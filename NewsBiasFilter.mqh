@@ -1,4 +1,32 @@
 ﻿#include "GOAT_Inputs_Definitions.mqh"
+struct SNewsSyncResult
+  {
+   bool     success;
+   int      total_events;
+   datetime latest_event_time;
+   string   error_text;
+  };
+
+struct SBiasAssetSyncResult
+  {
+   string   asset;
+   bool     success;
+   int      total_points;
+   datetime earliest_time;
+   datetime latest_time;
+   string   error_text;
+  };
+
+struct SBulkBiasSyncResult
+  {
+   bool                 success;
+   int                  assets_total;
+   int                  assets_synced;
+   int                  assets_failed;
+   string               error_text;
+   SBiasAssetSyncResult asset_results[];
+  };
+int GetGOATSupportedBiasAssets(string &assets[]);
 //+------------------------------------------------------------------+
 class GOATNewsFilter
   {
@@ -25,6 +53,7 @@ class GOATNewsFilter
    //string            m_arrExclude[];
 
    // --- Private Helpers ---
+   bool              WriteNewsFile(const string outputFileName,string &error_text);
    //void              ParseKeywords();
    //void              StringSplitterHelper(string stringname, string &MyArray[], string seperator=",");
    public:
@@ -54,8 +83,9 @@ class GOATNewsFilter
    }
    void              Init(string Key__);
    void              BacktestNewsFileDownloader(datetime startdate);
+   bool              SyncFullHistory(SNewsSyncResult &result);
    bool              LoadBacktestFileAndFillNews();
-   bool              DownloadAndFillNews(datetime startdate,int news_threshold,bool DownloadMode);
+   bool              DownloadAndFillNews(datetime startdate,int news_threshold,bool DownloadMode,bool showSummary=true);
    bool              FillTodaysNewsArray();
    bool              IsNewsTime(string sym,int threshold,int &indices[]);
   };
@@ -74,6 +104,7 @@ class GOATBiasHistory
    int               BrokerGMTOffsetSec;
    int               BrokerDSTEnabled;
 
+   bool              WriteBiasFile(const string outputFileName,string &error_text);
    void              UpdateStatesToTime(datetime now);
    //bool            ParseIso8601ToDatetime(string ts, datetime &out_time);
    //int             ParseSentimentToInt(string sentiment);
@@ -107,8 +138,10 @@ class GOATBiasHistory
                              //LoadBacktestFileAndFillBias();
                           }
    void                   BacktestBiasFileDownloader(datetime startdate);
+   bool                   SyncBiasHistory(datetime startdate,const string asset,SBiasAssetSyncResult &result);
+   bool                   SyncAllBiasHistory(SBulkBiasSyncResult &result);
    bool                   LoadBacktestFileAndFillBias();
-   bool                   DownloadAndFillBias(datetime startdate, string asset, bool DownloadMode);
+   bool                   DownloadAndFillBias(datetime startdate, string asset, bool DownloadMode,bool showSummary=true);
    int                    GetCurentBiasScore(string asset,int &idx);
   };
 GOATBiasHistory Bias;
@@ -311,19 +344,31 @@ void GOATNewsFilter::BacktestNewsFileDownloader(datetime startdate)
       return;
      }
    Print("Downloading News Data Finished");
-   //--- write CSV from NewsList
    Print("Writing to File...");
-   string outputFileName = NEWS_FILE;//Key_+"\\"+Download_News_FileName + ".csv";
+
+   string error_text = "";
+   if(!WriteNewsFile(NEWS_FILE,error_text))
+     {
+      Alert(error_text);
+      return;
+     }
+   Print("News Writing Complete");
+  }
+//+------------------------------------------------------------------+
+bool GOATNewsFilter::WriteNewsFile(const string outputFileName,string &error_text)
+  {
+   error_text = "";
    int outputFileHandle = FileOpen(outputFileName, FILE_WRITE | FILE_CSV | FILE_COMMON, ",");
 
    if(outputFileHandle == INVALID_HANDLE)
      {
-      Alert("Error opening news file for writing");
-      return;
+      error_text = "Error opening news file for writing";
+      Print(error_text);
+      return false;
      }
-   //FileWrite(outputFileHandle, "DaylightSavings", (int)IsWinterTime(TimeCurrent()));
+
    FileWrite(outputFileHandle, "Time", "Currency", "ImpactScore", "Name", "Actual", "Forecast", "Previous", "Outcome", "Description");
-   
+
    for(int i = 0; i < ArraySize(NewsList); i++)
      {
       FileWrite(outputFileHandle,
@@ -338,9 +383,41 @@ void GOATNewsFilter::BacktestNewsFileDownloader(datetime startdate)
                 NewsList[i].newsDescription);
      }
    FileClose(outputFileHandle);
+
    int g = 0, d = 0;
-   LoadOrSaveBrokerTimeFiles(g, d, false,Key_);
-   Print("News Writing Complete");
+   if(!LoadOrSaveBrokerTimeFiles(g, d, false,Key_))
+     {
+      error_text = "Error writing broker time metadata for news history";
+      Print(error_text);
+      return false;
+     }
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool GOATNewsFilter::SyncFullHistory(SNewsSyncResult &result)
+  {
+   result.success = false;
+   result.total_events = 0;
+   result.latest_event_time = 0;
+   result.error_text = "";
+
+   if(!DownloadAndFillNews(GOATFullHistorySyncStart(),News_threshold,true,false))
+     {
+      result.error_text = "News download failed";
+      return false;
+     }
+
+   result.total_events = ArraySize(NewsList);
+   if(result.total_events > 0)
+      result.latest_event_time = NewsList[result.total_events - 1].time;
+
+   if(!WriteNewsFile(NEWS_FILE,result.error_text))
+      return false;
+
+   result.success = (result.total_events > 0);
+   if(!result.success && result.error_text == "")
+      result.error_text = "No news events returned";
+   return result.success;
   }
 //+------------------------------------------------------------------+
 void GOATBiasHistory::BacktestBiasFileDownloader(datetime startdate)
@@ -352,16 +429,27 @@ void GOATBiasHistory::BacktestBiasFileDownloader(datetime startdate)
       return;
      }
    Print("Downloading Bias Data Finished");
-
    Print("Writing to File...");
-   string outputFileName = BIAS_FILE+ConvertToGOATsymbol(Symbol())+".csv";
+
+   string error_text = "";
+   if(!WriteBiasFile(BIAS_FILE+ConvertToGOATsymbol(Symbol())+".csv",error_text))
+     {
+      Print(error_text);
+      return;
+     }
+   Print("Bias Writing Complete");
+  }
+//+------------------------------------------------------------------+
+bool GOATBiasHistory::WriteBiasFile(const string outputFileName,string &error_text)
+  {
+   error_text = "";
    int outputFileHandle = FileOpen(outputFileName, FILE_WRITE | FILE_CSV | FILE_COMMON, ",");
 
    if(outputFileHandle == INVALID_HANDLE)
      {
-    //Print("Error opening bias file for writing");
-      PrintFormat("Error opening bias file for writing. Error=%d.",GetLastError());
-      return;
+      error_text = "Error opening bias file for writing. Error=" + (string)GetLastError();
+      Print(error_text);
+      return false;
      }
    FileWrite(outputFileHandle, "Time", "Asset", "SentimentScore");
 
@@ -373,12 +461,78 @@ void GOATBiasHistory::BacktestBiasFileDownloader(datetime startdate)
                 BiasList[i].sentiment_score);
      }
    FileClose(outputFileHandle);
+
    int g = 0, d = 0;
-   LoadOrSaveBrokerTimeFiles(g, d, false,Key_);
-   Print("Bias Writing Complete");
+   if(!LoadOrSaveBrokerTimeFiles(g, d, false,Key_))
+     {
+      error_text = "Error writing broker time metadata for bias history";
+      Print(error_text);
+      return false;
+     }
+   return true;
   }
 //+------------------------------------------------------------------+
-bool GOATNewsFilter::DownloadAndFillNews(datetime startdate,int news_threshold,bool DownloadMode)
+bool GOATBiasHistory::SyncBiasHistory(datetime startdate,const string asset,SBiasAssetSyncResult &result)
+  {
+   result.asset = asset;
+   result.success = false;
+   result.total_points = 0;
+   result.earliest_time = 0;
+   result.latest_time = 0;
+   result.error_text = "";
+
+   if(!DownloadAndFillBias(startdate,asset,true,false))
+     {
+      result.error_text = "Bias download failed";
+      return false;
+     }
+
+   result.total_points = ArraySize(BiasList);
+   if(result.total_points > 0)
+     {
+      result.earliest_time = BiasList[0].time;
+      result.latest_time = BiasList[result.total_points-1].time;
+     }
+
+   if(!WriteBiasFile(BIAS_FILE+asset+".csv",result.error_text))
+      return false;
+
+   result.success = (result.total_points > 0);
+   if(!result.success && result.error_text == "")
+      result.error_text = "No bias points returned";
+   return result.success;
+  }
+//+------------------------------------------------------------------+
+bool GOATBiasHistory::SyncAllBiasHistory(SBulkBiasSyncResult &result)
+  {
+   result.success = false;
+   result.assets_total = 0;
+   result.assets_synced = 0;
+   result.assets_failed = 0;
+   result.error_text = "";
+   ArrayResize(result.asset_results, 0);
+
+   string assets[];
+   int total = GetGOATSupportedBiasAssets(assets);
+   result.assets_total = total;
+   ArrayResize(result.asset_results, total);
+
+   datetime startdate = GOATFullHistorySyncStart();
+   for(int i = 0; i < total; i++)
+     {
+      SBiasAssetSyncResult asset_result;
+      if(SyncBiasHistory(startdate,assets[i],asset_result)) result.assets_synced++;
+      else                                                  result.assets_failed++;
+      result.asset_results[i] = asset_result;
+     }
+
+   result.success = (result.assets_synced > 0);
+   if(result.assets_failed > 0)
+      result.error_text = (string)result.assets_failed + " assets failed during sync";
+   return result.success;
+  }
+//+------------------------------------------------------------------+
+bool GOATNewsFilter::DownloadAndFillNews(datetime startdate,int news_threshold,bool DownloadMode,bool showSummary)
   {
    //--- build ISO8601 start_time from Download_StartDate (UTC)
    MqlDateTime dt;
@@ -417,11 +571,15 @@ bool GOATNewsFilter::DownloadAndFillNews(datetime startdate,int news_threshold,b
    if(res == -1)
      {
       int err = GetLastError();
-      if(DownloadMode) Alert("News downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.",err);
+      if(DownloadMode && showSummary) Alert("News downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.",err);
       PrintFormat("News downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.",err);
       return false;
      }
-   else if(res!=200) MessageBox(CharArrayToString(result, 0, -1, CP_UTF8),"Response code: "+(string)res,MB_OK);
+   else if(res!=200)
+     {
+      if(showSummary) MessageBox(CharArrayToString(result, 0, -1, CP_UTF8),"Response code: "+(string)res,MB_OK);
+      else            Print("News downloader HTTP response "+(string)res+": "+CharArrayToString(result, 0, -1, CP_UTF8));
+     }
    else LastNewsTimeCheck=TimeCurrent();
    
    Print("News API called");
@@ -576,17 +734,19 @@ bool GOATNewsFilter::DownloadAndFillNews(datetime startdate,int news_threshold,b
         }
       if(NewsList[i].time < NewsList[i - 1].time)
         {
-         Alert("GOATNewsFilter: News download order is incorrect (expected oldest at index 0). "
-               "Out-of-order at indices " + (string)(i - 1) + " -> " + (string)i
-               + " (" + TimeToString(NewsList[i - 1].time, TIME_DATE|TIME_MINUTES)
-               + " then " + TimeToString(NewsList[i].time, TIME_DATE|TIME_MINUTES) + ").");
+         string order_msg = "GOATNewsFilter: News download order is incorrect (expected oldest at index 0). "
+                            "Out-of-order at indices " + (string)(i - 1) + " -> " + (string)i
+                            + " (" + TimeToString(NewsList[i - 1].time, TIME_DATE|TIME_MINUTES)
+                            + " then " + TimeToString(NewsList[i].time, TIME_DATE|TIME_MINUTES) + ").";
+         if(showSummary) Alert(order_msg);
+         else            Print(order_msg);
          break;
         }
       i++;
      }
    NewsChecked = true; // newsList is fresh now and TodaysNewsList should be rebuilt
    ArrayResize(TodaysNewsList, 0);
-   if(DownloadMode)
+   if(DownloadMode && showSummary)
    {
     if(ArraySize(NewsList)>0) MessageBox("Captured "+(string)ArraySize(NewsList)+" News events\nDropped "+(string)dropped+" News events","News Download Complete",MB_OK|MB_ICONINFORMATION);
     else                      MessageBox("No New Events found\n\nResponse="+json,"News Download Incomplete",MB_OK|MB_ICONERROR);
@@ -597,7 +757,7 @@ bool GOATNewsFilter::DownloadAndFillNews(datetime startdate,int news_threshold,b
    return (ArraySize(NewsList)>0);
   }
 //+------------------------------------------------------------------+
-bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool DownloadMode)
+bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool DownloadMode,bool showSummary)
   {
    MqlDateTime dt;
    if(DownloadMode)
@@ -636,11 +796,15 @@ bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool D
    if(res == -1)
      {
       int err = GetLastError();
-      if(DownloadMode) Alert("Bias downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.", err);
+      if(DownloadMode && showSummary) Alert("Bias downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.", err);
       PrintFormat("Bias downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.", err);
       return false;
      }
-   else if(res!=200) MessageBox(CharArrayToString(result, 0, -1, CP_UTF8),"Response code: "+(string)res,MB_OK);
+   else if(res!=200)
+     {
+      if(showSummary) MessageBox(CharArrayToString(result, 0, -1, CP_UTF8),"Response code: "+(string)res,MB_OK);
+      else            Print("Bias downloader HTTP response "+(string)res+": "+CharArrayToString(result, 0, -1, CP_UTF8));
+     }
    //else LastBiasTimeCheck = TimeCurrent();
    Print("Bias API called");
    string json = CharArrayToString(result, 0, -1, CP_UTF8); //Print(json);
@@ -711,7 +875,7 @@ bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool D
      if(ArraySize(BiasList) == 0 && !DownloadMode) // Biaslist is empty even tho webrequest was sucessful
      {
       if(startdate > TimeCurrent() - 5*24*60*60)   // reaching 5 days back day by day to get valid bias points
-      return DownloadAndFillBias(startdate - 24*60*60, asset, false);
+      return DownloadAndFillBias(startdate - 24*60*60, asset, false, showSummary);
 
       ArrayResize(BiasList, 1); // inserting dummy bias sentiment of 0 value
       BiasList[0].time            = TimeCurrent();
@@ -737,13 +901,15 @@ bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool D
         }
       if(BiasList[i].time < BiasList[i - 1].time)
         {
-         Alert("GOATBiasHistory: Bias download order is incorrect for " + asset +"Out-of-order at indices " + (string)(i - 1) + " -> " + (string)i
-               + " (" + TimeToString(BiasList[i - 1].time, TIME_DATE|TIME_MINUTES|TIME_SECONDS)+ " then " + TimeToString(BiasList[i].time, TIME_DATE|TIME_MINUTES) + ").");
+         string order_msg = "GOATBiasHistory: Bias download order is incorrect for " + asset + " Out-of-order at indices " + (string)(i - 1) + " -> " + (string)i
+                            + " (" + TimeToString(BiasList[i - 1].time, TIME_DATE|TIME_MINUTES|TIME_SECONDS)+ " then " + TimeToString(BiasList[i].time, TIME_DATE|TIME_MINUTES) + ").";
+         if(showSummary) Alert(order_msg);
+         else            Print(order_msg);
          break;
         }
       i++;
      }
-   if(DownloadMode)
+   if(DownloadMode && showSummary)
    {
     if(ArraySize(BiasList)>0) MessageBox("Captured "+(string)ArraySize(BiasList)+" Bias points for "+asset+"\nDropped "+(string)dropped+" Bias points for "+asset,"Bias Download Complete",MB_OK|MB_ICONINFORMATION);
     else                      MessageBox("No Bias points for "+asset+"\n\nResponse="+json,"Bias Download Incomplete",MB_OK|MB_ICONERROR);
@@ -755,8 +921,31 @@ bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool D
    return (ArraySize(BiasList) > 0);
   }
 //+------------------------------------------------------------------+
-bool GOATNewsFilter::LoadBacktestFileAndFillNews()
+datetime GOATFullHistorySyncStart(void)
   {
+   return D'2023.01.01';
+  }
+//+------------------------------------------------------------------+
+int GetGOATSupportedBiasAssets(string &assets[])
+  {
+   string supported_assets[] =
+     {
+      "EURUSD","GBPUSD","USDJPY","USDCAD","USDCHF","AUDUSD","NZDUSD",
+      "EURGBP","EURJPY","EURAUD","EURNZD","EURCAD","EURCHF",
+      "GBPJPY","GBPAUD","GBPNZD","GBPCAD","GBPCHF",
+      "AUDJPY","AUDCAD","AUDNZD","AUDCHF","NZDJPY","NZDCAD","NZDCHF","CADJPY","CADCHF","CHFJPY",
+      "US500","NAS100","US30","GER40","EU50","JP225","AUS200",
+      "BTCUSD","ETHUSD",
+      "XAUUSD","XAGUSD"
+     };
+
+   int total = ArraySize(supported_assets);
+   ArrayResize(assets, total);
+   for(int i = 0; i < total; i++) assets[i] = supported_assets[i];
+   return total;
+  }
+//+------------------------------------------------------------------+
+bool GOATNewsFilter::LoadBacktestFileAndFillNews()  {
    string inputFileName = NEWS_FILE;//Key_+"\\"+Download_News_FileName + ".csv";
    int inputFileHandle = FileOpen(inputFileName, FILE_READ | FILE_SHARE_READ | FILE_CSV | FILE_COMMON, ",");
 
@@ -1075,10 +1264,20 @@ bool LoadOrSaveBrokerTimeFiles(int &gmt_offset_sec,int &dst_enabled,bool LoadOrS
    //--- save offset WITHOUT DST regardless of when saved      
    datetime gmt_now = TimeGMT();
    bool in_usdst    = IsInUSDST(gmt_now);          // DST window (US schedule) in GMT reference
-   int  local_dst   = (int)TimeDaylightSavings();  // extra sanity signal (platform/local)
+   int  local_dst_seconds = (int)TimeDaylightSavings();  // extra sanity signal (platform/local)
+   bool local_in_dst      = (local_dst_seconds != 0);
    //--- optional sanity warning (do not block saving)
-   if(dst == 1 && ((in_usdst ? 1 : 0) != local_dst))
-      Alert("DST sanity check: US-DST-window=" + (string)(in_usdst ? 1 : 0) + " TimeDaylightSavings=" + (string)local_dst + ". Saving continues.");
+   if(dst == 1 && in_usdst != local_in_dst)
+     {
+      static bool dst_sanity_logged = false;
+      if(!dst_sanity_logged)
+        {
+         dst_sanity_logged = true;
+         Print("DST sanity check: US-DST-window=" + (string)(in_usdst ? 1 : 0) +
+               " LocalDSTFlag=" + (string)(local_in_dst ? 1 : 0) +
+               " TimeDaylightSavings=" + (string)local_dst_seconds + ". Saving continues.");
+        }
+     }
    //--- SAVE STANDARD OFFSET (no DST) regardless of saving date
    // If broker uses DST and we are currently inside the DST window, server offset is typically +3600.
    // We remove that hour so the stored value remains the baseline (non-DST) offset.

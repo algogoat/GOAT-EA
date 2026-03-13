@@ -11,6 +11,9 @@
 //#include "GOATdefinitions.mqh"
 #include "Tester.mqh"
 #include "NewsBiasFilter.mqh"
+
+#define OPT_STUDIO_UI_VERSION "V1.35.1"
+
 // === PRESETS: map display-name -> actual file (with .txt)  // NEW
 string g_PresetDisplayNames[];
 string g_PresetFileNames[];
@@ -68,11 +71,12 @@ public:
    // Single button
    CButton     m_btnSelectFile,m_btnAddQueue,m_btnSetPresets,m_btnDelQ,m_btnDelQitem,m_btnUpQitem,m_btnDownQitem,m_btnCancelSelected,m_btnMakePending,m_btnStart,m_btnStop;
 // Export Settings extra objects
-   CLabel      m_lblSetsToExport,m_lblBackOOSDate,m_lblMinScore,m_lblMinARF,m_lblAdjustLots,m_lblMinSR,m_lblTargetDD,m_lblVerifyOOS;
+   CLabel      m_lblSetsToExport,m_lblBackOOSDate,m_lblMinScore,m_lblMinARF,m_lblAdjustLots,m_lblMinSR,m_lblTargetDD,m_lblVerifyOOS,m_lblDataSync;
    CEdit       m_edtSetsToExport                 ,m_edtMinScore,m_edtMinARF                ,m_edtMinSR,m_edtTargetDD;
    CCheckBox   m_chkAdjustLots,m_chkVerifyOOS;
    
    CDatePicker m_dpBackOOS,m_dpFwdOOS;
+   CButton     m_btnSyncBias,m_btnViewBias,m_btnSyncNews;
    // Layout parameters
    int         m_leftMargin,m_topMargin,m_labelWidth,m_GapHoriz,m_rowHeight,m_controlHeight,m_controlWidth;
    // Storing positions for date pickers so we can create them last
@@ -82,6 +86,7 @@ public:
 
    string Path_QueueBatch,Path_QueueStrategy,Path_ExportSettings,Key_,EA_Name_,Server_;
    int D_Width,D_Height,Font_Size;
+   bool m_dataSyncBusy;
  //color clr_CaptionBack,clr_CaptionBorder,clr_ClientBack,clr_ClientBorder,clr_Text;
    
    CStrategyTesterDialog();
@@ -106,6 +111,10 @@ public:
    void           OnClickCancelSelectedItem(void);                // current line  →  Cancelled
    void           OnClickMakeSelectedPending(void);               // current line  →  Pending
    void           OnClickRefresh(bool init,bool select);
+   void           OnClickSyncBias(void);
+   void           OnClickViewBias(void);
+   void           OnClickSyncNews(void);
+   void           RefreshNewsSyncButton(void);
    void           OnClickStart(void);
    void           OnClickStop(void);
    void           ChangeItemTo(const int index,const string state); // generic state swapper
@@ -119,6 +128,10 @@ private:
    void CreateEditBox(CEdit &edt, const string name, int x, int y, int width=60, string def="");
    void CreateButtonCtrl(CButton &btn, const string name, int x, int y, int width, int height, string caption);
    void CreateListView(CListView &listV, const string name, int x, int y, int width, int height, string caption);
+   bool ReadNewsHistoryRange(const string file_name,datetime &earliest_event_time,datetime &latest_event_time);
+   bool ReadBiasHistoryFileStats(const string asset,SBiasAssetSyncResult &result);
+   void BuildBiasHistoryStatus(SBulkBiasSyncResult &result);
+   void ShowBiasHistorySummary(const SBulkBiasSyncResult &result);
    // Child control event handlers
    void OnDateFromChanged(void);
    void OnDateToChanged(void);
@@ -145,13 +158,16 @@ EVENT_MAP_BEGIN(CStrategyTesterDialog)
 //ON_EVENT(ON_CLICK,  m_btnRefresh   ,OnClickRefresh)
   ON_EVENT(ON_CLICK,  m_btnCancelSelected ,OnClickCancelSelectedItem)
   ON_EVENT(ON_CLICK,  m_btnMakePending ,OnClickMakeSelectedPending)
+  ON_EVENT(ON_CLICK,  m_btnSyncBias ,OnClickSyncBias)
+  ON_EVENT(ON_CLICK,  m_btnViewBias ,OnClickViewBias)
+  ON_EVENT(ON_CLICK,  m_btnSyncNews ,OnClickSyncNews)
   ON_EVENT(ON_CLICK,  m_btnStart ,OnClickStart)
   ON_EVENT(ON_CLICK,  m_btnStop ,OnClickStop)
 EVENT_MAP_END(CAppDialog)
 //+------------------------------------------------------------------+
 CStrategyTesterDialog::CStrategyTesterDialog()
 {
-   
+   m_dataSyncBusy = false;
 }
 CStrategyTesterDialog::~CStrategyTesterDialog()
 {
@@ -165,11 +181,73 @@ void CStrategyTesterDialog::SetFlags(const string _Key_,const string _EA_Name_,c
    Key_=_Key_; EA_Name_=_EA_Name_; Server_=_Server_; Font_Size=_Font_Size_; D_Width=D_Width_; D_Height=D_Height_;
    Path_QueueBatch     = Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Key_+" Batch Queue."+Key_; //Print(Path_QueueBatch);
    Path_ExportSettings = Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Key_+" Export Settings."+Key_;
+   News.Key_ = Key_;
+   Bias.Key_ = Key_;
 }
 CEdit CaptionObjTester;
 CStrategyTesterDialog TesterDialog;
 
 string n_Expert,Strategy="",TesterInputs="";
+//+------------------------------------------------------------------+
+string GetCurrentExpertRelativePath()
+  {
+   string path=MQLInfoString(MQL_PROGRAM_PATH);
+   int ret=StringFind(path,"MQL5\\Experts");
+   if(ret<0) return "";
+   return StringSubstr(path,ret+StringLen("MQL5\\Experts")+1,-1);
+  }
+//+------------------------------------------------------------------+
+string NormalizeExpertRelativePath(string expertPath)
+  {
+   StringTrimLeft(expertPath);
+   StringTrimRight(expertPath);
+   StringReplace(expertPath,"/","\\");
+   while(StringFind(expertPath,"\\\\")>=0) StringReplace(expertPath,"\\\\","\\");
+
+   string expertsRoot=TerminalInfoString(TERMINAL_DATA_PATH)+"\\MQL5\\Experts\\";
+   if(expertPath!="" && MTTESTER::FileIsExist(expertsRoot+expertPath)) return expertPath;
+
+   string currentExpert=GetCurrentExpertRelativePath();
+   if(currentExpert!="" && MTTESTER::FileIsExist(expertsRoot+currentExpert)) return currentExpert;
+
+   string parts[];
+   int total=StringSplit(expertPath,'\\',parts);
+   string fileName=(total>0)?parts[total-1]:expertPath;
+
+   if(fileName!="" && MTTESTER::FileIsExist(expertsRoot+fileName)) return fileName;
+   if(fileName!="" && MTTESTER::FileIsExist(expertsRoot+"GOAT-EA\\"+fileName)) return "GOAT-EA\\"+fileName;
+
+   return expertPath;
+  }
+//+------------------------------------------------------------------+
+string RepairTesterExpertPath(string testerConfig)
+  {
+   string cfgLines[];
+   int count=StringSplit(testerConfig,'\n',cfgLines);
+   if(count<1) return testerConfig;
+
+   for(int i=0;i<count;i++)
+   {
+    string trimmed=cfgLines[i];
+    StringTrimLeft(trimmed);
+    StringTrimRight(trimmed);
+    if(StringFind(trimmed,"Expert=")==0)
+    {
+     string expertValue=StringSubstr(trimmed,StringLen("Expert="));
+     string repaired=NormalizeExpertRelativePath(expertValue);
+     if(repaired!="" && repaired!=expertValue) cfgLines[i]="Expert="+repaired;
+     break;
+    }
+   }
+
+   string result="";
+   for(int i=0;i<count;i++)
+   {
+    result+=cfgLines[i];
+    if(i<count-1) result+="\n";
+   }
+   return result;
+  }
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnDateFromChanged(void)
 {
@@ -216,7 +294,7 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
       return(false);
    }
    GlobalVariableDel("CaptionHeight");
-   Caption(Key_+" - Optimization Studio");
+   Caption(Key_+" - Optimization Studio " + OPT_STUDIO_UI_VERSION);
    ChartSetInteger(0,CHART_SHOW_TRADE_HISTORY,0);
    SetCaptionClientColors();
    
@@ -255,6 +333,7 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    string path = MQLInfoString(MQL_PROGRAM_PATH);
    int ret = StringFind(path, "MQL5\\Experts");
    if(ret >= 0) n_Expert = StringSubstr(path, ret + StringLen("MQL5\\Experts")+1, -1);
+   n_Expert = NormalizeExpertRelativePath(n_Expert);
    if(ret >= 0) path = StringSubstr(path, MathMax(ret,(StringLen(path)-33)), -1);
    
    m_cmbExpert.AddItem(path);
@@ -422,10 +501,16 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
          m_btnStop.FontSize(m_btnStop.FontSize()+2); m_btnStop.Color(clrWhite); m_btnStop.ColorBackground(clrCrimson); m_btnStop.ColorBorder(clrBlack);//C'15,23,42');
    y += m_rowHeight;
    
-   if(!c_Wnd_Export.Create(m_chart_id,m_name+"Export",m_subwin,(int)(D_Width*0.01),(int)(D_Height*0.70),(int)(D_Width*0.80),(int)(D_Height*0.93)))  // left,top,right,bottom
-   {
-      Print("Failed to create export rect: ", GetLastError());
-      return false;
+  int exportPanelLeft   = (int)(D_Width*0.01);
+  int exportPanelTop    = (int)(D_Height*0.70);
+  int exportPanelRight  = (int)(D_Width*0.80);
+  int exportPanelBottom = (int)(D_Height*0.995);
+  int exportPanelWidth  = exportPanelRight-exportPanelLeft;
+
+  if(!c_Wnd_Export.Create(m_chart_id,m_name+"Export",m_subwin,exportPanelLeft,exportPanelTop,exportPanelRight,exportPanelBottom))  // left,top,right,bottom
+  {
+     Print("Failed to create export rect: ", GetLastError());
+     return false;
    }
    c_Wnd_Export.ColorBackground(clrGainsboro);
    c_Wnd_Export.ColorBorder(clrBlack);
@@ -441,12 +526,14 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
     double TargetDD    = StringToDouble(FetchExportSetting("TargetDD",Key_,EA_Name_,Server_));  if(TargetDD<100) TargetDD=100;
     bool   AdjustLots  = StringToInteger(FetchExportSetting("AdjustLots",Key_,EA_Name_,Server_))!=0;//Print(AdjustLots);
     bool   InclBackOOS = StringToInteger(FetchExportSetting("IncludeBackOOS",Key_,EA_Name_,Server_))!=0;//Print(InclBackOOS);
-    
-   CreateLabel(m_lblExport,"Export Settings", m_leftMargin+(int)(D_Width*0.0), y, 10); m_lblExport.FontSize(m_lblExport.FontSize()+1);
-   //y += m_rowHeight;
+
+   CreateLabel(m_lblExport,"Export Settings", m_leftMargin+(int)(D_Width*0.0), y, 10);
+   m_lblExport.FontSize(m_lblExport.FontSize()+1);
+
    m_leftMargin  =(int)(m_leftMargin*8.0);
    m_labelWidth  =(int)(m_labelWidth*1.3);
    m_controlWidth=(int)(m_controlWidth*0.5);
+
    // ===== LEFT-COLUMN ITEMS  ========================================
    CreateLabel (m_lblSetsToExport ,"# of Sets to Export:", m_leftMargin,y,m_labelWidth);
    CreateEditBox(m_edtSetsToExport,"edtSetsToExport", m_leftMargin+m_labelWidth+m_GapHoriz,y,m_controlWidth,IntegerToString(SetsToExport));
@@ -461,28 +548,40 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    if(!m_chkAdjustLots.Create(m_chart_id,m_name+"chkAdjustLots",m_subwin,m_leftMargin+m_labelWidth+m_GapHoriz,y,m_leftMargin+m_labelWidth+m_GapHoriz+m_controlWidth/5,y+m_controlHeight))
       Print("CheckBox creation error:",GetLastError());
    Add(m_chkAdjustLots); m_chkAdjustLots.Text(""); m_chkAdjustLots.Checked(AdjustLots);
+
    // ===== RIGHT-COLUMN ITEMS  =======================================
    int xR = m_leftMargin + m_labelWidth + m_controlWidth + m_GapHoriz*4;
-   int yR = (int)(D_Height*0.72);   // row-0 anchor for right side
-   // (row-1) ----------------------------------------------------------
+   int yR = (int)(D_Height*0.72);
    yR += m_rowHeight;
    CreateLabel (m_lblMinARF ,"Min ARF:",xR,yR,m_labelWidth);
    CreateEditBox(m_edtMinARF,"edtMinARF",xR+m_labelWidth+m_GapHoriz,yR,m_controlWidth,DoubleToString(MinARF,1));
-   // (row-2) ----------------------------------------------------------
    yR += m_rowHeight;
    CreateLabel (m_lblMinSR ,"Min SR:",xR,yR,m_labelWidth);
    CreateEditBox(m_edtMinSR,"edtMinSR",xR+m_labelWidth+m_GapHoriz,yR,m_controlWidth,DoubleToString(MinSR,1));
-   // (row-3)  Verify on OOS  -----------------------------------------
    yR += m_rowHeight;
    CreateLabel (m_lblVerifyOOS ,"Include Back OOS:",xR,yR,m_labelWidth);
    if(!m_chkVerifyOOS.Create(m_chart_id,m_name+"chkVerifyOOS",m_subwin,xR+m_labelWidth+m_GapHoriz,yR,xR+m_labelWidth+m_GapHoriz+m_controlWidth/5,yR+m_controlHeight))
       Print("CheckBox creation error:",GetLastError());
    Add(m_chkVerifyOOS); m_chkVerifyOOS.Text(""); m_chkVerifyOOS.Checked(InclBackOOS);
-   // (row-0)  Back OOS Date -- created last for z-order --------------
+
    CreateLabel (m_lblBackOOSDate ,"Back OOS Date:",xR,(int)(D_Height*0.72),m_labelWidth);
    CreateDatePick(m_dpBackOOS   ,"dpBackOOS", xR+m_labelWidth+m_GapHoriz,(int)(D_Height*0.72),m_controlWidth);
    if(BackOOSDate=="") BackOOSDate="2024.01.01";
-   m_dpBackOOS.Value(StringToTime(BackOOSDate));//TimeToString(,TIME_DATE));//D'2024.01.08');
+   m_dpBackOOS.Value(StringToTime(BackOOSDate));
+
+  int syncButtonHeight = MathMax(18,(int)(m_controlHeight*0.90));
+  int syncButtonGap = MathMax(8,m_GapHoriz);
+  int syncLabelWidth = MathMax(80,(int)(D_Width*0.09));
+  int syncButtonWidth = MathMax(110,MathMin((int)(D_Width*0.20),(exportPanelWidth-syncLabelWidth-syncButtonGap*4)/3));
+  int syncGroupWidth = syncLabelWidth+syncButtonGap+(syncButtonWidth*3)+(syncButtonGap*2);
+  int syncGroupLeft = exportPanelLeft+MathMax(0,(exportPanelWidth-syncGroupWidth)/2);
+  int syncY = exportPanelBottom-syncButtonHeight-MathMax(8,(int)(D_Height*0.018));
+  int syncLabelX = syncGroupLeft;
+  int syncButtonX = syncLabelX + syncLabelWidth + syncButtonGap;
+  CreateLabel(m_lblDataSync,"Data Sync:",syncLabelX,syncY,syncLabelWidth);
+  CreateButtonCtrl(m_btnSyncBias,"m_btnSyncBias",syncButtonX,syncY,syncButtonWidth,syncButtonHeight,"Sync AI Bias History");
+  CreateButtonCtrl(m_btnViewBias,"m_btnViewBias",syncButtonX+syncButtonWidth+syncButtonGap,syncY,syncButtonWidth,syncButtonHeight,"View AI Bias History");
+  CreateButtonCtrl(m_btnSyncNews,"m_btnSyncNews",syncButtonX+(syncButtonWidth+syncButtonGap)*2,syncY,syncButtonWidth,syncButtonHeight,"Sync News History");
    // Show the dialog
    Show(); Sleep(50);
    OnClickRefresh(true);
@@ -573,6 +672,164 @@ void CStrategyTesterDialog::CreateListView(CListView &listV, const string name, 
    //m_listQueue.ItemColorsFHD(5,clrGreen,clrWheat); m_listQueue.Select(3); //m_listQueue.
 }
 //+------------------------------------------------------------------+
+bool CStrategyTesterDialog::ReadNewsHistoryRange(const string file_name,datetime &earliest_event_time,datetime &latest_event_time)
+  {
+   earliest_event_time = 0;
+   latest_event_time = 0;
+
+   if(!FileIsExist(file_name,FILE_COMMON)) return false;
+
+   int h = FileOpen(file_name,FILE_READ|FILE_CSV|FILE_COMMON,",");
+   if(h==INVALID_HANDLE) return false;
+
+   for(int i=0; i<9 && !FileIsEnding(h); i++) FileReadString(h); // header
+
+   while(!FileIsEnding(h))
+     {
+      string time_s = FileReadString(h);
+      for(int i=0; i<8 && !FileIsEnding(h); i++) FileReadString(h);
+      if(time_s == "") continue;
+
+      datetime t = StringToTime(time_s);
+      if(t <= 0) continue;
+
+      if(earliest_event_time == 0) earliest_event_time = t;
+      latest_event_time = t;
+     }
+   FileClose(h);
+
+   return (latest_event_time > 0);
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::ReadBiasHistoryFileStats(const string asset,SBiasAssetSyncResult &result)
+  {
+   result.asset = asset;
+   result.success = false;
+   result.total_points = 0;
+   result.earliest_time = 0;
+   result.latest_time = 0;
+   result.error_text = "";
+
+   string file_name = BIAS_FILE+asset+".csv";
+   if(!FileIsExist(file_name,FILE_COMMON))
+     {
+      result.error_text = "File missing";
+      return false;
+     }
+
+   int h = FileOpen(file_name,FILE_READ|FILE_CSV|FILE_COMMON,",");
+   if(h==INVALID_HANDLE)
+     {
+      result.error_text = "Open error=" + (string)GetLastError();
+      return false;
+     }
+
+   for(int i=0; i<3 && !FileIsEnding(h); i++) FileReadString(h); // header
+
+   while(!FileIsEnding(h))
+     {
+      string time_s = FileReadString(h);
+      if(!FileIsEnding(h)) FileReadString(h);
+      if(!FileIsEnding(h)) FileReadString(h);
+      if(time_s == "") continue;
+
+      datetime t = StringToTime(time_s);
+      if(t <= 0) continue;
+
+      if(result.total_points == 0) result.earliest_time = t;
+      result.latest_time = t;
+      result.total_points++;
+     }
+   FileClose(h);
+
+   result.success = (result.total_points > 0);
+   if(!result.success) result.error_text = "No bias points";
+   return result.success;
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::BuildBiasHistoryStatus(SBulkBiasSyncResult &result)
+  {
+   result.success = false;
+   result.assets_total = 0;
+   result.assets_synced = 0;
+   result.assets_failed = 0;
+   result.error_text = "";
+   ArrayResize(result.asset_results,0);
+
+   string assets[];
+   int total = GetGOATSupportedBiasAssets(assets);
+   result.assets_total = total;
+   ArrayResize(result.asset_results,total);
+
+   for(int i=0; i<total; i++)
+     {
+      SBiasAssetSyncResult asset_result;
+      if(ReadBiasHistoryFileStats(assets[i],asset_result)) result.assets_synced++;
+      else                                                 result.assets_failed++;
+      result.asset_results[i] = asset_result;
+     }
+
+   result.success = (result.assets_synced > 0);
+   if(result.assets_failed > 0)
+      result.error_text = (string)result.assets_failed + " assets missing or unreadable";
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::ShowBiasHistorySummary(const SBulkBiasSyncResult &result)
+  {
+   string summary = "AI Bias history";
+   summary += "\nAvailable assets: " + (string)result.assets_synced + "/" + (string)result.assets_total;
+   if(result.assets_failed > 0) summary += "\nMissing/failed assets: " + (string)result.assets_failed;
+   summary += "\n\n";
+
+   int total_assets = ArraySize(result.asset_results);
+   int asset_width = 0;
+   int points_digits = 1;
+   int status_width = 0;
+   for(int i = 0; i < total_assets; i++)
+     {
+      int asset_len = StringLen(result.asset_results[i].asset);
+      if(asset_len > asset_width) asset_width = asset_len;
+
+      string points_text = IntegerToString(result.asset_results[i].total_points);
+      int points_len = StringLen(points_text);
+      if(points_len > points_digits) points_digits = points_len;
+     }
+   for(int i = 0; i < total_assets; i++)
+     {
+      string status_field = "FAILED";
+      if(result.asset_results[i].success)
+        {
+         string points_text = IntegerToString(result.asset_results[i].total_points);
+         while(StringLen(points_text) < points_digits) points_text = " " + points_text;
+         status_field = points_text + " bias points";
+        }
+      if(StringLen(status_field) > status_width) status_width = StringLen(status_field);
+     }
+
+   for(int i = 0; i < total_assets; i++)
+     {
+      string earliest = (result.asset_results[i].earliest_time == 0) ? "No Date" : TimeToString(result.asset_results[i].earliest_time, TIME_DATE);
+      string latest = (result.asset_results[i].latest_time == 0) ? "No Date" : TimeToString(result.asset_results[i].latest_time, TIME_DATE);
+      string asset_field = result.asset_results[i].asset;
+      while(StringLen(asset_field) < asset_width) asset_field += " ";
+      string status_field = "FAILED";
+      if(result.asset_results[i].success)
+        {
+         string points_text = IntegerToString(result.asset_results[i].total_points);
+         while(StringLen(points_text) < points_digits) points_text = " " + points_text;
+         status_field = points_text + " bias points";
+        }
+      while(StringLen(status_field) < status_width) status_field += " ";
+      summary += asset_field + ": " + status_field + ", Start: " + earliest + ", End: " + latest;
+      if(!result.asset_results[i].success && result.asset_results[i].error_text != "")
+         summary += " - " + result.asset_results[i].error_text;
+      if(i < total_assets - 1) summary += "\n";
+     }
+
+   int icon = (result.assets_failed > 0) ? MB_ICONEXCLAMATION : MB_ICONINFORMATION;
+   MessageBox(summary, "AI Bias History", MB_OK|icon);
+  }
+//+------------------------------------------------------------------+
 //|  Sync GUI controls with the queue row that the user just clicked  |
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnSelectQueueItem(void)
@@ -654,20 +911,28 @@ void CStrategyTesterDialog::OnClickSelectFile()
    int ret = FileSelectDialog("Select a "+Key_+" .set file", NULL, "Set files (*.set)|*.set|All files (*.*)|*.*" , FSD_FILE_MUST_EXIST|FSD_COMMON_FOLDER , Filenames, NULL); //FSD_ALLOW_MULTISELECT
    if(ret>0)
    {
-    int handle = FileOpen(Filenames[0],FILE_READ|FILE_COMMON);
-    while(!FileIsEnding(handle))
-    {
-     string str=FileReadString(handle);
-     if(StringFind(str,"EA_Desc=")==0)
+     int handle = FileOpen(Filenames[0],FILE_READ|FILE_COMMON);
+     if(handle==INVALID_HANDLE)
      {
-      Strategy=StringSubstr(str,8); m_edtStrategy.Text(Strategy);
-     //if(StringFind(str,"SEQUENCE SETTINGS")>0 && Strategy!="") {
-      Path_QueueStrategy=Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy+"\\Queue."+Key_;
-      if(FileIsExist(Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy+"\\Inputs."+Key_,FILE_COMMON))
+      MessageBox("Unable to open the selected "+Key_+" set file.","Error",MB_OK|MB_ICONERROR);
+      return;
+     }
+     while(!FileIsEnding(handle))
+     {
+      string str=FileReadString(handle);
+      if(StringFind(str,"EA_Desc=")==0)
       {
-       // check if previously created file mismatch add here
-       string QueueContent_Strategy = GetFileContent(Path_QueueStrategy);
-       if(QueueContent_Strategy!="")
+       Strategy=NormalizeStrategyName(StringSubstr(str,8)); m_edtStrategy.Text(Strategy);
+      //if(StringFind(str,"SEQUENCE SETTINGS")>0 && Strategy!="") {
+       string strategyDir = Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy;
+       EnsureCommonFolderTree(strategyDir);
+       Path_QueueStrategy=strategyDir+"\\Queue."+Key_;
+       string inputsPath = strategyDir+"\\Inputs."+Key_;
+       if(FileIsExist(inputsPath,FILE_COMMON))
+       {
+        // check if previously created file mismatch add here
+        string QueueContent_Strategy = GetFileContent(Path_QueueStrategy);
+        if(QueueContent_Strategy!="")
        {
         int ret = MessageBox("Some Queue Items already present.\nStrategy name: "+Strategy+"\n\nDo you want to add the items?","Warning",MB_OKCANCEL|MB_ICONQUESTION);
         if(ret==IDOK)
@@ -675,17 +940,24 @@ void CStrategyTesterDialog::OnClickSelectFile()
          string QueueContent_Batch   =GetFileContent(Path_QueueBatch);
          string QueueContent_Strategy=GetFileContent(Path_QueueStrategy);
          QueueContent_Batch+=QueueContent_Strategy;
-         int handle = FileOpen(Path_QueueBatch,FILE_WRITE|FILE_COMMON);  // it overwrites the entire file
-         FileWrite(handle,QueueContent_Batch); FileClose(handle);
-         OnClickRefresh(true);
+          int handle = FileOpen(Path_QueueBatch,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);  // it overwrites the entire file
+          FileWrite(handle,QueueContent_Batch); FileClose(handle);
+           OnClickRefresh(true);
+         }
         }
        }
-      }
-      int handle_dest = FileOpen(Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy+"\\Inputs."+Key_,FILE_WRITE|FILE_COMMON);//FILE_TXT
-      FileWrite(handle_dest,"Mode_Operation=9"); // 9 is OnChart Standard
-      FileWrite(handle_dest,str);
-      while(!FileIsEnding(handle)) FileWrite(handle_dest,FileReadString(handle));
-      FileClose(handle_dest);
+       ResetLastError();
+       int handle_dest = FileOpen(inputsPath,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+       if(handle_dest==INVALID_HANDLE)
+       {
+        FileClose(handle);
+        MessageBox("Unable to create the strategy inputs file.\nFolder: "+strategyDir+"\nError code: "+(string)GetLastError(),"Error",MB_OK|MB_ICONERROR);
+        return;
+       }
+       FileWrite(handle_dest,"Mode_Operation=9"); // 9 is OnChart Standard
+       FileWrite(handle_dest,str);
+       while(!FileIsEnding(handle)) FileWrite(handle_dest,FileReadString(handle));
+       FileClose(handle_dest);
       break;
      }
     }
@@ -699,6 +971,7 @@ void CStrategyTesterDialog::OnClickSelectFile()
 void CStrategyTesterDialog::AddQueueSingle(void)
   {
    if(Strategy=="") {MessageBox("Select a "+Key_+" set file first.","Error",MB_OK|MB_ICONERROR); return;}
+   EnsureCommonFolderTree(Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy);
    
    string item=GetTESTERsettingsString();
    
@@ -707,16 +980,26 @@ void CStrategyTesterDialog::AddQueueSingle(void)
    
    QueueContent_Batch+=item+CharToString(31)+"\r\n";//((QueueContent=="")?"":"\n"); //Print(QueueContent);
    
-   int handle = FileOpen(Path_QueueBatch,FILE_WRITE|FILE_COMMON);  // it overwrites the entire file
+   int handle = FileOpen(Path_QueueBatch,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);  // it overwrites the entire file
+   if(handle==INVALID_HANDLE)
+   {
+    MessageBox("Unable to update the batch queue file.","Error",MB_OK|MB_ICONERROR);
+    return;
+   }
    FileWrite(handle,QueueContent_Batch); FileClose(handle);
    
    if(StringFind(QueueContent_Strategy,item)==-1)
    {
     QueueContent_Strategy+=item+CharToString(31)+"\r\n";//((QueueContent=="")?"":"\n"); //Print(QueueContent);
-    
-    int handle = FileOpen(Path_QueueStrategy,FILE_WRITE|FILE_COMMON);  // it overwrites the entire file
-    FileWrite(handle,QueueContent_Strategy); FileClose(handle);
-   }
+
+     int handle = FileOpen(Path_QueueStrategy,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);  // it overwrites the entire file
+     if(handle==INVALID_HANDLE)
+     {
+      MessageBox("Unable to update the strategy queue file.","Error",MB_OK|MB_ICONERROR);
+      return;
+     }
+     FileWrite(handle,QueueContent_Strategy); FileClose(handle);
+    }
    OnClickRefresh(true,true);
   }
 //+------------------------------------------------------------------+
@@ -886,6 +1169,7 @@ void CStrategyTesterDialog::OnClickMakeSelectedPending(void)
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickRefresh(bool init=false, bool select=false)
   {
+   RefreshNewsSyncButton();
    string QueueContent=GetFileContent(Path_QueueBatch);
    
    m_listQueue.ItemsClear();
@@ -921,11 +1205,126 @@ void CStrategyTesterDialog::OnClickRefresh(bool init=false, bool select=false)
    Sleep(20);
   }
 //+------------------------------------------------------------------+
+void CStrategyTesterDialog::OnClickSyncBias(void)
+  {
+   if(m_dataSyncBusy) return;
+   m_dataSyncBusy = true;
+
+   Bias.Key_ = Key_;
+   m_btnSyncBias.Text("Sync Running...");
+   m_btnSyncBias.Color(clrWhite);
+   m_btnSyncBias.ColorBackground(C'210,105,30');
+   m_btnSyncBias.ColorBorder(clrBlack);
+   ChartRedraw();
+   MessageBox("AI Bias history sync started.\n\nThis can take up to one minute.", "Data Sync", MB_OK|MB_ICONINFORMATION);
+
+   SBulkBiasSyncResult result;
+   bool sync_ok = Bias.SyncAllBiasHistory(result);
+
+   m_dataSyncBusy = false;
+   m_btnSyncBias.Text("Sync AI Bias History");
+   m_btnSyncBias.Color(clrPaleTurquoise);
+   m_btnSyncBias.ColorBackground(C'15,23,42');
+   m_btnSyncBias.ColorBorder(clrBlack);
+   RefreshNewsSyncButton();
+
+   if(!sync_ok && result.assets_synced == 0)
+     {
+      string msg = "AI Bias history sync failed";
+      if(result.error_text != "") msg += "\n\n" + result.error_text;
+      MessageBox(msg, "AI Bias History", MB_OK|MB_ICONERROR);
+      return;
+     }
+
+   ShowBiasHistorySummary(result);
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::OnClickViewBias(void)
+  {
+   if(m_dataSyncBusy) return;
+
+   SBulkBiasSyncResult result;
+   BuildBiasHistoryStatus(result);
+   ShowBiasHistorySummary(result);
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::RefreshNewsSyncButton(void)
+  {
+   datetime latest = 0;
+   bool stale = IsNewsHistoryStale(NEWS_FILE, latest);
+
+   if(stale)
+     {
+      m_btnSyncNews.Text("Sync News History");
+      m_btnSyncNews.Color(clrWhite);
+      m_btnSyncNews.ColorBackground(C'210,105,30');
+      m_btnSyncNews.ColorBorder(clrBlack);
+     }
+   else
+     {
+      m_btnSyncNews.Text("News Fresh: " + TimeToString(latest, TIME_DATE));
+      m_btnSyncNews.Color(clrWhite);
+      m_btnSyncNews.ColorBackground(C'46,139,87');
+      m_btnSyncNews.ColorBorder(clrBlack);
+     }
+   ChartRedraw();
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::OnClickSyncNews(void)
+  {
+   if(m_dataSyncBusy) return;
+   News.Key_ = Key_;
+
+   datetime earliest = 0;
+   datetime latest = 0;
+   ReadNewsHistoryRange(NEWS_FILE,earliest,latest);
+   if(!IsNewsHistoryStale(NEWS_FILE, latest) && latest > 0)
+     {
+      string start_stamp = (earliest == 0) ? "No Date" : TimeToString(earliest, TIME_DATE);
+      string end_stamp = TimeToString(latest, TIME_DATE|TIME_MINUTES);
+      MessageBox("News history is up to date.\n\nStart: " + start_stamp + "\nEnd: " + end_stamp, "News History", MB_OK|MB_ICONINFORMATION);
+      RefreshNewsSyncButton();
+      return;
+     }
+
+   m_dataSyncBusy = true;
+   m_btnSyncNews.Text("Sync Running...");
+   m_btnSyncNews.Color(clrWhite);
+   m_btnSyncNews.ColorBackground(C'210,105,30');
+   m_btnSyncNews.ColorBorder(clrBlack);
+   ChartRedraw();
+   MessageBox("News history sync started.\n\nThis can take up to one minute.", "Data Sync", MB_OK|MB_ICONINFORMATION);
+
+   SNewsSyncResult result;
+   bool sync_ok = News.SyncFullHistory(result);
+
+   m_dataSyncBusy = false;
+   if(!sync_ok)
+     {
+      string msg = "News history sync failed";
+      if(result.error_text != "") msg += "\n\n" + result.error_text;
+      MessageBox(msg, "News History", MB_OK|MB_ICONERROR);
+      RefreshNewsSyncButton();
+      return;
+     }
+
+   earliest = 0;
+   latest = 0;
+   ReadNewsHistoryRange(NEWS_FILE,earliest,latest);
+   string start_stamp = (earliest == 0) ? "No Date" : TimeToString(earliest, TIME_DATE);
+   string end_stamp = (latest == 0 && result.latest_event_time > 0) ? TimeToString(result.latest_event_time, TIME_DATE|TIME_MINUTES)
+                                                                     : ((latest == 0) ? "No Date" : TimeToString(latest, TIME_DATE|TIME_MINUTES));
+   MessageBox("News history is up to date.\n\nStart: " + start_stamp + "\nEnd: " + end_stamp, "News History", MB_OK|MB_ICONINFORMATION);
+   RefreshNewsSyncButton();
+  }
+//+------------------------------------------------------------------+
 //|  Batch-Start button - final version (news-file check included)   |
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickStart(void)
   {
    if(!FileIsExist(Path_QueueBatch,FILE_COMMON)) {MessageBox("No Queue file found.","Error",MB_OK|MB_ICONERROR); return;}
+   News.Key_ = Key_;
+   Bias.Key_ = Key_;
    /* -------- 1)  make sure the economic-news CSV is fresh -------- */
    if(!EnsureFreshNewsFile(NEWS_FILE)) return; // user cancelled or hard error
    
@@ -1124,29 +1523,75 @@ bool UpdateBatchQueueAndWriteConfigFile(bool init,bool error,string Key_,string 
 //+------------------------------------------------------------------+
 bool ActivatePending(string QueueItem,string Key_,string EA_Name_,string Server_)
   {
+   QueueItem = RepairTesterExpertPath(QueueItem);
    int ret = StringFind(QueueItem, ":"); if(ret <= 0) {WriteLog("Cannot Activate Queue Item: "+QueueItem,true,Key_,EA_Name_,Server_); return false;}
    Strategy = StringSubstr(QueueItem,ret+1);
    
    string temp = StringSubstr(QueueItem, ret + 1);
    
    ret = StringFind(temp, ";"); if(ret <= 0) {WriteLog("Cannot Activate Queue Item: "+QueueItem,true,Key_,EA_Name_,Server_); return false;}
-   Strategy = StringSubstr(temp,0,ret);
+   Strategy = NormalizeStrategyName(StringSubstr(temp,0,ret));
+   string strategyDir = Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy;
+   string inputsPath  = strategyDir+"\\Inputs."+Key_;
+   EnsureCommonFolderTree(strategyDir);
+   string testerInputs = GetFileContent(inputsPath);
+   if(testerInputs=="") {WriteLog("Cannot Activate Queue Item. Inputs file missing or empty: "+inputsPath,true,Key_,EA_Name_,Server_); return false;}
    //StringTrimLeft(QueueItem); StringTrimRight(QueueItem);
-   int handle = FileOpen(Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy+"\\config.ini",FILE_WRITE|FILE_COMMON);
+   int handle = FileOpen(strategyDir+"\\config.ini",FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
    if(handle != INVALID_HANDLE)
    {
     if(QueueItem=="") FileWrite(handle,QueueItem);
-    else              FileWrite(handle,QueueItem+"\n[TesterInputs]\n"+GetFileContent(Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy+"\\Inputs."+Key_));
+    else              FileWrite(handle,QueueItem+"\n[TesterInputs]\n"+testerInputs);
     FileClose(handle);
-    AddCommand(Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy);
+    AddCommand(strategyDir);
     return true;
    }
+   WriteLog("Cannot create config.ini for Queue Item: "+strategyDir,true,Key_,EA_Name_,Server_);
    return false;
+  }
+//+------------------------------------------------------------------+
+bool EnsureCommonFolderTree(string path)
+  {
+   StringReplace(path,"/","\\");
+   while(StringFind(path,"\\\\")>=0) StringReplace(path,"\\\\","\\");
+   string parts[];
+   int total=StringSplit(path,'\\',parts);
+   if(total<1) return false;
+
+   string current="";
+   for(int i=0;i<total;i++)
+   {
+    if(parts[i]=="") continue;
+    if(current!="") current+="\\";
+    current+=parts[i];
+    FolderCreate(current,FILE_COMMON);
+   }
+   return true;
+  }
+//+------------------------------------------------------------------+
+string NormalizeStrategyName(string s)
+  {
+   StringTrimLeft(s);
+   StringTrimRight(s);
+
+   string out="";
+   for(int i=0;i<StringLen(s);i++)
+   {
+    ushort ch=(ushort)StringGetCharacter(s,i);
+    if(ch<32) continue;
+    if(ch=='<' || ch=='>' || ch==':' || ch=='\"' || ch=='/' || ch=='\\' || ch=='|' || ch=='?' || ch=='*')
+      out+="_";
+    else
+      out+=ShortToString((short)ch);
+   }
+   StringTrimLeft(out);
+   StringTrimRight(out);
+   return out;
   }
 //+------------------------------------------------------------------+
 string GetFileContent(string FileName)
   {
-   int handle=FileOpen(FileName,FILE_READ|FILE_COMMON);
+   int handle=FileOpen(FileName,FILE_READ|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
    if(handle==INVALID_HANDLE) return "";
    
    string content = "";
@@ -1171,7 +1616,7 @@ void ReconstructFile(string FileName,string &SubStrings[])
     str+=SubStrings[i]+CharToString((ushort)31)+"\n";
   //str+=SubStrings[i]+((i<ArraySize(SubStrings)-1)?CharToString((ushort)31):"");
    }
-   int handle=FileOpen(FileName,FILE_WRITE|FILE_COMMON);
+   int handle=FileOpen(FileName,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
    if(handle != INVALID_HANDLE)
    {
     StringTrimLeft(str); StringTrimRight(str);
@@ -1343,6 +1788,7 @@ string CStrategyTesterDialog::GetTESTERsettingsString(bool header=false)
    string str="[Tester]"+"\n";
    //Expert — the file name of the Expert Advisor that will automatically run in the testing (optimization) mode. If this parameter is not present, testing will not run.
    string Expert     = m_cmbExpert.Select(); //Print(Expert); Print(n_Expert);
+   n_Expert = NormalizeExpertRelativePath(n_Expert);
    str+="Expert="+n_Expert+"\n";
 //--------------
    //ExpertParameters — the name of the file that contains Expert Advisor parameters. This file must be located in the MQL5\Profiles\Tester folder of the platform installation directory.
@@ -1553,21 +1999,27 @@ string FetchExportSetting(const string settingName,string Key_,string EA_Name_,s
 // 2) single helper that handles all user prompts + optional download
 bool EnsureFreshNewsFile(const string csv_file)
 {
-   //--- Live mode prompts only
-   if(MessageBox("Will this run use the economic news filter?", "Use news?", MB_YESNO|MB_ICONQUESTION) == IDNO) return true;
+   datetime latest = 0;
+   bool stale = IsNewsHistoryStale(csv_file, latest);
+   Print("Latest news: "+(string)latest);
 
-   bool     refresh = false;
-   datetime latest  = LatestNewsTimestampFast(csv_file); Print("Latest news: "+(string)latest);
-   string   stamp   = (latest==0) ? "No Date" : TimeToString(latest,TIME_DATE|TIME_MINUTES);
+   if(!stale) return true;
 
-   if(latest==0 || (TimeCurrent() - latest) > 7*24*3600)
-   {
-      string q = "Latest news saved in the news file is from:\n\n" + stamp + "\n\nDownload/update the news file now?";
-      if(MessageBox(q, "News data out-of-date", MB_YESNO|MB_ICONQUESTION) == IDYES) refresh = true;
-   }
-   else MessageBox("Latest news saved in the news file is from:\n\n" + stamp, "News data satisfactory", MB_OK|MB_ICONINFORMATION);
-   if(refresh) News.BacktestNewsFileDownloader(Download_StartDate); // live-only download
-   return true; // always continue batch
+   string stamp = (latest==0) ? "No Date" : TimeToString(latest,TIME_DATE|TIME_MINUTES);
+   string q = "News history is out of date.\n\nLatest news saved in the file is from:\n" + stamp +
+              "\n\nClick Yes to sync now, or No to continue anyway.";
+   if(MessageBox(q, "News data out-of-date", MB_YESNO|MB_ICONQUESTION) != IDYES) return true;
+
+   SNewsSyncResult result;
+   if(!News.SyncFullHistory(result))
+     {
+      string msg = "News history sync failed";
+      if(result.error_text != "") msg += "\n\n" + result.error_text;
+      MessageBox(msg, "News History", MB_OK|MB_ICONERROR);
+      return false;
+     }
+
+   return true;
 }
 //+------------------------------------------------------------------+
 //  Fast grab of newest-event timestamp – works with CR, LF, CRLF
@@ -1650,6 +2102,13 @@ datetime LatestNewsTimestampFast(const string file_name)
    if(ts == "Time") return 0;
 
    return StringToTime(ts);
+}
+//+------------------------------------------------------------------+
+bool IsNewsHistoryStale(const string file_name, datetime &latest_event_time)
+{
+   latest_event_time = LatestNewsTimestampFast(file_name);
+   if(latest_event_time == 0) return true;
+   return ((TimeCurrent() - latest_event_time) > 7*24*3600);
 }
 //+------------------------------------------------------------------+
 datetime GetForwardD(datetime startD, datetime endD, string forwardMode)

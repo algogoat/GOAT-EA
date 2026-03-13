@@ -44,5 +44,28 @@ These rules apply whenever changes are saved or pushed to this repository:
     - Optionally update or add `.mqh` include files as needed.
     - Commit the updated/new compiled `.ex5` binary and any new assets.
 
+### Version branch push workflow
+
+Use this workflow when the current branch has standing GOAT changes that should become the next released version:
+
+1. Create a dedicated release branch named after the target version before merging to `main`.
+   - In Codex sessions, use the required prefixed branch format such as `codex/GOAT-V1.36`.
+2. Copy the current modified main file into the new versioned entrypoint.
+   - Example: copy the current `GOAT V1.35.mq5` working copy to `GOAT V1.36.mq5`.
+3. Restore the previous versioned main file back to the tracked baseline content.
+   - Example: restore `GOAT V1.35.mq5` from `HEAD` or `main` after the copy is made.
+4. Keep version metadata stable per main file.
+   - Each versioned `.mq5` should define its own `GOAT_VERSION_LABEL` before including `GOAT_Inputs_Definitions.mqh`.
+   - `GOAT_Inputs_Definitions.mqh` should carry the newest default version label so the current release still initializes correctly in MT5.
+5. Leave shared `.mqh` improvements in place when they belong to the new release, but verify that both the old and new `.mq5` entrypoints still compile.
+6. Re-read the diff, update this README when the workflow changes, and do not stage logs, tester caches, or scratch reports.
+7. Compile and verify the target release before claiming success.
+
+### Reproducibility note
+
+Keeping multiple versioned `.mq5` files side by side preserves the released entrypoints, but it does not fully freeze historical behavior if shared `.mqh` files continue to evolve.
+
+If exact historical reproducibility becomes important, version the shared include graph together with each main `.mq5` release or keep release tags that point to the exact source tree used for that version.
+
 Following these rules ensures the repository remains a complete, reproducible history of all GOAT-EA versions, source code, binaries, and visual assets.
 

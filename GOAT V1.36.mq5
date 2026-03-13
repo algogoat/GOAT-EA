@@ -517,9 +517,9 @@ class SEQUENCE
                if(cum < 0.0) cum = 0.0;  // flooring
                break;}
         case Lots_Prog_CumPartial:{
-               // CumPartial always adds on adverse moves; retrace closes are handled separately.
+               // CumPartial keeps Cum's signed ladder shape; retrace closes are an extra feature.
                double Leff = (w1*Lots_Exponent + w2*Lots_Exponent*Lots_Factor);
-               l   = cum * MathAbs(Leff - 1.0);
+               l   = cum * (Leff - 1.0);
                cum += l;
                if(cum < 0.0) cum = 0.0;
                break;}
@@ -755,7 +755,6 @@ class SEQUENCE
    {
     double standing = GetStandingLots(true);
     if(standing<=0.0) return 0.0;
-    const double vMin = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
 
     int N = (Max_Seq_Trades>0) ? Max_Seq_Trades : 1;
     int lvl = MathMin(Level_Count,N-1);
@@ -763,42 +762,19 @@ class SEQUENCE
     double w1 = 1.0 - w2;
     double Leff = (w1*Lots_Exponent + w2*Lots_Exponent*Lots_Factor);
 
-    double nextLotsRaw = standing * MathAbs(Leff - 1.0);
-    double remaining = DBL_MAX;
-    double tradeCap  = DBL_MAX;
-
-    if(Lots_Max_Cum>0.0)
+    double nextLots = standing * (Leff - 1.0);
+    if(nextLots > 0.0 && Lots_Max_Cum>0.0)
     {
-     remaining = StartLots*Lots_Max_Cum - standing;
+     double remaining = StartLots*Lots_Max_Cum - standing;
      if(remaining <= 0.0) return 0.0;
-     if(nextLotsRaw > remaining) nextLotsRaw = remaining;
+     if(nextLots > remaining) nextLots = remaining;
     }
-    if(Lots_Max>0.01)
+    if(nextLots > 0.0 && Lots_Max>0.01)
     {
-     tradeCap = Lots_Max*StartLots;
-     if(nextLotsRaw > tradeCap) nextLotsRaw = tradeCap;
+     double tradeCap = Lots_Max*StartLots;
+     if(nextLots > tradeCap) nextLots = tradeCap;
     }
-    double nextLots = NormalizedLots(nextLotsRaw);
-    if(nextLots<=0.0)
-    {
-     int idx = MathMin(Level_Count,ArraySize(LotsNorm)-1);
-     if(idx>=0)
-     {
-      double baselineLots = LotsNorm[idx];
-      if(remaining<DBL_MAX && baselineLots>remaining) baselineLots = remaining;
-      if(tradeCap <DBL_MAX && baselineLots>tradeCap)  baselineLots = tradeCap;
-      nextLots = NormalizedLots(baselineLots);
-     }
-    }
-    if(nextLots<=0.0 && nextLotsRaw>0.0 && vMin>0.0)
-    {
-     double minTradable = vMin;
-     if(remaining<DBL_MAX && remaining<minTradable-1e-9) minTradable = 0.0;
-     if(tradeCap <DBL_MAX && tradeCap <minTradable-1e-9) minTradable = 0.0;
-     if(minTradable>0.0) nextLots = NormalizedLots(minTradable);
-    }
-    if(nextLots < 0.0) nextLots = 0.0;
-    return nextLots;
+    return NormalizedLots(nextLots);
    }
 //---------------------- close standing volume as prior levels are recrossed
    bool HandlePartialRetrace(double price)
@@ -925,7 +901,7 @@ class SEQUENCE
      string Desc_lvl = Desc+" Lvl "+IntegerToString(Level_Count+1,2,'0');
      //-----------------------------------------------------------------
      //  UNWIND branch  – negative lot triggers partial close
-     if(Mode_Lots_Prog!=Lots_Prog_CumPartial && Lots_Calc<0.0 && MathAbs(Lots_Calc)>=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN))
+     if(Lots_Calc<0.0 && MathAbs(Lots_Calc)>=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN))
      {
       double lotsToCut = MathAbs(Lots_Calc);
       if(closeLots(lotsToCut))                                  //  partial close
@@ -961,7 +937,7 @@ class SEQUENCE
      double LotsToBeSent=(Lots_Calc>0)?MathMax(Lots_Calc,Lots_Delayed):Lots_Calc;
       if(Mode_Lots_Prog==Lots_Prog_CumPartial && MathAbs(LotsToBeSent)<SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN))
       {
-       Print(Desc_lvl,": CumPartial next lots not tradable after broker min/cap checks");
+       Print(Desc_lvl,": CumPartial next lots below broker minimum");
        return false;
       }
       
@@ -989,11 +965,11 @@ class SEQUENCE
        else {Print(Desc_lvl,": Price=",DoubleToString(Level_New,_Digits)," Lots=",DoubleToString(Lots_Order,2),"/",DoubleToString(MathMax(Lots_Calc,Lots_Delayed),2)
                            ," Failed. Return Code:",LastRetCode," ID:",GetRetcodeID(LastRetCode)); return false;}
      }
-    else
-    {
+     else
+     {
       if(Mode_Lots_Prog==Lots_Prog_CumPartial && MathAbs(Lots_Calc)<SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN))
       {
-       Print(Desc_lvl,": CumPartial next lots not tradable after broker min/cap checks");
+       Print(Desc_lvl,": CumPartial next lots below broker minimum");
        return false;
       }
       if(!Active) Print(Desc+" Sequence Started @ "+DoubleToString(Level_New,_Digits));

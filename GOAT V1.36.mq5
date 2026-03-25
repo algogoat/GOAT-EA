@@ -1364,7 +1364,7 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
     ShowPrompt("Connection not allowed!","Copy the URL below and add to"," Tools > Options > Experts > Allowed URLs.",URL_API);
     return res;
    }
-   else if(res!=200&&res!=1003) MessageBox(CharArrayToString(result, 0, -1, CP_UTF8),"Response code: "+(string)res,MB_OK);
+   else if(res!=200&&res!=1003) Print("License check HTTP response "+(string)res+": "+CharArrayToString(result, 0, -1, CP_UTF8));
    HidePrompt();
    string response_text = CharArrayToString(result);
    //Print("Result Headers: ", result_headers);

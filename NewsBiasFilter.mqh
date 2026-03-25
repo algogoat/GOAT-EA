@@ -175,7 +175,7 @@ bool GOATNewsFilter::IsNewsTime(string sym,int threshold,int &indices[])
    
    if(!(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))) // if live trading
      {
-      if(!DownloadAndFillNews(TimeCurrent(), threshold, false)) return false; // DownloadAndFillNews function already filters for current symbol currencies so sym is useless here
+      if(!DownloadAndFillNews(TimeCurrent(), threshold, false, false)) return false; // live refresh should not block trading with modal API popups
      }
 
    if(!FillTodaysNewsArray()) return false;
@@ -229,7 +229,7 @@ int GOATBiasHistory::GetCurentBiasScore(string asset,int &idxx)
    if(!is_tester) // if live trading: standing bias = latest point, but must not be too old
      {
       datetime start_srv = TimeCurrent() - 24*60*60; // start with last 24h window in SERVER time
-      if(!DownloadAndFillBias(start_srv, asset, false)) return -999; // no bias, disregard bias
+      if(!DownloadAndFillBias(start_srv, asset, false, false)) return -999; // live refresh should not block trading with modal API popups
      }
    if(ArraySize(BiasList) <= 0) {Alert("Empty Bias List!"); return -999;}
    //--- calculate average duration (seconds) between consecutive bias points (used for staleness)
@@ -577,8 +577,9 @@ bool GOATNewsFilter::DownloadAndFillNews(datetime startdate,int news_threshold,b
      }
    else if(res!=200)
      {
-      if(showSummary) MessageBox(CharArrayToString(result, 0, -1, CP_UTF8),"Response code: "+(string)res,MB_OK);
-      else            Print("News downloader HTTP response "+(string)res+": "+CharArrayToString(result, 0, -1, CP_UTF8));
+      string response_text = CharArrayToString(result, 0, -1, CP_UTF8);
+      if(showSummary && response_text != "") MessageBox(response_text,"Response code: "+(string)res,MB_OK);
+      else                                   Print("News downloader HTTP response "+(string)res+(response_text != "" ? ": "+response_text : " (empty body)"));
      }
    else LastNewsTimeCheck=TimeCurrent();
    
@@ -802,8 +803,9 @@ bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool D
      }
    else if(res!=200)
      {
-      if(showSummary) MessageBox(CharArrayToString(result, 0, -1, CP_UTF8),"Response code: "+(string)res,MB_OK);
-      else            Print("Bias downloader HTTP response "+(string)res+": "+CharArrayToString(result, 0, -1, CP_UTF8));
+      string response_text = CharArrayToString(result, 0, -1, CP_UTF8);
+      if(showSummary && response_text != "") MessageBox(response_text,"Response code: "+(string)res,MB_OK);
+      else                                   Print("Bias downloader HTTP response "+(string)res+(response_text != "" ? ": "+response_text : " (empty body)"));
      }
    //else LastBiasTimeCheck = TimeCurrent();
    Print("Bias API called");

@@ -1,4 +1,4 @@
-﻿#define   GOAT_VERSION_LABEL "1.36"
+﻿#define   GOAT_VERSION_LABEL "1.37"
 #include "GOAT_Inputs_Definitions.mqh"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
@@ -1757,18 +1757,21 @@ int OnInit()
       if(!ChartGetInteger(0,CHART_IS_MAXIMIZED,0)) Sleep(999);
       int chartWidth  = (int)ChartGetInteger(ChartID(), CHART_WIDTH_IN_PIXELS);
       int chartHeight = (int)ChartGetInteger(ChartID(), CHART_HEIGHT_IN_PIXELS);
-      double marginW = 0.05*chartWidth, usableWidth =chartWidth -(2.0*marginW), scaleW=usableWidth/(double)DWidth;
-      double marginH = 0.05*chartHeight,usableHeight=chartHeight-(2.0*marginH), scaleH=usableHeight/(double)DHeight;
-      double scaleFactor,scaleMargin = MathMin(scaleW, scaleH);
-      if(scaleMargin<1.0) scaleFactor = 1.0; else scaleFactor = MathMin(scaleMargin, 1.5);
-      int newWidth =(int)(DWidth *scaleFactor), left=(newWidth  >= chartWidth  ? 0 : (chartWidth  - newWidth ) / 2);
-      int newHeight=(int)(DHeight*scaleFactor);
+      int baseWidth=(Mode_Operation==Operation_Dash ? MathMax(DWidth,1500) : DWidth);
+      int baseHeight=DHeight;
+      double marginW = 0.05*chartWidth, usableWidth =chartWidth -(2.0*marginW), scaleW=usableWidth/(double)baseWidth;
+      double marginH = 0.05*chartHeight,usableHeight=chartHeight-(2.0*marginH), scaleH=usableHeight/(double)baseHeight;
+      double scaleFactor=MathMin(MathMin(scaleW,scaleH),1.5);
+      if(scaleFactor<=0.0) scaleFactor=1.0;
+      int newWidth =MathMin((int)MathRound(baseWidth *scaleFactor),(int)MathRound(usableWidth));
+      int newHeight=(int)MathRound(baseHeight*scaleFactor);
+      int left=(newWidth >= (int)MathRound(usableWidth) ? (int)MathRound(marginW) : (chartWidth  - newWidth ) / 2);
       int dialogFramePadding=MathMax(28,(int)MathRound(newHeight*0.06));
       int dialogOuterHeight=newHeight+dialogFramePadding;
       int top =(dialogOuterHeight >= chartHeight ? 0 : (chartHeight - dialogOuterHeight) / 2);
       Font_Size=(int)MathCeil(Font_Size_Base*scaleFactor/dpiFactor); //Font_Size_Header=Font_Size+3;
       Print("ChartWidth="+(string)chartWidth+" ChartHeight="+(string)chartHeight);
-      Print("BaseWidth="+(string)DWidth+" BaseHeight="+(string)DHeight+" NewWidth="+(string)newWidth+" NewHeight="+(string)newHeight+" DialogOuterHeight="+(string)dialogOuterHeight);
+      Print("BaseWidth="+(string)baseWidth+" BaseHeight="+(string)baseHeight+" NewWidth="+(string)newWidth+" NewHeight="+(string)newHeight+" DialogOuterHeight="+(string)dialogOuterHeight);
       Print("BaseFontSize="+(string)Font_Size_Base+" ScaleFactor="+DoubleToString(scaleFactor,2)+" DPIfactor="+(string)dpiFactor+" FontSize="+(string)Font_Size);
       Sleep(100); ObjectsDeleteAll(ChartID(),0); Sleep(100);
       if(Mode_Operation==Operation_Batch)
@@ -1808,6 +1811,7 @@ int OnInit()
        int SetsTotal=DashboardDialog.LoadSetFiles();
        if(SetsTotal<=0) {Alert("No valid .set files found."); return(INIT_FAILED);}
        ChartSetInteger(0, CHART_EVENT_MOUSE_WHEEL, true);
+       ChartSetInteger(0, CHART_MOUSE_SCROLL, false);
        if(!DashboardDialog.Create(ChartID(),Key+"_Dashboard",0,SetsTotal,left,top,newWidth,newHeight,(int)usableHeight))
        {Alert("Dashboard GUI creation Failed, please try again."); return INIT_FAILED;}
        GUI_BG_Display();
@@ -2024,7 +2028,11 @@ void OnDeinit(const int reason)
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Deinit Start"+"================");
    if(reason!=REASON_PARAMETERS && reason!=REASON_TEMPLATE && reason!=REASON_CHARTCHANGE)
    {
-      if(Mode_Operation==Operation_Dash) GlobalVariableDel("Dashboard_ChartID");
+      if(Mode_Operation==Operation_Dash)
+      {
+         GlobalVariableDel("Dashboard_ChartID");
+         ChartSetInteger(0,CHART_MOUSE_SCROLL,true);
+      }
       if(!MQLInfoInteger(MQL_VISUAL_MODE))
       {
        if(ObjectFind(0,"RectLabel") >= 0) RectLabelDelete(0,"RectLabel");
@@ -2779,7 +2787,11 @@ void OnChartEvent(const int id,         // event ID
    if(!FastSpeed_Flag)
    {
          if(Mode_Operation==Operation_Batch) TesterDialog.ChartEvent(id,lparam,dparam,sparam);
-    else if(Mode_Operation==Operation_Dash)  DashboardDialog.ChartEvent(id,lparam,dparam,sparam);
+    else if(Mode_Operation==Operation_Dash)
+    {
+       if(id==CHARTEVENT_MOUSE_WHEEL) DashboardDialog.HandleMouseWheel(lparam,dparam);
+       DashboardDialog.ChartEvent(id,lparam,dparam,sparam);
+    }
     else                                     PanelDialog.ChartEvent(id,lparam,dparam,sparam);
   //Panel_Seq2.ChartEvent(id,lparam,dparam,sparam);
     if(id==CHARTEVENT_CHART_CHANGE)
@@ -2792,19 +2804,21 @@ void OnChartEvent(const int id,         // event ID
     if(id==CHARTEVENT_OBJECT_CLICK)
     {
      if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash) {for(int i=0; i<ArraySize(Obj_names); i++) if(sparam==Obj_names[i]) PanelDialog.OnClickCaption();}
+     if(Mode_Operation==Operation_Dash && DashboardDialog.HandleHeaderClick(sparam)) return;
      
-     if(StringFind(sparam,"R1_BTN")>0)
+     if(ArraySize(DashboardDialog.btn_Action)>1 && sparam==DashboardDialog.btn_Action[1].Name())
      {
       for(int i=0;i<ArraySize(DashboardDialog.g_sets);i++) DashboardDialog.DoActivate(i);
       DashboardDialog.edt_Status[1].Text("Deployed");
       return;
      }
      
-     int pos = StringFind(sparam,"BTN_");
-     if(pos>=0 && pos+4 < StringLen(sparam))              // must be something after “BTN_”
+     for(int row=2; row<ArraySize(DashboardDialog.btn_Action); row++)
      {
-      int idx = (int)StringToInteger(StringSubstr(sparam,pos+4));   // the digits after “BTN_”
-      if(DashboardDialog.btn_Action[idx+2].Text()=="Navigate")
+      if(sparam!=DashboardDialog.btn_Action[row].Name()) continue;
+
+      int idx=row-2;
+      if(DashboardDialog.btn_Action[row].Text()=="Navigate")
       {
        if(!ChartSetInteger(DashboardDialog.g_sets[idx].cid,CHART_BRING_TO_TOP,0,true))
        {
@@ -2812,7 +2826,8 @@ void OnChartEvent(const int id,         // event ID
        }
        Sleep(100); ChartRedraw(DashboardDialog.g_sets[idx].cid); Sleep(100); ChartRedraw(0); Sleep(100);
       }
-      else if(idx>=0) DashboardDialog.DoActivate(idx);          // 0-based index into g_sets[]
+      else DashboardDialog.DoActivate(idx);
+      return;
      }
    //Print(sparam); Print(Key+"_BackToDB_"+(string)MAGIC1);
      //if(sparam==Key+"_BackToDB_"+(string)MAGIC1 && GlobalVariableCheck("Dashboard_ChartID"))
@@ -3162,7 +3177,7 @@ void OnTick()
     if(!FastSpeed_Flag) BiasDisplayFunction(true,clrGold,idx);
    }
 //-------------------------------------------------------------------------
-   int Trades=0,Buys=0,Sells=0;
+   //int Trades=0,Buys=0,Sells=0;
    if(IsNewSecond())
    {
     int k;

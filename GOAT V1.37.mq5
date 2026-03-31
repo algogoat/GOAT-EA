@@ -2787,48 +2787,18 @@ void OnChartEvent(const int id,         // event ID
    if(!FastSpeed_Flag)
    {
          if(Mode_Operation==Operation_Batch) TesterDialog.ChartEvent(id,lparam,dparam,sparam);
-    else if(Mode_Operation==Operation_Dash)
-    {
-       if(id==CHARTEVENT_MOUSE_WHEEL) DashboardDialog.HandleMouseWheel(lparam,dparam);
-       DashboardDialog.ChartEvent(id,lparam,dparam,sparam);
-    }
+    else if(Mode_Operation==Operation_Dash)  DashboardDialog.HandleChartEvent(id,lparam,dparam,sparam);
     else                                     PanelDialog.ChartEvent(id,lparam,dparam,sparam);
   //Panel_Seq2.ChartEvent(id,lparam,dparam,sparam);
     if(id==CHARTEVENT_CHART_CHANGE)
     {
           if(Mode_Operation==Operation_Batch)   TesterDialog.maximizeWindow();
-     else if(Mode_Operation==Operation_Dash)    DashboardDialog.maximizeWindow();
-     else                                       PanelDialog.maximizeWindow();
+     else if(Mode_Operation!=Operation_Dash)    PanelDialog.maximizeWindow();
     }
   //if(id==CHARTEVENT_OBJECT_DRAG  && sparam==ExtDialog.Name()+"Caption") { ss=0;Comment(ss);}
     if(id==CHARTEVENT_OBJECT_CLICK)
     {
      if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash) {for(int i=0; i<ArraySize(Obj_names); i++) if(sparam==Obj_names[i]) PanelDialog.OnClickCaption();}
-     if(Mode_Operation==Operation_Dash && DashboardDialog.HandleHeaderClick(sparam)) return;
-     
-     if(ArraySize(DashboardDialog.btn_Action)>1 && sparam==DashboardDialog.btn_Action[1].Name())
-     {
-      for(int i=0;i<ArraySize(DashboardDialog.g_sets);i++) DashboardDialog.DoActivate(i);
-      DashboardDialog.edt_Status[1].Text("Deployed");
-      return;
-     }
-     
-     for(int row=2; row<ArraySize(DashboardDialog.btn_Action); row++)
-     {
-      if(sparam!=DashboardDialog.btn_Action[row].Name()) continue;
-
-      int idx=row-2;
-      if(DashboardDialog.btn_Action[row].Text()=="Navigate")
-      {
-       if(!ChartSetInteger(DashboardDialog.g_sets[idx].cid,CHART_BRING_TO_TOP,0,true))
-       {
-        Print(__FUNCTION__+", Error Code = ",GetLastError()); return;
-       }
-       Sleep(100); ChartRedraw(DashboardDialog.g_sets[idx].cid); Sleep(100); ChartRedraw(0); Sleep(100);
-      }
-      else DashboardDialog.DoActivate(idx);
-      return;
-     }
    //Print(sparam); Print(Key+"_BackToDB_"+(string)MAGIC1);
      //if(sparam==Key+"_BackToDB_"+(string)MAGIC1 && GlobalVariableCheck("Dashboard_ChartID"))
      //{

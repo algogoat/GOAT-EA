@@ -106,6 +106,7 @@ public:
     Key_=_Key_; EA_Name_=_EA_Name_; Server_=_Server_; Version=StringToDouble(_Version_); Font_Size=_Font_Size_; ChartId=Id;
    }
    virtual bool   OnEvent(const int id, const long &lparam,const double &dparam, const string &sparam);
+   bool           HandleChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam);
    void           SetCaptionClientColors();
    void           maximizeWindow();
    void           minimizeWindow();
@@ -121,7 +122,8 @@ public:
    void           RowsScrollTo(const int top_row);
    bool           HandleMouseWheel(const long lparam,const double dparam);
    bool           HandleHeaderClick(const string control_name);
-   //void           ScanAndUpdateRow(int idx,int gui_row);
+   void           DeployAll(void);
+ //void           ScanAndUpdateRow(int idx,int gui_row);
 //––––– 1. Load .set files + build g_sets[] ––––––––––––––––––––––––––
    int LoadSetFiles()
    {
@@ -224,6 +226,8 @@ public:
       ResetDayStats();                      // zero closed‑PL_daily after anchors move
   }
 private:
+   bool HandleObjectClick(const string control_name);
+   bool NavigateToSet(const int idx);
    void RefreshRowsViewportMetrics(void);
    void LayoutRowsScroll(void);
    void ApplyRowsViewport(void);
@@ -397,7 +401,7 @@ private:
    }
    void CGOATDashboard::CreateButtonCtrl2(CButton &btn, const string name, int x, int y, int width, int height, string caption)
    {
-    if(!btn.Create(m_chart_id, m_name+name, m_subwin, x, (int)(y)+2, x+width, (int)((y+height)*1.0)-2)) Print("Button creation error:", GetLastError());
+    if(!btn.Create(m_chart_id, m_name+name, m_subwin, x, y, x+width, y+height)) Print("Button creation error:", GetLastError());
     btn.Color(clrWhite); btn.ColorBorder(clrWhite); btn.ColorBackground(C'8,8,36');//C'15,23,42');
    if(Font_Size) btn.FontSize(Font_Size);
    btn.Text(caption);
@@ -496,6 +500,81 @@ void CGOATDashboard::maximizeWindow(void)
    ChartRedraw(0);
 }
 void CGOATDashboard::minimizeWindow(void)   {this.Minimize();}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::HandleChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+{
+   if(id==CHARTEVENT_OBJECT_CLICK)
+      return(HandleObjectClick(sparam));
+
+   if(id==CHARTEVENT_MOUSE_WHEEL && HandleMouseWheel(lparam,dparam))
+      return(true);
+
+   ChartEvent(id,lparam,dparam,sparam);
+
+   if(id==CHARTEVENT_CHART_CHANGE)
+   {
+      maximizeWindow();
+      return(true);
+   }
+
+   return(false);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::DeployAll(void)
+{
+   for(int i=0;i<ArraySize(g_sets);i++)
+      DoActivate(i);
+
+   if(ArraySize(edt_Status)>1)
+      edt_Status[1].Text("Deployed");
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::NavigateToSet(const int idx)
+{
+   if(idx<0 || idx>=ArraySize(g_sets)) return(false);
+   if(g_sets[idx].cid<=0) return(false);
+
+   if(!ChartSetInteger(g_sets[idx].cid,CHART_BRING_TO_TOP,0,true))
+   {
+      Print(__FUNCTION__+", Error Code = ",GetLastError());
+      return(false);
+   }
+
+   Sleep(100);
+   ChartRedraw(g_sets[idx].cid);
+   Sleep(100);
+   ChartRedraw(0);
+   Sleep(100);
+   return(true);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::HandleObjectClick(const string control_name)
+{
+   if(HandleHeaderClick(control_name))
+      return(true);
+
+   if(ArraySize(btn_Action)>1 && control_name==btn_Action[1].Name())
+   {
+      DeployAll();
+      return(true);
+   }
+
+   for(int row=2; row<ArraySize(btn_Action); row++)
+   {
+      if(control_name!=btn_Action[row].Name())
+         continue;
+
+      int idx=row-2;
+      if(btn_Action[row].Text()=="Navigate")
+         NavigateToSet(idx);
+      else
+         DoActivate(idx);
+
+      return(true);
+   }
+
+   return(false);
+}
 
 CEdit CaptionObjDashboard;
 CGOATDashboard DashboardDialog;

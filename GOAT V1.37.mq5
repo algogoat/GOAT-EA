@@ -1986,9 +1986,11 @@ int OnInit()
     {
     // ButtonCreate(0,Key+"_BackToDB_"+(string)MAGIC1,0,2*INDENT_HORI+PANEL_WIDTH,INDENT_VERT,150,25,CORNER_LEFT_UPPER,"Back to Dashboard","Arial Bold",Font_Size,
     //                                                                                                                 clrWhite,C'15,23,42',clrWhite,false,false,false,false,0);
-    // ObjectSetInteger(0,Key+"_BackToDB_"+(string)MAGIC1,OBJPROP_BORDER_TYPE,BORDER_SUNKEN);
-     GlobalVariableSet(Symbol()+"_"+IntegerToString(MAGIC1)+"_New",(double)MAGIC1);
-    }
+     // ObjectSetInteger(0,Key+"_BackToDB_"+(string)MAGIC1,OBJPROP_BORDER_TYPE,BORDER_SUNKEN);
+      string instance_gv_prefix=Key+"_ID_"+IntegerToString(MAGIC1)+"_"+Symbol()+"_";
+      GlobalVariableSet(instance_gv_prefix+"CID",(double)ChartID());
+      GlobalVariableSet(instance_gv_prefix+"Magic",(double)MAGIC1);
+     }
    }
 //-------------------------------------------------------------------------
  //if(Mode_Operation==Operation_Export)

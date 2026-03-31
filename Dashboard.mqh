@@ -520,6 +520,34 @@ bool CGOATDashboard::HandleChartEvent(const int id,const long &lparam,const doub
    return(false);
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::HandleObjectClick(const string control_name)
+{
+   if(HandleHeaderClick(control_name))
+      return(true);
+
+   if(ArraySize(btn_Action)>1 && control_name==btn_Action[1].Name())
+   {
+      DeployAll();
+      return(true);
+   }
+
+   for(int row=2; row<ArraySize(btn_Action); row++)
+   {
+      if(control_name!=btn_Action[row].Name())
+         continue;
+
+      int idx=row-2;
+      if(btn_Action[row].Text()=="Navigate")
+         NavigateToSet(idx);
+      else
+         DoActivate(idx);
+
+      return(true);
+   }
+
+   return(false);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::DeployAll(void)
 {
    for(int i=0;i<ArraySize(g_sets);i++)
@@ -548,34 +576,6 @@ bool CGOATDashboard::NavigateToSet(const int idx)
    return(true);
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
-bool CGOATDashboard::HandleObjectClick(const string control_name)
-{
-   if(HandleHeaderClick(control_name))
-      return(true);
-
-   if(ArraySize(btn_Action)>1 && control_name==btn_Action[1].Name())
-   {
-      DeployAll();
-      return(true);
-   }
-
-   for(int row=2; row<ArraySize(btn_Action); row++)
-   {
-      if(control_name!=btn_Action[row].Name())
-         continue;
-
-      int idx=row-2;
-      if(btn_Action[row].Text()=="Navigate")
-         NavigateToSet(idx);
-      else
-         DoActivate(idx);
-
-      return(true);
-   }
-
-   return(false);
-}
-
 CEdit CaptionObjDashboard;
 CGOATDashboard DashboardDialog;
 //+------------------------------------------------------------------+
@@ -1048,8 +1048,10 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    for(int i=GlobalVariablesTotal()-1;i>=0;i--)
    {
       string gv_name=GlobalVariableName(i);
-      if(StringFind(gv_name,symbol)>=0)
-         GlobalVariableDel(gv_name);
+      if(StringFind(gv_name,Key_+"_ID_",0)!=0)            continue;
+      if(StringFind(gv_name,"_"+symbol+"_",0)<0)          continue;
+      if(StringFind(gv_name,"_Magic",0)<0)                continue;
+      GlobalVariableDel(gv_name);
    }
    while(!NewSingleInstance(idx)) Sleep(50);
    
@@ -1072,6 +1074,22 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    Sleep(500); ChartRedraw(); Sleep(500);
    Print("  Template applied ✓");
    return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::NewSingleInstance(const int idx)
+{
+   for(int i=0;i<GlobalVariablesTotal();i++)
+   {
+    string NewVar = GlobalVariableName(i);
+    if(StringFind(NewVar,Key_+"_ID_",0)!=0)                 continue;
+    if(StringFind(NewVar,"_"+g_sets[idx].sym+"_",0)<0)      continue;
+    if(StringFind(NewVar,"_Magic",0)<0)                     continue;
+    g_sets[idx].magic = (long)GlobalVariableGet(NewVar);
+    GlobalVariableDel(NewVar);
+    return true;
+   }
+   Sleep(100);
+   return false;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::ParsePortfolioFolderInfo(void)
@@ -1128,22 +1146,6 @@ void CGOATDashboard::UpdatePortfolioInfoHeader(void)
    lbl_DailyLossTail.Text("("+FormatPadded4Text(daily_loss_left)+" Left)");
    lbl_DailyTargetLead.Text("Daily Target: "+FormatPadded4Text(Port_DailyTarget)+"/ ");
    lbl_DailyTargetTail.Text("("+FormatPadded4Text(daily_target_left)+" Left)");
-}
-//----------------------------------------------------------------------------------------------------------------------------------------------------
-bool CGOATDashboard::NewSingleInstance(const int idx)
-{
-   for(int i=0;i<GlobalVariablesTotal();i++)
-   {
-    string NewVar = GlobalVariableName(i);
-    if(StringFind(NewVar,"New",0)>0 && StringFind(NewVar,g_sets[idx].sym,0)>=0)
-    {
-     g_sets[idx].magic = (long)GlobalVariableGet(NewVar);
-     GlobalVariableDel(NewVar);
-     return true;
-    }
-   }
-   Sleep(100);
-   return false;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::GetOpenStats(const string symbol,long magic,int &open_trades,double &open_lots,double &open_pl,double &open_pl_day,double &open_pl_week,string &comment)

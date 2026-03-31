@@ -3177,7 +3177,6 @@ void OnTick()
     if(!FastSpeed_Flag) BiasDisplayFunction(true,clrGold,idx);
    }
 //-------------------------------------------------------------------------
-   //int Trades=0,Buys=0,Sells=0;
    if(IsNewSecond())
    {
     int k;
@@ -3202,6 +3201,7 @@ void OnTick()
     if(!Trade_December && FastSpeed_Flag && stm_cur.mon==12)                     Sequence_New_Dec=false;
     else                                                                         Sequence_New_Dec=true;
 //-------
+    int Trades=0,Buys=0,Sells=0;
     double PL_Total=0.0,PL_Buy=0.0,PL_Sell=0.0,PL_Closed=0.0,PL_Today=0.0;
     
     //if(MaxLossLocal!=0.0 || MaxDailyLossLocal!=0.0 || MaxDailyProfitLocal!=0.0 || !FastSpeed_Flag)

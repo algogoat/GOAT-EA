@@ -333,9 +333,9 @@ private:
    int mode=(int)StringToInteger(ParseSetFileForInput("Mode_Lots=",file));
    double risk=StringToDouble(ParseSetFileForInput("Risk=",file));
    double lots=StringToDouble(ParseSetFileForInput("Lots_Input=",file));
-   if(mode==0) return("Fixed "+DoubleToString(lots,2));
-   if(mode==1) return("Scaled "+DoubleToString(lots,2));
-   if(mode==2) return("Risk "+DoubleToString(risk,2));
+   if(mode==0) return(""+DoubleToString(lots,2));
+   if(mode==1) return(""+DoubleToString(lots,2));
+   if(mode==2) return(""+DoubleToString(risk,0)+" $");
    return("Lots?");
   }
   double FetchMetric(string filename, string metric)

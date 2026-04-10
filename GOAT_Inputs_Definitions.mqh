@@ -777,6 +777,20 @@ bool     PrevBuySig, PrevSellSig;
 bool     BuyExit, SellExit, BuyPartialExit, SellPartialExit;
 bool     PrevBuyExit, PrevSellExit;
 
+#define GOAT_EVENT_CHILD_STATUS   (CHARTEVENT_CUSTOM + 101)
+#define GOAT_GV_FIELD_CID         "CID"
+#define GOAT_GV_FIELD_MAGIC       "Magic"
+#define GOAT_GV_FIELD_HEARTBEAT   "HB"
+#define GOAT_GV_FIELD_OPEN_TRADES "OTR"
+#define GOAT_GV_FIELD_OPEN_LOTS   "OLT"
+#define GOAT_GV_FIELD_OPEN_PL     "OPL"
+#define GOAT_GV_FIELD_PL_DAILY    "PLD"
+#define GOAT_GV_FIELD_PL_WEEKLY   "PLW"
+#define GOAT_GV_FIELD_PL_TOTAL    "PLT"
+#define GOAT_GV_FIELD_TRADES_TOTAL "TRD"
+#define GOAT_GV_FIELD_NEWS        "NEWS"
+#define GOAT_GV_FIELD_BIAS        "BIAS"
+
 int      SL_Points,TP_Points;
 int      MAGIC1=0,MAGIC2=0,LicenseKey=0;
 
@@ -846,6 +860,10 @@ int      days_BOOS=0,days_IS=0,days_FOOS=0;
 datetime dt_BOOS_end=0,dt_IS_end=0;
 double   eq_BOOS_start=0,eq_BOOS_end=0,eq_IS_start=0,eq_IS_end=0,eq_FOOS_start=0; // FOOS end is fetchable
 int      trd_BOOS=0, trd_IS=0, trd_FOOS=0;
+datetime DashboardBusDayStart=0,DashboardBusWeekStart=0;
+double   DashboardBusClosedPLDaily=0.0,DashboardBusClosedPLWeekly=0.0,DashboardBusClosedPLTotal=0.0;
+int      DashboardBusClosedTradesTotal=0;
+double   DashboardBusNewsScore=0.0,DashboardBusBiasSentiment=0.0;
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 string GetFontName(ENUM_FONT FontNumber)
   {
@@ -1296,6 +1314,172 @@ bool IsNewDay2()
       return true;
    }
    return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatChildGVName(const long magic,const string symbol,const string field)
+  {
+   return Key+"_ID_"+IntegerToString((int)magic)+"_"+symbol+"_"+field;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatSymbolGVName(const string symbol,const string field)
+  {
+   return Key+"_SYM_"+symbol+"_"+field;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatPortfolioGVName(const string field)
+  {
+   return Key+"_PORT_"+field;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatTerminalToken(void)
+  {
+   string path=TerminalInfoString(TERMINAL_DATA_PATH);
+   for(int i=StringLen(path)-1;i>=0;--i)
+   {
+      if(path[i]=='\\' || path[i]=='/')
+         return StringSubstr(path,i+1);
+   }
+   return path;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatDashboardStatePath(void)
+  {
+   return Key+"\\dashboard_state_"+GoatTerminalToken()+".tsv";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+long GoatTruncateCidValue(const long cid)
+  {
+   string cid_text=StringFormat("%I64d",cid);
+   while(StringLen(cid_text)>0)
+   {
+      long truncated=(long)StringToInteger(cid_text);
+      if(truncated>0 && (double)truncated<=9007199254740991.0)
+         return truncated;
+      cid_text=StringSubstr(cid_text,1);
+   }
+   return 0;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatParseChildGVName(const string gv_name,long &magic,string &symbol,string &field)
+  {
+   string prefix=Key+"_ID_";
+   if(StringFind(gv_name,prefix,0)!=0) return false;
+
+   string rest=StringSubstr(gv_name,StringLen(prefix));
+   int first_sep=StringFind(rest,"_");
+   if(first_sep<=0) return false;
+
+   int last_sep=-1;
+   for(int i=StringLen(rest)-1;i>=0;--i)
+   {
+      if(StringGetCharacter(rest,i)=='_')
+      {
+         last_sep=i;
+         break;
+      }
+   }
+   if(last_sep<=first_sep) return false;
+
+   magic=(long)StringToInteger(StringSubstr(rest,0,first_sep));
+   symbol=StringSubstr(rest,first_sep+1,last_sep-first_sep-1);
+   field=StringSubstr(rest,last_sep+1);
+   return(symbol!="" && field!="");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatFindMagicByCid(const string symbol,const long chart_id,long &magic_out)
+  {
+   magic_out=0;
+   long target_cid=GoatTruncateCidValue(chart_id);
+   if(target_cid<=0) return false;
+
+   for(int i=GlobalVariablesTotal()-1;i>=0;--i)
+   {
+      string gv_name=GlobalVariableName(i);
+      long gv_magic=0;
+      string gv_symbol="",gv_field="";
+      if(!GoatParseChildGVName(gv_name,gv_magic,gv_symbol,gv_field)) continue;
+      if(gv_field!=GOAT_GV_FIELD_CID)                                continue;
+      if(gv_symbol!=symbol)                                          continue;
+
+      long gv_cid=GoatTruncateCidValue((long)GlobalVariableGet(gv_name));
+      if(gv_cid!=target_cid) continue;
+
+      magic_out=gv_magic;
+      return(magic_out>0);
+   }
+   return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+datetime GoatBrokerDayStart(const datetime when)
+  {
+   MqlDateTime tm;
+   TimeToStruct(when,tm);
+   tm.hour=0; tm.min=0; tm.sec=0;
+   return StructToTime(tm);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+datetime GoatBrokerWeekStart(const datetime when)
+  {
+   datetime day_start=GoatBrokerDayStart(when);
+   datetime cursor=day_start;
+   for(int i=0;i<7;++i)
+   {
+      MqlDateTime tm;
+      TimeToStruct(cursor,tm);
+      if(tm.day_of_week==1) return cursor;
+      cursor-=86400;
+   }
+   return day_start;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int GoatCountDashboardDataPoints(int &chart_count)
+  {
+   chart_count=0;
+   long chart_ids[];
+   ArrayResize(chart_ids,0);
+   int total_points=0;
+   string cid_suffix="_CID";
+
+   for(int i=GlobalVariablesTotal()-1;i>=0;--i)
+   {
+      string gv_name=GlobalVariableName(i);
+      bool is_child=(StringFind(gv_name,Key+"_ID_",0)==0);
+      bool is_symbol=(StringFind(gv_name,Key+"_SYM_",0)==0);
+      if(!is_child && !is_symbol) continue;
+
+      total_points++;
+      if(!is_child) continue;
+      if(StringLen(gv_name)<StringLen(cid_suffix) || StringSubstr(gv_name,StringLen(gv_name)-StringLen(cid_suffix))!=cid_suffix) continue;
+
+      long cid=GoatTruncateCidValue((long)GlobalVariableGet(gv_name));
+      bool seen=false;
+      for(int j=0;j<ArraySize(chart_ids);++j)
+      {
+         if(chart_ids[j]==cid) {seen=true; break;}
+      }
+      if(seen) continue;
+
+      int n=ArraySize(chart_ids);
+      ArrayResize(chart_ids,n+1);
+      chart_ids[n]=cid;
+   }
+
+   chart_count=ArraySize(chart_ids);
+   return total_points;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatDeleteDashboardBusData(void)
+  {
+   for(int i=GlobalVariablesTotal()-1;i>=0;--i)
+   {
+      string gv_name=GlobalVariableName(i);
+      if(StringFind(gv_name,Key+"_ID_",0)==0 || StringFind(gv_name,Key+"_SYM_",0)==0 || StringFind(gv_name,Key+"_PORT_",0)==0)
+         GlobalVariableDel(gv_name);
+   }
+   GlobalVariableDel("Dashboard_ChartID");
+   FileDelete(GoatDashboardStatePath(),FILE_COMMON);
+   FileDelete(Key+"\\dashboard_child_map.tsv",FILE_COMMON);
+   GlobalVariablesFlush();
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool ObjectSetText2(string name, string text, int font_size, string font_name=NULL, color text_color=CLR_NONE)

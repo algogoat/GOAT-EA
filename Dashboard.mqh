@@ -16,6 +16,7 @@
 #import "kernel32.dll"
    //int GetCurrentProcessId();
    int CopyFileW(string src, string dst, int fail_if_exists);
+   int DeleteFileW(string path);
 #import
 #endif 
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -52,11 +53,11 @@ class CGOATDashboard : public CAppDialog
   {
 public:
    CWndClient  c_Wnd_Table,c_Wnd_Export;
-   CLabel      m_lblHeading,m_lblExport,
-               lbl_RunningLossLead,lbl_RunningLossTail,lbl_DailyLossLead,lbl_DailyLossTail,lbl_DailyTargetLead,lbl_DailyTargetTail,
-               lbl_LowEquityStopLead,lbl_EquityTargetLead;
+   CLabel      m_lblHeading,m_lblExport;
    
    CEdit       edt_Heading,edt_HeadingPortfolio,edt_HeadingMembers,edt_HeadingScore,edt_HeadingAMSR,edt_HeadingMonthlyProfit,edt_HeadingMaxDD,edt_HeadingMonthlyRF,
+               edt_RunningLossBox,edt_DailyLossBox,edt_DailyTargetBox,edt_LowEquityStopBox,edt_EquityTargetBox,
+               edt_RunningLossLead,edt_RunningLossTail,edt_DailyLossLead,edt_DailyLossTail,edt_DailyTargetLead,edt_DailyTargetTail,edt_LowEquityStopLead,edt_EquityTargetLead,
                edt_RunningLossLimit,edt_DailyLossLimit,edt_DailyTargetLimit,edt_LowEquityStopLevel,edt_EquityTargetLevel,
                edt_Symbol[],edt_Strategy[],edt_Comment[],edt_News[],edt_AIBias[],edt_RiskLots[],edt_Action,edt_Status[],edt_Positions[],edt_Lots[],edt_Trades[],edt_HistDD[],edt_PL_Open[],edt_PL_D1[],edt_PL_W1[],edt_PL_All[];
    CButton     btn_Action[];
@@ -65,13 +66,15 @@ public:
  //int         Width_Symbol, Width_Strategy, Width_Action, Width_Status, Width_Positions, Width_Trades, Width_PL_D1, Width_PL_W1, Width_PL_M1, Width_PL_All;
    color       clrEdt,clrEdtBorder,clrEdtBG;
    CGOATDashScrollV m_rows_scroll;
-   int         m_rows_top,m_rows_visible,m_rows_top_max,m_rows_y0,m_rows_view_bottom,m_rows_view_left,m_rows_view_right,m_row_pitch,m_rows_data_offset;
-   bool        m_rows_scroll_enabled;
+   int         m_rows_top,m_rows_visible,m_rows_top_max,m_rows_y0,m_rows_view_bottom,m_rows_view_left,m_rows_view_right,m_row_pitch,m_rows_data_offset,m_rows_base_y0;
+   bool        m_rows_scroll_enabled,m_rows_need_scroll;
    
    string Key_,EA_Name_,Server_,Font;
    string SetFolder,EA_Path;
    string Portfolio_Name,Portfolio_Members,Portfolio_Score,Portfolio_AMSR,Portfolio_Target_MP,Portfolio_Target_DD,Portfolio_Target_MRF;
    double Portfolio_Live_MP,Portfolio_Live_DD,Portfolio_Live_MRF,Port_RunningLoss,Port_DailyLoss,Port_DailyTarget,Port_LowEquityStopLevel,Port_EquityTargetLevel;
+   datetime Portfolio_StartTime,Portfolio_DayStartTime;
+   double Portfolio_StartEquity,Portfolio_DayStartEquity,Portfolio_MaxEquity,Portfolio_MaxDDPct;
    double Version;
    long   ChartId;
    int    D_Width,D_Height,Font_Size;
@@ -79,20 +82,29 @@ public:
    //–– inside the private/protected section ––//
    datetime  m_day_start,          // broker midnight
              m_week_start;         // broker Monday
-   datetime  m_hist_last_scan[];   // one per g_sets[] element
-   double    m_hist_total_pl[];    // cumulative P/L  "
-   int       m_hist_total_trd[];   // cumulative trades "
+   bool      m_state_dirty;
+   datetime  m_last_state_save;
    // reusable GUI colours
    color clrPos, clrNeg, clrNeu;
    
    struct SetFileRecord
    {
-    string path,name,sym,strat,status,news_label,bias_label,risk_lots_label;       // activated ?
+    string path,name,sym,strat,status,news_label,bias_label,risk_lots_label;
     long   cid,magic;
-    double PL_total,PL_weekly,PL_daily;
-    int    Trades_total;
-    datetime last_deal_scan;             // ← NEW  incremental history cursor
-    SetFileRecord() {path=name=sym=strat=status=news_label=bias_label=risk_lots_label=""; cid=magic=-1; PL_total=PL_weekly=PL_daily=0; Trades_total=0; last_deal_scan=0;}
+    datetime heartbeat_ts,last_scan;
+    int    open_trades,Trades_total;
+    double open_lots,open_pl,PL_total,PL_weekly,PL_daily,news_score,bias_sentiment;
+    SetFileRecord()
+      {
+       path=name=sym=strat=news_label=bias_label=risk_lots_label="";
+       status="Pending";
+       cid=magic=-1;
+       heartbeat_ts=0;
+       last_scan=0;
+       open_trades=0;
+       Trades_total=0;
+       open_lots=open_pl=PL_total=PL_weekly=PL_daily=news_score=bias_sentiment=0.0;
+      }
    };
    SetFileRecord g_sets[];
    
@@ -113,12 +125,22 @@ public:
    void           OnClickSelectFile(void);
    string         BuildTemplate(const string eaName,const string eaPath,const string setFile);
    bool           SaveTemplateAndCopy(const string tplName,const string tplText);
+   bool           DeleteCopiedTemplate(const string tplName);
    bool           ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string tplName);
    bool           NewSingleInstance(const int idx);
    void           GetOpenStats(const string sym,long magic,int &open_trades,double &open_lots,double &open_pl,double &open_pl_day,double &open_pl_week,string &comment);
    void           CalcHistoryStatsFast(int idx,int  &new_trd,double &pl_d,double &pl_w,double &pl_all);
+   bool           ReadChildSnapshotIntoRow(const int idx);
+   void           ReadSymbolSharedFields(const int idx);
    void           UpdateRowMetrics(int idx,int gui_row);
    void           UpdatePortfolioRow();
+   void           RefreshPortfolioRealtimeStats(void);
+   void           ResetPortfolioTrackingState(void);
+   void           ProcessTimerCycle(void);
+   bool           DashboardStateExists(void) const;
+   int            LoadDashboardConfig(void);
+   bool           SaveDashboardConfig(void);
+   void           DeleteDashboardConfig(void);
    void           RowsScrollTo(const int top_row);
    bool           HandleMouseWheel(const long lparam,const double dparam);
    bool           HandleHeaderClick(const string control_name);
@@ -174,7 +196,7 @@ public:
      g_sets[n].news_label=BuildNewsLabel(g_sets[n].path);
      g_sets[n].bias_label=BuildBiasLabel(g_sets[n].path);
      g_sets[n].risk_lots_label=BuildRiskLotsLabel(g_sets[n].path);
-     g_sets[n].status="❌";
+     g_sets[n].status="Pending";
     }
     Print("✓ kept ",ArraySize(g_sets)," file(s) after EA-filter.");
     return ArraySize(g_sets);
@@ -183,7 +205,7 @@ public:
    void DoActivate(int idx)
    {
     if(idx<0 || idx>=ArraySize(g_sets)) return;
-    if(g_sets[idx].status=="✔") return;
+    if(ArraySize(btn_Action)>idx+2 && btn_Action[idx+2].Text()=="Navigate") return;
     //GlobalVariableSet("Dashboard_ChartID",(double)ChartID());
     // --- timeframe token from filename (",M1" etc.)
     int c = StringFind(g_sets[idx].name,",");
@@ -286,6 +308,38 @@ private:
    string FormatPadded4Text(const double value)
    {
       return(IntegerToString((int)MathRound(value),4,'0'));
+   }
+   color StatusColor(const string status) const
+   {
+      if(status=="Active" || status=="Linked") return C'87,153,122';
+      if(status=="Inactive")                   return C'214,161,52';
+      if(status=="Paused" || status=="Stale") return clrOrangeRed;
+      if(status=="Offline")                    return clrDarkGray;
+      if(status=="Deploying")                  return clrCornflowerBlue;
+      return C'146,7,1,255';
+   }
+   string DisplayStatusForRow(const int idx,const datetime now) const
+   {
+      if(idx<0 || idx>=ArraySize(g_sets)) return "Pending";
+      if(g_sets[idx].magic>0 && g_sets[idx].heartbeat_ts>0 && (now-g_sets[idx].heartbeat_ts)>5) return "Stale";
+      return g_sets[idx].status;
+   }
+   void MarkStateDirty(void)
+   {
+      m_state_dirty=true;
+   }
+   string StateCacheRelativePath(void) const
+   {
+      return GoatDashboardStatePath();
+   }
+   bool AllRowsDeployed(void) const
+   {
+      for(int idx=0; idx<ArraySize(g_sets); ++idx)
+      {
+         if(g_sets[idx].cid<=0 || g_sets[idx].magic<=0)
+            return false;
+      }
+      return(ArraySize(g_sets)>0);
    }
 // --- pull the “Lots=” line from a .set file (rudimentary INI reader)
    string ParseSetFileForInput(const string key,const string file)
@@ -442,6 +496,33 @@ private:
    edt.ColorBackground(clrWhite);
    Add(edt);
   }
+  void CGOATDashboard::CreateInfoOverlayEdit(CEdit &edt,const string name,const string text,int x,int y,int width,int height,color back,color border)
+  {
+   if(!edt.Create(m_chart_id,m_name+name,m_subwin,x,y,x+width,y+height)) Print("Edit creation error:",GetLastError());
+   if(Font_Size) edt.FontSize(Font_Size);
+   edt.Font("Tahoma Bold");
+   edt.Text(text);
+   edt.TextAlign(ALIGN_LEFT);
+   edt.ReadOnly(true);
+   edt.Color(clrWhite);
+   edt.ColorBorder(border);
+   edt.ColorBackground(back);
+   Add(edt);
+  }
+  void CGOATDashboard::CreateInfoInlineEdit(CEdit &edt,const string name,const string text,int x,int y,int width,int height,color back,int align_mode)
+  {
+   if(width<=0) return;
+   if(!edt.Create(m_chart_id,m_name+name,m_subwin,x,y,x+width,y+height)) Print("Edit creation error:",GetLastError());
+   if(Font_Size) edt.FontSize(Font_Size);
+   edt.Font("Tahoma Bold");
+   edt.Text(text);
+   edt.TextAlign((ENUM_ALIGN_MODE)align_mode);
+   edt.ReadOnly(true);
+   edt.Color(clrWhite);
+   edt.ColorBorder(back);
+   edt.ColorBackground(back);
+   Add(edt);
+  }
    // Creates a label and returns the left‐edge for the next column
    int PlaceEditLabel(CEdit &edt,const string id, const string text, int x,int y,int w)
    {
@@ -472,7 +553,11 @@ CGOATDashboard::CGOATDashboard()
    m_rows_view_right=0;
    m_row_pitch=0;
    m_rows_data_offset=0;
+   m_rows_base_y0=0;
    m_rows_scroll_enabled=false;
+   m_rows_need_scroll=false;
+   m_state_dirty=false;
+   m_last_state_save=0;
    Portfolio_Name="-";
    Portfolio_Members="-";
    Portfolio_Score="-";
@@ -488,6 +573,12 @@ CGOATDashboard::CGOATDashboard()
    Port_DailyTarget=0.0;
    Port_LowEquityStopLevel=0.0;
    Port_EquityTargetLevel=0.0;
+   Portfolio_StartTime=0;
+   Portfolio_DayStartTime=0;
+   Portfolio_StartEquity=0.0;
+   Portfolio_DayStartEquity=0.0;
+   Portfolio_MaxEquity=0.0;
+   Portfolio_MaxDDPct=0.0;
 }
 CGOATDashboard::~CGOATDashboard()
 {
@@ -503,6 +594,32 @@ void CGOATDashboard::minimizeWindow(void)   {this.Minimize();}
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashboard::HandleChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
 {
+   if(id==GOAT_EVENT_CHILD_STATUS)
+   {
+      string parts[];
+      int total=StringSplit(sparam,'|',parts);
+      if(total>=2)
+      {
+         string symbol=parts[0];
+         string status=parts[1];
+         long chart_id=(long)dparam;
+         for(int idx=0;idx<ArraySize(g_sets);++idx)
+         {
+            bool magic_match=(g_sets[idx].magic>0 && g_sets[idx].magic==lparam && g_sets[idx].sym==symbol);
+            bool cid_match=(g_sets[idx].cid>0 && g_sets[idx].cid==chart_id && g_sets[idx].sym==symbol);
+            if(!magic_match && !cid_match) continue;
+
+            g_sets[idx].status=status;
+            if(g_sets[idx].magic<=0) g_sets[idx].magic=lparam;
+            edt_Status[idx+2].Text(DisplayStatusForRow(idx,TimeCurrent()));
+            edt_Status[idx+2].Color(StatusColor(edt_Status[idx+2].Text()));
+            MarkStateDirty();
+            break;
+         }
+      }
+      return(true);
+   }
+
    if(id==CHARTEVENT_OBJECT_CLICK)
       return(HandleObjectClick(sparam));
 
@@ -555,6 +672,8 @@ void CGOATDashboard::DeployAll(void)
 
    if(ArraySize(edt_Status)>1)
       edt_Status[1].Text("Deployed");
+   if(AllRowsDeployed())
+      SaveDashboardConfig();
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashboard::NavigateToSet(const int idx)
@@ -594,7 +713,13 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 	D_Height=(int)MathMin(heightMax,MathMax(heightIdeal,0));
 	int captionH=(int)MathMax(CAPTION_MIN_PX,CAPTION_PC*D_Height);
 	
-	for(int _pass=0;_pass<3;_pass++)
+	m_rowHeight=ROW_MIN_PX;
+	m_controlHeight=m_rowHeight;
+	m_GapVert=1;
+	m_GapHoriz=(int)(0.001*D_Width);
+   if(m_GapHoriz<1) m_GapHoriz=1;
+
+	for(int _pass=0;_pass<8;_pass++)
 	{
 		double denom=(sets_total+3)+GAP_VERT_PC*(sets_total+rowScaling*2);
 		double rowH=(double)(D_Height-2*captionH)/denom;
@@ -603,7 +728,11 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 		double gapSet=GAP_VERT_PC*rowH,gapTall=gapSet*rowScaling;
 		int rowTallH=(int)MathMax((double)ROW_TALL_MIN_PX,MathRound(rowScaling*rowH)+ROW_TALL_EXTRA_PX);
 		int needH=2*captionH+(int)(rowH*(sets_total+3))+(int)(gapTall*2+gapSet*sets_total);
-		if(rowTallH>captionH) {captionH=rowTallH; continue;}
+		if(rowTallH>captionH)
+      {
+         captionH=rowTallH;
+         if(_pass<7) continue;
+      }
 		if(needH>D_Height)
 		{
 			double avail=(double)(D_Height-2*captionH-gapTall*2-gapSet*sets_total)/(sets_total+3);
@@ -611,9 +740,9 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 			gapSet=GAP_VERT_PC*rowH;
          gapTall=gapSet*rowScaling;
 		}
-		m_rowHeight=(int)rowH;
+		m_rowHeight=MathMax(ROW_MIN_PX,(int)MathRound(rowH));
 		m_controlHeight=m_rowHeight;
-		m_GapVert=(int)gapSet;
+		m_GapVert=MathMax(1,(int)MathRound(gapSet));
 		m_GapHoriz=(int)(0.001*D_Width);
       if(m_GapHoriz<1) m_GapHoriz=1;
 		break;
@@ -633,8 +762,9 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    const int info_top=info_pad;
    const int info_row_gap=MathMax(4,m_GapVert+1);
    const int info_table_gap=info_row_gap+MathMax(2,m_GapVert);
-   const int table_top=info_top+2*infoHeight+info_row_gap+info_table_gap;
-   const int table_bottom=(int)((D_Height-captionH)*0.98)-6;
+   const int info_table_spacer=rowTallH;
+   const int table_top=info_top+2*infoHeight+info_row_gap+info_table_gap+info_table_spacer;
+   int table_bottom=(int)((D_Height-captionH)*0.98)-6;
    const int rows=ArraySize(g_sets);
    const int margin_top_plan=table_top+MathMax(2,m_GapVert);
    const int rows_view_top_plan=margin_top_plan+2*(rowTallH+gapTallPx);
@@ -642,9 +772,18 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    const int rows_view_height_plan=MathMax(0,rows_view_bottom_plan-rows_view_top_plan);
    const int rows_visible_plan=(int)MathMax(1.0,MathFloor((double)(rows_view_height_plan+m_GapVert)/(double)(m_rowHeight+m_GapVert)));
    const bool need_rows_scroll=(rows>rows_visible_plan);
-   const int scroll_width=(need_rows_scroll ? CONTROLS_SCROLL_SIZE : 0);
+   m_rows_need_scroll=need_rows_scroll;
+   if(!need_rows_scroll)
+   {
+      int needed_table_bottom=table_top+2*(rowTallH+gapTallPx)+rows*(m_rowHeight+m_GapVert)+MathMax(2,m_GapVert);
+      table_bottom=needed_table_bottom;
+      int desired_height=table_bottom+captionH+8;
+      if(desired_height>0 && desired_height<D_Height)
+         D_Height=desired_height;
+   }
+   const int scroll_width=CONTROLS_SCROLL_SIZE;
    const int columns_left=table_left+table_inner_pad;
-   const int columns_right=table_right-table_inner_pad-(need_rows_scroll ? (scroll_gap+scroll_width) : 0);
+   const int columns_right=table_right-table_inner_pad-(scroll_gap+scroll_width);
    const int column_count=16;
    double column_pct[];
    ArrayResize(column_pct,column_count);
@@ -764,26 +903,10 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    CreateInfoEdit(edt_HeadingMonthlyProfit,"HdrMonthlyProfit",info_text_mp       ,info_x,info_y,info_widths[5],m_controlHeight,C'19,79,60'  ,clrWhite); info_x+=info_widths[5]+info_gap;
    CreateInfoEdit(edt_HeadingMaxDD        ,"HdrMaxDD"        ,info_text_dd       ,info_x,info_y,info_widths[6],m_controlHeight,C'122,63,34' ,clrWhite);
    info_y+=infoHeight+info_row_gap;
-   const double row2_group_pct[5]={23.0,21.0,23.0,16.5,16.5};
-   const double row2_lead_edit_gap_pct=0.02;
-   const double row2_edit_tail_gap_pct=0.08;
-   const double row2_group_gap_pct=0.35;
-   const double row2_part_pct[3][3]=
-   {
-      {45.0,18.0,37.0}, // Running Loss: lead / input / tail
-      {43.0,19.0,38.0}, // Daily Loss: lead / input / tail
-      {45.0,18.0,37.0}  // Daily Target: lead / input / tail
-   };
-   const double row2_level_part_pct[2][2]=
-   {
-      {69.0,31.0}, // Low Equity Stop level: label / input
-      {69.0,31.0}  // Equity Target Level: label / input
-   };
-   int row2_lead_edit_gap=MathMax(1,(int)MathRound(info_width*row2_lead_edit_gap_pct/100.0));
-   int row2_edit_tail_gap=MathMax(1,(int)MathRound(info_width*row2_edit_tail_gap_pct/100.0));
+   const double row2_group_pct[5]={22.0,22.0,22.0,17.0,17.0};
+   const double row2_group_gap_pct=0.45;
    int row2_group_gap=MathMax(1,(int)MathRound(info_width*row2_group_gap_pct/100.0));
-   const int row2_level_lead_edit_gap=0;
-   int row2_avail=info_width-3*(row2_lead_edit_gap+row2_edit_tail_gap)-2*row2_lead_edit_gap-4*row2_group_gap;
+   int row2_avail=info_width-4*row2_group_gap;
    int row2_group_widths[5];
    int row2_group_used=0;
    for(int i=0;i<4;i++)
@@ -792,48 +915,52 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
       row2_group_used+=row2_group_widths[i];
    }
    row2_group_widths[4]=MathMax(1,row2_avail-row2_group_used);
-   int row2_part_widths[3][3];
-   for(int group=0;group<3;group++)
-   {
-      int group_inner_avail=row2_group_widths[group]-row2_lead_edit_gap-row2_edit_tail_gap;
-      int group_used=0;
-      for(int part=0;part<2;part++)
-      {
-         row2_part_widths[group][part]=MathMax(1,(int)MathFloor(group_inner_avail*row2_part_pct[group][part]/100.0));
-         group_used+=row2_part_widths[group][part];
-      }
-      row2_part_widths[group][2]=MathMax(1,group_inner_avail-group_used);
-   }
-   int row2_level_widths[2][2];
-   for(int group=0;group<2;group++)
-   {
-      int group_inner_avail=row2_group_widths[group+3]-row2_level_lead_edit_gap;
-      row2_level_widths[group][0]=MathMax(1,(int)MathFloor(group_inner_avail*row2_level_part_pct[group][0]/100.0));
-      row2_level_widths[group][1]=MathMax(1,group_inner_avail-row2_level_widths[group][0]);
-   }
    string txt_running_limit="2000";
    string txt_daily_loss_limit="3000";
    string txt_daily_target_limit="3000";
-   string txt_running_lead="Running Loss: "+FormatPadded4Text(Port_RunningLoss)+"/ ";
-   string txt_running_tail="("+FormatPadded4Text(StringToDouble(txt_running_limit)-Port_RunningLoss)+" Left)";
-   string txt_daily_loss_lead="Daily Loss: "+FormatPadded4Text(Port_DailyLoss)+"/ ";
-   string txt_daily_loss_tail="("+FormatPadded4Text(StringToDouble(txt_daily_loss_limit)-Port_DailyLoss)+" Left)";
-   string txt_daily_target_lead="Daily Target: "+FormatPadded4Text(Port_DailyTarget)+"/ ";
-   string txt_daily_target_tail="("+FormatPadded4Text(StringToDouble(txt_daily_target_limit)-Port_DailyTarget)+" Left)";
+   int row2_box_pad=4;
+   int row2_inner_gap=4;
    info_x=table_left;
-   CreateInfoLabel(lbl_RunningLossLead,"LblRunLossLead",txt_running_lead,info_x,info_y,row2_part_widths[0][0]); info_x+=row2_part_widths[0][0]+row2_lead_edit_gap;
-   CreatePlainInputEdit(edt_RunningLossLimit,"EdtRunLossLimit",txt_running_limit,info_x,info_y,row2_part_widths[0][1]); info_x+=row2_part_widths[0][1]+row2_edit_tail_gap;
-   CreateInfoLabel(lbl_RunningLossTail,"LblRunLossTail",txt_running_tail,info_x,info_y,row2_part_widths[0][2]); info_x+=row2_part_widths[0][2]+row2_group_gap;
-   CreateInfoLabel(lbl_DailyLossLead,"LblDayLossLead",txt_daily_loss_lead,info_x,info_y,row2_part_widths[1][0]); info_x+=row2_part_widths[1][0]+row2_lead_edit_gap;
-   CreatePlainInputEdit(edt_DailyLossLimit,"EdtDayLossLimit",txt_daily_loss_limit,info_x,info_y,row2_part_widths[1][1]); info_x+=row2_part_widths[1][1]+row2_edit_tail_gap;
-   CreateInfoLabel(lbl_DailyLossTail,"LblDayLossTail",txt_daily_loss_tail,info_x,info_y,row2_part_widths[1][2]); info_x+=row2_part_widths[1][2]+row2_group_gap;
-   CreateInfoLabel(lbl_DailyTargetLead,"LblDayTargetLead",txt_daily_target_lead,info_x,info_y,row2_part_widths[2][0]); info_x+=row2_part_widths[2][0]+row2_lead_edit_gap;
-   CreatePlainInputEdit(edt_DailyTargetLimit,"EdtDayTargetLimit",txt_daily_target_limit,info_x,info_y,row2_part_widths[2][1]); info_x+=row2_part_widths[2][1]+row2_edit_tail_gap;
-   CreateInfoLabel(lbl_DailyTargetTail,"LblDayTargetTail",txt_daily_target_tail,info_x,info_y,row2_part_widths[2][2]); info_x+=row2_part_widths[2][2]+row2_group_gap;
-   CreateInfoLabel(lbl_LowEquityStopLead,"LblLowEqStopLead","Low Equity Stop level:",info_x,info_y,row2_level_widths[0][0]); info_x+=row2_level_widths[0][0]+row2_level_lead_edit_gap;
-   CreatePlainInputEdit(edt_LowEquityStopLevel,"EdtLowEqStopLevel",FormatIntegerText(Port_LowEquityStopLevel),info_x,info_y,row2_level_widths[0][1]); info_x+=row2_level_widths[0][1]+row2_group_gap;
-   CreateInfoLabel(lbl_EquityTargetLead,"LblEqTargetLead","Equity Target Level:",info_x,info_y,row2_level_widths[1][0]); info_x+=row2_level_widths[1][0]+row2_level_lead_edit_gap;
-   CreatePlainInputEdit(edt_EquityTargetLevel,"EdtEqTargetLevel",FormatIntegerText(Port_EquityTargetLevel),info_x,info_y,row2_level_widths[1][1]);
+   int group_x=info_x;
+   CreateInfoOverlayEdit(edt_RunningLossBox,"EdtRunLossBox","",group_x,info_y,row2_group_widths[0],m_controlHeight,C'26,63,95',clrWhite);
+   int row2_input_w=MathMax(54,(int)MathRound(row2_group_widths[0]*0.19));
+   int row2_input_x=group_x+MathMax(168,(int)MathRound(row2_group_widths[0]*0.43));
+   row2_input_x=MathMin(row2_input_x,group_x+row2_group_widths[0]-row2_input_w-86);
+   CreateInfoInlineEdit(edt_RunningLossLead,"EdtRunLossLead","Running Loss: "+FormatPadded4Text(Port_RunningLoss)+"/",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'26,63,95',ALIGN_LEFT);
+   CreatePlainInputEdit(edt_RunningLossLimit,"EdtRunLossLimit",txt_running_limit,row2_input_x,info_y,row2_input_w);
+   CreateInfoInlineEdit(edt_RunningLossTail,"EdtRunLossTail","("+FormatPadded4Text(StringToDouble(txt_running_limit)-Port_RunningLoss)+" Left)",row2_input_x+row2_input_w+row2_inner_gap,info_y,group_x+row2_group_widths[0]-(row2_input_x+row2_input_w+row2_inner_gap)-row2_box_pad,m_controlHeight,C'26,63,95',ALIGN_LEFT);
+   info_x+=row2_group_widths[0]+row2_group_gap;
+   group_x=info_x;
+   CreateInfoOverlayEdit(edt_DailyLossBox,"EdtDayLossBox","",group_x,info_y,row2_group_widths[1],m_controlHeight,C'47,74,111',clrWhite);
+   row2_input_w=MathMax(54,(int)MathRound(row2_group_widths[1]*0.19));
+   row2_input_x=group_x+MathMax(160,(int)MathRound(row2_group_widths[1]*0.45));
+   row2_input_x=MathMin(row2_input_x,group_x+row2_group_widths[1]-row2_input_w-84);
+   CreateInfoInlineEdit(edt_DailyLossLead,"EdtDayLossLead","Daily Loss: "+FormatPadded4Text(Port_DailyLoss)+" /",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'47,74,111',ALIGN_LEFT);
+   CreatePlainInputEdit(edt_DailyLossLimit,"EdtDayLossLimit",txt_daily_loss_limit,row2_input_x,info_y,row2_input_w);
+   CreateInfoInlineEdit(edt_DailyLossTail,"EdtDayLossTail"," ("+FormatPadded4Text(StringToDouble(txt_daily_loss_limit)-Port_DailyLoss)+" Left)",row2_input_x+row2_input_w+row2_inner_gap,info_y,group_x+row2_group_widths[1]-(row2_input_x+row2_input_w+row2_inner_gap)-row2_box_pad,m_controlHeight,C'47,74,111',ALIGN_LEFT);
+   info_x+=row2_group_widths[1]+row2_group_gap;
+   group_x=info_x;
+   CreateInfoOverlayEdit(edt_DailyTargetBox,"EdtDayTargetBox","",group_x,info_y,row2_group_widths[2],m_controlHeight,C'73,90,121',clrWhite);
+   row2_input_w=MathMax(54,(int)MathRound(row2_group_widths[2]*0.19));
+   row2_input_x=group_x+MathMax(172,(int)MathRound(row2_group_widths[2]*0.48));
+   row2_input_x=MathMin(row2_input_x,group_x+row2_group_widths[2]-row2_input_w-84);
+   CreateInfoInlineEdit(edt_DailyTargetLead,"EdtDayTargetLead","Daily Target: "+FormatPadded4Text(Port_DailyTarget)+" /",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'73,90,121',ALIGN_LEFT);
+   CreatePlainInputEdit(edt_DailyTargetLimit,"EdtDayTargetLimit",txt_daily_target_limit,row2_input_x,info_y,row2_input_w);
+   CreateInfoInlineEdit(edt_DailyTargetTail,"EdtDayTargetTail"," ("+FormatPadded4Text(StringToDouble(txt_daily_target_limit)-Port_DailyTarget)+" Left)",row2_input_x+row2_input_w+row2_inner_gap,info_y,group_x+row2_group_widths[2]-(row2_input_x+row2_input_w+row2_inner_gap)-row2_box_pad,m_controlHeight,C'73,90,121',ALIGN_LEFT);
+   info_x+=row2_group_widths[2]+row2_group_gap;
+   group_x=info_x;
+   CreateInfoOverlayEdit(edt_LowEquityStopBox,"EdtLowEqStopBox","",group_x,info_y,row2_group_widths[3],m_controlHeight,C'83,53,120',clrWhite);
+   row2_input_w=MathMax(78,(int)MathRound(row2_group_widths[3]*0.34));
+   row2_input_x=group_x+row2_group_widths[3]-row2_input_w-2;
+   CreateInfoInlineEdit(edt_LowEquityStopLead,"EdtLowEqStopLead","Low Equity Stop level:",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'83,53,120',ALIGN_LEFT);
+   CreatePlainInputEdit(edt_LowEquityStopLevel,"EdtLowEqStopLevel",FormatIntegerText(Port_LowEquityStopLevel),row2_input_x,info_y,row2_input_w);
+   info_x+=row2_group_widths[3]+row2_group_gap;
+   group_x=info_x;
+   CreateInfoOverlayEdit(edt_EquityTargetBox,"EdtEqTargetBox","",group_x,info_y,row2_group_widths[4],m_controlHeight,C'122,63,34',clrWhite);
+   row2_input_w=MathMax(86,(int)MathRound(row2_group_widths[4]*0.36));
+   row2_input_x=group_x+row2_group_widths[4]-row2_input_w-2;
+   CreateInfoInlineEdit(edt_EquityTargetLead,"EdtEqTargetLead","Equity Target Level:",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'122,63,34',ALIGN_LEFT);
+   CreatePlainInputEdit(edt_EquityTargetLevel,"EdtEqTargetLevel",FormatIntegerText(Port_EquityTargetLevel),row2_input_x,info_y,row2_input_w);
 // HEADER -----------------------------------------------------------
    m_controlHeight=rowTallH;
 	int r=0,y=Margin_Top,x=columns_left;
@@ -885,14 +1012,15 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 // DATA -------------------------------------------------------------
    clrEdt=clrWhite; clrEdtBorder=C'8,8,36'; clrEdtBG=C'8,8,36';//(C'15,23,42');//clrGainsboro
 	m_controlHeight=ctrlSave;
+   m_rows_base_y0=y;
 	for(int i=0;i<rows;i++,r++)
 	{
 	 prefix="R"+(string)r+"_";
 	 ArrayResize(edt_Symbol,r+1);    x=PlaceEditLabel(edt_Symbol[r]   ,prefix+"SYM",g_sets[i].sym,x,y,Width_Symbol);
 	 ArrayResize(edt_Strategy,r+1);  x=PlaceEditLabel(edt_Strategy[r] ,prefix+"STR",g_sets[i].strat,x,y,Width_Strategy);
-	 ArrayResize(btn_Action,r+1);    CreateButtonCtrl(btn_Action[r]   ,prefix+"BTN_"+IntegerToString(i),x, y,Width_Action,m_controlHeight,"Activate");
+	 ArrayResize(btn_Action,r+1);    CreateButtonCtrl(btn_Action[r]   ,prefix+"BTN_"+IntegerToString(i),x, y,Width_Action,m_controlHeight,(g_sets[i].magic>0 && g_sets[i].cid>0 ? "Navigate" : "Activate"));
 	                                                                                x+=Width_Action+m_GapHoriz; btn_Action[r].Color(C'87,153,122');
-	 ArrayResize(edt_Status,r+1);    x=PlaceEditLabel(edt_Status[r]   ,prefix+"STS",g_sets[i].status,x,y,Width_Status); edt_Status[r].Color(C'146,7,1,255');
+	 ArrayResize(edt_Status,r+1);    x=PlaceEditLabel(edt_Status[r]   ,prefix+"STS",g_sets[i].status,x,y,Width_Status); edt_Status[r].Color(StatusColor(g_sets[i].status));
 	 ArrayResize(edt_Comment,r+1);   x=PlaceEditLabel(edt_Comment[r]  ,prefix+"CMT","- - -",x,y,Width_Comment);
 	 ArrayResize(edt_News,r+1);      x=PlaceEditLabel(edt_News[r]     ,prefix+"NWS",g_sets[i].news_label,x,y,Width_News);
 	 ArrayResize(edt_AIBias,r+1);    x=PlaceEditLabel(edt_AIBias[r]   ,prefix+"BIA",g_sets[i].bias_label,x,y,Width_AIBias);
@@ -907,12 +1035,8 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 	 ArrayResize(edt_PL_All,r+1);    x=PlaceEditLabel(edt_PL_All[r]   ,prefix+"PLA","- - -",x,y,Width_PL_All);
 	 y+=m_rowHeight+m_GapVert;       x=columns_left;
 	}
-	ArrayResize(m_hist_last_scan,  ArraySize(g_sets),  0);
-   ArrayResize(m_hist_total_pl,   ArraySize(g_sets),  0.0);
-   ArrayResize(m_hist_total_trd,  ArraySize(g_sets),  0);
    m_rows_top=0;
    RefreshRowsViewportMetrics();
-   if(need_rows_scroll)
    {
       int sbX=table_right-CONTROLS_SCROLL_SIZE;
       int sbY=c_Wnd_Table.Top();
@@ -931,8 +1055,17 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
       }
    }
    ApplyRowsViewport();
+   RefreshPortfolioRealtimeStats();
+   for(int i=0;i<ArraySize(g_sets);++i)
+      UpdateRowMetrics(i,i+2);
+   UpdatePortfolioRow();
 // show -------------------------------------------------------------
 	Sleep(50); ChartRedraw(0); Sleep(50); Show(); ChartRedraw(0); Sleep(50);
+   ApplyRowsViewport();
+   for(int i=0;i<ArraySize(g_sets);++i)
+      UpdateRowMetrics(i,i+2);
+   UpdatePortfolioRow();
+   ChartRedraw(0);
 	return(true);
   }
 //+------------------------------------------------------------------+
@@ -1025,6 +1158,23 @@ bool CGOATDashboard::SaveTemplateAndCopy(const string tplName,const string tplTe
    return true;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::DeleteCopiedTemplate(const string tplName)
+{
+   string dstPath = TerminalInfoString(TERMINAL_DATA_PATH) + "\\MQL5\\Profiles\\Templates\\" + tplName;
+   string dstXL   = "\\\\?\\" + dstPath;
+
+   if(!DeleteFileW(dstXL))
+   {
+      int err=GetLastError();
+      if(err!=0)
+         PrintFormat("DeleteFileW failed for template '%s' err=%d",dstPath,err);
+      return false;
+   }
+
+   PrintFormat("Deleted copied template '%s'",dstPath);
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string tplName)
 {
    string symbol = g_sets[idx].sym;
@@ -1034,6 +1184,7 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    if(cid==0)
    {
       Alert("  ChartOpen FAILED  err=%d", GetLastError());
+      DeleteCopiedTemplate(tplName);
       return false;
    }
    g_sets[idx].cid=cid;
@@ -1042,18 +1193,42 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    if(!ChartApplyTemplate(cid, tplName))
    {
       Alert(StringFormat("  ChartApplyTemplate FAILED  err=%d", GetLastError()));
+      DeleteCopiedTemplate(tplName);
       return false;
    }
-   
-   for(int i=GlobalVariablesTotal()-1;i>=0;i--)
+
+   g_sets[idx].status="Deploying";
+   edt_Status[idx+2].Text(g_sets[idx].status);
+   edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
+   MarkStateDirty();
+
+   uint wait_start=GetTickCount();
+   uint last_refresh_tick=wait_start;
+   while(!NewSingleInstance(idx))
    {
-      string gv_name=GlobalVariableName(i);
-      if(StringFind(gv_name,Key_+"_ID_",0)!=0)            continue;
-      if(StringFind(gv_name,"_"+symbol+"_",0)<0)          continue;
-      if(StringFind(gv_name,"_Magic",0)<0)                continue;
-      GlobalVariableDel(gv_name);
+      if(GetTickCount()-wait_start>20000)
+      {
+         string msg="Unable to link the deployed child EA to the expected chart.\n\n"
+                   +"Set: "+g_sets[idx].name+"\n"
+                   +"Symbol: "+g_sets[idx].sym+"\n"
+                   +"Expected chart ID: "+StringFormat("%I64d",g_sets[idx].cid)+"\n"
+                   +"No pending child registration was detected within 20 seconds.";
+         MessageBox(msg,"Child Bind Failed",MB_OK|MB_ICONWARNING);
+         g_sets[idx].status="Pending";
+         edt_Status[idx+2].Text(g_sets[idx].status);
+         edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
+         MarkStateDirty();
+         DeleteCopiedTemplate(tplName);
+         return false;
+      }
+      if(GetTickCount()-last_refresh_tick>=2000)
+      {
+         ChartSetSymbolPeriod(cid,symbol,tf);
+         ChartRedraw(cid);
+         last_refresh_tick=GetTickCount();
+      }
+      Sleep(50);
    }
-   while(!NewSingleInstance(idx)) Sleep(50);
    
    Sleep(500); ChartRedraw(cid); Sleep(500);
    
@@ -1061,16 +1236,21 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    {
     //--- display the error message in Experts journal
     Print(__FUNCTION__+", Error Code = ",GetLastError());
+    DeleteCopiedTemplate(tplName);
     return(false);
    }
    Sleep(500); ChartRedraw(0); Sleep(500);
    
    if(g_sets[idx].cid!=-1 && g_sets[idx].magic!=-1)
    {
-    g_sets[idx].status = "✔";
-    edt_Status[idx+2].Text(g_sets[idx].status); edt_Status[idx+2].Color(C'87,153,122');
+    g_sets[idx].status = "Linked";
+    edt_Status[idx+2].Text(g_sets[idx].status); edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
     btn_Action[idx+2].Text("Navigate");
+    MarkStateDirty();
+    if(AllRowsDeployed())
+       SaveDashboardConfig();
    }
+   DeleteCopiedTemplate(tplName);
    Sleep(500); ChartRedraw(); Sleep(500);
    Print("  Template applied ✓");
    return true;
@@ -1080,15 +1260,17 @@ bool CGOATDashboard::NewSingleInstance(const int idx)
 {
    for(int i=0;i<GlobalVariablesTotal();i++)
    {
-    string NewVar = GlobalVariableName(i);
-    if(StringFind(NewVar,Key_+"_ID_",0)!=0)                 continue;
-    if(StringFind(NewVar,"_"+g_sets[idx].sym+"_",0)<0)      continue;
-    if(StringFind(NewVar,"_Magic",0)<0)                     continue;
-    g_sets[idx].magic = (long)GlobalVariableGet(NewVar);
-    GlobalVariableDel(NewVar);
+    string new_var = GlobalVariableName(i);
+    long magic=0;
+    string symbol="",field="";
+    if(!GoatParseChildGVName(new_var,magic,symbol,field)) continue;
+    if(field!=GOAT_GV_FIELD_MAGIC)                        continue;
+
+    g_sets[idx].magic=(long)GlobalVariableGet(new_var);
+    GlobalVariableDel(new_var);
+    GlobalVariablesFlush();
     return true;
    }
-   Sleep(100);
    return false;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1140,12 +1322,146 @@ void CGOATDashboard::UpdatePortfolioInfoHeader(void)
    edt_HeadingMonthlyRF.Text("Monthly RF: "+DoubleToString(Portfolio_Live_MRF,3)+"/"+Portfolio_Target_MRF);
    edt_HeadingMonthlyProfit.Text("Monthly Profit: "+IntegerToString((int)MathRound(Portfolio_Live_MP))+"/"+Portfolio_Target_MP);
    edt_HeadingMaxDD.Text("Max DD: "+IntegerToString((int)MathRound(Portfolio_Live_DD))+"/"+Portfolio_Target_DD);
-   lbl_RunningLossLead.Text("Running Loss: "+FormatPadded4Text(Port_RunningLoss)+"/ ");
-   lbl_RunningLossTail.Text("("+FormatPadded4Text(running_loss_left)+" Left)");
-   lbl_DailyLossLead.Text("Daily Loss: "+FormatPadded4Text(Port_DailyLoss)+"/ ");
-   lbl_DailyLossTail.Text("("+FormatPadded4Text(daily_loss_left)+" Left)");
-   lbl_DailyTargetLead.Text("Daily Target: "+FormatPadded4Text(Port_DailyTarget)+"/ ");
-   lbl_DailyTargetTail.Text("("+FormatPadded4Text(daily_target_left)+" Left)");
+   edt_RunningLossLead.Text("Running Loss: "+FormatPadded4Text(Port_RunningLoss)+"/");
+   edt_RunningLossTail.Text("("+FormatPadded4Text(running_loss_left)+" Left)");
+   edt_DailyLossLead.Text("Daily Loss: "+FormatPadded4Text(Port_DailyLoss)+"/");
+   edt_DailyLossTail.Text("("+FormatPadded4Text(daily_loss_left)+" Left)");
+   edt_DailyTargetLead.Text("Daily Target: "+FormatPadded4Text(Port_DailyTarget)+"/");
+   edt_DailyTargetTail.Text("("+FormatPadded4Text(daily_target_left)+" Left)");
+   edt_LowEquityStopLead.Text("Low Equity Stop level:");
+   edt_EquityTargetLead.Text("Equity Target Level:");
+
+   color normal_clr=clrWhite;
+   color warning_clr=clrRed;
+   color target_clr=C'0,140,0';
+   bool run_warn=(running_loss_limit>0.0 && Port_RunningLoss>=0.9*running_loss_limit);
+   bool day_loss_warn=(daily_loss_limit>0.0 && Port_DailyLoss>=0.9*daily_loss_limit);
+   bool day_target_hit=(daily_target_limit>0.0 && Port_DailyTarget>=0.9*daily_target_limit);
+
+   edt_RunningLossLead.Color(run_warn ? warning_clr : normal_clr);
+   edt_RunningLossTail.Color(run_warn ? warning_clr : normal_clr);
+   edt_DailyLossLead.Color(day_loss_warn ? warning_clr : normal_clr);
+   edt_DailyLossTail.Color(day_loss_warn ? warning_clr : normal_clr);
+   edt_DailyTargetLead.Color(day_target_hit ? target_clr : normal_clr);
+   edt_DailyTargetTail.Color(day_target_hit ? target_clr : normal_clr);
+   edt_LowEquityStopLead.Color(normal_clr);
+   edt_EquityTargetLead.Color(normal_clr);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::RefreshPortfolioRealtimeStats(void)
+{
+   datetime now=TimeCurrent();
+   double current_equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   double current_balance=AccountInfoDouble(ACCOUNT_BALANCE);
+   datetime current_day_key=GoatBrokerDayStart(now);
+   bool portfolio_gv_changed=false;
+   string gv_start_time=GoatPortfolioGVName("Portfolio_StartTime");
+   string gv_start_equity=GoatPortfolioGVName("Portfolio_StartEquity");
+   string gv_day_time=GoatPortfolioGVName("Portfolio_DayStartTime");
+   string gv_day_equity=GoatPortfolioGVName("Portfolio_DayStartEquity");
+   string gv_max_equity=GoatPortfolioGVName("Portfolio_MaxEquity");
+   string gv_max_dd=GoatPortfolioGVName("Portfolio_MaxDDActual");
+   string gv_max_dd_pct=GoatPortfolioGVName("Portfolio_MaxDDPct");
+
+   if(GlobalVariableCheck(gv_start_time))   Portfolio_StartTime=(datetime)GlobalVariableGet(gv_start_time);
+   if(GlobalVariableCheck(gv_start_equity)) Portfolio_StartEquity=GlobalVariableGet(gv_start_equity);
+   if(GlobalVariableCheck(gv_day_time))     Portfolio_DayStartTime=(datetime)GlobalVariableGet(gv_day_time);
+   if(GlobalVariableCheck(gv_day_equity))   Portfolio_DayStartEquity=GlobalVariableGet(gv_day_equity);
+   if(GlobalVariableCheck(gv_max_equity))   Portfolio_MaxEquity=GlobalVariableGet(gv_max_equity);
+   if(GlobalVariableCheck(gv_max_dd))       Portfolio_Live_DD=GlobalVariableGet(gv_max_dd);
+   if(GlobalVariableCheck(gv_max_dd_pct))   Portfolio_MaxDDPct=GlobalVariableGet(gv_max_dd_pct);
+
+   if(Portfolio_StartTime<=0)
+   {
+      Portfolio_StartTime=now;
+      GlobalVariableSet(gv_start_time,(double)Portfolio_StartTime);
+      portfolio_gv_changed=true;
+   }
+   if(Portfolio_StartEquity<=0.0)
+   {
+      Portfolio_StartEquity=current_equity;
+      GlobalVariableSet(gv_start_equity,Portfolio_StartEquity);
+      portfolio_gv_changed=true;
+   }
+
+   datetime stored_day_key=(Portfolio_DayStartTime>0 ? GoatBrokerDayStart(Portfolio_DayStartTime) : 0);
+   if(Portfolio_DayStartTime<=0 || stored_day_key<current_day_key || Portfolio_DayStartEquity<=0.0)
+   {
+      Portfolio_DayStartTime=now;
+      Portfolio_DayStartEquity=current_equity;
+      GlobalVariableSet(gv_day_time,(double)Portfolio_DayStartTime);
+      GlobalVariableSet(gv_day_equity,Portfolio_DayStartEquity);
+      portfolio_gv_changed=true;
+   }
+
+   if(Portfolio_MaxEquity<=0.0)
+   {
+      Portfolio_MaxEquity=current_equity;
+      GlobalVariableSet(gv_max_equity,Portfolio_MaxEquity);
+      portfolio_gv_changed=true;
+   }
+
+   if(current_equity>Portfolio_MaxEquity)
+   {
+      Portfolio_MaxEquity=current_equity;
+      GlobalVariableSet(gv_max_equity,Portfolio_MaxEquity);
+      portfolio_gv_changed=true;
+   }
+
+   double current_dd_pct=0.0;
+   if(Portfolio_MaxEquity>0.0)
+      current_dd_pct=(Portfolio_MaxEquity-current_equity)/Portfolio_MaxEquity;
+   double current_dd_actual=Portfolio_MaxEquity-current_equity;
+
+   if(current_dd_pct>Portfolio_MaxDDPct)
+   {
+      Portfolio_MaxDDPct=current_dd_pct;
+      GlobalVariableSet(gv_max_dd_pct,Portfolio_MaxDDPct);
+      portfolio_gv_changed=true;
+   }
+   if(current_dd_actual>Portfolio_Live_DD)
+   {
+      Portfolio_Live_DD=current_dd_actual;
+      GlobalVariableSet(gv_max_dd,Portfolio_Live_DD);
+      portfolio_gv_changed=true;
+   }
+
+   double elapsed_months=MathMax((double)(now-Portfolio_StartTime)/2629800.0,1.0/30.0);
+   double total_profit=current_equity-Portfolio_StartEquity;
+   double total_rf=(Portfolio_Live_DD>0.0 ? total_profit/Portfolio_Live_DD : 0.0);
+   Portfolio_Live_MP=total_profit/elapsed_months;
+   Portfolio_Live_MRF=total_rf/elapsed_months;
+
+   Port_RunningLoss=MathMax(0.0,current_balance-current_equity);
+   Port_DailyLoss=MathMax(0.0,Portfolio_DayStartEquity-current_equity);
+   Port_DailyTarget=MathMax(0.0,current_equity-Portfolio_DayStartEquity);
+   if(portfolio_gv_changed)
+      GlobalVariablesFlush();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ResetPortfolioTrackingState(void)
+{
+   Portfolio_StartTime=0;
+   Portfolio_DayStartTime=0;
+   Portfolio_StartEquity=0.0;
+   Portfolio_DayStartEquity=0.0;
+   Portfolio_MaxEquity=0.0;
+   Portfolio_MaxDDPct=0.0;
+   Portfolio_Live_MP=0.0;
+   Portfolio_Live_DD=0.0;
+   Portfolio_Live_MRF=0.0;
+   Port_RunningLoss=0.0;
+   Port_DailyLoss=0.0;
+   Port_DailyTarget=0.0;
+
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_StartTime"));
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_StartEquity"));
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_DayStartTime"));
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_DayStartEquity"));
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_MaxEquity"));
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_MaxDDActual"));
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_MaxDDPct"));
+   GlobalVariablesFlush();
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::GetOpenStats(const string symbol,long magic,int &open_trades,double &open_lots,double &open_pl,double &open_pl_day,double &open_pl_week,string &comment)
@@ -1182,33 +1498,84 @@ void CGOATDashboard::GetOpenStats(const string symbol,long magic,int &open_trade
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::CalcHistoryStatsFast(int idx,int &new_trd,double &pl_d,double &pl_w,double &pl_all)
 {
-   new_trd=0; pl_d=pl_w=0.0; pl_all=m_hist_total_pl[idx];
+   new_trd=0;
+   pl_d=0.0;
+   pl_w=0.0;
+   pl_all=0.0;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::ReadChildSnapshotIntoRow(const int idx)
+{
+   if(idx<0 || idx>=ArraySize(g_sets)) return false;
+   if(g_sets[idx].magic<=0)            return false;
 
-   datetime from = m_hist_last_scan[idx]+1,
-            now  = TimeCurrent();
+   ReadSymbolSharedFields(idx);
 
-   HistorySelect(from,now);                                        // incremental load :contentReference[oaicite:4]{index=4}
-   int deals = HistoryDealsTotal();
+   string hb_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_HEARTBEAT);
+   datetime now=TimeCurrent();
+   g_sets[idx].last_scan=now;
+   MarkStateDirty();
 
-   for(int i=0;i<deals;++i)
+   if(!GlobalVariableCheck(hb_key))
    {
-      ulong   tk = HistoryDealGetTicket(i);
-      if(HistoryDealGetString(tk,DEAL_SYMBOL)!=g_sets[idx].sym)            continue;
-      if(g_sets[idx].magic!=0 &&
-         HistoryDealGetInteger(tk,DEAL_MAGIC)!=g_sets[idx].magic)          continue;
-
-      uint entry=(uint)HistoryDealGetInteger(tk,DEAL_ENTRY);
-      if(entry!=DEAL_ENTRY_OUT && entry!=DEAL_ENTRY_OUT_BY)                continue; // closures :contentReference[oaicite:5]{index=5}
-
-      double profit = HistoryDealGetDouble(tk,DEAL_PROFIT);                // DEAL_PROFIT :contentReference[oaicite:6]{index=6}
-      datetime t    =(datetime)HistoryDealGetInteger(tk,DEAL_TIME);
-
-      m_hist_total_pl[idx]+=profit;  m_hist_total_trd[idx]++;  new_trd++;
-      if(t>=m_day_start)  pl_d+=profit;
-      if(t>=m_week_start) pl_w+=profit;
-      if(t>m_hist_last_scan[idx]) m_hist_last_scan[idx]=t;
+      return false;
    }
-   pl_all=m_hist_total_pl[idx];
+
+   datetime hb1=(datetime)GlobalVariableGet(hb_key);
+   if(hb1<=0)
+   {
+      return false;
+   }
+
+   if(hb1>g_sets[idx].heartbeat_ts)
+   {
+      double open_trades=0.0,open_lots=0.0,open_pl=0.0,pl_daily=0.0,pl_weekly=0.0,pl_total=0.0,trades_total=0.0;
+      string prefix=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,"");
+      if(prefix!="" && StringSubstr(prefix,StringLen(prefix)-1)=="_")
+         prefix=StringSubstr(prefix,0,StringLen(prefix)-1);
+
+      string otr_key=prefix+"_"+GOAT_GV_FIELD_OPEN_TRADES;
+      string olt_key=prefix+"_"+GOAT_GV_FIELD_OPEN_LOTS;
+      string opl_key=prefix+"_"+GOAT_GV_FIELD_OPEN_PL;
+      string pld_key=prefix+"_"+GOAT_GV_FIELD_PL_DAILY;
+      string plw_key=prefix+"_"+GOAT_GV_FIELD_PL_WEEKLY;
+      string plt_key=prefix+"_"+GOAT_GV_FIELD_PL_TOTAL;
+      string trd_key=prefix+"_"+GOAT_GV_FIELD_TRADES_TOTAL;
+
+      if(GlobalVariableCheck(otr_key)) open_trades=GlobalVariableGet(otr_key);
+      if(GlobalVariableCheck(olt_key)) open_lots=GlobalVariableGet(olt_key);
+      if(GlobalVariableCheck(opl_key)) open_pl=GlobalVariableGet(opl_key);
+      if(GlobalVariableCheck(pld_key)) pl_daily=GlobalVariableGet(pld_key);
+      if(GlobalVariableCheck(plw_key)) pl_weekly=GlobalVariableGet(plw_key);
+      if(GlobalVariableCheck(plt_key)) pl_total=GlobalVariableGet(plt_key);
+      if(GlobalVariableCheck(trd_key)) trades_total=GlobalVariableGet(trd_key);
+
+      datetime hb2=(datetime)GlobalVariableGet(hb_key);
+      if(hb2==hb1)
+      {
+         g_sets[idx].open_trades=(int)MathRound(open_trades);
+         g_sets[idx].open_lots=open_lots;
+         g_sets[idx].open_pl=open_pl;
+         g_sets[idx].PL_daily=pl_daily;
+         g_sets[idx].PL_weekly=pl_weekly;
+         g_sets[idx].PL_total=pl_total;
+         g_sets[idx].Trades_total=(int)MathRound(trades_total);
+         g_sets[idx].heartbeat_ts=hb1;
+         MarkStateDirty();
+      }
+   }
+
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ReadSymbolSharedFields(const int idx)
+{
+   if(idx<0 || idx>=ArraySize(g_sets)) return;
+
+   string news_key=GoatSymbolGVName(g_sets[idx].sym,GOAT_GV_FIELD_NEWS);
+   string bias_key=GoatSymbolGVName(g_sets[idx].sym,GOAT_GV_FIELD_BIAS);
+   if(GlobalVariableCheck(news_key)) g_sets[idx].news_score=GlobalVariableGet(news_key);
+   if(GlobalVariableCheck(bias_key)) g_sets[idx].bias_sentiment=GlobalVariableGet(bias_key);
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //  ───  PER‑ROW METRIC UPDATE  ────────────────────────────────────
@@ -1216,64 +1583,29 @@ void CGOATDashboard::UpdateRowMetrics(const int idx,const int gui_row)
 {
    if(idx<0 || idx>=ArraySize(g_sets)) return;
 
-   // ---------- 1. SCAN OPEN POSITIONS --------------------------------
-   int    open_trades = 0;
-   double open_lots   = 0.0;
-   double open_pl_d   = 0.0;
-   double open_pl_w   = 0.0;
-   double open_pl_any = 0.0;
-   string open_comment="- - -";
-   GetOpenStats(g_sets[idx].sym,g_sets[idx].magic,open_trades,open_lots,open_pl_any,open_pl_d,open_pl_w,open_comment);
-
-   // ---------- 2. SCAN CLOSED DEALS SINCE LAST PASS ------------------
-   datetime from = g_sets[idx].last_deal_scan + 1;
-   HistorySelect(from,TimeCurrent());
-   int deals = HistoryDealsTotal();
-
-   for(int d=0; d<deals; ++d)
-   {
-      ulong tk = HistoryDealGetTicket(d);
-      if(HistoryDealGetString(tk,DEAL_SYMBOL)  != g_sets[idx].sym)             continue;
-      if(g_sets[idx].magic && HistoryDealGetInteger(tk,DEAL_MAGIC)!=g_sets[idx].magic) continue;
-
-      uint entry = (uint)HistoryDealGetInteger(tk,DEAL_ENTRY);
-      if(entry!=DEAL_ENTRY_OUT && entry!=DEAL_ENTRY_OUT_BY)                    continue;
-
-      double pr =  HistoryDealGetDouble(tk,DEAL_PROFIT)
-                 + HistoryDealGetDouble(tk,DEAL_SWAP)
-                 + HistoryDealGetDouble(tk,DEAL_COMMISSION);
-
-      datetime t_close = (datetime)HistoryDealGetInteger(tk,DEAL_TIME);
-
-      g_sets[idx].Trades_total++;                // permanent counter
-      g_sets[idx].PL_weekly += (t_close >= m_week_start ? pr : 0);
-      g_sets[idx].PL_daily  += (t_close >= m_day_start  ? pr : 0);
-
-      if(t_close > g_sets[idx].last_deal_scan)
-         g_sets[idx].last_deal_scan = t_close;
-   }
-
-   // ---------- 3. COMBINE CLOSED + OPEN FOR DISPLAY -----------------
-   double run_day   = g_sets[idx].PL_daily  + open_pl_d;
-   double run_week  = g_sets[idx].PL_weekly + open_pl_w;
-   double run_total = g_sets[idx].PL_total  + run_week;   // spec: total = last‑weeks + running‑week
+   double run_day   = g_sets[idx].PL_daily  + g_sets[idx].open_pl;
+   double run_week  = g_sets[idx].PL_weekly + g_sets[idx].open_pl;
+   double run_total = g_sets[idx].PL_total  + g_sets[idx].open_pl;
    double hist_dd_value=FetchMetric(g_sets[idx].name,"DD");
+   string display_status=DisplayStatusForRow(idx,TimeCurrent());
 
-   // ---------- 4. WRITE GUI -----------------------------------------
-   edt_Comment  [gui_row].Text(open_comment);
+   edt_Comment  [gui_row].Text("- - -");
    edt_News     [gui_row].Text(g_sets[idx].news_label);
    edt_AIBias   [gui_row].Text(g_sets[idx].bias_label);
    edt_RiskLots [gui_row].Text(g_sets[idx].risk_lots_label);
+   edt_Status   [gui_row].Text(display_status);
+   edt_Status   [gui_row].Color(StatusColor(display_status));
    edt_Trades   [gui_row].Text(IntegerToString(g_sets[idx].Trades_total));
-   edt_Positions[gui_row].Text(IntegerToString(open_trades));
-   edt_Positions[gui_row].Color(ChooseColor(open_pl_any));
-   edt_Lots     [gui_row].Text(DoubleToString(open_lots,2));
-   edt_Lots     [gui_row].Color(ChooseColor(open_pl_any));
+   edt_Positions[gui_row].Text(IntegerToString(g_sets[idx].open_trades));
+   edt_Positions[gui_row].Color(ChooseColor(g_sets[idx].open_pl));
+   edt_Lots     [gui_row].Text(DoubleToString(g_sets[idx].open_lots,2));
+   edt_Lots     [gui_row].Color(ChooseColor(g_sets[idx].open_pl));
    edt_HistDD   [gui_row].Text(FormatIntegerText(hist_dd_value));
-   edt_PL_Open  [gui_row].Text(FormatIntegerText(open_pl_any)); edt_PL_Open[gui_row].Color(ChooseColor(open_pl_any));
-   edt_PL_D1 [gui_row].Text(FormatIntegerText(run_day )); edt_PL_D1 [gui_row].Color(ChooseColor(run_day ));
-   edt_PL_W1 [gui_row].Text(FormatIntegerText(run_week)); edt_PL_W1 [gui_row].Color(ChooseColor(run_week));
-   edt_PL_All[gui_row].Text(FormatIntegerText(run_total));edt_PL_All[gui_row].Color(ChooseColor(run_total));
+   edt_PL_Open  [gui_row].Text(FormatIntegerText(g_sets[idx].open_pl)); edt_PL_Open[gui_row].Color(ChooseColor(g_sets[idx].open_pl));
+   edt_PL_D1    [gui_row].Text(FormatIntegerText(run_day));              edt_PL_D1  [gui_row].Color(ChooseColor(run_day));
+   edt_PL_W1    [gui_row].Text(FormatIntegerText(run_week));             edt_PL_W1  [gui_row].Color(ChooseColor(run_week));
+   edt_PL_All   [gui_row].Text(FormatIntegerText(run_total));            edt_PL_All [gui_row].Color(ChooseColor(run_total));
+   btn_Action   [gui_row].Text((g_sets[idx].magic>0 && g_sets[idx].cid>0) ? "Navigate" : "Activate");
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //  ───  PORTFOLIO LINE (row 1)  ────────────────────────────────────
@@ -1285,30 +1617,162 @@ void CGOATDashboard::UpdatePortfolioRow()
    const int rows = ArraySize(g_sets);
    for(int i=0;i<rows;++i)
    {
-      pos_sum   += (int)StringToInteger(edt_Positions[i+2].Text());
-      lot_sum   += StringToDouble (edt_Lots     [i+2].Text());
-      trade_sum += g_sets[i].Trades_total;
-      open_sum  += StringToDouble (edt_PL_Open  [i+2].Text());
-      histdd_max = MathMax(histdd_max,StringToDouble(edt_HistDD[i+2].Text()));
-
-      d_sum += g_sets[i].PL_daily  + StringToDouble(edt_PL_D1 [i+2].Text()) - g_sets[i].PL_daily;
-      w_sum += g_sets[i].PL_weekly + StringToDouble(edt_PL_W1[i+2].Text()) - g_sets[i].PL_weekly;
-      t_sum += StringToDouble(edt_PL_All[i+2].Text());
+      pos_sum    += g_sets[i].open_trades;
+      lot_sum    += g_sets[i].open_lots;
+      trade_sum  += g_sets[i].Trades_total;
+      open_sum   += g_sets[i].open_pl;
+      d_sum      += g_sets[i].PL_daily  + g_sets[i].open_pl;
+      w_sum      += g_sets[i].PL_weekly + g_sets[i].open_pl;
+      t_sum      += g_sets[i].PL_total  + g_sets[i].open_pl;
+      histdd_max  = MathMax(histdd_max,StringToDouble(edt_HistDD[i+2].Text()));
    }
 
    edt_Comment  [1].Text("Mixed");
    edt_News     [1].Text("Mixed");
    edt_AIBias   [1].Text("Mixed");
    edt_RiskLots [1].Text("Mixed");
+   edt_Status   [1].Text("Portfolio");
+   edt_Status   [1].Color(StatusColor("Linked"));
    edt_HistDD   [1].Text(FormatIntegerText(histdd_max));
    edt_Trades   [1].Text(IntegerToString(trade_sum));
-   edt_Positions[1].Text(IntegerToString(pos_sum));           edt_Positions[1].Color(ChooseColor(open_sum));
-   edt_Lots     [1].Text(DoubleToString(lot_sum,2));          edt_Lots     [1].Color(ChooseColor(open_sum));
-   edt_PL_Open  [1].Text(FormatIntegerText(open_sum));         edt_PL_Open  [1].Color(ChooseColor(open_sum));
-   edt_PL_D1 [1].Text(FormatIntegerText(d_sum));  edt_PL_D1 [1].Color(ChooseColor(d_sum));
-   edt_PL_W1 [1].Text(FormatIntegerText(w_sum));  edt_PL_W1 [1].Color(ChooseColor(w_sum));
-   edt_PL_All[1].Text(FormatIntegerText(t_sum));  edt_PL_All[1].Color(ChooseColor(t_sum));
+   edt_Positions[1].Text(IntegerToString(pos_sum));  edt_Positions[1].Color(ChooseColor(open_sum));
+   edt_Lots     [1].Text(DoubleToString(lot_sum,2)); edt_Lots     [1].Color(ChooseColor(open_sum));
+   edt_PL_Open  [1].Text(FormatIntegerText(open_sum)); edt_PL_Open[1].Color(ChooseColor(open_sum));
+   edt_PL_D1    [1].Text(FormatIntegerText(d_sum));    edt_PL_D1  [1].Color(ChooseColor(d_sum));
+   edt_PL_W1    [1].Text(FormatIntegerText(w_sum));    edt_PL_W1  [1].Color(ChooseColor(w_sum));
+   edt_PL_All   [1].Text(FormatIntegerText(t_sum));    edt_PL_All [1].Color(ChooseColor(t_sum));
    UpdatePortfolioInfoHeader();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ProcessTimerCycle(void)
+{
+   datetime now=TimeCurrent();
+   const int rows=ArraySize(g_sets);
+   bool used[];
+   ArrayResize(used,rows);
+   ArrayInitialize(used,false);
+
+   for(int processed=0; processed<5; ++processed)
+   {
+      int best=-1;
+      datetime best_hb=D'3000.01.01 00:00';
+      datetime best_scan=D'3000.01.01 00:00';
+
+      for(int idx=0; idx<rows; ++idx)
+      {
+         if(used[idx]) continue;
+         if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+
+         datetime hb=0;
+         string hb_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_HEARTBEAT);
+         if(GlobalVariableCheck(hb_key)) hb=(datetime)GlobalVariableGet(hb_key);
+
+         if(best==-1 || hb<best_hb || (hb==best_hb && g_sets[idx].last_scan<best_scan))
+         {
+            best=idx;
+            best_hb=hb;
+            best_scan=g_sets[idx].last_scan;
+         }
+      }
+
+      if(best==-1) break;
+      used[best]=true;
+      ReadChildSnapshotIntoRow(best);
+      UpdateRowMetrics(best,best+2);
+   }
+
+   for(int idx=0; idx<rows; ++idx)
+   {
+      if(ArraySize(edt_Status)<=idx+2) continue;
+      edt_Status[idx+2].Text(DisplayStatusForRow(idx,now));
+      edt_Status[idx+2].Color(StatusColor(edt_Status[idx+2].Text()));
+   }
+
+   RefreshPortfolioRealtimeStats();
+   UpdatePortfolioRow();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::DashboardStateExists(void) const
+{
+   string rel_path=StateCacheRelativePath();
+   return FileIsExist(rel_path,FILE_COMMON);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int CGOATDashboard::LoadDashboardConfig(void)
+{
+   string rel_path=StateCacheRelativePath();
+   int h=FileOpen(rel_path,FILE_READ|FILE_CSV|FILE_COMMON,'\t');
+   if(h==INVALID_HANDLE) return 0;
+
+   ArrayResize(g_sets,0);
+
+   while(!FileIsEnding(h))
+   {
+      SetFileRecord row;
+      row.path=FileReadString(h);
+      if(row.path=="") break;
+
+      row.name=FileReadString(h);
+      row.sym=FileReadString(h);
+      row.strat=FileReadString(h);
+      row.news_label=FileReadString(h);
+      row.bias_label=FileReadString(h);
+      row.risk_lots_label=FileReadString(h);
+      row.cid=(long)StringToInteger(FileReadString(h));
+      row.magic=(long)StringToInteger(FileReadString(h));
+      row.status=(row.cid>0 && row.magic>0 ? "Linked" : "Pending");
+
+      while(!FileIsLineEnding(h) && !FileIsEnding(h))
+         FileReadString(h);
+
+      int n=ArraySize(g_sets);
+      ArrayResize(g_sets,n+1);
+      g_sets[n]=row;
+   }
+
+   FileClose(h);
+   if(ArraySize(g_sets)>0)
+      SetFolder=FolderOf(g_sets[0].path);
+   m_state_dirty=false;
+   m_last_state_save=0;
+   return ArraySize(g_sets);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SaveDashboardConfig(void)
+{
+   string rel_path=StateCacheRelativePath();
+   int h=FileOpen(rel_path,FILE_WRITE|FILE_CSV|FILE_COMMON,'\t');
+   if(h==INVALID_HANDLE) return false;
+
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      FileWrite(h,
+                g_sets[idx].path,
+                g_sets[idx].name,
+                g_sets[idx].sym,
+                g_sets[idx].strat,
+                g_sets[idx].news_label,
+                g_sets[idx].bias_label,
+                g_sets[idx].risk_lots_label,
+                StringFormat("%I64d",g_sets[idx].cid),
+                StringFormat("%I64d",g_sets[idx].magic));
+   }
+
+   FileClose(h);
+   m_state_dirty=false;
+   m_last_state_save=TimeCurrent();
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::DeleteDashboardConfig(void)
+{
+   string rel_path=StateCacheRelativePath();
+   if(FileIsExist(rel_path,FILE_COMMON))
+      FileDelete(rel_path,FILE_COMMON);
+   if(FileIsExist(Key_+"\\dashboard_child_map.tsv",FILE_COMMON))
+      FileDelete(Key_+"\\dashboard_child_map.tsv",FILE_COMMON);
+   m_state_dirty=false;
+   m_last_state_save=0;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::RowsScrollTo(const int top_row)
@@ -1372,6 +1836,14 @@ void CGOATDashboard::RefreshRowsViewportMetrics(void)
    m_rows_view_bottom=c_Wnd_Table.Bottom()-m_GapVert;
    m_rows_view_left=c_Wnd_Table.Left();
    m_rows_view_right=c_Wnd_Table.Right();
+
+   if(!m_rows_need_scroll)
+   {
+      m_rows_visible=ArraySize(g_sets);
+      m_rows_top_max=0;
+      m_rows_top=0;
+      return;
+   }
 
    int view_height=MathMax(0,m_rows_view_bottom-m_rows_y0);
    m_rows_visible=(int)MathMax(1.0,MathFloor((double)(view_height+m_GapVert)/(double)m_row_pitch));
@@ -1522,18 +1994,6 @@ void CGOATDashboard::SwapRowState(const int lhs,const int rhs)
    g_sets[lhs]=g_sets[rhs];
    g_sets[rhs]=set_tmp;
 
-   datetime hist_scan_tmp=m_hist_last_scan[lhs];
-   m_hist_last_scan[lhs]=m_hist_last_scan[rhs];
-   m_hist_last_scan[rhs]=hist_scan_tmp;
-
-   double hist_pl_tmp=m_hist_total_pl[lhs];
-   m_hist_total_pl[lhs]=m_hist_total_pl[rhs];
-   m_hist_total_pl[rhs]=hist_pl_tmp;
-
-   int hist_trd_tmp=m_hist_total_trd[lhs];
-   m_hist_total_trd[lhs]=m_hist_total_trd[rhs];
-   m_hist_total_trd[rhs]=hist_trd_tmp;
-
    int gui_lhs=lhs+2, gui_rhs=rhs+2;
    SwapEditState(edt_Symbol   [gui_lhs],edt_Symbol   [gui_rhs]);
    SwapEditState(edt_Strategy [gui_lhs],edt_Strategy [gui_rhs]);
@@ -1573,10 +2033,10 @@ void CGOATDashboard::ApplyRowsViewport(void)
 {
    if(ArraySize(g_sets)<=0 || ArraySize(edt_Symbol)<2 || m_row_pitch<=0) return;
 
+   const int total=ArraySize(g_sets);
    RefreshRowsViewportMetrics();
    LayoutRowsScroll();
 
-   const int total=ArraySize(g_sets);
    for(int i=0;i<total;i++)
    {
       int gui_row=i+2;

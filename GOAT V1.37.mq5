@@ -1511,6 +1511,70 @@ void HidePrompt()
    ChartRedraw();                            Sleep(10);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusSendStatus(const string status)
+  {
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
+   if(!GlobalVariableCheck("Dashboard_ChartID"))                         return;
+
+   long dashboard_cid=(long)GlobalVariableGet("Dashboard_ChartID");
+   if(dashboard_cid<=0) return;
+
+   EventChartCustom(dashboard_cid,GOAT_EVENT_CHILD_STATUS,(long)MAGIC1,(double)ChartID(),Symbol()+"|"+status);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusRollClosedBuckets(const datetime now_time)
+  {
+   datetime day_start=GoatBrokerDayStart(now_time);
+   datetime week_start=GoatBrokerWeekStart(now_time);
+
+   if(DashboardBusWeekStart==0 || week_start>DashboardBusWeekStart)
+      DashboardBusClosedPLWeekly=0.0;
+   if(DashboardBusDayStart==0 || day_start>DashboardBusDayStart)
+      DashboardBusClosedPLDaily=0.0;
+
+   DashboardBusWeekStart=week_start;
+   DashboardBusDayStart=day_start;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusRebuildClosedStats(void)
+  {
+   datetime now=TimeCurrent();
+   DashboardBusDayStart=GoatBrokerDayStart(now);
+   DashboardBusWeekStart=GoatBrokerWeekStart(now);
+   DashboardBusClosedPLDaily=0.0;
+   DashboardBusClosedPLWeekly=0.0;
+   DashboardBusClosedPLTotal=0.0;
+   DashboardBusClosedTradesTotal=0;
+
+   if(!HistorySelect(0,now)) return;
+   int total=HistoryDealsTotal();
+
+   for(int i=0;i<total;++i)
+   {
+      ulong ticket=HistoryDealGetTicket(i);
+      if(ticket==0)                                              continue;
+      if(HistoryDealGetString(ticket,DEAL_SYMBOL)!=_Symbol)      continue;
+      if(HistoryDealGetInteger(ticket,DEAL_MAGIC)!=MAGIC1)       continue;
+
+      long entry=HistoryDealGetInteger(ticket,DEAL_ENTRY);
+      if(entry!=DEAL_ENTRY_OUT && entry!=DEAL_ENTRY_OUT_BY)      continue;
+
+      long type=HistoryDealGetInteger(ticket,DEAL_TYPE);
+      if(type!=DEAL_TYPE_BUY && type!=DEAL_TYPE_SELL)            continue;
+
+      double closed_pl=HistoryDealGetDouble(ticket,DEAL_PROFIT)
+                      +HistoryDealGetDouble(ticket,DEAL_COMMISSION)
+                      +HistoryDealGetDouble(ticket,DEAL_SWAP);
+      datetime close_time=(datetime)HistoryDealGetInteger(ticket,DEAL_TIME);
+
+      DashboardBusClosedPLTotal+=closed_pl;
+      DashboardBusClosedTradesTotal++;
+      if(close_time>=DashboardBusDayStart)  DashboardBusClosedPLDaily +=closed_pl;
+      if(close_time>=DashboardBusWeekStart) DashboardBusClosedPLWeekly+=closed_pl;
+   }
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 int OnInit()
   {
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Initialization Start"+"================");
@@ -1782,14 +1846,11 @@ int OnInit()
        Sleep(100); TesterDialog.Run(); Sleep(100);
        return (INIT_SUCCEEDED);
       }
+      bool fresh_dashboard_launch=false;
+      bool resume_dashboard_launch=false;
       if(Mode_Operation==Operation_Dash)
       {
        //ChartNavigate(0,CHART_BEGIN);
-       if(GlobalVariableCheck("Dashboard_ChartID")) 
-       {
-        if(MessageBox("There might another Dashboard instance running which can cause Problems.\n""Do you want to continue ?","Duplicate Dashboard",MB_YESNO|MB_ICONWARNING)==IDNO)
-        {ShowPrompt("Duplicate Dashboard","","Ensure that no other Dashboard is running.",""); Sleep(10000); return(INIT_FAILED); ExpertRemove();}
-       }
        if(ChartID() != ChartFirst())
        {
         int ret=MessageBox("Dashboard mode must run on the first/oldest chart of the terminal for proper navigation and deployment.\nThis is not the first/oldest chart."+
@@ -1808,14 +1869,47 @@ int OnInit()
         else {ShowPrompt("Wrong Chart Position"," ","Open Dashboard on the first/oldest chart.",""); Sleep(10000); return(INIT_FAILED); ExpertRemove();}
        }
        DashboardDialog.SetFlags(Key,EA_Name,Server,version_,Font_Size,ChartID());
-       int SetsTotal=DashboardDialog.LoadSetFiles();
-       if(SetsTotal<=0) {Alert("No valid .set files found."); return(INIT_FAILED);}
+       if(DashboardDialog.DashboardStateExists())
+       {
+        string prompt="A previously deployed dashboard configuration was found for this terminal.\n\n"
+                     +"Yes = resume the saved dashboard.\n"
+                     +"No = deploy a new dashboard and delete the old configuration.\n"
+                     +"Cancel = abort dashboard launch.";
+        int resume_ret=MessageBox(prompt,"Dashboard Resume",MB_YESNOCANCEL|MB_ICONQUESTION|MB_DEFBUTTON1);
+        if(resume_ret==IDYES)
+           resume_dashboard_launch=true;
+        else if(resume_ret==IDNO)
+        {
+           GoatDeleteDashboardBusData();
+           DashboardDialog.DeleteDashboardConfig();
+           fresh_dashboard_launch=true;
+        }
+        else
+        {
+           ShowPrompt("Dashboard Launch Cancelled","","The saved dashboard configuration was left untouched.","");
+           Sleep(10000);
+           return(INIT_FAILED);
+           ExpertRemove();
+        }
+       }
+
+       int SetsTotal=(resume_dashboard_launch ? DashboardDialog.LoadDashboardConfig() : DashboardDialog.LoadSetFiles());
+       if(SetsTotal<=0)
+       {
+        if(resume_dashboard_launch) Alert("Saved dashboard configuration could not be loaded.");
+        else                        Alert("No valid .set files found.");
+        return(INIT_FAILED);
+       }
+       if(!resume_dashboard_launch)
+          DashboardDialog.ResetPortfolioTrackingState();
+       if(fresh_dashboard_launch) DashboardDialog.DeleteDashboardConfig();
        ChartSetInteger(0, CHART_EVENT_MOUSE_WHEEL, true);
        ChartSetInteger(0, CHART_MOUSE_SCROLL, false);
        if(!DashboardDialog.Create(ChartID(),Key+"_Dashboard",0,SetsTotal,left,top,newWidth,newHeight,(int)usableHeight))
        {Alert("Dashboard GUI creation Failed, please try again."); return INIT_FAILED;}
        GUI_BG_Display();
        GlobalVariableSet("Dashboard_ChartID",(double)ChartID());
+       GlobalVariablesFlush();
        Sleep(100); DashboardDialog.Run(); Sleep(100);
        return (INIT_SUCCEEDED);
       }
@@ -1977,20 +2071,23 @@ int OnInit()
     MathSrand(GetTickCount());//*TimeLocal());
   //randPF=(double)(MathRand()%1000)/1000.0;             // 0‥0.999
     randA =(double)(GetTickCount()%1000)/1000;
+    long restored_magic=0;
+    bool restored_magic_found=GoatFindMagicByCid(Symbol(),ChartID(),restored_magic);
+    if(restored_magic_found)
+       MAGIC1=(int)restored_magic;
     if(MAGIC1==0) MAGIC1 = MathRand()+9+ChartWindowsHandle(0);
     if(MAGIC2==0) MAGIC2 = MathRand()+9+ChartWindowsHandle(0);
     
                                 Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
     if(MathAbs(Delay_Trade)>0) {Seq_Buy_Virtual.Init(OP_BUY,true); Seq_Sell_Virtual.Init(OP_SELL,true);}
-    if(GlobalVariableCheck("Dashboard_ChartID"))
+    DashboardBusRebuildClosedStats();
+    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CID),(double)GoatTruncateCidValue(ChartID()));
+    if(GlobalVariableCheck("Dashboard_ChartID") && !restored_magic_found)
     {
-    // ButtonCreate(0,Key+"_BackToDB_"+(string)MAGIC1,0,2*INDENT_HORI+PANEL_WIDTH,INDENT_VERT,150,25,CORNER_LEFT_UPPER,"Back to Dashboard","Arial Bold",Font_Size,
-    //                                                                                                                 clrWhite,C'15,23,42',clrWhite,false,false,false,false,0);
-     // ObjectSetInteger(0,Key+"_BackToDB_"+(string)MAGIC1,OBJPROP_BORDER_TYPE,BORDER_SUNKEN);
-      string instance_gv_prefix=Key+"_ID_"+IntegerToString(MAGIC1)+"_"+Symbol()+"_";
-      GlobalVariableSet(instance_gv_prefix+"CID",(double)ChartID());
-      GlobalVariableSet(instance_gv_prefix+"Magic",(double)MAGIC1);
-     }
+       GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_MAGIC),(double)MAGIC1);
+       DashboardBusSendStatus("Deploying");
+    }
+    GlobalVariablesFlush();
    }
 //-------------------------------------------------------------------------
  //if(Mode_Operation==Operation_Export)
@@ -2030,8 +2127,18 @@ void OnDeinit(const int reason)
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Deinit Start"+"================");
    if(reason!=REASON_PARAMETERS && reason!=REASON_TEMPLATE && reason!=REASON_CHARTCHANGE)
    {
+      if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash)
+      {
+         DashboardBusSendStatus("Offline");
+         GlobalVariablesFlush();
+      }
       if(Mode_Operation==Operation_Dash)
       {
+         if(reason==REASON_REMOVE)
+         {
+            DashboardDialog.DeleteDashboardConfig();
+            GoatDeleteDashboardBusData();
+         }
          GlobalVariableDel("Dashboard_ChartID");
          ChartSetInteger(0,CHART_MOUSE_SCROLL,true);
       }
@@ -2731,13 +2838,7 @@ void OnTimer(void)
    
    if(Mode_Operation==Operation_Dash)
    {
-    if(IsNewDay2()) DashboardDialog.CalcPeriodAnchors();   // once per day it will roll weeks & reset days
-    
-    int rows = ArraySize(DashboardDialog.g_sets); if(rows==0) return;
-    static int rotor = -1;                 // outside keeps its value
-    rotor = (rotor+1)%rows;             // next symbol
-    DashboardDialog.UpdateRowMetrics(rotor,rotor+2);
-    DashboardDialog.UpdatePortfolioRow();
+    DashboardDialog.ProcessTimerCycle();
     ChartRedraw(0);
    }
    timer++;
@@ -2747,37 +2848,53 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result)
   {
-   if(trans.type==TRADE_TRANSACTION_DEAL_ADD)    // adding a trade
+   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
+
+   int TradeCount = FindNumberOfPositions(OP_BUY,MAGIC1);
+   if(Seq_Buy.Active && LastTradeCountBuy!=TradeCount && TradeCount==0 && Seq_Buy.Traded)//Seq_Buy.Level_Count>=Delay_Trade)
    {
-    int TradeCount = FindNumberOfPositions(OP_BUY,MAGIC1);
-    if(Seq_Buy.Active && LastTradeCountBuy!=TradeCount && TradeCount==0 && Seq_Buy.Traded)//Seq_Buy.Level_Count>=Delay_Trade)
-    {
-     Seq_Buy.End_Sequence("Trade(s) closed");
-    }
-    LastTradeCountBuy = TradeCount;
-    
-    TradeCount = FindNumberOfPositions(OP_SELL,MAGIC1);
-    if(Seq_Sell.Active && LastTradeCountSell!=TradeCount && TradeCount==0 && Seq_Sell.Traded)//Seq_Sell.Level_Count>=Delay_Trade)
-    {
-     Seq_Sell.End_Sequence("Trade(s) closed");
-    }
-    LastTradeCountSell = TradeCount;
-    //OnTick();
-    // Filter to this EA (and optionally this symbol)
-    if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return;
-    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
-    if(!HistoryDealSelect(trans.deal)) return;
-    if(HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=MAGIC1) return;
-    if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=_Symbol) return;
-    if((int)HistoryDealGetInteger(trans.deal,DEAL_ENTRY)!=DEAL_ENTRY_IN) return;
-    if((int)HistoryDealGetInteger(trans.deal,DEAL_TYPE)!=DEAL_TYPE_BUY&&(int)HistoryDealGetInteger(trans.deal,DEAL_TYPE)!=DEAL_TYPE_SELL) return; // ignore non-trade rows
-    if(HistoryDealGetDouble(trans.deal,DEAL_VOLUME)<=0.0) return;                         // ignore zero-volume artifacts
-    if(HistoryDealGetInteger(trans.deal,DEAL_REASON)!=DEAL_REASON_EXPERT) return;         // ignore manual/other reasons
-    
-         if(TimeCurrent()<dt_Back_OOS && dt_Back_OOS!=0) trd_BOOS++;
-    else if(TimeCurrent()>dt_Fwrd_OOS && dt_Fwrd_OOS!=0) trd_FOOS++;
-    else                                                 trd_IS++;
+    Seq_Buy.End_Sequence("Trade(s) closed");
    }
+   LastTradeCountBuy = TradeCount;
+
+   TradeCount = FindNumberOfPositions(OP_SELL,MAGIC1);
+   if(Seq_Sell.Active && LastTradeCountSell!=TradeCount && TradeCount==0 && Seq_Sell.Traded)//Seq_Sell.Level_Count>=Delay_Trade)
+   {
+    Seq_Sell.End_Sequence("Trade(s) closed");
+   }
+   LastTradeCountSell = TradeCount;
+
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return;
+   if(!HistoryDealSelect(trans.deal)) return;
+   if(HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=MAGIC1) return;
+   if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=_Symbol) return;
+
+   int deal_type=(int)HistoryDealGetInteger(trans.deal,DEAL_TYPE);
+   if(deal_type!=DEAL_TYPE_BUY && deal_type!=DEAL_TYPE_SELL) return;
+   if(HistoryDealGetDouble(trans.deal,DEAL_VOLUME)<=0.0)     return;
+
+   int deal_entry=(int)HistoryDealGetInteger(trans.deal,DEAL_ENTRY);
+   datetime deal_time=(datetime)HistoryDealGetInteger(trans.deal,DEAL_TIME);
+
+   if(deal_entry==DEAL_ENTRY_OUT || deal_entry==DEAL_ENTRY_OUT_BY)
+   {
+    DashboardBusRollClosedBuckets(deal_time);
+    double closed_pl=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)
+                    +HistoryDealGetDouble(trans.deal,DEAL_COMMISSION)
+                    +HistoryDealGetDouble(trans.deal,DEAL_SWAP);
+    DashboardBusClosedPLTotal+=closed_pl;
+    DashboardBusClosedTradesTotal++;
+    if(deal_time>=DashboardBusDayStart)  DashboardBusClosedPLDaily +=closed_pl;
+    if(deal_time>=DashboardBusWeekStart) DashboardBusClosedPLWeekly+=closed_pl;
+    return;
+   }
+
+   if(deal_entry!=DEAL_ENTRY_IN) return;
+   if(HistoryDealGetInteger(trans.deal,DEAL_REASON)!=DEAL_REASON_EXPERT) return;
+
+        if(TimeCurrent()<dt_Back_OOS && dt_Back_OOS!=0) trd_BOOS++;
+   else if(TimeCurrent()>dt_Fwrd_OOS && dt_Fwrd_OOS!=0) trd_FOOS++;
+   else                                                 trd_IS++;
    return;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2903,6 +3020,13 @@ void OnTick()
     // sees if symbol has news
     int indices[];
     bool IsNewsTime=News.IsNewsTime(Symbol(),News_threshold,indices);   // Change Symbol to the symbol traded
+    int max_news_score=0;
+    for(int i=0;i<ArraySize(indices);++i)
+    {
+     if(indices[i]<0 || indices[i]>=ArraySize(News.TodaysNewsList)) continue;
+     max_news_score=MathMax(max_news_score,News.TodaysNewsList[indices[i]].impact_score);
+    }
+    DashboardBusNewsScore=max_news_score;
     // We have news
     if(IsNewsTime)
     {
@@ -2977,9 +3101,11 @@ void OnTick()
     int idx=0;
     static int LastBias=0;
     int CurBias = Bias.GetCurentBiasScore(Symbol(),idx);
+    DashboardBusBiasSentiment=0.0;
     
     if(CurBias>=-100 && CurBias<=100) // We have valid bias
     {
+     DashboardBusBiasSentiment=CurBias;
      if(Mode_Bias!=Bias_Display) {
      // we disregard Bias_Disabled and Bias_Display as they are covered indirectly in other functions
      int bias_dir = 0;
@@ -3140,6 +3266,7 @@ void OnTick()
     }
     else
     {
+     DashboardBusBiasSentiment=0.0;
      // defaults
      Sequence_New_Bias_B   = true;  Sequence_New_Bias_S   = true;
      Sequence_Pause_Bias_B = false; Sequence_Pause_Bias_S = false;
@@ -3174,7 +3301,7 @@ void OnTick()
     else                                                                         Sequence_New_Dec=true;
 //-------
     int Trades=0,Buys=0,Sells=0;
-    double PL_Total=0.0,PL_Buy=0.0,PL_Sell=0.0,PL_Closed=0.0,PL_Today=0.0;
+    double OpenLots=0.0,PL_Total=0.0,PL_Buy=0.0,PL_Sell=0.0,PL_Closed=0.0,PL_Today=0.0;
     
     //if(MaxLossLocal!=0.0 || MaxDailyLossLocal!=0.0 || MaxDailyProfitLocal!=0.0 || !FastSpeed_Flag)
     {
@@ -3189,6 +3316,7 @@ void OnTick()
        if(m_position.Magic() != MAGIC1 && MAGIC1 != 0)                          continue;
        
        Trades++;
+       OpenLots+=m_position.Volume();
        if(m_position.PositionType() == POSITION_TYPE_BUY)    {Buys++;  PL_Buy += (m_position.Profit()+m_position.Commission()+m_position.Swap());}
        if(m_position.PositionType() == POSITION_TYPE_SELL)   {Sells++; PL_Sell+= (m_position.Profit()+m_position.Commission()+m_position.Swap());}
       }
@@ -3371,6 +3499,27 @@ void OnTick()
     }
     CurrentDD = (MaxEquity-AccountInfoDouble(ACCOUNT_EQUITY))/MaxEquity; if(CurrentDD > DDs_PC[0])     DDs_PC[0]     = CurrentDD;
     CurrentDD = (MaxEquity-AccountInfoDouble(ACCOUNT_EQUITY));           if(CurrentDD > DDs_Actual[0]) DDs_Actual[0] = CurrentDD;
+
+    DashboardBusRollClosedBuckets(TimeCurrent());
+    if(GlobalVariableCheck("Dashboard_ChartID"))
+    {
+     GlobalVariableSet(GoatSymbolGVName(Symbol(),GOAT_GV_FIELD_NEWS),DashboardBusNewsScore);
+     GlobalVariableSet(GoatSymbolGVName(Symbol(),GOAT_GV_FIELD_BIAS),DashboardBusBiasSentiment);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_OPEN_TRADES),(double)Trades);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_OPEN_LOTS),OpenLots);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_OPEN_PL),PL_Total);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_PL_DAILY),DashboardBusClosedPLDaily);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_PL_WEEKLY),DashboardBusClosedPLWeekly);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_PL_TOTAL),DashboardBusClosedPLTotal);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_TRADES_TOTAL),(double)DashboardBusClosedTradesTotal);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_HEARTBEAT),(double)TimeCurrent());
+
+     string dashboard_status="Active";
+     if(!Active || InActive) dashboard_status="Inactive";
+     if(StopOut_Flag || Pause_Flag || Sequence_Pause_Close || Sequence_Pause_News || Sequence_Pause_Bias_B || Sequence_Pause_Bias_S)
+        dashboard_status="Paused";
+     DashboardBusSendStatus(dashboard_status);
+    }
   //PartialClose();
    }
 //-------------------------------------------------------------------------

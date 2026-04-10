@@ -12,8 +12,6 @@
 #include "Tester.mqh"
 #include "NewsBiasFilter.mqh"
 
-#define OPT_STUDIO_UI_VERSION "V1.35.1"
-
 // === PRESETS: map display-name -> actual file (with .txt)  // NEW
 string g_PresetDisplayNames[];
 string g_PresetFileNames[];
@@ -294,7 +292,11 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
       return(false);
    }
    GlobalVariableDel("CaptionHeight");
-   Caption(Key_+" - Optimization Studio " + OPT_STUDIO_UI_VERSION);
+   string buildLabel=EA_Name_;
+   string buildPrefix=Key_+" ";
+   if(StringFind(buildLabel,buildPrefix)==0) buildLabel=StringSubstr(buildLabel,StringLen(buildPrefix));
+   if(buildLabel=="") buildLabel="V"+version_;
+   Caption(Key_+" - Optimization Studio " + buildLabel);
    ChartSetInteger(0,CHART_SHOW_TRADE_HISTORY,0);
    SetCaptionClientColors();
    

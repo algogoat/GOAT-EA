@@ -419,6 +419,125 @@ class SEQUENCE
     }
     return s;
    }
+//---------------------- build a formatted string from the already-open sequence levels
+   string FormatCompactValue(double value,int digits=2)
+   {
+    string s = DoubleToString(value,digits);
+    int dot = StringFind(s,".");
+    if(dot>=0)
+    {
+     while(StringLen(s)>dot+1 && StringGetCharacter(s,StringLen(s)-1)=='0')
+           s = StringSubstr(s,0,StringLen(s)-1);
+     if(StringLen(s)>0 && StringGetCharacter(s,StringLen(s)-1)=='.')
+           s = StringSubstr(s,0,StringLen(s)-1);
+    }
+    if(s=="-0") s="0";
+    return s;
+   }
+//----------------------
+   string PadRightValue(string value,int width)
+   {
+    while(StringLen(value)<width) value += " ";
+    return value;
+   }
+//---------------------- build a formatted string from the already-open sequence levels
+   string BuildOpenedLotsInfoString(void)
+   {
+    if(!Active || Level_Count<=0) return "";
+
+    if(Traded) RefreshTicketLots();
+
+    double point = SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+    if(!(point>0.0) || !MathIsValidNumber(point)) point = _Point;
+    if(!(point>0.0) || !MathIsValidNumber(point)) point = 1e-8;
+
+    double pipUnit = point*10.0;
+    if(!(pipUnit>0.0) || !MathIsValidNumber(pipUnit)) pipUnit = point;
+
+    double perUnit = PriceValuePerPointPerLot();
+    double standingNow = 0.0;
+    int    openLevels  = 0;
+    bool   hasClosedLevels = false;
+
+    for(int i=0; i<Level_Count; i++)
+    {
+     double lots = TradeLevels[i].lots;
+     if(!MathIsValidNumber(lots) || lots<0.0) lots = 0.0;
+     if(lots>0.0) {standingNow += lots; openLevels++;}
+     else if(i<Level_Count-1) hasClosedLevels = true;
+     if(Traded && TradeLevels[i].ticket==0) hasClosedLevels = true;
+    }
+
+    string state = Virtual ? "Virtual" : (Traded ? "Live" : "Delayed");
+    string lockTxt = "-";
+    string tpTxt   = "-";
+    string slTxt   = "-";
+
+    if(MathIsValidNumber(Level_Lock) && Level_Lock>0.0 && Level_Lock<999999.0) lockTxt = DoubleToString(Level_Lock,_Digits);
+    if(MathIsValidNumber(Level_SL)   && Level_SL  >0.0 && Level_SL  <999999.0) slTxt   = DoubleToString(Level_SL,_Digits);
+    if(dir==OP_BUY)
+    {
+     if(MathIsValidNumber(Level_TP) && Level_TP>0.0 && Level_TP<999999.0) tpTxt = DoubleToString(Level_TP,_Digits);
+    }
+    else if(dir==OP_SELL)
+    {
+     if(MathIsValidNumber(Level_TP) && Level_TP>0.0) tpTxt = DoubleToString(Level_TP,_Digits);
+    }
+
+    string s = Desc+" Open Layout\n";
+           s+= "State="+state
+             + "  Levels="+(string)Level_Count
+             + "  OpenLevels="+(string)openLevels
+             + "  StandingLots="+DoubleToString(standingNow,2)+"\n";
+           s+= "Entry="+DoubleToString(Level_Entry,_Digits)
+             + "  Lock="+lockTxt
+             + "  TP="+tpTxt
+             + "  SL="+slTxt;
+    if(Level_Retrace>0.0 && MathIsValidNumber(Level_Retrace))
+           s+= "  Retrace="+DoubleToString(Level_Retrace,_Digits);
+           s+= "\n";
+
+    if(Mode_Lots_Prog==Lots_Prog_CumPartial || hasClosedLevels)
+           s+= "NOTE: Open layout uses actual standing lots on the stored live levels, so partially closed/buried levels can show 0.00 lots.\n";
+           s+= "\n";
+
+    double standing = 0.0;
+    double cumLoss  = 0.0;
+
+    for(int lvl=0; lvl<Level_Count; ++lvl)
+    {
+     double lots = TradeLevels[lvl].lots;
+     if(!MathIsValidNumber(lots) || lots<0.0) lots = 0.0;
+
+     string gapTxt = "0";
+     if(lvl>0)
+     {
+      double gap = MathAbs(TradeLevels[lvl].price_level - TradeLevels[lvl-1].price_level);
+      double gapPips = gap/pipUnit;
+      cumLoss += gap * perUnit * standing;
+      gapTxt = FormatCompactValue(gapPips,1) + "p";
+     }
+     gapTxt = PadRightValue(gapTxt,5);
+
+     double cumLots = standing + lots;
+     if(cumLots<0.0) cumLots = 0.0;
+
+     s += "Lvl=" + IntegerToString(lvl+1,2,'0')
+        + "  Gap=" + gapTxt
+        + ((lots<10.0)    ? ("  Lots= "    + DoubleToString(lots,2))
+                          : ("  Lots="     + DoubleToString(lots,2)))
+        + ((cumLots<10.0) ? ("  Cum_Lots= "+ DoubleToString(cumLots,2))
+                          : ("  Cum_Lots=" + DoubleToString(cumLots,2)))
+        + "  Cum_Loss="+ FormatCompactValue(cumLoss,2);
+
+     if(Traded && TradeLevels[lvl].ticket==0) s += "  [closed]";
+     s += "\n";
+
+     standing = cumLots;
+    }
+
+    return s;
+   }
 //---------------------- solver for StartLots by target sequence loss (MLPS)
    double SolveStartLotsByRisk(double targetLoss)
    {
@@ -5122,6 +5241,25 @@ void CPanelDialog::OnClickLotsViewer(void)
   {
    SEQUENCE tempSEQ;  // temp seq created 
    string LotsInfo = tempSEQ.BuildLotsInfoString();  // method infers StartLots internally
+   string OpenInfo = "";
+
+   if(Seq_Buy.Active)       OpenInfo += Seq_Buy.BuildOpenedLotsInfoString();
+   if(Seq_Sell.Active)
+   {
+    if(OpenInfo!="") OpenInfo += "\n";
+    OpenInfo += Seq_Sell.BuildOpenedLotsInfoString();
+   }
+   if(OpenInfo=="")
+   {
+    if(Seq_Buy_Virtual.Active)  OpenInfo += Seq_Buy_Virtual.BuildOpenedLotsInfoString();
+    if(Seq_Sell_Virtual.Active)
+    {
+     if(OpenInfo!="") OpenInfo += "\n";
+     OpenInfo += Seq_Sell_Virtual.BuildOpenedLotsInfoString();
+    }
+   }
+
+   if(OpenInfo!="") LotsInfo += "\n\nCURRENT OPENED SEQUENCE LAYOUT\n\n" + OpenInfo;
    MessageBox(LotsInfo,"Sequence Levels Viewer",MB_OK);
   }
 void CPanelDialog::OnClickBackToDB(void) 

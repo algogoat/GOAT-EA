@@ -48,6 +48,23 @@ enum ENUM_GOAT_DASH_SORT_KEY
    GOAT_DASH_SORT_PL_W1,
    GOAT_DASH_SORT_PL_ALL
   };
+enum ENUM_GOAT_PORTFOLIO_RUN_STATE
+  {
+   GOAT_PORTFOLIO_RUN_ACTIVE=0,
+   GOAT_PORTFOLIO_RUN_PAUSED
+  };
+enum ENUM_GOAT_SAME_ASSET_DIRECTION_STATE
+  {
+   GOAT_SAME_ASSET_DIRECTION_ALLOW=0,
+   GOAT_SAME_ASSET_DIRECTION_FILTER
+  };
+enum ENUM_GOAT_CURRENCY_FILTER_STATE
+  {
+   GOAT_CURRENCY_FILTER_ALL=0,
+   GOAT_CURRENCY_FILTER_LONG_ONLY,
+   GOAT_CURRENCY_FILTER_SHORT_ONLY,
+   GOAT_CURRENCY_FILTER_PAUSE
+  };
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 class CGOATDashboard : public CAppDialog
   {
@@ -60,7 +77,7 @@ public:
                edt_RunningLossLead,edt_RunningLossTail,edt_DailyLossLead,edt_DailyLossTail,edt_DailyTargetLead,edt_DailyTargetTail,edt_LowEquityStopLead,edt_EquityTargetLead,
                edt_RunningLossLimit,edt_DailyLossLimit,edt_DailyTargetLimit,edt_LowEquityStopLevel,edt_EquityTargetLevel,
                edt_Symbol[],edt_Strategy[],edt_Comment[],edt_News[],edt_AIBias[],edt_RiskLots[],edt_Action,edt_Status[],edt_Positions[],edt_Lots[],edt_Trades[],edt_HistDD[],edt_PL_Open[],edt_PL_D1[],edt_PL_W1[],edt_PL_All[];
-   CButton     btn_Action[];
+   CButton     btn_Action[],btn_PortfolioPause,btn_SameAssetDirection,btn_USDFilter,btn_USDClose,btn_EURFilter,btn_EURClose,btn_GBPFilter,btn_GBPClose,btn_JPYFilter,btn_JPYClose;
    // Layout parameters
    int         Margin_Left,Margin_Top,m_GapHoriz,m_GapVert,m_rowHeight,m_controlHeight,m_controlWidth;
  //int         Width_Symbol, Width_Strategy, Width_Action, Width_Status, Width_Positions, Width_Trades, Width_PL_D1, Width_PL_W1, Width_PL_M1, Width_PL_All;
@@ -68,6 +85,8 @@ public:
    CGOATDashScrollV m_rows_scroll;
    int         m_rows_top,m_rows_visible,m_rows_top_max,m_rows_y0,m_rows_view_bottom,m_rows_view_left,m_rows_view_right,m_row_pitch,m_rows_data_offset,m_rows_base_y0;
    bool        m_rows_scroll_enabled,m_rows_need_scroll;
+   int         m_last_profit_sort_key;
+   bool        m_last_profit_sort_desc;
    
    string Key_,EA_Name_,Server_,Font;
    string SetFolder,EA_Path;
@@ -78,6 +97,9 @@ public:
    double Version;
    long   ChartId;
    int    D_Width,D_Height,Font_Size;
+   ENUM_GOAT_PORTFOLIO_RUN_STATE m_portfolio_run_state;
+   ENUM_GOAT_SAME_ASSET_DIRECTION_STATE m_same_asset_direction_state;
+   ENUM_GOAT_CURRENCY_FILTER_STATE m_usd_filter_state,m_eur_filter_state,m_gbp_filter_state,m_jpy_filter_state;
  //color  clr_CaptionBack,clr_CaptionBorder,clr_ClientBack,clr_ClientBorder,clr_Text;
    //–– inside the private/protected section ––//
    datetime  m_day_start,          // broker midnight
@@ -144,6 +166,7 @@ public:
    void           RowsScrollTo(const int top_row);
    bool           HandleMouseWheel(const long lparam,const double dparam);
    bool           HandleHeaderClick(const string control_name);
+   bool           HandleHeaderStateButtonClick(const string control_name);
    void           DeployAll(void);
  //void           ScanAndUpdateRow(int idx,int gui_row);
 //––––– 1. Load .set files + build g_sets[] ––––––––––––––––––––––––––
@@ -255,7 +278,9 @@ private:
    void ApplyRowsViewport(void);
    void MoveDataRow(const int gui_row,const int y);
    void SetDataRowVisible(const int gui_row,const bool visible);
-   bool ShouldSwapRows(const int lhs,const int rhs,const ENUM_GOAT_DASH_SORT_KEY sort_key);
+   bool ShouldSwapRows(const int lhs,const int rhs,const ENUM_GOAT_DASH_SORT_KEY sort_key,const bool descending);
+   bool IsProfitSortKey(const ENUM_GOAT_DASH_SORT_KEY sort_key) const;
+   double SortMetricValue(const int idx,const ENUM_GOAT_DASH_SORT_KEY sort_key);
    void SwapRowState(const int lhs,const int rhs);
    void SwapEditState(CEdit &lhs,CEdit &rhs);
    void SwapButtonState(CButton &lhs,CButton &rhs);
@@ -483,7 +508,7 @@ private:
    lbl.Color(clrBlack);
    Add(lbl);
   }
-  void CGOATDashboard::CreatePlainInputEdit(CEdit &edt,const string name,const string text,int x,int y,int width)
+   void CGOATDashboard::CreatePlainInputEdit(CEdit &edt,const string name,const string text,int x,int y,int width)
   {
    if(!edt.Create(m_chart_id,m_name+name,m_subwin,x,y,x+width,y+m_controlHeight)) Print("Edit creation error:",GetLastError());
    if(Font_Size) edt.FontSize(Font_Size);
@@ -495,6 +520,17 @@ private:
    edt.ColorBorder(C'90,90,90');
    edt.ColorBackground(clrWhite);
    Add(edt);
+  }
+  void CGOATDashboard::CreateHeaderStateButton(CButton &btn,const string name,const string caption,int x,int y,int width,int height,color back,color border,color text_color)
+  {
+   if(!btn.Create(m_chart_id,m_name+name,m_subwin,x,y,x+width,y+height)) Print("Button creation error:",GetLastError());
+   if(Font_Size) btn.FontSize(Font_Size);
+   btn.Font("Tahoma Bold");
+   btn.Text(caption);
+   btn.Color(text_color);
+   btn.ColorBorder(border);
+   btn.ColorBackground(back);
+   Add(btn);
   }
   void CGOATDashboard::CreateInfoOverlayEdit(CEdit &edt,const string name,const string text,int x,int y,int width,int height,color back,color border)
   {
@@ -522,6 +558,77 @@ private:
    edt.ColorBorder(back);
    edt.ColorBackground(back);
    Add(edt);
+  }
+  string PortfolioRunButtonText(void) const
+  {
+   return(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE ? "Pause Portfolio" : "Start Portfolio");
+  }
+  string SameAssetDirectionButtonText(void) const
+  {
+   return(m_same_asset_direction_state==GOAT_SAME_ASSET_DIRECTION_ALLOW ? "Allow Same Asset+Direction" : "Filter Same Asset+Direction");
+  }
+  string CurrencyFilterButtonText(const string currency,const ENUM_GOAT_CURRENCY_FILTER_STATE state) const
+  {
+   if(state==GOAT_CURRENCY_FILTER_LONG_ONLY)  return("Only Buying "+currency);
+   if(state==GOAT_CURRENCY_FILTER_SHORT_ONLY) return("Only Shorting "+currency);
+   if(state==GOAT_CURRENCY_FILTER_PAUSE)      return(currency+" Paused");
+   return("Trading All "+currency);
+  }
+  string CurrencyCloseButtonText(const string currency) const
+  {
+   return("Close "+currency);
+  }
+  void ApplyHeaderStateButtonStyle(CButton &btn,const string caption,const color back,const color border,const color text_color)
+  {
+   btn.Text(caption);
+   btn.Color(text_color);
+   btn.ColorBorder(border);
+   btn.ColorBackground(back);
+  }
+  void UpdateHeaderStateButtons(void)
+  {
+   color normal_back=C'26,63,95';
+   color normal_border=clrWhite;
+   color run_pause_back=C'128,57,57';
+   color filter_back=C'138,108,38';
+   color long_back=C'29,112,68';
+   color short_back=C'139,55,55';
+   color hold_back=C'111,86,29';
+   color usd_back=normal_back;
+   color eur_back=normal_back;
+   color gbp_back=normal_back;
+   color jpy_back=normal_back;
+
+   ApplyHeaderStateButtonStyle(btn_PortfolioPause,
+                               PortfolioRunButtonText(),
+                               (m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE ? normal_back : run_pause_back),
+                               normal_border,
+                               clrWhite);
+   ApplyHeaderStateButtonStyle(btn_SameAssetDirection,
+                               SameAssetDirectionButtonText(),
+                               (m_same_asset_direction_state==GOAT_SAME_ASSET_DIRECTION_ALLOW ? normal_back : filter_back),
+                               normal_border,
+                               clrWhite);
+   if(m_usd_filter_state==GOAT_CURRENCY_FILTER_LONG_ONLY)       usd_back=long_back;
+   else if(m_usd_filter_state==GOAT_CURRENCY_FILTER_SHORT_ONLY) usd_back=short_back;
+   else if(m_usd_filter_state==GOAT_CURRENCY_FILTER_PAUSE)      usd_back=hold_back;
+
+   if(m_eur_filter_state==GOAT_CURRENCY_FILTER_LONG_ONLY)       eur_back=long_back;
+   else if(m_eur_filter_state==GOAT_CURRENCY_FILTER_SHORT_ONLY) eur_back=short_back;
+   else if(m_eur_filter_state==GOAT_CURRENCY_FILTER_PAUSE)      eur_back=hold_back;
+
+   if(m_gbp_filter_state==GOAT_CURRENCY_FILTER_LONG_ONLY)       gbp_back=long_back;
+   else if(m_gbp_filter_state==GOAT_CURRENCY_FILTER_SHORT_ONLY) gbp_back=short_back;
+   else if(m_gbp_filter_state==GOAT_CURRENCY_FILTER_PAUSE)      gbp_back=hold_back;
+
+   if(m_jpy_filter_state==GOAT_CURRENCY_FILTER_LONG_ONLY)       jpy_back=long_back;
+   else if(m_jpy_filter_state==GOAT_CURRENCY_FILTER_SHORT_ONLY) jpy_back=short_back;
+   else if(m_jpy_filter_state==GOAT_CURRENCY_FILTER_PAUSE)      jpy_back=hold_back;
+
+   ApplyHeaderStateButtonStyle(btn_USDFilter,CurrencyFilterButtonText("USD",m_usd_filter_state),usd_back,normal_border,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_EURFilter,CurrencyFilterButtonText("EUR",m_eur_filter_state),eur_back,normal_border,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_GBPFilter,CurrencyFilterButtonText("GBP",m_gbp_filter_state),gbp_back,normal_border,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_JPYFilter,CurrencyFilterButtonText("JPY",m_jpy_filter_state),jpy_back,normal_border,clrWhite);
   }
    // Creates a label and returns the left‐edge for the next column
    int PlaceEditLabel(CEdit &edt,const string id, const string text, int x,int y,int w)
@@ -556,8 +663,16 @@ CGOATDashboard::CGOATDashboard()
    m_rows_base_y0=0;
    m_rows_scroll_enabled=false;
    m_rows_need_scroll=false;
+   m_last_profit_sort_key=-1;
+   m_last_profit_sort_desc=true;
    m_state_dirty=false;
    m_last_state_save=0;
+   m_portfolio_run_state=GOAT_PORTFOLIO_RUN_ACTIVE;
+   m_same_asset_direction_state=GOAT_SAME_ASSET_DIRECTION_ALLOW;
+   m_usd_filter_state=GOAT_CURRENCY_FILTER_ALL;
+   m_eur_filter_state=GOAT_CURRENCY_FILTER_ALL;
+   m_gbp_filter_state=GOAT_CURRENCY_FILTER_ALL;
+   m_jpy_filter_state=GOAT_CURRENCY_FILTER_ALL;
    Portfolio_Name="-";
    Portfolio_Members="-";
    Portfolio_Score="-";
@@ -642,8 +757,23 @@ bool CGOATDashboard::HandleObjectClick(const string control_name)
    if(HandleHeaderClick(control_name))
       return(true);
 
+   if(HandleHeaderStateButtonClick(control_name))
+      return(true);
+
    if(ArraySize(btn_Action)>1 && control_name==btn_Action[1].Name())
    {
+      bool any_pending=false;
+      datetime now=TimeCurrent();
+      for(int idx=0; idx<ArraySize(g_sets); ++idx)
+      {
+         if(DisplayStatusForRow(idx,now)=="Pending")
+         {
+            any_pending=true;
+            break;
+         }
+      }
+      if(!any_pending)
+         return(true);
       DeployAll();
       return(true);
    }
@@ -662,6 +792,55 @@ bool CGOATDashboard::HandleObjectClick(const string control_name)
       return(true);
    }
 
+   return(false);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
+{
+   if(control_name==btn_PortfolioPause.Name())
+   {
+      m_portfolio_run_state=(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE ? GOAT_PORTFOLIO_RUN_PAUSED : GOAT_PORTFOLIO_RUN_ACTIVE);
+      UpdateHeaderStateButtons();
+      return(true);
+   }
+   if(control_name==btn_SameAssetDirection.Name())
+   {
+      m_same_asset_direction_state=(m_same_asset_direction_state==GOAT_SAME_ASSET_DIRECTION_ALLOW ? GOAT_SAME_ASSET_DIRECTION_FILTER : GOAT_SAME_ASSET_DIRECTION_ALLOW);
+      UpdateHeaderStateButtons();
+      return(true);
+   }
+   if(control_name==btn_USDFilter.Name())
+   {
+      m_usd_filter_state=(ENUM_GOAT_CURRENCY_FILTER_STATE)(((int)m_usd_filter_state+1)%4);
+      UpdateHeaderStateButtons();
+      return(true);
+   }
+   if(control_name==btn_USDClose.Name())
+      return(true);
+   if(control_name==btn_EURFilter.Name())
+   {
+      m_eur_filter_state=(ENUM_GOAT_CURRENCY_FILTER_STATE)(((int)m_eur_filter_state+1)%4);
+      UpdateHeaderStateButtons();
+      return(true);
+   }
+   if(control_name==btn_EURClose.Name())
+      return(true);
+   if(control_name==btn_GBPFilter.Name())
+   {
+      m_gbp_filter_state=(ENUM_GOAT_CURRENCY_FILTER_STATE)(((int)m_gbp_filter_state+1)%4);
+      UpdateHeaderStateButtons();
+      return(true);
+   }
+   if(control_name==btn_GBPClose.Name())
+      return(true);
+   if(control_name==btn_JPYFilter.Name())
+   {
+      m_jpy_filter_state=(ENUM_GOAT_CURRENCY_FILTER_STATE)(((int)m_jpy_filter_state+1)%4);
+      UpdateHeaderStateButtons();
+      return(true);
+   }
+   if(control_name==btn_JPYClose.Name())
+      return(true);
    return(false);
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -760,9 +939,10 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    const int info_pad=canvas_gap;
    const int infoHeight=rowTallH;
    const int info_top=info_pad;
-   const int info_row_gap=MathMax(4,m_GapVert+1);
-   const int info_table_gap=info_row_gap+MathMax(2,m_GapVert);
-   const int info_table_spacer=rowTallH;
+   const int info_base_gap=MathMax(4,m_GapVert+1);
+   const int info_row_gap=info_base_gap+MathMax(4,m_GapVert+2);
+   const int info_table_gap=info_row_gap;
+   const int info_table_spacer=rowTallH+info_row_gap;
    const int table_top=info_top+2*infoHeight+info_row_gap+info_table_gap+info_table_spacer;
    int table_bottom=(int)((D_Height-captionH)*0.98)-6;
    const int rows=ArraySize(g_sets);
@@ -861,7 +1041,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 // HEADER INFO ------------------------------------------------------
    m_controlHeight=infoHeight;
    int info_y=info_top;
-   int info_gap=MathMax(2,m_GapHoriz);
+   int info_gap=MathMax(15,(m_GapHoriz+1)*5);
    int info_x=table_left;
    int info_width=table_right-table_left;
    string info_text_portfolio=Portfolio_Name;
@@ -903,9 +1083,8 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    CreateInfoEdit(edt_HeadingMonthlyProfit,"HdrMonthlyProfit",info_text_mp       ,info_x,info_y,info_widths[5],m_controlHeight,C'19,79,60'  ,clrWhite); info_x+=info_widths[5]+info_gap;
    CreateInfoEdit(edt_HeadingMaxDD        ,"HdrMaxDD"        ,info_text_dd       ,info_x,info_y,info_widths[6],m_controlHeight,C'122,63,34' ,clrWhite);
    info_y+=infoHeight+info_row_gap;
-   const double row2_group_pct[5]={22.0,22.0,22.0,17.0,17.0};
-   const double row2_group_gap_pct=0.45;
-   int row2_group_gap=MathMax(1,(int)MathRound(info_width*row2_group_gap_pct/100.0));
+   const double row2_group_pct[5]={22.0,20.0,22.0,18.0,18.0};
+   int row2_group_gap=info_gap;
    int row2_avail=info_width-4*row2_group_gap;
    int row2_group_widths[5];
    int row2_group_used=0;
@@ -920,47 +1099,74 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    string txt_daily_target_limit="3000";
    int row2_box_pad=4;
    int row2_inner_gap=4;
+   int row2_tail_gap=1;
    info_x=table_left;
    int group_x=info_x;
    CreateInfoOverlayEdit(edt_RunningLossBox,"EdtRunLossBox","",group_x,info_y,row2_group_widths[0],m_controlHeight,C'26,63,95',clrWhite);
-   int row2_input_w=MathMax(54,(int)MathRound(row2_group_widths[0]*0.19));
-   int row2_input_x=group_x+MathMax(168,(int)MathRound(row2_group_widths[0]*0.43));
-   row2_input_x=MathMin(row2_input_x,group_x+row2_group_widths[0]-row2_input_w-86);
+   int row2_input_w=MathMax(46,(int)MathRound(row2_group_widths[0]*0.16));
+   int row2_input_x=group_x+MathMax(172,(int)MathRound(row2_group_widths[0]*0.49));
+   row2_input_x=MathMin(row2_input_x,group_x+row2_group_widths[0]-row2_input_w-84);
    CreateInfoInlineEdit(edt_RunningLossLead,"EdtRunLossLead","Running Loss: "+FormatPadded4Text(Port_RunningLoss)+"/",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'26,63,95',ALIGN_LEFT);
    CreatePlainInputEdit(edt_RunningLossLimit,"EdtRunLossLimit",txt_running_limit,row2_input_x,info_y,row2_input_w);
-   CreateInfoInlineEdit(edt_RunningLossTail,"EdtRunLossTail","("+FormatPadded4Text(StringToDouble(txt_running_limit)-Port_RunningLoss)+" Left)",row2_input_x+row2_input_w+row2_inner_gap,info_y,group_x+row2_group_widths[0]-(row2_input_x+row2_input_w+row2_inner_gap)-row2_box_pad,m_controlHeight,C'26,63,95',ALIGN_LEFT);
+   CreateInfoInlineEdit(edt_RunningLossTail,"EdtRunLossTail","("+FormatPadded4Text(StringToDouble(txt_running_limit)-Port_RunningLoss)+" Left)",row2_input_x+row2_input_w+row2_tail_gap,info_y,group_x+row2_group_widths[0]-(row2_input_x+row2_input_w+row2_tail_gap)-row2_box_pad,m_controlHeight,C'26,63,95',ALIGN_LEFT);
    info_x+=row2_group_widths[0]+row2_group_gap;
    group_x=info_x;
    CreateInfoOverlayEdit(edt_DailyLossBox,"EdtDayLossBox","",group_x,info_y,row2_group_widths[1],m_controlHeight,C'47,74,111',clrWhite);
-   row2_input_w=MathMax(54,(int)MathRound(row2_group_widths[1]*0.19));
+   row2_input_w=MathMax(46,(int)MathRound(row2_group_widths[1]*0.16));
    row2_input_x=group_x+MathMax(160,(int)MathRound(row2_group_widths[1]*0.45));
    row2_input_x=MathMin(row2_input_x,group_x+row2_group_widths[1]-row2_input_w-84);
-   CreateInfoInlineEdit(edt_DailyLossLead,"EdtDayLossLead","Daily Loss: "+FormatPadded4Text(Port_DailyLoss)+" /",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'47,74,111',ALIGN_LEFT);
+   CreateInfoInlineEdit(edt_DailyLossLead,"EdtDayLossLead","Daily Loss: "+FormatPadded4Text(Port_DailyLoss)+"/",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'47,74,111',ALIGN_LEFT);
    CreatePlainInputEdit(edt_DailyLossLimit,"EdtDayLossLimit",txt_daily_loss_limit,row2_input_x,info_y,row2_input_w);
-   CreateInfoInlineEdit(edt_DailyLossTail,"EdtDayLossTail"," ("+FormatPadded4Text(StringToDouble(txt_daily_loss_limit)-Port_DailyLoss)+" Left)",row2_input_x+row2_input_w+row2_inner_gap,info_y,group_x+row2_group_widths[1]-(row2_input_x+row2_input_w+row2_inner_gap)-row2_box_pad,m_controlHeight,C'47,74,111',ALIGN_LEFT);
+   CreateInfoInlineEdit(edt_DailyLossTail,"EdtDayLossTail","("+FormatPadded4Text(StringToDouble(txt_daily_loss_limit)-Port_DailyLoss)+" Left)",row2_input_x+row2_input_w+row2_tail_gap,info_y,group_x+row2_group_widths[1]-(row2_input_x+row2_input_w+row2_tail_gap)-row2_box_pad,m_controlHeight,C'47,74,111',ALIGN_LEFT);
    info_x+=row2_group_widths[1]+row2_group_gap;
    group_x=info_x;
    CreateInfoOverlayEdit(edt_DailyTargetBox,"EdtDayTargetBox","",group_x,info_y,row2_group_widths[2],m_controlHeight,C'73,90,121',clrWhite);
-   row2_input_w=MathMax(54,(int)MathRound(row2_group_widths[2]*0.19));
+   row2_input_w=MathMax(46,(int)MathRound(row2_group_widths[2]*0.16));
    row2_input_x=group_x+MathMax(172,(int)MathRound(row2_group_widths[2]*0.48));
    row2_input_x=MathMin(row2_input_x,group_x+row2_group_widths[2]-row2_input_w-84);
-   CreateInfoInlineEdit(edt_DailyTargetLead,"EdtDayTargetLead","Daily Target: "+FormatPadded4Text(Port_DailyTarget)+" /",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'73,90,121',ALIGN_LEFT);
+   CreateInfoInlineEdit(edt_DailyTargetLead,"EdtDayTargetLead","Daily Target: "+FormatPadded4Text(Port_DailyTarget)+"/",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'73,90,121',ALIGN_LEFT);
    CreatePlainInputEdit(edt_DailyTargetLimit,"EdtDayTargetLimit",txt_daily_target_limit,row2_input_x,info_y,row2_input_w);
-   CreateInfoInlineEdit(edt_DailyTargetTail,"EdtDayTargetTail"," ("+FormatPadded4Text(StringToDouble(txt_daily_target_limit)-Port_DailyTarget)+" Left)",row2_input_x+row2_input_w+row2_inner_gap,info_y,group_x+row2_group_widths[2]-(row2_input_x+row2_input_w+row2_inner_gap)-row2_box_pad,m_controlHeight,C'73,90,121',ALIGN_LEFT);
+   CreateInfoInlineEdit(edt_DailyTargetTail,"EdtDayTargetTail","("+FormatPadded4Text(StringToDouble(txt_daily_target_limit)-Port_DailyTarget)+" Left)",row2_input_x+row2_input_w+row2_tail_gap,info_y,group_x+row2_group_widths[2]-(row2_input_x+row2_input_w+row2_tail_gap)-row2_box_pad,m_controlHeight,C'73,90,121',ALIGN_LEFT);
    info_x+=row2_group_widths[2]+row2_group_gap;
    group_x=info_x;
    CreateInfoOverlayEdit(edt_LowEquityStopBox,"EdtLowEqStopBox","",group_x,info_y,row2_group_widths[3],m_controlHeight,C'83,53,120',clrWhite);
-   row2_input_w=MathMax(78,(int)MathRound(row2_group_widths[3]*0.34));
+   row2_input_w=MathMax(72,(int)MathRound(row2_group_widths[3]*0.30));
    row2_input_x=group_x+row2_group_widths[3]-row2_input_w-2;
    CreateInfoInlineEdit(edt_LowEquityStopLead,"EdtLowEqStopLead","Low Equity Stop level:",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'83,53,120',ALIGN_LEFT);
    CreatePlainInputEdit(edt_LowEquityStopLevel,"EdtLowEqStopLevel",FormatIntegerText(Port_LowEquityStopLevel),row2_input_x,info_y,row2_input_w);
    info_x+=row2_group_widths[3]+row2_group_gap;
    group_x=info_x;
    CreateInfoOverlayEdit(edt_EquityTargetBox,"EdtEqTargetBox","",group_x,info_y,row2_group_widths[4],m_controlHeight,C'122,63,34',clrWhite);
-   row2_input_w=MathMax(86,(int)MathRound(row2_group_widths[4]*0.36));
+   row2_input_w=MathMax(80,(int)MathRound(row2_group_widths[4]*0.33));
    row2_input_x=group_x+row2_group_widths[4]-row2_input_w-2;
    CreateInfoInlineEdit(edt_EquityTargetLead,"EdtEqTargetLead","Equity Target Level:",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'122,63,34',ALIGN_LEFT);
    CreatePlainInputEdit(edt_EquityTargetLevel,"EdtEqTargetLevel",FormatIntegerText(Port_EquityTargetLevel),row2_input_x,info_y,row2_input_w);
+   info_y+=infoHeight+info_table_gap;
+   const int row3_button_count=10;
+   double row3_weights[10]={15.0,27.0,18.0,9.0,18.0,9.0,18.0,9.0,18.0,9.0};
+   int row3_avail=info_width-(row3_button_count-1)*info_gap;
+   int row3_widths[10];
+   int row3_used=0;
+   double row3_weight_total=0.0;
+   for(int i=0;i<row3_button_count;i++) row3_weight_total+=row3_weights[i];
+   for(int i=0;i<row3_button_count-1;i++)
+   {
+      row3_widths[i]=MathMax(1,(int)MathFloor(row3_avail*row3_weights[i]/row3_weight_total));
+      row3_used+=row3_widths[i];
+   }
+   row3_widths[row3_button_count-1]=MathMax(1,row3_avail-row3_used);
+   info_x=table_left;
+   CreateHeaderStateButton(btn_PortfolioPause,"HdrPortfolioPause",PortfolioRunButtonText(),info_x,info_y,row3_widths[0],m_controlHeight,C'26,63,95',clrWhite,clrWhite); info_x+=row3_widths[0]+info_gap;
+   CreateHeaderStateButton(btn_SameAssetDirection,"HdrSameAssetDirection",SameAssetDirectionButtonText(),info_x,info_y,row3_widths[1],m_controlHeight,C'26,63,95',clrWhite,clrWhite); info_x+=row3_widths[1]+info_gap;
+   CreateHeaderStateButton(btn_USDFilter,"HdrUSDFilter",CurrencyFilterButtonText("USD",m_usd_filter_state),info_x,info_y,row3_widths[2],m_controlHeight,C'26,63,95',clrWhite,clrWhite); info_x+=row3_widths[2]+info_gap;
+   CreateHeaderStateButton(btn_USDClose,"HdrUSDClose",CurrencyCloseButtonText("USD"),info_x,info_y,row3_widths[3],m_controlHeight,C'122,63,34',clrWhite,clrWhite); info_x+=row3_widths[3]+info_gap;
+   CreateHeaderStateButton(btn_EURFilter,"HdrEURFilter",CurrencyFilterButtonText("EUR",m_eur_filter_state),info_x,info_y,row3_widths[4],m_controlHeight,C'26,63,95',clrWhite,clrWhite); info_x+=row3_widths[4]+info_gap;
+   CreateHeaderStateButton(btn_EURClose,"HdrEURClose",CurrencyCloseButtonText("EUR"),info_x,info_y,row3_widths[5],m_controlHeight,C'122,63,34',clrWhite,clrWhite); info_x+=row3_widths[5]+info_gap;
+   CreateHeaderStateButton(btn_GBPFilter,"HdrGBPFilter",CurrencyFilterButtonText("GBP",m_gbp_filter_state),info_x,info_y,row3_widths[6],m_controlHeight,C'26,63,95',clrWhite,clrWhite); info_x+=row3_widths[6]+info_gap;
+   CreateHeaderStateButton(btn_GBPClose,"HdrGBPClose",CurrencyCloseButtonText("GBP"),info_x,info_y,row3_widths[7],m_controlHeight,C'122,63,34',clrWhite,clrWhite); info_x+=row3_widths[7]+info_gap;
+   CreateHeaderStateButton(btn_JPYFilter,"HdrJPYFilter",CurrencyFilterButtonText("JPY",m_jpy_filter_state),info_x,info_y,row3_widths[8],m_controlHeight,C'26,63,95',clrWhite,clrWhite); info_x+=row3_widths[8]+info_gap;
+   CreateHeaderStateButton(btn_JPYClose,"HdrJPYClose",CurrencyCloseButtonText("JPY"),info_x,info_y,row3_widths[9],m_controlHeight,C'122,63,34',clrWhite,clrWhite);
+   UpdateHeaderStateButtons();
 // HEADER -----------------------------------------------------------
    m_controlHeight=rowTallH;
 	int r=0,y=Margin_Top,x=columns_left;
@@ -1611,37 +1817,86 @@ void CGOATDashboard::UpdateRowMetrics(const int idx,const int gui_row)
 //  ───  PORTFOLIO LINE (row 1)  ────────────────────────────────────
 void CGOATDashboard::UpdatePortfolioRow()
 {
-   int    pos_sum = 0, trade_sum = 0;
-   double lot_sum = 0.0, open_sum = 0.0, d_sum = 0.0, w_sum = 0.0, t_sum = 0.0, histdd_max = 0.0;
+    int    pos_sum = 0, trade_sum = 0;
+    double lot_sum = 0.0, open_sum = 0.0, d_sum = 0.0, w_sum = 0.0, t_sum = 0.0;
+    string strategy_text="Mixed";
+    string risk_lots_text="Mixed";
+    bool first_strategy=true, strategy_mixed=false;
+    bool first_risk_mode=true, risk_mixed=false, all_risk_dollar=false, all_risk_lots=false;
+    int pending_rows=0;
+    datetime now=TimeCurrent();
 
-   const int rows = ArraySize(g_sets);
-   for(int i=0;i<rows;++i)
-   {
-      pos_sum    += g_sets[i].open_trades;
+    const int rows = ArraySize(g_sets);
+    for(int i=0;i<rows;++i)
+    {
+       pos_sum    += g_sets[i].open_trades;
       lot_sum    += g_sets[i].open_lots;
       trade_sum  += g_sets[i].Trades_total;
-      open_sum   += g_sets[i].open_pl;
-      d_sum      += g_sets[i].PL_daily  + g_sets[i].open_pl;
-      w_sum      += g_sets[i].PL_weekly + g_sets[i].open_pl;
-      t_sum      += g_sets[i].PL_total  + g_sets[i].open_pl;
-      histdd_max  = MathMax(histdd_max,StringToDouble(edt_HistDD[i+2].Text()));
-   }
+       open_sum   += g_sets[i].open_pl;
+       d_sum      += g_sets[i].PL_daily  + g_sets[i].open_pl;
+       w_sum      += g_sets[i].PL_weekly + g_sets[i].open_pl;
+       t_sum      += g_sets[i].PL_total  + g_sets[i].open_pl;
+       if(DisplayStatusForRow(i,now)=="Pending")
+          pending_rows++;
 
-   edt_Comment  [1].Text("Mixed");
-   edt_News     [1].Text("Mixed");
-   edt_AIBias   [1].Text("Mixed");
-   edt_RiskLots [1].Text("Mixed");
-   edt_Status   [1].Text("Portfolio");
-   edt_Status   [1].Color(StatusColor("Linked"));
-   edt_HistDD   [1].Text(FormatIntegerText(histdd_max));
-   edt_Trades   [1].Text(IntegerToString(trade_sum));
-   edt_Positions[1].Text(IntegerToString(pos_sum));  edt_Positions[1].Color(ChooseColor(open_sum));
-   edt_Lots     [1].Text(DoubleToString(lot_sum,2)); edt_Lots     [1].Color(ChooseColor(open_sum));
-   edt_PL_Open  [1].Text(FormatIntegerText(open_sum)); edt_PL_Open[1].Color(ChooseColor(open_sum));
-   edt_PL_D1    [1].Text(FormatIntegerText(d_sum));    edt_PL_D1  [1].Color(ChooseColor(d_sum));
-   edt_PL_W1    [1].Text(FormatIntegerText(w_sum));    edt_PL_W1  [1].Color(ChooseColor(w_sum));
-   edt_PL_All   [1].Text(FormatIntegerText(t_sum));    edt_PL_All [1].Color(ChooseColor(t_sum));
-   UpdatePortfolioInfoHeader();
+       if(first_strategy)
+       {
+          strategy_text=g_sets[i].strat;
+          first_strategy=false;
+       }
+       else if(strategy_text!=g_sets[i].strat)
+          strategy_mixed=true;
+
+       bool is_risk_dollar=(StringFind(g_sets[i].risk_lots_label,"$",0)>=0);
+       bool is_start_lots=(!is_risk_dollar);
+       if(first_risk_mode)
+       {
+          all_risk_dollar=is_risk_dollar;
+          all_risk_lots=is_start_lots;
+          first_risk_mode=false;
+       }
+       else if((all_risk_dollar && !is_risk_dollar) || (all_risk_lots && !is_start_lots))
+          risk_mixed=true;
+    }
+
+    if(strategy_mixed) strategy_text="Mixed";
+    if(risk_mixed || first_risk_mode) risk_lots_text="Mixed";
+    else if(all_risk_dollar)          risk_lots_text="Risk $";
+    else if(all_risk_lots)            risk_lots_text="Lots";
+    else                              risk_lots_text="Mixed";
+
+    bool all_deployed=(rows>0 && pending_rows==0);
+    string portfolio_status=(pending_rows>0 ? "Pending" : "Deployed");
+    color portfolio_status_clr=(pending_rows>0 ? clrRed : clrWhite);
+    string action_text=(all_deployed ? "✓ Activated" : "ActivateAll");
+    color action_text_clr=(all_deployed ? C'87,153,122' : clrWhite);
+    double portfolio_hist_dd=StringToDouble(Portfolio_Target_DD);
+    color pl_open_clr=(open_sum>0.0 ? C'0,180,0' : (open_sum<0.0 ? clrRed : clrWhite));
+    color pl_day_clr =(d_sum  >0.0 ? C'0,180,0' : (d_sum  <0.0 ? clrRed : clrWhite));
+    color pl_week_clr=(w_sum  >0.0 ? C'0,180,0' : (w_sum  <0.0 ? clrRed : clrWhite));
+    color pl_all_clr =(t_sum  >0.0 ? C'0,180,0' : (t_sum  <0.0 ? clrRed : clrWhite));
+
+    edt_Symbol   [1].Text("Portfolio"); edt_Symbol [1].Color(clrWhite);
+    edt_Strategy [1].Text(strategy_text); edt_Strategy[1].Color(clrWhite);
+    btn_Action   [1].Text(action_text); btn_Action[1].Color(action_text_clr);
+    edt_Comment  [1].Text("- - -");
+    edt_Comment  [1].Color(clrWhite);
+    edt_News     [1].Text("Mixed");
+    edt_AIBias   [1].Text("Mixed");
+    edt_News     [1].Color(clrWhite);
+    edt_AIBias   [1].Color(clrWhite);
+    edt_RiskLots [1].Text(risk_lots_text); edt_RiskLots[1].Color(clrWhite);
+    edt_Status   [1].Text(portfolio_status);
+    edt_Status   [1].Color(portfolio_status_clr);
+    edt_HistDD   [1].Text(FormatIntegerText(portfolio_hist_dd)); edt_HistDD[1].Color(clrWhite);
+    edt_Trades   [1].Text(IntegerToString(trade_sum)); edt_Trades[1].Color(clrWhite);
+    edt_Positions[1].Text(IntegerToString(pos_sum));   edt_Positions[1].Color(clrWhite);
+    edt_Lots     [1].Text(DoubleToString(lot_sum,2));  edt_Lots[1].Color(clrWhite);
+    edt_PL_Open  [1].Text(FormatIntegerText(open_sum)); edt_PL_Open[1].Color(pl_open_clr);
+    edt_PL_D1    [1].Text(FormatIntegerText(d_sum));    edt_PL_D1  [1].Color(pl_day_clr);
+    edt_PL_W1    [1].Text(FormatIntegerText(w_sum));    edt_PL_W1  [1].Color(pl_week_clr);
+    edt_PL_All   [1].Text(FormatIntegerText(t_sum));    edt_PL_All [1].Color(pl_all_clr);
+    UpdatePortfolioInfoHeader();
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::ProcessTimerCycle(void)
@@ -1937,34 +2192,56 @@ void CGOATDashboard::SetDataRowVisible(const int gui_row,const bool visible)
    }
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
-bool CGOATDashboard::ShouldSwapRows(const int lhs,const int rhs,const ENUM_GOAT_DASH_SORT_KEY sort_key)
+bool CGOATDashboard::IsProfitSortKey(const ENUM_GOAT_DASH_SORT_KEY sort_key) const
+{
+   return(sort_key==GOAT_DASH_SORT_PL_OPEN || sort_key==GOAT_DASH_SORT_PL_D1 || sort_key==GOAT_DASH_SORT_PL_W1 || sort_key==GOAT_DASH_SORT_PL_ALL);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+double CGOATDashboard::SortMetricValue(const int idx,const ENUM_GOAT_DASH_SORT_KEY sort_key)
+{
+   if(idx<0 || idx>=ArraySize(g_sets)) return 0.0;
+
+   if(sort_key==GOAT_DASH_SORT_POSITIONS) return (double)g_sets[idx].open_trades;
+   if(sort_key==GOAT_DASH_SORT_TRADES)    return (double)g_sets[idx].Trades_total;
+   if(sort_key==GOAT_DASH_SORT_LOTS)      return g_sets[idx].open_lots;
+   if(sort_key==GOAT_DASH_SORT_HIST_DD)   return FetchMetric(g_sets[idx].name,"DD");
+   if(sort_key==GOAT_DASH_SORT_PL_OPEN)   return g_sets[idx].open_pl;
+   if(sort_key==GOAT_DASH_SORT_PL_D1)     return g_sets[idx].PL_daily  + g_sets[idx].open_pl;
+   if(sort_key==GOAT_DASH_SORT_PL_W1)     return g_sets[idx].PL_weekly + g_sets[idx].open_pl;
+   if(sort_key==GOAT_DASH_SORT_PL_ALL)    return g_sets[idx].PL_total  + g_sets[idx].open_pl;
+   return 0.0;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::ShouldSwapRows(const int lhs,const int rhs,const ENUM_GOAT_DASH_SORT_KEY sort_key,const bool descending)
 {
    if(lhs<0 || rhs<0 || lhs>=ArraySize(g_sets) || rhs>=ArraySize(g_sets)) return(false);
 
    if(sort_key==GOAT_DASH_SORT_SYMBOL || sort_key==GOAT_DASH_SORT_STRATEGY)
    {
-      string left =(sort_key==GOAT_DASH_SORT_SYMBOL ? edt_Symbol[lhs+2].Text()   : edt_Strategy[lhs+2].Text());
-      string right=(sort_key==GOAT_DASH_SORT_SYMBOL ? edt_Symbol[rhs+2].Text()   : edt_Strategy[rhs+2].Text());
+      string left =(sort_key==GOAT_DASH_SORT_SYMBOL ? g_sets[lhs].sym   : g_sets[lhs].strat);
+      string right=(sort_key==GOAT_DASH_SORT_SYMBOL ? g_sets[rhs].sym   : g_sets[rhs].strat);
       StringToUpper(left);
       StringToUpper(right);
       return(StringCompare(left,right)>0);
    }
 
-   if(sort_key==GOAT_DASH_SORT_POSITIONS || sort_key==GOAT_DASH_SORT_TRADES)
+   if(sort_key==GOAT_DASH_SORT_POSITIONS || sort_key==GOAT_DASH_SORT_TRADES || sort_key==GOAT_DASH_SORT_LOTS || sort_key==GOAT_DASH_SORT_HIST_DD)
    {
-      long left =(sort_key==GOAT_DASH_SORT_POSITIONS ? StringToInteger(edt_Positions[lhs+2].Text()) : StringToInteger(edt_Trades[lhs+2].Text()));
-      long right=(sort_key==GOAT_DASH_SORT_POSITIONS ? StringToInteger(edt_Positions[rhs+2].Text()) : StringToInteger(edt_Trades[rhs+2].Text()));
+      double left =SortMetricValue(lhs,sort_key);
+      double right=SortMetricValue(rhs,sort_key);
       return(left<right);
    }
 
-   double left=0.0,right=0.0;
-   if(sort_key==GOAT_DASH_SORT_LOTS)         {left=StringToDouble(edt_Lots  [lhs+2].Text()); right=StringToDouble(edt_Lots  [rhs+2].Text());}
-   if(sort_key==GOAT_DASH_SORT_HIST_DD)      {left=StringToDouble(edt_HistDD[lhs+2].Text()); right=StringToDouble(edt_HistDD[rhs+2].Text());}
-   if(sort_key==GOAT_DASH_SORT_PL_OPEN)      {left=StringToDouble(edt_PL_Open[lhs+2].Text()); right=StringToDouble(edt_PL_Open[rhs+2].Text());}
-   if(sort_key==GOAT_DASH_SORT_PL_D1)        {left=StringToDouble(edt_PL_D1 [lhs+2].Text()); right=StringToDouble(edt_PL_D1 [rhs+2].Text());}
-   if(sort_key==GOAT_DASH_SORT_PL_W1)        {left=StringToDouble(edt_PL_W1 [lhs+2].Text()); right=StringToDouble(edt_PL_W1 [rhs+2].Text());}
-   if(sort_key==GOAT_DASH_SORT_PL_ALL)       {left=StringToDouble(edt_PL_All[lhs+2].Text()); right=StringToDouble(edt_PL_All[rhs+2].Text());}
-   return(left<right);
+   double left =SortMetricValue(lhs,sort_key);
+   double right=SortMetricValue(rhs,sort_key);
+   bool left_zero =(MathAbs(left)<=0.0000001);
+   bool right_zero=(MathAbs(right)<=0.0000001);
+
+   if(left_zero!=right_zero)
+      return(left_zero && !right_zero);
+
+   if(descending) return(left<right);
+   return(left>right);
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::SwapEditState(CEdit &lhs,CEdit &rhs)
@@ -2017,13 +2294,28 @@ void CGOATDashboard::SortRows(const ENUM_GOAT_DASH_SORT_KEY sort_key)
 {
    int total=ArraySize(g_sets);
    if(total<2) return;
+   bool descending=true;
+
+   if(IsProfitSortKey(sort_key))
+   {
+      if(m_last_profit_sort_key==(int)sort_key)
+         m_last_profit_sort_desc=!m_last_profit_sort_desc;
+      else
+      {
+         m_last_profit_sort_key=(int)sort_key;
+         m_last_profit_sort_desc=true;
+      }
+      descending=m_last_profit_sort_desc;
+   }
 
    for(int i=0;i<total-1;i++)
       for(int j=i+1;j<total;j++)
-         if(ShouldSwapRows(i,j,sort_key))
+         if(ShouldSwapRows(i,j,sort_key,descending))
             SwapRowState(i,j);
 
    m_rows_top=0;
+   if(m_rows_scroll_enabled && m_rows_scroll.CurrPos()!=0)
+      m_rows_scroll.CurrPos(0);
    ApplyRowsViewport();
    UpdatePortfolioRow();
    ChartRedraw(0);

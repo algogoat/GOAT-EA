@@ -1209,6 +1209,30 @@ static bool IsIdle()
     return(Res);
   }
 
+  static bool ClickStop( const int Attempts = 50 )
+  {
+    if (MTTESTER::IsIdle())
+      return(true);
+
+    static const int ControlID[] = {0xE81E, 0x804E};
+    const long Handle = MTTESTER::GetHandle(ControlID);
+
+    if (!Handle)
+      return(false);
+
+    user32::SendMessageW(Handle, user32::RegisterWindowMessageW("MetaTrader5_Internal_Message"), 0X31, 0);
+
+    bool Res = false;
+
+    for (int i = 0; (i < Attempts) && !(Res = MTTESTER::IsIdle()); i++)
+      ::Sleep(100);
+
+    if (!Res)
+      ::Print(__FILE__ + ": Stop->Start - is not detected!");
+
+    return(Res);
+  }
+
   static bool SetTimeFrame( ENUM_TIMEFRAMES period )
   {
     const bool Res = MTTESTER::IsReady();

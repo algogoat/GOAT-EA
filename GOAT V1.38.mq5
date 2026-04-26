@@ -2306,11 +2306,378 @@ void OnDeinit(const int reason)
    return;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+#define SEEDFARMING_MODE "SeedFarming"
+
+bool   g_seedFarmingActive=false,g_seedFarmingCompleted=false,g_seedFarmingHeaderWritten=false,g_seedFarmingStopIssued=false;
+int    g_seedFarmingTarget=0,g_seedFarmingHandle=INVALID_HANDLE,g_seedFarmingRows=0,g_seedFarmingHealthy=0,g_seedFarmingZeroTrades=0;
+double g_seedFarmingFitnessSum=0.0,g_seedFarmingTradesSum=0.0,g_seedFarmingBestFitness=-DBL_MAX;
+string g_seedFarmingFrom="",g_seedFarmingTo="",g_seedFarmingDir="",g_seedFarmingTmpFile="",g_seedFarmingFinalFile="",g_seedFarmingBaseFile="";
+string g_seedFarmingInputNames[];
+
+string EA_DescKeyValue(string &names[],string &values[],string key,string fallback="")
+  {
+   string wanted=key; StringToLower(wanted);
+   for(int i=0;i<ArraySize(names);i++)
+   {
+    string n=names[i]; StringToLower(n);
+    if(n==wanted) return values[i];
+   }
+   return fallback;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool RefreshEA_DescModeKeys(string &names[],string &values[])
+  {
+   string parsedStrat=ExtractFunctionKeysFromInputString(EA_Desc,names,values);
+   string parsedMode=EA_DescKeyValue(names,values,"mode","");
+   if(parsedMode!="") Mode=parsedMode;
+   if(parsedStrat!="") Strat=parsedStrat;
+   return (Mode!="");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string SeedFarmingSafePart(string text)
+  {
+   string out="";
+   for(int i=0;i<StringLen(text);i++)
+   {
+    int ch=StringGetCharacter(text,i);
+    if((ch>='0' && ch<='9') || (ch>='A' && ch<='Z') || (ch>='a' && ch<='z'))
+      out+=ShortToString((short)ch);
+   }
+   if(out=="") out="NA";
+   return out;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string SeedFarmingXmlEscape(string text)
+  {
+   StringReplace(text,"&","&amp;");
+   StringReplace(text,"<","&lt;");
+   StringReplace(text,">","&gt;");
+   StringReplace(text,"\"","&quot;");
+   return text;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool SeedFarmingLooksNumeric(string value)
+  {
+   StringTrimLeft(value); StringTrimRight(value);
+   if(value=="") return false;
+   for(int i=0;i<StringLen(value);i++)
+   {
+    int ch=StringGetCharacter(value,i);
+    if((ch>='0' && ch<='9') || ch=='-' || ch=='+' || ch=='.' || ch=='e' || ch=='E') continue;
+    return false;
+   }
+   return true;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingWriteStringCell(int handle,string value)
+  {
+   FileWriteString(handle,"<Cell><Data ss:Type=\"String\">"+SeedFarmingXmlEscape(value)+"</Data></Cell>\n");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingWriteNumberCell(int handle,double value,int digits=8)
+  {
+   if(!MathIsValidNumber(value)) value=0.0;
+   FileWriteString(handle,"<Cell><Data ss:Type=\"Number\">"+DoubleToString(value,digits)+"</Data></Cell>\n");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingWriteValueCell(int handle,string value)
+  {
+   if(SeedFarmingLooksNumeric(value)) SeedFarmingWriteNumberCell(handle,StringToDouble(value),8);
+   else                              SeedFarmingWriteStringCell(handle,value);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool SeedFarmingIsOptimizedInput(string name)
+  {
+   bool enable=false;
+   long lv=0,ls=0,lstep=0,lstop=0;
+   ResetLastError();
+   if(ParameterGetRange(name,enable,lv,ls,lstep,lstop)) return enable;
+
+   double dv=0.0,ds=0.0,dstep=0.0,dstop=0.0;
+   ResetLastError();
+   if(ParameterGetRange(name,enable,dv,ds,dstep,dstop)) return enable;
+
+   return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingExtractInputs(string &params[],uint count,string &names[],string &values[])
+  {
+   ArrayResize(names,0); ArrayResize(values,0);
+   for(uint i=0;i<count;i++)
+   {
+    string param=params[i];
+    int eq=StringFind(param,"=");
+    if(eq<=0) continue;
+
+    string name=StringSubstr(param,0,eq);
+    string value=StringSubstr(param,eq+1);
+    StringTrimLeft(name);  StringTrimRight(name);
+    StringTrimLeft(value); StringTrimRight(value);
+    if(!SeedFarmingIsOptimizedInput(name)) continue;
+
+    int n=ArraySize(names);
+    ArrayResize(names,n+1); ArrayResize(values,n+1);
+    names[n]=name; values[n]=value;
+   }
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string SeedFarmingBuildBaseFile()
+  {
+   string range=(g_seedFarmingFrom!="" && g_seedFarmingTo!="" ? g_seedFarmingFrom+"-"+g_seedFarmingTo : "UnknownDates");
+   string strategy=SeedFarmingSafePart(Strat);
+   if(StringLen(strategy)>52) strategy=StringSubstr(strategy,0,52);
+   return EA_Name+" "+Symbol()+","+TFToString(Period())+" "+range+" "+strategy;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool SeedFarmingPrepareReceiver()
+  {
+   string names[],values[];
+   if(!RefreshEA_DescModeKeys(names,values) || Mode!=SEEDFARMING_MODE) return false;
+
+   string n=EA_DescKeyValue(names,values,"n",EA_DescKeyValue(names,values,"target",EA_DescKeyValue(names,values,"count","")));
+   g_seedFarmingTarget=(int)StringToInteger(n);
+   if(g_seedFarmingTarget<=0)
+   {
+    Print("SeedFarming: target frame count key n/target/count is missing or invalid in EA_Desc. EA_Desc=",EA_Desc);
+    return false;
+   }
+
+   g_seedFarmingFrom=EA_DescKeyValue(names,values,"from",EA_DescKeyValue(names,values,"fromDate",""));
+   g_seedFarmingTo  =EA_DescKeyValue(names,values,"to",  EA_DescKeyValue(names,values,"toDate",""));
+
+   g_seedFarmingActive=true;
+   g_seedFarmingCompleted=false;
+   g_seedFarmingHeaderWritten=false;
+   g_seedFarmingStopIssued=false;
+   g_seedFarmingRows=0;
+   g_seedFarmingHealthy=0;
+   g_seedFarmingZeroTrades=0;
+   g_seedFarmingFitnessSum=0.0;
+   g_seedFarmingTradesSum=0.0;
+   g_seedFarmingBestFitness=-DBL_MAX;
+   ArrayResize(g_seedFarmingInputNames,0);
+
+   g_seedFarmingDir=Key+"\\SeedFarmingXML";
+   EnsureCommonFolderTree(g_seedFarmingDir);
+   g_seedFarmingBaseFile=SeedFarmingBuildBaseFile();
+   g_seedFarmingTmpFile=g_seedFarmingDir+"\\"+g_seedFarmingBaseFile+".tmp.xml";
+   g_seedFarmingFinalFile="";
+   if(FileIsExist(g_seedFarmingTmpFile,FILE_COMMON)) FileDelete(g_seedFarmingTmpFile,FILE_COMMON);
+
+   Print("SeedFarming receiver initialized. Target frames=",g_seedFarmingTarget," tmp=",g_seedFarmingTmpFile);
+   return true;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool SeedFarmingOpenXml(string &inputNames[])
+  {
+   if(g_seedFarmingHeaderWritten) return true;
+
+   g_seedFarmingHandle=FileOpen(g_seedFarmingTmpFile,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON,'\t',CP_UTF8);
+   if(g_seedFarmingHandle==INVALID_HANDLE)
+   {
+    Print("SeedFarming: failed to create XML ",g_seedFarmingTmpFile," error=",GetLastError());
+    return false;
+   }
+
+   ArrayResize(g_seedFarmingInputNames,ArraySize(inputNames));
+   for(int i=0;i<ArraySize(inputNames);i++) g_seedFarmingInputNames[i]=inputNames[i];
+
+   string range=(g_seedFarmingFrom!="" && g_seedFarmingTo!="" ? g_seedFarmingFrom+"-"+g_seedFarmingTo : "UnknownDates");
+   string title=EA_Name+" "+Symbol()+","+TFToString(Period())+" "+range+" "+Strat;
+
+   FileWriteString(g_seedFarmingHandle,"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
+   FileWriteString(g_seedFarmingHandle,"<?mso-application progid=\"Excel.Sheet\"?>\n");
+   FileWriteString(g_seedFarmingHandle,"<Workbook xmlns=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+   FileWriteString(g_seedFarmingHandle,"xmlns:o=\"urn:schemas-microsoft-com:office:office\"\n");
+   FileWriteString(g_seedFarmingHandle,"xmlns:x=\"urn:schemas-microsoft-com:office:excel\"\n");
+   FileWriteString(g_seedFarmingHandle,"xmlns:ss=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+   FileWriteString(g_seedFarmingHandle,"xmlns:html=\"http://www.w3.org/TR/REC-html40\">\n");
+   FileWriteString(g_seedFarmingHandle,"<DocumentProperties xmlns=\"urn:schemas-microsoft-com:office:office\">\n");
+   FileWriteString(g_seedFarmingHandle,"<Title>"+SeedFarmingXmlEscape(title)+"</Title>\n");
+   FileWriteString(g_seedFarmingHandle,"<Author>GOAT SeedFarming</Author>\n");
+   FileWriteString(g_seedFarmingHandle,"<Created>"+TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS)+"</Created>\n");
+   FileWriteString(g_seedFarmingHandle,"<Server>"+SeedFarmingXmlEscape(Server)+"</Server>\n");
+   FileWriteString(g_seedFarmingHandle,"<Mode>"+SEEDFARMING_MODE+"</Mode>\n");
+   FileWriteString(g_seedFarmingHandle,"<Target>"+IntegerToString(g_seedFarmingTarget)+"</Target>\n");
+   FileWriteString(g_seedFarmingHandle,"<Strategy>"+SeedFarmingXmlEscape(Strat)+"</Strategy>\n");
+   FileWriteString(g_seedFarmingHandle,"</DocumentProperties>\n");
+   FileWriteString(g_seedFarmingHandle,"<Styles>\n");
+   FileWriteString(g_seedFarmingHandle,"<Style ss:ID=\"ce2\"><NumberFormat ss:Format=\"0.00\"/></Style>\n");
+   FileWriteString(g_seedFarmingHandle,"<Style ss:ID=\"ce13\"><NumberFormat ss:Format=\"0.000000\"/></Style>\n");
+   FileWriteString(g_seedFarmingHandle,"</Styles>\n");
+   FileWriteString(g_seedFarmingHandle,"<Worksheet ss:Name=\"Tester Optimizator Results\">\n<Table>\n<Row>\n");
+
+   const string headers[]={"Pass","Result","Profit","Expected Payoff","Profit Factor","Recovery Factor","Sharpe Ratio","Custom","Equity DD %","Trades"};
+   for(int h=0;h<ArraySize(headers);h++) SeedFarmingWriteStringCell(g_seedFarmingHandle,headers[h]);
+   for(int i=0;i<ArraySize(g_seedFarmingInputNames);i++) SeedFarmingWriteStringCell(g_seedFarmingHandle,g_seedFarmingInputNames[i]);
+   FileWriteString(g_seedFarmingHandle,"</Row>\n");
+
+   g_seedFarmingHeaderWritten=true;
+   return true;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingRequestStop()
+  {
+   if(g_seedFarmingStopIssued) return;
+   g_seedFarmingStopIssued=true;
+
+   Print("SeedFarming: target reached, stopping strategy tester.");
+   for(int i=0;i<5 && !MTTESTER::IsIdle();i++)
+   {
+    if(MTTESTER::ClickStop(30)) break;
+    Sleep(500);
+   }
+
+   if(MTTESTER::IsIdle())
+   {
+    Sleep(500);
+    TerminalClose(99);
+   }
+   else Print("SeedFarming: tester stop was requested, but idle state was not confirmed; terminal left open.");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingFinalize(const bool requestStop)
+  {
+   if(g_seedFarmingCompleted) return;
+
+   if(!g_seedFarmingHeaderWritten)
+   {
+    string emptyInputNames[];
+    SeedFarmingOpenXml(emptyInputNames);
+   }
+
+   if(g_seedFarmingHandle!=INVALID_HANDLE)
+   {
+    FileWriteString(g_seedFarmingHandle,"</Table>\n</Worksheet>\n</Workbook>\n");
+    FileClose(g_seedFarmingHandle);
+    g_seedFarmingHandle=INVALID_HANDLE;
+   }
+
+   double avgFit=(g_seedFarmingRows>0 ? g_seedFarmingFitnessSum/g_seedFarmingRows : 0.0);
+   double health=(g_seedFarmingRows>0 ? 100.0*g_seedFarmingHealthy/g_seedFarmingRows : 0.0);
+   double avgTrades=(g_seedFarmingRows>0 ? g_seedFarmingTradesSum/g_seedFarmingRows : 0.0);
+   double bestFit=(g_seedFarmingRows>0 ? g_seedFarmingBestFitness : 0.0);
+   string metrics="_N"+IntegerToString(g_seedFarmingRows)
+                 +"_AvgFit="+DoubleToString(avgFit,3)
+                 +"_Health="+DoubleToString(health,2)
+                 +"_Zero="+IntegerToString(g_seedFarmingZeroTrades)
+                 +"_AvgTrades="+DoubleToString(avgTrades,1)
+                 +"_Best="+DoubleToString(bestFit,3);
+   g_seedFarmingFinalFile=g_seedFarmingDir+"\\"+g_seedFarmingBaseFile+metrics+".xml";
+
+   if(FileIsExist(g_seedFarmingTmpFile,FILE_COMMON))
+   {
+    if(!FileMove(g_seedFarmingTmpFile,FILE_COMMON,g_seedFarmingFinalFile,FILE_COMMON|FILE_REWRITE))
+      Print("SeedFarming: failed to finalize XML rename. err=",GetLastError()," tmp=",g_seedFarmingTmpFile," final=",g_seedFarmingFinalFile);
+    else
+      Print("SeedFarming XML ready: ",g_seedFarmingFinalFile);
+   }
+
+   g_seedFarmingCompleted=true;
+   if(requestStop) SeedFarmingRequestStop();
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingWriteFrame(ulong pass,double result,double &data[],string &inputNames[],string &inputValues[])
+  {
+   if(g_seedFarmingCompleted || g_seedFarmingRows>=g_seedFarmingTarget) return;
+   if(!SeedFarmingOpenXml(inputNames)) return;
+
+   double profit  =(ArraySize(data)>0 ? data[0] : 0.0);
+   double expected=(ArraySize(data)>1 ? data[1] : 0.0);
+   double pf      =(ArraySize(data)>2 ? data[2] : 0.0);
+   double rf      =(ArraySize(data)>3 ? data[3] : 0.0);
+   double sr      =(ArraySize(data)>4 ? data[4] : 0.0);
+   double ddPc    =(ArraySize(data)>5 ? data[5] : 0.0);
+   int    trades  =(ArraySize(data)>6 ? (int)data[6] : 0);
+
+   FileWriteString(g_seedFarmingHandle,"<Row>\n");
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,(double)pass,0);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,result,8);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,profit,2);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,expected,8);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,pf,8);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,rf,8);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,sr,8);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,result,8);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,ddPc,4);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,(double)trades,0);
+   for(int i=0;i<ArraySize(g_seedFarmingInputNames);i++)
+   {
+    string value="";
+    for(int j=0;j<ArraySize(inputNames);j++) if(inputNames[j]==g_seedFarmingInputNames[i]) {value=inputValues[j]; break;}
+    SeedFarmingWriteValueCell(g_seedFarmingHandle,value);
+   }
+   FileWriteString(g_seedFarmingHandle,"</Row>\n");
+   FileFlush(g_seedFarmingHandle);
+
+   g_seedFarmingRows++;
+   g_seedFarmingFitnessSum+=result;
+   g_seedFarmingTradesSum+=trades;
+   if(result>g_seedFarmingBestFitness) g_seedFarmingBestFitness=result;
+   if(trades>0) g_seedFarmingHealthy++;
+   else         g_seedFarmingZeroTrades++;
+
+   if(g_seedFarmingRows>=g_seedFarmingTarget) SeedFarmingFinalize(true);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingProcessFrames()
+  {
+   if(!g_seedFarmingActive || g_seedFarmingCompleted) return;
+
+   ulong pass;
+   string name;
+   long id;
+   double value;
+   double data[];
+   ResetLastError();
+
+   while(g_seedFarmingRows<g_seedFarmingTarget && FrameNext(pass,name,id,value,data))
+   {
+    if(name!=SEEDFARMING_MODE) continue;
+
+    string params[],inputNames[],inputValues[];
+    uint count=0;
+    if(!FrameInputs(pass,params,count))
+    {
+     Print("SeedFarming: FrameInputs failed for pass ",pass," error=",GetLastError());
+     continue;
+    }
+    SeedFarmingExtractInputs(params,count,inputNames,inputValues);
+    SeedFarmingWriteFrame(pass,value,data,inputNames,inputValues);
+   }
+
+   if(_LastError!=0 && _LastError!=4000) Print("SeedFarming: FrameNext error=",_LastError);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingAddFrame(double fitness,double profit,double expected,double pf,double rf,double sr,double ddPc,int trades)
+  {
+   if(!MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return;
+   if(Mode!=SEEDFARMING_MODE)
+   {
+    if(StringFind(EA_Desc,SEEDFARMING_MODE)<0) return;
+    string names[],values[];
+    if(!RefreshEA_DescModeKeys(names,values) || Mode!=SEEDFARMING_MODE) return;
+   }
+
+   double payload[7];
+   payload[0]=profit;
+   payload[1]=expected;
+   payload[2]=pf;
+   payload[3]=rf;
+   payload[4]=sr;
+   payload[5]=ddPc;
+   payload[6]=(double)trades;
+
+   if(!FrameAdd(SEEDFARMING_MODE,0,fitness,payload))
+      Print("SeedFarming: FrameAdd failed. error=",GetLastError());
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 int OnTesterInit()
   {
    Print(EA_Name+": "+Symbol()+" Optimization Initialization.");//,TerminalInfoString(TERMINAL_DATA_PATH));
    Sleep(100);
-   if(GlobalVariableGet("BatchOnGoing")!=0)
+   bool seedFarming=SeedFarmingPrepareReceiver();
+   if(!seedFarming && GlobalVariableGet("BatchOnGoing")!=0)
    {
     if(GlobalVariableGet("TerminalRunning")==0) GlobalVariableSet("TerminalRunning",1.0);
     else {
@@ -2331,9 +2698,9 @@ int OnTesterInit()
      WriteLog("INIT: Batch Queue updated",false,Key,EA_Name,Server);
     }
     else WriteLog("INIT: ❌ Batch Queue update Error",false,Key,EA_Name,Server);
-    Sleep(500);
-   }
-   else ShowPrompt("Optimization running...","Do not close this chart!"," ","");
+     Sleep(500);
+    }
+   else if(!seedFarming) ShowPrompt("Optimization running...","Do not close this chart!"," ","");
    
    if(Mode_Opti==Opti_PF_MRFp || Mode_Opti==Opti_PF_MRF_SRp)
    {
@@ -2387,7 +2754,11 @@ double OnTester()
    double RF  = TesterStatistics(STAT_RECOVERY_FACTOR);
    double SR  = TesterStatistics(STAT_SHARPE_RATIO);        // SR
    double profit = TesterStatistics(STAT_PROFIT);
+   double expected_payoff = TesterStatistics(STAT_EXPECTED_PAYOFF);
+   double PF_raw = PF;
+   double SR_raw = SR;
    double dd     = TesterStatistics(STAT_EQUITY_DD);//TesterStatistics(STAT_EQUITY_DDREL_PERCENT);// %DD
+   double dd_pc  = DDs_PC[0]*100.0;
    double MARF = ARF/(days/21.7);
    double mean_duration = MathMean(Position_Durations);
    //File_name   = "DDs_"+Symbol()+"_"+(string)Period()+".csv";
@@ -2587,21 +2958,21 @@ double OnTester()
     else WriteSet(desc);
     ChartClose(ChartID());
    }
-   //if(!MQLInfoInteger(MQL_FORWARD))
-   {
-    if(trades==0)                      return -0.010;
-    if(trades<=1)                      return -0.007;
-    if(trades<=2)                      return -0.006;
-    if(trades<=3)                      return -0.005;
-    if(trades<=4)                      return -0.004;
-    if(trades<=5)                      return -0.003;
-    if(trades<=6)                      return -0.001;
-  //if(mean_duration>Minutes_Hi)       return -0.3;
-   }
+   double final_fitness=fitness;
+   if(trades==0)                      final_fitness=-0.010;
+   else if(trades<=1)                 final_fitness=-0.007;
+   else if(trades<=2)                 final_fitness=-0.006;
+   else if(trades<=3)                 final_fitness=-0.005;
+   else if(trades<=4)                 final_fitness=-0.004;
+   else if(trades<=5)                 final_fitness=-0.003;
+   else if(trades<=6)                 final_fitness=-0.001;
+   //if(mean_duration>Minutes_Hi)      final_fitness=-0.3;
+
+   SeedFarmingAddFrame(final_fitness,profit,expected_payoff,PF_raw,RF,SR_raw,dd_pc,trades);
 //-----------------------------------------------------------------------------------
    //if(FileIsExist(Key+"\\"+EA_Name+"-"+Server+"\\"+"WriteFlag",FILE_COMMON) && !MQLInfoInteger(MQL_OPTIMIZATION) && !MQLInfoInteger(MQL_FORWARD))
    //WriteTesterStatistics(Key+"\\"+EA_Name+"-"+Server+"\\"+"Stats");
-   return fitness;
+   return final_fitness;
   }
 //-----------------------------------------------------------------------------------
 double AdjustFitness(double fitness,int trades,double mean_duration)
@@ -2637,21 +3008,11 @@ double AdjustFitness(double fitness,int trades,double mean_duration)
  //return MathLog(fitness+1);
   }
 //-----------------------------------------------------------------------------------
-//void OnTesterPass()
-  //{
-   //ulong pass;
-   //string name;
-   //long id;
-   //double value;
-   //ushort data[];
-   
-   //if(!FrameNext(pass,name,id,value,data))   printf("Error #%i with FrameNext",GetLastError());
-   //else                                      printf("%s : new frame pass:%llu name:%s id:%lli value:%f",__FUNCTION__,pass,name,id,value);
-   
-   //string receivedData=ShortArrayToString(data);
-   //printf("Size: %i %s",ArraySize(data),receivedData);
-   //Comment(receivedData);
-  //}
+void OnTesterPass()
+  {
+   if(!g_seedFarmingActive && !SeedFarmingPrepareReceiver()) return;
+   SeedFarmingProcessFrames();
+  }
 //-----------------------------------------------------------------------------------
 void OnTesterDeinit()
   {
@@ -2660,6 +3021,16 @@ void OnTesterDeinit()
    if(FileTester_handle != INVALID_HANDLE) {FileClose(FileTester_handle);  Sleep(100);}
    FileDelete(Key+"\\"+"Tester.txt",FILE_COMMON);                          Sleep(500);
    ChartSetInteger(0, CHART_BRING_TO_TOP, true);                           Sleep(100);
+
+   bool seedFarming=g_seedFarmingActive;
+   if(!seedFarming) seedFarming=SeedFarmingPrepareReceiver();
+   if(seedFarming)
+   {
+    SeedFarmingProcessFrames();
+    SeedFarmingFinalize(false);
+    ShowPrompt("SeedFarming complete","Captured "+IntegerToString(g_seedFarmingRows)+" frame row(s).","XML ready in Common\\Files\\"+g_seedFarmingDir,"");
+    return;
+   }
    
    if(GlobalVariableGet("BatchOnGoing")!=0)
    {

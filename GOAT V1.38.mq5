@@ -2177,6 +2177,7 @@ int OnInit()
       int dialogOuterHeight=newHeight+dialogFramePadding;
       int top =(dialogOuterHeight >= chartHeight ? 0 : (chartHeight - dialogOuterHeight) / 2);
       Font_Size=(int)MathCeil(Font_Size_Base*scaleFactor/dpiFactor); //Font_Size_Header=Font_Size+3;
+      if(Mode_Operation==Operation_Batch) Font_Size=(int)MathMax(Font_Size,8);
       Print("ChartWidth="+(string)chartWidth+" ChartHeight="+(string)chartHeight);
       Print("BaseWidth="+(string)baseWidth+" BaseHeight="+(string)baseHeight+" NewWidth="+(string)newWidth+" NewHeight="+(string)newHeight+" DialogOuterHeight="+(string)dialogOuterHeight);
       Print("BaseFontSize="+(string)Font_Size_Base+" ScaleFactor="+DoubleToString(scaleFactor,2)+" DPIfactor="+(string)dpiFactor+" FontSize="+(string)Font_Size);
@@ -3557,7 +3558,12 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTimer(void)
   {
-   if(GlobalVariableGet("RefreshQueue")!=0) {TesterDialog.OnClickRefresh(true); GlobalVariableDel("RefreshQueue");}
+   if(Mode_Operation==Operation_Batch && GlobalVariableGet("RefreshQueue")!=0)
+   {
+    TesterDialog.OnClickRefresh(true);
+    GlobalVariableDel("RefreshQueue");
+    ChartRedraw(0);
+   }
    
    if(Mode_Operation==Operation_Dash)
    {

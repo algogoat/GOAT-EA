@@ -267,13 +267,13 @@ void CStrategyTesterDialog::OnChange_cmbForward(void)
 //+------------------------------------------------------------------+
 bool CStrategyTesterDialog::Create(const long chart_id, const string name,const int subwin, int x1, int y1, int x2, int y2)
   {
-   m_leftMargin   =(int)(0.020*D_Width);
-   m_topMargin    =(int)(0.025*D_Height);
-   m_labelWidth   =(int)(0.100*D_Width);
-   m_GapHoriz     =(int)(0.010*D_Width);
-   m_rowHeight    =(int)(0.051*D_Height);
-   m_controlHeight=(int)(0.043*D_Height);
-   m_controlWidth =(int)(0.280*D_Width);
+   m_leftMargin   =(int)MathMax(6,(int)(0.020*D_Width));
+   m_topMargin    =(int)MathMax(8,(int)(0.025*D_Height));
+   m_labelWidth   =(int)MathMax(58,(int)(0.100*D_Width));
+   m_GapHoriz     =(int)MathMax(4,(int)(0.010*D_Width));
+   m_controlHeight=(int)MathMax(CONTROLS_COMBO_MIN_HEIGHT,(int)(0.043*D_Height));
+   m_rowHeight    =(int)MathMax(m_controlHeight+4,(int)(0.051*D_Height));
+   m_controlWidth =(int)MathMax(165,(int)(0.280*D_Width));
    
    int GapCtrl    =(int)(0.05*m_controlWidth);
    // 30+65+5=100
@@ -1185,26 +1185,29 @@ void CStrategyTesterDialog::OnClickRefresh(bool init=false, bool select=false)
    int total=StringSplit(QueueContent, (ushort)31, results);
    ReconstructFile(Path_QueueBatch,results);
    
+   int added=0;
+   int select_index=-1;
    for(int i=0;i<total;i++)
    {
     string res[];
     if(StringSplit(results[i],';',res)==3)
     {
-     m_listQueue.ItemDelete(i);
-     m_listQueue.AddItem(res[1]);
-          if(StringFind(res[1],"Completed",0)>=0) {}//m_listQueue.ItemColorsFHD(i,clrGreen);}
-     else if(StringFind(res[1],"OnGoing"  ,0)>=0) {m_listQueue.Select(i);}
-     else                                         {}//m_listQueue.ItemColorsFHD(i,clrBlack);}
+     if(m_listQueue.AddItem(res[1]))
+     {
+          if(StringFind(res[1],"Completed",0)>=0) {}//m_listQueue.ItemColorsFHD(added,clrGreen);}
+     else if(StringFind(res[1],"OnGoing"  ,0)>=0) select_index=added;
+     else                                         {}//m_listQueue.ItemColorsFHD(added,clrBlack);}
+      added++;
+     }
      //m_edtQueue[i].Text(res[1]); // error array out of bound
      //     if(StringFind(res[1],"Completed",0)>=0) m_edtQueue[i].Color(clrGreen);
      //else if(StringFind(res[1],"OnGoing"  ,0)>=0) m_edtQueue[i].Color(clrRed);
      //else                                         m_edtQueue[i].Color(clrBlack);
     }
    }
-   if(1)//!init)
-   {minimizeWindow(); maximizeWindow(); Sleep(20);}
-   if(select && total>0) m_listQueue.Select(total - 2);  //Print(total);// Select the latest (lowest) entry
-   Sleep(20);
+   if(select && added>0 && select_index<0) select_index=added-1;  // Select the latest displayed entry
+   if(select_index>=0) m_listQueue.Select(select_index);
+   ChartRedraw(m_chart_id);
   }
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickSyncBias(void)

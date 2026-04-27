@@ -1225,6 +1225,8 @@ void CStrategyTesterDialog::OnClickRefresh(bool init=false, bool select=false)
    }
    if(select && added>0 && select_index<0) select_index=added-1;  // Select the latest displayed entry
    if(select_index>=0) m_listQueue.Select(select_index);
+   // ItemsClear() hides the list scrollbar; show after refill so overflow is visible again.
+   m_listQueue.Show();
    ChartRedraw(m_chart_id);
   }
 //+------------------------------------------------------------------+

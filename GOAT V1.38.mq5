@@ -2164,6 +2164,7 @@ int OnInit()
       if(!ChartGetInteger(0,CHART_IS_MAXIMIZED,0)) Sleep(999);
       int chartWidth  = (int)ChartGetInteger(ChartID(), CHART_WIDTH_IN_PIXELS);
       int chartHeight = (int)ChartGetInteger(ChartID(), CHART_HEIGHT_IN_PIXELS);
+      bool preserveBatchStudioSize=(Mode_Operation==Operation_Batch && GlobalVariableGet("BatchOnGoing")!=0.0);
       int baseWidth=(Mode_Operation==Operation_Dash ? MathMax(DWidth,1500) : DWidth);
       int baseHeight=DHeight;
       double marginW = 0.05*chartWidth, usableWidth =chartWidth -(2.0*marginW), scaleW=usableWidth/(double)baseWidth;
@@ -2172,12 +2173,28 @@ int OnInit()
       if(scaleFactor<=0.0) scaleFactor=1.0;
       int newWidth =MathMin((int)MathRound(baseWidth *scaleFactor),(int)MathRound(usableWidth));
       int newHeight=(int)MathRound(baseHeight*scaleFactor);
+      if(preserveBatchStudioSize)
+      {
+       int savedWidth=(int)MathRound(GlobalVariableGet("GOAT_OPT_STUDIO_WIDTH"));
+       int savedHeight=(int)MathRound(GlobalVariableGet("GOAT_OPT_STUDIO_HEIGHT"));
+       if(savedWidth<=0) savedWidth=baseWidth;
+       if(savedHeight<=0) savedHeight=baseHeight;
+       newWidth=savedWidth;
+       newHeight=savedHeight;
+       scaleFactor=(double)newHeight/(double)baseHeight;
+      }
       int left=(newWidth >= (int)MathRound(usableWidth) ? (int)MathRound(marginW) : (chartWidth  - newWidth ) / 2);
+      if(preserveBatchStudioSize && newWidth>chartWidth) left=0;
       int dialogFramePadding=MathMax(28,(int)MathRound(newHeight*0.06));
       int dialogOuterHeight=newHeight+dialogFramePadding;
       int top =(dialogOuterHeight >= chartHeight ? 0 : (chartHeight - dialogOuterHeight) / 2);
       Font_Size=(int)MathCeil(Font_Size_Base*scaleFactor/dpiFactor); //Font_Size_Header=Font_Size+3;
       if(Mode_Operation==Operation_Batch) Font_Size=(int)MathMax(Font_Size,8);
+      if(preserveBatchStudioSize)
+      {
+       int savedFont=(int)MathRound(GlobalVariableGet("GOAT_OPT_STUDIO_FONT"));
+       if(savedFont>0) Font_Size=savedFont;
+      }
       Print("ChartWidth="+(string)chartWidth+" ChartHeight="+(string)chartHeight);
       Print("BaseWidth="+(string)baseWidth+" BaseHeight="+(string)baseHeight+" NewWidth="+(string)newWidth+" NewHeight="+(string)newHeight+" DialogOuterHeight="+(string)dialogOuterHeight);
       Print("BaseFontSize="+(string)Font_Size_Base+" ScaleFactor="+DoubleToString(scaleFactor,2)+" DPIfactor="+(string)dpiFactor+" FontSize="+(string)Font_Size);
@@ -3325,6 +3342,9 @@ void OnTesterDeinit()
     //WriteLog("DEINIT: ➡️➡️➡️➡️➡️ Batch Summary:\n"+summary,false,Key,EA_Name,Server);
       WriteLog("DEINIT: 🔵🔵🔵🔵🔵 Batch Completed 🔵🔵🔵🔵🔵",true,Key,EA_Name,Server);
       GlobalVariableDel("BatchOnGoing");
+      GlobalVariableDel("GOAT_OPT_STUDIO_WIDTH");
+      GlobalVariableDel("GOAT_OPT_STUDIO_HEIGHT");
+      GlobalVariableDel("GOAT_OPT_STUDIO_FONT");
     //int ret=MessageBox("Batch Summary:\n\n"+summary+"\n\nDo you want to open logs?","Batch Complete...",MB_OKCANCEL);
     //if(ret=IDOK) 
      }

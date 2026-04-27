@@ -84,7 +84,7 @@ public:
 
    string Path_QueueBatch,Path_QueueStrategy,Path_ExportSettings,Key_,EA_Name_,Server_;
    int D_Width,D_Height,Font_Size;
-   bool m_dataSyncBusy,m_compactLayout;
+   bool m_dataSyncBusy,m_compactLayout,m_batchRunning;
  //color clr_CaptionBack,clr_CaptionBorder,clr_ClientBack,clr_ClientBorder,clr_Text;
    
    CStrategyTesterDialog();
@@ -167,6 +167,7 @@ CStrategyTesterDialog::CStrategyTesterDialog()
 {
    m_dataSyncBusy = false;
    m_compactLayout = false;
+   m_batchRunning = false;
 }
 CStrategyTesterDialog::~CStrategyTesterDialog()
 {
@@ -275,7 +276,8 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    m_controlHeight=(int)MathMax(CONTROLS_COMBO_MIN_HEIGHT,(int)(0.043*D_Height));
    m_rowHeight    =(int)MathMax(m_controlHeight+4,(int)(0.051*D_Height));
    m_controlWidth =(int)MathMax(165,(int)(0.280*D_Width));
-   m_compactLayout=(GlobalVariableGet("BatchOnGoing")!=0.0);
+   m_batchRunning=(GlobalVariableGet("BatchOnGoing")!=0.0);
+   m_compactLayout=false;
    
    int GapCtrl    =(int)(0.05*m_controlWidth);
    // 30+65+5=100
@@ -510,9 +512,9 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    
    Ctrl_M=0.30;
    y=startY;
-   CreateButtonCtrl(m_btnStart   , "m_btnStart"    ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), startStopHeight, m_compactLayout ? "RUNNING" : "START BATCH");
+   CreateButtonCtrl(m_btnStart   , "m_btnStart"    ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), startStopHeight, m_batchRunning ? "RUNNING" : "START BATCH");
          m_btnStart.FontSize(m_btnStart.FontSize()+2); m_btnStart.Color(clrWhite); m_btnStart.ColorBackground(clrGreen); m_btnStart.ColorBorder(clrBlack);//C'15,23,42');
-   if(m_compactLayout) m_btnStart.Disable();
+   if(m_batchRunning) m_btnStart.Disable();
    y=stopY;
    CreateButtonCtrl(m_btnStop    , "m_btnStop"     ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), startStopHeight, "TERMINATE");
          m_btnStop.FontSize(m_btnStop.FontSize()+2); m_btnStop.Color(clrWhite); m_btnStop.ColorBackground(clrCrimson); m_btnStop.ColorBorder(clrBlack);//C'15,23,42');
@@ -1380,6 +1382,9 @@ void CStrategyTesterDialog::OnClickStart(void)
    {
     WriteLog((string)pend+" Pending Queue Items Found.",false,Key_,EA_Name_,Server_);
     WriteLog("Batch Start clicked and started. Terminal Restart Initiated.",false,Key_,EA_Name_,Server_);
+    GlobalVariableSet("GOAT_OPT_STUDIO_WIDTH",(double)D_Width);
+    GlobalVariableSet("GOAT_OPT_STUDIO_HEIGHT",(double)D_Height);
+    GlobalVariableSet("GOAT_OPT_STUDIO_FONT",(double)Font_Size);
     GlobalVariableSet("BatchOnGoing",1.0);
     //MessageBox("Terminal will restart now.","Info",MB_OK|MB_ICONINFORMATION);
     GlobalVariableDel("TerminalRunning");

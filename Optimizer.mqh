@@ -84,7 +84,7 @@ public:
 
    string Path_QueueBatch,Path_QueueStrategy,Path_ExportSettings,Key_,EA_Name_,Server_;
    int D_Width,D_Height,Font_Size;
-   bool m_dataSyncBusy;
+   bool m_dataSyncBusy,m_compactLayout;
  //color clr_CaptionBack,clr_CaptionBorder,clr_ClientBack,clr_ClientBorder,clr_Text;
    
    CStrategyTesterDialog();
@@ -166,6 +166,7 @@ EVENT_MAP_END(CAppDialog)
 CStrategyTesterDialog::CStrategyTesterDialog()
 {
    m_dataSyncBusy = false;
+   m_compactLayout = false;
 }
 CStrategyTesterDialog::~CStrategyTesterDialog()
 {
@@ -274,6 +275,7 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    m_controlHeight=(int)MathMax(CONTROLS_COMBO_MIN_HEIGHT,(int)(0.043*D_Height));
    m_rowHeight    =(int)MathMax(m_controlHeight+4,(int)(0.051*D_Height));
    m_controlWidth =(int)MathMax(165,(int)(0.280*D_Width));
+   m_compactLayout=(GlobalVariableGet("BatchOnGoing")!=0.0);
    
    int GapCtrl    =(int)(0.05*m_controlWidth);
    // 30+65+5=100
@@ -300,7 +302,8 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    ChartSetInteger(0,CHART_SHOW_TRADE_HISTORY,0);
    SetCaptionClientColors();
    
-   if(!c_Wnd_OPT.Create(m_chart_id,m_name+"Boundary",m_subwin,(int)(D_Width*0.01),(int)(D_Height*0.015),(int)(D_Width*0.42),(int)(D_Height*0.69)))  // left,top,right,bottom
+   int optPanelBottom=(int)(D_Height*(m_compactLayout ? 0.985 : 0.69));
+   if(!c_Wnd_OPT.Create(m_chart_id,m_name+"Boundary",m_subwin,(int)(D_Width*0.01),(int)(D_Height*0.015),(int)(D_Width*0.42),optPanelBottom))  // left,top,right,bottom
    {
       Print("Failed to create boundary rect: ", GetLastError());
       return false;
@@ -475,15 +478,26 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    int indt_left = m_leftMargin+m_labelWidth+m_GapHoriz+m_controlWidth+m_GapHoriz+2*m_GapHoriz;
    int width_right = (int)(D_Width*0.98)-indt_left;
    
-   CreateListView(m_listQueue,"m_listQueue",indt_left, y,width_right,last_y-m_topMargin-(int)(1.2*m_rowHeight)," ");
-   for(int i=0;i<ArraySize(m_edtQueue);i++)
+   int queueListTop=y;
+   int queueListHeight=last_y-m_topMargin-(int)(1.2*m_rowHeight);
+   int queueButtonY=queueListTop+ArraySize(m_edtQueue)*m_rowHeight+m_rowHeight;
+   int startY=queueButtonY+(int)(m_rowHeight*1.5);
+   int stopY=startY+(int)(m_rowHeight*2.5);
+   int startStopHeight=(int)(m_rowHeight*2.0);
+
+   if(m_compactLayout)
    {
-    //CreateEditBox(m_edtQueue[i], "edtQueue" +IntegerToString(i,2,'0'),m_leftMargin+m_labelWidth+  m_controlWidth+30, y,m_controlWidth+100  ," ");
-    //m_edtQueue[i].ReadOnly(true);
-    //CreateEditBox(m_edtStatus[i],"edtStatus"+IntegerToString(i,2,'0'),m_leftMargin+m_labelWidth+2*m_controlWidth+40, y,m_controlWidth/3," "); m_edtStatus[i].ReadOnly(true);
-    y += m_rowHeight;
+    int compactGap=MathMax(4,m_GapHoriz);
+    startStopHeight=MathMax(m_controlHeight+8,(int)(m_rowHeight*1.6));
+    int compactBottom=D_Height-m_topMargin;
+    stopY=compactBottom-startStopHeight;
+    startY=stopY-compactGap-startStopHeight;
+    queueButtonY=startY-compactGap-m_rowHeight;
+    queueListHeight=MathMax(m_rowHeight*4,queueButtonY-queueListTop-compactGap);
    }
-   y += m_rowHeight; Ctrl_M=0.19;
+
+   CreateListView(m_listQueue,"m_listQueue",indt_left, queueListTop,width_right,queueListHeight," ");
+   y=queueButtonY; Ctrl_M=0.19;
  //CreateButtonCtrl(m_btnDelQ          , "m_btnDelQ"          ,indt_left,                                                       y, (int)(width_right*Ctrl_M), m_rowHeight, "Delete Queue");
  //CreateButtonCtrl(m_btnDelQitem      , "m_btnDelQitem"      ,indt_left+(int)(width_right*Ctrl_M*1)+1*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), m_rowHeight, "Delete Item");
  //CreateButtonCtrl(m_btnRefresh       , "m_btnRefresh"       ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), m_rowHeight, "Refresh Queue");
@@ -495,14 +509,17 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    CreateButtonCtrl(m_btnMakePending   , "m_btnMakePending"   ,indt_left+(int)(width_right*Ctrl_M*3.8)+5*(int)(width_right*0.02), y, (int)(width_right*Ctrl_M)      , m_rowHeight, "Activate");
    
    Ctrl_M=0.30;
-   y += (int)(m_rowHeight*1.5);
-   CreateButtonCtrl(m_btnStart   , "m_btnStart"    ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), (int)(m_rowHeight*2.0), "START BATCH");
+   y=startY;
+   CreateButtonCtrl(m_btnStart   , "m_btnStart"    ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), startStopHeight, m_compactLayout ? "RUNNING" : "START BATCH");
          m_btnStart.FontSize(m_btnStart.FontSize()+2); m_btnStart.Color(clrWhite); m_btnStart.ColorBackground(clrGreen); m_btnStart.ColorBorder(clrBlack);//C'15,23,42');
-   y += (int)(m_rowHeight*2.5);
-   CreateButtonCtrl(m_btnStop    , "m_btnStop"     ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), (int)(m_rowHeight*2.0), "TERMINATE");
+   if(m_compactLayout) m_btnStart.Disable();
+   y=stopY;
+   CreateButtonCtrl(m_btnStop    , "m_btnStop"     ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), startStopHeight, "TERMINATE");
          m_btnStop.FontSize(m_btnStop.FontSize()+2); m_btnStop.Color(clrWhite); m_btnStop.ColorBackground(clrCrimson); m_btnStop.ColorBorder(clrBlack);//C'15,23,42');
    y += m_rowHeight;
    
+   if(!m_compactLayout)
+   {
   int exportPanelLeft   = (int)(D_Width*0.01);
   int exportPanelTop    = (int)(D_Height*0.70);
   int exportPanelRight  = (int)(D_Width*0.80);
@@ -584,6 +601,7 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
   CreateButtonCtrl(m_btnSyncBias,"m_btnSyncBias",syncButtonX,syncY,syncButtonWidth,syncButtonHeight,"Sync AI Bias History");
   CreateButtonCtrl(m_btnViewBias,"m_btnViewBias",syncButtonX+syncButtonWidth+syncButtonGap,syncY,syncButtonWidth,syncButtonHeight,"View AI Bias History");
   CreateButtonCtrl(m_btnSyncNews,"m_btnSyncNews",syncButtonX+(syncButtonWidth+syncButtonGap)*2,syncY,syncButtonWidth,syncButtonHeight,"Sync News History");
+   }
    // Show the dialog
    Show(); Sleep(50);
    OnClickRefresh(true);
@@ -1255,6 +1273,7 @@ void CStrategyTesterDialog::OnClickViewBias(void)
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::RefreshNewsSyncButton(void)
   {
+   if(m_compactLayout) return;
    datetime latest = 0;
    bool stale = IsNewsHistoryStale(NEWS_FILE, latest);
 
@@ -1327,6 +1346,7 @@ void CStrategyTesterDialog::OnClickSyncNews(void)
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickStart(void)
   {
+   if(GlobalVariableGet("BatchOnGoing")!=0.0) {MessageBox("Batch is already running.","Info",MB_OK|MB_ICONINFORMATION); return;}
    if(!FileIsExist(Path_QueueBatch,FILE_COMMON)) {MessageBox("No Queue file found.","Error",MB_OK|MB_ICONERROR); return;}
    News.Key_ = Key_;
    Bias.Key_ = Key_;

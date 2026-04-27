@@ -120,20 +120,25 @@ class SEQUENCE
    TRADELEVEL  TradeLevels[];
    string      Desc;
    bool        Active,Traded,Trailing,Virtual,Retrace_Triggered;
+   bool        BiasRescueActive,BiasRescueBEProtected;
    int         dir,Level_Count,Trades_Count;
+   int         BiasRescuePositiveAdds;
    double      Level_Last,Level_Retrace,Level_Lock,Level_TP,Level_SL,Level_TSL,Level_Entry,LotsTotal;
    double      Size_Grid,Size_Lock,Size_TP,Size_SL,Size_TSL;
    double      StartLots,PeakLots,PeakCumLots,ScaleFactor,LotsRaw[],LotsNorm[],LotsCum[],Distances[];
+   double      BiasRescueRealizedPL,BiasRescueBEPrice,BiasRescueSLPrice;
    //double      FirstTradeEquity;
    
    SEQUENCE()
    {
     dir=OP_NIL; Virtual=false;
-    Active=Traded=Trailing=Retrace_Triggered=false;
+    Active=Traded=Trailing=Retrace_Triggered=BiasRescueActive=BiasRescueBEProtected=false;
     Level_Count=Trades_Count=ArrayResize(TradeLevels,0,Max_Seq_Levels);
+    BiasRescuePositiveAdds=0;
     Level_Last=Level_Retrace=Level_Lock=Level_TP=Level_SL=Level_TSL=Level_Entry=LotsTotal=0.0;
     Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;
     StartLots=PeakLots=PeakCumLots=ScaleFactor=0.0;
+    BiasRescueRealizedPL=BiasRescueBEPrice=BiasRescueSLPrice=0.0;
     ArrayResize(LotsRaw,0,Max_Seq_Trades); ArrayResize(LotsNorm,0,Max_Seq_Trades); ArrayResize(LotsCum,0,Max_Seq_Trades); ArrayResize(Distances,0,Max_Seq_Trades);
     //FirstTradeEquity=0.0;
    }
@@ -144,6 +149,7 @@ class SEQUENCE
     Desc = Strat+((Virtual)?" Virtual ":" ")+((dir==OP_BUY)?"Buy":"Sell");
     Retrace_Triggered=false;
     Level_Retrace=0.0;
+    ResetBiasRescue();
    }
 //----------------------
    void End_Sequence(string desc)
@@ -189,6 +195,7 @@ class SEQUENCE
       Sequences_PL++;
      }
      Active=Traded=Trailing=Retrace_Triggered=false;
+     ResetBiasRescue();
      Level_Count=Trades_Count=ArrayResize(TradeLevels,0,Max_Seq_Levels);
      Level_Last=Level_Retrace=Level_Lock=Level_TP=Level_SL=Level_TSL=Level_Entry=LotsTotal=0.0;
      Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;
@@ -202,7 +209,15 @@ class SEQUENCE
      if(ObjectFind(0,Desc+" TPLine")>=0)     HLineDelete(0,Desc+" TPLine");
      if(ObjectFind(0,Desc+" SLLine")>=0)     HLineDelete(0,Desc+" SLLine");
      Print(Desc+" Sequence Ended"+" ("+desc+")");
+     }
     }
+//----------------------
+   void ResetBiasRescue()
+   {
+    BiasRescueActive=false;
+    BiasRescueBEProtected=false;
+    BiasRescuePositiveAdds=0;
+    BiasRescueRealizedPL=BiasRescueBEPrice=BiasRescueSLPrice=0.0;
    }
 //---------------------- Round any raw volume to the nearest tradable lot
    double NormalizedLots(double raw_volume)
@@ -827,6 +842,181 @@ class SEQUENCE
     }
     return standing;
    }
+//---------------------- live ticket presence for bias rescue decisions
+   bool HasLiveSequenceTrades()
+   {
+    if(!Traded) return false;
+    RefreshTicketLots();
+    for(int i=0; i<Level_Count; i++)
+    {
+     if(TradeLevels[i].ticket!=0 && TradeLevels[i].lots>0.0) return true;
+    }
+    return false;
+   }
+//---------------------- realized P/L ledger for sequence partial/full closes
+   double ClosedDealPL(const ulong deal_ticket)
+   {
+    return HistoryDealGetDouble(deal_ticket,DEAL_PROFIT)
+          +HistoryDealGetDouble(deal_ticket,DEAL_COMMISSION)
+          +HistoryDealGetDouble(deal_ticket,DEAL_SWAP);
+   }
+   void AccumulateBiasRescueDealPL(const ulong deal_ticket)
+   {
+    if(deal_ticket==0 || !HistoryDealSelect(deal_ticket)) return;
+    if(HistoryDealGetInteger(deal_ticket,DEAL_MAGIC)!=MAGIC1) return;
+    if(HistoryDealGetString(deal_ticket,DEAL_SYMBOL)!=_Symbol) return;
+
+    int deal_entry=(int)HistoryDealGetInteger(deal_ticket,DEAL_ENTRY);
+    if(deal_entry==DEAL_ENTRY_OUT || deal_entry==DEAL_ENTRY_OUT_BY)
+       BiasRescueRealizedPL += ClosedDealPL(deal_ticket);
+   }
+//---------------------- true sequence P/L = realized ledger + live open P/L
+   double CurrentSequencePL()
+   {
+    double pl=BiasRescueRealizedPL;
+    if(!Traded) return pl;
+
+    RefreshTicketLots();
+    for(int i=0; i<Level_Count; i++)
+    {
+     ulong tk=(ulong)TradeLevels[i].ticket;
+     if(tk==0) continue;
+     if(!PositionSelectByTicket(tk)) continue;
+     pl += PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+    }
+    return pl;
+   }
+//---------------------- price where the live basket reaches target sequence P/L
+   bool ComputeBiasRescueTargetPrice(const double target_pl,const double standing_lots,const double current_pl,double &price_out)
+   {
+    double perUnit=PriceValuePerPointPerLot();
+    if(standing_lots<=0.0 || perUnit<=0.0 || !MathIsValidNumber(perUnit)) return false;
+
+    double ref=(dir==OP_BUY) ? SymbolInfoDouble(_Symbol,SYMBOL_BID) : SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+    if(!(ref>0.0) || !MathIsValidNumber(ref)) ref=(dir==OP_BUY) ? bid : ask;
+    if(!(ref>0.0) || !MathIsValidNumber(ref)) return false;
+
+    double delta=(target_pl-current_pl)/(perUnit*standing_lots);
+    price_out=(dir==OP_BUY) ? ref+delta : ref-delta;
+    price_out=NormalizeDouble(price_out,_Digits);
+    return (price_out>0.0 && MathIsValidNumber(price_out));
+   }
+   int BiasRescueMinStopPoints()
+   {
+    int stops=(int)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL);
+    int freeze=(int)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL);
+    int base=(stops>freeze) ? stops : freeze;
+    if(base<0) base=0;
+    return base+1;
+   }
+   bool IsBiasRescueStopLegal(const double sl_price)
+   {
+    if(!(sl_price>0.0) || !MathIsValidNumber(sl_price)) return false;
+    int minPts=BiasRescueMinStopPoints();
+    double px=(dir==OP_BUY) ? SymbolInfoDouble(_Symbol,SYMBOL_BID) : SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+    if(!(px>0.0) || !MathIsValidNumber(px)) px=(dir==OP_BUY) ? bid : ask;
+    if(!(px>0.0) || !MathIsValidNumber(px)) return false;
+    if(dir==OP_BUY)  return (sl_price < NormalizeDouble(px-minPts*_Point,_Digits));
+    if(dir==OP_SELL) return (sl_price > NormalizeDouble(px+minPts*_Point,_Digits));
+    return false;
+   }
+   bool IsBiasRescueBEReached()
+   {
+    if(!(BiasRescueBEPrice>0.0)) return false;
+    double px=(dir==OP_BUY) ? SymbolInfoDouble(_Symbol,SYMBOL_BID) : SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+    if(!(px>0.0) || !MathIsValidNumber(px)) px=(dir==OP_BUY) ? bid : ask;
+    if(dir==OP_BUY)  return (px>=BiasRescueBEPrice);
+    if(dir==OP_SELL) return (px<=BiasRescueBEPrice);
+    return false;
+   }
+   double TighterBiasStop(const double first_sl,const double second_sl)
+   {
+    if(first_sl<=0.0)  return second_sl;
+    if(second_sl<=0.0) return first_sl;
+    if(dir==OP_BUY)  return MathMax(first_sl,second_sl);
+    if(dir==OP_SELL) return MathMin(first_sl,second_sl);
+    return second_sl;
+   }
+   double EffectiveBiasRescueSL(const double normal_sl)
+   {
+    double sl=TighterBiasStop(normal_sl,BiasRescueSLPrice);
+    if(BiasRescueBEProtected) sl=TighterBiasStop(sl,BiasRescueBEPrice);
+    return (sl>0.0) ? NormalizeDouble(sl,_Digits) : 0.0;
+   }
+   void CloseBiasRescue(const string reason)
+   {
+    if(Traded && FindNumberOfPositions(dir,MAGIC1)>0) CloseAllPositions(dir,MAGIC1);
+    if(!Traded || FindNumberOfPositions(dir,MAGIC1)==0) End_Sequence(reason);
+    else Print(Desc,": ",reason," close requested; positions remain open.");
+   }
+   bool RefreshBiasRescueLevels()
+   {
+    if(!BiasRescueActive || !Traded) return true;
+
+    double standing=GetStandingLots(true);
+    if(standing<=0.0) return true;
+
+    double pl=CurrentSequencePL();
+    if(pl<=-Risk)
+    {
+     CloseBiasRescue("Bias Rescue Exit: MLPS breached");
+     return false;
+    }
+
+    double be=0.0, sl=0.0;
+    if(!ComputeBiasRescueTargetPrice(0.0,standing,pl,be) || !ComputeBiasRescueTargetPrice(-Risk,standing,pl,sl))
+    {
+     CloseBiasRescue("Bias Rescue Exit: Risk gate failed");
+     return false;
+    }
+    if(!IsBiasRescueStopLegal(sl))
+    {
+     CloseBiasRescue("Bias Rescue Exit: Risk gate failed");
+     return false;
+    }
+
+    BiasRescueBEPrice=be;
+    BiasRescueSLPrice=sl;
+    if(!BiasRescueBEProtected && IsBiasRescueBEReached() && IsBiasRescueStopLegal(BiasRescueBEPrice))
+       BiasRescueBEProtected=true;
+    return true;
+   }
+   bool ArmBiasRescue()
+   {
+    if(!Active || !Traded) return false;
+    BiasRescueActive=true;
+    BiasRescueBEProtected=false;
+    BiasRescuePositiveAdds=0;
+    return RefreshBiasRescueLevels();
+   }
+   bool AllowBiasRescuePositiveAdd(const double lots_to_add)
+   {
+    if(!BiasRescueActive || lots_to_add<=0.0) return true;
+    if(Bias_Exit_Max_Exposure_Adds>=0 && BiasRescuePositiveAdds>=Bias_Exit_Max_Exposure_Adds)
+    {
+     CloseBiasRescue("Bias Rescue Exit: Exposure budget exhausted");
+     return false;
+    }
+
+    double standing=GetStandingLots(true)+lots_to_add;
+    double perUnit=PriceValuePerPointPerLot();
+    double spread=MathAbs(SymbolInfoDouble(_Symbol,SYMBOL_ASK)-SymbolInfoDouble(_Symbol,SYMBOL_BID));
+    if(spread<=0.0 || !MathIsValidNumber(spread)) spread=MathAbs(ask-bid);
+    double projected_pl=CurrentSequencePL()-(spread*perUnit*lots_to_add);
+    if(standing<=0.0 || projected_pl<=-Risk)
+    {
+     CloseBiasRescue("Bias Rescue Exit: Risk gate failed");
+     return false;
+    }
+
+    double projected_sl=0.0;
+    if(!ComputeBiasRescueTargetPrice(-Risk,standing,projected_pl,projected_sl) || !IsBiasRescueStopLegal(projected_sl))
+    {
+     CloseBiasRescue("Bias Rescue Exit: Risk gate failed");
+     return false;
+    }
+    return true;
+   }
 //---------------------- find the next retrace trigger that is closer to profit
    double FindNextRetraceLevel(double fromLevel)
    {
@@ -1059,9 +1249,10 @@ class SEQUENCE
        Print(Desc_lvl,": CumPartial next lots below broker minimum");
        return false;
       }
-      
+
       if(LotsToBeSent>(Lots_Max*StartLots) && Lots_Max>0.01) LotsToBeSent=Lots_Max*StartLots;
-      
+      if(BiasRescueActive && LotsToBeSent>0.0 && !AllowBiasRescuePositiveAdd(LotsToBeSent)) return false;
+
       if(OpenPosition(dir,MAGIC1,LotsToBeSent,Level_SL,Size_SL,Size_TP,Desc_lvl))
        {
         if(!Active) Print(Desc+" Sequence Started @ "+DoubleToString(Level_New,_Digits));
@@ -1074,6 +1265,7 @@ class SEQUENCE
         TradeLevels[Level_Count-1].sl          = Level_SL = LastSL;
         TradeLevels[Level_Count-1].tp          = LastTP;
         TradeLevels[Level_Count-1].ticket      = LastOrderTicket;
+        if(BiasRescueActive && Lots_Order>0.0) BiasRescuePositiveAdds++;
         if(Mode_Lots_Prog==Lots_Prog_CumPartial && hadPriorLevel && !Retrace_Triggered) Level_Retrace = prevLevel;
         //Sleep(1000);
         UpdateLockTPSL(Trades_Count);
@@ -1193,16 +1385,41 @@ class SEQUENCE
      else {if(ObjectFind(0,Desc+" SLLine")>=0) HLineDelete(0,Desc+" SLLine");}
     }
     //------------
+    if(BiasRescueActive)
+    {
+     if(!RefreshBiasRescueLevels()) return;
+
+     if(Size_Lock!=0)
+     {
+      Level_Lock=BiasRescueBEPrice;
+      HLineCreate(0,Desc+" LockLine",0,Level_Lock,(dir==OP_BUY)?clrBlue:C'225,68,29',STYLE_SOLID,1,false,false,false,0);
+     }
+     else
+     {
+      Level_TP=BiasRescueBEPrice;
+      if(!Virtual && (!Traded||Mode_Operation==Operation_Standard))
+                                                  HLineCreate(0,Desc+" TPLine",0,Level_TP,(dir==OP_BUY)?clrBlue:C'225,68,29',STYLE_DASH,1,false,false,false,0);
+     }
+
+     double normalSL=(Size_SL!=0) ? Level_SL : 0.0;
+     Level_SL=EffectiveBiasRescueSL(normalSL);
+     HLineCreate(0,Desc+" SLLine",0,Level_SL,(dir==OP_BUY)?clrBlue:C'225,68,29',STYLE_DASHDOT,1,false,false,false,0);
+    }
+    //------------
     if(Traded)
     {
      CTrade Trade;
      for(int i=0; i<Level_Count; i++)
      {
       double Level_TP_ = (Level_TP==999999)?0:Level_TP;
-      if(PositionSelectByTicket(TradeLevels[i].ticket) && (PositionGetDouble(POSITION_TP)!=Level_TP_||PositionGetDouble(POSITION_SL)!=Level_SL) )
+      if(PositionSelectByTicket(TradeLevels[i].ticket))
       {
-       if(!Trade.PositionModify(TradeLevels[i].ticket,Level_SL,Level_TP_)) TPmodifyErrors++; TPSLmodifieds++;
+       double Level_SL_ = BiasRescueActive ? TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL) : Level_SL;
+       if(PositionGetDouble(POSITION_TP)!=Level_TP_ || PositionGetDouble(POSITION_SL)!=Level_SL_)
+       {
+        if(!Trade.PositionModify(TradeLevels[i].ticket,Level_SL_,Level_TP_)) TPmodifyErrors++; TPSLmodifieds++;
       }
+     }
      }
     }
    }
@@ -1231,6 +1448,8 @@ class SEQUENCE
     int MIN_SL_DELTA=5, MIN_SPLVL=(int)MathMax((long)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL),(long)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL));
     MIN_SPLVL=MathMax(MIN_SPLVL,1); // atleast 1 point to avoid boundary errors
     //double tick = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+    if(BiasRescueActive && !BiasRescueBEProtected && IsBiasRescueBEReached() && IsBiasRescueStopLegal(BiasRescueBEPrice))
+       BiasRescueBEProtected=true;
     for(int i=0; i<Level_Count; i++)
     {
      if(dir==OP_BUY)
@@ -1242,11 +1461,13 @@ class SEQUENCE
 
       if(Traded && PositionSelectByTicket(TradeLevels[i].ticket))
       {
-       double currSL=PositionGetDouble(POSITION_SL);
-       // clamp to nearest legal on every adjustment
-       double legal = NormalizeDouble(bid-MIN_SPLVL*_Point,_Digits);
-       if(SL > legal) SL = legal;
-       // min movement threshold
+        double currSL=PositionGetDouble(POSITION_SL);
+        // clamp to nearest legal on every adjustment
+        double legal = NormalizeDouble(bid-MIN_SPLVL*_Point,_Digits);
+        if(BiasRescueActive && BiasRescueSLPrice>0.0)
+           SL = TighterBiasStop(SL,BiasRescueBEProtected ? TighterBiasStop(BiasRescueSLPrice,BiasRescueBEPrice) : BiasRescueSLPrice);
+        if(SL > legal) SL = legal;
+        // min movement threshold
        double minStep = MathMax(0.0001*bid,MIN_SL_DELTA*_Point);
        // after clamping, "is SL on the legal side" is guaranteed; no need to re-check it
        if(currSL==0.0 || (SL>currSL && (SL-currSL)>=minStep))
@@ -1266,10 +1487,12 @@ class SEQUENCE
 
       if(Traded && PositionSelectByTicket(TradeLevels[i].ticket))
       {
-       double currSL=PositionGetDouble(POSITION_SL);
-       // clamp to nearest legal on every adjustment
-       double legal = NormalizeDouble(ask+MIN_SPLVL*_Point,_Digits);
-       if(SL < legal) SL = legal;
+        double currSL=PositionGetDouble(POSITION_SL);
+        // clamp to nearest legal on every adjustment
+        double legal = NormalizeDouble(ask+MIN_SPLVL*_Point,_Digits);
+        if(BiasRescueActive && BiasRescueSLPrice>0.0)
+           SL = TighterBiasStop(SL,BiasRescueBEProtected ? TighterBiasStop(BiasRescueSLPrice,BiasRescueBEPrice) : BiasRescueSLPrice);
+        if(SL < legal) SL = legal;
        // min movement threshold
        double minStep = MathMax(0.0001*ask,MIN_SL_DELTA*_Point);
        // after clamping, "is SL on the legal side" is guaranteed; no need to re-check it
@@ -1341,7 +1564,8 @@ class SEQUENCE
          bool ok = fullClose ? tr.PositionClose(pickTk)
                              : tr.PositionClosePartial(pickTk, volCut);
          if(!ok) {PcloseErrors++; Print("Close error ",_LastError); return false; }
-   
+         AccumulateBiasRescueDealPL((ulong)tr.ResultDeal());
+
          lotsReq -= fullClose ? pickVol : volCut;
 
          if(pickIdx >= 0)
@@ -2071,6 +2295,15 @@ int OnInit()
    if(Mode_Lots == FixedLots)  Lots = Lots_Input;
    if(Mode_Lots == ScaledLots) Lots = Lots_Input/(AccountInfoDouble(ACCOUNT_EQUITY)/1000);
    if(Mode_Lots == RiskperSeq && Risk<10) {Alert("Initialization Stopped Manually: You have selected Risk per Sequence but your Risk Amount is too low."); return INIT_PARAMETERS_INCORRECT;}
+   if(Bias_Exit_Max_Exposure_Adds<-1) {Alert("Initialization Failed: Smart Rescue max positive adds cannot be less than -1."); return INIT_PARAMETERS_INCORRECT;}
+   if(Mode_Bias_Exit==BiasExit_SmartRescue)
+   {
+    if(Mode_Lots!=RiskperSeq || Risk<=0.0)
+    {
+     Alert("Initialization Failed: Smart Rescue requires Risk per Sequence lot sizing and Risk > 0.");
+     return INIT_PARAMETERS_INCORRECT;
+    }
+   }
 //-------------------------------------------------------------------------
    if(Mode_RRR!=RRR_Disabled) // RRR is enabled
    {
@@ -3343,14 +3576,14 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    int TradeCount = FindNumberOfPositions(OP_BUY,MAGIC1);
    if(Seq_Buy.Active && LastTradeCountBuy!=TradeCount && TradeCount==0 && Seq_Buy.Traded)//Seq_Buy.Level_Count>=Delay_Trade)
    {
-    Seq_Buy.End_Sequence("Trade(s) closed");
+    Seq_Buy.End_Sequence(Seq_Buy.BiasRescueActive ? "Bias Rescue Exit" : "Trade(s) closed");
    }
    LastTradeCountBuy = TradeCount;
 
    TradeCount = FindNumberOfPositions(OP_SELL,MAGIC1);
    if(Seq_Sell.Active && LastTradeCountSell!=TradeCount && TradeCount==0 && Seq_Sell.Traded)//Seq_Sell.Level_Count>=Delay_Trade)
    {
-    Seq_Sell.End_Sequence("Trade(s) closed");
+    Seq_Sell.End_Sequence(Seq_Sell.BiasRescueActive ? "Bias Rescue Exit" : "Trade(s) closed");
    }
    LastTradeCountSell = TradeCount;
 
@@ -3434,6 +3667,106 @@ void InitializeFlags()
    BuyExit     = SellExit      = false;
    PrevBuyExit = PrevSellExit  = false;
    //ObjectSetText("06","- - -",Font_Size,"NULL",clrDarkGray);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void DrawBiasExitLine(const string side)
+  {
+   if(!FastSpeed_Flag)
+      VLineCreate(0,Key+"_STOPOUT_BIAS_"+side+"_"+TimeToString(TimeCurrent(),TIME_DATE)+" "+TimeToString(TimeCurrent(),TIME_MINUTES),0,iTime(NULL,Period(),0),clrOrangeRed,STYLE_DASH,2,false,false,false,0);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void HandleBiasExitBuy(const int buys)
+  {
+   if(Mode_Bias_Exit==BiasExit_HardClose)
+   {
+    if(buys>0 && FindNumberOfPositions(OP_BUY,MAGIC1)>0) CloseAllPositions(OP_BUY,MAGIC1);
+    if     (Seq_Buy.Active)         Seq_Buy.End_Sequence("Bias StopOut");
+    else if(Seq_Buy_Virtual.Active) Seq_Buy_Virtual.End_Sequence("Bias StopOut");
+    DrawBiasExitLine("B");
+    return;
+   }
+
+   if(Mode_Lots!=RiskperSeq || Risk<=0.0)
+   {
+    if(buys>0) CloseAllPositions(OP_BUY,MAGIC1);
+    if(Seq_Buy.Active) Seq_Buy.End_Sequence("Bias Rescue Exit: Invalid MLPS");
+    DrawBiasExitLine("B");
+    return;
+   }
+
+   if(Seq_Buy.Active && Seq_Buy.Traded && Seq_Buy.HasLiveSequenceTrades())
+   {
+    double pl=Seq_Buy.CurrentSequencePL();
+    if(pl>=0.0)
+    {
+     if(buys>0) CloseAllPositions(OP_BUY,MAGIC1);
+     Seq_Buy.End_Sequence("Bias Profit Exit");
+    }
+    else if(pl<=-Risk)
+    {
+     if(buys>0) CloseAllPositions(OP_BUY,MAGIC1);
+     Seq_Buy.End_Sequence("Bias Rescue Exit: MLPS breached");
+    }
+    else if(Seq_Buy.ArmBiasRescue())
+    {
+     Seq_Buy.UpdateLockTPSL(Seq_Buy.Trades_Count);
+     Print("Buy sequence SmartRescue armed. P/L=",DoubleToString(pl,2)," BE=",DoubleToString(Seq_Buy.BiasRescueBEPrice,_Digits)," MLPS SL=",DoubleToString(Seq_Buy.BiasRescueSLPrice,_Digits));
+    }
+   }
+   else
+   {
+    if(buys>0) CloseAllPositions(OP_BUY,MAGIC1);
+    if     (Seq_Buy.Active)         Seq_Buy.End_Sequence("Bias Rescue Exit: No trades");
+    else if(Seq_Buy_Virtual.Active) Seq_Buy_Virtual.End_Sequence("Bias Rescue Exit: No trades");
+   }
+   DrawBiasExitLine("B");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void HandleBiasExitSell(const int sells)
+  {
+   if(Mode_Bias_Exit==BiasExit_HardClose)
+   {
+    if(sells>0 && FindNumberOfPositions(OP_SELL,MAGIC1)>0) CloseAllPositions(OP_SELL,MAGIC1);
+    if     (Seq_Sell.Active)         Seq_Sell.End_Sequence("Bias StopOut");
+    else if(Seq_Sell_Virtual.Active) Seq_Sell_Virtual.End_Sequence("Bias StopOut");
+    DrawBiasExitLine("S");
+    return;
+   }
+
+   if(Mode_Lots!=RiskperSeq || Risk<=0.0)
+   {
+    if(sells>0) CloseAllPositions(OP_SELL,MAGIC1);
+    if(Seq_Sell.Active) Seq_Sell.End_Sequence("Bias Rescue Exit: Invalid MLPS");
+    DrawBiasExitLine("S");
+    return;
+   }
+
+   if(Seq_Sell.Active && Seq_Sell.Traded && Seq_Sell.HasLiveSequenceTrades())
+   {
+    double pl=Seq_Sell.CurrentSequencePL();
+    if(pl>=0.0)
+    {
+     if(sells>0) CloseAllPositions(OP_SELL,MAGIC1);
+     Seq_Sell.End_Sequence("Bias Profit Exit");
+    }
+    else if(pl<=-Risk)
+    {
+     if(sells>0) CloseAllPositions(OP_SELL,MAGIC1);
+     Seq_Sell.End_Sequence("Bias Rescue Exit: MLPS breached");
+    }
+    else if(Seq_Sell.ArmBiasRescue())
+    {
+     Seq_Sell.UpdateLockTPSL(Seq_Sell.Trades_Count);
+     Print("Sell sequence SmartRescue armed. P/L=",DoubleToString(pl,2)," BE=",DoubleToString(Seq_Sell.BiasRescueBEPrice,_Digits)," MLPS SL=",DoubleToString(Seq_Sell.BiasRescueSLPrice,_Digits));
+    }
+   }
+   else
+   {
+    if(sells>0) CloseAllPositions(OP_SELL,MAGIC1);
+    if     (Seq_Sell.Active)         Seq_Sell.End_Sequence("Bias Rescue Exit: No trades");
+    else if(Seq_Sell_Virtual.Active) Seq_Sell_Virtual.End_Sequence("Bias Rescue Exit: No trades");
+   }
+   DrawBiasExitLine("S");
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTick()
@@ -3722,7 +4055,10 @@ void OnTick()
      {
       Sequence_New_Bias_S   = false;
       Sequence_Pause_Bias_S = true;
-     }}
+     }
+     if(Seq_Buy.BiasRescueActive)  Sequence_New_Bias_B = false;
+     if(Seq_Sell.BiasRescueActive) Sequence_New_Bias_S = false;
+     }
      if(!FastSpeed_Flag && DrawVLines)// && MQLInfoInteger(MQL_VISUAL_MODE))
      {
       if(IsNewBar2(Period()) && ObjectGetInteger(0,IntegerToString(lines_bias,4,'B'),OBJPROP_TIME) != iTime(NULL,Period(),0))
@@ -3949,17 +4285,7 @@ void OnTick()
     static bool Last_StopOut_Flag_B = false;
     if(StopOut_Flag_B && !Last_StopOut_Flag_B)
     {
-     if(Buys>0)
-     {
-      if(FindNumberOfPositions(OP_BUY,MAGIC1)>0) CloseAllPositions(OP_BUY,MAGIC1);
-     }
-     if     (Seq_Buy.Active)         Seq_Buy.End_Sequence("Bias StopOut");
-     else if(Seq_Buy_Virtual.Active) Seq_Buy_Virtual.End_Sequence("Bias StopOut");
-
-     if(!FastSpeed_Flag)
-     {
-      VLineCreate(0,Key+"_STOPOUT_BIAS_B_"+TimeToString(TimeCurrent(),TIME_DATE)+" "+TimeToString(TimeCurrent(),TIME_MINUTES),0,iTime(NULL,Period(),0),clrOrangeRed,STYLE_DASH,2,false,false,false,0);
-     }
+     HandleBiasExitBuy(Buys);
     }
     Last_StopOut_Flag_B = StopOut_Flag_B;
 //-------
@@ -3967,17 +4293,7 @@ void OnTick()
     static bool Last_StopOut_Flag_S = false;
     if(StopOut_Flag_S && !Last_StopOut_Flag_S)
     {
-     if(Sells>0)
-     {
-      if(FindNumberOfPositions(OP_SELL,MAGIC1)>0) CloseAllPositions(OP_SELL,MAGIC1);
-     }
-     if     (Seq_Sell.Active)         Seq_Sell.End_Sequence("Bias StopOut");
-     else if(Seq_Sell_Virtual.Active) Seq_Sell_Virtual.End_Sequence("Bias StopOut");
-
-     if(!FastSpeed_Flag)
-     {
-      VLineCreate(0,Key+"_STOPOUT_BIAS_S_"+TimeToString(TimeCurrent(),TIME_DATE)+" "+TimeToString(TimeCurrent(),TIME_MINUTES),0,iTime(NULL,Period(),0),clrOrangeRed,STYLE_DASH,2,false,false,false,0);
-     }
+     HandleBiasExitSell(Sells);
     }
     Last_StopOut_Flag_S = StopOut_Flag_S;
 //-------
@@ -4119,7 +4435,7 @@ void OnTick()
       {
        if(!LastBuyTradeSignal) Trades_Skipped_News++; 
       }
-      else if(Sequence_Pause_Bias_B)
+      else if(Sequence_Pause_Bias_B && !Seq_Buy.BiasRescueActive)
       {
        if(!LastBuyTradeSignal) Trades_Skipped_Bias_B++;
       }
@@ -4144,7 +4460,7 @@ void OnTick()
       {
        if(!LastSellTradeSignal) Trades_Skipped_News++;
       }
-      else if(Sequence_Pause_Bias_S)
+      else if(Sequence_Pause_Bias_S && !Seq_Sell.BiasRescueActive)
       {
        if(!LastSellTradeSignal) Trades_Skipped_Bias_S++;
       }

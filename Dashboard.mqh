@@ -409,6 +409,14 @@ private:
 
    string threshold=ParseSetFileForInput("Bias_threshold=",file);
    if(label=="Off" || label=="Disp" || threshold=="-1.0") return(label);
+   string exit_mode=ParseSetFileForInput("Mode_Bias_Exit=",file);
+   if(exit_mode!="-1.0" && (int)StringToInteger(exit_mode)==1 && StringFind(label,"Close")==0)
+   {
+    string adds=ParseSetFileForInput("Bias_Exit_Max_Exposure_Adds=",file);
+    int max_adds=(adds=="-1.0") ? -1 : (int)StringToInteger(adds);
+    label += "/R";
+    if(max_adds>=0) label += "+"+IntegerToString(max_adds);
+   }
    return(label+"@"+threshold);
   }
   string BuildRiskLotsLabel(const string file)

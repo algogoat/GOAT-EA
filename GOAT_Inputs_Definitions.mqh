@@ -196,6 +196,12 @@ enum ENUM_ACTION_BIAS
    Bias_Close_high,     // add above threshold and close on sentiment flip
   };
 //-------------------------------------------------------------------------
+enum ENUM_BIAS_EXIT
+  {
+   BiasExit_HardClose,   // Close affected sequence immediately
+   BiasExit_SmartRescue, // Profit close, loss rescue inside MLPS
+  };
+//-------------------------------------------------------------------------
 enum ENUM_BIAS_TRADES
   {
    Bias_Seq,            // Only restrict Sequence starts
@@ -533,6 +539,8 @@ FileWrite(FileSET_handle,"Trade_Friday="+(string)Trade_Friday);//=false||false||
 FileWrite(FileSET_handle,"; ==========NEWS AND AI BIAS FILTER==========");
 FileWrite(FileSET_handle,"Mode_Bias="+(string)Mode_Bias);
 FileWrite(FileSET_handle,"Mode_Bias_Trades="+(string)Mode_Bias_Trades);
+FileWrite(FileSET_handle,"Mode_Bias_Exit="+(string)Mode_Bias_Exit);
+FileWrite(FileSET_handle,"Bias_Exit_Max_Exposure_Adds="+(string)Bias_Exit_Max_Exposure_Adds);
 FileWrite(FileSET_handle,"Bias_threshold="+(string)Bias_threshold);
 FileWrite(FileSET_handle,"Mode_News="+(string)Mode_News);//=1||1||0||4||Y
 FileWrite(FileSET_handle,"News_threshold="+(string)News_threshold);
@@ -699,6 +707,8 @@ input    bool                    Trade_Friday                  =                
 input    group                   "==========NEWS AND AI FILTER==========                   ";
 input    ENUM_ACTION_BIAS        Mode_Bias                     =                 Bias_Disabled;       // AI Bias Mode
 input    ENUM_BIAS_TRADES        Mode_Bias_Trades              =                      Bias_Seq;       // AI Bias restriction
+input    ENUM_BIAS_EXIT          Mode_Bias_Exit                =              BiasExit_HardClose;     // AI Bias Exit Mode
+input    int                     Bias_Exit_Max_Exposure_Adds   =                            -1;       // Smart Rescue max positive adds (-1=normal)
 input    int                     Bias_threshold                =                            60;       // AI Confidence Threshold
 input    ENUM_ACTION_NEWS        Mode_News                     =                 News_Disabled;       // News Mode
 input    int                     News_threshold                =                            60;       // News Impact threshold

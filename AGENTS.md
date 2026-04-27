@@ -18,6 +18,7 @@ Work on GOAT-EA like a surgical MQL5 engineer.
 
 - Never delete old versioned main EA files when creating a new release.
 - Every release keeps its own versioned `.mq5` and committed `.ex5`.
+- Previous versioned `.mq5` and `.ex5` files are release history. Do not edit, recompile, or commit changes to previous versions when implementing fixes or new features unless the user explicitly requests a historical backport.
 - Each versioned `.mq5` must declare its own `GOAT_VERSION_LABEL` before including `GOAT_Inputs_Definitions.mqh`.
 - `GOAT_Inputs_Definitions.mqh` must carry the newest default `GOAT_VERSION_LABEL` used by the current release.
 - Track and preserve all GOAT `.mq5`, `.mqh`, `.ex5`, `.ico`, and `.png` files used by the project.
@@ -55,8 +56,10 @@ Work on GOAT-EA like a surgical MQL5 engineer.
 
 - Determine first whether the task is for the current release, an older release, or shared include logic.
 - For current-release work, edit the highest versioned tracked `GOAT V*.mq5` unless the user names a different version.
+- For fixes and new features, evolve forward into the current or next version. Do not patch previous versioned entrypoints or regenerate previous `.ex5` binaries just to carry the change backward.
 - For shared `.mqh` work, assume every versioned main that includes that file may be affected until proven otherwise.
 - Do not casually patch older versioned entrypoints just because they appear in older prompts, examples, or comments.
+- Backports are exceptional work. Only touch an older version when the user explicitly names that version and asks for a fix there.
 - Before release work, identify the current version, the target new version, and whether shared includes are intentionally changing with the release.
 
 ## Optimization File Discipline
@@ -226,7 +229,7 @@ Minimum compile checklist:
 3. Prefer `Result: 0 errors, 0 warnings`. If warnings remain, identify whether they are new or pre-existing before treating the build as clean.
 4. Confirm the expected repo-root `.ex5` exists in the intended location.
 5. Confirm the target `.ex5` timestamp changed.
-6. If shared `.mqh` files changed, compile every versioned main that is supposed to remain working, or at minimum the target release plus the adjacent release during a version cut.
+6. If shared `.mqh` files changed, compile and commit only the target current/new release by default. Do not recompile or commit previous versioned binaries unless the user explicitly requests a backport or compatibility verification for that older version.
 
 If MetaTrader still appears stale after compile:
 
@@ -268,7 +271,7 @@ When creating a new EA version:
 4. Set the new entrypoint's `GOAT_VERSION_LABEL` before including `GOAT_Inputs_Definitions.mqh`.
 5. Update `GOAT_Inputs_Definitions.mqh` so its default `GOAT_VERSION_LABEL` matches the newest release.
 6. Leave shared `.mqh` improvements in place only when they intentionally belong to the new release.
-7. Compile and verify the new release, and compile the previous entrypoint too when shared includes changed.
+7. Compile and verify the new release. Do not compile or mutate the previous entrypoint/binary unless the user explicitly requests that older version be updated.
 8. Commit the new `.mq5`, new `.ex5`, and any changed shared includes or assets together.
 
 ## Session Checklist

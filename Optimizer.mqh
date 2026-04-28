@@ -113,6 +113,7 @@ public:
    void           OnClickViewBias(void);
    void           OnClickSyncNews(void);
    void           RefreshNewsSyncButton(void);
+   void           RefreshBatchStartButtonState(void);
    void           OnClickStart(void);
    void           OnClickStop(void);
    void           ChangeItemTo(const int index,const string state); // generic state swapper
@@ -1229,6 +1230,7 @@ void CStrategyTesterDialog::OnClickRefresh(bool init=false, bool select=false)
    if(select_index>=0) m_listQueue.Select(select_index);
    // ItemsClear() hides the list scrollbar; show after refill so overflow is visible again.
    m_listQueue.Show();
+   RefreshBatchStartButtonState();
    ChartRedraw(m_chart_id);
   }
 //+------------------------------------------------------------------+
@@ -1296,6 +1298,14 @@ void CStrategyTesterDialog::RefreshNewsSyncButton(void)
       m_btnSyncNews.ColorBorder(clrBlack);
      }
    ChartRedraw();
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::RefreshBatchStartButtonState(void)
+  {
+   m_batchRunning=(GlobalVariableGet("BatchOnGoing")!=0.0);
+   m_btnStart.Text(m_batchRunning ? "RUNNING" : "START BATCH");
+   if(m_batchRunning) m_btnStart.Disable();
+   else               m_btnStart.Enable();
   }
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickSyncNews(void)
@@ -1386,6 +1396,7 @@ void CStrategyTesterDialog::OnClickStart(void)
     GlobalVariableSet("GOAT_OPT_STUDIO_HEIGHT",(double)D_Height);
     GlobalVariableSet("GOAT_OPT_STUDIO_FONT",(double)Font_Size);
     GlobalVariableSet("BatchOnGoing",1.0);
+    RefreshBatchStartButtonState();
     //MessageBox("Terminal will restart now.","Info",MB_OK|MB_ICONINFORMATION);
     GlobalVariableDel("TerminalRunning");
     Sleep(500); TerminalClose(99);

@@ -2930,12 +2930,8 @@ int OnTesterInit()
    bool seedFarming=SeedFarmingPrepareReceiver();
    if(!seedFarming && GlobalVariableGet("BatchOnGoing")!=0)
    {
-    if(GlobalVariableGet("TerminalRunning")==0) GlobalVariableSet("TerminalRunning",1.0);
-    else {
-      WriteLog("INIT: ❌❌❌❌❌ Batch is running but terminal did not restart (Or you stopped last Batch abruptly), Chance of duplicate Optimization <=====>",false,Key,EA_Name,Server);
-      ShowPrompt("Optimization Error...","Batch is running but terminal did not restart!","Chance of duplicate Optimization...","");
-      //return INIT_FAILED;
-      }
+    bool terminalWasRunning=(GlobalVariableGet("TerminalRunning")!=0);
+    if(!terminalWasRunning) GlobalVariableSet("TerminalRunning",1.0);
     WriteLog("INIT: ➡️➡️➡️➡️➡️ Batch Optimization Initialized, "+Symbol()+" ➡️➡️➡️➡️➡️",false,Key,EA_Name,Server);
     ShowPrompt("Optimization running...","Do not close this chart!","Batch Running.","");
     
@@ -2945,10 +2941,19 @@ int OnTesterInit()
     GlobalVariableSet("TerminalRunning",1.0);
     if(UpdateBatchQueueAndWriteConfigFile(true,false,Key,EA_Name,Server))
     {
+     if(terminalWasRunning) WriteLog("INIT: Existing batch state recovered/continued for "+Symbol()+".",false,Key,EA_Name,Server);
      GlobalVariableSet("RefreshQueue",1.0);
      WriteLog("INIT: Batch Queue updated",false,Key,EA_Name,Server);
     }
-    else WriteLog("INIT: ❌ Batch Queue update Error",false,Key,EA_Name,Server);
+    else
+    {
+     if(terminalWasRunning)
+     {
+      WriteLog("INIT: Batch is running but terminal state does not match the queue. Chance of duplicate Optimization.",true,Key,EA_Name,Server);
+      ShowPrompt("Optimization Error...","Batch terminal state does not match queue!","Chance of duplicate Optimization...","");
+     }
+     WriteLog("INIT: ❌ Batch Queue update Error",false,Key,EA_Name,Server);
+    }
      Sleep(500);
     }
    else if(!seedFarming) ShowPrompt("Optimization running...","Do not close this chart!"," ","");
@@ -3322,7 +3327,7 @@ void OnTesterDeinit()
      if(GlobalVariableGet("BatchOnGoing")!=0)
      {
       ShowPrompt("Restarting Terminal for next optimization...","Do not close this chart!","Batch Running...",""); Sleep(500);
-      WriteLog("DEINIT: ✅ Terminal restart sequence initiated...",false,Key,EA_Name,Server); Sleep(500);
+      WriteLog("DEINIT: Terminal restart command queued; requesting terminal close...",false,Key,EA_Name,Server); Sleep(500);
       
       //datetime t_start = TimeCurrent();
       for(int i=0;i<10;i++)
@@ -3330,10 +3335,10 @@ void OnTesterDeinit()
        datetime LastTime = TimeCurrent();
        Sleep(2000); TesterStop(); Sleep(2000); TesterStop(); Sleep(2000); TerminalClose(99); Sleep(9000);
        while(TimeCurrent()-LastTime<10) Sleep(10);
-       WriteLog("DEINIT: ❌ Terminal Failed to close in 10 seconds. Retrying...",true,Key,EA_Name,Server);
+       WriteLog("DEINIT: Terminal still open after close request. Retrying terminal close...",false,Key,EA_Name,Server);
        //if((TimeCurrent()-t_start) >= 600) {WriteLog("DEINIT: ❌ Unable to close Terminal. Batch Paused...",true,Key,EA_Name,Server); TerminalClose(99); break;}
       }
-      WriteLog("DEINIT: ❌ Unable to close Terminal. Batch Paused...",true,Key,EA_Name,Server); TerminalClose(99);
+      WriteLog("DEINIT: ❌ Unable to close Terminal after repeated restart requests. Batch paused with queued item waiting.",true,Key,EA_Name,Server); TerminalClose(99);
      }
      else
      {

@@ -9,10 +9,16 @@ int ShellExecuteW(int hWnd, string lpOperation, string lpFile, string lpParamete
 ////int GetCurrentProcessId();
 //#import
 //+------------------------------------------------------------------+
+string PowerShellSingleQuoted(string text)
+  {
+   StringReplace(text,"'","''");
+   return text;
+  }
+//+------------------------------------------------------------------+
 void AddCommand(string path)
   {
    //if(!TerminalInfoInteger(TERMINAL_DLLS_ALLOWED)) MessageBox()
-   string terminal_path = "\""+TerminalInfoString(TERMINAL_PATH) + "\\terminal64.exe\"";
+   string terminal_path = TerminalInfoString(TERMINAL_PATH) + "\\terminal64.exe";
    string config_path   = TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\"+path+"\\config.ini";
    // Get the current terminal's PID for the 'Wait-Process'
    uint    pid      = GetCurrentProcessId();
@@ -22,12 +28,17 @@ void AddCommand(string path)
    //  1) Wait for this process to exit
    //  2) Launch a new terminal64 with the /config parameter
    string psCommand = 
-       "Wait-Process -Id " + pidStr + 
-       "; Start-Process '" + terminal_path + "' -ArgumentList '/config:\"" + config_path + "\"'";
+       "$ErrorActionPreference='SilentlyContinue'; " +
+       "$tp='" + PowerShellSingleQuoted(terminal_path) + "'; " +
+       "$cp='" + PowerShellSingleQuoted(config_path) + "'; " +
+       "Wait-Process -Id " + pidStr + " -ErrorAction SilentlyContinue; " +
+       "Start-Sleep -Milliseconds 500; " +
+       "$q=[char]34; " +
+       "Start-Process -FilePath $tp -ArgumentList ('/config:'+$q+$cp+$q)";
    // Parameters to run PowerShell in no-profile, bypass execution policy
-   string parameters = "-NoProfile -ExecutionPolicy Bypass -Command \"" + psCommand + "\"";
+   string parameters = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"" + psCommand + "\"";
    // Launch PowerShell
-   ShellExecuteW(0, "open", "powershell", parameters, "", 0);
+   ShellExecuteW(0, "open", "powershell.exe", parameters, "", 0);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 struct SettingsStrings

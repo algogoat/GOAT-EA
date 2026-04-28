@@ -250,6 +250,65 @@ string RepairTesterExpertPath(string testerConfig)
    return result;
   }
 //+------------------------------------------------------------------+
+string QueueItemTitle(string queueItem)
+  {
+   string parts[];
+   if(StringSplit(queueItem,';',parts)>=2) return parts[1];
+   return queueItem;
+  }
+//+------------------------------------------------------------------+
+string QueueItemSymbolName(string queueItem)
+  {
+   string title=QueueItemTitle(queueItem);
+   int start=StringFind(title,"_",0);
+   if(start<0) return "";
+   start++;
+
+   int end=StringLen(title);
+   int comma=StringFind(title,",",start);
+   int space=StringFind(title," ",start);
+   if(comma>=0 && comma<end) end=comma;
+   if(space>=0 && space<end) end=space;
+   if(end<=start) return "";
+
+   string symbol=StringSubstr(title,start,end-start);
+   StringTrimLeft(symbol);
+   StringTrimRight(symbol);
+   return symbol;
+  }
+//+------------------------------------------------------------------+
+string QueueItemStrategyName(string queueItem)
+  {
+   string title=QueueItemTitle(queueItem);
+   int start=StringFind(title,":",0);
+   if(start<0) return "";
+   string strategy=StringSubstr(title,start+1);
+   StringTrimLeft(strategy);
+   StringTrimRight(strategy);
+   return NormalizeStrategyName(strategy);
+  }
+//+------------------------------------------------------------------+
+string ActiveQueueStrategyName()
+  {
+   string strategy=EA_Desc;
+   int meta=StringFind(strategy,"@{",0);
+   if(meta>=0) strategy=StringSubstr(strategy,0,meta);
+   StringTrimLeft(strategy);
+   StringTrimRight(strategy);
+   return NormalizeStrategyName(strategy);
+  }
+//+------------------------------------------------------------------+
+bool QueueItemMatchesCurrentRun(string queueItem)
+  {
+   string queuedSymbol=QueueItemSymbolName(queueItem);
+   string queuedStrategy=QueueItemStrategyName(queueItem);
+   string activeStrategy=ActiveQueueStrategyName();
+
+   if(queuedSymbol!=Symbol()) return false;
+   if(queuedStrategy=="" || activeStrategy=="") return true;
+   return (queuedStrategy==activeStrategy);
+  }
+//+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnDateFromChanged(void)
 {
    //Print(__FUNCTION__,": new from-date = ", TimeToString(m_dtFrom.Value(), TIME_DATE));
@@ -1502,6 +1561,17 @@ bool UpdateBatchQueueAndWriteConfigFile(bool init,bool error,string Key_,string 
    
    if(init)
    {
+    if(ongoingIndex >= 0)
+    {
+     if(QueueItemMatchesCurrentRun(QueueItems[ongoingIndex]))
+     {
+      WriteLog("INIT: Recovered existing OnGoing queue item after terminal relaunch: "+QueueItems[ongoingIndex],false,Key_,EA_Name_,Server_);
+      return true;
+     }
+     WriteLog("INIT: OnGoing queue item does not match current optimization. Queue="+QueueItemTitle(QueueItems[ongoingIndex])+
+              " Current="+Symbol()+":"+ActiveQueueStrategyName(),true,Key_,EA_Name_,Server_);
+     return false;
+    }
     if(QueuedIndex  >= 0)
     {
      StringReplace(QueueItems[QueuedIndex] , "Queued", "OnGoing"); StringTrimLeft(QueueItems[QueuedIndex]);

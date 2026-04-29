@@ -168,7 +168,12 @@ bool StartTester(int rowInd,string mode,bool reportMode,const int Attempts=20)
      for(int i=0;i<Attempts;i++)
      {
       Sleep(100);
-      if(MTTESTER::ClickStart()) return true;
+      if(MTTESTER::ClickStart())
+      {
+       Sleep(200);
+       if(!MTTESTER::SelectTesterGraphTab()) LogOrPrint(reportMode,"⚠️ Tester Graph tab selection request failed; export continues.",strT._K,strT._N,strT._S);
+       return true;
+      }
       else                       LogOrPrint(reportMode,"❌ Failed to Click the Strategy Tester Start Button.",strT._K,strT._N,strT._S);
      }
      return false;

@@ -15,6 +15,7 @@
 #define WM_KEYDOWN        0x0100
 #define WM_CHAR           0x0102
 #define WM_LBUTTONDOWN    0x0201
+#define WM_LBUTTONUP      0x0202
 #define WM_CLOSE          0x0010
 #define WM_COMMAND        0x0111
 
@@ -47,6 +48,11 @@
 #define INVALID_FILE_ATTRIBUTES UINT_MAX
 
 #define LVM_GETITEMCOUNT 0x1004
+
+#define TCM_FIRST        0x1300
+#define TCM_GETITEMCOUNT (TCM_FIRST + 4)
+#define TCM_GETITEMRECT  (TCM_FIRST + 10)
+#define TCM_GETCURSEL    (TCM_FIRST + 11)
 
 #import "user32.dll"
   PVOID SendMessageW( HANDLE, uint, PVOID, int &[] );
@@ -99,6 +105,21 @@ private:
       Pos--;
 
     return(Pos);
+  }
+
+  static int MakeLParam( const int X, const int Y )
+  {
+    return(((Y & 0xFFFF) << 16) | (X & 0xFFFF));
+  }
+
+  static int GetTabCenterPoint( const long Tabs, const int Index )
+  {
+    int Rect[4] = {0, 0, 0, 0};
+
+    if (user32::SendMessageW(Tabs, TCM_GETITEMRECT, Index, Rect))
+      return(MTTESTER::MakeLParam((Rect[0] + Rect[2]) / 2, (Rect[1] + Rect[3]) / 2));
+
+    return(MTTESTER::MakeLParam(590, 23));
   }
 
   static string GetPathExe( const HANDLE Handle )
@@ -1205,6 +1226,33 @@ static bool IsIdle()
 //      if (Check)
 //        user32::ShowWindow(user32::GetDlgItem(Handle, 0x28ED), 0); // Journal
     }
+
+    return(Res);
+  }
+
+  static bool SelectTesterGraphTab( const int Attempts = 3 )
+  {
+    static const int ControlID[] = {0xE81E, 0x804E};
+    static const long Handle = MTTESTER::GetHandle(ControlID);
+    const long Tabs = user32::GetDlgItem(Handle, 0x2712);
+    const int ItemCount = (int)user32::SendMessageW(Tabs, TCM_GETITEMCOUNT, 0, 0);
+    int GraphTabIndex = ItemCount - 5; // Export layout lands on Forward Results at -3; graph is two tabs left.
+
+    if (GraphTabIndex < 0)
+      GraphTabIndex = 0;
+
+    bool Res = (Tabs != 0) && (ItemCount > GraphTabIndex);
+    const int Point = Res ? MTTESTER::GetTabCenterPoint(Tabs, GraphTabIndex) : 0;
+
+    for (int i = 0; (i < Attempts) && Res; i++)
+    {
+      user32::SendMessageW(Tabs, WM_LBUTTONDOWN, 1, Point);
+      user32::SendMessageW(Tabs, WM_LBUTTONUP, 0, Point);
+      ::Sleep(50);
+    }
+
+    if (Res)
+      Res = ((int)user32::SendMessageW(Tabs, TCM_GETCURSEL, 0, 0) == GraphTabIndex);
 
     return(Res);
   }

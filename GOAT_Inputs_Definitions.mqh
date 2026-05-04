@@ -571,6 +571,8 @@ input    string                  EA_Desc                       =                
          int                     Font_Size_Base                =                            10;       // Base Font Size
          int                     DWidth                        =                           900;
          int                     DHeight                       =                           530;
+sinput   int                     PortfolioTracking_BucketMinutes=                           10;       // Portfolio Tracking Bucket Minutes
+sinput   int                     PortfolioTracking_SampleSeconds=                            5;       // Portfolio Tracking Sample Seconds
 //sinput   
          ENUM_FONT               Font_Header                   =                         Font1;
 //sinput   
@@ -855,7 +857,7 @@ string   requestHeaders = "Content-Type: application/json; charset=UTF-8\r\n"
 int      timeout  =                                  5000;
 long     Licensed_Account_Number =                      0;  // Account Number     ( 0  for not checking )
 string   Licensed_Account_Title  =                     "";  // Account Title/Name ( "" for not checking )
-datetime Expiry                  = D'2026.06.26 22:00:00';  // Year Month Day Hours Minutes Seconds
+datetime Expiry                  = D'2026.08.01 22:00:00';  // Year Month Day Hours Minutes Seconds
 //+------------------------------------------------------------------+
 //input string EA_Desc = "EA_Strategy@{mode=EXPORT,dt_BOOS_end=2025.09.01,dt_FOOS_start=2025.09.30"; // Strategy Comment datetime dt_Back_OOS=0,dt_Fwrd_OOS=0;
 //input int    Input1 = 1;

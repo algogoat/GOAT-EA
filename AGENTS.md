@@ -46,6 +46,7 @@ Work on GOAT-EA like a surgical MQL5 engineer.
 - Keep diffs narrow. Avoid whole-file rewrites of large MQL files unless there is no safer option.
 - Preserve file encoding and line endings. Current tracked source files are UTF-8 with BOM and CRLF; do not normalize them away.
 - Avoid mass formatting and whitespace churn in large `.mq5` and `.mqh` files.
+- Do not declare one-line helper functions unless that function is used more than two times elsewhere in the code. Inline one-off or two-use one-line logic instead of adding abstraction for its own sake.
 - Respect existing user changes in a dirty worktree. Do not revert unrelated edits.
 - If a task touches optimization, tester orchestration, file export, or news/bias data, trace the full path before editing.
 - If a task touches strategy logic, sequence sizing, risk controls, or signal filters, review it as capital-critical engineering rather than ordinary application code.

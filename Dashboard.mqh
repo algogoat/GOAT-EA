@@ -129,6 +129,25 @@ public:
       }
    };
    SetFileRecord g_sets[];
+
+   struct PortfolioTelemetryBucket
+   {
+    long   start_ms,end_ms;
+    int    minutes,samples,positions_close;
+    double balance_open,balance_close,equity_open,equity_high,equity_low,equity_close,margin_close,free_margin_close;
+    PortfolioTelemetryBucket()
+      {
+       start_ms=end_ms=0;
+       minutes=samples=positions_close=0;
+       balance_open=balance_close=equity_open=equity_high=equity_low=equity_close=margin_close=free_margin_close=0.0;
+      }
+   };
+   PortfolioTelemetryBucket m_pt_bucket,m_pt_queue[];
+   bool      m_pt_config_loaded,m_pt_state_loaded,m_pt_server_enabled,m_pt_bucket_open;
+   string    m_pt_portfolio_id;
+   int       m_pt_bucket_minutes,m_pt_sample_seconds,m_pt_max_upload_buckets;
+   datetime  m_pt_last_config_check,m_pt_last_state_check,m_pt_last_sample_time,m_pt_last_upload_attempt;
+   long      m_pt_server_time_offset_ms,m_pt_latest_bucket_end_ms;
    
    CGOATDashboard();
   ~CGOATDashboard();
@@ -287,6 +306,12 @@ private:
    void SortRows(const ENUM_GOAT_DASH_SORT_KEY sort_key);
    void ParsePortfolioFolderInfo(void);
    void UpdatePortfolioInfoHeader(void);
+   void ProcessPortfolioTelemetry(void);
+   bool FetchPortfolioTelemetryConfig(void);
+   bool FetchPortfolioTelemetryState(void);
+   void SamplePortfolioTelemetry(const long now_ms);
+   bool UploadPortfolioTelemetryQueue(void);
+   bool ReadJsonValue(const string json,const string key,string &raw,bool &quoted) const;
    string FolderOf(const string p) { for(int i=(int)StringLen(p)-1;i>=0;--i) if(p[i]=='\\'||p[i]=='/') return StringSubstr(p,0,i+0); return ""; }
 
    string FileNameOf(const string p) { for(int i=(int)StringLen(p)-1;i>=0;--i) if(p[i]=='\\'||p[i]=='/') return StringSubstr(p,i+1);  return p; }
@@ -702,6 +727,21 @@ CGOATDashboard::CGOATDashboard()
    Portfolio_DayStartEquity=0.0;
    Portfolio_MaxEquity=0.0;
    Portfolio_MaxDDPct=0.0;
+   m_pt_config_loaded=false;
+   m_pt_state_loaded=false;
+   m_pt_server_enabled=false;
+   m_pt_bucket_open=false;
+   m_pt_portfolio_id="";
+   m_pt_bucket_minutes=10;
+   m_pt_sample_seconds=5;
+   m_pt_max_upload_buckets=24;
+   m_pt_last_config_check=0;
+   m_pt_last_state_check=0;
+   m_pt_last_sample_time=0;
+   m_pt_last_upload_attempt=0;
+   m_pt_server_time_offset_ms=0;
+   m_pt_latest_bucket_end_ms=0;
+   ArrayResize(m_pt_queue,0);
 }
 CGOATDashboard::~CGOATDashboard()
 {
@@ -1678,6 +1718,286 @@ void CGOATDashboard::ResetPortfolioTrackingState(void)
    GlobalVariablesFlush();
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::ReadJsonValue(const string json,const string key,string &raw,bool &quoted) const
+{
+   raw="";
+   quoted=false;
+   string pattern="\""+key+"\"";
+   int key_pos=StringFind(json,pattern,0);
+   if(key_pos<0) return false;
+
+   int colon=StringFind(json,":",key_pos+StringLen(pattern));
+   if(colon<0) return false;
+
+   int pos=colon+1;
+   int len=StringLen(json);
+   while(pos<len)
+   {
+      int ch=StringGetCharacter(json,pos);
+      if(ch!=' ' && ch!='\r' && ch!='\n' && ch!='\t') break;
+      pos++;
+   }
+   if(pos>=len) return false;
+
+   int first=StringGetCharacter(json,pos);
+   if(first=='\"')
+   {
+      quoted=true;
+      bool escaped=false;
+      int start=pos+1;
+      for(int i=start;i<len;i++)
+      {
+         int ch=StringGetCharacter(json,i);
+         if(escaped)
+         {
+            escaped=false;
+            continue;
+         }
+         if(ch=='\\')
+         {
+            escaped=true;
+            continue;
+         }
+         if(ch=='\"')
+         {
+            raw=StringSubstr(json,start,i-start);
+            return true;
+         }
+      }
+      return false;
+   }
+
+   int end=pos;
+   while(end<len)
+   {
+      int ch=StringGetCharacter(json,end);
+      if(ch==',' || ch=='}' || ch==']' || ch=='\r' || ch=='\n' || ch=='\t' || ch==' ') break;
+      end++;
+   }
+   if(end<=pos) return false;
+   raw=StringSubstr(json,pos,end-pos);
+   StringTrimLeft(raw);
+   StringTrimRight(raw);
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::FetchPortfolioTelemetryConfig(void)
+{
+   m_pt_last_config_check=TimeLocal();
+   string url=URL_API+"/api/ea/portfolio-tracking/config?id="+(string)AccountInfoInteger(ACCOUNT_LOGIN);
+   string x="e9691e12e7eef5ceb1daa0559374c83d90248ba3165051f4d82670a7ad0928be";
+   string headers=requestHeaders+x+"161bd26578b6b1ab496e3b3fda393a39aa82cf4734bce5bc168d406248db9745\r\n";
+   char request_body[];
+   ArrayResize(request_body,0);
+   char result[];
+   string result_headers="";
+   ResetLastError();
+   int status=WebRequest("GET",url,headers,(int)MathMin((double)timeout,3000.0),request_body,result,result_headers);
+   if(status<200 || status>=300) return false;
+
+   string response=CharArrayToString(result,0,-1,CP_UTF8);
+   string raw="";
+   bool quoted=false;
+   int previous_minutes=m_pt_bucket_minutes;
+   m_pt_config_loaded=true;
+   m_pt_server_enabled=false;
+   m_pt_portfolio_id="";
+   m_pt_bucket_minutes=MathMax(1,PortfolioTracking_BucketMinutes);
+   m_pt_sample_seconds=MathMax(1,PortfolioTracking_SampleSeconds);
+   m_pt_max_upload_buckets=24;
+
+   if(ReadJsonValue(response,"enabled",raw,quoted))
+      m_pt_server_enabled=(raw=="true" || raw=="1");
+   if(ReadJsonValue(response,"portfolioId",raw,quoted) && raw!="null")
+      m_pt_portfolio_id=raw;
+   if(ReadJsonValue(response,"bucketMinutes",raw,quoted) && (int)StringToInteger(raw)>0)
+      m_pt_bucket_minutes=(int)StringToInteger(raw);
+   if(ReadJsonValue(response,"sampleSeconds",raw,quoted) && (int)StringToInteger(raw)>0)
+      m_pt_sample_seconds=(int)StringToInteger(raw);
+   if(ReadJsonValue(response,"maxUploadBuckets",raw,quoted) && (int)StringToInteger(raw)>0)
+      m_pt_max_upload_buckets=(int)StringToInteger(raw);
+   if(ReadJsonValue(response,"serverTimeMs",raw,quoted) && (long)StringToInteger(raw)>0)
+      m_pt_server_time_offset_ms=(long)StringToInteger(raw)-((long)TimeGMT()*1000);
+
+   int bucket_seconds=m_pt_bucket_minutes*60;
+   if(m_pt_sample_seconds>bucket_seconds) m_pt_sample_seconds=bucket_seconds;
+   if(m_pt_bucket_open && previous_minutes>0 && previous_minutes!=m_pt_bucket_minutes)
+      m_pt_bucket_open=false;
+
+   while(ArraySize(m_pt_queue)>m_pt_max_upload_buckets)
+   {
+      for(int i=1;i<ArraySize(m_pt_queue);++i)
+         m_pt_queue[i-1]=m_pt_queue[i];
+      ArrayResize(m_pt_queue,ArraySize(m_pt_queue)-1);
+   }
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::FetchPortfolioTelemetryState(void)
+{
+   m_pt_last_state_check=TimeLocal();
+   string url=URL_API+"/api/ea/portfolio-tracking/state?id="+(string)AccountInfoInteger(ACCOUNT_LOGIN);
+   string x="e9691e12e7eef5ceb1daa0559374c83d90248ba3165051f4d82670a7ad0928be";
+   string headers=requestHeaders+x+"161bd26578b6b1ab496e3b3fda393a39aa82cf4734bce5bc168d406248db9745\r\n";
+   char request_body[];
+   ArrayResize(request_body,0);
+   char result[];
+   string result_headers="";
+   ResetLastError();
+   int status=WebRequest("GET",url,headers,(int)MathMin((double)timeout,3000.0),request_body,result,result_headers);
+   if(status<200 || status>=300) return false;
+
+   string response=CharArrayToString(result,0,-1,CP_UTF8);
+   string raw="";
+   bool quoted=false;
+   if(ReadJsonValue(response,"latestBucketEndMs",raw,quoted) && (long)StringToInteger(raw)>m_pt_latest_bucket_end_ms)
+      m_pt_latest_bucket_end_ms=(long)StringToInteger(raw);
+   m_pt_state_loaded=true;
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::SamplePortfolioTelemetry(const long now_ms)
+{
+   long bucket_size_ms=(long)m_pt_bucket_minutes*60*1000;
+   if(bucket_size_ms<=0) return;
+
+   long start_ms=(now_ms/bucket_size_ms)*bucket_size_ms;
+   long end_ms=start_ms+bucket_size_ms;
+   double balance=AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   double margin=AccountInfoDouble(ACCOUNT_MARGIN);
+   double free_margin=AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   int positions_total=PositionsTotal();
+
+   if(m_pt_bucket_open && (now_ms>=m_pt_bucket.end_ms || now_ms<m_pt_bucket.start_ms))
+   {
+      if(m_pt_bucket.samples>0 && m_pt_bucket.end_ms<=now_ms && m_pt_bucket.end_ms>m_pt_latest_bucket_end_ms)
+      {
+         int n=ArraySize(m_pt_queue);
+         ArrayResize(m_pt_queue,n+1);
+         m_pt_queue[n]=m_pt_bucket;
+         while(ArraySize(m_pt_queue)>m_pt_max_upload_buckets)
+         {
+            for(int i=1;i<ArraySize(m_pt_queue);++i)
+               m_pt_queue[i-1]=m_pt_queue[i];
+            ArrayResize(m_pt_queue,ArraySize(m_pt_queue)-1);
+         }
+      }
+      m_pt_bucket_open=false;
+   }
+
+   if(!m_pt_bucket_open)
+   {
+      m_pt_bucket.start_ms=start_ms;
+      m_pt_bucket.end_ms=end_ms;
+      m_pt_bucket.minutes=m_pt_bucket_minutes;
+      m_pt_bucket.samples=0;
+      m_pt_bucket.positions_close=positions_total;
+      m_pt_bucket.balance_open=balance;
+      m_pt_bucket.balance_close=balance;
+      m_pt_bucket.equity_open=equity;
+      m_pt_bucket.equity_high=equity;
+      m_pt_bucket.equity_low=equity;
+      m_pt_bucket.equity_close=equity;
+      m_pt_bucket.margin_close=margin;
+      m_pt_bucket.free_margin_close=free_margin;
+      m_pt_bucket_open=true;
+   }
+
+   if(equity>m_pt_bucket.equity_high) m_pt_bucket.equity_high=equity;
+   if(equity<m_pt_bucket.equity_low)  m_pt_bucket.equity_low=equity;
+   m_pt_bucket.samples++;
+   m_pt_bucket.balance_close=balance;
+   m_pt_bucket.equity_close=equity;
+   m_pt_bucket.margin_close=margin;
+   m_pt_bucket.free_margin_close=free_margin;
+   m_pt_bucket.positions_close=positions_total;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::UploadPortfolioTelemetryQueue(void)
+{
+   if(ArraySize(m_pt_queue)<=0) return true;
+   m_pt_last_upload_attempt=TimeLocal();
+
+   string json="{\"schemaVersion\":1,\"eaVersion\":\""+(string)version_+"\",\"accountId\":\""+(string)AccountInfoInteger(ACCOUNT_LOGIN)+"\",\"buckets\":[";
+   for(int i=0;i<ArraySize(m_pt_queue);++i)
+   {
+      if(i>0) json+=",";
+      json+="{\"schemaVersion\":1"
+            +",\"bucketStartMs\":"+StringFormat("%I64d",m_pt_queue[i].start_ms)
+            +",\"bucketEndMs\":"+StringFormat("%I64d",m_pt_queue[i].end_ms)
+            +",\"bucketMinutes\":"+IntegerToString(m_pt_queue[i].minutes)
+            +",\"sampleCount\":"+IntegerToString(m_pt_queue[i].samples)
+            +",\"balanceOpen\":"+DoubleToString(m_pt_queue[i].balance_open,2)
+            +",\"balanceClose\":"+DoubleToString(m_pt_queue[i].balance_close,2)
+            +",\"equityOpen\":"+DoubleToString(m_pt_queue[i].equity_open,2)
+            +",\"equityHigh\":"+DoubleToString(m_pt_queue[i].equity_high,2)
+            +",\"equityLow\":"+DoubleToString(m_pt_queue[i].equity_low,2)
+            +",\"equityClose\":"+DoubleToString(m_pt_queue[i].equity_close,2)
+            +",\"positionCountClose\":"+IntegerToString(m_pt_queue[i].positions_close)
+            +",\"marginClose\":"+DoubleToString(m_pt_queue[i].margin_close,2)
+            +",\"freeMarginClose\":"+DoubleToString(m_pt_queue[i].free_margin_close,2)
+            +"}";
+   }
+   json+="]}";
+
+   char post_body[];
+   StringToCharArray(json,post_body,0,WHOLE_ARRAY,CP_UTF8);
+   if(ArraySize(post_body)>0) ArrayResize(post_body,ArraySize(post_body)-1);
+   char result[];
+   string result_headers="";
+   string x="e9691e12e7eef5ceb1daa0559374c83d90248ba3165051f4d82670a7ad0928be";
+   string headers=requestHeaders+x+"161bd26578b6b1ab496e3b3fda393a39aa82cf4734bce5bc168d406248db9745\r\n";
+   string url=URL_API+"/api/ea/portfolio-tracking/buckets?id="+(string)AccountInfoInteger(ACCOUNT_LOGIN);
+   ResetLastError();
+   int status=WebRequest("POST",url,headers,(int)MathMin((double)timeout,3000.0),post_body,result,result_headers);
+   if(status<200 || status>=300) return false;
+
+   m_pt_latest_bucket_end_ms=m_pt_queue[ArraySize(m_pt_queue)-1].end_ms;
+   ArrayResize(m_pt_queue,0);
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ProcessPortfolioTelemetry(void)
+{
+   if(!m_pt_config_loaded)
+   {
+      m_pt_bucket_minutes=MathMax(1,PortfolioTracking_BucketMinutes);
+      m_pt_sample_seconds=MathMax(1,PortfolioTracking_SampleSeconds);
+      m_pt_max_upload_buckets=24;
+   }
+
+   datetime now=TimeLocal();
+   bool request_made=false;
+   if((!m_pt_config_loaded || (now-m_pt_last_config_check)>=300) && (m_pt_last_config_check==0 || (now-m_pt_last_config_check)>=30))
+   {
+      FetchPortfolioTelemetryConfig();
+      request_made=true;
+   }
+
+   if(!m_pt_config_loaded || !m_pt_server_enabled || m_pt_portfolio_id=="")
+   {
+      m_pt_bucket_open=false;
+      ArrayResize(m_pt_queue,0);
+      return;
+   }
+
+   if(!request_made && (!m_pt_state_loaded || (now-m_pt_last_state_check)>=600) && (m_pt_last_state_check==0 || (now-m_pt_last_state_check)>=30))
+   {
+      FetchPortfolioTelemetryState();
+      request_made=true;
+   }
+
+   if(m_pt_last_sample_time==0 || (now-m_pt_last_sample_time)>=m_pt_sample_seconds)
+   {
+      SamplePortfolioTelemetry((long)TimeGMT()*1000+m_pt_server_time_offset_ms);
+      m_pt_last_sample_time=now;
+   }
+
+   if(!request_made && ArraySize(m_pt_queue)>0 && (m_pt_last_upload_attempt==0 || (now-m_pt_last_upload_attempt)>=30))
+      UploadPortfolioTelemetryQueue();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::GetOpenStats(const string symbol,long magic,int &open_trades,double &open_lots,double &open_pl,double &open_pl_day,double &open_pl_week,string &comment)
 {
    open_trades=0;
@@ -1952,6 +2272,7 @@ void CGOATDashboard::ProcessTimerCycle(void)
    }
 
    RefreshPortfolioRealtimeStats();
+   ProcessPortfolioTelemetry();
    UpdatePortfolioRow();
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------

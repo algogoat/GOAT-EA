@@ -1115,7 +1115,6 @@ class SEQUENCE
    bool AllowPeakSmartPositiveAdd(const double lots_to_add)
    {
     if(Mode_Lots_Prog!=Lots_Prog_PeakSmart || lots_to_add<=0.0) return true;
-    if(!Peak_Smart_MLPS_Gate) return true;
     if(Mode_Lots!=RiskperSeq || Risk<=0.0)
     {
      Print(Desc,": Smart Peak add blocked: RiskperSeq and Risk > 0 are required for live MLPS gating.");
@@ -1172,7 +1171,7 @@ class SEQUENCE
     }
 
     double sequencePL=CurrentSequencePL();
-    if(sequencePL<=Peak_Smart_Min_Profit) return true;
+    if(sequencePL<=0.0) return true;
 
     double releaseFactor=MathMax(0.0,MathMin(100.0,Peak_Smart_Release_PC))*0.01;
     double maxCloseFactor=MathMax(0.0,MathMin(100.0,Peak_Smart_Max_Close_PC))*0.01;
@@ -1546,7 +1545,7 @@ class SEQUENCE
      if     (dir==OP_BUY)  Level_Lock = Level_Entry + Size_Lock*Lock_Factor;
      else if(dir==OP_SELL) Level_Lock = Level_Entry - Size_Lock*Lock_Factor;
      Level_Lock = NormalizeDouble(Level_Lock,_Digits);
-     if(Mode_Lots_Prog==Lots_Prog_PeakSmart && Peak_Smart_LP_Aware && Traded && !BiasRescueActive)
+     if(Mode_Lots_Prog==Lots_Prog_PeakSmart && Traded && !BiasRescueActive)
      {
       double targetLockPL=MathAbs(Size_Lock*Lock_Factor)*PriceValuePerPointPerLot()*LotsTotal;
       double smartLock=0.0;
@@ -1823,7 +1822,7 @@ class SEQUENCE
 
             double v=PositionGetDouble(POSITION_VOLUME);
             double pr=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
-            if(v < VolMin - 1e-9 || pr <= Peak_Smart_Min_Profit) continue;
+            if(v < VolMin - 1e-9 || pr <= 0.0) continue;
 
             double lvl=TradeLevels[i].price_level;
             bool better=false;
@@ -2617,18 +2616,11 @@ int OnInit()
      Alert("Initialization Failed: Smart Peak requires Risk per Sequence lot sizing and Risk > 0.");
      return INIT_PARAMETERS_INCORRECT;
     }
-    if(!Peak_Smart_MLPS_Gate)
+    if(Peak_Smart_Release_PC<0.0 || Peak_Smart_Release_PC>100.0 || Peak_Smart_Max_Close_PC<0.0 || Peak_Smart_Max_Close_PC>100.0)
     {
-     Alert("Initialization Failed: Smart Peak requires the live MLPS gate enabled.");
+     Alert("Initialization Failed: Smart Peak inputs must use 0-100 percent ranges.");
      return INIT_PARAMETERS_INCORRECT;
     }
-    if(Peak_Smart_Release_PC<0.0 || Peak_Smart_Release_PC>100.0 || Peak_Smart_Max_Close_PC<0.0 || Peak_Smart_Max_Close_PC>100.0 || Peak_Smart_Min_Profit<0.0)
-    {
-     Alert("Initialization Failed: Smart Peak inputs must use 0-100 percent ranges and non-negative minimum profit.");
-     return INIT_PARAMETERS_INCORRECT;
-    }
-    if(!Peak_Smart_LP_Aware)
-       Print("Smart Peak warning: LP awareness is disabled; sequence exits will be less protective after harvests.");
    }
    if(Bias_Exit_Max_Exposure_Adds<-1) {Alert("Initialization Failed: Smart Rescue max positive adds cannot be less than -1."); return INIT_PARAMETERS_INCORRECT;}
    if(Mode_Bias_Exit==BiasExit_SmartRescue)

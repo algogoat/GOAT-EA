@@ -473,9 +473,6 @@ FileWrite(FileSET_handle,"Peak_Lots_Pos_PC="+(string)Peak_Lots_Pos_PC);
 FileWrite(FileSET_handle,"Partial_Profit_Factor="+(string)Partial_Profit_Factor);
 FileWrite(FileSET_handle,"Peak_Smart_Release_PC="+(string)Peak_Smart_Release_PC);
 FileWrite(FileSET_handle,"Peak_Smart_Max_Close_PC="+(string)Peak_Smart_Max_Close_PC);
-FileWrite(FileSET_handle,"Peak_Smart_Min_Profit="+(string)Peak_Smart_Min_Profit);
-FileWrite(FileSET_handle,"Peak_Smart_LP_Aware="+(string)Peak_Smart_LP_Aware);
-FileWrite(FileSET_handle,"Peak_Smart_MLPS_Gate="+(string)Peak_Smart_MLPS_Gate);
 FileWrite(FileSET_handle,"; ============MONEY MANAGEMENT===========");
 FileWrite(FileSET_handle,"MaxLossLocal="+(string)MaxLossLocal);//=0
 FileWrite(FileSET_handle,"MaxLossGlobal="+(string)MaxLossGlobal);//=0
@@ -637,9 +634,6 @@ input    double                  Peak_Lots_Pos_PC              =                
 input    double                  Partial_Profit_Factor         =                          10.0;       // % Standing lots to close on each retrace level
 input    double                  Peak_Smart_Release_PC         =                          50.0;       // Smart Peak % excess lots harvested
 input    double                  Peak_Smart_Max_Close_PC       =                          30.0;       // Smart Peak max % standing lots harvested
-input    double                  Peak_Smart_Min_Profit         =                           0.0;       // Smart Peak minimum sequence profit
-input    bool                    Peak_Smart_LP_Aware           =                          true;       // Smart Peak sequence P/L aware LP
-input    bool                    Peak_Smart_MLPS_Gate          =                          true;       // Smart Peak live MLPS gate
 input    group                   "============RISK MANAGEMENT===========                    ";
 sinput   double                  MaxLossLocal                  =                           0.0;       // Max Local Running Loss amount
 sinput   double                  MaxLossGlobal                 =                           0.0;       // Max Global Running Loss amount

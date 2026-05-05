@@ -2,7 +2,7 @@
 #define   EA_Name          MQLInfoString(MQL_PROGRAM_NAME)
 #define   Server           AccountInfoString(ACCOUNT_SERVER)
 #ifndef  GOAT_VERSION_LABEL
-#define   GOAT_VERSION_LABEL "1.38"
+#define   GOAT_VERSION_LABEL "1.39"
 #endif
 #define   version_         GOAT_VERSION_LABEL
 #define   NEWS_FILE        Key+"\\GOAT_News.csv"
@@ -257,6 +257,7 @@ enum ENUM_MODE_LOTS_PROG
    Lots_Prog_Cum2,      // Calculate by Front-Loaded Cumulative Lots
    Lots_Prog_Peak,      // Calculate by Peak Lots
    Lots_Prog_CumPartial,// Calculate by Cumulative Lots with retrace partial close
+   Lots_Prog_PeakSmart, // Calculate by Smart Peak Lots
   };
 //-------------------------------------------------------------------------
 enum ENUM_MODE_RESTART
@@ -470,6 +471,11 @@ FileWrite(FileSET_handle,"Lots_Factor="+(string)Lots_Factor);//=1.4||0.8||0.1||1
 FileWrite(FileSET_handle,"Mode_Lots_Prog="+(string)Mode_Lots_Prog);
 FileWrite(FileSET_handle,"Peak_Lots_Pos_PC="+(string)Peak_Lots_Pos_PC);
 FileWrite(FileSET_handle,"Partial_Profit_Factor="+(string)Partial_Profit_Factor);
+FileWrite(FileSET_handle,"Peak_Smart_Release_PC="+(string)Peak_Smart_Release_PC);
+FileWrite(FileSET_handle,"Peak_Smart_Max_Close_PC="+(string)Peak_Smart_Max_Close_PC);
+FileWrite(FileSET_handle,"Peak_Smart_Min_Profit="+(string)Peak_Smart_Min_Profit);
+FileWrite(FileSET_handle,"Peak_Smart_LP_Aware="+(string)Peak_Smart_LP_Aware);
+FileWrite(FileSET_handle,"Peak_Smart_MLPS_Gate="+(string)Peak_Smart_MLPS_Gate);
 FileWrite(FileSET_handle,"; ============MONEY MANAGEMENT===========");
 FileWrite(FileSET_handle,"MaxLossLocal="+(string)MaxLossLocal);//=0
 FileWrite(FileSET_handle,"MaxLossGlobal="+(string)MaxLossGlobal);//=0
@@ -629,6 +635,11 @@ input    double                  Lots_Factor                   =                
 input    ENUM_MODE_LOTS_PROG     Mode_Lots_Prog                =                Lots_Prog_Last;       // Lots Progression Model
 input    double                  Peak_Lots_Pos_PC              =                          50.0;       // % Position in sequence where Lots peak
 input    double                  Partial_Profit_Factor         =                          10.0;       // % Standing lots to close on each retrace level
+input    double                  Peak_Smart_Release_PC         =                          50.0;       // Smart Peak % excess lots harvested
+input    double                  Peak_Smart_Max_Close_PC       =                          30.0;       // Smart Peak max % standing lots harvested
+input    double                  Peak_Smart_Min_Profit         =                           0.0;       // Smart Peak minimum sequence profit
+input    bool                    Peak_Smart_LP_Aware           =                          true;       // Smart Peak sequence P/L aware LP
+input    bool                    Peak_Smart_MLPS_Gate          =                          true;       // Smart Peak live MLPS gate
 input    group                   "============RISK MANAGEMENT===========                    ";
 sinput   double                  MaxLossLocal                  =                           0.0;       // Max Local Running Loss amount
 sinput   double                  MaxLossGlobal                 =                           0.0;       // Max Global Running Loss amount

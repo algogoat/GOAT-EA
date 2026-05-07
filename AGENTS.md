@@ -70,6 +70,7 @@ Work on GOAT-EA like a surgical MQL5 engineer.
 - Prefer fewer, meaningful optimization dimensions over broad noisy searches. Remove dead parameters, contradictory toggles, and inactive indicator settings before widening any search space.
 - Treat `EA_Desc`, encoding, line endings, enum values, and start-step-stop geometry as correctness-sensitive parts of the optimization artifact, not clerical details.
 - When reviewing or creating optimization suites, sanity-check not only file format but also whether the search space is coherent, efficient, and aligned with how GOAT actually trades.
+- After any seed-farming workflow, dry-run and then execute safe cleanup of local `MQL5\Files\GOAT` seed-farming leftovers before launching normal batch optimization. Stale local seed-farming reports can cause batch XML migration to fail and move the queue forward without processing the current symbol.
 
 ## Recommendation Standard
 

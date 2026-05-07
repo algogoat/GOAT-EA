@@ -120,6 +120,8 @@ public:
    //void           WriteLog(string text,bool print,string Key_,string EA_Name_,string Server_);
    //bool           UpdateBatchQueueAndWriteConfigFile(bool init)
 private:
+   bool HasActiveBatchQueueItem(void);
+   bool ResolveBatchRunningState(const bool clearStale);
    // Helper creation methods
    void CreateLabel(CLabel &lbl, const string text, int x, int y, int width=130);
    void CreateCombo(CComboBox &cmb, const string name, int x, int y, int width=160);
@@ -336,7 +338,7 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    m_controlHeight=(int)MathMax(CONTROLS_COMBO_MIN_HEIGHT,(int)(0.043*D_Height));
    m_rowHeight    =(int)MathMax(m_controlHeight+4,(int)(0.051*D_Height));
    m_controlWidth =(int)MathMax(165,(int)(0.280*D_Width));
-   m_batchRunning=(GlobalVariableGet("BatchOnGoing")!=0.0);
+   m_batchRunning=ResolveBatchRunningState(true);
    m_compactLayout=false;
    
    int GapCtrl    =(int)(0.05*m_controlWidth);
@@ -1149,6 +1151,8 @@ void CStrategyTesterDialog::OnClickDelQ(void)
    else             MessageBox("No Queue file found.","Error",MB_OK|MB_ICONERROR);
    
    if(FileIsExist(Key_+"\\OnGoingBatch."+Key_,FILE_COMMON)) FileDelete(Key_+"\\OnGoingBatch."+Key_,FILE_COMMON);//FILE_TXT
+   GlobalVariableDel("BatchOnGoing");
+   GlobalVariableDel("TerminalRunning");
    OnClickRefresh(true,true);
   }
 //+------------------------------------------------------------------+
@@ -1357,11 +1361,49 @@ void CStrategyTesterDialog::RefreshNewsSyncButton(void)
       m_btnSyncNews.ColorBorder(clrBlack);
      }
    ChartRedraw();
+   }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::HasActiveBatchQueueItem(void)
+  {
+   string QueueContent=GetFileContent(Path_QueueBatch);
+   if(QueueContent=="") return false;
+
+   string QueueItems[];
+   int total=StringSplit(QueueContent,(ushort)31,QueueItems);
+   for(int i=0;i<total;i++)
+   {
+    string item=QueueItems[i];
+    StringTrimLeft(item);
+    StringTrimRight(item);
+    if(item=="") continue;
+
+    string parts[];
+    if(StringSplit(item,';',parts)==3)
+    {
+     if(StringFind(parts[1],"OnGoing",0)>=0 || StringFind(parts[1],"Queued",0)>=0) return true;
+    }
+    else if(StringFind(item,"OnGoing",0)>=0 || StringFind(item,"Queued",0)>=0) return true;
+   }
+   return false;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::ResolveBatchRunningState(const bool clearStale)
+  {
+   if(GlobalVariableGet("BatchOnGoing")==0.0) return false;
+   if(HasActiveBatchQueueItem()) return true;
+
+   if(clearStale)
+   {
+    GlobalVariableDel("BatchOnGoing");
+    GlobalVariableDel("TerminalRunning");
+    WriteLog("Cleared stale BatchOnGoing flag: queue has no Queued or OnGoing item.",true,Key_,EA_Name_,Server_);
+   }
+   return false;
   }
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::RefreshBatchStartButtonState(void)
   {
-   m_batchRunning=(GlobalVariableGet("BatchOnGoing")!=0.0);
+   m_batchRunning=ResolveBatchRunningState(true);
    m_btnStart.Text(m_batchRunning ? "RUNNING" : "START BATCH");
    if(m_batchRunning) m_btnStart.Disable();
    else               m_btnStart.Enable();
@@ -1419,7 +1461,7 @@ void CStrategyTesterDialog::OnClickSyncNews(void)
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickStart(void)
   {
-   if(GlobalVariableGet("BatchOnGoing")!=0.0) {MessageBox("Batch is already running.","Info",MB_OK|MB_ICONINFORMATION); return;}
+   if(ResolveBatchRunningState(true)) {MessageBox("Batch is already running.","Info",MB_OK|MB_ICONINFORMATION); return;}
    if(!FileIsExist(Path_QueueBatch,FILE_COMMON)) {MessageBox("No Queue file found.","Error",MB_OK|MB_ICONERROR); return;}
    News.Key_ = Key_;
    Bias.Key_ = Key_;
@@ -1484,6 +1526,7 @@ void CStrategyTesterDialog::OnClickStop(void)
    GlobalVariableDel("TerminalRunning");
    if(pendingCount==0)
    {
+      RefreshBatchStartButtonState();
       MessageBox("No Pending items found.","Info",MB_OK|MB_ICONINFORMATION); return;
    }
    string warn = StringFormat("All %d pending items will be cancelled.\n\nContinue?",pendingCount);

@@ -126,7 +126,7 @@ class SEQUENCE
    double      Level_Last,Level_Retrace,Level_Lock,Level_TP,Level_SL,Level_TSL,Level_Entry,LotsTotal;
    double      Size_Grid,Size_Lock,Size_TP,Size_SL,Size_TSL;
    double      StartLots,PeakLots,PeakCumLots,ScaleFactor,LotsRaw[],LotsNorm[],LotsCum[],Distances[];
-   double      BiasRescueRealizedPL,BiasRescueBEPrice,BiasRescueSLPrice;
+   double      SequenceRealizedPL,BiasRescueBEPrice,BiasRescueSLPrice;
    //double      FirstTradeEquity;
    
    SEQUENCE()
@@ -138,7 +138,7 @@ class SEQUENCE
     Level_Last=Level_Retrace=Level_Lock=Level_TP=Level_SL=Level_TSL=Level_Entry=LotsTotal=0.0;
     Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;
     StartLots=PeakLots=PeakCumLots=ScaleFactor=0.0;
-    BiasRescueRealizedPL=BiasRescueBEPrice=BiasRescueSLPrice=0.0;
+    SequenceRealizedPL=BiasRescueBEPrice=BiasRescueSLPrice=0.0;
     ArrayResize(LotsRaw,0,Max_Seq_Trades); ArrayResize(LotsNorm,0,Max_Seq_Trades); ArrayResize(LotsCum,0,Max_Seq_Trades); ArrayResize(Distances,0,Max_Seq_Trades);
     //FirstTradeEquity=0.0;
    }
@@ -149,7 +149,7 @@ class SEQUENCE
     Desc = Strat+((Virtual)?" Virtual ":" ")+((dir==OP_BUY)?"Buy":"Sell");
     Retrace_Triggered=false;
     Level_Retrace=0.0;
-    ResetBiasRescue();
+    ResetSequenceRiskState();
    }
 //----------------------
    void End_Sequence(string desc)
@@ -195,7 +195,7 @@ class SEQUENCE
       Sequences_PL++;
      }
      Active=Traded=Trailing=Retrace_Triggered=false;
-     ResetBiasRescue();
+     ResetSequenceRiskState();
      Level_Count=Trades_Count=ArrayResize(TradeLevels,0,Max_Seq_Levels);
      Level_Last=Level_Retrace=Level_Lock=Level_TP=Level_SL=Level_TSL=Level_Entry=LotsTotal=0.0;
      Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;
@@ -212,12 +212,12 @@ class SEQUENCE
      }
     }
 //----------------------
-   void ResetBiasRescue()
+   void ResetSequenceRiskState()
    {
     BiasRescueActive=false;
     BiasRescueBEProtected=false;
     BiasRescuePositiveAdds=0;
-    BiasRescueRealizedPL=BiasRescueBEPrice=BiasRescueSLPrice=0.0;
+    SequenceRealizedPL=BiasRescueBEPrice=BiasRescueSLPrice=0.0;
    }
 //---------------------- Round any raw volume to the nearest tradable lot
    double NormalizedLots(double raw_volume)
@@ -863,7 +863,7 @@ class SEQUENCE
           +HistoryDealGetDouble(deal_ticket,DEAL_COMMISSION)
           +HistoryDealGetDouble(deal_ticket,DEAL_SWAP);
    }
-   void AccumulateBiasRescueDealPL(const ulong deal_ticket)
+   void AccumulateSequenceDealPL(const ulong deal_ticket)
    {
     if(deal_ticket==0 || !HistoryDealSelect(deal_ticket)) return;
     if(HistoryDealGetInteger(deal_ticket,DEAL_MAGIC)!=MAGIC1) return;
@@ -871,12 +871,12 @@ class SEQUENCE
 
     int deal_entry=(int)HistoryDealGetInteger(deal_ticket,DEAL_ENTRY);
     if(deal_entry==DEAL_ENTRY_OUT || deal_entry==DEAL_ENTRY_OUT_BY)
-       BiasRescueRealizedPL += ClosedDealPL(deal_ticket);
+       SequenceRealizedPL += ClosedDealPL(deal_ticket);
    }
 //---------------------- true sequence P/L = realized ledger + live open P/L
    double CurrentSequencePL()
    {
-    double pl=BiasRescueRealizedPL;
+    double pl=SequenceRealizedPL;
     if(!Traded) return pl;
 
     RefreshTicketLots();
@@ -888,6 +888,22 @@ class SEQUENCE
      pl += PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
     }
     return pl;
+   }
+//---------------------- optional live MLPS breach stop for any real sequence
+   bool EnforceSequenceMLPS(const string context)
+   {
+    if(!Sequence_MLPS_Hard_Close) return false;
+    if(Virtual || !Active || !Traded) return false;
+    if(Risk<=0.0) return false;
+
+    double pl=CurrentSequencePL();
+    if(pl>-Risk) return false;
+
+    Print(Desc,": Sequence MLPS breached. P/L=",DoubleToString(pl,2),
+          " MLPS=-",DoubleToString(Risk,2),
+          " Context=",context);
+    CloseSequencePositions("Sequence Exit: MLPS breached");
+    return true;
    }
 //---------------------- price where the live basket reaches target sequence P/L
    bool ComputeBiasRescueTargetPrice(const double target_pl,const double standing_lots,const double current_pl,double &price_out)
@@ -946,11 +962,15 @@ class SEQUENCE
     if(BiasRescueBEProtected) sl=TighterBiasStop(sl,BiasRescueBEPrice);
     return (sl>0.0) ? NormalizeDouble(sl,_Digits) : 0.0;
    }
-   void CloseBiasRescue(const string reason)
+   void CloseSequencePositions(const string reason)
    {
     if(Traded && FindNumberOfPositions(dir,MAGIC1)>0) CloseAllPositions(dir,MAGIC1);
     if(!Traded || FindNumberOfPositions(dir,MAGIC1)==0) End_Sequence(reason);
     else Print(Desc,": ",reason," close requested; positions remain open.");
+   }
+   void CloseBiasRescue(const string reason)
+   {
+    CloseSequencePositions(reason);
    }
    bool RefreshBiasRescueLevels()
    {
@@ -1115,11 +1135,12 @@ class SEQUENCE
    bool AllowPeakSmartPositiveAdd(const double lots_to_add)
    {
     if(Mode_Lots_Prog!=Lots_Prog_PeakSmart || lots_to_add<=0.0) return true;
-    if(Mode_Lots!=RiskperSeq || Risk<=0.0)
+    if(Risk<=0.0)
     {
-     Print(Desc,": Smart Peak add blocked: RiskperSeq and Risk > 0 are required for live MLPS gating.");
+     Print(Desc,": Smart Peak add blocked: Risk/MLPS > 0 is required for live MLPS gating.");
      return false;
     }
+    if(EnforceSequenceMLPS("positive add")) return false;
 
     double standing=GetStandingLots(true);
     if(!Traded)
@@ -1153,6 +1174,7 @@ class SEQUENCE
    {
     if(Virtual || !Active || !Traded || Mode_Lots_Prog!=Lots_Prog_PeakSmart || Peak_Smart_Release_PC<=0.0 || Level_Count<2)
        return true;
+    if(EnforceSequenceMLPS("retrace")) return false;
     if(!(Level_Retrace>0.0) || !MathIsValidNumber(Level_Retrace)) return true;
 
     bool crossed=((dir==OP_BUY) ? (price>=Level_Retrace) : (price<=Level_Retrace));
@@ -1369,6 +1391,7 @@ class SEQUENCE
      if(Size_TP  ==1234.5) Size_TP   = GetSize(OP_TP);
      if(Size_SL  ==1234.5) Size_SL   = GetSize(OP_SL);
      if(Size_TSL ==1234.5) Size_TSL  = GetSize(TSL);
+     if(EnforceSequenceMLPS("add level")) return false;
 
      bool   hadPriorLevel = (Level_Count>0);
      double prevLevel     = Level_Last;
@@ -1767,7 +1790,7 @@ class SEQUENCE
          bool ok = fullClose ? tr.PositionClose(pickTk)
                              : tr.PositionClosePartial(pickTk, volCut);
          if(!ok) {PcloseErrors++; Print("Close error ",_LastError); return false; }
-         AccumulateBiasRescueDealPL((ulong)tr.ResultDeal());
+         AccumulateSequenceDealPL((ulong)tr.ResultDeal());
 
          lotsReq -= fullClose ? pickVol : volCut;
 
@@ -1857,7 +1880,7 @@ class SEQUENCE
             Print("Smart Peak close error ",_LastError);
             return false;
          }
-         AccumulateBiasRescueDealPL((ulong)tr.ResultDeal());
+         AccumulateSequenceDealPL((ulong)tr.ResultDeal());
 
          double closedVol=fullClose ? pickVol : volCut;
          closedLots+=closedVol;
@@ -2609,11 +2632,12 @@ int OnInit()
    if(Mode_Lots == FixedLots)  Lots = Lots_Input;
    if(Mode_Lots == ScaledLots) Lots = Lots_Input/(AccountInfoDouble(ACCOUNT_EQUITY)/1000);
    if(Mode_Lots == RiskperSeq && Risk<10) {Alert("Initialization Stopped Manually: You have selected Risk per Sequence but your Risk Amount is too low."); return INIT_PARAMETERS_INCORRECT;}
+   if(Sequence_MLPS_Hard_Close && Risk<10.0) {Alert("Initialization Failed: Sequence MLPS hard close requires Risk/MLPS amount of at least 10."); return INIT_PARAMETERS_INCORRECT;}
    if(Mode_Lots_Prog==Lots_Prog_PeakSmart)
    {
-    if(Mode_Lots!=RiskperSeq || Risk<=0.0)
+    if(Risk<10.0)
     {
-     Alert("Initialization Failed: Smart Peak requires Risk per Sequence lot sizing and Risk > 0.");
+     Alert("Initialization Failed: Smart Peak requires Risk/MLPS amount of at least 10.");
      return INIT_PARAMETERS_INCORRECT;
     }
     if(Peak_Smart_Release_PC<0.0 || Peak_Smart_Release_PC>100.0 || Peak_Smart_Max_Close_PC<0.0 || Peak_Smart_Max_Close_PC>100.0)
@@ -4762,60 +4786,75 @@ void OnTick()
  //else ObjectSetText(IntegerToString(TotalText_Trade-2,2,'0')," ",Font_Size-1,"NULL",clrLime);
 //-------------------------------------------------------------------------
    static bool LastBuyTradeSignal=false,LastSellTradeSignal=false;
-   
-   if(CheckSequenceNow() && !Sequence_Pause_Close)// && Active) // close or inactivity pause takes precedence over other pause types
+
+   bool buyMlpsExit=false,sellMlpsExit=false;
+   if(Seq_Buy.Active)  buyMlpsExit  = Seq_Buy.EnforceSequenceMLPS("tick");
+   if(Seq_Sell.Active) sellMlpsExit = Seq_Sell.EnforceSequenceMLPS("tick");
+
+   bool sequenceCheckNow=CheckSequenceNow();
+   if(sequenceCheckNow && !Sequence_Pause_Close)// && Active) // close or inactivity pause takes precedence over other pause types
    {
     if(Seq_Buy.Active)
     {
-     if(Seq_Buy.Traded && Mode_Lots_Prog==Lots_Prog_CumPartial && Partial_Profit_Factor>0.0 && ask >= Seq_Buy.Level_Retrace && Seq_Buy.Level_Retrace>0.0)
-        Seq_Buy.HandlePartialRetrace(ask);
-     if(Seq_Buy.Traded && Mode_Lots_Prog==Lots_Prog_PeakSmart && Peak_Smart_Release_PC>0.0 && bid >= Seq_Buy.Level_Retrace && Seq_Buy.Level_Retrace>0.0)
-        Seq_Buy.HandlePeakSmartRetrace(bid);
-
-     if(ask < (Seq_Buy.Level_Last-GetSize(GRID_VALID,Seq_Buy.Level_Count,Seq_Buy.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_BUY) )// && BuySig)
+     if(buyMlpsExit)
+        LastBuyTradeSignal = false;
+     else
      {
-      if(Sequence_Pause_News)
+      if(Seq_Buy.Traded && Mode_Lots_Prog==Lots_Prog_CumPartial && Partial_Profit_Factor>0.0 && ask >= Seq_Buy.Level_Retrace && Seq_Buy.Level_Retrace>0.0)
+         Seq_Buy.HandlePartialRetrace(ask);
+      if(Seq_Buy.Traded && Mode_Lots_Prog==Lots_Prog_PeakSmart && Peak_Smart_Release_PC>0.0 && bid >= Seq_Buy.Level_Retrace && Seq_Buy.Level_Retrace>0.0)
+         Seq_Buy.HandlePeakSmartRetrace(bid);
+
+      if(ask < (Seq_Buy.Level_Last-GetSize(GRID_VALID,Seq_Buy.Level_Count,Seq_Buy.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_BUY) )// && BuySig)
       {
-       if(!LastBuyTradeSignal) Trades_Skipped_News++; 
+       if(Sequence_Pause_News)
+       {
+        if(!LastBuyTradeSignal) Trades_Skipped_News++;
+       }
+       else if(Sequence_Pause_Bias_B && !Seq_Buy.BiasRescueActive)
+       {
+        if(!LastBuyTradeSignal) Trades_Skipped_Bias_B++;
+       }
+       else
+       {
+        Seq_Buy.Add_Level(ask); //return;
+       }
+       LastBuyTradeSignal = true; // we are currently in add trade condition so Last TradeSignal is true
       }
-      else if(Sequence_Pause_Bias_B && !Seq_Buy.BiasRescueActive)
-      {
-       if(!LastBuyTradeSignal) Trades_Skipped_Bias_B++;
-      }
-      else
-      {
-       Seq_Buy.Add_Level(ask); //return;
-      }
-      LastBuyTradeSignal = true; // we are currently in add trade condition so Last TradeSignal is true
+      else LastBuyTradeSignal = false; // last time sequence conditions didnt try adding a new trade
      }
-     else LastBuyTradeSignal = false; // last time sequence conditions didnt try adding a new trade
     }
     else LastBuyTradeSignal = false; // last time sequence conditions didnt try adding a new trade
 //--------
     if(Seq_Sell.Active)
     {
-     if(Seq_Sell.Traded && Mode_Lots_Prog==Lots_Prog_CumPartial && Partial_Profit_Factor>0.0 && bid <= Seq_Sell.Level_Retrace && Seq_Sell.Level_Retrace>0.0)
-        Seq_Sell.HandlePartialRetrace(bid);
-     if(Seq_Sell.Traded && Mode_Lots_Prog==Lots_Prog_PeakSmart && Peak_Smart_Release_PC>0.0 && ask <= Seq_Sell.Level_Retrace && Seq_Sell.Level_Retrace>0.0)
-        Seq_Sell.HandlePeakSmartRetrace(ask);
-
-     if(bid > (Seq_Sell.Level_Last+GetSize(GRID_VALID,Seq_Sell.Level_Count,Seq_Sell.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_SELL) )// && SellSig)
+     if(sellMlpsExit)
+        LastSellTradeSignal = false;
+     else
      {
-      if(Sequence_Pause_News)
+      if(Seq_Sell.Traded && Mode_Lots_Prog==Lots_Prog_CumPartial && Partial_Profit_Factor>0.0 && bid <= Seq_Sell.Level_Retrace && Seq_Sell.Level_Retrace>0.0)
+         Seq_Sell.HandlePartialRetrace(bid);
+      if(Seq_Sell.Traded && Mode_Lots_Prog==Lots_Prog_PeakSmart && Peak_Smart_Release_PC>0.0 && ask <= Seq_Sell.Level_Retrace && Seq_Sell.Level_Retrace>0.0)
+         Seq_Sell.HandlePeakSmartRetrace(ask);
+
+      if(bid > (Seq_Sell.Level_Last+GetSize(GRID_VALID,Seq_Sell.Level_Count,Seq_Sell.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_SELL) )// && SellSig)
       {
-       if(!LastSellTradeSignal) Trades_Skipped_News++;
+       if(Sequence_Pause_News)
+       {
+        if(!LastSellTradeSignal) Trades_Skipped_News++;
+       }
+       else if(Sequence_Pause_Bias_S && !Seq_Sell.BiasRescueActive)
+       {
+        if(!LastSellTradeSignal) Trades_Skipped_Bias_S++;
+       }
+       else
+       {
+        Seq_Sell.Add_Level(bid); //return;
+       }
+       LastSellTradeSignal = true; // we are currently in add trade condition so Last TradeSignal is true
       }
-      else if(Sequence_Pause_Bias_S && !Seq_Sell.BiasRescueActive)
-      {
-       if(!LastSellTradeSignal) Trades_Skipped_Bias_S++;
-      }
-      else
-      {
-       Seq_Sell.Add_Level(bid); //return;
-      }
-      LastSellTradeSignal = true; // we are currently in add trade condition so Last TradeSignal is true
+      else LastSellTradeSignal = false; // last time sequence conditions didnt try adding a new trade
      }
-     else LastSellTradeSignal = false; // last time sequence conditions didnt try adding a new trade
     }
     else LastSellTradeSignal = false; // last time sequence conditions didnt try adding a new trade
 //----------------------

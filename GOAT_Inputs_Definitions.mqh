@@ -463,6 +463,7 @@ FileWrite(FileSET_handle,"ATR_Method="+(string)ATR_Method);//=1||1||0||2||Y
 FileWrite(FileSET_handle,"; ============POSITION SIZING============");
 FileWrite(FileSET_handle,"Mode_Lots="+(string)Mode_Lots);//=0
 FileWrite(FileSET_handle,"Risk="+(string)Risk);//=1
+FileWrite(FileSET_handle,"Sequence_MLPS_Hard_Close="+(string)Sequence_MLPS_Hard_Close);
 FileWrite(FileSET_handle,"Lots_Input="+(string)Lots_Input);//=0.1||0.1||0.010000||1.000000||N
 FileWrite(FileSET_handle,"Lots_Max="+(string)Lots_Max);//=0.2||0.2||0.1||0.9||Y
 FileWrite(FileSET_handle,"Lots_Max_Cum="+(string)Lots_Max_Cum);//=0.2||0.2||0.1||0.9||Y
@@ -623,6 +624,7 @@ input    ENUM_MODE_MA            ATR_Method                    =                
 input    group                   "============POSITION SIZING============                    ";
 sinput   ENUM_MODE_LOTS          Mode_Lots                     =                     FixedLots;       // Sizing Method (For Starting Lots)
 sinput   double                  Risk                          =                           500;       // Risk/Loss per Sequence in $$$
+sinput   bool                    Sequence_MLPS_Hard_Close      =                         false;       // Hard Close Sequence at Risk/MLPS Breach
 input    double                  Lots_Input                    =                           0.1;       // Starting Lots (Fixed/Scaled)
 input    double                  Lots_Max                      =                          10.0;       // Max Trade Lots (multiplies Starting Lots)
 input    double                  Lots_Max_Cum                  =                          50.0;       // Max Cumulative Lots (multiplies Starting Lots)

@@ -64,7 +64,7 @@ public:
    CComboBox   m_cmbOptimization;
    // RIGHT SIDE
    CLabel      m_lblQueue;//,m_lblStatus;
-   CEdit       m_edtQueue[10];//,m_edtStatus[10];
+   CEdit       m_edtQueue[10],m_edtBatchProgress;//,m_edtStatus[10];
    CListView   m_listQueue;
    // Single button
    CButton     m_btnSelectFile,m_btnAddQueue,m_btnSetPresets,m_btnDelQ,m_btnDelQitem,m_btnUpQitem,m_btnDownQitem,m_btnCancelSelected,m_btnMakePending,m_btnStart,m_btnStop;
@@ -114,6 +114,7 @@ public:
    void           OnClickSyncNews(void);
    void           RefreshNewsSyncButton(void);
    void           RefreshBatchStartButtonState(void);
+   void           UpdateBatchProgressText(void);
    void           OnClickStart(void);
    void           OnClickStop(void);
    void           ChangeItemTo(const int index,const string state); // generic state swapper
@@ -309,6 +310,198 @@ bool QueueItemMatchesCurrentRun(string queueItem)
    if(queuedSymbol!=Symbol()) return false;
    if(queuedStrategy=="" || activeStrategy=="") return true;
    return (queuedStrategy==activeStrategy);
+  }
+//+------------------------------------------------------------------+
+struct SBatchProgressStats
+  {
+   int total;
+   int completed;
+   int errors;
+   int pending;
+   int queued;
+   int ongoing;
+   int cancelled;
+   int other;
+  };
+//+------------------------------------------------------------------+
+void ResetBatchProgressStats(SBatchProgressStats &stats)
+  {
+   stats.total=0;
+   stats.completed=0;
+   stats.errors=0;
+   stats.pending=0;
+   stats.queued=0;
+   stats.ongoing=0;
+   stats.cancelled=0;
+   stats.other=0;
+  }
+//+------------------------------------------------------------------+
+string BatchQueueStateFromTitle(string title)
+  {
+   StringTrimLeft(title);
+   StringTrimRight(title);
+   int split=StringFind(title,"_",0);
+   string state=(split>0 ? StringSubstr(title,0,split) : title);
+   StringTrimLeft(state);
+   StringTrimRight(state);
+   return state;
+  }
+//+------------------------------------------------------------------+
+bool ReadBatchProgressStats(const string queueFile,SBatchProgressStats &stats)
+  {
+   ResetBatchProgressStats(stats);
+   string content=GetFileContent(queueFile);
+   if(content=="") return false;
+
+   string rows[];
+   int total=StringSplit(content,(ushort)31,rows);
+   for(int i=0;i<total;i++)
+   {
+    string row=rows[i];
+    StringTrimLeft(row);
+    StringTrimRight(row);
+    if(row=="" || StringLen(row)<9) continue;
+
+    string parts[];
+    if(StringSplit(row,';',parts)<2) continue;
+
+    string state=BatchQueueStateFromTitle(parts[1]);
+    stats.total++;
+
+         if(state=="Completed") stats.completed++;
+    else if(state=="Error")     stats.errors++;
+    else if(state=="Pending")   stats.pending++;
+    else if(state=="Queued")    stats.queued++;
+    else if(state=="OnGoing")   stats.ongoing++;
+    else if(state=="Cancelled") stats.cancelled++;
+    else                        stats.other++;
+   }
+   return (stats.total>0);
+  }
+//+------------------------------------------------------------------+
+string FormatBatchProgressText(const SBatchProgressStats &stats,const bool loaded)
+  {
+   if(!loaded || stats.total<=0) return "0/0 Completed";
+
+   int left=stats.pending+stats.queued+stats.ongoing;
+   string text=IntegerToString(stats.completed)+"/"+IntegerToString(stats.total)+" Completed";
+   if(stats.errors>0)    text+=" | "+IntegerToString(stats.errors)+" Error";
+   if(stats.cancelled>0) text+=" | "+IntegerToString(stats.cancelled)+" Cancelled";
+   text+=" | "+IntegerToString(left)+" Left";
+   return text;
+  }
+//+------------------------------------------------------------------+
+string FormatDurationShort(const int seconds_in)
+  {
+   int seconds=(int)MathMax(seconds_in,0);
+   int durationDays=seconds/86400;
+   seconds%=86400;
+   int hours=seconds/3600;
+   seconds%=3600;
+   int minutes=seconds/60;
+   seconds%=60;
+
+   if(durationDays>0) return IntegerToString(durationDays)+"d "+IntegerToString(hours)+"h";
+   if(hours>0)   return IntegerToString(hours)+"h "+IntegerToString(minutes)+"m";
+   if(minutes>0) return IntegerToString(minutes)+"m "+IntegerToString(seconds)+"s";
+   return IntegerToString(seconds)+"s";
+  }
+//+------------------------------------------------------------------+
+bool TryParseLogStamp(const string line,datetime &stamp)
+  {
+   if(StringLen(line)<19) return false;
+   stamp=StringToTime(StringSubstr(line,0,19));
+   return (stamp>0);
+  }
+//+------------------------------------------------------------------+
+void BuildOptimizationBatchPromptSummary(const string queueFile,const string logFile,string &line1,string &line2,string &line3)
+  {
+   SBatchProgressStats stats;
+   bool loaded=ReadBatchProgressStats(queueFile,stats);
+   int left=stats.pending+stats.queued+stats.ongoing;
+
+   if(loaded)
+      line1=StringFormat("Runs OK: %d/%d | Errors: %d | Left: %d",stats.completed,stats.total,stats.errors,left);
+   else
+      line1="Runs OK: n/a | Queue not found";
+
+   string logLines[];
+   int lineCount=0;
+   int h=FileOpen(logFile,FILE_READ|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_TXT|FILE_COMMON);
+   if(h!=INVALID_HANDLE)
+   {
+    while(!FileIsEnding(h))
+    {
+     ArrayResize(logLines,lineCount+1);
+     logLines[lineCount]=FileReadString(h);
+     lineCount++;
+    }
+    FileClose(h);
+   }
+
+   int startIndex=-1;
+   datetime batchStart=0;
+   for(int i=lineCount-1;i>=0;i--)
+   {
+    if(StringFind(logLines[i],"Batch Start clicked and accepted",0)>=0)
+    {
+     startIndex=i;
+     TryParseLogStamp(logLines[i],batchStart);
+     break;
+    }
+   }
+
+   int completedRuns=0,totalSeconds=0,xmlIssues=0,exportIssues=0;
+   datetime currentStart=0,lastRunEnd=0;
+   for(int i=(int)MathMax(startIndex,0);i<lineCount;i++)
+   {
+    string ln=logLines[i];
+    datetime stamp=0;
+    bool haveStamp=TryParseLogStamp(ln,stamp);
+
+    if(StringFind(ln,"Batch Optimization Initialized",0)>=0)
+    {
+     if(haveStamp) currentStart=stamp;
+     continue;
+    }
+
+    if(StringFind(ln,"Optimization Ended",0)>=0)
+    {
+     if(haveStamp)
+     {
+      lastRunEnd=stamp;
+      if(currentStart>0 && stamp>=currentStart)
+      {
+       totalSeconds+=(int)(stamp-currentStart);
+       completedRuns++;
+      }
+     }
+     currentStart=0;
+     continue;
+    }
+
+    if(StringFind(ln,"XML Migration not complete",0)>=0 ||
+       StringFind(ln,"Some XML files failed to move",0)>=0 ||
+       StringFind(ln,"Failed to Analyze and Combine",0)>=0 ||
+       StringFind(ln,"Failed to analyze and combine",0)>=0)
+       xmlIssues++;
+
+    if(StringFind(ln,"Exports aborted",0)>=0 ||
+       (StringFind(ln,"StartExporter",0)>=0 && StringFind(ln,"failed",0)>=0))
+       exportIssues++;
+   }
+
+   if(completedRuns>0)
+   {
+    int avgSeconds=totalSeconds/completedRuns;
+    int elapsedSeconds=(batchStart>0 && lastRunEnd>=batchStart ? (int)(lastRunEnd-batchStart) : totalSeconds);
+    line2="Avg/run: "+FormatDurationShort(avgSeconds)+" | Total: "+FormatDurationShort(elapsedSeconds);
+   }
+   else
+      line2="Avg/run: n/a | Total: n/a";
+
+   line3=StringFormat("XML issues: %d | Export issues: %d",xmlIssues,exportIssues);
+   if(loaded && stats.cancelled>0) line3+=" | Cancelled: "+IntegerToString(stats.cancelled);
   }
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnDateFromChanged(void)
@@ -580,6 +773,12 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    y=stopY;
    CreateButtonCtrl(m_btnStop    , "m_btnStop"     ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), startStopHeight, "TERMINATE");
          m_btnStop.FontSize(m_btnStop.FontSize()+2); m_btnStop.Color(clrWhite); m_btnStop.ColorBackground(clrCrimson); m_btnStop.ColorBorder(clrBlack);//C'15,23,42');
+   int progressY=y+startStopHeight+MathMax(4,(int)(m_GapHoriz*0.75));
+   CreateEditBox(m_edtBatchProgress,"m_edtBatchProgress",indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05),progressY,(int)(width_right*Ctrl_M),"0/0 Completed");
+   m_edtBatchProgress.ReadOnly(true);
+   m_edtBatchProgress.Color(clrWhite);
+   m_edtBatchProgress.ColorBackground(C'47,74,111');
+   m_edtBatchProgress.ColorBorder(clrBlack);
    y += m_rowHeight;
    
    if(!m_compactLayout)
@@ -1261,6 +1460,7 @@ void CStrategyTesterDialog::OnClickRefresh(bool init=false, bool select=false)
    m_listQueue.ItemsClear();
    if(QueueContent=="")
    {
+    UpdateBatchProgressText();
     if(!init) MessageBox("No Queue file found.","Error",MB_OK|MB_ICONERROR);
     return;
    }
@@ -1407,6 +1607,20 @@ void CStrategyTesterDialog::RefreshBatchStartButtonState(void)
    m_btnStart.Text(m_batchRunning ? "RUNNING" : "START BATCH");
    if(m_batchRunning) m_btnStart.Disable();
    else               m_btnStart.Enable();
+   UpdateBatchProgressText();
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::UpdateBatchProgressText(void)
+  {
+   SBatchProgressStats stats;
+   bool loaded=ReadBatchProgressStats(Path_QueueBatch,stats);
+   m_edtBatchProgress.Text(FormatBatchProgressText(stats,loaded));
+   if(loaded && stats.errors>0)
+      m_edtBatchProgress.ColorBackground(C'122,63,34');
+   else if(loaded && stats.total>0 && stats.completed+stats.errors+stats.cancelled>=stats.total)
+      m_edtBatchProgress.ColorBackground(C'46,139,87');
+   else
+      m_edtBatchProgress.ColorBackground(C'47,74,111');
   }
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickSyncNews(void)

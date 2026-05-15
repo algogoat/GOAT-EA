@@ -1,0 +1,54 @@
+{
+  "source_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 Portfolio Long Short Split Retune V2",
+  "dest_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 Final Long Short Split",
+  "files": [
+    {
+      "source": "SP_CCE400_L.set",
+      "dest": "SP_CCE400_L.set"
+    },
+    {
+      "source": "SP_CCE400_S.set",
+      "dest": "SP_CCE400_S.set"
+    },
+    {
+      "source": "SP_CR2_400_L.set",
+      "dest": "SP_CR2_400_L.set"
+    },
+    {
+      "source": "SP_CR4_400_S.set",
+      "dest": "SP_CR4_400_S.set"
+    },
+    {
+      "source": "SP_RF400_L.set",
+      "dest": "SP_RF400_L.set"
+    },
+    {
+      "source": "SP_RF3_400_S.set",
+      "dest": "SP_RF3_400_S.set"
+    },
+    {
+      "source": "SP_TBB400_L.set",
+      "dest": "SP_TBB400_L.set"
+    },
+    {
+      "source": "SP_TBB400_S.set",
+      "dest": "SP_TBB400_S.set"
+    },
+    {
+      "source": "SP_TMACD400_L.set",
+      "dest": "SP_TMACD400_L.set"
+    },
+    {
+      "source": "SP_TMACD400_S.set",
+      "dest": "SP_TMACD400_S.set"
+    },
+    {
+      "source": "SP_TTR5_400_L.set",
+      "dest": "SP_TTR5_400_L.set"
+    },
+    {
+      "source": "SP_TTR3_400_S.set",
+      "dest": "SP_TTR3_400_S.set"
+    }
+  ]
+}

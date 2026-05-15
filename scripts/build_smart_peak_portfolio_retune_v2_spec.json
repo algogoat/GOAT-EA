@@ -1,0 +1,134 @@
+{
+  "source_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 Portfolio Long Short Split",
+  "dest_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 Portfolio Long Short Split Retune V2",
+  "files": [
+    {
+      "source": "SP_CCE400_L_M5.set",
+      "dest": "SP_CCE400_L.set"
+    },
+    {
+      "source": "SP_CCE400_S_M5.set",
+      "dest": "SP_CCE400_S.set"
+    },
+    {
+      "source": "SP_CR400_L_M5.set",
+      "dest": "SP_CR2_400_L.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SP_CR2_400_L",
+        "Grid_Size=": "Grid_Size=-2.5||-2.0||-0.5||-3.5||Y",
+        "Grid_Max=": "Grid_Max=-14.0||10.0||1.000000||100.000000||N",
+        "Lock_Profit_Size=": "Lock_Profit_Size=-2.5||-2.0||-0.5||-3.5||Y",
+        "TP_Pips=": "TP_Pips=1.5||0.9||0.3||1.8||Y",
+        "ADX_Mode=": "ADX_Mode=3||3||0||3||N",
+        "ADX_TF_=": "ADX_TF_=15||15||45||60||Y",
+        "ADX_Period=": "ADX_Period=14||10||2||18||Y",
+        "ADX_Level=": "ADX_Level=26||22||2||30||Y",
+        "BB_Period=": "BB_Period=25||20||5||35||Y",
+        "BB_Deviation=": "BB_Deviation=1.8||1.6||0.2||2.4||Y",
+        "MACD_Mode=": "MACD_Mode=5||5||0||5||N",
+        "MACD_Mode_Trend=": "MACD_Mode_Trend=2||1||1||3||Y",
+        "MACD_Fast=": "MACD_Fast=8||6||2||10||Y",
+        "MACD_Slow=": "MACD_Slow=21||18||3||24||Y",
+        "MACD_Signal=": "MACD_Signal=7||5||1||8||Y",
+        "MACD_Deviations=": "MACD_Deviations=1.4||1.0||0.2||1.8||Y"
+      }
+    },
+    {
+      "source": "SP_CR400_S_M5.set",
+      "dest": "SP_CR4_400_S.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SP_CR4_400_S",
+        "Grid_Size=": "Grid_Size=-2.5||-2.0||-0.5||-3.5||Y",
+        "Grid_Max=": "Grid_Max=-14.0||10.0||1.000000||100.000000||N",
+        "Lock_Profit_Size=": "Lock_Profit_Size=-3.0||-2.5||-0.5||-3.5||Y",
+        "TP_Pips=": "TP_Pips=1.2||0.9||0.3||1.8||Y",
+        "ADX_Mode=": "ADX_Mode=3||3||0||3||N",
+        "ADX_TF_=": "ADX_TF_=60||60||0||60||N",
+        "ADX_Period=": "ADX_Period=14||10||2||18||Y",
+        "ADX_Level=": "ADX_Level=28||24||2||30||Y",
+        "BB_Period=": "BB_Period=25||20||5||35||Y",
+        "BB_Deviation=": "BB_Deviation=2.2||1.8||0.2||2.4||Y",
+        "MACD_Mode=": "MACD_Mode=4||4||0||4||N",
+        "MACD_Mode_Trend=": "MACD_Mode_Trend=2||1||1||3||Y",
+        "MACD_Fast=": "MACD_Fast=8||6||2||10||Y",
+        "MACD_Slow=": "MACD_Slow=21||18||3||24||Y",
+        "MACD_Signal=": "MACD_Signal=7||5||1||8||Y",
+        "MACD_Deviations=": "MACD_Deviations=1.4||1.0||0.2||1.8||Y"
+      }
+    },
+    {
+      "source": "SP_RF400_L_M5.set",
+      "dest": "SP_RF400_L.set"
+    },
+    {
+      "source": "SP_RF400_S_M5.set",
+      "dest": "SP_RF3_400_S.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SP_RF3_400_S",
+        "Grid_Size=": "Grid_Size=-2.0||-1.5||-0.5||-3.0||Y",
+        "Grid_Max=": "Grid_Max=-12.0||10.0||1.000000||100.000000||N",
+        "Lock_Profit_Size=": "Lock_Profit_Size=-2.5||-1.5||-0.5||-3.5||Y",
+        "TP_Pips=": "TP_Pips=1.2||0.6||0.3||1.8||Y",
+        "RSI_Level=": "RSI_Level=55.0||52.5||2.5||60.0||Y",
+        "ADX_TF_=": "ADX_TF_=15||15||45||60||Y",
+        "ADX_Level=": "ADX_Level=30||26||2||32||Y",
+        "BB_Period=": "BB_Period=25||15||5||35||Y",
+        "BB_Deviation=": "BB_Deviation=2.0||1.6||0.2||2.4||Y"
+      }
+    },
+    {
+      "source": "SP_TBB400_L_M5.set",
+      "dest": "SP_TBB400_L.set"
+    },
+    {
+      "source": "SP_TBB400_S_M5.set",
+      "dest": "SP_TBB400_S.set"
+    },
+    {
+      "source": "SP_TMACD400_L_M5.set",
+      "dest": "SP_TMACD400_L.set"
+    },
+    {
+      "source": "SP_TMACD400_S_M5.set",
+      "dest": "SP_TMACD400_S.set"
+    },
+    {
+      "source": "SP_TTR400_L_M1.set",
+      "dest": "SP_TTR5_400_L.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SP_TTR5_400_L",
+        "Grid_Size=": "Grid_Size=-3.5||-2.5||-0.5||-4.0||Y",
+        "Lock_Profit_Size=": "Lock_Profit_Size=-3.0||-2.0||-0.5||-4.0||Y",
+        "TP_Pips=": "TP_Pips=1.5||1.2||0.3||1.8||Y",
+        "TSL_Size=": "TSL_Size=-1.5||-1.0||-0.5||-2.5||Y",
+        "Max_Seq_Trades=": "Max_Seq_Trades=12||10||1||13||Y",
+        "ATR_Period=": "ATR_Period=300||200||100||500||Y",
+        "Lots_Max_Cum=": "Lots_Max_Cum=35||25||5||35||Y",
+        "EMA_Mode=": "EMA_Mode=0||0||0||0||N",
+        "ADX_Mode=": "ADX_Mode=2||2||0||2||N",
+        "ADX_TF_=": "ADX_TF_=15||5||10||15||Y",
+        "ADX_Level=": "ADX_Level=27||24||3||30||Y",
+        "BB_Deviation=": "BB_Deviation=2.2||1.9||0.3||2.2||Y",
+        "MACD_Mode=": "MACD_Mode=0||0||0||0||N"
+      }
+    },
+    {
+      "source": "SP_TTR400_S_M1.set",
+      "dest": "SP_TTR3_400_S.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SP_TTR3_400_S",
+        "Grid_Size=": "Grid_Size=-3.0||-2.5||-0.5||-4.0||Y",
+        "Lock_Profit_Size=": "Lock_Profit_Size=-3.0||-2.0||-0.5||-4.5||Y",
+        "TP_Pips=": "TP_Pips=1.2||0.6||0.3||1.8||Y",
+        "EMA_Mode=": "EMA_Mode=2||2||0||2||N",
+        "EMA_TF_=": "EMA_TF_=15||15||45||60||Y",
+        "EMA_Period=": "EMA_Period=13||7||3||16||Y",
+        "ADX_Mode=": "ADX_Mode=2||2||0||2||N",
+        "ADX_TF_=": "ADX_TF_=15||5||10||15||Y",
+        "ADX_Level=": "ADX_Level=27||24||3||30||Y",
+        "BB_Deviation=": "BB_Deviation=1.9||1.3||0.3||2.2||Y",
+        "MACD_Mode=": "MACD_Mode=0||0||0||0||N"
+      }
+    }
+  ]
+}

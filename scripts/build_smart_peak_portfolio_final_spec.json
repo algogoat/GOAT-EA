@@ -1,0 +1,41 @@
+{
+  "source_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 Final",
+  "dest_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 Portfolio",
+  "files": [
+    {
+      "source": "SP_CounterCE_MLPS400_M5.set",
+      "dest": "SP_CCE400_M5.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SP_CCE400"
+      }
+    },
+    {
+      "source": "SP_CounterRange_MLPS400_M5.set",
+      "dest": "SP_CR400_M5.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SP_CR400"
+      }
+    },
+    {
+      "source": "SP_RangeRF_MLPS400_M5.set",
+      "dest": "SP_RF400_M5.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SP_RF400"
+      }
+    },
+    {
+      "source": "SP_TrendBB_MLPS400_M5.set",
+      "dest": "SP_TBB400_M5.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SP_TBB400"
+      }
+    },
+    {
+      "source": "SP_TrendTR_MLPS400_M1.set",
+      "dest": "SP_TTR400_M1.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SP_TTR400"
+      }
+    }
+  ]
+}

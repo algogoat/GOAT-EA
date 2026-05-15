@@ -1,0 +1,26 @@
+{
+  "source_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 Portfolio Long Short Split",
+  "dest_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 Retune TTR Long Lab",
+  "files": [
+    {
+      "source": "SP_TTR400_L_M1.set",
+      "dest": "SP_TTR5_400_L.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SP_TTR5_400_L",
+        "Grid_Size=": "Grid_Size=-3.5||-2.5||-0.5||-4.0||Y",
+        "Lock_Profit_Size=": "Lock_Profit_Size=-3.0||-2.0||-0.5||-4.0||Y",
+        "TP_Pips=": "TP_Pips=1.5||1.2||0.3||1.8||Y",
+        "TSL_Size=": "TSL_Size=-1.5||-1.0||-0.5||-2.5||Y",
+        "Max_Seq_Trades=": "Max_Seq_Trades=12||10||1||13||Y",
+        "ATR_Period=": "ATR_Period=300||200||100||500||Y",
+        "Lots_Max_Cum=": "Lots_Max_Cum=35||25||5||35||Y",
+        "EMA_Mode=": "EMA_Mode=0||0||0||0||N",
+        "ADX_Mode=": "ADX_Mode=2||2||0||2||N",
+        "ADX_TF_=": "ADX_TF_=15||5||10||15||Y",
+        "ADX_Level=": "ADX_Level=27||24||3||30||Y",
+        "BB_Deviation=": "BB_Deviation=2.2||1.9||0.3||2.2||Y",
+        "MACD_Mode=": "MACD_Mode=0||0||0||0||N"
+      }
+    }
+  ]
+}

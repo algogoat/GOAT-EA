@@ -1,0 +1,50 @@
+{
+  "source_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 Final",
+  "dest_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 TrendMACD Candidate",
+  "files": [
+    {
+      "source": "SP_TrendTR_MLPS400_M1.set",
+      "dest": "SP_TrendMACD_MLPS400_M5.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SPN_TrendMACD_MLPS400",
+        "Grid_Size=": "Grid_Size=-2.5||-2.0||-0.5||-3.5||Y",
+        "Grid_Max=": "Grid_Max=-18.0||30.0||3.000000||300.000000||N",
+        "Lock_Profit_Size=": "Lock_Profit_Size=-2.5||-1.5||-0.5||-3.5||Y",
+        "TP_Pips=": "TP_Pips=1.2||0.6||0.3||1.8||Y",
+        "RSI_Mode=": "RSI_Mode=0||0||0||0||N",
+        "RSI_TF_=": "RSI_TF_=15||15||0||60||N",
+        "RSI_Period=": "RSI_Period=7||7||1||70||N",
+        "RSI_Level=": "RSI_Level=70||70.0||7.000000||700.000000||N",
+        "EMA_Mode=": "EMA_Mode=2||1||1||2||Y",
+        "EMA_TF_=": "EMA_TF_=15||15||45||60||Y",
+        "EMA_Method=": "EMA_Method=1||1||1||2||Y",
+        "EMA_Count=": "EMA_Count=4||3||1||4||Y",
+        "EMA_Period=": "EMA_Period=20||10||5||30||Y",
+        "EMA_Exponent=": "EMA_Exponent=2.0||1.0||0.5||2.5||Y",
+        "EMA_MustCheck=": "EMA_MustCheck=false||false||0||true||Y",
+        "ADX_Mode=": "ADX_Mode=2||1||1||2||Y",
+        "ADX_TF_=": "ADX_TF_=15||15||45||60||Y",
+        "ADX_Period=": "ADX_Period=10||7||3||16||Y",
+        "ADX_Level=": "ADX_Level=27||21||3||30||Y",
+        "ADX_MustCheck=": "ADX_MustCheck=false||false||0||true||Y",
+        "BB_Mode=": "BB_Mode=0||0||0||0||N",
+        "BB_TF_=": "BB_TF_=60||60||0||60||N",
+        "BB_Period=": "BB_Period=15||15||0||15||N",
+        "BB_Deviation=": "BB_Deviation=1.6||1.0||0.3||1.9||N",
+        "BB_MustCheck=": "BB_MustCheck=false||false||0||true||N",
+        "MACD_Mode=": "MACD_Mode=2||1||1||2||Y",
+        "MACD_Mode_Trend=": "MACD_Mode_Trend=2||1||1||3||Y",
+        "MACD_TF_=": "MACD_TF_=15||5||10||15||Y",
+        "MACD_Fast=": "MACD_Fast=8||6||2||12||Y",
+        "MACD_Slow=": "MACD_Slow=21||18||3||27||Y",
+        "MACD_Signal=": "MACD_Signal=7||5||2||9||Y",
+        "MACD_Deviations=": "MACD_Deviations=1.4||1.0||0.2||1.8||Y",
+        "MACD_MustCheck=": "MACD_MustCheck=true||false||0||true||Y",
+        "RSI2_Mode=": "RSI2_Mode=0||0||0||0||N",
+        "Mode_Bias=": "Mode_Bias=3||3||0||5||N",
+        "Mode_News=": "Mode_News=3||2||1||3||Y",
+        "News_threshold=": "News_threshold=85||85||5||90||Y"
+      }
+    }
+  ]
+}

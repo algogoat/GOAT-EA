@@ -1,0 +1,29 @@
+{
+  "source_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 Portfolio Long Short Split",
+  "dest_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 Retune CR Short Lab",
+  "files": [
+    {
+      "source": "SP_CR400_S_M5.set",
+      "dest": "SP_CR4_400_S.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SP_CR4_400_S",
+        "Grid_Size=": "Grid_Size=-2.5||-2.0||-0.5||-3.5||Y",
+        "Grid_Max=": "Grid_Max=-14.0||10.0||1.000000||100.000000||N",
+        "Lock_Profit_Size=": "Lock_Profit_Size=-3.0||-2.5||-0.5||-3.5||Y",
+        "TP_Pips=": "TP_Pips=1.2||0.9||0.3||1.8||Y",
+        "ADX_Mode=": "ADX_Mode=3||3||0||3||N",
+        "ADX_TF_=": "ADX_TF_=60||60||0||60||N",
+        "ADX_Period=": "ADX_Period=14||10||2||18||Y",
+        "ADX_Level=": "ADX_Level=28||24||2||30||Y",
+        "BB_Period=": "BB_Period=25||20||5||35||Y",
+        "BB_Deviation=": "BB_Deviation=2.2||1.8||0.2||2.4||Y",
+        "MACD_Mode=": "MACD_Mode=4||4||0||4||N",
+        "MACD_Mode_Trend=": "MACD_Mode_Trend=2||1||1||3||Y",
+        "MACD_Fast=": "MACD_Fast=8||6||2||10||Y",
+        "MACD_Slow=": "MACD_Slow=21||18||3||24||Y",
+        "MACD_Signal=": "MACD_Signal=7||5||1||8||Y",
+        "MACD_Deviations=": "MACD_Deviations=1.4||1.0||0.2||1.8||Y"
+      }
+    }
+  ]
+}

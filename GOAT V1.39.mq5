@@ -889,12 +889,48 @@ class SEQUENCE
     }
     return pl;
    }
+//---------------------- fast cached mark-to-market P/L used only as an optimization precheck
+   bool EstimateSequencePLFromCache(double &pl_out)
+   {
+    pl_out=SequenceRealizedPL;
+    if(!Traded) return true;
+
+    double perUnit=PriceValuePerPointPerLot();
+    if(perUnit<=0.0 || !MathIsValidNumber(perUnit)) return false;
+
+    double px=(dir==OP_BUY) ? SymbolInfoDouble(_Symbol,SYMBOL_BID) : SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+    if(!(px>0.0) || !MathIsValidNumber(px)) px=(dir==OP_BUY) ? bid : ask;
+    if(!(px>0.0) || !MathIsValidNumber(px)) return false;
+
+    for(int i=0; i<Level_Count; i++)
+    {
+     if(TradeLevels[i].ticket==0 || TradeLevels[i].lots<=0.0) continue;
+
+     double entry=TradeLevels[i].price_trade;
+     if(!(entry>0.0) || !MathIsValidNumber(entry)) entry=TradeLevels[i].price_level;
+     if(!(entry>0.0) || !MathIsValidNumber(entry)) return false;
+
+     double delta=(dir==OP_BUY) ? (px-entry) : (entry-px);
+     double openPL=delta*perUnit*TradeLevels[i].lots;
+     if(!MathIsValidNumber(openPL)) return false;
+     pl_out+=openPL;
+    }
+    return MathIsValidNumber(pl_out);
+   }
 //---------------------- optional live MLPS breach stop for any real sequence
    bool EnforceSequenceMLPS(const string context)
    {
     if(!Sequence_MLPS_Hard_Close) return false;
     if(Virtual || !Active || !Traded) return false;
     if(Risk<=0.0) return false;
+
+    if(MQLInfoInteger(MQL_OPTIMIZATION))
+    {
+     double estimatedPL=0.0;
+     double exactBand=MathMax(25.0,Risk*0.25);
+     if(EstimateSequencePLFromCache(estimatedPL) && estimatedPL>(-Risk+exactBand))
+        return false;
+    }
 
     double pl=CurrentSequencePL();
     if(pl>-Risk) return false;
@@ -3661,7 +3697,7 @@ void OnTesterDeinit()
      {
       ShowPrompt("Restarting Terminal for next optimization...","Do not close this chart!","Batch Running...",""); Sleep(500);
       WriteLog("DEINIT: Terminal restart command queued; requesting terminal close...",false,Key,EA_Name,Server); Sleep(500);
-      
+
       //datetime t_start = TimeCurrent();
       for(int i=0;i<10;i++)
       {
@@ -3675,16 +3711,17 @@ void OnTesterDeinit()
      }
      else
      {
-      ShowPrompt("Optimization Batch Completed."," "," ","");
-    //string summary = GenerateOptimizationSummary(Key+"\\"+EA_Name+"-"+Server+"\\GOAT Batch Queue."+Key, Key+"\\"+EA_Name+"-"+Server+"\\log."+Key);
-    //WriteLog("DEINIT: ➡️➡️➡️➡️➡️ Batch Summary:\n"+summary,false,Key,EA_Name,Server);
+      string batchSummary1="",batchSummary2="",batchSummary3="";
+      string batchQueueFile=Key+"\\"+EA_Name+"-"+Server+"\\"+Key+" Batch Queue."+Key;
+      string batchLogFile=Key+"\\"+EA_Name+"-"+Server+"\\log."+Key;
+      BuildOptimizationBatchPromptSummary(batchQueueFile,batchLogFile,batchSummary1,batchSummary2,batchSummary3);
+      ShowPrompt("Optimization Batch Completed.",batchSummary1,batchSummary2,batchSummary3);
+      WriteLog("DEINIT: Batch Summary: "+batchSummary1+" | "+batchSummary2+" | "+batchSummary3,false,Key,EA_Name,Server);
       WriteLog("DEINIT: 🔵🔵🔵🔵🔵 Batch Completed 🔵🔵🔵🔵🔵",true,Key,EA_Name,Server);
       GlobalVariableDel("BatchOnGoing");
       GlobalVariableDel("GOAT_OPT_STUDIO_WIDTH");
       GlobalVariableDel("GOAT_OPT_STUDIO_HEIGHT");
       GlobalVariableDel("GOAT_OPT_STUDIO_FONT");
-    //int ret=MessageBox("Batch Summary:\n\n"+summary+"\n\nDo you want to open logs?","Batch Complete...",MB_OKCANCEL);
-    //if(ret=IDOK) 
      }
     }
     else
@@ -3710,12 +3747,15 @@ bool StartExporter(bool reportMode)
     double TargetDD    = StringToDouble(FetchExportSetting("TargetDD",Key,EA_Name,Server)); if(TargetDD<100) TargetDD=100;
     bool   AdjustLots  = StringToInteger(FetchExportSetting("AdjustLots",Key,EA_Name,Server))!=0;//Print(AdjustLots);
     bool   InclBackOOS = StringToInteger(FetchExportSetting("IncludeBackOOS",Key,EA_Name,Server))!=0;//Print(InclBackOOS);
+    const int EXPORT_START_ATTEMPTS = 3;
+    const int EXPORT_ERROR_ABORTS   = 2;
 
     if(!reportMode)
     {
      LogOrPrint(reportMode,"DEINIT: Running top Score Set on back history only",Key,EA_Name,Server);
      strT.fromDate=TimeToString(xmlData.startD,TIME_DATE); strT.toDate=TimeToString(xmlData.forwardD+24*60*60,TIME_DATE);
-     RunAndStoreSet(0,"Mode_Operation="+(string)OP_Standard+"\n"+"EA_Desc="+strT.Strat+"@{mode=EXPORT}"+"\n",reportMode,g_allExports,true); // Just Export enabling is required here
+     int initExportPass=RunAndStoreSet(0,"Mode_Operation="+(string)OP_Standard+"\n"+"EA_Desc="+strT.Strat+"@{mode=EXPORT}"+"\n",reportMode,g_allExports,true,EXPORT_START_ATTEMPTS); // Just Export enabling is required here
+     if(initExportPass<0) LogOrPrint(reportMode,"DEINIT: Top-set export verification could not complete; continuing with candidate exports.",Key,EA_Name,Server);
      while(!MTTESTER::IsReady()) Sleep(1000);
     }
     if(InclBackOOS && BackOOSDate!="") {strT.fromDate=BackOOSDate; LogOrPrint(reportMode,"⚠️ Back Out-Of-Sample (OOS) history is enabled.",Key,EA_Name,Server);}
@@ -3727,7 +3767,7 @@ bool StartExporter(bool reportMode)
     Sleep(99); ChartSetInteger(0, CHART_BRING_TO_TOP, true); Sleep(99);
     double lastScore=-1;
     const int MAX_CONSEC_NEG = 10; // early abort streak
-    int i=0,passes=0,profits=0,losses=0,errors=0,duplicates=0,fitterCount=0,consecNeg=0;
+    int i=0,passes=0,profits=0,losses=0,errors=0,duplicates=0,fitterCount=0,consecNeg=0,consecErrors=0;
     
     for(;i<MathMin(25,ArraySize(xmlData.RowsUnique));i++)
     {
@@ -3740,21 +3780,22 @@ bool StartExporter(bool reportMode)
                                             +" Set Exports stored="+(string)ArraySize(g_allExports)+"/"+IntegerToString(passes)+" Above Threshold="+IntegerToString(fitterCount),Key,EA_Name,Server);
       
       int PositivePass=RunAndStoreSet(i,"Mode_Operation="+(string)OP_Standard+"\n"+"EA_Desc="+strT.Strat+"@{mode=EXPORT,"+"dt_BOOS_end="  +TimeToString(xmlData.startD,TIME_DATE)+","
-                                                                                                        +"dt_FOOS_start="+TimeToString(xmlData.endD  +24*60*60,TIME_DATE)+"}\n",reportMode,g_allExports);
+                                                                                                        +"dt_FOOS_start="+TimeToString(xmlData.endD  +24*60*60,TIME_DATE)+"}\n",reportMode,g_allExports,false,EXPORT_START_ATTEMPTS);
       //@{mode=EXPORT,dt_BOOS_end=2025.09.01,dt_FOOS_start=2025.09.30"; // Strategy Comment datetime dt_Back_OOS=0,dt_Fwrd_OOS=0;
       if(PositivePass==1)
       {
-       profits++; consecNeg=0;
+       profits++; consecNeg=0; consecErrors=0;
        int idx = ArraySize(g_allExports)-1;   // newest record is last element only added if PositivePass is 1
        if(g_allExports[idx].arf>=MinARF && g_allExports[idx].sr>=MinSR) {fitterCount++;  LogOrPrint(reportMode,"✅ Stored Set passed thresholds.",Key,EA_Name,Server);}
        else                                                                              LogOrPrint(reportMode,"⚠️ Not passing thresholds.",Key,EA_Name,Server);
       }
-      else if(PositivePass==0) {losses++; consecNeg++;}
-      else errors++;
+      else if(PositivePass==0) {losses++; consecNeg++; consecErrors=0;}
+      else {errors++; consecErrors++;}
       passes++;
      }
      else {duplicates++; continue;}
      // 0. consecutive errors
+     if(consecErrors>=EXPORT_ERROR_ABORTS) {LogOrPrint(reportMode,"❌ Consecutive export/tester start errors reached "+IntegerToString(consecErrors)+" – aborting export search.",Key,EA_Name,Server); break;}
      if(errors>=MAX_CONSEC_NEG*1.5) {LogOrPrint(reportMode,"❌ Too many errors while running tests – aborting search...",Key,EA_Name,Server); break;}
      // 1. Ten consecutive non-profit runs *anywhere*
      if(consecNeg>=MAX_CONSEC_NEG) {LogOrPrint(reportMode,"❌ 10 consecutive non-profitable runs – aborting search...",Key,EA_Name,Server); break;}
@@ -3786,9 +3827,10 @@ bool StartExporter(bool reportMode)
      SortAndTrimExports(SetsToExport,MinARF,MinSR,g_allExports);
      if(AdjustLots)
      {
-      LogOrPrint(reportMode,"⚠️ Lot Adjustment to Target DD is enabled. Rerunning Shorlisted Exports...",Key,EA_Name,Server);
-      int j=0;profits=losses=errors=fitterCount=0;
-      ExportRecord AdjustedExports[];
+       LogOrPrint(reportMode,"⚠️ Lot Adjustment to Target DD is enabled. Rerunning Shorlisted Exports...",Key,EA_Name,Server);
+       int j=0;profits=losses=errors=fitterCount=0;
+       int consecAdjustmentErrors=0;
+       ExportRecord AdjustedExports[];
       for(;j<ArraySize(g_allExports);j++)
       {
        const ExportRecord r = g_allExports[j];
@@ -3806,16 +3848,17 @@ bool StartExporter(bool reportMode)
                                              ,"Adjusted Set Exports stored="+(string)ArraySize(AdjustedExports)+"/"+IntegerToString(j),"");
        LogOrPrint(reportMode,"▶ Re-run start for stored set ("+IntegerToString(j+1)+") ARF="+DoubleToString(r.arf,3)+" DD="+DoubleToString(r.dd,3)
                                                                                +" OldLots="+DoubleToString(Lots_Old,2)+" → NewLots="+DoubleToString(Lots_Adjusted,2),Key,EA_Name,Server);
-       int PositivePass=RunAndStoreSet(g_allExports[j].rowIndex,"Mode_Operation="+(string)OP_Standard+"\nLots_Input="+DoubleToString(Lots_Adjusted,2)+"\n",reportMode,AdjustedExports);
+       int PositivePass=RunAndStoreSet(g_allExports[j].rowIndex,"Mode_Operation="+(string)OP_Standard+"\nLots_Input="+DoubleToString(Lots_Adjusted,2)+"\n",reportMode,AdjustedExports,false,EXPORT_START_ATTEMPTS);
        if(PositivePass==1)
        {
-        profits++;
+        profits++; consecAdjustmentErrors=0;
         int idx = ArraySize(AdjustedExports)-1;   // newest record is last element only added if PositivePass is 1
         if(AdjustedExports[idx].arf>=MinARF && AdjustedExports[idx].sr>=MinSR) fitterCount++;
        }
-       else if(PositivePass==0) {losses++;}
-       else errors++;
+       else if(PositivePass==0) {losses++; consecAdjustmentErrors=0;}
+       else {errors++; consecAdjustmentErrors++;}
        if(PositivePass<=0) LogOrPrint(reportMode,"❌ Re-run FAILED/Negative for row "+(string)(r.rowIndex+1),Key,EA_Name,Server);
+       if(consecAdjustmentErrors>=EXPORT_ERROR_ABORTS) {LogOrPrint(reportMode,"❌ Consecutive lot-adjustment export/tester start errors reached "+IntegerToString(consecAdjustmentErrors)+" – aborting adjustment reruns.",Key,EA_Name,Server); break;}
       }
       LogOrPrint(reportMode,StringFormat("✅✅✅✅✅ Export Adjustment sequence complete: %d attempts – %d profitable, %d losses, %d errors, %d passed thresholds"
                                                                                             ,j,profits,losses,errors,fitterCount),Key,EA_Name,Server);
@@ -3839,11 +3882,11 @@ bool StartExporter(bool reportMode)
    return (ArraySize(g_allExports)>0); // true = exported ≥1 profitable set
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
-int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[],bool Init=false)
+int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[],bool Init=false,const int startAttempts=20)
   {
    string exports[]; FindExports("TEMP",exports); DeleteExports(exports); DeleteEmptyFolders("TEMP"); Sleep(50);
    
-   if(!StartTester(rowInd,mode,reportMode)) {LogOrPrint(reportMode,"❌ Failed to Configure and/or Start the Strategy Tester. Skipping...",Key,EA_Name,Server); return -1;}
+   if(!StartTester(rowInd,mode,reportMode,startAttempts)) {LogOrPrint(reportMode,"❌ Failed to Configure and/or Start the Strategy Tester after "+IntegerToString(startAttempts)+" start attempt(s). Skipping...",Key,EA_Name,Server); return -1;}
    
    const datetime t0 = TimeLocal();
    while(!FindExports("TEMP",exports))

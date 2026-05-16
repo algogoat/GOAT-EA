@@ -917,7 +917,7 @@ void WriteLog(string text,bool print,string Key_,string EA_Name_,string Server_)
    int newlinePos = StringFind(text, "\n");
    if(newlinePos != -1) text = StringSubstr(text, 0, newlinePos);
    if(print) Print(EA_Name_,": ", text);
-   int fileHandle = FileOpen(Key_+"\\"+EA_Name_+"-"+Server_+"\\log."+Key_,FILE_WRITE|FILE_SHARE_WRITE|FILE_READ|FILE_TXT|FILE_COMMON);
+   int fileHandle = FileOpen(GoatOptLogPath(EA_Name_,Server_),FILE_WRITE|FILE_SHARE_WRITE|FILE_READ|FILE_TXT|FILE_COMMON);
  //int fileHandle = FileOpen(strT._Key_+"\\"+strT._EA_Name_+"-"+strT._Server_+"\\log."+strT._Key_,FILE_WRITE|FILE_SHARE_WRITE|FILE_READ|FILE_TXT|FILE_COMMON);
    if(fileHandle == INVALID_HANDLE) {Print("Error: Could not open or create log file!"); return;}
    // Move file pointer to the end of the file so we effectively append

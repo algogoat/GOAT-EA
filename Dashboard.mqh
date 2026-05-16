@@ -1538,6 +1538,18 @@ void CGOATDashboard::ParsePortfolioFolderInfo(void)
    Portfolio_Target_DD="-";
    Portfolio_Target_MRF="-";
 
+   string folderLower=SetFolder;
+   StringToLower(folderLower);
+   if(StringLen(folderLower)>=7 && StringSubstr(folderLower,StringLen(folderLower)-7)=="\\deploy")
+   {
+      string runFolder=FolderOf(SetFolder);
+      string manifest=GoatOptReadTextFile(runFolder+"\\manifest.ini");
+      string runName=GoatOptReadIniValue(manifest,"RunName");
+      if(runName!="") Portfolio_Name=runName;
+      if(ArraySize(g_sets)>0) Portfolio_Members=IntegerToString(ArraySize(g_sets));
+      return;
+   }
+
    string parts[];
    int total=StringSplit(Portfolio_Name,'_',parts);
    if(total<=0) return;

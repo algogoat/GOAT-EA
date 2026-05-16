@@ -2,7 +2,7 @@
 #define   EA_Name          MQLInfoString(MQL_PROGRAM_NAME)
 #define   Server           AccountInfoString(ACCOUNT_SERVER)
 #ifndef  GOAT_VERSION_LABEL
-#define   GOAT_VERSION_LABEL "1.39"
+#define   GOAT_VERSION_LABEL "1.40"
 #endif
 #define   version_         GOAT_VERSION_LABEL
 #define   NEWS_FILE        Key+"\\GOAT_News.csv"
@@ -1364,6 +1364,305 @@ string GoatTerminalToken(void)
 string GoatDashboardStatePath(void)
   {
    return Key+"\\dashboard_state_"+GoatTerminalToken()+".tsv";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string g_goat_opt_active_run_path="";
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptSafePathPart(string text)
+  {
+   StringTrimLeft(text);
+   StringTrimRight(text);
+   if(text=="") text="Optimization Run";
+   string bad="\\/:*?\"<>|";
+   for(int i=0;i<StringLen(bad);++i)
+   {
+      string ch=StringSubstr(bad,i,1);
+      StringReplace(text,ch,"-");
+   }
+   while(StringFind(text,"  ",0)>=0) StringReplace(text,"  "," ");
+   return text;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptBasePath(const string ea_name,const string server_name)
+  {
+   return Key+"\\"+ea_name+"-"+server_name;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptRunsPath(const string ea_name,const string server_name)
+  {
+   return GoatOptBasePath(ea_name,server_name)+"\\Optimization Runs";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptActivePointerPath(const string ea_name,const string server_name)
+  {
+   return GoatOptBasePath(ea_name,server_name)+"\\active_optimization_run.ini";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatOptEnsureCommonFolderTree(string path)
+  {
+   StringTrimLeft(path);
+   StringTrimRight(path);
+   if(path=="") return;
+   string current="";
+   for(int i=0;i<StringLen(path);++i)
+   {
+      string ch=StringSubstr(path,i,1);
+      if(ch=="\\")
+      {
+         if(current!="") FolderCreate(current,FILE_COMMON);
+      }
+      current+=ch;
+   }
+   FolderCreate(path,FILE_COMMON);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptFolderOf(const string path)
+  {
+   for(int i=StringLen(path)-1;i>=0;--i)
+      if(path[i]=='\\' || path[i]=='/')
+         return StringSubstr(path,0,i);
+   return "";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatOptWriteTextFile(const string file_name,const string text)
+  {
+   string folder=GoatOptFolderOf(file_name);
+   if(folder!="") GoatOptEnsureCommonFolderTree(folder);
+   int handle=FileOpen(file_name,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+   if(handle==INVALID_HANDLE) return false;
+   FileWriteString(handle,text);
+   FileClose(handle);
+   return true;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptReadTextFile(const string file_name)
+  {
+   int handle=FileOpen(file_name,FILE_READ|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+   if(handle==INVALID_HANDLE) handle=FileOpen(file_name,FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+   if(handle==INVALID_HANDLE) return "";
+   string text="";
+   while(!FileIsEnding(handle))
+   {
+      text+=FileReadString(handle);
+      if(!FileIsEnding(handle)) text+="\n";
+   }
+   FileClose(handle);
+   return text;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptReadIniValue(const string text,const string key)
+  {
+   string opt_lines[];
+   int total=StringSplit(text,'\n',opt_lines);
+   string prefix=key+"=";
+   for(int i=0;i<total;++i)
+   {
+      string line=opt_lines[i];
+      StringTrimLeft(line);
+      StringTrimRight(line);
+      if(StringFind(line,prefix,0)==0)
+         return StringSubstr(line,StringLen(prefix));
+   }
+   return "";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptTimestampFolder(void)
+  {
+   MqlDateTime tm;
+   TimeToStruct(TimeLocal(),tm);
+   return StringFormat("%04d%02d%02d_%02d%02d%02d",tm.year,tm.mon,tm.day,tm.hour,tm.min,tm.sec);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatOptWriteActiveRunPath(const string ea_name,const string server_name,const string run_path)
+  {
+   g_goat_opt_active_run_path=run_path;
+   string text="[ActiveOptimizationRun]\r\nRunPath="+run_path+"\r\nUpdatedAt="+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\r\n";
+   return GoatOptWriteTextFile(GoatOptActivePointerPath(ea_name,server_name),text);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptCurrentRunPath(const string ea_name,const string server_name)
+  {
+   if(g_goat_opt_active_run_path!="") return g_goat_opt_active_run_path;
+   string text=GoatOptReadTextFile(GoatOptActivePointerPath(ea_name,server_name));
+   string run_path=GoatOptReadIniValue(text,"RunPath");
+   StringTrimLeft(run_path);
+   StringTrimRight(run_path);
+   g_goat_opt_active_run_path=run_path;
+   return g_goat_opt_active_run_path;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptCreateRunPath(const string ea_name,const string server_name,string run_name,const string parent_run_path="")
+  {
+   run_name=GoatOptSafePathPart(run_name);
+   string root=GoatOptRunsPath(ea_name,server_name);
+   GoatOptEnsureCommonFolderTree(root);
+   string stamp=GoatOptTimestampFolder();
+   string run_path="";
+   for(int i=0;i<100;++i)
+   {
+      string suffix=(i==0 ? "" : "_"+IntegerToString(i+1));
+      run_path=root+"\\"+stamp+"_"+run_name+suffix;
+      if(!FileIsExist(run_path+"\\manifest.ini",FILE_COMMON)) break;
+   }
+   GoatOptEnsureCommonFolderTree(run_path);
+   GoatOptEnsureCommonFolderTree(run_path+"\\inputs");
+   GoatOptEnsureCommonFolderTree(run_path+"\\reports");
+   GoatOptEnsureCommonFolderTree(run_path+"\\exports");
+   GoatOptEnsureCommonFolderTree(run_path+"\\deploy");
+   GoatOptEnsureCommonFolderTree(run_path+"\\leftover_xml");
+   string manifest="[OptimizationRun]\r\n"
+                  +"Version=1\r\n"
+                  +"RunName="+run_name+"\r\n"
+                  +"RunPath="+run_path+"\r\n"
+                  +"ParentRunPath="+parent_run_path+"\r\n"
+                  +"EA="+ea_name+"\r\n"
+                  +"Server="+server_name+"\r\n"
+                  +"CreatedAt="+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\r\n";
+   GoatOptWriteTextFile(run_path+"\\manifest.ini",manifest);
+   GoatOptWriteTextFile(run_path+"\\deploy\\portfolio_manifest.ini",manifest);
+   GoatOptWriteActiveRunPath(ea_name,server_name,run_path);
+   return run_path;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptQueuePath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return GoatOptBasePath(ea_name,server_name)+"\\"+Key+" Batch Queue."+Key;
+   return run_path+"\\queue."+Key;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptExportSettingsPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return GoatOptBasePath(ea_name,server_name)+"\\"+Key+" Export Settings."+Key;
+   return run_path+"\\export_settings."+Key;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptLogPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return GoatOptBasePath(ea_name,server_name)+"\\log."+Key;
+   return run_path+"\\log."+Key;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptPortfolioPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return GoatOptBasePath(ea_name,server_name)+"\\portfolio.goatbatch";
+   return run_path+"\\portfolio.goatbatch";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptTimelinePath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return "";
+   return run_path+"\\timeline.tsv";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptItemStatsPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return "";
+   return run_path+"\\item_stats.tsv";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptSummaryPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return "";
+   return run_path+"\\summary.txt";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptStrategyDir(const string ea_name,const string server_name,const string strategy)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return GoatOptBasePath(ea_name,server_name)+"\\"+GoatOptSafePathPart(strategy);
+   return run_path+"\\inputs\\"+GoatOptSafePathPart(strategy);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptReportRoot(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return GoatOptBasePath(ea_name,server_name);
+   return run_path+"\\reports";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptReportPath(const string ea_name,const string server_name,const string strategy,const string symbol,const string file_name)
+  {
+   return GoatOptReportRoot(ea_name,server_name)+"\\"+GoatOptSafePathPart(strategy)+"\\"+symbol+"\\"+file_name;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptExportsPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return "Exports";
+   return run_path+"\\exports";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptDeployPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return Key;
+   return run_path+"\\deploy";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptLeftoverPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return "LeftoverXMLs";
+   return run_path+"\\leftover_xml";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptTsvSafe(string text)
+  {
+   StringReplace(text,"\t"," ");
+   StringReplace(text,"\r"," ");
+   StringReplace(text,"\n"," ");
+   return text;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatOptAppendTextLine(const string file_name,const string line,const string header="")
+  {
+   if(file_name=="") return;
+   string folder=GoatOptFolderOf(file_name);
+   if(folder!="") GoatOptEnsureCommonFolderTree(folder);
+   bool write_header=(header!="" && !FileIsExist(file_name,FILE_COMMON));
+   int handle=FileOpen(file_name,FILE_WRITE|FILE_READ|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+   if(handle==INVALID_HANDLE) return;
+   FileSeek(handle,0,SEEK_END);
+   if(write_header) FileWriteString(handle,header+"\r\n");
+   FileWriteString(handle,line+"\r\n");
+   FileClose(handle);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatOptAppendTimeline(const string ea_name,const string server_name,const string event_name,const string item_name,const string status,const string details)
+  {
+   string path=GoatOptTimelinePath(ea_name,server_name);
+   string header="LocalTime\tServerTime\tEvent\tItem\tStatus\tDetails";
+   string line=TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\t"+
+               TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS)+"\t"+
+               GoatOptTsvSafe(event_name)+"\t"+
+               GoatOptTsvSafe(item_name)+"\t"+
+               GoatOptTsvSafe(status)+"\t"+
+               GoatOptTsvSafe(details);
+   GoatOptAppendTextLine(path,line,header);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatOptAppendItemStats(const string ea_name,const string server_name,const string symbol,const string strategy,const string status,
+                            const int xml_rows,const int unique_rows,const double top_score,const int final_exports,const string details)
+  {
+   string path=GoatOptItemStatsPath(ea_name,server_name);
+   string header="LocalTime\tSymbol\tStrategy\tStatus\tXmlRows\tUniqueRows\tTopScore\tFinalExports\tDetails";
+   string line=TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\t"+
+               GoatOptTsvSafe(symbol)+"\t"+
+               GoatOptTsvSafe(strategy)+"\t"+
+               GoatOptTsvSafe(status)+"\t"+
+               IntegerToString(xml_rows)+"\t"+
+               IntegerToString(unique_rows)+"\t"+
+               DoubleToString(top_score,1)+"\t"+
+               IntegerToString(final_exports)+"\t"+
+               GoatOptTsvSafe(details);
+   GoatOptAppendTextLine(path,line,header);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 long GoatTruncateCidValue(const long cid)

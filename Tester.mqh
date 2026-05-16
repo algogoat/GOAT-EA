@@ -591,7 +591,8 @@ bool MoveKeptExports(ExportRecord &expArr[],const string dstKey)
       files[k++] = expArr[i].setFile;
      }
    /* ---- move on disk ------------------------------------------- */
-   if(!MoveExports(dstKey, files))            // your helper updates files[]
+   string srcRoot=GoatOptExportsPath(strT._N,strT._S);
+   if(!MoveExportsFromRoot(srcRoot, dstKey, files))            // your helper updates files[]
       return false;                           // error already printed inside
    /* ---- reflect new paths back into expArr[] ------------- */
    k = 0;
@@ -600,6 +601,14 @@ bool MoveKeptExports(ExportRecord &expArr[],const string dstKey)
       expArr[i].csvFile = files[k++];
       expArr[i].setFile = files[k++];
      }
+   if(GoatOptCurrentRunPath(strT._N,strT._S)!="")
+   {
+      for(int i=0;i<n;++i)
+      {
+         string flatSet=dstKey+"\\"+FileNameOnly(expArr[i].setFile);
+         GoatOptWriteTextFile(flatSet,GoatOptReadTextFile(expArr[i].setFile));
+      }
+   }
    return true;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -753,13 +762,26 @@ bool FindExports(const string srcKey,string &out[])
 //--------------------------------------------------------------------
 bool MoveExports(const string dstKey,string &files[])
   {
+   return MoveExportsFromRoot("",dstKey,files);
+  }
+//--------------------------------------------------------------------
+//  MoveExportsFromRoot – move files while preserving the path below srcRoot
+//--------------------------------------------------------------------
+bool MoveExportsFromRoot(const string srcRoot,const string dstKey,string &files[])
+  {
    bool ok=true;
    for(int i=0;i<ArraySize(files);i++)
      {
       string src=files[i];                        // Key1\...\file
-      // Relative part after first '\'
-      int sep=StringFind(src,"\\");
-      string rel=(sep==-1)?src:StringSubstr(src,sep+1);
+      string rel=src;
+      if(srcRoot!="" && StringFind(src,srcRoot+"\\",0)==0)
+         rel=StringSubstr(src,StringLen(srcRoot)+1);
+      else
+      {
+         // Relative part after first '\'
+         int sep=StringFind(src,"\\");
+         rel=(sep==-1)?src:StringSubstr(src,sep+1);
+      }
       string dst=dstKey+"\\"+rel;                 // Key2\...\file
       /* --- build directory part of dst and create it --- */
       int lastSep=StringLen(dst)-1;

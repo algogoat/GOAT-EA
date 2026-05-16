@@ -3305,7 +3305,7 @@ int OnTesterInit()
     ShowPrompt("Optimization running...","Do not close this chart!","Batch Running.","");
     
     string movedFiles[];
-    if(MigrateLeftOverFilesToCommon(Key,movedFiles,GoatOptLeftoverPath(EA_Name,Server)) && ArraySize(movedFiles)>1) WriteLog("INIT: ❌ LeftOver XML(s) Found.",false,Key,EA_Name,Server);
+    if(MigrateLeftOverFilesToCommon(GoatOptReportRoot(EA_Name,Server),movedFiles,GoatOptLeftoverPath(EA_Name,Server)) && ArraySize(movedFiles)>0) WriteLog("INIT: ❌ LeftOver XML(s) Found.",false,Key,EA_Name,Server);
     
     GlobalVariableSet("TerminalRunning",1.0);
     if(UpdateBatchQueueAndWriteConfigFile(true,false,Key,EA_Name,Server))
@@ -3664,7 +3664,7 @@ void OnTesterDeinit()
     ShowPrompt("Processing Optimization...","Migrating XML files..."," ","");
     bool error=false;
     string movedFiles[];
-    if(MigrateFilesToCommon(Key,movedFiles))
+    if(MigrateRunReportFilesToCommon(GoatOptReportRoot(EA_Name,Server),movedFiles,Key,EA_Name,Server))
     {
      if(ArraySize(movedFiles)>1)
      {

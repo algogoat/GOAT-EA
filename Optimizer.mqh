@@ -66,7 +66,7 @@ public:
    CComboBox   m_cmbOptimization;
    // RIGHT SIDE
    CLabel      m_lblQueue;//,m_lblStatus;
-   CEdit       m_edtQueue[10],m_edtBatchProgress;//,m_edtStatus[10];
+   CEdit       m_edtQueue[10],m_edtBatchProgress,m_edtBatchErrors;//,m_edtStatus[10];
    CListView   m_listQueue;
    // Single button
    CButton     m_btnSelectFile,m_btnAddQueue,m_btnSetPresets,m_btnDelQ,m_btnDelQitem,m_btnUpQitem,m_btnDownQitem,m_btnCancelSelected,m_btnMakePending,m_btnStart,m_btnStop;
@@ -995,9 +995,21 @@ string FormatBatchProgressText(const SBatchProgressStats &stats,const bool loade
 
    int left=stats.pending+stats.queued+stats.ongoing;
    string text=IntegerToString(stats.completed)+"/"+IntegerToString(stats.total)+" Completed";
-   if(stats.errors>0)    text+=" | "+IntegerToString(stats.errors)+" Error";
-   if(stats.cancelled>0) text+=" | "+IntegerToString(stats.cancelled)+" Cancelled";
    text+=" | "+IntegerToString(left)+" Left";
+   return text;
+  }
+//+------------------------------------------------------------------+
+string FormatBatchProgressAlertText(const SBatchProgressStats &stats,const bool loaded)
+  {
+   if(!loaded || stats.total<=0) return "";
+
+   string text="";
+   if(stats.errors>0) text="Errors: "+IntegerToString(stats.errors);
+   if(stats.cancelled>0)
+   {
+    if(text!="") text+=" | ";
+    text+="Cancelled: "+IntegerToString(stats.cancelled);
+   }
    return text;
   }
 //+------------------------------------------------------------------+
@@ -1360,17 +1372,38 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    int layoutGap=MathMax(6,m_GapHoriz);
    int queueButtonY=optPanelBottom-m_rowHeight-layoutGap;
    int queueListHeight=MathMax(m_rowHeight*4,queueButtonY-queueListTop-layoutGap);
-   int startStopHeight=(int)MathMax(m_rowHeight+10,MathMin(m_rowHeight*1.6,D_Height*0.075));
-   int startY=optPanelBottom+MathMax(10,layoutGap);
-   int stopY=startY+startStopHeight+MathMax(14,layoutGap*2);
+   int actionGap=MathMax(8,layoutGap);
+   int progressGap=MathMax(4,(int)(layoutGap*0.55));
+   int alertGap=MathMax(3,(int)(layoutGap*0.45));
+   int startStopHeight=(int)MathMax(m_controlHeight+8,MathMin(m_rowHeight+8,D_Height*0.058));
+   int exportBandBottom=(int)(D_Height*0.995)-2;
+   int startY=optPanelBottom+MathMax(8,layoutGap);
+   int stopY=startY+startStopHeight+actionGap;
+   int progressY=stopY+startStopHeight+progressGap;
+   int errorsY=progressY+m_controlHeight+alertGap;
+   int stackBottom=errorsY+m_controlHeight;
+   if(stackBottom>exportBandBottom)
+   {
+    int overflow=stackBottom-exportBandBottom;
+    startY=MathMax(optPanelBottom+2,startY-overflow);
+    stopY=startY+startStopHeight+actionGap;
+    progressY=stopY+startStopHeight+progressGap;
+    errorsY=progressY+m_controlHeight+alertGap;
+   }
 
    if(m_compactLayout)
    {
     int compactGap=MathMax(4,m_GapHoriz);
-    startStopHeight=MathMax(m_controlHeight+8,(int)(m_rowHeight*1.6));
+    actionGap=compactGap;
+    progressGap=MathMax(3,(int)(compactGap*0.75));
+    alertGap=MathMax(2,(int)(compactGap*0.5));
+    startStopHeight=MathMax(m_controlHeight+6,(int)(m_rowHeight*1.20));
     int compactBottom=D_Height-m_topMargin;
-    stopY=compactBottom-startStopHeight;
-    startY=stopY-compactGap-startStopHeight;
+    int compactStackHeight=2*startStopHeight+actionGap+progressGap+m_controlHeight+alertGap+m_controlHeight;
+    startY=compactBottom-compactStackHeight;
+    stopY=startY+startStopHeight+actionGap;
+    progressY=stopY+startStopHeight+progressGap;
+    errorsY=progressY+m_controlHeight+alertGap;
     queueButtonY=startY-compactGap-m_rowHeight;
     queueListHeight=MathMax(m_rowHeight*4,queueButtonY-queueListTop-compactGap);
    }
@@ -1392,19 +1425,26 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    CreateButtonCtrl(m_btnMakePending   , "m_btnMakePending"   ,qx, y, qActionW, m_rowHeight, "Activate");
    
    Ctrl_M=0.30;
+   int actionX=indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05);
+   int actionW=(int)(width_right*Ctrl_M);
    y=startY;
-   CreateButtonCtrl(m_btnStart   , "m_btnStart"    ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), startStopHeight, m_batchRunning ? "RUNNING" : "START BATCH");
+   CreateButtonCtrl(m_btnStart   , "m_btnStart"    ,actionX, y, actionW, startStopHeight, m_batchRunning ? "RUNNING" : "START BATCH");
          m_btnStart.FontSize(m_btnStart.FontSize()+2); m_btnStart.Color(clrWhite); m_btnStart.ColorBackground(clrGreen); m_btnStart.ColorBorder(clrBlack);//C'15,23,42');
    if(m_batchRunning) m_btnStart.Disable();
    y=stopY;
-   CreateButtonCtrl(m_btnStop    , "m_btnStop"     ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), startStopHeight, "TERMINATE");
+   CreateButtonCtrl(m_btnStop    , "m_btnStop"     ,actionX, y, actionW, startStopHeight, "TERMINATE");
          m_btnStop.FontSize(m_btnStop.FontSize()+2); m_btnStop.Color(clrWhite); m_btnStop.ColorBackground(clrCrimson); m_btnStop.ColorBorder(clrBlack);//C'15,23,42');
-   int progressY=y+startStopHeight+MathMax(4,(int)(m_GapHoriz*0.75));
-   CreateEditBox(m_edtBatchProgress,"m_edtBatchProgress",indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05),progressY,(int)(width_right*Ctrl_M),"0/0 Completed");
+   CreateEditBox(m_edtBatchProgress,"m_edtBatchProgress",actionX,progressY,actionW,"0/0 Completed");
    m_edtBatchProgress.ReadOnly(true);
    m_edtBatchProgress.Color(clrWhite);
    m_edtBatchProgress.ColorBackground(C'47,74,111');
    m_edtBatchProgress.ColorBorder(clrBlack);
+   CreateEditBox(m_edtBatchErrors,"m_edtBatchErrors",actionX,errorsY,actionW,"");
+   m_edtBatchErrors.ReadOnly(true);
+   m_edtBatchErrors.Color(clrWhite);
+   m_edtBatchErrors.ColorBackground(C'122,63,34');
+   m_edtBatchErrors.ColorBorder(clrBlack);
+   m_edtBatchErrors.Hide();
    y += m_rowHeight;
    
    if(!m_compactLayout)
@@ -2263,9 +2303,18 @@ void CStrategyTesterDialog::UpdateBatchProgressText(void)
    SBatchProgressStats stats;
    bool loaded=ReadBatchProgressStats(Path_QueueBatch,stats);
    m_edtBatchProgress.Text(FormatBatchProgressText(stats,loaded));
-   if(loaded && stats.errors>0)
-      m_edtBatchProgress.ColorBackground(C'122,63,34');
-   else if(loaded && stats.total>0 && stats.completed+stats.errors+stats.cancelled>=stats.total)
+   string alertText=FormatBatchProgressAlertText(stats,loaded);
+   if(alertText!="")
+   {
+      m_edtBatchErrors.Text(alertText);
+      m_edtBatchErrors.Show();
+   }
+   else
+   {
+      m_edtBatchErrors.Text("");
+      m_edtBatchErrors.Hide();
+   }
+   if(loaded && stats.total>0 && stats.errors==0 && stats.cancelled==0 && stats.completed>=stats.total)
       m_edtBatchProgress.ColorBackground(C'46,139,87');
    else
       m_edtBatchProgress.ColorBackground(C'47,74,111');

@@ -3930,7 +3930,8 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
    if(profit>0)
    {
     // move first, because MoveExports rewrites paths
-    if(!MoveExportsFromRoot("TEMP",GoatOptExportsPath(EA_Name,Server),exports)) {LogOrPrint(reportMode,"❌ Failed to move Exports: "+FileNameOnly(exports[0]),Key,EA_Name,Server); return -1;}
+    string exportSrcRoot="TEMP"+"\\"+EA_Name+"-"+Server;
+    if(!MoveExportsFromRoot(exportSrcRoot,GoatOptExportsPath(EA_Name,Server),exports)) {LogOrPrint(reportMode,"❌ Failed to move Exports: "+FileNameOnly(exports[0]),Key,EA_Name,Server); return -1;}
     // identify csv vs set in their new locations
     string csv="",set="";
     for(int k=0;k<ArraySize(exports);k++)

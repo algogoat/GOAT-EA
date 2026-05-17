@@ -606,7 +606,11 @@ bool MoveKeptExports(ExportRecord &expArr[],const string dstKey)
       for(int i=0;i<n;++i)
       {
          string flatSet=dstKey+"\\"+FileNameOnly(expArr[i].setFile);
-         GoatOptWriteTextFile(flatSet,GoatOptReadTextFile(expArr[i].setFile));
+         if(!GoatExportCopyCommon(expArr[i].setFile,flatSet))
+         {
+            WriteLog("❌ Deploy copy failed: "+FileNameOnly(expArr[i].setFile),false,strT._K,strT._N,strT._S);
+            return false;
+         }
       }
    }
    return true;
@@ -615,17 +619,25 @@ bool MoveKeptExports(ExportRecord &expArr[],const string dstKey)
 // --- pull the “Lots=” line from a .set file (rudimentary INI reader)
 string ParseSetFileForInput(const string key,const string file)
   {
-   int h=FileOpen(file,FILE_READ|FILE_COMMON); if(h==INVALID_HANDLE) return("-1.0");
    const int keyLen=StringLen(key);
-   while(!FileIsEnding(h))
+   string content=GoatExportReadTextCommon(file,0);
+   if(content=="") return("-1.0");
+
+   string setLines[];
+   int total=StringSplit(content,'\n',setLines);
+   for(int i=0;i<total;++i)
    {
-      string ln = FileReadString(h);
+      string ln = setLines[i];
+      StringTrimLeft(ln);
+      StringTrimRight(ln);
       if(StringFind(ln,key,0)==0)
       {
-         string v = StringSubstr(ln,keyLen); StringTrimLeft(v); FileClose(h); return(v);
+         string v = StringSubstr(ln,keyLen);
+         StringTrimLeft(v);
+         return(v);
       }
    }
-   FileClose(h); return("-1.0");
+   return("-1.0");
   }
 double FetchMetric(string filename, string metric)
   {
@@ -758,6 +770,83 @@ bool FindExports(const string srcKey,string &out[])
    return WalkKey(srcKey,out);                 // true  ⇨ at least 1 file kept
   }
 //--------------------------------------------------------------------
+string GoatExportNormalizePath(string path)
+  {
+   StringReplace(path,"/","\\");
+   while(StringFind(path,"\\\\",0)>=0) StringReplace(path,"\\\\","\\");
+   return path;
+  }
+//--------------------------------------------------------------------
+string GoatExportCommonAbsPath(string relPath)
+  {
+   relPath=GoatExportNormalizePath(relPath);
+   if(StringFind(relPath,":\\",0)>0 || StringFind(relPath,"\\\\",0)==0) return relPath;
+   return TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\"+relPath;
+  }
+//--------------------------------------------------------------------
+string GoatExportReadTextCommon(const string srcRel,const int index)
+  {
+   string body=GoatOptReadTextFile(srcRel);
+   if(body!="") return body;
+
+   string tempRel=Key+"\\_export_read\\read_"+IntegerToString((int)GetTickCount())+"_"+IntegerToString(index)+".tmp";
+   if(MTTESTER::FileCopy(GoatExportCommonAbsPath(srcRel),GoatExportCommonAbsPath(tempRel),true))
+   {
+      body=GoatOptReadTextFile(tempRel);
+      GoatExportDeleteCommon(tempRel,index);
+   }
+   return body;
+  }
+//--------------------------------------------------------------------
+bool GoatExportMoveCommon(const string srcRel,const string dstRel)
+  {
+   string srcAbs=GoatExportCommonAbsPath(srcRel);
+   string dstAbs=GoatExportCommonAbsPath(dstRel);
+   if(MTTESTER::FileMove(srcAbs,dstAbs,true)) return true;
+
+   ResetLastError();
+   if(FileIsExist(dstRel,FILE_COMMON)) FileDelete(dstRel,FILE_COMMON);
+   return FileMove(srcRel,FILE_COMMON,dstRel,FILE_COMMON|FILE_REWRITE);
+  }
+//--------------------------------------------------------------------
+bool GoatExportCopyCommon(const string srcRel,const string dstRel)
+  {
+   string srcAbs=GoatExportCommonAbsPath(srcRel);
+   string dstAbs=GoatExportCommonAbsPath(dstRel);
+   if(MTTESTER::FileCopy(srcAbs,dstAbs,true)) return true;
+
+   string body=GoatExportReadTextCommon(srcRel,0);
+   if(body=="") return false;
+   return GoatOptWriteTextFile(dstRel,body);
+  }
+//--------------------------------------------------------------------
+bool GoatExportDeleteCommon(const string fileRel,const int index)
+  {
+   if(fileRel=="") return true;
+   ResetLastError();
+   if(FileDelete(fileRel,FILE_COMMON)) return true;
+
+   string ext="";
+   int lastDot=-1,lastSep=-1;
+   for(int i=0;i<StringLen(fileRel);++i)
+   {
+      ushort ch=StringGetCharacter(fileRel,i);
+      if(ch=='.') lastDot=i;
+      else if(ch=='\\' || ch=='/') lastSep=i;
+   }
+   if(lastDot>lastSep) ext=StringSubstr(fileRel,lastDot);
+
+   string trashRel=Key+"\\_export_delete\\deleted_"+IntegerToString((int)GetTickCount())+"_"+IntegerToString(index)+ext;
+   string srcAbs=GoatExportCommonAbsPath(fileRel);
+   string trashAbs=GoatExportCommonAbsPath(trashRel);
+   if(MTTESTER::FileMove(srcAbs,trashAbs,true))
+   {
+      FileDelete(trashRel,FILE_COMMON);
+      return true;
+   }
+   return false;
+  }
+//--------------------------------------------------------------------
 //  MoveExports – move list collected from Key1 to Key2 (any depth)
 //--------------------------------------------------------------------
 bool MoveExports(const string dstKey,string &files[])
@@ -788,9 +877,7 @@ bool MoveExportsFromRoot(const string srcRoot,const string dstKey,string &files[
       while(lastSep>=0 && StringGetCharacter(dst,lastSep)!='\\') lastSep--;
       string dstDir=(lastSep>0)?StringSubstr(dst,0,lastSep):"";
       EnsureCommonPath(dstDir);
-      // remove existing file to avoid "already open"
-      if(FileIsExist(dst,FILE_COMMON)) FileDelete(dst,FILE_COMMON);
-      if(!FileMove(src,FILE_COMMON,dst,FILE_COMMON|FILE_REWRITE))
+      if(!GoatExportMoveCommon(src,dst))
       {
        if(GlobalVariableGet("BatchOnGoing")!=0) WriteLog("❌ Move failed: "+FileErrorString(GetLastError()),false,strT._K,strT._N,strT._S);
        Print("Move failed: ",src," → ",dst," err=",GetLastError()); ok=false;}
@@ -803,9 +890,9 @@ bool DeleteExports(string &files[])
   {
    bool ok=true;
    for(int i=0;i<ArraySize(files);i++)
-      if(!FileDelete(files[i],FILE_COMMON))
-        {if(GlobalVariableGet("BatchOnGoing")!=0) WriteLog("❌ Delete failed: "+FileErrorString(GetLastError())+": "+files[i],false,strT._K,strT._N,strT._S);
-         Print("Delete failed: ",files[i]," err=",GetLastError()); ok=false;}
+      if(!GoatExportDeleteCommon(files[i],i))
+         {if(GlobalVariableGet("BatchOnGoing")!=0) WriteLog("❌ Delete failed: "+FileErrorString(GetLastError())+": "+files[i],false,strT._K,strT._N,strT._S);
+          Print("Delete failed: ",files[i]," err=",GetLastError()); ok=false;}
    return ok;
   }
 //+------------------------------------------------------------------+

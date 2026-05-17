@@ -128,6 +128,9 @@ private:
    bool SaveCurrentBatchPackage(void);
    bool LoadBatchPackage(const string packagePath);
    bool ApplyBatchTimelineAdjustment(string &queueContent,string &exportSettings,const string sourceRunPath);
+   string BuildBatchInputsPackage(const string queueContent);
+   bool RestoreBatchInputsPackage(const string packageBody);
+   void ApplyExportSettingsToControls(const string exportSettings);
    bool SaveStrategyInputsFromSet(const string setPath,string &savedStrategy);
    bool EnsureInputsForStrategy(const string strategy,string &message);
    bool PreflightQueueInputs(const string queueContent,string &message);
@@ -357,6 +360,7 @@ bool CStrategyTesterDialog::RewriteQueueItemTimeline(string &item,const int mode
    string strategy=QueueItemStrategyName(item);
    datetime oldFrom=StringToTime(GoatOptQueueValue(item,"FromDate"));
    datetime oldTo  =StringToTime(GoatOptQueueValue(item,"ToDate"));
+   datetime oldForward=StringToTime(GoatOptQueueValue(item,"ForwardDate"));
    if(symbol=="" || period=="" || strategy=="" || oldFrom<=0 || oldTo<=oldFrom) return false;
 
    datetime newFrom=oldFrom;
@@ -400,6 +404,8 @@ bool CStrategyTesterDialog::RewriteQueueItemTimeline(string &item,const int mode
    else if(fmode=="4")
    {
       datetime custom=m_dtForward.Value();
+      if(mode==2 && oldForward>0) custom=oldForward+(newFrom-oldFrom);
+      else if(mode==3 && oldForward>0) custom=oldForward;
       if(custom<=newFrom || custom>=newTo) custom=newFrom+(newTo-newFrom)/2;
       forwardDateLine=TimeToString(custom,TIME_DATE);
       forwardDateText=forwardDateLine;
@@ -520,19 +526,122 @@ bool CStrategyTesterDialog::ApplyBatchTimelineAdjustment(string &queueContent,st
    }
    queueContent=rebuilt;
 
-   if(mode==1 || mode==2 || mode==4)
+   bool includeBackOOS=(StringToInteger(GoatOptReadIniValue(exportSettings,"IncludeBackOOS"))!=0);
+   if(includeBackOOS && (mode==1 || mode==2 || mode==4))
    {
       string backOOS=GoatOptReadIniValue(exportSettings,"BackOOSDate");
       if(backOOS!="")
       {
          datetime oldBack=StringToTime(backOOS);
+         if(oldBack>0 && oldEarliest>0 && oldBack>=oldEarliest)
+         {
+            MessageBox("Invalid Back OOS date: Back OOS must be before the optimization start.","Timeline Error",MB_OK|MB_ICONERROR);
+            return false;
+         }
          datetime newBack=commonFrom;
-         if(mode==2 && oldBack>0 && oldEarliest>0) newBack=oldBack+(commonFrom-oldEarliest);
-         if(mode==4) newBack=commonFrom;
+         if(oldBack>0 && oldEarliest>0) newBack=oldBack+(commonFrom-oldEarliest);
+         if(newBack>=commonFrom)
+         {
+            MessageBox("Invalid adjusted Back OOS date: Back OOS must be before the optimization start.","Timeline Error",MB_OK|MB_ICONERROR);
+            return false;
+         }
          exportSettings=GoatOptSetIniValue(exportSettings,"BackOOSDate",TimeToString(newBack,TIME_DATE));
       }
    }
    return true;
+  }
+//+------------------------------------------------------------------+
+string CStrategyTesterDialog::BuildBatchInputsPackage(const string queueContent)
+  {
+   string out="[GOAT_INPUTS]\r\n";
+   string seen=";";
+   string queueItems[];
+   int total=StringSplit(queueContent,(ushort)31,queueItems);
+   for(int i=0;i<total;++i)
+   {
+      string strategy=QueueItemStrategyName(queueItems[i]);
+      if(strategy=="") continue;
+      string token=";"+strategy+";";
+      if(StringFind(seen,token,0)>=0) continue;
+      seen+=strategy+";";
+
+      string inputsPath=GoatOptStrategyDir(EA_Name_,Server_,strategy)+"\\Inputs."+Key_;
+      string inputs=GetFileContent(inputsPath);
+      if(inputs=="") continue;
+
+      out+="[GOAT_INPUT:"+GoatOptSafePathPart(strategy)+"]\r\n";
+      out+=inputs+"\r\n";
+      out+="[/GOAT_INPUT]\r\n";
+   }
+   out+="[/GOAT_INPUTS]\r\n";
+   return out;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::RestoreBatchInputsPackage(const string packageBody)
+  {
+   const string startTag="[GOAT_INPUT:";
+   const string endTag="[/GOAT_INPUT]";
+   int pos=0;
+   bool any=false;
+   bool ok=true;
+   while(true)
+   {
+      int start=StringFind(packageBody,startTag,pos);
+      if(start<0) break;
+      int nameStart=start+StringLen(startTag);
+      int nameEnd=StringFind(packageBody,"]",nameStart);
+      if(nameEnd<0) break;
+      string strategy=StringSubstr(packageBody,nameStart,nameEnd-nameStart);
+      StringTrimLeft(strategy);
+      StringTrimRight(strategy);
+
+      int contentStart=nameEnd+1;
+      while(contentStart<StringLen(packageBody))
+      {
+         ushort ch=StringGetCharacter(packageBody,contentStart);
+         if(ch!='\r' && ch!='\n') break;
+         contentStart++;
+      }
+      int end=StringFind(packageBody,endTag,contentStart);
+      if(end<0) break;
+      string inputs=StringSubstr(packageBody,contentStart,end-contentStart);
+      StringTrimLeft(inputs);
+      StringTrimRight(inputs);
+      if(strategy!="" && inputs!="")
+      {
+         string inputsPath=GoatOptStrategyDir(EA_Name_,Server_,strategy)+"\\Inputs."+Key_;
+         if(!GoatOptWriteTextFile(inputsPath,inputs)) ok=false;
+         else any=true;
+      }
+      pos=end+StringLen(endTag);
+   }
+   return (any && ok);
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::ApplyExportSettingsToControls(const string exportSettings)
+  {
+   if(m_compactLayout || exportSettings=="") return;
+
+   string val=GoatOptReadIniValue(exportSettings,"SetsToExport");
+   if(val!="") m_edtSetsToExport.Text(val);
+   val=GoatOptReadIniValue(exportSettings,"MinScore");
+   if(val!="") m_edtMinScore.Text(val);
+   val=GoatOptReadIniValue(exportSettings,"TargetDD");
+   if(val!="") m_edtTargetDD.Text(val);
+   val=GoatOptReadIniValue(exportSettings,"MinARF");
+   if(val!="") m_edtMinARF.Text(val);
+   val=GoatOptReadIniValue(exportSettings,"MinSR");
+   if(val!="") m_edtMinSR.Text(val);
+   val=GoatOptReadIniValue(exportSettings,"AdjustLots");
+   if(val!="") m_chkAdjustLots.Checked(StringToInteger(val)!=0);
+   val=GoatOptReadIniValue(exportSettings,"IncludeBackOOS");
+   if(val!="") m_chkVerifyOOS.Checked(StringToInteger(val)!=0);
+   val=GoatOptReadIniValue(exportSettings,"BackOOSDate");
+   if(val!="")
+   {
+      datetime backDate=StringToTime(val);
+      if(backDate>0) m_dpBackOOS.Value(backDate);
+   }
   }
 //+------------------------------------------------------------------+
 bool CStrategyTesterDialog::SaveCurrentBatchPackage(void)
@@ -547,13 +656,14 @@ bool CStrategyTesterDialog::SaveCurrentBatchPackage(void)
    if(runName=="") runName=GoatOptSafePathPart(Path_RunFolder);
    string body="[GOATBATCH]\r\n"
               +"Version=1\r\n"
-              +"RunName="+runName+"\r\n"
-              +"RunPath="+Path_RunFolder+"\r\n"
-              +"EA="+EA_Name_+"\r\n"
-              +"Server="+Server_+"\r\n"
-              +"SavedAt="+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\r\n"
-              +"[GOAT_EXPORT_SETTINGS]\r\n"+exportSettings+"\r\n[/GOAT_EXPORT_SETTINGS]\r\n"
-              +"[GOAT_QUEUE]\r\n"+queue+"\r\n[/GOAT_QUEUE]\r\n";
+               +"RunName="+runName+"\r\n"
+               +"RunPath="+Path_RunFolder+"\r\n"
+               +"EA="+EA_Name_+"\r\n"
+               +"Server="+Server_+"\r\n"
+               +"SavedAt="+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\r\n"
+               +"[GOAT_EXPORT_SETTINGS]\r\n"+exportSettings+"\r\n[/GOAT_EXPORT_SETTINGS]\r\n"
+               +"[GOAT_QUEUE]\r\n"+queue+"\r\n[/GOAT_QUEUE]\r\n"
+               +BuildBatchInputsPackage(queue);
    bool ok=GoatOptWriteTextFile(GoatOptPortfolioPath(EA_Name_,Server_),body);
    if(ok)
    {
@@ -588,10 +698,12 @@ bool CStrategyTesterDialog::LoadBatchPackage(const string packagePath)
 
    if(sourceRunPath!="")
       GoatOptCopyCommonTextTree(sourceRunPath+"\\inputs",Path_RunFolder+"\\inputs");
+   RestoreBatchInputsPackage(body);
 
    if(!ApplyBatchTimelineAdjustment(queue,exportSettings,sourceRunPath)) return false;
    GoatOptWriteTextFile(Path_QueueBatch,queue);
    if(exportSettings!="") GoatOptWriteTextFile(Path_ExportSettings,exportSettings);
+   ApplyExportSettingsToControls(exportSettings);
    SaveCurrentBatchPackage();
    Strategy="";
    m_edtStrategy.Text("Portfolio Batch");

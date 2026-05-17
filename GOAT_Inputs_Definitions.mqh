@@ -1390,7 +1390,7 @@ string GoatOptBasePath(const string ea_name,const string server_name)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 string GoatOptRunsPath(const string ea_name,const string server_name)
   {
-   return GoatOptBasePath(ea_name,server_name)+"\\Optimization Runs";
+   return GoatOptBasePath(ea_name,server_name);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 string GoatOptActivePointerPath(const string ea_name,const string server_name)

@@ -73,7 +73,7 @@ public:
 // Export Settings extra objects
    CLabel      m_lblSetsToExport,m_lblBackOOSDate,m_lblMinScore,m_lblMinARF,m_lblAdjustLots,m_lblMinSR,m_lblTargetDD,m_lblVerifyOOS,m_lblDataSync;
    CEdit       m_edtSetsToExport                 ,m_edtMinScore,m_edtMinARF                ,m_edtMinSR,m_edtTargetDD;
-   CCheckBox   m_chkAdjustLots,m_chkVerifyOOS;
+   CBmpButton  m_chkAdjustLots,m_chkVerifyOOS;
    
    CDatePicker m_dpBackOOS,m_dpFwdOOS;
    CButton     m_btnSyncBias,m_btnViewBias,m_btnSyncNews;
@@ -633,9 +633,9 @@ void CStrategyTesterDialog::ApplyExportSettingsToControls(const string exportSet
    val=GoatOptReadIniValue(exportSettings,"MinSR");
    if(val!="") m_edtMinSR.Text(val);
    val=GoatOptReadIniValue(exportSettings,"AdjustLots");
-   if(val!="") m_chkAdjustLots.Checked(StringToInteger(val)!=0);
+   if(val!="") m_chkAdjustLots.Pressed(StringToInteger(val)!=0);
    val=GoatOptReadIniValue(exportSettings,"IncludeBackOOS");
-   if(val!="") m_chkVerifyOOS.Checked(StringToInteger(val)!=0);
+   if(val!="") m_chkVerifyOOS.Pressed(StringToInteger(val)!=0);
    val=GoatOptReadIniValue(exportSettings,"BackOOSDate");
    if(val!="")
    {
@@ -1511,8 +1511,10 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    int adjustCheckX = exportLeftMargin+exportLabelWidth+m_GapHoriz;
    int adjustCheckY = exportRow3+exportCheckOffset;
    if(!m_chkAdjustLots.Create(m_chart_id,m_name+"chkAdjustLots",m_subwin,adjustCheckX,adjustCheckY,adjustCheckX+exportCheckSize,adjustCheckY+exportCheckSize))
-      Print("CheckBox creation error:",GetLastError());
-   Add(m_chkAdjustLots); m_chkAdjustLots.Text(""); m_chkAdjustLots.Checked(AdjustLots);
+      Print("CheckBox button creation error:",GetLastError());
+   m_chkAdjustLots.BmpNames("::res\\CheckBoxOff.bmp","::res\\CheckBoxOn.bmp");
+   m_chkAdjustLots.Locking(true);
+   Add(m_chkAdjustLots); m_chkAdjustLots.Pressed(AdjustLots);
 
    // ===== RIGHT-COLUMN ITEMS  =======================================
    int xR = exportLeftMargin + exportLabelWidth + exportControlWidth + m_GapHoriz*4;
@@ -1524,8 +1526,10 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    int oosCheckX = xR+exportLabelWidth+m_GapHoriz;
    int oosCheckY = exportRow3+exportCheckOffset;
    if(!m_chkVerifyOOS.Create(m_chart_id,m_name+"chkVerifyOOS",m_subwin,oosCheckX,oosCheckY,oosCheckX+exportCheckSize,oosCheckY+exportCheckSize))
-      Print("CheckBox creation error:",GetLastError());
-   Add(m_chkVerifyOOS); m_chkVerifyOOS.Text(""); m_chkVerifyOOS.Checked(InclBackOOS);
+      Print("CheckBox button creation error:",GetLastError());
+   m_chkVerifyOOS.BmpNames("::res\\CheckBoxOff.bmp","::res\\CheckBoxOn.bmp");
+   m_chkVerifyOOS.Locking(true);
+   Add(m_chkVerifyOOS); m_chkVerifyOOS.Pressed(InclBackOOS);
 
    CreateLabel (m_lblBackOOSDate ,"Back OOS Date:",xR,exportRow0,exportLabelWidth);
    CreateDatePick(m_dpBackOOS   ,"dpBackOOS", xR+exportLabelWidth+m_GapHoriz,exportRow0,exportControlWidth);
@@ -3007,13 +3011,13 @@ string CStrategyTesterDialog::GetExportSettingsString()
    str += "SetsToExport="  + m_edtSetsToExport.Text()         + "\n";
    str += "MinScore="      + m_edtMinScore.Text()             + "\n";
    str += "TargetDD="      + m_edtTargetDD.Text()             + "\n";
-   str += "AdjustLots="    + (m_chkAdjustLots.Checked() ? "1" : "0") + "\n";
+   str += "AdjustLots="    + (m_chkAdjustLots.Pressed() ? "1" : "0") + "\n";
 
    // --- right column -----------------------------------------------
    str += "BackOOSDate="   + TimeToString(m_dpBackOOS.Value(), TIME_DATE) + "\n";
    str += "MinARF="        + m_edtMinARF.Text()               + "\n";
    str += "MinSR="         + m_edtMinSR.Text()                + "\n";
-   str += "IncludeBackOOS="+ (m_chkVerifyOOS.Checked() ? "1" : "0") + "\n";
+   str += "IncludeBackOOS="+ (m_chkVerifyOOS.Pressed() ? "1" : "0") + "\n";
    
    // keep the trailing newline for easy concatenation with other blocks
    return str;

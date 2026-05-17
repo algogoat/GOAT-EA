@@ -870,15 +870,15 @@ int      PortfolioTracking_SampleSeconds =                   5;
 //input int    Input1 = 1;
 //input int    Input2 = 2;
 //input int    Input3 = 3;
-datetime dt_Back_OOS=0,dt_Fwrd_OOS=0;
+datetime dt_Back_OOS=0,dt_Fwrd_OOS=0,dt_FWD_start=0,dt_FWD_end=0;
 string   Strat="",Mode="",_Symbol_=_Symbol;
 string   FileCSV_Name="",Date_Start="";
 int      FileCSV_handle=INVALID_HANDLE,FileSET_handle=INVALID_HANDLE,FileTester_handle=INVALID_HANDLE;
 
-int      days_BOOS=0,days_IS=0,days_FOOS=0;
+int      days_BOOS=0,days_IS=0,days_FOOS=0,days_FWD=0;
 datetime dt_BOOS_end=0,dt_IS_end=0;
-double   eq_BOOS_start=0,eq_BOOS_end=0,eq_IS_start=0,eq_IS_end=0,eq_FOOS_start=0; // FOOS end is fetchable
-int      trd_BOOS=0, trd_IS=0, trd_FOOS=0;
+double   eq_BOOS_start=0,eq_BOOS_end=0,eq_IS_start=0,eq_IS_end=0,eq_FOOS_start=0,eq_FWD_start=0,eq_FWD_end=0; // FOOS end is fetchable
+int      trd_BOOS=0, trd_IS=0, trd_FOOS=0, trd_FWD=0;
 datetime DashboardBusDayStart=0,DashboardBusWeekStart=0;
 double   DashboardBusClosedPLDaily=0.0,DashboardBusClosedPLWeekly=0.0,DashboardBusClosedPLTotal=0.0;
 int      DashboardBusClosedTradesTotal=0;

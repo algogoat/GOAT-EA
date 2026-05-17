@@ -2310,12 +2310,22 @@ int OnInit()
      {
       dt_Fwrd_OOS = StringToTime(values[i]); Print("dt_FOOS_start:",TimeToString(dt_Fwrd_OOS,TIME_DATE));
      }
+     if(names[i]=="dt_FWD_start")
+     {
+      dt_FWD_start = StringToTime(values[i]); Print("dt_FWD_start:",TimeToString(dt_FWD_start,TIME_DATE));
+     }
+     if(names[i]=="dt_FWD_end")
+     {
+      dt_FWD_end = StringToTime(values[i]); Print("dt_FWD_end:",TimeToString(dt_FWD_end,TIME_DATE));
+     }
     }
     if(MQLInfoInteger(MQL_TESTER))
     {
      if(dt_Back_OOS!=0 && dt_Back_OOS<TimeCurrent()) {Print("EXPORT: dt_BOOS_end:"  +TimeToString(dt_Back_OOS,TIME_DATE)+" must be after test start date"); return(INIT_PARAMETERS_INCORRECT);}
      if(dt_Fwrd_OOS!=0 && dt_Fwrd_OOS<TimeCurrent()) {Print("EXPORT: dt_FOOS_start:"+TimeToString(dt_Fwrd_OOS,TIME_DATE)+" must be after test start date"); return(INIT_PARAMETERS_INCORRECT);}
      if(dt_Back_OOS!=0 && dt_Fwrd_OOS!=0 && dt_Fwrd_OOS<=dt_Back_OOS) {Print("EXPORT: dt_FOOS_start:"+TimeToString(dt_Fwrd_OOS,TIME_DATE)+" must be after dt_BOOS_end"); return(INIT_PARAMETERS_INCORRECT);}
+     if((dt_FWD_start!=0 || dt_FWD_end!=0) && (dt_FWD_start==0 || dt_FWD_end==0)) {Print("EXPORT: dt_FWD_start and dt_FWD_end must both be provided"); return(INIT_PARAMETERS_INCORRECT);}
+     if(dt_FWD_start!=0 && dt_FWD_end!=0 && dt_FWD_end<dt_FWD_start) {Print("EXPORT: dt_FWD_end:"+TimeToString(dt_FWD_end,TIME_DATE)+" must be after dt_FWD_start"); return(INIT_PARAMETERS_INCORRECT);}
     }
    }
    else if(Mode=="") Strat=EA_Desc; Print("Strategy: "+Strat);
@@ -3430,6 +3440,9 @@ double OnTester()
    string is_to   = (dt_Fwrd_OOS!=0 ? TimeToString(dt_Fwrd_OOS,TIME_DATE) : TimeToString(TimeCurrent(),TIME_DATE));
    temp="SAMPLE: "+is_from+"-"+is_to
                   +" Days="+(string)days_IS+" Trades="+(string)trd_IS+" PL="+DoubleToString(eq_IS_end-eq_IS_start,0);         Print(temp); desc+="; "+temp+"\n";
+   if(dt_FWD_start!=0 && dt_FWD_end!=0) {
+   temp="FWD:    "+TimeToString(dt_FWD_start,TIME_DATE)+"-"+TimeToString(dt_FWD_end,TIME_DATE)
+                  +" Days="+(string)days_FWD+" Trades="+(string)trd_FWD+" PL="+DoubleToString(eq_FWD_end-eq_FWD_start,0);       Print(temp); desc+="; "+temp+"\n";}
    if(dt_Fwrd_OOS!=0) {
    temp="FOOS:   "+TimeToString(dt_Fwrd_OOS,TIME_DATE)+"-"+TimeToString(TimeCurrent(),TIME_DATE)
                   +" Days="+(string)days_FOOS+" Trades="+(string)trd_FOOS+" PL="+DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY)-eq_FOOS_start,0);
@@ -3774,6 +3787,9 @@ bool StartExporter(bool reportMode)
     double lastScore=-1;
     const int MAX_CONSEC_NEG = 10; // early abort streak
     int i=0,passes=0,profits=0,losses=0,errors=0,duplicates=0,fitterCount=0,consecNeg=0,consecErrors=0;
+    string fwdRangeMeta="";
+    if(xmlData.forwardD!=0 && xmlData.endD!=0 && xmlData.forwardD<=xmlData.endD)
+     fwdRangeMeta=",dt_FWD_start="+TimeToString(xmlData.forwardD,TIME_DATE)+",dt_FWD_end="+TimeToString(xmlData.endD,TIME_DATE);
     
     for(;i<MathMin(25,ArraySize(xmlData.RowsUnique));i++)
     {
@@ -3786,7 +3802,7 @@ bool StartExporter(bool reportMode)
                                             +" Set Exports stored="+(string)ArraySize(g_allExports)+"/"+IntegerToString(passes)+" Above Threshold="+IntegerToString(fitterCount),Key,EA_Name,Server);
       
       int PositivePass=RunAndStoreSet(i,"Mode_Operation="+(string)OP_Standard+"\n"+"EA_Desc="+strT.Strat+"@{mode=EXPORT,"+"dt_BOOS_end="  +TimeToString(xmlData.startD,TIME_DATE)+","
-                                                                                                        +"dt_FOOS_start="+TimeToString(xmlData.endD  +24*60*60,TIME_DATE)+"}\n",reportMode,g_allExports,false,EXPORT_START_ATTEMPTS);
+                                                                                                        +"dt_FOOS_start="+TimeToString(xmlData.endD  +24*60*60,TIME_DATE)+fwdRangeMeta+"}\n",reportMode,g_allExports,false,EXPORT_START_ATTEMPTS);
       //@{mode=EXPORT,dt_BOOS_end=2025.09.01,dt_FOOS_start=2025.09.30"; // Strategy Comment datetime dt_Back_OOS=0,dt_Fwrd_OOS=0;
       if(PositivePass==1)
       {
@@ -4032,6 +4048,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
         if(TimeCurrent()<dt_Back_OOS && dt_Back_OOS!=0) trd_BOOS++;
    else if(TimeCurrent()>dt_Fwrd_OOS && dt_Fwrd_OOS!=0) trd_FOOS++;
    else                                                 trd_IS++;
+   if(dt_FWD_start!=0 && dt_FWD_end!=0 && TimeCurrent()>=dt_FWD_start && TimeCurrent()<=dt_FWD_end) trd_FWD++;
    return;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -4223,6 +4240,12 @@ void OnTick()
      if(eq_IS_start==0) eq_IS_start = DStartEquity;
      eq_IS_end = DStartEquity;
      dt_IS_end = DLastTime;
+    }
+    if(dt_FWD_start!=0 && dt_FWD_end!=0 && TimeCurrent()>=dt_FWD_start && TimeCurrent()<=dt_FWD_end)
+    {
+     days_FWD++;
+     if(eq_FWD_start==0) eq_FWD_start = DStartEquity;
+     eq_FWD_end = DStartEquity;
     }
     DLastTime=TimeCurrent();
    }

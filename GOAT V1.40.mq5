@@ -2847,7 +2847,7 @@ int OnInit()
     Date_Start = TimeToString(TimeCurrent(),TIME_DATE);
     if(dt_Back_OOS!=0) dt_BOOS_end = dt_Back_OOS;
     
-    FileCSV_Name="TEMP"+"\\"+EA_Name+"-"+Server+"\\"+Strat+"\\"+Symbol()+"\\CSV+SET\\"+EA_Name+" "+Symbol()+","+TFToString(Period())+" "+Date_Start;
+    FileCSV_Name="TEMP"+"\\"+EA_Name+"-"+Server+"\\"+Strat+"\\"+Symbol()+"\\CSV+SET\\"+EA_Name+" "+Symbol()+","+TFToString(Period());
     FileCSV_handle = FileOpen(FileCSV_Name+"_"+(string)MAGIC1+".csv",FILE_COMMON|FILE_CSV|FILE_WRITE,"\t");
     if(FileCSV_handle == INVALID_HANDLE)
     {
@@ -3573,7 +3573,7 @@ double OnTester()
     if(FileCSV_handle != INVALID_HANDLE) {FileClose(FileCSV_handle); FileCSV_handle=INVALID_HANDLE;}
     
     string oldFile = FileCSV_Name+"_"+(string)MAGIC1+".csv";
-    string newFile = FileCSV_Name+"-"+TimeToString(TimeCurrent(),TIME_DATE); // Start from the same prefix
+    string newFile = FileCSV_Name; // Date ranges live in the exported .set header.
     string metrix =  //"_Result="  + DoubleToString(fitness,2)
                        "_Trds="  + IntegerToString(trades)
                      + "_Prf="   + DoubleToString(profit,0)
@@ -3585,8 +3585,7 @@ double OnTester()
     newFile += metrix+".csv";//Print(newFile);
     if(!FileMove(oldFile,FILE_COMMON, newFile,FILE_REWRITE|FILE_COMMON)) Print("Error renaming CSV file: ", GetLastError());
     
-    string FileSET_Name="TEMP"+"\\"+EA_Name+"-"+Server+"\\"+Strat+"\\"+Symbol()+"\\CSV+SET\\"+EA_Name+" "+Symbol()+","+TFToString(Period())+" "+Date_Start
-                                                                                            +"-"+TimeToString(TimeCurrent(),TIME_DATE)+metrix+".set";//Print(FileSET_Name);
+    string FileSET_Name=FileCSV_Name+metrix+".set";//Print(FileSET_Name);
     FileSET_handle = FileOpen(FileSET_Name,FILE_CSV|FILE_WRITE|FILE_COMMON,"\t");
     if(FileSET_handle == INVALID_HANDLE)
     {

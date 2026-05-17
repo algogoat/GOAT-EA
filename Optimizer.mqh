@@ -999,10 +999,9 @@ string FormatBatchProgressText(const SBatchProgressStats &stats,const bool loade
 //+------------------------------------------------------------------+
 string FormatBatchProgressAlertText(const SBatchProgressStats &stats,const bool loaded)
   {
-   if(!loaded || stats.total<=0) return "";
+   if(!loaded || stats.total<=0) return "0 Errors";
 
-   string text="";
-   if(stats.errors>0) text="Errors: "+IntegerToString(stats.errors);
+   string text=(stats.errors>0 ? "Errors: "+IntegerToString(stats.errors) : "0 Errors");
    if(stats.cancelled>0)
    {
     if(text!="") text+=" | ";
@@ -1437,12 +1436,11 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    m_edtBatchProgress.Color(clrWhite);
    m_edtBatchProgress.ColorBackground(C'47,74,111');
    m_edtBatchProgress.ColorBorder(clrBlack);
-   CreateEditBox(m_edtBatchErrors,"m_edtBatchErrors",actionX,errorsY,actionW,"");
+   CreateEditBox(m_edtBatchErrors,"m_edtBatchErrors",actionX,errorsY,actionW,"0 Errors");
    m_edtBatchErrors.ReadOnly(true);
    m_edtBatchErrors.Color(clrWhite);
-   m_edtBatchErrors.ColorBackground(C'122,63,34');
+   m_edtBatchErrors.ColorBackground(C'47,74,111');
    m_edtBatchErrors.ColorBorder(clrBlack);
-   m_edtBatchErrors.Hide();
    y += m_rowHeight;
    
    if(!m_compactLayout)
@@ -2306,16 +2304,12 @@ void CStrategyTesterDialog::UpdateBatchProgressText(void)
    bool loaded=ReadBatchProgressStats(Path_QueueBatch,stats);
    m_edtBatchProgress.Text(FormatBatchProgressText(stats,loaded));
    string alertText=FormatBatchProgressAlertText(stats,loaded);
-   if(alertText!="")
-   {
-      m_edtBatchErrors.Text(alertText);
-      m_edtBatchErrors.Show();
-   }
+   m_edtBatchErrors.Text(alertText);
+   m_edtBatchErrors.Show();
+   if(loaded && (stats.errors>0 || stats.cancelled>0))
+      m_edtBatchErrors.ColorBackground(C'122,63,34');
    else
-   {
-      m_edtBatchErrors.Text("");
-      m_edtBatchErrors.Hide();
-   }
+      m_edtBatchErrors.ColorBackground(C'47,74,111');
    if(loaded && stats.total>0 && stats.errors==0 && stats.cancelled==0 && stats.completed>=stats.total)
       m_edtBatchProgress.ColorBackground(C'46,139,87');
    else

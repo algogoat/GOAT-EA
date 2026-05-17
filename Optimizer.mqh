@@ -993,10 +993,8 @@ string FormatBatchProgressText(const SBatchProgressStats &stats,const bool loade
   {
    if(!loaded || stats.total<=0) return "0/0 Completed";
 
-   int left=stats.pending+stats.queued+stats.ongoing;
-   string text=IntegerToString(stats.completed)+"/"+IntegerToString(stats.total)+" Completed";
-   text+=" | "+IntegerToString(left)+" Left";
-   return text;
+   int pct=(int)MathRound(100.0*(double)stats.completed/(double)stats.total);
+   return IntegerToString(pct)+"% Completed | "+IntegerToString(stats.completed)+"/"+IntegerToString(stats.total);
   }
 //+------------------------------------------------------------------+
 string FormatBatchProgressAlertText(const SBatchProgressStats &stats,const bool loaded)

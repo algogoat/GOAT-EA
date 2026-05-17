@@ -861,9 +861,24 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
       string baseName = StringSubstr(fileMain, 0, StringLen(fileMain)-4); // remove ".xml"
       // Search for the forward file in the list.
       bool forwardFound = false;
+      string forwardFile=baseName + ".forward.xml";
       for(int j=0; j<ArraySize(Files); j++)
         {
-         if(StringCompare(Files[j], baseName + ".forward.xml") == 0) {forwardFound = true; break;}
+         if(StringCompare(Files[j], forwardFile) == 0) {forwardFound = true; break;}
+        }
+      if(!forwardFound)
+        {
+         string noExtForward=baseName;
+         for(int j=0; j<ArraySize(Files); j++)
+           {
+            if(StringCompare(Files[j], noExtForward) == 0)
+              {
+               forwardFile=noExtForward;
+               forwardFound=true;
+               LogOrPrint(reportMode,"Forward report matched without .forward.xml suffix: "+FileNameOnly(forwardFile),Key_,EA_Name_,Server_);
+               break;
+              }
+           }
         }
       if(forwardFound)
         {
@@ -878,7 +893,7 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
          if(StringFind(fileMain,xmlData.Title)<0)
          {LogOrPrint(reportMode,"❌ xml File name and internal title do not match,\nTitle: "+xmlData.Title+"\nFilename: "+fileMain,Key_,EA_Name_,Server_); ret=false;}
          // 3) Process the forward test => merges forward data, calculates Score, then sorts
-         if(!xmlData.ProcessForwardXml((baseName+".forward.xml"))) ret=false;
+         if(!xmlData.ProcessForwardXml(forwardFile)) ret=false;
          if(ForwardDate!=0)
          {
           double topScore=0.0;
@@ -999,11 +1014,8 @@ string GoatXmlNormalizedReportDestination(const string srcRel)
    if(GoatXmlEndsWith(lower,".forward.xml") || GoatXmlEndsWith(lower,".xml"))
       return dst;
 
-   if(GoatXmlFileContains(dst,false,"Forward Result"))
-      return dst+".forward.xml";
-
    if(GoatXmlFileContains(dst,false,"<?xml"))
-      return dst+".xml";
+      return dst+".forward.xml";
 
    return dst;
   }

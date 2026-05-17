@@ -1411,10 +1411,11 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    {
   int exportPanelLeft   = (int)(D_Width*0.01);
   int exportPanelGap    = MathMax(6,(int)(m_GapHoriz*1.5));
-  int exportPanelTop    = optPanelBottom+exportPanelGap;
+  int exportActionBottom= MathMax(last_y+m_rowHeight,queueButtonY+m_rowHeight);
+  int exportPanelTop    = MathMax(optPanelBottom+exportPanelGap,exportActionBottom+MathMax(4,(int)(m_GapHoriz*0.5)));
   int exportPanelRight  = (int)(D_Width*0.80);
   int exportPanelBottom = (int)(D_Height*0.995);
-  int minExportHeight   = MathMax(180,(int)(m_rowHeight*5.2));
+  int minExportHeight   = MathMax(170,(int)(m_rowHeight*4.8));
   if(exportPanelTop>exportPanelBottom-minExportHeight)
      exportPanelTop=exportPanelBottom-minExportHeight;
   int exportPanelWidth  = exportPanelRight-exportPanelLeft;

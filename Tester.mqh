@@ -601,18 +601,6 @@ bool MoveKeptExports(ExportRecord &expArr[],const string dstKey)
       expArr[i].csvFile = files[k++];
       expArr[i].setFile = files[k++];
      }
-   if(GoatOptCurrentRunPath(strT._N,strT._S)!="")
-   {
-      for(int i=0;i<n;++i)
-      {
-         string flatSet=dstKey+"\\"+FileNameOnly(expArr[i].setFile);
-         if(!GoatExportCopyCommon(expArr[i].setFile,flatSet))
-         {
-            WriteLog("❌ Deploy copy failed: "+FileNameOnly(expArr[i].setFile),false,strT._K,strT._N,strT._S);
-            return false;
-         }
-      }
-   }
    return true;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -784,6 +772,15 @@ string GoatExportCommonAbsPath(string relPath)
    return TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\"+relPath;
   }
 //--------------------------------------------------------------------
+string GoatExportFlattenCsvSetFolder(string relPath)
+  {
+   relPath=GoatExportNormalizePath(relPath);
+   StringReplace(relPath,"\\CSV+SET\\","\\");
+   if(StringFind(relPath,"CSV+SET\\",0)==0)
+      relPath=StringSubstr(relPath,StringLen("CSV+SET\\"));
+   return relPath;
+  }
+//--------------------------------------------------------------------
 string GoatExportReadTextCommon(const string srcRel,const int index)
   {
    string body=GoatOptReadTextFile(srcRel);
@@ -871,6 +868,8 @@ bool MoveExportsFromRoot(const string srcRoot,const string dstKey,string &files[
          int sep=StringFind(src,"\\");
          rel=(sep==-1)?src:StringSubstr(src,sep+1);
       }
+      if(GoatOptCurrentRunPath(strT._N,strT._S)!="")
+         rel=GoatExportFlattenCsvSetFolder(rel);
       string dst=dstKey+"\\"+rel;                 // Key2\...\file
       /* --- build directory part of dst and create it --- */
       int lastSep=StringLen(dst)-1;

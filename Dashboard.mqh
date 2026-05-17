@@ -193,21 +193,38 @@ public:
    {
     Print("▶ Loading Set Files...");
     string picked[];
-    if(FileSelectDialog("Select .set files",NULL,"set files (*.set)|*.set",FSD_FILE_MUST_EXIST|FSD_ALLOW_MULTISELECT|FSD_COMMON_FOLDER,picked,NULL)<=0)
+    if(FileSelectDialog("Select .set files or deploy manifest",NULL,"GOAT deploy files (*.set;*.ini)|*.set;*.ini|set files (*.set)|*.set|All files (*.*)|*.*",FSD_FILE_MUST_EXIST|FSD_ALLOW_MULTISELECT|FSD_COMMON_FOLDER,picked,NULL)<=0)
     {
      Alert("⚠ No files chosen.");
      return 0;
     }
     EA_Path=MQLInfoString(MQL_PROGRAM_PATH); //Print(EA_Path);
     EA_Path=StringSubstr(EA_Path,StringFind(EA_Path,"Experts\\")); //Print(EA_Path);
-    SetFolder=FolderOf(picked[0]); //Print(SetFolder);
+    string setFiles[];
+    string deployRoot=ResolveDeployRootFromSelection(picked[0]);
+    if(deployRoot!="")
+      {
+       SetFolder=deployRoot;
+       CollectSetFilesRecursive(deployRoot,setFiles);
+      }
+    else
+      {
+       SetFolder=FolderOf(picked[0]); //Print(SetFolder);
+       ArrayResize(setFiles,ArraySize(picked));
+       for(int i=0;i<ArraySize(picked);++i) setFiles[i]=picked[i];
+      }
     
     bool ignore=false;
     ArrayResize(g_sets,0);
     // filter only .set files for this EA & symbols in Market Watch
-    for(int i=0;i<ArraySize(picked);++i)
+    string seenFiles=";";
+    for(int i=0;i<ArraySize(setFiles);++i)
     {
-     string sym="",EAname="",file=FileNameOf(picked[i]); //Print(file);
+     string sym="",EAname="",file=FileNameOf(setFiles[i]); //Print(file);
+     string fileToken=file;
+     StringToLower(fileToken);
+     if(StringFind(seenFiles,";"+fileToken+";",0)>=0) continue;
+     seenFiles+=fileToken+";";
      if(!EndsWith(file,".set"))                     continue;
      if(!ExtractEAnameAndSymbol(file,sym,EAname))  {MessageBox("Expert or symbol Name not found in file:\n\n"+file,"Invalid File Name",MB_OK|MB_ICONERROR); continue;}
      if(!SymbolSelect(sym,true))                   {MessageBox("The Symbol "+sym+" is not found in the market watch","Symbol not found",MB_OK|MB_ICONERROR); continue;}
@@ -231,7 +248,7 @@ public:
       else continue;
      }
      int n=ArraySize(g_sets); ArrayResize(g_sets,n+1);
-     g_sets[n].path = SetFolder+"\\"+file;
+     g_sets[n].path = setFiles[i];
      g_sets[n].name = file;
      g_sets[n].sym  = sym;
      g_sets[n].strat=ParseSetFileForInput("EA_Desc=",g_sets[n].path);
@@ -242,6 +259,55 @@ public:
     }
     Print("✓ kept ",ArraySize(g_sets)," file(s) after EA-filter.");
     return ArraySize(g_sets);
+   }
+   string ResolveDeployRootFromSelection(const string selectedPath)
+   {
+    string folder=FolderOf(selectedPath);
+    string file=FileNameOf(selectedPath);
+    StringToLower(file);
+    if(file=="portfolio_manifest.ini") return folder;
+
+    for(int i=0;i<8 && folder!="";++i)
+    {
+       if(FileIsExist(folder+"\\portfolio_manifest.ini",FILE_COMMON)) return folder;
+       string folderName=FileNameOf(folder);
+       StringToLower(folderName);
+       if(folderName=="deploy") return folder;
+       folder=FolderOf(folder);
+    }
+    return "";
+   }
+   bool CollectSetFilesRecursive(const string folder,string &out[])
+   {
+    string entry="";
+    long h=FileFindFirst(folder+"\\*",entry,FILE_COMMON);
+    if(h==INVALID_HANDLE) return false;
+    bool any=false;
+    do
+    {
+       string path=folder+"\\"+entry;
+       ResetLastError();
+       FileIsExist(path,FILE_COMMON);
+       if(GetLastError()==ERR_FILE_IS_DIRECTORY)
+       {
+          if(CollectSetFilesRecursive(path,out)) any=true;
+       }
+       else
+       {
+          string lower=entry;
+          StringToLower(lower);
+          if(EndsWith(lower,".set"))
+          {
+             int n=ArraySize(out);
+             ArrayResize(out,n+1);
+             out[n]=path;
+             any=true;
+          }
+       }
+    }
+    while(FileFindNext(h,entry));
+    FileFindClose(h);
+    return any;
    }
 //––––– activate row : open chart ▸ attach EA ▸ mark ✔ –––––––––––––––
    void DoActivate(int idx)

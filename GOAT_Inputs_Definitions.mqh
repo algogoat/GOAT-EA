@@ -819,9 +819,13 @@ bool     PrevBuyExit, PrevSellExit;
 #define GOAT_GV_FIELD_ACK_ERRORS  "ACKERR"
 #define GOAT_GV_FIELD_ACK_REMAINING "ACKREM"
 #define GOAT_GV_FIELD_POLICY_PAUSED "PPAUSED"
+#define GOAT_GV_FIELD_POLICY_TRADE_MASK "PTMASK"
 
 #define GOAT_DASH_CMD_PORTFOLIO_PAUSE 1
 #define GOAT_DASH_CMD_PORTFOLIO_CLOSE 2
+#define GOAT_DASH_CMD_TRADE_PERMISSIONS 3
+#define GOAT_DASH_TRADE_ALLOW_BUY       1
+#define GOAT_DASH_TRADE_ALLOW_SELL      2
 #define GOAT_DASH_ACK_APPLIED         1
 #define GOAT_DASH_ACK_REJECTED        2
 #define GOAT_DASH_ACK_FAILED          3
@@ -903,6 +907,7 @@ double   DashboardBusClosedPLDaily=0.0,DashboardBusClosedPLWeekly=0.0,DashboardB
 int      DashboardBusClosedTradesTotal=0;
 double   DashboardBusNewsScore=0.0,DashboardBusBiasSentiment=0.0;
 bool     DashboardPortfolioPaused=false;
+bool     DashboardTradeAllowBuy=true,DashboardTradeAllowSell=true;
 long     DashboardPortfolioCommandIdApplied=0;
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 string GetFontName(ENUM_FONT FontNumber)

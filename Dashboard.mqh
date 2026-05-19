@@ -53,10 +53,11 @@ enum ENUM_GOAT_PORTFOLIO_RUN_STATE
    GOAT_PORTFOLIO_RUN_ACTIVE=0,
    GOAT_PORTFOLIO_RUN_PAUSED
   };
-enum ENUM_GOAT_SAME_ASSET_DIRECTION_STATE
+enum ENUM_GOAT_EXPOSURE_POLICY_MODE
   {
-   GOAT_SAME_ASSET_DIRECTION_ALLOW=0,
-   GOAT_SAME_ASSET_DIRECTION_FILTER
+   GOAT_EXPOSURE_POLICY_ALLOW=GOAT_EXPOSURE_ALLOW,
+   GOAT_EXPOSURE_POLICY_SYMBOL_DIRECTION=GOAT_EXPOSURE_SYMBOL_DIRECTION,
+   GOAT_EXPOSURE_POLICY_CURRENCY_DIRECTION=GOAT_EXPOSURE_CURRENCY_DIRECTION
   };
 enum ENUM_GOAT_CURRENCY_FILTER_STATE
   {
@@ -107,7 +108,7 @@ public:
    long   ChartId;
    int    D_Width,D_Height,Font_Size;
    ENUM_GOAT_PORTFOLIO_RUN_STATE m_portfolio_run_state;
-   ENUM_GOAT_SAME_ASSET_DIRECTION_STATE m_same_asset_direction_state;
+   ENUM_GOAT_EXPOSURE_POLICY_MODE m_exposure_policy_mode;
    ENUM_GOAT_CURRENCY_FILTER_STATE m_usd_filter_state,m_eur_filter_state,m_gbp_filter_state,m_jpy_filter_state;
  //color  clr_CaptionBack,clr_CaptionBorder,clr_ClientBack,clr_ClientBorder,clr_Text;
    //–– inside the private/protected section ––//
@@ -137,7 +138,7 @@ public:
     int    open_trades,Trades_total;
      double open_lots,open_pl,PL_total,PL_weekly,PL_daily,news_score,bias_sentiment;
      long   last_ack_id;
-     int    last_ack_status,ack_closed,ack_errors,ack_remaining,trade_allow_mask,target_trade_allow_mask;
+     int    last_ack_status,ack_closed,ack_errors,ack_remaining,trade_allow_mask,target_trade_allow_mask,exposure_policy_mode,target_exposure_policy_mode;
      bool   policy_paused;
     SetFileRecord()
       {
@@ -157,6 +158,8 @@ public:
         ack_remaining=0;
         trade_allow_mask=GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL;
         target_trade_allow_mask=GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL;
+        exposure_policy_mode=GOAT_EXPOSURE_ALLOW;
+        target_exposure_policy_mode=GOAT_EXPOSURE_ALLOW;
         policy_paused=false;
        }
    };
@@ -328,8 +331,15 @@ private:
    bool SendPortfolioCloseCommand(void);
    bool SendPortfolioCommand(const int command_type,const int command_value,const string event_label,const bool notify=true);
    bool SendCurrencyRulesCommand(void);
+   bool SendExposurePolicyCommand(const int mode);
    string PortfolioCommandName(void) const;
    void AppendPortfolioCommandAudit(const string stage,const int targets,const int applied,const int failed,const string detail);
+   string ExposurePolicyLabelForMode(const int mode) const;
+   int NormalizeExposurePolicyMode(const int value) const;
+   int NextExposurePolicyMode(const int mode) const;
+   void LoadExposurePolicyState(void);
+   void SaveExposurePolicyState(void);
+   void AppendExposurePolicyAudit(const string stage,const string detail);
    string CurrencyRuleSummary(void) const;
    string CurrencyPolicyLabelForMask(const int mask) const;
    ENUM_GOAT_CURRENCY_FILTER_STATE NormalizeCurrencyFilterState(const int value) const;
@@ -425,7 +435,7 @@ private:
       if(status=="Closed")                       return C'87,153,122';
       if(status=="Inactive")                   return C'214,161,52';
       if(status=="Paused" || status=="Stale" || status=="Close Failed" || status=="No Ack" || status=="Command Failed" || status=="Cur Paused") return clrOrangeRed;
-      if(status=="Buy Only" || status=="Sell Only") return clrCornflowerBlue;
+      if(status=="Buy Only" || status=="Sell Only" || status=="Asset Filter" || status=="Ccy Filter") return clrCornflowerBlue;
       if(status=="Syncing" || status=="Closing") return clrCornflowerBlue;
       if(status=="Offline")                    return clrDarkGray;
       if(status=="Deploying")                  return clrCornflowerBlue;
@@ -460,6 +470,18 @@ private:
             }
             return "Syncing";
          }
+         if(m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY)
+         {
+            if(g_sets[idx].last_ack_id==m_portfolio_command_id)
+            {
+               if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].exposure_policy_mode==g_sets[idx].target_exposure_policy_mode)
+                  return ExposurePolicyLabelForMode(g_sets[idx].target_exposure_policy_mode);
+               if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_FAILED ||
+                  g_sets[idx].last_ack_status==GOAT_DASH_ACK_REJECTED ||
+                  g_sets[idx].last_ack_status==GOAT_DASH_ACK_EXPIRED) return "Command Failed";
+            }
+            return "Syncing";
+         }
          bool target_paused=(m_portfolio_command_target_pause!=0);
          bool acked=(g_sets[idx].last_ack_id==m_portfolio_command_id &&
                      g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED &&
@@ -469,6 +491,8 @@ private:
       if(g_sets[idx].policy_paused) return "Paused";
       if(g_sets[idx].trade_allow_mask!=(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL))
          return CurrencyPolicyLabelForMask(g_sets[idx].trade_allow_mask);
+      if(g_sets[idx].exposure_policy_mode!=GOAT_EXPOSURE_ALLOW)
+         return ExposurePolicyLabelForMode(g_sets[idx].exposure_policy_mode);
       return g_sets[idx].status;
    }
    void MarkStateDirty(void)
@@ -693,9 +717,11 @@ private:
   {
    return(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE ? "Pause Portfolio" : "Resume Portfolio");
   }
-  string SameAssetDirectionButtonText(void) const
+  string ExposurePolicyButtonText(void) const
   {
-   return(m_same_asset_direction_state==GOAT_SAME_ASSET_DIRECTION_ALLOW ? "Allow Same Asset+Direction" : "Filter Same Asset+Direction");
+   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_SYMBOL_DIRECTION)   return "Exposure: Asset";
+   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_CURRENCY_DIRECTION) return "Exposure: Ccy";
+   return "Exposure: Allow";
   }
    string CurrencyFilterButtonText(const string currency,const ENUM_GOAT_CURRENCY_FILTER_STATE state) const
    {
@@ -776,6 +802,11 @@ private:
             if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask) applied++;
             else if(g_sets[idx].last_ack_status!=0) failed++;
          }
+         else if(m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY)
+         {
+            if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].exposure_policy_mode==g_sets[idx].target_exposure_policy_mode) applied++;
+            else if(g_sets[idx].last_ack_status!=0) failed++;
+         }
          else
          {
             if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].policy_paused==target_paused) applied++;
@@ -786,6 +817,8 @@ private:
          pause_text="Closing "+IntegerToString(applied)+"/"+IntegerToString(targets)+(failed>0 ? " Failed "+IntegerToString(failed) : "");
       else if(m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS)
          pause_text="Applying Rules "+IntegerToString(applied)+"/"+IntegerToString(targets)+(failed>0 ? " Failed "+IntegerToString(failed) : "");
+      else if(m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY)
+         pause_text="Applying Exposure "+IntegerToString(applied)+"/"+IntegerToString(targets)+(failed>0 ? " Failed "+IntegerToString(failed) : "");
       else
          pause_text=(target_paused ? "Pausing " : "Resuming ")+IntegerToString(applied)+"/"+IntegerToString(targets);
       pause_back=pending_back;
@@ -798,7 +831,7 @@ private:
     ApplyHeaderStateButtonStyle(btn_SameAssetDirection,risk_text,risk_back,normal_border,clrWhite);
    ApplyHeaderStateButtonStyle(btn_USDFilter,CurrencyRulesButtonText(),(CurrencyPolicyActive() ? C'19,79,60' : planned_back),normal_border,clrWhite);
    ApplyHeaderStateButtonStyle(btn_USDClose,"Emergency Close",emergency_back,normal_border,clrWhite);
-   ApplyHeaderStateButtonStyle(btn_EURFilter,"Telemetry Live",planned_back,normal_border,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_EURFilter,ExposurePolicyButtonText(),(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_ALLOW ? planned_back : C'19,79,60'),normal_border,clrWhite);
    UpdateCurrencyRulesEditorButtons();
   }
    // Creates a label and returns the left‐edge for the next column
@@ -854,7 +887,7 @@ CGOATDashboard::CGOATDashboard()
    m_risk_equity_target=0.0;
    m_currency_rules_editor_visible=false;
    m_portfolio_run_state=GOAT_PORTFOLIO_RUN_ACTIVE;
-   m_same_asset_direction_state=GOAT_SAME_ASSET_DIRECTION_ALLOW;
+   m_exposure_policy_mode=GOAT_EXPOSURE_POLICY_ALLOW;
    m_usd_filter_state=GOAT_CURRENCY_FILTER_ALL;
    m_eur_filter_state=GOAT_CURRENCY_FILTER_ALL;
    m_gbp_filter_state=GOAT_CURRENCY_FILTER_ALL;
@@ -1049,7 +1082,15 @@ bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
    }
    if(control_name==btn_EURFilter.Name())
    {
-      MessageBox("Portfolio telemetry is live in the background when the GOAT AI endpoint enables it.","Telemetry",MB_OK|MB_ICONINFORMATION);
+      if(m_portfolio_command_pending)
+         return(true);
+      int next_mode=NextExposurePolicyMode((int)m_exposure_policy_mode);
+      string next_text=(next_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION ? "Exposure: Asset" : (next_mode==GOAT_EXPOSURE_CURRENCY_DIRECTION ? "Exposure: Ccy" : "Exposure: Allow"));
+      string prompt="Set exposure policy to "+next_text+"?\n\nThis gates new sequence starts only. Existing open sequences continue normal GOAT management.";
+      int ret=MessageBox(prompt,"Exposure Policy",MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2);
+      if(ret==IDYES)
+         SendExposurePolicyCommand(next_mode);
+      UpdateHeaderStateButtons();
       return(true);
    }
    if(control_name==btn_EURClose.Name())
@@ -1097,6 +1138,7 @@ string CGOATDashboard::PortfolioCommandName(void) const
 {
    if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE) return "EmergencyClose";
    if(m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS) return "CurrencyRules";
+   if(m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY) return "ExposurePolicy";
    if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_PAUSE)
       return(m_portfolio_command_target_pause!=0 ? "PausePortfolio" : "ResumePortfolio");
    return "PortfolioCommand";
@@ -1126,6 +1168,66 @@ void CGOATDashboard::AppendPortfolioCommandAudit(const string stage,const int ta
              IntegerToString(targets),
              IntegerToString(applied),
              IntegerToString(failed),
+             detail);
+   FileClose(h);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string CGOATDashboard::ExposurePolicyLabelForMode(const int mode) const
+{
+   int clean_mode=NormalizeExposurePolicyMode(mode);
+   if(clean_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION)   return "Asset Filter";
+   if(clean_mode==GOAT_EXPOSURE_CURRENCY_DIRECTION) return "Ccy Filter";
+   return "Linked";
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int CGOATDashboard::NormalizeExposurePolicyMode(const int value) const
+{
+   if(value<GOAT_EXPOSURE_ALLOW || value>GOAT_EXPOSURE_CURRENCY_DIRECTION)
+      return GOAT_EXPOSURE_ALLOW;
+   return value;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int CGOATDashboard::NextExposurePolicyMode(const int mode) const
+{
+   int clean_mode=NormalizeExposurePolicyMode(mode);
+   if(clean_mode==GOAT_EXPOSURE_ALLOW)             return GOAT_EXPOSURE_SYMBOL_DIRECTION;
+   if(clean_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION)  return GOAT_EXPOSURE_CURRENCY_DIRECTION;
+   return GOAT_EXPOSURE_ALLOW;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::LoadExposurePolicyState(void)
+{
+   string key=GoatPortfolioGVName("DashboardExposurePolicyMode");
+   if(GlobalVariableCheck(key))
+      m_exposure_policy_mode=(ENUM_GOAT_EXPOSURE_POLICY_MODE)NormalizeExposurePolicyMode((int)GlobalVariableGet(key));
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::SaveExposurePolicyState(void)
+{
+   GlobalVariableSet(GoatPortfolioGVName("DashboardExposurePolicyMode"),(double)NormalizeExposurePolicyMode((int)m_exposure_policy_mode));
+   GlobalVariablesFlush();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::AppendExposurePolicyAudit(const string stage,const string detail)
+{
+   string path=Key_+"\\dashboard_exposure_audit.tsv";
+   bool write_header=!FileIsExist(path,FILE_COMMON);
+   int h=FileOpen(path,FILE_WRITE|FILE_READ|FILE_CSV|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON,'\t');
+   if(h==INVALID_HANDLE)
+   {
+      PrintFormat("Dashboard exposure audit open failed path=%s err=%d",path,GetLastError());
+      return;
+   }
+
+   FileSeek(h,0,SEEK_END);
+   if(write_header)
+      FileWrite(h,"LocalTime","ServerTime","Stage","Policy","Detail");
+
+   FileWrite(h,
+             TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),
+             TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
+             stage,
+             ExposurePolicyLabelForMode((int)m_exposure_policy_mode),
              detail);
    FileClose(h);
 }
@@ -1332,6 +1434,49 @@ bool CGOATDashboard::SendCurrencyRulesCommand(void)
    GlobalVariablesFlush();
    AppendPortfolioCommandAudit("DISPATCH",targets,0,0,"Currency rules sent to linked child charts");
    AppendCurrencyPolicyAudit("DISPATCH",CurrencyRuleSummary());
+   MarkStateDirty();
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SendExposurePolicyCommand(const int mode)
+{
+   int clean_mode=NormalizeExposurePolicyMode(mode);
+   int targets=0;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+      if(g_sets[idx].magic>0 && g_sets[idx].cid>0)
+         targets++;
+
+   if(targets<=0)
+   {
+      MessageBox("No linked child charts are available for exposure policy.","Exposure Policy",MB_OK|MB_ICONWARNING);
+      return false;
+   }
+
+   m_exposure_policy_mode=(ENUM_GOAT_EXPOSURE_POLICY_MODE)clean_mode;
+   SaveExposurePolicyState();
+   m_portfolio_command_id=(long)TimeCurrent()*1000+(long)(GetTickCount()%1000);
+   m_portfolio_command_pending=true;
+   m_portfolio_command_type=GOAT_DASH_CMD_EXPOSURE_POLICY;
+   m_portfolio_command_target_pause=0;
+   m_portfolio_command_time=TimeCurrent();
+
+   datetime expires_at=TimeCurrent()+30;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+      g_sets[idx].target_exposure_policy_mode=clean_mode;
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_TYPE),(double)GOAT_DASH_CMD_EXPOSURE_POLICY);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_VALUE),(double)clean_mode);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_EXPIRES),(double)expires_at);
+      EventChartCustom(g_sets[idx].cid,GOAT_EVENT_DASHBOARD_COMMAND,m_portfolio_command_id,(double)clean_mode,"ExposurePolicy");
+      g_sets[idx].status="Syncing";
+   }
+
+   GlobalVariablesFlush();
+   string detail="Exposure policy set to "+(clean_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION ? "Exposure: Asset" : (clean_mode==GOAT_EXPOSURE_CURRENCY_DIRECTION ? "Exposure: Ccy" : "Exposure: Allow"));
+   AppendPortfolioCommandAudit("DISPATCH",targets,0,0,detail);
+   AppendExposurePolicyAudit("DISPATCH",detail);
    MarkStateDirty();
    return true;
 }
@@ -1810,6 +1955,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    }
    LoadRiskPolicyState();
    LoadCurrencyPolicyState();
+   LoadExposurePolicyState();
    Port_LowEquityStopLevel=m_risk_low_equity_stop;
    Port_EquityTargetLevel=m_risk_equity_target;
 // HEADER INFO ------------------------------------------------------
@@ -1934,7 +2080,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    CreateHeaderStateButton(btn_SameAssetDirection,"HdrRiskLimits",        "Risk Limits",    info_x,info_y,row3_widths[1],m_controlHeight,C'55,56,77',clrWhite,clrWhite); info_x+=row3_widths[1]+info_gap;
    CreateHeaderStateButton(btn_USDFilter,         "HdrCurrencyRules",     "Currency Rules", info_x,info_y,row3_widths[2],m_controlHeight,C'55,56,77',clrWhite,clrWhite); info_x+=row3_widths[2]+info_gap;
    CreateHeaderStateButton(btn_USDClose,          "HdrEmergencyClose",    "Emergency Close",info_x,info_y,row3_widths[3],m_controlHeight,C'122,63,34',clrWhite,clrWhite); info_x+=row3_widths[3]+info_gap;
-   CreateHeaderStateButton(btn_EURFilter,         "HdrTelemetry",         "Telemetry Live", info_x,info_y,row3_widths[4],m_controlHeight,C'55,56,77',clrWhite,clrWhite);
+   CreateHeaderStateButton(btn_EURFilter,         "HdrExposurePolicy",    ExposurePolicyButtonText(), info_x,info_y,row3_widths[4],m_controlHeight,C'55,56,77',clrWhite,clrWhite);
    info_x=table_left;
    CreateHeaderStateButton(btn_EURClose,          "HdrCurrencyUSD",       CurrencyFilterButtonText("USD",m_usd_filter_state),info_x,info_y,row3_widths[0],m_controlHeight,C'55,56,77',clrWhite,clrWhite); info_x+=row3_widths[0]+info_gap;
    CreateHeaderStateButton(btn_GBPFilter,         "HdrCurrencyEUR",       CurrencyFilterButtonText("EUR",m_eur_filter_state),info_x,info_y,row3_widths[1],m_controlHeight,C'55,56,77',clrWhite,clrWhite); info_x+=row3_widths[1]+info_gap;
@@ -2896,6 +3042,7 @@ void CGOATDashboard::ReadChildCommandState(const int idx)
    string ack_remaining_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_ACK_REMAINING);
    string paused_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_POLICY_PAUSED);
    string trade_mask_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_POLICY_TRADE_MASK);
+   string exposure_mode_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_POLICY_EXPOSURE_MODE);
 
    if(GlobalVariableCheck(ack_id_key))     g_sets[idx].last_ack_id=(long)GlobalVariableGet(ack_id_key);
    if(GlobalVariableCheck(ack_status_key)) g_sets[idx].last_ack_status=(int)GlobalVariableGet(ack_status_key);
@@ -2905,6 +3052,7 @@ void CGOATDashboard::ReadChildCommandState(const int idx)
    if(GlobalVariableCheck(ack_remaining_key)) g_sets[idx].ack_remaining=(int)GlobalVariableGet(ack_remaining_key);
    if(GlobalVariableCheck(paused_key))     g_sets[idx].policy_paused=(GlobalVariableGet(paused_key)>0.5);
    if(GlobalVariableCheck(trade_mask_key)) g_sets[idx].trade_allow_mask=((int)GlobalVariableGet(trade_mask_key))&(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL);
+   if(GlobalVariableCheck(exposure_mode_key)) g_sets[idx].exposure_policy_mode=NormalizeExposurePolicyMode((int)GlobalVariableGet(exposure_mode_key));
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //  ───  PER‑ROW METRIC UPDATE  ────────────────────────────────────
@@ -3084,6 +3232,7 @@ void CGOATDashboard::UpdatePortfolioCommandCompletion(void)
    bool target_paused=(m_portfolio_command_target_pause!=0);
    bool close_command=(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE);
    bool currency_command=(m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS);
+   bool exposure_command=(m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY);
    for(int idx=0; idx<ArraySize(g_sets); ++idx)
    {
       if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
@@ -3110,6 +3259,15 @@ void CGOATDashboard::UpdatePortfolioCommandCompletion(void)
                  g_sets[idx].last_ack_status==GOAT_DASH_ACK_EXPIRED)
             failed++;
       }
+      else if(exposure_command)
+      {
+         if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].exposure_policy_mode==g_sets[idx].target_exposure_policy_mode)
+            applied++;
+         else if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_REJECTED ||
+                 g_sets[idx].last_ack_status==GOAT_DASH_ACK_FAILED ||
+                 g_sets[idx].last_ack_status==GOAT_DASH_ACK_EXPIRED)
+            failed++;
+      }
       else
       {
          if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].policy_paused==target_paused)
@@ -3130,6 +3288,30 @@ void CGOATDashboard::UpdatePortfolioCommandCompletion(void)
    }
 
    bool command_timeout=(m_portfolio_command_time>0 && TimeCurrent()-m_portfolio_command_time>35);
+   if(exposure_command)
+   {
+      if(responses>=targets || command_timeout)
+      {
+         string detail=StringFormat("responses=%d policy=%s",responses,ExposurePolicyLabelForMode((int)m_exposure_policy_mode));
+         AppendPortfolioCommandAudit(command_timeout && responses<targets ? "TIMEOUT" : "COMPLETE",targets,applied,failed,detail);
+         AppendExposurePolicyAudit(command_timeout && responses<targets ? "TIMEOUT" : "COMPLETE",detail);
+         m_portfolio_command_pending=false;
+         for(int idx=0; idx<ArraySize(g_sets); ++idx)
+         {
+            if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+            if(g_sets[idx].last_ack_id!=m_portfolio_command_id)
+               g_sets[idx].status="No Ack";
+            else if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].exposure_policy_mode==g_sets[idx].target_exposure_policy_mode)
+               g_sets[idx].status=(g_sets[idx].exposure_policy_mode==GOAT_EXPOSURE_ALLOW ? "Active" : ExposurePolicyLabelForMode(g_sets[idx].exposure_policy_mode));
+            else
+               g_sets[idx].status="Command Failed";
+         }
+         MarkStateDirty();
+         UpdateHeaderStateButtons();
+      }
+      return;
+   }
+
    if(currency_command)
    {
       if(responses>=targets || command_timeout)

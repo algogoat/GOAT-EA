@@ -116,6 +116,93 @@ bool DashboardTradeAllowed(const int op)
    return true;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+int DashboardNormalizeExposurePolicyMode(const int mode)
+  {
+   if(mode<GOAT_EXPOSURE_ALLOW || mode>GOAT_EXPOSURE_CURRENCY_DIRECTION)
+      return GOAT_EXPOSURE_ALLOW;
+   return mode;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool DashboardSymbolCurrencies(const string symbol,string &base,string &quote)
+  {
+   if(StringLen(symbol)<6) return false;
+   base=StringSubstr(symbol,0,3);
+   quote=StringSubstr(symbol,3,3);
+   StringToUpper(base);
+   StringToUpper(quote);
+   return(base!="" && quote!="");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int DashboardCurrencySideForTrade(const string symbol,const int op,const string currency)
+  {
+   string base="",quote="";
+   if(!DashboardSymbolCurrencies(symbol,base,quote)) return 0;
+   if(currency==base)  return(op==OP_BUY ? 1 : -1);
+   if(currency==quote) return(op==OP_BUY ? -1 : 1);
+   return 0;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool DashboardRegisteredPortfolioPosition(const long magic,const string symbol)
+  {
+   if(magic<=0 || symbol=="") return false;
+   for(int i=GlobalVariablesTotal()-1;i>=0;--i)
+   {
+      string gv_name=GlobalVariableName(i);
+      long gv_magic=0;
+      string gv_symbol="",gv_field="";
+      if(!GoatParseChildGVName(gv_name,gv_magic,gv_symbol,gv_field)) continue;
+      if(gv_field!=GOAT_GV_FIELD_CID)                                continue;
+      if(gv_magic!=magic || gv_symbol!=symbol)                        continue;
+      if(GoatTruncateCidValue((long)GlobalVariableGet(gv_name))<=0)   continue;
+      return true;
+   }
+   return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool DashboardExposureConflict(const int op)
+  {
+   int policy=DashboardNormalizeExposurePolicyMode(DashboardExposurePolicyMode);
+   if(policy==GOAT_EXPOSURE_ALLOW) return false;
+
+   string want_symbol=Symbol();
+   string want_base="",want_quote="";
+   bool want_currencies=DashboardSymbolCurrencies(want_symbol,want_base,want_quote);
+
+   CPositionInfo position;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      if(!position.SelectByIndex(i)) continue;
+      string pos_symbol=position.Symbol();
+      long pos_magic=position.Magic();
+      if(!DashboardRegisteredPortfolioPosition(pos_magic,pos_symbol)) continue;
+
+      int pos_op=(int)position.PositionType();
+      if(pos_op!=OP_BUY && pos_op!=OP_SELL) continue;
+
+      if(policy==GOAT_EXPOSURE_SYMBOL_DIRECTION)
+      {
+         if(pos_symbol==want_symbol && pos_op==op) return true;
+         continue;
+      }
+
+      if(policy==GOAT_EXPOSURE_CURRENCY_DIRECTION && want_currencies)
+      {
+         int want_base_side=DashboardCurrencySideForTrade(want_symbol,op,want_base);
+         int want_quote_side=DashboardCurrencySideForTrade(want_symbol,op,want_quote);
+         if(want_base_side!=0 && DashboardCurrencySideForTrade(pos_symbol,pos_op,want_base)==want_base_side)   return true;
+         if(want_quote_side!=0 && DashboardCurrencySideForTrade(pos_symbol,pos_op,want_quote)==want_quote_side) return true;
+      }
+   }
+   return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool DashboardEntryAllowed(const int op)
+  {
+   if(!DashboardTradeAllowed(op)) return false;
+   if(DashboardExposureConflict(op)) return false;
+   return true;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 class SEQUENCE
   {
    public:
@@ -1431,8 +1518,8 @@ class SEQUENCE
      if(Virtual && Level_Count==Delay_Trade && ((dir==OP_BUY&&!Seq_Buy.Active) || (dir==OP_SELL&&!Seq_Sell.Active)))
      {
       bool ret=false;
-      if     (dir==OP_BUY &&MustCheck_Buy && DashboardTradeAllowed(OP_BUY))    ret=Seq_Buy.Add_Level(ask);
-      else if(dir==OP_SELL&&MustCheck_Sell&& DashboardTradeAllowed(OP_SELL))   ret=Seq_Sell.Add_Level(bid);
+      if     (dir==OP_BUY &&MustCheck_Buy && DashboardEntryAllowed(OP_BUY))    ret=Seq_Buy.Add_Level(ask);
+      else if(dir==OP_SELL&&MustCheck_Sell&& DashboardEntryAllowed(OP_SELL))   ret=Seq_Sell.Add_Level(bid);
       if(ret) End_Sequence("Real Sequence Start");
       return false;
      }
@@ -2299,6 +2386,7 @@ void DashboardBusAckCommand(const long command_id,const int ack_status)
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_TIME),(double)TimeCurrent());
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),(DashboardPortfolioPaused ? 1.0 : 0.0));
    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK),(double)DashboardTradePermissionMask());
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE),(double)DashboardNormalizeExposurePolicyMode(DashboardExposurePolicyMode));
    GlobalVariablesFlush();
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2392,6 +2480,16 @@ void DashboardBusApplyCommand(const long command_id,const int command_type,const
       else if(DashboardTradeAllowBuy && !DashboardTradeAllowSell)  policy_status="Buy Only";
       else if(!DashboardTradeAllowBuy && DashboardTradeAllowSell)  policy_status="Sell Only";
       DashboardBusSendStatus(policy_status);
+      return;
+   }
+
+   if(command_type==GOAT_DASH_CMD_EXPOSURE_POLICY)
+   {
+      DashboardExposurePolicyMode=DashboardNormalizeExposurePolicyMode(command_value);
+      DashboardPortfolioCommandIdApplied=command_id;
+      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE),(double)DashboardExposurePolicyMode);
+      DashboardBusAckCommand(command_id,GOAT_DASH_ACK_APPLIED);
+      DashboardBusSendStatus(DashboardPortfolioPaused ? "Paused" : "Active");
       return;
    }
 
@@ -2978,13 +3076,19 @@ int OnInit()
         DashboardTradeAllowBuy=((trade_mask&GOAT_DASH_TRADE_ALLOW_BUY)!=0);
         DashboardTradeAllowSell=((trade_mask&GOAT_DASH_TRADE_ALLOW_SELL)!=0);
      }
+     string exposure_mode_key=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE);
+     if(GlobalVariableCheck(exposure_mode_key))
+        DashboardExposurePolicyMode=DashboardNormalizeExposurePolicyMode((int)GlobalVariableGet(exposure_mode_key));
+     else if(GlobalVariableCheck(GoatPortfolioGVName("DashboardExposurePolicyMode")))
+        DashboardExposurePolicyMode=DashboardNormalizeExposurePolicyMode((int)GlobalVariableGet(GoatPortfolioGVName("DashboardExposurePolicyMode")));
 
-                                 Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
+                                  Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
      if(MathAbs(Delay_Trade)>0) {Seq_Buy_Virtual.Init(OP_BUY,true); Seq_Sell_Virtual.Init(OP_SELL,true);}
      DashboardBusRebuildClosedStats();
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CID),(double)GoatTruncateCidValue(ChartID()));
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),(DashboardPortfolioPaused ? 1.0 : 0.0));
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK),(double)DashboardTradePermissionMask());
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE),(double)DashboardNormalizeExposurePolicyMode(DashboardExposurePolicyMode));
      if(GlobalVariableCheck("Dashboard_ChartID") && !restored_magic_found)
      {
         GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_MAGIC),(double)MAGIC1);
@@ -5375,13 +5479,13 @@ void SignalEntryTrigger()//int Buys,int Sells)
      if(Reverse_Seq)
      {
       //virtual or real sequences not open, correct direction, no open trades in the same direction from other charts
-       if(DashboardTradeAllowed(OP_SELL) && !Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short) && FindNumberOfPositions(OP_SELL)<=0)
+       if(DashboardEntryAllowed(OP_SELL) && !Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short))
       {
        if(MathAbs(Delay_Trade)>0)                      Seq_Sell_Virtual.Add_Level(bid);
        else if(Allow_Opposite_Seq || !Seq_Buy.Traded)  Seq_Sell.Add_Level(bid);
       }
      }
-      else if(DashboardTradeAllowed(OP_BUY) && !Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long) && FindNumberOfPositions(OP_BUY)<=0)
+      else if(DashboardEntryAllowed(OP_BUY) && !Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long))
      {
       if(MathAbs(Delay_Trade)>0)                       Seq_Buy_Virtual.Add_Level(ask);
       else if(Allow_Opposite_Seq || !Seq_Sell.Traded)  Seq_Buy.Add_Level(ask);
@@ -5408,13 +5512,13 @@ void SignalEntryTrigger()//int Buys,int Sells)
     {
      if(Reverse_Seq)
      {
-       if(DashboardTradeAllowed(OP_BUY) && !Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long) && FindNumberOfPositions(OP_BUY)<=0)
+       if(DashboardEntryAllowed(OP_BUY) && !Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long))
       {
        if(MathAbs(Delay_Trade)>0)                      Seq_Buy_Virtual.Add_Level(ask);
        else if(Allow_Opposite_Seq || !Seq_Sell.Traded) Seq_Buy.Add_Level(ask);
       }
      }
-      else if(DashboardTradeAllowed(OP_SELL) && !Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short) && FindNumberOfPositions(OP_SELL)<=0)
+      else if(DashboardEntryAllowed(OP_SELL) && !Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short))
      {
       if(MathAbs(Delay_Trade)>0)                       Seq_Sell_Virtual.Add_Level(bid);
       else if(Allow_Opposite_Seq || !Seq_Buy.Traded)   Seq_Sell.Add_Level(bid);

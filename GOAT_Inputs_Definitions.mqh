@@ -795,6 +795,7 @@ bool     BuyExit, SellExit, BuyPartialExit, SellPartialExit;
 bool     PrevBuyExit, PrevSellExit;
 
 #define GOAT_EVENT_CHILD_STATUS   (CHARTEVENT_CUSTOM + 101)
+#define GOAT_EVENT_DASHBOARD_COMMAND (CHARTEVENT_CUSTOM + 102)
 #define GOAT_GV_FIELD_CID         "CID"
 #define GOAT_GV_FIELD_MAGIC       "Magic"
 #define GOAT_GV_FIELD_HEARTBEAT   "HB"
@@ -807,6 +808,24 @@ bool     PrevBuyExit, PrevSellExit;
 #define GOAT_GV_FIELD_TRADES_TOTAL "TRD"
 #define GOAT_GV_FIELD_NEWS        "NEWS"
 #define GOAT_GV_FIELD_BIAS        "BIAS"
+#define GOAT_GV_FIELD_CMD_ID      "CMDID"
+#define GOAT_GV_FIELD_CMD_TYPE    "CMDT"
+#define GOAT_GV_FIELD_CMD_VALUE   "CMDV"
+#define GOAT_GV_FIELD_CMD_EXPIRES "CMDEXP"
+#define GOAT_GV_FIELD_ACK_ID      "ACKID"
+#define GOAT_GV_FIELD_ACK_STATUS  "ACKS"
+#define GOAT_GV_FIELD_ACK_TIME    "ACKTIME"
+#define GOAT_GV_FIELD_ACK_CLOSED  "ACKCLOSED"
+#define GOAT_GV_FIELD_ACK_ERRORS  "ACKERR"
+#define GOAT_GV_FIELD_ACK_REMAINING "ACKREM"
+#define GOAT_GV_FIELD_POLICY_PAUSED "PPAUSED"
+
+#define GOAT_DASH_CMD_PORTFOLIO_PAUSE 1
+#define GOAT_DASH_CMD_PORTFOLIO_CLOSE 2
+#define GOAT_DASH_ACK_APPLIED         1
+#define GOAT_DASH_ACK_REJECTED        2
+#define GOAT_DASH_ACK_FAILED          3
+#define GOAT_DASH_ACK_EXPIRED         4
 
 int      SL_Points,TP_Points;
 int      MAGIC1=0,MAGIC2=0,LicenseKey=0;
@@ -883,6 +902,8 @@ datetime DashboardBusDayStart=0,DashboardBusWeekStart=0;
 double   DashboardBusClosedPLDaily=0.0,DashboardBusClosedPLWeekly=0.0,DashboardBusClosedPLTotal=0.0;
 int      DashboardBusClosedTradesTotal=0;
 double   DashboardBusNewsScore=0.0,DashboardBusBiasSentiment=0.0;
+bool     DashboardPortfolioPaused=false;
+long     DashboardPortfolioCommandIdApplied=0;
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 string GetFontName(ENUM_FONT FontNumber)
   {

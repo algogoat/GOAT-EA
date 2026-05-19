@@ -65,6 +65,15 @@ enum ENUM_GOAT_CURRENCY_FILTER_STATE
    GOAT_CURRENCY_FILTER_SHORT_ONLY,
    GOAT_CURRENCY_FILTER_PAUSE
   };
+enum ENUM_GOAT_RISK_BREACH_CODE
+  {
+   GOAT_RISK_BREACH_NONE=0,
+   GOAT_RISK_BREACH_RUNNING_LOSS,
+   GOAT_RISK_BREACH_DAILY_LOSS,
+   GOAT_RISK_BREACH_DAILY_TARGET,
+   GOAT_RISK_BREACH_LOW_EQUITY,
+   GOAT_RISK_BREACH_EQUITY_TARGET
+  };
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 class CGOATDashboard : public CAppDialog
   {
@@ -104,18 +113,31 @@ public:
    //–– inside the private/protected section ––//
    datetime  m_day_start,          // broker midnight
              m_week_start;         // broker Monday
-   bool      m_state_dirty;
-   datetime  m_last_state_save;
-   // reusable GUI colours
-   color clrPos, clrNeg, clrNeu;
+    bool      m_state_dirty;
+    datetime  m_last_state_save;
+    long      m_portfolio_command_id;
+    bool      m_portfolio_command_pending;
+    int       m_portfolio_command_type;
+    int       m_portfolio_command_target_pause;
+    datetime  m_portfolio_command_time;
+    bool      m_risk_policy_armed;
+    bool      m_risk_policy_breached;
+    int       m_risk_policy_breach_code;
+    datetime  m_risk_policy_breach_time;
+    double    m_risk_running_loss_limit,m_risk_daily_loss_limit,m_risk_daily_target_limit,m_risk_low_equity_stop,m_risk_equity_target;
+    // reusable GUI colours
+    color clrPos, clrNeg, clrNeu;
    
    struct SetFileRecord
    {
     string path,name,sym,strat,status,news_label,bias_label,risk_lots_label;
     long   cid,magic;
-    datetime heartbeat_ts,last_scan;
+    datetime heartbeat_ts,last_scan,last_ack_time;
     int    open_trades,Trades_total;
     double open_lots,open_pl,PL_total,PL_weekly,PL_daily,news_score,bias_sentiment;
+    long   last_ack_id;
+    int    last_ack_status,ack_closed,ack_errors,ack_remaining;
+    bool   policy_paused;
     SetFileRecord()
       {
        path=name=sym=strat=news_label=bias_label=risk_lots_label="";
@@ -123,9 +145,16 @@ public:
        cid=magic=-1;
        heartbeat_ts=0;
        last_scan=0;
+       last_ack_time=0;
        open_trades=0;
        Trades_total=0;
        open_lots=open_pl=PL_total=PL_weekly=PL_daily=news_score=bias_sentiment=0.0;
+       last_ack_id=0;
+       last_ack_status=0;
+       ack_closed=0;
+       ack_errors=0;
+       ack_remaining=0;
+       policy_paused=false;
       }
    };
    SetFileRecord g_sets[];
@@ -292,6 +321,20 @@ public:
 private:
    bool HandleObjectClick(const string control_name);
    bool NavigateToSet(const int idx);
+   bool SendPortfolioPauseCommand(const bool pause);
+   bool SendPortfolioCloseCommand(void);
+   bool SendPortfolioCommand(const int command_type,const int command_value,const string event_label,const bool notify=true);
+   string PortfolioCommandName(void) const;
+   void AppendPortfolioCommandAudit(const string stage,const int targets,const int applied,const int failed,const string detail);
+   double ParseRiskInputValue(const string raw);
+   bool ValidateRiskPolicyInputs(double &running_loss,double &daily_loss,double &daily_target,double &low_equity,double &equity_target,string &error_text);
+   bool ArmRiskPolicyFromHeader(void);
+   void LoadRiskPolicyState(void);
+   void SaveRiskPolicyState(void);
+   void AppendRiskPolicyAudit(const string stage,const string reason,const string detail);
+   void EvaluateRiskPolicy(void);
+   void ReadChildCommandState(const int idx);
+   void UpdatePortfolioCommandCompletion(void);
    void RefreshRowsViewportMetrics(void);
    void LayoutRowsScroll(void);
    void ApplyRowsViewport(void);
@@ -362,8 +405,10 @@ private:
    color StatusColor(const string status) const
    {
       if(status=="Active" || status=="Linked") return C'87,153,122';
+      if(status=="Closed")                       return C'87,153,122';
       if(status=="Inactive")                   return C'214,161,52';
-      if(status=="Paused" || status=="Stale") return clrOrangeRed;
+      if(status=="Paused" || status=="Stale" || status=="Close Failed" || status=="No Ack" || status=="Command Failed") return clrOrangeRed;
+      if(status=="Syncing" || status=="Closing") return clrCornflowerBlue;
       if(status=="Offline")                    return clrDarkGray;
       if(status=="Deploying")                  return clrCornflowerBlue;
       return C'146,7,1,255';
@@ -372,6 +417,26 @@ private:
    {
       if(idx<0 || idx>=ArraySize(g_sets)) return "Pending";
       if(g_sets[idx].magic>0 && g_sets[idx].heartbeat_ts>0 && (now-g_sets[idx].heartbeat_ts)>5) return "Stale";
+      if(m_portfolio_command_pending && g_sets[idx].magic>0 && g_sets[idx].cid>0)
+      {
+         if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE)
+         {
+            if(g_sets[idx].last_ack_id==m_portfolio_command_id)
+            {
+               if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0) return "Closed";
+               if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_FAILED ||
+                  g_sets[idx].last_ack_status==GOAT_DASH_ACK_REJECTED ||
+                  g_sets[idx].last_ack_status==GOAT_DASH_ACK_EXPIRED) return "Close Failed";
+            }
+            return "Closing";
+         }
+         bool target_paused=(m_portfolio_command_target_pause!=0);
+         bool acked=(g_sets[idx].last_ack_id==m_portfolio_command_id &&
+                     g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED &&
+                     g_sets[idx].policy_paused==target_paused);
+         if(!acked) return "Syncing";
+      }
+      if(g_sets[idx].policy_paused) return "Paused";
       return g_sets[idx].status;
    }
    void MarkStateDirty(void)
@@ -594,7 +659,7 @@ private:
   }
   string PortfolioRunButtonText(void) const
   {
-   return(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE ? "Pause Portfolio" : "Start Portfolio");
+   return(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE ? "Pause Portfolio" : "Resume Portfolio");
   }
   string SameAssetDirectionButtonText(void) const
   {
@@ -607,13 +672,28 @@ private:
    if(state==GOAT_CURRENCY_FILTER_PAUSE)      return(currency+" Paused");
    return("Trading All "+currency);
   }
-  string CurrencyCloseButtonText(const string currency) const
-  {
-   return("Close "+currency);
-  }
-  void ApplyHeaderStateButtonStyle(CButton &btn,const string caption,const color back,const color border,const color text_color)
-  {
-   btn.Text(caption);
+   string CurrencyCloseButtonText(const string currency) const
+   {
+    return("Close "+currency);
+   }
+   string RiskPolicyButtonText(void) const
+   {
+    if(m_risk_policy_breached) return "Risk Breached";
+    if(m_risk_policy_armed)    return "Risk Armed";
+    return "Risk Limits";
+   }
+   string RiskBreachText(const int breach_code) const
+   {
+    if(breach_code==GOAT_RISK_BREACH_RUNNING_LOSS)  return "Running Loss";
+    if(breach_code==GOAT_RISK_BREACH_DAILY_LOSS)    return "Daily Loss";
+    if(breach_code==GOAT_RISK_BREACH_DAILY_TARGET)  return "Daily Target";
+    if(breach_code==GOAT_RISK_BREACH_LOW_EQUITY)    return "Low Equity Stop";
+    if(breach_code==GOAT_RISK_BREACH_EQUITY_TARGET) return "Equity Target";
+    return "None";
+   }
+   void ApplyHeaderStateButtonStyle(CButton &btn,const string caption,const color back,const color border,const color text_color)
+   {
+    btn.Text(caption);
    btn.Color(text_color);
    btn.ColorBorder(border);
    btn.ColorBackground(back);
@@ -622,46 +702,52 @@ private:
   {
    color normal_back=C'26,63,95';
    color normal_border=clrWhite;
-   color run_pause_back=C'128,57,57';
-   color filter_back=C'138,108,38';
-   color long_back=C'29,112,68';
-   color short_back=C'139,55,55';
-   color hold_back=C'111,86,29';
-   color usd_back=normal_back;
-   color eur_back=normal_back;
-   color gbp_back=normal_back;
-   color jpy_back=normal_back;
+    color run_pause_back=C'128,57,57';
+    color pending_back=C'73,90,121';
+    color planned_back=C'55,56,77';
+    color emergency_back=C'122,63,34';
+    color risk_armed_back=C'19,79,60';
+    color risk_breached_back=C'128,57,57';
+    string pause_text=PortfolioRunButtonText();
+    color pause_back=(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE ? normal_back : run_pause_back);
+    string risk_text=RiskPolicyButtonText();
+    color risk_back=(m_risk_policy_breached ? risk_breached_back : (m_risk_policy_armed ? risk_armed_back : planned_back));
 
+   if(m_portfolio_command_pending)
+   {
+      int targets=0,applied=0,failed=0;
+      bool target_paused=(m_portfolio_command_target_pause!=0);
+      for(int idx=0; idx<ArraySize(g_sets); ++idx)
+      {
+         if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+         targets++;
+         if(g_sets[idx].last_ack_id!=m_portfolio_command_id) continue;
+         if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE)
+         {
+            if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0) applied++;
+            else if(g_sets[idx].last_ack_status!=0) failed++;
+         }
+         else
+         {
+            if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].policy_paused==target_paused) applied++;
+            else if(g_sets[idx].last_ack_status!=0) failed++;
+         }
+      }
+      if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE)
+         pause_text="Closing "+IntegerToString(applied)+"/"+IntegerToString(targets)+(failed>0 ? " Failed "+IntegerToString(failed) : "");
+      else
+         pause_text=(target_paused ? "Pausing " : "Resuming ")+IntegerToString(applied)+"/"+IntegerToString(targets);
+      pause_back=pending_back;
+   }
    ApplyHeaderStateButtonStyle(btn_PortfolioPause,
-                               PortfolioRunButtonText(),
-                               (m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE ? normal_back : run_pause_back),
+                               pause_text,
+                               pause_back,
                                normal_border,
                                clrWhite);
-   ApplyHeaderStateButtonStyle(btn_SameAssetDirection,
-                               SameAssetDirectionButtonText(),
-                               (m_same_asset_direction_state==GOAT_SAME_ASSET_DIRECTION_ALLOW ? normal_back : filter_back),
-                               normal_border,
-                               clrWhite);
-   if(m_usd_filter_state==GOAT_CURRENCY_FILTER_LONG_ONLY)       usd_back=long_back;
-   else if(m_usd_filter_state==GOAT_CURRENCY_FILTER_SHORT_ONLY) usd_back=short_back;
-   else if(m_usd_filter_state==GOAT_CURRENCY_FILTER_PAUSE)      usd_back=hold_back;
-
-   if(m_eur_filter_state==GOAT_CURRENCY_FILTER_LONG_ONLY)       eur_back=long_back;
-   else if(m_eur_filter_state==GOAT_CURRENCY_FILTER_SHORT_ONLY) eur_back=short_back;
-   else if(m_eur_filter_state==GOAT_CURRENCY_FILTER_PAUSE)      eur_back=hold_back;
-
-   if(m_gbp_filter_state==GOAT_CURRENCY_FILTER_LONG_ONLY)       gbp_back=long_back;
-   else if(m_gbp_filter_state==GOAT_CURRENCY_FILTER_SHORT_ONLY) gbp_back=short_back;
-   else if(m_gbp_filter_state==GOAT_CURRENCY_FILTER_PAUSE)      gbp_back=hold_back;
-
-   if(m_jpy_filter_state==GOAT_CURRENCY_FILTER_LONG_ONLY)       jpy_back=long_back;
-   else if(m_jpy_filter_state==GOAT_CURRENCY_FILTER_SHORT_ONLY) jpy_back=short_back;
-   else if(m_jpy_filter_state==GOAT_CURRENCY_FILTER_PAUSE)      jpy_back=hold_back;
-
-   ApplyHeaderStateButtonStyle(btn_USDFilter,CurrencyFilterButtonText("USD",m_usd_filter_state),usd_back,normal_border,clrWhite);
-   ApplyHeaderStateButtonStyle(btn_EURFilter,CurrencyFilterButtonText("EUR",m_eur_filter_state),eur_back,normal_border,clrWhite);
-   ApplyHeaderStateButtonStyle(btn_GBPFilter,CurrencyFilterButtonText("GBP",m_gbp_filter_state),gbp_back,normal_border,clrWhite);
-   ApplyHeaderStateButtonStyle(btn_JPYFilter,CurrencyFilterButtonText("JPY",m_jpy_filter_state),jpy_back,normal_border,clrWhite);
+    ApplyHeaderStateButtonStyle(btn_SameAssetDirection,risk_text,risk_back,normal_border,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_USDFilter,"Currency Rules",planned_back,normal_border,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_USDClose,"Emergency Close",emergency_back,normal_border,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_EURFilter,"Telemetry Live",planned_back,normal_border,clrWhite);
   }
    // Creates a label and returns the left‐edge for the next column
    int PlaceEditLabel(CEdit &edt,const string id, const string text, int x,int y,int w)
@@ -700,6 +786,20 @@ CGOATDashboard::CGOATDashboard()
    m_last_profit_sort_desc=true;
    m_state_dirty=false;
    m_last_state_save=0;
+   m_portfolio_command_id=0;
+   m_portfolio_command_pending=false;
+   m_portfolio_command_type=0;
+   m_portfolio_command_target_pause=0;
+   m_portfolio_command_time=0;
+   m_risk_policy_armed=false;
+   m_risk_policy_breached=false;
+   m_risk_policy_breach_code=GOAT_RISK_BREACH_NONE;
+   m_risk_policy_breach_time=0;
+   m_risk_running_loss_limit=0.0;
+   m_risk_daily_loss_limit=0.0;
+   m_risk_daily_target_limit=0.0;
+   m_risk_low_equity_stop=0.0;
+   m_risk_equity_target=0.0;
    m_portfolio_run_state=GOAT_PORTFOLIO_RUN_ACTIVE;
    m_same_asset_direction_state=GOAT_SAME_ASSET_DIRECTION_ALLOW;
    m_usd_filter_state=GOAT_CURRENCY_FILTER_ALL;
@@ -847,28 +947,54 @@ bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
 {
    if(control_name==btn_PortfolioPause.Name())
    {
-      m_portfolio_run_state=(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE ? GOAT_PORTFOLIO_RUN_PAUSED : GOAT_PORTFOLIO_RUN_ACTIVE);
+      if(m_portfolio_command_pending)
+         return(true);
+
+      bool target_pause=(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE);
+      string prompt=(target_pause ?
+                     "Pause new entries and sequence adds for all linked portfolio charts?\n\nExisting open trades will remain under their normal GOAT management." :
+                     "Resume new entries and sequence adds for all linked portfolio charts?");
+      int ret=MessageBox(prompt,(target_pause ? "Pause Portfolio" : "Resume Portfolio"),MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2);
+      if(ret!=IDYES)
+         return(true);
+
+      SendPortfolioPauseCommand(target_pause);
       UpdateHeaderStateButtons();
       return(true);
    }
    if(control_name==btn_SameAssetDirection.Name())
    {
-      m_same_asset_direction_state=(m_same_asset_direction_state==GOAT_SAME_ASSET_DIRECTION_ALLOW ? GOAT_SAME_ASSET_DIRECTION_FILTER : GOAT_SAME_ASSET_DIRECTION_ALLOW);
+      ArmRiskPolicyFromHeader();
       UpdateHeaderStateButtons();
       return(true);
    }
    if(control_name==btn_USDFilter.Name())
    {
-      m_usd_filter_state=(ENUM_GOAT_CURRENCY_FILTER_STATE)(((int)m_usd_filter_state+1)%4);
-      UpdateHeaderStateButtons();
+      MessageBox("Currency rules are intentionally parked behind the command bus foundation. They will become real portfolio commands next.","Currency Rules",MB_OK|MB_ICONINFORMATION);
       return(true);
    }
    if(control_name==btn_USDClose.Name())
+   {
+      if(m_portfolio_command_pending)
+         return(true);
+
+      int first=MessageBox("Emergency Close will pause the portfolio and ask every linked child EA to close its own open positions.\n\nContinue?",
+                           "Emergency Close",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+      if(first!=IDYES)
+         return(true);
+
+      int second=MessageBox("FINAL CONFIRMATION\n\nClose live portfolio exposure now?\nThis action cannot be undone.",
+                            "Confirm Emergency Close",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+      if(second!=IDYES)
+         return(true);
+
+      SendPortfolioCloseCommand();
+      UpdateHeaderStateButtons();
       return(true);
+   }
    if(control_name==btn_EURFilter.Name())
    {
-      m_eur_filter_state=(ENUM_GOAT_CURRENCY_FILTER_STATE)(((int)m_eur_filter_state+1)%4);
-      UpdateHeaderStateButtons();
+      MessageBox("Portfolio telemetry is live in the background when the GOAT AI endpoint enables it.","Telemetry",MB_OK|MB_ICONINFORMATION);
       return(true);
    }
    if(control_name==btn_EURClose.Name())
@@ -890,6 +1016,325 @@ bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
    if(control_name==btn_JPYClose.Name())
       return(true);
    return(false);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SendPortfolioPauseCommand(const bool pause)
+{
+   return SendPortfolioCommand(GOAT_DASH_CMD_PORTFOLIO_PAUSE,(pause ? 1 : 0),"PortfolioPause");
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SendPortfolioCloseCommand(void)
+{
+   return SendPortfolioCommand(GOAT_DASH_CMD_PORTFOLIO_CLOSE,1,"PortfolioClose");
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string CGOATDashboard::PortfolioCommandName(void) const
+{
+   if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE) return "EmergencyClose";
+   if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_PAUSE)
+      return(m_portfolio_command_target_pause!=0 ? "PausePortfolio" : "ResumePortfolio");
+   return "PortfolioCommand";
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::AppendPortfolioCommandAudit(const string stage,const int targets,const int applied,const int failed,const string detail)
+{
+   string path=Key_+"\\dashboard_command_audit.tsv";
+   bool write_header=!FileIsExist(path,FILE_COMMON);
+   int h=FileOpen(path,FILE_WRITE|FILE_READ|FILE_CSV|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON,'\t');
+   if(h==INVALID_HANDLE)
+   {
+      PrintFormat("Dashboard audit open failed path=%s err=%d",path,GetLastError());
+      return;
+   }
+
+   FileSeek(h,0,SEEK_END);
+   if(write_header)
+      FileWrite(h,"LocalTime","ServerTime","CommandId","Stage","Command","Targets","Applied","Failed","Detail");
+
+   FileWrite(h,
+             TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),
+             TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
+             StringFormat("%I64d",m_portfolio_command_id),
+             stage,
+             PortfolioCommandName(),
+             IntegerToString(targets),
+             IntegerToString(applied),
+             IntegerToString(failed),
+             detail);
+   FileClose(h);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+double CGOATDashboard::ParseRiskInputValue(const string raw)
+{
+   string text=raw;
+   StringReplace(text,",","");
+   StringReplace(text,"$","");
+   StringTrimLeft(text);
+   StringTrimRight(text);
+   return StringToDouble(text);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::ValidateRiskPolicyInputs(double &running_loss,double &daily_loss,double &daily_target,double &low_equity,double &equity_target,string &error_text)
+{
+   running_loss=ParseRiskInputValue(edt_RunningLossLimit.Text());
+   daily_loss=ParseRiskInputValue(edt_DailyLossLimit.Text());
+   daily_target=ParseRiskInputValue(edt_DailyTargetLimit.Text());
+   low_equity=ParseRiskInputValue(edt_LowEquityStopLevel.Text());
+   equity_target=ParseRiskInputValue(edt_EquityTargetLevel.Text());
+   error_text="";
+
+   if(running_loss<0.0 || daily_loss<0.0 || daily_target<0.0 || low_equity<0.0 || equity_target<0.0)
+   {
+      error_text="Risk limits cannot be negative. Use 0 to disable a specific threshold.";
+      return false;
+   }
+
+   double current_equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   if(low_equity>0.0 && equity_target>0.0 && low_equity>=equity_target)
+   {
+      error_text="Low Equity Stop must be below Equity Target.";
+      return false;
+   }
+   if(running_loss>0.0 && Port_RunningLoss>=running_loss)
+   {
+      error_text="Running Loss is already at or beyond the requested limit. Raise the limit or use Emergency Close.";
+      return false;
+   }
+   if(daily_loss>0.0 && Port_DailyLoss>=daily_loss)
+   {
+      error_text="Daily Loss is already at or beyond the requested limit. Raise the limit or use Emergency Close.";
+      return false;
+   }
+   if(daily_target>0.0 && Port_DailyTarget>=daily_target)
+   {
+      error_text="Daily Target is already reached. Raise the target or use Emergency Close if you want to flatten now.";
+      return false;
+   }
+   if(low_equity>0.0 && current_equity<=low_equity)
+   {
+      error_text="Current equity is already at or below the Low Equity Stop.";
+      return false;
+   }
+   if(equity_target>0.0 && current_equity>=equity_target)
+   {
+      error_text="Current equity is already at or above the Equity Target.";
+      return false;
+   }
+
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::LoadRiskPolicyState(void)
+{
+   string prefix="DashboardRisk_";
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"Armed")))           m_risk_policy_armed=(GlobalVariableGet(GoatPortfolioGVName(prefix+"Armed"))>0.5);
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"Breached")))        m_risk_policy_breached=(GlobalVariableGet(GoatPortfolioGVName(prefix+"Breached"))>0.5);
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"BreachCode")))      m_risk_policy_breach_code=(int)GlobalVariableGet(GoatPortfolioGVName(prefix+"BreachCode"));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"BreachTime")))      m_risk_policy_breach_time=(datetime)GlobalVariableGet(GoatPortfolioGVName(prefix+"BreachTime"));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"RunningLoss")))     m_risk_running_loss_limit=GlobalVariableGet(GoatPortfolioGVName(prefix+"RunningLoss"));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"DailyLoss")))       m_risk_daily_loss_limit=GlobalVariableGet(GoatPortfolioGVName(prefix+"DailyLoss"));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"DailyTarget")))     m_risk_daily_target_limit=GlobalVariableGet(GoatPortfolioGVName(prefix+"DailyTarget"));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"LowEquityStop")))   m_risk_low_equity_stop=GlobalVariableGet(GoatPortfolioGVName(prefix+"LowEquityStop"));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"EquityTarget")))    m_risk_equity_target=GlobalVariableGet(GoatPortfolioGVName(prefix+"EquityTarget"));
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::SaveRiskPolicyState(void)
+{
+   string prefix="DashboardRisk_";
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"Armed"),(m_risk_policy_armed ? 1.0 : 0.0));
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"Breached"),(m_risk_policy_breached ? 1.0 : 0.0));
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"BreachCode"),(double)m_risk_policy_breach_code);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"BreachTime"),(double)m_risk_policy_breach_time);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"RunningLoss"),m_risk_running_loss_limit);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"DailyLoss"),m_risk_daily_loss_limit);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"DailyTarget"),m_risk_daily_target_limit);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"LowEquityStop"),m_risk_low_equity_stop);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"EquityTarget"),m_risk_equity_target);
+   GlobalVariablesFlush();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::AppendRiskPolicyAudit(const string stage,const string reason,const string detail)
+{
+   string path=Key_+"\\dashboard_risk_audit.tsv";
+   bool write_header=!FileIsExist(path,FILE_COMMON);
+   int h=FileOpen(path,FILE_WRITE|FILE_READ|FILE_CSV|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON,'\t');
+   if(h==INVALID_HANDLE)
+   {
+      PrintFormat("Dashboard risk audit open failed path=%s err=%d",path,GetLastError());
+      return;
+   }
+
+   FileSeek(h,0,SEEK_END);
+   if(write_header)
+      FileWrite(h,"LocalTime","ServerTime","Stage","Reason","Armed","Breached","Equity","RunLoss","DayLoss","DayTarget","RunLimit","DayLossLimit","DayTargetLimit","LowEquityStop","EquityTarget","Detail");
+
+   FileWrite(h,
+             TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),
+             TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
+             stage,
+             reason,
+             (m_risk_policy_armed ? "1" : "0"),
+             (m_risk_policy_breached ? "1" : "0"),
+             DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2),
+             DoubleToString(Port_RunningLoss,2),
+             DoubleToString(Port_DailyLoss,2),
+             DoubleToString(Port_DailyTarget,2),
+             DoubleToString(m_risk_running_loss_limit,2),
+             DoubleToString(m_risk_daily_loss_limit,2),
+             DoubleToString(m_risk_daily_target_limit,2),
+             DoubleToString(m_risk_low_equity_stop,2),
+             DoubleToString(m_risk_equity_target,2),
+             detail);
+   FileClose(h);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::ArmRiskPolicyFromHeader(void)
+{
+   RefreshPortfolioRealtimeStats();
+   double running_loss=0.0,daily_loss=0.0,daily_target=0.0,low_equity=0.0,equity_target=0.0;
+   string error_text="";
+   bool all_disabled=false;
+
+   running_loss=ParseRiskInputValue(edt_RunningLossLimit.Text());
+   daily_loss=ParseRiskInputValue(edt_DailyLossLimit.Text());
+   daily_target=ParseRiskInputValue(edt_DailyTargetLimit.Text());
+   low_equity=ParseRiskInputValue(edt_LowEquityStopLevel.Text());
+   equity_target=ParseRiskInputValue(edt_EquityTargetLevel.Text());
+   if(running_loss<0.0 || daily_loss<0.0 || daily_target<0.0 || low_equity<0.0 || equity_target<0.0)
+   {
+      MessageBox("Risk limits cannot be negative. Use 0 to disable a specific threshold.","Risk Limits",MB_OK|MB_ICONWARNING);
+      return false;
+   }
+   all_disabled=(running_loss<=0.0 && daily_loss<=0.0 && daily_target<=0.0 && low_equity<=0.0 && equity_target<=0.0);
+   if(all_disabled)
+   {
+      int disarm_ret=MessageBox("All risk thresholds are 0. Disarm dashboard risk enforcement?","Risk Limits",MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2);
+      if(disarm_ret!=IDYES)
+         return false;
+
+      m_risk_policy_armed=false;
+      m_risk_policy_breached=false;
+      m_risk_policy_breach_code=GOAT_RISK_BREACH_NONE;
+      m_risk_policy_breach_time=0;
+      m_risk_running_loss_limit=0.0;
+      m_risk_daily_loss_limit=0.0;
+      m_risk_daily_target_limit=0.0;
+      m_risk_low_equity_stop=0.0;
+      m_risk_equity_target=0.0;
+      SaveRiskPolicyState();
+      AppendRiskPolicyAudit("DISARM","Manual","All thresholds disabled from dashboard header");
+      return true;
+   }
+
+   if(!ValidateRiskPolicyInputs(running_loss,daily_loss,daily_target,low_equity,equity_target,error_text))
+   {
+      MessageBox(error_text,"Risk Limits",MB_OK|MB_ICONWARNING);
+      return false;
+   }
+
+   string prompt=StringFormat("Arm dashboard risk limits?\n\nRunning Loss: %.0f\nDaily Loss: %.0f\nDaily Target: %.0f\nLow Equity Stop: %.0f\nEquity Target: %.0f\n\nAny armed threshold breach will pause the portfolio and request Emergency Close on all linked child charts.",
+                              running_loss,daily_loss,daily_target,low_equity,equity_target);
+   int ret=MessageBox(prompt,"Arm Risk Limits",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+   if(ret!=IDYES)
+      return false;
+
+   m_risk_running_loss_limit=running_loss;
+   m_risk_daily_loss_limit=daily_loss;
+   m_risk_daily_target_limit=daily_target;
+   m_risk_low_equity_stop=low_equity;
+   m_risk_equity_target=equity_target;
+   m_risk_policy_armed=true;
+   m_risk_policy_breached=false;
+   m_risk_policy_breach_code=GOAT_RISK_BREACH_NONE;
+   m_risk_policy_breach_time=0;
+   edt_RunningLossLimit.Text(FormatIntegerText(m_risk_running_loss_limit));
+   edt_DailyLossLimit.Text(FormatIntegerText(m_risk_daily_loss_limit));
+   edt_DailyTargetLimit.Text(FormatIntegerText(m_risk_daily_target_limit));
+   edt_LowEquityStopLevel.Text(FormatIntegerText(m_risk_low_equity_stop));
+   edt_EquityTargetLevel.Text(FormatIntegerText(m_risk_equity_target));
+   SaveRiskPolicyState();
+   AppendRiskPolicyAudit("ARM","Manual","Risk policy armed from dashboard header");
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::EvaluateRiskPolicy(void)
+{
+   if(!m_risk_policy_armed || m_risk_policy_breached) return;
+   if(m_portfolio_command_pending) return;
+
+   double current_equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   int breach_code=GOAT_RISK_BREACH_NONE;
+   if(m_risk_low_equity_stop>0.0 && current_equity<=m_risk_low_equity_stop)
+      breach_code=GOAT_RISK_BREACH_LOW_EQUITY;
+   else if(m_risk_running_loss_limit>0.0 && Port_RunningLoss>=m_risk_running_loss_limit)
+      breach_code=GOAT_RISK_BREACH_RUNNING_LOSS;
+   else if(m_risk_daily_loss_limit>0.0 && Port_DailyLoss>=m_risk_daily_loss_limit)
+      breach_code=GOAT_RISK_BREACH_DAILY_LOSS;
+   else if(m_risk_equity_target>0.0 && current_equity>=m_risk_equity_target)
+      breach_code=GOAT_RISK_BREACH_EQUITY_TARGET;
+   else if(m_risk_daily_target_limit>0.0 && Port_DailyTarget>=m_risk_daily_target_limit)
+      breach_code=GOAT_RISK_BREACH_DAILY_TARGET;
+
+   if(breach_code==GOAT_RISK_BREACH_NONE)
+      return;
+
+   string reason=RiskBreachText(breach_code);
+   m_risk_policy_armed=false;
+   m_risk_policy_breached=true;
+   m_risk_policy_breach_code=breach_code;
+   m_risk_policy_breach_time=TimeCurrent();
+   m_portfolio_run_state=GOAT_PORTFOLIO_RUN_PAUSED;
+   GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),1.0);
+   SaveRiskPolicyState();
+   AppendRiskPolicyAudit("BREACH",reason,"Portfolio paused; preparing emergency close command");
+   PrintFormat("Dashboard risk breach: %s. Equity=%.2f RunLoss=%.2f DayLoss=%.2f DayTarget=%.2f",
+               reason,current_equity,Port_RunningLoss,Port_DailyLoss,Port_DailyTarget);
+   bool command_sent=SendPortfolioCommand(GOAT_DASH_CMD_PORTFOLIO_CLOSE,1,"RiskBreachClose",false);
+   AppendRiskPolicyAudit(command_sent ? "ACTION" : "ACTION_FAILED",
+                         reason,
+                         command_sent ? "Emergency close command dispatched to linked child charts" : "No linked child charts were available for emergency close command");
+   UpdateHeaderStateButtons();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SendPortfolioCommand(const int command_type,const int command_value,const string event_label,const bool notify)
+{
+   int targets=0;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+      if(g_sets[idx].magic>0 && g_sets[idx].cid>0)
+         targets++;
+
+   if(targets<=0)
+   {
+      if(notify)
+         MessageBox("No linked child charts are available for a portfolio command.","Portfolio Command",MB_OK|MB_ICONWARNING);
+      else
+         Print("No linked child charts are available for an automatic portfolio command.");
+      return(false);
+   }
+
+   m_portfolio_command_id=(long)TimeCurrent()*1000+(long)(GetTickCount()%1000);
+   m_portfolio_command_pending=true;
+   m_portfolio_command_type=command_type;
+   m_portfolio_command_target_pause=(command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE ? 1 : command_value);
+   m_portfolio_command_time=TimeCurrent();
+
+   datetime expires_at=TimeCurrent()+30;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_TYPE),(double)command_type);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_VALUE),(double)command_value);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_EXPIRES),(double)expires_at);
+      EventChartCustom(g_sets[idx].cid,GOAT_EVENT_DASHBOARD_COMMAND,m_portfolio_command_id,(double)command_value,event_label);
+      g_sets[idx].status=(command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE ? "Closing" : "Syncing");
+   }
+
+   GlobalVariablesFlush();
+   AppendPortfolioCommandAudit("DISPATCH",targets,0,0,"Command sent to linked child charts");
+   MarkStateDirty();
+   return(true);
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::DeployAll(void)
@@ -1080,12 +1525,20 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    m_rows_data_offset=rowTallH+gapTallPx;
    int ctrlSave=m_controlHeight;
    ParsePortfolioFolderInfo();
+   if(GlobalVariableCheck(GoatPortfolioGVName("DashboardPolicyPaused")))
+      m_portfolio_run_state=(GlobalVariableGet(GoatPortfolioGVName("DashboardPolicyPaused"))>0.5 ? GOAT_PORTFOLIO_RUN_PAUSED : GOAT_PORTFOLIO_RUN_ACTIVE);
    double current_equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   m_risk_running_loss_limit=2000.0;
+   m_risk_daily_loss_limit=3000.0;
+   m_risk_daily_target_limit=3000.0;
    if(current_equity>0.0)
    {
-      Port_LowEquityStopLevel=MathRound(current_equity*0.90);
-      Port_EquityTargetLevel =MathRound(current_equity*1.10);
+      m_risk_low_equity_stop=MathRound(current_equity*0.90);
+      m_risk_equity_target =MathRound(current_equity*1.10);
    }
+   LoadRiskPolicyState();
+   Port_LowEquityStopLevel=m_risk_low_equity_stop;
+   Port_EquityTargetLevel=m_risk_equity_target;
 // HEADER INFO ------------------------------------------------------
    m_controlHeight=infoHeight;
    int info_y=info_top;
@@ -1094,10 +1547,10 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    int info_width=table_right-table_left;
    string info_text_portfolio=Portfolio_Name;
    string info_text_members="Members: "+Portfolio_Members;
-   string info_text_score="Score: "+Portfolio_Score;
-   string info_text_amsr="Avg. SR: "+Portfolio_AMSR;
-   string info_text_mrf="Monthly RF: 0.000/"+Portfolio_Target_MRF;
-   string info_text_mp="Monthly Profit: 0/"+Portfolio_Target_MP;
+   string info_text_score="Health A/P/S: 0/0/0";
+   string info_text_amsr="State: Running";
+   string info_text_mrf="Open P/L: 0";
+   string info_text_mp="Daily P/L: 0";
    string info_text_dd="Max DD: 0/"+Portfolio_Target_DD;
    const int info_count=7;
    double info_pct[];
@@ -1142,9 +1595,9 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
       row2_group_used+=row2_group_widths[i];
    }
    row2_group_widths[4]=MathMax(1,row2_avail-row2_group_used);
-   string txt_running_limit="2000";
-   string txt_daily_loss_limit="3000";
-   string txt_daily_target_limit="3000";
+   string txt_running_limit=FormatIntegerText(m_risk_running_loss_limit);
+   string txt_daily_loss_limit=FormatIntegerText(m_risk_daily_loss_limit);
+   string txt_daily_target_limit=FormatIntegerText(m_risk_daily_target_limit);
    int row2_box_pad=4;
    int row2_inner_gap=4;
    int row2_tail_gap=1;
@@ -1181,19 +1634,19 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    row2_input_w=MathMax(72,(int)MathRound(row2_group_widths[3]*0.30));
    row2_input_x=group_x+row2_group_widths[3]-row2_input_w-2;
    CreateInfoInlineEdit(edt_LowEquityStopLead,"EdtLowEqStopLead","Low Equity Stop level:",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'83,53,120',ALIGN_LEFT);
-   CreatePlainInputEdit(edt_LowEquityStopLevel,"EdtLowEqStopLevel",FormatIntegerText(Port_LowEquityStopLevel),row2_input_x,info_y,row2_input_w);
+   CreatePlainInputEdit(edt_LowEquityStopLevel,"EdtLowEqStopLevel",FormatIntegerText(m_risk_low_equity_stop),row2_input_x,info_y,row2_input_w);
    info_x+=row2_group_widths[3]+row2_group_gap;
    group_x=info_x;
    CreateInfoOverlayEdit(edt_EquityTargetBox,"EdtEqTargetBox","",group_x,info_y,row2_group_widths[4],m_controlHeight,C'122,63,34',clrWhite);
    row2_input_w=MathMax(80,(int)MathRound(row2_group_widths[4]*0.33));
    row2_input_x=group_x+row2_group_widths[4]-row2_input_w-2;
    CreateInfoInlineEdit(edt_EquityTargetLead,"EdtEqTargetLead","Equity Target Level:",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'122,63,34',ALIGN_LEFT);
-   CreatePlainInputEdit(edt_EquityTargetLevel,"EdtEqTargetLevel",FormatIntegerText(Port_EquityTargetLevel),row2_input_x,info_y,row2_input_w);
+   CreatePlainInputEdit(edt_EquityTargetLevel,"EdtEqTargetLevel",FormatIntegerText(m_risk_equity_target),row2_input_x,info_y,row2_input_w);
    info_y+=infoHeight+info_table_gap;
-   const int row3_button_count=10;
-   double row3_weights[10]={15.0,27.0,18.0,9.0,18.0,9.0,18.0,9.0,18.0,9.0};
+   const int row3_button_count=5;
+   double row3_weights[5]={20.0,18.0,22.0,20.0,20.0};
    int row3_avail=info_width-(row3_button_count-1)*info_gap;
-   int row3_widths[10];
+   int row3_widths[5];
    int row3_used=0;
    double row3_weight_total=0.0;
    for(int i=0;i<row3_button_count;i++) row3_weight_total+=row3_weights[i];
@@ -1205,15 +1658,10 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    row3_widths[row3_button_count-1]=MathMax(1,row3_avail-row3_used);
    info_x=table_left;
    CreateHeaderStateButton(btn_PortfolioPause,"HdrPortfolioPause",PortfolioRunButtonText(),info_x,info_y,row3_widths[0],m_controlHeight,C'26,63,95',clrWhite,clrWhite); info_x+=row3_widths[0]+info_gap;
-   CreateHeaderStateButton(btn_SameAssetDirection,"HdrSameAssetDirection",SameAssetDirectionButtonText(),info_x,info_y,row3_widths[1],m_controlHeight,C'26,63,95',clrWhite,clrWhite); info_x+=row3_widths[1]+info_gap;
-   CreateHeaderStateButton(btn_USDFilter,"HdrUSDFilter",CurrencyFilterButtonText("USD",m_usd_filter_state),info_x,info_y,row3_widths[2],m_controlHeight,C'26,63,95',clrWhite,clrWhite); info_x+=row3_widths[2]+info_gap;
-   CreateHeaderStateButton(btn_USDClose,"HdrUSDClose",CurrencyCloseButtonText("USD"),info_x,info_y,row3_widths[3],m_controlHeight,C'122,63,34',clrWhite,clrWhite); info_x+=row3_widths[3]+info_gap;
-   CreateHeaderStateButton(btn_EURFilter,"HdrEURFilter",CurrencyFilterButtonText("EUR",m_eur_filter_state),info_x,info_y,row3_widths[4],m_controlHeight,C'26,63,95',clrWhite,clrWhite); info_x+=row3_widths[4]+info_gap;
-   CreateHeaderStateButton(btn_EURClose,"HdrEURClose",CurrencyCloseButtonText("EUR"),info_x,info_y,row3_widths[5],m_controlHeight,C'122,63,34',clrWhite,clrWhite); info_x+=row3_widths[5]+info_gap;
-   CreateHeaderStateButton(btn_GBPFilter,"HdrGBPFilter",CurrencyFilterButtonText("GBP",m_gbp_filter_state),info_x,info_y,row3_widths[6],m_controlHeight,C'26,63,95',clrWhite,clrWhite); info_x+=row3_widths[6]+info_gap;
-   CreateHeaderStateButton(btn_GBPClose,"HdrGBPClose",CurrencyCloseButtonText("GBP"),info_x,info_y,row3_widths[7],m_controlHeight,C'122,63,34',clrWhite,clrWhite); info_x+=row3_widths[7]+info_gap;
-   CreateHeaderStateButton(btn_JPYFilter,"HdrJPYFilter",CurrencyFilterButtonText("JPY",m_jpy_filter_state),info_x,info_y,row3_widths[8],m_controlHeight,C'26,63,95',clrWhite,clrWhite); info_x+=row3_widths[8]+info_gap;
-   CreateHeaderStateButton(btn_JPYClose,"HdrJPYClose",CurrencyCloseButtonText("JPY"),info_x,info_y,row3_widths[9],m_controlHeight,C'122,63,34',clrWhite,clrWhite);
+   CreateHeaderStateButton(btn_SameAssetDirection,"HdrRiskLimits",        "Risk Limits",    info_x,info_y,row3_widths[1],m_controlHeight,C'55,56,77',clrWhite,clrWhite); info_x+=row3_widths[1]+info_gap;
+   CreateHeaderStateButton(btn_USDFilter,         "HdrCurrencyRules",     "Currency Rules", info_x,info_y,row3_widths[2],m_controlHeight,C'55,56,77',clrWhite,clrWhite); info_x+=row3_widths[2]+info_gap;
+   CreateHeaderStateButton(btn_USDClose,          "HdrEmergencyClose",    "Emergency Close",info_x,info_y,row3_widths[3],m_controlHeight,C'122,63,34',clrWhite,clrWhite); info_x+=row3_widths[3]+info_gap;
+   CreateHeaderStateButton(btn_EURFilter,         "HdrTelemetry",         "Telemetry Live", info_x,info_y,row3_widths[4],m_controlHeight,C'55,56,77',clrWhite,clrWhite);
    UpdateHeaderStateButtons();
 // HEADER -----------------------------------------------------------
    m_controlHeight=rowTallH;
@@ -1574,25 +2022,49 @@ void CGOATDashboard::ParsePortfolioFolderInfo(void)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::UpdatePortfolioInfoHeader(void)
 {
-   double running_loss_limit=StringToDouble(edt_RunningLossLimit.Text());
-   double daily_loss_limit=StringToDouble(edt_DailyLossLimit.Text());
-   double daily_target_limit=StringToDouble(edt_DailyTargetLimit.Text());
+   double running_loss_limit=ParseRiskInputValue(edt_RunningLossLimit.Text());
+   double daily_loss_limit=ParseRiskInputValue(edt_DailyLossLimit.Text());
+   double daily_target_limit=ParseRiskInputValue(edt_DailyTargetLimit.Text());
+   double low_equity_stop=ParseRiskInputValue(edt_LowEquityStopLevel.Text());
+   double equity_target=ParseRiskInputValue(edt_EquityTargetLevel.Text());
+   double current_equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   Port_LowEquityStopLevel=low_equity_stop;
+   Port_EquityTargetLevel=equity_target;
    double running_loss_left=running_loss_limit-Port_RunningLoss;
    double daily_loss_left=daily_loss_limit-Port_DailyLoss;
    double daily_target_left=daily_target_limit-Port_DailyTarget;
+   int active_count=0,paused_count=0,stale_count=0,syncing_count=0;
+   double open_sum=0.0,daily_sum=0.0;
+   datetime now=TimeCurrent();
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      string row_status=DisplayStatusForRow(idx,now);
+      if(row_status=="Active" || row_status=="Linked") active_count++;
+      else if(row_status=="Paused")                    paused_count++;
+      else if(row_status=="Stale")                     stale_count++;
+      else if(row_status=="Syncing" || row_status=="Closing") syncing_count++;
+
+      open_sum+=g_sets[idx].open_pl;
+      daily_sum+=g_sets[idx].PL_daily+g_sets[idx].open_pl;
+   }
+   string state_text=(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_PAUSED ? "Paused" : "Running");
+   if(m_portfolio_command_pending)
+      state_text=(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE ? "Closing" : (m_portfolio_command_target_pause!=0 ? "Pausing" : "Resuming"));
+   else if(m_risk_policy_breached)
+      state_text="Risk: "+RiskBreachText(m_risk_policy_breach_code);
 
    edt_HeadingPortfolio.Text(Portfolio_Name);
    edt_HeadingMembers.Text("Members: "+Portfolio_Members);
-   edt_HeadingScore.Text("Score: "+Portfolio_Score);
-   edt_HeadingAMSR.Text("Avg. SR: "+Portfolio_AMSR);
-   edt_HeadingMonthlyRF.Text("Monthly RF: "+DoubleToString(Portfolio_Live_MRF,3)+"/"+Portfolio_Target_MRF);
-   edt_HeadingMonthlyProfit.Text("Monthly Profit: "+IntegerToString((int)MathRound(Portfolio_Live_MP))+"/"+Portfolio_Target_MP);
+   edt_HeadingScore.Text("Health A/P/S: "+IntegerToString(active_count)+"/"+IntegerToString(paused_count)+"/"+IntegerToString(stale_count));
+   edt_HeadingAMSR.Text("State: "+state_text+(syncing_count>0 ? " ("+IntegerToString(syncing_count)+" Sync)" : ""));
+   edt_HeadingMonthlyRF.Text("Open P/L: "+FormatIntegerText(open_sum));
+   edt_HeadingMonthlyProfit.Text("Daily P/L: "+FormatIntegerText(daily_sum));
    edt_HeadingMaxDD.Text("Max DD: "+IntegerToString((int)MathRound(Portfolio_Live_DD))+"/"+Portfolio_Target_DD);
-   edt_RunningLossLead.Text("Running Loss: "+FormatPadded4Text(Port_RunningLoss)+"/");
+   edt_RunningLossLead.Text("Run Loss: "+FormatPadded4Text(Port_RunningLoss)+"/");
    edt_RunningLossTail.Text("("+FormatPadded4Text(running_loss_left)+" Left)");
-   edt_DailyLossLead.Text("Daily Loss: "+FormatPadded4Text(Port_DailyLoss)+"/");
+   edt_DailyLossLead.Text("Day Loss: "+FormatPadded4Text(Port_DailyLoss)+"/");
    edt_DailyLossTail.Text("("+FormatPadded4Text(daily_loss_left)+" Left)");
-   edt_DailyTargetLead.Text("Daily Target: "+FormatPadded4Text(Port_DailyTarget)+"/");
+   edt_DailyTargetLead.Text("Day Target: "+FormatPadded4Text(Port_DailyTarget)+"/");
    edt_DailyTargetTail.Text("("+FormatPadded4Text(daily_target_left)+" Left)");
    edt_LowEquityStopLead.Text("Low Equity Stop level:");
    edt_EquityTargetLead.Text("Equity Target Level:");
@@ -1603,6 +2075,8 @@ void CGOATDashboard::UpdatePortfolioInfoHeader(void)
    bool run_warn=(running_loss_limit>0.0 && Port_RunningLoss>=0.9*running_loss_limit);
    bool day_loss_warn=(daily_loss_limit>0.0 && Port_DailyLoss>=0.9*daily_loss_limit);
    bool day_target_hit=(daily_target_limit>0.0 && Port_DailyTarget>=0.9*daily_target_limit);
+   bool low_equity_hit=(low_equity_stop>0.0 && current_equity<=low_equity_stop);
+   bool equity_target_hit=(equity_target>0.0 && current_equity>=equity_target);
 
    edt_RunningLossLead.Color(run_warn ? warning_clr : normal_clr);
    edt_RunningLossTail.Color(run_warn ? warning_clr : normal_clr);
@@ -1610,8 +2084,8 @@ void CGOATDashboard::UpdatePortfolioInfoHeader(void)
    edt_DailyLossTail.Color(day_loss_warn ? warning_clr : normal_clr);
    edt_DailyTargetLead.Color(day_target_hit ? target_clr : normal_clr);
    edt_DailyTargetTail.Color(day_target_hit ? target_clr : normal_clr);
-   edt_LowEquityStopLead.Color(normal_clr);
-   edt_EquityTargetLead.Color(normal_clr);
+   edt_LowEquityStopLead.Color(low_equity_hit ? warning_clr : normal_clr);
+   edt_EquityTargetLead.Color(equity_target_hit ? target_clr : normal_clr);
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::RefreshPortfolioRealtimeStats(void)
@@ -2056,6 +2530,7 @@ bool CGOATDashboard::ReadChildSnapshotIntoRow(const int idx)
    if(g_sets[idx].magic<=0)            return false;
 
    ReadSymbolSharedFields(idx);
+   ReadChildCommandState(idx);
 
    string hb_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_HEARTBEAT);
    datetime now=TimeCurrent();
@@ -2122,6 +2597,28 @@ void CGOATDashboard::ReadSymbolSharedFields(const int idx)
    string bias_key=GoatSymbolGVName(g_sets[idx].sym,GOAT_GV_FIELD_BIAS);
    if(GlobalVariableCheck(news_key)) g_sets[idx].news_score=GlobalVariableGet(news_key);
    if(GlobalVariableCheck(bias_key)) g_sets[idx].bias_sentiment=GlobalVariableGet(bias_key);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ReadChildCommandState(const int idx)
+{
+   if(idx<0 || idx>=ArraySize(g_sets)) return;
+   if(g_sets[idx].magic<=0)            return;
+
+   string ack_id_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_ACK_ID);
+   string ack_status_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_ACK_STATUS);
+   string ack_time_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_ACK_TIME);
+   string ack_closed_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_ACK_CLOSED);
+   string ack_errors_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_ACK_ERRORS);
+   string ack_remaining_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_ACK_REMAINING);
+   string paused_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_POLICY_PAUSED);
+
+   if(GlobalVariableCheck(ack_id_key))     g_sets[idx].last_ack_id=(long)GlobalVariableGet(ack_id_key);
+   if(GlobalVariableCheck(ack_status_key)) g_sets[idx].last_ack_status=(int)GlobalVariableGet(ack_status_key);
+   if(GlobalVariableCheck(ack_time_key))   g_sets[idx].last_ack_time=(datetime)GlobalVariableGet(ack_time_key);
+   if(GlobalVariableCheck(ack_closed_key)) g_sets[idx].ack_closed=(int)GlobalVariableGet(ack_closed_key);
+   if(GlobalVariableCheck(ack_errors_key)) g_sets[idx].ack_errors=(int)GlobalVariableGet(ack_errors_key);
+   if(GlobalVariableCheck(ack_remaining_key)) g_sets[idx].ack_remaining=(int)GlobalVariableGet(ack_remaining_key);
+   if(GlobalVariableCheck(paused_key))     g_sets[idx].policy_paused=(GlobalVariableGet(paused_key)>0.5);
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //  ───  PER‑ROW METRIC UPDATE  ────────────────────────────────────
@@ -2207,8 +2704,10 @@ void CGOATDashboard::UpdatePortfolioRow()
 
     bool all_deployed=(rows>0 && pending_rows==0);
     string portfolio_status=(pending_rows>0 ? "Pending" : "Deployed");
-    color portfolio_status_clr=(pending_rows>0 ? clrRed : clrWhite);
-    string action_text=(all_deployed ? "✓ Activated" : "ActivateAll");
+    if(m_portfolio_command_pending) portfolio_status=(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE ? "Closing" : "Syncing");
+    else if(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_PAUSED) portfolio_status="Paused";
+    color portfolio_status_clr=(portfolio_status=="Pending" ? clrRed : (portfolio_status=="Deployed" ? clrWhite : StatusColor(portfolio_status)));
+    string action_text=(all_deployed ? "Activated" : "ActivateAll");
     color action_text_clr=(all_deployed ? C'87,153,122' : clrWhite);
     double portfolio_hist_dd=StringToDouble(Portfolio_Target_DD);
     color pl_open_clr=(open_sum>0.0 ? C'0,180,0' : (open_sum<0.0 ? clrRed : clrWhite));
@@ -2284,8 +2783,107 @@ void CGOATDashboard::ProcessTimerCycle(void)
    }
 
    RefreshPortfolioRealtimeStats();
+   EvaluateRiskPolicy();
    ProcessPortfolioTelemetry();
+   UpdatePortfolioCommandCompletion();
    UpdatePortfolioRow();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::UpdatePortfolioCommandCompletion(void)
+{
+   if(!m_portfolio_command_pending) return;
+
+   int targets=0,applied=0,failed=0,responses=0;
+   int closed_positions=0,close_errors=0,remaining_positions=0;
+   bool target_paused=(m_portfolio_command_target_pause!=0);
+   bool close_command=(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE);
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+      targets++;
+      if(g_sets[idx].last_ack_id!=m_portfolio_command_id) continue;
+      responses++;
+      closed_positions+=g_sets[idx].ack_closed;
+      close_errors+=g_sets[idx].ack_errors;
+      remaining_positions+=g_sets[idx].ack_remaining;
+
+      if(close_command)
+      {
+         if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0)
+            applied++;
+         else if(g_sets[idx].last_ack_status!=0)
+            failed++;
+      }
+      else
+      {
+         if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].policy_paused==target_paused)
+            applied++;
+         else if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_REJECTED ||
+                 g_sets[idx].last_ack_status==GOAT_DASH_ACK_FAILED ||
+                 g_sets[idx].last_ack_status==GOAT_DASH_ACK_EXPIRED)
+            failed++;
+      }
+   }
+
+   if(targets<=0)
+   {
+      AppendPortfolioCommandAudit("NO_TARGETS",0,0,0,"No linked child charts were available during completion scan");
+      m_portfolio_command_pending=false;
+      UpdateHeaderStateButtons();
+      return;
+   }
+
+   bool command_timeout=(m_portfolio_command_time>0 && TimeCurrent()-m_portfolio_command_time>35);
+   if(close_command)
+   {
+      if(responses>=targets || command_timeout)
+      {
+         string detail=StringFormat("responses=%d closed_positions=%d close_errors=%d remaining=%d",
+                                    responses,closed_positions,close_errors,remaining_positions);
+         AppendPortfolioCommandAudit(command_timeout && responses<targets ? "TIMEOUT" : "COMPLETE",targets,applied,failed,detail);
+         m_portfolio_command_pending=false;
+         m_portfolio_run_state=GOAT_PORTFOLIO_RUN_PAUSED;
+         GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),1.0);
+         GlobalVariablesFlush();
+         for(int idx=0; idx<ArraySize(g_sets); ++idx)
+         {
+            if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+            if(g_sets[idx].last_ack_id!=m_portfolio_command_id)
+               g_sets[idx].status="No Ack";
+            else if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0)
+               g_sets[idx].status="Closed";
+            else
+               g_sets[idx].status="Close Failed";
+         }
+         MarkStateDirty();
+         UpdateHeaderStateButtons();
+      }
+      return;
+   }
+
+   if(applied>=targets)
+   {
+      AppendPortfolioCommandAudit("COMPLETE",targets,applied,failed,"Pause state applied by all linked child charts");
+      m_portfolio_command_pending=false;
+      m_portfolio_run_state=(target_paused ? GOAT_PORTFOLIO_RUN_PAUSED : GOAT_PORTFOLIO_RUN_ACTIVE);
+      GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),(target_paused ? 1.0 : 0.0));
+      GlobalVariablesFlush();
+      for(int idx=0; idx<ArraySize(g_sets); ++idx)
+         if(g_sets[idx].magic>0 && g_sets[idx].cid>0)
+            g_sets[idx].status=(target_paused ? "Paused" : "Active");
+      MarkStateDirty();
+      UpdateHeaderStateButtons();
+      return;
+   }
+
+   if(failed>0 || command_timeout)
+   {
+      PrintFormat("Portfolio command %I64d incomplete: applied=%d targets=%d failed=%d",
+                  m_portfolio_command_id,applied,targets,failed);
+      AppendPortfolioCommandAudit(command_timeout ? "TIMEOUT" : "FAILED",targets,applied,failed,"Pause command did not receive a clean acknowledgement from every child chart");
+      m_portfolio_command_pending=false;
+      UpdateHeaderStateButtons();
+   }
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashboard::DashboardStateExists(void) const

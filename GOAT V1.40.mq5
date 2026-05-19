@@ -2273,6 +2273,116 @@ void DashboardBusRebuildClosedStats(void)
    }
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusAckCommand(const long command_id,const int ack_status)
+  {
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
+   if(MAGIC1<=0)                                                         return;
+
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_ID),(double)command_id);
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_STATUS),(double)ack_status);
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_TIME),(double)TimeCurrent());
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),(DashboardPortfolioPaused ? 1.0 : 0.0));
+   GlobalVariablesFlush();
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int DashboardBusCloseOwnPositions(int &close_errors)
+  {
+   close_errors=0;
+   int closed_positions=0;
+   CTrade m_trade;
+
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+    if(!m_position.SelectByIndex(i))                                  continue;
+     if(m_position.Symbol()!=_Symbol)                                  continue;
+     if(m_position.Magic()!=MAGIC1 && MAGIC1!=0)                       continue;
+
+     if(!m_trade.PositionClose(m_position.Ticket()))
+        close_errors++;
+     else
+        closed_positions++;
+   }
+
+   Pause_Flag=true;
+   return closed_positions;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusAckCloseCommand(const long command_id,const int ack_status,const int closed_positions,const int close_errors,const int remaining)
+  {
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
+   if(MAGIC1<=0)                                                         return;
+
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_CLOSED),(double)closed_positions);
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_ERRORS),(double)close_errors);
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_REMAINING),(double)remaining);
+   DashboardBusAckCommand(command_id,ack_status);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusApplyCommand(const long command_id,const int command_type,const int command_value,const datetime expires_at)
+  {
+   if(command_id<=0) return;
+   if(command_id==DashboardPortfolioCommandIdApplied)
+   {
+      DashboardBusAckCommand(command_id,GOAT_DASH_ACK_APPLIED);
+      return;
+   }
+
+   if(expires_at>0 && TimeCurrent()>expires_at)
+   {
+      DashboardBusAckCommand(command_id,GOAT_DASH_ACK_EXPIRED);
+      return;
+   }
+
+   if(command_type==GOAT_DASH_CMD_PORTFOLIO_PAUSE)
+   {
+      DashboardPortfolioPaused=(command_value!=0);
+      DashboardPortfolioCommandIdApplied=command_id;
+      GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),(DashboardPortfolioPaused ? 1.0 : 0.0));
+      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),(DashboardPortfolioPaused ? 1.0 : 0.0));
+      DashboardBusAckCommand(command_id,GOAT_DASH_ACK_APPLIED);
+      DashboardBusSendStatus(DashboardPortfolioPaused ? "Paused" : "Active");
+      return;
+   }
+
+   if(command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE)
+   {
+      DashboardPortfolioPaused=true;
+      DashboardPortfolioCommandIdApplied=command_id;
+      GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),1.0);
+      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),1.0);
+
+      int close_errors=0;
+      int closed_positions=DashboardBusCloseOwnPositions(close_errors);
+      int remaining=FindNumberOfPositions(OP_BUYSELL,MAGIC1);
+      int ack_status=(close_errors==0 && remaining==0 ? GOAT_DASH_ACK_APPLIED : GOAT_DASH_ACK_FAILED);
+      DashboardBusAckCloseCommand(command_id,ack_status,closed_positions,close_errors,remaining);
+      DashboardBusSendStatus(remaining==0 ? "Paused" : "Close Failed");
+      return;
+   }
+
+   DashboardBusAckCommand(command_id,GOAT_DASH_ACK_REJECTED);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusProcessCommands(void)
+  {
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
+   if(MAGIC1<=0)                                                         return;
+
+   string cmd_id_key=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_ID);
+   if(!GlobalVariableCheck(cmd_id_key)) return;
+
+   long command_id=(long)GlobalVariableGet(cmd_id_key);
+   if(command_id<=0) return;
+
+   int command_type=(int)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_TYPE));
+   int command_value=(int)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_VALUE));
+   datetime expires_at=(datetime)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_EXPIRES));
+   DashboardBusApplyCommand(command_id,command_type,command_value,expires_at);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 int OnInit()
   {
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Initialization Start"+"================");
@@ -2824,18 +2934,21 @@ int OnInit()
     bool restored_magic_found=GoatFindMagicByCid(Symbol(),ChartID(),restored_magic);
     if(restored_magic_found)
        MAGIC1=(int)restored_magic;
-    if(MAGIC1==0) MAGIC1 = MathRand()+9+ChartWindowsHandle(0);
-    if(MAGIC2==0) MAGIC2 = MathRand()+9+ChartWindowsHandle(0);
-    
-                                Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
-    if(MathAbs(Delay_Trade)>0) {Seq_Buy_Virtual.Init(OP_BUY,true); Seq_Sell_Virtual.Init(OP_SELL,true);}
-    DashboardBusRebuildClosedStats();
-    GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CID),(double)GoatTruncateCidValue(ChartID()));
-    if(GlobalVariableCheck("Dashboard_ChartID") && !restored_magic_found)
-    {
-       GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_MAGIC),(double)MAGIC1);
-       DashboardBusSendStatus("Deploying");
-    }
+     if(MAGIC1==0) MAGIC1 = MathRand()+9+ChartWindowsHandle(0);
+     if(MAGIC2==0) MAGIC2 = MathRand()+9+ChartWindowsHandle(0);
+     if(GlobalVariableCheck(GoatPortfolioGVName("DashboardPolicyPaused")))
+        DashboardPortfolioPaused=(GlobalVariableGet(GoatPortfolioGVName("DashboardPolicyPaused"))>0.5);
+
+                                 Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
+     if(MathAbs(Delay_Trade)>0) {Seq_Buy_Virtual.Init(OP_BUY,true); Seq_Sell_Virtual.Init(OP_SELL,true);}
+     DashboardBusRebuildClosedStats();
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CID),(double)GoatTruncateCidValue(ChartID()));
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),(DashboardPortfolioPaused ? 1.0 : 0.0));
+     if(GlobalVariableCheck("Dashboard_ChartID") && !restored_magic_found)
+     {
+        GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_MAGIC),(double)MAGIC1);
+        DashboardBusSendStatus("Deploying");
+     }
     GlobalVariablesFlush();
    }
 //-------------------------------------------------------------------------
@@ -3993,8 +4106,10 @@ void OnTimer(void)
     DashboardDialog.ProcessTimerCycle();
     ChartRedraw(0);
    }
+   if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash)
+      DashboardBusProcessCommands();
    timer++;
-  }
+   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
@@ -4056,6 +4171,11 @@ void OnChartEvent(const int id,         // event ID
                   const double& dparam, // event parameter of the double type
                   const string& sparam) // event parameter of the string type
   {
+   if(id==GOAT_EVENT_DASHBOARD_COMMAND)
+   {
+    DashboardBusProcessCommands();
+    return;
+   }
    if(!FastSpeed_Flag)
    {
          if(Mode_Operation==Operation_Batch) TesterDialog.ChartEvent(id,lparam,dparam,sparam);
@@ -4758,8 +4878,9 @@ void OnTick()
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_HEARTBEAT),(double)TimeCurrent());
 
      string dashboard_status="Active";
-     if(!Active || InActive) dashboard_status="Inactive";
-     if(StopOut_Flag || Pause_Flag || Sequence_Pause_Close || Sequence_Pause_News || Sequence_Pause_Bias_B || Sequence_Pause_Bias_S)
+     if(DashboardPortfolioPaused) dashboard_status="Paused";
+     else if(!Active || InActive) dashboard_status="Inactive";
+     if(!DashboardPortfolioPaused && (StopOut_Flag || Pause_Flag || Sequence_Pause_Close || Sequence_Pause_News || Sequence_Pause_Bias_B || Sequence_Pause_Bias_S))
         dashboard_status="Paused";
      DashboardBusSendStatus(dashboard_status);
     }
@@ -4846,7 +4967,7 @@ void OnTick()
      
      if(!checked) UpdateCurrentSignals(Shift_Sig);
      
-     if(Allow_New_Sequence&&Sequence_New_Friday&&Sequence_New_Dec) SignalEntryTrigger();//Buys,Sells);
+      if(!DashboardPortfolioPaused&&Allow_New_Sequence&&Sequence_New_Friday&&Sequence_New_Dec) SignalEntryTrigger();//Buys,Sells);
      //SignalExitTrigger();
      //OrderUpdate();
      //File_update=true;
@@ -4887,6 +5008,9 @@ void OnTick()
        {
         if(!LastBuyTradeSignal) Trades_Skipped_Bias_B++;
        }
+       else if(DashboardPortfolioPaused)
+       {
+       }
        else
        {
         Seq_Buy.Add_Level(ask); //return;
@@ -4919,6 +5043,9 @@ void OnTick()
        {
         if(!LastSellTradeSignal) Trades_Skipped_Bias_S++;
        }
+       else if(DashboardPortfolioPaused)
+       {
+       }
        else
        {
         Seq_Sell.Add_Level(bid); //return;
@@ -4930,14 +5057,14 @@ void OnTick()
     }
     else LastSellTradeSignal = false; // last time sequence conditions didnt try adding a new trade
 //----------------------
-    if(Seq_Buy_Virtual.Active && !Sequence_Pause_News && !Sequence_Pause_Bias_B)
+    if(Seq_Buy_Virtual.Active && !DashboardPortfolioPaused && !Sequence_Pause_News && !Sequence_Pause_Bias_B)
     {
      if(ask < (Seq_Buy_Virtual.Level_Last-GetSize(GRID_VALID,Seq_Buy_Virtual.Level_Count,GetSize(GRID))) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_BUY) )// && BuySig)
      {
       Seq_Buy_Virtual.Add_Level(ask); //return;
      }
     }
-    if(Seq_Sell_Virtual.Active && !Sequence_Pause_News && !Sequence_Pause_Bias_S)
+    if(Seq_Sell_Virtual.Active && !DashboardPortfolioPaused && !Sequence_Pause_News && !Sequence_Pause_Bias_S)
     {
      if(bid > (Seq_Sell_Virtual.Level_Last+GetSize(GRID_VALID,Seq_Sell_Virtual.Level_Count,GetSize(GRID))) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_SELL) )// && SellSig)
      {

@@ -126,8 +126,10 @@ public:
     int       m_risk_policy_breach_code;
     datetime  m_risk_policy_breach_time;
     double    m_risk_running_loss_limit,m_risk_daily_loss_limit,m_risk_daily_target_limit,m_risk_low_equity_stop,m_risk_equity_target;
-    bool      m_currency_rules_editor_visible;
-    // reusable GUI colours
+     bool      m_currency_rules_editor_visible;
+     bool      m_close_scope_editor_visible;
+     int       m_portfolio_command_close_scope;
+     // reusable GUI colours
     color clrPos, clrNeg, clrNeu;
    
    struct SetFileRecord
@@ -138,7 +140,7 @@ public:
     int    open_trades,Trades_total;
      double open_lots,open_pl,PL_total,PL_weekly,PL_daily,news_score,bias_sentiment;
      long   last_ack_id;
-     int    last_ack_status,ack_closed,ack_errors,ack_remaining,trade_allow_mask,target_trade_allow_mask,exposure_policy_mode,target_exposure_policy_mode;
+     int    last_ack_status,ack_closed,ack_errors,ack_remaining,trade_allow_mask,target_trade_allow_mask,exposure_policy_mode,target_exposure_policy_mode,target_close_scope;
      bool   policy_paused;
     SetFileRecord()
       {
@@ -160,6 +162,7 @@ public:
         target_trade_allow_mask=GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL;
         exposure_policy_mode=GOAT_EXPOSURE_ALLOW;
         target_exposure_policy_mode=GOAT_EXPOSURE_ALLOW;
+        target_close_scope=GOAT_CLOSE_SCOPE_ALL;
         policy_paused=false;
        }
    };
@@ -332,8 +335,13 @@ private:
    bool SendPortfolioCommand(const int command_type,const int command_value,const string event_label,const bool notify=true);
    bool SendCurrencyRulesCommand(void);
    bool SendExposurePolicyCommand(const int mode);
+   bool SendCloseScopeCommand(const int scope);
    string PortfolioCommandName(void) const;
    void AppendPortfolioCommandAudit(const string stage,const int targets,const int applied,const int failed,const string detail);
+   void AppendCloseScopeAudit(const string stage,const int scope,const int targets,const int close_targets,const int closed_positions,const int close_errors,const int remaining_positions,const string detail);
+   string CloseScopeLabel(const int scope) const;
+   string CloseScopeCurrency(const int scope) const;
+   bool SymbolMatchesCloseScope(const string symbol,const int scope) const;
    string ExposurePolicyLabelForMode(const int mode) const;
    int NormalizeExposurePolicyMode(const int value) const;
    int NextExposurePolicyMode(const int mode) const;
@@ -353,6 +361,9 @@ private:
    void UpdateCurrencyRulesEditorButtons(void);
    void ShowCurrencyRulesEditor(const bool visible);
    void CycleCurrencyRule(const string code);
+   void UpdateCloseScopeEditorButtons(void);
+   void ShowCloseScopeEditor(const bool visible);
+   bool ConfirmAndSendCloseScope(const int scope);
    double ParseRiskInputValue(const string raw);
    bool ValidateRiskPolicyInputs(double &running_loss,double &daily_loss,double &daily_target,double &low_equity,double &equity_target,string &error_text);
    bool ArmRiskPolicyFromHeader(void);
@@ -447,16 +458,19 @@ private:
       if(g_sets[idx].magic>0 && g_sets[idx].heartbeat_ts>0 && (now-g_sets[idx].heartbeat_ts)>5) return "Stale";
       if(m_portfolio_command_pending && g_sets[idx].magic>0 && g_sets[idx].cid>0)
       {
-         if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE)
+         if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE || m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE)
          {
+            bool row_matches_close=(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE || SymbolMatchesCloseScope(g_sets[idx].sym,m_portfolio_command_close_scope));
             if(g_sets[idx].last_ack_id==m_portfolio_command_id)
             {
-               if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0) return "Closed";
+               bool close_policy_ok=(m_portfolio_command_type!=GOAT_DASH_CMD_CLOSE_SCOPE || g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask);
+               if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0 && close_policy_ok)
+                  return(row_matches_close ? "Closed" : CurrencyPolicyLabelForMask(g_sets[idx].target_trade_allow_mask));
                if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_FAILED ||
                   g_sets[idx].last_ack_status==GOAT_DASH_ACK_REJECTED ||
                   g_sets[idx].last_ack_status==GOAT_DASH_ACK_EXPIRED) return "Close Failed";
             }
-            return "Closing";
+            return(row_matches_close ? "Closing" : "Syncing");
          }
          if(m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS)
          {
@@ -797,6 +811,11 @@ private:
             if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0) applied++;
             else if(g_sets[idx].last_ack_status!=0) failed++;
          }
+         else if(m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE)
+         {
+            if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0 && g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask) applied++;
+            else if(g_sets[idx].last_ack_status!=0) failed++;
+         }
          else if(m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS)
          {
             if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask) applied++;
@@ -815,6 +834,8 @@ private:
       }
       if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE)
          pause_text="Closing "+IntegerToString(applied)+"/"+IntegerToString(targets)+(failed>0 ? " Failed "+IntegerToString(failed) : "");
+      else if(m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE)
+         pause_text="Closing "+CloseScopeLabel(m_portfolio_command_close_scope)+" "+IntegerToString(applied)+"/"+IntegerToString(targets)+(failed>0 ? " Failed "+IntegerToString(failed) : "");
       else if(m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS)
          pause_text="Applying Rules "+IntegerToString(applied)+"/"+IntegerToString(targets)+(failed>0 ? " Failed "+IntegerToString(failed) : "");
       else if(m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY)
@@ -832,7 +853,8 @@ private:
    ApplyHeaderStateButtonStyle(btn_USDFilter,CurrencyRulesButtonText(),(CurrencyPolicyActive() ? C'19,79,60' : planned_back),normal_border,clrWhite);
    ApplyHeaderStateButtonStyle(btn_USDClose,"Emergency Close",emergency_back,normal_border,clrWhite);
    ApplyHeaderStateButtonStyle(btn_EURFilter,ExposurePolicyButtonText(),(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_ALLOW ? planned_back : C'19,79,60'),normal_border,clrWhite);
-   UpdateCurrencyRulesEditorButtons();
+   if(m_close_scope_editor_visible) UpdateCloseScopeEditorButtons();
+   else                             UpdateCurrencyRulesEditorButtons();
   }
    // Creates a label and returns the left‐edge for the next column
    int PlaceEditLabel(CEdit &edt,const string id, const string text, int x,int y,int w)
@@ -876,6 +898,7 @@ CGOATDashboard::CGOATDashboard()
    m_portfolio_command_type=0;
    m_portfolio_command_target_pause=0;
    m_portfolio_command_time=0;
+   m_portfolio_command_close_scope=GOAT_CLOSE_SCOPE_ALL;
    m_risk_policy_armed=false;
    m_risk_policy_breached=false;
    m_risk_policy_breach_code=GOAT_RISK_BREACH_NONE;
@@ -886,6 +909,7 @@ CGOATDashboard::CGOATDashboard()
    m_risk_low_equity_stop=0.0;
    m_risk_equity_target=0.0;
    m_currency_rules_editor_visible=false;
+   m_close_scope_editor_visible=false;
    m_portfolio_run_state=GOAT_PORTFOLIO_RUN_ACTIVE;
    m_exposure_policy_mode=GOAT_EXPOSURE_POLICY_ALLOW;
    m_usd_filter_state=GOAT_CURRENCY_FILTER_ALL;
@@ -1065,19 +1089,7 @@ bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
    {
       if(m_portfolio_command_pending)
          return(true);
-
-      int first=MessageBox("Emergency Close will pause the portfolio and ask every linked child EA to close its own open positions.\n\nContinue?",
-                           "Emergency Close",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
-      if(first!=IDYES)
-         return(true);
-
-      int second=MessageBox("FINAL CONFIRMATION\n\nClose live portfolio exposure now?\nThis action cannot be undone.",
-                            "Confirm Emergency Close",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
-      if(second!=IDYES)
-         return(true);
-
-      SendPortfolioCloseCommand();
-      UpdateHeaderStateButtons();
+      ShowCloseScopeEditor(!m_close_scope_editor_visible);
       return(true);
    }
    if(control_name==btn_EURFilter.Name())
@@ -1095,26 +1107,51 @@ bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
    }
    if(control_name==btn_EURClose.Name())
    {
+      if(m_close_scope_editor_visible)
+      {
+         ConfirmAndSendCloseScope(GOAT_CLOSE_SCOPE_ALL);
+         return(true);
+      }
       CycleCurrencyRule("USD");
       return(true);
    }
    if(control_name==btn_GBPFilter.Name())
    {
+      if(m_close_scope_editor_visible)
+      {
+         ConfirmAndSendCloseScope(GOAT_CLOSE_SCOPE_USD);
+         return(true);
+      }
       CycleCurrencyRule("EUR");
       return(true);
    }
    if(control_name==btn_GBPClose.Name())
    {
+      if(m_close_scope_editor_visible)
+      {
+         ConfirmAndSendCloseScope(GOAT_CLOSE_SCOPE_EUR);
+         return(true);
+      }
       CycleCurrencyRule("GBP");
       return(true);
    }
    if(control_name==btn_JPYFilter.Name())
    {
+      if(m_close_scope_editor_visible)
+      {
+         ConfirmAndSendCloseScope(GOAT_CLOSE_SCOPE_GBP);
+         return(true);
+      }
       CycleCurrencyRule("JPY");
       return(true);
    }
    if(control_name==btn_JPYClose.Name())
    {
+      if(m_close_scope_editor_visible)
+      {
+         ConfirmAndSendCloseScope(GOAT_CLOSE_SCOPE_JPY);
+         return(true);
+      }
       if(!m_portfolio_command_pending)
          SendCurrencyRulesCommand();
       ShowCurrencyRulesEditor(false);
@@ -1137,6 +1174,7 @@ bool CGOATDashboard::SendPortfolioCloseCommand(void)
 string CGOATDashboard::PortfolioCommandName(void) const
 {
    if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE) return "EmergencyClose";
+   if(m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE) return "Close"+CloseScopeLabel(m_portfolio_command_close_scope);
    if(m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS) return "CurrencyRules";
    if(m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY) return "ExposurePolicy";
    if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_PAUSE)
@@ -1170,6 +1208,69 @@ void CGOATDashboard::AppendPortfolioCommandAudit(const string stage,const int ta
              IntegerToString(failed),
              detail);
    FileClose(h);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::AppendCloseScopeAudit(const string stage,const int scope,const int targets,const int close_targets,const int closed_positions,const int close_errors,const int remaining_positions,const string detail)
+{
+   string path=Key_+"\\dashboard_close_audit.tsv";
+   bool write_header=!FileIsExist(path,FILE_COMMON);
+   int h=FileOpen(path,FILE_WRITE|FILE_READ|FILE_CSV|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON,'\t');
+   if(h==INVALID_HANDLE)
+   {
+      PrintFormat("Dashboard close audit open failed path=%s err=%d",path,GetLastError());
+      return;
+   }
+
+   FileSeek(h,0,SEEK_END);
+   if(write_header)
+      FileWrite(h,"LocalTime","ServerTime","CommandId","Stage","Scope","Targets","CloseTargets","ClosedPositions","CloseErrors","RemainingPositions","Detail");
+
+   FileWrite(h,
+             TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),
+             TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
+             StringFormat("%I64d",m_portfolio_command_id),
+             stage,
+             CloseScopeLabel(scope),
+             IntegerToString(targets),
+             IntegerToString(close_targets),
+             IntegerToString(closed_positions),
+             IntegerToString(close_errors),
+             IntegerToString(remaining_positions),
+             detail);
+   FileClose(h);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string CGOATDashboard::CloseScopeLabel(const int scope) const
+{
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(clean_scope==GOAT_CLOSE_SCOPE_USD) return "USD";
+   if(clean_scope==GOAT_CLOSE_SCOPE_EUR) return "EUR";
+   if(clean_scope==GOAT_CLOSE_SCOPE_GBP) return "GBP";
+   if(clean_scope==GOAT_CLOSE_SCOPE_JPY) return "JPY";
+   return "All";
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string CGOATDashboard::CloseScopeCurrency(const int scope) const
+{
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(clean_scope==GOAT_CLOSE_SCOPE_USD) return "USD";
+   if(clean_scope==GOAT_CLOSE_SCOPE_EUR) return "EUR";
+   if(clean_scope==GOAT_CLOSE_SCOPE_GBP) return "GBP";
+   if(clean_scope==GOAT_CLOSE_SCOPE_JPY) return "JPY";
+   return "";
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SymbolMatchesCloseScope(const string symbol,const int scope) const
+{
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(clean_scope==GOAT_CLOSE_SCOPE_ALL) return true;
+   if(StringLen(symbol)<6) return false;
+   string currency=CloseScopeCurrency(clean_scope);
+   string base=StringSubstr(symbol,0,3);
+   string quote=StringSubstr(symbol,3,3);
+   StringToUpper(base);
+   StringToUpper(quote);
+   return(base==currency || quote==currency);
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 string CGOATDashboard::ExposurePolicyLabelForMode(const int mode) const
@@ -1348,6 +1449,7 @@ void CGOATDashboard::AppendCurrencyPolicyAudit(const string stage,const string d
 void CGOATDashboard::UpdateCurrencyRulesEditorButtons(void)
 {
    if(btn_EURClose.Name()=="") return;
+   if(m_close_scope_editor_visible) return;
    ApplyHeaderStateButtonStyle(btn_EURClose,CurrencyFilterButtonText("USD",m_usd_filter_state),C'55,56,77',clrWhite,clrWhite);
    ApplyHeaderStateButtonStyle(btn_GBPFilter,CurrencyFilterButtonText("EUR",m_eur_filter_state),C'55,56,77',clrWhite,clrWhite);
    ApplyHeaderStateButtonStyle(btn_GBPClose,CurrencyFilterButtonText("GBP",m_gbp_filter_state),C'55,56,77',clrWhite,clrWhite);
@@ -1358,6 +1460,8 @@ void CGOATDashboard::UpdateCurrencyRulesEditorButtons(void)
 void CGOATDashboard::ShowCurrencyRulesEditor(const bool visible)
 {
    m_currency_rules_editor_visible=visible;
+   if(visible)
+      m_close_scope_editor_visible=false;
    if(visible)
    {
       btn_PortfolioPause.Hide();
@@ -1386,6 +1490,88 @@ void CGOATDashboard::ShowCurrencyRulesEditor(const bool visible)
    }
    UpdateHeaderStateButtons();
    ChartRedraw(0);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::UpdateCloseScopeEditorButtons(void)
+{
+   if(btn_EURClose.Name()=="") return;
+   ApplyHeaderStateButtonStyle(btn_EURClose,"Close All",C'122,63,34',clrWhite,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_GBPFilter,"Close USD",C'122,63,34',clrWhite,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_GBPClose,"Close EUR",C'122,63,34',clrWhite,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_JPYFilter,"Close GBP",C'122,63,34',clrWhite,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_JPYClose,"Close JPY",C'122,63,34',clrWhite,clrWhite);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ShowCloseScopeEditor(const bool visible)
+{
+   m_close_scope_editor_visible=visible;
+   if(visible)
+      m_currency_rules_editor_visible=false;
+   if(visible)
+   {
+      btn_PortfolioPause.Hide();
+      btn_SameAssetDirection.Hide();
+      btn_USDFilter.Hide();
+      btn_USDClose.Hide();
+      btn_EURFilter.Hide();
+      btn_EURClose.Show();
+      btn_GBPFilter.Show();
+      btn_GBPClose.Show();
+      btn_JPYFilter.Show();
+      btn_JPYClose.Show();
+   }
+   else
+   {
+      btn_EURClose.Hide();
+      btn_GBPFilter.Hide();
+      btn_GBPClose.Hide();
+      btn_JPYFilter.Hide();
+      btn_JPYClose.Hide();
+      btn_PortfolioPause.Show();
+      btn_SameAssetDirection.Show();
+      btn_USDFilter.Show();
+      btn_USDClose.Show();
+      btn_EURFilter.Show();
+   }
+   UpdateHeaderStateButtons();
+   ChartRedraw(0);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::ConfirmAndSendCloseScope(const int scope)
+{
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(m_portfolio_command_pending)
+      return false;
+
+   if(clean_scope==GOAT_CLOSE_SCOPE_ALL)
+   {
+      int first=MessageBox("Emergency Close will pause the portfolio and ask every linked child EA to close its own open positions.\n\nContinue?",
+                           "Emergency Close",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+      if(first!=IDYES) return false;
+
+      int second=MessageBox("FINAL CONFIRMATION\n\nClose live portfolio exposure now?\nThis action cannot be undone.",
+                            "Confirm Emergency Close",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+      if(second!=IDYES) return false;
+
+      ShowCloseScopeEditor(false);
+      bool sent=SendPortfolioCloseCommand();
+      UpdateHeaderStateButtons();
+      return sent;
+   }
+
+   string currency=CloseScopeCurrency(clean_scope);
+   int first=MessageBox("Close all open portfolio exposure involving "+currency+" and pause new "+currency+" entries?\n\nExisting non-"+currency+" rows will only receive the updated currency policy.",
+                        "Close "+currency+" Exposure",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+   if(first!=IDYES) return false;
+
+   int second=MessageBox("FINAL CONFIRMATION\n\nClose live "+currency+" exposure now and set "+currency+" to Paused?",
+                         "Confirm Close "+currency,MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+   if(second!=IDYES) return false;
+
+   ShowCloseScopeEditor(false);
+   bool sent=SendCloseScopeCommand(clean_scope);
+   UpdateHeaderStateButtons();
+   return sent;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::CycleCurrencyRule(const string code)
@@ -1434,6 +1620,71 @@ bool CGOATDashboard::SendCurrencyRulesCommand(void)
    GlobalVariablesFlush();
    AppendPortfolioCommandAudit("DISPATCH",targets,0,0,"Currency rules sent to linked child charts");
    AppendCurrencyPolicyAudit("DISPATCH",CurrencyRuleSummary());
+   MarkStateDirty();
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SendCloseScopeCommand(const int scope)
+{
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(clean_scope==GOAT_CLOSE_SCOPE_ALL)
+      return SendPortfolioCloseCommand();
+
+   string currency=CloseScopeCurrency(clean_scope);
+   int targets=0,close_targets=0;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+      targets++;
+      if(SymbolMatchesCloseScope(g_sets[idx].sym,clean_scope))
+         close_targets++;
+   }
+
+   if(targets<=0)
+   {
+      MessageBox("No linked child charts are available for scoped close.","Close "+currency,MB_OK|MB_ICONWARNING);
+      return false;
+   }
+   if(close_targets<=0)
+   {
+      MessageBox("No linked portfolio rows contain "+currency+".","Close "+currency,MB_OK|MB_ICONWARNING);
+      return false;
+   }
+
+   if(currency=="USD")      m_usd_filter_state=GOAT_CURRENCY_FILTER_PAUSE;
+   else if(currency=="EUR") m_eur_filter_state=GOAT_CURRENCY_FILTER_PAUSE;
+   else if(currency=="GBP") m_gbp_filter_state=GOAT_CURRENCY_FILTER_PAUSE;
+   else if(currency=="JPY") m_jpy_filter_state=GOAT_CURRENCY_FILTER_PAUSE;
+   SaveCurrencyPolicyState();
+
+   m_portfolio_command_id=(long)TimeCurrent()*1000+(long)(GetTickCount()%1000);
+   m_portfolio_command_pending=true;
+   m_portfolio_command_type=GOAT_DASH_CMD_CLOSE_SCOPE;
+   m_portfolio_command_target_pause=0;
+   m_portfolio_command_close_scope=clean_scope;
+   m_portfolio_command_time=TimeCurrent();
+
+   datetime expires_at=TimeCurrent()+30;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+      int mask=CurrencyPolicyMaskForSymbol(g_sets[idx].sym);
+      int command_value=GoatCloseCommandValue(clean_scope,mask);
+      g_sets[idx].target_trade_allow_mask=mask;
+      g_sets[idx].target_close_scope=clean_scope;
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_TYPE),(double)GOAT_DASH_CMD_CLOSE_SCOPE);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_VALUE),(double)command_value);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_EXPIRES),(double)expires_at);
+      EventChartCustom(g_sets[idx].cid,GOAT_EVENT_DASHBOARD_COMMAND,m_portfolio_command_id,(double)command_value,"Close"+currency);
+      g_sets[idx].status=(SymbolMatchesCloseScope(g_sets[idx].sym,clean_scope) ? "Closing" : "Syncing");
+   }
+
+   GlobalVariablesFlush();
+   string detail="Close "+currency+" exposure dispatched and "+currency+" policy set to Paused";
+   AppendPortfolioCommandAudit("DISPATCH",targets,0,0,detail);
+   AppendCurrencyPolicyAudit("CLOSE_SCOPE",detail);
+   AppendCloseScopeAudit("DISPATCH",clean_scope,targets,close_targets,0,0,0,detail);
    MarkStateDirty();
    return true;
 }
@@ -1733,6 +1984,7 @@ bool CGOATDashboard::SendPortfolioCommand(const int command_type,const int comma
    m_portfolio_command_pending=true;
    m_portfolio_command_type=command_type;
    m_portfolio_command_target_pause=(command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE ? 1 : command_value);
+   m_portfolio_command_close_scope=GOAT_CLOSE_SCOPE_ALL;
    m_portfolio_command_time=TimeCurrent();
 
    datetime expires_at=TimeCurrent()+30;
@@ -1750,6 +2002,8 @@ bool CGOATDashboard::SendPortfolioCommand(const int command_type,const int comma
 
    GlobalVariablesFlush();
    AppendPortfolioCommandAudit("DISPATCH",targets,0,0,"Command sent to linked child charts");
+   if(command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE)
+      AppendCloseScopeAudit("DISPATCH",GOAT_CLOSE_SCOPE_ALL,targets,targets,0,0,0,"Emergency close sent to linked child charts");
    MarkStateDirty();
    return(true);
 }
@@ -2479,7 +2733,7 @@ void CGOATDashboard::UpdatePortfolioInfoHeader(void)
    }
    string state_text=(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_PAUSED ? "Paused" : "Running");
    if(m_portfolio_command_pending)
-      state_text=(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE ? "Closing" : (m_portfolio_command_target_pause!=0 ? "Pausing" : "Resuming"));
+      state_text=((m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE || m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE) ? "Closing" : (m_portfolio_command_target_pause!=0 ? "Pausing" : "Resuming"));
    else if(m_risk_policy_breached)
       state_text="Risk: "+RiskBreachText(m_risk_policy_breach_code);
 
@@ -3138,7 +3392,7 @@ void CGOATDashboard::UpdatePortfolioRow()
 
     bool all_deployed=(rows>0 && pending_rows==0);
     string portfolio_status=(pending_rows>0 ? "Pending" : "Deployed");
-    if(m_portfolio_command_pending) portfolio_status=(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE ? "Closing" : "Syncing");
+    if(m_portfolio_command_pending) portfolio_status=((m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE || m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE) ? "Closing" : "Syncing");
     else if(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_PAUSED) portfolio_status="Paused";
     color portfolio_status_clr=(portfolio_status=="Pending" ? clrRed : (portfolio_status=="Deployed" ? clrWhite : StatusColor(portfolio_status)));
     string action_text=(all_deployed ? "Activated" : "ActivateAll");
@@ -3227,16 +3481,19 @@ void CGOATDashboard::UpdatePortfolioCommandCompletion(void)
 {
    if(!m_portfolio_command_pending) return;
 
-   int targets=0,applied=0,failed=0,responses=0;
+   int targets=0,applied=0,failed=0,responses=0,close_targets=0;
    int closed_positions=0,close_errors=0,remaining_positions=0;
    bool target_paused=(m_portfolio_command_target_pause!=0);
    bool close_command=(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE);
+   bool close_scope_command=(m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE);
    bool currency_command=(m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS);
    bool exposure_command=(m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY);
    for(int idx=0; idx<ArraySize(g_sets); ++idx)
    {
       if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
       targets++;
+      if(close_command || (close_scope_command && SymbolMatchesCloseScope(g_sets[idx].sym,m_portfolio_command_close_scope)))
+         close_targets++;
       if(g_sets[idx].last_ack_id!=m_portfolio_command_id) continue;
       responses++;
       closed_positions+=g_sets[idx].ack_closed;
@@ -3246,6 +3503,13 @@ void CGOATDashboard::UpdatePortfolioCommandCompletion(void)
       if(close_command)
       {
          if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0)
+            applied++;
+         else if(g_sets[idx].last_ack_status!=0)
+            failed++;
+      }
+      else if(close_scope_command)
+      {
+         if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0 && g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask)
             applied++;
          else if(g_sets[idx].last_ack_status!=0)
             failed++;
@@ -3288,6 +3552,32 @@ void CGOATDashboard::UpdatePortfolioCommandCompletion(void)
    }
 
    bool command_timeout=(m_portfolio_command_time>0 && TimeCurrent()-m_portfolio_command_time>35);
+   if(close_scope_command)
+   {
+      if(responses>=targets || command_timeout)
+      {
+         string detail=StringFormat("scope=%s responses=%d closed_positions=%d close_errors=%d remaining=%d",
+                                    CloseScopeLabel(m_portfolio_command_close_scope),responses,closed_positions,close_errors,remaining_positions);
+         string stage=(command_timeout && responses<targets ? "TIMEOUT" : "COMPLETE");
+         AppendPortfolioCommandAudit(stage,targets,applied,failed,detail);
+         AppendCloseScopeAudit(stage,m_portfolio_command_close_scope,targets,close_targets,closed_positions,close_errors,remaining_positions,detail);
+         m_portfolio_command_pending=false;
+         for(int idx=0; idx<ArraySize(g_sets); ++idx)
+         {
+            if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+            if(g_sets[idx].last_ack_id!=m_portfolio_command_id)
+               g_sets[idx].status="No Ack";
+            else if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0 && g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask)
+               g_sets[idx].status=(SymbolMatchesCloseScope(g_sets[idx].sym,m_portfolio_command_close_scope) ? "Closed" : CurrencyPolicyLabelForMask(g_sets[idx].trade_allow_mask));
+            else
+               g_sets[idx].status="Close Failed";
+         }
+         MarkStateDirty();
+         UpdateHeaderStateButtons();
+      }
+      return;
+   }
+
    if(exposure_command)
    {
       if(responses>=targets || command_timeout)
@@ -3343,6 +3633,7 @@ void CGOATDashboard::UpdatePortfolioCommandCompletion(void)
          string detail=StringFormat("responses=%d closed_positions=%d close_errors=%d remaining=%d",
                                     responses,closed_positions,close_errors,remaining_positions);
          AppendPortfolioCommandAudit(command_timeout && responses<targets ? "TIMEOUT" : "COMPLETE",targets,applied,failed,detail);
+         AppendCloseScopeAudit(command_timeout && responses<targets ? "TIMEOUT" : "COMPLETE",GOAT_CLOSE_SCOPE_ALL,targets,targets,closed_positions,close_errors,remaining_positions,detail);
          m_portfolio_command_pending=false;
          m_portfolio_run_state=GOAT_PORTFOLIO_RUN_PAUSED;
          GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),1.0);

@@ -826,11 +826,18 @@ bool     PrevBuyExit, PrevSellExit;
 #define GOAT_DASH_CMD_PORTFOLIO_CLOSE 2
 #define GOAT_DASH_CMD_TRADE_PERMISSIONS 3
 #define GOAT_DASH_CMD_EXPOSURE_POLICY    4
+#define GOAT_DASH_CMD_CLOSE_SCOPE        5
 #define GOAT_DASH_TRADE_ALLOW_BUY       1
 #define GOAT_DASH_TRADE_ALLOW_SELL      2
 #define GOAT_EXPOSURE_ALLOW             0
 #define GOAT_EXPOSURE_SYMBOL_DIRECTION  1
 #define GOAT_EXPOSURE_CURRENCY_DIRECTION 2
+#define GOAT_CLOSE_SCOPE_ALL            0
+#define GOAT_CLOSE_SCOPE_USD            1
+#define GOAT_CLOSE_SCOPE_EUR            2
+#define GOAT_CLOSE_SCOPE_GBP            3
+#define GOAT_CLOSE_SCOPE_JPY            4
+#define GOAT_CLOSE_SCOPE_VALUE_FACTOR   16
 #define GOAT_DASH_ACK_APPLIED         1
 #define GOAT_DASH_ACK_REJECTED        2
 #define GOAT_DASH_ACK_FAILED          3
@@ -915,6 +922,28 @@ bool     DashboardPortfolioPaused=false;
 bool     DashboardTradeAllowBuy=true,DashboardTradeAllowSell=true;
 int      DashboardExposurePolicyMode=GOAT_EXPOSURE_ALLOW;
 long     DashboardPortfolioCommandIdApplied=0;
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int GoatNormalizeCloseScope(const int scope)
+  {
+   if(scope<GOAT_CLOSE_SCOPE_ALL || scope>GOAT_CLOSE_SCOPE_JPY)
+      return GOAT_CLOSE_SCOPE_ALL;
+   return scope;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int GoatCloseCommandValue(const int scope,const int trade_mask)
+  {
+   return GoatNormalizeCloseScope(scope)+GOAT_CLOSE_SCOPE_VALUE_FACTOR*(trade_mask&(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL));
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int GoatCloseCommandScope(const int command_value)
+  {
+   return GoatNormalizeCloseScope(command_value%GOAT_CLOSE_SCOPE_VALUE_FACTOR);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int GoatCloseCommandTradeMask(const int command_value)
+  {
+   return (command_value/GOAT_CLOSE_SCOPE_VALUE_FACTOR)&(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL);
+  }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 string GetFontName(ENUM_FONT FontNumber)
   {

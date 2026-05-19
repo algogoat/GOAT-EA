@@ -203,6 +203,43 @@ bool DashboardEntryAllowed(const int op)
    return true;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+string DashboardCloseScopeCurrency(const int scope)
+  {
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(clean_scope==GOAT_CLOSE_SCOPE_USD) return "USD";
+   if(clean_scope==GOAT_CLOSE_SCOPE_EUR) return "EUR";
+   if(clean_scope==GOAT_CLOSE_SCOPE_GBP) return "GBP";
+   if(clean_scope==GOAT_CLOSE_SCOPE_JPY) return "JPY";
+   return "";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool DashboardSymbolMatchesCloseScope(const string symbol,const int scope)
+  {
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(clean_scope==GOAT_CLOSE_SCOPE_ALL) return true;
+
+   string base="",quote="";
+   if(!DashboardSymbolCurrencies(symbol,base,quote)) return false;
+   string currency=DashboardCloseScopeCurrency(clean_scope);
+   return(base==currency || quote==currency);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int DashboardBusCountCloseScopePositions(const int scope)
+  {
+   int count=0;
+   if(!DashboardSymbolMatchesCloseScope(Symbol(),scope)) return 0;
+
+   CPositionInfo position;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      if(!position.SelectByIndex(i))                         continue;
+      if(position.Symbol()!=_Symbol)                          continue;
+      if(position.Magic()!=MAGIC1 && MAGIC1!=0)               continue;
+      count++;
+   }
+   return count;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 class SEQUENCE
   {
    public:
@@ -2412,6 +2449,33 @@ int DashboardBusCloseOwnPositions(int &close_errors)
    return closed_positions;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+int DashboardBusCloseScopePositions(const int scope,int &close_errors)
+  {
+   close_errors=0;
+   int closed_positions=0;
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(!DashboardSymbolMatchesCloseScope(Symbol(),clean_scope))
+      return 0;
+
+   CTrade m_trade;
+   CPositionInfo position;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      if(!position.SelectByIndex(i))                         continue;
+      if(position.Symbol()!=_Symbol)                          continue;
+      if(position.Magic()!=MAGIC1 && MAGIC1!=0)               continue;
+
+      if(!m_trade.PositionClose(position.Ticket()))
+         close_errors++;
+      else
+         closed_positions++;
+   }
+
+   if(clean_scope==GOAT_CLOSE_SCOPE_ALL || closed_positions>0)
+      Pause_Flag=true;
+   return closed_positions;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 void DashboardBusAckCloseCommand(const long command_id,const int ack_status,const int closed_positions,const int close_errors,const int remaining)
   {
    if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
@@ -2463,6 +2527,37 @@ void DashboardBusApplyCommand(const long command_id,const int command_type,const
       int ack_status=(close_errors==0 && remaining==0 ? GOAT_DASH_ACK_APPLIED : GOAT_DASH_ACK_FAILED);
       DashboardBusAckCloseCommand(command_id,ack_status,closed_positions,close_errors,remaining);
       DashboardBusSendStatus(remaining==0 ? "Paused" : "Close Failed");
+      return;
+   }
+
+   if(command_type==GOAT_DASH_CMD_CLOSE_SCOPE)
+   {
+      int close_scope=GoatCloseCommandScope(command_value);
+      int trade_mask=GoatCloseCommandTradeMask(command_value);
+      DashboardTradeAllowBuy=((trade_mask&GOAT_DASH_TRADE_ALLOW_BUY)!=0);
+      DashboardTradeAllowSell=((trade_mask&GOAT_DASH_TRADE_ALLOW_SELL)!=0);
+      if(close_scope==GOAT_CLOSE_SCOPE_ALL)
+      {
+         DashboardPortfolioPaused=true;
+         GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),1.0);
+         GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),1.0);
+      }
+
+      DashboardPortfolioCommandIdApplied=command_id;
+      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK),(double)DashboardTradePermissionMask());
+
+      int close_errors=0;
+      int closed_positions=DashboardBusCloseScopePositions(close_scope,close_errors);
+      int remaining=DashboardBusCountCloseScopePositions(close_scope);
+      int ack_status=(close_errors==0 && remaining==0 ? GOAT_DASH_ACK_APPLIED : GOAT_DASH_ACK_FAILED);
+      DashboardBusAckCloseCommand(command_id,ack_status,closed_positions,close_errors,remaining);
+
+      string policy_status="Active";
+      if(DashboardPortfolioPaused) policy_status="Paused";
+      else if(!DashboardTradeAllowBuy && !DashboardTradeAllowSell) policy_status="Cur Paused";
+      else if(DashboardTradeAllowBuy && !DashboardTradeAllowSell)  policy_status="Buy Only";
+      else if(!DashboardTradeAllowBuy && DashboardTradeAllowSell)  policy_status="Sell Only";
+      DashboardBusSendStatus(remaining==0 ? policy_status : "Close Failed");
       return;
    }
 

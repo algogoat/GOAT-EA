@@ -1998,11 +1998,20 @@ void CStrategyTesterDialog::OnClickAddQueue(void)
          AddQueueSingle();
          added++;
       }
+      if(sel!="")
+      {
+         if(!m_cmbSymbol.SelectByText(sel))
+         {
+            m_cmbSymbol.AddItem(sel);
+            m_cmbSymbol.SelectByText(sel);
+         }
+      }
       MessageBox((string)added+" item(s) added from preset: "+StripTxtExt(presetFile),"Info",MB_OK|MB_ICONINFORMATION);
       return;
    }
    // Not a preset -> single-add (original behaviour)
    AddQueueSingle();
+   if(sel!="") m_cmbSymbol.SelectByText(sel);
 }
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickSetPresets(void)

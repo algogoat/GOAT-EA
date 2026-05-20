@@ -1557,12 +1557,11 @@ string GoatOptCreateRunPath(const string ea_name,const string server_name,string
    run_name=GoatOptSafePathPart(run_name);
    string root=GoatOptRunsPath(ea_name,server_name);
    GoatOptEnsureCommonFolderTree(root);
-   string stamp=GoatOptTimestampFolder();
    string run_path="";
    for(int i=0;i<100;++i)
    {
       string suffix=(i==0 ? "" : "_"+IntegerToString(i+1));
-      run_path=root+"\\"+stamp+"_"+run_name+suffix;
+      run_path=root+"\\"+run_name+suffix;
       if(!FileIsExist(run_path+"\\manifest.ini",FILE_COMMON)) break;
    }
    GoatOptEnsureCommonFolderTree(run_path);

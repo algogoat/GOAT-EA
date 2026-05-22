@@ -15,11 +15,26 @@ string PowerShellSingleQuoted(string text)
    return text;
   }
 //+------------------------------------------------------------------+
-void AddCommand(string path)
+void AddCommand(string configPath,string guardPath="",string launchId="")
   {
    //if(!TerminalInfoInteger(TERMINAL_DLLS_ALLOWED)) MessageBox()
    string terminal_path = TerminalInfoString(TERMINAL_PATH) + "\\terminal64.exe";
-   string config_path   = TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\"+path+"\\config.ini";
+   string config_rel    = configPath;
+   StringTrimLeft(config_rel);
+   StringTrimRight(config_rel);
+   StringReplace(config_rel,"/","\\");
+   if(StringLen(config_rel)<4 || StringSubstr(config_rel,StringLen(config_rel)-4)!=".ini")
+      config_rel+="\\config.ini";
+   string config_path   = TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\"+config_rel;
+   string guard_path    = "";
+   if(guardPath!="")
+   {
+      string guard_rel = guardPath;
+      StringTrimLeft(guard_rel);
+      StringTrimRight(guard_rel);
+      StringReplace(guard_rel,"/","\\");
+      guard_path = TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\"+guard_rel;
+   }
    // Get the current terminal's PID for the 'Wait-Process'
    uint    pid      = GetCurrentProcessId();
    string pidStr   = IntegerToString(pid);
@@ -27,12 +42,27 @@ void AddCommand(string path)
    // Build a PowerShell command to:
    //  1) Wait for this process to exit
    //  2) Launch a new terminal64 with the /config parameter
-   string psCommand = 
+   string guardCommand = "";
+   if(guard_path!="" && launchId!="")
+   {
+      guardCommand =
+       "$gp='" + PowerShellSingleQuoted(guard_path) + "'; " +
+       "$lid='" + PowerShellSingleQuoted(launchId) + "'; " +
+       "$cr='" + PowerShellSingleQuoted(config_rel) + "'; " +
+       "if(!(Test-Path -LiteralPath $gp)){exit}; " +
+       "$guard=Get-Content -LiteralPath $gp -Raw -ErrorAction SilentlyContinue; " +
+       "if($guard -notlike ('*LaunchId='+$lid+'*')){exit}; " +
+       "if($guard -notlike ('*ConfigPath='+$cr+'*')){exit}; ";
+   }
+
+   string psCommand =
        "$ErrorActionPreference='SilentlyContinue'; " +
        "$tp='" + PowerShellSingleQuoted(terminal_path) + "'; " +
        "$cp='" + PowerShellSingleQuoted(config_path) + "'; " +
        "Wait-Process -Id " + pidStr + " -ErrorAction SilentlyContinue; " +
        "Start-Sleep -Milliseconds 500; " +
+       guardCommand +
+       "if(!(Test-Path -LiteralPath $cp)){exit}; " +
        "$q=[char]34; " +
        "Start-Process -FilePath $tp -ArgumentList ('/config:'+$q+$cp+$q)";
    // Parameters to run PowerShell in no-profile, bypass execution policy

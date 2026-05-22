@@ -1459,6 +1459,16 @@ string GoatOptActivePointerPath(const string ea_name,const string server_name)
    return GoatOptBasePath(ea_name,server_name)+"\\active_optimization_run.ini";
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptActiveConfigPath(const string ea_name,const string server_name)
+  {
+   return GoatOptBasePath(ea_name,server_name)+"\\active_optimization_config.ini";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptLaunchGuardPath(const string ea_name,const string server_name)
+  {
+   return GoatOptBasePath(ea_name,server_name)+"\\active_optimization_launch.ini";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 void GoatOptEnsureCommonFolderTree(string path)
   {
    StringTrimLeft(path);

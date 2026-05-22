@@ -3655,8 +3655,11 @@ void SeedFarmingAddFrame(double fitness,double profit,double expected,double pf,
       Print("SeedFarming: FrameAdd failed. error=",GetLastError());
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+bool g_batchStartupAccepted=false;
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 int OnTesterInit()
   {
+   g_batchStartupAccepted=false;
    Print(EA_Name+": "+Symbol()+" Optimization Initialization.");//,TerminalInfoString(TERMINAL_DATA_PATH));
    Sleep(100);
    bool seedFarming=SeedFarmingPrepareReceiver();
@@ -3673,6 +3676,7 @@ int OnTesterInit()
     GlobalVariableSet("TerminalRunning",1.0);
     if(UpdateBatchQueueAndWriteConfigFile(true,false,Key,EA_Name,Server))
     {
+     g_batchStartupAccepted=true;
      if(terminalWasRunning) WriteLog("INIT: Existing batch state recovered/continued for "+Symbol()+".",false,Key,EA_Name,Server);
      GlobalVariableSet("RefreshQueue",1.0);
      WriteLog("INIT: Batch Queue updated",false,Key,EA_Name,Server);
@@ -3685,6 +3689,10 @@ int OnTesterInit()
       ShowPrompt("Optimization Error...","Batch terminal state does not match queue!","Chance of duplicate Optimization...","");
      }
      WriteLog("INIT: ❌ Batch Queue update Error",false,Key,EA_Name,Server);
+     GlobalVariableDel("BatchOnGoing");
+     GlobalVariableDel("TerminalRunning");
+     GlobalVariableSet("RefreshQueue",1.0);
+     return INIT_FAILED;
     }
      Sleep(500);
     }
@@ -4024,6 +4032,15 @@ void OnTesterDeinit()
    
    if(GlobalVariableGet("BatchOnGoing")!=0)
    {
+    if(!g_batchStartupAccepted)
+    {
+     WriteLog("DEINIT: ❌ Skipping batch XML migration/export because tester startup was not accepted for the active queue item.",true,Key,EA_Name,Server);
+     ShowPrompt("Batch Startup Rejected","Tester config did not match the active queue item.","Reload Optimization Studio and start batch again.","");
+     GlobalVariableDel("BatchOnGoing");
+     GlobalVariableDel("TerminalRunning");
+     GlobalVariableSet("RefreshQueue",1.0);
+     return;
+    }
     WriteLog("DEINIT: Optimization Ended, "+Symbol()+"",false,Key,EA_Name,Server);
     ShowPrompt("Optimization Ended!","Waiting a few seconds..."," ","");   Sleep(4000);
     ShowPrompt("Processing Optimization...","Migrating XML files..."," ","");

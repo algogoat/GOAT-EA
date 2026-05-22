@@ -911,15 +911,123 @@ string ActiveQueueStrategyName()
    return NormalizeStrategyName(strategy);
   }
 //+------------------------------------------------------------------+
-bool QueueItemMatchesCurrentRun(string queueItem)
+string QueueItemWithState(string queueItem,const string newState)
+  {
+   string parts[];
+   if(StringSplit(queueItem,';',parts)==3)
+   {
+      int pos=StringFind(parts[1],"_",0);
+      if(pos>=0) parts[1]=newState+StringSubstr(parts[1],pos);
+      else       parts[1]=newState;
+      return ";"+parts[1]+";"+parts[2];
+   }
+   return queueItem;
+  }
+//+------------------------------------------------------------------+
+string NormalizeQueueCompareValue(string value)
+  {
+   StringTrimLeft(value);
+   StringTrimRight(value);
+   StringReplace(value,"/","\\");
+   while(StringFind(value,"\\\\",0)>=0) StringReplace(value,"\\\\","\\");
+   return value;
+  }
+//+------------------------------------------------------------------+
+bool QueueSettingValueMatches(const string queueItem,const string settings,const string key,string &details)
+  {
+   string expected=NormalizeQueueCompareValue(GoatOptQueueValue(queueItem,key));
+   string loaded  =NormalizeQueueCompareValue(GoatOptReadIniValue(settings,key));
+   if(expected=="" || loaded=="") return true;
+   if(expected==loaded) return true;
+   details="Tester "+key+" mismatch. Queue="+expected+" Tester="+loaded;
+   return false;
+  }
+//+------------------------------------------------------------------+
+bool QueueItemMatchesLaunchGuard(const string queueItem,string &details)
+  {
+   string guard=GoatOptReadTextFile(GoatOptLaunchGuardPath(EA_Name,Server));
+   if(guard=="") return true;
+
+   string runPath=NormalizeQueueCompareValue(GoatOptCurrentRunPath(EA_Name,Server));
+   string guardRun=NormalizeQueueCompareValue(GoatOptReadIniValue(guard,"RunPath"));
+   if(guardRun!="" && runPath!="" && guardRun!=runPath)
+   {
+      details="Launch guard run mismatch. Guard="+guardRun+" Active="+runPath;
+      return false;
+   }
+
+   string guardTitle=GoatOptReadIniValue(guard,"QueuedTitle");
+   string title=QueueItemTitle(queueItem);
+   if(guardTitle!="" && title!="" && guardTitle!=title)
+   {
+      details="Launch guard item mismatch. Guard="+guardTitle+" Queue="+title;
+      return false;
+   }
+
+   string guardStrategy=NormalizeStrategyName(GoatOptReadIniValue(guard,"Strategy"));
+   string strategy=QueueItemStrategyName(queueItem);
+   if(guardStrategy!="" && strategy!="" && guardStrategy!=strategy)
+   {
+      details="Launch guard strategy mismatch. Guard="+guardStrategy+" Queue="+strategy;
+      return false;
+   }
+
+   string guardSymbol=GoatOptReadIniValue(guard,"Symbol");
+   string symbol=QueueItemSymbolName(queueItem);
+   if(guardSymbol!="" && symbol!="" && guardSymbol!=symbol)
+   {
+      details="Launch guard symbol mismatch. Guard="+guardSymbol+" Queue="+symbol;
+      return false;
+   }
+
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool QueueItemMatchesTesterSettings(const string queueItem,string &details)
+  {
+   string settings="";
+   if(!MTTESTER::GetSettings2(settings) || settings=="")
+   {
+      details="Tester settings unavailable; checked symbol and strategy only.";
+      return true;
+   }
+
+   if(!QueueSettingValueMatches(queueItem,settings,"Symbol",details))      return false;
+   if(!QueueSettingValueMatches(queueItem,settings,"Period",details))      return false;
+   if(!QueueSettingValueMatches(queueItem,settings,"FromDate",details))    return false;
+   if(!QueueSettingValueMatches(queueItem,settings,"ToDate",details))      return false;
+   if(!QueueSettingValueMatches(queueItem,settings,"ForwardMode",details)) return false;
+   if(!QueueSettingValueMatches(queueItem,settings,"ForwardDate",details)) return false;
+   if(!QueueSettingValueMatches(queueItem,settings,"Report",details))      return false;
+
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool QueueItemMatchesCurrentRun(string queueItem,string &details)
   {
    string queuedSymbol=QueueItemSymbolName(queueItem);
    string queuedStrategy=QueueItemStrategyName(queueItem);
    string activeStrategy=ActiveQueueStrategyName();
 
-   if(queuedSymbol!=Symbol()) return false;
-   if(queuedStrategy=="" || activeStrategy=="") return true;
-   return (queuedStrategy==activeStrategy);
+   if(queuedSymbol!=Symbol())
+   {
+      details="Symbol mismatch. Queue="+queuedSymbol+" Tester="+Symbol();
+      return false;
+   }
+   if(queuedStrategy!="" && activeStrategy!="" && queuedStrategy!=activeStrategy)
+   {
+      details="Strategy mismatch. Queue="+queuedStrategy+" Tester="+activeStrategy;
+      return false;
+   }
+   if(!QueueItemMatchesLaunchGuard(queueItem,details)) return false;
+   if(!QueueItemMatchesTesterSettings(queueItem,details)) return false;
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool QueueItemMatchesCurrentRun(string queueItem)
+  {
+   string details="";
+   return QueueItemMatchesCurrentRun(queueItem,details);
   }
 //+------------------------------------------------------------------+
 struct SBatchProgressStats
@@ -2043,6 +2151,8 @@ void CStrategyTesterDialog::OnClickDelQ(void)
    if(FileIsExist(Key_+"\\OnGoingBatch."+Key_,FILE_COMMON)) FileDelete(Key_+"\\OnGoingBatch."+Key_,FILE_COMMON);//FILE_TXT
    GlobalVariableDel("BatchOnGoing");
    GlobalVariableDel("TerminalRunning");
+   FileDelete(GoatOptLaunchGuardPath(EA_Name_,Server_),FILE_COMMON);
+   FileDelete(GoatOptActiveConfigPath(EA_Name_,Server_),FILE_COMMON);
    if(Path_RunFolder!="")
    {
       FileDelete(GoatOptActivePointerPath(EA_Name_,Server_),FILE_COMMON);
@@ -2450,6 +2560,7 @@ void CStrategyTesterDialog::OnClickStop(void)
       if(StringSplit(items[i],';',parts)==3 && StringFind(parts[1],"Pending",0)==0) pendingCount++;
    }
    GlobalVariableDel("TerminalRunning");
+   FileDelete(GoatOptLaunchGuardPath(EA_Name_,Server_),FILE_COMMON);
    if(pendingCount==0)
    {
       RefreshBatchStartButtonState();
@@ -2532,17 +2643,33 @@ bool UpdateBatchQueueAndWriteConfigFile(bool init,bool error,string Key_,string 
    {
     if(ongoingIndex >= 0)
     {
-     if(QueueItemMatchesCurrentRun(QueueItems[ongoingIndex]))
+     string matchDetails="";
+     if(QueueItemMatchesCurrentRun(QueueItems[ongoingIndex],matchDetails))
      {
       WriteLog("INIT: Recovered existing OnGoing queue item after terminal relaunch: "+QueueItems[ongoingIndex],false,Key_,EA_Name_,Server_);
       return true;
      }
      WriteLog("INIT: OnGoing queue item does not match current optimization. Queue="+QueueItemTitle(QueueItems[ongoingIndex])+
-              " Current="+Symbol()+":"+ActiveQueueStrategyName(),true,Key_,EA_Name_,Server_);
+              " Current="+Symbol()+":"+ActiveQueueStrategyName()+" Details="+matchDetails,true,Key_,EA_Name_,Server_);
+     GoatOptAppendTimeline(EA_Name_,Server_,"STALE_STARTUP",QueueItemTitle(QueueItems[ongoingIndex]),"Rejected",matchDetails);
+     QueueItems[ongoingIndex]=QueueItemWithState(QueueItems[ongoingIndex],"Pending");
+     ReconstructFile(Path_QueueBatch,QueueItems);
+     FileDelete(GoatOptLaunchGuardPath(EA_Name_,Server_),FILE_COMMON);
      return false;
     }
     if(QueuedIndex  >= 0)
     {
+     string matchDetails="";
+     if(!QueueItemMatchesCurrentRun(QueueItems[QueuedIndex],matchDetails))
+     {
+      WriteLog("INIT: Queued queue item does not match current optimization. Queue="+QueueItemTitle(QueueItems[QueuedIndex])+
+               " Current="+Symbol()+":"+ActiveQueueStrategyName()+" Details="+matchDetails,true,Key_,EA_Name_,Server_);
+      GoatOptAppendTimeline(EA_Name_,Server_,"STALE_STARTUP",QueueItemTitle(QueueItems[QueuedIndex]),"Rejected",matchDetails);
+      QueueItems[QueuedIndex]=QueueItemWithState(QueueItems[QueuedIndex],"Pending");
+      ReconstructFile(Path_QueueBatch,QueueItems);
+      FileDelete(GoatOptLaunchGuardPath(EA_Name_,Server_),FILE_COMMON);
+      return false;
+     }
      StringReplace(QueueItems[QueuedIndex] , "Queued", "OnGoing"); StringTrimLeft(QueueItems[QueuedIndex]);
      WriteLog("Queued->OnGoing: "+QueueItems[QueuedIndex],false,Key_,EA_Name_,Server_);
      GoatOptAppendTimeline(EA_Name_,Server_,"QUEUE_STATE",QueueItemTitle(QueueItems[QueuedIndex]),"OnGoing","Queued item recovered after restart");
@@ -2578,6 +2705,8 @@ bool UpdateBatchQueueAndWriteConfigFile(bool init,bool error,string Key_,string 
     else
     {
      GlobalVariableDel("BatchOnGoing");
+     FileDelete(GoatOptLaunchGuardPath(EA_Name_,Server_),FILE_COMMON);
+     FileDelete(GoatOptActiveConfigPath(EA_Name_,Server_),FILE_COMMON);
      ReconstructFile(Path_QueueBatch,QueueItems);
      return true;
     }
@@ -2628,18 +2757,40 @@ bool ActivatePending(string QueueItem,string Key_,string EA_Name_,string Server_
    EnsureCommonFolderTree(strategyDir);
    string testerInputs = GetFileContent(inputsPath);
    if(testerInputs=="") {WriteLog("Cannot Activate Queue Item. Inputs file missing or empty: "+inputsPath,true,Key_,EA_Name_,Server_); return false;}
-   //StringTrimLeft(QueueItem); StringTrimRight(QueueItem);
-   int handle = FileOpen(strategyDir+"\\config.ini",FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
-   if(handle != INVALID_HANDLE)
+   string configBody=(QueueItem=="" ? QueueItem : QueueItem+"\r\n[TesterInputs]\r\n"+testerInputs);
+   string auditConfig=strategyDir+"\\config.ini";
+   string activeConfig=GoatOptActiveConfigPath(EA_Name_,Server_);
+   string guardPath=GoatOptLaunchGuardPath(EA_Name_,Server_);
+   if(!GoatOptWriteTextFile(auditConfig,configBody))
    {
-    if(QueueItem=="") FileWrite(handle,QueueItem);
-    else              FileWrite(handle,QueueItem+"\n[TesterInputs]\n"+testerInputs);
-    FileClose(handle);
-    AddCommand(strategyDir);
-    return true;
+      WriteLog("Cannot create config.ini for Queue Item: "+strategyDir,true,Key_,EA_Name_,Server_);
+      return false;
    }
-   WriteLog("Cannot create config.ini for Queue Item: "+strategyDir,true,Key_,EA_Name_,Server_);
-   return false;
+   if(!GoatOptWriteTextFile(activeConfig,configBody))
+   {
+      WriteLog("Cannot create active optimization config: "+activeConfig,true,Key_,EA_Name_,Server_);
+      return false;
+   }
+
+   string launchId=IntegerToString((long)TimeLocal())+"_"+IntegerToString((long)GetTickCount());
+   string guard="[ActiveOptimizationLaunch]\r\n"
+               +"LaunchId="+launchId+"\r\n"
+               +"RunPath="+GoatOptCurrentRunPath(EA_Name_,Server_)+"\r\n"
+               +"ConfigPath="+activeConfig+"\r\n"
+               +"AuditConfigPath="+auditConfig+"\r\n"
+               +"QueuedTitle="+QueueItemTitle(QueueItem)+"\r\n"
+               +"Symbol="+QueueItemSymbolName(QueueItem)+"\r\n"
+               +"Strategy="+Strategy+"\r\n"
+               +"CreatedAt="+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\r\n";
+   if(!GoatOptWriteTextFile(guardPath,guard))
+   {
+      WriteLog("Cannot create active optimization launch guard: "+guardPath,true,Key_,EA_Name_,Server_);
+      return false;
+   }
+
+   WriteLog("Active optimization config prepared: "+activeConfig,false,Key_,EA_Name_,Server_);
+   AddCommand(activeConfig,guardPath,launchId);
+   return true;
   }
 //+------------------------------------------------------------------+
 bool EnsureCommonFolderTree(string path)

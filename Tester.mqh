@@ -79,6 +79,85 @@ struct SettingsStrings
   };
 SettingsStrings strT;
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+#define GOAT_BATCH_RESTART_PENDING_GV       "GOAT_BatchRestartPending"
+#define GOAT_BATCH_RESTART_REQUESTED_AT_GV  "GOAT_BatchRestartRequestedAt"
+#define GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV "GOAT_BatchRestartStopAttempts"
+#define GOAT_BATCH_RESTART_LAST_LOG_GV      "GOAT_BatchRestartLastLog"
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatBatchDeferredRestartPending(void)
+  {
+   return (GlobalVariableGet(GOAT_BATCH_RESTART_PENDING_GV)>0.0);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatBatchClearDeferredRestart(void)
+  {
+   GlobalVariableDel(GOAT_BATCH_RESTART_PENDING_GV);
+   GlobalVariableDel(GOAT_BATCH_RESTART_REQUESTED_AT_GV);
+   GlobalVariableDel(GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV);
+   GlobalVariableDel(GOAT_BATCH_RESTART_LAST_LOG_GV);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatBatchRequestDeferredRestart(const string reason,string Key_,string EA_Name_,string Server_)
+  {
+   GlobalVariableSet(GOAT_BATCH_RESTART_PENDING_GV,1.0);
+   GlobalVariableSet(GOAT_BATCH_RESTART_REQUESTED_AT_GV,(double)TimeLocal());
+   GlobalVariableSet(GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV,0.0);
+   GlobalVariableSet(GOAT_BATCH_RESTART_LAST_LOG_GV,0.0);
+   WriteLog("Batch terminal restart deferred until Strategy Tester is idle. Reason: "+reason,false,Key_,EA_Name_,Server_);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatBatchTesterIdleConfirmed(const int stableMs=750)
+  {
+   if(!MTTESTER::IsIdle()) return false;
+   Sleep(stableMs);
+   return MTTESTER::IsIdle();
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatBatchTryCloseTerminalWhenTesterIdle(string Key_,string EA_Name_,string Server_,
+                                             const int maxStopRequests=3,
+                                             const int stopWindowSec=120,
+                                             const int logIntervalSec=30)
+  {
+   if(!GoatBatchDeferredRestartPending()) return false;
+
+   if(GoatBatchTesterIdleConfirmed())
+     {
+      WriteLog("Batch restart: Strategy Tester is idle; requesting terminal close.",false,Key_,EA_Name_,Server_);
+      bool closeRequested=TerminalClose(99);
+      if(closeRequested) GoatBatchClearDeferredRestart();
+      else WriteLog("Batch restart: terminal close request failed; deferred restart remains pending.",true,Key_,EA_Name_,Server_);
+      return closeRequested;
+     }
+
+   datetime now=(datetime)TimeLocal();
+   datetime requestedAt=(datetime)GlobalVariableGet(GOAT_BATCH_RESTART_REQUESTED_AT_GV);
+   int attempts=(int)GlobalVariableGet(GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV);
+
+   if(requestedAt<=0)
+     {
+      requestedAt=now;
+      GlobalVariableSet(GOAT_BATCH_RESTART_REQUESTED_AT_GV,(double)requestedAt);
+     }
+
+   if((now-requestedAt)<=stopWindowSec && attempts<maxStopRequests)
+     {
+      GlobalVariableSet(GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV,(double)(attempts+1));
+      WriteLog("Batch restart: Strategy Tester still active; requesting tester stop before terminal close.",false,Key_,EA_Name_,Server_);
+      MTTESTER::ClickStop(30);
+      TesterStop();
+      return false;
+     }
+
+   datetime lastLog=(datetime)GlobalVariableGet(GOAT_BATCH_RESTART_LAST_LOG_GV);
+   if(lastLog<=0 || (now-lastLog)>=logIntervalSec)
+     {
+      GlobalVariableSet(GOAT_BATCH_RESTART_LAST_LOG_GV,(double)now);
+      WriteLog("Batch restart pending: Strategy Tester is still active. Terminal close will wait to avoid the MT5 shutdown warning.",true,Key_,EA_Name_,Server_);
+     }
+
+   return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 struct ExportRecord
   {
    string csvFile,setFile;       // full TARGET paths in TEMP2

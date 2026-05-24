@@ -2489,6 +2489,7 @@ void CStrategyTesterDialog::OnClickStart(void)
   {
    if(!EnsureRunContext(false)) {MessageBox("Unable to create or recover an Optimization Run folder.","Error",MB_OK|MB_ICONERROR); return;}
    if(ResolveBatchRunningState(true)) {MessageBox("Batch is already running.","Info",MB_OK|MB_ICONINFORMATION); return;}
+   if(!MTTESTER::IsIdle()) {MessageBox("Strategy Tester is still running. Stop it before starting a batch.","Info",MB_OK|MB_ICONINFORMATION); return;}
    if(!FileIsExist(Path_QueueBatch,FILE_COMMON)) {MessageBox("No Queue file found.","Error",MB_OK|MB_ICONERROR); return;}
    News.Key_ = Key_;
    Bias.Key_ = Key_;
@@ -2536,7 +2537,8 @@ void CStrategyTesterDialog::OnClickStart(void)
     RefreshBatchStartButtonState();
     //MessageBox("Terminal will restart now.","Info",MB_OK|MB_ICONINFORMATION);
     GlobalVariableDel("TerminalRunning");
-    Sleep(500); TerminalClose(99);
+    GoatBatchRequestDeferredRestart("Batch start accepted",Key_,EA_Name_,Server_);
+    GoatBatchTryCloseTerminalWhenTesterIdle(Key_,EA_Name_,Server_);
    }
    else WriteLog("Batch Start clicked but could not start.",true,Key_,EA_Name_,Server_);
    //else MessageBox("OnGoing Batch file found.","Error",MB_OK|MB_ICONERROR);

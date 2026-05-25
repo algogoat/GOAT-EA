@@ -126,17 +126,20 @@ private:
    void RefreshRunPaths(void);
    bool EnsureRunContext(const bool forceNew=false,const string runNameOverride="");
    bool SaveCurrentBatchPackage(void);
+   bool RehomeRunIfEditedNameChanged(void);
    bool LoadBatchPackage(const string packagePath);
    bool ApplyBatchTimelineAdjustment(string &queueContent,string &exportSettings,const string sourceRunPath);
+   bool RebuildQueueReportsForActiveRun(string &queueContent,string &message,const bool preserveState=true);
    string BuildBatchInputsPackage(const string queueContent);
    bool RestoreBatchInputsPackage(const string packageBody);
    void ApplyExportSettingsToControls(const string exportSettings);
    bool SaveStrategyInputsFromSet(const string setPath,string &savedStrategy);
    bool EnsureInputsForStrategy(const string strategy,string &message);
+   bool EnsureQueueItemReportPath(const string queueItem,string &message);
    bool PreflightQueueInputs(const string queueContent,string &message);
    string BuildQueueTitle(const string state,const string symbol,const string period,const string fromDate,const string toDate,const string model,const string strategy);
    string BuildReportValue(const string strategy,const string symbol,const string period,const string fromDate,const string toDate,const string forwardDateText);
-   bool RewriteQueueItemTimeline(string &item,const int mode,const datetime commonFrom,const datetime commonTo,const datetime oldEarliest,const datetime rollingAnchor);
+   bool RewriteQueueItemTimeline(string &item,const int mode,const datetime commonFrom,const datetime commonTo,const datetime oldEarliest,const datetime rollingAnchor,const string stateOverride="Pending");
    bool HasActiveBatchQueueItem(void);
    bool ResolveBatchRunningState(const bool clearStale);
    // Helper creation methods
@@ -339,6 +342,29 @@ bool CStrategyTesterDialog::EnsureRunContext(const bool forceNew=false,const str
    return true;
   }
 //+------------------------------------------------------------------+
+bool EnsureLocalFolderTree(string path)
+  {
+   StringTrimLeft(path);
+   StringTrimRight(path);
+   if(path=="") return false;
+   StringReplace(path,"/","\\");
+   while(StringFind(path,"\\\\")>=0) StringReplace(path,"\\\\","\\");
+
+   string parts[];
+   int total=StringSplit(path,'\\',parts);
+   if(total<1) return false;
+
+   string current="";
+   for(int i=0;i<total;i++)
+     {
+      if(parts[i]=="") continue;
+      if(current!="") current+="\\";
+      current+=parts[i];
+      FolderCreate(current);
+     }
+   return true;
+  }
+//+------------------------------------------------------------------+
 string CStrategyTesterDialog::BuildQueueTitle(const string state,const string symbol,const string period,const string fromDate,const string toDate,const string model,const string strategy)
   {
    return ";"+state+"_"+symbol+","+period+" "+fromDate+"-"+toDate+"_"+GoatOptModelShortFromCode(model)+":"+strategy+";";
@@ -348,10 +374,16 @@ string CStrategyTesterDialog::BuildReportValue(const string strategy,const strin
   {
    string reportName=EA_Name_+" "+symbol+","+period+" "+fromDate+"-"+toDate+"_("+forwardDateText+").xml";
    string rel=GoatOptReportPath(EA_Name_,Server_,strategy,symbol,reportName);
+   string folder=GoatOptFolderOf(rel);
+   if(folder!="")
+     {
+      EnsureLocalFolderTree(folder);
+      GoatOptEnsureCommonFolderTree(folder);
+     }
    return "MQL5\\Files\\"+rel;
   }
 //+------------------------------------------------------------------+
-bool CStrategyTesterDialog::RewriteQueueItemTimeline(string &item,const int mode,const datetime commonFrom,const datetime commonTo,const datetime oldEarliest,const datetime rollingAnchor)
+bool CStrategyTesterDialog::RewriteQueueItemTimeline(string &item,const int mode,const datetime commonFrom,const datetime commonTo,const datetime oldEarliest,const datetime rollingAnchor,const string stateOverride="Pending")
   {
    string symbol=GoatOptQueueValue(item,"Symbol");
    string period=GoatOptQueueValue(item,"Period");
@@ -362,6 +394,14 @@ bool CStrategyTesterDialog::RewriteQueueItemTimeline(string &item,const int mode
    datetime oldTo  =StringToTime(GoatOptQueueValue(item,"ToDate"));
    datetime oldForward=StringToTime(GoatOptQueueValue(item,"ForwardDate"));
    if(symbol=="" || period=="" || strategy=="" || oldFrom<=0 || oldTo<=oldFrom) return false;
+
+   string queueState=stateOverride;
+   if(queueState=="")
+   {
+      string title=QueueItemTitle(item);
+      int pos=StringFind(title,"_",0);
+      queueState=(pos>0 ? StringSubstr(title,0,pos) : "Pending");
+   }
 
    datetime newFrom=oldFrom;
    datetime newTo=oldTo;
@@ -404,7 +444,8 @@ bool CStrategyTesterDialog::RewriteQueueItemTimeline(string &item,const int mode
    else if(fmode=="4")
    {
       datetime custom=m_dtForward.Value();
-      if(mode==2 && oldForward>0) custom=oldForward+(newFrom-oldFrom);
+      if(mode==0 && oldForward>0) custom=oldForward;
+      else if(mode==2 && oldForward>0) custom=oldForward+(newFrom-oldFrom);
       else if(mode==3 && oldForward>0) custom=oldForward;
       if(custom<=newFrom || custom>=newTo) custom=newFrom+(newTo-newFrom)/2;
       forwardDateLine=TimeToString(custom,TIME_DATE);
@@ -420,6 +461,7 @@ bool CStrategyTesterDialog::RewriteQueueItemTimeline(string &item,const int mode
    int total=StringSplit(item,'\n',opt_lines);
    string out="";
    bool wroteForwardDate=false;
+   bool wroteReport=false;
    for(int i=0;i<total;++i)
    {
       string line=opt_lines[i];
@@ -428,7 +470,7 @@ bool CStrategyTesterDialog::RewriteQueueItemTimeline(string &item,const int mode
       StringTrimLeft(trimmed);
       StringTrimRight(trimmed);
       if(i==0 && StringFind(trimmed,";",0)==0)
-         line=BuildQueueTitle("Pending",symbol,period,fromDate,toDate,model,strategy);
+         line=BuildQueueTitle(queueState,symbol,period,fromDate,toDate,model,strategy);
       else if(StringFind(trimmed,"FromDate=",0)==0)
          line="FromDate="+fromDate;
       else if(StringFind(trimmed,"ToDate=",0)==0)
@@ -454,9 +496,14 @@ bool CStrategyTesterDialog::RewriteQueueItemTimeline(string &item,const int mode
          else continue;
       }
       else if(StringFind(trimmed,"Report=",0)==0)
+      {
          line="Report="+BuildReportValue(strategy,symbol,period,fromDate,toDate,forwardDateText);
+         wroteReport=true;
+      }
       out+=(out=="" ? "" : "\r\n")+line;
    }
+   if(!wroteReport)
+      out+=(out=="" ? "" : "\r\n")+"Report="+BuildReportValue(strategy,symbol,period,fromDate,toDate,forwardDateText);
    item=out;
    return true;
   }
@@ -508,19 +555,10 @@ bool CStrategyTesterDialog::ApplyBatchTimelineAdjustment(string &queueContent,st
       StringTrimLeft(item);
       StringTrimRight(item);
       if(item=="") continue;
-      if(mode!=0 && !RewriteQueueItemTimeline(item,mode,commonFrom,commonTo,oldEarliest,rollingAnchor))
+      if(!RewriteQueueItemTimeline(item,mode,commonFrom,commonTo,oldEarliest,rollingAnchor))
       {
-         MessageBox("Unable to rewrite one queue item timeline. Batch load aborted.","Timeline Error",MB_OK|MB_ICONERROR);
+         MessageBox("Unable to normalize one queue item for the active run. Batch load aborted.","Timeline Error",MB_OK|MB_ICONERROR);
          return false;
-      }
-      else if(mode==0)
-      {
-         string parts[];
-         if(StringSplit(item,';',parts)==3)
-         {
-            int pos=StringFind(parts[1],"_",0);
-            if(pos>=0) item=";Pending"+StringSubstr(parts[1],pos)+";"+parts[2];
-         }
       }
       rebuilt+=(rebuilt=="" ? "" : "\r\n")+item+CharToString(31);
    }
@@ -548,6 +586,31 @@ bool CStrategyTesterDialog::ApplyBatchTimelineAdjustment(string &queueContent,st
          exportSettings=GoatOptSetIniValue(exportSettings,"BackOOSDate",TimeToString(newBack,TIME_DATE));
       }
    }
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::RebuildQueueReportsForActiveRun(string &queueContent,string &message,const bool preserveState=true)
+  {
+   message="";
+   string rows[];
+   int total=StringSplit(queueContent,(ushort)31,rows);
+   if(total<=0) return true;
+
+   string rebuilt="";
+   for(int i=0;i<total;++i)
+   {
+      string item=rows[i];
+      StringTrimLeft(item);
+      StringTrimRight(item);
+      if(item=="") continue;
+      if(!RewriteQueueItemTimeline(item,0,0,0,0,0,(preserveState ? "" : "Pending")))
+      {
+         message="Unable to rebuild queue item report path for the active run:\n"+QueueItemTitle(item);
+         return false;
+      }
+      rebuilt+=(rebuilt=="" ? "" : "\r\n")+item+CharToString(31);
+   }
+   queueContent=rebuilt;
    return true;
   }
 //+------------------------------------------------------------------+
@@ -674,6 +737,66 @@ bool CStrategyTesterDialog::SaveCurrentBatchPackage(void)
    return ok;
   }
 //+------------------------------------------------------------------+
+bool CStrategyTesterDialog::RehomeRunIfEditedNameChanged(void)
+  {
+   RefreshRunPaths();
+   if(Path_RunFolder=="") return EnsureRunContext(false);
+
+   string requested=m_edtRunName.Text();
+   StringTrimLeft(requested);
+   StringTrimRight(requested);
+   if(requested=="") return true;
+
+   string requestedSafe=GoatOptSafePathPart(requested);
+   string manifest=GoatOptReadTextFile(Path_RunFolder+"\\manifest.ini");
+   string current=GoatOptReadIniValue(manifest,"RunName");
+   StringTrimLeft(current);
+   StringTrimRight(current);
+   if(current=="") current=FileNameOnly(Path_RunFolder);
+   string currentSafe=GoatOptSafePathPart(current);
+
+   string requestedCheck=requestedSafe;
+   string currentCheck=currentSafe;
+   StringToLower(requestedCheck);
+   StringToLower(currentCheck);
+   if(requestedCheck==currentCheck) return true;
+
+   string oldRunFolder=Path_RunFolder;
+   string oldQueuePath=Path_QueueBatch;
+   string oldExportSettingsPath=Path_ExportSettings;
+   string queue=GetFileContent(oldQueuePath);
+   string exportSettings=GetFileContent(oldExportSettingsPath);
+   if(queue=="") return true;
+
+   Path_RunFolder=GoatOptCreateRunPath(EA_Name_,Server_,requestedSafe,oldRunFolder);
+   RefreshRunPaths();
+   m_edtRunName.Text(requestedSafe);
+
+   if(oldRunFolder!="")
+      GoatOptCopyCommonTextTree(oldRunFolder+"\\inputs",Path_RunFolder+"\\inputs");
+
+   string rebuildMessage="";
+   if(!RebuildQueueReportsForActiveRun(queue,rebuildMessage,true))
+     {
+      MessageBox(rebuildMessage,"Error",MB_OK|MB_ICONERROR);
+      return false;
+     }
+   if(!GoatOptWriteTextFile(Path_QueueBatch,queue))
+     {
+      MessageBox("Unable to write the renamed optimization queue:\n"+Path_QueueBatch,"Error",MB_OK|MB_ICONERROR);
+      return false;
+     }
+   if(exportSettings!="" && !GoatOptWriteTextFile(Path_ExportSettings,exportSettings))
+     {
+      MessageBox("Unable to write the renamed optimization export settings:\n"+Path_ExportSettings,"Error",MB_OK|MB_ICONERROR);
+      return false;
+     }
+   if(exportSettings!="") ApplyExportSettingsToControls(exportSettings);
+   SaveCurrentBatchPackage();
+   GoatOptAppendTimeline(EA_Name_,Server_,"RUN_REHOME","Batch","Ready","Moved from "+oldRunFolder);
+   return true;
+  }
+//+------------------------------------------------------------------+
 bool CStrategyTesterDialog::LoadBatchPackage(const string packagePath)
   {
    string body=GoatOptReadTextFile(packagePath);
@@ -770,6 +893,57 @@ bool CStrategyTesterDialog::EnsureInputsForStrategy(const string strategy,string
    return false;
   }
 //+------------------------------------------------------------------+
+bool CStrategyTesterDialog::EnsureQueueItemReportPath(const string queueItem,string &message)
+  {
+   message="";
+   string title=QueueItemTitle(queueItem);
+   string report=GoatOptQueueValue(queueItem,"Report");
+   StringTrimLeft(report);
+   StringTrimRight(report);
+
+   string reportNorm=report;
+   StringReplace(reportNorm,"/","\\");
+   while(StringFind(reportNorm,"\\\\",0)>=0) StringReplace(reportNorm,"\\\\","\\");
+   while(StringLen(reportNorm)>0 && StringSubstr(reportNorm,0,1)=="\\")
+      reportNorm=StringSubstr(reportNorm,1);
+
+   string expected="MQL5\\Files\\"+GoatOptReportRoot(EA_Name_,Server_)+"\\";
+   string expectedNorm=expected;
+   StringReplace(expectedNorm,"/","\\");
+   while(StringFind(expectedNorm,"\\\\",0)>=0) StringReplace(expectedNorm,"\\\\","\\");
+
+   string reportCheck=reportNorm;
+   string expectedCheck=expectedNorm;
+   StringToLower(reportCheck);
+   StringToLower(expectedCheck);
+
+   if(reportNorm=="" || StringFind(reportCheck,expectedCheck,0)!=0)
+     {
+      message="Queue item report path does not point to the active optimization run:\n"+title+
+              "\n\nReport:\n"+(reportNorm=="" ? "(empty)" : reportNorm)+
+              "\n\nExpected under:\n"+expectedNorm+
+              "\n\nReload the .goatbatch so GOAT can rebuild its report paths for this run.";
+      return false;
+     }
+
+   string rel=reportNorm;
+   string prefix="MQL5\\Files\\";
+   string relCheck=rel;
+   string prefixCheck=prefix;
+   StringToLower(relCheck);
+   StringToLower(prefixCheck);
+   if(StringFind(relCheck,prefixCheck,0)==0)
+      rel=StringSubstr(rel,StringLen(prefix));
+
+   string folder=GoatOptFolderOf(rel);
+   if(folder!="")
+     {
+      EnsureLocalFolderTree(folder);
+      GoatOptEnsureCommonFolderTree(folder);
+     }
+   return true;
+  }
+//+------------------------------------------------------------------+
 bool CStrategyTesterDialog::PreflightQueueInputs(const string queueContent,string &message)
   {
    message="";
@@ -791,6 +965,8 @@ bool CStrategyTesterDialog::PreflightQueueInputs(const string queueContent,strin
         }
       else if(!EnsureInputsForStrategy(strategy,itemMessage))
          ok=false;
+      if(ok && !EnsureQueueItemReportPath(queueItems[i],itemMessage))
+         ok=false;
       if(!ok)
         {
          if(message!="") message+="\n\n";
@@ -799,7 +975,7 @@ bool CStrategyTesterDialog::PreflightQueueInputs(const string queueContent,strin
      }
 
    if(message=="") return true;
-   message="Batch cannot start because one or more queue items are missing their saved tester inputs.\n\n"+message;
+   message="Batch cannot start because one or more queue items are not ready for this optimization run.\n\n"+message;
    return false;
   }
 //+------------------------------------------------------------------+
@@ -2490,6 +2666,7 @@ void CStrategyTesterDialog::OnClickStart(void)
    if(!EnsureRunContext(false)) {MessageBox("Unable to create or recover an Optimization Run folder.","Error",MB_OK|MB_ICONERROR); return;}
    if(ResolveBatchRunningState(true)) {MessageBox("Batch is already running.","Info",MB_OK|MB_ICONINFORMATION); return;}
    if(!MTTESTER::IsIdle()) {MessageBox("Strategy Tester is still running. Stop it before starting a batch.","Info",MB_OK|MB_ICONINFORMATION); return;}
+   if(!RehomeRunIfEditedNameChanged()) return;
    if(!FileIsExist(Path_QueueBatch,FILE_COMMON)) {MessageBox("No Queue file found.","Error",MB_OK|MB_ICONERROR); return;}
    News.Key_ = Key_;
    Bias.Key_ = Key_;

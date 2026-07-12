@@ -104,9 +104,14 @@ string V2Sha256Hex(const string value)
    uchar key[];
    uchar digest[];
    ArrayResize(key,0);
-   const int copied=StringToCharArray(value,source,0,StringLen(value),CP_UTF8);
-   if(copied<0)
+   int copied=StringToCharArray(value,source,0,WHOLE_ARRAY,CP_UTF8);
+   if(copied<=0)
       return "";
+   if(source[copied-1]==0)
+     {
+      copied--;
+      ArrayResize(source,copied);
+     }
    const int bytes=CryptEncode(CRYPT_HASH_SHA256,source,key,digest);
    if(bytes<=0)
       return "";
@@ -120,8 +125,12 @@ string V2Sha256Hex(const string value)
 int V2Utf8ByteCount(const string value)
   {
    uchar bytes[];
-   const int copied=StringToCharArray(value,bytes,0,StringLen(value),CP_UTF8);
-   return copied<0 ? 0 : copied;
+   int copied=StringToCharArray(value,bytes,0,WHOLE_ARRAY,CP_UTF8);
+   if(copied<=0)
+      return 0;
+   if(bytes[copied-1]==0)
+      copied--;
+   return copied;
   }
 
 string V2ReceiptKindName(const ENUM_V2_RECEIPT_KIND kind)

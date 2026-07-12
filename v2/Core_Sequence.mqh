@@ -107,21 +107,25 @@ public:
          plan.reason="GRID_SHAPE_NONFINITE";
          return false;
         }
-
       if(!ResolveSignedDistance(config.grid_size,config,plan.base_distance,plan.reason) ||
          plan.base_distance<=0.0)
         {
          if(plan.reason=="") plan.reason="GRID_BASE_NOT_POSITIVE";
          return false;
         }
-      if(!ResolveSignedDistance(config.grid_min,config,plan.minimum_distance,plan.reason))
+      // V1.42 normalizes a disabled/tiny Grid_Min to -0.5 during OnInit.
+      // Preserve that contract here: zero does not disable the floor; it
+      // means a minimum step of 0.5 ATR.
+      double effective_grid_min=config.grid_min;
+      if(effective_grid_min>-0.5 && effective_grid_min<0.5)
+         effective_grid_min=-0.5;
+      if(!ResolveSignedDistance(effective_grid_min,config,plan.minimum_distance,plan.reason))
          return false;
       if(!ResolveSignedDistance(config.grid_max,config,plan.maximum_distance,plan.reason))
          return false;
 
-      // A zero min/max is a caller-controlled disabled bound.  V1 normally
-      // converts a disabled maximum to a very large value during OnInit.
-      if(plan.minimum_distance<=0.0) plan.minimum_distance=0.0;
+      // V1 normally converts a disabled maximum to a very large value during
+      // OnInit. The minimum has already received V1's 0.5 ATR floor above.
       if(plan.maximum_distance<=0.0) plan.maximum_distance=DBL_MAX;
       if(plan.maximum_distance<plan.minimum_distance)
         {
@@ -172,9 +176,9 @@ public:
      }
   };
 
-// Corrected execution grid.  It preserves the V1 frequency-space geometry,
-// but defines factor=0 as neutral (1.0) for the V2 input surface and snaps
-// every distance upward to a tradable tick so risk is never understated.
+// Corrected execution grid. It preserves the V1 frequency-space geometry and
+// rejects factor=0 because V1 has no defined zero-factor geometry. Every
+// distance is snapped upward to a tradable tick so risk is never understated.
 class CV2GridPlanner
   {
 private:
@@ -187,22 +191,25 @@ private:
 public:
    bool Build(const V2GridPlanConfig &source,V2GridPlan &plan) const
      {
-      V2GridPlanConfig config=source;
-      if(MathAbs(config.grid_factor)<=1e-12) config.grid_factor=1.0;
-
-      CV2V1CompatGridPlanner compatibility;
-      if(!compatibility.Build(config,plan)) return false;
-
-      if(config.tick_size>0.0)
+      if(MathIsValidNumber(source.grid_factor) && MathAbs(source.grid_factor)<=1e-12)
         {
-         plan.base_distance=SnapUp(plan.base_distance,config.tick_size);
-         plan.minimum_distance=SnapUp(plan.minimum_distance,config.tick_size);
+         plan.Reset();
+         plan.reason="GRID_FACTOR_ZERO_UNDEFINED_IN_V1_COMPAT";
+         return false;
+        }
+      CV2V1CompatGridPlanner compatibility;
+      if(!compatibility.Build(source,plan)) return false;
+
+      if(source.tick_size>0.0)
+        {
+         plan.base_distance=SnapUp(plan.base_distance,source.tick_size);
+         plan.minimum_distance=SnapUp(plan.minimum_distance,source.tick_size);
          if(plan.maximum_distance<DBL_MAX/2.0)
-            plan.maximum_distance=SnapUp(plan.maximum_distance,config.tick_size);
+            plan.maximum_distance=SnapUp(plan.maximum_distance,source.tick_size);
          ArrayInitialize(plan.cumulative_distance,0.0);
          for(int level=1;level<ArraySize(plan.step_distance);level++)
            {
-            plan.step_distance[level]=SnapUp(plan.step_distance[level],config.tick_size);
+            plan.step_distance[level]=SnapUp(plan.step_distance[level],source.tick_size);
             plan.cumulative_distance[level]=plan.cumulative_distance[level-1]+plan.step_distance[level];
            }
         }
@@ -585,6 +592,13 @@ public:
 struct V2BasketPlanConfig
   {
    ENUM_V2_DIRECTION direction;
+   // V1's lock curve is driven by Trades_Count / Max_Seq_Trades. These
+   // explicit fields prevent callers from substituting a count of price
+   // levels, live positions, or remaining levels.
+   int    executed_trade_count;
+   int    maximum_trade_count;
+   // Deprecated compatibility fields for pre-review callers. New production
+   // code must populate the trade-count fields above.
    int    executed_level_count;
    int    maximum_level_count;
    double lock_distance;
@@ -597,6 +611,8 @@ struct V2BasketPlanConfig
    void Reset(void)
      {
       direction=V2_DIR_NONE;
+      executed_trade_count=-1;
+      maximum_trade_count=-1;
       executed_level_count=0;
       maximum_level_count=0;
       lock_distance=0.0;
@@ -605,6 +621,26 @@ struct V2BasketPlanConfig
       stop_loss_distance=0.0;
       trailing_distance=0.0;
       tick_size=0.0;
+     }
+  };
+
+struct V2LockFactorResult
+  {
+   bool   valid;
+   string reason;
+   int    trade_count;
+   int    maximum_trade_count;
+   double effective_flexibility;
+   double lock_factor;
+
+   void Reset(void)
+     {
+      valid=false;
+      reason="";
+      trade_count=0;
+      maximum_trade_count=0;
+      effective_flexibility=1.0;
+      lock_factor=1.0;
      }
   };
 
@@ -654,6 +690,60 @@ private:
      }
 
 public:
+   bool EvaluateLockFactor(const V2BasketPlanConfig &config,
+                           V2LockFactorResult &result) const
+     {
+      result.Reset();
+      if(!MathIsValidNumber(config.lock_flexibility))
+        {
+         result.reason="BASKET_LOCK_FLEXIBILITY_NONFINITE";
+         return false;
+        }
+      if(config.lock_flexibility<-1.0)
+        {
+         result.reason="BASKET_LOCK_FLEXIBILITY_BELOW_MINIMUM";
+         return false;
+        }
+
+      const bool explicit_trade_basis=(config.executed_trade_count>=0 ||
+                                       config.maximum_trade_count>=0);
+      if(explicit_trade_basis)
+        {
+         if(config.executed_trade_count<0 || config.maximum_trade_count<1)
+           {
+            result.reason="BASKET_TRADE_COUNT_BASIS_INCOMPLETE";
+            return false;
+           }
+         result.trade_count=config.executed_trade_count;
+         result.maximum_trade_count=config.maximum_trade_count;
+        }
+      else
+        {
+         // Compatibility only. This preserves old fixtures while making the
+         // count basis visible and independently testable for production.
+         result.trade_count=config.executed_level_count;
+         result.maximum_trade_count=config.maximum_level_count;
+        }
+
+      if(result.maximum_trade_count<1 || result.trade_count<0 ||
+         result.trade_count>result.maximum_trade_count)
+        {
+         result.reason="BASKET_TRADE_COUNT_GEOMETRY_INVALID";
+         return false;
+        }
+
+      // V1 applies flexibility only below 1.0. Values above 1.0 therefore
+      // have neutral behavior rather than invalidating all basket protection.
+      result.effective_flexibility=MathMin(config.lock_flexibility,1.0);
+      if(result.trade_count>0 && result.effective_flexibility<1.0)
+        {
+         const double ratio=(double)result.trade_count/(double)result.maximum_trade_count;
+         result.lock_factor=1.0-(1.0-result.effective_flexibility)*ratio*ratio;
+        }
+      result.valid=true;
+      return true;
+     }
+
    bool Build(const V2BasketPlanConfig &config,
               double &fill_prices[],
               double &standing_volumes[],
@@ -662,13 +752,17 @@ public:
       plan.Reset();
       if(config.direction==V2_DIR_NONE)
         { plan.reason="BASKET_DIRECTION_NONE"; return false; }
-      if(config.maximum_level_count<1 || config.executed_level_count<0 ||
-         config.executed_level_count>config.maximum_level_count)
-        { plan.reason="BASKET_LEVEL_GEOMETRY_INVALID"; return false; }
-      if(config.lock_flexibility<-1.0 || config.lock_flexibility>1.0 ||
+      if(!MathIsValidNumber(config.lock_distance) ||
+         !MathIsValidNumber(config.take_profit_distance) ||
+         !MathIsValidNumber(config.stop_loss_distance) ||
+         !MathIsValidNumber(config.trailing_distance) ||
+         !MathIsValidNumber(config.tick_size) ||
          config.lock_distance<0.0 || config.take_profit_distance<0.0 ||
          config.stop_loss_distance<0.0 || config.trailing_distance<0.0)
-        { plan.reason="BASKET_DISTANCE_OR_FLEXIBILITY_INVALID"; return false; }
+         { plan.reason="BASKET_DISTANCE_OR_FLEXIBILITY_INVALID"; return false; }
+      V2LockFactorResult lock_result;
+      if(!EvaluateLockFactor(config,lock_result))
+        { plan.reason=lock_result.reason; return false; }
       const int count=MathMin(ArraySize(fill_prices),ArraySize(standing_volumes));
       double weighted=0.0;
       for(int i=0;i<count;i++)
@@ -683,11 +777,7 @@ public:
       if(plan.standing_volume<=0.0)
         { plan.reason="BASKET_NO_STANDING_VOLUME"; return false; }
       plan.entry_vwap=weighted/plan.standing_volume;
-      if(config.executed_level_count>0 && config.lock_flexibility<1.0)
-        {
-         const double ratio=(double)config.executed_level_count/(double)config.maximum_level_count;
-         plan.lock_factor=1.0-(1.0-config.lock_flexibility)*ratio*ratio;
-        }
+      plan.lock_factor=lock_result.lock_factor;
       const double sign=(config.direction==V2_DIR_LONG ? 1.0 : -1.0);
       if(config.lock_distance>0.0)
          plan.lock_price=SnapNearest(plan.entry_vwap+sign*config.lock_distance*plan.lock_factor,config.tick_size);
@@ -728,13 +818,42 @@ public:
      }
   };
 
+enum ENUM_V2_PEAK_SMART_RETRACE_DECISION
+  {
+   V2_PEAK_SMART_HOLD_WHILE_UNDERWATER=0,
+   V2_PEAK_SMART_ADVANCE_WITHOUT_CLOSE=1,
+   V2_PEAK_SMART_CLOSE_AND_ADVANCE=2
+  };
+
+struct V2PeakSmartRetraceResult
+  {
+   bool                                  valid;
+   string                                reason;
+   ENUM_V2_PEAK_SMART_RETRACE_DECISION  decision;
+   double                                excess_volume;
+   double                                requested_close_volume;
+   double                                close_volume;
+
+   void Reset(void)
+     {
+      valid=false;
+      reason="";
+      decision=V2_PEAK_SMART_HOLD_WHILE_UNDERWATER;
+      excess_volume=0.0;
+      requested_close_volume=0.0;
+      close_volume=0.0;
+     }
+  };
+
 class CV2RetracePlanner
   {
 private:
-   double NormalizeDown(const double requested,const double minimum,const double maximum,const double step) const
+   double NormalizeNearest(const double requested,const double minimum,const double maximum,const double step) const
      {
       if(requested<=0.0 || minimum<=0.0 || maximum<minimum || step<=0.0) return 0.0;
-      double normalized=MathFloor((requested+1e-12)/step)*step;
+      // V1 NormalizedLots uses symmetric nearest-step rounding. Retrace
+      // releases must use the same rule or every half-step is under-harvested.
+      double normalized=MathRound(requested/step)*step;
       normalized=MathMin(normalized,maximum);
       if(normalized<minimum-1e-12) return 0.0;
       return NormalizeDouble(normalized,8);
@@ -774,9 +893,71 @@ public:
                                  const double volume_step) const
      {
       const double bounded=MathMax(0.0,MathMin(100.0,release_percent))*0.01;
-      return NormalizeDown(MathMin(standing_volume,standing_volume*bounded),volume_min,volume_max,volume_step);
+      double normalized=NormalizeNearest(standing_volume*bounded,volume_min,volume_max,volume_step);
+      if(normalized>standing_volume)
+         normalized=NormalizeNearest(standing_volume,volume_min,volume_max,volume_step);
+      return normalized;
      }
 
+   bool EvaluatePeakSmart(const double standing_volume,
+                          const double planned_volume,
+                          const double sequence_profit,
+                          const double release_percent,
+                          const double maximum_close_percent,
+                          const double volume_min,
+                          const double volume_max,
+                          const double volume_step,
+                          V2PeakSmartRetraceResult &result) const
+     {
+      result.Reset();
+      if(!MathIsValidNumber(standing_volume) || !MathIsValidNumber(planned_volume) ||
+         !MathIsValidNumber(sequence_profit) || !MathIsValidNumber(release_percent) ||
+         !MathIsValidNumber(maximum_close_percent) || !MathIsValidNumber(volume_min) ||
+         !MathIsValidNumber(volume_max) || !MathIsValidNumber(volume_step))
+        {
+         result.reason="PEAK_SMART_NONFINITE_INPUT";
+         return false;
+        }
+      if(standing_volume<0.0 || planned_volume<0.0 || volume_min<=0.0 ||
+         volume_max<volume_min || volume_step<=0.0)
+        {
+         result.reason="PEAK_SMART_VOLUME_GEOMETRY_INVALID";
+         return false;
+        }
+
+      result.excess_volume=standing_volume-planned_volume;
+      if(result.excess_volume<=0.0)
+        {
+         // V1 consumes this trigger because no excess exists at the crossed
+         // planned level, irrespective of the current sequence P/L.
+         result.decision=V2_PEAK_SMART_ADVANCE_WITHOUT_CLOSE;
+         result.valid=true;
+         return true;
+        }
+      if(sequence_profit<=0.0)
+        {
+         // V1 keeps the same trigger armed until the sequence becomes
+         // profitable. Advancing here would permanently burn the harvest.
+         result.decision=V2_PEAK_SMART_HOLD_WHILE_UNDERWATER;
+         result.valid=true;
+         return true;
+        }
+
+      const double release=MathMax(0.0,MathMin(100.0,release_percent))*0.01;
+      const double maximum=MathMax(0.0,MathMin(100.0,maximum_close_percent))*0.01;
+      result.requested_close_volume=result.excess_volume*release;
+      if(maximum>0.0)
+         result.requested_close_volume=MathMin(result.requested_close_volume,standing_volume*maximum);
+      result.close_volume=NormalizeNearest(result.requested_close_volume,volume_min,volume_max,volume_step);
+      result.decision=(result.close_volume>0.0 ?
+                       V2_PEAK_SMART_CLOSE_AND_ADVANCE :
+                       V2_PEAK_SMART_ADVANCE_WITHOUT_CLOSE);
+      result.valid=true;
+      return true;
+     }
+
+   // Compatibility-only scalar wrapper for existing fixtures. Production
+   // transition logic must call EvaluatePeakSmart and branch on decision.
    double PeakSmartClose(const double standing_volume,
                          const double planned_volume,
                          const double sequence_profit,
@@ -786,12 +967,12 @@ public:
                          const double volume_max,
                          const double volume_step) const
      {
-      if(sequence_profit<=0.0 || standing_volume<=planned_volume) return 0.0;
-      const double release=MathMax(0.0,MathMin(100.0,release_percent))*0.01;
-      const double maximum=MathMax(0.0,MathMin(100.0,maximum_close_percent))*0.01;
-      double requested=(standing_volume-planned_volume)*release;
-      if(maximum>0.0) requested=MathMin(requested,standing_volume*maximum);
-      return NormalizeDown(requested,volume_min,volume_max,volume_step);
+      V2PeakSmartRetraceResult result;
+      if(!EvaluatePeakSmart(standing_volume,planned_volume,sequence_profit,
+                            release_percent,maximum_close_percent,
+                            volume_min,volume_max,volume_step,result))
+         return 0.0;
+      return result.close_volume;
      }
   };
 

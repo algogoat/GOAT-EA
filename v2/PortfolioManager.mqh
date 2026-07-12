@@ -24,6 +24,7 @@
 #include "OnnxLayer.mqh"
 #include "ChartHUD.mqh"
 #include "ChartOverlay.mqh"
+#include "Clock.mqh"
 
 #define V2_MANAGER_OBSERVATION_BUDGET 128
 #define V2_MANAGER_WORK_BUDGET        8
@@ -67,6 +68,7 @@ struct V2PendingExecution
    double              requested_volume;
    double              observed_volume;
    long                submitted_at_msc;
+   ulong               submitted_tick_count;
 
    void Reset(void)
      {
@@ -79,8 +81,47 @@ struct V2PendingExecution
       requested_volume=0.0;
       observed_volume=0.0;
       submitted_at_msc=0;
+      submitted_tick_count=0;
      }
   };
+
+#ifdef GOAT2_TEST_HOOKS
+struct V2GatewayIntegrationSnapshot
+  {
+   bool                      initialized;
+   bool                      recovery_verified;
+   bool                      new_risk_enabled;
+   bool                      pending_execution;
+   ENUM_V2_OPERATIONAL_STATE operational_state;
+   string                    operational_reason;
+   string                    sequence_id;
+   ENUM_V2_SEQUENCE_STATUS   runtime_sequence_status;
+   ENUM_V2_SEQUENCE_STATUS   persisted_sequence_status;
+   bool                      persisted_projection_found;
+   double                    broker_standing_volume;
+   double                    runtime_standing_volume;
+   double                    persisted_standing_volume;
+   int                       broker_position_count;
+
+   void Reset(void)
+     {
+      initialized=false;
+      recovery_verified=false;
+      new_risk_enabled=false;
+      pending_execution=false;
+      operational_state=V2_OP_HALTED;
+      operational_reason="";
+      sequence_id="";
+      runtime_sequence_status=V2_SEQ_IDLE;
+      persisted_sequence_status=V2_SEQ_IDLE;
+      persisted_projection_found=false;
+      broker_standing_volume=0.0;
+      runtime_standing_volume=0.0;
+      persisted_standing_volume=0.0;
+      broker_position_count=0;
+     }
+  };
+#endif
 
 class CV2PortfolioManager
   {
@@ -92,8 +133,10 @@ private:
    bool                      m_plans_ready;
    bool                      m_recovery_verified;
    bool                      m_risk_high_water_ready;
+   bool                      m_broker_profile_verified;
    bool                      m_new_risk_enabled;
    ENUM_V2_OPERATIONAL_STATE m_operational_state;
+   string                    m_operational_reason;
 
    CV2Identity               m_identity;
    CV2DomainMachine          m_domain;
@@ -134,6 +177,13 @@ private:
    V2PendingExecution        m_pending;
 
    long                      m_last_hud_render_msc;
+   datetime                  m_last_entry_decision_bar;
+   datetime                  m_last_shadow_decision_bar;
+   datetime                  m_last_level_skip_bar;
+   int                       m_last_level_skip_index;
+   int                       m_broker_mismatch_passes;
+   int                       m_healthy_recovery_passes;
+   bool                      m_supervised_repromotion_pending;
    double                    m_peak_equity;
    double                    m_maximum_adverse_excursion_atr;
    double                    m_maximum_favorable_excursion_atr;
@@ -158,8 +208,7 @@ private:
 
    double PipSize(void) const
      {
-      const int digits=(int)SymbolInfoInteger(_Symbol,SYMBOL_DIGITS);
-      return((digits==3 || digits==5) ? 10.0 : 1.0)*PointSize();
+      return V2V1ConfiguredPipSize(PointSize());
      }
 
    double CurrentAtrPrice(void) const
@@ -272,9 +321,42 @@ private:
       return true;
      }
 
+   bool IsSupervisedRecoveryReason(const string reason) const
+     {
+      return(StringFind(reason,"DATABASE_HEARTBEAT_FAILED:")==0 ||
+             StringFind(reason,"RISK_HIGH_WATER_")==0 ||
+             StringFind(reason,"TELEMETRY_")==0 ||
+             StringFind(reason,"DECISION_TELEMETRY_")==0 ||
+             StringFind(reason,"OBSERVATION_")==0 ||
+             StringFind(reason,"BROKER_MATCH_RECHECK_REQUIRED:")==0 ||
+             StringFind(reason,"GATEWAY_REQUIRES_MANAGE_ONLY:")==0 ||
+             StringFind(reason,"ENTRY_OUTCOME_REQUIRES_RECONCILIATION:")==0 ||
+             StringFind(reason,"REDUCTION_GATEWAY_DEGRADED:")==0 ||
+             StringFind(reason,"REDUCTION_OUTCOME_REQUIRES_RECONCILIATION:")==0 ||
+             StringFind(reason,"PROTECTION_GATEWAY_DEGRADED:")==0);
+     }
+
    void SetOperationalState(const ENUM_V2_OPERATIONAL_STATE state,const string reason)
      {
+      const bool changed=(state!=m_operational_state || reason!=m_operational_reason);
+      const bool supervised_candidate=(state==V2_OP_DEGRADED ||
+                                       (state==V2_OP_MANAGE_ONLY &&
+                                        IsSupervisedRecoveryReason(reason)));
+      if(supervised_candidate)
+        {
+         // Every observed failure starts a fresh three-pass audit. Healthy
+         // observations accumulated before the degradation never count.
+         m_supervised_repromotion_pending=true;
+         m_healthy_recovery_passes=0;
+        }
+      else if(state==V2_OP_NORMAL || state==V2_OP_RECOVERY_QUARANTINE ||
+              state==V2_OP_HALTED || state==V2_OP_MANAGE_ONLY)
+        {
+         m_supervised_repromotion_pending=false;
+         m_healthy_recovery_passes=0;
+        }
       m_operational_state=state;
+      m_operational_reason=reason;
       m_new_risk_enabled=(GOAT2_PHASE1_EXECUTION_CERTIFIED==1 &&
                           state==V2_OP_NORMAL && V2_RunMode==V2_RUN_TRADE &&
                           V2_EnableNewRisk && m_recovery_verified);
@@ -283,7 +365,39 @@ private:
          m_gateway.SetNewRiskEnabled(true);
       m_last_reason=reason;
       m_hud.MarkDirty();
-      Print("GOAT2|STATE|",IntegerToString((int)state),"|",reason);
+      if(changed)
+        {
+         Print("GOAT2|STATE|",IntegerToString((int)state),"|",reason);
+         if(m_initialized)
+           {
+            string receipt_reason="";
+            if(!PersistOperationalStateReceipt(receipt_reason))
+               Print("GOAT2|STATE|RECEIPT_FAILED|",receipt_reason);
+           }
+        }
+     }
+
+   bool ApplyIntentTransition(V2OrderIntent &intent,
+                              const ENUM_V2_ORDER_INTENT_STATUS next,
+                              string &reason) const
+     {
+      CV2OrderIntentMachine machine;
+      return machine.Apply(next,intent,reason);
+     }
+
+   bool ApplyObservedIntentTransition(V2OrderIntent &intent,
+                                      const ENUM_V2_ORDER_INTENT_STATUS next,
+                                      string &reason) const
+     {
+      reason="";
+      if(intent.status==V2_INTENT_PLANNED && next!=V2_INTENT_PERSISTED &&
+         !ApplyIntentTransition(intent,V2_INTENT_PERSISTED,reason))
+         return false;
+      if(intent.status==V2_INTENT_PERSISTED && next!=V2_INTENT_SUBMITTED &&
+         next!=V2_INTENT_CANCELLED &&
+         !ApplyIntentTransition(intent,V2_INTENT_SUBMITTED,reason))
+         return false;
+      return ApplyIntentTransition(intent,next,reason);
      }
 
    int FindLevelByPositionId(const ulong position_id) const
@@ -293,6 +407,16 @@ private:
          if(m_levels[i].position_id==position_id && !m_levels[i].closed)
             return i;
       return -1;
+     }
+
+   int ExecutedTradeCount(void) const
+     {
+      const double epsilon=V2PhysicalVolumeEpsilon();
+      int count=0;
+      for(int i=0;i<ArraySize(m_levels);i++)
+         if(m_levels[i].position_id!=0 || m_levels[i].filled_volume>epsilon || m_levels[i].closed)
+            count++;
+      return count;
      }
 
    bool HasOwnedPendingOrders(void) const
@@ -365,8 +489,10 @@ public:
       m_plans_ready=false;
       m_recovery_verified=false;
       m_risk_high_water_ready=false;
+      m_broker_profile_verified=false;
       m_new_risk_enabled=false;
       m_operational_state=V2_OP_MANAGE_ONLY;
+      m_operational_reason="NOT_INITIALIZED";
       m_sequence.Reset();
       ArrayResize(m_levels,0);
       m_grid_config.Reset();
@@ -381,6 +507,13 @@ public:
       m_onnx.Evaluate(m_feature_frame,m_onnx_proposal);
       m_pending.Reset();
       m_last_hud_render_msc=0;
+      m_last_entry_decision_bar=0;
+      m_last_shadow_decision_bar=0;
+      m_last_level_skip_bar=0;
+      m_last_level_skip_index=-1;
+      m_broker_mismatch_passes=0;
+      m_healthy_recovery_passes=0;
+      m_supervised_repromotion_pending=false;
       m_peak_equity=0.0;
       m_maximum_adverse_excursion_atr=0.0;
       m_maximum_favorable_excursion_atr=0.0;
@@ -432,8 +565,12 @@ private:
       bool found=false;
       if(!m_database.LoadRiskHighWater("account_equity_peak",stored,found,reason)) return false;
       const double current=AccountInfoDouble(ACCOUNT_EQUITY);
-      m_peak_equity=MathMax(current,(found ? stored : 0.0));
-      if(!found || current>stored)
+      // Preserve an in-memory peak that may be newer than the durable value.
+      // This matters when a transient metadata read/write failure degraded the
+      // manager after the account made a new equity high: recovery must retry
+      // the highest observed value, never a later lower account snapshot.
+      m_peak_equity=MathMax(m_peak_equity,MathMax(current,(found ? stored : 0.0)));
+      if(!found || m_peak_equity>stored)
         {
          if(!m_database.StoreRiskHighWater("account_equity_peak",m_peak_equity,reason)) return false;
         }
@@ -480,12 +617,17 @@ private:
 
    string FeatureSnapshot(void) const
      {
-      return StringFormat("schema=1;spread=%.8f:%d;atr=%.8f:%d;fast=%.8f:%d;slow=%.8f:%d;rsi=%.8f:%d",
+      return StringFormat("schema=1;spread=%.8f:%d:%I64d;atr=%.8f:%d:%I64d;fast=%.8f:%d:%I64d;slow=%.8f:%d:%I64d;rsi=%.8f:%d:%I64d",
                           m_feature_frame.spread_points.value,(int)m_feature_frame.spread_points.ready,
+                          m_feature_frame.spread_points.source_age_msc,
                           m_feature_frame.atr_points.value,(int)m_feature_frame.atr_points.ready,
+                          m_feature_frame.atr_points.source_age_msc,
                           m_feature_frame.fast_ema.value,(int)m_feature_frame.fast_ema.ready,
+                          m_feature_frame.fast_ema.source_age_msc,
                           m_feature_frame.slow_ema.value,(int)m_feature_frame.slow_ema.ready,
-                          m_feature_frame.rsi.value,(int)m_feature_frame.rsi.ready);
+                          m_feature_frame.slow_ema.source_age_msc,
+                          m_feature_frame.rsi.value,(int)m_feature_frame.rsi.ready,
+                          m_feature_frame.rsi.source_age_msc);
      }
 
    bool BuildReceipt(const V2DomainEvent &event,
@@ -554,6 +696,118 @@ private:
       receipt.payload_hash="";
       receipt.canonical_payload="";
       return m_receipts.Build(receipt,reason);
+     }
+
+   bool StoreDecisionReceipt(const ENUM_V2_RECEIPT_KIND kind,
+                             const string decision_reason,
+                             const ENUM_V2_DIRECTION direction,
+                             const ENUM_V2_ACTION_KIND action,
+                             const ENUM_V2_RISK_EFFECT risk_effect,
+                             const int level_index,
+                             const double volume,
+                             const double price,
+                             string &reason)
+     {
+      reason="";
+      V2DomainEvent event;
+      event.Reset();
+      event.kind=V2_EVENT_NONE;
+      event.sequence_id=m_sequence.sequence_id;
+      event.direction=direction;
+      event.symbol=_Symbol;
+      event.action=action;
+      event.risk_effect=risk_effect;
+      event.occurred_at=V2UtcNow();
+      event.state_version=m_sequence.last_state_version;
+      event.level_index=level_index;
+      event.volume=volume;
+      event.price=price;
+      event.reason_code=decision_reason;
+      const string material="GOAT2|DECISION|"+IntegerToString((int)kind)+"|"+
+                            m_sequence.sequence_id+"|"+IntegerToString(level_index)+"|"+
+                            IntegerToString((long)iTime(_Symbol,V2_SignalTimeframe,0))+"|"+decision_reason;
+      if(!m_identity.EventId(material,event.event_id))
+        { reason="DECISION_RECEIPT_EVENT_ID_FAILED"; return false; }
+      V2Receipt receipt;
+      if(!BuildReceipt(event,kind,0.0,0.0,receipt,reason))
+         return false;
+      receipt.counterfactual=(kind==V2_RECEIPT_SHADOW_DECISION);
+      receipt.receipt_id="";
+      receipt.payload_hash="";
+      receipt.canonical_payload="";
+      if(!m_receipts.Build(receipt,reason) || !m_database.StoreReceipt(receipt,reason))
+         return false;
+      V2TelemetryStatus telemetry_status;
+      string telemetry_reason="";
+      if(!m_telemetry.EnqueueReceipt(receipt,5,false,telemetry_status,telemetry_reason) &&
+         telemetry_status.requires_manage_only)
+         SetOperationalState(V2_OP_MANAGE_ONLY,"DECISION_TELEMETRY_CAPACITY:"+telemetry_reason);
+      return true;
+     }
+
+   bool PersistOperationalStateReceipt(string &reason)
+     {
+      reason="";
+      if(!m_database.IsOpen() || !m_database.IsWritable())
+        { reason="OPERATIONAL_STATE_DATABASE_NOT_WRITABLE"; return false; }
+      V2DomainEvent event;
+      event.Reset();
+      event.kind=V2_EVENT_OPERATIONAL_STATE_CHANGED;
+      event.sequence_id=m_sequence.sequence_id;
+      event.direction=m_sequence.direction;
+      event.symbol=_Symbol;
+      event.action=V2_ACTION_CANCEL;
+      event.risk_effect=(m_operational_state==V2_OP_NORMAL ? V2_RISK_NEUTRAL : V2_RISK_DECREASE);
+      event.occurred_at=V2UtcNow();
+      event.state_version=m_sequence.last_state_version;
+      event.reason_code="STATE="+IntegerToString((int)m_operational_state)+"|"+m_operational_reason;
+      if(!m_identity.EventId("GOAT2|OP_STATE|"+event.reason_code+"|"+
+                             IntegerToString((long)GetTickCount64()),event.event_id))
+        { reason="OPERATIONAL_STATE_EVENT_ID_FAILED"; return false; }
+      V2Receipt receipt;
+      if(!BuildReceipt(event,V2_RECEIPT_OPERATIONAL_STATE,0.0,0.0,receipt,reason))
+         return false;
+      return m_database.StoreReceipt(receipt,reason);
+     }
+
+   bool StoreBarDecisionReceipt(const ENUM_V2_RECEIPT_KIND kind,
+                                const string decision_reason,
+                                const ENUM_V2_DIRECTION direction,
+                                const ENUM_V2_ACTION_KIND action,
+                                const ENUM_V2_RISK_EFFECT risk_effect,
+                                const int level_index,
+                                const double volume,
+                                const double price,
+                                datetime &last_bar,
+                                string &reason)
+     {
+      const datetime current_bar=iTime(_Symbol,V2_SignalTimeframe,0);
+      if(current_bar>0 && current_bar==last_bar)
+         return true;
+      if(!StoreDecisionReceipt(kind,decision_reason,direction,action,risk_effect,
+                               level_index,volume,price,reason))
+         return false;
+      last_bar=current_bar;
+      return true;
+     }
+
+   bool StoreLevelSkipReceipt(const string skip_reason,
+                              const int level_index,
+                              const double volume,
+                              const double price,
+                              string &reason)
+     {
+      const datetime current_bar=iTime(_Symbol,V2_SignalTimeframe,0);
+      if(current_bar>0 && current_bar==m_last_level_skip_bar &&
+         level_index==m_last_level_skip_index)
+         return true;
+      if(!StoreDecisionReceipt(V2_RECEIPT_LEVEL_SKIP,skip_reason,m_sequence.direction,
+                               V2_ACTION_ADD,V2_RISK_INCREASE,level_index,
+                               volume,price,reason))
+         return false;
+      m_last_level_skip_bar=current_bar;
+      m_last_level_skip_index=level_index;
+      return true;
      }
 
    ENUM_V2_RECEIPT_KIND ReceiptKindForEvent(const V2DomainEvent &event) const
@@ -773,16 +1027,17 @@ private:
       V2OwnedPosition positions[];
       double standing=0.0,vwap=0.0,floating=0.0;
       if(!ScanOwnedPositions(positions,standing,vwap,floating,reason)) return false;
-      const double step=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
       if(m_sequence.sequence_id=="")
         {
-         if(standing>step*0.5 || HasOwnedPendingOrders())
+         if(ArraySize(positions)>0 || V2HasPhysicalVolume(standing) || HasOwnedPendingOrders())
            { reason="UNJOURNALED_OWNED_EXPOSURE_OR_ORDER"; return false; }
          return true;
         }
       if(m_sequence.symbol!=_Symbol)
         { reason="RECOVERY_SEQUENCE_SYMBOL_MISMATCH"; return false; }
-      if(MathAbs(standing-m_sequence.standing_volume)>MathMax(step*0.5,1e-8))
+      if(V2HasPhysicalVolume(standing)!=V2HasPhysicalVolume(m_sequence.standing_volume))
+        { reason="RECOVERY_STANDING_VOLUME_PRESENCE_MISMATCH"; return false; }
+      if(MathAbs(standing-m_sequence.standing_volume)>V2PhysicalVolumeEpsilon())
         { reason="RECOVERY_STANDING_VOLUME_MISMATCH"; return false; }
       for(int i=0;i<ArraySize(positions);i++)
         {
@@ -791,7 +1046,10 @@ private:
          const int level=FindLevelByPositionId(positions[i].position_id);
          if(level<0)
            { reason="RECOVERY_POSITION_LINEAGE_MISSING"; return false; }
-         if(MathAbs(m_levels[level].filled_volume-positions[i].volume)>MathMax(step*0.5,1e-8))
+         if(V2HasPhysicalVolume(m_levels[level].filled_volume)!=V2HasPhysicalVolume(positions[i].volume))
+           { reason="RECOVERY_LEVEL_VOLUME_PRESENCE_MISMATCH"; return false; }
+         if(MathAbs(m_levels[level].filled_volume-positions[i].volume)>
+            V2PhysicalVolumeEpsilon())
            { reason="RECOVERY_LEVEL_VOLUME_MISMATCH"; return false; }
         }
       if(HasOwnedPendingOrders())
@@ -803,7 +1061,8 @@ private:
      {
       m_recovery_verified=false;
       SetOperationalState(V2_OP_RECOVERY_QUARANTINE,quarantine_reason);
-      if(m_sequence.sequence_id=="" || m_sequence.status==V2_SEQ_QUARANTINED)
+      if(m_sequence.sequence_id=="" || m_sequence.status==V2_SEQ_QUARANTINED ||
+         m_sequence.status==V2_SEQ_IDLE || m_sequence.status==V2_SEQ_ENDED)
          return false;
       V2DomainEvent event;
       event.Reset();
@@ -813,7 +1072,7 @@ private:
       event.risk_effect=V2_RISK_DECREASE;
       event.direction=m_sequence.direction;
       event.symbol=m_sequence.symbol;
-      event.occurred_at=TimeCurrent();
+      event.occurred_at=V2UtcNow();
       event.reason_code=quarantine_reason;
       string reason="";
       if(!PersistSimpleEvent(event,reason))
@@ -850,7 +1109,7 @@ private:
       if(!m_policy.Initialize(V2_StateMode,reason)) return false;
       if(!m_onnx.Initialize(V2_OnnxMode,reason)) return false;
       if(!m_replay.InitializeDisabled(reason)) return false;
-      if(!m_hud.Initialize(V2_EnableHud,reason)) return false;
+      if(!m_hud.Initialize(V2_EnableHud,V2_Mode_Operation,reason)) return false;
       if(!m_overlay.Initialize(V2_EnableOverlay))
         { reason="OVERLAY_INITIALIZATION_FAILED"; return false; }
       return true;
@@ -876,7 +1135,18 @@ public:
       const ENUM_V2_STATE_DB_MODE database_mode=V2ResolveStateDBMode(V2_Bookkeeping);
       V2StateDBConfig database_config;
       V2BuildDefaultStateDBConfig(m_identity,database_mode,database_config);
-      if(!m_database.Open(database_config,reason)) return Fail("STATE_DB:"+reason);
+      if(!m_database.OpenOrRecoverReadOnly(database_config,reason)) return Fail("STATE_DB:"+reason);
+      if(m_database.IsReadOnlyRecovery())
+        {
+         if(!InitializeSubsystems(reason)) return Fail("READ_ONLY_SUBSYSTEM:"+reason);
+         m_recovery_verified=false;
+         SetOperationalState(V2_OP_HALTED,"DATABASE_READ_ONLY_RECOVERY:"+m_database.StatusReason());
+         m_initialized=true;
+         RenderHud(true);
+         Print("GOAT2|INIT|READ_ONLY_RECOVERY|",m_database.StatusReason(),
+               "|path=",MQLInfoString(MQL_PROGRAM_PATH));
+         return true;
+        }
       if(!InitializeRiskHighWater(reason))
          Print("GOAT2|RISK_HIGH_WATER|DEGRADED|",reason);
       if(!BuildManifest(database_mode,reason)) return Fail("MANIFEST:"+reason);
@@ -898,13 +1168,13 @@ public:
       m_recovery_verified=false;
       string broker_profile_key=V2_BrokerProfileId;
       StringToLower(broker_profile_key);
-      const bool broker_profile_verified=(MQLInfoInteger(MQL_TESTER) ||
-                                          (StringFind(broker_profile_key,"unverified")<0 &&
-                                           V2_BrokerProfileVersion!="" &&
-                                           V2Sha256Hex(V2CanonicalBrokerProfileInputs())!=""));
+      m_broker_profile_verified=(MQLInfoInteger(MQL_TESTER) ||
+                                 (StringFind(broker_profile_key,"unverified")<0 &&
+                                  V2_BrokerProfileVersion!="" &&
+                                  V2Sha256Hex(V2CanonicalBrokerProfileInputs())!=""));
       const bool requested_new_risk=(GOAT2_PHASE1_EXECUTION_CERTIFIED==1 &&
                                       V2_RunMode==V2_RUN_TRADE && V2_EnableNewRisk &&
-                                      m_risk_high_water_ready && broker_profile_verified);
+                                      m_risk_high_water_ready && m_broker_profile_verified);
       if(!m_gateway.Initialize(m_identity,m_kernel,m_database,m_receipts,
                                m_manifest.manifest_id,
                                V2_BrokerProfileId+"@"+V2_BrokerProfileVersion,
@@ -940,9 +1210,18 @@ public:
          return true;
         }
 
-      const double recovery_volume_epsilon=MathMax(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP)*0.5,1e-8);
+      V2OwnedPosition recovery_positions[];
+      double recovery_standing=0.0,recovery_vwap=0.0,recovery_floating=0.0;
+      if(!ScanOwnedPositions(recovery_positions,recovery_standing,recovery_vwap,recovery_floating,reason))
+        {
+         EnterRecoveryQuarantine("RECOVERY_FLATNESS_SCAN:"+reason);
+         m_initialized=true;
+         return true;
+        }
+      const bool recovery_broker_flat=(ArraySize(recovery_positions)==0 &&
+                                       !V2HasPhysicalVolume(recovery_standing));
       if(m_sequence.reduction_reason!="" &&
-         m_sequence.reduction_remaining<=recovery_volume_epsilon &&
+         !V2HasPhysicalVolume(m_sequence.reduction_remaining) &&
          !CompleteReductionMandate(reason))
         {
          EnterRecoveryQuarantine("RECOVERY_REDUCTION_COMPLETION:"+reason);
@@ -950,7 +1229,7 @@ public:
          return true;
         }
       if(m_sequence.sequence_id!="" && m_sequence.status!=V2_SEQ_ENDED &&
-         m_sequence.standing_volume<=recovery_volume_epsilon &&
+         recovery_broker_flat && !V2HasPhysicalVolume(m_sequence.standing_volume) &&
          !EndSequence("RECOVERY_BROKER_FLAT",reason))
         {
          EnterRecoveryQuarantine("RECOVERY_SEQUENCE_END:"+reason);
@@ -979,19 +1258,24 @@ public:
       const bool telemetry_ready=m_telemetry.RefreshStatus(startup_telemetry,telemetry_reason);
       if(!telemetry_ready || startup_telemetry.requires_manage_only)
          SetOperationalState(V2_OP_MANAGE_ONLY,"TELEMETRY_STARTUP_GATE:"+telemetry_reason+startup_telemetry.reason);
+      else if(V2_RunMode==V2_RUN_DISABLED)
+         SetOperationalState(V2_OP_HALTED,"RUN_DISABLED_NO_BROKER_MUTATIONS");
       else if(GOAT2_PHASE1_EXECUTION_CERTIFIED!=1)
          SetOperationalState(V2_OP_MANAGE_ONLY,"PHASE1_EXECUTION_NOT_CERTIFIED");
       else if(V2_RunMode!=V2_RUN_TRADE || !V2_EnableNewRisk)
          SetOperationalState(V2_OP_MANAGE_ONLY,"NEW_RISK_NOT_EXPLICITLY_ENABLED");
       else if(!m_risk_high_water_ready)
          SetOperationalState(V2_OP_MANAGE_ONLY,"RISK_HIGH_WATER_NOT_DURABLE");
-      else if(!broker_profile_verified)
+      else if(!m_broker_profile_verified)
          SetOperationalState(V2_OP_MANAGE_ONLY,"BROKER_PROFILE_UNVERIFIED");
       else if(!requested_new_risk)
          SetOperationalState(V2_OP_MANAGE_ONLY,"NEW_RISK_PREREQUISITE_FAILED");
       else
          SetOperationalState(V2_OP_NORMAL,"RECOVERY_VERIFIED");
       m_initialized=true;
+      string state_receipt_reason="";
+      if(!PersistOperationalStateReceipt(state_receipt_reason))
+         Print("GOAT2|STATE|INITIAL_RECEIPT_FAILED|",state_receipt_reason);
       RenderHud(true);
       Print("GOAT2|INIT|OK|version=",m_product_version,
             "|build=",m_build_id,
@@ -1004,27 +1288,12 @@ public:
 private:
    bool FindPersistedDealEvent(const ulong deal_ticket,V2DomainEvent &matched,bool &found,string &reason)
      {
-      matched.Reset();
-      found=false;
-      reason="";
-      if(deal_ticket==0) return true;
-      V2DomainEvent events[];
-      if(!m_database.LoadEventsAfter(0,events,reason)) return false;
-      for(int i=0;i<ArraySize(events);i++)
-        {
-         if(events[i].deal_ticket!=deal_ticket) continue;
-         if(events[i].kind!=V2_EVENT_FILL_PARTIAL && events[i].kind!=V2_EVENT_FILL_COMPLETE) continue;
-         if(found)
-           { reason="DEAL_EVENT_CORRELATION_AMBIGUOUS"; return false; }
-         matched=events[i];
-         found=true;
-        }
-      return true;
+      return m_database.FindFillEventByDeal(deal_ticket,matched,found,reason);
      }
 
    double ExecutedVolumeForIntent(const V2OrderIntent &intent,const ENUM_DEAL_ENTRY expected_entry) const
      {
-      const datetime from=(intent.created_at>60 ? intent.created_at-60 : 0);
+      const datetime from=V2UtcTimeToServer(intent.created_at>60 ? intent.created_at-60 : 0);
       if(!HistorySelect(from,TimeCurrent()+60)) return 0.0;
       double total=0.0;
       for(int i=0;i<HistoryDealsTotal();i++)
@@ -1045,7 +1314,12 @@ private:
      {
       reason="";
       if(m_sequence.sequence_id=="" || m_sequence.status==V2_SEQ_ENDED) return true;
-      if(m_sequence.standing_volume>SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP)*0.5)
+      V2OwnedPosition positions[];
+      double broker_standing=0.0,vwap=0.0,floating=0.0;
+      if(!ScanOwnedPositions(positions,broker_standing,vwap,floating,reason))
+         return false;
+      if(ArraySize(positions)>0 || V2HasPhysicalVolume(broker_standing) ||
+         V2HasPhysicalVolume(m_sequence.standing_volume))
         { reason="END_SEQUENCE_NOT_FLAT"; return false; }
       V2DomainEvent event;
       event.Reset();
@@ -1055,7 +1329,7 @@ private:
       event.risk_effect=V2_RISK_DECREASE;
       event.direction=m_sequence.direction;
       event.symbol=m_sequence.symbol;
-      event.occurred_at=TimeCurrent();
+      event.occurred_at=V2UtcNow();
       event.reason_code=attribution;
       if(!PersistSimpleEvent(event,reason)) return false;
       m_pending.Reset();
@@ -1087,7 +1361,7 @@ private:
       event.risk_effect=V2_RISK_DECREASE;
       event.direction=m_sequence.direction;
       event.symbol=m_sequence.symbol;
-      event.occurred_at=TimeCurrent();
+      event.occurred_at=V2UtcNow();
       event.price=next;
       event.reason_code=(next>0.0 ? "RETRACE_POINTER_ADVANCED" : "RETRACE_CHAIN_EXHAUSTED");
       return PersistSimpleEvent(event,reason);
@@ -1097,19 +1371,19 @@ private:
      {
       reason="";
       if(m_sequence.reduction_reason=="") return true;
-      const double epsilon=MathMax(SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP)*0.5,1e-8);
-      if(m_sequence.reduction_remaining>epsilon)
+      if(V2HasPhysicalVolume(m_sequence.reduction_remaining))
         { reason="REDUCTION_COMPLETION_VOLUME_REMAINS"; return false; }
       const bool retrace_pending=m_sequence.retrace_advance_pending;
       V2DomainEvent completed;
       completed.Reset();
       completed.sequence_id=m_sequence.sequence_id;
       completed.kind=V2_EVENT_REDUCTION_COMPLETED;
-      completed.action=(m_sequence.standing_volume<=epsilon ? V2_ACTION_CLOSE : V2_ACTION_PARTIAL_CLOSE);
+      completed.action=(!V2HasPhysicalVolume(m_sequence.standing_volume) ?
+                        V2_ACTION_CLOSE : V2_ACTION_PARTIAL_CLOSE);
       completed.risk_effect=V2_RISK_DECREASE;
       completed.direction=m_sequence.direction;
       completed.symbol=m_sequence.symbol;
-      completed.occurred_at=TimeCurrent();
+      completed.occurred_at=V2UtcNow();
       completed.level_index=m_sequence.reduction_semantic_level;
       completed.retrace_advance=retrace_pending;
       completed.price=(retrace_pending ? NextRetracePrice() : 0.0);
@@ -1170,13 +1444,13 @@ private:
          if(!m_identity.SystemExitIntentId(m_sequence.sequence_id,observation.deal_ticket,
                                            intent.order_intent_id))
            { reason="SYSTEM_EXIT_INTENT_ID_FAILED"; return false; }
-         const double step=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
          const double level_volume=m_levels[position_level].filled_volume;
          intent.sequence_id=m_sequence.sequence_id;
-         intent.action=(volume>=level_volume-MathMax(step*0.5,1e-8) ?
+         intent.action=(V2ExecutedVolumeSatisfies(volume,level_volume) ?
                         V2_ACTION_CLOSE : V2_ACTION_PARTIAL_CLOSE);
          intent.risk_effect=V2_RISK_DECREASE;
-         intent.status=V2_INTENT_PERSISTED;
+         if(!ApplyIntentTransition(intent,V2_INTENT_PERSISTED,reason))
+           { reason="SYSTEM_EXIT_INTENT_TRANSITION_FAILED:"+reason; return false; }
          intent.direction=m_sequence.direction;
          intent.symbol=_Symbol;
          intent.magic=m_identity.Magic();
@@ -1187,7 +1461,7 @@ private:
          intent.order_ticket=order_ticket;
          intent.deal_ticket=observation.deal_ticket;
          intent.position_id=position_id;
-         intent.created_at=(datetime)(HistoryDealGetInteger(observation.deal_ticket,DEAL_TIME_MSC)/1000);
+         intent.created_at=(datetime)(V2ServerTimeToUtcMsc((long)HistoryDealGetInteger(observation.deal_ticket,DEAL_TIME_MSC))/1000);
          intent.reason_code=(deal_reason==DEAL_REASON_SL ? "SYSTEM_EXIT_STOP_LOSS" :
                              (deal_reason==DEAL_REASON_TP ? "SYSTEM_EXIT_TAKE_PROFIT" :
                               "SYSTEM_EXIT_STOP_OUT"));
@@ -1195,7 +1469,7 @@ private:
          V2Receipt recovery_receipt;
          recovery_receipt.Reset();
          recovery_receipt.kind=V2_RECEIPT_RECOVERY_ACTION;
-         recovery_receipt.occurred_at_msc=(long)HistoryDealGetInteger(observation.deal_ticket,DEAL_TIME_MSC);
+         recovery_receipt.occurred_at_msc=V2ServerTimeToUtcMsc((long)HistoryDealGetInteger(observation.deal_ticket,DEAL_TIME_MSC));
          recovery_receipt.deployment_id=m_identity.DeploymentId();
          recovery_receipt.portfolio_generation_id=m_identity.GenerationId();
          recovery_receipt.strategy_member_id=m_identity.MemberId();
@@ -1245,9 +1519,12 @@ private:
             m_sequence=projected;
            }
          else if(existing.state_version>m_sequence.last_state_version)
-           { reason="PERSISTED_DEAL_STATE_VERSION_GAP"; return false; }
+            { reason="PERSISTED_DEAL_STATE_VERSION_GAP"; return false; }
          intent.deal_ticket=observation.deal_ticket;
-         intent.status=(existing.kind==V2_EVENT_FILL_COMPLETE ? V2_INTENT_FILLED : V2_INTENT_PARTIAL);
+         if(!ApplyObservedIntentTransition(intent,
+                                           (existing.kind==V2_EVENT_FILL_COMPLETE ? V2_INTENT_FILLED : V2_INTENT_PARTIAL),
+                                           reason))
+           { reason="PERSISTED_DEAL_INTENT_TRANSITION_FAILED:"+reason; return false; }
          intent.reason_code="DEAL_EVENT_ALREADY_RECONCILED";
          return m_database.UpdateOrderIntent(intent,reason);
         }
@@ -1266,9 +1543,9 @@ private:
         { reason="DEAL_ORDER_TICKET_REQUIRED_FOR_FILL_AGGREGATION"; return false; }
       const double executed=(StringFind(intent.reason_code,"SYSTEM_EXIT_")==0 ?
                              volume : ExecutedVolumeForIntent(intent,entry));
-      const double step=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
-      const bool complete=(executed>=intent.requested_volume-MathMax(step*0.5,1e-8));
-      intent.status=(complete ? V2_INTENT_FILLED : V2_INTENT_PARTIAL);
+      const bool complete=V2ExecutedVolumeSatisfies(executed,intent.requested_volume);
+      if(!ApplyObservedIntentTransition(intent,(complete ? V2_INTENT_FILLED : V2_INTENT_PARTIAL),reason))
+        { reason="DEAL_FILL_INTENT_TRANSITION_FAILED:"+reason; return false; }
       intent.risk_effect=risk_effect;
       intent.deal_ticket=observation.deal_ticket;
       intent.order_ticket=order_ticket;
@@ -1301,7 +1578,7 @@ private:
            { reason="CLOSE_POSITION_LEVEL_LINEAGE_MISSING"; return false; }
          primary=m_levels[primary_index];
          primary.filled_volume=MathMax(0.0,primary.filled_volume-volume);
-         if(primary.filled_volume<=MathMax(step*0.5,1e-8))
+         if(!V2HasPhysicalVolume(primary.filled_volume))
            {
             primary.filled_volume=0.0;
             primary.closed=true;
@@ -1325,15 +1602,14 @@ private:
       event.risk_effect=risk_effect;
       event.direction=intent.direction;
       event.symbol=intent.symbol;
-      event.occurred_at=(datetime)(HistoryDealGetInteger(observation.deal_ticket,DEAL_TIME_MSC)/1000);
+      event.occurred_at=(datetime)(V2ServerTimeToUtcMsc((long)HistoryDealGetInteger(observation.deal_ticket,DEAL_TIME_MSC))/1000);
       event.level_index=intent.level_index;
       event.request_id=observation.request_id;
       event.order_ticket=order_ticket;
       event.deal_ticket=observation.deal_ticket;
       event.position_id=position_id;
-      event.volume=(risk_effect==V2_RISK_DECREASE &&
-                    MathAbs(m_sequence.standing_volume-volume)<=MathMax(step*0.5,1e-8) ?
-                    m_sequence.standing_volume : volume);
+      event.volume=(risk_effect==V2_RISK_DECREASE ?
+                    MathMin(volume,m_sequence.standing_volume) : volume);
       event.price=price;
       event.realized_pl=profit;
       event.reason_code=intent.reason_code;
@@ -1366,7 +1642,7 @@ private:
             retrace.risk_effect=V2_RISK_DECREASE;
             retrace.direction=m_sequence.direction;
             retrace.symbol=m_sequence.symbol;
-            retrace.occurred_at=TimeCurrent();
+            retrace.occurred_at=V2UtcNow();
             retrace.level_index=previous;
             retrace.price=m_levels[previous].planned_price;
             retrace.reason_code="RETRACE_POINTER_ARMED";
@@ -1374,7 +1650,14 @@ private:
            }
         }
 
-      if(m_sequence.standing_volume<=MathMax(step*0.5,1e-8))
+      V2OwnedPosition post_deal_positions[];
+      double post_deal_standing=0.0,post_deal_vwap=0.0,post_deal_floating=0.0;
+      if(!ScanOwnedPositions(post_deal_positions,post_deal_standing,
+                             post_deal_vwap,post_deal_floating,reason))
+         return false;
+      const bool broker_flat_after_deal=(ArraySize(post_deal_positions)==0 &&
+                                         !V2HasPhysicalVolume(post_deal_standing));
+      if(broker_flat_after_deal && !V2HasPhysicalVolume(m_sequence.standing_volume))
         {
          const string flat_reason=(m_sequence.reduction_reason=="" ? "BROKER_FLAT" : m_sequence.reduction_reason);
          if(m_sequence.reduction_reason!="" && !CompleteReductionMandate(reason))
@@ -1383,7 +1666,7 @@ private:
             return false;
         }
       else if(m_sequence.reduction_reason!="" &&
-              m_sequence.reduction_remaining<=MathMax(step*0.5,1e-8) &&
+              !V2HasPhysicalVolume(m_sequence.reduction_remaining) &&
               !CompleteReductionMandate(reason))
          return false;
       return true;
@@ -1450,11 +1733,12 @@ private:
               {
                const ulong active_order=OrderGetTicket(order_index);
                if(active_order==0 || !OrderSelect(active_order)) continue;
-               if((ulong)OrderGetInteger(ORDER_MAGIC)!=m_identity.Magic() ||
-                  OrderGetString(ORDER_SYMBOL)!=intent.symbol ||
-                  OrderGetString(ORDER_COMMENT)!=correlation_token) continue;
-               intent.order_ticket=active_order;
-               intent.status=V2_INTENT_RECONCILE_REQUIRED;
+                if((ulong)OrderGetInteger(ORDER_MAGIC)!=m_identity.Magic() ||
+                   OrderGetString(ORDER_SYMBOL)!=intent.symbol ||
+                   OrderGetString(ORDER_COMMENT)!=correlation_token) continue;
+                intent.order_ticket=active_order;
+               if(!ApplyObservedIntentTransition(intent,V2_INTENT_RECONCILE_REQUIRED,reason))
+                 { reason="ACTIVE_ORDER_INTENT_TRANSITION_FAILED:"+reason; return false; }
                intent.reason_code="RECOVERY_CORRELATED_ACTIVE_ORDER_BY_TOKEN";
                if(!m_database.UpdateOrderIntent(intent,reason)) return false;
                break;
@@ -1462,11 +1746,23 @@ private:
            }
 
          bool found_deal=false;
-         if(HistorySelect((intent.created_at>60 ? intent.created_at-60 : 0),TimeCurrent()+60))
+         if(HistorySelect(V2UtcTimeToServer(intent.created_at>60 ? intent.created_at-60 : 0),TimeCurrent()+60))
            {
-            for(int d=0;d<HistoryDealsTotal();d++)
+            ulong deal_tickets[];
+            const int history_total=HistoryDealsTotal();
+            if(ArrayResize(deal_tickets,history_total)!=history_total)
+              { reason="HISTORY_DEAL_SNAPSHOT_ALLOCATION_FAILED"; return false; }
+            int deal_count=0;
+            for(int d=0;d<history_total;d++)
               {
-               const ulong deal=HistoryDealGetTicket(d);
+               const ulong ticket=HistoryDealGetTicket(d);
+               if(ticket!=0)
+                  deal_tickets[deal_count++]=ticket;
+              }
+            ArrayResize(deal_tickets,deal_count);
+            for(int d=0;d<deal_count;d++)
+              {
+               const ulong deal=deal_tickets[d];
                 if(deal==0 || (ulong)HistoryDealGetInteger(deal,DEAL_MAGIC)!=m_identity.Magic()) continue;
                 if(HistoryDealGetString(deal,DEAL_SYMBOL)!=intent.symbol) continue;
                 const ulong order=(ulong)HistoryDealGetInteger(deal,DEAL_ORDER);
@@ -1485,13 +1781,15 @@ private:
                   {
                    intent.order_ticket=order;
                    intent.deal_ticket=deal;
-                   intent.status=V2_INTENT_RECONCILE_REQUIRED;
+                   if(!ApplyObservedIntentTransition(intent,V2_INTENT_RECONCILE_REQUIRED,reason))
+                     { reason="CORRELATED_DEAL_INTENT_TRANSITION_FAILED:"+reason; return false; }
                    intent.reason_code="RECOVERY_CORRELATED_DEAL_BY_TOKEN";
                    if(!m_database.UpdateOrderIntent(intent,reason)) return false;
                   }
                 V2TradeObservation observation;
                observation.Reset();
-               observation.captured_at_msc=(long)HistoryDealGetInteger(deal,DEAL_TIME_MSC);
+               observation.captured_at_msc=V2ServerTimeToUtcMsc(
+                                             (long)HistoryDealGetInteger(deal,DEAL_TIME_MSC));
                observation.transaction_type=TRADE_TRANSACTION_DEAL_ADD;
                observation.request_id=intent.request_id;
                observation.order_ticket=order;
@@ -1509,8 +1807,7 @@ private:
             const ENUM_DEAL_ENTRY expected_entry=(V2ActionIncreasesRisk(intent.action) ?
                                                    DEAL_ENTRY_IN : DEAL_ENTRY_OUT);
             const double executed=ExecutedVolumeForIntent(intent,expected_entry);
-            const double step=SymbolInfoDouble(intent.symbol,SYMBOL_VOLUME_STEP);
-            if(executed>=intent.requested_volume-MathMax(step*0.5,1e-8))
+            if(V2ExecutedVolumeSatisfies(executed,intent.requested_volume))
                continue;
             const bool active_order=(intent.order_ticket!=0 && OrderSelect(intent.order_ticket));
             bool terminal_remainder=false;
@@ -1523,7 +1820,8 @@ private:
               }
             if(terminal_remainder)
               {
-               intent.status=V2_INTENT_CANCELLED;
+               if(!ApplyObservedIntentTransition(intent,V2_INTENT_CANCELLED,reason))
+                 { reason="PARTIAL_REMAINDER_INTENT_TRANSITION_FAILED:"+reason; return false; }
                intent.reason_code="PARTIAL_FILL_REMAINDER_TERMINATED";
                if(!m_database.UpdateOrderIntent(intent,reason)) return false;
                if(m_pending.active && m_pending.order_intent_id==intent.order_intent_id)
@@ -1545,7 +1843,8 @@ private:
           // manufacture a cancellation.
          if(intent.action==V2_ACTION_MODIFY && PositionProtectionMatchesIntent(intent))
            {
-            intent.status=V2_INTENT_FILLED;
+            if(!ApplyObservedIntentTransition(intent,V2_INTENT_FILLED,reason))
+              { reason="PROTECTION_INTENT_TRANSITION_FAILED:"+reason; return false; }
             intent.reason_code="RECOVERY_PROTECTIVE_MODIFICATION_CONFIRMED";
             if(!m_database.UpdateOrderIntent(intent,reason)) return false;
             continue;
@@ -1556,7 +1855,8 @@ private:
             if(intent.order_ticket!=0 && OrderSelect(intent.order_ticket)) broker_order_present=true;
             if(!broker_order_present)
               {
-               intent.status=V2_INTENT_CANCELLED;
+               if(!ApplyObservedIntentTransition(intent,V2_INTENT_CANCELLED,reason))
+                 { reason="CANCEL_INTENT_TRANSITION_FAILED:"+reason; return false; }
                intent.reason_code="RECOVERY_CANCELLATION_CONFIRMED";
                if(!m_database.UpdateOrderIntent(intent,reason)) return false;
                continue;
@@ -1569,11 +1869,20 @@ private:
             if(order_state==ORDER_STATE_CANCELED || order_state==ORDER_STATE_EXPIRED ||
                order_state==ORDER_STATE_REJECTED)
               {
-               intent.status=(order_state==ORDER_STATE_REJECTED ? V2_INTENT_REJECTED : V2_INTENT_CANCELLED);
+               if(!ApplyObservedIntentTransition(intent,
+                                                 (order_state==ORDER_STATE_REJECTED ? V2_INTENT_REJECTED : V2_INTENT_CANCELLED),
+                                                 reason))
+                 { reason="TERMINAL_ORDER_INTENT_TRANSITION_FAILED:"+reason; return false; }
                intent.reason_code="BROKER_ORDER_TERMINAL_WITHOUT_FILL";
                if(!m_database.UpdateOrderIntent(intent,reason)) return false;
                if(m_pending.active && m_pending.order_intent_id==intent.order_intent_id)
                   m_pending.Reset();
+               if(V2ActionIncreasesRisk(intent.action) && intent.level_index==0 &&
+                  !V2HasPhysicalVolume(m_sequence.standing_volume))
+                 {
+                  if(!EndSequence("ENTRY_REJECTED_ASYNC",reason))
+                     return false;
+                 }
                continue;
               }
            }
@@ -1611,7 +1920,7 @@ private:
       event.risk_effect=risk_effect;
       event.direction=m_sequence.direction;
       event.symbol=m_sequence.symbol;
-      event.occurred_at=TimeCurrent();
+      event.occurred_at=V2UtcNow();
       event.level_index=level_index;
       event.volume=requested_volume;
       event.price=planned_price;
@@ -1667,6 +1976,15 @@ private:
       if(m_sequence.mlps_budget>0.0 && action.projected_loss_delta>m_sequence.mlps_budget+1e-8)
         {
          reason="LIVE_MLPS_BUDGET_BLOCKS_POSITIVE_ADD";
+         if(level_index>0)
+           {
+            string receipt_reason="";
+            if(!StoreLevelSkipReceipt(reason,level_index,requested_volume,entry,receipt_reason))
+              {
+               SetOperationalState(V2_OP_MANAGE_ONLY,"LEVEL_SKIP_RECEIPT_FAILED:"+receipt_reason);
+               reason+="|RECEIPT_FAILED:"+receipt_reason;
+              }
+           }
          return false;
         }
       action.reason_code=reason_code;
@@ -1679,7 +1997,7 @@ private:
          SetOperationalState(V2_OP_RECOVERY_QUARANTINE,"GATEWAY_EVENT_PROJECTION_FAILED:"+reason);
          return false;
         }
-      if(outcome.status==V2_GATEWAY_SUBMITTED)
+      if(outcome.status==V2_GATEWAY_SUBMITTED || outcome.status==V2_GATEWAY_RECONCILE_REQUIRED)
         {
          m_pending.Reset();
          m_pending.active=true;
@@ -1689,14 +2007,19 @@ private:
          m_pending.request_id=outcome.request_id;
          m_pending.order_ticket=outcome.order_ticket;
          m_pending.requested_volume=outcome.safety.normalized_volume;
-         m_pending.submitted_at_msc=(long)TimeCurrent()*1000;
+         m_pending.submitted_at_msc=V2UtcNowMsc();
+         m_pending.submitted_tick_count=GetTickCount64();
+         if(outcome.status==V2_GATEWAY_RECONCILE_REQUIRED)
+            SetOperationalState(V2_OP_MANAGE_ONLY,"ENTRY_OUTCOME_REQUIRES_RECONCILIATION:"+outcome.reason_code);
          return true;
         }
       reason="LEVEL_SUBMISSION_"+outcome.reason_code;
-      if(m_sequence.standing_volume<=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP)*0.5)
+      if((outcome.status==V2_GATEWAY_REJECTED || outcome.status==V2_GATEWAY_DENIED) &&
+         !V2HasPhysicalVolume(m_sequence.standing_volume))
         {
          string end_reason="";
-         EndSequence("ENTRY_NOT_SUBMITTED:"+outcome.reason_code,end_reason);
+         if(!EndSequence("ENTRY_PROVEN_NOT_EXECUTED:"+outcome.reason_code,end_reason) && end_reason!="")
+            reason+="|SEQUENCE_END_FAILED:"+end_reason;
         }
       return false;
      }
@@ -1747,7 +2070,7 @@ private:
       start.risk_effect=V2_RISK_INCREASE;
       start.direction=direction;
       start.symbol=_Symbol;
-      start.occurred_at=TimeCurrent();
+      start.occurred_at=V2UtcNow();
       start.volume=m_lot_config.start_lots;
       start.price=(direction==V2_DIR_LONG ? tick.ask : tick.bid);
       start.reason_code=policy_reason;
@@ -1822,7 +2145,7 @@ private:
      {
       reason="";
       const double minimum=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
-      if(m_pending.active || m_sequence.reduction_remaining<minimum-1e-12) return true;
+      if(m_pending.active || !V2HasPhysicalVolume(m_sequence.reduction_remaining)) return true;
       V2OwnedPosition target;
       int target_level=-1;
       if(!SelectReductionTarget(m_sequence.reduction_reason,target,target_level,reason)) return false;
@@ -1837,6 +2160,7 @@ private:
       action.risk_effect=V2_RISK_DECREASE;
       action.direction=m_sequence.direction;
       action.position_ticket=target.ticket;
+      action.position_id=target.position_id;
       action.state_version=m_sequence.last_state_version+1;
       action.level_index=(m_sequence.reduction_semantic_level>=0 ? m_sequence.reduction_semantic_level : target_level);
       action.volume=(full ? target.volume : requested);
@@ -1851,7 +2175,7 @@ private:
          SetOperationalState(V2_OP_RECOVERY_QUARANTINE,"REDUCTION_EVENT_PROJECTION_FAILED:"+reason);
          return false;
         }
-      if(outcome.status!=V2_GATEWAY_SUBMITTED)
+      if(outcome.status!=V2_GATEWAY_SUBMITTED && outcome.status!=V2_GATEWAY_RECONCILE_REQUIRED)
         { reason="REDUCTION_SUBMISSION_"+outcome.reason_code; return false; }
       m_pending.Reset();
       m_pending.active=true;
@@ -1861,7 +2185,10 @@ private:
       m_pending.request_id=outcome.request_id;
       m_pending.order_ticket=outcome.order_ticket;
       m_pending.requested_volume=outcome.safety.normalized_volume;
-      m_pending.submitted_at_msc=(long)TimeCurrent()*1000;
+      m_pending.submitted_at_msc=V2UtcNowMsc();
+      m_pending.submitted_tick_count=GetTickCount64();
+      if(outcome.status==V2_GATEWAY_RECONCILE_REQUIRED)
+         SetOperationalState(V2_OP_MANAGE_ONLY,"REDUCTION_OUTCOME_REQUIRES_RECONCILIATION:"+outcome.reason_code);
       return true;
      }
 
@@ -1885,7 +2212,7 @@ private:
          mandate.risk_effect=V2_RISK_DECREASE;
          mandate.direction=m_sequence.direction;
          mandate.symbol=m_sequence.symbol;
-         mandate.occurred_at=TimeCurrent();
+         mandate.occurred_at=V2UtcNow();
          mandate.level_index=semantic_level;
          mandate.volume=target;
          mandate.retrace_advance=advance_retrace;
@@ -1929,6 +2256,8 @@ private:
       V2BasketPlanConfig config;
       config.Reset();
       config.direction=m_sequence.direction;
+      config.executed_trade_count=ExecutedTradeCount();
+      config.maximum_trade_count=V2_MaxSequenceTrades;
       config.executed_level_count=m_sequence.level_count;
       config.maximum_level_count=V2_MaxSequenceTrades;
       config.lock_distance=ResolveSignedDistance(V2_LockProfitSize,atr);
@@ -2007,7 +2336,7 @@ private:
                                -1,false,reason);
       if(V2_EnableSequenceLossHardClose && m_sequence.mlps_budget>0.0 && sequence_pl<=-m_sequence.mlps_budget)
          return BeginReduction(standing,"MLPS_HARD_CLOSE",-1,false,reason);
-      if(m_sequence.reduction_remaining>0.0)
+      if(V2HasPhysicalVolume(m_sequence.reduction_remaining))
          return SubmitNextReduction(reason);
 
       V2BasketPlan basket;
@@ -2070,7 +2399,7 @@ private:
      {
       reason="";
       if(m_sequence.status!=V2_SEQ_ACTIVE || m_sequence.retrace_price<=0.0 ||
-         m_pending.active || m_sequence.reduction_remaining>0.0)
+         m_pending.active || V2HasPhysicalVolume(m_sequence.reduction_remaining))
          return true;
       const double market=(m_sequence.direction==V2_DIR_LONG ? tick.bid : tick.ask);
       if(!m_retrace_planner.Crossed(m_sequence.direction,market,m_sequence.retrace_price)) return true;
@@ -2092,13 +2421,21 @@ private:
          for(int i=0;i<ArraySize(m_levels);i++)
             if(MathAbs(m_levels[i].planned_price-m_sequence.retrace_price)<=PointSize()*2.0)
               { retrace_index=i; break; }
-         if(retrace_index>=0 && retrace_index<ArraySize(m_lot_plan.cumulative_lots))
-            close_volume=m_retrace_planner.PeakSmartClose(m_sequence.standing_volume,
-                                                          m_lot_plan.cumulative_lots[retrace_index],
-                                                          CurrentSequenceProfit(),
-                                                          V2_PeakSmartReleasePercent,
-                                                          V2_PeakSmartMaxClosePercent,
-                                                          minimum,maximum,step);
+         if(retrace_index<0 || retrace_index>=ArraySize(m_lot_plan.cumulative_lots))
+           { reason="PEAK_SMART_RETRACE_PLAN_INDEX_MISSING"; return false; }
+         V2PeakSmartRetraceResult smart;
+         if(!m_retrace_planner.EvaluatePeakSmart(m_sequence.standing_volume,
+                                                 m_lot_plan.cumulative_lots[retrace_index],
+                                                 CurrentSequenceProfit(),
+                                                 V2_PeakSmartReleasePercent,
+                                                 V2_PeakSmartMaxClosePercent,
+                                                 minimum,maximum,step,smart))
+           { reason=smart.reason; return false; }
+         if(smart.decision==V2_PEAK_SMART_HOLD_WHILE_UNDERWATER)
+            return true;
+         if(smart.decision==V2_PEAK_SMART_ADVANCE_WITHOUT_CLOSE)
+            return AdvanceRetracePointer(reason);
+         close_volume=smart.close_volume;
          close_reason="PEAK_SMART_RETRACE";
         }
       else return true;
@@ -2110,7 +2447,8 @@ private:
    bool MaybeAddLevel(const MqlTick &tick,string &reason)
      {
       reason="";
-      if(m_sequence.status!=V2_SEQ_ACTIVE || m_pending.active || m_sequence.reduction_remaining>0.0)
+      if(m_sequence.status!=V2_SEQ_ACTIVE || m_pending.active ||
+         V2HasPhysicalVolume(m_sequence.reduction_remaining))
          return true;
       if(!m_plans_ready)
         {
@@ -2145,7 +2483,15 @@ private:
          RefreshFeatures(tick);
          const ENUM_V2_DIRECTION recheck=m_features.Signal(V2_SignalMode,m_feature_frame,
                                                            V2_RsiLongThreshold,V2_RsiShortThreshold);
-         if(recheck!=m_sequence.direction) return true;
+         if(recheck!=m_sequence.direction)
+           {
+            if(!StoreLevelSkipReceipt("ADVERSE_LEVEL_SIGNAL_RECHECK_BLOCKED",next_level,0.0,market,reason))
+              {
+               SetOperationalState(V2_OP_MANAGE_ONLY,"LEVEL_SKIP_RECEIPT_FAILED:"+reason);
+               return false;
+              }
+            return true;
+           }
         }
       double delta=0.0;
       if(V2_LotProgression==V2_LOT_CUMULATIVE_PARTIAL)
@@ -2155,7 +2501,15 @@ private:
       else if(next_level<ArraySize(m_lot_plan.normalized_delta))
          delta=m_lot_plan.normalized_delta[next_level];
       const double minimum=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
-      if(MathAbs(delta)<minimum-1e-12) return true;
+      if(MathAbs(delta)<minimum-1e-12)
+        {
+         if(!StoreLevelSkipReceipt("ADVERSE_LEVEL_DELTA_BELOW_MINIMUM",next_level,MathAbs(delta),market,reason))
+           {
+            SetOperationalState(V2_OP_MANAGE_ONLY,"LEVEL_SKIP_RECEIPT_FAILED:"+reason);
+            return false;
+           }
+         return true;
+        }
 
       if(next_level<ArraySize(m_levels))
         {
@@ -2177,26 +2531,92 @@ private:
    bool MaybeStartNewSequence(const MqlTick &tick,string &reason)
      {
       reason="";
-      if(m_operational_state!=V2_OP_NORMAL || !m_new_risk_enabled || m_pending.active ||
-         m_sequence.reduction_remaining>0.0 ||
+      if(m_pending.active || V2HasPhysicalVolume(m_sequence.reduction_remaining) ||
          (m_sequence.sequence_id!="" && m_sequence.status!=V2_SEQ_ENDED && m_sequence.status!=V2_SEQ_IDLE))
          return true;
-      if(!RefreshFeatures(tick)) return true;
+      if(!RefreshFeatures(tick))
+        {
+         if(!StoreBarDecisionReceipt(V2_RECEIPT_SEQUENCE_START_SUPPRESSED,"FEATURES_NOT_READY",
+                                     V2_DIR_NONE,V2_ACTION_OPEN,V2_RISK_INCREASE,-1,0.0,0.0,
+                                     m_last_entry_decision_bar,reason))
+           {
+            SetOperationalState(V2_OP_MANAGE_ONLY,"SEQ_SUPPRESSION_RECEIPT_FAILED:"+reason);
+            return false;
+           }
+         return true;
+        }
       const ENUM_V2_DIRECTION deterministic=m_features.Signal(V2_SignalMode,m_feature_frame,
                                                                V2_RsiLongThreshold,V2_RsiShortThreshold);
-      if(deterministic==V2_DIR_NONE || !DirectionAllowed(deterministic)) return true;
+      if(deterministic==V2_DIR_NONE)
+        {
+         if(!StoreBarDecisionReceipt(V2_RECEIPT_SEQUENCE_START_SUPPRESSED,"DETERMINISTIC_SIGNAL_NONE",
+                                     deterministic,V2_ACTION_OPEN,V2_RISK_INCREASE,-1,0.0,0.0,
+                                     m_last_entry_decision_bar,reason))
+           {
+            SetOperationalState(V2_OP_MANAGE_ONLY,"SEQ_SUPPRESSION_RECEIPT_FAILED:"+reason);
+            return false;
+           }
+         return true;
+        }
+      if(!DirectionAllowed(deterministic))
+        {
+         if(!StoreBarDecisionReceipt(V2_RECEIPT_SEQUENCE_START_SUPPRESSED,"TRADE_DIRECTION_BLOCKED",
+                                     deterministic,V2_ACTION_OPEN,V2_RISK_INCREASE,-1,0.0,0.0,
+                                     m_last_entry_decision_bar,reason))
+           {
+            SetOperationalState(V2_OP_MANAGE_ONLY,"SEQ_SUPPRESSION_RECEIPT_FAILED:"+reason);
+            return false;
+           }
+         return true;
+        }
       V2IntelligenceState intelligence;
       m_intelligence.Current(intelligence);
       if(!m_policy.Evaluate(deterministic,m_feature_frame,intelligence,m_policy_envelope))
-        { reason="POLICY_EVALUATION_FAILED"; return false; }
+         { reason="POLICY_EVALUATION_FAILED"; return false; }
       m_onnx.Evaluate(m_feature_frame,m_onnx_proposal);
-      if(!m_policy_envelope.allow_new_sequence) return true;
+      if(V2_StateMode==V2_STATE_SHADOW || V2_OnnxMode==V2_ONNX_SHADOW)
+        {
+         const string shadow_reason="POLICY="+m_policy_envelope.reason_code+
+                                    "|ONNX="+m_onnx_proposal.reason_code;
+         if(!StoreBarDecisionReceipt(V2_RECEIPT_SHADOW_DECISION,shadow_reason,
+                                     m_policy_envelope.proposed_direction,V2_ACTION_OPEN,V2_RISK_NEUTRAL,
+                                     -1,0.0,(deterministic==V2_DIR_LONG ? tick.ask : tick.bid),
+                                     m_last_shadow_decision_bar,reason))
+           {
+            SetOperationalState(V2_OP_MANAGE_ONLY,"SHADOW_DECISION_RECEIPT_FAILED:"+reason);
+            return false;
+           }
+        }
+      if(!m_policy_envelope.allow_new_sequence)
+        {
+         if(!StoreBarDecisionReceipt(V2_RECEIPT_SEQUENCE_START_SUPPRESSED,
+                                     "POLICY_BLOCKED:"+m_policy_envelope.reason_code,
+                                     deterministic,V2_ACTION_OPEN,V2_RISK_INCREASE,-1,0.0,0.0,
+                                     m_last_entry_decision_bar,reason))
+           {
+            SetOperationalState(V2_OP_MANAGE_ONLY,"SEQ_SUPPRESSION_RECEIPT_FAILED:"+reason);
+            return false;
+           }
+         return true;
+        }
+      if(m_operational_state!=V2_OP_NORMAL || !m_new_risk_enabled || !m_recovery_verified)
+        {
+         if(!StoreBarDecisionReceipt(V2_RECEIPT_SEQUENCE_START_SUPPRESSED,
+                                     "OPERATIONAL_GATE_CLOSED:"+m_operational_reason,
+                                     m_policy_envelope.proposed_direction,V2_ACTION_OPEN,V2_RISK_INCREASE,
+                                     -1,0.0,0.0,m_last_entry_decision_bar,reason))
+           {
+            SetOperationalState(V2_OP_MANAGE_ONLY,"SEQ_SUPPRESSION_RECEIPT_FAILED:"+reason);
+            return false;
+           }
+         return true;
+        }
       return StartSequence(m_policy_envelope.proposed_direction,tick,m_policy_envelope.reason_code,reason);
      }
 
    void RenderHud(const bool force)
      {
-      const long now=(long)TimeCurrent()*1000;
+      const long now=(long)GetTickCount64();
       if(!force && now-m_last_hud_render_msc<1000) return;
       V2HudSnapshot snapshot;
       snapshot.operational_state=m_operational_state;
@@ -2224,26 +2644,43 @@ private:
    bool Housekeeping(string &reason)
      {
       reason="";
+      if(m_database.IsReadOnlyRecovery())
+        {
+         SetOperationalState(V2_OP_HALTED,"DATABASE_READ_ONLY_RECOVERY:"+m_database.StatusReason());
+         RenderHud(false);
+         return true;
+        }
       if(!m_database.Heartbeat(reason))
         {
-         SetOperationalState(V2_OP_MANAGE_ONLY,"DATABASE_HEARTBEAT_FAILED:"+reason);
+         SetOperationalState(V2_OP_DEGRADED,"DATABASE_HEARTBEAT_FAILED:"+reason);
          return false;
+        }
+      if(!m_risk_high_water_ready)
+        {
+         string recovery_reason="";
+         if(!InitializeRiskHighWater(recovery_reason))
+           {
+            reason="RISK_HIGH_WATER_RECOVERY_FAILED:"+recovery_reason;
+            SetOperationalState(V2_OP_DEGRADED,reason);
+            return false;
+           }
+         m_gateway.SetDurablePeakEquity(m_peak_equity);
         }
       const double equity=AccountInfoDouble(ACCOUNT_EQUITY);
       if(equity>m_peak_equity)
         {
          m_peak_equity=equity;
          if(!m_database.StoreRiskHighWater("account_equity_peak",m_peak_equity,reason))
-           {
-            m_risk_high_water_ready=false;
-            SetOperationalState(V2_OP_MANAGE_ONLY,"RISK_HIGH_WATER_WRITE_FAILED:"+reason);
-            return false;
+            {
+             m_risk_high_water_ready=false;
+             SetOperationalState(V2_OP_DEGRADED,"RISK_HIGH_WATER_WRITE_FAILED:"+reason);
+             return false;
            }
          m_gateway.SetDurablePeakEquity(m_peak_equity);
         }
-      const long now_msc=(long)TimeCurrent()*1000;
-      if(m_pending.active && m_pending.submitted_at_msc>0 &&
-         now_msc-m_pending.submitted_at_msc>=30000)
+      const ulong now_tick_count=GetTickCount64();
+      if(m_pending.active && m_pending.submitted_tick_count>0 &&
+         now_tick_count-m_pending.submitted_tick_count>=30000)
         {
          if(!ReconcileUnsettledIntents(reason))
            {
@@ -2254,20 +2691,96 @@ private:
       V2TelemetryStatus status;
       string telemetry_reason="";
       if(!m_telemetry.RecordHeartbeat(m_identity.DeploymentId(),m_operational_state,
-                                      (long)TimeCurrent()*1000,m_manifest.manifest_id,
+                                      V2UtcNowMsc(),m_manifest.manifest_id,
                                       status,telemetry_reason) || status.requires_manage_only)
-         SetOperationalState(V2_OP_MANAGE_ONLY,"TELEMETRY_HEARTBEAT_GATE:"+telemetry_reason+status.reason);
-      if(m_gateway.RequiresFullReconciliation() || m_gateway.RingOverflowed())
         {
-         reason="GATEWAY_RECONCILIATION_REQUIRED";
+         m_healthy_recovery_passes=0;
+         SetOperationalState(V2_OP_DEGRADED,"TELEMETRY_HEARTBEAT_GATE:"+telemetry_reason+status.reason);
+         return false;
+        }
+      if(m_gateway.RingOverflowed())
+        {
+         reason="GATEWAY_OBSERVATION_RING_OVERFLOW";
          EnterRecoveryQuarantine(reason);
          return false;
         }
-      if(m_gateway.PendingObservationCount()==0 && !m_pending.active &&
-         !RecoveryMatchesBroker(reason))
+      if(m_gateway.RequiresFullReconciliation() && !m_pending.active &&
+         m_gateway.PendingObservationCount()==0)
         {
-         EnterRecoveryQuarantine("CONTINUOUS_BROKER_MATCH:"+reason);
+         if(!ReconcileUnsettledIntents(reason) || !RecoveryMatchesBroker(reason))
+           {
+            EnterRecoveryQuarantine("GATEWAY_FULL_RECONCILIATION:"+reason);
+            return false;
+           }
+         m_gateway.AcknowledgeFullReconciliation();
+        }
+
+      int unprocessed_before=0;
+      if(!m_database.CountUnprocessedTradeObservations(unprocessed_before,reason))
+        {
+         m_healthy_recovery_passes=0;
+         SetOperationalState(V2_OP_DEGRADED,"OBSERVATION_COUNT_FAILED:"+reason);
          return false;
+        }
+      if(m_gateway.PendingObservationCount()==0 && unprocessed_before==0 && !m_pending.active)
+        {
+         string match_reason="";
+         const bool matches=RecoveryMatchesBroker(match_reason);
+         int unprocessed_after=0;
+         if(!m_database.CountUnprocessedTradeObservations(unprocessed_after,reason))
+           {
+            m_healthy_recovery_passes=0;
+            SetOperationalState(V2_OP_DEGRADED,"OBSERVATION_RECOUNT_FAILED:"+reason);
+            return false;
+           }
+         const bool stable_snapshot=(m_gateway.PendingObservationCount()==0 &&
+                                     unprocessed_after==0 && !m_pending.active);
+         if(stable_snapshot && !matches)
+           {
+            m_healthy_recovery_passes=0;
+            m_broker_mismatch_passes++;
+            if(m_broker_mismatch_passes>=2)
+              {
+               reason="CONTINUOUS_BROKER_MATCH:"+match_reason;
+               EnterRecoveryQuarantine(reason);
+               return false;
+              }
+            SetOperationalState(V2_OP_DEGRADED,"BROKER_MATCH_RECHECK_REQUIRED:"+match_reason);
+           }
+         else if(stable_snapshot && matches)
+           {
+            m_broker_mismatch_passes=0;
+            if(m_supervised_repromotion_pending &&
+               (m_operational_state==V2_OP_DEGRADED ||
+                m_operational_state==V2_OP_MANAGE_ONLY))
+               m_healthy_recovery_passes++;
+            else
+               m_healthy_recovery_passes=0;
+           }
+        }
+      else
+        {
+         m_broker_mismatch_passes=0;
+         m_healthy_recovery_passes=0;
+        }
+
+      const bool promotion_eligible=(m_supervised_repromotion_pending &&
+                                     m_healthy_recovery_passes>=3 && m_recovery_verified &&
+                                     m_risk_high_water_ready && m_broker_profile_verified &&
+                                     m_database.BrokerMutationAllowed() &&
+                                     !m_gateway.RequiresFullReconciliation() &&
+                                     !m_gateway.RingOverflowed() &&
+                                     (m_operational_state==V2_OP_DEGRADED ||
+                                      m_operational_state==V2_OP_MANAGE_ONLY));
+      if(promotion_eligible && GOAT2_PHASE1_EXECUTION_CERTIFIED==1 &&
+         V2_RunMode==V2_RUN_TRADE && V2_EnableNewRisk)
+        {
+         SetOperationalState(V2_OP_NORMAL,"SUPERVISED_HEALTH_REPROMOTION");
+         m_healthy_recovery_passes=0;
+        }
+      else if(promotion_eligible)
+        {
+         SetOperationalState(V2_OP_MANAGE_ONLY,"SUPERVISED_HEALTH_RECOVERED_EXECUTION_LOCKED");
         }
       RenderHud(false);
       return true;
@@ -2303,7 +2816,8 @@ private:
                if(m_scheduler.LatestTick(tick))
                  {
                   if(!MaybeHandleRetrace(tick,reason) || !MaybeAddLevel(tick,reason)) return false;
-                  if(m_sequence.reduction_remaining>0.0 && !m_pending.active && !SubmitNextReduction(reason)) return false;
+                  if(V2HasPhysicalVolume(m_sequence.reduction_remaining) &&
+                     !m_pending.active && !SubmitNextReduction(reason)) return false;
                  }
                break;
             case V2_WORK_SCHEDULED_EXITS:
@@ -2323,6 +2837,19 @@ public:
    void OnTick(const MqlTick &tick)
      {
       if(!m_initialized) return;
+      if(m_database.IsReadOnlyRecovery())
+        {
+         SetOperationalState(V2_OP_HALTED,
+                             "DATABASE_READ_ONLY_RECOVERY:"+m_database.StatusReason());
+         RenderHud(false);
+         return;
+        }
+      if(V2_RunMode==V2_RUN_DISABLED)
+        {
+         SetOperationalState(V2_OP_HALTED,"RUN_DISABLED_NO_BROKER_MUTATIONS");
+         RenderHud(false);
+         return;
+        }
       m_scheduler.OnChartTick(tick);
       string reason="";
       if(!ProcessDueWork(reason) && reason!="")
@@ -2332,6 +2859,19 @@ public:
    void OnTimer(void)
      {
       if(!m_initialized) return;
+      if(m_database.IsReadOnlyRecovery())
+        {
+         SetOperationalState(V2_OP_HALTED,
+                             "DATABASE_READ_ONLY_RECOVERY:"+m_database.StatusReason());
+         RenderHud(false);
+         return;
+        }
+      if(V2_RunMode==V2_RUN_DISABLED)
+        {
+         SetOperationalState(V2_OP_HALTED,"RUN_DISABLED_NO_BROKER_MUTATIONS");
+         RenderHud(false);
+         return;
+        }
       m_scheduler.OnTimer();
       string reason="";
       if(!ProcessDueWork(reason) && reason!="")
@@ -2343,12 +2883,14 @@ public:
                            const MqlTradeResult &result)
      {
       if(!m_initialized) return;
+      if(m_database.IsReadOnlyRecovery() || V2_RunMode==V2_RUN_DISABLED) return;
       m_gateway.CaptureTradeTransaction(transaction,request,result);
      }
 
    void OnChartEvent(const int id,const long lparam,const double dparam,const string sparam)
      {
       if(!m_initialized) return;
+      if(m_database.IsReadOnlyRecovery() || V2_RunMode==V2_RUN_DISABLED) return;
       const ENUM_V2_HUD_COMMAND command=m_hud.OnChartEvent(id,lparam,dparam);
       if(command==V2_HUD_NONE) return;
       string reason="";
@@ -2378,6 +2920,144 @@ public:
       RenderHud(true);
      }
 
+#ifdef GOAT2_TEST_HOOKS
+   bool TestGatewayStartSequence(const ENUM_V2_DIRECTION direction,string &reason)
+     {
+      reason="";
+      if(!MQLInfoInteger(MQL_TESTER))
+        { reason="TEST_HOOK_REQUIRES_STRATEGY_TESTER"; return false; }
+      if(!m_initialized)
+        { reason="TEST_HOOK_MANAGER_NOT_INITIALIZED"; return false; }
+      if(GOAT2_PHASE1_EXECUTION_CERTIFIED!=1)
+        { reason="TEST_HOOK_CERTIFIED_BUILD_REQUIRED"; return false; }
+      if(m_operational_state!=V2_OP_NORMAL || !m_recovery_verified || !m_new_risk_enabled)
+        { reason="TEST_HOOK_NEW_RISK_GATE_CLOSED:"+m_operational_reason; return false; }
+      if(m_sequence.sequence_id!="" && m_sequence.status!=V2_SEQ_ENDED)
+        { reason="TEST_HOOK_SEQUENCE_ALREADY_MANAGEABLE"; return false; }
+      V2OwnedPosition positions[];
+      double broker_standing=0.0,vwap=0.0,floating=0.0;
+      if(!ScanOwnedPositions(positions,broker_standing,vwap,floating,reason)) return false;
+      const double epsilon=V2PhysicalVolumeEpsilon();
+      if(broker_standing>epsilon || ArraySize(positions)>0)
+        { reason="TEST_HOOK_BROKER_NOT_FLAT_AT_START"; return false; }
+      MqlTick tick;
+      if(!SymbolInfoTick(_Symbol,tick))
+        { reason="TEST_HOOK_TICK_UNAVAILABLE"; return false; }
+      return StartSequence(direction,tick,"GATEWAY_INTEGRATION_REAL_OPEN",reason);
+     }
+
+   bool TestGatewayForceFullReduction(string &reason)
+     {
+      reason="";
+      if(!MQLInfoInteger(MQL_TESTER))
+        { reason="TEST_HOOK_REQUIRES_STRATEGY_TESTER"; return false; }
+      if(!m_initialized)
+        { reason="TEST_HOOK_MANAGER_NOT_INITIALIZED"; return false; }
+      if(m_pending.active)
+        { reason="TEST_HOOK_EXECUTION_STILL_PENDING"; return false; }
+      V2OwnedPosition positions[];
+      double broker_standing=0.0,vwap=0.0,floating=0.0;
+      if(!ScanOwnedPositions(positions,broker_standing,vwap,floating,reason)) return false;
+      const double epsilon=V2PhysicalVolumeEpsilon();
+      if(!V2HasPhysicalVolume(broker_standing) || ArraySize(positions)<1)
+        { reason="TEST_HOOK_NO_REAL_POSITION_TO_REDUCE"; return false; }
+      if(MathAbs(broker_standing-m_sequence.standing_volume)>epsilon)
+        { reason="TEST_HOOK_PRE_REDUCTION_JOURNAL_MISMATCH"; return false; }
+      return BeginReduction(broker_standing,"GATEWAY_INTEGRATION_FORCED_FULL_REDUCTION",-1,false,reason);
+     }
+
+   bool TestGatewayExerciseRiskHighWaterLatchRearm(string &reason)
+     {
+      reason="";
+      if(!MQLInfoInteger(MQL_TESTER))
+        { reason="TEST_HOOK_REQUIRES_STRATEGY_TESTER"; return false; }
+      if(!m_initialized)
+        { reason="TEST_HOOK_MANAGER_NOT_INITIALIZED"; return false; }
+      double durable_before=0.0;
+      bool durable_before_found=false;
+      if(!m_database.LoadRiskHighWater("account_equity_peak",durable_before,
+                                      durable_before_found,reason))
+         return false;
+      const double peak_before=MathMax(m_peak_equity,
+                                       (durable_before_found ? durable_before : 0.0))+1.0;
+      // Model the exact transient-failure case: memory observed a newer peak,
+      // the durable store missed it, and equity subsequently fell below it.
+      m_peak_equity=peak_before;
+      m_risk_high_water_ready=false;
+      if(!Housekeeping(reason)) return false;
+      if(!m_risk_high_water_ready)
+        { reason="TEST_HOOK_RISK_HIGH_WATER_NOT_REARMED"; return false; }
+      double durable_after=0.0;
+      bool durable_after_found=false;
+      if(!m_database.LoadRiskHighWater("account_equity_peak",durable_after,
+                                      durable_after_found,reason))
+         return false;
+      if(m_peak_equity+1e-8<peak_before || !durable_after_found ||
+         durable_after+1e-8<peak_before)
+        { reason="TEST_HOOK_RISK_HIGH_WATER_REGRESSED"; return false; }
+      return true;
+     }
+
+   bool TestGatewayExerciseSupervisedRepromotion(string &reason)
+     {
+      reason="";
+      if(!MQLInfoInteger(MQL_TESTER) || GOAT2_PHASE1_EXECUTION_CERTIFIED!=1)
+        { reason="TEST_HOOK_CERTIFIED_TESTER_BUILD_REQUIRED"; return false; }
+      if(m_operational_state!=V2_OP_NORMAL || !m_new_risk_enabled)
+        { reason="TEST_HOOK_REPROMOTION_REQUIRES_NORMAL_START"; return false; }
+      SetOperationalState(V2_OP_DEGRADED,
+                          "BROKER_MATCH_RECHECK_REQUIRED:TEST_INJECTED_TRANSIENT");
+      if(!m_supervised_repromotion_pending || m_healthy_recovery_passes!=0)
+        { reason="TEST_HOOK_REPROMOTION_AUDIT_NOT_RESET"; return false; }
+      for(int pass=1;pass<=3;pass++)
+        {
+         if(!Housekeeping(reason)) return false;
+         if(pass<3 && (m_operational_state==V2_OP_NORMAL ||
+                       m_healthy_recovery_passes!=pass))
+           { reason="TEST_HOOK_REPROMOTED_BEFORE_THREE_PASSES"; return false; }
+        }
+      if(m_operational_state!=V2_OP_NORMAL || !m_new_risk_enabled ||
+         m_supervised_repromotion_pending || m_healthy_recovery_passes!=0)
+        { reason="TEST_HOOK_REPROMOTION_DID_NOT_COMPLETE"; return false; }
+      return true;
+     }
+
+   bool TestGatewaySnapshot(V2GatewayIntegrationSnapshot &snapshot,string &reason)
+     {
+      snapshot.Reset();
+      reason="";
+      if(!MQLInfoInteger(MQL_TESTER))
+        { reason="TEST_HOOK_REQUIRES_STRATEGY_TESTER"; return false; }
+      snapshot.initialized=m_initialized;
+      snapshot.recovery_verified=m_recovery_verified;
+      snapshot.new_risk_enabled=m_new_risk_enabled;
+      snapshot.pending_execution=m_pending.active;
+      snapshot.operational_state=m_operational_state;
+      snapshot.operational_reason=m_operational_reason;
+      snapshot.sequence_id=m_sequence.sequence_id;
+      snapshot.runtime_sequence_status=m_sequence.status;
+      snapshot.runtime_standing_volume=m_sequence.standing_volume;
+
+      V2OwnedPosition positions[];
+      double vwap=0.0,floating=0.0;
+      if(!ScanOwnedPositions(positions,snapshot.broker_standing_volume,vwap,floating,reason)) return false;
+      snapshot.broker_position_count=ArraySize(positions);
+      if(snapshot.sequence_id=="") return true;
+
+      V2SequenceState persisted;
+      persisted.Reset();
+      if(!m_database.LoadSequenceProjection(snapshot.sequence_id,persisted,
+                                            snapshot.persisted_projection_found,reason))
+         return false;
+      if(snapshot.persisted_projection_found)
+        {
+         snapshot.persisted_sequence_status=persisted.status;
+         snapshot.persisted_standing_volume=persisted.standing_volume;
+        }
+      return true;
+     }
+#endif
+
    double TesterScore(void) const
      {
       const double profit=TesterStatistics(STAT_PROFIT);
@@ -2397,9 +3077,12 @@ public:
          m_database.Close();
          return;
         }
-      m_gateway.DrainTradeObservations(V2_MANAGER_OBSERVATION_BUDGET);
       string reconcile_reason="";
-      ProcessTradeObservations(reconcile_reason);
+      if(!m_database.IsReadOnlyRecovery() && V2_RunMode!=V2_RUN_DISABLED)
+        {
+         m_gateway.DrainTradeObservations(V2_MANAGER_OBSERVATION_BUDGET);
+         ProcessTradeObservations(reconcile_reason);
+        }
       RenderHud(true);
       m_overlay.Shutdown();
       m_hud.Shutdown();

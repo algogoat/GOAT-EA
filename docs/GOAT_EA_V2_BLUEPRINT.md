@@ -1,6 +1,6 @@
 # GOAT EA V2 — Design Blueprint
 
-**Status:** v1.1 APPROVED BUILD BRIEF — merged from v0.1 (Claude/Fable) + v0.2 Codex implementation review + Claude's review of that review + v1.1 UI layer (Vince directive). Vince authorized Codex to execute the plan and build V2.0 on 2026-07-11; this records approval of the §18 decisions while preserving every later evidence and autonomy gate. Revision history: v0.1 in git history of this file; v0.2 preserved as `docs/GOAT_EA_V2_BLUEPRINT_CODEX_REVIEW.md`.
+**Status:** v1.2 APPROVED BUILD BRIEF — v1.1 plus Vince's 2026-07-11 product ruling: V1's operation modes (Optimization Studio, Portfolio Dashboard, Report Processor) are core product surfaces that V2 preserves and enhances in-terminal (§13.4), and the input surface must match V1's fine-grained group organization (§11). Vince authorized Codex to execute the plan and build V2.0 on 2026-07-11; this records approval of the §18 decisions (as amended by ruling #17) while preserving every later evidence and autonomy gate. Revision history: v0.1 in git history of this file; v0.2 preserved as `docs/GOAT_EA_V2_BLUEPRINT_CODEX_REVIEW.md`.
 **Date:** 2026-07-11
 **Authors:** Vince (vision/approval) + Claude "Fable" (architecture/review) + Codex (implementation review, lead build responsibility)
 **Relationship to V1:** V1.4x remains a living, independently released product and will continue to evolve. V2 is a new internal product built without V1 compatibility pressure. The current V1.42 source and binary should be committed, then one explicit V1 reference commit will be selected for V2 parity work. That reference is a reproducible comparison anchor, not a freeze on future V1 development. Later V1 improvements may be intentionally evaluated and carried into V2 through a documented delta process. Nothing in this document authorizes changes to V1 entrypoints.
@@ -33,6 +33,11 @@
 **v1.1 (Vince directive) adds:**
 
 16. A dedicated UI layer (§13): canvas-rendered Chart HUD + on-chart intelligence overlay replace the V1 CDialog/object-farm approach; heavy portfolio-ops UI moves platform-side and is receipts/telemetry-fed. `Dashboard.mqh` is not ported.
+
+**v1.2 (Vince product ruling, 2026-07-11) adds:**
+
+17. **Operation modes are core product surfaces (§13.4).** V2 carries a `V2_Mode_Operation` equivalent with TRADING, PORTFOLIO_DASHBOARD, OPTIMIZATION_STUDIO, and REPORT_PROCESSOR modes — the V1 multi-app capability is preserved and enhanced in-terminal, never dropped. Platform surfaces complement the in-terminal modes; they do not replace them. This supersedes the platform-only reading of §13.3 and revises the delta-register dispositions for the Dashboard and Optimization Studio.
+18. **Input organization contract (§11).** The input schema carries per-field `group` metadata generating fine-grained `input group` sections that mirror V1's organization (sequence, ATR, position sizing, risk, per-indicator packs, schedule, intelligence/state, ONNX, lineage). Coarse lumped groups do not meet the standard.
 
 **Implementation authorization (2026-07-11):** Vince instructed Codex to execute this plan and build V2.0 as a fresh EA product. Approval applies to all §18 architectural decisions. Phase promotion, autonomy promotion, capital increases, and claims of certification still require the evidence and approvals defined in this document.
 
@@ -443,6 +448,8 @@ Thesis transitions use `thesisId`, revision ordering, hysteresis, minimum dwell/
 
 The input schema is defined once in a machine-readable source and generates input declarations, `.set` writing, validation and documentation. Generated artifacts carry a schema hash and are committed for reproducibility.
 
+**Input organization contract (v1.2):** every schema field carries `group` (and stable ordering) metadata, and the generated declarations use fine-grained `input group` sections mirroring V1's proven organization — General/Identity, Sequence Settings, ATR Settings, Position Sizing, Risk Management, one section per indicator/feature pack, Trading Schedule, Intelligence/State (AI), ONNX, Telemetry, Lineage/Certification. Mixed buckets that lump indicator parameters with grid geometry (the V2.0 foundation's "Strategy and sequence" group) do not meet the standard. Group ordering is stable across releases so `.set` diffs stay readable.
+
 ---
 
 ## 12. Native ONNX execution intelligence (`OnnxLayer.mqh`)
@@ -545,11 +552,22 @@ The intelligence drawn where it belongs — on the price chart:
 - Event markers from receipts (starts, adds, harvests, rescues, kernel vetoes) for post-session review.
 - Fully rendered in **visual backtests** — this is how `Execute`-mode mapping (zones → sequence starts, invalidation → basket stops) gets visually verified during Phase 2/3 certification, not just statistically.
 
-### 13.3 Ops surfaces move platform-side
+### 13.3 Platform surfaces complement the in-terminal modes *(revised by v1.2 ruling)*
 
-The V1 `Dashboard.mqh` role (deploy, currency rules, exposure policy, scoped close, fleet supervision) is **not rebuilt in MQL5**. Portfolio operations become platform surfaces (Command Center web + desktop app) fed by receipts/telemetry and issuing commands through the platform APIs — richer UI than MT5 can ever host, one codebase instead of two, and consistent with the portfolio-native architecture (in portfolio mode the "fleet" is one EA instance; the HUD is its local truth, the platform is its command deck). The in-terminal Optimization Studio GUI similarly shrinks as GOAT Ops (§15) takes over orchestration.
+The V1 `Dashboard.mqh` **implementation** (CDialog/object farm, GV bus) is not ported — but the **capability** is: portfolio deploy/supervision lives on as the in-terminal PORTFOLIO_DASHBOARD operation mode (§13.4), rebuilt on the canvas UI framework over StateDB/receipts instead of GlobalVariables. Platform surfaces (Command Center web + desktop app) are an *additional* command deck fed by receipts/telemetry — richer for remote/fleet views — but the in-terminal experience is never dropped or reduced to a thin fallback. The same applies to the Optimization Studio: GOAT Ops (§15) enhances it; it does not replace it.
 
 Acceptance: HUD render budget met on a reference VPS profile; overlay/HUD pixel-verified in visual tester; command path audit proves UI actions cannot bypass the kernel; zero UI cost measured in non-visual optimization.
+
+### 13.4 Operation modes — core product surfaces *(v1.2, Vince ruling 2026-07-11)*
+
+V2 is one product with multiple in-terminal operation modes, exactly as V1's `Mode_Operation` established. A `V2_Mode_Operation` input selects:
+
+1. **TRADING** (default) — the execution engine with Chart HUD + overlay (Phases 1–4 as planned).
+2. **PORTFOLIO_DASHBOARD** — deploy, supervise, and command the portfolio in-terminal: member health, exposure/currency policy, scoped and emergency closes, risk-policy arming. V2-native implementation: canvas UI framework (§13.1), commands through the manager→kernel→gateway path only, state from StateDB/receipts (no GV bus, no CDialog farm). Preserves every V1 dashboard capability and enhances it with V2's richer truth (receipts, MLPS utilization, lineage). Lands with Phase 4 (portfolio production), foundations earlier where cheap.
+3. **OPTIMIZATION_STUDIO** — the in-terminal research cockpit: queue building across symbols/presets, batch orchestration, export thresholds, run monitoring, deploy-pack management. In V2 this becomes the *cockpit of GOAT Ops* (§15): same workflows the V1 Studio proved, backed by the orchestrator service and experiment registry. Preserved and enhanced — never dropped. Lands with Phase 5; the mode selector and a status-only placeholder ship earlier so the product surface is visible.
+4. **REPORT_PROCESSOR** — optimization report analysis/combination/export (V1's Operation_Report), rebuilt on the V2 evidence formats (receipts, manifests, State Packs) alongside MT5 XML reports.
+
+Rules: mode selection is an input (like V1), each mode is a separate UI composition over the same five-layer core, non-trading modes never construct the execution path beyond read-only surfaces, and every mode honors the same Safety Kernel/no-bypass discipline. The delta-register dispositions for "V1 CDialog dashboard" and "Optimization Studio and batch UI" are revised accordingly (capability = PORT/REDESIGN; only the legacy implementation is NOT_APPLICABLE).
 
 ---
 
@@ -688,8 +706,8 @@ Per phase: shadow observation → demo canary → small live canary → bounded 
 | **1 — Deterministic foundation** | Thin entrypoint; portfolio-capable domain/scheduler; identity; Broker Gateway; Safety Kernel; StateDB/journal/recovery (incl. §4.1 modes); SEQUENCE/MLPS port; canonical local receipts; single-symbol golden master | Parity battery green; gateway audit; recovery/failure demo; optimization-speed budget met; approval |
 | **2 — Intelligence shadow and gate** | Feed v2; State Pack; live/replay parity; FeatureFrame foundation; `Display`/`Shadow`/`Gate`; counterfactual receipts; Chart HUD foundation + intelligence overlay (§13.1–13.2) | Anti-lookahead and replay determinism proven; marginal overlay evidence; HUD render budget met; approval |
 | **3 — Native execution intelligence** | Feature packs complete; receipts upload; ONNX execution-quality training pipeline and model registry; shadow/champion-challenger; bounded `Execute` mapping (visually certified via overlay in visual tester) | Model/execute modes beat no-model/state-only baselines on untouched and forward cohorts; approval |
-| **4 — Portfolio production** | Multi-symbol live scheduling; portfolio MLPS/exposure/dependency controls; portfolio HUD strip + platform ops surfaces (§13.3); composed portfolio sets; multi-symbol tester reconciliation | Portfolio tests reconcile with member composition; demo/live canary evidence; approval |
-| **5 — GOAT Ops** | Orchestrator, triggers, AI spec writer, overseer memos, experiment registry, staged deploy, rollback, lineage and approval UI; Stage A live | Stage-A record accumulating; governance and demotion controls proven |
+| **4 — Portfolio production** | Multi-symbol live scheduling; portfolio MLPS/exposure/dependency controls; **PORTFOLIO_DASHBOARD operation mode (§13.4)** + platform ops surfaces (§13.3); composed portfolio sets; multi-symbol tester reconciliation | Portfolio tests reconcile with member composition; dashboard-mode capability parity with V1 dashboard; demo/live canary evidence; approval |
+| **5 — GOAT Ops** | Orchestrator, triggers, AI spec writer, overseer memos, experiment registry, staged deploy, rollback, lineage and approval UI; **OPTIMIZATION_STUDIO operation mode as the in-terminal GOAT Ops cockpit + REPORT_PROCESSOR mode (§13.4)**; Stage A live | Stage-A record accumulating; Studio-mode workflow parity with V1 Studio; governance and demotion controls proven |
 
 Phase 1 is portfolio-capable by design, but Phase 4 activates and certifies full multi-symbol production behavior. This avoids a structural rewrite while keeping early scope controlled.
 
@@ -708,7 +726,7 @@ Phase 1 is portfolio-capable by design, but Phase 4 activates and certifies full
 | 7 | Action-aware kernel decisions + risk monotonicity | Mandatory | **Concur — mandatory** | Approved 2026-07-11 |
 | 8 | Receipt retention limits | Decide after Phase-1 volume estimate | **Concur**, with §4.1 bookkeeping modes bounding worst-case volume | Approved as Phase-1 decision gate 2026-07-11 |
 | 9 | Model distribution: repo-bundled (dev) / signed platform distribution (prod) | Approve split | **Concur** | Approved 2026-07-11 |
-| 10 | UI: canvas HUD + on-chart overlay in MQL5; portfolio-ops UI platform-side; `Dashboard.mqh` not ported (§13) | — (added v1.1) | **Recommend approve** — one modern local surface, one rich platform surface, no CDialog farm | Approved 2026-07-11 |
+| 10 | UI: canvas HUD + on-chart overlay in MQL5; `Dashboard.mqh` *implementation* not ported; **in-terminal operation modes (Dashboard/Studio/Report) preserved and enhanced per §13.4**; platform surfaces complement, never replace | — (v1.1); superseded in part by Vince's v1.2 ruling | **Concur with the ruling** | Approved 2026-07-11; **amended by Vince ruling 2026-07-11 (§13.4)** |
 
 ---
 

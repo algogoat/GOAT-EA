@@ -21,6 +21,9 @@ GOAT2 V2.0.mq5                  thin lifecycle entrypoint and certification lock
 GOAT2 V2.0.ex5                  matching compiled candidate binary
 v2/Domain.mqh                   domain events and legal state transitions
 v2/Identity.mqh                 deployment, member, sequence, intent, and magic identity
+v2/Clock.mqh                    shared UTC wall-clock and broker-time conversion helpers
+v2/Normalization.mqh            shared tick-size/point price normalization contract
+v2/OperationMode.mqh            public product modes and execution-path permissions
 v2/Inputs_V2.mqh                V2-only input declarations and validation
 v2/Core_Sequence.mqh            grid, lot, basket, trailing, and retrace geometry
 v2/Core_Risk.mqh                V1 compatibility lane and cost-complete MLPS lane
@@ -41,11 +44,14 @@ v2/ChartOverlay.mqh             chart-overlay foundation
 v2/PortfolioManager.mqh         current single-member lifecycle coordinator
 v2/schema/                      committed input and intelligence contracts
 v2/reference/                   pinned V1.42 comparison manifest
-v2/tests/                       Phase-1 MQL test EA, binary, and case inventory
+v2/tests/                       unit, StateDB, and real-gateway tester contracts
 scripts/check_goat2_boundaries.ps1
 scripts/check_goat2_input_schema.py
+scripts/generate_goat2_inputs.py
 scripts/make_goat2_start_config.py
 docs/GOAT_EA_V2_BLUEPRINT.md
+docs/GOAT_EA_V2_FOUNDATION_REVIEW.md
+docs/GOAT_EA_V2_FOUNDATION_IMPLEMENTATION.md
 docs/V2_PHASE1_ACCEPTANCE.md
 docs/V2_BUILD_STATUS.md
 docs/V1_TO_V2_DELTA.md
@@ -63,18 +69,40 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\check_goat2_boundaries.ps1 -RequireGateway
 
 python .\scripts\check_goat2_input_schema.py
+
+python .\scripts\generate_goat2_inputs.py --check
 ```
 
-Compile the MQL unit-test EA separately:
+Compile each MQL verification EA separately. The gateway target is a guarded
+tester-only executable; its certification macro does not alter the production
+entrypoint or production binary:
 
 ```powershell
 python C:\Users\web\.codex\skills\mt5-goat-compile\scripts\compile_goat_ea.py `
   --source "C:\Users\web\AppData\Roaming\MetaQuotes\Terminal\BF132C3D361D44374EA9896A87302483\MQL5\Experts\GOAT-EA\v2\tests\GOAT2_Phase1_UnitTests.mq5"
+
+python C:\Users\web\.codex\skills\mt5-goat-compile\scripts\compile_goat_ea.py `
+  --source "C:\Users\web\AppData\Roaming\MetaQuotes\Terminal\BF132C3D361D44374EA9896A87302483\MQL5\Experts\GOAT-EA\v2\tests\GOAT2_StateDB_ContractTests.mq5"
+
+python C:\Users\web\.codex\skills\mt5-goat-compile\scripts\compile_goat_ea.py `
+  --source "C:\Users\web\AppData\Roaming\MetaQuotes\Terminal\BF132C3D361D44374EA9896A87302483\MQL5\Experts\GOAT-EA\v2\tests\GOAT2_Gateway_Integration.mq5"
 ```
 
 A compile claim is valid only when the relevant log ends in `Result: 0 errors, 0 warnings`, the expected `.ex5` exists beside its source, and its timestamp is newer than every source/include used by that build. Compile logs and tester results are verification artifacts, not repository source.
 
-The unit-test EA is `v2/tests/GOAT2_Phase1_UnitTests.mq5`; its expected runtime summary is `FILE_COMMON\GOAT2\tests\phase1-unit-result.json`. A clean compile is not a runtime PASS. See [the V2 build status](docs/V2_BUILD_STATUS.md) for the current evidence state and remaining gates.
+The runtime result contracts are:
+
+- `v2/tests/GOAT2_Phase1_UnitTests.mq5` → `FILE_COMMON\GOAT2\tests\phase1-unit-result.json`
+- `v2/tests/GOAT2_StateDB_ContractTests.mq5` → `FILE_COMMON\GOAT2\tests\state-db-contract-result.json`
+- `v2/tests/GOAT2_Gateway_Integration.mq5` → `FILE_COMMON\GOAT2\tests\gateway-integration-result.json`
+
+A clean compile is not a runtime PASS. Result files, tester logs, temporary `.set` files, and compile logs are verification artifacts, not repository source. See [the V2 build status](docs/V2_BUILD_STATUS.md) for the current evidence state and remaining gates, and [the implementation record](docs/GOAT_EA_V2_FOUNDATION_IMPLEMENTATION.md) for the reviewer-finding crosswalk.
+
+#### V2 operation modes
+
+The public operation-mode tokens are `TRADING`, `PORTFOLIO_DASHBOARD`, `OPTIMIZATION_STUDIO`, and `REPORT_PROCESSOR`. Only `TRADING` constructs `CV2PortfolioManager` or receives broker lifecycle events. The other three modes are deliberately non-trading status placeholders for later phases and return a neutral tester score. They are not represented as completed dashboard, optimizer, or report-processing products.
+
+`V2_RUN_DISABLED` is a halted, no-broker-mutation state. It is not an alias for `MANAGE_ONLY`. In every mode, the production compile-time certification lock remains authoritative.
 
 #### V2 durability and experiment identity
 

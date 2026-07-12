@@ -57,6 +57,18 @@ struct V2FeatureFrame
      }
   };
 
+bool V2ClosedBarAvailabilityAgeMsc(const long observed_at_msc,
+                                   const datetime closed_bar_available_at,
+                                   long &age_msc)
+  {
+   age_msc=0;
+   const long available_at_msc=(long)closed_bar_available_at*1000;
+   if(observed_at_msc<=0 || available_at_msc<=0 || observed_at_msc<available_at_msc)
+      return false;
+   age_msc=observed_at_msc-available_at_msc;
+   return true;
+  }
+
 class CV2Features
   {
 private:
@@ -136,15 +148,22 @@ public:
       SetFeature(frame.spread_points,(spread_ready ? (tick.ask-tick.bid)/point : 0.0),spread_ready,0);
 
       double fast=0.0,slow=0.0,rsi=0.0,atr=0.0;
-      bool fast_ready=CopyOne(m_fast_handle,0,1,fast);
-      bool slow_ready=CopyOne(m_slow_handle,0,1,slow);
-      bool rsi_ready=CopyOne(m_rsi_handle,0,1,rsi);
-      bool atr_ready=CopyOne(m_atr_handle,0,1,atr) && point>0.0 && atr>0.0;
-      SetFeature(frame.fast_ema,fast,fast_ready,0);
-      SetFeature(frame.slow_ema,slow,slow_ready,0);
-      SetFeature(frame.rsi,rsi,rsi_ready,0);
-      SetFeature(frame.atr_points,(atr_ready ? atr/point : 0.0),atr_ready,0);
-      SetFeature(frame.ema_spread_atr,(fast_ready && slow_ready && atr_ready ? (fast-slow)/atr : 0.0),fast_ready && slow_ready && atr_ready,0);
+      // Shift 1 supplies the last closed-bar value; it becomes available at
+      // the shift-0 bar boundary, not at the prior bar's opening timestamp.
+      const datetime source_available_at=iTime(m_symbol,m_timeframe,0);
+      long source_age_msc=0;
+      const bool source_timestamp_ready=V2ClosedBarAvailabilityAgeMsc(tick.time_msc,
+                                                                     source_available_at,
+                                                                     source_age_msc);
+      bool fast_ready=source_timestamp_ready && CopyOne(m_fast_handle,0,1,fast);
+      bool slow_ready=source_timestamp_ready && CopyOne(m_slow_handle,0,1,slow);
+      bool rsi_ready=source_timestamp_ready && CopyOne(m_rsi_handle,0,1,rsi);
+      bool atr_ready=source_timestamp_ready && CopyOne(m_atr_handle,0,1,atr) && point>0.0 && atr>0.0;
+      SetFeature(frame.fast_ema,fast,fast_ready,source_age_msc);
+      SetFeature(frame.slow_ema,slow,slow_ready,source_age_msc);
+      SetFeature(frame.rsi,rsi,rsi_ready,source_age_msc);
+      SetFeature(frame.atr_points,(atr_ready ? atr/point : 0.0),atr_ready,source_age_msc);
+      SetFeature(frame.ema_spread_atr,(fast_ready && slow_ready && atr_ready ? (fast-slow)/atr : 0.0),fast_ready && slow_ready && atr_ready,source_age_msc);
       SetFeature(frame.sequence_mlps_utilization,(mlps_budget>0.0 ? mlps_used/mlps_budget : 0.0),mlps_budget>0.0,0);
       SetFeature(frame.sequence_exposure_ratio,(planned_peak_lots>0.0 ? standing_lots/planned_peak_lots : 0.0),planned_peak_lots>0.0,0);
       return true;

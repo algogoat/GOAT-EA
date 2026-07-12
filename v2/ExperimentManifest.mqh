@@ -4,6 +4,7 @@
 #include "Identity.mqh"
 #include "Inputs_V2.mqh"
 #include "Receipts.mqh"
+#include "Clock.mqh"
 
 enum ENUM_V2_MANIFEST_CLASS
   {
@@ -159,6 +160,7 @@ string V2CanonicalInputValues(void)
    payload+="\"deploymentId\":"+V2JsonQuote(V2_DeploymentId)+",";
    payload+="\"portfolioGenerationId\":"+V2JsonQuote(V2_PortfolioGenerationId)+",";
    payload+="\"strategyMemberId\":"+V2JsonQuote(V2_StrategyMemberId)+",";
+   payload+="\"operationMode\":"+IntegerToString((int)V2_Mode_Operation)+",";
    payload+="\"runMode\":"+IntegerToString((int)V2_RunMode)+",";
    payload+="\"enableNewRisk\":"+V2JsonBool(V2_EnableNewRisk)+",";
    payload+="\"bookkeeping\":"+IntegerToString((int)V2_Bookkeeping)+",";
@@ -230,7 +232,7 @@ string V2CanonicalInputValues(void)
 string V2InputSchemaHash(void)
   {
    const string schema=
-      "goat2-inputs-v1|deploymentId|portfolioGenerationId|strategyMemberId|runMode|enableNewRisk|bookkeeping|certificationRun|stateDatabaseName|"
+      "goat2-inputs-v2|deploymentId|portfolioGenerationId|strategyMemberId|operationMode|runMode|enableNewRisk|bookkeeping|certificationRun|stateDatabaseName|"
       "tradeDirection|signalMode|signalTimeframe|fastEmaPeriod|slowEmaPeriod|rsiPeriod|atrPeriod|rsiLongThreshold|"
       "rsiShortThreshold|maxSequenceTrades|gridSize|gridMinimum|gridMaximum|gridExponent|gridFactor|takeProfitSize|stopLossSize|"
       "lockProfitSize|lockFlexibility|trailingStopSize|closeAtMaxLevels|enableSequenceLossHardClose|cumPartialReleasePercent|peakSmartReleasePercent|peakSmartMaxClosePercent|lotMode|lotProgression|startLots|riskPerSequence|lotExponent|lotFactor|"
@@ -448,7 +450,7 @@ public:
       manifest.product_version=product_version;
       manifest.build_id=build_id;
       manifest.manifest_class=manifest_class;
-      manifest.created_at_msc=(long)TimeCurrent()*1000;
+      manifest.created_at_msc=V2UtcNowMsc();
       manifest.deployment_id=identity.DeploymentId();
       manifest.portfolio_generation_id=identity.GenerationId();
       manifest.strategy_member_id=identity.MemberId();

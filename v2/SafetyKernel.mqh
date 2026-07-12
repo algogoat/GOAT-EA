@@ -2,6 +2,7 @@
 #define GOAT_V2_SAFETY_KERNEL_MQH
 
 #include "Domain.mqh"
+#include "Normalization.mqh"
 
 struct V2SafetyLimits
   {
@@ -145,13 +146,6 @@ private:
    V2SafetyLimits m_limits;
    bool           m_initialized;
 
-   double NormalizePrice(const double price,const double tick_size) const
-     {
-      if(price<=0.0 || tick_size<=0.0)
-         return 0.0;
-      return MathRound(price/tick_size)*tick_size;
-     }
-
    double NormalizeVolumeDown(const double volume,const V2SymbolSnapshot &symbol) const
      {
       if(volume<=0.0 || symbol.volume_step<=0.0)
@@ -171,7 +165,7 @@ private:
          return false;
       if(action.current_stop_loss<=0.0)
          return true;
-      const double epsilon=MathMax(symbol.tick_size,1e-12)*0.5;
+      const double epsilon=V2PriceEpsilon(symbol.tick_size,symbol.point);
       if(action.direction==V2_DIR_LONG)
          return action.stop_loss>=action.current_stop_loss-epsilon;
       if(action.direction==V2_DIR_SHORT)
@@ -182,7 +176,7 @@ private:
    bool TargetTightens(const V2BrokerAction &action,const V2SymbolSnapshot &symbol) const
      {
       if(action.position_ticket==0 || action.take_profit<=0.0) return false;
-      const double epsilon=MathMax(symbol.tick_size,1e-12)*0.5;
+      const double epsilon=V2PriceEpsilon(symbol.tick_size,symbol.point);
       if(action.direction==V2_DIR_LONG)
         {
          if(action.take_profit<=symbol.bid+epsilon) return false;
@@ -194,6 +188,37 @@ private:
          return(action.current_take_profit<=0.0 || action.take_profit>=action.current_take_profit-epsilon);
         }
       return false;
+     }
+
+   bool ProtectivePricesLegal(const V2BrokerAction &action,
+                              const V2SymbolSnapshot &symbol,
+                              const double stop_loss,
+                              const double take_profit,
+                              string &reason) const
+     {
+      reason="";
+      if(action.action!=V2_ACTION_OPEN && action.action!=V2_ACTION_ADD &&
+         action.action!=V2_ACTION_MODIFY)
+         return true;
+      if(action.direction==V2_DIR_NONE || symbol.bid<=0.0 || symbol.ask<=0.0 ||
+         symbol.ask<symbol.bid || symbol.point<=0.0)
+        { reason="PROTECTION_MARKET_SNAPSHOT_INVALID"; return false; }
+      const double minimum_distance=(double)MathMax(symbol.stops_level_points,
+                                                     symbol.freeze_level_points)*symbol.point;
+      const double epsilon=V2PriceEpsilon(symbol.tick_size,symbol.point);
+      if(action.direction==V2_DIR_LONG)
+        {
+         if(stop_loss>0.0 && stop_loss>symbol.bid-minimum_distance+epsilon)
+           { reason="LONG_STOP_INSIDE_STOPS_OR_FREEZE_LEVEL"; return false; }
+         if(take_profit>0.0 && take_profit<symbol.bid+minimum_distance-epsilon)
+           { reason="LONG_TARGET_INSIDE_STOPS_OR_FREEZE_LEVEL"; return false; }
+         return true;
+        }
+      if(stop_loss>0.0 && stop_loss<symbol.ask+minimum_distance-epsilon)
+        { reason="SHORT_STOP_INSIDE_STOPS_OR_FREEZE_LEVEL"; return false; }
+      if(take_profit>0.0 && take_profit>symbol.ask-minimum_distance+epsilon)
+        { reason="SHORT_TARGET_INSIDE_STOPS_OR_FREEZE_LEVEL"; return false; }
+      return true;
      }
 
 public:
@@ -246,7 +271,7 @@ public:
 
          case V2_ACTION_MODIFY:
             {
-             const double epsilon=MathMax(symbol.tick_size,1e-12)*0.5;
+             const double epsilon=V2PriceEpsilon(symbol.tick_size,symbol.point);
              const bool stop_removed=(action.current_stop_loss>0.0 && action.stop_loss<=0.0);
              const bool stop_changed=(MathAbs(action.stop_loss-action.current_stop_loss)>epsilon);
              const bool stop_tightens=StopTightens(action,symbol);
@@ -293,10 +318,22 @@ public:
          return false;
         }
 
-      decision.normalized_volume=NormalizeVolumeDown(action.volume,context.symbol);
-      decision.normalized_price=NormalizePrice(action.price,context.symbol.tick_size);
-      decision.normalized_stop_loss=NormalizePrice(action.stop_loss,context.symbol.tick_size);
-      decision.normalized_take_profit=NormalizePrice(action.take_profit,context.symbol.tick_size);
+      decision.normalized_volume=(action.action==V2_ACTION_CLOSE && decision.risk_effect==V2_RISK_DECREASE ?
+                                  NormalizeDouble(action.volume,8) :
+                                  NormalizeVolumeDown(action.volume,context.symbol));
+      decision.normalized_price=V2NormalizeMarketPrice(action.price,context.symbol.tick_size,context.symbol.point);
+      decision.normalized_stop_loss=V2NormalizeMarketPrice(action.stop_loss,context.symbol.tick_size,context.symbol.point);
+      decision.normalized_take_profit=V2NormalizeMarketPrice(action.take_profit,context.symbol.tick_size,context.symbol.point);
+
+      string protection_reason="";
+      if(!ProtectivePricesLegal(action,context.symbol,
+                                decision.normalized_stop_loss,
+                                decision.normalized_take_profit,
+                                protection_reason))
+        {
+         decision.reason_code=protection_reason;
+         return false;
+        }
 
       if(action.action!=V2_ACTION_MODIFY && action.action!=V2_ACTION_CANCEL && decision.normalized_volume<=0.0)
         {

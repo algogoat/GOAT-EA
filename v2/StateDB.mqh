@@ -6,6 +6,7 @@
 #include "Inputs_V2.mqh"
 #include "Receipts.mqh"
 #include "ExperimentManifest.mqh"
+#include "Clock.mqh"
 
 enum ENUM_V2_STATE_DB_MODE
   {
@@ -26,6 +27,57 @@ enum ENUM_V2_OUTBOX_STATE
    V2_OUTBOX_DELIVERED=1,
    V2_OUTBOX_DEAD_LETTER=2
   };
+
+// Schema v4 adds append-only journal guards, an inherited verification
+// checkpoint, and an explicit migration ledger.  The application accepts one
+// current schema only; every older version must pass a named migration step.
+#define V2_STATE_DB_SCHEMA_VERSION 4
+#define V2_STATE_DB_MIN_LEASE_STALE_SECONDS 5
+#define V2_STATE_DB_MAX_LEASE_STALE_SECONDS 86400
+
+enum ENUM_V2_STATE_DB_ACCESS_MODE
+  {
+   V2_DB_ACCESS_CLOSED=0,
+   V2_DB_ACCESS_READ_ONLY_RECOVERY=1,
+   V2_DB_ACCESS_READ_WRITE=2
+  };
+
+enum ENUM_V2_STATE_DB_STATUS
+  {
+   V2_DB_STATUS_CLOSED=0,
+   V2_DB_STATUS_HEALTHY=1,
+   V2_DB_STATUS_READ_ONLY_EXPLICIT=2,
+   V2_DB_STATUS_READ_ONLY_SCHEMA=3,
+   V2_DB_STATUS_READ_ONLY_INTEGRITY=4,
+   V2_DB_STATUS_READ_ONLY_WRITE_FAILURE=5,
+   V2_DB_STATUS_FAILED=6
+  };
+
+string V2StateDBAccessModeName(const ENUM_V2_STATE_DB_ACCESS_MODE mode)
+  {
+   switch(mode)
+     {
+      case V2_DB_ACCESS_CLOSED:             return "CLOSED";
+      case V2_DB_ACCESS_READ_ONLY_RECOVERY: return "READ_ONLY_RECOVERY";
+      case V2_DB_ACCESS_READ_WRITE:         return "READ_WRITE";
+     }
+   return "UNKNOWN";
+  }
+
+string V2StateDBStatusName(const ENUM_V2_STATE_DB_STATUS status)
+  {
+   switch(status)
+     {
+      case V2_DB_STATUS_CLOSED:                  return "CLOSED";
+      case V2_DB_STATUS_HEALTHY:                 return "HEALTHY";
+      case V2_DB_STATUS_READ_ONLY_EXPLICIT:      return "READ_ONLY_EXPLICIT";
+      case V2_DB_STATUS_READ_ONLY_SCHEMA:        return "READ_ONLY_SCHEMA";
+      case V2_DB_STATUS_READ_ONLY_INTEGRITY:     return "READ_ONLY_INTEGRITY";
+      case V2_DB_STATUS_READ_ONLY_WRITE_FAILURE: return "READ_ONLY_WRITE_FAILURE";
+      case V2_DB_STATUS_FAILED:                  return "FAILED";
+     }
+   return "UNKNOWN";
+  }
 
 string V2StateDBModeName(const ENUM_V2_STATE_DB_MODE mode)
   {
@@ -104,7 +156,7 @@ struct V2StateDBConfig
       strategy_member_id="";
       owner_instance_id="";
       lease_stale_seconds=30;
-      schema_version=3;
+      schema_version=V2_STATE_DB_SCHEMA_VERSION;
      }
   };
 
@@ -126,7 +178,7 @@ void V2BuildDefaultStateDBConfig(const CV2Identity &identity,
    config.owner_instance_id="owner_"+V2Sha256Hex(identity.DeploymentId()+"|"+
                                                    MQLInfoString(MQL_PROGRAM_PATH)+"|"+
                                                    IntegerToString(ChartID())+"|"+
-                                                   IntegerToString((long)TimeLocal())+"|"+
+                                                   IntegerToString((long)V2UtcNow())+"|"+
                                                    V2UlongToText(GetMicrosecondCount()));
   }
 
@@ -224,6 +276,61 @@ struct V2OutboxRecord
      }
   };
 
+// A recovery snapshot is deliberately scoped to exactly one configured
+// strategy member.  It is an audit description, not a database copy and not a
+// license to rebuild projections from guesses.
+struct V2StateDBMemberSnapshot
+  {
+   string strategy_member_id;
+   long   sequence_count;
+   long   manageable_sequence_count;
+   long   event_count;
+   long   intent_count;
+   long   unsettled_intent_count;
+   long   observation_count;
+   long   unprocessed_observation_count;
+   long   last_canonical_number;
+   string last_event_hash;
+   bool   projection_lineage_valid;
+   string audit_reason;
+   string snapshot_hash;
+
+   void Reset(void)
+     {
+      strategy_member_id="";
+      sequence_count=0;
+      manageable_sequence_count=0;
+      event_count=0;
+      intent_count=0;
+      unsettled_intent_count=0;
+      observation_count=0;
+      unprocessed_observation_count=0;
+      last_canonical_number=0;
+      last_event_hash="";
+      projection_lineage_valid=false;
+      audit_reason="";
+      snapshot_hash="";
+     }
+  };
+
+struct V2StateDBMemberRepairPlan
+  {
+   string strategy_member_id;
+   string snapshot_hash;
+   string requested_reason;
+   bool   online_apply_allowed;
+   string plan_hash;
+
+   void Reset(void)
+     {
+      strategy_member_id="";
+      snapshot_hash="";
+      requested_reason="";
+      online_apply_allowed=false;
+      plan_hash="";
+     }
+  };
+
 class CV2WriterLease
   {
 private:
@@ -249,7 +356,7 @@ public:
       ResetLastError();
       // Intentionally omit FILE_SHARE_READ and FILE_SHARE_WRITE. The open
       // handle itself is the process-lifetime exclusion sentinel.
-      m_handle=FileOpen(path,FILE_READ|FILE_WRITE|FILE_BIN|FILE_COMMON);
+      m_handle=FileOpen(path,FILE_READ|FILE_WRITE|FILE_BIN|FILE_ANSI|FILE_COMMON);
       if(m_handle==INVALID_HANDLE)
         {
          reason="LEASE_EXCLUSIVE_OPEN_FAILED:"+IntegerToString(GetLastError());
@@ -257,13 +364,22 @@ public:
         }
       m_path=path;
       FileSeek(m_handle,0,SEEK_SET);
-      if(FileWriteString(m_handle,owner_instance_id)!=(uint)StringLen(owner_instance_id))
+      uchar owner_bytes[];
+      const int converted=StringToCharArray(owner_instance_id,owner_bytes,0,WHOLE_ARRAY,CP_UTF8);
+      const uint character_count=(uint)StringLen(owner_instance_id);
+      const uint byte_count=(converted>0 ? (uint)(converted-1) : 0);
+      ResetLastError();
+      const uint written=FileWriteString(m_handle,owner_instance_id);
+      const int write_error=GetLastError();
+      FileFlush(m_handle);
+      const ulong persisted_size=FileSize(m_handle);
+      const bool count_valid=(written==character_count || written==byte_count);
+      if(character_count==0 || byte_count==0 || written==0 || !count_valid || persisted_size<byte_count)
         {
-         reason="LEASE_OWNER_WRITE_FAILED:"+IntegerToString(GetLastError());
+         reason="LEASE_OWNER_WRITE_FAILED:"+IntegerToString(write_error);
          Release();
          return false;
         }
-      FileFlush(m_handle);
       return true;
      }
 
@@ -286,18 +402,69 @@ private:
    bool                m_open;
    bool                m_writable;
    bool                m_in_transaction;
+   ENUM_V2_STATE_DB_ACCESS_MODE m_access_mode;
+   ENUM_V2_STATE_DB_STATUS      m_status;
    V2StateDBConfig     m_config;
    CV2WriterLease      m_lease;
    string              m_last_error;
+   string              m_status_reason;
    string              m_last_event_hash;
    string              m_transaction_start_event_hash;
+   long                m_transaction_start_checkpoint_number;
+   string              m_transaction_start_checkpoint_hash;
+   bool                m_transaction_start_checkpoint_inherited;
+   long                m_verified_checkpoint_number;
+   string              m_verified_checkpoint_hash;
+   bool                m_checkpoint_inherited;
    long                m_outbox_max_messages;
    long                m_outbox_max_bytes;
 
    bool SetFailure(const string reason)
      {
       m_last_error=reason;
+      m_status_reason=reason;
+      if(m_access_mode!=V2_DB_ACCESS_READ_ONLY_RECOVERY)
+         m_status=V2_DB_STATUS_FAILED;
       return false;
+     }
+
+   bool RequireReadable(string &reason) const
+     {
+      if(!m_open || m_database==INVALID_HANDLE)
+        {
+         reason="DATABASE_NOT_OPEN";
+         return false;
+        }
+      return true;
+     }
+
+   bool RequireWritable(string &reason) const
+     {
+      if(!m_open || !m_writable || m_access_mode!=V2_DB_ACCESS_READ_WRITE ||
+         m_database==INVALID_HANDLE)
+        {
+         reason="DATABASE_NOT_WRITABLE:"+V2StateDBAccessModeName(m_access_mode);
+         return false;
+        }
+      if(m_config.mode==V2_DB_FULL_DURABLE && !m_lease.IsHeld())
+        {
+         reason="WRITER_LEASE_NOT_HELD";
+         return false;
+        }
+      return true;
+     }
+
+   void PoisonWrites(const string reason)
+     {
+      m_writable=false;
+      m_access_mode=(m_open ? V2_DB_ACCESS_READ_ONLY_RECOVERY : V2_DB_ACCESS_CLOSED);
+      m_status=(m_open ? V2_DB_STATUS_READ_ONLY_WRITE_FAILURE : V2_DB_STATUS_FAILED);
+      m_last_error=reason;
+      m_status_reason=reason;
+      // Keep an already-held sentinel until Close(): releasing it inside a
+      // failed transaction would let a second writer race the rollback.  The
+      // logical access mode and writable latch revoke broker authority even
+      // while the poisoned instance conservatively retains file exclusion.
      }
 
    bool CheckOutboxCapacity(const long additional_messages,
@@ -330,27 +497,96 @@ private:
 
    bool ExecutePreparedNoRows(const int request,string &reason)
      {
+      if(!RequireWritable(reason)) return false;
       ResetLastError();
       const bool result=DatabaseRead(request);
       const int error=GetLastError();
       if(result || error==ERR_DATABASE_NO_MORE_DATA)
          return true;
       reason="DATABASE_REQUEST_FAILED:"+IntegerToString(error);
+      PoisonWrites(reason);
       return false;
      }
 
    bool ExecuteSchemaStatement(const string sql,string &reason)
      {
+      if(!RequireWritable(reason))
+         return false;
       ResetLastError();
       if(DatabaseExecute(m_database,sql))
          return true;
       reason="DATABASE_SCHEMA_FAILED:"+IntegerToString(GetLastError());
+      PoisonWrites(reason);
       return false;
+     }
+
+   bool TableExists(const string table_name,bool &exists,string &reason)
+     {
+      exists=false;
+      if(!RequireReadable(reason))
+         return false;
+      int request=DatabasePrepare(m_database,
+         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1;");
+      if(request==INVALID_HANDLE || !DatabaseBind(request,0,table_name))
+        {
+         reason="DATABASE_TABLE_LOOKUP_FAILED:"+table_name+":"+IntegerToString(GetLastError());
+         if(request!=INVALID_HANDLE) DatabaseFinalize(request);
+         return false;
+        }
+      ResetLastError();
+      if(DatabaseRead(request))
+        {
+         exists=true;
+         DatabaseFinalize(request);
+         return true;
+        }
+      const int error=GetLastError();
+      DatabaseFinalize(request);
+      if(error==ERR_DATABASE_NO_MORE_DATA)
+         return true;
+      reason="DATABASE_TABLE_LOOKUP_READ_FAILED:"+table_name+":"+IntegerToString(error);
+      return false;
+     }
+
+   bool ValidateCoreSchemaTables(const bool require_v4_infrastructure,string &reason)
+     {
+      string names[]={"meta","counters","domain_events","sequences","levels","seq_ledger",
+                      "order_intents","trade_observations","receipts","receipt_aggregates",
+                      "reduced_event_keys","reduced_receipt_keys","slippage_log",
+                      "intelligence_cache","telemetry_outbox","experiment_manifests"};
+      for(int i=0;i<ArraySize(names);i++)
+        {
+         bool exists=false;
+         if(!TableExists(names[i],exists,reason)) return false;
+         if(!exists)
+           {
+            reason="DATABASE_REQUIRED_TABLE_MISSING:"+names[i];
+            return false;
+           }
+        }
+      if(require_v4_infrastructure)
+        {
+         string v4_names[]={"schema_migrations","journal_checkpoints"};
+         for(int i=0;i<ArraySize(v4_names);i++)
+           {
+            bool exists=false;
+            if(!TableExists(v4_names[i],exists,reason)) return false;
+            if(!exists)
+              {
+               reason="DATABASE_V4_TABLE_MISSING:"+v4_names[i];
+               return false;
+              }
+           }
+        }
+      return true;
      }
 
    bool CreateSchema(string &reason)
      {
+      if(!RequireWritable(reason)) return false;
       if(!ExecuteSchemaStatement("CREATE TABLE IF NOT EXISTS meta (meta_key TEXT PRIMARY KEY NOT NULL,meta_value TEXT NOT NULL,updated_at_msc INTEGER NOT NULL);",reason)) return false;
+      if(!ExecuteSchemaStatement("CREATE TABLE IF NOT EXISTS schema_migrations (migration_id TEXT PRIMARY KEY NOT NULL,from_version INTEGER NOT NULL,to_version INTEGER NOT NULL,applied_at_msc INTEGER NOT NULL,migration_hash TEXT NOT NULL);",reason)) return false;
+      if(!ExecuteSchemaStatement("CREATE TABLE IF NOT EXISTS journal_checkpoints (checkpoint_slot INTEGER PRIMARY KEY NOT NULL CHECK(checkpoint_slot=1),canonical_number INTEGER NOT NULL,event_hash TEXT NOT NULL,verified_at_msc INTEGER NOT NULL,verification_mode TEXT NOT NULL,checkpoint_hash TEXT NOT NULL);",reason)) return false;
       if(!ExecuteSchemaStatement("CREATE TABLE IF NOT EXISTS counters (counter_name TEXT PRIMARY KEY NOT NULL,next_value INTEGER NOT NULL);",reason)) return false;
        if(!ExecuteSchemaStatement("CREATE TABLE IF NOT EXISTS domain_events (canonical_number INTEGER PRIMARY KEY NOT NULL,state_version INTEGER NOT NULL,event_id TEXT UNIQUE NOT NULL,event_kind INTEGER NOT NULL,action_kind INTEGER NOT NULL,risk_effect INTEGER NOT NULL,direction INTEGER NOT NULL,symbol TEXT NOT NULL,occurred_at_msc INTEGER NOT NULL,sequence_id TEXT,order_intent_id TEXT,level_index INTEGER NOT NULL,request_id TEXT NOT NULL,order_ticket TEXT NOT NULL,deal_ticket TEXT NOT NULL,position_id TEXT NOT NULL,volume REAL NOT NULL,price REAL NOT NULL,realized_pl REAL NOT NULL,retrace_advance INTEGER NOT NULL,reason_code TEXT NOT NULL,canonical_payload TEXT NOT NULL,previous_hash TEXT NOT NULL,event_hash TEXT UNIQUE NOT NULL);",reason)) return false;
        if(!ExecuteSchemaStatement("CREATE TABLE IF NOT EXISTS sequences (sequence_id TEXT PRIMARY KEY NOT NULL,strategy_member_id TEXT NOT NULL,symbol TEXT NOT NULL,direction INTEGER NOT NULL,status INTEGER NOT NULL,started_at_msc INTEGER NOT NULL,ended_at_msc INTEGER NOT NULL,last_event_number INTEGER NOT NULL,last_state_version INTEGER NOT NULL,last_event_id TEXT NOT NULL,last_event_hash TEXT NOT NULL,experiment_manifest_id TEXT NOT NULL,input_values_hash TEXT NOT NULL,broker_profile_hash TEXT NOT NULL,symbol_spec_hash TEXT NOT NULL,execution_plan_hash TEXT NOT NULL,level_count INTEGER NOT NULL,max_levels INTEGER NOT NULL,start_volume REAL NOT NULL,standing_volume REAL NOT NULL,average_entry_price REAL NOT NULL,realized_pl REAL NOT NULL,commission REAL NOT NULL,swap REAL NOT NULL,mlps_budget REAL NOT NULL,mlps_used REAL NOT NULL,retrace_price REAL NOT NULL,rescue_armed INTEGER NOT NULL,reduction_remaining REAL NOT NULL,reduction_semantic_level INTEGER NOT NULL,reduction_reason TEXT NOT NULL,retrace_advance_pending INTEGER NOT NULL);",reason)) return false;
@@ -367,6 +603,7 @@ private:
       if(!ExecuteSchemaStatement("CREATE TABLE IF NOT EXISTS telemetry_outbox (message_id TEXT PRIMARY KEY NOT NULL,message_kind TEXT NOT NULL,payload TEXT NOT NULL,payload_hash TEXT NOT NULL,payload_size INTEGER NOT NULL,created_at_msc INTEGER NOT NULL,next_attempt_msc INTEGER NOT NULL,attempts INTEGER NOT NULL,priority INTEGER NOT NULL,critical INTEGER NOT NULL,outbox_state INTEGER NOT NULL,last_error TEXT NOT NULL);",reason)) return false;
       if(!ExecuteSchemaStatement("CREATE TABLE IF NOT EXISTS experiment_manifests (manifest_id TEXT PRIMARY KEY NOT NULL,manifest_hash TEXT UNIQUE NOT NULL,created_at_msc INTEGER NOT NULL,manifest_class INTEGER NOT NULL,external_lineage_complete INTEGER NOT NULL,canonical_payload TEXT NOT NULL);",reason)) return false;
       if(!ExecuteSchemaStatement("CREATE INDEX IF NOT EXISTS idx_events_sequence ON domain_events(sequence_id,canonical_number);",reason)) return false;
+      if(!ExecuteSchemaStatement("CREATE INDEX IF NOT EXISTS idx_events_deal_fill ON domain_events(deal_ticket,event_kind) WHERE deal_ticket<>'0';",reason)) return false;
       if(!ExecuteSchemaStatement("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_sequence_state ON domain_events(sequence_id,state_version) WHERE sequence_id IS NOT NULL AND sequence_id<>'';",reason)) return false;
       if(!ExecuteSchemaStatement("CREATE INDEX IF NOT EXISTS idx_intents_sequence ON order_intents(sequence_id,status);",reason)) return false;
       if(!ExecuteSchemaStatement("CREATE INDEX IF NOT EXISTS idx_intents_request ON order_intents(request_id) WHERE request_id<>'0';",reason)) return false;
@@ -374,6 +611,17 @@ private:
       if(!ExecuteSchemaStatement("CREATE INDEX IF NOT EXISTS idx_intents_deal ON order_intents(deal_ticket) WHERE deal_ticket<>'0';",reason)) return false;
       if(!ExecuteSchemaStatement("CREATE INDEX IF NOT EXISTS idx_observations_processed ON trade_observations(processed,captured_at_msc);",reason)) return false;
       if(!ExecuteSchemaStatement("CREATE INDEX IF NOT EXISTS idx_outbox_pending ON telemetry_outbox(outbox_state,priority,next_attempt_msc);",reason)) return false;
+      // The journal is append-only.  Projection repair is never allowed to
+      // edit or delete evidence; it must be performed by replay into a new
+      // projection under a separately reviewed migration/tooling workflow.
+      if(!ExecuteSchemaStatement("CREATE TRIGGER IF NOT EXISTS trg_domain_events_append_guard BEFORE INSERT ON domain_events WHEN NEW.canonical_number<>COALESCE((SELECT MAX(canonical_number)+1 FROM domain_events),1) OR NEW.previous_hash<>COALESCE((SELECT NULLIF(meta_value,'') FROM meta WHERE meta_key='last_event_hash'),'GENESIS') BEGIN SELECT RAISE(ABORT,'DOMAIN_EVENT_APPEND_INVARIANT'); END;",reason)) return false;
+      if(!ExecuteSchemaStatement("CREATE TRIGGER IF NOT EXISTS trg_domain_events_no_update BEFORE UPDATE ON domain_events BEGIN SELECT RAISE(ABORT,'DOMAIN_EVENTS_IMMUTABLE'); END;",reason)) return false;
+      if(!ExecuteSchemaStatement("CREATE TRIGGER IF NOT EXISTS trg_domain_events_no_delete BEFORE DELETE ON domain_events BEGIN SELECT RAISE(ABORT,'DOMAIN_EVENTS_IMMUTABLE'); END;",reason)) return false;
+      if(!ExecuteSchemaStatement("CREATE TRIGGER IF NOT EXISTS trg_reduced_events_append_guard BEFORE INSERT ON reduced_event_keys WHEN NEW.canonical_number<>COALESCE((SELECT MAX(canonical_number)+1 FROM reduced_event_keys),1) BEGIN SELECT RAISE(ABORT,'REDUCED_EVENT_APPEND_INVARIANT'); END;",reason)) return false;
+      if(!ExecuteSchemaStatement("CREATE TRIGGER IF NOT EXISTS trg_reduced_events_no_update BEFORE UPDATE ON reduced_event_keys BEGIN SELECT RAISE(ABORT,'REDUCED_EVENTS_IMMUTABLE'); END;",reason)) return false;
+      if(!ExecuteSchemaStatement("CREATE TRIGGER IF NOT EXISTS trg_reduced_events_no_delete BEFORE DELETE ON reduced_event_keys BEGIN SELECT RAISE(ABORT,'REDUCED_EVENTS_IMMUTABLE'); END;",reason)) return false;
+      if(!ExecuteSchemaStatement("CREATE TRIGGER IF NOT EXISTS trg_schema_migrations_no_update BEFORE UPDATE ON schema_migrations BEGIN SELECT RAISE(ABORT,'SCHEMA_MIGRATIONS_IMMUTABLE'); END;",reason)) return false;
+      if(!ExecuteSchemaStatement("CREATE TRIGGER IF NOT EXISTS trg_schema_migrations_no_delete BEFORE DELETE ON schema_migrations BEGIN SELECT RAISE(ABORT,'SCHEMA_MIGRATIONS_IMMUTABLE'); END;",reason)) return false;
       return true;
      }
 
@@ -405,6 +653,7 @@ private:
 
    bool WriteMeta(const string key,const string value,string &reason)
      {
+      if(!RequireWritable(reason)) return false;
       string prior="";
       bool found=false;
       if(!ReadMeta(key,prior,found,reason))
@@ -414,13 +663,108 @@ private:
          "INSERT INTO meta(meta_value,updated_at_msc,meta_key) VALUES(?1,?2,?3);";
       int request=DatabasePrepare(m_database,sql);
       if(request==INVALID_HANDLE)
-        { reason="META_WRITE_PREPARE_FAILED:"+IntegerToString(GetLastError()); return false; }
-      const long now_msc=(long)TimeLocal()*1000;
+        {
+         reason="META_WRITE_PREPARE_FAILED:"+IntegerToString(GetLastError());
+         PoisonWrites(reason);
+         return false;
+        }
+      const long now_msc=V2UtcNowMsc();
       if(!DatabaseBind(request,0,value) || !DatabaseBind(request,1,now_msc) || !DatabaseBind(request,2,key))
-        { reason="META_WRITE_BIND_FAILED:"+IntegerToString(GetLastError()); DatabaseFinalize(request); return false; }
+        {
+         reason="META_WRITE_BIND_FAILED:"+IntegerToString(GetLastError());
+         DatabaseFinalize(request);
+         PoisonWrites(reason);
+         return false;
+        }
       const bool ok=ExecutePreparedNoRows(request,reason);
       DatabaseFinalize(request);
       return ok;
+     }
+
+   bool RecordSchemaMigration(const int from_version,const int to_version,string &reason)
+     {
+      if(!RequireWritable(reason)) return false;
+      const string migration_id="schema_"+IntegerToString(from_version)+"_to_"+IntegerToString(to_version);
+      const string migration_hash=V2Sha256Hex(migration_id+"|GOAT2_STATE_DB");
+      int request=DatabasePrepare(m_database,
+         "INSERT INTO schema_migrations(migration_id,from_version,to_version,applied_at_msc,migration_hash) VALUES(?1,?2,?3,?4,?5);");
+      if(request==INVALID_HANDLE ||
+         !DatabaseBind(request,0,migration_id) ||
+         !DatabaseBind(request,1,from_version) ||
+         !DatabaseBind(request,2,to_version) ||
+         !DatabaseBind(request,3,V2UtcNowMsc()) ||
+         !DatabaseBind(request,4,migration_hash) ||
+         !ExecutePreparedNoRows(request,reason))
+        {
+         if(reason=="") reason="SCHEMA_MIGRATION_LEDGER_WRITE_FAILED:"+IntegerToString(GetLastError());
+         if(request!=INVALID_HANDLE) DatabaseFinalize(request);
+         return false;
+        }
+      DatabaseFinalize(request);
+      return true;
+     }
+
+   bool ApplySchemaMigrationStep(const int from_version,string &reason)
+     {
+      if(!RequireWritable(reason)) return false;
+      switch(from_version)
+        {
+         case 3:
+           {
+            // v3 -> v4 is intentionally additive: verify that the complete v3
+            // core exists, then add checkpoint/migration infrastructure and
+            // append-only guards.  No journal or projection row is rewritten.
+            if(!ValidateCoreSchemaTables(false,reason))
+              {
+               reason="SCHEMA_MIGRATION_3_TO_4_PRECONDITION_FAILED:"+reason;
+               return false;
+              }
+            if(!CreateSchema(reason) ||
+               !RecordSchemaMigration(3,4,reason) ||
+               !WriteMeta("schema_version","4",reason))
+              {
+               reason="SCHEMA_MIGRATION_3_TO_4_FAILED:"+reason;
+               return false;
+              }
+            return true;
+           }
+         case 1:
+         case 2:
+            reason="SCHEMA_MIGRATION_UNSAFE_LEGACY_VERSION:"+IntegerToString(from_version);
+            return false;
+        }
+      reason="SCHEMA_MIGRATION_STEP_UNKNOWN:"+IntegerToString(from_version)+"_TO_"+
+             IntegerToString(from_version+1);
+      return false;
+     }
+
+   bool MigrateSchema(const int stored_version,const int target_version,string &reason)
+     {
+      if(!RequireWritable(reason)) return false;
+      if(stored_version<=0 || target_version!=V2_STATE_DB_SCHEMA_VERSION ||
+         stored_version>target_version)
+        {
+         reason="DATABASE_SCHEMA_MIGRATION_UNSUPPORTED:"+IntegerToString(stored_version)+"_TO_"+
+                IntegerToString(target_version);
+         return false;
+        }
+      if(stored_version==target_version)
+         return ValidateCoreSchemaTables(true,reason);
+      if(m_in_transaction)
+        { reason="SCHEMA_MIGRATION_AMBIENT_TRANSACTION_FORBIDDEN"; return false; }
+      if(!Begin(reason)) return false;
+      int version=stored_version;
+      while(version<target_version)
+        {
+         if(!ApplySchemaMigrationStep(version,reason))
+           {
+            Rollback();
+            return false;
+           }
+         version++;
+        }
+      if(!Commit(reason)) return false;
+      return ValidateCoreSchemaTables(true,reason);
      }
 
    string CanonicalEventPayload(const V2DomainEvent &event) const
@@ -521,6 +865,7 @@ private:
 
    bool StoreReceiptAggregate(const V2Receipt &receipt,string &reason)
      {
+      if(!RequireWritable(reason)) return false;
       string existing_hash="";
       bool existing=false;
       int request=DatabasePrepare(m_database,
@@ -600,6 +945,7 @@ private:
 
    bool StoreReceiptInternal(const V2Receipt &receipt,string &reason)
      {
+      if(!RequireWritable(reason)) return false;
       if(receipt.receipt_id=="" || receipt.payload_hash=="" || receipt.canonical_payload=="")
         { reason="RECEIPT_NOT_FINALIZED"; return false; }
       CV2ReceiptBuilder validator;
@@ -718,6 +1064,7 @@ private:
    bool InsertIntentInternal(const V2OrderIntent &intent,bool &inserted,string &reason)
      {
       inserted=false;
+      if(!RequireWritable(reason)) return false;
       if(intent.order_intent_id=="" || intent.sequence_id=="")
         { reason="INTENT_IDENTITY_EMPTY"; return false; }
       if(!MathIsValidNumber(intent.requested_volume) ||
@@ -768,12 +1115,24 @@ private:
 
    bool UpdateIntentInternal(const V2OrderIntent &intent,string &reason)
      {
+      if(!RequireWritable(reason)) return false;
       bool found=false;
       int stored_status=0;
       if(!ReadExistingIntent(intent,found,stored_status,reason))
          return false;
       if(!found)
         { reason="INTENT_UPDATE_TARGET_MISSING"; return false; }
+      CV2OrderIntentMachine intent_machine;
+      string transition_reason="";
+      if(!intent_machine.CanTransition((ENUM_V2_ORDER_INTENT_STATUS)stored_status,
+                                       intent.status,
+                                       transition_reason))
+        {
+         reason="INTENT_DATABASE_TRANSITION_REJECTED:"+
+                IntegerToString(stored_status)+"_TO_"+
+                IntegerToString((int)intent.status)+":"+transition_reason;
+         return false;
+        }
       int request=DatabasePrepare(m_database,
          "UPDATE order_intents SET status=?1,request_id=?2,order_ticket=?3,deal_ticket=?4,position_id=?5,retcode=?6,reason_code=?7 WHERE order_intent_id=?8;");
       if(request==INVALID_HANDLE ||
@@ -795,6 +1154,39 @@ private:
       return true;
      }
 
+   bool UpdateIntentCanonicalInternal(const V2OrderIntent &intent,
+                                      const bool broker_submission_observed,
+                                      string &reason)
+     {
+      bool found=false;
+      int stored_status=0;
+      if(!ReadExistingIntent(intent,found,stored_status,reason))
+         return false;
+      if(!found)
+        { reason="INTENT_UPDATE_TARGET_MISSING"; return false; }
+
+      // The runtime machine can observe a broker's terminal answer in the
+      // same call that first proves submission. Persist/replay SUBMITTED as
+      // the canonical intermediate state instead of attempting an illegal
+      // PERSISTED -> terminal shortcut. Both updates remain in the caller's
+      // transaction, so failure rolls the intent back to its pre-call state.
+      const ENUM_V2_ORDER_INTENT_STATUS current=(ENUM_V2_ORDER_INTENT_STATUS)stored_status;
+      const bool needs_submission_bridge=(current==V2_INTENT_PERSISTED &&
+                                          intent.status!=V2_INTENT_PERSISTED &&
+                                          intent.status!=V2_INTENT_SUBMITTED &&
+                                          (broker_submission_observed ||
+                                           intent.status!=V2_INTENT_CANCELLED));
+      if(needs_submission_bridge)
+        {
+         V2OrderIntent submitted=intent;
+         submitted.status=V2_INTENT_SUBMITTED;
+         submitted.reason_code="CANONICAL_SUBMISSION_BRIDGE:"+intent.reason_code;
+         if(!UpdateIntentInternal(submitted,reason))
+            return false;
+        }
+      return UpdateIntentInternal(intent,reason);
+     }
+
    bool EnsureStableMetaIdentity(const string key,const string expected,string &reason)
      {
       if(expected=="")
@@ -812,17 +1204,199 @@ private:
       return WriteMeta(key,expected,reason);
      }
 
-   bool VerifyJournalIntegrity(string &reason)
+   string JournalCheckpointHash(const long canonical_number,const string event_hash) const
+     {
+      return V2Sha256Hex("GOAT2_JOURNAL_CHECKPOINT_V1|"+
+                         m_config.deployment_id+"|"+
+                         IntegerToString(V2_STATE_DB_SCHEMA_VERSION)+"|"+
+                         IntegerToString(canonical_number)+"|"+event_hash);
+     }
+
+   bool LoadJournalCheckpoint(long &canonical_number,
+                              string &event_hash,
+                              bool &found,
+                              string &reason)
+     {
+      canonical_number=0;
+      event_hash="GENESIS";
+      found=false;
+      bool checkpoint_table_exists=false;
+      if(!TableExists("journal_checkpoints",checkpoint_table_exists,reason)) return false;
+      if(!checkpoint_table_exists) return true;
+      int request=DatabasePrepare(m_database,
+         "SELECT canonical_number,event_hash,checkpoint_hash FROM journal_checkpoints WHERE checkpoint_slot=1;");
+      if(request==INVALID_HANDLE)
+        { reason="JOURNAL_CHECKPOINT_PREPARE_FAILED:"+IntegerToString(GetLastError()); return false; }
+      ResetLastError();
+      if(!DatabaseRead(request))
+        {
+         const int error=GetLastError();
+         DatabaseFinalize(request);
+         if(error==ERR_DATABASE_NO_MORE_DATA) return true;
+         reason="JOURNAL_CHECKPOINT_READ_FAILED:"+IntegerToString(error);
+         return false;
+        }
+      string checkpoint_hash="";
+      const bool read=DatabaseColumnLong(request,0,canonical_number) &&
+                      DatabaseColumnText(request,1,event_hash) &&
+                      DatabaseColumnText(request,2,checkpoint_hash);
+      DatabaseFinalize(request);
+      if(!read || canonical_number<0 || event_hash=="" ||
+         checkpoint_hash!=JournalCheckpointHash(canonical_number,event_hash))
+        { reason="JOURNAL_CHECKPOINT_INVALID"; return false; }
+      if(canonical_number==0)
+        {
+         if(event_hash!="GENESIS")
+           { reason="JOURNAL_GENESIS_CHECKPOINT_INVALID"; return false; }
+         found=true;
+         return true;
+        }
+      request=DatabasePrepare(m_database,
+         "SELECT event_hash FROM domain_events WHERE canonical_number=?1;");
+      if(request==INVALID_HANDLE || !DatabaseBind(request,0,canonical_number))
+        {
+         reason="JOURNAL_CHECKPOINT_ANCHOR_LOOKUP_FAILED:"+IntegerToString(GetLastError());
+         if(request!=INVALID_HANDLE) DatabaseFinalize(request);
+         return false;
+        }
+      ResetLastError();
+      string anchored_hash="";
+      const bool anchor_read=DatabaseRead(request) && DatabaseColumnText(request,0,anchored_hash);
+      DatabaseFinalize(request);
+      if(!anchor_read || anchored_hash!=event_hash)
+        { reason="JOURNAL_CHECKPOINT_ANCHOR_MISMATCH"; return false; }
+      found=true;
+      return true;
+     }
+
+   bool PersistJournalCheckpoint(const long canonical_number,
+                                 const string event_hash,
+                                 const string verification_mode,
+                                 string &reason)
+     {
+      if(!RequireWritable(reason)) return false;
+      const string checkpoint_hash=JournalCheckpointHash(canonical_number,event_hash);
+      int request=DatabasePrepare(m_database,
+         "INSERT OR REPLACE INTO journal_checkpoints(checkpoint_slot,canonical_number,event_hash,verified_at_msc,verification_mode,checkpoint_hash) VALUES(1,?1,?2,?3,?4,?5);");
+      if(request==INVALID_HANDLE ||
+         !DatabaseBind(request,0,canonical_number) ||
+         !DatabaseBind(request,1,event_hash) ||
+         !DatabaseBind(request,2,V2UtcNowMsc()) ||
+         !DatabaseBind(request,3,verification_mode) ||
+         !DatabaseBind(request,4,checkpoint_hash) ||
+         !ExecutePreparedNoRows(request,reason))
+        {
+         if(reason=="") reason="JOURNAL_CHECKPOINT_WRITE_FAILED:"+IntegerToString(GetLastError());
+         if(request!=INVALID_HANDLE) DatabaseFinalize(request);
+         return false;
+        }
+      DatabaseFinalize(request);
+      return true;
+     }
+
+   bool VerifyJournalStateVersions(const long checkpoint_number,string &reason)
+     {
+      string sql="";
+      if(checkpoint_number<=0)
+         sql="SELECT sequence_id FROM domain_events WHERE sequence_id IS NOT NULL AND sequence_id<>'' GROUP BY sequence_id HAVING MIN(state_version)<>1 OR MAX(state_version)<>COUNT(*) LIMIT 1;";
+      else
+        {
+         const string checkpoint=IntegerToString(checkpoint_number);
+         // The correlated prefix MAX is index-backed per touched sequence; the
+         // unbounded prefix itself is not rescanned as one global aggregate.
+         sql="SELECT e.sequence_id FROM domain_events e WHERE e.canonical_number>"+checkpoint+
+             " AND e.sequence_id IS NOT NULL AND e.sequence_id<>'' GROUP BY e.sequence_id HAVING "+
+             "MIN(e.state_version)<>COALESCE((SELECT MAX(p.state_version) FROM domain_events p WHERE p.sequence_id=e.sequence_id AND p.canonical_number<="+checkpoint+"),0)+1 OR "+
+             "MAX(e.state_version)-MIN(e.state_version)+1<>COUNT(*) LIMIT 1;";
+        }
+      int request=DatabasePrepare(m_database,sql);
+      if(request==INVALID_HANDLE)
+        { reason="JOURNAL_STATE_VERSION_PREPARE_FAILED:"+IntegerToString(GetLastError()); return false; }
+      ResetLastError();
+      if(DatabaseRead(request))
+        {
+         string sequence_id="";
+         DatabaseColumnText(request,0,sequence_id);
+         DatabaseFinalize(request);
+         reason="JOURNAL_STATE_VERSION_GAP:"+sequence_id;
+         return false;
+        }
+      const int error=GetLastError();
+      DatabaseFinalize(request);
+      if(error!=ERR_DATABASE_NO_MORE_DATA)
+        { reason="JOURNAL_STATE_VERSION_READ_FAILED:"+IntegerToString(error); return false; }
+      return true;
+     }
+
+   bool VerifyProjectionLineage(const string strategy_member_id,string &reason)
+     {
+      string sql="SELECT s.sequence_id FROM sequences s LEFT JOIN domain_events e ON e.event_id=s.last_event_id WHERE ";
+      if(strategy_member_id!="")
+         sql+="s.strategy_member_id=?1 AND ";
+      sql+="((s.status<>0 AND s.last_state_version<=0) OR (s.last_state_version>0 AND (e.event_id IS NULL OR e.sequence_id<>s.sequence_id OR e.canonical_number<>s.last_event_number OR e.state_version<>s.last_state_version OR e.event_hash<>s.last_event_hash))) LIMIT 1;";
+      int request=DatabasePrepare(m_database,sql);
+      if(request==INVALID_HANDLE || (strategy_member_id!="" && !DatabaseBind(request,0,strategy_member_id)))
+        {
+         reason="PROJECTION_INTEGRITY_PREPARE_FAILED:"+IntegerToString(GetLastError());
+         if(request!=INVALID_HANDLE) DatabaseFinalize(request);
+         return false;
+        }
+      ResetLastError();
+      if(DatabaseRead(request))
+        {
+         string sequence_id="";
+         DatabaseColumnText(request,0,sequence_id);
+         DatabaseFinalize(request);
+         reason="PROJECTION_JOURNAL_LINEAGE_MISMATCH:"+sequence_id;
+         return false;
+        }
+      const int error=GetLastError();
+      DatabaseFinalize(request);
+      if(error!=ERR_DATABASE_NO_MORE_DATA)
+        { reason="PROJECTION_INTEGRITY_READ_FAILED:"+IntegerToString(error); return false; }
+      return true;
+     }
+
+   bool VerifyJournalIntegrity(const bool persist_checkpoint,
+                               const bool allow_inherited_checkpoint,
+                               string &reason)
      {
       reason="";
-      int request=DatabasePrepare(m_database,
-         "SELECT canonical_number,event_id,canonical_payload,previous_hash,event_hash FROM domain_events ORDER BY canonical_number ASC;");
-      if(request==INVALID_HANDLE)
-        { reason="JOURNAL_INTEGRITY_PREPARE_FAILED:"+IntegerToString(GetLastError()); return false; }
+      if(!RequireReadable(reason)) return false;
+      m_verified_checkpoint_number=0;
+      m_verified_checkpoint_hash="";
+      m_checkpoint_inherited=false;
 
-      string running_hash="GENESIS";
-      long prior_number=0;
-      int count=0;
+      long checkpoint_number=0;
+      string checkpoint_hash="GENESIS";
+      bool checkpoint_found=false;
+      if(allow_inherited_checkpoint &&
+         !LoadJournalCheckpoint(checkpoint_number,checkpoint_hash,checkpoint_found,reason))
+         return false;
+
+      // Verification invariant:
+      //  1. With no checkpoint, every event from GENESIS is recomputed.
+      //  2. A checkpoint is persisted only after a successful full/inherited
+      //     proof or an atomic, hash-verified append from that proven head.  On
+      //     later opens its self-hash and anchored journal row must match, and
+      //     every suffix link/hash is recomputed to the stored head.
+      //  3. v4 SQL triggers forbid in-process UPDATE/DELETE of the inherited
+      //     prefix.  quick_check protects SQLite structure.
+      // This is an inherited hash-chain proof, not external authentication.  A
+      // coordinated offline replacement of both DB history and its checkpoint
+      // requires an independently retained snapshot/hash to detect; the prior
+      // full O(N) verifier had the same unauthenticated-rewrite limitation.
+      const long start_number=(checkpoint_found ? checkpoint_number : 0);
+      string running_hash=(checkpoint_found ? checkpoint_hash : "GENESIS");
+      long prior_number=start_number;
+      int request=DatabasePrepare(m_database,
+         "SELECT canonical_number,event_id,canonical_payload,previous_hash,event_hash FROM domain_events WHERE canonical_number>?1 ORDER BY canonical_number ASC;");
+      if(request==INVALID_HANDLE || !DatabaseBind(request,0,start_number))
+        {
+         reason="JOURNAL_INTEGRITY_PREPARE_FAILED:"+IntegerToString(GetLastError());
+         if(request!=INVALID_HANDLE) DatabaseFinalize(request);
+         return false;
+        }
       while(true)
         {
          ResetLastError();
@@ -844,7 +1418,7 @@ private:
                          DatabaseColumnText(request,2,payload) &&
                          DatabaseColumnText(request,3,previous_hash) &&
                          DatabaseColumnText(request,4,event_hash);
-         if(!read || canonical_number<=prior_number || event_id=="" || payload=="" ||
+         if(!read || canonical_number!=prior_number+1 || event_id=="" || payload=="" ||
             previous_hash!=running_hash ||
             event_hash!=V2Sha256Hex(previous_hash+"|"+event_id+"|"+payload))
            {
@@ -854,60 +1428,46 @@ private:
            }
          prior_number=canonical_number;
          running_hash=event_hash;
-         count++;
         }
       DatabaseFinalize(request);
 
-      request=DatabasePrepare(m_database,
-         "SELECT sequence_id FROM domain_events WHERE sequence_id IS NOT NULL AND sequence_id<>'' GROUP BY sequence_id HAVING MIN(state_version)<>1 OR MAX(state_version)<>COUNT(*) LIMIT 1;");
-      if(request==INVALID_HANDLE)
-        { reason="JOURNAL_STATE_VERSION_PREPARE_FAILED:"+IntegerToString(GetLastError()); return false; }
-      ResetLastError();
-      if(DatabaseRead(request))
-        {
-         string sequence_id="";
-         DatabaseColumnText(request,0,sequence_id);
-         DatabaseFinalize(request);
-         reason="JOURNAL_STATE_VERSION_GAP:"+sequence_id;
+      if(!VerifyJournalStateVersions(start_number,reason) ||
+         !VerifyProjectionLineage("",reason))
          return false;
-        }
-      const int state_error=GetLastError();
-      DatabaseFinalize(request);
-      if(state_error!=ERR_DATABASE_NO_MORE_DATA)
-        { reason="JOURNAL_STATE_VERSION_READ_FAILED:"+IntegerToString(state_error); return false; }
-
-      request=DatabasePrepare(m_database,
-         "SELECT s.sequence_id FROM sequences s LEFT JOIN domain_events e ON e.event_id=s.last_event_id WHERE (s.status<>0 AND s.last_state_version<=0) OR (s.last_state_version>0 AND (e.event_id IS NULL OR e.sequence_id<>s.sequence_id OR e.canonical_number<>s.last_event_number OR e.state_version<>s.last_state_version OR e.event_hash<>s.last_event_hash)) LIMIT 1;");
-      if(request==INVALID_HANDLE)
-        { reason="PROJECTION_INTEGRITY_PREPARE_FAILED:"+IntegerToString(GetLastError()); return false; }
-      ResetLastError();
-      if(DatabaseRead(request))
-        {
-         string sequence_id="";
-         DatabaseColumnText(request,0,sequence_id);
-         DatabaseFinalize(request);
-         reason="PROJECTION_JOURNAL_LINEAGE_MISMATCH:"+sequence_id;
-         return false;
-        }
-      const int projection_error=GetLastError();
-      DatabaseFinalize(request);
-      if(projection_error!=ERR_DATABASE_NO_MORE_DATA)
-        { reason="PROJECTION_INTEGRITY_READ_FAILED:"+IntegerToString(projection_error); return false; }
 
       string stored_head="";
       bool head_found=false;
-      if(!ReadMeta("last_event_hash",stored_head,head_found,reason))
-         return false;
-      if(count==0)
+      if(!ReadMeta("last_event_hash",stored_head,head_found,reason)) return false;
+      if(prior_number==0)
         {
          if(head_found && stored_head!="")
            { reason="JOURNAL_HEAD_PRESENT_WITHOUT_EVENTS"; return false; }
+         running_hash="GENESIS";
          m_last_event_hash="";
-         return true;
         }
-      if(!head_found || stored_head!=running_hash)
-        { reason="JOURNAL_HEAD_MISMATCH"; return false; }
-      m_last_event_hash=running_hash;
+      else
+        {
+         if(!head_found || stored_head!=running_hash)
+           { reason="JOURNAL_HEAD_MISMATCH"; return false; }
+         m_last_event_hash=running_hash;
+        }
+
+      m_verified_checkpoint_number=prior_number;
+      m_verified_checkpoint_hash=running_hash;
+      m_checkpoint_inherited=checkpoint_found;
+      if(persist_checkpoint)
+        {
+         const bool own_transaction=!m_in_transaction;
+         if(own_transaction && !Begin(reason)) return false;
+         const string verification_mode=(checkpoint_found ?
+            "INHERITED_PREFIX_PLUS_VERIFIED_SUFFIX" : "FULL_FROM_GENESIS");
+         if(!PersistJournalCheckpoint(prior_number,running_hash,verification_mode,reason))
+           {
+            if(own_transaction) Rollback();
+            return false;
+           }
+         if(own_transaction && !Commit(reason)) return false;
+        }
       return true;
      }
 
@@ -919,8 +1479,39 @@ private:
       m_open=false;
       m_writable=false;
       m_in_transaction=false;
+      m_access_mode=V2_DB_ACCESS_CLOSED;
       m_transaction_start_event_hash="";
+      m_transaction_start_checkpoint_number=0;
+      m_transaction_start_checkpoint_hash="";
+      m_transaction_start_checkpoint_inherited=false;
+      m_verified_checkpoint_number=0;
+      m_verified_checkpoint_hash="";
+      m_checkpoint_inherited=false;
       m_lease.Release();
+     }
+
+   bool ValidateOpenConfig(const V2StateDBConfig &config,
+                           const bool read_only_recovery,
+                           string &reason) const
+     {
+      if(config.deployment_id=="" || config.strategy_member_id=="")
+        { reason="DATABASE_IDENTITY_EMPTY"; return false; }
+      if(config.schema_version!=V2_STATE_DB_SCHEMA_VERSION)
+        { reason="DATABASE_SCHEMA_VERSION_UNSUPPORTED"; return false; }
+      if(read_only_recovery && config.mode!=V2_DB_FULL_DURABLE)
+        { reason="READ_ONLY_RECOVERY_REQUIRES_DURABLE_DATABASE"; return false; }
+      if(config.mode!=V2_DB_FULL_DURABLE && !MQLInfoInteger(MQL_TESTER))
+        { reason="NON_DURABLE_DATABASE_FORBIDDEN_OUTSIDE_TESTER"; return false; }
+      if(config.mode==V2_DB_FULL_DURABLE)
+        {
+         if(config.database_path=="" || config.lease_path=="" ||
+            (!read_only_recovery && config.owner_instance_id==""))
+           { reason="DURABLE_DATABASE_CONFIGURATION_INCOMPLETE"; return false; }
+         if(config.lease_stale_seconds<V2_STATE_DB_MIN_LEASE_STALE_SECONDS ||
+            config.lease_stale_seconds>V2_STATE_DB_MAX_LEASE_STALE_SECONDS)
+           { reason="LEASE_STALE_SECONDS_OUT_OF_RANGE"; return false; }
+        }
+      return true;
      }
 
 public:
@@ -930,10 +1521,19 @@ public:
       m_open=false;
       m_writable=false;
       m_in_transaction=false;
+      m_access_mode=V2_DB_ACCESS_CLOSED;
+      m_status=V2_DB_STATUS_CLOSED;
       m_config.Reset();
       m_last_error="";
+      m_status_reason="";
       m_last_event_hash="";
       m_transaction_start_event_hash="";
+      m_transaction_start_checkpoint_number=0;
+      m_transaction_start_checkpoint_hash="";
+      m_transaction_start_checkpoint_inherited=false;
+      m_verified_checkpoint_number=0;
+      m_verified_checkpoint_hash="";
+      m_checkpoint_inherited=false;
       m_outbox_max_messages=10000;
       m_outbox_max_bytes=50*1024*1024;
      }
@@ -946,6 +1546,7 @@ public:
    bool IntegrityCheck(string &reason)
      {
       reason="";
+      if(!RequireReadable(reason)) return false;
       int request=DatabasePrepare(m_database,"PRAGMA quick_check(1);");
       if(request==INVALID_HANDLE)
         { reason="DATABASE_INTEGRITY_PREPARE_FAILED:"+IntegerToString(GetLastError()); return false; }
@@ -964,25 +1565,41 @@ public:
       return true;
      }
 
+   bool AuditJournalFromGenesis(string &reason)
+     {
+      reason="";
+      if(!RequireReadable(reason)) return false;
+      if(m_in_transaction)
+        { reason="FULL_JOURNAL_AUDIT_AMBIENT_TRANSACTION_FORBIDDEN"; return false; }
+      // This explicit diagnostic never writes/repairs history and deliberately
+      // ignores an inherited checkpoint.  It is the authoritative slow audit
+      // to run before approving any offline member-projection repair plan.
+      if(VerifyJournalIntegrity(false,false,reason)) return true;
+      if(m_writable) PoisonWrites("FULL_JOURNAL_AUDIT_FAILED:"+reason);
+      return false;
+     }
+
    bool Open(const V2StateDBConfig &config,string &reason)
      {
       reason="";
       Close();
       m_last_error="";
+      m_status_reason="";
+      m_last_event_hash="";
+      m_transaction_start_event_hash="";
+      m_transaction_start_checkpoint_number=0;
+      m_transaction_start_checkpoint_hash="";
+      m_transaction_start_checkpoint_inherited=false;
+      m_verified_checkpoint_number=0;
+      m_verified_checkpoint_hash="";
+      m_checkpoint_inherited=false;
       m_config=config;
 
-      if(config.deployment_id=="" || config.strategy_member_id=="")
-        { reason="DATABASE_IDENTITY_EMPTY"; return SetFailure(reason); }
-      if(config.schema_version!=3)
-         { reason="DATABASE_SCHEMA_VERSION_UNSUPPORTED"; return SetFailure(reason); }
-      if(config.mode!=V2_DB_FULL_DURABLE && !MQLInfoInteger(MQL_TESTER))
-        { reason="NON_DURABLE_DATABASE_FORBIDDEN_OUTSIDE_TESTER"; return SetFailure(reason); }
+      if(!ValidateOpenConfig(config,false,reason)) return SetFailure(reason);
       if(config.mode==V2_DB_FULL_DURABLE)
         {
-         if(config.database_path=="" || config.lease_path=="" || config.owner_instance_id=="")
-           { reason="DURABLE_DATABASE_CONFIGURATION_INCOMPLETE"; return SetFailure(reason); }
          if(!m_lease.Acquire(config.lease_path,config.owner_instance_id,reason))
-            return SetFailure(reason);
+             return SetFailure(reason);
         }
 
       ResetLastError();
@@ -998,6 +1615,8 @@ public:
         }
       m_open=true;
       m_writable=true;
+      m_access_mode=V2_DB_ACCESS_READ_WRITE;
+      m_status=V2_DB_STATUS_HEALTHY;
 
       if(config.mode==V2_DB_FULL_DURABLE)
         {
@@ -1012,26 +1631,79 @@ public:
            { AbortOpen(); return SetFailure(reason); }
         }
 
-      if(!IntegrityCheck(reason) || !CreateSchema(reason))
+      if(!IntegrityCheck(reason))
         { AbortOpen(); return SetFailure(reason); }
 
-      string stored_schema="";
-      bool schema_found=false;
-      if(!ReadMeta("schema_version",stored_schema,schema_found,reason))
+      bool meta_exists=false;
+      if(!TableExists("meta",meta_exists,reason))
         { AbortOpen(); return SetFailure(reason); }
-      if(schema_found && (int)StringToInteger(stored_schema)!=config.schema_version)
-        { reason="DATABASE_SCHEMA_MIGRATION_REQUIRED"; AbortOpen(); return SetFailure(reason); }
-      if(!WriteMeta("schema_version",IntegerToString(config.schema_version),reason))
-        { AbortOpen(); return SetFailure(reason); }
-
       const string account_fingerprint=V2Sha256Hex(AccountInfoString(ACCOUNT_SERVER)+"|"+
                                                     IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)));
-      if(!EnsureStableMetaIdentity("deployment_id",config.deployment_id,reason) ||
-         !EnsureStableMetaIdentity("account_fingerprint",account_fingerprint,reason) ||
-         !WriteMeta("last_portfolio_generation_id",config.portfolio_generation_id,reason) ||
+      if(meta_exists)
+        {
+         string stored_deployment="",stored_account="";
+         bool deployment_found=false,account_found=false;
+         if(!ReadMeta("deployment_id",stored_deployment,deployment_found,reason) ||
+            !ReadMeta("account_fingerprint",stored_account,account_found,reason) ||
+            !deployment_found || !account_found || stored_deployment!=config.deployment_id ||
+            stored_account!=account_fingerprint)
+           {
+            if(reason=="") reason="DATABASE_STABLE_IDENTITY_MISSING_OR_MISMATCH";
+            AbortOpen();
+            return SetFailure(reason);
+           }
+        }
+      if(!meta_exists)
+        {
+         if(!Begin(reason) || !CreateSchema(reason) ||
+            !WriteMeta("schema_version",IntegerToString(config.schema_version),reason) ||
+            !Commit(reason))
+           {
+            if(m_in_transaction) Rollback();
+            AbortOpen();
+            return SetFailure(reason);
+           }
+        }
+      else
+        {
+         string stored_schema="";
+         bool schema_found=false;
+         if(!ReadMeta("schema_version",stored_schema,schema_found,reason) || !schema_found ||
+            IntegerToString((int)StringToInteger(stored_schema))!=stored_schema)
+           {
+            if(reason=="") reason="DATABASE_SCHEMA_VERSION_METADATA_INVALID";
+            AbortOpen();
+            return SetFailure(reason);
+           }
+         const int stored_version=(int)StringToInteger(stored_schema);
+         if(stored_version!=config.schema_version)
+           {
+            if(stored_version==3 && !VerifyJournalIntegrity(false,false,reason))
+              {
+               reason="SCHEMA_MIGRATION_3_TO_4_SOURCE_AUDIT_FAILED:"+reason;
+               AbortOpen();
+               return SetFailure(reason);
+              }
+            if(!MigrateSchema(stored_version,config.schema_version,reason))
+              { AbortOpen(); return SetFailure(reason); }
+           }
+         else
+           {
+            if(!ValidateCoreSchemaTables(true,reason) || !CreateSchema(reason))
+              { AbortOpen(); return SetFailure(reason); }
+           }
+        }
+
+      if(!ValidateCoreSchemaTables(true,reason))
+        { AbortOpen(); return SetFailure(reason); }
+      if(!meta_exists &&
+         (!EnsureStableMetaIdentity("deployment_id",config.deployment_id,reason) ||
+          !EnsureStableMetaIdentity("account_fingerprint",account_fingerprint,reason)))
+        { AbortOpen(); return SetFailure(reason); }
+      if(!WriteMeta("last_portfolio_generation_id",config.portfolio_generation_id,reason) ||
          !WriteMeta("last_strategy_member_id",config.strategy_member_id,reason) ||
          !WriteMeta("persistence_mode",V2StateDBModeName(config.mode),reason))
-        { AbortOpen(); return SetFailure(reason); }
+         { AbortOpen(); return SetFailure(reason); }
 
       string previous_owner="",previous_heartbeat="",previous_released="";
       bool owner_found=false,heartbeat_found=false,released_found=false;
@@ -1043,8 +1715,31 @@ public:
          (!released_found || previous_released!="1") && heartbeat_found)
         {
          const long heartbeat=(long)StringToInteger(previous_heartbeat);
-         const long stale_before=((long)TimeLocal()-config.lease_stale_seconds)*1000;
-         if(heartbeat>stale_before)
+         if(heartbeat<=0 || IntegerToString(heartbeat)!=previous_heartbeat)
+           {
+            reason="LEASE_HEARTBEAT_METADATA_INVALID";
+            AbortOpen();
+            return SetFailure(reason);
+           }
+         const long utc_now_msc=V2UtcNowMsc();
+         if(utc_now_msc<=0)
+           {
+            reason="LEASE_UTC_CLOCK_UNAVAILABLE";
+            AbortOpen();
+            return SetFailure(reason);
+           }
+         if(heartbeat>utc_now_msc)
+           {
+            // The exclusive sentinel is the primary ownership proof.  A
+            // persisted future heartbeat indicates a UTC clock regression;
+            // fail closed for supervised recovery instead of waiting on a
+            // timezone/DST jump or silently taking over.
+            reason="LEASE_UTC_CLOCK_REGRESSION_REQUIRES_SUPERVISION";
+            AbortOpen();
+            return SetFailure(reason);
+           }
+         const long heartbeat_age_msc=utc_now_msc-heartbeat;
+         if(heartbeat_age_msc<(long)config.lease_stale_seconds*1000)
            {
             reason="LEASE_HEARTBEAT_FRESH_FOR_DIFFERENT_OWNER";
             AbortOpen();
@@ -1052,11 +1747,150 @@ public:
            }
         }
 
-      if(!VerifyJournalIntegrity(reason))
+      if(!VerifyJournalIntegrity(true,true,reason))
         { AbortOpen(); return SetFailure(reason); }
       if(config.mode==V2_DB_FULL_DURABLE && !Heartbeat(reason))
         { AbortOpen(); return SetFailure(reason); }
+      m_status=V2_DB_STATUS_HEALTHY;
+      m_status_reason="";
+      m_last_error="";
       return true;
+     }
+
+   bool OpenReadOnlyRecovery(const V2StateDBConfig &config,
+                             const string recovery_trigger,
+                             string &reason)
+     {
+      reason="";
+      Close();
+      m_last_error="";
+      m_status_reason="";
+      m_last_event_hash="";
+      m_transaction_start_event_hash="";
+      m_transaction_start_checkpoint_number=0;
+      m_transaction_start_checkpoint_hash="";
+      m_transaction_start_checkpoint_inherited=false;
+      m_verified_checkpoint_number=0;
+      m_verified_checkpoint_hash="";
+      m_checkpoint_inherited=false;
+      m_config=config;
+      if(!ValidateOpenConfig(config,true,reason)) return SetFailure(reason);
+
+      ResetLastError();
+      m_database=DatabaseOpen(config.database_path,DATABASE_OPEN_READONLY|DATABASE_OPEN_COMMON);
+      if(m_database==INVALID_HANDLE)
+        {
+         reason="READ_ONLY_DATABASE_OPEN_FAILED:"+IntegerToString(GetLastError());
+         AbortOpen();
+         return SetFailure(reason);
+        }
+      m_open=true;
+      m_writable=false;
+      m_access_mode=V2_DB_ACCESS_READ_ONLY_RECOVERY;
+      m_status=V2_DB_STATUS_READ_ONLY_EXPLICIT;
+      m_status_reason=(recovery_trigger=="" ? "EXPLICIT_READ_ONLY_RECOVERY" : recovery_trigger);
+      m_last_error=m_status_reason;
+      m_lease.Release();
+
+      if(StringFind(m_status_reason,"SCHEMA")>=0)
+         m_status=V2_DB_STATUS_READ_ONLY_SCHEMA;
+      else if(StringFind(m_status_reason,"INTEGRITY")>=0 ||
+              StringFind(m_status_reason,"JOURNAL")>=0 ||
+              StringFind(m_status_reason,"PROJECTION")>=0)
+         m_status=V2_DB_STATUS_READ_ONLY_INTEGRITY;
+      else if(StringFind(m_status_reason,"WRITE")>=0 ||
+              StringFind(m_status_reason,"COMMIT")>=0 ||
+              StringFind(m_status_reason,"ROLLBACK")>=0 ||
+              StringFind(m_status_reason,"DATABASE_REQUEST")>=0)
+         m_status=V2_DB_STATUS_READ_ONLY_WRITE_FAILURE;
+
+      string audit_reason="";
+      if(!IntegrityCheck(audit_reason))
+        {
+         m_status=V2_DB_STATUS_READ_ONLY_INTEGRITY;
+         m_status_reason=m_status_reason+"|READ_ONLY_AUDIT:"+audit_reason;
+         m_last_error=m_status_reason;
+         return true;
+        }
+
+      bool meta_exists=false;
+      if(!TableExists("meta",meta_exists,audit_reason) || !meta_exists)
+        {
+         m_status=V2_DB_STATUS_READ_ONLY_SCHEMA;
+         m_status_reason=m_status_reason+"|READ_ONLY_AUDIT:"+
+                         (audit_reason=="" ? "META_TABLE_MISSING" : audit_reason);
+         m_last_error=m_status_reason;
+         return true;
+        }
+      string stored_schema="";
+      bool schema_found=false;
+      if(!ReadMeta("schema_version",stored_schema,schema_found,audit_reason) || !schema_found)
+        {
+         m_status=V2_DB_STATUS_READ_ONLY_SCHEMA;
+         m_status_reason=m_status_reason+"|READ_ONLY_AUDIT:"+
+                         (audit_reason=="" ? "SCHEMA_VERSION_MISSING" : audit_reason);
+         m_last_error=m_status_reason;
+         return true;
+        }
+      const int stored_version=(int)StringToInteger(stored_schema);
+      if((stored_version!=3 && stored_version!=V2_STATE_DB_SCHEMA_VERSION) ||
+         IntegerToString(stored_version)!=stored_schema ||
+         !ValidateCoreSchemaTables(stored_version==V2_STATE_DB_SCHEMA_VERSION,audit_reason))
+        {
+         m_status=V2_DB_STATUS_READ_ONLY_SCHEMA;
+         m_status_reason=m_status_reason+"|READ_ONLY_AUDIT:"+
+                         (audit_reason=="" ? "UNSUPPORTED_STORED_SCHEMA:"+stored_schema : audit_reason);
+         m_last_error=m_status_reason;
+         return true;
+        }
+      if(stored_version==3)
+        {
+         m_status=V2_DB_STATUS_READ_ONLY_SCHEMA;
+         m_status_reason=m_status_reason+"|SCHEMA_MIGRATION_3_TO_4_REQUIRED_FOR_WRITE";
+         m_last_error=m_status_reason;
+        }
+
+      string stored_deployment="",stored_account="";
+      bool deployment_found=false,account_found=false;
+      const string account_fingerprint=V2Sha256Hex(AccountInfoString(ACCOUNT_SERVER)+"|"+
+                                                    IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)));
+      if(!ReadMeta("deployment_id",stored_deployment,deployment_found,audit_reason) ||
+         !ReadMeta("account_fingerprint",stored_account,account_found,audit_reason) ||
+         !deployment_found || !account_found || stored_deployment!=config.deployment_id ||
+         stored_account!=account_fingerprint)
+        {
+         m_status=V2_DB_STATUS_READ_ONLY_SCHEMA;
+         m_status_reason=m_status_reason+"|READ_ONLY_AUDIT:"+
+                         (audit_reason=="" ? "DATABASE_IDENTITY_MISMATCH" : audit_reason);
+         m_last_error=m_status_reason;
+         return true;
+        }
+
+      if(!VerifyJournalIntegrity(false,true,audit_reason))
+        {
+         m_status=V2_DB_STATUS_READ_ONLY_INTEGRITY;
+         m_status_reason=m_status_reason+"|READ_ONLY_AUDIT:"+audit_reason;
+         m_last_error=m_status_reason;
+        }
+      return true;
+     }
+
+   bool OpenOrRecoverReadOnly(const V2StateDBConfig &config,string &reason)
+     {
+      string write_reason="";
+      if(Open(config,write_reason))
+        {
+         reason="";
+         return true;
+        }
+      string recovery_reason="";
+      if(OpenReadOnlyRecovery(config,write_reason,recovery_reason))
+        {
+         reason="";
+         return true;
+        }
+      reason=write_reason+"|READ_ONLY_RECOVERY_FAILED:"+recovery_reason;
+      return false;
      }
 
    bool ConfigureOutboxLimits(const long maximum_messages,
@@ -1095,6 +1929,7 @@ public:
       value=0.0;
       found=false;
       reason="";
+      if(!RequireReadable(reason)) return false;
       if(key=="" || V2SafeFileComponent(key)!=key)
         { reason="RISK_HIGH_WATER_KEY_INVALID"; return false; }
       string stored="";
@@ -1116,24 +1951,27 @@ public:
    bool StoreRiskHighWater(const string key,const double value,string &reason)
      {
       reason="";
-      if(!m_open || !m_writable)
-        { reason="DATABASE_NOT_WRITABLE"; return false; }
+      if(!RequireWritable(reason)) return false;
       if(key=="" || V2SafeFileComponent(key)!=key)
         { reason="RISK_HIGH_WATER_KEY_INVALID"; return false; }
       if(!MathIsValidNumber(value) || value<0.0)
+        { reason="RISK_HIGH_WATER_VALUE_INVALID"; return false; }
+      const string candidate_text=V2CanonicalDouble(value);
+      const double candidate=StringToDouble(candidate_text);
+      if(!MathIsValidNumber(candidate) || candidate<0.0)
         { reason="RISK_HIGH_WATER_VALUE_INVALID"; return false; }
       double prior=0.0;
       bool found=false;
       if(!LoadRiskHighWater(key,prior,found,reason))
          return false;
-      if(found && value<prior)
+      if(found && candidate<prior)
         { reason="RISK_HIGH_WATER_REGRESSION"; return false; }
-      if(found && value==prior)
+      if(found && candidate==prior)
          return true;
       const bool own_transaction=!m_in_transaction;
       if(own_transaction && !Begin(reason))
          return false;
-      if(!WriteMeta("risk_high_water:"+key,V2CanonicalDouble(value),reason))
+      if(!WriteMeta("risk_high_water:"+key,candidate_text,reason))
         {
          if(own_transaction) Rollback();
          return false;
@@ -1146,20 +1984,27 @@ public:
    bool Begin(string &reason)
      {
       reason="";
-      if(!m_open || !m_writable)
-        { reason="DATABASE_NOT_WRITABLE"; return false; }
+      if(!RequireWritable(reason)) return false;
       if(m_in_transaction)
         { reason="DATABASE_TRANSACTION_ALREADY_ACTIVE"; return false; }
       if(!DatabaseTransactionBegin(m_database))
-        { reason="DATABASE_BEGIN_FAILED:"+IntegerToString(GetLastError()); return false; }
+        {
+         reason="DATABASE_BEGIN_FAILED:"+IntegerToString(GetLastError());
+         PoisonWrites(reason);
+         return false;
+        }
       m_in_transaction=true;
       m_transaction_start_event_hash=m_last_event_hash;
+      m_transaction_start_checkpoint_number=m_verified_checkpoint_number;
+      m_transaction_start_checkpoint_hash=m_verified_checkpoint_hash;
+      m_transaction_start_checkpoint_inherited=m_checkpoint_inherited;
       return true;
      }
 
    bool Commit(string &reason)
      {
       reason="";
+      if(!RequireWritable(reason)) return false;
       if(!m_in_transaction)
         { reason="DATABASE_TRANSACTION_NOT_ACTIVE"; return false; }
       if(!DatabaseTransactionCommit(m_database))
@@ -1167,13 +2012,22 @@ public:
          reason="DATABASE_COMMIT_FAILED:"+IntegerToString(GetLastError());
          DatabaseTransactionRollback(m_database);
          m_last_event_hash=m_transaction_start_event_hash;
+         m_verified_checkpoint_number=m_transaction_start_checkpoint_number;
+         m_verified_checkpoint_hash=m_transaction_start_checkpoint_hash;
+         m_checkpoint_inherited=m_transaction_start_checkpoint_inherited;
          m_transaction_start_event_hash="";
+         m_transaction_start_checkpoint_number=0;
+         m_transaction_start_checkpoint_hash="";
+         m_transaction_start_checkpoint_inherited=false;
          m_in_transaction=false;
-         m_writable=false;
+         PoisonWrites(reason);
          return false;
         }
       m_in_transaction=false;
       m_transaction_start_event_hash="";
+      m_transaction_start_checkpoint_number=0;
+      m_transaction_start_checkpoint_hash="";
+      m_transaction_start_checkpoint_inherited=false;
       return true;
      }
 
@@ -1183,19 +2037,28 @@ public:
         {
          if(!DatabaseTransactionRollback(m_database))
            {
-            m_last_error="DATABASE_ROLLBACK_FAILED:"+IntegerToString(GetLastError());
-            m_writable=false;
+            const string rollback_failure="DATABASE_ROLLBACK_FAILED:"+IntegerToString(GetLastError());
+            PoisonWrites(rollback_failure);
            }
          m_last_event_hash=m_transaction_start_event_hash;
+         m_verified_checkpoint_number=m_transaction_start_checkpoint_number;
+         m_verified_checkpoint_hash=m_transaction_start_checkpoint_hash;
+         m_checkpoint_inherited=m_transaction_start_checkpoint_inherited;
         }
       m_in_transaction=false;
       m_transaction_start_event_hash="";
+      m_transaction_start_checkpoint_number=0;
+      m_transaction_start_checkpoint_hash="";
+      m_transaction_start_checkpoint_inherited=false;
      }
 
    bool ReserveCounter(const string counter_name,long &reserved_value,string &reason)
      {
       reserved_value=0;
       reason="";
+      if(!RequireWritable(reason)) return false;
+      if(counter_name=="" || V2SafeFileComponent(counter_name)!=counter_name)
+        { reason="COUNTER_NAME_INVALID"; return false; }
       const bool own_transaction=!m_in_transaction;
       if(own_transaction && !Begin(reason))
          return false;
@@ -1251,8 +2114,7 @@ public:
    bool AppendDomainEvent(V2DomainEvent &event,string &reason)
      {
       reason="";
-      if(!m_open || !m_writable)
-        { reason="DATABASE_NOT_WRITABLE"; return false; }
+      if(!RequireWritable(reason)) return false;
       if(event.kind==V2_EVENT_NONE)
         { reason="DOMAIN_EVENT_KIND_NONE"; return false; }
       if(event.state_version<0 || (event.sequence_id!="" && event.state_version<=0))
@@ -1282,6 +2144,29 @@ public:
       const bool own_transaction=!m_in_transaction;
       if(own_transaction && !Begin(reason))
          return false;
+      if(m_config.mode!=V2_DB_REDUCED && event.sequence_id!="")
+        {
+         long prior_state_version=0;
+         int state_request=DatabasePrepare(m_database,
+            "SELECT COALESCE(MAX(state_version),0) FROM domain_events WHERE sequence_id=?1;");
+         if(state_request==INVALID_HANDLE ||
+            !DatabaseBind(state_request,0,event.sequence_id) ||
+            !DatabaseRead(state_request) ||
+            !DatabaseColumnLong(state_request,0,prior_state_version))
+           {
+            reason="DOMAIN_EVENT_PRIOR_STATE_VERSION_READ_FAILED:"+IntegerToString(GetLastError());
+            if(state_request!=INVALID_HANDLE) DatabaseFinalize(state_request);
+            if(own_transaction) Rollback();
+            return false;
+           }
+         DatabaseFinalize(state_request);
+         if(event.state_version!=prior_state_version+1)
+           {
+            reason="DOMAIN_EVENT_STATE_VERSION_NOT_CONSECUTIVE";
+            if(own_transaction) Rollback();
+            return false;
+           }
+        }
       // Canonical ordering is owned exclusively by this journal. Resetting a
       // non-existing event also makes a caller-held object safe to retry after
       // an outer transaction rollback.
@@ -1364,9 +2249,34 @@ public:
             if(own_transaction) Rollback();
             return false;
            }
+         const string verified_head=(m_last_event_hash=="" ? "GENESIS" : m_last_event_hash);
+         if(m_verified_checkpoint_hash=="" ||
+            m_verified_checkpoint_number!=event.canonical_number-1 ||
+            m_verified_checkpoint_hash!=verified_head)
+           {
+            reason="JOURNAL_CHECKPOINT_PREDECESSOR_NOT_VERIFIED";
+            if(own_transaction) Rollback();
+            return false;
+           }
+         // The new event, updated journal head, and advanced checkpoint share
+         // the same transaction.  This inductive step keeps restart work
+         // bounded to events written outside the normal StateDB path while the
+         // append-only guards preserve the already-verified prefix.
+         if(!PersistJournalCheckpoint(event.canonical_number,event_hash,
+                                      "TRANSACTIONALLY_VERIFIED_APPEND",reason))
+           {
+            if(own_transaction) Rollback();
+            return false;
+           }
         }
       m_last_event_hash=event_hash;
       event.event_hash=event_hash;
+      if(m_config.mode!=V2_DB_REDUCED)
+        {
+         m_verified_checkpoint_number=event.canonical_number;
+         m_verified_checkpoint_hash=event_hash;
+         m_checkpoint_inherited=true;
+        }
       if(own_transaction && !Commit(reason))
          return false;
       return true;
@@ -1375,8 +2285,7 @@ public:
    bool StoreReceipt(V2Receipt &receipt,string &reason)
      {
       reason="";
-      if(!m_open || !m_writable)
-        { reason="DATABASE_NOT_WRITABLE"; return false; }
+      if(!RequireWritable(reason)) return false;
       if(receipt.receipt_id=="")
         {
          CV2ReceiptBuilder builder;
@@ -1400,10 +2309,7 @@ public:
      {
       newly_inserted=false;
       reason="";
-      if(!m_open || !m_writable)
-        { reason="DATABASE_NOT_WRITABLE"; return false; }
-      if(IsDurable() && !m_lease.IsHeld())
-        { reason="WRITER_LEASE_NOT_HELD"; return false; }
+      if(!RequireWritable(reason)) return false;
       if(receipt.order_intent_id!=intent.order_intent_id ||
          receipt.sequence_id!=intent.sequence_id ||
          receipt.action!=intent.action ||
@@ -1441,12 +2347,11 @@ public:
    bool UpdateOrderIntent(const V2OrderIntent &intent,string &reason)
      {
       reason="";
-      if(!m_open || !m_writable)
-        { reason="DATABASE_NOT_WRITABLE"; return false; }
+      if(!RequireWritable(reason)) return false;
       const bool own_transaction=!m_in_transaction;
       if(own_transaction && !Begin(reason))
          return false;
-      if(!UpdateIntentInternal(intent,reason))
+      if(!UpdateIntentCanonicalInternal(intent,false,reason))
         {
          if(own_transaction) Rollback();
          return false;
@@ -1460,8 +2365,15 @@ public:
                                   const V2Receipt &source_receipt,
                                   const bool action_proven_risk_reducing,
                                   V2PersistenceAuthorization &authorization)
-     {
+      {
       authorization.Reset();
+      string access_reason="";
+      if(!RequireWritable(access_reason))
+        {
+         authorization.reason=access_reason;
+         authorization.requires_manage_only=true;
+         return false;
+        }
       if(m_in_transaction)
         {
          authorization.reason="BROKER_AUTHORIZATION_REQUIRES_OWN_COMMITTED_TRANSACTION";
@@ -1502,9 +2414,10 @@ public:
                                 string &reason)
      {
       reason="";
+      if(!RequireWritable(reason)) return false;
       const bool own_transaction=!m_in_transaction;
       if(own_transaction && !Begin(reason)) return false;
-      if(!UpdateIntentInternal(intent,reason) || !AppendDomainEvent(event,reason))
+      if(!UpdateIntentCanonicalInternal(intent,true,reason) || !AppendDomainEvent(event,reason))
         {
          if(own_transaction) Rollback();
          return false;
@@ -1536,6 +2449,7 @@ public:
    bool SaveSequenceProjection(const V2SequenceState &state,string &reason)
      {
       reason="";
+      if(!RequireWritable(reason)) return false;
       int request=DatabasePrepare(m_database,
          "SELECT last_state_version,last_event_number,last_event_id,last_event_hash FROM sequences WHERE sequence_id=?1;");
       if(request==INVALID_HANDLE || !DatabaseBind(request,0,state.sequence_id))
@@ -1625,6 +2539,7 @@ public:
    bool SaveLevelProjection(const V2LevelState &state,string &reason)
      {
       reason="";
+      if(!RequireWritable(reason)) return false;
       int request=DatabasePrepare(m_database,
          "INSERT OR REPLACE INTO levels(sequence_id,level_index,planned_price,requested_volume,filled_volume,average_fill_price,position_id,virtual_level,closed) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9);");
       if(request==INVALID_HANDLE ||
@@ -1651,6 +2566,7 @@ public:
      {
       ArrayResize(levels,0);
       reason="";
+      if(!RequireReadable(reason)) return false;
       if(sequence_id=="")
         { reason="LEVEL_PROJECTION_SEQUENCE_ID_EMPTY"; return false; }
       int request=DatabasePrepare(m_database,
@@ -1713,6 +2629,7 @@ public:
       state.Reset();
       found=false;
       reason="";
+      if(!RequireReadable(reason)) return false;
       int request=DatabasePrepare(m_database,
          "SELECT sequence_id,strategy_member_id,symbol,direction,status,started_at_msc,ended_at_msc,last_event_number,last_state_version,last_event_id,last_event_hash,experiment_manifest_id,input_values_hash,broker_profile_hash,symbol_spec_hash,execution_plan_hash,level_count,max_levels,start_volume,standing_volume,average_entry_price,realized_pl,commission,swap,mlps_budget,mlps_used,retrace_price,rescue_armed,reduction_remaining,reduction_semantic_level,reduction_reason,retrace_advance_pending FROM sequences WHERE sequence_id=?1;");
       if(request==INVALID_HANDLE || !DatabaseBind(request,0,sequence_id))
@@ -1782,6 +2699,7 @@ public:
      {
       ArrayResize(states,0);
       reason="";
+      if(!RequireReadable(reason)) return false;
       if(strategy_member_id=="")
         { reason="MANAGEABLE_SEQUENCE_MEMBER_ID_EMPTY"; return false; }
       int request=DatabasePrepare(m_database,
@@ -1875,6 +2793,7 @@ public:
      {
       ArrayResize(events,0);
       reason="";
+      if(!RequireReadable(reason)) return false;
       if(m_config.mode==V2_DB_REDUCED)
          return true;
       int request=DatabasePrepare(m_database,
@@ -1941,10 +2860,107 @@ public:
       return true;
      }
 
+   bool FindFillEventByDeal(const ulong deal_ticket,
+                            V2DomainEvent &event,
+                            bool &found,
+                            string &reason)
+     {
+      event.Reset();
+      found=false;
+      reason="";
+      if(!RequireReadable(reason)) return false;
+      if(deal_ticket==0)
+        { reason="FILL_EVENT_DEAL_TICKET_ZERO"; return false; }
+      if(m_config.mode==V2_DB_REDUCED)
+         return true;
+      int request=DatabasePrepare(m_database,
+         "SELECT canonical_number,state_version,event_id,event_kind,action_kind,risk_effect,direction,symbol,occurred_at_msc,sequence_id,order_intent_id,level_index,request_id,order_ticket,deal_ticket,position_id,volume,price,realized_pl,retrace_advance,reason_code,event_hash FROM domain_events WHERE deal_ticket=?1 AND event_kind IN (?2,?3) ORDER BY canonical_number ASC LIMIT 2;");
+      if(request==INVALID_HANDLE ||
+         !DatabaseBind(request,0,V2UlongToText(deal_ticket)) ||
+         !DatabaseBind(request,1,(int)V2_EVENT_FILL_PARTIAL) ||
+         !DatabaseBind(request,2,(int)V2_EVENT_FILL_COMPLETE))
+        {
+         reason="FILL_EVENT_LOOKUP_PREPARE_OR_BIND_FAILED:"+IntegerToString(GetLastError());
+         if(request!=INVALID_HANDLE) DatabaseFinalize(request);
+         return false;
+        }
+      ResetLastError();
+      if(!DatabaseRead(request))
+        {
+         const int error=GetLastError();
+         DatabaseFinalize(request);
+         if(error==ERR_DATABASE_NO_MORE_DATA) return true;
+         reason="FILL_EVENT_LOOKUP_READ_FAILED:"+IntegerToString(error);
+         return false;
+        }
+
+      int kind=0,action=0,risk_effect=0,direction=0,retrace_advance=0;
+      long occurred_msc=0;
+      string request_text="",order_text="",deal_text="",position_text="";
+      const bool columns=DatabaseColumnLong(request,0,event.canonical_number) &&
+                         DatabaseColumnLong(request,1,event.state_version) &&
+                         DatabaseColumnText(request,2,event.event_id) &&
+                         DatabaseColumnInteger(request,3,kind) &&
+                         DatabaseColumnInteger(request,4,action) &&
+                         DatabaseColumnInteger(request,5,risk_effect) &&
+                         DatabaseColumnInteger(request,6,direction) &&
+                         DatabaseColumnText(request,7,event.symbol) &&
+                         DatabaseColumnLong(request,8,occurred_msc) &&
+                         DatabaseColumnText(request,9,event.sequence_id) &&
+                         DatabaseColumnText(request,10,event.order_intent_id) &&
+                         DatabaseColumnInteger(request,11,event.level_index) &&
+                         DatabaseColumnText(request,12,request_text) &&
+                         DatabaseColumnText(request,13,order_text) &&
+                         DatabaseColumnText(request,14,deal_text) &&
+                         DatabaseColumnText(request,15,position_text) &&
+                         DatabaseColumnDouble(request,16,event.volume) &&
+                         DatabaseColumnDouble(request,17,event.price) &&
+                         DatabaseColumnDouble(request,18,event.realized_pl) &&
+                         DatabaseColumnInteger(request,19,retrace_advance) &&
+                         DatabaseColumnText(request,20,event.reason_code) &&
+                         DatabaseColumnText(request,21,event.event_hash);
+      if(!columns || !V2TextToUlong(request_text,event.request_id) ||
+         !V2TextToUlong(order_text,event.order_ticket) ||
+         !V2TextToUlong(deal_text,event.deal_ticket) ||
+         !V2TextToUlong(position_text,event.position_id) ||
+         event.deal_ticket!=deal_ticket)
+        {
+         reason="FILL_EVENT_LOOKUP_COLUMN_OR_ID_FAILED";
+         DatabaseFinalize(request);
+         return false;
+        }
+      event.kind=(ENUM_V2_EVENT_KIND)kind;
+      event.action=(ENUM_V2_ACTION_KIND)action;
+      event.risk_effect=(ENUM_V2_RISK_EFFECT)risk_effect;
+      event.direction=(ENUM_V2_DIRECTION)direction;
+      event.occurred_at=(datetime)(occurred_msc/1000);
+      event.retrace_advance=(retrace_advance!=0);
+
+      ResetLastError();
+      if(DatabaseRead(request))
+        {
+         DatabaseFinalize(request);
+         event.Reset();
+         reason="FILL_EVENT_DEAL_AMBIGUOUS";
+         return false;
+        }
+      const int tail_error=GetLastError();
+      DatabaseFinalize(request);
+      if(tail_error!=ERR_DATABASE_NO_MORE_DATA)
+        {
+         event.Reset();
+         reason="FILL_EVENT_LOOKUP_TAIL_READ_FAILED:"+IntegerToString(tail_error);
+         return false;
+        }
+      found=true;
+      return true;
+     }
+
    bool GetLastCanonicalNumber(long &canonical_number,string &reason)
      {
       canonical_number=0;
       reason="";
+      if(!RequireReadable(reason)) return false;
       if(m_config.mode==V2_DB_REDUCED)
         {
          int request=DatabasePrepare(m_database,
@@ -1975,6 +2991,7 @@ public:
    bool StoreTradeObservation(V2TradeObservation &observation,string &reason)
      {
       reason="";
+      if(!RequireWritable(reason)) return false;
       if(!MathIsValidNumber(observation.volume) ||
          !MathIsValidNumber(observation.price) ||
          !MathIsValidNumber(observation.stop_loss) ||
@@ -2038,12 +3055,42 @@ public:
       return true;
      }
 
+   bool CountUnprocessedTradeObservations(int &count,string &reason)
+     {
+      count=0;
+      reason="";
+      if(!RequireReadable(reason)) return false;
+      // trade_observations intentionally records the raw terminal stream before
+      // member correlation exists.  The durable DB identity is deployment-
+      // scoped, so this guard counts every unprocessed observation in that
+      // deployment.  This is conservatively stronger than a member-only count:
+      // an uncorrelated observation can never be ignored during broker match.
+      int request=DatabasePrepare(m_database,
+         "SELECT COUNT(*) FROM trade_observations WHERE processed=0;");
+      if(request==INVALID_HANDLE)
+        { reason="TRADE_OBSERVATION_COUNT_PREPARE_FAILED:"+IntegerToString(GetLastError()); return false; }
+      ResetLastError();
+      long stored_count=0;
+      if(!DatabaseRead(request) || !DatabaseColumnLong(request,0,stored_count))
+        {
+         reason="TRADE_OBSERVATION_COUNT_READ_FAILED:"+IntegerToString(GetLastError());
+         DatabaseFinalize(request);
+         return false;
+        }
+      DatabaseFinalize(request);
+      if(stored_count<0 || stored_count>2147483647)
+        { reason="TRADE_OBSERVATION_COUNT_OUT_OF_RANGE"; return false; }
+      count=(int)stored_count;
+      return true;
+     }
+
    bool LoadUnprocessedTradeObservations(const int maximum,
                                          V2TradeObservation &observations[],
                                          string &reason)
      {
       ArrayResize(observations,0);
       reason="";
+      if(!RequireReadable(reason)) return false;
       if(maximum<=0)
          return true;
       const int bounded=MathMin(maximum,1000);
@@ -2124,6 +3171,7 @@ public:
       intent.Reset();
       found=false;
       reason="";
+      if(!RequireReadable(reason)) return false;
       if(request_id==0 && order_ticket==0 && deal_ticket==0)
         { reason="INTENT_CORRELATION_IDS_ALL_ZERO"; return false; }
 
@@ -2237,6 +3285,7 @@ public:
      {
       ArrayResize(intents,0);
       reason="";
+      if(!RequireReadable(reason)) return false;
       if(maximum<=0)
          return true;
       const int bounded=MathMin(maximum,1000);
@@ -2323,8 +3372,9 @@ public:
      }
 
    bool MarkTradeObservationProcessed(const string observation_id,string &reason)
-      {
+       {
       reason="";
+      if(!RequireWritable(reason)) return false;
       const string sql=(m_config.mode==V2_DB_REDUCED) ?
          "DELETE FROM trade_observations WHERE observation_id=?1;" :
          "UPDATE trade_observations SET processed=1 WHERE observation_id=?1;";
@@ -2349,6 +3399,7 @@ public:
                       string &reason)
      {
       reason="";
+      if(!RequireWritable(reason)) return false;
       if(m_config.mode==V2_DB_REDUCED)
          return true;
       if(message_id=="" || message_kind=="" || payload=="")
@@ -2384,7 +3435,7 @@ public:
          return true;
         }
 
-      const long now_msc=(long)TimeCurrent()*1000;
+      const long now_msc=V2UtcNowMsc();
       const long payload_size=V2Utf8ByteCount(payload);
       if(!CheckOutboxCapacity(1,payload_size,reason))
          return false;
@@ -2414,6 +3465,7 @@ public:
    bool UpsertHeartbeatOutbox(const string deployment_id,const string payload,string &reason)
      {
       reason="";
+      if(!RequireWritable(reason)) return false;
       if(m_config.mode==V2_DB_REDUCED)
          return true;
       if(deployment_id=="" || payload=="")
@@ -2422,7 +3474,7 @@ public:
       const string payload_hash=V2Sha256Hex(payload);
       if(payload_hash=="")
         { reason="HEARTBEAT_OUTBOX_HASH_FAILED"; return false; }
-      const long now_msc=(long)TimeCurrent()*1000;
+      const long now_msc=V2UtcNowMsc();
       bool found=false;
       long prior_payload_size=0;
       int prior_state=(int)V2_OUTBOX_DELIVERED;
@@ -2477,6 +3529,7 @@ public:
       pending_count=0;
       pending_bytes=0;
       reason="";
+      if(!RequireReadable(reason)) return false;
       if(m_config.mode==V2_DB_REDUCED)
          return true;
       int request=DatabasePrepare(m_database,
@@ -2500,10 +3553,11 @@ public:
      {
       ArrayResize(records,0);
       reason="";
+      if(!RequireReadable(reason)) return false;
       if(m_config.mode==V2_DB_REDUCED || maximum<=0)
          return true;
       const int bounded=MathMin(maximum,1000);
-      const long now_msc=(long)TimeCurrent()*1000;
+      const long now_msc=V2UtcNowMsc();
       int request=DatabasePrepare(m_database,
          "SELECT message_id,message_kind,payload,payload_hash,created_at_msc,next_attempt_msc,attempts,priority,critical,outbox_state,last_error FROM telemetry_outbox WHERE outbox_state=0 AND next_attempt_msc<=?1 ORDER BY priority DESC,next_attempt_msc ASC,created_at_msc ASC LIMIT "+IntegerToString(bounded)+";");
       if(request==INVALID_HANDLE || !DatabaseBind(request,0,now_msc))
@@ -2551,6 +3605,7 @@ public:
    bool MarkOutboxDelivered(const string message_id,string &reason)
      {
       reason="";
+      if(!RequireWritable(reason)) return false;
       int request=DatabasePrepare(m_database,
          "UPDATE telemetry_outbox SET payload='',payload_size=0,outbox_state=?1,last_error='' WHERE message_id=?2;");
       if(request==INVALID_HANDLE ||
@@ -2579,6 +3634,7 @@ public:
                                    string &reason)
      {
       reason="";
+      if(!RequireWritable(reason)) return false;
       int request=DatabasePrepare(m_database,
          "UPDATE telemetry_outbox SET attempts=attempts+1,next_attempt_msc=?1,last_error=?2 WHERE message_id=?3;");
       if(request==INVALID_HANDLE ||
@@ -2598,6 +3654,7 @@ public:
    bool SaveExperimentManifest(const V2ExperimentManifest &manifest,string &reason)
      {
       reason="";
+      if(!RequireWritable(reason)) return false;
       if(manifest.manifest_id=="" || manifest.manifest_hash=="" || manifest.canonical_payload=="")
         { reason="EXPERIMENT_MANIFEST_NOT_FINALIZED"; return false; }
       if(manifest.manifest_class==V2_MANIFEST_CERTIFICATION && !manifest.external_lineage_complete)
@@ -2639,6 +3696,7 @@ public:
                              string &reason)
      {
       reason="";
+      if(!RequireWritable(reason)) return false;
       if(sequence_id=="" || deal_ticket==0)
         { reason="SEQUENCE_LEDGER_IDENTITY_INVALID"; return false; }
       if(!MathIsValidNumber(profit) || !MathIsValidNumber(commission) || !MathIsValidNumber(swap))
@@ -2703,6 +3761,7 @@ public:
                        string &reason)
      {
       reason="";
+      if(!RequireWritable(reason)) return false;
       if(entry_id=="" || order_intent_id=="")
         { reason="SLIPPAGE_IDENTITY_EMPTY"; return false; }
       if(!MathIsValidNumber(requested_price) || !MathIsValidNumber(accepted_price) ||
@@ -2765,21 +3824,194 @@ public:
       return true;
      }
 
+   bool CreateMemberSnapshot(const string strategy_member_id,
+                             V2StateDBMemberSnapshot &snapshot,
+                             string &reason)
+     {
+      snapshot.Reset();
+      reason="";
+      if(!RequireReadable(reason)) return false;
+      if(strategy_member_id=="" || strategy_member_id!=m_config.strategy_member_id)
+        { reason="MEMBER_SNAPSHOT_SCOPE_MISMATCH"; return false; }
+      snapshot.strategy_member_id=strategy_member_id;
+
+      int request=DatabasePrepare(m_database,
+         "SELECT COUNT(*),COALESCE(SUM(CASE WHEN status IN (?1,?2,?3) THEN 1 ELSE 0 END),0) FROM sequences WHERE strategy_member_id=?4;");
+      if(request==INVALID_HANDLE ||
+         !DatabaseBind(request,0,(int)V2_SEQ_ACTIVE) ||
+         !DatabaseBind(request,1,(int)V2_SEQ_REDUCE_ONLY) ||
+         !DatabaseBind(request,2,(int)V2_SEQ_QUARANTINED) ||
+         !DatabaseBind(request,3,strategy_member_id) ||
+         !DatabaseRead(request) ||
+         !DatabaseColumnLong(request,0,snapshot.sequence_count) ||
+         !DatabaseColumnLong(request,1,snapshot.manageable_sequence_count))
+        {
+         reason="MEMBER_SNAPSHOT_SEQUENCE_COUNT_FAILED:"+IntegerToString(GetLastError());
+         if(request!=INVALID_HANDLE) DatabaseFinalize(request);
+         return false;
+        }
+      DatabaseFinalize(request);
+
+      request=DatabasePrepare(m_database,
+         "SELECT COUNT(*) FROM domain_events e INNER JOIN sequences s ON s.sequence_id=e.sequence_id WHERE s.strategy_member_id=?1;");
+      if(request==INVALID_HANDLE || !DatabaseBind(request,0,strategy_member_id) ||
+         !DatabaseRead(request) || !DatabaseColumnLong(request,0,snapshot.event_count))
+        {
+         reason="MEMBER_SNAPSHOT_EVENT_COUNT_FAILED:"+IntegerToString(GetLastError());
+         if(request!=INVALID_HANDLE) DatabaseFinalize(request);
+         return false;
+        }
+      DatabaseFinalize(request);
+
+      request=DatabasePrepare(m_database,
+         "SELECT COUNT(*),COALESCE(SUM(CASE WHEN i.status IN (?1,?2,?3,?4,?5) THEN 1 ELSE 0 END),0) FROM order_intents i INNER JOIN sequences s ON s.sequence_id=i.sequence_id WHERE s.strategy_member_id=?6;");
+      if(request==INVALID_HANDLE ||
+         !DatabaseBind(request,0,(int)V2_INTENT_PERSISTED) ||
+         !DatabaseBind(request,1,(int)V2_INTENT_SUBMITTED) ||
+         !DatabaseBind(request,2,(int)V2_INTENT_ACCEPTED) ||
+         !DatabaseBind(request,3,(int)V2_INTENT_PARTIAL) ||
+         !DatabaseBind(request,4,(int)V2_INTENT_RECONCILE_REQUIRED) ||
+         !DatabaseBind(request,5,strategy_member_id) ||
+         !DatabaseRead(request) ||
+         !DatabaseColumnLong(request,0,snapshot.intent_count) ||
+         !DatabaseColumnLong(request,1,snapshot.unsettled_intent_count))
+        {
+         reason="MEMBER_SNAPSHOT_INTENT_COUNT_FAILED:"+IntegerToString(GetLastError());
+         if(request!=INVALID_HANDLE) DatabaseFinalize(request);
+         return false;
+        }
+      DatabaseFinalize(request);
+
+      // Raw terminal observations precede correlation and are therefore only
+      // deployment-scoped.  Reporting the full deployment count is deliberate
+      // and prevents a member repair from hiding an ambiguous observation.
+      request=DatabasePrepare(m_database,
+         "SELECT COUNT(*),COALESCE(SUM(CASE WHEN processed=0 THEN 1 ELSE 0 END),0) FROM trade_observations;");
+      if(request==INVALID_HANDLE || !DatabaseRead(request) ||
+         !DatabaseColumnLong(request,0,snapshot.observation_count) ||
+         !DatabaseColumnLong(request,1,snapshot.unprocessed_observation_count))
+        {
+         reason="MEMBER_SNAPSHOT_OBSERVATION_COUNT_FAILED:"+IntegerToString(GetLastError());
+         if(request!=INVALID_HANDLE) DatabaseFinalize(request);
+         return false;
+        }
+      DatabaseFinalize(request);
+
+      request=DatabasePrepare(m_database,
+         "SELECT e.canonical_number,e.event_hash FROM domain_events e INNER JOIN sequences s ON s.sequence_id=e.sequence_id WHERE s.strategy_member_id=?1 ORDER BY e.canonical_number DESC LIMIT 1;");
+      if(request==INVALID_HANDLE || !DatabaseBind(request,0,strategy_member_id))
+        {
+         reason="MEMBER_SNAPSHOT_HEAD_PREPARE_FAILED:"+IntegerToString(GetLastError());
+         if(request!=INVALID_HANDLE) DatabaseFinalize(request);
+         return false;
+        }
+      ResetLastError();
+      if(DatabaseRead(request))
+        {
+         if(!DatabaseColumnLong(request,0,snapshot.last_canonical_number) ||
+            !DatabaseColumnText(request,1,snapshot.last_event_hash))
+           {
+            reason="MEMBER_SNAPSHOT_HEAD_READ_FAILED:"+IntegerToString(GetLastError());
+            DatabaseFinalize(request);
+            return false;
+           }
+        }
+      else if(GetLastError()!=ERR_DATABASE_NO_MORE_DATA)
+        {
+         reason="MEMBER_SNAPSHOT_HEAD_READ_FAILED:"+IntegerToString(GetLastError());
+         DatabaseFinalize(request);
+         return false;
+        }
+      DatabaseFinalize(request);
+
+      string lineage_reason="";
+      snapshot.projection_lineage_valid=VerifyProjectionLineage(strategy_member_id,lineage_reason);
+      snapshot.audit_reason=(snapshot.projection_lineage_valid ?
+         "MEMBER_PROJECTION_LINEAGE_VALID;RAW_OBSERVATIONS_DEPLOYMENT_SCOPED" : lineage_reason);
+      const string canonical=strategy_member_id+"|"+
+                             IntegerToString(snapshot.sequence_count)+"|"+
+                             IntegerToString(snapshot.manageable_sequence_count)+"|"+
+                             IntegerToString(snapshot.event_count)+"|"+
+                             IntegerToString(snapshot.intent_count)+"|"+
+                             IntegerToString(snapshot.unsettled_intent_count)+"|"+
+                             IntegerToString(snapshot.observation_count)+"|"+
+                             IntegerToString(snapshot.unprocessed_observation_count)+"|"+
+                             IntegerToString(snapshot.last_canonical_number)+"|"+
+                             snapshot.last_event_hash+"|"+
+                             (snapshot.projection_lineage_valid ? "1" : "0")+"|"+
+                             snapshot.audit_reason;
+      snapshot.snapshot_hash=V2Sha256Hex(canonical);
+      if(snapshot.snapshot_hash=="")
+        { reason="MEMBER_SNAPSHOT_HASH_FAILED"; return false; }
+      return true;
+     }
+
+   bool BuildMemberRepairPlan(const string strategy_member_id,
+                              const string requested_reason,
+                              V2StateDBMemberRepairPlan &plan,
+                              string &reason)
+     {
+      plan.Reset();
+      reason="";
+      if(requested_reason=="")
+        { reason="MEMBER_REPAIR_REASON_EMPTY"; return false; }
+      V2StateDBMemberSnapshot snapshot;
+      if(!CreateMemberSnapshot(strategy_member_id,snapshot,reason)) return false;
+      plan.strategy_member_id=strategy_member_id;
+      plan.snapshot_hash=snapshot.snapshot_hash;
+      plan.requested_reason=requested_reason;
+      plan.online_apply_allowed=false;
+      plan.plan_hash=V2Sha256Hex("GOAT2_MEMBER_REPAIR_PLAN_V1|"+
+                                plan.strategy_member_id+"|"+
+                                plan.snapshot_hash+"|"+
+                                plan.requested_reason+"|ONLINE_APPLY_FORBIDDEN");
+      if(plan.plan_hash=="")
+        { reason="MEMBER_REPAIR_PLAN_HASH_FAILED"; return false; }
+      return true;
+     }
+
+   bool ApplyMemberRepairPlan(const V2StateDBMemberRepairPlan &plan,string &reason)
+     {
+      reason="";
+      if(plan.strategy_member_id=="" || plan.strategy_member_id!=m_config.strategy_member_id)
+        { reason="MEMBER_REPAIR_SCOPE_MISMATCH"; return false; }
+      const string expected=V2Sha256Hex("GOAT2_MEMBER_REPAIR_PLAN_V1|"+
+                                        plan.strategy_member_id+"|"+
+                                        plan.snapshot_hash+"|"+
+                                        plan.requested_reason+"|ONLINE_APPLY_FORBIDDEN");
+      if(plan.online_apply_allowed || plan.plan_hash=="" || plan.plan_hash!=expected)
+        { reason="MEMBER_REPAIR_PLAN_INVALID"; return false; }
+      // StateDB never edits or deletes damaged history and cannot reconstruct
+      // domain state without the domain reducer.  The reviewed repair workflow
+      // is: retain this member-scoped plan/snapshot, replay immutable events
+      // into a new projection offline, review the diff, then migrate explicitly.
+      reason="ONLINE_MEMBER_REPAIR_FORBIDDEN:OFFLINE_REPLAY_AND_REVIEW_REQUIRED";
+      return false;
+     }
+
    bool Heartbeat(string &reason)
      {
       reason="";
+      if(!RequireWritable(reason)) return false;
       if(m_config.mode!=V2_DB_FULL_DURABLE)
          return true;
       const bool own_transaction=!m_in_transaction;
       if(own_transaction && !Begin(reason))
          return false;
-      const long now_msc=(long)TimeLocal()*1000;
+      const long now_msc=V2UtcNowMsc();
+      if(now_msc<=0)
+        {
+         reason="LEASE_UTC_CLOCK_UNAVAILABLE";
+         if(own_transaction) Rollback();
+         PoisonWrites(reason);
+         return false;
+        }
       if(!WriteMeta("lease_owner",m_config.owner_instance_id,reason) ||
          !WriteMeta("lease_heartbeat_msc",IntegerToString(now_msc),reason) ||
          !WriteMeta("lease_released","0",reason))
         {
          if(own_transaction) Rollback();
-         m_writable=false;
+         PoisonWrites(reason);
          return false;
         }
       if(own_transaction && !Commit(reason))
@@ -2788,11 +4020,28 @@ public:
      }
 
    bool IsOpen(void) const { return m_open; }
-   bool IsWritable(void) const { return m_open && m_writable; }
+   bool IsWritable(void) const
+     {
+      return m_open && m_writable && m_access_mode==V2_DB_ACCESS_READ_WRITE &&
+             (m_config.mode!=V2_DB_FULL_DURABLE || m_lease.IsHeld());
+     }
+   bool BrokerMutationAllowed(void) const { return IsWritable(); }
+   bool IsReadOnlyRecovery(void) const
+     { return m_open && m_access_mode==V2_DB_ACCESS_READ_ONLY_RECOVERY; }
+   bool RequiresSupervisedReopen(void) const { return IsReadOnlyRecovery(); }
    bool IsDurable(void) const { return m_config.mode==V2_DB_FULL_DURABLE; }
    bool HasLease(void) const { return m_lease.IsHeld(); }
    ENUM_V2_STATE_DB_MODE Mode(void) const { return m_config.mode; }
    string ModeName(void) const { return V2StateDBModeName(m_config.mode); }
+   ENUM_V2_STATE_DB_ACCESS_MODE AccessMode(void) const { return m_access_mode; }
+   string AccessModeName(void) const { return V2StateDBAccessModeName(m_access_mode); }
+   ENUM_V2_STATE_DB_STATUS Status(void) const { return m_status; }
+   string StatusName(void) const { return V2StateDBStatusName(m_status); }
+   string StatusReason(void) const { return m_status_reason; }
+   long VerifiedCheckpointNumber(void) const { return m_verified_checkpoint_number; }
+   string VerifiedCheckpointHash(void) const { return m_verified_checkpoint_hash; }
+   bool JournalAuditVerified(void) const { return m_verified_checkpoint_hash!=""; }
+   bool VerificationInheritedCheckpoint(void) const { return m_checkpoint_inherited; }
    string LastError(void) const { return m_last_error; }
 
    void Close(void)
@@ -2805,9 +4054,13 @@ public:
          const bool own_transaction=!m_in_transaction;
          if(!own_transaction || Begin(ignored))
            {
-            WriteMeta("lease_released","1",ignored);
-            WriteMeta("lease_heartbeat_msc",IntegerToString((long)TimeLocal()*1000),ignored);
-            if(own_transaction) Commit(ignored);
+            const bool release_written=WriteMeta("lease_released","1",ignored) &&
+                                       WriteMeta("lease_heartbeat_msc",IntegerToString(V2UtcNowMsc()),ignored);
+            if(own_transaction)
+              {
+               if(release_written) Commit(ignored);
+               else Rollback();
+              }
            }
         }
       if(m_database!=INVALID_HANDLE)
@@ -2816,7 +4069,15 @@ public:
       m_open=false;
       m_writable=false;
       m_in_transaction=false;
+      m_access_mode=V2_DB_ACCESS_CLOSED;
+      m_status=V2_DB_STATUS_CLOSED;
       m_transaction_start_event_hash="";
+      m_transaction_start_checkpoint_number=0;
+      m_transaction_start_checkpoint_hash="";
+      m_transaction_start_checkpoint_inherited=false;
+      m_verified_checkpoint_number=0;
+      m_verified_checkpoint_hash="";
+      m_checkpoint_inherited=false;
       m_lease.Release();
      }
   };

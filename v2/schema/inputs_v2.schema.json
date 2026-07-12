@@ -1,17 +1,43 @@
 {
-  "schemaVersion": "goat2-inputs-v1",
+  "schemaVersion": "goat2-inputs-v2",
   "productVersion": "2.0",
+  "sourceOfTruth": true,
   "declarationArtifact": "v2/Inputs_V2.mqh",
+  "generation": {
+    "generator": "scripts/generate_goat2_inputs.py",
+    "checkCommand": "python scripts/generate_goat2_inputs.py --check",
+    "writeCommand": "python scripts/generate_goat2_inputs.py --write",
+    "declarationKind": "input",
+    "groupDirective": "input group",
+    "typeColumnWidth": 26,
+    "commentColumn": 62,
+    "beginMarker": "// <GOAT2_INPUTS_GENERATED schema=\"v2/schema/inputs_v2.schema.json\">",
+    "endMarker": "// </GOAT2_INPUTS_GENERATED>",
+    "groupIdProperty": "group",
+    "groupLabelProperty": "label",
+    "stableOrderProperty": "order",
+    "mqlTypeProperty": "mqlType",
+    "mqlDefaultProperty": "mqlDefault",
+    "enumTypeProperty": "enumType",
+    "enumValuesProperty": "values",
+    "enumValueEncoding": "For ENUM_V2_* fields, values array order is the exact zero-based MQL numeric mapping",
+    "schemaHashAlgorithm": "SHA-256",
+    "schemaHashMaterial": "exact schema artifact bytes",
+    "generatedArtifacts": [{"path":"v2/Inputs_V2.mqh","region":"marker-bounded input declarations"}],
+    "handWrittenRegions": ["enum declarations", "validation", "helper functions"]
+  },
   "lineageSemantics": {
     "inputValuesHash": "SHA-256 of canonical runtime and strategy controls, excluding every expected/external lineage field",
     "setHash": "The same normalized, lineage-excluded inputValuesHash; it is not a circular literal whole-file .set hash",
     "expectedHashes": "Optional assertions compared with externally supplied source and binary lineage"
   },
   "rules": {
+    "defaultOperationMode": "TRADING",
+    "nonTradingModesConstructExecutionPath": false,
     "liveNewRiskDefault": false,
     "accountMode": "hedging-only",
-    "stateInfluenceMaxPhase1": "Shadow",
-    "onnxInfluencePhase1": "Disabled",
+    "stateInfluenceMaxPhase1": "V2_STATE_SHADOW",
+    "onnxInfluencePhase1": "V2_ONNX_DISABLED",
     "unverifiedBrokerProfileMayTradeLive": false,
     "liveNewRiskRequiresPositiveBrokerHostedStop": true,
     "liveAtrGridRequiresImmutablePlanSnapshot": true,
@@ -19,118 +45,203 @@
   },
   "groups": [
     {
-      "name": "product-identity",
+      "name": "product-operation",
+      "label": "GOAT2 | Product and operation",
+      "order": 10,
       "fields": [
-        {"name":"V2_DeploymentId","type":"string","default":"goat2-local","optimize":false},
-        {"name":"V2_PortfolioGenerationId","type":"string","default":"manual-v2.0","optimize":false},
-        {"name":"V2_StrategyMemberId","type":"string","default":"primary","optimize":false},
-        {"name":"V2_RunMode","type":"enum","values":["Disabled","ManageOnly","Trade"],"default":"ManageOnly","optimize":false},
-        {"name":"V2_EnableNewRisk","type":"bool","default":false,"optimize":false},
-        {"name":"V2_Bookkeeping","type":"enum","values":["Auto","Reduced","Full"],"default":"Auto","optimize":false},
-        {"name":"V2_CertificationRun","type":"bool","default":false,"optimize":false},
-        {"name":"V2_StateDatabaseName","type":"string","default":"goat2-v2.0.db","optimize":false}
+        {"name":"V2_Mode_Operation","group":"product-operation","order":10,"type":"enum","mqlType":"ENUM_V2_OPERATION_MODE","enumType":"ENUM_V2_OPERATION_MODE","values":["TRADING","PORTFOLIO_DASHBOARD","OPTIMIZATION_STUDIO","REPORT_PROCESSOR"],"default":"TRADING","mqlDefault":"TRADING","optimize":false},
+        {"name":"V2_RunMode","group":"product-operation","order":20,"type":"enum","mqlType":"ENUM_V2_RUN_MODE","enumType":"ENUM_V2_RUN_MODE","values":["V2_RUN_DISABLED","V2_RUN_MANAGE_ONLY","V2_RUN_TRADE"],"default":"V2_RUN_MANAGE_ONLY","mqlDefault":"V2_RUN_MANAGE_ONLY","optimize":false},
+        {"name":"V2_EnableNewRisk","group":"product-operation","order":30,"type":"bool","mqlType":"bool","default":false,"mqlDefault":"false","optimize":false},
+        {"name":"V2_Bookkeeping","group":"product-operation","order":40,"type":"enum","mqlType":"ENUM_V2_BOOKKEEPING_MODE","enumType":"ENUM_V2_BOOKKEEPING_MODE","values":["V2_BOOKKEEPING_AUTO","V2_BOOKKEEPING_REDUCED","V2_BOOKKEEPING_FULL"],"default":"V2_BOOKKEEPING_AUTO","mqlDefault":"V2_BOOKKEEPING_AUTO","optimize":false},
+        {"name":"V2_CertificationRun","group":"product-operation","order":50,"type":"bool","mqlType":"bool","default":false,"mqlDefault":"false","optimize":false}
       ]
     },
     {
-      "name": "strategy-and-sequence",
+      "name": "general-identity",
+      "label": "GOAT2 | General identity",
+      "order": 20,
       "fields": [
-        {"name":"V2_TradeDirection","type":"enum","values":["LongAndShort","LongOnly","ShortOnly"],"optimize":true},
-        {"name":"V2_SignalMode","type":"enum","values":["Disabled","Trend","MeanReversion","Hybrid"],"default":"Disabled","certificationRole":"non-parity adapter","optimize":false},
-        {"name":"V2_SignalTimeframe","type":"timeframe","default":"Current","optimize":true},
-        {"name":"V2_FastEmaPeriod","type":"int","min":2,"default":21,"optimize":true},
-        {"name":"V2_SlowEmaPeriod","type":"int","min":3,"default":55,"optimize":true},
-        {"name":"V2_RsiPeriod","type":"int","min":2,"default":14,"optimize":true},
-        {"name":"V2_AtrPeriod","type":"int","min":2,"default":14,"optimize":true},
-        {"name":"V2_RsiLongThreshold","type":"double","default":55.0,"optimize":true},
-        {"name":"V2_RsiShortThreshold","type":"double","default":45.0,"optimize":true},
-        {"name":"V2_MaxSequenceTrades","type":"int","min":1,"max":64,"default":7,"optimize":true},
-        {"name":"V2_GridSize","type":"double","nonzero":true,"unit":"configured-pips-or-negative-ATR","default":10.0,"optimize":true},
-        {"name":"V2_GridMinimum","type":"double","unit":"configured-pips-or-negative-ATR","default":1.0,"optimize":true},
-        {"name":"V2_GridMaximum","type":"double","unit":"configured-pips-or-negative-ATR","default":30.0,"optimize":true},
-        {"name":"V2_GridExponent","type":"double","exclusiveMin":0,"default":1.0,"optimize":true},
-        {"name":"V2_GridFactor","type":"double","exclusiveMin":0,"default":1.0,"optimize":true},
-        {"name":"V2_TakeProfitSize","type":"double","unit":"configured-pips-or-negative-ATR","default":60.0,"optimize":true},
-        {"name":"V2_StopLossSize","type":"double","unit":"configured-pips-or-negative-ATR","default":0.0,"optimize":true},
-        {"name":"V2_LockProfitSize","type":"double","unit":"configured-pips-or-negative-ATR","default":30.0,"optimize":true},
-        {"name":"V2_LockFlexibility","type":"double","min":-1.0,"max":1.0,"default":1.0,"optimize":true},
-        {"name":"V2_TrailingStopSize","type":"double","unit":"configured-pips-or-negative-ATR","default":5.0,"optimize":true},
-        {"name":"V2_CloseAtMaxLevels","type":"bool","default":false,"optimize":false},
-        {"name":"V2_EnableSequenceLossHardClose","type":"bool","default":true,"optimize":false},
-        {"name":"V2_CumPartialReleasePercent","type":"double","min":0,"max":100,"default":10.0,"optimize":true},
-        {"name":"V2_PeakSmartReleasePercent","type":"double","min":0,"max":100,"default":50.0,"optimize":true},
-        {"name":"V2_PeakSmartMaxClosePercent","type":"double","min":0,"max":100,"default":30.0,"optimize":true}
+        {"name":"V2_DeploymentId","group":"general-identity","order":10,"type":"string","mqlType":"string","default":"goat2-local","mqlDefault":"\"goat2-local\"","optimize":false},
+        {"name":"V2_PortfolioGenerationId","group":"general-identity","order":20,"type":"string","mqlType":"string","default":"manual-v2.0","mqlDefault":"\"manual-v2.0\"","optimize":false},
+        {"name":"V2_StrategyMemberId","group":"general-identity","order":30,"type":"string","mqlType":"string","default":"primary","mqlDefault":"\"primary\"","optimize":false},
+        {"name":"V2_StateDatabaseName","group":"general-identity","order":40,"type":"string","mqlType":"string","default":"goat2-v2.0.db","mqlDefault":"\"goat2-v2.0.db\"","optimize":false}
       ]
     },
     {
-      "name": "lot-geometry",
+      "name": "sequence-settings",
+      "label": "GOAT2 | Sequence settings",
+      "order": 30,
       "fields": [
-        {"name":"V2_LotMode","type":"enum","values":["Fixed","EquityScaled","RiskPerSequence"],"optimize":false},
-        {"name":"V2_LotProgression","type":"enum","values":["Start","Last","Cumulative","CumulativeFrontLoaded","Peak","CumulativePartial","PeakSmart"],"optimize":true},
-        {"name":"V2_StartLots","type":"double","exclusiveMin":0,"default":0.01,"optimize":true},
-        {"name":"V2_RiskPerSequence","type":"double","exclusiveMin":0,"unit":"account-currency","default":100.0,"optimize":true},
-        {"name":"V2_LotExponent","type":"double","default":1.0,"optimize":true},
-        {"name":"V2_LotFactor","type":"double","default":0.0,"optimize":true},
-        {"name":"V2_MaxTradeMultiple","type":"double","exclusiveMin":0,"default":100.0,"optimize":true},
-        {"name":"V2_MaxCumulativeMultiple","type":"double","exclusiveMin":0,"default":100.0,"optimize":true},
-        {"name":"V2_PeakPositionPercent","type":"double","min":0,"max":100,"default":50.0,"optimize":true}
+        {"name":"V2_TradeDirection","group":"sequence-settings","order":10,"type":"enum","mqlType":"ENUM_V2_TRADE_DIRECTION","enumType":"ENUM_V2_TRADE_DIRECTION","values":["V2_TRADE_LONG_AND_SHORT","V2_TRADE_LONG_ONLY","V2_TRADE_SHORT_ONLY"],"default":"V2_TRADE_LONG_AND_SHORT","mqlDefault":"V2_TRADE_LONG_AND_SHORT","optimize":true},
+        {"name":"V2_SignalMode","group":"sequence-settings","order":20,"type":"enum","mqlType":"ENUM_V2_SIGNAL_MODE","enumType":"ENUM_V2_SIGNAL_MODE","values":["V2_SIGNAL_DISABLED","V2_SIGNAL_TREND","V2_SIGNAL_MEAN_REVERSION","V2_SIGNAL_HYBRID"],"default":"V2_SIGNAL_DISABLED","mqlDefault":"V2_SIGNAL_DISABLED","certificationRole":"non-parity adapter","optimize":false},
+        {"name":"V2_MaxSequenceTrades","group":"sequence-settings","order":30,"type":"int","mqlType":"int","min":1,"max":64,"default":7,"mqlDefault":"7","optimize":true},
+        {"name":"V2_CloseAtMaxLevels","group":"sequence-settings","order":40,"type":"bool","mqlType":"bool","default":false,"mqlDefault":"false","optimize":false}
+      ]
+    },
+    {
+      "name": "atr-grid-settings",
+      "label": "GOAT2 | ATR and grid settings",
+      "order": 40,
+      "fields": [
+        {"name":"V2_AtrPeriod","group":"atr-grid-settings","order":10,"type":"int","mqlType":"int","min":2,"default":14,"mqlDefault":"14","optimize":true},
+        {"name":"V2_GridSize","group":"atr-grid-settings","order":20,"type":"double","mqlType":"double","nonzero":true,"unit":"configured-pips-or-negative-ATR","default":10.0,"mqlDefault":"10.0","mqlComment":"Configured pips; negative means ATR multiple","optimize":true},
+        {"name":"V2_GridMinimum","group":"atr-grid-settings","order":30,"type":"double","mqlType":"double","unit":"configured-pips-or-negative-ATR","default":1.0,"mqlDefault":"1.0","mqlComment":"Configured pips; negative means ATR multiple","optimize":true},
+        {"name":"V2_GridMaximum","group":"atr-grid-settings","order":40,"type":"double","mqlType":"double","unit":"configured-pips-or-negative-ATR","default":30.0,"mqlDefault":"30.0","mqlComment":"Configured pips; negative means ATR multiple","optimize":true},
+        {"name":"V2_GridExponent","group":"atr-grid-settings","order":50,"type":"double","mqlType":"double","exclusiveMin":0,"default":1.0,"mqlDefault":"1.0","optimize":true},
+        {"name":"V2_GridFactor","group":"atr-grid-settings","order":60,"type":"double","mqlType":"double","exclusiveMin":0,"default":1.0,"mqlDefault":"1.0","optimize":true}
+      ]
+    },
+    {
+      "name": "position-sizing",
+      "label": "GOAT2 | Position sizing",
+      "order": 50,
+      "fields": [
+        {"name":"V2_LotMode","group":"position-sizing","order":10,"type":"enum","mqlType":"ENUM_V2_LOT_MODE","enumType":"ENUM_V2_LOT_MODE","values":["V2_LOTS_FIXED","V2_LOTS_EQUITY_SCALED","V2_LOTS_RISK_PER_SEQUENCE"],"default":"V2_LOTS_FIXED","mqlDefault":"V2_LOTS_FIXED","optimize":false},
+        {"name":"V2_LotProgression","group":"position-sizing","order":20,"type":"enum","mqlType":"ENUM_V2_LOT_PROGRESSION","enumType":"ENUM_V2_LOT_PROGRESSION","values":["V2_LOT_START","V2_LOT_LAST","V2_LOT_CUMULATIVE","V2_LOT_CUMULATIVE_FRONT_LOADED","V2_LOT_PEAK","V2_LOT_CUMULATIVE_PARTIAL","V2_LOT_PEAK_SMART"],"default":"V2_LOT_START","mqlDefault":"V2_LOT_START","optimize":true},
+        {"name":"V2_StartLots","group":"position-sizing","order":30,"type":"double","mqlType":"double","exclusiveMin":0,"default":0.01,"mqlDefault":"0.01","optimize":true},
+        {"name":"V2_RiskPerSequence","group":"position-sizing","order":40,"type":"double","mqlType":"double","exclusiveMin":0,"unit":"account-currency","default":100.0,"mqlDefault":"100.0","optimize":true},
+        {"name":"V2_LotExponent","group":"position-sizing","order":50,"type":"double","mqlType":"double","default":1.0,"mqlDefault":"1.0","optimize":true},
+        {"name":"V2_LotFactor","group":"position-sizing","order":60,"type":"double","mqlType":"double","default":0.0,"mqlDefault":"0.0","optimize":true},
+        {"name":"V2_MaxTradeMultiple","group":"position-sizing","order":70,"type":"double","mqlType":"double","exclusiveMin":0,"default":100.0,"mqlDefault":"100.0","optimize":true},
+        {"name":"V2_MaxCumulativeMultiple","group":"position-sizing","order":80,"type":"double","mqlType":"double","exclusiveMin":0,"default":100.0,"mqlDefault":"100.0","optimize":true},
+        {"name":"V2_PeakPositionPercent","group":"position-sizing","order":90,"type":"double","mqlType":"double","min":0,"max":100,"default":50.0,"mqlDefault":"50.0","optimize":true}
+      ]
+    },
+    {
+      "name": "basket-sequence-risk",
+      "label": "GOAT2 | Basket and sequence risk",
+      "order": 60,
+      "fields": [
+        {"name":"V2_TakeProfitSize","group":"basket-sequence-risk","order":10,"type":"double","mqlType":"double","unit":"configured-pips-or-negative-ATR","default":60.0,"mqlDefault":"60.0","mqlComment":"Configured pips; negative means ATR multiple","optimize":true},
+        {"name":"V2_StopLossSize","group":"basket-sequence-risk","order":20,"type":"double","mqlType":"double","unit":"configured-pips-or-negative-ATR","default":0.0,"mqlDefault":"0.0","mqlComment":"Zero disables; negative means ATR multiple","optimize":true},
+        {"name":"V2_LockProfitSize","group":"basket-sequence-risk","order":30,"type":"double","mqlType":"double","unit":"configured-pips-or-negative-ATR","default":30.0,"mqlDefault":"30.0","mqlComment":"Zero disables; negative means ATR multiple","optimize":true},
+        {"name":"V2_LockFlexibility","group":"basket-sequence-risk","order":40,"type":"double","mqlType":"double","min":-1.0,"valuesAboveOne":"accepted and neutralized by the V1-compatibility planner","default":1.0,"mqlDefault":"1.0","optimize":true},
+        {"name":"V2_TrailingStopSize","group":"basket-sequence-risk","order":50,"type":"double","mqlType":"double","unit":"configured-pips-or-negative-ATR","default":5.0,"mqlDefault":"5.0","mqlComment":"Zero disables; negative means ATR multiple","optimize":true},
+        {"name":"V2_EnableSequenceLossHardClose","group":"basket-sequence-risk","order":60,"type":"bool","mqlType":"bool","default":true,"mqlDefault":"true","optimize":false},
+        {"name":"V2_CumPartialReleasePercent","group":"basket-sequence-risk","order":70,"type":"double","mqlType":"double","min":0,"max":100,"default":10.0,"mqlDefault":"10.0","optimize":true},
+        {"name":"V2_PeakSmartReleasePercent","group":"basket-sequence-risk","order":80,"type":"double","mqlType":"double","min":0,"max":100,"default":50.0,"mqlDefault":"50.0","optimize":true},
+        {"name":"V2_PeakSmartMaxClosePercent","group":"basket-sequence-risk","order":90,"type":"double","mqlType":"double","min":0,"max":100,"default":30.0,"mqlDefault":"30.0","optimize":true}
       ]
     },
     {
       "name": "deterministic-safety",
+      "label": "GOAT2 | Deterministic safety",
+      "order": 70,
       "fields": [
-        {"name":"V2_MaxSpreadPoints","type":"double","exclusiveMin":0,"default":100.0,"optimize":false},
-        {"name":"V2_AdditionalMarginBufferPct","type":"double","min":0,"default":20.0,"optimize":false},
-        {"name":"V2_MaxSymbolLots","type":"double","exclusiveMin":0,"default":10.0,"optimize":false},
-        {"name":"V2_MaxPortfolioLots","type":"double","exclusiveMin":0,"default":20.0,"optimize":false},
-        {"name":"V2_MaxSequenceLoss","type":"double","exclusiveMin":0,"unit":"account-currency","default":100.0,"optimize":false},
-        {"name":"V2_EquityFloor","type":"double","min":0,"default":0.0,"optimize":false},
-        {"name":"V2_MaxEquityDrawdownPct","type":"double","exclusiveMin":0,"exclusiveMax":100,"default":20.0,"optimize":false},
-        {"name":"V2_MaxConsecutiveBrokerErrors","type":"int","min":1,"default":5,"optimize":false}
+        {"name":"V2_MaxSpreadPoints","group":"deterministic-safety","order":10,"type":"double","mqlType":"double","exclusiveMin":0,"default":100.0,"mqlDefault":"100.0","optimize":false},
+        {"name":"V2_AdditionalMarginBufferPct","group":"deterministic-safety","order":20,"type":"double","mqlType":"double","min":0,"default":20.0,"mqlDefault":"20.0","optimize":false},
+        {"name":"V2_MaxSymbolLots","group":"deterministic-safety","order":30,"type":"double","mqlType":"double","exclusiveMin":0,"default":10.0,"mqlDefault":"10.0","optimize":false},
+        {"name":"V2_MaxPortfolioLots","group":"deterministic-safety","order":40,"type":"double","mqlType":"double","exclusiveMin":0,"default":20.0,"mqlDefault":"20.0","optimize":false},
+        {"name":"V2_MaxSequenceLoss","group":"deterministic-safety","order":50,"type":"double","mqlType":"double","exclusiveMin":0,"unit":"account-currency","default":100.0,"mqlDefault":"100.0","optimize":false},
+        {"name":"V2_EquityFloor","group":"deterministic-safety","order":60,"type":"double","mqlType":"double","min":0,"default":0.0,"mqlDefault":"0.0","optimize":false},
+        {"name":"V2_MaxEquityDrawdownPct","group":"deterministic-safety","order":70,"type":"double","mqlType":"double","exclusiveMin":0,"exclusiveMax":100,"default":20.0,"mqlDefault":"20.0","optimize":false},
+        {"name":"V2_MaxConsecutiveBrokerErrors","group":"deterministic-safety","order":80,"type":"int","mqlType":"int","min":1,"default":5,"mqlDefault":"5","optimize":false}
       ]
     },
     {
       "name": "broker-cost-profile",
+      "label": "GOAT2 | Manifested broker-cost profile",
+      "order": 80,
       "fields": [
-        {"name":"V2_BrokerProfileId","type":"string","default":"development-unverified","optimize":false},
-        {"name":"V2_BrokerProfileVersion","type":"string","default":"1","optimize":false},
-        {"name":"V2_CommissionOpenPerLot","type":"double","min":0,"default":0.0,"optimize":false},
-        {"name":"V2_CommissionClosePerLot","type":"double","min":0,"default":0.0,"optimize":false},
-        {"name":"V2_SwapLongPerLotDay","type":"double","default":0.0,"optimize":false},
-        {"name":"V2_SwapShortPerLotDay","type":"double","default":0.0,"optimize":false},
-        {"name":"V2_ProjectedHoldingDays","type":"double","min":0,"default":1.0,"optimize":false},
-        {"name":"V2_ProjectedTripleSwapEvents","type":"int","min":0,"default":0,"optimize":false},
-        {"name":"V2_StressedSpreadPoints","type":"double","min":0,"default":0.0,"optimize":false},
-        {"name":"V2_OpenSlippagePoints","type":"double","min":0,"default":0.0,"optimize":false},
-        {"name":"V2_CloseSlippagePoints","type":"double","min":0,"default":0.0,"optimize":false},
-        {"name":"V2_TerminalAdversePoints","type":"double","min":0,"default":0.0,"optimize":false}
+        {"name":"V2_BrokerProfileId","group":"broker-cost-profile","order":10,"type":"string","mqlType":"string","default":"development-unverified","mqlDefault":"\"development-unverified\"","optimize":false},
+        {"name":"V2_BrokerProfileVersion","group":"broker-cost-profile","order":20,"type":"string","mqlType":"string","default":"1","mqlDefault":"\"1\"","optimize":false},
+        {"name":"V2_CommissionOpenPerLot","group":"broker-cost-profile","order":30,"type":"double","mqlType":"double","min":0,"default":0.0,"mqlDefault":"0.0","optimize":false},
+        {"name":"V2_CommissionClosePerLot","group":"broker-cost-profile","order":40,"type":"double","mqlType":"double","min":0,"default":0.0,"mqlDefault":"0.0","optimize":false},
+        {"name":"V2_SwapLongPerLotDay","group":"broker-cost-profile","order":50,"type":"double","mqlType":"double","default":0.0,"mqlDefault":"0.0","optimize":false},
+        {"name":"V2_SwapShortPerLotDay","group":"broker-cost-profile","order":60,"type":"double","mqlType":"double","default":0.0,"mqlDefault":"0.0","optimize":false},
+        {"name":"V2_ProjectedHoldingDays","group":"broker-cost-profile","order":70,"type":"double","mqlType":"double","min":0,"default":1.0,"mqlDefault":"1.0","optimize":false},
+        {"name":"V2_ProjectedTripleSwapEvents","group":"broker-cost-profile","order":80,"type":"int","mqlType":"int","min":0,"default":0,"mqlDefault":"0","optimize":false},
+        {"name":"V2_StressedSpreadPoints","group":"broker-cost-profile","order":90,"type":"double","mqlType":"double","min":0,"default":0.0,"mqlDefault":"0.0","optimize":false},
+        {"name":"V2_OpenSlippagePoints","group":"broker-cost-profile","order":100,"type":"double","mqlType":"double","min":0,"default":0.0,"mqlDefault":"0.0","optimize":false},
+        {"name":"V2_CloseSlippagePoints","group":"broker-cost-profile","order":110,"type":"double","mqlType":"double","min":0,"default":0.0,"mqlDefault":"0.0","optimize":false},
+        {"name":"V2_TerminalAdversePoints","group":"broker-cost-profile","order":120,"type":"double","mqlType":"double","min":0,"default":0.0,"mqlDefault":"0.0","optimize":false}
       ]
     },
     {
-      "name": "state-model-interface-gates",
+      "name": "trend-ema-feature",
+      "label": "GOAT2 | Trend and EMA feature",
+      "order": 90,
       "fields": [
-        {"name":"V2_StateMode","type":"enum","values":["Disabled","Display","Shadow","Gate","Execute"],"phase1Max":"Shadow","default":"Disabled","optimize":false},
-        {"name":"V2_OnnxMode","type":"enum","values":["Disabled","Shadow","Gate"],"phase1Max":"Disabled","default":"Disabled","optimize":false},
-        {"name":"V2_EnableHud","type":"bool","default":true,"optimize":false},
-        {"name":"V2_EnableOverlay","type":"bool","default":true,"optimize":false},
-        {"name":"V2_EnableTelemetry","type":"bool","default":false,"transport":"local-outbox-only","optimize":false},
-        {"name":"V2_ExpectedSourceHash","type":"string","format":"sha256-or-empty","lineageExcluded":true,"optimize":false},
-        {"name":"V2_ExpectedBinaryHash","type":"string","format":"sha256-or-empty","lineageExcluded":true,"optimize":false}
+        {"name":"V2_FastEmaPeriod","group":"trend-ema-feature","order":10,"type":"int","mqlType":"int","min":2,"default":21,"mqlDefault":"21","optimize":true},
+        {"name":"V2_SlowEmaPeriod","group":"trend-ema-feature","order":20,"type":"int","mqlType":"int","min":3,"default":55,"mqlDefault":"55","optimize":true}
+      ]
+    },
+    {
+      "name": "mean-reversion-rsi-feature",
+      "label": "GOAT2 | Mean reversion and RSI feature",
+      "order": 100,
+      "fields": [
+        {"name":"V2_RsiPeriod","group":"mean-reversion-rsi-feature","order":10,"type":"int","mqlType":"int","min":2,"default":14,"mqlDefault":"14","optimize":true},
+        {"name":"V2_RsiLongThreshold","group":"mean-reversion-rsi-feature","order":20,"type":"double","mqlType":"double","default":55.0,"mqlDefault":"55.0","optimize":true},
+        {"name":"V2_RsiShortThreshold","group":"mean-reversion-rsi-feature","order":30,"type":"double","mqlType":"double","default":45.0,"mqlDefault":"45.0","optimize":true}
+      ]
+    },
+    {
+      "name": "trading-schedule",
+      "label": "GOAT2 | Trading schedule",
+      "order": 110,
+      "fields": [
+        {"name":"V2_SignalTimeframe","group":"trading-schedule","order":10,"type":"timeframe","mqlType":"ENUM_TIMEFRAMES","enumType":"ENUM_TIMEFRAMES","default":"PERIOD_CURRENT","mqlDefault":"PERIOD_CURRENT","optimize":true}
+      ]
+    },
+    {
+      "name": "intelligence-state",
+      "label": "GOAT2 | Intelligence and state",
+      "order": 120,
+      "fields": [
+        {"name":"V2_StateMode","group":"intelligence-state","order":10,"type":"enum","mqlType":"ENUM_V2_STATE_MODE","enumType":"ENUM_V2_STATE_MODE","values":["V2_STATE_DISABLED","V2_STATE_DISPLAY","V2_STATE_SHADOW","V2_STATE_GATE","V2_STATE_EXECUTE"],"phase1Max":"V2_STATE_SHADOW","default":"V2_STATE_DISABLED","mqlDefault":"V2_STATE_DISABLED","optimize":false}
+      ]
+    },
+    {
+      "name": "onnx-execution-intelligence",
+      "label": "GOAT2 | ONNX execution intelligence",
+      "order": 130,
+      "fields": [
+        {"name":"V2_OnnxMode","group":"onnx-execution-intelligence","order":10,"type":"enum","mqlType":"ENUM_V2_ONNX_MODE","enumType":"ENUM_V2_ONNX_MODE","values":["V2_ONNX_DISABLED","V2_ONNX_SHADOW","V2_ONNX_GATE"],"phase1Max":"V2_ONNX_DISABLED","default":"V2_ONNX_DISABLED","mqlDefault":"V2_ONNX_DISABLED","optimize":false}
+      ]
+    },
+    {
+      "name": "chart-interface",
+      "label": "GOAT2 | Chart interface",
+      "order": 140,
+      "fields": [
+        {"name":"V2_EnableHud","group":"chart-interface","order":10,"type":"bool","mqlType":"bool","default":true,"mqlDefault":"true","optimize":false},
+        {"name":"V2_EnableOverlay","group":"chart-interface","order":20,"type":"bool","mqlType":"bool","default":true,"mqlDefault":"true","optimize":false}
+      ]
+    },
+    {
+      "name": "telemetry",
+      "label": "GOAT2 | Telemetry",
+      "order": 150,
+      "fields": [
+        {"name":"V2_EnableTelemetry","group":"telemetry","order":10,"type":"bool","mqlType":"bool","default":false,"mqlDefault":"false","transport":"local-outbox-only","optimize":false}
+      ]
+    },
+    {
+      "name": "expected-artifact-hashes",
+      "label": "GOAT2 | Expected artifact hashes",
+      "order": 160,
+      "fields": [
+        {"name":"V2_ExpectedSourceHash","group":"expected-artifact-hashes","order":10,"type":"string","mqlType":"string","default":"","mqlDefault":"\"\"","format":"sha256-or-empty","lineageExcluded":true,"optimize":false},
+        {"name":"V2_ExpectedBinaryHash","group":"expected-artifact-hashes","order":20,"type":"string","mqlType":"string","default":"","mqlDefault":"\"\"","format":"sha256-or-empty","lineageExcluded":true,"optimize":false}
       ]
     },
     {
       "name": "certification-lineage",
+      "label": "GOAT2 | Certification lineage",
+      "order": 170,
       "fields": [
-        {"name":"V2_LineageGitCommit","type":"string","lineageExcluded":true,"optimize":false},
-        {"name":"V2_LineageSourceHash","type":"string","format":"sha256","lineageExcluded":true,"optimize":false},
-        {"name":"V2_LineageBinaryHash","type":"string","format":"sha256","lineageExcluded":true,"optimize":false},
-        {"name":"V2_LineageReferenceCommit","type":"string","lineageExcluded":true,"optimize":false},
-        {"name":"V2_LineageTickDataHash","type":"string","format":"sha256","lineageExcluded":true,"optimize":false},
-        {"name":"V2_LineageTesterModel","type":"string","lineageExcluded":true,"optimize":false},
-        {"name":"V2_LineageTestWindow","type":"string","lineageExcluded":true,"optimize":false},
-        {"name":"V2_LineageStatePackHash","type":"string","format":"sha256-or-empty","lineageExcluded":true,"optimize":false},
-        {"name":"V2_LineageCalendarHash","type":"string","format":"sha256-or-empty","lineageExcluded":true,"optimize":false},
-        {"name":"V2_LineageModelBundleHash","type":"string","format":"sha256-or-empty","lineageExcluded":true,"optimize":false},
-        {"name":"V2_LineageRandomSeed","type":"string","lineageExcluded":true,"optimize":false}
+        {"name":"V2_LineageGitCommit","group":"certification-lineage","order":10,"type":"string","mqlType":"string","default":"","mqlDefault":"\"\"","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageSourceHash","group":"certification-lineage","order":20,"type":"string","mqlType":"string","default":"","mqlDefault":"\"\"","format":"sha256","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageBinaryHash","group":"certification-lineage","order":30,"type":"string","mqlType":"string","default":"","mqlDefault":"\"\"","format":"sha256","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageReferenceCommit","group":"certification-lineage","order":40,"type":"string","mqlType":"string","default":"","mqlDefault":"\"\"","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageTickDataHash","group":"certification-lineage","order":50,"type":"string","mqlType":"string","default":"","mqlDefault":"\"\"","format":"sha256","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageTesterModel","group":"certification-lineage","order":60,"type":"string","mqlType":"string","default":"","mqlDefault":"\"\"","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageTestWindow","group":"certification-lineage","order":70,"type":"string","mqlType":"string","default":"","mqlDefault":"\"\"","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageStatePackHash","group":"certification-lineage","order":80,"type":"string","mqlType":"string","default":"","mqlDefault":"\"\"","format":"sha256-or-empty","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageCalendarHash","group":"certification-lineage","order":90,"type":"string","mqlType":"string","default":"","mqlDefault":"\"\"","format":"sha256-or-empty","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageModelBundleHash","group":"certification-lineage","order":100,"type":"string","mqlType":"string","default":"","mqlDefault":"\"\"","format":"sha256-or-empty","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageRandomSeed","group":"certification-lineage","order":110,"type":"string","mqlType":"string","default":"","mqlDefault":"\"\"","lineageExcluded":true,"optimize":false}
       ]
     }
   ]

@@ -303,12 +303,27 @@ private:
       profit=0.0;
       if(volume<=0.0) return true;
       ENUM_ORDER_TYPE order_type=(market.direction==V2_DIR_LONG ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
+      const double minimum=SymbolInfoDouble(market.symbol,SYMBOL_VOLUME_MIN);
+      const double step=SymbolInfoDouble(market.symbol,SYMBOL_VOLUME_STEP);
+      double calculation_volume=volume;
+      bool scaled=false;
+      if(minimum>0.0 && step>0.0)
+        {
+         const double nearest=MathRound(volume/step)*step;
+         if(volume<minimum-1e-12 || MathAbs(volume-nearest)>MathMax(step*1e-8,1e-12))
+           {
+            calculation_volume=MathMax(minimum,step);
+            scaled=true;
+           }
+        }
       ResetLastError();
-      if(!OrderCalcProfit(order_type,market.symbol,volume,open_price,close_price,profit))
+      if(!OrderCalcProfit(order_type,market.symbol,calculation_volume,open_price,close_price,profit))
         {
          reason="ORDER_CALC_PROFIT_FAILED_"+IntegerToString(GetLastError());
          return false;
         }
+      if(scaled)
+         profit*=volume/calculation_volume;
       if(!MathIsValidNumber(profit))
         {
          reason="ORDER_CALC_PROFIT_NONFINITE";

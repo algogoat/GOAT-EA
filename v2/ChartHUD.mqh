@@ -4,6 +4,7 @@
 #include <Canvas\Canvas.mqh>
 #include "Domain.mqh"
 #include "IntelligenceBus.mqh"
+#include "OperationMode.mqh"
 
 enum ENUM_V2_HUD_COMMAND
   {
@@ -36,6 +37,7 @@ private:
    bool                m_enabled;
    int                 m_width;
    int                 m_height;
+   ENUM_V2_OPERATION_MODE m_operation_mode;
    ENUM_V2_HUD_COMMAND m_pending_command;
    uint                m_pending_at_ms;
 
@@ -63,6 +65,35 @@ private:
       m_canvas.TextOut(x+8,y+6,label,Argb(clrWhite));
      }
 
+   void RenderModePlaceholder(void)
+     {
+      m_canvas.Erase(Argb(C'10,18,30',242));
+      m_canvas.FillRectangle(0,0,m_width,34,Argb(C'15,39,68'));
+      m_canvas.FontSet("Arial",13,FW_BOLD);
+      m_canvas.TextOut(14,9,"GOAT2  V2.0",Argb(C'87,187,255'));
+
+      m_canvas.FontSet("Arial",9,FW_NORMAL);
+      m_canvas.TextOut(14,52,"OPERATION MODE",Argb(C'132,154,180'));
+      m_canvas.FontSet("Arial",11,FW_BOLD);
+      m_canvas.TextOut(14,72,V2OperationModeName(m_operation_mode),Argb(C'87,187,255'));
+
+      m_canvas.Line(14,102,m_width-14,102,Argb(C'48,65,86'));
+      m_canvas.FontSet("Arial",9,FW_NORMAL);
+      m_canvas.TextOut(14,117,"DELIVERY STATUS",Argb(C'132,154,180'));
+      m_canvas.FontSet("Arial",10,FW_BOLD);
+      m_canvas.TextOut(14,139,StringFormat("PHASE %d - NOT YET BUILT",V2OperationModeDeliveryPhase(m_operation_mode)),Argb(C'255,184,77'));
+      m_canvas.FontSet("Arial",9,FW_NORMAL);
+      m_canvas.TextOut(14,165,V2OperationModeStatus(m_operation_mode),Argb(C'220,225,232'));
+      m_canvas.TextOut(14,191,"This surface is status-only in the V2.0 foundation.",Argb(C'150,165,185'));
+      m_canvas.TextOut(14,209,"No execution manager or broker command path is active.",Argb(C'150,165,185'));
+
+      m_canvas.FillRectangle(14,240,m_width-14,268,Argb(C'31,46,65'));
+      m_canvas.FontSet("Arial",9,FW_BOLD);
+      m_canvas.TextOut(24,248,"READ-ONLY PLACEHOLDER",Argb(C'255,184,77'));
+      m_canvas.Update();
+      m_dirty=false;
+     }
+
 public:
                      CV2ChartHUD(void)
      {
@@ -72,13 +103,22 @@ public:
       m_enabled=false;
       m_width=380;
       m_height=285;
+      m_operation_mode=TRADING;
       m_pending_command=V2_HUD_NONE;
       m_pending_at_ms=0;
      }
 
    bool Initialize(const bool requested,string &reason)
      {
+      return Initialize(requested,TRADING,reason);
+     }
+
+   bool Initialize(const bool requested,
+                   const ENUM_V2_OPERATION_MODE operation_mode,
+                   string &reason)
+     {
       reason="";
+      m_operation_mode=operation_mode;
       m_enabled=(requested && (!MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_VISUAL_MODE)));
       if(!m_enabled)
          return true;
@@ -95,10 +135,22 @@ public:
 
    void MarkDirty(void) { m_dirty=true; }
 
+   void RenderOperationStatus(void)
+     {
+      if(!m_enabled || !m_created || !m_dirty || m_operation_mode==TRADING)
+         return;
+      RenderModePlaceholder();
+     }
+
    void Render(const V2HudSnapshot &snapshot)
      {
       if(!m_enabled || !m_created || !m_dirty)
          return;
+      if(m_operation_mode!=TRADING)
+        {
+         RenderModePlaceholder();
+         return;
+        }
       m_canvas.Erase(Argb(C'10,18,30',242));
       m_canvas.FillRectangle(0,0,m_width,34,Argb(C'15,39,68'));
       m_canvas.FontSet("Arial",13,FW_BOLD);
@@ -142,7 +194,7 @@ public:
 
    ENUM_V2_HUD_COMMAND OnChartEvent(const int id,const long lparam,const double dparam)
      {
-      if(!m_enabled || id!=CHARTEVENT_CLICK)
+      if(!m_enabled || m_operation_mode!=TRADING || id!=CHARTEVENT_CLICK)
          return V2_HUD_NONE;
       int x=(int)lparam-10;
       int y=(int)dparam-20;

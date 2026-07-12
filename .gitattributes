@@ -1,3 +1,4 @@
 *.mq5 text eol=crlf
 *.mqh text eol=crlf
+v2/schema/inputs_v2.schema.json text eol=lf
 

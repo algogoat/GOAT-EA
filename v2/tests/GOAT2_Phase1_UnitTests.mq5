@@ -6,10 +6,14 @@
 #include "../Domain.mqh"
 #include "../Identity.mqh"
 #include "../Inputs_V2.mqh"
+#include "../Normalization.mqh"
 #include "../SafetyKernel.mqh"
 #include "../Core_Sequence.mqh"
 #include "../Core_Risk.mqh"
+#include "../Receipts.mqh"
 #include "../StateDB.mqh"
+#include "../Features.mqh"
+#include "../BrokerGateway.mqh"
 
 int g_checks=0;
 int g_passed=0;
@@ -31,6 +35,16 @@ void Check(const bool condition,const string name,const string detail="")
 bool Near(const double left,const double right,const double epsilon=1e-9)
   {
    return(MathIsValidNumber(left) && MathIsValidNumber(right) && MathAbs(left-right)<=epsilon);
+  }
+
+bool VectorNear(const double &actual[],const double &expected[],const double epsilon=1e-9)
+  {
+   if(ArraySize(actual)!=ArraySize(expected))
+      return false;
+   for(int i=0;i<ArraySize(expected);i++)
+      if(!Near(actual[i],expected[i],epsilon))
+         return false;
+   return true;
   }
 
 void MakeEvent(V2DomainEvent &event,
@@ -202,6 +216,25 @@ void TestOrderIntentTransitions(void)
    ok=machine.Apply(V2_INTENT_SUBMITTED,unpersisted_reduction,reason);
    Check(!ok && unpersisted_reduction.status==V2_INTENT_PLANNED,
          "intent.reduction_also_requires_durable_persistence",reason);
+
+   V2OrderIntent submitted_cancel;
+   submitted_cancel.Reset();
+   bool prepared=machine.Apply(V2_INTENT_PERSISTED,submitted_cancel,reason) &&
+                 machine.Apply(V2_INTENT_SUBMITTED,submitted_cancel,reason);
+   ok=machine.Apply(V2_INTENT_CANCELLED,submitted_cancel,reason);
+   Check(prepared && ok && submitted_cancel.status==V2_INTENT_CANCELLED,
+         "intent.submitted_to_cancelled",reason);
+   ok=machine.Apply(V2_INTENT_ACCEPTED,submitted_cancel,reason);
+   Check(!ok && reason=="ILLEGAL_ORDER_INTENT_TRANSITION" &&
+         submitted_cancel.status==V2_INTENT_CANCELLED,
+         "intent.cancelled_is_terminal",reason);
+
+   V2OrderIntent persisted_cancel;
+   persisted_cancel.Reset();
+   prepared=machine.Apply(V2_INTENT_PERSISTED,persisted_cancel,reason);
+   ok=machine.Apply(V2_INTENT_CANCELLED,persisted_cancel,reason);
+   Check(prepared && ok && persisted_cancel.status==V2_INTENT_CANCELLED,
+         "intent.persisted_to_cancelled_before_send",reason);
   }
 
 void BaseLotConfig(V2LotPlanConfig &config,const ENUM_V2_LOT_PROGRESSION progression)
@@ -284,6 +317,83 @@ void TestAllLotProgressions(void)
          "lots.peak_smart.live_target_delta",peak_plan.reason);
   }
 
+void TestExplicitLotGeometry(void)
+  {
+   CV2LotPlanner planner;
+   V2LotPlanConfig config;
+   config.Reset();
+   config.level_count=4;
+   config.start_lots=0.10;
+   config.lot_exponent=2.0;
+   config.lot_factor=0.5;
+   config.max_trade_multiple=10.0;
+   config.max_cumulative_multiple=10.0;
+   config.peak_position_percent=50.0;
+   config.volume_min=0.000001;
+   config.volume_max=100.0;
+   config.volume_step=0.000001;
+
+   V2LotPlan plan;
+   double start_delta[4]={0.100000,0.175000,0.150000,0.125000};
+   double start_cumulative[4]={0.100000,0.275000,0.425000,0.550000};
+   config.progression=V2_LOT_START;
+   bool ok=planner.Build(config,plan);
+   Check(ok && VectorNear(plan.normalized_delta,start_delta,1e-9) &&
+         VectorNear(plan.cumulative_lots,start_cumulative,1e-9),
+         "lots.explicit.start_constants",plan.reason);
+
+   double last_delta[4]={0.100000,0.175000,0.250000,0.275000};
+   double last_cumulative[4]={0.100000,0.275000,0.525000,0.800000};
+   config.progression=V2_LOT_LAST;
+   ok=planner.Build(config,plan);
+   Check(ok && VectorNear(plan.normalized_delta,last_delta,1e-9) &&
+         VectorNear(plan.cumulative_lots,last_cumulative,1e-9),
+         "lots.explicit.last_constants",plan.reason);
+
+   double cumulative_delta[4]={0.100000,0.075000,0.087500,0.065625};
+   double cumulative_lots[4]={0.100000,0.175000,0.262500,0.328125};
+   config.progression=V2_LOT_CUMULATIVE;
+   ok=planner.Build(config,plan);
+   Check(ok && VectorNear(plan.normalized_delta,cumulative_delta,1e-9) &&
+         VectorNear(plan.cumulative_lots,cumulative_lots,1e-9),
+         "lots.explicit.cumulative_constants",plan.reason);
+
+   config.progression=V2_LOT_CUMULATIVE_PARTIAL;
+   ok=planner.Build(config,plan);
+   Check(ok && VectorNear(plan.normalized_delta,cumulative_delta,1e-9) &&
+         VectorNear(plan.cumulative_lots,cumulative_lots,1e-9),
+         "lots.explicit.cumulative_partial_constants",plan.reason);
+
+   double front_delta[4]={0.100000,0.150000,0.175000,0.131250};
+   double front_cumulative[4]={0.100000,0.250000,0.425000,0.556250};
+   config.progression=V2_LOT_CUMULATIVE_FRONT_LOADED;
+   ok=planner.Build(config,plan);
+   Check(ok && VectorNear(plan.normalized_delta,front_delta,1e-9) &&
+         VectorNear(plan.cumulative_lots,front_cumulative,1e-9),
+         "lots.explicit.front_loaded_constants",plan.reason);
+
+   config.level_count=5;
+   config.lot_exponent=1.0;
+   config.lot_factor=1.0;
+   config.max_cumulative_multiple=4.0;
+   config.peak_position_percent=40.0;
+   config.volume_min=0.0001;
+   config.volume_step=0.0001;
+   double peak_delta[5]={0.1000,0.1875,0.1125,-0.1500,-0.2500};
+   double peak_cumulative[5]={0.1000,0.2875,0.4000,0.2500,0.0000};
+   config.progression=V2_LOT_PEAK;
+   ok=planner.Build(config,plan);
+   Check(ok && VectorNear(plan.normalized_delta,peak_delta,1e-9) &&
+         VectorNear(plan.cumulative_lots,peak_cumulative,1e-9),
+         "lots.explicit.peak_constants",plan.reason);
+
+   config.progression=V2_LOT_PEAK_SMART;
+   ok=planner.Build(config,plan);
+   Check(ok && VectorNear(plan.normalized_delta,peak_delta,1e-9) &&
+         VectorNear(plan.cumulative_lots,peak_cumulative,1e-9),
+         "lots.explicit.peak_smart_constants",plan.reason);
+  }
+
 void BaseGridConfig(V2GridPlanConfig &config)
   {
    config.Reset();
@@ -315,7 +425,27 @@ void TestGridGeometry(void)
    Check(!ok && plan.reason=="GRID_FACTOR_ZERO_UNDEFINED_IN_V1_COMPAT",
          "grid.v1_zero_factor_rejected",plan.reason);
    ok=corrected.Build(zero_factor,plan);
-   Check(ok && plan.valid,"grid.v2_zero_factor_has_defined_neutral_fallback",plan.reason);
+   Check(!ok && plan.reason=="GRID_FACTOR_ZERO_UNDEFINED_IN_V1_COMPAT",
+         "grid.v2_zero_factor_rejected",plan.reason);
+
+   V2GridPlanConfig zero_min=config;
+   zero_min.grid_min=0.0;
+   ok=corrected.Build(zero_min,plan);
+   Check(ok && Near(plan.minimum_distance,0.0005,1e-12),
+         "grid.zero_min_uses_half_atr_floor",plan.reason);
+
+   V2GridPlanConfig two_digit=config;
+   two_digit.grid_size=3.0;
+   two_digit.grid_min=1.0;
+   two_digit.grid_max=10.0;
+   two_digit.pip_size=0.10;
+   two_digit.atr_price=1.0;
+   two_digit.tick_size=0.01;
+   ok=corrected.Build(two_digit,plan);
+   Check(ok && Near(plan.base_distance,0.30,1e-12) &&
+         Near(plan.minimum_distance,0.10,1e-12) &&
+         Near(plan.maximum_distance,1.00,1e-12),
+         "grid.two_digit_v1_pip_scale_fixture",plan.reason);
 
    V2GridPlanConfig inverted=config;
    inverted.grid_min=-5.0;
@@ -465,12 +595,165 @@ void TestSafetyRiskClassification(void)
    Check(ok && decision.verdict==V2_KERNEL_ALLOW_REDUCE_ONLY,
          "safety.halted_state_preserves_reduction",decision.reason_code);
 
+   action.volume=0.001;
+   ok=kernel.Evaluate(action,context,decision);
+   Check(ok && decision.verdict==V2_KERNEL_ALLOW_REDUCE_ONLY &&
+         Near(decision.normalized_volume,0.001,1e-12),
+         "safety.dust_full_close_is_not_rounded_away",decision.reason_code);
+
    action.Reset(); action.action=V2_ACTION_OPEN; action.volume=0.10;
    action.price=1.1001; action.direction=V2_DIR_LONG;
    context.operational_state=V2_OP_MANAGE_ONLY;
    ok=kernel.Evaluate(action,context,decision);
    Check(ok && decision.verdict==V2_KERNEL_HALT_NEW_RISK,
          "safety.manage_only_blocks_open",decision.reason_code);
+  }
+
+void TestSafetyEvaluateMatrix(void)
+  {
+   V2SafetyLimits limits;
+   limits.max_spread_points=50.0;
+   limits.additional_margin_buffer_pct=20.0;
+   limits.max_sequence_loss=1000.0;
+   limits.max_symbol_lots=10.0;
+   limits.max_portfolio_lots=20.0;
+   limits.equity_floor=0.0;
+   limits.max_equity_drawdown_pct=20.0;
+   limits.max_consecutive_broker_errors=5;
+   CV2SafetyKernel kernel;
+   string reason="";
+   bool initialized=kernel.Initialize(limits,reason);
+   Check(initialized,"safety.matrix_kernel_initializes",reason);
+   if(!initialized) return;
+
+   V2SafetyContext context;
+   BuildSafetySymbol(context.symbol);
+   context.account.margin_mode=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING;
+   context.account.balance=100000.0;
+   context.account.equity=100000.0;
+   context.account.margin=0.0;
+   context.account.free_margin=100000.0;
+   context.account.peak_equity=100000.0;
+   context.exposure.sequence_lots=0.20;
+   context.exposure.symbol_lots=0.20;
+   context.exposure.portfolio_lots=0.20;
+   context.exposure.projected_sequence_loss=100.0;
+   context.exposure.projected_portfolio_loss=100.0;
+   context.operational_state=V2_OP_NORMAL;
+   context.database_healthy=true;
+   context.writer_lease_held=true;
+   context.new_risk_enabled=true;
+   context.session_allows_new_risk=true;
+   context.feed_allows_new_risk=true;
+   context.license_allows_new_risk=true;
+   context.order_check_ok=true;
+   context.order_check_margin=100.0;
+   context.order_check_margin_free=1000.0;
+   context.consecutive_broker_errors=0;
+
+   V2BrokerAction action;
+   action.Reset();
+   action.action=V2_ACTION_OPEN;
+   action.direction=V2_DIR_LONG;
+   action.volume=0.10;
+   action.price=1.1001;
+   V2SafetyDecision decision;
+   bool ok=kernel.Evaluate(action,context,decision);
+   Check(ok && decision.verdict==V2_KERNEL_ALLOW &&
+         decision.reason_code=="ALL_INVARIANTS_SATISFIED",
+         "safety.matrix_all_invariants_allow",decision.reason_code);
+
+   context.symbol.ask=1.1010;
+   ok=kernel.Evaluate(action,context,decision);
+   Check(ok && decision.verdict==V2_KERNEL_HALT_NEW_RISK &&
+         decision.reason_code=="SPREAD_LIMIT",
+         "safety.matrix_spread_limit",decision.reason_code);
+   context.symbol.ask=1.1001;
+
+   context.account.equity=79000.0;
+   ok=kernel.Evaluate(action,context,decision);
+   Check(ok && decision.verdict==V2_KERNEL_FORCE_REDUCE &&
+         decision.reason_code=="EQUITY_DRAWDOWN_LIMIT",
+         "safety.matrix_equity_drawdown_forces_reduction",decision.reason_code);
+   context.account.equity=100000.0;
+
+   context.exposure.projected_sequence_loss=1000.01;
+   ok=kernel.Evaluate(action,context,decision);
+   Check(ok && decision.verdict==V2_KERNEL_DENY &&
+         decision.reason_code=="SEQUENCE_LOSS_LIMIT",
+         "safety.matrix_sequence_loss_denied",decision.reason_code);
+   context.exposure.projected_sequence_loss=100.0;
+
+   context.exposure.symbol_lots=9.95;
+   ok=kernel.Evaluate(action,context,decision);
+   Check(ok && decision.verdict==V2_KERNEL_DENY &&
+         decision.reason_code=="EXPOSURE_LIMIT",
+         "safety.matrix_symbol_exposure_denied",decision.reason_code);
+   context.exposure.symbol_lots=0.20;
+
+   context.consecutive_broker_errors=5;
+   ok=kernel.Evaluate(action,context,decision);
+   Check(ok && decision.verdict==V2_KERNEL_HALT_NEW_RISK &&
+         decision.reason_code=="BROKER_ERROR_BUDGET",
+         "safety.matrix_broker_error_budget_halts",decision.reason_code);
+   context.consecutive_broker_errors=0;
+
+   context.order_check_ok=false;
+   ok=kernel.Evaluate(action,context,decision);
+   Check(ok && decision.verdict==V2_KERNEL_DENY &&
+         decision.reason_code=="ORDER_CHECK_FAILED",
+         "safety.matrix_order_check_failure_denied",decision.reason_code);
+   context.order_check_ok=true;
+
+   context.order_check_margin_free=119.99;
+   ok=kernel.Evaluate(action,context,decision);
+   Check(ok && decision.verdict==V2_KERNEL_DENY &&
+         decision.reason_code=="MARGIN_BUFFER",
+         "safety.matrix_margin_buffer_denied",decision.reason_code);
+   context.order_check_margin_free=1000.0;
+
+   context.database_healthy=false;
+   ok=kernel.Evaluate(action,context,decision);
+   Check(ok && decision.verdict==V2_KERNEL_HALT_NEW_RISK &&
+         decision.reason_code=="DURABILITY_OR_LEASE_UNAVAILABLE",
+         "safety.matrix_durability_halts",decision.reason_code);
+   context.database_healthy=true;
+
+   context.account.margin_mode=ACCOUNT_MARGIN_MODE_RETAIL_NETTING;
+   ok=kernel.Evaluate(action,context,decision);
+   Check(ok && decision.verdict==V2_KERNEL_DENY &&
+         decision.reason_code=="ACCOUNT_MODE_NOT_HEDGING",
+         "safety.matrix_netting_account_denied",decision.reason_code);
+   context.account.margin_mode=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING;
+
+   context.session_allows_new_risk=false;
+   ok=kernel.Evaluate(action,context,decision);
+   Check(ok && decision.verdict==V2_KERNEL_HALT_NEW_RISK &&
+         decision.reason_code=="NEW_RISK_PREREQUISITE_BLOCKED",
+         "safety.matrix_prerequisite_halts",decision.reason_code);
+  }
+
+void TestSharedPriceNormalization(void)
+  {
+   Check(Near(V2V1ConfiguredPipSize(0.01),0.10,1e-12) &&
+         Near(V2V1ConfiguredPipSize(0.0001),0.0010,1e-12),
+         "normalization.v1_two_and_four_digit_pip_contract");
+   Check(V2V1ConfiguredPipSize(0.0)==0.0,
+         "normalization.invalid_v1_point_fails_closed");
+   Check(Near(V2PriceIncrement(0.0005,0.0001),0.0005,1e-12),
+         "normalization.tick_size_takes_precedence");
+   Check(Near(V2NormalizeMarketPrice(1.23474,0.0005,0.0001),1.2345,1e-12),
+         "normalization.price_uses_tick_size");
+   Check(Near(V2NormalizeMarketPrice(1.23456,0.0,0.0001),1.2346,1e-12),
+         "normalization.zero_tick_falls_back_to_point");
+   Check(V2NormalizeMarketPrice(1.23456,0.0,0.0)==0.0 &&
+         Near(V2PriceEpsilon(0.0,0.0001),0.00005,1e-12),
+         "normalization.invalid_increment_fails_closed");
+   Check(V2HasPhysicalVolume(0.005) && !V2HasPhysicalVolume(0.0),
+         "normalization.sub_step_position_is_real_exposure");
+   Check(!V2ExecutedVolumeSatisfies(0.005,0.01) &&
+         V2ExecutedVolumeSatisfies(0.005,0.005),
+         "normalization.partial_fill_never_uses_half_step_completion");
   }
 
 void TestDurableReductionMandate(void)
@@ -557,7 +840,9 @@ void TestBasketAndRetraceGeometry(void)
    V2BasketPlanConfig config;
    config.Reset();
    config.direction=V2_DIR_LONG;
-   config.executed_level_count=2;
+   config.executed_trade_count=2;
+   config.maximum_trade_count=7;
+   config.executed_level_count=6;
    config.maximum_level_count=7;
    config.lock_distance=0.0030;
    config.lock_flexibility=0.0;
@@ -569,14 +854,24 @@ void TestBasketAndRetraceGeometry(void)
    double volumes[2]={0.10,0.20};
    V2BasketPlan plan;
    bool ok=basket_planner.Build(config,prices,volumes,plan);
-   const double expected_vwap=(1.1000*0.10+1.0900*0.20)/0.30;
-   const double expected_factor=1.0-MathPow(2.0/7.0,2.0);
+   const double expected_vwap=1.0933333333333333;
+   const double expected_factor=0.9183673469387755;
    Check(ok && plan.valid && Near(plan.standing_volume,0.30,1e-12) && Near(plan.entry_vwap,expected_vwap,1e-9),
          "basket.actual_fill_vwap",plan.reason);
    Check(ok && Near(plan.lock_factor,expected_factor,1e-12),
-         "basket.v1_lock_flexibility_curve",plan.reason);
+         "basket.explicit_trade_count_drives_lock_curve",plan.reason);
    Check(ok && plan.take_profit_price>plan.entry_vwap && plan.stop_loss_price<plan.entry_vwap,
          "basket.direction_parameterized_targets",plan.reason);
+
+   V2BasketPlanConfig neutral_flex=config;
+   neutral_flex.lock_flexibility=1.50;
+   V2LockFactorResult lock_result;
+   ok=basket_planner.EvaluateLockFactor(neutral_flex,lock_result);
+   Check(ok && lock_result.valid && Near(lock_result.effective_flexibility,1.0,1e-12) &&
+         Near(lock_result.lock_factor,1.0,1e-12),
+         "basket.lock_flexibility_above_one_is_neutral",lock_result.reason);
+   Check(ok && lock_result.trade_count==2 && lock_result.maximum_trade_count==7,
+         "basket.lock_factor_reports_explicit_trade_basis",lock_result.reason);
 
    double trailing=0.0;
    ok=basket_planner.NextTrailingStop(config,1.1000,1.1001,0.0002,1.0950,trailing);
@@ -592,10 +887,36 @@ void TestBasketAndRetraceGeometry(void)
    Check(Near(next,1.0900,1e-9),"retrace.next_level_moves_toward_profit");
    const double partial=retrace.CumulativePartialClose(1.00,10.0,0.01,100.0,0.01);
    Check(Near(partial,0.10,1e-12),"retrace.cumulative_partial_volume");
+   const double rounded_partial=retrace.CumulativePartialClose(0.26,10.0,0.01,100.0,0.01);
+   Check(Near(rounded_partial,0.03,1e-12),
+         "retrace.release_uses_nearest_step_not_floor");
    const double smart=retrace.PeakSmartClose(1.00,0.60,25.0,50.0,30.0,0.01,100.0,0.01);
    Check(Near(smart,0.20,1e-12),"retrace.peak_smart_excess_and_cap");
    Check(retrace.PeakSmartClose(1.00,0.60,-1.0,50.0,30.0,0.01,100.0,0.01)==0.0,
          "retrace.peak_smart_requires_profit");
+
+   V2PeakSmartRetraceResult smart_result;
+   ok=retrace.EvaluatePeakSmart(1.00,0.60,-1.0,50.0,30.0,0.01,100.0,0.01,smart_result);
+   Check(ok && smart_result.valid &&
+         smart_result.decision==V2_PEAK_SMART_HOLD_WHILE_UNDERWATER &&
+         Near(smart_result.excess_volume,0.40,1e-12) && smart_result.close_volume==0.0,
+         "retrace.peak_smart_underwater_holds_trigger",smart_result.reason);
+
+   ok=retrace.EvaluatePeakSmart(0.60,0.60,-1.0,50.0,30.0,0.01,100.0,0.01,smart_result);
+   Check(ok && smart_result.decision==V2_PEAK_SMART_ADVANCE_WITHOUT_CLOSE &&
+         smart_result.close_volume==0.0,
+         "retrace.peak_smart_no_excess_advances_without_close",smart_result.reason);
+
+   ok=retrace.EvaluatePeakSmart(1.00,0.60,25.0,50.0,30.0,0.01,100.0,0.01,smart_result);
+   Check(ok && smart_result.decision==V2_PEAK_SMART_CLOSE_AND_ADVANCE &&
+         Near(smart_result.requested_close_volume,0.20,1e-12) &&
+         Near(smart_result.close_volume,0.20,1e-12),
+         "retrace.peak_smart_profitable_excess_closes_and_advances",smart_result.reason);
+
+   ok=retrace.EvaluatePeakSmart(0.61,0.60,1.0,10.0,30.0,0.01,100.0,0.01,smart_result);
+   Check(ok && smart_result.decision==V2_PEAK_SMART_ADVANCE_WITHOUT_CLOSE &&
+         Near(smart_result.requested_close_volume,0.001,1e-12) && smart_result.close_volume==0.0,
+         "retrace.peak_smart_subminimum_release_advances_without_close",smart_result.reason);
   }
 
 void TestIdentityAndMagic(void)
@@ -644,15 +965,98 @@ void TestIdentityAndMagic(void)
          "identity.canonical_event_id_deterministic");
   }
 
+void BaseReceiptFixture(V2Receipt &receipt,const string policy_reason)
+  {
+   receipt.Reset();
+   receipt.kind=V2_RECEIPT_SHADOW_DECISION;
+   receipt.occurred_at_msc=1767225600123;
+   receipt.canonical_number=42;
+   receipt.state_version=42;
+   receipt.deployment_id="dep_unit";
+   receipt.portfolio_generation_id="gen_unit";
+   receipt.strategy_member_id="member_café_東京";
+   receipt.sequence_id="seq_unit";
+   receipt.event_id="evt_unit";
+   receipt.experiment_manifest_id="manifest_unit";
+   receipt.symbol="EURUSD";
+   receipt.direction=V2_DIR_LONG;
+   receipt.level_index=2;
+   receipt.action=V2_ACTION_ADD;
+   receipt.risk_effect=V2_RISK_INCREASE;
+   receipt.policy_reason=policy_reason;
+   receipt.feature_snapshot="{\"source\":\"café-東京\"}";
+   receipt.requested_volume=0.10;
+   receipt.requested_price=1.23456;
+  }
+
+void TestReceiptUtf8AndDeterminism(void)
+  {
+   const string utf8_text="café-東京";
+   Check(V2Utf8ByteCount(utf8_text)==12,
+         "receipt.utf8_byte_count_uses_encoded_bytes");
+   Check(V2Sha256Hex(utf8_text)=="7E75AD0C0816664EC7EB0128674222DD972F82301CE4B489CCE6B45114AE22AC",
+         "receipt.utf8_sha256_matches_external_vector");
+   Check(V2Sha256Hex("abc")=="BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD",
+         "receipt.ascii_sha256_matches_nist_vector");
+
+   CV2ReceiptBuilder builder;
+   V2Receipt first;
+   V2Receipt same;
+   BaseReceiptFixture(first,utf8_text);
+   BaseReceiptFixture(same,utf8_text);
+   string first_reason="";
+   string same_reason="";
+   bool first_ok=builder.Build(first,first_reason);
+   bool same_ok=builder.Build(same,same_reason);
+   Check(first_ok && same_ok && StringLen(first.payload_hash)==64 &&
+         first.receipt_id=="rcp_"+first.payload_hash,
+         "receipt.utf8_fixture_builds",first_reason+"|"+same_reason);
+   Check(first_ok && same_ok && first.canonical_payload==same.canonical_payload &&
+         first.payload_hash==same.payload_hash && first.receipt_id==same.receipt_id,
+         "receipt.identical_inputs_are_byte_deterministic");
+
+   string validation_reason="";
+   Check(first_ok && builder.Validate(first,validation_reason),
+         "receipt.canonical_payload_validates",validation_reason);
+
+   V2Receipt changed;
+   BaseReceiptFixture(changed,utf8_text+"!");
+   string changed_reason="";
+   bool changed_ok=builder.Build(changed,changed_reason);
+   Check(changed_ok && changed.canonical_payload!=first.canonical_payload &&
+         changed.payload_hash!=first.payload_hash && changed.receipt_id!=first.receipt_id,
+         "receipt.one_byte_change_changes_identity",changed_reason);
+  }
+
 void TestDefaultInputContract(void)
   {
    string reason="";
    bool ok=V2ValidateInputs(reason);
    Check(ok,"inputs.default_contract_is_valid",reason);
+   Check(V2_Mode_Operation==TRADING && V2OperationModeName(V2_Mode_Operation)=="TRADING",
+         "inputs.default_operation_is_trading_surface");
+   Check(V2OperationModeName(PORTFOLIO_DASHBOARD)=="PORTFOLIO_DASHBOARD" &&
+         V2OperationModeName(OPTIMIZATION_STUDIO)=="OPTIMIZATION_STUDIO" &&
+         V2OperationModeName(REPORT_PROCESSOR)=="REPORT_PROCESSOR",
+         "operation.mode_names_match_product_contract");
    Check(V2_RunMode==V2_RUN_MANAGE_ONLY && !V2_EnableNewRisk,
          "inputs.new_risk_disabled_by_default");
    Check(V2_StateMode<=V2_STATE_SHADOW && V2_OnnxMode==V2_ONNX_DISABLED,
           "inputs.future_influence_modes_are_gated");
+   Check(V2OperationModeAllowsExecutionPath(TRADING) &&
+         !V2OperationModeAllowsExecutionPath(PORTFOLIO_DASHBOARD) &&
+         !V2OperationModeAllowsExecutionPath(OPTIMIZATION_STUDIO) &&
+         !V2OperationModeAllowsExecutionPath(REPORT_PROCESSOR),
+         "operation.only_trading_has_execution_path");
+   Check(V2OperationModeDeliveryPhase(TRADING)==1 &&
+         V2OperationModeDeliveryPhase(PORTFOLIO_DASHBOARD)==4 &&
+         V2OperationModeDeliveryPhase(OPTIMIZATION_STUDIO)==5 &&
+         V2OperationModeDeliveryPhase(REPORT_PROCESSOR)==5,
+         "operation.delivery_phases_match_blueprint");
+   Check(StringFind(V2OperationModeStatus(PORTFOLIO_DASHBOARD),"PLACEHOLDER")>=0 &&
+         StringFind(V2OperationModeStatus(OPTIMIZATION_STUDIO),"PLACEHOLDER")>=0 &&
+         StringFind(V2OperationModeStatus(REPORT_PROCESSOR),"PLACEHOLDER")>=0,
+         "operation.nontrading_statuses_are_honest_placeholders");
   }
 
 void TestCertificationBookkeepingContract(void)
@@ -725,6 +1129,43 @@ void TestCertificationBookkeepingContract(void)
          "certification.validator_cross_checks_backend",reason);
   }
 
+void TestFeatureSourceAgeContract(void)
+  {
+   const long observed_at_msc=(long)D'2026.01.01 10:30:00'*1000;
+   long age_msc=0;
+   bool ready=V2ClosedBarAvailabilityAgeMsc(observed_at_msc,
+                                            D'2026.01.01 10:00:00',
+                                            age_msc);
+   Check(ready && age_msc==1800000,
+         "features.closed_bar_age_uses_availability_boundary");
+
+   age_msc=-1;
+   ready=V2ClosedBarAvailabilityAgeMsc(observed_at_msc,
+                                       D'2026.01.01 11:00:00',
+                                       age_msc);
+   Check(!ready && age_msc==0,
+         "features.future_availability_is_not_ready");
+  }
+
+void TestBrokerUncertaintyContract(void)
+  {
+   Check(V2BrokerResultIsUncertain(false,0,false,false),
+         "gateway.false_send_without_retcode_is_uncertain");
+   Check(V2BrokerResultIsUncertain(false,TRADE_RETCODE_TIMEOUT,false,false) &&
+         V2BrokerResultIsUncertain(false,TRADE_RETCODE_CONNECTION,false,false),
+         "gateway.timeout_and_connection_are_uncertain");
+   Check(!V2BrokerResultIsUncertain(false,TRADE_RETCODE_REJECT,false,false),
+         "gateway.terminal_reject_is_not_uncertain");
+   Check(V2BrokerResultIsUncertain(true,TRADE_RETCODE_PLACED,true,false) &&
+         !V2BrokerResultIsUncertain(true,TRADE_RETCODE_DONE,true,true),
+         "gateway.terminal_action_requires_confirmation");
+   Check(V2BrokerIntentOrderTicket(V2_ACTION_CANCEL,0,987654)==987654,
+         "gateway.cancel_target_ticket_survives_pre_send_persistence");
+   Check(V2BrokerIntentOrderTicket(V2_ACTION_OPEN,123456,0)==123456 &&
+         V2BrokerIntentOrderTicket(V2_ACTION_OPEN,0,987654)==0,
+         "gateway.non_cancel_order_ticket_uses_broker_result_only");
+  }
+
 void WriteSummary(void)
   {
    FolderCreate("GOAT2",FILE_COMMON);
@@ -751,13 +1192,19 @@ int OnInit(void)
    TestDurableReductionMandate();
    TestOrderIntentTransitions();
    TestAllLotProgressions();
+   TestExplicitLotGeometry();
    TestGridGeometry();
    TestCompatibilityRiskPath();
    TestSafetyRiskClassification();
+   TestSafetyEvaluateMatrix();
+   TestSharedPriceNormalization();
    TestBasketAndRetraceGeometry();
    TestIdentityAndMagic();
+   TestReceiptUtf8AndDeterminism();
    TestDefaultInputContract();
    TestCertificationBookkeepingContract();
+   TestFeatureSourceAgeContract();
+   TestBrokerUncertaintyContract();
    WriteSummary();
    return(g_failed==0 ? INIT_SUCCEEDED : INIT_FAILED);
   }

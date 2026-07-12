@@ -6,11 +6,18 @@
     "source": "v2/tests/GOAT2_Phase1_UnitTests.mq5",
     "requires": [
       "v2/Domain.mqh",
+      "v2/Clock.mqh",
       "v2/Identity.mqh",
       "v2/Inputs_V2.mqh",
+      "v2/OperationMode.mqh",
+      "v2/Normalization.mqh",
       "v2/SafetyKernel.mqh",
       "v2/Core_Sequence.mqh",
-      "v2/Core_Risk.mqh"
+      "v2/Core_Risk.mqh",
+      "v2/Receipts.mqh",
+      "v2/StateDB.mqh",
+      "v2/Features.mqh",
+      "v2/BrokerGateway.mqh"
     ],
     "expectedErrors": 0,
     "expectedWarnings": 0
@@ -38,6 +45,9 @@
       "id": "order_intent_lifecycle",
       "covers": [
         "persist before ordinary submit",
+        "submitted intent cancellation",
+        "pre-send persisted intent cancellation",
+        "cancelled intents are terminal",
         "partial-fill repetition",
         "terminal-state rejection",
         "reductions also require durable persistence"
@@ -66,6 +76,7 @@
       ],
       "covers": [
         "V1-compatible geometry",
+        "independently calculated constants for all seven progression modes",
         "V2 post-rounding cumulative cap",
         "V2 per-trade cap",
         "live-standing CumPartial and PeakSmart calculations"
@@ -76,7 +87,9 @@
       "covers": [
         "ATR-relative negative input convention",
         "V1 zero-factor rejection",
-        "defined V2 neutral-factor fallback",
+        "V2 zero-factor fail-closed rejection",
+        "zero Grid_Min maps to the V1 half-ATR floor",
+        "two-digit symbol V1 pip-scale fixture",
         "inverted-bound rejection",
         "zero-base rejection"
       ]
@@ -98,19 +111,45 @@
         "entry-order cancellation",
         "protective-order cancellation",
         "risk reduction while halted",
-        "new-risk block in manage-only"
+        "dust full-close volume preservation",
+        "new-risk block in manage-only",
+        "allow-path invariant matrix",
+        "spread, drawdown, loss, exposure, broker-error, order-check, margin, durability, account-mode, and prerequisite vetoes"
       ]
     },
     {
       "id": "basket_and_retrace_geometry",
       "covers": [
         "actual-fill VWAP",
-        "V1 lock-flexibility curve",
+        "V1 lock-flexibility curve on explicit trade count",
+        "lock flexibility above one is neutral",
         "direction-parameterized TP and SL",
         "legal monotonic trailing stop",
         "retrace ordering toward profit",
-        "CumPartial release volume",
-        "PeakSmart profitable-excess release and cap"
+        "CumPartial nearest-step release volume",
+        "PeakSmart underwater hold, no-close advance, and close-and-advance decisions"
+      ]
+    },
+    {
+      "id": "shared_price_normalization",
+      "covers": [
+        "V1 two- and four-digit configured pip migration",
+        "tradable tick-size precedence",
+        "point fallback when tick size is unavailable",
+        "fail-closed behavior when neither increment exists",
+        "shared epsilon fallback",
+        "sub-step broker positions remain physical exposure",
+        "fill completion uses physical rather than half-step tolerance"
+      ]
+    },
+    {
+      "id": "receipt_utf8_determinism",
+      "covers": [
+        "UTF-8 byte count",
+        "external non-ASCII SHA-256 vector",
+        "external ASCII SHA-256 vector",
+        "canonical receipt determinism",
+        "one-byte mutation changes receipt identity"
       ]
     },
     {
@@ -126,9 +165,28 @@
     {
       "id": "default_input_gates",
       "covers": [
+        "TRADING product-surface default",
         "manage-only default",
         "new-risk disabled default",
-        "Phase-2 and Phase-3 influence gates"
+        "Phase-2 and Phase-3 influence gates",
+        "only TRADING exposes an execution path",
+        "dashboard, studio, and report modes are honest phased placeholders"
+      ]
+    },
+    {
+      "id": "feature_source_age_contract",
+      "covers": [
+        "closed-bar values age from their availability boundary",
+        "future availability timestamps are not ready"
+      ]
+    },
+    {
+      "id": "broker_uncertainty_contract",
+      "covers": [
+        "false OrderSend with no retcode requires reconciliation",
+        "timeout and connection retcodes require reconciliation",
+        "terminal rejects remain proven rejects",
+        "terminal actions require explicit completion evidence"
       ]
     },
     {
@@ -141,6 +199,40 @@
       ]
     }
   ],
+  "runtimeGates": [
+    {
+      "id": "state_db_contract",
+      "source": "v2/tests/GOAT2_StateDB_ContractTests.mq5",
+      "expert": "GOAT-EA\\v2\\tests\\GOAT2_StateDB_ContractTests.ex5",
+      "resultArtifact": "FILE_COMMON\\GOAT2\\tests\\state-db-contract-result.json",
+      "covers": [
+        "exclusive ANSI writer lease",
+        "explicit read-only recovery denies mutation",
+        "canonical PERSISTED-to-SUBMITTED intent bridge for rejected and uncertain outcomes",
+        "uncertain outcomes remain recoverable",
+        "canonical risk high-water rounding is monotonic and idempotent"
+      ]
+    },
+    {
+      "id": "real_gateway_open_reduce_flat",
+      "source": "v2/tests/GOAT2_Gateway_Integration.mq5",
+      "expert": "GOAT-EA\\v2\\tests\\GOAT2_Gateway_Integration.ex5",
+      "resultArtifact": "FILE_COMMON\\GOAT2\\tests\\gateway-integration-result.json",
+      "covers": [
+        "real manager-to-kernel-to-gateway open",
+        "broker, runtime, and persisted volume reconciliation",
+        "real forced full reduction to broker flat",
+        "durable high-water latch re-arm without regression",
+        "three post-degradation healthy passes before supervised re-promotion"
+      ]
+    }
+  ],
+  "schemaGenerationAudit": {
+    "command": "python scripts/generate_goat2_inputs.py --check",
+    "source": "v2/schema/inputs_v2.schema.json",
+    "artifact": "v2/Inputs_V2.mqh",
+    "requiresEmbeddedSchemaSha256": true
+  },
   "boundaryAudit": {
     "command": "powershell -ExecutionPolicy Bypass -File scripts/check_goat2_boundaries.ps1 -RequireGateway",
     "allowedMutationFile": "v2/BrokerGateway.mqh",

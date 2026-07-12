@@ -411,11 +411,16 @@ public:
                reason="SEQUENCE_NOT_MANAGEABLE";
                return false;
               }
-            if(event.order_intent_id=="" || event.volume<=0.0 || event.price<=0.0 || !MathIsValidNumber(event.volume) || !MathIsValidNumber(event.price))
+             if(event.order_intent_id=="" || event.volume<=0.0 || event.price<=0.0 || !MathIsValidNumber(event.volume) || !MathIsValidNumber(event.price))
               {
                reason="FILL_PAYLOAD_INVALID";
-               return false;
-              }
+                return false;
+               }
+             if(event.risk_effect!=V2_RISK_INCREASE && event.risk_effect!=V2_RISK_DECREASE)
+               {
+                reason="FILL_RISK_EFFECT_REQUIRED";
+                return false;
+               }
             if((state.status==V2_SEQ_REDUCE_ONLY || state.status==V2_SEQ_QUARANTINED) && event.risk_effect!=V2_RISK_DECREASE)
               {
                reason="ONLY_RISK_DECREASE_ALLOWED";
@@ -525,6 +530,12 @@ public:
             return true;
 
          case V2_EVENT_RECOVERY_QUARANTINED:
+            if(state.status==V2_SEQ_IDLE || state.status==V2_SEQ_ENDED)
+              {
+               reason="RECOVERY_QUARANTINE_REQUIRES_MANAGEABLE_SEQUENCE";
+               return false;
+              }
+            return true;
          case V2_EVENT_OPERATIONAL_STATE_CHANGED:
             return true;
         }
@@ -589,6 +600,8 @@ public:
             state.rescue_armed=true;
             break;
          case V2_EVENT_REDUCTION_MANDATED:
+            if(state.status==V2_SEQ_ACTIVE)
+               state.status=V2_SEQ_REDUCE_ONLY;
             state.reduction_remaining=event.volume;
             state.reduction_semantic_level=event.level_index;
             state.reduction_reason=event.reason_code;
@@ -601,6 +614,8 @@ public:
             state.reduction_semantic_level=-1;
             state.reduction_reason="";
             state.retrace_advance_pending=false;
+            if(state.status==V2_SEQ_REDUCE_ONLY)
+               state.status=V2_SEQ_ACTIVE;
             break;
          case V2_EVENT_RECOVERY_QUARANTINED:
             state.status=V2_SEQ_QUARANTINED;
@@ -630,7 +645,7 @@ public:
                        string &reason) const
      {
       reason="";
-      if(current==next && (current==V2_INTENT_PARTIAL || current==V2_INTENT_RECONCILE_REQUIRED))
+      if(current==next)
          return true;
       switch(current)
         {
@@ -642,9 +657,9 @@ public:
             if(next==V2_INTENT_SUBMITTED || next==V2_INTENT_CANCELLED)
                return true;
             break;
-         case V2_INTENT_SUBMITTED:
-            if(next==V2_INTENT_ACCEPTED || next==V2_INTENT_PARTIAL || next==V2_INTENT_FILLED || next==V2_INTENT_REJECTED || next==V2_INTENT_RECONCILE_REQUIRED)
-               return true;
+          case V2_INTENT_SUBMITTED:
+             if(next==V2_INTENT_ACCEPTED || next==V2_INTENT_PARTIAL || next==V2_INTENT_FILLED || next==V2_INTENT_REJECTED || next==V2_INTENT_CANCELLED || next==V2_INTENT_RECONCILE_REQUIRED)
+                return true;
             break;
          case V2_INTENT_ACCEPTED:
             if(next==V2_INTENT_PARTIAL || next==V2_INTENT_FILLED || next==V2_INTENT_REJECTED || next==V2_INTENT_CANCELLED || next==V2_INTENT_RECONCILE_REQUIRED)

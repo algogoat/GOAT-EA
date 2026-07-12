@@ -67,7 +67,14 @@ public:
       envelope.depth_factor=1.0;
       envelope.allow_new_sequence=true;
       envelope.allow_add=true;
-      envelope.reason_code=(m_mode==V2_STATE_DISABLED ? "STATE_DISABLED" : "STATE_SHADOW_NO_INFLUENCE");
+      if(m_mode==V2_STATE_DISABLED)
+         envelope.reason_code="STATE_DISABLED";
+      else if(m_mode==V2_STATE_DISPLAY)
+         envelope.reason_code="STATE_DISPLAY_ONLY";
+      else if(!state.valid)
+         envelope.reason_code="STATE_SHADOW_ABSTAIN_NO_VALID_STATE";
+      else
+         envelope.reason_code="STATE_SHADOW_OBSERVED_NO_POLICY_CERTIFIED";
       return true;
      }
   };

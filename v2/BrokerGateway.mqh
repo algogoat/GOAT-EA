@@ -6,6 +6,7 @@
 #include "SafetyKernel.mqh"
 #include "StateDB.mqh"
 #include "Receipts.mqh"
+#include "Clock.mqh"
 
 #define V2_GATEWAY_RING_CAPACITY 512
 
@@ -53,6 +54,27 @@ struct V2GatewayOutcome
      }
   };
 
+bool V2BrokerResultIsUncertain(const bool accepted,
+                               const uint retcode,
+                               const bool terminal_action,
+                               const bool terminal_action_confirmed)
+  {
+   const bool reconciliation_retcode=(retcode==TRADE_RETCODE_TIMEOUT ||
+                                      retcode==TRADE_RETCODE_CONNECTION ||
+                                      retcode==0);
+   return((!accepted && reconciliation_retcode) ||
+          (terminal_action && accepted && !terminal_action_confirmed));
+  }
+
+ulong V2BrokerIntentOrderTicket(const ENUM_V2_ACTION_KIND action,
+                                const ulong broker_result_order,
+                                const ulong target_order)
+  {
+   if(broker_result_order!=0)
+      return broker_result_order;
+   return(action==V2_ACTION_CANCEL ? target_order : 0);
+  }
+
 class CV2BrokerGateway
   {
 private:
@@ -88,18 +110,6 @@ private:
       return NormalizeDouble(normalized,8);
      }
 
-   double NormalizePrice(const string symbol,const double price) const
-     {
-      if(price<=0.0)
-         return 0.0;
-      double tick=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
-      if(tick<=0.0)
-         tick=SymbolInfoDouble(symbol,SYMBOL_POINT);
-      if(tick<=0.0)
-         return 0.0;
-      return MathRound(price/tick)*tick;
-     }
-
    ENUM_ORDER_TYPE_FILLING FillingMode(const string symbol) const
      {
       long flags=0;
@@ -119,11 +129,6 @@ private:
              retcode==TRADE_RETCODE_DONE_PARTIAL ||
              retcode==TRADE_RETCODE_NO_CHANGES ||
              retcode==TRADE_RETCODE_ORDER_CHANGED);
-     }
-
-   bool RetcodeRequiresReconciliation(const uint retcode) const
-     {
-      return(retcode==TRADE_RETCODE_TIMEOUT || retcode==TRADE_RETCODE_CONNECTION || retcode==0);
      }
 
    bool PrepareAction(const V2BrokerAction &source,V2BrokerAction &action,string &reason) const
@@ -164,24 +169,49 @@ private:
          action.current_stop_loss=PositionGetDouble(POSITION_SL);
          action.current_take_profit=PositionGetDouble(POSITION_TP);
          double position_volume=PositionGetDouble(POSITION_VOLUME);
-         if(action.action==V2_ACTION_CLOSE)
-            action.volume=position_volume;
-         else if(action.action==V2_ACTION_PARTIAL_CLOSE)
-            action.volume=MathMin(action.volume,position_volume);
+          if(action.action==V2_ACTION_CLOSE)
+             action.volume=position_volume;
+          else if(action.action==V2_ACTION_PARTIAL_CLOSE)
+            {
+             action.volume=MathMin(action.volume,position_volume);
+             const double minimum=SymbolInfoDouble(action.symbol,SYMBOL_VOLUME_MIN);
+             if(position_volume-action.volume<minimum-1e-12)
+               {
+                action.action=V2_ACTION_CLOSE;
+                action.volume=position_volume;
+               }
+            }
+         }
+
+      if(action.action==V2_ACTION_CANCEL)
+        {
+         if(action.order_ticket==0 || !OrderSelect(action.order_ticket))
+           { reason="ORDER_TARGET_NOT_FOUND"; return false; }
+         if((ulong)OrderGetInteger(ORDER_MAGIC)!=action.magic ||
+            OrderGetString(ORDER_SYMBOL)!=action.symbol)
+           { reason="ORDER_OWNERSHIP_MISMATCH"; return false; }
+         // The broker record, never the caller, decides whether cancellation
+         // removes protection from an existing position.
+         action.cancels_protective_order=((ulong)OrderGetInteger(ORDER_POSITION_ID)!=0);
         }
 
       if(action.action==V2_ACTION_OPEN || action.action==V2_ACTION_ADD || action.action==V2_ACTION_PARTIAL_CLOSE || action.action==V2_ACTION_CLOSE)
         {
-         action.volume=NormalizeVolumeDown(action.symbol,action.volume);
+         if(action.action!=V2_ACTION_CLOSE)
+            action.volume=NormalizeVolumeDown(action.symbol,action.volume);
+         else
+            action.volume=NormalizeDouble(action.volume,8);
          if(action.volume<=0.0)
            {
             reason="ACTION_VOLUME_NORMALIZATION_FAILED";
             return false;
            }
         }
-      action.price=NormalizePrice(action.symbol,action.price);
-      action.stop_loss=NormalizePrice(action.symbol,action.stop_loss);
-      action.take_profit=NormalizePrice(action.symbol,action.take_profit);
+      const double tick_size=SymbolInfoDouble(action.symbol,SYMBOL_TRADE_TICK_SIZE);
+      const double point=SymbolInfoDouble(action.symbol,SYMBOL_POINT);
+      action.price=V2NormalizeMarketPrice(action.price,tick_size,point);
+      action.stop_loss=V2NormalizeMarketPrice(action.stop_loss,tick_size,point);
+      action.take_profit=V2NormalizeMarketPrice(action.take_profit,tick_size,point);
       return true;
      }
 
@@ -199,13 +229,15 @@ private:
          reason="SYMBOL_TICK_UNAVAILABLE";
          return false;
         }
+      const double tick_size=SymbolInfoDouble(action.symbol,SYMBOL_TRADE_TICK_SIZE);
+      const double point=SymbolInfoDouble(action.symbol,SYMBOL_POINT);
 
       if(action.action==V2_ACTION_OPEN || action.action==V2_ACTION_ADD)
         {
          request.action=TRADE_ACTION_DEAL;
          request.type=(action.direction==V2_DIR_LONG ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
          request.volume=action.volume;
-         request.price=(action.direction==V2_DIR_LONG ? tick.ask : tick.bid);
+         request.price=V2NormalizeMarketPrice((action.direction==V2_DIR_LONG ? tick.ask : tick.bid),tick_size,point);
          request.sl=action.stop_loss;
          request.tp=action.take_profit;
          request.type_filling=FillingMode(action.symbol);
@@ -219,7 +251,7 @@ private:
          request.position=action.position_ticket;
          request.type=(action.direction==V2_DIR_LONG ? ORDER_TYPE_SELL : ORDER_TYPE_BUY);
          request.volume=action.volume;
-         request.price=(action.direction==V2_DIR_LONG ? tick.bid : tick.ask);
+         request.price=V2NormalizeMarketPrice((action.direction==V2_DIR_LONG ? tick.bid : tick.ask),tick_size,point);
          request.type_filling=FillingMode(action.symbol);
          request.type_time=ORDER_TIME_GTC;
          return true;
@@ -310,9 +342,13 @@ private:
       context.database_healthy=(m_database!=NULL && m_database.IsOpen() && m_database.IsWritable());
       context.writer_lease_held=(m_database!=NULL && (m_database.HasLease() || !m_database.IsDurable()));
       context.new_risk_enabled=m_new_risk_enabled;
-      context.session_allows_new_risk=true;
-      context.feed_allows_new_risk=true;
-      context.license_allows_new_risk=true;
+      context.session_allows_new_risk=(context.symbol.trade_mode==SYMBOL_TRADE_MODE_FULL ||
+                                       context.symbol.trade_mode==SYMBOL_TRADE_MODE_LONGONLY ||
+                                       context.symbol.trade_mode==SYMBOL_TRADE_MODE_SHORTONLY);
+      context.feed_allows_new_risk=(tick.time_msc>0 && tick.bid>0.0 && tick.ask>=tick.bid);
+      context.license_allows_new_risk=((bool)AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) &&
+                                       (bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) &&
+                                       (bool)MQLInfoInteger(MQL_TRADE_ALLOWED));
       context.consecutive_broker_errors=m_consecutive_broker_errors;
 
       ResetLastError();
@@ -331,7 +367,7 @@ private:
      {
       receipt.Reset();
       receipt.kind=V2_RECEIPT_ORDER_SUBMISSION;
-      receipt.occurred_at_msc=(long)TimeCurrent()*1000;
+      receipt.occurred_at_msc=V2UtcNowMsc();
       receipt.deployment_id=m_identity.DeploymentId();
       receipt.portfolio_generation_id=m_identity.GenerationId();
       receipt.strategy_member_id=m_identity.MemberId();
@@ -494,7 +530,7 @@ public:
                outcome.reason_code="ORDER_INTENT_COUNTER_REQUIRED:"+reason;
                return outcome.status;
               }
-            ordinal=(long)TimeCurrent()*1000000+(long)(GetMicrosecondCount()%1000000);
+            ordinal=(long)V2UtcNow()*1000000+(long)(GetMicrosecondCount()%1000000);
            }
          if(!m_identity.OrderIntentId(action.sequence_id,action.action,ordinal,action.order_intent_id))
            {
@@ -545,13 +581,34 @@ public:
          request.tp=outcome.safety.normalized_take_profit;
         }
 
+      // OrderCheck must observe the exact normalized request that OrderSend
+      // will receive.  Re-evaluate the kernel with that final broker check so
+      // margin and request validity cannot be certified on stale fields.
+      MqlTradeCheckResult final_check;
+      V2SafetyContext final_context;
+      BuildSafetyContext(action,request,final_context,final_check);
+      V2SafetyDecision final_safety;
+      if(!m_kernel.Evaluate(action,final_context,final_safety) ||
+         (final_safety.verdict!=V2_KERNEL_ALLOW && final_safety.verdict!=V2_KERNEL_ALLOW_REDUCE_ONLY))
+        {
+         outcome.safety=final_safety;
+         outcome.reason_code=final_safety.reason_code;
+         string veto_reason="";
+         if(!PersistKernelVeto(action,request,final_safety,veto_reason))
+           {
+            outcome.requires_manage_only=true;
+            outcome.reason_code+="|FINAL_VETO_RECEIPT_FAILED:"+veto_reason;
+           }
+         return outcome.status;
+        }
+      outcome.safety=final_safety;
+
       V2OrderIntent intent;
       intent.Reset();
       intent.order_intent_id=action.order_intent_id;
       intent.sequence_id=action.sequence_id;
       intent.action=action.action;
       intent.risk_effect=action.risk_effect;
-      intent.status=V2_INTENT_PERSISTED;
       intent.direction=action.direction;
       intent.symbol=action.symbol;
       intent.magic=action.magic;
@@ -560,9 +617,17 @@ public:
       intent.requested_price=request.price;
       intent.stop_loss=request.sl;
       intent.take_profit=request.tp;
+      intent.order_ticket=V2BrokerIntentOrderTicket(action.action,0,action.order_ticket);
       intent.position_id=action.position_id;
-      intent.created_at=TimeCurrent();
+      intent.created_at=V2UtcNow();
       intent.reason_code=action.reason_code;
+      CV2OrderIntentMachine intent_machine;
+      string transition_reason="";
+      if(!intent_machine.Apply(V2_INTENT_PERSISTED,intent,transition_reason))
+        {
+         outcome.reason_code="INTENT_PERSIST_TRANSITION_FAILED:"+transition_reason;
+         return outcome.status;
+        }
 
       V2Receipt receipt;
       BuildPreSubmissionReceipt(action,request,outcome.safety,receipt);
@@ -592,17 +657,23 @@ public:
       const ulong send_started_micros=GetMicrosecondCount();
       bool submitted=OrderSend(request,result);
       const ulong send_latency_micros=GetMicrosecondCount()-send_started_micros;
+      const int send_error=GetLastError();
       const bool accepted=(submitted && RetcodeAccepted(result.retcode));
       const bool terminal_action=(action.action==V2_ACTION_MODIFY || action.action==V2_ACTION_CANCEL);
       const bool terminal_action_confirmed=(terminal_action && accepted &&
                                             (result.retcode==TRADE_RETCODE_DONE ||
                                              result.retcode==TRADE_RETCODE_NO_CHANGES ||
                                              result.retcode==TRADE_RETCODE_ORDER_CHANGED));
-      const bool uncertain=(submitted && ((!accepted && RetcodeRequiresReconciliation(result.retcode)) ||
-                                          (terminal_action && accepted && !terminal_action_confirmed)));
+      // A timeout, connection loss, or absent server retcode is uncertain even
+      // when OrderSend returns false.  GetLastError is retained as diagnostic
+      // evidence; it cannot prove non-execution when no server retcode exists.
+      const bool uncertain=V2BrokerResultIsUncertain(accepted,result.retcode,
+                                                     terminal_action,
+                                                     terminal_action_confirmed);
       outcome.order_send_returned_true=submitted;
       outcome.request_id=(ulong)result.request_id;
-      outcome.order_ticket=result.order;
+      outcome.order_ticket=V2BrokerIntentOrderTicket(action.action,result.order,
+                                                     action.order_ticket);
       outcome.deal_ticket=result.deal;
       outcome.retcode=result.retcode;
       outcome.retcode_external=result.retcode_external;
@@ -612,14 +683,25 @@ public:
       intent.order_ticket=outcome.order_ticket;
       intent.deal_ticket=outcome.deal_ticket;
       intent.retcode=result.retcode;
-      intent.status=(terminal_action_confirmed ?
-                     (action.action==V2_ACTION_CANCEL ? V2_INTENT_CANCELLED : V2_INTENT_FILLED) :
-                     ((accepted && !uncertain) ? V2_INTENT_SUBMITTED :
-                      (uncertain ? V2_INTENT_RECONCILE_REQUIRED : V2_INTENT_REJECTED)));
+      const ENUM_V2_ORDER_INTENT_STATUS terminal_status=(terminal_action_confirmed ?
+                                                          (action.action==V2_ACTION_CANCEL ? V2_INTENT_CANCELLED : V2_INTENT_FILLED) :
+                                                          ((accepted && !uncertain) ? V2_INTENT_SUBMITTED :
+                                                           (uncertain ? V2_INTENT_RECONCILE_REQUIRED : V2_INTENT_REJECTED)));
+      if(!intent_machine.Apply(V2_INTENT_SUBMITTED,intent,transition_reason) ||
+         (terminal_status!=V2_INTENT_SUBMITTED && !intent_machine.Apply(terminal_status,intent,transition_reason)))
+        {
+         m_requires_full_reconciliation=true;
+         m_operational_state=V2_OP_MANAGE_ONLY;
+         m_new_risk_enabled=false;
+         outcome.requires_manage_only=true;
+         outcome.reason_code="INTENT_RESULT_TRANSITION_FAILED:"+transition_reason;
+         return outcome.status;
+        }
       intent.reason_code=(terminal_action_confirmed ?
                           (action.action==V2_ACTION_CANCEL ? "CANCEL_CONFIRMED" : "PROTECTION_MODIFY_CONFIRMED") :
                           ((accepted && !uncertain) ? "ORDER_SEND_SUBMITTED" :
-                           (uncertain ? "ORDER_SEND_UNCERTAIN" : "ORDER_SEND_REJECTED")));
+                           (uncertain ? "ORDER_SEND_UNCERTAIN" : "ORDER_SEND_REJECTED")))+
+                         ":terminalError="+IntegerToString(send_error);
 
       V2DomainEvent event;
       event.Reset();
@@ -629,7 +711,7 @@ public:
       event.risk_effect=action.risk_effect;
       event.direction=action.direction;
       event.symbol=action.symbol;
-      event.occurred_at=TimeCurrent();
+      event.occurred_at=V2UtcNow();
       event.state_version=action.state_version;
       event.sequence_id=action.sequence_id;
       event.order_intent_id=action.order_intent_id;
@@ -666,6 +748,7 @@ public:
          m_operational_state=V2_OP_MANAGE_ONLY;
          m_new_risk_enabled=false;
          outcome.status=V2_GATEWAY_RECONCILE_REQUIRED;
+         outcome.requires_manage_only=true;
          outcome.reason_code="POST_SUBMISSION_PERSISTENCE_FAILED:"+persistence_reason;
          return outcome.status;
         }
@@ -679,7 +762,9 @@ public:
          m_new_risk_enabled=false;
          outcome.requires_manage_only=true;
          outcome.status=V2_GATEWAY_RECONCILE_REQUIRED;
-         outcome.reason_code="SUBMISSION_RESULT_UNCERTAIN";
+         outcome.reason_code="SUBMISSION_RESULT_UNCERTAIN:retcode="+
+                             IntegerToString((long)result.retcode)+
+                             ":terminalError="+IntegerToString(send_error);
         }
       else if(accepted && !uncertain)
         {
@@ -712,7 +797,7 @@ public:
         }
       V2TradeObservation observation;
       observation.Reset();
-      observation.captured_at_msc=(long)TimeCurrent()*1000;
+      observation.captured_at_msc=V2UtcNowMsc();
       observation.transaction_type=(int)transaction.type;
       observation.request_id=(ulong)result.request_id;
       observation.order_ticket=transaction.order;
@@ -758,6 +843,11 @@ public:
      }
 
    bool RequiresFullReconciliation(void) const { return m_requires_full_reconciliation; }
+   void AcknowledgeFullReconciliation(void)
+     {
+      if(m_ring_count==0 && !m_ring_overflow)
+         m_requires_full_reconciliation=false;
+     }
    bool RingOverflowed(void) const { return m_ring_overflow; }
    int PendingObservationCount(void) const { return m_ring_count; }
    ENUM_V2_OPERATIONAL_STATE OperationalState(void) const { return m_operational_state; }

@@ -38,7 +38,7 @@ The runtime experiment manifest stores a normalized hash of trading/runtime inpu
 | Ticket arrays and direction-wide ownership | REDESIGN | Domain + StateDB | Event-sourced identity/recovery tests |
 | Direct raw broker mutations | REDESIGN | Broker Gateway | Static bypass audit must return zero |
 | In-memory-only sequence recovery | REDESIGN | StateDB | Crash/restart and idempotent replay tests |
-| Process-memory-only broker submission fallback | NOT_APPLICABLE | StateDB + Broker Gateway | Every broker submission requires durable intent/receipt persistence; write failure enters `MANAGE_ONLY` |
+| Process-memory-only broker submission fallback | NOT_APPLICABLE | StateDB + Broker Gateway | Every broker submission requires durable intent/receipt persistence; write failure enters `MANAGE_ONLY` or poisoned-writer `HALTED` read-only recovery |
 | Virtual and delayed sequence execution | DEFER | Execution Core | Port/redesign contract and trace fixtures required before any dependent parity case can pass |
 | MustCheck add/start revalidation | DEFER | Policy + Execution Core | Complete V1 semantic trace and approved direction-parameterized implementation |
 | Bias/state rescue behavior | DEFER | Policy + Intelligence Bus | Phase-2 typed-state contract, deterministic rescue mapping, and replay evidence |
@@ -46,8 +46,10 @@ The runtime experiment manifest stores a normalized hash of trading/runtime inpu
 | Multi-symbol/member portfolio scheduling and risk | DEFER | Domain + Scheduler + Portfolio Manager | Phase-4 containers, aggregate exposure/MLPS, recovery, and portfolio canary |
 | Legacy news/bias CSV/API behavior | DEFER | Intelligence Bus | Phase 2 typed-feed/replay gate |
 | Custom binary-only MACD resource | NOT_APPLICABLE | Features | Native, source-controlled features only |
-| V1 CDialog dashboard/object farm | NOT_APPLICABLE | Chart HUD/platform | Canvas HUD and platform-side operations |
-| Optimization Studio and batch UI | DEFER | GOAT Ops | Phase 5 orchestration gate |
+| V1 portfolio-dashboard capability (deploy/supervise/command) | REDESIGN — *revised per Vince ruling 2026-07-11* | PORTFOLIO_DASHBOARD operation mode (§13.4) + platform | In-terminal capability parity with V1 dashboard at Phase 4; CDialog/GV-bus implementation itself is NOT_APPLICABLE |
+| Optimization Studio and batch UI | DEFER (capability preserved) — *revised per Vince ruling 2026-07-11* | OPTIMIZATION_STUDIO operation mode as GOAT Ops cockpit (§13.4) | Phase 5; in-terminal Studio workflow parity is a named gate, not optional |
+| Mode_Operation multi-app entry (Standard/Batch/Report/Dash) | PORT/REDESIGN — *added per Vince ruling 2026-07-11* | `V2_Mode_Operation` input + PortfolioManager mode composition | Mode selector contract in Phase 4/5 specs; non-trading modes never construct execution paths |
+| Fine-grained input group organization (sequence/ATR/sizing/risk/per-indicator/schedule/…) | PORT — *added per Vince ruling 2026-07-11* | `Inputs_V2.mqh` + `inputs_v2.schema.json` group metadata | 17 fine-grained groups and 81/81 parity are present; deterministic schema-to-MQL declaration generation with embedded schema SHA passes, while `.set`, validation, and documentation generation remain named gates |
 | Hard release expiry blocking management | NOT_APPLICABLE | Safety Kernel | Protective management always available |
 | Fleet-wide embedded bearer material | NOT_APPLICABLE | Platform token contract | Per-customer rotated credentials only |
 | V1.42 stale/invalid bias fail-safe | REDESIGN | Policy | Typed `NO_STATE`; block new risk, preserve management |

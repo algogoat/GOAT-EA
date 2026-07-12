@@ -1,0 +1,137 @@
+{
+  "schemaVersion": "goat2-inputs-v1",
+  "productVersion": "2.0",
+  "declarationArtifact": "v2/Inputs_V2.mqh",
+  "lineageSemantics": {
+    "inputValuesHash": "SHA-256 of canonical runtime and strategy controls, excluding every expected/external lineage field",
+    "setHash": "The same normalized, lineage-excluded inputValuesHash; it is not a circular literal whole-file .set hash",
+    "expectedHashes": "Optional assertions compared with externally supplied source and binary lineage"
+  },
+  "rules": {
+    "liveNewRiskDefault": false,
+    "accountMode": "hedging-only",
+    "stateInfluenceMaxPhase1": "Shadow",
+    "onnxInfluencePhase1": "Disabled",
+    "unverifiedBrokerProfileMayTradeLive": false,
+    "liveNewRiskRequiresPositiveBrokerHostedStop": true,
+    "liveAtrGridRequiresImmutablePlanSnapshot": true,
+    "signedDistance": "Positive values are configured pips; negative values are ATR multiples; zero disables optional basket distances"
+  },
+  "groups": [
+    {
+      "name": "product-identity",
+      "fields": [
+        {"name":"V2_DeploymentId","type":"string","default":"goat2-local","optimize":false},
+        {"name":"V2_PortfolioGenerationId","type":"string","default":"manual-v2.0","optimize":false},
+        {"name":"V2_StrategyMemberId","type":"string","default":"primary","optimize":false},
+        {"name":"V2_RunMode","type":"enum","values":["Disabled","ManageOnly","Trade"],"default":"ManageOnly","optimize":false},
+        {"name":"V2_EnableNewRisk","type":"bool","default":false,"optimize":false},
+        {"name":"V2_Bookkeeping","type":"enum","values":["Auto","Reduced","Full"],"default":"Auto","optimize":false},
+        {"name":"V2_CertificationRun","type":"bool","default":false,"optimize":false},
+        {"name":"V2_StateDatabaseName","type":"string","default":"goat2-v2.0.db","optimize":false}
+      ]
+    },
+    {
+      "name": "strategy-and-sequence",
+      "fields": [
+        {"name":"V2_TradeDirection","type":"enum","values":["LongAndShort","LongOnly","ShortOnly"],"optimize":true},
+        {"name":"V2_SignalMode","type":"enum","values":["Disabled","Trend","MeanReversion","Hybrid"],"default":"Disabled","certificationRole":"non-parity adapter","optimize":false},
+        {"name":"V2_SignalTimeframe","type":"timeframe","default":"Current","optimize":true},
+        {"name":"V2_FastEmaPeriod","type":"int","min":2,"default":21,"optimize":true},
+        {"name":"V2_SlowEmaPeriod","type":"int","min":3,"default":55,"optimize":true},
+        {"name":"V2_RsiPeriod","type":"int","min":2,"default":14,"optimize":true},
+        {"name":"V2_AtrPeriod","type":"int","min":2,"default":14,"optimize":true},
+        {"name":"V2_RsiLongThreshold","type":"double","default":55.0,"optimize":true},
+        {"name":"V2_RsiShortThreshold","type":"double","default":45.0,"optimize":true},
+        {"name":"V2_MaxSequenceTrades","type":"int","min":1,"max":64,"default":7,"optimize":true},
+        {"name":"V2_GridSize","type":"double","nonzero":true,"unit":"configured-pips-or-negative-ATR","default":10.0,"optimize":true},
+        {"name":"V2_GridMinimum","type":"double","unit":"configured-pips-or-negative-ATR","default":1.0,"optimize":true},
+        {"name":"V2_GridMaximum","type":"double","unit":"configured-pips-or-negative-ATR","default":30.0,"optimize":true},
+        {"name":"V2_GridExponent","type":"double","exclusiveMin":0,"default":1.0,"optimize":true},
+        {"name":"V2_GridFactor","type":"double","exclusiveMin":0,"default":1.0,"optimize":true},
+        {"name":"V2_TakeProfitSize","type":"double","unit":"configured-pips-or-negative-ATR","default":60.0,"optimize":true},
+        {"name":"V2_StopLossSize","type":"double","unit":"configured-pips-or-negative-ATR","default":0.0,"optimize":true},
+        {"name":"V2_LockProfitSize","type":"double","unit":"configured-pips-or-negative-ATR","default":30.0,"optimize":true},
+        {"name":"V2_LockFlexibility","type":"double","min":-1.0,"max":1.0,"default":1.0,"optimize":true},
+        {"name":"V2_TrailingStopSize","type":"double","unit":"configured-pips-or-negative-ATR","default":5.0,"optimize":true},
+        {"name":"V2_CloseAtMaxLevels","type":"bool","default":false,"optimize":false},
+        {"name":"V2_EnableSequenceLossHardClose","type":"bool","default":true,"optimize":false},
+        {"name":"V2_CumPartialReleasePercent","type":"double","min":0,"max":100,"default":10.0,"optimize":true},
+        {"name":"V2_PeakSmartReleasePercent","type":"double","min":0,"max":100,"default":50.0,"optimize":true},
+        {"name":"V2_PeakSmartMaxClosePercent","type":"double","min":0,"max":100,"default":30.0,"optimize":true}
+      ]
+    },
+    {
+      "name": "lot-geometry",
+      "fields": [
+        {"name":"V2_LotMode","type":"enum","values":["Fixed","EquityScaled","RiskPerSequence"],"optimize":false},
+        {"name":"V2_LotProgression","type":"enum","values":["Start","Last","Cumulative","CumulativeFrontLoaded","Peak","CumulativePartial","PeakSmart"],"optimize":true},
+        {"name":"V2_StartLots","type":"double","exclusiveMin":0,"default":0.01,"optimize":true},
+        {"name":"V2_RiskPerSequence","type":"double","exclusiveMin":0,"unit":"account-currency","default":100.0,"optimize":true},
+        {"name":"V2_LotExponent","type":"double","default":1.0,"optimize":true},
+        {"name":"V2_LotFactor","type":"double","default":0.0,"optimize":true},
+        {"name":"V2_MaxTradeMultiple","type":"double","exclusiveMin":0,"default":100.0,"optimize":true},
+        {"name":"V2_MaxCumulativeMultiple","type":"double","exclusiveMin":0,"default":100.0,"optimize":true},
+        {"name":"V2_PeakPositionPercent","type":"double","min":0,"max":100,"default":50.0,"optimize":true}
+      ]
+    },
+    {
+      "name": "deterministic-safety",
+      "fields": [
+        {"name":"V2_MaxSpreadPoints","type":"double","exclusiveMin":0,"default":100.0,"optimize":false},
+        {"name":"V2_AdditionalMarginBufferPct","type":"double","min":0,"default":20.0,"optimize":false},
+        {"name":"V2_MaxSymbolLots","type":"double","exclusiveMin":0,"default":10.0,"optimize":false},
+        {"name":"V2_MaxPortfolioLots","type":"double","exclusiveMin":0,"default":20.0,"optimize":false},
+        {"name":"V2_MaxSequenceLoss","type":"double","exclusiveMin":0,"unit":"account-currency","default":100.0,"optimize":false},
+        {"name":"V2_EquityFloor","type":"double","min":0,"default":0.0,"optimize":false},
+        {"name":"V2_MaxEquityDrawdownPct","type":"double","exclusiveMin":0,"exclusiveMax":100,"default":20.0,"optimize":false},
+        {"name":"V2_MaxConsecutiveBrokerErrors","type":"int","min":1,"default":5,"optimize":false}
+      ]
+    },
+    {
+      "name": "broker-cost-profile",
+      "fields": [
+        {"name":"V2_BrokerProfileId","type":"string","default":"development-unverified","optimize":false},
+        {"name":"V2_BrokerProfileVersion","type":"string","default":"1","optimize":false},
+        {"name":"V2_CommissionOpenPerLot","type":"double","min":0,"default":0.0,"optimize":false},
+        {"name":"V2_CommissionClosePerLot","type":"double","min":0,"default":0.0,"optimize":false},
+        {"name":"V2_SwapLongPerLotDay","type":"double","default":0.0,"optimize":false},
+        {"name":"V2_SwapShortPerLotDay","type":"double","default":0.0,"optimize":false},
+        {"name":"V2_ProjectedHoldingDays","type":"double","min":0,"default":1.0,"optimize":false},
+        {"name":"V2_ProjectedTripleSwapEvents","type":"int","min":0,"default":0,"optimize":false},
+        {"name":"V2_StressedSpreadPoints","type":"double","min":0,"default":0.0,"optimize":false},
+        {"name":"V2_OpenSlippagePoints","type":"double","min":0,"default":0.0,"optimize":false},
+        {"name":"V2_CloseSlippagePoints","type":"double","min":0,"default":0.0,"optimize":false},
+        {"name":"V2_TerminalAdversePoints","type":"double","min":0,"default":0.0,"optimize":false}
+      ]
+    },
+    {
+      "name": "state-model-interface-gates",
+      "fields": [
+        {"name":"V2_StateMode","type":"enum","values":["Disabled","Display","Shadow","Gate","Execute"],"phase1Max":"Shadow","default":"Disabled","optimize":false},
+        {"name":"V2_OnnxMode","type":"enum","values":["Disabled","Shadow","Gate"],"phase1Max":"Disabled","default":"Disabled","optimize":false},
+        {"name":"V2_EnableHud","type":"bool","default":true,"optimize":false},
+        {"name":"V2_EnableOverlay","type":"bool","default":true,"optimize":false},
+        {"name":"V2_EnableTelemetry","type":"bool","default":false,"transport":"local-outbox-only","optimize":false},
+        {"name":"V2_ExpectedSourceHash","type":"string","format":"sha256-or-empty","lineageExcluded":true,"optimize":false},
+        {"name":"V2_ExpectedBinaryHash","type":"string","format":"sha256-or-empty","lineageExcluded":true,"optimize":false}
+      ]
+    },
+    {
+      "name": "certification-lineage",
+      "fields": [
+        {"name":"V2_LineageGitCommit","type":"string","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageSourceHash","type":"string","format":"sha256","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageBinaryHash","type":"string","format":"sha256","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageReferenceCommit","type":"string","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageTickDataHash","type":"string","format":"sha256","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageTesterModel","type":"string","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageTestWindow","type":"string","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageStatePackHash","type":"string","format":"sha256-or-empty","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageCalendarHash","type":"string","format":"sha256-or-empty","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageModelBundleHash","type":"string","format":"sha256-or-empty","lineageExcluded":true,"optimize":false},
+        {"name":"V2_LineageRandomSeed","type":"string","lineageExcluded":true,"optimize":false}
+      ]
+    }
+  ]
+}

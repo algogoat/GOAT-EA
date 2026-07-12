@@ -1,0 +1,224 @@
+﻿#ifndef GOAT_V2_INPUTS_MQH
+#define GOAT_V2_INPUTS_MQH
+
+enum ENUM_V2_RUN_MODE
+  {
+   V2_RUN_DISABLED=0,
+   V2_RUN_MANAGE_ONLY=1,
+   V2_RUN_TRADE=2
+  };
+
+enum ENUM_V2_BOOKKEEPING_MODE
+  {
+   V2_BOOKKEEPING_AUTO=0,
+   V2_BOOKKEEPING_REDUCED=1,
+   V2_BOOKKEEPING_FULL=2
+  };
+
+enum ENUM_V2_TRADE_DIRECTION
+  {
+   V2_TRADE_LONG_AND_SHORT=0,
+   V2_TRADE_LONG_ONLY=1,
+   V2_TRADE_SHORT_ONLY=2
+  };
+
+enum ENUM_V2_LOT_MODE
+  {
+   V2_LOTS_FIXED=0,
+   V2_LOTS_EQUITY_SCALED=1,
+   V2_LOTS_RISK_PER_SEQUENCE=2
+  };
+
+enum ENUM_V2_LOT_PROGRESSION
+  {
+   V2_LOT_START=0,
+   V2_LOT_LAST=1,
+   V2_LOT_CUMULATIVE=2,
+   V2_LOT_CUMULATIVE_FRONT_LOADED=3,
+   V2_LOT_PEAK=4,
+   V2_LOT_CUMULATIVE_PARTIAL=5,
+   V2_LOT_PEAK_SMART=6
+  };
+
+enum ENUM_V2_SIGNAL_MODE
+  {
+   V2_SIGNAL_DISABLED=0,
+   V2_SIGNAL_TREND=1,
+   V2_SIGNAL_MEAN_REVERSION=2,
+   V2_SIGNAL_HYBRID=3
+  };
+
+enum ENUM_V2_STATE_MODE
+  {
+   V2_STATE_DISABLED=0,
+   V2_STATE_DISPLAY=1,
+   V2_STATE_SHADOW=2,
+   V2_STATE_GATE=3,
+   V2_STATE_EXECUTE=4
+  };
+
+enum ENUM_V2_ONNX_MODE
+  {
+   V2_ONNX_DISABLED=0,
+   V2_ONNX_SHADOW=1,
+   V2_ONNX_GATE=2
+  };
+
+input group "GOAT2 | Product identity"
+input string                    V2_DeploymentId="goat2-local";
+input string                    V2_PortfolioGenerationId="manual-v2.0";
+input string                    V2_StrategyMemberId="primary";
+input ENUM_V2_RUN_MODE          V2_RunMode=V2_RUN_MANAGE_ONLY;
+input bool                      V2_EnableNewRisk=false;
+input ENUM_V2_BOOKKEEPING_MODE  V2_Bookkeeping=V2_BOOKKEEPING_AUTO;
+input bool                      V2_CertificationRun=false;
+input string                    V2_StateDatabaseName="goat2-v2.0.db";
+
+input group "GOAT2 | Strategy and sequence"
+input ENUM_V2_TRADE_DIRECTION   V2_TradeDirection=V2_TRADE_LONG_AND_SHORT;
+input ENUM_V2_SIGNAL_MODE       V2_SignalMode=V2_SIGNAL_DISABLED;
+input ENUM_TIMEFRAMES           V2_SignalTimeframe=PERIOD_CURRENT;
+input int                       V2_FastEmaPeriod=21;
+input int                       V2_SlowEmaPeriod=55;
+input int                       V2_RsiPeriod=14;
+input int                       V2_AtrPeriod=14;
+input double                    V2_RsiLongThreshold=55.0;
+input double                    V2_RsiShortThreshold=45.0;
+input int                       V2_MaxSequenceTrades=7;
+input double                    V2_GridSize=10.0;             // Configured pips; negative means ATR multiple
+input double                    V2_GridMinimum=1.0;           // Configured pips; negative means ATR multiple
+input double                    V2_GridMaximum=30.0;          // Configured pips; negative means ATR multiple
+input double                    V2_GridExponent=1.0;
+input double                    V2_GridFactor=1.0;
+input double                    V2_TakeProfitSize=60.0;       // Configured pips; negative means ATR multiple
+input double                    V2_StopLossSize=0.0;          // Zero disables; negative means ATR multiple
+input double                    V2_LockProfitSize=30.0;       // Zero disables; negative means ATR multiple
+input double                    V2_LockFlexibility=1.0;
+input double                    V2_TrailingStopSize=5.0;      // Zero disables; negative means ATR multiple
+input bool                      V2_CloseAtMaxLevels=false;
+input bool                      V2_EnableSequenceLossHardClose=true;
+input double                    V2_CumPartialReleasePercent=10.0;
+input double                    V2_PeakSmartReleasePercent=50.0;
+input double                    V2_PeakSmartMaxClosePercent=30.0;
+
+input group "GOAT2 | Lot geometry"
+input ENUM_V2_LOT_MODE          V2_LotMode=V2_LOTS_FIXED;
+input ENUM_V2_LOT_PROGRESSION   V2_LotProgression=V2_LOT_START;
+input double                    V2_StartLots=0.01;
+input double                    V2_RiskPerSequence=100.0;
+input double                    V2_LotExponent=1.0;
+input double                    V2_LotFactor=0.0;
+input double                    V2_MaxTradeMultiple=100.0;
+input double                    V2_MaxCumulativeMultiple=100.0;
+input double                    V2_PeakPositionPercent=50.0;
+
+input group "GOAT2 | Deterministic safety"
+input double                    V2_MaxSpreadPoints=100.0;
+input double                    V2_AdditionalMarginBufferPct=20.0;
+input double                    V2_MaxSymbolLots=10.0;
+input double                    V2_MaxPortfolioLots=20.0;
+input double                    V2_MaxSequenceLoss=100.0;
+input double                    V2_EquityFloor=0.0;
+input double                    V2_MaxEquityDrawdownPct=20.0;
+input int                       V2_MaxConsecutiveBrokerErrors=5;
+
+input group "GOAT2 | Manifested broker-cost profile"
+input string                    V2_BrokerProfileId="development-unverified";
+input string                    V2_BrokerProfileVersion="1";
+input double                    V2_CommissionOpenPerLot=0.0;
+input double                    V2_CommissionClosePerLot=0.0;
+input double                    V2_SwapLongPerLotDay=0.0;
+input double                    V2_SwapShortPerLotDay=0.0;
+input double                    V2_ProjectedHoldingDays=1.0;
+input int                       V2_ProjectedTripleSwapEvents=0;
+input double                    V2_StressedSpreadPoints=0.0;
+input double                    V2_OpenSlippagePoints=0.0;
+input double                    V2_CloseSlippagePoints=0.0;
+input double                    V2_TerminalAdversePoints=0.0;
+
+input group "GOAT2 | State, model, and interface gates"
+input ENUM_V2_STATE_MODE        V2_StateMode=V2_STATE_DISABLED;
+input ENUM_V2_ONNX_MODE         V2_OnnxMode=V2_ONNX_DISABLED;
+input bool                      V2_EnableHud=true;
+input bool                      V2_EnableOverlay=true;
+input bool                      V2_EnableTelemetry=false;
+input string                    V2_ExpectedSourceHash="";
+input string                    V2_ExpectedBinaryHash="";
+
+input group "GOAT2 | Certification lineage (required only for certification)"
+input string                    V2_LineageGitCommit="";
+input string                    V2_LineageSourceHash="";
+input string                    V2_LineageBinaryHash="";
+input string                    V2_LineageReferenceCommit="";
+input string                    V2_LineageTickDataHash="";
+input string                    V2_LineageTesterModel="";
+input string                    V2_LineageTestWindow="";
+input string                    V2_LineageStatePackHash="";
+input string                    V2_LineageCalendarHash="";
+input string                    V2_LineageModelBundleHash="";
+input string                    V2_LineageRandomSeed="";
+
+bool V2ValidateCertificationBookkeeping(const bool certification_run,
+                                         const ENUM_V2_BOOKKEEPING_MODE requested,
+                                         string &reason)
+  {
+   reason="";
+   if(certification_run && requested==V2_BOOKKEEPING_REDUCED)
+     {
+      reason="CERTIFICATION_REQUIRES_FULL_BOOKKEEPING";
+      return false;
+     }
+   return true;
+  }
+
+bool V2ValidateInputs(string &reason)
+  {
+   reason="";
+   if(!V2ValidateCertificationBookkeeping(V2_CertificationRun,V2_Bookkeeping,reason)) return false;
+   if(StringLen(V2_DeploymentId)<3)                    { reason="DEPLOYMENT_ID_TOO_SHORT"; return false; }
+   if(StringLen(V2_StrategyMemberId)<1)                { reason="MEMBER_ID_EMPTY"; return false; }
+   if(StringLen(V2_StateDatabaseName)<3)               { reason="STATE_DATABASE_NAME_TOO_SHORT"; return false; }
+   if(V2_MaxSequenceTrades<1 || V2_MaxSequenceTrades>64){ reason="MAX_SEQUENCE_TRADES_RANGE"; return false; }
+   if(V2_StartLots<=0.0)                               { reason="START_LOTS_NOT_POSITIVE"; return false; }
+   if(V2_RiskPerSequence<=0.0)                         { reason="RISK_PER_SEQUENCE_NOT_POSITIVE"; return false; }
+   if(!MathIsValidNumber(V2_GridSize) || MathAbs(V2_GridSize)<=1e-12){ reason="GRID_SIZE_INVALID"; return false; }
+   if(!MathIsValidNumber(V2_GridMinimum) || !MathIsValidNumber(V2_GridMaximum)){ reason="GRID_BOUNDS_NONFINITE"; return false; }
+   if(V2_GridExponent<=0.0)                            { reason="GRID_EXPONENT_NOT_POSITIVE"; return false; }
+   if(V2_GridFactor<=0.0 || !MathIsValidNumber(V2_GridFactor)){ reason="GRID_FACTOR_NOT_POSITIVE_FINITE"; return false; }
+   if(!MathIsValidNumber(V2_TakeProfitSize) || !MathIsValidNumber(V2_StopLossSize) ||
+      !MathIsValidNumber(V2_LockProfitSize) || !MathIsValidNumber(V2_TrailingStopSize)){ reason="BASKET_DISTANCE_NONFINITE"; return false; }
+   if(V2_LockFlexibility<-1.0 || V2_LockFlexibility>1.0){ reason="LOCK_FLEXIBILITY_RANGE"; return false; }
+   if(V2_CumPartialReleasePercent<0.0 || V2_CumPartialReleasePercent>100.0 ||
+      V2_PeakSmartReleasePercent<0.0 || V2_PeakSmartReleasePercent>100.0 ||
+      V2_PeakSmartMaxClosePercent<0.0 || V2_PeakSmartMaxClosePercent>100.0){ reason="RETRACE_RELEASE_PERCENT_RANGE"; return false; }
+   if(V2_MaxTradeMultiple<=0.0)                        { reason="MAX_TRADE_MULTIPLE_NOT_POSITIVE"; return false; }
+   if(V2_MaxCumulativeMultiple<=0.0)                   { reason="MAX_CUMULATIVE_MULTIPLE_NOT_POSITIVE"; return false; }
+   if(V2_PeakPositionPercent<0.0 || V2_PeakPositionPercent>100.0){ reason="PEAK_POSITION_PERCENT_RANGE"; return false; }
+   if(V2_MaxSpreadPoints<=0.0)                         { reason="MAX_SPREAD_NOT_POSITIVE"; return false; }
+   if(V2_AdditionalMarginBufferPct<0.0)                { reason="MARGIN_BUFFER_NEGATIVE"; return false; }
+   if(V2_MaxSymbolLots<=0.0 || V2_MaxPortfolioLots<=0.0){ reason="EXPOSURE_CAP_NOT_POSITIVE"; return false; }
+   if(V2_MaxSymbolLots>V2_MaxPortfolioLots)            { reason="SYMBOL_CAP_EXCEEDS_PORTFOLIO_CAP"; return false; }
+   if(V2_MaxSequenceLoss<=0.0)                         { reason="MAX_SEQUENCE_LOSS_NOT_POSITIVE"; return false; }
+   if(V2_RunMode==V2_RUN_TRADE && V2_EnableNewRisk && V2_StopLossSize<=0.0)
+      { reason="BROKER_HOSTED_POSITIVE_STOP_REQUIRED"; return false; }
+   if(V2_RunMode==V2_RUN_TRADE && V2_EnableNewRisk &&
+      (V2_GridSize<0.0 || V2_GridMinimum<0.0 || V2_GridMaximum<0.0))
+      { reason="LIVE_ATR_GRID_REQUIRES_IMMUTABLE_PLAN_SNAPSHOT"; return false; }
+   if(V2_MaxEquityDrawdownPct<=0.0 || V2_MaxEquityDrawdownPct>=100.0){ reason="EQUITY_DRAWDOWN_RANGE"; return false; }
+   if(StringLen(V2_BrokerProfileId)<1 || StringLen(V2_BrokerProfileVersion)<1){ reason="BROKER_PROFILE_IDENTITY_EMPTY"; return false; }
+   if(V2_CommissionOpenPerLot<0.0 || V2_CommissionClosePerLot<0.0 || V2_ProjectedHoldingDays<0.0 || V2_ProjectedTripleSwapEvents<0 || V2_StressedSpreadPoints<0.0 || V2_OpenSlippagePoints<0.0 || V2_CloseSlippagePoints<0.0 || V2_TerminalAdversePoints<0.0){ reason="BROKER_COST_PROFILE_RANGE"; return false; }
+   if(V2_FastEmaPeriod<2 || V2_SlowEmaPeriod<=V2_FastEmaPeriod){ reason="EMA_PERIOD_GEOMETRY"; return false; }
+   if(V2_RsiPeriod<2 || V2_AtrPeriod<2)                 { reason="OSCILLATOR_PERIOD_RANGE"; return false; }
+   if(V2_RsiLongThreshold<=V2_RsiShortThreshold)       { reason="RSI_THRESHOLDS_INVERTED"; return false; }
+   if(V2_StateMode>V2_STATE_SHADOW)                    { reason="STATE_INFLUENCE_REQUIRES_PHASE2_CERTIFICATION"; return false; }
+   if(V2_OnnxMode!=V2_ONNX_DISABLED)                   { reason="ONNX_INFLUENCE_REQUIRES_PHASE3_CERTIFICATION"; return false; }
+   if(V2_CertificationRun &&
+      (V2_ExpectedSourceHash=="" || V2_ExpectedBinaryHash=="" ||
+       V2_LineageGitCommit=="" || V2_LineageSourceHash=="" || V2_LineageBinaryHash=="" ||
+       V2_LineageReferenceCommit=="" || V2_LineageTickDataHash=="" ||
+       V2_LineageTesterModel=="" || V2_LineageTestWindow==""))
+      { reason="CERTIFICATION_LINEAGE_INCOMPLETE"; return false; }
+   return true;
+  }
+
+#endif

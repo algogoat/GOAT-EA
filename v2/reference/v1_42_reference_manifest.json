@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "goat-v2-reference-manifest-v1",
+  "createdAtUtc": "2026-07-11T00:00:00Z",
+  "v2ReferenceCommit": "d775d48b09d6fe65a946f65a8b14f430d854a593",
+  "terminal": {
+    "product": "MetaTrader 5",
+    "terminalBuild": "5.0.0.5833",
+    "metaEditorBuild": "5.0.0.5833",
+    "lastObservedBrokerServerBuild": "5.0.0.5830",
+    "dataFolderId": "BF132C3D361D44374EA9896A87302483"
+  },
+  "artifacts": {
+    "entrypoint": {
+      "path": "GOAT V1.42.mq5",
+      "sha256": "7E39DB6DC533A71E30D96A64C9CAFEE7C67629A20CF049AEAF0D51AD0EC54E8C"
+    },
+    "binary": {
+      "path": "GOAT V1.42.ex5",
+      "sha256": "7AD7B7910D0AA4C2AB5790D852A6131A75F5E1892E718525702A7B2EA3DD925D"
+    },
+    "sharedInputs": {
+      "path": "GOAT_Inputs_Definitions.mqh",
+      "sha256": "7F746A73FF30D4CDEC5439AA0F30BC92A05591D717A328AECAD3C17117ECE10B"
+    }
+  },
+  "compile": {
+    "errors": 0,
+    "warnings": 0
+  },
+  "runtimeCapture": {
+    "status": "required",
+    "requiredFields": [
+      "brokerServer",
+      "accountCurrency",
+      "accountLeverage",
+      "accountMarginMode",
+      "symbolSpecifications",
+      "tickDataProvenance",
+      "referenceSetHashes",
+      "referenceDecisionTraceHashes"
+    ]
+  }
+}

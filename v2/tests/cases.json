@@ -1,0 +1,238 @@
+{
+  "schemaVersion": "goat2-phase1-cases-v1",
+  "testExpert": "GOAT-EA\\v2\\tests\\GOAT2_Phase1_UnitTests.ex5",
+  "resultArtifact": "FILE_COMMON\\GOAT2\\tests\\phase1-unit-result.json",
+  "compile": {
+    "source": "v2/tests/GOAT2_Phase1_UnitTests.mq5",
+    "requires": [
+      "v2/Domain.mqh",
+      "v2/Identity.mqh",
+      "v2/Inputs_V2.mqh",
+      "v2/SafetyKernel.mqh",
+      "v2/Core_Sequence.mqh",
+      "v2/Core_Risk.mqh"
+    ],
+    "expectedErrors": 0,
+    "expectedWarnings": 0
+  },
+  "unitCases": [
+    {
+      "id": "domain_ordering_idempotency",
+      "covers": [
+        "contiguous canonical ordering",
+        "same-id/same-hash replay idempotency",
+        "same-id/different-hash conflict",
+        "aggregate identity mismatch"
+      ]
+    },
+    {
+      "id": "domain_quarantine_reduction",
+      "covers": [
+        "quarantine blocks adds",
+        "quarantine permits partial close",
+        "quarantine permits flatten and sequence end",
+        "ended aggregate cannot restart"
+      ]
+    },
+    {
+      "id": "order_intent_lifecycle",
+      "covers": [
+        "persist before ordinary submit",
+        "partial-fill repetition",
+        "terminal-state rejection",
+        "reductions also require durable persistence"
+      ]
+    },
+    {
+      "id": "durable_reduction_mandate",
+      "covers": [
+        "mandate target and retrace obligation are domain state",
+        "reduction fills decrement remaining volume",
+        "premature completion is rejected",
+        "retrace obligation cannot be silently dropped",
+        "completion clears mandate metadata"
+      ]
+    },
+    {
+      "id": "seven_lot_progressions",
+      "modes": [
+        "START",
+        "LAST",
+        "CUMULATIVE",
+        "CUMULATIVE_FRONT_LOADED",
+        "PEAK",
+        "CUMULATIVE_PARTIAL",
+        "PEAK_SMART"
+      ],
+      "covers": [
+        "V1-compatible geometry",
+        "V2 post-rounding cumulative cap",
+        "V2 per-trade cap",
+        "live-standing CumPartial and PeakSmart calculations"
+      ]
+    },
+    {
+      "id": "grid_geometry_fail_closed",
+      "covers": [
+        "ATR-relative negative input convention",
+        "V1 zero-factor rejection",
+        "defined V2 neutral-factor fallback",
+        "inverted-bound rejection",
+        "zero-base rejection"
+      ]
+    },
+    {
+      "id": "risk_path_geometry",
+      "covers": [
+        "compatibility adverse path evaluates",
+        "adverse loss path is monotonic"
+      ]
+    },
+    {
+      "id": "risk_monotonicity_classification",
+      "covers": [
+        "open versus close",
+        "long and short stop tightening",
+        "stop loosening",
+        "profit-target addition, tightening, and removal",
+        "entry-order cancellation",
+        "protective-order cancellation",
+        "risk reduction while halted",
+        "new-risk block in manage-only"
+      ]
+    },
+    {
+      "id": "basket_and_retrace_geometry",
+      "covers": [
+        "actual-fill VWAP",
+        "V1 lock-flexibility curve",
+        "direction-parameterized TP and SL",
+        "legal monotonic trailing stop",
+        "retrace ordering toward profit",
+        "CumPartial release volume",
+        "PeakSmart profitable-excess release and cap"
+      ]
+    },
+    {
+      "id": "identity_magic_contract",
+      "covers": [
+        "stable SHA-256-derived identities",
+        "53-bit magic ceiling",
+        "decimal string transport",
+        "collision detection",
+        "persisted ordinal requirement"
+      ]
+    },
+    {
+      "id": "default_input_gates",
+      "covers": [
+        "manage-only default",
+        "new-risk disabled default",
+        "Phase-2 and Phase-3 influence gates"
+      ]
+    },
+    {
+      "id": "certification_bookkeeping_contract",
+      "covers": [
+        "explicit reduced bookkeeping is rejected for certification",
+        "certification resolver forces a full backend",
+        "manifest records the observed backend rather than a rewritten claim",
+        "certification validator cross-checks FULL mode and backend"
+      ]
+    }
+  ],
+  "boundaryAudit": {
+    "command": "powershell -ExecutionPolicy Bypass -File scripts/check_goat2_boundaries.ps1 -RequireGateway",
+    "allowedMutationFile": "v2/BrokerGateway.mqh",
+    "expectedBypasses": 0
+  },
+  "goldenMasterDefaults": {
+    "sourceRoot": "MT5_COMMON\\Files\\GOAT",
+    "period": "M1",
+    "model": 4,
+    "fromDate": "2026.02.01",
+    "toDate": "2026.06.26",
+    "deposit": 100000,
+    "currency": "USD",
+    "leverage": 100,
+    "lanes": {
+      "executionParity": {
+        "overrides": {
+          "Mode_Lots": 0,
+          "Mode_News": 1,
+          "Mode_Bias": 1
+        },
+        "purpose": "Isolate ported signal/sequence/lot semantics from redesigned MLPS and legacy policy inputs."
+      },
+      "mlpsCertification": {
+        "purpose": "Require cost-complete loss coverage and budget-safe lot-step rounding; final metric equality is not required."
+      }
+    }
+  },
+  "referenceCases": [
+    {
+      "id": "gm_counterrange_eurusd",
+      "strategy": "CounterRange",
+      "symbol": "EURUSD",
+      "progression": "CUMULATIVE_PARTIAL",
+      "sourceSetRelativePath": "GOAT V1.41-Darwinex-Demo\\Cumulative Portfolio Reload_2\\deploy\\CounterRange\\EURUSD\\GOAT V1.41 EURUSD,M1_Trds=675_Prf=1910_DD=575_PF=1.79_SR=2.06_ARF=0.337.set",
+      "sourceSetSha256": "C92B0BCB55B939A169038BD0F72F48C75C2A9ACAB8CAD787D48685ABCB4CCFAB"
+    },
+    {
+      "id": "gm_counterce_usdjpy",
+      "strategy": "Counter_CE",
+      "symbol": "USDJPY",
+      "progression": "CUMULATIVE_PARTIAL",
+      "sourceSetRelativePath": "GOAT V1.41-Darwinex-Demo\\Cumulative Portfolio Reload_2\\deploy\\Counter_CE\\USDJPY\\GOAT V1.41 USDJPY,M1_Trds=383_Prf=1585_DD=410_PF=2.06_SR=5.63_ARF=0.457.set",
+      "sourceSetSha256": "11D1EF03C3DA41AAB1D50D783BA15F5C8AC03AD48A9C5D576A7A453378014961"
+    },
+    {
+      "id": "gm_trendrange_gbpjpy",
+      "strategy": "TrendRange",
+      "symbol": "GBPJPY",
+      "progression": "CUMULATIVE_PARTIAL",
+      "sourceSetRelativePath": "GOAT V1.41-Darwinex-Demo\\Cumulative Portfolio Reload_2\\deploy\\TrendRange\\GBPJPY\\GOAT V1.41 GBPJPY,M1_Trds=1055_Prf=587_DD=277_PF=1.40_SR=1.61_ARF=0.263.set",
+      "sourceSetSha256": "E10949F332665694EC09F84463B492E6A35D35E06EBDEB8BC74BF285D76F2627"
+    },
+    {
+      "id": "gm_rangefade_ws30",
+      "strategy": "RangeFade_Metals",
+      "symbol": "WS30",
+      "progression": "CUMULATIVE_PARTIAL",
+      "sourceSetRelativePath": "GOAT V1.41-Darwinex-Demo\\Cumulative Portfolio Reload_3\\deploy\\RangeFade_Metals\\WS30\\GOAT V1.41 WS30,M1_Trds=660_Prf=3220_DD=329_PF=2.49_SR=5.92_ARF=0.787.set",
+      "sourceSetSha256": "94A03F055C3626B2265AF192731F74FFC53AEA181C40A6FD0DDE3BE1122FEB07"
+    },
+    {
+      "id": "gm_trendpullback_xauusd",
+      "strategy": "TrendPullback_Metals",
+      "symbol": "XAUUSD",
+      "progression": "CUMULATIVE_PARTIAL",
+      "sourceSetRelativePath": "GOAT V1.41-Darwinex-Demo\\Cumulative Portfolio Reload_3\\deploy\\TrendPullback_Metals\\XAUUSD\\GOAT V1.41 XAUUSD,M1_Trds=172_Prf=1378_DD=605_PF=1.57_SR=4.08_ARF=0.205.set",
+      "sourceSetSha256": "931A4028EA93F88B2A9778099BFDF890A8433686EDF7BF6F970F7DA26984E699"
+    },
+    {
+      "id": "gm_sptrendbb_eurusd",
+      "strategy": "SP_TrendBB",
+      "symbol": "EURUSD",
+      "progression": "PEAK_SMART",
+      "sourceSetRelativePath": "GOAT V1.41-Darwinex-Demo\\Smart Peak Portfolio\\deploy\\SP_TrendBB\\EURUSD\\GOAT V1.41 EURUSD,M1_Trds=592_Prf=1273_DD=503_PF=2.03_SR=3.67_ARF=0.109.set",
+      "sourceSetSha256": "BBD81FE3DA9DD8F3134908C1FB207C8D4C59879B1F98722A6860C98878DE5768"
+    },
+    {
+      "id": "gm_sptbb400_audusd",
+      "strategy": "SP_TBB400",
+      "symbol": "AUDUSD",
+      "progression": "PEAK_SMART",
+      "sourceSetRelativePath": "GOAT V1.41-Darwinex-Demo\\LongShot_3\\deploy\\SP_TBB400\\AUDUSD\\GOAT V1.41 AUDUSD,M1_Trds=1866_Prf=3303_DD=2240_PF=1.31_SR=1.82_ARF=0.056.set",
+      "sourceSetSha256": "BBB32CFAE64A24F7EAA42EAD53466BB0558ED215D120A636C30D8B7FA0BAFD17"
+    },
+    {
+      "id": "gm_spttr_gbpusd",
+      "strategy": "SP_TTR",
+      "symbol": "GBPUSD",
+      "progression": "PEAK_SMART",
+      "sourceSetRelativePath": "GOAT V1.41-Darwinex-Demo\\Optimization Run\\deploy\\SP_TTR\\GBPUSD\\GOAT V1.41 GBPUSD,M1_Trds=181_Prf=489_DD=286_PF=2.69_SR=6.70_ARF=0.048.set",
+      "sourceSetSha256": "1948EB64886E6B0BD611DD44A90160FAB1F81E3A7052F420DD0EF721C5FAD1D5"
+    }
+  ]
+}

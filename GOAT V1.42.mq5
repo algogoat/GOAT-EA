@@ -4905,9 +4905,15 @@ void OnTick()
      DashboardBusBiasSentiment=0.0;
      // Stale/invalid bias blocks sequence starts only when bias filtering is active.
      bool bias_filter_active = (Mode_Bias!=Bias_Display && Mode_Bias!=Bias_Disabled);
+     bool bias_controls_additions = bias_filter_active && Mode_Bias_Trades==Bias_SeqTrade;
      Sequence_New_Bias_B   = !bias_filter_active; Sequence_New_Bias_S = !bias_filter_active;
-     Sequence_Pause_Bias_B = false; Sequence_Pause_Bias_S = false;
+     Sequence_Pause_Bias_B = bias_controls_additions; Sequence_Pause_Bias_S = bias_controls_additions;
      StopOut_Flag_B        = false; StopOut_Flag_S        = false;
+     if(!FastSpeed_Flag && Mode_Bias!=Bias_Disabled)
+       {
+        SetEdit(PanelDialog.m_edit_Bias1,"  Latest Bias: UNAVAILABLE",clrRed);
+        SetEdit(PanelDialog.m_edit_Bias2,"Previous Bias: UNAVAILABLE",clrRed);
+       }
      // no need to redraw inactive lines as that is already covered in the news section
     }
     if(!FastSpeed_Flag) BiasDisplayFunction(true,clrGold,idx);

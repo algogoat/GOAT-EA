@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+from pathlib import Path
+import re
+
+
+ROOT = Path(__file__).resolve().parents[1]
+FILTER_SOURCE = (ROOT / "NewsBiasFilter.mqh").read_text(encoding="utf-8-sig")
+EA_SOURCE = (ROOT / "GOAT V1.42.mq5").read_text(encoding="utf-8-sig")
+WIRE_SOURCE = (ROOT / "EALegacyWireContract.mqh").read_text(encoding="utf-8-sig")
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+require(
+    '#include "EALegacyWireContract.mqh"' in FILTER_SOURCE,
+    "live bias source must include the strict wire evaluator",
+)
+require(
+    "EAEvaluateLegacyBiasResponse(json,asset,request_elapsed_ms,evaluated)" in FILTER_SOURCE,
+    "live HTTP 200 body must pass through the strict evaluator",
+)
+require(
+    "LastBiasAuthoritativeNowMs=evaluated.authoritative_now_ms;" in FILTER_SOURCE
+    and "LastBiasAuthoritativeTickMs=request_finished_tick;" in FILTER_SOURCE,
+    "accepted server time must be anchored to the monotonic response tick",
+)
+require(
+    "wire_valid_until_ms<=authoritative_now_ms" in FILTER_SOURCE,
+    "cached live rows must enforce explicit validUntil",
+)
+require(
+    'InvalidateLiveBias("HTTP_STATUS_"+(string)res);' in FILTER_SOURCE,
+    "non-200 responses must invalidate live bias",
+)
+require(
+    "return DownloadAndFillBias(startdate - 24*60*60" not in FILTER_SOURCE,
+    "live parse failure must not recurse into older windows",
+)
+require(
+    "Injected dummy 0 bias point" not in FILTER_SOURCE,
+    "live parse failure must not fabricate neutral",
+)
+require(
+    re.search(
+        r"else if\(res!=200\).*?"
+        r'InvalidateLiveBias\("HTTP_STATUS_"\+\(string\)res\);.*?return false;',
+        FILTER_SOURCE,
+        re.DOTALL,
+    ),
+    "non-200 branch must return before response parsing",
+)
+require(
+    "bool bias_controls_additions = bias_filter_active && Mode_Bias_Trades==Bias_SeqTrade;"
+    in EA_SOURCE,
+    "unavailable bias must identify when bias controls sequence additions",
+)
+require(
+    "Sequence_Pause_Bias_B = bias_controls_additions;"
+    " Sequence_Pause_Bias_S = bias_controls_additions;"
+    in EA_SOURCE,
+    "unavailable bias must pause both controlled addition lanes",
+)
+require(
+    '"  Latest Bias: UNAVAILABLE"' in EA_SOURCE
+    and '"Previous Bias: UNAVAILABLE"' in EA_SOURCE,
+    "feed unavailability must render distinctly from model-authored neutral",
+)
+for required_reason in (
+    "BODY_JSON_INVALID",
+    "SERVER_TIME_INVALID",
+    "DATA_EMPTY",
+    "ROW_ASSET_MISMATCH",
+    "ROW_TIMESTAMP_INVALID",
+    "ROWS_NOT_STRICTLY_ASCENDING",
+    "ROW_SENTIMENT_INVALID",
+    "ROW_VALIDITY_WINDOW_INVALID",
+    "ROW_FROM_FUTURE",
+    "VALID_UNTIL_EXPIRED",
+):
+    require(
+        f'"{required_reason}"' in WIRE_SOURCE,
+        f"strict evaluator must expose {required_reason}",
+    )
+
+print("EA wire source integration checks passed.")

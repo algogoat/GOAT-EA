@@ -100,6 +100,7 @@ CPng EA_LOGO(LOGO_png_data);
 //#resource "\\Files\\GOAT_News.csv" as string abc
 #resource "\\Indicators\\MACD - GOAT 2.ex5"
 string MACD_Path        = "::Indicators\\MACD - GOAT 2.ex5";                    // MACD Indicator Path
+bool Bias_Feed_Unavailable = true;                                               // Fail closed until a validated live row is available
 //---------------------------------------------------------------------------------------------------------------------------------------------------
 int DashboardTradePermissionMask(void)
   {
@@ -4738,6 +4739,7 @@ void OnTick()
     
     if(CurBias>=-100 && CurBias<=100) // We have valid bias
     {
+     Bias_Feed_Unavailable=false;
      DashboardBusBiasSentiment=CurBias;
      if(Mode_Bias!=Bias_Display) {
      // we disregard Bias_Disabled and Bias_Display as they are covered indirectly in other functions
@@ -4902,12 +4904,19 @@ void OnTick()
     }
     else
     {
+     Bias_Feed_Unavailable=true;
      DashboardBusBiasSentiment=0.0;
      // Stale/invalid bias blocks sequence starts only when bias filtering is active.
      bool bias_filter_active = (Mode_Bias!=Bias_Display && Mode_Bias!=Bias_Disabled);
+     bool bias_controls_additions = bias_filter_active && Mode_Bias_Trades==Bias_SeqTrade;
      Sequence_New_Bias_B   = !bias_filter_active; Sequence_New_Bias_S = !bias_filter_active;
-     Sequence_Pause_Bias_B = false; Sequence_Pause_Bias_S = false;
+     Sequence_Pause_Bias_B = bias_controls_additions; Sequence_Pause_Bias_S = bias_controls_additions;
      StopOut_Flag_B        = false; StopOut_Flag_S        = false;
+     if(!FastSpeed_Flag && Mode_Bias!=Bias_Disabled)
+       {
+        SetEdit(PanelDialog.m_edit_Bias1,"  Latest Bias: UNAVAILABLE",clrRed);
+        SetEdit(PanelDialog.m_edit_Bias2,"Previous Bias: UNAVAILABLE",clrRed);
+       }
      // no need to redraw inactive lines as that is already covered in the news section
     }
     if(!FastSpeed_Flag) BiasDisplayFunction(true,clrGold,idx);
@@ -5259,7 +5268,7 @@ void OnTick()
        {
         if(!LastBuyTradeSignal) Trades_Skipped_News++;
        }
-       else if(Sequence_Pause_Bias_B && !Seq_Buy.BiasRescueActive)
+       else if(Sequence_Pause_Bias_B && (Bias_Feed_Unavailable || !Seq_Buy.BiasRescueActive))
        {
         if(!LastBuyTradeSignal) Trades_Skipped_Bias_B++;
        }
@@ -5294,7 +5303,7 @@ void OnTick()
        {
         if(!LastSellTradeSignal) Trades_Skipped_News++;
        }
-       else if(Sequence_Pause_Bias_S && !Seq_Sell.BiasRescueActive)
+       else if(Sequence_Pause_Bias_S && (Bias_Feed_Unavailable || !Seq_Sell.BiasRescueActive))
        {
         if(!LastSellTradeSignal) Trades_Skipped_Bias_S++;
        }

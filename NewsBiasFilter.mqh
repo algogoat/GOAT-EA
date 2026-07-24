@@ -1,4 +1,5 @@
 ﻿#include "GOAT_Inputs_Definitions.mqh"
+#include "EALegacyWireContract.mqh"
 struct SNewsSyncResult
   {
    bool     success;
@@ -99,13 +100,21 @@ class GOATBiasHistory
       datetime       time;
       string         asset;
       int            sentiment_score;
+      long           wire_scan_timestamp_ms;
+      long           wire_valid_until_ms;
      };
    datetime          LastBiasTimeCheck;
    int               BrokerGMTOffsetSec;
    int               BrokerDSTEnabled;
+   long              LastBiasAuthoritativeNowMs;
+   ulong             LastBiasAuthoritativeTickMs;
+   ulong             LastBiasFetchTickMs;
+   string            LastBiasUnavailableReason;
 
    bool              WriteBiasFile(const string outputFileName,string &error_text);
    void              UpdateStatesToTime(datetime now);
+   void              InvalidateLiveBias(const string reason);
+   bool              CurrentAuthoritativeNowMs(long &authoritative_now_ms);
    //bool            ParseIso8601ToDatetime(string ts, datetime &out_time);
    //int             ParseSentimentToInt(string sentiment);
    //void            SortBiasListByTime(int left, int right);
@@ -121,6 +130,10 @@ class GOATBiasHistory
     LastBiasTimeCheck = 0;
     BrokerGMTOffsetSec = 0;
     BrokerDSTEnabled   = 0;
+    LastBiasAuthoritativeNowMs = 0;
+    LastBiasAuthoritativeTickMs = 0;
+    LastBiasFetchTickMs = 0;
+    LastBiasUnavailableReason = "NOT_FETCHED";
    }
    ~GOATBiasHistory()
    {
@@ -145,6 +158,27 @@ class GOATBiasHistory
    int                    GetCurentBiasScore(string asset,int &idx);
   };
 GOATBiasHistory Bias;
+//+------------------------------------------------------------------+
+void GOATBiasHistory::InvalidateLiveBias(const string reason)
+  {
+   ArrayResize(BiasList,0);
+   LastBiasAuthoritativeNowMs=0;
+   LastBiasAuthoritativeTickMs=0;
+   LastBiasUnavailableReason=reason;
+   Print("GOATBiasHistory: Live bias unavailable: "+reason);
+  }
+//+------------------------------------------------------------------+
+bool GOATBiasHistory::CurrentAuthoritativeNowMs(long &authoritative_now_ms)
+  {
+   authoritative_now_ms=0;
+   if(LastBiasAuthoritativeNowMs<=0 || LastBiasAuthoritativeTickMs==0) return false;
+   ulong now_tick=GetTickCount64();
+   if(now_tick<LastBiasAuthoritativeTickMs) return false;
+   ulong elapsed=now_tick-LastBiasAuthoritativeTickMs;
+   if(elapsed>(ulong)LONG_MAX || LastBiasAuthoritativeNowMs>LONG_MAX-(long)elapsed) return false;
+   authoritative_now_ms=LastBiasAuthoritativeNowMs+(long)elapsed;
+   return true;
+  }
 //+------------------------------------------------------------------+
 void GOATNewsFilter::Init(string Key__)
   {
@@ -220,17 +254,42 @@ bool GOATNewsFilter::IsNewsTime(string sym,int threshold,int &indices[])
 int GOATBiasHistory::GetCurentBiasScore(string asset,int &idxx)
   {
    asset = ConvertToGOATsymbol(asset);
+   idxx = -1;
    if(Mode_Bias == Bias_Disabled) return -999;
-
-   datetime now = TimeCurrent();
    
    bool is_tester = (MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD));
    
-   if(!is_tester) // if live trading: standing bias = latest point, but must not be too old
+   if(!is_tester)
      {
-      datetime start_srv = TimeCurrent() - 24*60*60; // start with last 24h window in SERVER time
-      if(!DownloadAndFillBias(start_srv, asset, false, false)) return -999; // live refresh should not block trading with modal API popups
+      datetime start_srv=TimeCurrent()-24*60*60;
+      if(!DownloadAndFillBias(start_srv,asset,false,false)) return -999;
+      int count=ArraySize(BiasList);
+      if(count<=0) return -999;
+
+      long authoritative_now_ms=0;
+      if(!CurrentAuthoritativeNowMs(authoritative_now_ms))
+        {
+         InvalidateLiveBias("AUTHORITATIVE_TIME_UNAVAILABLE");
+         return -999;
+        }
+
+      int latest=count-1;
+      if(BiasList[latest].wire_scan_timestamp_ms<=0 ||
+         BiasList[latest].wire_scan_timestamp_ms>authoritative_now_ms)
+        {
+         InvalidateLiveBias("LATEST_ROW_TIME_INVALID");
+         return -999;
+        }
+      if(BiasList[latest].wire_valid_until_ms<=authoritative_now_ms)
+        {
+         InvalidateLiveBias("VALID_UNTIL_EXPIRED");
+         return -999;
+        }
+      idxx=latest;
+      return BiasList[latest].sentiment_score;
      }
+
+   datetime now = TimeCurrent();
    if(ArraySize(BiasList) <= 0) {Alert("Empty Bias List!"); return -999;}
    //--- calculate average duration (seconds) between consecutive bias points (used for staleness)
    long sum = 0;
@@ -760,6 +819,14 @@ bool GOATNewsFilter::DownloadAndFillNews(datetime startdate,int news_threshold,b
 //+------------------------------------------------------------------+
 bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool DownloadMode,bool showSummary)
   {
+   if(!DownloadMode)
+     {
+      ulong now_tick=GetTickCount64();
+      if(LastBiasFetchTickMs>0 &&
+         now_tick>=LastBiasFetchTickMs &&
+         now_tick-LastBiasFetchTickMs<(ulong)Bias_RegenerateMinutes*60*1000)
+         return ArraySize(BiasList)>0;
+     }
    MqlDateTime dt;
    if(DownloadMode)
      {
@@ -767,14 +834,9 @@ bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool D
      }
    else
      {
-      if(TimeCurrent() > LastBiasTimeCheck + Bias_RegenerateMinutes * 60)
-        {
-         // if not returning then must adjust offset in live mode
-         int off = (int)(TimeTradeServer() - TimeGMT()); // current server->GMT offset (includes DST if any)
-         datetime utc_start = startdate - off;
-         TimeToStruct(utc_start, dt); // convert request start_time to UTC ("Z")
-        }
-      else if(ArraySize(BiasList) > 0) return true;
+      int off = (int)(TimeTradeServer() - TimeGMT());
+      datetime utc_start = startdate - off;
+      TimeToStruct(utc_start, dt);
      }
    string start_time = StringFormat("%04d-%02d-%02dT%02d:%02d:%02dZ", dt.year, dt.mon, dt.day, dt.hour, dt.min, dt.sec); StringReplace(start_time, ":", "%3A");
 
@@ -789,16 +851,27 @@ bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool D
    ArrayResize(request_body, 0);
    char result[];
    string result_headers = "";
+   ulong request_started_tick=GetTickCount64();
    
    string x = "e9691e12e7eef5ceb1daa0559374c83d90248ba3165051f4d82670a7ad0928be";
    ResetLastError();
    int res = WebRequest("GET", url, requestHeaders+x+"161bd26578b6b1ab496e3b3fda393a39aa82cf4734bce5bc168d406248db9745\r\n", timeout*3, request_body, result, result_headers);
+
+   ulong request_finished_tick=GetTickCount64();
+   if(!DownloadMode) LastBiasFetchTickMs=request_finished_tick;
+   if(request_finished_tick<request_started_tick)
+     {
+      if(!DownloadMode) InvalidateLiveBias("REQUEST_DURATION_INVALID");
+      return false;
+     }
+   long request_elapsed_ms=(long)(request_finished_tick-request_started_tick);
 
    if(res == -1)
      {
       int err = GetLastError();
       if(DownloadMode && showSummary) Alert("Bias downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.", err);
       PrintFormat("Bias downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.", err);
+      if(!DownloadMode) InvalidateLiveBias("WEBREQUEST_FAILED");
       return false;
      }
    else if(res!=200)
@@ -806,10 +879,40 @@ bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool D
       string response_text = CharArrayToString(result, 0, -1, CP_UTF8);
       if(showSummary && response_text != "") MessageBox(response_text,"Response code: "+(string)res,MB_OK);
       else                                   Print("Bias downloader HTTP response "+(string)res+(response_text != "" ? ": "+response_text : " (empty body)"));
+      if(!DownloadMode) InvalidateLiveBias("HTTP_STATUS_"+(string)res);
+      return false;
      }
    //else LastBiasTimeCheck = TimeCurrent();
    Print("Bias API called");
    string json = CharArrayToString(result, 0, -1, CP_UTF8); //Print(json);
+
+   if(!DownloadMode)
+     {
+      SEALegacyBiasResponse evaluated;
+      if(!EAEvaluateLegacyBiasResponse(json,asset,request_elapsed_ms,evaluated))
+        {
+         InvalidateLiveBias(evaluated.reason);
+         return false;
+        }
+
+      int count=ArraySize(evaluated.rows);
+      ArrayResize(BiasList,count);
+      int current_off=(int)(TimeTradeServer()-TimeGMT());
+      for(int i=0;i<count;i++)
+        {
+         BiasList[i].time=(datetime)(evaluated.rows[i].scan_timestamp_ms/1000)+current_off;
+         BiasList[i].asset=evaluated.rows[i].asset;
+         BiasList[i].sentiment_score=(int)evaluated.rows[i].score;
+         BiasList[i].wire_scan_timestamp_ms=evaluated.rows[i].scan_timestamp_ms;
+         BiasList[i].wire_valid_until_ms=evaluated.rows[i].valid_until_ms;
+        }
+      LastBiasAuthoritativeNowMs=evaluated.authoritative_now_ms;
+      LastBiasAuthoritativeTickMs=request_finished_tick;
+      LastBiasTimeCheck=TimeCurrent();
+      LastBiasUnavailableReason="";
+      Print("Captured "+(string)count+" fully validated live Bias points for "+asset);
+      return true;
+     }
    
    ArrayResize(BiasList, 0);
 
@@ -872,21 +975,8 @@ bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool D
       BiasList[n].time            = event_time;
       BiasList[n].asset           = asset;
       BiasList[n].sentiment_score = score;
-     }
-     
-     if(ArraySize(BiasList) == 0 && !DownloadMode) // Biaslist is empty even tho webrequest was sucessful
-     {
-      if(startdate > TimeCurrent() - 5*24*60*60)   // reaching 5 days back day by day to get valid bias points
-      return DownloadAndFillBias(startdate - 24*60*60, asset, false, showSummary);
-
-      ArrayResize(BiasList, 1); // inserting dummy bias sentiment of 0 value
-      BiasList[0].time            = TimeCurrent();
-      BiasList[0].asset           = asset;
-      BiasList[0].sentiment_score = 0;
-
-      LastBiasTimeCheck = TimeCurrent();
-      Print("GOATBiasHistory: No bias points found after going back 5 days. Injected dummy 0 bias point for " + asset);
-      return true;
+      BiasList[n].wire_scan_timestamp_ms = 0;
+      BiasList[n].wire_valid_until_ms = 0;
      }
    //--- Post-parse sanity checks: remove double-stamped timestamps; alert+break on wrong order
    for(int i = 1; i < ArraySize(BiasList); )
@@ -1075,6 +1165,8 @@ bool GOATBiasHistory::LoadBacktestFileAndFillBias()
       BiasList[n].time = adj_t;
       BiasList[n].asset = asset;
       BiasList[n].sentiment_score = (int)StringToInteger(sc_s);
+      BiasList[n].wire_scan_timestamp_ms = 0;
+      BiasList[n].wire_valid_until_ms = 0;
 
       if(n == 0 && BiasList[n].time > TimeCurrent()) Alert("Loading Bias File start date (" + (string)BiasList[n].time + ") is greater than test start date (" + (string)TimeCurrent() + ") Ensure full bias history");
       else if(n==0)                                  Print("Bias File start date is "+(string)BiasList[n].time);

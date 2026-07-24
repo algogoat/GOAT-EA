@@ -100,6 +100,7 @@ CPng EA_LOGO(LOGO_png_data);
 //#resource "\\Files\\GOAT_News.csv" as string abc
 #resource "\\Indicators\\MACD - GOAT 2.ex5"
 string MACD_Path        = "::Indicators\\MACD - GOAT 2.ex5";                    // MACD Indicator Path
+bool Bias_Feed_Unavailable = true;                                               // Fail closed until a validated live row is available
 //---------------------------------------------------------------------------------------------------------------------------------------------------
 int DashboardTradePermissionMask(void)
   {
@@ -4738,6 +4739,7 @@ void OnTick()
     
     if(CurBias>=-100 && CurBias<=100) // We have valid bias
     {
+     Bias_Feed_Unavailable=false;
      DashboardBusBiasSentiment=CurBias;
      if(Mode_Bias!=Bias_Display) {
      // we disregard Bias_Disabled and Bias_Display as they are covered indirectly in other functions
@@ -4902,6 +4904,7 @@ void OnTick()
     }
     else
     {
+     Bias_Feed_Unavailable=true;
      DashboardBusBiasSentiment=0.0;
      // Stale/invalid bias blocks sequence starts only when bias filtering is active.
      bool bias_filter_active = (Mode_Bias!=Bias_Display && Mode_Bias!=Bias_Disabled);
@@ -5265,7 +5268,7 @@ void OnTick()
        {
         if(!LastBuyTradeSignal) Trades_Skipped_News++;
        }
-       else if(Sequence_Pause_Bias_B && !Seq_Buy.BiasRescueActive)
+       else if(Sequence_Pause_Bias_B && (Bias_Feed_Unavailable || !Seq_Buy.BiasRescueActive))
        {
         if(!LastBuyTradeSignal) Trades_Skipped_Bias_B++;
        }
@@ -5300,7 +5303,7 @@ void OnTick()
        {
         if(!LastSellTradeSignal) Trades_Skipped_News++;
        }
-       else if(Sequence_Pause_Bias_S && !Seq_Sell.BiasRescueActive)
+       else if(Sequence_Pause_Bias_S && (Bias_Feed_Unavailable || !Seq_Sell.BiasRescueActive))
        {
         if(!LastSellTradeSignal) Trades_Skipped_Bias_S++;
        }

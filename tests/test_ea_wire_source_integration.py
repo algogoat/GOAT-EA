@@ -63,6 +63,60 @@ require(
     in EA_SOURCE,
     "unavailable bias must pause both controlled addition lanes",
 )
+for side, sequence in (("B", "Buy"), ("S", "Sell")):
+    downstream_guard = (
+        f"else if(Sequence_Pause_Bias_{side} && "
+        f"(Bias_Feed_Unavailable || !Seq_{sequence}.BiasRescueActive))"
+    )
+    require(
+        downstream_guard in EA_SOURCE,
+        f"unavailable {sequence.lower()} rescue must be stopped at the downstream addition consumer",
+    )
+    require(
+        re.search(
+            re.escape(downstream_guard)
+            + r".*?else\s*\{.*?"
+            + re.escape(f"Seq_{sequence}.Add_Level("),
+            EA_SOURCE,
+            re.DOTALL,
+        ),
+        f"{sequence.lower()} addition must remain behind the unavailable-aware pause guard",
+    )
+    require(
+        f"Sequence_Pause_Bias_{side} && !Seq_{sequence}.BiasRescueActive"
+        not in EA_SOURCE,
+        f"legacy {sequence.lower()} rescue bypass must not survive",
+    )
+require(
+    "bool Bias_Feed_Unavailable = true;" in EA_SOURCE
+    and "Bias_Feed_Unavailable=false;" in EA_SOURCE
+    and "Bias_Feed_Unavailable=true;" in EA_SOURCE,
+    "live bias availability must fail closed and track accepted versus unavailable state",
+)
+
+
+def reaches_add_level(
+    sequence_pause: bool,
+    feed_unavailable: bool,
+    rescue_active: bool,
+) -> bool:
+    blocked = sequence_pause and (feed_unavailable or not rescue_active)
+    return not blocked
+
+
+for sequence in ("buy", "sell"):
+    require(
+        not reaches_add_level(True, True, True),
+        f"unavailable {sequence} rescue must not add risk",
+    )
+    require(
+        not reaches_add_level(True, True, False),
+        f"unavailable non-rescue {sequence} sequence must not add risk",
+    )
+    require(
+        reaches_add_level(True, False, True),
+        f"available {sequence} rescue compatibility must remain unchanged",
+    )
 require(
     '"  Latest Bias: UNAVAILABLE"' in EA_SOURCE
     and '"Previous Bias: UNAVAILABLE"' in EA_SOURCE,

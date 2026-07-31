@@ -2,7 +2,7 @@
 #define   EA_Name          MQLInfoString(MQL_PROGRAM_NAME)
 #define   Server           AccountInfoString(ACCOUNT_SERVER)
 #ifndef  GOAT_VERSION_LABEL
-#define   GOAT_VERSION_LABEL "1.42"
+#define   GOAT_VERSION_LABEL "1.43"
 #endif
 #define   version_         GOAT_VERSION_LABEL
 #define   NEWS_FILE        Key+"\\GOAT_News.csv"
@@ -897,7 +897,7 @@ string   requestHeaders = "Content-Type: application/json; charset=UTF-8\r\n"
 int      timeout  =                                  5000;
 long     Licensed_Account_Number =                      0;  // Account Number     ( 0  for not checking )
 string   Licensed_Account_Title  =                     "";  // Account Title/Name ( "" for not checking )
-datetime Expiry                  = D'2026.08.01 22:00:00';  // Year Month Day Hours Minutes Seconds
+datetime Expiry                  = D'2027.08.01 22:00:00';  // Year Month Day Hours Minutes Seconds
 int      PortfolioTracking_BucketMinutes =                  10;
 int      PortfolioTracking_SampleSeconds =                   5;
 //+------------------------------------------------------------------+

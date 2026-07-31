@@ -2,6 +2,28 @@
 
 Expert Advisor (EA) project for MetaTrader 5, maintained in the `GOAT-EA` repository.
 
+### V1.43 Control Tower wire
+
+`GOAT V1.43` adds a forward-only client for
+`/api/ea/bias/v2` (`ea-wire-v2-calibrated-probability-v1`). The client pins the
+V53 era and immutable manifest, verifies the exact response shape and lowercase
+SHA-256 checksum, and derives expiry from the server read time plus monotonic
+elapsed time. It never substitutes the legacy packed-score feed.
+
+`Bias_Protocol` defaults to `BiasProtocol_ControlTowerV2`, while `Mode_Bias`
+continues to default to `Bias_Disabled`; upgrading the binary therefore does not
+silently enable AI-governed trading. When bias filtering is enabled, unavailable,
+WITHHELD, neutral, or below-cutoff V2 evidence blocks new sequence risk and, when
+configured, sequence additions. It does not force-close an existing position.
+Actionable calibrated Bullish/Bearish probability is passed into the existing bias
+trade modes only when it clears both `Bias_threshold` and the configured
+payoff/cost break-even threshold.
+
+Tester and optimization runs deliberately treat V2 as unavailable. Historical
+legacy bias testing requires the explicit
+`BiasProtocol_LegacyRecorded` selection. Exported `.set` files append the selected
+protocol and the four V2 payoff inputs.
+
 The **main trading logic** for each released version is contained in a single `.mq5` file, and there can be **multiple versions** of this main file present in the repository at the same time. Supporting logic is implemented in one or more `.mqh` include files.
 
 ### Repository structure and versioning rules

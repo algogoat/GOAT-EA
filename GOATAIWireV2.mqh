@@ -595,14 +595,24 @@ bool GOATAppendWireV2SetFile(const string file_name)
       FileClose(handle);
       return false;
      }
-   FileWrite(handle,"; ==========GOAT AI CONTROL TOWER==========");
-   FileWrite(handle,"Bias_Protocol="+(string)Bias_Protocol);
-   FileWrite(handle,"Bias_V2_Win_Payoff_R="+DoubleToString(Bias_V2_Win_Payoff_R,8));
-   FileWrite(handle,"Bias_V2_Loss_Payoff_R="+DoubleToString(Bias_V2_Loss_Payoff_R,8));
-   FileWrite(handle,"Bias_V2_Round_Trip_Cost_R="+DoubleToString(Bias_V2_Round_Trip_Cost_R,8));
-   FileWrite(handle,"Bias_V2_Min_Expected_R="+DoubleToString(Bias_V2_Min_Expected_R,8));
+   bool written=true;
+   if(FileWrite(handle,"; ==========GOAT AI CONTROL TOWER==========")==0) written=false;
+   if(FileWrite(handle,"Bias_Protocol="+(string)Bias_Protocol)==0) written=false;
+   if(FileWrite(handle,"Bias_V2_Win_Payoff_R="+DoubleToString(Bias_V2_Win_Payoff_R,8))==0) written=false;
+   if(FileWrite(handle,"Bias_V2_Loss_Payoff_R="+DoubleToString(Bias_V2_Loss_Payoff_R,8))==0) written=false;
+   if(FileWrite(handle,"Bias_V2_Round_Trip_Cost_R="+DoubleToString(Bias_V2_Round_Trip_Cost_R,8))==0) written=false;
+   if(FileWrite(handle,"Bias_V2_Min_Expected_R="+DoubleToString(Bias_V2_Min_Expected_R,8))==0) written=false;
+   FileFlush(handle);
    FileClose(handle);
-   return true;
+   return written;
+  }
+
+bool GOATWireV2AuthoritativeNow(const long read_at_ms,const ulong verified_tick,const ulong now_tick,long &authoritative_now)
+  {
+   authoritative_now=0;
+   if(now_tick<verified_tick) return false;
+   authoritative_now=read_at_ms+(long)(now_tick-verified_tick);
+   return(authoritative_now>=read_at_ms);
   }
 
 class CGOATAIWireV2
@@ -666,6 +676,12 @@ class CGOATAIWireV2
       if(!GOATSha256Utf8(mql5_vector,digest)
          || digest!="bb3296d130dbb9460ab9f7df60ae443a34a29c792b29952c0e0cd4dc97ac9eda") return false;
 
+      long adversarial_now=0;
+      if(!GOATWireV2AuthoritativeNow(1000000L,500,999,adversarial_now) || adversarial_now!=1000499L
+         || !GOATWireV2AuthoritativeNow(1000000L,500,1499,adversarial_now) || adversarial_now!=1000999L
+         || !GOATWireV2AuthoritativeNow(1000000L,500,1500,adversarial_now) || adversarial_now!=1001000L
+         || GOATWireV2AuthoritativeNow(1000000L,500,499,adversarial_now)) return false;
+
       string response="{\"status\":\"success\",\"data\":{\"v\":2,"
                       +"\"wireContract\":\"ea-wire-v2-calibrated-probability-v1\",\"asset\":\"EURUSD\","
                       +"\"publishedAt\":\"2026-07-30T12:00:00.000Z\",\"validUntil\":\"2026-07-30T13:05:00.000Z\","
@@ -705,8 +721,9 @@ class CGOATAIWireV2
          if(now_tick<m_verified_tick) refresh=true;
          else
            {
-            long authoritative_now=m_read_at_ms+(long)(now_tick-m_verified_tick);
-            if(authoritative_now>=m_valid_until_ms) refresh=true;
+            long authoritative_now=0;
+            if(!GOATWireV2AuthoritativeNow(m_read_at_ms,m_verified_tick,now_tick,authoritative_now)
+               || authoritative_now>=m_valid_until_ms) refresh=true;
            }
         }
       if(refresh) Refresh(asset);
@@ -761,10 +778,15 @@ bool CGOATAIWireV2::Refresh(const string asset)
    char result[];
    ArrayResize(request_body,0);
    string result_headers="";
-   string suffix="e9691e12e7eef5ceb1daa0559374c83d90248ba3165051f4d82670a7ad0928be"
-                 +"161bd26578b6b1ab496e3b3fda393a39aa82cf4734bce5bc168d406248db9745\r\n";
+   string api_headers="";
+   if(!GOATBuildAuthenticatedRequestHeaders(api_headers))
+     {
+      m_state.reason_code="AUTH_TOKEN_UNAVAILABLE";
+      Print("GOAT AI wire v2 unavailable: AUTH_TOKEN_UNAVAILABLE.");
+      return false;
+     }
    ResetLastError();
-   int response=WebRequest("GET",url,requestHeaders+suffix,timeout*3,request_body,result,result_headers);
+   int response=WebRequest("GET",url,api_headers,timeout*3,request_body,result,result_headers);
    ulong finished=GetTickCount64();
    m_last_attempt_tick=finished;
    ulong duration=(finished>=started ? finished-started : 0);
@@ -790,7 +812,7 @@ bool CGOATAIWireV2::Refresh(const string asset)
       return false;
      }
    m_state=parsed;
-   m_verified_tick=finished;
+   m_verified_tick=started;
    if(!GOATParseCanonicalIsoMs(m_state.read_at,m_read_at_ms)
       || !GOATParseCanonicalIsoMs(m_state.valid_until,m_valid_until_ms))
      {

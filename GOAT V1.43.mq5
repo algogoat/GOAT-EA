@@ -1,6 +1,6 @@
 ﻿#define   GOAT_VERSION_LABEL "1.43"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.43-CONTROL-TOWER-V2"
+#define   GOAT_BUILD_ID "V1.43-CONTROL-TOWER-V2-R2"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -2192,8 +2192,15 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
    ArrayResize(post_data,ArraySize(post_data)-1);                    // Removing the last character, maybe null added automatically
  //Print("Post data:"+json_data);
    string result_headers;
-   string x = "e9691e12e7eef5ceb1daa0559374c83d90248ba3165051f4d82670a7ad0928be";
-   int res = WebRequest("POST", URL, requestHeaders+x+"161bd26578b6b1ab496e3b3fda393a39aa82cf4734bce5bc168d406248db9745\r\n", timeout, post_data, result, result_headers);
+   string api_headers="";
+   if(!GOATBuildAuthenticatedRequestHeaders(api_headers))
+     {
+      Print("License check unavailable: GOAT API credential file is missing or invalid.");
+      HidePrompt();
+      ShowPrompt("Authorization Failed","Install the GOAT API credential file."," ","");
+      return 401;
+     }
+   int res = WebRequest("POST", URL, api_headers, timeout, post_data, result, result_headers);
    Print("Response Code: ", res);
    if(res==-1)
    {
@@ -2628,6 +2635,21 @@ int OnInit()
    string names[], values[];
    Strat = ExtractFunctionKeysFromInputString(EA_Desc,names,values);
    _Symbol_ = ConvertToGOATsymbol(_Symbol); Print("Symbol="+_Symbol+" GOAT_Symbol="+_Symbol_);
+   bool test_context=(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD));
+   if(Bias_Protocol==BiasProtocol_LegacyRecorded && !test_context)
+     {
+      Print("Legacy recorded bias is historical/test-only and cannot be selected on a live chart.");
+      return INIT_PARAMETERS_INCORRECT;
+     }
+   if(!test_context)
+     {
+      string api_headers="";
+      if(!GOATBuildAuthenticatedRequestHeaders(api_headers))
+        {
+         Print("GOAT API credential file is missing or invalid: "+GOAT_API_BEARER_FILE);
+         return INIT_FAILED;
+        }
+     }
    if(Bias_Protocol==BiasProtocol_ControlTowerV2)
      {
       if(Bias_V2_Win_Payoff_R<=0.0
@@ -3976,7 +3998,12 @@ double OnTester()
       {
        WriteSet(desc);
        if(!GOATAppendWireV2SetFile(FileSET_Name))
-          Print("Failed to append GOAT AI Control Tower settings to "+FileSET_Name);
+         {
+          int append_error=GetLastError();
+          bool removed=FileDelete(FileSET_Name,FILE_COMMON);
+          Print("GOAT AI Control Tower settings append failed; incomplete SET artifact discarded. err=",
+                append_error," removed=",removed," file=",FileSET_Name);
+         }
       }
     ChartClose(ChartID());
    }

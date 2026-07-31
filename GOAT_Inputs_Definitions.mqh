@@ -891,9 +891,45 @@ bool     NEWS_ON=false;
 string   URL_Web        = "www.GOATedge.ai";//"https://www.GOATalgo.com/";
 string   URL_API        = "https://goatedge.ai";//"https://api.goatalgo.com";
 //string URL_API2       = "https://eloquent-nature-75ba63ed82.strapiapp.com/api/metatrader/check-id";
-string   requestHeaders = "Content-Type: application/json; charset=UTF-8\r\n"
-                          "Authorization: Bearer 664ff7e62275f1ee4438b264e4928176940a7e25c3401b596334a73d689a2dd4"+
-                                                "6d647c15a5ee7af289757589ad7f872ad3f74853a120b39d79822dddd2126196";
+#define  GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer.token"
+string   requestHeaders = "Content-Type: application/json; charset=UTF-8\r\n";
+
+bool GOATIsSafeApiBearerToken(const string token)
+  {
+   int length=StringLen(token);
+   if(length<64 || length>512) return false;
+   for(int i=0;i<length;i++)
+     {
+      ushort c=StringGetCharacter(token,i);
+      if(!((c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9')
+           || c=='-' || c=='_' || c=='.' || c=='~')) return false;
+     }
+   return true;
+  }
+
+bool GOATBuildAuthenticatedRequestHeaders(string &headers)
+  {
+   headers="";
+   int handle=FileOpen(GOAT_API_BEARER_FILE,FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
+   if(handle==INVALID_HANDLE) return false;
+   ulong file_size=FileSize(handle);
+   if(file_size<64 || file_size>1024)
+     {
+      FileClose(handle);
+      return false;
+     }
+   string token=FileReadString(handle);
+   bool extra_content=false;
+   while(!FileIsEnding(handle))
+     {
+      string extra=FileReadString(handle);
+      if(StringLen(extra)>0) extra_content=true;
+     }
+   FileClose(handle);
+   if(extra_content || !GOATIsSafeApiBearerToken(token)) return false;
+   headers=requestHeaders+"Authorization: Bearer "+token+"\r\n";
+   return true;
+  }
 int      timeout  =                                  5000;
 long     Licensed_Account_Number =                      0;  // Account Number     ( 0  for not checking )
 string   Licensed_Account_Title  =                     "";  // Account Title/Name ( "" for not checking )

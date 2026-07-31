@@ -2955,8 +2955,8 @@ bool CGOATDashboard::FetchPortfolioTelemetryConfig(void)
 {
    m_pt_last_config_check=TimeLocal();
    string url=URL_API+"/api/ea/portfolio-tracking/config?id="+(string)AccountInfoInteger(ACCOUNT_LOGIN);
-   string x="e9691e12e7eef5ceb1daa0559374c83d90248ba3165051f4d82670a7ad0928be";
-   string headers=requestHeaders+x+"161bd26578b6b1ab496e3b3fda393a39aa82cf4734bce5bc168d406248db9745\r\n";
+   string headers="";
+   if(!GOATBuildAuthenticatedRequestHeaders(headers)) return false;
    char request_body[];
    ArrayResize(request_body,0);
    char result[];
@@ -3007,8 +3007,8 @@ bool CGOATDashboard::FetchPortfolioTelemetryState(void)
 {
    m_pt_last_state_check=TimeLocal();
    string url=URL_API+"/api/ea/portfolio-tracking/state?id="+(string)AccountInfoInteger(ACCOUNT_LOGIN);
-   string x="e9691e12e7eef5ceb1daa0559374c83d90248ba3165051f4d82670a7ad0928be";
-   string headers=requestHeaders+x+"161bd26578b6b1ab496e3b3fda393a39aa82cf4734bce5bc168d406248db9745\r\n";
+   string headers="";
+   if(!GOATBuildAuthenticatedRequestHeaders(headers)) return false;
    char request_body[];
    ArrayResize(request_body,0);
    char result[];
@@ -3116,8 +3116,8 @@ bool CGOATDashboard::UploadPortfolioTelemetryQueue(void)
    if(ArraySize(post_body)>0) ArrayResize(post_body,ArraySize(post_body)-1);
    char result[];
    string result_headers="";
-   string x="e9691e12e7eef5ceb1daa0559374c83d90248ba3165051f4d82670a7ad0928be";
-   string headers=requestHeaders+x+"161bd26578b6b1ab496e3b3fda393a39aa82cf4734bce5bc168d406248db9745\r\n";
+   string headers="";
+   if(!GOATBuildAuthenticatedRequestHeaders(headers)) return false;
    string url=URL_API+"/api/ea/portfolio-tracking/buckets?id="+(string)AccountInfoInteger(ACCOUNT_LOGIN);
    ResetLastError();
    int status=WebRequest("POST",url,headers,(int)MathMin((double)timeout,3000.0),post_body,result,result_headers);

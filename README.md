@@ -21,8 +21,17 @@ payoff/cost break-even threshold.
 
 Tester and optimization runs deliberately treat V2 as unavailable. Historical
 legacy bias testing requires the explicit
-`BiasProtocol_LegacyRecorded` selection. Exported `.set` files append the selected
-protocol and the four V2 payoff inputs.
+`BiasProtocol_LegacyRecorded` selection; that protocol is rejected on live charts.
+Exported `.set` files append the selected protocol and the four V2 payoff inputs,
+and an incomplete append causes the newly created artifact to be discarded.
+
+Live API authentication is never stored in source or `.set` files. Provision the
+rotated bearer as the only non-empty line in
+`Common\Files\GOAT\Credentials\api-bearer.token` on each MT5 host. The EA
+validates the local file and fails initialization when it is missing or malformed.
+The production `LICENSE_GATEWAY_TOKEN` must be rotated whenever a prior token may
+have appeared in repository history; deploy/provision the replacement before
+retiring the old value to avoid an unsafe partial cutover.
 
 The **main trading logic** for each released version is contained in a single `.mq5` file, and there can be **multiple versions** of this main file present in the repository at the same time. Supporting logic is implemented in one or more `.mqh` include files.
 

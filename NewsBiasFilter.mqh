@@ -564,9 +564,14 @@ bool GOATNewsFilter::DownloadAndFillNews(datetime startdate,int news_threshold,b
    char result[];
    string result_headers = "";
    
-   string x = "e9691e12e7eef5ceb1daa0559374c83d90248ba3165051f4d82670a7ad0928be";
+   string api_headers="";
+   if(!GOATBuildAuthenticatedRequestHeaders(api_headers))
+     {
+      Print("News downloader unavailable: GOAT API credential file is missing or invalid.");
+      return false;
+     }
    ResetLastError();
-   int res = WebRequest("GET", url, requestHeaders+x+"161bd26578b6b1ab496e3b3fda393a39aa82cf4734bce5bc168d406248db9745\r\n", timeout, request_body, result, result_headers);
+   int res = WebRequest("GET", url, api_headers, timeout, request_body, result, result_headers);
    Print("Response Code: ", res);
    if(res == -1)
      {
@@ -790,9 +795,14 @@ bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool D
    char result[];
    string result_headers = "";
    
-   string x = "e9691e12e7eef5ceb1daa0559374c83d90248ba3165051f4d82670a7ad0928be";
+   string api_headers="";
+   if(!GOATBuildAuthenticatedRequestHeaders(api_headers))
+     {
+      Print("Legacy bias downloader unavailable: GOAT API credential file is missing or invalid.");
+      return false;
+     }
    ResetLastError();
-   int res = WebRequest("GET", url, requestHeaders+x+"161bd26578b6b1ab496e3b3fda393a39aa82cf4734bce5bc168d406248db9745\r\n", timeout*3, request_body, result, result_headers);
+   int res = WebRequest("GET", url, api_headers, timeout*3, request_body, result, result_headers);
 
    if(res == -1)
      {

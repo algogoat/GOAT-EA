@@ -2,13 +2,17 @@
 
 Expert Advisor (EA) project for MetaTrader 5, maintained in the `GOAT-EA` repository.
 
-### V1.43 Control Tower wire
+### V1.44 Control Tower V54 wire
 
-`GOAT V1.43` adds a forward-only client for
+`GOAT V1.44` carries the forward-only client for
 `/api/ea/bias/v2` (`ea-wire-v2-calibrated-probability-v1`). The client pins the
-V53 era and immutable manifest, verifies the exact response shape and lowercase
+V54 era and immutable manifest, verifies the exact response shape and lowercase
 SHA-256 checksum, and derives expiry from the server read time plus monotonic
 elapsed time. It never substitutes the legacy packed-score feed.
+
+`GOAT V1.43` remains the immutable V53-pinned predecessor release. It must not be
+used against the V54 Control Tower because the exact era/manifest guard correctly
+rejects cross-era directives.
 
 `Bias_Protocol` defaults to `BiasProtocol_ControlTowerV2`, while `Mode_Bias`
 continues to default to `Bias_Disabled`; upgrading the binary therefore does not

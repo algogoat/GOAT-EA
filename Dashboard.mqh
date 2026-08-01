@@ -16,8 +16,65 @@
 #import "kernel32.dll"
    //int GetCurrentProcessId();
    int CopyFileW(string src, string dst, int fail_if_exists);
+   int DeleteFileW(string path);
 #import
 #endif 
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+class CGOATDashboard;
+
+class CGOATDashScrollV : public CScrollV
+  {
+private:
+   CGOATDashboard *m_owner;
+public:
+                     CGOATDashScrollV(void) {m_owner=NULL;}
+   void              Owner(CGOATDashboard *owner) {m_owner=owner;}
+protected:
+   virtual bool      OnChangePos(void);
+   virtual bool      OnThumbDragProcess(void);
+   virtual bool      OnThumbDragEnd(void);
+  };
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+enum ENUM_GOAT_DASH_SORT_KEY
+  {
+   GOAT_DASH_SORT_SYMBOL=0,
+   GOAT_DASH_SORT_STRATEGY,
+   GOAT_DASH_SORT_POSITIONS,
+   GOAT_DASH_SORT_TRADES,
+   GOAT_DASH_SORT_LOTS,
+   GOAT_DASH_SORT_HIST_DD,
+   GOAT_DASH_SORT_PL_OPEN,
+   GOAT_DASH_SORT_PL_D1,
+   GOAT_DASH_SORT_PL_W1,
+   GOAT_DASH_SORT_PL_ALL
+  };
+enum ENUM_GOAT_PORTFOLIO_RUN_STATE
+  {
+   GOAT_PORTFOLIO_RUN_ACTIVE=0,
+   GOAT_PORTFOLIO_RUN_PAUSED
+  };
+enum ENUM_GOAT_EXPOSURE_POLICY_MODE
+  {
+   GOAT_EXPOSURE_POLICY_ALLOW=GOAT_EXPOSURE_ALLOW,
+   GOAT_EXPOSURE_POLICY_SYMBOL_DIRECTION=GOAT_EXPOSURE_SYMBOL_DIRECTION,
+   GOAT_EXPOSURE_POLICY_CURRENCY_DIRECTION=GOAT_EXPOSURE_CURRENCY_DIRECTION
+  };
+enum ENUM_GOAT_CURRENCY_FILTER_STATE
+  {
+   GOAT_CURRENCY_FILTER_ALL=0,
+   GOAT_CURRENCY_FILTER_LONG_ONLY,
+   GOAT_CURRENCY_FILTER_SHORT_ONLY,
+   GOAT_CURRENCY_FILTER_PAUSE
+  };
+enum ENUM_GOAT_RISK_BREACH_CODE
+  {
+   GOAT_RISK_BREACH_NONE=0,
+   GOAT_RISK_BREACH_RUNNING_LOSS,
+   GOAT_RISK_BREACH_DAILY_LOSS,
+   GOAT_RISK_BREACH_DAILY_TARGET,
+   GOAT_RISK_BREACH_LOW_EQUITY,
+   GOAT_RISK_BREACH_EQUITY_TARGET
+  };
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 class CGOATDashboard : public CAppDialog
   {
@@ -25,38 +82,110 @@ public:
    CWndClient  c_Wnd_Table,c_Wnd_Export;
    CLabel      m_lblHeading,m_lblExport;
    
-   CEdit       edt_Heading,edt_Symbol[],edt_Strategy[],edt_Action,edt_Status[],edt_Positions[],edt_Lots[],edt_Trades[],edt_HistDD[],edt_PL_D1[],edt_PL_W1[],edt_PL_All[];
-   CButton     btn_Action[];
+   CEdit       edt_Heading,edt_HeadingPortfolio,edt_HeadingMembers,edt_HeadingScore,edt_HeadingAMSR,edt_HeadingMonthlyProfit,edt_HeadingMaxDD,edt_HeadingMonthlyRF,
+               edt_RunningLossBox,edt_DailyLossBox,edt_DailyTargetBox,edt_LowEquityStopBox,edt_EquityTargetBox,
+               edt_RunningLossLead,edt_RunningLossTail,edt_DailyLossLead,edt_DailyLossTail,edt_DailyTargetLead,edt_DailyTargetTail,edt_LowEquityStopLead,edt_EquityTargetLead,
+               edt_RunningLossLimit,edt_DailyLossLimit,edt_DailyTargetLimit,edt_LowEquityStopLevel,edt_EquityTargetLevel,
+               edt_Symbol[],edt_Strategy[],edt_Comment[],edt_News[],edt_AIBias[],edt_RiskLots[],edt_Action,edt_Status[],edt_Positions[],edt_Lots[],edt_Trades[],edt_HistDD[],edt_PL_Open[],edt_PL_D1[],edt_PL_W1[],edt_PL_All[];
+   CButton     btn_Action[],btn_PortfolioPause,btn_SameAssetDirection,btn_USDFilter,btn_USDClose,btn_EURFilter,btn_EURClose,btn_GBPFilter,btn_GBPClose,btn_JPYFilter,btn_JPYClose;
    // Layout parameters
    int         Margin_Left,Margin_Top,m_GapHoriz,m_GapVert,m_rowHeight,m_controlHeight,m_controlWidth;
  //int         Width_Symbol, Width_Strategy, Width_Action, Width_Status, Width_Positions, Width_Trades, Width_PL_D1, Width_PL_W1, Width_PL_M1, Width_PL_All;
    color       clrEdt,clrEdtBorder,clrEdtBG;
+   CGOATDashScrollV m_rows_scroll;
+   int         m_rows_top,m_rows_visible,m_rows_top_max,m_rows_y0,m_rows_view_bottom,m_rows_view_left,m_rows_view_right,m_row_pitch,m_rows_data_offset,m_rows_base_y0;
+   bool        m_rows_scroll_enabled,m_rows_need_scroll;
+   int         m_last_profit_sort_key;
+   bool        m_last_profit_sort_desc;
    
    string Key_,EA_Name_,Server_,Font;
    string SetFolder,EA_Path;
+   string Portfolio_Name,Portfolio_Members,Portfolio_Score,Portfolio_AMSR,Portfolio_Target_MP,Portfolio_Target_DD,Portfolio_Target_MRF;
+   double Portfolio_Live_MP,Portfolio_Live_DD,Portfolio_Live_MRF,Port_RunningLoss,Port_DailyLoss,Port_DailyTarget,Port_LowEquityStopLevel,Port_EquityTargetLevel;
+   datetime Portfolio_StartTime,Portfolio_DayStartTime;
+   double Portfolio_StartEquity,Portfolio_DayStartEquity,Portfolio_MaxEquity,Portfolio_MaxDDPct;
    double Version;
    long   ChartId;
    int    D_Width,D_Height,Font_Size;
+   ENUM_GOAT_PORTFOLIO_RUN_STATE m_portfolio_run_state;
+   ENUM_GOAT_EXPOSURE_POLICY_MODE m_exposure_policy_mode;
+   ENUM_GOAT_CURRENCY_FILTER_STATE m_usd_filter_state,m_eur_filter_state,m_gbp_filter_state,m_jpy_filter_state;
  //color  clr_CaptionBack,clr_CaptionBorder,clr_ClientBack,clr_ClientBorder,clr_Text;
    //–– inside the private/protected section ––//
    datetime  m_day_start,          // broker midnight
              m_week_start;         // broker Monday
-   datetime  m_hist_last_scan[];   // one per g_sets[] element
-   double    m_hist_total_pl[];    // cumulative P/L  "
-   int       m_hist_total_trd[];   // cumulative trades "
-   // reusable GUI colours
-   color clrPos, clrNeg, clrNeu;
+    bool      m_state_dirty;
+    datetime  m_last_state_save;
+    long      m_portfolio_command_id;
+    bool      m_portfolio_command_pending;
+    int       m_portfolio_command_type;
+    int       m_portfolio_command_target_pause;
+    datetime  m_portfolio_command_time;
+    bool      m_risk_policy_armed;
+    bool      m_risk_policy_breached;
+    int       m_risk_policy_breach_code;
+    datetime  m_risk_policy_breach_time;
+    double    m_risk_running_loss_limit,m_risk_daily_loss_limit,m_risk_daily_target_limit,m_risk_low_equity_stop,m_risk_equity_target;
+     bool      m_currency_rules_editor_visible;
+     bool      m_close_scope_editor_visible;
+     int       m_portfolio_command_close_scope;
+     // reusable GUI colours
+    color clrPos, clrNeg, clrNeu;
    
    struct SetFileRecord
    {
-    string path,name,sym,strat,status;       // activated ?
+    string path,name,sym,strat,status,news_label,bias_label,risk_lots_label;
     long   cid,magic;
-    double PL_total,PL_weekly,PL_daily;
-    int    Trades_total;
-    datetime last_deal_scan;             // ← NEW  incremental history cursor
-    SetFileRecord() {path=name=sym=strat=status=""; cid=magic=-1; PL_total=PL_weekly=PL_daily=0; Trades_total=0; last_deal_scan=0;}
+    datetime heartbeat_ts,last_scan,last_ack_time;
+    int    open_trades,Trades_total;
+     double open_lots,open_pl,PL_total,PL_weekly,PL_daily,news_score,bias_sentiment;
+     long   last_ack_id;
+     int    last_ack_status,ack_closed,ack_errors,ack_remaining,trade_allow_mask,target_trade_allow_mask,exposure_policy_mode,target_exposure_policy_mode,target_close_scope;
+     bool   policy_paused;
+    SetFileRecord()
+      {
+       path=name=sym=strat=news_label=bias_label=risk_lots_label="";
+       status="Pending";
+       cid=magic=-1;
+       heartbeat_ts=0;
+       last_scan=0;
+       last_ack_time=0;
+       open_trades=0;
+       Trades_total=0;
+       open_lots=open_pl=PL_total=PL_weekly=PL_daily=news_score=bias_sentiment=0.0;
+       last_ack_id=0;
+       last_ack_status=0;
+        ack_closed=0;
+        ack_errors=0;
+        ack_remaining=0;
+        trade_allow_mask=GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL;
+        target_trade_allow_mask=GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL;
+        exposure_policy_mode=GOAT_EXPOSURE_ALLOW;
+        target_exposure_policy_mode=GOAT_EXPOSURE_ALLOW;
+        target_close_scope=GOAT_CLOSE_SCOPE_ALL;
+        policy_paused=false;
+       }
    };
    SetFileRecord g_sets[];
+
+   struct PortfolioTelemetryBucket
+   {
+    long   start_ms,end_ms;
+    int    minutes,samples,positions_close;
+    double balance_open,balance_close,equity_open,equity_high,equity_low,equity_close,margin_close,free_margin_close;
+    PortfolioTelemetryBucket()
+      {
+       start_ms=end_ms=0;
+       minutes=samples=positions_close=0;
+       balance_open=balance_close=equity_open=equity_high=equity_low=equity_close=margin_close=free_margin_close=0.0;
+      }
+   };
+   PortfolioTelemetryBucket m_pt_bucket,m_pt_queue[];
+   bool      m_pt_config_loaded,m_pt_state_loaded,m_pt_server_enabled,m_pt_bucket_open;
+   string    m_pt_portfolio_id;
+   int       m_pt_bucket_minutes,m_pt_sample_seconds,m_pt_max_upload_buckets;
+   datetime  m_pt_last_config_check,m_pt_last_state_check,m_pt_last_sample_time,m_pt_last_upload_attempt;
+   long      m_pt_server_time_offset_ms,m_pt_latest_bucket_end_ms;
    
    CGOATDashboard();
   ~CGOATDashboard();
@@ -68,51 +197,74 @@ public:
     Key_=_Key_; EA_Name_=_EA_Name_; Server_=_Server_; Version=StringToDouble(_Version_); Font_Size=_Font_Size_; ChartId=Id;
    }
    virtual bool   OnEvent(const int id, const long &lparam,const double &dparam, const string &sparam);
+   bool           HandleChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam);
    void           SetCaptionClientColors();
    void           maximizeWindow();
    void           minimizeWindow();
    void           OnClickSelectFile(void);
    string         BuildTemplate(const string eaName,const string eaPath,const string setFile);
    bool           SaveTemplateAndCopy(const string tplName,const string tplText);
+   bool           DeleteCopiedTemplate(const string tplName);
    bool           ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string tplName);
    bool           NewSingleInstance(const int idx);
-   void           GetOpenStatsNet(const string sym,long magic,int &pos_cnt,double &net_lots);
+   void           GetOpenStats(const string sym,long magic,int &open_trades,double &open_lots,double &open_pl,double &open_pl_day,double &open_pl_week,string &comment);
    void           CalcHistoryStatsFast(int idx,int  &new_trd,double &pl_d,double &pl_w,double &pl_all);
+   bool           ReadChildSnapshotIntoRow(const int idx);
+   void           ReadSymbolSharedFields(const int idx);
    void           UpdateRowMetrics(int idx,int gui_row);
    void           UpdatePortfolioRow();
-   //void           ScanAndUpdateRow(int idx,int gui_row);
+   void           RefreshPortfolioRealtimeStats(void);
+   void           ResetPortfolioTrackingState(void);
+   void           ProcessTimerCycle(void);
+   bool           DashboardStateExists(void) const;
+   int            LoadDashboardConfig(void);
+   bool           SaveDashboardConfig(void);
+   void           DeleteDashboardConfig(void);
+   void           RowsScrollTo(const int top_row);
+   bool           HandleMouseWheel(const long lparam,const double dparam);
+   bool           HandleHeaderClick(const string control_name);
+   bool           HandleHeaderStateButtonClick(const string control_name);
+   void           DeployAll(void);
+ //void           ScanAndUpdateRow(int idx,int gui_row);
 //––––– 1. Load .set files + build g_sets[] ––––––––––––––––––––––––––
    int LoadSetFiles()
    {
     Print("▶ Loading Set Files...");
-  //g_myEA = MQLInfoString(MQL_PROGRAM_NAME); g_myEA="GOAT V1.24"; // auto-detect EA name
     string picked[];
     if(FileSelectDialog("Select .set files",NULL,"set files (*.set)|*.set",FSD_FILE_MUST_EXIST|FSD_ALLOW_MULTISELECT|FSD_COMMON_FOLDER,picked,NULL)<=0)
     {
      Alert("⚠ No files chosen.");
-     return false;
+     return 0;
     }
     EA_Path=MQLInfoString(MQL_PROGRAM_PATH); //Print(EA_Path);
     EA_Path=StringSubstr(EA_Path,StringFind(EA_Path,"Experts\\")); //Print(EA_Path);
     SetFolder=FolderOf(picked[0]); //Print(SetFolder);
     
+    bool ignore=false;
     ArrayResize(g_sets,0);
     // filter only .set files for this EA & symbols in Market Watch
     for(int i=0;i<ArraySize(picked);++i)
     {
-     string file = FileNameOf(picked[i]); //Print(file);
-     if(!EndsWith(file,".set")) continue;
-     
-     string sym="",EAname="";
-     if(!ExtractEAnameAndSymbol(file,sym,EAname) || !SymbolSelect(sym,true)) continue; //Print(sym); Print(EAname);
-     //int s1=StringFind(file," "); int s2=StringFind(file," ",s1+1); Print(StringSubstr(file,0,s2));
+     string sym="",EAname="",file=FileNameOf(picked[i]); //Print(file);
+     if(!EndsWith(file,".set"))                     continue;
+     if(!ExtractEAnameAndSymbol(file,sym,EAname))  {MessageBox("Expert or symbol Name not found in file:\n\n"+file,"Invalid File Name",MB_OK|MB_ICONERROR); continue;}
+     if(!SymbolSelect(sym,true))                   {MessageBox("The Symbol "+sym+" is not found in the market watch","Symbol not found",MB_OK|MB_ICONERROR); continue;}
      if(EAname!=EA_Name_)
      {
       if(StringFind(EAname,Key_)>=0)
       {
-       int ret=MessageBox("EA Version not matching in set file:\n\n"+StringSubstr(file,0,StringFind(file,"_Trds"))+
-                          "\n\nDo you want to accept this set file?\nThis may affect your portfolio profitibility.","EA Version Mismatch",MB_YESNO|MB_ICONWARNING);
-       if(ret==IDNO) continue;
+       if(!ignore)
+       {
+          int trim_pos=StringFind(file,"_Trds");
+          string file_label=(trim_pos>0 ? StringSubstr(file,0,trim_pos) : file);
+          int ret=MessageBox("EA Version not matching in set file:\n\n"+file_label+
+                             "\n\nDo you want to accept this set file?"+
+                             "\nThis may affect your portfolio profitibility."+
+                             "\n\nPress Abort to discard once\nPress Retry to accept once\nPress Ignore to accept all further mismatches",
+                             "EA Version Mismatch",MB_ABORTRETRYIGNORE|MB_ICONQUESTION);
+          if(ret==IDABORT) continue;
+          if(ret==IDIGNORE) ignore=true;
+       }
       }
       else continue;
      }
@@ -120,7 +272,11 @@ public:
      g_sets[n].path = SetFolder+"\\"+file;
      g_sets[n].name = file;
      g_sets[n].sym  = sym;
-     g_sets[n].status="❌";
+     g_sets[n].strat=ParseSetFileForInput("EA_Desc=",g_sets[n].path);
+     g_sets[n].news_label=BuildNewsLabel(g_sets[n].path);
+     g_sets[n].bias_label=BuildBiasLabel(g_sets[n].path);
+     g_sets[n].risk_lots_label=BuildRiskLotsLabel(g_sets[n].path);
+     g_sets[n].status="Pending";
     }
     Print("✓ kept ",ArraySize(g_sets)," file(s) after EA-filter.");
     return ArraySize(g_sets);
@@ -129,7 +285,7 @@ public:
    void DoActivate(int idx)
    {
     if(idx<0 || idx>=ArraySize(g_sets)) return;
-    if(g_sets[idx].status=="✔") return;
+    if(ArraySize(btn_Action)>idx+2 && btn_Action[idx+2].Text()=="Navigate") return;
     //GlobalVariableSet("Dashboard_ChartID",(double)ChartID());
     // --- timeframe token from filename (",M1" etc.)
     int c = StringFind(g_sets[idx].name,",");
@@ -170,8 +326,73 @@ public:
       m_day_start  = newDay;
       m_week_start = newWeek;
       ResetDayStats();                      // zero closed‑PL_daily after anchors move
-   }
+  }
 private:
+   bool HandleObjectClick(const string control_name);
+   bool NavigateToSet(const int idx);
+   bool SendPortfolioPauseCommand(const bool pause);
+   bool SendPortfolioCloseCommand(void);
+   bool SendPortfolioCommand(const int command_type,const int command_value,const string event_label,const bool notify=true);
+   bool SendCurrencyRulesCommand(void);
+   bool SendExposurePolicyCommand(const int mode);
+   bool SendCloseScopeCommand(const int scope);
+   string PortfolioCommandName(void) const;
+   void AppendPortfolioCommandAudit(const string stage,const int targets,const int applied,const int failed,const string detail);
+   void AppendCloseScopeAudit(const string stage,const int scope,const int targets,const int close_targets,const int closed_positions,const int close_errors,const int remaining_positions,const string detail);
+   string CloseScopeLabel(const int scope) const;
+   string CloseScopeCurrency(const int scope) const;
+   bool SymbolMatchesCloseScope(const string symbol,const int scope) const;
+   string ExposurePolicyLabelForMode(const int mode) const;
+   int NormalizeExposurePolicyMode(const int value) const;
+   int NextExposurePolicyMode(const int mode) const;
+   void LoadExposurePolicyState(void);
+   void SaveExposurePolicyState(void);
+   void AppendExposurePolicyAudit(const string stage,const string detail);
+   string CurrencyRuleSummary(void) const;
+   string CurrencyPolicyLabelForMask(const int mask) const;
+   ENUM_GOAT_CURRENCY_FILTER_STATE NormalizeCurrencyFilterState(const int value) const;
+   ENUM_GOAT_CURRENCY_FILTER_STATE NextCurrencyFilterState(const ENUM_GOAT_CURRENCY_FILTER_STATE state) const;
+   bool CurrencySideAllowed(const ENUM_GOAT_CURRENCY_FILTER_STATE state,const bool is_long) const;
+   ENUM_GOAT_CURRENCY_FILTER_STATE CurrencyStateByCode(const string code) const;
+   int CurrencyPolicyMaskForSymbol(const string symbol) const;
+   void LoadCurrencyPolicyState(void);
+   void SaveCurrencyPolicyState(void);
+   void AppendCurrencyPolicyAudit(const string stage,const string detail);
+   void UpdateCurrencyRulesEditorButtons(void);
+   void ShowCurrencyRulesEditor(const bool visible);
+   void CycleCurrencyRule(const string code);
+   void UpdateCloseScopeEditorButtons(void);
+   void ShowCloseScopeEditor(const bool visible);
+   bool ConfirmAndSendCloseScope(const int scope);
+   double ParseRiskInputValue(const string raw);
+   bool ValidateRiskPolicyInputs(double &running_loss,double &daily_loss,double &daily_target,double &low_equity,double &equity_target,string &error_text);
+   bool ArmRiskPolicyFromHeader(void);
+   void LoadRiskPolicyState(void);
+   void SaveRiskPolicyState(void);
+   void AppendRiskPolicyAudit(const string stage,const string reason,const string detail);
+   void EvaluateRiskPolicy(void);
+   void ReadChildCommandState(const int idx);
+   void UpdatePortfolioCommandCompletion(void);
+   void RefreshRowsViewportMetrics(void);
+   void LayoutRowsScroll(void);
+   void ApplyRowsViewport(void);
+   void MoveDataRow(const int gui_row,const int y);
+   void SetDataRowVisible(const int gui_row,const bool visible);
+   bool ShouldSwapRows(const int lhs,const int rhs,const ENUM_GOAT_DASH_SORT_KEY sort_key,const bool descending);
+   bool IsProfitSortKey(const ENUM_GOAT_DASH_SORT_KEY sort_key) const;
+   double SortMetricValue(const int idx,const ENUM_GOAT_DASH_SORT_KEY sort_key);
+   void SwapRowState(const int lhs,const int rhs);
+   void SwapEditState(CEdit &lhs,CEdit &rhs);
+   void SwapButtonState(CButton &lhs,CButton &rhs);
+   void SortRows(const ENUM_GOAT_DASH_SORT_KEY sort_key);
+   void ParsePortfolioFolderInfo(void);
+   void UpdatePortfolioInfoHeader(void);
+   void ProcessPortfolioTelemetry(void);
+   bool FetchPortfolioTelemetryConfig(void);
+   bool FetchPortfolioTelemetryState(void);
+   void SamplePortfolioTelemetry(const long now_ms);
+   bool UploadPortfolioTelemetryQueue(void);
+   bool ReadJsonValue(const string json,const string key,string &raw,bool &quoted) const;
    string FolderOf(const string p) { for(int i=(int)StringLen(p)-1;i>=0;--i) if(p[i]=='\\'||p[i]=='/') return StringSubstr(p,0,i+0); return ""; }
 
    string FileNameOf(const string p) { for(int i=(int)StringLen(p)-1;i>=0;--i) if(p[i]=='\\'||p[i]=='/') return StringSubstr(p,i+1);  return p; }
@@ -211,6 +432,100 @@ private:
       if(v<0.0)  return C'180,0,0';          // red
       return clrWhite;                       // neutral
    }
+   string FormatIntegerText(const double value)
+   {
+      return(IntegerToString((int)MathRound(value)));
+   }
+   string FormatPadded4Text(const double value)
+   {
+      return(IntegerToString((int)MathRound(value),4,'0'));
+   }
+   color StatusColor(const string status) const
+   {
+      if(status=="Active" || status=="Linked") return C'87,153,122';
+      if(status=="Closed")                       return C'87,153,122';
+      if(status=="Inactive")                   return C'214,161,52';
+      if(status=="Paused" || status=="Stale" || status=="Close Failed" || status=="No Ack" || status=="Command Failed" || status=="Cur Paused") return clrOrangeRed;
+      if(status=="Buy Only" || status=="Sell Only" || status=="Asset Filter" || status=="Ccy Filter") return clrCornflowerBlue;
+      if(status=="Syncing" || status=="Closing") return clrCornflowerBlue;
+      if(status=="Offline")                    return clrDarkGray;
+      if(status=="Deploying")                  return clrCornflowerBlue;
+      return C'146,7,1,255';
+   }
+   string DisplayStatusForRow(const int idx,const datetime now) const
+   {
+      if(idx<0 || idx>=ArraySize(g_sets)) return "Pending";
+      if(g_sets[idx].magic>0 && g_sets[idx].heartbeat_ts>0 && (now-g_sets[idx].heartbeat_ts)>5) return "Stale";
+      if(m_portfolio_command_pending && g_sets[idx].magic>0 && g_sets[idx].cid>0)
+      {
+         if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE || m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE)
+         {
+            bool row_matches_close=(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE || SymbolMatchesCloseScope(g_sets[idx].sym,m_portfolio_command_close_scope));
+            if(g_sets[idx].last_ack_id==m_portfolio_command_id)
+            {
+               bool close_policy_ok=(m_portfolio_command_type!=GOAT_DASH_CMD_CLOSE_SCOPE || g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask);
+               if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0 && close_policy_ok)
+                  return(row_matches_close ? "Closed" : CurrencyPolicyLabelForMask(g_sets[idx].target_trade_allow_mask));
+               if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_FAILED ||
+                  g_sets[idx].last_ack_status==GOAT_DASH_ACK_REJECTED ||
+                  g_sets[idx].last_ack_status==GOAT_DASH_ACK_EXPIRED) return "Close Failed";
+            }
+            return(row_matches_close ? "Closing" : "Syncing");
+         }
+         if(m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS)
+         {
+            if(g_sets[idx].last_ack_id==m_portfolio_command_id)
+            {
+               if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask)
+                  return CurrencyPolicyLabelForMask(g_sets[idx].target_trade_allow_mask);
+               if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_FAILED ||
+                  g_sets[idx].last_ack_status==GOAT_DASH_ACK_REJECTED ||
+                  g_sets[idx].last_ack_status==GOAT_DASH_ACK_EXPIRED) return "Command Failed";
+            }
+            return "Syncing";
+         }
+         if(m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY)
+         {
+            if(g_sets[idx].last_ack_id==m_portfolio_command_id)
+            {
+               if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].exposure_policy_mode==g_sets[idx].target_exposure_policy_mode)
+                  return ExposurePolicyLabelForMode(g_sets[idx].target_exposure_policy_mode);
+               if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_FAILED ||
+                  g_sets[idx].last_ack_status==GOAT_DASH_ACK_REJECTED ||
+                  g_sets[idx].last_ack_status==GOAT_DASH_ACK_EXPIRED) return "Command Failed";
+            }
+            return "Syncing";
+         }
+         bool target_paused=(m_portfolio_command_target_pause!=0);
+         bool acked=(g_sets[idx].last_ack_id==m_portfolio_command_id &&
+                     g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED &&
+                     g_sets[idx].policy_paused==target_paused);
+         if(!acked) return "Syncing";
+      }
+      if(g_sets[idx].policy_paused) return "Paused";
+      if(g_sets[idx].trade_allow_mask!=(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL))
+         return CurrencyPolicyLabelForMask(g_sets[idx].trade_allow_mask);
+      if(g_sets[idx].exposure_policy_mode!=GOAT_EXPOSURE_ALLOW)
+         return ExposurePolicyLabelForMode(g_sets[idx].exposure_policy_mode);
+      return g_sets[idx].status;
+   }
+   void MarkStateDirty(void)
+   {
+      m_state_dirty=true;
+   }
+   string StateCacheRelativePath(void) const
+   {
+      return GoatDashboardStatePath();
+   }
+   bool AllRowsDeployed(void) const
+   {
+      for(int idx=0; idx<ArraySize(g_sets); ++idx)
+      {
+         if(g_sets[idx].cid<=0 || g_sets[idx].magic<=0)
+            return false;
+      }
+      return(ArraySize(g_sets)>0);
+   }
 // --- pull the “Lots=” line from a .set file (rudimentary INI reader)
    string ParseSetFileForInput(const string key,const string file)
    {
@@ -223,11 +538,59 @@ private:
      {
       string v = StringSubstr(ln,keyLen); StringTrimLeft(v); FileClose(h); return(v);
      }
-    }
-    FileClose(h); return("-1.0");
    }
-   double FetchMetric(string filename, string metric)
+   FileClose(h); return("-1.0");
+  }
+  string BuildNewsLabel(const string file)
+  {
+   int mode=(int)StringToInteger(ParseSetFileForInput("Mode_News=",file));
+   string label="News?";
+   if(mode==0) label="Disp";
+   if(mode==1) label="Off";
+   if(mode==2) label="Avoid";
+   if(mode==3) label="Pause";
+   if(mode==4) label="Close";
+   if(mode==5) label="Only";
+
+   string threshold=ParseSetFileForInput("News_threshold=",file);
+   if(label=="Off" || label=="Disp" || threshold=="-1.0") return(label);
+   return(label+"@"+threshold);
+  }
+  string BuildBiasLabel(const string file)
+  {
+   int mode=(int)StringToInteger(ParseSetFileForInput("Mode_Bias=",file));
+   string label="Bias?";
+   if(mode==0) label="Disp";
+   if(mode==1) label="Off";
+   if(mode==2) label="Open";
+   if(mode==3) label="CloseL";
+   if(mode==4) label="CloseM";
+   if(mode==5) label="CloseH";
+
+   string threshold=ParseSetFileForInput("Bias_threshold=",file);
+   if(label=="Off" || label=="Disp" || threshold=="-1.0") return(label);
+   string exit_mode=ParseSetFileForInput("Mode_Bias_Exit=",file);
+   if(exit_mode!="-1.0" && (int)StringToInteger(exit_mode)==1 && StringFind(label,"Close")==0)
    {
+    string adds=ParseSetFileForInput("Bias_Exit_Max_Exposure_Adds=",file);
+    int max_adds=(adds=="-1.0") ? -1 : (int)StringToInteger(adds);
+    label += "/R";
+    if(max_adds>=0) label += "+"+IntegerToString(max_adds);
+   }
+   return(label+"@"+threshold);
+  }
+  string BuildRiskLotsLabel(const string file)
+  {
+   int mode=(int)StringToInteger(ParseSetFileForInput("Mode_Lots=",file));
+   double risk=StringToDouble(ParseSetFileForInput("Risk=",file));
+   double lots=StringToDouble(ParseSetFileForInput("Lots_Input=",file));
+   if(mode==0) return(""+DoubleToString(lots,2));
+   if(mode==1) return(""+DoubleToString(lots,2));
+   if(mode==2) return(""+DoubleToString(risk,0)+" $");
+   return("Lots?");
+  }
+  double FetchMetric(string filename, string metric)
+  {
     // 1) Strip path by finding the last '\' or '/'
     int pos = -1, last = -1;
     // scan for backslashes
@@ -257,11 +620,12 @@ private:
     // not found → return 0 (or change to NaN / error code)
     return 0.0;
    }
-   void CGOATDashboard::CreateLabel(CLabel &lbl, const string text, int x, int y, int width)
-   {
+  void CGOATDashboard::CreateLabel(CLabel &lbl, const string text, int x, int y, int width)
+  {
     if(!lbl.Create(m_chart_id, text, m_subwin, x, y, x+width, y+m_controlHeight)) Print("Label creation error:", GetLastError());
     if(Font_Size) lbl.FontSize(Font_Size);
     lbl.Text(text);
+    lbl.Color(clrBlack);
     //lbl.Color(clrRed); lbl.ColorBackground(clrAqua); lbl.ColorBorder(clrBlack);
     Add(lbl);
    }
@@ -284,12 +648,214 @@ private:
    }
    void CGOATDashboard::CreateButtonCtrl2(CButton &btn, const string name, int x, int y, int width, int height, string caption)
    {
-    if(!btn.Create(m_chart_id, m_name+name, m_subwin, x, (int)(y)+2, x+width, (int)((y+height)*1.0)-2)) Print("Button creation error:", GetLastError());
+    if(!btn.Create(m_chart_id, m_name+name, m_subwin, x, y, x+width, y+height)) Print("Button creation error:", GetLastError());
     btn.Color(clrWhite); btn.ColorBorder(clrWhite); btn.ColorBackground(C'8,8,36');//C'15,23,42');
-    if(Font_Size) btn.FontSize(Font_Size);
-    btn.Text(caption);
-    Add(btn);
+   if(Font_Size) btn.FontSize(Font_Size);
+   btn.Text(caption);
+   Add(btn);
+  }
+  void CGOATDashboard::CreateInfoEdit(CEdit &edt,const string name,const string text,int x,int y,int width,int height,color back,color border)
+  {
+   if(!edt.Create(m_chart_id,m_name+name,m_subwin,x,y,x+width,y+height)) Print("Edit creation error:",GetLastError());
+   if(Font_Size) edt.FontSize(Font_Size);
+   edt.Font("Tahoma Bold");
+   edt.Text(text);
+   edt.TextAlign(ALIGN_CENTER);
+   edt.ReadOnly(true);
+   edt.Color(clrWhite);
+   edt.ColorBorder(border);
+   edt.ColorBackground(back);
+   Add(edt);
+  }
+  void CGOATDashboard::CreateInfoLabel(CLabel &lbl,const string name,const string text,int x,int y,int width)
+  {
+   if(!lbl.Create(m_chart_id,m_name+name,m_subwin,x,y,x+width,y+m_controlHeight)) Print("Label creation error:",GetLastError());
+   if(Font_Size) lbl.FontSize(Font_Size);
+   lbl.Font("Tahoma Bold");
+   lbl.Text(text);
+   lbl.Color(clrBlack);
+   Add(lbl);
+  }
+   void CGOATDashboard::CreatePlainInputEdit(CEdit &edt,const string name,const string text,int x,int y,int width)
+  {
+   if(!edt.Create(m_chart_id,m_name+name,m_subwin,x,y,x+width,y+m_controlHeight)) Print("Edit creation error:",GetLastError());
+   if(Font_Size) edt.FontSize(Font_Size);
+   edt.Font("Tahoma Bold");
+   edt.Text(text);
+   edt.TextAlign(ALIGN_CENTER);
+   edt.ReadOnly(false);
+   edt.Color(clrBlack);
+   edt.ColorBorder(C'90,90,90');
+   edt.ColorBackground(clrWhite);
+   Add(edt);
+  }
+  void CGOATDashboard::CreateHeaderStateButton(CButton &btn,const string name,const string caption,int x,int y,int width,int height,color back,color border,color text_color)
+  {
+   if(!btn.Create(m_chart_id,m_name+name,m_subwin,x,y,x+width,y+height)) Print("Button creation error:",GetLastError());
+   if(Font_Size) btn.FontSize(Font_Size);
+   btn.Font("Tahoma Bold");
+   btn.Text(caption);
+   btn.Color(text_color);
+   btn.ColorBorder(border);
+   btn.ColorBackground(back);
+   Add(btn);
+  }
+  void CGOATDashboard::CreateInfoOverlayEdit(CEdit &edt,const string name,const string text,int x,int y,int width,int height,color back,color border)
+  {
+   if(!edt.Create(m_chart_id,m_name+name,m_subwin,x,y,x+width,y+height)) Print("Edit creation error:",GetLastError());
+   if(Font_Size) edt.FontSize(Font_Size);
+   edt.Font("Tahoma Bold");
+   edt.Text(text);
+   edt.TextAlign(ALIGN_LEFT);
+   edt.ReadOnly(true);
+   edt.Color(clrWhite);
+   edt.ColorBorder(border);
+   edt.ColorBackground(back);
+   Add(edt);
+  }
+  void CGOATDashboard::CreateInfoInlineEdit(CEdit &edt,const string name,const string text,int x,int y,int width,int height,color back,int align_mode)
+  {
+   if(width<=0) return;
+   if(!edt.Create(m_chart_id,m_name+name,m_subwin,x,y,x+width,y+height)) Print("Edit creation error:",GetLastError());
+   if(Font_Size) edt.FontSize(Font_Size);
+   edt.Font("Tahoma Bold");
+   edt.Text(text);
+   edt.TextAlign((ENUM_ALIGN_MODE)align_mode);
+   edt.ReadOnly(true);
+   edt.Color(clrWhite);
+   edt.ColorBorder(back);
+   edt.ColorBackground(back);
+   Add(edt);
+  }
+  string PortfolioRunButtonText(void) const
+  {
+   return(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE ? "Pause Portfolio" : "Resume Portfolio");
+  }
+  string ExposurePolicyButtonText(void) const
+  {
+   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_SYMBOL_DIRECTION)   return "Exposure: Asset";
+   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_CURRENCY_DIRECTION) return "Exposure: Ccy";
+   return "Exposure: Allow";
+  }
+   string CurrencyFilterButtonText(const string currency,const ENUM_GOAT_CURRENCY_FILTER_STATE state) const
+   {
+    if(state==GOAT_CURRENCY_FILTER_LONG_ONLY)  return(currency+" Buy Only");
+    if(state==GOAT_CURRENCY_FILTER_SHORT_ONLY) return(currency+" Sell Only");
+    if(state==GOAT_CURRENCY_FILTER_PAUSE)      return(currency+" Paused");
+    return(currency+" All");
    }
+  string CurrencyCloseButtonText(const string currency) const
+  {
+   return("Close "+currency);
+  }
+   bool CurrencyPolicyActive(void) const
+   {
+    return(m_usd_filter_state!=GOAT_CURRENCY_FILTER_ALL ||
+           m_eur_filter_state!=GOAT_CURRENCY_FILTER_ALL ||
+           m_gbp_filter_state!=GOAT_CURRENCY_FILTER_ALL ||
+           m_jpy_filter_state!=GOAT_CURRENCY_FILTER_ALL);
+   }
+   string CurrencyRulesButtonText(void) const
+   {
+    if(m_currency_rules_editor_visible) return "Apply Currency Rules";
+    return(CurrencyPolicyActive() ? "Currency Armed" : "Currency Rules");
+   }
+   string RiskPolicyButtonText(void) const
+   {
+    if(m_risk_policy_breached) return "Risk Breached";
+    if(m_risk_policy_armed)    return "Risk Armed";
+    return "Risk Limits";
+   }
+   string RiskBreachText(const int breach_code) const
+   {
+    if(breach_code==GOAT_RISK_BREACH_RUNNING_LOSS)  return "Running Loss";
+    if(breach_code==GOAT_RISK_BREACH_DAILY_LOSS)    return "Daily Loss";
+    if(breach_code==GOAT_RISK_BREACH_DAILY_TARGET)  return "Daily Target";
+    if(breach_code==GOAT_RISK_BREACH_LOW_EQUITY)    return "Low Equity Stop";
+    if(breach_code==GOAT_RISK_BREACH_EQUITY_TARGET) return "Equity Target";
+    return "None";
+   }
+   void ApplyHeaderStateButtonStyle(CButton &btn,const string caption,const color back,const color border,const color text_color)
+   {
+    btn.Text(caption);
+   btn.Color(text_color);
+   btn.ColorBorder(border);
+   btn.ColorBackground(back);
+  }
+  void UpdateHeaderStateButtons(void)
+  {
+   color normal_back=C'26,63,95';
+   color normal_border=clrWhite;
+    color run_pause_back=C'128,57,57';
+    color pending_back=C'73,90,121';
+    color planned_back=C'55,56,77';
+    color emergency_back=C'122,63,34';
+    color risk_armed_back=C'19,79,60';
+    color risk_breached_back=C'128,57,57';
+    string pause_text=PortfolioRunButtonText();
+    color pause_back=(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE ? normal_back : run_pause_back);
+    string risk_text=RiskPolicyButtonText();
+    color risk_back=(m_risk_policy_breached ? risk_breached_back : (m_risk_policy_armed ? risk_armed_back : planned_back));
+
+   if(m_portfolio_command_pending)
+   {
+      int targets=0,applied=0,failed=0;
+      bool target_paused=(m_portfolio_command_target_pause!=0);
+      for(int idx=0; idx<ArraySize(g_sets); ++idx)
+      {
+         if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+         targets++;
+         if(g_sets[idx].last_ack_id!=m_portfolio_command_id) continue;
+         if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE)
+         {
+            if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0) applied++;
+            else if(g_sets[idx].last_ack_status!=0) failed++;
+         }
+         else if(m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE)
+         {
+            if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0 && g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask) applied++;
+            else if(g_sets[idx].last_ack_status!=0) failed++;
+         }
+         else if(m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS)
+         {
+            if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask) applied++;
+            else if(g_sets[idx].last_ack_status!=0) failed++;
+         }
+         else if(m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY)
+         {
+            if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].exposure_policy_mode==g_sets[idx].target_exposure_policy_mode) applied++;
+            else if(g_sets[idx].last_ack_status!=0) failed++;
+         }
+         else
+         {
+            if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].policy_paused==target_paused) applied++;
+            else if(g_sets[idx].last_ack_status!=0) failed++;
+         }
+      }
+      if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE)
+         pause_text="Closing "+IntegerToString(applied)+"/"+IntegerToString(targets)+(failed>0 ? " Failed "+IntegerToString(failed) : "");
+      else if(m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE)
+         pause_text="Closing "+CloseScopeLabel(m_portfolio_command_close_scope)+" "+IntegerToString(applied)+"/"+IntegerToString(targets)+(failed>0 ? " Failed "+IntegerToString(failed) : "");
+      else if(m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS)
+         pause_text="Applying Rules "+IntegerToString(applied)+"/"+IntegerToString(targets)+(failed>0 ? " Failed "+IntegerToString(failed) : "");
+      else if(m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY)
+         pause_text="Applying Exposure "+IntegerToString(applied)+"/"+IntegerToString(targets)+(failed>0 ? " Failed "+IntegerToString(failed) : "");
+      else
+         pause_text=(target_paused ? "Pausing " : "Resuming ")+IntegerToString(applied)+"/"+IntegerToString(targets);
+      pause_back=pending_back;
+   }
+   ApplyHeaderStateButtonStyle(btn_PortfolioPause,
+                               pause_text,
+                               pause_back,
+                               normal_border,
+                               clrWhite);
+    ApplyHeaderStateButtonStyle(btn_SameAssetDirection,risk_text,risk_back,normal_border,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_USDFilter,CurrencyRulesButtonText(),(CurrencyPolicyActive() ? C'19,79,60' : planned_back),normal_border,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_USDClose,"Emergency Close",emergency_back,normal_border,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_EURFilter,ExposurePolicyButtonText(),(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_ALLOW ? planned_back : C'19,79,60'),normal_border,clrWhite);
+   if(m_close_scope_editor_visible) UpdateCloseScopeEditorButtons();
+   else                             UpdateCurrencyRulesEditorButtons();
+  }
    // Creates a label and returns the left‐edge for the next column
    int PlaceEditLabel(CEdit &edt,const string id, const string text, int x,int y,int w)
    {
@@ -311,14 +877,1167 @@ CGOATDashboard::CGOATDashboard()
    clrPos=C'0,180,0'; clrNeg=C'180,0,0'; clrNeu=clrWhite;
    m_day_start  = 0;                 // will be set on first timer tick
    m_week_start = 0;
+   m_rows_top=0;
+   m_rows_visible=0;
+   m_rows_top_max=0;
+   m_rows_y0=0;
+   m_rows_view_bottom=0;
+   m_rows_view_left=0;
+   m_rows_view_right=0;
+   m_row_pitch=0;
+   m_rows_data_offset=0;
+   m_rows_base_y0=0;
+   m_rows_scroll_enabled=false;
+   m_rows_need_scroll=false;
+   m_last_profit_sort_key=-1;
+   m_last_profit_sort_desc=true;
+   m_state_dirty=false;
+   m_last_state_save=0;
+   m_portfolio_command_id=0;
+   m_portfolio_command_pending=false;
+   m_portfolio_command_type=0;
+   m_portfolio_command_target_pause=0;
+   m_portfolio_command_time=0;
+   m_portfolio_command_close_scope=GOAT_CLOSE_SCOPE_ALL;
+   m_risk_policy_armed=false;
+   m_risk_policy_breached=false;
+   m_risk_policy_breach_code=GOAT_RISK_BREACH_NONE;
+   m_risk_policy_breach_time=0;
+   m_risk_running_loss_limit=0.0;
+   m_risk_daily_loss_limit=0.0;
+   m_risk_daily_target_limit=0.0;
+   m_risk_low_equity_stop=0.0;
+   m_risk_equity_target=0.0;
+   m_currency_rules_editor_visible=false;
+   m_close_scope_editor_visible=false;
+   m_portfolio_run_state=GOAT_PORTFOLIO_RUN_ACTIVE;
+   m_exposure_policy_mode=GOAT_EXPOSURE_POLICY_ALLOW;
+   m_usd_filter_state=GOAT_CURRENCY_FILTER_ALL;
+   m_eur_filter_state=GOAT_CURRENCY_FILTER_ALL;
+   m_gbp_filter_state=GOAT_CURRENCY_FILTER_ALL;
+   m_jpy_filter_state=GOAT_CURRENCY_FILTER_ALL;
+   Portfolio_Name="-";
+   Portfolio_Members="-";
+   Portfolio_Score="-";
+   Portfolio_AMSR="-";
+   Portfolio_Target_MP="-";
+   Portfolio_Target_DD="-";
+   Portfolio_Target_MRF="-";
+   Portfolio_Live_MP=0.0;
+   Portfolio_Live_DD=0.0;
+   Portfolio_Live_MRF=0.0;
+   Port_RunningLoss=0.0;
+   Port_DailyLoss=0.0;
+   Port_DailyTarget=0.0;
+   Port_LowEquityStopLevel=0.0;
+   Port_EquityTargetLevel=0.0;
+   Portfolio_StartTime=0;
+   Portfolio_DayStartTime=0;
+   Portfolio_StartEquity=0.0;
+   Portfolio_DayStartEquity=0.0;
+   Portfolio_MaxEquity=0.0;
+   Portfolio_MaxDDPct=0.0;
+   m_pt_config_loaded=false;
+   m_pt_state_loaded=false;
+   m_pt_server_enabled=false;
+   m_pt_bucket_open=false;
+   m_pt_portfolio_id="";
+   m_pt_bucket_minutes=10;
+   m_pt_sample_seconds=5;
+   m_pt_max_upload_buckets=24;
+   m_pt_last_config_check=0;
+   m_pt_last_state_check=0;
+   m_pt_last_sample_time=0;
+   m_pt_last_upload_attempt=0;
+   m_pt_server_time_offset_ms=0;
+   m_pt_latest_bucket_end_ms=0;
+   ArrayResize(m_pt_queue,0);
 }
 CGOATDashboard::~CGOATDashboard()
 {
    // Typically Destroy is called in OnDeinit
 }
-void CGOATDashboard::maximizeWindow(void)   {this.Maximize();}
+void CGOATDashboard::maximizeWindow(void)
+{
+   this.Maximize();
+   ApplyRowsViewport();
+   ChartRedraw(0);
+}
 void CGOATDashboard::minimizeWindow(void)   {this.Minimize();}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::HandleChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+{
+   if(id==GOAT_EVENT_CHILD_STATUS)
+   {
+      string parts[];
+      int total=StringSplit(sparam,'|',parts);
+      if(total>=2)
+      {
+         string symbol=parts[0];
+         string status=parts[1];
+         long chart_id=(long)dparam;
+         for(int idx=0;idx<ArraySize(g_sets);++idx)
+         {
+            bool magic_match=(g_sets[idx].magic>0 && g_sets[idx].magic==lparam && g_sets[idx].sym==symbol);
+            bool cid_match=(g_sets[idx].cid>0 && g_sets[idx].cid==chart_id && g_sets[idx].sym==symbol);
+            if(!magic_match && !cid_match) continue;
 
+            g_sets[idx].status=status;
+            if(g_sets[idx].magic<=0) g_sets[idx].magic=lparam;
+            edt_Status[idx+2].Text(DisplayStatusForRow(idx,TimeCurrent()));
+            edt_Status[idx+2].Color(StatusColor(edt_Status[idx+2].Text()));
+            MarkStateDirty();
+            break;
+         }
+      }
+      return(true);
+   }
+
+   if(id==CHARTEVENT_OBJECT_CLICK)
+      return(HandleObjectClick(sparam));
+
+   if(id==CHARTEVENT_MOUSE_WHEEL && HandleMouseWheel(lparam,dparam))
+      return(true);
+
+   ChartEvent(id,lparam,dparam,sparam);
+
+   if(id==CHARTEVENT_CHART_CHANGE)
+   {
+      maximizeWindow();
+      return(true);
+   }
+
+   return(false);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::HandleObjectClick(const string control_name)
+{
+   if(HandleHeaderClick(control_name))
+      return(true);
+
+   if(HandleHeaderStateButtonClick(control_name))
+      return(true);
+
+   if(ArraySize(btn_Action)>1 && control_name==btn_Action[1].Name())
+   {
+      bool any_pending=false;
+      datetime now=TimeCurrent();
+      for(int idx=0; idx<ArraySize(g_sets); ++idx)
+      {
+         if(DisplayStatusForRow(idx,now)=="Pending")
+         {
+            any_pending=true;
+            break;
+         }
+      }
+      if(!any_pending)
+         return(true);
+      DeployAll();
+      return(true);
+   }
+
+   for(int row=2; row<ArraySize(btn_Action); row++)
+   {
+      if(control_name!=btn_Action[row].Name())
+         continue;
+
+      int idx=row-2;
+      if(btn_Action[row].Text()=="Navigate")
+         NavigateToSet(idx);
+      else
+         DoActivate(idx);
+
+      return(true);
+   }
+
+   return(false);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
+{
+   if(control_name==btn_PortfolioPause.Name())
+   {
+      if(m_portfolio_command_pending)
+         return(true);
+
+      bool target_pause=(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE);
+      string prompt=(target_pause ?
+                     "Pause new entries and sequence adds for all linked portfolio charts?\n\nExisting open trades will remain under their normal GOAT management." :
+                     "Resume new entries and sequence adds for all linked portfolio charts?");
+      int ret=MessageBox(prompt,(target_pause ? "Pause Portfolio" : "Resume Portfolio"),MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2);
+      if(ret!=IDYES)
+         return(true);
+
+      SendPortfolioPauseCommand(target_pause);
+      UpdateHeaderStateButtons();
+      return(true);
+   }
+   if(control_name==btn_SameAssetDirection.Name())
+   {
+      ArmRiskPolicyFromHeader();
+      UpdateHeaderStateButtons();
+      return(true);
+   }
+   if(control_name==btn_USDFilter.Name())
+   {
+      if(m_portfolio_command_pending)
+         return(true);
+      ShowCurrencyRulesEditor(!m_currency_rules_editor_visible);
+      return(true);
+   }
+   if(control_name==btn_USDClose.Name())
+   {
+      if(m_portfolio_command_pending)
+         return(true);
+      ShowCloseScopeEditor(!m_close_scope_editor_visible);
+      return(true);
+   }
+   if(control_name==btn_EURFilter.Name())
+   {
+      if(m_portfolio_command_pending)
+         return(true);
+      int next_mode=NextExposurePolicyMode((int)m_exposure_policy_mode);
+      string next_text=(next_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION ? "Exposure: Asset" : (next_mode==GOAT_EXPOSURE_CURRENCY_DIRECTION ? "Exposure: Ccy" : "Exposure: Allow"));
+      string prompt="Set exposure policy to "+next_text+"?\n\nThis gates new sequence starts only. Existing open sequences continue normal GOAT management.";
+      int ret=MessageBox(prompt,"Exposure Policy",MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2);
+      if(ret==IDYES)
+         SendExposurePolicyCommand(next_mode);
+      UpdateHeaderStateButtons();
+      return(true);
+   }
+   if(control_name==btn_EURClose.Name())
+   {
+      if(m_close_scope_editor_visible)
+      {
+         ConfirmAndSendCloseScope(GOAT_CLOSE_SCOPE_ALL);
+         return(true);
+      }
+      CycleCurrencyRule("USD");
+      return(true);
+   }
+   if(control_name==btn_GBPFilter.Name())
+   {
+      if(m_close_scope_editor_visible)
+      {
+         ConfirmAndSendCloseScope(GOAT_CLOSE_SCOPE_USD);
+         return(true);
+      }
+      CycleCurrencyRule("EUR");
+      return(true);
+   }
+   if(control_name==btn_GBPClose.Name())
+   {
+      if(m_close_scope_editor_visible)
+      {
+         ConfirmAndSendCloseScope(GOAT_CLOSE_SCOPE_EUR);
+         return(true);
+      }
+      CycleCurrencyRule("GBP");
+      return(true);
+   }
+   if(control_name==btn_JPYFilter.Name())
+   {
+      if(m_close_scope_editor_visible)
+      {
+         ConfirmAndSendCloseScope(GOAT_CLOSE_SCOPE_GBP);
+         return(true);
+      }
+      CycleCurrencyRule("JPY");
+      return(true);
+   }
+   if(control_name==btn_JPYClose.Name())
+   {
+      if(m_close_scope_editor_visible)
+      {
+         ConfirmAndSendCloseScope(GOAT_CLOSE_SCOPE_JPY);
+         return(true);
+      }
+      if(!m_portfolio_command_pending)
+         SendCurrencyRulesCommand();
+      ShowCurrencyRulesEditor(false);
+      UpdateHeaderStateButtons();
+      return(true);
+   }
+   return(false);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SendPortfolioPauseCommand(const bool pause)
+{
+   return SendPortfolioCommand(GOAT_DASH_CMD_PORTFOLIO_PAUSE,(pause ? 1 : 0),"PortfolioPause");
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SendPortfolioCloseCommand(void)
+{
+   return SendPortfolioCommand(GOAT_DASH_CMD_PORTFOLIO_CLOSE,1,"PortfolioClose");
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string CGOATDashboard::PortfolioCommandName(void) const
+{
+   if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE) return "EmergencyClose";
+   if(m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE) return "Close"+CloseScopeLabel(m_portfolio_command_close_scope);
+   if(m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS) return "CurrencyRules";
+   if(m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY) return "ExposurePolicy";
+   if(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_PAUSE)
+      return(m_portfolio_command_target_pause!=0 ? "PausePortfolio" : "ResumePortfolio");
+   return "PortfolioCommand";
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::AppendPortfolioCommandAudit(const string stage,const int targets,const int applied,const int failed,const string detail)
+{
+   string path=Key_+"\\dashboard_command_audit.tsv";
+   bool write_header=!FileIsExist(path,FILE_COMMON);
+   int h=FileOpen(path,FILE_WRITE|FILE_READ|FILE_CSV|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON,'\t');
+   if(h==INVALID_HANDLE)
+   {
+      PrintFormat("Dashboard audit open failed path=%s err=%d",path,GetLastError());
+      return;
+   }
+
+   FileSeek(h,0,SEEK_END);
+   if(write_header)
+      FileWrite(h,"LocalTime","ServerTime","CommandId","Stage","Command","Targets","Applied","Failed","Detail");
+
+   FileWrite(h,
+             TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),
+             TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
+             StringFormat("%I64d",m_portfolio_command_id),
+             stage,
+             PortfolioCommandName(),
+             IntegerToString(targets),
+             IntegerToString(applied),
+             IntegerToString(failed),
+             detail);
+   FileClose(h);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::AppendCloseScopeAudit(const string stage,const int scope,const int targets,const int close_targets,const int closed_positions,const int close_errors,const int remaining_positions,const string detail)
+{
+   string path=Key_+"\\dashboard_close_audit.tsv";
+   bool write_header=!FileIsExist(path,FILE_COMMON);
+   int h=FileOpen(path,FILE_WRITE|FILE_READ|FILE_CSV|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON,'\t');
+   if(h==INVALID_HANDLE)
+   {
+      PrintFormat("Dashboard close audit open failed path=%s err=%d",path,GetLastError());
+      return;
+   }
+
+   FileSeek(h,0,SEEK_END);
+   if(write_header)
+      FileWrite(h,"LocalTime","ServerTime","CommandId","Stage","Scope","Targets","CloseTargets","ClosedPositions","CloseErrors","RemainingPositions","Detail");
+
+   FileWrite(h,
+             TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),
+             TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
+             StringFormat("%I64d",m_portfolio_command_id),
+             stage,
+             CloseScopeLabel(scope),
+             IntegerToString(targets),
+             IntegerToString(close_targets),
+             IntegerToString(closed_positions),
+             IntegerToString(close_errors),
+             IntegerToString(remaining_positions),
+             detail);
+   FileClose(h);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string CGOATDashboard::CloseScopeLabel(const int scope) const
+{
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(clean_scope==GOAT_CLOSE_SCOPE_USD) return "USD";
+   if(clean_scope==GOAT_CLOSE_SCOPE_EUR) return "EUR";
+   if(clean_scope==GOAT_CLOSE_SCOPE_GBP) return "GBP";
+   if(clean_scope==GOAT_CLOSE_SCOPE_JPY) return "JPY";
+   return "All";
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string CGOATDashboard::CloseScopeCurrency(const int scope) const
+{
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(clean_scope==GOAT_CLOSE_SCOPE_USD) return "USD";
+   if(clean_scope==GOAT_CLOSE_SCOPE_EUR) return "EUR";
+   if(clean_scope==GOAT_CLOSE_SCOPE_GBP) return "GBP";
+   if(clean_scope==GOAT_CLOSE_SCOPE_JPY) return "JPY";
+   return "";
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SymbolMatchesCloseScope(const string symbol,const int scope) const
+{
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(clean_scope==GOAT_CLOSE_SCOPE_ALL) return true;
+   if(StringLen(symbol)<6) return false;
+   string currency=CloseScopeCurrency(clean_scope);
+   string base=StringSubstr(symbol,0,3);
+   string quote=StringSubstr(symbol,3,3);
+   StringToUpper(base);
+   StringToUpper(quote);
+   return(base==currency || quote==currency);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string CGOATDashboard::ExposurePolicyLabelForMode(const int mode) const
+{
+   int clean_mode=NormalizeExposurePolicyMode(mode);
+   if(clean_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION)   return "Asset Filter";
+   if(clean_mode==GOAT_EXPOSURE_CURRENCY_DIRECTION) return "Ccy Filter";
+   return "Linked";
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int CGOATDashboard::NormalizeExposurePolicyMode(const int value) const
+{
+   if(value<GOAT_EXPOSURE_ALLOW || value>GOAT_EXPOSURE_CURRENCY_DIRECTION)
+      return GOAT_EXPOSURE_ALLOW;
+   return value;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int CGOATDashboard::NextExposurePolicyMode(const int mode) const
+{
+   int clean_mode=NormalizeExposurePolicyMode(mode);
+   if(clean_mode==GOAT_EXPOSURE_ALLOW)             return GOAT_EXPOSURE_SYMBOL_DIRECTION;
+   if(clean_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION)  return GOAT_EXPOSURE_CURRENCY_DIRECTION;
+   return GOAT_EXPOSURE_ALLOW;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::LoadExposurePolicyState(void)
+{
+   string key=GoatPortfolioGVName("DashboardExposurePolicyMode");
+   if(GlobalVariableCheck(key))
+      m_exposure_policy_mode=(ENUM_GOAT_EXPOSURE_POLICY_MODE)NormalizeExposurePolicyMode((int)GlobalVariableGet(key));
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::SaveExposurePolicyState(void)
+{
+   GlobalVariableSet(GoatPortfolioGVName("DashboardExposurePolicyMode"),(double)NormalizeExposurePolicyMode((int)m_exposure_policy_mode));
+   GlobalVariablesFlush();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::AppendExposurePolicyAudit(const string stage,const string detail)
+{
+   string path=Key_+"\\dashboard_exposure_audit.tsv";
+   bool write_header=!FileIsExist(path,FILE_COMMON);
+   int h=FileOpen(path,FILE_WRITE|FILE_READ|FILE_CSV|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON,'\t');
+   if(h==INVALID_HANDLE)
+   {
+      PrintFormat("Dashboard exposure audit open failed path=%s err=%d",path,GetLastError());
+      return;
+   }
+
+   FileSeek(h,0,SEEK_END);
+   if(write_header)
+      FileWrite(h,"LocalTime","ServerTime","Stage","Policy","Detail");
+
+   FileWrite(h,
+             TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),
+             TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
+             stage,
+             ExposurePolicyLabelForMode((int)m_exposure_policy_mode),
+             detail);
+   FileClose(h);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string CGOATDashboard::CurrencyRuleSummary(void) const
+{
+   if(!CurrencyPolicyActive()) return "All currencies trading both directions";
+   return CurrencyFilterButtonText("USD",m_usd_filter_state)+", "+
+          CurrencyFilterButtonText("EUR",m_eur_filter_state)+", "+
+          CurrencyFilterButtonText("GBP",m_gbp_filter_state)+", "+
+          CurrencyFilterButtonText("JPY",m_jpy_filter_state);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string CGOATDashboard::CurrencyPolicyLabelForMask(const int mask) const
+{
+   int clean_mask=mask&(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL);
+   if(clean_mask==(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL)) return "Linked";
+   if(clean_mask==GOAT_DASH_TRADE_ALLOW_BUY)                              return "Buy Only";
+   if(clean_mask==GOAT_DASH_TRADE_ALLOW_SELL)                             return "Sell Only";
+   return "Cur Paused";
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+ENUM_GOAT_CURRENCY_FILTER_STATE CGOATDashboard::NormalizeCurrencyFilterState(const int value) const
+{
+   if(value<GOAT_CURRENCY_FILTER_ALL || value>GOAT_CURRENCY_FILTER_PAUSE)
+      return GOAT_CURRENCY_FILTER_ALL;
+   return (ENUM_GOAT_CURRENCY_FILTER_STATE)value;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+ENUM_GOAT_CURRENCY_FILTER_STATE CGOATDashboard::NextCurrencyFilterState(const ENUM_GOAT_CURRENCY_FILTER_STATE state) const
+{
+   return (ENUM_GOAT_CURRENCY_FILTER_STATE)(((int)state+1)%4);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::CurrencySideAllowed(const ENUM_GOAT_CURRENCY_FILTER_STATE state,const bool is_long) const
+{
+   if(state==GOAT_CURRENCY_FILTER_PAUSE)      return false;
+   if(state==GOAT_CURRENCY_FILTER_LONG_ONLY)  return is_long;
+   if(state==GOAT_CURRENCY_FILTER_SHORT_ONLY) return !is_long;
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+ENUM_GOAT_CURRENCY_FILTER_STATE CGOATDashboard::CurrencyStateByCode(const string code) const
+{
+   if(code=="USD") return m_usd_filter_state;
+   if(code=="EUR") return m_eur_filter_state;
+   if(code=="GBP") return m_gbp_filter_state;
+   if(code=="JPY") return m_jpy_filter_state;
+   return GOAT_CURRENCY_FILTER_ALL;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int CGOATDashboard::CurrencyPolicyMaskForSymbol(const string symbol) const
+{
+   if(StringLen(symbol)<6)
+      return GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL;
+
+   string base=StringSubstr(symbol,0,3);
+   string quote=StringSubstr(symbol,3,3);
+   StringToUpper(base);
+   StringToUpper(quote);
+
+   bool buy_allowed=(CurrencySideAllowed(CurrencyStateByCode(base),true) &&
+                     CurrencySideAllowed(CurrencyStateByCode(quote),false));
+   bool sell_allowed=(CurrencySideAllowed(CurrencyStateByCode(base),false) &&
+                      CurrencySideAllowed(CurrencyStateByCode(quote),true));
+   int mask=0;
+   if(buy_allowed)  mask|=GOAT_DASH_TRADE_ALLOW_BUY;
+   if(sell_allowed) mask|=GOAT_DASH_TRADE_ALLOW_SELL;
+   return mask;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::LoadCurrencyPolicyState(void)
+{
+   string prefix="DashboardCurrency_";
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"USD"))) m_usd_filter_state=NormalizeCurrencyFilterState((int)GlobalVariableGet(GoatPortfolioGVName(prefix+"USD")));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"EUR"))) m_eur_filter_state=NormalizeCurrencyFilterState((int)GlobalVariableGet(GoatPortfolioGVName(prefix+"EUR")));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"GBP"))) m_gbp_filter_state=NormalizeCurrencyFilterState((int)GlobalVariableGet(GoatPortfolioGVName(prefix+"GBP")));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"JPY"))) m_jpy_filter_state=NormalizeCurrencyFilterState((int)GlobalVariableGet(GoatPortfolioGVName(prefix+"JPY")));
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::SaveCurrencyPolicyState(void)
+{
+   string prefix="DashboardCurrency_";
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"USD"),(double)m_usd_filter_state);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"EUR"),(double)m_eur_filter_state);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"GBP"),(double)m_gbp_filter_state);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"JPY"),(double)m_jpy_filter_state);
+   GlobalVariablesFlush();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::AppendCurrencyPolicyAudit(const string stage,const string detail)
+{
+   string path=Key_+"\\dashboard_currency_audit.tsv";
+   bool write_header=!FileIsExist(path,FILE_COMMON);
+   int h=FileOpen(path,FILE_WRITE|FILE_READ|FILE_CSV|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON,'\t');
+   if(h==INVALID_HANDLE)
+   {
+      PrintFormat("Dashboard currency audit open failed path=%s err=%d",path,GetLastError());
+      return;
+   }
+
+   FileSeek(h,0,SEEK_END);
+   if(write_header)
+      FileWrite(h,"LocalTime","ServerTime","Stage","USD","EUR","GBP","JPY","Detail");
+
+   FileWrite(h,
+             TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),
+             TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
+             stage,
+             CurrencyFilterButtonText("USD",m_usd_filter_state),
+             CurrencyFilterButtonText("EUR",m_eur_filter_state),
+             CurrencyFilterButtonText("GBP",m_gbp_filter_state),
+             CurrencyFilterButtonText("JPY",m_jpy_filter_state),
+             detail);
+   FileClose(h);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::UpdateCurrencyRulesEditorButtons(void)
+{
+   if(btn_EURClose.Name()=="") return;
+   if(m_close_scope_editor_visible) return;
+   ApplyHeaderStateButtonStyle(btn_EURClose,CurrencyFilterButtonText("USD",m_usd_filter_state),C'55,56,77',clrWhite,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_GBPFilter,CurrencyFilterButtonText("EUR",m_eur_filter_state),C'55,56,77',clrWhite,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_GBPClose,CurrencyFilterButtonText("GBP",m_gbp_filter_state),C'55,56,77',clrWhite,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_JPYFilter,CurrencyFilterButtonText("JPY",m_jpy_filter_state),C'55,56,77',clrWhite,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_JPYClose,(CurrencyPolicyActive() ? "Apply Rules" : "Clear Rules"),C'19,79,60',clrWhite,clrWhite);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ShowCurrencyRulesEditor(const bool visible)
+{
+   m_currency_rules_editor_visible=visible;
+   if(visible)
+      m_close_scope_editor_visible=false;
+   if(visible)
+   {
+      btn_PortfolioPause.Hide();
+      btn_SameAssetDirection.Hide();
+      btn_USDFilter.Hide();
+      btn_USDClose.Hide();
+      btn_EURFilter.Hide();
+      btn_EURClose.Show();
+      btn_GBPFilter.Show();
+      btn_GBPClose.Show();
+      btn_JPYFilter.Show();
+      btn_JPYClose.Show();
+   }
+   else
+   {
+      btn_EURClose.Hide();
+      btn_GBPFilter.Hide();
+      btn_GBPClose.Hide();
+      btn_JPYFilter.Hide();
+      btn_JPYClose.Hide();
+      btn_PortfolioPause.Show();
+      btn_SameAssetDirection.Show();
+      btn_USDFilter.Show();
+      btn_USDClose.Show();
+      btn_EURFilter.Show();
+   }
+   UpdateHeaderStateButtons();
+   ChartRedraw(0);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::UpdateCloseScopeEditorButtons(void)
+{
+   if(btn_EURClose.Name()=="") return;
+   ApplyHeaderStateButtonStyle(btn_EURClose,"Close All",C'122,63,34',clrWhite,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_GBPFilter,"Close USD",C'122,63,34',clrWhite,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_GBPClose,"Close EUR",C'122,63,34',clrWhite,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_JPYFilter,"Close GBP",C'122,63,34',clrWhite,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_JPYClose,"Close JPY",C'122,63,34',clrWhite,clrWhite);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ShowCloseScopeEditor(const bool visible)
+{
+   m_close_scope_editor_visible=visible;
+   if(visible)
+      m_currency_rules_editor_visible=false;
+   if(visible)
+   {
+      btn_PortfolioPause.Hide();
+      btn_SameAssetDirection.Hide();
+      btn_USDFilter.Hide();
+      btn_USDClose.Hide();
+      btn_EURFilter.Hide();
+      btn_EURClose.Show();
+      btn_GBPFilter.Show();
+      btn_GBPClose.Show();
+      btn_JPYFilter.Show();
+      btn_JPYClose.Show();
+   }
+   else
+   {
+      btn_EURClose.Hide();
+      btn_GBPFilter.Hide();
+      btn_GBPClose.Hide();
+      btn_JPYFilter.Hide();
+      btn_JPYClose.Hide();
+      btn_PortfolioPause.Show();
+      btn_SameAssetDirection.Show();
+      btn_USDFilter.Show();
+      btn_USDClose.Show();
+      btn_EURFilter.Show();
+   }
+   UpdateHeaderStateButtons();
+   ChartRedraw(0);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::ConfirmAndSendCloseScope(const int scope)
+{
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(m_portfolio_command_pending)
+      return false;
+
+   if(clean_scope==GOAT_CLOSE_SCOPE_ALL)
+   {
+      int first=MessageBox("Emergency Close will pause the portfolio and ask every linked child EA to close its own open positions.\n\nContinue?",
+                           "Emergency Close",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+      if(first!=IDYES) return false;
+
+      int second=MessageBox("FINAL CONFIRMATION\n\nClose live portfolio exposure now?\nThis action cannot be undone.",
+                            "Confirm Emergency Close",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+      if(second!=IDYES) return false;
+
+      ShowCloseScopeEditor(false);
+      bool sent=SendPortfolioCloseCommand();
+      UpdateHeaderStateButtons();
+      return sent;
+   }
+
+   string currency=CloseScopeCurrency(clean_scope);
+   int first=MessageBox("Close all open portfolio exposure involving "+currency+" and pause new "+currency+" entries?\n\nExisting non-"+currency+" rows will only receive the updated currency policy.",
+                        "Close "+currency+" Exposure",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+   if(first!=IDYES) return false;
+
+   int second=MessageBox("FINAL CONFIRMATION\n\nClose live "+currency+" exposure now and set "+currency+" to Paused?",
+                         "Confirm Close "+currency,MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+   if(second!=IDYES) return false;
+
+   ShowCloseScopeEditor(false);
+   bool sent=SendCloseScopeCommand(clean_scope);
+   UpdateHeaderStateButtons();
+   return sent;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::CycleCurrencyRule(const string code)
+{
+   if(code=="USD")      m_usd_filter_state=NextCurrencyFilterState(m_usd_filter_state);
+   else if(code=="EUR") m_eur_filter_state=NextCurrencyFilterState(m_eur_filter_state);
+   else if(code=="GBP") m_gbp_filter_state=NextCurrencyFilterState(m_gbp_filter_state);
+   else if(code=="JPY") m_jpy_filter_state=NextCurrencyFilterState(m_jpy_filter_state);
+   UpdateCurrencyRulesEditorButtons();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SendCurrencyRulesCommand(void)
+{
+   int targets=0;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+      if(g_sets[idx].magic>0 && g_sets[idx].cid>0)
+         targets++;
+
+   if(targets<=0)
+   {
+      MessageBox("No linked child charts are available for currency rules.","Currency Rules",MB_OK|MB_ICONWARNING);
+      return false;
+   }
+
+   SaveCurrencyPolicyState();
+   m_portfolio_command_id=(long)TimeCurrent()*1000+(long)(GetTickCount()%1000);
+   m_portfolio_command_pending=true;
+   m_portfolio_command_type=GOAT_DASH_CMD_TRADE_PERMISSIONS;
+   m_portfolio_command_target_pause=0;
+   m_portfolio_command_time=TimeCurrent();
+
+   datetime expires_at=TimeCurrent()+30;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+      int mask=CurrencyPolicyMaskForSymbol(g_sets[idx].sym);
+      g_sets[idx].target_trade_allow_mask=mask;
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_TYPE),(double)GOAT_DASH_CMD_TRADE_PERMISSIONS);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_VALUE),(double)mask);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_EXPIRES),(double)expires_at);
+      EventChartCustom(g_sets[idx].cid,GOAT_EVENT_DASHBOARD_COMMAND,m_portfolio_command_id,(double)mask,"CurrencyRules");
+      g_sets[idx].status="Syncing";
+   }
+
+   GlobalVariablesFlush();
+   AppendPortfolioCommandAudit("DISPATCH",targets,0,0,"Currency rules sent to linked child charts");
+   AppendCurrencyPolicyAudit("DISPATCH",CurrencyRuleSummary());
+   MarkStateDirty();
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SendCloseScopeCommand(const int scope)
+{
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(clean_scope==GOAT_CLOSE_SCOPE_ALL)
+      return SendPortfolioCloseCommand();
+
+   string currency=CloseScopeCurrency(clean_scope);
+   int targets=0,close_targets=0;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+      targets++;
+      if(SymbolMatchesCloseScope(g_sets[idx].sym,clean_scope))
+         close_targets++;
+   }
+
+   if(targets<=0)
+   {
+      MessageBox("No linked child charts are available for scoped close.","Close "+currency,MB_OK|MB_ICONWARNING);
+      return false;
+   }
+   if(close_targets<=0)
+   {
+      MessageBox("No linked portfolio rows contain "+currency+".","Close "+currency,MB_OK|MB_ICONWARNING);
+      return false;
+   }
+
+   if(currency=="USD")      m_usd_filter_state=GOAT_CURRENCY_FILTER_PAUSE;
+   else if(currency=="EUR") m_eur_filter_state=GOAT_CURRENCY_FILTER_PAUSE;
+   else if(currency=="GBP") m_gbp_filter_state=GOAT_CURRENCY_FILTER_PAUSE;
+   else if(currency=="JPY") m_jpy_filter_state=GOAT_CURRENCY_FILTER_PAUSE;
+   SaveCurrencyPolicyState();
+
+   m_portfolio_command_id=(long)TimeCurrent()*1000+(long)(GetTickCount()%1000);
+   m_portfolio_command_pending=true;
+   m_portfolio_command_type=GOAT_DASH_CMD_CLOSE_SCOPE;
+   m_portfolio_command_target_pause=0;
+   m_portfolio_command_close_scope=clean_scope;
+   m_portfolio_command_time=TimeCurrent();
+
+   datetime expires_at=TimeCurrent()+30;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+      int mask=CurrencyPolicyMaskForSymbol(g_sets[idx].sym);
+      int command_value=GoatCloseCommandValue(clean_scope,mask);
+      g_sets[idx].target_trade_allow_mask=mask;
+      g_sets[idx].target_close_scope=clean_scope;
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_TYPE),(double)GOAT_DASH_CMD_CLOSE_SCOPE);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_VALUE),(double)command_value);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_EXPIRES),(double)expires_at);
+      EventChartCustom(g_sets[idx].cid,GOAT_EVENT_DASHBOARD_COMMAND,m_portfolio_command_id,(double)command_value,"Close"+currency);
+      g_sets[idx].status=(SymbolMatchesCloseScope(g_sets[idx].sym,clean_scope) ? "Closing" : "Syncing");
+   }
+
+   GlobalVariablesFlush();
+   string detail="Close "+currency+" exposure dispatched and "+currency+" policy set to Paused";
+   AppendPortfolioCommandAudit("DISPATCH",targets,0,0,detail);
+   AppendCurrencyPolicyAudit("CLOSE_SCOPE",detail);
+   AppendCloseScopeAudit("DISPATCH",clean_scope,targets,close_targets,0,0,0,detail);
+   MarkStateDirty();
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SendExposurePolicyCommand(const int mode)
+{
+   int clean_mode=NormalizeExposurePolicyMode(mode);
+   int targets=0;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+      if(g_sets[idx].magic>0 && g_sets[idx].cid>0)
+         targets++;
+
+   if(targets<=0)
+   {
+      MessageBox("No linked child charts are available for exposure policy.","Exposure Policy",MB_OK|MB_ICONWARNING);
+      return false;
+   }
+
+   m_exposure_policy_mode=(ENUM_GOAT_EXPOSURE_POLICY_MODE)clean_mode;
+   SaveExposurePolicyState();
+   m_portfolio_command_id=(long)TimeCurrent()*1000+(long)(GetTickCount()%1000);
+   m_portfolio_command_pending=true;
+   m_portfolio_command_type=GOAT_DASH_CMD_EXPOSURE_POLICY;
+   m_portfolio_command_target_pause=0;
+   m_portfolio_command_time=TimeCurrent();
+
+   datetime expires_at=TimeCurrent()+30;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+      g_sets[idx].target_exposure_policy_mode=clean_mode;
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_TYPE),(double)GOAT_DASH_CMD_EXPOSURE_POLICY);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_VALUE),(double)clean_mode);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_EXPIRES),(double)expires_at);
+      EventChartCustom(g_sets[idx].cid,GOAT_EVENT_DASHBOARD_COMMAND,m_portfolio_command_id,(double)clean_mode,"ExposurePolicy");
+      g_sets[idx].status="Syncing";
+   }
+
+   GlobalVariablesFlush();
+   string detail="Exposure policy set to "+(clean_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION ? "Exposure: Asset" : (clean_mode==GOAT_EXPOSURE_CURRENCY_DIRECTION ? "Exposure: Ccy" : "Exposure: Allow"));
+   AppendPortfolioCommandAudit("DISPATCH",targets,0,0,detail);
+   AppendExposurePolicyAudit("DISPATCH",detail);
+   MarkStateDirty();
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+double CGOATDashboard::ParseRiskInputValue(const string raw)
+{
+   string text=raw;
+   StringReplace(text,",","");
+   StringReplace(text,"$","");
+   StringTrimLeft(text);
+   StringTrimRight(text);
+   return StringToDouble(text);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::ValidateRiskPolicyInputs(double &running_loss,double &daily_loss,double &daily_target,double &low_equity,double &equity_target,string &error_text)
+{
+   running_loss=ParseRiskInputValue(edt_RunningLossLimit.Text());
+   daily_loss=ParseRiskInputValue(edt_DailyLossLimit.Text());
+   daily_target=ParseRiskInputValue(edt_DailyTargetLimit.Text());
+   low_equity=ParseRiskInputValue(edt_LowEquityStopLevel.Text());
+   equity_target=ParseRiskInputValue(edt_EquityTargetLevel.Text());
+   error_text="";
+
+   if(running_loss<0.0 || daily_loss<0.0 || daily_target<0.0 || low_equity<0.0 || equity_target<0.0)
+   {
+      error_text="Risk limits cannot be negative. Use 0 to disable a specific threshold.";
+      return false;
+   }
+
+   double current_equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   if(low_equity>0.0 && equity_target>0.0 && low_equity>=equity_target)
+   {
+      error_text="Low Equity Stop must be below Equity Target.";
+      return false;
+   }
+   if(running_loss>0.0 && Port_RunningLoss>=running_loss)
+   {
+      error_text="Running Loss is already at or beyond the requested limit. Raise the limit or use Emergency Close.";
+      return false;
+   }
+   if(daily_loss>0.0 && Port_DailyLoss>=daily_loss)
+   {
+      error_text="Daily Loss is already at or beyond the requested limit. Raise the limit or use Emergency Close.";
+      return false;
+   }
+   if(daily_target>0.0 && Port_DailyTarget>=daily_target)
+   {
+      error_text="Daily Target is already reached. Raise the target or use Emergency Close if you want to flatten now.";
+      return false;
+   }
+   if(low_equity>0.0 && current_equity<=low_equity)
+   {
+      error_text="Current equity is already at or below the Low Equity Stop.";
+      return false;
+   }
+   if(equity_target>0.0 && current_equity>=equity_target)
+   {
+      error_text="Current equity is already at or above the Equity Target.";
+      return false;
+   }
+
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::LoadRiskPolicyState(void)
+{
+   string prefix="DashboardRisk_";
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"Armed")))           m_risk_policy_armed=(GlobalVariableGet(GoatPortfolioGVName(prefix+"Armed"))>0.5);
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"Breached")))        m_risk_policy_breached=(GlobalVariableGet(GoatPortfolioGVName(prefix+"Breached"))>0.5);
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"BreachCode")))      m_risk_policy_breach_code=(int)GlobalVariableGet(GoatPortfolioGVName(prefix+"BreachCode"));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"BreachTime")))      m_risk_policy_breach_time=(datetime)GlobalVariableGet(GoatPortfolioGVName(prefix+"BreachTime"));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"RunningLoss")))     m_risk_running_loss_limit=GlobalVariableGet(GoatPortfolioGVName(prefix+"RunningLoss"));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"DailyLoss")))       m_risk_daily_loss_limit=GlobalVariableGet(GoatPortfolioGVName(prefix+"DailyLoss"));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"DailyTarget")))     m_risk_daily_target_limit=GlobalVariableGet(GoatPortfolioGVName(prefix+"DailyTarget"));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"LowEquityStop")))   m_risk_low_equity_stop=GlobalVariableGet(GoatPortfolioGVName(prefix+"LowEquityStop"));
+   if(GlobalVariableCheck(GoatPortfolioGVName(prefix+"EquityTarget")))    m_risk_equity_target=GlobalVariableGet(GoatPortfolioGVName(prefix+"EquityTarget"));
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::SaveRiskPolicyState(void)
+{
+   string prefix="DashboardRisk_";
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"Armed"),(m_risk_policy_armed ? 1.0 : 0.0));
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"Breached"),(m_risk_policy_breached ? 1.0 : 0.0));
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"BreachCode"),(double)m_risk_policy_breach_code);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"BreachTime"),(double)m_risk_policy_breach_time);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"RunningLoss"),m_risk_running_loss_limit);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"DailyLoss"),m_risk_daily_loss_limit);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"DailyTarget"),m_risk_daily_target_limit);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"LowEquityStop"),m_risk_low_equity_stop);
+   GlobalVariableSet(GoatPortfolioGVName(prefix+"EquityTarget"),m_risk_equity_target);
+   GlobalVariablesFlush();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::AppendRiskPolicyAudit(const string stage,const string reason,const string detail)
+{
+   string path=Key_+"\\dashboard_risk_audit.tsv";
+   bool write_header=!FileIsExist(path,FILE_COMMON);
+   int h=FileOpen(path,FILE_WRITE|FILE_READ|FILE_CSV|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON,'\t');
+   if(h==INVALID_HANDLE)
+   {
+      PrintFormat("Dashboard risk audit open failed path=%s err=%d",path,GetLastError());
+      return;
+   }
+
+   FileSeek(h,0,SEEK_END);
+   if(write_header)
+      FileWrite(h,"LocalTime","ServerTime","Stage","Reason","Armed","Breached","Equity","RunLoss","DayLoss","DayTarget","RunLimit","DayLossLimit","DayTargetLimit","LowEquityStop","EquityTarget","Detail");
+
+   FileWrite(h,
+             TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),
+             TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
+             stage,
+             reason,
+             (m_risk_policy_armed ? "1" : "0"),
+             (m_risk_policy_breached ? "1" : "0"),
+             DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY),2),
+             DoubleToString(Port_RunningLoss,2),
+             DoubleToString(Port_DailyLoss,2),
+             DoubleToString(Port_DailyTarget,2),
+             DoubleToString(m_risk_running_loss_limit,2),
+             DoubleToString(m_risk_daily_loss_limit,2),
+             DoubleToString(m_risk_daily_target_limit,2),
+             DoubleToString(m_risk_low_equity_stop,2),
+             DoubleToString(m_risk_equity_target,2),
+             detail);
+   FileClose(h);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::ArmRiskPolicyFromHeader(void)
+{
+   RefreshPortfolioRealtimeStats();
+   double running_loss=0.0,daily_loss=0.0,daily_target=0.0,low_equity=0.0,equity_target=0.0;
+   string error_text="";
+   bool all_disabled=false;
+
+   running_loss=ParseRiskInputValue(edt_RunningLossLimit.Text());
+   daily_loss=ParseRiskInputValue(edt_DailyLossLimit.Text());
+   daily_target=ParseRiskInputValue(edt_DailyTargetLimit.Text());
+   low_equity=ParseRiskInputValue(edt_LowEquityStopLevel.Text());
+   equity_target=ParseRiskInputValue(edt_EquityTargetLevel.Text());
+   if(running_loss<0.0 || daily_loss<0.0 || daily_target<0.0 || low_equity<0.0 || equity_target<0.0)
+   {
+      MessageBox("Risk limits cannot be negative. Use 0 to disable a specific threshold.","Risk Limits",MB_OK|MB_ICONWARNING);
+      return false;
+   }
+   all_disabled=(running_loss<=0.0 && daily_loss<=0.0 && daily_target<=0.0 && low_equity<=0.0 && equity_target<=0.0);
+   if(all_disabled)
+   {
+      int disarm_ret=MessageBox("All risk thresholds are 0. Disarm dashboard risk enforcement?","Risk Limits",MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2);
+      if(disarm_ret!=IDYES)
+         return false;
+
+      m_risk_policy_armed=false;
+      m_risk_policy_breached=false;
+      m_risk_policy_breach_code=GOAT_RISK_BREACH_NONE;
+      m_risk_policy_breach_time=0;
+      m_risk_running_loss_limit=0.0;
+      m_risk_daily_loss_limit=0.0;
+      m_risk_daily_target_limit=0.0;
+      m_risk_low_equity_stop=0.0;
+      m_risk_equity_target=0.0;
+      SaveRiskPolicyState();
+      AppendRiskPolicyAudit("DISARM","Manual","All thresholds disabled from dashboard header");
+      return true;
+   }
+
+   if(!ValidateRiskPolicyInputs(running_loss,daily_loss,daily_target,low_equity,equity_target,error_text))
+   {
+      MessageBox(error_text,"Risk Limits",MB_OK|MB_ICONWARNING);
+      return false;
+   }
+
+   string prompt=StringFormat("Arm dashboard risk limits?\n\nRunning Loss: %.0f\nDaily Loss: %.0f\nDaily Target: %.0f\nLow Equity Stop: %.0f\nEquity Target: %.0f\n\nAny armed threshold breach will pause the portfolio and request Emergency Close on all linked child charts.",
+                              running_loss,daily_loss,daily_target,low_equity,equity_target);
+   int ret=MessageBox(prompt,"Arm Risk Limits",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+   if(ret!=IDYES)
+      return false;
+
+   m_risk_running_loss_limit=running_loss;
+   m_risk_daily_loss_limit=daily_loss;
+   m_risk_daily_target_limit=daily_target;
+   m_risk_low_equity_stop=low_equity;
+   m_risk_equity_target=equity_target;
+   m_risk_policy_armed=true;
+   m_risk_policy_breached=false;
+   m_risk_policy_breach_code=GOAT_RISK_BREACH_NONE;
+   m_risk_policy_breach_time=0;
+   edt_RunningLossLimit.Text(FormatIntegerText(m_risk_running_loss_limit));
+   edt_DailyLossLimit.Text(FormatIntegerText(m_risk_daily_loss_limit));
+   edt_DailyTargetLimit.Text(FormatIntegerText(m_risk_daily_target_limit));
+   edt_LowEquityStopLevel.Text(FormatIntegerText(m_risk_low_equity_stop));
+   edt_EquityTargetLevel.Text(FormatIntegerText(m_risk_equity_target));
+   SaveRiskPolicyState();
+   AppendRiskPolicyAudit("ARM","Manual","Risk policy armed from dashboard header");
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::EvaluateRiskPolicy(void)
+{
+   if(!m_risk_policy_armed || m_risk_policy_breached) return;
+   if(m_portfolio_command_pending) return;
+
+   double current_equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   int breach_code=GOAT_RISK_BREACH_NONE;
+   if(m_risk_low_equity_stop>0.0 && current_equity<=m_risk_low_equity_stop)
+      breach_code=GOAT_RISK_BREACH_LOW_EQUITY;
+   else if(m_risk_running_loss_limit>0.0 && Port_RunningLoss>=m_risk_running_loss_limit)
+      breach_code=GOAT_RISK_BREACH_RUNNING_LOSS;
+   else if(m_risk_daily_loss_limit>0.0 && Port_DailyLoss>=m_risk_daily_loss_limit)
+      breach_code=GOAT_RISK_BREACH_DAILY_LOSS;
+   else if(m_risk_equity_target>0.0 && current_equity>=m_risk_equity_target)
+      breach_code=GOAT_RISK_BREACH_EQUITY_TARGET;
+   else if(m_risk_daily_target_limit>0.0 && Port_DailyTarget>=m_risk_daily_target_limit)
+      breach_code=GOAT_RISK_BREACH_DAILY_TARGET;
+
+   if(breach_code==GOAT_RISK_BREACH_NONE)
+      return;
+
+   string reason=RiskBreachText(breach_code);
+   m_risk_policy_armed=false;
+   m_risk_policy_breached=true;
+   m_risk_policy_breach_code=breach_code;
+   m_risk_policy_breach_time=TimeCurrent();
+   m_portfolio_run_state=GOAT_PORTFOLIO_RUN_PAUSED;
+   GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),1.0);
+   SaveRiskPolicyState();
+   AppendRiskPolicyAudit("BREACH",reason,"Portfolio paused; preparing emergency close command");
+   PrintFormat("Dashboard risk breach: %s. Equity=%.2f RunLoss=%.2f DayLoss=%.2f DayTarget=%.2f",
+               reason,current_equity,Port_RunningLoss,Port_DailyLoss,Port_DailyTarget);
+   bool command_sent=SendPortfolioCommand(GOAT_DASH_CMD_PORTFOLIO_CLOSE,1,"RiskBreachClose",false);
+   AppendRiskPolicyAudit(command_sent ? "ACTION" : "ACTION_FAILED",
+                         reason,
+                         command_sent ? "Emergency close command dispatched to linked child charts" : "No linked child charts were available for emergency close command");
+   UpdateHeaderStateButtons();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SendPortfolioCommand(const int command_type,const int command_value,const string event_label,const bool notify)
+{
+   int targets=0;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+      if(g_sets[idx].magic>0 && g_sets[idx].cid>0)
+         targets++;
+
+   if(targets<=0)
+   {
+      if(notify)
+         MessageBox("No linked child charts are available for a portfolio command.","Portfolio Command",MB_OK|MB_ICONWARNING);
+      else
+         Print("No linked child charts are available for an automatic portfolio command.");
+      return(false);
+   }
+
+   m_portfolio_command_id=(long)TimeCurrent()*1000+(long)(GetTickCount()%1000);
+   m_portfolio_command_pending=true;
+   m_portfolio_command_type=command_type;
+   m_portfolio_command_target_pause=(command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE ? 1 : command_value);
+   m_portfolio_command_close_scope=GOAT_CLOSE_SCOPE_ALL;
+   m_portfolio_command_time=TimeCurrent();
+
+   datetime expires_at=TimeCurrent()+30;
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_ID),(double)m_portfolio_command_id);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_TYPE),(double)command_type);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_VALUE),(double)command_value);
+      GlobalVariableSet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_CMD_EXPIRES),(double)expires_at);
+      EventChartCustom(g_sets[idx].cid,GOAT_EVENT_DASHBOARD_COMMAND,m_portfolio_command_id,(double)command_value,event_label);
+      g_sets[idx].status=(command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE ? "Closing" : "Syncing");
+   }
+
+   GlobalVariablesFlush();
+   AppendPortfolioCommandAudit("DISPATCH",targets,0,0,"Command sent to linked child charts");
+   if(command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE)
+      AppendCloseScopeAudit("DISPATCH",GOAT_CLOSE_SCOPE_ALL,targets,targets,0,0,0,"Emergency close sent to linked child charts");
+   MarkStateDirty();
+   return(true);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::DeployAll(void)
+{
+   for(int i=0;i<ArraySize(g_sets);i++)
+      DoActivate(i);
+
+   if(ArraySize(edt_Status)>1)
+      edt_Status[1].Text("Deployed");
+   if(AllRowsDeployed())
+      SaveDashboardConfig();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::NavigateToSet(const int idx)
+{
+   if(idx<0 || idx>=ArraySize(g_sets)) return(false);
+   if(g_sets[idx].cid<=0) return(false);
+
+   if(!ChartSetInteger(g_sets[idx].cid,CHART_BRING_TO_TOP,0,true))
+   {
+      Print(__FUNCTION__+", Error Code = ",GetLastError());
+      return(false);
+   }
+
+   Sleep(100);
+   ChartRedraw(g_sets[idx].cid);
+   Sleep(100);
+   ChartRedraw(0);
+   Sleep(100);
+   return(true);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 CEdit CaptionObjDashboard;
 CGOATDashboard DashboardDialog;
 //+------------------------------------------------------------------+
@@ -326,6 +2045,8 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
   {
 // sizing -----------------------------------------------------------
 	const int    ROW_MIN_PX=15;
+	const int    ROW_TALL_MIN_PX=20;
+   const int    ROW_TALL_EXTRA_PX=1;
 	const double GAP_VERT_PC=0.01;
 	const double CAPTION_PC=0.05;
 	const int    CAPTION_MIN_PX=25;
@@ -335,44 +2056,121 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 	D_Height=(int)MathMin(heightMax,MathMax(heightIdeal,0));
 	int captionH=(int)MathMax(CAPTION_MIN_PX,CAPTION_PC*D_Height);
 	
-	for(int _pass=0;_pass<3;_pass++)
+	m_rowHeight=ROW_MIN_PX;
+	m_controlHeight=m_rowHeight;
+	m_GapVert=1;
+	m_GapHoriz=(int)(0.001*D_Width);
+   if(m_GapHoriz<1) m_GapHoriz=1;
+
+	for(int _pass=0;_pass<8;_pass++)
 	{
 		double denom=(sets_total+3)+GAP_VERT_PC*(sets_total+rowScaling*2);
 		double rowH=(double)(D_Height-2*captionH)/denom;
 		rowH=MathMax((double)ROW_MIN_PX,MathMin((double)(captionH/rowScaling),rowH));
 		
 		double gapSet=GAP_VERT_PC*rowH,gapTall=gapSet*rowScaling;
-		int rowTallH=(int)(rowScaling*rowH);
+		int rowTallH=(int)MathMax((double)ROW_TALL_MIN_PX,MathRound(rowScaling*rowH)+ROW_TALL_EXTRA_PX);
 		int needH=2*captionH+(int)(rowH*(sets_total+3))+(int)(gapTall*2+gapSet*sets_total);
-		if(rowTallH>captionH) {captionH=rowTallH; continue;}
-		if(needH>heightMax)
+		if(rowTallH>captionH)
+      {
+         captionH=rowTallH;
+         if(_pass<7) continue;
+      }
+		if(needH>D_Height)
 		{
-			double avail=(double)(heightMax-2*captionH-gapTall*2-gapSet*sets_total)/(sets_total+3);
+			double avail=(double)(D_Height-2*captionH-gapTall*2-gapSet*sets_total)/(sets_total+3);
 			rowH=MathMax((double)ROW_MIN_PX,MathMin((double)(captionH/rowScaling),avail));
-			gapSet=GAP_VERT_PC*rowH;gapTall=gapSet*rowScaling;needH=heightMax;
+			gapSet=GAP_VERT_PC*rowH;
+         gapTall=gapSet*rowScaling;
 		}
-		D_Height=needH;
-		m_rowHeight=(int)rowH;
+		m_rowHeight=MathMax(ROW_MIN_PX,(int)MathRound(rowH));
 		m_controlHeight=m_rowHeight;
-		m_GapVert=(int)gapSet;
+		m_GapVert=MathMax(1,(int)MathRound(gapSet));
 		m_GapHoriz=(int)(0.001*D_Width);
+      if(m_GapHoriz<1) m_GapHoriz=1;
 		break;
 	}
-	double captionPC=(double)captionH/(double)D_Height;
-	Margin_Left=(int)(0.015*D_Width);
-	Margin_Top =(int)((captionPC+0.005)*D_Height);
-// column widths ----------------------------------------------------
-	int Width_Symbol   =(int)(0.090*D_Width);
-	int Width_Strategy =(int)(0.150*D_Width);
-	int Width_Action   =(int)(0.080*D_Width);
-	int Width_Status   =(int)(0.080*D_Width);
-	int Width_Positions=(int)(0.080*D_Width);
-	int Width_Lots     =(int)(0.070*D_Width);
-	int Width_Trades   =(int)(0.080*D_Width);
-	int Width_HistDD   =(int)(0.080*D_Width);
-	int Width_PL_D1    =(int)(0.080*D_Width);
-	int Width_PL_W1    =(int)(0.090*D_Width);
-	int Width_PL_All   =(int)(0.080*D_Width);
+   const int client_width=MathMax(1,D_Width-2*(2*CONTROLS_BORDER_WIDTH+CONTROLS_DIALOG_CLIENT_OFF));
+   const int canvas_gap=MathMax(8,(int)MathRound(client_width*0.01));
+   const int table_inner_pad=1;
+   const int scroll_gap=1;
+	Margin_Left=table_inner_pad;
+// helper sizes -----------------------------------------------------
+	const int rowTallH =MathMax(ROW_TALL_MIN_PX,(int)MathRound(rowScaling*m_rowHeight)+ROW_TALL_EXTRA_PX);
+	const int gapTallPx=(int)(m_GapVert*rowScaling);
+   const int table_left=canvas_gap;
+   const int table_right=(client_width-1)-canvas_gap;
+   const int info_pad=canvas_gap;
+   const int infoHeight=rowTallH;
+   const int info_top=info_pad;
+   const int info_base_gap=MathMax(4,m_GapVert+1);
+   const int info_row_gap=info_base_gap+MathMax(4,m_GapVert+2);
+   const int info_table_gap=info_row_gap;
+   const int info_table_spacer=rowTallH+info_row_gap;
+   const int table_top=info_top+2*infoHeight+info_row_gap+info_table_gap+info_table_spacer;
+   int table_bottom=(int)((D_Height-captionH)*0.98)-6;
+   const int rows=ArraySize(g_sets);
+   const int margin_top_plan=table_top+MathMax(2,m_GapVert);
+   const int rows_view_top_plan=margin_top_plan+2*(rowTallH+gapTallPx);
+   const int rows_view_bottom_plan=table_bottom-m_GapVert;
+   const int rows_view_height_plan=MathMax(0,rows_view_bottom_plan-rows_view_top_plan);
+   const int rows_visible_plan=(int)MathMax(1.0,MathFloor((double)(rows_view_height_plan+m_GapVert)/(double)(m_rowHeight+m_GapVert)));
+   const bool need_rows_scroll=(rows>rows_visible_plan);
+   m_rows_need_scroll=need_rows_scroll;
+   if(!need_rows_scroll)
+   {
+      int needed_table_bottom=table_top+2*(rowTallH+gapTallPx)+rows*(m_rowHeight+m_GapVert)+MathMax(2,m_GapVert);
+      table_bottom=needed_table_bottom;
+      int desired_height=table_bottom+captionH+8;
+      if(desired_height>0 && desired_height<D_Height)
+         D_Height=desired_height;
+   }
+   const int scroll_width=CONTROLS_SCROLL_SIZE;
+   const int columns_left=table_left+table_inner_pad;
+   const int columns_right=table_right-table_inner_pad-(scroll_gap+scroll_width);
+   const int column_count=16;
+   double column_pct[];
+   ArrayResize(column_pct,column_count);
+   column_pct[0]=6.0;   // Symbol
+   column_pct[1]=11.0;  // Strategy
+   column_pct[2]=6.0;   // Action
+   column_pct[3]=5.0;   // Status
+   column_pct[4]=6.0;   // Comment
+   column_pct[5]=6.0;   // News
+   column_pct[6]=6.0;   // AI Bias
+   const double equal_tail_pct=40.5/9.0;
+   for(int i=7;i<column_count;i++)
+      column_pct[i]=equal_tail_pct;   // Risk/Lots .. P/L Total
+   double column_pct_total=0.0;
+   for(int i=0;i<column_count;i++) column_pct_total+=column_pct[i];
+   int column_gap_total=(column_count-1)*m_GapHoriz;
+   int column_pixels=MathMax(200,columns_right-columns_left-column_gap_total);
+   int column_widths[];
+   ArrayResize(column_widths,column_count);
+   int column_used=0;
+   for(int i=0;i<column_count-1;i++)
+   {
+      column_widths[i]=MathMax(12,(int)MathFloor(column_pixels*column_pct[i]/column_pct_total));
+      column_used+=column_widths[i];
+   }
+   column_widths[column_count-1]=MathMax(12,column_pixels-column_used);
+   int Width_Symbol   =column_widths[0];
+   int Width_Strategy =column_widths[1];
+   int Width_Action   =column_widths[2];
+   int Width_Status   =column_widths[3];
+   int Width_Comment  =column_widths[4];
+   int Width_News     =column_widths[5];
+   int Width_AIBias   =column_widths[6];
+   int Width_RiskLots =column_widths[7];
+   int Width_HistDD   =column_widths[8];
+   int Width_Trades   =column_widths[9];
+   int Width_Positions=column_widths[10];
+   int Width_Lots     =column_widths[11];
+   int Width_PL_Open  =column_widths[12];
+   int Width_PL_D1    =column_widths[13];
+   int Width_PL_W1    =column_widths[14];
+   int Width_PL_All   =column_widths[15];
+   Margin_Top =margin_top_plan;
 // create dialog -----------------------------------------------------
 	GlobalVariableSet("CaptionHeight",captionH);
 	if(!CAppDialog::Create(chart_id,name,subwin,x1,y1,x1+D_Width,y1+D_Height))
@@ -385,14 +2183,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 	ChartSetInteger(0,CHART_SHOW_TRADE_HISTORY,0);
 	SetCaptionClientColors();
 	
-	clrEdt=C'8,8,36'; clrEdtBorder=clrWhite; clrEdtBG=clrWhite;//C'55,56,77';//(C'15,23,42');//clrGainsboro
-	//CreateEditLabel(edt_Heading,"","PortfolioHeading",(int)(D_Width*0.15),0,(int)(D_Width*0.70));
-   if(!edt_Heading.Create(m_chart_id,m_name+name,m_subwin,(int)(D_Width*0.15),0,(int)(D_Width*0.15)+(int)(D_Width*0.70),0+(int)(D_Height*captionPC)-2)) Print("Edit creation error:", GetLastError());
-   edt_Heading.Text(SetFolder);
-   if(Font_Size) edt_Heading.FontSize(Font_Size+1); edt_Heading.Font("Tahoma Bold");
-   edt_Heading.TextAlign(ALIGN_CENTER); edt_Heading.ReadOnly(true); edt_Heading.Color(clrEdt); edt_Heading.ColorBorder(clrEdtBorder); edt_Heading.ColorBackground(clrEdtBG); Add(edt_Heading);
-	
-	if(!c_Wnd_Table.Create(m_chart_id,m_name+"Boundary",m_subwin,(int)(D_Width*0.01),(int)(D_Height*captionPC),(int)(D_Width*0.98),(int)((D_Height-captionH)*0.98)-6))
+	if(!c_Wnd_Table.Create(m_chart_id,m_name+"Boundary",m_subwin,table_left,table_top,table_right,table_bottom))
 	{
 		Print("Failed to create boundary rect: ",GetLastError());
 		return false;
@@ -401,29 +2192,189 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 	c_Wnd_Table.ColorBorder(clrBlack);
 	Add(c_Wnd_Table);
 //-------------------------------------------------------------
-// helper sizes (no extra gapTall variable – reuse existing)
-	const int rowTallH =(int)(rowScaling*m_rowHeight);
-	const int gapTallPx=(int)(m_GapVert*rowScaling);
+   m_row_pitch=m_rowHeight+m_GapVert;
+   m_rows_data_offset=rowTallH+gapTallPx;
    int ctrlSave=m_controlHeight;
+   ParsePortfolioFolderInfo();
+   if(GlobalVariableCheck(GoatPortfolioGVName("DashboardPolicyPaused")))
+      m_portfolio_run_state=(GlobalVariableGet(GoatPortfolioGVName("DashboardPolicyPaused"))>0.5 ? GOAT_PORTFOLIO_RUN_PAUSED : GOAT_PORTFOLIO_RUN_ACTIVE);
+   double current_equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   m_risk_running_loss_limit=2000.0;
+   m_risk_daily_loss_limit=3000.0;
+   m_risk_daily_target_limit=3000.0;
+   if(current_equity>0.0)
+   {
+      m_risk_low_equity_stop=MathRound(current_equity*0.90);
+      m_risk_equity_target =MathRound(current_equity*1.10);
+   }
+   LoadRiskPolicyState();
+   LoadCurrencyPolicyState();
+   LoadExposurePolicyState();
+   Port_LowEquityStopLevel=m_risk_low_equity_stop;
+   Port_EquityTargetLevel=m_risk_equity_target;
+// HEADER INFO ------------------------------------------------------
+   m_controlHeight=infoHeight;
+   int info_y=info_top;
+   int info_gap=MathMax(15,(m_GapHoriz+1)*5);
+   int info_x=table_left;
+   int info_width=table_right-table_left;
+   string info_text_portfolio=Portfolio_Name;
+   string info_text_members="Members: "+Portfolio_Members;
+   string info_text_score="Health A/P/S: 0/0/0";
+   string info_text_amsr="State: Running";
+   string info_text_mrf="Open P/L: 0";
+   string info_text_mp="Daily P/L: 0";
+   string info_text_dd="Max DD: 0/"+Portfolio_Target_DD;
+   const int info_count=7;
+   double info_pct[];
+   ArrayResize(info_pct,info_count);
+   const double info_large_pct=16.0;
+   const double info_small_pct=9.0;
+   info_pct[0]=info_large_pct;
+   info_pct[1]=info_small_pct;
+   info_pct[2]=info_small_pct;
+   info_pct[3]=info_small_pct;
+   info_pct[4]=info_large_pct;
+   info_pct[5]=info_large_pct;
+   info_pct[6]=info_large_pct;
+   double info_pct_total=0.0;
+   for(int i=0;i<info_count;i++) info_pct_total+=info_pct[i];
+   int info_avail=info_width-(info_count-1)*info_gap;
+   int info_widths[];
+   ArrayResize(info_widths,info_count);
+   int info_used=0;
+   for(int i=0;i<info_count-1;i++)
+   {
+      info_widths[i]=MathMax(1,(int)MathFloor(info_avail*info_pct[i]/info_pct_total));
+      info_used+=info_widths[i];
+   }
+   info_widths[info_count-1]=MathMax(1,info_avail-info_used);
+   CreateInfoEdit(edt_HeadingPortfolio    ,"HdrPortfolio"    ,info_text_portfolio,info_x,info_y,info_widths[0],m_controlHeight,C'21,44,72'  ,clrWhite); info_x+=info_widths[0]+info_gap;
+   CreateInfoEdit(edt_HeadingMembers      ,"HdrMembers"      ,info_text_members  ,info_x,info_y,info_widths[1],m_controlHeight,C'26,63,95'  ,clrWhite); info_x+=info_widths[1]+info_gap;
+   CreateInfoEdit(edt_HeadingScore        ,"HdrScore"        ,info_text_score    ,info_x,info_y,info_widths[2],m_controlHeight,C'47,74,111' ,clrWhite); info_x+=info_widths[2]+info_gap;
+   CreateInfoEdit(edt_HeadingAMSR         ,"HdrAMSR"         ,info_text_amsr     ,info_x,info_y,info_widths[3],m_controlHeight,C'73,90,121' ,clrWhite); info_x+=info_widths[3]+info_gap;
+   CreateInfoEdit(edt_HeadingMonthlyRF    ,"HdrMonthlyRF"    ,info_text_mrf      ,info_x,info_y,info_widths[4],m_controlHeight,C'83,53,120' ,clrWhite); info_x+=info_widths[4]+info_gap;
+   CreateInfoEdit(edt_HeadingMonthlyProfit,"HdrMonthlyProfit",info_text_mp       ,info_x,info_y,info_widths[5],m_controlHeight,C'19,79,60'  ,clrWhite); info_x+=info_widths[5]+info_gap;
+   CreateInfoEdit(edt_HeadingMaxDD        ,"HdrMaxDD"        ,info_text_dd       ,info_x,info_y,info_widths[6],m_controlHeight,C'122,63,34' ,clrWhite);
+   info_y+=infoHeight+info_row_gap;
+   const double row2_group_pct[5]={22.0,20.0,22.0,18.0,18.0};
+   int row2_group_gap=info_gap;
+   int row2_avail=info_width-4*row2_group_gap;
+   int row2_group_widths[5];
+   int row2_group_used=0;
+   for(int i=0;i<4;i++)
+   {
+      row2_group_widths[i]=MathMax(1,(int)MathFloor(row2_avail*row2_group_pct[i]/100.0));
+      row2_group_used+=row2_group_widths[i];
+   }
+   row2_group_widths[4]=MathMax(1,row2_avail-row2_group_used);
+   string txt_running_limit=FormatIntegerText(m_risk_running_loss_limit);
+   string txt_daily_loss_limit=FormatIntegerText(m_risk_daily_loss_limit);
+   string txt_daily_target_limit=FormatIntegerText(m_risk_daily_target_limit);
+   int row2_box_pad=4;
+   int row2_inner_gap=4;
+   int row2_tail_gap=1;
+   info_x=table_left;
+   int group_x=info_x;
+   CreateInfoOverlayEdit(edt_RunningLossBox,"EdtRunLossBox","",group_x,info_y,row2_group_widths[0],m_controlHeight,C'26,63,95',clrWhite);
+   int row2_input_w=MathMax(46,(int)MathRound(row2_group_widths[0]*0.16));
+   int row2_input_x=group_x+MathMax(172,(int)MathRound(row2_group_widths[0]*0.49));
+   row2_input_x=MathMin(row2_input_x,group_x+row2_group_widths[0]-row2_input_w-84);
+   CreateInfoInlineEdit(edt_RunningLossLead,"EdtRunLossLead","Running Loss: "+FormatPadded4Text(Port_RunningLoss)+"/",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'26,63,95',ALIGN_LEFT);
+   CreatePlainInputEdit(edt_RunningLossLimit,"EdtRunLossLimit",txt_running_limit,row2_input_x,info_y,row2_input_w);
+   CreateInfoInlineEdit(edt_RunningLossTail,"EdtRunLossTail","("+FormatPadded4Text(StringToDouble(txt_running_limit)-Port_RunningLoss)+" Left)",row2_input_x+row2_input_w+row2_tail_gap,info_y,group_x+row2_group_widths[0]-(row2_input_x+row2_input_w+row2_tail_gap)-row2_box_pad,m_controlHeight,C'26,63,95',ALIGN_LEFT);
+   info_x+=row2_group_widths[0]+row2_group_gap;
+   group_x=info_x;
+   CreateInfoOverlayEdit(edt_DailyLossBox,"EdtDayLossBox","",group_x,info_y,row2_group_widths[1],m_controlHeight,C'47,74,111',clrWhite);
+   row2_input_w=MathMax(46,(int)MathRound(row2_group_widths[1]*0.16));
+   row2_input_x=group_x+MathMax(160,(int)MathRound(row2_group_widths[1]*0.45));
+   row2_input_x=MathMin(row2_input_x,group_x+row2_group_widths[1]-row2_input_w-84);
+   CreateInfoInlineEdit(edt_DailyLossLead,"EdtDayLossLead","Daily Loss: "+FormatPadded4Text(Port_DailyLoss)+"/",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'47,74,111',ALIGN_LEFT);
+   CreatePlainInputEdit(edt_DailyLossLimit,"EdtDayLossLimit",txt_daily_loss_limit,row2_input_x,info_y,row2_input_w);
+   CreateInfoInlineEdit(edt_DailyLossTail,"EdtDayLossTail","("+FormatPadded4Text(StringToDouble(txt_daily_loss_limit)-Port_DailyLoss)+" Left)",row2_input_x+row2_input_w+row2_tail_gap,info_y,group_x+row2_group_widths[1]-(row2_input_x+row2_input_w+row2_tail_gap)-row2_box_pad,m_controlHeight,C'47,74,111',ALIGN_LEFT);
+   info_x+=row2_group_widths[1]+row2_group_gap;
+   group_x=info_x;
+   CreateInfoOverlayEdit(edt_DailyTargetBox,"EdtDayTargetBox","",group_x,info_y,row2_group_widths[2],m_controlHeight,C'73,90,121',clrWhite);
+   row2_input_w=MathMax(46,(int)MathRound(row2_group_widths[2]*0.16));
+   row2_input_x=group_x+MathMax(172,(int)MathRound(row2_group_widths[2]*0.48));
+   row2_input_x=MathMin(row2_input_x,group_x+row2_group_widths[2]-row2_input_w-84);
+   CreateInfoInlineEdit(edt_DailyTargetLead,"EdtDayTargetLead","Daily Target: "+FormatPadded4Text(Port_DailyTarget)+"/",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'73,90,121',ALIGN_LEFT);
+   CreatePlainInputEdit(edt_DailyTargetLimit,"EdtDayTargetLimit",txt_daily_target_limit,row2_input_x,info_y,row2_input_w);
+   CreateInfoInlineEdit(edt_DailyTargetTail,"EdtDayTargetTail","("+FormatPadded4Text(StringToDouble(txt_daily_target_limit)-Port_DailyTarget)+" Left)",row2_input_x+row2_input_w+row2_tail_gap,info_y,group_x+row2_group_widths[2]-(row2_input_x+row2_input_w+row2_tail_gap)-row2_box_pad,m_controlHeight,C'73,90,121',ALIGN_LEFT);
+   info_x+=row2_group_widths[2]+row2_group_gap;
+   group_x=info_x;
+   CreateInfoOverlayEdit(edt_LowEquityStopBox,"EdtLowEqStopBox","",group_x,info_y,row2_group_widths[3],m_controlHeight,C'83,53,120',clrWhite);
+   row2_input_w=MathMax(72,(int)MathRound(row2_group_widths[3]*0.30));
+   row2_input_x=group_x+row2_group_widths[3]-row2_input_w-2;
+   CreateInfoInlineEdit(edt_LowEquityStopLead,"EdtLowEqStopLead","Low Equity Stop level:",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'83,53,120',ALIGN_LEFT);
+   CreatePlainInputEdit(edt_LowEquityStopLevel,"EdtLowEqStopLevel",FormatIntegerText(m_risk_low_equity_stop),row2_input_x,info_y,row2_input_w);
+   info_x+=row2_group_widths[3]+row2_group_gap;
+   group_x=info_x;
+   CreateInfoOverlayEdit(edt_EquityTargetBox,"EdtEqTargetBox","",group_x,info_y,row2_group_widths[4],m_controlHeight,C'122,63,34',clrWhite);
+   row2_input_w=MathMax(80,(int)MathRound(row2_group_widths[4]*0.33));
+   row2_input_x=group_x+row2_group_widths[4]-row2_input_w-2;
+   CreateInfoInlineEdit(edt_EquityTargetLead,"EdtEqTargetLead","Equity Target Level:",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'122,63,34',ALIGN_LEFT);
+   CreatePlainInputEdit(edt_EquityTargetLevel,"EdtEqTargetLevel",FormatIntegerText(m_risk_equity_target),row2_input_x,info_y,row2_input_w);
+   info_y+=infoHeight+info_table_gap;
+   const int row3_button_count=5;
+   double row3_weights[5]={20.0,18.0,22.0,20.0,20.0};
+   int row3_avail=info_width-(row3_button_count-1)*info_gap;
+   int row3_widths[5];
+   int row3_used=0;
+   double row3_weight_total=0.0;
+   for(int i=0;i<row3_button_count;i++) row3_weight_total+=row3_weights[i];
+   for(int i=0;i<row3_button_count-1;i++)
+   {
+      row3_widths[i]=MathMax(1,(int)MathFloor(row3_avail*row3_weights[i]/row3_weight_total));
+      row3_used+=row3_widths[i];
+   }
+   row3_widths[row3_button_count-1]=MathMax(1,row3_avail-row3_used);
+   info_x=table_left;
+   CreateHeaderStateButton(btn_PortfolioPause,"HdrPortfolioPause",PortfolioRunButtonText(),info_x,info_y,row3_widths[0],m_controlHeight,C'26,63,95',clrWhite,clrWhite); info_x+=row3_widths[0]+info_gap;
+   CreateHeaderStateButton(btn_SameAssetDirection,"HdrRiskLimits",        "Risk Limits",    info_x,info_y,row3_widths[1],m_controlHeight,C'55,56,77',clrWhite,clrWhite); info_x+=row3_widths[1]+info_gap;
+   CreateHeaderStateButton(btn_USDFilter,         "HdrCurrencyRules",     "Currency Rules", info_x,info_y,row3_widths[2],m_controlHeight,C'55,56,77',clrWhite,clrWhite); info_x+=row3_widths[2]+info_gap;
+   CreateHeaderStateButton(btn_USDClose,          "HdrEmergencyClose",    "Emergency Close",info_x,info_y,row3_widths[3],m_controlHeight,C'122,63,34',clrWhite,clrWhite); info_x+=row3_widths[3]+info_gap;
+   CreateHeaderStateButton(btn_EURFilter,         "HdrExposurePolicy",    ExposurePolicyButtonText(), info_x,info_y,row3_widths[4],m_controlHeight,C'55,56,77',clrWhite,clrWhite);
+   info_x=table_left;
+   CreateHeaderStateButton(btn_EURClose,          "HdrCurrencyUSD",       CurrencyFilterButtonText("USD",m_usd_filter_state),info_x,info_y,row3_widths[0],m_controlHeight,C'55,56,77',clrWhite,clrWhite); info_x+=row3_widths[0]+info_gap;
+   CreateHeaderStateButton(btn_GBPFilter,         "HdrCurrencyEUR",       CurrencyFilterButtonText("EUR",m_eur_filter_state),info_x,info_y,row3_widths[1],m_controlHeight,C'55,56,77',clrWhite,clrWhite); info_x+=row3_widths[1]+info_gap;
+   CreateHeaderStateButton(btn_GBPClose,          "HdrCurrencyGBP",       CurrencyFilterButtonText("GBP",m_gbp_filter_state),info_x,info_y,row3_widths[2],m_controlHeight,C'55,56,77',clrWhite,clrWhite); info_x+=row3_widths[2]+info_gap;
+   CreateHeaderStateButton(btn_JPYFilter,         "HdrCurrencyJPY",       CurrencyFilterButtonText("JPY",m_jpy_filter_state),info_x,info_y,row3_widths[3],m_controlHeight,C'55,56,77',clrWhite,clrWhite); info_x+=row3_widths[3]+info_gap;
+   CreateHeaderStateButton(btn_JPYClose,          "HdrCurrencyApply",     "Apply Rules", info_x,info_y,row3_widths[4],m_controlHeight,C'19,79,60',clrWhite,clrWhite);
+   btn_EURClose.Hide();
+   btn_GBPFilter.Hide();
+   btn_GBPClose.Hide();
+   btn_JPYFilter.Hide();
+   btn_JPYClose.Hide();
+   UpdateHeaderStateButtons();
 // HEADER -----------------------------------------------------------
    m_controlHeight=rowTallH;
-	int r=0,y=Margin_Top,x=Margin_Left;
-	Font_Size++; Font="Tahoma Bold";
-	clrEdt=clrWhite; clrEdtBorder=C'8,8,36'; clrEdtBG=C'8,8,36';//(C'15,23,42');//clrGainsboro
+	int r=0,y=Margin_Top,x=columns_left;
+   int base_font_size=Font_Size;
+   const int lead_header_font_size=base_font_size+1;
+   const int tail_header_font_size=MathMax(7,lead_header_font_size-2);
+	Font_Size=lead_header_font_size; Font="Tahoma Bold";
+	clrEdt=clrWhite; clrEdtBorder=C'67,112,176'; clrEdtBG=C'20,52,96';
 	string prefix="R0_";
 	ArrayResize(edt_Symbol,1);    x=PlaceEditLabel(edt_Symbol[0]   ,prefix+"SYM","Symbol",x,y,Width_Symbol);
 	ArrayResize(edt_Strategy,1);  x=PlaceEditLabel(edt_Strategy[0] ,prefix+"STR","Strategy",x,y,Width_Strategy);
 	                              x=PlaceEditLabel(edt_Action      ,prefix+"Act","Action",x,y,Width_Action);
-	ArrayResize(edt_Status,1);    x=PlaceEditLabel(edt_Status[0]   ,prefix+"STS","Status",x,y,Width_Status); Font_Size--;
-	ArrayResize(edt_Positions,1); x=PlaceEditLabel(edt_Positions[0],prefix+"POS","Positions",x,y,Width_Positions); Font_Size++;
-	ArrayResize(edt_Lots,1);      x=PlaceEditLabel(edt_Lots[0]     ,prefix+"LOT","Lots",x,y,Width_Lots);
-	ArrayResize(edt_Trades,1);    x=PlaceEditLabel(edt_Trades[0]   ,prefix+"TRD","Trades",x,y,Width_Trades);
-	ArrayResize(edt_HistDD,1);    x=PlaceEditLabel(edt_HistDD[0]   ,prefix+"HDD","Hist DD",x,y,Width_HistDD); Font_Size--;
+	ArrayResize(edt_Status,1);    x=PlaceEditLabel(edt_Status[0]   ,prefix+"STS","Status",x,y,Width_Status);
+	ArrayResize(edt_Comment,1);   x=PlaceEditLabel(edt_Comment[0]  ,prefix+"CMT","Comment",x,y,Width_Comment);
+	ArrayResize(edt_News,1);      x=PlaceEditLabel(edt_News[0]     ,prefix+"NWS","News",x,y,Width_News);
+	ArrayResize(edt_AIBias,1);    x=PlaceEditLabel(edt_AIBias[0]   ,prefix+"BIA","AI Bias",x,y,Width_AIBias);
+   Font_Size=tail_header_font_size;
+	ArrayResize(edt_RiskLots,1);  x=PlaceEditLabel(edt_RiskLots[0] ,prefix+"RSK","Risk/Lots",x,y,Width_RiskLots);
+	ArrayResize(edt_HistDD,1);    x=PlaceEditLabel(edt_HistDD[0]   ,prefix+"HDD","Hist DD",x,y,Width_HistDD);
+	ArrayResize(edt_Trades,1);    x=PlaceEditLabel(edt_Trades[0]   ,prefix+"TRD","All Trades",x,y,Width_Trades);
+	ArrayResize(edt_Positions,1); x=PlaceEditLabel(edt_Positions[0],prefix+"POS","Standing",x,y,Width_Positions);
+	ArrayResize(edt_Lots,1);      x=PlaceEditLabel(edt_Lots[0]     ,prefix+"LOT","Open Lots",x,y,Width_Lots);
+	ArrayResize(edt_PL_Open,1);   x=PlaceEditLabel(edt_PL_Open[0]  ,prefix+"PLO","P/L Open",x,y,Width_PL_Open);
 	ArrayResize(edt_PL_D1,1);     x=PlaceEditLabel(edt_PL_D1[0]    ,prefix+"PLD","P/L Daily",x,y,Width_PL_D1);
 	ArrayResize(edt_PL_W1,1);     x=PlaceEditLabel(edt_PL_W1[0]    ,prefix+"PLW","P/L Weekly",x,y,Width_PL_W1);
-	ArrayResize(edt_PL_All,1);    x=PlaceEditLabel(edt_PL_All[0]   ,prefix+"PLA","P/L Total",x,y,Width_PL_All); Font_Size++;
-	r++; y+=rowTallH+gapTallPx;   x=Margin_Left;
-	Font_Size--; Font="";
+	ArrayResize(edt_PL_All,1);    x=PlaceEditLabel(edt_PL_All[0]   ,prefix+"PLA","P/L Total",x,y,Width_PL_All);
+	r++; y+=rowTallH+gapTallPx;   x=columns_left;
+	Font_Size=base_font_size; Font="";
 // PORTFOLIO --------------------------------------------------------
    clrEdt=clrWhite; clrEdtBorder=C'55,56,77'; clrEdtBG=C'55,56,77';//(C'15,23,42');//clrGainsboro
 	prefix="R1_";
@@ -431,41 +2382,76 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 	ArrayResize(edt_Strategy,2);  x=PlaceEditLabel(edt_Strategy[1] ,prefix+"STR","Mixed",x,y,Width_Strategy);
 	ArrayResize(btn_Action,2);    CreateButtonCtrl2(btn_Action[1]  ,prefix+"BTN",x,y,Width_Action,m_controlHeight,"ActivateAll"); x+=Width_Action+m_GapHoriz;
 	ArrayResize(edt_Status,2);    x=PlaceEditLabel(edt_Status[1]   ,prefix+"STS","Pending",x,y,Width_Status); //edt_Status[1].Color(clrYellow);
+	ArrayResize(edt_Comment,2);   x=PlaceEditLabel(edt_Comment[1]  ,prefix+"CMT","Mixed",x,y,Width_Comment);
+	ArrayResize(edt_News,2);      x=PlaceEditLabel(edt_News[1]     ,prefix+"NWS","Mixed",x,y,Width_News);
+	ArrayResize(edt_AIBias,2);    x=PlaceEditLabel(edt_AIBias[1]   ,prefix+"BIA","Mixed",x,y,Width_AIBias);
+	ArrayResize(edt_RiskLots,2);  x=PlaceEditLabel(edt_RiskLots[1] ,prefix+"RSK","Mixed",x,y,Width_RiskLots);
+	ArrayResize(edt_HistDD,2);    x=PlaceEditLabel(edt_HistDD[1]   ,prefix+"HDD","- - -",x,y,Width_HistDD);
+	ArrayResize(edt_Trades,2);    x=PlaceEditLabel(edt_Trades[1]   ,prefix+"TRD","- - -",x,y,Width_Trades);
 	ArrayResize(edt_Positions,2); x=PlaceEditLabel(edt_Positions[1],prefix+"POS","- - -",x,y,Width_Positions);
 	ArrayResize(edt_Lots,2);      x=PlaceEditLabel(edt_Lots[1]     ,prefix+"LOT","- - -",x,y,Width_Lots);
-	ArrayResize(edt_Trades,2);    x=PlaceEditLabel(edt_Trades[1]   ,prefix+"TRD","- - -",x,y,Width_Trades);
-	ArrayResize(edt_HistDD,2);    x=PlaceEditLabel(edt_HistDD[1]   ,prefix+"HDD","- - -",x,y,Width_HistDD);
+	ArrayResize(edt_PL_Open,2);   x=PlaceEditLabel(edt_PL_Open[1]  ,prefix+"PLO","- - -",x,y,Width_PL_Open);
 	ArrayResize(edt_PL_D1,2);     x=PlaceEditLabel(edt_PL_D1[1]    ,prefix+"PLD","- - -",x,y,Width_PL_D1);
 	ArrayResize(edt_PL_W1,2);     x=PlaceEditLabel(edt_PL_W1[1]    ,prefix+"PLW","- - -",x,y,Width_PL_W1);
 	ArrayResize(edt_PL_All,2);    x=PlaceEditLabel(edt_PL_All[1]   ,prefix+"PLA","- - -",x,y,Width_PL_All);
-	r++; y+=rowTallH+gapTallPx;   x=Margin_Left;
+	r++; y+=rowTallH+gapTallPx;   x=columns_left;
 // DATA -------------------------------------------------------------
    clrEdt=clrWhite; clrEdtBorder=C'8,8,36'; clrEdtBG=C'8,8,36';//(C'15,23,42');//clrGainsboro
 	m_controlHeight=ctrlSave;
-	const int rows=ArraySize(g_sets);
+   m_rows_base_y0=y;
 	for(int i=0;i<rows;i++,r++)
 	{
 	 prefix="R"+(string)r+"_";
-	 g_sets[i].strat=ParseSetFileForInput("EA_Desc=",g_sets[i].path);
 	 ArrayResize(edt_Symbol,r+1);    x=PlaceEditLabel(edt_Symbol[r]   ,prefix+"SYM",g_sets[i].sym,x,y,Width_Symbol);
 	 ArrayResize(edt_Strategy,r+1);  x=PlaceEditLabel(edt_Strategy[r] ,prefix+"STR",g_sets[i].strat,x,y,Width_Strategy);
-	 ArrayResize(btn_Action,r+1);    CreateButtonCtrl(btn_Action[r]   ,prefix+"BTN_"+IntegerToString(i),x, y,Width_Action,m_controlHeight,"Activate");
+	 ArrayResize(btn_Action,r+1);    CreateButtonCtrl(btn_Action[r]   ,prefix+"BTN_"+IntegerToString(i),x, y,Width_Action,m_controlHeight,(g_sets[i].magic>0 && g_sets[i].cid>0 ? "Navigate" : "Activate"));
 	                                                                                x+=Width_Action+m_GapHoriz; btn_Action[r].Color(C'87,153,122');
-	 ArrayResize(edt_Status,r+1);    x=PlaceEditLabel(edt_Status[r]   ,prefix+"STS",g_sets[i].status,x,y,Width_Status); edt_Status[r].Color(C'146,7,1,255');
-	 ArrayResize(edt_Positions,r+1); x=PlaceEditLabel(edt_Positions[r],prefix+"POS","- - -",x,y,Width_Positions);
-  	 ArrayResize(edt_Lots,r+1);      x=PlaceEditLabel(edt_Lots[r]     ,prefix+"LOT","- - -",x,y,Width_Lots);
+	 ArrayResize(edt_Status,r+1);    x=PlaceEditLabel(edt_Status[r]   ,prefix+"STS",g_sets[i].status,x,y,Width_Status); edt_Status[r].Color(StatusColor(g_sets[i].status));
+	 ArrayResize(edt_Comment,r+1);   x=PlaceEditLabel(edt_Comment[r]  ,prefix+"CMT","- - -",x,y,Width_Comment);
+	 ArrayResize(edt_News,r+1);      x=PlaceEditLabel(edt_News[r]     ,prefix+"NWS",g_sets[i].news_label,x,y,Width_News);
+	 ArrayResize(edt_AIBias,r+1);    x=PlaceEditLabel(edt_AIBias[r]   ,prefix+"BIA",g_sets[i].bias_label,x,y,Width_AIBias);
+	 ArrayResize(edt_RiskLots,r+1);  x=PlaceEditLabel(edt_RiskLots[r] ,prefix+"RSK",g_sets[i].risk_lots_label,x,y,Width_RiskLots);
+	 ArrayResize(edt_HistDD,r+1);    x=PlaceEditLabel(edt_HistDD[r]   ,prefix+"HDD","- - -",x,y,Width_HistDD); edt_HistDD[r].Text(FormatIntegerText(FetchMetric(g_sets[i].name,"DD")));
 	 ArrayResize(edt_Trades,r+1);    x=PlaceEditLabel(edt_Trades[r]   ,prefix+"TRD","- - -",x,y,Width_Trades);
-	 ArrayResize(edt_HistDD,r+1);    x=PlaceEditLabel(edt_HistDD[r]   ,prefix+"HDD","- - -",x,y,Width_HistDD); edt_HistDD[r].Text(DoubleToString(FetchMetric(g_sets[i].name,"DD"),1));
+	 ArrayResize(edt_Positions,r+1); x=PlaceEditLabel(edt_Positions[r],prefix+"POS","- - -",x,y,Width_Positions);
+	 ArrayResize(edt_Lots,r+1);      x=PlaceEditLabel(edt_Lots[r]     ,prefix+"LOT","- - -",x,y,Width_Lots);
+	 ArrayResize(edt_PL_Open,r+1);   x=PlaceEditLabel(edt_PL_Open[r]  ,prefix+"PLO","- - -",x,y,Width_PL_Open);
 	 ArrayResize(edt_PL_D1,r+1);     x=PlaceEditLabel(edt_PL_D1[r]    ,prefix+"PLD","- - -",x,y,Width_PL_D1);
 	 ArrayResize(edt_PL_W1,r+1);     x=PlaceEditLabel(edt_PL_W1[r]    ,prefix+"PLW","- - -",x,y,Width_PL_W1);
 	 ArrayResize(edt_PL_All,r+1);    x=PlaceEditLabel(edt_PL_All[r]   ,prefix+"PLA","- - -",x,y,Width_PL_All);
-	 y+=m_rowHeight+m_GapVert;       x=Margin_Left;
+	 y+=m_rowHeight+m_GapVert;       x=columns_left;
 	}
-	ArrayResize(m_hist_last_scan,  ArraySize(g_sets),  0);
-   ArrayResize(m_hist_total_pl,   ArraySize(g_sets),  0.0);
-   ArrayResize(m_hist_total_trd,  ArraySize(g_sets),  0);
+   m_rows_top=0;
+   RefreshRowsViewportMetrics();
+   {
+      int sbX=table_right-CONTROLS_SCROLL_SIZE;
+      int sbY=c_Wnd_Table.Top();
+      int sbH=MathMax(1,c_Wnd_Table.Bottom()-c_Wnd_Table.Top());
+      if(!m_rows_scroll.Create(m_chart_id,m_name+"RowsVScroll",m_subwin,sbX,sbY,table_right,sbY+sbH))
+         Print("Rows scroll creation error:",GetLastError());
+      else
+      {
+         if(!Add(m_rows_scroll))
+            Print("Rows scroll add error:",GetLastError());
+         else
+         {
+            m_rows_scroll.Owner(GetPointer(this));
+            m_rows_scroll_enabled=true;
+         }
+      }
+   }
+   ApplyRowsViewport();
+   RefreshPortfolioRealtimeStats();
+   for(int i=0;i<ArraySize(g_sets);++i)
+      UpdateRowMetrics(i,i+2);
+   UpdatePortfolioRow();
 // show -------------------------------------------------------------
 	Sleep(50); ChartRedraw(0); Sleep(50); Show(); ChartRedraw(0); Sleep(50);
+   ApplyRowsViewport();
+   for(int i=0;i<ArraySize(g_sets);++i)
+      UpdateRowMetrics(i,i+2);
+   UpdatePortfolioRow();
+   ChartRedraw(0);
 	return(true);
   }
 //+------------------------------------------------------------------+
@@ -558,6 +2544,23 @@ bool CGOATDashboard::SaveTemplateAndCopy(const string tplName,const string tplTe
    return true;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::DeleteCopiedTemplate(const string tplName)
+{
+   string dstPath = TerminalInfoString(TERMINAL_DATA_PATH) + "\\MQL5\\Profiles\\Templates\\" + tplName;
+   string dstXL   = "\\\\?\\" + dstPath;
+
+   if(!DeleteFileW(dstXL))
+   {
+      int err=GetLastError();
+      if(err!=0)
+         PrintFormat("DeleteFileW failed for template '%s' err=%d",dstPath,err);
+      return false;
+   }
+
+   PrintFormat("Deleted copied template '%s'",dstPath);
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string tplName)
 {
    string symbol = g_sets[idx].sym;
@@ -567,6 +2570,7 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    if(cid==0)
    {
       Alert("  ChartOpen FAILED  err=%d", GetLastError());
+      DeleteCopiedTemplate(tplName);
       return false;
    }
    g_sets[idx].cid=cid;
@@ -575,10 +2579,42 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    if(!ChartApplyTemplate(cid, tplName))
    {
       Alert(StringFormat("  ChartApplyTemplate FAILED  err=%d", GetLastError()));
+      DeleteCopiedTemplate(tplName);
       return false;
    }
-   
-   while(!NewSingleInstance(idx)) Sleep(50);
+
+   g_sets[idx].status="Deploying";
+   edt_Status[idx+2].Text(g_sets[idx].status);
+   edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
+   MarkStateDirty();
+
+   uint wait_start=GetTickCount();
+   uint last_refresh_tick=wait_start;
+   while(!NewSingleInstance(idx))
+   {
+      if(GetTickCount()-wait_start>20000)
+      {
+         string msg="Unable to link the deployed child EA to the expected chart.\n\n"
+                   +"Set: "+g_sets[idx].name+"\n"
+                   +"Symbol: "+g_sets[idx].sym+"\n"
+                   +"Expected chart ID: "+StringFormat("%I64d",g_sets[idx].cid)+"\n"
+                   +"No pending child registration was detected within 20 seconds.";
+         MessageBox(msg,"Child Bind Failed",MB_OK|MB_ICONWARNING);
+         g_sets[idx].status="Pending";
+         edt_Status[idx+2].Text(g_sets[idx].status);
+         edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
+         MarkStateDirty();
+         DeleteCopiedTemplate(tplName);
+         return false;
+      }
+      if(GetTickCount()-last_refresh_tick>=2000)
+      {
+         ChartSetSymbolPeriod(cid,symbol,tf);
+         ChartRedraw(cid);
+         last_refresh_tick=GetTickCount();
+      }
+      Sleep(50);
+   }
    
    Sleep(500); ChartRedraw(cid); Sleep(500);
    
@@ -586,16 +2622,21 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    {
     //--- display the error message in Experts journal
     Print(__FUNCTION__+", Error Code = ",GetLastError());
+    DeleteCopiedTemplate(tplName);
     return(false);
    }
    Sleep(500); ChartRedraw(0); Sleep(500);
    
    if(g_sets[idx].cid!=-1 && g_sets[idx].magic!=-1)
    {
-    g_sets[idx].status = "✔";
-    edt_Status[idx+2].Text(g_sets[idx].status); edt_Status[idx+2].Color(C'87,153,122');
+    g_sets[idx].status = "Linked";
+    edt_Status[idx+2].Text(g_sets[idx].status); edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
     btn_Action[idx+2].Text("Navigate");
+    MarkStateDirty();
+    if(AllRowsDeployed())
+       SaveDashboardConfig();
    }
+   DeleteCopiedTemplate(tplName);
    Sleep(500); ChartRedraw(); Sleep(500);
    Print("  Template applied ✓");
    return true;
@@ -605,21 +2646,537 @@ bool CGOATDashboard::NewSingleInstance(const int idx)
 {
    for(int i=0;i<GlobalVariablesTotal();i++)
    {
-    string NewVar = GlobalVariableName(i);
-    if(StringFind(NewVar,"New",0)>0 && StringFind(NewVar,g_sets[idx].sym,0)>=0)
-    {
-     g_sets[idx].magic = (long)GlobalVariableGet(NewVar);
-     GlobalVariableDel(NewVar);
-     return true;
-    }
+    string new_var = GlobalVariableName(i);
+    long magic=0;
+    string symbol="",field="";
+    if(!GoatParseChildGVName(new_var,magic,symbol,field)) continue;
+    if(field!=GOAT_GV_FIELD_MAGIC)                        continue;
+
+    g_sets[idx].magic=(long)GlobalVariableGet(new_var);
+    GlobalVariableDel(new_var);
+    GlobalVariablesFlush();
+    return true;
    }
-   Sleep(100);
    return false;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
-void CGOATDashboard::GetOpenStatsNet(const string symbol,long magic,int &pos_count,double &net_lots)
+void CGOATDashboard::ParsePortfolioFolderInfo(void)
 {
-   pos_count=0; net_lots=0.0;
+   Portfolio_Name=FileNameOf(SetFolder);
+   Portfolio_Members="-";
+   Portfolio_Score="-";
+   Portfolio_AMSR="-";
+   Portfolio_Target_MP="-";
+   Portfolio_Target_DD="-";
+   Portfolio_Target_MRF="-";
+
+   string folderLower=SetFolder;
+   StringToLower(folderLower);
+   if(StringLen(folderLower)>=7 && StringSubstr(folderLower,StringLen(folderLower)-7)=="\\deploy")
+   {
+      string runFolder=FolderOf(SetFolder);
+      string manifest=GoatOptReadTextFile(runFolder+"\\manifest.ini");
+      string runName=GoatOptReadIniValue(manifest,"RunName");
+      if(runName!="") Portfolio_Name=runName;
+      if(ArraySize(g_sets)>0) Portfolio_Members=IntegerToString(ArraySize(g_sets));
+      return;
+   }
+
+   string parts[];
+   int total=StringSplit(Portfolio_Name,'_',parts);
+   if(total<=0) return;
+
+   Portfolio_Name=parts[0];
+   for(int i=1;i<total;i++)
+   {
+      int eq=StringFind(parts[i],"=");
+      if(eq<=0) continue;
+
+      string key=StringSubstr(parts[i],0,eq);
+      string val=StringSubstr(parts[i],eq+1);
+
+      if(key=="Members") Portfolio_Members=val;
+      if(key=="Score")   Portfolio_Score=val;
+      if(key=="AMSR")    Portfolio_AMSR=val;
+      if(key=="MP")      Portfolio_Target_MP=val;
+      if(key=="DD")      Portfolio_Target_DD=val;
+      if(key=="MRF")     Portfolio_Target_MRF=val;
+   }
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::UpdatePortfolioInfoHeader(void)
+{
+   double running_loss_limit=ParseRiskInputValue(edt_RunningLossLimit.Text());
+   double daily_loss_limit=ParseRiskInputValue(edt_DailyLossLimit.Text());
+   double daily_target_limit=ParseRiskInputValue(edt_DailyTargetLimit.Text());
+   double low_equity_stop=ParseRiskInputValue(edt_LowEquityStopLevel.Text());
+   double equity_target=ParseRiskInputValue(edt_EquityTargetLevel.Text());
+   double current_equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   Port_LowEquityStopLevel=low_equity_stop;
+   Port_EquityTargetLevel=equity_target;
+   double running_loss_left=running_loss_limit-Port_RunningLoss;
+   double daily_loss_left=daily_loss_limit-Port_DailyLoss;
+   double daily_target_left=daily_target_limit-Port_DailyTarget;
+   int active_count=0,paused_count=0,stale_count=0,syncing_count=0;
+   double open_sum=0.0,daily_sum=0.0;
+   datetime now=TimeCurrent();
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      string row_status=DisplayStatusForRow(idx,now);
+      if(row_status=="Active" || row_status=="Linked") active_count++;
+      else if(row_status=="Paused")                    paused_count++;
+      else if(row_status=="Stale")                     stale_count++;
+      else if(row_status=="Syncing" || row_status=="Closing") syncing_count++;
+
+      open_sum+=g_sets[idx].open_pl;
+      daily_sum+=g_sets[idx].PL_daily+g_sets[idx].open_pl;
+   }
+   string state_text=(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_PAUSED ? "Paused" : "Running");
+   if(m_portfolio_command_pending)
+      state_text=((m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE || m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE) ? "Closing" : (m_portfolio_command_target_pause!=0 ? "Pausing" : "Resuming"));
+   else if(m_risk_policy_breached)
+      state_text="Risk: "+RiskBreachText(m_risk_policy_breach_code);
+
+   edt_HeadingPortfolio.Text(Portfolio_Name);
+   edt_HeadingMembers.Text("Members: "+Portfolio_Members);
+   edt_HeadingScore.Text("Health A/P/S: "+IntegerToString(active_count)+"/"+IntegerToString(paused_count)+"/"+IntegerToString(stale_count));
+   edt_HeadingAMSR.Text("State: "+state_text+(syncing_count>0 ? " ("+IntegerToString(syncing_count)+" Sync)" : ""));
+   edt_HeadingMonthlyRF.Text("Open P/L: "+FormatIntegerText(open_sum));
+   edt_HeadingMonthlyProfit.Text("Daily P/L: "+FormatIntegerText(daily_sum));
+   edt_HeadingMaxDD.Text("Max DD: "+IntegerToString((int)MathRound(Portfolio_Live_DD))+"/"+Portfolio_Target_DD);
+   edt_RunningLossLead.Text("Run Loss: "+FormatPadded4Text(Port_RunningLoss)+"/");
+   edt_RunningLossTail.Text("("+FormatPadded4Text(running_loss_left)+" Left)");
+   edt_DailyLossLead.Text("Day Loss: "+FormatPadded4Text(Port_DailyLoss)+"/");
+   edt_DailyLossTail.Text("("+FormatPadded4Text(daily_loss_left)+" Left)");
+   edt_DailyTargetLead.Text("Day Target: "+FormatPadded4Text(Port_DailyTarget)+"/");
+   edt_DailyTargetTail.Text("("+FormatPadded4Text(daily_target_left)+" Left)");
+   edt_LowEquityStopLead.Text("Low Equity Stop level:");
+   edt_EquityTargetLead.Text("Equity Target Level:");
+
+   color normal_clr=clrWhite;
+   color warning_clr=clrRed;
+   color target_clr=C'0,140,0';
+   bool run_warn=(running_loss_limit>0.0 && Port_RunningLoss>=0.9*running_loss_limit);
+   bool day_loss_warn=(daily_loss_limit>0.0 && Port_DailyLoss>=0.9*daily_loss_limit);
+   bool day_target_hit=(daily_target_limit>0.0 && Port_DailyTarget>=0.9*daily_target_limit);
+   bool low_equity_hit=(low_equity_stop>0.0 && current_equity<=low_equity_stop);
+   bool equity_target_hit=(equity_target>0.0 && current_equity>=equity_target);
+
+   edt_RunningLossLead.Color(run_warn ? warning_clr : normal_clr);
+   edt_RunningLossTail.Color(run_warn ? warning_clr : normal_clr);
+   edt_DailyLossLead.Color(day_loss_warn ? warning_clr : normal_clr);
+   edt_DailyLossTail.Color(day_loss_warn ? warning_clr : normal_clr);
+   edt_DailyTargetLead.Color(day_target_hit ? target_clr : normal_clr);
+   edt_DailyTargetTail.Color(day_target_hit ? target_clr : normal_clr);
+   edt_LowEquityStopLead.Color(low_equity_hit ? warning_clr : normal_clr);
+   edt_EquityTargetLead.Color(equity_target_hit ? target_clr : normal_clr);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::RefreshPortfolioRealtimeStats(void)
+{
+   datetime now=TimeCurrent();
+   double current_equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   double current_balance=AccountInfoDouble(ACCOUNT_BALANCE);
+   datetime current_day_key=GoatBrokerDayStart(now);
+   bool portfolio_gv_changed=false;
+   string gv_start_time=GoatPortfolioGVName("Portfolio_StartTime");
+   string gv_start_equity=GoatPortfolioGVName("Portfolio_StartEquity");
+   string gv_day_time=GoatPortfolioGVName("Portfolio_DayStartTime");
+   string gv_day_equity=GoatPortfolioGVName("Portfolio_DayStartEquity");
+   string gv_max_equity=GoatPortfolioGVName("Portfolio_MaxEquity");
+   string gv_max_dd=GoatPortfolioGVName("Portfolio_MaxDDActual");
+   string gv_max_dd_pct=GoatPortfolioGVName("Portfolio_MaxDDPct");
+
+   if(GlobalVariableCheck(gv_start_time))   Portfolio_StartTime=(datetime)GlobalVariableGet(gv_start_time);
+   if(GlobalVariableCheck(gv_start_equity)) Portfolio_StartEquity=GlobalVariableGet(gv_start_equity);
+   if(GlobalVariableCheck(gv_day_time))     Portfolio_DayStartTime=(datetime)GlobalVariableGet(gv_day_time);
+   if(GlobalVariableCheck(gv_day_equity))   Portfolio_DayStartEquity=GlobalVariableGet(gv_day_equity);
+   if(GlobalVariableCheck(gv_max_equity))   Portfolio_MaxEquity=GlobalVariableGet(gv_max_equity);
+   if(GlobalVariableCheck(gv_max_dd))       Portfolio_Live_DD=GlobalVariableGet(gv_max_dd);
+   if(GlobalVariableCheck(gv_max_dd_pct))   Portfolio_MaxDDPct=GlobalVariableGet(gv_max_dd_pct);
+
+   if(Portfolio_StartTime<=0)
+   {
+      Portfolio_StartTime=now;
+      GlobalVariableSet(gv_start_time,(double)Portfolio_StartTime);
+      portfolio_gv_changed=true;
+   }
+   if(Portfolio_StartEquity<=0.0)
+   {
+      Portfolio_StartEquity=current_equity;
+      GlobalVariableSet(gv_start_equity,Portfolio_StartEquity);
+      portfolio_gv_changed=true;
+   }
+
+   datetime stored_day_key=(Portfolio_DayStartTime>0 ? GoatBrokerDayStart(Portfolio_DayStartTime) : 0);
+   if(Portfolio_DayStartTime<=0 || stored_day_key<current_day_key || Portfolio_DayStartEquity<=0.0)
+   {
+      Portfolio_DayStartTime=now;
+      Portfolio_DayStartEquity=current_equity;
+      GlobalVariableSet(gv_day_time,(double)Portfolio_DayStartTime);
+      GlobalVariableSet(gv_day_equity,Portfolio_DayStartEquity);
+      portfolio_gv_changed=true;
+   }
+
+   if(Portfolio_MaxEquity<=0.0)
+   {
+      Portfolio_MaxEquity=current_equity;
+      GlobalVariableSet(gv_max_equity,Portfolio_MaxEquity);
+      portfolio_gv_changed=true;
+   }
+
+   if(current_equity>Portfolio_MaxEquity)
+   {
+      Portfolio_MaxEquity=current_equity;
+      GlobalVariableSet(gv_max_equity,Portfolio_MaxEquity);
+      portfolio_gv_changed=true;
+   }
+
+   double current_dd_pct=0.0;
+   if(Portfolio_MaxEquity>0.0)
+      current_dd_pct=(Portfolio_MaxEquity-current_equity)/Portfolio_MaxEquity;
+   double current_dd_actual=Portfolio_MaxEquity-current_equity;
+
+   if(current_dd_pct>Portfolio_MaxDDPct)
+   {
+      Portfolio_MaxDDPct=current_dd_pct;
+      GlobalVariableSet(gv_max_dd_pct,Portfolio_MaxDDPct);
+      portfolio_gv_changed=true;
+   }
+   if(current_dd_actual>Portfolio_Live_DD)
+   {
+      Portfolio_Live_DD=current_dd_actual;
+      GlobalVariableSet(gv_max_dd,Portfolio_Live_DD);
+      portfolio_gv_changed=true;
+   }
+
+   double elapsed_months=MathMax((double)(now-Portfolio_StartTime)/2629800.0,1.0/30.0);
+   double total_profit=current_equity-Portfolio_StartEquity;
+   double total_rf=(Portfolio_Live_DD>0.0 ? total_profit/Portfolio_Live_DD : 0.0);
+   Portfolio_Live_MP=total_profit/elapsed_months;
+   Portfolio_Live_MRF=total_rf/elapsed_months;
+
+   Port_RunningLoss=MathMax(0.0,current_balance-current_equity);
+   Port_DailyLoss=MathMax(0.0,Portfolio_DayStartEquity-current_equity);
+   Port_DailyTarget=MathMax(0.0,current_equity-Portfolio_DayStartEquity);
+   if(portfolio_gv_changed)
+      GlobalVariablesFlush();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ResetPortfolioTrackingState(void)
+{
+   Portfolio_StartTime=0;
+   Portfolio_DayStartTime=0;
+   Portfolio_StartEquity=0.0;
+   Portfolio_DayStartEquity=0.0;
+   Portfolio_MaxEquity=0.0;
+   Portfolio_MaxDDPct=0.0;
+   Portfolio_Live_MP=0.0;
+   Portfolio_Live_DD=0.0;
+   Portfolio_Live_MRF=0.0;
+   Port_RunningLoss=0.0;
+   Port_DailyLoss=0.0;
+   Port_DailyTarget=0.0;
+
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_StartTime"));
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_StartEquity"));
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_DayStartTime"));
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_DayStartEquity"));
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_MaxEquity"));
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_MaxDDActual"));
+   GlobalVariableDel(GoatPortfolioGVName("Portfolio_MaxDDPct"));
+   GlobalVariablesFlush();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::ReadJsonValue(const string json,const string key,string &raw,bool &quoted) const
+{
+   raw="";
+   quoted=false;
+   string pattern="\""+key+"\"";
+   int key_pos=StringFind(json,pattern,0);
+   if(key_pos<0) return false;
+
+   int colon=StringFind(json,":",key_pos+StringLen(pattern));
+   if(colon<0) return false;
+
+   int pos=colon+1;
+   int len=StringLen(json);
+   while(pos<len)
+   {
+      int ch=StringGetCharacter(json,pos);
+      if(ch!=' ' && ch!='\r' && ch!='\n' && ch!='\t') break;
+      pos++;
+   }
+   if(pos>=len) return false;
+
+   int first=StringGetCharacter(json,pos);
+   if(first=='\"')
+   {
+      quoted=true;
+      bool escaped=false;
+      int start=pos+1;
+      for(int i=start;i<len;i++)
+      {
+         int ch=StringGetCharacter(json,i);
+         if(escaped)
+         {
+            escaped=false;
+            continue;
+         }
+         if(ch=='\\')
+         {
+            escaped=true;
+            continue;
+         }
+         if(ch=='\"')
+         {
+            raw=StringSubstr(json,start,i-start);
+            return true;
+         }
+      }
+      return false;
+   }
+
+   int end=pos;
+   while(end<len)
+   {
+      int ch=StringGetCharacter(json,end);
+      if(ch==',' || ch=='}' || ch==']' || ch=='\r' || ch=='\n' || ch=='\t' || ch==' ') break;
+      end++;
+   }
+   if(end<=pos) return false;
+   raw=StringSubstr(json,pos,end-pos);
+   StringTrimLeft(raw);
+   StringTrimRight(raw);
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::FetchPortfolioTelemetryConfig(void)
+{
+   m_pt_last_config_check=TimeLocal();
+   string url=URL_API+"/api/ea/portfolio-tracking/config?id="+(string)AccountInfoInteger(ACCOUNT_LOGIN);
+   string headers="";
+   if(!GOATBuildAuthenticatedRequestHeaders(headers)) return false;
+   char request_body[];
+   ArrayResize(request_body,0);
+   char result[];
+   string result_headers="";
+   ResetLastError();
+   int status=WebRequest("GET",url,headers,(int)MathMin((double)timeout,3000.0),request_body,result,result_headers);
+   if(status<200 || status>=300) return false;
+
+   string response=CharArrayToString(result,0,-1,CP_UTF8);
+   string raw="";
+   bool quoted=false;
+   int previous_minutes=m_pt_bucket_minutes;
+   m_pt_config_loaded=true;
+   m_pt_server_enabled=false;
+   m_pt_portfolio_id="";
+   m_pt_bucket_minutes=MathMax(1,PortfolioTracking_BucketMinutes);
+   m_pt_sample_seconds=MathMax(1,PortfolioTracking_SampleSeconds);
+   m_pt_max_upload_buckets=24;
+
+   if(ReadJsonValue(response,"enabled",raw,quoted))
+      m_pt_server_enabled=(raw=="true" || raw=="1");
+   if(ReadJsonValue(response,"portfolioId",raw,quoted) && raw!="null")
+      m_pt_portfolio_id=raw;
+   if(ReadJsonValue(response,"bucketMinutes",raw,quoted) && (int)StringToInteger(raw)>0)
+      m_pt_bucket_minutes=(int)StringToInteger(raw);
+   if(ReadJsonValue(response,"sampleSeconds",raw,quoted) && (int)StringToInteger(raw)>0)
+      m_pt_sample_seconds=(int)StringToInteger(raw);
+   if(ReadJsonValue(response,"maxUploadBuckets",raw,quoted) && (int)StringToInteger(raw)>0)
+      m_pt_max_upload_buckets=(int)StringToInteger(raw);
+   if(ReadJsonValue(response,"serverTimeMs",raw,quoted) && (long)StringToInteger(raw)>0)
+      m_pt_server_time_offset_ms=(long)StringToInteger(raw)-((long)TimeGMT()*1000);
+
+   int bucket_seconds=m_pt_bucket_minutes*60;
+   if(m_pt_sample_seconds>bucket_seconds) m_pt_sample_seconds=bucket_seconds;
+   if(m_pt_bucket_open && previous_minutes>0 && previous_minutes!=m_pt_bucket_minutes)
+      m_pt_bucket_open=false;
+
+   while(ArraySize(m_pt_queue)>m_pt_max_upload_buckets)
+   {
+      for(int i=1;i<ArraySize(m_pt_queue);++i)
+         m_pt_queue[i-1]=m_pt_queue[i];
+      ArrayResize(m_pt_queue,ArraySize(m_pt_queue)-1);
+   }
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::FetchPortfolioTelemetryState(void)
+{
+   m_pt_last_state_check=TimeLocal();
+   string url=URL_API+"/api/ea/portfolio-tracking/state?id="+(string)AccountInfoInteger(ACCOUNT_LOGIN);
+   string headers="";
+   if(!GOATBuildAuthenticatedRequestHeaders(headers)) return false;
+   char request_body[];
+   ArrayResize(request_body,0);
+   char result[];
+   string result_headers="";
+   ResetLastError();
+   int status=WebRequest("GET",url,headers,(int)MathMin((double)timeout,3000.0),request_body,result,result_headers);
+   if(status<200 || status>=300) return false;
+
+   string response=CharArrayToString(result,0,-1,CP_UTF8);
+   string raw="";
+   bool quoted=false;
+   if(ReadJsonValue(response,"latestBucketEndMs",raw,quoted) && (long)StringToInteger(raw)>m_pt_latest_bucket_end_ms)
+      m_pt_latest_bucket_end_ms=(long)StringToInteger(raw);
+   m_pt_state_loaded=true;
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::SamplePortfolioTelemetry(const long now_ms)
+{
+   long bucket_size_ms=(long)m_pt_bucket_minutes*60*1000;
+   if(bucket_size_ms<=0) return;
+
+   long start_ms=(now_ms/bucket_size_ms)*bucket_size_ms;
+   long end_ms=start_ms+bucket_size_ms;
+   double balance=AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity=AccountInfoDouble(ACCOUNT_EQUITY);
+   double margin=AccountInfoDouble(ACCOUNT_MARGIN);
+   double free_margin=AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   int positions_total=PositionsTotal();
+
+   if(m_pt_bucket_open && (now_ms>=m_pt_bucket.end_ms || now_ms<m_pt_bucket.start_ms))
+   {
+      if(m_pt_bucket.samples>0 && m_pt_bucket.end_ms<=now_ms && m_pt_bucket.end_ms>m_pt_latest_bucket_end_ms)
+      {
+         int n=ArraySize(m_pt_queue);
+         ArrayResize(m_pt_queue,n+1);
+         m_pt_queue[n]=m_pt_bucket;
+         while(ArraySize(m_pt_queue)>m_pt_max_upload_buckets)
+         {
+            for(int i=1;i<ArraySize(m_pt_queue);++i)
+               m_pt_queue[i-1]=m_pt_queue[i];
+            ArrayResize(m_pt_queue,ArraySize(m_pt_queue)-1);
+         }
+      }
+      m_pt_bucket_open=false;
+   }
+
+   if(!m_pt_bucket_open)
+   {
+      m_pt_bucket.start_ms=start_ms;
+      m_pt_bucket.end_ms=end_ms;
+      m_pt_bucket.minutes=m_pt_bucket_minutes;
+      m_pt_bucket.samples=0;
+      m_pt_bucket.positions_close=positions_total;
+      m_pt_bucket.balance_open=balance;
+      m_pt_bucket.balance_close=balance;
+      m_pt_bucket.equity_open=equity;
+      m_pt_bucket.equity_high=equity;
+      m_pt_bucket.equity_low=equity;
+      m_pt_bucket.equity_close=equity;
+      m_pt_bucket.margin_close=margin;
+      m_pt_bucket.free_margin_close=free_margin;
+      m_pt_bucket_open=true;
+   }
+
+   if(equity>m_pt_bucket.equity_high) m_pt_bucket.equity_high=equity;
+   if(equity<m_pt_bucket.equity_low)  m_pt_bucket.equity_low=equity;
+   m_pt_bucket.samples++;
+   m_pt_bucket.balance_close=balance;
+   m_pt_bucket.equity_close=equity;
+   m_pt_bucket.margin_close=margin;
+   m_pt_bucket.free_margin_close=free_margin;
+   m_pt_bucket.positions_close=positions_total;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::UploadPortfolioTelemetryQueue(void)
+{
+   if(ArraySize(m_pt_queue)<=0) return true;
+   m_pt_last_upload_attempt=TimeLocal();
+
+   string json="{\"schemaVersion\":1,\"eaVersion\":\""+(string)version_+"\",\"accountId\":\""+(string)AccountInfoInteger(ACCOUNT_LOGIN)+"\",\"buckets\":[";
+   for(int i=0;i<ArraySize(m_pt_queue);++i)
+   {
+      if(i>0) json+=",";
+      json+="{\"schemaVersion\":1"
+            +",\"bucketStartMs\":"+StringFormat("%I64d",m_pt_queue[i].start_ms)
+            +",\"bucketEndMs\":"+StringFormat("%I64d",m_pt_queue[i].end_ms)
+            +",\"bucketMinutes\":"+IntegerToString(m_pt_queue[i].minutes)
+            +",\"sampleCount\":"+IntegerToString(m_pt_queue[i].samples)
+            +",\"balanceOpen\":"+DoubleToString(m_pt_queue[i].balance_open,2)
+            +",\"balanceClose\":"+DoubleToString(m_pt_queue[i].balance_close,2)
+            +",\"equityOpen\":"+DoubleToString(m_pt_queue[i].equity_open,2)
+            +",\"equityHigh\":"+DoubleToString(m_pt_queue[i].equity_high,2)
+            +",\"equityLow\":"+DoubleToString(m_pt_queue[i].equity_low,2)
+            +",\"equityClose\":"+DoubleToString(m_pt_queue[i].equity_close,2)
+            +",\"positionCountClose\":"+IntegerToString(m_pt_queue[i].positions_close)
+            +",\"marginClose\":"+DoubleToString(m_pt_queue[i].margin_close,2)
+            +",\"freeMarginClose\":"+DoubleToString(m_pt_queue[i].free_margin_close,2)
+            +"}";
+   }
+   json+="]}";
+
+   char post_body[];
+   StringToCharArray(json,post_body,0,WHOLE_ARRAY,CP_UTF8);
+   if(ArraySize(post_body)>0) ArrayResize(post_body,ArraySize(post_body)-1);
+   char result[];
+   string result_headers="";
+   string headers="";
+   if(!GOATBuildAuthenticatedRequestHeaders(headers)) return false;
+   string url=URL_API+"/api/ea/portfolio-tracking/buckets?id="+(string)AccountInfoInteger(ACCOUNT_LOGIN);
+   ResetLastError();
+   int status=WebRequest("POST",url,headers,(int)MathMin((double)timeout,3000.0),post_body,result,result_headers);
+   if(status<200 || status>=300) return false;
+
+   m_pt_latest_bucket_end_ms=m_pt_queue[ArraySize(m_pt_queue)-1].end_ms;
+   ArrayResize(m_pt_queue,0);
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ProcessPortfolioTelemetry(void)
+{
+   if(!m_pt_config_loaded)
+   {
+      m_pt_bucket_minutes=MathMax(1,PortfolioTracking_BucketMinutes);
+      m_pt_sample_seconds=MathMax(1,PortfolioTracking_SampleSeconds);
+      m_pt_max_upload_buckets=24;
+   }
+
+   datetime now=TimeLocal();
+   bool request_made=false;
+   if((!m_pt_config_loaded || (now-m_pt_last_config_check)>=300) && (m_pt_last_config_check==0 || (now-m_pt_last_config_check)>=30))
+   {
+      FetchPortfolioTelemetryConfig();
+      request_made=true;
+   }
+
+   if(!m_pt_config_loaded || !m_pt_server_enabled || m_pt_portfolio_id=="")
+   {
+      m_pt_bucket_open=false;
+      ArrayResize(m_pt_queue,0);
+      return;
+   }
+
+   if(!request_made && (!m_pt_state_loaded || (now-m_pt_last_state_check)>=600) && (m_pt_last_state_check==0 || (now-m_pt_last_state_check)>=30))
+   {
+      FetchPortfolioTelemetryState();
+      request_made=true;
+   }
+
+   if(m_pt_last_sample_time==0 || (now-m_pt_last_sample_time)>=m_pt_sample_seconds)
+   {
+      SamplePortfolioTelemetry((long)TimeGMT()*1000+m_pt_server_time_offset_ms);
+      m_pt_last_sample_time=now;
+   }
+
+   if(!request_made && ArraySize(m_pt_queue)>0 && (m_pt_last_upload_attempt==0 || (now-m_pt_last_upload_attempt)>=30))
+      UploadPortfolioTelemetryQueue();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::GetOpenStats(const string symbol,long magic,int &open_trades,double &open_lots,double &open_pl,double &open_pl_day,double &open_pl_week,string &comment)
+{
+   open_trades=0;
+   open_lots=0.0;
+   open_pl=0.0;
+   open_pl_day=0.0;
+   open_pl_week=0.0;
+   comment="- - -";
+   string first_comment="";
    CPositionInfo p;
    for(int i=PositionsTotal()-1;i>=0;--i)
    {
@@ -627,41 +3184,129 @@ void CGOATDashboard::GetOpenStatsNet(const string symbol,long magic,int &pos_cou
       if(p.Symbol()!=symbol)                   continue;
       if(magic!=0 && p.Magic()!=magic)         continue;
 
-      double lots = p.Volume();
-           if(p.PositionType()==POSITION_TYPE_BUY)  {net_lots+=lots; pos_count++;}
-      else if(p.PositionType()==POSITION_TYPE_SELL) {net_lots-=lots; pos_count++;}
+      open_trades++;
+      open_lots += p.Volume();
+
+      double pr = p.Profit();
+      open_pl += pr;
+      if(p.Time() >= m_week_start) open_pl_week += pr;
+      if(p.Time() >= m_day_start ) open_pl_day  += pr;
+
+      string pos_comment=PositionGetString(POSITION_COMMENT);
+      if(StringLen(pos_comment)==0) pos_comment="- - -";
+      if(first_comment=="") first_comment=pos_comment;
+      else if(first_comment!=pos_comment) first_comment="Mixed";
    }
+   if(first_comment!="") comment=first_comment;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::CalcHistoryStatsFast(int idx,int &new_trd,double &pl_d,double &pl_w,double &pl_all)
 {
-   new_trd=0; pl_d=pl_w=0.0; pl_all=m_hist_total_pl[idx];
+   new_trd=0;
+   pl_d=0.0;
+   pl_w=0.0;
+   pl_all=0.0;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::ReadChildSnapshotIntoRow(const int idx)
+{
+   if(idx<0 || idx>=ArraySize(g_sets)) return false;
+   if(g_sets[idx].magic<=0)            return false;
 
-   datetime from = m_hist_last_scan[idx]+1,
-            now  = TimeCurrent();
+   ReadSymbolSharedFields(idx);
+   ReadChildCommandState(idx);
 
-   HistorySelect(from,now);                                        // incremental load :contentReference[oaicite:4]{index=4}
-   int deals = HistoryDealsTotal();
+   string hb_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_HEARTBEAT);
+   datetime now=TimeCurrent();
+   g_sets[idx].last_scan=now;
+   MarkStateDirty();
 
-   for(int i=0;i<deals;++i)
+   if(!GlobalVariableCheck(hb_key))
    {
-      ulong   tk = HistoryDealGetTicket(i);
-      if(HistoryDealGetString(tk,DEAL_SYMBOL)!=g_sets[idx].sym)            continue;
-      if(g_sets[idx].magic!=0 &&
-         HistoryDealGetInteger(tk,DEAL_MAGIC)!=g_sets[idx].magic)          continue;
-
-      uint entry=(uint)HistoryDealGetInteger(tk,DEAL_ENTRY);
-      if(entry!=DEAL_ENTRY_OUT && entry!=DEAL_ENTRY_OUT_BY)                continue; // closures :contentReference[oaicite:5]{index=5}
-
-      double profit = HistoryDealGetDouble(tk,DEAL_PROFIT);                // DEAL_PROFIT :contentReference[oaicite:6]{index=6}
-      datetime t    =(datetime)HistoryDealGetInteger(tk,DEAL_TIME);
-
-      m_hist_total_pl[idx]+=profit;  m_hist_total_trd[idx]++;  new_trd++;
-      if(t>=m_day_start)  pl_d+=profit;
-      if(t>=m_week_start) pl_w+=profit;
-      if(t>m_hist_last_scan[idx]) m_hist_last_scan[idx]=t;
+      return false;
    }
-   pl_all=m_hist_total_pl[idx];
+
+   datetime hb1=(datetime)GlobalVariableGet(hb_key);
+   if(hb1<=0)
+   {
+      return false;
+   }
+
+   if(hb1>g_sets[idx].heartbeat_ts)
+   {
+      double open_trades=0.0,open_lots=0.0,open_pl=0.0,pl_daily=0.0,pl_weekly=0.0,pl_total=0.0,trades_total=0.0;
+      string prefix=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,"");
+      if(prefix!="" && StringSubstr(prefix,StringLen(prefix)-1)=="_")
+         prefix=StringSubstr(prefix,0,StringLen(prefix)-1);
+
+      string otr_key=prefix+"_"+GOAT_GV_FIELD_OPEN_TRADES;
+      string olt_key=prefix+"_"+GOAT_GV_FIELD_OPEN_LOTS;
+      string opl_key=prefix+"_"+GOAT_GV_FIELD_OPEN_PL;
+      string pld_key=prefix+"_"+GOAT_GV_FIELD_PL_DAILY;
+      string plw_key=prefix+"_"+GOAT_GV_FIELD_PL_WEEKLY;
+      string plt_key=prefix+"_"+GOAT_GV_FIELD_PL_TOTAL;
+      string trd_key=prefix+"_"+GOAT_GV_FIELD_TRADES_TOTAL;
+
+      if(GlobalVariableCheck(otr_key)) open_trades=GlobalVariableGet(otr_key);
+      if(GlobalVariableCheck(olt_key)) open_lots=GlobalVariableGet(olt_key);
+      if(GlobalVariableCheck(opl_key)) open_pl=GlobalVariableGet(opl_key);
+      if(GlobalVariableCheck(pld_key)) pl_daily=GlobalVariableGet(pld_key);
+      if(GlobalVariableCheck(plw_key)) pl_weekly=GlobalVariableGet(plw_key);
+      if(GlobalVariableCheck(plt_key)) pl_total=GlobalVariableGet(plt_key);
+      if(GlobalVariableCheck(trd_key)) trades_total=GlobalVariableGet(trd_key);
+
+      datetime hb2=(datetime)GlobalVariableGet(hb_key);
+      if(hb2==hb1)
+      {
+         g_sets[idx].open_trades=(int)MathRound(open_trades);
+         g_sets[idx].open_lots=open_lots;
+         g_sets[idx].open_pl=open_pl;
+         g_sets[idx].PL_daily=pl_daily;
+         g_sets[idx].PL_weekly=pl_weekly;
+         g_sets[idx].PL_total=pl_total;
+         g_sets[idx].Trades_total=(int)MathRound(trades_total);
+         g_sets[idx].heartbeat_ts=hb1;
+         MarkStateDirty();
+      }
+   }
+
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ReadSymbolSharedFields(const int idx)
+{
+   if(idx<0 || idx>=ArraySize(g_sets)) return;
+
+   string news_key=GoatSymbolGVName(g_sets[idx].sym,GOAT_GV_FIELD_NEWS);
+   string bias_key=GoatSymbolGVName(g_sets[idx].sym,GOAT_GV_FIELD_BIAS);
+   if(GlobalVariableCheck(news_key)) g_sets[idx].news_score=GlobalVariableGet(news_key);
+   if(GlobalVariableCheck(bias_key)) g_sets[idx].bias_sentiment=GlobalVariableGet(bias_key);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ReadChildCommandState(const int idx)
+{
+   if(idx<0 || idx>=ArraySize(g_sets)) return;
+   if(g_sets[idx].magic<=0)            return;
+
+   string ack_id_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_ACK_ID);
+   string ack_status_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_ACK_STATUS);
+   string ack_time_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_ACK_TIME);
+   string ack_closed_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_ACK_CLOSED);
+   string ack_errors_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_ACK_ERRORS);
+   string ack_remaining_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_ACK_REMAINING);
+   string paused_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_POLICY_PAUSED);
+   string trade_mask_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_POLICY_TRADE_MASK);
+   string exposure_mode_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_POLICY_EXPOSURE_MODE);
+
+   if(GlobalVariableCheck(ack_id_key))     g_sets[idx].last_ack_id=(long)GlobalVariableGet(ack_id_key);
+   if(GlobalVariableCheck(ack_status_key)) g_sets[idx].last_ack_status=(int)GlobalVariableGet(ack_status_key);
+   if(GlobalVariableCheck(ack_time_key))   g_sets[idx].last_ack_time=(datetime)GlobalVariableGet(ack_time_key);
+   if(GlobalVariableCheck(ack_closed_key)) g_sets[idx].ack_closed=(int)GlobalVariableGet(ack_closed_key);
+   if(GlobalVariableCheck(ack_errors_key)) g_sets[idx].ack_errors=(int)GlobalVariableGet(ack_errors_key);
+   if(GlobalVariableCheck(ack_remaining_key)) g_sets[idx].ack_remaining=(int)GlobalVariableGet(ack_remaining_key);
+   if(GlobalVariableCheck(paused_key))     g_sets[idx].policy_paused=(GlobalVariableGet(paused_key)>0.5);
+   if(GlobalVariableCheck(trade_mask_key)) g_sets[idx].trade_allow_mask=((int)GlobalVariableGet(trade_mask_key))&(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL);
+   if(GlobalVariableCheck(exposure_mode_key)) g_sets[idx].exposure_policy_mode=NormalizeExposurePolicyMode((int)GlobalVariableGet(exposure_mode_key));
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //  ───  PER‑ROW METRIC UPDATE  ────────────────────────────────────
@@ -669,101 +3314,786 @@ void CGOATDashboard::UpdateRowMetrics(const int idx,const int gui_row)
 {
    if(idx<0 || idx>=ArraySize(g_sets)) return;
 
-   // ---------- 1. SCAN OPEN POSITIONS --------------------------------
-   int    pos_cnt   = 0;
-   double net_lots  = 0.0;
-   double open_pl_d = 0.0, open_pl_w = 0.0, open_pl_any = 0.0;
+   double run_day   = g_sets[idx].PL_daily  + g_sets[idx].open_pl;
+   double run_week  = g_sets[idx].PL_weekly + g_sets[idx].open_pl;
+   double run_total = g_sets[idx].PL_total  + g_sets[idx].open_pl;
+   double hist_dd_value=FetchMetric(g_sets[idx].name,"DD");
+   string display_status=DisplayStatusForRow(idx,TimeCurrent());
 
-   CPositionInfo pos;
-   for(int i=PositionsTotal()-1;i>=0;--i)
-   {
-      if(!pos.SelectByIndex(i))                             continue;
-      if(pos.Symbol() != g_sets[idx].sym)                   continue;
-      if(g_sets[idx].magic && pos.Magic()!=g_sets[idx].magic) continue;
-
-      pos_cnt++;
-      double lots = pos.Volume();
-      if(pos.PositionType()==POSITION_TYPE_SELL) lots = -lots;
-      net_lots += lots;
-
-      double pr = pos.Profit();             // includes swap+commission
-      open_pl_any += pr;
-      if(pos.Time() >= m_week_start) open_pl_w += pr;
-      if(pos.Time() >= m_day_start ) open_pl_d += pr;
-   }
-
-   // ---------- 2. SCAN CLOSED DEALS SINCE LAST PASS ------------------
-   datetime from = g_sets[idx].last_deal_scan + 1;
-   HistorySelect(from,TimeCurrent());
-   int deals = HistoryDealsTotal();
-
-   for(int d=0; d<deals; ++d)
-   {
-      ulong tk = HistoryDealGetTicket(d);
-      if(HistoryDealGetString(tk,DEAL_SYMBOL)  != g_sets[idx].sym)             continue;
-      if(g_sets[idx].magic && HistoryDealGetInteger(tk,DEAL_MAGIC)!=g_sets[idx].magic) continue;
-
-      uint entry = (uint)HistoryDealGetInteger(tk,DEAL_ENTRY);
-      if(entry!=DEAL_ENTRY_OUT && entry!=DEAL_ENTRY_OUT_BY)                    continue;
-
-      double pr =  HistoryDealGetDouble(tk,DEAL_PROFIT)
-                 + HistoryDealGetDouble(tk,DEAL_SWAP)
-                 + HistoryDealGetDouble(tk,DEAL_COMMISSION);
-
-      datetime t_close = (datetime)HistoryDealGetInteger(tk,DEAL_TIME);
-
-      g_sets[idx].Trades_total++;                // permanent counter
-      g_sets[idx].PL_weekly += (t_close >= m_week_start ? pr : 0);
-      g_sets[idx].PL_daily  += (t_close >= m_day_start  ? pr : 0);
-
-      if(t_close > g_sets[idx].last_deal_scan)
-         g_sets[idx].last_deal_scan = t_close;
-   }
-
-   // ---------- 3. COMBINE CLOSED + OPEN FOR DISPLAY -----------------
-   double run_day   = g_sets[idx].PL_daily  + open_pl_d;
-   double run_week  = g_sets[idx].PL_weekly + open_pl_w;
-   double run_total = g_sets[idx].PL_total  + run_week;   // spec: total = last‑weeks + running‑week
-
-   // ---------- 4. WRITE GUI -----------------------------------------
-   edt_Positions[gui_row].Text(IntegerToString(pos_cnt));
-   edt_Positions[gui_row].Color(ChooseColor(net_lots));
-
-   edt_Lots     [gui_row].Text(DoubleToString(net_lots,2));
-   edt_Lots     [gui_row].Color(ChooseColor(net_lots));
-
+   edt_Comment  [gui_row].Text("- - -");
+   edt_News     [gui_row].Text(g_sets[idx].news_label);
+   edt_AIBias   [gui_row].Text(g_sets[idx].bias_label);
+   edt_RiskLots [gui_row].Text(g_sets[idx].risk_lots_label);
+   edt_Status   [gui_row].Text(display_status);
+   edt_Status   [gui_row].Color(StatusColor(display_status));
    edt_Trades   [gui_row].Text(IntegerToString(g_sets[idx].Trades_total));
-
-   edt_PL_D1 [gui_row].Text(DoubleToString(run_day ,2)); edt_PL_D1 [gui_row].Color(ChooseColor(run_day ));
-   edt_PL_W1 [gui_row].Text(DoubleToString(run_week,2)); edt_PL_W1 [gui_row].Color(ChooseColor(run_week));
-   edt_PL_All[gui_row].Text(DoubleToString(run_total,2));edt_PL_All[gui_row].Color(ChooseColor(run_total));
+   edt_Positions[gui_row].Text(IntegerToString(g_sets[idx].open_trades));
+   edt_Positions[gui_row].Color(ChooseColor(g_sets[idx].open_pl));
+   edt_Lots     [gui_row].Text(DoubleToString(g_sets[idx].open_lots,2));
+   edt_Lots     [gui_row].Color(ChooseColor(g_sets[idx].open_pl));
+   edt_HistDD   [gui_row].Text(FormatIntegerText(hist_dd_value));
+   edt_PL_Open  [gui_row].Text(FormatIntegerText(g_sets[idx].open_pl)); edt_PL_Open[gui_row].Color(ChooseColor(g_sets[idx].open_pl));
+   edt_PL_D1    [gui_row].Text(FormatIntegerText(run_day));              edt_PL_D1  [gui_row].Color(ChooseColor(run_day));
+   edt_PL_W1    [gui_row].Text(FormatIntegerText(run_week));             edt_PL_W1  [gui_row].Color(ChooseColor(run_week));
+   edt_PL_All   [gui_row].Text(FormatIntegerText(run_total));            edt_PL_All [gui_row].Color(ChooseColor(run_total));
+   btn_Action   [gui_row].Text((g_sets[idx].magic>0 && g_sets[idx].cid>0) ? "Navigate" : "Activate");
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //  ───  PORTFOLIO LINE (row 1)  ────────────────────────────────────
 void CGOATDashboard::UpdatePortfolioRow()
 {
-   int    pos_sum = 0, trade_sum = 0;
-   double lot_sum = 0.0, d_sum = 0.0, w_sum = 0.0, t_sum = 0.0;
+    int    pos_sum = 0, trade_sum = 0;
+    double lot_sum = 0.0, open_sum = 0.0, d_sum = 0.0, w_sum = 0.0, t_sum = 0.0;
+    string strategy_text="Mixed";
+    string risk_lots_text="Mixed";
+    bool first_strategy=true, strategy_mixed=false;
+    bool first_risk_mode=true, risk_mixed=false, all_risk_dollar=false, all_risk_lots=false;
+    int pending_rows=0;
+    datetime now=TimeCurrent();
 
-   const int rows = ArraySize(g_sets);
-   for(int i=0;i<rows;++i)
+    const int rows = ArraySize(g_sets);
+    for(int i=0;i<rows;++i)
+    {
+       pos_sum    += g_sets[i].open_trades;
+      lot_sum    += g_sets[i].open_lots;
+      trade_sum  += g_sets[i].Trades_total;
+       open_sum   += g_sets[i].open_pl;
+       d_sum      += g_sets[i].PL_daily  + g_sets[i].open_pl;
+       w_sum      += g_sets[i].PL_weekly + g_sets[i].open_pl;
+       t_sum      += g_sets[i].PL_total  + g_sets[i].open_pl;
+       if(DisplayStatusForRow(i,now)=="Pending")
+          pending_rows++;
+
+       if(first_strategy)
+       {
+          strategy_text=g_sets[i].strat;
+          first_strategy=false;
+       }
+       else if(strategy_text!=g_sets[i].strat)
+          strategy_mixed=true;
+
+       bool is_risk_dollar=(StringFind(g_sets[i].risk_lots_label,"$",0)>=0);
+       bool is_start_lots=(!is_risk_dollar);
+       if(first_risk_mode)
+       {
+          all_risk_dollar=is_risk_dollar;
+          all_risk_lots=is_start_lots;
+          first_risk_mode=false;
+       }
+       else if((all_risk_dollar && !is_risk_dollar) || (all_risk_lots && !is_start_lots))
+          risk_mixed=true;
+    }
+
+    if(strategy_mixed) strategy_text="Mixed";
+    if(risk_mixed || first_risk_mode) risk_lots_text="Mixed";
+    else if(all_risk_dollar)          risk_lots_text="Risk $";
+    else if(all_risk_lots)            risk_lots_text="Lots";
+    else                              risk_lots_text="Mixed";
+
+    bool all_deployed=(rows>0 && pending_rows==0);
+    string portfolio_status=(pending_rows>0 ? "Pending" : "Deployed");
+    if(m_portfolio_command_pending) portfolio_status=((m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE || m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE) ? "Closing" : "Syncing");
+    else if(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_PAUSED) portfolio_status="Paused";
+    color portfolio_status_clr=(portfolio_status=="Pending" ? clrRed : (portfolio_status=="Deployed" ? clrWhite : StatusColor(portfolio_status)));
+    string action_text=(all_deployed ? "Activated" : "ActivateAll");
+    color action_text_clr=(all_deployed ? C'87,153,122' : clrWhite);
+    double portfolio_hist_dd=StringToDouble(Portfolio_Target_DD);
+    color pl_open_clr=(open_sum>0.0 ? C'0,180,0' : (open_sum<0.0 ? clrRed : clrWhite));
+    color pl_day_clr =(d_sum  >0.0 ? C'0,180,0' : (d_sum  <0.0 ? clrRed : clrWhite));
+    color pl_week_clr=(w_sum  >0.0 ? C'0,180,0' : (w_sum  <0.0 ? clrRed : clrWhite));
+    color pl_all_clr =(t_sum  >0.0 ? C'0,180,0' : (t_sum  <0.0 ? clrRed : clrWhite));
+
+    edt_Symbol   [1].Text("Portfolio"); edt_Symbol [1].Color(clrWhite);
+    edt_Strategy [1].Text(strategy_text); edt_Strategy[1].Color(clrWhite);
+    btn_Action   [1].Text(action_text); btn_Action[1].Color(action_text_clr);
+    edt_Comment  [1].Text("- - -");
+    edt_Comment  [1].Color(clrWhite);
+    edt_News     [1].Text("Mixed");
+    edt_AIBias   [1].Text("Mixed");
+    edt_News     [1].Color(clrWhite);
+    edt_AIBias   [1].Color(clrWhite);
+    edt_RiskLots [1].Text(risk_lots_text); edt_RiskLots[1].Color(clrWhite);
+    edt_Status   [1].Text(portfolio_status);
+    edt_Status   [1].Color(portfolio_status_clr);
+    edt_HistDD   [1].Text(FormatIntegerText(portfolio_hist_dd)); edt_HistDD[1].Color(clrWhite);
+    edt_Trades   [1].Text(IntegerToString(trade_sum)); edt_Trades[1].Color(clrWhite);
+    edt_Positions[1].Text(IntegerToString(pos_sum));   edt_Positions[1].Color(clrWhite);
+    edt_Lots     [1].Text(DoubleToString(lot_sum,2));  edt_Lots[1].Color(clrWhite);
+    edt_PL_Open  [1].Text(FormatIntegerText(open_sum)); edt_PL_Open[1].Color(pl_open_clr);
+    edt_PL_D1    [1].Text(FormatIntegerText(d_sum));    edt_PL_D1  [1].Color(pl_day_clr);
+    edt_PL_W1    [1].Text(FormatIntegerText(w_sum));    edt_PL_W1  [1].Color(pl_week_clr);
+    edt_PL_All   [1].Text(FormatIntegerText(t_sum));    edt_PL_All [1].Color(pl_all_clr);
+    UpdatePortfolioInfoHeader();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ProcessTimerCycle(void)
+{
+   datetime now=TimeCurrent();
+   const int rows=ArraySize(g_sets);
+   bool used[];
+   ArrayResize(used,rows);
+   ArrayInitialize(used,false);
+
+   for(int processed=0; processed<5; ++processed)
    {
-      pos_sum   += (int)StringToInteger(edt_Positions[i+2].Text());
-      lot_sum   += StringToDouble (edt_Lots     [i+2].Text());
-      trade_sum += g_sets[i].Trades_total;
+      int best=-1;
+      datetime best_hb=D'3000.01.01 00:00';
+      datetime best_scan=D'3000.01.01 00:00';
 
-      d_sum += g_sets[i].PL_daily  + StringToDouble(edt_PL_D1 [i+2].Text()) - g_sets[i].PL_daily;
-      w_sum += g_sets[i].PL_weekly + StringToDouble(edt_PL_W1[i+2].Text()) - g_sets[i].PL_weekly;
-      t_sum += StringToDouble(edt_PL_All[i+2].Text());
+      for(int idx=0; idx<rows; ++idx)
+      {
+         if(used[idx]) continue;
+         if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+
+         datetime hb=0;
+         string hb_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,GOAT_GV_FIELD_HEARTBEAT);
+         if(GlobalVariableCheck(hb_key)) hb=(datetime)GlobalVariableGet(hb_key);
+
+         if(best==-1 || hb<best_hb || (hb==best_hb && g_sets[idx].last_scan<best_scan))
+         {
+            best=idx;
+            best_hb=hb;
+            best_scan=g_sets[idx].last_scan;
+         }
+      }
+
+      if(best==-1) break;
+      used[best]=true;
+      ReadChildSnapshotIntoRow(best);
+      UpdateRowMetrics(best,best+2);
    }
 
-   edt_Positions[1].Text(IntegerToString(pos_sum));           edt_Positions[1].Color(ChooseColor(lot_sum));
-   edt_Lots     [1].Text(DoubleToString(lot_sum,2));          edt_Lots     [1].Color(ChooseColor(lot_sum));
-   edt_Trades   [1].Text(IntegerToString(trade_sum));
+   for(int idx=0; idx<rows; ++idx)
+   {
+      if(ArraySize(edt_Status)<=idx+2) continue;
+      edt_Status[idx+2].Text(DisplayStatusForRow(idx,now));
+      edt_Status[idx+2].Color(StatusColor(edt_Status[idx+2].Text()));
+   }
 
-   edt_PL_D1 [1].Text(DoubleToString(d_sum,2));  edt_PL_D1 [1].Color(ChooseColor(d_sum));
-   edt_PL_W1 [1].Text(DoubleToString(w_sum,2));  edt_PL_W1 [1].Color(ChooseColor(w_sum));
-   edt_PL_All[1].Text(DoubleToString(t_sum,2));  edt_PL_All[1].Color(ChooseColor(t_sum));
+   RefreshPortfolioRealtimeStats();
+   EvaluateRiskPolicy();
+   ProcessPortfolioTelemetry();
+   UpdatePortfolioCommandCompletion();
+   UpdatePortfolioRow();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::UpdatePortfolioCommandCompletion(void)
+{
+   if(!m_portfolio_command_pending) return;
+
+   int targets=0,applied=0,failed=0,responses=0,close_targets=0;
+   int closed_positions=0,close_errors=0,remaining_positions=0;
+   bool target_paused=(m_portfolio_command_target_pause!=0);
+   bool close_command=(m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE);
+   bool close_scope_command=(m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE);
+   bool currency_command=(m_portfolio_command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS);
+   bool exposure_command=(m_portfolio_command_type==GOAT_DASH_CMD_EXPOSURE_POLICY);
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+      targets++;
+      if(close_command || (close_scope_command && SymbolMatchesCloseScope(g_sets[idx].sym,m_portfolio_command_close_scope)))
+         close_targets++;
+      if(g_sets[idx].last_ack_id!=m_portfolio_command_id) continue;
+      responses++;
+      closed_positions+=g_sets[idx].ack_closed;
+      close_errors+=g_sets[idx].ack_errors;
+      remaining_positions+=g_sets[idx].ack_remaining;
+
+      if(close_command)
+      {
+         if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0)
+            applied++;
+         else if(g_sets[idx].last_ack_status!=0)
+            failed++;
+      }
+      else if(close_scope_command)
+      {
+         if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0 && g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask)
+            applied++;
+         else if(g_sets[idx].last_ack_status!=0)
+            failed++;
+      }
+      else if(currency_command)
+      {
+         if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask)
+            applied++;
+         else if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_REJECTED ||
+                 g_sets[idx].last_ack_status==GOAT_DASH_ACK_FAILED ||
+                 g_sets[idx].last_ack_status==GOAT_DASH_ACK_EXPIRED)
+            failed++;
+      }
+      else if(exposure_command)
+      {
+         if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].exposure_policy_mode==g_sets[idx].target_exposure_policy_mode)
+            applied++;
+         else if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_REJECTED ||
+                 g_sets[idx].last_ack_status==GOAT_DASH_ACK_FAILED ||
+                 g_sets[idx].last_ack_status==GOAT_DASH_ACK_EXPIRED)
+            failed++;
+      }
+      else
+      {
+         if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].policy_paused==target_paused)
+            applied++;
+         else if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_REJECTED ||
+                 g_sets[idx].last_ack_status==GOAT_DASH_ACK_FAILED ||
+                 g_sets[idx].last_ack_status==GOAT_DASH_ACK_EXPIRED)
+            failed++;
+      }
+   }
+
+   if(targets<=0)
+   {
+      AppendPortfolioCommandAudit("NO_TARGETS",0,0,0,"No linked child charts were available during completion scan");
+      m_portfolio_command_pending=false;
+      UpdateHeaderStateButtons();
+      return;
+   }
+
+   bool command_timeout=(m_portfolio_command_time>0 && TimeCurrent()-m_portfolio_command_time>35);
+   if(close_scope_command)
+   {
+      if(responses>=targets || command_timeout)
+      {
+         string detail=StringFormat("scope=%s responses=%d closed_positions=%d close_errors=%d remaining=%d",
+                                    CloseScopeLabel(m_portfolio_command_close_scope),responses,closed_positions,close_errors,remaining_positions);
+         string stage=(command_timeout && responses<targets ? "TIMEOUT" : "COMPLETE");
+         AppendPortfolioCommandAudit(stage,targets,applied,failed,detail);
+         AppendCloseScopeAudit(stage,m_portfolio_command_close_scope,targets,close_targets,closed_positions,close_errors,remaining_positions,detail);
+         m_portfolio_command_pending=false;
+         for(int idx=0; idx<ArraySize(g_sets); ++idx)
+         {
+            if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+            if(g_sets[idx].last_ack_id!=m_portfolio_command_id)
+               g_sets[idx].status="No Ack";
+            else if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0 && g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask)
+               g_sets[idx].status=(SymbolMatchesCloseScope(g_sets[idx].sym,m_portfolio_command_close_scope) ? "Closed" : CurrencyPolicyLabelForMask(g_sets[idx].trade_allow_mask));
+            else
+               g_sets[idx].status="Close Failed";
+         }
+         MarkStateDirty();
+         UpdateHeaderStateButtons();
+      }
+      return;
+   }
+
+   if(exposure_command)
+   {
+      if(responses>=targets || command_timeout)
+      {
+         string detail=StringFormat("responses=%d policy=%s",responses,ExposurePolicyLabelForMode((int)m_exposure_policy_mode));
+         AppendPortfolioCommandAudit(command_timeout && responses<targets ? "TIMEOUT" : "COMPLETE",targets,applied,failed,detail);
+         AppendExposurePolicyAudit(command_timeout && responses<targets ? "TIMEOUT" : "COMPLETE",detail);
+         m_portfolio_command_pending=false;
+         for(int idx=0; idx<ArraySize(g_sets); ++idx)
+         {
+            if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+            if(g_sets[idx].last_ack_id!=m_portfolio_command_id)
+               g_sets[idx].status="No Ack";
+            else if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].exposure_policy_mode==g_sets[idx].target_exposure_policy_mode)
+               g_sets[idx].status=(g_sets[idx].exposure_policy_mode==GOAT_EXPOSURE_ALLOW ? "Active" : ExposurePolicyLabelForMode(g_sets[idx].exposure_policy_mode));
+            else
+               g_sets[idx].status="Command Failed";
+         }
+         MarkStateDirty();
+         UpdateHeaderStateButtons();
+      }
+      return;
+   }
+
+   if(currency_command)
+   {
+      if(responses>=targets || command_timeout)
+      {
+         string detail=StringFormat("responses=%d rules=%s",responses,CurrencyRuleSummary());
+         AppendPortfolioCommandAudit(command_timeout && responses<targets ? "TIMEOUT" : "COMPLETE",targets,applied,failed,detail);
+         AppendCurrencyPolicyAudit(command_timeout && responses<targets ? "TIMEOUT" : "COMPLETE",detail);
+         m_portfolio_command_pending=false;
+         for(int idx=0; idx<ArraySize(g_sets); ++idx)
+         {
+            if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+            if(g_sets[idx].last_ack_id!=m_portfolio_command_id)
+               g_sets[idx].status="No Ack";
+            else if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].trade_allow_mask==g_sets[idx].target_trade_allow_mask)
+               g_sets[idx].status=CurrencyPolicyLabelForMask(g_sets[idx].trade_allow_mask);
+            else
+               g_sets[idx].status="Command Failed";
+         }
+         MarkStateDirty();
+         UpdateHeaderStateButtons();
+      }
+      return;
+   }
+
+   if(close_command)
+   {
+      if(responses>=targets || command_timeout)
+      {
+         string detail=StringFormat("responses=%d closed_positions=%d close_errors=%d remaining=%d",
+                                    responses,closed_positions,close_errors,remaining_positions);
+         AppendPortfolioCommandAudit(command_timeout && responses<targets ? "TIMEOUT" : "COMPLETE",targets,applied,failed,detail);
+         AppendCloseScopeAudit(command_timeout && responses<targets ? "TIMEOUT" : "COMPLETE",GOAT_CLOSE_SCOPE_ALL,targets,targets,closed_positions,close_errors,remaining_positions,detail);
+         m_portfolio_command_pending=false;
+         m_portfolio_run_state=GOAT_PORTFOLIO_RUN_PAUSED;
+         GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),1.0);
+         GlobalVariablesFlush();
+         for(int idx=0; idx<ArraySize(g_sets); ++idx)
+         {
+            if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+            if(g_sets[idx].last_ack_id!=m_portfolio_command_id)
+               g_sets[idx].status="No Ack";
+            else if(g_sets[idx].last_ack_status==GOAT_DASH_ACK_APPLIED && g_sets[idx].ack_remaining==0)
+               g_sets[idx].status="Closed";
+            else
+               g_sets[idx].status="Close Failed";
+         }
+         MarkStateDirty();
+         UpdateHeaderStateButtons();
+      }
+      return;
+   }
+
+   if(applied>=targets)
+   {
+      AppendPortfolioCommandAudit("COMPLETE",targets,applied,failed,"Pause state applied by all linked child charts");
+      m_portfolio_command_pending=false;
+      m_portfolio_run_state=(target_paused ? GOAT_PORTFOLIO_RUN_PAUSED : GOAT_PORTFOLIO_RUN_ACTIVE);
+      GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),(target_paused ? 1.0 : 0.0));
+      GlobalVariablesFlush();
+      for(int idx=0; idx<ArraySize(g_sets); ++idx)
+         if(g_sets[idx].magic>0 && g_sets[idx].cid>0)
+            g_sets[idx].status=(target_paused ? "Paused" : "Active");
+      MarkStateDirty();
+      UpdateHeaderStateButtons();
+      return;
+   }
+
+   if(failed>0 || command_timeout)
+   {
+      PrintFormat("Portfolio command %I64d incomplete: applied=%d targets=%d failed=%d",
+                  m_portfolio_command_id,applied,targets,failed);
+      AppendPortfolioCommandAudit(command_timeout ? "TIMEOUT" : "FAILED",targets,applied,failed,"Pause command did not receive a clean acknowledgement from every child chart");
+      m_portfolio_command_pending=false;
+      UpdateHeaderStateButtons();
+   }
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::DashboardStateExists(void) const
+{
+   string rel_path=StateCacheRelativePath();
+   return FileIsExist(rel_path,FILE_COMMON);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int CGOATDashboard::LoadDashboardConfig(void)
+{
+   string rel_path=StateCacheRelativePath();
+   int h=FileOpen(rel_path,FILE_READ|FILE_CSV|FILE_COMMON,'\t');
+   if(h==INVALID_HANDLE) return 0;
+
+   ArrayResize(g_sets,0);
+
+   while(!FileIsEnding(h))
+   {
+      SetFileRecord row;
+      row.path=FileReadString(h);
+      if(row.path=="") break;
+
+      row.name=FileReadString(h);
+      row.sym=FileReadString(h);
+      row.strat=FileReadString(h);
+      row.news_label=FileReadString(h);
+      row.bias_label=FileReadString(h);
+      row.risk_lots_label=FileReadString(h);
+      row.cid=(long)StringToInteger(FileReadString(h));
+      row.magic=(long)StringToInteger(FileReadString(h));
+      row.status=(row.cid>0 && row.magic>0 ? "Linked" : "Pending");
+
+      while(!FileIsLineEnding(h) && !FileIsEnding(h))
+         FileReadString(h);
+
+      int n=ArraySize(g_sets);
+      ArrayResize(g_sets,n+1);
+      g_sets[n]=row;
+   }
+
+   FileClose(h);
+   if(ArraySize(g_sets)>0)
+      SetFolder=FolderOf(g_sets[0].path);
+   m_state_dirty=false;
+   m_last_state_save=0;
+   return ArraySize(g_sets);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::SaveDashboardConfig(void)
+{
+   string rel_path=StateCacheRelativePath();
+   int h=FileOpen(rel_path,FILE_WRITE|FILE_CSV|FILE_COMMON,'\t');
+   if(h==INVALID_HANDLE) return false;
+
+   for(int idx=0; idx<ArraySize(g_sets); ++idx)
+   {
+      FileWrite(h,
+                g_sets[idx].path,
+                g_sets[idx].name,
+                g_sets[idx].sym,
+                g_sets[idx].strat,
+                g_sets[idx].news_label,
+                g_sets[idx].bias_label,
+                g_sets[idx].risk_lots_label,
+                StringFormat("%I64d",g_sets[idx].cid),
+                StringFormat("%I64d",g_sets[idx].magic));
+   }
+
+   FileClose(h);
+   m_state_dirty=false;
+   m_last_state_save=TimeCurrent();
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::DeleteDashboardConfig(void)
+{
+   string rel_path=StateCacheRelativePath();
+   if(FileIsExist(rel_path,FILE_COMMON))
+      FileDelete(rel_path,FILE_COMMON);
+   if(FileIsExist(Key_+"\\dashboard_child_map.tsv",FILE_COMMON))
+      FileDelete(Key_+"\\dashboard_child_map.tsv",FILE_COMMON);
+   m_state_dirty=false;
+   m_last_state_save=0;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::RowsScrollTo(const int top_row)
+{
+   RefreshRowsViewportMetrics();
+
+   int t=top_row;
+   if(t<0) t=0;
+   if(t>m_rows_top_max) t=m_rows_top_max;
+   if(t==m_rows_top) return;
+
+   m_rows_top=t;
+
+   if(m_rows_scroll_enabled && m_rows_scroll.CurrPos()!=t)
+      m_rows_scroll.CurrPos(t);
+
+   ApplyRowsViewport();
+   ChartRedraw(0);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::HandleMouseWheel(const long lparam,const double dparam)
+{
+   RefreshRowsViewportMetrics();
+   if(m_rows_top_max<=0) return(false);
+
+   int x_cursor=(int)(short)lparam;
+   int y_cursor=(int)(short)(lparam>>16);
+   if(x_cursor<m_rows_view_left || x_cursor>m_rows_view_right) return(false);
+   if(y_cursor<m_rows_y0 || y_cursor>m_rows_view_bottom) return(false);
+
+   int steps=((int)dparam)/120;
+   if(steps==0) return(false);
+
+   RowsScrollTo(m_rows_top-steps);
+   return(true);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::HandleHeaderClick(const string control_name)
+{
+   if(ArraySize(edt_Symbol)<1) return(false);
+
+   if(control_name==edt_Symbol[0].Name())    {SortRows(GOAT_DASH_SORT_SYMBOL);   return(true);}
+   if(control_name==edt_Strategy[0].Name())  {SortRows(GOAT_DASH_SORT_STRATEGY); return(true);}
+   if(control_name==edt_Positions[0].Name()) {SortRows(GOAT_DASH_SORT_POSITIONS);return(true);}
+   if(control_name==edt_Trades[0].Name())    {SortRows(GOAT_DASH_SORT_TRADES);   return(true);}
+   if(control_name==edt_Lots[0].Name())      {SortRows(GOAT_DASH_SORT_LOTS);     return(true);}
+   if(control_name==edt_HistDD[0].Name())    {SortRows(GOAT_DASH_SORT_HIST_DD);  return(true);}
+   if(control_name==edt_PL_Open[0].Name())   {SortRows(GOAT_DASH_SORT_PL_OPEN);  return(true);}
+   if(control_name==edt_PL_D1[0].Name())     {SortRows(GOAT_DASH_SORT_PL_D1);    return(true);}
+   if(control_name==edt_PL_W1[0].Name())     {SortRows(GOAT_DASH_SORT_PL_W1);    return(true);}
+   if(control_name==edt_PL_All[0].Name())    {SortRows(GOAT_DASH_SORT_PL_ALL);   return(true);}
+
+   return(false);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::RefreshRowsViewportMetrics(void)
+{
+   if(ArraySize(edt_Symbol)<2 || m_row_pitch<=0) return;
+
+   m_rows_y0=edt_Symbol[1].Top()+m_rows_data_offset;
+   m_rows_view_bottom=c_Wnd_Table.Bottom()-m_GapVert;
+   m_rows_view_left=c_Wnd_Table.Left();
+   m_rows_view_right=c_Wnd_Table.Right();
+
+   if(!m_rows_need_scroll)
+   {
+      m_rows_visible=ArraySize(g_sets);
+      m_rows_top_max=0;
+      m_rows_top=0;
+      return;
+   }
+
+   int view_height=MathMax(0,m_rows_view_bottom-m_rows_y0);
+   m_rows_visible=(int)MathMax(1.0,MathFloor((double)(view_height+m_GapVert)/(double)m_row_pitch));
+   m_rows_top_max=MathMax(0,ArraySize(g_sets)-m_rows_visible);
+   if(m_rows_top>m_rows_top_max)
+      m_rows_top=m_rows_top_max;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::LayoutRowsScroll(void)
+{
+   if(!m_rows_scroll_enabled) return;
+
+   int sbX=c_Wnd_Table.Right()-CONTROLS_SCROLL_SIZE;
+   int sbY=c_Wnd_Table.Top();
+   int sbH=MathMax(1,c_Wnd_Table.Bottom()-c_Wnd_Table.Top());
+
+   m_rows_scroll.Move(sbX,sbY);
+   m_rows_scroll.Size(CONTROLS_SCROLL_SIZE,sbH);
+   m_rows_scroll.MinPos(0);
+   m_rows_scroll.MaxPos(m_rows_top_max);
+
+   if(m_rows_top_max>0)
+   {
+      m_rows_scroll.Show();
+      if(m_rows_scroll.CurrPos()!=m_rows_top)
+         m_rows_scroll.CurrPos(m_rows_top);
+   }
+   else
+      m_rows_scroll.Hide();
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::MoveDataRow(const int gui_row,const int y)
+{
+   CRect rc=edt_Symbol[gui_row].Rect();    edt_Symbol[gui_row].Move(rc.left,y);
+         rc=edt_Strategy[gui_row].Rect();  edt_Strategy[gui_row].Move(rc.left,y);
+         rc=edt_Comment[gui_row].Rect();   edt_Comment[gui_row].Move(rc.left,y);
+         rc=edt_News[gui_row].Rect();      edt_News[gui_row].Move(rc.left,y);
+         rc=edt_AIBias[gui_row].Rect();    edt_AIBias[gui_row].Move(rc.left,y);
+         rc=edt_RiskLots[gui_row].Rect();  edt_RiskLots[gui_row].Move(rc.left,y);
+         rc=btn_Action[gui_row].Rect();    btn_Action[gui_row].Move(rc.left,y);
+         rc=edt_Status[gui_row].Rect();    edt_Status[gui_row].Move(rc.left,y);
+         rc=edt_HistDD[gui_row].Rect();    edt_HistDD[gui_row].Move(rc.left,y);
+         rc=edt_Trades[gui_row].Rect();    edt_Trades[gui_row].Move(rc.left,y);
+         rc=edt_Positions[gui_row].Rect(); edt_Positions[gui_row].Move(rc.left,y);
+         rc=edt_Lots[gui_row].Rect();      edt_Lots[gui_row].Move(rc.left,y);
+         rc=edt_PL_Open[gui_row].Rect();   edt_PL_Open[gui_row].Move(rc.left,y);
+         rc=edt_PL_D1[gui_row].Rect();     edt_PL_D1[gui_row].Move(rc.left,y);
+         rc=edt_PL_W1[gui_row].Rect();     edt_PL_W1[gui_row].Move(rc.left,y);
+         rc=edt_PL_All[gui_row].Rect();    edt_PL_All[gui_row].Move(rc.left,y);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::SetDataRowVisible(const int gui_row,const bool visible)
+{
+   if(visible)
+   {
+      edt_Symbol[gui_row].Show();
+      edt_Strategy[gui_row].Show();
+      edt_Comment[gui_row].Show();
+      edt_News[gui_row].Show();
+      edt_AIBias[gui_row].Show();
+      edt_RiskLots[gui_row].Show();
+      btn_Action[gui_row].Show();
+      edt_Status[gui_row].Show();
+      edt_HistDD[gui_row].Show();
+      edt_Trades[gui_row].Show();
+      edt_Positions[gui_row].Show();
+      edt_Lots[gui_row].Show();
+      edt_PL_Open[gui_row].Show();
+      edt_PL_D1[gui_row].Show();
+      edt_PL_W1[gui_row].Show();
+      edt_PL_All[gui_row].Show();
+   }
+   else
+   {
+      edt_Symbol[gui_row].Hide();
+      edt_Strategy[gui_row].Hide();
+      edt_Comment[gui_row].Hide();
+      edt_News[gui_row].Hide();
+      edt_AIBias[gui_row].Hide();
+      edt_RiskLots[gui_row].Hide();
+      btn_Action[gui_row].Hide();
+      edt_Status[gui_row].Hide();
+      edt_HistDD[gui_row].Hide();
+      edt_Trades[gui_row].Hide();
+      edt_Positions[gui_row].Hide();
+      edt_Lots[gui_row].Hide();
+      edt_PL_Open[gui_row].Hide();
+      edt_PL_D1[gui_row].Hide();
+      edt_PL_W1[gui_row].Hide();
+      edt_PL_All[gui_row].Hide();
+   }
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::IsProfitSortKey(const ENUM_GOAT_DASH_SORT_KEY sort_key) const
+{
+   return(sort_key==GOAT_DASH_SORT_PL_OPEN || sort_key==GOAT_DASH_SORT_PL_D1 || sort_key==GOAT_DASH_SORT_PL_W1 || sort_key==GOAT_DASH_SORT_PL_ALL);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+double CGOATDashboard::SortMetricValue(const int idx,const ENUM_GOAT_DASH_SORT_KEY sort_key)
+{
+   if(idx<0 || idx>=ArraySize(g_sets)) return 0.0;
+
+   if(sort_key==GOAT_DASH_SORT_POSITIONS) return (double)g_sets[idx].open_trades;
+   if(sort_key==GOAT_DASH_SORT_TRADES)    return (double)g_sets[idx].Trades_total;
+   if(sort_key==GOAT_DASH_SORT_LOTS)      return g_sets[idx].open_lots;
+   if(sort_key==GOAT_DASH_SORT_HIST_DD)   return FetchMetric(g_sets[idx].name,"DD");
+   if(sort_key==GOAT_DASH_SORT_PL_OPEN)   return g_sets[idx].open_pl;
+   if(sort_key==GOAT_DASH_SORT_PL_D1)     return g_sets[idx].PL_daily  + g_sets[idx].open_pl;
+   if(sort_key==GOAT_DASH_SORT_PL_W1)     return g_sets[idx].PL_weekly + g_sets[idx].open_pl;
+   if(sort_key==GOAT_DASH_SORT_PL_ALL)    return g_sets[idx].PL_total  + g_sets[idx].open_pl;
+   return 0.0;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::ShouldSwapRows(const int lhs,const int rhs,const ENUM_GOAT_DASH_SORT_KEY sort_key,const bool descending)
+{
+   if(lhs<0 || rhs<0 || lhs>=ArraySize(g_sets) || rhs>=ArraySize(g_sets)) return(false);
+
+   if(sort_key==GOAT_DASH_SORT_SYMBOL || sort_key==GOAT_DASH_SORT_STRATEGY)
+   {
+      string left =(sort_key==GOAT_DASH_SORT_SYMBOL ? g_sets[lhs].sym   : g_sets[lhs].strat);
+      string right=(sort_key==GOAT_DASH_SORT_SYMBOL ? g_sets[rhs].sym   : g_sets[rhs].strat);
+      StringToUpper(left);
+      StringToUpper(right);
+      return(StringCompare(left,right)>0);
+   }
+
+   if(sort_key==GOAT_DASH_SORT_POSITIONS || sort_key==GOAT_DASH_SORT_TRADES || sort_key==GOAT_DASH_SORT_LOTS || sort_key==GOAT_DASH_SORT_HIST_DD)
+   {
+      double left =SortMetricValue(lhs,sort_key);
+      double right=SortMetricValue(rhs,sort_key);
+      return(left<right);
+   }
+
+   double left =SortMetricValue(lhs,sort_key);
+   double right=SortMetricValue(rhs,sort_key);
+   bool left_zero =(MathAbs(left)<=0.0000001);
+   bool right_zero=(MathAbs(right)<=0.0000001);
+
+   if(left_zero!=right_zero)
+      return(left_zero && !right_zero);
+
+   if(descending) return(left<right);
+   return(left>right);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::SwapEditState(CEdit &lhs,CEdit &rhs)
+{
+   string text=lhs.Text();
+   color  clr =lhs.Color();
+
+   lhs.Text(rhs.Text());
+   lhs.Color(rhs.Color());
+
+   rhs.Text(text);
+   rhs.Color(clr);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::SwapButtonState(CButton &lhs,CButton &rhs)
+{
+   string text=lhs.Text();
+   lhs.Text(rhs.Text());
+   rhs.Text(text);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::SwapRowState(const int lhs,const int rhs)
+{
+   if(lhs==rhs) return;
+
+   SetFileRecord set_tmp=g_sets[lhs];
+   g_sets[lhs]=g_sets[rhs];
+   g_sets[rhs]=set_tmp;
+
+   int gui_lhs=lhs+2, gui_rhs=rhs+2;
+   SwapEditState(edt_Symbol   [gui_lhs],edt_Symbol   [gui_rhs]);
+   SwapEditState(edt_Strategy [gui_lhs],edt_Strategy [gui_rhs]);
+   SwapEditState(edt_Comment  [gui_lhs],edt_Comment  [gui_rhs]);
+   SwapEditState(edt_News     [gui_lhs],edt_News     [gui_rhs]);
+   SwapEditState(edt_AIBias   [gui_lhs],edt_AIBias   [gui_rhs]);
+   SwapEditState(edt_RiskLots [gui_lhs],edt_RiskLots [gui_rhs]);
+   SwapButtonState(btn_Action [gui_lhs],btn_Action   [gui_rhs]);
+   SwapEditState(edt_Status   [gui_lhs],edt_Status   [gui_rhs]);
+   SwapEditState(edt_HistDD   [gui_lhs],edt_HistDD   [gui_rhs]);
+   SwapEditState(edt_Trades   [gui_lhs],edt_Trades   [gui_rhs]);
+   SwapEditState(edt_Positions[gui_lhs],edt_Positions[gui_rhs]);
+   SwapEditState(edt_Lots     [gui_lhs],edt_Lots     [gui_rhs]);
+   SwapEditState(edt_PL_Open  [gui_lhs],edt_PL_Open  [gui_rhs]);
+   SwapEditState(edt_PL_D1    [gui_lhs],edt_PL_D1    [gui_rhs]);
+   SwapEditState(edt_PL_W1    [gui_lhs],edt_PL_W1    [gui_rhs]);
+   SwapEditState(edt_PL_All   [gui_lhs],edt_PL_All   [gui_rhs]);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::SortRows(const ENUM_GOAT_DASH_SORT_KEY sort_key)
+{
+   int total=ArraySize(g_sets);
+   if(total<2) return;
+   bool descending=true;
+
+   if(IsProfitSortKey(sort_key))
+   {
+      if(m_last_profit_sort_key==(int)sort_key)
+         m_last_profit_sort_desc=!m_last_profit_sort_desc;
+      else
+      {
+         m_last_profit_sort_key=(int)sort_key;
+         m_last_profit_sort_desc=true;
+      }
+      descending=m_last_profit_sort_desc;
+   }
+
+   for(int i=0;i<total-1;i++)
+      for(int j=i+1;j<total;j++)
+         if(ShouldSwapRows(i,j,sort_key,descending))
+            SwapRowState(i,j);
+
+   m_rows_top=0;
+   if(m_rows_scroll_enabled && m_rows_scroll.CurrPos()!=0)
+      m_rows_scroll.CurrPos(0);
+   ApplyRowsViewport();
+   UpdatePortfolioRow();
+   ChartRedraw(0);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ApplyRowsViewport(void)
+{
+   if(ArraySize(g_sets)<=0 || ArraySize(edt_Symbol)<2 || m_row_pitch<=0) return;
+
+   const int total=ArraySize(g_sets);
+   RefreshRowsViewportMetrics();
+   LayoutRowsScroll();
+
+   for(int i=0;i<total;i++)
+   {
+      int gui_row=i+2;
+      int slot=i-m_rows_top;
+      bool visible=(slot>=0 && slot<m_rows_visible);
+      if(visible)
+         MoveDataRow(gui_row,m_rows_y0+slot*m_row_pitch);
+      SetDataRowVisible(gui_row,visible);
+   }
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashScrollV::OnChangePos(void)
+{
+   bool ok=CScrollV::OnChangePos();
+   if(ok && m_owner!=NULL)
+      m_owner.RowsScrollTo(CurrPos());
+   return(ok);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashScrollV::OnThumbDragProcess(void)
+{
+   bool ok=CScrollV::OnThumbDragProcess();
+   if(ok && m_owner!=NULL)
+      m_owner.RowsScrollTo(CurrPos());
+   return(ok);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashScrollV::OnThumbDragEnd(void)
+{
+   bool ok=CScrollV::OnThumbDragEnd();
+   if(ok && m_owner!=NULL)
+      m_owner.RowsScrollTo(CurrPos());
+   return(ok);
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------------------------------------------------------

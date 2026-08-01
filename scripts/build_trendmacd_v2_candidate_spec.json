@@ -1,0 +1,33 @@
+{
+  "source_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 TrendMACD Candidate",
+  "dest_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 TrendMACD V2 Candidate",
+  "files": [
+    {
+      "source": "SP_TrendMACD_MLPS400_M5.set",
+      "dest": "SP_TrendMACD2_MLPS400_M5.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SPN_TrendMACD2_MLPS400",
+        "Grid_Size=": "Grid_Size=-3.0||-2.5||-0.5||-4.0||Y",
+        "Grid_Max=": "Grid_Max=-20.0||30.0||3.000000||300.000000||N",
+        "Lock_Profit_Size=": "Lock_Profit_Size=-2.5||-2.0||-0.5||-3.5||Y",
+        "TP_Pips=": "TP_Pips=1.2||0.6||0.3||1.8||Y",
+        "EMA_Mode=": "EMA_Mode=1||1||0||1||N",
+        "EMA_TF_=": "EMA_TF_=60||60||0||60||N",
+        "EMA_Period=": "EMA_Period=15||10||5||25||Y",
+        "EMA_MustCheck=": "EMA_MustCheck=false||false||0||false||N",
+        "ADX_Mode=": "ADX_Mode=2||2||0||2||N",
+        "ADX_TF_=": "ADX_TF_=60||60||0||60||N",
+        "ADX_Level=": "ADX_Level=24||21||3||30||Y",
+        "ADX_MustCheck=": "ADX_MustCheck=false||false||0||false||N",
+        "MACD_Mode=": "MACD_Mode=1||1||0||1||N",
+        "MACD_Mode_Trend=": "MACD_Mode_Trend=1||1||1||3||Y",
+        "MACD_TF_=": "MACD_TF_=15||5||10||15||Y",
+        "MACD_Fast=": "MACD_Fast=12||6||2||12||Y",
+        "MACD_Slow=": "MACD_Slow=21||18||3||27||Y",
+        "MACD_Signal=": "MACD_Signal=7||5||2||9||Y",
+        "MACD_Deviations=": "MACD_Deviations=1.4||1.0||0.2||1.8||Y",
+        "MACD_MustCheck=": "MACD_MustCheck=false||false||0||false||N"
+      }
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+{
+  "source_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.41 CUMProfit",
+  "dest_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.41 CUMProfit\\Metals",
+  "files": [
+    {
+      "source": "CounterRange.set",
+      "dest": "CounterRange.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=CounterRange_Metals",
+        "Grid_Size=": "Grid_Size=-5.0||-3.0||-1.0||-6.0||Y",
+        "Grid_Exponent=": "Grid_Exponent=1.2||1.0||0.1||1.3||Y",
+        "Grid_Factor=": "Grid_Factor=1.0||0.9||0.1||1.1||Y",
+        "Lock_Profit_Size=": "Lock_Profit_Size=-4.0||-3.0||-1.0||-5.0||Y",
+        "Lock_Profit_Flexibility=": "Lock_Profit_Flexibility=0.1||0.0||0.1||0.3||Y",
+        "Max_Seq_Trades=": "Max_Seq_Trades=9||8||1||10||Y",
+        "ATR_Period=": "ATR_Period=800||400||200||1200||Y",
+        "Risk=": "Risk=300",
+        "Lots_Max_Cum=": "Lots_Max_Cum=30||25||5||35||Y",
+        "Lots_Exponent=": "Lots_Exponent=1.0||0.9||0.1||1.2||Y",
+        "Lots_Factor=": "Lots_Factor=0.4||0.2||0.1||0.6||Y",
+        "Partial_Profit_Factor=": "Partial_Profit_Factor=20.0||10.0||10.0||30.0||Y",
+        "RSI_Mode=": "RSI_Mode=1||1||0||1||N",
+        "RSI_Period=": "RSI_Period=7||5||2||11||Y",
+        "RSI_Level=": "RSI_Level=70||70.0||5.0||75.0||Y",
+        "BB_Mode=": "BB_Mode=2||2||0||2||N",
+        "BB_Period=": "BB_Period=10||10||5||15||Y",
+        "BB_Deviation=": "BB_Deviation=1.2||1.0||0.2||1.4||Y",
+        "MACD_Mode=": "MACD_Mode=0||0||0||0||N",
+        "MACD_Mode_Trend=": "MACD_Mode_Trend=0||0||0||0||N",
+        "MACD_Fast=": "MACD_Fast=8||8||2||14||N",
+        "MACD_Slow=": "MACD_Slow=20||20||2||28||N",
+        "MACD_Signal=": "MACD_Signal=6||6||2||12||N",
+        "MACD_Deviations=": "MACD_Deviations=2.0||1.5||0.5||2.5||N",
+        "RSI2_Mode=": "RSI2_Mode=1||1||0||1||N",
+        "RSI2_TF_=": "RSI2_TF_=15||15||0||15||N",
+        "RSI2_Period=": "RSI2_Period=7||4||1||10||Y",
+        "RSI2_Level=": "RSI2_Level=65||60.0||5.0||65.0||Y",
+        "Mode_Bias=": "Mode_Bias=2||2||0||2||N",
+        "Mode_News=": "Mode_News=2||2||0||2||N",
+        "Mode_Opti=": "Mode_Opti=0",
+        "Seq_min_inp=": "Seq_min_inp=140",
+        "Trades_min_inp=": "Trades_min_inp=220",
+        "Trades_Max=": "Trades_Max=1800"
+      }
+    },
+    {
+      "source": "CounterTrend.set",
+      "dest": "CounterTrend.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=Counter_CE_Metals",
+        "Grid_Size=": "Grid_Size=-4.0||-3.0||-1.0||-4.0||Y",
+        "Grid_Exponent=": "Grid_Exponent=1.1||1.0||0.1||1.2||Y",
+        "Grid_Factor=": "Grid_Factor=0.9||0.7||0.2||1.1||Y",
+        "Lock_Profit_Size=": "Lock_Profit_Size=-3.0||-2.0||-1.0||-4.0||Y",
+        "Lock_Profit_Flexibility=": "Lock_Profit_Flexibility=0.3||0.2||0.1||0.4||Y",
+        "Max_Seq_Trades=": "Max_Seq_Trades=10||9||1||12||Y",
+        "ATR_TF_=": "ATR_TF_=15||5||10||15||Y",
+        "Risk=": "Risk=300",
+        "Lots_Max_Cum=": "Lots_Max_Cum=60||55||5||60||Y",
+        "Lots_Exponent=": "Lots_Exponent=1.2||0.9||0.1||1.4||Y",
+        "Lots_Factor=": "Lots_Factor=0.9||0.7||0.1||1.1||Y",
+        "Partial_Profit_Factor=": "Partial_Profit_Factor=25.0||20.0||5.0||30.0||Y",
+        "RSI_Level=": "RSI_Level=60||55.0||5.0||60.0||Y",
+        "EMA_TF_=": "EMA_TF_=240||60||180||240||Y",
+        "EMA_Period=": "EMA_Period=20||10||10||30||Y",
+        "BB_TF_=": "BB_TF_=15||5||10||15||Y",
+        "BB_Period=": "BB_Period=7||5||2||9||Y",
+        "BB_Deviation=": "BB_Deviation=1.0||0.8||0.2||1.2||Y",
+        "Mode_News=": "Mode_News=2||2||0||2||N",
+        "Mode_Opti=": "Mode_Opti=1",
+        "Seq_min_inp=": "Seq_min_inp=150",
+        "Trades_min_inp=": "Trades_min_inp=250",
+        "Trades_Max=": "Trades_Max=2100"
+      }
+    },
+    {
+      "source": "RangeFade.set",
+      "dest": "RangeFade.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=RangeFade_Metals"
+      }
+    },
+    {
+      "source": "TrendPullback.set",
+      "dest": "TrendPullback.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=TrendPullback_Metals"
+      }
+    },
+    {
+      "source": "TrendRange.set",
+      "dest": "TrendRange.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=TrendRange_Metals"
+      }
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-﻿#define   GOAT_VERSION_LABEL "1.35"
+﻿#define   GOAT_VERSION_LABEL "1.42"
 #include "GOAT_Inputs_Definitions.mqh"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
@@ -101,6 +101,145 @@ CPng EA_LOGO(LOGO_png_data);
 #resource "\\Indicators\\MACD - GOAT 2.ex5"
 string MACD_Path        = "::Indicators\\MACD - GOAT 2.ex5";                    // MACD Indicator Path
 //---------------------------------------------------------------------------------------------------------------------------------------------------
+int DashboardTradePermissionMask(void)
+  {
+   int mask=0;
+   if(DashboardTradeAllowBuy)  mask|=GOAT_DASH_TRADE_ALLOW_BUY;
+   if(DashboardTradeAllowSell) mask|=GOAT_DASH_TRADE_ALLOW_SELL;
+   return mask;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool DashboardTradeAllowed(const int op)
+  {
+   if(op==OP_BUY)  return DashboardTradeAllowBuy;
+   if(op==OP_SELL) return DashboardTradeAllowSell;
+   return true;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int DashboardNormalizeExposurePolicyMode(const int mode)
+  {
+   if(mode<GOAT_EXPOSURE_ALLOW || mode>GOAT_EXPOSURE_CURRENCY_DIRECTION)
+      return GOAT_EXPOSURE_ALLOW;
+   return mode;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool DashboardSymbolCurrencies(const string symbol,string &base,string &quote)
+  {
+   if(StringLen(symbol)<6) return false;
+   base=StringSubstr(symbol,0,3);
+   quote=StringSubstr(symbol,3,3);
+   StringToUpper(base);
+   StringToUpper(quote);
+   return(base!="" && quote!="");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int DashboardCurrencySideForTrade(const string symbol,const int op,const string currency)
+  {
+   string base="",quote="";
+   if(!DashboardSymbolCurrencies(symbol,base,quote)) return 0;
+   if(currency==base)  return(op==OP_BUY ? 1 : -1);
+   if(currency==quote) return(op==OP_BUY ? -1 : 1);
+   return 0;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool DashboardRegisteredPortfolioPosition(const long magic,const string symbol)
+  {
+   if(magic<=0 || symbol=="") return false;
+   for(int i=GlobalVariablesTotal()-1;i>=0;--i)
+   {
+      string gv_name=GlobalVariableName(i);
+      long gv_magic=0;
+      string gv_symbol="",gv_field="";
+      if(!GoatParseChildGVName(gv_name,gv_magic,gv_symbol,gv_field)) continue;
+      if(gv_field!=GOAT_GV_FIELD_CID)                                continue;
+      if(gv_magic!=magic || gv_symbol!=symbol)                        continue;
+      if(GoatTruncateCidValue((long)GlobalVariableGet(gv_name))<=0)   continue;
+      return true;
+   }
+   return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool DashboardExposureConflict(const int op)
+  {
+   int policy=DashboardNormalizeExposurePolicyMode(DashboardExposurePolicyMode);
+   if(policy==GOAT_EXPOSURE_ALLOW) return false;
+
+   string want_symbol=Symbol();
+   string want_base="",want_quote="";
+   bool want_currencies=DashboardSymbolCurrencies(want_symbol,want_base,want_quote);
+
+   CPositionInfo position;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      if(!position.SelectByIndex(i)) continue;
+      string pos_symbol=position.Symbol();
+      long pos_magic=position.Magic();
+      if(!DashboardRegisteredPortfolioPosition(pos_magic,pos_symbol)) continue;
+
+      int pos_op=(int)position.PositionType();
+      if(pos_op!=OP_BUY && pos_op!=OP_SELL) continue;
+
+      if(policy==GOAT_EXPOSURE_SYMBOL_DIRECTION)
+      {
+         if(pos_symbol==want_symbol && pos_op==op) return true;
+         continue;
+      }
+
+      if(policy==GOAT_EXPOSURE_CURRENCY_DIRECTION && want_currencies)
+      {
+         int want_base_side=DashboardCurrencySideForTrade(want_symbol,op,want_base);
+         int want_quote_side=DashboardCurrencySideForTrade(want_symbol,op,want_quote);
+         if(want_base_side!=0 && DashboardCurrencySideForTrade(pos_symbol,pos_op,want_base)==want_base_side)   return true;
+         if(want_quote_side!=0 && DashboardCurrencySideForTrade(pos_symbol,pos_op,want_quote)==want_quote_side) return true;
+      }
+   }
+   return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool DashboardEntryAllowed(const int op)
+  {
+   if(!DashboardTradeAllowed(op)) return false;
+   if(DashboardExposureConflict(op)) return false;
+   return true;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string DashboardCloseScopeCurrency(const int scope)
+  {
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(clean_scope==GOAT_CLOSE_SCOPE_USD) return "USD";
+   if(clean_scope==GOAT_CLOSE_SCOPE_EUR) return "EUR";
+   if(clean_scope==GOAT_CLOSE_SCOPE_GBP) return "GBP";
+   if(clean_scope==GOAT_CLOSE_SCOPE_JPY) return "JPY";
+   return "";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool DashboardSymbolMatchesCloseScope(const string symbol,const int scope)
+  {
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(clean_scope==GOAT_CLOSE_SCOPE_ALL) return true;
+
+   string base="",quote="";
+   if(!DashboardSymbolCurrencies(symbol,base,quote)) return false;
+   string currency=DashboardCloseScopeCurrency(clean_scope);
+   return(base==currency || quote==currency);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int DashboardBusCountCloseScopePositions(const int scope)
+  {
+   int count=0;
+   if(!DashboardSymbolMatchesCloseScope(Symbol(),scope)) return 0;
+
+   CPositionInfo position;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      if(!position.SelectByIndex(i))                         continue;
+      if(position.Symbol()!=_Symbol)                          continue;
+      if(position.Magic()!=MAGIC1 && MAGIC1!=0)               continue;
+      count++;
+   }
+   return count;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 class SEQUENCE
   {
    public:
@@ -119,21 +258,26 @@ class SEQUENCE
    
    TRADELEVEL  TradeLevels[];
    string      Desc;
-   bool        Active,Traded,Trailing,Virtual;
+   bool        Active,Traded,Trailing,Virtual,Retrace_Triggered;
+   bool        BiasRescueActive,BiasRescueBEProtected;
    int         dir,Level_Count,Trades_Count;
-   double      Level_Last,Level_Lock,Level_TP,Level_SL,Level_TSL,Level_Entry,LotsTotal;
+   int         BiasRescuePositiveAdds;
+   double      Level_Last,Level_Retrace,Level_Lock,Level_TP,Level_SL,Level_TSL,Level_Entry,LotsTotal;
    double      Size_Grid,Size_Lock,Size_TP,Size_SL,Size_TSL;
    double      StartLots,PeakLots,PeakCumLots,ScaleFactor,LotsRaw[],LotsNorm[],LotsCum[],Distances[];
+   double      SequenceRealizedPL,BiasRescueBEPrice,BiasRescueSLPrice;
    //double      FirstTradeEquity;
    
    SEQUENCE()
    {
     dir=OP_NIL; Virtual=false;
-    Active=Traded=Trailing=false;
+    Active=Traded=Trailing=Retrace_Triggered=BiasRescueActive=BiasRescueBEProtected=false;
     Level_Count=Trades_Count=ArrayResize(TradeLevels,0,Max_Seq_Levels);
-    Level_Last=Level_Lock=Level_TP=Level_SL=Level_TSL=Level_Entry=LotsTotal=0.0;
+    BiasRescuePositiveAdds=0;
+    Level_Last=Level_Retrace=Level_Lock=Level_TP=Level_SL=Level_TSL=Level_Entry=LotsTotal=0.0;
     Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;
     StartLots=PeakLots=PeakCumLots=ScaleFactor=0.0;
+    SequenceRealizedPL=BiasRescueBEPrice=BiasRescueSLPrice=0.0;
     ArrayResize(LotsRaw,0,Max_Seq_Trades); ArrayResize(LotsNorm,0,Max_Seq_Trades); ArrayResize(LotsCum,0,Max_Seq_Trades); ArrayResize(Distances,0,Max_Seq_Trades);
     //FirstTradeEquity=0.0;
    }
@@ -142,6 +286,9 @@ class SEQUENCE
    {
     dir=OP; Virtual=v;
     Desc = Strat+((Virtual)?" Virtual ":" ")+((dir==OP_BUY)?"Buy":"Sell");
+    Retrace_Triggered=false;
+    Level_Retrace=0.0;
+    ResetSequenceRiskState();
    }
 //----------------------
    void End_Sequence(string desc)
@@ -186,9 +333,10 @@ class SEQUENCE
       }
       Sequences_PL++;
      }
-     Active=Traded=Trailing=false;
+     Active=Traded=Trailing=Retrace_Triggered=false;
+     ResetSequenceRiskState();
      Level_Count=Trades_Count=ArrayResize(TradeLevels,0,Max_Seq_Levels);
-     Level_Last=Level_Lock=Level_TP=Level_SL=Level_TSL=Level_Entry=LotsTotal=0.0;
+     Level_Last=Level_Retrace=Level_Lock=Level_TP=Level_SL=Level_TSL=Level_Entry=LotsTotal=0.0;
      Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;
      StartLots=PeakLots=PeakCumLots=ScaleFactor=0.0;
      ArrayResize(LotsRaw,0,Max_Seq_Trades); ArrayResize(LotsNorm,0,Max_Seq_Trades); ArrayResize(LotsCum,0,Max_Seq_Trades); ArrayResize(Distances,0,Max_Seq_Trades);
@@ -200,7 +348,15 @@ class SEQUENCE
      if(ObjectFind(0,Desc+" TPLine")>=0)     HLineDelete(0,Desc+" TPLine");
      if(ObjectFind(0,Desc+" SLLine")>=0)     HLineDelete(0,Desc+" SLLine");
      Print(Desc+" Sequence Ended"+" ("+desc+")");
+     }
     }
+//----------------------
+   void ResetSequenceRiskState()
+   {
+    BiasRescueActive=false;
+    BiasRescueBEProtected=false;
+    BiasRescuePositiveAdds=0;
+    SequenceRealizedPL=BiasRescueBEPrice=BiasRescueSLPrice=0.0;
    }
 //---------------------- Round any raw volume to the nearest tradable lot
    double NormalizedLots(double raw_volume)
@@ -217,6 +373,65 @@ class SEQUENCE
     if(lots>=0)             lots =  MathMin(lots, v_max);
     else                    lots = -MathMin(MathAbs(lots), v_max);
     return lots;
+   }
+//---------------------- currency conversion fallback for cross-currency symbols
+   double GetSymbolMidPrice(string sym)
+   {
+    if(sym=="") return 0.0;
+    SymbolSelect(sym,true);
+
+   MqlTick tk;
+   if(SymbolInfoTick(sym,tk))
+   {
+     double tickBid = tk.bid, tickAsk = tk.ask;
+     if(tickBid>0.0 && tickAsk>0.0) return 0.5*(tickBid+tickAsk);
+     if(tickBid>0.0) return tickBid;
+     if(tickAsk>0.0) return tickAsk;
+   }
+
+   double symBid = SymbolInfoDouble(sym,SYMBOL_BID);
+   double symAsk = SymbolInfoDouble(sym,SYMBOL_ASK);
+   if(symBid>0.0 && symAsk>0.0) return 0.5*(symBid+symAsk);
+   if(symBid>0.0) return symBid;
+   if(symAsk>0.0) return symAsk;
+   return 0.0;
+   }
+   double ConvertCurrencyAmount(double amount,string from,string to,string &convSym,double &convPx,bool &isInverse)
+   {
+    convSym=""; convPx=0.0; isInverse=false;
+    if(!MathIsValidNumber(amount) || amount==0.0) return 0.0;
+    if(from=="" || to=="") return 0.0;
+    if(from==to) return amount;
+
+    int total = (int)SymbolsTotal(false);
+    for(int i=0;i<total;i++)
+    {
+     string sym = SymbolName(i,false);
+     if(sym=="") continue;
+
+     string base="", profit="";
+     if(!SymbolInfoString(sym,SYMBOL_CURRENCY_BASE,base)) continue;
+     if(!SymbolInfoString(sym,SYMBOL_CURRENCY_PROFIT,profit)) continue;
+
+     double px = GetSymbolMidPrice(sym);
+     if(!(px>0.0) || !MathIsValidNumber(px)) continue;
+
+     if(base==from && profit==to)
+     {
+      convSym = sym;
+      convPx  = px;
+      isInverse = false;
+      return amount * px;
+     }
+     if(base==to   && profit==from)
+     {
+      convSym = sym;
+      convPx  = px;
+      isInverse = true;
+      return amount / px;
+     }
+    }
+    return 0.0;
    }
 //---------------------- price→money conversion for 1.0 lot per 1.0 price unit
    double PriceValuePerPointPerLot0()
@@ -269,9 +484,42 @@ class SEQUENCE
             if(acc == quote && quote != "") return contract * point;
             // Account == base (e.g., USD acct & USDJPY) → divide by price
             if(acc == base && base != "" && px > 0.0) return (contract * point) / px;
+
+            // Cross-currency account fallback (e.g., USD acct & AUDJPY) -> convert quote currency to account currency
+            string convSym="";
+            double convPx=0.0;
+            bool   convInverse=false;
+            double cross = ConvertCurrencyAmount(contract * point, quote, acc, convSym, convPx, convInverse);
+            if(cross > 0.0 && MathIsValidNumber(cross))
+            {
+               static string lastCrossLog = "";
+               string logKey = _Symbol+"|"+quote+"|"+acc+"|"+convSym+"|"+DoubleToString(convPx,_Digits);
+               if(lastCrossLog != logKey)
+               {
+                  lastCrossLog = logKey;
+                  Print("PriceValuePerPointPerLot cross fallback: sym=",_Symbol,
+                        " profit=",quote,
+                        " account=",acc,
+                        " via=",convSym,
+                        (convInverse?" inverse":" direct"),
+                        " px=",DoubleToString(convPx,_Digits),
+                        " perPointPerLot=",DoubleToString(cross,6));
+               }
+               return cross;
+            }
          }
       }
       // --- Last resort: EURUSD-like default (per 1 point, 1 lot)
+      static string lastFallbackWarn = "";
+      string fallbackKey = _Symbol+"|"+AccountInfoString(ACCOUNT_CURRENCY);
+      if(lastFallbackWarn != fallbackKey)
+      {
+         lastFallbackWarn = fallbackKey;
+         Print("PriceValuePerPointPerLot WARNING: using final fallback 1.0 for sym=",_Symbol,
+               " account=",AccountInfoString(ACCOUNT_CURRENCY),
+               " tickValue=",DoubleToString(tv,6),
+               " tickSize=",DoubleToString(ts,6));
+      }
       return 1.0;
    }
 //---------------------- build a formatted lots/cum-lots/cum-loss string
@@ -300,7 +548,11 @@ class SEQUENCE
     double cumLoss  = 0.0;   // running cumulative loss
 
     string s = "GAPs=["+DoubleToString(Grid_Exponent,2)+","+DoubleToString(Grid_Factor,2)+"]"+"   LOTs=["+DoubleToString(Lots_Exponent,2)+","+DoubleToString(Lots_Factor,2)+"]\n\n";
-           s+= "Peak Cumulative Lots="+DoubleToString(PeakCumLots,2)+"   Scale Factor="+DoubleToString(ScaleFactor,5)+"\n\n";
+    s+= "Peak Cumulative Lots="+DoubleToString(PeakCumLots,2)+"   Scale Factor="+DoubleToString(ScaleFactor,5)+"\n\n";
+    if(Mode_Lots_Prog==Lots_Prog_CumPartial)
+           s+= "NOTE: CumPartial uses this ladder as a baseline only. After retrace closes, next deeper lots are recalculated from live standing volume.\n\n";
+    if(Mode_Lots_Prog==Lots_Prog_PeakSmart)
+           s+= "NOTE: Smart Peak uses the Peak curve as a target map, then harvests excess live exposure on profitable retraces.\n\n";
 
     for(int lvl=0; lvl<Max_Seq_Trades; ++lvl)
     {
@@ -321,6 +573,125 @@ class SEQUENCE
                                  :("  Cum_Lots=" + DoubleToString(LotsCum[lvl],2)))
         + "  Cum_Loss="+ DoubleToString(cumLoss,2) + "\n";
     }
+    return s;
+   }
+//---------------------- build a formatted string from the already-open sequence levels
+   string FormatCompactValue(double value,int digits=2)
+   {
+    string s = DoubleToString(value,digits);
+    int dot = StringFind(s,".");
+    if(dot>=0)
+    {
+     while(StringLen(s)>dot+1 && StringGetCharacter(s,StringLen(s)-1)=='0')
+           s = StringSubstr(s,0,StringLen(s)-1);
+     if(StringLen(s)>0 && StringGetCharacter(s,StringLen(s)-1)=='.')
+           s = StringSubstr(s,0,StringLen(s)-1);
+    }
+    if(s=="-0") s="0";
+    return s;
+   }
+//----------------------
+   string PadRightValue(string value,int width)
+   {
+    while(StringLen(value)<width) value += " ";
+    return value;
+   }
+//---------------------- build a formatted string from the already-open sequence levels
+   string BuildOpenedLotsInfoString(void)
+   {
+    if(!Active || Level_Count<=0) return "";
+
+    if(Traded) RefreshTicketLots();
+
+    double point = SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+    if(!(point>0.0) || !MathIsValidNumber(point)) point = _Point;
+    if(!(point>0.0) || !MathIsValidNumber(point)) point = 1e-8;
+
+    double pipUnit = point*10.0;
+    if(!(pipUnit>0.0) || !MathIsValidNumber(pipUnit)) pipUnit = point;
+
+    double perUnit = PriceValuePerPointPerLot();
+    double standingNow = 0.0;
+    int    openLevels  = 0;
+    bool   hasClosedLevels = false;
+
+    for(int i=0; i<Level_Count; i++)
+    {
+     double lots = TradeLevels[i].lots;
+     if(!MathIsValidNumber(lots) || lots<0.0) lots = 0.0;
+     if(lots>0.0) {standingNow += lots; openLevels++;}
+     else if(i<Level_Count-1) hasClosedLevels = true;
+     if(Traded && TradeLevels[i].ticket==0) hasClosedLevels = true;
+    }
+
+    string state = Virtual ? "Virtual" : (Traded ? "Live" : "Delayed");
+    string lockTxt = "-";
+    string tpTxt   = "-";
+    string slTxt   = "-";
+
+    if(MathIsValidNumber(Level_Lock) && Level_Lock>0.0 && Level_Lock<999999.0) lockTxt = DoubleToString(Level_Lock,_Digits);
+    if(MathIsValidNumber(Level_SL)   && Level_SL  >0.0 && Level_SL  <999999.0) slTxt   = DoubleToString(Level_SL,_Digits);
+    if(dir==OP_BUY)
+    {
+     if(MathIsValidNumber(Level_TP) && Level_TP>0.0 && Level_TP<999999.0) tpTxt = DoubleToString(Level_TP,_Digits);
+    }
+    else if(dir==OP_SELL)
+    {
+     if(MathIsValidNumber(Level_TP) && Level_TP>0.0) tpTxt = DoubleToString(Level_TP,_Digits);
+    }
+
+    string s = Desc+" Open Layout\n";
+           s+= "State="+state
+             + "  Levels="+(string)Level_Count
+             + "  OpenLevels="+(string)openLevels
+             + "  StandingLots="+DoubleToString(standingNow,2)+"\n";
+           s+= "Entry="+DoubleToString(Level_Entry,_Digits)
+             + "  Lock="+lockTxt
+             + "  TP="+tpTxt
+             + "  SL="+slTxt;
+    if(Level_Retrace>0.0 && MathIsValidNumber(Level_Retrace))
+           s+= "  Retrace="+DoubleToString(Level_Retrace,_Digits);
+           s+= "\n";
+
+    if(Mode_Lots_Prog==Lots_Prog_CumPartial || Mode_Lots_Prog==Lots_Prog_PeakSmart || hasClosedLevels)
+           s+= "NOTE: Open layout uses actual standing lots on the stored live levels, so partially closed/buried levels can show 0.00 lots.\n";
+           s+= "\n";
+
+    double standing = 0.0;
+    double cumLoss  = 0.0;
+
+    for(int lvl=0; lvl<Level_Count; ++lvl)
+    {
+     double lots = TradeLevels[lvl].lots;
+     if(!MathIsValidNumber(lots) || lots<0.0) lots = 0.0;
+
+     string gapTxt = "0";
+     if(lvl>0)
+     {
+      double gap = MathAbs(TradeLevels[lvl].price_level - TradeLevels[lvl-1].price_level);
+      double gapPips = gap/pipUnit;
+      cumLoss += gap * perUnit * standing;
+      gapTxt = FormatCompactValue(gapPips,1) + "p";
+     }
+     gapTxt = PadRightValue(gapTxt,5);
+
+     double cumLots = standing + lots;
+     if(cumLots<0.0) cumLots = 0.0;
+
+     s += "Lvl=" + IntegerToString(lvl+1,2,'0')
+        + "  Gap=" + gapTxt
+        + ((lots<10.0)    ? ("  Lots= "    + DoubleToString(lots,2))
+                          : ("  Lots="     + DoubleToString(lots,2)))
+        + ((cumLots<10.0) ? ("  Cum_Lots= "+ DoubleToString(cumLots,2))
+                          : ("  Cum_Lots=" + DoubleToString(cumLots,2)))
+        + "  Cum_Loss="+ FormatCompactValue(cumLoss,2);
+
+     if(Traded && TradeLevels[lvl].ticket==0) s += "  [closed]";
+     s += "\n";
+
+     standing = cumLots;
+    }
+
     return s;
    }
 //---------------------- solver for StartLots by target sequence loss (MLPS)
@@ -396,8 +767,10 @@ class SEQUENCE
        {
         LotsRaw[lvl]=InitLots;
         
-        if(Mode_Lots_Prog==Lots_Prog_Cum2) cum=InitLots/(1.0 - 1.0/(w1*Lots_Exponent + w2*Lots_Exponent*Lots_Factor));
-        else                               cum=InitLots;
+        double Leff0 = (w1*Lots_Exponent + w2*Lots_Exponent*Lots_Factor);
+        // Cum2 seed only makes sense when the first-step cumulative factor expands exposure.
+        if(Mode_Lots_Prog==Lots_Prog_Cum2 && Leff0>1.0+1e-9) cum=InitLots/(1.0 - 1.0/Leff0);
+        else                                                  cum=InitLots;
         
         continue;
        }
@@ -418,6 +791,13 @@ class SEQUENCE
                cum += l;                 // cum *= Leff
                if(cum < 0.0) cum = 0.0;  // flooring
                break;}
+        case Lots_Prog_CumPartial:{
+               // CumPartial keeps Cum's signed ladder shape; retrace closes are an extra feature.
+               double Leff = (w1*Lots_Exponent + w2*Lots_Exponent*Lots_Factor);
+               l   = cum * (Leff - 1.0);
+               cum += l;
+               if(cum < 0.0) cum = 0.0;
+               break;}
         case Lots_Prog_Cum2:{
                // Effective multiplicative factor for this level (your existing shaping)
                double Leff = (w1*Lots_Exponent + w2*Lots_Exponent*Lots_Factor);
@@ -428,7 +808,8 @@ class SEQUENCE
                cum += l;                 // cum *= Leff
                if(cum < 0.0) cum = 0.0;  // flooring
                break;}
-        case Lots_Prog_Peak:{
+        case Lots_Prog_Peak:
+        case Lots_Prog_PeakSmart:{
                // --- Safe bounds and anchors
                const int    Nraw   = (Max_Seq_Trades>0) ? Max_Seq_Trades : 1;
                int          pivot  = (int)MathRound(Max_Seq_Trades * Peak_Lots_Pos_PC / 100.0);
@@ -567,6 +948,569 @@ class SEQUENCE
      if(Cum>PeakCumLots) PeakCumLots=Cum;
     }
    }
+//---------------------- keep ticket-backed lots aligned to live broker volume
+   void RefreshTicketLots()
+   {
+    const double VolMin = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+    for(int i=0; i<Level_Count; i++)
+    {
+     ulong tk = (ulong)TradeLevels[i].ticket;
+     if(tk==0) continue;
+     if(!PositionSelectByTicket(tk))
+     {
+      TradeLevels[i].lots   = 0.0;
+      TradeLevels[i].ticket = 0;
+      continue;
+     }
+     double vol = PositionGetDouble(POSITION_VOLUME);
+     if(vol < VolMin - 1e-9)
+     {
+      TradeLevels[i].lots   = 0.0;
+      TradeLevels[i].ticket = 0;
+     }
+     else TradeLevels[i].lots = vol;
+    }
+   }
+//---------------------- sum live standing volume only from ticket-backed positions
+   double GetStandingLots(bool refresh=true)
+   {
+    if(!Traded) return 0.0;
+    if(refresh) RefreshTicketLots();
+    double standing = 0.0;
+    for(int i=0; i<Level_Count; i++)
+    {
+     if(TradeLevels[i].ticket!=0 && TradeLevels[i].lots>0.0)
+        standing += TradeLevels[i].lots;
+    }
+    return standing;
+   }
+//---------------------- live ticket presence for bias rescue decisions
+   bool HasLiveSequenceTrades()
+   {
+    if(!Traded) return false;
+    RefreshTicketLots();
+    for(int i=0; i<Level_Count; i++)
+    {
+     if(TradeLevels[i].ticket!=0 && TradeLevels[i].lots>0.0) return true;
+    }
+    return false;
+   }
+//---------------------- realized P/L ledger for sequence partial/full closes
+   double ClosedDealPL(const ulong deal_ticket)
+   {
+    return HistoryDealGetDouble(deal_ticket,DEAL_PROFIT)
+          +HistoryDealGetDouble(deal_ticket,DEAL_COMMISSION)
+          +HistoryDealGetDouble(deal_ticket,DEAL_SWAP);
+   }
+   void AccumulateSequenceDealPL(const ulong deal_ticket)
+   {
+    if(deal_ticket==0 || !HistoryDealSelect(deal_ticket)) return;
+    if(HistoryDealGetInteger(deal_ticket,DEAL_MAGIC)!=MAGIC1) return;
+    if(HistoryDealGetString(deal_ticket,DEAL_SYMBOL)!=_Symbol) return;
+
+    int deal_entry=(int)HistoryDealGetInteger(deal_ticket,DEAL_ENTRY);
+    if(deal_entry==DEAL_ENTRY_OUT || deal_entry==DEAL_ENTRY_OUT_BY)
+       SequenceRealizedPL += ClosedDealPL(deal_ticket);
+   }
+//---------------------- true sequence P/L = realized ledger + live open P/L
+   double CurrentSequencePL()
+   {
+    double pl=SequenceRealizedPL;
+    if(!Traded) return pl;
+
+    RefreshTicketLots();
+    for(int i=0; i<Level_Count; i++)
+    {
+     ulong tk=(ulong)TradeLevels[i].ticket;
+     if(tk==0) continue;
+     if(!PositionSelectByTicket(tk)) continue;
+     pl += PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+    }
+    return pl;
+   }
+//---------------------- fast cached mark-to-market P/L used only as an optimization precheck
+   bool EstimateSequencePLFromCache(double &pl_out)
+   {
+    pl_out=SequenceRealizedPL;
+    if(!Traded) return true;
+
+    double perUnit=PriceValuePerPointPerLot();
+    if(perUnit<=0.0 || !MathIsValidNumber(perUnit)) return false;
+
+    double px=(dir==OP_BUY) ? SymbolInfoDouble(_Symbol,SYMBOL_BID) : SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+    if(!(px>0.0) || !MathIsValidNumber(px)) px=(dir==OP_BUY) ? bid : ask;
+    if(!(px>0.0) || !MathIsValidNumber(px)) return false;
+
+    for(int i=0; i<Level_Count; i++)
+    {
+     if(TradeLevels[i].ticket==0 || TradeLevels[i].lots<=0.0) continue;
+
+     double entry=TradeLevels[i].price_trade;
+     if(!(entry>0.0) || !MathIsValidNumber(entry)) entry=TradeLevels[i].price_level;
+     if(!(entry>0.0) || !MathIsValidNumber(entry)) return false;
+
+     double delta=(dir==OP_BUY) ? (px-entry) : (entry-px);
+     double openPL=delta*perUnit*TradeLevels[i].lots;
+     if(!MathIsValidNumber(openPL)) return false;
+     pl_out+=openPL;
+    }
+    return MathIsValidNumber(pl_out);
+   }
+//---------------------- optional live MLPS breach stop for any real sequence
+   bool EnforceSequenceMLPS(const string context)
+   {
+    if(!Sequence_MLPS_Hard_Close) return false;
+    if(Virtual || !Active || !Traded) return false;
+    if(Risk<=0.0) return false;
+
+    if(MQLInfoInteger(MQL_OPTIMIZATION))
+    {
+     double estimatedPL=0.0;
+     double exactBand=MathMax(25.0,Risk*0.25);
+     if(EstimateSequencePLFromCache(estimatedPL) && estimatedPL>(-Risk+exactBand))
+        return false;
+    }
+
+    double pl=CurrentSequencePL();
+    if(pl>-Risk) return false;
+
+    Print(Desc,": Sequence MLPS breached. P/L=",DoubleToString(pl,2),
+          " MLPS=-",DoubleToString(Risk,2),
+          " Context=",context);
+    CloseSequencePositions("Sequence Exit: MLPS breached");
+    return true;
+   }
+//---------------------- price where the live basket reaches target sequence P/L
+   bool ComputeBiasRescueTargetPrice(const double target_pl,const double standing_lots,const double current_pl,double &price_out)
+   {
+    double perUnit=PriceValuePerPointPerLot();
+    if(standing_lots<=0.0 || perUnit<=0.0 || !MathIsValidNumber(perUnit)) return false;
+
+    double ref=(dir==OP_BUY) ? SymbolInfoDouble(_Symbol,SYMBOL_BID) : SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+    if(!(ref>0.0) || !MathIsValidNumber(ref)) ref=(dir==OP_BUY) ? bid : ask;
+    if(!(ref>0.0) || !MathIsValidNumber(ref)) return false;
+
+    double delta=(target_pl-current_pl)/(perUnit*standing_lots);
+    price_out=(dir==OP_BUY) ? ref+delta : ref-delta;
+    price_out=NormalizeDouble(price_out,_Digits);
+    return (price_out>0.0 && MathIsValidNumber(price_out));
+   }
+   int BiasRescueMinStopPoints()
+   {
+    int stops=(int)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL);
+    int freeze=(int)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_FREEZE_LEVEL);
+    int base=(stops>freeze) ? stops : freeze;
+    if(base<0) base=0;
+    return base+1;
+   }
+   bool IsBiasRescueStopLegal(const double sl_price)
+   {
+    if(!(sl_price>0.0) || !MathIsValidNumber(sl_price)) return false;
+    int minPts=BiasRescueMinStopPoints();
+    double px=(dir==OP_BUY) ? SymbolInfoDouble(_Symbol,SYMBOL_BID) : SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+    if(!(px>0.0) || !MathIsValidNumber(px)) px=(dir==OP_BUY) ? bid : ask;
+    if(!(px>0.0) || !MathIsValidNumber(px)) return false;
+    if(dir==OP_BUY)  return (sl_price < NormalizeDouble(px-minPts*_Point,_Digits));
+    if(dir==OP_SELL) return (sl_price > NormalizeDouble(px+minPts*_Point,_Digits));
+    return false;
+   }
+   bool IsBiasRescueBEReached()
+   {
+    if(!(BiasRescueBEPrice>0.0)) return false;
+    double px=(dir==OP_BUY) ? SymbolInfoDouble(_Symbol,SYMBOL_BID) : SymbolInfoDouble(_Symbol,SYMBOL_ASK);
+    if(!(px>0.0) || !MathIsValidNumber(px)) px=(dir==OP_BUY) ? bid : ask;
+    if(dir==OP_BUY)  return (px>=BiasRescueBEPrice);
+    if(dir==OP_SELL) return (px<=BiasRescueBEPrice);
+    return false;
+   }
+   double TighterBiasStop(const double first_sl,const double second_sl)
+   {
+    if(first_sl<=0.0)  return second_sl;
+    if(second_sl<=0.0) return first_sl;
+    if(dir==OP_BUY)  return MathMax(first_sl,second_sl);
+    if(dir==OP_SELL) return MathMin(first_sl,second_sl);
+    return second_sl;
+   }
+   double EffectiveBiasRescueSL(const double normal_sl)
+   {
+    double sl=TighterBiasStop(normal_sl,BiasRescueSLPrice);
+    if(BiasRescueBEProtected) sl=TighterBiasStop(sl,BiasRescueBEPrice);
+    return (sl>0.0) ? NormalizeDouble(sl,_Digits) : 0.0;
+   }
+   void CloseSequencePositions(const string reason)
+   {
+    if(Traded && FindNumberOfPositions(dir,MAGIC1)>0) CloseAllPositions(dir,MAGIC1);
+    if(!Traded || FindNumberOfPositions(dir,MAGIC1)==0) End_Sequence(reason);
+    else Print(Desc,": ",reason," close requested; positions remain open.");
+   }
+   void CloseBiasRescue(const string reason)
+   {
+    CloseSequencePositions(reason);
+   }
+   bool RefreshBiasRescueLevels()
+   {
+    if(!BiasRescueActive || !Traded) return true;
+
+    double standing=GetStandingLots(true);
+    if(standing<=0.0) return true;
+
+    double pl=CurrentSequencePL();
+    if(pl<=-Risk)
+    {
+     CloseBiasRescue("Bias Rescue Exit: MLPS breached");
+     return false;
+    }
+
+    double be=0.0, sl=0.0;
+    if(!ComputeBiasRescueTargetPrice(0.0,standing,pl,be) || !ComputeBiasRescueTargetPrice(-Risk,standing,pl,sl))
+    {
+     CloseBiasRescue("Bias Rescue Exit: Risk gate failed");
+     return false;
+    }
+    if(!IsBiasRescueStopLegal(sl))
+    {
+     CloseBiasRescue("Bias Rescue Exit: Risk gate failed");
+     return false;
+    }
+
+    BiasRescueBEPrice=be;
+    BiasRescueSLPrice=sl;
+    if(!BiasRescueBEProtected && IsBiasRescueBEReached() && IsBiasRescueStopLegal(BiasRescueBEPrice))
+       BiasRescueBEProtected=true;
+    return true;
+   }
+   bool ArmBiasRescue()
+   {
+    if(!Active || !Traded) return false;
+    BiasRescueActive=true;
+    BiasRescueBEProtected=false;
+    BiasRescuePositiveAdds=0;
+    return RefreshBiasRescueLevels();
+   }
+   bool AllowBiasRescuePositiveAdd(const double lots_to_add)
+   {
+    if(!BiasRescueActive || lots_to_add<=0.0) return true;
+    if(Bias_Exit_Max_Exposure_Adds>=0 && BiasRescuePositiveAdds>=Bias_Exit_Max_Exposure_Adds)
+    {
+     CloseBiasRescue("Bias Rescue Exit: Exposure budget exhausted");
+     return false;
+    }
+
+    double standing=GetStandingLots(true)+lots_to_add;
+    double perUnit=PriceValuePerPointPerLot();
+    double spread=MathAbs(SymbolInfoDouble(_Symbol,SYMBOL_ASK)-SymbolInfoDouble(_Symbol,SYMBOL_BID));
+    if(spread<=0.0 || !MathIsValidNumber(spread)) spread=MathAbs(ask-bid);
+    double projected_pl=CurrentSequencePL()-(spread*perUnit*lots_to_add);
+    if(standing<=0.0 || projected_pl<=-Risk)
+    {
+     CloseBiasRescue("Bias Rescue Exit: Risk gate failed");
+     return false;
+    }
+
+    double projected_sl=0.0;
+    if(!ComputeBiasRescueTargetPrice(-Risk,standing,projected_pl,projected_sl) || !IsBiasRescueStopLegal(projected_sl))
+    {
+     CloseBiasRescue("Bias Rescue Exit: Risk gate failed");
+     return false;
+    }
+    return true;
+   }
+//---------------------- planned Smart Peak standing exposure at a stored level
+   double PlannedPeakStandingAtLevel(const int level_index)
+   {
+    if(level_index<0) return 0.0;
+    if(ArraySize(LotsCum)<=0 && StartLots>0.0)
+    {
+     BuildRawLots(StartLots);
+     ScaleRawLots();
+     BuildNormalizedLots();
+     BuildCumulativeLots(LotsNorm);
+    }
+    int n=ArraySize(LotsCum);
+    if(n<=0) return 0.0;
+    int idx=level_index;
+    if(idx>=n) idx=n-1;
+    double planned=LotsCum[idx];
+    if(!MathIsValidNumber(planned) || planned<0.0) planned=0.0;
+    return planned;
+   }
+//---------------------- locate the stored level corresponding to the active retrace price
+   int FindRetraceLevelIndex(const double level_price)
+   {
+    if(!(level_price>0.0) || !MathIsValidNumber(level_price)) return -1;
+
+    double eps=SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+    if(!(eps>0.0) || !MathIsValidNumber(eps)) eps=_Point;
+    if(!(eps>0.0) || !MathIsValidNumber(eps)) eps=1e-8;
+    eps*=2.0;
+
+    int best=-1;
+    double bestDiff=DBL_MAX;
+    for(int i=0; i<Level_Count; i++)
+    {
+     double diff=MathAbs(TradeLevels[i].price_level-level_price);
+     if(diff<=eps && diff<bestDiff)
+     {
+      best=i;
+      bestDiff=diff;
+     }
+    }
+    return best;
+   }
+//---------------------- dynamic next deeper lot for Smart Peak mode
+   double CalcNextLotsPeakSmart()
+   {
+    double standing=GetStandingLots(true);
+    if(!Traded)
+    {
+     standing=0.0;
+     for(int i=0; i<Level_Count; i++)
+        if(TradeLevels[i].lots>0.0) standing+=TradeLevels[i].lots;
+    }
+
+    int N=(Max_Seq_Trades>0) ? Max_Seq_Trades : 1;
+    int idx=MathMin(Level_Count,N-1);
+    double planned=PlannedPeakStandingAtLevel(idx);
+    double nextLots=planned-standing;
+
+    if(nextLots>0.0 && Lots_Max_Cum>0.0)
+    {
+     double remaining=StartLots*Lots_Max_Cum-standing;
+     if(remaining<=0.0) return 0.0;
+     if(nextLots>remaining) nextLots=remaining;
+    }
+    if(nextLots>0.0 && Lots_Max>0.01)
+    {
+     double tradeCap=Lots_Max*StartLots;
+     if(nextLots>tradeCap) nextLots=tradeCap;
+    }
+    return NormalizedLots(nextLots);
+   }
+//---------------------- projected adverse loss after a Smart Peak positive add
+   double ProjectedPeakSmartRemainingLoss(const int new_level_index,const double projected_standing)
+   {
+    double perUnit=PriceValuePerPointPerLot();
+    if(perUnit<=0.0 || !MathIsValidNumber(perUnit)) return DBL_MAX;
+
+    double base_grid=(Size_Grid==1234.5) ? GetSize(GRID) : Size_Grid;
+    double standing=projected_standing;
+    if(standing<0.0 || !MathIsValidNumber(standing)) standing=0.0;
+
+    double loss=0.0;
+    for(int i=new_level_index+1; i<Max_Seq_Trades; i++)
+    {
+     double d=GetSize(GRID_VALID,i,base_grid);
+     if(d<0.0) d=-d;
+     loss += d*perUnit*standing;
+     standing=PlannedPeakStandingAtLevel(i);
+    }
+    return loss;
+   }
+//---------------------- live MLPS guard for Smart Peak positive exposure adds
+   bool AllowPeakSmartPositiveAdd(const double lots_to_add)
+   {
+    if(Mode_Lots_Prog!=Lots_Prog_PeakSmart || lots_to_add<=0.0) return true;
+    if(Risk<=0.0)
+    {
+     Print(Desc,": Smart Peak add blocked: Risk/MLPS > 0 is required for live MLPS gating.");
+     return false;
+    }
+    if(EnforceSequenceMLPS("positive add")) return false;
+
+    double standing=GetStandingLots(true);
+    if(!Traded)
+    {
+     standing=0.0;
+     for(int i=0; i<Level_Count; i++)
+        if(TradeLevels[i].lots>0.0) standing+=TradeLevels[i].lots;
+    }
+    standing += lots_to_add;
+
+    double perUnit=PriceValuePerPointPerLot();
+    double spread=MathAbs(SymbolInfoDouble(_Symbol,SYMBOL_ASK)-SymbolInfoDouble(_Symbol,SYMBOL_BID));
+    if(spread<=0.0 || !MathIsValidNumber(spread)) spread=MathAbs(ask-bid);
+
+    double projectedPL=CurrentSequencePL()-(spread*perUnit*lots_to_add);
+    double projectedLoss=ProjectedPeakSmartRemainingLoss(Level_Count,standing);
+    double projectedWorstPL=projectedPL-projectedLoss;
+    double tolerance=MathMax(1.0,Risk*0.01);
+    if(projectedWorstPL < -Risk-tolerance)
+    {
+     Print(Desc,": Smart Peak add blocked by MLPS gate. ProjectedWorstPL=",DoubleToString(projectedWorstPL,2),
+           " Risk=-",DoubleToString(Risk,2),
+           " Lots=",DoubleToString(lots_to_add,2),
+           " Standing=",DoubleToString(standing,2));
+     return false;
+    }
+    return true;
+   }
+//---------------------- close excess Smart Peak exposure as prior levels are recrossed
+   bool HandlePeakSmartRetrace(double price)
+   {
+    if(Virtual || !Active || !Traded || Mode_Lots_Prog!=Lots_Prog_PeakSmart || Peak_Smart_Release_PC<=0.0 || Level_Count<2)
+       return true;
+    if(EnforceSequenceMLPS("retrace")) return false;
+    if(!(Level_Retrace>0.0) || !MathIsValidNumber(Level_Retrace)) return true;
+
+    bool crossed=((dir==OP_BUY) ? (price>=Level_Retrace) : (price<=Level_Retrace));
+    if(!crossed) return true;
+
+    int retraceIdx=FindRetraceLevelIndex(Level_Retrace);
+    if(retraceIdx<0) return true;
+
+    double standing=GetStandingLots(true);
+    double planned=PlannedPeakStandingAtLevel(retraceIdx);
+    double excess=standing-planned;
+    if(excess<=0.0)
+    {
+     AdvanceRetraceLevel();
+     return true;
+    }
+
+    double sequencePL=CurrentSequencePL();
+    if(sequencePL<=0.0) return true;
+
+    double releaseFactor=MathMax(0.0,MathMin(100.0,Peak_Smart_Release_PC))*0.01;
+    double maxCloseFactor=MathMax(0.0,MathMin(100.0,Peak_Smart_Max_Close_PC))*0.01;
+    double lotsToClose=excess*releaseFactor;
+    double maxClose=standing*maxCloseFactor;
+    if(maxClose>0.0 && lotsToClose>maxClose) lotsToClose=maxClose;
+    lotsToClose=NormalizedLots(lotsToClose);
+    if(lotsToClose<=0.0)
+    {
+     AdvanceRetraceLevel();
+     return true;
+    }
+
+    double beforePL=sequencePL;
+    double closedLots=0.0;
+    if(!closeLotsPeakSmart(lotsToClose,closedLots)) return false;
+    if(closedLots<=0.0) return true;
+
+    UpdateLockTPSL(Trades_Count);
+    double afterPL=CurrentSequencePL();
+    Print(Desc,": Smart Peak harvest retrace=",DoubleToString(Level_Retrace,_Digits),
+          " planned=",DoubleToString(planned,2),
+          " standing=",DoubleToString(standing,2),
+          " excess=",DoubleToString(excess,2),
+          " closed=",DoubleToString(closedLots,2),
+          " seqPL ",DoubleToString(beforePL,2)," -> ",DoubleToString(afterPL,2));
+
+    if(GetStandingLots(true)<=0.0)
+    {
+     End_Sequence("Sequence Closed: Smart Peak harvest flattened sequence");
+     return false;
+    }
+
+    AdvanceRetraceLevel();
+    return true;
+   }
+//---------------------- find the next retrace trigger that is closer to profit
+   double FindNextRetraceLevel(double fromLevel)
+   {
+    if(Level_Count<2 || !(fromLevel>0.0) || !MathIsValidNumber(fromLevel)) return 0.0;
+
+    double eps = SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+    if(!(eps>0.0) || !MathIsValidNumber(eps)) eps = _Point;
+    if(!(eps>0.0) || !MathIsValidNumber(eps)) eps = 1e-8;
+
+    double nextLevel = 0.0;
+    bool found = false;
+    for(int i=0; i<Level_Count; i++)
+    {
+     double lvl = TradeLevels[i].price_level;
+     if(!(lvl>0.0) || !MathIsValidNumber(lvl)) continue;
+
+     if(dir==OP_BUY)
+     {
+      if(lvl > fromLevel + eps && (!found || lvl < nextLevel))
+      {
+       nextLevel = lvl;
+       found = true;
+      }
+     }
+     else if(dir==OP_SELL)
+     {
+      if(lvl < fromLevel - eps && (!found || lvl > nextLevel))
+      {
+       nextLevel = lvl;
+       found = true;
+      }
+     }
+    }
+    return found ? nextLevel : 0.0;
+   }
+//---------------------- consume the current retrace trigger and arm the next one
+   void AdvanceRetraceLevel()
+   {
+    if(!(Level_Retrace>0.0) || !MathIsValidNumber(Level_Retrace)) return;
+    Retrace_Triggered = true;
+    Level_Retrace = FindNextRetraceLevel(Level_Retrace);
+   }
+//---------------------- dynamic next deeper lot for CumPartial mode
+   double CalcNextLotsCumPartial()
+   {
+    double standing = GetStandingLots(true);
+    if(standing<=0.0) return 0.0;
+
+    int N = (Max_Seq_Trades>0) ? Max_Seq_Trades : 1;
+    int lvl = MathMin(Level_Count,N-1);
+    double w2 = (double)lvl / (double)N;
+    double w1 = 1.0 - w2;
+    double Leff = (w1*Lots_Exponent + w2*Lots_Exponent*Lots_Factor);
+
+    double nextLots = standing * (Leff - 1.0);
+    if(nextLots > 0.0 && Lots_Max_Cum>0.0)
+    {
+     double remaining = StartLots*Lots_Max_Cum - standing;
+     if(remaining <= 0.0) return 0.0;
+     if(nextLots > remaining) nextLots = remaining;
+    }
+    if(nextLots > 0.0 && Lots_Max>0.01)
+    {
+     double tradeCap = Lots_Max*StartLots;
+     if(nextLots > tradeCap) nextLots = tradeCap;
+    }
+    return NormalizedLots(nextLots);
+   }
+//---------------------- close standing volume as prior levels are recrossed
+   bool HandlePartialRetrace(double price)
+   {
+    if(Virtual || !Active || !Traded || Mode_Lots_Prog!=Lots_Prog_CumPartial || Partial_Profit_Factor<=0.0 || Level_Count<2)
+       return true;
+    if(!(Level_Retrace>0.0) || !MathIsValidNumber(Level_Retrace)) return true;
+
+    bool crossed = ((dir==OP_BUY) ? (price >= Level_Retrace) : (price <= Level_Retrace));
+    if(!crossed) return true;
+
+    double factor = MathMax(0.0,MathMin(100.0,Partial_Profit_Factor))*0.01;
+    double standing = GetStandingLots(true);
+    if(standing <= 0.0)
+    {
+     End_Sequence("Sequence Closed: No standing lots on retrace");
+     return false;
+    }
+
+    double lotsToClose = NormalizedLots(standing * factor);
+    if(lotsToClose > standing) lotsToClose = NormalizedLots(standing);
+    if(lotsToClose <= 0.0)
+    {
+     AdvanceRetraceLevel();
+     return true;
+    }
+
+    if(!closeLots(lotsToClose)) return false;
+
+    UpdateLockTPSL(Trades_Count);
+    if(GetStandingLots(true) <= 0.0)
+    {
+     End_Sequence("Sequence Closed: Partial retrace flattened sequence");
+     return false;
+    }
+
+    AdvanceRetraceLevel();
+    return true;
+   }
 //---------------------- build cumulative adverse distances (price units)
    void BuildDistances()
    {
@@ -611,8 +1555,8 @@ class SEQUENCE
      if(Virtual && Level_Count==Delay_Trade && ((dir==OP_BUY&&!Seq_Buy.Active) || (dir==OP_SELL&&!Seq_Sell.Active)))
      {
       bool ret=false;
-      if     (dir==OP_BUY &&MustCheck_Buy)   ret=Seq_Buy.Add_Level(ask);
-      else if(dir==OP_SELL&&MustCheck_Sell)  ret=Seq_Sell.Add_Level(bid);
+      if     (dir==OP_BUY &&MustCheck_Buy && DashboardEntryAllowed(OP_BUY))    ret=Seq_Buy.Add_Level(ask);
+      else if(dir==OP_SELL&&MustCheck_Sell&& DashboardEntryAllowed(OP_SELL))   ret=Seq_Sell.Add_Level(bid);
       if(ret) End_Sequence("Real Sequence Start");
       return false;
      }
@@ -622,6 +1566,10 @@ class SEQUENCE
      if(Size_TP  ==1234.5) Size_TP   = GetSize(OP_TP);
      if(Size_SL  ==1234.5) Size_SL   = GetSize(OP_SL);
      if(Size_TSL ==1234.5) Size_TSL  = GetSize(TSL);
+     if(EnforceSequenceMLPS("add level")) return false;
+
+     bool   hadPriorLevel = (Level_Count>0);
+     double prevLevel     = Level_Last;
      
      double Lots_Calc=0.0; double Lots_Delayed=0.0;
      
@@ -632,15 +1580,20 @@ class SEQUENCE
     //else if(Mode_Lots==PercentageRisk) {return (Risk*0.01*AccountInfoDouble(ACCOUNT_EQUITY))/((Size_SL/_Point)*SymbolInfoDouble(Symbol(),SYMBOL_TRADE_TICK_VALUE));}
       else if(Mode_Lots==RiskperSeq)     Lots_Calc = StartLots = SolveStartLotsByRisk(Risk);
       
-      BuildRawLots(StartLots); ScaleRawLots(); BuildNormalizedLots();
+      BuildRawLots(StartLots); ScaleRawLots(); BuildNormalizedLots(); BuildCumulativeLots(LotsNorm);
      }
    //else {Lots_Calc = TradeLevels[Level_Count-1].lots*Lots_Exponent;}//TradeLevels[0].lots*(MathPow(Lot_Exponent,Level_Count));
      else
      {
-      //if(Level_Count>=ArraySize(LotsNorm)) Level_Count=ArraySize(LotsNorm)-1;
-      int idx = MathMin(Level_Count, ArraySize(LotsNorm)-1);
-    //Lots_Calc = LotsNorm[Level_Count];//Level_Lots(Level_Count);
-      Lots_Calc = LotsNorm[idx];
+      if(Mode_Lots_Prog==Lots_Prog_CumPartial)      Lots_Calc = CalcNextLotsCumPartial();
+      else if(Mode_Lots_Prog==Lots_Prog_PeakSmart)  Lots_Calc = CalcNextLotsPeakSmart();
+      else
+      {
+       //if(Level_Count>=ArraySize(LotsNorm)) Level_Count=ArraySize(LotsNorm)-1;
+       int idx = MathMin(Level_Count, ArraySize(LotsNorm)-1);
+     //Lots_Calc = LotsNorm[Level_Count];//Level_Lots(Level_Count);
+       Lots_Calc = LotsNorm[idx];
+      }
      }
      Lots_Calc = NormalizedLots(Lots_Calc);
      //Print("Level="+(Level_Count+1)+" LotsCalc="+DoubleToString(Lots_Calc,3)+" ");
@@ -662,6 +1615,7 @@ class SEQUENCE
        TradeLevels[Level_Count-1].sl          = 0.0;
        TradeLevels[Level_Count-1].tp          = 0.0;
        TradeLevels[Level_Count-1].ticket      = 0;             // virtual tag
+       if(Mode_Lots_Prog==Lots_Prog_PeakSmart && hadPriorLevel) {Level_Retrace=prevLevel; Retrace_Triggered=false;}
        UpdateLockTPSL(Trades_Count);                           // refresh Lock/TP/SL
        HLineCreate(0,Desc_lvl,0,Level_New,(dir==OP_BUY)?clrBlue:C'225,68,29',STYLE_DOT,1,true,false,false,0);
        Print(Desc_lvl,": Price=",DoubleToString(Level_New,Digits())," Partial‑Closed Lot=",DoubleToString(lotsToCut,2));
@@ -680,11 +1634,18 @@ class SEQUENCE
      //-----------------------------------------------------------------
      if(!Virtual && Level_Count>=MathAbs(Delay_Trade_Live))
      { //int oppDir = (dir == OP_BUY) ? POSITION_TYPE_SELL : POSITION_TYPE_BUY;
-       double LotsToBeSent=(Lots_Calc>0)?MathMax(Lots_Calc,Lots_Delayed):Lots_Calc;
-       
-       if(LotsToBeSent>(Lots_Max*StartLots) && Lots_Max>0.01) LotsToBeSent=Lots_Max*StartLots;
-       
-       if(OpenPosition(dir,MAGIC1,LotsToBeSent,Level_SL,Size_SL,Size_TP,Desc_lvl))
+     double LotsToBeSent=(Lots_Calc>0)?MathMax(Lots_Calc,Lots_Delayed):Lots_Calc;
+      if((Mode_Lots_Prog==Lots_Prog_CumPartial || Mode_Lots_Prog==Lots_Prog_PeakSmart) && MathAbs(LotsToBeSent)<SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN))
+      {
+       Print(Desc_lvl,": Dynamic next lots below broker minimum");
+       return false;
+      }
+
+      if(LotsToBeSent>(Lots_Max*StartLots) && Lots_Max>0.01) LotsToBeSent=Lots_Max*StartLots;
+      if(LotsToBeSent>0.0 && !AllowPeakSmartPositiveAdd(LotsToBeSent)) return false;
+      if(BiasRescueActive && LotsToBeSent>0.0 && !AllowBiasRescuePositiveAdd(LotsToBeSent)) return false;
+
+      if(OpenPosition(dir,MAGIC1,LotsToBeSent,Level_SL,Size_SL,Size_TP,Desc_lvl))
        {
         if(!Active) Print(Desc+" Sequence Started @ "+DoubleToString(Level_New,_Digits));
         if(!Traded) {Sequences++; }//FirstTradeEquity=AccountInfoDouble(ACCOUNT_EQUITY);}
@@ -696,6 +1657,9 @@ class SEQUENCE
         TradeLevels[Level_Count-1].sl          = Level_SL = LastSL;
         TradeLevels[Level_Count-1].tp          = LastTP;
         TradeLevels[Level_Count-1].ticket      = LastOrderTicket;
+        if(BiasRescueActive && Lots_Order>0.0) BiasRescuePositiveAdds++;
+        if(Mode_Lots_Prog==Lots_Prog_PeakSmart && hadPriorLevel) {Level_Retrace=prevLevel; Retrace_Triggered=false;}
+        if(Mode_Lots_Prog==Lots_Prog_CumPartial && hadPriorLevel && !Retrace_Triggered) Level_Retrace = prevLevel;
         //Sleep(1000);
         UpdateLockTPSL(Trades_Count);
         HLineCreate(0,Desc_lvl,0,Level_New,(dir==OP_BUY)?clrBlue:C'225,68,29',STYLE_DOT,1,true,false,false,0);
@@ -707,6 +1671,11 @@ class SEQUENCE
      }
      else
      {
+      if((Mode_Lots_Prog==Lots_Prog_CumPartial || Mode_Lots_Prog==Lots_Prog_PeakSmart) && MathAbs(Lots_Calc)<SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN))
+      {
+       Print(Desc_lvl,": Dynamic next lots below broker minimum");
+       return false;
+      }
       if(!Active) Print(Desc+" Sequence Started @ "+DoubleToString(Level_New,_Digits));
       Active=true;
       Level_Count = ArrayResize(TradeLevels,Level_Count+1,Max_Seq_Levels);
@@ -715,6 +1684,8 @@ class SEQUENCE
       TradeLevels[Level_Count-1].lots        = Lots_Calc;//GetNormalizedLots(Lots_Calc);
     //TradeLevels[Level_Count-1].sl          = 0.0;
       TradeLevels[Level_Count-1].tp          = (dir==OP_BUY)?NormalizeDouble(ask+Size_TP,_Digits):NormalizeDouble(bid-Size_TP,_Digits);
+      if(Mode_Lots_Prog==Lots_Prog_PeakSmart && hadPriorLevel) {Level_Retrace=prevLevel; Retrace_Triggered=false;}
+      if(Mode_Lots_Prog==Lots_Prog_CumPartial && hadPriorLevel && !Retrace_Triggered) Level_Retrace = prevLevel;
       UpdateLockTPSL();
       HLineCreate(0,Desc_lvl,0,Level_New,(dir==OP_BUY)?clrBlue:C'225,68,29',STYLE_DOT,1,true,false,false,0);
       Print(Desc_lvl,": Price=",DoubleToString(Level_New,_Digits)," Lots=",DoubleToString(Lots_Calc,2),(Virtual?" Virtual":" Delayed"));
@@ -772,6 +1743,13 @@ class SEQUENCE
      if     (dir==OP_BUY)  Level_Lock = Level_Entry + Size_Lock*Lock_Factor;
      else if(dir==OP_SELL) Level_Lock = Level_Entry - Size_Lock*Lock_Factor;
      Level_Lock = NormalizeDouble(Level_Lock,_Digits);
+     if(Mode_Lots_Prog==Lots_Prog_PeakSmart && Traded && !BiasRescueActive)
+     {
+      double targetLockPL=MathAbs(Size_Lock*Lock_Factor)*PriceValuePerPointPerLot()*LotsTotal;
+      double smartLock=0.0;
+      if(targetLockPL>0.0 && ComputeBiasRescueTargetPrice(targetLockPL,LotsTotal,CurrentSequencePL(),smartLock))
+         Level_Lock=smartLock;
+     }
      //Print("Level_Entry="+DoubleToString(Level_Entry,_Digits)+" Lock="+Level_Lock+" SizeLock="+DoubleToString(Size_Lock*Lock_Factor,2));
      HLineCreate(0,Desc+" LockLine",0,Level_Lock,(dir==OP_BUY)?clrBlue:C'225,68,29',STYLE_SOLID,1,false,false,false,0);
     }
@@ -808,16 +1786,41 @@ class SEQUENCE
      else {if(ObjectFind(0,Desc+" SLLine")>=0) HLineDelete(0,Desc+" SLLine");}
     }
     //------------
+    if(BiasRescueActive)
+    {
+     if(!RefreshBiasRescueLevels()) return;
+
+     if(Size_Lock!=0)
+     {
+      Level_Lock=BiasRescueBEPrice;
+      HLineCreate(0,Desc+" LockLine",0,Level_Lock,(dir==OP_BUY)?clrBlue:C'225,68,29',STYLE_SOLID,1,false,false,false,0);
+     }
+     else
+     {
+      Level_TP=BiasRescueBEPrice;
+      if(!Virtual && (!Traded||Mode_Operation==Operation_Standard))
+                                                  HLineCreate(0,Desc+" TPLine",0,Level_TP,(dir==OP_BUY)?clrBlue:C'225,68,29',STYLE_DASH,1,false,false,false,0);
+     }
+
+     double normalSL=(Size_SL!=0) ? Level_SL : 0.0;
+     Level_SL=EffectiveBiasRescueSL(normalSL);
+     HLineCreate(0,Desc+" SLLine",0,Level_SL,(dir==OP_BUY)?clrBlue:C'225,68,29',STYLE_DASHDOT,1,false,false,false,0);
+    }
+    //------------
     if(Traded)
     {
      CTrade Trade;
      for(int i=0; i<Level_Count; i++)
      {
       double Level_TP_ = (Level_TP==999999)?0:Level_TP;
-      if(PositionSelectByTicket(TradeLevels[i].ticket) && (PositionGetDouble(POSITION_TP)!=Level_TP_||PositionGetDouble(POSITION_SL)!=Level_SL) )
+      if(PositionSelectByTicket(TradeLevels[i].ticket))
       {
-       if(!Trade.PositionModify(TradeLevels[i].ticket,Level_SL,Level_TP_)) TPmodifyErrors++; TPSLmodifieds++;
+       double Level_SL_ = BiasRescueActive ? TighterBiasStop(PositionGetDouble(POSITION_SL),Level_SL) : Level_SL;
+       if(PositionGetDouble(POSITION_TP)!=Level_TP_ || PositionGetDouble(POSITION_SL)!=Level_SL_)
+       {
+        if(!Trade.PositionModify(TradeLevels[i].ticket,Level_SL_,Level_TP_)) TPmodifyErrors++; TPSLmodifieds++;
       }
+     }
      }
     }
    }
@@ -846,6 +1849,8 @@ class SEQUENCE
     int MIN_SL_DELTA=5, MIN_SPLVL=(int)MathMax((long)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL),(long)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL));
     MIN_SPLVL=MathMax(MIN_SPLVL,1); // atleast 1 point to avoid boundary errors
     //double tick = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+    if(BiasRescueActive && !BiasRescueBEProtected && IsBiasRescueBEReached() && IsBiasRescueStopLegal(BiasRescueBEPrice))
+       BiasRescueBEProtected=true;
     for(int i=0; i<Level_Count; i++)
     {
      if(dir==OP_BUY)
@@ -857,11 +1862,13 @@ class SEQUENCE
 
       if(Traded && PositionSelectByTicket(TradeLevels[i].ticket))
       {
-       double currSL=PositionGetDouble(POSITION_SL);
-       // clamp to nearest legal on every adjustment
-       double legal = NormalizeDouble(bid-MIN_SPLVL*_Point,_Digits);
-       if(SL > legal) SL = legal;
-       // min movement threshold
+        double currSL=PositionGetDouble(POSITION_SL);
+        // clamp to nearest legal on every adjustment
+        double legal = NormalizeDouble(bid-MIN_SPLVL*_Point,_Digits);
+        if(BiasRescueActive && BiasRescueSLPrice>0.0)
+           SL = TighterBiasStop(SL,BiasRescueBEProtected ? TighterBiasStop(BiasRescueSLPrice,BiasRescueBEPrice) : BiasRescueSLPrice);
+        if(SL > legal) SL = legal;
+        // min movement threshold
        double minStep = MathMax(0.0001*bid,MIN_SL_DELTA*_Point);
        // after clamping, "is SL on the legal side" is guaranteed; no need to re-check it
        if(currSL==0.0 || (SL>currSL && (SL-currSL)>=minStep))
@@ -881,10 +1888,12 @@ class SEQUENCE
 
       if(Traded && PositionSelectByTicket(TradeLevels[i].ticket))
       {
-       double currSL=PositionGetDouble(POSITION_SL);
-       // clamp to nearest legal on every adjustment
-       double legal = NormalizeDouble(ask+MIN_SPLVL*_Point,_Digits);
-       if(SL < legal) SL = legal;
+        double currSL=PositionGetDouble(POSITION_SL);
+        // clamp to nearest legal on every adjustment
+        double legal = NormalizeDouble(ask+MIN_SPLVL*_Point,_Digits);
+        if(BiasRescueActive && BiasRescueSLPrice>0.0)
+           SL = TighterBiasStop(SL,BiasRescueBEProtected ? TighterBiasStop(BiasRescueSLPrice,BiasRescueBEPrice) : BiasRescueSLPrice);
+        if(SL < legal) SL = legal;
        // min movement threshold
        double minStep = MathMax(0.0001*ask,MIN_SL_DELTA*_Point);
        // after clamping, "is SL on the legal side" is guaranteed; no need to re-check it
@@ -904,68 +1913,171 @@ class SEQUENCE
 //------------------------------------------------------------------
    bool closeLots(double lotsReq)
    {
-      const double VolMin  = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);   // ≈0.01
-      const double VolStep = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);  // ≈0.01
+      const double VolMin  = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+      const double VolStep = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
    
-      lotsReq = MathFloor((lotsReq + VolStep*0.5) / VolStep) * VolStep;     // align ▲
-      if(lotsReq < VolMin - 1e-9) return true;                              // nothing to do
+      lotsReq = MathFloor((lotsReq + VolStep*0.5) / VolStep) * VolStep;
+      if(lotsReq < VolMin - 1e-9) return true;
    
       CTrade tr;
-      int     safety = 64;                                                  // loop guard
+      int     safety = 64;
    
       while(lotsReq >= VolMin - 1e-9 && safety-- > 0)
       {
-         // ----------------------------------------------------------------
-         // 1) search exact-match ticket
          ulong pickTk  = 0;  double pickVol = 0.0;  int pickIdx = -1;
    
          for(int i = 0; i < Level_Count; i++)
          {
-            ulong tk = TradeLevels[i].ticket;   if(tk == 0) continue;
-            if(!PositionSelectByTicket(tk)) { TradeLevels[i].ticket = 0; continue; }
-            double v = PositionGetDouble(POSITION_VOLUME);                  // live size:contentReference[oaicite:1]{index=1}
+            ulong tk = (ulong)TradeLevels[i].ticket;   if(tk == 0) continue;
+            if(!PositionSelectByTicket(tk)) { TradeLevels[i].lots = 0.0; TradeLevels[i].ticket = 0; continue; }
+            double v = PositionGetDouble(POSITION_VOLUME);
             if(MathAbs(v - lotsReq) < VolStep*0.5) { pickTk=tk; pickVol=v; pickIdx=i; break; }
          }
-         // 2) smallest ticket that is larger than lotsReq
          if(pickTk == 0)
          {
             double bestDiff = DBL_MAX;
             for(int i = 0; i < Level_Count; i++)
             {
-               ulong tk = TradeLevels[i].ticket;   if(tk == 0) continue;
-               if(!PositionSelectByTicket(tk)) { TradeLevels[i].ticket = 0; continue; }
+               ulong tk = (ulong)TradeLevels[i].ticket;   if(tk == 0) continue;
+               if(!PositionSelectByTicket(tk)) { TradeLevels[i].lots = 0.0; TradeLevels[i].ticket = 0; continue; }
                double v = PositionGetDouble(POSITION_VOLUME);
                double d = v - lotsReq;
                if(d >= 0.0 && d < bestDiff) { bestDiff=d; pickTk=tk; pickVol=v; pickIdx=i; }
             }
          }
-         // 3) fallback – largest remaining ticket
          if(pickTk == 0)
          {
             for(int i = 0; i < Level_Count; i++)
             {
-               ulong tk = TradeLevels[i].ticket;   if(tk == 0) continue;
-               if(!PositionSelectByTicket(tk)) { TradeLevels[i].ticket = 0; continue; }
+               ulong tk = (ulong)TradeLevels[i].ticket;   if(tk == 0) continue;
+               if(!PositionSelectByTicket(tk)) { TradeLevels[i].lots = 0.0; TradeLevels[i].ticket = 0; continue; }
                double v = PositionGetDouble(POSITION_VOLUME);
                if(v > pickVol) { pickTk=tk; pickVol=v; pickIdx=i; }
             }
          }
-         if(pickTk == 0) break;                                             // nothing left
+         if(pickTk == 0) break;
    
          double volCut   = MathMin(lotsReq, pickVol);
                 volCut   = MathFloor((volCut + VolStep*0.5) / VolStep) * VolStep;
          bool   fullClose = (pickVol - volCut) < VolMin + 1e-9;
          if(volCut < VolMin - 1e-9) { fullClose=true; volCut=pickVol; }
          Pclosed++;
-         bool ok = fullClose ? tr.PositionClose(pickTk)                    // full close:contentReference[oaicite:2]{index=2}
-                             : tr.PositionClosePartial(pickTk, volCut);    // partial:contentReference[oaicite:3]{index=3}
+         bool ok = fullClose ? tr.PositionClose(pickTk)
+                             : tr.PositionClosePartial(pickTk, volCut);
          if(!ok) {PcloseErrors++; Print("Close error ",_LastError); return false; }
-   
+         AccumulateSequenceDealPL((ulong)tr.ResultDeal());
+
          lotsReq -= fullClose ? pickVol : volCut;
-   
-         if(fullClose) TradeLevels[pickIdx].ticket = 0;                    // mark closed
+
+         if(pickIdx >= 0)
+         {
+          double liveVol = 0.0;
+          if(!fullClose && PositionSelectByTicket(pickTk)) liveVol = PositionGetDouble(POSITION_VOLUME);
+          else if(!fullClose)                              liveVol = MathMax(0.0,pickVol-volCut);
+
+          TradeLevels[pickIdx].lots = liveVol;
+          if(fullClose || liveVol < VolMin - 1e-9)
+          {
+           TradeLevels[pickIdx].lots   = 0.0;
+           TradeLevels[pickIdx].ticket = 0;
+          }
+         }
       }
-      return (lotsReq < VolMin - 1e-9);                                     // success?
+      RefreshTicketLots();
+      return (lotsReq < VolMin - 1e-9);
+   }
+//------------------------------------------------------------------
+   bool closeLotsPeakSmart(double lotsReq,double &closedLots)
+   {
+      closedLots=0.0;
+      const double VolMin  = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);
+      const double VolStep = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+
+      lotsReq = MathFloor((lotsReq + VolStep*0.5) / VolStep) * VolStep;
+      if(lotsReq < VolMin - 1e-9) return true;
+
+      CTrade tr;
+      int safety=64;
+
+      while(lotsReq >= VolMin - 1e-9 && safety-- > 0)
+      {
+         ulong  pickTk=0;
+         double pickVol=0.0;
+         double pickProfit=0.0;
+         double pickLevel=0.0;
+         int    pickIdx=-1;
+
+         for(int i=0; i<Level_Count; i++)
+         {
+            ulong tk=(ulong)TradeLevels[i].ticket;
+            if(tk==0) continue;
+            if(!PositionSelectByTicket(tk))
+            {
+               TradeLevels[i].lots=0.0;
+               TradeLevels[i].ticket=0;
+               continue;
+            }
+
+            double v=PositionGetDouble(POSITION_VOLUME);
+            double pr=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+            if(v < VolMin - 1e-9 || pr <= 0.0) continue;
+
+            double lvl=TradeLevels[i].price_level;
+            bool better=false;
+            if(pickIdx<0) better=true;
+            else if(dir==OP_BUY  && lvl < pickLevel-_Point) better=true;
+            else if(dir==OP_SELL && lvl > pickLevel+_Point) better=true;
+            else if(MathAbs(lvl-pickLevel)<=_Point && pr>pickProfit) better=true;
+
+            if(better)
+            {
+               pickTk=tk;
+               pickVol=v;
+               pickProfit=pr;
+               pickLevel=lvl;
+               pickIdx=i;
+            }
+         }
+
+         if(pickTk==0) break;
+
+         double volCut=MathMin(lotsReq,pickVol);
+                volCut=MathFloor((volCut + VolStep*0.5) / VolStep) * VolStep;
+         bool fullClose=(pickVol-volCut) < VolMin + 1e-9;
+         if(volCut < VolMin - 1e-9) { fullClose=true; volCut=pickVol; }
+
+         Pclosed++;
+         bool ok=fullClose ? tr.PositionClose(pickTk)
+                           : tr.PositionClosePartial(pickTk,volCut);
+         if(!ok)
+         {
+            PcloseErrors++;
+            Print("Smart Peak close error ",_LastError);
+            return false;
+         }
+         AccumulateSequenceDealPL((ulong)tr.ResultDeal());
+
+         double closedVol=fullClose ? pickVol : volCut;
+         closedLots+=closedVol;
+         lotsReq-=closedVol;
+
+         if(pickIdx>=0)
+         {
+            double liveVol=0.0;
+            if(!fullClose && PositionSelectByTicket(pickTk)) liveVol=PositionGetDouble(POSITION_VOLUME);
+            else if(!fullClose)                              liveVol=MathMax(0.0,pickVol-volCut);
+
+            TradeLevels[pickIdx].lots=liveVol;
+            if(fullClose || liveVol < VolMin - 1e-9)
+            {
+               TradeLevels[pickIdx].lots=0.0;
+               TradeLevels[pickIdx].ticket=0;
+            }
+         }
+      }
+
+      RefreshTicketLots();
+      return true;
    }
 //------------------------------------------------------------------
    bool closeLots2(double lotsReq)
@@ -1089,7 +2201,7 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
     ShowPrompt("Connection not allowed!","Copy the URL below and add to"," Tools > Options > Experts > Allowed URLs.",URL_API);
     return res;
    }
-   else if(res!=200&&res!=1003) MessageBox(CharArrayToString(result, 0, -1, CP_UTF8),"Response code: "+(string)res,MB_OK);
+   else if(res!=200&&res!=1003) Print("License check HTTP response "+(string)res+": "+CharArrayToString(result, 0, -1, CP_UTF8));
    HidePrompt();
    string response_text = CharArrayToString(result);
    //Print("Result Headers: ", result_headers);
@@ -1236,6 +2348,267 @@ void HidePrompt()
    ChartRedraw();                            Sleep(10);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusSendStatus(const string status)
+  {
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
+   if(!GlobalVariableCheck("Dashboard_ChartID"))                         return;
+
+   long dashboard_cid=(long)GlobalVariableGet("Dashboard_ChartID");
+   if(dashboard_cid<=0) return;
+
+   EventChartCustom(dashboard_cid,GOAT_EVENT_CHILD_STATUS,(long)MAGIC1,(double)ChartID(),Symbol()+"|"+status);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusRollClosedBuckets(const datetime now_time)
+  {
+   datetime day_start=GoatBrokerDayStart(now_time);
+   datetime week_start=GoatBrokerWeekStart(now_time);
+
+   if(DashboardBusWeekStart==0 || week_start>DashboardBusWeekStart)
+      DashboardBusClosedPLWeekly=0.0;
+   if(DashboardBusDayStart==0 || day_start>DashboardBusDayStart)
+      DashboardBusClosedPLDaily=0.0;
+
+   DashboardBusWeekStart=week_start;
+   DashboardBusDayStart=day_start;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusRebuildClosedStats(void)
+  {
+   datetime now=TimeCurrent();
+   DashboardBusDayStart=GoatBrokerDayStart(now);
+   DashboardBusWeekStart=GoatBrokerWeekStart(now);
+   DashboardBusClosedPLDaily=0.0;
+   DashboardBusClosedPLWeekly=0.0;
+   DashboardBusClosedPLTotal=0.0;
+   DashboardBusClosedTradesTotal=0;
+
+   if(!HistorySelect(0,now)) return;
+   int total=HistoryDealsTotal();
+
+   for(int i=0;i<total;++i)
+   {
+      ulong ticket=HistoryDealGetTicket(i);
+      if(ticket==0)                                              continue;
+      if(HistoryDealGetString(ticket,DEAL_SYMBOL)!=_Symbol)      continue;
+      if(HistoryDealGetInteger(ticket,DEAL_MAGIC)!=MAGIC1)       continue;
+
+      long entry=HistoryDealGetInteger(ticket,DEAL_ENTRY);
+      if(entry!=DEAL_ENTRY_OUT && entry!=DEAL_ENTRY_OUT_BY)      continue;
+
+      long type=HistoryDealGetInteger(ticket,DEAL_TYPE);
+      if(type!=DEAL_TYPE_BUY && type!=DEAL_TYPE_SELL)            continue;
+
+      double closed_pl=HistoryDealGetDouble(ticket,DEAL_PROFIT)
+                      +HistoryDealGetDouble(ticket,DEAL_COMMISSION)
+                      +HistoryDealGetDouble(ticket,DEAL_SWAP);
+      datetime close_time=(datetime)HistoryDealGetInteger(ticket,DEAL_TIME);
+
+      DashboardBusClosedPLTotal+=closed_pl;
+      DashboardBusClosedTradesTotal++;
+      if(close_time>=DashboardBusDayStart)  DashboardBusClosedPLDaily +=closed_pl;
+      if(close_time>=DashboardBusWeekStart) DashboardBusClosedPLWeekly+=closed_pl;
+   }
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusAckCommand(const long command_id,const int ack_status)
+  {
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
+   if(MAGIC1<=0)                                                         return;
+
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_ID),(double)command_id);
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_STATUS),(double)ack_status);
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_TIME),(double)TimeCurrent());
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),(DashboardPortfolioPaused ? 1.0 : 0.0));
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK),(double)DashboardTradePermissionMask());
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE),(double)DashboardNormalizeExposurePolicyMode(DashboardExposurePolicyMode));
+   GlobalVariablesFlush();
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int DashboardBusCloseOwnPositions(int &close_errors)
+  {
+   close_errors=0;
+   int closed_positions=0;
+   CTrade m_trade;
+
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+    if(!m_position.SelectByIndex(i))                                  continue;
+     if(m_position.Symbol()!=_Symbol)                                  continue;
+     if(m_position.Magic()!=MAGIC1 && MAGIC1!=0)                       continue;
+
+     if(!m_trade.PositionClose(m_position.Ticket()))
+        close_errors++;
+     else
+        closed_positions++;
+   }
+
+   Pause_Flag=true;
+   return closed_positions;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int DashboardBusCloseScopePositions(const int scope,int &close_errors)
+  {
+   close_errors=0;
+   int closed_positions=0;
+   int clean_scope=GoatNormalizeCloseScope(scope);
+   if(!DashboardSymbolMatchesCloseScope(Symbol(),clean_scope))
+      return 0;
+
+   CTrade m_trade;
+   CPositionInfo position;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      if(!position.SelectByIndex(i))                         continue;
+      if(position.Symbol()!=_Symbol)                          continue;
+      if(position.Magic()!=MAGIC1 && MAGIC1!=0)               continue;
+
+      if(!m_trade.PositionClose(position.Ticket()))
+         close_errors++;
+      else
+         closed_positions++;
+   }
+
+   if(clean_scope==GOAT_CLOSE_SCOPE_ALL || closed_positions>0)
+      Pause_Flag=true;
+   return closed_positions;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusAckCloseCommand(const long command_id,const int ack_status,const int closed_positions,const int close_errors,const int remaining)
+  {
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
+   if(MAGIC1<=0)                                                         return;
+
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_CLOSED),(double)closed_positions);
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_ERRORS),(double)close_errors);
+   GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_ACK_REMAINING),(double)remaining);
+   DashboardBusAckCommand(command_id,ack_status);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusApplyCommand(const long command_id,const int command_type,const int command_value,const datetime expires_at)
+  {
+   if(command_id<=0) return;
+   if(command_id==DashboardPortfolioCommandIdApplied)
+   {
+      DashboardBusAckCommand(command_id,GOAT_DASH_ACK_APPLIED);
+      return;
+   }
+
+   if(expires_at>0 && TimeCurrent()>expires_at)
+   {
+      DashboardBusAckCommand(command_id,GOAT_DASH_ACK_EXPIRED);
+      return;
+   }
+
+   if(command_type==GOAT_DASH_CMD_PORTFOLIO_PAUSE)
+   {
+      DashboardPortfolioPaused=(command_value!=0);
+      DashboardPortfolioCommandIdApplied=command_id;
+      GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),(DashboardPortfolioPaused ? 1.0 : 0.0));
+      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),(DashboardPortfolioPaused ? 1.0 : 0.0));
+      DashboardBusAckCommand(command_id,GOAT_DASH_ACK_APPLIED);
+      DashboardBusSendStatus(DashboardPortfolioPaused ? "Paused" : "Active");
+      return;
+   }
+
+   if(command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE)
+   {
+      DashboardPortfolioPaused=true;
+      DashboardPortfolioCommandIdApplied=command_id;
+      GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),1.0);
+      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),1.0);
+
+      int close_errors=0;
+      int closed_positions=DashboardBusCloseOwnPositions(close_errors);
+      int remaining=FindNumberOfPositions(OP_BUYSELL,MAGIC1);
+      int ack_status=(close_errors==0 && remaining==0 ? GOAT_DASH_ACK_APPLIED : GOAT_DASH_ACK_FAILED);
+      DashboardBusAckCloseCommand(command_id,ack_status,closed_positions,close_errors,remaining);
+      DashboardBusSendStatus(remaining==0 ? "Paused" : "Close Failed");
+      return;
+   }
+
+   if(command_type==GOAT_DASH_CMD_CLOSE_SCOPE)
+   {
+      int close_scope=GoatCloseCommandScope(command_value);
+      int trade_mask=GoatCloseCommandTradeMask(command_value);
+      DashboardTradeAllowBuy=((trade_mask&GOAT_DASH_TRADE_ALLOW_BUY)!=0);
+      DashboardTradeAllowSell=((trade_mask&GOAT_DASH_TRADE_ALLOW_SELL)!=0);
+      if(close_scope==GOAT_CLOSE_SCOPE_ALL)
+      {
+         DashboardPortfolioPaused=true;
+         GlobalVariableSet(GoatPortfolioGVName("DashboardPolicyPaused"),1.0);
+         GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),1.0);
+      }
+
+      DashboardPortfolioCommandIdApplied=command_id;
+      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK),(double)DashboardTradePermissionMask());
+
+      int close_errors=0;
+      int closed_positions=DashboardBusCloseScopePositions(close_scope,close_errors);
+      int remaining=DashboardBusCountCloseScopePositions(close_scope);
+      int ack_status=(close_errors==0 && remaining==0 ? GOAT_DASH_ACK_APPLIED : GOAT_DASH_ACK_FAILED);
+      DashboardBusAckCloseCommand(command_id,ack_status,closed_positions,close_errors,remaining);
+
+      string policy_status="Active";
+      if(DashboardPortfolioPaused) policy_status="Paused";
+      else if(!DashboardTradeAllowBuy && !DashboardTradeAllowSell) policy_status="Cur Paused";
+      else if(DashboardTradeAllowBuy && !DashboardTradeAllowSell)  policy_status="Buy Only";
+      else if(!DashboardTradeAllowBuy && DashboardTradeAllowSell)  policy_status="Sell Only";
+      DashboardBusSendStatus(remaining==0 ? policy_status : "Close Failed");
+      return;
+   }
+
+   if(command_type==GOAT_DASH_CMD_TRADE_PERMISSIONS)
+   {
+      int trade_mask=command_value&(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL);
+      DashboardTradeAllowBuy=((trade_mask&GOAT_DASH_TRADE_ALLOW_BUY)!=0);
+      DashboardTradeAllowSell=((trade_mask&GOAT_DASH_TRADE_ALLOW_SELL)!=0);
+      DashboardPortfolioCommandIdApplied=command_id;
+      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK),(double)DashboardTradePermissionMask());
+      DashboardBusAckCommand(command_id,GOAT_DASH_ACK_APPLIED);
+      string policy_status="Active";
+      if(DashboardPortfolioPaused) policy_status="Paused";
+      else if(!DashboardTradeAllowBuy && !DashboardTradeAllowSell) policy_status="Cur Paused";
+      else if(DashboardTradeAllowBuy && !DashboardTradeAllowSell)  policy_status="Buy Only";
+      else if(!DashboardTradeAllowBuy && DashboardTradeAllowSell)  policy_status="Sell Only";
+      DashboardBusSendStatus(policy_status);
+      return;
+   }
+
+   if(command_type==GOAT_DASH_CMD_EXPOSURE_POLICY)
+   {
+      DashboardExposurePolicyMode=DashboardNormalizeExposurePolicyMode(command_value);
+      DashboardPortfolioCommandIdApplied=command_id;
+      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE),(double)DashboardExposurePolicyMode);
+      DashboardBusAckCommand(command_id,GOAT_DASH_ACK_APPLIED);
+      DashboardBusSendStatus(DashboardPortfolioPaused ? "Paused" : "Active");
+      return;
+   }
+
+   DashboardBusAckCommand(command_id,GOAT_DASH_ACK_REJECTED);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void DashboardBusProcessCommands(void)
+  {
+   if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return;
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD))   return;
+   if(MAGIC1<=0)                                                         return;
+
+   string cmd_id_key=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_ID);
+   if(!GlobalVariableCheck(cmd_id_key)) return;
+
+   long command_id=(long)GlobalVariableGet(cmd_id_key);
+   if(command_id<=0) return;
+
+   int command_type=(int)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_TYPE));
+   int command_value=(int)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_VALUE));
+   datetime expires_at=(datetime)GlobalVariableGet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CMD_EXPIRES));
+   DashboardBusApplyCommand(command_id,command_type,command_value,expires_at);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 int OnInit()
   {
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Initialization Start"+"================");
@@ -1273,12 +2646,22 @@ int OnInit()
      {
       dt_Fwrd_OOS = StringToTime(values[i]); Print("dt_FOOS_start:",TimeToString(dt_Fwrd_OOS,TIME_DATE));
      }
+     if(names[i]=="dt_FWD_start")
+     {
+      dt_FWD_start = StringToTime(values[i]); Print("dt_FWD_start:",TimeToString(dt_FWD_start,TIME_DATE));
+     }
+     if(names[i]=="dt_FWD_end")
+     {
+      dt_FWD_end = StringToTime(values[i]); Print("dt_FWD_end:",TimeToString(dt_FWD_end,TIME_DATE));
+     }
     }
     if(MQLInfoInteger(MQL_TESTER))
     {
      if(dt_Back_OOS!=0 && dt_Back_OOS<TimeCurrent()) {Print("EXPORT: dt_BOOS_end:"  +TimeToString(dt_Back_OOS,TIME_DATE)+" must be after test start date"); return(INIT_PARAMETERS_INCORRECT);}
      if(dt_Fwrd_OOS!=0 && dt_Fwrd_OOS<TimeCurrent()) {Print("EXPORT: dt_FOOS_start:"+TimeToString(dt_Fwrd_OOS,TIME_DATE)+" must be after test start date"); return(INIT_PARAMETERS_INCORRECT);}
      if(dt_Back_OOS!=0 && dt_Fwrd_OOS!=0 && dt_Fwrd_OOS<=dt_Back_OOS) {Print("EXPORT: dt_FOOS_start:"+TimeToString(dt_Fwrd_OOS,TIME_DATE)+" must be after dt_BOOS_end"); return(INIT_PARAMETERS_INCORRECT);}
+     if((dt_FWD_start!=0 || dt_FWD_end!=0) && (dt_FWD_start==0 || dt_FWD_end==0)) {Print("EXPORT: dt_FWD_start and dt_FWD_end must both be provided"); return(INIT_PARAMETERS_INCORRECT);}
+     if(dt_FWD_start!=0 && dt_FWD_end!=0 && dt_FWD_end<dt_FWD_start) {Print("EXPORT: dt_FWD_end:"+TimeToString(dt_FWD_end,TIME_DATE)+" must be after dt_FWD_start"); return(INIT_PARAMETERS_INCORRECT);}
     }
    }
    else if(Mode=="") Strat=EA_Desc; Print("Strategy: "+Strat);
@@ -1482,33 +2865,54 @@ int OnInit()
       if(!ChartGetInteger(0,CHART_IS_MAXIMIZED,0)) Sleep(999);
       int chartWidth  = (int)ChartGetInteger(ChartID(), CHART_WIDTH_IN_PIXELS);
       int chartHeight = (int)ChartGetInteger(ChartID(), CHART_HEIGHT_IN_PIXELS);
-      double marginW = 0.05*chartWidth, usableWidth =chartWidth -(2.0*marginW), scaleW=usableWidth/(double)DWidth;
-      double marginH = 0.05*chartHeight,usableHeight=chartHeight-(2.0*marginH), scaleH=usableHeight/(double)DHeight;
-      double scaleFactor,scaleMargin = MathMin(scaleW, scaleH);
-      if(scaleMargin<1.0) scaleFactor = 1.0; else scaleFactor = MathMin(scaleMargin, 1.5);
-      int newWidth =(int)(DWidth *scaleFactor), left=(newWidth  >= chartWidth  ? 0 : (chartWidth  - newWidth ) / 2);
-      int newHeight=(int)(DHeight*scaleFactor), top =(newHeight >= chartHeight ? 0 : (chartHeight - newHeight) / 2);
+      bool preserveBatchStudioSize=(Mode_Operation==Operation_Batch && GlobalVariableGet("BatchOnGoing")!=0.0);
+      int baseWidth=(Mode_Operation==Operation_Dash ? MathMax(DWidth,1500) : DWidth);
+      int baseHeight=DHeight;
+      double marginW = 0.05*chartWidth, usableWidth =chartWidth -(2.0*marginW), scaleW=usableWidth/(double)baseWidth;
+      double marginH = 0.05*chartHeight,usableHeight=chartHeight-(2.0*marginH), scaleH=usableHeight/(double)baseHeight;
+      double scaleFactor=MathMin(MathMin(scaleW,scaleH),1.5);
+      if(scaleFactor<=0.0) scaleFactor=1.0;
+      int newWidth =MathMin((int)MathRound(baseWidth *scaleFactor),(int)MathRound(usableWidth));
+      int newHeight=(int)MathRound(baseHeight*scaleFactor);
+      if(preserveBatchStudioSize)
+      {
+       int savedWidth=(int)MathRound(GlobalVariableGet("GOAT_OPT_STUDIO_WIDTH"));
+       int savedHeight=(int)MathRound(GlobalVariableGet("GOAT_OPT_STUDIO_HEIGHT"));
+       if(savedWidth<=0) savedWidth=baseWidth;
+       if(savedHeight<=0) savedHeight=baseHeight;
+       newWidth=savedWidth;
+       newHeight=savedHeight;
+       scaleFactor=(double)newHeight/(double)baseHeight;
+      }
+      int left=(newWidth >= (int)MathRound(usableWidth) ? (int)MathRound(marginW) : (chartWidth  - newWidth ) / 2);
+      if(preserveBatchStudioSize && newWidth>chartWidth) left=0;
+      int dialogFramePadding=MathMax(28,(int)MathRound(newHeight*0.06));
+      int dialogOuterHeight=newHeight+dialogFramePadding;
+      int top =(dialogOuterHeight >= chartHeight ? 0 : (chartHeight - dialogOuterHeight) / 2);
       Font_Size=(int)MathCeil(Font_Size_Base*scaleFactor/dpiFactor); //Font_Size_Header=Font_Size+3;
+      if(Mode_Operation==Operation_Batch) Font_Size=(int)MathMax(Font_Size,8);
+      if(preserveBatchStudioSize)
+      {
+       int savedFont=(int)MathRound(GlobalVariableGet("GOAT_OPT_STUDIO_FONT"));
+       if(savedFont>0) Font_Size=savedFont;
+      }
       Print("ChartWidth="+(string)chartWidth+" ChartHeight="+(string)chartHeight);
-      Print("BaseWidth="+(string)DWidth+" BaseHeight="+(string)DHeight+" NewWidth="+(string)newWidth+" NewHeight="+(string)newHeight);
+      Print("BaseWidth="+(string)baseWidth+" BaseHeight="+(string)baseHeight+" NewWidth="+(string)newWidth+" NewHeight="+(string)newHeight+" DialogOuterHeight="+(string)dialogOuterHeight);
       Print("BaseFontSize="+(string)Font_Size_Base+" ScaleFactor="+DoubleToString(scaleFactor,2)+" DPIfactor="+(string)dpiFactor+" FontSize="+(string)Font_Size);
       Sleep(100); ObjectsDeleteAll(ChartID(),0); Sleep(100);
       if(Mode_Operation==Operation_Batch)
       {
        TesterDialog.SetFlags(Key,EA_Name,Server,Font_Size,newWidth,newHeight);
-       if(!TesterDialog.Create(ChartID(),"StrategyTesterGUI",0, left,top,left+newWidth,top+newHeight)) {Alert("Tester GUI creation Failed, please try again."); return(INIT_FAILED);}
+       if(!TesterDialog.Create(ChartID(),"StrategyTesterGUI",0, left,top,left+newWidth,top+dialogOuterHeight)) {Alert("Tester GUI creation Failed, please try again."); return(INIT_FAILED);}
        GUI_BG_Display();
        Sleep(100); TesterDialog.Run(); Sleep(100);
        return (INIT_SUCCEEDED);
       }
+      bool fresh_dashboard_launch=false;
+      bool resume_dashboard_launch=false;
       if(Mode_Operation==Operation_Dash)
       {
        //ChartNavigate(0,CHART_BEGIN);
-       if(GlobalVariableCheck("Dashboard_ChartID")) 
-       {
-        if(MessageBox("There might another Dashboard instance running which can cause Problems.\n""Do you want to continue ?","Duplicate Dashboard",MB_YESNO|MB_ICONWARNING)==IDNO)
-        {ShowPrompt("Duplicate Dashboard","","Ensure that no other Dashboard is running.",""); Sleep(10000); return(INIT_FAILED); ExpertRemove();}
-       }
        if(ChartID() != ChartFirst())
        {
         int ret=MessageBox("Dashboard mode must run on the first/oldest chart of the terminal for proper navigation and deployment.\nThis is not the first/oldest chart."+
@@ -1527,13 +2931,47 @@ int OnInit()
         else {ShowPrompt("Wrong Chart Position"," ","Open Dashboard on the first/oldest chart.",""); Sleep(10000); return(INIT_FAILED); ExpertRemove();}
        }
        DashboardDialog.SetFlags(Key,EA_Name,Server,version_,Font_Size,ChartID());
-       int SetsTotal=DashboardDialog.LoadSetFiles();
-       if(SetsTotal<=0) {Alert("No valid .set files found."); return(INIT_FAILED);}
+       if(DashboardDialog.DashboardStateExists())
+       {
+        string prompt="A previously deployed dashboard configuration was found for this terminal.\n\n"
+                     +"Yes = resume the saved dashboard.\n"
+                     +"No = deploy a new dashboard and delete the old configuration.\n"
+                     +"Cancel = abort dashboard launch.";
+        int resume_ret=MessageBox(prompt,"Dashboard Resume",MB_YESNOCANCEL|MB_ICONQUESTION|MB_DEFBUTTON1);
+        if(resume_ret==IDYES)
+           resume_dashboard_launch=true;
+        else if(resume_ret==IDNO)
+        {
+           GoatDeleteDashboardBusData();
+           DashboardDialog.DeleteDashboardConfig();
+           fresh_dashboard_launch=true;
+        }
+        else
+        {
+           ShowPrompt("Dashboard Launch Cancelled","","The saved dashboard configuration was left untouched.","");
+           Sleep(10000);
+           return(INIT_FAILED);
+           ExpertRemove();
+        }
+       }
+
+       int SetsTotal=(resume_dashboard_launch ? DashboardDialog.LoadDashboardConfig() : DashboardDialog.LoadSetFiles());
+       if(SetsTotal<=0)
+       {
+        if(resume_dashboard_launch) Alert("Saved dashboard configuration could not be loaded.");
+        else                        Alert("No valid .set files found.");
+        return(INIT_FAILED);
+       }
+       if(!resume_dashboard_launch)
+          DashboardDialog.ResetPortfolioTrackingState();
+       if(fresh_dashboard_launch) DashboardDialog.DeleteDashboardConfig();
        ChartSetInteger(0, CHART_EVENT_MOUSE_WHEEL, true);
+       ChartSetInteger(0, CHART_MOUSE_SCROLL, false);
        if(!DashboardDialog.Create(ChartID(),Key+"_Dashboard",0,SetsTotal,left,top,newWidth,newHeight,(int)usableHeight))
        {Alert("Dashboard GUI creation Failed, please try again."); return INIT_FAILED;}
        GUI_BG_Display();
        GlobalVariableSet("Dashboard_ChartID",(double)ChartID());
+       GlobalVariablesFlush();
        Sleep(100); DashboardDialog.Run(); Sleep(100);
        return (INIT_SUCCEEDED);
       }
@@ -1576,6 +3014,29 @@ int OnInit()
    if(Mode_Lots == FixedLots)  Lots = Lots_Input;
    if(Mode_Lots == ScaledLots) Lots = Lots_Input/(AccountInfoDouble(ACCOUNT_EQUITY)/1000);
    if(Mode_Lots == RiskperSeq && Risk<10) {Alert("Initialization Stopped Manually: You have selected Risk per Sequence but your Risk Amount is too low."); return INIT_PARAMETERS_INCORRECT;}
+   if(Sequence_MLPS_Hard_Close && Risk<10.0) {Alert("Initialization Failed: Sequence MLPS hard close requires Risk/MLPS amount of at least 10."); return INIT_PARAMETERS_INCORRECT;}
+   if(Mode_Lots_Prog==Lots_Prog_PeakSmart)
+   {
+    if(Risk<10.0)
+    {
+     Alert("Initialization Failed: Smart Peak requires Risk/MLPS amount of at least 10.");
+     return INIT_PARAMETERS_INCORRECT;
+    }
+    if(Peak_Smart_Release_PC<0.0 || Peak_Smart_Release_PC>100.0 || Peak_Smart_Max_Close_PC<0.0 || Peak_Smart_Max_Close_PC>100.0)
+    {
+     Alert("Initialization Failed: Smart Peak inputs must use 0-100 percent ranges.");
+     return INIT_PARAMETERS_INCORRECT;
+    }
+   }
+   if(Bias_Exit_Max_Exposure_Adds<-1) {Alert("Initialization Failed: Smart Rescue max positive adds cannot be less than -1."); return INIT_PARAMETERS_INCORRECT;}
+   if(Mode_Bias_Exit==BiasExit_SmartRescue)
+   {
+    if(Mode_Lots!=RiskperSeq || Risk<=0.0)
+    {
+     Alert("Initialization Failed: Smart Rescue requires Risk per Sequence lot sizing and Risk > 0.");
+     return INIT_PARAMETERS_INCORRECT;
+    }
+   }
 //-------------------------------------------------------------------------
    if(Mode_RRR!=RRR_Disabled) // RRR is enabled
    {
@@ -1695,18 +3156,40 @@ int OnInit()
     MathSrand(GetTickCount());//*TimeLocal());
   //randPF=(double)(MathRand()%1000)/1000.0;             // 0‥0.999
     randA =(double)(GetTickCount()%1000)/1000;
-    if(MAGIC1==0) MAGIC1 = MathRand()+9+ChartWindowsHandle(0);
-    if(MAGIC2==0) MAGIC2 = MathRand()+9+ChartWindowsHandle(0);
-    
-                                Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
-    if(MathAbs(Delay_Trade)>0) {Seq_Buy_Virtual.Init(OP_BUY,true); Seq_Sell_Virtual.Init(OP_SELL,true);}
-    if(GlobalVariableCheck("Dashboard_ChartID"))
-    {
-    // ButtonCreate(0,Key+"_BackToDB_"+(string)MAGIC1,0,2*INDENT_HORI+PANEL_WIDTH,INDENT_VERT,150,25,CORNER_LEFT_UPPER,"Back to Dashboard","Arial Bold",Font_Size,
-    //                                                                                                                 clrWhite,C'15,23,42',clrWhite,false,false,false,false,0);
-    // ObjectSetInteger(0,Key+"_BackToDB_"+(string)MAGIC1,OBJPROP_BORDER_TYPE,BORDER_SUNKEN);
-     GlobalVariableSet(Symbol()+"_"+IntegerToString(MAGIC1)+"_New",(double)MAGIC1);
-    }
+    long restored_magic=0;
+    bool restored_magic_found=GoatFindMagicByCid(Symbol(),ChartID(),restored_magic);
+    if(restored_magic_found)
+       MAGIC1=(int)restored_magic;
+     if(MAGIC1==0) MAGIC1 = MathRand()+9+ChartWindowsHandle(0);
+     if(MAGIC2==0) MAGIC2 = MathRand()+9+ChartWindowsHandle(0);
+     if(GlobalVariableCheck(GoatPortfolioGVName("DashboardPolicyPaused")))
+        DashboardPortfolioPaused=(GlobalVariableGet(GoatPortfolioGVName("DashboardPolicyPaused"))>0.5);
+     string trade_mask_key=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK);
+     if(GlobalVariableCheck(trade_mask_key))
+     {
+        int trade_mask=((int)GlobalVariableGet(trade_mask_key))&(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL);
+        DashboardTradeAllowBuy=((trade_mask&GOAT_DASH_TRADE_ALLOW_BUY)!=0);
+        DashboardTradeAllowSell=((trade_mask&GOAT_DASH_TRADE_ALLOW_SELL)!=0);
+     }
+     string exposure_mode_key=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE);
+     if(GlobalVariableCheck(exposure_mode_key))
+        DashboardExposurePolicyMode=DashboardNormalizeExposurePolicyMode((int)GlobalVariableGet(exposure_mode_key));
+     else if(GlobalVariableCheck(GoatPortfolioGVName("DashboardExposurePolicyMode")))
+        DashboardExposurePolicyMode=DashboardNormalizeExposurePolicyMode((int)GlobalVariableGet(GoatPortfolioGVName("DashboardExposurePolicyMode")));
+
+                                  Seq_Buy.Init(OP_BUY,false);        Seq_Sell.Init(OP_SELL,false);
+     if(MathAbs(Delay_Trade)>0) {Seq_Buy_Virtual.Init(OP_BUY,true); Seq_Sell_Virtual.Init(OP_SELL,true);}
+     DashboardBusRebuildClosedStats();
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CID),(double)GoatTruncateCidValue(ChartID()));
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_PAUSED),(DashboardPortfolioPaused ? 1.0 : 0.0));
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK),(double)DashboardTradePermissionMask());
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_EXPOSURE_MODE),(double)DashboardNormalizeExposurePolicyMode(DashboardExposurePolicyMode));
+     if(GlobalVariableCheck("Dashboard_ChartID") && !restored_magic_found)
+     {
+        GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_MAGIC),(double)MAGIC1);
+        DashboardBusSendStatus("Deploying");
+     }
+    GlobalVariablesFlush();
    }
 //-------------------------------------------------------------------------
  //if(Mode_Operation==Operation_Export)
@@ -1717,7 +3200,7 @@ int OnInit()
     Date_Start = TimeToString(TimeCurrent(),TIME_DATE);
     if(dt_Back_OOS!=0) dt_BOOS_end = dt_Back_OOS;
     
-    FileCSV_Name="TEMP"+"\\"+EA_Name+"-"+Server+"\\"+Strat+"\\"+Symbol()+"\\CSV+SET\\"+EA_Name+" "+Symbol()+","+TFToString(Period())+" "+Date_Start;
+    FileCSV_Name="TEMP"+"\\"+EA_Name+"-"+Server+"\\"+Strat+"\\"+Symbol()+"\\CSV+SET\\"+EA_Name+" "+Symbol()+","+TFToString(Period());
     FileCSV_handle = FileOpen(FileCSV_Name+"_"+(string)MAGIC1+".csv",FILE_COMMON|FILE_CSV|FILE_WRITE,"\t");
     if(FileCSV_handle == INVALID_HANDLE)
     {
@@ -1746,7 +3229,21 @@ void OnDeinit(const int reason)
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Deinit Start"+"================");
    if(reason!=REASON_PARAMETERS && reason!=REASON_TEMPLATE && reason!=REASON_CHARTCHANGE)
    {
-      if(Mode_Operation==Operation_Dash) GlobalVariableDel("Dashboard_ChartID");
+      if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash)
+      {
+         DashboardBusSendStatus("Offline");
+         GlobalVariablesFlush();
+      }
+      if(Mode_Operation==Operation_Dash)
+      {
+         if(reason==REASON_REMOVE)
+         {
+            DashboardDialog.DeleteDashboardConfig();
+            GoatDeleteDashboardBusData();
+         }
+         GlobalVariableDel("Dashboard_ChartID");
+         ChartSetInteger(0,CHART_MOUSE_SCROLL,true);
+      }
       if(!MQLInfoInteger(MQL_VISUAL_MODE))
       {
        if(ObjectFind(0,"RectLabel") >= 0) RectLabelDelete(0,"RectLabel");
@@ -1792,34 +3289,414 @@ void OnDeinit(const int reason)
    return;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+#define SEEDFARMING_MODE "SeedFarming"
+
+bool   g_seedFarmingActive=false,g_seedFarmingCompleted=false,g_seedFarmingHeaderWritten=false,g_seedFarmingStopIssued=false;
+int    g_seedFarmingTarget=0,g_seedFarmingHandle=INVALID_HANDLE,g_seedFarmingRows=0,g_seedFarmingHealthy=0,g_seedFarmingZeroTrades=0;
+double g_seedFarmingFitnessSum=0.0,g_seedFarmingTradesSum=0.0,g_seedFarmingBestFitness=-DBL_MAX;
+string g_seedFarmingFrom="",g_seedFarmingTo="",g_seedFarmingDir="",g_seedFarmingTmpFile="",g_seedFarmingFinalFile="",g_seedFarmingBaseFile="";
+string g_seedFarmingInputNames[];
+
+string EA_DescKeyValue(string &names[],string &values[],string key,string fallback="")
+  {
+   string wanted=key; StringToLower(wanted);
+   for(int i=0;i<ArraySize(names);i++)
+   {
+    string n=names[i]; StringToLower(n);
+    if(n==wanted) return values[i];
+   }
+   return fallback;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool RefreshEA_DescModeKeys(string &names[],string &values[])
+  {
+   string parsedStrat=ExtractFunctionKeysFromInputString(EA_Desc,names,values);
+   string parsedMode=EA_DescKeyValue(names,values,"mode","");
+   if(parsedMode!="") Mode=parsedMode;
+   if(parsedStrat!="") Strat=parsedStrat;
+   return (Mode!="");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string SeedFarmingSafePart(string text)
+  {
+   string out="";
+   for(int i=0;i<StringLen(text);i++)
+   {
+    int ch=StringGetCharacter(text,i);
+    if((ch>='0' && ch<='9') || (ch>='A' && ch<='Z') || (ch>='a' && ch<='z'))
+      out+=ShortToString((short)ch);
+   }
+   if(out=="") out="NA";
+   return out;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string SeedFarmingXmlEscape(string text)
+  {
+   StringReplace(text,"&","&amp;");
+   StringReplace(text,"<","&lt;");
+   StringReplace(text,">","&gt;");
+   StringReplace(text,"\"","&quot;");
+   return text;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool SeedFarmingLooksNumeric(string value)
+  {
+   StringTrimLeft(value); StringTrimRight(value);
+   if(value=="") return false;
+   for(int i=0;i<StringLen(value);i++)
+   {
+    int ch=StringGetCharacter(value,i);
+    if((ch>='0' && ch<='9') || ch=='-' || ch=='+' || ch=='.' || ch=='e' || ch=='E') continue;
+    return false;
+   }
+   return true;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingWriteStringCell(int handle,string value)
+  {
+   FileWriteString(handle,"<Cell><Data ss:Type=\"String\">"+SeedFarmingXmlEscape(value)+"</Data></Cell>\n");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingWriteNumberCell(int handle,double value,int digits=8)
+  {
+   if(!MathIsValidNumber(value)) value=0.0;
+   FileWriteString(handle,"<Cell><Data ss:Type=\"Number\">"+DoubleToString(value,digits)+"</Data></Cell>\n");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingWriteValueCell(int handle,string value)
+  {
+   if(SeedFarmingLooksNumeric(value)) SeedFarmingWriteNumberCell(handle,StringToDouble(value),8);
+   else                              SeedFarmingWriteStringCell(handle,value);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool SeedFarmingIsOptimizedInput(string name)
+  {
+   bool enable=false;
+   long lv=0,ls=0,lstep=0,lstop=0;
+   ResetLastError();
+   if(ParameterGetRange(name,enable,lv,ls,lstep,lstop)) return enable;
+
+   double dv=0.0,ds=0.0,dstep=0.0,dstop=0.0;
+   ResetLastError();
+   if(ParameterGetRange(name,enable,dv,ds,dstep,dstop)) return enable;
+
+   return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingExtractInputs(string &params[],uint count,string &names[],string &values[])
+  {
+   ArrayResize(names,0); ArrayResize(values,0);
+   for(uint i=0;i<count;i++)
+   {
+    string param=params[i];
+    int eq=StringFind(param,"=");
+    if(eq<=0) continue;
+
+    string name=StringSubstr(param,0,eq);
+    string value=StringSubstr(param,eq+1);
+    StringTrimLeft(name);  StringTrimRight(name);
+    StringTrimLeft(value); StringTrimRight(value);
+    if(!SeedFarmingIsOptimizedInput(name)) continue;
+
+    int n=ArraySize(names);
+    ArrayResize(names,n+1); ArrayResize(values,n+1);
+    names[n]=name; values[n]=value;
+   }
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string SeedFarmingBuildBaseFile()
+  {
+   string range=(g_seedFarmingFrom!="" && g_seedFarmingTo!="" ? g_seedFarmingFrom+"-"+g_seedFarmingTo : "UnknownDates");
+   string strategy=SeedFarmingSafePart(Strat);
+   if(StringLen(strategy)>52) strategy=StringSubstr(strategy,0,52);
+   return EA_Name+" "+Symbol()+","+TFToString(Period())+" "+range+" "+strategy;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool SeedFarmingPrepareReceiver()
+  {
+   string names[],values[];
+   if(!RefreshEA_DescModeKeys(names,values) || Mode!=SEEDFARMING_MODE) return false;
+
+   string n=EA_DescKeyValue(names,values,"n",EA_DescKeyValue(names,values,"target",EA_DescKeyValue(names,values,"count","")));
+   g_seedFarmingTarget=(int)StringToInteger(n);
+   if(g_seedFarmingTarget<=0)
+   {
+    Print("SeedFarming: target frame count key n/target/count is missing or invalid in EA_Desc. EA_Desc=",EA_Desc);
+    return false;
+   }
+
+   g_seedFarmingFrom=EA_DescKeyValue(names,values,"from",EA_DescKeyValue(names,values,"fromDate",""));
+   g_seedFarmingTo  =EA_DescKeyValue(names,values,"to",  EA_DescKeyValue(names,values,"toDate",""));
+
+   g_seedFarmingActive=true;
+   g_seedFarmingCompleted=false;
+   g_seedFarmingHeaderWritten=false;
+   g_seedFarmingStopIssued=false;
+   g_seedFarmingRows=0;
+   g_seedFarmingHealthy=0;
+   g_seedFarmingZeroTrades=0;
+   g_seedFarmingFitnessSum=0.0;
+   g_seedFarmingTradesSum=0.0;
+   g_seedFarmingBestFitness=-DBL_MAX;
+   ArrayResize(g_seedFarmingInputNames,0);
+
+   g_seedFarmingDir=Key+"\\SeedFarmingXML";
+   EnsureCommonFolderTree(g_seedFarmingDir);
+   g_seedFarmingBaseFile=SeedFarmingBuildBaseFile();
+   g_seedFarmingTmpFile=g_seedFarmingDir+"\\"+g_seedFarmingBaseFile+".tmp.xml";
+   g_seedFarmingFinalFile="";
+   if(FileIsExist(g_seedFarmingTmpFile,FILE_COMMON)) FileDelete(g_seedFarmingTmpFile,FILE_COMMON);
+
+   Print("SeedFarming receiver initialized. Target frames=",g_seedFarmingTarget," tmp=",g_seedFarmingTmpFile);
+   return true;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool SeedFarmingOpenXml(string &inputNames[])
+  {
+   if(g_seedFarmingHeaderWritten) return true;
+
+   g_seedFarmingHandle=FileOpen(g_seedFarmingTmpFile,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON,'\t',CP_UTF8);
+   if(g_seedFarmingHandle==INVALID_HANDLE)
+   {
+    Print("SeedFarming: failed to create XML ",g_seedFarmingTmpFile," error=",GetLastError());
+    return false;
+   }
+
+   ArrayResize(g_seedFarmingInputNames,ArraySize(inputNames));
+   for(int i=0;i<ArraySize(inputNames);i++) g_seedFarmingInputNames[i]=inputNames[i];
+
+   string range=(g_seedFarmingFrom!="" && g_seedFarmingTo!="" ? g_seedFarmingFrom+"-"+g_seedFarmingTo : "UnknownDates");
+   string title=EA_Name+" "+Symbol()+","+TFToString(Period())+" "+range+" "+Strat;
+
+   FileWriteString(g_seedFarmingHandle,"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
+   FileWriteString(g_seedFarmingHandle,"<?mso-application progid=\"Excel.Sheet\"?>\n");
+   FileWriteString(g_seedFarmingHandle,"<Workbook xmlns=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+   FileWriteString(g_seedFarmingHandle,"xmlns:o=\"urn:schemas-microsoft-com:office:office\"\n");
+   FileWriteString(g_seedFarmingHandle,"xmlns:x=\"urn:schemas-microsoft-com:office:excel\"\n");
+   FileWriteString(g_seedFarmingHandle,"xmlns:ss=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+   FileWriteString(g_seedFarmingHandle,"xmlns:html=\"http://www.w3.org/TR/REC-html40\">\n");
+   FileWriteString(g_seedFarmingHandle,"<DocumentProperties xmlns=\"urn:schemas-microsoft-com:office:office\">\n");
+   FileWriteString(g_seedFarmingHandle,"<Title>"+SeedFarmingXmlEscape(title)+"</Title>\n");
+   FileWriteString(g_seedFarmingHandle,"<Author>GOAT SeedFarming</Author>\n");
+   FileWriteString(g_seedFarmingHandle,"<Created>"+TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS)+"</Created>\n");
+   FileWriteString(g_seedFarmingHandle,"<Server>"+SeedFarmingXmlEscape(Server)+"</Server>\n");
+   FileWriteString(g_seedFarmingHandle,"<Mode>"+SEEDFARMING_MODE+"</Mode>\n");
+   FileWriteString(g_seedFarmingHandle,"<Target>"+IntegerToString(g_seedFarmingTarget)+"</Target>\n");
+   FileWriteString(g_seedFarmingHandle,"<Strategy>"+SeedFarmingXmlEscape(Strat)+"</Strategy>\n");
+   FileWriteString(g_seedFarmingHandle,"</DocumentProperties>\n");
+   FileWriteString(g_seedFarmingHandle,"<Styles>\n");
+   FileWriteString(g_seedFarmingHandle,"<Style ss:ID=\"ce2\"><NumberFormat ss:Format=\"0.00\"/></Style>\n");
+   FileWriteString(g_seedFarmingHandle,"<Style ss:ID=\"ce13\"><NumberFormat ss:Format=\"0.000000\"/></Style>\n");
+   FileWriteString(g_seedFarmingHandle,"</Styles>\n");
+   FileWriteString(g_seedFarmingHandle,"<Worksheet ss:Name=\"Tester Optimizator Results\">\n<Table>\n<Row>\n");
+
+   const string headers[]={"Pass","Result","Profit","Expected Payoff","Profit Factor","Recovery Factor","Sharpe Ratio","Custom","Equity DD %","Trades"};
+   for(int h=0;h<ArraySize(headers);h++) SeedFarmingWriteStringCell(g_seedFarmingHandle,headers[h]);
+   for(int i=0;i<ArraySize(g_seedFarmingInputNames);i++) SeedFarmingWriteStringCell(g_seedFarmingHandle,g_seedFarmingInputNames[i]);
+   FileWriteString(g_seedFarmingHandle,"</Row>\n");
+
+   g_seedFarmingHeaderWritten=true;
+   return true;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingRequestStop()
+  {
+   if(g_seedFarmingStopIssued) return;
+   g_seedFarmingStopIssued=true;
+
+   Print("SeedFarming: target reached, stopping strategy tester.");
+   for(int i=0;i<5 && !MTTESTER::IsIdle();i++)
+   {
+    if(MTTESTER::ClickStop(30)) break;
+    Sleep(500);
+   }
+
+   if(MTTESTER::IsIdle())
+   {
+    Sleep(500);
+    TerminalClose(99);
+   }
+   else Print("SeedFarming: tester stop was requested, but idle state was not confirmed; terminal left open.");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingFinalize(const bool requestStop)
+  {
+   if(g_seedFarmingCompleted) return;
+
+   if(!g_seedFarmingHeaderWritten)
+   {
+    string emptyInputNames[];
+    SeedFarmingOpenXml(emptyInputNames);
+   }
+
+   if(g_seedFarmingHandle!=INVALID_HANDLE)
+   {
+    FileWriteString(g_seedFarmingHandle,"</Table>\n</Worksheet>\n</Workbook>\n");
+    FileClose(g_seedFarmingHandle);
+    g_seedFarmingHandle=INVALID_HANDLE;
+   }
+
+   double avgFit=(g_seedFarmingRows>0 ? g_seedFarmingFitnessSum/g_seedFarmingRows : 0.0);
+   double health=(g_seedFarmingRows>0 ? 100.0*g_seedFarmingHealthy/g_seedFarmingRows : 0.0);
+   double avgTrades=(g_seedFarmingRows>0 ? g_seedFarmingTradesSum/g_seedFarmingRows : 0.0);
+   double bestFit=(g_seedFarmingRows>0 ? g_seedFarmingBestFitness : 0.0);
+   string metrics="_N"+IntegerToString(g_seedFarmingRows)
+                 +"_AvgFit="+DoubleToString(avgFit,3)
+                 +"_Health="+DoubleToString(health,2)
+                 +"_Zero="+IntegerToString(g_seedFarmingZeroTrades)
+                 +"_AvgTrades="+DoubleToString(avgTrades,1)
+                 +"_Best="+DoubleToString(bestFit,3);
+   g_seedFarmingFinalFile=g_seedFarmingDir+"\\"+g_seedFarmingBaseFile+metrics+".xml";
+
+   if(FileIsExist(g_seedFarmingTmpFile,FILE_COMMON))
+   {
+    if(!FileMove(g_seedFarmingTmpFile,FILE_COMMON,g_seedFarmingFinalFile,FILE_COMMON|FILE_REWRITE))
+      Print("SeedFarming: failed to finalize XML rename. err=",GetLastError()," tmp=",g_seedFarmingTmpFile," final=",g_seedFarmingFinalFile);
+    else
+      Print("SeedFarming XML ready: ",g_seedFarmingFinalFile);
+   }
+
+   g_seedFarmingCompleted=true;
+   if(requestStop) SeedFarmingRequestStop();
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingWriteFrame(ulong pass,double result,double &data[],string &inputNames[],string &inputValues[])
+  {
+   if(g_seedFarmingCompleted || g_seedFarmingRows>=g_seedFarmingTarget) return;
+   if(!SeedFarmingOpenXml(inputNames)) return;
+
+   double profit  =(ArraySize(data)>0 ? data[0] : 0.0);
+   double expected=(ArraySize(data)>1 ? data[1] : 0.0);
+   double pf      =(ArraySize(data)>2 ? data[2] : 0.0);
+   double rf      =(ArraySize(data)>3 ? data[3] : 0.0);
+   double sr      =(ArraySize(data)>4 ? data[4] : 0.0);
+   double ddPc    =(ArraySize(data)>5 ? data[5] : 0.0);
+   int    trades  =(ArraySize(data)>6 ? (int)data[6] : 0);
+
+   FileWriteString(g_seedFarmingHandle,"<Row>\n");
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,(double)pass,0);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,result,8);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,profit,2);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,expected,8);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,pf,8);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,rf,8);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,sr,8);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,result,8);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,ddPc,4);
+   SeedFarmingWriteNumberCell(g_seedFarmingHandle,(double)trades,0);
+   for(int i=0;i<ArraySize(g_seedFarmingInputNames);i++)
+   {
+    string value="";
+    for(int j=0;j<ArraySize(inputNames);j++) if(inputNames[j]==g_seedFarmingInputNames[i]) {value=inputValues[j]; break;}
+    SeedFarmingWriteValueCell(g_seedFarmingHandle,value);
+   }
+   FileWriteString(g_seedFarmingHandle,"</Row>\n");
+   FileFlush(g_seedFarmingHandle);
+
+   g_seedFarmingRows++;
+   g_seedFarmingFitnessSum+=result;
+   g_seedFarmingTradesSum+=trades;
+   if(result>g_seedFarmingBestFitness) g_seedFarmingBestFitness=result;
+   if(trades>0) g_seedFarmingHealthy++;
+   else         g_seedFarmingZeroTrades++;
+
+   if(g_seedFarmingRows>=g_seedFarmingTarget) SeedFarmingFinalize(true);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingProcessFrames()
+  {
+   if(!g_seedFarmingActive || g_seedFarmingCompleted) return;
+
+   ulong pass;
+   string name;
+   long id;
+   double value;
+   double data[];
+   ResetLastError();
+
+   while(g_seedFarmingRows<g_seedFarmingTarget && FrameNext(pass,name,id,value,data))
+   {
+    if(name!=SEEDFARMING_MODE) continue;
+
+    string params[],inputNames[],inputValues[];
+    uint count=0;
+    if(!FrameInputs(pass,params,count))
+    {
+     Print("SeedFarming: FrameInputs failed for pass ",pass," error=",GetLastError());
+     continue;
+    }
+    SeedFarmingExtractInputs(params,count,inputNames,inputValues);
+    SeedFarmingWriteFrame(pass,value,data,inputNames,inputValues);
+   }
+
+   if(_LastError!=0 && _LastError!=4000) Print("SeedFarming: FrameNext error=",_LastError);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void SeedFarmingAddFrame(double fitness,double profit,double expected,double pf,double rf,double sr,double ddPc,int trades)
+  {
+   if(!MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return;
+   if(Mode!=SEEDFARMING_MODE)
+   {
+    if(StringFind(EA_Desc,SEEDFARMING_MODE)<0) return;
+    string names[],values[];
+    if(!RefreshEA_DescModeKeys(names,values) || Mode!=SEEDFARMING_MODE) return;
+   }
+
+   double payload[7];
+   payload[0]=profit;
+   payload[1]=expected;
+   payload[2]=pf;
+   payload[3]=rf;
+   payload[4]=sr;
+   payload[5]=ddPc;
+   payload[6]=(double)trades;
+
+   if(!FrameAdd(SEEDFARMING_MODE,0,fitness,payload))
+      Print("SeedFarming: FrameAdd failed. error=",GetLastError());
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool g_batchStartupAccepted=false;
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 int OnTesterInit()
   {
+   g_batchStartupAccepted=false;
    Print(EA_Name+": "+Symbol()+" Optimization Initialization.");//,TerminalInfoString(TERMINAL_DATA_PATH));
    Sleep(100);
-   if(GlobalVariableGet("BatchOnGoing")!=0)
+   bool seedFarming=SeedFarmingPrepareReceiver();
+   if(!seedFarming && GlobalVariableGet("BatchOnGoing")!=0)
    {
-    if(GlobalVariableGet("TerminalRunning")==0) GlobalVariableSet("TerminalRunning",1.0);
-    else {
-      WriteLog("INIT: ❌❌❌❌❌ Batch is running but terminal did not restart (Or you stopped last Batch abruptly), Chance of duplicate Optimization <=====>",false,Key,EA_Name,Server);
-      ShowPrompt("Optimization Error...","Batch is running but terminal did not restart!","Chance of duplicate Optimization...","");
-      //return INIT_FAILED;
-      }
+    bool terminalWasRunning=(GlobalVariableGet("TerminalRunning")!=0);
+    if(!terminalWasRunning) GlobalVariableSet("TerminalRunning",1.0);
     WriteLog("INIT: ➡️➡️➡️➡️➡️ Batch Optimization Initialized, "+Symbol()+" ➡️➡️➡️➡️➡️",false,Key,EA_Name,Server);
     ShowPrompt("Optimization running...","Do not close this chart!","Batch Running.","");
     
     string movedFiles[];
-    if(MigrateLeftOverFilesToCommon(Key,movedFiles) && ArraySize(movedFiles)>1) WriteLog("INIT: ❌ LeftOver XML(s) Found.",false,Key,EA_Name,Server);
+    if(MigrateLeftOverFilesToCommon(GoatOptReportRoot(EA_Name,Server),movedFiles,GoatOptLeftoverPath(EA_Name,Server)) && ArraySize(movedFiles)>0) WriteLog("INIT: ❌ LeftOver XML(s) Found.",false,Key,EA_Name,Server);
     
     GlobalVariableSet("TerminalRunning",1.0);
     if(UpdateBatchQueueAndWriteConfigFile(true,false,Key,EA_Name,Server))
     {
+     g_batchStartupAccepted=true;
+     if(terminalWasRunning) WriteLog("INIT: Existing batch state recovered/continued for "+Symbol()+".",false,Key,EA_Name,Server);
      GlobalVariableSet("RefreshQueue",1.0);
      WriteLog("INIT: Batch Queue updated",false,Key,EA_Name,Server);
     }
-    else WriteLog("INIT: ❌ Batch Queue update Error",false,Key,EA_Name,Server);
-    Sleep(500);
-   }
-   else ShowPrompt("Optimization running...","Do not close this chart!"," ","");
+    else
+    {
+     if(terminalWasRunning)
+     {
+      WriteLog("INIT: Batch is running but terminal state does not match the queue. Chance of duplicate Optimization.",true,Key,EA_Name,Server);
+      ShowPrompt("Optimization Error...","Batch terminal state does not match queue!","Chance of duplicate Optimization...","");
+     }
+     WriteLog("INIT: ❌ Batch Queue update Error",false,Key,EA_Name,Server);
+     GlobalVariableDel("BatchOnGoing");
+     GlobalVariableDel("TerminalRunning");
+     GlobalVariableSet("RefreshQueue",1.0);
+     return INIT_FAILED;
+    }
+     Sleep(500);
+    }
+   else if(!seedFarming) ShowPrompt("Optimization running...","Do not close this chart!"," ","");
    
    if(Mode_Opti==Opti_PF_MRFp || Mode_Opti==Opti_PF_MRF_SRp)
    {
@@ -1873,7 +3750,11 @@ double OnTester()
    double RF  = TesterStatistics(STAT_RECOVERY_FACTOR);
    double SR  = TesterStatistics(STAT_SHARPE_RATIO);        // SR
    double profit = TesterStatistics(STAT_PROFIT);
+   double expected_payoff = TesterStatistics(STAT_EXPECTED_PAYOFF);
+   double PF_raw = PF;
+   double SR_raw = SR;
    double dd     = TesterStatistics(STAT_EQUITY_DD);//TesterStatistics(STAT_EQUITY_DDREL_PERCENT);// %DD
+   double dd_pc  = DDs_PC[0]*100.0;
    double MARF = ARF/(days/21.7);
    double mean_duration = MathMean(Position_Durations);
    //File_name   = "DDs_"+Symbol()+"_"+(string)Period()+".csv";
@@ -1920,6 +3801,9 @@ double OnTester()
    string is_to   = (dt_Fwrd_OOS!=0 ? TimeToString(dt_Fwrd_OOS,TIME_DATE) : TimeToString(TimeCurrent(),TIME_DATE));
    temp="SAMPLE: "+is_from+"-"+is_to
                   +" Days="+(string)days_IS+" Trades="+(string)trd_IS+" PL="+DoubleToString(eq_IS_end-eq_IS_start,0);         Print(temp); desc+="; "+temp+"\n";
+   if(dt_FWD_start!=0 && dt_FWD_end!=0) {
+   temp="FWD:    "+TimeToString(dt_FWD_start,TIME_DATE)+"-"+TimeToString(dt_FWD_end,TIME_DATE)
+                  +" Days="+(string)days_FWD+" Trades="+(string)trd_FWD+" PL="+DoubleToString(eq_FWD_end-eq_FWD_start,0);       Print(temp); desc+="; "+temp+"\n";}
    if(dt_Fwrd_OOS!=0) {
    temp="FOOS:   "+TimeToString(dt_Fwrd_OOS,TIME_DATE)+"-"+TimeToString(TimeCurrent(),TIME_DATE)
                   +" Days="+(string)days_FOOS+" Trades="+(string)trd_FOOS+" PL="+DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY)-eq_FOOS_start,0);
@@ -2050,7 +3934,7 @@ double OnTester()
     if(FileCSV_handle != INVALID_HANDLE) {FileClose(FileCSV_handle); FileCSV_handle=INVALID_HANDLE;}
     
     string oldFile = FileCSV_Name+"_"+(string)MAGIC1+".csv";
-    string newFile = FileCSV_Name+"-"+TimeToString(TimeCurrent(),TIME_DATE); // Start from the same prefix
+    string newFile = FileCSV_Name; // Date ranges live in the exported .set header.
     string metrix =  //"_Result="  + DoubleToString(fitness,2)
                        "_Trds="  + IntegerToString(trades)
                      + "_Prf="   + DoubleToString(profit,0)
@@ -2062,8 +3946,7 @@ double OnTester()
     newFile += metrix+".csv";//Print(newFile);
     if(!FileMove(oldFile,FILE_COMMON, newFile,FILE_REWRITE|FILE_COMMON)) Print("Error renaming CSV file: ", GetLastError());
     
-    string FileSET_Name="TEMP"+"\\"+EA_Name+"-"+Server+"\\"+Strat+"\\"+Symbol()+"\\CSV+SET\\"+EA_Name+" "+Symbol()+","+TFToString(Period())+" "+Date_Start
-                                                                                            +"-"+TimeToString(TimeCurrent(),TIME_DATE)+metrix+".set";//Print(FileSET_Name);
+    string FileSET_Name=FileCSV_Name+metrix+".set";//Print(FileSET_Name);
     FileSET_handle = FileOpen(FileSET_Name,FILE_CSV|FILE_WRITE|FILE_COMMON,"\t");
     if(FileSET_handle == INVALID_HANDLE)
     {
@@ -2073,21 +3956,21 @@ double OnTester()
     else WriteSet(desc);
     ChartClose(ChartID());
    }
-   //if(!MQLInfoInteger(MQL_FORWARD))
-   {
-    if(trades==0)                      return -0.010;
-    if(trades<=1)                      return -0.007;
-    if(trades<=2)                      return -0.006;
-    if(trades<=3)                      return -0.005;
-    if(trades<=4)                      return -0.004;
-    if(trades<=5)                      return -0.003;
-    if(trades<=6)                      return -0.001;
-  //if(mean_duration>Minutes_Hi)       return -0.3;
-   }
+   double final_fitness=fitness;
+   if(trades==0)                      final_fitness=-0.010;
+   else if(trades<=1)                 final_fitness=-0.007;
+   else if(trades<=2)                 final_fitness=-0.006;
+   else if(trades<=3)                 final_fitness=-0.005;
+   else if(trades<=4)                 final_fitness=-0.004;
+   else if(trades<=5)                 final_fitness=-0.003;
+   else if(trades<=6)                 final_fitness=-0.001;
+   //if(mean_duration>Minutes_Hi)      final_fitness=-0.3;
+
+   SeedFarmingAddFrame(final_fitness,profit,expected_payoff,PF_raw,RF,SR_raw,dd_pc,trades);
 //-----------------------------------------------------------------------------------
    //if(FileIsExist(Key+"\\"+EA_Name+"-"+Server+"\\"+"WriteFlag",FILE_COMMON) && !MQLInfoInteger(MQL_OPTIMIZATION) && !MQLInfoInteger(MQL_FORWARD))
    //WriteTesterStatistics(Key+"\\"+EA_Name+"-"+Server+"\\"+"Stats");
-   return fitness;
+   return final_fitness;
   }
 //-----------------------------------------------------------------------------------
 double AdjustFitness(double fitness,int trades,double mean_duration)
@@ -2123,21 +4006,11 @@ double AdjustFitness(double fitness,int trades,double mean_duration)
  //return MathLog(fitness+1);
   }
 //-----------------------------------------------------------------------------------
-//void OnTesterPass()
-  //{
-   //ulong pass;
-   //string name;
-   //long id;
-   //double value;
-   //ushort data[];
-   
-   //if(!FrameNext(pass,name,id,value,data))   printf("Error #%i with FrameNext",GetLastError());
-   //else                                      printf("%s : new frame pass:%llu name:%s id:%lli value:%f",__FUNCTION__,pass,name,id,value);
-   
-   //string receivedData=ShortArrayToString(data);
-   //printf("Size: %i %s",ArraySize(data),receivedData);
-   //Comment(receivedData);
-  //}
+void OnTesterPass()
+  {
+   if(!g_seedFarmingActive && !SeedFarmingPrepareReceiver()) return;
+   SeedFarmingProcessFrames();
+  }
 //-----------------------------------------------------------------------------------
 void OnTesterDeinit()
   {
@@ -2146,15 +4019,34 @@ void OnTesterDeinit()
    if(FileTester_handle != INVALID_HANDLE) {FileClose(FileTester_handle);  Sleep(100);}
    FileDelete(Key+"\\"+"Tester.txt",FILE_COMMON);                          Sleep(500);
    ChartSetInteger(0, CHART_BRING_TO_TOP, true);                           Sleep(100);
+
+   bool seedFarming=g_seedFarmingActive;
+   if(!seedFarming) seedFarming=SeedFarmingPrepareReceiver();
+   if(seedFarming)
+   {
+    SeedFarmingProcessFrames();
+    SeedFarmingFinalize(false);
+    ShowPrompt("SeedFarming complete","Captured "+IntegerToString(g_seedFarmingRows)+" frame row(s).","XML ready in Common\\Files\\"+g_seedFarmingDir,"");
+    return;
+   }
    
    if(GlobalVariableGet("BatchOnGoing")!=0)
    {
+    if(!g_batchStartupAccepted)
+    {
+     WriteLog("DEINIT: ❌ Skipping batch XML migration/export because tester startup was not accepted for the active queue item.",true,Key,EA_Name,Server);
+     ShowPrompt("Batch Startup Rejected","Tester config did not match the active queue item.","Reload Optimization Studio and start batch again.","");
+     GlobalVariableDel("BatchOnGoing");
+     GlobalVariableDel("TerminalRunning");
+     GlobalVariableSet("RefreshQueue",1.0);
+     return;
+    }
     WriteLog("DEINIT: Optimization Ended, "+Symbol()+"",false,Key,EA_Name,Server);
     ShowPrompt("Optimization Ended!","Waiting a few seconds..."," ","");   Sleep(4000);
     ShowPrompt("Processing Optimization...","Migrating XML files..."," ","");
     bool error=false;
     string movedFiles[];
-    if(MigrateFilesToCommon(Key,movedFiles))
+    if(MigrateRunReportFilesToCommon(GoatOptReportRoot(EA_Name,Server),movedFiles,Key,EA_Name,Server))
     {
      if(ArraySize(movedFiles)>1)
      {
@@ -2167,8 +4059,12 @@ void OnTesterDeinit()
        WriteLog("DEINIT: ✅ XML files Combined and Analyzed.",false,Key,EA_Name,Server);
        ShowPrompt("Processing Optimization...","XML files Combined and Analyzed.","Running the top set for verification...",""); Sleep(999);
        error=!StartExporter(false);
+       double topScore=(ArraySize(xmlData.Rows)>0 ? xmlData.Rows[0].Score : 0.0);
+       GoatOptAppendItemStats(EA_Name,Server,Symbol(),Strat,(error ? "Error" : "Completed"),
+                              ArraySize(xmlData.Rows),ArraySize(xmlData.RowsUnique),topScore,ArraySize(g_allExports),
+                              "Export cycle finished");
        Print("Deleting Empty Folders...");
-       DeleteEmptyFolders("TEMP"); DeleteEmptyFolders("Exports");
+       DeleteEmptyFolders("TEMP"); DeleteEmptyFolders(GoatOptExportsPath(EA_Name,Server));
        Print("Empty Folders in TEMP and Exports, deleted.");
       }
       else {error=true; WriteLog("DEINIT: ❌ Failed to Analyze and Combine xml reports. Aborting exports",true,Key,EA_Name,Server);
@@ -2186,28 +4082,25 @@ void OnTesterDeinit()
      if(GlobalVariableGet("BatchOnGoing")!=0)
      {
       ShowPrompt("Restarting Terminal for next optimization...","Do not close this chart!","Batch Running...",""); Sleep(500);
-      WriteLog("DEINIT: ✅ Terminal restart sequence initiated...",false,Key,EA_Name,Server); Sleep(500);
-      
-      //datetime t_start = TimeCurrent();
-      for(int i=0;i<10;i++)
-      {
-       datetime LastTime = TimeCurrent();
-       Sleep(2000); TesterStop(); Sleep(2000); TesterStop(); Sleep(2000); TerminalClose(99); Sleep(9000);
-       while(TimeCurrent()-LastTime<10) Sleep(10);
-       WriteLog("DEINIT: ❌ Terminal Failed to close in 10 seconds. Retrying...",true,Key,EA_Name,Server);
-       //if((TimeCurrent()-t_start) >= 600) {WriteLog("DEINIT: ❌ Unable to close Terminal. Batch Paused...",true,Key,EA_Name,Server); TerminalClose(99); break;}
-      }
-      WriteLog("DEINIT: ❌ Unable to close Terminal. Batch Paused...",true,Key,EA_Name,Server); TerminalClose(99);
+      WriteLog("DEINIT: Terminal restart command queued; waiting for Strategy Tester idle before terminal close.",false,Key,EA_Name,Server); Sleep(500);
+      GoatBatchRequestDeferredRestart("Next optimization config prepared",Key,EA_Name,Server);
+      GoatBatchTryCloseTerminalWhenTesterIdle(Key,EA_Name,Server);
      }
      else
      {
-      ShowPrompt("Optimization Batch Completed."," "," ","");
-    //string summary = GenerateOptimizationSummary(Key+"\\"+EA_Name+"-"+Server+"\\GOAT Batch Queue."+Key, Key+"\\"+EA_Name+"-"+Server+"\\log."+Key);
-    //WriteLog("DEINIT: ➡️➡️➡️➡️➡️ Batch Summary:\n"+summary,false,Key,EA_Name,Server);
+      string batchSummary1="",batchSummary2="",batchSummary3="";
+      string batchQueueFile=GoatOptQueuePath(EA_Name,Server);
+      string batchLogFile=GoatOptLogPath(EA_Name,Server);
+      BuildOptimizationBatchPromptSummary(batchQueueFile,batchLogFile,batchSummary1,batchSummary2,batchSummary3);
+      ShowPrompt("Optimization Batch Completed.",batchSummary1,batchSummary2,batchSummary3);
+      WriteLog("DEINIT: Batch Summary: "+batchSummary1+" | "+batchSummary2+" | "+batchSummary3,false,Key,EA_Name,Server);
+      string summaryPath=GoatOptSummaryPath(EA_Name,Server);
+      if(summaryPath!="") GoatOptWriteTextFile(summaryPath,batchSummary1+"\r\n"+batchSummary2+"\r\n"+batchSummary3+"\r\n");
       WriteLog("DEINIT: 🔵🔵🔵🔵🔵 Batch Completed 🔵🔵🔵🔵🔵",true,Key,EA_Name,Server);
       GlobalVariableDel("BatchOnGoing");
-    //int ret=MessageBox("Batch Summary:\n\n"+summary+"\n\nDo you want to open logs?","Batch Complete...",MB_OKCANCEL);
-    //if(ret=IDOK) 
+      GlobalVariableDel("GOAT_OPT_STUDIO_WIDTH");
+      GlobalVariableDel("GOAT_OPT_STUDIO_HEIGHT");
+      GlobalVariableDel("GOAT_OPT_STUDIO_FONT");
      }
     }
     else
@@ -2233,12 +4126,15 @@ bool StartExporter(bool reportMode)
     double TargetDD    = StringToDouble(FetchExportSetting("TargetDD",Key,EA_Name,Server)); if(TargetDD<100) TargetDD=100;
     bool   AdjustLots  = StringToInteger(FetchExportSetting("AdjustLots",Key,EA_Name,Server))!=0;//Print(AdjustLots);
     bool   InclBackOOS = StringToInteger(FetchExportSetting("IncludeBackOOS",Key,EA_Name,Server))!=0;//Print(InclBackOOS);
+    const int EXPORT_START_ATTEMPTS = 3;
+    const int EXPORT_ERROR_ABORTS   = 2;
 
     if(!reportMode)
     {
      LogOrPrint(reportMode,"DEINIT: Running top Score Set on back history only",Key,EA_Name,Server);
      strT.fromDate=TimeToString(xmlData.startD,TIME_DATE); strT.toDate=TimeToString(xmlData.forwardD+24*60*60,TIME_DATE);
-     RunAndStoreSet(0,"Mode_Operation="+(string)OP_Standard+"\n"+"EA_Desc="+strT.Strat+"@{mode=EXPORT}"+"\n",reportMode,g_allExports,true); // Just Export enabling is required here
+     int initExportPass=RunAndStoreSet(0,"Mode_Operation="+(string)OP_Standard+"\n"+"EA_Desc="+strT.Strat+"@{mode=EXPORT}"+"\n",reportMode,g_allExports,true,EXPORT_START_ATTEMPTS); // Just Export enabling is required here
+     if(initExportPass<0) LogOrPrint(reportMode,"DEINIT: Top-set export verification could not complete; continuing with candidate exports.",Key,EA_Name,Server);
      while(!MTTESTER::IsReady()) Sleep(1000);
     }
     if(InclBackOOS && BackOOSDate!="") {strT.fromDate=BackOOSDate; LogOrPrint(reportMode,"⚠️ Back Out-Of-Sample (OOS) history is enabled.",Key,EA_Name,Server);}
@@ -2250,7 +4146,10 @@ bool StartExporter(bool reportMode)
     Sleep(99); ChartSetInteger(0, CHART_BRING_TO_TOP, true); Sleep(99);
     double lastScore=-1;
     const int MAX_CONSEC_NEG = 10; // early abort streak
-    int i=0,passes=0,profits=0,losses=0,errors=0,duplicates=0,fitterCount=0,consecNeg=0;
+    int i=0,passes=0,profits=0,losses=0,errors=0,duplicates=0,fitterCount=0,consecNeg=0,consecErrors=0;
+    string fwdRangeMeta="";
+    if(xmlData.forwardD!=0 && xmlData.endD!=0 && xmlData.forwardD<=xmlData.endD)
+     fwdRangeMeta=",dt_FWD_start="+TimeToString(xmlData.forwardD,TIME_DATE)+",dt_FWD_end="+TimeToString(xmlData.endD,TIME_DATE);
     
     for(;i<MathMin(25,ArraySize(xmlData.RowsUnique));i++)
     {
@@ -2263,21 +4162,22 @@ bool StartExporter(bool reportMode)
                                             +" Set Exports stored="+(string)ArraySize(g_allExports)+"/"+IntegerToString(passes)+" Above Threshold="+IntegerToString(fitterCount),Key,EA_Name,Server);
       
       int PositivePass=RunAndStoreSet(i,"Mode_Operation="+(string)OP_Standard+"\n"+"EA_Desc="+strT.Strat+"@{mode=EXPORT,"+"dt_BOOS_end="  +TimeToString(xmlData.startD,TIME_DATE)+","
-                                                                                                        +"dt_FOOS_start="+TimeToString(xmlData.endD  +24*60*60,TIME_DATE)+"}\n",reportMode,g_allExports);
+                                                                                                        +"dt_FOOS_start="+TimeToString(xmlData.endD  +24*60*60,TIME_DATE)+fwdRangeMeta+"}\n",reportMode,g_allExports,false,EXPORT_START_ATTEMPTS);
       //@{mode=EXPORT,dt_BOOS_end=2025.09.01,dt_FOOS_start=2025.09.30"; // Strategy Comment datetime dt_Back_OOS=0,dt_Fwrd_OOS=0;
       if(PositivePass==1)
       {
-       profits++; consecNeg=0;
+       profits++; consecNeg=0; consecErrors=0;
        int idx = ArraySize(g_allExports)-1;   // newest record is last element only added if PositivePass is 1
        if(g_allExports[idx].arf>=MinARF && g_allExports[idx].sr>=MinSR) {fitterCount++;  LogOrPrint(reportMode,"✅ Stored Set passed thresholds.",Key,EA_Name,Server);}
        else                                                                              LogOrPrint(reportMode,"⚠️ Not passing thresholds.",Key,EA_Name,Server);
       }
-      else if(PositivePass==0) {losses++; consecNeg++;}
-      else errors++;
+      else if(PositivePass==0) {losses++; consecNeg++; consecErrors=0;}
+      else {errors++; consecErrors++;}
       passes++;
      }
      else {duplicates++; continue;}
      // 0. consecutive errors
+     if(consecErrors>=EXPORT_ERROR_ABORTS) {LogOrPrint(reportMode,"❌ Consecutive export/tester start errors reached "+IntegerToString(consecErrors)+" – aborting export search.",Key,EA_Name,Server); break;}
      if(errors>=MAX_CONSEC_NEG*1.5) {LogOrPrint(reportMode,"❌ Too many errors while running tests – aborting search...",Key,EA_Name,Server); break;}
      // 1. Ten consecutive non-profit runs *anywhere*
      if(consecNeg>=MAX_CONSEC_NEG) {LogOrPrint(reportMode,"❌ 10 consecutive non-profitable runs – aborting search...",Key,EA_Name,Server); break;}
@@ -2309,9 +4209,10 @@ bool StartExporter(bool reportMode)
      SortAndTrimExports(SetsToExport,MinARF,MinSR,g_allExports);
      if(AdjustLots)
      {
-      LogOrPrint(reportMode,"⚠️ Lot Adjustment to Target DD is enabled. Rerunning Shorlisted Exports...",Key,EA_Name,Server);
-      int j=0;profits=losses=errors=fitterCount=0;
-      ExportRecord AdjustedExports[];
+       LogOrPrint(reportMode,"⚠️ Lot Adjustment to Target DD is enabled. Rerunning Shorlisted Exports...",Key,EA_Name,Server);
+       int j=0;profits=losses=errors=fitterCount=0;
+       int consecAdjustmentErrors=0;
+       ExportRecord AdjustedExports[];
       for(;j<ArraySize(g_allExports);j++)
       {
        const ExportRecord r = g_allExports[j];
@@ -2329,30 +4230,31 @@ bool StartExporter(bool reportMode)
                                              ,"Adjusted Set Exports stored="+(string)ArraySize(AdjustedExports)+"/"+IntegerToString(j),"");
        LogOrPrint(reportMode,"▶ Re-run start for stored set ("+IntegerToString(j+1)+") ARF="+DoubleToString(r.arf,3)+" DD="+DoubleToString(r.dd,3)
                                                                                +" OldLots="+DoubleToString(Lots_Old,2)+" → NewLots="+DoubleToString(Lots_Adjusted,2),Key,EA_Name,Server);
-       int PositivePass=RunAndStoreSet(g_allExports[j].rowIndex,"Mode_Operation="+(string)OP_Standard+"\nLots_Input="+DoubleToString(Lots_Adjusted,2)+"\n",reportMode,AdjustedExports);
+       int PositivePass=RunAndStoreSet(g_allExports[j].rowIndex,"Mode_Operation="+(string)OP_Standard+"\nLots_Input="+DoubleToString(Lots_Adjusted,2)+"\n",reportMode,AdjustedExports,false,EXPORT_START_ATTEMPTS);
        if(PositivePass==1)
        {
-        profits++;
+        profits++; consecAdjustmentErrors=0;
         int idx = ArraySize(AdjustedExports)-1;   // newest record is last element only added if PositivePass is 1
         if(AdjustedExports[idx].arf>=MinARF && AdjustedExports[idx].sr>=MinSR) fitterCount++;
        }
-       else if(PositivePass==0) {losses++;}
-       else errors++;
+       else if(PositivePass==0) {losses++; consecAdjustmentErrors=0;}
+       else {errors++; consecAdjustmentErrors++;}
        if(PositivePass<=0) LogOrPrint(reportMode,"❌ Re-run FAILED/Negative for row "+(string)(r.rowIndex+1),Key,EA_Name,Server);
+       if(consecAdjustmentErrors>=EXPORT_ERROR_ABORTS) {LogOrPrint(reportMode,"❌ Consecutive lot-adjustment export/tester start errors reached "+IntegerToString(consecAdjustmentErrors)+" – aborting adjustment reruns.",Key,EA_Name,Server); break;}
       }
       LogOrPrint(reportMode,StringFormat("✅✅✅✅✅ Export Adjustment sequence complete: %d attempts – %d profitable, %d losses, %d errors, %d passed thresholds"
                                                                                             ,j,profits,losses,errors,fitterCount),Key,EA_Name,Server);
       if(ArraySize(AdjustedExports)>0)
       {
        SortAndTrimExports(SetsToExport,MinARF,MinSR,AdjustedExports);
-       if(MoveKeptExports(AdjustedExports,Key)) LogOrPrint(reportMode,"✅ All Shortlisted and Adjusted Exports migrated & saved.",Key,EA_Name,Server);
+       if(MoveKeptExports(AdjustedExports,GoatOptDeployPath(EA_Name,Server))) LogOrPrint(reportMode,"✅ All Shortlisted and Adjusted Exports migrated & saved.",Key,EA_Name,Server);
        else                                     LogOrPrint(reportMode,"❌ Problem migrating the adjusted export package.",Key,EA_Name,Server);
       }
       else {LogOrPrint(reportMode,"❌ zero adjusted exports available after the export cycle.",Key,EA_Name,Server);}
      }
      else
      {
-      if(MoveKeptExports(g_allExports,Key)) LogOrPrint(reportMode,"✅ All Shortlisted Exports migrated & saved.",Key,EA_Name,Server);
+      if(MoveKeptExports(g_allExports,GoatOptDeployPath(EA_Name,Server))) LogOrPrint(reportMode,"✅ All Shortlisted Exports migrated & saved.",Key,EA_Name,Server);
       else                                  LogOrPrint(reportMode,"❌ Problem migrating the finalized export package.",Key,EA_Name,Server);
      }
     }
@@ -2362,11 +4264,11 @@ bool StartExporter(bool reportMode)
    return (ArraySize(g_allExports)>0); // true = exported ≥1 profitable set
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
-int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[],bool Init=false)
+int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[],bool Init=false,const int startAttempts=20)
   {
    string exports[]; FindExports("TEMP",exports); DeleteExports(exports); DeleteEmptyFolders("TEMP"); Sleep(50);
    
-   if(!StartTester(rowInd,mode,reportMode)) {LogOrPrint(reportMode,"❌ Failed to Configure and/or Start the Strategy Tester. Skipping...",Key,EA_Name,Server); return -1;}
+   if(!StartTester(rowInd,mode,reportMode,startAttempts)) {LogOrPrint(reportMode,"❌ Failed to Configure and/or Start the Strategy Tester after "+IntegerToString(startAttempts)+" start attempt(s). Skipping...",Key,EA_Name,Server); return -1;}
    
    const datetime t0 = TimeLocal();
    while(!FindExports("TEMP",exports))
@@ -2404,7 +4306,8 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
    if(profit>0)
    {
     // move first, because MoveExports rewrites paths
-    if(!MoveExports("Exports",exports)) {LogOrPrint(reportMode,"❌ Failed to move Exports: "+FileNameOnly(exports[0]),Key,EA_Name,Server); return -1;}
+    string exportSrcRoot="TEMP"+"\\"+EA_Name+"-"+Server;
+    if(!MoveExportsFromRoot(exportSrcRoot,GoatOptExportsPath(EA_Name,Server),exports)) {LogOrPrint(reportMode,"❌ Failed to move Exports: "+FileNameOnly(exports[0]),Key,EA_Name,Server); return -1;}
     // identify csv vs set in their new locations
     string csv="",set="";
     for(int k=0;k<ArraySize(exports);k++)
@@ -2439,57 +4342,81 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTimer(void)
   {
-   if(GlobalVariableGet("RefreshQueue")!=0) {TesterDialog.OnClickRefresh(true); GlobalVariableDel("RefreshQueue");}
+   if(Mode_Operation==Operation_Batch && GoatBatchDeferredRestartPending())
+   {
+    ShowPrompt("Restarting Terminal for next optimization...","Waiting for Strategy Tester to stop.","Batch Running...","");
+    GoatBatchTryCloseTerminalWhenTesterIdle(Key,EA_Name,Server);
+   }
+
+   if(Mode_Operation==Operation_Batch && GlobalVariableGet("RefreshQueue")!=0)
+   {
+    TesterDialog.OnClickRefresh(true);
+    GlobalVariableDel("RefreshQueue");
+    ChartRedraw(0);
+   }
    
    if(Mode_Operation==Operation_Dash)
    {
-    if(IsNewDay2()) DashboardDialog.CalcPeriodAnchors();   // once per day it will roll weeks & reset days
-    
-    int rows = ArraySize(DashboardDialog.g_sets); if(rows==0) return;
-    static int rotor = -1;                 // outside keeps its value
-    rotor = (rotor+1)%rows;             // next symbol
-    DashboardDialog.UpdateRowMetrics(rotor,rotor+2);
-    DashboardDialog.UpdatePortfolioRow();
+    DashboardDialog.ProcessTimerCycle();
     ChartRedraw(0);
    }
+   if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash)
+      DashboardBusProcessCommands();
    timer++;
-  }
+   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result)
   {
-   if(trans.type==TRADE_TRANSACTION_DEAL_ADD)    // adding a trade
+   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
+
+   int TradeCount = FindNumberOfPositions(OP_BUY,MAGIC1);
+   if(Seq_Buy.Active && LastTradeCountBuy!=TradeCount && TradeCount==0 && Seq_Buy.Traded)//Seq_Buy.Level_Count>=Delay_Trade)
    {
-    int TradeCount = FindNumberOfPositions(OP_BUY,MAGIC1);
-    if(Seq_Buy.Active && LastTradeCountBuy!=TradeCount && TradeCount==0 && Seq_Buy.Traded)//Seq_Buy.Level_Count>=Delay_Trade)
-    {
-     Seq_Buy.End_Sequence("Trade(s) closed");
-    }
-    LastTradeCountBuy = TradeCount;
-    
-    TradeCount = FindNumberOfPositions(OP_SELL,MAGIC1);
-    if(Seq_Sell.Active && LastTradeCountSell!=TradeCount && TradeCount==0 && Seq_Sell.Traded)//Seq_Sell.Level_Count>=Delay_Trade)
-    {
-     Seq_Sell.End_Sequence("Trade(s) closed");
-    }
-    LastTradeCountSell = TradeCount;
-    //OnTick();
-    // Filter to this EA (and optionally this symbol)
-    if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return;
-    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
-    if(!HistoryDealSelect(trans.deal)) return;
-    if(HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=MAGIC1) return;
-    if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=_Symbol) return;
-    if((int)HistoryDealGetInteger(trans.deal,DEAL_ENTRY)!=DEAL_ENTRY_IN) return;
-    if((int)HistoryDealGetInteger(trans.deal,DEAL_TYPE)!=DEAL_TYPE_BUY&&(int)HistoryDealGetInteger(trans.deal,DEAL_TYPE)!=DEAL_TYPE_SELL) return; // ignore non-trade rows
-    if(HistoryDealGetDouble(trans.deal,DEAL_VOLUME)<=0.0) return;                         // ignore zero-volume artifacts
-    if(HistoryDealGetInteger(trans.deal,DEAL_REASON)!=DEAL_REASON_EXPERT) return;         // ignore manual/other reasons
-    
-         if(TimeCurrent()<dt_Back_OOS && dt_Back_OOS!=0) trd_BOOS++;
-    else if(TimeCurrent()>dt_Fwrd_OOS && dt_Fwrd_OOS!=0) trd_FOOS++;
-    else                                                 trd_IS++;
+    Seq_Buy.End_Sequence(Seq_Buy.BiasRescueActive ? "Bias Rescue Exit" : "Trade(s) closed");
    }
+   LastTradeCountBuy = TradeCount;
+
+   TradeCount = FindNumberOfPositions(OP_SELL,MAGIC1);
+   if(Seq_Sell.Active && LastTradeCountSell!=TradeCount && TradeCount==0 && Seq_Sell.Traded)//Seq_Sell.Level_Count>=Delay_Trade)
+   {
+    Seq_Sell.End_Sequence(Seq_Sell.BiasRescueActive ? "Bias Rescue Exit" : "Trade(s) closed");
+   }
+   LastTradeCountSell = TradeCount;
+
+   if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return;
+   if(!HistoryDealSelect(trans.deal)) return;
+   if(HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=MAGIC1) return;
+   if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=_Symbol) return;
+
+   int deal_type=(int)HistoryDealGetInteger(trans.deal,DEAL_TYPE);
+   if(deal_type!=DEAL_TYPE_BUY && deal_type!=DEAL_TYPE_SELL) return;
+   if(HistoryDealGetDouble(trans.deal,DEAL_VOLUME)<=0.0)     return;
+
+   int deal_entry=(int)HistoryDealGetInteger(trans.deal,DEAL_ENTRY);
+   datetime deal_time=(datetime)HistoryDealGetInteger(trans.deal,DEAL_TIME);
+
+   if(deal_entry==DEAL_ENTRY_OUT || deal_entry==DEAL_ENTRY_OUT_BY)
+   {
+    DashboardBusRollClosedBuckets(deal_time);
+    double closed_pl=HistoryDealGetDouble(trans.deal,DEAL_PROFIT)
+                    +HistoryDealGetDouble(trans.deal,DEAL_COMMISSION)
+                    +HistoryDealGetDouble(trans.deal,DEAL_SWAP);
+    DashboardBusClosedPLTotal+=closed_pl;
+    DashboardBusClosedTradesTotal++;
+    if(deal_time>=DashboardBusDayStart)  DashboardBusClosedPLDaily +=closed_pl;
+    if(deal_time>=DashboardBusWeekStart) DashboardBusClosedPLWeekly+=closed_pl;
+    return;
+   }
+
+   if(deal_entry!=DEAL_ENTRY_IN) return;
+   if(HistoryDealGetInteger(trans.deal,DEAL_REASON)!=DEAL_REASON_EXPERT) return;
+
+        if(TimeCurrent()<dt_Back_OOS && dt_Back_OOS!=0) trd_BOOS++;
+   else if(TimeCurrent()>dt_Fwrd_OOS && dt_Fwrd_OOS!=0) trd_FOOS++;
+   else                                                 trd_IS++;
+   if(dt_FWD_start!=0 && dt_FWD_end!=0 && TimeCurrent()>=dt_FWD_start && TimeCurrent()<=dt_FWD_end) trd_FWD++;
    return;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2498,44 +4425,26 @@ void OnChartEvent(const int id,         // event ID
                   const double& dparam, // event parameter of the double type
                   const string& sparam) // event parameter of the string type
   {
+   if(id==GOAT_EVENT_DASHBOARD_COMMAND)
+   {
+    DashboardBusProcessCommands();
+    return;
+   }
    if(!FastSpeed_Flag)
    {
          if(Mode_Operation==Operation_Batch) TesterDialog.ChartEvent(id,lparam,dparam,sparam);
-    else if(Mode_Operation==Operation_Dash)  DashboardDialog.ChartEvent(id,lparam,dparam,sparam);
+    else if(Mode_Operation==Operation_Dash)  DashboardDialog.HandleChartEvent(id,lparam,dparam,sparam);
     else                                     PanelDialog.ChartEvent(id,lparam,dparam,sparam);
   //Panel_Seq2.ChartEvent(id,lparam,dparam,sparam);
     if(id==CHARTEVENT_CHART_CHANGE)
     {
           if(Mode_Operation==Operation_Batch)   TesterDialog.maximizeWindow();
-     else if(Mode_Operation==Operation_Dash)    DashboardDialog.maximizeWindow();
-     else                                       PanelDialog.maximizeWindow();
+     else if(Mode_Operation!=Operation_Dash)    PanelDialog.maximizeWindow();
     }
   //if(id==CHARTEVENT_OBJECT_DRAG  && sparam==ExtDialog.Name()+"Caption") { ss=0;Comment(ss);}
     if(id==CHARTEVENT_OBJECT_CLICK)
     {
      if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash) {for(int i=0; i<ArraySize(Obj_names); i++) if(sparam==Obj_names[i]) PanelDialog.OnClickCaption();}
-     
-     if(StringFind(sparam,"R1_BTN")>0)
-     {
-      for(int i=0;i<ArraySize(DashboardDialog.g_sets);i++) DashboardDialog.DoActivate(i);
-      DashboardDialog.edt_Status[1].Text("Deployed");
-      return;
-     }
-     
-     int pos = StringFind(sparam,"BTN_");
-     if(pos>=0 && pos+4 < StringLen(sparam))              // must be something after “BTN_”
-     {
-      int idx = (int)StringToInteger(StringSubstr(sparam,pos+4));   // the digits after “BTN_”
-      if(DashboardDialog.btn_Action[idx+2].Text()=="Navigate")
-      {
-       if(!ChartSetInteger(DashboardDialog.g_sets[idx].cid,CHART_BRING_TO_TOP,0,true))
-       {
-        Print(__FUNCTION__+", Error Code = ",GetLastError()); return;
-       }
-       Sleep(100); ChartRedraw(DashboardDialog.g_sets[idx].cid); Sleep(100); ChartRedraw(0); Sleep(100);
-      }
-      else if(idx>=0) DashboardDialog.DoActivate(idx);          // 0-based index into g_sets[]
-     }
    //Print(sparam); Print(Key+"_BackToDB_"+(string)MAGIC1);
      //if(sparam==Key+"_BackToDB_"+(string)MAGIC1 && GlobalVariableCheck("Dashboard_ChartID"))
      //{
@@ -2562,6 +4471,106 @@ void InitializeFlags()
    BuyExit     = SellExit      = false;
    PrevBuyExit = PrevSellExit  = false;
    //ObjectSetText("06","- - -",Font_Size,"NULL",clrDarkGray);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void DrawBiasExitLine(const string side)
+  {
+   if(!FastSpeed_Flag)
+      VLineCreate(0,Key+"_STOPOUT_BIAS_"+side+"_"+TimeToString(TimeCurrent(),TIME_DATE)+" "+TimeToString(TimeCurrent(),TIME_MINUTES),0,iTime(NULL,Period(),0),clrOrangeRed,STYLE_DASH,2,false,false,false,0);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void HandleBiasExitBuy(const int buys)
+  {
+   if(Mode_Bias_Exit==BiasExit_HardClose)
+   {
+    if(buys>0 && FindNumberOfPositions(OP_BUY,MAGIC1)>0) CloseAllPositions(OP_BUY,MAGIC1);
+    if     (Seq_Buy.Active)         Seq_Buy.End_Sequence("Bias StopOut");
+    else if(Seq_Buy_Virtual.Active) Seq_Buy_Virtual.End_Sequence("Bias StopOut");
+    DrawBiasExitLine("B");
+    return;
+   }
+
+   if(Mode_Lots!=RiskperSeq || Risk<=0.0)
+   {
+    if(buys>0) CloseAllPositions(OP_BUY,MAGIC1);
+    if(Seq_Buy.Active) Seq_Buy.End_Sequence("Bias Rescue Exit: Invalid MLPS");
+    DrawBiasExitLine("B");
+    return;
+   }
+
+   if(Seq_Buy.Active && Seq_Buy.Traded && Seq_Buy.HasLiveSequenceTrades())
+   {
+    double pl=Seq_Buy.CurrentSequencePL();
+    if(pl>=0.0)
+    {
+     if(buys>0) CloseAllPositions(OP_BUY,MAGIC1);
+     Seq_Buy.End_Sequence("Bias Profit Exit");
+    }
+    else if(pl<=-Risk)
+    {
+     if(buys>0) CloseAllPositions(OP_BUY,MAGIC1);
+     Seq_Buy.End_Sequence("Bias Rescue Exit: MLPS breached");
+    }
+    else if(Seq_Buy.ArmBiasRescue())
+    {
+     Seq_Buy.UpdateLockTPSL(Seq_Buy.Trades_Count);
+     Print("Buy sequence SmartRescue armed. P/L=",DoubleToString(pl,2)," BE=",DoubleToString(Seq_Buy.BiasRescueBEPrice,_Digits)," MLPS SL=",DoubleToString(Seq_Buy.BiasRescueSLPrice,_Digits));
+    }
+   }
+   else
+   {
+    if(buys>0) CloseAllPositions(OP_BUY,MAGIC1);
+    if     (Seq_Buy.Active)         Seq_Buy.End_Sequence("Bias Rescue Exit: No trades");
+    else if(Seq_Buy_Virtual.Active) Seq_Buy_Virtual.End_Sequence("Bias Rescue Exit: No trades");
+   }
+   DrawBiasExitLine("B");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void HandleBiasExitSell(const int sells)
+  {
+   if(Mode_Bias_Exit==BiasExit_HardClose)
+   {
+    if(sells>0 && FindNumberOfPositions(OP_SELL,MAGIC1)>0) CloseAllPositions(OP_SELL,MAGIC1);
+    if     (Seq_Sell.Active)         Seq_Sell.End_Sequence("Bias StopOut");
+    else if(Seq_Sell_Virtual.Active) Seq_Sell_Virtual.End_Sequence("Bias StopOut");
+    DrawBiasExitLine("S");
+    return;
+   }
+
+   if(Mode_Lots!=RiskperSeq || Risk<=0.0)
+   {
+    if(sells>0) CloseAllPositions(OP_SELL,MAGIC1);
+    if(Seq_Sell.Active) Seq_Sell.End_Sequence("Bias Rescue Exit: Invalid MLPS");
+    DrawBiasExitLine("S");
+    return;
+   }
+
+   if(Seq_Sell.Active && Seq_Sell.Traded && Seq_Sell.HasLiveSequenceTrades())
+   {
+    double pl=Seq_Sell.CurrentSequencePL();
+    if(pl>=0.0)
+    {
+     if(sells>0) CloseAllPositions(OP_SELL,MAGIC1);
+     Seq_Sell.End_Sequence("Bias Profit Exit");
+    }
+    else if(pl<=-Risk)
+    {
+     if(sells>0) CloseAllPositions(OP_SELL,MAGIC1);
+     Seq_Sell.End_Sequence("Bias Rescue Exit: MLPS breached");
+    }
+    else if(Seq_Sell.ArmBiasRescue())
+    {
+     Seq_Sell.UpdateLockTPSL(Seq_Sell.Trades_Count);
+     Print("Sell sequence SmartRescue armed. P/L=",DoubleToString(pl,2)," BE=",DoubleToString(Seq_Sell.BiasRescueBEPrice,_Digits)," MLPS SL=",DoubleToString(Seq_Sell.BiasRescueSLPrice,_Digits));
+    }
+   }
+   else
+   {
+    if(sells>0) CloseAllPositions(OP_SELL,MAGIC1);
+    if     (Seq_Sell.Active)         Seq_Sell.End_Sequence("Bias Rescue Exit: No trades");
+    else if(Seq_Sell_Virtual.Active) Seq_Sell_Virtual.End_Sequence("Bias Rescue Exit: No trades");
+   }
+   DrawBiasExitLine("S");
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTick()
@@ -2605,6 +4614,12 @@ void OnTick()
      eq_IS_end = DStartEquity;
      dt_IS_end = DLastTime;
     }
+    if(dt_FWD_start!=0 && dt_FWD_end!=0 && TimeCurrent()>=dt_FWD_start && TimeCurrent()<=dt_FWD_end)
+    {
+     days_FWD++;
+     if(eq_FWD_start==0) eq_FWD_start = DStartEquity;
+     eq_FWD_end = DStartEquity;
+    }
     DLastTime=TimeCurrent();
    }
 //-------------------------------------------------------------------------
@@ -2638,6 +4653,13 @@ void OnTick()
     // sees if symbol has news
     int indices[];
     bool IsNewsTime=News.IsNewsTime(Symbol(),News_threshold,indices);   // Change Symbol to the symbol traded
+    int max_news_score=0;
+    for(int i=0;i<ArraySize(indices);++i)
+    {
+     if(indices[i]<0 || indices[i]>=ArraySize(News.TodaysNewsList)) continue;
+     max_news_score=MathMax(max_news_score,News.TodaysNewsList[indices[i]].impact_score);
+    }
+    DashboardBusNewsScore=max_news_score;
     // We have news
     if(IsNewsTime)
     {
@@ -2712,9 +4734,11 @@ void OnTick()
     int idx=0;
     static int LastBias=0;
     int CurBias = Bias.GetCurentBiasScore(Symbol(),idx);
+    DashboardBusBiasSentiment=0.0;
     
     if(CurBias>=-100 && CurBias<=100) // We have valid bias
     {
+     DashboardBusBiasSentiment=CurBias;
      if(Mode_Bias!=Bias_Display) {
      // we disregard Bias_Disabled and Bias_Display as they are covered indirectly in other functions
      int bias_dir = 0;
@@ -2841,7 +4865,10 @@ void OnTick()
      {
       Sequence_New_Bias_S   = false;
       Sequence_Pause_Bias_S = true;
-     }}
+     }
+     if(Seq_Buy.BiasRescueActive)  Sequence_New_Bias_B = false;
+     if(Seq_Sell.BiasRescueActive) Sequence_New_Bias_S = false;
+     }
      if(!FastSpeed_Flag && DrawVLines)// && MQLInfoInteger(MQL_VISUAL_MODE))
      {
       if(IsNewBar2(Period()) && ObjectGetInteger(0,IntegerToString(lines_bias,4,'B'),OBJPROP_TIME) != iTime(NULL,Period(),0))
@@ -2875,8 +4902,10 @@ void OnTick()
     }
     else
     {
-     // defaults
-     Sequence_New_Bias_B   = true;  Sequence_New_Bias_S   = true;
+     DashboardBusBiasSentiment=0.0;
+     // Stale/invalid bias blocks sequence starts only when bias filtering is active.
+     bool bias_filter_active = (Mode_Bias!=Bias_Display && Mode_Bias!=Bias_Disabled);
+     Sequence_New_Bias_B   = !bias_filter_active; Sequence_New_Bias_S = !bias_filter_active;
      Sequence_Pause_Bias_B = false; Sequence_Pause_Bias_S = false;
      StopOut_Flag_B        = false; StopOut_Flag_S        = false;
      // no need to redraw inactive lines as that is already covered in the news section
@@ -2884,7 +4913,6 @@ void OnTick()
     if(!FastSpeed_Flag) BiasDisplayFunction(true,clrGold,idx);
    }
 //-------------------------------------------------------------------------
-   int Trades=0,Buys=0,Sells=0;
    if(IsNewSecond())
    {
     int k;
@@ -2909,7 +4937,8 @@ void OnTick()
     if(!Trade_December && FastSpeed_Flag && stm_cur.mon==12)                     Sequence_New_Dec=false;
     else                                                                         Sequence_New_Dec=true;
 //-------
-    double PL_Total=0.0,PL_Buy=0.0,PL_Sell=0.0,PL_Closed=0.0,PL_Today=0.0;
+    int Trades=0,Buys=0,Sells=0;
+    double OpenLots=0.0,PL_Total=0.0,PL_Buy=0.0,PL_Sell=0.0,PL_Closed=0.0,PL_Today=0.0;
     
     //if(MaxLossLocal!=0.0 || MaxDailyLossLocal!=0.0 || MaxDailyProfitLocal!=0.0 || !FastSpeed_Flag)
     {
@@ -2924,6 +4953,7 @@ void OnTick()
        if(m_position.Magic() != MAGIC1 && MAGIC1 != 0)                          continue;
        
        Trades++;
+       OpenLots+=m_position.Volume();
        if(m_position.PositionType() == POSITION_TYPE_BUY)    {Buys++;  PL_Buy += (m_position.Profit()+m_position.Commission()+m_position.Swap());}
        if(m_position.PositionType() == POSITION_TYPE_SELL)   {Sells++; PL_Sell+= (m_position.Profit()+m_position.Commission()+m_position.Swap());}
       }
@@ -2972,10 +5002,12 @@ void OnTick()
      switch(Mode_Lots_Prog)
      {
       case Lots_Prog_Start:SetEdit(PanelDialog.m_edit_Det5_2,"Start Lots"); break;
-      case Lots_Prog_Last: SetEdit(PanelDialog.m_edit_Det5_2,"Last Lots"); break;
+      case Lots_Prog_Last: SetEdit(PanelDialog.m_edit_Det5_2,"Exponential Lots"); break;
       case Lots_Prog_Cum:  SetEdit(PanelDialog.m_edit_Det5_2,"Cumulative Lots"); break;
-      case Lots_Prog_Cum2: SetEdit(PanelDialog.m_edit_Det5_2,"Adjusted Cumulative"); break;
+      case Lots_Prog_Cum2: SetEdit(PanelDialog.m_edit_Det5_2,"Front-Loaded Cumulative"); break;
+      case Lots_Prog_CumPartial: SetEdit(PanelDialog.m_edit_Det5_2,"Cum + Partial"); break;
       case Lots_Prog_Peak: SetEdit(PanelDialog.m_edit_Det5_2,"Peak Lots"); break;
+      case Lots_Prog_PeakSmart: SetEdit(PanelDialog.m_edit_Det5_2,"Smart Peak"); break;
       default:             SetEdit(PanelDialog.m_edit_Det5_2,"Unknown Mode"); break;
      }
     }
@@ -3065,17 +5097,7 @@ void OnTick()
     static bool Last_StopOut_Flag_B = false;
     if(StopOut_Flag_B && !Last_StopOut_Flag_B)
     {
-     if(Buys>0)
-     {
-      if(FindNumberOfPositions(OP_BUY,MAGIC1)>0) CloseAllPositions(OP_BUY,MAGIC1);
-     }
-     if     (Seq_Buy.Active)         Seq_Buy.End_Sequence("Bias StopOut");
-     else if(Seq_Buy_Virtual.Active) Seq_Buy_Virtual.End_Sequence("Bias StopOut");
-
-     if(!FastSpeed_Flag)
-     {
-      VLineCreate(0,Key+"_STOPOUT_BIAS_B_"+TimeToString(TimeCurrent(),TIME_DATE)+" "+TimeToString(TimeCurrent(),TIME_MINUTES),0,iTime(NULL,Period(),0),clrOrangeRed,STYLE_DASH,2,false,false,false,0);
-     }
+     HandleBiasExitBuy(Buys);
     }
     Last_StopOut_Flag_B = StopOut_Flag_B;
 //-------
@@ -3083,17 +5105,7 @@ void OnTick()
     static bool Last_StopOut_Flag_S = false;
     if(StopOut_Flag_S && !Last_StopOut_Flag_S)
     {
-     if(Sells>0)
-     {
-      if(FindNumberOfPositions(OP_SELL,MAGIC1)>0) CloseAllPositions(OP_SELL,MAGIC1);
-     }
-     if     (Seq_Sell.Active)         Seq_Sell.End_Sequence("Bias StopOut");
-     else if(Seq_Sell_Virtual.Active) Seq_Sell_Virtual.End_Sequence("Bias StopOut");
-
-     if(!FastSpeed_Flag)
-     {
-      VLineCreate(0,Key+"_STOPOUT_BIAS_S_"+TimeToString(TimeCurrent(),TIME_DATE)+" "+TimeToString(TimeCurrent(),TIME_MINUTES),0,iTime(NULL,Period(),0),clrOrangeRed,STYLE_DASH,2,false,false,false,0);
-     }
+     HandleBiasExitSell(Sells);
     }
     Last_StopOut_Flag_S = StopOut_Flag_S;
 //-------
@@ -3105,6 +5117,28 @@ void OnTick()
     }
     CurrentDD = (MaxEquity-AccountInfoDouble(ACCOUNT_EQUITY))/MaxEquity; if(CurrentDD > DDs_PC[0])     DDs_PC[0]     = CurrentDD;
     CurrentDD = (MaxEquity-AccountInfoDouble(ACCOUNT_EQUITY));           if(CurrentDD > DDs_Actual[0]) DDs_Actual[0] = CurrentDD;
+
+    DashboardBusRollClosedBuckets(TimeCurrent());
+    if(GlobalVariableCheck("Dashboard_ChartID"))
+    {
+     GlobalVariableSet(GoatSymbolGVName(Symbol(),GOAT_GV_FIELD_NEWS),DashboardBusNewsScore);
+     GlobalVariableSet(GoatSymbolGVName(Symbol(),GOAT_GV_FIELD_BIAS),DashboardBusBiasSentiment);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_OPEN_TRADES),(double)Trades);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_OPEN_LOTS),OpenLots);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_OPEN_PL),PL_Total);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_PL_DAILY),DashboardBusClosedPLDaily);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_PL_WEEKLY),DashboardBusClosedPLWeekly);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_PL_TOTAL),DashboardBusClosedPLTotal);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_TRADES_TOTAL),(double)DashboardBusClosedTradesTotal);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_HEARTBEAT),(double)TimeCurrent());
+
+     string dashboard_status="Active";
+     if(DashboardPortfolioPaused) dashboard_status="Paused";
+     else if(!Active || InActive) dashboard_status="Inactive";
+     if(!DashboardPortfolioPaused && (StopOut_Flag || Pause_Flag || Sequence_Pause_Close || Sequence_Pause_News || Sequence_Pause_Bias_B || Sequence_Pause_Bias_S))
+        dashboard_status="Paused";
+     DashboardBusSendStatus(dashboard_status);
+    }
   //PartialClose();
    }
 //-------------------------------------------------------------------------
@@ -3188,7 +5222,7 @@ void OnTick()
      
      if(!checked) UpdateCurrentSignals(Shift_Sig);
      
-     if(Allow_New_Sequence&&Sequence_New_Friday&&Sequence_New_Dec) SignalEntryTrigger();//Buys,Sells);
+      if(!DashboardPortfolioPaused&&Allow_New_Sequence&&Sequence_New_Friday&&Sequence_New_Dec&&(DashboardTradeAllowBuy||DashboardTradeAllowSell)) SignalEntryTrigger();//Buys,Sells);
      //SignalExitTrigger();
      //OrderUpdate();
      //File_update=true;
@@ -3200,61 +5234,92 @@ void OnTick()
  //else ObjectSetText(IntegerToString(TotalText_Trade-2,2,'0')," ",Font_Size-1,"NULL",clrLime);
 //-------------------------------------------------------------------------
    static bool LastBuyTradeSignal=false,LastSellTradeSignal=false;
-   
-   if(CheckSequenceNow() && !Sequence_Pause_Close)// && Active) // close or inactivity pause takes precedence over other pause types
+
+   bool buyMlpsExit=false,sellMlpsExit=false;
+   if(Seq_Buy.Active)  buyMlpsExit  = Seq_Buy.EnforceSequenceMLPS("tick");
+   if(Seq_Sell.Active) sellMlpsExit = Seq_Sell.EnforceSequenceMLPS("tick");
+
+   bool sequenceCheckNow=CheckSequenceNow();
+   if(sequenceCheckNow && !Sequence_Pause_Close)// && Active) // close or inactivity pause takes precedence over other pause types
    {
     if(Seq_Buy.Active)
     {
-     if(ask < (Seq_Buy.Level_Last-GetSize(GRID_VALID,Seq_Buy.Level_Count,Seq_Buy.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_BUY) )// && BuySig)
+     if(buyMlpsExit)
+        LastBuyTradeSignal = false;
+     else
      {
-      if(Sequence_Pause_News)
+      if(Seq_Buy.Traded && Mode_Lots_Prog==Lots_Prog_CumPartial && Partial_Profit_Factor>0.0 && ask >= Seq_Buy.Level_Retrace && Seq_Buy.Level_Retrace>0.0)
+         Seq_Buy.HandlePartialRetrace(ask);
+      if(Seq_Buy.Traded && Mode_Lots_Prog==Lots_Prog_PeakSmart && Peak_Smart_Release_PC>0.0 && bid >= Seq_Buy.Level_Retrace && Seq_Buy.Level_Retrace>0.0)
+         Seq_Buy.HandlePeakSmartRetrace(bid);
+
+      if(ask < (Seq_Buy.Level_Last-GetSize(GRID_VALID,Seq_Buy.Level_Count,Seq_Buy.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_BUY) )// && BuySig)
       {
-       if(!LastBuyTradeSignal) Trades_Skipped_News++; 
+       if(Sequence_Pause_News)
+       {
+        if(!LastBuyTradeSignal) Trades_Skipped_News++;
+       }
+       else if(Sequence_Pause_Bias_B && !Seq_Buy.BiasRescueActive)
+       {
+        if(!LastBuyTradeSignal) Trades_Skipped_Bias_B++;
+       }
+        else if(DashboardPortfolioPaused || !DashboardTradeAllowed(OP_BUY))
+        {
+        }
+       else
+       {
+        Seq_Buy.Add_Level(ask); //return;
+       }
+       LastBuyTradeSignal = true; // we are currently in add trade condition so Last TradeSignal is true
       }
-      else if(Sequence_Pause_Bias_B)
-      {
-       if(!LastBuyTradeSignal) Trades_Skipped_Bias_B++;
-      }
-      else
-      {
-       Seq_Buy.Add_Level(ask); //return;
-      }
-      LastBuyTradeSignal = true; // we are currently in add trade condition so Last TradeSignal is true
+      else LastBuyTradeSignal = false; // last time sequence conditions didnt try adding a new trade
      }
-     else LastBuyTradeSignal = false; // last time sequence conditions didnt try adding a new trade
     }
     else LastBuyTradeSignal = false; // last time sequence conditions didnt try adding a new trade
 //--------
     if(Seq_Sell.Active)
     {
-     if(bid > (Seq_Sell.Level_Last+GetSize(GRID_VALID,Seq_Sell.Level_Count,Seq_Sell.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_SELL) )// && SellSig)
+     if(sellMlpsExit)
+        LastSellTradeSignal = false;
+     else
      {
-      if(Sequence_Pause_News)
+      if(Seq_Sell.Traded && Mode_Lots_Prog==Lots_Prog_CumPartial && Partial_Profit_Factor>0.0 && bid <= Seq_Sell.Level_Retrace && Seq_Sell.Level_Retrace>0.0)
+         Seq_Sell.HandlePartialRetrace(bid);
+      if(Seq_Sell.Traded && Mode_Lots_Prog==Lots_Prog_PeakSmart && Peak_Smart_Release_PC>0.0 && ask <= Seq_Sell.Level_Retrace && Seq_Sell.Level_Retrace>0.0)
+         Seq_Sell.HandlePeakSmartRetrace(ask);
+
+      if(bid > (Seq_Sell.Level_Last+GetSize(GRID_VALID,Seq_Sell.Level_Count,Seq_Sell.Size_Grid)) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_SELL) )// && SellSig)
       {
-       if(!LastSellTradeSignal) Trades_Skipped_News++;
+       if(Sequence_Pause_News)
+       {
+        if(!LastSellTradeSignal) Trades_Skipped_News++;
+       }
+       else if(Sequence_Pause_Bias_S && !Seq_Sell.BiasRescueActive)
+       {
+        if(!LastSellTradeSignal) Trades_Skipped_Bias_S++;
+       }
+        else if(DashboardPortfolioPaused || !DashboardTradeAllowed(OP_SELL))
+        {
+        }
+       else
+       {
+        Seq_Sell.Add_Level(bid); //return;
+       }
+       LastSellTradeSignal = true; // we are currently in add trade condition so Last TradeSignal is true
       }
-      else if(Sequence_Pause_Bias_S)
-      {
-       if(!LastSellTradeSignal) Trades_Skipped_Bias_S++;
-      }
-      else
-      {
-       Seq_Sell.Add_Level(bid); //return;
-      }
-      LastSellTradeSignal = true; // we are currently in add trade condition so Last TradeSignal is true
+      else LastSellTradeSignal = false; // last time sequence conditions didnt try adding a new trade
      }
-     else LastSellTradeSignal = false; // last time sequence conditions didnt try adding a new trade
     }
     else LastSellTradeSignal = false; // last time sequence conditions didnt try adding a new trade
 //----------------------
-    if(Seq_Buy_Virtual.Active && !Sequence_Pause_News && !Sequence_Pause_Bias_B)
+    if(Seq_Buy_Virtual.Active && !DashboardPortfolioPaused && DashboardTradeAllowed(OP_BUY) && !Sequence_Pause_News && !Sequence_Pause_Bias_B)
     {
      if(ask < (Seq_Buy_Virtual.Level_Last-GetSize(GRID_VALID,Seq_Buy_Virtual.Level_Count,GetSize(GRID))) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_BUY) )// && BuySig)
      {
       Seq_Buy_Virtual.Add_Level(ask); //return;
      }
     }
-    if(Seq_Sell_Virtual.Active && !Sequence_Pause_News && !Sequence_Pause_Bias_S)
+    if(Seq_Sell_Virtual.Active && !DashboardPortfolioPaused && DashboardTradeAllowed(OP_SELL) && !Sequence_Pause_News && !Sequence_Pause_Bias_S)
     {
      if(bid > (Seq_Sell_Virtual.Level_Last+GetSize(GRID_VALID,Seq_Sell_Virtual.Level_Count,GetSize(GRID))) && ((RSI_Mode==RSI_Disabled) || RSI_Sig==OP_SELL) )// && SellSig)
      {
@@ -3524,13 +5589,13 @@ void SignalEntryTrigger()//int Buys,int Sells)
      if(Reverse_Seq)
      {
       //virtual or real sequences not open, correct direction, no open trades in the same direction from other charts
-      if(!Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short) && FindNumberOfPositions(OP_SELL)<=0)
+       if(DashboardEntryAllowed(OP_SELL) && !Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short))
       {
        if(MathAbs(Delay_Trade)>0)                      Seq_Sell_Virtual.Add_Level(bid);
        else if(Allow_Opposite_Seq || !Seq_Buy.Traded)  Seq_Sell.Add_Level(bid);
       }
      }
-     else if(!Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long) && FindNumberOfPositions(OP_BUY)<=0)
+      else if(DashboardEntryAllowed(OP_BUY) && !Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long))
      {
       if(MathAbs(Delay_Trade)>0)                       Seq_Buy_Virtual.Add_Level(ask);
       else if(Allow_Opposite_Seq || !Seq_Sell.Traded)  Seq_Buy.Add_Level(ask);
@@ -3557,13 +5622,13 @@ void SignalEntryTrigger()//int Buys,int Sells)
     {
      if(Reverse_Seq)
      {
-      if(!Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long) && FindNumberOfPositions(OP_BUY)<=0)
+       if(DashboardEntryAllowed(OP_BUY) && !Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long))
       {
        if(MathAbs(Delay_Trade)>0)                      Seq_Buy_Virtual.Add_Level(ask);
        else if(Allow_Opposite_Seq || !Seq_Sell.Traded) Seq_Buy.Add_Level(ask);
       }
      }
-     else if(!Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short) && FindNumberOfPositions(OP_SELL)<=0)
+      else if(DashboardEntryAllowed(OP_SELL) && !Seq_Sell_Virtual.Active && !Seq_Sell.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Short))
      {
       if(MathAbs(Delay_Trade)>0)                       Seq_Sell_Virtual.Add_Level(bid);
       else if(Allow_Opposite_Seq || !Seq_Buy.Traded)   Seq_Sell.Add_Level(bid);
@@ -3628,6 +5693,53 @@ int FindNumberOfPositions(int OP,int magic=0)
    return Buys+Sells;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+ulong ResolveLivePositionTicket(int OP,int magic,double expectedVolume,string desc,ulong orderTicket,ulong dealTicket)
+  {
+   if(orderTicket>0 && PositionSelectByTicket(orderTicket))
+      return (ulong)PositionGetInteger(POSITION_TICKET);
+
+   if(dealTicket>0 && HistoryDealSelect(dealTicket))
+   {
+    ulong position_id = (ulong)HistoryDealGetInteger(dealTicket,DEAL_POSITION_ID);
+    if(position_id>0 && PositionSelectByTicket(position_id))
+       return (ulong)PositionGetInteger(POSITION_TICKET);
+   }
+
+   double volTol = SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);
+   if(volTol<=0.0) volTol = 0.01;
+
+   for(int attempt=0; attempt<10; attempt++)
+   {
+    ulong bestTicket = 0;
+    long  bestTime = -1;
+    for(int i=PositionsTotal()-1; i>=0; i--)
+    {
+     if(!m_position.SelectByIndex(i)) continue;
+     if(m_position.Symbol()!=_Symbol) continue;
+     if(m_position.Magic()!=magic && magic!=0) continue;
+     if(m_position.PositionType()!=OP) continue;
+
+     double posVol = PositionGetDouble(POSITION_VOLUME);
+     string posComment = PositionGetString(POSITION_COMMENT);
+     bool volMatch = (expectedVolume<=0.0 || MathAbs(posVol-expectedVolume)<=volTol*0.5);
+     bool descMatch = (desc!="" && posComment==desc);
+     if(!volMatch && !descMatch) continue;
+
+     long posTime = (long)PositionGetInteger(POSITION_TIME);
+     if(descMatch) posTime += 1000000000;
+     if(posTime>=bestTime)
+     {
+      bestTime = posTime;
+      bestTicket = (ulong)PositionGetInteger(POSITION_TICKET);
+     }
+    }
+    if(bestTicket>0) return bestTicket;
+    Sleep(50);
+   }
+
+   return orderTicket;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 void CalculateAllPendingOrders(int &count_buy_limits,int &count_sell_limits,int &count_buy_stops,int &count_sell_stops)
   {
    count_buy_limits  = 0;
@@ -3661,6 +5773,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
    int ret=0;
    double SL=0,TP=0;
    Lots_Order=lots;
+   double requestedVolume = GetNormalizedLots(Lots_Order);
    static ENUM_ORDER_TYPE_FILLING TypeFillingOpen = -1;//ORDER_FILLING_IOC;
    
    if(MathAbs(lots)<SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN)) {Lots_Order=LastOpen=LastSL=LastTP=0; LastOrderTicket=0; return 1;} // 0 lots added successfully
@@ -3683,7 +5796,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
     request.magic = magic;                               // Magic Number
   //request.order = ;                                    // Order ticket
     request.symbol = _Symbol;                            // Symbol
-    request.volume = GetNormalizedLots(Lots_Order);      // Requested volume for a deal in lots
+    request.volume = requestedVolume;                    // Requested volume for a deal in lots
     request.price = NormalizeDouble(ask,_Digits);        // Lastest Bid price
   //request.stoplimit = ;                                // StopLimit level of the order
     request.sl = SL;                                     // Stop Loss
@@ -3706,7 +5819,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
     else{
      ret++;
      LastSL=SL; LastTP=TP;
-     LastOrderTicket=(int)result.order;
+     LastOrderTicket=(int)ResolveLivePositionTicket(OP,magic,requestedVolume,desc,(ulong)result.order,(ulong)result.deal);
      LastDealTicket=LastBuyTicket=(int)result.deal;
    //Print(PositionSelectByTicket(LastOrderTicket)+" "+LastOrderTicket+" "+LastDealTicket+" "+PositionGetInteger(POSITION_TICKET)+" "+PositionGetInteger(POSITION_IDENTIFIER));
    //LastTradeTime = tm_cur;
@@ -3732,7 +5845,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
     request.magic = magic;                               // Magic Number
   //request.order = ;                                    // Order ticket
     request.symbol = _Symbol;                            // Symbol
-    request.volume = GetNormalizedLots(Lots_Order);      // Requested volume for a deal in lots
+    request.volume = requestedVolume;                    // Requested volume for a deal in lots
     request.price = NormalizeDouble(bid,_Digits);        // Lastest Bid price
   //request.stoplimit = ;                                // StopLimit level of the order
     request.sl = SL;                                     // Stop Loss
@@ -3755,7 +5868,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
     else{
      ret++;
      LastSL=SL; LastTP=TP;
-     LastOrderTicket=(int)result.order;
+     LastOrderTicket=(int)ResolveLivePositionTicket(OP,magic,requestedVolume,desc,(ulong)result.order,(ulong)result.deal);
      LastDealTicket=LastSellTicket=(int)result.deal;
    //LastTradeTime = tm_cur;
    //TradesInSession++;
@@ -3764,8 +5877,10 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
     LastRetCode=result.retcode;
     orders++;
    }
-   PositionSelectByTicket(LastOrderTicket);
-   LastOpen=PositionGetDouble(POSITION_PRICE_OPEN);
+   if(LastOrderTicket>0 && PositionSelectByTicket((ulong)LastOrderTicket))
+      LastOpen=PositionGetDouble(POSITION_PRICE_OPEN);
+   else
+      LastOpen=0.0;
    Pause_Flag=true;
    //ObjectSetText("06","- - -",Font_Size,"NULL",clr_Text);
    return ret;
@@ -4651,6 +6766,25 @@ void CPanelDialog::OnClickLotsViewer(void)
   {
    SEQUENCE tempSEQ;  // temp seq created 
    string LotsInfo = tempSEQ.BuildLotsInfoString();  // method infers StartLots internally
+   string OpenInfo = "";
+
+   if(Seq_Buy.Active)       OpenInfo += Seq_Buy.BuildOpenedLotsInfoString();
+   if(Seq_Sell.Active)
+   {
+    if(OpenInfo!="") OpenInfo += "\n";
+    OpenInfo += Seq_Sell.BuildOpenedLotsInfoString();
+   }
+   if(OpenInfo=="")
+   {
+    if(Seq_Buy_Virtual.Active)  OpenInfo += Seq_Buy_Virtual.BuildOpenedLotsInfoString();
+    if(Seq_Sell_Virtual.Active)
+    {
+     if(OpenInfo!="") OpenInfo += "\n";
+     OpenInfo += Seq_Sell_Virtual.BuildOpenedLotsInfoString();
+    }
+   }
+
+   if(OpenInfo!="") LotsInfo += "\n\nCURRENT OPENED SEQUENCE LAYOUT\n\n" + OpenInfo;
    MessageBox(LotsInfo,"Sequence Levels Viewer",MB_OK);
   }
 void CPanelDialog::OnClickBackToDB(void) 

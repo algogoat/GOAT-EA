@@ -9,11 +9,32 @@ int ShellExecuteW(int hWnd, string lpOperation, string lpFile, string lpParamete
 ////int GetCurrentProcessId();
 //#import
 //+------------------------------------------------------------------+
-void AddCommand(string path)
+string PowerShellSingleQuoted(string text)
+  {
+   StringReplace(text,"'","''");
+   return text;
+  }
+//+------------------------------------------------------------------+
+void AddCommand(string configPath,string guardPath="",string launchId="")
   {
    //if(!TerminalInfoInteger(TERMINAL_DLLS_ALLOWED)) MessageBox()
-   string terminal_path = "\""+TerminalInfoString(TERMINAL_PATH) + "\\terminal64.exe\"";
-   string config_path   = TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\"+path+"\\config.ini";
+   string terminal_path = TerminalInfoString(TERMINAL_PATH) + "\\terminal64.exe";
+   string config_rel    = configPath;
+   StringTrimLeft(config_rel);
+   StringTrimRight(config_rel);
+   StringReplace(config_rel,"/","\\");
+   if(StringLen(config_rel)<4 || StringSubstr(config_rel,StringLen(config_rel)-4)!=".ini")
+      config_rel+="\\config.ini";
+   string config_path   = TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\"+config_rel;
+   string guard_path    = "";
+   if(guardPath!="")
+   {
+      string guard_rel = guardPath;
+      StringTrimLeft(guard_rel);
+      StringTrimRight(guard_rel);
+      StringReplace(guard_rel,"/","\\");
+      guard_path = TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\"+guard_rel;
+   }
    // Get the current terminal's PID for the 'Wait-Process'
    uint    pid      = GetCurrentProcessId();
    string pidStr   = IntegerToString(pid);
@@ -21,13 +42,33 @@ void AddCommand(string path)
    // Build a PowerShell command to:
    //  1) Wait for this process to exit
    //  2) Launch a new terminal64 with the /config parameter
-   string psCommand = 
-       "Wait-Process -Id " + pidStr + 
-       "; Start-Process '" + terminal_path + "' -ArgumentList '/config:\"" + config_path + "\"'";
+   string guardCommand = "";
+   if(guard_path!="" && launchId!="")
+   {
+      guardCommand =
+       "$gp='" + PowerShellSingleQuoted(guard_path) + "'; " +
+       "$lid='" + PowerShellSingleQuoted(launchId) + "'; " +
+       "$cr='" + PowerShellSingleQuoted(config_rel) + "'; " +
+       "if(!(Test-Path -LiteralPath $gp)){exit}; " +
+       "$guard=Get-Content -LiteralPath $gp -Raw -ErrorAction SilentlyContinue; " +
+       "if($guard -notlike ('*LaunchId='+$lid+'*')){exit}; " +
+       "if($guard -notlike ('*ConfigPath='+$cr+'*')){exit}; ";
+   }
+
+   string psCommand =
+       "$ErrorActionPreference='SilentlyContinue'; " +
+       "$tp='" + PowerShellSingleQuoted(terminal_path) + "'; " +
+       "$cp='" + PowerShellSingleQuoted(config_path) + "'; " +
+       "Wait-Process -Id " + pidStr + " -ErrorAction SilentlyContinue; " +
+       "Start-Sleep -Milliseconds 500; " +
+       guardCommand +
+       "if(!(Test-Path -LiteralPath $cp)){exit}; " +
+       "$q=[char]34; " +
+       "Start-Process -FilePath $tp -ArgumentList ('/config:'+$q+$cp+$q)";
    // Parameters to run PowerShell in no-profile, bypass execution policy
-   string parameters = "-NoProfile -ExecutionPolicy Bypass -Command \"" + psCommand + "\"";
+   string parameters = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"" + psCommand + "\"";
    // Launch PowerShell
-   ShellExecuteW(0, "open", "powershell", parameters, "", 0);
+   ShellExecuteW(0, "open", "powershell.exe", parameters, "", 0);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 struct SettingsStrings
@@ -37,6 +78,85 @@ struct SettingsStrings
    SettingsStrings() {str_testerSettings="";str_Inputs="";Expert="";symbol="";period_="";Optimization="";Model="";fromDate="";toDate="";ForwardMode="";ForwardDate="";ExecutionMode="";Visual="";}
   };
 SettingsStrings strT;
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+#define GOAT_BATCH_RESTART_PENDING_GV       "GOAT_BatchRestartPending"
+#define GOAT_BATCH_RESTART_REQUESTED_AT_GV  "GOAT_BatchRestartRequestedAt"
+#define GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV "GOAT_BatchRestartStopAttempts"
+#define GOAT_BATCH_RESTART_LAST_LOG_GV      "GOAT_BatchRestartLastLog"
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatBatchDeferredRestartPending(void)
+  {
+   return (GlobalVariableGet(GOAT_BATCH_RESTART_PENDING_GV)>0.0);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatBatchClearDeferredRestart(void)
+  {
+   GlobalVariableDel(GOAT_BATCH_RESTART_PENDING_GV);
+   GlobalVariableDel(GOAT_BATCH_RESTART_REQUESTED_AT_GV);
+   GlobalVariableDel(GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV);
+   GlobalVariableDel(GOAT_BATCH_RESTART_LAST_LOG_GV);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatBatchRequestDeferredRestart(const string reason,string Key_,string EA_Name_,string Server_)
+  {
+   GlobalVariableSet(GOAT_BATCH_RESTART_PENDING_GV,1.0);
+   GlobalVariableSet(GOAT_BATCH_RESTART_REQUESTED_AT_GV,(double)TimeLocal());
+   GlobalVariableSet(GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV,0.0);
+   GlobalVariableSet(GOAT_BATCH_RESTART_LAST_LOG_GV,0.0);
+   WriteLog("Batch terminal restart deferred until Strategy Tester is idle. Reason: "+reason,false,Key_,EA_Name_,Server_);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatBatchTesterIdleConfirmed(const int stableMs=750)
+  {
+   if(!MTTESTER::IsIdle()) return false;
+   Sleep(stableMs);
+   return MTTESTER::IsIdle();
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatBatchTryCloseTerminalWhenTesterIdle(string Key_,string EA_Name_,string Server_,
+                                             const int maxStopRequests=3,
+                                             const int stopWindowSec=120,
+                                             const int logIntervalSec=30)
+  {
+   if(!GoatBatchDeferredRestartPending()) return false;
+
+   if(GoatBatchTesterIdleConfirmed())
+     {
+      WriteLog("Batch restart: Strategy Tester is idle; requesting terminal close.",false,Key_,EA_Name_,Server_);
+      bool closeRequested=TerminalClose(99);
+      if(closeRequested) GoatBatchClearDeferredRestart();
+      else WriteLog("Batch restart: terminal close request failed; deferred restart remains pending.",true,Key_,EA_Name_,Server_);
+      return closeRequested;
+     }
+
+   datetime now=(datetime)TimeLocal();
+   datetime requestedAt=(datetime)GlobalVariableGet(GOAT_BATCH_RESTART_REQUESTED_AT_GV);
+   int attempts=(int)GlobalVariableGet(GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV);
+
+   if(requestedAt<=0)
+     {
+      requestedAt=now;
+      GlobalVariableSet(GOAT_BATCH_RESTART_REQUESTED_AT_GV,(double)requestedAt);
+     }
+
+   if((now-requestedAt)<=stopWindowSec && attempts<maxStopRequests)
+     {
+      GlobalVariableSet(GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV,(double)(attempts+1));
+      WriteLog("Batch restart: Strategy Tester still active; requesting tester stop before terminal close.",false,Key_,EA_Name_,Server_);
+      MTTESTER::ClickStop(30);
+      TesterStop();
+      return false;
+     }
+
+   datetime lastLog=(datetime)GlobalVariableGet(GOAT_BATCH_RESTART_LAST_LOG_GV);
+   if(lastLog<=0 || (now-lastLog)>=logIntervalSec)
+     {
+      GlobalVariableSet(GOAT_BATCH_RESTART_LAST_LOG_GV,(double)now);
+      WriteLog("Batch restart pending: Strategy Tester is still active. Terminal close will wait to avoid the MT5 shutdown warning.",true,Key_,EA_Name_,Server_);
+     }
+
+   return false;
+  }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 struct ExportRecord
   {
@@ -157,7 +277,12 @@ bool StartTester(int rowInd,string mode,bool reportMode,const int Attempts=20)
      for(int i=0;i<Attempts;i++)
      {
       Sleep(100);
-      if(MTTESTER::ClickStart()) return true;
+      if(MTTESTER::ClickStart())
+      {
+       Sleep(200);
+       if(!MTTESTER::SelectTesterGraphTab()) LogOrPrint(reportMode,"⚠️ Tester Graph tab selection request failed; export continues.",strT._K,strT._N,strT._S);
+       return true;
+      }
       else                       LogOrPrint(reportMode,"❌ Failed to Click the Strategy Tester Start Button.",strT._K,strT._N,strT._S);
      }
      return false;
@@ -575,7 +700,8 @@ bool MoveKeptExports(ExportRecord &expArr[],const string dstKey)
       files[k++] = expArr[i].setFile;
      }
    /* ---- move on disk ------------------------------------------- */
-   if(!MoveExports(dstKey, files))            // your helper updates files[]
+   string srcRoot=GoatOptExportsPath(strT._N,strT._S);
+   if(!MoveExportsFromRoot(srcRoot, dstKey, files))            // your helper updates files[]
       return false;                           // error already printed inside
    /* ---- reflect new paths back into expArr[] ------------- */
    k = 0;
@@ -590,17 +716,25 @@ bool MoveKeptExports(ExportRecord &expArr[],const string dstKey)
 // --- pull the “Lots=” line from a .set file (rudimentary INI reader)
 string ParseSetFileForInput(const string key,const string file)
   {
-   int h=FileOpen(file,FILE_READ|FILE_COMMON); if(h==INVALID_HANDLE) return("-1.0");
    const int keyLen=StringLen(key);
-   while(!FileIsEnding(h))
+   string content=GoatExportReadTextCommon(file,0);
+   if(content=="") return("-1.0");
+
+   string setLines[];
+   int total=StringSplit(content,'\n',setLines);
+   for(int i=0;i<total;++i)
    {
-      string ln = FileReadString(h);
+      string ln = setLines[i];
+      StringTrimLeft(ln);
+      StringTrimRight(ln);
       if(StringFind(ln,key,0)==0)
       {
-         string v = StringSubstr(ln,keyLen); StringTrimLeft(v); FileClose(h); return(v);
+         string v = StringSubstr(ln,keyLen);
+         StringTrimLeft(v);
+         return(v);
       }
    }
-   FileClose(h); return("-1.0");
+   return("-1.0");
   }
 double FetchMetric(string filename, string metric)
   {
@@ -733,26 +867,125 @@ bool FindExports(const string srcKey,string &out[])
    return WalkKey(srcKey,out);                 // true  ⇨ at least 1 file kept
   }
 //--------------------------------------------------------------------
+string GoatExportNormalizePath(string path)
+  {
+   StringReplace(path,"/","\\");
+   while(StringFind(path,"\\\\",0)>=0) StringReplace(path,"\\\\","\\");
+   return path;
+  }
+//--------------------------------------------------------------------
+string GoatExportCommonAbsPath(string relPath)
+  {
+   relPath=GoatExportNormalizePath(relPath);
+   if(StringFind(relPath,":\\",0)>0 || StringFind(relPath,"\\\\",0)==0) return relPath;
+   return TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\"+relPath;
+  }
+//--------------------------------------------------------------------
+string GoatExportFlattenCsvSetFolder(string relPath)
+  {
+   relPath=GoatExportNormalizePath(relPath);
+   StringReplace(relPath,"\\CSV+SET\\","\\");
+   if(StringFind(relPath,"CSV+SET\\",0)==0)
+      relPath=StringSubstr(relPath,StringLen("CSV+SET\\"));
+   return relPath;
+  }
+//--------------------------------------------------------------------
+string GoatExportReadTextCommon(const string srcRel,const int index)
+  {
+   string body=GoatOptReadTextFile(srcRel);
+   if(body!="") return body;
+
+   string tempRel=Key+"\\_export_read\\read_"+IntegerToString((int)GetTickCount())+"_"+IntegerToString(index)+".tmp";
+   if(MTTESTER::FileCopy(GoatExportCommonAbsPath(srcRel),GoatExportCommonAbsPath(tempRel),true))
+   {
+      body=GoatOptReadTextFile(tempRel);
+      GoatExportDeleteCommon(tempRel,index);
+   }
+   return body;
+  }
+//--------------------------------------------------------------------
+bool GoatExportMoveCommon(const string srcRel,const string dstRel)
+  {
+   string srcAbs=GoatExportCommonAbsPath(srcRel);
+   string dstAbs=GoatExportCommonAbsPath(dstRel);
+   if(MTTESTER::FileMove(srcAbs,dstAbs,true)) return true;
+
+   ResetLastError();
+   if(FileIsExist(dstRel,FILE_COMMON)) FileDelete(dstRel,FILE_COMMON);
+   return FileMove(srcRel,FILE_COMMON,dstRel,FILE_COMMON|FILE_REWRITE);
+  }
+//--------------------------------------------------------------------
+bool GoatExportCopyCommon(const string srcRel,const string dstRel)
+  {
+   string srcAbs=GoatExportCommonAbsPath(srcRel);
+   string dstAbs=GoatExportCommonAbsPath(dstRel);
+   if(MTTESTER::FileCopy(srcAbs,dstAbs,true)) return true;
+
+   string body=GoatExportReadTextCommon(srcRel,0);
+   if(body=="") return false;
+   return GoatOptWriteTextFile(dstRel,body);
+  }
+//--------------------------------------------------------------------
+bool GoatExportDeleteCommon(const string fileRel,const int index)
+  {
+   if(fileRel=="") return true;
+   ResetLastError();
+   if(FileDelete(fileRel,FILE_COMMON)) return true;
+
+   string ext="";
+   int lastDot=-1,lastSep=-1;
+   for(int i=0;i<StringLen(fileRel);++i)
+   {
+      ushort ch=StringGetCharacter(fileRel,i);
+      if(ch=='.') lastDot=i;
+      else if(ch=='\\' || ch=='/') lastSep=i;
+   }
+   if(lastDot>lastSep) ext=StringSubstr(fileRel,lastDot);
+
+   string trashRel=Key+"\\_export_delete\\deleted_"+IntegerToString((int)GetTickCount())+"_"+IntegerToString(index)+ext;
+   string srcAbs=GoatExportCommonAbsPath(fileRel);
+   string trashAbs=GoatExportCommonAbsPath(trashRel);
+   if(MTTESTER::FileMove(srcAbs,trashAbs,true))
+   {
+      FileDelete(trashRel,FILE_COMMON);
+      return true;
+   }
+   return false;
+  }
+//--------------------------------------------------------------------
 //  MoveExports – move list collected from Key1 to Key2 (any depth)
 //--------------------------------------------------------------------
 bool MoveExports(const string dstKey,string &files[])
+  {
+   return MoveExportsFromRoot("",dstKey,files);
+  }
+//--------------------------------------------------------------------
+//  MoveExportsFromRoot – move files while preserving the path below srcRoot
+//--------------------------------------------------------------------
+bool MoveExportsFromRoot(const string srcRoot,const string dstKey,string &files[])
   {
    bool ok=true;
    for(int i=0;i<ArraySize(files);i++)
      {
       string src=files[i];                        // Key1\...\file
-      // Relative part after first '\'
-      int sep=StringFind(src,"\\");
-      string rel=(sep==-1)?src:StringSubstr(src,sep+1);
+      string rel=src;
+      if(srcRoot!="" && StringFind(src,srcRoot+"\\",0)==0)
+         rel=StringSubstr(src,StringLen(srcRoot)+1);
+      else
+      {
+         // Relative part after first '\'
+         int sep=StringFind(src,"\\");
+         rel=(sep==-1)?src:StringSubstr(src,sep+1);
+      }
+      if(GoatOptCurrentRunPath(strT._N,strT._S)!="")
+         rel=GoatExportFlattenCsvSetFolder(rel);
       string dst=dstKey+"\\"+rel;                 // Key2\...\file
       /* --- build directory part of dst and create it --- */
       int lastSep=StringLen(dst)-1;
       while(lastSep>=0 && StringGetCharacter(dst,lastSep)!='\\') lastSep--;
       string dstDir=(lastSep>0)?StringSubstr(dst,0,lastSep):"";
       EnsureCommonPath(dstDir);
-      // remove existing file to avoid "already open"
-      if(FileIsExist(dst,FILE_COMMON)) FileDelete(dst,FILE_COMMON);
-      if(!FileMove(src,FILE_COMMON,dst,FILE_COMMON|FILE_REWRITE))
+      if(!GoatExportMoveCommon(src,dst))
       {
        if(GlobalVariableGet("BatchOnGoing")!=0) WriteLog("❌ Move failed: "+FileErrorString(GetLastError()),false,strT._K,strT._N,strT._S);
        Print("Move failed: ",src," → ",dst," err=",GetLastError()); ok=false;}
@@ -765,9 +998,9 @@ bool DeleteExports(string &files[])
   {
    bool ok=true;
    for(int i=0;i<ArraySize(files);i++)
-      if(!FileDelete(files[i],FILE_COMMON))
-        {if(GlobalVariableGet("BatchOnGoing")!=0) WriteLog("❌ Delete failed: "+FileErrorString(GetLastError())+": "+files[i],false,strT._K,strT._N,strT._S);
-         Print("Delete failed: ",files[i]," err=",GetLastError()); ok=false;}
+      if(!GoatExportDeleteCommon(files[i],i))
+         {if(GlobalVariableGet("BatchOnGoing")!=0) WriteLog("❌ Delete failed: "+FileErrorString(GetLastError())+": "+files[i],false,strT._K,strT._N,strT._S);
+          Print("Delete failed: ",files[i]," err=",GetLastError()); ok=false;}
    return ok;
   }
 //+------------------------------------------------------------------+

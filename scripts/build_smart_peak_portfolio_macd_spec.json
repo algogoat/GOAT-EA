@@ -1,0 +1,13 @@
+{
+  "source_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 TrendMACD V2 Candidate",
+  "dest_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.39 Smart Peak News MLPS 400 Portfolio",
+  "files": [
+    {
+      "source": "SP_TrendMACD2_MLPS400_M5.set",
+      "dest": "SP_TMACD400_M5.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=SP_TMACD400"
+      }
+    }
+  ]
+}

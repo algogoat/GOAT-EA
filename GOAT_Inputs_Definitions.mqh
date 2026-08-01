@@ -1,7 +1,10 @@
 ﻿#define   Key              "GOAT"
 #define   EA_Name          MQLInfoString(MQL_PROGRAM_NAME)
 #define   Server           AccountInfoString(ACCOUNT_SERVER)
-#define   version_         "1.35"
+#ifndef  GOAT_VERSION_LABEL
+#define   GOAT_VERSION_LABEL "1.44"
+#endif
+#define   version_         GOAT_VERSION_LABEL
 #define   NEWS_FILE        Key+"\\GOAT_News.csv"
 #define   GMT_OFFSET_FILE  Key+"\\GOAT_GMToffset.txt"
 #define   DST_FILE         Key+"\\GOAT_DST.txt"
@@ -193,6 +196,12 @@ enum ENUM_ACTION_BIAS
    Bias_Close_high,     // add above threshold and close on sentiment flip
   };
 //-------------------------------------------------------------------------
+enum ENUM_BIAS_EXIT
+  {
+   BiasExit_HardClose,   // Close affected sequence immediately
+   BiasExit_SmartRescue, // Profit close, loss rescue inside MLPS
+  };
+//-------------------------------------------------------------------------
 enum ENUM_BIAS_TRADES
   {
    Bias_Seq,            // Only restrict Sequence starts
@@ -243,10 +252,12 @@ enum ENUM_MODE_LOTSCLOSE
 enum ENUM_MODE_LOTS_PROG
   {
    Lots_Prog_Start,     // Calculate by Starting Lots
-   Lots_Prog_Last,      // Calculate by Last Lots
+   Lots_Prog_Last,      // Calculate by Exponential Lots
    Lots_Prog_Cum,       // Calculate by Cumulative Lots
-   Lots_Prog_Cum2,      // Calculate by Adjusted Cumulative Lots
+   Lots_Prog_Cum2,      // Calculate by Front-Loaded Cumulative Lots
    Lots_Prog_Peak,      // Calculate by Peak Lots
+   Lots_Prog_CumPartial,// Calculate by Cumulative Lots with retrace partial close
+   Lots_Prog_PeakSmart, // Calculate by Smart Peak Lots
   };
 //-------------------------------------------------------------------------
 enum ENUM_MODE_RESTART
@@ -452,6 +463,7 @@ FileWrite(FileSET_handle,"ATR_Method="+(string)ATR_Method);//=1||1||0||2||Y
 FileWrite(FileSET_handle,"; ============POSITION SIZING============");
 FileWrite(FileSET_handle,"Mode_Lots="+(string)Mode_Lots);//=0
 FileWrite(FileSET_handle,"Risk="+(string)Risk);//=1
+FileWrite(FileSET_handle,"Sequence_MLPS_Hard_Close="+(string)Sequence_MLPS_Hard_Close);
 FileWrite(FileSET_handle,"Lots_Input="+(string)Lots_Input);//=0.1||0.1||0.010000||1.000000||N
 FileWrite(FileSET_handle,"Lots_Max="+(string)Lots_Max);//=0.2||0.2||0.1||0.9||Y
 FileWrite(FileSET_handle,"Lots_Max_Cum="+(string)Lots_Max_Cum);//=0.2||0.2||0.1||0.9||Y
@@ -459,6 +471,9 @@ FileWrite(FileSET_handle,"Lots_Exponent="+(string)Lots_Exponent);//=1.4||0.8||0.
 FileWrite(FileSET_handle,"Lots_Factor="+(string)Lots_Factor);//=1.4||0.8||0.1||1.5||Y
 FileWrite(FileSET_handle,"Mode_Lots_Prog="+(string)Mode_Lots_Prog);
 FileWrite(FileSET_handle,"Peak_Lots_Pos_PC="+(string)Peak_Lots_Pos_PC);
+FileWrite(FileSET_handle,"Partial_Profit_Factor="+(string)Partial_Profit_Factor);
+FileWrite(FileSET_handle,"Peak_Smart_Release_PC="+(string)Peak_Smart_Release_PC);
+FileWrite(FileSET_handle,"Peak_Smart_Max_Close_PC="+(string)Peak_Smart_Max_Close_PC);
 FileWrite(FileSET_handle,"; ============MONEY MANAGEMENT===========");
 FileWrite(FileSET_handle,"MaxLossLocal="+(string)MaxLossLocal);//=0
 FileWrite(FileSET_handle,"MaxLossGlobal="+(string)MaxLossGlobal);//=0
@@ -528,6 +543,8 @@ FileWrite(FileSET_handle,"Trade_Friday="+(string)Trade_Friday);//=false||false||
 FileWrite(FileSET_handle,"; ==========NEWS AND AI BIAS FILTER==========");
 FileWrite(FileSET_handle,"Mode_Bias="+(string)Mode_Bias);
 FileWrite(FileSET_handle,"Mode_Bias_Trades="+(string)Mode_Bias_Trades);
+FileWrite(FileSET_handle,"Mode_Bias_Exit="+(string)Mode_Bias_Exit);
+FileWrite(FileSET_handle,"Bias_Exit_Max_Exposure_Adds="+(string)Bias_Exit_Max_Exposure_Adds);
 FileWrite(FileSET_handle,"Bias_threshold="+(string)Bias_threshold);
 FileWrite(FileSET_handle,"Mode_News="+(string)Mode_News);//=1||1||0||4||Y
 FileWrite(FileSET_handle,"News_threshold="+(string)News_threshold);
@@ -557,7 +574,7 @@ sinput   ENUM_MODE_OPERATION     Mode_Operation                =            Oper
 input    string                  EA_Desc                       =                "GOAT_Trading";       // Strategy Comment
          int                     Font_Size_Base                =                            10;       // Base Font Size
          int                     DWidth                        =                           900;
-         int                     DHeight                       =                           500;
+         int                     DHeight                       =                           530;
 //sinput   
          ENUM_FONT               Font_Header                   =                         Font1;
 //sinput   
@@ -607,6 +624,7 @@ input    ENUM_MODE_MA            ATR_Method                    =                
 input    group                   "============POSITION SIZING============                    ";
 sinput   ENUM_MODE_LOTS          Mode_Lots                     =                     FixedLots;       // Sizing Method (For Starting Lots)
 sinput   double                  Risk                          =                           500;       // Risk/Loss per Sequence in $$$
+sinput   bool                    Sequence_MLPS_Hard_Close      =                         false;       // Hard Close Sequence at Risk/MLPS Breach
 input    double                  Lots_Input                    =                           0.1;       // Starting Lots (Fixed/Scaled)
 input    double                  Lots_Max                      =                          10.0;       // Max Trade Lots (multiplies Starting Lots)
 input    double                  Lots_Max_Cum                  =                          50.0;       // Max Cumulative Lots (multiplies Starting Lots)
@@ -615,6 +633,9 @@ input    double                  Lots_Factor                   =                
 //sinput ENUM_MODE_LOTSCLOSE     Mode_LotsClose                =                 Close_Partial;       // Net Lots reduction method
 input    ENUM_MODE_LOTS_PROG     Mode_Lots_Prog                =                Lots_Prog_Last;       // Lots Progression Model
 input    double                  Peak_Lots_Pos_PC              =                          50.0;       // % Position in sequence where Lots peak
+input    double                  Partial_Profit_Factor         =                          10.0;       // % Standing lots to close on each retrace level
+input    double                  Peak_Smart_Release_PC         =                          50.0;       // Smart Peak % excess lots harvested
+input    double                  Peak_Smart_Max_Close_PC       =                          30.0;       // Smart Peak max % standing lots harvested
 input    group                   "============RISK MANAGEMENT===========                    ";
 sinput   double                  MaxLossLocal                  =                           0.0;       // Max Local Running Loss amount
 sinput   double                  MaxLossGlobal                 =                           0.0;       // Max Global Running Loss amount
@@ -693,6 +714,8 @@ input    bool                    Trade_Friday                  =                
 input    group                   "==========NEWS AND AI FILTER==========                   ";
 input    ENUM_ACTION_BIAS        Mode_Bias                     =                 Bias_Disabled;       // AI Bias Mode
 input    ENUM_BIAS_TRADES        Mode_Bias_Trades              =                      Bias_Seq;       // AI Bias restriction
+input    ENUM_BIAS_EXIT          Mode_Bias_Exit                =              BiasExit_HardClose;     // AI Bias Exit Mode
+input    int                     Bias_Exit_Max_Exposure_Adds   =                            -1;       // Smart Rescue max positive adds (-1=normal)
 input    int                     Bias_threshold                =                            60;       // AI Confidence Threshold
 input    ENUM_ACTION_NEWS        Mode_News                     =                 News_Disabled;       // News Mode
 input    int                     News_threshold                =                            60;       // News Impact threshold
@@ -771,6 +794,55 @@ bool     PrevBuySig, PrevSellSig;
 bool     BuyExit, SellExit, BuyPartialExit, SellPartialExit;
 bool     PrevBuyExit, PrevSellExit;
 
+#define GOAT_EVENT_CHILD_STATUS   (CHARTEVENT_CUSTOM + 101)
+#define GOAT_EVENT_DASHBOARD_COMMAND (CHARTEVENT_CUSTOM + 102)
+#define GOAT_GV_FIELD_CID         "CID"
+#define GOAT_GV_FIELD_MAGIC       "Magic"
+#define GOAT_GV_FIELD_HEARTBEAT   "HB"
+#define GOAT_GV_FIELD_OPEN_TRADES "OTR"
+#define GOAT_GV_FIELD_OPEN_LOTS   "OLT"
+#define GOAT_GV_FIELD_OPEN_PL     "OPL"
+#define GOAT_GV_FIELD_PL_DAILY    "PLD"
+#define GOAT_GV_FIELD_PL_WEEKLY   "PLW"
+#define GOAT_GV_FIELD_PL_TOTAL    "PLT"
+#define GOAT_GV_FIELD_TRADES_TOTAL "TRD"
+#define GOAT_GV_FIELD_NEWS        "NEWS"
+#define GOAT_GV_FIELD_BIAS        "BIAS"
+#define GOAT_GV_FIELD_CMD_ID      "CMDID"
+#define GOAT_GV_FIELD_CMD_TYPE    "CMDT"
+#define GOAT_GV_FIELD_CMD_VALUE   "CMDV"
+#define GOAT_GV_FIELD_CMD_EXPIRES "CMDEXP"
+#define GOAT_GV_FIELD_ACK_ID      "ACKID"
+#define GOAT_GV_FIELD_ACK_STATUS  "ACKS"
+#define GOAT_GV_FIELD_ACK_TIME    "ACKTIME"
+#define GOAT_GV_FIELD_ACK_CLOSED  "ACKCLOSED"
+#define GOAT_GV_FIELD_ACK_ERRORS  "ACKERR"
+#define GOAT_GV_FIELD_ACK_REMAINING "ACKREM"
+#define GOAT_GV_FIELD_POLICY_PAUSED "PPAUSED"
+#define GOAT_GV_FIELD_POLICY_TRADE_MASK "PTMASK"
+#define GOAT_GV_FIELD_POLICY_EXPOSURE_MODE "PEMODE"
+
+#define GOAT_DASH_CMD_PORTFOLIO_PAUSE 1
+#define GOAT_DASH_CMD_PORTFOLIO_CLOSE 2
+#define GOAT_DASH_CMD_TRADE_PERMISSIONS 3
+#define GOAT_DASH_CMD_EXPOSURE_POLICY    4
+#define GOAT_DASH_CMD_CLOSE_SCOPE        5
+#define GOAT_DASH_TRADE_ALLOW_BUY       1
+#define GOAT_DASH_TRADE_ALLOW_SELL      2
+#define GOAT_EXPOSURE_ALLOW             0
+#define GOAT_EXPOSURE_SYMBOL_DIRECTION  1
+#define GOAT_EXPOSURE_CURRENCY_DIRECTION 2
+#define GOAT_CLOSE_SCOPE_ALL            0
+#define GOAT_CLOSE_SCOPE_USD            1
+#define GOAT_CLOSE_SCOPE_EUR            2
+#define GOAT_CLOSE_SCOPE_GBP            3
+#define GOAT_CLOSE_SCOPE_JPY            4
+#define GOAT_CLOSE_SCOPE_VALUE_FACTOR   16
+#define GOAT_DASH_ACK_APPLIED         1
+#define GOAT_DASH_ACK_REJECTED        2
+#define GOAT_DASH_ACK_FAILED          3
+#define GOAT_DASH_ACK_EXPIRED         4
+
 int      SL_Points,TP_Points;
 int      MAGIC1=0,MAGIC2=0,LicenseKey=0;
 
@@ -819,27 +891,95 @@ bool     NEWS_ON=false;
 string   URL_Web        = "www.GOATedge.ai";//"https://www.GOATalgo.com/";
 string   URL_API        = "https://goatedge.ai";//"https://api.goatalgo.com";
 //string URL_API2       = "https://eloquent-nature-75ba63ed82.strapiapp.com/api/metatrader/check-id";
-string   requestHeaders = "Content-Type: application/json; charset=UTF-8\r\n"
-                          "Authorization: Bearer 664ff7e62275f1ee4438b264e4928176940a7e25c3401b596334a73d689a2dd4"+
-                                                "6d647c15a5ee7af289757589ad7f872ad3f74853a120b39d79822dddd2126196";
+#define  GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer.token"
+string   requestHeaders = "Content-Type: application/json; charset=UTF-8\r\n";
+
+bool GOATIsSafeApiBearerToken(const string token)
+  {
+   int length=StringLen(token);
+   if(length<64 || length>512) return false;
+   for(int i=0;i<length;i++)
+     {
+      ushort c=StringGetCharacter(token,i);
+      if(!((c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9')
+           || c=='-' || c=='_' || c=='.' || c=='~')) return false;
+     }
+   return true;
+  }
+
+bool GOATBuildAuthenticatedRequestHeaders(string &headers)
+  {
+   headers="";
+   int handle=FileOpen(GOAT_API_BEARER_FILE,FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
+   if(handle==INVALID_HANDLE) return false;
+   ulong file_size=FileSize(handle);
+   if(file_size<64 || file_size>1024)
+     {
+      FileClose(handle);
+      return false;
+     }
+   string token=FileReadString(handle);
+   bool extra_content=false;
+   while(!FileIsEnding(handle))
+     {
+      string extra=FileReadString(handle);
+      if(StringLen(extra)>0) extra_content=true;
+     }
+   FileClose(handle);
+   if(extra_content || !GOATIsSafeApiBearerToken(token)) return false;
+   headers=requestHeaders+"Authorization: Bearer "+token+"\r\n";
+   return true;
+  }
 int      timeout  =                                  5000;
 long     Licensed_Account_Number =                      0;  // Account Number     ( 0  for not checking )
 string   Licensed_Account_Title  =                     "";  // Account Title/Name ( "" for not checking )
-datetime Expiry                  = D'2026.03.27 22:00:00';  // Year Month Day Hours Minutes Seconds
+datetime Expiry                  = D'2027.08.01 22:00:00';  // Year Month Day Hours Minutes Seconds
+int      PortfolioTracking_BucketMinutes =                  10;
+int      PortfolioTracking_SampleSeconds =                   5;
 //+------------------------------------------------------------------+
 //input string EA_Desc = "EA_Strategy@{mode=EXPORT,dt_BOOS_end=2025.09.01,dt_FOOS_start=2025.09.30"; // Strategy Comment datetime dt_Back_OOS=0,dt_Fwrd_OOS=0;
 //input int    Input1 = 1;
 //input int    Input2 = 2;
 //input int    Input3 = 3;
-datetime dt_Back_OOS=0,dt_Fwrd_OOS=0;
+datetime dt_Back_OOS=0,dt_Fwrd_OOS=0,dt_FWD_start=0,dt_FWD_end=0;
 string   Strat="",Mode="",_Symbol_=_Symbol;
 string   FileCSV_Name="",Date_Start="";
 int      FileCSV_handle=INVALID_HANDLE,FileSET_handle=INVALID_HANDLE,FileTester_handle=INVALID_HANDLE;
 
-int      days_BOOS=0,days_IS=0,days_FOOS=0;
+int      days_BOOS=0,days_IS=0,days_FOOS=0,days_FWD=0;
 datetime dt_BOOS_end=0,dt_IS_end=0;
-double   eq_BOOS_start=0,eq_BOOS_end=0,eq_IS_start=0,eq_IS_end=0,eq_FOOS_start=0; // FOOS end is fetchable
-int      trd_BOOS=0, trd_IS=0, trd_FOOS=0;
+double   eq_BOOS_start=0,eq_BOOS_end=0,eq_IS_start=0,eq_IS_end=0,eq_FOOS_start=0,eq_FWD_start=0,eq_FWD_end=0; // FOOS end is fetchable
+int      trd_BOOS=0, trd_IS=0, trd_FOOS=0, trd_FWD=0;
+datetime DashboardBusDayStart=0,DashboardBusWeekStart=0;
+double   DashboardBusClosedPLDaily=0.0,DashboardBusClosedPLWeekly=0.0,DashboardBusClosedPLTotal=0.0;
+int      DashboardBusClosedTradesTotal=0;
+double   DashboardBusNewsScore=0.0,DashboardBusBiasSentiment=0.0;
+bool     DashboardPortfolioPaused=false;
+bool     DashboardTradeAllowBuy=true,DashboardTradeAllowSell=true;
+int      DashboardExposurePolicyMode=GOAT_EXPOSURE_ALLOW;
+long     DashboardPortfolioCommandIdApplied=0;
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int GoatNormalizeCloseScope(const int scope)
+  {
+   if(scope<GOAT_CLOSE_SCOPE_ALL || scope>GOAT_CLOSE_SCOPE_JPY)
+      return GOAT_CLOSE_SCOPE_ALL;
+   return scope;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int GoatCloseCommandValue(const int scope,const int trade_mask)
+  {
+   return GoatNormalizeCloseScope(scope)+GOAT_CLOSE_SCOPE_VALUE_FACTOR*(trade_mask&(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL));
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int GoatCloseCommandScope(const int command_value)
+  {
+   return GoatNormalizeCloseScope(command_value%GOAT_CLOSE_SCOPE_VALUE_FACTOR);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int GoatCloseCommandTradeMask(const int command_value)
+  {
+   return (command_value/GOAT_CLOSE_SCOPE_VALUE_FACTOR)&(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL);
+  }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 string GetFontName(ENUM_FONT FontNumber)
   {
@@ -1290,6 +1430,480 @@ bool IsNewDay2()
       return true;
    }
    return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatChildGVName(const long magic,const string symbol,const string field)
+  {
+   return Key+"_ID_"+IntegerToString((int)magic)+"_"+symbol+"_"+field;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatSymbolGVName(const string symbol,const string field)
+  {
+   return Key+"_SYM_"+symbol+"_"+field;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatPortfolioGVName(const string field)
+  {
+   return Key+"_PORT_"+field;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatTerminalToken(void)
+  {
+   string path=TerminalInfoString(TERMINAL_DATA_PATH);
+   for(int i=StringLen(path)-1;i>=0;--i)
+   {
+      if(path[i]=='\\' || path[i]=='/')
+         return StringSubstr(path,i+1);
+   }
+   return path;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatDashboardStatePath(void)
+  {
+   return Key+"\\dashboard_state_"+GoatTerminalToken()+".tsv";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string g_goat_opt_active_run_path="";
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptSafePathPart(string text)
+  {
+   StringTrimLeft(text);
+   StringTrimRight(text);
+   if(text=="") text="Optimization Run";
+   string bad="\\/:*?\"<>|";
+   for(int i=0;i<StringLen(bad);++i)
+   {
+      string ch=StringSubstr(bad,i,1);
+      StringReplace(text,ch,"-");
+   }
+   while(StringFind(text,"  ",0)>=0) StringReplace(text,"  "," ");
+   return text;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptBasePath(const string ea_name,const string server_name)
+  {
+   return Key+"\\"+ea_name+"-"+server_name;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptRunsPath(const string ea_name,const string server_name)
+  {
+   return GoatOptBasePath(ea_name,server_name);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptActivePointerPath(const string ea_name,const string server_name)
+  {
+   return GoatOptBasePath(ea_name,server_name)+"\\active_optimization_run.ini";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptActiveConfigPath(const string ea_name,const string server_name)
+  {
+   return GoatOptBasePath(ea_name,server_name)+"\\active_optimization_config.ini";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptLaunchGuardPath(const string ea_name,const string server_name)
+  {
+   return GoatOptBasePath(ea_name,server_name)+"\\active_optimization_launch.ini";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatOptEnsureCommonFolderTree(string path)
+  {
+   StringTrimLeft(path);
+   StringTrimRight(path);
+   if(path=="") return;
+   string current="";
+   for(int i=0;i<StringLen(path);++i)
+   {
+      string ch=StringSubstr(path,i,1);
+      if(ch=="\\")
+      {
+         if(current!="") FolderCreate(current,FILE_COMMON);
+      }
+      current+=ch;
+   }
+   FolderCreate(path,FILE_COMMON);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptFolderOf(const string path)
+  {
+   for(int i=StringLen(path)-1;i>=0;--i)
+      if(path[i]=='\\' || path[i]=='/')
+         return StringSubstr(path,0,i);
+   return "";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatOptWriteTextFile(const string file_name,const string text)
+  {
+   string folder=GoatOptFolderOf(file_name);
+   if(folder!="") GoatOptEnsureCommonFolderTree(folder);
+   int handle=FileOpen(file_name,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+   if(handle==INVALID_HANDLE) return false;
+   FileWriteString(handle,text);
+   FileClose(handle);
+   return true;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptReadTextFile(const string file_name)
+  {
+   int handle=FileOpen(file_name,FILE_READ|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+   if(handle==INVALID_HANDLE) handle=FileOpen(file_name,FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+   if(handle==INVALID_HANDLE) return "";
+   string text="";
+   while(!FileIsEnding(handle))
+   {
+      text+=FileReadString(handle);
+      if(!FileIsEnding(handle)) text+="\n";
+   }
+   FileClose(handle);
+   return text;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptReadIniValue(const string text,const string key)
+  {
+   string opt_lines[];
+   int total=StringSplit(text,'\n',opt_lines);
+   string prefix=key+"=";
+   for(int i=0;i<total;++i)
+   {
+      string line=opt_lines[i];
+      StringTrimLeft(line);
+      StringTrimRight(line);
+      if(StringFind(line,prefix,0)==0)
+         return StringSubstr(line,StringLen(prefix));
+   }
+   return "";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptTimestampFolder(void)
+  {
+   MqlDateTime tm;
+   TimeToStruct(TimeLocal(),tm);
+   return StringFormat("%04d%02d%02d_%02d%02d%02d",tm.year,tm.mon,tm.day,tm.hour,tm.min,tm.sec);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatOptWriteActiveRunPath(const string ea_name,const string server_name,const string run_path)
+  {
+   g_goat_opt_active_run_path=run_path;
+   string text="[ActiveOptimizationRun]\r\nRunPath="+run_path+"\r\nUpdatedAt="+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\r\n";
+   return GoatOptWriteTextFile(GoatOptActivePointerPath(ea_name,server_name),text);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptCurrentRunPath(const string ea_name,const string server_name)
+  {
+   if(g_goat_opt_active_run_path!="") return g_goat_opt_active_run_path;
+   string text=GoatOptReadTextFile(GoatOptActivePointerPath(ea_name,server_name));
+   string run_path=GoatOptReadIniValue(text,"RunPath");
+   StringTrimLeft(run_path);
+   StringTrimRight(run_path);
+   g_goat_opt_active_run_path=run_path;
+   return g_goat_opt_active_run_path;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptCreateRunPath(const string ea_name,const string server_name,string run_name,const string parent_run_path="")
+  {
+   run_name=GoatOptSafePathPart(run_name);
+   string root=GoatOptRunsPath(ea_name,server_name);
+   GoatOptEnsureCommonFolderTree(root);
+   string run_path="";
+   for(int i=0;i<100;++i)
+   {
+      string suffix=(i==0 ? "" : "_"+IntegerToString(i+1));
+      run_path=root+"\\"+run_name+suffix;
+      if(!FileIsExist(run_path+"\\manifest.ini",FILE_COMMON)) break;
+   }
+   GoatOptEnsureCommonFolderTree(run_path);
+   GoatOptEnsureCommonFolderTree(run_path+"\\inputs");
+   GoatOptEnsureCommonFolderTree(run_path+"\\reports");
+   GoatOptEnsureCommonFolderTree(run_path+"\\exports");
+   GoatOptEnsureCommonFolderTree(run_path+"\\deploy");
+   GoatOptEnsureCommonFolderTree(run_path+"\\leftover_xml");
+   string manifest="[OptimizationRun]\r\n"
+                  +"Version=1\r\n"
+                  +"RunName="+run_name+"\r\n"
+                  +"RunPath="+run_path+"\r\n"
+                  +"ParentRunPath="+parent_run_path+"\r\n"
+                  +"EA="+ea_name+"\r\n"
+                  +"Server="+server_name+"\r\n"
+                  +"CreatedAt="+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\r\n";
+   GoatOptWriteTextFile(run_path+"\\manifest.ini",manifest);
+   GoatOptWriteTextFile(run_path+"\\deploy\\portfolio_manifest.ini",manifest);
+   GoatOptWriteActiveRunPath(ea_name,server_name,run_path);
+   return run_path;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptQueuePath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return GoatOptBasePath(ea_name,server_name)+"\\"+Key+" Batch Queue."+Key;
+   return run_path+"\\queue."+Key;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptExportSettingsPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return GoatOptBasePath(ea_name,server_name)+"\\"+Key+" Export Settings."+Key;
+   return run_path+"\\export_settings."+Key;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptLogPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return GoatOptBasePath(ea_name,server_name)+"\\log."+Key;
+   return run_path+"\\log."+Key;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptPortfolioPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return GoatOptBasePath(ea_name,server_name)+"\\portfolio.goatbatch";
+   return run_path+"\\portfolio.goatbatch";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptTimelinePath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return "";
+   return run_path+"\\timeline.tsv";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptItemStatsPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return "";
+   return run_path+"\\item_stats.tsv";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptSummaryPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return "";
+   return run_path+"\\summary.txt";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptStrategyDir(const string ea_name,const string server_name,const string strategy)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return GoatOptBasePath(ea_name,server_name)+"\\"+GoatOptSafePathPart(strategy);
+   return run_path+"\\inputs\\"+GoatOptSafePathPart(strategy);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptReportRoot(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return GoatOptBasePath(ea_name,server_name);
+   return run_path+"\\reports";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptReportPath(const string ea_name,const string server_name,const string strategy,const string symbol,const string file_name)
+  {
+   return GoatOptReportRoot(ea_name,server_name)+"\\"+GoatOptSafePathPart(strategy)+"\\"+symbol+"\\"+file_name;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptExportsPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return "Exports";
+   return run_path+"\\exports";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptDeployPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return Key;
+   return run_path+"\\deploy";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptLeftoverPath(const string ea_name,const string server_name)
+  {
+   string run_path=GoatOptCurrentRunPath(ea_name,server_name);
+   if(run_path=="") return "LeftoverXMLs";
+   return run_path+"\\leftover_xml";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptTsvSafe(string text)
+  {
+   StringReplace(text,"\t"," ");
+   StringReplace(text,"\r"," ");
+   StringReplace(text,"\n"," ");
+   return text;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatOptAppendTextLine(const string file_name,const string line,const string header="")
+  {
+   if(file_name=="") return;
+   string folder=GoatOptFolderOf(file_name);
+   if(folder!="") GoatOptEnsureCommonFolderTree(folder);
+   bool write_header=(header!="" && !FileIsExist(file_name,FILE_COMMON));
+   int handle=FileOpen(file_name,FILE_WRITE|FILE_READ|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+   if(handle==INVALID_HANDLE) return;
+   FileSeek(handle,0,SEEK_END);
+   if(write_header) FileWriteString(handle,header+"\r\n");
+   FileWriteString(handle,line+"\r\n");
+   FileClose(handle);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatOptAppendTimeline(const string ea_name,const string server_name,const string event_name,const string item_name,const string status,const string details)
+  {
+   string path=GoatOptTimelinePath(ea_name,server_name);
+   string header="LocalTime\tServerTime\tEvent\tItem\tStatus\tDetails";
+   string line=TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\t"+
+               TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS)+"\t"+
+               GoatOptTsvSafe(event_name)+"\t"+
+               GoatOptTsvSafe(item_name)+"\t"+
+               GoatOptTsvSafe(status)+"\t"+
+               GoatOptTsvSafe(details);
+   GoatOptAppendTextLine(path,line,header);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatOptAppendItemStats(const string ea_name,const string server_name,const string symbol,const string strategy,const string status,
+                            const int xml_rows,const int unique_rows,const double top_score,const int final_exports,const string details)
+  {
+   string path=GoatOptItemStatsPath(ea_name,server_name);
+   string header="LocalTime\tSymbol\tStrategy\tStatus\tXmlRows\tUniqueRows\tTopScore\tFinalExports\tDetails";
+   string line=TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\t"+
+               GoatOptTsvSafe(symbol)+"\t"+
+               GoatOptTsvSafe(strategy)+"\t"+
+               GoatOptTsvSafe(status)+"\t"+
+               IntegerToString(xml_rows)+"\t"+
+               IntegerToString(unique_rows)+"\t"+
+               DoubleToString(top_score,1)+"\t"+
+               IntegerToString(final_exports)+"\t"+
+               GoatOptTsvSafe(details);
+   GoatOptAppendTextLine(path,line,header);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+long GoatTruncateCidValue(const long cid)
+  {
+   string cid_text=StringFormat("%I64d",cid);
+   while(StringLen(cid_text)>0)
+   {
+      long truncated=(long)StringToInteger(cid_text);
+      if(truncated>0 && (double)truncated<=9007199254740991.0)
+         return truncated;
+      cid_text=StringSubstr(cid_text,1);
+   }
+   return 0;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatParseChildGVName(const string gv_name,long &magic,string &symbol,string &field)
+  {
+   string prefix=Key+"_ID_";
+   if(StringFind(gv_name,prefix,0)!=0) return false;
+
+   string rest=StringSubstr(gv_name,StringLen(prefix));
+   int first_sep=StringFind(rest,"_");
+   if(first_sep<=0) return false;
+
+   int last_sep=-1;
+   for(int i=StringLen(rest)-1;i>=0;--i)
+   {
+      if(StringGetCharacter(rest,i)=='_')
+      {
+         last_sep=i;
+         break;
+      }
+   }
+   if(last_sep<=first_sep) return false;
+
+   magic=(long)StringToInteger(StringSubstr(rest,0,first_sep));
+   symbol=StringSubstr(rest,first_sep+1,last_sep-first_sep-1);
+   field=StringSubstr(rest,last_sep+1);
+   return(symbol!="" && field!="");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatFindMagicByCid(const string symbol,const long chart_id,long &magic_out)
+  {
+   magic_out=0;
+   long target_cid=GoatTruncateCidValue(chart_id);
+   if(target_cid<=0) return false;
+
+   for(int i=GlobalVariablesTotal()-1;i>=0;--i)
+   {
+      string gv_name=GlobalVariableName(i);
+      long gv_magic=0;
+      string gv_symbol="",gv_field="";
+      if(!GoatParseChildGVName(gv_name,gv_magic,gv_symbol,gv_field)) continue;
+      if(gv_field!=GOAT_GV_FIELD_CID)                                continue;
+      if(gv_symbol!=symbol)                                          continue;
+
+      long gv_cid=GoatTruncateCidValue((long)GlobalVariableGet(gv_name));
+      if(gv_cid!=target_cid) continue;
+
+      magic_out=gv_magic;
+      return(magic_out>0);
+   }
+   return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+datetime GoatBrokerDayStart(const datetime when)
+  {
+   MqlDateTime tm;
+   TimeToStruct(when,tm);
+   tm.hour=0; tm.min=0; tm.sec=0;
+   return StructToTime(tm);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+datetime GoatBrokerWeekStart(const datetime when)
+  {
+   datetime day_start=GoatBrokerDayStart(when);
+   datetime cursor=day_start;
+   for(int i=0;i<7;++i)
+   {
+      MqlDateTime tm;
+      TimeToStruct(cursor,tm);
+      if(tm.day_of_week==1) return cursor;
+      cursor-=86400;
+   }
+   return day_start;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int GoatCountDashboardDataPoints(int &chart_count)
+  {
+   chart_count=0;
+   long chart_ids[];
+   ArrayResize(chart_ids,0);
+   int total_points=0;
+   string cid_suffix="_CID";
+
+   for(int i=GlobalVariablesTotal()-1;i>=0;--i)
+   {
+      string gv_name=GlobalVariableName(i);
+      bool is_child=(StringFind(gv_name,Key+"_ID_",0)==0);
+      bool is_symbol=(StringFind(gv_name,Key+"_SYM_",0)==0);
+      if(!is_child && !is_symbol) continue;
+
+      total_points++;
+      if(!is_child) continue;
+      if(StringLen(gv_name)<StringLen(cid_suffix) || StringSubstr(gv_name,StringLen(gv_name)-StringLen(cid_suffix))!=cid_suffix) continue;
+
+      long cid=GoatTruncateCidValue((long)GlobalVariableGet(gv_name));
+      bool seen=false;
+      for(int j=0;j<ArraySize(chart_ids);++j)
+      {
+         if(chart_ids[j]==cid) {seen=true; break;}
+      }
+      if(seen) continue;
+
+      int n=ArraySize(chart_ids);
+      ArrayResize(chart_ids,n+1);
+      chart_ids[n]=cid;
+   }
+
+   chart_count=ArraySize(chart_ids);
+   return total_points;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void GoatDeleteDashboardBusData(void)
+  {
+   for(int i=GlobalVariablesTotal()-1;i>=0;--i)
+   {
+      string gv_name=GlobalVariableName(i);
+      if(StringFind(gv_name,Key+"_ID_",0)==0 || StringFind(gv_name,Key+"_SYM_",0)==0 || StringFind(gv_name,Key+"_PORT_",0)==0)
+         GlobalVariableDel(gv_name);
+   }
+   GlobalVariableDel("Dashboard_ChartID");
+   FileDelete(GoatDashboardStatePath(),FILE_COMMON);
+   FileDelete(Key+"\\dashboard_child_map.tsv",FILE_COMMON);
+   GlobalVariablesFlush();
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool ObjectSetText2(string name, string text, int font_size, string font_name=NULL, color text_color=CLR_NONE)

@@ -11,6 +11,7 @@
 //#include "GOATdefinitions.mqh"
 #include "Tester.mqh"
 #include "NewsBiasFilter.mqh"
+
 // === PRESETS: map display-name -> actual file (with .txt)  // NEW
 string g_PresetDisplayNames[];
 string g_PresetFileNames[];
@@ -26,6 +27,8 @@ class CStrategyTesterDialog : public CAppDialog
 public:
    CWndClient  c_Wnd_OPT,c_Wnd_Export;
    CLabel      m_lblHeading,m_lblExport;
+   CLabel      m_lblRunName;
+   CEdit       m_edtRunName;
    // (0) "Set File:" at top
    CEdit       m_edtSetFile;
    CLabel      m_lblStrategy;
@@ -63,16 +66,17 @@ public:
    CComboBox   m_cmbOptimization;
    // RIGHT SIDE
    CLabel      m_lblQueue;//,m_lblStatus;
-   CEdit       m_edtQueue[10];//,m_edtStatus[10];
+   CEdit       m_edtQueue[10],m_edtBatchProgress,m_edtBatchErrors;//,m_edtStatus[10];
    CListView   m_listQueue;
    // Single button
    CButton     m_btnSelectFile,m_btnAddQueue,m_btnSetPresets,m_btnDelQ,m_btnDelQitem,m_btnUpQitem,m_btnDownQitem,m_btnCancelSelected,m_btnMakePending,m_btnStart,m_btnStop;
 // Export Settings extra objects
-   CLabel      m_lblSetsToExport,m_lblBackOOSDate,m_lblMinScore,m_lblMinARF,m_lblAdjustLots,m_lblMinSR,m_lblTargetDD,m_lblVerifyOOS;
+   CLabel      m_lblSetsToExport,m_lblBackOOSDate,m_lblMinScore,m_lblMinARF,m_lblAdjustLots,m_lblMinSR,m_lblTargetDD,m_lblVerifyOOS,m_lblDataSync;
    CEdit       m_edtSetsToExport                 ,m_edtMinScore,m_edtMinARF                ,m_edtMinSR,m_edtTargetDD;
-   CCheckBox   m_chkAdjustLots,m_chkVerifyOOS;
+   CBmpButton  m_chkAdjustLots,m_chkVerifyOOS;
    
    CDatePicker m_dpBackOOS,m_dpFwdOOS;
+   CButton     m_btnSyncBias,m_btnViewBias,m_btnSyncNews;
    // Layout parameters
    int         m_leftMargin,m_topMargin,m_labelWidth,m_GapHoriz,m_rowHeight,m_controlHeight,m_controlWidth;
    // Storing positions for date pickers so we can create them last
@@ -80,8 +84,9 @@ public:
    int         m_xTo,   m_yTo;
    int         m_xForwardDt, m_yForwardDt;
 
-   string Path_QueueBatch,Path_QueueStrategy,Path_ExportSettings,Key_,EA_Name_,Server_;
+   string Path_RunFolder,Path_QueueBatch,Path_QueueStrategy,Path_ExportSettings,Key_,EA_Name_,Server_,m_selectedSetPath;
    int D_Width,D_Height,Font_Size;
+   bool m_dataSyncBusy,m_compactLayout,m_batchRunning;
  //color clr_CaptionBack,clr_CaptionBorder,clr_ClientBack,clr_ClientBorder,clr_Text;
    
    CStrategyTesterDialog();
@@ -106,12 +111,37 @@ public:
    void           OnClickCancelSelectedItem(void);                // current line  →  Cancelled
    void           OnClickMakeSelectedPending(void);               // current line  →  Pending
    void           OnClickRefresh(bool init,bool select);
+   void           OnClickSyncBias(void);
+   void           OnClickViewBias(void);
+   void           OnClickSyncNews(void);
+   void           RefreshNewsSyncButton(void);
+   void           RefreshBatchStartButtonState(void);
+   void           UpdateBatchProgressText(void);
    void           OnClickStart(void);
    void           OnClickStop(void);
    void           ChangeItemTo(const int index,const string state); // generic state swapper
    //void           WriteLog(string text,bool print,string Key_,string EA_Name_,string Server_);
    //bool           UpdateBatchQueueAndWriteConfigFile(bool init)
 private:
+   void RefreshRunPaths(void);
+   bool EnsureRunContext(const bool forceNew=false,const string runNameOverride="");
+   bool SaveCurrentBatchPackage(void);
+   bool RehomeRunIfEditedNameChanged(void);
+   bool LoadBatchPackage(const string packagePath);
+   bool ApplyBatchTimelineAdjustment(string &queueContent,string &exportSettings,const string sourceRunPath);
+   bool RebuildQueueReportsForActiveRun(string &queueContent,string &message,const bool preserveState=true);
+   string BuildBatchInputsPackage(const string queueContent);
+   bool RestoreBatchInputsPackage(const string packageBody);
+   void ApplyExportSettingsToControls(const string exportSettings);
+   bool SaveStrategyInputsFromSet(const string setPath,string &savedStrategy);
+   bool EnsureInputsForStrategy(const string strategy,string &message);
+   bool EnsureQueueItemReportPath(const string queueItem,string &message);
+   bool PreflightQueueInputs(const string queueContent,string &message);
+   string BuildQueueTitle(const string state,const string symbol,const string period,const string fromDate,const string toDate,const string model,const string strategy);
+   string BuildReportValue(const string strategy,const string symbol,const string period,const string fromDate,const string toDate,const string forwardDateText);
+   bool RewriteQueueItemTimeline(string &item,const int mode,const datetime commonFrom,const datetime commonTo,const datetime oldEarliest,const datetime rollingAnchor,const string stateOverride="Pending");
+   bool HasActiveBatchQueueItem(void);
+   bool ResolveBatchRunningState(const bool clearStale);
    // Helper creation methods
    void CreateLabel(CLabel &lbl, const string text, int x, int y, int width=130);
    void CreateCombo(CComboBox &cmb, const string name, int x, int y, int width=160);
@@ -119,6 +149,10 @@ private:
    void CreateEditBox(CEdit &edt, const string name, int x, int y, int width=60, string def="");
    void CreateButtonCtrl(CButton &btn, const string name, int x, int y, int width, int height, string caption);
    void CreateListView(CListView &listV, const string name, int x, int y, int width, int height, string caption);
+   bool ReadNewsHistoryRange(const string file_name,datetime &earliest_event_time,datetime &latest_event_time);
+   bool ReadBiasHistoryFileStats(const string asset,SBiasAssetSyncResult &result);
+   void BuildBiasHistoryStatus(SBulkBiasSyncResult &result);
+   void ShowBiasHistorySummary(const SBulkBiasSyncResult &result);
    // Child control event handlers
    void OnDateFromChanged(void);
    void OnDateToChanged(void);
@@ -145,13 +179,18 @@ EVENT_MAP_BEGIN(CStrategyTesterDialog)
 //ON_EVENT(ON_CLICK,  m_btnRefresh   ,OnClickRefresh)
   ON_EVENT(ON_CLICK,  m_btnCancelSelected ,OnClickCancelSelectedItem)
   ON_EVENT(ON_CLICK,  m_btnMakePending ,OnClickMakeSelectedPending)
+  ON_EVENT(ON_CLICK,  m_btnSyncBias ,OnClickSyncBias)
+  ON_EVENT(ON_CLICK,  m_btnViewBias ,OnClickViewBias)
+  ON_EVENT(ON_CLICK,  m_btnSyncNews ,OnClickSyncNews)
   ON_EVENT(ON_CLICK,  m_btnStart ,OnClickStart)
   ON_EVENT(ON_CLICK,  m_btnStop ,OnClickStop)
 EVENT_MAP_END(CAppDialog)
 //+------------------------------------------------------------------+
 CStrategyTesterDialog::CStrategyTesterDialog()
 {
-   
+   m_dataSyncBusy = false;
+   m_compactLayout = false;
+   m_batchRunning = false;
 }
 CStrategyTesterDialog::~CStrategyTesterDialog()
 {
@@ -163,13 +202,1210 @@ void CStrategyTesterDialog::minimizeWindow(void)   {this.Minimize();}
 void CStrategyTesterDialog::SetFlags(const string _Key_,const string _EA_Name_,const string _Server_,const int _Font_Size_,const int D_Width_,const int D_Height_)
 {
    Key_=_Key_; EA_Name_=_EA_Name_; Server_=_Server_; Font_Size=_Font_Size_; D_Width=D_Width_; D_Height=D_Height_;
-   Path_QueueBatch     = Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Key_+" Batch Queue."+Key_; //Print(Path_QueueBatch);
-   Path_ExportSettings = Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Key_+" Export Settings."+Key_;
+   RefreshRunPaths();
+   News.Key_ = Key_;
+   Bias.Key_ = Key_;
 }
 CEdit CaptionObjTester;
 CStrategyTesterDialog TesterDialog;
 
 string n_Expert,Strategy="",TesterInputs="";
+//+------------------------------------------------------------------+
+string GoatOptExtractSection(const string text,const string startTag,const string endTag)
+  {
+   int start=StringFind(text,startTag,0);
+   if(start<0) return "";
+   start+=StringLen(startTag);
+   if(start<StringLen(text) && StringGetCharacter(text,start)=='\r') start++;
+   if(start<StringLen(text) && StringGetCharacter(text,start)=='\n') start++;
+   int end=StringFind(text,endTag,start);
+   if(end<0) end=StringLen(text);
+   string out=StringSubstr(text,start,end-start);
+   StringTrimLeft(out);
+   StringTrimRight(out);
+   return out;
+  }
+//+------------------------------------------------------------------+
+string GoatOptQueueValue(const string item,const string key)
+  {
+   string opt_lines[];
+   int total=StringSplit(item,'\n',opt_lines);
+   string prefix=key+"=";
+   for(int i=0;i<total;++i)
+   {
+      string line=opt_lines[i];
+      StringTrimLeft(line);
+      StringTrimRight(line);
+      if(StringFind(line,prefix,0)==0)
+         return StringSubstr(line,StringLen(prefix));
+   }
+   return "";
+  }
+//+------------------------------------------------------------------+
+string GoatOptSetIniValue(string text,const string key,const string value)
+  {
+   string opt_lines[];
+   int total=StringSplit(text,'\n',opt_lines);
+   string prefix=key+"=";
+   bool changed=false;
+   string out="";
+   for(int i=0;i<total;++i)
+   {
+      string line=opt_lines[i];
+      string trimmed=line;
+      StringTrimLeft(trimmed);
+      StringTrimRight(trimmed);
+      if(StringFind(trimmed,prefix,0)==0)
+      {
+         line=prefix+value;
+         changed=true;
+      }
+      out+=(out=="" ? "" : "\r\n")+line;
+   }
+   if(!changed) out+=(out=="" ? "" : "\r\n")+prefix+value;
+   return out;
+  }
+//+------------------------------------------------------------------+
+string GoatOptForwardTextFromMode(const string mode)
+  {
+        if(mode=="1") return "1/2";
+   else if(mode=="2") return "1/3";
+   else if(mode=="3") return "1/4";
+   else if(mode=="4") return "Custom";
+   return "No";
+  }
+//+------------------------------------------------------------------+
+string GoatOptModelShortFromCode(const string model)
+  {
+        if(model=="2") return "OP";
+   else if(model=="1") return "OHLC";
+   else if(model=="0") return "ET";
+   else if(model=="4") return "ETWRT";
+   return model;
+  }
+//+------------------------------------------------------------------+
+bool GoatOptCopyCommonTextTree(const string src,const string dst)
+  {
+   string entry="";
+   long h=FileFindFirst(src+"\\*",entry,FILE_COMMON);
+   if(h==INVALID_HANDLE) return false;
+   bool ok=true;
+   GoatOptEnsureCommonFolderTree(dst);
+   do
+   {
+      string srcPath=src+"\\"+entry;
+      string dstPath=dst+"\\"+entry;
+      ResetLastError();
+      FileIsExist(srcPath,FILE_COMMON);
+      if(GetLastError()==ERR_FILE_IS_DIRECTORY)
+      {
+         if(!GoatOptCopyCommonTextTree(srcPath,dstPath)) ok=false;
+      }
+      else
+      {
+         string body=GoatOptReadTextFile(srcPath);
+         if(!GoatOptWriteTextFile(dstPath,body)) ok=false;
+      }
+   }
+   while(FileFindNext(h,entry));
+   FileFindClose(h);
+   return ok;
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::RefreshRunPaths(void)
+  {
+   Path_RunFolder      = GoatOptCurrentRunPath(EA_Name_,Server_);
+   Path_QueueBatch     = GoatOptQueuePath(EA_Name_,Server_);
+   Path_ExportSettings = GoatOptExportSettingsPath(EA_Name_,Server_);
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::EnsureRunContext(const bool forceNew=false,const string runNameOverride="")
+  {
+   string runName=runNameOverride;
+   if(runName=="")
+   {
+      runName=m_edtRunName.Text();
+      StringTrimLeft(runName);
+      StringTrimRight(runName);
+   }
+   if(runName=="" || runName==" ") runName="Optimization Run";
+   if(forceNew || GoatOptCurrentRunPath(EA_Name_,Server_)=="")
+      Path_RunFolder=GoatOptCreateRunPath(EA_Name_,Server_,runName);
+   RefreshRunPaths();
+   if(Path_RunFolder=="") return false;
+   GoatOptEnsureCommonFolderTree(Path_RunFolder);
+   GoatOptEnsureCommonFolderTree(Path_RunFolder+"\\inputs");
+   GoatOptEnsureCommonFolderTree(Path_RunFolder+"\\reports");
+   GoatOptEnsureCommonFolderTree(Path_RunFolder+"\\exports");
+   GoatOptEnsureCommonFolderTree(Path_RunFolder+"\\deploy");
+   if(m_edtRunName.Text()=="" || m_edtRunName.Text()==" ") m_edtRunName.Text(GoatOptSafePathPart(runName));
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool EnsureLocalFolderTree(string path)
+  {
+   StringTrimLeft(path);
+   StringTrimRight(path);
+   if(path=="") return false;
+   StringReplace(path,"/","\\");
+   while(StringFind(path,"\\\\")>=0) StringReplace(path,"\\\\","\\");
+
+   string parts[];
+   int total=StringSplit(path,'\\',parts);
+   if(total<1) return false;
+
+   string current="";
+   for(int i=0;i<total;i++)
+     {
+      if(parts[i]=="") continue;
+      if(current!="") current+="\\";
+      current+=parts[i];
+      FolderCreate(current);
+     }
+   return true;
+  }
+//+------------------------------------------------------------------+
+string CStrategyTesterDialog::BuildQueueTitle(const string state,const string symbol,const string period,const string fromDate,const string toDate,const string model,const string strategy)
+  {
+   return ";"+state+"_"+symbol+","+period+" "+fromDate+"-"+toDate+"_"+GoatOptModelShortFromCode(model)+":"+strategy+";";
+  }
+//+------------------------------------------------------------------+
+string CStrategyTesterDialog::BuildReportValue(const string strategy,const string symbol,const string period,const string fromDate,const string toDate,const string forwardDateText)
+  {
+   string reportName=EA_Name_+" "+symbol+","+period+" "+fromDate+"-"+toDate+"_("+forwardDateText+").xml";
+   string rel=GoatOptReportPath(EA_Name_,Server_,strategy,symbol,reportName);
+   string folder=GoatOptFolderOf(rel);
+   if(folder!="")
+     {
+      EnsureLocalFolderTree(folder);
+      GoatOptEnsureCommonFolderTree(folder);
+     }
+   return "MQL5\\Files\\"+rel;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::RewriteQueueItemTimeline(string &item,const int mode,const datetime commonFrom,const datetime commonTo,const datetime oldEarliest,const datetime rollingAnchor,const string stateOverride="Pending")
+  {
+   string symbol=GoatOptQueueValue(item,"Symbol");
+   string period=GoatOptQueueValue(item,"Period");
+   string model =GoatOptQueueValue(item,"Model");
+   string fmode =GoatOptQueueValue(item,"ForwardMode");
+   string strategy=QueueItemStrategyName(item);
+   datetime oldFrom=StringToTime(GoatOptQueueValue(item,"FromDate"));
+   datetime oldTo  =StringToTime(GoatOptQueueValue(item,"ToDate"));
+   datetime oldForward=StringToTime(GoatOptQueueValue(item,"ForwardDate"));
+   if(symbol=="" || period=="" || strategy=="" || oldFrom<=0 || oldTo<=oldFrom) return false;
+
+   string queueState=stateOverride;
+   if(queueState=="")
+   {
+      string title=QueueItemTitle(item);
+      int pos=StringFind(title,"_",0);
+      queueState=(pos>0 ? StringSubstr(title,0,pos) : "Pending");
+   }
+
+   datetime newFrom=oldFrom;
+   datetime newTo=oldTo;
+   if(mode==1)
+   {
+      newFrom=commonFrom;
+      newTo=commonTo;
+   }
+   else if(mode==2)
+   {
+      int offset=(oldEarliest>0 ? (int)(oldFrom-oldEarliest) : 0);
+      int duration=(int)(oldTo-oldFrom);
+      newFrom=commonFrom+offset;
+      newTo=newFrom+duration;
+   }
+   else if(mode==3)
+   {
+      newTo=commonTo;
+   }
+   else if(mode==4)
+   {
+      newTo=rollingAnchor;
+      newFrom=newTo-730*86400;
+      fmode="4";
+   }
+   if(newTo<=newFrom) return false;
+
+   string fromDate=TimeToString(newFrom,TIME_DATE);
+   string toDate=TimeToString(newTo,TIME_DATE);
+   string forwardDateText="No Forward";
+   string forwardDateLine="";
+   if(mode==4)
+   {
+      datetime rollingForward=newTo-183*86400;
+      if(rollingForward<=newFrom) rollingForward=newFrom+(newTo-newFrom)/2;
+      forwardDateLine=TimeToString(rollingForward,TIME_DATE);
+      forwardDateText=forwardDateLine;
+      fmode="4";
+   }
+   else if(fmode=="4")
+   {
+      datetime custom=m_dtForward.Value();
+      if(mode==0 && oldForward>0) custom=oldForward;
+      else if(mode==2 && oldForward>0) custom=oldForward+(newFrom-oldFrom);
+      else if(mode==3 && oldForward>0) custom=oldForward;
+      if(custom<=newFrom || custom>=newTo) custom=newFrom+(newTo-newFrom)/2;
+      forwardDateLine=TimeToString(custom,TIME_DATE);
+      forwardDateText=forwardDateLine;
+   }
+   else if(fmode=="1" || fmode=="2" || fmode=="3")
+   {
+      string forwardModeText=GoatOptForwardTextFromMode(fmode);
+      forwardDateText=TimeToString(GetForwardD(newFrom,newTo,forwardModeText),TIME_DATE);
+   }
+
+   string opt_lines[];
+   int total=StringSplit(item,'\n',opt_lines);
+   string out="";
+   bool wroteForwardDate=false;
+   bool wroteReport=false;
+   for(int i=0;i<total;++i)
+   {
+      string line=opt_lines[i];
+      StringTrimRight(line);
+      string trimmed=line;
+      StringTrimLeft(trimmed);
+      StringTrimRight(trimmed);
+      if(i==0 && StringFind(trimmed,";",0)==0)
+         line=BuildQueueTitle(queueState,symbol,period,fromDate,toDate,model,strategy);
+      else if(StringFind(trimmed,"FromDate=",0)==0)
+         line="FromDate="+fromDate;
+      else if(StringFind(trimmed,"ToDate=",0)==0)
+         line="ToDate="+toDate;
+      else if(StringFind(trimmed,"ForwardMode=",0)==0)
+      {
+         line="ForwardMode="+fmode;
+         if(fmode=="4" && forwardDateLine!="")
+         {
+            out+=(out=="" ? "" : "\r\n")+line;
+            out+="\r\nForwardDate="+forwardDateLine;
+            wroteForwardDate=true;
+            continue;
+         }
+      }
+      else if(StringFind(trimmed,"ForwardDate=",0)==0)
+      {
+         if(fmode=="4" && !wroteForwardDate)
+         {
+            line="ForwardDate="+forwardDateLine;
+            wroteForwardDate=true;
+         }
+         else continue;
+      }
+      else if(StringFind(trimmed,"Report=",0)==0)
+      {
+         line="Report="+BuildReportValue(strategy,symbol,period,fromDate,toDate,forwardDateText);
+         wroteReport=true;
+      }
+      out+=(out=="" ? "" : "\r\n")+line;
+   }
+   if(!wroteReport)
+      out+=(out=="" ? "" : "\r\n")+"Report="+BuildReportValue(strategy,symbol,period,fromDate,toDate,forwardDateText);
+   item=out;
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::ApplyBatchTimelineAdjustment(string &queueContent,string &exportSettings,const string sourceRunPath)
+  {
+   string rows[];
+   int total=StringSplit(queueContent,(ushort)31,rows);
+   if(total<=0) return false;
+
+   datetime oldEarliest=0;
+   for(int i=0;i<total;++i)
+   {
+      datetime d=StringToTime(GoatOptQueueValue(rows[i],"FromDate"));
+      if(d>0 && (oldEarliest==0 || d<oldEarliest)) oldEarliest=d;
+   }
+
+   int mode=1;
+   int ret=MessageBox("Loaded portfolio batch:\n"+sourceRunPath+
+                      "\n\nUse the visible Optimization Studio Date from / Date to / Forward controls to adjust the batch timeline?\n\n"+
+                      "Yes = Rebuild Common Range\nNo = More timeline modes\nCancel = Keep Original Dates",
+                      "Batch Timeline Adjuster",MB_YESNOCANCEL|MB_ICONQUESTION);
+   if(ret==IDCANCEL) mode=0;
+   else if(ret==IDNO)
+   {
+      int ret2=MessageBox("Choose alternate timeline mode:\n\n"+
+                          "Yes = Shift Timeline to current Date from\n"+
+                          "No = Extend End Date to current Date to\n"+
+                          "Cancel = Rolling Window, 24M optimization + 6M forward ending at current Date to",
+                          "Batch Timeline Adjuster",MB_YESNOCANCEL|MB_ICONQUESTION);
+      if(ret2==IDYES) mode=2;
+      else if(ret2==IDNO) mode=3;
+      else mode=4;
+   }
+
+   datetime commonFrom=m_dtFrom.Value();
+   datetime commonTo=m_dtTo.Value();
+   datetime rollingAnchor=commonTo;
+   if(mode!=0 && commonTo<=commonFrom)
+   {
+      MessageBox("Invalid timeline: Date to must be after Date from.","Timeline Error",MB_OK|MB_ICONERROR);
+      return false;
+   }
+
+   string rebuilt="";
+   for(int i=0;i<total;++i)
+   {
+      string item=rows[i];
+      StringTrimLeft(item);
+      StringTrimRight(item);
+      if(item=="") continue;
+      if(!RewriteQueueItemTimeline(item,mode,commonFrom,commonTo,oldEarliest,rollingAnchor))
+      {
+         MessageBox("Unable to normalize one queue item for the active run. Batch load aborted.","Timeline Error",MB_OK|MB_ICONERROR);
+         return false;
+      }
+      rebuilt+=(rebuilt=="" ? "" : "\r\n")+item+CharToString(31);
+   }
+   queueContent=rebuilt;
+
+   bool includeBackOOS=(StringToInteger(GoatOptReadIniValue(exportSettings,"IncludeBackOOS"))!=0);
+   if(includeBackOOS && (mode==1 || mode==2 || mode==4))
+   {
+      string backOOS=GoatOptReadIniValue(exportSettings,"BackOOSDate");
+      if(backOOS!="")
+      {
+         datetime oldBack=StringToTime(backOOS);
+         if(oldBack>0 && oldEarliest>0 && oldBack>=oldEarliest)
+         {
+            MessageBox("Invalid Back OOS date: Back OOS must be before the optimization start.","Timeline Error",MB_OK|MB_ICONERROR);
+            return false;
+         }
+         datetime newBack=commonFrom;
+         if(oldBack>0 && oldEarliest>0) newBack=oldBack+(commonFrom-oldEarliest);
+         if(newBack>=commonFrom)
+         {
+            MessageBox("Invalid adjusted Back OOS date: Back OOS must be before the optimization start.","Timeline Error",MB_OK|MB_ICONERROR);
+            return false;
+         }
+         exportSettings=GoatOptSetIniValue(exportSettings,"BackOOSDate",TimeToString(newBack,TIME_DATE));
+      }
+   }
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::RebuildQueueReportsForActiveRun(string &queueContent,string &message,const bool preserveState=true)
+  {
+   message="";
+   string rows[];
+   int total=StringSplit(queueContent,(ushort)31,rows);
+   if(total<=0) return true;
+
+   string rebuilt="";
+   for(int i=0;i<total;++i)
+   {
+      string item=rows[i];
+      StringTrimLeft(item);
+      StringTrimRight(item);
+      if(item=="") continue;
+      if(!RewriteQueueItemTimeline(item,0,0,0,0,0,(preserveState ? "" : "Pending")))
+      {
+         message="Unable to rebuild queue item report path for the active run:\n"+QueueItemTitle(item);
+         return false;
+      }
+      rebuilt+=(rebuilt=="" ? "" : "\r\n")+item+CharToString(31);
+   }
+   queueContent=rebuilt;
+   return true;
+  }
+//+------------------------------------------------------------------+
+string CStrategyTesterDialog::BuildBatchInputsPackage(const string queueContent)
+  {
+   string out="[GOAT_INPUTS]\r\n";
+   string seen=";";
+   string queueItems[];
+   int total=StringSplit(queueContent,(ushort)31,queueItems);
+   for(int i=0;i<total;++i)
+   {
+      string strategy=QueueItemStrategyName(queueItems[i]);
+      if(strategy=="") continue;
+      string token=";"+strategy+";";
+      if(StringFind(seen,token,0)>=0) continue;
+      seen+=strategy+";";
+
+      string inputsPath=GoatOptStrategyDir(EA_Name_,Server_,strategy)+"\\Inputs."+Key_;
+      string inputs=GetFileContent(inputsPath);
+      if(inputs=="") continue;
+
+      out+="[GOAT_INPUT:"+GoatOptSafePathPart(strategy)+"]\r\n";
+      out+=inputs+"\r\n";
+      out+="[/GOAT_INPUT]\r\n";
+   }
+   out+="[/GOAT_INPUTS]\r\n";
+   return out;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::RestoreBatchInputsPackage(const string packageBody)
+  {
+   const string startTag="[GOAT_INPUT:";
+   const string endTag="[/GOAT_INPUT]";
+   int pos=0;
+   bool any=false;
+   bool ok=true;
+   while(true)
+   {
+      int start=StringFind(packageBody,startTag,pos);
+      if(start<0) break;
+      int nameStart=start+StringLen(startTag);
+      int nameEnd=StringFind(packageBody,"]",nameStart);
+      if(nameEnd<0) break;
+      string strategy=StringSubstr(packageBody,nameStart,nameEnd-nameStart);
+      StringTrimLeft(strategy);
+      StringTrimRight(strategy);
+
+      int contentStart=nameEnd+1;
+      while(contentStart<StringLen(packageBody))
+      {
+         ushort ch=StringGetCharacter(packageBody,contentStart);
+         if(ch!='\r' && ch!='\n') break;
+         contentStart++;
+      }
+      int end=StringFind(packageBody,endTag,contentStart);
+      if(end<0) break;
+      string inputs=StringSubstr(packageBody,contentStart,end-contentStart);
+      StringTrimLeft(inputs);
+      StringTrimRight(inputs);
+      if(strategy!="" && inputs!="")
+      {
+         string inputsPath=GoatOptStrategyDir(EA_Name_,Server_,strategy)+"\\Inputs."+Key_;
+         if(!GoatOptWriteTextFile(inputsPath,inputs)) ok=false;
+         else any=true;
+      }
+      pos=end+StringLen(endTag);
+   }
+   return (any && ok);
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::ApplyExportSettingsToControls(const string exportSettings)
+  {
+   if(m_compactLayout || exportSettings=="") return;
+
+   string val=GoatOptReadIniValue(exportSettings,"SetsToExport");
+   if(val!="") m_edtSetsToExport.Text(val);
+   val=GoatOptReadIniValue(exportSettings,"MinScore");
+   if(val!="") m_edtMinScore.Text(val);
+   val=GoatOptReadIniValue(exportSettings,"TargetDD");
+   if(val!="") m_edtTargetDD.Text(val);
+   val=GoatOptReadIniValue(exportSettings,"MinARF");
+   if(val!="") m_edtMinARF.Text(val);
+   val=GoatOptReadIniValue(exportSettings,"MinSR");
+   if(val!="") m_edtMinSR.Text(val);
+   val=GoatOptReadIniValue(exportSettings,"AdjustLots");
+   if(val!="") m_chkAdjustLots.Pressed(StringToInteger(val)!=0);
+   val=GoatOptReadIniValue(exportSettings,"IncludeBackOOS");
+   if(val!="") m_chkVerifyOOS.Pressed(StringToInteger(val)!=0);
+   val=GoatOptReadIniValue(exportSettings,"BackOOSDate");
+   if(val!="")
+   {
+      datetime backDate=StringToTime(val);
+      if(backDate>0) m_dpBackOOS.Value(backDate);
+   }
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::SaveCurrentBatchPackage(void)
+  {
+   if(!EnsureRunContext(false)) return false;
+   string queue=GetFileContent(Path_QueueBatch);
+   string exportSettings=GetFileContent(Path_ExportSettings);
+   if(exportSettings=="" && !m_compactLayout) exportSettings=GetExportSettingsString();
+   string runName=m_edtRunName.Text();
+   StringTrimLeft(runName);
+   StringTrimRight(runName);
+   if(runName=="") runName=GoatOptSafePathPart(Path_RunFolder);
+   string body="[GOATBATCH]\r\n"
+              +"Version=1\r\n"
+               +"RunName="+runName+"\r\n"
+               +"RunPath="+Path_RunFolder+"\r\n"
+               +"EA="+EA_Name_+"\r\n"
+               +"Server="+Server_+"\r\n"
+               +"SavedAt="+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\r\n"
+               +"[GOAT_EXPORT_SETTINGS]\r\n"+exportSettings+"\r\n[/GOAT_EXPORT_SETTINGS]\r\n"
+               +"[GOAT_QUEUE]\r\n"+queue+"\r\n[/GOAT_QUEUE]\r\n"
+               +BuildBatchInputsPackage(queue);
+   bool ok=GoatOptWriteTextFile(GoatOptPortfolioPath(EA_Name_,Server_),body);
+   if(ok)
+   {
+      string manifest=GoatOptReadTextFile(Path_RunFolder+"\\manifest.ini");
+      if(manifest=="") manifest="[OptimizationRun]\r\nRunName="+runName+"\r\nRunPath="+Path_RunFolder+"\r\n";
+      GoatOptWriteTextFile(Path_RunFolder+"\\deploy\\portfolio_manifest.ini",manifest);
+   }
+   return ok;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::RehomeRunIfEditedNameChanged(void)
+  {
+   RefreshRunPaths();
+   if(Path_RunFolder=="") return EnsureRunContext(false);
+
+   string requested=m_edtRunName.Text();
+   StringTrimLeft(requested);
+   StringTrimRight(requested);
+   if(requested=="") return true;
+
+   string requestedSafe=GoatOptSafePathPart(requested);
+   string manifest=GoatOptReadTextFile(Path_RunFolder+"\\manifest.ini");
+   string current=GoatOptReadIniValue(manifest,"RunName");
+   StringTrimLeft(current);
+   StringTrimRight(current);
+   if(current=="") current=FileNameOnly(Path_RunFolder);
+   string currentSafe=GoatOptSafePathPart(current);
+
+   string requestedCheck=requestedSafe;
+   string currentCheck=currentSafe;
+   StringToLower(requestedCheck);
+   StringToLower(currentCheck);
+   if(requestedCheck==currentCheck) return true;
+
+   string oldRunFolder=Path_RunFolder;
+   string oldQueuePath=Path_QueueBatch;
+   string oldExportSettingsPath=Path_ExportSettings;
+   string queue=GetFileContent(oldQueuePath);
+   string exportSettings=GetFileContent(oldExportSettingsPath);
+   if(queue=="") return true;
+
+   Path_RunFolder=GoatOptCreateRunPath(EA_Name_,Server_,requestedSafe,oldRunFolder);
+   RefreshRunPaths();
+   m_edtRunName.Text(requestedSafe);
+
+   if(oldRunFolder!="")
+      GoatOptCopyCommonTextTree(oldRunFolder+"\\inputs",Path_RunFolder+"\\inputs");
+
+   string rebuildMessage="";
+   if(!RebuildQueueReportsForActiveRun(queue,rebuildMessage,true))
+     {
+      MessageBox(rebuildMessage,"Error",MB_OK|MB_ICONERROR);
+      return false;
+     }
+   if(!GoatOptWriteTextFile(Path_QueueBatch,queue))
+     {
+      MessageBox("Unable to write the renamed optimization queue:\n"+Path_QueueBatch,"Error",MB_OK|MB_ICONERROR);
+      return false;
+     }
+   if(exportSettings!="" && !GoatOptWriteTextFile(Path_ExportSettings,exportSettings))
+     {
+      MessageBox("Unable to write the renamed optimization export settings:\n"+Path_ExportSettings,"Error",MB_OK|MB_ICONERROR);
+      return false;
+     }
+   if(exportSettings!="") ApplyExportSettingsToControls(exportSettings);
+   SaveCurrentBatchPackage();
+   GoatOptAppendTimeline(EA_Name_,Server_,"RUN_REHOME","Batch","Ready","Moved from "+oldRunFolder);
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::LoadBatchPackage(const string packagePath)
+  {
+   string body=GoatOptReadTextFile(packagePath);
+   if(body=="")
+   {
+      MessageBox("Unable to read the selected portfolio batch file.","Error",MB_OK|MB_ICONERROR);
+      return false;
+   }
+   string queue=GoatOptExtractSection(body,"[GOAT_QUEUE]","[/GOAT_QUEUE]");
+   string exportSettings=GoatOptExtractSection(body,"[GOAT_EXPORT_SETTINGS]","[/GOAT_EXPORT_SETTINGS]");
+   if(queue=="")
+   {
+      MessageBox("The selected portfolio batch does not contain a queue.","Error",MB_OK|MB_ICONERROR);
+      return false;
+   }
+   string sourceRunPath=GoatOptFolderOf(packagePath);
+   string runName=GoatOptReadIniValue(body,"RunName");
+   if(runName=="") runName="Reloaded Batch";
+   Path_RunFolder=GoatOptCreateRunPath(EA_Name_,Server_,runName+" Reload",sourceRunPath);
+   RefreshRunPaths();
+   m_edtRunName.Text(runName+" Reload");
+
+   if(sourceRunPath!="")
+      GoatOptCopyCommonTextTree(sourceRunPath+"\\inputs",Path_RunFolder+"\\inputs");
+   RestoreBatchInputsPackage(body);
+
+   if(!ApplyBatchTimelineAdjustment(queue,exportSettings,sourceRunPath)) return false;
+   GoatOptWriteTextFile(Path_QueueBatch,queue);
+   if(exportSettings!="") GoatOptWriteTextFile(Path_ExportSettings,exportSettings);
+   ApplyExportSettingsToControls(exportSettings);
+   SaveCurrentBatchPackage();
+   Strategy="";
+   m_edtStrategy.Text("Portfolio Batch");
+   m_edtSetFile.Text(FileNameOnly(packagePath));
+   OnClickRefresh(true,true);
+   GoatOptAppendTimeline(EA_Name_,Server_,"BATCH_LOADED",FileNameOnly(packagePath),"Pending","Reloaded into "+Path_RunFolder);
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::SaveStrategyInputsFromSet(const string setPath,string &savedStrategy)
+  {
+   savedStrategy="";
+   int handle = FileOpen(setPath,FILE_READ|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(handle==INVALID_HANDLE) return false;
+
+   while(!FileIsEnding(handle))
+     {
+      string str=FileReadString(handle);
+      if(StringFind(str,"EA_Desc=")!=0) continue;
+
+      savedStrategy=NormalizeStrategyName(StringSubstr(str,8));
+      if(savedStrategy=="") { FileClose(handle); return false; }
+
+      string strategyDir = GoatOptStrategyDir(EA_Name_,Server_,savedStrategy);
+      EnsureCommonFolderTree(strategyDir);
+      string inputsPath = strategyDir+"\\Inputs."+Key_;
+      ResetLastError();
+      int handle_dest = FileOpen(inputsPath,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+      if(handle_dest==INVALID_HANDLE)
+        {
+         FileClose(handle);
+         return false;
+        }
+
+      FileWrite(handle_dest,"Mode_Operation=9");
+      FileWrite(handle_dest,str);
+      while(!FileIsEnding(handle)) FileWrite(handle_dest,FileReadString(handle));
+      FileClose(handle_dest);
+      FileClose(handle);
+      return (GetFileContent(inputsPath)!="");
+     }
+
+   FileClose(handle);
+   return false;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::EnsureInputsForStrategy(const string strategy,string &message)
+  {
+   string cleanStrategy=NormalizeStrategyName(strategy);
+   string inputsPath=GoatOptStrategyDir(EA_Name_,Server_,cleanStrategy)+"\\Inputs."+Key_;
+   if(GetFileContent(inputsPath)!="")
+      return true;
+
+   if(cleanStrategy==NormalizeStrategyName(Strategy) && m_selectedSetPath!="")
+     {
+      string savedStrategy="";
+      if(SaveStrategyInputsFromSet(m_selectedSetPath,savedStrategy) && NormalizeStrategyName(savedStrategy)==cleanStrategy && GetFileContent(inputsPath)!="")
+         return true;
+     }
+
+   message="Missing strategy inputs for "+cleanStrategy+
+           ".\nExpected file:\n"+inputsPath+
+           "\n\nSelect that .set file again, then add the queue item again.";
+   return false;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::EnsureQueueItemReportPath(const string queueItem,string &message)
+  {
+   message="";
+   string title=QueueItemTitle(queueItem);
+   string report=GoatOptQueueValue(queueItem,"Report");
+   StringTrimLeft(report);
+   StringTrimRight(report);
+
+   string reportNorm=report;
+   StringReplace(reportNorm,"/","\\");
+   while(StringFind(reportNorm,"\\\\",0)>=0) StringReplace(reportNorm,"\\\\","\\");
+   while(StringLen(reportNorm)>0 && StringSubstr(reportNorm,0,1)=="\\")
+      reportNorm=StringSubstr(reportNorm,1);
+
+   string expected="MQL5\\Files\\"+GoatOptReportRoot(EA_Name_,Server_)+"\\";
+   string expectedNorm=expected;
+   StringReplace(expectedNorm,"/","\\");
+   while(StringFind(expectedNorm,"\\\\",0)>=0) StringReplace(expectedNorm,"\\\\","\\");
+
+   string reportCheck=reportNorm;
+   string expectedCheck=expectedNorm;
+   StringToLower(reportCheck);
+   StringToLower(expectedCheck);
+
+   if(reportNorm=="" || StringFind(reportCheck,expectedCheck,0)!=0)
+     {
+      message="Queue item report path does not point to the active optimization run:\n"+title+
+              "\n\nReport:\n"+(reportNorm=="" ? "(empty)" : reportNorm)+
+              "\n\nExpected under:\n"+expectedNorm+
+              "\n\nReload the .goatbatch so GOAT can rebuild its report paths for this run.";
+      return false;
+     }
+
+   string rel=reportNorm;
+   string prefix="MQL5\\Files\\";
+   string relCheck=rel;
+   string prefixCheck=prefix;
+   StringToLower(relCheck);
+   StringToLower(prefixCheck);
+   if(StringFind(relCheck,prefixCheck,0)==0)
+      rel=StringSubstr(rel,StringLen(prefix));
+
+   string folder=GoatOptFolderOf(rel);
+   if(folder!="")
+     {
+      EnsureLocalFolderTree(folder);
+      GoatOptEnsureCommonFolderTree(folder);
+     }
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::PreflightQueueInputs(const string queueContent,string &message)
+  {
+   message="";
+   string queueItems[];
+   int total=StringSplit(queueContent,(ushort)31,queueItems);
+   for(int i=0;i<total;i++)
+     {
+      string title=QueueItemTitle(queueItems[i]);
+      if(StringFind(title,"Pending_")!=0 && StringFind(title,"Queued_")!=0 && StringFind(title,"OnGoing_")!=0)
+         continue;
+
+      string strategy=QueueItemStrategyName(queueItems[i]);
+      string itemMessage="";
+      bool ok=true;
+      if(strategy=="")
+        {
+         itemMessage="Queue item has no strategy name:\n"+title;
+         ok=false;
+        }
+      else if(!EnsureInputsForStrategy(strategy,itemMessage))
+         ok=false;
+      if(ok && !EnsureQueueItemReportPath(queueItems[i],itemMessage))
+         ok=false;
+      if(!ok)
+        {
+         if(message!="") message+="\n\n";
+         message+=itemMessage;
+        }
+     }
+
+   if(message=="") return true;
+   message="Batch cannot start because one or more queue items are not ready for this optimization run.\n\n"+message;
+   return false;
+  }
+//+------------------------------------------------------------------+
+string GetCurrentExpertRelativePath()
+  {
+   string path=MQLInfoString(MQL_PROGRAM_PATH);
+   int ret=StringFind(path,"MQL5\\Experts");
+   if(ret<0) return "";
+   return StringSubstr(path,ret+StringLen("MQL5\\Experts")+1,-1);
+  }
+//+------------------------------------------------------------------+
+string NormalizeExpertRelativePath(string expertPath)
+  {
+   StringTrimLeft(expertPath);
+   StringTrimRight(expertPath);
+   StringReplace(expertPath,"/","\\");
+   while(StringFind(expertPath,"\\\\")>=0) StringReplace(expertPath,"\\\\","\\");
+
+   string expertsRoot=TerminalInfoString(TERMINAL_DATA_PATH)+"\\MQL5\\Experts\\";
+   if(expertPath!="" && MTTESTER::FileIsExist(expertsRoot+expertPath)) return expertPath;
+
+   string currentExpert=GetCurrentExpertRelativePath();
+   if(currentExpert!="" && MTTESTER::FileIsExist(expertsRoot+currentExpert)) return currentExpert;
+
+   string parts[];
+   int total=StringSplit(expertPath,'\\',parts);
+   string fileName=(total>0)?parts[total-1]:expertPath;
+
+   if(fileName!="" && MTTESTER::FileIsExist(expertsRoot+fileName)) return fileName;
+   if(fileName!="" && MTTESTER::FileIsExist(expertsRoot+"GOAT-EA\\"+fileName)) return "GOAT-EA\\"+fileName;
+
+   return expertPath;
+  }
+//+------------------------------------------------------------------+
+string RepairTesterExpertPath(string testerConfig)
+  {
+   string cfgLines[];
+   int count=StringSplit(testerConfig,'\n',cfgLines);
+   if(count<1) return testerConfig;
+
+   for(int i=0;i<count;i++)
+   {
+    string trimmed=cfgLines[i];
+    StringTrimLeft(trimmed);
+    StringTrimRight(trimmed);
+    if(StringFind(trimmed,"Expert=")==0)
+    {
+     string expertValue=StringSubstr(trimmed,StringLen("Expert="));
+     string repaired=NormalizeExpertRelativePath(expertValue);
+     if(repaired!="" && repaired!=expertValue) cfgLines[i]="Expert="+repaired;
+     break;
+    }
+   }
+
+   string result="";
+   for(int i=0;i<count;i++)
+   {
+    result+=cfgLines[i];
+    if(i<count-1) result+="\n";
+   }
+   return result;
+  }
+//+------------------------------------------------------------------+
+string QueueItemTitle(string queueItem)
+  {
+   string parts[];
+   if(StringSplit(queueItem,';',parts)>=2) return parts[1];
+   return queueItem;
+  }
+//+------------------------------------------------------------------+
+string QueueItemSymbolName(string queueItem)
+  {
+   string title=QueueItemTitle(queueItem);
+   int start=StringFind(title,"_",0);
+   if(start<0) return "";
+   start++;
+
+   int end=StringLen(title);
+   int comma=StringFind(title,",",start);
+   int space=StringFind(title," ",start);
+   if(comma>=0 && comma<end) end=comma;
+   if(space>=0 && space<end) end=space;
+   if(end<=start) return "";
+
+   string symbol=StringSubstr(title,start,end-start);
+   StringTrimLeft(symbol);
+   StringTrimRight(symbol);
+   return symbol;
+  }
+//+------------------------------------------------------------------+
+string QueueItemStrategyName(string queueItem)
+  {
+   string title=QueueItemTitle(queueItem);
+   int start=StringFind(title,":",0);
+   if(start<0) return "";
+   string strategy=StringSubstr(title,start+1);
+   StringTrimLeft(strategy);
+   StringTrimRight(strategy);
+   return NormalizeStrategyName(strategy);
+  }
+//+------------------------------------------------------------------+
+string ActiveQueueStrategyName()
+  {
+   string strategy=EA_Desc;
+   int meta=StringFind(strategy,"@{",0);
+   if(meta>=0) strategy=StringSubstr(strategy,0,meta);
+   StringTrimLeft(strategy);
+   StringTrimRight(strategy);
+   return NormalizeStrategyName(strategy);
+  }
+//+------------------------------------------------------------------+
+string QueueItemWithState(string queueItem,const string newState)
+  {
+   string parts[];
+   if(StringSplit(queueItem,';',parts)==3)
+   {
+      int pos=StringFind(parts[1],"_",0);
+      if(pos>=0) parts[1]=newState+StringSubstr(parts[1],pos);
+      else       parts[1]=newState;
+      return ";"+parts[1]+";"+parts[2];
+   }
+   return queueItem;
+  }
+//+------------------------------------------------------------------+
+string NormalizeQueueCompareValue(string value)
+  {
+   StringTrimLeft(value);
+   StringTrimRight(value);
+   StringReplace(value,"/","\\");
+   while(StringFind(value,"\\\\",0)>=0) StringReplace(value,"\\\\","\\");
+   return value;
+  }
+//+------------------------------------------------------------------+
+bool QueueSettingValueMatches(const string queueItem,const string settings,const string key,string &details)
+  {
+   string expected=NormalizeQueueCompareValue(GoatOptQueueValue(queueItem,key));
+   string loaded  =NormalizeQueueCompareValue(GoatOptReadIniValue(settings,key));
+   if(expected=="" || loaded=="") return true;
+   if(expected==loaded) return true;
+   details="Tester "+key+" mismatch. Queue="+expected+" Tester="+loaded;
+   return false;
+  }
+//+------------------------------------------------------------------+
+bool QueueItemMatchesLaunchGuard(const string queueItem,string &details)
+  {
+   string guard=GoatOptReadTextFile(GoatOptLaunchGuardPath(EA_Name,Server));
+   if(guard=="") return true;
+
+   string runPath=NormalizeQueueCompareValue(GoatOptCurrentRunPath(EA_Name,Server));
+   string guardRun=NormalizeQueueCompareValue(GoatOptReadIniValue(guard,"RunPath"));
+   if(guardRun!="" && runPath!="" && guardRun!=runPath)
+   {
+      details="Launch guard run mismatch. Guard="+guardRun+" Active="+runPath;
+      return false;
+   }
+
+   string guardTitle=GoatOptReadIniValue(guard,"QueuedTitle");
+   string title=QueueItemTitle(queueItem);
+   if(guardTitle!="" && title!="" && guardTitle!=title)
+   {
+      details="Launch guard item mismatch. Guard="+guardTitle+" Queue="+title;
+      return false;
+   }
+
+   string guardStrategy=NormalizeStrategyName(GoatOptReadIniValue(guard,"Strategy"));
+   string strategy=QueueItemStrategyName(queueItem);
+   if(guardStrategy!="" && strategy!="" && guardStrategy!=strategy)
+   {
+      details="Launch guard strategy mismatch. Guard="+guardStrategy+" Queue="+strategy;
+      return false;
+   }
+
+   string guardSymbol=GoatOptReadIniValue(guard,"Symbol");
+   string symbol=QueueItemSymbolName(queueItem);
+   if(guardSymbol!="" && symbol!="" && guardSymbol!=symbol)
+   {
+      details="Launch guard symbol mismatch. Guard="+guardSymbol+" Queue="+symbol;
+      return false;
+   }
+
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool QueueItemMatchesTesterSettings(const string queueItem,string &details)
+  {
+   string settings="";
+   if(!MTTESTER::GetSettings2(settings) || settings=="")
+   {
+      details="Tester settings unavailable; checked symbol and strategy only.";
+      return true;
+   }
+
+   if(!QueueSettingValueMatches(queueItem,settings,"Symbol",details))      return false;
+   if(!QueueSettingValueMatches(queueItem,settings,"Period",details))      return false;
+   if(!QueueSettingValueMatches(queueItem,settings,"FromDate",details))    return false;
+   if(!QueueSettingValueMatches(queueItem,settings,"ToDate",details))      return false;
+   if(!QueueSettingValueMatches(queueItem,settings,"ForwardMode",details)) return false;
+   if(!QueueSettingValueMatches(queueItem,settings,"ForwardDate",details)) return false;
+   if(!QueueSettingValueMatches(queueItem,settings,"Report",details))      return false;
+
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool QueueItemMatchesCurrentRun(string queueItem,string &details)
+  {
+   string queuedSymbol=QueueItemSymbolName(queueItem);
+   string queuedStrategy=QueueItemStrategyName(queueItem);
+   string activeStrategy=ActiveQueueStrategyName();
+
+   if(queuedSymbol!=Symbol())
+   {
+      details="Symbol mismatch. Queue="+queuedSymbol+" Tester="+Symbol();
+      return false;
+   }
+   if(queuedStrategy!="" && activeStrategy!="" && queuedStrategy!=activeStrategy)
+   {
+      details="Strategy mismatch. Queue="+queuedStrategy+" Tester="+activeStrategy;
+      return false;
+   }
+   if(!QueueItemMatchesLaunchGuard(queueItem,details)) return false;
+   if(!QueueItemMatchesTesterSettings(queueItem,details)) return false;
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool QueueItemMatchesCurrentRun(string queueItem)
+  {
+   string details="";
+   return QueueItemMatchesCurrentRun(queueItem,details);
+  }
+//+------------------------------------------------------------------+
+struct SBatchProgressStats
+  {
+   int total;
+   int completed;
+   int errors;
+   int pending;
+   int queued;
+   int ongoing;
+   int cancelled;
+   int other;
+  };
+//+------------------------------------------------------------------+
+void ResetBatchProgressStats(SBatchProgressStats &stats)
+  {
+   stats.total=0;
+   stats.completed=0;
+   stats.errors=0;
+   stats.pending=0;
+   stats.queued=0;
+   stats.ongoing=0;
+   stats.cancelled=0;
+   stats.other=0;
+  }
+//+------------------------------------------------------------------+
+string BatchQueueStateFromTitle(string title)
+  {
+   StringTrimLeft(title);
+   StringTrimRight(title);
+   int split=StringFind(title,"_",0);
+   string state=(split>0 ? StringSubstr(title,0,split) : title);
+   StringTrimLeft(state);
+   StringTrimRight(state);
+   return state;
+  }
+//+------------------------------------------------------------------+
+bool ReadBatchProgressStats(const string queueFile,SBatchProgressStats &stats)
+  {
+   ResetBatchProgressStats(stats);
+   string content=GetFileContent(queueFile);
+   if(content=="") return false;
+
+   string rows[];
+   int total=StringSplit(content,(ushort)31,rows);
+   for(int i=0;i<total;i++)
+   {
+    string row=rows[i];
+    StringTrimLeft(row);
+    StringTrimRight(row);
+    if(row=="" || StringLen(row)<9) continue;
+
+    string parts[];
+    if(StringSplit(row,';',parts)<2) continue;
+
+    string state=BatchQueueStateFromTitle(parts[1]);
+    stats.total++;
+
+         if(state=="Completed") stats.completed++;
+    else if(state=="Error")     stats.errors++;
+    else if(state=="Pending")   stats.pending++;
+    else if(state=="Queued")    stats.queued++;
+    else if(state=="OnGoing")   stats.ongoing++;
+    else if(state=="Cancelled") stats.cancelled++;
+    else                        stats.other++;
+   }
+   return (stats.total>0);
+  }
+//+------------------------------------------------------------------+
+string FormatBatchProgressText(const SBatchProgressStats &stats,const bool loaded)
+  {
+   if(!loaded || stats.total<=0) return "0/0 Completed";
+
+   int pct=(int)MathRound(100.0*(double)stats.completed/(double)stats.total);
+   return IntegerToString(pct)+"% Completed | "+IntegerToString(stats.completed)+"/"+IntegerToString(stats.total);
+  }
+//+------------------------------------------------------------------+
+string FormatBatchProgressAlertText(const SBatchProgressStats &stats,const bool loaded)
+  {
+   if(!loaded || stats.total<=0) return "0 Errors";
+
+   string text=(stats.errors>0 ? "Errors: "+IntegerToString(stats.errors) : "0 Errors");
+   if(stats.cancelled>0)
+   {
+    if(text!="") text+=" | ";
+    text+="Cancelled: "+IntegerToString(stats.cancelled);
+   }
+   return text;
+  }
+//+------------------------------------------------------------------+
+string FormatDurationShort(const int seconds_in)
+  {
+   int seconds=(int)MathMax(seconds_in,0);
+   int durationDays=seconds/86400;
+   seconds%=86400;
+   int hours=seconds/3600;
+   seconds%=3600;
+   int minutes=seconds/60;
+   seconds%=60;
+
+   if(durationDays>0) return IntegerToString(durationDays)+"d "+IntegerToString(hours)+"h";
+   if(hours>0)   return IntegerToString(hours)+"h "+IntegerToString(minutes)+"m";
+   if(minutes>0) return IntegerToString(minutes)+"m "+IntegerToString(seconds)+"s";
+   return IntegerToString(seconds)+"s";
+  }
+//+------------------------------------------------------------------+
+bool TryParseLogStamp(const string line,datetime &stamp)
+  {
+   if(StringLen(line)<19) return false;
+   stamp=StringToTime(StringSubstr(line,0,19));
+   return (stamp>0);
+  }
+//+------------------------------------------------------------------+
+void BuildOptimizationBatchPromptSummary(const string queueFile,const string logFile,string &line1,string &line2,string &line3)
+  {
+   SBatchProgressStats stats;
+   bool loaded=ReadBatchProgressStats(queueFile,stats);
+   int left=stats.pending+stats.queued+stats.ongoing;
+
+   if(loaded)
+      line1=StringFormat("Runs OK: %d/%d | Errors: %d | Left: %d",stats.completed,stats.total,stats.errors,left);
+   else
+      line1="Runs OK: n/a | Queue not found";
+
+   string logLines[];
+   int lineCount=0;
+   int h=FileOpen(logFile,FILE_READ|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_TXT|FILE_COMMON);
+   if(h!=INVALID_HANDLE)
+   {
+    while(!FileIsEnding(h))
+    {
+     ArrayResize(logLines,lineCount+1);
+     logLines[lineCount]=FileReadString(h);
+     lineCount++;
+    }
+    FileClose(h);
+   }
+
+   int startIndex=-1;
+   datetime batchStart=0;
+   for(int i=lineCount-1;i>=0;i--)
+   {
+    if(StringFind(logLines[i],"Batch Start clicked and accepted",0)>=0)
+    {
+     startIndex=i;
+     TryParseLogStamp(logLines[i],batchStart);
+     break;
+    }
+   }
+
+   int completedRuns=0,totalSeconds=0,xmlIssues=0,exportIssues=0;
+   datetime currentStart=0,lastRunEnd=0;
+   for(int i=(int)MathMax(startIndex,0);i<lineCount;i++)
+   {
+    string ln=logLines[i];
+    datetime stamp=0;
+    bool haveStamp=TryParseLogStamp(ln,stamp);
+
+    if(StringFind(ln,"Batch Optimization Initialized",0)>=0)
+    {
+     if(haveStamp) currentStart=stamp;
+     continue;
+    }
+
+    if(StringFind(ln,"Optimization Ended",0)>=0)
+    {
+     if(haveStamp)
+     {
+      lastRunEnd=stamp;
+      if(currentStart>0 && stamp>=currentStart)
+      {
+       totalSeconds+=(int)(stamp-currentStart);
+       completedRuns++;
+      }
+     }
+     currentStart=0;
+     continue;
+    }
+
+    if(StringFind(ln,"XML Migration not complete",0)>=0 ||
+       StringFind(ln,"Some XML files failed to move",0)>=0 ||
+       StringFind(ln,"Failed to Analyze and Combine",0)>=0 ||
+       StringFind(ln,"Failed to analyze and combine",0)>=0)
+       xmlIssues++;
+
+    if(StringFind(ln,"Exports aborted",0)>=0 ||
+       (StringFind(ln,"StartExporter",0)>=0 && StringFind(ln,"failed",0)>=0))
+       exportIssues++;
+   }
+
+   if(completedRuns>0)
+   {
+    int avgSeconds=totalSeconds/completedRuns;
+    int elapsedSeconds=(batchStart>0 && lastRunEnd>=batchStart ? (int)(lastRunEnd-batchStart) : totalSeconds);
+    line2="Avg/run: "+FormatDurationShort(avgSeconds)+" | Total: "+FormatDurationShort(elapsedSeconds);
+   }
+   else
+      line2="Avg/run: n/a | Total: n/a";
+
+   line3=StringFormat("XML issues: %d | Export issues: %d",xmlIssues,exportIssues);
+   if(loaded && stats.cancelled>0) line3+=" | Cancelled: "+IntegerToString(stats.cancelled);
+  }
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnDateFromChanged(void)
 {
@@ -191,13 +1427,15 @@ void CStrategyTesterDialog::OnChange_cmbForward(void)
 //+------------------------------------------------------------------+
 bool CStrategyTesterDialog::Create(const long chart_id, const string name,const int subwin, int x1, int y1, int x2, int y2)
   {
-   m_leftMargin   =(int)(0.020*D_Width);
-   m_topMargin    =(int)(0.025*D_Height);
-   m_labelWidth   =(int)(0.100*D_Width);
-   m_GapHoriz     =(int)(0.010*D_Width);
-   m_rowHeight    =(int)(0.051*D_Height);
-   m_controlHeight=(int)(0.043*D_Height);
-   m_controlWidth =(int)(0.280*D_Width);
+   m_leftMargin   =(int)MathMax(6,(int)(0.020*D_Width));
+   m_topMargin    =(int)MathMax(8,(int)(0.025*D_Height));
+   m_labelWidth   =(int)MathMax(58,(int)(0.100*D_Width));
+   m_GapHoriz     =(int)MathMax(4,(int)(0.010*D_Width));
+   m_controlHeight=(int)MathMax(CONTROLS_COMBO_MIN_HEIGHT,(int)(0.043*D_Height));
+   m_rowHeight    =(int)MathMax(m_controlHeight+4,(int)(0.051*D_Height));
+   m_controlWidth =(int)MathMax(165,(int)(0.280*D_Width));
+   m_batchRunning=ResolveBatchRunningState(true);
+   m_compactLayout=false;
    
    int GapCtrl    =(int)(0.05*m_controlWidth);
    // 30+65+5=100
@@ -216,11 +1454,20 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
       return(false);
    }
    GlobalVariableDel("CaptionHeight");
-   Caption(Key_+" - Optimization Studio");
+   string buildLabel=EA_Name_;
+   string buildPrefix=Key_+" ";
+   if(StringFind(buildLabel,buildPrefix)==0) buildLabel=StringSubstr(buildLabel,StringLen(buildPrefix));
+   if(buildLabel=="") buildLabel="V"+version_;
+   Caption(Key_+" - Optimization Studio " + buildLabel);
    ChartSetInteger(0,CHART_SHOW_TRADE_HISTORY,0);
    SetCaptionClientColors();
    
-   if(!c_Wnd_OPT.Create(m_chart_id,m_name+"Boundary",m_subwin,(int)(D_Width*0.01),(int)(D_Height*0.015),(int)(D_Width*0.42),(int)(D_Height*0.69)))  // left,top,right,bottom
+   int settingsRowsWithActions=14; // heading, settings rows, and Add/Set action row
+   int settingsPanelNeeded=m_topMargin+(settingsRowsWithActions*m_rowHeight)+MathMax(8,m_GapHoriz);
+   int settingsPanelBase=(int)(D_Height*(m_compactLayout ? 0.985 : 0.69));
+   int settingsPanelLimit=(int)(D_Height*(m_compactLayout ? 0.985 : 0.78));
+   int optPanelBottom=(int)MathMin(settingsPanelLimit,MathMax(settingsPanelBase,settingsPanelNeeded));
+   if(!c_Wnd_OPT.Create(m_chart_id,m_name+"Boundary",m_subwin,(int)(D_Width*0.01),(int)(D_Height*0.015),(int)(D_Width*0.42),optPanelBottom))  // left,top,right,bottom
    {
       Print("Failed to create boundary rect: ", GetLastError());
       return false;
@@ -234,8 +1481,15 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    CreateLabel(m_lblHeading,"Optimization Settings", m_leftMargin+(int)(D_Width*0.11), y, m_controlWidth); m_lblHeading.FontSize(m_lblHeading.FontSize()+1);
    y += m_rowHeight;
    //-------------------------------------------------------------
+   CreateLabel(m_lblRunName, "Run Name:", m_leftMargin, y, m_labelWidth);
+   string runNameDefault="";
+   if(Path_RunFolder!="") runNameDefault=GoatOptSafePathPart(GoatOptReadIniValue(GoatOptReadTextFile(Path_RunFolder+"\\manifest.ini"),"RunName"));
+   if(runNameDefault=="" || runNameDefault=="Optimization Run") runNameDefault="Optimization Run";
+   CreateEditBox(m_edtRunName, "edtRunName",m_leftMargin + m_labelWidth + m_GapHoriz, y,m_controlWidth,runNameDefault);
+   y += m_rowHeight;
+   //-------------------------------------------------------------
  //CreateLabel(m_lblSetFile, "Set File:", m_leftMargin, y, m_labelWidth);
-   CreateButtonCtrl(m_btnSelectFile, "btnSelectFile", m_leftMargin, y, m_labelWidth, m_controlHeight, "Select Set");
+   CreateButtonCtrl(m_btnSelectFile, "btnSelectFile", m_leftMargin, y, m_labelWidth, m_controlHeight, "Select");
    CreateEditBox(m_edtSetFile, "edtSetFile",m_leftMargin + m_labelWidth + m_GapHoriz, y,m_controlWidth," "); // default text empty or "mysettings.set"
    m_edtSetFile.ReadOnly(true);
    y += m_rowHeight;
@@ -255,6 +1509,7 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    string path = MQLInfoString(MQL_PROGRAM_PATH);
    int ret = StringFind(path, "MQL5\\Experts");
    if(ret >= 0) n_Expert = StringSubstr(path, ret + StringLen("MQL5\\Experts")+1, -1);
+   n_Expert = NormalizeExpertRelativePath(n_Expert);
    if(ret >= 0) path = StringSubstr(path, MathMax(ret,(StringLen(path)-33)), -1);
    
    m_cmbExpert.AddItem(path);
@@ -394,44 +1649,118 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    int indt_left = m_leftMargin+m_labelWidth+m_GapHoriz+m_controlWidth+m_GapHoriz+2*m_GapHoriz;
    int width_right = (int)(D_Width*0.98)-indt_left;
    
-   CreateListView(m_listQueue,"m_listQueue",indt_left, y,width_right,last_y-m_topMargin-(int)(1.2*m_rowHeight)," ");
-   for(int i=0;i<ArraySize(m_edtQueue);i++)
+   int queueListTop=y;
+   int layoutGap=MathMax(6,m_GapHoriz);
+   int queueButtonY=optPanelBottom-m_rowHeight-layoutGap;
+   int queueListHeight=MathMax(m_rowHeight*4,queueButtonY-queueListTop-layoutGap);
+   int actionGap=MathMax(8,layoutGap);
+   int progressGap=MathMax(4,(int)(layoutGap*0.55));
+   int alertGap=MathMax(3,(int)(layoutGap*0.45));
+   int startStopHeight=(int)MathMax(m_controlHeight+8,MathMin(m_rowHeight+8,D_Height*0.058));
+   int exportBandBottom=(int)(D_Height*0.995)-2;
+   int startY=optPanelBottom+MathMax(8,layoutGap);
+   int stopY=startY+startStopHeight+actionGap;
+   int progressY=stopY+startStopHeight+progressGap;
+   int errorsY=progressY+m_controlHeight+alertGap;
+   int stackBottom=errorsY+m_controlHeight;
+   if(stackBottom>exportBandBottom)
    {
-    //CreateEditBox(m_edtQueue[i], "edtQueue" +IntegerToString(i,2,'0'),m_leftMargin+m_labelWidth+  m_controlWidth+30, y,m_controlWidth+100  ," ");
-    //m_edtQueue[i].ReadOnly(true);
-    //CreateEditBox(m_edtStatus[i],"edtStatus"+IntegerToString(i,2,'0'),m_leftMargin+m_labelWidth+2*m_controlWidth+40, y,m_controlWidth/3," "); m_edtStatus[i].ReadOnly(true);
-    y += m_rowHeight;
+    int overflow=stackBottom-exportBandBottom;
+    startY=MathMax(optPanelBottom+2,startY-overflow);
+    stopY=startY+startStopHeight+actionGap;
+    progressY=stopY+startStopHeight+progressGap;
+    errorsY=progressY+m_controlHeight+alertGap;
    }
-   y += m_rowHeight; Ctrl_M=0.19;
+
+   if(m_compactLayout)
+   {
+    int compactGap=MathMax(4,m_GapHoriz);
+    actionGap=compactGap;
+    progressGap=MathMax(3,(int)(compactGap*0.75));
+    alertGap=MathMax(2,(int)(compactGap*0.5));
+    startStopHeight=MathMax(m_controlHeight+6,(int)(m_rowHeight*1.20));
+    int compactBottom=D_Height-m_topMargin;
+    int compactStackHeight=2*startStopHeight+actionGap+progressGap+m_controlHeight+alertGap+m_controlHeight;
+    startY=compactBottom-compactStackHeight;
+    stopY=startY+startStopHeight+actionGap;
+    progressY=stopY+startStopHeight+progressGap;
+    errorsY=progressY+m_controlHeight+alertGap;
+    queueButtonY=startY-compactGap-m_rowHeight;
+    queueListHeight=MathMax(m_rowHeight*4,queueButtonY-queueListTop-compactGap);
+   }
+
+   CreateListView(m_listQueue,"m_listQueue",indt_left, queueListTop,width_right,queueListHeight," ");
+   y=queueButtonY; Ctrl_M=0.19;
  //CreateButtonCtrl(m_btnDelQ          , "m_btnDelQ"          ,indt_left,                                                       y, (int)(width_right*Ctrl_M), m_rowHeight, "Delete Queue");
  //CreateButtonCtrl(m_btnDelQitem      , "m_btnDelQitem"      ,indt_left+(int)(width_right*Ctrl_M*1)+1*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), m_rowHeight, "Delete Item");
  //CreateButtonCtrl(m_btnRefresh       , "m_btnRefresh"       ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), m_rowHeight, "Refresh Queue");
-   CreateButtonCtrl(m_btnDelQ          , "m_btnDelQ"          ,indt_left+(int)(width_right*Ctrl_M*0.0)+0*(int)(width_right*0.02), y, (int)(width_right*Ctrl_M)      , m_rowHeight, "Delete All");
-   CreateButtonCtrl(m_btnDelQitem      , "m_btnDelQitem"      ,indt_left+(int)(width_right*Ctrl_M*1.0)+1*(int)(width_right*0.02), y, (int)(width_right*Ctrl_M)      , m_rowHeight, "Delete");
-   CreateButtonCtrl(m_btnUpQitem       , "m_btnUpQitem"       ,indt_left+(int)(width_right*Ctrl_M*2.0)+2*(int)(width_right*0.02), y, (int)((width_right*Ctrl_M)/2.5), m_rowHeight, "▲");
-   CreateButtonCtrl(m_btnDownQitem     , "m_btnDownQitem"     ,indt_left+(int)(width_right*Ctrl_M*2.4)+3*(int)(width_right*0.02), y, (int)((width_right*Ctrl_M)/2.5), m_rowHeight, "▼");
-   CreateButtonCtrl(m_btnCancelSelected, "m_btnCancelSelected",indt_left+(int)(width_right*Ctrl_M*2.8)+4*(int)(width_right*0.02), y, (int)(width_right*Ctrl_M)      , m_rowHeight, "Cancel");
-   CreateButtonCtrl(m_btnMakePending   , "m_btnMakePending"   ,indt_left+(int)(width_right*Ctrl_M*3.8)+5*(int)(width_right*0.02), y, (int)(width_right*Ctrl_M)      , m_rowHeight, "Activate");
+   int qBtnGap=MathMax(8,(int)(width_right*0.014));
+   int qArrowW=MathMax(52,(int)(width_right*0.075));
+   int qActionW=(width_right-(qBtnGap*5)-(qArrowW*2))/4;
+   int qx=indt_left;
+   CreateButtonCtrl(m_btnDelQ          , "m_btnDelQ"          ,qx, y, qActionW, m_rowHeight, "Delete All"); qx+=qActionW+qBtnGap;
+   CreateButtonCtrl(m_btnDelQitem      , "m_btnDelQitem"      ,qx, y, qActionW, m_rowHeight, "Delete");     qx+=qActionW+qBtnGap;
+   CreateButtonCtrl(m_btnUpQitem       , "m_btnUpQitem"       ,qx, y, qArrowW , m_rowHeight, "▲");          qx+=qArrowW+qBtnGap;
+   CreateButtonCtrl(m_btnDownQitem     , "m_btnDownQitem"     ,qx, y, qArrowW , m_rowHeight, "▼");          qx+=qArrowW+qBtnGap;
+   CreateButtonCtrl(m_btnCancelSelected, "m_btnCancelSelected",qx, y, qActionW, m_rowHeight, "Cancel");     qx+=qActionW+qBtnGap;
+   CreateButtonCtrl(m_btnMakePending   , "m_btnMakePending"   ,qx, y, qActionW, m_rowHeight, "Activate");
    
    Ctrl_M=0.30;
-   y += (int)(m_rowHeight*1.5);
-   CreateButtonCtrl(m_btnStart   , "m_btnStart"    ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), (int)(m_rowHeight*2.0), "START BATCH");
+   int actionX=indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05);
+   int actionW=(int)(width_right*Ctrl_M);
+   y=startY;
+   CreateButtonCtrl(m_btnStart   , "m_btnStart"    ,actionX, y, actionW, startStopHeight, m_batchRunning ? "RUNNING" : "START BATCH");
          m_btnStart.FontSize(m_btnStart.FontSize()+2); m_btnStart.Color(clrWhite); m_btnStart.ColorBackground(clrGreen); m_btnStart.ColorBorder(clrBlack);//C'15,23,42');
-   y += (int)(m_rowHeight*2.5);
-   CreateButtonCtrl(m_btnStop    , "m_btnStop"     ,indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05), y, (int)(width_right*Ctrl_M), (int)(m_rowHeight*2.0), "TERMINATE");
+   if(m_batchRunning) m_btnStart.Disable();
+   y=stopY;
+   CreateButtonCtrl(m_btnStop    , "m_btnStop"     ,actionX, y, actionW, startStopHeight, "TERMINATE");
          m_btnStop.FontSize(m_btnStop.FontSize()+2); m_btnStop.Color(clrWhite); m_btnStop.ColorBackground(clrCrimson); m_btnStop.ColorBorder(clrBlack);//C'15,23,42');
+   CreateEditBox(m_edtBatchProgress,"m_edtBatchProgress",actionX,progressY,actionW,"0/0 Completed");
+   m_edtBatchProgress.ReadOnly(true);
+   m_edtBatchProgress.Color(clrWhite);
+   m_edtBatchProgress.ColorBackground(C'47,74,111');
+   m_edtBatchProgress.ColorBorder(clrBlack);
+   CreateEditBox(m_edtBatchErrors,"m_edtBatchErrors",actionX,errorsY,actionW,"0 Errors");
+   m_edtBatchErrors.ReadOnly(true);
+   m_edtBatchErrors.Color(clrWhite);
+   m_edtBatchErrors.ColorBackground(C'47,74,111');
+   m_edtBatchErrors.ColorBorder(clrBlack);
    y += m_rowHeight;
    
-   if(!c_Wnd_Export.Create(m_chart_id,m_name+"Export",m_subwin,(int)(D_Width*0.01),(int)(D_Height*0.70),(int)(D_Width*0.80),(int)(D_Height*0.93)))  // left,top,right,bottom
+   if(!m_compactLayout)
    {
-      Print("Failed to create export rect: ", GetLastError());
-      return false;
+  int exportPanelLeft   = (int)(D_Width*0.01);
+  int exportPanelGap    = MathMax(6,(int)(m_GapHoriz*1.5));
+  int exportActionBottom= MathMax(last_y+m_rowHeight,queueButtonY+m_rowHeight);
+  int exportPanelTop    = MathMax(optPanelBottom+exportPanelGap,exportActionBottom+MathMax(4,(int)(m_GapHoriz*0.5)));
+  int exportPanelRight  = (int)(D_Width*0.80);
+  int exportPanelBottom = (int)(D_Height*0.995);
+  int minExportHeight   = MathMax(170,(int)(m_rowHeight*4.8));
+  if(exportPanelTop>exportPanelBottom-minExportHeight)
+     exportPanelTop=exportPanelBottom-minExportHeight;
+  int exportPanelWidth  = exportPanelRight-exportPanelLeft;
+
+  if(!c_Wnd_Export.Create(m_chart_id,m_name+"Export",m_subwin,exportPanelLeft,exportPanelTop,exportPanelRight,exportPanelBottom))  // left,top,right,bottom
+  {
+     Print("Failed to create export rect: ", GetLastError());
+     return false;
    }
    c_Wnd_Export.ColorBackground(clrGainsboro);
    c_Wnd_Export.ColorBorder(clrBlack);
    Add(c_Wnd_Export);
    
-   y = (int)(D_Height*0.72);
+   int exportContentY = exportPanelTop+MathMax(12,(int)(m_GapHoriz*2));
+   int syncButtonHeight = MathMax(18,MathMin(28,(int)(m_controlHeight*0.78)));
+   int syncButtonGap = MathMax(8,m_GapHoriz);
+   int syncLabelWidth = MathMax(80,(int)(D_Width*0.09));
+   int syncButtonWidth = MathMax(110,MathMin((int)(D_Width*0.20),(exportPanelWidth-syncLabelWidth-syncButtonGap*4)/3));
+   int syncGroupWidth = syncLabelWidth+syncButtonGap+(syncButtonWidth*3)+(syncButtonGap*2);
+   int syncGroupLeft = exportPanelLeft+MathMax(0,(exportPanelWidth-syncGroupWidth)/2);
+   int syncY = exportPanelBottom-syncButtonHeight-MathMax(10,(int)(D_Height*0.014));
+   int exportRowStep = (int)MathMax(28,MathMin(m_rowHeight-8,(syncY-exportContentY-MathMax(22,(int)(m_controlHeight*0.55))-8)/3));
+   int exportCheckSize = MathMax(14,MathMin(20,(int)(m_controlHeight*0.55)));
+   int exportCheckOffset = MathMax(0,(m_controlHeight-exportCheckSize)/2);
+   y = exportContentY;
    // -----------------  EXPORT SETTINGS  -----------------------------
     string BackOOSDate = FetchExportSetting("BackOOSDate",Key_,EA_Name_,Server_);               if(BackOOSDate=="") BackOOSDate=TimeToString(D'2024.01.08',TIME_DATE);
     int    SetsToExport= (int)FetchExportSetting("SetsToExport",Key_,EA_Name_,Server_);         if(SetsToExport<2) SetsToExport=2;
@@ -441,48 +1770,61 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
     double TargetDD    = StringToDouble(FetchExportSetting("TargetDD",Key_,EA_Name_,Server_));  if(TargetDD<100) TargetDD=100;
     bool   AdjustLots  = StringToInteger(FetchExportSetting("AdjustLots",Key_,EA_Name_,Server_))!=0;//Print(AdjustLots);
     bool   InclBackOOS = StringToInteger(FetchExportSetting("IncludeBackOOS",Key_,EA_Name_,Server_))!=0;//Print(InclBackOOS);
-    
-   CreateLabel(m_lblExport,"Export Settings", m_leftMargin+(int)(D_Width*0.0), y, 10); m_lblExport.FontSize(m_lblExport.FontSize()+1);
-   //y += m_rowHeight;
-   m_leftMargin  =(int)(m_leftMargin*8.0);
-   m_labelWidth  =(int)(m_labelWidth*1.3);
-   m_controlWidth=(int)(m_controlWidth*0.5);
+
+   CreateLabel(m_lblExport,"Export Settings", m_leftMargin+(int)(D_Width*0.0), y, 10);
+   m_lblExport.FontSize(m_lblExport.FontSize()+1);
+
+   int exportLeftMargin  =(int)(m_leftMargin*8.0);
+   int exportLabelWidth  =(int)(m_labelWidth*1.3);
+   int exportControlWidth=(int)(m_controlWidth*0.5);
+   int exportRow0 = exportContentY;
+   int exportRow1 = exportRow0+exportRowStep;
+   int exportRow2 = exportRow1+exportRowStep;
+   int exportRow3 = exportRow2+exportRowStep;
+
    // ===== LEFT-COLUMN ITEMS  ========================================
-   CreateLabel (m_lblSetsToExport ,"# of Sets to Export:", m_leftMargin,y,m_labelWidth);
-   CreateEditBox(m_edtSetsToExport,"edtSetsToExport", m_leftMargin+m_labelWidth+m_GapHoriz,y,m_controlWidth,IntegerToString(SetsToExport));
-   y += m_rowHeight;
-   CreateLabel (m_lblMinScore ,"Min OPT Score:" ,m_leftMargin,y,m_labelWidth);
-   CreateEditBox(m_edtMinScore,"edtMinScore",m_leftMargin+m_labelWidth+m_GapHoriz,y,m_controlWidth,DoubleToString(MinScore,1));
-   y += m_rowHeight;
-   CreateLabel (m_lblTargetDD ,"Target Drawdown:",m_leftMargin,y,m_labelWidth);
-   CreateEditBox(m_edtTargetDD,"edtTargetDD",m_leftMargin+m_labelWidth+m_GapHoriz,y,m_controlWidth,DoubleToString(TargetDD,0));
-   y += m_rowHeight;
-   CreateLabel (m_lblAdjustLots ,"Adjust Lots to DD:",m_leftMargin,y,m_labelWidth);
-   if(!m_chkAdjustLots.Create(m_chart_id,m_name+"chkAdjustLots",m_subwin,m_leftMargin+m_labelWidth+m_GapHoriz,y,m_leftMargin+m_labelWidth+m_GapHoriz+m_controlWidth/5,y+m_controlHeight))
-      Print("CheckBox creation error:",GetLastError());
-   Add(m_chkAdjustLots); m_chkAdjustLots.Text(""); m_chkAdjustLots.Checked(AdjustLots);
+   CreateLabel (m_lblSetsToExport ,"# of Sets to Export:", exportLeftMargin,exportRow0,exportLabelWidth);
+   CreateEditBox(m_edtSetsToExport,"edtSetsToExport", exportLeftMargin+exportLabelWidth+m_GapHoriz,exportRow0,exportControlWidth,IntegerToString(SetsToExport));
+   CreateLabel (m_lblMinScore ,"Min OPT Score:" ,exportLeftMargin,exportRow1,exportLabelWidth);
+   CreateEditBox(m_edtMinScore,"edtMinScore",exportLeftMargin+exportLabelWidth+m_GapHoriz,exportRow1,exportControlWidth,DoubleToString(MinScore,1));
+   CreateLabel (m_lblTargetDD ,"Target Drawdown:",exportLeftMargin,exportRow2,exportLabelWidth);
+   CreateEditBox(m_edtTargetDD,"edtTargetDD",exportLeftMargin+exportLabelWidth+m_GapHoriz,exportRow2,exportControlWidth,DoubleToString(TargetDD,0));
+   CreateLabel (m_lblAdjustLots ,"Adjust Lots to DD:",exportLeftMargin,exportRow3,exportLabelWidth);
+   int adjustCheckX = exportLeftMargin+exportLabelWidth+m_GapHoriz;
+   int adjustCheckY = exportRow3+exportCheckOffset;
+   if(!m_chkAdjustLots.Create(m_chart_id,m_name+"chkAdjustLots",m_subwin,adjustCheckX,adjustCheckY,adjustCheckX+exportCheckSize,adjustCheckY+exportCheckSize))
+      Print("CheckBox button creation error:",GetLastError());
+   m_chkAdjustLots.BmpNames("::res\\CheckBoxOff.bmp","::res\\CheckBoxOn.bmp");
+   m_chkAdjustLots.Locking(true);
+   Add(m_chkAdjustLots); m_chkAdjustLots.Pressed(AdjustLots);
+
    // ===== RIGHT-COLUMN ITEMS  =======================================
-   int xR = m_leftMargin + m_labelWidth + m_controlWidth + m_GapHoriz*4;
-   int yR = (int)(D_Height*0.72);   // row-0 anchor for right side
-   // (row-1) ----------------------------------------------------------
-   yR += m_rowHeight;
-   CreateLabel (m_lblMinARF ,"Min ARF:",xR,yR,m_labelWidth);
-   CreateEditBox(m_edtMinARF,"edtMinARF",xR+m_labelWidth+m_GapHoriz,yR,m_controlWidth,DoubleToString(MinARF,1));
-   // (row-2) ----------------------------------------------------------
-   yR += m_rowHeight;
-   CreateLabel (m_lblMinSR ,"Min SR:",xR,yR,m_labelWidth);
-   CreateEditBox(m_edtMinSR,"edtMinSR",xR+m_labelWidth+m_GapHoriz,yR,m_controlWidth,DoubleToString(MinSR,1));
-   // (row-3)  Verify on OOS  -----------------------------------------
-   yR += m_rowHeight;
-   CreateLabel (m_lblVerifyOOS ,"Include Back OOS:",xR,yR,m_labelWidth);
-   if(!m_chkVerifyOOS.Create(m_chart_id,m_name+"chkVerifyOOS",m_subwin,xR+m_labelWidth+m_GapHoriz,yR,xR+m_labelWidth+m_GapHoriz+m_controlWidth/5,yR+m_controlHeight))
-      Print("CheckBox creation error:",GetLastError());
-   Add(m_chkVerifyOOS); m_chkVerifyOOS.Text(""); m_chkVerifyOOS.Checked(InclBackOOS);
-   // (row-0)  Back OOS Date -- created last for z-order --------------
-   CreateLabel (m_lblBackOOSDate ,"Back OOS Date:",xR,(int)(D_Height*0.72),m_labelWidth);
-   CreateDatePick(m_dpBackOOS   ,"dpBackOOS", xR+m_labelWidth+m_GapHoriz,(int)(D_Height*0.72),m_controlWidth);
+   int xR = exportLeftMargin + exportLabelWidth + exportControlWidth + m_GapHoriz*4;
+   CreateLabel (m_lblMinARF ,"Min ARF:",xR,exportRow1,exportLabelWidth);
+   CreateEditBox(m_edtMinARF,"edtMinARF",xR+exportLabelWidth+m_GapHoriz,exportRow1,exportControlWidth,DoubleToString(MinARF,1));
+   CreateLabel (m_lblMinSR ,"Min SR:",xR,exportRow2,exportLabelWidth);
+   CreateEditBox(m_edtMinSR,"edtMinSR",xR+exportLabelWidth+m_GapHoriz,exportRow2,exportControlWidth,DoubleToString(MinSR,1));
+   CreateLabel (m_lblVerifyOOS ,"Include Back OOS:",xR,exportRow3,exportLabelWidth);
+   int oosCheckX = xR+exportLabelWidth+m_GapHoriz;
+   int oosCheckY = exportRow3+exportCheckOffset;
+   if(!m_chkVerifyOOS.Create(m_chart_id,m_name+"chkVerifyOOS",m_subwin,oosCheckX,oosCheckY,oosCheckX+exportCheckSize,oosCheckY+exportCheckSize))
+      Print("CheckBox button creation error:",GetLastError());
+   m_chkVerifyOOS.BmpNames("::res\\CheckBoxOff.bmp","::res\\CheckBoxOn.bmp");
+   m_chkVerifyOOS.Locking(true);
+   Add(m_chkVerifyOOS); m_chkVerifyOOS.Pressed(InclBackOOS);
+
+   CreateLabel (m_lblBackOOSDate ,"Back OOS Date:",xR,exportRow0,exportLabelWidth);
+   CreateDatePick(m_dpBackOOS   ,"dpBackOOS", xR+exportLabelWidth+m_GapHoriz,exportRow0,exportControlWidth);
    if(BackOOSDate=="") BackOOSDate="2024.01.01";
-   m_dpBackOOS.Value(StringToTime(BackOOSDate));//TimeToString(,TIME_DATE));//D'2024.01.08');
+   m_dpBackOOS.Value(StringToTime(BackOOSDate));
+
+  int syncLabelX = syncGroupLeft;
+  int syncButtonX = syncLabelX + syncLabelWidth + syncButtonGap;
+  CreateLabel(m_lblDataSync,"Data Sync:",syncLabelX,syncY,syncLabelWidth);
+  CreateButtonCtrl(m_btnSyncBias,"m_btnSyncBias",syncButtonX,syncY,syncButtonWidth,syncButtonHeight,"Sync AI Bias History");
+  CreateButtonCtrl(m_btnViewBias,"m_btnViewBias",syncButtonX+syncButtonWidth+syncButtonGap,syncY,syncButtonWidth,syncButtonHeight,"View AI Bias History");
+  CreateButtonCtrl(m_btnSyncNews,"m_btnSyncNews",syncButtonX+(syncButtonWidth+syncButtonGap)*2,syncY,syncButtonWidth,syncButtonHeight,"Sync News History");
+   }
    // Show the dialog
    Show(); Sleep(50);
    OnClickRefresh(true);
@@ -573,6 +1915,164 @@ void CStrategyTesterDialog::CreateListView(CListView &listV, const string name, 
    //m_listQueue.ItemColorsFHD(5,clrGreen,clrWheat); m_listQueue.Select(3); //m_listQueue.
 }
 //+------------------------------------------------------------------+
+bool CStrategyTesterDialog::ReadNewsHistoryRange(const string file_name,datetime &earliest_event_time,datetime &latest_event_time)
+  {
+   earliest_event_time = 0;
+   latest_event_time = 0;
+
+   if(!FileIsExist(file_name,FILE_COMMON)) return false;
+
+   int h = FileOpen(file_name,FILE_READ|FILE_CSV|FILE_COMMON,",");
+   if(h==INVALID_HANDLE) return false;
+
+   for(int i=0; i<9 && !FileIsEnding(h); i++) FileReadString(h); // header
+
+   while(!FileIsEnding(h))
+     {
+      string time_s = FileReadString(h);
+      for(int i=0; i<8 && !FileIsEnding(h); i++) FileReadString(h);
+      if(time_s == "") continue;
+
+      datetime t = StringToTime(time_s);
+      if(t <= 0) continue;
+
+      if(earliest_event_time == 0) earliest_event_time = t;
+      latest_event_time = t;
+     }
+   FileClose(h);
+
+   return (latest_event_time > 0);
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::ReadBiasHistoryFileStats(const string asset,SBiasAssetSyncResult &result)
+  {
+   result.asset = asset;
+   result.success = false;
+   result.total_points = 0;
+   result.earliest_time = 0;
+   result.latest_time = 0;
+   result.error_text = "";
+
+   string file_name = BIAS_FILE+asset+".csv";
+   if(!FileIsExist(file_name,FILE_COMMON))
+     {
+      result.error_text = "File missing";
+      return false;
+     }
+
+   int h = FileOpen(file_name,FILE_READ|FILE_CSV|FILE_COMMON,",");
+   if(h==INVALID_HANDLE)
+     {
+      result.error_text = "Open error=" + (string)GetLastError();
+      return false;
+     }
+
+   for(int i=0; i<3 && !FileIsEnding(h); i++) FileReadString(h); // header
+
+   while(!FileIsEnding(h))
+     {
+      string time_s = FileReadString(h);
+      if(!FileIsEnding(h)) FileReadString(h);
+      if(!FileIsEnding(h)) FileReadString(h);
+      if(time_s == "") continue;
+
+      datetime t = StringToTime(time_s);
+      if(t <= 0) continue;
+
+      if(result.total_points == 0) result.earliest_time = t;
+      result.latest_time = t;
+      result.total_points++;
+     }
+   FileClose(h);
+
+   result.success = (result.total_points > 0);
+   if(!result.success) result.error_text = "No bias points";
+   return result.success;
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::BuildBiasHistoryStatus(SBulkBiasSyncResult &result)
+  {
+   result.success = false;
+   result.assets_total = 0;
+   result.assets_synced = 0;
+   result.assets_failed = 0;
+   result.error_text = "";
+   ArrayResize(result.asset_results,0);
+
+   string assets[];
+   int total = GetGOATSupportedBiasAssets(assets);
+   result.assets_total = total;
+   ArrayResize(result.asset_results,total);
+
+   for(int i=0; i<total; i++)
+     {
+      SBiasAssetSyncResult asset_result;
+      if(ReadBiasHistoryFileStats(assets[i],asset_result)) result.assets_synced++;
+      else                                                 result.assets_failed++;
+      result.asset_results[i] = asset_result;
+     }
+
+   result.success = (result.assets_synced > 0);
+   if(result.assets_failed > 0)
+      result.error_text = (string)result.assets_failed + " assets missing or unreadable";
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::ShowBiasHistorySummary(const SBulkBiasSyncResult &result)
+  {
+   string summary = "AI Bias history";
+   summary += "\nAvailable assets: " + (string)result.assets_synced + "/" + (string)result.assets_total;
+   if(result.assets_failed > 0) summary += "\nMissing/failed assets: " + (string)result.assets_failed;
+   summary += "\n\n";
+
+   int total_assets = ArraySize(result.asset_results);
+   int asset_width = 0;
+   int points_digits = 1;
+   int status_width = 0;
+   for(int i = 0; i < total_assets; i++)
+     {
+      int asset_len = StringLen(result.asset_results[i].asset);
+      if(asset_len > asset_width) asset_width = asset_len;
+
+      string points_text = IntegerToString(result.asset_results[i].total_points);
+      int points_len = StringLen(points_text);
+      if(points_len > points_digits) points_digits = points_len;
+     }
+   for(int i = 0; i < total_assets; i++)
+     {
+      string status_field = "FAILED";
+      if(result.asset_results[i].success)
+        {
+         string points_text = IntegerToString(result.asset_results[i].total_points);
+         while(StringLen(points_text) < points_digits) points_text = " " + points_text;
+         status_field = points_text + " bias points";
+        }
+      if(StringLen(status_field) > status_width) status_width = StringLen(status_field);
+     }
+
+   for(int i = 0; i < total_assets; i++)
+     {
+      string earliest = (result.asset_results[i].earliest_time == 0) ? "No Date" : TimeToString(result.asset_results[i].earliest_time, TIME_DATE);
+      string latest = (result.asset_results[i].latest_time == 0) ? "No Date" : TimeToString(result.asset_results[i].latest_time, TIME_DATE);
+      string asset_field = result.asset_results[i].asset;
+      while(StringLen(asset_field) < asset_width) asset_field += " ";
+      string status_field = "FAILED";
+      if(result.asset_results[i].success)
+        {
+         string points_text = IntegerToString(result.asset_results[i].total_points);
+         while(StringLen(points_text) < points_digits) points_text = " " + points_text;
+         status_field = points_text + " bias points";
+        }
+      while(StringLen(status_field) < status_width) status_field += " ";
+      summary += asset_field + ": " + status_field + ", Start: " + earliest + ", End: " + latest;
+      if(!result.asset_results[i].success && result.asset_results[i].error_text != "")
+         summary += " - " + result.asset_results[i].error_text;
+      if(i < total_assets - 1) summary += "\n";
+     }
+
+   int icon = (result.assets_failed > 0) ? MB_ICONEXCLAMATION : MB_ICONINFORMATION;
+   MessageBox(summary, "AI Bias History", MB_OK|icon);
+  }
+//+------------------------------------------------------------------+
 //|  Sync GUI controls with the queue row that the user just clicked  |
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnSelectQueueItem(void)
@@ -651,55 +2151,76 @@ void CStrategyTesterDialog::OnClickSelectFile()
     if(ret==IDCANCEL) return;
    }
    string Filenames[];
-   int ret = FileSelectDialog("Select a "+Key_+" .set file", NULL, "Set files (*.set)|*.set|All files (*.*)|*.*" , FSD_FILE_MUST_EXIST|FSD_COMMON_FOLDER , Filenames, NULL); //FSD_ALLOW_MULTISELECT
+   int ret = FileSelectDialog("Select a "+Key_+" set or portfolio batch", NULL, "GOAT files (*.set;*.goatbatch)|*.set;*.goatbatch|Set files (*.set)|*.set|Portfolio batch files (*.goatbatch)|*.goatbatch|All files (*.*)|*.*" , FSD_FILE_MUST_EXIST|FSD_COMMON_FOLDER , Filenames, NULL); //FSD_ALLOW_MULTISELECT
    if(ret>0)
    {
-    int handle = FileOpen(Filenames[0],FILE_READ|FILE_COMMON);
-    while(!FileIsEnding(handle))
-    {
-     string str=FileReadString(handle);
-     if(StringFind(str,"EA_Desc=")==0)
+     string picked=Filenames[0];
+     string pickedLower=picked;
+     StringToLower(pickedLower);
+     if(EndsWith(pickedLower,".goatbatch"))
      {
-      Strategy=StringSubstr(str,8); m_edtStrategy.Text(Strategy);
-     //if(StringFind(str,"SEQUENCE SETTINGS")>0 && Strategy!="") {
-      Path_QueueStrategy=Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy+"\\Queue."+Key_;
-      if(FileIsExist(Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy+"\\Inputs."+Key_,FILE_COMMON))
-      {
-       // check if previously created file mismatch add here
-       string QueueContent_Strategy = GetFileContent(Path_QueueStrategy);
-       if(QueueContent_Strategy!="")
-       {
-        int ret = MessageBox("Some Queue Items already present.\nStrategy name: "+Strategy+"\n\nDo you want to add the items?","Warning",MB_OKCANCEL|MB_ICONQUESTION);
-        if(ret==IDOK)
-        {
-         string QueueContent_Batch   =GetFileContent(Path_QueueBatch);
-         string QueueContent_Strategy=GetFileContent(Path_QueueStrategy);
-         QueueContent_Batch+=QueueContent_Strategy;
-         int handle = FileOpen(Path_QueueBatch,FILE_WRITE|FILE_COMMON);  // it overwrites the entire file
-         FileWrite(handle,QueueContent_Batch); FileClose(handle);
-         OnClickRefresh(true);
-        }
-       }
-      }
-      int handle_dest = FileOpen(Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy+"\\Inputs."+Key_,FILE_WRITE|FILE_COMMON);//FILE_TXT
-      FileWrite(handle_dest,"Mode_Operation=9"); // 9 is OnChart Standard
-      FileWrite(handle_dest,str);
-      while(!FileIsEnding(handle)) FileWrite(handle_dest,FileReadString(handle));
-      FileClose(handle_dest);
-      break;
+      LoadBatchPackage(picked);
+      return;
      }
+     SBatchProgressStats stats;
+     bool forceNewRun=false;
+     if(ReadBatchProgressStats(Path_QueueBatch,stats) && stats.total>0 && stats.pending+stats.queued+stats.ongoing==0)
+        forceNewRun=true;
+     if(!EnsureRunContext(forceNewRun)) {MessageBox("Unable to create or recover an Optimization Run folder.","Error",MB_OK|MB_ICONERROR); return;}
+      string savedStrategy="";
+      if(!SaveStrategyInputsFromSet(picked,savedStrategy))
+        {
+         MessageBox("Unable to read and save strategy inputs from the selected "+Key_+" set file.\n\nFile:\n"+picked,"Error",MB_OK|MB_ICONERROR);
+         return;
+        }
+      Strategy=savedStrategy;
+      m_selectedSetPath=picked;
+      m_edtStrategy.Text(Strategy);
+
+      string strategyDir = GoatOptStrategyDir(EA_Name_,Server_,Strategy);
+      EnsureCommonFolderTree(strategyDir);
+      Path_QueueStrategy=strategyDir+"\\Queue."+Key_;
+      string QueueContent_Strategy = GetFileContent(Path_QueueStrategy);
+      if(QueueContent_Strategy!="")
+        {
+         int addRet = MessageBox("Some Queue Items already present.\nStrategy name: "+Strategy+"\n\nDo you want to add the items?","Warning",MB_OKCANCEL|MB_ICONQUESTION);
+         if(addRet==IDOK)
+           {
+            string QueueContent_Batch=GetFileContent(Path_QueueBatch);
+            QueueContent_Batch+=QueueContent_Strategy;
+            int batchHandle = FileOpen(Path_QueueBatch,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+            if(batchHandle!=INVALID_HANDLE)
+              {
+               FileWrite(batchHandle,QueueContent_Batch);
+               FileClose(batchHandle);
+               OnClickRefresh(true);
+              }
+           }
+        }
+
+     if(Strategy=="") {MessageBox("No Strategy name or reference comment found. Invalid "+Key_+" set file.","Error",MB_OK|MB_ICONERROR); return;}
+     int tailStart=(int)MathMax(0,StringLen(picked)-35);
+     m_edtSetFile.Text(StringSubstr(picked,tailStart,-1));
+     SaveCurrentBatchPackage();
+     OnClickRefresh(true);
     }
-    if(Strategy=="") {MessageBox("No Strategy name or reference comment found. Invalid "+Key_+" set file.","Error",MB_OK|MB_ICONERROR); return;}
-    m_edtSetFile.Text(StringSubstr(Filenames[0], MathMax(ret,(StringLen(Filenames[0])-35)), -1));
-    OnClickRefresh(true);
-    FileClose(handle);
-   }
   }
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::AddQueueSingle(void)
   {
    if(Strategy=="") {MessageBox("Select a "+Key_+" set file first.","Error",MB_OK|MB_ICONERROR); return;}
-   
+   if(!EnsureRunContext(false)) {MessageBox("Unable to create or recover an Optimization Run folder.","Error",MB_OK|MB_ICONERROR); return;}
+   string strategyDir=GoatOptStrategyDir(EA_Name_,Server_,Strategy);
+   Path_QueueStrategy=strategyDir+"\\Queue."+Key_;
+   EnsureCommonFolderTree(strategyDir);
+
+   string inputMessage="";
+   if(!EnsureInputsForStrategy(Strategy,inputMessage))
+     {
+      MessageBox(inputMessage,"Error",MB_OK|MB_ICONERROR);
+      return;
+     }
+
    string item=GetTESTERsettingsString();
    
    string QueueContent_Batch   =GetFileContent(Path_QueueBatch);
@@ -707,16 +2228,27 @@ void CStrategyTesterDialog::AddQueueSingle(void)
    
    QueueContent_Batch+=item+CharToString(31)+"\r\n";//((QueueContent=="")?"":"\n"); //Print(QueueContent);
    
-   int handle = FileOpen(Path_QueueBatch,FILE_WRITE|FILE_COMMON);  // it overwrites the entire file
+   int handle = FileOpen(Path_QueueBatch,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);  // it overwrites the entire file
+   if(handle==INVALID_HANDLE)
+   {
+    MessageBox("Unable to update the batch queue file.","Error",MB_OK|MB_ICONERROR);
+    return;
+   }
    FileWrite(handle,QueueContent_Batch); FileClose(handle);
    
    if(StringFind(QueueContent_Strategy,item)==-1)
    {
     QueueContent_Strategy+=item+CharToString(31)+"\r\n";//((QueueContent=="")?"":"\n"); //Print(QueueContent);
-    
-    int handle = FileOpen(Path_QueueStrategy,FILE_WRITE|FILE_COMMON);  // it overwrites the entire file
-    FileWrite(handle,QueueContent_Strategy); FileClose(handle);
-   }
+
+     int handle = FileOpen(Path_QueueStrategy,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);  // it overwrites the entire file
+     if(handle==INVALID_HANDLE)
+     {
+      MessageBox("Unable to update the strategy queue file.","Error",MB_OK|MB_ICONERROR);
+      return;
+     }
+     FileWrite(handle,QueueContent_Strategy); FileClose(handle);
+    }
+   SaveCurrentBatchPackage();
    OnClickRefresh(true,true);
   }
 //+------------------------------------------------------------------+
@@ -750,11 +2282,20 @@ void CStrategyTesterDialog::OnClickAddQueue(void)
          AddQueueSingle();
          added++;
       }
+      if(sel!="")
+      {
+         if(!m_cmbSymbol.SelectByText(sel))
+         {
+            m_cmbSymbol.AddItem(sel);
+            m_cmbSymbol.SelectByText(sel);
+         }
+      }
       MessageBox((string)added+" item(s) added from preset: "+StripTxtExt(presetFile),"Info",MB_OK|MB_ICONINFORMATION);
       return;
    }
    // Not a preset -> single-add (original behaviour)
    AddQueueSingle();
+   if(sel!="") m_cmbSymbol.SelectByText(sel);
 }
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickSetPresets(void)
@@ -784,6 +2325,16 @@ void CStrategyTesterDialog::OnClickDelQ(void)
    else             MessageBox("No Queue file found.","Error",MB_OK|MB_ICONERROR);
    
    if(FileIsExist(Key_+"\\OnGoingBatch."+Key_,FILE_COMMON)) FileDelete(Key_+"\\OnGoingBatch."+Key_,FILE_COMMON);//FILE_TXT
+   GlobalVariableDel("BatchOnGoing");
+   GlobalVariableDel("TerminalRunning");
+   FileDelete(GoatOptLaunchGuardPath(EA_Name_,Server_),FILE_COMMON);
+   FileDelete(GoatOptActiveConfigPath(EA_Name_,Server_),FILE_COMMON);
+   if(Path_RunFolder!="")
+   {
+      FileDelete(GoatOptActivePointerPath(EA_Name_,Server_),FILE_COMMON);
+      g_goat_opt_active_run_path="";
+      RefreshRunPaths();
+   }
    OnClickRefresh(true,true);
   }
 //+------------------------------------------------------------------+
@@ -886,11 +2437,13 @@ void CStrategyTesterDialog::OnClickMakeSelectedPending(void)
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickRefresh(bool init=false, bool select=false)
   {
+   RefreshNewsSyncButton();
    string QueueContent=GetFileContent(Path_QueueBatch);
    
    m_listQueue.ItemsClear();
    if(QueueContent=="")
    {
+    UpdateBatchProgressText();
     if(!init) MessageBox("No Queue file found.","Error",MB_OK|MB_ICONERROR);
     return;
    }
@@ -899,33 +2452,224 @@ void CStrategyTesterDialog::OnClickRefresh(bool init=false, bool select=false)
    int total=StringSplit(QueueContent, (ushort)31, results);
    ReconstructFile(Path_QueueBatch,results);
    
+   int added=0;
+   int select_index=-1;
    for(int i=0;i<total;i++)
    {
     string res[];
     if(StringSplit(results[i],';',res)==3)
     {
-     m_listQueue.ItemDelete(i);
-     m_listQueue.AddItem(res[1]);
-          if(StringFind(res[1],"Completed",0)>=0) {}//m_listQueue.ItemColorsFHD(i,clrGreen);}
-     else if(StringFind(res[1],"OnGoing"  ,0)>=0) {m_listQueue.Select(i);}
-     else                                         {}//m_listQueue.ItemColorsFHD(i,clrBlack);}
+     if(m_listQueue.AddItem(res[1]))
+     {
+          if(StringFind(res[1],"Completed",0)>=0) {}//m_listQueue.ItemColorsFHD(added,clrGreen);}
+     else if(StringFind(res[1],"OnGoing"  ,0)>=0) select_index=added;
+     else                                         {}//m_listQueue.ItemColorsFHD(added,clrBlack);}
+      added++;
+     }
      //m_edtQueue[i].Text(res[1]); // error array out of bound
      //     if(StringFind(res[1],"Completed",0)>=0) m_edtQueue[i].Color(clrGreen);
      //else if(StringFind(res[1],"OnGoing"  ,0)>=0) m_edtQueue[i].Color(clrRed);
      //else                                         m_edtQueue[i].Color(clrBlack);
     }
    }
-   if(1)//!init)
-   {minimizeWindow(); maximizeWindow(); Sleep(20);}
-   if(select && total>0) m_listQueue.Select(total - 2);  //Print(total);// Select the latest (lowest) entry
-   Sleep(20);
+   if(select && added>0 && select_index<0) select_index=added-1;  // Select the latest displayed entry
+   if(select_index>=0) m_listQueue.Select(select_index);
+   // ItemsClear() hides the list scrollbar; show after refill so overflow is visible again.
+   m_listQueue.Show();
+   RefreshBatchStartButtonState();
+   ChartRedraw(m_chart_id);
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::OnClickSyncBias(void)
+  {
+   if(m_dataSyncBusy) return;
+   m_dataSyncBusy = true;
+
+   Bias.Key_ = Key_;
+   m_btnSyncBias.Text("Sync Running...");
+   m_btnSyncBias.Color(clrWhite);
+   m_btnSyncBias.ColorBackground(C'210,105,30');
+   m_btnSyncBias.ColorBorder(clrBlack);
+   ChartRedraw();
+   MessageBox("AI Bias history sync started.\n\nThis can take up to one minute.", "Data Sync", MB_OK|MB_ICONINFORMATION);
+
+   SBulkBiasSyncResult result;
+   bool sync_ok = Bias.SyncAllBiasHistory(result);
+
+   m_dataSyncBusy = false;
+   m_btnSyncBias.Text("Sync AI Bias History");
+   m_btnSyncBias.Color(clrPaleTurquoise);
+   m_btnSyncBias.ColorBackground(C'15,23,42');
+   m_btnSyncBias.ColorBorder(clrBlack);
+   RefreshNewsSyncButton();
+
+   if(!sync_ok && result.assets_synced == 0)
+     {
+      string msg = "AI Bias history sync failed";
+      if(result.error_text != "") msg += "\n\n" + result.error_text;
+      MessageBox(msg, "AI Bias History", MB_OK|MB_ICONERROR);
+      return;
+     }
+
+   ShowBiasHistorySummary(result);
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::OnClickViewBias(void)
+  {
+   if(m_dataSyncBusy) return;
+
+   SBulkBiasSyncResult result;
+   BuildBiasHistoryStatus(result);
+   ShowBiasHistorySummary(result);
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::RefreshNewsSyncButton(void)
+  {
+   if(m_compactLayout) return;
+   datetime latest = 0;
+   bool stale = IsNewsHistoryStale(NEWS_FILE, latest);
+
+   if(stale)
+     {
+      m_btnSyncNews.Text("Sync News History");
+      m_btnSyncNews.Color(clrWhite);
+      m_btnSyncNews.ColorBackground(C'210,105,30');
+      m_btnSyncNews.ColorBorder(clrBlack);
+     }
+   else
+     {
+      m_btnSyncNews.Text("News Fresh: " + TimeToString(latest, TIME_DATE));
+      m_btnSyncNews.Color(clrWhite);
+      m_btnSyncNews.ColorBackground(C'46,139,87');
+      m_btnSyncNews.ColorBorder(clrBlack);
+     }
+   ChartRedraw();
+   }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::HasActiveBatchQueueItem(void)
+  {
+   string QueueContent=GetFileContent(Path_QueueBatch);
+   if(QueueContent=="") return false;
+
+   string QueueItems[];
+   int total=StringSplit(QueueContent,(ushort)31,QueueItems);
+   for(int i=0;i<total;i++)
+   {
+    string item=QueueItems[i];
+    StringTrimLeft(item);
+    StringTrimRight(item);
+    if(item=="") continue;
+
+    string parts[];
+    if(StringSplit(item,';',parts)==3)
+    {
+     if(StringFind(parts[1],"OnGoing",0)>=0 || StringFind(parts[1],"Queued",0)>=0) return true;
+    }
+    else if(StringFind(item,"OnGoing",0)>=0 || StringFind(item,"Queued",0)>=0) return true;
+   }
+   return false;
+  }
+//+------------------------------------------------------------------+
+bool CStrategyTesterDialog::ResolveBatchRunningState(const bool clearStale)
+  {
+   if(GlobalVariableGet("BatchOnGoing")==0.0) return false;
+   if(HasActiveBatchQueueItem()) return true;
+
+   if(clearStale)
+   {
+    GlobalVariableDel("BatchOnGoing");
+    GlobalVariableDel("TerminalRunning");
+    WriteLog("Cleared stale BatchOnGoing flag: queue has no Queued or OnGoing item.",true,Key_,EA_Name_,Server_);
+   }
+   return false;
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::RefreshBatchStartButtonState(void)
+  {
+   m_batchRunning=ResolveBatchRunningState(true);
+   m_btnStart.Text(m_batchRunning ? "RUNNING" : "START BATCH");
+   if(m_batchRunning) m_btnStart.Disable();
+   else               m_btnStart.Enable();
+   UpdateBatchProgressText();
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::UpdateBatchProgressText(void)
+  {
+   SBatchProgressStats stats;
+   bool loaded=ReadBatchProgressStats(Path_QueueBatch,stats);
+   m_edtBatchProgress.Text(FormatBatchProgressText(stats,loaded));
+   string alertText=FormatBatchProgressAlertText(stats,loaded);
+   m_edtBatchErrors.Text(alertText);
+   m_edtBatchErrors.Show();
+   if(loaded && (stats.errors>0 || stats.cancelled>0))
+      m_edtBatchErrors.ColorBackground(C'122,63,34');
+   else
+      m_edtBatchErrors.ColorBackground(C'47,74,111');
+   if(loaded && stats.total>0 && stats.errors==0 && stats.cancelled==0 && stats.completed>=stats.total)
+      m_edtBatchProgress.ColorBackground(C'46,139,87');
+   else
+      m_edtBatchProgress.ColorBackground(C'47,74,111');
+  }
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::OnClickSyncNews(void)
+  {
+   if(m_dataSyncBusy) return;
+   News.Key_ = Key_;
+
+   datetime earliest = 0;
+   datetime latest = 0;
+   ReadNewsHistoryRange(NEWS_FILE,earliest,latest);
+   if(!IsNewsHistoryStale(NEWS_FILE, latest) && latest > 0)
+     {
+      string start_stamp = (earliest == 0) ? "No Date" : TimeToString(earliest, TIME_DATE);
+      string end_stamp = TimeToString(latest, TIME_DATE|TIME_MINUTES);
+      MessageBox("News history is up to date.\n\nStart: " + start_stamp + "\nEnd: " + end_stamp, "News History", MB_OK|MB_ICONINFORMATION);
+      RefreshNewsSyncButton();
+      return;
+     }
+
+   m_dataSyncBusy = true;
+   m_btnSyncNews.Text("Sync Running...");
+   m_btnSyncNews.Color(clrWhite);
+   m_btnSyncNews.ColorBackground(C'210,105,30');
+   m_btnSyncNews.ColorBorder(clrBlack);
+   ChartRedraw();
+   MessageBox("News history sync started.\n\nThis can take up to one minute.", "Data Sync", MB_OK|MB_ICONINFORMATION);
+
+   SNewsSyncResult result;
+   bool sync_ok = News.SyncFullHistory(result);
+
+   m_dataSyncBusy = false;
+   if(!sync_ok)
+     {
+      string msg = "News history sync failed";
+      if(result.error_text != "") msg += "\n\n" + result.error_text;
+      MessageBox(msg, "News History", MB_OK|MB_ICONERROR);
+      RefreshNewsSyncButton();
+      return;
+     }
+
+   earliest = 0;
+   latest = 0;
+   ReadNewsHistoryRange(NEWS_FILE,earliest,latest);
+   string start_stamp = (earliest == 0) ? "No Date" : TimeToString(earliest, TIME_DATE);
+   string end_stamp = (latest == 0 && result.latest_event_time > 0) ? TimeToString(result.latest_event_time, TIME_DATE|TIME_MINUTES)
+                                                                     : ((latest == 0) ? "No Date" : TimeToString(latest, TIME_DATE|TIME_MINUTES));
+   MessageBox("News history is up to date.\n\nStart: " + start_stamp + "\nEnd: " + end_stamp, "News History", MB_OK|MB_ICONINFORMATION);
+   RefreshNewsSyncButton();
   }
 //+------------------------------------------------------------------+
 //|  Batch-Start button - final version (news-file check included)   |
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickStart(void)
   {
+   if(!EnsureRunContext(false)) {MessageBox("Unable to create or recover an Optimization Run folder.","Error",MB_OK|MB_ICONERROR); return;}
+   if(ResolveBatchRunningState(true)) {MessageBox("Batch is already running.","Info",MB_OK|MB_ICONINFORMATION); return;}
+   if(!MTTESTER::IsIdle()) {MessageBox("Strategy Tester is still running. Stop it before starting a batch.","Info",MB_OK|MB_ICONINFORMATION); return;}
+   if(!RehomeRunIfEditedNameChanged()) return;
    if(!FileIsExist(Path_QueueBatch,FILE_COMMON)) {MessageBox("No Queue file found.","Error",MB_OK|MB_ICONERROR); return;}
+   News.Key_ = Key_;
+   Bias.Key_ = Key_;
    /* -------- 1)  make sure the economic-news CSV is fresh -------- */
    if(!EnsureFreshNewsFile(NEWS_FILE)) return; // user cancelled or hard error
    
@@ -939,25 +2683,39 @@ void CStrategyTesterDialog::OnClickStart(void)
     if(StringSplit(QueueItems[i],';',res)==3) if(StringFind(res[1],"Pending",0)>=0) pend++;
    }
    if(QueueContent==""||StringLen(QueueContent)<9||pend==0) {MessageBox("Batch Queue File is Empty or no pending item found","Error",MB_OK|MB_ICONERROR); return;}
-   
+
+   string preflightMessage="";
+   if(!PreflightQueueInputs(QueueContent,preflightMessage))
+     {
+      MessageBox(preflightMessage,"Error",MB_OK|MB_ICONERROR);
+      return;
+     }
+
    // 2) export-settings -------------------------------------------------
    string exportSettings = GetExportSettingsString();        // <-- NEW
-   int handle = FileOpen(Path_ExportSettings,FILE_WRITE|FILE_COMMON);  // it overwrites the entire file
+   int handle = FileOpen(Path_ExportSettings,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);  // it overwrites the entire file
    FileWrite(handle,exportSettings); FileClose(handle);
+   SaveCurrentBatchPackage();
 
    int ret = MessageBox((string)pend+" Pending Queue Items Found.\n\nTerminal will restart, start batch now?","Info",MB_OKCANCEL|MB_ICONQUESTION);
    if(ret==IDCANCEL) return;
    
    WriteLog("🔵🔵🔵🔵🔵 Batch Start clicked and accepted 🔵🔵🔵🔵🔵",false,Key_,EA_Name_,Server_);
+   GoatOptAppendTimeline(EA_Name_,Server_,"BATCH_START_CLICKED","Batch","Accepted",(string)pend+" pending item(s)");
    
    if(UpdateBatchQueueAndWriteConfigFile(false,false,Key_,EA_Name_,Server_))
    {
     WriteLog((string)pend+" Pending Queue Items Found.",false,Key_,EA_Name_,Server_);
     WriteLog("Batch Start clicked and started. Terminal Restart Initiated.",false,Key_,EA_Name_,Server_);
+    GlobalVariableSet("GOAT_OPT_STUDIO_WIDTH",(double)D_Width);
+    GlobalVariableSet("GOAT_OPT_STUDIO_HEIGHT",(double)D_Height);
+    GlobalVariableSet("GOAT_OPT_STUDIO_FONT",(double)Font_Size);
     GlobalVariableSet("BatchOnGoing",1.0);
+    RefreshBatchStartButtonState();
     //MessageBox("Terminal will restart now.","Info",MB_OK|MB_ICONINFORMATION);
     GlobalVariableDel("TerminalRunning");
-    Sleep(500); TerminalClose(99);
+    GoatBatchRequestDeferredRestart("Batch start accepted",Key_,EA_Name_,Server_);
+    GoatBatchTryCloseTerminalWhenTesterIdle(Key_,EA_Name_,Server_);
    }
    else WriteLog("Batch Start clicked but could not start.",true,Key_,EA_Name_,Server_);
    //else MessageBox("OnGoing Batch file found.","Error",MB_OK|MB_ICONERROR);
@@ -981,8 +2739,10 @@ void CStrategyTesterDialog::OnClickStop(void)
       if(StringSplit(items[i],';',parts)==3 && StringFind(parts[1],"Pending",0)==0) pendingCount++;
    }
    GlobalVariableDel("TerminalRunning");
+   FileDelete(GoatOptLaunchGuardPath(EA_Name_,Server_),FILE_COMMON);
    if(pendingCount==0)
    {
+      RefreshBatchStartButtonState();
       MessageBox("No Pending items found.","Info",MB_OK|MB_ICONINFORMATION); return;
    }
    string warn = StringFormat("All %d pending items will be cancelled.\n\nContinue?",pendingCount);
@@ -1041,7 +2801,7 @@ void CStrategyTesterDialog::ChangeItemTo(const int index,const string newState)
 //+------------------------------------------------------------------+
 bool UpdateBatchQueueAndWriteConfigFile(bool init,bool error,string Key_,string EA_Name_,string Server_)
   {
-   string Path_QueueBatch = Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Key_+" Batch Queue."+Key_;
+   string Path_QueueBatch = GoatOptQueuePath(EA_Name_,Server_);
    string QueueContent=GetFileContent(Path_QueueBatch);//TesterDialog.Path_QueueBatch);
    
    if(QueueContent=="") {WriteLog("Batch Queue File is Empty or does not exist.",true,Key_,EA_Name_,Server_); return false;}
@@ -1060,10 +2820,38 @@ bool UpdateBatchQueueAndWriteConfigFile(bool init,bool error,string Key_,string 
    
    if(init)
    {
+    if(ongoingIndex >= 0)
+    {
+     string matchDetails="";
+     if(QueueItemMatchesCurrentRun(QueueItems[ongoingIndex],matchDetails))
+     {
+      WriteLog("INIT: Recovered existing OnGoing queue item after terminal relaunch: "+QueueItems[ongoingIndex],false,Key_,EA_Name_,Server_);
+      return true;
+     }
+     WriteLog("INIT: OnGoing queue item does not match current optimization. Queue="+QueueItemTitle(QueueItems[ongoingIndex])+
+              " Current="+Symbol()+":"+ActiveQueueStrategyName()+" Details="+matchDetails,true,Key_,EA_Name_,Server_);
+     GoatOptAppendTimeline(EA_Name_,Server_,"STALE_STARTUP",QueueItemTitle(QueueItems[ongoingIndex]),"Rejected",matchDetails);
+     QueueItems[ongoingIndex]=QueueItemWithState(QueueItems[ongoingIndex],"Pending");
+     ReconstructFile(Path_QueueBatch,QueueItems);
+     FileDelete(GoatOptLaunchGuardPath(EA_Name_,Server_),FILE_COMMON);
+     return false;
+    }
     if(QueuedIndex  >= 0)
     {
+     string matchDetails="";
+     if(!QueueItemMatchesCurrentRun(QueueItems[QueuedIndex],matchDetails))
+     {
+      WriteLog("INIT: Queued queue item does not match current optimization. Queue="+QueueItemTitle(QueueItems[QueuedIndex])+
+               " Current="+Symbol()+":"+ActiveQueueStrategyName()+" Details="+matchDetails,true,Key_,EA_Name_,Server_);
+      GoatOptAppendTimeline(EA_Name_,Server_,"STALE_STARTUP",QueueItemTitle(QueueItems[QueuedIndex]),"Rejected",matchDetails);
+      QueueItems[QueuedIndex]=QueueItemWithState(QueueItems[QueuedIndex],"Pending");
+      ReconstructFile(Path_QueueBatch,QueueItems);
+      FileDelete(GoatOptLaunchGuardPath(EA_Name_,Server_),FILE_COMMON);
+      return false;
+     }
      StringReplace(QueueItems[QueuedIndex] , "Queued", "OnGoing"); StringTrimLeft(QueueItems[QueuedIndex]);
      WriteLog("Queued->OnGoing: "+QueueItems[QueuedIndex],false,Key_,EA_Name_,Server_);
+     GoatOptAppendTimeline(EA_Name_,Server_,"QUEUE_STATE",QueueItemTitle(QueueItems[QueuedIndex]),"OnGoing","Queued item recovered after restart");
      ReconstructFile(Path_QueueBatch,QueueItems);
      return true;
     }
@@ -1076,17 +2864,28 @@ bool UpdateBatchQueueAndWriteConfigFile(bool init,bool error,string Key_,string 
      if(error) status="Error";
      StringReplace(QueueItems[ongoingIndex], "OnGoing", status); StringTrimLeft(QueueItems[ongoingIndex]);
      WriteLog("OnGoing->"+status+": "+QueueItems[ongoingIndex],false,Key_,EA_Name_,Server_);
+     GoatOptAppendTimeline(EA_Name_,Server_,"QUEUE_STATE",QueueItemTitle(QueueItems[ongoingIndex]),status,"Optimization item finished");
     }
     if(pendingIndex >= 0)
     {
-     StringReplace(QueueItems[pendingIndex], "Pending", "Queued"); StringTrimLeft(QueueItems[pendingIndex]);
-     WriteLog("Pending->Queued: "+QueueItems[pendingIndex],false,Key_,EA_Name_,Server_);
-     ReconstructFile(Path_QueueBatch,QueueItems);
-     return ActivatePending(QueueItems[pendingIndex],Key_,EA_Name_,Server_);
-    }
+      StringReplace(QueueItems[pendingIndex], "Pending", "Queued"); StringTrimLeft(QueueItems[pendingIndex]);
+      WriteLog("Pending->Queued: "+QueueItems[pendingIndex],false,Key_,EA_Name_,Server_);
+      GoatOptAppendTimeline(EA_Name_,Server_,"QUEUE_STATE",QueueItemTitle(QueueItems[pendingIndex]),"Queued","Next pending item queued");
+      ReconstructFile(Path_QueueBatch,QueueItems);
+      if(ActivatePending(QueueItems[pendingIndex],Key_,EA_Name_,Server_))
+         return true;
+
+      StringReplace(QueueItems[pendingIndex], "Queued", "Pending"); StringTrimLeft(QueueItems[pendingIndex]);
+      WriteLog("Queued activation failed; restored item to Pending: "+QueueItems[pendingIndex],true,Key_,EA_Name_,Server_);
+      GoatOptAppendTimeline(EA_Name_,Server_,"QUEUE_STATE",QueueItemTitle(QueueItems[pendingIndex]),"Pending","Activation failed; restored to Pending");
+      ReconstructFile(Path_QueueBatch,QueueItems);
+      return false;
+     }
     else
     {
      GlobalVariableDel("BatchOnGoing");
+     FileDelete(GoatOptLaunchGuardPath(EA_Name_,Server_),FILE_COMMON);
+     FileDelete(GoatOptActiveConfigPath(EA_Name_,Server_),FILE_COMMON);
      ReconstructFile(Path_QueueBatch,QueueItems);
      return true;
     }
@@ -1124,29 +2923,97 @@ bool UpdateBatchQueueAndWriteConfigFile(bool init,bool error,string Key_,string 
 //+------------------------------------------------------------------+
 bool ActivatePending(string QueueItem,string Key_,string EA_Name_,string Server_)
   {
+   QueueItem = RepairTesterExpertPath(QueueItem);
    int ret = StringFind(QueueItem, ":"); if(ret <= 0) {WriteLog("Cannot Activate Queue Item: "+QueueItem,true,Key_,EA_Name_,Server_); return false;}
    Strategy = StringSubstr(QueueItem,ret+1);
    
    string temp = StringSubstr(QueueItem, ret + 1);
    
    ret = StringFind(temp, ";"); if(ret <= 0) {WriteLog("Cannot Activate Queue Item: "+QueueItem,true,Key_,EA_Name_,Server_); return false;}
-   Strategy = StringSubstr(temp,0,ret);
-   //StringTrimLeft(QueueItem); StringTrimRight(QueueItem);
-   int handle = FileOpen(Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy+"\\config.ini",FILE_WRITE|FILE_COMMON);
-   if(handle != INVALID_HANDLE)
+   Strategy = NormalizeStrategyName(StringSubstr(temp,0,ret));
+   string strategyDir = GoatOptStrategyDir(EA_Name_,Server_,Strategy);
+   string inputsPath  = strategyDir+"\\Inputs."+Key_;
+   EnsureCommonFolderTree(strategyDir);
+   string testerInputs = GetFileContent(inputsPath);
+   if(testerInputs=="") {WriteLog("Cannot Activate Queue Item. Inputs file missing or empty: "+inputsPath,true,Key_,EA_Name_,Server_); return false;}
+   string configBody=(QueueItem=="" ? QueueItem : QueueItem+"\r\n[TesterInputs]\r\n"+testerInputs);
+   string auditConfig=strategyDir+"\\config.ini";
+   string activeConfig=GoatOptActiveConfigPath(EA_Name_,Server_);
+   string guardPath=GoatOptLaunchGuardPath(EA_Name_,Server_);
+   if(!GoatOptWriteTextFile(auditConfig,configBody))
    {
-    if(QueueItem=="") FileWrite(handle,QueueItem);
-    else              FileWrite(handle,QueueItem+"\n[TesterInputs]\n"+GetFileContent(Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy+"\\Inputs."+Key_));
-    FileClose(handle);
-    AddCommand(Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy);
-    return true;
+      WriteLog("Cannot create config.ini for Queue Item: "+strategyDir,true,Key_,EA_Name_,Server_);
+      return false;
    }
-   return false;
+   if(!GoatOptWriteTextFile(activeConfig,configBody))
+   {
+      WriteLog("Cannot create active optimization config: "+activeConfig,true,Key_,EA_Name_,Server_);
+      return false;
+   }
+
+   string launchId=IntegerToString((long)TimeLocal())+"_"+IntegerToString((long)GetTickCount());
+   string guard="[ActiveOptimizationLaunch]\r\n"
+               +"LaunchId="+launchId+"\r\n"
+               +"RunPath="+GoatOptCurrentRunPath(EA_Name_,Server_)+"\r\n"
+               +"ConfigPath="+activeConfig+"\r\n"
+               +"AuditConfigPath="+auditConfig+"\r\n"
+               +"QueuedTitle="+QueueItemTitle(QueueItem)+"\r\n"
+               +"Symbol="+QueueItemSymbolName(QueueItem)+"\r\n"
+               +"Strategy="+Strategy+"\r\n"
+               +"CreatedAt="+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\r\n";
+   if(!GoatOptWriteTextFile(guardPath,guard))
+   {
+      WriteLog("Cannot create active optimization launch guard: "+guardPath,true,Key_,EA_Name_,Server_);
+      return false;
+   }
+
+   WriteLog("Active optimization config prepared: "+activeConfig,false,Key_,EA_Name_,Server_);
+   AddCommand(activeConfig,guardPath,launchId);
+   return true;
+  }
+//+------------------------------------------------------------------+
+bool EnsureCommonFolderTree(string path)
+  {
+   StringReplace(path,"/","\\");
+   while(StringFind(path,"\\\\")>=0) StringReplace(path,"\\\\","\\");
+   string parts[];
+   int total=StringSplit(path,'\\',parts);
+   if(total<1) return false;
+
+   string current="";
+   for(int i=0;i<total;i++)
+   {
+    if(parts[i]=="") continue;
+    if(current!="") current+="\\";
+    current+=parts[i];
+    FolderCreate(current,FILE_COMMON);
+   }
+   return true;
+  }
+//+------------------------------------------------------------------+
+string NormalizeStrategyName(string s)
+  {
+   StringTrimLeft(s);
+   StringTrimRight(s);
+
+   string out="";
+   for(int i=0;i<StringLen(s);i++)
+   {
+    ushort ch=(ushort)StringGetCharacter(s,i);
+    if(ch<32) continue;
+    if(ch=='<' || ch=='>' || ch==':' || ch=='\"' || ch=='/' || ch=='\\' || ch=='|' || ch=='?' || ch=='*')
+      out+="_";
+    else
+      out+=ShortToString((short)ch);
+   }
+   StringTrimLeft(out);
+   StringTrimRight(out);
+   return out;
   }
 //+------------------------------------------------------------------+
 string GetFileContent(string FileName)
   {
-   int handle=FileOpen(FileName,FILE_READ|FILE_COMMON);
+   int handle=FileOpen(FileName,FILE_READ|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
    if(handle==INVALID_HANDLE) return "";
    
    string content = "";
@@ -1171,7 +3038,7 @@ void ReconstructFile(string FileName,string &SubStrings[])
     str+=SubStrings[i]+CharToString((ushort)31)+"\n";
   //str+=SubStrings[i]+((i<ArraySize(SubStrings)-1)?CharToString((ushort)31):"");
    }
-   int handle=FileOpen(FileName,FILE_WRITE|FILE_COMMON);
+   int handle=FileOpen(FileName,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
    if(handle != INVALID_HANDLE)
    {
     StringTrimLeft(str); StringTrimRight(str);
@@ -1343,6 +3210,7 @@ string CStrategyTesterDialog::GetTESTERsettingsString(bool header=false)
    string str="[Tester]"+"\n";
    //Expert — the file name of the Expert Advisor that will automatically run in the testing (optimization) mode. If this parameter is not present, testing will not run.
    string Expert     = m_cmbExpert.Select(); //Print(Expert); Print(n_Expert);
+   n_Expert = NormalizeExpertRelativePath(n_Expert);
    str+="Expert="+n_Expert+"\n";
 //--------------
    //ExpertParameters — the name of the file that contains Expert Advisor parameters. This file must be located in the MQL5\Profiles\Tester folder of the platform installation directory.
@@ -1420,7 +3288,7 @@ string CStrategyTesterDialog::GetTESTERsettingsString(bool header=false)
    //relative to this directory, for example, \reports\tester.htm. The subdirectory where the report is saved should exist. If no extension is specified in the file name, the ".htm" extension 
    //is automatically used for testing reports, and ".xml" is used for optimization reports. If this parameter is not set, the testing report will not be saved as a file. 
    //If forward testing is enabled, its results will be saved in a separate file with the ".forward" suffix. For example, tester.forward.htm.
-   str+="Report="+"MQL5\\Files\\"+Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Strategy+"\\"+symbol+"\\"+EA_Name_+" "+symbol+","+period+" "+FromDate+"-"+ToDate+"_("+ForwardDateStr+").xml"+"\n";
+   str+="Report="+BuildReportValue(Strategy,symbol,period,FromDate,ToDate,ForwardDateStr)+"\n";
 //--------------
    //ReplaceReport — enable/disable overwriting of the report file (0 — disable, 1 — enable). If overwriting is forbidden and a file with the same name already exists, 
    //a number in square brackets will be added to the file name. For example, tester[1].htm. If this parameter is not set, default 0 is used (overwriting is not allowed).
@@ -1462,7 +3330,7 @@ string CStrategyTesterDialog::GetTESTERsettingsString(bool header=false)
    //Port — the port, on which the local testing agent is running. The port should be specified for the parallel start of testing on different agents. 
    //For example, you can run parallel tests of the same Expert Advisor with different parameters. During a single test port can be omitted.
 //--------------
-   str = ";"+"Pending_"+symbol+","+period+" "+FromDate+"-"+ToDate+"_"+Model_name+":"+Strategy+";\n"+str;
+   str = BuildQueueTitle("Pending",symbol,period,FromDate,ToDate,Model,Strategy)+"\n"+str;
  //str = ";"+"Pending_"+symbol+","+period+" "+FromDate+"-"+ToDate+"_"+ForwardDate+"_"+Model_name+"_"+Strategy+";\n"+str;
    StringTrimLeft(str); //StringTrimRight(str);
    return str;
@@ -1476,13 +3344,13 @@ string CStrategyTesterDialog::GetExportSettingsString()
    str += "SetsToExport="  + m_edtSetsToExport.Text()         + "\n";
    str += "MinScore="      + m_edtMinScore.Text()             + "\n";
    str += "TargetDD="      + m_edtTargetDD.Text()             + "\n";
-   str += "AdjustLots="    + (m_chkAdjustLots.Checked() ? "1" : "0") + "\n";
+   str += "AdjustLots="    + (m_chkAdjustLots.Pressed() ? "1" : "0") + "\n";
 
    // --- right column -----------------------------------------------
    str += "BackOOSDate="   + TimeToString(m_dpBackOOS.Value(), TIME_DATE) + "\n";
    str += "MinARF="        + m_edtMinARF.Text()               + "\n";
    str += "MinSR="         + m_edtMinSR.Text()                + "\n";
-   str += "IncludeBackOOS="+ (m_chkVerifyOOS.Checked() ? "1" : "0") + "\n";
+   str += "IncludeBackOOS="+ (m_chkVerifyOOS.Pressed() ? "1" : "0") + "\n";
    
    // keep the trailing newline for easy concatenation with other blocks
    return str;
@@ -1490,9 +3358,10 @@ string CStrategyTesterDialog::GetExportSettingsString()
 //+------------------------------------------------------------------+
 string FetchExportSetting(const string settingName,string Key_,string EA_Name_,string Server_)
   {
-   string Path_ExportSettings = Key_+"\\"+EA_Name_+"-"+Server_+"\\"+Key_+" Export Settings."+Key_;
+   string Path_ExportSettings = GoatOptExportSettingsPath(EA_Name_,Server_);
    if(!FileIsExist(Path_ExportSettings,FILE_COMMON)) return "";
-   int handle = FileOpen(Path_ExportSettings, FILE_READ | FILE_COMMON | FILE_ANSI);
+   int handle = FileOpen(Path_ExportSettings, FILE_READ|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+   if(handle == INVALID_HANDLE) handle = FileOpen(Path_ExportSettings, FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
    if(handle == INVALID_HANDLE) { PrintFormat("FetchExportSetting: cannot open %s  (err=%d)", Path_ExportSettings, GetLastError()); return ""; }
    // read whole content into a single string ---------------------------
    string fullText = "";
@@ -1553,21 +3422,27 @@ string FetchExportSetting(const string settingName,string Key_,string EA_Name_,s
 // 2) single helper that handles all user prompts + optional download
 bool EnsureFreshNewsFile(const string csv_file)
 {
-   //--- Live mode prompts only
-   if(MessageBox("Will this run use the economic news filter?", "Use news?", MB_YESNO|MB_ICONQUESTION) == IDNO) return true;
+   datetime latest = 0;
+   bool stale = IsNewsHistoryStale(csv_file, latest);
+   Print("Latest news: "+(string)latest);
 
-   bool     refresh = false;
-   datetime latest  = LatestNewsTimestampFast(csv_file); Print("Latest news: "+(string)latest);
-   string   stamp   = (latest==0) ? "No Date" : TimeToString(latest,TIME_DATE|TIME_MINUTES);
+   if(!stale) return true;
 
-   if(latest==0 || (TimeCurrent() - latest) > 7*24*3600)
-   {
-      string q = "Latest news saved in the news file is from:\n\n" + stamp + "\n\nDownload/update the news file now?";
-      if(MessageBox(q, "News data out-of-date", MB_YESNO|MB_ICONQUESTION) == IDYES) refresh = true;
-   }
-   else MessageBox("Latest news saved in the news file is from:\n\n" + stamp, "News data satisfactory", MB_OK|MB_ICONINFORMATION);
-   if(refresh) News.BacktestNewsFileDownloader(Download_StartDate); // live-only download
-   return true; // always continue batch
+   string stamp = (latest==0) ? "No Date" : TimeToString(latest,TIME_DATE|TIME_MINUTES);
+   string q = "News history is out of date.\n\nLatest news saved in the file is from:\n" + stamp +
+              "\n\nClick Yes to sync now, or No to continue anyway.";
+   if(MessageBox(q, "News data out-of-date", MB_YESNO|MB_ICONQUESTION) != IDYES) return true;
+
+   SNewsSyncResult result;
+   if(!News.SyncFullHistory(result))
+     {
+      string msg = "News history sync failed";
+      if(result.error_text != "") msg += "\n\n" + result.error_text;
+      MessageBox(msg, "News History", MB_OK|MB_ICONERROR);
+      return false;
+     }
+
+   return true;
 }
 //+------------------------------------------------------------------+
 //  Fast grab of newest-event timestamp – works with CR, LF, CRLF
@@ -1650,6 +3525,13 @@ datetime LatestNewsTimestampFast(const string file_name)
    if(ts == "Time") return 0;
 
    return StringToTime(ts);
+}
+//+------------------------------------------------------------------+
+bool IsNewsHistoryStale(const string file_name, datetime &latest_event_time)
+{
+   latest_event_time = LatestNewsTimestampFast(file_name);
+   if(latest_event_time == 0) return true;
+   return ((TimeCurrent() - latest_event_time) > 7*24*3600);
 }
 //+------------------------------------------------------------------+
 datetime GetForwardD(datetime startD, datetime endD, string forwardMode)

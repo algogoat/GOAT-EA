@@ -861,9 +861,24 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
       string baseName = StringSubstr(fileMain, 0, StringLen(fileMain)-4); // remove ".xml"
       // Search for the forward file in the list.
       bool forwardFound = false;
+      string forwardFile=baseName + ".forward.xml";
       for(int j=0; j<ArraySize(Files); j++)
         {
-         if(StringCompare(Files[j], baseName + ".forward.xml") == 0) {forwardFound = true; break;}
+         if(StringCompare(Files[j], forwardFile) == 0) {forwardFound = true; break;}
+        }
+      if(!forwardFound)
+        {
+         string noExtForward=baseName;
+         for(int j=0; j<ArraySize(Files); j++)
+           {
+            if(StringCompare(Files[j], noExtForward) == 0)
+              {
+               forwardFile=noExtForward;
+               forwardFound=true;
+               LogOrPrint(reportMode,"Forward report matched without .forward.xml suffix: "+FileNameOnly(forwardFile),Key_,EA_Name_,Server_);
+               break;
+              }
+           }
         }
       if(forwardFound)
         {
@@ -878,7 +893,7 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
          if(StringFind(fileMain,xmlData.Title)<0)
          {LogOrPrint(reportMode,"❌ xml File name and internal title do not match,\nTitle: "+xmlData.Title+"\nFilename: "+fileMain,Key_,EA_Name_,Server_); ret=false;}
          // 3) Process the forward test => merges forward data, calculates Score, then sorts
-         if(!xmlData.ProcessForwardXml((baseName+".forward.xml"))) ret=false;
+         if(!xmlData.ProcessForwardXml(forwardFile)) ret=false;
          if(ForwardDate!=0)
          {
           double topScore=0.0;
@@ -917,7 +932,7 @@ void WriteLog(string text,bool print,string Key_,string EA_Name_,string Server_)
    int newlinePos = StringFind(text, "\n");
    if(newlinePos != -1) text = StringSubstr(text, 0, newlinePos);
    if(print) Print(EA_Name_,": ", text);
-   int fileHandle = FileOpen(Key_+"\\"+EA_Name_+"-"+Server_+"\\log."+Key_,FILE_WRITE|FILE_SHARE_WRITE|FILE_READ|FILE_TXT|FILE_COMMON);
+   int fileHandle = FileOpen(GoatOptLogPath(EA_Name_,Server_),FILE_WRITE|FILE_SHARE_WRITE|FILE_READ|FILE_TXT|FILE_COMMON);
  //int fileHandle = FileOpen(strT._Key_+"\\"+strT._EA_Name_+"-"+strT._Server_+"\\log."+strT._Key_,FILE_WRITE|FILE_SHARE_WRITE|FILE_READ|FILE_TXT|FILE_COMMON);
    if(fileHandle == INVALID_HANDLE) {Print("Error: Could not open or create log file!"); return;}
    // Move file pointer to the end of the file so we effectively append
@@ -943,22 +958,158 @@ string FileNameOnly(const string full_path)
    return full_path;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatXmlNormalizePath(string path)
+  {
+   StringReplace(path,"/","\\");
+   while(StringFind(path,"\\\\")>=0) StringReplace(path,"\\\\","\\");
+   StringTrimLeft(path);
+   StringTrimRight(path);
+   while(StringLen(path)>0 && StringGetCharacter(path,0)=='\\')
+      path=StringSubstr(path,1);
+   return path;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatXmlEndsWith(const string text,const string suffix)
+  {
+   int textLen=StringLen(text), suffixLen=StringLen(suffix);
+   if(textLen<suffixLen) return false;
+   return (StringSubstr(text,textLen-suffixLen)==suffix);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatXmlFolderOf(string path)
+  {
+   path=GoatXmlNormalizePath(path);
+   int last=-1;
+   for(int i=0;i<StringLen(path);i++)
+      if(StringGetCharacter(path,i)=='\\') last=i;
+   if(last<=0) return "";
+   return StringSubstr(path,0,last);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatXmlFileContains(const string relPath,const bool common,const string needle)
+  {
+   int flags=FILE_READ|FILE_TXT|FILE_SHARE_READ|FILE_SHARE_WRITE;
+   if(common) flags|=FILE_COMMON;
+   int handle=FileOpen(relPath,flags);
+   if(handle==INVALID_HANDLE) return false;
+
+   int scanLines=0;
+   bool found=false;
+   while(!FileIsEnding(handle) && scanLines<400)
+     {
+      string line=FileReadString(handle);
+      if(StringFind(line,needle,0)>=0) { found=true; break; }
+      scanLines++;
+     }
+   FileClose(handle);
+   return found;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatXmlNormalizedReportDestination(const string srcRel)
+  {
+   string dst=GoatXmlNormalizePath(srcRel);
+   string lower=dst;
+   StringToLower(lower);
+
+   if(GoatXmlEndsWith(lower,".forward.xml") || GoatXmlEndsWith(lower,".xml"))
+      return dst;
+
+   if(GoatXmlFileContains(dst,false,"<?xml"))
+      return dst+".forward.xml";
+
+   return dst;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatXmlMoveLocalToCommon(const string srcRel,const string dstRel,const string context)
+  {
+   string src=GoatXmlNormalizePath(srcRel);
+   string dst=GoatXmlNormalizePath(dstRel);
+   string dstFolder=GoatXmlFolderOf(dst);
+   if(dstFolder!="") GoatOptEnsureCommonFolderTree(dstFolder);
+
+   ResetLastError();
+   if(FileMove(src,0,dst,FILE_COMMON|FILE_REWRITE))
+      return true;
+
+   int mqlErr=GetLastError();
+   string localAbs=TerminalInfoString(TERMINAL_DATA_PATH)+"\\MQL5\\Files\\"+src;
+   string commonAbs=TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\"+dst;
+   ResetLastError();
+   if(MTTESTER::FileMove(localAbs,commonAbs,true))
+     {
+      Print(context,": MQL FileMove failed (",mqlErr,") but absolute fallback moved ",src," -> ",dst);
+      return true;
+     }
+
+   Print(context,": error moving ",src," -> ",dst,"  MQL error=",mqlErr," fallback error=",GetLastError());
+   return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool MigrateRunReportFilesToCommon(const string reportRoot,string &MovedFileNames[],string Key_,string EA_Name_,string Server_)
+  {
+   string root=GoatXmlNormalizePath(reportRoot);
+   bool success=true;
+   string filter=root+"\\*";
+   string entry;
+   long h=FileFindFirst(filter,entry,0);
+   if(h==INVALID_HANDLE)
+     {
+      FolderDelete(root);
+      return true;
+     }
+
+   do
+     {
+      string src=GoatXmlNormalizePath(root+"\\"+entry);
+      ResetLastError();
+      FileIsExist(src,0);
+      if(GetLastError()==ERR_FILE_IS_DIRECTORY)
+        {
+         if(!MigrateRunReportFilesToCommon(src,MovedFileNames,Key_,EA_Name_,Server_))
+           {
+            Print(__FUNCTION__,": failed to migrate subfolder ",src);
+            success=false;
+           }
+        }
+      else
+        {
+         string dst=GoatXmlNormalizedReportDestination(src);
+         if(GoatXmlMoveLocalToCommon(src,dst,__FUNCTION__))
+           {
+            int idx=ArraySize(MovedFileNames);
+            ArrayResize(MovedFileNames,idx+1);
+            MovedFileNames[idx]=dst;
+            WriteLog("DEINIT: XML migrated: "+FileNameOnly(dst),false,Key_,EA_Name_,Server_);
+           }
+         else success=false;
+        }
+     }
+   while(FileFindNext(h,entry));
+   FileFindClose(h);
+
+   long h2=FileFindFirst(filter,entry,0);
+   if(h2==INVALID_HANDLE) FolderDelete(root);
+   else FileFindClose(h2);
+   return success;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 bool MigrateFilesToCommon(const string folder, string &MovedFileNames[])
   {
    bool success=true,created_common=false;
-   string filter=folder+"\\*";
+   string sourceFolder=GoatXmlNormalizePath(folder);
+   string filter=sourceFolder+"\\*";
    string entry;
    // Check if the source folder has anything
    long h=FileFindFirst(filter,entry,0);
    if(h==INVALID_HANDLE)
      {
       // Folder is empty in MQL5\Files, delete it
-      FolderDelete(folder);
+      FolderDelete(sourceFolder);
       return true;
-     }
+      }
    // Process each item
    do{
-      string src=folder+"\\"+entry;
+      string src=GoatXmlNormalizePath(sourceFolder+"\\"+entry);
       ResetLastError();
       FileIsExist(src,0);
       if(GetLastError()==ERR_FILE_IS_DIRECTORY)
@@ -974,16 +1125,15 @@ bool MigrateFilesToCommon(const string folder, string &MovedFileNames[])
         {
          // Create the matching folder in Common if this is the first file
          if(!created_common)
-           {
-            FolderCreate(folder,FILE_COMMON);
-            created_common=true;
-           }
-         // Move the file
-         if(!FileMove(src,0,src,FILE_COMMON|FILE_REWRITE))
-           {
-            Print("Error moving file: ", src, " Error: ", GetLastError());
-            success=false;
-           }
+            {
+             GoatOptEnsureCommonFolderTree(sourceFolder);
+             created_common=true;
+            }
+          // Move the file
+          if(!GoatXmlMoveLocalToCommon(src,src,__FUNCTION__))
+            {
+             success=false;
+            }
          else
            {
             // Store the relative path so we can later open with FILE_COMMON
@@ -997,7 +1147,7 @@ bool MigrateFilesToCommon(const string folder, string &MovedFileNames[])
    FileFindClose(h);
    // After handling all items, check if folder became empty and remove it
    long h2=FileFindFirst(filter,entry,0);
-   if(h2==INVALID_HANDLE) FolderDelete(folder);
+    if(h2==INVALID_HANDLE) FolderDelete(sourceFolder);
    else FileFindClose(h2);
    return success;
   }
@@ -1009,27 +1159,29 @@ bool MigrateFilesToCommon(const string folder, string &MovedFileNames[])
 bool MigrateLeftOverFilesToCommon(const string folder,string &moved_files[],string CommonFolder="LeftoverXMLs")
  {
    bool success = true;
-   string filter = folder + "\\*";
+   string sourceFolder=GoatXmlNormalizePath(folder);
+   string commonRoot=GoatXmlNormalizePath(CommonFolder);
+   string filter = sourceFolder + "\\*";
    string entry;
    //-- First item (if any)
    long h = FileFindFirst(filter, entry, 0);
    if(h == INVALID_HANDLE)          // nothing here – just delete the empty dir and bail out
    {
-      FolderDelete(folder);
-      return true;
-   }
-   //-- Make sure the target root exists in FILE_COMMON
-   FolderCreate(CommonFolder, FILE_COMMON);
+       FolderDelete(sourceFolder);
+       return true;
+    }
+    //-- Make sure the target root exists in FILE_COMMON
+    GoatOptEnsureCommonFolderTree(commonRoot);
    do
    {
-      string src  = folder + "\\" + entry;          // source, relative to local MQL5\Files
+       string src  = GoatXmlNormalizePath(sourceFolder + "\\" + entry);          // source, relative to local MQL5\Files
       ResetLastError();
       FileIsExist(src, 0);
       bool is_dir = (GetLastError() == ERR_FILE_IS_DIRECTORY);
       if(is_dir)                                    // ── recurse into sub-folder ──
       {
-         string dstSub = CommonFolder + "\\" + entry;
-         FolderCreate(dstSub, FILE_COMMON);         // ensure matching sub-dir exists in FILE_COMMON
+          string dstSub = GoatXmlNormalizePath(commonRoot + "\\" + entry);
+          GoatOptEnsureCommonFolderTree(dstSub);      // ensure matching sub-dir exists in FILE_COMMON
          if(!MigrateLeftOverFilesToCommon(src, moved_files, dstSub))
          {
             Print(__FUNCTION__, ": failed to migrate subfolder ", src);
@@ -1038,12 +1190,14 @@ bool MigrateLeftOverFilesToCommon(const string folder,string &moved_files[],stri
       }
       else                                          // ── move a single file ──
       {
-         string dst = CommonFolder + "\\" + entry;  // e.g.  "LeftoverXMLs\\file.xml"
-         if(!FileMove(src, 0, dst, FILE_COMMON | FILE_REWRITE))
-         {
-            Print(__FUNCTION__,": error moving ", src, " → ", dst,"  (", GetLastError(), ")");
-            success = false;
-         }
+          string dst = GoatXmlNormalizePath(commonRoot + "\\" + entry);  // e.g.  "LeftoverXMLs\\file.xml"
+          string normalizedReport=GoatXmlNormalizedReportDestination(src);
+          if(normalizedReport!=src)
+             dst+=StringSubstr(normalizedReport,StringLen(src));
+          if(!GoatXmlMoveLocalToCommon(src,dst,__FUNCTION__))
+          {
+             success = false;
+          }
          else                                       // remember for the caller
          {
             int n = ArraySize(moved_files);
@@ -1056,7 +1210,7 @@ bool MigrateLeftOverFilesToCommon(const string folder,string &moved_files[],stri
    FileFindClose(h);
    //-- remove the source folder if we emptied it
    long h2 = FileFindFirst(filter, entry, 0);
-   if(h2 == INVALID_HANDLE) FolderDelete(folder);
+    if(h2 == INVALID_HANDLE) FolderDelete(sourceFolder);
    else                     FileFindClose(h2);
    return success;
 }

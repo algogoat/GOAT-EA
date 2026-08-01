@@ -17,6 +17,9 @@ Desktop.ini
 *.log
 logs/
 
+# Local Codex workspace data and generated artifacts
+codex/
+
 # MetaTrader 5 tester / cache outputs that do NOT need to be versioned
 MQL5/Tester/
 MQL5/Logs/

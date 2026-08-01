@@ -1,0 +1,63 @@
+{
+  "source_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.41 CUMProfit",
+  "dest_dir": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT OPT Files\\V1.41 CUMProfit\\Metals",
+  "files": [
+    {
+      "source": "CounterRange.set",
+      "dest": "CounterRange.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=CounterRange_Metals",
+        "Risk=": "Risk=300",
+        "Lots_Max_Cum=": "Lots_Max_Cum=35||25||5||40||Y",
+        "Partial_Profit_Factor=": "Partial_Profit_Factor=20.0||10.0||10||30||Y",
+        "Mode_Opti=": "Mode_Opti=1",
+        "Trades_min_inp=": "Trades_min_inp=250",
+        "Trades_Max=": "Trades_Max=1700"
+      }
+    },
+    {
+      "source": "CounterTrend.set",
+      "dest": "CounterTrend.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=Counter_CE_Metals",
+        "Risk=": "Risk=300",
+        "ATR_TF_=": "ATR_TF_=5||5||5||15||Y",
+        "Trades_min_inp=": "Trades_min_inp=250",
+        "Trades_Max=": "Trades_Max=2100"
+      }
+    },
+    {
+      "source": "RangeFade.set",
+      "dest": "RangeFade.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=RangeFade_Metals",
+        "Risk=": "Risk=300",
+        "Trades_min_inp=": "Trades_min_inp=250",
+        "Trades_Max=": "Trades_Max=2400"
+      }
+    },
+    {
+      "source": "TrendPullback.set",
+      "dest": "TrendPullback.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=TrendPullback_Metals",
+        "Risk=": "Risk=300",
+        "ATR_TF_=": "ATR_TF_=5||5||5||15||Y",
+        "Mode_Opti=": "Mode_Opti=1",
+        "Trades_min_inp=": "Trades_min_inp=250",
+        "Trades_Max=": "Trades_Max=1700"
+      }
+    },
+    {
+      "source": "TrendRange.set",
+      "dest": "TrendRange.set",
+      "replace": {
+        "EA_Desc=": "EA_Desc=TrendRange_Metals",
+        "Risk=": "Risk=300",
+        "Seq_min_inp=": "Seq_min_inp=200",
+        "Trades_min_inp=": "Trades_min_inp=350",
+        "Trades_Max=": "Trades_Max=2000"
+      }
+    }
+  ]
+}

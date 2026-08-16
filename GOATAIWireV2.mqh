@@ -460,7 +460,7 @@ bool GOATIsSafeId(const string value,const int minimum,const int maximum)
    for(int i=0;i<total;i++)
      {
       ushort c=StringGetCharacter(value,i);
-      if(!((c>='A' && c<='Z') || (c>='a' && c<='z') || (c>='0' && c<='9') || c=='-' || c=='_' || c=='.')) return false;
+       if(!((c>='A' && c<='Z') || (c>='a' && c<='z') || (c>='0' && c<='9') || c=='-' || c=='_' || c=='.' || c==':')) return false;
      }
    return true;
   }
@@ -729,10 +729,12 @@ class CGOATAIWireV2
       return(ParseAndVerify(response,"EURUSD",10,parsed)
              && parsed.verified
              && !parsed.directive_available
-             && parsed.reason_code=="CALIBRATION_ARTIFACT_UNAVAILABLE"
-             && GOATIsEraId(parsed.era)
-             && !GOATIsEraId("INVALID ERA")
-             && parsed.checksum=="8f7f04401edaa982d7ade41c8547ee92f9b6f0e7d82e57371ebc9d4116bed2e3");
+              && parsed.reason_code=="CALIBRATION_ARTIFACT_UNAVAILABLE"
+              && GOATIsEraId(parsed.era)
+              && !GOATIsEraId("INVALID ERA")
+              && GOATIsSafeId("decision-registry:EURUSD:sample",1,256)
+              && !GOATIsSafeId("decision/registry",1,256)
+              && parsed.checksum=="8f7f04401edaa982d7ade41c8547ee92f9b6f0e7d82e57371ebc9d4116bed2e3");
      }
 
    bool GetState(string asset,SGOATAIWireV2State &state)

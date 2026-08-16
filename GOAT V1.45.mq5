@@ -1,7 +1,7 @@
 ﻿#define   GOAT_VERSION_LABEL "1.45"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.45-CONTROL-TOWER-LIVE-R5"
+#define   GOAT_BUILD_ID "V1.45-CONTROL-TOWER-LIVE-R6"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -127,8 +127,9 @@ int ServerBreakDownDays=1;
 //#resource "\\Experts\\MPTS - GOAT\\KID Name BG.png" as uchar LOGO_png_data[]
 //#resource "\\Experts\\MPTS - GOAT\\GOAT Gradient Logo.png" as uchar LOGO_png_data[]
 #resource "GOAT Gradient Logo.png" as uchar LOGO_png_data[]
+#resource "GOAT Head Transparent.png" as uchar PANEL_LOGO_png_data[]
 CPng EA_LOGO(LOGO_png_data);
-CPng PANEL_LOGO(LOGO_png_data);
+CPng PANEL_LOGO(PANEL_LOGO_png_data);
 bool GOAT_PANEL_LOGO_READY=false;
 
 color GOAT_UI_SECTION_BACK   =C'9,24,39';
@@ -3362,7 +3363,6 @@ void OnDeinit(const int reason)
       HidePrompt();
       EA_LOGO.BmpArrayFree();
       ObjectDelete(0,"GOAT_Panel_Logo");
-      ObjectDelete(0,"GOAT_Panel_Logo_Back");
       GOAT_PANEL_LOGO_READY=false;
       PANEL_LOGO.BmpArrayFree();
    //--- destroy dialogs
@@ -4549,8 +4549,6 @@ void OnChartEvent(const int id,         // event ID
        PanelDialog.ChartEvent(id,lparam,dparam,sparam);
        if(GOAT_PANEL_LOGO_READY && (id==CHARTEVENT_MOUSE_MOVE || id==CHARTEVENT_OBJECT_DRAG || id==CHARTEVENT_CHART_CHANGE))
          {
-          ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_XDISTANCE,PanelDialog.Left()+4);
-          ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_YDISTANCE,PanelDialog.Top()+1);
           PANEL_LOGO._MoveCanvas(PanelDialog.Left()+7,PanelDialog.Top()+4);
          }
       }
@@ -6659,18 +6657,6 @@ bool CPanelDialog::Create(const long chart,const string name,const int subwin,co
    ChartRedraw();
    // Show the dialog
    Show(); Sleep(50);
-   ObjectDelete(0,"GOAT_Panel_Logo_Back");
-   ObjectCreate(0,"GOAT_Panel_Logo_Back",OBJ_RECTANGLE_LABEL,0,0,0);
-   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_XDISTANCE,PanelDialog.Left()+4);
-   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_YDISTANCE,PanelDialog.Top()+1);
-   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_XSIZE,24);
-   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_YSIZE,24);
-   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_BGCOLOR,C'211,230,240');
-   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_BORDER_COLOR,C'74,157,190');
-   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_SELECTABLE,false);
-   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_HIDDEN,true);
-   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_BACK,false);
-   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_ZORDER,999);
    PANEL_LOGO.Resize(18);
    GOAT_PANEL_LOGO_READY=PANEL_LOGO._CreateCanvas(PanelDialog.Left()+7,PanelDialog.Top()+4,"GOAT_Panel_Logo");
    if(GOAT_PANEL_LOGO_READY)

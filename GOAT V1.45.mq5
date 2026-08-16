@@ -1,7 +1,7 @@
 ﻿#define   GOAT_VERSION_LABEL "1.45"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.45-CONTROL-TOWER-LIVE-R2"
+#define   GOAT_BUILD_ID "V1.45-CONTROL-TOWER-LIVE-R4"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"

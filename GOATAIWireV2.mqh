@@ -846,6 +846,12 @@ bool CGOATAIWireV2::Refresh(const string asset)
       GOATResetWireV2State(m_state,"RESPONSE_TIME_INVALID");
       return false;
      }
+   PrintFormat("GOAT AI wire v2 verified: availability=%s reason=%s era=%s manifest=%s duration_ms=%I64u.",
+               m_state.availability,
+               (m_state.reason_code=="" ? "NONE" : m_state.reason_code),
+               m_state.era,
+               m_state.manifest_sha256,
+               m_state.request_duration_ms);
    return true;
   }
 

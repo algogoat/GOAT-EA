@@ -726,15 +726,32 @@ class CGOATAIWireV2
                       +"\"manifestSha256\":\"2a2456b360c4d15d85ba7212f23e37e6890c4f5a7c7edcc816bfef73da06d628\","
                       +"\"releaseAttemptId\":\"release-v1-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}}";
       SGOATAIWireV2State parsed;
-      return(ParseAndVerify(response,"EURUSD",10,parsed)
-             && parsed.verified
-             && !parsed.directive_available
-              && parsed.reason_code=="CALIBRATION_ARTIFACT_UNAVAILABLE"
-              && GOATIsEraId(parsed.era)
-              && !GOATIsEraId("INVALID ERA")
-              && GOATIsSafeId("decision-registry:EURUSD:sample",1,256)
-              && !GOATIsSafeId("decision/registry",1,256)
-              && parsed.checksum=="8f7f04401edaa982d7ade41c8547ee92f9b6f0e7d82e57371ebc9d4116bed2e3");
+      if(!ParseAndVerify(response,"EURUSD",10,parsed)
+         || !parsed.verified
+         || parsed.directive_available
+         || parsed.reason_code!="CALIBRATION_ARTIFACT_UNAVAILABLE"
+         || !GOATIsEraId(parsed.era)
+         || GOATIsEraId("INVALID ERA")
+         || !GOATIsSafeId("decision-registry:EURUSD:sample",1,256)
+         || GOATIsSafeId("decision/registry",1,256)
+         || parsed.checksum!="8f7f04401edaa982d7ade41c8547ee92f9b6f0e7d82e57371ebc9d4116bed2e3"
+         || DisplayLine(parsed)!="Waiting for fresh AI bias"
+         || DetailLine(parsed)!="Checks every "+IntegerToString(MathMax(1,Bias_RegenerateMinutes))+" minutes") return false;
+
+      SGOATAIWireV2State unavailable;
+      GOATResetWireV2State(unavailable,"WEBREQUEST_FAILED");
+      if(DisplayLine(unavailable)!="AI bias temporarily unavailable"
+         || DetailLine(unavailable)!="Retrying automatically") return false;
+
+      parsed.directive_available=true;
+      parsed.actionable=true;
+      parsed.direction="BULLISH";
+      parsed.calibrated_probability=0.72;
+      parsed.probability_cutoff=0.60;
+      if(DisplayLine(parsed)!="Bullish · 72% confidence"
+         || DetailLine(parsed)!="Trade threshold · 60%") return false;
+      parsed.actionable=false;
+      return DetailLine(parsed)=="Below trade threshold · 60%";
      }
 
    bool GetState(string asset,SGOATAIWireV2State &state)
@@ -778,11 +795,21 @@ class CGOATAIWireV2
 
    string DisplayLine(SGOATAIWireV2State &state)
      {
-      if(!state.verified) return "Control Tower unavailable: "+state.reason_code;
-      if(!state.directive_available) return "Control Tower WITHHELD: "+state.reason_code;
-      return "Control Tower "+state.direction+" "
-             +DoubleToString(state.calibrated_probability*100.0,1)+"% (cutoff "
-             +DoubleToString(state.probability_cutoff*100.0,1)+"%)";
+      if(!state.verified) return "AI bias temporarily unavailable";
+      if(!state.directive_available) return "Waiting for fresh AI bias";
+      string direction=(state.direction=="BULLISH" ? "Bullish"
+                        : state.direction=="BEARISH" ? "Bearish" : "Neutral");
+      return direction+" · "+IntegerToString((int)MathRound(state.calibrated_probability*100.0))+"% confidence";
+     }
+
+   string DetailLine(SGOATAIWireV2State &state)
+     {
+      if(!state.verified) return "Retrying automatically";
+      if(!state.directive_available)
+         return "Checks every "+IntegerToString(MathMax(1,Bias_RegenerateMinutes))+" minutes";
+      string threshold=IntegerToString((int)MathRound(state.probability_cutoff*100.0))+"%";
+      if(!state.actionable) return "Below trade threshold · "+threshold;
+      return "Trade threshold · "+threshold;
      }
   };
 

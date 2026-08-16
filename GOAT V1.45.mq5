@@ -1,7 +1,7 @@
 ﻿#define   GOAT_VERSION_LABEL "1.45"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.45-CONTROL-TOWER-LIVE-R4"
+#define   GOAT_BUILD_ID "V1.45-CONTROL-TOWER-LIVE-R5"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -69,10 +69,37 @@
 #include <Trade\PositionInfo.mqh>
 #include <Trade\OrderInfo.mqh>
 #include <Trade\Trade.mqh>
+#include <ControlsPlus\Defines.mqh>
+#undef CONTROLS_LISTITEM_COLOR_TEXT
+#undef CONTROLS_LISTITEM_COLOR_TEXT_SEL
+#undef CONTROLS_LISTITEM_COLOR_BG
+#undef CONTROLS_LISTITEM_COLOR_BG_SEL
+#undef CONTROLS_LIST_COLOR_BG
+#undef CONTROLS_LIST_COLOR_BORDER
+#undef CONTROLS_DIALOG_COLOR_BORDER_LIGHT
+#undef CONTROLS_DIALOG_COLOR_BORDER_DARK
+#undef CONTROLS_DIALOG_COLOR_BG
+#undef CONTROLS_DIALOG_COLOR_CAPTION_TEXT
+#undef CONTROLS_DIALOG_COLOR_CLIENT_BG
+#undef CONTROLS_DIALOG_COLOR_CLIENT_BORDER
+#define CONTROLS_LISTITEM_COLOR_TEXT        C'168,184,201'
+#define CONTROLS_LISTITEM_COLOR_TEXT_SEL    C'238,244,250'
+#define CONTROLS_LISTITEM_COLOR_BG          C'11,20,32'
+#define CONTROLS_LISTITEM_COLOR_BG_SEL      C'17,47,68'
+#define CONTROLS_LIST_COLOR_BG              C'8,15,25'
+#define CONTROLS_LIST_COLOR_BORDER          C'35,51,72'
+#define CONTROLS_DIALOG_COLOR_BORDER_LIGHT  C'43,72,96'
+#define CONTROLS_DIALOG_COLOR_BORDER_DARK   C'15,29,44'
+#define CONTROLS_DIALOG_COLOR_BG            C'8,19,32'
+#define CONTROLS_DIALOG_COLOR_CAPTION_TEXT  C'231,238,246'
+#define CONTROLS_DIALOG_COLOR_CLIENT_BG     C'6,10,18'
+#define CONTROLS_DIALOG_COLOR_CLIENT_BORDER C'35,51,72'
 #include "Optimizer.mqh"
 #include "Dashboard.mqh"
 #define GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER 1
 #include "GOATAIWireV2.mqh"
+#undef PANEL_WIDTH
+#define PANEL_WIDTH (340)
 //#include "XmlProcessor.mqh"
 //#include "MTTester.mqh"
 //#include <Canvas\iCanvas_CB.mqh> // https://www.mql5.com/ru/code/22164
@@ -101,6 +128,20 @@ int ServerBreakDownDays=1;
 //#resource "\\Experts\\MPTS - GOAT\\GOAT Gradient Logo.png" as uchar LOGO_png_data[]
 #resource "GOAT Gradient Logo.png" as uchar LOGO_png_data[]
 CPng EA_LOGO(LOGO_png_data);
+CPng PANEL_LOGO(LOGO_png_data);
+bool GOAT_PANEL_LOGO_READY=false;
+
+color GOAT_UI_SECTION_BACK   =C'9,24,39';
+color GOAT_UI_SECTION_BORDER =C'35,77,103';
+color GOAT_UI_SECTION_TEXT   =C'97,207,244';
+color GOAT_UI_MUTED_TEXT     =C'154,171,190';
+color GOAT_UI_INFO_BACK      =C'10,21,35';
+color GOAT_UI_BUY_HEADER     =C'11,71,58';
+color GOAT_UI_SELL_HEADER    =C'78,30,43';
+color GOAT_UI_AI_BACK        =C'34,28,14';
+color GOAT_UI_AI_BORDER      =C'104,81,29';
+color GOAT_UI_AI_TEXT        =C'245,201,91';
+color GOAT_UI_BUTTON_BACK    =C'14,31,49';
 //#resource "\\Files\\GOAT_News.csv" as string abc
 #resource "\\Indicators\\MACD - GOAT 2.ex5"
 string MACD_Path        = "::Indicators\\MACD - GOAT 2.ex5";                    // MACD Indicator Path
@@ -3018,9 +3059,20 @@ int OnInit()
        Sleep(100); DashboardDialog.Run(); Sleep(100);
        return (INIT_SUCCEEDED);
       }
-     }
-     else {
-     //--- create application dialog
+      }
+      else {
+      clr_CaptionBack   =C'8,19,32';
+      clr_CaptionBorder =C'43,72,96';
+      clr_ClientBack    =C'6,10,18';
+      clr_ClientBorder  =C'35,51,72';
+      clr_RowBack       =C'11,20,32';
+      clr_RowBorders    =C'29,43,60';
+      clr_Text          =C'231,238,246';
+      clr_Buy           =C'27,172,127';
+      clr_Sell          =C'218,72,93';
+      clr_Null          =C'199,145,49';
+      Font_Size         =MathMax(Font_Size,8);
+      //--- create application dialog
       int x1=INDENT_HORI,     y1=INDENT_VERT;//CHART_HEIGHT-PANEL_HEIGHT-INDENT_VERT;
       int x2=x1+PANEL_WIDTH,  y2=y1+PANEL_HEIGHT;
       Sleep(100);
@@ -3028,19 +3080,20 @@ int OnInit()
        if(!PanelDialog.Create(ChartID(),EA_Name_generated,0,x1,y1,x2,y2)) {Alert("Panel GUI creation Failed, please try again."); return(INIT_FAILED);}
        Sleep(100); PanelDialog.Run(); Sleep(100);
       }
-      SetEdit(PanelDialog.m_edit_Info_1,Symbol()); SetEdit(PanelDialog.m_edit_Info_2,Strat,clr_Text,Font_Size);
-      SetEdit(PanelDialog.m_edit_Buy1_1, "Buy Sequence");
-      SetEdit(PanelDialog.m_edit_Sell1_1,"Sell Sequence");
+      SetEdit(PanelDialog.m_edit_Info_1,Symbol(),clr_Text,Font_Size,GOAT_UI_INFO_BACK,GOAT_UI_SECTION_BORDER,Font_SubHeader);
+      SetEdit(PanelDialog.m_edit_Info_2,Strat,GOAT_UI_MUTED_TEXT,Font_Size,GOAT_UI_INFO_BACK,GOAT_UI_SECTION_BORDER,Font_Text);
+      SetEdit(PanelDialog.m_edit_Buy1_1, "BUY SEQUENCE",clr_Text,Font_Size,GOAT_UI_BUY_HEADER,clr_Buy,Font_SubHeader);
+      SetEdit(PanelDialog.m_edit_Sell1_1,"SELL SEQUENCE",clr_Text,Font_Size,GOAT_UI_SELL_HEADER,clr_Sell,Font_SubHeader);
 
       if(!Buy_EN && !FastSpeed_Flag)  {SetEdit(PanelDialog.m_edit_Buy1_2,"Disabled") ;SetEdit(PanelDialog.m_edit_Buy2_1," ");
                                        SetEdit(PanelDialog.m_edit_Buy2_2," ");SetEdit(PanelDialog.m_edit_Buy3_1," ");SetEdit(PanelDialog.m_edit_Buy3_2," ");}
       if(!Sell_EN && !FastSpeed_Flag) {SetEdit(PanelDialog.m_edit_Sell1_2,"Disabled");SetEdit(PanelDialog.m_edit_Sell2_1," ");
                                        SetEdit(PanelDialog.m_edit_Sell2_2," ");SetEdit(PanelDialog.m_edit_Sell3_1," ");SetEdit(PanelDialog.m_edit_Sell3_2," ");}
 
-      SetEdit(PanelDialog.m_edit_Indicators,"Indicators");
-      SetEdit(PanelDialog.m_edit_Details,"Trading Details");
-      if(Mode_Bias!=Bias_Disabled) {SetEdit(PanelDialog.m_edit_Bias,"AI Bias Confidence");}
-      if(Mode_News!=News_Disabled) {SetEdit(PanelDialog.m_edit_News,"High Impact News");}
+      SetEdit(PanelDialog.m_edit_Indicators,"  MARKET SIGNALS",GOAT_UI_SECTION_TEXT,Font_Size+1,GOAT_UI_SECTION_BACK,GOAT_UI_SECTION_BORDER,Font_SubHeader);
+      SetEdit(PanelDialog.m_edit_Details,"  TRADING DETAILS",GOAT_UI_SECTION_TEXT,Font_Size+1,GOAT_UI_SECTION_BACK,GOAT_UI_SECTION_BORDER,Font_SubHeader);
+      if(Mode_Bias!=Bias_Disabled) {SetEdit(PanelDialog.m_edit_Bias,"  GOAT AI INTELLIGENCE",GOAT_UI_AI_TEXT,Font_Size+1,GOAT_UI_AI_BACK,GOAT_UI_AI_BORDER,Font_SubHeader);}
+      if(Mode_News!=News_Disabled) {SetEdit(PanelDialog.m_edit_News,"  HIGH IMPACT NEWS",GOAT_UI_SECTION_TEXT,Font_Size+1,GOAT_UI_SECTION_BACK,GOAT_UI_SECTION_BORDER,Font_SubHeader);}
     //SetEdit(PanelDialog.m_edit_Foot_1,"BIIIONIC"); SetEdit(PanelDialog.m_edit_Foot_2,"EA v");
      }
     }
@@ -3308,6 +3361,10 @@ void OnDeinit(const int reason)
       if(FileSET_handle!=INVALID_HANDLE) FileClose(FileSET_handle);
       HidePrompt();
       EA_LOGO.BmpArrayFree();
+      ObjectDelete(0,"GOAT_Panel_Logo");
+      ObjectDelete(0,"GOAT_Panel_Logo_Back");
+      GOAT_PANEL_LOGO_READY=false;
+      PANEL_LOGO.BmpArrayFree();
    //--- destroy dialogs
            if(Mode_Operation==Operation_Batch) TesterDialog.Destroy(reason);
       else if(Mode_Operation==Operation_Dash)  DashboardDialog.Destroy(reason);
@@ -4487,7 +4544,16 @@ void OnChartEvent(const int id,         // event ID
    {
          if(Mode_Operation==Operation_Batch) TesterDialog.ChartEvent(id,lparam,dparam,sparam);
     else if(Mode_Operation==Operation_Dash)  DashboardDialog.HandleChartEvent(id,lparam,dparam,sparam);
-    else                                     PanelDialog.ChartEvent(id,lparam,dparam,sparam);
+    else
+      {
+       PanelDialog.ChartEvent(id,lparam,dparam,sparam);
+       if(GOAT_PANEL_LOGO_READY && (id==CHARTEVENT_MOUSE_MOVE || id==CHARTEVENT_OBJECT_DRAG || id==CHARTEVENT_CHART_CHANGE))
+         {
+          ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_XDISTANCE,PanelDialog.Left()+4);
+          ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_YDISTANCE,PanelDialog.Top()+1);
+          PANEL_LOGO._MoveCanvas(PanelDialog.Left()+7,PanelDialog.Top()+4);
+         }
+      }
   //Panel_Seq2.ChartEvent(id,lparam,dparam,sparam);
     if(id==CHARTEVENT_CHART_CHANGE)
     {
@@ -4986,11 +5052,8 @@ void OnTick()
       {
        if(control_tower_v2 && Mode_Bias!=Bias_Disabled)
          {
-          SetEdit(PanelDialog.m_edit_Bias1,GOATBiasWireV2.DisplayLine(control_tower_state),clrGold);
-          string receipt_line=(control_tower_state.verified
-                               ? "Scan "+control_tower_state.scan_id
-                               : "No verified Control Tower receipt");
-          SetEdit(PanelDialog.m_edit_Bias2,receipt_line,clr_Text);
+           SetEdit(PanelDialog.m_edit_Bias1,"  "+GOATBiasWireV2.DisplayLine(control_tower_state),GOAT_UI_AI_TEXT);
+           SetEdit(PanelDialog.m_edit_Bias2,"  "+GOATBiasWireV2.DetailLine(control_tower_state),GOAT_UI_MUTED_TEXT);
          }
        else BiasDisplayFunction(true,clrGold,idx);
       }
@@ -6501,76 +6564,74 @@ bool CPanelDialog::Create(const long chart,const string name,const int subwin,co
    //GlobalVariableDel("CaptionHeight");
    //Caption(Key_+" - Optimization Studio");
    SetCaptionClientColors();
-//--- create dependent controls
+ //--- create dependent controls
    if(GlobalVariableCheck("Dashboard_ChartID")) {
-   if(!CreateBiEditRow(PanelDialog.m_edit_Dash_1 ,m_edit_Dash_2 ,22,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);    Vertical_Pointer+=GAP_Y;
-   if(!CreateButton   (m_button_DB,"Return to Dashboard"      ,20,BUTTON_WIDTH*4,24,true,clrSteelBlue,clrWhite,clr_Text,Font_Size,Font_Text))return(false);
+   if(!CreateBiEditRow(PanelDialog.m_edit_Dash_1 ,m_edit_Dash_2 ,24,true,GOAT_UI_INFO_BACK,GOAT_UI_SECTION_BORDER,clr_Text,Font_Size,Font_Text)) return(false); Vertical_Pointer+=GAP_Y;
+   if(!CreateButton   (m_button_DB,"Return to Dashboard"      ,20,BUTTON_WIDTH*4,25,true,GOAT_UI_BUTTON_BACK,GOAT_UI_SECTION_BORDER,GOAT_UI_SECTION_TEXT,Font_Size,Font_Text)) return(false);
    /*GlobalVariableSet(Symbol()+"_"+IntegerToString(MAGIC1)+"_New",(double)MAGIC1);*/}
-   if(!CreateBiEditRow(PanelDialog.m_edit_Info_1 ,m_edit_Info_2 ,22,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);    Vertical_Pointer+=GAP_Y;
+   if(!CreateBiEditRow(PanelDialog.m_edit_Info_1 ,m_edit_Info_2 ,24,true,GOAT_UI_INFO_BACK,GOAT_UI_SECTION_BORDER,clr_Text,Font_Size,Font_Text)) return(false); Vertical_Pointer+=GAP_Y;
    if(Buy_EN) {
-   if(!CreateBiEditRow(PanelDialog.m_edit_Buy1_1 ,m_edit_Buy1_2 ,20,true,clr_Buy    ,clr_Buy       ,clr_Text,Font_Size  ,Font_Text))         return(false);
-   if(!CreateButton   (m_button_Buy_close,"Close",18,BUTTON_WIDTH,19,true,clr_Buy   ,clrWhite      ,clr_Text,Font_Size  ,Font_Text))         return(false);
-   if(!CreateBiEditRow(PanelDialog.m_edit_Buy2_1 ,m_edit_Buy2_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
-   if(!CreateBiEditRow(PanelDialog.m_edit_Buy3_1 ,m_edit_Buy3_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);} //Vertical_Pointer++;
+   if(!CreateBiEditRow(PanelDialog.m_edit_Buy1_1 ,m_edit_Buy1_2 ,22,true,GOAT_UI_BUY_HEADER,clr_Buy,clr_Text,Font_Size,Font_Text)) return(false);
+   if(!CreateButton   (m_button_Buy_close,"Close",18,BUTTON_WIDTH,20,true,GOAT_UI_BUTTON_BACK,clr_Buy,clr_Buy,Font_Size,Font_Text)) return(false);
+   if(!CreateBiEditRow(PanelDialog.m_edit_Buy2_1 ,m_edit_Buy2_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);
+   if(!CreateBiEditRow(PanelDialog.m_edit_Buy3_1 ,m_edit_Buy3_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);} //Vertical_Pointer++;
    if(Sell_EN) {
-   if(!CreateBiEditRow(PanelDialog.m_edit_Sell1_1,m_edit_Sell1_2,20,true,clr_Sell   ,clr_Sell      ,clr_Text,Font_Size  ,Font_Text))         return(false);
-   if(!CreateButton   (m_button_Sell_close,"Close",18,BUTTON_WIDTH,19,true,clr_Sell ,clrWhite      ,clr_Text,Font_Size  ,Font_Text))         return(false);
-   if(!CreateBiEditRow(PanelDialog.m_edit_Sell2_1,m_edit_Sell2_2,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
-   if(!CreateBiEditRow(PanelDialog.m_edit_Sell3_1,m_edit_Sell3_2,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);}   Vertical_Pointer+=GAP_Y;
+   if(!CreateBiEditRow(PanelDialog.m_edit_Sell1_1,m_edit_Sell1_2,22,true,GOAT_UI_SELL_HEADER,clr_Sell,clr_Text,Font_Size,Font_Text)) return(false);
+   if(!CreateButton   (m_button_Sell_close,"Close",18,BUTTON_WIDTH,20,true,GOAT_UI_BUTTON_BACK,clr_Sell,clr_Sell,Font_Size,Font_Text)) return(false);
+   if(!CreateBiEditRow(PanelDialog.m_edit_Sell2_1,m_edit_Sell2_2,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);
+   if(!CreateBiEditRow(PanelDialog.m_edit_Sell3_1,m_edit_Sell3_2,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);} Vertical_Pointer+=GAP_Y;
 
-   if(!CreateEditRow  (PanelDialog.m_edit_Indicators            ,22,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size+1,Font_SubHeader))    return(false);
+   if(!CreateEditRow  (PanelDialog.m_edit_Indicators            ,24,true,GOAT_UI_SECTION_BACK,GOAT_UI_SECTION_BORDER,GOAT_UI_SECTION_TEXT,Font_Size+1,Font_SubHeader)) return(false);
+   m_edit_Indicators.TextAlign(ALIGN_LEFT);
 
    if(RSI_Mode!=RSI_Disabled)
-  {if(!CreateBiEditRow(PanelDialog.m_edit_Ind1_1 ,m_edit_Ind1_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
-   m_edit_Ind1_1.TextAlign(ALIGN_CENTER); m_edit_Ind1_2.TextAlign(ALIGN_CENTER);}
+  {if(!CreateBiEditRow(PanelDialog.m_edit_Ind1_1 ,m_edit_Ind1_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);}
    if(EMA_Mode!=Trade_Disabled)
-  {if(!CreateBiEditRow(PanelDialog.m_edit_Ind2_1 ,m_edit_Ind2_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
-   m_edit_Ind2_1.TextAlign(ALIGN_CENTER); m_edit_Ind2_2.TextAlign(ALIGN_CENTER);}
+  {if(!CreateBiEditRow(PanelDialog.m_edit_Ind2_1 ,m_edit_Ind2_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);}
    if(ADX_Mode!=Trade_Disabled)
-  {if(!CreateBiEditRow(PanelDialog.m_edit_Ind3_1 ,m_edit_Ind3_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
-   m_edit_Ind3_1.TextAlign(ALIGN_CENTER); m_edit_Ind3_2.TextAlign(ALIGN_CENTER);}
+  {if(!CreateBiEditRow(PanelDialog.m_edit_Ind3_1 ,m_edit_Ind3_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);}
    if(BB_Mode!=BB_Disabled)
-  {if(!CreateBiEditRow(PanelDialog.m_edit_Ind4_1 ,m_edit_Ind4_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
-   m_edit_Ind4_1.TextAlign(ALIGN_CENTER); m_edit_Ind4_2.TextAlign(ALIGN_CENTER);}
+  {if(!CreateBiEditRow(PanelDialog.m_edit_Ind4_1 ,m_edit_Ind4_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);}
    if(MACD_Mode!=Trade_Disabled)
-  {if(!CreateBiEditRow(PanelDialog.m_edit_Ind5_1 ,m_edit_Ind5_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
-   m_edit_Ind5_1.TextAlign(ALIGN_CENTER); m_edit_Ind5_2.TextAlign(ALIGN_CENTER);}
+  {if(!CreateBiEditRow(PanelDialog.m_edit_Ind5_1 ,m_edit_Ind5_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);}
    if(RSI2_Mode!=RSI_Disabled)
-  {if(!CreateBiEditRow(PanelDialog.m_edit_Ind6_1 ,m_edit_Ind6_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
-   m_edit_Ind6_1.TextAlign(ALIGN_CENTER); m_edit_Ind6_2.TextAlign(ALIGN_CENTER);}
+  {if(!CreateBiEditRow(PanelDialog.m_edit_Ind6_1 ,m_edit_Ind6_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);}
 
-   if(!CreateBiEditRow(PanelDialog.m_edit_Ind7_1 ,m_edit_Ind7_2 ,10,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);    Vertical_Pointer+=GAP_Y;
+   if(!CreateBiEditRow(PanelDialog.m_edit_Ind7_1 ,m_edit_Ind7_2 ,8,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false); Vertical_Pointer+=GAP_Y;
 
-   if(!CreateEditRow  (PanelDialog.m_edit_Details               ,22,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size+1,Font_SubHeader))    return(false);    Vertical_Pointer++;
+   if(!CreateEditRow  (PanelDialog.m_edit_Details               ,24,true,GOAT_UI_SECTION_BACK,GOAT_UI_SECTION_BORDER,GOAT_UI_SECTION_TEXT,Font_Size+1,Font_SubHeader)) return(false); Vertical_Pointer++;
+   m_edit_Details.TextAlign(ALIGN_LEFT);
 
-   if(!CreateBiEditRow(PanelDialog.m_edit_Det1_1 ,m_edit_Det1_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
+   if(!CreateBiEditRow(PanelDialog.m_edit_Det1_1 ,m_edit_Det1_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);
    //m_edit_Det1_1.TextAlign(ALIGN_CENTER); m_edit_Det1_2.TextAlign(ALIGN_CENTER);
-   if(!CreateBiEditRow(PanelDialog.m_edit_Det2_1 ,m_edit_Det2_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
+   if(!CreateBiEditRow(PanelDialog.m_edit_Det2_1 ,m_edit_Det2_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);
    //m_edit_Det2_1.TextAlign(ALIGN_CENTER); m_edit_Det2_2.TextAlign(ALIGN_CENTER);
-   if(!CreateBiEditRow(PanelDialog.m_edit_Det3_1 ,m_edit_Det3_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
+   if(!CreateBiEditRow(PanelDialog.m_edit_Det3_1 ,m_edit_Det3_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);
    //m_edit_Det3_1.TextAlign(ALIGN_CENTER); m_edit_Det3_2.TextAlign(ALIGN_CENTER);
-   if(!CreateBiEditRow(PanelDialog.m_edit_Det4_1 ,m_edit_Det4_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
-   if(!CreateBiEditRow(PanelDialog.m_edit_Det5_1 ,m_edit_Det5_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
-   if(!CreateButton   (m_button_Lots_Viewer,"View",18,BUTTON_WIDTH,19,true,clr_RowBack,clrWhite    ,clr_Text,Font_Size  ,Font_Text))         return(false);
+   if(!CreateBiEditRow(PanelDialog.m_edit_Det4_1 ,m_edit_Det4_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);
+   if(!CreateBiEditRow(PanelDialog.m_edit_Det5_1 ,m_edit_Det5_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);
+   if(!CreateButton   (m_button_Lots_Viewer,"View",18,BUTTON_WIDTH,20,true,GOAT_UI_BUTTON_BACK,GOAT_UI_SECTION_BORDER,GOAT_UI_SECTION_TEXT,Font_Size,Font_Text)) return(false);
    if(Grid_Size<0||LP_Size_<0||SL_Pips_<0||TP_Pips_<0||TSL_Size_<0||Grid_Min_<0||Grid_Max_<0)
-   if(!CreateBiEditRow(PanelDialog.m_edit_Det6_1 ,m_edit_Det6_2 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
-   if(!CreateBiEditRow(PanelDialog.m_edit_Det7_1 ,m_edit_Det7_2 ,10,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);
+   if(!CreateBiEditRow(PanelDialog.m_edit_Det6_1 ,m_edit_Det6_2 ,20,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);
+   if(!CreateBiEditRow(PanelDialog.m_edit_Det7_1 ,m_edit_Det7_2 ,8,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);
 
    if(Mode_Bias!=Bias_Disabled) {                                                                                                                              Vertical_Pointer+=GAP_Y;
-   if(!CreateEditRow  (PanelDialog.m_edit_Bias                  ,22,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size+1,Font_SubHeader))    return(false);    Vertical_Pointer++;
-   if(!CreateEditRow  (PanelDialog.m_edit_Bias1                 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);    //m_edit_Bias1.TextAlign(ALIGN_LEFT);
-   if(!CreateEditRow  (PanelDialog.m_edit_Bias2                 ,18,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);    //m_edit_Bias2.TextAlign(ALIGN_LEFT);
-   if(!CreateEditRow  (PanelDialog.m_edit_Bias3                 ,10,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);}
+   if(!CreateEditRow  (PanelDialog.m_edit_Bias                  ,24,true,GOAT_UI_AI_BACK,GOAT_UI_AI_BORDER,GOAT_UI_AI_TEXT,Font_Size+1,Font_SubHeader)) return(false); Vertical_Pointer++;
+   m_edit_Bias.TextAlign(ALIGN_LEFT);
+   if(!CreateEditRow  (PanelDialog.m_edit_Bias1                 ,20,true,GOAT_UI_AI_BACK,GOAT_UI_AI_BORDER,GOAT_UI_AI_TEXT,Font_Size,Font_Text)) return(false); m_edit_Bias1.TextAlign(ALIGN_LEFT);
+   if(!CreateEditRow  (PanelDialog.m_edit_Bias2                 ,20,true,GOAT_UI_AI_BACK,GOAT_UI_AI_BORDER,GOAT_UI_MUTED_TEXT,Font_Size,Font_Text)) return(false); m_edit_Bias2.TextAlign(ALIGN_LEFT);
+   if(!CreateEditRow  (PanelDialog.m_edit_Bias3                 ,8,true,GOAT_UI_AI_BACK,GOAT_UI_AI_BORDER,GOAT_UI_AI_TEXT,Font_Size,Font_Text)) return(false);}
 
    if(Mode_News!=News_Disabled) {                                                                                                                              Vertical_Pointer+=GAP_Y;
-   if(!CreateEditRow  (PanelDialog.m_edit_News                  ,22,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_SubHeader))    return(false);    Vertical_Pointer++;
+   if(!CreateEditRow  (PanelDialog.m_edit_News                  ,24,true,GOAT_UI_SECTION_BACK,GOAT_UI_SECTION_BORDER,GOAT_UI_SECTION_TEXT,Font_Size+1,Font_SubHeader)) return(false); Vertical_Pointer++;
+   m_edit_News.TextAlign(ALIGN_LEFT);
    int list_x      = INDENT_LEFT+1;
    int list_y      = Vertical_Pointer+1;
    int list_w      = (PANEL_WIDTH-10) - INDENT_RIGHT - INDENT_LEFT;
    int list_h      = 3*22 + 2; // 3 visible rows
 
    if(!CreateListView(PanelDialog.m_list_News,"list_news",list_x,list_y,list_w,list_h))                                                      return(false);    Vertical_Pointer += list_h;
-   if(!CreateEditRow (PanelDialog.m_edit_New1                   ,10,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size  ,Font_Text))         return(false);}
+   if(!CreateEditRow (PanelDialog.m_edit_New1                   ,8,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size,Font_Text)) return(false);}
 
    //if(!CreateBiEditRow(PanelDialog.m_edit_Foot_1 ,m_edit_Foot_2 ,22,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size+2,Font_Header))       return(false);    //Vertical_Pointer+=3;
    //if(!CreateButton1())                                     return(false);
@@ -6598,6 +6659,27 @@ bool CPanelDialog::Create(const long chart,const string name,const int subwin,co
    ChartRedraw();
    // Show the dialog
    Show(); Sleep(50);
+   ObjectDelete(0,"GOAT_Panel_Logo_Back");
+   ObjectCreate(0,"GOAT_Panel_Logo_Back",OBJ_RECTANGLE_LABEL,0,0,0);
+   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_XDISTANCE,PanelDialog.Left()+4);
+   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_YDISTANCE,PanelDialog.Top()+1);
+   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_XSIZE,24);
+   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_YSIZE,24);
+   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_BGCOLOR,C'211,230,240');
+   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_BORDER_COLOR,C'74,157,190');
+   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_HIDDEN,true);
+   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_BACK,false);
+   ObjectSetInteger(0,"GOAT_Panel_Logo_Back",OBJPROP_ZORDER,999);
+   PANEL_LOGO.Resize(18);
+   GOAT_PANEL_LOGO_READY=PANEL_LOGO._CreateCanvas(PanelDialog.Left()+7,PanelDialog.Top()+4,"GOAT_Panel_Logo");
+   if(GOAT_PANEL_LOGO_READY)
+     {
+      ObjectSetInteger(0,"GOAT_Panel_Logo",OBJPROP_SELECTABLE,false);
+      ObjectSetInteger(0,"GOAT_Panel_Logo",OBJPROP_HIDDEN,true);
+      ObjectSetInteger(0,"GOAT_Panel_Logo",OBJPROP_BACK,false);
+      ObjectSetInteger(0,"GOAT_Panel_Logo",OBJPROP_ZORDER,1000);
+     }
    return(true);
   }
 //+------------------------------------------------------------------+
@@ -6616,10 +6698,11 @@ void CPanelDialog::SetCaptionClientColors(void)
      CaptionObjPanel = edit;
      //color clr=(color)GETRGB(XRGB(rand()%255,rand()%255,rand()%255));
      edit.ColorBackground(clr_CaptionBack);
-     edit.ColorBorder(clr_CaptionBorder);
-     edit.Color(clr_Text);
-     edit.Font(GetFontName(Font_Header));
-     edit.FontSize(Font_Size+2);
+      edit.ColorBorder(clr_CaptionBorder);
+      edit.Color(clr_Text);
+      edit.Font(GetFontName(Font_Header));
+      edit.FontSize(Font_Size+2);
+      edit.Text("        GOAT V"+GOAT_VERSION_LABEL);
     }
     //---
     if(name==prefix+"Client")

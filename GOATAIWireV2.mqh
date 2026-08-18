@@ -3,6 +3,9 @@
 
 #define GOAT_AI_WIRE_V2_EXPECTED_ERA "sol-control-tower-rebuild-2026-07-v54"
 #define GOAT_AI_WIRE_V2_EXPECTED_MANIFEST "2a2456b360c4d15d85ba7212f23e37e6890c4f5a7c7edcc816bfef73da06d628"
+#ifndef GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER
+#define GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER 0
+#endif
 
 // GOAT AI Control Tower wire-v2 client.
 // The client is deliberately forward-only: selecting v2 never falls back to the
@@ -457,9 +460,29 @@ bool GOATIsSafeId(const string value,const int minimum,const int maximum)
    for(int i=0;i<total;i++)
      {
       ushort c=StringGetCharacter(value,i);
-      if(!((c>='A' && c<='Z') || (c>='a' && c<='z') || (c>='0' && c<='9') || c=='-' || c=='_' || c=='.')) return false;
+       if(!((c>='A' && c<='Z') || (c>='a' && c<='z') || (c>='0' && c<='9') || c=='-' || c=='_' || c=='.' || c==':')) return false;
      }
    return true;
+  }
+
+bool GOATIsEraId(const string value)
+  {
+   int total=StringLen(value);
+   if(total<1 || total>128) return false;
+   ushort first=StringGetCharacter(value,0);
+   if(!((first>='a' && first<='z') || (first>='0' && first<='9'))) return false;
+   for(int i=1;i<total;i++)
+     {
+      ushort c=StringGetCharacter(value,i);
+      if(!((c>='a' && c<='z') || (c>='0' && c<='9') || c=='.' || c=='_' || c==':' || c=='-')) return false;
+     }
+   return true;
+  }
+
+bool GOATWireV2AcceptsPointer(const string era,const string manifest)
+  {
+   if(GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER==1) return true;
+   return(era==GOAT_AI_WIRE_V2_EXPECTED_ERA && manifest==GOAT_AI_WIRE_V2_EXPECTED_MANIFEST);
   }
 
 bool GOATIsReasonCode(const string value)
@@ -703,11 +726,32 @@ class CGOATAIWireV2
                       +"\"manifestSha256\":\"2a2456b360c4d15d85ba7212f23e37e6890c4f5a7c7edcc816bfef73da06d628\","
                       +"\"releaseAttemptId\":\"release-v1-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}}";
       SGOATAIWireV2State parsed;
-      return(ParseAndVerify(response,"EURUSD",10,parsed)
-             && parsed.verified
-             && !parsed.directive_available
-             && parsed.reason_code=="CALIBRATION_ARTIFACT_UNAVAILABLE"
-             && parsed.checksum=="8f7f04401edaa982d7ade41c8547ee92f9b6f0e7d82e57371ebc9d4116bed2e3");
+      if(!ParseAndVerify(response,"EURUSD",10,parsed)
+         || !parsed.verified
+         || parsed.directive_available
+         || parsed.reason_code!="CALIBRATION_ARTIFACT_UNAVAILABLE"
+         || !GOATIsEraId(parsed.era)
+         || GOATIsEraId("INVALID ERA")
+         || !GOATIsSafeId("decision-registry:EURUSD:sample",1,256)
+         || GOATIsSafeId("decision/registry",1,256)
+         || parsed.checksum!="8f7f04401edaa982d7ade41c8547ee92f9b6f0e7d82e57371ebc9d4116bed2e3"
+         || DisplayLine(parsed)!="Waiting for fresh AI bias"
+         || DetailLine(parsed)!="Checks every "+IntegerToString(MathMax(1,Bias_RegenerateMinutes))+" minutes") return false;
+
+      SGOATAIWireV2State unavailable;
+      GOATResetWireV2State(unavailable,"WEBREQUEST_FAILED");
+      if(DisplayLine(unavailable)!="AI bias temporarily unavailable"
+         || DetailLine(unavailable)!="Retrying automatically") return false;
+
+      parsed.directive_available=true;
+      parsed.actionable=true;
+      parsed.direction="BULLISH";
+      parsed.calibrated_probability=0.72;
+      parsed.probability_cutoff=0.60;
+      if(DisplayLine(parsed)!="Bullish · 72% confidence"
+         || DetailLine(parsed)!="Trade threshold · 60%") return false;
+      parsed.actionable=false;
+      return DetailLine(parsed)=="Below trade threshold · 60%";
      }
 
    bool GetState(string asset,SGOATAIWireV2State &state)
@@ -751,11 +795,21 @@ class CGOATAIWireV2
 
    string DisplayLine(SGOATAIWireV2State &state)
      {
-      if(!state.verified) return "Control Tower unavailable: "+state.reason_code;
-      if(!state.directive_available) return "Control Tower WITHHELD: "+state.reason_code;
-      return "Control Tower "+state.direction+" "
-             +DoubleToString(state.calibrated_probability*100.0,1)+"% (cutoff "
-             +DoubleToString(state.probability_cutoff*100.0,1)+"%)";
+      if(!state.verified) return "AI bias temporarily unavailable";
+      if(!state.directive_available) return "Waiting for fresh AI bias";
+      string direction=(state.direction=="BULLISH" ? "Bullish"
+                        : state.direction=="BEARISH" ? "Bearish" : "Neutral");
+      return direction+" · "+IntegerToString((int)MathRound(state.calibrated_probability*100.0))+"% confidence";
+     }
+
+   string DetailLine(SGOATAIWireV2State &state)
+     {
+      if(!state.verified) return "Retrying automatically";
+      if(!state.directive_available)
+         return "Checks every "+IntegerToString(MathMax(1,Bias_RegenerateMinutes))+" minutes";
+      string threshold=IntegerToString((int)MathRound(state.probability_cutoff*100.0))+"%";
+      if(!state.actionable) return "Below trade threshold · "+threshold;
+      return "Trade threshold · "+threshold;
      }
   };
 
@@ -819,6 +873,12 @@ bool CGOATAIWireV2::Refresh(const string asset)
       GOATResetWireV2State(m_state,"RESPONSE_TIME_INVALID");
       return false;
      }
+   PrintFormat("GOAT AI wire v2 verified: availability=%s reason=%s era=%s manifest=%s duration_ms=%I64u.",
+               m_state.availability,
+               (m_state.reason_code=="" ? "NONE" : m_state.reason_code),
+               m_state.era,
+               m_state.manifest_sha256,
+               m_state.request_duration_ms);
    return true;
   }
 
@@ -877,9 +937,10 @@ bool CGOATAIWireV2::ParseAndVerify(const string json,const string expected_asset
       || !GOATJsonGetString(json,tokens,context_index,"scanId",scan_id) || !GOATIsSafeId(scan_id,1,256)
       || !GOATJsonGetString(json,tokens,context_index,"beliefId",belief_id) || !GOATIsSafeId(belief_id,1,256)
       || !GOATJsonGetString(json,tokens,context_index,"underwritingWakeCompletedAt",wake_completed_at)
-      || !GOATJsonGetString(json,tokens,context_index,"era",era) || era!=GOAT_AI_WIRE_V2_EXPECTED_ERA
+      || !GOATJsonGetString(json,tokens,context_index,"era",era) || !GOATIsEraId(era)
       || !GOATJsonGetString(json,tokens,context_index,"manifestSha256",manifest)
-      || manifest!=GOAT_AI_WIRE_V2_EXPECTED_MANIFEST
+      || !GOATIsLowerHex(manifest,64)
+      || !GOATWireV2AcceptsPointer(era,manifest)
       || !GOATJsonGetBoolean(json,tokens,context_index,"noBackfill",no_backfill) || !no_backfill
       || !GOATJsonGetString(json,tokens,meta_index,"routeVersion",route_version) || route_version!="ea-wire-v2-route-v1"
       || !GOATJsonGetString(json,tokens,meta_index,"wireContract",meta_wire_contract) || meta_wire_contract!=wire_contract

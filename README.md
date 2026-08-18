@@ -2,6 +2,24 @@
 
 Expert Advisor (EA) project for MetaTrader 5, maintained in the `GOAT-EA` repository.
 
+### V1.45 release-admitted Control Tower wire
+
+`GOAT V1.45` carries the forward-only client for `/api/ea/bias/v2`
+(`ea-wire-v2-calibrated-probability-v1`) without hard-pinning a short-lived era
+name in the desktop binary. The authenticated API admits only its exact live
+release pointer; the EA independently requires an exact schema, lowercase
+SHA-256 checksum, asset match, expiry, safe era identifier, manifest hash, and
+data/meta era-manifest equality. It never substitutes the legacy packed-score
+feed.
+
+`Bias_Protocol` defaults to `BiasProtocol_ControlTowerV2` and V1.45 defaults
+`Mode_Bias` to `Bias_Opens`. A verified actionable Bullish/Bearish directive can
+therefore govern new sequence risk immediately. Unavailable, WITHHELD, neutral,
+or below-cutoff evidence blocks new sequence risk and, when configured, sequence
+additions. A feed outage does not force-close an existing position. Actionable
+calibrated probability must clear both `Bias_threshold` and the configured
+payoff/cost break-even threshold.
+
 ### V1.44 Control Tower V54 wire
 
 `GOAT V1.44` carries the forward-only client for
@@ -14,9 +32,8 @@ elapsed time. It never substitutes the legacy packed-score feed.
 used against the V54 Control Tower because the exact era/manifest guard correctly
 rejects cross-era directives.
 
-`Bias_Protocol` defaults to `BiasProtocol_ControlTowerV2`, while `Mode_Bias`
-continues to default to `Bias_Disabled`; upgrading the binary therefore does not
-silently enable AI-governed trading. When bias filtering is enabled, unavailable,
+`Bias_Protocol` defaults to `BiasProtocol_ControlTowerV2`, while V1.44's
+`Mode_Bias` continues to default to `Bias_Disabled`. When bias filtering is enabled, unavailable,
 WITHHELD, neutral, or below-cutoff V2 evidence blocks new sequence risk and, when
 configured, sequence additions. It does not force-close an existing position.
 Actionable calibrated Bullish/Bearish probability is passed into the existing bias

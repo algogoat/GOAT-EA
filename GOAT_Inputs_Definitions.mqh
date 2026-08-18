@@ -2,7 +2,10 @@
 #define   EA_Name          MQLInfoString(MQL_PROGRAM_NAME)
 #define   Server           AccountInfoString(ACCOUNT_SERVER)
 #ifndef  GOAT_VERSION_LABEL
-#define   GOAT_VERSION_LABEL "1.44"
+#define   GOAT_VERSION_LABEL "1.45"
+#endif
+#ifndef  GOAT_DEFAULT_BIAS_MODE
+#define   GOAT_DEFAULT_BIAS_MODE Bias_Disabled
 #endif
 #define   version_         GOAT_VERSION_LABEL
 #define   NEWS_FILE        Key+"\\GOAT_News.csv"
@@ -712,7 +715,7 @@ input    ENUM_ACTION_CLOSE       Action_Dayend                 =                
 input    ENUM_ACTION_CLOSE       Action_Friday                 =                   Action_Null;       // Action at Friday Close
 input    bool                    Trade_Friday                  =                          true;       // Start New Sequences on Friday
 input    group                   "==========NEWS AND AI FILTER==========                   ";
-input    ENUM_ACTION_BIAS        Mode_Bias                     =                 Bias_Disabled;       // AI Bias Mode
+input    ENUM_ACTION_BIAS        Mode_Bias                     =         GOAT_DEFAULT_BIAS_MODE;       // AI Bias Mode
 input    ENUM_BIAS_TRADES        Mode_Bias_Trades              =                      Bias_Seq;       // AI Bias restriction
 input    ENUM_BIAS_EXIT          Mode_Bias_Exit                =              BiasExit_HardClose;     // AI Bias Exit Mode
 input    int                     Bias_Exit_Max_Exposure_Adds   =                            -1;       // Smart Rescue max positive adds (-1=normal)

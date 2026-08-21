@@ -48,6 +48,12 @@ enum ENUM_GOAT_DASH_SORT_KEY
    GOAT_DASH_SORT_PL_W1,
    GOAT_DASH_SORT_PL_ALL
   };
+enum ENUM_GOAT_DASH_TABLE_VIEW
+  {
+   GOAT_DASH_VIEW_OVERVIEW=0,
+   GOAT_DASH_VIEW_INTELLIGENCE,
+   GOAT_DASH_VIEW_PERFORMANCE
+  };
 enum ENUM_GOAT_PORTFOLIO_RUN_STATE
   {
    GOAT_PORTFOLIO_RUN_ACTIVE=0,
@@ -87,7 +93,8 @@ public:
                edt_RunningLossLead,edt_RunningLossTail,edt_DailyLossLead,edt_DailyLossTail,edt_DailyTargetLead,edt_DailyTargetTail,edt_LowEquityStopLead,edt_EquityTargetLead,
                edt_RunningLossLimit,edt_DailyLossLimit,edt_DailyTargetLimit,edt_LowEquityStopLevel,edt_EquityTargetLevel,
                edt_Symbol[],edt_Strategy[],edt_Comment[],edt_News[],edt_AIBias[],edt_RiskLots[],edt_Action,edt_Status[],edt_Positions[],edt_Lots[],edt_Trades[],edt_HistDD[],edt_PL_Open[],edt_PL_D1[],edt_PL_W1[],edt_PL_All[];
-   CButton     btn_Action[],btn_PortfolioPause,btn_SameAssetDirection,btn_USDFilter,btn_USDClose,btn_EURFilter,btn_EURClose,btn_GBPFilter,btn_GBPClose,btn_JPYFilter,btn_JPYClose;
+   CButton     btn_Action[],btn_PortfolioPause,btn_SameAssetDirection,btn_USDFilter,btn_USDClose,btn_EURFilter,btn_EURClose,btn_GBPFilter,btn_GBPClose,btn_JPYFilter,btn_JPYClose,
+               btn_ViewOverview,btn_ViewIntelligence,btn_ViewPerformance;
    // Layout parameters
    int         Margin_Left,Margin_Top,m_GapHoriz,m_GapVert,m_rowHeight,m_controlHeight,m_controlWidth;
  //int         Width_Symbol, Width_Strategy, Width_Action, Width_Status, Width_Positions, Width_Trades, Width_PL_D1, Width_PL_W1, Width_PL_M1, Width_PL_All;
@@ -95,6 +102,7 @@ public:
    CGOATDashScrollV m_rows_scroll;
    int         m_rows_top,m_rows_visible,m_rows_top_max,m_rows_y0,m_rows_view_bottom,m_rows_view_left,m_rows_view_right,m_row_pitch,m_rows_data_offset,m_rows_base_y0;
    bool        m_rows_scroll_enabled,m_rows_need_scroll;
+   int         m_table_view,m_table_columns_left,m_table_columns_right;
    int         m_last_profit_sort_key;
    bool        m_last_profit_sort_desc;
    
@@ -329,6 +337,10 @@ public:
   }
 private:
    bool HandleObjectClick(const string control_name);
+   bool HandleTableViewClick(const string control_name);
+   void ApplyTableView(void);
+   void LayoutTableEdit(CEdit &control,int &x,const int y,const int width,const bool visible);
+   void LayoutTableButton(CButton &control,int &x,const int y,const int width,const bool visible);
    bool NavigateToSet(const int idx);
    bool SendPortfolioPauseCommand(const bool pause);
    bool SendPortfolioCloseCommand(void);
@@ -625,7 +637,7 @@ private:
     if(!lbl.Create(m_chart_id, text, m_subwin, x, y, x+width, y+m_controlHeight)) Print("Label creation error:", GetLastError());
     if(Font_Size) lbl.FontSize(Font_Size);
     lbl.Text(text);
-    lbl.Color(clrBlack);
+    lbl.Color(C'135,181,216');
     //lbl.Color(clrRed); lbl.ColorBackground(clrAqua); lbl.ColorBorder(clrBlack);
     Add(lbl);
    }
@@ -641,7 +653,7 @@ private:
    void CGOATDashboard::CreateButtonCtrl(CButton &btn, const string name, int x, int y, int width, int height, string caption)
    {
     if(!btn.Create(m_chart_id, m_name+name, m_subwin, x, y, x+width, y+height)) Print("Button creation error:", GetLastError());
-    btn.Color(clrWhite); btn.ColorBorder(C'15,23,42'); btn.ColorBackground(C'8,8,36');//C'15,23,42');
+     btn.Color(C'225,238,248'); btn.ColorBorder(C'35,60,82'); btn.ColorBackground(C'11,28,44');
     if(Font_Size) btn.FontSize(Font_Size);
     btn.Text(caption);
     Add(btn);
@@ -649,7 +661,7 @@ private:
    void CGOATDashboard::CreateButtonCtrl2(CButton &btn, const string name, int x, int y, int width, int height, string caption)
    {
     if(!btn.Create(m_chart_id, m_name+name, m_subwin, x, y, x+width, y+height)) Print("Button creation error:", GetLastError());
-    btn.Color(clrWhite); btn.ColorBorder(clrWhite); btn.ColorBackground(C'8,8,36');//C'15,23,42');
+     btn.Color(C'92,210,247'); btn.ColorBorder(C'92,210,247'); btn.ColorBackground(C'11,28,44');
    if(Font_Size) btn.FontSize(Font_Size);
    btn.Text(caption);
    Add(btn);
@@ -662,7 +674,7 @@ private:
    edt.Text(text);
    edt.TextAlign(ALIGN_CENTER);
    edt.ReadOnly(true);
-   edt.Color(clrWhite);
+    edt.Color(C'225,238,248');
    edt.ColorBorder(border);
    edt.ColorBackground(back);
    Add(edt);
@@ -673,7 +685,7 @@ private:
    if(Font_Size) lbl.FontSize(Font_Size);
    lbl.Font("Tahoma Bold");
    lbl.Text(text);
-   lbl.Color(clrBlack);
+    lbl.Color(C'135,181,216');
    Add(lbl);
   }
    void CGOATDashboard::CreatePlainInputEdit(CEdit &edt,const string name,const string text,int x,int y,int width)
@@ -684,9 +696,9 @@ private:
    edt.Text(text);
    edt.TextAlign(ALIGN_CENTER);
    edt.ReadOnly(false);
-   edt.Color(clrBlack);
-   edt.ColorBorder(C'90,90,90');
-   edt.ColorBackground(clrWhite);
+    edt.Color(C'225,238,248');
+    edt.ColorBorder(C'46,92,120');
+    edt.ColorBackground(C'7,17,29');
    Add(edt);
   }
   void CGOATDashboard::CreateHeaderStateButton(CButton &btn,const string name,const string caption,int x,int y,int width,int height,color back,color border,color text_color)
@@ -708,7 +720,7 @@ private:
    edt.Text(text);
    edt.TextAlign(ALIGN_LEFT);
    edt.ReadOnly(true);
-   edt.Color(clrWhite);
+    edt.Color(C'225,238,248');
    edt.ColorBorder(border);
    edt.ColorBackground(back);
    Add(edt);
@@ -722,7 +734,7 @@ private:
    edt.Text(text);
    edt.TextAlign((ENUM_ALIGN_MODE)align_mode);
    edt.ReadOnly(true);
-   edt.Color(clrWhite);
+    edt.Color(C'225,238,248');
    edt.ColorBorder(back);
    edt.ColorBackground(back);
    Add(edt);
@@ -784,14 +796,14 @@ private:
   }
   void UpdateHeaderStateButtons(void)
   {
-   color normal_back=C'26,63,95';
-   color normal_border=clrWhite;
-    color run_pause_back=C'128,57,57';
-    color pending_back=C'73,90,121';
-    color planned_back=C'55,56,77';
-    color emergency_back=C'122,63,34';
-    color risk_armed_back=C'19,79,60';
-    color risk_breached_back=C'128,57,57';
+    color normal_back=C'14,47,67';
+    color normal_border=C'92,210,247';
+     color run_pause_back=C'92,35,52';
+     color pending_back=C'31,55,79';
+     color planned_back=C'11,28,44';
+     color emergency_back=C'81,42,39';
+     color risk_armed_back=C'13,69,58';
+     color risk_breached_back=C'92,35,52';
     string pause_text=PortfolioRunButtonText();
     color pause_back=(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_ACTIVE ? normal_back : run_pause_back);
     string risk_text=RiskPolicyButtonText();
@@ -850,9 +862,9 @@ private:
                                normal_border,
                                clrWhite);
     ApplyHeaderStateButtonStyle(btn_SameAssetDirection,risk_text,risk_back,normal_border,clrWhite);
-   ApplyHeaderStateButtonStyle(btn_USDFilter,CurrencyRulesButtonText(),(CurrencyPolicyActive() ? C'19,79,60' : planned_back),normal_border,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_USDFilter,CurrencyRulesButtonText(),(CurrencyPolicyActive() ? C'13,69,58' : planned_back),normal_border,clrWhite);
    ApplyHeaderStateButtonStyle(btn_USDClose,"Emergency Close",emergency_back,normal_border,clrWhite);
-   ApplyHeaderStateButtonStyle(btn_EURFilter,ExposurePolicyButtonText(),(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_ALLOW ? planned_back : C'19,79,60'),normal_border,clrWhite);
+   ApplyHeaderStateButtonStyle(btn_EURFilter,ExposurePolicyButtonText(),(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_ALLOW ? planned_back : C'13,69,58'),normal_border,clrWhite);
    if(m_close_scope_editor_visible) UpdateCloseScopeEditorButtons();
    else                             UpdateCurrencyRulesEditorButtons();
   }
@@ -889,6 +901,9 @@ CGOATDashboard::CGOATDashboard()
    m_rows_base_y0=0;
    m_rows_scroll_enabled=false;
    m_rows_need_scroll=false;
+   m_table_view=GOAT_DASH_VIEW_OVERVIEW;
+   m_table_columns_left=0;
+   m_table_columns_right=0;
    m_last_profit_sort_key=-1;
    m_last_profit_sort_desc=true;
    m_state_dirty=false;
@@ -960,6 +975,9 @@ CGOATDashboard::~CGOATDashboard()
 void CGOATDashboard::maximizeWindow(void)
 {
    this.Maximize();
+   // Maximize() restores all child controls. Re-assert the active dashboard
+   // view before laying out rows so hidden columns and actions stay hidden.
+   ApplyTableView();
    ApplyRowsViewport();
    ChartRedraw(0);
 }
@@ -1012,6 +1030,9 @@ bool CGOATDashboard::HandleChartEvent(const int id,const long &lparam,const doub
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashboard::HandleObjectClick(const string control_name)
 {
+   if(HandleTableViewClick(control_name))
+      return(true);
+
    if(HandleHeaderClick(control_name))
       return(true);
 
@@ -1051,6 +1072,139 @@ bool CGOATDashboard::HandleObjectClick(const string control_name)
    }
 
    return(false);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::HandleTableViewClick(const string control_name)
+{
+   int next_view=-1;
+   if(control_name==btn_ViewOverview.Name())          next_view=GOAT_DASH_VIEW_OVERVIEW;
+   if(control_name==btn_ViewIntelligence.Name())      next_view=GOAT_DASH_VIEW_INTELLIGENCE;
+   if(control_name==btn_ViewPerformance.Name())       next_view=GOAT_DASH_VIEW_PERFORMANCE;
+   if(next_view<0) return(false);
+
+   m_table_view=next_view;
+   ApplyTableView();
+   ChartRedraw(0);
+   return(true);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::LayoutTableEdit(CEdit &control,int &x,const int y,const int width,const bool visible)
+{
+   // The view definitions use dialog-local column coordinates while Move()
+   // operates in chart-client coordinates after controls have been attached.
+   int client_x=c_Wnd_Table.Left()-(m_table_columns_left-1);
+   control.Move(client_x+x,y);
+   control.Size(width,control.Height());
+   if(visible) control.Show(); else control.Hide();
+   x+=width+m_GapHoriz;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::LayoutTableButton(CButton &control,int &x,const int y,const int width,const bool visible)
+{
+   int client_x=c_Wnd_Table.Left()-(m_table_columns_left-1);
+   control.Move(client_x+x,y);
+   control.Size(width,control.Height());
+   if(visible) control.Show(); else control.Hide();
+   x+=width+m_GapHoriz;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::ApplyTableView(void)
+{
+   const int total=ArraySize(edt_Symbol);
+   if(total<=0 || m_table_columns_right<=m_table_columns_left) return;
+
+   string heading=(m_table_view==GOAT_DASH_VIEW_INTELLIGENCE ? "RISK & SIGNALS" :
+                  (m_table_view==GOAT_DASH_VIEW_PERFORMANCE ? "PERFORMANCE" : "OVERVIEW"));
+   edt_Heading.Text("STRATEGY FLEET  /  "+heading);
+
+   const color selected_back=C'20,63,86';
+   const color selected_border=C'92,210,247';
+   const color idle_back=C'11,28,44';
+   const color idle_border=C'35,60,82';
+   ApplyHeaderStateButtonStyle(btn_ViewOverview,"Overview",
+                               (m_table_view==GOAT_DASH_VIEW_OVERVIEW ? selected_back : idle_back),
+                               (m_table_view==GOAT_DASH_VIEW_OVERVIEW ? selected_border : idle_border),
+                               (m_table_view==GOAT_DASH_VIEW_OVERVIEW ? C'225,238,248' : C'135,181,216'));
+   ApplyHeaderStateButtonStyle(btn_ViewIntelligence,"Risk & Signals",
+                               (m_table_view==GOAT_DASH_VIEW_INTELLIGENCE ? selected_back : idle_back),
+                               (m_table_view==GOAT_DASH_VIEW_INTELLIGENCE ? selected_border : idle_border),
+                               (m_table_view==GOAT_DASH_VIEW_INTELLIGENCE ? C'225,238,248' : C'135,181,216'));
+   ApplyHeaderStateButtonStyle(btn_ViewPerformance,"Performance",
+                               (m_table_view==GOAT_DASH_VIEW_PERFORMANCE ? selected_back : idle_back),
+                               (m_table_view==GOAT_DASH_VIEW_PERFORMANCE ? selected_border : idle_border),
+                               (m_table_view==GOAT_DASH_VIEW_PERFORMANCE ? C'225,238,248' : C'135,181,216'));
+
+   for(int row=0;row<total;row++)
+   {
+      edt_Symbol[row].Hide();
+      edt_Strategy[row].Hide();
+      edt_Status[row].Hide();
+      edt_Comment[row].Hide();
+      edt_News[row].Hide();
+      edt_AIBias[row].Hide();
+      edt_RiskLots[row].Hide();
+      edt_HistDD[row].Hide();
+      edt_Trades[row].Hide();
+      edt_Positions[row].Hide();
+      edt_Lots[row].Hide();
+      edt_PL_Open[row].Hide();
+      edt_PL_D1[row].Hide();
+      edt_PL_W1[row].Hide();
+      edt_PL_All[row].Hide();
+      if(row==0) edt_Action.Hide();
+      else if(row<ArraySize(btn_Action)) btn_Action[row].Hide();
+
+      bool row_visible=(row<2 || (row-2>=m_rows_top && row-2<m_rows_top+m_rows_visible));
+      int y=edt_Symbol[row].Top();
+      int count=(m_table_view==GOAT_DASH_VIEW_INTELLIGENCE ? 6 : 8);
+      int available=m_table_columns_right-m_table_columns_left-(count-1)*m_GapHoriz;
+      int x=m_table_columns_left;
+
+      if(m_table_view==GOAT_DASH_VIEW_OVERVIEW)
+      {
+         double weights[8]={12.0,21.0,12.0,12.0,17.0,9.0,9.0,8.0};
+         int widths[8],used=0;
+         for(int i=0;i<7;i++){widths[i]=(int)MathFloor(available*weights[i]/100.0);used+=widths[i];}
+         widths[7]=available-used;
+         LayoutTableEdit(edt_Symbol[row],x,y,widths[0],row_visible);
+         LayoutTableEdit(edt_Strategy[row],x,y,widths[1],row_visible);
+         if(row==0) LayoutTableEdit(edt_Action,x,y,widths[2],row_visible);
+         else       LayoutTableButton(btn_Action[row],x,y,widths[2],row_visible);
+         LayoutTableEdit(edt_Status[row],x,y,widths[3],row_visible);
+         LayoutTableEdit(edt_AIBias[row],x,y,widths[4],row_visible);
+         LayoutTableEdit(edt_PL_Open[row],x,y,widths[5],row_visible);
+         LayoutTableEdit(edt_PL_D1[row],x,y,widths[6],row_visible);
+         LayoutTableEdit(edt_PL_All[row],x,y,widths[7],row_visible);
+      }
+      else if(m_table_view==GOAT_DASH_VIEW_INTELLIGENCE)
+      {
+         double weights[6]={13.0,25.0,13.0,24.0,13.0,12.0};
+         int widths[6],used=0;
+         for(int i=0;i<5;i++){widths[i]=(int)MathFloor(available*weights[i]/100.0);used+=widths[i];}
+         widths[5]=available-used;
+         LayoutTableEdit(edt_Symbol[row],x,y,widths[0],row_visible);
+         LayoutTableEdit(edt_Comment[row],x,y,widths[1],row_visible);
+         LayoutTableEdit(edt_News[row],x,y,widths[2],row_visible);
+         LayoutTableEdit(edt_AIBias[row],x,y,widths[3],row_visible);
+         LayoutTableEdit(edt_RiskLots[row],x,y,widths[4],row_visible);
+         LayoutTableEdit(edt_HistDD[row],x,y,widths[5],row_visible);
+      }
+      else
+      {
+         double weights[8]={13.0,12.0,12.0,12.0,13.0,13.0,13.0,12.0};
+         int widths[8],used=0;
+         for(int i=0;i<7;i++){widths[i]=(int)MathFloor(available*weights[i]/100.0);used+=widths[i];}
+         widths[7]=available-used;
+         LayoutTableEdit(edt_Symbol[row],x,y,widths[0],row_visible);
+         LayoutTableEdit(edt_Trades[row],x,y,widths[1],row_visible);
+         LayoutTableEdit(edt_Positions[row],x,y,widths[2],row_visible);
+         LayoutTableEdit(edt_Lots[row],x,y,widths[3],row_visible);
+         LayoutTableEdit(edt_PL_Open[row],x,y,widths[4],row_visible);
+         LayoutTableEdit(edt_PL_D1[row],x,y,widths[5],row_visible);
+         LayoutTableEdit(edt_PL_W1[row],x,y,widths[6],row_visible);
+         LayoutTableEdit(edt_PL_All[row],x,y,widths[7],row_visible);
+      }
+   }
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
@@ -2108,9 +2262,10 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    const int info_table_gap=info_row_gap;
    const int info_table_spacer=rowTallH+info_row_gap;
    const int table_top=info_top+2*infoHeight+info_row_gap+info_table_gap+info_table_spacer;
+   const int view_toolbar_top=table_top+table_inner_pad;
    int table_bottom=(int)((D_Height-captionH)*0.98)-6;
    const int rows=ArraySize(g_sets);
-   const int margin_top_plan=table_top+MathMax(2,m_GapVert);
+   const int margin_top_plan=view_toolbar_top+rowTallH+gapTallPx;
    const int rows_view_top_plan=margin_top_plan+2*(rowTallH+gapTallPx);
    const int rows_view_bottom_plan=table_bottom-m_GapVert;
    const int rows_view_height_plan=MathMax(0,rows_view_bottom_plan-rows_view_top_plan);
@@ -2119,7 +2274,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    m_rows_need_scroll=need_rows_scroll;
    if(!need_rows_scroll)
    {
-      int needed_table_bottom=table_top+2*(rowTallH+gapTallPx)+rows*(m_rowHeight+m_GapVert)+MathMax(2,m_GapVert);
+      int needed_table_bottom=margin_top_plan+2*(rowTallH+gapTallPx)+rows*(m_rowHeight+m_GapVert)+MathMax(2,m_GapVert);
       table_bottom=needed_table_bottom;
       int desired_height=table_bottom+captionH+8;
       if(desired_height>0 && desired_height<D_Height)
@@ -2128,6 +2283,8 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    const int scroll_width=CONTROLS_SCROLL_SIZE;
    const int columns_left=table_left+table_inner_pad;
    const int columns_right=table_right-table_inner_pad-(scroll_gap+scroll_width);
+   m_table_columns_left=columns_left;
+   m_table_columns_right=columns_right;
    const int column_count=16;
    double column_pct[];
    ArrayResize(column_pct,column_count);
@@ -2179,7 +2336,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 		return(false);
 	}
 	GlobalVariableDel("CaptionHeight");
-	Caption(Key_+" - Portfolio Dashboard and Deploy");
+	Caption("GOAT  /  PORTFOLIO COMMAND CENTER  /  "+Key_);
 	ChartSetInteger(0,CHART_SHOW_TRADE_HISTORY,0);
 	SetCaptionClientColors();
 	
@@ -2188,9 +2345,22 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 		Print("Failed to create boundary rect: ",GetLastError());
 		return false;
 	}
-	c_Wnd_Table.ColorBackground(C'8,8,36');//(clrGainsboro);
-	c_Wnd_Table.ColorBorder(clrBlack);
+	c_Wnd_Table.ColorBackground(C'7,17,29');
+	c_Wnd_Table.ColorBorder(C'35,60,82');
 	Add(c_Wnd_Table);
+   {
+      int tab_gap=MathMax(5,m_GapHoriz*4);
+      int tab_width=MathMax(84,(int)MathRound((columns_right-columns_left)*0.115));
+      int tabs_total=3*tab_width+2*tab_gap;
+      int tabs_x=columns_right-tabs_total;
+      int heading_width=MathMax(120,tabs_x-columns_left-tab_gap);
+      CreateInfoOverlayEdit(edt_Heading,"FleetHeading","STRATEGY FLEET  /  OVERVIEW",columns_left,view_toolbar_top,heading_width,rowTallH,C'9,24,39',C'35,77,103');
+      CreateHeaderStateButton(btn_ViewOverview,"ViewOverview","Overview",tabs_x,view_toolbar_top,tab_width,rowTallH,C'20,63,86',C'92,210,247',C'225,238,248');
+      tabs_x+=tab_width+tab_gap;
+      CreateHeaderStateButton(btn_ViewIntelligence,"ViewIntelligence","Risk & Signals",tabs_x,view_toolbar_top,tab_width,rowTallH,C'11,28,44',C'35,60,82',C'135,181,216');
+      tabs_x+=tab_width+tab_gap;
+      CreateHeaderStateButton(btn_ViewPerformance,"ViewPerformance","Performance",tabs_x,view_toolbar_top,tab_width,rowTallH,C'11,28,44',C'35,60,82',C'135,181,216');
+   }
 //-------------------------------------------------------------
    m_row_pitch=m_rowHeight+m_GapVert;
    m_rows_data_offset=rowTallH+gapTallPx;
@@ -2249,13 +2419,13 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
       info_used+=info_widths[i];
    }
    info_widths[info_count-1]=MathMax(1,info_avail-info_used);
-   CreateInfoEdit(edt_HeadingPortfolio    ,"HdrPortfolio"    ,info_text_portfolio,info_x,info_y,info_widths[0],m_controlHeight,C'21,44,72'  ,clrWhite); info_x+=info_widths[0]+info_gap;
-   CreateInfoEdit(edt_HeadingMembers      ,"HdrMembers"      ,info_text_members  ,info_x,info_y,info_widths[1],m_controlHeight,C'26,63,95'  ,clrWhite); info_x+=info_widths[1]+info_gap;
-   CreateInfoEdit(edt_HeadingScore        ,"HdrScore"        ,info_text_score    ,info_x,info_y,info_widths[2],m_controlHeight,C'47,74,111' ,clrWhite); info_x+=info_widths[2]+info_gap;
-   CreateInfoEdit(edt_HeadingAMSR         ,"HdrAMSR"         ,info_text_amsr     ,info_x,info_y,info_widths[3],m_controlHeight,C'73,90,121' ,clrWhite); info_x+=info_widths[3]+info_gap;
-   CreateInfoEdit(edt_HeadingMonthlyRF    ,"HdrMonthlyRF"    ,info_text_mrf      ,info_x,info_y,info_widths[4],m_controlHeight,C'83,53,120' ,clrWhite); info_x+=info_widths[4]+info_gap;
-   CreateInfoEdit(edt_HeadingMonthlyProfit,"HdrMonthlyProfit",info_text_mp       ,info_x,info_y,info_widths[5],m_controlHeight,C'19,79,60'  ,clrWhite); info_x+=info_widths[5]+info_gap;
-   CreateInfoEdit(edt_HeadingMaxDD        ,"HdrMaxDD"        ,info_text_dd       ,info_x,info_y,info_widths[6],m_controlHeight,C'122,63,34' ,clrWhite);
+   CreateInfoEdit(edt_HeadingPortfolio    ,"HdrPortfolio"    ,info_text_portfolio,info_x,info_y,info_widths[0],m_controlHeight,C'9,24,39'  ,C'35,77,103'); info_x+=info_widths[0]+info_gap;
+   CreateInfoEdit(edt_HeadingMembers      ,"HdrMembers"      ,info_text_members  ,info_x,info_y,info_widths[1],m_controlHeight,C'11,28,44' ,C'35,60,82'); info_x+=info_widths[1]+info_gap;
+   CreateInfoEdit(edt_HeadingScore        ,"HdrScore"        ,info_text_score    ,info_x,info_y,info_widths[2],m_controlHeight,C'11,28,44' ,C'35,60,82'); info_x+=info_widths[2]+info_gap;
+   CreateInfoEdit(edt_HeadingAMSR         ,"HdrAMSR"         ,info_text_amsr     ,info_x,info_y,info_widths[3],m_controlHeight,C'11,28,44' ,C'35,60,82'); info_x+=info_widths[3]+info_gap;
+   CreateInfoEdit(edt_HeadingMonthlyRF    ,"HdrMonthlyRF"    ,info_text_mrf      ,info_x,info_y,info_widths[4],m_controlHeight,C'11,28,44' ,C'35,60,82'); info_x+=info_widths[4]+info_gap;
+   CreateInfoEdit(edt_HeadingMonthlyProfit,"HdrMonthlyProfit",info_text_mp       ,info_x,info_y,info_widths[5],m_controlHeight,C'11,28,44' ,C'35,60,82'); info_x+=info_widths[5]+info_gap;
+   CreateInfoEdit(edt_HeadingMaxDD        ,"HdrMaxDD"        ,info_text_dd       ,info_x,info_y,info_widths[6],m_controlHeight,C'11,28,44' ,C'35,60,82');
    info_y+=infoHeight+info_row_gap;
    const double row2_group_pct[5]={22.0,20.0,22.0,18.0,18.0};
    int row2_group_gap=info_gap;
@@ -2276,44 +2446,44 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    int row2_tail_gap=1;
    info_x=table_left;
    int group_x=info_x;
-   CreateInfoOverlayEdit(edt_RunningLossBox,"EdtRunLossBox","",group_x,info_y,row2_group_widths[0],m_controlHeight,C'26,63,95',clrWhite);
+   CreateInfoOverlayEdit(edt_RunningLossBox,"EdtRunLossBox","",group_x,info_y,row2_group_widths[0],m_controlHeight,C'11,28,44',C'35,60,82');
    int row2_input_w=MathMax(46,(int)MathRound(row2_group_widths[0]*0.16));
    int row2_input_x=group_x+MathMax(172,(int)MathRound(row2_group_widths[0]*0.49));
    row2_input_x=MathMin(row2_input_x,group_x+row2_group_widths[0]-row2_input_w-84);
-   CreateInfoInlineEdit(edt_RunningLossLead,"EdtRunLossLead","Running Loss: "+FormatPadded4Text(Port_RunningLoss)+"/",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'26,63,95',ALIGN_LEFT);
+   CreateInfoInlineEdit(edt_RunningLossLead,"EdtRunLossLead","Running Loss: "+FormatPadded4Text(Port_RunningLoss)+"/",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'11,28,44',ALIGN_LEFT);
    CreatePlainInputEdit(edt_RunningLossLimit,"EdtRunLossLimit",txt_running_limit,row2_input_x,info_y,row2_input_w);
-   CreateInfoInlineEdit(edt_RunningLossTail,"EdtRunLossTail","("+FormatPadded4Text(StringToDouble(txt_running_limit)-Port_RunningLoss)+" Left)",row2_input_x+row2_input_w+row2_tail_gap,info_y,group_x+row2_group_widths[0]-(row2_input_x+row2_input_w+row2_tail_gap)-row2_box_pad,m_controlHeight,C'26,63,95',ALIGN_LEFT);
+   CreateInfoInlineEdit(edt_RunningLossTail,"EdtRunLossTail","("+FormatPadded4Text(StringToDouble(txt_running_limit)-Port_RunningLoss)+" Left)",row2_input_x+row2_input_w+row2_tail_gap,info_y,group_x+row2_group_widths[0]-(row2_input_x+row2_input_w+row2_tail_gap)-row2_box_pad,m_controlHeight,C'11,28,44',ALIGN_LEFT);
    info_x+=row2_group_widths[0]+row2_group_gap;
    group_x=info_x;
-   CreateInfoOverlayEdit(edt_DailyLossBox,"EdtDayLossBox","",group_x,info_y,row2_group_widths[1],m_controlHeight,C'47,74,111',clrWhite);
+   CreateInfoOverlayEdit(edt_DailyLossBox,"EdtDayLossBox","",group_x,info_y,row2_group_widths[1],m_controlHeight,C'11,28,44',C'35,60,82');
    row2_input_w=MathMax(46,(int)MathRound(row2_group_widths[1]*0.16));
    row2_input_x=group_x+MathMax(160,(int)MathRound(row2_group_widths[1]*0.45));
    row2_input_x=MathMin(row2_input_x,group_x+row2_group_widths[1]-row2_input_w-84);
-   CreateInfoInlineEdit(edt_DailyLossLead,"EdtDayLossLead","Daily Loss: "+FormatPadded4Text(Port_DailyLoss)+"/",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'47,74,111',ALIGN_LEFT);
+   CreateInfoInlineEdit(edt_DailyLossLead,"EdtDayLossLead","Daily Loss: "+FormatPadded4Text(Port_DailyLoss)+"/",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'11,28,44',ALIGN_LEFT);
    CreatePlainInputEdit(edt_DailyLossLimit,"EdtDayLossLimit",txt_daily_loss_limit,row2_input_x,info_y,row2_input_w);
-   CreateInfoInlineEdit(edt_DailyLossTail,"EdtDayLossTail","("+FormatPadded4Text(StringToDouble(txt_daily_loss_limit)-Port_DailyLoss)+" Left)",row2_input_x+row2_input_w+row2_tail_gap,info_y,group_x+row2_group_widths[1]-(row2_input_x+row2_input_w+row2_tail_gap)-row2_box_pad,m_controlHeight,C'47,74,111',ALIGN_LEFT);
+   CreateInfoInlineEdit(edt_DailyLossTail,"EdtDayLossTail","("+FormatPadded4Text(StringToDouble(txt_daily_loss_limit)-Port_DailyLoss)+" Left)",row2_input_x+row2_input_w+row2_tail_gap,info_y,group_x+row2_group_widths[1]-(row2_input_x+row2_input_w+row2_tail_gap)-row2_box_pad,m_controlHeight,C'11,28,44',ALIGN_LEFT);
    info_x+=row2_group_widths[1]+row2_group_gap;
    group_x=info_x;
-   CreateInfoOverlayEdit(edt_DailyTargetBox,"EdtDayTargetBox","",group_x,info_y,row2_group_widths[2],m_controlHeight,C'73,90,121',clrWhite);
+   CreateInfoOverlayEdit(edt_DailyTargetBox,"EdtDayTargetBox","",group_x,info_y,row2_group_widths[2],m_controlHeight,C'11,28,44',C'35,60,82');
    row2_input_w=MathMax(46,(int)MathRound(row2_group_widths[2]*0.16));
    row2_input_x=group_x+MathMax(172,(int)MathRound(row2_group_widths[2]*0.48));
    row2_input_x=MathMin(row2_input_x,group_x+row2_group_widths[2]-row2_input_w-84);
-   CreateInfoInlineEdit(edt_DailyTargetLead,"EdtDayTargetLead","Daily Target: "+FormatPadded4Text(Port_DailyTarget)+"/",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'73,90,121',ALIGN_LEFT);
+   CreateInfoInlineEdit(edt_DailyTargetLead,"EdtDayTargetLead","Daily Target: "+FormatPadded4Text(Port_DailyTarget)+"/",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'11,28,44',ALIGN_LEFT);
    CreatePlainInputEdit(edt_DailyTargetLimit,"EdtDayTargetLimit",txt_daily_target_limit,row2_input_x,info_y,row2_input_w);
-   CreateInfoInlineEdit(edt_DailyTargetTail,"EdtDayTargetTail","("+FormatPadded4Text(StringToDouble(txt_daily_target_limit)-Port_DailyTarget)+" Left)",row2_input_x+row2_input_w+row2_tail_gap,info_y,group_x+row2_group_widths[2]-(row2_input_x+row2_input_w+row2_tail_gap)-row2_box_pad,m_controlHeight,C'73,90,121',ALIGN_LEFT);
+   CreateInfoInlineEdit(edt_DailyTargetTail,"EdtDayTargetTail","("+FormatPadded4Text(StringToDouble(txt_daily_target_limit)-Port_DailyTarget)+" Left)",row2_input_x+row2_input_w+row2_tail_gap,info_y,group_x+row2_group_widths[2]-(row2_input_x+row2_input_w+row2_tail_gap)-row2_box_pad,m_controlHeight,C'11,28,44',ALIGN_LEFT);
    info_x+=row2_group_widths[2]+row2_group_gap;
    group_x=info_x;
-   CreateInfoOverlayEdit(edt_LowEquityStopBox,"EdtLowEqStopBox","",group_x,info_y,row2_group_widths[3],m_controlHeight,C'83,53,120',clrWhite);
+   CreateInfoOverlayEdit(edt_LowEquityStopBox,"EdtLowEqStopBox","",group_x,info_y,row2_group_widths[3],m_controlHeight,C'11,28,44',C'35,60,82');
    row2_input_w=MathMax(72,(int)MathRound(row2_group_widths[3]*0.30));
    row2_input_x=group_x+row2_group_widths[3]-row2_input_w-2;
-   CreateInfoInlineEdit(edt_LowEquityStopLead,"EdtLowEqStopLead","Low Equity Stop level:",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'83,53,120',ALIGN_LEFT);
+   CreateInfoInlineEdit(edt_LowEquityStopLead,"EdtLowEqStopLead","Low Equity Stop level:",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'11,28,44',ALIGN_LEFT);
    CreatePlainInputEdit(edt_LowEquityStopLevel,"EdtLowEqStopLevel",FormatIntegerText(m_risk_low_equity_stop),row2_input_x,info_y,row2_input_w);
    info_x+=row2_group_widths[3]+row2_group_gap;
    group_x=info_x;
-   CreateInfoOverlayEdit(edt_EquityTargetBox,"EdtEqTargetBox","",group_x,info_y,row2_group_widths[4],m_controlHeight,C'122,63,34',clrWhite);
+   CreateInfoOverlayEdit(edt_EquityTargetBox,"EdtEqTargetBox","",group_x,info_y,row2_group_widths[4],m_controlHeight,C'11,28,44',C'35,60,82');
    row2_input_w=MathMax(80,(int)MathRound(row2_group_widths[4]*0.33));
    row2_input_x=group_x+row2_group_widths[4]-row2_input_w-2;
-   CreateInfoInlineEdit(edt_EquityTargetLead,"EdtEqTargetLead","Equity Target Level:",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'122,63,34',ALIGN_LEFT);
+   CreateInfoInlineEdit(edt_EquityTargetLead,"EdtEqTargetLead","Equity Target Level:",group_x+row2_box_pad,info_y,row2_input_x-group_x-row2_box_pad-row2_inner_gap,m_controlHeight,C'11,28,44',ALIGN_LEFT);
    CreatePlainInputEdit(edt_EquityTargetLevel,"EdtEqTargetLevel",FormatIntegerText(m_risk_equity_target),row2_input_x,info_y,row2_input_w);
    info_y+=infoHeight+info_table_gap;
    const int row3_button_count=5;
@@ -2354,7 +2524,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
    const int lead_header_font_size=base_font_size+1;
    const int tail_header_font_size=MathMax(7,lead_header_font_size-2);
 	Font_Size=lead_header_font_size; Font="Tahoma Bold";
-	clrEdt=clrWhite; clrEdtBorder=C'67,112,176'; clrEdtBG=C'20,52,96';
+	clrEdt=C'225,238,248'; clrEdtBorder=C'46,92,120'; clrEdtBG=C'14,47,67';
 	string prefix="R0_";
 	ArrayResize(edt_Symbol,1);    x=PlaceEditLabel(edt_Symbol[0]   ,prefix+"SYM","Symbol",x,y,Width_Symbol);
 	ArrayResize(edt_Strategy,1);  x=PlaceEditLabel(edt_Strategy[0] ,prefix+"STR","Strategy",x,y,Width_Strategy);
@@ -2376,7 +2546,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 	r++; y+=rowTallH+gapTallPx;   x=columns_left;
 	Font_Size=base_font_size; Font="";
 // PORTFOLIO --------------------------------------------------------
-   clrEdt=clrWhite; clrEdtBorder=C'55,56,77'; clrEdtBG=C'55,56,77';//(C'15,23,42');//clrGainsboro
+   clrEdt=C'225,238,248'; clrEdtBorder=C'35,60,82'; clrEdtBG=C'13,34,52';
 	prefix="R1_";
 	ArrayResize(edt_Symbol,2);    x=PlaceEditLabel(edt_Symbol[1]   ,prefix+"SYM","Portfolio",x,y,Width_Symbol);
 	ArrayResize(edt_Strategy,2);  x=PlaceEditLabel(edt_Strategy[1] ,prefix+"STR","Mixed",x,y,Width_Strategy);
@@ -2396,7 +2566,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 	ArrayResize(edt_PL_All,2);    x=PlaceEditLabel(edt_PL_All[1]   ,prefix+"PLA","- - -",x,y,Width_PL_All);
 	r++; y+=rowTallH+gapTallPx;   x=columns_left;
 // DATA -------------------------------------------------------------
-   clrEdt=clrWhite; clrEdtBorder=C'8,8,36'; clrEdtBG=C'8,8,36';//(C'15,23,42');//clrGainsboro
+   clrEdt=C'225,238,248'; clrEdtBorder=C'20,43,61'; clrEdtBG=C'7,17,29';
 	m_controlHeight=ctrlSave;
    m_rows_base_y0=y;
 	for(int i=0;i<rows;i++,r++)
@@ -2405,7 +2575,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 	 ArrayResize(edt_Symbol,r+1);    x=PlaceEditLabel(edt_Symbol[r]   ,prefix+"SYM",g_sets[i].sym,x,y,Width_Symbol);
 	 ArrayResize(edt_Strategy,r+1);  x=PlaceEditLabel(edt_Strategy[r] ,prefix+"STR",g_sets[i].strat,x,y,Width_Strategy);
 	 ArrayResize(btn_Action,r+1);    CreateButtonCtrl(btn_Action[r]   ,prefix+"BTN_"+IntegerToString(i),x, y,Width_Action,m_controlHeight,(g_sets[i].magic>0 && g_sets[i].cid>0 ? "Navigate" : "Activate"));
-	                                                                                x+=Width_Action+m_GapHoriz; btn_Action[r].Color(C'87,153,122');
+	                                                                                x+=Width_Action+m_GapHoriz; btn_Action[r].Color(C'78,221,178');
 	 ArrayResize(edt_Status,r+1);    x=PlaceEditLabel(edt_Status[r]   ,prefix+"STS",g_sets[i].status,x,y,Width_Status); edt_Status[r].Color(StatusColor(g_sets[i].status));
 	 ArrayResize(edt_Comment,r+1);   x=PlaceEditLabel(edt_Comment[r]  ,prefix+"CMT","- - -",x,y,Width_Comment);
 	 ArrayResize(edt_News,r+1);      x=PlaceEditLabel(edt_News[r]     ,prefix+"NWS",g_sets[i].news_label,x,y,Width_News);
@@ -2470,9 +2640,9 @@ void CGOATDashboard::SetCaptionClientColors(void)
      CEdit *edit=(CEdit*) obj;
      CaptionObjDashboard = edit;
      //color clr=(color)GETRGB(XRGB(rand()%255,rand()%255,rand()%255));
-     edit.Color(clrWhite);
+      edit.Color(C'225,238,248');
      //edit.ColorBorder(clrWheat);
-     edit.ColorBackground(C'8,8,36');//(C'15,23,42');
+      edit.ColorBackground(C'9,21,35');
      //edit.Font(GetFontName(Font_Header));
      if(Font_Size) edit.FontSize(Font_Size+2);
      edit.Font("Tahoma Bold");
@@ -4070,6 +4240,7 @@ void CGOATDashboard::ApplyRowsViewport(void)
          MoveDataRow(gui_row,m_rows_y0+slot*m_row_pitch);
       SetDataRowVisible(gui_row,visible);
    }
+   ApplyTableView();
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashScrollV::OnChangePos(void)

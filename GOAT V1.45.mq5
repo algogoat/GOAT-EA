@@ -1,7 +1,7 @@
 ﻿#define   GOAT_VERSION_LABEL "1.45"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.45-CONTROL-TOWER-LIVE-R6"
+#define   GOAT_BUILD_ID "V1.45-CONTROL-TOWER-V78-R7"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -2951,7 +2951,11 @@ int OnInit()
       int chartWidth  = (int)ChartGetInteger(ChartID(), CHART_WIDTH_IN_PIXELS);
       int chartHeight = (int)ChartGetInteger(ChartID(), CHART_HEIGHT_IN_PIXELS);
       bool preserveBatchStudioSize=(Mode_Operation==Operation_Batch && GlobalVariableGet("BatchOnGoing")!=0.0);
-      int baseWidth=(Mode_Operation==Operation_Dash ? MathMax(DWidth,1500) : DWidth);
+      // The command surfaces need enough horizontal room to keep controls legible.
+      // Let MT5 scale the requested canvas down to the available chart width, but
+      // never design the Dashboard or Optimization Studio against the legacy
+      // narrow canvas.
+      int baseWidth=((Mode_Operation==Operation_Dash || Mode_Operation==Operation_Batch) ? MathMax(DWidth,1500) : DWidth);
       int baseHeight=DHeight;
       double marginW = 0.05*chartWidth, usableWidth =chartWidth -(2.0*marginW), scaleW=usableWidth/(double)baseWidth;
       double marginH = 0.05*chartHeight,usableHeight=chartHeight-(2.0*marginH), scaleH=usableHeight/(double)baseHeight;
@@ -2965,6 +2969,13 @@ int OnInit()
        int savedHeight=(int)MathRound(GlobalVariableGet("GOAT_OPT_STUDIO_HEIGHT"));
        if(savedWidth<=0) savedWidth=baseWidth;
        if(savedHeight<=0) savedHeight=baseHeight;
+       // Migrate legacy/temporarily collapsed Studio dimensions to the minimum
+       // usable V1.45 command-surface canvas.  Preserve larger operator sizes,
+       // while keeping the result bounded by the current chart.
+       int studioWidthFloor=(int)MathMin((double)baseWidth,usableWidth);
+       int studioHeightFloor=(int)MathMin((double)baseHeight,usableHeight);
+       savedWidth=MathMax(savedWidth,studioWidthFloor);
+       savedHeight=MathMax(savedHeight,studioHeightFloor);
        newWidth=savedWidth;
        newHeight=savedHeight;
        scaleFactor=(double)newHeight/(double)baseHeight;
@@ -4546,7 +4557,7 @@ void OnChartEvent(const int id,         // event ID
     else if(Mode_Operation==Operation_Dash)  DashboardDialog.HandleChartEvent(id,lparam,dparam,sparam);
     else
       {
-       PanelDialog.ChartEvent(id,lparam,dparam,sparam);
+       PanelDialog.HandleChartEvent(id,lparam,dparam,sparam);
        if(GOAT_PANEL_LOGO_READY && (id==CHARTEVENT_MOUSE_MOVE || id==CHARTEVENT_OBJECT_DRAG || id==CHARTEVENT_CHART_CHANGE))
          {
           PANEL_LOGO._MoveCanvas(PanelDialog.Left()+7,PanelDialog.Top()+4);
@@ -6503,6 +6514,7 @@ public:
                      {/*Key_=_Key_; EA_Name_=_EA_Name_; Server_=_Server_; Font_Size=_Font_Size_; D_Width=D_Width_; D_Height=D_Height_;*/}
    //--- chart event handler
    virtual bool      OnEvent(const int id,const long &lparam,const double &dparam,const string &sparam);
+   bool              HandleChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam);
    void              OnClickCaption(void)
    {
     //if(m_minimized) ExtDialog.maximizeWindow();
@@ -6548,6 +6560,23 @@ EVENT_MAP_END(CAppDialog)
 //+------------------------------------------------------------------+
 CPanelDialog PanelDialog;
 CEdit CaptionObjPanel;
+//+------------------------------------------------------------------+
+bool CPanelDialog::HandleChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+  {
+   // Route compact-panel commands explicitly. Branded canvas objects can alter
+   // the order in which MT5 bubbles child-control clicks, so command delivery
+   // must not depend on that ordering.
+   if(id==CHARTEVENT_OBJECT_CLICK)
+     {
+      if(sparam==m_button_Buy_close.Name())   { OnClickCloseBuy();   return(true); }
+      if(sparam==m_button_Sell_close.Name())  { OnClickCloseSell();  return(true); }
+      if(sparam==m_button_Lots_Viewer.Name()) { OnClickLotsViewer(); return(true); }
+      if(sparam==m_button_DB.Name())          { OnClickBackToDB();   return(true); }
+     }
+
+   ChartEvent(id,lparam,dparam,sparam);
+   return(false);
+  }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CPanelDialog::Create(const long chart,const string name,const int subwin,const int x1,const int y1,const int x2,const int y2)
   {

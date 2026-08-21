@@ -1,8 +1,8 @@
 ﻿#ifndef GOAT_AI_WIRE_V2_MQH
 #define GOAT_AI_WIRE_V2_MQH
 
-#define GOAT_AI_WIRE_V2_EXPECTED_ERA "sol-control-tower-rebuild-2026-07-v54"
-#define GOAT_AI_WIRE_V2_EXPECTED_MANIFEST "2a2456b360c4d15d85ba7212f23e37e6890c4f5a7c7edcc816bfef73da06d628"
+#define GOAT_AI_WIRE_V2_EXPECTED_ERA "sol-control-tower-rebuild-2026-07-v78"
+#define GOAT_AI_WIRE_V2_EXPECTED_MANIFEST "165f17a990334dedffdbf4d12106c6eef2edc0adb985e4521aef20a8ab381035"
 #ifndef GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER
 #define GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER 0
 #endif
@@ -713,17 +713,17 @@ class CGOATAIWireV2
                       +"\"calibration\":null,\"reasonCode\":\"CALIBRATION_ARTIFACT_UNAVAILABLE\",\"wakeRequired\":false},"
                       +"\"context\":{\"version\":\"ea-wire-v2-context-v1\",\"thesisHorizonMinutes\":240,"
                       +"\"expressionHorizonMinutes\":65,\"sourceDirection\":\"BULLISH\",\"sourceProbability\":0.72,"
-                      +"\"sourceDecisionId\":\"decision-eurusd-v54\",\"scanId\":\"scan-eurusd-v54\","
-                      +"\"beliefId\":\"belief-eurusd-v54\",\"underwritingWakeCompletedAt\":\"2026-07-30T11:55:00.000Z\","
-                      +"\"era\":\"sol-control-tower-rebuild-2026-07-v54\","
-                      +"\"manifestSha256\":\"2a2456b360c4d15d85ba7212f23e37e6890c4f5a7c7edcc816bfef73da06d628\","
+                      +"\"sourceDecisionId\":\"decision-eurusd-v78\",\"scanId\":\"scan-eurusd-v78\","
+                      +"\"beliefId\":\"belief-eurusd-v78\",\"underwritingWakeCompletedAt\":\"2026-07-30T11:55:00.000Z\","
+                      +"\"era\":\"sol-control-tower-rebuild-2026-07-v78\","
+                      +"\"manifestSha256\":\"165f17a990334dedffdbf4d12106c6eef2edc0adb985e4521aef20a8ab381035\","
                       +"\"tradeLocation\":null,\"executionOverlay\":null,\"stackAlignment\":null,\"noBackfill\":true},"
-                      +"\"checksum\":\"8f7f04401edaa982d7ade41c8547ee92f9b6f0e7d82e57371ebc9d4116bed2e3\"},"
+                      +"\"checksum\":\"f1a1ab50ff49e3323f69e8437d3c1d6e9b9ccca77f2fa9720735ba41daff9e4b\"},"
                       +"\"meta\":{\"routeVersion\":\"ea-wire-v2-route-v1\","
                       +"\"wireContract\":\"ea-wire-v2-calibrated-probability-v1\",\"asset\":\"EURUSD\",\"revision\":1,"
                       +"\"currentRecordHash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\","
-                      +"\"readAt\":\"2026-07-30T12:00:01.000Z\",\"era\":\"sol-control-tower-rebuild-2026-07-v54\","
-                      +"\"manifestSha256\":\"2a2456b360c4d15d85ba7212f23e37e6890c4f5a7c7edcc816bfef73da06d628\","
+                      +"\"readAt\":\"2026-07-30T12:00:01.000Z\",\"era\":\"sol-control-tower-rebuild-2026-07-v78\","
+                      +"\"manifestSha256\":\"165f17a990334dedffdbf4d12106c6eef2edc0adb985e4521aef20a8ab381035\","
                       +"\"releaseAttemptId\":\"release-v1-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}}";
       SGOATAIWireV2State parsed;
       if(!ParseAndVerify(response,"EURUSD",10,parsed)
@@ -734,7 +734,7 @@ class CGOATAIWireV2
          || GOATIsEraId("INVALID ERA")
          || !GOATIsSafeId("decision-registry:EURUSD:sample",1,256)
          || GOATIsSafeId("decision/registry",1,256)
-         || parsed.checksum!="8f7f04401edaa982d7ade41c8547ee92f9b6f0e7d82e57371ebc9d4116bed2e3"
+         || parsed.checksum!="f1a1ab50ff49e3323f69e8437d3c1d6e9b9ccca77f2fa9720735ba41daff9e4b"
          || DisplayLine(parsed)!="Waiting for fresh AI bias"
          || DetailLine(parsed)!="Checks every "+IntegerToString(MathMax(1,Bias_RegenerateMinutes))+" minutes") return false;
 

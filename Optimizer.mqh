@@ -26,7 +26,7 @@ class CStrategyTesterDialog : public CAppDialog
 //private:
 public:
    CWndClient  c_Wnd_OPT,c_Wnd_Export;
-   CLabel      m_lblHeading,m_lblExport;
+   CLabel      m_lblHeading,m_lblExport,m_lblBatchControl;
    CLabel      m_lblRunName;
    CEdit       m_edtRunName;
    // (0) "Set File:" at top
@@ -69,7 +69,8 @@ public:
    CEdit       m_edtQueue[10],m_edtBatchProgress,m_edtBatchErrors;//,m_edtStatus[10];
    CListView   m_listQueue;
    // Single button
-   CButton     m_btnSelectFile,m_btnAddQueue,m_btnSetPresets,m_btnDelQ,m_btnDelQitem,m_btnUpQitem,m_btnDownQitem,m_btnCancelSelected,m_btnMakePending,m_btnStart,m_btnStop;
+   CButton     m_btnSelectFile,m_btnAddQueue,m_btnSetPresets,m_btnDelQ,m_btnDelQitem,m_btnUpQitem,m_btnDownQitem,m_btnCancelSelected,m_btnMakePending,m_btnStart,m_btnStop,
+               m_btnStageSetup,m_btnStageTimeline,m_btnStageExecution,m_btnStageExport;
 // Export Settings extra objects
    CLabel      m_lblSetsToExport,m_lblBackOOSDate,m_lblMinScore,m_lblMinARF,m_lblAdjustLots,m_lblMinSR,m_lblTargetDD,m_lblVerifyOOS,m_lblDataSync;
    CEdit       m_edtSetsToExport                 ,m_edtMinScore,m_edtMinARF                ,m_edtMinSR,m_edtTargetDD;
@@ -85,7 +86,7 @@ public:
    int         m_xForwardDt, m_yForwardDt;
 
    string Path_RunFolder,Path_QueueBatch,Path_QueueStrategy,Path_ExportSettings,Key_,EA_Name_,Server_,m_selectedSetPath;
-   int D_Width,D_Height,Font_Size;
+   int D_Width,D_Height,Font_Size,m_activeStage;
    bool m_dataSyncBusy,m_compactLayout,m_batchRunning;
  //color clr_CaptionBack,clr_CaptionBorder,clr_ClientBack,clr_ClientBorder,clr_Text;
    
@@ -119,10 +120,16 @@ public:
    void           UpdateBatchProgressText(void);
    void           OnClickStart(void);
    void           OnClickStop(void);
+   void           OnClickStageSetup(void);
+   void           OnClickStageTimeline(void);
+   void           OnClickStageExecution(void);
+   void           OnClickStageExport(void);
    void           ChangeItemTo(const int index,const string state); // generic state swapper
    //void           WriteLog(string text,bool print,string Key_,string EA_Name_,string Server_);
    //bool           UpdateBatchQueueAndWriteConfigFile(bool init)
 private:
+   void ApplyStudioStage(const int stage);
+   void StageMove(CWnd &control,const int x,const int y,const bool visible,const int width=-1,const int height=-1);
    void RefreshRunPaths(void);
    bool EnsureRunContext(const bool forceNew=false,const string runNameOverride="");
    bool SaveCurrentBatchPackage(void);
@@ -184,6 +191,10 @@ EVENT_MAP_BEGIN(CStrategyTesterDialog)
   ON_EVENT(ON_CLICK,  m_btnSyncNews ,OnClickSyncNews)
   ON_EVENT(ON_CLICK,  m_btnStart ,OnClickStart)
   ON_EVENT(ON_CLICK,  m_btnStop ,OnClickStop)
+  ON_EVENT(ON_CLICK,  m_btnStageSetup,OnClickStageSetup)
+  ON_EVENT(ON_CLICK,  m_btnStageTimeline,OnClickStageTimeline)
+  ON_EVENT(ON_CLICK,  m_btnStageExecution,OnClickStageExecution)
+  ON_EVENT(ON_CLICK,  m_btnStageExport,OnClickStageExport)
 EVENT_MAP_END(CAppDialog)
 //+------------------------------------------------------------------+
 CStrategyTesterDialog::CStrategyTesterDialog()
@@ -191,12 +202,19 @@ CStrategyTesterDialog::CStrategyTesterDialog()
    m_dataSyncBusy = false;
    m_compactLayout = false;
    m_batchRunning = false;
+   m_activeStage = 0;
 }
 CStrategyTesterDialog::~CStrategyTesterDialog()
 {
    // Typically Destroy is called in OnDeinit
 }
-void CStrategyTesterDialog::maximizeWindow(void)   {this.Maximize();}
+void CStrategyTesterDialog::maximizeWindow(void)
+{
+   this.Maximize();
+   // CAppDialog::Maximize() reveals every child. Re-apply the selected stage so
+   // chart resizes never leak controls from the other Studio pages.
+   ApplyStudioStage(m_activeStage);
+}
 void CStrategyTesterDialog::minimizeWindow(void)   {this.Minimize();}
 
 void CStrategyTesterDialog::SetFlags(const string _Key_,const string _EA_Name_,const string _Server_,const int _Font_Size_,const int D_Width_,const int D_Height_)
@@ -1425,6 +1443,148 @@ void CStrategyTesterDialog::OnChange_cmbForward(void)
    if(ForwardMode=="1/2"||ForwardMode=="1/3"||ForwardMode=="1/4") m_dtForward.Value((datetime)TimeToString(GetForwardD(m_dtFrom.Value(),m_dtTo.Value(),ForwardMode),TIME_DATE));
 }
 //+------------------------------------------------------------------+
+void CStrategyTesterDialog::StageMove(CWnd &control,const int x,const int y,const bool visible,const int width,const int height)
+{
+   // Controls are created in dialog-client coordinates.  Once Add() attaches
+   // them, Move() expects chart-client coordinates, so preserve the dialog's
+   // client origin when repositioning controls between workflow stages.
+   int client_x=m_btnStageSetup.Left()-m_leftMargin;
+   int client_y=m_btnStageSetup.Top()-m_topMargin;
+   control.Move(client_x+x,client_y+y);
+   if(width>0)
+      control.Size(width,(height>0 ? height : control.Height()));
+   if(visible) control.Show(); else control.Hide();
+}
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::ApplyStudioStage(const int stage)
+{
+   m_activeStage=MathMax(0,MathMin(3,stage));
+
+   m_lblRunName.Hide();       m_edtRunName.Hide();
+   m_btnSelectFile.Hide();    m_edtSetFile.Hide();
+   m_lblStrategy.Hide();      m_edtStrategy.Hide();
+   m_lblExpert.Hide();        m_cmbExpert.Hide();
+   m_lblSymbol.Hide();        m_cmbSymbol.Hide();        m_cmbPeriod.Hide();
+   m_lblDateFrom.Hide();      m_dtFrom.Hide();
+   m_lblDateTo.Hide();        m_dtTo.Hide();
+   m_lblForward.Hide();       m_cmbForward.Hide();       m_dtForward.Hide();
+   m_lblDelay.Hide();         m_cmbDelay.Hide();
+   m_lblModeling.Hide();      m_cmbModel.Hide();
+   m_lblDeposit.Hide();       m_edtDeposit.Hide();       m_edtCurrency.Hide();       m_cmbLeverage.Hide();
+   m_lblOptimization.Hide();  m_cmbOptimization.Hide();
+   m_lblExport.Hide();
+   m_lblSetsToExport.Hide();  m_edtSetsToExport.Hide();
+   m_lblBackOOSDate.Hide();   m_dpBackOOS.Hide();
+   m_lblMinScore.Hide();      m_edtMinScore.Hide();
+   m_lblMinARF.Hide();        m_edtMinARF.Hide();
+   m_lblTargetDD.Hide();      m_edtTargetDD.Hide();
+   m_lblMinSR.Hide();         m_edtMinSR.Hide();
+   m_lblAdjustLots.Hide();    m_chkAdjustLots.Hide();
+   m_lblVerifyOOS.Hide();     m_chkVerifyOOS.Hide();
+   m_lblDataSync.Hide();      m_btnSyncBias.Hide();       m_btnViewBias.Hide();       m_btnSyncNews.Hide();
+   // The legacy export tray is retained as an implementation container, but
+   // the new workflow presents every export control inside stage 04.
+   c_Wnd_Export.Hide();
+
+   const color selected_back=C'20,63,86';
+   const color selected_border=C'92,210,247';
+   const color idle_back=C'11,28,44';
+   const color idle_border=C'35,60,82';
+   m_btnStageSetup.Text("01  SETUP");
+   m_btnStageSetup.Color(m_activeStage==0 ? C'225,238,248' : C'135,181,216');
+   m_btnStageSetup.ColorBackground(m_activeStage==0 ? selected_back : idle_back);
+   m_btnStageSetup.ColorBorder(m_activeStage==0 ? selected_border : idle_border);
+   m_btnStageTimeline.Text("02  TIMELINE");
+   m_btnStageTimeline.Color(m_activeStage==1 ? C'225,238,248' : C'135,181,216');
+   m_btnStageTimeline.ColorBackground(m_activeStage==1 ? selected_back : idle_back);
+   m_btnStageTimeline.ColorBorder(m_activeStage==1 ? selected_border : idle_border);
+   m_btnStageExecution.Text("03  EXECUTION");
+   m_btnStageExecution.Color(m_activeStage==2 ? C'225,238,248' : C'135,181,216');
+   m_btnStageExecution.ColorBackground(m_activeStage==2 ? selected_back : idle_back);
+   m_btnStageExecution.ColorBorder(m_activeStage==2 ? selected_border : idle_border);
+   m_btnStageExport.Text("04  EXPORT & DATA");
+   m_btnStageExport.Color(m_activeStage==3 ? C'225,238,248' : C'135,181,216');
+   m_btnStageExport.ColorBackground(m_activeStage==3 ? selected_back : idle_back);
+   m_btnStageExport.ColorBorder(m_activeStage==3 ? selected_border : idle_border);
+
+   int label_x=m_leftMargin;
+   int control_x=m_leftMargin+m_labelWidth+m_GapHoriz;
+   int editor_width=m_labelWidth+m_GapHoriz+m_controlWidth;
+   int y=m_topMargin+2*m_rowHeight;
+   int row=m_rowHeight;
+   int compact_gap=MathMax(4,(int)(m_controlWidth*0.05));
+
+   if(m_activeStage==0)
+   {
+      m_lblHeading.Text("01  RUN SETUP  /  STRATEGY IDENTITY");
+       StageMove(m_lblRunName,label_x,y,true,m_labelWidth);       StageMove(m_edtRunName,control_x,y,true,m_controlWidth); y+=row;
+       StageMove(m_btnSelectFile,label_x,y,true,m_labelWidth);    StageMove(m_edtSetFile,control_x,y,true,m_controlWidth); y+=row;
+       StageMove(m_lblStrategy,label_x,y,true,m_labelWidth);      StageMove(m_edtStrategy,control_x,y,true,m_controlWidth); y+=row;
+       StageMove(m_lblExpert,label_x,y,true,m_labelWidth);        StageMove(m_cmbExpert,control_x,y,true,m_controlWidth); y+=row;
+       int symbol_width=(int)(m_controlWidth*0.65);
+       int period_width=m_controlWidth-symbol_width-compact_gap;
+       StageMove(m_lblSymbol,label_x,y,true,m_labelWidth);        StageMove(m_cmbSymbol,control_x,y,true,symbol_width);
+       StageMove(m_cmbPeriod,control_x+symbol_width+compact_gap,y,true,period_width);
+   }
+   else if(m_activeStage==1)
+   {
+      m_lblHeading.Text("02  TEST TIMELINE  /  VALIDATION WINDOW");
+       StageMove(m_lblDateFrom,label_x,y,true,m_labelWidth);      StageMove(m_dtFrom,control_x,y,true,m_controlWidth); y+=row;
+       StageMove(m_lblDateTo,label_x,y,true,m_labelWidth);        StageMove(m_dtTo,control_x,y,true,m_controlWidth); y+=row;
+       int forward_mode_width=(int)(m_controlWidth*0.30);
+       int forward_date_width=m_controlWidth-forward_mode_width-compact_gap;
+       StageMove(m_lblForward,label_x,y,true,m_labelWidth);       StageMove(m_cmbForward,control_x,y,true,forward_mode_width);
+       StageMove(m_dtForward,control_x+forward_mode_width+compact_gap,y,true,forward_date_width);
+   }
+   else if(m_activeStage==2)
+   {
+      m_lblHeading.Text("03  EXECUTION MODEL  /  CAPITAL ASSUMPTIONS");
+       StageMove(m_lblDelay,label_x,y,true,m_labelWidth);         StageMove(m_cmbDelay,control_x,y,true,m_controlWidth); y+=row;
+       StageMove(m_lblModeling,label_x,y,true,m_labelWidth);      StageMove(m_cmbModel,control_x,y,true,m_controlWidth); y+=row;
+       int capital_width=(m_controlWidth-2*compact_gap)/3;
+       StageMove(m_lblDeposit,label_x,y,true,m_labelWidth);       StageMove(m_edtDeposit,control_x,y,true,capital_width);
+       StageMove(m_edtCurrency,control_x+capital_width+compact_gap,y,true,capital_width);
+       StageMove(m_cmbLeverage,control_x+2*(capital_width+compact_gap),y,true,m_controlWidth-2*(capital_width+compact_gap)); y+=row;
+       StageMove(m_lblOptimization,label_x,y,true,m_labelWidth);  StageMove(m_cmbOptimization,control_x,y,true,m_controlWidth);
+   }
+   else
+   {
+      m_lblHeading.Text("04  EXPORT & DATA  /  QUALITY GATES");
+       int pair_gap=MathMax(10,m_GapHoriz);
+       int pair_width=(editor_width-pair_gap)/2;
+       int pair_label=MathMax(84,(int)(pair_width*0.48));
+       int pair_control=pair_width-pair_label-m_GapHoriz;
+       int right_x=label_x+pair_width+pair_gap;
+       int right_control_x=right_x+pair_label+m_GapHoriz;
+       StageMove(m_lblSetsToExport,label_x,y,true,pair_label);  StageMove(m_edtSetsToExport,label_x+pair_label+m_GapHoriz,y,true,pair_control);
+       StageMove(m_lblBackOOSDate,right_x,y,true,pair_label);   StageMove(m_dpBackOOS,right_control_x,y,true,pair_control); y+=row;
+       StageMove(m_lblMinScore,label_x,y,true,pair_label);      StageMove(m_edtMinScore,label_x+pair_label+m_GapHoriz,y,true,pair_control);
+       StageMove(m_lblMinARF,right_x,y,true,pair_label);        StageMove(m_edtMinARF,right_control_x,y,true,pair_control); y+=row;
+       StageMove(m_lblTargetDD,label_x,y,true,pair_label);      StageMove(m_edtTargetDD,label_x+pair_label+m_GapHoriz,y,true,pair_control);
+       StageMove(m_lblMinSR,right_x,y,true,pair_label);         StageMove(m_edtMinSR,right_control_x,y,true,pair_control); y+=row;
+       StageMove(m_lblAdjustLots,label_x,y,true,pair_label);    StageMove(m_chkAdjustLots,label_x+pair_label+m_GapHoriz,y+(m_controlHeight-m_chkAdjustLots.Height())/2,true);
+       StageMove(m_lblVerifyOOS,right_x,y,true,pair_label);     StageMove(m_chkVerifyOOS,right_control_x,y+(m_controlHeight-m_chkVerifyOOS.Height())/2,true); y+=row;
+       StageMove(m_lblDataSync,label_x,y,true,editor_width); y+=row;
+       int sync_width=(editor_width-2*pair_gap)/3;
+       StageMove(m_btnSyncBias,label_x,y,true,sync_width);
+       StageMove(m_btnViewBias,label_x+sync_width+pair_gap,y,true,sync_width);
+       StageMove(m_btnSyncNews,label_x+2*(sync_width+pair_gap),y,true,editor_width-2*(sync_width+pair_gap));
+   }
+
+   StageMove(m_lblHeading,m_leftMargin,m_topMargin+m_rowHeight,true,editor_width);
+   int actions_y=m_topMargin+9*m_rowHeight;
+   int action_gap=MathMax(8,m_GapHoriz);
+   int action_width=(editor_width-action_gap)/2;
+   StageMove(m_btnAddQueue,m_leftMargin,actions_y,true,action_width,m_rowHeight);
+   StageMove(m_btnSetPresets,m_leftMargin+action_width+action_gap,actions_y,true,editor_width-action_width-action_gap,m_rowHeight);
+   ChartRedraw(0);
+}
+//+------------------------------------------------------------------+
+void CStrategyTesterDialog::OnClickStageSetup(void)     {ApplyStudioStage(0);}
+void CStrategyTesterDialog::OnClickStageTimeline(void)  {ApplyStudioStage(1);}
+void CStrategyTesterDialog::OnClickStageExecution(void) {ApplyStudioStage(2);}
+void CStrategyTesterDialog::OnClickStageExport(void)    {ApplyStudioStage(3);}
+//+------------------------------------------------------------------+
 bool CStrategyTesterDialog::Create(const long chart_id, const string name,const int subwin, int x1, int y1, int x2, int y2)
   {
    m_leftMargin   =(int)MathMax(6,(int)(0.020*D_Width));
@@ -1458,23 +1618,34 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    string buildPrefix=Key_+" ";
    if(StringFind(buildLabel,buildPrefix)==0) buildLabel=StringSubstr(buildLabel,StringLen(buildPrefix));
    if(buildLabel=="") buildLabel="V"+version_;
-   Caption(Key_+" - Optimization Studio " + buildLabel);
+    Caption("GOAT  /  OPTIMIZATION STUDIO  /  " + buildLabel);
    ChartSetInteger(0,CHART_SHOW_TRADE_HISTORY,0);
    SetCaptionClientColors();
    
-   int settingsRowsWithActions=14; // heading, settings rows, and Add/Set action row
-   int settingsPanelNeeded=m_topMargin+(settingsRowsWithActions*m_rowHeight)+MathMax(8,m_GapHoriz);
-   int settingsPanelBase=(int)(D_Height*(m_compactLayout ? 0.985 : 0.69));
-   int settingsPanelLimit=(int)(D_Height*(m_compactLayout ? 0.985 : 0.78));
-   int optPanelBottom=(int)MathMin(settingsPanelLimit,MathMax(settingsPanelBase,settingsPanelNeeded));
-   if(!c_Wnd_OPT.Create(m_chart_id,m_name+"Boundary",m_subwin,(int)(D_Width*0.01),(int)(D_Height*0.015),(int)(D_Width*0.42),optPanelBottom))  // left,top,right,bottom
+   int optPanelLeft=(int)(D_Width*0.01);
+   int optPanelTop=(int)(D_Height*0.015);
+   int optPanelRight=(int)(D_Width*0.99);
+   int optPanelBottom=(int)(D_Height*0.985);
+    if(!c_Wnd_OPT.Create(m_chart_id,m_name+"Boundary",m_subwin,optPanelLeft,optPanelTop,optPanelRight,optPanelBottom))  // left,top,right,bottom
    {
       Print("Failed to create boundary rect: ", GetLastError());
       return false;
    }
-   c_Wnd_OPT.ColorBackground(clrGainsboro);
-   c_Wnd_OPT.ColorBorder(clrBlack);
-   Add(c_Wnd_OPT);
+    c_Wnd_OPT.ColorBackground(C'7,17,29');
+    c_Wnd_OPT.ColorBorder(C'35,60,82');
+    Add(c_Wnd_OPT);
+
+    int stageLeft=m_leftMargin;
+    int stageRight=optPanelRight-m_leftMargin;
+    int stageGap=MathMax(5,m_GapHoriz);
+    int stageWidth=(stageRight-stageLeft-3*stageGap)/4;
+    CreateButtonCtrl(m_btnStageSetup,"btnStageSetup",stageLeft,m_topMargin,stageWidth,m_controlHeight,"01  SETUP");
+    stageLeft+=stageWidth+stageGap;
+    CreateButtonCtrl(m_btnStageTimeline,"btnStageTimeline",stageLeft,m_topMargin,stageWidth,m_controlHeight,"02  TIMELINE");
+    stageLeft+=stageWidth+stageGap;
+    CreateButtonCtrl(m_btnStageExecution,"btnStageExecution",stageLeft,m_topMargin,stageWidth,m_controlHeight,"03  EXECUTION");
+    stageLeft+=stageWidth+stageGap;
+    CreateButtonCtrl(m_btnStageExport,"btnStageExport",stageLeft,m_topMargin,stageWidth,m_controlHeight,"04  EXPORT & DATA");
    
    int y = m_topMargin;
    //-------------------------------------------------------------
@@ -1639,55 +1810,25 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    CreateDatePick(m_dtFrom, "dtFrom", m_xFrom, m_yFrom, m_controlWidth);
    m_dtFrom.Value(D'2024.01.08');
    //-------------------------------------------------------------
-   int last_y=y;
-   y = m_topMargin;
-   CreateLabel(m_lblQueue, "Q U E U E" , m_leftMargin+m_labelWidth+m_GapHoriz+m_controlWidth+m_GapHoriz+(int)(D_Width*0.25), y, m_controlWidth); m_lblQueue.FontSize(m_lblQueue.FontSize()+2);
+    int last_y=y;
+     y = m_topMargin+m_rowHeight;
+    int indt_left = m_leftMargin+m_labelWidth+m_GapHoriz+m_controlWidth+3*m_GapHoriz;
+    int width_right = optPanelRight-m_leftMargin-indt_left;
+     CreateLabel(m_lblQueue, "B A T C H   Q U E U E" , indt_left+(int)(width_right*0.34), y, (int)(width_right*0.66)); m_lblQueue.FontSize(m_lblQueue.FontSize()+2);
  //CreateLabel(m_lblStatus,"Status", m_leftMargin+m_labelWidth+2*m_controlWidth+60 , y, m_labelWidth/3);
    y += m_rowHeight;
    m_listQueue.ItemHeightFHD(m_rowHeight-1); // void              ItemHeightFHD(const int px) {m_item_height=px} // Add in ControlsPlus\ListView.mqh
    
-   int indt_left = m_leftMargin+m_labelWidth+m_GapHoriz+m_controlWidth+m_GapHoriz+2*m_GapHoriz;
-   int width_right = (int)(D_Width*0.98)-indt_left;
-   
-   int queueListTop=y;
-   int layoutGap=MathMax(6,m_GapHoriz);
-   int queueButtonY=optPanelBottom-m_rowHeight-layoutGap;
-   int queueListHeight=MathMax(m_rowHeight*4,queueButtonY-queueListTop-layoutGap);
-   int actionGap=MathMax(8,layoutGap);
-   int progressGap=MathMax(4,(int)(layoutGap*0.55));
-   int alertGap=MathMax(3,(int)(layoutGap*0.45));
-   int startStopHeight=(int)MathMax(m_controlHeight+8,MathMin(m_rowHeight+8,D_Height*0.058));
-   int exportBandBottom=(int)(D_Height*0.995)-2;
-   int startY=optPanelBottom+MathMax(8,layoutGap);
-   int stopY=startY+startStopHeight+actionGap;
-   int progressY=stopY+startStopHeight+progressGap;
-   int errorsY=progressY+m_controlHeight+alertGap;
-   int stackBottom=errorsY+m_controlHeight;
-   if(stackBottom>exportBandBottom)
-   {
-    int overflow=stackBottom-exportBandBottom;
-    startY=MathMax(optPanelBottom+2,startY-overflow);
-    stopY=startY+startStopHeight+actionGap;
-    progressY=stopY+startStopHeight+progressGap;
-    errorsY=progressY+m_controlHeight+alertGap;
-   }
-
-   if(m_compactLayout)
-   {
-    int compactGap=MathMax(4,m_GapHoriz);
-    actionGap=compactGap;
-    progressGap=MathMax(3,(int)(compactGap*0.75));
-    alertGap=MathMax(2,(int)(compactGap*0.5));
-    startStopHeight=MathMax(m_controlHeight+6,(int)(m_rowHeight*1.20));
-    int compactBottom=D_Height-m_topMargin;
-    int compactStackHeight=2*startStopHeight+actionGap+progressGap+m_controlHeight+alertGap+m_controlHeight;
-    startY=compactBottom-compactStackHeight;
-    stopY=startY+startStopHeight+actionGap;
-    progressY=stopY+startStopHeight+progressGap;
-    errorsY=progressY+m_controlHeight+alertGap;
-    queueButtonY=startY-compactGap-m_rowHeight;
-    queueListHeight=MathMax(m_rowHeight*4,queueButtonY-queueListTop-compactGap);
-   }
+    int queueListTop=y;
+    int layoutGap=MathMax(6,m_GapHoriz);
+    int queueButtonY=optPanelBottom-m_rowHeight-layoutGap;
+    int queueListHeight=MathMax(m_rowHeight*4,queueButtonY-queueListTop-layoutGap);
+    int actionGap=MathMax(8,layoutGap);
+    int startStopHeight=MathMax(m_controlHeight+8,m_rowHeight);
+    int editorWidth=m_labelWidth+m_GapHoriz+m_controlWidth;
+    int dockStatusY=optPanelBottom-layoutGap-m_controlHeight;
+    int dockActionY=dockStatusY-layoutGap-startStopHeight;
+    int dockHeadingY=dockActionY-m_rowHeight;
 
    CreateListView(m_listQueue,"m_listQueue",indt_left, queueListTop,width_right,queueListHeight," ");
    y=queueButtonY; Ctrl_M=0.19;
@@ -1705,27 +1846,26 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    CreateButtonCtrl(m_btnCancelSelected, "m_btnCancelSelected",qx, y, qActionW, m_rowHeight, "Cancel");     qx+=qActionW+qBtnGap;
    CreateButtonCtrl(m_btnMakePending   , "m_btnMakePending"   ,qx, y, qActionW, m_rowHeight, "Activate");
    
-   Ctrl_M=0.30;
-   int actionX=indt_left+(int)(width_right*Ctrl_M*2)+2*(int)(width_right*0.05);
-   int actionW=(int)(width_right*Ctrl_M);
-   y=startY;
-   CreateButtonCtrl(m_btnStart   , "m_btnStart"    ,actionX, y, actionW, startStopHeight, m_batchRunning ? "RUNNING" : "START BATCH");
-         m_btnStart.FontSize(m_btnStart.FontSize()+2); m_btnStart.Color(clrWhite); m_btnStart.ColorBackground(clrGreen); m_btnStart.ColorBorder(clrBlack);//C'15,23,42');
-   if(m_batchRunning) m_btnStart.Disable();
-   y=stopY;
-   CreateButtonCtrl(m_btnStop    , "m_btnStop"     ,actionX, y, actionW, startStopHeight, "TERMINATE");
-         m_btnStop.FontSize(m_btnStop.FontSize()+2); m_btnStop.Color(clrWhite); m_btnStop.ColorBackground(clrCrimson); m_btnStop.ColorBorder(clrBlack);//C'15,23,42');
-   CreateEditBox(m_edtBatchProgress,"m_edtBatchProgress",actionX,progressY,actionW,"0/0 Completed");
-   m_edtBatchProgress.ReadOnly(true);
-   m_edtBatchProgress.Color(clrWhite);
-   m_edtBatchProgress.ColorBackground(C'47,74,111');
-   m_edtBatchProgress.ColorBorder(clrBlack);
-   CreateEditBox(m_edtBatchErrors,"m_edtBatchErrors",actionX,errorsY,actionW,"0 Errors");
+    int dockGap=MathMax(8,m_GapHoriz);
+    int dockButtonW=(editorWidth-dockGap)/2;
+    CreateLabel(m_lblBatchControl,"B A T C H   C O N T R O L",m_leftMargin,dockHeadingY,editorWidth);
+    m_lblBatchControl.FontSize(m_lblBatchControl.FontSize()+1);
+    CreateButtonCtrl(m_btnStart   , "m_btnStart"    ,m_leftMargin, dockActionY, dockButtonW, startStopHeight, m_batchRunning ? "RUNNING" : "START BATCH");
+           m_btnStart.FontSize(m_btnStart.FontSize()+2); m_btnStart.Color(C'225,238,248'); m_btnStart.ColorBackground(C'13,99,78'); m_btnStart.ColorBorder(C'78,221,178');
+    if(m_batchRunning) m_btnStart.Disable();
+    CreateButtonCtrl(m_btnStop    , "m_btnStop"     ,m_leftMargin+dockButtonW+dockGap, dockActionY, editorWidth-dockButtonW-dockGap, startStopHeight, "TERMINATE");
+           m_btnStop.FontSize(m_btnStop.FontSize()+2); m_btnStop.Color(C'225,238,248'); m_btnStop.ColorBackground(C'92,35,52'); m_btnStop.ColorBorder(C'255,104,126');
+    CreateEditBox(m_edtBatchProgress,"m_edtBatchProgress",m_leftMargin,dockStatusY,dockButtonW,"0/0 Completed");
+    m_edtBatchProgress.ReadOnly(true);
+    m_edtBatchProgress.Color(C'225,238,248');
+    m_edtBatchProgress.ColorBackground(C'11,28,44');
+    m_edtBatchProgress.ColorBorder(C'35,60,82');
+    CreateEditBox(m_edtBatchErrors,"m_edtBatchErrors",m_leftMargin+dockButtonW+dockGap,dockStatusY,editorWidth-dockButtonW-dockGap,"0 Errors");
    m_edtBatchErrors.ReadOnly(true);
-   m_edtBatchErrors.Color(clrWhite);
-   m_edtBatchErrors.ColorBackground(C'47,74,111');
-   m_edtBatchErrors.ColorBorder(clrBlack);
-   y += m_rowHeight;
+    m_edtBatchErrors.Color(C'225,238,248');
+    m_edtBatchErrors.ColorBackground(C'11,28,44');
+    m_edtBatchErrors.ColorBorder(C'35,60,82');
+    y = dockStatusY+m_controlHeight;
    
    if(!m_compactLayout)
    {
@@ -1745,9 +1885,10 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
      Print("Failed to create export rect: ", GetLastError());
      return false;
    }
-   c_Wnd_Export.ColorBackground(clrGainsboro);
-   c_Wnd_Export.ColorBorder(clrBlack);
-   Add(c_Wnd_Export);
+    c_Wnd_Export.ColorBackground(C'7,17,29');
+    c_Wnd_Export.ColorBorder(C'35,60,82');
+    Add(c_Wnd_Export);
+    c_Wnd_Export.Hide();
    
    int exportContentY = exportPanelTop+MathMax(12,(int)(m_GapHoriz*2));
    int syncButtonHeight = MathMax(18,MathMin(28,(int)(m_controlHeight*0.78)));
@@ -1825,9 +1966,13 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
   CreateButtonCtrl(m_btnViewBias,"m_btnViewBias",syncButtonX+syncButtonWidth+syncButtonGap,syncY,syncButtonWidth,syncButtonHeight,"View AI Bias History");
   CreateButtonCtrl(m_btnSyncNews,"m_btnSyncNews",syncButtonX+(syncButtonWidth+syncButtonGap)*2,syncY,syncButtonWidth,syncButtonHeight,"Sync News History");
    }
-   // Show the dialog
+   // CAppDialog::Show() recursively reveals its children, so apply the selected
+   // workflow stage after the dialog is visible.  This keeps inactive stage
+   // controls genuinely hidden instead of allowing them to crowd the canvas.
    Show(); Sleep(50);
+   ApplyStudioStage(0);
    OnClickRefresh(true);
+   ApplyStudioStage(m_activeStage);
    return(true);
 }
 //+------------------------------------------------------------------+
@@ -1845,9 +1990,9 @@ void CStrategyTesterDialog::SetCaptionClientColors(void)
      CEdit *edit=(CEdit*) obj;
      CaptionObjTester = edit;
      //color clr=(color)GETRGB(XRGB(rand()%255,rand()%255,rand()%255));
-     edit.ColorBackground(C'15,23,42');
+      edit.ColorBackground(C'9,21,35');
      //edit.ColorBorder(clrWheat);
-     edit.Color(clrWhite);
+      edit.Color(C'225,238,248');
      //edit.Font(GetFontName(Font_Header));
      edit.FontSize(Font_Size+2);
      edit.TextAlign(ALIGN_CENTER);
@@ -1855,10 +2000,10 @@ void CStrategyTesterDialog::SetCaptionClientColors(void)
     //---
     if(name==prefix+"Client")
     {
-     //CWndClient *wndclient=(CWndClient*) obj;
+      CWndClient *wndclient=(CWndClient*) obj;
      //color clr=(color)GETRGB(XRGB(rand()%255,rand()%255,rand()%255));
-     //wndclient.ColorBackground(clrWhite);
-     //wndclient.ColorBorder(clrWheat);
+      wndclient.ColorBackground(C'7,17,29');
+      wndclient.ColorBorder(C'7,17,29');
     }
    }
    ChartRedraw();
@@ -1870,7 +2015,9 @@ void CStrategyTesterDialog::CreateLabel(CLabel &lbl, const string text, int x, i
    if(!lbl.Create(m_chart_id, text, m_subwin, x, y, x+width, y+m_controlHeight))
       Print("Label creation error:", GetLastError());
    if(Font_Size>0) lbl.FontSize(Font_Size);
+   lbl.Font("Tahoma Bold");
    lbl.Text(text);
+   lbl.Color(C'135,181,216');
    Add(lbl);
 }
 void CStrategyTesterDialog::CreateCombo(CComboBox &cmb, const string name, int x, int y, int width)
@@ -1878,6 +2025,14 @@ void CStrategyTesterDialog::CreateCombo(CComboBox &cmb, const string name, int x
    if(!cmb.Create(m_chart_id, m_name+name, m_subwin, x, y, x+width, y+m_controlHeight))
       Print("Combo creation error:", GetLastError());
    if(Font_Size>0) cmb.FontSizeFHD(Font_Size); //void      FontSizeFHD(const int px)   {m_edit.FontSize(px); m_list.FontSizeFHD(px);} // Add in ControlsPlus\ComboBox.mqh
+   CWnd *comboObj=cmb.Control(0);
+   if(comboObj!=NULL)
+   {
+      CEdit *comboEdit=(CEdit*)comboObj;
+      comboEdit.Color(C'225,238,248');
+      comboEdit.ColorBackground(C'11,28,44');
+      comboEdit.ColorBorder(C'46,92,120');
+   }
    Add(cmb);
 }
 void CStrategyTesterDialog::CreateDatePick(CDatePicker &dtp, const string name, int x, int y, int width)
@@ -1888,19 +2043,31 @@ void CStrategyTesterDialog::CreateDatePick(CDatePicker &dtp, const string name, 
    if(!dtp.Create(m_chart_id, m_name+name, m_subwin, x, y, x+width, y+m_controlHeight)) Print("DatePicker creation error:", GetLastError());
    GlobalVariableDel("TesterDatePickerFontSize");
    if(Font_Size>0) dtp.FontSizeFHD(Font_Size); //void      FontSizeFHD(const int px) {m_edit.FontSize(px);} // Add in ControlsPlus\DatePicker.mqh
+   CWnd *dateObj=dtp.Control(0);
+   if(dateObj!=NULL)
+   {
+      CEdit *dateEdit=(CEdit*)dateObj;
+      dateEdit.Color(C'225,238,248');
+      dateEdit.ColorBackground(C'11,28,44');
+      dateEdit.ColorBorder(C'46,92,120');
+   }
    Add(dtp);
 }
 void CStrategyTesterDialog::CreateEditBox(CEdit &edt, const string name, int x, int y, int width, string def)
 {
    if(!edt.Create(m_chart_id, m_name+name, m_subwin, x, y, x+width, y+m_controlHeight)) Print("Edit creation error:", GetLastError());
    if(Font_Size>0) edt.FontSize(Font_Size);
+   edt.Font("Tahoma");
    edt.Text(def);
+   edt.Color(C'225,238,248');
+   edt.ColorBackground(C'11,28,44');
+   edt.ColorBorder(C'46,92,120');
    Add(edt);
 }
 void CStrategyTesterDialog::CreateButtonCtrl(CButton &btn, const string name, int x, int y, int width, int height, string caption)
 {
    if(!btn.Create(m_chart_id, m_name+name, m_subwin, x, y, x+width, y+height)) Print("Button creation error:", GetLastError());
-      btn.Color(clrPaleTurquoise); btn.ColorBackground(C'15,23,42'); btn.ColorBorder(clrBlack);//C'15,23,42');
+      btn.Color(C'135,214,245'); btn.ColorBackground(C'11,28,44'); btn.ColorBorder(C'35,60,82');
    if(Font_Size>0) btn.FontSize(Font_Size);
    btn.Text(caption);
    Add(btn);

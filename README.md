@@ -2,6 +2,19 @@
 
 Expert Advisor (EA) project for MetaTrader 5, maintained in the `GOAT-EA` repository.
 
+### V1.47 behavior-neutral tester performance hotfix
+
+`GOAT V1.47` removes normal per-tick `TSL BUY/SELL skipped` log lines and
+replaces them with aggregate buy/sell counters. It also emits one tester-only
+`GOAT PERF SUMMARY` covering the lot solver, exact MLPS enforcement, trailing,
+and signal processing. Modification failures remain logged.
+
+The MLPS calculation and cache policy are unchanged. Exact-control A/B tests on
+the audited NZDUSD RangeFade fixture produced byte-identical OHLC and ETWRT HTML
+reports, complete order/deal ledgers, tester statistics, GOAT CSV exports, and
+GOAT SET exports. The hotfix removed 6,000 OHLC and 58,304 ETWRT skip lines;
+ETWRT master/agent logs were about 87% smaller.
+
 ### V1.45 release-admitted Control Tower wire
 
 `GOAT V1.45` carries the forward-only client for `/api/ea/bias/v2`

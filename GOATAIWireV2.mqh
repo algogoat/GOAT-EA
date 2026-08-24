@@ -6,6 +6,9 @@
 #ifndef GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER
 #define GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER 0
 #endif
+#ifndef GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED
+#define GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED 0
+#endif
 
 // GOAT AI Control Tower wire-v2 client.
 // The client is deliberately forward-only: selecting v2 never falls back to the
@@ -14,11 +17,18 @@
 enum ENUM_GOAT_AI_BIAS_PROTOCOL
   {
    BiasProtocol_LegacyRecorded = 0, // Explicit legacy live/history compatibility
-   BiasProtocol_ControlTowerV2 = 1  // Strict /api/ea/bias/v2
+   BiasProtocol_ControlTowerV2 = 1  // Strict calibrated /api/ea/bias/v2
+#if GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED == 1
+   ,BiasProtocol_ControlTowerV2DemoRaw = 2 // Demo only: promote authenticated raw model probability when calibration is the sole withhold
+#endif
   };
 
 input group "==========GOAT AI CONTROL TOWER==========               ";
+#if GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED == 1
+input ENUM_GOAT_AI_BIAS_PROTOCOL Bias_Protocol = BiasProtocol_ControlTowerV2DemoRaw; // Live bias protocol (demo raw enabled)
+#else
 input ENUM_GOAT_AI_BIAS_PROTOCOL Bias_Protocol = BiasProtocol_ControlTowerV2; // Live bias protocol
+#endif
 input double Bias_V2_Win_Payoff_R = 1.00;                                     // Expected win payoff (R)
 input double Bias_V2_Loss_Payoff_R = 1.00;                                    // Expected loss magnitude (R)
 input double Bias_V2_Round_Trip_Cost_R = 0.02;                                // Spread/slippage/fees (R)
@@ -49,11 +59,16 @@ struct SGOATAIWireV2State
    bool   verified;
    bool   directive_available;
    bool   actionable;
+   bool   demo_raw_authority;
    int    signed_probability_percent;
    double calibrated_probability;
+   double source_probability;
+   double decision_probability;
    double probability_cutoff;
    string availability;
    string direction;
+   string source_direction;
+   string probability_authority;
    string reason_code;
    string published_at;
    string valid_until;
@@ -592,11 +607,16 @@ void GOATResetWireV2State(SGOATAIWireV2State &state,const string reason)
    state.verified=false;
    state.directive_available=false;
    state.actionable=false;
+   state.demo_raw_authority=false;
    state.signed_probability_percent=0;
    state.calibrated_probability=0.0;
+   state.source_probability=0.0;
+   state.decision_probability=0.0;
    state.probability_cutoff=0.0;
    state.availability="UNAVAILABLE";
    state.direction="";
+   state.source_direction="";
+   state.probability_authority="NONE";
    state.reason_code=reason;
    state.published_at="";
    state.valid_until="";
@@ -607,6 +627,40 @@ void GOATResetWireV2State(SGOATAIWireV2State &state,const string reason)
    state.scan_id="";
    state.checksum="";
    state.request_duration_ms=0;
+  }
+
+bool GOATUsingControlTowerBias()
+  {
+   if(Bias_Protocol==BiasProtocol_ControlTowerV2) return true;
+#if GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED == 1
+   if(Bias_Protocol==BiasProtocol_ControlTowerV2DemoRaw) return true;
+#endif
+   return false;
+  }
+
+bool GOATApplyWireV2DemoRawAuthority(SGOATAIWireV2State &state,const bool enabled)
+  {
+#if GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED == 1
+   if(enabled
+      && state.verified
+      && !state.directive_available
+      && state.availability=="WITHHELD"
+      && state.reason_code=="CALIBRATION_ARTIFACT_UNAVAILABLE"
+      && (state.source_direction=="BULLISH"
+          || state.source_direction=="NEUTRAL"
+          || state.source_direction=="BEARISH")
+      && state.source_probability>=0.0
+      && state.source_probability<=1.0)
+     {
+      state.directive_available=true;
+      state.demo_raw_authority=true;
+      state.direction=state.source_direction;
+      state.decision_probability=state.source_probability;
+      state.probability_authority="MODEL_REPORTED_DEMO_RAW";
+      return true;
+     }
+#endif
+   return false;
   }
 
 bool GOATAppendWireV2SetFile(const string file_name)
@@ -738,6 +792,20 @@ class CGOATAIWireV2
          || DisplayLine(parsed)!="Waiting for fresh AI bias"
          || DetailLine(parsed)!="Checks every "+IntegerToString(MathMax(1,Bias_RegenerateMinutes))+" minutes") return false;
 
+#if GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED == 1
+      SGOATAIWireV2State demo_raw=parsed;
+      if(!GOATApplyWireV2DemoRawAuthority(demo_raw,true)
+         || !demo_raw.demo_raw_authority
+         || !demo_raw.directive_available
+         || demo_raw.direction!="BULLISH"
+         || demo_raw.decision_probability!=0.72
+         || demo_raw.probability_authority!="MODEL_REPORTED_DEMO_RAW") return false;
+      SGOATAIWireV2State non_calibration_withhold=parsed;
+      non_calibration_withhold.reason_code="INPUT_TRUST_INELIGIBLE";
+      if(GOATApplyWireV2DemoRawAuthority(non_calibration_withhold,true)
+         || non_calibration_withhold.directive_available) return false;
+#endif
+
       SGOATAIWireV2State unavailable;
       GOATResetWireV2State(unavailable,"WEBREQUEST_FAILED");
       if(DisplayLine(unavailable)!="AI bias temporarily unavailable"
@@ -747,8 +815,9 @@ class CGOATAIWireV2
       parsed.actionable=true;
       parsed.direction="BULLISH";
       parsed.calibrated_probability=0.72;
+      parsed.decision_probability=0.72;
       parsed.probability_cutoff=0.60;
-      if(DisplayLine(parsed)!="Bullish · 72% confidence"
+      if(DisplayLine(parsed)!="Bullish · 72% calibrated probability"
          || DetailLine(parsed)!="Trade threshold · 60%") return false;
       parsed.actionable=false;
       return DetailLine(parsed)=="Below trade threshold · 60%";
@@ -772,6 +841,10 @@ class CGOATAIWireV2
         }
       if(refresh) Refresh(asset);
       state=m_state;
+#if GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED == 1
+      bool demo_raw_enabled=(Bias_Protocol==BiasProtocol_ControlTowerV2DemoRaw);
+      GOATApplyWireV2DemoRawAuthority(state,demo_raw_enabled);
+#endif
       double payoff_cutoff=(Bias_V2_Loss_Payoff_R+Bias_V2_Round_Trip_Cost_R+Bias_V2_Min_Expected_R)
                            /(Bias_V2_Win_Payoff_R+Bias_V2_Loss_Payoff_R);
       double configured_cutoff=MathMax(0.0,MathMin(100.0,(double)Bias_threshold))/100.0;
@@ -779,10 +852,10 @@ class CGOATAIWireV2
       state.actionable=(state.verified
                         && state.directive_available
                         && (state.direction=="BULLISH" || state.direction=="BEARISH")
-                        && state.calibrated_probability>=state.probability_cutoff);
+                        && state.decision_probability>=state.probability_cutoff);
       if(state.directive_available)
         {
-         int probability_percent=(int)MathRound(state.calibrated_probability*100.0);
+         int probability_percent=(int)MathRound(state.decision_probability*100.0);
          if(state.direction=="BULLISH") state.signed_probability_percent=probability_percent;
          else if(state.direction=="BEARISH") state.signed_probability_percent=-probability_percent;
          else state.signed_probability_percent=0;
@@ -799,7 +872,9 @@ class CGOATAIWireV2
       if(!state.directive_available) return "Waiting for fresh AI bias";
       string direction=(state.direction=="BULLISH" ? "Bullish"
                         : state.direction=="BEARISH" ? "Bearish" : "Neutral");
-      return direction+" · "+IntegerToString((int)MathRound(state.calibrated_probability*100.0))+"% confidence";
+      string probability=IntegerToString((int)MathRound(state.decision_probability*100.0))+"%";
+      if(state.demo_raw_authority) return direction+" · "+probability+" model probability · DEMO";
+      return direction+" · "+probability+" calibrated probability";
      }
 
    string DetailLine(SGOATAIWireV2State &state)
@@ -808,6 +883,8 @@ class CGOATAIWireV2
       if(!state.directive_available)
          return "Checks every "+IntegerToString(MathMax(1,Bias_RegenerateMinutes))+" minutes";
       string threshold=IntegerToString((int)MathRound(state.probability_cutoff*100.0))+"%";
+      if(state.demo_raw_authority)
+         return (state.actionable ? "DEMO RAW · trade threshold · " : "DEMO RAW · below threshold · ")+threshold;
       if(!state.actionable) return "Below trade threshold · "+threshold;
       return "Trade threshold · "+threshold;
      }
@@ -1019,9 +1096,13 @@ bool CGOATAIWireV2::ParseAndVerify(const string json,const string expected_asset
    state.actionable=false;
    state.signed_probability_percent=0;
    state.calibrated_probability=calibrated_probability;
+   state.source_probability=source_probability;
+   state.decision_probability=calibrated_probability;
    state.probability_cutoff=0.0;
    state.availability=availability;
    state.direction=direction;
+   state.source_direction=source_direction;
+   state.probability_authority=(availability=="AVAILABLE" ? "ISOTONIC_CALIBRATED" : "NONE");
    state.reason_code=(availability=="WITHHELD" ? reason_code : "");
    state.published_at=published_at;
    state.valid_until=valid_until;

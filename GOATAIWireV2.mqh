@@ -6,10 +6,6 @@
 #ifndef GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER
 #define GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER 0
 #endif
-#ifndef GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED
-#define GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED 0
-#endif
-
 // GOAT AI Control Tower wire-v2 client.
 // The client is deliberately forward-only: selecting v2 never falls back to the
 // legacy packed-score endpoint, cached neutral, or workstation/broker wall time.
@@ -18,13 +14,13 @@ enum ENUM_GOAT_AI_BIAS_PROTOCOL
   {
    BiasProtocol_LegacyRecorded = 0, // Explicit legacy live/history compatibility
    BiasProtocol_ControlTowerV2 = 1  // Strict calibrated /api/ea/bias/v2
-#if GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED == 1
+#ifdef GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED
    ,BiasProtocol_ControlTowerV2DemoRaw = 2 // Demo only: promote authenticated raw model probability when calibration is the sole withhold
 #endif
   };
 
 input group "==========GOAT AI CONTROL TOWER==========               ";
-#if GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED == 1
+#ifdef GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED
 input ENUM_GOAT_AI_BIAS_PROTOCOL Bias_Protocol = BiasProtocol_ControlTowerV2DemoRaw; // Live bias protocol (demo raw enabled)
 #else
 input ENUM_GOAT_AI_BIAS_PROTOCOL Bias_Protocol = BiasProtocol_ControlTowerV2; // Live bias protocol
@@ -632,7 +628,7 @@ void GOATResetWireV2State(SGOATAIWireV2State &state,const string reason)
 bool GOATUsingControlTowerBias()
   {
    if(Bias_Protocol==BiasProtocol_ControlTowerV2) return true;
-#if GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED == 1
+#ifdef GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED
    if(Bias_Protocol==BiasProtocol_ControlTowerV2DemoRaw) return true;
 #endif
    return false;
@@ -640,7 +636,7 @@ bool GOATUsingControlTowerBias()
 
 bool GOATApplyWireV2DemoRawAuthority(SGOATAIWireV2State &state,const bool enabled)
   {
-#if GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED == 1
+#ifdef GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED
    if(enabled
       && state.verified
       && !state.directive_available
@@ -792,7 +788,7 @@ class CGOATAIWireV2
          || DisplayLine(parsed)!="Waiting for fresh AI bias"
          || DetailLine(parsed)!="Checks every "+IntegerToString(MathMax(1,Bias_RegenerateMinutes))+" minutes") return false;
 
-#if GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED == 1
+#ifdef GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED
       SGOATAIWireV2State demo_raw=parsed;
       if(!GOATApplyWireV2DemoRawAuthority(demo_raw,true)
          || !demo_raw.demo_raw_authority
@@ -841,7 +837,7 @@ class CGOATAIWireV2
         }
       if(refresh) Refresh(asset);
       state=m_state;
-#if GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED == 1
+#ifdef GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED
       bool demo_raw_enabled=(Bias_Protocol==BiasProtocol_ControlTowerV2DemoRaw);
       GOATApplyWireV2DemoRawAuthority(state,demo_raw_enabled);
 #endif

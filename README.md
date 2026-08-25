@@ -20,12 +20,17 @@ V1.47 also keeps the authenticated `Bias_Protocol` selector in the existing
 `.set`/optimizer input and is presented as **Minimum AI confidence to trade
 (%)**. The separate win/loss/cost/expected-edge R inputs and their duplicate
 break-even gate do not apply to V1.47; the EA's existing risk/reward and trade
-management settings remain authoritative. Demo raw still promotes only an
-authenticated `CALIBRATION_ARTIFACT_UNAVAILABLE` response, while unavailable,
-stale, neutral, unauthenticated, and all other withheld states remain
-non-actionable. This is a same-version V1.47 source refresh; the V1.47 label is
-unchanged, and the historical V1.43-V1.46 entrypoints retain their prior input
-surface and actionability behavior.
+management settings remain authoritative. Outside tester contexts, Demo raw is
+accepted only on `ACCOUNT_TRADE_MODE_DEMO` accounts and still promotes only an
+authenticated `CALIBRATION_ARTIFACT_UNAVAILABLE` response. An active bias filter
+in tester, optimization, or forward contexts must explicitly select
+`BiasProtocol_LegacyRecorded`; initialization otherwise fails with a clear
+parameter error. Disabling AI bias remains valid, and the wire layer retains its
+`LIVE_WIRE_UNAVAILABLE_IN_TESTER` fail-closed defense. Unavailable, stale,
+neutral, unauthenticated, and all other withheld states remain non-actionable.
+This is a same-version V1.47 source refresh; the V1.47 label is unchanged, and
+the historical V1.43-V1.46 entrypoints retain their prior input surface and
+actionability behavior.
 
 ### V1.45 release-admitted Control Tower wire
 

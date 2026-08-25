@@ -881,7 +881,15 @@ class CGOATAIWireV2
       if(refresh) Refresh(asset);
       state=m_state;
 #ifdef GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED
+#ifdef GOAT_AI_SIGNAL_FILTER_V147
+      bool demo_raw_enabled=(Bias_Protocol==BiasProtocol_ControlTowerV2DemoRaw
+                             && !MQLInfoInteger(MQL_TESTER)
+                             && !MQLInfoInteger(MQL_OPTIMIZATION)
+                             && !MQLInfoInteger(MQL_FORWARD)
+                             && AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO);
+#else
       bool demo_raw_enabled=(Bias_Protocol==BiasProtocol_ControlTowerV2DemoRaw);
+#endif
       GOATApplyWireV2DemoRawAuthority(state,demo_raw_enabled);
 #endif
 #ifdef GOAT_AI_SIGNAL_FILTER_V147

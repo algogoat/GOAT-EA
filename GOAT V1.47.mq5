@@ -2,7 +2,7 @@
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R2"
+#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R3"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -2731,9 +2731,21 @@ int OnInit()
    Strat = ExtractFunctionKeysFromInputString(EA_Desc,names,values);
    _Symbol_ = ConvertToGOATsymbol(_Symbol); Print("Symbol="+_Symbol+" GOAT_Symbol="+_Symbol_);
    bool test_context=(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD));
+   if(test_context && Mode_Bias!=Bias_Disabled && GOATUsingControlTowerBias())
+     {
+      Print("Live Control Tower bias is unavailable in tester, optimization, and forward contexts. Select BiasProtocol_LegacyRecorded or disable AI bias.");
+      return INIT_PARAMETERS_INCORRECT;
+     }
    if(Bias_Protocol==BiasProtocol_LegacyRecorded && !test_context)
      {
       Print("Legacy recorded bias is historical/test-only and cannot be selected on a live chart.");
+      return INIT_PARAMETERS_INCORRECT;
+     }
+   if(Bias_Protocol==BiasProtocol_ControlTowerV2DemoRaw
+      && !test_context
+      && AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO)
+     {
+      Print("Demo raw AI bias is restricted to demo accounts and cannot be selected on this live account.");
       return INIT_PARAMETERS_INCORRECT;
      }
    if(!test_context)

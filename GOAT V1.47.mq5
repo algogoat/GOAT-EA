@@ -1,7 +1,8 @@
 ﻿#define   GOAT_VERSION_LABEL "1.47"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
+#define   GOAT_AI_SIGNAL_FILTER_V147 1
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-PROFILE-R1"
+#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R3"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -2730,9 +2731,22 @@ int OnInit()
    Strat = ExtractFunctionKeysFromInputString(EA_Desc,names,values);
    _Symbol_ = ConvertToGOATsymbol(_Symbol); Print("Symbol="+_Symbol+" GOAT_Symbol="+_Symbol_);
    bool test_context=(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD));
+   if(test_context && Mode_Bias!=Bias_Disabled && GOATUsingControlTowerBias())
+     {
+      Print("Live Control Tower bias is unavailable in tester, optimization, and forward contexts. Select BiasProtocol_LegacyRecorded or disable AI bias.");
+      return INIT_PARAMETERS_INCORRECT;
+     }
    if(Bias_Protocol==BiasProtocol_LegacyRecorded && !test_context)
      {
       Print("Legacy recorded bias is historical/test-only and cannot be selected on a live chart.");
+      return INIT_PARAMETERS_INCORRECT;
+     }
+   if(Mode_Bias!=Bias_Disabled
+      && Bias_Protocol==BiasProtocol_ControlTowerV2DemoRaw
+      && !test_context
+      && AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO)
+     {
+      Print("Demo raw AI bias is restricted to demo accounts and cannot be selected on this live account.");
       return INIT_PARAMETERS_INCORRECT;
      }
    if(!test_context)
@@ -2746,14 +2760,6 @@ int OnInit()
      }
    if(GOATUsingControlTowerBias())
      {
-      if(Bias_V2_Win_Payoff_R<=0.0
-         || Bias_V2_Loss_Payoff_R<=0.0
-         || Bias_V2_Round_Trip_Cost_R<0.0
-         || Bias_V2_Min_Expected_R<0.0)
-        {
-         Print("GOAT AI wire v2 payoff parameters are invalid.");
-         return INIT_PARAMETERS_INCORRECT;
-        }
       if(!GOATBiasWireV2.SelfTest())
         {
          Print("GOAT AI wire v2 checksum self-test failed.");
@@ -4118,13 +4124,6 @@ double OnTester()
     else
       {
        WriteSet(desc);
-       if(!GOATAppendWireV2SetFile(FileSET_Name))
-         {
-          int append_error=GetLastError();
-          bool removed=FileDelete(FileSET_Name,FILE_COMMON);
-          Print("GOAT AI Control Tower settings append failed; incomplete SET artifact discarded. err=",
-                append_error," removed=",removed," file=",FileSET_Name);
-         }
       }
     ChartClose(ChartID());
    }

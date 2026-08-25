@@ -2741,7 +2741,8 @@ int OnInit()
       Print("Legacy recorded bias is historical/test-only and cannot be selected on a live chart.");
       return INIT_PARAMETERS_INCORRECT;
      }
-   if(Bias_Protocol==BiasProtocol_ControlTowerV2DemoRaw
+   if(Mode_Bias!=Bias_Disabled
+      && Bias_Protocol==BiasProtocol_ControlTowerV2DemoRaw
       && !test_context
       && AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO)
      {

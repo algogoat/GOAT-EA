@@ -10,6 +10,8 @@
 // The client is deliberately forward-only: selecting v2 never falls back to the
 // legacy packed-score endpoint, cached neutral, or workstation/broker wall time.
 
+#ifndef GOAT_AI_BIAS_PROTOCOL_DEFINED
+#define GOAT_AI_BIAS_PROTOCOL_DEFINED 1
 enum ENUM_GOAT_AI_BIAS_PROTOCOL
   {
    BiasProtocol_LegacyRecorded = 0, // Explicit legacy live/history compatibility
@@ -18,7 +20,9 @@ enum ENUM_GOAT_AI_BIAS_PROTOCOL
    ,BiasProtocol_ControlTowerV2DemoRaw = 2 // Demo only: promote authenticated raw model probability when calibration is the sole withhold
 #endif
   };
+#endif
 
+#ifndef GOAT_AI_SIGNAL_FILTER_V147
 input group "==========GOAT AI CONTROL TOWER==========               ";
 #ifdef GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED
 input ENUM_GOAT_AI_BIAS_PROTOCOL Bias_Protocol = BiasProtocol_ControlTowerV2DemoRaw; // Live bias protocol (demo raw enabled)
@@ -29,6 +33,7 @@ input double Bias_V2_Win_Payoff_R = 1.00;                                     //
 input double Bias_V2_Loss_Payoff_R = 1.00;                                    // Expected loss magnitude (R)
 input double Bias_V2_Round_Trip_Cost_R = 0.02;                                // Spread/slippage/fees (R)
 input double Bias_V2_Min_Expected_R = 0.00;                                   // Minimum expected edge (R)
+#endif
 
 enum ENUM_GOAT_JSON_TOKEN_TYPE
   {
@@ -659,6 +664,7 @@ bool GOATApplyWireV2DemoRawAuthority(SGOATAIWireV2State &state,const bool enable
    return false;
   }
 
+#ifndef GOAT_AI_SIGNAL_FILTER_V147
 bool GOATAppendWireV2SetFile(const string file_name)
   {
    int handle=FileOpen(file_name,FILE_CSV|FILE_READ|FILE_WRITE|FILE_COMMON,"\t");
@@ -679,6 +685,7 @@ bool GOATAppendWireV2SetFile(const string file_name)
    FileClose(handle);
    return written;
   }
+#endif
 
 bool GOATWireV2AuthoritativeNow(const long read_at_ms,const ulong verified_tick,const ulong now_tick,long &authoritative_now)
   {
@@ -687,6 +694,24 @@ bool GOATWireV2AuthoritativeNow(const long read_at_ms,const ulong verified_tick,
    authoritative_now=read_at_ms+(long)(now_tick-verified_tick);
    return(authoritative_now>=read_at_ms);
   }
+
+#ifdef GOAT_AI_SIGNAL_FILTER_V147
+void GOATFinalizeWireV2Actionability(SGOATAIWireV2State &state,const double confidence_cutoff)
+  {
+   state.probability_cutoff=MathMax(0.0,MathMin(1.0,confidence_cutoff));
+   state.actionable=(state.verified
+                     && state.directive_available
+                     && (state.direction=="BULLISH" || state.direction=="BEARISH")
+                     && state.decision_probability>=state.probability_cutoff);
+   state.signed_probability_percent=0;
+   if(state.verified && state.directive_available)
+     {
+      int probability_percent=(int)MathRound(state.decision_probability*100.0);
+      if(state.direction=="BULLISH") state.signed_probability_percent=probability_percent;
+      else if(state.direction=="BEARISH") state.signed_probability_percent=-probability_percent;
+     }
+  }
+#endif
 
 class CGOATAIWireV2
   {
@@ -800,6 +825,24 @@ class CGOATAIWireV2
       non_calibration_withhold.reason_code="INPUT_TRUST_INELIGIBLE";
       if(GOATApplyWireV2DemoRawAuthority(non_calibration_withhold,true)
          || non_calibration_withhold.directive_available) return false;
+#ifdef GOAT_AI_SIGNAL_FILTER_V147
+      SGOATAIWireV2State demo_above_cutoff=demo_raw;
+      GOATFinalizeWireV2Actionability(demo_above_cutoff,0.60);
+      if(!demo_above_cutoff.actionable || demo_above_cutoff.signed_probability_percent!=72) return false;
+      SGOATAIWireV2State demo_below_cutoff=demo_raw;
+      demo_below_cutoff.decision_probability=0.59;
+      GOATFinalizeWireV2Actionability(demo_below_cutoff,0.60);
+      if(demo_below_cutoff.actionable) return false;
+      SGOATAIWireV2State demo_neutral=demo_raw;
+      demo_neutral.direction="NEUTRAL";
+      demo_neutral.decision_probability=0.99;
+      GOATFinalizeWireV2Actionability(demo_neutral,0.60);
+      if(demo_neutral.actionable || demo_neutral.signed_probability_percent!=0) return false;
+      SGOATAIWireV2State unverified_demo=parsed;
+      unverified_demo.verified=false;
+      if(GOATApplyWireV2DemoRawAuthority(unverified_demo,true)
+         || unverified_demo.directive_available) return false;
+#endif
 #endif
 
       SGOATAIWireV2State unavailable;
@@ -841,6 +884,10 @@ class CGOATAIWireV2
       bool demo_raw_enabled=(Bias_Protocol==BiasProtocol_ControlTowerV2DemoRaw);
       GOATApplyWireV2DemoRawAuthority(state,demo_raw_enabled);
 #endif
+#ifdef GOAT_AI_SIGNAL_FILTER_V147
+      double configured_cutoff=MathMax(0.0,MathMin(100.0,(double)Bias_threshold))/100.0;
+      GOATFinalizeWireV2Actionability(state,configured_cutoff);
+#else
       double payoff_cutoff=(Bias_V2_Loss_Payoff_R+Bias_V2_Round_Trip_Cost_R+Bias_V2_Min_Expected_R)
                            /(Bias_V2_Win_Payoff_R+Bias_V2_Loss_Payoff_R);
       double configured_cutoff=MathMax(0.0,MathMin(100.0,(double)Bias_threshold))/100.0;
@@ -856,6 +903,7 @@ class CGOATAIWireV2
          else if(state.direction=="BEARISH") state.signed_probability_percent=-probability_percent;
          else state.signed_probability_percent=0;
         }
+#endif
       m_state.probability_cutoff=state.probability_cutoff;
       m_state.actionable=state.actionable;
       m_state.signed_probability_percent=state.signed_probability_percent;

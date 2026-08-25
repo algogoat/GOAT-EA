@@ -211,6 +211,16 @@ enum ENUM_BIAS_TRADES
    Bias_SeqTrade,       // Restrict Seq starts and trades
   };
 //-------------------------------------------------------------------------
+#ifdef GOAT_AI_SIGNAL_FILTER_V147
+#define GOAT_AI_BIAS_PROTOCOL_DEFINED 1
+enum ENUM_GOAT_AI_BIAS_PROTOCOL
+  {
+   BiasProtocol_LegacyRecorded = 0,       // Historical tester - recorded bias
+   BiasProtocol_ControlTowerV2 = 1,       // Live - calibrated AI bias
+   BiasProtocol_ControlTowerV2DemoRaw = 2 // Demo - authenticated raw AI bias
+  };
+//-------------------------------------------------------------------------
+#endif
 enum ENUM_MODE_DOWNLOAD
   {
    Download_Disabled,   // Download Disabled
@@ -543,7 +553,12 @@ FileWrite(FileSET_handle,"Active_Time_US="+(string)Active_Time_US);//"15:00-22:3
 FileWrite(FileSET_handle,"Action_Dayend="+(string)Action_Dayend);//=1||0||0||1||Y
 FileWrite(FileSET_handle,"Action_Friday="+(string)Action_Friday);//=2||0||0||2||Y
 FileWrite(FileSET_handle,"Trade_Friday="+(string)Trade_Friday);//=false||false||0||true||Y
+#ifdef GOAT_AI_SIGNAL_FILTER_V147
+FileWrite(FileSET_handle,"; ==========GOAT AI SIGNAL FILTER==========");
+FileWrite(FileSET_handle,"Bias_Protocol="+(string)Bias_Protocol);
+#else
 FileWrite(FileSET_handle,"; ==========NEWS AND AI BIAS FILTER==========");
+#endif
 FileWrite(FileSET_handle,"Mode_Bias="+(string)Mode_Bias);
 FileWrite(FileSET_handle,"Mode_Bias_Trades="+(string)Mode_Bias_Trades);
 FileWrite(FileSET_handle,"Mode_Bias_Exit="+(string)Mode_Bias_Exit);
@@ -714,13 +729,21 @@ input    string                  Active_Time_US                =                
 input    ENUM_ACTION_CLOSE       Action_Dayend                 =                   Action_Null;       // Action at End of Session
 input    ENUM_ACTION_CLOSE       Action_Friday                 =                   Action_Null;       // Action at Friday Close
 input    bool                    Trade_Friday                  =                          true;       // Start New Sequences on Friday
-input    group                   "==========NEWS AND AI FILTER==========                   ";
-input    ENUM_ACTION_BIAS        Mode_Bias                     =         GOAT_DEFAULT_BIAS_MODE;       // AI Bias Mode
-input    ENUM_BIAS_TRADES        Mode_Bias_Trades              =                      Bias_Seq;       // AI Bias restriction
-input    ENUM_BIAS_EXIT          Mode_Bias_Exit                =              BiasExit_HardClose;     // AI Bias Exit Mode
-input    int                     Bias_Exit_Max_Exposure_Adds   =                            -1;       // Smart Rescue max positive adds (-1=normal)
-input    int                     Bias_threshold                =                            60;       // AI Confidence Threshold
-input    ENUM_ACTION_NEWS        Mode_News                     =                 News_Disabled;       // News Mode
+#ifdef GOAT_AI_SIGNAL_FILTER_V147
+  input    group                   "==========GOAT AI SIGNAL FILTER==========                ";
+  input    ENUM_GOAT_AI_BIAS_PROTOCOL Bias_Protocol              = BiasProtocol_ControlTowerV2DemoRaw;  // Authenticated AI bias protocol
+#else
+  input    group                   "==========NEWS AND AI FILTER==========                   ";
+#endif
+  input    ENUM_ACTION_BIAS        Mode_Bias                     =         GOAT_DEFAULT_BIAS_MODE;       // AI bias mode
+  input    ENUM_BIAS_TRADES        Mode_Bias_Trades              =                      Bias_Seq;       // AI Bias restriction
+  input    ENUM_BIAS_EXIT          Mode_Bias_Exit                =              BiasExit_HardClose;     // AI Bias Exit Mode
+  input    int                     Bias_Exit_Max_Exposure_Adds   =                            -1;       // Smart Rescue max positive adds (-1=normal)
+  input    int                     Bias_threshold                =                            60;       // Minimum AI confidence to trade (%)
+#ifdef GOAT_AI_SIGNAL_FILTER_V147
+  input    group                   "================GOAT NEWS FILTER================         ";
+#endif
+  input    ENUM_ACTION_NEWS        Mode_News                     =                 News_Disabled;       // News Mode
 input    int                     News_threshold                =                            60;       // News Impact threshold
 input    int                     News_beforeMinutes            =                            90;       // Before News Minutes
 input    int                     News_afterMinutes             =                           150;       // After News Minutes

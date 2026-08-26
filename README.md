@@ -32,6 +32,12 @@ This is a same-version V1.47 source refresh; the V1.47 label is unchanged, and
 the historical V1.43-V1.46 entrypoints retain their prior input surface and
 actionability behavior.
 
+The R4 portal hotfix removes obsolete `tester_file` metadata from the customer
+binary. Those declarations made MT5 require 42 local data files before `OnInit`
+even though the active news, time, and recorded-bias readers use `FILE_COMMON`.
+V1.47 therefore remains a one-file portal install, retains `tester_no_cache`,
+and does not change signal, trade, risk, or live-bias behavior.
+
 ### V1.45 release-admitted Control Tower wire
 
 `GOAT V1.45` carries the forward-only client for `/api/ea/bias/v2`

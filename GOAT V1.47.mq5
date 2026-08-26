@@ -2,7 +2,7 @@
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R3"
+#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R4"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -10,56 +10,6 @@
 #property strict
 #property icon             "GOAT.ico"
 #property tester_no_cache
-#property tester_file      NEWS_FILE
-#property tester_file      GMT_OFFSET_FILE
-#property tester_file      DST_FILE
-
-#property tester_file      BIAS_FILE+"EURUSD"+".csv"
-#property tester_file      BIAS_FILE+"GBPUSD"+".csv"
-#property tester_file      BIAS_FILE+"USDJPY"+".csv"
-#property tester_file      BIAS_FILE+"USDCAD"+".csv"
-#property tester_file      BIAS_FILE+"USDCHF"+".csv"
-#property tester_file      BIAS_FILE+"AUDUSD"+".csv"
-#property tester_file      BIAS_FILE+"NZDUSD"+".csv"
-
-#property tester_file      BIAS_FILE+"EURGBP"+".csv"
-#property tester_file      BIAS_FILE+"EURJPY"+".csv"
-#property tester_file      BIAS_FILE+"EURAUD"+".csv"
-#property tester_file      BIAS_FILE+"EURNZD"+".csv"
-#property tester_file      BIAS_FILE+"EURCAD"+".csv"
-#property tester_file      BIAS_FILE+"EURCHF"+".csv"
-
-#property tester_file      BIAS_FILE+"GBPJPY"+".csv"
-#property tester_file      BIAS_FILE+"GBPAUD"+".csv"
-#property tester_file      BIAS_FILE+"GBPNZD"+".csv"
-#property tester_file      BIAS_FILE+"GBPCAD"+".csv"
-#property tester_file      BIAS_FILE+"GBPCHF"+".csv"
-
-#property tester_file      BIAS_FILE+"AUDJPY"+".csv"
-#property tester_file      BIAS_FILE+"AUDCAD"+".csv"
-#property tester_file      BIAS_FILE+"AUDNZD"+".csv"
-#property tester_file      BIAS_FILE+"AUDCHF"+".csv"
-#property tester_file      BIAS_FILE+"NZDJPY"+".csv"
-#property tester_file      BIAS_FILE+"NZDCAD"+".csv"
-#property tester_file      BIAS_FILE+"NZDCHF"+".csv"
-#property tester_file      BIAS_FILE+"CADJPY"+".csv"
-#property tester_file      BIAS_FILE+"CADCHF"+".csv"
-#property tester_file      BIAS_FILE+"CHFJPY"+".csv"
-
-#property tester_file      BIAS_FILE+"US500"+".csv"
-#property tester_file      BIAS_FILE+"NAS100"+".csv"
-#property tester_file      BIAS_FILE+"US30"+".csv"
-#property tester_file      BIAS_FILE+"GER40"+".csv"
-#property tester_file      BIAS_FILE+"EU50"+".csv"
-#property tester_file      BIAS_FILE+"JP225"+".csv"
-#property tester_file      BIAS_FILE+"AUS200"+".csv"
-
-#property tester_file      BIAS_FILE+"BTCUSD"+".csv"
-#property tester_file      BIAS_FILE+"ETHUSD"+".csv"
-
-#property tester_file      BIAS_FILE+"XAUUSD"+".csv"
-#property tester_file      BIAS_FILE+"XAGUSD"+".csv"
-
 #property description      "-> Global Optimization Algorithmic Trader"
 #property description      " "
 #property description      " "

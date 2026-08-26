@@ -295,6 +295,7 @@ string GoatOptNormalizeTesterInputSurface(const string text)
 
    string bias_protocol_line="";
    int bias_protocol_count=0;
+   int mode_news_count=0;
    bool has_signal_header=false;
    for(int i=0;i<total;++i)
    {
@@ -310,10 +311,13 @@ string GoatOptNormalizeTesterInputSurface(const string text)
          bias_protocol_line=trimmed;
          bias_protocol_count++;
       }
+      if(StringFind(trimmed,"Mode_News=",0)==0)
+         mode_news_count++;
    }
 
    string out="";
    bool signal_header_written=false;
+   bool news_header_written=false;
    for(int i=0;i<total;++i)
    {
       string line=opt_lines[i];
@@ -336,6 +340,7 @@ string GoatOptNormalizeTesterInputSurface(const string text)
          continue;
       }
       if(trimmed=="; ==========GOAT AI CONTROL TOWER==========") continue;
+      if(trimmed=="; ================GOAT NEWS FILTER================" && mode_news_count>0) continue;
 
       int eq=StringFind(trimmed,"=",0);
       if(eq>0)
@@ -344,6 +349,11 @@ string GoatOptNormalizeTesterInputSurface(const string text)
          StringTrimLeft(key);
          StringTrimRight(key);
          if(key=="Bias_Protocol" && has_signal_header && bias_protocol_count==1) continue;
+         if(key=="Mode_News" && !news_header_written)
+         {
+            out+=(out=="" ? "" : "\r\n")+"; ================GOAT NEWS FILTER================";
+            news_header_written=true;
+         }
          if(key=="Bias_V2_Win_Payoff_R"
             || key=="Bias_V2_Loss_Payoff_R"
             || key=="Bias_V2_Round_Trip_Cost_R"

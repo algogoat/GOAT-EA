@@ -2,7 +2,8 @@
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R4"
+#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R5"
+#define   GOAT_BUILD_MARKER "R5"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -2256,6 +2257,8 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
    else if(res!=200&&res!=1003) Print("License check HTTP response "+(string)res+": "+CharArrayToString(result, 0, -1, CP_UTF8));
    HidePrompt();
    string response_text = CharArrayToString(result);
+   StringTrimLeft(response_text);
+   StringTrimRight(response_text);
    //Print("Result Headers: ", result_headers);
    //return LICENSE_VALID;
    // --- New contract: HTTP 200 + "<id> - yes"  OR HTTP 200 + "no"
@@ -2271,11 +2274,14 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
       return LICENSE_VALID;
      }
     }
-    if(StringFind(response_text, "no") >= 0)
-    {
-     Print("License not valid for this MT5 account.");
-     ShowPrompt("Validation Failed!","Check your MT5 Acc# in your GOATedge client area.","Visit the URL below to buy or activate the GOAT EA.",URL_Web);
-     return res;
+     if(response_text=="no")
+     {
+      Print("License not valid for this MT5 account.");
+      ShowPrompt("Validation Failed!","Check your MT5 Acc# in your GOATedge client area.","Visit the URL below to buy or activate the GOAT EA.",URL_Web);
+      // The legacy-compatible endpoint deliberately transports an entitlement
+      // denial as HTTP 200 + "no". Preserve that wire contract while returning
+      // the typed authorization result OnInit needs for safe device reactivation.
+      return 403;
     }
     // unexpected 200 body
     ShowPrompt("Validation Failed!","Unexpected response from server."," ","");
@@ -2399,6 +2405,8 @@ void HidePrompt()
    ObjectDelete(ChartID(), "Prompt_Edit");   Sleep(10);
    ChartRedraw();                            Sleep(10);
   }
+// Secure one-file activation is V1.47-only. Older release entrypoints remain immutable.
+#include "GOATEADeviceActivation.mqh"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void DashboardBusSendStatus(const string status)
   {
@@ -2704,9 +2712,12 @@ int OnInit()
       string api_headers="";
       if(!GOATBuildAuthenticatedRequestHeaders(api_headers))
         {
-         Print("GOAT API credential file is missing or invalid: "+GOAT_API_BEARER_FILE);
-         return INIT_FAILED;
+         Print("GOAT activation required. Trading remains disabled until you sign in and confirm this MT5 account.");
+         if(!GOATDeviceActivationBegin(AccountInfoInteger(ACCOUNT_LOGIN),GOAT_BUILD_ID))
+            return INIT_FAILED;
+         return INIT_SUCCEEDED;
         }
+      api_headers="";
      }
    if(GOATUsingControlTowerBias())
      {
@@ -3004,8 +3015,9 @@ int OnInit()
       Sleep(100); ObjectsDeleteAll(ChartID(),0); Sleep(100);
       if(Mode_Operation==Operation_Batch)
       {
-       TesterDialog.SetFlags(Key,EA_Name,Server,Font_Size,newWidth,newHeight);
-       if(!TesterDialog.Create(ChartID(),"StrategyTesterGUI",0, left,top,left+newWidth,top+dialogOuterHeight)) {Alert("Tester GUI creation Failed, please try again."); return(INIT_FAILED);}
+      TesterDialog.SetFlags(Key,EA_Name,Server,Font_Size,newWidth,newHeight);
+      if(!TesterDialog.Create(ChartID(),"StrategyTesterGUI",0, left,top,left+newWidth,top+dialogOuterHeight)) {Alert("Tester GUI creation Failed, please try again."); return(INIT_FAILED);}
+      TesterDialog.Caption("GOAT  /  OPTIMIZATION STUDIO  /  V"+GOAT_VERSION_LABEL+" "+GOAT_BUILD_MARKER);
        GUI_BG_Display();
        Sleep(100); TesterDialog.Run(); Sleep(100);
        return (INIT_SUCCEEDED);
@@ -3114,6 +3126,18 @@ int OnInit()
       if(Mode_News!=News_Disabled) {SetEdit(PanelDialog.m_edit_News,"  HIGH IMPACT NEWS",GOAT_UI_SECTION_TEXT,Font_Size+1,GOAT_UI_SECTION_BACK,GOAT_UI_SECTION_BORDER,Font_SubHeader);}
     //SetEdit(PanelDialog.m_edit_Foot_1,"BIIIONIC"); SetEdit(PanelDialog.m_edit_Foot_2,"EA v");
      }
+    }
+    else if(LicenseKey==401 || LicenseKey==403)
+    {
+     Print("Stored GOAT user credential was rejected. Starting secure replacement for this MT5 account.");
+     if(!GOATDeviceActivationBegin(AccountInfoInteger(ACCOUNT_LOGIN),GOAT_BUILD_ID,true))
+        return INIT_FAILED;
+     return INIT_SUCCEEDED;
+    }
+    else if(LicenseKey<0 || LicenseKey>=500)
+    {
+     Print("GOAT license service is temporarily unavailable. Stored credential was preserved; no reactivation was started.");
+     return INIT_FAILED;
     }
     else
     {
@@ -3341,6 +3365,14 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Deinit Start"+"================");
+   if(GOATDeviceActivationOnly())
+     {
+      EventKillTimer();
+      HidePrompt();
+      GOATDeviceActivationScrub();
+      Print("GOAT activation-only session closed safely.");
+      return;
+     }
    if(reason!=REASON_PARAMETERS && reason!=REASON_TEMPLATE && reason!=REASON_CHARTCHANGE)
    {
       if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash)
@@ -4464,6 +4496,11 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTimer(void)
   {
+   if(GOATDeviceActivationOnly())
+   {
+    GOATDeviceActivationTimer();
+    return;
+   }
    if(Mode_Operation==Operation_Batch && GoatBatchDeferredRestartPending())
    {
     ShowPrompt("Restarting Terminal for next optimization...","Waiting for Strategy Tester to stop.","Batch Running...","");
@@ -4491,6 +4528,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result)
   {
+   if(GOATDeviceActivationOnly()) return;
    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
 
    int TradeCount = FindNumberOfPositions(OP_BUY,MAGIC1);
@@ -4547,6 +4585,7 @@ void OnChartEvent(const int id,         // event ID
                   const double& dparam, // event parameter of the double type
                   const string& sparam) // event parameter of the string type
   {
+   if(GOATDeviceActivationOnly()) return;
    if(id==GOAT_EVENT_DASHBOARD_COMMAND)
    {
     DashboardBusProcessCommands();
@@ -4704,6 +4743,7 @@ void HandleBiasExitSell(const int sells)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTick()
   {
+   if(GOATDeviceActivationOnly()) return;
    if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return; //return; // returning for testing
    //if(!IsLicensed())    {Alert("Trial Expired"); return;}
    //if(!FastSpeed_Flag) OnlineValidationFunction(MetatraderKey,ServerBreakDownDays,false);
@@ -6720,7 +6760,7 @@ void CPanelDialog::SetCaptionClientColors(void)
       edit.Color(clr_Text);
       edit.Font(GetFontName(Font_Header));
       edit.FontSize(Font_Size+2);
-      edit.Text("        GOAT V"+GOAT_VERSION_LABEL);
+      edit.Text("        GOAT V"+GOAT_VERSION_LABEL+" "+GOAT_BUILD_MARKER);
     }
     //---
     if(name==prefix+"Client")

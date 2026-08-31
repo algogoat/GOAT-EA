@@ -2,8 +2,8 @@
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R5"
-#define   GOAT_BUILD_MARKER "R5"
+#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R8"
+#define   GOAT_BUILD_MARKER "R8"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -47,6 +47,7 @@
 #define CONTROLS_DIALOG_COLOR_CLIENT_BG     C'6,10,18'
 #define CONTROLS_DIALOG_COLOR_CLIENT_BORDER C'35,51,72'
 #include "Optimizer.mqh"
+#define GOAT_DASH_AI_LAUNCH_POLICY_V147 1
 #include "Dashboard.mqh"
 #define GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER 1
 #define GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED 1

@@ -116,8 +116,10 @@ try {
     Require (-not $inputDiff) 'EA input definitions changed'
     $oldMain=(git show "${baselineCommit}:GOAT V1.47.mq5") -join "`n"
     $newMain=$main.Replace("`r`n","`n").TrimEnd("`n")
-    $newMain=$newMain.Replace('V1.47-PERFORMANCE-AI-FILTER-R8','V1.47-PERFORMANCE-AI-FILTER-R5').Replace('GOAT_BUILD_MARKER "R8"','GOAT_BUILD_MARKER "R5"')
+    $newMain=$newMain.Replace('V1.47-PERFORMANCE-AI-FILTER-R9','V1.47-PERFORMANCE-AI-FILTER-R5').Replace('GOAT_BUILD_MARKER "R9"','GOAT_BUILD_MARKER "R5"')
     $newMain=$newMain.Replace("#define GOAT_DASH_AI_LAUNCH_POLICY_V147 1`n",'')
+    $newMain=$newMain.Replace("   ObjectDelete(ChartID(), `"Prompt_ConnectGOAT`");`n",'')
+    $newMain=$newMain.Replace("   if(GOATDeviceActivationOnly())`n   {`n    GOATDeviceActivationChartEvent(id,sparam);`n    return;`n   }",'   if(GOATDeviceActivationOnly()) return;')
     Require ($newMain -ceq $oldMain.TrimStart([char]0xFEFF)) 'V1.47 trading/optimization code changed outside the approved build/gate lines'
 } finally { Pop-Location }
 Write-Output "PASS: production self-test, boundary/invalid thresholds, both override modes, duplicate/missing keys, and $($files.Count) unchanged source exports."

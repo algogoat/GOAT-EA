@@ -2,8 +2,8 @@
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R8"
-#define   GOAT_BUILD_MARKER "R8"
+#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R9"
+#define   GOAT_BUILD_MARKER "R9"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -2398,6 +2398,7 @@ void ShowPrompt(string heading,string sub_heading,string sub_heading2,string tex
 //+------------------------------------------------------------------+
 void HidePrompt()
   {
+   ObjectDelete(ChartID(), "Prompt_ConnectGOAT");
    ObjectDelete(ChartID(), "Prompt_Rect");   Sleep(10);
    ObjectDelete(ChartID(), "Prompt_Logo");   Sleep(10);
    ObjectDelete(ChartID(), "Prompt_Title");  Sleep(10);
@@ -4586,7 +4587,11 @@ void OnChartEvent(const int id,         // event ID
                   const double& dparam, // event parameter of the double type
                   const string& sparam) // event parameter of the string type
   {
-   if(GOATDeviceActivationOnly()) return;
+   if(GOATDeviceActivationOnly())
+   {
+    GOATDeviceActivationChartEvent(id,sparam);
+    return;
+   }
    if(id==GOAT_EVENT_DASHBOARD_COMMAND)
    {
     DashboardBusProcessCommands();

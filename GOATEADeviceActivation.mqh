@@ -74,6 +74,13 @@ int GOATDeviceActivationPostJson(const string path,const string headers,const st
 
 void GOATDeviceActivationShowNetworkHelp(void)
   {
+   if(g_GOATDeviceActivationState==GOAT_DEVICE_ACTIVATION_PENDING
+      && (long)TimeGMT()*1000<g_GOATDeviceActivationExpiresAtMs
+      && GOATDeviceActivationValidCode(g_GOATDeviceActivationConnectCode))
+     {
+      GOATDeviceActivationShowRetry("Connection interrupted; retrying. Check WebRequest settings if needed.");
+      return;
+     }
    HidePrompt();
    ShowPrompt("GOAT activation needs one MT5 permission",
               "Tools > Options > Expert Advisors: enable WebRequest",

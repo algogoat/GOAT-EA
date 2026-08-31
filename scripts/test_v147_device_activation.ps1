@@ -60,4 +60,7 @@ Require ($activation.Contains('(long)TimeGMT()*1000>=g_GOATDeviceActivationExpir
 Require ($activation.Contains('string connect_url="https://goatedge.ai/user-portal?tab=ea#ea-connect="+g_GOATDeviceActivationConnectCode;')) 'fixed-origin fragment link is required'
 Require (-not $activation.Contains('Enter pairing code:')) 'new activation flow must not require typing a code'
 Require (-not $activation.Contains('/api/ea/device/approve')) 'EA must never approve its own connection'
+$networkHelp = $activation.Substring($activation.IndexOf('void GOATDeviceActivationShowNetworkHelp'), $activation.IndexOf('void GOATDeviceActivationShowCode') - $activation.IndexOf('void GOATDeviceActivationShowNetworkHelp'))
+Require ($networkHelp.Contains('GOATDeviceActivationValidCode(g_GOATDeviceActivationConnectCode)')) 'pending WebRequest failures must retain the validated connection link'
+Require ($networkHelp.Contains('GOATDeviceActivationShowRetry(')) 'pending network help must use the link-preserving retry prompt'
 Write-Output 'V1.47 secure one-file activation and explicit Connect GOAT link contract passed.'

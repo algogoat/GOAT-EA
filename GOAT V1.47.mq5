@@ -2,8 +2,8 @@
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R7"
-#define   GOAT_BUILD_MARKER "R7"
+#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R8"
+#define   GOAT_BUILD_MARKER "R8"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"

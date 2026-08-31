@@ -95,7 +95,7 @@ Require ($main.Contains('#define GOAT_DASH_AI_LAUNCH_POLICY_V147 1')) 'V1.47 fea
 Require ($dashboard.Contains('if(AnyAILaunchRowsDeployed()) return true;')) 'Launch policy lock missing'
 Require ($dashboard.Contains('edt_AILaunchThreshold.ReadOnly(locked || m_ai_launch_mode==GOAT_AI_LAUNCH_AS_OPTIMIZED);')) 'Threshold lock missing'
 Require ($dashboard.Contains('if(PrepareAILaunchPolicy()) UpdateAILaunchControls();')) 'Invalid threshold must not silently reset before a queued activation'
-Require ($dashboard.Contains('LoadAILaunchPolicyState();') -and $dashboard.Contains('SaveAILaunchPolicyState();') -and $dashboard.Contains('DeleteAILaunchPolicyState();')) 'Resume/new-portfolio policy lifecycle missing'
+Require ($dashboard.Contains('if(header=="#GOAT_AI_LAUNCH_V147_1")') -and $dashboard.Contains('SaveAILaunchPolicyState();') -and $dashboard.Contains('DeleteAILaunchPolicyState();')) 'Resume/new-portfolio policy lifecycle missing'
 Require ($dashboard.Contains('AppendAILaunchAudit(idx,"PREPARED");') -and $dashboard.Contains('"LINKED" : "APPLY_FAILED"')) 'Launch audit stages missing'
 Require ($dashboard.Contains('if(tplText=="") return;') -and $dashboard.Contains('if(inputs=="")')) 'Unreadable/empty export launch guard missing'
 Require ($dashboard.Contains('if(next_mode!=GOAT_AI_LAUNCH_AS_OPTIMIZED && !PrepareAILaunchPolicy()) return true;')) 'Invalid threshold must not prevent returning to As Optimized'
@@ -106,6 +106,9 @@ Require ($applyBody.IndexOf('g_sets[idx].cid=cid;') -lt $applyBody.IndexOf('if(!
 Require ($applyBody.IndexOf('if(!SaveDashboardConfig())') -lt $applyBody.IndexOf('if(!ChartApplyTemplate(cid, tplName))')) 'Partial deployment lock must be persisted before the child EA can run'
 Require ($applyBody.Contains('if(ChartClose(cid)) g_sets[idx].cid=-1;')) 'Failed durable save must block child launch'
 Require ($dashboard.Contains('if(written==0)') -and $dashboard.Contains('if(!FileMove(write_path,FILE_COMMON,rel_path,FILE_COMMON|FILE_REWRITE)) return false;')) 'Dashboard snapshot must fail closed on partial write/replacement failure'
+Require ($dashboard.Contains('if(FileWrite(h,"#GOAT_AI_LAUNCH_V147_1",IntegerToString(m_ai_launch_mode),IntegerToString(m_ai_launch_threshold))==0)')) 'Policy must be written atomically with child identities, not depend on terminal globals'
+Require ($dashboard.Contains('No duplicate EA will be launched.')) 'Unlinked persisted child identity must not allow a duplicate launch'
+Require ($dashboard.Contains('Legacy split AI policy state cannot be resumed safely; inspect existing child charts.')) 'Unproven legacy split policy must fail closed'
 
 Push-Location $repo
 try {
@@ -113,7 +116,7 @@ try {
     Require (-not $inputDiff) 'EA input definitions changed'
     $oldMain=(git show "${baselineCommit}:GOAT V1.47.mq5") -join "`n"
     $newMain=$main.Replace("`r`n","`n").TrimEnd("`n")
-    $newMain=$newMain.Replace('V1.47-PERFORMANCE-AI-FILTER-R7','V1.47-PERFORMANCE-AI-FILTER-R5').Replace('GOAT_BUILD_MARKER "R7"','GOAT_BUILD_MARKER "R5"')
+    $newMain=$newMain.Replace('V1.47-PERFORMANCE-AI-FILTER-R8','V1.47-PERFORMANCE-AI-FILTER-R5').Replace('GOAT_BUILD_MARKER "R8"','GOAT_BUILD_MARKER "R5"')
     $newMain=$newMain.Replace("#define GOAT_DASH_AI_LAUNCH_POLICY_V147 1`n",'')
     Require ($newMain -ceq $oldMain.TrimStart([char]0xFEFF)) 'V1.47 trading/optimization code changed outside the approved build/gate lines'
 } finally { Pop-Location }

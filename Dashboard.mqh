@@ -307,6 +307,12 @@ public:
     if(idx<0 || idx>=ArraySize(g_sets)) return;
     if(ArraySize(btn_Action)>idx+2 && btn_Action[idx+2].Text()=="Navigate") return;
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
+    if(g_sets[idx].cid>0 || g_sets[idx].magic>0)
+    {
+       MessageBox("This row already has a child identity, but is not linked.\n\nNo duplicate EA will be launched. Inspect the existing child chart before creating a new portfolio.",
+                  "Existing Child Requires Inspection",MB_OK|MB_ICONWARNING);
+       return;
+    }
     if(!PrepareAILaunchPolicy()) return;
 #endif
     //GlobalVariableSet("Dashboard_ChartID",(double)ChartID());
@@ -4122,7 +4128,39 @@ int CGOATDashboard::LoadDashboardConfig(void)
    int h=FileOpen(rel_path,FILE_READ|FILE_CSV|FILE_COMMON,'\t');
    if(h==INVALID_HANDLE) return 0;
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
-   LoadAILaunchPolicyState();
+   // This header and all child identities share one checked atomic snapshot.
+   // Terminal globals are UI convenience only, never resume authority.
+   string header=FileReadString(h);
+   if(header=="#GOAT_AI_LAUNCH_V147_1")
+   {
+      string saved_mode=FileReadString(h);
+      string saved_threshold=FileReadString(h);
+      int threshold=60;
+      if((saved_mode!="0" && saved_mode!="1" && saved_mode!="2") ||
+         !GoatParseAILaunchThreshold(saved_threshold,threshold) || !FileIsLineEnding(h))
+      {
+         Print("Invalid dashboard AI policy snapshot; resume blocked.");
+         FileClose(h);
+         return 0;
+      }
+      m_ai_launch_mode=(int)StringToInteger(saved_mode);
+      m_ai_launch_threshold=threshold;
+   }
+   else
+   {
+      // R5 has no AI override state. Unpublished legacy candidates with split
+      // policy/global state cannot prove which policy belongs to this file.
+      if(GlobalVariableCheck(GoatPortfolioGVName("DashboardAILaunchV147Mode")) ||
+         GlobalVariableCheck(GoatPortfolioGVName("DashboardAILaunchV147Threshold")))
+      {
+         Print("Legacy split AI policy state cannot be resumed safely; inspect existing child charts.");
+         FileClose(h);
+         return 0;
+      }
+      m_ai_launch_mode=GOAT_AI_LAUNCH_AS_OPTIMIZED;
+      m_ai_launch_threshold=60;
+      FileSeek(h,0,SEEK_SET);
+   }
 #endif
 
    ArrayResize(g_sets,0);
@@ -4177,6 +4215,14 @@ bool CGOATDashboard::SaveDashboardConfig(void)
 #endif
    if(h==INVALID_HANDLE) return false;
 
+#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
+   if(FileWrite(h,"#GOAT_AI_LAUNCH_V147_1",IntegerToString(m_ai_launch_mode),IntegerToString(m_ai_launch_threshold))==0)
+   {
+      FileClose(h);
+      FileDelete(write_path,FILE_COMMON);
+      return false;
+   }
+#endif
    for(int idx=0; idx<ArraySize(g_sets); ++idx)
    {
       uint written=FileWrite(h,

@@ -23,6 +23,8 @@ ulong  g_GOATDeviceActivationNextAttemptTick=0;
 int    g_GOATDeviceActivationPollSeconds=5;
 bool   g_GOATDeviceActivationReloadRequested=false;
 bool   g_GOATDeviceActivationReplaceCredential=false;
+string g_GOATDeviceActivationConnectCode="";
+ulong  g_GOATDeviceActivationNextOpenTick=0;
 
 bool GOATDeviceActivationOnly(void)
   {
@@ -40,6 +42,8 @@ void GOATDeviceActivationScrub(void)
    g_GOATDeviceActivationPollSeconds=5;
    g_GOATDeviceActivationReloadRequested=false;
    g_GOATDeviceActivationReplaceCredential=false;
+   g_GOATDeviceActivationConnectCode="";
+   g_GOATDeviceActivationNextOpenTick=0;
   }
 
 bool GOATDeviceActivationValidCode(const string value)
@@ -79,13 +83,69 @@ void GOATDeviceActivationShowNetworkHelp(void)
 void GOATDeviceActivationShowCode(const string user_code,const string verification_url)
   {
    HidePrompt();
-   ShowPrompt("Activate GOAT V1.47",
-               "Sign in and confirm MT5 account "+g_GOATDeviceActivationAccountId+".",
-               "Enter pairing code: "+user_code,verification_url);
+   g_GOATDeviceActivationConnectCode="";
+   if(!GOATDeviceActivationValidCode(user_code)
+      || verification_url!="https://goatedge.ai/user-portal?tab=ea") return;
+   g_GOATDeviceActivationConnectCode=user_code;
+   // Only the short-lived request code enters the URL fragment, never a bearer credential.
+   string connect_url=verification_url+"#ea-connect="+user_code;
+   ShowPrompt("Connect GOAT",
+               "Sign in and approve MT5 account "+g_GOATDeviceActivationAccountId+".",
+               "No code entry. If the browser cannot open, use the link below.",connect_url);
+   int left=(int)ObjectGetInteger(ChartID(),"Prompt_Edit",OBJPROP_XDISTANCE);
+   int top=(int)ObjectGetInteger(ChartID(),"Prompt_Edit",OBJPROP_YDISTANCE);
+   ObjectSetInteger(ChartID(),"Prompt_Rect",OBJPROP_YSIZE,174);
+   ObjectSetInteger(ChartID(),"Prompt_Edit",OBJPROP_YDISTANCE,top+38);
+   ObjectSetInteger(ChartID(),"Prompt_Edit",OBJPROP_READONLY,true);
+   ObjectCreate(ChartID(),"Prompt_ConnectGOAT",OBJ_BUTTON,0,0,0);
+   ObjectSetInteger(ChartID(),"Prompt_ConnectGOAT",OBJPROP_XDISTANCE,left);
+   ObjectSetInteger(ChartID(),"Prompt_ConnectGOAT",OBJPROP_YDISTANCE,top);
+   ObjectSetInteger(ChartID(),"Prompt_ConnectGOAT",OBJPROP_XSIZE,180);
+   ObjectSetInteger(ChartID(),"Prompt_ConnectGOAT",OBJPROP_YSIZE,28);
+   ObjectSetInteger(ChartID(),"Prompt_ConnectGOAT",OBJPROP_COLOR,clrWhite);
+   ObjectSetInteger(ChartID(),"Prompt_ConnectGOAT",OBJPROP_BGCOLOR,C'17,47,68');
+   ObjectSetInteger(ChartID(),"Prompt_ConnectGOAT",OBJPROP_FONTSIZE,10);
+   ObjectSetString(ChartID(),"Prompt_ConnectGOAT",OBJPROP_TEXT,"Connect GOAT");
+   ChartRedraw();
+  }
+
+void GOATDeviceActivationChartEvent(const int id,const string object_name)
+  {
+   if(id!=CHARTEVENT_OBJECT_CLICK || object_name!="Prompt_ConnectGOAT") return;
+   ObjectSetInteger(ChartID(),"Prompt_ConnectGOAT",OBJPROP_STATE,false);
+   if(g_GOATDeviceActivationState!=GOAT_DEVICE_ACTIVATION_PENDING
+      || g_GOATDeviceActivationReloadRequested
+      || (long)TimeGMT()*1000>=g_GOATDeviceActivationExpiresAtMs
+      || !GOATDeviceActivationValidCode(g_GOATDeviceActivationConnectCode)) return;
+   ulong tick=GetTickCount64();
+   if(tick<g_GOATDeviceActivationNextOpenTick) return;
+   g_GOATDeviceActivationNextOpenTick=tick+2000;
+   if(!MQLInfoInteger(MQL_DLLS_ALLOWED))
+     {
+      ObjectSetString(ChartID(),"Prompt_Descp2",OBJPROP_TEXT,"Open the full link below in your browser; no code entry.");
+      ChartRedraw();
+      return;
+     }
+   string connect_url="https://goatedge.ai/user-portal?tab=ea#ea-connect="+g_GOATDeviceActivationConnectCode;
+   // Fixed HTTPS origin and validated code only. Never execute prompt text or server-supplied commands.
+   int opened=ShellExecuteW(0,"open",connect_url,"","",1);
+   if(opened<=32)
+      ObjectSetString(ChartID(),"Prompt_Descp2",OBJPROP_TEXT,"Browser could not open. Open the full link below instead.");
+   ChartRedraw();
   }
 
 void GOATDeviceActivationShowRetry(const string detail)
   {
+   if(g_GOATDeviceActivationState==GOAT_DEVICE_ACTIVATION_PENDING
+      && (long)TimeGMT()*1000<g_GOATDeviceActivationExpiresAtMs
+      && GOATDeviceActivationValidCode(g_GOATDeviceActivationConnectCode))
+     {
+      string pending_code=g_GOATDeviceActivationConnectCode;
+      GOATDeviceActivationShowCode(pending_code,"https://goatedge.ai/user-portal?tab=ea");
+      ObjectSetString(ChartID(),"Prompt_Descp2",OBJPROP_TEXT,detail);
+      return;
+     }
+   g_GOATDeviceActivationConnectCode="";
    HidePrompt();
    ShowPrompt("GOAT activation is waiting",detail,
               "The EA is safely paused and will retry automatically.",URL_API);
@@ -267,7 +327,7 @@ void GOATDeviceActivationTimer(void)
       g_GOATDeviceActivationCandidate="";
       g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_STARTING;
       g_GOATDeviceActivationNextAttemptTick=now_tick+1000;
-      GOATDeviceActivationShowRetry("The pairing code expired; requesting a fresh code.");
+      GOATDeviceActivationShowRetry("The connection link expired; requesting a fresh link.");
       return;
      }
 

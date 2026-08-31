@@ -38,6 +38,19 @@ even though the active news, time, and recorded-bias readers use `FILE_COMMON`.
 V1.47 therefore remains a one-file portal install, retains `tester_no_cache`,
 and does not change signal, trade, risk, or live-bias behavior.
 
+### V1.47 R9 Connect GOAT
+
+Attach the EA, click **Connect GOAT**, sign in if needed, then approve the
+displayed MT5 account and build. The link carries a short-lived request code in
+its fragment; no manual code entry or private credential appears in the URL.
+The browser removes the fragment after capture and only inspects the request
+automatically. Approval remains an explicit signed-in user action, with the
+existing entitlement, account membership, build admission and expiry checks.
+If MT5 cannot open the browser (including DLL permission being off), open the
+full link shown on the chart. No permission is enabled automatically. The
+saved user-scoped credential is reused across authorized local terminals.
+R9 retains the dashboard policy below without changing any EA inputs or sets.
+
 ### V1.47 R8 dashboard AI launch policy
 
 Before activating any portfolio row, use the AI control beside the dashboard's

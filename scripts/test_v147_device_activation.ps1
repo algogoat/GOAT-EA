@@ -8,7 +8,7 @@ function Require([bool]$condition, [string]$message) {
     if (-not $condition) { throw $message }
 }
 
-Require ($main.Contains('#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R8"')) 'R8 build id missing'
+Require ($main.Contains('#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R9"')) 'R9 build id missing'
 Require ($main.Contains('#include "GOATEADeviceActivation.mqh"')) 'activation module is not included'
 Require ($main.Contains('if(GOATDeviceActivationOnly()) return;')) 'capital-sensitive event guards missing'
 Require ($main.Contains('GOATDeviceActivationTimer();')) 'activation timer is not wired'
@@ -44,11 +44,20 @@ Require ($activation.Contains('string expected[]={"ok","status","activationId","
 Require ($activation.Contains('GOATJsonGetInteger(response,tokens,0,"status",response_status)')) 'start response status must be parsed as an integer'
 Require ($activation.Contains('return(response_status==201')) 'start response must require HTTP-created status identity'
 Require (-not $activation.Contains('account-bound credential')) 'credential wording must reflect user-scoped authorization'
-Require ($activation.Contains('confirm MT5 account "+g_GOATDeviceActivationAccountId')) 'EA must identify the requested account during activation'
+Require ($activation.Contains('approve MT5 account "+g_GOATDeviceActivationAccountId')) 'EA must identify the requested account during activation'
 Require ($activation.Contains('Your GOAT user credential is installed.')) 'installed credential must be described as user-scoped'
 Require ($activation.Contains('rechecks MT5-account membership and entitlement on every feed request')) 'server-side account authorization contract must be documented'
 Require ($activation.Contains('EventKillTimer();')) 'failed automatic chart reload must stop activation polling'
 Require (-not [regex]::IsMatch($activation, 'ChartSetSymbolPeriod[\s\S]{0,300}g_GOATDeviceActivationReloadRequested=false;')) 'failed chart reload must stay latched instead of retrying'
 Require ($activation.Contains('Remove and add V1.47 once to finish setup.')) 'manual one-time reload guidance missing'
 
-Write-Output 'V1.47 secure one-file device activation contract passed.'
+Require ($main.Contains('GOATDeviceActivationChartEvent(id,sparam);')) 'activation button event is missing'
+Require ($main.Contains('ObjectDelete(ChartID(), "Prompt_ConnectGOAT");')) 'activation button cleanup is missing'
+Require ($activation.Contains('if(id!=CHARTEVENT_OBJECT_CLICK || object_name!="Prompt_ConnectGOAT") return;')) 'browser must only open on explicit Connect button clicks'
+Require ($activation.Contains('if(!MQLInfoInteger(MQL_DLLS_ALLOWED))')) 'browser fallback must not require enabling DLLs'
+Require ($activation.Contains('g_GOATDeviceActivationState!=GOAT_DEVICE_ACTIVATION_PENDING')) 'expired/nonpending requests must not open'
+Require ($activation.Contains('(long)TimeGMT()*1000>=g_GOATDeviceActivationExpiresAtMs')) 'expired link must fail closed'
+Require ($activation.Contains('string connect_url="https://goatedge.ai/user-portal?tab=ea#ea-connect="+g_GOATDeviceActivationConnectCode;')) 'fixed-origin fragment link is required'
+Require (-not $activation.Contains('Enter pairing code:')) 'new activation flow must not require typing a code'
+Require (-not $activation.Contains('/api/ea/device/approve')) 'EA must never approve its own connection'
+Write-Output 'V1.47 secure one-file activation and explicit Connect GOAT link contract passed.'

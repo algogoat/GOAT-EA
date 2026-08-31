@@ -4,7 +4,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-$baselineCommit = '67cd046c3b3b43d4e535ea6955b826891445f315' # Released V1.47 R5; stable after R6 is committed.
+$baselineCommit = '67cd046c3b3b43d4e535ea6955b826891445f315' # Released V1.47 R5; stable after later revisions are committed.
 $helper = [IO.File]::ReadAllText((Join-Path $repo 'GOAT_DashboardAILaunchPolicy.mqh'))
 $dashboard = [IO.File]::ReadAllText((Join-Path $repo 'Dashboard.mqh'))
 $main = [IO.File]::ReadAllText((Join-Path $repo 'GOAT V1.47.mq5'))
@@ -98,6 +98,14 @@ Require ($dashboard.Contains('if(PrepareAILaunchPolicy()) UpdateAILaunchControls
 Require ($dashboard.Contains('LoadAILaunchPolicyState();') -and $dashboard.Contains('SaveAILaunchPolicyState();') -and $dashboard.Contains('DeleteAILaunchPolicyState();')) 'Resume/new-portfolio policy lifecycle missing'
 Require ($dashboard.Contains('AppendAILaunchAudit(idx,"PREPARED");') -and $dashboard.Contains('"LINKED" : "APPLY_FAILED"')) 'Launch audit stages missing'
 Require ($dashboard.Contains('if(tplText=="") return;') -and $dashboard.Contains('if(inputs=="")')) 'Unreadable/empty export launch guard missing'
+Require ($dashboard.Contains('if(next_mode!=GOAT_AI_LAUNCH_AS_OPTIMIZED && !PrepareAILaunchPolicy()) return true;')) 'Invalid threshold must not prevent returning to As Optimized'
+$applyStart=$dashboard.IndexOf('bool CGOATDashboard::ApplyTemplate(')
+$applyEnd=$dashboard.IndexOf('bool CGOATDashboard::NewSingleInstance(',$applyStart)
+$applyBody=$dashboard.Substring($applyStart,$applyEnd-$applyStart)
+Require ($applyBody.IndexOf('g_sets[idx].cid=cid;') -lt $applyBody.IndexOf('if(!SaveDashboardConfig())')) 'Child identity must be assigned before persisting'
+Require ($applyBody.IndexOf('if(!SaveDashboardConfig())') -lt $applyBody.IndexOf('if(!ChartApplyTemplate(cid, tplName))')) 'Partial deployment lock must be persisted before the child EA can run'
+Require ($applyBody.Contains('if(ChartClose(cid)) g_sets[idx].cid=-1;')) 'Failed durable save must block child launch'
+Require ($dashboard.Contains('if(written==0)') -and $dashboard.Contains('if(!FileMove(write_path,FILE_COMMON,rel_path,FILE_COMMON|FILE_REWRITE)) return false;')) 'Dashboard snapshot must fail closed on partial write/replacement failure'
 
 Push-Location $repo
 try {
@@ -105,7 +113,7 @@ try {
     Require (-not $inputDiff) 'EA input definitions changed'
     $oldMain=(git show "${baselineCommit}:GOAT V1.47.mq5") -join "`n"
     $newMain=$main.Replace("`r`n","`n").TrimEnd("`n")
-    $newMain=$newMain.Replace('V1.47-PERFORMANCE-AI-FILTER-R6','V1.47-PERFORMANCE-AI-FILTER-R5').Replace('GOAT_BUILD_MARKER "R6"','GOAT_BUILD_MARKER "R5"')
+    $newMain=$newMain.Replace('V1.47-PERFORMANCE-AI-FILTER-R7','V1.47-PERFORMANCE-AI-FILTER-R5').Replace('GOAT_BUILD_MARKER "R7"','GOAT_BUILD_MARKER "R5"')
     $newMain=$newMain.Replace("#define GOAT_DASH_AI_LAUNCH_POLICY_V147 1`n",'')
     Require ($newMain -ceq $oldMain.TrimStart([char]0xFEFF)) 'V1.47 trading/optimization code changed outside the approved build/gate lines'
 } finally { Pop-Location }

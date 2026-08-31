@@ -1396,8 +1396,9 @@ bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
                     "AI Launch Policy",MB_OK|MB_ICONINFORMATION);
          return true;
       }
-      if(!PrepareAILaunchPolicy()) return true;
-      m_ai_launch_mode=(m_ai_launch_mode+1)%3;
+      int next_mode=(m_ai_launch_mode+1)%3;
+      if(next_mode!=GOAT_AI_LAUNCH_AS_OPTIMIZED && !PrepareAILaunchPolicy()) return true;
+      m_ai_launch_mode=next_mode;
       SaveAILaunchPolicyState();
       RefreshAILaunchLabels();
       UpdateAILaunchControls();
@@ -2985,6 +2986,18 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    g_sets[idx].cid=cid;
    PrintFormat("  Chart opened  cid=%I64d", cid);
 
+#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
+   // Persist the child identity and policy before an EA can run. A partial
+   // deployment must remain resumable and locked across a terminal restart.
+   if(!SaveDashboardConfig())
+   {
+      Print("Dashboard state could not be saved; child EA launch blocked.");
+      if(ChartClose(cid)) g_sets[idx].cid=-1;
+      DeleteCopiedTemplate(tplName);
+      return false;
+   }
+#endif
+
    if(!ChartApplyTemplate(cid, tplName))
    {
       Alert(StringFormat("  ChartApplyTemplate FAILED  err=%d", GetLastError()));
@@ -3042,8 +3055,13 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
     edt_Status[idx+2].Text(g_sets[idx].status); edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
     btn_Action[idx+2].Text("Navigate");
     MarkStateDirty();
+#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
+    if(!SaveDashboardConfig())
+       Print("Dashboard linked-state save failed; pre-launch child identity remains persisted and policy stays locked.");
+#else
     if(AllRowsDeployed())
        SaveDashboardConfig();
+#endif
    }
    DeleteCopiedTemplate(tplName);
    Sleep(500); ChartRedraw(); Sleep(500);
@@ -4150,12 +4168,18 @@ bool CGOATDashboard::SaveDashboardConfig(void)
    SaveAILaunchPolicyState();
 #endif
    string rel_path=StateCacheRelativePath();
+#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
+   // Preserve the previous complete snapshot if writing the new one fails.
+   string write_path=rel_path+".pending";
+   int h=FileOpen(write_path,FILE_WRITE|FILE_CSV|FILE_COMMON,'\t');
+#else
    int h=FileOpen(rel_path,FILE_WRITE|FILE_CSV|FILE_COMMON,'\t');
+#endif
    if(h==INVALID_HANDLE) return false;
 
    for(int idx=0; idx<ArraySize(g_sets); ++idx)
    {
-      FileWrite(h,
+      uint written=FileWrite(h,
                 g_sets[idx].path,
                 g_sets[idx].name,
                 g_sets[idx].sym,
@@ -4165,9 +4189,21 @@ bool CGOATDashboard::SaveDashboardConfig(void)
                 g_sets[idx].risk_lots_label,
                 StringFormat("%I64d",g_sets[idx].cid),
                 StringFormat("%I64d",g_sets[idx].magic));
+#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
+      if(written==0)
+      {
+         FileClose(h);
+         FileDelete(write_path,FILE_COMMON);
+         return false;
+      }
+#endif
    }
 
+   FileFlush(h);
    FileClose(h);
+#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
+   if(!FileMove(write_path,FILE_COMMON,rel_path,FILE_COMMON|FILE_REWRITE)) return false;
+#endif
    m_state_dirty=false;
    m_last_state_save=TimeCurrent();
    return true;

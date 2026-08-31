@@ -38,7 +38,7 @@ even though the active news, time, and recorded-bias readers use `FILE_COMMON`.
 V1.47 therefore remains a one-file portal install, retains `tester_no_cache`,
 and does not change signal, trade, risk, or live-bias behavior.
 
-### V1.47 R6 dashboard AI launch policy
+### V1.47 R7 dashboard AI launch policy
 
 Before activating any portfolio row, use the AI control beside the dashboard's
 view tabs to cycle **As Optimized**, **Display Only**, and **Entry Filter**.
@@ -46,6 +46,9 @@ As Optimized is the default and preserves every exported input. For the two
 override modes, enter a whole-number threshold from 1 to 100 (default 60).
 The setting locks after the first child chart is opened and is retained when
 resuming the saved dashboard; it is not a command to change running EAs.
+The child identity and policy are saved before applying its EA template, so the
+lock also survives a restart after partial deployment. A failed state save blocks
+that child launch. R7 supersedes the unpublished R6 candidate.
 
 Only temporary launch templates are changed: `Mode_Bias` becomes Display (0)
 or Opens (2), `Bias_threshold` uses the selected value, `Bias_Protocol` is

@@ -38,6 +38,31 @@ even though the active news, time, and recorded-bias readers use `FILE_COMMON`.
 V1.47 therefore remains a one-file portal install, retains `tester_no_cache`,
 and does not change signal, trade, risk, or live-bias behavior.
 
+### V1.47 R6 dashboard AI launch policy
+
+Before activating any portfolio row, use the AI control beside the dashboard's
+view tabs to cycle **As Optimized**, **Display Only**, and **Entry Filter**.
+As Optimized is the default and preserves every exported input. For the two
+override modes, enter a whole-number threshold from 1 to 100 (default 60).
+The setting locks after the first child chart is opened and is retained when
+resuming the saved dashboard; it is not a command to change running EAs.
+
+Only temporary launch templates are changed: `Mode_Bias` becomes Display (0)
+or Opens (2), `Bias_threshold` uses the selected value, `Bias_Protocol` is
+calibrated Control Tower V2 (1), and `Mode_Bias_Trades` is sequence starts only
+(0). Source `.set` files, the EA input schema, news settings, optimization
+behavior, and all other strategy/risk/exit inputs remain unchanged. No AI close
+or SmartRescue override is offered. Directly attaching a set bypasses this
+dashboard policy. Entry Filter retains the existing fail-closed behavior when
+calibrated AI data is unavailable; Display Only does not gate entries.
+
+Each launch records source/effective AI values in
+`Common\Files\GOAT\dashboard_ai_launch_audit.tsv` (under the configured GOAT
+key). `PREPARED`, `LINKED`, and `APPLY_FAILED` distinguish template preparation
+from child binding. This does not certify a trade or a healthy live feed.
+Run `scripts/test_v147_ai_launch_policy.ps1` for the executable policy and
+export-preservation checks, then compile V1.47 with the GOAT compile wrapper.
+
 ### V1.45 release-admitted Control Tower wire
 
 `GOAT V1.45` carries the forward-only client for `/api/ea/bias/v2`

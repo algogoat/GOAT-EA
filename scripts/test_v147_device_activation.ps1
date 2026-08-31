@@ -8,7 +8,7 @@ function Require([bool]$condition, [string]$message) {
     if (-not $condition) { throw $message }
 }
 
-Require ($main.Contains('#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R5"')) 'R5 build id missing'
+Require ($main.Contains('#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R6"')) 'R6 build id missing'
 Require ($main.Contains('#include "GOATEADeviceActivation.mqh"')) 'activation module is not included'
 Require ($main.Contains('if(GOATDeviceActivationOnly()) return;')) 'capital-sensitive event guards missing'
 Require ($main.Contains('GOATDeviceActivationTimer();')) 'activation timer is not wired'

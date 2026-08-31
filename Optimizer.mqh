@@ -284,6 +284,87 @@ string GoatOptSetIniValue(string text,const string key,const string value)
    return out;
   }
 //+------------------------------------------------------------------+
+string GoatOptNormalizeTesterInputSurface(const string text)
+  {
+#ifndef GOAT_AI_SIGNAL_FILTER_V147
+   return text;
+#else
+   string opt_lines[];
+   int total=StringSplit(text,'\n',opt_lines);
+   if(total<=0) return text;
+
+   string bias_protocol_line="";
+   int bias_protocol_count=0;
+   int mode_news_count=0;
+   bool has_signal_header=false;
+   for(int i=0;i<total;++i)
+   {
+      string trimmed=opt_lines[i];
+      StringTrimLeft(trimmed);
+      StringTrimRight(trimmed);
+      if(trimmed=="; ==========NEWS AND AI FILTER=========="
+         || trimmed=="; ==========NEWS AND AI BIAS FILTER=========="
+         || trimmed=="; ==========GOAT AI SIGNAL FILTER==========")
+         has_signal_header=true;
+      if(StringFind(trimmed,"Bias_Protocol=",0)==0)
+      {
+         bias_protocol_line=trimmed;
+         bias_protocol_count++;
+      }
+      if(StringFind(trimmed,"Mode_News=",0)==0)
+         mode_news_count++;
+   }
+
+   string out="";
+   bool signal_header_written=false;
+   bool news_header_written=false;
+   for(int i=0;i<total;++i)
+   {
+      string line=opt_lines[i];
+      StringReplace(line,"\r","");
+      string trimmed=line;
+      StringTrimLeft(trimmed);
+      StringTrimRight(trimmed);
+
+      if(trimmed=="; ==========NEWS AND AI FILTER=========="
+         || trimmed=="; ==========NEWS AND AI BIAS FILTER=========="
+         || trimmed=="; ==========GOAT AI SIGNAL FILTER==========")
+      {
+         if(!signal_header_written)
+         {
+            out+=(out=="" ? "" : "\r\n")+"; ==========GOAT AI SIGNAL FILTER==========";
+            if(bias_protocol_count==1)
+               out+="\r\n"+bias_protocol_line;
+         }
+         signal_header_written=true;
+         continue;
+      }
+      if(trimmed=="; ==========GOAT AI CONTROL TOWER==========") continue;
+      if(trimmed=="; ================GOAT NEWS FILTER================" && mode_news_count>0) continue;
+
+      int eq=StringFind(trimmed,"=",0);
+      if(eq>0)
+      {
+         string key=StringSubstr(trimmed,0,eq);
+         StringTrimLeft(key);
+         StringTrimRight(key);
+         if(key=="Bias_Protocol" && has_signal_header && bias_protocol_count==1) continue;
+         if(key=="Mode_News" && !news_header_written)
+         {
+            out+=(out=="" ? "" : "\r\n")+"; ================GOAT NEWS FILTER================";
+            news_header_written=true;
+         }
+         if(key=="Bias_V2_Win_Payoff_R"
+            || key=="Bias_V2_Loss_Payoff_R"
+            || key=="Bias_V2_Round_Trip_Cost_R"
+            || key=="Bias_V2_Min_Expected_R") continue;
+      }
+      out+=(out=="" ? "" : "\r\n")+line;
+   }
+   return out;
+#endif
+  }
+//+------------------------------------------------------------------+
 string GoatOptForwardTextFromMode(const string mode)
   {
         if(mode=="1") return "1/2";
@@ -649,6 +730,7 @@ string CStrategyTesterDialog::BuildBatchInputsPackage(const string queueContent)
       string inputsPath=GoatOptStrategyDir(EA_Name_,Server_,strategy)+"\\Inputs."+Key_;
       string inputs=GetFileContent(inputsPath);
       if(inputs=="") continue;
+      inputs=GoatOptNormalizeTesterInputSurface(inputs);
 
       out+="[GOAT_INPUT:"+GoatOptSafePathPart(strategy)+"]\r\n";
       out+=inputs+"\r\n";
@@ -688,6 +770,7 @@ bool CStrategyTesterDialog::RestoreBatchInputsPackage(const string packageBody)
       string inputs=StringSubstr(packageBody,contentStart,end-contentStart);
       StringTrimLeft(inputs);
       StringTrimRight(inputs);
+      inputs=GoatOptNormalizeTesterInputSurface(inputs);
       if(strategy!="" && inputs!="")
       {
          string inputsPath=GoatOptStrategyDir(EA_Name_,Server_,strategy)+"\\Inputs."+Key_;
@@ -884,7 +967,9 @@ bool CStrategyTesterDialog::SaveStrategyInputsFromSet(const string setPath,strin
       while(!FileIsEnding(handle)) FileWrite(handle_dest,FileReadString(handle));
       FileClose(handle_dest);
       FileClose(handle);
-      return (GetFileContent(inputsPath)!="");
+      string inputs=GoatOptNormalizeTesterInputSurface(GetFileContent(inputsPath));
+      if(inputs=="") return false;
+      return GoatOptWriteTextFile(inputsPath,inputs);
      }
 
    FileClose(handle);
@@ -3102,6 +3187,7 @@ bool ActivatePending(string QueueItem,string Key_,string EA_Name_,string Server_
    string inputsPath  = strategyDir+"\\Inputs."+Key_;
    EnsureCommonFolderTree(strategyDir);
    string testerInputs = GetFileContent(inputsPath);
+   testerInputs=GoatOptNormalizeTesterInputSurface(testerInputs);
    if(testerInputs=="") {WriteLog("Cannot Activate Queue Item. Inputs file missing or empty: "+inputsPath,true,Key_,EA_Name_,Server_); return false;}
    string configBody=(QueueItem=="" ? QueueItem : QueueItem+"\r\n[TesterInputs]\r\n"+testerInputs);
    string auditConfig=strategyDir+"\\config.ini";

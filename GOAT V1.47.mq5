@@ -3,8 +3,8 @@
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-STUDIO-RESTART-R16"
-#define   GOAT_BUILD_MARKER "R16"
+#define   GOAT_BUILD_ID "V1.47-ASSET-SEQUENCE-GUARD-R1"
+#define   GOAT_BUILD_MARKER "DG1"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -202,10 +202,15 @@ bool DashboardRegisteredPortfolioPosition(const long magic,const string symbol)
    return false;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// Atomic asset-direction ownership at the real-order boundary.
+#include "GOAT_DirectionGuard.mqh"
+
 bool DashboardExposureConflict(const int op)
   {
    int policy=DashboardNormalizeExposurePolicyMode(DashboardExposurePolicyMode);
    if(policy==GOAT_EXPOSURE_ALLOW) return false;
+   // Asset admission is atomic at the first real order, after virtual tracking.
+   if(policy==GOAT_EXPOSURE_SYMBOL_DIRECTION) return false;
 
    string want_symbol=Symbol();
    string want_base="",want_quote="";
@@ -302,6 +307,7 @@ class SEQUENCE
    TRADELEVEL  TradeLevels[];
    string      Desc;
    bool        Active,Traded,Trailing,Virtual,Retrace_Triggered;
+   bool        GuardRealStarted;
    bool        BiasRescueActive,BiasRescueBEProtected;
    int         dir,Level_Count,Trades_Count;
    int         BiasRescuePositiveAdds;
@@ -313,7 +319,7 @@ class SEQUENCE
 
    SEQUENCE()
    {
-    dir=OP_NIL; Virtual=false;
+    dir=OP_NIL; Virtual=false; GuardRealStarted=false;
     Active=Traded=Trailing=Retrace_Triggered=BiasRescueActive=BiasRescueBEProtected=false;
     Level_Count=Trades_Count=ArrayResize(TradeLevels,0,Max_Seq_Levels);
     BiasRescuePositiveAdds=0;
@@ -376,6 +382,8 @@ class SEQUENCE
       }
       Sequences_PL++;
      }
+     if(!Virtual) GoatDirectionGuardEnd(dir);
+     GuardRealStarted=false;
      Active=Traded=Trailing=Retrace_Triggered=false;
      ResetSequenceRiskState();
      Level_Count=Trades_Count=ArrayResize(TradeLevels,0,Max_Seq_Levels);
@@ -1693,7 +1701,25 @@ class SEQUENCE
       if(LotsToBeSent>0.0 && !AllowPeakSmartPositiveAdd(LotsToBeSent)) return false;
       if(BiasRescueActive && LotsToBeSent>0.0 && !AllowBiasRescuePositiveAdd(LotsToBeSent)) return false;
 
-      if(OpenPosition(dir,MAGIC1,LotsToBeSent,Level_SL,Size_SL,Size_TP,Desc_lvl))
+      bool has_real_order=(MathAbs(LotsToBeSent)>=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN));
+      bool previously_traded=GuardRealStarted;
+      LastRetCode=0;
+      bool guard_opened=OpenPosition(dir,MAGIC1,LotsToBeSent,Level_SL,Size_SL,Size_TP,Desc_lvl,GuardRealStarted);
+      if(g_direction_guard_send_attempted) GoatDirectionGuardResult(dir,(uint)LastRetCode,guard_opened,previously_traded);
+      if(g_direction_guard_denied)
+      {
+       if(!Active && !Traded)
+       {
+        // A denied candidate did not start a sequence: do not retain its ATR sizing.
+        Size_Grid=Size_Lock=Size_TP=Size_SL=Size_TSL=1234.5;
+        StartLots=PeakLots=PeakCumLots=ScaleFactor=0.0;
+        ArrayResize(LotsRaw,0,Max_Seq_Trades); ArrayResize(LotsNorm,0,Max_Seq_Trades); ArrayResize(LotsCum,0,Max_Seq_Trades); ArrayResize(Distances,0,Max_Seq_Trades);
+       }
+       return false;
+      }
+
+      if(guard_opened && has_real_order) GuardRealStarted=true;
+      if(guard_opened)
        {
         if(!Active) Print(Desc+" Sequence Started @ "+DoubleToString(Level_New,_Digits));
         if(!Traded) {Sequences++; }//FirstTradeEquity=AccountInfoDouble(ACCOUNT_EQUITY);}
@@ -3376,6 +3402,7 @@ int OnInit()
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnDeinit(const int reason)
   {
+   GoatDirectionGuardDeinit();
    if(g_GoatStudioReadOnlyMonitor)
    {TesterDialog.Destroy(reason);EventKillTimer();return;}
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Deinit Start"+"================");
@@ -4560,7 +4587,10 @@ void OnTimer(void)
     ChartRedraw(0);
    }
    if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash)
+     {
       DashboardBusProcessCommands();
+      if(MAGIC1!=0) GoatDirectionGuardPublish(Seq_Buy.GuardRealStarted,Seq_Sell.GuardRealStarted);
+     }
    timer++;
    }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -4571,6 +4601,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(g_GoatStudioReadOnlyMonitor) return;
    if(GOATDeviceActivationOnly()) return;
    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
+   GoatDirectionGuardDeal(trans.deal,Seq_Buy.GuardRealStarted,Seq_Sell.GuardRealStarted);
 
    int TradeCount = FindNumberOfPositions(OP_BUY,MAGIC1);
    if(Seq_Buy.Active && LastTradeCountBuy!=TradeCount && TradeCount==0 && Seq_Buy.Traded)//Seq_Buy.Level_Count>=Delay_Trade)
@@ -5372,6 +5403,7 @@ void OnTick()
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_TRADES_TOTAL),(double)DashboardBusClosedTradesTotal);
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_HEARTBEAT),(double)TimeCurrent());
 
+     GoatDirectionGuardPublish(Seq_Buy.GuardRealStarted,Seq_Sell.GuardRealStarted);
      string dashboard_status="Active";
      if(DashboardPortfolioPaused) dashboard_status="Paused";
      else if(!Active || InActive) dashboard_status="Inactive";
@@ -5481,6 +5513,7 @@ void OnTick()
    if(Seq_Buy.Active)  buyMlpsExit  = Seq_Buy.EnforceSequenceMLPS("tick");
    if(Seq_Sell.Active) sellMlpsExit = Seq_Sell.EnforceSequenceMLPS("tick");
 
+   GoatDirectionGuardMaintenance(Seq_Buy.Active,Seq_Sell.Active);
    bool sequenceCheckNow=CheckSequenceNow();
    if(sequenceCheckNow && !Sequence_Pause_Close)// && Active) // close or inactivity pause takes precedence over other pause types
    {
@@ -6006,8 +6039,10 @@ void CalculateAllPendingOrders(int &count_buy_limits,int &count_sell_limits,int 
         }
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
-int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,double Size_TP,string desc)
+int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,double Size_TP,string desc,const bool guard_previously_traded)
   {
+   g_direction_guard_send_attempted=false;
+   g_direction_guard_denied=false;
    //if((100*AccountInfoDouble(ACCOUNT_MARGIN))/AccountInfoDouble(ACCOUNT_EQUITY)>=Max_Margin) {LastRetCode=741; return 0;}
    if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>MaxSP) return 0;
    if(StopOut_Flag) {LastRetCode=740; return 0;}
@@ -6029,7 +6064,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
      ArrowCreate(0,IntegerToString(arrows++,3,'U'),0,0,bid,233,ANCHOR_TOP,clrBlue,STYLE_DOT,1,false,false,true,0);
      if(ObjectFind(0,IntegerToString(arrows-99,3,'U')) >= 0) ArrowDelete(0,IntegerToString(arrows-99,3,'U'));}
 
-    if(Level_SL==0) {SL=NormalizeDouble(ask-Size_SL,_Digits); if(SL>ask) return 0; if(SL==ask) SL=0;}
+    if(Level_SL==0) {SL=NormalizeDouble(ask-Size_SL,_Digits); if(SL>ask) {LastRetCode=TRADE_RETCODE_INVALID_STOPS;return 0;} if(SL==ask) SL=0;}
     else             SL=Level_SL;
 
     double TP=NormalizeDouble(ask+Size_TP,_Digits); if(TP==ask) TP=0;
@@ -6056,8 +6091,11 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
   //request.position = ;                                 // Position ticket
   //request.position_by = ;                              // The ticket of an opposite position
 
+    if(!GoatDirectionGuardBegin(OP,guard_previously_traded)) {g_direction_guard_denied=true;return 0;}
+    g_direction_guard_send_attempted=true;
     bool sent = OrderSend(request,result);
-    if(result.retcode!=10008&&result.retcode!=10009) orderErrors++;
+    GoatDirectionGuardCaptureOrder(OP,(ulong)result.order);
+    if(result.retcode!=10008&&result.retcode!=10009&&result.retcode!=10010) orderErrors++;
     else{
      ret++;
      LastSL=SL; LastTP=TP;
@@ -6078,7 +6116,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
      ArrowCreate(0,IntegerToString(arrows++,3,'D'),0,0,ask,234,ANCHOR_BOTTOM,clrRed,STYLE_DOT,1,false,false,true,0);
      if(ObjectFind(0,IntegerToString(arrows-99,3,'D')) >= 0) ArrowDelete(0,IntegerToString(arrows-99,3,'D'));}
 
-    if(Level_SL==0) {SL=NormalizeDouble(bid+Size_SL,_Digits); if(SL<bid) return 0; if(SL==bid) SL=0;}
+    if(Level_SL==0) {SL=NormalizeDouble(bid+Size_SL,_Digits); if(SL<bid) {LastRetCode=TRADE_RETCODE_INVALID_STOPS;return 0;} if(SL==bid) SL=0;}
     else             SL=Level_SL;
 
     double TP=NormalizeDouble(bid-Size_TP,_Digits); if(TP==bid) TP=0;
@@ -6105,8 +6143,11 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
   //request.position = ;                                 // Position ticket
   //request.position_by = ;                              // The ticket of an opposite position
 
+    if(!GoatDirectionGuardBegin(OP,guard_previously_traded)) {g_direction_guard_denied=true;return 0;}
+    g_direction_guard_send_attempted=true;
     bool sent = OrderSend(request,result);
-    if(result.retcode!=10008&&result.retcode!=10009) orderErrors++;
+    GoatDirectionGuardCaptureOrder(OP,(ulong)result.order);
+    if(result.retcode!=10008&&result.retcode!=10009&&result.retcode!=10010) orderErrors++;
     else{
      ret++;
      LastSL=SL; LastTP=TP;
@@ -6120,7 +6161,10 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
     orders++;
    }
    if(LastOrderTicket>0 && PositionSelectByTicket((ulong)LastOrderTicket))
+     {
       LastOpen=PositionGetDouble(POSITION_PRICE_OPEN);
+      Lots_Order=PositionGetDouble(POSITION_VOLUME); // accepted partial fill uses actual volume
+     }
    else
       LastOpen=0.0;
    Pause_Flag=true;

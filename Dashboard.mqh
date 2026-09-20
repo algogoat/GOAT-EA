@@ -497,6 +497,7 @@ private:
    }
    color StatusColor(const string status) const
    {
+      if(StringFind(status,"B:")==0) return(StringFind(status,"Check")>=0 ? clrOrangeRed : clrCornflowerBlue);
       if(status=="Active" || status=="Linked") return C'87,153,122';
       if(status=="Closed")                       return C'87,153,122';
       if(status=="Inactive")                   return C'214,161,52';
@@ -506,6 +507,17 @@ private:
       if(status=="Offline")                    return clrDarkGray;
       if(status=="Deploying")                  return clrCornflowerBlue;
       return C'146,7,1,255';
+   }
+   string AssetGuardState(const int idx,const string field) const
+   {
+      string key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,field);
+      if(!GlobalVariableCheck(key)) return "?";
+      int state=(int)GlobalVariableGet(key);
+      if(state==1) return "Own";
+      if(state==2) return "Wait";
+      if(state==3) return "Check";
+      if(state==4) return "Live";
+      return "Ready";
    }
    string DisplayStatusForRow(const int idx,const datetime now) const
    {
@@ -560,6 +572,8 @@ private:
       if(g_sets[idx].policy_paused) return "Paused";
       if(g_sets[idx].trade_allow_mask!=(GOAT_DASH_TRADE_ALLOW_BUY|GOAT_DASH_TRADE_ALLOW_SELL))
          return CurrencyPolicyLabelForMask(g_sets[idx].trade_allow_mask);
+      if(g_sets[idx].exposure_policy_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION)
+         return "B:"+AssetGuardState(idx,"DGB")+" S:"+AssetGuardState(idx,"DGS");
       if(g_sets[idx].exposure_policy_mode!=GOAT_EXPOSURE_ALLOW)
          return ExposurePolicyLabelForMode(g_sets[idx].exposure_policy_mode);
       return g_sets[idx].status;
@@ -788,9 +802,9 @@ private:
   }
   string ExposurePolicyButtonText(void) const
   {
-   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_SYMBOL_DIRECTION)   return "Exposure: Asset";
+   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_SYMBOL_DIRECTION)   return "Asset Filter: ON";
    if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_CURRENCY_DIRECTION) return "Exposure: Ccy";
-   return "Exposure: Allow";
+   return "Asset Filter: OFF";
   }
    string CurrencyFilterButtonText(const string currency,const ENUM_GOAT_CURRENCY_FILTER_STATE state) const
    {
@@ -1483,7 +1497,7 @@ bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
          return(true);
       int next_mode=NextExposurePolicyMode((int)m_exposure_policy_mode);
       string next_text=(next_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION ? "Exposure: Asset" : (next_mode==GOAT_EXPOSURE_CURRENCY_DIRECTION ? "Exposure: Ccy" : "Exposure: Allow"));
-      string prompt="Set exposure policy to "+next_text+"?\n\nThis gates new sequence starts only. Existing open sequences continue normal GOAT management.";
+      string prompt="Set exposure policy to "+next_text+"?\n\nAsset mode: one sequence owns each symbol and direction until it finishes. Its adds and partial closes remain managed. Buy and Sell are independent; there is no cooldown.\n\nScope: this terminal and account only. Existing positions and pending orders (including manual trades) block new asset-direction admission. Existing sequences keep normal management. Turning off allows new overlap; it does not close trades.";
       int ret=MessageBox(prompt,"Exposure Policy",MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2);
       if(ret==IDYES)
          SendExposurePolicyCommand(next_mode);
@@ -2086,6 +2100,26 @@ bool CGOATDashboard::SendExposurePolicyCommand(const int mode)
    {
       MessageBox("No linked child charts are available for exposure policy.","Exposure Policy",MB_OK|MB_ICONWARNING);
       return false;
+   }
+
+   if(clean_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION)
+   {
+      if(AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+      {
+         MessageBox("Independent Buy/Sell sequence ownership requires a hedging account. Asset filter cannot be enabled on a netting account.","Asset Filter Not Available",MB_OK|MB_ICONWARNING);
+         return false;
+      }
+      for(int idx=0;idx<ArraySize(g_sets);++idx)
+      {
+         if(g_sets[idx].magic<=0 || g_sets[idx].cid<=0) continue;
+         string guard_key=GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,"DG_AT");
+         double guard_at=0.0;
+         if(!GlobalVariableGet(guard_key,guard_at) || guard_at<=0.0 || TimeCurrent()-(datetime)guard_at>5)
+         {
+            MessageBox("Asset filter requires current guard telemetry from every linked child. Update/reload all children with the asset-sequence guard build and wait for fresh status before enabling.","Asset Filter Not Ready",MB_OK|MB_ICONWARNING);
+            return false;
+         }
+      }
    }
 
    m_exposure_policy_mode=(ENUM_GOAT_EXPOSURE_POLICY_MODE)clean_mode;
@@ -3791,6 +3825,9 @@ void CGOATDashboard::UpdateRowMetrics(const int idx,const int gui_row)
    edt_RiskLots [gui_row].Text(g_sets[idx].risk_lots_label);
    edt_Status   [gui_row].Text(display_status);
    edt_Status   [gui_row].Color(StatusColor(display_status));
+   if(g_sets[idx].exposure_policy_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION)
+      ObjectSetString(0,edt_Status[gui_row].Name(),OBJPROP_TOOLTIP,"Asset filter: this terminal/account only. B=Buy; S=Sell. Own=whole-sequence owner; Wait=another owner or actual position/order; Check=unresolved broker request or late fill: manual reconciliation required before restarting entries; Live=sequence already running when enabled; ?=child guard telemetry unavailable. Owner token: "+DoubleToString(GlobalVariableGet(GoatChildGVName(g_sets[idx].magic,g_sets[idx].sym,"DGT")),0));
+   else ObjectSetString(0,edt_Status[gui_row].Name(),OBJPROP_TOOLTIP,display_status);
    edt_Trades   [gui_row].Text(IntegerToString(g_sets[idx].Trades_total));
    edt_Positions[gui_row].Text(IntegerToString(g_sets[idx].open_trades));
    edt_Positions[gui_row].Color(ChooseColor(g_sets[idx].open_pl));

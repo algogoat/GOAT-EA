@@ -945,6 +945,38 @@ public:
     return(Res);
   }
 
+  // Managed Studio readback: no cached child handle and no stale clipboard output.
+  // Caller still verifies every returned setting before any launch action.
+  static bool GetSettingsManaged( string &Str )
+  {
+    Str = NULL;
+    if (::IsStopped() || !MTTESTER::LockWaiting(1)) return false;
+    bool Res = false;
+    const uint message = user32::RegisterWindowMessageW("MetaTrader5_Internal_Message");
+    const HANDLE root = MTTESTER::GetTerminalHandle();
+    // Abort on hung/destroyed targets; do not use NOTIMEOUTIFNOTHUNG.
+    if (message && root && user32::SendMessageTimeoutW(root,message,9,INT_MAX,0x0022,1000,0))
+    {
+      const int controls[] = {0xE81E,0x804E};
+      const HANDLE pane = MTTESTER::GetHandle(controls);
+      const uint before = user32::GetClipboardSequenceNumber();
+      if (pane && before && user32::SendMessageTimeoutW(pane,WM_COMMAND,ID_EDIT_COPY,0,0x0022,1000,0))
+      {
+        string candidate;
+        const uint copied = user32::GetClipboardSequenceNumber();
+        if (copied && copied != before && MTTESTER::GetClipboard(candidate,1)
+            && copied == user32::GetClipboardSequenceNumber()
+            && ::StringFind(candidate,"[Tester]") == 0)
+        {
+          Str = candidate;
+          Res = true;
+        }
+      }
+    }
+    MTTESTER::Lock(false);
+    return Res;
+  }
+
   static bool GetSettings2( string &Str, const int Attempts = 10 )
   {
     bool Res = false;
@@ -1228,6 +1260,28 @@ static bool IsIdle()
     }
 
     return(Res);
+  }
+
+  // Select only the Agents view; never toggle workers or tester execution.
+  static HANDLE ShowTesterAgents( void )
+  {
+    const HANDLE root = MTTESTER::GetTerminalHandle();
+    const uint message = user32::RegisterWindowMessageW("MetaTrader5_Internal_Message");
+    if (!root || !message || !user32::SendMessageTimeoutW(root,message,9,INT_MAX,0x22,1000,0)) return 0;
+    const int ids[] = {0xE81E,0x804E};
+    const HANDLE pane = MTTESTER::GetHandle(ids);
+    const HANDLE tabs = user32::GetDlgItem(pane,0x2712);
+    if (!pane || !tabs) return 0;
+    const int count = (int)user32::SendMessageW(tabs,TCM_GETITEMCOUNT,0,0);
+    // Agents precedes Journal in MT5 tester layouts. Confirm its actual list
+    // is visible after selection instead of trusting the tab index alone.
+    if (count < 2 || count > 20) return 0;
+    const int point = MTTESTER::GetTabCenterPoint(tabs,count-2);
+    if (!point) return 0;
+    if (!user32::SendMessageTimeoutW(tabs,WM_LBUTTONDOWN,1,point,0x22,1000,0)
+        || !user32::SendMessageTimeoutW(tabs,WM_LBUTTONUP,0,point,0x22,1000,0)) return 0;
+    const HANDLE agents = user32::GetDlgItem(pane,10478);
+    return agents && user32::IsWindowVisible(agents) ? agents : 0;
   }
 
   static bool SelectTesterGraphTab( const int Attempts = 3 )

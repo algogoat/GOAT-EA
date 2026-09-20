@@ -100,10 +100,12 @@ bool GOATIsHexCharacter(const ushort c)
    return((c>='0' && c<='9') || (c>='a' && c<='f') || (c>='A' && c<='F'));
   }
 
+int g_GoatJsonTokenBudget=2048;
+
 bool GOATJsonAppendToken(SGOATJsonToken &tokens[],const int type,const int start,const int parent,const bool is_key,int &index)
   {
    int total=ArraySize(tokens);
-   if(total>=2048) return false;
+   if(total>=g_GoatJsonTokenBudget) return false;
    if(ArrayResize(tokens,total+1)!=total+1) return false;
    tokens[total].type=type;
    tokens[total].start=start;
@@ -300,14 +302,19 @@ bool GOATJsonParseValue(const string json,int &pos,const int parent,const int de
    return GOATJsonParseNumberToken(json,pos,parent,tokens,token_index);
   }
 
-bool GOATJsonParse(const string json,SGOATJsonToken &tokens[])
+bool GOATJsonParse(const string json,SGOATJsonToken &tokens[],const int token_budget=2048,const int length_budget=131072)
   {
    ArrayResize(tokens,0);
    int length=StringLen(json);
-   if(length<2 || length>131072) return false;
+   if(token_budget<1 || token_budget>16384 || length_budget<2 || length_budget>2000000
+      || length<2 || length>length_budget) return false;
+   int saved_budget=g_GoatJsonTokenBudget;
+   g_GoatJsonTokenBudget=token_budget;
    int pos=0;
    int root=-1;
-   if(!GOATJsonParseValue(json,pos,-1,0,tokens,root) || root!=0) return false;
+   bool parsed=GOATJsonParseValue(json,pos,-1,0,tokens,root);
+   g_GoatJsonTokenBudget=saved_budget;
+   if(!parsed || root!=0) return false;
    GOATSkipJsonWhitespace(json,pos);
    return(pos==length && tokens[0].type==GOAT_JSON_OBJECT);
   }

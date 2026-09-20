@@ -1,9 +1,10 @@
-﻿#define   GOAT_VERSION_LABEL "1.47"
+﻿#define GOAT_STUDIO_UNIFIED_V147 1
+#define   GOAT_VERSION_LABEL "1.47"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-PERFORMANCE-AI-FILTER-R8"
-#define   GOAT_BUILD_MARKER "R8"
+#define   GOAT_BUILD_ID "V1.47-STUDIO-RESTART-R16"
+#define   GOAT_BUILD_MARKER "R16"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -52,6 +53,8 @@
 #define GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER 1
 #define GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED 1
 #include "GOATAIWireV2.mqh"
+#include "GOATStudioUI.mqh"
+#include "GOATStudioCompletion.mqh"
 #undef PANEL_WIDTH
 #define PANEL_WIDTH (340)
 //#include "XmlProcessor.mqh"
@@ -2670,8 +2673,16 @@ void DashboardBusProcessCommands(void)
    DashboardBusApplyCommand(command_id,command_type,command_value,expires_at);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+sinput bool Studio_ReadOnlyMonitor=false; // Optimization Studio: read-only batch monitor
+sinput string Studio_MonitorRunPath=""; // Read-only run folder; blank follows active batch
 int OnInit()
   {
+   g_GoatStudioReadOnlyMonitor=Studio_ReadOnlyMonitor;
+   g_GoatStudioMonitorRunPath=Studio_MonitorRunPath;
+   if(Studio_ReadOnlyMonitor && Studio_MonitorRunPath!="" &&
+      (StringFind(Studio_MonitorRunPath,"GOAT\\")!=0 || StringFind(Studio_MonitorRunPath,"..")>=0 || StringFind(Studio_MonitorRunPath,":")>=0)) return INIT_PARAMETERS_INCORRECT;
+   if(Studio_ReadOnlyMonitor && (Mode_Operation!=Operation_Batch || MQLInfoInteger(MQL_TESTER)))
+   {Print("Read-only Studio requires chart operation mode Optimization Studio");return INIT_PARAMETERS_INCORRECT;}
    GoatPerformanceReset();
    g_PerformanceProfileTester=(MQLInfoInteger(MQL_TESTER)!=0);
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Initialization Start"+"================");
@@ -2962,13 +2973,13 @@ int OnInit()
      //while(GetTickCount()-lastTickcount<2000) Sleep(500);
      if(MAGIC1==0 && (Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash))
      {
-      if(!MQLInfoInteger(MQL_DLLS_ALLOWED))
+      if(!g_GoatStudioReadOnlyMonitor && !MQLInfoInteger(MQL_DLLS_ALLOWED))
       {int ret=MessageBox("DLL should be enabled for proper working of this mode.\n\nMT5 > Tools > Options > Experts > Allowed DLL","Enable DLL",MB_OK|MB_ICONERROR); Sleep(5000); return(INIT_FAILED);}
     //string filename; int handle=FileFindFirst("*",filename,FILE_COMMON); Print(filename); FileFindNext(handle,filename);
       if(!ChartGetInteger(0,CHART_IS_MAXIMIZED,0)) Sleep(999);
       int chartWidth  = (int)ChartGetInteger(ChartID(), CHART_WIDTH_IN_PIXELS);
       int chartHeight = (int)ChartGetInteger(ChartID(), CHART_HEIGHT_IN_PIXELS);
-      bool preserveBatchStudioSize=(Mode_Operation==Operation_Batch && GlobalVariableGet("BatchOnGoing")!=0.0);
+      bool preserveBatchStudioSize=(!g_GoatStudioReadOnlyMonitor && Mode_Operation==Operation_Batch && GlobalVariableGet("BatchOnGoing")!=0.0);
       // The command surfaces need enough horizontal room to keep controls legible.
       // Let MT5 scale the requested canvas down to the available chart width, but
       // never design the Dashboard or Optimization Studio against the legacy
@@ -3018,7 +3029,7 @@ int OnInit()
       {
       TesterDialog.SetFlags(Key,EA_Name,Server,Font_Size,newWidth,newHeight);
       if(!TesterDialog.Create(ChartID(),"StrategyTesterGUI",0, left,top,left+newWidth,top+dialogOuterHeight)) {Alert("Tester GUI creation Failed, please try again."); return(INIT_FAILED);}
-      TesterDialog.Caption("GOAT  /  OPTIMIZATION STUDIO  /  V"+GOAT_VERSION_LABEL+" "+GOAT_BUILD_MARKER);
+      TesterDialog.Caption("GOAT  /  OPTIMIZATION STUDIO  /  V"+GOAT_VERSION_LABEL+" "+GOAT_BUILD_MARKER+(g_GoatStudioReadOnlyMonitor ? "  /  READ-ONLY MONITOR" : ""));
        GUI_BG_Display();
        Sleep(100); TesterDialog.Run(); Sleep(100);
        return (INIT_SUCCEEDED);
@@ -3365,6 +3376,8 @@ int OnInit()
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnDeinit(const int reason)
   {
+   if(g_GoatStudioReadOnlyMonitor)
+   {TesterDialog.Destroy(reason);EventKillTimer();return;}
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Deinit Start"+"================");
    if(GOATDeviceActivationOnly())
      {
@@ -3814,7 +3827,7 @@ int OnTesterInit()
    Print(EA_Name+": "+Symbol()+" Optimization Initialization.");//,TerminalInfoString(TERMINAL_DATA_PATH));
    Sleep(100);
    bool seedFarming=SeedFarmingPrepareReceiver();
-   if(!seedFarming && GlobalVariableGet("BatchOnGoing")!=0)
+   if(!seedFarming && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)==0.0 && GlobalVariableGet("BatchOnGoing")!=0)
    {
     bool terminalWasRunning=(GlobalVariableGet("TerminalRunning")!=0);
     if(!terminalWasRunning) GlobalVariableSet("TerminalRunning",1.0);
@@ -4185,6 +4198,11 @@ void OnTesterDeinit()
     return;
    }
 
+   if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0)
+   {
+    ShowPrompt("Batch Terminated","Automatic continuation is disabled.","","");
+    return;
+   }
    if(GlobalVariableGet("BatchOnGoing")!=0)
    {
     if(!g_batchStartupAccepted)
@@ -4198,6 +4216,7 @@ void OnTesterDeinit()
     }
     WriteLog("DEINIT: Optimization Ended, "+Symbol()+"",false,Key,EA_Name,Server);
     ShowPrompt("Optimization Ended!","Waiting a few seconds..."," ","");   Sleep(4000);
+    if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return;
     ShowPrompt("Processing Optimization...","Migrating XML files..."," ","");
     bool error=false;
     string movedFiles[];
@@ -4214,6 +4233,7 @@ void OnTesterDeinit()
        WriteLog("DEINIT: ✅ XML files Combined and Analyzed.",false,Key,EA_Name,Server);
        ShowPrompt("Processing Optimization...","XML files Combined and Analyzed.","Running the top set for verification...",""); Sleep(999);
        error=!StartExporter(false);
+       if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return;
        double topScore=(ArraySize(xmlData.Rows)>0 ? xmlData.Rows[0].Score : 0.0);
        GoatOptAppendItemStats(EA_Name,Server,Symbol(),Strat,(error ? "Error" : "Completed"),
                               ArraySize(xmlData.Rows),ArraySize(xmlData.RowsUnique),topScore,ArraySize(g_allExports),
@@ -4229,6 +4249,7 @@ void OnTesterDeinit()
     }
     else {error=true; WriteLog("DEINIT: ❌ Some XML files failed to move. Aborting report processing and exports cycle...",true,Key,EA_Name,Server);}
     Sleep(999);
+    if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return;
     if(UpdateBatchQueueAndWriteConfigFile(false,error,Key,EA_Name,Server))
     {
      GlobalVariableDel("TerminalRunning");
@@ -4247,7 +4268,12 @@ void OnTesterDeinit()
       string batchQueueFile=GoatOptQueuePath(EA_Name,Server);
       string batchLogFile=GoatOptLogPath(EA_Name,Server);
       BuildOptimizationBatchPromptSummary(batchQueueFile,batchLogFile,batchSummary1,batchSummary2,batchSummary3);
-      ShowPrompt("Optimization Batch Completed.",batchSummary1,batchSummary2,batchSummary3);
+      string queueProgress="",queueNext="";
+      if(GoatStudioCompletionText(EA_Name,Server,queueProgress,queueNext))
+         ShowPrompt("Optimization complete",queueProgress,queueNext,batchSummary3);
+      else if(FileIsExist(GoatOptBasePath(EA_Name,Server)+"\\agent-native-control-owner.json",FILE_COMMON))
+         ShowPrompt("Optimization complete","Queue progress unavailable; see Optimization Studio.","Waiting for controller verification.",batchSummary3);
+      else ShowPrompt("Optimization batch complete",batchSummary1,batchSummary2,batchSummary3);
       WriteLog("DEINIT: Batch Summary: "+batchSummary1+" | "+batchSummary2+" | "+batchSummary3,false,Key,EA_Name,Server);
       string summaryPath=GoatOptSummaryPath(EA_Name,Server);
       if(summaryPath!="") GoatOptWriteTextFile(summaryPath,batchSummary1+"\r\n"+batchSummary2+"\r\n"+batchSummary3+"\r\n");
@@ -4271,6 +4297,7 @@ void OnTesterDeinit()
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool StartExporter(bool reportMode)
   {
+   if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
    if(InitializeTester(Key,EA_Name,Server,reportMode))
    {
     string BackOOSDate = FetchExportSetting("BackOOSDate",Key,EA_Name,Server);//Print(BackOOSDate);
@@ -4290,7 +4317,11 @@ bool StartExporter(bool reportMode)
      strT.fromDate=TimeToString(xmlData.startD,TIME_DATE); strT.toDate=TimeToString(xmlData.forwardD+24*60*60,TIME_DATE);
      int initExportPass=RunAndStoreSet(0,"Mode_Operation="+(string)OP_Standard+"\n"+"EA_Desc="+strT.Strat+"@{mode=EXPORT}"+"\n",reportMode,g_allExports,true,EXPORT_START_ATTEMPTS); // Just Export enabling is required here
      if(initExportPass<0) LogOrPrint(reportMode,"DEINIT: Top-set export verification could not complete; continuing with candidate exports.",Key,EA_Name,Server);
-     while(!MTTESTER::IsReady()) Sleep(1000);
+     while(!MTTESTER::IsReady())
+     {
+      if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
+      Sleep(1000);
+     }
     }
     if(InclBackOOS && BackOOSDate!="") {strT.fromDate=BackOOSDate; LogOrPrint(reportMode,"⚠️ Back Out-Of-Sample (OOS) history is enabled.",Key,EA_Name,Server);}
     else                                strT.fromDate=TimeToString(xmlData.startD,TIME_DATE);
@@ -4308,6 +4339,7 @@ bool StartExporter(bool reportMode)
 
     for(;i<MathMin(25,ArraySize(xmlData.RowsUnique));i++)
     {
+     if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
      if(xmlData.RowsUnique[i].Score!=lastScore)
      {
       lastScore=xmlData.RowsUnique[i].Score;
@@ -4370,6 +4402,7 @@ bool StartExporter(bool reportMode)
        ExportRecord AdjustedExports[];
       for(;j<ArraySize(g_allExports);j++)
       {
+       if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
        const ExportRecord r = g_allExports[j];
        double Lots_Old = StringToDouble(ParseSetFileForInput("Lots_Input=",r.setFile));
        if(Lots_Old<0) {LogOrPrint(reportMode,"❌ Problem getting valid lot size from the stored export. Skipping export...",Key,EA_Name,Server); continue;}
@@ -4409,6 +4442,7 @@ bool StartExporter(bool reportMode)
      }
      else
      {
+      if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
       if(MoveKeptExports(g_allExports,GoatOptDeployPath(EA_Name,Server))) LogOrPrint(reportMode,"✅ All Shortlisted Exports migrated & saved.",Key,EA_Name,Server);
       else                                  LogOrPrint(reportMode,"❌ Problem migrating the finalized export package.",Key,EA_Name,Server);
      }
@@ -4421,6 +4455,7 @@ bool StartExporter(bool reportMode)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[],bool Init=false,const int startAttempts=20)
   {
+   if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return -1;
    string exports[]; FindExports("TEMP",exports); DeleteExports(exports); DeleteEmptyFolders("TEMP"); Sleep(50);
 
    if(!StartTester(rowInd,mode,reportMode,startAttempts)) {LogOrPrint(reportMode,"❌ Failed to Configure and/or Start the Strategy Tester after "+IntegerToString(startAttempts)+" start attempt(s). Skipping...",Key,EA_Name,Server); return -1;}
@@ -4428,6 +4463,7 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
    const datetime t0 = TimeLocal();
    while(!FindExports("TEMP",exports))
    {
+    if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return -1;
     Sleep(500);
     if(TimeLocal()-t0 > 250) // 200 sec watchdog
     {
@@ -4442,6 +4478,7 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
      LogOrPrint(reportMode,"❌ Export timeout 250 seconds – aborting this set",Key,EA_Name,Server); return -1;
     }
    }
+   if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return -1;
    LogOrPrint(reportMode," Export found in "+(string)((long)TimeLocal()-(long)t0)+"s: "+FileNameOnly(exports[0]),Key,EA_Name,Server);
 
    double profit=FetchMetric(exports[0],"Prf");
@@ -4497,6 +4534,8 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTimer(void)
   {
+   if(g_GoatStudioReadOnlyMonitor)
+   {TesterDialog.OnClickRefresh(true);return;}
    if(GOATDeviceActivationOnly())
    {
     GOATDeviceActivationTimer();
@@ -4529,6 +4568,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result)
   {
+   if(g_GoatStudioReadOnlyMonitor) return;
    if(GOATDeviceActivationOnly()) return;
    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
 
@@ -4586,6 +4626,9 @@ void OnChartEvent(const int id,         // event ID
                   const double& dparam, // event parameter of the double type
                   const string& sparam) // event parameter of the string type
   {
+   if(g_GoatStudioReadOnlyMonitor)
+   {TesterDialog.ChartEvent(id,lparam,dparam,sparam);
+      if(id==CHARTEVENT_CHART_CHANGE) TesterDialog.maximizeWindow();return;}
    if(GOATDeviceActivationOnly()) return;
    if(id==GOAT_EVENT_DASHBOARD_COMMAND)
    {

@@ -99,9 +99,9 @@ public:
    CButton     btn_Action[],btn_PortfolioPause,btn_SameAssetDirection,btn_USDFilter,btn_USDClose,btn_EURFilter,btn_EURClose,btn_GBPFilter,btn_GBPClose,btn_JPYFilter,btn_JPYClose,
                btn_ViewOverview,btn_ViewIntelligence,btn_ViewPerformance;
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
-   CButton     btn_AILaunchPolicy;
+   CButton     btn_AILaunchPolicy,btn_AILaunchFeed;
    CEdit       edt_AILaunchThreshold;
-   int         m_ai_launch_mode,m_ai_launch_threshold;
+   int         m_ai_launch_mode,m_ai_launch_threshold,m_ai_launch_protocol;
 #endif
    // Layout parameters
    int         Margin_Left,Margin_Top,m_GapHoriz,m_GapVert,m_rowHeight,m_controlHeight,m_controlWidth;
@@ -313,7 +313,7 @@ public:
                   "Existing Child Requires Inspection",MB_OK|MB_ICONWARNING);
        return;
     }
-    if(!PrepareAILaunchPolicy()) return;
+    if(!PrepareAILaunchPolicy(true)) return;
 #endif
     //GlobalVariableSet("Dashboard_ChartID",(double)ChartID());
     // --- timeframe token from filename (",M1" etc.)
@@ -370,7 +370,7 @@ public:
 private:
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
    bool AnyAILaunchRowsDeployed(void) const;
-   bool PrepareAILaunchPolicy(void);
+   bool PrepareAILaunchPolicy(const bool launching=false);
    string EffectiveAILaunchLabel(const string file);
    void RefreshAILaunchLabels(void);
    void UpdateAILaunchControls(void);
@@ -932,6 +932,7 @@ CGOATDashboard::CGOATDashboard()
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
    m_ai_launch_mode=GOAT_AI_LAUNCH_AS_OPTIMIZED;
    m_ai_launch_threshold=60;
+   m_ai_launch_protocol=1;
 #endif
    clrPos=C'0,180,0'; clrNeg=C'180,0,0'; clrNeu=clrWhite;
    m_day_start  = 0;                 // will be set on first timer tick
@@ -1028,8 +1029,15 @@ bool CGOATDashboard::AnyAILaunchRowsDeployed(void) const
    return false;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
-bool CGOATDashboard::PrepareAILaunchPolicy(void)
+bool CGOATDashboard::PrepareAILaunchPolicy(const bool launching)
 {
+   if(launching && m_ai_launch_mode!=GOAT_AI_LAUNCH_AS_OPTIMIZED && m_ai_launch_protocol==2 &&
+      AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO)
+   {
+      MessageBox("Demo (raw) AI bias requires a demo trading account. Select Live (calibrated) for this account.",
+                 "AI Feed",MB_OK|MB_ICONWARNING);
+      return false;
+   }
    if(AnyAILaunchRowsDeployed()) return true;
    if(m_ai_launch_mode!=GOAT_AI_LAUNCH_AS_OPTIMIZED)
    {
@@ -1051,7 +1059,7 @@ string CGOATDashboard::EffectiveAILaunchLabel(const string file)
 {
    if(m_ai_launch_mode==GOAT_AI_LAUNCH_AS_OPTIMIZED)
       return(file=="" ? "Mixed" : BuildBiasLabel(file));
-   return(m_ai_launch_mode==GOAT_AI_LAUNCH_DISPLAY_ONLY ? "Disp@" : "Open@")+IntegerToString(m_ai_launch_threshold);
+   return(m_ai_launch_mode==GOAT_AI_LAUNCH_DISPLAY_ONLY ? "Disp@" : "Open@")+IntegerToString(m_ai_launch_threshold)+(m_ai_launch_protocol==2 ? " D" : " L");
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::RefreshAILaunchLabels(void)
@@ -1075,6 +1083,9 @@ void CGOATDashboard::UpdateAILaunchControls(void)
    ApplyHeaderStateButtonStyle(btn_AILaunchPolicy,caption,
                               (m_ai_launch_mode==GOAT_AI_LAUNCH_ENTRY_FILTER ? C'13,69,58' : C'34,28,14'),
                               (locked ? C'71,85,96' : C'104,81,29'),C'245,201,91');
+   ApplyHeaderStateButtonStyle(btn_AILaunchFeed,
+                              (m_ai_launch_mode==GOAT_AI_LAUNCH_AS_OPTIMIZED ? "Feed: From SET" : (m_ai_launch_protocol==2 ? "Feed: DEMO" : "Feed: LIVE")),
+                              C'34,28,14',(locked ? C'71,85,96' : C'104,81,29'),C'245,201,91');
    edt_AILaunchThreshold.Text(IntegerToString(m_ai_launch_threshold));
    edt_AILaunchThreshold.ReadOnly(locked || m_ai_launch_mode==GOAT_AI_LAUNCH_AS_OPTIMIZED);
 }
@@ -1085,6 +1096,9 @@ void CGOATDashboard::LoadAILaunchPolicyState(void)
    string threshold_key=GoatPortfolioGVName("DashboardAILaunchV147Threshold");
    m_ai_launch_mode=GOAT_AI_LAUNCH_AS_OPTIMIZED;
    m_ai_launch_threshold=60;
+   m_ai_launch_protocol=1;
+   string protocol_key=GoatPortfolioGVName("DashboardAILaunchV147Protocol");
+   if(GlobalVariableCheck(protocol_key) && GlobalVariableGet(protocol_key)==2.0) m_ai_launch_protocol=2;
    if(GlobalVariableCheck(mode_key))
       m_ai_launch_mode=GoatNormalizeAILaunchMode((int)GlobalVariableGet(mode_key));
    if(GlobalVariableCheck(threshold_key))
@@ -1098,15 +1112,18 @@ void CGOATDashboard::SaveAILaunchPolicyState(void)
 {
    GlobalVariableSet(GoatPortfolioGVName("DashboardAILaunchV147Mode"),(double)m_ai_launch_mode);
    GlobalVariableSet(GoatPortfolioGVName("DashboardAILaunchV147Threshold"),(double)m_ai_launch_threshold);
+   GlobalVariableSet(GoatPortfolioGVName("DashboardAILaunchV147Protocol"),(double)m_ai_launch_protocol);
    GlobalVariablesFlush();
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::DeleteAILaunchPolicyState(void)
 {
+   GlobalVariableDel(GoatPortfolioGVName("DashboardAILaunchV147Protocol"));
    GlobalVariableDel(GoatPortfolioGVName("DashboardAILaunchV147Mode"));
    GlobalVariableDel(GoatPortfolioGVName("DashboardAILaunchV147Threshold"));
    m_ai_launch_mode=GOAT_AI_LAUNCH_AS_OPTIMIZED;
    m_ai_launch_threshold=60;
+   m_ai_launch_protocol=1;
    GlobalVariablesFlush();
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1132,16 +1149,16 @@ void CGOATDashboard::AppendAILaunchAudit(const int idx,const string stage)
                 "SourceTradesMode","EffectiveTradesMode","NewsModeUnchanged","NewsThresholdUnchanged");
    FileWrite(h,TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS),TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS),
              stage,Portfolio_Name,file,g_sets[idx].sym,g_sets[idx].strat,GoatAILaunchModeLabel(m_ai_launch_mode),
-             source_mode,GoatAILaunchInputValue(m_ai_launch_mode,m_ai_launch_threshold,"Mode_Bias",source_mode),
-             source_threshold,GoatAILaunchInputValue(m_ai_launch_mode,m_ai_launch_threshold,"Bias_threshold",source_threshold),
-             source_protocol,GoatAILaunchInputValue(m_ai_launch_mode,m_ai_launch_threshold,"Bias_Protocol",source_protocol),
-             source_trades,GoatAILaunchInputValue(m_ai_launch_mode,m_ai_launch_threshold,"Mode_Bias_Trades",source_trades),
+             source_mode,GoatAILaunchInputValue(m_ai_launch_mode,m_ai_launch_threshold,"Mode_Bias",source_mode,m_ai_launch_protocol),
+             source_threshold,GoatAILaunchInputValue(m_ai_launch_mode,m_ai_launch_threshold,"Bias_threshold",source_threshold,m_ai_launch_protocol),
+             source_protocol,GoatAILaunchInputValue(m_ai_launch_mode,m_ai_launch_threshold,"Bias_Protocol",source_protocol,m_ai_launch_protocol),
+             source_trades,GoatAILaunchInputValue(m_ai_launch_mode,m_ai_launch_threshold,"Mode_Bias_Trades",source_trades,m_ai_launch_protocol),
              ParseSetFileForInput("Mode_News=",file),ParseSetFileForInput("News_threshold=",file));
    FileClose(h);
    PrintFormat("GOAT AI launch %s: set=%s policy=%s Mode_Bias=%s->%s threshold=%s->%s; source set/news unchanged",
                stage,g_sets[idx].name,GoatAILaunchModeLabel(m_ai_launch_mode),source_mode,
-               GoatAILaunchInputValue(m_ai_launch_mode,m_ai_launch_threshold,"Mode_Bias",source_mode),source_threshold,
-               GoatAILaunchInputValue(m_ai_launch_mode,m_ai_launch_threshold,"Bias_threshold",source_threshold));
+               GoatAILaunchInputValue(m_ai_launch_mode,m_ai_launch_threshold,"Mode_Bias",source_mode,m_ai_launch_protocol),source_threshold,
+               GoatAILaunchInputValue(m_ai_launch_mode,m_ai_launch_threshold,"Bias_threshold",source_threshold,m_ai_launch_protocol));
 }
 #endif
 void CGOATDashboard::maximizeWindow(void)
@@ -1394,6 +1411,17 @@ void CGOATDashboard::ApplyTableView(void)
 bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
 {
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
+   if(control_name==btn_AILaunchFeed.Name())
+   {
+      if(AnyAILaunchRowsDeployed() || m_ai_launch_mode==GOAT_AI_LAUNCH_AS_OPTIMIZED) return true;
+      if(!PrepareAILaunchPolicy()) return true;
+      m_ai_launch_protocol=(m_ai_launch_protocol==2 ? 1 : 2);
+      SaveAILaunchPolicyState();
+      RefreshAILaunchLabels();
+      UpdateAILaunchControls();
+      ChartRedraw(0);
+      return true;
+   }
    if(control_name==btn_AILaunchPolicy.Name())
    {
       if(AnyAILaunchRowsDeployed())
@@ -2369,7 +2397,7 @@ void CGOATDashboard::DeployAll(void)
 {
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
    // Validate once before the loop, avoiding a repeated prompt for every row.
-   if(!PrepareAILaunchPolicy()) return;
+   if(!PrepareAILaunchPolicy(true)) return;
 #endif
    for(int i=0;i<ArraySize(g_sets);i++)
       DoActivate(i);
@@ -2569,7 +2597,8 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
       }
       int ai_button_width=MathMax(170,(int)MathRound((columns_right-columns_left)*0.16));
       int ai_threshold_width=48;
-      heading_width=MathMax(120,heading_width-ai_button_width-ai_threshold_width-2*tab_gap);
+      int ai_feed_width=130;
+      heading_width=MathMax(120,heading_width-ai_button_width-ai_threshold_width-ai_feed_width-3*tab_gap);
 #endif
       CreateInfoOverlayEdit(edt_Heading,"FleetHeading","STRATEGY FLEET  /  OVERVIEW",columns_left,view_toolbar_top,heading_width,rowTallH,C'9,24,39',C'35,77,103');
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
@@ -2580,6 +2609,9 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
       m_controlHeight=rowTallH;
       CreatePlainInputEdit(edt_AILaunchThreshold,"AILaunchThreshold",IntegerToString(m_ai_launch_threshold),ai_x,view_toolbar_top,ai_threshold_width);
       m_controlHeight=ai_saved_height;
+      ai_x+=ai_threshold_width+tab_gap;
+      CreateHeaderStateButton(btn_AILaunchFeed,"AILaunchFeed","",ai_x,view_toolbar_top,ai_feed_width,rowTallH,C'34,28,14',C'104,81,29',C'245,201,91');
+      ObjectSetString(m_chart_id,btn_AILaunchFeed.Name(),OBJPROP_TOOLTIP,"Click to select Live (calibrated) or Demo (raw). Demo requires a demo account. Locked after first deployment; As Optimized preserves each SET feed.");
       ObjectSetString(m_chart_id,btn_AILaunchPolicy.Name(),OBJPROP_TOOLTIP,"Launch only: click to cycle As Optimized / Display Only / Entry Filter. Locked after first deployment.");
       ObjectSetString(m_chart_id,edt_AILaunchThreshold.Name(),OBJPROP_TOOLTIP,"AI bias threshold (whole number 1-100). Applied only to launch overrides; source .set files are never changed.");
       UpdateAILaunchControls();
@@ -2928,7 +2960,7 @@ string CGOATDashboard::BuildTemplate(const string eaName,const string eaPath,con
       Print("Selected export has no readable inputs; dashboard launch blocked: ",setFile);
       return "";
    }
-   inputs=GoatApplyAILaunchPolicy(inputs,m_ai_launch_mode,m_ai_launch_threshold);
+   inputs=GoatApplyAILaunchPolicy(inputs,m_ai_launch_mode,m_ai_launch_threshold,m_ai_launch_protocol);
 #endif
    tpl += inputs;
    tpl += "</inputs>\r\n</expert>\r\n</chart>\r\n";
@@ -4131,12 +4163,14 @@ int CGOATDashboard::LoadDashboardConfig(void)
    // This header and all child identities share one checked atomic snapshot.
    // Terminal globals are UI convenience only, never resume authority.
    string header=FileReadString(h);
-   if(header=="#GOAT_AI_LAUNCH_V147_1")
+   if(header=="#GOAT_AI_LAUNCH_V147_1" || header=="#GOAT_AI_LAUNCH_V147_2")
    {
       string saved_mode=FileReadString(h);
       string saved_threshold=FileReadString(h);
+      string saved_protocol="1"; // Older snapshots always launched the Live feed.
+      if(header=="#GOAT_AI_LAUNCH_V147_2") saved_protocol=FileReadString(h);
       int threshold=60;
-      if((saved_mode!="0" && saved_mode!="1" && saved_mode!="2") ||
+      if((saved_protocol!="1" && saved_protocol!="2") || (saved_mode!="0" && saved_mode!="1" && saved_mode!="2") ||
          !GoatParseAILaunchThreshold(saved_threshold,threshold) || !FileIsLineEnding(h))
       {
          Print("Invalid dashboard AI policy snapshot; resume blocked.");
@@ -4145,13 +4179,15 @@ int CGOATDashboard::LoadDashboardConfig(void)
       }
       m_ai_launch_mode=(int)StringToInteger(saved_mode);
       m_ai_launch_threshold=threshold;
+      m_ai_launch_protocol=(int)StringToInteger(saved_protocol);
    }
    else
    {
       // R5 has no AI override state. Unpublished legacy candidates with split
       // policy/global state cannot prove which policy belongs to this file.
       if(GlobalVariableCheck(GoatPortfolioGVName("DashboardAILaunchV147Mode")) ||
-         GlobalVariableCheck(GoatPortfolioGVName("DashboardAILaunchV147Threshold")))
+         GlobalVariableCheck(GoatPortfolioGVName("DashboardAILaunchV147Threshold")) ||
+         GlobalVariableCheck(GoatPortfolioGVName("DashboardAILaunchV147Protocol")))
       {
          Print("Legacy split AI policy state cannot be resumed safely; inspect existing child charts.");
          FileClose(h);
@@ -4159,6 +4195,7 @@ int CGOATDashboard::LoadDashboardConfig(void)
       }
       m_ai_launch_mode=GOAT_AI_LAUNCH_AS_OPTIMIZED;
       m_ai_launch_threshold=60;
+      m_ai_launch_protocol=1;
       FileSeek(h,0,SEEK_SET);
    }
 #endif
@@ -4216,7 +4253,7 @@ bool CGOATDashboard::SaveDashboardConfig(void)
    if(h==INVALID_HANDLE) return false;
 
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
-   if(FileWrite(h,"#GOAT_AI_LAUNCH_V147_1",IntegerToString(m_ai_launch_mode),IntegerToString(m_ai_launch_threshold))==0)
+   if(FileWrite(h,"#GOAT_AI_LAUNCH_V147_2",IntegerToString(m_ai_launch_mode),IntegerToString(m_ai_launch_threshold),IntegerToString(m_ai_launch_protocol))==0)
    {
       FileClose(h);
       FileDelete(write_path,FILE_COMMON);

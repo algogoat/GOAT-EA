@@ -36,19 +36,19 @@ bool GoatParseAILaunchThreshold(string raw,int &threshold)
    return true;
   }
 
-string GoatAILaunchInputValue(const int mode,const int threshold,const string name,const string source)
+string GoatAILaunchInputValue(const int mode,const int threshold,const string name,const string source,const int protocol=1)
   {
    int policy=GoatNormalizeAILaunchMode(mode);
    if(policy==GOAT_AI_LAUNCH_AS_OPTIMIZED) return source;
    if(name=="Mode_Bias") return(policy==GOAT_AI_LAUNCH_DISPLAY_ONLY ? "0" : "2");
    if(name=="Bias_threshold") return IntegerToString(threshold);
-   // Calibrated feed; gate new sequences only. Never select AI closes/rescue.
-   if(name=="Bias_Protocol") return "1";
+   // Selected feed; gate new sequences only. Never select AI closes/rescue.
+   if(name=="Bias_Protocol") return(protocol==2 ? "2" : "1");
    if(name=="Mode_Bias_Trades") return "0";
    return source;
   }
 
-string GoatApplyAILaunchPolicy(const string source,const int mode,const int threshold)
+string GoatApplyAILaunchPolicy(const string source,const int mode,const int threshold,const int protocol=1)
   {
    if(GoatNormalizeAILaunchMode(mode)==GOAT_AI_LAUNCH_AS_OPTIMIZED) return source;
    string names[4]={"Mode_Bias","Bias_threshold","Bias_Protocol","Mode_Bias_Trades"};
@@ -70,13 +70,13 @@ string GoatApplyAILaunchPolicy(const string source,const int mode,const int thre
          string value=StringSubstr(line,split+1);
          for(int n=0;n<4;++n)
             if(name==names[n]) found[n]=true;
-         line=name+"="+GoatAILaunchInputValue(mode,threshold,name,value);
+         line=name+"="+GoatAILaunchInputValue(mode,threshold,name,value,protocol);
         }
       result+=line+"\r\n";
      }
    // Older exports can omit inputs; explicit overrides must still be effective.
    for(int n=0;n<4;++n)
-      if(!found[n]) result+=names[n]+"="+GoatAILaunchInputValue(mode,threshold,names[n],"")+"\r\n";
+      if(!found[n]) result+=names[n]+"="+GoatAILaunchInputValue(mode,threshold,names[n],"",protocol)+"\r\n";
    return result;
   }
 
@@ -92,6 +92,9 @@ bool GoatAILaunchPolicySelfTest(void)
       "Mode_Bias=2\r\nBias_threshold=75\r\nBias_Protocol=1\r\nMode_Bias_Trades=0\r\n"+unchanged) return false;
    if(GoatApplyAILaunchPolicy("Risk=100\r\n",GOAT_AI_LAUNCH_ENTRY_FILTER,60)!=
       "Risk=100\r\nMode_Bias=2\r\nBias_threshold=60\r\nBias_Protocol=1\r\nMode_Bias_Trades=0\r\n") return false;
+   if(GoatApplyAILaunchPolicy(source,GOAT_AI_LAUNCH_ENTRY_FILTER,50,2)!=
+      "Mode_Bias=2\r\nBias_threshold=50\r\nBias_Protocol=2\r\nMode_Bias_Trades=0\r\n"+unchanged) return false;
+   if(GoatApplyAILaunchPolicy(source,GOAT_AI_LAUNCH_AS_OPTIMIZED,50,2)!=source) return false;
    int threshold=60;
    if(!GoatParseAILaunchThreshold(" 75 ",threshold) || threshold!=75) return false;
    if(!GoatParseAILaunchThreshold("1",threshold) || !GoatParseAILaunchThreshold("100",threshold)) return false;

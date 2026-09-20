@@ -1,4 +1,4 @@
-# GOAT-EA Agent Guide
+﻿# GOAT-EA Agent Guide
 
 ## Mission
 
@@ -38,6 +38,20 @@ Work on GOAT-EA like a surgical MQL5 engineer.
 - `README.md` is the source of truth for release workflow details. If this guide disagrees with `README.md` or the actual repo state, follow `README.md` and the repo.
 - The repo root may also contain local operational files such as `compile-codex.log`, `compile-codex-*.log`, `scripts/`, and `tools/`. Treat these as workspace aids unless the user explicitly asks to edit or version them.
 - Version-specific examples in this guide are illustrative only. Prefer durable rules over hard-coded version numbers wherever possible.
+
+## Development Backlog
+
+- [BACKLOG.md](BACKLOG.md) is the shared EA development board. Review its next-release items when planning a release.
+- Record newly agreed work with a stable ID, scope, evidence and acceptance checks; update status and link validation when completed.
+
+## Agent-native product programme
+
+- For operating the current research/portfolio stack, start with [the agent operating pack](docs/experiments/AI-EXPOSURE-PILOT/AGENT-OPERATING-PACK.md). It maps supported tools, current host paths, evidence, recovery and incomplete orchestration. Do not treat a prepared campaign as running or reuse historical launch IDs.
+
+- [docs/AGENT-NATIVE-STRATEGY-LIFECYCLE.md](docs/AGENT-NATIVE-STRATEGY-LIFECYCLE.md) records the agreed product direction and proposed implementation stages for optimization, portfolios, deployment and live feedback.
+- Start lifecycle work with [docs/LIFECYCLE-HANDOFF.md](docs/LIFECYCLE-HANDOFF.md). Track delivery under LIFE-001 through LIFE-008 in BACKLOG.md.
+- Keep template revisions, exported settings and deployed instances separately identifiable. Preserve exact artifacts and record source/effective settings; use generic family names with dated per-asset evidence.
+- This roadmap is not proof of implementation or authorization for live trading. Update status with evidence, preserve active position management and keep customer data out of the repo.
 
 ## Working Style
 

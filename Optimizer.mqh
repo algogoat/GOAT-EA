@@ -11,8 +11,17 @@
 //#include "GOATdefinitions.mqh"
 #include "Tester.mqh"
 #include "NewsBiasFilter.mqh"
+#include "GOATStudioQueueList.mqh"
+
+#ifdef GOAT_STUDIO_UNIFIED_V147
+bool GoatStudioManaged(void);
+bool GoatStudioUIState(string &tester,string &exports,string &owner,long &revision,long &generation,string &status,bool &saved);
+bool GoatStudioUISubmit(const string command,const string tester,const string exports,const long revision,const long generation);
+#endif
 
 // === PRESETS: map display-name -> actual file (with .txt)  // NEW
+bool g_GoatStudioReadOnlyMonitor=false;
+string g_GoatStudioMonitorRunPath="";
 string g_PresetDisplayNames[];
 string g_PresetFileNames[];
 
@@ -67,7 +76,7 @@ public:
    // RIGHT SIDE
    CLabel      m_lblQueue;//,m_lblStatus;
    CEdit       m_edtQueue[10],m_edtBatchProgress,m_edtBatchErrors;//,m_edtStatus[10];
-   CListView   m_listQueue;
+   CGoatStudioQueueList m_listQueue;
    // Single button
    CButton     m_btnSelectFile,m_btnAddQueue,m_btnSetPresets,m_btnDelQ,m_btnDelQitem,m_btnUpQitem,m_btnDownQitem,m_btnCancelSelected,m_btnMakePending,m_btnStart,m_btnStop,
                m_btnStageSetup,m_btnStageTimeline,m_btnStageExecution,m_btnStageExport;
@@ -96,9 +105,38 @@ public:
    virtual bool   Create(const long chart_id, const string name,const int subwin,const int x1,const int y1,const int x2,const int y2);
    void           SetFlags(const string _Key_,const string _EA_Name_,const string _Server_,const int _Font_Size_,const int D_Width_,const int D_Height_);
    virtual bool   OnEvent(const int id, const long &lparam,const double &dparam, const string &sparam);
+#ifdef GOAT_STUDIO_UNIFIED_V147
+   void ChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam);
+#endif
    void           SetCaptionClientColors();
    void           maximizeWindow();
    void           minimizeWindow();
+   void           ApplyTesterSettingsToControls(const string ini);
+#ifdef GOAT_STUDIO_UNIFIED_V147
+   bool m_studioLoaded,m_studioDraftChecked,m_studioDraftFailed;
+   long m_studioRevision,m_studioGeneration;
+   string m_studioOwner,m_studioBaseline,m_studioSubmitted;
+   void ManagedRefresh(void);
+   void ManagedObservation(const string status);
+   void ManagedResize(void);
+   bool ManagedPersistDraft(void);
+   bool ManagedRestoreDraft(void);
+   virtual void Destroy(const int reason=REASON_PROGRAM);
+   void ManagedControls(void);
+   void ManagedSave(void);
+   void ManagedTakeover(void);
+   void ManagedGrant(void);
+   void ManagedReload(void);
+   void ManagedSelectStrategy(void);
+   void ManagedQueueRefresh(void);
+   void ManagedQueueSubmit(const string command,const string payload);
+   void ManagedQueueEnqueue(void);
+   void ManagedQueueCancel(void);
+   void ManagedQueueRemove(void);
+   void ManagedQueueUp(void);
+   void ManagedQueueDown(void);
+   void ManagedQueueMove(const int direction);
+#endif
    string         GetTESTERsettingsString(bool header);
    string         GetExportSettingsString(void);
    void           AddQueueSingle(void);   // ← NEW: extracted single-item logic
@@ -171,6 +209,36 @@ private:
 };
 //+------------------------------------------------------------------+
 EVENT_MAP_BEGIN(CStrategyTesterDialog)
+#ifdef GOAT_STUDIO_UNIFIED_V147
+  if(GoatStudioManaged())
+  {
+    ON_EVENT(ON_CLICK,m_btnStageSetup,OnClickStageSetup)
+    ON_EVENT(ON_CLICK,m_btnStageTimeline,OnClickStageTimeline)
+    ON_EVENT(ON_CLICK,m_btnStageExecution,OnClickStageExecution)
+    ON_EVENT(ON_CLICK,m_btnStageExport,OnClickStageExport)
+    ON_EVENT(ON_CHANGE,m_cmbForward,OnChange_cmbForward)
+    ON_EVENT(ON_CLICK,m_btnSelectFile,ManagedSelectStrategy)
+    ON_EVENT(ON_CLICK,m_btnAddQueue,ManagedSave)
+    ON_EVENT(ON_CLICK,m_btnSetPresets,ManagedReload)
+    ON_EVENT(ON_CLICK,m_btnStart,ManagedTakeover)
+    ON_EVENT(ON_CLICK,m_btnStop,ManagedGrant)
+    ON_EVENT(ON_CHANGE,m_listQueue,ManagedControls)
+    ON_EVENT(ON_CLICK,m_btnCancelSelected,ManagedQueueCancel)
+    ON_EVENT(ON_CLICK,m_btnDelQitem,ManagedQueueRemove)
+    ON_EVENT(ON_CLICK,m_btnUpQitem,ManagedQueueUp)
+    ON_EVENT(ON_CLICK,m_btnDownQitem,ManagedQueueDown)
+    ON_EVENT(ON_CLICK,m_btnMakePending,ManagedQueueEnqueue)
+    return CAppDialog::OnEvent(id,lparam,dparam,sparam);
+  }
+#endif
+  if(g_GoatStudioReadOnlyMonitor)
+  {
+    ON_EVENT(ON_CLICK,m_btnStageSetup,OnClickStageSetup)
+    ON_EVENT(ON_CLICK,m_btnStageTimeline,OnClickStageTimeline)
+    ON_EVENT(ON_CLICK,m_btnStageExecution,OnClickStageExecution)
+    ON_EVENT(ON_CLICK,m_btnStageExport,OnClickStageExport)
+    return CAppDialog::OnEvent(id,lparam,dparam,sparam);
+  }
   ON_EVENT(ON_CHANGE, m_dtFrom       ,OnDateFromChanged)
   ON_EVENT(ON_CHANGE, m_dtTo         ,OnDateToChanged)
   ON_EVENT(ON_CHANGE, m_dtForward    ,OnDateForwardChanged)
@@ -203,6 +271,10 @@ CStrategyTesterDialog::CStrategyTesterDialog()
    m_compactLayout = false;
    m_batchRunning = false;
    m_activeStage = 0;
+#ifdef GOAT_STUDIO_UNIFIED_V147
+   m_studioDraftChecked=false; m_studioDraftFailed=false;
+   m_studioLoaded=false; m_studioRevision=-1; m_studioGeneration=-1;
+#endif
 }
 CStrategyTesterDialog::~CStrategyTesterDialog()
 {
@@ -210,6 +282,9 @@ CStrategyTesterDialog::~CStrategyTesterDialog()
 }
 void CStrategyTesterDialog::maximizeWindow(void)
 {
+#ifdef GOAT_STUDIO_UNIFIED_V147
+   if(GoatStudioManaged()) ManagedResize();
+#endif
    this.Maximize();
    // CAppDialog::Maximize() reveals every child. Re-apply the selected stage so
    // chart resizes never leak controls from the other Studio pages.
@@ -335,6 +410,12 @@ void CStrategyTesterDialog::RefreshRunPaths(void)
    Path_RunFolder      = GoatOptCurrentRunPath(EA_Name_,Server_);
    Path_QueueBatch     = GoatOptQueuePath(EA_Name_,Server_);
    Path_ExportSettings = GoatOptExportSettingsPath(EA_Name_,Server_);
+   if(g_GoatStudioReadOnlyMonitor && g_GoatStudioMonitorRunPath!="")
+   {
+      Path_RunFolder=g_GoatStudioMonitorRunPath;
+      Path_QueueBatch=Path_RunFolder+"\\queue.GOAT";
+      Path_ExportSettings=Path_RunFolder+"\\export_settings.GOAT";
+   }
   }
 //+------------------------------------------------------------------+
 bool CStrategyTesterDialog::EnsureRunContext(const bool forceNew=false,const string runNameOverride="")
@@ -729,8 +810,9 @@ bool CStrategyTesterDialog::SaveCurrentBatchPackage(void)
   {
    if(!EnsureRunContext(false)) return false;
    string queue=GetFileContent(Path_QueueBatch);
-   string exportSettings=GetFileContent(Path_ExportSettings);
-   if(exportSettings=="" && !m_compactLayout) exportSettings=GetExportSettingsString();
+   // Save the values currently displayed, not a previous run/start snapshot.
+   string exportSettings=(m_compactLayout ? GetFileContent(Path_ExportSettings) : GetExportSettingsString());
+   if(exportSettings!="" && !GoatOptWriteTextFile(Path_ExportSettings,exportSettings)) return false;
    string runName=m_edtRunName.Text();
    StringTrimLeft(runName);
    StringTrimRight(runName);
@@ -783,7 +865,7 @@ bool CStrategyTesterDialog::RehomeRunIfEditedNameChanged(void)
    string oldQueuePath=Path_QueueBatch;
    string oldExportSettingsPath=Path_ExportSettings;
    string queue=GetFileContent(oldQueuePath);
-   string exportSettings=GetFileContent(oldExportSettingsPath);
+   string exportSettings=(m_compactLayout ? GetFileContent(oldExportSettingsPath) : GetExportSettingsString());
    if(queue=="") return true;
 
    Path_RunFolder=GoatOptCreateRunPath(EA_Name_,Server_,requestedSafe,oldRunFolder);
@@ -1448,9 +1530,14 @@ void CStrategyTesterDialog::StageMove(CWnd &control,const int x,const int y,cons
    // Controls are created in dialog-client coordinates.  Once Add() attaches
    // them, Move() expects chart-client coordinates, so preserve the dialog's
    // client origin when repositioning controls between workflow stages.
-   int client_x=m_btnStageSetup.Left()-m_leftMargin;
-   int client_y=m_btnStageSetup.Top()-m_topMargin;
+   int client_x=ClientAreaLeft();
+   int client_y=ClientAreaTop();
    control.Move(client_x+x,client_y+y);
+#ifdef GOAT_STUDIO_UNIFIED_V147
+   if(GoatStudioManaged() && width>0 && height<0)
+      control.Size(width,m_controlHeight);
+   else
+#endif
    if(width>0)
       control.Size(width,(height>0 ? height : control.Height()));
    if(visible) control.Show(); else control.Hide();
@@ -1577,6 +1664,51 @@ void CStrategyTesterDialog::ApplyStudioStage(const int stage)
    int action_width=(editor_width-action_gap)/2;
    StageMove(m_btnAddQueue,m_leftMargin,actions_y,true,action_width,m_rowHeight);
    StageMove(m_btnSetPresets,m_leftMargin+action_width+action_gap,actions_y,true,editor_width-action_width-action_gap,m_rowHeight);
+   if(g_GoatStudioReadOnlyMonitor)
+   {
+      // Disable editing controls, never the parent client area or navigation.
+      m_btnSelectFile.Disable();
+      m_btnAddQueue.Disable();
+      m_btnSetPresets.Disable();
+      m_btnDelQ.Disable();
+      m_btnDelQitem.Disable();
+      m_btnUpQitem.Disable();
+      m_btnDownQitem.Disable();
+      m_btnCancelSelected.Disable();
+      m_btnMakePending.Disable();
+      m_btnStart.Disable();
+      m_btnStop.Disable();
+      m_btnSyncBias.Disable();
+      m_btnViewBias.Disable();
+      m_btnSyncNews.Disable();
+      m_edtRunName.Disable();
+      m_cmbExpert.Disable();
+      m_cmbSymbol.Disable();
+      m_cmbPeriod.Disable();
+      m_dtFrom.Disable();
+      m_dtTo.Disable();
+      m_cmbForward.Disable();
+      m_dtForward.Disable();
+      m_cmbDelay.Disable();
+      m_cmbModel.Disable();
+      m_edtDeposit.Disable();
+      m_edtCurrency.Disable();
+      m_cmbLeverage.Disable();
+      m_cmbOptimization.Disable();
+      m_edtSetsToExport.Disable();
+      m_dpBackOOS.Disable();
+      m_edtMinScore.Disable();
+      m_edtMinARF.Disable();
+      m_edtTargetDD.Disable();
+      m_edtMinSR.Disable();
+      m_chkAdjustLots.Disable();
+      m_chkVerifyOOS.Disable();
+      m_btnStart.Text("AGENT CONTROLS BATCH");
+      m_btnStop.Text("READ-ONLY VIEW");
+   }
+#ifdef GOAT_STUDIO_UNIFIED_V147
+   if(GoatStudioManaged()) ManagedControls();
+#endif
    ChartRedraw(0);
 }
 //+------------------------------------------------------------------+
@@ -1594,7 +1726,7 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    m_controlHeight=(int)MathMax(CONTROLS_COMBO_MIN_HEIGHT,(int)(0.043*D_Height));
    m_rowHeight    =(int)MathMax(m_controlHeight+4,(int)(0.051*D_Height));
    m_controlWidth =(int)MathMax(165,(int)(0.280*D_Width));
-   m_batchRunning=ResolveBatchRunningState(true);
+   m_batchRunning=ResolveBatchRunningState(false);
    m_compactLayout=false;
    
    int GapCtrl    =(int)(0.05*m_controlWidth);
@@ -1604,7 +1736,7 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    // 30+5+30+5+30=100
    double Ctrl_M = 0.300;     // 2 Cntrl larger
    
-   GlobalVariableSet("CaptionHeight",0.05*D_Height);
+   GlobalVariableSet("CaptionHeight",MathMax(28,0.05*D_Height));
    //int val=(int)GlobalVariableGet("CaptionHeight"); // Add in ControlsPlus\Dialog.mqh
    //int y2=y1+((val>1)?val:CONTROLS_DIALOG_CAPTION_HEIGHT);
    //int y1=off+((val>1)?val:CONTROLS_DIALOG_CAPTION_HEIGHT);
@@ -1903,14 +2035,14 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    int exportCheckOffset = MathMax(0,(m_controlHeight-exportCheckSize)/2);
    y = exportContentY;
    // -----------------  EXPORT SETTINGS  -----------------------------
-    string BackOOSDate = FetchExportSetting("BackOOSDate",Key_,EA_Name_,Server_);               if(BackOOSDate=="") BackOOSDate=TimeToString(D'2024.01.08',TIME_DATE);
-    int    SetsToExport= (int)FetchExportSetting("SetsToExport",Key_,EA_Name_,Server_);         if(SetsToExport<2) SetsToExport=2;
-    double MinScore    = StringToDouble(FetchExportSetting("MinScore",Key_,EA_Name_,Server_));  if(MinScore<60) MinScore=60.0;
-    double MinARF      = StringToDouble(FetchExportSetting("MinARF",Key_,EA_Name_,Server_));    if(MinARF<0.2) MinARF=0.2;
-    double MinSR       = StringToDouble(FetchExportSetting("MinSR",Key_,EA_Name_,Server_));     if(MinSR<2.5) MinSR=2.5;
-    double TargetDD    = StringToDouble(FetchExportSetting("TargetDD",Key_,EA_Name_,Server_));  if(TargetDD<100) TargetDD=100;
-    bool   AdjustLots  = StringToInteger(FetchExportSetting("AdjustLots",Key_,EA_Name_,Server_))!=0;//Print(AdjustLots);
-    bool   InclBackOOS = StringToInteger(FetchExportSetting("IncludeBackOOS",Key_,EA_Name_,Server_))!=0;//Print(InclBackOOS);
+    string BackOOSDate = (g_GoatStudioReadOnlyMonitor ? GoatOptReadIniValue(GoatOptReadTextFile(Path_ExportSettings),"BackOOSDate") : FetchExportSetting("BackOOSDate",Key_,EA_Name_,Server_));               if(BackOOSDate=="") BackOOSDate=TimeToString(D'2024.01.08',TIME_DATE);
+    int    SetsToExport= (int)(g_GoatStudioReadOnlyMonitor ? GoatOptReadIniValue(GoatOptReadTextFile(Path_ExportSettings),"SetsToExport") : FetchExportSetting("SetsToExport",Key_,EA_Name_,Server_));         if(SetsToExport<2) SetsToExport=2;
+    double MinScore    = StringToDouble((g_GoatStudioReadOnlyMonitor ? GoatOptReadIniValue(GoatOptReadTextFile(Path_ExportSettings),"MinScore") : FetchExportSetting("MinScore",Key_,EA_Name_,Server_)));  if(MinScore<60) MinScore=60.0;
+    double MinARF      = StringToDouble((g_GoatStudioReadOnlyMonitor ? GoatOptReadIniValue(GoatOptReadTextFile(Path_ExportSettings),"MinARF") : FetchExportSetting("MinARF",Key_,EA_Name_,Server_)));    if(MinARF<0.2) MinARF=0.2;
+    double MinSR       = StringToDouble((g_GoatStudioReadOnlyMonitor ? GoatOptReadIniValue(GoatOptReadTextFile(Path_ExportSettings),"MinSR") : FetchExportSetting("MinSR",Key_,EA_Name_,Server_)));     if(MinSR<2.5) MinSR=2.5;
+    double TargetDD    = StringToDouble((g_GoatStudioReadOnlyMonitor ? GoatOptReadIniValue(GoatOptReadTextFile(Path_ExportSettings),"TargetDD") : FetchExportSetting("TargetDD",Key_,EA_Name_,Server_)));  if(TargetDD<100) TargetDD=100;
+    bool   AdjustLots  = StringToInteger((g_GoatStudioReadOnlyMonitor ? GoatOptReadIniValue(GoatOptReadTextFile(Path_ExportSettings),"AdjustLots") : FetchExportSetting("AdjustLots",Key_,EA_Name_,Server_)))!=0;//Print(AdjustLots);
+    bool   InclBackOOS = StringToInteger((g_GoatStudioReadOnlyMonitor ? GoatOptReadIniValue(GoatOptReadTextFile(Path_ExportSettings),"IncludeBackOOS") : FetchExportSetting("IncludeBackOOS",Key_,EA_Name_,Server_)))!=0;//Print(InclBackOOS);
 
    CreateLabel(m_lblExport,"Export Settings", m_leftMargin+(int)(D_Width*0.0), y, 10);
    m_lblExport.FontSize(m_lblExport.FontSize()+1);
@@ -2257,6 +2389,10 @@ void CStrategyTesterDialog::OnSelectQueueItem(void)
    int pos = StringFind(block,"\n");
    if(pos < 0) return;
    string ini = StringSubstr(block,pos+1);
+   ApplyTesterSettingsToControls(ini);
+  }
+void CStrategyTesterDialog::ApplyTesterSettingsToControls(const string ini)
+  {
    /*------------------ 2. Parse key=value lines --------------------*/
    string liness[];
    const int nLines = StringSplit(ini,'\n',liness);
@@ -2267,7 +2403,8 @@ void CStrategyTesterDialog::OnSelectQueueItem(void)
       string key = StringTrim(kv[0]);
       string val = StringTrim(kv[1]);
       /* ---- basic symbol / TF / dates -------------------------------- */
-      if(key == "Symbol")              m_cmbSymbol .SelectByText(val);
+      if(key == "Expert") {n_Expert=val; if(m_cmbExpert.Select()!=val) m_cmbExpert.AddItem(val); m_cmbExpert.SelectByText(val);}
+      else if(key == "Symbol")              {if(m_cmbSymbol.Select()!=val) m_cmbSymbol.AddItem(val); m_cmbSymbol.SelectByText(val);}
       else if(key == "Period")         m_cmbPeriod .SelectByText(val);
       else if(key == "FromDate")       m_dtFrom    .Value((datetime)StringToTime(val));
       else if(key == "ToDate")         m_dtTo      .Value((datetime)StringToTime(val));
@@ -2298,6 +2435,7 @@ void CStrategyTesterDialog::OnSelectQueueItem(void)
       {
          int d = (int)StringToInteger(val);                   // latency in ms
          string dTxt = (d==0) ? "Zero latency, ideal execution": (string)d + " ms delay";
+         if(m_cmbDelay.Select()!=dTxt) m_cmbDelay.AddItem(dTxt);
          m_cmbDelay.SelectByText(dTxt);
       }
       /* ---- optimisation type ---------------------------------------- */
@@ -2305,7 +2443,7 @@ void CStrategyTesterDialog::OnSelectQueueItem(void)
       /* ---- money management fields ---------------------------------- */
       else if(key == "Deposit")         m_edtDeposit .Text(val);
       else if(key == "Currency")        m_edtCurrency.Text(val);
-      else if(key == "Leverage")        m_cmbLeverage.SelectByText("1:"+val);
+      else if(key == "Leverage")        {string lev=(StringFind(val,":")>=0 ? val : "1:"+val); if(m_cmbLeverage.Select()!=lev) m_cmbLeverage.AddItem(lev); m_cmbLeverage.SelectByText(lev);}
    }
    ChartRedraw();                                               // instant UI update
   }
@@ -2604,6 +2742,42 @@ void CStrategyTesterDialog::OnClickMakeSelectedPending(void)
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickRefresh(bool init=false, bool select=false)
   {
+#ifdef GOAT_STUDIO_UNIFIED_V147
+   if(GoatStudioManaged()) {ManagedRefresh(); return;}
+#endif
+   if(g_GoatStudioReadOnlyMonitor)
+   {
+      // Follow the active pointer without mutating globals, native files or queue state.
+      string pointer=GoatOptReadTextFile(GoatOptActivePointerPath(EA_Name_,Server_));
+      string runPath=(g_GoatStudioMonitorRunPath=="" ? GoatOptReadIniValue(pointer,"RunPath") : g_GoatStudioMonitorRunPath);
+      Path_QueueBatch=(runPath=="" ? "" : runPath+"\\queue.GOAT");
+      string queue=(Path_QueueBatch=="" ? "" : GetFileContent(Path_QueueBatch));
+      m_listQueue.ItemsClear();
+      int selected=0;
+      string items[]; int total=StringSplit(queue,(ushort)31,items);
+      for(int i=0;i<total;i++)
+      {
+         string parts[];
+         if(StringSplit(items[i],';',parts)==3)
+         {
+            m_listQueue.AddItem(parts[1]);
+            if(StringFind(parts[1],"OnGoing_")==0 || StringFind(parts[1],"Queued_")==0) selected=i;
+         }
+      }
+      if(total>0 && queue!="")
+      {
+         m_listQueue.Select(selected);
+         OnSelectQueueItem();
+         string symbol=GoatOptQueueValue(items[selected],"Symbol");
+         m_edtStrategy.Text("Agent run / "+symbol);
+         m_edtSetFile.Text(GoatOptQueueValue(items[selected],"Expert"));
+         string expert=GoatOptQueueValue(items[selected],"Expert");
+         if(m_cmbExpert.Select()!=expert)
+         {m_cmbExpert.AddItem(expert);m_cmbExpert.SelectByText(expert);}
+         m_cmbLeverage.SelectByText(GoatOptQueueValue(items[selected],"Leverage"));
+      }
+      m_listQueue.Show(); UpdateBatchProgressText(); ChartRedraw(m_chart_id); return;
+   }
    RefreshNewsSyncButton();
    string QueueContent=GetFileContent(Path_QueueBatch);
    
@@ -2617,7 +2791,9 @@ void CStrategyTesterDialog::OnClickRefresh(bool init=false, bool select=false)
    //for(int i=15;i>=0;i--) m_listQueue.TotalView   ItemDelete(i);
    string results[];
    int total=StringSplit(QueueContent, (ushort)31, results);
-   ReconstructFile(Path_QueueBatch,results);
+   // Refresh is observational: normalize the in-memory display only.
+   // Queue writes belong to explicit actions/native transitions.
+   for(int i=0;i<total;i++) {StringTrimLeft(results[i]); StringTrimRight(results[i]);}
    
    int added=0;
    int select_index=-1;
@@ -2739,6 +2915,16 @@ bool CStrategyTesterDialog::HasActiveBatchQueueItem(void)
 //+------------------------------------------------------------------+
 bool CStrategyTesterDialog::ResolveBatchRunningState(const bool clearStale)
   {
+   if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0)
+   {
+    if(clearStale)
+    {
+     GlobalVariableDel("BatchOnGoing");
+     GlobalVariableDel("TerminalRunning");
+     GoatBatchClearDeferredRestart();
+    }
+    return false;
+   }
    if(GlobalVariableGet("BatchOnGoing")==0.0) return false;
    if(HasActiveBatchQueueItem()) return true;
 
@@ -2753,7 +2939,8 @@ bool CStrategyTesterDialog::ResolveBatchRunningState(const bool clearStale)
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::RefreshBatchStartButtonState(void)
   {
-   m_batchRunning=ResolveBatchRunningState(true);
+   // Display refresh must never clear runtime ownership/control flags.
+   m_batchRunning=ResolveBatchRunningState(false);
    m_btnStart.Text(m_batchRunning ? "RUNNING" : "START BATCH");
    if(m_batchRunning) m_btnStart.Disable();
    else               m_btnStart.Enable();
@@ -2858,15 +3045,18 @@ void CStrategyTesterDialog::OnClickStart(void)
       return;
      }
 
-   // 2) export-settings -------------------------------------------------
-   string exportSettings = GetExportSettingsString();        // <-- NEW
-   int handle = FileOpen(Path_ExportSettings,FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);  // it overwrites the entire file
-   FileWrite(handle,exportSettings); FileClose(handle);
-   SaveCurrentBatchPackage();
-
    int ret = MessageBox((string)pend+" Pending Queue Items Found.\n\nTerminal will restart, start batch now?","Info",MB_OKCANCEL|MB_ICONQUESTION);
-   if(ret==IDCANCEL) return;
-   
+   if(ret!=IDOK) return;
+   if(!SaveCurrentBatchPackage())
+   {
+      MessageBox("Unable to save the run and export settings. Batch was not started.","Error",MB_OK|MB_ICONERROR);
+      return;
+   }
+   // Only an explicitly accepted new start releases the persistent cancellation latch.
+   GlobalVariableDel(GOAT_BATCH_CANCELLED_GV);
+   GoatBatchClearDeferredRestart();
+   GlobalVariablesFlush();
+
    WriteLog("🔵🔵🔵🔵🔵 Batch Start clicked and accepted 🔵🔵🔵🔵🔵",false,Key_,EA_Name_,Server_);
    GoatOptAppendTimeline(EA_Name_,Server_,"BATCH_START_CLICKED","Batch","Accepted",(string)pend+" pending item(s)");
    
@@ -2891,52 +3081,51 @@ void CStrategyTesterDialog::OnClickStart(void)
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickStop(void)
   {
-   string fileContent = GetFileContent(Path_QueueBatch);
-   if(fileContent=="")
-   {
-      MessageBox("No queue file found.","Error",MB_OK|MB_ICONERROR);
-      return;
-   }
-   string items[];
-   int    total = StringSplit(fileContent,(ushort)31,items);
-   int pendingCount = 0;
-   for(int i=0;i<total;i++)
-   {
-      string parts[];
-      if(StringSplit(items[i],';',parts)==3 && StringFind(parts[1],"Pending",0)==0) pendingCount++;
-   }
-   GlobalVariableDel("TerminalRunning");
-   FileDelete(GoatOptLaunchGuardPath(EA_Name_,Server_),FILE_COMMON);
-   if(pendingCount==0)
-   {
-      RefreshBatchStartButtonState();
-      MessageBox("No Pending items found.","Info",MB_OK|MB_ICONINFORMATION); return;
-   }
-   string warn = StringFormat("All %d pending items will be cancelled.\n\nContinue?",pendingCount);
-   int    res  = MessageBox(warn,"Confirmation",MB_YESNO|MB_ICONWARNING);
+   int res=MessageBox("Terminate this batch?\n\nThe running optimization will be stopped and all Pending, Queued and OnGoing items cancelled.","Confirmation",MB_YESNO|MB_ICONWARNING);
    if(res!=IDYES) return;
-   bool changed = false;
+
+   // Disarm callbacks and terminal relaunch before requesting tester stop.
+   // Persist even when the queue is missing or cannot be rewritten.
+   GlobalVariableSet(GOAT_BATCH_CANCELLED_GV,1.0);
+   GlobalVariableDel("BatchOnGoing");
+   GlobalVariableDel("TerminalRunning");
+   GoatBatchClearDeferredRestart();
+   GlobalVariablesFlush();
+   string guardPath=GoatOptLaunchGuardPath(EA_Name_,Server_);
+   string configPath=GoatOptActiveConfigPath(EA_Name_,Server_);
+   bool launchCleared=true;
+   if(FileIsExist(guardPath,FILE_COMMON) && !FileDelete(guardPath,FILE_COMMON)) launchCleared=false;
+   if(FileIsExist(configPath,FILE_COMMON) && !FileDelete(configPath,FILE_COMMON)) launchCleared=false;
+
+   bool testerStopped=MTTESTER::ClickStop(30);
+   // Read after stopping so a finishing callback cannot leave us using an old snapshot.
+   string fileContent=GetFileContent(Path_QueueBatch);
+   string items[];
+   int total=StringSplit(fileContent,(ushort)31,items);
+   int cancelledCount=0;
    for(int i=0;i<total;i++)
    {
       string parts[];
-      if(StringSplit(items[i],';',parts)==3)
+      if(StringSplit(items[i],';',parts)!=3) continue;
+      string state=parts[1];
+      int underscore=StringFind(state,"_");
+      if(underscore>=0) state=StringSubstr(state,0,underscore);
+      if(state=="Pending" || state=="Queued" || state=="OnGoing")
       {
-         if(StringFind(parts[1],"Pending",0)==0)
-         {
-            int underscore = StringFind(parts[1],"_");
-            parts[1] = (underscore>=0) ? "Cancelled"+StringSubstr(parts[1],underscore): "Cancelled";
-            items[i] = ";" + parts[1] + ";" + parts[2];
-            changed  = true;
-         }
+         items[i]=QueueItemWithState(items[i],"Cancelled");
+         cancelledCount++;
       }
    }
-   if(changed)
-   {
-      WriteLog("❌❌❌❌❌ Batch Terminated ❌❌❌❌❌",false,Key_,EA_Name_,Server_);
-      ReconstructFile(Path_QueueBatch,items);
-      OnClickRefresh(true,true);
-      MessageBox(StringFormat("%d item(s) were cancelled.\nFeel Free to stop any running optimization.\nExports sequence wont run.",pendingCount),"Info",MB_OK|MB_ICONINFORMATION);
-   }
+   bool queueSaved=(cancelledCount==0 || ReconstructFile(Path_QueueBatch,items));
+   WriteLog("Batch terminated: "+IntegerToString(cancelledCount)+" unfinished item(s) cancelled.",false,Key_,EA_Name_,Server_);
+   GoatOptAppendTimeline(EA_Name_,Server_,"BATCH_TERMINATED","Batch","Cancelled",IntegerToString(cancelledCount)+" unfinished item(s)");
+   OnClickRefresh(true,true);
+   RefreshBatchStartButtonState();
+   string message="Batch terminated. Automatic continuation is disabled.";
+   if(!testerStopped) message+="\nStrategy Tester has not confirmed it stopped. Stop it manually before starting another batch.";
+   if(!queueSaved) message+="\nUnable to save cancelled queue rows. Cancellation remains active; check the queue file before restarting.";
+   if(!launchCleared) message+="\nUnable to remove all launch files. Check the run folder before closing the terminal.";
+   MessageBox(message,"Batch Terminated",MB_OK|MB_ICONINFORMATION);
   }
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::ChangeItemTo(const int index,const string newState)
@@ -2968,6 +3157,7 @@ void CStrategyTesterDialog::ChangeItemTo(const int index,const string newState)
 //+------------------------------------------------------------------+
 bool UpdateBatchQueueAndWriteConfigFile(bool init,bool error,string Key_,string EA_Name_,string Server_)
   {
+   if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
    string Path_QueueBatch = GoatOptQueuePath(EA_Name_,Server_);
    string QueueContent=GetFileContent(Path_QueueBatch);//TesterDialog.Path_QueueBatch);
    
@@ -3090,6 +3280,7 @@ bool UpdateBatchQueueAndWriteConfigFile(bool init,bool error,string Key_,string 
 //+------------------------------------------------------------------+
 bool ActivatePending(string QueueItem,string Key_,string EA_Name_,string Server_)
   {
+   if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
    QueueItem = RepairTesterExpertPath(QueueItem);
    int ret = StringFind(QueueItem, ":"); if(ret <= 0) {WriteLog("Cannot Activate Queue Item: "+QueueItem,true,Key_,EA_Name_,Server_); return false;}
    Strategy = StringSubstr(QueueItem,ret+1);
@@ -3135,6 +3326,12 @@ bool ActivatePending(string QueueItem,string Key_,string EA_Name_,string Server_
    }
 
    WriteLog("Active optimization config prepared: "+activeConfig,false,Key_,EA_Name_,Server_);
+   if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0)
+   {
+      FileDelete(guardPath,FILE_COMMON);
+      FileDelete(activeConfig,FILE_COMMON);
+      return false;
+   }
    AddCommand(activeConfig,guardPath,launchId);
    return true;
   }
@@ -3195,7 +3392,7 @@ string GetFileContent(string FileName)
    return content;
   }
 //+------------------------------------------------------------------+
-void ReconstructFile(string FileName,string &SubStrings[])
+bool ReconstructFile(string FileName,string &SubStrings[])
   {
    string str="";
    for(int i=0;i<ArraySize(SubStrings);i++)
@@ -3209,9 +3406,11 @@ void ReconstructFile(string FileName,string &SubStrings[])
    if(handle != INVALID_HANDLE)
    {
     StringTrimLeft(str); StringTrimRight(str);
-    FileWrite(handle, str);
+    bool written=(FileWrite(handle, str)>0);
     FileClose(handle);
+    return written;
    }
+   return false;
   }
 //+------------------------------------------------------------------+
 bool EndsWith(const string s,const string suf)
@@ -3413,6 +3612,9 @@ string CStrategyTesterDialog::GetTESTERsettingsString(bool header=false)
    else if(delay=="100 ms delay")                     delay="100";
    else if(delay=="200 ms delay")                     delay="200";
    else if(delay=="500 ms delay")                     delay="500"; //Print(delay);
+#ifdef GOAT_STUDIO_UNIFIED_V147
+   if(GoatStudioManaged()) {int suffix=StringFind(delay," ms delay"); if(suffix>0) delay=StringSubstr(delay,0,suffix);}
+#endif
    str+="ExecutionMode="+delay+"\n";
 //--------------
    string opt        = m_cmbOptimization.Select(); //Print(opt);
@@ -3439,7 +3641,9 @@ string CStrategyTesterDialog::GetTESTERsettingsString(bool header=false)
    string ForwardDateStr;
    //ForwardMode — forward testing mode (0 — off, 1 — 1/2 of the testing period, 2 — 1/3 of the testing period, 3 — 1/4 of the testing period, 
    //4 — custom interval specified using the ForwardDate parameter).
-      //if(ForwardMode=="No")                        {ForwardDateStr="No Forward";     ForwardMode="0";}
+#ifdef GOAT_STUDIO_UNIFIED_V147
+   if(GoatStudioManaged() && ForwardMode=="No") {ForwardDateStr="No Forward"; ForwardMode="0";}
+#endif
         if(ForwardMode=="1/2")                       {ForwardDateStr="1/2";            ForwardMode="1";}
    else if(ForwardMode=="1/3")                       {ForwardDateStr="1/3";            ForwardMode="2";}
    else if(ForwardMode=="1/4")                       {ForwardDateStr="1/4";            ForwardMode="3";}

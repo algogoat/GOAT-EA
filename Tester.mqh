@@ -79,6 +79,7 @@ struct SettingsStrings
   };
 SettingsStrings strT;
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+#define GOAT_BATCH_CANCELLED_GV             "GOAT_BatchCancelled"
 #define GOAT_BATCH_RESTART_PENDING_GV       "GOAT_BatchRestartPending"
 #define GOAT_BATCH_RESTART_REQUESTED_AT_GV  "GOAT_BatchRestartRequestedAt"
 #define GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV "GOAT_BatchRestartStopAttempts"
@@ -99,6 +100,7 @@ void GoatBatchClearDeferredRestart(void)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void GoatBatchRequestDeferredRestart(const string reason,string Key_,string EA_Name_,string Server_)
   {
+   if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return;
    GlobalVariableSet(GOAT_BATCH_RESTART_PENDING_GV,1.0);
    GlobalVariableSet(GOAT_BATCH_RESTART_REQUESTED_AT_GV,(double)TimeLocal());
    GlobalVariableSet(GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV,0.0);
@@ -118,11 +120,17 @@ bool GoatBatchTryCloseTerminalWhenTesterIdle(string Key_,string EA_Name_,string 
                                              const int stopWindowSec=120,
                                              const int logIntervalSec=30)
   {
+   if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0)
+     {
+      GoatBatchClearDeferredRestart();
+      return false;
+     }
    if(!GoatBatchDeferredRestartPending()) return false;
 
    if(GoatBatchTesterIdleConfirmed())
      {
       WriteLog("Batch restart: Strategy Tester is idle; requesting terminal close.",false,Key_,EA_Name_,Server_);
+      if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
       bool closeRequested=TerminalClose(99);
       if(closeRequested) GoatBatchClearDeferredRestart();
       else WriteLog("Batch restart: terminal close request failed; deferred restart remains pending.",true,Key_,EA_Name_,Server_);
@@ -238,10 +246,12 @@ bool InitializeTester(string Key_,string EA_Name_,string Server_,bool reportMode
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool StartTester(int rowInd,string mode,bool reportMode,const int Attempts=20)
   {
+   if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
    // SAFEGUARD: do not touch Strategy Tester while it's running
    const datetime t0 = TimeLocal();
    while(!MTTESTER::IsIdle())
    {
+    if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
     Sleep(500);
     if(TimeLocal()-t0 > 500) // 500 sec watchdog
     {
@@ -277,6 +287,7 @@ bool StartTester(int rowInd,string mode,bool reportMode,const int Attempts=20)
      for(int i=0;i<Attempts;i++)
      {
       Sleep(100);
+      if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
       if(MTTESTER::ClickStart())
       {
        Sleep(200);

@@ -3,6 +3,7 @@
 #define GOAT_DIRECTION_GUARD_MQH
 double g_direction_guard_token=0.0;
 bool g_direction_guard_send_attempted=false,g_direction_guard_denied=false;
+bool g_direction_guard_current_request=false;
 string g_direction_guard_keys[2];
 bool g_direction_guard_held[2]={false,false};
 string g_direction_guard_reason[2];
@@ -169,6 +170,7 @@ void GoatDirectionGuardStatus(const int direction,const string reason)
 
 bool GoatDirectionGuardBegin(const int direction,const bool already_traded)
   {
+   g_direction_guard_current_request=false;
    int policy=DashboardExposurePolicyMode;
    string policy_key=GoatPortfolioGVName("DashboardExposurePolicyMode");
    if(!MQLInfoInteger(MQL_TESTER) && GlobalVariableCheck(policy_key)) policy=(int)GlobalVariableGet(policy_key);
@@ -205,6 +207,7 @@ bool GoatDirectionGuardBegin(const int direction,const bool already_traded)
       GoatDirectionGuardStatus(direction,"Check: durable reservation unavailable; no order sent");return false;
      }
    GoatDirectionGuardStatus(direction,g_direction_guard_held[direction] ? "sequence owns lock" : "existing sequence managed");
+   g_direction_guard_current_request=true;
    return true;
   }
 
@@ -220,8 +223,8 @@ void GoatDirectionGuardEnd(const int direction)
 
 void GoatDirectionGuardResult(const int direction,const uint retcode,const bool opened,const bool previously_traded)
   {
-   if(!g_direction_guard_tracking[direction]) return;
-   bool settled=(retcode==TRADE_RETCODE_DONE || retcode==TRADE_RETCODE_DONE_PARTIAL);
+   if(!g_direction_guard_current_request || !g_direction_guard_tracking[direction]) return;
+   bool settled=opened && (retcode==TRADE_RETCODE_DONE || retcode==TRADE_RETCODE_DONE_PARTIAL);
    bool rejected=(retcode==10004 || retcode==10006 || (retcode>=10013 && retcode<=10022) ||
                   retcode==10024 || retcode==10026 || retcode==10027 || retcode==10030 ||
                   (retcode>=10032 && retcode<=10035) || retcode==10040 || (retcode>=10042 && retcode<=10044) || retcode==10046);
@@ -254,7 +257,7 @@ void GoatDirectionGuardDeal(const ulong deal,const bool buy_started,const bool s
 
 void GoatDirectionGuardCaptureOrder(const int direction,const ulong order)
   {
-   if(g_direction_guard_tracking[direction]) g_direction_guard_pending_order[direction]=order;
+   if(g_direction_guard_current_request && g_direction_guard_tracking[direction]) g_direction_guard_pending_order[direction]=order;
   }
 
 void GoatDirectionGuardPublish(const bool buy_traded,const bool sell_traded)

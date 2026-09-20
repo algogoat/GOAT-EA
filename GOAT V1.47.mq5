@@ -6048,6 +6048,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
    if(StopOut_Flag) {LastRetCode=740; return 0;}
 
    int ret=0;
+   ulong resolvedPositionTicket=0;
    double SL=0,TP=0;
    Lots_Order=lots;
    double requestedVolume = GetNormalizedLots(Lots_Order);
@@ -6099,7 +6100,8 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
     else{
      ret++;
      LastSL=SL; LastTP=TP;
-     LastOrderTicket=(int)ResolveLivePositionTicket(OP,magic,requestedVolume,desc,(ulong)result.order,(ulong)result.deal);
+     resolvedPositionTicket=ResolveLivePositionTicket(OP,magic,requestedVolume,desc,(ulong)result.order,(ulong)result.deal);
+     LastOrderTicket=(int)resolvedPositionTicket;
      LastDealTicket=LastBuyTicket=(int)result.deal;
    //Print(PositionSelectByTicket(LastOrderTicket)+" "+LastOrderTicket+" "+LastDealTicket+" "+PositionGetInteger(POSITION_TICKET)+" "+PositionGetInteger(POSITION_IDENTIFIER));
    //LastTradeTime = tm_cur;
@@ -6151,7 +6153,8 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
     else{
      ret++;
      LastSL=SL; LastTP=TP;
-     LastOrderTicket=(int)ResolveLivePositionTicket(OP,magic,requestedVolume,desc,(ulong)result.order,(ulong)result.deal);
+     resolvedPositionTicket=ResolveLivePositionTicket(OP,magic,requestedVolume,desc,(ulong)result.order,(ulong)result.deal);
+     LastOrderTicket=(int)resolvedPositionTicket;
      LastDealTicket=LastSellTicket=(int)result.deal;
    //LastTradeTime = tm_cur;
    //TradesInSession++;
@@ -6160,10 +6163,38 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
     LastRetCode=result.retcode;
     orders++;
    }
-   if(LastOrderTicket>0 && PositionSelectByTicket((ulong)LastOrderTicket))
+   // Partial-fill sequence metadata must remain representable by the existing
+   // int-ticket lifecycle. Preserve broker evidence, but do not fabricate success.
+   if(result.retcode==TRADE_RETCODE_DONE_PARTIAL)
+     {
+      LastOpen=result.price;
+      Lots_Order=result.volume;
+      bool mapped=(resolvedPositionTicket>0 && resolvedPositionTicket<=2147483647 &&
+                   PositionSelectByTicket(resolvedPositionTicket));
+      if(mapped)
+        {
+         ulong position_id=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+         mapped=(PositionGetString(POSITION_SYMBOL)==_Symbol && PositionGetInteger(POSITION_MAGIC)==magic &&
+                 PositionGetInteger(POSITION_TYPE)==OP &&
+                 ((ulong)result.order==resolvedPositionTicket ||
+                  ((ulong)result.deal>0 && HistoryDealSelect((ulong)result.deal) &&
+                   (ulong)HistoryDealGetInteger((ulong)result.deal,DEAL_POSITION_ID)==position_id)));
+        }
+      if(mapped)
+        {
+         LastOpen=PositionGetDouble(POSITION_PRICE_OPEN);
+         Lots_Order=PositionGetDouble(POSITION_VOLUME);
+        }
+      if(!mapped || LastOpen<=0.0 || Lots_Order<=0.0)
+        {
+         ret=0;
+         GoatDirectionGuardStatus(OP,"Check: partial fill requires manual sequence reconciliation");
+        }
+     }
+   else if(LastOrderTicket>0 && PositionSelectByTicket((ulong)LastOrderTicket))
      {
       LastOpen=PositionGetDouble(POSITION_PRICE_OPEN);
-      Lots_Order=PositionGetDouble(POSITION_VOLUME); // accepted partial fill uses actual volume
+      Lots_Order=PositionGetDouble(POSITION_VOLUME);
      }
    else
       LastOpen=0.0;

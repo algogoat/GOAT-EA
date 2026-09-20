@@ -30,6 +30,7 @@ function adapter(state) {
  Object.assign(api,{
   g_direction_guard_token:1,g_direction_guard_held:[false,false],g_direction_guard_keys:['B','S'],g_direction_guard_pending_order:[0,0],
   g_direction_guard_tracking:[false,false],g_direction_guard_manual_reconcile:[false,false],
+  g_direction_guard_current_request:false,
   DashboardExposurePolicyMode:1,GOAT_EXPOSURE_SYMBOL_DIRECTION:1,OP_BUY:0,OP_SELL:1,MQL_TESTER:1,TERMINAL_CONNECTED:1,
   MQLInfoInteger:()=>true,TerminalInfoInteger:()=>true,GoatPortfolioGVName:()=>'',GlobalVariableCheck:()=>false,
   GoatDirectionGuardInit:()=>true,GoatDirectionGuardStatus:()=>{},GoatGuardOwnerKey:(token,field)=>24+token*2+(field==='PB'?0:1),
@@ -39,6 +40,7 @@ function adapter(state) {
   GoatGuardDurablePending:dir=>state[62+dir]!==0,
   GoatGuardWritePending:dir=>{state[62+dir]=1;return true;},
   GoatGuardResolvePending:dir=>{state[62+dir]=0;return true;},
+  GoatGuardPendingPath:dir=>dir,FileIsExist:dir=>state[62+dir]!==0,
   MAGIC1:123,_Symbol:'EURUSD',DEAL_MAGIC:1,DEAL_SYMBOL:2,DEAL_ENTRY:3,DEAL_ENTRY_IN:0,DEAL_TYPE:4,DEAL_ORDER:5,
   HistoryDealSelect:()=>true,HistoryDealGetString:()=> 'EURUSD',dealOrder:9,
  });
@@ -66,13 +68,16 @@ if(!isMainThread){
  test('fresh reservation rechecks actual exposure',()=>{const s=fresh();let calls=0;const p=policy(s,()=>{calls++;s[4]=1;});assert(!p.claim('B',1,0));assert.equal(s[0],0);assert.equal(calls,1);});
  test('CAS loser never releases winning token',()=>{const s=fresh(),p=policy(s);assert(p.claim('B',2,0));assert(!p.release('B',1,0));assert.equal(s[0],2);});
  test('toggle on preserves existing sequence and durably tracks its send; toggle off bypasses admission',()=>{const s=fresh(),p=adapter(s);assert(p.GoatDirectionGuardBegin(0,true));assert.equal(s[0],-1);assert.equal(s[62],1);p.GoatDirectionGuardResult(0,10009,true,true);assert.equal(s[62],0);p.DashboardExposurePolicyMode=0;assert(p.GoatDirectionGuardBegin(0,false));assert.equal(s[0],-1);});
- test('broker timeout blocks second send; definitive rejection releases initial claim',()=>{const s=fresh(),p=adapter(s);assert(p.GoatDirectionGuardBegin(0,false));assert.equal(s[26],1);p.GoatDirectionGuardResult(0,10012,false,false);assert(!p.GoatDirectionGuardBegin(0,false));p.GoatDirectionGuardResult(0,10006,false,false);assert.equal(s[0],0);assert.equal(p.g_direction_guard_held[0],false);});
+ test('broker timeout blocks second send; definitive rejection releases initial claim',()=>{const s=fresh(),p=adapter(s);assert(p.GoatDirectionGuardBegin(0,false));assert.equal(s[26],1);p.GoatDirectionGuardResult(0,10012,false,false);assert(!p.GoatDirectionGuardBegin(0,false));assert.equal(s[62],1);const rejected=fresh(),q=adapter(rejected);assert(q.GoatDirectionGuardBegin(0,false));q.GoatDirectionGuardResult(0,10006,false,false);assert.equal(rejected[0],0);assert.equal(q.g_direction_guard_held[0],false);});
  test('rejected scaling add does not release a flat active sequence',()=>{const s=fresh(),p=adapter(s);assert(p.GoatDirectionGuardBegin(0,false));p.GoatDirectionGuardResult(0,10009,true,false);assert(p.GoatDirectionGuardBegin(0,true));p.GoatDirectionGuardResult(0,10006,false,true);assert.equal(s[0],1);assert(p.g_direction_guard_held[0]);});
  test('partial first fill does not admit duplicate sequence before state reconciles',()=>{const s=fresh(),p=adapter(s);assert(p.GoatDirectionGuardBegin(0,false));s[4]=1;p.GoatDirectionGuardResult(0,10010,false,false);assert(!p.GoatDirectionGuardBegin(0,false));assert.equal(s[0],1);});
  test('only exact accepted broker order clears pending marker',()=>{const s=fresh(),p=adapter(s);assert(p.GoatDirectionGuardBegin(0,false));p.g_direction_guard_pending_order[0]=8;p.GoatDirectionGuardDeal(1,true,false);assert.equal(s[26],1);p.dealOrder=8;p.GoatDirectionGuardDeal(1,true,false);assert.equal(s[26],0);assert.equal(s[62],0);});
  test('terminal restart retains durable unresolved-send blockade',()=>{const s=fresh(),p=adapter(s);assert(p.GoatDirectionGuardBegin(0,false));p.GoatDirectionGuardResult(0,10012,false,false);for(let i=0;i<62;i++)s[i]=0;s[0]=s[1]=-1;const restarted=adapter(s);assert.equal(s[62],1);assert(!restarted.GoatDirectionGuardBegin(0,false));assert.equal(s[0],-1);});
  test('uncertain late fill remains manual reconciliation even for an existing sequence',()=>{const s=fresh(),p=adapter(s);assert(p.GoatDirectionGuardBegin(0,true));p.GoatDirectionGuardResult(0,10012,false,true);p.g_direction_guard_pending_order[0]=9;p.GoatDirectionGuardDeal(1,true,false);assert.equal(s[62],1);assert.equal(s[26],1);});
  test('netting account cannot start independent directional ownership',()=>{const s=fresh(),p=adapter(s);p.marginMode=0;assert(!p.GoatDirectionGuardBegin(0,false));assert.equal(s[0],-1);});
+ test('disabled-filter unrelated send cannot resolve previous uncertain request',()=>{const s=fresh(),p=adapter(s);assert(p.GoatDirectionGuardBegin(0,false));p.GoatDirectionGuardResult(0,10012,false,false);p.DashboardExposurePolicyMode=0;assert(p.GoatDirectionGuardBegin(0,false));p.GoatDirectionGuardResult(0,10009,true,false);assert.equal(s[62],1);assert.equal(s[26],1);});
+ test('failed durable write prevents send and incomplete marker stays fail closed',()=>{const s=fresh(),p=adapter(s);p.GoatGuardWritePending=()=>false;assert(!p.GoatDirectionGuardBegin(0,false));assert.equal(s[0],0);assert.equal(s[26],0);const partial=fresh(),q=adapter(partial);q.GoatGuardWritePending=()=>{partial[62]=1;return false;};assert(!q.GoatDirectionGuardBegin(0,false));assert.equal(partial[62],1);assert.equal(partial[26],1);});
+ test('accepted partial-fill result releases uncertainty but retains sequence ownership',()=>{const s=fresh(),p=adapter(s);assert(p.GoatDirectionGuardBegin(0,false));s[4]=1;p.GoatDirectionGuardResult(0,10010,true,false);assert.equal(s[62],0);assert.equal(s[26],0);assert.equal(s[0],1);assert(p.GoatDirectionGuardBegin(0,true));});
  for(let round=0;round<20;round++){
   const s=fresh(),workers=[],answers=[];
   for(let token=1;token<=8;token++){
@@ -86,6 +91,26 @@ if(!isMainThread){
  }
  console.log('PASS 20 rounds x 8 simultaneous independent claims');count++;
  const main=fs.readFileSync(path.join(__dirname,'..','GOAT V1.47.mq5'),'utf8');
+ test('actual partial-fill integration preserves confirmed metadata or retains durable recovery',()=>{
+  const start=main.indexOf('   if(result.retcode==TRADE_RETCODE_DONE_PARTIAL)',main.indexOf('int OpenPosition('));
+  const end=main.indexOf('   Pause_Flag=true;',start);assert(start>0&&end>start);
+  const partial=main.slice(start,end).replace('bool mapped=','let mapped=').replace('ulong position_id=','let position_id=').replace(/\(ulong\)/g,'');
+  for(const scenario of [{ticket:17,select:true,ok:true},{ticket:0,select:false,ok:false},{ticket:2147483648,select:true,ok:false},{ticket:17,select:true,wrong:true,ok:false}]){
+   const s=fresh(),p=adapter(s);assert(p.GoatDirectionGuardBegin(0,false));
+   const context={result:{retcode:10010,price:1.23,volume:0.2,order:scenario.wrong?18:17,deal:0},TRADE_RETCODE_DONE_PARTIAL:10010,
+    resolvedPositionTicket:scenario.ticket,LastOrderTicket:scenario.ticket,LastOpen:0,Lots_Order:1,ret:1,OP:0,
+    POSITION_PRICE_OPEN:1,POSITION_VOLUME:2,PositionSelectByTicket:()=>scenario.select,
+    _Symbol:'EURUSD',magic:123,POSITION_IDENTIFIER:3,POSITION_MAGIC:4,POSITION_TYPE:5,POSITION_SYMBOL:6,
+    PositionGetString:()=> 'EURUSD',PositionGetInteger:key=>({3:17,4:123,5:0}[key]),
+    PositionGetDouble:key=>key===1?1.24:0.19,GoatDirectionGuardStatus:()=>{}};
+   vm.runInNewContext(partial,context);
+   assert.equal(context.ret,scenario.ok?1:0);
+   assert.equal(context.Lots_Order,scenario.ok?0.19:0.2);assert.equal(context.LastOpen,scenario.ok?1.24:1.23);
+   p.GoatDirectionGuardResult(0,10010,context.ret>0,false);
+   assert.equal(s[62],scenario.ok?0:1);assert.equal(p.g_direction_guard_manual_reconcile[0],!scenario.ok);
+  }
+ });
+
  test('EA claim precedes send; lifecycle and transaction hooks are wired',()=>{
   assert.match(main,/GoatDirectionGuardBegin\(OP,guard_previously_traded\)[\s\S]{0,170}OrderSend\(request,result\)/);
   assert.match(main,/if\(!Virtual\) GoatDirectionGuardEnd\(dir\);/);

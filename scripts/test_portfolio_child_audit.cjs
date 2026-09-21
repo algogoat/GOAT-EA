@@ -6,7 +6,7 @@ const source=fs.readFileSync(path.join(root,'GOATPortfolioChildAudit.mqh'),'utf8
 let text=source.slice(0,source.indexOf('bool GoatChildAuditRead('))+source.slice(source.indexOf('bool GoatPortfolioChildAuditSelfTest('));
 text=text.replace(/^\uFEFF/,'').replace(/^#.*$/gm,'').replace(/\b(?:bool|string|int) (Goat\w+)\(/g,'function $1(')
  .replace(/\bconst (?:string|int) /g,'').replace(/\bstring &(\w+)\[\]/g,'$1')
- .replace(/\bstring (\w+)\[2\]=\{([^}]+)\}/g,'let $1=[$2]')
+ .replace(/\bstring (\w+)\[\d+\]=\{([^}]+)\}/g,'let $1=[$2]')
  .replace(/\b(?:string|int|bool|ushort) /g,'let ').replace(/\b(\w+)\[\](?=[,;])/g,'$1=[]')
  .replace(/'([^'\\]|\\[nr])'/g,(_,c)=>String(c==='\\n'?10:c==='\\r'?13:c.charCodeAt(0)))
  .replace(/StringTrimLeft\((\w+)\)/g,'$1=$1.trimStart()').replace(/StringTrimRight\((\w+)\)/g,'$1=$1.trimEnd()')
@@ -29,7 +29,7 @@ for(const [a,b,expected]of [['0.05','00.0500',true],['-0.00','0',true],['9007199
  assert.equal(api.GoatChildAuditValue('Risk',a,b),expected);passed++;
 }
 const original='EA_Desc=Fixture\nRisk=500\nMode_Bias=1\n';
-const inputs=original+'Studio_ReadOnlyMonitor=false\nStudio_MonitorRunPath=\n';
+const inputs=original+'Studio_ReadOnlyMonitor=false\nStudio_MonitorRunPath=\nDashboard_Resume_Saved=false\n';
 const head='<chart>\n<expert>\npath=Experts\\GOAT Experiment\\GOAT V1.47.ex5\n<inputs>\n',tail='</inputs>\n</expert>\n</chart>\n';
 const expert='Experts\\GOAT Experiment\\GOAT V1.47.ex5';
 for(const bad of [head+inputs.replace('Risk=500\n','')+tail,head+inputs.replace('Monitor=false','Monitor=true')+tail,head+inputs+tail+head+inputs+tail,head+inputs+tail.replace('</inputs>','</window>')]){

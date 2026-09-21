@@ -166,11 +166,11 @@ bool GoatChildAuditMaps(const string source,const int mode,const int threshold,c
    string names[],values[],actual_names[],actual_values[];
    string effective=GoatApplyAILaunchPolicy(source,mode,threshold,protocol);
    if(!GoatChildAuditInputs(effective,names,values) || !GoatChildAuditTemplate(template_body,expected_path,actual_names,actual_values)) return false;
-   // The frozen export covers the strategy inputs. These two live sinputs are
+   // The frozen export covers the strategy inputs. These live sinputs are
    // intentionally omitted by WriteSet and must remain at inert-monitor defaults.
-   string omitted_names[2]={"Studio_ReadOnlyMonitor","Studio_MonitorRunPath"};
-   string omitted_values[2]={"false",""};
-   for(int n=0;n<2;n++)
+   string omitted_names[3]={"Studio_ReadOnlyMonitor","Studio_MonitorRunPath","Dashboard_Resume_Saved"};
+   string omitted_values[3]={"false","","false"};
+   for(int n=0;n<3;n++)
    {
       bool found=false;
       for(int i=0;i<ArraySize(names);i++) if(names[i]==omitted_names[n])
@@ -258,7 +258,7 @@ bool GoatPortfolioChildSettingsMatch(const int row,const string expected_sha256)
 bool GoatPortfolioChildAuditSelfTest(void)
 {
    string source="; fixed export\nEA_Desc=Fixture\nRisk=500.0\nMode_Bias=1\n";
-   string inputs="EA_Desc=Fixture\nRisk=500.000\nMode_Bias=1\nStudio_ReadOnlyMonitor=false\nStudio_MonitorRunPath=\n";
+   string inputs="EA_Desc=Fixture\nRisk=500.000\nMode_Bias=1\nStudio_ReadOnlyMonitor=false\nStudio_MonitorRunPath=\nDashboard_Resume_Saved=false\n";
    string head="<chart>\n<expert>\npath=Experts\\GOAT Experiment\\GOAT V1.47.ex5\n<inputs>\n";
    string tail="</inputs>\n</expert>\n</chart>\n";
    string path="Experts\\GOAT Experiment\\GOAT V1.47.ex5";

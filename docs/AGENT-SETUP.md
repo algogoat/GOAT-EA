@@ -150,3 +150,13 @@ transport; no alternate DLL transport or allowlist manipulation was added.
 
 Do not expose broker passwords, bearer tokens, pairing candidates or response
 bodies in ordinary agent logs. Report redacted reasons and timestamps instead.
+
+## R3 explicit persistent dashboard resume
+
+`Dashboard_Resume_Saved` defaults to false. Set it to true on an intentionally prepared dashboard chart to resume its existing saved state without confirmation dialogs. It requires the dashboard to be the first chart and saved state to exist; otherwise initialization fails with a journal reason. It never closes other charts, opens the SET selector, deletes state or resets tracking. Manual startup remains unchanged when false. Children must keep this input false; the complete input audit verifies that default even for older SET exports.
+
+This is a startup choice, not portfolio validation. Preserve source/effective SET hashes and verify all expected children, account identity, policies and actual inputs before enabling trading. Do not require a flat account or disabled trading merely to resume an already deployed portfolio after a later restart.
+
+Observed setup defects: the R2 native dashboard blocked on chart-order and saved-state dialogs after license verification; the operator recovered only six verified inert demo processes and preserved their profiles before removing empty non-EA charts. The R3 change addresses saved-state prompts; first-chart ordering is still a required prepared-profile property. Native R3 qualification remains pending.
+
+Separate activation follow-up: same-symbol/timeframe `ChartSetSymbolPeriod` did not reinitialize the activated EA in this pilot. A stored credential and successful queueing are not proof of initialized runtime. Use the verified orderly terminal restart and fresh native status. Future onboarding should expose a truthful restart-required state and automatically orchestrate safe restart, preserving existing position management; do not toggle chart timeframe or recursively call OnInit.

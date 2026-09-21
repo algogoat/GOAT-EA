@@ -3,7 +3,8 @@
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-ASSET-SEQUENCE-GUARD-R2"
+#define   GOAT_BUILD_ID "V1.47-ASSET-SEQUENCE-GUARD-R3"
+sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 #define   GOAT_BUILD_MARKER "DG1"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
@@ -3067,7 +3068,13 @@ int OnInit()
       bool resume_dashboard_launch=false;
       if(Mode_Operation==Operation_Dash)
       {
-       //ChartNavigate(0,CHART_BEGIN);
+       DashboardDialog.SetFlags(Key,EA_Name,Server,version_,Font_Size,ChartID());
+       // Explicit persistent resume never deletes charts or selects a new portfolio.
+       if(Dashboard_Resume_Saved && (ChartID()!=ChartFirst() || !DashboardDialog.DashboardStateExists()))
+       {
+          Print("Dashboard resume refused: saved state and first chart are required.");
+          return INIT_FAILED;
+       }
        if(ChartID() != ChartFirst())
        {
         int ret=MessageBox("Dashboard mode must run on the first/oldest chart of the terminal for proper navigation and deployment.\nThis is not the first/oldest chart."+
@@ -3085,8 +3092,9 @@ int OnInit()
         }
         else {ShowPrompt("Wrong Chart Position"," ","Open Dashboard on the first/oldest chart.",""); Sleep(10000); return(INIT_FAILED); ExpertRemove();}
        }
-       DashboardDialog.SetFlags(Key,EA_Name,Server,version_,Font_Size,ChartID());
-       if(DashboardDialog.DashboardStateExists())
+       if(Dashboard_Resume_Saved)
+          resume_dashboard_launch=true;
+       else if(DashboardDialog.DashboardStateExists())
        {
         string prompt="A previously deployed dashboard configuration was found for this terminal.\n\n"
                      +"Yes = resume the saved dashboard.\n"
@@ -3113,7 +3121,8 @@ int OnInit()
        int SetsTotal=(resume_dashboard_launch ? DashboardDialog.LoadDashboardConfig() : DashboardDialog.LoadSetFiles());
        if(SetsTotal<=0)
        {
-        if(resume_dashboard_launch) Alert("Saved dashboard configuration could not be loaded.");
+        if(Dashboard_Resume_Saved) Print("Dashboard resume refused: saved configuration could not be loaded.");
+        else if(resume_dashboard_launch) Alert("Saved dashboard configuration could not be loaded.");
         else                        Alert("No valid .set files found.");
         return(INIT_FAILED);
        }

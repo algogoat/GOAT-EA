@@ -80,6 +80,11 @@ configuration is for the one-shot script only, not ongoing user operation.
 
 ## Remaining product work
 
+Product requirement SETUP-001: [Secure agent-driven onboarding plan](SECURE-AGENT-ONBOARDING-PLAN.md).
+One sign-in and scoped authorization must support agent-led setup without weakening
+authentication, entitlement, native permissions or the separate trading launch gate.
+The plan defines implementation phases and acceptance checks; it is not shipped capability.
+
 This diagnostic patch is not an end-to-end provisioning controller. A unified
 setup surface still needs full deployment phase receipts, supported permission setup,
 account-link/capacity handling, one portal approval, per-account access probes,

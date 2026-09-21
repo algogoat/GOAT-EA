@@ -225,6 +225,9 @@ public:
    void           SetFlags(const string _Key_,const string _EA_Name_,const string _Server_,const string _Version_,const int _Font_Size_,const long Id)
    {
     Key_=_Key_; EA_Name_=_EA_Name_; Server_=_Server_; Version=StringToDouble(_Version_); Font_Size=_Font_Size_; ChartId=Id;
+    string program_path=MQLInfoString(MQL_PROGRAM_PATH);
+    int expert_start=StringFind(program_path,"Experts\\");
+    EA_Path=(expert_start>=0 ? StringSubstr(program_path,expert_start) : "");
    }
    virtual bool   OnEvent(const int id, const long &lparam,const double &dparam, const string &sparam);
    bool           HandleChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam);
@@ -266,8 +269,6 @@ public:
      Alert("⚠ No files chosen.");
      return 0;
     }
-    EA_Path=MQLInfoString(MQL_PROGRAM_PATH); //Print(EA_Path);
-    EA_Path=StringSubstr(EA_Path,StringFind(EA_Path,"Experts\\")); //Print(EA_Path);
     SetFolder=FolderOf(picked[0]); //Print(SetFolder);
     
     bool ignore=false;
@@ -319,6 +320,11 @@ public:
    void DoActivate(int idx)
    {
     if(idx<0 || idx>=ArraySize(g_sets)) return;
+    if(StringFind(EA_Path,"Experts\\")!=0 || !EndsWith(EA_Path,"\\"+EA_Name_+".ex5"))
+    {
+       Print("Dashboard child launch blocked: invalid current expert path.");
+       return;
+    }
     if(ArraySize(btn_Action)>idx+2 && btn_Action[idx+2].Text()=="Navigate") return;
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
     if(g_sets[idx].cid>0 || g_sets[idx].magic>0)
@@ -3057,8 +3063,8 @@ string CGOATDashboard::BuildTemplate(const string eaName,const string eaPath,con
 bool CGOATDashboard::SaveTemplateAndCopy(const string tplName,const string tplText)
 {
    string commonRoot = TerminalInfoString(TERMINAL_COMMONDATA_PATH) + "\\Files\\";
-   string relFolder  = (StringSubstr(SetFolder, StringLen(commonRoot)));          // e.g. "Freestyle Seq sets\"
-   string relPath    = relFolder + tplName;                                      // relative inside Common\Files
+   string relPath=GoatDashboardCommonSetPath(SetFolder+"\\"+tplName);
+   if(relPath=="") return false;
    
    // 1) write the template right next to the .set file
    int h = FileOpen(relPath, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);

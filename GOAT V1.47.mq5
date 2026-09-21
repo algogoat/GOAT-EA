@@ -3,7 +3,7 @@
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-ASSET-SEQUENCE-GUARD-R3"
+#define   GOAT_BUILD_ID "V1.47-ASSET-SEQUENCE-GUARD-R4"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 #define   GOAT_BUILD_MARKER "DG1"
 //----------------------------------------------------------------------------------------------------------------------------------------------------

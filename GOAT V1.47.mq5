@@ -2437,6 +2437,7 @@ void HidePrompt()
   }
 // Secure one-file activation is V1.47-only. Older release entrypoints remain immutable.
 #include "GOATEADeviceActivation.mqh"
+#include "GOATSetupControl.mqh"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void DashboardBusSendStatus(const string status)
   {
@@ -4561,6 +4562,7 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTimer(void)
   {
+   GoatSetupControlPoll();
    if(g_GoatStudioReadOnlyMonitor)
    {TesterDialog.OnClickRefresh(true);return;}
    if(GOATDeviceActivationOnly())

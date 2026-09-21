@@ -10,7 +10,8 @@ enum ENUM_GOAT_DEVICE_ACTIVATION_STATE
    GOAT_DEVICE_ACTIVATION_INACTIVE=0,
    GOAT_DEVICE_ACTIVATION_STARTING=1,
    GOAT_DEVICE_ACTIVATION_PENDING=2,
-   GOAT_DEVICE_ACTIVATION_APPROVED=3
+   GOAT_DEVICE_ACTIVATION_APPROVED=3,
+   GOAT_DEVICE_ACTIVATION_BLOCKED=4
   };
 
 ENUM_GOAT_DEVICE_ACTIVATION_STATE g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_INACTIVE;
@@ -23,6 +24,41 @@ ulong  g_GOATDeviceActivationNextAttemptTick=0;
 int    g_GOATDeviceActivationPollSeconds=5;
 bool   g_GOATDeviceActivationReloadRequested=false;
 bool   g_GOATDeviceActivationReplaceCredential=false;
+
+// Status is operational metadata only: never tokens, pairing codes or bodies.
+void GOATDeviceActivationStatus(const string reason,const int http_status,const int native_error,const int retry_seconds)
+  {
+   FolderCreate(Key,FILE_COMMON);
+   string path=Key+"\\activation-status-"+GoatTerminalToken()+".json";
+   string temporary=path+"."+IntegerToString(ChartID())+"."+IntegerToString((long)GetTickCount64())+".pending";
+   int h=FileOpen(temporary,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(h==INVALID_HANDLE) return;
+   string record="{\"accountId\":\""+g_GOATDeviceActivationAccountId+"\",\"buildId\":\""+g_GOATDeviceActivationBuildId+"\",\"reason\":\""+reason+"\",\"httpStatus\":"+IntegerToString(http_status)+",\"nativeError\":"+IntegerToString(native_error)+",\"retrySeconds\":"+IntegerToString(retry_seconds)+",\"observedAtUtc\":"+IntegerToString((long)TimeGMT())+"}";
+   uint written=FileWriteString(h,record);
+   FileFlush(h);FileClose(h);
+   if((int)written!=StringLen(record) || !FileMove(temporary,FILE_COMMON,path,FILE_COMMON|FILE_REWRITE))
+      FileDelete(temporary,FILE_COMMON);
+  }
+
+int GOATDeviceActivationRetrySeconds(const int status)
+  {
+   if(status==429) return 900;
+   if(status>=400 && status<500 && status!=408) return 0;
+   return 60;
+  }
+
+void GOATDeviceActivationFailure(const int status,const int native_error,const bool starting=true)
+  {
+   int delay=GOATDeviceActivationRetrySeconds(status);
+   g_GOATDeviceActivationNextAttemptTick=GetTickCount64()+(ulong)delay*1000;
+   string reason=(status==409 ? (starting ? "build_not_admitted" : "activation_not_pending") : (status==429 ? "rate_limited" : (status==-1 && native_error==4014 ? "webrequest_permission_required" : (status<0 ? "network_error" : "service_error"))));
+   if(delay==0) g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_BLOCKED;
+   GOATDeviceActivationStatus(reason,status,native_error,delay);
+   if(reason=="webrequest_permission_required") GOATDeviceActivationShowNetworkHelp();
+   else if(status==409 && starting) GOATDeviceActivationShowRetry("This EA build is not admitted. Update the approved build before retrying.");
+   else if(status==429) GOATDeviceActivationShowRetry("Activation is rate limited. Automatic retry in 15 minutes; no action needed.");
+   else GOATDeviceActivationShowRetry("Activation status "+IntegerToString(status)+(delay==0 ? ". Setup needs attention; automatic requests stopped." : ". Retrying in 60 seconds."));
+  }
 
 bool GOATDeviceActivationOnly(void)
   {
@@ -88,7 +124,7 @@ void GOATDeviceActivationShowRetry(const string detail)
   {
    HidePrompt();
    ShowPrompt("GOAT activation is waiting",detail,
-              "The EA is safely paused and will retry automatically.",URL_API);
+              g_GOATDeviceActivationState==GOAT_DEVICE_ACTIVATION_BLOCKED ? "The EA is paused. Resolve setup before reattaching." : "The EA is safely paused and will retry automatically.",URL_API);
   }
 
 bool GOATDeviceActivationParseStart(const string response,string &activation_id,
@@ -178,6 +214,25 @@ void GOATDeviceActivationRequestReload(void)
      }
   }
 
+// Exclusive handle is owned by the caller. Reserve before network IO so a
+// crash cannot bypass the shared request budget. Never repair malformed state.
+bool GOATDeviceActivationReserve(const int handle,const long deadline)
+  {
+   ResetLastError();
+   if(!FileSeek(handle,0,SEEK_SET) || FileWriteLong(handle,deadline)!=8) return false;
+   FileFlush(handle);
+   if(GetLastError()!=0 || FileSize(handle)!=8 || !FileSeek(handle,0,SEEK_SET)) return false;
+   long stored=FileReadLong(handle);
+   return(GetLastError()==0 && stored==deadline);
+  }
+
+void GOATDeviceActivationAdmissionFailure(void)
+  {
+   g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_BLOCKED;
+   GOATDeviceActivationStatus("activation_storage_error",0,0,0);
+   GOATDeviceActivationShowRetry("Activation cooldown storage needs repair. No further requests will be sent.");
+  }
+
 bool GOATDeviceActivationRequestStart(void)
   {
    ulong now_tick=GetTickCount64();
@@ -188,16 +243,53 @@ bool GOATDeviceActivationRequestStart(void)
    string json="{\"accountId\":\""+g_GOATDeviceActivationAccountId
                +"\",\"buildId\":\""+g_GOATDeviceActivationBuildId+"\"}";
    string response="";
-   int status=GOATDeviceActivationPostJson("/api/ea/device/start",requestHeaders,json,response);
-   json="";
-   if(status==-1)
+   // All terminals under this Windows user share one admission cooldown.
+   // The exclusive file handle spans the request; never overwrite another lease.
+   FolderCreate(Key,FILE_COMMON);
+   FolderCreate(Key+"\\Credentials",FILE_COMMON);
+   int admission=FileOpen(Key+"\\Credentials\\activation-admission.bin",FILE_READ|FILE_WRITE|FILE_BIN|FILE_COMMON);
+   if(admission==INVALID_HANDLE)
      {
-      GOATDeviceActivationShowNetworkHelp();
+      GOATDeviceActivationStatus("waiting_for_host_activation",0,0,30);
       return true;
      }
+   long now=(long)TimeGMT();
+   ulong length=FileSize(admission);
+   ResetLastError();
+   long next=(length==8 ? FileReadLong(admission) : 0);
+   if((length!=0 && length!=8) || GetLastError()!=0 || next<0 || next>now+900)
+     {
+      FileClose(admission);
+      GOATDeviceActivationAdmissionFailure();
+      return true;
+     }
+   if(next>now)
+     {
+      FileClose(admission);
+      int wait=(int)MathMin(900.0,(double)(next-now));
+      g_GOATDeviceActivationNextAttemptTick=GetTickCount64()+(ulong)wait*1000;
+      GOATDeviceActivationStatus("host_activation_cooldown",0,0,wait);
+      return true;
+     }
+   if(!GOATDeviceActivationReserve(admission,now+60))
+     {
+      FileClose(admission);
+      GOATDeviceActivationAdmissionFailure();
+      return true;
+     }
+   int status=GOATDeviceActivationPostJson("/api/ea/device/start",requestHeaders,json,response);
+   int request_error=GetLastError();
+   bool retained=(status!=429 || GOATDeviceActivationReserve(admission,(long)TimeGMT()+900));
+   FileClose(admission);
+   if(!retained)
+     {
+      GOATDeviceActivationAdmissionFailure();
+      return true;
+     }
+   json="";
    if(status!=201)
      {
-      GOATDeviceActivationShowRetry("The activation service returned status "+IntegerToString(status)+".");
+      GOATDeviceActivationFailure(status,request_error);
       return true;
      }
 
@@ -220,6 +312,7 @@ bool GOATDeviceActivationRequestStart(void)
    g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_PENDING;
    activation_id="";
    credential_candidate="";
+   GOATDeviceActivationStatus("awaiting_approval",201,0,poll_seconds);
    GOATDeviceActivationShowCode(user_code,verification_url);
    user_code="";
    return true;
@@ -252,6 +345,7 @@ void GOATDeviceActivationTimer(void)
      }
    existing_headers="";
 
+   if(g_GOATDeviceActivationState==GOAT_DEVICE_ACTIVATION_BLOCKED) return;
    ulong now_tick=GetTickCount64();
    if(now_tick<g_GOATDeviceActivationNextAttemptTick) return;
    if(g_GOATDeviceActivationState!=GOAT_DEVICE_ACTIVATION_PENDING)
@@ -280,11 +374,6 @@ void GOATDeviceActivationTimer(void)
    headers="";
    json="";
    g_GOATDeviceActivationNextAttemptTick=now_tick+(ulong)g_GOATDeviceActivationPollSeconds*1000;
-   if(status==-1)
-     {
-      GOATDeviceActivationShowNetworkHelp();
-      return;
-     }
    if(status==410)
      {
       g_GOATDeviceActivationId="";
@@ -295,7 +384,7 @@ void GOATDeviceActivationTimer(void)
      }
    if(status!=200)
      {
-      GOATDeviceActivationShowRetry("The activation service returned status "+IntegerToString(status)+".");
+      GOATDeviceActivationFailure(status,GetLastError(),false);
       return;
      }
 
@@ -343,6 +432,7 @@ void GOATDeviceActivationTimer(void)
          GOATDeviceActivationShowRetry("MT5 could not store the GOAT user credential.");
          return;
         }
+      GOATDeviceActivationStatus("approved",200,0,0);
       g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_APPROVED;
       GOATDeviceActivationRequestReload();
       return;

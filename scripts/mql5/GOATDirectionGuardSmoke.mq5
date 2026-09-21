@@ -2,7 +2,7 @@
 bool owners[3]={false,true,true};
 bool exposure[2]={false,false};
 bool pending[3]={false,false,false};
-bool GuardStoreEnsure(const string key) {return GlobalVariableTemp(key);}
+bool GuardStoreEnsure(const string key) {return GlobalVariableTemp(key) || GlobalVariableCheck(key);}
 double GuardStoreRead(const string key) {double value=-1.0;if(!GlobalVariableGet(key,value))return -1.0;return value;}
 bool GuardStoreCAS(const string key,const double value,const double expected) {return GlobalVariableSetOnCondition(key,value,expected);}
 bool GuardOwnerAlive(const double token) {return owners[(int)token];}

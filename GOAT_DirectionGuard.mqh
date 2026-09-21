@@ -71,7 +71,8 @@ string GoatGuardOwnerKey(const double token,const string field)
 bool GuardStoreEnsure(const string key)
   {
    // Unlike Check+Set(0), Temp does not overwrite an already-created variable.
-   return GlobalVariableTemp(key);
+   if(GlobalVariableTemp(key)) return true;
+   return GlobalVariableCheck(key);
   }
 
 double GuardStoreRead(const string key)

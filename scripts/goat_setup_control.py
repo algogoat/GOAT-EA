@@ -17,14 +17,37 @@ import time
 import uuid
 
 
+def sharing_retry(operation):
+    # A native atomic move/terminal exit can briefly deny a Windows file share.
+    # Retry only that condition, without submitting another native request.
+    for attempt in range(5):
+        try:
+            return operation()
+        except OSError as error:
+            if getattr(error, 'winerror', None) not in (32, 33) or attempt == 4:
+                raise
+            time.sleep(0.025)
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('duplicate controller field')
+        result[key] = value
+    return result
+
+
 def read(path, credential=None):
     if path.name.casefold() == 'api-bearer.token' or (credential is not None and credential.exists() and path.samefile(credential)):
         raise ValueError("credential alias refused")
-    with path.open('rb') as handle:
-        data = handle.read(16385)
+    def bounded_read():
+        with path.open('rb') as handle:
+            return handle.read(16385)
+    data = sharing_retry(bounded_read)
     if len(data) > 16384:
         raise ValueError("oversized controller file")
-    result = json.loads(data.decode("utf-8-sig"))
+    result = json.loads(data.decode("utf-8-sig"), object_pairs_hook=unique_object)
     if not isinstance(result, dict):
         raise ValueError("controller object required")
     return result
@@ -36,7 +59,7 @@ def atomic(path, data):
         json.dump(data, handle, separators=(",", ":"))
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    sharing_retry(lambda: os.replace(temporary, path))
 
 
 def scope(manifest):
@@ -149,6 +172,10 @@ def request(manifest, action, timeout=30):
             old_receipt = receipt_record(read(root / (previous + '.json'), credential), previous, data, pairing=True)
             if old_receipt['result'] == 'pairing_available':
                 consume_pairing(root / (previous + '.json'), old_receipt)
+            # Keep the current request available to native expiry cleanup until
+            # every retained temporary is known and code-free. Never archive an
+            # orphan payload out of the native cleanup scope or hide unknowns.
+            verify_pairing_temporaries(root, previous, data, credential)
             archived = root / (previous + ".request.json")
             if archived.exists():
                 raise ValueError("request archive already exists; inspect retained state")
@@ -163,15 +190,30 @@ def request(manifest, action, timeout=30):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if receipt.exists():
-                result = receipt_record(read(receipt, credential), identity, data, pairing=(action == 'pairing'), fresh=True)
+                result = receipt_record(read(receipt, credential), identity, data, pairing=(action == 'pairing'))
                 if result['result'] == 'pairing_available':
                     consume_pairing(receipt, result)
+                    # Even a valid but expired challenge is scrubbed before the
+                    # stale error. It is never returned to the caller.
+                    receipt_record(result, identity, data, pairing=True, fresh=True)
                 return result
             time.sleep(0.25)
         return {"id": identity, "result": "receipt_timeout", "requestRetained": True}
     finally:
         os.close(fd)
-        lock.unlink()
+        sharing_retry(lock.unlink)
+
+
+def verify_pairing_temporaries(root, identity, data, credential):
+    for index, path in enumerate(root.glob(identity + '.json.*.pending')):
+        if index >= 16:
+            raise ValueError('too many retained receipt temporaries; inspect state')
+        # Native legacy chart ID or current chart/tick/serial naming only.
+        if not re.fullmatch(re.escape(identity) + r'\.json\.\d{1,20}(?:\.\d{1,20}\.\d{1,20})?\.pending', path.name) or path.is_symlink():
+            raise ValueError('unknown receipt temporary retained')
+        value = receipt_record(read(path, credential), identity, data, pairing=True)
+        if value['result'] != 'pairing_consumed':
+            raise ValueError('receipt temporary awaits native expiry cleanup')
 
 
 def consume_pairing(path, value):
@@ -193,7 +235,7 @@ def main():
         result = register(args.manifest, args.allow_pairing_read) if args.operation == "register" else request(args.manifest, args.operation, args.timeout)
         print(json.dumps(result))
         return 1 if result.get("result") == "receipt_timeout" else 0
-    except (ValueError, OSError, KeyError, TypeError):
+    except (ValueError, OSError, KeyError, TypeError, RecursionError):
         # File paths and arbitrary malformed contents are not echoed.
         print(json.dumps({"result": "setup_control_error", "action": args.operation}))
         return 2

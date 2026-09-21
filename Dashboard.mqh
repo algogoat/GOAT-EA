@@ -25,6 +25,16 @@
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 class CGOATDashboard;
 
+string GoatDashboardCommonSetPath(const string path)
+{
+   string root=TerminalInfoString(TERMINAL_COMMONDATA_PATH)+"\\Files\\";
+   string relative=path;
+   if(StringFind(path,root)==0) relative=StringSubstr(path,StringLen(root));
+   if(relative=="" || StringFind(relative,":")>=0 || StringFind(relative,"..")>=0
+      || StringSubstr(relative,0,1)=="\\" || StringSubstr(relative,0,1)=="/") return "";
+   return relative;
+}
+
 class CGOATDashScrollV : public CScrollV
   {
 private:
@@ -89,6 +99,10 @@ class CGOATDashboard : public CAppDialog
   {
 public:
    CWndClient  c_Wnd_Table,c_Wnd_Export;
+   bool        m_agent_setup_quiet;
+   bool        AgentConfigureAI(const int mode,const int threshold,const int protocol);
+   bool        AgentDeployRow(const int idx);
+   bool        AgentExposurePolicy(const int mode);
    CLabel      m_lblHeading,m_lblExport;
    
    CEdit       edt_Heading,edt_HeadingPortfolio,edt_HeadingMembers,edt_HeadingScore,edt_HeadingAMSR,edt_HeadingMonthlyProfit,edt_HeadingMaxDD,edt_HeadingMonthlyRF,
@@ -309,7 +323,7 @@ public:
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
     if(g_sets[idx].cid>0 || g_sets[idx].magic>0)
     {
-       MessageBox("This row already has a child identity, but is not linked.\n\nNo duplicate EA will be launched. Inspect the existing child chart before creating a new portfolio.",
+       if(!m_agent_setup_quiet) MessageBox("This row already has a child identity, but is not linked.\n\nNo duplicate EA will be launched. Inspect the existing child chart before creating a new portfolio.",
                   "Existing Child Requires Inspection",MB_OK|MB_ICONWARNING);
        return;
     }
@@ -598,7 +612,9 @@ private:
 // --- pull the “Lots=” line from a .set file (rudimentary INI reader)
    string ParseSetFileForInput(const string key,const string file)
    {
-    int h=FileOpen(file,FILE_READ|FILE_COMMON); if(h==INVALID_HANDLE) return("-1.0");
+    string relative=GoatDashboardCommonSetPath(file);
+    if(relative=="") return "-1.0";
+    int h=FileOpen(relative,FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON); if(h==INVALID_HANDLE) return("-1.0");
     const int keyLen=StringLen(key);
     while(!FileIsEnding(h))
     {
@@ -943,6 +959,7 @@ EVENT_MAP_END(CAppDialog)
 //+------------------------------------------------------------------+
 CGOATDashboard::CGOATDashboard()
 {
+   m_agent_setup_quiet=false;
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
    m_ai_launch_mode=GOAT_AI_LAUNCH_AS_OPTIMIZED;
    m_ai_launch_threshold=60;
@@ -1036,6 +1053,40 @@ CGOATDashboard::~CGOATDashboard()
 }
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::AgentConfigureAI(const int mode,const int threshold,const int protocol)
+{
+   if(AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO || !TerminalInfoInteger(TERMINAL_CONNECTED)
+      || TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || PositionsTotal()!=0 || OrdersTotal()!=0
+      || AnyAILaunchRowsDeployed() || mode<0 || mode>2 || threshold<1 || threshold>100 || (protocol!=1 && protocol!=2)) return false;
+   m_ai_launch_mode=mode; m_ai_launch_threshold=threshold; m_ai_launch_protocol=protocol;
+   edt_AILaunchThreshold.Text(IntegerToString(threshold));
+   RefreshAILaunchLabels(); UpdateAILaunchControls();
+   return SaveDashboardConfig();
+}
+
+bool CGOATDashboard::AgentDeployRow(const int idx)
+{
+   if(AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO || !TerminalInfoInteger(TERMINAL_CONNECTED)
+      || TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || PositionsTotal()!=0 || OrdersTotal()!=0
+      || idx<0 || idx>=ArraySize(g_sets) || g_sets[idx].cid>0 || g_sets[idx].magic>0) return false;
+   m_agent_setup_quiet=true;
+   DoActivate(idx);
+   m_agent_setup_quiet=false;
+   return(g_sets[idx].cid>0 && g_sets[idx].magic>0 && SaveDashboardConfig());
+}
+
+bool CGOATDashboard::AgentExposurePolicy(const int mode)
+{
+   if(AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO || !TerminalInfoInteger(TERMINAL_CONNECTED)
+      || TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || PositionsTotal()!=0 || OrdersTotal()!=0
+      || (mode!=GOAT_EXPOSURE_ALLOW && mode!=GOAT_EXPOSURE_SYMBOL_DIRECTION) || m_portfolio_command_pending) return false;
+   m_agent_setup_quiet=true;
+   bool accepted=SendExposurePolicyCommand(mode);
+   m_agent_setup_quiet=false;
+   return accepted;
+}
+
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashboard::AnyAILaunchRowsDeployed(void) const
 {
    for(int idx=0;idx<ArraySize(g_sets);++idx)
@@ -1048,7 +1099,7 @@ bool CGOATDashboard::PrepareAILaunchPolicy(const bool launching)
    if(launching && m_ai_launch_mode!=GOAT_AI_LAUNCH_AS_OPTIMIZED && m_ai_launch_protocol==2 &&
       AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO)
    {
-      MessageBox("Demo (raw) AI bias requires a demo trading account. Select Live (calibrated) for this account.",
+      if(!m_agent_setup_quiet) MessageBox("Demo (raw) AI bias requires a demo trading account. Select Live (calibrated) for this account.",
                  "AI Feed",MB_OK|MB_ICONWARNING);
       return false;
    }
@@ -1058,7 +1109,7 @@ bool CGOATDashboard::PrepareAILaunchPolicy(const bool launching)
       int threshold=m_ai_launch_threshold;
       if(!GoatParseAILaunchThreshold(edt_AILaunchThreshold.Text(),threshold))
       {
-         MessageBox("Enter an AI bias threshold from 1 to 100 (whole numbers only).\n\nNo portfolio charts have been launched by this action.",
+         if(!m_agent_setup_quiet) MessageBox("Enter an AI bias threshold from 1 to 100 (whole numbers only).\n\nNo portfolio charts have been launched by this action.",
                     "Invalid AI Threshold",MB_OK|MB_ICONWARNING);
          return false;
       }
@@ -2098,7 +2149,7 @@ bool CGOATDashboard::SendExposurePolicyCommand(const int mode)
 
    if(targets<=0)
    {
-      MessageBox("No linked child charts are available for exposure policy.","Exposure Policy",MB_OK|MB_ICONWARNING);
+      if(!m_agent_setup_quiet) MessageBox("No linked child charts are available for exposure policy.","Exposure Policy",MB_OK|MB_ICONWARNING);
       return false;
    }
 
@@ -2106,7 +2157,7 @@ bool CGOATDashboard::SendExposurePolicyCommand(const int mode)
    {
       if(AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
       {
-         MessageBox("Independent Buy/Sell sequence ownership requires a hedging account. Asset filter cannot be enabled on a netting account.","Asset Filter Not Available",MB_OK|MB_ICONWARNING);
+         if(!m_agent_setup_quiet) MessageBox("Independent Buy/Sell sequence ownership requires a hedging account. Asset filter cannot be enabled on a netting account.","Asset Filter Not Available",MB_OK|MB_ICONWARNING);
          return false;
       }
       for(int idx=0;idx<ArraySize(g_sets);++idx)
@@ -2116,7 +2167,7 @@ bool CGOATDashboard::SendExposurePolicyCommand(const int mode)
          double guard_at=0.0;
          if(!GlobalVariableGet(guard_key,guard_at) || guard_at<=0.0 || TimeCurrent()-(datetime)guard_at>5)
          {
-            MessageBox("Asset filter requires current guard telemetry from every linked child. Update/reload all children with the asset-sequence guard build and wait for fresh status before enabling.","Asset Filter Not Ready",MB_OK|MB_ICONWARNING);
+            if(!m_agent_setup_quiet) MessageBox("Asset filter requires current guard telemetry from every linked child. Update/reload all children with the asset-sequence guard build and wait for fresh status before enabling.","Asset Filter Not Ready",MB_OK|MB_ICONWARNING);
             return false;
          }
       }
@@ -2966,7 +3017,9 @@ string CGOATDashboard::BuildTemplate(const string eaName,const string eaPath,con
    tpl        +=  "<inputs>\r\n";
    string inputs="";
    // read .set and turn every line "Var=Value" into XML
-   int h = FileOpen(setFile, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   string relative=GoatDashboardCommonSetPath(setFile);
+   if(relative=="") return "";
+   int h = FileOpen(relative, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
    if(h!=INVALID_HANDLE)
    {
       while(!FileIsEnding(h))
@@ -3051,7 +3104,7 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    long cid = ChartOpen(symbol, tf);
    if(cid==0)
    {
-      Alert("  ChartOpen FAILED  err=%d", GetLastError());
+      if(!m_agent_setup_quiet) Alert("  ChartOpen FAILED  err=%d", GetLastError());
       DeleteCopiedTemplate(tplName);
       return false;
    }
@@ -3072,7 +3125,7 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
 
    if(!ChartApplyTemplate(cid, tplName))
    {
-      Alert(StringFormat("  ChartApplyTemplate FAILED  err=%d", GetLastError()));
+      if(!m_agent_setup_quiet) Alert(StringFormat("  ChartApplyTemplate FAILED  err=%d", GetLastError()));
       DeleteCopiedTemplate(tplName);
       return false;
    }
@@ -3093,7 +3146,7 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
                    +"Symbol: "+g_sets[idx].sym+"\n"
                    +"Expected chart ID: "+StringFormat("%I64d",g_sets[idx].cid)+"\n"
                    +"No pending child registration was detected within 20 seconds.";
-         MessageBox(msg,"Child Bind Failed",MB_OK|MB_ICONWARNING);
+         if(!m_agent_setup_quiet) MessageBox(msg,"Child Bind Failed",MB_OK|MB_ICONWARNING);
          g_sets[idx].status="Pending";
          edt_Status[idx+2].Text(g_sets[idx].status);
          edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
@@ -3143,20 +3196,22 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashboard::NewSingleInstance(const int idx)
 {
-   for(int i=0;i<GlobalVariablesTotal();i++)
-   {
-    string new_var = GlobalVariableName(i);
-    long magic=0;
-    string symbol="",field="";
-    if(!GoatParseChildGVName(new_var,magic,symbol,field)) continue;
-    if(field!=GOAT_GV_FIELD_MAGIC)                        continue;
-
-    g_sets[idx].magic=(long)GlobalVariableGet(new_var);
-    GlobalVariableDel(new_var);
-    GlobalVariablesFlush();
-    return true;
-   }
-   return false;
+   if(idx<0 || idx>=ArraySize(g_sets) || g_sets[idx].cid<=0) return false;
+   long magic=0;
+   if(!GoatFindMagicByCid(g_sets[idx].sym,g_sets[idx].cid,magic) || magic<=0) return false;
+   double hi=0,lo=0;
+   if(!GlobalVariableGet(GoatChildGVName(magic,g_sets[idx].sym,"SETUP_CID_HI"),hi)
+      || !GlobalVariableGet(GoatChildGVName(magic,g_sets[idx].sym,"SETUP_CID_LO"),lo)
+      || (long)hi!=g_sets[idx].cid/1000000000 || (long)lo!=g_sets[idx].cid%1000000000) return false;
+   string pending=GoatChildGVName(magic,g_sets[idx].sym,GOAT_GV_FIELD_MAGIC);
+   double value=0;
+   if(!GlobalVariableGet(pending,value) || (long)value!=magic) return false;
+   for(int other=0;other<ArraySize(g_sets);other++)
+      if(other!=idx && g_sets[other].magic==magic) return false;
+   g_sets[idx].magic=magic;
+   GlobalVariableDel(pending);
+   GlobalVariablesFlush();
+   return true;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CGOATDashboard::ParsePortfolioFolderInfo(void)

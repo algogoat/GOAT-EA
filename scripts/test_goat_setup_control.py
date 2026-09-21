@@ -182,6 +182,100 @@ class SetupControlTests(unittest.TestCase):
         self.assertNotIn('activationId', saved)
         self.assertTrue((self.rpc / 'request.json').exists())
 
+    def test_expired_pairing_is_scrubbed_before_error(self):
+        control.register(self.manifest, allow_pairing=True)
+        identity = 'e' * 32
+        value = self.pairing_receipt(identity)
+        value.update(observedAtUtc=int(time.time()) - 120,
+                     responseExpiresAtUtc=int(time.time()) - 60)
+        control.atomic(self.rpc / (identity + '.json'), value)
+        with patch.object(control.uuid, 'uuid4') as new_id:
+            new_id.return_value.hex = identity
+            with self.assertRaisesRegex(ValueError, 'stale'):
+                control.request(self.manifest, 'pairing', 1)
+        saved = control.read(self.rpc / (identity + '.json'))
+        self.assertEqual(saved['result'], 'pairing_consumed')
+        self.assertNotIn('userCode', saved)
+        self.assertNotIn('activationId', saved)
+        self.assertTrue((self.rpc / 'request.json').exists())
+
+    def test_unknown_and_unconsumed_temporaries_prevent_archival(self):
+        identity = 'b' * 32
+        control.atomic(self.rpc / 'request.json', {'id': identity})
+        receipt = self.rpc / (identity + '.json')
+        control.atomic(receipt, self.pairing_receipt(identity))
+        for suffix, value in [('123.pending', self.pairing_receipt(identity)),
+                              ('unknown.pending', {'credentialCandidate': 'never echo'}),
+                              ('123.1.1.pending', {'invalid': True})]:
+            with self.subTest(suffix=suffix):
+                temporary = self.rpc / (identity + '.json.' + suffix)
+                control.atomic(temporary, value)
+                before = temporary.read_bytes()
+                with self.assertRaises(ValueError):
+                    control.request(self.manifest, 'status', 1)
+                self.assertEqual(temporary.read_bytes(), before)
+                self.assertTrue((self.rpc / 'request.json').exists())
+                self.assertFalse((self.rpc / (identity + '.request.json')).exists())
+                temporary.unlink()
+        self.assertEqual(control.read(receipt)['result'], 'pairing_consumed')
+
+    def test_codefree_temporary_replay_markers_are_retained_and_bounded(self):
+        identity = 'b' * 32
+        value = dict(self.receipt(identity), result='pairing_consumed')
+        for i in range(16):
+            control.atomic(self.rpc / (identity + f'.json.123.1.{i}.pending'), value)
+        control.verify_pairing_temporaries(self.rpc, identity, self.data, None)
+        self.assertEqual(len(list(self.rpc.glob('*.pending'))), 16)
+        control.atomic(self.rpc / (identity + '.json.123.1.17.pending'), value)
+        with self.assertRaisesRegex(ValueError, 'too many'):
+            control.verify_pairing_temporaries(self.rpc, identity, self.data, None)
+
+    def test_duplicate_json_fields_rejected_without_echo(self):
+        path = self.rpc / 'duplicate.json'
+        path.write_text('{"result":"observed","result":"secret-value"}')
+        with self.assertRaisesRegex(ValueError, '^duplicate controller field$'):
+            control.read(path)
+
+    def test_windows_share_retry_is_bounded_and_does_not_mask_other_errors(self):
+        error = PermissionError('fixture share')
+        error.winerror = 32
+        with patch.object(control.time, 'sleep') as sleep:
+            calls = []
+            def operation():
+                calls.append(1)
+                if len(calls) < 3:
+                    raise error
+                return 'shutdown_requested'
+            self.assertEqual(control.sharing_retry(operation), 'shutdown_requested')
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(sleep.call_count, 2)
+            with self.assertRaises(PermissionError):
+                control.sharing_retry(lambda: (_ for _ in ()).throw(error))
+            self.assertEqual(sleep.call_count, 6)
+            with self.assertRaises(FileNotFoundError):
+                control.sharing_retry(lambda: (_ for _ in ()).throw(FileNotFoundError()))
+            self.assertEqual(sleep.call_count, 6)
+
+    def test_shutdown_receipt_survives_transient_share_during_lock_release(self):
+        identity = 'f' * 32
+        control.atomic(self.rpc / (identity + '.json'), dict(self.receipt(identity), result='shutdown_requested'))
+        original_unlink = Path.unlink
+        calls = []
+        def unlink(path, *args, **kwargs):
+            if path.name == 'producer.lock':
+                calls.append(1)
+                if len(calls) == 1:
+                    error = PermissionError('fixture shutdown share')
+                    error.winerror = 32
+                    raise error
+            return original_unlink(path, *args, **kwargs)
+        with patch.object(control.uuid, 'uuid4') as new_id, patch.object(Path, 'unlink', unlink):
+            new_id.return_value.hex = identity
+            result = control.request(self.manifest, 'shutdown', 1)
+        self.assertEqual(result['result'], 'shutdown_requested')
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(control.read(self.rpc / 'request.json')['id'], identity)
+
 
 if __name__ == "__main__":
     unittest.main()

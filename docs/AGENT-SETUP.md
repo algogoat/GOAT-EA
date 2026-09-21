@@ -107,6 +107,36 @@ configuration is for the one-shot script only, not ongoing user operation.
 
 ## Remaining product work
 
+### Internal R2 portfolio setup candidate
+
+`scripts/goat_portfolio_setup.py` adds a separate opt-in registration under
+`GOAT/AgentPortfolio/<terminal>/`. It binds the installed EX5, full terminal/account
+identity, exact ordered Common Files SET hashes and AI/exposure policy. Commands
+are `configure`, `deploy_next`, `apply_policy`, `status` and `audit`. Registration
+and request issuance share an exclusive producer lock; retained native mutation
+intent prevents blind reissuance after interruption. Rejections exit nonzero.
+
+The controller operates portfolio rows already loaded into the dashboard. It
+does not import arbitrary folders, enable trading, send orders or close positions.
+Mutations require a connected demo with trading OFF and no orders/positions.
+`deploy_next` attaches one pending row through the existing UI handler; any partial
+child identity stops further deployment. Child binding checks symbol and full
+chart identity, not just the first pending registration. Common Files paths are
+normalized before native sandbox file access.
+
+`audit` saves each existing child chart's template to a unique local temporary,
+compares the actual expert and complete effective input map against the frozen
+SET bytes, then removes only that owned temporary. It exposes a boolean, not input
+contents. UTC child observations bound freshness even if broker ticks stop.
+`verify_ready` additionally requires every policy ACK, effective child AI inputs
+and fresh verified AI state on AI arms. A valid withheld directive need not allow
+a trade. Dashboard mode0 means **As Optimized**; the experiment requires observed
+Mode_Bias1 before labeling such an arm AI OFF.
+
+This section describes the candidate contract. Native installation, full child
+audits, account access, restart and resource checks remain separate evidence.
+Passing Python/source tests or compiling is not deployment readiness.
+
 Product requirement SETUP-001: [Secure agent-driven onboarding plan](SECURE-AGENT-ONBOARDING-PLAN.md).
 One sign-in and scoped authorization must support agent-led setup without weakening
 authentication, entitlement, native permissions or the separate trading launch gate.

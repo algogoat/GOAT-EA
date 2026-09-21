@@ -3,7 +3,7 @@
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-ASSET-SEQUENCE-GUARD-R1"
+#define   GOAT_BUILD_ID "V1.47-ASSET-SEQUENCE-GUARD-R2"
 #define   GOAT_BUILD_MARKER "DG1"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
@@ -2438,6 +2438,8 @@ void HidePrompt()
 // Secure one-file activation is V1.47-only. Older release entrypoints remain immutable.
 #include "GOATEADeviceActivation.mqh"
 #include "GOATSetupControl.mqh"
+#include "GOATPortfolioChildAudit.mqh"
+#include "GOATPortfolioSetupControl.mqh"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void DashboardBusSendStatus(const string status)
   {
@@ -4586,12 +4588,20 @@ void OnTimer(void)
    if(Mode_Operation==Operation_Dash)
    {
     DashboardDialog.ProcessTimerCycle();
+    GoatPortfolioSetupPoll();
     ChartRedraw(0);
    }
    if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash)
      {
       DashboardBusProcessCommands();
       if(MAGIC1!=0) GoatDirectionGuardPublish(Seq_Buy.GuardRealStarted,Seq_Sell.GuardRealStarted);
+      if(MAGIC1!=0 && GlobalVariableCheck("Dashboard_ChartID"))
+      {
+       GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),"SETUP_UTC"),(double)TimeGMT());
+       GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),"SETUP_CID_HI"),(double)(ChartID()/1000000000));
+       GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),"SETUP_CID_LO"),(double)(ChartID()%1000000000));
+       GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),"EA_TRADE_ALLOWED"),(double)MQLInfoInteger(MQL_TRADE_ALLOWED));
+      }
      }
    timer++;
    }
@@ -4993,6 +5003,12 @@ void OnTick()
          }
       }
     else CurBias=Bias.GetCurentBiasScore(Symbol(),idx);
+    if(GlobalVariableCheck("Dashboard_ChartID") && MAGIC1!=0)
+    {
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),"AI_VERIFIED"),(control_tower_verified ? 1.0 : 0.0));
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),"AI_AVAILABLE"),(control_tower_verified && control_tower_state.directive_available ? 1.0 : 0.0));
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),"AI_AT"),(double)TimeGMT());
+    }
     DashboardBusBiasSentiment=0.0;
     if(control_tower_v2 && control_tower_verified && control_tower_state.directive_available)
        DashboardBusBiasSentiment=control_tower_state.signed_probability_percent;
@@ -5403,6 +5419,10 @@ void OnTick()
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_PL_WEEKLY),DashboardBusClosedPLWeekly);
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_PL_TOTAL),DashboardBusClosedPLTotal);
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_TRADES_TOTAL),(double)DashboardBusClosedTradesTotal);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),"AI_MODE"),(double)Mode_Bias);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),"AI_PROTOCOL"),(double)Bias_Protocol);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),"AI_THRESHOLD"),(double)Bias_threshold);
+     GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),"AI_SCOPE"),(double)Mode_Bias_Trades);
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_HEARTBEAT),(double)TimeCurrent());
 
      GoatDirectionGuardPublish(Seq_Buy.GuardRealStarted,Seq_Sell.GuardRealStarted);

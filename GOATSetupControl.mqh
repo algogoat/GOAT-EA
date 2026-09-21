@@ -53,17 +53,30 @@ void GoatSetupControlPoll(void)
    if(!GoatSetupRead(root+"registration.json",registration)) return;
    SGOATJsonToken reg[];
    string reg_fields[]={"schema","account","server","directory","buildId","expiresAtUtc"};
+   string pairing_reg_fields[]={"schema","account","server","directory","buildId","expiresAtUtc","allowPairingRead"};
    long schema=0,account=0,expires=0;
+   bool allow_pairing=false;
    string build="",server="",directory="";
-   if(!GOATJsonParse(registration,reg) || !GOATJsonExactFields(registration,reg,0,reg_fields)
-      || !GOATJsonGetInteger(registration,reg,0,"schema",schema) || schema!=1
-      || !GOATJsonGetInteger(registration,reg,0,"account",account) || account!=AccountInfoInteger(ACCOUNT_LOGIN)
+   if(!GOATJsonParse(registration,reg) || !GOATJsonGetInteger(registration,reg,0,"schema",schema)) return;
+   if(schema==1)
+     {
+      if(!GOATJsonExactFields(registration,reg,0,reg_fields)) return;
+     }
+   else if(schema==2)
+     {
+      if(!GOATJsonExactFields(registration,reg,0,pairing_reg_fields)
+         || !GOATJsonGetBoolean(registration,reg,0,"allowPairingRead",allow_pairing) || !allow_pairing) return;
+     }
+   else return;
+   if(!GOATJsonGetInteger(registration,reg,0,"account",account) || account!=AccountInfoInteger(ACCOUNT_LOGIN)
       || !GOATJsonGetInteger(registration,reg,0,"expiresAtUtc",expires)
       || !GOATJsonGetString(registration,reg,0,"server",server) || server!=AccountInfoString(ACCOUNT_SERVER)
       || !GOATJsonGetString(registration,reg,0,"directory",directory) || !GoatSetupDirectoryMatches(directory)
       || !GOATJsonGetString(registration,reg,0,"buildId",build) || build!=GOAT_BUILD_ID
       || expires<(long)TimeGMT() || expires>(long)TimeGMT()+86400
       || AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO) return;
+   if(allow_pairing && expires>(long)TimeGMT()+900) return;
+   long registration_expires=expires;
    int lock=FileOpen(root+"owner.lock",FILE_READ|FILE_WRITE|FILE_BIN|FILE_COMMON);
    if(lock==INVALID_HANDLE) return;
    if(!GoatSetupRead(root+"request.json",request)){FileClose(lock);return;}
@@ -80,7 +93,8 @@ void GoatSetupControlPoll(void)
      }
    string receipt=root+id+".json";
    if(FileIsExist(receipt,FILE_COMMON)){FileClose(lock);return;}
-   bool valid=GOATJsonGetInteger(request,tok,0,"schema",schema) && schema==1
+   long request_schema=0;
+   bool valid=GOATJsonGetInteger(request,tok,0,"schema",request_schema) && (request_schema==1 || request_schema==2)
       && GOATJsonGetInteger(request,tok,0,"account",account) && account==AccountInfoInteger(ACCOUNT_LOGIN)
       && GOATJsonGetString(request,tok,0,"server",server) && server==AccountInfoString(ACCOUNT_SERVER)
       && GOATJsonGetString(request,tok,0,"directory",directory) && GoatSetupDirectoryMatches(directory)
@@ -88,9 +102,17 @@ void GoatSetupControlPoll(void)
       && GOATJsonGetInteger(request,tok,0,"expiresAtUtc",expires)
       && expires>=(long)TimeGMT() && expires<=(long)TimeGMT()+300
       && GOATJsonGetString(request,tok,0,"action",action)
-      && (action=="status" || action=="shutdown");
+      && ((request_schema==1 && (action=="status" || action=="shutdown"))
+         || (request_schema==2 && action=="pairing" && allow_pairing));
    bool inert=TerminalInfoInteger(TERMINAL_CONNECTED) && !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) && PositionsTotal()==0 && OrdersTotal()==0;
    string result=(!valid ? "rejected_envelope" : (action=="shutdown" && !inert ? "rejected_not_inert" : (action=="shutdown" ? "shutdown_requested" : "observed")));
+   bool pairing_available=false;
+   if(valid && action=="pairing")
+     {
+      pairing_available=inert && GOATDeviceActivationPairingReadable((long)TimeGMT()*1000,
+         AccountInfoInteger(ACCOUNT_LOGIN),AccountInfoString(ACCOUNT_SERVER),GOAT_BUILD_ID);
+      result=(!inert ? "rejected_not_inert" : (pairing_available ? "pairing_available" : "pairing_unavailable"));
+     }
    int charts=0;
    for(long cid=ChartFirst();cid>=0;cid=ChartNext(cid)) charts++;
    string body="{\"schema\":1,\"id\":\""+id+"\",\"result\":\""+result+"\",\"account\":"+IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))
@@ -99,6 +121,14 @@ void GoatSetupControlPoll(void)
       +",\"tradingAllowed\":"+(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) ? "true" : "false")
       +",\"activationOnly\":"+(GOATDeviceActivationOnly() ? "true" : "false")
       +",\"positions\":"+IntegerToString(PositionsTotal())+",\"orders\":"+IntegerToString(OrdersTotal())+",\"charts\":"+IntegerToString(charts)+"}";
+   if(pairing_available)
+     {
+      body=StringSubstr(body,0,StringLen(body)-1)
+         +",\"userCode\":"+GoatSetupQuote(g_GOATDeviceActivationUserCode)
+         +",\"activationId\":"+GoatSetupQuote(g_GOATDeviceActivationId)
+         +",\"responseExpiresAtUtc\":"+IntegerToString((long)MathMin(MathMin((double)expires,(double)registration_expires),MathMin((double)((long)TimeGMT()+60),(double)(g_GOATDeviceActivationExpiresAtMs/1000))))
+         +",\"pairingExpiresAtMs\":"+IntegerToString(g_GOATDeviceActivationExpiresAtMs)+"}";
+     }
    bool saved=GoatSetupWrite(receipt,body);
    if(saved && result=="shutdown_requested") TerminalClose(0);
    FileClose(lock);

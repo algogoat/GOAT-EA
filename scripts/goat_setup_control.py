@@ -1,7 +1,9 @@
 """Local file RPC for the opt-in GOAT demo setup controller. No credentials/trades.
 
 Run on the VPS via SSH. Required manifest fields: directory, account, server,
-buildId, eaSha256, commonFiles. Register grants status/shutdown only, for one hour.
+buildId, eaSha256, commonFiles. Register defaults to status/shutdown for one hour.
+Explicit --allow-pairing-read adds a 15-minute public-challenge capability. Only
+the pairing action returns that challenge; never log it as ordinary status.
 Native shutdown is refused unless connected, trading disabled, no orders/positions.
 An observed status is not portfolio readiness; shutdown_requested is not exit proof.
 """
@@ -69,14 +71,32 @@ def scope(manifest):
     return data, common / "GOAT/AgentSetup" / directory.name
 
 
-def receipt_record(value, identity, data):
+def receipt_record(value, identity, data, pairing=False, fresh=False):
     fields = {'schema', 'id', 'result', 'account', 'server', 'directory', 'buildId', 'observedAtUtc',
               'connected', 'tradingAllowed', 'activationOnly', 'positions', 'orders', 'charts'}
+    if value.get('result') == 'pairing_available':
+        if not pairing:
+            raise ValueError('unexpected pairing payload')
+        fields |= {'userCode', 'activationId', 'pairingExpiresAtMs', 'responseExpiresAtUtc'}
+        if not isinstance(value.get('userCode'), str) or not re.fullmatch(r'[A-Z2-9]{4}-[A-Z2-9]{4}', value['userCode']):
+            raise ValueError('invalid pairing code')
+        if not isinstance(value.get('activationId'), str) or not re.fullmatch(r'[A-Za-z0-9_-]{32}', value['activationId']):
+            raise ValueError('invalid pairing identity')
+        expiry, response_expiry = value.get('pairingExpiresAtMs'), value.get('responseExpiresAtUtc')
+        if type(expiry) is not int or type(response_expiry) is not int:
+            raise ValueError('invalid pairing expiry')
+        observed = value.get('observedAtUtc')
+        if type(observed) is not int or not observed < response_expiry <= min(observed + 60, expiry // 1000) or not observed * 1000 < expiry <= (observed + 900) * 1000:
+            raise ValueError('invalid pairing lifetime')
+        if fresh and not observed <= time.time() < response_expiry:
+            raise ValueError('stale pairing payload')
+        if value.get('connected') is not True or value.get('tradingAllowed') is not False or value.get('activationOnly') is not True or value.get('positions') != 0 or value.get('orders') != 0:
+            raise ValueError('pairing is not inert')
     if set(value) != fields or type(value['schema']) is not int or value['schema'] != 1:
         raise ValueError('invalid receipt schema')
     if value['id'] != identity or any(value[k] != data[k] for k in ('account', 'server', 'buildId')) or os.path.normcase(value['directory']) != os.path.normcase(data['directory']):
         raise ValueError('receipt identity mismatch')
-    if value['result'] not in ('observed', 'shutdown_requested', 'rejected_envelope', 'rejected_not_inert'):
+    if value['result'] not in ('observed', 'shutdown_requested', 'rejected_envelope', 'rejected_not_inert', 'pairing_available', 'pairing_unavailable', 'pairing_consumed'):
         raise ValueError('invalid receipt result')
     for key in ('connected', 'tradingAllowed', 'activationOnly'):
         if type(value[key]) is not bool:
@@ -87,22 +107,24 @@ def receipt_record(value, identity, data):
     return {key: value[key] for key in fields}
 
 
-def register(manifest):
+def register(manifest, allow_pairing=False):
     data, root = scope(manifest)
     root.mkdir(parents=True, exist_ok=True)
     record = {"schema": 1, "account": data["account"], "server": data["server"], "directory": data['directory'],
               "buildId": data["buildId"], "expiresAtUtc": int(time.time()) + 3600}
+    if allow_pairing:
+        record.update(schema=2, allowPairingRead=True, expiresAtUtc=int(time.time()) + 900)
     path = root / "registration.json"
     if path.exists():
         old = read(path, Path(data['commonFiles']) / 'GOAT/Credentials/api-bearer.token')
         if any(old.get(key) != record[key] for key in ("account", "server", "buildId", "directory")):
             raise ValueError("retained registration identity differs; inspect before replacement")
     atomic(path, record)
-    return {"registered": True, "expiresAtUtc": record["expiresAtUtc"], "capabilities": ["status", "shutdown"]}
+    return {"registered": True, "expiresAtUtc": record["expiresAtUtc"], "capabilities": ["status", "shutdown"] + (["pairing"] if allow_pairing else [])}
 
 
 def request(manifest, action, timeout=30):
-    if action not in ("status", "shutdown") or not 1 <= timeout <= 60:
+    if action not in ("status", "shutdown", "pairing") or not 1 <= timeout <= 60:
         raise ValueError("unsupported action or timeout")
     data, root = scope(manifest)
     credential = Path(data['commonFiles']) / 'GOAT/Credentials/api-bearer.token'
@@ -111,6 +133,8 @@ def request(manifest, action, timeout=30):
         raise ValueError("setup registration expired")
     if any(reg.get(key) != data[key] for key in ("account", "server", "buildId", "directory")):
         raise ValueError("setup registration mismatch")
+    if action == 'pairing' and (reg.get('schema') != 2 or reg.get('allowPairingRead') is not True):
+        raise ValueError('pairing read was not authorized')
     # Exclusive producer lock; native receipt IDs provide replay protection.
     lock = root / "producer.lock"
     fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -122,7 +146,9 @@ def request(manifest, action, timeout=30):
             previous = old.get("id", "")
             if not re.fullmatch(r"[a-f0-9]{32}", previous) or not (root / (previous + ".json")).exists():
                 raise ValueError("unresolved request retained; do not overwrite or repeat")
-            receipt_record(read(root / (previous + '.json'), credential), previous, data)
+            old_receipt = receipt_record(read(root / (previous + '.json'), credential), previous, data, pairing=True)
+            if old_receipt['result'] == 'pairing_available':
+                consume_pairing(root / (previous + '.json'), old_receipt)
             archived = root / (previous + ".request.json")
             if archived.exists():
                 raise ValueError("request archive already exists; inspect retained state")
@@ -130,12 +156,17 @@ def request(manifest, action, timeout=30):
         identity = uuid.uuid4().hex
         envelope = {"schema": 1, "id": identity, "account": data["account"], "server": data["server"], "directory": data['directory'],
                     "buildId": data["buildId"], "expiresAtUtc": int(time.time()) + 120, "action": action}
+        if action == 'pairing':
+            envelope['schema'] = 2
         atomic(pending, envelope)
         receipt = root / (identity + ".json")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if receipt.exists():
-                return receipt_record(read(receipt, credential), identity, data)
+                result = receipt_record(read(receipt, credential), identity, data, pairing=(action == 'pairing'), fresh=True)
+                if result['result'] == 'pairing_available':
+                    consume_pairing(receipt, result)
+                return result
             time.sleep(0.25)
         return {"id": identity, "result": "receipt_timeout", "requestRetained": True}
     finally:
@@ -143,14 +174,23 @@ def request(manifest, action, timeout=30):
         lock.unlink()
 
 
+def consume_pairing(path, value):
+    tombstone = {key: item for key, item in value.items() if key not in ('userCode', 'activationId', 'pairingExpiresAtMs', 'responseExpiresAtUtc')}
+    tombstone['result'] = 'pairing_consumed'
+    atomic(path, tombstone)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("register", "status", "shutdown"))
+    parser.add_argument("operation", choices=("register", "status", "shutdown", "pairing"))
+    parser.add_argument('--allow-pairing-read', action='store_true', help='Explicit 15-minute pairing-read capability; register only')
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--timeout", type=int, default=30)
     args = parser.parse_args()
     try:
-        result = register(args.manifest) if args.operation == "register" else request(args.manifest, args.operation, args.timeout)
+        if args.allow_pairing_read and args.operation != 'register':
+            raise ValueError('capability flag is registration only')
+        result = register(args.manifest, args.allow_pairing_read) if args.operation == "register" else request(args.manifest, args.operation, args.timeout)
         print(json.dumps(result))
         return 1 if result.get("result") == "receipt_timeout" else 0
     except (ValueError, OSError, KeyError, TypeError):

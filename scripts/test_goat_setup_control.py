@@ -127,6 +127,61 @@ class SetupControlTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 control.read(path)
 
+    def pairing_receipt(self, identity):
+        now = int(time.time())
+        return dict(self.receipt(identity), result='pairing_available', userCode='ABCD-2345',
+                    activationId='a' * 32, pairingExpiresAtMs=(now + 600) * 1000,
+                    responseExpiresAtUtc=now + 60)
+
+    def test_pairing_requires_explicit_capability(self):
+        with self.assertRaisesRegex(ValueError, 'not authorized'):
+            control.request(self.manifest, 'pairing')
+        registered = control.register(self.manifest, allow_pairing=True)
+        self.assertIn('pairing', registered['capabilities'])
+        self.assertLessEqual(registered['expiresAtUtc'] - time.time(), 900)
+        self.assertEqual(control.read(self.rpc / 'registration.json')['schema'], 2)
+        control.register(self.manifest)
+        self.assertEqual(control.read(self.rpc / 'registration.json')['schema'], 1)
+
+    def test_pairing_payload_not_returned_by_status(self):
+        with self.assertRaisesRegex(ValueError, 'unexpected pairing'):
+            control.receipt_record(self.pairing_receipt('a' * 32), 'a' * 32, self.data)
+
+    def test_pairing_expiry_and_identity_validation(self):
+        value = self.pairing_receipt('a' * 32)
+        for changes in ({'responseExpiresAtUtc': int(time.time()) - 1},
+                        {'observedAtUtc': int(time.time()) + 10},
+                        {'account': 456}, {'tradingAllowed': True}, {'orders': 1},
+                        {'activationId': 'bad'}, {'userCode': 'bad'},
+                        {'pairingExpiresAtMs': 2**53}, {'credentialCandidate': 'private'}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                control.receipt_record(dict(value, **changes), 'a' * 32, self.data, pairing=True, fresh=True)
+
+    def test_pairing_is_consumed_without_replay_or_secret_receipt(self):
+        control.register(self.manifest, allow_pairing=True)
+        def native():
+            for _ in range(200):
+                try:
+                    req = control.read(self.rpc / 'request.json')
+                    self.assertEqual(req['schema'], 2)
+                    self.assertEqual(req['action'], 'pairing')
+                    control.atomic(self.rpc / (req['id'] + '.json'), self.pairing_receipt(req['id']))
+                    return
+                except FileNotFoundError:
+                    time.sleep(.01)
+        worker = threading.Thread(target=native)
+        worker.start()
+        try:
+            result = control.request(self.manifest, 'pairing', 3)
+        finally:
+            worker.join()
+        self.assertEqual(result['userCode'], 'ABCD-2345')
+        saved = control.read(self.rpc / (result['id'] + '.json'))
+        self.assertEqual(saved['result'], 'pairing_consumed')
+        self.assertNotIn('userCode', saved)
+        self.assertNotIn('activationId', saved)
+        self.assertTrue((self.rpc / 'request.json').exists())
+
 
 if __name__ == "__main__":
     unittest.main()

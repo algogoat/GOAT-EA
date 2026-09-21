@@ -28,3 +28,17 @@ assert(src.indexOf('if(!GOATDeviceActivationReserve(admission,now+60))')<src.ind
 assert(src.includes('(length!=0 && length!=8)'));
 assert(src.includes('IntegerToString(ChartID())'));
 console.log('PASS activation permanent failures, rate limiting, transient retry, permission distinction, credential-free status and host admission contract');
+// Execute the real pairing predicate before any activation timer refresh.
+const pairing={GOAT_DEVICE_ACTIVATION_PENDING:2, g_GOATDeviceActivationState:2,
+ g_GOATDeviceActivationUserCode:'ABCD-2345',g_GOATDeviceActivationAccountId:'123',
+ g_GOATDeviceActivationBuildId:'TEST-BUILD',g_GOATDeviceActivationServer:'Demo',
+ g_GOATDeviceActivationExpiresAtMs:700000,IntegerToString:String,
+ GOATDeviceActivationValidCode:(value)=>/^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(value)};
+vm.createContext(pairing); vm.runInContext(extract('GOATDeviceActivationPairingReadable'),pairing);
+assert.equal(pairing.GOATDeviceActivationPairingReadable(100000,123,'Demo','TEST-BUILD'),true);
+for(const args of [[690000,123,'Demo','TEST-BUILD'],[701000,123,'Demo','TEST-BUILD'],
+ [100000,124,'Demo','TEST-BUILD'],[100000,123,'Other','TEST-BUILD'],[100000,123,'Demo','OTHER']])
+ assert.equal(pairing.GOATDeviceActivationPairingReadable(...args),false);
+for(const state of [0,1,3,4]){pairing.g_GOATDeviceActivationState=state;assert.equal(pairing.GOATDeviceActivationPairingReadable(100000,123,'Demo','TEST-BUILD'),false);}
+assert(src.indexOf('g_GOATDeviceActivationUserCode="";',src.indexOf('if(activation_status=="APPROVED")'))<src.indexOf('if(!GOATDeviceActivationWriteCredential())'));
+console.log('PASS actual pairing predicate: account/server/build binding, expiry-before-timer, nonpending state and approval scrubbing');

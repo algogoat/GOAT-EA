@@ -50,7 +50,7 @@ directory, broker account/server, build ID, installed EA SHA256 and Common Files
 directory. Registration is valid for one hour and binds the full native data path;
 equal directory basenames cannot authorize another installation.
 
-The only actions in this version are `status` and `shutdown`. Shutdown requires a
+The default schema-1 registration permits only `status` and `shutdown`. Shutdown requires a
 connected demo account, AlgoTrading off and zero orders/positions. It does not
 close trades, install credentials, change AI/exposure settings or enable trading.
 Request and receipt IDs are retained. A pending request without a validated receipt
@@ -63,6 +63,33 @@ native shutdown followed by process exit verified, normal restart restored the
 dashboard and returned a fresh RPC status. Account remained connected, trading
 disabled, zero positions/orders. This is not evidence of licensed initialization
 or successful portfolio deployment. Source review and 32 Python setup tests passed.
+
+### Pairing handoff candidate (not runtime-qualified)
+
+The new source adds `register --allow-pairing-read`, an explicit schema-2 capability
+limited to 15 minutes. `pairing` uses a schema-2 request and returns only the actual
+pending public challenge, activation ID and expiry, bound to the same terminal,
+account, broker and build. It requires connected demo, trading OFF and no exposure.
+Status never includes pairing data; schema 1 cannot request it. A response expires
+within 60 seconds and no later than its request, registration or activation.
+
+The client validates the exact response and atomically replaces its stored pairing
+payload with a code-free consumed receipt before returning it. Retain that receipt
+to prevent replay. Interrupted clients can leave expired payloads or native temporary
+files; these must not be reported as memory-only or fully cleaned up. The client
+rejects expired responses, and the server independently expires pairing challenges.
+Complete a bounded expired-payload cleanup policy before customer release.
+
+The agent must compare native activation ID, build, expiry and account against the
+portal's inspected request and recheck inert state before approval. Use the existing
+authenticated inspect/approve flow; no auto-approval endpoint, private credential
+export or build-ID substitution is provided. Private candidates stay in MT5.
+
+Local checks cover the client capability, freshness, wrong identity, unexpected
+payloads and consumed receipts, plus the actual native pairing predicate. They are
+not a completed VPS pairing test. The published R9 currently installed on VPS does
+not contain this command. A legitimate reviewed release/admission is still required
+before this candidate can initiate its own pairing request.
 
 ## Persistent bootstrap
 

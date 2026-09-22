@@ -8,7 +8,7 @@ function run({resume=true,first=true,saved=true,count=33,answer=6}={}) {
  Key:'k',EA_Name:'n',Server:'s',version_:'1.47',Font_Size:8,INIT_FAILED:-1,IDYES:6,IDNO:7,
  MB_YESNO:0,MB_YESNOCANCEL:0,MB_ICONQUESTION:0,MB_DEFBUTTON1:0,
  ChartID:()=>1,ChartFirst:()=>first?1:2,ChartNext:()=>-1,ChartClose:()=>calls.push('closeChart'),ChartRedraw:()=>{},
- Print:()=>calls.push('print'),Alert:()=>calls.push('alert'),ShowPrompt:()=>calls.push('prompt'),Sleep:()=>{},ExpertRemove:()=>{},
+ GoatStartupTrace:()=>{},Print:()=>calls.push('print'),Alert:()=>calls.push('alert'),ShowPrompt:()=>calls.push('prompt'),Sleep:()=>{},ExpertRemove:()=>{},
  MessageBox:()=>{calls.push('message');return answer;},GoatDeleteDashboardBusData:()=>calls.push('deleteBus'),
  DashboardDialog:{ResetPortfolioTrackingState:()=>calls.push('reset'),SetFlags:()=>calls.push('flags'),DashboardStateExists:()=>{assert.equal(calls[0],'flags');return saved;},
  LoadDashboardConfig:()=>{calls.push('loadSaved');return count;},LoadSetFiles:()=>{calls.push('picker');return count;},DeleteDashboardConfig:()=>calls.push('deleteConfig')}};

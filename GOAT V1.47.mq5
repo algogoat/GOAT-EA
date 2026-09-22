@@ -2,8 +2,9 @@
 #define   GOAT_VERSION_LABEL "1.47"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
+#define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-r6-diagnostic.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-ASSET-SEQUENCE-GUARD-R5"
+#define   GOAT_BUILD_ID "V1.47-ASSET-SEQUENCE-GUARD-R6"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 #define   GOAT_BUILD_MARKER "DG1"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2248,11 +2249,14 @@ SEQUENCE       Seq_Buy,Seq_Sell,Seq_Buy_Virtual,Seq_Sell_Virtual;
 CPositionInfo  m_position;       // object of CPositionInfo class
 COrderInfo     m_order;          // object of COrderInfo class
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+#include "GOATStartupTrace.mqh"
 #include "GOATLicenseInitRetry.mqh"
 int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
   {
    static datetime LastLicenseCheckTime;
+   GoatStartupTrace("license.prompt.before");
    if(init) ShowPrompt("Validating License..."," ",URL_Web);
+   GoatStartupTrace("license.prompt.after");
 
    string URL = URL_API+"/api/ea/check";
    //if(Key=="GOAT") URL += "/api/metatrader/check-id/goat";
@@ -2269,7 +2273,9 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
  //Print("Post data:"+json_data);
    string result_headers;
    int native_error=0;
+   GoatStartupTrace("license.request.before");
    int res=GOATLicenseAuthenticatedRequest(AccNum,AccServer,init,URL,post_data,result,result_headers,native_error);
+   GoatStartupTrace("license.request.after");
    Print("Response Code: ", res);
    if(res==-1)
    {
@@ -2280,8 +2286,10 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
     return res;
    }
    else if(res!=200&&res!=1003) Print("License check HTTP response ",res);
+   GoatStartupTrace("license.hide.before");
    HidePrompt();
    string response_text = CharArrayToString(result);
+   GoatStartupTrace("license.hide.after");
    StringTrimLeft(response_text);
    StringTrimRight(response_text);
    //Print("Result Headers: ", result_headers);
@@ -2701,6 +2709,8 @@ sinput bool Studio_ReadOnlyMonitor=false; // Optimization Studio: read-only batc
 sinput string Studio_MonitorRunPath=""; // Read-only run folder; blank follows active batch
 int OnInit()
   {
+   g_GoatStartupTracing=true;
+   GoatStartupTrace("init.enter");
    g_GoatStudioReadOnlyMonitor=Studio_ReadOnlyMonitor;
    g_GoatStudioMonitorRunPath=Studio_MonitorRunPath;
    if(Studio_ReadOnlyMonitor && Studio_MonitorRunPath!="" &&
@@ -3056,6 +3066,7 @@ int OnInit()
       TesterDialog.Caption("GOAT  /  OPTIMIZATION STUDIO  /  V"+GOAT_VERSION_LABEL+" "+GOAT_BUILD_MARKER+(g_GoatStudioReadOnlyMonitor ? "  /  READ-ONLY MONITOR" : ""));
        GUI_BG_Display();
        Sleep(100); TesterDialog.Run(); Sleep(100);
+       GoatStartupTrace("init.ready"); g_GoatStartupTracing=false;
        return (INIT_SUCCEEDED);
       }
       bool fresh_dashboard_launch=false;
@@ -3112,7 +3123,9 @@ int OnInit()
         }
        }
 
+   GoatStartupTrace("dashboard.state.before");
        int SetsTotal=(resume_dashboard_launch ? DashboardDialog.LoadDashboardConfig() : DashboardDialog.LoadSetFiles());
+   GoatStartupTrace("dashboard.state.after");
        if(SetsTotal<=0)
        {
         if(Dashboard_Resume_Saved) Print("Dashboard resume refused: saved configuration could not be loaded.");
@@ -3125,12 +3138,16 @@ int OnInit()
        if(fresh_dashboard_launch) DashboardDialog.DeleteDashboardConfig();
        ChartSetInteger(0, CHART_EVENT_MOUSE_WHEEL, true);
        ChartSetInteger(0, CHART_MOUSE_SCROLL, false);
+   GoatStartupTrace("dashboard.create.before");
        if(!DashboardDialog.Create(ChartID(),Key+"_Dashboard",0,SetsTotal,left,top,newWidth,newHeight,(int)usableHeight))
        {Alert("Dashboard GUI creation Failed, please try again."); return INIT_FAILED;}
+   GoatStartupTrace("dashboard.background.before");
        GUI_BG_Display();
        GlobalVariableSet("Dashboard_ChartID",(double)ChartID());
+   GoatStartupTrace("dashboard.background.after");
        GlobalVariablesFlush();
        Sleep(100); DashboardDialog.Run(); Sleep(100);
+       GoatStartupTrace("init.ready"); g_GoatStartupTracing=false;
        return (INIT_SUCCEEDED);
       }
       }
@@ -3151,8 +3168,11 @@ int OnInit()
       int x2=x1+PANEL_WIDTH,  y2=y1+PANEL_HEIGHT;
       Sleep(100);
       if(MAGIC1==0) {
+   GoatStartupTrace("child.panel.before");
        if(!PanelDialog.Create(ChartID(),EA_Name_generated,0,x1,y1,x2,y2)) {Alert("Panel GUI creation Failed, please try again."); return(INIT_FAILED);}
+   GoatStartupTrace("child.panel.run.before");
        Sleep(100); PanelDialog.Run(); Sleep(100);
+   GoatStartupTrace("child.panel.run.after");
       }
       SetEdit(PanelDialog.m_edit_Info_1,Symbol(),clr_Text,Font_Size,GOAT_UI_INFO_BACK,GOAT_UI_SECTION_BORDER,Font_SubHeader);
       SetEdit(PanelDialog.m_edit_Info_2,Strat,GOAT_UI_MUTED_TEXT,Font_Size,GOAT_UI_INFO_BACK,GOAT_UI_SECTION_BORDER,Font_Text);
@@ -3286,6 +3306,7 @@ int OnInit()
  //ArrayResize(EMA_Periods,EMA_Count);
    ArrayResize(EMA_handles,EMA_Count);
    ArrayResize(EMAs,EMA_Count);
+   GoatStartupTrace("indicators.before");
    ArraySetAsSeries(ATR_Buf      ,true);
    ArraySetAsSeries(RSI_Buf      ,true);
    ArraySetAsSeries(EMA1_Buf     ,true);
@@ -3323,6 +3344,7 @@ int OnInit()
                                     MACD_handle    = iCustom(Symbol(),MACD_TF,MACD_Path,MACD_Fast,MACD_Slow,MACD_Signal,0,MACD_Price,100,MACD_Deviations,MACD_Mode_Trend);
    if(RSI2_Mode!= RSI_Disabled)     RSI2_handle    = iRSI   (Symbol(),RSI2_TF,RSI2_Period,RSI2_Price);
 //-------------------------------------------------------------------------
+   GoatStartupTrace("indicators.after");
    RSI_Sig=EMA_Sig=ADX_Sig=BB_Sig=MACD_Sig=RSI2_Sig=OP_NULL;
 //-------------------------------------------------------------------------
    ArraySetAsSeries(DDs,false);        ArrayResize(DDs,99);        ArrayInitialize(DDs,0.0);
@@ -3394,16 +3416,21 @@ int OnInit()
 //-------------------------------------------------------------------------
    if(!FastSpeed_Flag)
    {
+   GoatStartupTrace("child.display.before");
     /*&& Mode_Operation!=Operation_None)*/ AllDisplaySettings();
+   GoatStartupTrace("child.display.after");
     //if(NEWS_FILTER && DRAW_NEWS_CHART && READ_NEWS(NEWS_TABLE) && ArraySize(NEWS_TABLE)>0) DRAW_NEWS(NEWS_TABLE);
     //TIME_CORRECTION = ((int(TimeCurrent() - TimeGMT()) + 1800) / 3600);
    }
    if(MQLInfoInteger(MQL_VISUAL_MODE)) {AllDisplaySettings(); FastSpeed_Flag=false;}
 //-------------------------------------------------------------------------
    //if(Mode_Operation!=Operation_Batch) return INIT_PARAMETERS_INCORRECT;
+   GoatStartupTrace("first.tick.before");
    OnTick(); Sleep(50);
+   GoatStartupTrace("first.tick.after");
    ChartRedraw(); Sleep(50);
-   return (INIT_SUCCEEDED);
+   GoatStartupTrace("init.ready"); g_GoatStartupTracing=false;
+       return (INIT_SUCCEEDED);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnDeinit(const int reason)

@@ -3,7 +3,7 @@
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.47-ASSET-SEQUENCE-GUARD-R4"
+#define   GOAT_BUILD_ID "V1.47-ASSET-SEQUENCE-GUARD-R5"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 #define   GOAT_BUILD_MARKER "DG1"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2248,6 +2248,7 @@ SEQUENCE       Seq_Buy,Seq_Sell,Seq_Buy_Virtual,Seq_Sell_Virtual;
 CPositionInfo  m_position;       // object of CPositionInfo class
 COrderInfo     m_order;          // object of COrderInfo class
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+#include "GOATLicenseInitRetry.mqh"
 int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
   {
    static datetime LastLicenseCheckTime;
@@ -2267,25 +2268,18 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
    ArrayResize(post_data,ArraySize(post_data)-1);                    // Removing the last character, maybe null added automatically
  //Print("Post data:"+json_data);
    string result_headers;
-   string api_headers="";
-   if(!GOATBuildAuthenticatedRequestHeaders(api_headers))
-     {
-      Print("License check unavailable: GOAT API credential file is missing or invalid.");
-      HidePrompt();
-      ShowPrompt("Authorization Failed","Install the GOAT API credential file."," ","");
-      return 401;
-     }
-   int res = WebRequest("POST", URL, api_headers, timeout, post_data, result, result_headers);
+   int native_error=0;
+   int res=GOATLicenseAuthenticatedRequest(AccNum,AccServer,init,URL,post_data,result,result_headers,native_error);
    Print("Response Code: ", res);
    if(res==-1)
    {
-    Print("WebRequest failed: ", GetLastError());
+    Print("WebRequest failed: ", native_error);
     HidePrompt();
     if(MQLInfoInteger(MQL_VISUAL_MODE)) Print("For security purposes, visual testing mode is limited in features.");
     ShowPrompt("Connection not allowed!","Copy the URL below and add to"," Tools > Options > Experts > Allowed URLs.",URL_API);
     return res;
    }
-   else if(res!=200&&res!=1003) Print("License check HTTP response "+(string)res+": "+CharArrayToString(result, 0, -1, CP_UTF8));
+   else if(res!=200&&res!=1003) Print("License check HTTP response ",res);
    HidePrompt();
    string response_text = CharArrayToString(result);
    StringTrimLeft(response_text);

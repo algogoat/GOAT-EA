@@ -20,6 +20,7 @@ import goat_demo_pair_profile as p
 import goat_demo_pair_readiness as r
 import goat_demo_pair_restart as restart
 import goat_demo_pair_lifecycle as life
+import goat_demo_pair_trust as trust
 
 
 def row(n):
@@ -339,6 +340,76 @@ class DeploymentTests(unittest.TestCase):
                 with self.assertRaisesRegex(c.Refused,'profile_effective_inputs'):life.operate(args,[target],target,api,host,{})
                 replace.assert_not_called()
             self.assertEqual((root/'config/common.ini').read_bytes(),before)
+
+
+class TrustTests(unittest.TestCase):
+    def source(self):
+        return prep.fresh_common(c.PAIR_ACCOUNTS[7]).decode('utf16').replace(
+            'WebRequest=0\r\nWebRequestUrl=', 'WebRequest=1\r\nWebRequestUrl='+'aB'*48).encode('utf16')
+    def test_fresh_permission_is_honestly_disabled(self):
+        text=prep.fresh_common(c.PAIR_ACCOUNTS[7]).decode('utf16')
+        self.assertIn('WebRequest=0\r\nWebRequestUrl=\r\n',text)
+        self.assertNotIn('https://',text)
+    def test_permission_patch_changes_only_two_records(self):
+        source=self.source()
+        for legacy in (False,True):
+            text=prep.fresh_common(c.PAIR_ACCOUNTS[8]).decode('utf16')+'[Private]\r\nOpaque=keep-exact\r\n'
+            if legacy:text=text.replace('WebRequest=0\r\nWebRequestUrl=', 'WebRequest=1\r\nWebRequestUrl=https://goatedge.ai')
+            before=text.encode('utf16');after=trust.patch_trust(before,source)
+            expected=text.replace('WebRequest=0','WebRequest=1').replace(
+                'WebRequestUrl='+('https://goatedge.ai' if legacy else ''),'WebRequestUrl='+'aB'*48).encode('utf16')
+            self.assertEqual(after,expected)
+            self.assertEqual(p.patch_common(after,c.PAIR_ACCOUNTS[8],0),after)
+            self.assertEqual(source,self.source())
+            with self.assertRaises(c.Refused):trust.patch_trust(after,source)
+    def test_source_permission_requires_approved_native_format(self):
+        source=self.source().decode('utf16');target=prep.fresh_common(c.PAIR_ACCOUNTS[7])
+        for change in (source.replace('WebRequest=1','WebRequest=0'),source.replace('aB'*48,'https://goatedge.ai'),
+                       source.replace('aB'*48,'a'*15),source.replace('[Experts]','[Experts]\r\nWebRequest=1'),
+                       source.replace('WebRequest=1','WebRequest=1\r\nwebrequest=1')):
+            with self.subTest(change=change[:30]),self.assertRaises((c.Refused,trust.configparser.Error)):
+                trust.patch_trust(target,change.encode('utf16'))
+        # Native record length is not a fixed URL length; actual source is hash-pinned.
+        trust.patch_trust(target,source.replace('aB'*48,'aB'*42).encode('utf16'))
+    def test_trust_shutdown_exact_inert_activation_dashboard(self):
+        target=row(7);now=int(time.time())
+        receipt=dict(schema=1,id='a'*32,result='shutdown_requested',account=target['login'],server=target['server'],
+            directory=target['directory'],buildId=target['buildId'],observedAtUtc=now,
+            connected=True,tradingAllowed=False,activationOnly=True,positions=0,orders=0,charts=1)
+        trust.shutdown_state(receipt,target)
+        changes={'activationOnly':False,'connected':False,'tradingAllowed':True,'positions':1,'orders':1,
+                 'charts':36,'account':target['login']+1,'server':'Other','directory':'C:/Other','observedAtUtc':now-14401,
+                 'schema':True,'id':'../other','result':'observed'}
+        for key,value in changes.items():
+            with self.subTest(key=key),self.assertRaises(c.Refused):trust.shutdown_state(dict(receipt,**{key:value}),target)
+    def test_target_existing_permissions_and_ambiguity_refused(self):
+        target=prep.fresh_common(c.PAIR_ACCOUNTS[7]).decode('utf16');source=self.source()
+        for change in (target.replace('Enabled=0','Enabled=1'),target.replace('WebRequestUrl=','WebRequestUrl=https://other.example'),
+                       target.replace('WebRequest=0','WebRequest=1'),target.replace('WebRequest=0','WebRequest=0\r\nWebRequest=0'),
+                       target.replace('[Experts]','[Experts]\r\n[experts]\r\nEnabled=0'),target.replace('WebRequestUrl=\r\n','')):
+            with self.subTest(change=change[:30]),self.assertRaises((c.Refused,trust.configparser.Error)):
+                trust.patch_trust(change.encode('utf16'),source)
+        with self.assertRaises(c.Refused):trust.patch_trust(target.encode(),source)
+    def test_trust_run_dry_and_retained_output_do_not_write(self):
+        from types import SimpleNamespace as S
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);out=root/'trust';plan={'outputDirectory':str(out)}
+            args=S(plan=root/'plan.json',protected_witness=root/'witness.json',apply=False)
+            with patch.object(g,'read',return_value=plan),patch.object(trust,'inspect',return_value=({},[],[])),\
+                 patch.object(c,'WindowsHost'),patch.object(trust,'replace_preserving_acl') as replace:
+                self.assertEqual(trust.run(args)['status'],'dry_run_passed');replace.assert_not_called()
+                self.assertFalse(out.exists());out.mkdir();args.apply=True
+                with self.assertRaisesRegex(c.Refused,'retained_migration_requires_review'):trust.run(args)
+                replace.assert_not_called()
+    def test_trust_run_refuses_changed_state_after_lock(self):
+        from types import SimpleNamespace as S
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);out=root/'trust';args=S(plan=root/'plan.json',protected_witness=root/'witness.json',apply=True)
+            with patch.object(g,'read',return_value={'outputDirectory':str(out)}),patch.object(c,'WindowsHost'),\
+                 patch.object(trust,'inspect',side_effect=[({'revision':1},[],[]),({'revision':2},[],[])]),\
+                 patch.object(g,'lifecycle_lock',return_value=contextlib.nullcontext()),patch.object(trust,'replace_preserving_acl') as replace:
+                with self.assertRaisesRegex(c.Refused,'migration_state_changed'):trust.run(args)
+                replace.assert_not_called();self.assertFalse(out.exists())
 
 
 class ReadinessTests(unittest.TestCase):

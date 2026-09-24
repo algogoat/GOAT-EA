@@ -194,6 +194,39 @@ running terminal: inspect the retained process before retrying anything.
 
 ## Monitoring and documentation
 
+### Native WebRequest permission migration
+
+Fresh installation now writes `WebRequest=0` and an empty `WebRequestUrl`.
+A plaintext URL does not encode MT5's native permission list. When the approved
+same-host source is terminal 01 (`01 - Standard - Clean R5`), the bounded
+`scripts/goat_demo_pair_trust.py` helper can copy only its two native permission
+records into the closed, Algo-OFF pair. It never decodes that opaque list, changes
+accounts, writes the source terminal or launches a process. Each target must have
+one exact V1.48 dashboard on EURUSD M1 and a matching retained native inert shutdown
+receipt. Existing target permission must be disabled/blank or the historical
+plaintext GOAT URL; any other permission requires investigation.
+
+Use a private JSON plan with schema `goat-pair-native-trust-v1`, pinned `manifest`
+and `source` objects (`path`, `sha256`), absolute `commonFiles` and a new
+`outputDirectory`, and `targets` ordered 7 then 8. Each target contains `terminal`,
+the witnessed `chartId`, and pinned `shutdown` (`path`, `sha256`). Source is exactly
+`C:\GOAT Experiment\01 - Standard - Clean R5\config\common.ini`; the fresh protected
+six witness must still contain its unchanged running process.
+
+```powershell
+& $PairPython -B "$PairScripts/goat_demo_pair_trust.py" --plan "$PairStage/trust-plan.json" --protected-witness "$PairStage/protected-six.json"
+# After reviewing the dry run, use the same command with --apply.
+```
+
+The helper uses the shared lifecycle lock, rechecks both closed targets and pins,
+preserves configuration backups and full profile hashes in an ACL-restricted
+output folder, and emits the current combined `reconnect-manifest.json`. All
+other configuration bytes and saved chart inputs remain unchanged. Retained or
+partially applied output is never automatically retried or rolled back. Inspect
+its evidence first. Restart inert through the reviewed interactive runner and
+verify a native WebRequest response before claiming permission works; successful
+configuration migration alone is not runtime proof.
+
 The website live adapter separately verifies running status against retained
 settings/audit and startup evidence; the inert readiness verifier is not a live
 proof. Native command IDs can reset on restart. Check actual fresh 35 child

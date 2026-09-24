@@ -79,13 +79,13 @@ show_data=1
 
 
 def fresh_common(login):
-    # Native permissions still require runtime proof. These are intentional
-    # user-authorized settings for the new accounts only; Algo remains disabled.
+    # Plain URLs are not MT5's native opaque allowlist. Leave permission disabled
+    # until an approved same-host trust migration; Algo remains disabled.
     return (f'[Common]\r\nLogin={login}\r\nServer=Darwinex-Demo\r\nKeepPrivate=1\r\nNewsEnable=0\r\n'
             '[Charts]\r\nProfileLast=Default\r\n'
             '[Experts]\r\nEnabled=0\r\nAllowLiveTrading=1\r\nAllowDllImport=1\r\n'
             'Account=0\r\nProfile=0\r\nChart=0\r\n'
-            'WebRequest=1\r\nWebRequestUrl=https://goatedge.ai\r\n').encode('utf-16')
+            'WebRequest=0\r\nWebRequestUrl=\r\n').encode('utf-16')
 
 
 def bare_chart():

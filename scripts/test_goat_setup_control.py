@@ -42,6 +42,33 @@ class SetupControlTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "binary differs"):
             control.request(self.manifest, "status")
 
+    def test_versioned_binary_and_isolated_credential_scope(self):
+        self.data.update(expertRelativePath='MQL5/Experts/GOAT Experiment/GOAT V1.48.ex5',
+                         credentialRelativePath='GOAT/Credentials/api-bearer-pair.token')
+        binary = Path(self.data['directory']) / self.data['expertRelativePath']
+        binary.write_bytes(b'fixture EA')
+        control.atomic(self.manifest, self.data)
+        scoped, _ = control.scope(self.manifest)
+        self.assertEqual(control.credential_path(scoped).name, 'api-bearer-pair.token')
+        binary.write_bytes(b'wrong version')
+        with self.assertRaisesRegex(ValueError, 'binary differs'):
+            control.scope(self.manifest)
+
+    def test_version_scope_rejects_partial_and_traversal(self):
+        for fields in [dict(expertRelativePath='MQL5/Experts/GOAT V1.48.ex5'),
+                       dict(expertRelativePath='MQL5/Experts/../../other.ex5', credentialRelativePath='GOAT/Credentials/api-bearer-pair.token'),
+                       dict(expertRelativePath='C:/other.ex5', credentialRelativePath='GOAT/Credentials/api-bearer-pair.token')]:
+            control.atomic(self.manifest, dict(self.data, **fields))
+            with self.assertRaises(ValueError):
+                control.scope(self.manifest)
+
+    def test_namespaced_credential_and_pending_not_read(self):
+        for name in ('api-bearer-pair.token', 'api-bearer-pair.token.pending'):
+            path = Path(self.temp.name) / name
+            path.write_text('{}')
+            with self.assertRaisesRegex(ValueError, 'credential alias'):
+                control.read(path)
+
     def test_wrong_broker_registration_rejected(self):
         reg = control.read(self.rpc / "registration.json")
         reg["server"] = "Different-Demo"

@@ -191,7 +191,7 @@ bool GOATDeviceActivationWriteCredential(void)
    // One user-scoped FILE_COMMON credential is shared locally. The server
    // rechecks MT5-account membership and entitlement on every feed request.
    string directory="GOAT\\Credentials";
-   string temporary=directory+"\\api-bearer.token.pending";
+   string temporary=GOAT_API_BEARER_FILE+".pending";
    FolderCreate(directory,FILE_COMMON);
    FileDelete(temporary,FILE_COMMON);
    int handle=FileOpen(temporary,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);

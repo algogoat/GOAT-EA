@@ -72,6 +72,21 @@ class SetupStatusTests(unittest.TestCase):
         self.credential.touch()
         self.assertEqual(self.inspect()["credential"], {"present": False, "status": "empty"})
 
+    def test_isolated_pair_paths_do_not_describe_legacy_token(self):
+        self.credential.write_bytes(b'legacy fixture')
+        relative = 'MQL5/Experts/GOAT Experiment/GOAT V1.48.ex5'
+        binary = self.terminal / relative
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b'pair fixture')
+        result = self.inspect(hash_ea=True, expert_relative_path=relative,
+                              credential_relative_path='GOAT/Credentials/api-bearer-pair.token')
+        self.assertEqual(result['credential']['status'], 'missing')
+        self.assertEqual(result['terminals'][0]['installedEa']['sha256'], hashlib.sha256(b'pair fixture').hexdigest())
+
+    def test_version_path_traversal_rejected(self):
+        with self.assertRaises(status.InspectionError):
+            self.inspect(expert_relative_path='MQL5/Experts/../../other.ex5')
+
     def test_missing_status_not_replaced_by_saved_webrequest_settings(self):
         config = self.terminal / "config"
         config.mkdir()

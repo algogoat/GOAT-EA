@@ -15,6 +15,7 @@ reason to quietly substitute repeated mouse clicks.
 | Native terminal status, pairing, orderly shutdown | `scripts/goat_setup_control.py --help` | Scoped request and matching native receipt |
 | Configure and attach a frozen portfolio | `scripts/goat_portfolio_setup.py --help` | Per-operation native receipts, then full input audit |
 | Install/connect/persist a demo on VPS | `goat-vps-setup` skill and its portfolio reference | Host-specific setup procedure; still requires current runtime proof |
+| Set up the reviewed Balanced35 AI pair | [Paired demo setup](PAIRED-DEMO-SETUP.md) | Fresh bare login, isolated production dashboard,35 native attachments and restart/launch evidence; bounded internal contract |
 | Inspect active trading/exposure | `goat-vps-trade-audit` skill | Observed positions, deals, inputs and effective policies |
 | Create or benchmark optimization inputs | `goat-opt-file-create`, `goat-seed-farming` | File integrity, bounded tests and scoped post-run cleanup |
 | Launch an optimization | `mt5-goat-optimize` and the campaign's current continuation | Exact retained queue, controller ownership, native results |

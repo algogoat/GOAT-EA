@@ -279,6 +279,45 @@ considered fixed by staging recovery; all 35 input/policy checks and restart
 rehearsal remain required before any trading launch. Partial repairs or changed
 configuration remain retained for inspection, with no automatic rollback.
 
+### Second inspected partial recovery
+
+`goat_demo_pair_recover_child_v2.py` is separate authority for terminal 07,
+index 26, NZDUSD chart 55957314657764 and the recorded September 24 failure at
+1790231505. It cannot retry another index. Its source-compatible v1 parsing
+helpers still default to the original six-child case; the original proof and
+successful recovery receipt remain verifiable against their historical journal
+prefix. The second authority must follow that successful recovery in the same
+journal and retain the first seven identities, then all 26 current child IDs,
+magics and complete effective saved inputs.
+
+Its schema is `goat-partial-child-recovery-v2`. The plan contains pinned
+`reconnectManifest`, `installation`, `draft`, `pins`, `failure`, `journal`,
+`orphan`, `state`, `globals`, `previousRecovery`, `termination`, `sdkBefore`,
+`terminationIntent`, `pendingRequest`, `pendingReceipt`, plus absolute
+`controlDirectory` and new `outputDirectory`. The SDK evidence is the retained
+`sdk-before-termination.json`; the completion and intent must identify PID 20896,
+created `2026-09-24T06:23:35.6919830Z`. SDK observation must prove the same demo
+account, connected, Algo OFF and flat immediately before that explicit
+termination. The helper itself never attaches the SDK, closes or kills a process.
+Actual process absence is independently required.
+
+The retained timed-out read request `477ab53b36004ea5b5c60dea500f8f53` subsequently
+completed with an `observed` receipt at 1790231682. Both files are pinned,
+validated and copied to recovery evidence; neither is removed. A timeout alone
+does not establish that the controller never resumed. Expired registration is
+validated at the failure's historical time and remains unchanged: this closed
+repair issues no RPC and grants no fresh registration validity.
+
+Dry run and `--apply` use the same CLI as v1. The sole terminal mutations are
+quarantining the proven-empty `chart28.chr` and resetting row 26's two identity
+fields. All other profile/config/global/state bytes are retained and checked.
+The helper appends a distinct `recovery:deploy:26:<failure-sha>` authorization.
+The orchestrator accepts it only with a fresh normal inspection and the exact
+26-member prefix; a failed or interrupted recovery attempt cannot be repeated.
+Build rollout/registration renewal is a separate operation. Do not rewrite old
+installation manifests, original journal bindings or either recovery proof to
+make a new binary appear to be the old one.
+
 The website live adapter separately verifies running status against retained
 settings/audit and startup evidence; the inert readiness verifier is not a live
 proof. Native command IDs can reset on restart. Check actual fresh 35 child

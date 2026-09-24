@@ -16,39 +16,39 @@ from goat_demo_pair_lifecycle import replace_preserving_acl
 SCHEMA='goat-partial-child-recovery-v1'
 
 
-def reset_state(blob,registration,failure):
+def reset_state(blob,registration,failure,index=6):
     text,encoding,bom=p.decode_text(blob);lines=text.splitlines(keepends=True)
     c.require(len(lines)==36 and lines[0].rstrip('\r\n')=='#GOAT_AI_LAUNCH_V147_2\t0\t50\t2','state_shape')
-    for index,(line,member,old) in enumerate(zip(lines[1:],registration['members'],failure['rows'])):
+    for current,(line,member,old) in enumerate(zip(lines[1:],registration['members'],failure['rows'])):
         fields=line.rstrip('\r\n').split('\t')
         c.require(len(fields)==9 and fields[0]==member['path'] and fields[2]==member['symbol']
                   and fields[7:]==[str(old['chartId']),str(old['magic'])],'state_identity')
-        if index==6:
+        if current==index:
             ending=line[len(line.rstrip('\r\n')):]
-            lines[index+1]='\t'.join(fields[:7]+['0','0'])+ending
+            lines[current+1]='\t'.join(fields[:7]+['0','0'])+ending
     return bom+''.join(lines).encode(encoding)
 
 
-def empty_chart(blob,failed_cid):
+def empty_chart(blob,failed_cid,symbol='EURUSD'):
     text=p.decode_text(blob)[0];lines=[v.strip() for v in text.splitlines() if v.strip()]
     c.require(lines[0]=='<chart>' and lines[-1]=='</chart>' and all('<' not in v and '>' not in v for v in lines[1:-1]),'orphan_not_empty_chart')
     values=c.unique_object([line.split('=',1) for line in lines[1:-1]])
-    c.require(values.get('id') in ('0',str(failed_cid)) and values.get('symbol')=='EURUSD'
+    c.require(values.get('id') in ('0',str(failed_cid)) and values.get('symbol')==symbol
               and values.get('period_type')=='0' and values.get('period_size')=='1' and values.get('windows_total')=='0','orphan_not_empty_chart')
 
 
-def saved_prefix(directory,registration,failure,orphan):
+def saved_prefix(directory,registration,failure,orphan,index=6,symbol='EURUSD'):
     folder=directory/'MQL5/Profiles/Charts/Default';paths=[];files={};seen=set();dashboards=0
     c.require(folder.is_dir() and not any(v.is_symlink() or v.is_junction() for v in [folder,*folder.parents]),'profile_alias')
-    expected={r['chartId']:(m,r) for m,r in zip(registration['members'][:6],failure['rows'][:6])}
-    c.require(len(expected)==6,'prefix_duplicate')
+    expected={r['chartId']:(m,r) for m,r in zip(registration['members'][:index],failure['rows'][:index])}
+    c.require(len(expected)==index,'prefix_duplicate')
     for path in folder.rglob('*'):
         c.require(len(paths)<1024,'profile_bound');paths.append(path)
     for path in sorted(paths):
         c.require(not path.is_symlink() and not path.is_junction(),'profile_alias')
         if not path.is_file():continue
         c.require(len(files)<512,'profile_bound');blob=g.raw(path);files[path.relative_to(folder).as_posix()]=blob
-        if path==orphan:empty_chart(blob,failure['rows'][6]['chartId']);continue
+        if path==orphan:empty_chart(blob,failure['rows'][index]['chartId'],symbol);continue
         if path.name=='order.wnd':
             c.require(orphan.name not in p.decode_text(blob)[0].splitlines(),'orphan_still_in_order');continue
         c.require(path.suffix.casefold()=='.chr','unexpected_profile_file')

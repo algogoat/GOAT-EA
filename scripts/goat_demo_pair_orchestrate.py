@@ -100,9 +100,10 @@ class Runner:
 
     def deployment_target(self,count,value):
         target=f'deploy:{count}'
-        if count==6 and self.recovery is not None:
-            require([list(v) for v in identities(value)[:6]]==self.recovery['prefix'],'recovery_prefix_changed')
-            require(count_attached(value)==6 and self.journal.tried(target),'recovery_not_original_failure')
+        if self.recovery is not None and count==self.recovery.get('index',6):
+            require(count in (6,26),'recovery_index_scope')
+            require([list(v) for v in identities(value)[:count]]==self.recovery['prefix'],'recovery_prefix_changed')
+            require(count_attached(value)==count and self.journal.tried(target),'recovery_not_original_failure')
             return self.recovery['target']
         return target
 
@@ -301,7 +302,11 @@ def main():
         require(bool(args.recovery_proof)==bool(args.recovery_proof_sha256),'recovery_pin_required')
         if args.recovery_proof:
             require(args.terminal==7 and inspected is not None,'recovery_scope')
-            from goat_demo_pair_recover_child import validate_authority
+            recovery_schema=json.loads(bounded(args.recovery_proof)).get('schema')
+            if recovery_schema=='goat-partial-child-recovery-v2':
+                from goat_demo_pair_recover_child_v2 import validate_authority
+            else:
+                from goat_demo_pair_recover_child import validate_authority
             recovery=validate_authority(args.recovery_proof,args.recovery_proof_sha256,journal,api)
         journal.add('attempt',resumed=inspected is not None)
         summary.update(Runner(api,api.reg,journal,inspected is not None,recovery=recovery).run(inspected))

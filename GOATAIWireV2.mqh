@@ -869,7 +869,22 @@ class CGOATAIWireV2
       return DetailLine(parsed)=="Below trade threshold · 60%";
      }
 
-   bool GetState(string asset,SGOATAIWireV2State &state)
+   // No network IO: checked again immediately before every exposure-increasing send.
+   bool EntryFeedReady()
+     {
+      long now_ms=0;
+      SGOATAIWireV2State entry_state=m_state;
+#ifdef GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED
+      GOATApplyWireV2DemoRawAuthority(entry_state,Bias_Protocol==BiasProtocol_ControlTowerV2DemoRaw
+           && AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO
+           && !MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_OPTIMIZATION) && !MQLInfoInteger(MQL_FORWARD));
+#endif
+      return(entry_state.verified && entry_state.directive_available
+             && GOATWireV2AuthoritativeNow(m_read_at_ms,m_verified_tick,GetTickCount64(),now_ms)
+             && now_ms<m_valid_until_ms);
+     }
+
+   bool GetState(string asset,SGOATAIWireV2State &state,const bool allow_refresh=true)
      {
       asset=ConvertToGOATsymbol(asset);
       ulong now_tick=GetTickCount64();
@@ -885,7 +900,9 @@ class CGOATAIWireV2
                || authoritative_now>=m_valid_until_ms) refresh=true;
            }
         }
-      if(refresh) Refresh(asset);
+      if(refresh && allow_refresh) Refresh(asset);
+      if(!allow_refresh && m_state.verified && !EntryFeedReady())
+        {GOATResetWireV2State(state,"FEED_EXPIRED_OR_UNAVAILABLE");return false;}
       state=m_state;
 #ifdef GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED
 #ifdef GOAT_AI_SIGNAL_FILTER_V147
@@ -976,7 +993,11 @@ bool CGOATAIWireV2::Refresh(const string asset)
       return false;
      }
    ResetLastError();
+#ifdef GOAT_MANAGEMENT_ONLY_BOOT
+   int response=WebRequest("GET",url,api_headers,1000,request_body,result,result_headers);
+#else
    int response=WebRequest("GET",url,api_headers,timeout*3,request_body,result,result_headers);
+#endif
    ulong finished=GetTickCount64();
    m_last_attempt_tick=finished;
    ulong duration=(finished>=started ? finished-started : 0);

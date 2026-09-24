@@ -1,12 +1,13 @@
 ﻿#define GOAT_STUDIO_UNIFIED_V147 1
+#define GOAT_MANAGEMENT_ONLY_BOOT 1
 #define   GOAT_VERSION_LABEL "1.48"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-balanced35-ai-20260923.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.48-DASHBOARD-AI-PAIR-R2"
+#define   GOAT_BUILD_ID "V1.48-MANAGEMENT-BOOT-R3"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
-#define   GOAT_BUILD_MARKER "UI1"
+#define   GOAT_BUILD_MARKER "MGT3"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -56,6 +57,7 @@ sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without star
 #define GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER 1
 #define GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED 1
 #include "GOATAIWireV2.mqh"
+#include "GOATManagementBoot.mqh"
 #include "GOATStudioUI.mqh"
 #include "GOATStudioCompletion.mqh"
 #undef PANEL_WIDTH
@@ -1606,7 +1608,7 @@ class SEQUENCE
 //----------------------
    bool Add_Level(double Level_New)
    {
-    if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();}
+    if(g_GOATManager && g_GOATRecoveryDegraded) return false;
   //if(!IsLicensed())        {Alert("Trial Expired"); return false;}
     if(Level_Count<Max_Seq_Levels && Trades_Count<Max_Seq_Trades)
     {
@@ -1627,6 +1629,7 @@ class SEQUENCE
      if(Size_TSL ==1234.5) Size_TSL  = GetSize(TSL);
      if(EnforceSequenceMLPS("add level")) return false;
 
+     if(!GOATCanAddRisk() && (!Active || Virtual)) return false;
      bool   hadPriorLevel = (Level_Count>0);
      double prevLevel     = Level_Last;
 
@@ -1683,6 +1686,7 @@ class SEQUENCE
       else return false;
      }
      //-----------------------------------------------------------------
+     if(!GOATCanAddRisk()) return false;
      // virtual delayed lots
      if(!Virtual && !Traded && Delay_Lots_Add && Level_Count==MathAbs(Delay_Trade_Live) && Level_Count>0 && Lots_Calc>0)
      {
@@ -2247,6 +2251,7 @@ class SEQUENCE
   };
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 SEQUENCE       Seq_Buy,Seq_Sell,Seq_Buy_Virtual,Seq_Sell_Virtual;
+#include "GOATSequenceRecovery.mqh"
 CPositionInfo  m_position;       // object of CPositionInfo class
 COrderInfo     m_order;          // object of COrderInfo class
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2321,40 +2326,6 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
    if(res==1001){ShowPrompt("No Connection!","Ensure your MT5 terminal is online and has stable internet.","GOAT EA requires an active connection to function properly.",""); return res;}
                  ShowPrompt("Validation Failed!","Unexpected HTTP status: "+(string)res,"","");
    return res;
-  }
-//+------------------------------------------------------------------+
-bool IsVersionExpired()
-  {
-   if(TimeCurrent() > Expiry) return true;
-   else                       return false;
-   //if(MQLInfoInteger(MQL_TESTER))                                        {ObjectSetText("006","Acc. TradeMode : Tester",Font_Size,"NULL",clr_Text); return true;}
-   if(AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO)
-   {
-    //ObjectSetText("006","Acc. TradeMode : Demo",Font_Size,"NULL",clr_Text);
-    //ObjectSetText("011","Demo Acc. License",Font_Size,"NULL",clrGreen);
-    //ObjectSetText("012","No Expiry",Font_Size,"NULL",clrGreen);
-    return true;
-   }
-   if(AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL)
-   {
-    //ObjectSetText("006","Acc. TradeMode : Real",Font_Size,"NULL",clr_Text);
-    if(Licensed_Account_Number!=0 && AccountInfoInteger(ACCOUNT_LOGIN)!=Licensed_Account_Number)
-    {
-     Alert("Account Number is not Licensed"); ExpertRemove();
-    }
-    if(Licensed_Account_Title!="" && AccountInfoString(ACCOUNT_NAME)!=Licensed_Account_Title)
-    {
-     Alert("Account Name/Title is not Licensed"); ExpertRemove();
-    }
-    if(TimeCurrent() > Expiry)
-    {
-     Alert("License expired"); ExpertRemove();
-    }
-    //ObjectSetText("011","ACC. LICENSED",Font_Size,"NULL",clrGreen);
-    //ObjectSetText("012","ACC. Expiry  : "+TimeToString(License_Expiry,TIME_DATE),Font_Size,"NULL",clrGreen);
-    return true;
-   }
-   return false;
   }
 //+------------------------------------------------------------------+
 void ShowPrompt(string heading,string sub_heading,string sub_heading2,string text="")
@@ -2745,7 +2716,14 @@ int OnInit()
       Print("Demo raw AI bias is restricted to demo accounts and cannot be selected on this live account.");
       return INIT_PARAMETERS_INCORRECT;
      }
-   if(!test_context)
+   g_GOATManager=(!test_context && Mode_Operation==Operation_Standard);
+   g_GOATManagerReady=false;
+   g_GOATManagerAccount=AccountInfoInteger(ACCOUNT_LOGIN);
+   g_GOATManagerServer=AccountInfoString(ACCOUNT_SERVER);
+   g_GOATAuthUntil=0;
+   g_GOATAuthNext=GetTickCount64()+1000+(ulong)(ChartID()%3000);
+   g_GOATAuthReason="AUTH_PENDING";
+   if(!test_context && !g_GOATManager)
      {
       string api_headers="";
       if(!GOATBuildAuthenticatedRequestHeaders(api_headers))
@@ -2761,8 +2739,9 @@ int OnInit()
      {
       if(!GOATBiasWireV2.SelfTest())
         {
-         Print("GOAT AI wire v2 checksum self-test failed.");
-         return INIT_FAILED;
+         Print("GOAT AI wire v2 checksum self-test failed; new exposure disabled.");
+         g_GOATWireHealthy=false;
+         if(!g_GOATManager) return INIT_FAILED;
         }
      }
 
@@ -2810,7 +2789,6 @@ int OnInit()
    if(Mode_Trade==Long_and_Short || Mode_Trade==Short) Sell_EN=true;    else Sell_EN=false;
 //-------------------------------------------------------------------------
    do Sleep(20); while(TimeToString(TimeCurrent())=="");
-   if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); return INIT_FAILED; ExpertRemove();}
 //-------------------------------------------------------------------------
    if(Mode_Download==Download_News||Mode_Download==Download_NewsBias)
    {
@@ -2960,7 +2938,6 @@ int OnInit()
    if( (MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD) || MQLInfoInteger(MQL_TESTER)) ) FastSpeed_Flag=true; //&&!MQLInfoInteger(MQL_VISUAL_MODE)
    else
    {
-    Print("Expiry: ", Expiry);
     Font_Size=Font_Size_Base;
     double dpi = TerminalInfoInteger(TERMINAL_SCREEN_DPI);
     if(dpi<72) dpi=96;
@@ -2977,10 +2954,10 @@ int OnInit()
     //MessageBox("Press Ok and Please Wait...","Verifying Online License",MB_OK);
     //if(OnlineValidationFunction(MetatraderKey,ServerBreakDownDays,true))  MessageBox("Online License Validation Successful","Licensed",MB_OK);
     //else                                                                  MessageBox("Online License Validation Failed"    ,"Validation Failed",MB_OK);
-    if(Mode_Download!=Download_News&&Mode_Download!=Download_NewsBias)
+    if(!g_GOATManager && Mode_Download!=Download_News&&Mode_Download!=Download_NewsBias)
     LicenseKey = VerifyLicense(AccountInfoInteger(ACCOUNT_LOGIN),AccountInfoString(ACCOUNT_NAME),AccountInfoString(ACCOUNT_SERVER),true);
 
-    if(LicenseKey==LICENSE_VALID)//||LicenseKey!=0)
+    if(LicenseKey==LICENSE_VALID || g_GOATManager)
     {
      if(Mode_Operation==Operation_Report)
      {
@@ -3403,6 +3380,7 @@ int OnInit()
    if(MQLInfoInteger(MQL_VISUAL_MODE)) {AllDisplaySettings(); FastSpeed_Flag=false;}
 //-------------------------------------------------------------------------
    //if(Mode_Operation!=Operation_Batch) return INIT_PARAMETERS_INCORRECT;
+   if(g_GOATManager) GOATTryManagementRecovery();
    OnTick(); Sleep(50);
    ChartRedraw(); Sleep(50);
    return (INIT_SUCCEEDED);
@@ -3410,6 +3388,7 @@ int OnInit()
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnDeinit(const int reason)
   {
+   GOATSaveManagement();
    GoatDirectionGuardDeinit();
    if(g_GoatStudioReadOnlyMonitor)
    {TesterDialog.Destroy(reason);EventKillTimer();return;}
@@ -4608,6 +4587,20 @@ void OnTimer(void)
        GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),"EA_TRADE_ALLOWED"),(double)MQLInfoInteger(MQL_TRADE_ALLOWED));
       }
      }
+   if(g_GOATManager && GOATTryManagementRecovery())
+   {
+      // Management runs before bounded network refresh, including quiet markets.
+      g_GOATManagementTimerPass=true;
+      OnTick();
+      g_GOATManagementTimerPass=false;
+      GOATManagementAuthPoll();
+      if(g_GOATWireHealthy && g_GOATAuthUntil>GetTickCount64() && Mode_Bias!=Bias_Disabled)
+      {
+         SGOATAIWireV2State refreshed;
+         GOATBiasWireV2.GetState(Symbol(),refreshed);
+      }
+      GOATManagementStatus();
+   }
    timer++;
    }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -4835,6 +4828,7 @@ void HandleBiasExitSell(const int sells)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTick()
   {
+   if(g_GOATManager && !GOATTryManagementRecovery()) return;
    if(GOATDeviceActivationOnly()) return;
    if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return; //return; // returning for testing
    //if(!IsLicensed())    {Alert("Trial Expired"); return;}
@@ -5002,7 +4996,7 @@ void OnTick()
       {
        if(Mode_Bias!=Bias_Disabled)
          {
-          control_tower_verified=GOATBiasWireV2.GetState(Symbol(),control_tower_state);
+          control_tower_verified=g_GOATWireHealthy && GOATBiasWireV2.GetState(Symbol(),control_tower_state,!g_GOATManager);
           if(control_tower_verified && control_tower_state.actionable)
              CurBias=control_tower_state.signed_probability_percent;
          }
@@ -5436,7 +5430,8 @@ void OnTick()
      else if(!Active || InActive) dashboard_status="Inactive";
      if(!DashboardPortfolioPaused && (StopOut_Flag || Pause_Flag || Sequence_Pause_Close || Sequence_Pause_News || Sequence_Pause_Bias_B || Sequence_Pause_Bias_S))
         dashboard_status="Paused";
-     DashboardBusSendStatus(dashboard_status);
+     if(!GOATCanAddRisk()) dashboard_status="Management Only";
+     if(!g_GOATManagementTimerPass) DashboardBusSendStatus(dashboard_status);
     }
   //PartialClose();
    }
@@ -5513,7 +5508,6 @@ void OnTick()
     {
      // an adjustment for good comparison Weekend Close
      //if(Active && CloseTradesWeekend && stm_cur.day_of_week==1 && stm_cur.hour==Hour_Start[0] && stm_cur.min==Minute_Start[0]) {if(FirstRun) FirstRun=false; else return;}
-     if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();}
      //if(!IsLicensed())    {Alert("Trial Expired"); return;}
      //if(!FastSpeed_Flag) OnlineValidationFunction(MetatraderKey,ServerBreakDownDays,false);
      SetEdit(PanelDialog.m_edit_Info_2,"Active: Checking...",clrLime,Font_Size);
@@ -5561,7 +5555,7 @@ void OnTick()
        {
         if(!LastBuyTradeSignal) Trades_Skipped_News++;
        }
-       else if(Sequence_Pause_Bias_B && !Seq_Buy.BiasRescueActive)
+       else if(Sequence_Pause_Bias_B && !Seq_Buy.BiasRescueActive && (!g_GOATManager || GOATCanAddRisk()))
        {
         if(!LastBuyTradeSignal) Trades_Skipped_Bias_B++;
        }
@@ -5596,7 +5590,7 @@ void OnTick()
        {
         if(!LastSellTradeSignal) Trades_Skipped_News++;
        }
-       else if(Sequence_Pause_Bias_S && !Seq_Sell.BiasRescueActive)
+       else if(Sequence_Pause_Bias_S && !Seq_Sell.BiasRescueActive && (!g_GOATManager || GOATCanAddRisk()))
        {
         if(!LastSellTradeSignal) Trades_Skipped_Bias_S++;
        }
@@ -5630,6 +5624,8 @@ void OnTick()
     }
    }
 //-------------------------------------------------------------------------
+   GOATSaveManagement();
+   GOATManagementStatus();
    return;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -5877,6 +5873,7 @@ void UpdateCurrentSignals(int shift)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void SignalEntryTrigger()//int Buys,int Sells)
   {
+   if(!GOATCanAddRisk()) return;
    static bool LastBuySignal=false,LastSellSignal=false;
    if(//!Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long)
          ( RSI_Mode==RSI_Disabled  || RSI_Sig==OP_BUY)
@@ -6070,6 +6067,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
   {
    g_direction_guard_send_attempted=false;
    g_direction_guard_denied=false;
+   if(!GOATCanAddRisk()) {g_direction_guard_denied=true; return 0;}
    //if((100*AccountInfoDouble(ACCOUNT_MARGIN))/AccountInfoDouble(ACCOUNT_EQUITY)>=Max_Margin) {LastRetCode=741; return 0;}
    if(SymbolInfoInteger(Symbol(),SYMBOL_SPREAD)>MaxSP) return 0;
    if(StopOut_Flag) {LastRetCode=740; return 0;}
@@ -6769,7 +6767,6 @@ bool CPanelDialog::HandleChartEvent(const int id,const long &lparam,const double
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CPanelDialog::Create(const long chart,const string name,const int subwin,const int x1,const int y1,const int x2,const int y2)
   {
-   if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();}
    Vertical_Pointer=INDENT_TOP;
    //GlobalVariableSet("CaptionHeight",0.05*D_Height);
    GoatDeploymentPhase("panel_base_begin",chart);

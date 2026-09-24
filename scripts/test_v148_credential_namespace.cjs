@@ -14,8 +14,16 @@ for(const tokenPath of [legacy,pair])for(const failure of ['none','open','short'
  assert.ok(touched.every(p=>p===tokenPath||p===tokenPath+'.pending'));
  if(tokenPath===pair)assert.ok(!touched.includes(legacy)&&!touched.includes(legacy+'.pending'));passed++;
 }
-// Trading handlers in the new main are byte-for-byte the R5 handlers.
-for(const [start,end] of [['void OnTick()','//-------------------------------------------------------------------------END']]){/* See contiguous assertion below: all code from OnTick through the UI class boundary. */}
+// The management-boot revision intentionally changes the trading handler.
+// Keep the unrelated strategy/exit calculations identical after stripping only
+// the reviewed safety hooks (behavior tested separately in test_management_boot).
 const a=old.indexOf('void OnTick()'),b0=old.indexOf('class CPanelDialog',a),c=main.indexOf('void OnTick()'),d=main.indexOf('class CPanelDialog',c);
-assert.ok(a>0&&b0>a&&c>0&&d>c);assert.equal(old.slice(a,b0),main.slice(c,d));passed++;
-console.log(JSON.stringify({passed,legacyAndPairNamespacesIsolated:true,tradingHandlerUnchanged:true,nativePairing:false}));
+function withoutSafetyHooks(s){return s
+ .replace(/^.*if\(TimeCurrent\(\)>Expiry\).*\r?\n/gm,'')
+ .replace(/^.*(?:GOATSaveManagement\(\);|GOATManagementStatus\(\);|if\(!GOATCanAddRisk\(\)\)).*\r?\n/gm,'')
+ .replace('g_GOATWireHealthy && GOATBiasWireV2.GetState(Symbol(),control_tower_state,!g_GOATManager)','GOATBiasWireV2.GetState(Symbol(),control_tower_state)')
+ .replace(/^.*if\(g_GOATManager && !GOATTryManagementRecovery\(\)\) return;\r?\n/gm,'')
+ .replaceAll(' && (!g_GOATManager || GOATCanAddRisk())','')
+ .replace('if(!g_GOATManagementTimerPass) DashboardBusSendStatus(dashboard_status);','DashboardBusSendStatus(dashboard_status);');}
+assert.ok(a>0&&b0>a&&c>0&&d>c);assert.equal(withoutSafetyHooks(old.slice(a,b0)),withoutSafetyHooks(main.slice(c,d)));passed++;
+console.log(JSON.stringify({passed,legacyAndPairNamespacesIsolated:true,strategyCalculationsUnchanged:true,nativePairing:false}));

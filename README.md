@@ -2,6 +2,13 @@
 
 Expert Advisor (EA) project for MetaTrader 5, maintained in the `GOAT-EA` repository.
 
+### V1.48 R3 management-only boot candidate
+
+The current candidate separates permission to add exposure from existing-position
+management and removes the compiled calendar expiry. See the [failure matrix,
+restart limitations, verification and rollout plan](docs/operations/MANAGEMENT-ONLY-BOOT.md).
+Native restart qualification is pending; this branch is not a deployed release.
+
 ### V1.47 behavior-neutral tester performance hotfix
 
 `GOAT V1.47` removes normal per-tick `TSL BUY/SELL skipped` log lines and

@@ -93,7 +93,9 @@ def bare_chart():
     return re.sub(r'<expert>.*?</expert>\r\n','',text,flags=re.S).encode('utf16')
 
 
-def prepare(plan, host, witness_path, apply=False):
+def prepare(plan, host, witness_path, apply=False, progress=None):
+    progress={} if progress is None else progress
+    progress['stage']='validate_plan'
     need(type(plan) is dict and set(plan)=={'schema','commonFiles','outputDirectory','sources','terminals'}
          and plan['schema']=='goat-demo-pair-install-v1', 'plan_schema')
     need(ntpath.isabs(plan['commonFiles']) and ntpath.isabs(plan['outputDirectory']), 'absolute_paths')
@@ -168,31 +170,49 @@ def prepare(plan, host, witness_path, apply=False):
     conn.validate_manifest(manifest); assert_new_pair_paths(rows,witness)
     summary={'status':'preflight_passed','tradingEnabled':False,'membersPerArm':35,'files':[{str(p):sha(v) for p,v in files.items()} for _,files,_,_ in prepared]}
     if not apply: return summary
+    progress['stage']='acquire_lifecycle_lock'
     with lifecycle_lock(witness):
+        progress['stage']='revalidate_protected_processes'
         checked_witness(witness_path,host,expected=witness)
         need(all(not Path(r['directory']).exists() and not host.processes(r) for r in rows), 'preparation_race')
+        progress['stage']='create_output'
         output.mkdir(parents=True,exist_ok=False)
+        progress['stage']='write_installation_intent'
         write_new(output/'installation-intent.json',{'planSha256':sha(json.dumps(plan,sort_keys=True).encode()),'atUtc':time.time()})
         for row,files,install,draft in prepared:
+            progress.update(stage='create_terminal_directory',terminal=row['terminal'])
             directory=Path(row['directory']); directory.mkdir()
+            progress['stage']='restrict_terminal_acl'
             acl=subprocess.run(['icacls',str(directory),'/inheritance:r','/grant:r','Administrator:(OI)(CI)F','SYSTEM:(OI)(CI)F'],capture_output=True)
             need(acl.returncode==0, 'installation_acl_failed')
-            for path,data in files.items():
+            for index,(path,data) in enumerate(files.items()):
+                progress.update(stage='write_prepared_file',fileIndex=index)
                 path.parent.mkdir(parents=True,exist_ok=True); write_new(path,data)
+            progress['stage']='write_native_manifests'
             write_new(output/f'terminal-{row["terminal"]:02d}.json',install)
             write_new(output/f'portfolio-{row["terminal"]:02d}.json',draft)
+            progress['stage']='verify_installed_files'
             conn.verify_files(row,True)
+        progress['stage']='verify_final_protected_processes'
         checked_witness(witness_path,host,expected=witness)
+        progress['stage']='write_completion'
         write_new(output/'reconnect-manifest.json',manifest)
         summary['status']='prepared_inert_no_launch'; write_new(output/'preparation.json',summary)
+        progress['stage']='release_lifecycle_lock'
     return summary
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--plan',type=Path,required=True);p.add_argument('--protected-witness',type=Path,required=True);p.add_argument('--apply',action='store_true');args=p.parse_args()
-    try: result=prepare(read(args.plan),conn.WindowsHost(),args.protected_witness,args.apply)
-    except conn.Refused as error: result={'status':'needs_review','reason':str(error)}
-    except Exception: result={'status':'needs_review','reason':'unexpected_error_inspect_retained_preparation'}
+    progress={'stage':'read_plan'}
+    try: result=prepare(read(args.plan),conn.WindowsHost(),args.protected_witness,args.apply,progress)
+    except Exception as error:
+        # No exception message, argv, local variables or full paths are emitted.
+        result={'status':'needs_review','reason':str(error) if isinstance(error,conn.Refused) else 'unexpected_error_inspect_retained_preparation',
+                'stage':progress['stage'],'terminal':progress.get('terminal'),'fileIndex':progress.get('fileIndex'),
+                'exceptionType':type(error).__name__,
+                'errno':error.errno if type(getattr(error,'errno',None)) is int else None,
+                'winerror':error.winerror if type(getattr(error,'winerror',None)) is int else None}
     print(json.dumps(result));return 2 if result['status']=='needs_review' else 0
 
 if __name__=='__main__':raise SystemExit(main())

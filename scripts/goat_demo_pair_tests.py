@@ -6,6 +6,9 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+import io
+import contextlib
+import sys
 from unittest.mock import patch
 
 import goat_demo_pair_connection as c
@@ -133,6 +136,17 @@ class ManifestTests(unittest.TestCase):
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_prepare_os_error_diagnostic_does_not_expose_message(self):
+        def fail(*args):
+            args[4]['stage']='acquire_lifecycle_lock'
+            raise FileExistsError(17,'SENSITIVE_EXCEPTION_MESSAGE','SENSITIVE_PATH')
+        output=io.StringIO()
+        with patch.object(sys,'argv',['prepare','--plan','p','--protected-witness','w','--apply']),patch.object(prep,'read',return_value={}),patch.object(prep,'prepare',side_effect=fail),contextlib.redirect_stdout(output):
+            self.assertEqual(prep.main(),2)
+        result=json.loads(output.getvalue())
+        self.assertEqual(result['stage'],'acquire_lifecycle_lock')
+        self.assertEqual(result['exceptionType'],'FileExistsError');self.assertEqual(result['errno'],17)
+        self.assertNotIn('SENSITIVE',output.getvalue())
     def test_partial_id_and_duplicate_chart_fail(self):
         v={'rows':[dict(chartId=1,magic=0)]}
         with self.assertRaises(o.Stop):o.count_attached(v)

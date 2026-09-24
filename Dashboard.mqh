@@ -24,6 +24,7 @@
 #endif 
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #include "GOAT_DashboardOverview.mqh"
+#include "GOATDeploymentDiagnostics.mqh"
 class CGOATDashboard;
 
 string GoatDashboardCommonSetPath(const string path)
@@ -3126,10 +3127,14 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    string symbol = g_sets[idx].sym;
    PrintFormat("→ ApplyTemplate  sym=%s  tf=%d  tpl=%s", symbol, tf, tplName);
 
+   GoatDeploymentPhase("chart_open_begin");
+   ResetLastError();
    long cid = ChartOpen(symbol, tf);
+   int open_error=GetLastError();
+   GoatDeploymentPhase(cid==0 ? "chart_open_failed" : "chart_open_returned",cid,"",open_error);
    if(cid==0)
    {
-      if(!m_agent_setup_quiet) Alert("  ChartOpen FAILED  err=%d", GetLastError());
+      if(!m_agent_setup_quiet) Alert("  ChartOpen FAILED  err=%d", open_error);
       DeleteCopiedTemplate(tplName);
       return false;
    }
@@ -3148,9 +3153,14 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    }
 #endif
 
-   if(!ChartApplyTemplate(cid, tplName))
+   GoatDeploymentPhase("template_enqueue_begin",cid);
+   ResetLastError();
+   bool template_queued=ChartApplyTemplate(cid, tplName);
+   int template_error=GetLastError();
+   GoatDeploymentPhase(template_queued ? "template_enqueued" : "template_enqueue_failed",cid,"",template_error);
+   if(!template_queued)
    {
-      if(!m_agent_setup_quiet) Alert(StringFormat("  ChartApplyTemplate FAILED  err=%d", GetLastError()));
+      if(!m_agent_setup_quiet) Alert(StringFormat("  ChartApplyTemplate FAILED  err=%d", template_error));
       DeleteCopiedTemplate(tplName);
       return false;
    }
@@ -3160,12 +3170,14 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
    MarkStateDirty();
 
+   // This limits registration polling only; it cannot interrupt a blocked native call.
+   GoatDeploymentPhase("handshake_begin",cid);
    uint wait_start=GetTickCount();
-   uint last_refresh_tick=wait_start;
    while(!NewSingleInstance(idx))
    {
       if(GetTickCount()-wait_start>20000)
       {
+         GoatDeploymentPhase("handshake_timeout",cid);
          string msg="Unable to link the deployed child EA to the expected chart.\n\n"
                    +"Set: "+g_sets[idx].name+"\n"
                    +"Symbol: "+g_sets[idx].sym+"\n"
@@ -3179,25 +3191,22 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
          DeleteCopiedTemplate(tplName);
          return false;
       }
-      if(GetTickCount()-last_refresh_tick>=2000)
-      {
-         ChartSetSymbolPeriod(cid,symbol,tf);
-         ChartRedraw(cid);
-         last_refresh_tick=GetTickCount();
-      }
       Sleep(50);
    }
    
-   Sleep(500); ChartRedraw(cid); Sleep(500);
-   
-   if(!ChartSetInteger(ChartId,CHART_BRING_TO_TOP,0,true))
+   GoatDeploymentPhase("handshake_linked",cid);
+   // Agent setup needs the registration, not cross-chart focus/redraw operations.
+   if(!m_agent_setup_quiet)
    {
-    //--- display the error message in Experts journal
-    Print(__FUNCTION__+", Error Code = ",GetLastError());
-    DeleteCopiedTemplate(tplName);
-    return(false);
+      Sleep(500); ChartRedraw(cid); Sleep(500);
+      if(!ChartSetInteger(ChartId,CHART_BRING_TO_TOP,0,true))
+      {
+         Print(__FUNCTION__+", Error Code = ",GetLastError());
+         DeleteCopiedTemplate(tplName);
+         return(false);
+      }
+      Sleep(500); ChartRedraw(0); Sleep(500);
    }
-   Sleep(500); ChartRedraw(0); Sleep(500);
    
    if(g_sets[idx].cid!=-1 && g_sets[idx].magic!=-1)
    {
@@ -3214,7 +3223,8 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
 #endif
    }
    DeleteCopiedTemplate(tplName);
-   Sleep(500); ChartRedraw(); Sleep(500);
+   if(!m_agent_setup_quiet) {Sleep(500); ChartRedraw(); Sleep(500);}
+   GoatDeploymentPhase("deployment_complete",cid);
    Print("  Template applied ✓");
    return true;
 }

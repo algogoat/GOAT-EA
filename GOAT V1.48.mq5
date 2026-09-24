@@ -51,6 +51,7 @@ sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without star
 #define CONTROLS_DIALOG_COLOR_CLIENT_BORDER C'35,51,72'
 #include "Optimizer.mqh"
 #define GOAT_DASH_AI_LAUNCH_POLICY_V147 1
+#define GOAT_DEPLOY_STARTUP_DIAGNOSTICS 1
 #include "Dashboard.mqh"
 #define GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER 1
 #define GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED 1
@@ -6771,14 +6772,16 @@ bool CPanelDialog::Create(const long chart,const string name,const int subwin,co
    if(TimeCurrent()>Expiry) {Alert("This version expired on "+TimeToString(Expiry,TIME_DATE)+". Go to "+URL_Web+" to download the latest version."); ExpertRemove();}
    Vertical_Pointer=INDENT_TOP;
    //GlobalVariableSet("CaptionHeight",0.05*D_Height);
+   GoatDeploymentPhase("panel_base_begin",chart);
+   ResetLastError();
    if(!CAppDialog::Create(chart,name,subwin,x1,y1,x2,y2))
-   {
-      Print("Failed to create Panel: ", GetLastError());
-      return(false);
-   }
+      return GoatPanelCreateFailed("Create","base_dialog",GetLastError());
+   GoatDeploymentPhase("panel_base_ready",chart);
    //GlobalVariableDel("CaptionHeight");
    //Caption(Key_+" - Optimization Studio");
+   GoatDeploymentPhase("panel_caption_begin",chart);
    SetCaptionClientColors();
+   GoatDeploymentPhase("panel_caption_ready",chart);
  //--- create dependent controls
    // Always offer navigation, including children restored before the dashboard.
    if(!CreateBiEditRow(m_edit_Dash_1,m_edit_Dash_2,26,true,GOAT_UI_INFO_BACK,GOAT_UI_SECTION_BORDER,clr_Text,Font_Size,Font_Text)) return false;
@@ -6851,6 +6854,7 @@ bool CPanelDialog::Create(const long chart,const string name,const int subwin,co
    //if(!CreateBiEditRow(PanelDialog.m_edit_Foot_1 ,m_edit_Foot_2 ,22,true,clr_RowBack,clr_RowBorders,clr_Text,Font_Size+2,Font_Header))       return(false);    //Vertical_Pointer+=3;
    //if(!CreateButton1())                                     return(false);
    //if(!CreateButton2())                                     return(false);
+   GoatDeploymentPhase("panel_controls_ready",chart);
    int PANEL_HEIGHT_NEW = CONTROLS_DIALOG_CAPTION_HEIGHT+Vertical_Pointer+6;  // 3+3 pixel border top+bottom
 
    m_norm_rect.Height(PANEL_HEIGHT_NEW);
@@ -6871,10 +6875,13 @@ bool CPanelDialog::Create(const long chart,const string name,const int subwin,co
    PanelDialog.maximizeWindow();
    //Rebound();
    ChartSetInteger(0,CHART_SHOW_ONE_CLICK,false);
+   GoatDeploymentPhase("panel_redraw_begin",chart);
    ChartRedraw();
+   GoatDeploymentPhase("panel_redraw_ready",chart);
    // Show the dialog
    Show(); Sleep(50);
    PANEL_LOGO.Resize(18);
+   GoatDeploymentPhase("panel_logo_begin",chart);
    GOAT_PANEL_LOGO_READY=PANEL_LOGO._CreateCanvas(PanelDialog.Left()+7,PanelDialog.Top()+4,"GOAT_Panel_Logo");
    if(GOAT_PANEL_LOGO_READY)
      {
@@ -6883,6 +6890,7 @@ bool CPanelDialog::Create(const long chart,const string name,const int subwin,co
       ObjectSetInteger(0,"GOAT_Panel_Logo",OBJPROP_BACK,false);
       ObjectSetInteger(0,"GOAT_Panel_Logo",OBJPROP_ZORDER,1000);
      }
+   GoatDeploymentPhase("panel_ready",chart);
    return(true);
   }
 //+------------------------------------------------------------------+
@@ -6930,13 +6938,21 @@ bool CPanelDialog::CreateBiEditRow(CEdit &edit1,CEdit &edit2,int height,bool rea
    static int x=0;
    string number=IntegerToString(x,2,'0');      x++;
 
-   if(!edit1.Create(0,"edit_L_"+number,0,x1,y1,x2-GAP_X,y2))                  return(false);
-   if(!Add(edit1))                                                            return(false);
+   GoatDeploymentPhase("panel_control_Create_begin",ChartID(),"edit_L_"+number);
+   ResetLastError();
+   if(!edit1.Create(0,"edit_L_"+number,0,x1,y1,x2-GAP_X,y2)) return GoatPanelCreateFailed("Create","edit_L_"+number,GetLastError());
+   GoatDeploymentPhase("panel_control_Add_begin",ChartID(),edit1.Name());
+   ResetLastError();
+   if(!Add(edit1)) return GoatPanelCreateFailed("Add",edit1.Name(),GetLastError());
 
    edit1.ReadOnly(true);edit1.Text(" ");edit1.ColorBackground(cback); edit1.ColorBorder(cborder); edit1.Color(ctext); edit1.Font(GetFontName(font)); edit1.FontSize(Fsize); edit1.TextAlign(ALIGN_LEFT);
 
-   if(!edit2.Create(0,"edit_R_"+number,0,x2+GAP_X,y1,x2*2-INDENT_RIGHT,y2))   return(false);
-   if(!Add(edit2))                                                            return(false);
+   GoatDeploymentPhase("panel_control_Create_begin",ChartID(),"edit_R_"+number);
+   ResetLastError();
+   if(!edit2.Create(0,"edit_R_"+number,0,x2+GAP_X,y1,x2*2-INDENT_RIGHT,y2)) return GoatPanelCreateFailed("Create","edit_R_"+number,GetLastError());
+   GoatDeploymentPhase("panel_control_Add_begin",ChartID(),edit2.Name());
+   ResetLastError();
+   if(!Add(edit2)) return GoatPanelCreateFailed("Add",edit2.Name(),GetLastError());
 
    edit2.ReadOnly(true);edit2.Text(" ");edit2.ColorBackground(cback); edit2.ColorBorder(cborder); edit2.Color(ctext); edit2.Font(GetFontName(font)); edit2.FontSize(Fsize); edit2.TextAlign(ALIGN_RIGHT);
 
@@ -6955,8 +6971,12 @@ bool CPanelDialog::CreateEditRow(CEdit &edit1,int height,bool readOnly,color cba
    static int x=0;
    string number=IntegerToString(x,2,'0');      x++;
 
-   if(!edit1.Create(0,"edit_"+number,0,x1,y1,x2-INDENT_RIGHT,y2))             return(false);
-   if(!Add(edit1))                                                            return(false);
+   GoatDeploymentPhase("panel_control_Create_begin",ChartID(),"edit_"+number);
+   ResetLastError();
+   if(!edit1.Create(0,"edit_"+number,0,x1,y1,x2-INDENT_RIGHT,y2)) return GoatPanelCreateFailed("Create","edit_"+number,GetLastError());
+   GoatDeploymentPhase("panel_control_Add_begin",ChartID(),edit1.Name());
+   ResetLastError();
+   if(!Add(edit1)) return GoatPanelCreateFailed("Add",edit1.Name(),GetLastError());
 
    edit1.ReadOnly(true);edit1.Text(" ");edit1.ColorBackground(cback); edit1.ColorBorder(cborder); edit1.Color(ctext); edit1.Font(GetFontName(font)); edit1.FontSize(Fsize); edit1.TextAlign(ALIGN_CENTER);
 
@@ -6974,9 +6994,15 @@ bool CPanelDialog::CreateButton(CButton &Button1,string text,int height,int widt
    static int x=0;
    string number=IntegerToString(x,2,'0');      x++;
 
-   if(!Button1.Create(0,"Button_"+number,0,x1,y1,x2,y2))                      return(false);
-   if(!Button1.Text(text))                                                    return(false);
-   if(!Add(Button1))                                                          return(false);
+   GoatDeploymentPhase("panel_control_Create_begin",ChartID(),"Button_"+number);
+   ResetLastError();
+   if(!Button1.Create(0,"Button_"+number,0,x1,y1,x2,y2)) return GoatPanelCreateFailed("Create","Button_"+number,GetLastError());
+   GoatDeploymentPhase("panel_control_Text_begin",ChartID(),"Button_"+number);
+   ResetLastError();
+   if(!Button1.Text(text)) return GoatPanelCreateFailed("Text","Button_"+number,GetLastError());
+   GoatDeploymentPhase("panel_control_Add_begin",ChartID(),"Button_"+number);
+   ResetLastError();
+   if(!Add(Button1)) return GoatPanelCreateFailed("Add","Button_"+number,GetLastError());
  //button.ReadOnly(true);
  //Button1.BringToTop();
    Button1.ColorBackground(cback); Button1.ColorBorder(cborder); Button1.Color(ctext); Button1.Font(GetFontName(font)); Button1.FontSize(Fsize);
@@ -6991,8 +7017,12 @@ bool CPanelDialog::CreateListView(CListView &listV,const string name,int x,int y
    int x1=x,            y1=y;
    int x2=x+width,      y2=y+height;
 
-   if(!listV.Create(0,name,0,x1,y1,x2,y2))                        return(false);
-   if(!Add(listV))                                                return(false);
+   GoatDeploymentPhase("panel_control_Create_begin",ChartID(),name);
+   ResetLastError();
+   if(!listV.Create(0,name,0,x1,y1,x2,y2)) return GoatPanelCreateFailed("Create",name,GetLastError());
+   GoatDeploymentPhase("panel_control_Add_begin",ChartID(),name);
+   ResetLastError();
+   if(!Add(listV)) return GoatPanelCreateFailed("Add",name,GetLastError());
    //listV.ColorBackground(clr_RowBack);
    //listV.ColorBorder(clr_RowBorders);
    // IMPORTANT: set text style (otherwise it can look “empty” on dark backgrounds)

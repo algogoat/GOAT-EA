@@ -44,6 +44,22 @@ def context(args):
     return rows,row,api
 
 
+def verify_close_registration(api,manifest):
+    _,root=api.module.setup.scope(manifest)
+    registration=api.module.setup.read(root/'registration.json')
+    schema=registration.get('schema')
+    fields={'schema','account','server','directory','buildId','expiresAtUtc'}
+    need(type(schema) is int and schema in (1,2)
+         and set(registration)==fields|({'allowPairingRead'} if schema==2 else set())
+         and (schema==1 or registration['allowPairingRead'] is True),'setup_registration_shape')
+    need(type(registration.get('account')) is int
+         and all(registration.get(key)==api.installation[key] for key in ('account','server','directory','buildId')),
+         'setup_registration_identity_changed')
+    now=time.time();expiry=registration.get('expiresAtUtc')
+    need(type(expiry) is int and now+120<expiry<=int(now)+(900 if schema==2 else 86400),
+         'setup_registration_needs_renewal_before_close')
+
+
 def run(args):
     rows,row,api=context(args);host=conn.WindowsHost()
     witness=guard.checked_witness(args.protected_witness,host);guard.assert_new_pair_paths(rows,witness)
@@ -85,6 +101,9 @@ def operate(args,rows,row,api,host,witness):
         return restart.run_policy(api,runner,host,row,process,pair['audit'],api.root/'restart-policy-claims',orch.write_new,paired,args.output/'paired-readiness')
     if args.operation=='close':
         need(current==[pair['proof']['process']],'paired_process_changed')
+        # Refuse before SDK attachment or the once-only shutdown claim. Renew
+        # the same scoped registration separately, retaining old/new evidence.
+        verify_close_registration(api,args.manifest)
         need(args.sdk_path is not None,'sdk_path_required');sys.path.insert(0,str(args.sdk_path));import MetaTrader5 as mt
         need(mt.initialize(str(Path(row['directory'])/'terminal64.exe'),portable=True,timeout=15000),'observe_attach_failed')
         try:
@@ -94,6 +113,7 @@ def operate(args,rows,row,api,host,witness):
             guard.write_new(args.output/'runtime-before.json',{'readOnly':True,'accounts':[snap]})
         finally:mt.shutdown()
         need(host.processes(row)==current,'close_process_changed')
+        verify_close_registration(api,args.manifest)
         claims=api.root/'shutdown-claims';claims.mkdir(exist_ok=True)
         key=paired.sha(paired.encoded(current[0]))
         guard.claim_once(claims/(key+'.json'),{'operation':'shutdown_once','process':current[0],'output':str(args.output),'atUtc':time.time()})

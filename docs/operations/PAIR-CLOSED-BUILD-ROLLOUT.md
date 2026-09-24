@@ -136,6 +136,15 @@ restart rehearsal, same-members/only-AI comparison and current capacity checks.
 Any later trading-enabled launch remains a separate reviewed operation requiring
 the closed persistence proof. Admission remains required at every launch.
 
+Before each lifecycle close, ensure the setup registration has more than two
+minutes remaining. The close preflight refuses stale, nearly expired or differently
+scoped registration before SDK attachment and before recording the once-only
+shutdown claim. If renewal is needed, inspect any retained request first, preserve
+the old/new registration and renew only the same account, directory, build and
+capabilities under the shared lifecycle/producer locks. This metadata renewal does
+not issue shutdown and must not re-pair or rotate the account credential. The
+separate portfolio registration and server admission have their own lifetimes.
+
 ## Immutable tool packaging and tests
 
 Freeze these 14 source files together from the reviewed commit under one directory:

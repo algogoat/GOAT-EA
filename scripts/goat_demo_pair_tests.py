@@ -343,6 +343,68 @@ class DeploymentTests(unittest.TestCase):
                 replace.assert_not_called()
             self.assertEqual((root/'config/common.ini').read_bytes(),before)
 
+    def test_close_checks_setup_lifetime_before_sdk_or_shutdown_claim(self):
+        from types import SimpleNamespace as S
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);target=row(7);process={'pid':123};now=1000
+            installation=dict(account=target['login'],server=target['server'],directory=target['directory'],buildId=target['buildId'])
+            registration=dict(installation,schema=1,expiresAtUtc=now+3600)
+            setup=S(scope=lambda _: (installation,root),read=lambda _: registration,
+                    request=lambda *a,**k: self.fail('shutdown request before valid preflight'))
+            api=S(module=S(setup=setup),installation=installation,reg={},digest='a'*64,root=root)
+            args=S(operation='close',proof=root/'proof.json',manifest=root/'terminal-07.json',sdk_path=None,output=root/'output')
+            host=S(processes=lambda _: [process]);pair={'proof':{'process':process}}
+            with patch.object(r,'verify_stored_pair',return_value=pair),patch.object(life.time,'time',return_value=now):
+                for expiry in (now-1,now,now+119,now+120,now+86401,True,float('inf'),'4600'):
+                    registration['expiresAtUtc']=expiry
+                    with self.subTest(expiry=expiry),self.assertRaisesRegex(c.Refused,'setup_registration_needs_renewal_before_close'):
+                        life.operate(args,[target],target,api,host,{})
+                    self.assertFalse((root/'shutdown-claims').exists())
+                registration['expiresAtUtc']=now+3600
+                registration['account']=target['login']+1
+                with self.assertRaisesRegex(c.Refused,'setup_registration_identity_changed'):
+                    life.operate(args,[target],target,api,host,{})
+                registration['account']=target['login']
+                with self.assertRaisesRegex(c.Refused,'sdk_path_required'):
+                    life.operate(args,[target],target,api,host,{})
+                self.assertFalse((root/'shutdown-claims').exists())
+                for changes in ({'schema':True},{'schema':3},{'schema':2},{'unexpected':True},
+                                {'schema':2,'allowPairingRead':False},{'schema':2,'allowPairingRead':1}):
+                    registration.clear();registration.update(installation,schema=1,expiresAtUtc=now+800);registration.update(changes)
+                    with self.subTest(changes=changes),self.assertRaisesRegex(c.Refused,'setup_registration_shape'):
+                        life.operate(args,[target],target,api,host,{})
+                registration.clear();registration.update(installation,schema=2,allowPairingRead=True,expiresAtUtc=now+901)
+                with self.assertRaisesRegex(c.Refused,'setup_registration_needs_renewal_before_close'):
+                    life.operate(args,[target],target,api,host,{})
+                registration['expiresAtUtc']=now+900
+                with self.assertRaisesRegex(c.Refused,'sdk_path_required'):
+                    life.operate(args,[target],target,api,host,{})
+                self.assertFalse((root/'shutdown-claims').exists())
+
+    def test_close_rechecks_registration_after_sdk_before_consuming_claim(self):
+        from types import SimpleNamespace as S
+        for change in ('elapsed','identity','schema'):
+            with self.subTest(change=change),tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);output=root/'output';output.mkdir();target=row(7);process={'pid':123};clock=[1000]
+                installation=dict(account=target['login'],server=target['server'],directory=target['directory'],buildId=target['buildId'])
+                registration=dict(installation,schema=2,allowPairingRead=True,expiresAtUtc=1900)
+                setup=S(scope=lambda _: (installation,root),read=lambda _: registration,
+                        request=lambda *a,**k: self.fail('stale shutdown issued'))
+                api=S(module=S(setup=setup),installation=installation,reg={},digest='a'*64,root=root)
+                args=S(operation='close',proof=root/'proof.json',manifest=root/'terminal-07.json',sdk_path=root,output=output)
+                host=S(processes=lambda _: [process]);pair={'proof':{'process':process}}
+                sdk=S(initialize=lambda *a,**k: True,shutdown=lambda: None)
+                def observed(*args):
+                    if change=='elapsed':clock[0]=1790
+                    elif change=='identity':registration['buildId']='changed'
+                    else:registration['allowPairingRead']=False
+                    return dict(connected=True,algoEnabled=False,positionTickets=[],orderTickets=[])
+                with patch.object(r,'verify_stored_pair',return_value=pair),patch.object(life.time,'time',side_effect=lambda:clock[0]),\
+                     patch.object(c,'snapshot',side_effect=observed),patch.dict(sys.modules,{'MetaTrader5':sdk}),patch.object(sys,'path',list(sys.path)):
+                    with self.assertRaises(c.Refused):life.operate(args,[target],target,api,host,{})
+                self.assertTrue((output/'runtime-before.json').exists())
+                self.assertFalse((root/'shutdown-claims').exists())
+
 
 class TrustTests(unittest.TestCase):
     def source(self):

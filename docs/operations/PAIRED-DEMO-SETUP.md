@@ -318,6 +318,11 @@ Build rollout/registration renewal is a separate operation. Do not rewrite old
 installation manifests, original journal bindings or either recovery proof to
 make a new binary appear to be the old one.
 
+For the qualified closed R1-to-R2 pair transition, see
+[closed build rollout](PAIR-CLOSED-BUILD-ROLLOUT.md). It documents the private plan,
+exact build/admission pins, immutable packaging and same-journal 07 resume plus
+08's first attachment. Catalog membership never substitutes for live admission.
+
 The website live adapter separately verifies running status against retained
 settings/audit and startup evidence; the inert readiness verifier is not a live
 proof. Native command IDs can reset on restart. Check actual fresh 35 child

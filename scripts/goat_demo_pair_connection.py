@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import uuid
+from goat_demo_pair_builds import BUILDS
 
 CONNECTION_SERVER = 'Darwinex-Demo'
 EXPERT_RELATIVE = 'MQL5/Experts/GOAT Experiment/GOAT V1.48.ex5'
@@ -64,10 +65,11 @@ def validate_manifest(value):
         require(type(row['savedAlgoEnabled']) is bool, 'saved_algo_required')
         require(row['profile'] == 'Default', 'profile_name')
         require(row['expertRelativePath'] == EXPERT_RELATIVE and row['credentialRelativePath'] == CREDENTIAL_RELATIVE
-                and row['buildId'] == BUILD_ID, 'build_paths')
+                and row['buildId'] in BUILDS, 'build_paths')
         for key in ('terminalSha256', 'profileSha256', 'commonIniSha256', 'eaSha256'):
             require(isinstance(row[key], str) and re.fullmatch('[a-f0-9]{64}', row[key])
                     and row[key] != '0'*64, 'qualified_hash_required')
+        require(row['eaSha256']==BUILDS[row['buildId']]['artifactSHA256'],'reviewed_build_hash')
         roots.append(canonical(row['directory']))
     require({r['terminal'] for r in value['terminals']} == {7, 8} and len(set(roots)) == 2
             and not any(a.startswith(b+'\\') for a in roots for b in roots if a != b), 'pair_paths_overlap')

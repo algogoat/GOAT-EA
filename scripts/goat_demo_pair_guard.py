@@ -10,6 +10,7 @@ import time
 import uuid
 
 from goat_demo_pair_connection import Refused, require, canonical, unique_object
+from goat_demo_pair_builds import BUILDS
 
 
 def raw(path, cap=2*1024*1024):
@@ -141,10 +142,10 @@ def verify_admission(path, expected_sha256, row, now=None):
     data=raw(path)
     require(hashlib.sha256(data).hexdigest()==expected_sha256,'admission_proof_hash')
     value=json.loads(data,object_pairs_hook=unique_object)
-    require(value.get('schemaVersion')==1 and value.get('buildId')==row['buildId']
-            and value.get('artifactSHA256')==row['eaSha256']=='8fec6e0379be4f2657f3c425ec1cf2e1701d3a65324e39576dcdcb6405833b0d'
-            and value.get('compileReceiptSHA256')=='ad9617637b9733e1c2c9c72ec5bf1bfe9575613848978d242e9dd5bd9a454fab'
-            and value.get('sourceCommit')=='e96465d590690178176e55c51ff3c1bc8a363fde','admission_build_binding')
+    qualified=BUILDS.get(row['buildId'])
+    require(qualified is not None and value.get('schemaVersion')==1 and value.get('buildId')==row['buildId']
+            and value.get('artifactSHA256')==row['eaSha256']==qualified['artifactSHA256']
+            and all(value.get(key)==expected for key,expected in qualified.items()),'admission_build_binding')
     accounts=value.get('allowedAccountIds')
     require(type(accounts) is list and len(accounts)==2 and all(type(x) is int for x in accounts)
             and set(accounts)=={3000109421,3000109427} and row['login'] in accounts,'admission_pair_scope')

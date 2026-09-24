@@ -28,7 +28,7 @@ import goat_demo_pair_recover_child as recovery
 def row(n):
     return dict(terminal=n, directory=rf'C:\GOAT Experiment\{n:02d} - Balanced 35 - AI '+('OFF' if n==7 else 'ON'),
                 login=c.PAIR_ACCOUNTS[n],server='Darwinex-Demo',currency='USD',leverage=200,
-                terminalSha256='1'*64,eaSha256='2'*64,profile='Default',profileSha256='3'*64,
+                terminalSha256='1'*64,eaSha256=c.BUILDS[c.BUILD_ID]['artifactSHA256'],profile='Default',profileSha256='3'*64,
                 commonIniSha256='4'*64,savedAlgoEnabled=False,expertRelativePath=c.EXPERT_RELATIVE,
                 credentialRelativePath=c.CREDENTIAL_RELATIVE,buildId=c.BUILD_ID)
 
@@ -547,7 +547,7 @@ class PartialRecoveryTests(unittest.TestCase):
 
 class ReadinessTests(unittest.TestCase):
     def build(self):
-        now=int(time.time()); installation=dict(account=3000109421,server='Darwinex-Demo',directory=row(8)['directory'],buildId=c.BUILD_ID,eaSha256='2'*64)
+        now=int(time.time()); installation=dict(account=3000109421,server='Darwinex-Demo',directory=row(8)['directory'],buildId=c.BUILD_ID,eaSha256=c.BUILDS[c.BUILD_ID]['artifactSHA256'])
         reg=dict(aiMode=2,aiThreshold=50,aiProtocol=2,exposureMode=0,members=[{} for _ in range(35)])
         rows=[dict(index=i,symbol='EURUSD',chartId=i+100,magic=i+1,linkedFresh=True,settingsMatch=True,exposureMode=0,ackId=10,ackStatus=1,AI_MODE=2,AI_PROTOCOL=2,AI_THRESHOLD=50,AI_SCOPE=0,AI_VERIFIED=1,AI_AVAILABLE=0,AI_AT=now,EA_TRADE_ALLOWED=1) for i in range(35)]
         common=dict(registrationSha256='c'*64,result='observed',connected=True,tradingAllowed=False,positions=0,orders=0,commandPending=False,commandId=10,observedAtUtc=now,rows=rows,aiMode=2,aiProtocol=2,aiThreshold=50)

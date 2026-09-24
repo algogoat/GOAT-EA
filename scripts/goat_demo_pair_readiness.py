@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import time
+from goat_demo_pair_builds import BUILDS
 
 SCHEMA = 'paired-native-readiness-v2'
 BUILD_ID = 'V1.48-DASHBOARD-AI-PAIR-R1'
@@ -78,7 +79,7 @@ def process_created(process,installation):
 
 def verify_pair(api,audit,status,registration,installation,captured_at,process):
     need(type(captured_at) in (int,float) and math.isfinite(captured_at),'capture_time')
-    need(installation['buildId']==BUILD_ID and re.fullmatch('[a-f0-9]{64}',installation['eaSha256']) is not None,'reviewed_build')
+    need(installation['buildId'] in BUILDS and installation['eaSha256']==BUILDS[installation['buildId']]['artifactSHA256'],'reviewed_build')
     need(type(installation['account']) is int and installation['account'] in PAIR_ACCOUNTS
          and installation['server']=='Darwinex-Demo','pair_demo_scope')
     need(len(registration['members'])==35,'exact_35_members')
@@ -172,7 +173,7 @@ def capture_pair(api,manifest,audit_path,output_dir,host,request_status=None,*,c
         except FreshnessPending:
             need(clock()+5<deadline,'fresh_status_capture_timeout');sleep(5);continue
         break
-    proof={'schema':SCHEMA,'apiPins':dict(API_PINS),'eaSha256':installation['eaSha256'],'buildId':BUILD_ID,
+    proof={'schema':SCHEMA,'apiPins':dict(API_PINS),'eaSha256':installation['eaSha256'],'buildId':installation['buildId'],
            'manifestPath':str(manifest.resolve()),'manifestSha256':manifest_sha,
            'registrationPath':str((rpc/'registration.json').resolve()),'registrationSha256':reg_sha,
            'process':process,'capturedAtUtc':captured,
@@ -192,7 +193,8 @@ def verify_stored_pair(api,proof_path,installation,registration,registration_sha
     fields={'schema','apiPins','eaSha256','buildId','manifestPath','manifestSha256','registrationPath',
             'registrationSha256','process','capturedAtUtc','audit','status','summary','statusAttempts'}
     need(type(proof) is dict and set(proof)==fields and proof['schema']==SCHEMA,'proof_schema')
-    need(proof['apiPins']==API_PINS and proof['eaSha256']==installation['eaSha256'] and proof['buildId']==BUILD_ID,'proof_source')
+    need(proof['apiPins']==API_PINS and proof['eaSha256']==installation['eaSha256'] and proof['buildId']==installation['buildId']
+         and proof['buildId'] in BUILDS,'proof_source')
     need(type(max_age) in (int,float) and 0<max_age<=14400 and type(now) in (int,float) and math.isfinite(now),'history_age_bound')
     need(type(proof['capturedAtUtc']) in (int,float) and math.isfinite(proof['capturedAtUtc'])
          and 0<=now-proof['capturedAtUtc']<=max_age,'historical_proof_expired')

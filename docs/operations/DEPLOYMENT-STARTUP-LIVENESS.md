@@ -2,9 +2,15 @@
 
 September 24, 2026: two separate child attachments failed on an inert demo
 terminal. The first recorded a successful license check followed by a panel
-creation failure. The second had no completed child initialization in the
-available buffered journal. Its failed deployment receipt was produced before
-later controller requests timed out. Neither establishes one common root cause.
+creation failure. The second initially had no child initialization in the buffered
+journal. The later flushed record shows NZDUSD `OnInit` at 11:31:21.688 (UTC+5),
+license HTTP 200 at 11:31:27.943, dashboard `APPLY_FAILED` at 11:31:40.569, then
+`ChartWindowsHandle` error 4102 (`ERR_CHART_NO_REPLY`) at 11:31:48.581. That chart
+query occurs after panel creation, before the final magic registration. No final
+`INIT_FAILED` was observed. The dashboard's polling deadline therefore expired
+while the child was still initializing; this is distinct from the first known
+panel failure. The timed-out read-only status later completed. Neither failure
+establishes one common root cause or a permanent native deadlock.
 Observed GUI resource counts did not approach the usual per-process limit.
 
 The dashboard previously refreshed the target chart every two seconds while
@@ -42,6 +48,7 @@ compile the reviewed source, qualify native attachment without enabling trades,
 audit all children, and prove restart restoration. Preserve failed attempts and
 inspect actual process exit before any separately authorized partial recovery.
 
-Primary references: [ObjectFind queue semantics](https://www.mql5.com/en/docs/objects/objectfind),
+Primary references: [Runtime error codes](https://www.mql5.com/en/docs/constants/errorswarnings/errorcodes),
+[ObjectFind queue semantics](https://www.mql5.com/en/docs/objects/objectfind),
 [ChartApplyTemplate asynchronous request semantics](https://www.mql5.com/en/docs/chart_operations/chartapplytemplate),
 [ChartSetSymbolPeriod refresh semantics](https://www.mql5.com/en/docs/chart_operations/chartsetsymbolperiod).

@@ -9,6 +9,7 @@ import sys
 import time
 
 from goat_demo_pair_connection import BUILD_ID, PAIR_ACCOUNTS, WindowsHost, verify_files
+from goat_demo_pair_builds import BUILDS
 from goat_demo_pair_guard import checked_witness, lifecycle_lock, assert_new_pair_paths
 import goat_demo_pair_readiness as paired
 PINS = {}
@@ -200,7 +201,8 @@ class NativeAPI:
         require(manifest.name == f'terminal-{terminal:02d}.json', 'manifest_name')
         require(terminal in PAIR_ACCOUNTS and self.installation['account'] == PAIR_ACCOUNTS[terminal]
                 and self.installation['server'] == 'Darwinex-Demo'
-                and self.installation['buildId'] == BUILD_ID, 'fixed_terminal_binding')
+                and self.installation['buildId'] in BUILDS
+                and self.installation['eaSha256']==BUILDS[self.installation['buildId']]['artifactSHA256'], 'fixed_terminal_binding')
         self.host=WindowsHost()
         self.reg, self.digest = module.read_bounded(self.root/'registration.json')
         module.validate_registration(self.reg, self.installation)
@@ -234,7 +236,8 @@ class NativeAPI:
 
 
 def load_api(directory):
-    require(len(PINS)==2,'api_pins_unset')
+    require(set(PINS)=={'goat_portfolio_setup.py','goat_setup_control.py'}
+        and all(isinstance(v,str) and len(v)==64 and set(v)<=set('0123456789abcdef') for v in PINS.values()),'api_pins_unset')
     for name, expected in PINS.items():
         require(sha(bounded(directory/name)) == expected, 'api_pin_mismatch')
     sys.path.insert(0,str(directory))
@@ -266,6 +269,8 @@ def main():
     parser.add_argument('--reconnect-manifest',type=Path,required=True)
     parser.add_argument('--recovery-proof',type=Path)
     parser.add_argument('--recovery-proof-sha256')
+    parser.add_argument('--build-rollout-proof',type=Path)
+    parser.add_argument('--build-rollout-proof-sha256')
     args=parser.parse_args()
     global PINS
     PINS=json.loads(bounded(args.pins))
@@ -290,10 +295,18 @@ def main():
         os.write(native_fd,str(os.getpid()).encode())
         summary['members']=len(api.reg['members'])
         binding={'terminal':args.terminal,'registrationSha256':api.digest,'manifestSha256':sha(bounded(args.manifest))}
+        recovery_api=api;recovery_journal=journal;rollout=None
+        require(bool(args.build_rollout_proof)==bool(args.build_rollout_proof_sha256),'rollout_pin_required')
+        if args.build_rollout_proof:
+            require(args.terminal==7 and args.inspection is not None,'rollout_resume_scope')
+            from goat_demo_pair_build_rollout import validate_transition
+            recovery_api,recovery_journal,rollout=validate_transition(args.build_rollout_proof,args.build_rollout_proof_sha256,journal,api)
+            require(args.recovery_proof is not None and str(args.recovery_proof)==rollout['recovery']['path']
+                and args.recovery_proof_sha256==rollout['recovery']['sha256'],'rollout_recovery_binding')
         claim_terminal(api.root,args.run_dir,binding)
         inspected=None
         if journal.records:
-            require(args.inspection is not None and journal.records[0].get('binding') == binding, 'explicit_inspection_required')
+            require(args.inspection is not None and (journal.records[0].get('binding') == binding or rollout is not None), 'explicit_inspection_required')
             inspected=api.inspection(args.inspection,journal)
         else:
             require(args.inspection is None,'no_prior_journal')
@@ -307,7 +320,7 @@ def main():
                 from goat_demo_pair_recover_child_v2 import validate_authority
             else:
                 from goat_demo_pair_recover_child import validate_authority
-            recovery=validate_authority(args.recovery_proof,args.recovery_proof_sha256,journal,api)
+            recovery=validate_authority(args.recovery_proof,args.recovery_proof_sha256,recovery_journal,recovery_api)
         journal.add('attempt',resumed=inspected is not None)
         summary.update(Runner(api,api.reg,journal,inspected is not None,recovery=recovery).run(inspected))
         checked_witness(args.protected_witness,host,expected=witness)

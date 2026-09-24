@@ -10,6 +10,8 @@ param(
   [switch]$InitialLogin,
   [string]$AdmissionProof,
   [string]$AdmissionSha256,
+  [string]$PersistenceProof,
+  [string]$PersistenceSha256,
   [switch]$AllowClosed
 )
 $ErrorActionPreference='Stop'
@@ -51,6 +53,7 @@ try {
   if($AllowClosed){$argumentValues+=@('--allow-closed')}
   if($InitialLogin){$argumentValues+=@('--initial-login')}
   if($AdmissionProof){$argumentValues+=@('--admission-proof',$AdmissionProof,'--admission-sha256',$AdmissionSha256)}
+  if($PersistenceProof){$argumentValues+=@('--persistence-proof',$PersistenceProof,'--persistence-sha256',$PersistenceSha256)}
   $quotedArguments=foreach($item in $argumentValues){
     $value=[string]$item
     $value=[regex]::Replace($value,'(\\*)"','$1$1\"')

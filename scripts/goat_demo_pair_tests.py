@@ -9,6 +9,7 @@ import unittest
 import io
 import contextlib
 import sys
+import subprocess
 from unittest.mock import patch
 
 import goat_demo_pair_connection as c
@@ -18,6 +19,7 @@ import goat_demo_pair_orchestrate as o
 import goat_demo_pair_profile as p
 import goat_demo_pair_readiness as r
 import goat_demo_pair_restart as restart
+import goat_demo_pair_lifecycle as life
 
 
 def row(n):
@@ -30,6 +32,38 @@ def row(n):
 
 def fixture():
     return {'schema':'goat-demo-pair-connection-v1','terminals':[row(7),row(8)]}
+
+
+def saved_profile(root,ai=False):
+    folder=root/'MQL5/Profiles/Charts/Default';folder.mkdir(parents=True)
+    dashboard=prep.fresh_chart().decode('utf16').replace('<chart>','<chart>\r\nid=999',1)
+    (folder/'chart00.chr').write_bytes(dashboard.encode('utf16'))
+    reg=dict(aiMode=2 if ai else 0,aiThreshold=50,aiProtocol=2,members=[]);audit=dict(rows=[])
+    for i in range(35):
+        source=('Mode_Operation=9\nEA_Desc=Strategy '+str(i)+'\nRisk=500.0\nMode_Bias=1\nBias_Protocol=2\n'
+                'Bias_threshold=50\nMode_Bias_Trades=0\nDownload_StartDate=2025.01.01\nActive_Time_ASIA=01:30-11:00\n')
+        path=root/f'member{i}.set';path.write_bytes(source.encode('utf16'))
+        symbol='EURUSD' if i%2 else 'USDJPY';cid=1000+i
+        member=dict(index=i,path=str(path),symbol=symbol,sha256=p.digest(path.read_bytes()))
+        reg['members'].append(member);audit['rows'].append(dict(index=i,symbol=symbol,chartId=cid,magic=2000+i,settingsMatch=True))
+        inputs=p.effective_inputs(member,reg)
+        inputs['Risk']='500.000';inputs['Download_StartDate']='2025.01.01 00:00:00'
+        text='<chart>\nid='+str(cid)+'\nsymbol='+symbol+'\nperiod_type=0\nperiod_size=1\n<expert>\nname=GOAT V1.48\npath=Experts\\GOAT Experiment\\GOAT V1.48.ex5\nexpertmode=5\n<inputs>\n'
+        text+='\n'.join(k+'='+v for k,v in inputs.items())+'\n</inputs>\n</expert>\n</chart>\n'
+        (folder/f'child{i:02d}.chr').write_bytes(text.encode('utf16'))
+    return folder,reg,audit
+
+
+def persistence_fixture(root):
+    target=row(7);target.update(directory=str(root),savedAlgoEnabled=True)
+    (root/'bases').mkdir();(root/'bases/gvariables.dat').write_bytes(b'closed native global bytes')
+    state=root/'Common/GOAT'/('dashboard_state_'+root.name+'.tsv');state.parent.mkdir(parents=True);state.write_bytes(b'closed audited dashboard bytes')
+    proof=dict(schema='goat-demo-pair-persistence-v1',terminal=7,account=target['login'],directory=str(root),buildId=target['buildId'],
+        eaSha256=target['eaSha256'],profileSha256=target['profileSha256'],commonIniSha256=target['commonIniSha256'],
+        registrationSha256='a'*64,pairedProofSha256='b'*64,createdAtUtc=1000,process=dict(pid=10,path=str(root/'terminal64.exe'),created='x'),
+        shutdownId='c'*32,globalsSha256=p.digest((root/'bases/gvariables.dat').read_bytes()),dashboardStatePath=str(state),dashboardStateSha256=p.digest(state.read_bytes()))
+    path=root/'enabled-persistence.json';g.write_new(path,proof)
+    return target,path,p.digest(path.read_bytes()),proof
 
 
 class ManifestTests(unittest.TestCase):
@@ -136,6 +170,19 @@ class ManifestTests(unittest.TestCase):
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_cli_guard_refusal_preserves_reason_without_native_calls(self):
+        # Missing witness is rejected before any process probe, file verification,
+        # SDK import or launch. Exercise the real __main__/import class boundary.
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);manifest=root/'manifest.json';g.write_new(manifest,fixture())
+            vault=[dict(login=item['login'],server=item['server'],master='fixture-only') for item in fixture()['terminals']]
+            result=subprocess.run([sys.executable,'-B',str(Path(c.__file__)),
+                '--manifest',str(manifest),'--terminal','7','--sdk-path',str(root),
+                '--attempt-dir',str(root/'attempt'),'--protected-witness',str(root/'missing.json'),'--initial-login'],
+                input=json.dumps(vault),text=True,capture_output=True,timeout=15)
+            self.assertEqual(result.returncode,2)
+            value=json.loads(result.stdout);self.assertEqual(value['reason'],'unsafe_evidence_file')
+            self.assertFalse((root/'attempt').exists());self.assertNotIn('fixture-only',result.stdout)
     def test_prepare_os_error_diagnostic_does_not_expose_message(self):
         def fail(*args):
             args[4]['stage']='acquire_lifecycle_lock'
@@ -147,6 +194,23 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(result['stage'],'acquire_lifecycle_lock')
         self.assertEqual(result['exceptionType'],'FileExistsError');self.assertEqual(result['errno'],17)
         self.assertNotIn('SENSITIVE',output.getvalue())
+    def test_connect_busy_lock_does_not_claim_or_expose_error(self):
+        from types import SimpleNamespace as S
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);rows=fixture()['terminals'];rows[0]['directory']=str(root/'07 - Test')
+            manifest=root/'manifest.json';g.write_new(manifest,fixture());out=root/'attempt';output=io.StringIO()
+            args=['connect','--manifest',str(manifest),'--terminal','7','--sdk-path',str(root),
+                  '--attempt-dir',str(out),'--protected-witness',str(root/'w.json'),'--initial-login','--allow-closed']
+            with patch.object(sys,'argv',args),patch.object(sys,'stdin',S(buffer=io.BytesIO(b'[]'))),patch.dict(sys.modules,{'MetaTrader5':S()}),\
+                 patch.object(c,'validate_manifest',return_value=rows),patch.object(c,'validate_vault',return_value=[{},{}]),\
+                 patch.object(c,'verify_files'),patch.object(c,'WindowsHost',return_value=S(processes=lambda row:[])),\
+                 patch.object(g,'checked_witness',return_value={}),patch.object(g,'assert_new_pair_paths'),\
+                 patch.object(g,'lifecycle_lock',side_effect=FileExistsError(17,'SENSITIVE_ERROR','SENSITIVE_PATH')),\
+                 patch.object(g,'claim_once') as claim,contextlib.redirect_stdout(output):
+                self.assertEqual(c.main(),2);claim.assert_not_called()
+            value=json.loads(output.getvalue());self.assertEqual(value['stage'],'acquire_lifecycle_lock')
+            self.assertEqual(value['exceptionType'],'FileExistsError');self.assertEqual(value['errno'],17)
+            self.assertNotIn('SENSITIVE',output.getvalue());self.assertEqual(g.read(out/'result.json'),value)
     def test_partial_id_and_duplicate_chart_fail(self):
         v={'rows':[dict(chartId=1,magic=0)]}
         with self.assertRaises(o.Stop):o.count_attached(v)
@@ -165,15 +229,89 @@ class DeploymentTests(unittest.TestCase):
             (path/'journal.jsonl').write_bytes((path/'journal.jsonl').read_bytes()[:-1])
             with self.assertRaises(o.Stop):o.Journal(path)
     def test_profile_requires35_children(self):
-        raw=prep.fresh_chart();txt=raw.decode('utf16').replace('Mode_Operation=8','Mode_Operation=9').replace('Dashboard_Resume_Saved=true','Dashboard_Resume_Saved=false')
-        child=txt.encode('utf16')
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);folder=root/'MQL5/Profiles/Charts/Default';folder.mkdir(parents=True)
-            (folder/'chart00.chr').write_bytes(raw)
-            for i in range(35):(folder/f'child{i:02d}.chr').write_bytes(child)
-            digest,claims=p.profile_claims(root,c);self.assertEqual(len(claims),36)
+            root=Path(tmp);folder,reg,audit=saved_profile(root)
+            digest,claims=p.profile_claims(root,c,reg,audit);self.assertEqual(len(claims),36)
             (folder/'child34.chr').unlink()
-            with self.assertRaises(c.Refused):p.profile_claims(root,c)
+            with self.assertRaises(c.Refused):p.profile_claims(root,c,reg,audit)
+    def test_profile_ai_effective_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);folder,reg,audit=saved_profile(root,ai=True)
+            p.profile_claims(root,c,reg,audit)
+            path=folder/'child00.chr';text=path.read_bytes().decode('utf16')
+            path.write_bytes(text.replace('Mode_Bias=2','Mode_Bias=1').encode('utf16'))
+            with self.assertRaises(c.Refused):p.profile_claims(root,c,reg,audit)
+    def test_profile_saved_child_drift_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);folder,reg,audit=saved_profile(root);path=folder/'child00.chr';original=path.read_bytes().decode('utf16')
+            changes=[('Risk=500.000','Risk=500.00000000000001'),('EA_Desc=Strategy 0','EA_Desc=Strategy 1'),
+                ('id=1000','id=1001'),('id=1000','id=999999'),('id=1000\n',''),('symbol=USDJPY','symbol=GBPUSD'),
+                ('period_size=1','period_size=5'),('period_type=0','period_type=1'),('expertmode=5','expertmode=4'),
+                ('Mode_Bias=1','Mode_Bias=2'),('Bias_Protocol=2','Bias_Protocol=1'),('Bias_threshold=50','Bias_threshold=60'),
+                ('Mode_Bias_Trades=0','Mode_Bias_Trades=1'),('Risk=500.000','Risk=500.000\nRisk=500.000'),
+                ('Risk=500.000','Risk=500.000\nUnknown=0'),('Risk=500.000\n',''),
+                ('Active_Time_ASIA=01:30-11:00','Active_Time_ASIA=01:30-12:00'),('</chart>',''),
+                ('</chart>','</chart>\n<chart>\n</chart>'),('<inputs>','<inputs>\n<inputs>'),
+                ('Dashboard_Resume_Saved=false','Dashboard_Resume_Saved=true')]
+            for before,after in changes:
+                with self.subTest(after=after):
+                    path.write_bytes(original.replace(before,after,1).encode('utf16'))
+                    with self.assertRaises(c.Refused):p.profile_claims(root,c,reg,audit)
+            path.write_bytes(original.encode('utf16'))
+            source=Path(reg['members'][0]['path']);source.write_bytes(source.read_bytes()+b'\n\x00')
+            with self.assertRaises(c.Refused):p.profile_claims(root,c,reg,audit)
+    def test_profile_duplicate_clones_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);folder,reg,audit=saved_profile(root)
+            (folder/'child01.chr').write_bytes((folder/'child00.chr').read_bytes())
+            with self.assertRaises(c.Refused):p.profile_claims(root,c,reg,audit)
+    def test_input_normalization_matches_native(self):
+        self.assertTrue(p.input_equal('Risk','+00500.00','500'))
+        self.assertTrue(p.input_equal('Risk','-0.0','0'))
+        self.assertTrue(p.input_equal('Download_StartDate','2025.01.01','2025.01.01 00:00'))
+        for name,left,right in [('Risk','1e3','1000'),('Risk','1','1.0000000001'),('EA_Desc','001','1'),('Risk','NaN','nan')]:
+            self.assertFalse(p.input_equal(name,left,right))
+    def test_enabled_persistence_changes_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);target,path,sha,proof=persistence_fixture(root)
+            p.verify_enabled_persistence(target,path,sha,now=1001)
+            for file in (root/'bases/gvariables.dat',Path(proof['dashboardStatePath'])):
+                original=file.read_bytes();file.write_bytes(original+b'changed')
+                with self.assertRaises(c.Refused):p.verify_enabled_persistence(target,path,sha,now=1001)
+                file.write_bytes(original)
+            for key in ('login','profileSha256','commonIniSha256','eaSha256'):
+                changed=copy.deepcopy(target);changed[key]=0 if key=='login' else '9'*64
+                with self.assertRaises(c.Refused):p.verify_enabled_persistence(changed,path,sha,now=1001)
+            with self.assertRaises(c.Refused):p.verify_enabled_persistence(target,None,None,now=1001)
+            with self.assertRaises(c.Refused):p.verify_enabled_persistence(target,path,'9'*64,now=1001)
+            with self.assertRaises(c.Refused):p.verify_enabled_persistence(target,path,sha,now=1601)
+            with self.assertRaises(c.Refused):p.verify_enabled_persistence(target,path,sha,now=999)
+    def test_enabled_start_requires_proof_before_launch(self):
+        class Host:
+            def processes(self,row):return []
+            def launch(self,row):raise AssertionError('unverified launch')
+        target=row(7);target['savedAlgoEnabled']=True
+        with self.assertRaises(c.Refused):c.reconnect(None,Host(),target,{},True,verifier=lambda *a:None)
+    def test_freeze_rejects_changed_profile_before_enable(self):
+        from types import SimpleNamespace as S
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);target=row(7);target['directory']=str(root)
+            (root/'config').mkdir();(root/'config/common.ini').write_bytes(prep.fresh_common(target['login']))
+            proof_path=root/'proof.json';g.write_new(proof_path,{'fixture':'paired'})
+            proof=dict(proof=dict(capturedAtUtc=100,process={'pid':10}),audit={})
+            shutdown=dict(result='shutdown_requested',account=target['login'],directory=str(root),buildId=target['buildId'],
+                connected=True,tradingAllowed=False,positions=0,orders=0,charts=36,observedAtUtc=101,id='a'*32)
+            g.write_new(root/(shutdown['id']+'.json'),shutdown)
+            rehearsal=dict(status='restart_policy_paired_ready',members=35,process={'pid':10},pairedProofSha256=p.digest(proof_path.read_bytes()))
+            g.write_new(root/'rehearsal.json',rehearsal)
+            args=S(operation='freeze-on',proof=proof_path,shutdown=root/(shutdown['id']+'.json'),rehearsal=root/'rehearsal.json',manifest=root/'manifest.json')
+            api=S(module=S(setup=S(scope=lambda m:(None,root))),installation={},reg={},digest='a'*64,manifest=root/'manifest.json')
+            host=S(processes=lambda row:[])
+            before=(root/'config/common.ini').read_bytes()
+            with patch.object(r,'verify_stored_pair',return_value=proof),patch.object(p,'profile_claims',side_effect=c.Refused('profile_effective_inputs')),patch.object(life,'replace_preserving_acl') as replace:
+                with self.assertRaisesRegex(c.Refused,'profile_effective_inputs'):life.operate(args,[target],target,api,host,{})
+                replace.assert_not_called()
+            self.assertEqual((root/'config/common.ini').read_bytes(),before)
 
 
 class ReadinessTests(unittest.TestCase):

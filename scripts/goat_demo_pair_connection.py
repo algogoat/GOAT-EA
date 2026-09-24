@@ -193,7 +193,8 @@ def snapshot(mt5, row):
             'positionTickets': sorted(item.ticket for item in positions), 'orderTickets': sorted(item.ticket for item in orders)}
 
 
-def reconnect(mt5, host, row, account, allow_closed=False, verifier=verify_files, audit=None, initial=False):
+def reconnect(mt5, host, row, account, allow_closed=False, verifier=verify_files, audit=None, initial=False,
+              persistence_proof=None, persistence_sha256=None):
     audit = {} if audit is None else audit
     verifier(row, False)
     observed = host.processes(row)
@@ -203,7 +204,12 @@ def reconnect(mt5, host, row, account, allow_closed=False, verifier=verify_files
     if started:
         require(allow_closed, 'closed_launch_not_requested')
         verifier(row, True)
+        if row['savedAlgoEnabled']:
+            from goat_demo_pair_profile import verify_enabled_persistence
+            verify_enabled_persistence(row,persistence_proof,persistence_sha256)
+            audit['enabledPersistenceSha256']=persistence_sha256
         require(not host.processes(row), 'startup_race')
+        audit['stage']='launch_terminal_once'
         launched_identity = host.launch(row)
         observed = host.processes(row)
         require(observed == [launched_identity], 'launch_process_changed')
@@ -212,6 +218,7 @@ def reconnect(mt5, host, row, account, allow_closed=False, verifier=verify_files
     audit['process'] = identity
     audit['launched'] = started
     audit['credentialedInitialize'] = False
+    audit['startedWithAlgoEnabled']=started and row['savedAlgoEnabled']
     before = None
     try:
         # A cold process has no cached password. Only this invocation's explicit,
@@ -223,6 +230,7 @@ def reconnect(mt5, host, row, account, allow_closed=False, verifier=verify_files
             options.update(login=row['login'], password=account['master'], server=CONNECTION_SERVER)
             audit['credentialedInitialize'] = True
         try:
+            audit['stage']='initialize_sdk_once'
             attached = mt5.initialize(ntpath.join(row['directory'], 'terminal64.exe'), **options)
         finally:
             options.clear()
@@ -268,8 +276,10 @@ def main():
     parser.add_argument('--initial-login', action='store_true')
     parser.add_argument('--admission-proof', type=Path)
     parser.add_argument('--admission-sha256')
+    parser.add_argument('--persistence-proof', type=Path)
+    parser.add_argument('--persistence-sha256')
     args = parser.parse_args()
-    report = {'schema': 1, 'status': 'needs_review', 'tradingEnabledByScript': False}
+    report = {'schema': 1, 'status': 'needs_review', 'tradingEnabledByScript': False,'stage':'validate_inputs'}
     vault = None
     try:
         rows = validate_manifest(decode(args.manifest.read_bytes()))
@@ -292,27 +302,44 @@ def main():
         args.attempt_dir.mkdir(parents=True, exist_ok=False)
         # Account/path claim survives unknown failure. A different output directory
         # must not provide an accidental retry of an unresolved startup intent.
-        claim = claim_once(Path(row['directory'])/'GOAT-startup-intent.json',
-                           {'account':row['login'], 'attempt':str(args.attempt_dir),
-                            'manifestSha256':hashlib.sha256(args.manifest.read_bytes()).hexdigest()})
+        report['stage']='load_sdk'
         sys.path.insert(0, str(args.sdk_path))
         import MetaTrader5 as mt5
         assert_new_pair_paths(rows, witness)
+        report['stage']='acquire_lifecycle_lock'
         with lifecycle_lock(witness):
+            report['stage']='validate_locked_startup'
             checked_witness(args.protected_witness, host, expected=witness)
-            report.update(reconnect(mt5, host, row, account, args.allow_closed, audit=report,initial=args.initial_login))
+            verify_files(row,not host.processes(row))
+            if not host.processes(row) and row['savedAlgoEnabled']:
+                from goat_demo_pair_profile import verify_enabled_persistence
+                verify_enabled_persistence(row,args.persistence_proof,args.persistence_sha256)
+            report['stage']='claim_startup_once'
+            claim = claim_once(Path(row['directory'])/'GOAT-startup-intent.json',
+                               {'account':row['login'], 'attempt':str(args.attempt_dir),
+                                'manifestSha256':hashlib.sha256(args.manifest.read_bytes()).hexdigest()})
+            report['stage']='reconnect'
+            report.update(reconnect(mt5, host, row, account, args.allow_closed, audit=report,initial=args.initial_login,
+                                    persistence_proof=args.persistence_proof,persistence_sha256=args.persistence_sha256))
             report['initialLogin']=args.initial_login
             report['observedAtUtc']=time.time()
         checked_witness(args.protected_witness, host, expected=witness)
-        (args.attempt_dir/'result.json').write_text(json.dumps(report), encoding='utf-8')
+        report['stage']='persist_verification'
+        (args.attempt_dir/'verification.json').write_text(json.dumps(report), encoding='utf-8')
         # Successful proof permits a later explicit restart; retain completed claim.
+        report['stage']='retire_startup_claim'
         claim.rename(claim.with_name('GOAT-startup-complete-'+uuid.uuid4().hex+'.json'))
+        report['stage']='completed'
     except Refused as error:
         report['status'] = 'needs_review'
         report['reason'] = str(error)
-    except Exception:
+    except Exception as error:
         report['status'] = 'needs_review'
         report['reason'] = 'unexpected_error_inspect_retained_intent'
+        report['exceptionType']=type(error).__name__
+        if isinstance(error,OSError):
+            report['errno']=error.errno
+            report['winerror']=getattr(error,'winerror',None)
     finally:
         vault = None
     if args.attempt_dir.is_dir() and not (args.attempt_dir/'result.json').exists():
@@ -322,4 +349,7 @@ def main():
 
 
 if __name__ == '__main__':
+    # Guards/profile import this module by name. Keep their Refused type identical
+    # to the CLI's rather than loading a second copy beside __main__.
+    sys.modules['goat_demo_pair_connection']=sys.modules[__name__]
     raise SystemExit(main())

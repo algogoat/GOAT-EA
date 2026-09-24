@@ -158,6 +158,30 @@ terminal's saved Algo state, snapshots profile/config/state and emits another
 manifest. It does not start trading. Root must compare both arms, fresh protected
 six and capacity before explicitly starting the enabled manifests via the wrapper.
 
+The saved profile is checked against the rehearsal's exact child chart IDs,
+symbols, M1 periods and every effective frozen SET input before either freeze.
+This is separate from checking the dashboard TSV: the TSV alone cannot prove
+which inputs a saved child chart will execute. Duplicate children, extra/missing
+inputs and changed AI settings are refused. Native decimal/date serialization
+differences are accepted only under the same exact rules as the child audit.
+
+`freeze-on` also emits `enabled-persistence.json` and its SHA256 in completion.
+An enabled cold start requires wrapper arguments `-PersistenceProof` and
+`-PersistenceSha256` from that completion, within 600 seconds. The client checks
+the saved profile/config plus the exact closed dashboard TSV and terminal-global
+bytes before startup. These hashes are not expected to stay fixed after MT5
+starts; live verification still requires fresh native member/policy evidence.
+Do not restore the saved global bytes or use this proof as permission to retry.
+Use a separately pinned successor helper package for this final launch phase;
+do not overwrite the original prepared helper package or its evidence.
+
+The connection successor acquires the lifecycle lock before recording a startup
+intent. A busy lock therefore cannot create an unissued startup claim. Failure
+receipts include a bounded stage and exception type/OS code without exception
+messages or credentials. A real CLI missing-witness check confirms shared guard
+refusals retain their exact reason. The strengthened helper suite passes 36 pure
+tests; native startup/restart evidence remains a separate requirement.
+
 Carry the newest combined manifest into the other arm's stages; do not substitute
 an earlier manifest that still describes the other arm's pre-rehearsal profile.
 Preserve actual startup receipts and times. Establish the comparison baseline only
@@ -178,7 +202,7 @@ under lifecycle/orchestration exclusion and with old/new digest receipts and no
 pending request. It must not invalidate or rewrite the historical settings proof.
 That renewal lives in the separately reviewed website adapter, not these helpers.
 
-At delivery, 26 pure tests and syntax checks passed; no native setup was performed
+At initial delivery, 26 pure tests and syntax checks passed; no native setup was performed
 by the tooling author. Record actual host successes/failures in the task handoff,
 then update the relevant skill's operating reference. Never promote source tests,
 an inert presentation preview, prepared files or a completed process launch into

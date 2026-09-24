@@ -121,29 +121,46 @@ def operate(args,rows,row,api,host,witness):
              and rehearsal.get('pairedProofSha256')==paired.sha(guard.raw(args.proof)),'restart_rehearsal_binding')
     directory=Path(row['directory']);common=directory/'config/common.ini';before=guard.raw(common)
     after=profile.patch_common(before,row['login'],int(enabled))
-    profile_hash,claims=profile.profile_claims(directory,conn)
+    profile_hash,claims=profile.profile_claims(directory,conn,api.reg,pair['audit'])
     state=Path(api.installation['commonFiles'])/'GOAT'/('dashboard_state_'+directory.name+'.tsv');state_raw=guard.raw(state)
     profile.verify_dashboard(state_raw,api.reg,pair['audit'])
+    globals_raw=guard.raw(directory/'bases/gvariables.dat',32*1024*1024)
     for member in api.reg['members']:need(paired.sha(guard.raw(member['path']))==member['sha256'],'source_set_changed')
     guard.write_new(args.output/'manifest-before.json',{'schema':'goat-demo-pair-connection-v1','terminals':rows})
     guard.write_new(args.output/'profile-claims.json',claims)
     guard.write_new(args.output/'common-before.ini',before);guard.write_new(args.output/'dashboard-before.tsv',state_raw)
+    guard.write_new(args.output/'globals-before.dat',globals_raw)
     for name,digest in claims:
         content=guard.raw(directory/'MQL5/Profiles/Charts/Default'/name)
         need(paired.sha(content)==digest,'profile_changed')
         target=args.output/'profile'/name;target.parent.mkdir(parents=True,exist_ok=True);guard.write_new(target,content)
     guard.write_new(args.output/'freeze-intent.json',{'account':row['login'],'enabled':enabled,'profileSha256':profile_hash,'beforeSha256':paired.sha(before),'afterSha256':paired.sha(after)})
     need(not host.processes(row) and guard.raw(common)==before and guard.raw(state)==state_raw,'freeze_race')
+    need(profile.profile_claims(directory,conn,api.reg,pair['audit'])==(profile_hash,claims)
+         and guard.raw(directory/'bases/gvariables.dat',32*1024*1024)==globals_raw,'freeze_persistence_race')
     guard.checked_witness(args.protected_witness,host,expected=witness)
     row.update(profileSha256=profile_hash,commonIniSha256=paired.sha(after),savedAlgoEnabled=enabled)
     if before!=after:replace_preserving_acl(common,after)
     conn.verify_files(row,True)
+    persistence_path=None;persistence_sha=None
+    if enabled:
+        persistence=dict(schema='goat-demo-pair-persistence-v1',terminal=row['terminal'],account=row['login'],
+            directory=row['directory'],buildId=row['buildId'],eaSha256=row['eaSha256'],profileSha256=profile_hash,
+            commonIniSha256=row['commonIniSha256'],registrationSha256=api.digest,
+            pairedProofSha256=paired.sha(guard.raw(args.proof)),createdAtUtc=time.time(),process=pair['proof']['process'],
+            shutdownId=shut['id'],globalsSha256=paired.sha(globals_raw),dashboardStatePath=str(state),
+            dashboardStateSha256=paired.sha(state_raw))
+        persistence_path=args.output/'enabled-persistence.json';guard.write_new(persistence_path,persistence)
+        persistence_sha=paired.sha(guard.raw(persistence_path))
+        profile.verify_enabled_persistence(row,persistence_path,persistence_sha)
     manifest={'schema':'goat-demo-pair-connection-v1','terminals':rows}
     conn.validate_manifest(manifest);guard.write_new(args.output/'reconnect-manifest.json',manifest)
     # Caller selects this newly frozen manifest deliberately; canonical previous
     # manifests remain immutable and are never silently overwritten.
     return {'status':'staged_closed_no_launch','terminal':row['terminal'],'enabled':enabled,'atUtc':time.time(),
-            'profileSha256':profile_hash,'reconnectManifest':str(args.output/'reconnect-manifest.json')}
+            'profileSha256':profile_hash,'reconnectManifest':str(args.output/'reconnect-manifest.json'),
+            'enabledPersistenceProof':str(persistence_path) if persistence_path else None,
+            'enabledPersistenceSha256':persistence_sha}
 
 
 def main():

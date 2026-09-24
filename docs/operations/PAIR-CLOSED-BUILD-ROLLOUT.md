@@ -146,6 +146,9 @@ Freeze these 14 source files together from the reviewed commit under one directo
 `goat_demo_pair_recover_child_v2.py`, `goat_demo_pair_dashboard_recapture.py`,
 `goat_demo_pair_trust.py`, `goat_demo_pair_lifecycle.py`,
 `goat_demo_pair_restart.py`, `goat_demo_pair_prepare.py`.
+Also include the 15th file, `goat_demo_pair_connect.ps1`, beside the updated
+`goat_demo_pair_connection.py`: the credential wrapper resolves its Python client
+through `$PSScriptRoot`. Invoking an old wrapper directory would load old tooling.
 Keep the two separately pinned native controller sources in their reviewed
 `--control-dir`. Package by explicit tracked paths, excluding `__pycache__`,
 credentials, scratch artifacts and unrelated files. Verify a SHA-256 inventory

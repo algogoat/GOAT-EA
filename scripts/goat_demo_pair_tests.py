@@ -21,6 +21,7 @@ import goat_demo_pair_readiness as r
 import goat_demo_pair_restart as restart
 import goat_demo_pair_lifecycle as life
 import goat_demo_pair_trust as trust
+import goat_demo_pair_dashboard_recapture as recapture
 
 
 def row(n):
@@ -410,6 +411,37 @@ class TrustTests(unittest.TestCase):
                  patch.object(g,'lifecycle_lock',return_value=contextlib.nullcontext()),patch.object(trust,'replace_preserving_acl') as replace:
                 with self.assertRaisesRegex(c.Refused,'migration_state_changed'):trust.run(args)
                 replace.assert_not_called();self.assertFalse(out.exists())
+
+
+class DashboardRecaptureTests(unittest.TestCase):
+    def test_exact_dashboard_inputs_and_full_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);folder=root/'MQL5/Profiles/Charts/Default';folder.mkdir(parents=True)
+            chart=prep.fresh_chart().decode('utf16').replace('<chart>','<chart>\r\nid=123',1)
+            chart=chart.replace('</inputs>','NativeExpandedDefault=42\r\n</inputs>');path=folder/'chart01.chr'
+            path.write_bytes(chart.encode('utf16'));target=dict(directory=str(root))
+            files,proof,claims,sha=recapture.snapshot_profile(target,123)
+            self.assertEqual(files['chart01.chr'],chart.encode('utf16'));self.assertEqual(proof['expandedInputCount'],6)
+            self.assertEqual(len(proof['explicitInputs']),5);self.assertEqual(len(sha),64)
+            changes=[('id=123','id=124'),('symbol=EURUSD','symbol=USDJPY'),('period_size=1','period_size=5'),
+                     ('expertmode=5','expertmode=4'),('GOAT V1.48.ex5','GOAT V1.47.ex5'),('Mode_Operation=8','Mode_Operation=9'),
+                     ('Dashboard_Resume_Saved=true','Dashboard_Resume_Saved=false'),('Mode_Bias=1','Mode_Bias=2'),
+                     ('Bias_Protocol=2','Bias_Protocol=1'),('Bias_threshold=50','Bias_threshold=60')]
+            for before,after in changes:
+                path.write_bytes(chart.replace(before,after).encode('utf16'))
+                with self.subTest(after=after),self.assertRaises(c.Refused):recapture.snapshot_profile(target,123)
+            path.write_bytes(chart.encode('utf16'));(folder/'extra.chr').write_bytes(path.read_bytes())
+            with self.assertRaisesRegex(c.Refused,'one_dashboard_only'):recapture.snapshot_profile(target,123)
+    def test_extra_default_is_preserved_not_claimed_prior_equal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);folder=root/'MQL5/Profiles/Charts/Default';folder.mkdir(parents=True)
+            chart=prep.fresh_chart().decode('utf16').replace('<chart>','<chart>\r\nid=123',1)
+            path=folder/'chart01.chr';path.write_bytes(chart.encode('utf16'));target=dict(directory=str(root))
+            before=recapture.snapshot_profile(target,123)
+            path.write_bytes(chart.replace('</inputs>','ExpandedUnknown=retained\r\n</inputs>').encode('utf16'))
+            after=recapture.snapshot_profile(target,123)
+            self.assertNotEqual(before[1]['expandedInputsSha256'],after[1]['expandedInputsSha256'])
+            self.assertEqual(after[1]['explicitInputs'],before[1]['explicitInputs'])
 
 
 class ReadinessTests(unittest.TestCase):

@@ -227,6 +227,22 @@ its evidence first. Restart inert through the reviewed interactive runner and
 verify a native WebRequest response before claiming permission works; successful
 configuration migration alone is not runtime proof.
 
+After activation, a dashboard may require an actual inert process restart. If its
+native save changes only the saved profile hash, use the separate
+`goat_demo_pair_dashboard_recapture.py` with `--plan`, `--protected-witness` and,
+after its dry run, `--apply`. Its plan schema is `goat-pair-dashboard-recapture-v1`
+with pinned `manifest`, absolute `commonFiles`, a new `outputDirectory`, and the
+same ordered `targets` shape as trust migration. It accepts only the already
+closed activation-only pair, exact native shutdown receipts, unchanged common.ini
+hashes, one dashboard per arm and the original five explicit bootstrap inputs.
+It writes private evidence and a refreshed combined manifest only; it never
+modifies terminal files or issues another shutdown/restart. Full current chart
+bytes and the expanded input digest are retained. Equality of all expanded
+defaults to an earlier save is explicitly **not proven** when that earlier chart
+was not retained. This limited pre-attachment proof does not qualify any child
+strategy. Restart inert with a fresh reviewed interactive attempt and then verify
+native activation; the subsequent 35-child audit remains required.
+
 The website live adapter separately verifies running status against retained
 settings/audit and startup evidence; the inert readiness verifier is not a live
 proof. Native command IDs can reset on restart. Check actual fresh 35 child

@@ -170,6 +170,33 @@ class ManifestTests(unittest.TestCase):
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_lifecycle_lock_timeout_preserves_other_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'shared.lock';other=b'other owner';path.write_bytes(other)
+            clock=[0.0];sleeps=[]
+            def sleep(seconds):sleeps.append(seconds);clock[0]+=seconds
+            with patch.object(g.time,'monotonic',side_effect=lambda:clock[0]),patch.object(g.time,'sleep',side_effect=sleep),\
+                 patch.object(g,'claim_once') as claim:
+                with self.assertRaisesRegex(c.Refused,'lifecycle_lock_busy'):
+                    with g.lifecycle_lock({'lifecycleLock':str(path)}):g.claim_once(Path(tmp)/'startup.json',{})
+                claim.assert_not_called()
+            self.assertEqual(path.read_bytes(),other);self.assertEqual(clock[0],20)
+            self.assertTrue(sleeps and max(sleeps)<=0.25)
+    def test_lifecycle_lock_temporary_contention_then_owned_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'shared.lock';path.write_bytes(b'other owner');clock=[0.0]
+            def release(seconds):clock[0]+=seconds;path.unlink()
+            with patch.object(g.time,'monotonic',side_effect=lambda:clock[0]),patch.object(g.time,'sleep',side_effect=release):
+                with g.lifecycle_lock({'lifecycleLock':str(path)}):
+                    value=g.read(path);self.assertEqual(value['kind'],'demo-pair');self.assertEqual(len(value['nonce']),32)
+            self.assertFalse(path.exists())
+    def test_lifecycle_lock_changed_owner_is_retained(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'shared.lock'
+            with self.assertRaisesRegex(c.Refused,'lifecycle_lock_owner_changed'):
+                with g.lifecycle_lock({'lifecycleLock':str(path)}):
+                    path.write_bytes(b'new owner')
+            self.assertEqual(path.read_bytes(),b'new owner')
     def test_cli_guard_refusal_preserves_reason_without_native_calls(self):
         # Missing witness is rejected before any process probe, file verification,
         # SDK import or launch. Exercise the real __main__/import class boundary.

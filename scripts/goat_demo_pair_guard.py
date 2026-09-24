@@ -7,6 +7,7 @@ import ntpath
 import os
 from pathlib import Path
 import time
+import uuid
 
 from goat_demo_pair_connection import Refused, require, canonical, unique_object
 
@@ -79,15 +80,35 @@ def checked_witness(path, host, expected=None, now=None):
 
 
 @contextlib.contextmanager
-def lifecycle_lock(witness):
+def lifecycle_lock(witness, wait_seconds=20):
+    require(type(wait_seconds) in (int,float) and 0<=wait_seconds<=20,'lifecycle_lock_wait_bound')
     path = Path(witness['lifecycleLock'])
-    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    deadline=time.monotonic()+wait_seconds
+    while True:
+        try:
+            descriptor=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY|getattr(os,'O_BINARY',0))
+            break
+        except FileExistsError:
+            remaining=deadline-time.monotonic()
+            require(remaining>0,'lifecycle_lock_busy')
+            time.sleep(min(0.25,remaining))
+            require(time.monotonic()<deadline,'lifecycle_lock_busy')
+    content=encoded({'pid':os.getpid(),'kind':'demo-pair','nonce':uuid.uuid4().hex})
+    identity=None
     try:
-        os.write(descriptor, encoded({'pid':os.getpid(),'kind':'demo-pair'}))
+        require(os.write(descriptor,content)==len(content),'lifecycle_lock_write')
         os.fsync(descriptor)
+        # Use the same identity observation at acquisition and release.
+        identity=path.stat()
+        require(raw(path)==content,'lifecycle_lock_owner_changed')
         yield
     finally:
         os.close(descriptor)
+        # Never remove a lock now owned by another actor, even if the operation
+        # failed. Retained/replaced locks require inspection, not stale cleanup.
+        current=path.stat()
+        require(identity is not None and (current.st_dev,current.st_ino)==(identity.st_dev,identity.st_ino)
+                and raw(path)==content,'lifecycle_lock_owner_changed')
         path.unlink()
 
 

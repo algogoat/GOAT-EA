@@ -179,7 +179,10 @@ The connection successor acquires the lifecycle lock before recording a startup
 intent. A busy lock therefore cannot create an unissued startup claim. Failure
 receipts include a bounded stage and exception type/OS code without exception
 messages or credentials. A real CLI missing-witness check confirms shared guard
-refusals retain their exact reason. The strengthened helper suite passes 36 pure
+refusals retain their exact reason. Shared-lock contention waits at most 20 seconds
+with at most 250 ms between attempts; timeout retains the other owner's lock and
+does not create a startup claim. Owned-lock cleanup checks identity and nonce.
+The strengthened helper suite passes 39 pure
 tests; native startup/restart evidence remains a separate requirement.
 
 Carry the newest combined manifest into the other arm's stages; do not substitute

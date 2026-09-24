@@ -4,7 +4,7 @@
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-balanced35-ai-20260923.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.48-DASHBOARD-AI-PAIR-R1"
+#define   GOAT_BUILD_ID "V1.48-DASHBOARD-AI-PAIR-R2"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 #define   GOAT_BUILD_MARKER "UI1"
 //----------------------------------------------------------------------------------------------------------------------------------------------------

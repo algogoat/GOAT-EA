@@ -84,7 +84,7 @@ class DeploymentLivenessTests(unittest.TestCase):
             data = (ROOT / name).read_bytes()
             self.assertTrue(data.startswith(b'\xef\xbb\xbf'), name)
             self.assertNotIn(b'\n', data.replace(b'\r\n', b''), name)
-        self.assertIn('#define   GOAT_BUILD_ID "V1.48-DASHBOARD-AI-PAIR-R1"', self.main)
+        self.assertIn('#define   GOAT_BUILD_ID "V1.48-DASHBOARD-AI-PAIR-R2"', self.main)
 
 
 if __name__ == '__main__':

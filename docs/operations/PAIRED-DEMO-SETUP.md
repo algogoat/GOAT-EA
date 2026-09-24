@@ -243,6 +243,42 @@ was not retained. This limited pre-attachment proof does not qualify any child
 strategy. Restart inert with a fresh reviewed interactive attempt and then verify
 native activation; the subsequent 35-child audit remains required.
 
+### One inspected partial-child recovery
+
+`goat_demo_pair_recover_child.py` handles only the reviewed terminal 07 failure
+at child index 6, after six successful children and a retained native
+`child_attach_failed` receipt. It never closes, starts or kills a process. Actual
+terminal absence, Algo-OFF configuration, exact registration and original journal
+owner, native receipt equality, all six saved child identities and every effective
+SET input must match. The failed chart must be a pinned expert-free empty EURUSD
+M1 chart, absent from `order.wnd`; any other profile or failure shape is refused.
+
+The private plan has schema `goat-partial-child-recovery-v1`; pinned `{path,sha256}`
+references `reconnectManifest`, `installation`, `draft`, `pins`, `failure`,
+`shutdown`, `journal`, `orphan`, `state`, `globals`; and absolute `controlDirectory`
+and new `outputDirectory`. `failure` must be the original deployment journal's
+exact saved failure receipt bytes, `journal` its existing `journal.jsonl`, `state`
+the terminal-scoped dashboard TSV and `globals` the terminal's gvariables.dat.
+Use `--plan`, `--protected-witness` and dry-run first; `--apply` takes the lifecycle
+and original orchestration locks. It preserves all current profile/config/global/
+state bytes, quarantines only the empty chart, resets only row 6's cid/magic to
+zero, then emits a combined reconnect manifest and appends one
+`recovery_authorized` record to the **same** journal. No original record or failed
+intent is deleted or rewritten. Dashboard validation compares its five explicit
+bootstrap inputs; full expanded dashboard defaults are retained but not claimed
+equal to an unavailable earlier copy.
+
+After a separately authorized inert restart, inspect fresh native status and
+prepare the normal pinned `--inspection` for that same journal. Resume the reviewed
+orchestrator with the same `--run-dir` plus `--recovery-proof` and
+`--recovery-proof-sha256` from completion. It can issue one distinct, recorded
+recovery of `deploy:6` only while all six original identities remain linked; a
+second recovery attempt is refused, including after a crash or timeout. Subsequent
+children retain ordinary exactly-once intents. The original GUI failure is not
+considered fixed by staging recovery; all 35 input/policy checks and restart
+rehearsal remain required before any trading launch. Partial repairs or changed
+configuration remain retained for inspection, with no automatic rollback.
+
 The website live adapter separately verifies running status against retained
 settings/audit and startup evidence; the inert readiness verifier is not a live
 proof. Native command IDs can reset on restart. Check actual fresh 35 child

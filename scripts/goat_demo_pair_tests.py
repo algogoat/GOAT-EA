@@ -22,6 +22,7 @@ import goat_demo_pair_restart as restart
 import goat_demo_pair_lifecycle as life
 import goat_demo_pair_trust as trust
 import goat_demo_pair_dashboard_recapture as recapture
+import goat_demo_pair_recover_child as recovery
 
 
 def row(n):
@@ -442,6 +443,106 @@ class DashboardRecaptureTests(unittest.TestCase):
             after=recapture.snapshot_profile(target,123)
             self.assertNotEqual(before[1]['expandedInputsSha256'],after[1]['expandedInputsSha256'])
             self.assertEqual(after[1]['explicitInputs'],before[1]['explicitInputs'])
+
+
+class PartialRecoveryTests(unittest.TestCase):
+    def failure(self):
+        return dict(action='deploy_next',result='child_attach_failed',connected=True,tradingAllowed=False,positions=0,orders=0,commandPending=False,
+            rows=[dict(index=i,symbol='EURUSD',chartId=1000+i if i<=6 else 0,magic=2000+i if i<6 else 0,linkedFresh=i<6) for i in range(35)])
+    def test_failure_scope_refuses_other_outcomes(self):
+        failure=self.failure();registration={'members':[dict(symbol='EURUSD') for _ in range(35)]}
+        recovery.failure_scope(failure,registration)
+        for key,value in [('tradingAllowed',True),('positions',1),('orders',1),('result','child_attached'),('connected',False)]:
+            with self.subTest(key=key),self.assertRaises(c.Refused):recovery.failure_scope(dict(failure,**{key:value}),registration)
+        for index,key,value in [(6,'magic',777),(7,'chartId',999),(0,'linkedFresh',False),(2,'chartId',1000)]:
+            changed=copy.deepcopy(failure);changed['rows'][index][key]=value
+            with self.subTest(index=index,key=key),self.assertRaises(c.Refused):recovery.failure_scope(changed,registration)
+    def test_empty_orphan_has_no_expert_or_other_chart(self):
+        text='<chart>\r\nid=0\r\nsymbol=EURUSD\r\nperiod_type=0\r\nperiod_size=1\r\nwindows_total=0\r\n</chart>\r\n'
+        recovery.empty_chart(text.encode('utf16'),1006)
+        for changed in [text.replace('id=0','id=1000'),text.replace('windows_total=0','windows_total=1'),
+                        text.replace('</chart>','<expert>\r\n</expert>\r\n</chart>'),text+text]:
+            with self.assertRaises(c.Refused):recovery.empty_chart(changed.encode('utf16'),1006)
+    def test_only_failed_state_identity_changes(self):
+        failure=self.failure();members=[dict(path=f'C:/sets/{i}.set',symbol='EURUSD') for i in range(35)]
+        lines=['#GOAT_AI_LAUNCH_V147_2\t0\t50\t2']
+        for member,child in zip(members,failure['rows']):lines.append('\t'.join([member['path'],'name','EURUSD','strategy','OFF','OFF','Risk $500',str(child['chartId']),str(child['magic'])]))
+        before=('\r\n'.join(lines)+'\r\n').encode('utf16');after=recovery.reset_state(before,dict(members=members),failure)
+        self.assertEqual(after,before.replace('\t1006\t0\r\n'.encode('utf-16-le'),'\t0\t0\r\n'.encode('utf-16-le')))
+        with self.assertRaises(c.Refused):recovery.reset_state(after,dict(members=members),failure)
+    def test_six_saved_children_remain_exact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);folder,reg,audit=saved_profile(root)
+            for i in range(6,35):(folder/f'child{i:02d}.chr').unlink()
+            failure=self.failure()
+            for i,member in enumerate(reg['members']):failure['rows'][i]['symbol']=member['symbol']
+            orphan=folder/'empty.chr';orphan.write_bytes('<chart>\nid=0\nsymbol=EURUSD\nperiod_type=0\nperiod_size=1\nwindows_total=0\n</chart>\n'.encode('utf16'))
+            files=recovery.saved_prefix(root,reg,failure,orphan);self.assertEqual(len(files),8)
+            good=folder/'child00.chr';good.write_bytes(good.read_bytes().replace('Risk=500.000'.encode('utf-16-le'),'Risk=600.000'.encode('utf-16-le')))
+            with self.assertRaisesRegex(c.Refused,'saved_child_inputs_changed'):recovery.saved_prefix(root,reg,failure,orphan)
+    def test_one_recovery_attempt_preserves_original_failed_intent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);journal=o.Journal(root);journal.add('intent',target='deploy:6')
+            before=journal.path.read_bytes();value=self.failure();value['rows'][6]['chartId']=0
+            authority={'prefix':[[r['chartId'],r['magic']] for r in value['rows'][:6]],'target':'recovery:deploy:6:'+'a'*64}
+            calls=[]
+            class API:
+                successes={'deploy_next':{'child_attached'}}
+                def request(self,action):calls.append(action);return dict(value,result='child_attach_failed')
+            runner=o.Runner(API(),{},journal,True,recovery=authority)
+            target=runner.deployment_target(6,value)
+            with self.assertRaises(o.Stop):runner.call('deploy_next',target)
+            with self.assertRaisesRegex(o.Stop,'mutation_already_attempted'):runner.call('deploy_next',target)
+            self.assertEqual(len(calls),1);self.assertTrue(journal.path.read_bytes().startswith(before))
+            changed=copy.deepcopy(value);changed['rows'][0]['magic']+=5
+            with self.assertRaisesRegex(o.Stop,'recovery_prefix_changed'):runner.deployment_target(6,changed)
+            self.assertEqual(runner.deployment_target(7,value),'deploy:7')
+    def test_recovery_authority_requires_same_journal_chain(self):
+        from types import SimpleNamespace as S
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);journal=o.Journal(root);journal.add('intent',target='deploy:6');journal.add('receipt',result='child_attach_failed',sha256='a'*64)
+            proof=dict(schema=recovery.SCHEMA,status='closed_partial_repair_complete',terminal=7,index=6,registrationSha256='b'*64,
+                runDirectory=str(root.resolve()),journalBeforeSha256=p.digest(journal.path.read_bytes()),failureSha256='a'*64,
+                target='recovery:deploy:6:'+'a'*64,prefix=[[1000+i,2000+i] for i in range(6)])
+            path=root/'proof.json';g.write_new(path,proof);sha=p.digest(path.read_bytes())
+            journal.add('recovery_authorized',proofPath=str(path.resolve()),proofSha256=sha,target=proof['target'])
+            self.assertEqual(recovery.validate_authority(path,sha,journal,S(digest='b'*64)),proof)
+            with self.assertRaises(c.Refused):recovery.validate_authority(path,sha,journal,S(digest='c'*64))
+            journal.add('recovery_authorized',proofPath=str(path.resolve()),proofSha256=sha,target=proof['target'])
+            with self.assertRaises(c.Refused):recovery.validate_authority(path,sha,journal,S(digest='b'*64))
+    def test_closed_stage_preserves_files_and_appends_authority(self):
+        from types import SimpleNamespace as S
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);terminal=root/'07 - fixture';folder=terminal/'MQL5/Profiles/Charts/Default';folder.mkdir(parents=True)
+            (terminal/'config').mkdir();common=prep.fresh_common(c.PAIR_ACCOUNTS[7]);(terminal/'config/common.ini').write_bytes(common)
+            (terminal/'bases').mkdir();(terminal/'bases/gvariables.dat').write_bytes(b'original globals')
+            orphan=folder/'empty.chr';orphan.write_bytes(b'empty pinned fixture');(folder/'good.chr').write_bytes(b'unchanged good profile')
+            state=root/'state.tsv';state.write_bytes(b'original state')
+            run_dir=root/'deployment-07';run_dir.mkdir();journal=o.Journal(run_dir)
+            journal.add('intent',target='deploy:6');journal.add('receipt',result='child_attach_failed',sha256='a'*64)
+            original_journal=journal.path.read_bytes();native=root/'native';native.mkdir();api=S(root=native,digest='b'*64)
+            target=row(7);target['directory']=str(terminal);rows=[target,row(8)]
+            files={'empty.chr':orphan.read_bytes(),'good.chr':(folder/'good.chr').read_bytes()}
+            data=dict(common=common,files=files,stateBefore=b'original state',stateAfter=b'one changed row',globals=b'original globals',
+                failure=self.failure(),journalRaw=original_journal,registrationSha256=api.digest)
+            plan=dict(outputDirectory=str(root/'recovery'),orphan=dict(path=str(orphan),sha256=p.digest(orphan.read_bytes())),
+                state=dict(path=str(state)),failure=dict(sha256='a'*64))
+            plan_path=root/'plan.json';g.write_new(plan_path,plan);witness={'lifecycleLock':str(root/'lifecycle.lock')}
+            host=S(processes=lambda r:[],powershell=lambda cmd:'');args=S(plan=plan_path,protected_witness=root/'witness.json',apply=True)
+            def verify(row,closed):
+                claims=[[v.name,p.digest(v.read_bytes())] for v in sorted(folder.iterdir())]
+                self.assertEqual(row['profileSha256'],p.digest(json.dumps(claims,separators=(',',':')).encode()))
+            with patch.object(recovery,'inspect',return_value=(witness,rows,api,journal,data)),patch.object(c,'WindowsHost',return_value=host),\
+                 patch.object(g,'checked_witness',return_value=witness),patch.object(c,'verify_files',side_effect=verify),\
+                 patch.object(recovery,'replace_preserving_acl',side_effect=lambda path,blob:path.write_bytes(blob)):
+                result=recovery.run(args)
+            out=Path(plan['outputDirectory']);self.assertFalse(orphan.exists())
+            self.assertEqual((out/'quarantined-empty-chart.chr').read_bytes(),files['empty.chr'])
+            self.assertEqual((folder/'good.chr').read_bytes(),files['good.chr']);self.assertEqual((terminal/'config/common.ini').read_bytes(),common)
+            self.assertEqual((terminal/'bases/gvariables.dat').read_bytes(),b'original globals');self.assertEqual(state.read_bytes(),b'one changed row')
+            self.assertTrue(journal.path.read_bytes().startswith(original_journal));self.assertEqual(journal.records[-1]['kind'],'recovery_authorized')
+            recovery.validate_authority(result['recoveryProof'],result['recoveryProofSha256'],journal,api)
+            self.assertEqual(g.read(out/'reconnect-manifest.json')['terminals'][1],row(8))
 
 
 class ReadinessTests(unittest.TestCase):

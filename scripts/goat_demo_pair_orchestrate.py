@@ -91,11 +91,20 @@ def count_attached(value):
 
 
 class Runner:
-    def __init__(self, api, registration, journal, resumed=False, clock=time.monotonic, sleep=time.sleep):
+    def __init__(self, api, registration, journal, resumed=False, clock=time.monotonic, sleep=time.sleep, recovery=None):
         self.api, self.reg, self.journal = api, registration, journal
         self.resumed, self.clock, self.sleep = resumed, clock, sleep
         self.deadline = clock()+3600
         self.calls = 0
+        self.recovery = recovery
+
+    def deployment_target(self,count,value):
+        target=f'deploy:{count}'
+        if count==6 and self.recovery is not None:
+            require([list(v) for v in identities(value)[:6]]==self.recovery['prefix'],'recovery_prefix_changed')
+            require(count_attached(value)==6 and self.journal.tried(target),'recovery_not_original_failure')
+            return self.recovery['target']
+        return target
 
     def call(self, action, target=None):
         require(self.clock() < self.deadline and self.calls < 1024, 'overall_bound')
@@ -147,7 +156,7 @@ class Runner:
             # All existing children must still be linked before one more launch.
             value = self.wait(value, lambda v: count_attached(v) == count and all(r['linkedFresh'] for r in v['rows'][:count]), 'prior_child_link_timeout')
             before = identities(value)
-            value = self.call('deploy_next', f'deploy:{count}')
+            value = self.call('deploy_next', self.deployment_target(count,value))
             require(value['result'] == 'child_attached' and count_attached(value) == count+1,
                     'unexpected_deploy_count')
             require(identities(value)[:count] == before[:count], 'existing_child_changed')
@@ -254,6 +263,8 @@ def main():
     parser.add_argument('--pins',type=Path,required=True)
     parser.add_argument('--protected-witness',type=Path,required=True)
     parser.add_argument('--reconnect-manifest',type=Path,required=True)
+    parser.add_argument('--recovery-proof',type=Path)
+    parser.add_argument('--recovery-proof-sha256')
     args=parser.parse_args()
     global PINS
     PINS=json.loads(bounded(args.pins))
@@ -286,8 +297,14 @@ def main():
         else:
             require(args.inspection is None,'no_prior_journal')
             journal.add('start',binding=binding)
+        recovery=None
+        require(bool(args.recovery_proof)==bool(args.recovery_proof_sha256),'recovery_pin_required')
+        if args.recovery_proof:
+            require(args.terminal==7 and inspected is not None,'recovery_scope')
+            from goat_demo_pair_recover_child import validate_authority
+            recovery=validate_authority(args.recovery_proof,args.recovery_proof_sha256,journal,api)
         journal.add('attempt',resumed=inspected is not None)
-        summary.update(Runner(api,api.reg,journal,inspected is not None).run(inspected))
+        summary.update(Runner(api,api.reg,journal,inspected is not None,recovery=recovery).run(inspected))
         checked_witness(args.protected_witness,host,expected=witness)
         summary['status']='ready_for_separate_trading_check'
     except Stop as error:

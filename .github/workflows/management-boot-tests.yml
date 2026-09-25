@@ -1,0 +1,26 @@
+name: Management boot tests
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  management-boot-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run production-function simulations and related regressions
+        run: |
+          node scripts/test_management_boot.cjs
+          node scripts/test_v148_credential_namespace.cjs
+          node scripts/test_license_init_retry.cjs
+          node scripts/test_activation_retry.cjs
+          node scripts/test_direction_guard.cjs
+          node scripts/test_dashboard_resume.cjs
+          python scripts/test_management_variants.py

@@ -1,0 +1,44 @@
+{
+  "sameTesterInputs": true,
+  "authPathExercised": false,
+  "period": "2026-09-14/2026-09-19",
+  "symbol": "EURUSD",
+  "model": "M1 OHLC",
+  "exactTradeRecordMatch": true,
+  "results": {
+    "baseline": {
+      "dealCount": 10,
+      "dealSha256": "c742bb511f7618b23e97b7d70bfeb4f136a250ca9dc04142e9e64185e4453a46",
+      "finalBalance": "100012.32 USD",
+      "deals": [
+        "2026.09.16 10:32:00   deal #2 sell 0.22 EURUSD at 1.15540 done (based on order #2)",
+        "2026.09.16 21:02:00   deal #3 buy 0.22 EURUSD at 1.15151 done (based on order #3)",
+        "2026.09.16 21:02:40   deal #4 buy 0.22 EURUSD at 1.15134 done (based on order #4)",
+        "2026.09.16 21:15:00   deal #5 buy 0.14 EURUSD at 1.15013 done (based on order #5)",
+        "2026.09.16 21:33:00   deal #6 buy 0.17 EURUSD at 1.14856 done (based on order #6)",
+        "2026.09.16 22:19:00   deal #7 buy 0.21 EURUSD at 1.14665 done (based on order #7)",
+        "2026.09.18 23:59:58   deal #8 sell 0.21 EURUSD at 1.14857 done (based on order #8)",
+        "2026.09.18 23:59:58   deal #9 sell 0.17 EURUSD at 1.14857 done (based on order #9)",
+        "2026.09.18 23:59:58   deal #10 sell 0.14 EURUSD at 1.14857 done (based on order #10)",
+        "2026.09.18 23:59:58   deal #11 sell 0.22 EURUSD at 1.14857 done (based on order #11)"
+      ]
+    },
+    "candidate": {
+      "dealCount": 10,
+      "dealSha256": "c742bb511f7618b23e97b7d70bfeb4f136a250ca9dc04142e9e64185e4453a46",
+      "finalBalance": "100012.32 USD",
+      "deals": [
+        "2026.09.16 10:32:00   deal #2 sell 0.22 EURUSD at 1.15540 done (based on order #2)",
+        "2026.09.16 21:02:00   deal #3 buy 0.22 EURUSD at 1.15151 done (based on order #3)",
+        "2026.09.16 21:02:40   deal #4 buy 0.22 EURUSD at 1.15134 done (based on order #4)",
+        "2026.09.16 21:15:00   deal #5 buy 0.14 EURUSD at 1.15013 done (based on order #5)",
+        "2026.09.16 21:33:00   deal #6 buy 0.17 EURUSD at 1.14856 done (based on order #6)",
+        "2026.09.16 22:19:00   deal #7 buy 0.21 EURUSD at 1.14665 done (based on order #7)",
+        "2026.09.18 23:59:58   deal #8 sell 0.21 EURUSD at 1.14857 done (based on order #8)",
+        "2026.09.18 23:59:58   deal #9 sell 0.17 EURUSD at 1.14857 done (based on order #9)",
+        "2026.09.18 23:59:58   deal #10 sell 0.14 EURUSD at 1.14857 done (based on order #10)",
+        "2026.09.18 23:59:58   deal #11 sell 0.22 EURUSD at 1.14857 done (based on order #11)"
+      ]
+    }
+  }
+}

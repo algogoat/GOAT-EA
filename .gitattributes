@@ -1,3 +1,4 @@
 *.mq5 text eol=crlf
 *.mqh text eol=crlf
+review-builds/management-r4/*/entrypoint.patch -whitespace
 

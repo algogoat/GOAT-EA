@@ -961,7 +961,9 @@ bool GOATBuildAuthenticatedRequestHeaders(string &headers)
 int      timeout  =                                  5000;
 long     Licensed_Account_Number =                      0;  // Account Number     ( 0  for not checking )
 string   Licensed_Account_Title  =                     "";  // Account Title/Name ( "" for not checking )
+#ifndef GOAT_MANAGEMENT_ONLY_BOOT
 datetime Expiry                  = D'2027.08.01 22:00:00';  // Year Month Day Hours Minutes Seconds
+#endif
 int      PortfolioTracking_BucketMinutes =                  10;
 int      PortfolioTracking_SampleSeconds =                   5;
 //+------------------------------------------------------------------+

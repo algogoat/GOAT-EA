@@ -18,6 +18,7 @@ reason to quietly substitute repeated mouse clicks.
 | Set up the reviewed Balanced35 AI pair | [Paired demo setup](PAIRED-DEMO-SETUP.md) | Fresh bare login, isolated production dashboard,35 native attachments and restart/launch evidence; bounded internal contract |
 | Inspect active trading/exposure | `goat-vps-trade-audit` skill | Observed positions, deals, inputs and effective policies |
 | Create or benchmark optimization inputs | `goat-opt-file-create`, `goat-seed-farming` | File integrity, bounded tests and scoped post-run cleanup |
+| Operate Optimization Studio settings, queue and controller | [Studio controller guide](OPTIMIZATION-STUDIO-CONTROLLER.md) | Local/managed controls, exact research command schema, persistence, ownership, receipts, recovery and explicit V1.48 capability gaps |
 | Launch an optimization | `mt5-goat-optimize` and the campaign's current continuation | Exact retained queue, controller ownership, native results |
 | Operate the Electron portfolio builder | Its authenticated local agent API and repo operating docs | Saved pool/job/portfolio IDs and exports; no screen dependency |
 

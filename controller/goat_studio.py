@@ -39,6 +39,9 @@ OPERATION_CONTRACTS = {
     'build-set':dict(required=['source','output','spec'],effect='clone real SET with narrow typed changes, unique EA_Desc, support notes and provenance; never overwrite'),
     'discover':dict(required=[],effect='read installation and schema; runtime readiness not evaluated'),
     'bootstrap':dict(required=['account-login','account-server'],effect='create human-owned local binding and monitor preset; no launch'),
+    'onboarding-status':dict(required=[],effect='read-only staged local monitor evidence and precise recovery; never grants control'),
+    'monitor-prepare':dict(required=['symbol'],effect='create a separate persistent monitor profile only while terminals are stopped; no permissions or launch'),
+    'monitor-launch':dict(required=['attempt-id'],effect='one retained stopped-terminal launch of prepared inert profile; saved login and Algo-off required'),
     'serve':dict(required=[],defaults={'watch-seconds':3600},limits={'watch-seconds':[0,3600]},effect='process durable draft/ownership inboxes; no native launch'),
     'state':dict(required=[],effect='process UI inbox then return full controller state'),
     'submit':dict(required=['request'],effect='apply exact agent envelope with revision and generation checks'),
@@ -131,7 +134,7 @@ class Controller:
         write_json(self.root/'session.json',session)
         write_json(self.local/'active.json',dict(directory_id=run,terminal_id=terminal,run_id=run,
                                                terminal_data_path=self.install['terminal_data_root']))
-        return session|dict(monitor_preset=str(preset),next_action='Attach installed EA to a chart, load monitor preset, enable DLLs, keep Algo Trading off, run serve, then Give to Agent in Studio')
+        return session|dict(monitor_preset=str(preset),next_action='Run onboarding-status. With selected terminal stopped, monitor-prepare --symbol <exact broker symbol> then monitor-launch --attempt-id <new-id> stages and opens a persistent monitor. User approves DLL/WebRequest, keeps Algo Trading off; run serve, then human Give to Agent.')
 
     def prepare(self,job_id,set_path,configuration):
         from strategy_registry import connect,inspect_set
@@ -247,7 +250,9 @@ def main(argv=None):
     p=sub.add_parser('save-batch');p.add_argument('--batch-id',required=True);p.add_argument('--output',type=Path,required=True)
     p=sub.add_parser('load-batch');p.add_argument('--batch-id',required=True);p.add_argument('--file',type=Path,required=True)
     p=sub.add_parser('resume-batch');p.add_argument('--batch-id',required=True);p.add_argument('--source-batch-id',required=True);p.add_argument('--include-failed',action='store_true')
-    sub.add_parser('discover');sub.add_parser('state')
+    sub.add_parser('discover');sub.add_parser('state');sub.add_parser('onboarding-status')
+    p=sub.add_parser('monitor-prepare');p.add_argument('--symbol',required=True)
+    p=sub.add_parser('monitor-launch');p.add_argument('--attempt-id',required=True)
     p=sub.add_parser('validate-set');p.add_argument('--set',type=Path,required=True);p.add_argument('--require-optimization',action='store_true')
     p=sub.add_parser('build-set');p.add_argument('--source',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--spec',type=Path,required=True)
     p=sub.add_parser('bootstrap');p.add_argument('--account-login',required=True);p.add_argument('--account-server',required=True)
@@ -262,6 +267,11 @@ def main(argv=None):
         if args.operation=='discover':
             result=dict(controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 executable may be running for ordinary native batch activation','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
         elif args.operation=='bootstrap': result=controller.bootstrap(args.account_login,args.account_server)
+        elif args.operation in ('onboarding-status','monitor-prepare','monitor-launch'):
+            from studio_onboarding import onboarding_status,monitor_prepare,monitor_launch
+            if args.operation=='onboarding-status': result=onboarding_status(controller)
+            elif args.operation=='monitor-prepare': result=monitor_prepare(controller,args.symbol)
+            else: result=monitor_launch(controller,args.attempt_id)
         elif args.operation=='validate-set':
             from studio_template_tools import validate_set
             result=validate_set(args.set,controller.schema,controller.policy,require_optimization=args.require_optimization)

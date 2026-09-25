@@ -14,6 +14,64 @@ In the unified agent kit, prefix each command below with:
 The standalone equivalent is `python.exe controller\goat_studio.py` followed by
 the same arguments, using the bundled runtime rather than a system Python.
 
+## Agent-assisted monitor onboarding
+
+After desktop sign-in, use desktop `onboarding.status` for beta access and the
+user's own linked account. These Studio commands operate the selected installed
+terminal and do not enroll a tester, approve EA pairing, or collect passwords.
+The user signs in to their own demo directly in MT5, turns Algo Trading off, and
+closes that terminal normally when setup requires a stopped terminal. Never stop
+another terminal to satisfy setup checks; arrange an isolated research session.
+
+With the usual executable and global installation prefix above:
+
+```text
+bootstrap --account-login <own-demo-login> --account-server <exact-broker-server>
+onboarding-status
+monitor-prepare --symbol <exact-broker-symbol>
+monitor-launch --attempt-id first-monitor-open
+serve --watch-seconds 3600
+```
+
+`monitor-prepare` writes a dedicated `GOAT-Studio-<session>` profile, including
+one persistent chart and the actual installed EA path. It selects Studio's
+read-only monitor inputs and leaves DLL and trading permissions disabled on the
+chart. It neither changes the user's existing profile nor edits `common.ini`.
+`monitor-launch` uses MT5 `/profile`, with `/portable` only when the installation
+receipt identifies portable mode; it does not use a disposable `/config` startup
+chart. The saved broker login/server must match the controller binding, saved
+Algo Trading must be off, and nonportable installations must have matching
+`origin.txt`. All terminal processes must be stopped for this conservative beta
+setup path. No command closes a terminal or enables trading.
+
+The human approves DLL imports and the exact WebRequest URL displayed by GOAT,
+completes legitimate GOAT device activation, and clicks **Give to Agent** in
+Studio while `serve` runs. Run `onboarding-status` again to inspect the resulting
+state. It does not consume pending human requests; `serve` performs that step.
+A stale monitor, changed account, enabled Algo Trading, unknown tester state or
+mismatched owner/revision/generation remains blocked. `local_monitor_ready`
+means these local observations match; `execution_ready:false` and
+`native_qualification:false` remain explicit. Job start still rechecks runtime,
+ownership, license-dependent initialization and frozen artifacts. Desktop beta
+eligibility and actual native execution qualification are separate evidence.
+
+A launch attempt ID is never replayed. The same ID returns its retained result,
+even after process exit. After a normal close, a new explicit attempt ID may
+reopen the saved monitor; the controller revalidates the chart's EA path, inert
+Studio inputs, symbol, permission flags and absence of extra charts/indicators.
+MT5 metadata changes and the human's DLL approval can persist; chart trading
+permission remains disallowed. A launch error or crash retains `launch_intent`
+and blocks new attempts until the uncertain effect has been inspected. Preserve
+that evidence and use support if it cannot be resolved; do not delete it to
+force a retry. Partial profile staging is also preserved and never overwritten.
+
+The profile format follows the repository's existing persistent-chart bootstrap.
+Only fixture acceptance has been run for these commands. Real broker-symbol
+acceptance, human permissions/activation, normal-close persistence and at least
+two native members still require the exact packaged build's MT5 qualification.
+MT5's [startup documentation](https://www.metatrader5.com/en/terminal/help/start_advanced/start)
+distinguishes precreated `/profile` charts from disposable `[StartUp]` charts.
+
 ## Commands and effects
 
 | Command | Required options | Effect |
@@ -22,6 +80,9 @@ the same arguments, using the bundled runtime rather than a system Python.
 | `validate-set` | `--set`, optional `--require-optimization` | Read-only encoding, complete input, active range and partial dependency validation |
 | `build-set` | `--source`, `--output`, `--spec` | Clone a real SET with narrow typed replacements; new unique identity, support notes and provenance |
 | `bootstrap` | `--account-login`, `--account-server` | Create local human-owned binding and monitor preset; never launch |
+| `onboarding-status` | None | Read-only local binding, process, fresh monitor and human ownership stages; exact recovery steps |
+| `monitor-prepare` | `--symbol` | Stage a separate persistent inert monitor profile while terminals are stopped; preserve other profiles |
+| `monitor-launch` | `--attempt-id` | One retained launch of the prepared profile; verify saved account, Algo-off, process and job state |
 | `serve` | Optional `--watch-seconds` | Process Studio inboxes; default 3600, range 0–3600; zero is one cycle |
 | `state` | None | Process pending UI commands then return drafts/queue/ownership |
 | `submit` | `--request` JSON file | Submit exact versioned agent command envelope; no actor override |

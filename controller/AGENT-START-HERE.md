@@ -52,9 +52,13 @@ document every change and register new candidates as untested local matrix forks
 2. Run `bootstrap --account-login <login> --account-server '<server>'` with
    the global `--installation` argument. It creates local state and an EA preset,
    prints its path, and leaves control with the human. It never launches MT5.
-3. Attach the installed GOAT EA to a chart and load the generated
-   **GOAT Studio Agent.set** preset. It selects the monitor-only Studio mode.
-   Enable DLL imports, keep Algo Trading off, and confirm the demo connection.
+3. Run `onboarding-status`. With terminals stopped, run
+   `monitor-prepare --symbol <exact broker symbol>` then
+   `monitor-launch --attempt-id <new unique ID>`. These commands create and open
+   a separate persistent monitor chart without editing existing profiles or
+   granting permissions. The user approves DLL imports and the WebRequest URL
+   shown by the EA, completes GOAT activation, and keeps Algo Trading off.
+   See [onboarding and recovery](README.md#agent-assisted-monitor-onboarding).
 4. Run `serve` in a separate process while using the Studio UI. Its bounded
    default is one hour; restart it explicitly when needed. It processes durable
    human/agent requests and refreshes the snapshot, not MT5 jobs. The user saves

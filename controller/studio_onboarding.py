@@ -81,6 +81,8 @@ def onboarding_status(controller):
         same = all(observation.get(k) == state[k] for k in ('owner','revision','generation'))
         if not same:
             raise ValueError('Monitor and controller revision/generation/owner differ; run serve and recheck')
+        stamp = datetime.strptime(observation['observed_terminal_utc'], '%Y.%m.%d %H:%M:%S').replace(tzinfo=timezone.utc).timestamp()
+        result['runtime_valid_until_ms'] = int((min(modified, stamp) + 20) * 1000)
         step('native_monitor', 'complete', 'Fresh bound demo monitor is connected, Algo Trading off and tester idle')
         step('agent_control', 'complete' if state['owner']=='agent' else 'human_action',
              'Human clicks Give to Agent in Studio while serve is running; then recheck status')

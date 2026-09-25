@@ -69,6 +69,8 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(result['account'], {'login':'123456','server':'Customer-Demo'})
         self.assertFalse(result['execution_ready'])
         self.assertFalse(result['native_qualification'])
+        self.assertGreater(result['runtime_valid_until_ms'], time.time()*1000)
+        self.assertLessEqual(result['runtime_valid_until_ms'], (time.time()+20)*1000)
 
     def test_stale_revision_or_feedback_never_ready(self):
         self.fixture.grant(self.c);self.observe(generation=-1)

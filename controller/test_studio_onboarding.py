@@ -66,6 +66,7 @@ class OnboardingTests(unittest.TestCase):
         self.fixture.grant(self.c);self.observe()
         result = onboarding_status(self.c)
         self.assertEqual(result['status'],'local_monitor_ready')
+        self.assertEqual(result['account'], {'login':'123456','server':'Customer-Demo'})
         self.assertFalse(result['execution_ready'])
         self.assertFalse(result['native_qualification'])
 

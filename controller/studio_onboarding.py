@@ -50,6 +50,7 @@ def onboarding_status(controller):
                   scope='Local monitor onboarding only; desktop onboarding.status checks signed-in beta access and account linking')
     try:
         session, state = session_state(controller)
+        result['account'] = dict(login=session['account']['login'], server=session['account']['server'])
         step('controller_binding', 'complete', 'Existing local demo account binding verified')
     except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
         step('controller_binding', 'blocked', 'Run bootstrap --account-login <own demo login> --account-server <exact server>', detail=str(exc))

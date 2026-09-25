@@ -17,6 +17,7 @@ from studio_runtime_check import check_runtime
 from studio_startup_config import startup_config
 from studio_input_readback import explicit_paste_inputs
 from studio_strategy_settings import read_values
+from studio_batch_contract import configuration_members
 
 
 def ini_sections(raw):
@@ -74,33 +75,44 @@ def _validate_material(state, job, *, account, monitor_path, monitor_sha256, inp
         raise ValueError('Launch package changed')
     manifest=json.loads(raw);plan=json.loads((package/'studio-plan.json').read_text(encoding='utf-8'))
     source=plan['studio_source'];binding=plan['research_binding']
-    if manifest['campaign_id']!=sha(plan) or len(manifest['jobs'])!=1:
+    if manifest['campaign_id']!=sha(plan) or not manifest['jobs']:
         raise ValueError('Package identity mismatch')
     if any(source[k]!=v for k,v in dict(terminal_id=state['terminal_id'],run_id=state['run_id'],
             job_id=job['job_id'],configuration_sha256=job['configuration_sha256'],source_revision=job['source_revision']).items()):
         raise ValueError('Package does not belong to frozen job')
     config=job['configuration']
-    if input_schema is None or sha(input_schema)!=config['strategy']['schema_hash']:
-        raise ValueError('Trusted input schema does not match frozen job')
+    members=configuration_members(config)
+    if len(manifest['jobs'])!=len(members):raise ValueError('Manifest/frozen member count mismatch')
     if sha(config)!=job['configuration_sha256']:raise ValueError('Frozen job drift')
     if plan['native_batch']['export_settings']!=config['export'] or binding['ea_relative_path']!=config['tester']['Expert']:
         raise ValueError('Frozen export policy or research expert mismatch')
     verify_export_policy(package,plan,manifest)
-    item=manifest['jobs'][0];alias=item['run_alias'];relative=manifest['native_run_relative']
-    if not re.fullmatch(r'R[0-9a-f]{20}',alias) or not re.fullmatch(r'GOAT\\R[0-9a-f]{12}',relative):
+    relative=manifest['native_run_relative']
+    if not re.fullmatch(r'GOAT\\R[0-9a-f]{12}',relative):
         raise ValueError('Invalid native path')
-    staged_set=(package/(alias+'.set')).read_bytes();staged_ini=(package/(alias+'.ini')).read_bytes()
-    if hashlib.sha256(staged_set).hexdigest()!=item['staged_sha256'] or hashlib.sha256(staged_ini).hexdigest()!=item['ini_sha256']:
-        raise ValueError('Staged SET/INI drift')
-    if read_values(staged_set)!=(config['strategy']['values']|{'EA_Desc':alias}):
-        raise ValueError('Staged strategy differs from frozen job')
-    sections=ini_sections(staged_ini)
-    if sections.get('Tester')!={key:str(value) for key,value in item['tester'].items()}:
-        raise ValueError('Staged tester differs from manifest')
-    for key,value in config['tester'].items():
-        if str(value)!=sections['Tester'].get(key):raise ValueError('Frozen tester mismatch: '+key)
-    if sections.get('TesterInputs')!=read_values(staged_set):raise ValueError('Inline input drift')
-    paste_inputs=explicit_paste_inputs(sections['TesterInputs'],input_schema)
+    materials=[];aliases=set()
+    for member,item in zip(members,manifest['jobs']):
+        if input_schema is None or sha(input_schema)!=member['strategy']['schema_hash']:
+            raise ValueError('Trusted input schema does not match frozen member')
+        if member['tester']['Expert']!=binding['ea_relative_path']:
+            raise ValueError('Frozen member expert differs from installation')
+        alias=item['run_alias']
+        if not re.fullmatch(r'R[0-9a-f]{20}',alias) or alias in aliases:raise ValueError('Invalid or duplicate native alias')
+        aliases.add(alias)
+        staged_set=(package/(alias+'.set')).read_bytes();staged_ini=(package/(alias+'.ini')).read_bytes()
+        if hashlib.sha256(staged_set).hexdigest()!=item['staged_sha256'] or hashlib.sha256(staged_ini).hexdigest()!=item['ini_sha256']:
+            raise ValueError('Staged SET/INI drift')
+        if read_values(staged_set)!=(member['strategy']['values']|{'EA_Desc':alias}):
+            raise ValueError('Staged strategy differs from frozen member')
+        member_sections=ini_sections(staged_ini)
+        if member_sections.get('Tester')!={key:str(value) for key,value in item['tester'].items()}:
+            raise ValueError('Staged tester differs from manifest')
+        for key,value in member['tester'].items():
+            if str(value)!=member_sections['Tester'].get(key):raise ValueError('Frozen tester mismatch: '+key)
+        if member_sections.get('TesterInputs')!=read_values(staged_set):raise ValueError('Inline input drift')
+        member_paste=explicit_paste_inputs(member_sections['TesterInputs'],input_schema)
+        materials.append(dict(sections=member_sections,paste_inputs=member_paste,alias=alias))
+    sections=materials[0]['sections'];paste_inputs=materials[0]['paste_inputs']
     data=Path(binding['research_data_root']).resolve()
     if binding.get('account_confirmation_pending',True) or binding.get('live_trading_allowed',True):
         raise ValueError('Explicit research account authorization required')
@@ -112,7 +124,7 @@ def _validate_material(state, job, *, account, monitor_path, monitor_sha256, inp
     monitor=Path(monitor_path).resolve()
     if not monitor.is_relative_to(data/'MQL5/Experts') or hashlib.sha256(monitor.read_bytes()).hexdigest()!=monitor_sha256.lower():
         raise ValueError('Studio monitor binary drift')
-    material=dict(package=package,manifest=manifest,plan=plan,sections=sections,paste_inputs=paste_inputs)
+    material=dict(package=package,manifest=manifest,plan=plan,sections=sections,paste_inputs=paste_inputs,members=materials)
     startup_monitor=binding.get('startup_monitor')
     if startup_monitor is not None:
         if set(startup_monitor)!={'expert','preset','preset_sha256'}:

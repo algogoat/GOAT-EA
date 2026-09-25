@@ -8,16 +8,38 @@ from campaign_ledger import sha
 from studio_report_paths import report_paths
 from verify_native_reports import verify_pair, read_report
 from studio_export_scan import scan_exports
+from studio_batch_contract import configuration_members
 
 
-def observe_reports(package, configuration, schema=None):
+def observe_reports(package, configuration, schema=None, member_statuses=None):
     package = Path(package)
     manifest = json.loads((package / 'manifest.json').read_text(encoding='utf-8'))
     plan = json.loads((package / 'studio-plan.json').read_text(encoding='utf-8'))
     if (manifest['campaign_id'] != sha(plan)
             or plan['studio_source']['configuration_sha256'] != sha(configuration)):
         raise ValueError('Report package/configuration binding mismatch')
-    paths = report_paths(plan, manifest)
+    members=configuration_members(configuration)
+    if len(members)!=len(manifest['jobs']):raise ValueError('Report/frozen member count mismatch')
+    if member_statuses is not None and (not isinstance(member_statuses,list) or len(member_statuses)!=len(members)):
+        raise ValueError('Complete native member status coverage required')
+    results=[]
+    for index,member in enumerate(members):
+        native_status=member_statuses[index] if member_statuses is not None else 'native_completed'
+        if native_status=='native_completed':
+            observed=_observe_member(package,plan,manifest,member,schema,index)
+        else:
+            observed=dict(status='member_not_completed',native_status=native_status,export_qualification='not_evaluated')
+        results.append(observed|dict(index=index,run_alias=manifest['jobs'][index]['run_alias'],symbol=member['tester']['Symbol']))
+    if len(results)==1:return results[0]
+    verified=all(item['status']=='report_pair_verified' or (item['status']=='member_not_completed' and item['native_status'] in ('native_cancelled','native_error')) for item in results)
+    return dict(status='report_batch_verified' if verified else 'batch_reports_pending',members=results,
+                member_count=len(results),verified_completed_count=sum(item['status']=='report_pair_verified' for item in results),
+                launch_permitted=False,retry_permitted=False,release_permitted=False,
+                export_qualification='Per-member native evidence; independent portfolio import verification required')
+
+
+def _observe_member(package,plan,manifest,configuration,schema,index):
+    paths = report_paths(plan, manifest, index)
     tester = configuration['tester']
     axes = sorted(configuration['strategy']['axes'])
     title = (f"{PureWindowsPath(tester['Expert']).stem} {tester['Symbol']},{tester['Period']} "
@@ -42,7 +64,7 @@ def observe_reports(package, configuration, schema=None):
         return result | dict(status='reports_unverified', reason=str(exc))
     exports = dict(status='trusted_schema_required', qualified_count=None, release_permitted=False)
     if schema is not None and sha(schema) == configuration['strategy']['schema_hash']:
-        native_job = manifest['jobs'][0]
+        native_job = manifest['jobs'][index]
         source_path = paths['common_run']/'inputs'/native_job['run_alias']/'Inputs.GOAT'
         source_raw = source_path.read_bytes()
         if hashlib.sha256(source_raw).hexdigest() != native_job['staged_sha256']:

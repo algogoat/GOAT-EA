@@ -46,7 +46,7 @@ def reconcile(store, terminal_id, run_id, job_id, attempt_id, *, revision,
           and runtime_observation['runtime']['batch_ongoing'] is True):status='running'
     gate=store.db.execute('SELECT root FROM studio_native_gate WHERE id=1').fetchone()
     dispatch=observe_dispatch(gate[0],attempt_id) if gate else None
-    reports=observe_reports(package,job['configuration'],store.input_schema) if native['status']=='native_completed' else None
+    reports=observe_reports(package,job['configuration'],store.input_schema,member_statuses=[member['status'] for member in native.get('members',[])]) if any(member['status']=='native_completed' for member in native.get('members',[])) else None
     evidence=dict(native=native,reports=reports,runtime=runtime,runtime_feedback=runtime_observation,dispatch=dispatch,
                   status=status,attempt_id=attempt_id)
     # Poll timestamps do not create endless queue revisions. Preserve the actual

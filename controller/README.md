@@ -31,13 +31,28 @@ the same arguments, using the bundled runtime rather than a system Python.
 | `cancel` | `--job-id` | Cancel pending job or publish owned native stop; reconcile before claiming stopped |
 | `finish` | `--job-id` | Confirm terminal idle and terminal queue outcome, retain result, restore owned controls |
 
-`start` supports the **first pending** job only. The beta uses local genetic
+`start` supports the **first pending controller job**, which can contain a full
+native batch of frozen file/asset members. The beta uses local genetic
 optimization (`Optimization=2`, criterion 6), a custom forward date (`ForwardMode=4`),
 nonvisual testing, local workers enabled and remote/cloud workers disabled.
 Only the chosen MT5 executable may be running for native activation. If another
 terminal is open, stop here and let the user close it normally; do not kill it.
-The controller does not install a service, restart MT5 or auto-start the next job.
-It supports one frozen job per native package and serial explicit starts.
+The controller does not install a service or automatically start a separate
+controller job. A native batch starts once; Optimization Studio advances its
+native queue across the frozen members. Initial activation queues the first
+member and retains the rest as Pending. Every member's settings, input hashes,
+native progress and report evidence are independently checked. Native terminal
+restart/continuation still requires actual lifecycle qualification; controller
+unit tests do not prove runtime acceptance.
+
+Batch progress includes member status counts, completed/finished totals and the
+active member indices. Cancel disarms the entire owned native batch and cancels
+its unfinished rows while preserving completed rows. Finish requires all members
+to reach a terminal state and verifies reports for every completed member, even
+when another member failed or was cancelled. Results retain each member outcome;
+never present a partly completed batch as entirely successful. Save/load creates
+new frozen work through the installed batch API; resume must preserve prior
+outcomes and use a new explicit attempt for selected unfinished members.
 
 ## Configuration
 

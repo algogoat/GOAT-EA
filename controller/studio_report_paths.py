@@ -3,10 +3,10 @@ from pathlib import Path, PureWindowsPath
 import re
 
 
-def report_paths(plan, manifest):
-    if len(manifest['jobs']) != 1:
-        raise ValueError('One managed report job required')
-    job = manifest['jobs'][0]
+def report_paths(plan, manifest, index=0):
+    if type(index) is not int or not 0<=index<len(manifest['jobs']):
+        raise ValueError('Existing managed report member index required')
+    job = manifest['jobs'][index]
     run = manifest['native_run_relative']
     alias = job['run_alias']
     if not re.fullmatch(r'GOAT\\R[0-9a-f]{12}', run) or not re.fullmatch(r'R[0-9a-f]{20}', alias):

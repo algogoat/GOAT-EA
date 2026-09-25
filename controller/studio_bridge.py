@@ -34,6 +34,12 @@ def display_state(state):
                        for job in state.get('queue', [])]
     result['queue_detail'] = 'display_summary_only'
     for summary, job in zip(result['queue'], state.get('queue', [])):
+        if 'batch_members' in job['configuration']:
+            summary['batch_member_count']=len(job['configuration']['batch_members'])
+            summary['batch_members']=[dict(index=index,symbol=member['tester']['Symbol'],period=member['tester']['Period']) for index,member in enumerate(job['configuration']['batch_members'])]
+        if 'native_observation' in job:
+            native=job['native_observation'].get('native',{})
+            summary['native_progress']={key:native[key] for key in ('member_count','status_counts','completed_count','finished_count','active_indices') if key in native}
         if 'restart_intent' in job:
             summary['restart_phase'] = job['restart_intent']['phase']
             for field in ('attempt_id', 'startup_sha256'):

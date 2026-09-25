@@ -50,11 +50,12 @@ def _install_controls(state,job,*,restart,account,observation_path,monitor_path,
     relative=manifest['native_run_relative'];alias=manifest['jobs'][0]['run_alias']
     run=common/relative.replace('\\','/');evidence=Path(evidence).resolve()
     if run.exists() or evidence.exists():raise ValueError('Existing activation requires reconciliation')
-    reports=report_paths(plan,manifest)
+    all_reports=[report_paths(plan,manifest,index) for index in range(len(manifest['jobs']))]
+    reports=all_reports[0]
     if reports['local_run'].exists():raise ValueError('Existing local report run requires reconciliation')
     raw_queue=(package/'queue.GOAT').read_bytes().decode('utf-16')
-    if raw_queue.count(';Pending_')!=1 or ';OnGoing_' in raw_queue or ';Queued_' in raw_queue:
-        raise ValueError('Only untouched single-job package accepted')
+    if raw_queue.count(';Pending_')!=len(manifest['jobs']) or ';OnGoing_' in raw_queue or ';Queued_' in raw_queue:
+        raise ValueError('Only an untouched complete native batch package is accepted')
     queue=raw_queue.replace(';Pending_',';Queued_',1)
     title=queue.strip().splitlines()[0].strip(';')
     owner=job['launch_intent']['attempt_id']
@@ -71,19 +72,23 @@ def _install_controls(state,job,*,restart,account,observation_path,monitor_path,
     # MT5 requires the destination folder to exist before writing its XML.
     # Reserve the entire unique local run: stale/colliding reports never mix.
     reports['local_run'].mkdir(parents=True,exist_ok=False)
-    reports['local_back'].parent.mkdir(parents=True,exist_ok=False)
+    for member_reports in all_reports:
+        member_reports['local_back'].parent.mkdir(parents=True,exist_ok=False)
     shutil.copytree(package,run)
-    reports['common_back'].parent.mkdir(parents=True,exist_ok=True)
+    for member_reports in all_reports:
+        member_reports['common_back'].parent.mkdir(parents=True,exist_ok=True)
     (run/'queue.GOAT').write_bytes(queue.encode('utf-16'))
     batch=(package/'portfolio.goatbatch').read_bytes().decode('utf-16')
     (run/'portfolio.goatbatch').write_bytes(batch.replace(';Pending_',';Queued_',1).encode('utf-16'))
-    (run/'inputs'/alias/'config.ini').write_bytes(config)
+    for item in manifest['jobs']:
+        (run/'inputs'/item['run_alias']/'config.ini').write_bytes((package/(item['run_alias']+'.ini')).read_bytes())
     base.mkdir(parents=True,exist_ok=True)
     transaction=begin(base,evidence,replacements,expected,owner)
     validator=validate_restart_controls if restart else validate_activated_job
     fields=validator(state,job,evidence=evidence,**args)
     receipt=dict(stage='CONTROLS_INSTALLED_NOT_ARMED',attempt_id=owner,run=str(run),
         report_destinations={key:str(value) for key,value in reports.items()},
+        member_report_destinations=[{key:str(value) for key,value in member.items()} for member in all_reports],
         observed_at=datetime.now(timezone.utc).isoformat(),transaction_phase=transaction['phase'],
         request_fields_sha256=hashlib.sha256(json.dumps(fields,sort_keys=True).encode()).hexdigest())
     (evidence/'activation.json').write_text(json.dumps(receipt,indent=2),encoding='utf-8')

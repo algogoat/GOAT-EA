@@ -22,9 +22,11 @@ def finish(controller,job_id):
     native=observe(package)
     outcomes={'native_completed':'completed','native_cancelled':'cancelled','native_error':'failed'}
     if native['status'] not in outcomes: raise ValueError('Native queue is not finished; reconcile, do not reset')
-    reports=observe_reports(package,job['configuration'],controller.schema) if native['status']=='native_completed' else None
-    if reports and reports['status']!='report_pair_verified': raise ValueError('Completed queue still requires verified report pair')
-    result=dict(schema_version=1,attempt_id=intent['attempt_id'],job_id=job_id,status=outcomes[native['status']],
+    completed_members=any(member['status']=='native_completed' for member in native['members'])
+    reports=observe_reports(package,job['configuration'],controller.schema,member_statuses=[member['status'] for member in native['members']]) if completed_members else None
+    if reports and reports['status'] not in ('report_pair_verified','report_batch_verified'):
+        raise ValueError('Completed queue members still require verified report pairs')
+    result=dict(schema_version=1,member_outcomes=native['members'],attempt_id=intent['attempt_id'],job_id=job_id,status=outcomes[native['status']],
                 configuration_sha256=job['configuration_sha256'],configuration=job['configuration'],native=native,reports=reports,
                 source=read_json(controller.root/'packages'/(job_id+'.source.json')),
                 package_sha256=intent['package_sha256'],

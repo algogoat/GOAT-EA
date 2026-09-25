@@ -10,7 +10,7 @@ reason to quietly substitute repeated mouse clicks.
 | Goal | Entry point | What it proves |
 |---|---|---|
 | Compile an EA | `mt5-goat-compile` skill | Source, compiler, output hash and clean compile log |
-| Review management-only boot or plan an EA upgrade | [Management-only boot](MANAGEMENT-ONLY-BOOT.md) | Failure matrix, checkpoint scope, degraded legacy recovery, repeatable tests and release gates; draft candidate, not deployed |
+| Review management-only boot or plan an EA upgrade | [Management-only R4 qualification](MANAGEMENT-ONLY-R4-QUALIFICATION.md) | Failure matrix, checkpoint scope, degraded legacy recovery, repeatable tests and release gates; draft candidate, not deployed |
 | Connect an owned inert demo | `scripts/goat_demo_connection.py --help` and [connection contract](DEMO-CONNECTION.md) | Process/hash preflight, one login attempt, exact native account readback; login and encrypted-provider reconnection verified on the local preview host |
 | Inspect installed setup evidence | `scripts/goat_setup_status.py --help` | Saved observations and optional disk hash; not live readiness |
 | Native terminal status, pairing, orderly shutdown | `scripts/goat_setup_control.py --help` | Scoped request and matching native receipt |

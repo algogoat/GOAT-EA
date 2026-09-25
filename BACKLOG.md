@@ -5,6 +5,7 @@ V1.48/dashboard work; they do not replace other branches' historical backlog.
 
 | ID | Work | State | Acceptance |
 |---|---|---|---|
+| EXPORT-148-01 | Capture native sequence evidence within selected batch export backtests and import it for exposure-filter construction | Implemented; native and service qualification passed | Exact final SET/CSV binding, original/adjusted sizing, complete native lifecycle/costs, atomic package retention, generic pool import/search, no extra capture run for matching future exports; [evidence](docs/operations/V1.48-SEQUENCE-EXPORT.md) |
 | UI-148-01 | Restore **Dashboard** chart navigation | Implemented; native QA pending | Exact dashboard is brought forward after ordinary restart; missing/ambiguous target handled |
 | UI-148-02 | Clear AI/exposure summaries and grouped controls | Implemented; native QA pending | Readable at supported window sizes; all controls reachable; unknown/mixed policy never presented as confirmed |
 | UI-148-03 | Remove noisy overview stale column and fair child polling | Source tests passed | Diagnostics retains useful age; one silent child cannot starve the remaining fleet |

@@ -1,7 +1,7 @@
 --- a/GOAT V1.48.mq5
 +++ b/GOAT V1.48.mq5
 @@ -1,12 +1,13 @@
- #define GOAT_STUDIO_UNIFIED_V147 1
+ ﻿#define GOAT_STUDIO_UNIFIED_V147 1
 +#define GOAT_MANAGEMENT_ONLY_BOOT 1
  #define   GOAT_VERSION_LABEL "1.48"
  #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
@@ -36,11 +36,11 @@
 @@ -1627,6 +1629,7 @@
       if(Size_TSL ==1234.5) Size_TSL  = GetSize(TSL);
       if(EnforceSequenceMLPS("add level")) return false;
-
+ 
 +     if(!GOATCanAddRisk() && (!Active || Virtual)) return false;
       bool   hadPriorLevel = (Level_Count>0);
       double prevLevel     = Level_Last;
-
+ 
 @@ -1683,6 +1686,7 @@
        else return false;
       }
@@ -126,7 +126,7 @@
 +         if(!g_GOATManager) return INIT_FAILED;
          }
       }
-
+ 
 @@ -2810,7 +2790,6 @@
     if(Mode_Trade==Long_and_Short || Mode_Trade==Short) Sell_EN=true;    else Sell_EN=false;
  //-------------------------------------------------------------------------
@@ -150,7 +150,7 @@
 -    if(Mode_Download!=Download_News&&Mode_Download!=Download_NewsBias)
 +    if(!g_GOATManager && Mode_Download!=Download_News&&Mode_Download!=Download_NewsBias)
      LicenseKey = VerifyLicense(AccountInfoInteger(ACCOUNT_LOGIN),AccountInfoString(ACCOUNT_NAME),AccountInfoString(ACCOUNT_SERVER),true);
-
+ 
 -    if(LicenseKey==LICENSE_VALID)//||LicenseKey!=0)
 +    if(LicenseKey==LICENSE_VALID || g_GOATManager)
      {

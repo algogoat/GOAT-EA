@@ -494,4 +494,3 @@ void GoatTraceClose(const int reason)
    GoatTracePublish();
   }
 #endif
-

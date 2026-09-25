@@ -25,6 +25,8 @@ def load_installation(path):
         raise ValueError('Version 1 installation receipt required; run GOAT Setup')
     if value['controller_version'] != VERSION or value['ea_version'] != '1.48':
         raise ValueError('EA/controller receipt is incompatible with this controller')
+    if not isinstance(value['ea_relative_path'],str) or not isinstance(value['ea_sha256'],str):
+        raise ValueError('EA relative path and SHA-256 must be strings')
     for name in ('terminal_executable','terminal_data_root','common_files_root','controller_state_root'):
         if not isinstance(value[name],str) or not Path(value[name]).is_absolute():
             raise ValueError('Absolute installed path required: '+name)

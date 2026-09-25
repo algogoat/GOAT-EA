@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import sqlite3
 import sys
+import subprocess
 import time
 import uuid
 
@@ -21,6 +22,20 @@ from studio_command_store import StudioStore
 from studio_native_gate import configure_gate,exclusive_gate
 from studio_strategy_settings import read_values
 from studio_settings import FIELDS,PERIODS,validate_tester,validate_export
+
+OPERATION_CONTRACTS = {
+    'discover':dict(required=[],effect='read installation and schema; runtime readiness not evaluated'),
+    'bootstrap':dict(required=['account-login','account-server'],effect='create human-owned local binding and monitor preset; no launch'),
+    'serve':dict(required=[],defaults={'watch-seconds':3600},limits={'watch-seconds':[0,3600]},effect='process durable draft/ownership inboxes; no native launch'),
+    'state':dict(required=[],effect='process UI inbox then return full controller state'),
+    'submit':dict(required=['request'],effect='apply exact agent envelope with revision and generation checks'),
+    'prepare':dict(required=['job-id','set','configuration'],effect='freeze explicit settings and stage pending native package'),
+    'start':dict(required=['job-id'],effect='explicit one-time native dispatch for first pending job; reconcile receipt'),
+    'status':dict(required=['job-id'],effect='observe retained attempt; update reconciled state without retry'),
+    'reconcile':dict(required=['job-id'],effect='alias of status'),
+    'cancel':dict(required=['job-id'],effect='cancel pending job or publish exact owned native stop; receipt is not stop proof'),
+    'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls')
+}
 
 
 class Controller:
@@ -218,7 +233,7 @@ def main(argv=None):
     try:
         controller=Controller(args.installation)
         if args.operation=='discover':
-            result=dict(controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),tester_fields=sorted(FIELDS),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 executable may be running','Native optimization requires custom forward and local workers','Give to Agent required; start is explicit; no automatic restart'],execution_ready=False)
+            result=dict(controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 executable may be running','Native optimization requires custom forward and local workers','Give to Agent required; start is explicit; no automatic restart'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
         elif args.operation=='bootstrap': result=controller.bootstrap(args.account_login,args.account_server)
         else:
             controller.open()
@@ -234,7 +249,7 @@ def main(argv=None):
                 result=finish(controller,args.job_id)
             else: result=controller.reconcile(args.job_id)
         print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
-    except (OSError,ValueError,KeyError,sqlite3.Error) as exc:
+    except (OSError,ValueError,KeyError,sqlite3.Error,subprocess.SubprocessError) as exc:
         print(json.dumps(dict(ok=False,error=str(exc),recovery='Preserve receipts; inspect state and matching job/attempt before retrying a mutation')));return 2
     finally:
         if controller and controller.store: controller.store.close()

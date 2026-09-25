@@ -78,6 +78,12 @@ Keep two distinct layers in one view:
   user explicitly chooses a supported sharing flow. Installing updates is not
   authorization to upload trading results or settings.
 
+Generate the human matrix view, CSV export and agent query results from the same
+versioned catalog and result history. A new observation must be visible in every
+view after refresh, with the same status and evidence identity. Avoid separately
+hand-maintained HTML/CSV snapshots that omit newer trial notes. An older published
+snapshot may remain available, but must display its date/revision and scope.
+
 GOAT can publish independent **strategy-library updates** containing new files,
 new matrix entries, updated evidence and corrected/deprecated templates. These
 do not require a new EA or controller when declared compatibility is unchanged.

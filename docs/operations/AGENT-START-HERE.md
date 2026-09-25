@@ -7,6 +7,12 @@ reason to quietly substitute repeated mouse clicks.
 
 ## Choose the task
 
+These instructions apply to the current user's installation. Discover installed
+tools and paths locally; private skills and internal research files are optional
+references, not prerequisites. Use current capabilities and the user's chosen
+settings. See the [unified setup proposal](GOAT-SETUP-BUNDLE.md) for the planned
+EA, controller, optimization files and matrix distribution.
+
 | Goal | Entry point | What it proves |
 |---|---|---|
 | Compile an EA | `mt5-goat-compile` skill | Source, compiler, output hash and clean compile log |
@@ -15,7 +21,6 @@ reason to quietly substitute repeated mouse clicks.
 | Native terminal status, pairing, orderly shutdown | `scripts/goat_setup_control.py --help` | Scoped request and matching native receipt |
 | Configure and attach a frozen portfolio | `scripts/goat_portfolio_setup.py --help` | Per-operation native receipts, then full input audit |
 | Install/connect/persist a demo on VPS | `goat-vps-setup` skill and its portfolio reference | Host-specific setup procedure; still requires current runtime proof |
-| Set up the reviewed Balanced35 AI pair | [Paired demo setup](PAIRED-DEMO-SETUP.md) | Fresh bare login, isolated production dashboard,35 native attachments and restart/launch evidence; bounded internal contract |
 | Inspect active trading/exposure | `goat-vps-trade-audit` skill | Observed positions, deals, inputs and effective policies |
 | Create or benchmark optimization inputs | `goat-opt-file-create`, `goat-seed-farming` | File integrity, bounded tests and scoped post-run cleanup |
 | Operate Optimization Studio settings, queue and controller | [Studio controller guide](OPTIMIZATION-STUDIO-CONTROLLER.md) | Local/managed controls, exact research command schema, persistence, ownership, receipts, recovery and explicit V1.48 capability gaps |
@@ -33,7 +38,9 @@ the current dashboard change and its unfinished verification.
 
 ## First five observations
 
-1. Read the task's latest `CONTINUE.md` and the explicitly selected run manifest.
+1. Read the user's current request and installed tool capabilities. For an
+   explicitly resumed run, read its selected manifest and any continuation or
+   pause note. A new installation needs no research `CONTINUE.md`.
 2. Resolve the exact executable, data directory, Common Files directory, account,
    server, build ID, EX5 hash and process creation time. A terminal nickname is
    not a sufficient identity.

@@ -9,6 +9,15 @@ package contract, native qualification and measured recording cost.
 
 ## Choose the actual operating surface
 
+Start with the user's installation, not the development environment. Discover
+their terminal/data/Common Files paths, installed builds and controller
+capabilities. Use their selected optimization suites, matrix, symbols and dates.
+There is no required developer drive, VPS, account, research database or private
+agent skill. Example paths and request IDs are placeholders. A fresh user has
+no previous run to resume; create new work only through the installed tool's
+supported setup flow. Existing campaign manifests apply only when that user
+explicitly selects that campaign.
+
 | Surface | How to identify it | Available operations |
 |---|---|---|
 | Local Optimization Studio | V1.48 chart in `Mode_Operation=Operation_Batch`, `Studio_ReadOnlyMonitor=false`; buttons **START BATCH** and **TERMINATE** | Select inputs, edit local settings, save/reload batches, manage queue, explicitly start/restart or terminate native work, export selected results |
@@ -18,9 +27,10 @@ package contract, native qualification and measured recording cost.
 | Native research adapters | Separately provisioned gate, controller database, run manifests and native receipts | Campaign-specific staging, dispatch, restart and reconciliation; not a generic V1.48 launch command |
 
 The tracked MQL UI/bridge is in this repository. The research Python files
-described below were inspected at `C:\Users\web\Desktop\GOAT-EA\scripts` and
-are **not tracked in this V1.48 worktree**. Discover their actual location and
-version on another host. Do not assume they exist beside this guide.
+described below are **not included in this V1.48 source release**. Their sections
+document an optional legacy integration, not a customer installation prerequisite.
+Only use them if that integration is installed and advertises the documented
+contract. Do not search for the developer's workspace or copy its database.
 
 The [native controller runbook](NATIVE-CONTROLLER-RUNBOOK.md) covers terminal
 setup/portfolio operations. Those commands are not interchangeable with the
@@ -55,6 +65,14 @@ Studio draft/queue protocol.
 8. Retain the saved `.goatbatch`, run settings, original input SETs, output
    CSV/SET pairs and any matching `.goatseq` directories. Import the containing
    folder/ZIP into a compatible portfolio builder; see the sequence guide.
+9. Update the user's strategy/asset matrix with the verified run outcome,
+   exact template/settings identity, broker/model/dates, available metrics and
+   evidence locations. Preserve failures and no-qualifying-export results too.
+   If the installed tools have no matrix-write operation, retain an explicit
+   result receipt for reconciliation and report that the matrix update remains
+   pending; do not invent an API or silently rewrite an unknown file format.
+   The [living matrix contract](GOAT-SETUP-BUNDLE.md#living-matrix-and-ongoing-releases)
+   separates local results from GOAT's versioned catalog updates.
 
 For agent operation, use an available controller and its verified campaign
 procedure. If the required controller operation is absent, report that gap;

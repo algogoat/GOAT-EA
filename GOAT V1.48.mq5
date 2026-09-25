@@ -3,7 +3,7 @@
 #define   GOAT_VERSION_LABEL "1.48"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
-#define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-balanced35-ai-20260923.token"
+#define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-v148.token"
 #include "GOAT_Inputs_Definitions.mqh"
 #define   GOAT_BUILD_ID "V1.48-SEQUENCE-EXPORT-1"
 #include "GOAT_SequencePackage.mqh"

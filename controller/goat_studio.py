@@ -39,6 +39,8 @@ OPERATION_CONTRACTS = {
     'build-set':dict(required=['source','output','spec'],effect='clone real SET with narrow typed changes, unique EA_Desc, support notes and provenance; never overwrite'),
     'discover':dict(required=[],effect='read installation and schema; runtime readiness not evaluated'),
     'bootstrap':dict(required=['account-login','account-server'],effect='create human-owned local binding and monitor preset; no launch'),
+    'resource-profile':dict(required=[],effect='read-only current CPU, RAM and filesystem capacity; no throughput or worker estimate'),
+    'benchmark-report':dict(required=['batch-id'],effect='read-only verified completed batch and exact native timeline; never finishes, grants or launches'),
     'onboarding-status':dict(required=[],effect='read-only staged local monitor evidence and precise recovery; never grants control'),
     'monitor-prepare':dict(required=['symbol'],effect='create a separate persistent monitor profile only while terminals are stopped; no permissions or launch'),
     'monitor-launch':dict(required=['attempt-id'],effect='one retained stopped-terminal launch of prepared inert profile; saved login and Algo-off required'),
@@ -250,6 +252,8 @@ def main(argv=None):
     p=sub.add_parser('save-batch');p.add_argument('--batch-id',required=True);p.add_argument('--output',type=Path,required=True)
     p=sub.add_parser('load-batch');p.add_argument('--batch-id',required=True);p.add_argument('--file',type=Path,required=True)
     p=sub.add_parser('resume-batch');p.add_argument('--batch-id',required=True);p.add_argument('--source-batch-id',required=True);p.add_argument('--include-failed',action='store_true')
+    sub.add_parser('resource-profile')
+    p=sub.add_parser('benchmark-report');p.add_argument('--batch-id',required=True)
     sub.add_parser('discover');sub.add_parser('state');sub.add_parser('onboarding-status')
     p=sub.add_parser('monitor-prepare');p.add_argument('--symbol',required=True)
     p=sub.add_parser('monitor-launch');p.add_argument('--attempt-id',required=True)
@@ -266,6 +270,12 @@ def main(argv=None):
         controller=Controller(args.installation)
         if args.operation=='discover':
             result=dict(controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 executable may be running for ordinary native batch activation','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
+        elif args.operation=='resource-profile':
+            from studio_resources import resource_profile
+            result=resource_profile(controller.install)
+        elif args.operation=='benchmark-report':
+            from studio_benchmark import benchmark_report
+            result=benchmark_report(controller,args.batch_id)
         elif args.operation=='bootstrap': result=controller.bootstrap(args.account_login,args.account_server)
         elif args.operation in ('onboarding-status','monitor-prepare','monitor-launch'):
             from studio_onboarding import onboarding_status,monitor_prepare,monitor_launch

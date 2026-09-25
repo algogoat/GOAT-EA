@@ -135,7 +135,7 @@ void GOATDeviceActivationShowNetworkHelp(void)
 void GOATDeviceActivationShowCode(const string user_code,const string verification_url)
   {
    HidePrompt();
-   ShowPrompt("Activate GOAT V1.47",
+   ShowPrompt("Activate GOAT V"+GOAT_VERSION_LABEL,
                "Sign in and confirm MT5 account "+g_GOATDeviceActivationAccountId+".",
                "Enter pairing code: "+user_code,verification_url);
   }
@@ -222,7 +222,7 @@ void GOATDeviceActivationRequestReload(void)
    g_GOATDeviceActivationReloadRequested=true;
    HidePrompt();
    ShowPrompt("GOAT activation complete","Your GOAT user credential is installed.",
-               "Restarting V1.47 automatically...","");
+               "Restarting V"+GOAT_VERSION_LABEL+" automatically...","");
    g_GOATDeviceActivationId="";
    g_GOATDeviceActivationCandidate="";
    if(!ChartSetSymbolPeriod(ChartID(),Symbol(),Period()))
@@ -231,7 +231,7 @@ void GOATDeviceActivationRequestReload(void)
       // callback cannot retry or flood the log. A manual reattach re-enters OnInit.
       EventKillTimer();
       ShowPrompt("GOAT activation complete","Your GOAT user credential is installed.",
-                  "Remove and add V1.47 once to finish setup.","");
+                  "Remove and add V"+GOAT_VERSION_LABEL+" once to finish setup.","");
      }
   }
 

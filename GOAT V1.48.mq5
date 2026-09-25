@@ -1,10 +1,12 @@
 ﻿#define GOAT_STUDIO_UNIFIED_V147 1
+#define GOAT_SEQUENCE_EXPORT_V148 1
 #define   GOAT_VERSION_LABEL "1.48"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-balanced35-ai-20260923.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.48-DASHBOARD-AI-PAIR-R2"
+#define   GOAT_BUILD_ID "V1.48-SEQUENCE-EXPORT-1"
+#include "GOAT_SequencePackage.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 #define   GOAT_BUILD_MARKER "UI1"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -207,6 +209,7 @@ bool DashboardRegisteredPortfolioPosition(const long magic,const string symbol)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // Atomic asset-direction ownership at the real-order boundary.
 #include "GOAT_DirectionGuard.mqh"
+#include "GOAT_SequenceExport.mqh"
 
 bool DashboardExposureConflict(const int op)
   {
@@ -311,6 +314,7 @@ class SEQUENCE
    string      Desc;
    bool        Active,Traded,Trailing,Virtual,Retrace_Triggered;
    bool        GuardRealStarted;
+   ulong       TraceSequenceID;
    bool        BiasRescueActive,BiasRescueBEProtected;
    int         dir,Level_Count,Trades_Count;
    int         BiasRescuePositiveAdds;
@@ -322,7 +326,7 @@ class SEQUENCE
 
    SEQUENCE()
    {
-    dir=OP_NIL; Virtual=false; GuardRealStarted=false;
+    dir=OP_NIL; Virtual=false; GuardRealStarted=false; TraceSequenceID=0;
     Active=Traded=Trailing=Retrace_Triggered=BiasRescueActive=BiasRescueBEProtected=false;
     Level_Count=Trades_Count=ArrayResize(TradeLevels,0,Max_Seq_Levels);
     BiasRescuePositiveAdds=0;
@@ -385,6 +389,8 @@ class SEQUENCE
       }
       Sequences_PL++;
      }
+     GoatTraceEnd(TraceSequenceID,desc);
+     TraceSequenceID=0;
      if(!Virtual) GoatDirectionGuardEnd(dir);
      GuardRealStarted=false;
      Active=Traded=Trailing=Retrace_Triggered=false;
@@ -1706,8 +1712,11 @@ class SEQUENCE
 
       bool has_real_order=(MathAbs(LotsToBeSent)>=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN));
       bool previously_traded=GuardRealStarted;
+      GoatTraceEnsureSequence(TraceSequenceID,dir,Virtual);
+      g_trace_current_sequence=TraceSequenceID;
       LastRetCode=0;
       bool guard_opened=OpenPosition(dir,MAGIC1,LotsToBeSent,Level_SL,Size_SL,Size_TP,Desc_lvl,GuardRealStarted);
+      g_trace_current_sequence=0;
       if(g_direction_guard_send_attempted) GoatDirectionGuardResult(dir,(uint)LastRetCode,guard_opened,previously_traded);
       if(g_direction_guard_denied)
       {
@@ -1727,6 +1736,7 @@ class SEQUENCE
         if(!Active) Print(Desc+" Sequence Started @ "+DoubleToString(Level_New,_Digits));
         if(!Traded) {Sequences++; }//FirstTradeEquity=AccountInfoDouble(ACCOUNT_EQUITY);}
         Active=Traded=true; Trades_Count++;
+        GoatTraceActivate(TraceSequenceID);
         Level_Count = ArrayResize(TradeLevels,Level_Count+1,Max_Seq_Levels);
         TradeLevels[Level_Count-1].price_level = Level_Last = Level_New;
         TradeLevels[Level_Count-1].price_trade = LastOpen;
@@ -1755,6 +1765,8 @@ class SEQUENCE
       }
       if(!Active) Print(Desc+" Sequence Started @ "+DoubleToString(Level_New,_Digits));
       Active=true;
+      GoatTraceEnsureSequence(TraceSequenceID,dir,Virtual);
+      GoatTraceActivate(TraceSequenceID);
       Level_Count = ArrayResize(TradeLevels,Level_Count+1,Max_Seq_Levels);
       TradeLevels[Level_Count-1].price_level = Level_Last = Level_New;
       TradeLevels[Level_Count-1].price_trade = 0.0;
@@ -3380,11 +3392,15 @@ int OnInit()
    if(Mode=="EXPORT")
    {
     if(MQLInfoInteger(MQL_OPTIMIZATION)||MQLInfoInteger(MQL_FORWARD)) {Print("Exporting CSV/SET is not allowed in Optimization mode: Initialization Failed."); return INIT_PARAMETERS_INCORRECT;}
+    if(!GoatSeqClaimAttempt()) {Print("Sequence export attempt already exists or has an invalid identity; preserved without overwrite.");return INIT_FAILED;}
     //if(MQLInfoInteger(MQL_TESTER)) Date_Start = TimeToString(TimeCurrent(),TIME_DATE);
     Date_Start = TimeToString(TimeCurrent(),TIME_DATE);
     if(dt_Back_OOS!=0) dt_BOOS_end = dt_Back_OOS;
 
-    FileCSV_Name="TEMP"+"\\"+EA_Name+"-"+Server+"\\"+Strat+"\\"+Symbol()+"\\CSV+SET\\"+EA_Name+" "+Symbol()+","+TFToString(Period());
+    string exportRoot="TEMP\\"+EA_Name+"-"+Server;
+    FileCSV_Name=exportRoot+"\\"+Strat+"\\"+Symbol()+"\\CSV+SET\\"+EA_Name+" "+Symbol()+","+TFToString(Period());
+    if(GoatSeqSafeId(Sequence_Export_Id)) FileCSV_Name=GoatSeqAttemptRoot(Sequence_Export_Id)+"\\"+EA_Name+" "+Symbol()+","+TFToString(Period());
+    if(Sequence_Export_Enabled && !GoatSeqPathFits(FileCSV_Name+"_"+(string)MAGIC1+".csv")) {Print("Sequence export temporary path exceeds native MT5 limit");return INIT_FAILED;}
     FileCSV_handle = FileOpen(FileCSV_Name+"_"+(string)MAGIC1+".csv",FILE_COMMON|FILE_CSV|FILE_WRITE,"\t");
     if(FileCSV_handle == INVALID_HANDLE)
     {
@@ -3403,6 +3419,7 @@ int OnInit()
    if(MQLInfoInteger(MQL_VISUAL_MODE)) {AllDisplaySettings(); FastSpeed_Flag=false;}
 //-------------------------------------------------------------------------
    //if(Mode_Operation!=Operation_Batch) return INIT_PARAMETERS_INCORRECT;
+   GoatTraceInit(); // Evidence failure never changes trading decisions.
    OnTick(); Sleep(50);
    ChartRedraw(); Sleep(50);
    return (INIT_SUCCEEDED);
@@ -3410,6 +3427,7 @@ int OnInit()
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnDeinit(const int reason)
   {
+   GoatTraceClose(reason);
    GoatDirectionGuardDeinit();
    if(g_GoatStudioReadOnlyMonitor)
    {TesterDialog.Destroy(reason);EventKillTimer();return;}
@@ -3909,6 +3927,7 @@ int OnTesterInit()
 //-----------------------------------------------------------------------------------
 double OnTester()
   {
+   GoatTraceTesterFinished();
    if(AccountInfoDouble(ACCOUNT_EQUITY) > MaxEquity)
    {
     MaxEquity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -4143,9 +4162,12 @@ double OnTester()
                      + "_SR="    + DoubleToString(TesterStatistics(STAT_SHARPE_RATIO),2)
                      + "_ARF="   + DoubleToString(MARF,3);//Print(metrix);
     newFile += metrix+".csv";//Print(newFile);
-    if(!FileMove(oldFile,FILE_COMMON, newFile,FILE_REWRITE|FILE_COMMON)) Print("Error renaming CSV file: ", GetLastError());
-
     string FileSET_Name=FileCSV_Name+metrix+".set";//Print(FileSET_Name);
+    bool exportPathSafe=(!Sequence_Export_Enabled || (GoatSeqPathFits(newFile) && GoatSeqPathFits(FileSET_Name) && GoatSeqPathFits(GoatSeqStem(newFile)+".goatseq\\report-reconciliation.json.tmp")));
+    if(!exportPathSafe) GoatTraceFail("final package path exceeds native MT5 limit; temporary data retained");
+    else
+    {
+    if(!FileMove(oldFile,FILE_COMMON, newFile,FILE_REWRITE|FILE_COMMON)) Print("Error renaming CSV file: ", GetLastError());
     FileSET_handle = FileOpen(FileSET_Name,FILE_CSV|FILE_WRITE|FILE_COMMON,"\t");
     if(FileSET_handle == INVALID_HANDLE)
     {
@@ -4156,6 +4178,9 @@ double OnTester()
       {
        WriteSet(desc);
       }
+    g_sequence_export_csv=newFile;
+    g_sequence_export_set=FileSET_Name;
+    }
     ChartClose(ChartID());
    }
    double final_fitness=fitness;
@@ -4491,12 +4516,21 @@ bool StartExporter(bool reportMode)
 int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[],bool Init=false,const int startAttempts=20)
   {
    if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return -1;
-   string exports[]; FindExports("TEMP",exports); DeleteExports(exports); DeleteEmptyFolders("TEMP"); Sleep(50);
+   string captureId="export-"+(string)TimeLocal()+"-"+(string)GetMicrosecondCount()+"-"+(string)rowInd;
+   string attemptRoot=GoatSeqAttemptRoot(captureId);
+   if(attemptRoot=="") return -1;
+   string pendingRoot="GOATSequencePending\\"+captureId;
+   GoatSeqMakePath(pendingRoot);
+   if(!Init && !GoatSeqAtomicText(pendingRoot+"\\source-inputs.set",xmlData.getInputsSettingString(rowInd))) return -1;
+   mode="Sequence_Export_Enabled="+(Init?"false":"true")+"\nSequence_Export_Id="+captureId+
+        "\nSequence_Export_Start="+strT.fromDate+"\nSequence_Export_End="+strT.toDate+
+        "\nSequence_Export_Model="+strT.Model+"\n"+mode;
+   string exports[];
 
    if(!StartTester(rowInd,mode,reportMode,startAttempts)) {LogOrPrint(reportMode,"❌ Failed to Configure and/or Start the Strategy Tester after "+IntegerToString(startAttempts)+" start attempt(s). Skipping...",Key,EA_Name,Server); return -1;}
 
    const datetime t0 = TimeLocal();
-   while(!FindExports("TEMP",exports))
+   while(!GoatSeqAttemptReady(attemptRoot,!Init,exports))
    {
     if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return -1;
     Sleep(500);
@@ -4533,8 +4567,8 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
    if(profit>0)
    {
     // move first, because MoveExports rewrites paths
-    string exportSrcRoot="TEMP"+"\\"+EA_Name+"-"+Server;
-    if(!MoveExportsFromRoot(exportSrcRoot,GoatOptExportsPath(EA_Name,Server),exports)) {LogOrPrint(reportMode,"❌ Failed to move Exports: "+FileNameOnly(exports[0]),Key,EA_Name,Server); return -1;}
+    string exportSrcRoot=attemptRoot;
+    if(!MoveExportsFromRoot(exportSrcRoot,GoatOptExportsPath(EA_Name,Server)+"\\"+strT.Strat+"\\"+strT.symbol,exports)) {LogOrPrint(reportMode,"❌ Failed to move Exports: "+FileNameOnly(exports[0]),Key,EA_Name,Server); return -1;}
     // identify csv vs set in their new locations
     string csv="",set="";
     for(int k=0;k<ArraySize(exports);k++)
@@ -4562,12 +4596,19 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
    }
    else
    {
-    LogOrPrint(reportMode,"⚠️ Export Profit="+DoubleToString(profit,0)+"<0, Discarding Set",Key,EA_Name,Server); return 0;
+    DeleteExports(exports);
+    LogOrPrint(reportMode,"⚠️ Export Profit="+DoubleToString(profit,0)+"<0, Discarding completed Set (incomplete evidence retained)",Key,EA_Name,Server); return 0;
    }
    return -1;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTimer(void)
+  {
+   GoatTimerBody();
+   GoatTraceTimer();
+  }
+
+void GoatTimerBody(void)
   {
    GoatSetupControlPoll();
    if(g_GoatStudioReadOnlyMonitor)
@@ -4612,6 +4653,14 @@ void OnTimer(void)
    }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+  {
+   GoatTradeTransactionBody(trans,request,result);
+   if(trans.type==TRADE_TRANSACTION_DEAL_ADD) GoatTraceBoundary(true);
+  }
+
+void GoatTradeTransactionBody(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result)
   {
@@ -4834,6 +4883,12 @@ void HandleBiasExitSell(const int sells)
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void OnTick()
+  {
+   GoatTickBody();
+   GoatTraceBoundary();
+  }
+
+void GoatTickBody()
   {
    if(GOATDeviceActivationOnly()) return;
    if(Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash) return; //return; // returning for testing
@@ -6122,6 +6177,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
     if(!GoatDirectionGuardBegin(OP,guard_previously_traded)) {g_direction_guard_denied=true;return 0;}
     g_direction_guard_send_attempted=true;
     bool sent = OrderSend(request,result);
+    GoatTraceOrderResult(OP,request,result,sent);
     GoatDirectionGuardCaptureOrder(OP,(ulong)result.order);
     if(result.retcode!=10008&&result.retcode!=10009&&result.retcode!=10010) orderErrors++;
     else{
@@ -6175,6 +6231,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
     if(!GoatDirectionGuardBegin(OP,guard_previously_traded)) {g_direction_guard_denied=true;return 0;}
     g_direction_guard_send_attempted=true;
     bool sent = OrderSend(request,result);
+    GoatTraceOrderResult(OP,request,result,sent);
     GoatDirectionGuardCaptureOrder(OP,(ulong)result.order);
     if(result.retcode!=10008&&result.retcode!=10009&&result.retcode!=10010) orderErrors++;
     else{

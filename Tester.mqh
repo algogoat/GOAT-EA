@@ -1,4 +1,7 @@
 ﻿#include "MTTester.mqh"
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+#include "GOAT_SequenceHostIO.mqh"
+#endif
 #include "XmlProcessor.mqh"
 
 #import "shell32.dll"
@@ -854,12 +857,23 @@ bool WalkKey(const string folder,string &arr[])
        ResetLastError();
        FileIsExist(path, FILE_COMMON);
 
-       if(GetLastError() == ERR_FILE_IS_DIRECTORY)    any |= WalkKey(path, arr);            // recurse
+       if(GetLastError() == ERR_FILE_IS_DIRECTORY)
+       {
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+          if(StringLen(ent)>=8 && StringSubstr(ent,StringLen(ent)-8)==".goatseq") continue;
+#endif
+          any |= WalkKey(path, arr);
+       }
        else{
           // extract bare filename for the filter test
           int lastSep = StringFind(path,"\\",StringLen(path)-1);
           string fname = (lastSep==-1)?path:StringSubstr(path,lastSep+1);
 
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+          int nameLen=StringLen(ent);
+          if(nameLen<4 || (StringSubstr(ent,nameLen-4)!=".csv" && StringSubstr(ent,nameLen-4)!=".set")) continue;
+          fname=ent;
+#endif
           if(IsExportFile(fname)){
              int n = ArraySize(arr);
              ArrayResize(arr, n+1);
@@ -976,8 +990,10 @@ bool MoveExports(const string dstKey,string &files[])
 bool MoveExportsFromRoot(const string srcRoot,const string dstKey,string &files[])
   {
    bool ok=true;
+   bool handled[];ArrayResize(handled,ArraySize(files));ArrayInitialize(handled,false);
    for(int i=0;i<ArraySize(files);i++)
      {
+      if(handled[i]) continue;
       string src=files[i];                        // Key1\...\file
       string rel=src;
       if(srcRoot!="" && StringFind(src,srcRoot+"\\",0)==0)
@@ -996,6 +1012,17 @@ bool MoveExportsFromRoot(const string srcRoot,const string dstKey,string &files[
       while(lastSep>=0 && StringGetCharacter(dst,lastSep)!='\\') lastSep--;
       string dstDir=(lastSep>0)?StringSubstr(dst,0,lastSep):"";
       EnsureCommonPath(dstDir);
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+      string stem=GoatSeqStem(src);
+      if(stem!="" && GoatSeqExists(stem+".goatseq\\manifest.json"))
+      {
+         string destinationStem=GoatSeqStem(dst);
+         if(!GoatSeqTransferUnit(stem+".csv",destinationStem+".csv",true)) return false;
+         for(int j=0;j<ArraySize(files);++j)
+            if(GoatSeqStem(files[j])==stem) {files[j]=destinationStem+StringSubstr(files[j],StringLen(stem));handled[j]=true;}
+         continue;
+      }
+#endif
       if(!GoatExportMoveCommon(src,dst))
       {
        if(GlobalVariableGet("BatchOnGoing")!=0) WriteLog("❌ Move failed: "+FileErrorString(GetLastError()),false,strT._K,strT._N,strT._S);
@@ -1009,9 +1036,21 @@ bool DeleteExports(string &files[])
   {
    bool ok=true;
    for(int i=0;i<ArraySize(files);i++)
+     {
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+      if(files[i]=="") continue;
+      string stem=GoatSeqStem(files[i]);
+      if(stem!="" && GoatSeqExists(stem+".goatseq\\manifest.json"))
+      {
+         if(!GoatSeqDeleteUnit(stem+".csv")) {ok=false;continue;}
+         for(int j=i+1;j<ArraySize(files);++j) if(GoatSeqStem(files[j])==stem) files[j]="";
+         continue;
+      }
+#endif
       if(!GoatExportDeleteCommon(files[i],i))
          {if(GlobalVariableGet("BatchOnGoing")!=0) WriteLog("❌ Delete failed: "+FileErrorString(GetLastError())+": "+files[i],false,strT._K,strT._N,strT._S);
           Print("Delete failed: ",files[i]," err=",GetLastError()); ok=false;}
+     }
    return ok;
   }
 //+------------------------------------------------------------------+
@@ -1165,3 +1204,20 @@ void SortStrings(string &arr[], const int n)
      }
   }*/
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+bool GoatSeqAttemptReady(const string root,const bool capture,string &files[])
+  {
+   if(!MTTESTER::IsIdle() || !FindExports(root,files)) return false;
+   string csv="",set="";
+   for(int i=0;i<ArraySize(files);++i)
+     {
+      int n=StringLen(files[i]);
+      if(n>4 && StringSubstr(files[i],n-4)==".csv") {if(csv!="") return false;csv=files[i];}
+      if(n>4 && StringSubstr(files[i],n-4)==".set") {if(set!="") return false;set=files[i];}
+     }
+   if(csv=="" || set=="" || GoatSeqStem(csv)!=GoatSeqStem(set)) return false;
+   if(capture && !FileIsExist(GoatSeqStem(csv)+".goatseq\\manifest.json",FILE_COMMON)) return false;
+   return true;
+  }
+#endif

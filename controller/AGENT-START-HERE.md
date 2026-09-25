@@ -12,6 +12,11 @@ agent kit; its `studio` command forwards to the controller below.
 
 ## Start safely and discover
 
+In the installed suite, begin with [the complete beta agent workflow](goat-beta-agent-guide.md).
+It covers setup, the living matrix, Studio exports, Portfolio Builder, exposure
+filters and recovery. The [human quickstart](goat-beta-start-here.md) explains
+the few MT5 steps the user performs. These two guides are added by the suite packager.
+
 Use the receipt path shown by Setup's **Set up my agent** action:
 
 ```powershell

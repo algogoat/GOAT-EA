@@ -71,6 +71,21 @@ int OnInit()
      }
    else Check(!GoatSeqTransferUnit(copy,long_root+"\\candidate.csv",false),"overlong transfer cannot truncate destination");
    Check(FileIsExist(copy,FILE_COMMON) && FileIsExist(GoatSeqStem(copy)+".goatseq\\manifest.json",FILE_COMMON),"overlong transfer retains whole source");
+   string pair[];ArrayResize(pair,2);
+   pair[0]=testRoot+"\\cancelled\\candidate.csv";pair[1]=testRoot+"\\cancelled\\candidate.set";
+   Check(GoatSeqPairReady(pair,false),"ordinary CSV SET pair ready without sequence manifest");
+   Check(!GoatSeqPairReady(pair,true),"capture enabled requires final manifest");
+   pair[1]=testRoot+"\\cancelled\\different.set";
+   Check(!GoatSeqPairReady(pair,false),"different stems cannot form a completed pair");
+   ArrayResize(pair,1);
+   Check(!GoatSeqPairReady(pair,false),"missing SET is never ready even capture off");
+   if(Sequence_Export_Id!="" && !Sequence_Export_Enabled)
+     {
+      Check(GoatSeqClaimAttempt(),"capture off claims unique native export routing");
+      Check(FileIsExist(GoatSeqAttemptRoot(Sequence_Export_Id)+"\\attempt-issued.json",FILE_COMMON),"capture off preserves unique attempt marker");
+      Check(!FileIsExist("GOATSequencePending\\"+Sequence_Export_Id+"\\attempt-issued.json",FILE_COMMON),"capture off creates no pending evidence marker");
+      Check(!GoatSeqClaimAttempt(),"capture off rejects duplicate export identity");
+     }
    GoatSeqAtomicText(testRoot+"\\result.json","{\"checks\":"+(string)checks+",\"failures\":"+(string)failures+",\"passed\":"+(failures==0?"true":"false")+"}");
    Print("SEQUENCE PACKAGE TESTS ",checks," checks, ",failures," failures: ",testRoot);
    return INIT_SUCCEEDED;

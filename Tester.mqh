@@ -1208,16 +1208,7 @@ void SortStrings(string &arr[], const int n)
 #ifdef GOAT_SEQUENCE_EXPORT_V148
 bool GoatSeqAttemptReady(const string root,const bool capture,string &files[])
   {
-   if(!MTTESTER::IsIdle() || !FindExports(root,files)) return false;
-   string csv="",set="";
-   for(int i=0;i<ArraySize(files);++i)
-     {
-      int n=StringLen(files[i]);
-      if(n>4 && StringSubstr(files[i],n-4)==".csv") {if(csv!="") return false;csv=files[i];}
-      if(n>4 && StringSubstr(files[i],n-4)==".set") {if(set!="") return false;set=files[i];}
-     }
-   if(csv=="" || set=="" || GoatSeqStem(csv)!=GoatSeqStem(set)) return false;
-   if(capture && !FileIsExist(GoatSeqStem(csv)+".goatseq\\manifest.json",FILE_COMMON)) return false;
-   return true;
+   return MTTESTER::IsIdle() && FindExports(root,files) && GoatSeqPairReady(files,capture);
   }
+
 #endif

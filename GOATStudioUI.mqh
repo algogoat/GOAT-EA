@@ -23,6 +23,20 @@ bool GoatStudioManaged(void)
 
 string GoatStudioFields(const bool exports)
   {
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+   // Preserve the strict eight-field protocol of older managed controllers.
+   if(exports)
+     {
+      SGOATJsonToken snapshot[];
+      if(GOATJsonParse(g_StudioSnapshot,snapshot,16384,2000000))
+        {
+         int state=GOATJsonFindField(g_StudioSnapshot,snapshot,0,"state");
+         int draft=GOATJsonFindField(g_StudioSnapshot,snapshot,state,"export_draft");
+         if(GOATJsonFindField(g_StudioSnapshot,snapshot,draft,"IncludeSequenceData")>=0)
+            return "SetsToExport,MinScore,TargetDD,AdjustLots,BackOOSDate,MinARF,MinSR,IncludeBackOOS,IncludeSequenceData";
+        }
+     }
+#endif
    return exports ? "SetsToExport,MinScore,TargetDD,AdjustLots,BackOOSDate,MinARF,MinSR,IncludeBackOOS"
       : "Expert,Symbol,Period,Model,ExecutionMode,Optimization,OptimizationCriterion,FromDate,ToDate,ForwardMode,ForwardDate,Deposit,Currency,Leverage,UseLocal,UseRemote,UseCloud,Visual";
   }
@@ -31,10 +45,19 @@ bool GoatStudioSectionINI(const string body,SGOATJsonToken &tokens[],const int s
   {
    ini="";
    if(section<0 || tokens[section].type!=GOAT_JSON_OBJECT) return false;
-   string fields[]; int count=StringSplit(GoatStudioFields(exports),',',fields);
+   string fieldNames=GoatStudioFields(exports);
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+   // Incoming capabilities can differ from the previous local snapshot.
+   if(exports && GOATJsonFindField(body,tokens,section,"IncludeSequenceData")>=0 && StringFind(fieldNames,",IncludeSequenceData")<0)
+      fieldNames+=",IncludeSequenceData";
+#endif
+   string fields[]; int count=StringSplit(fieldNames,',',fields);
    for(int i=0;i<count;i++)
      {
       int token=GOATJsonFindField(body,tokens,section,fields[i]);
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+      if(token<0 && exports && fields[i]=="IncludeSequenceData") {ini+="IncludeSequenceData=1\n";continue;}
+#endif
       if(token<0) return false;
       string value;
       if(tokens[token].type==GOAT_JSON_STRING)
@@ -150,7 +173,11 @@ bool GoatStudioINIJson(const string ini,const bool exports,string &body)
       if(key=="ForwardDate" && GoatOptReadIniValue(ini,"ForwardMode")!="4") value="";
       string encoded;
       if(StringFind(strings,","+key+",")>=0) encoded=GoatStudioQuote(value);
-      else if(key=="AdjustLots" || key=="IncludeBackOOS")
+      else if(key=="AdjustLots" || key=="IncludeBackOOS"
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+              || key=="IncludeSequenceData"
+#endif
+             )
         {if(value!="0" && value!="1") return false; encoded=(value=="1" ? "true" : "false");}
       else
         {SGOATJsonToken number[]; int pos=0,token=-1; if(!GOATJsonParseNumberToken(value,pos,-1,number,token) || pos!=StringLen(value) || ArraySize(number)!=1) return false; encoded=value;}
@@ -264,6 +291,11 @@ void CStrategyTesterDialog::ManagedControls(void)
       m_cmbLeverage.Enable(); m_edtSetsToExport.Enable(); m_dpBackOOS.Enable();
       m_edtMinScore.Enable(); m_edtMinARF.Enable(); m_edtTargetDD.Enable(); m_edtMinSR.Enable();
       m_chkAdjustLots.Enable(); m_chkVerifyOOS.Enable();
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+      if(StringFind(GoatStudioFields(true),",IncludeSequenceData")>=0) m_chkSequenceData.Enable();
+      else m_chkSequenceData.Disable();
+#endif
+
      }
    else
      {
@@ -273,6 +305,10 @@ void CStrategyTesterDialog::ManagedControls(void)
       m_edtSetsToExport.Disable(); m_dpBackOOS.Disable(); m_edtMinScore.Disable();
       m_edtMinARF.Disable(); m_edtTargetDD.Disable(); m_edtMinSR.Disable();
       m_chkAdjustLots.Disable(); m_chkVerifyOOS.Disable();
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+      m_chkSequenceData.Disable();
+#endif
+
      }
    m_btnStart.Color(C'225,238,248'); m_btnSetPresets.Color(C'225,238,248');
    m_btnAddQueue.Color(edit ? C'225,238,248' : C'100,120,140');
@@ -285,6 +321,14 @@ void CStrategyTesterDialog::ManagedControls(void)
    GoatStudioComboTheme(m_cmbLeverage,m_activeStage==2,edit);
    if(m_activeStage!=1) {m_dtFrom.Hide(); m_dtTo.Hide(); m_dtForward.Hide();}
    if(m_activeStage!=3) {m_dpBackOOS.Hide(); m_chkAdjustLots.Hide(); m_chkVerifyOOS.Hide();}
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+   if(m_activeStage!=3) m_chkSequenceData.Hide();
+#endif
+
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+   bool sequenceSupported=StringFind(GoatStudioFields(true),",IncludeSequenceData")>=0;
+   m_lblSequenceCost.Text(sequenceSupported ? "Adds export time and disk use; off requires a later capture." : "This controller cannot change sequence-data export settings.");
+#endif
    int selected=m_listQueue.Current();
    bool pending=selected>=0 && selected<ArraySize(g_StudioQueueStatuses) && g_StudioQueueStatuses[selected]=="pending";
    bool queue_edit=edit && g_StudioPendingId=="";

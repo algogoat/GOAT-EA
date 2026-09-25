@@ -4519,10 +4519,15 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
    string captureId="export-"+(string)TimeLocal()+"-"+(string)GetMicrosecondCount()+"-"+(string)rowInd;
    string attemptRoot=GoatSeqAttemptRoot(captureId);
    if(attemptRoot=="") return -1;
-   string pendingRoot="GOATSequencePending\\"+captureId;
-   GoatSeqMakePath(pendingRoot);
-   if(!Init && !GoatSeqAtomicText(pendingRoot+"\\source-inputs.set",xmlData.getInputsSettingString(rowInd))) return -1;
-   mode="Sequence_Export_Enabled="+(Init?"false":"true")+"\nSequence_Export_Id="+captureId+
+   string sequenceSetting=FetchExportSetting("IncludeSequenceData",Key,EA_Name,Server);
+   bool capture=!Init && (sequenceSetting=="" || sequenceSetting=="1");
+   if(capture)
+     {
+      string pendingRoot="GOATSequencePending\\"+captureId;
+      GoatSeqMakePath(pendingRoot);
+      if(!GoatSeqAtomicText(pendingRoot+"\\source-inputs.set",xmlData.getInputsSettingString(rowInd))) return -1;
+     }
+   mode="Sequence_Export_Enabled="+(capture?"true":"false")+"\nSequence_Export_Id="+captureId+
         "\nSequence_Export_Start="+strT.fromDate+"\nSequence_Export_End="+strT.toDate+
         "\nSequence_Export_Model="+strT.Model+"\n"+mode;
    string exports[];
@@ -4530,7 +4535,7 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
    if(!StartTester(rowInd,mode,reportMode,startAttempts)) {LogOrPrint(reportMode,"❌ Failed to Configure and/or Start the Strategy Tester after "+IntegerToString(startAttempts)+" start attempt(s). Skipping...",Key,EA_Name,Server); return -1;}
 
    const datetime t0 = TimeLocal();
-   while(!GoatSeqAttemptReady(attemptRoot,!Init,exports))
+   while(!GoatSeqAttemptReady(attemptRoot,capture,exports))
    {
     if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return -1;
     Sleep(500);

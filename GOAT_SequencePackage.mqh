@@ -140,10 +140,13 @@ bool GoatSeqClaimAttempt()
   {
    if(!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD) || Sequence_Export_Id=="") return true;
    if(!GoatSeqSafeId(Sequence_Export_Id)) return false;
-   string path="GOATSequencePending\\"+Sequence_Export_Id;
-   GoatSeqMakePath(path);
    string body="{\"runId\":"+GoatSeqJson(Sequence_Export_Id)+",\"state\":\"native-attempt-issued\"}";
-   if(!GoatSeqAtomicText(path+"\\attempt-issued.json",body)) return false;
+   if(Sequence_Export_Enabled)
+     {
+      string path="GOATSequencePending\\"+Sequence_Export_Id;
+      GoatSeqMakePath(path);
+      if(!GoatSeqAtomicText(path+"\\attempt-issued.json",body)) return false;
+     }
    string root=GoatSeqAttemptRoot(Sequence_Export_Id);
    if(root=="") return false;
    GoatSeqMakePath(root);
@@ -235,6 +238,21 @@ bool GoatSeqTransferUnit(const string csv,const string destination_csv,const boo
       if(GoatSeqPathFits(oldstem+".goatseq")) FolderDelete(oldstem+".goatseq",FILE_COMMON);
       else GoatSeqHostRemoveEmpty(oldstem+".goatseq");
      }
+   return true;
+  }
+
+// Shared by native completion discovery and the filesystem qualification harness.
+bool GoatSeqPairReady(const string &files[],const bool capture)
+  {
+   string csv="",set="";
+   for(int i=0;i<ArraySize(files);++i)
+     {
+      int n=StringLen(files[i]);
+      if(n>4 && StringSubstr(files[i],n-4)==".csv") {if(csv!="") return false;csv=files[i];}
+      if(n>4 && StringSubstr(files[i],n-4)==".set") {if(set!="") return false;set=files[i];}
+     }
+   if(csv=="" || set=="" || GoatSeqStem(csv)!=GoatSeqStem(set) || !GoatSeqExists(csv) || !GoatSeqExists(set)) return false;
+   if(capture && !GoatSeqExists(GoatSeqStem(csv)+".goatseq\\manifest.json")) return false;
    return true;
   }
 

@@ -8,7 +8,7 @@ construct native permits manually. No API accepts a caller-supplied “safe” f
 In the unified agent kit, prefix each command below with:
 
 ```powershell
-& '<agent kit>\goat.cmd' studio --installation '<Setup receipt.json>'
+& '<agent kit>\goat.exe' studio --installation '<Setup receipt.json>'
 ```
 
 The standalone equivalent is `python.exe controller\goat_studio.py` followed by

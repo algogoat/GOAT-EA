@@ -7,7 +7,7 @@ exist here. Never import another person's controller database or receipt.
 
 GOAT Setup supplies the EA, this controller, optimization templates, the living
 strategy/asset matrix, Portfolio Builder and Python runtime. Development tools,
-private skills and source checkouts are unnecessary. Use `goat.cmd` in the installed
+private skills and source checkouts are unnecessary. Use `goat.exe` in the installed
 agent kit; its `studio` command forwards to the controller below.
 
 ## Start safely and discover
@@ -15,7 +15,7 @@ agent kit; its `studio` command forwards to the controller below.
 Use the receipt path shown by Setup's **Set up my agent** action:
 
 ```powershell
-& '<installed agent kit>\goat.cmd' studio --installation '<your installation.json>' discover
+& '<installed agent kit>\goat.exe' studio --installation '<your installation.json>' discover
 ```
 
 `discover` verifies the installed EA hash and returns machine-specific paths,

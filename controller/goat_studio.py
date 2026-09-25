@@ -180,12 +180,12 @@ class Controller:
         if 'launch_intent' not in job: return dict(status=job['status'],native_attempt=False)
         from studio_dispatch_observe import observe_dispatch
         dispatch=observe_dispatch(self.local/'native-gate',job['launch_intent']['attempt_id'])
-        if dispatch['status']=='awaiting_receipt':
-            return dict(status='dispatch_pending',dispatch=dispatch,job=job)
         cancel_id=sha([job['launch_intent']['attempt_id'],'cancel'])
         cancellation=observe_dispatch(self.local/'native-gate',cancel_id)
         if cancellation['status']=='awaiting_receipt':
             return dict(status='cancel_pending',dispatch=cancellation,job=job)
+        if cancellation['status']=='not_issued' and dispatch['status']=='awaiting_receipt':
+            return dict(status='dispatch_pending',dispatch=dispatch,job=job)
         kwargs={}
         try:
             raw=read_json(self.local/'ui-observation.json')

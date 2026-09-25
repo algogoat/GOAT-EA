@@ -15,6 +15,8 @@ def finish(controller,job_id):
         return dict(status=job['status'],result=job.get('completion'),reused=True)
     if 'launch_intent' not in job: raise ValueError('No native attempt to finish')
     intent=job['launch_intent'];package=Path(intent['package'])
+    if sha(job['configuration'])!=job['configuration_sha256']:
+        raise ValueError('Frozen job configuration changed')
     if hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()!=intent['package_sha256']:
         raise ValueError('Frozen package changed')
     native=observe(package)
@@ -24,6 +26,8 @@ def finish(controller,job_id):
     if reports and reports['status']!='report_pair_verified': raise ValueError('Completed queue still requires verified report pair')
     result=dict(schema_version=1,attempt_id=intent['attempt_id'],job_id=job_id,status=outcomes[native['status']],
                 configuration_sha256=job['configuration_sha256'],configuration=job['configuration'],native=native,reports=reports,
+                source=read_json(controller.root/'packages'/(job_id+'.source.json')),
+                package_sha256=intent['package_sha256'],
                 performance_qualification='Native artifacts observed; portfolio evidence is independently validated on import',
                 matrix_result_required=True,ea_version=controller.install['ea_version'],ea_sha256=controller.install['ea_sha256'],
                 controller_version=controller.install['controller_version'],account_server=controller.session['account']['server'])

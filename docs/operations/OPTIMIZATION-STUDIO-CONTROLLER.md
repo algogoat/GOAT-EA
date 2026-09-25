@@ -1,5 +1,14 @@
 # Optimization Studio: controls and controller contract
 
+The customer beta now has a portable, receipt-bound controller and installed
+[agent start guide](../../controller/AGENT-START-HERE.md) with the full
+[command and recovery contract](../../controller/README.md). Its entrypoint is
+`controller/goat_studio.py`, not the historical research scripts described below.
+It includes nine-field sequence export settings, portable binding/preparation,
+owned native start/cancel and retained completion results. Native lifecycle
+qualification is recorded separately in release evidence; portable unit tests do
+not establish a clean-machine MT5 qualification.
+
 Use this guide to prepare settings, select strategies, maintain a queue, run a
 local batch, and recover uncertain commands. It describes the tracked V1.48
 Studio and the separately installed research controller as inspected on

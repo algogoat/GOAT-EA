@@ -6,4 +6,3 @@ def unique_object(pairs):
             raise ValueError('Duplicate JSON field: '+key)
         result[key] = value
     return result
-

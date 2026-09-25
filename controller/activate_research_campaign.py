@@ -1,22 +1,8 @@
-"""Stage a reviewed Banker native batch; bootstrap/MT5 launches are separate.
-
-This version requires an explicit private ownership inspection receipt and an
-idle research terminal. It preserves prior controls without editing the prior
-queue. A marker survives failures; reconcile instead of rerunning activation.
-"""
-import argparse
+"""Verify exact frozen export policy across the native package and batch."""
 import hashlib
 import json
 from pathlib import Path
-import shutil
-import subprocess
-import time
-import uuid
 import configparser
-from campaign_ledger import sha
-from native_control_transaction import NAMES, begin, contents, digest
-from prepare_native_campaign import native_run_relative
-from strategy_registry import inspect_set
 from studio_settings import validate_export
 
 
@@ -51,4 +37,3 @@ def verify_export_policy(stage, plan, manifest):
     if batch.split(opening,1)[1].split(closing,1)[0] != text:
         raise ValueError('Batch export policy differs from staged export file')
     return expected
-

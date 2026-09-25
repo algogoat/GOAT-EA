@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+import shutil
 import unittest
 from unittest.mock import patch
 
@@ -122,5 +123,70 @@ class PortableControllerTests(unittest.TestCase):
         self.assertEqual(schema['source_sha256'],policy['header_sha256'])
         for rule in policy['rules']:
             self.assertIn(rule['input'],schema['inputs']);self.assertIn(rule['controller'],schema['inputs'])
+
+    def activated_fixture(self):
+        """Exact real package/store/ownership files; MT5 itself is not started."""
+        from studio_launch_intent import record_intent
+        from native_control_transaction import begin,NAMES
+        c=self.bound();self.grant(c);result=self.prepare(c)
+        package=Path(result['package']);manifest=result['manifest'];job=c.job('beta-job')
+        c.submit('queue.reserve',dict(job_id='beta-job',configuration_sha256=job['configuration_sha256'],package_sha256=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()),'beta-job-reserve')
+        state=c.state();intent=record_intent(c.store,c.terminal,c.run,'beta-job',package,actor='agent',revision=state['revision'],generation=state['generation'])
+        native=self.common/manifest['native_run_relative'].replace('\\','/');shutil.copytree(package,native)
+        base=self.common/'GOAT/GOAT V1.48-Customer-Demo';base.mkdir(parents=True)
+        evidence=c.root/'attempts'/intent['attempt_id'];evidence.parent.mkdir(parents=True)
+        alias=manifest['jobs'][0]['run_alias']
+        controls=dict(zip(NAMES,[('[ActiveOptimizationRun]\r\nRunPath='+manifest['native_run_relative']+'\r\n').encode('utf-16'),(package/(alias+'.ini')).read_bytes(),b'guard']))
+        begin(base,evidence,controls,{name:None for name in NAMES},intent['attempt_id'])
+        return c,native,base,evidence
+
+    def test_active_cancel_is_owned_idempotent_publication_not_stop(self):
+        from studio_dispatch_observe import observe_dispatch
+        c,native,base,evidence=self.activated_fixture()
+        result=c.cancel('beta-job')
+        self.assertEqual(result['status'],'cancel_published_not_confirmed');self.assertFalse(result['stopped'])
+        gate=c.local/'native-gate';request=json.loads((gate/'request.json').read_text())
+        self.assertEqual(request['action'],'cancel');self.assertEqual(request['account_server'],'Customer-Demo')
+        prior=(gate/'request.json').read_bytes()
+        again=c.cancel('beta-job')
+        self.assertEqual(again['request_id'],result['request_id']);self.assertEqual((gate/'request.json').read_bytes(),prior)
+        self.assertEqual(observe_dispatch(gate,result['request_id'])['status'],'awaiting_receipt')
+
+    def test_cancel_rejects_different_native_owner(self):
+        c,native,base,evidence=self.activated_fixture()
+        (base/'agent-native-control-owner.json').write_text(json.dumps(dict(owner='some-other-attempt',evidence=str(evidence))))
+        with self.assertRaisesRegex(ValueError,'another attempt'):c.cancel('beta-job')
+        self.assertFalse((c.local/'native-gate/permit.json').exists())
+
+    def test_cancel_pending_status_does_not_revoke_permit(self):
+        c,native,base,evidence=self.activated_fixture();c.cancel('beta-job')
+        result=c.reconcile('beta-job')
+        self.assertEqual(result['status'],'cancel_pending')
+        self.assertTrue((c.local/'native-gate/permit.json').exists())
+
+    def test_finish_cancelled_restores_owned_controls_and_retains_result(self):
+        from studio_finish import finish
+        c,native,base,evidence=self.activated_fixture()
+        queue=native/'queue.GOAT';queue.write_bytes(queue.read_bytes().decode('utf-16').replace(';Pending_',';Cancelled_').encode('utf-16'))
+        with patch.object(c,'runtime',return_value=({},{})):
+            result=finish(c,'beta-job')
+        self.assertEqual(result['status'],'cancelled')
+        self.assertTrue(Path(result['result_path']).is_file());self.assertTrue(result['result']['matrix_result_required'])
+        self.assertFalse((base/'agent-native-control-owner.json').exists())
+        self.assertEqual(c.job('beta-job')['status'],'cancelled')
+        self.assertEqual(finish(c,'beta-job')['reused'],True)
+
+    def test_finish_unknown_state_preserves_ownership(self):
+        from studio_finish import finish
+        c,native,base,evidence=self.activated_fixture()
+        with self.assertRaisesRegex(ValueError,'not finished'):finish(c,'beta-job')
+        self.assertTrue((base/'agent-native-control-owner.json').exists())
+
+    def test_finish_complete_without_reports_cannot_release(self):
+        from studio_finish import finish
+        c,native,base,evidence=self.activated_fixture()
+        queue=native/'queue.GOAT';queue.write_bytes(queue.read_bytes().decode('utf-16').replace(';Pending_',';Completed_').encode('utf-16'))
+        with self.assertRaisesRegex(ValueError,'report pair'):finish(c,'beta-job')
+        self.assertTrue((base/'agent-native-control-owner.json').exists())
 
 if __name__=='__main__':unittest.main()

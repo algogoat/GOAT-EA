@@ -177,4 +177,3 @@ def pump_for(bridge, seconds, interval=0.5, limit=32, *, clock=time.monotonic, w
         wait(min(interval,remaining))
         if clock()>=deadline:break
     return dict(cycles=cycles,processed=processed,rejected=rejected,execution_ready=False)
-

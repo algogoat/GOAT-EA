@@ -10,6 +10,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -21,3 +23,4 @@ jobs:
           node scripts/test_activation_retry.cjs
           node scripts/test_direction_guard.cjs
           node scripts/test_dashboard_resume.cjs
+          python scripts/test_management_variants.py

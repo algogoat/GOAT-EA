@@ -1,0 +1,54 @@
+2026.09.14 02:00:00   NATIVE_ASSERT PASS fixture inputs
+2026.09.14 02:00:00   NATIVE_ASSERT PASS production initialization succeeds without authorization
+2026.09.14 02:00:00   NATIVE_ASSERT PASS fixture volume within symbol bounds
+2026.09.14 02:00:00   NATIVE_ASSERT PASS server_down: native fixture open
+2026.09.14 02:00:00   NATIVE_ASSERT PASS native checkpoint write
+2026.09.14 02:00:00   NATIVE_ASSERT PASS server_down: production reinit with existing position
+2026.09.14 02:00:00   NATIVE_ASSERT PASS server_down: entry permission denied
+2026.09.14 02:00:00   NATIVE_ASSERT PASS final send gate blocks added risk
+2026.09.14 02:00:00   NATIVE_ASSERT PASS no risk added
+2026.09.14 02:00:00   NATIVE_ASSERT PASS server_down: native management exit filled
+2026.09.14 02:00:00   NATIVE_ASSERT PASS server_down: auth recovers without another init
+2026.09.14 02:00:20   NATIVE_ASSERT PASS fixture volume within symbol bounds
+2026.09.14 02:00:20   NATIVE_ASSERT PASS rejected: native fixture open
+2026.09.14 02:00:20   NATIVE_ASSERT PASS native checkpoint write
+2026.09.14 02:00:20   NATIVE_ASSERT PASS rejected: production reinit with existing position
+2026.09.14 02:00:20   NATIVE_ASSERT PASS rejected: entry permission denied
+2026.09.14 02:00:20   NATIVE_ASSERT PASS final send gate blocks added risk
+2026.09.14 02:00:20   NATIVE_ASSERT PASS no risk added
+2026.09.14 02:00:20   NATIVE_ASSERT PASS rejected: native management exit filled
+2026.09.14 02:00:20   NATIVE_ASSERT PASS rejected: auth recovers without another init
+2026.09.14 02:00:40   NATIVE_ASSERT PASS fixture volume within symbol bounds
+2026.09.14 02:00:40   NATIVE_ASSERT PASS pending: native fixture open
+2026.09.14 02:00:40   NATIVE_ASSERT PASS native checkpoint write
+2026.09.14 02:00:40   NATIVE_ASSERT PASS pending: production reinit with existing position
+2026.09.14 02:00:40   NATIVE_ASSERT PASS pending: entry permission denied
+2026.09.14 02:00:40   NATIVE_ASSERT PASS final send gate blocks added risk
+2026.09.14 02:00:40   NATIVE_ASSERT PASS no risk added
+2026.09.14 02:00:40   NATIVE_ASSERT PASS pending: native management exit filled
+2026.09.14 02:00:40   NATIVE_ASSERT PASS pending: auth recovers without another init
+2026.09.14 02:00:59   NATIVE_ASSERT PASS fixture volume within symbol bounds
+2026.09.14 02:00:59   NATIVE_ASSERT PASS entitlement_expired: native fixture open
+2026.09.14 02:00:59   NATIVE_ASSERT PASS native checkpoint write
+2026.09.14 02:00:59   NATIVE_ASSERT PASS entitlement_expired: production reinit with existing position
+2026.09.14 02:00:59   NATIVE_ASSERT PASS entitlement_expired: entry permission denied
+2026.09.14 02:00:59   NATIVE_ASSERT PASS final send gate blocks added risk
+2026.09.14 02:00:59   NATIVE_ASSERT PASS no risk added
+2026.09.14 02:00:59   NATIVE_ASSERT PASS entitlement_expired: native management exit filled
+2026.09.14 02:00:59   NATIVE_ASSERT PASS entitlement_expired: auth recovers without another init
+2026.09.14 02:01:00   NATIVE_ASSERT PASS fixture volume within symbol bounds
+2026.09.14 02:01:00   NATIVE_ASSERT PASS revoked: native fixture open
+2026.09.14 02:01:00   NATIVE_ASSERT PASS native checkpoint write
+2026.09.14 02:01:00   NATIVE_ASSERT PASS revoked: production reinit with existing position
+2026.09.14 02:01:00   NATIVE_ASSERT PASS revoked: entry permission denied
+2026.09.14 02:01:00   NATIVE_ASSERT PASS final send gate blocks added risk
+2026.09.14 02:01:00   NATIVE_ASSERT PASS no risk added
+2026.09.14 02:01:00   NATIVE_ASSERT PASS revoked: native management exit filled
+2026.09.14 02:01:00   NATIVE_ASSERT PASS revoked: auth recovers without another init
+2026.09.14 02:01:20   NATIVE_ASSERT PASS fixture volume within symbol bounds
+2026.09.14 02:01:20   NATIVE_ASSERT PASS healthy: native fixture open
+2026.09.14 02:01:20   NATIVE_ASSERT PASS native checkpoint write
+2026.09.14 02:01:20   NATIVE_ASSERT PASS healthy: production reinit with existing position
+2026.09.14 02:01:20   NATIVE_ASSERT PASS healthy: native management exit filled
+2026.09.14 02:01:20   NATIVE_ASSERT PASS healthy: auth recovers without another init
+2026.09.14 02:01:40   NATIVE_MANAGEMENT_RESULT cases=6 failures=0 simulated_reinit=true cold_terminal_restart=false

@@ -5,9 +5,9 @@
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-balanced35-ai-20260923.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.48-MANAGEMENT-BOOT-R3"
+#define   GOAT_BUILD_ID "V1.48-DASHBOARD-AI-PAIR-R2-MANAGEMENT-R4"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
-#define   GOAT_BUILD_MARKER "MGT3"
+#define   GOAT_BUILD_MARKER "MGT4"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -2721,6 +2721,7 @@ int OnInit()
    g_GOATManagerAccount=AccountInfoInteger(ACCOUNT_LOGIN);
    g_GOATManagerServer=AccountInfoString(ACCOUNT_SERVER);
    g_GOATAuthUntil=0;
+   g_GOATAuthFailures=0;
    g_GOATAuthNext=GetTickCount64()+1000+(ulong)(ChartID()%3000);
    g_GOATAuthReason="AUTH_PENDING";
    if(!test_context && !g_GOATManager)
@@ -4594,11 +4595,6 @@ void OnTimer(void)
       OnTick();
       g_GOATManagementTimerPass=false;
       GOATManagementAuthPoll();
-      if(g_GOATWireHealthy && g_GOATAuthUntil>GetTickCount64() && Mode_Bias!=Bias_Disabled)
-      {
-         SGOATAIWireV2State refreshed;
-         GOATBiasWireV2.GetState(Symbol(),refreshed);
-      }
       GOATManagementStatus();
    }
    timer++;
@@ -4996,7 +4992,7 @@ void OnTick()
       {
        if(Mode_Bias!=Bias_Disabled)
          {
-          control_tower_verified=g_GOATWireHealthy && GOATBiasWireV2.GetState(Symbol(),control_tower_state,!g_GOATManager);
+          control_tower_verified=GOATBiasWireV2.GetState(Symbol(),control_tower_state);
           if(control_tower_verified && control_tower_state.actionable)
              CurBias=control_tower_state.signed_probability_percent;
          }

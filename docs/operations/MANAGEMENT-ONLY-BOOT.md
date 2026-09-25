@@ -1,3 +1,5 @@
+> Historical R3 record. The current R4 scope, unchanged AI policy, three-build backports and qualification status are in [MANAGEMENT-ONLY-R4-QUALIFICATION.md](MANAGEMENT-ONLY-R4-QUALIFICATION.md). This document does not establish release readiness.
+
 # V1.48 R3 management-only boot — review candidate
 
 Follow-up to [backend authorization PR1669](https://github.com/algogoat/goatai/pull/1669).

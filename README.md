@@ -194,3 +194,7 @@ If exact historical reproducibility becomes important, version the shared includ
 
 Following these rules ensures the repository remains a complete, reproducible history of all GOAT-EA versions, source code, binaries, and visual assets.
 
+
+### Management-only R4 qualification
+
+R4 update: preserves each R5/R6/R2 AI source and credential namespace; adds bounded failure backoff and the requested MANAGEMENT-ONLY status. Three production builds compile cleanly; 59 portable checks per variant and 18 native tester cases pass. Original R2 and candidate match all 10 deal records in the bounded EURUSD tester comparison. Native demo cold restart and independent review remain required; no experiment deployment. See docs/operations/MANAGEMENT-ONLY-R4-QUALIFICATION.md and review-builds/management-r4.

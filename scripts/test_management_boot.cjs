@@ -1,9 +1,9 @@
-// Executes production MQL functions with deterministic MT5 adapters, not a second policy.
+﻿// Executes production MQL functions with deterministic MT5 adapters, not a second policy.
 // Syntax adaptation is explicit. This is not a native terminal/broker rehearsal.
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
-const root=path.join(__dirname,'..');
+const root=process.env.GOAT_TEST_ROOT || path.join(__dirname,'..');
 const read=n=>fs.readFileSync(path.join(root,n),'utf8');
-const main=read('GOAT V1.48.mq5'),boot=read('GOATManagementBoot.mqh'),recovery=read('GOATSequenceRecovery.mqh');
+const main=read(process.env.GOAT_TEST_MAIN || 'GOAT V1.48.mq5'),boot=read('GOATManagementBoot.mqh'),recovery=read('GOATSequenceRecovery.mqh');
 function extract(src,name){
  const start=src.search(new RegExp('\\b(?:bool|void|string|int|double) '+name+'\\('));assert(start>=0,name);
  const begin=src.indexOf('{',start);let depth=1,end=begin+1;
@@ -32,7 +32,7 @@ function sequence(dir=0){const s={TradeLevels:[],LotsRaw:[],LotsNorm:[],LotsCum:
 function harness({status=200,reply='9271 - yes',ai=false,feed=true}={}){
  let clock=1000,account=9271,server='Demo',selected=null,requests=0;const positions=new Map(),events=[];
  const c={g_GOATManager:true,g_GOATManagerReady:true,g_GOATManagementTimerPass:false,g_GOATWireHealthy:true,g_GOATRecoveryDegraded:false,g_GOATRecoveryWriteFailed:false,
- g_GOATManagerAccount:9271,g_GOATManagerServer:'Demo',g_GOATAuthUntil:0,g_GOATAuthNext:0,g_GOATAuthReason:'AUTH_PENDING',
+ g_GOATManagerAccount:9271,g_GOATManagerServer:'Demo',g_GOATAuthUntil:0,g_GOATAuthNext:0,g_GOATAuthReason:'AUTH_PENDING',g_GOATAuthFailures:0,MathMin:Math.min,MathPow:Math.pow,
  Mode_Bias:ai?1:0,Bias_Disabled:0,Bias_Display:2,GOATBiasWireV2:{EntryFeedReady:()=>feed},
  ACCOUNT_LOGIN:1,ACCOUNT_SERVER:2,ACCOUNT_EQUITY:3,MQL_TESTER:4,MQL_OPTIMIZATION:5,MQL_FORWARD:6,
  POSITION_MAGIC:10,POSITION_SYMBOL:11,POSITION_TYPE:12,POSITION_VOLUME:13,POSITION_SL:14,POSITION_TP:15,POSITION_PROFIT:16,POSITION_SWAP:17,
@@ -77,16 +77,16 @@ function harness({status=200,reply='9271 - yes',ai=false,feed=true}={}){
    assert(c.GOATDecodeSequence(encoded,after));assert.equal(c.GOATEncodeSequence(after),encoded);
    c.g_GOATAuthUntil=0;position(77,dir);assert(c.GOATSequenceMatchesBroker(after,dir));return attach(after);
  }
- return {c,events,positions,restart,position,setClock:x=>clock=x,setAccount:x=>account=x,setServer:x=>server=x,requests:()=>requests};
+ return {c,events,positions,restart,position,setClock:x=>clock=x,setAccount:x=>account=x,setServer:x=>server=x,requests:()=>requests,setTransport:(s,r)=>{status=s;reply=r;}};
 }
-for(const [name,options] of Object.entries({auth_failure:{status:401},entitlement_expired:{reply:'no'},server_outage:{status:-1},build_revoked:{status:403},ai_unavailable:{ai:true,feed:false}})){
+for(const [name,options] of Object.entries({auth_failure:{status:401},entitlement_expired:{reply:'no'},server_outage:{status:-1},build_revoked:{status:403}})){
  for(const dir of [0,1]){
    test(`${name}: restart with ${dir?'sell':'buy'} still executes loss exit`,()=>{const h=harness(options),seq=h.restart(dir);h.c.GOATManagementAuthPoll();assert.equal(h.c.GOATCanAddRisk(),false);assert.equal(seq.EnforceSequenceMLPS('restart fixture'),true);assert.equal(h.positions.size,0);assert(h.events.some(x=>x[0]==='exit'));});
    test(`${name}: trailing modification survives restart`,()=>{const h=harness(options),seq=h.restart(dir);h.c.GOATManagementAuthPoll();seq.TrailingStoploss();assert(h.events.some(x=>x[0]==='modify'));assert.equal(h.positions.get(77)[15],dir?1.07:1.14);assert.equal(h.c.GOATCanAddRisk(),false);});
  }
 }
 test('AI OFF never requires AI feed',()=>{const h=harness({feed:false});h.c.GOATManagementAuthPoll();assert(h.c.GOATCanAddRisk());});
-test('valid auth cannot bypass stale AI',()=>{const h=harness({ai:true,feed:false});h.c.GOATManagementAuthPoll();assert(!h.c.GOATCanAddRisk());});
+test('auth gate leaves AI decisions to unchanged existing policy',()=>{const h=harness({ai:true,feed:false});h.c.GOATManagementAuthPoll();assert(h.c.GOATCanAddRisk());});
 test('grant expires monotonically without a timer event',()=>{const h=harness();h.c.GOATManagementAuthPoll();h.setClock(46001);assert(!h.c.GOATCanAddRisk());});
 test('restart never restores authorization from disk',()=>{const h=harness();h.c.GOATManagementAuthPoll();h.restart(0);assert(!h.c.GOATCanAddRisk());});
 test('strict account-bound parser rejects ambiguous success',()=>{for(const reply of ['999 - yes','9271 yes','bad9271 - yes','yes','']){const h=harness({reply});h.c.GOATManagementAuthPoll();assert(!h.c.GOATCanAddRisk());}});
@@ -98,7 +98,7 @@ test('trade submission has a final exposure gate before broker send',()=>{const 
 test('negative-lot unwind precedes entry gate',()=>{const f=extract(main,'Add_Level');assert(f.indexOf('if(closeLots(lotsToCut))')<f.indexOf('if(!GOATCanAddRisk()) return false;'));});
 test('trading initialization skips activation and completes restoration',()=>{const f=extract(main,'OnInit');assert(f.includes('if(!test_context && !g_GOATManager)'));assert(f.includes('if(LicenseKey==LICENSE_VALID || g_GOATManager)'));assert(f.indexOf('Seq_Buy.Init')<f.indexOf('GOATTryManagementRecovery()'));const r=extract(recovery,'GOATTryManagementRecovery');assert(r.indexOf('GOATRestoreManagement()')<r.indexOf('g_GOATManagerReady=true'));});
 test('no calendar expiry remains in current entrypoint',()=>{assert(!main.includes('Expiry'));assert(read('GOAT_Inputs_Definitions.mqh').includes('#ifndef GOAT_MANAGEMENT_ONLY_BOOT\r\ndatetime Expiry'));});
-test('management precedes bounded auth/feed IO',()=>{const f=extract(main,'OnTimer');assert(f.indexOf('OnTick();')<f.indexOf('GOATManagementAuthPoll();'));assert(main.includes('GetState(Symbol(),control_tower_state,!g_GOATManager)'));});
+test('management precedes bounded auth/feed IO',()=>{const f=extract(main,'OnTimer');assert(f.indexOf('OnTick();')<f.indexOf('GOATManagementAuthPoll();'));assert(main.includes('GetState(Symbol(),control_tower_state)')); });
 test('timer management cannot create an entry from an old quote',()=>{const h=harness();h.c.GOATManagementAuthPoll();h.c.g_GOATManagementTimerPass=true;assert(!h.c.GOATCanAddRisk());});
 for(const status of [-1,401,403,409,429,500,503])test('failed refresh clears a prior grant: '+status,()=>{const h=harness({status});h.c.g_GOATAuthUntil=999999;h.c.GOATManagementAuthPoll();assert.equal(h.c.g_GOATAuthUntil,0);assert(!h.c.GOATCanAddRisk());});
 test('missing credential performs no network request',()=>{const h=harness();h.c.buildHeaders=()=>null;h.c.GOATManagementAuthPoll();assert.equal(h.requests(),0);assert(!h.c.GOATCanAddRisk());});
@@ -119,20 +119,6 @@ for(const fault of [null,'hash','open','short-write','flush','move','readback'])
 test('recovery codec covers every persisted sequence field and array',()=>{
  const h=harness(),s=h.restart(0);Object.assign(s,{Trailing:true,Retrace_Triggered:true,BiasRescueActive:true,BiasRescueBEProtected:true,BiasRescuePositiveAdds:2,SequenceRealizedPL:24.125,Level_Retrace:1.0999,Level_TSL:1.1077,PeakLots:0.2,PeakCumLots:0.35,ScaleFactor:0.9});
  const saved=h.c.GOATEncodeSequence(s),restored=sequence();assert(h.c.GOATDecodeSequence(saved,restored));assert.equal(h.c.GOATEncodeSequence(restored),saved);
-});
-test('actual wire entry predicate honors freshness, verification and demo-only authority',()=>{
- const wire=read('GOATAIWireV2.mqh'),c={};
- Object.assign(c,{m_read_at_ms:1000000,m_verified_tick:500,m_valid_until_ms:1001000,GetTickCount64:()=>999,
- Bias_Protocol:2,BiasProtocol_ControlTowerV2DemoRaw:2,ACCOUNT_TRADE_MODE:0,ACCOUNT_TRADE_MODE_DEMO:0,
- MQL_TESTER:4,MQL_OPTIMIZATION:5,MQL_FORWARD:6,MQLInfoInteger:()=>false,AccountInfoInteger:()=>0});
- vm.createContext(c);
- const demo=adapt(extract(wire,'GOATApplyWireV2DemoRawAuthority')).replace(/^#.*$/gm,'');vm.runInContext(demo,c);
- let clock=adapt(extract(wire,'GOATWireV2AuthoritativeNow')).replace('return false;','return {ok:false,value:0};').replace('return(authoritative_now>=read_at_ms);','return {ok:authoritative_now>=read_at_ms,value:authoritative_now};');vm.runInContext(clock,c);
- let code=adapt(extract(wire,'EntryFeedReady')).replace(/^#.*$/gm,'').replace('SGOATAIWireV2State entry_state=m_state;','let entry_state={...m_state};')
- .replace('GOATWireV2AuthoritativeNow(m_read_at_ms,m_verified_tick,GetTickCount64(),now_ms)','(()=>{const r=GOATWireV2AuthoritativeNow(m_read_at_ms,m_verified_tick,GetTickCount64(),now_ms);now_ms=r.value;return r.ok;})()');vm.runInContext(code,c);
- c.m_state={verified:true,directive_available:true};assert(c.EntryFeedReady());c.GetTickCount64=()=>1500;assert(!c.EntryFeedReady());c.GetTickCount64=()=>499;assert(!c.EntryFeedReady());c.GetTickCount64=()=>999;
- c.m_state={verified:true,directive_available:false,availability:'WITHHELD',reason_code:'CALIBRATION_ARTIFACT_UNAVAILABLE',source_direction:'BULLISH',source_probability:0.8};assert(c.EntryFeedReady());assert.equal(c.m_state.directive_available,false);
- c.AccountInfoInteger=()=>1;assert(!c.EntryFeedReady());c.AccountInfoInteger=()=>0;c.m_state.verified=false;assert(!c.EntryFeedReady());c.m_state.verified=true;c.m_state.reason_code='REVOKED';assert(!c.EntryFeedReady());
 });
 test('disconnected boot defers state writes without failing initialization',()=>{
  const h=harness(),c=h.c;let restored=0,saved=0;c.g_GOATManagerReady=false;c.TerminalInfoInteger=()=>false;
@@ -165,5 +151,23 @@ test('all current inputs participate in the recovery fingerprint',()=>{
  const defs=read('GOAT_Inputs_Definitions.mqh').replace(/\/\*[\s\S]*?\*\//g,'').replace(/\/\/[^\n]*/g,'');
  const fingerprint=extract(recovery,'GOATRecoverySettings');
  for(const m of defs.matchAll(/^\s*s?input\s+\w+\s+(\w+)\s*=/gm))assert(fingerprint.includes(m[1]),m[1]);
+});
+test('retry backoff is bounded and deferred calls do not send',()=>{
+ const h=harness({status:503});let previous=0;
+ for(let i=0;i<10;i++){h.c.GOATManagementAuthPoll();const delay=h.c.g_GOATAuthNext-previous;assert(delay<=301000);assert(!h.c.GOATCanAddRisk());const sent=h.requests();h.c.GOATManagementAuthPoll();assert.equal(h.requests(),sent);previous=h.c.g_GOATAuthNext;h.setClock(previous);}
+});
+test('recovery resumes permission without restart and resets failure backoff',()=>{
+ const h=harness({status:503});h.c.GOATManagementAuthPoll();assert(!h.c.GOATCanAddRisk());
+ h.setClock(h.c.g_GOATAuthNext);h.setTransport(200,'9271 - yes');h.c.GOATManagementAuthPoll();
+ assert(h.c.GOATCanAddRisk());assert.equal(h.c.g_GOATAuthFailures,0);
+ h.setClock(h.c.g_GOATAuthNext);h.setTransport(403,'no');h.c.GOATManagementAuthPoll();
+ assert(!h.c.GOATCanAddRisk());assert.equal(h.c.g_GOATAuthFailures,1);
+});
+test('management-only is explicit in chart status',()=>{
+ assert(boot.includes('"MANAGEMENT-ONLY: "'));assert(!boot.includes('EntryFeedReady'));
+});
+test('AI wire is unchanged against the admitted R2 source',()=>{
+ const baseline=require('node:child_process').execFileSync('git',['show',(process.env.GOAT_TEST_BASE || '6705df9')+':GOATAIWireV2.mqh'],{cwd:path.join(__dirname,'..'),encoding:'utf8'});
+ assert.equal(read('GOATAIWireV2.mqh').replace(/\r\n/g,'\n'),baseline.replace(/\r\n/g,'\n'));
 });
 console.log(JSON.stringify({passed,productionFunctions:true,nativeExecution:false}));

@@ -1,5 +1,6 @@
 """Read native SeedFarming SpreadsheetML, binding each row to frozen inputs."""
 import hashlib
+import json
 import math
 from pathlib import Path
 import re
@@ -10,15 +11,35 @@ from studio_strategy_settings import numeric
 
 SS='urn:schemas-microsoft-com:office:spreadsheet'
 OFFICE='urn:schemas-microsoft-com:office:office'
+MAX_XML_BYTES=64*1024*1024
+MAX_RESULT_BYTES=64*1024*1024
+MAX_MANIFEST_BYTES=128*1024*1024
+MAX_STATE_BYTES=32*1024*1024
+
+
+def read_seed_json(path,limit=MAX_STATE_BYTES):
+    with Path(path).open('rb') as stream:raw=stream.read(limit+1)
+    if len(raw)>limit:raise ValueError('Seed JSON exceeds its explicit byte bound')
+    def unique(pairs):
+        value={}
+        for key,item in pairs:
+            if key in value:raise ValueError('Duplicate seed JSON key')
+            value[key]=item
+        return value
+    def nonfinite(value):raise ValueError('Nonfinite seed JSON number')
+    return json.loads(raw.decode('utf-8-sig'),object_pairs_hook=unique,parse_constant=nonfinite)
+
+
 HEADERS=['Pass','Result','Profit','Expected Payoff','Profit Factor','Recovery Factor','Sharpe Ratio','Custom','Equity DD %','Trades']
 
 
 def collect(path, member, schema, cutoff):
     path=Path(path)
-    if path.stat().st_size>100_000_000:raise ValueError('Oversized seed XML')
-    raw=path.read_bytes()
-    if len(raw)>100_000_000 or b'<!DOCTYPE' in raw.upper() or b'<!ENTITY' in raw.upper():
+    with path.open('rb') as stream:raw=stream.read(MAX_XML_BYTES+1)
+    if len(raw)>MAX_XML_BYTES or b'<!DOCTYPE' in raw.upper() or b'<!ENTITY' in raw.upper():
         raise ValueError('Unsafe or oversized seed XML')
+    raw.decode('utf-8-sig')
+    if b'\0' in raw:raise ValueError('Seed XML must use native UTF-8 encoding')
     match=re.fullmatch(re.escape(member['output_base'])+r'_N(\d+)_AvgFit=([-\d.]+)_Health=([-\d.]+)_Zero=(\d+)_AvgTrades=([-\d.]+)_Best=([-\d.]+)\.xml',path.name)
     if not match:raise ValueError('Final seed filename does not match frozen member')
     try:root=ET.fromstring(raw)
@@ -31,7 +52,7 @@ def collect(path, member, schema, cutoff):
         key=item.tag.removeprefix('{'+OFFICE+'}')
         if key in metadata:raise ValueError('Duplicate seed metadata')
         metadata[key]=item.text or ''
-    expected=dict(Title=member['output_base'],Author='GOAT SeedFarming',Server=member['account']['server'],Mode='SeedFarming',Target=str(member['frame_target']),Strategy=member['alias'])
+    expected=dict(Title=member['xml_title'],Author='GOAT SeedFarming',Server=member['account']['server'],Mode='SeedFarming',Target=str(member['frame_target']),Strategy=member['alias'])
     if any(metadata.get(k)!=v for k,v in expected.items()):raise ValueError('Seed XML metadata differs from frozen identity')
     sheets=root.findall('{'+SS+'}Worksheet')
     if len(sheets)!=1 or sheets[0].get('{'+SS+'}Name')!='Tester Optimizator Results':raise ValueError('Unexpected seed worksheets')
@@ -54,7 +75,8 @@ def collect(path, member, schema, cutoff):
     if header[:10]!=HEADERS or len(header)!=len(set(header)) or (rows and set(header[10:])!=set(axes)) or (not rows and header[10:] and set(header[10:])!=set(axes)):
         raise ValueError('Seed XML axes differ from frozen template')
     if len(rows)>member['frame_target'] or len(rows)!=int(match[1]):raise ValueError('Actual seed row count/target mismatch')
-    candidates=[];seen=set()
+    base_values={key:value if schema['inputs'][key]['type']=='string' else value.split('||')[0] for key,value in member['values'].items()}
+    candidates=[];seen=set();candidate_bytes=len(json.dumps(base_values).encode('utf-8'))+4096
     for row in rows:
         if len(row)!=len(header):raise ValueError('Seed row width mismatch')
         values=dict(zip(header,row));metrics={}
@@ -65,7 +87,7 @@ def collect(path, member, schema, cutoff):
         if metrics['Pass']<0 or metrics['Pass']!=int(metrics['Pass']) or metrics['Pass'] in seen:raise ValueError('Invalid/duplicate seed pass')
         seen.add(metrics['Pass'])
         if metrics['Trades']<0 or metrics['Trades']!=int(metrics['Trades']):raise ValueError('Invalid seed trades')
-        exact={key:value if schema['inputs'][key]['type']=='string' else value.split('||')[0] for key,value in member['values'].items()}
+        exact=dict(base_values);overrides={}
         for name in header[10:]:
             definition=schema['inputs'][name]
             encoded=values[name]
@@ -76,10 +98,14 @@ def collect(path, member, schema, cutoff):
             start=numeric(parts[1],definition);step=numeric(parts[2],definition,step=True);stop=numeric(parts[3],definition)
             if number<start or number>stop or ((number-start)/step).denominator!=1:raise ValueError('Seed axis value outside frozen ladder: '+name)
             exact[name]=str(int(number)) if number.denominator==1 else encoded
+            overrides[name]=exact[name]
         canonical={k:(v if schema['inputs'][k]['type'] in ('string','datetime') else str(numeric(v,schema['inputs'][k]))) for k,v in exact.items() if k!='EA_Desc'}
-        candidates.append(dict(pass_number=int(metrics['Pass']),metrics=metrics,values=exact,values_require_new_ea_desc=True,
+        candidate=dict(pass_number=int(metrics['Pass']),metrics=metrics,value_overrides=overrides,values_require_new_ea_desc=True,
             candidate_sha256=sha(canonical),candidate_hash_scheme='goat-seed-fixed-values-v1',source_sha256=member['source_sha256'],frozen_sha256=member['set_sha256'],
-            qualifies=metrics['Result']>=cutoff['min_fitness'] and metrics['Trades']>=cutoff['min_trades']))
+            qualifies=metrics['Result']>=cutoff['min_fitness'] and metrics['Trades']>=cutoff['min_trades'])
+        candidate_bytes+=len(json.dumps(candidate).encode('utf-8'))+2
+        if candidate_bytes>MAX_RESULT_BYTES:raise ValueError('Seed candidate evidence exceeds 64 MiB; use a smaller frame target')
+        candidates.append(candidate)
     n=len(candidates);fits=[c['metrics']['Result'] for c in candidates];trades=[c['metrics']['Trades'] for c in candidates]
     summary=dict(actual_frames=n,requested_frames=member['frame_target'],average_fitness=sum(fits)/n if n else 0,
         health_percent=100*sum(t>0 for t in trades)/n if n else 0,
@@ -88,5 +114,6 @@ def collect(path, member, schema, cutoff):
     for group,key,tolerance in [(2,'average_fitness',.00051),(3,'health_percent',.0051),(4,'zero_trade_count',0),(5,'average_trades',.051),(6,'best_fitness',.00051)]:
         if abs(float(match[group])-summary[key])>tolerance:raise ValueError('Seed filename metrics disagree with rows: '+key)
     return dict(status='verified_seed_xml',path=str(path.resolve()),sha256=hashlib.sha256(raw).hexdigest(),
-        member_id=member['member_id'],summary=summary,candidates=candidates,cutoff=cutoff,
+        schema_version=2,member_id=member['member_id'],summary=summary,base_values=base_values,candidates=candidates,cutoff=cutoff,
+        candidate_values='Merge base_values with candidate.value_overrides; replace EA_Desc before independent validation',
         performance_scope='in_sample_seed_search_only',native_launch_qualification=False)

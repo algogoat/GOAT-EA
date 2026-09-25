@@ -2,6 +2,11 @@ import copy
 import hashlib
 from pathlib import Path
 import tempfile
+import json
+import sqlite3
+from unittest.mock import patch
+import studio_seed
+import studio_seed_results
 from types import SimpleNamespace
 import unittest
 from xml.sax.saxutils import escape
@@ -13,7 +18,7 @@ from studio_seed_slot import guard_active_seed
 
 
 def xml_result(member,rows):
-    props={'Title':member['output_base'],'Author':'GOAT SeedFarming','Server':member['account']['server'],'Mode':'SeedFarming','Target':str(member['frame_target']),'Strategy':member['alias']}
+    props={'Title':member['xml_title'],'Author':'GOAT SeedFarming','Server':member['account']['server'],'Mode':'SeedFarming','Target':str(member['frame_target']),'Strategy':member['alias']}
     def row(values):return '<Row>'+''.join('<Cell><Data ss:Type="'+('Number' if isinstance(v,(int,float)) else 'String')+'">'+escape(str(v))+'</Data></Cell>' for v in values)+'</Row>'
     axes=list(member['axes']) if rows else []
     return ('<?xml version="1.0" encoding="UTF-8"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">'+''.join('<'+k+'>'+escape(v)+'</'+k+'>' for k,v in props.items())+'</DocumentProperties><Worksheet ss:Name="Tester Optimizator Results"><Table>'+row(HEADERS+axes)+''.join(row(r) for r in rows)+'</Table></Worksheet></Workbook>').encode()
@@ -73,10 +78,13 @@ class SeedTests(unittest.TestCase):
         self.assertEqual(state['status'],'completed');self.assertEqual(len(self.starts),2)
         self.assertEqual(len(self.closes),1);guard_active_seed(self.controller.root)
         result=self.runner.report('batch');row=result['members'][0]
-        self.assertEqual(row['actual_frames'],2);self.assertEqual(row['result']['summary']['health_percent'],50)
-        self.assertEqual(row['result']['summary']['qualifying_count'],1)
-        self.assertEqual(row['result']['candidates'][0]['values']['Size'],'1.5')
-        self.assertEqual(row['result']['candidates'][0]['values']['Period'],'10')
+        self.assertEqual(row['actual_frames'],2);self.assertEqual(row['summary']['health_percent'],50)
+        self.assertEqual(row['summary']['qualifying_count'],1)
+        result=read_json(row['result_path']);candidate=result['candidates'][0]
+        exact=result['base_values']|candidate['value_overrides']
+        self.assertEqual(exact['Size'],'1.5')
+        self.assertEqual(exact['Period'],'10')
+        self.assertNotIn('Size',candidate['value_overrides'])
         self.runner.resume('batch',1);self.assertEqual(len(self.starts),2)
 
     def test_resume_running_does_not_restart_and_missing_output_is_null(self):
@@ -152,6 +160,65 @@ class SeedTests(unittest.TestCase):
         self.prepare();m=self.member();Path(m['set_path']).write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError,'material'):self.runner.start('batch',1)
         self.assertFalse(self.closes)
+
+    def test_filename_and_metadata_match_actual_ea_source_rules(self):
+        source=(Path(__file__).parents[1]/'GOAT V1.48.mq5').read_text(encoding='utf-8-sig')
+        self.assertIn('string strategy=SeedFarmingSafePart(Strat);',source)
+        self.assertIn('" "+range+" "+Strat;',source)
+        for index,(symbol,period) in enumerate([('EURUSD.pro','M5'),('US500#','H4'),('GER40 cash','MN1')]):
+            plan=copy.deepcopy(self.plan);plan['jobs'][0]['tester'].update(Symbol=symbol,Period=period)
+            self.runner.prepare('naming'+str(index),plan)
+            member=studio_seed_results.read_seed_json(self.runner.path('naming'+str(index))/'manifest.json',studio_seed_results.MAX_MANIFEST_BYTES)['members'][0]
+            prefix='GOAT V1.48 '+symbol+','+period+' 2026.01.01-2026.03.01 '
+            self.assertEqual(member['output_base'],prefix+member['alias'].replace('_',''))
+            self.assertEqual(member['xml_title'],prefix+member['alias'])
+            self.assertEqual(collect(self.output(member),member,self.controller.schema,self.plan['cutoff'])['summary']['actual_frames'],2)
+
+    def test_aggregate_input_budget_rejects_before_any_staged_files(self):
+        with patch.object(studio_seed,'MAX_RETAINED_INPUT_BYTES',1):
+            with self.assertRaisesRegex(ValueError,'128 MiB'):self.prepare()
+        self.assertFalse(self.runner.path('batch').exists())
+        self.assertFalse((Path(self.controller.install['terminal_data_root'])/'config/GOATStudio/Seeds').exists())
+
+    def test_seed_json_streaming_bound_duplicates_and_supported_large_payload(self):
+        file=self.root/'json.json';file.write_text(' '*2_000_001+'{"value":1}')
+        self.assertEqual(studio_seed_results.read_seed_json(file),{'value':1})
+        with self.assertRaisesRegex(ValueError,'byte bound'):studio_seed_results.read_seed_json(file,20)
+        file.write_text('{"value":1,"value":2}')
+        with self.assertRaisesRegex(ValueError,'Duplicate'):studio_seed_results.read_seed_json(file)
+
+    def test_candidate_result_budget_is_explicit_and_never_truncates_silently(self):
+        self.prepare();member=self.member()
+        with patch.object(studio_seed_results,'MAX_RESULT_BYTES',1):
+            with self.assertRaisesRegex(ValueError,'candidate evidence'):collect(self.output(member),member,self.controller.schema,self.plan['cutoff'])
+
+    def test_cancel_requires_its_exact_terminal_slot_before_close(self):
+        self.prepare();self.runner.start('batch',1)
+        slot=read_json(self.runner.slot);slot['batch_id']='other';self.runner.slot.write_text(json.dumps(slot))
+        with self.assertRaisesRegex(ValueError,'ownership receipt differs'):self.runner.cancel('batch')
+        self.assertEqual(len(self.closes),1)
+
+    def test_foreign_run_native_reservation_blocks_seed_close(self):
+        self.prepare();db=sqlite3.connect(':memory:');self.addCleanup(db.close)
+        db.execute('CREATE TABLE studio_queues(jobs TEXT)');db.execute('INSERT INTO studio_queues VALUES(?)',(json.dumps([{'status':'reserved'}]),))
+        self.controller.store=SimpleNamespace(db=db)
+        with self.assertRaisesRegex(ValueError,'Unresolved'):self.runner.start('batch',1)
+        self.assertFalse(self.closes)
+
+    def test_state_member_truncation_cannot_release_seed_ownership(self):
+        self.prepare();self.runner.start('batch',1);file=self.runner.path('batch')/'state.json'
+        state=read_json(file);state['members']=[];file.write_text(json.dumps(state))
+        with self.assertRaisesRegex(ValueError,'identity/count'):self.runner.status('batch')
+        with self.assertRaises(ValueError):guard_active_seed(self.controller.root)
+
+    def test_public_reports_reference_complete_candidate_artifacts(self):
+        self.prepare();self.auto=True;self.runner.start('batch',5)
+        with patch.object(studio_seed,'MAX_PUBLIC_MEMBERS',0):
+            reply=self.runner.report('batch');self.assertTrue(reply['members_omitted']);self.assertNotIn('members',reply)
+        report=studio_seed_results.read_seed_json(reply['report_path']);row=report['members'][0]
+        self.assertNotIn('result',row);self.assertEqual(row['actual_frames'],2)
+        artifact=studio_seed_results.read_seed_json(row['result_path'],studio_seed_results.MAX_RESULT_BYTES)
+        self.assertEqual(len(artifact['candidates']),2);self.assertEqual(artifact['base_values']['Size'],'1.5')
 
     def test_completed_evidence_revalidated_before_resume(self):
         self.prepare();self.auto=True;self.runner.start('batch',5);m=self.member();self.output(m).write_bytes(b'changed')

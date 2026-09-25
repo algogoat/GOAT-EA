@@ -5,6 +5,7 @@ write-ahead state; uncertain start/close is never automatically retried.
 """
 import hashlib
 import math
+import json
 from pathlib import Path
 import re
 import time
@@ -17,10 +18,13 @@ from studio_native_gate import exclusive_gate
 from studio_settings import validate_tester
 from studio_strategy_settings import read_values,numeric
 from studio_template_tools import source_bytes,validate_raw
-from studio_seed_results import collect
+from studio_seed_results import collect,read_seed_json,MAX_MANIFEST_BYTES,MAX_STATE_BYTES,MAX_RESULT_BYTES
 from studio_seed_slot import guard_active_seed
 
 TERMINAL={'completed','cancelled','timeout','failed','missing_output'}
+MAX_RETAINED_INPUT_BYTES=128*1024*1024
+MAX_PUBLIC_MEMBERS=100
+
 BUSY={'reserved','starting','running','reconcile_required','verifying'}
 
 
@@ -42,8 +46,10 @@ class SeedRunner:
         return self.base/batch_id
 
     def _read(self,batch_id):
-        root=self.path(batch_id);manifest=read_json(root/'manifest.json');state=read_json(root/'state.json')
+        root=self.path(batch_id);manifest=read_seed_json(root/'manifest.json',MAX_MANIFEST_BYTES);state=read_seed_json(root/'state.json')
         if state['manifest_sha256']!=digest(root/'manifest.json') or manifest['installation_sha256']!=sha(self.c.install) or manifest['schema_sha256']!=sha(self.c.schema):raise ValueError('Seed manifest/installation/schema identity changed')
+        if (state.get('batch_id')!=batch_id or manifest.get('batch_id')!=batch_id or len(state['members'])!=len(manifest['members'])
+                or [(m['member_id'],m['alias']) for m in state['members']]!=[(m['member_id'],m['alias']) for m in manifest['members']]):raise ValueError('Seed state member identity/count changed')
         binary=Path(self.c.install['terminal_data_root'])/'MQL5/Experts'/self.c.install['ea_relative_path'].replace('\\','/')
         if digest(binary)!=self.c.install['ea_sha256']:raise ValueError('Installed EA binary changed')
         for member in manifest['members']:
@@ -56,12 +62,24 @@ class SeedRunner:
         return root,manifest,state
 
     def _save(self,root,state):
-        state['updated_unix']=self.clock();write_json(root/'state.json',state)
+        state['updated_unix']=self.clock()
+        if len(json.dumps(state).encode('utf-8'))>MAX_STATE_BYTES:raise ValueError('Seed state exceeds 32 MiB')
+        write_json(root/'state.json',state)
+
+    def _public(self,root,state):
+        if len(state['members'])<=MAX_PUBLIC_MEMBERS:return state
+        counts={}
+        for item in state['members']:counts[item['status']]=counts.get(item['status'],0)+1
+        return {key:value for key,value in state.items() if key!='members'}|dict(member_count=len(state['members']),status_counts=counts,
+            members_omitted=True,state_path=str(root/'state.json'),manifest_path=str(root/'manifest.json'),native_launch_qualified=False)
 
     def _owner(self,generation=None):
         state=self.c.state()
         if state['owner']!='agent' or (generation is not None and state['generation']!=generation):raise ValueError('Human Studio grant is missing or changed; no further seed effects')
-        if any(j['status'] in BUSY for j in state['queue']):raise ValueError('Unresolved native batch must finish before seed workflow')
+        queues=[state['queue']]
+        if hasattr(self.c,'store'):
+            queues=[json.loads(row[0]) for row in self.c.store.db.execute('SELECT jobs FROM studio_queues')]
+        if any(j['status'] in BUSY for jobs in queues for j in jobs):raise ValueError('Unresolved native batch must finish before seed workflow')
         return state
 
     def _slot(self,batch_id,state):
@@ -81,7 +99,7 @@ class SeedRunner:
             _,old,_=self._read(batch_id)
             if old['plan_sha256']!=sha(plan):raise ValueError('Seed batch ID already belongs to a different plan')
             return self.status(batch_id)
-        members=[];payloads=[];identities=set();nonce=uuid.uuid4().hex[:16]
+        members=[];payloads=[];identities=set();retained_bytes=0;nonce=uuid.uuid4().hex[:16]
         account=self.c.session['account']
         for index,job in enumerate(plan['jobs']):
             if not isinstance(job,dict) or set(job)!={'set_path','tester','frame_target'}:raise ValueError('Each seed job requires set_path, full tester and frame_target')
@@ -90,6 +108,7 @@ class SeedRunner:
             if not re.fullmatch(r'[A-Za-z0-9_.# -]{1,80}',tester['Symbol']):raise ValueError('Symbol cannot contain filename/protocol delimiters')
             target=job['frame_target']
             if type(target) is not int or not 1<=target<=1000000:raise ValueError('frame_target must be 1..1000000')
+            if not isinstance(job['set_path'],str) or not Path(job['set_path']).is_absolute():raise ValueError('Seed source SET path must be absolute')
             source,raw,text=source_bytes(job['set_path']);valid=validate_raw(raw,self.c.schema,self.c.policy,require_optimization=True)
             original_values=read_values(raw)
             for name in valid['active_axes']:
@@ -117,19 +136,23 @@ class SeedRunner:
                     if any(c in str(value) for c in '\r\n\x00'):raise ValueError('Unsafe startup value')
                     ini+=key+'='+str(value)+'\r\n'
             config=ini.encode('utf-16')
+            retained_bytes+=len(raw)+len(frozen)+len(config)
+            if retained_bytes>MAX_RETAINED_INPUT_BYTES:raise ValueError('Retained seed input matrix exceeds 128 MiB')
             member=dict(member_id=identity,index=index,alias=alias,account=account,tester=tester,frame_target=target,
                 source_path=str(source),source_sha256=valid['sha256'],set_path=str(setpath),set_sha256=hashlib.sha256(frozen).hexdigest(),
                 config_path=str(configpath),config_sha256=hashlib.sha256(config).hexdigest(),values=values,axes=valid['active_axes'],
-                output_base='GOAT V'+self.c.install['ea_version']+' '+tester['Symbol']+','+tester['Period']+' '+tester['FromDate']+'-'+tester['ToDate']+' '+alias)
+                xml_title=Path(self.c.install['ea_relative_path'].replace('\\','/')).stem+' '+tester['Symbol']+','+tester['Period']+' '+tester['FromDate']+'-'+tester['ToDate']+' '+alias,
+                output_base=Path(self.c.install['ea_relative_path'].replace('\\','/')).stem+' '+tester['Symbol']+','+tester['Period']+' '+tester['FromDate']+'-'+tester['ToDate']+' '+re.sub('[^A-Za-z0-9]','',alias)[:52])
             members.append(member);payloads.extend([(setpath,frozen),(configpath,config)])
-        # No SET/config write before every job passes validation.
+        manifest=dict(schema_version=1,batch_id=batch_id,installation_sha256=sha(self.c.install),schema_sha256=sha(self.c.schema),plan_sha256=sha(plan),
+            plan=plan,created_unix=self.clock(),members=members,mode='SeedFarming',native_launch_qualified=False)
+        if len(json.dumps(manifest).encode('utf-8'))>MAX_MANIFEST_BYTES:raise ValueError('Seed manifest exceeds 128 MiB; split the matrix')
+        # No SET/config write before every job and aggregate bound passes validation.
         root.mkdir(parents=True,exist_ok=False)
         (Path(self.c.install['terminal_data_root'])/'MQL5/Files/GOATStudio/SeedReports').mkdir(parents=True,exist_ok=True)
         for path,raw in payloads:
             path.parent.mkdir(parents=True,exist_ok=True)
             with path.open('xb') as stream:stream.write(raw)
-        manifest=dict(schema_version=1,batch_id=batch_id,installation_sha256=sha(self.c.install),schema_sha256=sha(self.c.schema),plan_sha256=sha(plan),
-            plan=plan,created_unix=self.clock(),members=members,mode='SeedFarming',native_launch_qualified=False)
         write_json(root/'manifest.json',manifest)
         state=dict(schema_version=1,batch_id=batch_id,manifest_sha256=digest(root/'manifest.json'),status='prepared',generation=None,
             members=[dict(member_id=m['member_id'],alias=m['alias'],status='pending',attempts=0,result=None) for m in members])
@@ -183,7 +206,7 @@ class SeedRunner:
             root,manifest,state=self._read(batch_id)
             self._observe(root,manifest,state)
         members=[item|dict(tester=spec['tester'],source_sha256=spec['source_sha256'],frozen_set_sha256=spec['set_sha256'],config_sha256=spec['config_sha256'],requested_frames=spec['frame_target']) for spec,item in zip(manifest['members'],state['members'])]
-        return state|dict(members=members,native_launch_qualified=False,manifest_path=str(root/'manifest.json'),report_path=str(root/'report.json'))
+        return self._public(root,state|dict(members=members,native_launch_qualified=False,manifest_path=str(root/'manifest.json'),report_path=str(root/'report.json')))
 
     def _activate(self,batch_id,root,manifest,state):
         owner=self._owner()
@@ -210,13 +233,13 @@ class SeedRunner:
             self.c.bridge.pump()
             with exclusive_gate(self.gate):
                 root,manifest,state=self._read(batch_id)
-                if state['status'] in ('completed','stopped','reconcile_required'):return state
+                if state['status'] in ('completed','stopped','reconcile_required'):return self._public(root,state)
                 if state['status']=='prepared':
                     if not initial:raise ValueError('Use seed-start for a prepared batch')
                     self._activate(batch_id,root,manifest,state)
                 self._owner(state['generation']);self._slot(batch_id,state)
                 current=self._observe(root,manifest,state)
-                if state['status'] in ('completed','stopped','reconcile_required'):return state
+                if state['status'] in ('completed','stopped','reconcile_required'):return self._public(root,state)
                 if state['status']=='closing_monitor':
                     if current is not None and current!=state['initial_process']:raise ValueError('Monitor process changed during normal close')
                     if current is None:state['status']='active';self._save(root,state)
@@ -245,12 +268,13 @@ class SeedRunner:
         self.c.bridge.pump()
         with exclusive_gate(self.gate):
             root,manifest,state=self._read(batch_id)
-            if state['status'] in ('completed','stopped'):return state
+            if state['status'] in ('completed','stopped'):return self._public(root,state)
             self._owner(state['generation'])
+            if state['status']!='prepared':self._slot(batch_id,state)
             if state['status']=='prepared':
                 for item in state['members']:item['status']='cancelled'
                 state['status']='stopped';self._save(root,state)
-                return state|dict(stop_verified=True,native_started=False)
+                return self._public(root,state)|dict(stop_verified=True,native_started=False)
             current=self._observe(root,manifest,state)
             if state['status']=='reconcile_required':raise ValueError('Uncertain process provenance requires human inspection; no close sent')
             for item in state['members']:
@@ -261,18 +285,23 @@ class SeedRunner:
             if current:
                 self.process.close(current)
             else:self._observe(root,manifest,state)
-            return state|dict(stop_verified=current is None)
+            return self._public(root,state)|dict(stop_verified=current is None)
 
     def report(self,batch_id):
-        state=self.status(batch_id);root,manifest,_=self._read(batch_id);rows=[]
+        self.status(batch_id);root,manifest,state=self._read(batch_id);rows=[]
         for spec,item in zip(manifest['members'],state['members']):
             result=None
             if item.get('result'):
                 saved=item['result']
                 if digest(saved['path'])!=saved['sha256'] or digest(saved['xml_path'])!=saved['xml_sha256']:raise ValueError('Retained seed result changed')
-                result=read_json(saved['path'])
-            rows.append(dict(member_id=spec['member_id'],alias=spec['alias'],symbol=spec['tester']['Symbol'],tester=spec['tester'],source_path=spec['source_path'],source_sha256=spec['source_sha256'],frozen_set_sha256=spec['set_sha256'],config_sha256=spec['config_sha256'],status=item['status'],requested_frames=spec['frame_target'],actual_frames=result['summary']['actual_frames'] if result else None,result=result))
+                result=read_seed_json(saved['path'],MAX_RESULT_BYTES)
+            rows.append(dict(member_id=spec['member_id'],alias=spec['alias'],symbol=spec['tester']['Symbol'],tester=spec['tester'],source_path=spec['source_path'],source_sha256=spec['source_sha256'],frozen_set_sha256=spec['set_sha256'],config_sha256=spec['config_sha256'],status=item['status'],requested_frames=spec['frame_target'],actual_frames=result['summary']['actual_frames'] if result else None,summary=result['summary'] if result else None,
+                result_path=item['result']['path'] if result else None,result_sha256=item['result']['sha256'] if result else None,
+                xml_path=item['result']['xml_path'] if result else None,xml_sha256=item['result']['xml_sha256'] if result else None))
         value=dict(schema_version=1,batch_id=batch_id,status=state['status'],members=rows,cutoff=manifest['plan']['cutoff'],
             missing_output_is_zero=False,scope='Seed search only; freeze exact candidates for independent validation before portfolios',native_launch_qualified=False)
         write_json(root/'report.json',value)
-        return value
+        if len(rows)>MAX_PUBLIC_MEMBERS:
+            return dict(schema_version=1,batch_id=batch_id,status=state['status'],member_count=len(rows),report_path=str(root/'report.json'),
+                report_sha256=digest(root/'report.json'),members_omitted=True,native_launch_qualified=False)
+        return value|dict(report_path=str(root/'report.json'),report_sha256=digest(root/'report.json'))

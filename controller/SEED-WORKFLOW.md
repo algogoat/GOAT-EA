@@ -63,8 +63,10 @@ All 18 tester fields are required and use the normal discovered controller
 tester contract. Seed mode requires `ForwardMode: 0`, empty `ForwardDate`, local
 workers, genetic optimization, custom fitness, no remote/cloud workers and no
 visual mode. `frame_target` is 1..1,000,000; the plan holds 1..10,000 unique jobs.
-`job_timeout_seconds` is 30..86,400. A timeout requests normal close and stops the
-driver; it never force-kills MT5. Cutoff fitness is finite and minimum trades is a
+`job_timeout_seconds` is 30..86,400 and is checked while `seed-start` or
+`seed-resume` is driving the run. Between invocations there is no background
+timeout watcher; the EA frame target remains active. An observed timeout requests
+normal close and stops the driver; it never force-kills MT5. Cutoff fitness is finite and minimum trades is a
 nonnegative integer. Qualifying rows meet both inclusive thresholds. These are
 research selection thresholds, not profitability guarantees.
 
@@ -83,6 +85,12 @@ sections and trading inputs; only `EA_Desc` receives a unique short run alias an
 configuration, schema, installation and retained result has a SHA-256 binding.
 Axes must be exactly representable by the native seed XML's eight-decimal output;
 unrepresentable search precision is rejected instead of silently changing it.
+
+Retained source, frozen SET and startup INI bytes together are limited to 128 MiB
+per prepared matrix. The public plan JSON is limited to 64 MiB. Manifest JSON is limited to 128 MiB, state JSON to 32 MiB,
+and each native XML and candidate result artifact to 64 MiB. These are explicit
+byte limits in addition to job/frame counts. Split larger matrices or use a smaller
+frame target; oversized evidence is a failed result, never silent truncation or zero.
 
 An existing batch ID is reusable only with the same plan and intact frozen bytes.
 Edit a new plan/new ID for changes. This command never starts MT5.
@@ -147,14 +155,28 @@ Verified reports contain actual rows, average/best fitness, health percentage,
 zero-trade count, average trades and qualifying count. Native health means the
 percentage of rows with trades greater than zero; it does not mean profitable.
 Filename metrics are checked against XML rows. The report retains the raw XML
-path and hash. Every candidate contains reconstructed exact fixed+optimized
-input values, a canonical candidate hash excluding the run description, pass
+path and hash. Each per-member result artifact stores `base_values` once and every candidate
+stores only optimized `value_overrides`. Reconstruct exact values with
+`base_values | candidate.value_overrides`. Candidates retain a canonical hash excluding the run description, pass
 number as a reference, and the source/frozen hashes. Join follow-up evidence by
 canonical settings and source hashes, never by pass number alone.
-The candidate `values` retain the actual seed run description for provenance.
+The shared `base_values.EA_Desc` retains the actual seed run description for provenance.
 When freezing a candidate for ordinary validation, use a new unique plain
 `EA_Desc` without SeedFarming metadata and turn its optimized axes into fixed
 values. `values_require_new_ea_desc: true` makes this boundary explicit.
+
+`seed-report` includes member summaries and `result_path`/`result_sha256` plus
+`xml_path`/`xml_sha256`; full candidates remain in the referenced result artifact
+(`schema_version: 2`). It does not print every candidate. Above 100 members,
+report stdout returns `member_count`, `members_omitted: true`, `report_path` and
+`report_sha256`; the report file retains every member. Large status/start/resume/
+cancel replies similarly return status counts and the complete `state_path`.
+Read those local JSON files with the bundled Python or the agent filesystem tool,
+verify their recorded hashes, and iterate every persisted member. Do not treat a
+compact reply as the whole matrix. For each member, read its result artifact and
+merge `base_values` with the chosen candidate `value_overrides` before freezing
+validation inputs. Record every attempted member outcome in the living matrix,
+including failures and missing outputs.
 
 Record these results in the customer's local matrix with the full tester
 conditions and config hash. Do not inherit parent variant measurements or overwrite

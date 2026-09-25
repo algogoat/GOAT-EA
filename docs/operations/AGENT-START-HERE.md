@@ -24,6 +24,7 @@ EA, controller, optimization files and matrix distribution.
 | Inspect active trading/exposure | `goat-vps-trade-audit` skill | Observed positions, deals, inputs and effective policies |
 | Create or benchmark optimization inputs | `goat-opt-file-create`, `goat-seed-farming` | File integrity, bounded tests and scoped post-run cleanup |
 | Operate Optimization Studio settings, queue and controller | [Studio controller guide](OPTIMIZATION-STUDIO-CONTROLLER.md) | Local/managed controls, exact research command schema, persistence, ownership, receipts, recovery and explicit V1.48 capability gaps |
+| Inspect current machine and completed pilot cost | Installed `goat.exe studio --installation <receipt>` with `resource-profile` and `benchmark-report --batch-id <completed-id>`; [command contract](../../controller/README.md#measure-a-pilot-before-committing-a-research-budget) | Current CPU/RAM/filesystem facts and exact completed batch/report/timeline observations; no throughput prediction, native worker count or launch |
 | Launch an optimization | `mt5-goat-optimize` and the campaign's current continuation | Exact retained queue, controller ownership, native results |
 | Operate the Electron portfolio builder | Its authenticated local agent API and repo operating docs | Saved pool/job/portfolio IDs and exports; no screen dependency |
 
@@ -35,6 +36,27 @@ connection. Do not copy a previous campaign's host paths, PIDs or account count.
 Read [the native controller runbook](NATIVE-CONTROLLER-RUNBOOK.md) before issuing
 commands. Read [the V1.48 verification notes](V1.48-DASHBOARD-VERIFICATION.md) for
 the current dashboard change and its unfinished verification.
+
+## Agree a measured research budget
+
+Before a large optimization, run `resource-profile` and discuss the user's
+wall-clock window and available disk space. CPU specifications do not establish
+MT5 worker availability or optimization speed. Prepare a small representative
+pilot with `prepare-batch` (even for one member), run it through the normal
+explicit start/finish workflow, then inspect `benchmark-report --batch-id`.
+Match exact assets, timeframes, dates, models, forward settings, input axes and
+exports. Retain the batch ID and returned evidence hashes. Missing or ambiguous
+timing remains unknown; do not substitute guessed genetic pass counts or a
+universal timeframe multiplier. These inspection commands neither consume human
+control requests nor start, finish or reconcile work.
+
+Use comparable completed pilots to present a provisional scenario table with
+sample count, observed range, unmeasured groups and storage/restart uncertainty.
+Current machine facts do not prove past worker/cache/load conditions. Agree the
+next batch scope with the user before committing its budget. Larger diverse,
+independently validated pools can offer more portfolio choices; merely adding
+correlated or overfit candidates does not demonstrate improvement. Explain the
+tradeoff between research cost, useful diversity and validation quality.
 
 ## First five observations
 

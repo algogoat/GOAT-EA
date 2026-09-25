@@ -14,6 +14,78 @@ In the unified agent kit, prefix each command below with:
 The standalone equivalent is `python.exe controller\goat_studio.py` followed by
 the same arguments, using the bundled runtime rather than a system Python.
 
+## Measure a pilot before committing a research budget
+
+With the installed executable and receipt prefix above:
+
+```text
+resource-profile
+benchmark-report --batch-id <completed-pilot-batch-id>
+```
+
+`resource-profile` works before bootstrap. It observes the current Windows CPU
+model, physical/logical processor counts, total/available RAM and the free/total
+capacity of the filesystems containing the selected terminal data, Common Files
+and controller state. Each observation is timestamped. Paths on the same volume
+share capacity: do not add their free space together. Missing inventory stays
+unavailable. CPU count is neither enabled MT5 worker count nor a speed estimate;
+`enabled_mt5_workers` is null. The Windows CIM probe uses the absolute system
+PowerShell path and no console window, without requiring PowerShell on PATH.
+
+Discuss the user's available wall-clock window and disk headroom before preparing
+a full batch. Select representative asset/timeframe/settings groups, preserving
+exact broker symbols, dates, tester model, forward split, optimization axes and
+export settings. Use `prepare-batch` for a small timing pilot, including a
+one-member pilot, then the normal authorized `start`, observation and successful
+`finish` workflow. Preparation and either inspection command do not launch work.
+The user still controls broker login, permissions, pairing and Give to Agent.
+
+After `finish`, `benchmark-report` reads the retained completed job, frozen
+preparation receipt, exact attempt/result, native inputs/queue and verified
+back/forward reports. It never opens/migrates controller storage, pumps the human
+inbox, finishes/reconciles a job, grants authority or launches a terminal.
+Incomplete work and changed or mismatched artifacts return an error; preserve
+the receipts and investigate the exact batch. Legacy `prepare` jobs without a
+batch preparation receipt are not benchmark inputs.
+
+The timing reader requires exactly one ordered native `OnGoing`/`Completed`
+QUEUE_STATE pair per frozen alias, with valid nondecreasing local timestamps.
+Duplicate, regressing, retry, cancelled, incomplete or foreign-member timelines
+leave `timing.status: timing_unknown` and member `elapsed_seconds: null`.
+Absence is not zero. Valid observations return `native_timeline_observed`, member
+elapsed seconds, `observed_batch_span_seconds` and `between_member_seconds`.
+These one-second local wall-clock stamps include native report migration and
+selected exports, but exclude initial launch and final controller finish.
+Timezone, DST and forward clock adjustments are not attested. Historical
+hardware, enabled workers, background load and cache state remain unknown; a
+current resource snapshot cannot fill those fields.
+
+Use `workload_sha256`, the exact tester/export settings and active axes to match
+observations. `actual_back_report_rows` and `actual_forward_report_rows` describe
+retained XML rows, not total genetic passes. Summarize repeated comparable pilots
+with their observed range and sample count; label a single sample as provisional.
+Build the user's scenario table by workload group and planned member count,
+explicitly marking unmeasured groups and additional restart/export/storage
+uncertainty. Do not extrapolate SeedFarming to full optimization, apply a blanket
+M1 multiplier, or promise linear speedup from processor counts. The command
+returns no future estimate or launch permission.
+
+`artifact_bytes` totals only the exact frozen package, completion result, native
+queue/inputs, report XML, timeline and alias/symbol SET/CSV exports examined. It
+excludes tick/history caches, tester agents and temporary storage and is not a
+future disk requirement. Reads are bounded to 64 MiB per file and 512 MiB per
+artifact group; package/export inventories also have file-count limits. At most
+100 members are included inline, with `members_omitted` identifying larger
+batches. Prefer small representative pilots. Missing timing does not qualify a
+workload just because its reports exist.
+
+A larger pool of diverse, independently validated strategies can give portfolio
+construction more alternatives across assets, regimes and behavior. Duplicated
+or correlated strategies and overfit results do not establish useful diversity;
+more candidates do not guarantee better portfolios or returns. Use measured
+research cost and independent validation to choose the next increment with the
+user, then revisit the budget as evidence accumulates.
+
 ## Agent-assisted monitor onboarding
 
 After desktop sign-in, use desktop `onboarding.status` for beta access and the

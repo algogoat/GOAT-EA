@@ -135,7 +135,7 @@ void GOATDeviceActivationShowNetworkHelp(void)
 void GOATDeviceActivationShowCode(const string user_code,const string verification_url)
   {
    HidePrompt();
-   ShowPrompt("Activate GOAT V1.47",
+   ShowPrompt("Activate GOAT V"+GOAT_VERSION_LABEL,
                "Sign in and confirm MT5 account "+g_GOATDeviceActivationAccountId+".",
                "Enter pairing code: "+user_code,verification_url);
   }
@@ -191,7 +191,7 @@ bool GOATDeviceActivationWriteCredential(void)
    // One user-scoped FILE_COMMON credential is shared locally. The server
    // rechecks MT5-account membership and entitlement on every feed request.
    string directory="GOAT\\Credentials";
-   string temporary=directory+"\\api-bearer.token.pending";
+   string temporary=GOAT_API_BEARER_FILE+".pending";
    FolderCreate(directory,FILE_COMMON);
    FileDelete(temporary,FILE_COMMON);
    int handle=FileOpen(temporary,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
@@ -222,7 +222,7 @@ void GOATDeviceActivationRequestReload(void)
    g_GOATDeviceActivationReloadRequested=true;
    HidePrompt();
    ShowPrompt("GOAT activation complete","Your GOAT user credential is installed.",
-               "Restarting V1.47 automatically...","");
+               "Restarting V"+GOAT_VERSION_LABEL+" automatically...","");
    g_GOATDeviceActivationId="";
    g_GOATDeviceActivationCandidate="";
    if(!ChartSetSymbolPeriod(ChartID(),Symbol(),Period()))
@@ -231,7 +231,7 @@ void GOATDeviceActivationRequestReload(void)
       // callback cannot retry or flood the log. A manual reattach re-enters OnInit.
       EventKillTimer();
       ShowPrompt("GOAT activation complete","Your GOAT user credential is installed.",
-                  "Remove and add V1.47 once to finish setup.","");
+                  "Remove and add V"+GOAT_VERSION_LABEL+" once to finish setup.","");
      }
   }
 

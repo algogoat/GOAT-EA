@@ -84,6 +84,10 @@ public:
    CLabel      m_lblSetsToExport,m_lblBackOOSDate,m_lblMinScore,m_lblMinARF,m_lblAdjustLots,m_lblMinSR,m_lblTargetDD,m_lblVerifyOOS,m_lblDataSync;
    CEdit       m_edtSetsToExport                 ,m_edtMinScore,m_edtMinARF                ,m_edtMinSR,m_edtTargetDD;
    CBmpButton  m_chkAdjustLots,m_chkVerifyOOS;
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+   CBmpButton m_chkSequenceData;
+   CLabel m_lblSequenceData,m_lblSequenceCost;
+#endif
    
    CDatePicker m_dpBackOOS,m_dpFwdOOS;
    CButton     m_btnSyncBias,m_btnViewBias,m_btnSyncNews;
@@ -798,6 +802,10 @@ void CStrategyTesterDialog::ApplyExportSettingsToControls(const string exportSet
    if(val!="") m_chkAdjustLots.Pressed(StringToInteger(val)!=0);
    val=GoatOptReadIniValue(exportSettings,"IncludeBackOOS");
    if(val!="") m_chkVerifyOOS.Pressed(StringToInteger(val)!=0);
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+   val=GoatOptReadIniValue(exportSettings,"IncludeSequenceData");
+   m_chkSequenceData.Pressed(val=="" || val=="1");
+#endif
    val=GoatOptReadIniValue(exportSettings,"BackOOSDate");
    if(val!="")
    {
@@ -1568,6 +1576,9 @@ void CStrategyTesterDialog::ApplyStudioStage(const int stage)
    m_lblMinSR.Hide();         m_edtMinSR.Hide();
    m_lblAdjustLots.Hide();    m_chkAdjustLots.Hide();
    m_lblVerifyOOS.Hide();     m_chkVerifyOOS.Hide();
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+   m_lblSequenceData.Hide(); m_chkSequenceData.Hide(); m_lblSequenceCost.Hide();
+#endif
    m_lblDataSync.Hide();      m_btnSyncBias.Hide();       m_btnViewBias.Hide();       m_btnSyncNews.Hide();
    // The legacy export tray is retained as an implementation container, but
    // the new workflow presents every export control inside stage 04.
@@ -1651,7 +1662,13 @@ void CStrategyTesterDialog::ApplyStudioStage(const int stage)
        StageMove(m_lblMinSR,right_x,y,true,pair_label);         StageMove(m_edtMinSR,right_control_x,y,true,pair_control); y+=row;
        StageMove(m_lblAdjustLots,label_x,y,true,pair_label);    StageMove(m_chkAdjustLots,label_x+pair_label+m_GapHoriz,y+(m_controlHeight-m_chkAdjustLots.Height())/2,true);
        StageMove(m_lblVerifyOOS,right_x,y,true,pair_label);     StageMove(m_chkVerifyOOS,right_control_x,y+(m_controlHeight-m_chkVerifyOOS.Height())/2,true); y+=row;
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+       StageMove(m_lblSequenceData,label_x,y,true,m_labelWidth);
+       StageMove(m_chkSequenceData,control_x,y+(m_controlHeight-m_chkSequenceData.Height())/2,true); y+=row;
+       StageMove(m_lblSequenceCost,label_x,y,true,editor_width); y+=row;
+#else
        StageMove(m_lblDataSync,label_x,y,true,editor_width); y+=row;
+#endif
        int sync_width=(editor_width-2*pair_gap)/3;
        StageMove(m_btnSyncBias,label_x,y,true,sync_width);
        StageMove(m_btnViewBias,label_x+sync_width+pair_gap,y,true,sync_width);
@@ -1703,6 +1720,9 @@ void CStrategyTesterDialog::ApplyStudioStage(const int stage)
       m_edtMinSR.Disable();
       m_chkAdjustLots.Disable();
       m_chkVerifyOOS.Disable();
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+      m_chkSequenceData.Disable();
+#endif
       m_btnStart.Text("AGENT CONTROLS BATCH");
       m_btnStop.Text("READ-ONLY VIEW");
    }
@@ -2070,6 +2090,19 @@ bool CStrategyTesterDialog::Create(const long chart_id, const string name,const 
    m_chkAdjustLots.BmpNames("::res\\CheckBoxOff.bmp","::res\\CheckBoxOn.bmp");
    m_chkAdjustLots.Locking(true);
    Add(m_chkAdjustLots); m_chkAdjustLots.Pressed(AdjustLots);
+
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+   string sequenceSetting=(g_GoatStudioReadOnlyMonitor ? GoatOptReadIniValue(GoatOptReadTextFile(Path_ExportSettings),"IncludeSequenceData") : FetchExportSetting("IncludeSequenceData",Key_,EA_Name_,Server_));
+   CreateLabel(m_lblSequenceData,"Include sequence data",exportLeftMargin,exportRow3,exportLabelWidth);
+   CreateLabel(m_lblSequenceCost,"Adds export time and disk use; off requires a later capture.",exportLeftMargin,exportRow3,exportPanelWidth);
+   m_lblSequenceCost.FontSize(MathMax(8,Font_Size-2));
+   if(!m_chkSequenceData.Create(m_chart_id,m_name+"chkSequenceData",m_subwin,adjustCheckX,adjustCheckY,adjustCheckX+exportCheckSize,adjustCheckY+exportCheckSize))
+      Print("Sequence checkbox creation error:",GetLastError());
+   m_chkSequenceData.BmpNames("::res\\CheckBoxOff.bmp","::res\\CheckBoxOn.bmp");
+   m_chkSequenceData.Locking(true);
+   ObjectSetString(m_chart_id,m_chkSequenceData.Name(),OBJPROP_TOOLTIP,"Adds export time and disk use. Enables exposure-filter builds without a later capture run. If off, export CSV/SET only; capture again later for exposure-filter builds.");
+   Add(m_chkSequenceData); m_chkSequenceData.Pressed(sequenceSetting=="" || sequenceSetting=="1");
+#endif
 
    // ===== RIGHT-COLUMN ITEMS  =======================================
    int xR = exportLeftMargin + exportLabelWidth + exportControlWidth + m_GapHoriz*4;
@@ -3723,6 +3756,9 @@ string CStrategyTesterDialog::GetExportSettingsString()
    str += "MinSR="         + m_edtMinSR.Text()                + "\n";
    str += "IncludeBackOOS="+ (m_chkVerifyOOS.Pressed() ? "1" : "0") + "\n";
    
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+   str += "IncludeSequenceData="+(m_chkSequenceData.Pressed() ? "1" : "0")+"\n";
+#endif
    // keep the trailing newline for easy concatenation with other blocks
    return str;
   }

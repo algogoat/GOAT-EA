@@ -15,6 +15,20 @@ from pathlib import Path
 import re
 import time
 import uuid
+from pathlib import PurePosixPath
+
+
+def credential_path(data):
+    return Path(data['commonFiles']) / data.get('credentialRelativePath', 'GOAT/Credentials/api-bearer.token')
+
+
+def relative_file(value, suffix, prefix):
+    if not isinstance(value, str) or '\\' in value or ':' in value or any(ord(c) < 32 for c in value):
+        raise ValueError('invalid relative file')
+    path = PurePosixPath(value)
+    if path.is_absolute() or '..' in path.parts or path.as_posix() != value or not value.startswith(prefix) or path.suffix != suffix:
+        raise ValueError('unsafe relative file')
+    return value
 
 
 def sharing_retry(operation):
@@ -39,7 +53,7 @@ def unique_object(pairs):
 
 
 def read(path, credential=None):
-    if path.name.casefold() == 'api-bearer.token' or (credential is not None and credential.exists() and path.samefile(credential)):
+    if re.fullmatch(r'api-bearer(?:-[A-Za-z0-9_-]+)?\.token(?:\.pending)?', path.name, re.I) or (credential is not None and credential.exists() and path.samefile(credential)):
         raise ValueError("credential alias refused")
     def bounded_read():
         with path.open('rb') as handle:
@@ -65,7 +79,8 @@ def atomic(path, data):
 def scope(manifest):
     data = read(Path(manifest))
     expected = {"directory", "account", "server", "buildId", "eaSha256", "commonFiles"}
-    if set(data) != expected or type(data["account"]) is not int or data["account"] <= 0:
+    optional = {'expertRelativePath', 'credentialRelativePath'}
+    if not expected.issubset(data) or set(data) - expected not in (set(), optional) or type(data["account"]) is not int or data["account"] <= 0:
         raise ValueError("invalid setup manifest")
     directory, common = Path(data["directory"]), Path(data["commonFiles"])
     if not directory.is_absolute() or not common.is_absolute() or directory.name in ("", ".", ".."):
@@ -77,9 +92,11 @@ def scope(manifest):
         raise ValueError("invalid binary hash")
     if not isinstance(data["server"], str) or not data["server"] or any(ord(c) < 32 for c in data["server"]):
         raise ValueError("invalid broker server")
-    binary = directory / "MQL5/Experts/GOAT Experiment/GOAT V1.47.ex5"
-    credential = common / 'GOAT/Credentials/api-bearer.token'
-    if binary.is_symlink() or (credential.exists() and binary.samefile(credential)) or binary.stat().st_size > 64 * 1024 * 1024:
+    expert = relative_file(data.get('expertRelativePath', 'MQL5/Experts/GOAT Experiment/GOAT V1.47.ex5'), '.ex5', 'MQL5/Experts/')
+    relative_file(data.get('credentialRelativePath', 'GOAT/Credentials/api-bearer.token'), '.token', 'GOAT/Credentials/')
+    binary = directory / expert
+    credential = credential_path(data)
+    if not binary.resolve().is_relative_to(directory.resolve()) or any(p.is_symlink() or p.is_junction() for p in [binary, *binary.parents] if p != directory.parent) or (credential.exists() and binary.samefile(credential)) or binary.stat().st_size > 64 * 1024 * 1024:
         raise ValueError("unsafe binary file")
     digest = hashlib.sha256()
     count = 0
@@ -139,7 +156,7 @@ def register(manifest, allow_pairing=False):
         record.update(schema=2, allowPairingRead=True, expiresAtUtc=int(time.time()) + 900)
     path = root / "registration.json"
     if path.exists():
-        old = read(path, Path(data['commonFiles']) / 'GOAT/Credentials/api-bearer.token')
+        old = read(path, credential_path(data))
         if any(old.get(key) != record[key] for key in ("account", "server", "buildId", "directory")):
             raise ValueError("retained registration identity differs; inspect before replacement")
     atomic(path, record)
@@ -150,7 +167,7 @@ def request(manifest, action, timeout=30):
     if action not in ("status", "shutdown", "pairing") or not 1 <= timeout <= 60:
         raise ValueError("unsupported action or timeout")
     data, root = scope(manifest)
-    credential = Path(data['commonFiles']) / 'GOAT/Credentials/api-bearer.token'
+    credential = credential_path(data)
     reg = read(root / "registration.json", credential)
     if reg.get("expiresAtUtc", 0) < time.time():
         raise ValueError("setup registration expired")

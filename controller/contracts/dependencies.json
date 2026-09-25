@@ -1,0 +1,143 @@
+{
+  "main_sha256": "2370b4fe295073f342fabceaf1c309450eaf99a692cd8517bc80a8fd767535e9",
+  "header_sha256": "a460cf6642b794d5e564701b192c135cd7564e300726fa88fe01e9649209e5c0",
+  "rules": [
+    {
+      "input": "RSI_TF_",
+      "controller": "RSI_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "RSI_Period",
+      "controller": "RSI_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "RSI_Price",
+      "controller": "RSI_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "RSI_Level",
+      "controller": "RSI_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "EMA_TF_",
+      "controller": "EMA_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "EMA_Method",
+      "controller": "EMA_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "EMA_Price",
+      "controller": "EMA_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "EMA_Count",
+      "controller": "EMA_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "EMA_Period",
+      "controller": "EMA_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "EMA_Exponent",
+      "controller": "EMA_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "ADX_TF_",
+      "controller": "ADX_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "ADX_Period",
+      "controller": "ADX_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "ADX_Level",
+      "controller": "ADX_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "BB_TF_",
+      "controller": "BB_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "BB_Period",
+      "controller": "BB_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "BB_Deviation",
+      "controller": "BB_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "MACD_Mode_Trend",
+      "controller": "MACD_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "MACD_TF_",
+      "controller": "MACD_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "MACD_Fast",
+      "controller": "MACD_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "MACD_Slow",
+      "controller": "MACD_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "MACD_Signal",
+      "controller": "MACD_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "MACD_Deviations",
+      "controller": "MACD_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "MACD_Price",
+      "controller": "MACD_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "RSI2_TF_",
+      "controller": "RSI2_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "RSI2_Period",
+      "controller": "RSI2_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "RSI2_Price",
+      "controller": "RSI2_Mode",
+      "disabled": 0
+    },
+    {
+      "input": "RSI2_Level",
+      "controller": "RSI2_Mode",
+      "disabled": 0
+    }
+  ],
+  "coverage": "indicator_mode_gates_only",
+  "evidence": "V1.48 source indicator gate review; MustCheck and all other strategy interactions are outside this partial audit."
+}

@@ -1,0 +1,1155 @@
+{
+  "schema_version": 1,
+  "source_sha256": "a460cf6642b794d5e564701b192c135cd7564e300726fa88fe01e9649209e5c0",
+  "defines": {
+    "GOAT_VERSION_LABEL": "\"1.48\"",
+    "GOAT_DEFAULT_BIAS_MODE": "Bias_Opens",
+    "GOAT_AI_SIGNAL_FILTER_V147": "1",
+    "GOAT_SEQUENCE_EXPORT_V148": "1"
+  },
+  "inputs": {
+    "Mode_Operation": {
+      "type": "ENUM_MODE_OPERATION",
+      "declaration": "sinput",
+      "default_expression": "Operation_Standard",
+      "optimizable": false,
+      "enum_choices": {
+        "Operation_Standard": 9,
+        "Operation_Batch": 11,
+        "Operation_Report": 13,
+        "Operation_Dash": 8
+      },
+      "dependency_audited": false
+    },
+    "EA_Desc": {
+      "type": "string",
+      "declaration": "input",
+      "default_expression": "\"GOAT_Trading\"",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Signal_Sample_Period": {
+      "type": "ENUM_MODE_SAMPLING",
+      "declaration": "sinput",
+      "default_expression": "M1",
+      "optimizable": false,
+      "enum_choices": {
+        "Tick": 0,
+        "Second": -1,
+        "M1": 1,
+        "M_Current": 99
+      },
+      "dependency_audited": false
+    },
+    "Sequence_Sample_Period": {
+      "type": "ENUM_MODE_SAMPLING",
+      "declaration": "sinput",
+      "default_expression": "M1",
+      "optimizable": false,
+      "enum_choices": {
+        "Tick": 0,
+        "Second": -1,
+        "M1": 1,
+        "M_Current": 99
+      },
+      "dependency_audited": false
+    },
+    "Trailing_Sample_Period": {
+      "type": "ENUM_MODE_SAMPLING",
+      "declaration": "input",
+      "default_expression": "Second",
+      "optimizable": true,
+      "enum_choices": {
+        "Tick": 0,
+        "Second": -1,
+        "M1": 1,
+        "M_Current": 99
+      },
+      "dependency_audited": false
+    },
+    "Allow_New_Sequence": {
+      "type": "bool",
+      "declaration": "sinput",
+      "default_expression": "true",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Allow_Opposite_Seq": {
+      "type": "bool",
+      "declaration": "input",
+      "default_expression": "true",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Reverse_Seq": {
+      "type": "bool",
+      "declaration": "input",
+      "default_expression": "false",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Mode_Trade": {
+      "type": "ENUM_MODE_TRADE_DIR",
+      "declaration": "input",
+      "default_expression": "Long_and_Short",
+      "optimizable": true,
+      "enum_choices": {
+        "Long_and_Short": 0,
+        "Long": 1,
+        "Short": 2
+      },
+      "dependency_audited": false
+    },
+    "Grid_Size": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "10.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Grid_Min": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "1.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Grid_Max": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "30.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Grid_Exponent": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "1.2",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Grid_Factor": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "1.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Lock_Profit_Size": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "30.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Lock_Profit_Flexibility": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "1.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "TP_Pips": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "2.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "SL_Pips": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "RRR": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Mode_RRR": {
+      "type": "ENUM_MODE_RRR",
+      "declaration": "input",
+      "default_expression": "RRR_Disabled",
+      "optimizable": true,
+      "enum_choices": {
+        "RRR_Disabled": 0,
+        "RRR_SL_TP": 1,
+        "RRR_SL_LP": 2
+      },
+      "dependency_audited": false
+    },
+    "TSL_Size": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "5.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Mode_Trail": {
+      "type": "ENUM_MODE_TRAIL",
+      "declaration": "input",
+      "default_expression": "Trail_Lock",
+      "optimizable": true,
+      "enum_choices": {
+        "Trail_Lock": 0,
+        "Trail_Lock_Pro": 1
+      },
+      "dependency_audited": false
+    },
+    "Delay_Trade": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "1",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Delay_Trade_Live": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "1",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Delay_Lots_Add": {
+      "type": "bool",
+      "declaration": "input",
+      "default_expression": "true",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Max_Seq_Trades": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "10",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "CloseAtMaxLevels": {
+      "type": "bool",
+      "declaration": "input",
+      "default_expression": "false",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "ATR_TF_": {
+      "type": "ENUM_MODE_TFs",
+      "declaration": "input",
+      "default_expression": "TF_M1",
+      "optimizable": true,
+      "enum_choices": {
+        "TF_Cur": 0,
+        "TF_M1": 1,
+        "TF_M5": 5,
+        "TF_M15": 15,
+        "TF_H1": 60,
+        "TF_H4": 240
+      },
+      "dependency_audited": false
+    },
+    "ATR_Period": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "100",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "ATR_Method": {
+      "type": "ENUM_MODE_MA",
+      "declaration": "input",
+      "default_expression": "SMA",
+      "optimizable": true,
+      "enum_choices": {
+        "EMA": 0,
+        "SMA": 1,
+        "LWMA": 2
+      },
+      "dependency_audited": false
+    },
+    "Mode_Lots": {
+      "type": "ENUM_MODE_LOTS",
+      "declaration": "sinput",
+      "default_expression": "FixedLots",
+      "optimizable": false,
+      "enum_choices": {
+        "FixedLots": 0,
+        "ScaledLots": 1,
+        "RiskperSeq": 2
+      },
+      "dependency_audited": false
+    },
+    "Risk": {
+      "type": "double",
+      "declaration": "sinput",
+      "default_expression": "500",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Sequence_MLPS_Hard_Close": {
+      "type": "bool",
+      "declaration": "sinput",
+      "default_expression": "false",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Lots_Input": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.1",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Lots_Max": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "10.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Lots_Max_Cum": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "50.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Lots_Exponent": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "1.2",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Lots_Factor": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "1.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Mode_Lots_Prog": {
+      "type": "ENUM_MODE_LOTS_PROG",
+      "declaration": "input",
+      "default_expression": "Lots_Prog_Last",
+      "optimizable": true,
+      "enum_choices": {
+        "Lots_Prog_Start": 0,
+        "Lots_Prog_Last": 1,
+        "Lots_Prog_Cum": 2,
+        "Lots_Prog_Cum2": 3,
+        "Lots_Prog_Peak": 4,
+        "Lots_Prog_CumPartial": 5,
+        "Lots_Prog_PeakSmart": 6
+      },
+      "dependency_audited": false
+    },
+    "Peak_Lots_Pos_PC": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "50.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Partial_Profit_Factor": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "10.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Peak_Smart_Release_PC": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "50.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Peak_Smart_Max_Close_PC": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "30.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "MaxLossLocal": {
+      "type": "double",
+      "declaration": "sinput",
+      "default_expression": "0.0",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "MaxLossGlobal": {
+      "type": "double",
+      "declaration": "sinput",
+      "default_expression": "0.0",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "MaxDailyLossLocal": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "MaxDailyProfitLocal": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "0.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "MinLevelEquity": {
+      "type": "double",
+      "declaration": "sinput",
+      "default_expression": "0.0",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "MaxLevelEquity": {
+      "type": "double",
+      "declaration": "sinput",
+      "default_expression": "0.0",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Mode_Restart": {
+      "type": "ENUM_MODE_RESTART",
+      "declaration": "sinput",
+      "default_expression": "Restart_Tmr",
+      "optimizable": false,
+      "enum_choices": {
+        "Restart_Tmr": 25,
+        "Restart_1": 1,
+        "Restart_2": 2,
+        "Restart_3": 3,
+        "Restart_5": 5
+      },
+      "dependency_audited": false
+    },
+    "RSI_Mode": {
+      "type": "ENUM_MODE_RSI",
+      "declaration": "input",
+      "default_expression": "RSI_OverBS",
+      "optimizable": true,
+      "enum_choices": {
+        "RSI_Disabled": 0,
+        "RSI_OverBS": 1,
+        "RSI_OverBSCross": 2,
+        "RSI_OBSCEngulf": 3
+      },
+      "dependency_audited": false
+    },
+    "RSI_TF_": {
+      "type": "ENUM_MODE_TFs",
+      "declaration": "input",
+      "default_expression": "TF_M1",
+      "optimizable": true,
+      "enum_choices": {
+        "TF_Cur": 0,
+        "TF_M1": 1,
+        "TF_M5": 5,
+        "TF_M15": 15,
+        "TF_H1": 60,
+        "TF_H4": 240
+      },
+      "dependency_audited": false
+    },
+    "RSI_Period": {
+      "type": "uint",
+      "declaration": "input",
+      "default_expression": "4",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "RSI_Price": {
+      "type": "ENUM_MODE_PRICE",
+      "declaration": "input",
+      "default_expression": "Price_Typical",
+      "optimizable": true,
+      "enum_choices": {
+        "Price_Close": 1,
+        "Price_Typical": 6,
+        "Price_Weighted": 7,
+        "Price_Median": 5
+      },
+      "dependency_audited": false
+    },
+    "RSI_Level": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "80",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "EMA_Mode": {
+      "type": "ENUM_MODE_TRADE",
+      "declaration": "input",
+      "default_expression": "Trade_Trend",
+      "optimizable": true,
+      "enum_choices": {
+        "Trade_Disabled": 0,
+        "Trade_Trend": 1,
+        "Trade_Trend_Range": 2,
+        "Trade_Range": 3,
+        "Trade_Counter_Range": 4,
+        "Trade_Counter": 5
+      },
+      "dependency_audited": false
+    },
+    "EMA_TF_": {
+      "type": "ENUM_MODE_TFs",
+      "declaration": "input",
+      "default_expression": "TF_M15",
+      "optimizable": true,
+      "enum_choices": {
+        "TF_Cur": 0,
+        "TF_M1": 1,
+        "TF_M5": 5,
+        "TF_M15": 15,
+        "TF_H1": 60,
+        "TF_H4": 240
+      },
+      "dependency_audited": false
+    },
+    "EMA_Method": {
+      "type": "ENUM_MA_METHOD",
+      "declaration": "input",
+      "default_expression": "MODE_EMA",
+      "optimizable": true,
+      "enum_choices": {
+        "MODE_SMA": 0,
+        "MODE_EMA": 1,
+        "MODE_SMMA": 2,
+        "MODE_LWMA": 3
+      },
+      "dependency_audited": false
+    },
+    "EMA_Price": {
+      "type": "ENUM_MODE_PRICE",
+      "declaration": "input",
+      "default_expression": "Price_Typical",
+      "optimizable": true,
+      "enum_choices": {
+        "Price_Close": 1,
+        "Price_Typical": 6,
+        "Price_Weighted": 7,
+        "Price_Median": 5
+      },
+      "dependency_audited": false
+    },
+    "EMA_Count": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "5",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "EMA_Period": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "7",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "EMA_Exponent": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "1.5",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "EMA_MustCheck": {
+      "type": "bool",
+      "declaration": "input",
+      "default_expression": "false",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "ADX_Mode": {
+      "type": "ENUM_MODE_TRADE",
+      "declaration": "input",
+      "default_expression": "Trade_Trend",
+      "optimizable": true,
+      "enum_choices": {
+        "Trade_Disabled": 0,
+        "Trade_Trend": 1,
+        "Trade_Trend_Range": 2,
+        "Trade_Range": 3,
+        "Trade_Counter_Range": 4,
+        "Trade_Counter": 5
+      },
+      "dependency_audited": false
+    },
+    "ADX_TF_": {
+      "type": "ENUM_MODE_TFs",
+      "declaration": "input",
+      "default_expression": "TF_M15",
+      "optimizable": true,
+      "enum_choices": {
+        "TF_Cur": 0,
+        "TF_M1": 1,
+        "TF_M5": 5,
+        "TF_M15": 15,
+        "TF_H1": 60,
+        "TF_H4": 240
+      },
+      "dependency_audited": false
+    },
+    "ADX_Period": {
+      "type": "uint",
+      "declaration": "input",
+      "default_expression": "14",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "ADX_Level": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "30",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "ADX_MustCheck": {
+      "type": "bool",
+      "declaration": "input",
+      "default_expression": "false",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "BB_Mode": {
+      "type": "ENUM_MODE_BB",
+      "declaration": "input",
+      "default_expression": "BB_Disabled",
+      "optimizable": true,
+      "enum_choices": {
+        "BB_Disabled": 0,
+        "BB_Channel": 1,
+        "BB_OverBS": 2,
+        "BB_Trend": 3
+      },
+      "dependency_audited": false
+    },
+    "BB_TF_": {
+      "type": "ENUM_MODE_TFs",
+      "declaration": "input",
+      "default_expression": "TF_H1",
+      "optimizable": true,
+      "enum_choices": {
+        "TF_Cur": 0,
+        "TF_M1": 1,
+        "TF_M5": 5,
+        "TF_M15": 15,
+        "TF_H1": 60,
+        "TF_H4": 240
+      },
+      "dependency_audited": false
+    },
+    "BB_Period": {
+      "type": "uint",
+      "declaration": "input",
+      "default_expression": "120",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "BB_Deviation": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "1.5",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "BB_MustCheck": {
+      "type": "bool",
+      "declaration": "input",
+      "default_expression": "false",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "MACD_Mode": {
+      "type": "ENUM_MODE_TRADE",
+      "declaration": "input",
+      "default_expression": "Trade_Disabled",
+      "optimizable": true,
+      "enum_choices": {
+        "Trade_Disabled": 0,
+        "Trade_Trend": 1,
+        "Trade_Trend_Range": 2,
+        "Trade_Range": 3,
+        "Trade_Counter_Range": 4,
+        "Trade_Counter": 5
+      },
+      "dependency_audited": false
+    },
+    "MACD_Mode_Trend": {
+      "type": "ENUM_MODE_MACD_TREND",
+      "declaration": "input",
+      "default_expression": "MACD_CO",
+      "optimizable": true,
+      "enum_choices": {
+        "MACD_CO": 0,
+        "MACD_CO_G": 1,
+        "MACD_CO_T": 2,
+        "MACD_CO_G_T": 3
+      },
+      "dependency_audited": false
+    },
+    "MACD_TF_": {
+      "type": "ENUM_MODE_TFs",
+      "declaration": "input",
+      "default_expression": "TF_M15",
+      "optimizable": true,
+      "enum_choices": {
+        "TF_Cur": 0,
+        "TF_M1": 1,
+        "TF_M5": 5,
+        "TF_M15": 15,
+        "TF_H1": 60,
+        "TF_H4": 240
+      },
+      "dependency_audited": false
+    },
+    "MACD_Fast": {
+      "type": "uint",
+      "declaration": "input",
+      "default_expression": "12",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "MACD_Slow": {
+      "type": "uint",
+      "declaration": "input",
+      "default_expression": "26",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "MACD_Signal": {
+      "type": "uint",
+      "declaration": "input",
+      "default_expression": "9",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "MACD_Deviations": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "2.0",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "MACD_Price": {
+      "type": "ENUM_MODE_PRICE",
+      "declaration": "input",
+      "default_expression": "Price_Typical",
+      "optimizable": true,
+      "enum_choices": {
+        "Price_Close": 1,
+        "Price_Typical": 6,
+        "Price_Weighted": 7,
+        "Price_Median": 5
+      },
+      "dependency_audited": false
+    },
+    "MACD_MustCheck": {
+      "type": "bool",
+      "declaration": "input",
+      "default_expression": "false",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "RSI2_Mode": {
+      "type": "ENUM_MODE_RSI",
+      "declaration": "input",
+      "default_expression": "RSI_Disabled",
+      "optimizable": true,
+      "enum_choices": {
+        "RSI_Disabled": 0,
+        "RSI_OverBS": 1,
+        "RSI_OverBSCross": 2,
+        "RSI_OBSCEngulf": 3
+      },
+      "dependency_audited": false
+    },
+    "RSI2_TF_": {
+      "type": "ENUM_MODE_TFs",
+      "declaration": "input",
+      "default_expression": "TF_M15",
+      "optimizable": true,
+      "enum_choices": {
+        "TF_Cur": 0,
+        "TF_M1": 1,
+        "TF_M5": 5,
+        "TF_M15": 15,
+        "TF_H1": 60,
+        "TF_H4": 240
+      },
+      "dependency_audited": false
+    },
+    "RSI2_Period": {
+      "type": "uint",
+      "declaration": "input",
+      "default_expression": "13",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "RSI2_Price": {
+      "type": "ENUM_MODE_PRICE",
+      "declaration": "input",
+      "default_expression": "Price_Typical",
+      "optimizable": true,
+      "enum_choices": {
+        "Price_Close": 1,
+        "Price_Typical": 6,
+        "Price_Weighted": 7,
+        "Price_Median": 5
+      },
+      "dependency_audited": false
+    },
+    "RSI2_Level": {
+      "type": "double",
+      "declaration": "input",
+      "default_expression": "70",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "RSI2_MustCheck": {
+      "type": "bool",
+      "declaration": "input",
+      "default_expression": "false",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Active_Time_Weekday": {
+      "type": "ENUM_MODE_SESSION",
+      "declaration": "input",
+      "default_expression": "SESS_ALL",
+      "optimizable": true,
+      "enum_choices": {
+        "SESS_NONE": 0,
+        "SESS_AS": 1,
+        "SESS_AS_EU": 2,
+        "SESS_EU": 3,
+        "SESS_EU_US": 4,
+        "SESS_US": 5,
+        "SESS_ALL": 6
+      },
+      "dependency_audited": false
+    },
+    "Active_Time_Friday": {
+      "type": "ENUM_MODE_SESSION2",
+      "declaration": "input",
+      "default_expression": "SESSION_AS",
+      "optimizable": true,
+      "enum_choices": {
+        "SESSION_NONE": 0,
+        "SESSION_AS": 1,
+        "SESSION_AS_EU": 2,
+        "SESSION_EU": 3,
+        "SESSION_EU_US": 4,
+        "SESSION_US": 5,
+        "SESSION_ALL": 6,
+        "SESSION_FRI": 7
+      },
+      "dependency_audited": false
+    },
+    "Active_Time_ASIA": {
+      "type": "string",
+      "declaration": "input",
+      "default_expression": "\"01:30-11:00\"",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Active_Time_EU": {
+      "type": "string",
+      "declaration": "input",
+      "default_expression": "\"10:00-19:00\"",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Active_Time_US": {
+      "type": "string",
+      "declaration": "input",
+      "default_expression": "\"15:00-22:30\"",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Action_Dayend": {
+      "type": "ENUM_ACTION_CLOSE",
+      "declaration": "input",
+      "default_expression": "Action_Null",
+      "optimizable": true,
+      "enum_choices": {
+        "Action_Null": 0,
+        "Action_Pause": 1,
+        "Action_Close": 2
+      },
+      "dependency_audited": false
+    },
+    "Action_Friday": {
+      "type": "ENUM_ACTION_CLOSE",
+      "declaration": "input",
+      "default_expression": "Action_Null",
+      "optimizable": true,
+      "enum_choices": {
+        "Action_Null": 0,
+        "Action_Pause": 1,
+        "Action_Close": 2
+      },
+      "dependency_audited": false
+    },
+    "Trade_Friday": {
+      "type": "bool",
+      "declaration": "input",
+      "default_expression": "true",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Bias_Protocol": {
+      "type": "ENUM_GOAT_AI_BIAS_PROTOCOL",
+      "declaration": "input",
+      "default_expression": "BiasProtocol_ControlTowerV2DemoRaw",
+      "optimizable": true,
+      "enum_choices": {
+        "BiasProtocol_LegacyRecorded": 0,
+        "BiasProtocol_ControlTowerV2": 1,
+        "BiasProtocol_ControlTowerV2DemoRaw": 2
+      },
+      "dependency_audited": false
+    },
+    "Mode_Bias": {
+      "type": "ENUM_ACTION_BIAS",
+      "declaration": "input",
+      "default_expression": "GOAT_DEFAULT_BIAS_MODE",
+      "optimizable": true,
+      "enum_choices": {
+        "Bias_Display": 0,
+        "Bias_Disabled": 1,
+        "Bias_Opens": 2,
+        "Bias_Close_low": 3,
+        "Bias_Close_med": 4,
+        "Bias_Close_high": 5
+      },
+      "dependency_audited": false
+    },
+    "Mode_Bias_Trades": {
+      "type": "ENUM_BIAS_TRADES",
+      "declaration": "input",
+      "default_expression": "Bias_Seq",
+      "optimizable": true,
+      "enum_choices": {
+        "Bias_Seq": 0,
+        "Bias_SeqTrade": 1
+      },
+      "dependency_audited": false
+    },
+    "Mode_Bias_Exit": {
+      "type": "ENUM_BIAS_EXIT",
+      "declaration": "input",
+      "default_expression": "BiasExit_HardClose",
+      "optimizable": true,
+      "enum_choices": {
+        "BiasExit_HardClose": 0,
+        "BiasExit_SmartRescue": 1
+      },
+      "dependency_audited": false
+    },
+    "Bias_Exit_Max_Exposure_Adds": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "-1",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Bias_threshold": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "60",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Mode_News": {
+      "type": "ENUM_ACTION_NEWS",
+      "declaration": "input",
+      "default_expression": "News_Disabled",
+      "optimizable": true,
+      "enum_choices": {
+        "News_Display": 0,
+        "News_Disabled": 1,
+        "News_Avoid": 2,
+        "News_Pause": 3,
+        "News_Close": 4,
+        "News_Only": 5
+      },
+      "dependency_audited": false
+    },
+    "News_threshold": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "60",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "News_beforeMinutes": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "90",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "News_afterMinutes": {
+      "type": "int",
+      "declaration": "input",
+      "default_expression": "150",
+      "optimizable": true,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Mode_Download": {
+      "type": "ENUM_MODE_DOWNLOAD",
+      "declaration": "sinput",
+      "default_expression": "Download_Disabled",
+      "optimizable": false,
+      "enum_choices": {
+        "Download_Disabled": 0,
+        "Download_News": 1,
+        "Download_Bias": 2,
+        "Download_NewsBias": 3
+      },
+      "dependency_audited": false
+    },
+    "Download_StartDate": {
+      "type": "datetime",
+      "declaration": "sinput",
+      "default_expression": "D'2025.01.01'",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Mode_Opti": {
+      "type": "ENUM_MODE_OPTI",
+      "declaration": "sinput",
+      "default_expression": "Opti_PF_MRF_SRp",
+      "optimizable": false,
+      "enum_choices": {
+        "Opti_MRF": 0,
+        "Opti_PF_MRF": 1,
+        "Opti_PF_MRFp": 2,
+        "Opti_PF_MRF_SR": 3,
+        "Opti_PF_MRF_SRp": 4
+      },
+      "dependency_audited": false
+    },
+    "Seq_min_inp": {
+      "type": "int",
+      "declaration": "sinput",
+      "default_expression": "100",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Trades_min_inp": {
+      "type": "int",
+      "declaration": "sinput",
+      "default_expression": "300",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Trades_Max": {
+      "type": "int",
+      "declaration": "sinput",
+      "default_expression": "1500",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Minutes_Max": {
+      "type": "int",
+      "declaration": "sinput",
+      "default_expression": "1000",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    },
+    "Trade_December": {
+      "type": "bool",
+      "declaration": "sinput",
+      "default_expression": "true",
+      "optimizable": false,
+      "enum_choices": null,
+      "dependency_audited": false
+    }
+  },
+  "scope": "provided_input_header",
+  "builtin_enum_reference": "https://www.mql5.com/files/book/mql5book.pdf#page=789",
+  "execution_ready": false
+}

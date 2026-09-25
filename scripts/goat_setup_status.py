@@ -28,6 +28,7 @@ import re
 import stat
 import sys
 import time
+from goat_setup_control import relative_file
 
 
 EA_RELATIVE = Path("MQL5/Experts/GOAT Experiment/GOAT V1.47.ex5")
@@ -45,7 +46,7 @@ class InspectionError(Exception):
 
 def read_json(path, limit, forbidden=None):
     try:
-        if path.name.casefold() == "api-bearer.token" or (forbidden is not None and forbidden.exists() and path.samefile(forbidden)):
+        if re.fullmatch(r'api-bearer(?:-[A-Za-z0-9_-]+)?\.token(?:\.pending)?', path.name, re.I) or (forbidden is not None and forbidden.exists() and path.samefile(forbidden)):
             raise InspectionError("unsafe_file_alias")
         with path.open("rb") as handle:
             raw = handle.read(limit + 1)
@@ -185,17 +186,24 @@ def native_status(path, expected, now, maximum_age, credential):
     return result
 
 
-def inspect(installation, common_files, maximum_age=1800, hash_ea=False, now=None):
+def inspect(installation, common_files, maximum_age=1800, hash_ea=False, now=None,
+            expert_relative_path=str(EA_RELATIVE).replace('\\', '/'),
+            credential_relative_path='GOAT/Credentials/api-bearer.token'):
     if type(maximum_age) is not int or not 1 <= maximum_age <= 604800:
         raise InspectionError("invalid_max_age")
     now = int(time.time()) if now is None else now
     common_files = Path(common_files)
-    credential = common_files / "GOAT/Credentials/api-bearer.token"
+    try:
+        relative_file(expert_relative_path, '.ex5', 'MQL5/Experts/')
+        relative_file(credential_relative_path, '.token', 'GOAT/Credentials/')
+    except ValueError:
+        raise InspectionError('invalid_relative_path') from None
+    credential = common_files / credential_relative_path
     terminals = []
     for directory, token, expected in installations(Path(installation), credential):
         terminals.append({"directory": str(directory), "terminalToken": token, "expectedAccountId": expected,
                           "activation": native_status(common_files / "GOAT" / f"activation-status-{token}.json", expected, now, maximum_age, credential),
-                          "installedEa": installed_ea(directory / EA_RELATIVE, credential, hash_ea)})
+                          "installedEa": installed_ea(directory / expert_relative_path, credential, hash_ea)})
     return {"schemaVersion": "goat-setup-status-v1", "observedAtUtc": now, "maximumAgeSeconds": maximum_age,
             "credential": credential_status(credential), "terminals": terminals,
             "qualification": "Native activation observations and installed files only; no process, loaded-binary, portfolio or trading-readiness verification. Saved common.ini is not runtime WebRequest evidence."}
@@ -213,8 +221,12 @@ def main(argv=None):
         parser.add_argument("--common-files", required=True, type=Path)
         parser.add_argument("--max-age-seconds", type=int, default=1800)
         parser.add_argument("--hash-installed-ea", action="store_true")
+        parser.add_argument('--expert-relative-path', default=str(EA_RELATIVE).replace('\\', '/'))
+        parser.add_argument('--credential-relative-path', default='GOAT/Credentials/api-bearer.token')
         args = parser.parse_args(argv)
-        output = inspect(args.installation, args.common_files, args.max_age_seconds, args.hash_installed_ea)
+        output = inspect(args.installation, args.common_files, args.max_age_seconds, args.hash_installed_ea,
+                         expert_relative_path=args.expert_relative_path,
+                         credential_relative_path=args.credential_relative_path)
     except InspectionError as error:
         print(json.dumps({"schemaVersion": "goat-setup-status-v1", "error": str(error)}))
         return 2

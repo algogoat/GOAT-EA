@@ -24,7 +24,7 @@ RESULTS = {'observed', 'started', 'rejected_portfolio_mismatch', 'rejected_not_i
 
 def read_bounded(path):
     path = Path(path)
-    if path.name.lower() == 'api-bearer.token' or path.is_symlink():
+    if setup.re.fullmatch(r'api-bearer(?:-[A-Za-z0-9_-]+)?\.token(?:\.pending)?', path.name, setup.re.I) or path.is_symlink():
         raise ValueError('unsafe input')
     with path.open('rb') as handle:
         raw = handle.read(131073)

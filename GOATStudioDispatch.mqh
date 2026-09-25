@@ -15,8 +15,86 @@ bool GoatStudioCommonDigest(const string path,const string expected)
    return hex==expected;
   }
 
+
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+// Explicit agent cancellation shares the native ownership gate with start.
+// It disarms continuation before stopping, and never claims stop confirmation.
+string GoatStudioCancelRequest(const string body)
+  {
+   SGOATJsonToken t[],s[];string id,terminal,run,owner,job,config,data,installation,login,server,native_run,owner_hash,pointer_hash;
+   long version,revision,generation,expires;
+   if(!GOATJsonParse(body,t)
+      || !GOATJsonGetInteger(body,t,0,"schema_version",version) || version!=1
+      || !GOATJsonGetString(body,t,0,"request_id",id) || !GoatStudioId(id)
+      || !GOATJsonGetString(body,t,0,"terminal_id",terminal) || terminal!=g_StudioBridge.TerminalId()
+      || !GOATJsonGetString(body,t,0,"run_id",run) || run!=g_StudioBridge.RunId()
+      || !GOATJsonGetString(body,t,0,"owner",owner) || owner!="agent"
+      || !GOATJsonGetString(body,t,0,"job_id",job)
+      || !GOATJsonGetString(body,t,0,"configuration_sha256",config)
+      || !GOATJsonGetInteger(body,t,0,"revision",revision)
+      || !GOATJsonGetInteger(body,t,0,"generation",generation)
+      || !GOATJsonGetInteger(body,t,0,"expires_utc",expires) || expires<=(long)TimeGMT() || expires>(long)TimeGMT()+120
+      || !GOATJsonGetString(body,t,0,"data_path",data) || data!=TerminalInfoString(TERMINAL_DATA_PATH)
+      || !GOATJsonGetString(body,t,0,"installation_path",installation) || installation!=TerminalInfoString(TERMINAL_PATH)
+      || !GOATJsonGetString(body,t,0,"account_login",login) || login!=(string)AccountInfoInteger(ACCOUNT_LOGIN)
+      || !GOATJsonGetString(body,t,0,"account_server",server) || server!=AccountInfoString(ACCOUNT_SERVER)
+      || AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO
+      || !GOATJsonGetString(body,t,0,"native_run",native_run)
+      || !GOATJsonGetString(body,t,0,"native_owner_sha256",owner_hash)
+      || !GOATJsonGetString(body,t,0,"pointer_sha256",pointer_hash)) return "CANCEL_REJECTED";
+   if(StringLen(native_run)!=18 || StringFind(native_run,"GOAT\\R")!=0) return "CANCEL_PATH_REJECTED";
+   for(int i=6;i<StringLen(native_run);i++) if(StringFind("0123456789abcdef",StringSubstr(native_run,i,1))<0) return "CANCEL_PATH_REJECTED";
+   string snapshot,state_owner;long state_revision,state_generation;
+   if(!g_StudioBridge.ReadSnapshot(snapshot) || !GOATJsonParse(snapshot,s,16384,2000000)) return "CANCEL_SNAPSHOT_REJECTED";
+   int state=GOATJsonFindField(snapshot,s,0,"state");
+   if(!GOATJsonGetString(snapshot,s,state,"owner",state_owner) || state_owner!=owner
+      || !GOATJsonGetInteger(snapshot,s,state,"revision",state_revision) || state_revision!=revision
+      || !GOATJsonGetInteger(snapshot,s,state,"generation",state_generation) || state_generation!=generation) return "CANCEL_CONTROL_REVOKED";
+   int queue=GOATJsonFindField(snapshot,s,state,"queue");bool matched=false;
+   for(int i=0;i<ArraySize(s);i++)
+     {
+      if(s[i].parent!=queue || s[i].type!=GOAT_JSON_OBJECT) continue;
+      string current,hash,status;
+      if(GOATJsonGetString(snapshot,s,i,"job_id",current) && current==job
+         && GOATJsonGetString(snapshot,s,i,"configuration_sha256",hash) && hash==config
+         && GOATJsonGetString(snapshot,s,i,"status",status)
+         && (status=="starting" || status=="running" || status=="verifying" || status=="reconcile_required")) matched=true;
+     }
+   string base="GOAT\\GOAT V"+GOAT_VERSION_LABEL+"-"+server;
+   if(!matched || !GoatStudioCommonDigest(base+"\\agent-native-control-owner.json",owner_hash)
+      || !GoatStudioCommonDigest(base+"\\active_optimization_run.ini",pointer_hash)) return "CANCEL_NATIVE_OWNER_CHANGED";
+   // Pointer identity was frozen by the controller while holding this gate.
+   string pointer=GoatOptReadTextFile(base+"\\active_optimization_run.ini");
+   if(GoatOptReadIniValue(pointer,"RunPath")!=native_run) return "CANCEL_RUN_CHANGED";
+   if(!GoatStudioWriteUtf8("GOATStudio\\native-gate\\consumed-"+id+".json",body)) return "CANCEL_ALREADY_CONSUMED";
+   GlobalVariableSet(GOAT_BATCH_CANCELLED_GV,1.0);
+   GlobalVariableDel("BatchOnGoing");GlobalVariableDel("TerminalRunning");
+   GoatBatchClearDeferredRestart();GlobalVariablesFlush();
+   bool cleared=true;
+   string guard=base+"\\active_optimization_launch.ini",cfg=base+"\\active_optimization_config.ini";
+   if(FileIsExist(guard,FILE_COMMON) && !FileDelete(guard,FILE_COMMON)) cleared=false;
+   if(FileIsExist(cfg,FILE_COMMON) && !FileDelete(cfg,FILE_COMMON)) cleared=false;
+   bool stopped=MTTESTER::ClickStop(1);
+   string items[];StringSplit(GetFileContent(native_run+"\\queue.GOAT"),(ushort)31,items);
+   bool saved=(ArraySize(items)>0);
+   for(int i=0;i<ArraySize(items);i++)
+     {
+      string parts[];if(StringSplit(items[i],';',parts)!=3) continue;
+      if(StringFind(parts[1],"Pending_")==0 || StringFind(parts[1],"Queued_")==0 || StringFind(parts[1],"OnGoing_")==0)
+         items[i]=QueueItemWithState(items[i],"Cancelled");
+     }
+   if(saved) saved=ReconstructFile(native_run+"\\queue.GOAT",items);
+   return (stopped && saved && cleared) ? "CANCELLED_RECONCILE" : "CANCEL_SIGNAL_SENT_RECONCILE";
+  }
+#endif
+
 string GoatStudioExecuteRequest(const string body,const string request_hash)
   {
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+   SGOATJsonToken action_tokens[];string requested_action;
+   if(GOATJsonParse(body,action_tokens) && GOATJsonGetString(body,action_tokens,0,"action",requested_action) && requested_action=="cancel")
+      return GoatStudioCancelRequest(body);
+#endif
    SGOATJsonToken t[],snapshot_tokens[];
    string id,terminal,run,owner,job_id,config_hash,ini,ini_hash,expected_data,installation,login,server,native_run,alias;
    long version,revision,generation,expires;
@@ -84,7 +162,7 @@ string GoatStudioExecuteRequest(const string body,const string request_hash)
      }
    if(action=="start" && has_restart) return "RESTART_ROUTE_SELECTED";
    if(action=="arm_restart" && !restart_matched) return "RESTART_INTENT_REJECTED";
-   string base="GOAT\\GOAT V1.47-"+server;
+   string base="GOAT\\GOAT V"+GOAT_VERSION_LABEL+"-"+server;
    string paths[]={native_run+"\\queue.GOAT",native_run+"\\inputs\\"+alias+"\\Inputs.GOAT",
                    base+"\\active_optimization_run.ini",base+"\\active_optimization_config.ini",
                    base+"\\active_optimization_launch.ini",base+"\\agent-native-control-owner.json"};
@@ -135,6 +213,7 @@ string GoatStudioExecuteRequest(const string body,const string request_hash)
    if(IsStopped() || expires<=(long)TimeGMT()) return "REQUEST_EXPIRED_BEFORE_START";
    if(!GoatStudioWriteUtf8("GOATStudio\\native-gate\\start-intent-"+id+".json",
        "{\"request_sha256\":"+GoatStudioQuote(request_hash)+"}")) return "START_INTENT_WRITE_FAILED";
+   GlobalVariableDel(GOAT_BATCH_CANCELLED_GV);
    if(GlobalVariableSet("BatchOnGoing",1.0)==0) return "ARM_FAILED";
    GlobalVariablesFlush();
    // Check=false avoids helper retries/UI heuristics; one native start message.

@@ -2,6 +2,16 @@
 
 Expert Advisor (EA) project for MetaTrader 5, maintained in the `GOAT-EA` repository.
 
+### V1.48 integrated sequence exports
+
+Selected batch export backtests can capture native sequence evidence beside the
+matching CSV/SET. Keep the `.goatseq` folder with the pair when copying or zipping
+exports. The companion desktop importer validates the package before enabling
+exposure-filter construction. **Include sequence data** in Studio Export & Data
+defaults on and saves with the batch. It adds export time and disk use; off keeps
+ordinary CSV/SET exports. Genetic passes and live trading do not record it.
+See [workflow, qualification and release status](docs/operations/V1.48-SEQUENCE-EXPORT.md).
+
 ### V1.47 behavior-neutral tester performance hotfix
 
 `GOAT V1.47` removes normal per-tick `TSL BUY/SELL skipped` log lines and

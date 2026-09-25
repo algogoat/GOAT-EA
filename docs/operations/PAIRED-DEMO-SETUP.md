@@ -1,0 +1,341 @@
+# Matched demo pair setup
+
+This is the bounded internal Balanced 35 AI experiment workflow, not a
+customer-general installer. The source intentionally binds ordinals 7/8 to the
+reviewed two accounts, V1.48 build, credential namespace and 35-member policy.
+Different accounts/builds require a reviewed contract and new evidence. No
+source helper below silently creates an account, changes a password or deploys
+to the six existing accounts.
+
+## Contract and source map
+
+| Stage | Implementation | Evidence |
+|---|---|---|
+| Validate pair, connect or read runtime | [connection](../../scripts/goat_demo_pair_connection.py) | Exact path/hash/process, USD 100,000 demo / leverage 200 / hedging for initial login; receipt with funds, positions, orders and Algo state |
+| Protected six, locks, admission | [guards](../../scripts/goat_demo_pair_guard.py) | Fresh six-process witness, shared lifecycle lock, pinned actual protected-release proof |
+| Fresh inert installation | [prepare](../../scripts/goat_demo_pair_prepare.py) | Dry-run file claims, fresh bare profile,35 pending rows, installation/draft/reconnect manifests |
+| Secret delivery | [PowerShell wrapper](../../scripts/goat_demo_pair_connect.ps1) | CurrentUser or explicit LocalMachine DPAPI; plaintext only in memory/stdin |
+| Bare account to dashboard | [bootstrap](../../scripts/goat_demo_pair_bootstrap.py) | Exact inert process graceful close, selected symbols, new dashboard profile and frozen manifest |
+| Sequential portfolio setup | [orchestrator](../../scripts/goat_demo_pair_orchestrate.py) | Durable intent chain, exactly-once configure/deploy/policy calls, native receipts |
+| Settings plus current policy/AI | [paired readiness](../../scripts/goat_demo_pair_readiness.py) | Original native settings audit plus separate fresh native status; no synthetic merged receipt |
+| Restart, snapshot and enable staging | [lifecycle](../../scripts/goat_demo_pair_lifecycle.py), [profile](../../scripts/goat_demo_pair_profile.py), [restart](../../scripts/goat_demo_pair_restart.py) | 36 experts, retained child identities, full profiles/inputs, explicit closed Algo transition |
+| Non-native regression tests | [tests](../../scripts/goat_demo_pair_tests.py) |26 tests at initial delivery; native acceptance is separate |
+
+Current terminal directories are `C:\GOAT Experiment\07 - Balanced 35 - AI OFF`
+and `C:\GOAT Experiment\08 - Balanced 35 - AI ON`. Account bindings live in
+`PAIR_ACCOUNTS` and the reviewed manifest; control is 3000109427, AI is 3000109421.
+The expert path is `MQL5/Experts/GOAT Experiment/GOAT V1.48.ex5`; the isolated
+Common Files credential is `GOAT/Credentials/api-bearer-balanced35-ai-20260923.token`.
+Do not substitute the six-account `api-bearer.token` or reuse their installation
+manifest/vault. Both arms have 35 identical members, risk/source settings preserved,
+DEMO protocol 2 / threshold 50, exposure filter OFF; intended difference is AI OFF/ON.
+
+The sealed EA source commit is `e96465d590690178176e55c51ff3c1bc8a363fde`, build
+`V1.48-DASHBOARD-AI-PAIR-R1`, artifact SHA256
+`8fec6e0379be4f2657f3c425ec1cf2e1701d3a65324e39576dcdcb6405833b0d`.
+This identity alone is not admission. Root must provide the immutable actual
+protected backend release/canary/registry-readback receipt and its SHA256. The
+admission guard binds both accounts, build, artifact, compile receipt and source,
+requires the seven-day maximum validity window, PASS canary and nonzero published
+record, registry, API verification/source-tree/package hashes.
+
+## Before running
+
+Inspect the task's latest continuation, exact six protected processes, all pending
+requests/claims, disk/RAM/CPU, final source hashes and source freeze. Keep receipts
+outside Git. Use current witnessed timestamps; never extend an expired witness by
+editing the old observation. All new operations coordinate through the existing
+host lifecycle lock. A lock timeout is not permission to remove a lock.
+
+Select reviewed host-local values for these PowerShell variables before executing
+commands: `PairPython`, `PairScripts`, `PairStage`, `PairPlan`, `PairWitness`,
+`PairPins`, `PairSdk`, `PairVault`, `PairAdmission`, `PairAdmissionSha`.
+`PairPins` holds exact `goat_setup_control.py` and `goat_portfolio_setup.py` hashes.
+`PairStage` is a new retained evidence directory, separate from either terminal.
+`PairVault` points to the already provisioned pair-only DPAPI vault. No command
+below provisions or retransfers that vault.
+
+## Installation and bare broker qualification
+
+Dry-run first, inspect claims, then apply once:
+
+```powershell
+& $PairPython -B "$PairScripts/goat_demo_pair_prepare.py" --plan $PairPlan --protected-witness $PairWitness
+& $PairPython -B "$PairScripts/goat_demo_pair_prepare.py" --plan $PairPlan --protected-witness $PairWitness --apply
+```
+
+Preparation copies only hash-verified vendor terminal/server files, the sealed EA
+and frozen SET files. It creates a **bare chart with no EA**, fresh config with
+Algo OFF and a separate staged dashboard chart. It does not copy old common.ini,
+accounts.dat, profiles, chart IDs or tokens. The initial profile's native
+acceptance is a required qualification, not guaranteed by a source fixture.
+
+Set `PairInstall` to the plan's actual outputDirectory and `PairOrdinal` to 7 first.
+Set `PairConnection` to its `reconnect-manifest.json`. For this VPS select the
+explicit LocalMachine vault scope (restricted Administrator/SYSTEM ACL); there is
+no silent CurrentUser fallback. Other reviewed hosts may use CurrentUser scope.
+
+```powershell
+& "$PairScripts/goat_demo_pair_connect.ps1" -Python $PairPython -Manifest $PairConnection -Terminal $PairOrdinal -VaultPath $PairVault -VaultScope LocalMachine -SdkPath $PairSdk -AttemptDirectory "$PairStage/initial-07" -ProtectedWitness $PairWitness -InitialLogin -AllowClosed
+```
+
+This path may run before EA admission because it refuses a profile containing an
+expert. It requires a cold launch and native USD 100,000 balance/equity, hedging demo,
+leverage 200, no positions/orders, broker trading permission and terminal Algo OFF.
+Any failure retains the startup intent and observed nonsecret state. Repeat for 8
+only after 7 is understood; use another new evidence directory, never overwrite 7.
+
+## Dashboard bootstrap and pairing
+
+After the real backend admission exists, set `PairManifest` to
+`terminal-07.json`, `PairDraft` to `portfolio-07.json`, and use the actual initial
+receipt. Bootstrap selects the registered symbols and gracefully closes only the
+verified bare process, with no kill fallback:
+
+```powershell
+& $PairPython -B "$PairScripts/goat_demo_pair_bootstrap.py" --manifest $PairConnection --terminal $PairOrdinal --initial-receipt "$PairStage/initial-07/result.json" --draft $PairDraft --protected-witness $PairWitness --sdk-path $PairSdk --output "$PairStage/bootstrap-07" --admission-proof $PairAdmission --admission-sha256 $PairAdmissionSha
+```
+
+Select the emitted reconnect manifest, then start the dashboard inert:
+
+```powershell
+$PairConnection="$PairStage/bootstrap-07/reconnect-manifest.json"
+& "$PairScripts/goat_demo_pair_connect.ps1" -Python $PairPython -Manifest $PairConnection -Terminal $PairOrdinal -VaultPath $PairVault -VaultScope LocalMachine -SdkPath $PairSdk -AttemptDirectory "$PairStage/dashboard-start-07" -ProtectedWitness $PairWitness -AdmissionProof $PairAdmission -AdmissionSha256 $PairAdmissionSha -AllowClosed
+& $PairPython -B "$PairScripts/goat_setup_control.py" register --manifest $PairManifest --allow-pairing-read
+& $PairPython -B "$PairScripts/goat_setup_control.py" status --manifest $PairManifest
+```
+
+If native evidence shows activationOnly, request the explicitly registered public
+pairing challenge through the setup client's `pairing` action and finish legitimate
+GOAT approval. Do not log challenge data as routine status or copy privileged
+tokens. Verify fresh native authorization, account/build identity and WebRequest
+behavior. A configured URL does not prove WebRequest permission.
+
+## 35 attachments and inert readiness
+
+```powershell
+& $PairPython -B "$PairScripts/goat_portfolio_setup.py" register --manifest $PairManifest --draft $PairDraft
+& $PairPython -B "$PairScripts/goat_demo_pair_orchestrate.py" --control-dir $PairScripts --pins $PairPins --manifest $PairManifest --draft $PairDraft --terminal $PairOrdinal --run-dir "$PairStage/deployment-07" --protected-witness $PairWitness --reconnect-manifest $PairConnection
+```
+
+The durable journal claims configure and every individual child before issuing
+the native request. It requires sequential unique chart/magic identities, fresh
+linkage, intended policy acknowledgement, exact input audit and fresh AI status.
+The proof is in `deployment-07/paired-readiness/proof.json`. A withheld but verified
+AI signal is allowed; unknown/stale AI is not readiness.
+
+Unknown outcomes stop the tool. Only a separately inspected resume document can
+continue the existing run; it cannot repeat a previously attempted mutation.
+Never change run-dir to evade an old intent/owner claim. Do not register again
+while the orchestrator owns the terminal or a native request is unresolved.
+
+## Restart rehearsal and authorized launch
+
+Common lifecycle arguments, rebuilt with the **latest** combined reconnect manifest:
+
+```powershell
+$PairLife=@('--control-dir',$PairScripts,'--pins',$PairPins,'--manifest',$PairManifest,'--draft',$PairDraft,'--terminal',"$PairOrdinal",'--reconnect-manifest',$PairConnection,'--protected-witness',$PairWitness)
+$PairProof="$PairStage/deployment-07/paired-readiness/proof.json"
+& $PairPython -B "$PairScripts/goat_demo_pair_lifecycle.py" close @PairLife --proof $PairProof --sdk-path $PairSdk --output "$PairStage/close-off-07"
+& $PairPython -B "$PairScripts/goat_demo_pair_lifecycle.py" freeze-off @PairLife --proof $PairProof --shutdown "$PairStage/close-off-07/shutdown.json" --output "$PairStage/freeze-off-07"
+```
+
+Select `freeze-off-07/reconnect-manifest.json`, restart via the same wrapper with a
+new attempt directory and admission proof, and run:
+
+```powershell
+& $PairPython -B "$PairScripts/goat_demo_pair_lifecycle.py" post-restart @PairLife --proof $PairProof --prior-runtime "$PairStage/close-off-07/runtime-before.json" --restart-receipt "$PairStage/restart-off-07/result.json" --output "$PairStage/rehearsal-07"
+```
+
+Rebuild `PairLife` after selecting each new manifest. The rehearsal validates 36
+experts/charts, retained 35 child identities, source/effective inputs and policy,
+then issues one new policy command and captures a new distinct audit/status proof.
+
+For launch, take the rehearsal's paired proof, close inert once again, and use
+`freeze-on` with that new close receipt and `--rehearsal
+"$PairStage/rehearsal-07/completion.json"`. This changes the selected **closed**
+terminal's saved Algo state, snapshots profile/config/state and emits another
+manifest. It does not start trading. Root must compare both arms, fresh protected
+six and capacity before explicitly starting the enabled manifests via the wrapper.
+
+The saved profile is checked against the rehearsal's exact child chart IDs,
+symbols, M1 periods and every effective frozen SET input before either freeze.
+This is separate from checking the dashboard TSV: the TSV alone cannot prove
+which inputs a saved child chart will execute. Duplicate children, extra/missing
+inputs and changed AI settings are refused. Native decimal/date serialization
+differences are accepted only under the same exact rules as the child audit.
+
+`freeze-on` also emits `enabled-persistence.json` and its SHA256 in completion.
+An enabled cold start requires wrapper arguments `-PersistenceProof` and
+`-PersistenceSha256` from that completion, within 600 seconds. The client checks
+the saved profile/config plus the exact closed dashboard TSV and terminal-global
+bytes before startup. These hashes are not expected to stay fixed after MT5
+starts; live verification still requires fresh native member/policy evidence.
+Do not restore the saved global bytes or use this proof as permission to retry.
+Use a separately pinned successor helper package for this final launch phase;
+do not overwrite the original prepared helper package or its evidence.
+
+The connection successor acquires the lifecycle lock before recording a startup
+intent. A busy lock therefore cannot create an unissued startup claim. Failure
+receipts include a bounded stage and exception type/OS code without exception
+messages or credentials. A real CLI missing-witness check confirms shared guard
+refusals retain their exact reason. Shared-lock contention waits at most 20 seconds
+with at most 250 ms between attempts; timeout retains the other owner's lock and
+does not create a startup claim. Owned-lock cleanup checks identity and nonce.
+The strengthened helper suite passes 39 pure
+tests; native startup/restart evidence remains a separate requirement.
+
+Carry the newest combined manifest into the other arm's stages; do not substitute
+an earlier manifest that still describes the other arm's pre-rehearsal profile.
+Preserve actual startup receipts and times. Establish the comparison baseline only
+after both arms are verified, accounting for any staggered-start trades. No test
+order or balance reset is necessary. A failed observer after startup may leave a
+running terminal: inspect the retained process before retrying anything.
+
+## Monitoring and documentation
+
+### Native WebRequest permission migration
+
+Fresh installation now writes `WebRequest=0` and an empty `WebRequestUrl`.
+A plaintext URL does not encode MT5's native permission list. When the approved
+same-host source is terminal 01 (`01 - Standard - Clean R5`), the bounded
+`scripts/goat_demo_pair_trust.py` helper can copy only its two native permission
+records into the closed, Algo-OFF pair. It never decodes that opaque list, changes
+accounts, writes the source terminal or launches a process. Each target must have
+one exact V1.48 dashboard on EURUSD M1 and a matching retained native inert shutdown
+receipt. Existing target permission must be disabled/blank or the historical
+plaintext GOAT URL; any other permission requires investigation.
+
+Use a private JSON plan with schema `goat-pair-native-trust-v1`, pinned `manifest`
+and `source` objects (`path`, `sha256`), absolute `commonFiles` and a new
+`outputDirectory`, and `targets` ordered 7 then 8. Each target contains `terminal`,
+the witnessed `chartId`, and pinned `shutdown` (`path`, `sha256`). Source is exactly
+`C:\GOAT Experiment\01 - Standard - Clean R5\config\common.ini`; the fresh protected
+six witness must still contain its unchanged running process.
+
+```powershell
+& $PairPython -B "$PairScripts/goat_demo_pair_trust.py" --plan "$PairStage/trust-plan.json" --protected-witness "$PairStage/protected-six.json"
+# After reviewing the dry run, use the same command with --apply.
+```
+
+The helper uses the shared lifecycle lock, rechecks both closed targets and pins,
+preserves configuration backups and full profile hashes in an ACL-restricted
+output folder, and emits the current combined `reconnect-manifest.json`. All
+other configuration bytes and saved chart inputs remain unchanged. Retained or
+partially applied output is never automatically retried or rolled back. Inspect
+its evidence first. Restart inert through the reviewed interactive runner and
+verify a native WebRequest response before claiming permission works; successful
+configuration migration alone is not runtime proof.
+
+After activation, a dashboard may require an actual inert process restart. If its
+native save changes only the saved profile hash, use the separate
+`goat_demo_pair_dashboard_recapture.py` with `--plan`, `--protected-witness` and,
+after its dry run, `--apply`. Its plan schema is `goat-pair-dashboard-recapture-v1`
+with pinned `manifest`, absolute `commonFiles`, a new `outputDirectory`, and the
+same ordered `targets` shape as trust migration. It accepts only the already
+closed activation-only pair, exact native shutdown receipts, unchanged common.ini
+hashes, one dashboard per arm and the original five explicit bootstrap inputs.
+It writes private evidence and a refreshed combined manifest only; it never
+modifies terminal files or issues another shutdown/restart. Full current chart
+bytes and the expanded input digest are retained. Equality of all expanded
+defaults to an earlier save is explicitly **not proven** when that earlier chart
+was not retained. This limited pre-attachment proof does not qualify any child
+strategy. Restart inert with a fresh reviewed interactive attempt and then verify
+native activation; the subsequent 35-child audit remains required.
+
+### One inspected partial-child recovery
+
+`goat_demo_pair_recover_child.py` handles only the reviewed terminal 07 failure
+at child index 6, after six successful children and a retained native
+`child_attach_failed` receipt. It never closes, starts or kills a process. Actual
+terminal absence, Algo-OFF configuration, exact registration and original journal
+owner, native receipt equality, all six saved child identities and every effective
+SET input must match. The failed chart must be a pinned expert-free empty EURUSD
+M1 chart, absent from `order.wnd`; any other profile or failure shape is refused.
+
+The private plan has schema `goat-partial-child-recovery-v1`; pinned `{path,sha256}`
+references `reconnectManifest`, `installation`, `draft`, `pins`, `failure`,
+`shutdown`, `journal`, `orphan`, `state`, `globals`; and absolute `controlDirectory`
+and new `outputDirectory`. `failure` must be the original deployment journal's
+exact saved failure receipt bytes, `journal` its existing `journal.jsonl`, `state`
+the terminal-scoped dashboard TSV and `globals` the terminal's gvariables.dat.
+Use `--plan`, `--protected-witness` and dry-run first; `--apply` takes the lifecycle
+and original orchestration locks. It preserves all current profile/config/global/
+state bytes, quarantines only the empty chart, resets only row 6's cid/magic to
+zero, then emits a combined reconnect manifest and appends one
+`recovery_authorized` record to the **same** journal. No original record or failed
+intent is deleted or rewritten. Dashboard validation compares its five explicit
+bootstrap inputs; full expanded dashboard defaults are retained but not claimed
+equal to an unavailable earlier copy.
+
+After a separately authorized inert restart, inspect fresh native status and
+prepare the normal pinned `--inspection` for that same journal. Resume the reviewed
+orchestrator with the same `--run-dir` plus `--recovery-proof` and
+`--recovery-proof-sha256` from completion. It can issue one distinct, recorded
+recovery of `deploy:6` only while all six original identities remain linked; a
+second recovery attempt is refused, including after a crash or timeout. Subsequent
+children retain ordinary exactly-once intents. The original GUI failure is not
+considered fixed by staging recovery; all 35 input/policy checks and restart
+rehearsal remain required before any trading launch. Partial repairs or changed
+configuration remain retained for inspection, with no automatic rollback.
+
+### Second inspected partial recovery
+
+`goat_demo_pair_recover_child_v2.py` is separate authority for terminal 07,
+index 26, NZDUSD chart 55957314657764 and the recorded September 24 failure at
+1790231505. It cannot retry another index. Its source-compatible v1 parsing
+helpers still default to the original six-child case; the original proof and
+successful recovery receipt remain verifiable against their historical journal
+prefix. The second authority must follow that successful recovery in the same
+journal and retain the first seven identities, then all 26 current child IDs,
+magics and complete effective saved inputs.
+
+Its schema is `goat-partial-child-recovery-v2`. The plan contains pinned
+`reconnectManifest`, `installation`, `draft`, `pins`, `failure`, `journal`,
+`orphan`, `state`, `globals`, `previousRecovery`, `termination`, `sdkBefore`,
+`terminationIntent`, `pendingRequest`, `pendingReceipt`, plus absolute
+`controlDirectory` and new `outputDirectory`. The SDK evidence is the retained
+`sdk-before-termination.json`; the completion and intent must identify PID 20896,
+created `2026-09-24T06:23:35.6919830Z`. SDK observation must prove the same demo
+account, connected, Algo OFF and flat immediately before that explicit
+termination. The helper itself never attaches the SDK, closes or kills a process.
+Actual process absence is independently required.
+
+The retained timed-out read request `477ab53b36004ea5b5c60dea500f8f53` subsequently
+completed with an `observed` receipt at 1790231682. Both files are pinned,
+validated and copied to recovery evidence; neither is removed. A timeout alone
+does not establish that the controller never resumed. Expired registration is
+validated at the failure's historical time and remains unchanged: this closed
+repair issues no RPC and grants no fresh registration validity.
+
+Dry run and `--apply` use the same CLI as v1. The sole terminal mutations are
+quarantining the proven-empty `chart28.chr` and resetting row 26's two identity
+fields. All other profile/config/global/state bytes are retained and checked.
+The helper appends a distinct `recovery:deploy:26:<failure-sha>` authorization.
+The orchestrator accepts it only with a fresh normal inspection and the exact
+26-member prefix; a failed or interrupted recovery attempt cannot be repeated.
+Build rollout/registration renewal is a separate operation. Do not rewrite old
+installation manifests, original journal bindings or either recovery proof to
+make a new binary appear to be the old one.
+
+For the qualified closed R1-to-R2 pair transition, see
+[closed build rollout](PAIR-CLOSED-BUILD-ROLLOUT.md). It documents the private plan,
+exact build/admission pins, immutable packaging and same-journal 07 resume plus
+08's first attachment. Catalog membership never substitutes for live admission.
+
+The website live adapter separately verifies running status against retained
+settings/audit and startup evidence; the inert readiness verifier is not a live
+proof. Native command IDs can reset on restart. Check actual fresh 35 child
+AI/exposure settings and no pending changes rather than demanding an old ID.
+
+Portfolio registration expiry is four hours. The approved pair monitoring path
+may renew **only expiry with unchanged account/build/membership/settings/policy**,
+under lifecycle/orchestration exclusion and with old/new digest receipts and no
+pending request. It must not invalidate or rewrite the historical settings proof.
+That renewal lives in the separately reviewed website adapter, not these helpers.
+
+At initial delivery, 26 pure tests and syntax checks passed; no native setup was performed
+by the tooling author. Record actual host successes/failures in the task handoff,
+then update the relevant skill's operating reference. Never promote source tests,
+an inert presentation preview, prepared files or a completed process launch into
+claims of production attachment, AI readiness or an active trading experiment.

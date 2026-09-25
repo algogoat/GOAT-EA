@@ -2,7 +2,7 @@
 #define   EA_Name          MQLInfoString(MQL_PROGRAM_NAME)
 #define   Server           AccountInfoString(ACCOUNT_SERVER)
 #ifndef  GOAT_VERSION_LABEL
-#define   GOAT_VERSION_LABEL "1.47"
+#define   GOAT_VERSION_LABEL "1.48"
 #endif
 #ifndef  GOAT_DEFAULT_BIAS_MODE
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Disabled
@@ -917,7 +917,9 @@ bool     NEWS_ON=false;
 string   URL_Web        = "www.GOATedge.ai";//"https://www.GOATalgo.com/";
 string   URL_API        = "https://goatedge.ai";//"https://api.goatalgo.com";
 //string URL_API2       = "https://eloquent-nature-75ba63ed82.strapiapp.com/api/metatrader/check-id";
+#ifndef GOAT_API_BEARER_FILE
 #define  GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer.token"
+#endif
 string   requestHeaders = "Content-Type: application/json; charset=UTF-8\r\n";
 
 bool GOATIsSafeApiBearerToken(const string token)

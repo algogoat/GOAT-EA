@@ -209,8 +209,8 @@ def verify_saved_monitor(raw, ea_relative_path, symbol, data_root):
     chart=fields.get(('chart',),{});expert=fields.get(('chart','expert'),{});inputs=fields.get(('chart','expert','inputs'),{})
     relative=PureWindowsPath(ea_relative_path)
     allowed=[PureWindowsPath('Experts')/relative,PureWindowsPath(data_root)/'MQL5'/'Experts'/relative]
-    if chart.get('symbol')!=symbol or PureWindowsPath(expert.get('path','')) not in allowed or expert.get('expertmode') not in ('0','4'):
-        raise ValueError('Saved monitor symbol, EA identity or inert permissions changed')
+    if chart.get('symbol')!=symbol or PureWindowsPath(expert.get('path','')) not in allowed or expert.get('expertmode') != '0':
+        raise ValueError('Saved monitor symbol, EA identity or permissions changed; human must review and reopen the saved profile in MT5')
     if inputs.get('Mode_Operation')!='11' or inputs.get('Studio_ReadOnlyMonitor')!='true' or inputs.get('Studio_MonitorRunPath','')!='':
         raise ValueError('Saved chart is no longer an inert Studio monitor')
     indicator=fields.get(('chart','window','indicator'),{})

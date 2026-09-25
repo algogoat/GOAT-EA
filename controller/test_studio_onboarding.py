@@ -134,10 +134,10 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(chart.read_bytes(),b'MT5 changed saved profile')
         self.start.assert_not_called()
 
-    def test_saved_profile_metadata_and_human_dll_approval_survive_restart(self):
+    def test_saved_profile_metadata_survives_restart_with_zero_permissions(self):
         result=monitor_prepare(self.c,'EURUSD')
         chart=Path(result['profile_path'])/'chart01.chr'
-        text=chart.read_text(encoding='utf-16').replace('expertmode=0','expertmode=4').replace('scale=8','scale=7')
+        text=chart.read_text(encoding='utf-16').replace('scale=8','scale=7')
         chart.write_text(text,encoding='utf-16')
         (chart.parent/'order.wnd').write_bytes(b'fixture ordering')
         monitor_launch(self.c,'saved-restart')
@@ -147,6 +147,7 @@ class OnboardingTests(unittest.TestCase):
         result=monitor_prepare(self.c,'EURUSD')
         chart=Path(result['profile_path'])/'chart01.chr';original=chart.read_text(encoding='utf-16')
         unsafe=[original.replace('expertmode=0','expertmode=5'),
+                original.replace('expertmode=0','expertmode=4'),
                 original.replace('Studio_ReadOnlyMonitor=true','Studio_ReadOnlyMonitor=false'),
                 original.replace('Mode_Operation=11','Mode_Operation=8'),
                 original.replace('Mode_Operation=11','Mode_Operation=11\nMode_Operation =8'),

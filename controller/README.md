@@ -59,8 +59,11 @@ A launch attempt ID is never replayed. The same ID returns its retained result,
 even after process exit. After a normal close, a new explicit attempt ID may
 reopen the saved monitor; the controller revalidates the chart's EA path, inert
 Studio inputs, symbol, permission flags and absence of extra charts/indicators.
-MT5 metadata changes and the human's DLL approval can persist; chart trading
-permission remains disallowed. A launch error or crash retains `launch_intent`
+MT5 metadata changes can persist. Automated launch accepts only the original
+zero permission flags until actual MT5 fixtures qualify their bit meanings. If
+the human's DLL approval changes saved flags, the human must review and reopen
+that saved profile in MT5; the controller never resets or guesses permission
+bits. A launch error or crash retains `launch_intent`
 and blocks new attempts until the uncertain effect has been inspected. Preserve
 that evidence and use support if it cannot be resolved; do not delete it to
 force a retry. Partial profile staging is also preserved and never overwritten.

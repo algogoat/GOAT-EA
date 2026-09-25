@@ -17,7 +17,6 @@ from campaign_ledger import sha
 from prepare_native_campaign import native_run_relative, prepare
 from strategy_registry import connect, inspect_set
 from studio_bridge import write_json
-from studio_installation import read_json
 from studio_queue import validate_batch_members
 from studio_strategy_settings import read_values
 from studio_template_tools import source_bytes, validate_raw
@@ -29,7 +28,7 @@ MAX_RETAINED_SET_BYTES = 128 * 1024 * 1024
 def _json(path, limit=MAX_PLAN_BYTES):
     path = Path(path)
     if path.stat().st_size > limit: raise ValueError('Batch JSON exceeds its byte limit')
-    raw = path.read_bytes()
+    with path.open('rb') as stream: raw = stream.read(limit + 1)
     if len(raw) > limit: raise ValueError('Batch JSON exceeds its byte limit')
     def unique(pairs):
         result = {}
@@ -184,6 +183,8 @@ def save_batch(controller, batch_id, output):
     job = controller.job(batch_id)
     package, plan, manifest = _verify_package(controller, job)
     output = Path(output).resolve()
+    if output.is_relative_to(controller.root.resolve()):
+        raise ValueError('Save outside controller state to preserve immutable packages and evidence')
     if output.suffix.lower() != '.goatbatch':
         raise ValueError('Choose a new .goatbatch filename')
     raw = (package / 'portfolio.goatbatch').read_bytes()
@@ -223,7 +224,7 @@ def load_batch(controller, batch_id, source):
     source = Path(source).resolve()
     if source.stat().st_size > 128 * 1024 * 1024:
         raise ValueError('Saved batch exceeds 128 MiB')
-    raw = source.read_bytes()
+    with source.open('rb') as stream: raw = stream.read(128 * 1024 * 1024 + 1)
     if len(raw) > 128 * 1024 * 1024: raise ValueError('Saved batch exceeds 128 MiB')
     text = raw.decode('utf-16' if raw.startswith(b'\xff\xfe') else 'utf-8-sig')
     exports_text = _section(text, 'GOAT_EXPORT_SETTINGS')

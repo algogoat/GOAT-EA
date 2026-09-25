@@ -67,6 +67,13 @@ class NativeBatchTests(unittest.TestCase):
             self.assertEqual(expected['strategy']['values']['Lots'], actual['strategy']['values']['Lots'])
         with self.assertRaises(FileExistsError): save_batch(self.controller, 'customer-batch', output)
 
+    def test_save_cannot_modify_controller_immutable_package(self):
+        result = self.prepare(); output = Path(result['package']) / 'saved.goatbatch'
+        with self.assertRaisesRegex(ValueError, 'outside controller state'):
+            save_batch(self.controller, 'customer-batch', output)
+        self.assertFalse(output.exists())
+        self.assertTrue(self.prepare()['reused'])
+
     def test_without_human_grant_no_batch_is_enqueued(self):
         state = self.controller.state()
         self.controller.store.submit(dict(schema_version=1, request_id='takeover-test', terminal_id=self.controller.terminal,

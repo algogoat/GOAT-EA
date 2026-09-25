@@ -19,6 +19,8 @@ the same arguments, using the bundled runtime rather than a system Python.
 | Command | Required options | Effect |
 |---|---|---|
 | `discover` | None | Read-only installation/hash/schema/capability inspection |
+| `validate-set` | `--set`, optional `--require-optimization` | Read-only encoding, complete input, active range and partial dependency validation |
+| `build-set` | `--source`, `--output`, `--spec` | Clone a real SET with narrow typed replacements; new unique identity, support notes and provenance |
 | `bootstrap` | `--account-login`, `--account-server` | Create local human-owned binding and monitor preset; never launch |
 | `serve` | Optional `--watch-seconds` | Process Studio inboxes; default 3600, range 0–3600; zero is one cycle |
 | `state` | None | Process pending UI commands then return drafts/queue/ownership |
@@ -38,6 +40,9 @@ The controller does not install a service, restart MT5 or auto-start the next jo
 It supports one frozen job per native package and serial explicit starts.
 
 ## Configuration
+
+For creating and validating files, read [template creation and seed research](TEMPLATE-WORKFLOW.md).
+These commands require the installation receipt but no Studio binding or running terminal.
 
 `prepare --configuration settings.json` requires exactly two top-level sections:
 

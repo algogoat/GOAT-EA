@@ -24,6 +24,8 @@ from studio_strategy_settings import read_values
 from studio_settings import FIELDS,PERIODS,validate_tester,validate_export
 
 OPERATION_CONTRACTS = {
+    'validate-set':dict(required=['set'],defaults={'require-optimization':False},effect='read-only exact schema, encoding, range and partial dependency validation; no launch'),
+    'build-set':dict(required=['source','output','spec'],effect='clone real SET with narrow typed changes, unique EA_Desc, support notes and provenance; never overwrite'),
     'discover':dict(required=[],effect='read installation and schema; runtime readiness not evaluated'),
     'bootstrap':dict(required=['account-login','account-server'],effect='create human-owned local binding and monitor preset; no launch'),
     'serve':dict(required=[],defaults={'watch-seconds':3600},limits={'watch-seconds':[0,3600]},effect='process durable draft/ownership inboxes; no native launch'),
@@ -223,6 +225,8 @@ def main(argv=None):
     parser.add_argument('--installation',type=Path,required=True)
     sub=parser.add_subparsers(dest='operation',required=True)
     sub.add_parser('discover');sub.add_parser('state')
+    p=sub.add_parser('validate-set');p.add_argument('--set',type=Path,required=True);p.add_argument('--require-optimization',action='store_true')
+    p=sub.add_parser('build-set');p.add_argument('--source',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--spec',type=Path,required=True)
     p=sub.add_parser('bootstrap');p.add_argument('--account-login',required=True);p.add_argument('--account-server',required=True)
     p=sub.add_parser('serve');p.add_argument('--watch-seconds',type=float,default=3600)
     p=sub.add_parser('submit');p.add_argument('--request',type=Path,required=True)
@@ -235,6 +239,14 @@ def main(argv=None):
         if args.operation=='discover':
             result=dict(controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 executable may be running','Native optimization requires custom forward and local workers','Give to Agent required; start is explicit; no automatic restart'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
         elif args.operation=='bootstrap': result=controller.bootstrap(args.account_login,args.account_server)
+        elif args.operation=='validate-set':
+            from studio_template_tools import validate_set
+            result=validate_set(args.set,controller.schema,controller.policy,require_optimization=args.require_optimization)
+        elif args.operation=='build-set':
+            from studio_template_tools import build_set
+            result=build_set(args.source,args.output,read_json(args.spec),controller.schema,controller.policy,
+                controller_version=VERSION,ea_version=controller.install['ea_version'],
+                forbidden_roots=[controller.install['catalog_root']] if controller.install.get('catalog_root') else [])
         else:
             controller.open()
             if args.operation=='serve': result=pump_for(controller.bridge,args.watch_seconds)

@@ -41,6 +41,9 @@ There are two control surfaces:
   building a portfolio never starts an MT5 optimization or deploys live trading.
 
 Read [the full Studio command and recovery guide](README.md) before the first run.
+For new optimization files, follow [template creation and seed research](TEMPLATE-WORKFLOW.md).
+Use the installed `validate-set` and `build-set` commands; preserve parent evidence,
+document every change and register new candidates as untested local matrix forks.
 
 ## First session
 

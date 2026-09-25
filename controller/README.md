@@ -26,10 +26,26 @@ the same arguments, using the bundled runtime rather than a system Python.
 | `state` | None | Process pending UI commands then return drafts/queue/ownership |
 | `submit` | `--request` JSON file | Submit exact versioned agent command envelope; no actor override |
 | `prepare` | `--job-id`, `--set`, `--configuration` | Freeze complete inputs, queue job and stage immutable native package |
+| `prepare-batch` | `--batch-id`, `--plan` | Freeze all file/asset members of a complete native queue; no launch |
+| `batch-status` | `--batch-id` | Reconcile native queue and every member's progress |
+| `save-batch` | `--batch-id`, `--output` | Save a standard `.goatbatch` outside controller state; never overwrite |
+| `load-batch` | New `--batch-id`, `--file` | Validate a saved `.goatbatch` as new unstarted work on this installation |
+| `resume-batch` | `--source-batch-id`, new `--batch-id`, optional `--include-failed` | Prepare verified unfinished members after original completion/cancellation; no launch |
 | `start` | `--job-id` | Recheck demo/runtime/binary/ownership, reserve, activate and publish one start |
 | `status` / `reconcile` | `--job-id` | Inspect retained native attempt, dispatch, runtime and report evidence |
 | `cancel` | `--job-id` | Cancel pending job or publish owned native stop; reconcile before claiming stopped |
 | `finish` | `--job-id` | Confirm terminal idle and terminal queue outcome, retain result, restore owned controls |
+| `seed-prepare` | `--batch-id`, `--plan` | Validate and freeze a dedicated bounded SeedFarming campaign |
+| `seed-start` / `seed-resume` | `--batch-id`, optional `--max-seconds` | Drive selected-terminal seed work for a bounded call; retain running work at call timeout |
+| `seed-status` | `--batch-id` | Observe retained seed campaign progress |
+| `seed-cancel` | `--batch-id` | Request owned seed stop; verify exit before reporting stopped |
+| `seed-report` | `--batch-id` | Read actual seed evidence and per-job provenance, including unknown or missing results |
+
+Read the installed [complete runbook](goat-beta-agent-guide.md) for a full native
+batch plan, save/load/revision examples and per-member matrix reporting. Read
+[SeedFarming](SEED-WORKFLOW.md) for its separate mode, no-forward plan, limits,
+terminal closure and recovery. All [114 EA inputs](INPUT-REFERENCE.md) and
+[public capabilities](goat-agent-capabilities.md) are included in this kit.
 
 `start` supports the **first pending controller job**, which can contain a full
 native batch of frozen file/asset members. The beta uses local genetic

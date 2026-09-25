@@ -24,6 +24,17 @@ from studio_strategy_settings import read_values
 from studio_settings import FIELDS,PERIODS,validate_tester,validate_export
 
 OPERATION_CONTRACTS = {
+    'seed-prepare':dict(required=['batch-id','plan'],effect='freeze a dedicated SeedFarming matrix; no launch'),
+    'seed-start':dict(required=['batch-id'],defaults={'max-seconds':60},limits={'max-seconds':[1,3600]},effect='explicit bounded driver for dedicated SeedFarming; preserves active work on call timeout'),
+    'seed-resume':dict(required=['batch-id'],defaults={'max-seconds':60},limits={'max-seconds':[1,3600]},effect='continue verified retained seed work; uncertain effects require reconciliation'),
+    'seed-status':dict(required=['batch-id'],effect='observe dedicated seed campaign state and native process evidence'),
+    'seed-cancel':dict(required=['batch-id'],effect='request normal close of exact owned seed process; receipt is not exit proof'),
+    'seed-report':dict(required=['batch-id'],effect='report actual seed XML metrics and frozen provenance; missing evidence remains unavailable'),
+    'prepare-batch':dict(required=['batch-id','plan'],effect='validate and freeze a full native Studio batch; no launch'),
+    'batch-status':dict(required=['batch-id'],effect='reconcile whole native batch and report member progress'),
+    'save-batch':dict(required=['batch-id','output'],effect='save native .goatbatch without overwriting'),
+    'load-batch':dict(required=['batch-id','file'],effect='validate saved .goatbatch as a new unstarted batch on this installation'),
+    'resume-batch':dict(required=['source-batch-id','batch-id'],effect='prepare remaining members under a new identity after original stop/finish; failed members require include-failed'),
     'validate-set':dict(required=['set'],defaults={'require-optimization':False},effect='read-only exact schema, encoding, range and partial dependency validation; no launch'),
     'build-set':dict(required=['source','output','spec'],effect='clone real SET with narrow typed changes, unique EA_Desc, support notes and provenance; never overwrite'),
     'discover':dict(required=[],effect='read installation and schema; runtime readiness not evaluated'),
@@ -154,6 +165,8 @@ class Controller:
         return dict(job_id=job_id,package=str(package),manifest=result['receipt'],native_started=False)
 
     def start(self,job_id):
+        from studio_seed_slot import guard_active_seed
+        guard_active_seed(self.root)
         from studio_process_check import inspect_processes,revalidate_processes
         from studio_launch_intent import record_intent
         from studio_open_activation import activate_open
@@ -224,6 +237,16 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--installation',type=Path,required=True)
     sub=parser.add_subparsers(dest='operation',required=True)
+    p=sub.add_parser('seed-prepare');p.add_argument('--batch-id',required=True);p.add_argument('--plan',type=Path,required=True)
+    for command in ('seed-start','seed-resume'):
+        p=sub.add_parser(command);p.add_argument('--batch-id',required=True);p.add_argument('--max-seconds',type=int,default=60)
+    for command in ('seed-status','seed-cancel','seed-report'):
+        p=sub.add_parser(command);p.add_argument('--batch-id',required=True)
+    p=sub.add_parser('prepare-batch');p.add_argument('--batch-id',required=True);p.add_argument('--plan',type=Path,required=True)
+    p=sub.add_parser('batch-status');p.add_argument('--batch-id',required=True)
+    p=sub.add_parser('save-batch');p.add_argument('--batch-id',required=True);p.add_argument('--output',type=Path,required=True)
+    p=sub.add_parser('load-batch');p.add_argument('--batch-id',required=True);p.add_argument('--file',type=Path,required=True)
+    p=sub.add_parser('resume-batch');p.add_argument('--batch-id',required=True);p.add_argument('--source-batch-id',required=True);p.add_argument('--include-failed',action='store_true')
     sub.add_parser('discover');sub.add_parser('state')
     p=sub.add_parser('validate-set');p.add_argument('--set',type=Path,required=True);p.add_argument('--require-optimization',action='store_true')
     p=sub.add_parser('build-set');p.add_argument('--source',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--spec',type=Path,required=True)
@@ -237,7 +260,7 @@ def main(argv=None):
     try:
         controller=Controller(args.installation)
         if args.operation=='discover':
-            result=dict(controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 executable may be running','Native optimization requires custom forward and local workers','Give to Agent required; start is explicit; no automatic restart'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
+            result=dict(controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 executable may be running for ordinary native batch activation','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
         elif args.operation=='bootstrap': result=controller.bootstrap(args.account_login,args.account_server)
         elif args.operation=='validate-set':
             from studio_template_tools import validate_set
@@ -249,11 +272,35 @@ def main(argv=None):
                 forbidden_roots=[controller.install['catalog_root']] if controller.install.get('catalog_root') else [])
         else:
             controller.open()
-            if args.operation=='serve': result=pump_for(controller.bridge,args.watch_seconds)
+            if args.operation.startswith('seed-'):
+                from studio_seed import SeedRunner
+                runner=SeedRunner(controller)
+                if args.operation=='seed-prepare':
+                    from studio_batch import _json
+                    result=runner.prepare(args.batch_id,_json(args.plan))
+                elif args.operation in ('seed-start','seed-resume'):
+                    result=getattr(runner,args.operation.removeprefix('seed-'))(args.batch_id,max_seconds=args.max_seconds)
+                else: result=getattr(runner,args.operation.removeprefix('seed-'))(args.batch_id)
+            elif args.operation=='serve': result=pump_for(controller.bridge,args.watch_seconds)
             elif args.operation=='state': controller.bridge.pump();result=controller.state()
             elif args.operation=='submit':
                 result=controller.store.submit(read_json(args.request),actor='agent');controller.bridge.pump()
             elif args.operation=='prepare': result=controller.prepare(args.job_id,args.set,args.configuration)
+            elif args.operation=='prepare-batch':
+                from studio_batch import prepare_batch
+                result=prepare_batch(controller,args.batch_id,args.plan)
+            elif args.operation=='batch-status':
+                from studio_batch import batch_status
+                result=batch_status(controller,args.batch_id)
+            elif args.operation=='save-batch':
+                from studio_batch import save_batch
+                result=save_batch(controller,args.batch_id,args.output)
+            elif args.operation=='load-batch':
+                from studio_batch import load_batch
+                result=load_batch(controller,args.batch_id,args.file)
+            elif args.operation=='resume-batch':
+                from studio_batch import resume_batch
+                result=resume_batch(controller,args.source_batch_id,args.batch_id,include_failed=args.include_failed)
             elif args.operation=='start': result=controller.start(args.job_id)
             elif args.operation=='cancel': result=controller.cancel(args.job_id)
             elif args.operation=='finish':

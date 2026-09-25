@@ -17,7 +17,7 @@ It covers setup, the living matrix, Studio exports, Portfolio Builder, exposure
 filters and recovery. The [human quickstart](goat-beta-start-here.md) explains
 the few MT5 steps the user performs. These two guides are added by the suite packager.
 
-Use the receipt path shown by Setup's **Set up my agent** action:
+Use the receipt path shown by Setup's **Copy instructions for my agent** action:
 
 ```powershell
 & '<installed agent kit>\goat.exe' studio --installation '<your installation.json>' discover
@@ -59,16 +59,28 @@ document every change and register new candidates as untested local matrix forks
    default is one hour; restart it explicitly when needed. It processes durable
    human/agent requests and refreshes the snapshot, not MT5 jobs. The user saves
    or reloads Studio settings and clicks **Give to Agent**. Agents cannot self-grant.
-5. Inspect `state`, select a compatible matrix row, and create a complete tester
-   and export configuration from the discovered schema. Explain date range,
-   symbol, search axes and export options before the user's first authorized run.
-6. `prepare` freezes one SET/configuration into a pending job. Review its returned
-   package and `state`. `start` explicitly dispatches that job once.
-7. Use `status` to reconcile receipts and native progress. Use `cancel` when the
-   user asks to stop. A published start/cancel request is not proof of execution.
-8. After the native queue finishes and MT5 is idle, use `finish`. It verifies the
-   report pair for completed jobs, retains the result, releases owned controls,
-   and prints the exact result path. Never reset a database to clear a busy job.
+5. Inspect `state` and discuss the user's research goal. Select exact template/asset
+   pairs and review all tester/export settings, validation history and compute limits.
+6. Use `prepare-batch` with a complete plan to freeze the full native queue. Inspect
+   every member and retain its template lineage. `prepare` also supports a focused
+   single-file check. Save/load preserve `.goatbatch` plans under new identities.
+7. `start --job-id <batch-id>` explicitly launches the aggregate batch; the EA
+   advances its members. Use `batch-status` and `status` to reconcile progress.
+   `cancel` stops the whole batch and must be reconciled. A request is not stop proof.
+8. After terminal completion and idle, `finish` verifies every completed member's
+   reports and exports and retains results. `resume-batch` prepares verified remaining
+   work under a new ID after finish; failed retries require `--include-failed`.
+   Never reset a database or rewrite active inputs to clear a busy batch.
+
+For dedicated SeedFarming, read [the seed workflow](SEED-WORKFLOW.md) and use
+`seed-prepare`, `seed-start`, `seed-status`, `seed-resume`, `seed-cancel` and
+`seed-report`. It has a separate bounded driver and terminal lifecycle and produces
+no-forward candidate XML. Ordinary portfolio exports come from the subsequent
+full optimization/export batch. Check the exact release's native qualification.
+
+The [capability reference](goat-agent-capabilities.md) maps all supported workflows.
+The [input reference](INPUT-REFERENCE.md) lists all 114 inputs, enum values, source
+defaults and the dependency checks that are actually implemented.
 
 ## The matrix is a living record
 
@@ -76,8 +88,15 @@ Before selection, read the current installed catalog revision and the user's own
 results. Publisher findings are not this user's broker results. Every selectable
 row must resolve to the catalog's exact SET and hash.
 
-After every attempt, record its actual status in **My results**, using the
-attempt ID for deduplication: completed, failed, cancelled, rejected or unknown.
+After every attempt, record each native batch member separately in **My results**:
+completed, failed, cancelled, rejected or unknown. Match its verified member index,
+run alias and frozen configuration to the retained template lineage. Use distinct
+stable matrix attempt IDs (for example, native attempt ID plus `-m` plus member
+index), and keep the aggregate attempt ID and alias in provenance. A completed
+member keeps its own outcome if a later member fails. Resumed members have new
+attempt IDs; cancelled/unstarted and unknown results remain explicit.
+The matrix uses `interrupted` for native cancelled attempts; keep `unknown`
+unresolved until reconciled. Use the matrix API's documented status vocabulary.
 Use the `finish` result JSON as provenance, with the exact template revision/hash,
 effective settings, EA/controller builds, broker/symbol, history/forward dates,
 model, costs/sizing and available metrics. Mark missing measurements unavailable.

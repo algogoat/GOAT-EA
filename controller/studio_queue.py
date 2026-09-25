@@ -6,7 +6,44 @@ from studio_settings import validate_tester, validate_export
 from studio_strategy_settings import validate_strategy
 from studio_dependencies import audit_dependencies
 
-COMMANDS = ('queue.enqueue', 'queue.revise', 'queue.cancel', 'queue.remove', 'queue.reorder', 'queue.reserve', 'queue.release_reservation')
+COMMANDS = ('queue.enqueue', 'queue.enqueue_batch', 'queue.revise', 'queue.cancel', 'queue.remove', 'queue.reorder', 'queue.reserve', 'queue.release_reservation')
+
+
+def validate_batch_members(members, schema, policy):
+    if not isinstance(members, list) or not 1 <= len(members) <= 10000:
+        raise ValueError('Native batch requires 1..10000 explicit members')
+    checked_members, identities = [], set()
+    for member in members:
+        if not isinstance(member, dict) or set(member) != {'tester', 'export', 'strategy'}:
+            raise ValueError('Each batch member requires tester, export and strategy settings')
+        tester = validate_tester(member['tester'])
+        exports = validate_export(member['export'], tester)
+        raw = member['strategy']
+        if not isinstance(raw, dict) or set(raw) != {'schema_hash', 'values'} or raw['schema_hash'] != sha(schema):
+            raise ValueError('Batch member requires the installed input schema')
+        strategy = validate_strategy(raw['values'], schema)
+        if not strategy['axes']:
+            raise ValueError('Optimization batch member has no enabled search dimensions')
+        strategy['schema_hash'] = sha(schema)
+        if policy is not None:
+            audit = audit_dependencies(strategy, schema, policy)
+            errors = [item['message'] for item in audit['findings'] if item['severity'] == 'error']
+            if errors:
+                raise ValueError('; '.join(errors))
+            strategy['dependency_validation'] = audit
+        current = dict(tester=tester, export=exports, strategy=strategy)
+        if tester['ForwardMode'] != 4:
+            raise ValueError('Native export batches require an explicit custom forward window')
+        if checked_members:
+            first = checked_members[0]
+            if exports != first['export'] or tester['ForwardDate'] != first['tester']['ForwardDate'] or tester['Expert'] != first['tester']['Expert']:
+                raise ValueError('Studio uses one EA, export policy and forward boundary per native batch')
+        identity = sha(current)
+        if identity in identities:
+            raise ValueError('Duplicate file/asset/settings member')
+        identities.add(identity)
+        checked_members.append(current)
+    return checked_members
 
 
 def reserve_job(state, payload, reservation_id):
@@ -31,7 +68,16 @@ def change_queue(command, payload, state, schema, policy):
     if not isinstance(payload, dict):
         raise ValueError('Queue payload must be an object')
     jobs = copy.deepcopy(state['queue'])
-    if command in ('queue.enqueue', 'queue.revise'):
+    if command == 'queue.enqueue_batch':
+        if set(payload) != {'job_id', 'members'} or not isinstance(payload['job_id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', payload['job_id']):
+            raise ValueError('Explicit safe batch job_id and members required')
+        if any(j['job_id'] == payload['job_id'] for j in jobs) or len(jobs) >= 10000:
+            raise ValueError('Batch identity exists or campaign queue is full')
+        members = validate_batch_members(payload['members'], schema, policy)
+        config = dict(members[0], batch_members=members)
+        jobs.append(dict(job_id=payload['job_id'], status='pending', configuration=config,
+            configuration_sha256=sha(config), source_revision=state['revision'], execution_ready=False))
+    elif command in ('queue.enqueue', 'queue.revise'):
         required = {'job_id', 'replaces_job_id'} if command == 'queue.revise' else {'job_id'}
         if set(payload) != required or not isinstance(payload['job_id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', payload['job_id']):
             raise ValueError('Explicit safe job_id required')

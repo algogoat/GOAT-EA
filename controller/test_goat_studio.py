@@ -77,6 +77,18 @@ class PortableControllerTests(unittest.TestCase):
         c=self.bound()
         with self.assertRaisesRegex(ValueError,'Current controller'):self.prepare(c)
 
+    def test_native_reservation_excludes_active_seed_inside_transaction(self):
+        c=self.bound();self.grant(c);self.prepare(c)
+        before=c.state();job=c.job('beta-job')
+        payload=dict(job_id='beta-job',configuration_sha256=job['configuration_sha256'],package_sha256='a'*64)
+        slot=c.root/'seed-active.json';slot.write_text(json.dumps(dict(status='active',batch_id='seed-fixture')))
+        with self.assertRaisesRegex(ValueError,'Seed runner owns'):
+            c.submit('queue.reserve',payload,'native-reserve-after-seed')
+        self.assertEqual(c.state(),before)
+        slot.write_text(json.dumps(dict(status='released',batch_id='seed-fixture')))
+        c.submit('queue.reserve',payload,'native-reserve-after-seed')
+        self.assertEqual(c.job('beta-job')['status'],'reserved')
+
     def test_prepare_exact_inputs_server_version_ninth_setting(self):
         c=self.bound();self.grant(c);result=self.prepare(c)
         package=Path(result['package']);manifest=result['manifest'];alias=manifest['jobs'][0]['run_alias']

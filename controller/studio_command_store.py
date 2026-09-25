@@ -5,6 +5,7 @@ The isolated UI draft adapter uses this boundary; native execution is unsupporte
 """
 import json
 import sqlite3
+from pathlib import Path
 from contextlib import contextmanager
 from studio_native_gate import mutation_gate
 from campaign_ledger import packed, sha
@@ -151,6 +152,10 @@ class StudioStore:
                     raise Conflict('Current controller required; take over explicitly')
                 if command in QUEUE_COMMANDS:
                     if command == 'queue.reserve':
+                        from studio_seed_slot import guard_active_seed
+                        database_path = self.db.execute('PRAGMA database_list').fetchone()[2]
+                        if database_path:
+                            guard_active_seed(Path(database_path).parent)
                         # Same SQLite transaction as queue revision and receipt.
                         # No second reservation in this controller, even across runs.
                         for queued in self.db.execute('SELECT jobs FROM studio_queues'):

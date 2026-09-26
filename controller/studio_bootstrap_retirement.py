@@ -354,6 +354,15 @@ def handover_gate(c,db,gate):
     if value and actual==value['database'] and (request.exists() or request.is_symlink()):
         from studio_legacy_settled_gate import assert_legacy_settled_request
         return assert_legacy_settled_request(db,gate,value['registry'])
+    if Path(gate)==c.local/'native-gate' and request.exists() and actual!=str(c.root/'studio.sqlite'):
+        from campaign_ledger import packed
+        retained=read_json(request)
+        binding=packed(dict(terminal_id=retained['terminal_id'],run_id=retained['run_id']))
+        row=db.execute('SELECT jobs FROM studio_queues WHERE binding=?',(binding,)).fetchone()
+        jobs=[j for j in json.loads(row[0]) if j['job_id']==retained['job_id']] if row else []
+        if len(jobs)==1 and 'completion_path' not in jobs[0]:
+            from studio_legacy_root_gate import assert_legacy_root_settled
+            return assert_legacy_root_settled(db,gate,c.install)
     return assert_clear_controls(db,gate)
 
 

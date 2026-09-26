@@ -9,6 +9,11 @@ For interrupted legacy monitor startup and protected peer handling, see
 [the migration guide](LEGACY-MONITOR-MIGRATION.md). A reviewable source candidate
 is not an installed or natively qualified release.
 
+The 1.49 controller accepts existing 1.48 installation receipts and uses their
+1.48 input contracts and installed EA hash. Local controller development does not
+require publishing a new desktop installer or replacing the EA. The selected
+EA's normal activation, MT5 permissions and human control grant still apply.
+
 In the unified agent kit, prefix each command below with:
 
 ```powershell
@@ -409,6 +414,14 @@ terminal GOATStudio directory and app controller state under an attempt-specific
 archive outside both directories. The installation receipt remains registered.
 Queues, drafts, results, profiles outside GOATStudio, Common Files and credentials
 are not discarded. No process is stopped or launched automatically.
+
+Older unscoped campaign completions embed their outcome in the queue rather than
+using the newer `completion_path`. Offline handover verifies their consumed
+request, exact package and terminal binding, retained outcome, restored control
+transaction and absent control files. This compatibility route preserves the
+original evidence and grants no current worker clearance; a missing or mismatched
+proof still blocks switching. Ordinary queue mutations retain their current
+completion contract.
 
 After parking, run ordinary bootstrap for the explicitly selected demo account.
 The new session is human-owned and requires the user's fresh Give to Agent.

@@ -57,9 +57,11 @@ reviewed bundle; using source is not proof of an installed customer update.
 
 Host tests cover crash/retry, changed identity, pending work, editor preservation,
 atomic registry rollback, shared guards and old completion validation. Native
-qualification has established peer protection and a real retirement preview;
-the observed normal close remained unconfirmed. No successful native retirement,
-fresh optimization start or complete end-to-end qualification is claimed.
+qualification has established peer protection, actual retirement after the user's
+normal close, and user-confirmed parking of both historical sessions. A fresh
+session was bootstrapped using the compatible installed V1.48 EA. MT5's updater
+then discarded the requested monitor profile; recovery is tracked as CTRL-010.
+No fresh optimization start or complete end-to-end qualification is claimed.
 
 ## Installing a reviewed pair after parking
 

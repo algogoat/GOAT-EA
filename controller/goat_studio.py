@@ -25,6 +25,10 @@ from studio_strategy_settings import read_values
 from studio_settings import FIELDS,PERIODS,validate_tester,validate_export
 
 OPERATION_CONTRACTS = {
+    'bootstrap-retirement-prepare':dict(required=['specification','bootstrap-receipts'],effect='review failed legacy passive monitor startup, exact original receipts and idle replacement; no close or claim effects'),
+    'bootstrap-retirement-apply':dict(required=['review-id'],effect='within authorised selected-terminal maintenance, normal-close exact reviewed idle monitor once, then retire original startup claim/slot atomically only after native process absence; retries inspect only, never resend or restart'),
+    'peer-prepare':dict(required=['terminal-executable','data-root'],effect='review one existing protected peer and exact running process; never grants or manages the peer'),
+    'peer-apply':dict(required=['review-id','confirm-reviewed'],authorization='Authorized caller confirms this exact review after inspection within the user-authorized setup scope; no grant or peer management authority',effect='persist protected peer outside switched session; replacement requires fresh review; unknown terminals still block'),
     'switch-plan':dict(required=[],effect='review offline session handover; optional restore-id restores a parked session; never grants or launches'),
     'switch-status':dict(required=['review-id'],effect='read retained handover progress and recovery identity'),
     'switch-apply':dict(required=['review-id','confirm-reviewed'],authorization='Only after the user confirms this exact review in the desktop app or explicitly in chat; never agent self-approval. Trusted-local coordination, not an OS-user security boundary.',effect='apply or recover the exact user-reviewed handover; preserve research and revoke prior agent control'),
@@ -119,11 +123,13 @@ class Controller:
         return job
 
     def binding(self):
+        from studio_protected_peer import binding_fields
         i=self.install;s=self.session
+        peer=binding_fields(self)
         return dict(research_terminal=i['terminal_executable'],research_data_root=i['terminal_data_root'],
                     common_files_root=i['common_files_root'],ea_relative_path=i['ea_relative_path'],
                     ea_sha256=i['ea_sha256'],ea_version=i['ea_version'],account_server=s['account']['server'],
-                    protected_data_roots=[],account_confirmation_pending=False,live_trading_allowed=False)
+                    account_confirmation_pending=False,live_trading_allowed=False,**({'protected_data_roots':[]}|peer))
 
     def native_args(self):
         i=self.install
@@ -269,6 +275,10 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--installation',type=Path,required=True)
     sub=parser.add_subparsers(dest='operation',required=True)
+    p=sub.add_parser('peer-prepare');p.add_argument('--terminal-executable',type=Path,required=True);p.add_argument('--data-root',type=Path,required=True)
+    p=sub.add_parser('peer-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
+    p=sub.add_parser('bootstrap-retirement-prepare');p.add_argument('--specification',type=Path,required=True);p.add_argument('--bootstrap-receipts',type=Path,required=True)
+    p=sub.add_parser('bootstrap-retirement-apply');p.add_argument('--review-id',required=True)
     p=sub.add_parser('switch-plan');p.add_argument('--restore-id')
     p=sub.add_parser('switch-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
     p=sub.add_parser('switch-status');p.add_argument('--review-id',required=True)
@@ -305,16 +315,22 @@ def main(argv=None):
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
         controller=Controller(args.installation)
-        if args.operation not in ('switch-plan','switch-apply','switch-status','discover','resource-profile') and not args.operation.startswith('orphan-recovery-'):
+        if args.operation not in ('peer-prepare','peer-apply','switch-plan','switch-apply','switch-status','discover','resource-profile') and not args.operation.startswith(('orphan-recovery-','bootstrap-retirement-')):
             from studio_handover import session_lock,guard
             locks.enter_context(session_lock(controller));guard(controller)
-        if args.operation in ('switch-plan','switch-apply','switch-status'):
+        if args.operation.startswith('bootstrap-retirement-'):
+            from studio_bootstrap_retirement import prepare,apply
+            result=prepare(controller,args.specification,args.bootstrap_receipts) if args.operation=='bootstrap-retirement-prepare' else apply(controller,args.review_id)
+        elif args.operation in ('peer-prepare','peer-apply'):
+            from studio_protected_peer import prepare,apply
+            result=prepare(controller,args.terminal_executable,args.data_root) if args.operation=='peer-prepare' else apply(controller,args.review_id,args.confirm_reviewed)
+        elif args.operation in ('switch-plan','switch-apply','switch-status'):
             from studio_handover import review,apply,load_plan,public
             if args.operation=='switch-plan': result=review(controller,args.restore_id)
             elif args.operation=='switch-status': result=public(load_plan(controller,args.review_id))
             else: result=apply(controller,args.review_id,args.confirm_reviewed)
         elif args.operation=='discover':
-            result=dict(controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 executable may be running for ordinary native batch activation','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
+            result=dict(controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 and an explicitly reviewed exact protected peer may be running; unknown/replaced processes block','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
         elif args.operation=='resource-profile':
             from studio_resources import resource_profile
             result=resource_profile(controller.install)

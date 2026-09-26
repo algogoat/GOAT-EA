@@ -65,7 +65,7 @@ def paths(c):
 
 def stopped(c, databases):
     """Read complete process identities, excluding only this invocation's parents."""
-    command = 'ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine)'
+    command = 'ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
     raw = subprocess.check_output(['powershell', '-NoProfile', '-Command', command],
                                   text=True, encoding='utf-8-sig', timeout=20)
     rows = json.loads(raw)
@@ -79,6 +79,12 @@ def stopped(c, databases):
     while pid in by_id and pid not in ancestors:
         ancestors.add(pid)
         pid = by_id[pid]['ParentProcessId']
+    from studio_protected_peer import process_binding
+    peer_binding = process_binding(c)
+    if peer_binding.get('protected_terminal'):
+        from studio_process_check import classify_processes
+        terminal_rows = [r for r in rows if str(r.get('Name','')).lower() in ('terminal64.exe','terminal.exe')]
+        classify_processes(terminal_rows,peer_binding,observed_unix=time.time(),research_running=False)
     needles = [str(c.local).lower(), str(c.root).lower(), *(str(p).lower() for p in databases)]
     for row in rows:
         if row['ProcessId'] in ancestors:
@@ -86,6 +92,8 @@ def stopped(c, databases):
         name = str(row.get('Name', '')).lower()
         command_line = str(row.get('CommandLine') or '').lower()
         if name in ('terminal64.exe', 'terminal.exe', 'metaeditor64.exe'):
+            if name=='terminal64.exe' and peer_binding.get('protected_terminal'):
+                continue  # Every terminal identity was classified above; selected must be absent.
             raise ValueError('Close MT5 terminals and MetaEditor before switching; none are stopped automatically')
         candidate = name.startswith(('python', 'goat')) or name in ('powershell.exe', 'pwsh.exe')
         if candidate and (not row.get('ExecutablePath') or not row.get('CommandLine')):
@@ -105,6 +113,9 @@ def database_view(path):
         states = [list(row) for row in db.execute('SELECT binding,revision,generation,owner FROM studio_state ORDER BY binding')]
         queues = list(db.execute('SELECT binding,jobs FROM studio_queues ORDER BY binding'))
         jobs = [j for _, raw in queues for j in json.loads(raw)]
+        tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'studio_fixed_tasks' in tables and db.execute('SELECT 1 FROM studio_fixed_tasks WHERE released=0').fetchone():
+            raise ValueError('Fixed task still owns this controller; use its original inspected retirement')
         if any(j.get('status') not in SETTLED for j in jobs):
             raise ValueError('Unresolved native attempt; reconcile it with its original controller')
         if len(states) != 1 or any(row[3] not in ('agent', 'human') for row in states):
@@ -125,6 +136,8 @@ def database_view(path):
 
 def inspect(c):
     root, local, _, _ = paths(c)
+    from studio_bootstrap_retirement import handover_guard, handover_gate
+    handover_guard(c)
     databases = set()
     bindings = []
     active = None
@@ -159,12 +172,13 @@ def inspect(c):
                 raise ValueError('Controller gate lies outside this terminal; reconcile its scope first')
             if read_json(gate/'controller.json') != {'database': view['path']}:
                 raise ValueError('Native gate database ownership differs')
-            if any((gate/name).exists() for name in ('permit.json', 'request.json')):
-                raise ValueError('Native request or permit remains; reconcile it before switching')
+            with exclusive_gate(gate), closing(sqlite3.connect(Path(view['path']).as_uri()+'?mode=ro',uri=True)) as db:
+                handover_gate(c,db,gate)
         seed = Path(view['path']).parent/'seed-active.json'
         if seed.exists() and read_json(seed).get('status') != 'released':
             raise ValueError('Seed runner still owns this terminal')
-    return dict(installation_sha256=sha(c.install), active=active, bindings=bindings,
+    from studio_protected_peer import binding_fields
+    return dict(installation_sha256=sha(c.install), protected_peer=binding_fields(c), active=active, bindings=bindings,
                 databases=views, state_files=tree(root), terminal_files=tree(local))
 
 
@@ -292,6 +306,8 @@ def apply(c, review_id, confirmed=False):
             return public(plan)
         folder = archive/review_id
         observation = plan['observation']
+        from studio_bootstrap_retirement import handover_guard, handover_gate
+        handover_guard(c)
         stopped(c, [v['path'] for v in observation['databases']])
         if plan['status'] == 'review':
             if time.time() > plan['expires_at'] or inspect(c) != observation:
@@ -321,10 +337,9 @@ def apply(c, review_id, confirmed=False):
                 with ExitStack() as stack:
                     for gate in sorted(old['gates']):
                         stack.enter_context(exclusive_gate(gate))
-                        if any((Path(gate)/name).exists() for name in ('permit.json', 'request.json')):
-                            raise ValueError('Native controls changed during handover')
                     db = stack.enter_context(closing(sqlite3.connect(old['path'], timeout=1, isolation_level=None)))
                     db.execute('BEGIN IMMEDIATE')
+                    for gate in sorted(old['gates']): handover_gate(c,db,gate)
                     current = database_view(old['path'])
                     if current == old:
                         db.execute("UPDATE studio_state SET owner='human',revision=revision+1,generation=generation+1")
@@ -384,6 +399,9 @@ def guard(c):
     if (c.root/'orphan-recovery-pending.json').exists():
         raise ValueError('Native orphan recovery requires exact orphan-recovery-status readback; do not start or switch sessions')
     _, _, archive, _ = paths(c)
+    retirement=archive/'bootstrap-retirement/pending.json'
+    if retirement.exists():
+        raise ValueError('Interrupted monitor retirement; inspect bootstrap-retirement-apply with review ID '+read_json(retirement)['review_id'])
     pending = archive/'pending.json'
     if pending.exists():
         raise ValueError('Interrupted Studio handover; resume switch-apply with review ID '+read_json(pending)['review_id'])

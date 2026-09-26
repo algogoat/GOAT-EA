@@ -1,9 +1,13 @@
-# GOAT Studio controller 1.48 beta
+# GOAT Studio controller 1.49 beta candidate
 
 This portable Windows controller uses the installed receipt and bundled Python.
 Only `goat_studio.py` is the public Studio entrypoint. The other Python modules
 implement its validation and durable storage; do not invoke internal helpers or
 construct native permits manually. No API accepts a caller-supplied “safe” flag.
+
+For interrupted legacy monitor startup and protected peer handling, see
+[the migration guide](LEGACY-MONITOR-MIGRATION.md). A reviewable source candidate
+is not an installed or natively qualified release.
 
 In the unified agent kit, prefix each command below with:
 
@@ -372,8 +376,10 @@ and a compatible installed monitor are still required before promotion.
 ### Park and restore an entire research session
 
 If bootstrap refuses an existing Studio activation, never delete active.json,
-permits, gate owners, databases or pending jobs. Stop MT5, MetaEditor and all
-controller/runner processes first. The installed public CLI supports:
+permits, gate owners, databases or pending jobs. Stop the selected MT5, MetaEditor
+and relevant controller/runner processes first. A separately reviewed protected
+peer may remain running with its exact recorded identity. Without that policy,
+all terminals must be stopped. The installed public CLI supports:
 
 ```
 goat.exe studio --installation <installation.json> switch-plan
@@ -395,7 +401,8 @@ the exclusive counterpart and refuses while any ordinary command is running;
 ordinary commands refuse while apply is in progress. Existing native mutation
 gates continue to serialize individual commits.
 
-The handover refuses running terminals/controllers, unresolved native jobs,
+The handover refuses the running selected terminal, unknown or changed peer
+processes, controller writers, unresolved native jobs,
 seed ownership, unconsumed requests/permits, shared/ambiguous databases and
 filesystem aliases. It revokes old agent generations, then parks the entire
 terminal GOATStudio directory and app controller state under an attempt-specific
@@ -417,3 +424,21 @@ inside the parked state directory. Normal controller commands refuse until the
 retained handover completes. Never manufacture a new attempt to clear the fence.
 This is a trusted-local-user coordination protocol, not an OS security boundary.
 Native MT5 lifecycle qualification is still required separately from fixture tests.
+
+### Protect one other running terminal
+
+Use `peer-prepare --terminal-executable <absolute terminal64.exe> --data-root
+<absolute MT5 data root>` before setup or switching when another terminal must
+remain untouched. Inspect the returned exact paths, PID and creation time; within
+the user's authorized setup scope, confirm that exact review using `peer-apply --review-id <id> --confirm-reviewed`.
+Preparation and apply do not close, launch, grant control over or write to the peer.
+
+The retained policy verifies its executable hash, origin/data binding and
+nonoverlapping paths. It lives outside both parked session directories and
+survives a session switch or EA version upgrade on the same installation target.
+Onboarding, switch reviews and native package process checks require the exact
+recorded peer process. A restart, binary update, changed path or unknown additional
+terminal blocks further work; obtain and inspect a fresh review before confirming it.
+This is one protected peer, not an arbitrary process ignore list. It does not
+release legacy worker claims or startup slots, reconcile native work or substitute
+for idle/setup checks on the selected terminal.

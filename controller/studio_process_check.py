@@ -38,6 +38,8 @@ def classify_processes(processes,binding,*,observed_unix,research_running=True):
         raise ValueError('Explicit research process state required')
     if len(result['research'])!=int(research_running) or len(result['protected'])!=int(protected is not None):
         raise ValueError('Expected research process state and one protected terminal required')
+    if binding.get('protected_process') is not None and result['protected'] != [binding['protected_process']]:
+        raise ValueError('Protected peer process changed; obtain a fresh explicit review')
     return dict(observed_unix=observed_unix,**{key:(value[0] if value else None) for key,value in result.items()},
                 launch_permitted=False,limitation='Process identity does not establish native batch ownership')
 

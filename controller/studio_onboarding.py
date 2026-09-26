@@ -20,6 +20,7 @@ from studio_installation import read_json
 from studio_bridge import write_json
 from studio_native_gate import exclusive_gate
 from studio_process_check import inspect_processes
+from studio_protected_peer import process_binding
 
 
 def session_state(controller):
@@ -56,9 +57,8 @@ def onboarding_status(controller):
         step('controller_binding', 'blocked', 'Run bootstrap --account-login <own demo login> --account-server <exact server>', detail=str(exc))
         result['next_action']=steps[-1]['action']
         return result
-    binding = dict(research_terminal=controller.install['terminal_executable'])
     try:
-        processes = inspect_processes(binding)
+        processes = inspect_processes(process_binding(controller))
         step('terminal_process', 'complete', 'Selected terminal is running; exact executable process observed')
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         processes = None
@@ -139,7 +139,7 @@ def monitor_prepare(controller, symbol):
     target = controller.root/'monitor-profile.json'
     with exclusive_gate(controller.local/'native-gate'):
         require_idle_control(controller, session)
-        inspect_processes(dict(research_terminal=controller.install['terminal_executable']), research_running=False)
+        inspect_processes(process_binding(controller), research_running=False)
         if target.exists():
             if read_json(target)!=receipt:
                 raise ValueError('A different monitor profile is already prepared; preserve existing setup')
@@ -261,7 +261,7 @@ def monitor_launch(controller, attempt_id):
         receipt = read_json(controller.root/'monitor-profile.json')
         verify_monitor_profile(controller, receipt)
         portable = saved_launch_policy(controller, session)
-        inspect_processes(dict(research_terminal=controller.install['terminal_executable']), research_running=False)
+        inspect_processes(process_binding(controller), research_running=False)
         arguments = [controller.install['terminal_executable'], '/profile:'+receipt['profile_name']]
         if portable: arguments.append('/portable')
         intent = dict(schema_version=1, attempt_id=attempt_id, status='launch_intent',

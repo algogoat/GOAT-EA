@@ -316,3 +316,44 @@ must also compile without warnings and be qualified with actual bound MT5
 start/status/cancel/finish before a release claims that lifecycle is verified.
 Customer documentation describes supported process; qualification evidence
 belongs in the release notes rather than copying a developer's paths here.
+
+## Safe switching and restoration
+
+If bootstrap refuses an existing Studio activation, never delete active.json,
+permits, gate owners, databases or pending jobs. Stop MT5, MetaEditor and all
+controller/runner processes first. The installed public CLI supports:
+
+```
+goat.exe studio --installation <installation.json> switch-plan
+goat.exe studio --installation <installation.json> switch-status --review-id <id>
+goat.exe studio --installation <installation.json> switch-apply --review-id <id> --confirm-reviewed
+```
+
+Explain every affected binding/database and pending-job count before the user
+confirms. An agent may use `--confirm-reviewed` only after that explicit user
+instruction. In the desktop app, the agent prepares `onboarding.prepareSwitch`
+and the user confirms the displayed review themselves; there is no agent
+confirmation RPC. Reviews expire after ten minutes and changes invalidate them.
+
+The handover refuses running terminals/controllers, unresolved native jobs,
+seed ownership, unconsumed requests/permits, shared/ambiguous databases and
+filesystem aliases. It revokes old agent generations, then parks the entire
+terminal GOATStudio directory and app controller state under an attempt-specific
+archive outside both directories. The installation receipt remains registered.
+Queues, drafts, results, profiles outside GOATStudio, Common Files and credentials
+are not discarded. No process is stopped or launched automatically.
+
+After parking, run ordinary bootstrap for the explicitly selected demo account.
+The new session is human-owned and requires the user's fresh Give to Agent.
+Restoration is also reviewed: `switch-plan --restore-id <completed park id>` then
+apply that NEW review ID. This parks the newer session before restoring the old
+files. Old control remains human-owned. A changed app/EA installation or externally
+changed archived database requires a compatible migration; restoration refuses it.
+
+Keep the returned recovery ID. After any timeout or interrupted directory move,
+inspect `switch-status` and retry ONLY `switch-apply` with that same review ID.
+The journal can recover even if the original installation receipt is temporarily
+inside the parked state directory. Normal controller commands refuse until the
+retained handover completes. Never manufacture a new attempt to clear the fence.
+This is a trusted-local-user coordination protocol, not an OS security boundary.
+Native MT5 lifecycle qualification is still required separately from fixture tests.

@@ -3,12 +3,16 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
+import time
 import unittest
 from contextlib import closing
 from unittest.mock import patch
 
 from goat_studio import Controller
-from studio_handover import apply, database_view, guard, inspect, load_plan, paths, review, tree
+from studio_handover import apply, database_view, guard, inspect, load_plan, paths, review, tree, session_lock
+from studio_native_gate import exclusive_gate, shared_gate
 from studio_handover import stopped as inspect_stopped
 from studio_bridge import write_json
 from test_goat_studio import PortableControllerTests
@@ -210,6 +214,105 @@ class HandoverTests(unittest.TestCase):
         (archive/first/'state/changed').write_text('changed after review')
         with self.assertRaisesRegex(ValueError, 'Restore source changed'):
             apply(new, restore, True)
+
+    def test_expired_review_cleanup_preserves_active_applied_and_unknown_evidence(self):
+        expired = review(self.c)['review_id']
+        future = review(self.c)['review_id']
+        unknown = review(self.c)['review_id']
+        archive = paths(self.c)[2]
+        (archive/unknown/'unexpected').write_text('retain')
+        for review_id in (expired, unknown):
+            plan = load_plan(self.c, review_id)
+            plan['expires_at'] = 0
+            write_json(archive/review_id/'receipt.json', plan)
+        applied = review(self.c)['review_id']
+        self.assertFalse((archive/expired).exists())
+        self.assertTrue((archive/future/'receipt.json').exists())
+        self.assertTrue((archive/unknown/'unexpected').exists())
+        apply(self.c, applied, True)
+        new = Controller(self.receipt)
+        new.bootstrap('123456', 'Customer-Demo')
+        new.store.close(); new.store = None
+        plan = load_plan(new, applied); plan['expires_at'] = 0
+        write_json(archive/applied/'receipt.json', plan)
+        review(new)
+        self.assertTrue((archive/applied/'state/studio.sqlite').is_file())
+        self.assertTrue((archive/applied/'receipt.json').is_file())
+
+    def test_process_identity_error_explains_elevated_or_other_session(self):
+        rows = [dict(ProcessId=os.getpid(), ParentProcessId=0),
+                dict(ProcessId=123, Name='pwsh.exe', CommandLine=None, ExecutablePath=None)]
+        with patch('studio_handover.subprocess.check_output', return_value=json.dumps(rows)):
+            with self.assertRaisesRegex(ValueError, 'elevated or in another Windows session'):
+                inspect_stopped(self.c, [])
+
+    def test_shared_holds_exclude_apply_and_exclusive_hold_excludes_commands(self):
+        # Real platform handles, across processes: no mocked lock primitives.
+        lock = paths(self.c)[3]; lock.mkdir(parents=True, exist_ok=True)
+        code = ('import sys; from studio_native_gate import shared_gate,exclusive_gate; '
+                'gate=shared_gate if sys.argv[2]=="shared" else exclusive_gate; '
+                '\nwith gate(sys.argv[1]): print("held",flush=True); input()')
+        for mode in ('shared', 'exclusive'):
+            with self.subTest(mode=mode):
+                child = subprocess.Popen([sys.executable, '-c', code, str(lock), mode],
+                                         cwd=Path(__file__).parent, stdin=subprocess.PIPE,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    self.assertEqual(child.stdout.readline().strip(), 'held')
+                    if mode == 'shared':
+                        with session_lock(self.c): pass
+                    else:
+                        with self.assertRaises(OSError):
+                            with session_lock(self.c): pass
+                    with self.assertRaises(OSError):
+                        with exclusive_gate(lock): pass
+                finally:
+                    out, err = child.communicate('\n', timeout=10)
+                    self.assertEqual(child.returncode, 0, err)
+                with exclusive_gate(lock): pass
+
+    def test_real_cli_serve_allows_state_onboarding_cancel_and_blocks_switch_apply(self):
+        planned = review(self.c)['review_id']
+        ready = self.fixture.root/'serve-ready'
+        # The marker is written by the real serve loop after its first bridge
+        # pump, proving the public CLI acquired its lifetime hold and is running.
+        script = ('import sys; from pathlib import Path; import goat_studio; '
+                  'from studio_bridge import pump_for; marker=Path(sys.argv.pop(1)); '
+                  'original=goat_studio.pump_for\n'
+                  'def serve(bridge, seconds):\n'
+                  '  pump=bridge.pump\n'
+                  '  def marked(*a,**kw):\n'
+                  '    result=pump(*a,**kw); marker.touch(); return result\n'
+                  '  bridge.pump=marked\n'
+                  '  return original(bridge, seconds)\n'
+                  'goat_studio.pump_for=serve\n'
+                  'sys.exit(goat_studio.main())')
+        folder = Path(__file__).parent
+        args = ['--installation', str(self.receipt)]
+        child = subprocess.Popen([sys.executable, '-c', script, str(ready), *args,
+                                  'serve', '--watch-seconds', '8'], cwd=folder,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic()+5
+            while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(ready.exists(), 'serve did not enter its real pump loop')
+            for command in [('switch-apply', '--review-id', planned, '--confirm-reviewed'),
+                            ('state',), ('onboarding-status',), ('cancel', '--job-id', 'beta-job'),
+                            ('state',)]:
+                self.assertIsNone(child.poll(), 'serve exited before concurrent CLI assertion')
+                result = subprocess.run([sys.executable, 'goat_studio.py', *args, *command],
+                                        cwd=folder, capture_output=True, text=True, timeout=5)
+                body = json.loads(result.stdout)
+                if command[0] == 'switch-apply':
+                    self.assertFalse(body['ok'], body)
+                    self.assertTrue('WinError 32' in body['error'] or 'temporarily unavailable' in body['error'], body)
+                else:
+                    self.assertTrue(body['ok'], body)
+            self.assertEqual(body['result']['queue'][0]['status'], 'cancelled')
+        finally:
+            out, err = child.communicate(timeout=12)
+            self.assertEqual(child.returncode, 0, out+err)
 
 
 if __name__ == '__main__': unittest.main()

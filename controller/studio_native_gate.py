@@ -11,6 +11,19 @@ from pathlib import Path
 
 @contextmanager
 def exclusive_gate(root):
+    with file_gate(root, shared=False):
+        yield
+
+
+@contextmanager
+def shared_gate(root):
+    """Concurrent controller holds; excluded by an exclusive handover hold."""
+    with file_gate(root, shared=True):
+        yield
+
+
+@contextmanager
+def file_gate(root, *, shared):
     path=Path(root)/'launch.lock'
     if os.name=='nt':
         import ctypes
@@ -22,7 +35,9 @@ def exclusive_gate(root):
         create.restype=wintypes.HANDLE
         close=kernel.CloseHandle
         close.argtypes=[wintypes.HANDLE];close.restype=wintypes.BOOL
-        handle=create(str(path),0xC0000000,0,None,4,0x80,None)
+        # Both access and share checks are symmetric: readers coexist, but an
+        # exclusive handle cannot open until every shared handle is released.
+        handle=create(str(path),0xC0000000,3 if shared else 0,None,4,0x80,None)
         if handle==ctypes.c_void_p(-1).value:
             raise ctypes.WinError(ctypes.get_last_error())
         try:yield
@@ -30,7 +45,8 @@ def exclusive_gate(root):
     else:
         import fcntl
         with path.open('a+b') as handle:
-            fcntl.flock(handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+            mode=fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+            fcntl.flock(handle.fileno(),mode|fcntl.LOCK_NB)
             try:yield
             finally:fcntl.flock(handle.fileno(),fcntl.LOCK_UN)
 

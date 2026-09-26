@@ -19,7 +19,7 @@ import uuid
 from campaign_ledger import sha
 from studio_bridge import write_json
 from studio_installation import read_json
-from studio_native_gate import exclusive_gate
+from studio_native_gate import exclusive_gate, shared_gate
 
 SETTLED = {'pending', 'completed', 'failed', 'cancelled', 'removed', 'superseded'}
 MAX_FILES = 50000
@@ -89,7 +89,9 @@ def stopped(c, databases):
             raise ValueError('Close MT5 terminals and MetaEditor before switching; none are stopped automatically')
         candidate = name.startswith(('python', 'goat')) or name in ('powershell.exe', 'pwsh.exe')
         if candidate and (not row.get('ExecutablePath') or not row.get('CommandLine')):
-            raise ValueError('Controller process identity unavailable; reconcile before switching')
+            raise ValueError('Controller process identity unavailable (PID '+str(row['ProcessId'])+
+                             '); it may be elevated or in another Windows session. Identify and stop '
+                             'the relevant controller before switching; do not bypass this check')
         if candidate and (name == 'goat.exe' or 'studio' in command_line or any(n in command_line for n in needles)):
             raise ValueError('Stop the existing controller/runner before switching (PID '+str(row['ProcessId'])+')')
 
@@ -167,6 +169,45 @@ def inspect(c):
 
 
 def review(c, restore_id=None):
+    # Keep apply out while observing and pruning. Serialize concurrent reviewers
+    # separately without excluding ordinary controller commands.
+    _, _, archive, _ = paths(c)
+    with session_lock(c):
+        archive.mkdir(parents=True, exist_ok=True)
+        with exclusive_gate(archive):
+            return create_review(c, restore_id)
+
+
+def prune_expired_reviews(c):
+    """Only discard expired, never-applied metadata; never archived research."""
+    archive = paths(c)[2]
+    pending = archive/'pending.json'
+    pending_id = read_json(pending).get('review_id') if pending.exists() else None
+    for folder in archive.iterdir():
+        if not re.fullmatch('[a-f0-9]{32}', folder.name) or folder.name == pending_id:
+            continue
+        try:
+            safe_path(folder)
+            plan = load_plan(c, folder.name)
+            if plan.get('status') != 'review' or time.time() <= plan['expires_at']:
+                continue
+            # Unexpected content is retained for inspection, never recursively
+            # deleted. Applied receipts and both parked directories survive.
+            if {p.name for p in folder.iterdir()} != {'receipt.json', 'installation.json'}:
+                continue
+            for name in ('receipt.json', 'installation.json'):
+                if not safe_path(folder/name).is_file():
+                    break
+            else:
+                (folder/'receipt.json').unlink()
+                (folder/'installation.json').unlink()
+                folder.rmdir()
+        except (OSError, ValueError, KeyError, TypeError):
+            # Malformed/unreadable evidence is not an automatic cleanup target.
+            continue
+
+
+def create_review(c, restore_id=None):
     guard(c)
     root, local, archive, _ = paths(c)
     observation = inspect(c)
@@ -188,6 +229,7 @@ def review(c, restore_id=None):
                 raise ValueError('Archived session database changed outside its parked files')
     elif not observation['active'] and not observation['bindings'] and not observation['databases']:
         raise ValueError('No existing controller session to switch')
+    prune_expired_reviews(c)
     review_id = uuid.uuid4().hex
     plan = dict(schema_version=1, review_id=review_id, action='restore' if restore else 'park',
                 created_at=time.time(), expires_at=time.time()+600, status='review',
@@ -346,10 +388,13 @@ def guard(c):
 
 
 def session_lock(c):
-    """Held for the entire public CLI operation, including a long-running serve."""
+    """Shared lifetime hold: serve/seed drivers coexist with state and cancel.
+
+    Handover apply takes the exclusive counterpart; neither can race a move.
+    """
     lock = paths(c)[3]
     lock.mkdir(parents=True, exist_ok=True)
-    return exclusive_gate(lock)
+    return shared_gate(lock)
 
 
 def recovery_installation(receipt):

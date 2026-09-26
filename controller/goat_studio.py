@@ -27,7 +27,7 @@ from studio_settings import FIELDS,PERIODS,validate_tester,validate_export
 OPERATION_CONTRACTS = {
     'switch-plan':dict(required=[],effect='review offline session handover; optional restore-id restores a parked session; never grants or launches'),
     'switch-status':dict(required=['review-id'],effect='read retained handover progress and recovery identity'),
-    'switch-apply':dict(required=['review-id','confirm-reviewed'],effect='apply or recover the exact user-reviewed handover; preserve research and revoke prior agent control'),
+    'switch-apply':dict(required=['review-id','confirm-reviewed'],authorization='Only after the user confirms this exact review in the desktop app or explicitly in chat; never agent self-approval. Trusted-local coordination, not an OS-user security boundary.',effect='apply or recover the exact user-reviewed handover; preserve research and revoke prior agent control'),
     'seed-prepare':dict(required=['batch-id','plan'],effect='freeze a dedicated SeedFarming matrix; no launch'),
     'seed-start':dict(required=['batch-id'],defaults={'max-seconds':60},limits={'max-seconds':[1,3600]},effect='explicit bounded driver for dedicated SeedFarming; preserves active work on call timeout'),
     'seed-resume':dict(required=['batch-id'],defaults={'max-seconds':60},limits={'max-seconds':[1,3600]},effect='continue verified retained seed work; uncertain effects require reconciliation'),

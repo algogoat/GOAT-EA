@@ -334,6 +334,14 @@ confirms. An agent may use `--confirm-reviewed` only after that explicit user
 instruction. In the desktop app, the agent prepares `onboarding.prepareSwitch`
 and the user confirms the displayed review themselves; there is no agent
 confirmation RPC. Reviews expire after ten minutes and changes invalidate them.
+The next successful review prunes expired, never-applied review metadata only;
+completed/recoverable receipts and parked research are retained.
+
+Ordinary commands hold a shared session lock, so `serve` and bounded seed drivers
+can coexist with `state`, onboarding checks and cancellation. Handover apply takes
+the exclusive counterpart and refuses while any ordinary command is running;
+ordinary commands refuse while apply is in progress. Existing native mutation
+gates continue to serialize individual commits.
 
 The handover refuses running terminals/controllers, unresolved native jobs,
 seed ownership, unconsumed requests/permits, shared/ambiguous databases and

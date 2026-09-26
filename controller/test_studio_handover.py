@@ -67,6 +67,36 @@ class HandoverTests(unittest.TestCase):
             self.assertEqual(restored.state()['queue'][0]['status'], 'pending')
         finally: restored.store.close()
 
+    def test_restore_receipt_can_restore_the_session_it_parked(self):
+        # A has pending research. Park it, create B, restore A, then restore B
+        # using exactly the second receipt ID advertised by the app.
+        first = review(self.c)['review_id']; apply(self.c, first, True)
+        session_b = Controller(self.receipt)
+        session_b.bootstrap('123456', 'Customer-Demo')
+        session_b.store.close(); session_b.store = None
+        before_b = database_view(session_b.root/'studio.sqlite')
+        second = review(session_b, first)['review_id']
+        apply(session_b, second, True)
+        self.assertEqual(load_plan(session_b, second)['action'], 'restore')
+        current_a = Controller(self.receipt).open()
+        try:
+            self.assertEqual(len(current_a.state()['queue']), 1)
+        finally:
+            current_a.store.close(); current_a.store = None
+        third = review(current_a, second)['review_id']
+        self.assertEqual(apply(current_a, third, True)['status'], 'complete')
+        restored_b = Controller(self.receipt).open()
+        try:
+            self.assertEqual(restored_b.state()['queue'], [])
+            self.assertEqual(restored_b.state()['owner'], 'human')
+            self.assertEqual(database_view(restored_b.root/'studio.sqlite')['content'], before_b['content'])
+        finally:
+            restored_b.store.close()
+        # A remains available under the newest receipt, including its pending job.
+        parked_a = database_view(paths(current_a)[2]/third/'state/studio.sqlite')
+        self.assertEqual(parked_a['counts'], {'pending': 1})
+        self.assertEqual(parked_a['states'][0][3], 'human')
+
     def test_review_is_read_only_for_research_and_confirmation_is_required(self):
         before = tree(self.c.root), tree(self.c.local)
         plan = review(self.c)

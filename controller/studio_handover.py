@@ -173,8 +173,8 @@ def review(c, restore_id=None):
     restore = None
     if restore_id:
         previous = load_plan(c, restore_id)
-        if previous.get('status') != 'complete' or previous['action'] != 'park':
-            raise ValueError('Choose a completed park receipt to restore')
+        if previous.get('status') != 'complete' or previous['action'] not in ('park', 'restore'):
+            raise ValueError('Choose a completed handover receipt to restore')
         restore = dict(id=restore_id, state_files=tree(archive/restore_id/'state'),
                        terminal_files=tree(archive/restore_id/'terminal'))
         if restore['state_files'] != previous['parked_state'] or restore['terminal_files'] != previous['parked_terminal']:

@@ -118,12 +118,37 @@ serve --watch-seconds 3600
 one persistent chart and the actual installed EA path. It selects Studio's
 read-only monitor inputs and leaves DLL and trading permissions disabled on the
 chart. It neither changes the user's existing profile nor edits `common.ini`.
-`monitor-launch` uses MT5 `/profile`, with `/portable` only when the installation
-receipt identifies portable mode; it does not use a disposable `/config` startup
-chart. The saved broker login/server must match the controller binding, saved
-Algo Trading must be off, and nonportable installations must have matching
-`origin.txt`. All terminal processes must be stopped for this conservative beta
-setup path. No command closes a terminal or enables trading.
+`monitor-launch` supplies an immutable, hashed `/config` with explicit StartUp
+expert and verified monitor preset, keeping the dedicated saved profile. The
+saved account must match the session and Algo Trading must remain off. This
+operation requires the selected terminal to be stopped and never enables trading.
+An explicitly reviewed protected peer may be stopped; a different process still
+requires a new review.
+
+If an MT5 update discarded the startup arguments, `monitor-repair --attempt-id
+<unique-id>` can recover an empty, never-started monitor session. The official
+MetaTrader5 Python adapter must be available in the controller runtime. It checks
+the exact existing selected process, saved demo identity, connection, zero open
+positions/orders, Algo off and a positively idle native tester before issuing
+one normal close. It preserves the original profile and journals the close and
+new explicit startup. An uncertain close is never resent, a replacement process
+is never adopted, and native campaign flags/grants are untouched. The SDK is
+available in the local developer probe environment; inclusion in the customer
+installer remains a packaging requirement.
+
+V1.49 MONITOR-ONBOARDING-2 displays a compact agent connection screen for an
+empty session and small charts. A genuine human handoff is possible before the
+agent creates settings; no default trading/test settings are invented. Existing
+saved drafts and partial/malformed states still require recovery. Fresh OnInit
+and UI observations, not a queued chart command, establish activation progress.
+Automatic activation reload is bounded to20seconds and reports
+`ACTIVATION_RELOAD_REQUIRED` on failure. The controller exposes the same reason
+for a fresh matching activation status. Native qualification is still pending.
+
+WebRequest setup uses only `https://goatedge.ai`. The agent provides that exact
+URL and checks readiness after the user's MT5 approval. DLL imports are separate
+from live trading permission. Automated permission-dialog navigation and scoped
+permission preparation are tracked in CTRL-012; they are not implemented here.
 
 The human approves DLL imports and the exact WebRequest URL displayed by GOAT,
 completes legitimate GOAT device activation, and clicks **Give to Agent** in

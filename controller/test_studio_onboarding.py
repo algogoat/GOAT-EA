@@ -84,6 +84,22 @@ class OnboardingTests(unittest.TestCase):
         self.inspector.return_value={'research':{'created_utc':'2099-01-01T00:00:00+00:00','pid':55}}
         self.assertIn('predates',onboarding_status(self.c)['steps'][-1]['detail'])
 
+    def test_activation_reload_failure_is_account_version_and_freshness_bound(self):
+        folder=self.common if hasattr(self,'common') else self.fixture.common
+        folder=folder/'GOAT';folder.mkdir()
+        report=folder/('activation-status-'+self.data.name+'.json')
+        def write(**changes):
+            value=dict(accountId='123456',buildId='V1.48-TEST',reason='ACTIVATION_RELOAD_REQUIRED',observedAtUtc=str(int(time.time())))
+            value.update(changes);report.write_text(json.dumps(value))
+        write()
+        result=onboarding_status(self.c)
+        self.assertEqual(result['steps'][-1]['reason_code'],'ACTIVATION_RELOAD_REQUIRED')
+        for changes in ({'accountId':'999'}, {'buildId':'V1.49-TEST'}, {'observedAtUtc':'1'}, {'observedAtUtc':str(int(time.time())+120)}):
+            write(**changes)
+            self.assertNotIn('reason_code',onboarding_status(self.c)['steps'][-1])
+        write();self.observe()
+        self.assertEqual(onboarding_status(self.c)['steps'][-1]['id'],'agent_control')
+
     def test_prepare_separate_persistent_chart_no_permissions_and_idempotent(self):
         original = self.data/'MQL5/Profiles/Charts/Default/chart01.chr'
         original.parent.mkdir(parents=True);original.write_bytes(b'untouched')
@@ -105,7 +121,14 @@ class OnboardingTests(unittest.TestCase):
         launch=monitor_launch(self.c,'first-open')
         self.assertEqual(launch['status'],'process_started_unverified')
         args=self.start.call_args.args[0]
-        self.assertEqual(args,[str(self.fixture.bin),'/profile:'+result['profile_name']])
+        self.assertEqual(args,[str(self.fixture.bin),'/config:'+launch['startup_config']])
+        startup=Path(launch['startup_config']).read_text(encoding='utf-16')
+        self.assertIn('[StartUp]',startup)
+        self.assertIn('Expert=GOAT-EA\\GOAT V1.48.ex5',startup)
+        self.assertIn('ExpertParameters=GOAT Studio Agent.set',startup)
+        self.assertIn('AllowLiveTrading=0',startup)
+        self.assertNotIn('[Tester]',startup)
+        self.assertNotIn('Password',startup)
         self.assertEqual(self.c.state()['owner'],'human')
         self.assertEqual(before,self.common_ini.read_bytes())
         self.assertTrue(monitor_launch(self.c,'first-open')['reused'])

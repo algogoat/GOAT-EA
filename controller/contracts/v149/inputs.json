@@ -6,7 +6,8 @@
     "GOAT_DEFAULT_BIAS_MODE": "Bias_Opens",
     "GOAT_AI_SIGNAL_FILTER_V147": "1",
     "GOAT_SEQUENCE_EXPORT_V148": "1",
-    "GOAT_ORPHAN_RECOVERY_V149": "1"
+    "GOAT_ORPHAN_RECOVERY_V149": "1",
+    "GOAT_MONITOR_ONBOARDING_V149": "1"
   },
   "inputs": {
     "Mode_Operation": {

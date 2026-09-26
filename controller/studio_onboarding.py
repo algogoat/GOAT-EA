@@ -87,14 +87,28 @@ def onboarding_status(controller):
         step('agent_control', 'complete' if state['owner']=='agent' else 'human_action',
              'Human clicks Give to Agent in Studio while serve is running; then recheck status')
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        step('native_monitor', 'blocked', 'Inspect the selected MT5 monitor: sign in to your demo, complete GOAT activation, approve DLL imports and required WebRequest URL, keep Algo Trading off, run serve and recheck.', detail=str(exc))
+        reason = None
+        activation = Path(controller.install['common_files_root'])/'GOAT'/('activation-status-'+Path(controller.install['terminal_data_root']).name+'.json')
+        try:
+            report = read_json(activation)
+            age = time.time()-float(report['observedAtUtc'])
+            if (0 <= age <= 60 and report.get('accountId') == session['account']['login']
+                    and str(report.get('buildId','')).startswith('V'+controller.install['ea_version']+'-')
+                    and report.get('reason') == 'ACTIVATION_RELOAD_REQUIRED'):
+                reason = 'ACTIVATION_RELOAD_REQUIRED'
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        action = ('Activation completed, but the EA did not confirm restart. Use the controller monitor repair on an idle session, or change the chart timeframe once.' if reason else
+                  'Inspect the selected MT5 monitor: sign in to your demo, complete GOAT activation, approve DLL imports and required WebRequest URL, keep Algo Trading off, run serve and recheck.')
+        step('native_monitor', 'blocked', action, detail=str(exc), **({'reason_code':reason} if reason else {}))
     if all(s['state']=='complete' for s in steps):
         result['status']='local_monitor_ready'
     result['next_action'] = next((s['action'] for s in steps if s['state']!='complete'),
         'Use desktop onboarding.status for account eligibility; native job start still performs fresh ownership/runtime checks')
     result['monitor_preset'] = str(Path(controller.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set')
     result['permissions'] = dict(automation_changes_permissions=False,
-        webrequest='User approves the exact URL shown by the EA activation panel',
+        webrequest='Add https://goatedge.ai in MT5 Tools > Options > Expert Advisors > Allow WebRequest for listed URL',
+        webrequest_urls=['https://goatedge.ai'],
         dll_imports='User approves DLL imports in MT5 and the monitor EA properties',
         broker_login='User signs in directly in MT5; never pass broker passwords through controller arguments')
     return result
@@ -119,11 +133,9 @@ def require_idle_control(controller, session):
         raise ValueError('Monitor process inspection requires terminal64.exe')
 
 
-def monitor_prepare(controller, symbol):
+def monitor_chart(controller, symbol):
     if not re.fullmatch(r'[A-Za-z0-9_.#-]{1,64}', symbol):
         raise ValueError('Supply the exact broker symbol using letters, digits, underscore, dot, # or hyphen')
-    session, _ = session_state(controller)
-    name, profile = monitor_paths(controller, session)
     relative = PureWindowsPath(controller.install['ea_relative_path'])
     if any(c in str(relative) for c in '\r\n<>\0'):
         raise ValueError('Unsupported EA profile path')
@@ -132,7 +144,13 @@ def monitor_prepare(controller, symbol):
             '\nexpertmode=0\n<inputs>\nMode_Operation=11\nStudio_ReadOnlyMonitor=true\nStudio_MonitorRunPath=\n'
             'EA_Desc=Studio Monitor\n</inputs>\n</expert>\n<window>\nheight=100.000000\nobjects=0\n'
             '<indicator>\nname=Main\npath=\napply=1\nshow_data=1\n</indicator>\n</window>\n</chart>\n')
-    raw = text.replace('\n','\r\n').encode('utf-16')
+    return text.replace('\n','\r\n').encode('utf-16')
+
+
+def monitor_prepare(controller, symbol):
+    raw = monitor_chart(controller, symbol)
+    session, _ = session_state(controller)
+    name, profile = monitor_paths(controller, session)
     receipt = dict(schema_version=1, installation_sha256=sha(controller.install), run_id=session['run_id'],
                    profile_name=name, profile_path=str(profile), symbol=symbol,
                    chart_sha256=hashlib.sha256(raw).hexdigest(), trading_enabled=False, permissions_granted=False)
@@ -262,12 +280,27 @@ def monitor_launch(controller, attempt_id):
         verify_monitor_profile(controller, receipt)
         portable = saved_launch_policy(controller, session)
         inspect_processes(process_binding(controller), research_running=False)
-        arguments = [controller.install['terminal_executable'], '/profile:'+receipt['profile_name']]
+        # MT5 can open a profile without applying its embedded expert inputs.
+        # Explicit native startup is required for a reproducible monitor attach.
+        preset = Path(controller.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set'
+        expected = 'Mode_Operation=11\r\nStudio_ReadOnlyMonitor=true\r\nStudio_MonitorRunPath=\r\nEA_Desc=Studio Monitor\r\n'.encode('utf-16')
+        if preset.read_bytes() != expected:
+            raise ValueError('Monitor startup preset changed; preserve it before repair')
+        config = directory/(attempt_id+'.ini')
+        startup = ('[Charts]\r\nProfileLast='+receipt['profile_name']+'\r\n[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n'
+                   '[StartUp]\r\nExpert='+controller.install['ea_relative_path']+'\r\nExpertParameters='+preset.name+
+                   '\r\nSymbol='+receipt['symbol']+'\r\nPeriod=M1\r\n').encode('utf-16')
+        if config.exists():
+            raise ValueError('Unclaimed startup configuration exists; preserve and inspect before another launch')
+        with config.open('xb') as stream:
+            stream.write(startup); stream.flush(); os.fsync(stream.fileno())
+        arguments = [controller.install['terminal_executable'], '/config:'+str(config)]
         if portable: arguments.append('/portable')
         intent = dict(schema_version=1, attempt_id=attempt_id, status='launch_intent',
                       installation_sha256=sha(controller.install), run_id=session['run_id'],
                       created_at=datetime.now(timezone.utc).isoformat(), execution_ready=False,
-                      native_qualification=False)
+                      native_qualification=False, startup_config=str(config),
+                      startup_sha256=hashlib.sha256(startup).hexdigest(), preset_sha256=hashlib.sha256(expected).hexdigest())
         write_json(target, intent)
         # A crash/failure here retains uncertainty; no automatic retry or close.
         process = subprocess.Popen(arguments, cwd=str(Path(arguments[0]).parent),

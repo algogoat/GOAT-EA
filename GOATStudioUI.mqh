@@ -13,6 +13,9 @@ string g_StudioSnapshot="",g_StudioQueueRendered="",g_StudioQueueIds[],g_StudioQ
 long g_StudioQueueRevision=-1,g_StudioQueueGeneration=-1;
 string g_StudioSchemaHash="",g_StudioStrategyName="";
 bool g_StudioHasStrategy=false;
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+bool g_StudioEmptyDraft=false;
+#endif
 void GoatStudioDispatch(void);
 #ifdef GOAT_ORPHAN_RECOVERY_V149
 string GoatStudioRecoveryInstance(void);
@@ -138,9 +141,31 @@ bool GoatStudioUIState(string &tester,string &exports,string &owner,long &revisi
       else status="Waiting for controller receipt";
      }
    if(g_StudioLastError!="") status=g_StudioLastError;
-   if(!GoatStudioSectionINI(body,tokens,GOATJsonFindField(body,tokens,state,"tester_draft"),false,tester)
-      || !GoatStudioSectionINI(body,tokens,GOATJsonFindField(body,tokens,state,"export_draft"),true,exports))
-     {status="Controller needs tester and export drafts"; return false;}
+   int tester_token=GOATJsonFindField(body,tokens,state,"tester_draft");
+   int export_token=GOATJsonFindField(body,tokens,state,"export_draft");
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   // A valid empty binding permits HUMAN handoff before the agent creates
+   // settings. Never synthesize settings or accept partial/malformed drafts.
+   g_StudioEmptyDraft=(tester_token>=0 && export_token>=0
+      && tokens[tester_token].type==GOAT_JSON_NULL && tokens[export_token].type==GOAT_JSON_NULL);
+   if(g_StudioEmptyDraft)
+     {
+      int queue=GOATJsonFindField(body,tokens,state,"queue");
+      int strategy=GOATJsonFindField(body,tokens,state,"strategy_draft");
+      if(queue<0 || tokens[queue].type!=GOAT_JSON_ARRAY || strategy<0 || tokens[strategy].type!=GOAT_JSON_NULL)
+         {status="Incomplete controller state; ask your agent to repair setup"; return false;}
+      for(int q=queue+1;q<ArraySize(tokens);q++)
+         if(tokens[q].parent==queue) {status="Queued work has no settings; preserve and inspect"; return false;}
+      tester=""; exports="";
+      status=(owner=="human" ? "Ready to connect your agent" : "Agent connected; preparing your experiment");
+      if(g_StudioPendingId!="" && !g_StudioReceiptResolved) status="Waiting for controller confirmation";
+      if(g_StudioLastError!="") status=g_StudioLastError;
+     }
+   else
+#endif
+   if(!GoatStudioSectionINI(body,tokens,tester_token,false,tester)
+      || !GoatStudioSectionINI(body,tokens,export_token,true,exports))
+     {status="Controller settings are incomplete; ask your agent to repair setup"; return false;}
    g_StudioSnapshot=body;
    g_StudioHasStrategy=false; g_StudioStrategyName=""; g_StudioSchemaHash="";
    GOATJsonGetString(body,tokens,0,"schema_hash",g_StudioSchemaHash);
@@ -229,8 +254,16 @@ void CStrategyTesterDialog::ManagedResize(void)
    if(cw<=0 || ch<=0) return;
    // Reflow from viewport dimensions, never from previously rounded controls.
    // Retain a readable minimum canvas when docked panes leave too little room.
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   int width=(int)MathMax(160,cw-16);
+#else
    int width=(int)MathMax(1000,cw-16);
+#endif
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   int height=(int)MathMax(120,ch-52);
+#else
    int height=(int)MathMax(480,ch-52);
+#endif
    D_Width=width; D_Height=height;
    m_leftMargin=16; m_topMargin=8; m_GapHoriz=10;
    m_controlHeight=(int)MathMax(24,Font_Size*2+8);
@@ -245,6 +278,11 @@ void CStrategyTesterDialog::ManagedResize(void)
    m_client_area.Alignment(WND_ALIGN_CLIENT,8,32,8,8);
    m_client_area.Move(Left()+8,Top()+32); m_client_area.Size(width-16,height-4);
    StageMove(c_Wnd_OPT,0,0,true,width-16,height-4);
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   if(!m_studioLoaded || g_StudioEmptyDraft || width<1000 || height<480)
+     {ManagedControls(); return;}
+   m_lblBatchControl.Text("BATCH CONTROL");
+#endif
    int tabs_width=width-48,tab_gap=8,tab_width=(tabs_width-3*tab_gap)/4;
    StageMove(m_btnStageSetup,16,8,true,tab_width,m_controlHeight);
    StageMove(m_btnStageTimeline,16+tab_width+tab_gap,8,true,tab_width,m_controlHeight);
@@ -279,12 +317,19 @@ void CStrategyTesterDialog::ManagedResize(void)
 void CStrategyTesterDialog::ManagedControls(void)
   {
    bool edit=m_studioLoaded && !m_studioDraftFailed && m_studioOwner=="human";
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   bool handoff=edit && g_StudioPendingId=="";
+   edit=edit && !g_StudioEmptyDraft;
+#endif
    m_btnStart.Text("TAKE CONTROL"); m_btnStart.Enable();
    m_btnStop.Text("GIVE TO AGENT");
    m_btnAddQueue.Text("SAVE SETTINGS"); m_btnSetPresets.Text("LOAD SAVED");
    m_btnSetPresets.Enable();
    if(edit) {m_btnAddQueue.Enable(); m_btnStop.Enable();}
    else {m_btnAddQueue.Disable(); m_btnStop.Disable();}
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   if(handoff) m_btnStop.Enable(); else m_btnStop.Disable();
+#endif
    // All other actions remain disabled by the monitor's base layout.
    if(edit)
      {
@@ -347,6 +392,28 @@ void CStrategyTesterDialog::ManagedControls(void)
    m_btnMakePending.Color(queue_edit && g_StudioHasStrategy ? C'225,238,248' : C'100,120,140');
    color qcolor=queue_edit && pending ? C'225,238,248' : C'100,120,140';
    m_btnDelQitem.Color(qcolor); m_btnCancelSelected.Color(qcolor); m_btnUpQitem.Color(qcolor); m_btnDownQitem.Color(qcolor);
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   // Keep handoff visible without showing empty settings or off-screen actions.
+   if(!m_studioLoaded || g_StudioEmptyDraft || D_Width<1000 || D_Height<480)
+     {
+      for(int i=0;i<c_Wnd_OPT.ControlsTotal();i++)
+        {CWnd *child=c_Wnd_OPT.Control(i); if(child!=NULL) child.Hide();}
+      c_Wnd_Export.Hide();
+      int w=(int)MathMax(100,D_Width-48);
+      m_lblHeading.Text("GOAT / AGENT CONNECTION");
+      StageMove(m_lblHeading,16,12,true,w,26);
+      StageMove(m_edtBatchProgress,16,48,true,w,26);
+      m_btnStop.Text("GIVE TO AGENT");
+      m_btnStop.Color(handoff ? C'225,238,248' : C'100,120,140');
+      StageMove(m_btnStop,16,86,true,w,36);
+      m_btnStart.Text("TAKE CONTROL");
+      StageMove(m_btnStart,16,130,m_studioOwner=="agent",w,32);
+      m_lblBatchControl.Text("Your agent prepares the settings and batch.");
+      StageMove(m_lblBatchControl,16,174,D_Height>=230,w,26);
+      StageMove(m_edtBatchErrors,16,208,D_Height>=270,w,26);
+      StageMove(m_listQueue,16,250,!g_StudioEmptyDraft && D_Height>=350,w,D_Height-274);
+     }
+#endif
   }
 
 void CStrategyTesterDialog::ManagedSelectStrategy(void)
@@ -474,6 +541,10 @@ void CStrategyTesterDialog::ManagedQueueMove(const int direction)
 bool CStrategyTesterDialog::ManagedPersistDraft(void)
   {
    if(!m_studioLoaded || !g_StudioBound || m_studioDraftFailed || g_StudioEditorLock==INVALID_HANDLE) return false;
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   // Empty setup must not persist stale UI defaults as user settings.
+   if(g_StudioEmptyDraft) return !FileIsExist(g_StudioBridge.DraftPath());
+#endif
    string body="{\"schema_version\":1,\"terminal_id\":"+GoatStudioQuote(g_StudioBridge.TerminalId())
       +",\"run_id\":"+GoatStudioQuote(g_StudioBridge.RunId())
       +",\"revision\":"+(string)m_studioRevision+",\"generation\":"+(string)m_studioGeneration
@@ -540,13 +611,24 @@ void CStrategyTesterDialog::Destroy(const int reason)
 
 void CStrategyTesterDialog::ManagedRefresh(void)
   {
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   Caption("GOAT / AGENT CONNECTION / V"+GOAT_VERSION_LABEL);
+#else
    Caption("GOAT / OPTIMIZATION STUDIO / SHARED SETTINGS / "+GOAT_BUILD_MARKER+" Q350-FILL");
+#endif
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   ManagedResize();
+#endif
    string tester,exports,owner,status; long revision,generation; bool saved=false;
    string current=GetTESTERsettingsString(true)+GetExportSettingsString();
    if(m_studioLoaded && !ManagedPersistDraft())
      {m_edtBatchErrors.Text("Unable to preserve local draft; existing file retained"); return;}
    if(!GoatStudioUIState(tester,exports,owner,revision,generation,status,saved))
-     {m_studioOwner=""; m_edtBatchErrors.Text(status); ManagedControls(); ManagedObservation(status); return;}
+     {m_studioOwner=""; m_edtBatchErrors.Text(status); m_edtBatchProgress.Text("Setup needs repair; your agent can inspect it"); ManagedControls(); ManagedObservation(status); return;}
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   if(g_StudioEmptyDraft && FileIsExist(g_StudioBridge.DraftPath()))
+     {m_studioOwner=""; m_studioDraftFailed=true; m_edtBatchProgress.Text("Saved edits need recovery; ask your agent"); ManagedControls(); ManagedObservation("Empty state conflicts with saved draft"); return;}
+#endif
    if(!ManagedRestoreDraft())
      {m_studioOwner=""; ManagedControls(); m_edtBatchErrors.Text("Editor busy or draft recovery failed; local file retained"); return;}
    current=GetTESTERsettingsString(true)+GetExportSettingsString();
@@ -562,14 +644,21 @@ void CStrategyTesterDialog::ManagedRefresh(void)
      {
       if(!m_studioLoaded || revision!=m_studioRevision)
         {
-         ApplyTesterSettingsToControls(tester); ApplyExportSettingsToControls(exports);
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+         if(!g_StudioEmptyDraft)
+#endif
+           {ApplyTesterSettingsToControls(tester); ApplyExportSettingsToControls(exports);}
          m_studioBaseline=GetTESTERsettingsString(true)+GetExportSettingsString();
          m_studioRevision=revision; m_studioGeneration=generation; m_studioLoaded=true;
         }
      }
    else status+=" / Unsaved edits retained";
    m_edtBatchProgress.Text(status);
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   m_edtBatchErrors.Text("Connecting an agent does not enable trading.");
+#else
    m_edtBatchErrors.Text("Managed settings / native execution not connected");
+#endif
    if(!ManagedPersistDraft()) status="Unable to preserve local draft; do not close Studio";
    else if(g_StudioReceiptResolved)
      {
@@ -582,7 +671,11 @@ void CStrategyTesterDialog::ManagedRefresh(void)
         }
      }
    m_edtBatchProgress.Text(status);
-   ManagedQueueRefresh(); ManagedControls(); ManagedObservation(status); ChartRedraw(m_chart_id);
+   ManagedQueueRefresh();
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   ManagedResize();
+#endif
+   ManagedControls(); ManagedObservation(status); ChartRedraw(m_chart_id);
    GoatStudioDispatch();
   }
 

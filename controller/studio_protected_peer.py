@@ -82,7 +82,7 @@ def binding_fields(c):
     value=policy(c)
     if value is None: return {}
     return dict(protected_terminal=value['peer']['executable'],protected_data_roots=[value['peer']['data_root']],
-                protected_process=value['process'],protected_policy_sha256=sha(value))
+                protected_process=value['process'],protected_policy_sha256=sha(value),protected_may_be_stopped=True)
 
 
 def process_binding(c):

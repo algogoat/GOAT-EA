@@ -215,16 +215,123 @@ bool GOATDeviceActivationWriteCredential(void)
    return stored;
   }
 
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+// Chart-scoped durable restart ticket; no account ID, credential or grant.
+// Two actual period changes are required. Queuing is never called success.
+ulong g_GOATActivationReloadDeadline=0;
+string GOATActivationReloadPath(void)
+  {
+   return "GOATStudio\\activation-reload-"+GOAT_BUILD_ID+"-"+(string)ChartID()+".json";
+  }
+void GOATActivationReloadRequired(void)
+  {
+   g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_APPROVED;
+   g_GOATDeviceActivationReloadRequested=true;
+   g_GOATActivationReloadDeadline=0;
+   string body; SGOATJsonToken ticket[]; long original,temporary,expires;
+   if(GoatStudioReadUtf8(GOATActivationReloadPath(),body) && GOATJsonParse(body,ticket)
+      && GOATJsonGetInteger(body,ticket,0,"original",original)
+      && GOATJsonGetInteger(body,ticket,0,"temporary",temporary)
+      && GOATJsonGetInteger(body,ticket,0,"expires",expires))
+      GOATActivationReloadWrite("manual_required",original,temporary,expires);
+   GOATDeviceActivationStatus("ACTIVATION_RELOAD_REQUIRED",0,0,0);
+   HidePrompt();
+   ShowPrompt("GOAT activation complete","Your GOAT user credential is installed.",
+      "Change the chart timeframe once to finish starting GOAT.","");
+  }
+bool GOATActivationReloadWrite(const string phase,const long original,const long temporary,const long expires)
+  {
+   FolderCreate("GOATStudio");
+   string body="{\"build\":"+GoatStudioQuote(GOAT_BUILD_ID)+",\"symbol\":"+GoatStudioQuote(Symbol())
+      +",\"original\":"+(string)original+",\"temporary\":"+(string)temporary
+      +",\"expires\":"+(string)expires+",\"phase\":"+GoatStudioQuote(phase)+"}";
+   return GoatStudioWriteUtf8(GOATActivationReloadPath(),body,true);
+  }
+// Called from a real OnInit, before normal EA initialization. An intermediate
+// period stays activation-only; no signals, orders, or optimization may run.
+bool GOATActivationReloadOnInit(void)
+  {
+   string path=GOATActivationReloadPath();
+   if(MQLInfoInteger(MQL_TESTER) || !FileIsExist(path)) return false;
+   string body,build,symbol,phase; long original,temporary,expires; SGOATJsonToken tokens[];
+   if(!GoatStudioReadUtf8(path,body) || !GOATJsonParse(body,tokens)
+      || !GOATJsonGetString(body,tokens,0,"build",build) || build!=GOAT_BUILD_ID
+      || !GOATJsonGetString(body,tokens,0,"symbol",symbol) || symbol!=Symbol()
+      || !GOATJsonGetString(body,tokens,0,"phase",phase)
+      || !GOATJsonGetInteger(body,tokens,0,"original",original)
+      || !GOATJsonGetInteger(body,tokens,0,"temporary",temporary)
+      || !GOATJsonGetInteger(body,tokens,0,"expires",expires))
+     {GOATActivationReloadRequired(); return true;}
+   if(original==temporary || PeriodSeconds((ENUM_TIMEFRAMES)original)<=0
+      || temporary!=(original==PERIOD_M1 ? PERIOD_M5 : PERIOD_M1))
+     {GOATActivationReloadRequired(); return true;}
+   if(phase=="reinitialized") return false;
+   if(phase=="manual_required")
+     {
+      // This invocation itself proves a subsequent human/normal reload. Never
+      // issue another automatic period change for the retained failed attempt.
+      if(!GOATActivationReloadWrite("reinitialized",original,temporary,expires))
+        {GOATActivationReloadRequired(); return true;}
+      Print("GOAT activation: manual OnInit observed after bounded reload failure.");
+      return false;
+     }
+   g_GOATDeviceActivationAccountId=(string)AccountInfoInteger(ACCOUNT_LOGIN);
+   g_GOATDeviceActivationBuildId=GOAT_BUILD_ID;
+   if(expires<(long)TimeGMT() || expires>(long)TimeGMT()+30)
+     {
+      // A later genuine human chart reload can initialize using the approved
+      // credential. Do not issue another automatic chart change.
+      GOATActivationReloadWrite("reinitialized",original,temporary,expires);
+      Print("GOAT activation: later OnInit observed; automatic restart expired.");
+      return false;
+     }
+   if(phase=="switch_requested" && Period()==temporary)
+     {
+      g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_APPROVED;
+      g_GOATDeviceActivationReloadRequested=true;
+      g_GOATActivationReloadDeadline=GetTickCount64()+(ulong)(expires-(long)TimeGMT())*1000;
+      if(!GOATActivationReloadWrite("restore_requested",original,temporary,expires)
+         || !ChartSetSymbolPeriod(ChartID(),Symbol(),(ENUM_TIMEFRAMES)original))
+         GOATActivationReloadRequired();
+      return true;
+     }
+   if(phase=="restore_requested" && Period()==original)
+     {
+      if(!GOATActivationReloadWrite("reinitialized",original,temporary,expires))
+        {GOATActivationReloadRequired(); return true;}
+      GOATDeviceActivationStatus("activation_oninit_observed",0,0,0);
+      Print("GOAT activation: original timeframe restored; real OnInit observed.");
+      return false;
+     }
+   GOATActivationReloadRequired(); return true;
+  }
+#endif
+
 void GOATDeviceActivationRequestReload(void)
   {
    g_GOATDeviceActivationUserCode="";
    if(g_GOATDeviceActivationReloadRequested) return;
    g_GOATDeviceActivationReloadRequested=true;
    HidePrompt();
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   ShowPrompt("GOAT activation complete","Your GOAT user credential is installed.","Preparing to start GOAT...","");
+#else
    ShowPrompt("GOAT activation complete","Your GOAT user credential is installed.",
                "Restarting V"+GOAT_VERSION_LABEL+" automatically...","");
+#endif
    g_GOATDeviceActivationId="";
    g_GOATDeviceActivationCandidate="";
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   long original=(long)Period(),temporary=(Period()==PERIOD_M1 ? PERIOD_M5 : PERIOD_M1);
+   long expires=(long)TimeGMT()+20;
+   g_GOATActivationReloadDeadline=GetTickCount64()+20000;
+   GOATDeviceActivationStatus("activation_reload_pending",0,0,20);
+   ShowPrompt("GOAT activation complete","Your GOAT user credential is installed.",
+      "Starting GOAT; waiting for the EA to confirm...","");
+   if(!GOATActivationReloadWrite("switch_requested",original,temporary,expires)
+      || !ChartSetSymbolPeriod(ChartID(),Symbol(),(ENUM_TIMEFRAMES)temporary))
+      GOATActivationReloadRequired();
+#else
    if(!ChartSetSymbolPeriod(ChartID(),Symbol(),Period()))
      {
       // Keep the request latched: activation-only mode remains inert and this
@@ -233,6 +340,7 @@ void GOATDeviceActivationRequestReload(void)
       ShowPrompt("GOAT activation complete","Your GOAT user credential is installed.",
                   "Remove and add V"+GOAT_VERSION_LABEL+" once to finish setup.","");
      }
+#endif
   }
 
 // Exclusive handle is owned by the caller. Reserve before network IO so a
@@ -359,6 +467,10 @@ bool GOATDeviceActivationBegin(const long account_id,const string build_id,
 void GOATDeviceActivationTimer(void)
   {
    if((long)TimeGMT()*1000>=g_GOATDeviceActivationExpiresAtMs) g_GOATDeviceActivationUserCode="";
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   if(g_GOATDeviceActivationReloadRequested && g_GOATActivationReloadDeadline>0
+      && GetTickCount64()>=g_GOATActivationReloadDeadline) GOATActivationReloadRequired();
+#endif
    if(!GOATDeviceActivationOnly() || g_GOATDeviceActivationReloadRequested) return;
 
    string existing_headers="";

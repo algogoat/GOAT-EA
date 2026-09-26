@@ -1,12 +1,13 @@
 ﻿#define GOAT_STUDIO_UNIFIED_V147 1
 #define GOAT_SEQUENCE_EXPORT_V148 1
 #define GOAT_ORPHAN_RECOVERY_V149 1
+#define GOAT_MONITOR_ONBOARDING_V149 1
 #define   GOAT_VERSION_LABEL "1.49"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-ORPHAN-RECOVERY-1"
+#define   GOAT_BUILD_ID "V1.49-MONITOR-ONBOARDING-2"
 #include "GOAT_SequencePackage.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 #define   GOAT_BUILD_MARKER "UI1"
@@ -2736,6 +2737,7 @@ int OnInit()
    //ResourceCreate(abc,"abc.csv");
    //ChartSetSymbolPeriod(ChartID(),Symbol(),PERIOD_M1);
    EventSetTimer(1);
+   if(GOATActivationReloadOnInit()) return INIT_SUCCEEDED;
    string names[], values[];
    Strat = ExtractFunctionKeysFromInputString(EA_Desc,names,values);
    _Symbol_ = ConvertToGOATsymbol(_Symbol); Print("Symbol="+_Symbol+" GOAT_Symbol="+_Symbol_);
@@ -4617,13 +4619,14 @@ void OnTimer(void)
 void GoatTimerBody(void)
   {
    GoatSetupControlPoll();
-   if(g_GoatStudioReadOnlyMonitor)
-   {TesterDialog.OnClickRefresh(true);return;}
+   // Activation timers must run even before the read-only monitor exists.
    if(GOATDeviceActivationOnly())
    {
     GOATDeviceActivationTimer();
     return;
    }
+   if(g_GoatStudioReadOnlyMonitor)
+   {TesterDialog.OnClickRefresh(true);return;}
    if(Mode_Operation==Operation_Batch && GoatBatchDeferredRestartPending())
    {
     ShowPrompt("Restarting Terminal for next optimization...","Waiting for Strategy Tester to stop.","Batch Running...","");

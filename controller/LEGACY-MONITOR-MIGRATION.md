@@ -60,3 +60,25 @@ atomic registry rollback, shared guards and old completion validation. Native
 qualification has established peer protection and a real retirement preview;
 the observed normal close remained unconfirmed. No successful native retirement,
 fresh optimization start or complete end-to-end qualification is claimed.
+
+## Installing a reviewed pair after parking
+
+The authenticated desktop installer must verify internal build admission and the
+exact bundled EA, controller and compatible catalog before replacing an existing
+installation. These trusted local commands provide serialization, not admission:
+
+- `switch-verify-park --review-id <id>` verifies a completed PARK, immutable
+  research archives, unchanged external databases and a stopped selected terminal.
+- `switch-replace-receipt --review-id <id> --candidate-receipt <path>
+  --expected-sha256 <old raw receipt hash>` replaces only the registered receipt
+  under the controller session lock and external database write locks. Stage the
+  candidate outside the active controller and terminal state directories. The
+  physical terminal/data/common/state roots must match the archived installation.
+
+The replacement retains its candidate and publication intent in the PARK archive.
+Retry the same candidate/review/hash after an uncertain response; never remove its
+EA payload while publication is unresolved. A successful response is
+`receipt_replaced` with the candidate's raw `receipt_sha256`. It creates no session,
+grants no agent control and launches nothing. Ten host tests cover artifact and
+receipt changes, database/session races, invalid journals and interrupted receipt
+publication. Native installation through this route remains unqualified.

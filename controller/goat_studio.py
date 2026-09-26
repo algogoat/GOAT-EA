@@ -25,6 +25,8 @@ from studio_strategy_settings import read_values
 from studio_settings import FIELDS,PERIODS,validate_tester,validate_export
 
 OPERATION_CONTRACTS = {
+    'switch-verify-park':dict(required=['review-id'],effect='read-only verification of completed park, immutable archives, external databases and absent selected terminal/session; not admission or grant'),
+    'switch-replace-receipt':dict(required=['review-id','candidate-receipt','expected-sha256'],effect='authenticated installer companion: atomic old-receipt CAS under exclusive session lock after verified park and unchanged physical target; preserves old receipt/research, never grants or starts; admission remains installer responsibility'),
     'bootstrap-retirement-prepare':dict(required=['specification','bootstrap-receipts'],effect='review failed legacy passive monitor startup, exact original receipts and idle replacement; no close or claim effects'),
     'bootstrap-retirement-apply':dict(required=['review-id'],effect='within authorised selected-terminal maintenance, normal-close exact reviewed idle monitor once, then retire original startup claim/slot atomically only after native process absence; retries inspect only, never resend or restart'),
     'peer-prepare':dict(required=['terminal-executable','data-root'],effect='review one existing protected peer and exact running process; never grants or manages the peer'),
@@ -279,6 +281,8 @@ def main(argv=None):
     p=sub.add_parser('peer-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
     p=sub.add_parser('bootstrap-retirement-prepare');p.add_argument('--specification',type=Path,required=True);p.add_argument('--bootstrap-receipts',type=Path,required=True)
     p=sub.add_parser('bootstrap-retirement-apply');p.add_argument('--review-id',required=True)
+    p=sub.add_parser('switch-verify-park');p.add_argument('--review-id',required=True)
+    p=sub.add_parser('switch-replace-receipt');p.add_argument('--review-id',required=True);p.add_argument('--candidate-receipt',type=Path,required=True);p.add_argument('--expected-sha256',required=True)
     p=sub.add_parser('switch-plan');p.add_argument('--restore-id')
     p=sub.add_parser('switch-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
     p=sub.add_parser('switch-status');p.add_argument('--review-id',required=True)
@@ -315,10 +319,13 @@ def main(argv=None):
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
         controller=Controller(args.installation)
-        if args.operation not in ('peer-prepare','peer-apply','switch-plan','switch-apply','switch-status','discover','resource-profile') and not args.operation.startswith(('orphan-recovery-','bootstrap-retirement-')):
+        if args.operation not in ('peer-prepare','peer-apply','switch-plan','switch-apply','switch-status','switch-verify-park','switch-replace-receipt','discover','resource-profile') and not args.operation.startswith(('orphan-recovery-','bootstrap-retirement-')):
             from studio_handover import session_lock,guard
             locks.enter_context(session_lock(controller));guard(controller)
-        if args.operation.startswith('bootstrap-retirement-'):
+        if args.operation in ('switch-verify-park','switch-replace-receipt'):
+            from studio_installation_upgrade import verify_park,replace_receipt
+            result=verify_park(controller,args.review_id) if args.operation=='switch-verify-park' else replace_receipt(controller,args.review_id,args.candidate_receipt,args.expected_sha256)
+        elif args.operation.startswith('bootstrap-retirement-'):
             from studio_bootstrap_retirement import prepare,apply
             result=prepare(controller,args.specification,args.bootstrap_receipts) if args.operation=='bootstrap-retirement-prepare' else apply(controller,args.review_id)
         elif args.operation in ('peer-prepare','peer-apply'):

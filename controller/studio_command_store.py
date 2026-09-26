@@ -48,8 +48,8 @@ class StudioStore:
         self.db.close()
 
     @contextmanager
-    def transaction(self):
-        with mutation_gate(self.db):
+    def transaction(self, *, require_clear_controls=False):
+        with mutation_gate(self.db, require_clear_controls=require_clear_controls):
             self.db.execute('BEGIN IMMEDIATE')
             try:
                 yield
@@ -135,7 +135,7 @@ class StudioStore:
             raise ValueError('Unexpected control payload')
         binding = packed(dict(terminal_id=request['terminal_id'], run_id=request['run_id']))
         payload_hash = sha(dict(request=request, actor=actor))
-        with self.transaction():
+        with self.transaction(require_clear_controls=command == 'queue.clear_pending'):
             prior = self.db.execute('SELECT * FROM studio_receipts WHERE binding=? AND request_id=?',
                                     (binding, request['request_id'])).fetchone()
             if prior:
@@ -151,6 +151,17 @@ class StudioStore:
                 if actor != state['owner']:
                     raise Conflict('Current controller required; take over explicitly')
                 if command in QUEUE_COMMANDS:
+                    if command == 'queue.clear_pending':
+                        from studio_seed_slot import guard_active_seed
+                        database_path = self.db.execute('PRAGMA database_list').fetchone()[2]
+                        if database_path:
+                            guard_active_seed(Path(database_path).parent)
+                        settled = {'pending','completed','failed','cancelled','removed','superseded'}
+                        for queued in self.db.execute('SELECT jobs FROM studio_queues'):
+                            if any(j.get('status') not in settled or
+                                   (j['status'] == 'pending' and 'launch_intent' in j)
+                                   for j in json.loads(queued['jobs'])):
+                                raise Conflict('Unresolved native attempt requires reconciliation before clearing pending work')
                     if command == 'queue.reserve':
                         from studio_seed_slot import guard_active_seed
                         database_path = self.db.execute('PRAGMA database_list').fetchone()[2]

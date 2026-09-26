@@ -78,13 +78,15 @@ def configure_gate(store, root):
 
 
 @contextmanager
-def mutation_gate(db):
+def mutation_gate(db, *, require_clear_controls=False):
     row=db.execute('SELECT root FROM studio_native_gate WHERE id=1').fetchone()
     if row is None:
         yield
         return
     root=Path(row[0])
     with exclusive_gate(root):
+        if require_clear_controls and any((root/name).exists() for name in ('permit.json', 'request.json')):
+            raise ValueError('Native request or permit remains; reconcile or cancel the owned attempt before clearing pending work')
         # Invalidating an unconsumed permit before any database mutation is
         # conservative on rollback: stale requests cannot launch afterward.
         (root/'permit.json').unlink(missing_ok=True)

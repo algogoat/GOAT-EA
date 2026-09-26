@@ -319,6 +319,33 @@ belongs in the release notes rather than copying a developer's paths here.
 
 ## Safe switching and restoration
 
+### Clear pending work and prepare a fresh batch
+
+Use `clear-queue` to preview pending job IDs and the current revision. To remove
+that pending work, use `clear-queue --apply --request-id <unique-id>
+--expected-revision <preview-revision>`. Retry the exact same identity and revision
+after a transport failure. The operation is atomic and requires current agent
+ownership. A changed queue/revision requires a fresh review and a new request ID.
+It marks pending jobs removed while retaining their packages, configuration and
+history. Completed results, other settled jobs and drafts are unchanged. It refuses
+unresolved attempts across controller bindings, active seed work and unconsumed
+native requests/permits; it never treats clearing a queue as stopping a tester.
+
+Then run `prepare-batch --batch-id <new-id> --plan <plan.json>`, inspect
+`batch-status --batch-id <new-id>`, and explicitly `start --job-id <new-id>` when
+ready. Clearing and preparation never launch work. Old job IDs remain reserved
+for provenance; do not reuse them for a new experiment.
+
+For inconsistent native flags, run `native-recovery-status`. It reports runtime
+identity/readiness failures and remaining controls without clearing anything.
+`cancel` requires an exact owned attempt; `finish` requires its observed native
+completion and idle runtime. Neither repairs an orphan `BatchOnGoing` flag. A
+possible orphan requires the compatible reviewed native recovery capability;
+do not edit global-variable files, call Start/Stop as a reset or fabricate a launch
+receipt. See [native recovery contract](NATIVE-RECOVERY-CONTRACT.md).
+
+### Park and restore an entire research session
+
 If bootstrap refuses an existing Studio activation, never delete active.json,
 permits, gate owners, databases or pending jobs. Stop MT5, MetaEditor and all
 controller/runner processes first. The installed public CLI supports:

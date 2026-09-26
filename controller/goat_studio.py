@@ -56,6 +56,8 @@ OPERATION_CONTRACTS = {
     'status':dict(required=['job-id'],effect='observe retained attempt; update reconciled state without retry'),
     'reconcile':dict(required=['job-id'],effect='alias of status'),
     'cancel':dict(required=['job-id'],effect='cancel pending job or publish exact owned native stop; receipt is not stop proof'),
+    'clear-queue':dict(required=[],defaults={'apply':False},apply_required=['request-id','expected-revision'],effect='preview pending jobs; explicit apply removes only pending work atomically, preserving all history/packages/results; refuses unresolved native attempts, seed ownership and outstanding native controls; never resets EA flags or starts work'),
+    'native-recovery-status':dict(required=[],effect='diagnose runtime flags, native controls and unresolved controller work without resetting or launching; orphan continuation recovery is unsupported and requires a compatible reviewed EA/controller release'),
     'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls')
 }
 
@@ -86,15 +88,17 @@ class Controller:
 
     def state(self): return self.store.snapshot(self.terminal,self.run)
 
-    def submit(self,command,payload,request_id):
+    def submit(self,command,payload,request_id,*,expected_revision=None):
         state = self.state()
         request = dict(schema_version=1,request_id=request_id,terminal_id=self.terminal,run_id=self.run,
-                       expected_revision=state['revision'],generation=state['generation'],command=command,payload=payload)
+                       expected_revision=state['revision'] if expected_revision is None else expected_revision,generation=state['generation'],command=command,payload=payload)
         # Persist the exact envelope before submission, making transport retries idempotent.
         path = self.root/'requests'/(request_id+'.json')
         if path.exists():
             prior = read_json(path)
             if prior['command'] != command or prior['payload'] != payload: raise ValueError('Request ID content changed')
+            if expected_revision is not None and prior['expected_revision'] != expected_revision:
+                raise ValueError('Request ID revision changed; retry the exact original request')
             request = prior
         else: write_json(path,request)
         result = self.store.submit(request,actor='agent')
@@ -276,6 +280,8 @@ def main(argv=None):
     p=sub.add_parser('build-set');p.add_argument('--source',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--spec',type=Path,required=True)
     p=sub.add_parser('bootstrap');p.add_argument('--account-login',required=True);p.add_argument('--account-server',required=True)
     p=sub.add_parser('serve');p.add_argument('--watch-seconds',type=float,default=3600)
+    p=sub.add_parser('clear-queue');p.add_argument('--apply',action='store_true');p.add_argument('--request-id');p.add_argument('--expected-revision',type=int)
+    sub.add_parser('native-recovery-status')
     p=sub.add_parser('submit');p.add_argument('--request',type=Path,required=True)
     p=sub.add_parser('prepare');p.add_argument('--job-id',required=True);p.add_argument('--set',type=Path,required=True);p.add_argument('--configuration',type=Path,required=True)
     for command in ('start','status','cancel','reconcile','finish'):
@@ -326,6 +332,12 @@ def main(argv=None):
                 else: result=getattr(runner,args.operation.removeprefix('seed-'))(args.batch_id)
             elif args.operation=='serve': result=pump_for(controller.bridge,args.watch_seconds)
             elif args.operation=='state': controller.bridge.pump();result=controller.state()
+            elif args.operation=='clear-queue':
+                from studio_queue_clear import clear_queue
+                result=clear_queue(controller,apply=args.apply,request_id=args.request_id,expected_revision=args.expected_revision)
+            elif args.operation=='native-recovery-status':
+                from studio_queue_clear import recovery_status
+                result=recovery_status(controller)
             elif args.operation=='submit':
                 result=controller.store.submit(read_json(args.request),actor='agent');controller.bridge.pump()
             elif args.operation=='prepare': result=controller.prepare(args.job_id,args.set,args.configuration)

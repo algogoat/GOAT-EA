@@ -232,18 +232,18 @@ void GOATActivationReloadReset(void)
   }
 void GOATActivationReloadRequired(void)
   {
-   // A delayed timer must never downgrade a completed restart ticket.
+   // Preserve completed evidence even when a later attempt cannot write.
+   // Failure still stays activation-only until a real normal OnInit.
    string completedBody,completedBuild,completedSymbol,completedPhase; SGOATJsonToken completed[];
-   if(GoatStudioReadUtf8(GOATActivationReloadPath(),completedBody) && GOATJsonParse(completedBody,completed)
+   bool preserveCompleted=(GoatStudioReadUtf8(GOATActivationReloadPath(),completedBody) && GOATJsonParse(completedBody,completed)
       && GOATJsonGetString(completedBody,completed,0,"build",completedBuild) && completedBuild==GOAT_BUILD_ID
       && GOATJsonGetString(completedBody,completed,0,"symbol",completedSymbol) && completedSymbol==Symbol()
-      && GOATJsonGetString(completedBody,completed,0,"phase",completedPhase) && completedPhase=="reinitialized")
-     {GOATActivationReloadReset(); return;}
+      && GOATJsonGetString(completedBody,completed,0,"phase",completedPhase) && completedPhase=="reinitialized");
    g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_APPROVED;
    g_GOATDeviceActivationReloadRequested=true;
    g_GOATActivationReloadDeadline=0;
    string body; SGOATJsonToken ticket[]; long original,temporary,expires;
-   if(GoatStudioReadUtf8(GOATActivationReloadPath(),body) && GOATJsonParse(body,ticket)
+   if(!preserveCompleted && GoatStudioReadUtf8(GOATActivationReloadPath(),body) && GOATJsonParse(body,ticket)
       && GOATJsonGetInteger(body,ticket,0,"original",original)
       && GOATJsonGetInteger(body,ticket,0,"temporary",temporary)
       && GOATJsonGetInteger(body,ticket,0,"expires",expires))

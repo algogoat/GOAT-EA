@@ -42,15 +42,23 @@ class ActivationReloadSourceContract(unittest.TestCase):
                 self.assertEqual(state["g_GOATActivationReloadDeadline"], "0")
                 self.assertEqual(state["g_GOATDeviceActivationReloadRequested"], "false")
 
-    def test_completed_ticket_guard_precedes_any_failure_mutation(self):
+    def test_completed_ticket_preserved_but_failure_stays_activation_only(self):
         required = body("GOATActivationReloadRequired")
-        guard = required.index('completedPhase=="reinitialized"')
-        reset = required.index("{GOATActivationReloadReset(); return;}")
-        mutation = required.index("g_GOATDeviceActivationState=")
-        self.assertLess(guard,reset)
-        self.assertLess(reset,mutation)
-        self.assertIn("completedBuild==GOAT_BUILD_ID",required[:mutation])
-        self.assertIn("completedSymbol==Symbol()",required[:mutation])
+        self.assertNotIn("GOATActivationReloadReset()", required)
+        self.assertNotIn("GOAT_DEVICE_ACTIVATION_INACTIVE", required)
+        self.assertNotIn("return;", required)
+        self.assertIn('completedPhase=="reinitialized"', required)
+        self.assertIn("completedBuild==GOAT_BUILD_ID", required)
+        self.assertIn("completedSymbol==Symbol()", required)
+        self.assertIn('if(!preserveCompleted && GoatStudioReadUtf8', required)
+        self.assertIn('GOATActivationReloadWrite("manual_required"', required)
+        # No completed-ticket early exit may bypass the inert state or prompt,
+        # including a failed switch_requested write over a prior completed ticket.
+        self.assertIn("g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_APPROVED;", required)
+        self.assertIn("g_GOATDeviceActivationReloadRequested=true;", required)
+        self.assertIn("g_GOATActivationReloadDeadline=0;", required)
+        self.assertLess(required.index("g_GOATDeviceActivationState="), required.index("if(!preserveCompleted"))
+        self.assertIn('GOATDeviceActivationStatus("ACTIVATION_RELOAD_REQUIRED"', required)
 
     def test_expired_reload_requires_durable_ack(self):
         pending = body("GOATActivationReloadPendingOnInit")

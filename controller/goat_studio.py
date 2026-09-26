@@ -25,6 +25,7 @@ from studio_strategy_settings import read_values
 from studio_settings import FIELDS,PERIODS,validate_tester,validate_export
 
 OPERATION_CONTRACTS = {
+    'monitor-stop':dict(required=['attempt-id'],effect='normal-close exact idle connected demo once for authorized upgrade; empty unstarted sessions only, no relaunch/grant/trading; retained stop refuses a replacement process'),
     'monitor-repair':dict(required=['attempt-id'],effect='within authorized setup, read native identity/demo/Algo-off/zero positions and idle tester; normal-close once, preserve and restore prepared profile and explicitly attach monitor; empty unstarted sessions only, no grant/trading/optimization'),
     'switch-verify-park':dict(required=['review-id'],effect='read-only verification of completed park, immutable archives, external databases and absent selected terminal/session; not admission or grant'),
     'switch-replace-receipt':dict(required=['review-id','candidate-receipt','expected-sha256'],effect='authenticated installer companion: atomic old-receipt CAS under exclusive session lock after verified park and unchanged physical target; preserves old receipt/research, never grants or starts; admission remains installer responsibility'),
@@ -303,6 +304,7 @@ def main(argv=None):
     p=sub.add_parser('monitor-prepare');p.add_argument('--symbol',required=True)
     p=sub.add_parser('monitor-launch');p.add_argument('--attempt-id',required=True)
     p=sub.add_parser('monitor-repair');p.add_argument('--attempt-id',required=True)
+    p=sub.add_parser('monitor-stop');p.add_argument('--attempt-id',required=True)
     p=sub.add_parser('validate-set');p.add_argument('--set',type=Path,required=True);p.add_argument('--require-optimization',action='store_true')
     p=sub.add_parser('build-set');p.add_argument('--source',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--spec',type=Path,required=True)
     p=sub.add_parser('bootstrap');p.add_argument('--account-login',required=True);p.add_argument('--account-server',required=True)
@@ -362,9 +364,9 @@ def main(argv=None):
                 forbidden_roots=[controller.install['catalog_root']] if controller.install.get('catalog_root') else [])
         else:
             if not args.operation.startswith('orphan-recovery-'): controller.open()
-            if args.operation=='monitor-repair':
+            if args.operation in ('monitor-repair','monitor-stop'):
                 from studio_monitor_repair import repair
-                result=repair(controller,args.attempt_id)
+                result=repair(controller,args.attempt_id,stop_only=args.operation=='monitor-stop')
             elif args.operation.startswith('orphan-recovery-'):
                 from studio_orphan_recovery import prepare,apply,status
                 if args.operation=='orphan-recovery-prepare': result=prepare(controller)

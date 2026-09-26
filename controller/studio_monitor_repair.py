@@ -15,7 +15,9 @@ from studio_onboarding import session_state, monitor_launch, monitor_chart, moni
 from studio_seed_process import WindowsSeedProcess
 
 
-def repair(controller, attempt_id):
+def repair(controller, attempt_id, *, stop_only=False):
+    if type(stop_only) is not bool:
+        raise ValueError("Explicit monitor operation required")
     if not re.fullmatch('[A-Za-z0-9_-]{1,80}', attempt_id):
         raise ValueError('Simple retained repair attempt ID required')
     session, _ = session_state(controller)
@@ -30,10 +32,13 @@ def repair(controller, attempt_id):
             raise ValueError('Repair is limited to an empty, never-started monitor session')
         assert_clear_controls(controller.store.db, controller.local/'native-gate')
         for other in root.glob('*.json'):
-            if other != path and read_json(other).get('phase') != 'launched':
+            retained = read_json(other)
+            if other != path and retained.get('phase') != 'launched' and not (retained.get('stop_only') is True and retained.get('phase') == 'stopped'):
                 raise ValueError('Resume the retained monitor repair; do not create another attempt')
         if path.exists():
             record = read_json(path)
+            if record.get('stop_only', False) != stop_only:
+                raise ValueError('Retained monitor operation differs; never reinterpret a stop as a relaunch')
             if record['installation_sha256'] != sha(controller.install) or record['session_sha256'] != sha(session):
                 raise ValueError('Repair installation/session changed')
             if record.get('schema_version') != 1 or record.get('attempt_id') != attempt_id or record.get('phase') not in ('close_issued','stopped','prepared','launched'):
@@ -56,7 +61,7 @@ def repair(controller, attempt_id):
                             # them; this operation cannot arm a batch or clear native flags.
                             retained_other_versions[str(control)] = hashlib.sha256(control.read_bytes()).hexdigest()
             native = inspect_idle_demo(controller)
-            record = dict(schema_version=1, attempt_id=attempt_id, phase='close_issued',
+            record = dict(schema_version=1, attempt_id=attempt_id, stop_only=stop_only, phase='close_issued',
                           installation_sha256=sha(controller.install), session_sha256=sha(session),
                           native=native, retained_other_version_controls=retained_other_versions,
                           created_at=time.time(), grants_changed=False, optimization_started=False)
@@ -73,6 +78,10 @@ def repair(controller, attempt_id):
             if current is not None:
                 return record | dict(status='close_outcome_unresolved', close_will_not_be_repeated=True)
             record['phase'] = 'stopped'; write_json(path, record)
+        if record['phase'] == 'stopped' and stop_only:
+            if process.inspect() is not None:
+                raise ValueError('Terminal reopened after retained stop; no further close or adoption')
+            return record | dict(status='selected_terminal_stopped', profile_changed=False)
         if record['phase'] == 'stopped':
             if process.inspect() is not None:
                 raise ValueError('Terminal reopened before monitor repair; no additional close')

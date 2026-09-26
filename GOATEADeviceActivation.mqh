@@ -223,8 +223,22 @@ string GOATActivationReloadPath(void)
   {
    return "GOATStudio\\activation-reload-"+GOAT_BUILD_ID+"-"+(string)ChartID()+".json";
   }
+void GOATActivationReloadReset(void)
+  {
+   // MT5 preserves globals across chart-change OnDeinit/OnInit.
+   GOATDeviceActivationScrub();
+   g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_INACTIVE;
+   g_GOATActivationReloadDeadline=0;
+  }
 void GOATActivationReloadRequired(void)
   {
+   // A delayed timer must never downgrade a completed restart ticket.
+   string completedBody,completedBuild,completedSymbol,completedPhase; SGOATJsonToken completed[];
+   if(GoatStudioReadUtf8(GOATActivationReloadPath(),completedBody) && GOATJsonParse(completedBody,completed)
+      && GOATJsonGetString(completedBody,completed,0,"build",completedBuild) && completedBuild==GOAT_BUILD_ID
+      && GOATJsonGetString(completedBody,completed,0,"symbol",completedSymbol) && completedSymbol==Symbol()
+      && GOATJsonGetString(completedBody,completed,0,"phase",completedPhase) && completedPhase=="reinitialized")
+     {GOATActivationReloadReset(); return;}
    g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_APPROVED;
    g_GOATDeviceActivationReloadRequested=true;
    g_GOATActivationReloadDeadline=0;
@@ -249,7 +263,7 @@ bool GOATActivationReloadWrite(const string phase,const long original,const long
   }
 // Called from a real OnInit, before normal EA initialization. An intermediate
 // period stays activation-only; no signals, orders, or optimization may run.
-bool GOATActivationReloadOnInit(void)
+bool GOATActivationReloadPendingOnInit(void)
   {
    string path=GOATActivationReloadPath();
    if(MQLInfoInteger(MQL_TESTER) || !FileIsExist(path)) return false;
@@ -281,7 +295,8 @@ bool GOATActivationReloadOnInit(void)
      {
       // A later genuine human chart reload can initialize using the approved
       // credential. Do not issue another automatic chart change.
-      GOATActivationReloadWrite("reinitialized",original,temporary,expires);
+      if(!GOATActivationReloadWrite("reinitialized",original,temporary,expires))
+        {GOATActivationReloadRequired(); return true;}
       Print("GOAT activation: later OnInit observed; automatic restart expired.");
       return false;
      }
@@ -304,6 +319,14 @@ bool GOATActivationReloadOnInit(void)
       return false;
      }
    GOATActivationReloadRequired(); return true;
+  }
+bool GOATActivationReloadOnInit(void)
+  {
+   if(GOATActivationReloadPendingOnInit()) return true;
+   // Every non-pending path must release activation-only state, including a
+   // missing ticket, an already completed ticket and a genuine manual reload.
+   GOATActivationReloadReset();
+   return false;
   }
 #endif
 

@@ -136,7 +136,12 @@ is never adopted, and native campaign flags/grants are untouched. The SDK is
 available in the local developer probe environment; inclusion in the customer
 installer remains a packaging requirement.
 
-V1.49 MONITOR-ONBOARDING-2 displays a compact agent connection screen for an
+`monitor-stop --attempt-id <unique-id>` uses the same idle-demo checks for an
+authorized upgrade, closes normally once and retains the result without changing
+the profile or relaunching. Reuse the same ID to inspect an uncertain outcome;
+a reopened terminal is refused, never closed again or adopted.
+
+V1.49 MONITOR-ONBOARDING-3 displays a compact agent connection screen for an
 empty session and small charts. A genuine human handoff is possible before the
 agent creates settings; no default trading/test settings are invented. Existing
 saved drafts and partial/malformed states still require recovery. Fresh OnInit

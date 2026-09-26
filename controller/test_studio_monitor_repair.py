@@ -49,6 +49,26 @@ class MonitorRepairTests(unittest.TestCase):
         self.assertEqual(result['phase'], 'launched')
         self.close.assert_called_once()
 
+    def test_stop_only_preserves_profile_never_launches_and_replays_without_close(self):
+        profile=Path(json.loads((self.c.root/'monitor-profile.json').read_text())['profile_path'])
+        before={p.name:p.read_bytes() for p in profile.iterdir()}
+        result=repair(self.c,'upgrade-stop',stop_only=True)
+        self.assertEqual(result['status'],'selected_terminal_stopped')
+        self.assertFalse(result['profile_changed'])
+        self.fixture.start.assert_not_called(); self.close.assert_called_once()
+        self.assertEqual(repair(self.c,'upgrade-stop',stop_only=True)['status'],'selected_terminal_stopped')
+        self.close.assert_called_once()
+        with self.assertRaisesRegex(ValueError,'reinterpret'):
+            repair(self.c,'upgrade-stop')
+        self.assertEqual(before,{p.name:p.read_bytes() for p in profile.iterdir()})
+
+    def test_completed_stop_refuses_reopened_terminal(self):
+        repair(self.c,'reopened-stop',stop_only=True)
+        self.process.inspect=lambda:dict(self.identity,pid=99)
+        with self.assertRaisesRegex(ValueError,'reopened'):
+            repair(self.c,'reopened-stop',stop_only=True)
+        self.close.assert_called_once();self.fixture.start.assert_not_called()
+
     def test_replacement_is_not_adopted(self):
         self.close.side_effect = OSError('uncertain')
         with self.assertRaises(OSError): repair(self.c, 'replacement')

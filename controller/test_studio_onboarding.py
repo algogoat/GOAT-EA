@@ -124,6 +124,7 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(args,[str(self.fixture.bin),'/config:'+launch['startup_config']])
         startup=Path(launch['startup_config']).read_text(encoding='utf-16')
         self.assertIn('[StartUp]',startup)
+        self.assertNotIn('Symbol=',startup)  # Preserve the prepared chart across ordinary restart.
         self.assertIn('Expert=GOAT-EA\\GOAT V1.48.ex5',startup)
         self.assertIn('ExpertParameters=GOAT Studio Agent.set',startup)
         self.assertIn('AllowLiveTrading=0',startup)

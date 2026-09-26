@@ -287,9 +287,11 @@ def monitor_launch(controller, attempt_id):
         if preset.read_bytes() != expected:
             raise ValueError('Monitor startup preset changed; preserve it before repair')
         config = directory/(attempt_id+'.ini')
+        # Omit StartUp.Symbol: MT5 then attaches to the saved first chart,
+        # rather than creating a disposable chart that vanishes on next start.
         startup = ('[Charts]\r\nProfileLast='+receipt['profile_name']+'\r\n[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n'
                    '[StartUp]\r\nExpert='+controller.install['ea_relative_path']+'\r\nExpertParameters='+preset.name+
-                   '\r\nSymbol='+receipt['symbol']+'\r\nPeriod=M1\r\n').encode('utf-16')
+                   '\r\nPeriod=M1\r\n').encode('utf-16')
         if config.exists():
             raise ValueError('Unclaimed startup configuration exists; preserve and inspect before another launch')
         with config.open('xb') as stream:

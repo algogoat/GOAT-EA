@@ -38,3 +38,5 @@ qualifying an actual cold restart after retained native shutdowns. The bounded
 pre-attachment recovery aid, not a fix to the automatic reload path. A future
 change must verify the native transition and bound retries without restarting or
 altering any unrelated terminal or already attached strategy.
+
+| CTRL-004 | Safe terminal session switching and restoration (goatai#1880) | Controller/desktop source implemented; Windows filesystem/SQLite fixture tests passed; native MT5 qualification pending | Review both active and gate owners, preserve pending research, revoke grants, retain exact recovery IDs, block live/unresolved work, restore without launching |

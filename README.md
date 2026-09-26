@@ -2,6 +2,16 @@
 
 Expert Advisor (EA) project for MetaTrader 5, maintained in the `GOAT-EA` repository.
 
+### V1.49 reviewed research recovery candidate
+
+The forward-only orphan recovery action allows the matched controller to request
+clearing a positively identified stale BatchOnGoing flag inside the inert Studio
+monitor. It never launches/stops work, edits research queues or changes grants.
+Foreign gates and active/uncertain attempts are refused. The public controller
+also supports atomic pending-queue cleanup and a retained time-budgeted batch
+driver. See [controller workflow and native qualification requirements](controller/NATIVE-RECOVERY-CONTRACT.md).
+Source/compile evidence is not a production activation or completed native test.
+
 ### V1.48 integrated sequence exports
 
 Selected batch export backtests can capture native sequence evidence beside the

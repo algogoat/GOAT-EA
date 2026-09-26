@@ -57,7 +57,12 @@ OPERATION_CONTRACTS = {
     'reconcile':dict(required=['job-id'],effect='alias of status'),
     'cancel':dict(required=['job-id'],effect='cancel pending job or publish exact owned native stop; receipt is not stop proof'),
     'clear-queue':dict(required=[],defaults={'apply':False},apply_required=['request-id','expected-revision'],effect='preview pending jobs; explicit apply removes only pending work atomically, preserving all history/packages/results; refuses unresolved native attempts, seed ownership and outstanding native controls; never resets EA flags or starts work'),
-    'native-recovery-status':dict(required=[],effect='diagnose runtime flags, native controls and unresolved controller work without resetting or launching; orphan continuation recovery is unsupported and requires a compatible reviewed EA/controller release'),
+    'native-recovery-status':dict(required=[],effect='diagnose flags, native controls and running monitor capability without effects; only matched V1.49 supports reviewed orphan recovery, and foreign ownership still blocks'),
+    'orphan-recovery-prepare':dict(required=[],effect='V1.49 only: freeze single-owner idle orphan-flag recovery review; no mutation to native state'),
+    'orphan-recovery-apply':dict(required=['review-id','confirm-reviewed'],authorization='Only after explicit user approval of the exact review in chat or app; never self-approve',effect='publish one exact V1.49 recovery action; no launch, stop, queue or grant change; receipt/readback required'),
+    'orphan-recovery-status':dict(required=['review-id'],effect='reconcile exact native receipt and fresh readback; retain fence on uncertain effects; never resend'),
+    'run-batch':dict(required=['job-id'],start_required=['max-seconds'],limits={'max-seconds':[1,86400]},resume='Use --resume without a new budget; retained deadline does not reset',effect='bounded owned batch driver with durable dispatch deadline and one cancel request at budget; stop must be observed, never assumed; no force kill or uncertain relaunch'),
+    'batch-driver-status':dict(required=['job-id'],effect='read retained driver journal and current binding match; never starts, resumes or cancels work'),
     'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls')
 }
 
@@ -67,12 +72,12 @@ class Controller:
         self.install = load_installation(receipt)
         self.root = Path(self.install['controller_state_root'])
         self.local = Path(self.install['terminal_data_root'])/'MQL5/Files/GOATStudio'
-        self.schema,self.policy = contracts()
+        self.schema,self.policy = contracts(self.install['ea_version'])
         self.store = None
 
-    def open(self):
+    def open(self, *, recovery=False):
         from studio_handover import guard
-        guard(self)
+        if not recovery: guard(self)
         self.session = read_json(self.root/'session.json')
         if self.session['installation_sha256'] != sha(self.install):
             raise ValueError('Installation changed since bootstrap; reconcile before repair')
@@ -88,10 +93,11 @@ class Controller:
 
     def state(self): return self.store.snapshot(self.terminal,self.run)
 
-    def submit(self,command,payload,request_id,*,expected_revision=None):
+    def submit(self,command,payload,request_id,*,expected_revision=None,expected_generation=None):
         state = self.state()
         request = dict(schema_version=1,request_id=request_id,terminal_id=self.terminal,run_id=self.run,
-                       expected_revision=state['revision'] if expected_revision is None else expected_revision,generation=state['generation'],command=command,payload=payload)
+                       expected_revision=state['revision'] if expected_revision is None else expected_revision,
+                       generation=state['generation'] if expected_generation is None else expected_generation,command=command,payload=payload)
         # Persist the exact envelope before submission, making transport retries idempotent.
         path = self.root/'requests'/(request_id+'.json')
         if path.exists():
@@ -99,6 +105,8 @@ class Controller:
             if prior['command'] != command or prior['payload'] != payload: raise ValueError('Request ID content changed')
             if expected_revision is not None and prior['expected_revision'] != expected_revision:
                 raise ValueError('Request ID revision changed; retry the exact original request')
+            if expected_generation is not None and prior['generation'] != expected_generation:
+                raise ValueError('Request ID generation changed; retry the exact original request')
             request = prior
         else: write_json(path,request)
         result = self.store.submit(request,actor='agent')
@@ -185,7 +193,7 @@ class Controller:
         write_json(self.root/'packages'/(job_id+'.source.json'),dict(set_path=str(Path(set_path).resolve()),set_sha256=info['sha256']))
         return dict(job_id=job_id,package=str(package),manifest=result['receipt'],native_started=False)
 
-    def start(self,job_id):
+    def start(self,job_id,*,expected_generation=None):
         from studio_seed_slot import guard_active_seed
         guard_active_seed(self.root)
         from studio_process_check import inspect_processes,revalidate_processes
@@ -195,26 +203,29 @@ class Controller:
         from studio_native_request import validate_activated_job
         state=self.state();job=self.job(job_id);binding=self.binding();args=self.native_args()
         if state['owner']!='agent': raise ValueError('Human must Give to Agent in Studio first')
+        generation=state['generation'] if expected_generation is None else expected_generation
+        if state['generation']!=generation: raise ValueError('Controller generation changed before start')
         if job['status']!='pending': raise ValueError('Only pending job can start; reconcile existing attempt')
         # Check runtime BEFORE recording an irreversible attempt.
         self.runtime(require_idle=True,expected_batch_ongoing=False)
         baseline=inspect_processes(binding)
         package=self.root/'packages'/job_id
         digest=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()
-        self.submit('queue.reserve',dict(job_id=job_id,configuration_sha256=job['configuration_sha256'],package_sha256=digest),job_id+'-reserve')
+        self.submit('queue.reserve',dict(job_id=job_id,configuration_sha256=job['configuration_sha256'],package_sha256=digest),job_id+'-reserve',expected_generation=generation)
         state=self.state()
-        intent=record_intent(self.store,self.terminal,self.run,job_id,package,actor='agent',revision=state['revision'],generation=state['generation'])
+        intent=record_intent(self.store,self.terminal,self.run,job_id,package,actor='agent',revision=state['revision'],generation=generation)
         evidence=self.root/'attempts'/intent['attempt_id'];evidence.parent.mkdir(exist_ok=True)
         def ownership(bound,inventory):
             revalidate_processes(bound,baseline)
             self.runtime(require_idle=True,expected_batch_ongoing=False)
         with exclusive_gate(self.local/'native-gate'):
+            if self.state()['generation']!=generation: raise ValueError('Controller generation changed before activation')
             activate_open(self.state(),self.job(job_id),**args,evidence=evidence,process_baseline=baseline,validate_ownership=ownership)
         state=self.state()
         def validate(state,job):
             revalidate_processes(binding,baseline)
             return validate_activated_job(state,job,**args,evidence=evidence)
-        return publish(self.store,self.terminal,self.run,job_id,self.bridge.root,actor='agent',revision=state['revision'],generation=state['generation'],validate_native=validate)
+        return publish(self.store,self.terminal,self.run,job_id,self.bridge.root,actor='agent',revision=state['revision'],generation=generation,validate_native=validate)
 
     def runtime(self,require_idle=False,expected_batch_ongoing=False):
         from studio_resilient_read import read_observation
@@ -247,11 +258,11 @@ class Controller:
         self.bridge.pump()
         return result|dict(job=self.job(job_id))
 
-    def cancel(self,job_id):
+    def cancel(self,job_id,*,expected_generation=None):
         from studio_cancel import publish_cancel
         job=self.job(job_id)
-        if job['status']=='pending': return self.submit('queue.cancel',dict(job_id=job_id),job_id+'-cancel')
-        return publish_cancel(self,job)
+        if job['status']=='pending': return self.submit('queue.cancel',dict(job_id=job_id),job_id+'-cancel',expected_generation=expected_generation)
+        return publish_cancel(self,job,expected_generation=expected_generation)
 
 
 def main(argv=None):
@@ -282,6 +293,11 @@ def main(argv=None):
     p=sub.add_parser('serve');p.add_argument('--watch-seconds',type=float,default=3600)
     p=sub.add_parser('clear-queue');p.add_argument('--apply',action='store_true');p.add_argument('--request-id');p.add_argument('--expected-revision',type=int)
     sub.add_parser('native-recovery-status')
+    sub.add_parser('orphan-recovery-prepare')
+    p=sub.add_parser('orphan-recovery-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
+    p=sub.add_parser('orphan-recovery-status');p.add_argument('--review-id',required=True)
+    p=sub.add_parser('run-batch');p.add_argument('--job-id',required=True);p.add_argument('--max-seconds',type=int);p.add_argument('--resume',action='store_true')
+    p=sub.add_parser('batch-driver-status');p.add_argument('--job-id',required=True)
     p=sub.add_parser('submit');p.add_argument('--request',type=Path,required=True)
     p=sub.add_parser('prepare');p.add_argument('--job-id',required=True);p.add_argument('--set',type=Path,required=True);p.add_argument('--configuration',type=Path,required=True)
     for command in ('start','status','cancel','reconcile','finish'):
@@ -289,7 +305,7 @@ def main(argv=None):
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
         controller=Controller(args.installation)
-        if args.operation not in ('switch-plan','switch-apply','switch-status','discover','resource-profile'):
+        if args.operation not in ('switch-plan','switch-apply','switch-status','discover','resource-profile') and not args.operation.startswith('orphan-recovery-'):
             from studio_handover import session_lock,guard
             locks.enter_context(session_lock(controller));guard(controller)
         if args.operation in ('switch-plan','switch-apply','switch-status'):
@@ -320,8 +336,13 @@ def main(argv=None):
                 controller_version=VERSION,ea_version=controller.install['ea_version'],
                 forbidden_roots=[controller.install['catalog_root']] if controller.install.get('catalog_root') else [])
         else:
-            controller.open()
-            if args.operation.startswith('seed-'):
+            if not args.operation.startswith('orphan-recovery-'): controller.open()
+            if args.operation.startswith('orphan-recovery-'):
+                from studio_orphan_recovery import prepare,apply,status
+                if args.operation=='orphan-recovery-prepare': result=prepare(controller)
+                elif args.operation=='orphan-recovery-apply': result=apply(controller,args.review_id,confirmed=args.confirm_reviewed)
+                else: result=status(controller,args.review_id)
+            elif args.operation.startswith('seed-'):
                 from studio_seed import SeedRunner
                 runner=SeedRunner(controller)
                 if args.operation=='seed-prepare':
@@ -330,6 +351,10 @@ def main(argv=None):
                 elif args.operation in ('seed-start','seed-resume'):
                     result=getattr(runner,args.operation.removeprefix('seed-'))(args.batch_id,max_seconds=args.max_seconds)
                 else: result=getattr(runner,args.operation.removeprefix('seed-'))(args.batch_id)
+            elif args.operation in ('run-batch','batch-driver-status'):
+                from studio_batch_driver import run,status
+                if args.operation=='run-batch': result=run(controller,args.job_id,max_seconds=args.max_seconds,resume=args.resume)
+                else: result=status(controller,args.job_id)
             elif args.operation=='serve': result=pump_for(controller.bridge,args.watch_seconds)
             elif args.operation=='state': controller.bridge.pump();result=controller.state()
             elif args.operation=='clear-queue':

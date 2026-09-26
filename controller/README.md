@@ -340,9 +340,34 @@ For inconsistent native flags, run `native-recovery-status`. It reports runtime
 identity/readiness failures and remaining controls without clearing anything.
 `cancel` requires an exact owned attempt; `finish` requires its observed native
 completion and idle runtime. Neither repairs an orphan `BatchOnGoing` flag. A
-possible orphan requires the compatible reviewed native recovery capability;
+possible orphan requires the matching V1.49 reviewed native recovery capability;
 do not edit global-variable files, call Start/Stop as a reset or fabricate a launch
 receipt. See [native recovery contract](NATIVE-RECOVERY-CONTRACT.md).
+
+### Time-budgeted batch execution
+
+After preparing and checking a batch, `run-batch --job-id <id> --max-seconds 86400`
+drives its existing owned start/status/cancel/finish operations with a durable
+deadline (1..86400 seconds). At the deadline it requests cancellation once and
+waits a bounded grace period for native stop/readback. It never equates issuing
+cancel with confirmed stop and never force-kills MT5. Keep the driver process
+running: an agent/process crash is not an autonomous native deadline mechanism.
+`batch-driver-status --job-id <id>` reads progress; `run-batch --job-id <id> --resume`
+uses the original deadline without replenishing its budget or retrying uncertain
+starts. Driver authority remains tied to the original generation. A changed
+grant, configuration or native identity requires reconciliation.
+
+### Reviewed orphan continuation recovery (V1.49)
+
+`orphan-recovery-prepare` freezes exact idle demo/runtime and single-owner evidence.
+After the user explicitly approves that review, `orphan-recovery-apply --review-id
+<id> --confirm-reviewed` publishes the one native action. Use
+`orphan-recovery-status --review-id <id>` for the retained receipt and fresh
+readback. The native action clears only the positively reviewed BatchOnGoing flag;
+it never starts/stops trading or testing, changes grants, clears queues, or edits
+native control files. Ambiguous delivery remains fenced and requires review.
+Legacy monitors and foreign gate owners are refused. Native Windows qualification
+and a compatible installed monitor are still required before promotion.
 
 ### Park and restore an entire research session
 

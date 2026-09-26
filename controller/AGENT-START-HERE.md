@@ -150,4 +150,9 @@ Starting a fresh batch on the same session: `clear-queue` previews pending work;
 `clear-queue --apply --request-id <unique-id> --expected-revision <preview-revision>`
 removes only pending jobs with history preserved. Then `prepare-batch` with a new
 identity, inspect `batch-status`, and explicitly `start`. For inconsistent runtime
-flags use `native-recovery-status`; there is no supported orphan reset in this EA.
+flags use `native-recovery-status`; legacy monitors cannot perform orphan recovery.
+Matched V1.49 supports the reviewed `orphan-recovery-prepare/apply/status` workflow
+described in README, with foreign/active ownership refused. A bounded experiment
+can use `run-batch --job-id <id> --max-seconds <1..86400>` after preparation;
+`batch-driver-status` reports retained progress. The driver requests stop at its
+deadline but requires actual native confirmation and must remain running.

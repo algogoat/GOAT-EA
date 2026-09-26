@@ -1,0 +1,240 @@
+"""Bounded supervision of one frozen native batch; never a process watchdog.
+
+Host/controller liveness is required. Native cancellation is a request until
+studio_finish verifies completion. An interrupted uncertain start is never
+retried or adopted, and a revoked owner never cancels a successor's work.
+"""
+import hashlib
+import math
+import re
+import time
+from pathlib import Path
+
+from campaign_ledger import sha
+from studio_batch import _verify_package
+from studio_bridge import write_json
+from studio_finish import finish
+from studio_handover import safe_path, session_lock
+from studio_installation import read_json
+from studio_native_gate import exclusive_gate
+
+TERMINAL = {'completed', 'cancelled', 'failed'}
+
+
+def _binding(controller, job_id, verify_preparation=False):
+    state = controller.state()
+    if state['owner'] != 'agent':
+        raise ValueError('Agent ownership was revoked; no takeover or cancellation performed')
+    job = controller.job(job_id)
+    if sha(job['configuration']) != job['configuration_sha256']:
+        raise ValueError('Frozen batch configuration changed')
+    if not job['configuration'].get('batch_members'):
+        raise ValueError('A prepared native batch is required')
+    package = safe_path(controller.root/'packages'/job_id)
+    if verify_preparation:
+        _verify_package(controller, job)
+    preparation = read_json(package/'preparation.json')
+    if preparation.get('configuration_sha256') != job['configuration_sha256']:
+        raise ValueError('Prepared batch configuration differs')
+    for relative, expected in preparation['files'].items():
+        target = safe_path(package/relative)
+        if not target.is_relative_to(package) or hashlib.sha256(target.read_bytes()).hexdigest() != expected:
+            raise ValueError('Prepared batch bytes changed')
+    session = read_json(controller.root/'session.json')
+    if session != controller.session or session['installation_sha256'] != sha(controller.install):
+        raise ValueError('Installed session changed')
+    expected_active = dict(directory_id=session['directory_id'], terminal_id=controller.terminal,
+                           run_id=controller.run, terminal_data_path=controller.install['terminal_data_root'])
+    if read_json(controller.local/'active.json') != expected_active:
+        raise ValueError('Active controller session changed')
+    return dict(job_id=job_id, terminal_id=controller.terminal, run_id=controller.run,
+                generation=state['generation'], installation_sha256=sha(controller.install),
+                session_sha256=sha(session), configuration_sha256=job['configuration_sha256'],
+                package=str(package), package_sha256=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest(),
+                preparation_sha256=hashlib.sha256((package/'preparation.json').read_bytes()).hexdigest())
+
+
+def _owned_attempt(controller, record):
+    if _binding(controller, record['binding']['job_id']) != record['binding']:
+        raise ValueError('Batch binding or ownership generation changed; no foreign cancellation')
+    job = controller.job(record['binding']['job_id'])
+    intent = job.get('launch_intent', {})
+    if (intent.get('attempt_id') != record['attempt_id']
+            or intent.get('package_sha256') != record['binding']['package_sha256']
+            or str(Path(intent.get('package', '')).resolve()) != record['binding']['package']):
+        raise ValueError('Exact owned attempt changed; no foreign cancellation')
+    return job
+
+
+def _save(path, record, clock):
+    now = clock.time()
+    if not math.isfinite(now):
+        raise ValueError('Wall clock is not finite')
+    record['last_wall'] = max(record.get('last_wall', now), now)
+    write_json(path, record)
+
+
+def _summary(path, record):
+    return {key: record.get(key) for key in ('status', 'max_seconds', 'started_wall', 'deadline_wall',
+            'attempt_id', 'start_issued', 'cancel_issued', 'stopped', 'last_error', 'result_path')} | dict(
+        journal_path=str(path), job_id=record['binding']['job_id'],
+        host_liveness_required=True, independent_hard_stop=False)
+
+
+def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
+        cancel_grace_seconds=120, clock=time, finish_fn=finish):
+    """Start once, or explicitly observe a retained attempt against its old deadline.
+
+    Controller must already be open. CLI callers can hold their normal shared
+    session lock too. No resume path starts a pending job, retries a start or
+    acquires agent ownership. All journals remain available for reviewed recovery.
+    """
+    if not isinstance(job_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', job_id):
+        raise ValueError('Invalid prepared batch ID')
+    if type(resume) is not bool:
+        raise ValueError('Resume must be an explicit boolean')
+    if resume and max_seconds is not None:
+        raise ValueError('Resume preserves the original budget; do not supply max_seconds')
+    if not resume and (type(max_seconds) is not int or not 1 <= max_seconds <= 86400):
+        raise ValueError('max_seconds must be an integer from 1 through 86400')
+    for value, minimum, maximum in ((poll_seconds, .1, 60), (cancel_grace_seconds, 1, 600)):
+        if type(value) not in (int, float) or not math.isfinite(value) or not minimum <= value <= maximum:
+            raise ValueError('Polling and cancellation observation limits must be finite and bounded')
+    call_wall, call_monotonic = clock.time(), clock.monotonic()
+    if not math.isfinite(call_wall) or not math.isfinite(call_monotonic):
+        raise ValueError('Driver clocks must be finite')
+    root = safe_path(controller.root)
+    gate = safe_path(root/'batch-driver-gate')
+    journals = safe_path(root/'batch-drivers')
+    gate.mkdir(exist_ok=True); journals.mkdir(exist_ok=True)
+    path = safe_path(journals/(job_id+'.json'))
+    with session_lock(controller), exclusive_gate(gate):
+        if resume:
+            record = read_json(path)
+            if (record.get('schema_version') != 1 or type(record.get('max_seconds')) is not int
+                    or not 1 <= record['max_seconds'] <= 86400
+                    or record['deadline_wall'] != record['started_wall']+record['max_seconds']
+                    or not all(type(record.get(k)) is bool for k in ('start_issued', 'cancel_issued', 'stopped'))
+                    or record['binding']['job_id'] != job_id
+                    or type(record.get('cancel_grace_seconds')) not in (int, float)
+                    or not 1 <= record['cancel_grace_seconds'] <= 600
+                    or any(type(record.get(k)) not in (int, float) or not math.isfinite(record[k])
+                           for k in ('started_wall', 'deadline_wall', 'last_wall'))
+                    or (record['cancel_issued'] and (type(record.get('cancel_deadline_wall')) not in (int, float)
+                        or not math.isfinite(record['cancel_deadline_wall'])))):
+                raise ValueError('Invalid retained batch driver journal')
+            if _binding(controller, job_id) != record['binding']:
+                raise ValueError('Batch/session/ownership changed; resume refused')
+            if record['stopped']:
+                return _summary(path, record)
+            if not record['start_issued'] or not record.get('attempt_id'):
+                record['status'] = 'start_uncertain'
+                record['last_error'] = 'No exact retained attempt; observe/reconcile manually. No start or cancel was issued.'
+                _save(path, record, clock)
+                return _summary(path, record)
+        else:
+            if path.exists():
+                raise ValueError('Driver journal exists; explicit resume required, never restart')
+            binding = _binding(controller, job_id, verify_preparation=True)
+            job = controller.job(job_id)
+            if job['status'] != 'pending' or 'launch_intent' in job:
+                raise ValueError('Only an unstarted pending prepared batch can be driven')
+            if any(item['status'] in ('reserved', 'starting', 'running', 'reconcile_required', 'verifying')
+                   for item in controller.state()['queue']):
+                raise ValueError('Existing native work requires reconciliation')
+            now = clock.time()
+            if not math.isfinite(now):
+                raise ValueError('Wall clock is not finite')
+            record = dict(schema_version=1, binding=binding, max_seconds=max_seconds,
+                          started_wall=now, deadline_wall=now+max_seconds, last_wall=now,
+                          start_issued=True, attempt_id=None, cancel_issued=False,
+                          stopped=False, status='start_issued', cancel_grace_seconds=cancel_grace_seconds)
+            # Durable intent precedes any dispatch, including a crash before start.
+            _save(path, record, clock)
+            try:
+                if _binding(controller, job_id) != binding:
+                    raise ValueError('Batch authority changed before dispatch')
+                controller.start(job_id, expected_generation=binding['generation'])
+                intent = controller.job(job_id).get('launch_intent', {})
+                if (not re.fullmatch(r'[a-f0-9]{64}', intent.get('attempt_id', ''))
+                        or intent.get('package_sha256') != binding['package_sha256']):
+                    raise ValueError('Start returned without an exact native attempt')
+                record['attempt_id'] = intent['attempt_id']
+                record['status'] = 'observing'
+                _save(path, record, clock)
+            except Exception as error:
+                record['status'] = 'start_uncertain'; record['last_error'] = str(error)
+                _save(path, record, clock)
+                return _summary(path, record)
+        wall_start, monotonic_start = call_wall, call_monotonic
+        rollback = clock.time() < record['last_wall']
+        monotonic_deadline = monotonic_start+max(0, record['deadline_wall']-wall_start)
+        cancel_mono_deadline = None
+        if record['cancel_issued']:
+            cancel_mono_deadline = monotonic_start+min(record['cancel_grace_seconds'], max(0, record['cancel_deadline_wall']-wall_start))
+        while True:
+            now, mono = clock.time(), clock.monotonic()
+            rollback = rollback or now < record['last_wall'] or now-wall_start+.05 < mono-monotonic_start
+            try:
+                _owned_attempt(controller, record)
+            except Exception as error:
+                record['status'] = 'ownership_or_binding_changed'; record['last_error'] = str(error)
+                _save(path, record, clock)
+                return _summary(path, record)
+            try:
+                if controller.job(job_id)['status'] not in TERMINAL:
+                    controller.reconcile(job_id)
+                _owned_attempt(controller, record)
+                result = finish_fn(controller, job_id, expected_generation=record['binding']['generation'])
+                if result.get('status') not in TERMINAL or result.get('result', {}).get('attempt_id') != record['attempt_id']:
+                    raise ValueError('Finish did not verify this exact attempt')
+                record.update(status=result['status'], stopped=True, last_error=None,
+                              result_path=result.get('result_path') or controller.job(job_id).get('completion_path'))
+                _save(path, record, clock)
+                return _summary(path, record)
+            except Exception as error:
+                record['last_error'] = str(error)
+            now, mono = clock.time(), clock.monotonic()
+            rollback = rollback or now < record['last_wall'] or now-wall_start+.05 < mono-monotonic_start
+            if record['cancel_issued'] or rollback or now >= record['deadline_wall'] or mono >= monotonic_deadline:
+                if not record['cancel_issued']:
+                    try:
+                        _owned_attempt(controller, record)
+                    except Exception as error:
+                        record['status'] = 'ownership_or_binding_changed'; record['last_error'] = str(error)
+                        _save(path, record, clock)
+                        return _summary(path, record)
+                    grace = record['cancel_grace_seconds']
+                    record.update(cancel_issued=True, status='cancel_requested_unconfirmed',
+                                  cancel_deadline_wall=now+grace,
+                                  cancel_reason='clock_rollback' if rollback else 'deadline')
+                    cancel_mono_deadline = mono+grace
+                    _save(path, record, clock)
+                    try:
+                        controller.cancel(job_id, expected_generation=record['binding']['generation'])
+                    except Exception as error:
+                        record['last_error'] = str(error)
+                if (mono >= cancel_mono_deadline or now >= record['cancel_deadline_wall']):
+                    record['status'] = 'stop_unconfirmed'
+                    _save(path, record, clock)
+                    return _summary(path, record)
+            _save(path, record, clock)
+            remaining = (cancel_mono_deadline if record['cancel_issued'] else monotonic_deadline)-mono
+            clock.sleep(min(poll_seconds, max(.01, remaining)))
+
+
+def status(controller, job_id):
+    """Read the atomically retained driver record, even while its lock is held."""
+    if not isinstance(job_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', job_id):
+        raise ValueError('Invalid prepared batch ID')
+    path = safe_path(controller.root/'batch-drivers'/(job_id+'.json'))
+    with session_lock(controller):
+        record = read_json(path)
+        if record.get('schema_version') != 1 or record['binding']['job_id'] != job_id:
+            raise ValueError('Invalid retained batch driver journal')
+        try:
+            matches = _binding(controller, job_id) == record['binding']
+        except (ValueError, OSError, KeyError):
+            matches = False
+        return _summary(path, record) | dict(current_binding_matches=matches,
+            last_recorded_wall=record['last_wall'], observation='retained_driver_record_not_fresh_native_state')

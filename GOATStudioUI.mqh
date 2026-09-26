@@ -14,6 +14,9 @@ long g_StudioQueueRevision=-1,g_StudioQueueGeneration=-1;
 string g_StudioSchemaHash="",g_StudioStrategyName="";
 bool g_StudioHasStrategy=false;
 void GoatStudioDispatch(void);
+#ifdef GOAT_ORPHAN_RECOVERY_V149
+string GoatStudioRecoveryInstance(void);
+#endif
 
 bool GoatStudioManaged(void)
   {
@@ -636,6 +639,11 @@ void CStrategyTesterDialog::ManagedObservation(const string status)
       +",\"account_demo\":"+(AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO ? "true" : "false")
       +",\"batch_ongoing\":"+(GlobalVariableCheck("BatchOnGoing") && GlobalVariableGet("BatchOnGoing")!=0 ? "true" : "false")
       +",\"restart_pending\":"+(GlobalVariableCheck("GOAT_BatchRestartPending") && GlobalVariableGet("GOAT_BatchRestartPending")!=0 ? "true" : "false")+"}";
+#ifdef GOAT_ORPHAN_RECOVERY_V149
+   body+=" ,\"recovery_capability\":{\"protocol\":1,\"ea_version\":"+GoatStudioQuote(GOAT_VERSION_LABEL)
+      +",\"monitor_instance\":"+GoatStudioQuote(GoatStudioRecoveryInstance())
+      +",\"terminal_running\":"+(GlobalVariableGet("TerminalRunning")!=0 ? "true" : "false")+"}";
+#endif
    ulong now=GetTickCount64();
    if(body==g_StudioLastObservation && now-g_StudioObservationMillis<5000) return;
    string published=body+",\"observed_terminal_utc\":"+GoatStudioQuote(TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS))+"}";

@@ -381,6 +381,8 @@ def apply(c, review_id, confirmed=False):
 
 
 def guard(c):
+    if (c.root/'orphan-recovery-pending.json').exists():
+        raise ValueError('Native orphan recovery requires exact orphan-recovery-status readback; do not start or switch sessions')
     _, _, archive, _ = paths(c)
     pending = archive/'pending.json'
     if pending.exists():

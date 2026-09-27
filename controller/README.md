@@ -455,7 +455,10 @@ statuses and the reviewed native recovery action remain in place.
 
 Source contracts in `test_studio_recovery_diagnostics_source.py` check guard
 ordering, unchanged recovery action/observation bytes and logging boundaries.
-These tests do not execute MQL5 or qualify a native monitor. This source candidate
+These tests do not execute MQL5 or qualify a native monitor. The V1.49 dependency
+policy pins this distinct -6 main source (SHA-256
+`838b4a8e0698b1ccbaecf5819655b8a4ceb142ea2d1ae519f87cd71f7bbdbb1e`);
+that source provenance is not compilation or admission. This source candidate
 requires a distinct compiled artifact, compile receipt, admission and reviewed
 native qualification before use; the admitted -5 binary is preserved.
 

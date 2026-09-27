@@ -432,6 +432,23 @@ native control files. Ambiguous delivery remains fenced and requires review.
 Legacy monitors and foreign gate owners are refused. Native Windows qualification
 and a compatible installed monitor are still required before promotion.
 
+If the exact retained receipt is `ORPHAN_RUNTIME_REJECTED`, no consumption exists
+anywhere in the selected local Studio tree, and the request has expired, review
+that rejection before using `orphan-recovery-reconcile-rejection --review-id
+<original-id> --confirm-reviewed` within authorized recovery maintenance. This
+separate command requires the original process, monitor, account, agent grant,
+state and idle orphan flag to match. It supports only an originally empty native
+gate; other results or prior controls remain fenced.
+
+Settlement retains the original review, issued/result receipts and transport
+bytes plus a durable cleanup intent. It removes only the exact rejected request
+and permit, marks `rejected_settled`, then removes that review's pending fence.
+It does not clear BatchOnGoing or retry recovery. Resume interrupted cleanup with
+the same command and review ID; never remove evidence manually. A status call
+only reports an interrupted rejection settlement and cannot finish it. Diagnose
+the rejection before preparing any later recovery, which needs a fresh explicit
+human approval. These controller fixtures are not native qualification.
+
 ### Park and restore an entire research session
 
 If bootstrap refuses an existing Studio activation, never delete active.json,

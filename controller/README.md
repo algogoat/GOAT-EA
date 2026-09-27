@@ -432,6 +432,33 @@ native control files. Ambiguous delivery remains fenced and requires review.
 Legacy monitors and foreign gate owners are refused. Native Windows qualification
 and a compatible installed monitor are still required before promotion.
 
+### Current monitor journal diagnostics (V1.49 internal -6)
+
+`V1.49-ORPHAN-DIAGNOSTIC-6` adds journal-only visibility into the existing
+orphan-recovery runtime guard. A rejected runtime check records its first fixed
+reason. A bound, loaded, read-only monitor with `BatchOnGoing` set also observes
+the same guard during the existing managed observation cadence. Those messages
+say `CURRENT_MONITOR_OBSERVATION`, `NO_ACTION`, and
+`current_state_not_original_rejection`: they describe the current monitor, not
+the cause of an earlier request's rejection. `CURRENT_GUARD_PASS` does not approve
+or perform recovery. Settle any retained rejected request through its supported
+review before a monitor upgrade; never resend it to obtain diagnostics.
+
+Only fixed reason labels and numeric chart-query error values are logged; no
+account, server, monitor, request or path identifiers are printed. Query errors
+are captured before and after the failed read without resetting `_LastError`,
+so unchanged values can be stale and are not proof of a fresh platform error.
+Repeated identical diagnostic tuples are suppressed, with at most 16 journal
+messages per EA load. No new timer, request, receipt, observation field, flag
+change, grant or trading action is introduced. All original recovery guards,
+statuses and the reviewed native recovery action remain in place.
+
+Source contracts in `test_studio_recovery_diagnostics_source.py` check guard
+ordering, unchanged recovery action/observation bytes and logging boundaries.
+These tests do not execute MQL5 or qualify a native monitor. This source candidate
+requires a distinct compiled artifact, compile receipt, admission and reviewed
+native qualification before use; the admitted -5 binary is preserved.
+
 ### Park and restore an entire research session
 
 If bootstrap refuses an existing Studio activation, never delete active.json,

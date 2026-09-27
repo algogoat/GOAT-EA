@@ -458,9 +458,21 @@ ordering, unchanged recovery action/observation bytes and logging boundaries.
 These tests do not execute MQL5 or qualify a native monitor. The V1.49 dependency
 policy pins this distinct -6 main source (SHA-256
 `838b4a8e0698b1ccbaecf5819655b8a4ceb142ea2d1ae519f87cd71f7bbdbb1e`);
-that source provenance is not compilation or admission. This source candidate
-requires a distinct compiled artifact, compile receipt, admission and reviewed
-native qualification before use; the admitted -5 binary is preserved.
+that source provenance alone is not compilation or admission.
+
+Root compiled clean source commit
+`94cf75f640ab014f885b7126980f94bbcab4e47a` with MetaEditor 5.0.0.6230:
+**0 errors, 0 warnings**. The source and staged main hashes matched. This PR
+tracks the resulting 2,255,896-byte candidate, SHA-256
+`30ae456630a962de99711de6321f465df9ef6dcd3dc53258cd57aeb8cf419d6c`.
+The retained compile receipt SHA-256 is
+`e64d428a733e019cd17456370924724cc23d2f7f3e42bbdfda1edec99670521d`.
+The admitted -5 artifact remains preserved in Git history at the compiled source
+commit, SHA-256
+`62a882c362880fe2682a9d427125f9a551727eabe1463f00a6523c60cd429f61`.
+No MQL source changed when the compiled candidate was promoted into this PR.
+This candidate is **not admitted or installed** and still requires admission
+and reviewed native qualification before use.
 
 ### Park and restore an entire research session
 

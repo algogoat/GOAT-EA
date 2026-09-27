@@ -121,12 +121,12 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
         self.assertIn('GoatStudioRecoveryDiagnostic("CURRENT_MONITOR_OBSERVATION",reason,before,after);', self.observer)
         self.assertIn('reason="CURRENT_GUARD_PASS";before=0;after=0;', self.guard)
 
-    def test_source_identity_changes_without_replacing_admitted_binary(self):
+    def test_source_and_compiled_candidate_identity(self):
         main = source('GOAT V1.49.mq5')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
         self.assertIn('#define   GOAT_BUILD_ID "V1.49-ORPHAN-DIAGNOSTIC-6"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
-                         '62a882c362880fe2682a9d427125f9a551727eabe1463f00a6523c60cd429f61')
+                         '30ae456630a962de99711de6321f465df9ef6dcd3dc53258cd57aeb8cf419d6c')
         for name in ('GOATStudioRecovery.mqh', 'GOATStudioUI.mqh', 'GOAT V1.49.mq5'):
             raw = (ROOT/name).read_bytes()
             self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))

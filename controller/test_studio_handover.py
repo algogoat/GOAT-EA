@@ -53,8 +53,12 @@ class HandoverTests(unittest.TestCase):
             if os.name == 'nt' and len(str(path)) > 260 and not str(path).startswith('\\\\?\\'):
                 return False
             return original_is_file(path)
-        with patch.object(Path, 'is_file', without_unprefixed_long_paths):
+        # This filesystem fixture must not consult the developer's live MT5.
+        with patch('studio_installation_upgrade.stopped') as stopped, patch.object(Path, 'is_file', without_unprefixed_long_paths):
             self.assertEqual(verify_park(self.c, planned['review_id'])['status'], 'parked_verified')
+            stopped.assert_called_once()
+            self.assertIs(stopped.call_args.args[0], self.c)
+            self.assertTrue(stopped.call_args.kwargs['allow_qualification_client'])
         self.assertEqual(filesystem_path(archived).read_bytes(), b'preserved research evidence')
         original_is_symlink = Path.is_symlink
         def linked_deep_file(path):

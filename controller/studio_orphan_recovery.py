@@ -137,8 +137,10 @@ def prepare(c):
                     next_action='Explain the exact review and obtain explicit user approval; apply never starts the next batch')
 
 
-def apply(c,review_id,*,confirmed=False):
-    if not confirmed: raise ValueError('Explicit user approval of this recovery review required')
+def apply(c,review_id,*,confirmed=False,owner_research=False):
+    if type(owner_research) is not bool or (confirmed and owner_research):
+        raise ValueError('Choose one explicit recovery authorization route')
+    if not confirmed and not owner_research: raise ValueError('Explicit user approval of this recovery review required')
     with recovery_lock(c):
         path=plan_path(c,review_id); plan=read_json(path)
         if plan['status']!='review': return status_locked(c,plan)
@@ -147,6 +149,9 @@ def apply(c,review_id,*,confirmed=False):
         gate=c.local/'native-gate'
         with exclusive_gate(gate):
             if inspect(c)!=plan['observation']: raise ValueError('Recovery evidence changed before publication')
+            if owner_research:
+                from studio_owner_research import authorize,record as record_authorization
+                record_authorization(c,authorize(c,'orphan-recovery-apply',review_id))
             state=c.state()
             write_json(c.bridge.root/'snapshot.json',dict(protocol_version=1,state=display_state(state),schema_hash=c.store.input_schema_hash,execution_ready=False))
             request_id=sha(['orphan-recovery',review_id,plan['observation']])

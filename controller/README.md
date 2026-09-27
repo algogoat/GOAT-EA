@@ -720,3 +720,24 @@ It never clears a flag or retries recovery; exact human confirmation remains.
 Native MT5 build6230 fixture result:27 checks,0 failures, including an actual
 trailing-separator enumeration and a held native lock. This qualifies the
 isolated inventory functions, not a complete Banker recovery or batch launch.
+
+### Finite owner recovery authority (internal qualification only)
+
+The reviewed `contracts/owner_research_maintenance.json` scope permits only the
+named owner's existing demo terminal/session and exact original human grant to
+use `--owner-research` instead of `--confirm-reviewed` for
+`orphan-recovery-apply` and `orphan-recovery-reconcile-rejection`. This is a
+separate authorization route, not a claim that a human confirmed a review.
+It requires the original human-channel archive and committed receipt, unchanged
+revocation generation, exact account/server/terminal/build pins, fresh matching
+native ownership, idle connected demo, Algo Trading off and zero positions/orders.
+Pending human control requests block it. Authority is checked under the existing
+locks and recorded separately without altering original recovery evidence.
+
+This first slice does not authorize PARK, install, migration, bootstrap, grant
+creation or trading. Other accounts, replacement grants and changed sessions are
+refused. Ordinary explicit-review behavior is unchanged. It is not customer
+standing consent, and it is not native qualification. Subsequent maintenance
+continuity requires a separate reviewed change; never copy grants or submit a
+human command on the user's behalf. Machine review expiry, exact consumption,
+foreign-control guards and uncertain-outcome reconciliation remain enforced.

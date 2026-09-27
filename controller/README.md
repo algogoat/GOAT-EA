@@ -485,6 +485,15 @@ policy pins this distinct -6 main source (SHA-256
 `838b4a8e0698b1ccbaecf5819655b8a4ceb142ea2d1ae519f87cd71f7bbdbb1e`);
 that source provenance alone is not compilation or admission.
 
+Internal `V1.49-ORPHAN-DIAGNOSTIC-7` retains the same refusal and adds a local
+`GOAT ORPHAN SCRIPT` journal line when `CHART_SCRIPT_NAME` is nonempty. It names
+the chart ID, whether that chart hosts this EA, and MT5's reported script name
+before returning `SCRIPT_PRESENT`. This diagnoses a persistent native refusal;
+it does not clear the flag, authorize recovery, or change trading. Treat script
+names in the local MT5 journal as diagnostic data. The -7 V1.49 dependency
+policy pins main source SHA-256
+`824f23628a400c896097c0aab47b04868bd79b9e996c224a1f6019b22af15477`.
+
 Root compiled clean source commit
 `94cf75f640ab014f885b7126980f94bbcab4e47a` with MetaEditor 5.0.0.6230:
 **0 errors, 0 warnings**. The source and staged main hashes matched. This PR

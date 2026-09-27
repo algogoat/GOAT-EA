@@ -62,6 +62,7 @@ bool GoatStudioRecoveryCommonClear(void)
 // Error values are observations, not a fresh error attribution: never reset _LastError.
 string g_StudioRecoveryDiagnosticKeys[16];
 int g_StudioRecoveryDiagnosticCount=0;
+bool g_StudioScriptDiagnosticLogged=false;
 void GoatStudioRecoveryDiagnostic(const string context,const string reason,const int before,const int after)
   {
    if(g_StudioRecoveryDiagnosticCount>=16) return;
@@ -97,7 +98,15 @@ bool GoatStudioRecoveryRuntime(const string login,const string server,const stri
       query_before=GetLastError();
       if(!ChartGetString(chart,CHART_SCRIPT_NAME,script))
         {after=GetLastError();before=query_before;reason="SCRIPT_QUERY_FAILED";return false;}
-      if(script!="") {reason="SCRIPT_PRESENT";return false;}
+      if(script!="")
+        {
+         if(!g_StudioScriptDiagnosticLogged)
+           {
+            g_StudioScriptDiagnosticLogged=true;
+            PrintFormat("GOAT ORPHAN SCRIPT chart=%I64d own=%s script=%s diagnostic_only",chart,chart==ChartID()?"yes":"no",script);
+           }
+         reason="SCRIPT_PRESENT";return false;
+        }
       if(chart==ChartID()) own=true;
       else if(expert!="") {reason="OTHER_EXPERT_PRESENT";return false;}
       chart=ChartNext(chart);

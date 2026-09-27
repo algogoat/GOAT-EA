@@ -93,7 +93,13 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
             'GoatStudioRecoveryDiagnostic', 'GoatStudioRecoveryRuntimeCheck', 'ChartFirst', 'ChartNext',
             'ChartID', 'ChartGetString', 'GetLastError', 'IsStopped', 'MQLInfoInteger',
             'GoatStudioTesterState', 'TerminalInfoInteger', 'AccountInfoInteger', 'AccountInfoString',
-            'GoatStudioRecoveryInstance', 'GlobalVariableGet', 'if', 'while'})
+            'GoatStudioRecoveryInstance', 'GlobalVariableGet', 'PrintFormat', 'if', 'while'})
+        self.assertIn('if(script!="")', self.guard)
+        self.assertIn('if(!g_StudioScriptDiagnosticLogged)', self.guard)
+        self.assertIn('g_StudioScriptDiagnosticLogged=true;', self.guard)
+        self.assertIn('PrintFormat("GOAT ORPHAN SCRIPT chart=%I64d own=%s script=%s diagnostic_only",chart,chart==ChartID()?"yes":"no",script);', self.guard)
+        self.assertIn('reason="SCRIPT_PRESENT";return false;', self.guard)
+        self.assertLess(self.guard.index('g_StudioScriptDiagnosticLogged=true;'), self.guard.index('PrintFormat("GOAT ORPHAN SCRIPT'))
         self.assertNotIn('GoatStudioRecoverOrphan(', self.observer)
         self.assertNotIn('GoatStudioDispatch(', self.observer)
 
@@ -124,9 +130,9 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
     def test_source_and_compiled_candidate_identity(self):
         main = source('GOAT V1.49.mq5')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
-        self.assertIn('#define   GOAT_BUILD_ID "V1.49-ORPHAN-DIAGNOSTIC-6"', main)
+        self.assertIn('#define   GOAT_BUILD_ID "V1.49-ORPHAN-DIAGNOSTIC-7"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
-                         '30ae456630a962de99711de6321f465df9ef6dcd3dc53258cd57aeb8cf419d6c')
+                         'a23c2f09091de307dd67bf44439e493d52c83d9b6a9ac4a2f9e1d044f62f4f8d')
         for name in ('GOATStudioRecovery.mqh', 'GOATStudioUI.mqh', 'GOAT V1.49.mq5'):
             raw = (ROOT/name).read_bytes()
             self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))

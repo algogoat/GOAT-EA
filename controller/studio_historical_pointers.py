@@ -160,18 +160,28 @@ def writer_check(c, databases):
     return dict(status=proof['status'],independent_service_agents=proof['independent_service_agents'])
 
 
-def references_target(value, needles):
+def references_target(value, needles, *, _raw_negative_safe=None):
+    if _raw_negative_safe is None:
+        # Real Windows run paths cannot contain quotes or control characters.
+        # Keep the original decoder for callers with such synthetic targets.
+        _raw_negative_safe=all(re.search(r'["\x00-\x1f]',needle) is None for needle in needles)
     if isinstance(value,str):
         normalized=value.replace('\\','/').casefold()
         while '//' in normalized:normalized=normalized.replace('//','/')
         if any(n in normalized for n in needles):return True
+        # JSON escaped slash/backslash sequences normalize to the same slash;
+        # structural quotes and control escapes cannot hide a valid target.
+        # Only Unicode escapes can conceal path characters from the raw scan.
+        # Avoid decoding and walking large unrelated retained audit payloads.
+        if _raw_negative_safe and '\\u' not in value:return False
         try:decoded=json.loads(value)
         except (ValueError,TypeError):return False
-        if isinstance(decoded,(dict,list)):return references_target(decoded,needles)
+        if isinstance(decoded,(dict,list)):return references_target(decoded,needles,_raw_negative_safe=_raw_negative_safe)
     elif isinstance(value,dict):
-        return any(references_target(k,needles) or references_target(v,needles) for k,v in value.items())
+        return any(references_target(k,needles,_raw_negative_safe=_raw_negative_safe)
+                   or references_target(v,needles,_raw_negative_safe=_raw_negative_safe) for k,v in value.items())
     elif isinstance(value,(list,tuple)):
-        return any(references_target(v,needles) for v in value)
+        return any(references_target(v,needles,_raw_negative_safe=_raw_negative_safe) for v in value)
     return False
 
 

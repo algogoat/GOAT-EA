@@ -71,6 +71,8 @@ Work on GOAT-EA like a surgical MQL5 engineer.
 
 ## Version Targeting
 
+- Owner policy: bug fixes stay within the current full version. Use a distinct internal build ID, binary hash and compile receipt for a corrected build; reserve a new full version for meaningful updates or upgrades. Do not increment V1.xx merely for a fix. This does not authorize changing historical releases or bypassing review, admission or native qualification.
+
 - Determine first whether the task is for the current release, an older release, or shared include logic.
 - For current-release work, edit the highest versioned tracked `GOAT V*.mq5` unless the user names a different version.
 - For fixes and new features, evolve forward into the current or next version. Do not patch previous versioned entrypoints or regenerate previous `.ex5` binaries just to carry the change backward.

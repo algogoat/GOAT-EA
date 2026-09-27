@@ -396,8 +396,12 @@ void CStrategyTesterDialog::ManagedControls(void)
    // Keep handoff visible without showing empty settings or off-screen actions.
    if(!m_studioLoaded || g_StudioEmptyDraft || D_Width<1000 || D_Height<480)
      {
-      for(int i=0;i<c_Wnd_OPT.ControlsTotal();i++)
-        {CWnd *child=c_Wnd_OPT.Control(i); if(child!=NULL) child.Hide();}
+      // CDialog::Add registers every form control in m_client_area.
+      // c_Wnd_OPT is only a sibling backdrop, not their parent.
+      for(int i=0;i<m_client_area.ControlsTotal();i++)
+        {CWnd *child=m_client_area.Control(i); if(child!=NULL) child.Hide();}
+      // Restore the client-area backdrop before the foreground controls.
+      StageMove(c_Wnd_OPT,0,0,true,D_Width-16,D_Height-4);
       c_Wnd_Export.Hide();
       int w=(int)MathMax(100,D_Width-48);
       m_lblHeading.Text("GOAT / AGENT CONNECTION");

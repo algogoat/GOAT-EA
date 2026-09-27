@@ -20,8 +20,8 @@ from studio_native_gate import exclusive_gate
 from studio_handover import paths, safe_path, load_plan, tree, database_view, stopped, guard, session_lock
 
 
-def inspect_park(c, review_id, *, allowed_receipt_sha256=None):
-    guard(c)
+def inspect_park(c, review_id, *, allowed_receipt_sha256=None, build_update_fence=None):
+    guard(c,build_update_fence=build_update_fence)
     from studio_bootstrap_retirement import handover_guard
     handover_guard(c)
     root,local,archive,_=paths(c);plan=load_plan(c,review_id);folder=archive/review_id

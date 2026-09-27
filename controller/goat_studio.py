@@ -29,6 +29,7 @@ OPERATION_CONTRACTS = {
     'monitor-repair':dict(required=['attempt-id'],effect='within authorized setup, read native identity/demo/Algo-off/zero positions and idle tester; normal-close once, preserve and restore prepared profile and explicitly attach monitor; empty unstarted sessions only, no grant/trading/optimization'),
     'switch-verify-park':dict(required=['review-id'],effect='read-only verification of completed park, immutable archives, external databases and absent selected terminal/session; not admission or grant'),
     'switch-replace-receipt':dict(required=['review-id','candidate-receipt','expected-sha256'],effect='authenticated installer companion: atomic old-receipt CAS under exclusive session lock after verified park and unchanged physical target; preserves old receipt/research, never grants or starts; admission remains installer responsibility'),
+    'switch-replace-build':dict(required=['review-id','candidate-receipt','candidate-ea','expected-sha256'],effect='authenticated installer companion: exact same-version EA and receipt exchange under exclusive parked-session and database locks; retained journal permits exact interrupted-pair reconciliation; no admission, control grant or launch'),
     'bootstrap-retirement-prepare':dict(required=['specification','bootstrap-receipts'],effect='review failed legacy passive monitor startup, exact original receipts and idle replacement; no close or claim effects'),
     'bootstrap-retirement-apply':dict(required=['review-id'],effect='within authorised selected-terminal maintenance, normal-close exact reviewed idle monitor once, then retire original startup claim/slot atomically only after native process absence; retries inspect only, never resend or restart'),
     'peer-prepare':dict(required=['terminal-executable','data-root'],effect='review one existing protected peer and exact running process; never grants or manages the peer'),
@@ -285,6 +286,7 @@ def main(argv=None):
     p=sub.add_parser('bootstrap-retirement-apply');p.add_argument('--review-id',required=True)
     p=sub.add_parser('switch-verify-park');p.add_argument('--review-id',required=True)
     p=sub.add_parser('switch-replace-receipt');p.add_argument('--review-id',required=True);p.add_argument('--candidate-receipt',type=Path,required=True);p.add_argument('--expected-sha256',required=True)
+    p=sub.add_parser('switch-replace-build');p.add_argument('--review-id',required=True);p.add_argument('--candidate-receipt',type=Path,required=True);p.add_argument('--candidate-ea',type=Path,required=True);p.add_argument('--expected-sha256',required=True)
     p=sub.add_parser('switch-plan');p.add_argument('--restore-id')
     p=sub.add_parser('switch-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
     p=sub.add_parser('switch-status');p.add_argument('--review-id',required=True)
@@ -322,7 +324,13 @@ def main(argv=None):
         p=sub.add_parser(command);p.add_argument('--job-id',required=True)
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
+        if args.operation=='switch-replace-build':
+            from studio_build_upgrade import replace_build
+            result=replace_build(args.installation,args.review_id,args.candidate_receipt,args.candidate_ea,args.expected_sha256)
+            print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
         controller=Controller(args.installation)
+        from studio_build_upgrade import guard_pending
+        guard_pending(controller.root)
         if args.operation not in ('peer-prepare','peer-apply','switch-plan','switch-apply','switch-status','switch-verify-park','switch-replace-receipt','discover','resource-profile') and not args.operation.startswith(('orphan-recovery-','bootstrap-retirement-')):
             from studio_handover import session_lock,guard
             locks.enter_context(session_lock(controller));guard(controller)

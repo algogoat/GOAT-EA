@@ -329,6 +329,12 @@ class HandoverTests(unittest.TestCase):
                   'sys.exit(goat_studio.main())')
         folder = Path(__file__).parent
         args = ['--installation', str(self.receipt)]
+        # Check the cold real CLI first, including Windows process discovery.
+        # The concurrent probes below then measure the server/client boundary.
+        cold = subprocess.run([sys.executable, 'goat_studio.py', *args, 'onboarding-status'],
+                              cwd=folder, capture_output=True, text=True, timeout=15)
+        self.assertEqual(cold.returncode, 0, cold.stderr)
+        self.assertTrue(json.loads(cold.stdout)['ok'])
         # The five concurrent CLI probes each keep their strict 5-second bound.
         # Leave the real server alive through the full aggregate probe window.
         child = subprocess.Popen([sys.executable, '-c', script, str(ready), *args,

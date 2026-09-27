@@ -26,30 +26,45 @@ SETTLED = {'pending', 'completed', 'failed', 'cancelled', 'removed', 'superseded
 MAX_FILES = 50000
 
 
+def filesystem_path(path):
+    """Use Windows extended paths for IO without changing receipt path identities."""
+    path = Path(path)
+    if os.name != 'nt' or str(path).startswith('\\\\?\\'):
+        return path
+    raw = str(path)
+    if raw.startswith('\\\\'):
+        return Path('\\\\?\\UNC\\' + raw.lstrip('\\'))
+    return Path('\\\\?\\' + raw)
+
+
 def safe_path(path):
     path = Path(path).absolute()
     for part in (path, *path.parents):
-        if part.is_symlink() or (hasattr(part, 'is_junction') and part.is_junction()):
+        physical = filesystem_path(part) if os.name == 'nt' and len(str(part)) >= 240 else part
+        if physical.is_symlink() or (hasattr(physical, 'is_junction') and physical.is_junction()):
             raise ValueError('Handover refuses filesystem links: '+str(part))
-    if path.resolve() != path:
+    physical = filesystem_path(path) if os.name == 'nt' and len(str(path)) >= 240 else path
+    if physical.resolve() != physical:
         raise ValueError('Handover requires canonical paths')
     return path
 
 
 def tree(path):
     path = safe_path(path)
-    if not path.exists():
+    physical = filesystem_path(path)
+    if not physical.exists():
         return None
-    if not path.is_dir():
+    if not physical.is_dir():
         raise ValueError('Expected controller directory')
     files = {}
-    for item in sorted(path.rglob('*')):
+    for file in sorted(physical.rglob('*')):
+        item = path/file.relative_to(physical)
         safe_path(item)
-        if item.is_dir():
+        if file.is_dir():
             continue
-        if not item.is_file() or len(files) >= MAX_FILES:
+        if not file.is_file() or len(files) >= MAX_FILES:
             raise ValueError('Unsupported or oversized controller directory')
-        with item.open('rb') as handle:
+        with file.open('rb') as handle:
             digest = hashlib.file_digest(handle, 'sha256').hexdigest()
         files[item.relative_to(path).as_posix()] = digest
     return files

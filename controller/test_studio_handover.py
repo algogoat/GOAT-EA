@@ -12,7 +12,8 @@ from contextlib import closing
 from unittest.mock import patch
 
 from goat_studio import Controller
-from studio_handover import apply, database_view, guard, inspect, load_plan, paths, review, tree, session_lock
+from studio_handover import apply, database_view, filesystem_path, guard, inspect, load_plan, paths, review, tree, session_lock
+from studio_installation_upgrade import verify_park
 from studio_native_gate import exclusive_gate, shared_gate
 from studio_handover import stopped as inspect_stopped
 from studio_bridge import write_json
@@ -36,6 +37,36 @@ class HandoverTests(unittest.TestCase):
 
     def tearDown(self):
         self.fixture.tearDown()
+
+    def test_completed_park_verifies_long_archived_path_without_reparking(self):
+        relative = Path(*(['research-' + 'a'*55]*3))/'evidence.bin'
+        source = filesystem_path(self.c.root/relative)
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b'preserved research evidence')
+        planned = review(self.c)
+        self.assertEqual(apply(self.c, planned['review_id'], True)['status'], 'complete')
+        archived = paths(self.c)[2]/planned['review_id']/'state'/relative
+        self.assertGreater(len(str(archived)), 260)
+
+        original_is_file = Path.is_file
+        def without_unprefixed_long_paths(path):
+            if os.name == 'nt' and len(str(path)) > 260 and not str(path).startswith('\\\\?\\'):
+                return False
+            return original_is_file(path)
+        with patch.object(Path, 'is_file', without_unprefixed_long_paths):
+            self.assertEqual(verify_park(self.c, planned['review_id'])['status'], 'parked_verified')
+        self.assertEqual(filesystem_path(archived).read_bytes(), b'preserved research evidence')
+        original_is_symlink = Path.is_symlink
+        def linked_deep_file(path):
+            if os.name == 'nt' and str(path).startswith('\\\\?\\') and path.name == 'evidence.bin':
+                return True
+            return original_is_symlink(path)
+        with patch.object(Path, 'is_symlink', linked_deep_file):
+            with self.assertRaisesRegex(ValueError, 'filesystem links'):
+                verify_park(self.c, planned['review_id'])
+        filesystem_path(archived).write_bytes(b'changed research evidence')
+        with self.assertRaisesRegex(ValueError, 'Parked research files changed'):
+            verify_park(self.c, planned['review_id'])
 
     def test_park_preserves_pending_research_revokes_control_and_bootstraps_human(self):
         planned = review(self.c)

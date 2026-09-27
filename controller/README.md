@@ -615,6 +615,14 @@ command holds the exclusive session gate and external parked database locks
 across verification and both EA/receipt writes. Original bytes, candidate bytes
 and the exact publication journal remain in the PARK archive.
 
+On Windows, the PARK verifier reads archived files through extended-length paths
+while retaining the original relative names and SHA-256 comparison in the
+review receipt. A completed PARK remains the authority if an older verifier
+refused a deep archive path: install the corrected controller and retry
+`switch-verify-park` or the supported migration with the **same review ID**.
+Do not park again, move archived files, clear the fence or create a new session.
+Any changed archive byte still blocks verification.
+
 An interruption leaves a durable pending fence outside active session state.
 Ordinary controller operations and desktop updates must stop there. After fresh
 admission, only explicit reconciliation of the same journal-bound old/new pair

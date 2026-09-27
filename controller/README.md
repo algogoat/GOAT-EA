@@ -485,3 +485,17 @@ terminal blocks further work; obtain and inspect a fresh review before confirmin
 This is one protected peer, not an arbitrary process ignore list. It does not
 release legacy worker claims or startup slots, reconcile native work or substitute
 for idle/setup checks on the selected terminal.
+
+### Desktop client during a parked receipt upgrade
+
+The desktop installer may invoke `switch-verify-park` and `switch-replace-receipt`
+while its requesting `goat.exe desktop suite.installInternalQualification` client
+waits for the RPC response. That client is separate from the installer's native
+child process; it is not an MT5 runner. Only those two receipt-upgrade operations
+can recognize one exact launcher/embedded-Python pair from the executing bundle.
+The executable, entrypoint and controller hashes must match that bundle's manifest,
+arguments must name internal qualification for this same terminal, and the child
+must forward the exact arguments. Unrecognized, changed or concurrent clients
+remain blocked. Ordinary session review/park/restore still rejects every unrelated
+launcher. This recognition grants no account admission, native control or trading
+permission and does not retry an interrupted installation.

@@ -41,7 +41,7 @@ def inspect_park(c, review_id, *, allowed_receipt_sha256=None):
     for view in plan['after_ownership']:
         if not Path(view['path']).is_relative_to(root) and database_view(view['path'])!=view:
             raise ValueError('External parked controller database changed')
-    stopped(c,[v['path'] for v in plan['after_ownership']])
+    stopped(c,[v['path'] for v in plan['after_ownership']],allow_qualification_client=True)
     return dict(status='parked_verified',review_id=review_id,installation_sha256=sha(c.install),
                 receipt_sha256=digest,review_sha256=hashlib.sha256((folder/'receipt.json').read_bytes()).hexdigest())
 

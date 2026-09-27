@@ -63,7 +63,7 @@ def paths(c):
     return root, local, archive, lock
 
 
-def stopped(c, databases):
+def stopped(c, databases, *, allow_qualification_client=False):
     """Read complete process identities, excluding only this invocation's parents."""
     command = 'ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
     raw = subprocess.check_output(['powershell', '-NoProfile', '-Command', command],
@@ -85,9 +85,13 @@ def stopped(c, databases):
         from studio_process_check import classify_processes
         terminal_rows = [r for r in rows if str(r.get('Name','')).lower() in ('terminal64.exe','terminal.exe')]
         classify_processes(terminal_rows,peer_binding,observed_unix=time.time(),research_running=False)
+    clients = set()
+    if allow_qualification_client:
+        from studio_desktop_client import qualification_clients
+        clients = qualification_clients(c, rows)
     needles = [str(c.local).lower(), str(c.root).lower(), *(str(p).lower() for p in databases)]
     for row in rows:
-        if row['ProcessId'] in ancestors:
+        if row['ProcessId'] in ancestors or row['ProcessId'] in clients:
             continue
         name = str(row.get('Name', '')).lower()
         command_line = str(row.get('CommandLine') or '').lower()

@@ -61,8 +61,11 @@ document every change and register new candidates as untested local matrix forks
    See [onboarding and recovery](README.md#agent-assisted-monitor-onboarding).
 4. Run `serve` in a separate process while using the Studio UI. Its bounded
    default is one hour; restart it explicitly when needed. It processes durable
-   human/agent requests and refreshes the snapshot, not MT5 jobs. The user saves
-   or reloads Studio settings and clicks **Give to Agent**. Agents cannot self-grant.
+   human/agent requests and refreshes the snapshot, not MT5 jobs. On V1.49's
+   verified fresh empty session, the user can click **Give to Agent** before
+   creating tester/export drafts; the agent then prepares the complete plan.
+   Saved drafts must be reloaded, and partial or malformed state needs recovery.
+   Agents cannot self-grant.
 5. Inspect `state` and discuss the user's research goal. Select exact template/asset
    pairs and review all tester/export settings, validation history and compute limits.
 6. Use `prepare-batch` with a complete plan to freeze the full native queue. Inspect

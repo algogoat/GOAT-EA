@@ -330,7 +330,8 @@ completed optimization queue is not proof of profitable or usable exports.
 
 | Situation | Action |
 |---|---|
-| Human owns state | User saves/reloads then clicks Give to Agent; never forge a human command |
+| Human owns state | In V1.49's verified fresh empty session, user may Give to Agent before drafts; reload saved drafts and recover partial/malformed state. Never forge a human command |
+| Interrupted same-version EA build update | Preserve the installer inputs and PARK archive. The authenticated installer must recheck admission, then reconcile that exact `switch-replace-build` transaction. Never delete its pending fence or edit the EA/receipt pair |
 | No UI receipt | Keep serve running; inspect inbox/processing/outbox. Never delete pending recovery files |
 | Stale revision/generation | Read state; reconcile human changes. Old authority is revoked |
 | Prepare interrupted | Retry same job/input identities; preserved envelopes replay. Partial package requires inspection |
@@ -493,10 +494,11 @@ for idle/setup checks on the selected terminal.
 
 ### Desktop client during a parked receipt upgrade
 
-The desktop installer may invoke `switch-verify-park` and `switch-replace-receipt`
+The desktop installer may invoke `switch-verify-park`, `switch-replace-receipt`
+and `switch-replace-build`
 while its requesting `goat.exe desktop suite.installInternalQualification` client
 waits for the RPC response. That client is separate from the installer's native
-child process; it is not an MT5 runner. Only those two receipt-upgrade operations
+child process; it is not an MT5 runner. Only those parked-installation operations
 can recognize one exact launcher/embedded-Python pair from the executing bundle.
 The files on disk (executable, entrypoint and controller) must match the bundle's manifest,
 arguments must name internal qualification for this same terminal, and the child
@@ -508,3 +510,21 @@ attest the running image: process inventory precedes hashing. This is coordinati
 among trusted local tools, not protection against a same-user actor replacing files.
 Portable mode is derived from the installed data/executable paths, including older
 receipts without an explicit portable field.
+
+For a corrected build with the same full EA version, `switch-replace-build`
+receives a staged candidate EA and receipt, the completed PARK review ID and the
+exact old receipt SHA-256. The installer checks fresh own-account admission and
+bundle identity before invoking it; the native command grants neither. The
+command holds the exclusive session gate and external parked database locks
+across verification and both EA/receipt writes. Original bytes, candidate bytes
+and the exact publication journal remain in the PARK archive.
+
+An interruption leaves a durable pending fence outside active session state.
+Ordinary controller operations and desktop updates must stop there. After fresh
+admission, only explicit reconciliation of the same journal-bound old/new pair
+may finish forward; unknown bytes or changed research state remain blocked.
+This narrow entrypoint can reconcile before the ordinary receipt hash loader,
+which continues to reject a mismatched installed EA. It never launches MT5,
+creates a session, grants agent control or resumes research. Source fixture tests
+cover these boundaries; native qualification of the packaged command is still
+required before claiming a successful installed upgrade.

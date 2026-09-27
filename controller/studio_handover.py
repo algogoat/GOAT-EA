@@ -40,10 +40,11 @@ def filesystem_path(path):
 def safe_path(path):
     path = Path(path).absolute()
     for part in (path, *path.parents):
-        physical = filesystem_path(part)
+        physical = filesystem_path(part) if os.name == 'nt' and len(str(part)) >= 240 else part
         if physical.is_symlink() or (hasattr(physical, 'is_junction') and physical.is_junction()):
             raise ValueError('Handover refuses filesystem links: '+str(part))
-    if filesystem_path(path).resolve() != filesystem_path(path):
+    physical = filesystem_path(path) if os.name == 'nt' and len(str(path)) >= 240 else path
+    if physical.resolve() != physical:
         raise ValueError('Handover requires canonical paths')
     return path
 

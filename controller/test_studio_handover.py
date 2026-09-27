@@ -56,6 +56,14 @@ class HandoverTests(unittest.TestCase):
         with patch.object(Path, 'is_file', without_unprefixed_long_paths):
             self.assertEqual(verify_park(self.c, planned['review_id'])['status'], 'parked_verified')
         self.assertEqual(filesystem_path(archived).read_bytes(), b'preserved research evidence')
+        original_is_symlink = Path.is_symlink
+        def linked_deep_file(path):
+            if os.name == 'nt' and str(path).startswith('\\\\?\\') and path.name == 'evidence.bin':
+                return True
+            return original_is_symlink(path)
+        with patch.object(Path, 'is_symlink', linked_deep_file):
+            with self.assertRaisesRegex(ValueError, 'filesystem links'):
+                verify_park(self.c, planned['review_id'])
         filesystem_path(archived).write_bytes(b'changed research evidence')
         with self.assertRaisesRegex(ValueError, 'Parked research files changed'):
             verify_park(self.c, planned['review_id'])

@@ -3,6 +3,7 @@ import hashlib
 from contextlib import closing,redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import sqlite3
 import unittest
@@ -180,6 +181,25 @@ class HistoricalPointerTests(unittest.TestCase):
             with closing(sqlite3.connect(registry)) as db:
                 db.execute('UPDATE attempts SET released=1');db.execute('INSERT INTO workers VALUES(?)',(json.dumps({'nested':{'run':self.relative}}),));db.commit()
             with self.assertRaisesRegex(ValueError,'registry references'):self.review()
+
+    @unittest.skipUnless(os.name=='nt','Windows case aliases share one physical SQLite database')
+    def test_real_legacy_registry_case_alias_does_not_deadlock_maintenance(self):
+        from studio_bootstrap_retirement import folder as legacy_folder
+        registry=self.f.root/'legacy-workers.sqlite';database=self.c.root/'studio.sqlite'
+        worker=dict(scope='fixture-worker',terminal=self.c.install['terminal_executable'],
+                    data_root=self.c.install['terminal_data_root'],controller=str(database).lower(),
+                    common_root=self.c.install['common_files_root'])
+        with closing(sqlite3.connect(registry)) as db:
+            db.executescript('CREATE TABLE workers(scope TEXT,configuration TEXT); CREATE TABLE attempts(released INTEGER); CREATE TABLE startup_slot(id INTEGER);')
+            db.execute('INSERT INTO workers VALUES(?,?)',(worker['scope'],json.dumps(worker)));db.commit()
+        retained=legacy_folder(self.c);retained.mkdir(parents=True)
+        write_json(retained/'registry.json',dict(registry=str(registry),scope=worker['scope'],database=str(database).upper(),
+                                                terminal=self.c.install['terminal_executable'],data_root=self.c.install['terminal_data_root']))
+        # All real discovery/registry readers run. Raw casing differs in three
+        # durable sources; every concurrent writer must still stay locked out.
+        review=self.review()
+        self.assertEqual(len(known_sources(self.c)['databases']),1)
+        self.assertEqual(self.perform(review)['status'],'retired')
 
     def test_foreign_review_and_run_escape_refused(self):
         with self.assertRaisesRegex(ValueError,'review ID'):self.perform('../outside')

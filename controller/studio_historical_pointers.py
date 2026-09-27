@@ -114,11 +114,14 @@ def inventory(c, retired=None):
 
 def known_sources(c):
     """Known durable bindings only, never caller-supplied database paths."""
-    root,_,archive,_=paths(c);databases={str(safe_path(root/'studio.sqlite'))};evidence={};registries=set()
+    # Windows Path identity is case-insensitive. Retained registry/handover
+    # strings may spell one SQLite file differently; locking every spelling
+    # would deadlock against our own first BEGIN IMMEDIATE.
+    root,_,archive,_=paths(c);databases={safe_path(root/'studio.sqlite')};evidence={};registries=set()
     from studio_bootstrap_retirement import legacy_registration
     registration=legacy_registration(c)
     if registration:
-        registries.add(registration['registry']);databases.add(registration['database'])
+        registries.add(safe_path(registration['registry']));databases.add(safe_path(registration['database']))
     if archive.exists():
         for folder in archive.iterdir():
             safe_path(folder)
@@ -133,15 +136,15 @@ def known_sources(c):
                 or record.get('observation',{}).get('installation_sha256')!=sha(old)):
                 raise ValueError('Historical handover belongs to a different installation')
             evidence[str(receipt)]=hashlib.sha256(raw).hexdigest()
-            for view in record['after_ownership']:databases.add(str(safe_path(view['path'])))
+            for view in record['after_ownership']:databases.add(safe_path(view['path']))
     for registry in list(registries):
         p=safe_path(registry)
         with closing(sqlite3.connect(p.as_uri()+'?mode=ro',uri=True)) as db:
             for raw, in db.execute('SELECT configuration FROM workers'):
                 worker=json.loads(raw)
                 if safe_path(worker['common_root'])==safe_path(c.install['common_files_root']):
-                    databases.add(str(safe_path(worker['controller'])))
-    return dict(databases=sorted(databases),registries=sorted(registries),handover_evidence=evidence)
+                    databases.add(safe_path(worker['controller']))
+    return dict(databases=[str(p) for p in sorted(databases)],registries=[str(p) for p in sorted(registries)],handover_evidence=evidence)
 
 
 def writer_check(c, databases):
@@ -209,7 +212,7 @@ def data_view(c, sources, targets):
         safe_path(owner)
         if owner.parent.name!='native-gate':raise ValueError('Unknown controller owner file')
         database=read_json(owner).get('database')
-        if database not in sources['databases']:raise ValueError('Unregistered native gate remains')
+        if safe_path(database) not in {safe_path(p) for p in sources['databases']}:raise ValueError('Unregistered native gate remains')
         with exclusive_gate(owner.parent),closing(sqlite3.connect(safe_path(database).as_uri()+'?mode=ro',uri=True)) as db:
             assert_clear_controls(db,owner.parent)
         gates[str(owner.parent)]=tree(owner.parent)
@@ -223,8 +226,7 @@ def maintenance(c):
     session.mkdir(parents=True,exist_ok=True);common.mkdir(parents=True,exist_ok=True)
     with exclusive_gate(session),exclusive_gate(common),ExitStack() as stack:
         sources=known_sources(c)
-        for name in sorted(set(sources['databases']+sources['registries'])):
-            p=safe_path(name)
+        for p in sorted({safe_path(name) for name in sources['databases']+sources['registries']}):
             if not p.is_file():raise ValueError('Known controller database is missing')
             db=stack.enter_context(closing(sqlite3.connect(p,timeout=1,isolation_level=None)))
             db.execute('BEGIN IMMEDIATE')

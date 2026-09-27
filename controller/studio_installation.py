@@ -4,7 +4,7 @@ import json
 from pathlib import Path, PureWindowsPath
 import re
 
-VERSION = '1.48-beta.1'
+VERSION = '1.49-beta.1'
 
 def read_json(path):
     def unique(pairs):
@@ -26,7 +26,7 @@ def load_installation(path):
                 'terminal_data_root','common_files_root','ea_relative_path','ea_sha256','controller_state_root'}
     if not isinstance(value,dict) or not required <= value.keys() or value['schema_version'] != 1:
         raise ValueError('Version 1 installation receipt required; run GOAT Setup')
-    if value['controller_version'] != VERSION or value['ea_version'] != '1.48':
+    if (value['controller_version'], value['ea_version']) not in ((VERSION,'1.49'),(VERSION,'1.48'),('1.48-beta.1','1.48')):
         raise ValueError('EA/controller receipt is incompatible with this controller')
     if not isinstance(value['ea_relative_path'],str) or not isinstance(value['ea_sha256'],str):
         raise ValueError('EA relative path and SHA-256 must be strings')
@@ -51,8 +51,10 @@ def load_installation(path):
         if state.is_relative_to(root): raise ValueError('Controller state must be outside MT5 and Common Files')
     return value
 
-def contracts():
+def contracts(ea_version='1.48'):
     root = Path(__file__).parent/'contracts'
+    if ea_version == '1.49': root = root/'v149'
+    elif ea_version != '1.48': raise ValueError('Unsupported EA contract version')
     schema,policy = read_json(root/'inputs.json'),read_json(root/'dependencies.json')
     if schema['source_sha256'] != policy['header_sha256']: raise ValueError('Mismatched controller contracts')
     return schema,policy

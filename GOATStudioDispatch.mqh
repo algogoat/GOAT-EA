@@ -1,6 +1,7 @@
-#ifndef GOAT_STUDIO_DISPATCH_MQH
+﻿#ifndef GOAT_STUDIO_DISPATCH_MQH
 #define GOAT_STUDIO_DISPATCH_MQH
 #include "GOATStudioWorkers.mqh"
+#include "GOATStudioRecovery.mqh"
 // Included after Studio UI helpers. Requests are terminal-local and require the
 // same exclusive launch.lock used by every configured controller transaction.
 bool GoatStudioCommonDigest(const string path,const string expected)
@@ -90,6 +91,11 @@ string GoatStudioCancelRequest(const string body)
 
 string GoatStudioExecuteRequest(const string body,const string request_hash)
   {
+#ifdef GOAT_ORPHAN_RECOVERY_V149
+   SGOATJsonToken recovery_tokens[];string recovery_action;
+   if(GOATJsonParse(body,recovery_tokens) && GOATJsonGetString(body,recovery_tokens,0,"action",recovery_action)
+      && recovery_action=="recover_orphan_continuation") return GoatStudioRecoverOrphan(body,request_hash);
+#endif
 #ifdef GOAT_SEQUENCE_EXPORT_V148
    SGOATJsonToken action_tokens[];string requested_action;
    if(GOATJsonParse(body,action_tokens) && GOATJsonGetString(body,action_tokens,0,"action",requested_action) && requested_action=="cancel")

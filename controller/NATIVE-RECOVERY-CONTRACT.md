@@ -1,8 +1,37 @@
-# Orphan continuation recovery: proposed native capability
+# V1.49 orphan continuation recovery
 
-Status: design only. `native-recovery-status` diagnoses; no recovery action is
-implemented or authorized by this document. The historical V1.47/V1.48 binaries
-must not be rewritten or relabelled to add it.
+Status: controller/native source implemented and compiled; native qualification
+and matched monitor delivery remain required. Historical V1.47/V1.48 binaries
+are unchanged. This document never grants permission to reset a user's session.
+
+## Public reviewed workflow
+
+`native-recovery-status` is a diagnosis. On a matching V1.49 monitor,
+`orphan-recovery-prepare` freezes a ten-minute review. Explain it to the user,
+then use `orphan-recovery-apply --review-id <id> --confirm-reviewed` only after
+their explicit approval. That command reports publication, not recovery.
+`orphan-recovery-status --review-id <id>` requires matching issued/consumed/result
+receipts and fresh same-process/monitor/account/state readback before reporting
+`recovered`. Future work requires its own explicit start.
+
+Apply fences ordinary commands and session switching. A missing, rejected or
+ambiguous native outcome remains `reconcile_required`; no command silently
+resends an issued request. Interrupted cleanup after durable success can complete
+on the next exact status call. Keep every review and native receipt.
+
+This first implementation deliberately accepts only one known controller binding,
+database and native gate. Any retained legacy/foreign owner fails closed. Native
+checks reject other chart EAs/scripts, other-version active controls, a nonzero
+TerminalRunning flag and deferred restart state. Only BatchOnGoing is cleared.
+The Python review excludes other controller processes; the native action validates
+its exact snapshot/active/owner hashes under the existing native gate. As with
+existing launch operations this coordinates trusted local tools, not hostile
+same-user writers or filesystem tampering.
+
+The installed public process binding currently does not support mapping a second
+protected terminal. A running peer Terminal 2 is therefore rejected as unmapped;
+preserve that terminal and qualify an appropriate supported binding separately.
+Installing V1.49 alone does not make that multi-terminal host ready.
 
 ## Existing lifecycle is insufficient
 
@@ -15,9 +44,9 @@ owned active job and exact Common Files owner/pointer hashes. `finish` needs an
 observed finished attempt with idle runtime and `batch_ongoing:false`. An orphan
 has none of those identities; constructing them would fabricate ownership.
 
-## Required forward-version implementation
+## Native protocol requirements
 
-Introduce a versioned native action such as `recover_orphan_continuation`, advertised
+The versioned native action is `recover_orphan_continuation`, advertised
 by the running monitor's runtime capability and the controller discovery contract.
 Use the existing native gate with a separate durable review/commit/consumption
 receipt, never a fake start/cancel. An explicit user-approved review freezes all
@@ -56,9 +85,8 @@ plus the normal exact process/account binding checks.
 
 ## Delivery and qualification dependencies
 
-Cut the next versioned EA entrypoint (expected V1.49, subject to release coordinator),
-advance default version/schema/dependency contracts, and compile a new EX5 with
-the approved MetaEditor flow. Preserve previous version files and binaries. Review
+V1.49 has its own entrypoint, forward-only capability guard, schema/dependency
+contracts and compiled EX5. Preserve previous version files and binaries. Review
 the native dispatch/observation/controller changes together. Build a matched
 desktop suite with exact EA and controller source/hash pins and release activation.
 The selected legacy monitor must be upgraded through the supported installer and

@@ -25,6 +25,14 @@ from studio_strategy_settings import read_values
 from studio_settings import FIELDS,PERIODS,validate_tester,validate_export
 
 OPERATION_CONTRACTS = {
+    'monitor-stop':dict(required=['attempt-id'],effect='normal-close exact idle connected demo once for authorized upgrade; empty unstarted sessions only, no relaunch/grant/trading; retained stop refuses a replacement process'),
+    'monitor-repair':dict(required=['attempt-id'],effect='within authorized setup, read native identity/demo/Algo-off/zero positions and idle tester; normal-close once, preserve and restore prepared profile and explicitly attach monitor; empty unstarted sessions only, no grant/trading/optimization'),
+    'switch-verify-park':dict(required=['review-id'],effect='read-only verification of completed park, immutable archives, external databases and absent selected terminal/session; not admission or grant'),
+    'switch-replace-receipt':dict(required=['review-id','candidate-receipt','expected-sha256'],effect='authenticated installer companion: atomic old-receipt CAS under exclusive session lock after verified park and unchanged physical target; preserves old receipt/research, never grants or starts; admission remains installer responsibility'),
+    'bootstrap-retirement-prepare':dict(required=['specification','bootstrap-receipts'],effect='review failed legacy passive monitor startup, exact original receipts and idle replacement; no close or claim effects'),
+    'bootstrap-retirement-apply':dict(required=['review-id'],effect='within authorised selected-terminal maintenance, normal-close exact reviewed idle monitor once, then retire original startup claim/slot atomically only after native process absence; retries inspect only, never resend or restart'),
+    'peer-prepare':dict(required=['terminal-executable','data-root'],effect='review one existing protected peer and exact running process; never grants or manages the peer'),
+    'peer-apply':dict(required=['review-id','confirm-reviewed'],authorization='Authorized caller confirms this exact review after inspection within the user-authorized setup scope; no grant or peer management authority',effect='persist protected peer outside switched session; replacement requires fresh review; unknown terminals still block'),
     'switch-plan':dict(required=[],effect='review offline session handover; optional restore-id restores a parked session; never grants or launches'),
     'switch-status':dict(required=['review-id'],effect='read retained handover progress and recovery identity'),
     'switch-apply':dict(required=['review-id','confirm-reviewed'],authorization='Only after the user confirms this exact review in the desktop app or explicitly in chat; never agent self-approval. Trusted-local coordination, not an OS-user security boundary.',effect='apply or recover the exact user-reviewed handover; preserve research and revoke prior agent control'),
@@ -57,7 +65,12 @@ OPERATION_CONTRACTS = {
     'reconcile':dict(required=['job-id'],effect='alias of status'),
     'cancel':dict(required=['job-id'],effect='cancel pending job or publish exact owned native stop; receipt is not stop proof'),
     'clear-queue':dict(required=[],defaults={'apply':False},apply_required=['request-id','expected-revision'],effect='preview pending jobs; explicit apply removes only pending work atomically, preserving all history/packages/results; refuses unresolved native attempts, seed ownership and outstanding native controls; never resets EA flags or starts work'),
-    'native-recovery-status':dict(required=[],effect='diagnose runtime flags, native controls and unresolved controller work without resetting or launching; orphan continuation recovery is unsupported and requires a compatible reviewed EA/controller release'),
+    'native-recovery-status':dict(required=[],effect='diagnose flags, native controls and running monitor capability without effects; only matched V1.49 supports reviewed orphan recovery, and foreign ownership still blocks'),
+    'orphan-recovery-prepare':dict(required=[],effect='V1.49 only: freeze single-owner idle orphan-flag recovery review; no mutation to native state'),
+    'orphan-recovery-apply':dict(required=['review-id','confirm-reviewed'],authorization='Only after explicit user approval of the exact review in chat or app; never self-approve',effect='publish one exact V1.49 recovery action; no launch, stop, queue or grant change; receipt/readback required'),
+    'orphan-recovery-status':dict(required=['review-id'],effect='reconcile exact native receipt and fresh readback; retain fence on uncertain effects; never resend'),
+    'run-batch':dict(required=['job-id'],start_required=['max-seconds'],limits={'max-seconds':[1,86400]},resume='Use --resume without a new budget; retained deadline does not reset',effect='bounded owned batch driver with durable dispatch deadline and one cancel request at budget; stop must be observed, never assumed; no force kill or uncertain relaunch'),
+    'batch-driver-status':dict(required=['job-id'],effect='read retained driver journal and current binding match; never starts, resumes or cancels work'),
     'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls')
 }
 
@@ -67,12 +80,12 @@ class Controller:
         self.install = load_installation(receipt)
         self.root = Path(self.install['controller_state_root'])
         self.local = Path(self.install['terminal_data_root'])/'MQL5/Files/GOATStudio'
-        self.schema,self.policy = contracts()
+        self.schema,self.policy = contracts(self.install['ea_version'])
         self.store = None
 
-    def open(self):
+    def open(self, *, recovery=False):
         from studio_handover import guard
-        guard(self)
+        if not recovery: guard(self)
         self.session = read_json(self.root/'session.json')
         if self.session['installation_sha256'] != sha(self.install):
             raise ValueError('Installation changed since bootstrap; reconcile before repair')
@@ -88,10 +101,11 @@ class Controller:
 
     def state(self): return self.store.snapshot(self.terminal,self.run)
 
-    def submit(self,command,payload,request_id,*,expected_revision=None):
+    def submit(self,command,payload,request_id,*,expected_revision=None,expected_generation=None):
         state = self.state()
         request = dict(schema_version=1,request_id=request_id,terminal_id=self.terminal,run_id=self.run,
-                       expected_revision=state['revision'] if expected_revision is None else expected_revision,generation=state['generation'],command=command,payload=payload)
+                       expected_revision=state['revision'] if expected_revision is None else expected_revision,
+                       generation=state['generation'] if expected_generation is None else expected_generation,command=command,payload=payload)
         # Persist the exact envelope before submission, making transport retries idempotent.
         path = self.root/'requests'/(request_id+'.json')
         if path.exists():
@@ -99,6 +113,8 @@ class Controller:
             if prior['command'] != command or prior['payload'] != payload: raise ValueError('Request ID content changed')
             if expected_revision is not None and prior['expected_revision'] != expected_revision:
                 raise ValueError('Request ID revision changed; retry the exact original request')
+            if expected_generation is not None and prior['generation'] != expected_generation:
+                raise ValueError('Request ID generation changed; retry the exact original request')
             request = prior
         else: write_json(path,request)
         result = self.store.submit(request,actor='agent')
@@ -111,11 +127,13 @@ class Controller:
         return job
 
     def binding(self):
+        from studio_protected_peer import binding_fields
         i=self.install;s=self.session
+        peer=binding_fields(self)
         return dict(research_terminal=i['terminal_executable'],research_data_root=i['terminal_data_root'],
                     common_files_root=i['common_files_root'],ea_relative_path=i['ea_relative_path'],
                     ea_sha256=i['ea_sha256'],ea_version=i['ea_version'],account_server=s['account']['server'],
-                    protected_data_roots=[],account_confirmation_pending=False,live_trading_allowed=False)
+                    account_confirmation_pending=False,live_trading_allowed=False,**({'protected_data_roots':[]}|peer))
 
     def native_args(self):
         i=self.install
@@ -185,7 +203,7 @@ class Controller:
         write_json(self.root/'packages'/(job_id+'.source.json'),dict(set_path=str(Path(set_path).resolve()),set_sha256=info['sha256']))
         return dict(job_id=job_id,package=str(package),manifest=result['receipt'],native_started=False)
 
-    def start(self,job_id):
+    def start(self,job_id,*,expected_generation=None):
         from studio_seed_slot import guard_active_seed
         guard_active_seed(self.root)
         from studio_process_check import inspect_processes,revalidate_processes
@@ -195,26 +213,29 @@ class Controller:
         from studio_native_request import validate_activated_job
         state=self.state();job=self.job(job_id);binding=self.binding();args=self.native_args()
         if state['owner']!='agent': raise ValueError('Human must Give to Agent in Studio first')
+        generation=state['generation'] if expected_generation is None else expected_generation
+        if state['generation']!=generation: raise ValueError('Controller generation changed before start')
         if job['status']!='pending': raise ValueError('Only pending job can start; reconcile existing attempt')
         # Check runtime BEFORE recording an irreversible attempt.
         self.runtime(require_idle=True,expected_batch_ongoing=False)
         baseline=inspect_processes(binding)
         package=self.root/'packages'/job_id
         digest=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()
-        self.submit('queue.reserve',dict(job_id=job_id,configuration_sha256=job['configuration_sha256'],package_sha256=digest),job_id+'-reserve')
+        self.submit('queue.reserve',dict(job_id=job_id,configuration_sha256=job['configuration_sha256'],package_sha256=digest),job_id+'-reserve',expected_generation=generation)
         state=self.state()
-        intent=record_intent(self.store,self.terminal,self.run,job_id,package,actor='agent',revision=state['revision'],generation=state['generation'])
+        intent=record_intent(self.store,self.terminal,self.run,job_id,package,actor='agent',revision=state['revision'],generation=generation)
         evidence=self.root/'attempts'/intent['attempt_id'];evidence.parent.mkdir(exist_ok=True)
         def ownership(bound,inventory):
             revalidate_processes(bound,baseline)
             self.runtime(require_idle=True,expected_batch_ongoing=False)
         with exclusive_gate(self.local/'native-gate'):
+            if self.state()['generation']!=generation: raise ValueError('Controller generation changed before activation')
             activate_open(self.state(),self.job(job_id),**args,evidence=evidence,process_baseline=baseline,validate_ownership=ownership)
         state=self.state()
         def validate(state,job):
             revalidate_processes(binding,baseline)
             return validate_activated_job(state,job,**args,evidence=evidence)
-        return publish(self.store,self.terminal,self.run,job_id,self.bridge.root,actor='agent',revision=state['revision'],generation=state['generation'],validate_native=validate)
+        return publish(self.store,self.terminal,self.run,job_id,self.bridge.root,actor='agent',revision=state['revision'],generation=generation,validate_native=validate)
 
     def runtime(self,require_idle=False,expected_batch_ongoing=False):
         from studio_resilient_read import read_observation
@@ -247,17 +268,23 @@ class Controller:
         self.bridge.pump()
         return result|dict(job=self.job(job_id))
 
-    def cancel(self,job_id):
+    def cancel(self,job_id,*,expected_generation=None):
         from studio_cancel import publish_cancel
         job=self.job(job_id)
-        if job['status']=='pending': return self.submit('queue.cancel',dict(job_id=job_id),job_id+'-cancel')
-        return publish_cancel(self,job)
+        if job['status']=='pending': return self.submit('queue.cancel',dict(job_id=job_id),job_id+'-cancel',expected_generation=expected_generation)
+        return publish_cancel(self,job,expected_generation=expected_generation)
 
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--installation',type=Path,required=True)
     sub=parser.add_subparsers(dest='operation',required=True)
+    p=sub.add_parser('peer-prepare');p.add_argument('--terminal-executable',type=Path,required=True);p.add_argument('--data-root',type=Path,required=True)
+    p=sub.add_parser('peer-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
+    p=sub.add_parser('bootstrap-retirement-prepare');p.add_argument('--specification',type=Path,required=True);p.add_argument('--bootstrap-receipts',type=Path,required=True)
+    p=sub.add_parser('bootstrap-retirement-apply');p.add_argument('--review-id',required=True)
+    p=sub.add_parser('switch-verify-park');p.add_argument('--review-id',required=True)
+    p=sub.add_parser('switch-replace-receipt');p.add_argument('--review-id',required=True);p.add_argument('--candidate-receipt',type=Path,required=True);p.add_argument('--expected-sha256',required=True)
     p=sub.add_parser('switch-plan');p.add_argument('--restore-id')
     p=sub.add_parser('switch-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
     p=sub.add_parser('switch-status');p.add_argument('--review-id',required=True)
@@ -276,12 +303,19 @@ def main(argv=None):
     sub.add_parser('discover');sub.add_parser('state');sub.add_parser('onboarding-status')
     p=sub.add_parser('monitor-prepare');p.add_argument('--symbol',required=True)
     p=sub.add_parser('monitor-launch');p.add_argument('--attempt-id',required=True)
+    p=sub.add_parser('monitor-repair');p.add_argument('--attempt-id',required=True)
+    p=sub.add_parser('monitor-stop');p.add_argument('--attempt-id',required=True)
     p=sub.add_parser('validate-set');p.add_argument('--set',type=Path,required=True);p.add_argument('--require-optimization',action='store_true')
     p=sub.add_parser('build-set');p.add_argument('--source',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--spec',type=Path,required=True)
     p=sub.add_parser('bootstrap');p.add_argument('--account-login',required=True);p.add_argument('--account-server',required=True)
     p=sub.add_parser('serve');p.add_argument('--watch-seconds',type=float,default=3600)
     p=sub.add_parser('clear-queue');p.add_argument('--apply',action='store_true');p.add_argument('--request-id');p.add_argument('--expected-revision',type=int)
     sub.add_parser('native-recovery-status')
+    sub.add_parser('orphan-recovery-prepare')
+    p=sub.add_parser('orphan-recovery-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
+    p=sub.add_parser('orphan-recovery-status');p.add_argument('--review-id',required=True)
+    p=sub.add_parser('run-batch');p.add_argument('--job-id',required=True);p.add_argument('--max-seconds',type=int);p.add_argument('--resume',action='store_true')
+    p=sub.add_parser('batch-driver-status');p.add_argument('--job-id',required=True)
     p=sub.add_parser('submit');p.add_argument('--request',type=Path,required=True)
     p=sub.add_parser('prepare');p.add_argument('--job-id',required=True);p.add_argument('--set',type=Path,required=True);p.add_argument('--configuration',type=Path,required=True)
     for command in ('start','status','cancel','reconcile','finish'):
@@ -289,16 +323,25 @@ def main(argv=None):
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
         controller=Controller(args.installation)
-        if args.operation not in ('switch-plan','switch-apply','switch-status','discover','resource-profile'):
+        if args.operation not in ('peer-prepare','peer-apply','switch-plan','switch-apply','switch-status','switch-verify-park','switch-replace-receipt','discover','resource-profile') and not args.operation.startswith(('orphan-recovery-','bootstrap-retirement-')):
             from studio_handover import session_lock,guard
             locks.enter_context(session_lock(controller));guard(controller)
-        if args.operation in ('switch-plan','switch-apply','switch-status'):
+        if args.operation in ('switch-verify-park','switch-replace-receipt'):
+            from studio_installation_upgrade import verify_park,replace_receipt
+            result=verify_park(controller,args.review_id) if args.operation=='switch-verify-park' else replace_receipt(controller,args.review_id,args.candidate_receipt,args.expected_sha256)
+        elif args.operation.startswith('bootstrap-retirement-'):
+            from studio_bootstrap_retirement import prepare,apply
+            result=prepare(controller,args.specification,args.bootstrap_receipts) if args.operation=='bootstrap-retirement-prepare' else apply(controller,args.review_id)
+        elif args.operation in ('peer-prepare','peer-apply'):
+            from studio_protected_peer import prepare,apply
+            result=prepare(controller,args.terminal_executable,args.data_root) if args.operation=='peer-prepare' else apply(controller,args.review_id,args.confirm_reviewed)
+        elif args.operation in ('switch-plan','switch-apply','switch-status'):
             from studio_handover import review,apply,load_plan,public
             if args.operation=='switch-plan': result=review(controller,args.restore_id)
             elif args.operation=='switch-status': result=public(load_plan(controller,args.review_id))
             else: result=apply(controller,args.review_id,args.confirm_reviewed)
         elif args.operation=='discover':
-            result=dict(controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 executable may be running for ordinary native batch activation','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
+            result=dict(controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 and an explicitly reviewed exact protected peer may be running; unknown/replaced processes block','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
         elif args.operation=='resource-profile':
             from studio_resources import resource_profile
             result=resource_profile(controller.install)
@@ -320,8 +363,16 @@ def main(argv=None):
                 controller_version=VERSION,ea_version=controller.install['ea_version'],
                 forbidden_roots=[controller.install['catalog_root']] if controller.install.get('catalog_root') else [])
         else:
-            controller.open()
-            if args.operation.startswith('seed-'):
+            if not args.operation.startswith('orphan-recovery-'): controller.open()
+            if args.operation in ('monitor-repair','monitor-stop'):
+                from studio_monitor_repair import repair
+                result=repair(controller,args.attempt_id,stop_only=args.operation=='monitor-stop')
+            elif args.operation.startswith('orphan-recovery-'):
+                from studio_orphan_recovery import prepare,apply,status
+                if args.operation=='orphan-recovery-prepare': result=prepare(controller)
+                elif args.operation=='orphan-recovery-apply': result=apply(controller,args.review_id,confirmed=args.confirm_reviewed)
+                else: result=status(controller,args.review_id)
+            elif args.operation.startswith('seed-'):
                 from studio_seed import SeedRunner
                 runner=SeedRunner(controller)
                 if args.operation=='seed-prepare':
@@ -330,6 +381,10 @@ def main(argv=None):
                 elif args.operation in ('seed-start','seed-resume'):
                     result=getattr(runner,args.operation.removeprefix('seed-'))(args.batch_id,max_seconds=args.max_seconds)
                 else: result=getattr(runner,args.operation.removeprefix('seed-'))(args.batch_id)
+            elif args.operation in ('run-batch','batch-driver-status'):
+                from studio_batch_driver import run,status
+                if args.operation=='run-batch': result=run(controller,args.job_id,max_seconds=args.max_seconds,resume=args.resume)
+                else: result=status(controller,args.job_id)
             elif args.operation=='serve': result=pump_for(controller.bridge,args.watch_seconds)
             elif args.operation=='state': controller.bridge.pump();result=controller.state()
             elif args.operation=='clear-queue':

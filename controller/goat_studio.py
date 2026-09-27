@@ -72,7 +72,7 @@ OPERATION_CONTRACTS = {
     'orphan-recovery-prepare':dict(required=[],effect='V1.49 only: freeze single-owner idle orphan-flag recovery review; no mutation to native state'),
     'orphan-recovery-apply':dict(required=['review-id','confirm-reviewed'],authorization='Only after explicit user approval of the exact review in chat or app; never self-approve',effect='publish one exact V1.49 recovery action; no launch, stop, queue or grant change; receipt/readback required'),
     'orphan-recovery-status':dict(required=['review-id'],effect='reconcile exact native receipt and fresh readback; retain fence on uncertain effects; never resend'),
-    'run-batch':dict(required=['job-id'],start_required=['max-seconds'],limits={'max-seconds':[1,86400]},resume='Use --resume without a new budget; retained deadline does not reset',effect='bounded owned batch driver with durable dispatch deadline and one cancel request at budget; stop must be observed, never assumed; no force kill or uncertain relaunch'),
+    'run-batch':dict(required=['job-id'],start_required=['max-seconds'],limits={'max-seconds':[1,86400]},min_free_bytes_default=5368709120,resume='Use --resume without a new budget or disk threshold; retained deadline and guard do not reset',effect='bounded owned batch driver with durable dispatch deadline and one cancel request at budget, low disk or unavailable capacity; stop must be observed, never assumed; no force kill or uncertain relaunch'),
     'batch-driver-status':dict(required=['job-id'],effect='read retained driver journal and current binding match; never starts, resumes or cancels work'),
     'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls')
 }
@@ -320,7 +320,7 @@ def main(argv=None):
     sub.add_parser('orphan-recovery-prepare')
     p=sub.add_parser('orphan-recovery-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
     p=sub.add_parser('orphan-recovery-status');p.add_argument('--review-id',required=True)
-    p=sub.add_parser('run-batch');p.add_argument('--job-id',required=True);p.add_argument('--max-seconds',type=int);p.add_argument('--resume',action='store_true')
+    p=sub.add_parser('run-batch');p.add_argument('--job-id',required=True);p.add_argument('--max-seconds',type=int);p.add_argument('--resume',action='store_true');p.add_argument('--min-free-bytes',type=int,help='Positive free-space reserve on each output filesystem; default 5368709120 (5 GiB), frozen at start; omit on resume')
     p=sub.add_parser('batch-driver-status');p.add_argument('--job-id',required=True)
     p=sub.add_parser('submit');p.add_argument('--request',type=Path,required=True)
     p=sub.add_parser('prepare');p.add_argument('--job-id',required=True);p.add_argument('--set',type=Path,required=True);p.add_argument('--configuration',type=Path,required=True)
@@ -401,7 +401,7 @@ def main(argv=None):
                 else: result=getattr(runner,args.operation.removeprefix('seed-'))(args.batch_id)
             elif args.operation in ('run-batch','batch-driver-status'):
                 from studio_batch_driver import run,status
-                if args.operation=='run-batch': result=run(controller,args.job_id,max_seconds=args.max_seconds,resume=args.resume)
+                if args.operation=='run-batch': result=run(controller,args.job_id,max_seconds=args.max_seconds,resume=args.resume,min_free_bytes=args.min_free_bytes)
                 else: result=status(controller,args.job_id)
             elif args.operation=='serve': result=pump_for(controller.bridge,args.watch_seconds)
             elif args.operation=='state': controller.bridge.pump();result=controller.state()

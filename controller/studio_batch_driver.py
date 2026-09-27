@@ -7,6 +7,7 @@ retried or adopted, and a revoked owner never cancels a successor's work.
 import hashlib
 import math
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -19,6 +20,31 @@ from studio_installation import read_json
 from studio_native_gate import exclusive_gate
 
 TERMINAL = {'completed', 'cancelled', 'failed'}
+DEFAULT_MIN_FREE_BYTES = 5 * 1024**3
+
+
+def _capacity(controller, minimum):
+    """Probe each actual output filesystem; missing/unreadable roots fail closed."""
+    observations = []
+    for role, key in (('terminal_data', 'terminal_data_root'), ('common_files', 'common_files_root'),
+                      ('controller_state', 'controller_state_root')):
+        item = dict(role=role, free_bytes=None)
+        try:
+            root = safe_path(Path(controller.install[key]))
+            item['path'] = str(root)
+            if not root.is_dir():
+                raise ValueError('Output root is unavailable')
+            free = shutil.disk_usage(root).free
+            if type(free) is not int or free < 0:
+                raise ValueError('Invalid free capacity')
+            item['free_bytes'] = free
+        except (OSError, ValueError, KeyError, TypeError):
+            item['unavailable'] = True
+        observations.append(item)
+    reason = ('disk_probe_unavailable' if any(item.get('unavailable') for item in observations) else
+              'disk_low' if any(item['free_bytes'] < minimum for item in observations) else None)
+    return dict(reason=reason, volumes=observations)
+
 
 
 def _binding(controller, job_id, verify_preparation=False):
@@ -76,13 +102,16 @@ def _save(path, record, clock):
 
 def _summary(path, record):
     return {key: record.get(key) for key in ('status', 'max_seconds', 'started_wall', 'deadline_wall',
-            'attempt_id', 'start_issued', 'cancel_issued', 'stopped', 'last_error', 'result_path')} | dict(
+            'attempt_id', 'start_issued', 'cancel_issued', 'stopped', 'last_error', 'result_path',
+            'min_free_bytes', 'cancel_reason', 'disk_observation')} | dict(
         journal_path=str(path), job_id=record['binding']['job_id'],
+        disk_guard_available=(record.get('schema_version') == 2 and type(record.get('min_free_bytes')) is int
+                              and record['min_free_bytes'] > 0),
         host_liveness_required=True, independent_hard_stop=False)
 
 
 def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
-        cancel_grace_seconds=120, clock=time, finish_fn=finish):
+        cancel_grace_seconds=120, min_free_bytes=None, clock=time, finish_fn=finish):
     """Start once, or explicitly observe a retained attempt against its old deadline.
 
     Controller must already be open. CLI callers can hold their normal shared
@@ -93,6 +122,12 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
         raise ValueError('Invalid prepared batch ID')
     if type(resume) is not bool:
         raise ValueError('Resume must be an explicit boolean')
+    if resume and min_free_bytes is not None:
+        raise ValueError('Resume preserves the original disk guard; do not supply min_free_bytes')
+    if not resume:
+        min_free_bytes = DEFAULT_MIN_FREE_BYTES if min_free_bytes is None else min_free_bytes
+        if type(min_free_bytes) is not int or min_free_bytes <= 0:
+            raise ValueError('min_free_bytes must be a positive integer; disk guard cannot be disabled')
     if resume and max_seconds is not None:
         raise ValueError('Resume preserves the original budget; do not supply max_seconds')
     if not resume and (type(max_seconds) is not int or not 1 <= max_seconds <= 86400):
@@ -111,7 +146,7 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
     with session_lock(controller), exclusive_gate(gate):
         if resume:
             record = read_json(path)
-            if (record.get('schema_version') != 1 or type(record.get('max_seconds')) is not int
+            if (record.get('schema_version') not in (1, 2) or type(record.get('max_seconds')) is not int
                     or not 1 <= record['max_seconds'] <= 86400
                     or record['deadline_wall'] != record['started_wall']+record['max_seconds']
                     or not all(type(record.get(k)) is bool for k in ('start_issued', 'cancel_issued', 'stopped'))
@@ -127,6 +162,9 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
                 raise ValueError('Batch/session/ownership changed; resume refused')
             if record['stopped']:
                 return _summary(path, record)
+            if (record.get('schema_version') != 2 or type(record.get('min_free_bytes')) is not int
+                    or record['min_free_bytes'] <= 0):
+                raise ValueError('Retained disk guard unavailable; active legacy driver needs reviewed recovery, not resume')
             if not record['start_issued'] or not record.get('attempt_id'):
                 record['status'] = 'start_uncertain'
                 record['last_error'] = 'No exact retained attempt; observe/reconcile manually. No start or cancel was issued.'
@@ -142,10 +180,14 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
             if any(item['status'] in ('reserved', 'starting', 'running', 'reconcile_required', 'verifying')
                    for item in controller.state()['queue']):
                 raise ValueError('Existing native work requires reconciliation')
+            capacity = _capacity(controller, min_free_bytes)
+            if capacity['reason']:
+                raise ValueError('Batch dispatch refused: '+capacity['reason'])
             now = clock.time()
             if not math.isfinite(now):
                 raise ValueError('Wall clock is not finite')
-            record = dict(schema_version=1, binding=binding, max_seconds=max_seconds,
+            record = dict(schema_version=2, binding=binding, max_seconds=max_seconds,
+                          min_free_bytes=min_free_bytes, disk_observation=capacity,
                           started_wall=now, deadline_wall=now+max_seconds, last_wall=now,
                           start_issued=True, attempt_id=None, cancel_issued=False,
                           stopped=False, status='start_issued', cancel_grace_seconds=cancel_grace_seconds)
@@ -181,6 +223,8 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
                 record['status'] = 'ownership_or_binding_changed'; record['last_error'] = str(error)
                 _save(path, record, clock)
                 return _summary(path, record)
+            if not record['cancel_issued']:
+                record['disk_observation'] = _capacity(controller, record['min_free_bytes'])
             try:
                 if controller.job(job_id)['status'] not in TERMINAL:
                     controller.reconcile(job_id)
@@ -196,7 +240,8 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
                 record['last_error'] = str(error)
             now, mono = clock.time(), clock.monotonic()
             rollback = rollback or now < record['last_wall'] or now-wall_start+.05 < mono-monotonic_start
-            if record['cancel_issued'] or rollback or now >= record['deadline_wall'] or mono >= monotonic_deadline:
+            disk_reason = record.get('disk_observation', {}).get('reason')
+            if record['cancel_issued'] or disk_reason or rollback or now >= record['deadline_wall'] or mono >= monotonic_deadline:
                 if not record['cancel_issued']:
                     try:
                         _owned_attempt(controller, record)
@@ -207,7 +252,7 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
                     grace = record['cancel_grace_seconds']
                     record.update(cancel_issued=True, status='cancel_requested_unconfirmed',
                                   cancel_deadline_wall=now+grace,
-                                  cancel_reason='clock_rollback' if rollback else 'deadline')
+                                  cancel_reason=disk_reason or ('clock_rollback' if rollback else 'deadline'))
                     cancel_mono_deadline = mono+grace
                     _save(path, record, clock)
                     try:
@@ -230,7 +275,7 @@ def status(controller, job_id):
     path = safe_path(controller.root/'batch-drivers'/(job_id+'.json'))
     with session_lock(controller):
         record = read_json(path)
-        if record.get('schema_version') != 1 or record['binding']['job_id'] != job_id:
+        if record.get('schema_version') not in (1, 2) or record['binding']['job_id'] != job_id:
             raise ValueError('Invalid retained batch driver journal')
         try:
             matches = _binding(controller, job_id) == record['binding']

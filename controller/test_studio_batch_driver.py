@@ -3,13 +3,14 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from campaign_ledger import sha
 from studio_bridge import write_json
 from studio_native_gate import exclusive_gate
-from studio_batch_driver import run, status
+from studio_batch_driver import DEFAULT_MIN_FREE_BYTES, run, status
 
 
 class HostDeath(BaseException):
@@ -40,7 +41,9 @@ class Controller:
         self.root = Path(folder)/'state'
         self.local = Path(folder)/'terminal'/'MQL5'/'Files'/'GOATStudio'
         self.root.mkdir(); self.local.mkdir(parents=True)
-        self.install = dict(controller_state_root=str(self.root), terminal_data_root=str(self.local.parent.parent.parent))
+        common = Path(folder)/'common'; common.mkdir()
+        self.install = dict(controller_state_root=str(self.root), terminal_data_root=str(self.local.parent.parent.parent),
+                            common_files_root=str(common))
         self.terminal, self.run = 'terminal-fixture', 'run-fixture'
         self.session = dict(installation_sha256=sha(self.install), directory_id=self.run,
                             terminal_id=self.terminal, run_id=self.run)
@@ -111,10 +114,136 @@ class BatchDriverTests(unittest.TestCase):
         # driver still hashes actual prepared files/config/session in every test.
         verify = patch('studio_batch_driver._verify_package')
         self.verified = verify.start(); self.addCleanup(verify.stop)
+        disk = patch('studio_batch_driver.shutil.disk_usage', return_value=SimpleNamespace(free=100*1024**3))
+        self.disk = disk.start(); self.addCleanup(disk.stop)
 
     def drive(self, **kwargs):
         return run(self.c, 'batch', poll_seconds=1, cancel_grace_seconds=2,
                    clock=self.c.clock, finish_fn=self.c.finish, **kwargs)
+
+
+    def test_capacity_refuses_each_output_volume_before_journal_or_start(self):
+        for role in ('terminal_data_root', 'common_files_root', 'controller_state_root'):
+            with self.subTest(role=role):
+                self.disk.side_effect = lambda path: SimpleNamespace(
+                    free=1 if path == Path(self.c.install[role]) else 100*1024**3)
+                with self.assertRaisesRegex(ValueError, 'disk_low'):
+                    self.drive(max_seconds=86400)
+                self.assertEqual((self.c.starts, self.c.cancels), (0, 0))
+                self.assertFalse((self.c.root/'batch-drivers'/'batch.json').exists())
+        self.assertEqual({call.args[0] for call in self.disk.call_args_list},
+                         {Path(value) for value in self.c.install.values()})
+
+    def test_probe_failure_refuses_before_journal_or_start(self):
+        self.disk.side_effect = OSError('probe unavailable')
+        with self.assertRaisesRegex(ValueError, 'disk_probe_unavailable'):
+            self.drive(max_seconds=86400)
+        self.assertEqual(self.c.starts, 0)
+        self.assertFalse((self.c.root/'batch-drivers'/'batch.json').exists())
+
+    def test_missing_output_root_is_not_probed_via_other_volume(self):
+        Path(self.c.install['common_files_root']).rmdir()
+        with self.assertRaisesRegex(ValueError, 'disk_probe_unavailable'):
+            self.drive(max_seconds=86400)
+        self.assertEqual(self.c.starts, 0)
+
+    def test_threshold_is_positive_integer_and_boundary_is_allowed(self):
+        for value in (0, -1, 1.5, True, float('nan'), float('inf'), '500'):
+            with self.assertRaisesRegex(ValueError, 'positive integer'):
+                self.drive(max_seconds=10, min_free_bytes=value)
+        self.disk.return_value = SimpleNamespace(free=DEFAULT_MIN_FREE_BYTES)
+        self.c.finished = True
+        result = self.drive(max_seconds=86400)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(result['min_free_bytes'], DEFAULT_MIN_FREE_BYTES)
+        self.assertTrue(result['disk_guard_available'])
+        self.assertIsNone(result['cancel_reason'])
+
+    def test_low_disk_cancels_once_preserves_deadline_and_reason_after_finish(self):
+        self.c.clock.on_sleep = lambda: setattr(self.disk, 'return_value', SimpleNamespace(free=99))
+        result = self.drive(max_seconds=86400, min_free_bytes=100)
+        self.assertEqual((self.c.starts, self.c.cancels), (1, 1))
+        self.assertTrue(result['stopped'])
+        self.assertEqual(result['deadline_wall'], 87400)
+        self.assertEqual(result['min_free_bytes'], 100)
+        self.assertEqual(result['cancel_reason'], 'disk_low')
+        self.assertIsNone(result['last_error'])
+        self.assertEqual(result['disk_observation']['volumes'][0]['free_bytes'], 99)
+        self.assertLess(self.c.clock.mono, 86400)
+        self.assertEqual(status(self.c, 'batch')['cancel_reason'], 'disk_low')
+
+    def test_lost_probe_during_run_uses_owned_cancel(self):
+        self.c.clock.on_sleep = lambda: setattr(self.disk, 'side_effect', OSError('lost volume'))
+        result = self.drive(max_seconds=86400)
+        self.assertEqual((self.c.starts, self.c.cancels), (1, 1))
+        self.assertEqual(result['cancel_reason'], 'disk_probe_unavailable')
+        self.assertTrue(result['stopped'])
+
+    def test_revoked_ownership_plus_low_disk_never_cancels_foreign_work(self):
+        def revoke():
+            self.c.snapshot['generation'] += 1
+            self.disk.return_value = SimpleNamespace(free=0)
+        self.c.clock.on_sleep = revoke
+        result = self.drive(max_seconds=86400)
+        self.assertEqual(result['status'], 'ownership_or_binding_changed')
+        self.assertEqual(self.c.cancels, 0)
+
+    def test_disk_cancel_uncertainty_resume_retains_guard_reason_and_never_reissues(self):
+        self.c.cancel_error = True
+        self.c.clock.on_sleep = lambda: setattr(self.disk, 'return_value', SimpleNamespace(free=0))
+        result = self.drive(max_seconds=86400, min_free_bytes=100)
+        self.assertEqual(result['status'], 'stop_unconfirmed')
+        self.c.clock.on_sleep = None
+        self.disk.return_value = SimpleNamespace(free=100*1024**3)
+        result = self.drive(resume=True)
+        self.assertEqual((self.c.starts, self.c.cancels), (1, 1))
+        self.assertEqual(result['cancel_reason'], 'disk_low')
+        self.assertEqual(result['min_free_bytes'], 100)
+        self.assertEqual(result['deadline_wall'], 87400)
+        with self.assertRaisesRegex(ValueError, 'original disk guard'):
+            self.drive(resume=True, min_free_bytes=101)
+
+    def test_guard_survives_host_death_without_start_or_deadline_reset(self):
+        self.c.clock.on_sleep = lambda: (_ for _ in ()).throw(HostDeath())
+        with self.assertRaises(HostDeath):
+            self.drive(max_seconds=86400, min_free_bytes=100)
+        self.c.clock.on_sleep = None
+        self.disk.return_value = SimpleNamespace(free=99)
+        result = self.drive(resume=True)
+        self.assertEqual((self.c.starts, self.c.cancels), (1, 1))
+        self.assertEqual(result['deadline_wall'], 87400)
+        self.assertEqual(result['cancel_reason'], 'disk_low')
+
+    def test_legacy_active_resume_refused_but_status_and_stopped_readable(self):
+        self.c.clock.on_sleep = lambda: (_ for _ in ()).throw(HostDeath())
+        with self.assertRaises(HostDeath):
+            self.drive(max_seconds=86400)
+        path = self.c.root/'batch-drivers'/'batch.json'
+        record = json.loads(path.read_text())
+        record['schema_version'] = 1
+        record.pop('min_free_bytes'); record.pop('disk_observation')
+        write_json(path, record)
+        self.assertFalse(status(self.c, 'batch')['disk_guard_available'])
+        with self.assertRaisesRegex(ValueError, 'legacy driver needs reviewed recovery'):
+            self.drive(resume=True)
+        self.assertEqual((self.c.starts, self.c.cancels), (1, 0))
+        record['stopped'] = True; record['status'] = 'completed'
+        write_json(path, record)
+        self.assertFalse(self.drive(resume=True)['disk_guard_available'])
+
+    def test_capacity_journal_write_failure_never_claims_cancel_or_stop(self):
+        self.c.clock.on_sleep = lambda: setattr(self.disk, 'return_value', SimpleNamespace(free=0))
+        def fail_cancel_write(path, record):
+            if record.get('cancel_issued'):
+                raise OSError('disk write failed')
+            return write_json(path, record)
+        with patch('studio_batch_driver.write_json', side_effect=fail_cancel_write):
+            with self.assertRaisesRegex(OSError, 'disk write failed'):
+                self.drive(max_seconds=86400)
+        self.assertEqual((self.c.starts, self.c.cancels), (1, 0))
+        retained = status(self.c, 'batch')
+        self.assertFalse(retained['cancel_issued'])
+        self.assertFalse(retained['stopped'])
 
     def test_deadline_cancel_once_then_confirmed_stop(self):
         result = self.drive(max_seconds=3)

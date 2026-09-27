@@ -79,7 +79,7 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
                    '{after=GetLastError();before=query_before;reason="EXPERT_QUERY_FAILED";return false;}',
                    'query_before=GetLastError();', 'if(!ChartGetString(chart,CHART_SCRIPT_NAME,script))',
                    '{after=GetLastError();before=query_before;reason="SCRIPT_QUERY_FAILED";return false;}',
-                   'if(script!="")', 'if(chart==ChartID()) own=true;', 'else if(expert!="")',
+                   'if(StringLen(script)>0)', 'if(chart==ChartID()) own=true;', 'else if(StringLen(expert)>0)',
                    'chart=ChartNext(chart);', 'if(!own)', 'return GoatStudioRecoveryRuntimeCheck']
         position = 0
         for fragment in ordered:
@@ -91,10 +91,10 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
         names = set(re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\(', self.guard + self.observer))
         self.assertEqual(names, {'GoatStudioRecoveryRuntime', 'GoatStudioRecoveryObserveCurrent',
             'GoatStudioRecoveryDiagnostic', 'GoatStudioRecoveryRuntimeCheck', 'ChartFirst', 'ChartNext',
-            'ChartID', 'ChartGetString', 'GetLastError', 'IsStopped', 'MQLInfoInteger',
+            'ChartID', 'ChartGetString', 'StringLen', 'GetLastError', 'IsStopped', 'MQLInfoInteger',
             'GoatStudioTesterState', 'TerminalInfoInteger', 'AccountInfoInteger', 'AccountInfoString',
             'GoatStudioRecoveryInstance', 'GlobalVariableGet', 'PrintFormat', 'if', 'while'})
-        self.assertIn('if(script!="")', self.guard)
+        self.assertIn('if(StringLen(script)>0)', self.guard)
         self.assertIn('if(!g_StudioScriptDiagnosticLogged)', self.guard)
         self.assertIn('g_StudioScriptDiagnosticLogged=true;', self.guard)
         self.assertIn('PrintFormat("GOAT ORPHAN SCRIPT chart=%I64d own=%s script=%s diagnostic_only",chart,chart==ChartID()?"yes":"no",script);', self.guard)
@@ -130,7 +130,7 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
     def test_source_and_compiled_candidate_identity(self):
         main = source('GOAT V1.49.mq5')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
-        self.assertIn('#define   GOAT_BUILD_ID "V1.49-ORPHAN-DIAGNOSTIC-7"', main)
+        self.assertIn('#define   GOAT_BUILD_ID "V1.49-ORPHAN-EMPTY-NAME-8"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
                          'a23c2f09091de307dd67bf44439e493d52c83d9b6a9ac4a2f9e1d044f62f4f8d')
         for name in ('GOATStudioRecovery.mqh', 'GOATStudioUI.mqh', 'GOAT V1.49.mq5'):

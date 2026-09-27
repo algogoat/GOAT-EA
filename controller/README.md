@@ -672,3 +672,25 @@ same verified controller bundle containing this pending-fence contract. Do not
 run a newer external maintenance CLI while the app still spawns an older
 controller that cannot recognize its fence. Updating an idle app's reviewed
 controller resources does not change the admitted EA binary or installed session.
+
+### Empty chart program names (V1.49 internal -8)
+
+`V1.49-ORPHAN-EMPTY-NAME-8` corrects the chart-name presence checks in orphan
+recovery. MQL5 `NULL` and `""` are distinct strings. On September 27, the native
+`controller/native-tests/ChartStringProbe.mq5` probe on Banker build 6230 read
+its existing GOAT chart: the script query succeeded, returned `NULL`, and had
+length zero. The old `script!=""` predicate was true and caused the false
+`SCRIPT_PRESENT` refusal. The probe's own chart returned `ChartStringProbe`,
+length 16, and was correctly recognized as occupied. Explicit `NULL`, empty,
+and named-string cases were also executed. The temporary script performed no
+trading, recovery, grant or EA replacement; MT5 exited after completion.
+
+The corrected checks use `StringLen(name)>0` for script and other-chart expert
+names. Query failures still refuse recovery, every nonzero-length name still
+refuses (including whitespace), and all later runtime guards, reviewed recovery
+effects and wire fields are unchanged. The native probe validates the string
+and chart-query behavior; source contracts bind the fix to the guard. Neither
+is proof that the complete corrected EA has been installed or run a batch.
+That native qualification remains required after its exact internal admission.
+
+Reference: https://www.mql5.com/en/book/basis/builtin_types/strings

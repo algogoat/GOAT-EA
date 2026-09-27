@@ -694,3 +694,11 @@ is proof that the complete corrected EA has been installed or run a batch.
 That native qualification remains required after its exact internal admission.
 
 Reference: https://www.mql5.com/en/book/basis/builtin_types/strings
+
+Compiled candidate: clean source `ead17629e88b6e599da81430426f52845eddd8c9`,
+MetaEditor 6230, zero errors and warnings; EX5 SHA-256
+`931212a291c6296e46525cd11972cabe9568bcde7f50cf91966cf23cb6c2e449`
+(2,256,830 bytes), compile receipt SHA-256
+`b0499f6839d3112414f016711c78bb7949379c1a5e42be4d591bc137007639b5`.
+The full 391 controller fixtures passed; nine focused source/identity checks
+passed again after binding this binary. Corrected-EA native qualification is pending.

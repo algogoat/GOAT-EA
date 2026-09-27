@@ -132,7 +132,7 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
         self.assertIn('#define   GOAT_BUILD_ID "V1.49-ORPHAN-EMPTY-NAME-8"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
-                         'a23c2f09091de307dd67bf44439e493d52c83d9b6a9ac4a2f9e1d044f62f4f8d')
+                         '931212a291c6296e46525cd11972cabe9568bcde7f50cf91966cf23cb6c2e449')
         for name in ('GOATStudioRecovery.mqh', 'GOATStudioUI.mqh', 'GOAT V1.49.mq5'):
             raw = (ROOT/name).read_bytes()
             self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))

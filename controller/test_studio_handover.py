@@ -329,8 +329,16 @@ class HandoverTests(unittest.TestCase):
                   'sys.exit(goat_studio.main())')
         folder = Path(__file__).parent
         args = ['--installation', str(self.receipt)]
+        # Check the cold real CLI first, including Windows process discovery.
+        # The concurrent probes below then measure the server/client boundary.
+        cold = subprocess.run([sys.executable, 'goat_studio.py', *args, 'onboarding-status'],
+                              cwd=folder, capture_output=True, text=True, timeout=15)
+        self.assertEqual(cold.returncode, 0, cold.stderr)
+        self.assertTrue(json.loads(cold.stdout)['ok'])
+        # The five concurrent CLI probes each keep their strict 5-second bound.
+        # Leave the real server alive through the full aggregate probe window.
         child = subprocess.Popen([sys.executable, '-c', script, str(ready), *args,
-                                  'serve', '--watch-seconds', '8'], cwd=folder,
+                                  'serve', '--watch-seconds', '32'], cwd=folder,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             deadline = time.monotonic()+5
@@ -341,8 +349,13 @@ class HandoverTests(unittest.TestCase):
                             ('state',), ('onboarding-status',), ('cancel', '--job-id', 'beta-job'),
                             ('state',)]:
                 self.assertIsNone(child.poll(), 'serve exited before concurrent CLI assertion')
-                result = subprocess.run([sys.executable, 'goat_studio.py', *args, *command],
-                                        cwd=folder, capture_output=True, text=True, timeout=5)
+                started = time.monotonic()
+                try:
+                    result = subprocess.run([sys.executable, 'goat_studio.py', *args, *command],
+                                            cwd=folder, capture_output=True, text=True, timeout=5)
+                finally:
+                    print(f'concurrent CLI {command[0]}: {time.monotonic()-started:.3f}s; '
+                          f'serve_running={child.poll() is None}', file=sys.stderr)
                 body = json.loads(result.stdout)
                 if command[0] == 'switch-apply':
                     self.assertFalse(body['ok'], body)
@@ -351,7 +364,7 @@ class HandoverTests(unittest.TestCase):
                     self.assertTrue(body['ok'], body)
             self.assertEqual(body['result']['queue'][0]['status'], 'cancelled')
         finally:
-            out, err = child.communicate(timeout=12)
+            out, err = child.communicate(timeout=40)
             self.assertEqual(child.returncode, 0, out+err)
 
 

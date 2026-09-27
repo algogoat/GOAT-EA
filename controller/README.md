@@ -402,6 +402,24 @@ uses the original deadline without replenishing its budget or retrying uncertain
 starts. Driver authority remains tied to the original generation. A changed
 grant, configuration or native identity requires reconciliation.
 
+The driver also requires 5 GiB of free space on each terminal-data, Common-files
+and controller-state filesystem. `--min-free-bytes <positive integer>` selects a
+reserve for a new run; zero cannot disable protection. Low capacity or an
+unavailable probe refuses dispatch before a start journal or native start is
+issued. During execution either condition requests cancellation of the exact
+owned attempt through the same one-shot cancel/readback path. The journal and
+status retain `min_free_bytes`, `disk_observation` and `cancel_reason` even after
+confirmed completion. Resume preserves both the original deadline and reserve;
+omit both options. Active legacy journals without a retained disk guard require
+reviewed recovery rather than automatic resume; their status remains readable
+and explicitly reports `disk_guard_available: false`.
+
+Capacity is sampled by the running driver, not an independent native watchdog.
+The reserve is headroom for cancellation/evidence, not a prediction of required
+history or tester-agent storage. A rapid disk loss or failed journal write can
+still leave stop unconfirmed. Never infer a stopped tester from a cancellation
+request or delete history/queues to manufacture free space.
+
 ### Reviewed orphan continuation recovery (V1.49)
 
 `orphan-recovery-prepare` freezes exact idle demo/runtime and single-owner evidence.

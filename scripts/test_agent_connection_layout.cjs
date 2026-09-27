@@ -22,6 +22,8 @@ assert.match(optimizer, /Add\(lbl\)/);
 assert.match(optimizer, /Add\(btn\)/);
 assert.match(optimizer, /Add\(edt\)/);
 assert.match(optimizer, /Add\(cmb\)/);
+assert.match(optimizer, /Add\(c_Wnd_OPT\)/);
+assert.match(optimizer, /Add\(c_Wnd_Export\)/);
 const names = [...new Set(optimizer.match(/\bm_(?:lbl|edt|btn|cmb|dt|dp|chk|list)\w+/g))];
 function fixture(width, height, owner, empty, loaded) {
   const controls = Object.fromEntries(names.map(name => [name, {
@@ -31,16 +33,19 @@ function fixture(width, height, owner, empty, loaded) {
     Enable() {}, Disable() {}, Height() { return 24; }, FitRows() {},
   }]));
   const container = children => ({
+    visible: true, bounds: null,
     ControlsTotal: () => children.length, Control: i => children[i],
-    Hide() { children.forEach(c => c.Hide()); },
+    Hide() { this.visible = false; children.forEach(c => c.Hide()); },
   });
-  const c = { ...controls, m_client_area: container(Object.values(controls)),
-    c_Wnd_OPT: container([]), c_Wnd_Export: container([]),
+  const backdrop = container([]), exportTray = container([]);
+  const c = { ...controls, m_client_area: container([backdrop, exportTray, ...Object.values(controls)]),
+    c_Wnd_OPT: backdrop, c_Wnd_Export: exportTray, shown: [],
     D_Width: width, D_Height: height, m_studioOwner: owner,
     m_studioLoaded: loaded, g_StudioEmptyDraft: empty, handoff: owner === 'human',
     MathMax: Math.max, MathMin: Math.min,
     StageMove(control, x, y, visible, w, h) {
       control.bounds = {x, y, w, h}; control.visible = visible;
+      if (visible) c.shown.push(control);
     },
   };
   return {c, controls};
@@ -57,7 +62,12 @@ for (const [width, height, empty, loaded] of [
   for (let reveal = 0; reveal < 3; reveal++) {
     // Native Show/Maximize recursively exposes all children before reflow.
     Object.values(controls).forEach(control => control.Show());
+    c.shown = [];
     vm.runInNewContext(production, c);
+    assert.ok(c.c_Wnd_OPT.visible, 'Compact view must retain its panel background');
+    assert.equal(c.shown[0], c.c_Wnd_OPT, 'Restore the backdrop before foreground controls');
+    assert.deepEqual(c.c_Wnd_OPT.bounds, {x: 0, y: 0, w: width-16, h: height-4});
+    assert.equal(c.c_Wnd_Export.visible, false);
     const expected = ['m_lblHeading', 'm_edtBatchProgress', 'm_btnStop'];
     if (owner === 'agent') expected.push('m_btnStart');
     if (height >= 230) expected.push('m_lblBatchControl');
@@ -93,7 +103,8 @@ const stageEnd = optimizer.indexOf('//+-----------------------------------------
 const stage = optimizer.slice(optimizer.indexOf('{', stageStart)+1, optimizer.lastIndexOf('}', stageEnd));
 const reflowStart = ui.indexOf('   int tabs_width=');
 const reflowEnd = ui.indexOf('\n  }', reflowStart);
-const reflow = ui.slice(reflowStart, reflowEnd);
+const backdropReflow = ui.match(/StageMove\(c_Wnd_OPT,0,0,true,width-16,height-4\);/)[0];
+const reflow = backdropReflow + ui.slice(reflowStart, reflowEnd);
 assert.ok(stageStart > 0 && reflowStart > 0 && reflow.includes('ApplyStudioStage'));
 for (let selected = 0; selected < 4; selected++) {
   const {c, controls} = fixture(780, 600, 'agent', false, true);
@@ -108,6 +119,7 @@ for (let selected = 0; selected < 4; selected++) {
     ApplyStudioStage(value) { c.stage = value; vm.runInNewContext(preprocess(stage), c); },
   });
   vm.runInNewContext(preprocess(reflow), c);
+  assert.ok(c.c_Wnd_OPT.visible, 'Full view must retain its panel background');
   for (const name of ['m_btnStageSetup', 'm_btnStageTimeline', 'm_btnStageExecution',
     'm_btnStageExport', 'm_listQueue', 'm_btnStart', 'm_btnStop', 'm_lblQueue'])
     assert.ok(controls[name].visible, `${name} did not return after widening`);

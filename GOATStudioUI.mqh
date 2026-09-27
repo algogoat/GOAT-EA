@@ -400,6 +400,8 @@ void CStrategyTesterDialog::ManagedControls(void)
       // c_Wnd_OPT is only a sibling backdrop, not their parent.
       for(int i=0;i<m_client_area.ControlsTotal();i++)
         {CWnd *child=m_client_area.Control(i); if(child!=NULL) child.Hide();}
+      // Restore the client-area backdrop before the foreground controls.
+      StageMove(c_Wnd_OPT,0,0,true,D_Width-16,D_Height-4);
       c_Wnd_Export.Hide();
       int w=(int)MathMax(100,D_Width-48);
       m_lblHeading.Text("GOAT / AGENT CONNECTION");

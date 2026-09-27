@@ -1,4 +1,4 @@
-"""Identify the shipped, waiting desktop qualification client during receipt CAS.
+"""Identify the shipped, waiting desktop migration client during receipt CAS.
 
 This is local process coordination, not an OS-user security boundary. Never
 recognize arbitrary goat.exe instances or native Studio operations as clients.
@@ -62,7 +62,8 @@ Called only for an already completed PARK receipt verification/replacement.
                 continue
             args = windows_argv(row.get('CommandLine'))
             if (len(args) < 5 or args[0].casefold() != launcher
-                    or args[1:3] != ['desktop', 'suite.installInternalQualification']):
+                    or args[1] != 'desktop'
+                    or args[2] not in ('suite.installInternalQualification', 'suite.migrateInstallation')):
                 continue
             flags = args[3:]
             if len(flags) % 2 or len(set(flags[::2])) != len(flags[::2]):
@@ -78,16 +79,28 @@ Called only for an already completed PARK receipt verification/replacement.
             if not params_path.is_absolute():
                 continue
             params = read_json(params_path)
-            expected = dict(terminalExecutable=controller.install['terminal_executable'],
-                            terminalDataRoot=controller.install['terminal_data_root'],
-                            portable=Path(controller.install['terminal_data_root']) ==
-                                     Path(controller.install['terminal_executable']).parent)
-            if (set(params) != {'selection', 'accountId', 'buildId', 'parkReviewId'}
-                    or params['selection'] != expected
-                    or not re.fullmatch(r'[a-f0-9]{32}', str(params['parkReviewId']))
-                    or not re.fullmatch(r'[1-9][0-9]{3,19}', str(params['accountId']))
-                    or not re.fullmatch(r'[A-Za-z0-9._-]{1,96}', str(params['buildId']))):
+            if (not isinstance(params, dict) or not isinstance(params.get('parkReviewId'), str)
+                    or not re.fullmatch(r'[a-f0-9]{32}', params['parkReviewId'])):
                 continue
+            if args[2] == 'suite.migrateInstallation':
+                if set(params) != {'receiptPath', 'parkReviewId'} or not isinstance(params['receiptPath'], str):
+                    continue
+                receipt = Path(params['receiptPath'])
+                registered = Path(controller.install['receipt_path'])
+                expected = Path(controller.install['controller_state_root'])/'installation.json'
+                if (not receipt.is_absolute() or not registered.is_absolute() or receipt.is_symlink()
+                        or receipt.resolve() != expected.resolve() or registered.resolve() != expected.resolve()):
+                    continue
+            else:
+                expected = dict(terminalExecutable=controller.install['terminal_executable'],
+                                terminalDataRoot=controller.install['terminal_data_root'],
+                                portable=Path(controller.install['terminal_data_root']) ==
+                                         Path(controller.install['terminal_executable']).parent)
+                if (set(params) != {'selection', 'accountId', 'buildId', 'parkReviewId'}
+                        or params['selection'] != expected
+                        or not re.fullmatch(r'[1-9][0-9]{3,19}', str(params['accountId']))
+                        or not re.fullmatch(r'[A-Za-z0-9._-]{1,96}', str(params['buildId']))):
+                    continue
             children = [child for child in rows if child.get('ParentProcessId') == row['ProcessId']]
             if len(children) != 1:
                 continue

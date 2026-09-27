@@ -20,6 +20,9 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       FIRESTORE_EMULATOR_HOST: 127.0.0.1:1
+      # Hosted Windows TEMP defaults to a short-name alias; fixtures require canonical paths.
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
     steps:
       - name: Check out proposed source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -40,9 +43,14 @@ jobs:
         shell: python
         run: |
           import sys
+          import tempfile
+          from pathlib import Path
           import numpy
           import MetaTrader5
           assert sys.platform == "win32" and sys.version_info[:2] == (3, 13)
+          fixture_temp = Path(tempfile.gettempdir())
+          assert fixture_temp.is_absolute() and fixture_temp.resolve() == fixture_temp
+          print("Canonical fixture temp", fixture_temp)
           assert numpy.__version__ == "2.2.6"
           assert MetaTrader5.__version__ == "5.0.6180"
           assert numpy.dot(numpy.array([2, 3]), numpy.array([4, 5])).item() == 23

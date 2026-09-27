@@ -489,6 +489,17 @@ inspect `switch-status` and retry ONLY `switch-apply` with that same review ID.
 The journal can recover even if the original installation receipt is temporarily
 inside the parked state directory. Normal controller commands refuse until the
 retained handover completes. Never manufacture a new attempt to clear the fence.
+When the terminal and app state are on different volumes, the same reviewed
+handover uses a retained `.studio-transfer-*` journal beside the destination.
+It copies into staging on that destination volume, fsyncs each file and verifies
+the complete reviewed SHA-256 inventory before publishing the directory. Only
+then does it remove matching source files and their known empty directories.
+Interrupted copying, publication or source cleanup resumes under the same review
+ID; unexpected files, links or changed hashes retain both sides and refuse further
+cleanup. Keep the transfer journal and any staging/scratch evidence for recovery.
+Same-volume handovers retain the atomic directory rename. Tests cover operation
+interruption and disk-full failure; file fsync does not establish directory
+metadata or sudden power-loss durability.
 This is a trusted-local-user coordination protocol, not an OS security boundary.
 Native MT5 lifecycle qualification is still required separately from fixture tests.
 

@@ -1,5 +1,6 @@
 """Windows filesystem/SQLite handover tests; no broker or tester is launched."""
 import json
+import errno
 import os
 from pathlib import Path
 import sqlite3
@@ -70,6 +71,45 @@ class HandoverTests(unittest.TestCase):
             self.assertEqual(restored.state()['owner'], 'human')
             self.assertEqual(restored.state()['queue'][0]['status'], 'pending')
         finally: restored.store.close()
+
+    def test_cross_volume_park_and_restore_preserve_research_and_human_ownership(self):
+        rename = Path.rename
+        def cross_volume(source, target):
+            if source in (self.c.local, self.c.root) or (source.name in ('state', 'terminal') and target in (self.c.local, self.c.root)):
+                raise OSError(errno.EXDEV, 'cross-volume test boundary')
+            return rename(source, target)
+        with patch.object(Path, 'rename', cross_volume):
+            first = review(self.c)['review_id']; apply(self.c, first, True)
+            new = Controller(self.receipt); new.bootstrap('123456', 'Customer-Demo')
+            new.store.close(); new.store = None
+            second = review(new, first)['review_id']
+            self.assertEqual(apply(new, second, True)['status'], 'complete')
+        restored = Controller(self.receipt).open()
+        try:
+            self.assertEqual(restored.state()['owner'], 'human')
+            self.assertEqual(restored.state()['queue'][0]['status'], 'pending')
+            self.assertEqual(database_view(restored.root/'studio.sqlite')['content'], self.before['content'])
+        finally: restored.store.close()
+
+    def test_cross_volume_retirement_interruption_keeps_same_review_fence_and_resumes(self):
+        planned = review(self.c)['review_id']
+        before_files = tree(self.c.local)
+        rename, unlink = Path.rename, Path.unlink
+        def cross_volume(source, target):
+            if source == self.c.local: raise OSError(errno.EXDEV, 'cross-volume test boundary')
+            return rename(source, target)
+        def interrupt(file, *args, **kwargs):
+            result = unlink(file, *args, **kwargs)
+            if file.is_relative_to(self.c.local): raise OSError('interrupted retirement')
+            return result
+        with patch.object(Path, 'rename', cross_volume), patch.object(Path, 'unlink', interrupt):
+            with self.assertRaisesRegex(OSError, 'interrupted retirement'): apply(self.c, planned, True)
+        with self.assertRaisesRegex(ValueError, planned): guard(self.c)
+        with self.assertRaisesRegex(ValueError, 'Interrupted'): self.c.bootstrap('123456', 'Customer-Demo')
+        self.assertEqual(tree(paths(self.c)[2]/planned/'terminal'), before_files)
+        self.assertEqual(apply(self.c, planned, True)['status'], 'complete')
+        guard(self.c)
+        self.assertEqual(tree(paths(self.c)[2]/planned/'terminal'), before_files)
 
     def test_restore_receipt_can_restore_the_session_it_parked(self):
         # A has pending research. Park it, create B, restore A, then restore B

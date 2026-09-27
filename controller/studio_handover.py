@@ -6,6 +6,7 @@ This coordinates trusted local tools, not an OS-user security boundary.
 """
 from collections import Counter
 from contextlib import ExitStack, closing
+import errno
 import hashlib
 import json
 import os
@@ -286,6 +287,16 @@ def move_once(source, target, expected):
         if source.exists() or target.exists():
             raise ValueError('Unexpected directory during retained handover')
         return
+    identity = dict(source=str(source), target=str(target), files=expected)
+    transfer = target.parent/('.studio-transfer-'+sha(identity))
+    journal = transfer.with_suffix('.json')
+    safe_path(transfer); safe_path(journal)
+    if journal.exists():
+        copy_move_once(source, target, expected, identity, transfer, journal)
+        return
+    scratch = safe_path(transfer.with_suffix('.part'))
+    if transfer.exists() or scratch.exists():
+        raise ValueError('Unregistered handover transfer; preserve staging and source')
     if target.exists():
         if source.exists() or tree(target) != expected:
             raise ValueError('Ambiguous interrupted handover; preserve both directories')
@@ -293,7 +304,106 @@ def move_once(source, target, expected):
     if tree(source) != expected:
         raise ValueError('Controller files changed since review')
     target.parent.mkdir(parents=True, exist_ok=True)
-    source.rename(target)
+    try:
+        source.rename(target)
+    except OSError as error:
+        if error.errno != errno.EXDEV and getattr(error, 'winerror', None) != 17:
+            raise
+        # Cross-volume rename cannot publish. Persist exact transfer ownership
+        # before creating staging; all copied data stays on the target volume.
+        if target.exists() or tree(source) != expected:
+            raise ValueError('Files changed during cross-volume handover') from error
+        directories = sorted(p.relative_to(source).as_posix() for p in source.rglob('*') if p.is_dir())
+        write_json(journal, dict(schema_version=1, identity=identity, directories=directories, phase='copying'))
+        copy_move_once(source, target, expected, identity, transfer, journal)
+
+
+def copy_move_once(source, target, expected, identity, transfer, journal):
+    """Copy/verify/publish, then retire exact source bytes; resume under apply's lock.
+
+    The external journal remains as evidence. No source byte is removed before
+    copied file bytes are fsynced and the final tree is verified. Directory
+    metadata is not fsynced; this does not claim power-loss durability.
+    """
+    record = read_json(safe_path(journal))
+    if record.get('schema_version') != 1 or record.get('identity') != identity or record.get('phase') not in ('copying', 'cleaning', 'complete'):
+        raise ValueError('Handover transfer identity changed; preserve both trees')
+    directories = record.get('directories')
+    if not isinstance(directories, list) or any(not isinstance(p, str) for p in directories):
+        raise ValueError('Handover transfer directory inventory is invalid')
+    partial = transfer.with_suffix('.part')
+    safe_path(partial)
+    if record['phase'] == 'copying':
+        if tree(source) != expected or sorted(p.relative_to(source).as_posix() for p in source.rglob('*') if p.is_dir()) != directories:
+            raise ValueError('Cross-volume source changed; preserve transfer evidence')
+        if target.exists():
+            if transfer.exists() or partial.exists():
+                raise ValueError('Ambiguous published handover transfer; preserve both trees')
+        else:
+            staged = tree(transfer)
+            if staged is not None and any(expected.get(name) != digest for name, digest in staged.items()):
+                raise ValueError('Handover staging changed; preserve source and staging')
+            if staged is not None and any(p.relative_to(transfer).as_posix() not in directories for p in transfer.rglob('*') if p.is_dir()):
+                raise ValueError('Unexpected handover staging directory')
+            transfer.mkdir(exist_ok=True)
+            for name in directories:
+                safe_path(transfer/name).mkdir(parents=True, exist_ok=True)
+            # A prior interrupted write is only this journal's isolated scratch
+            # file, never a published payload file or a customer source path.
+            if partial.exists():
+                if not partial.is_file():
+                    raise ValueError('Unexpected handover scratch path')
+                partial.unlink()
+            for name, digest in expected.items():
+                origin, copied = safe_path(source/name), safe_path(transfer/name)
+                if copied.exists():
+                    continue  # Already hashed with the complete staged inventory.
+                with origin.open('rb') as incoming, partial.open('xb') as outgoing:
+                    checksum = hashlib.sha256()
+                    while chunk := incoming.read(1024*1024):
+                        checksum.update(chunk); outgoing.write(chunk)
+                    outgoing.flush(); os.fsync(outgoing.fileno())
+                if checksum.hexdigest() != digest:
+                    raise ValueError('Source changed while copying; preserve both trees')
+                partial.rename(copied)
+            if tree(source) != expected or tree(transfer) != expected:
+                raise ValueError('Cross-volume copy verification failed; source retained')
+            # Directory publication is atomic on the destination volume. A crash
+            # here resumes from the verified target even if phase still copying.
+            transfer.rename(target)
+        if tree(target) != expected or sorted(p.relative_to(target).as_posix() for p in target.rglob('*') if p.is_dir()) != directories:
+            raise ValueError('Published handover differs; source retained')
+        record['phase'] = 'cleaning'
+        write_json(journal, record)
+    if tree(target) != expected or sorted(p.relative_to(target).as_posix() for p in target.rglob('*') if p.is_dir()) != directories:
+        raise ValueError('Published handover changed; preserve remaining source')
+    remaining = tree(source)
+    if record['phase'] == 'complete':
+        if remaining is not None:
+            raise ValueError('Source reappeared after completed handover; preserve it')
+        return
+    if remaining is not None:
+        if any(expected.get(name) != digest for name, digest in remaining.items()):
+            raise ValueError('Remaining handover source changed; preserve both trees')
+        source_dirs = [p for p in source.rglob('*') if p.is_dir()]
+        if any(p.relative_to(source).as_posix() not in directories for p in source_dirs):
+            raise ValueError('Remaining handover source has an unexpected directory')
+        for name, digest in remaining.items():
+            origin, copied = safe_path(source/name), safe_path(target/name)
+            with origin.open('rb') as handle:
+                original_hash = hashlib.file_digest(handle, 'sha256').hexdigest()
+            with copied.open('rb') as handle:
+                copied_hash = hashlib.file_digest(handle, 'sha256').hexdigest()
+            if original_hash != digest or copied_hash != digest:
+                raise ValueError('Source or destination changed before retirement')
+            origin.unlink()
+        # Remove only the known empty directories, deepest first. New content
+        # prevents rmdir; no recursive deletion can discard unreviewed files.
+        for directory in sorted(source_dirs, key=lambda p: len(p.parts), reverse=True):
+            safe_path(directory).rmdir()
+        safe_path(source).rmdir()
+    record['phase'] = 'complete'
+    write_json(journal, record)
 
 
 def apply(c, review_id, confirmed=False):

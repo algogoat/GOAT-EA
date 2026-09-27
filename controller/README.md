@@ -1,9 +1,18 @@
-# GOAT Studio controller 1.48 beta
+# GOAT Studio controller 1.49 beta candidate
 
 This portable Windows controller uses the installed receipt and bundled Python.
 Only `goat_studio.py` is the public Studio entrypoint. The other Python modules
 implement its validation and durable storage; do not invoke internal helpers or
 construct native permits manually. No API accepts a caller-supplied “safe” flag.
+
+For interrupted legacy monitor startup and protected peer handling, see
+[the migration guide](LEGACY-MONITOR-MIGRATION.md). A reviewable source candidate
+is not an installed or natively qualified release.
+
+The 1.49 controller accepts existing 1.48 installation receipts and uses their
+1.48 input contracts and installed EA hash. Local controller development does not
+require publishing a new desktop installer or replacing the EA. The selected
+EA's normal activation, MT5 permissions and human control grant still apply.
 
 In the unified agent kit, prefix each command below with:
 
@@ -109,12 +118,42 @@ serve --watch-seconds 3600
 one persistent chart and the actual installed EA path. It selects Studio's
 read-only monitor inputs and leaves DLL and trading permissions disabled on the
 chart. It neither changes the user's existing profile nor edits `common.ini`.
-`monitor-launch` uses MT5 `/profile`, with `/portable` only when the installation
-receipt identifies portable mode; it does not use a disposable `/config` startup
-chart. The saved broker login/server must match the controller binding, saved
-Algo Trading must be off, and nonportable installations must have matching
-`origin.txt`. All terminal processes must be stopped for this conservative beta
-setup path. No command closes a terminal or enables trading.
+`monitor-launch` supplies an immutable, hashed `/config` with explicit StartUp
+expert and verified monitor preset, keeping the dedicated saved profile. The
+saved account must match the session and Algo Trading must remain off. This
+operation requires the selected terminal to be stopped and never enables trading.
+An explicitly reviewed protected peer may be stopped; a different process still
+requires a new review.
+
+If an MT5 update discarded the startup arguments, `monitor-repair --attempt-id
+<unique-id>` can recover an empty, never-started monitor session. The official
+MetaTrader5 Python adapter must be available in the controller runtime. It checks
+the exact existing selected process, saved demo identity, connection, zero open
+positions/orders, Algo off and a positively idle native tester before issuing
+one normal close. It preserves the original profile and journals the close and
+new explicit startup. An uncertain close is never resent, a replacement process
+is never adopted, and native campaign flags/grants are untouched. The SDK is
+available in the local developer probe environment; inclusion in the customer
+installer remains a packaging requirement.
+
+`monitor-stop --attempt-id <unique-id>` uses the same idle-demo checks for an
+authorized upgrade, closes normally once and retains the result without changing
+the profile or relaunching. Reuse the same ID to inspect an uncertain outcome;
+a reopened terminal is refused, never closed again or adopted.
+
+V1.49 MONITOR-ONBOARDING-4 displays a compact agent connection screen for an
+empty session and small charts. A genuine human handoff is possible before the
+agent creates settings; no default trading/test settings are invented. Existing
+saved drafts and partial/malformed states still require recovery. Fresh OnInit
+and UI observations, not a queued chart command, establish activation progress.
+Automatic activation reload is bounded to20seconds and reports
+`ACTIVATION_RELOAD_REQUIRED` on failure. The controller exposes the same reason
+for a fresh matching activation status. Native qualification is still pending.
+
+WebRequest setup uses only `https://goatedge.ai`. The agent provides that exact
+URL and checks readiness after the user's MT5 approval. DLL imports are separate
+from live trading permission. Automated permission-dialog navigation and scoped
+permission preparation are tracked in CTRL-012; they are not implemented here.
 
 The human approves DLL imports and the exact WebRequest URL displayed by GOAT,
 completes legitimate GOAT device activation, and clicks **Give to Agent** in
@@ -340,15 +379,42 @@ For inconsistent native flags, run `native-recovery-status`. It reports runtime
 identity/readiness failures and remaining controls without clearing anything.
 `cancel` requires an exact owned attempt; `finish` requires its observed native
 completion and idle runtime. Neither repairs an orphan `BatchOnGoing` flag. A
-possible orphan requires the compatible reviewed native recovery capability;
+possible orphan requires the matching V1.49 reviewed native recovery capability;
 do not edit global-variable files, call Start/Stop as a reset or fabricate a launch
 receipt. See [native recovery contract](NATIVE-RECOVERY-CONTRACT.md).
+
+### Time-budgeted batch execution
+
+After preparing and checking a batch, `run-batch --job-id <id> --max-seconds 86400`
+drives its existing owned start/status/cancel/finish operations with a durable
+deadline (1..86400 seconds). At the deadline it requests cancellation once and
+waits a bounded grace period for native stop/readback. It never equates issuing
+cancel with confirmed stop and never force-kills MT5. Keep the driver process
+running: an agent/process crash is not an autonomous native deadline mechanism.
+`batch-driver-status --job-id <id>` reads progress; `run-batch --job-id <id> --resume`
+uses the original deadline without replenishing its budget or retrying uncertain
+starts. Driver authority remains tied to the original generation. A changed
+grant, configuration or native identity requires reconciliation.
+
+### Reviewed orphan continuation recovery (V1.49)
+
+`orphan-recovery-prepare` freezes exact idle demo/runtime and single-owner evidence.
+After the user explicitly approves that review, `orphan-recovery-apply --review-id
+<id> --confirm-reviewed` publishes the one native action. Use
+`orphan-recovery-status --review-id <id>` for the retained receipt and fresh
+readback. The native action clears only the positively reviewed BatchOnGoing flag;
+it never starts/stops trading or testing, changes grants, clears queues, or edits
+native control files. Ambiguous delivery remains fenced and requires review.
+Legacy monitors and foreign gate owners are refused. Native Windows qualification
+and a compatible installed monitor are still required before promotion.
 
 ### Park and restore an entire research session
 
 If bootstrap refuses an existing Studio activation, never delete active.json,
-permits, gate owners, databases or pending jobs. Stop MT5, MetaEditor and all
-controller/runner processes first. The installed public CLI supports:
+permits, gate owners, databases or pending jobs. Stop the selected MT5, MetaEditor
+and relevant controller/runner processes first. A separately reviewed protected
+peer may remain running with its exact recorded identity. Without that policy,
+all terminals must be stopped. The installed public CLI supports:
 
 ```
 goat.exe studio --installation <installation.json> switch-plan
@@ -370,13 +436,22 @@ the exclusive counterpart and refuses while any ordinary command is running;
 ordinary commands refuse while apply is in progress. Existing native mutation
 gates continue to serialize individual commits.
 
-The handover refuses running terminals/controllers, unresolved native jobs,
+The handover refuses the running selected terminal, unknown or changed peer
+processes, controller writers, unresolved native jobs,
 seed ownership, unconsumed requests/permits, shared/ambiguous databases and
 filesystem aliases. It revokes old agent generations, then parks the entire
 terminal GOATStudio directory and app controller state under an attempt-specific
 archive outside both directories. The installation receipt remains registered.
 Queues, drafts, results, profiles outside GOATStudio, Common Files and credentials
 are not discarded. No process is stopped or launched automatically.
+
+Older unscoped campaign completions embed their outcome in the queue rather than
+using the newer `completion_path`. Offline handover verifies their consumed
+request, exact package and terminal binding, retained outcome, restored control
+transaction and absent control files. This compatibility route preserves the
+original evidence and grants no current worker clearance; a missing or mismatched
+proof still blocks switching. Ordinary queue mutations retain their current
+completion contract.
 
 After parking, run ordinary bootstrap for the explicitly selected demo account.
 The new session is human-owned and requires the user's fresh Give to Agent.
@@ -392,3 +467,39 @@ inside the parked state directory. Normal controller commands refuse until the
 retained handover completes. Never manufacture a new attempt to clear the fence.
 This is a trusted-local-user coordination protocol, not an OS security boundary.
 Native MT5 lifecycle qualification is still required separately from fixture tests.
+
+### Protect one other running terminal
+
+Use `peer-prepare --terminal-executable <absolute terminal64.exe> --data-root
+<absolute MT5 data root>` before setup or switching when another terminal must
+remain untouched. Inspect the returned exact paths, PID and creation time; within
+the user's authorized setup scope, confirm that exact review using `peer-apply --review-id <id> --confirm-reviewed`.
+Preparation and apply do not close, launch, grant control over or write to the peer.
+
+The retained policy verifies its executable hash, origin/data binding and
+nonoverlapping paths. It lives outside both parked session directories and
+survives a session switch or EA version upgrade on the same installation target.
+Onboarding, switch reviews and native package process checks require the exact
+recorded peer process. A restart, binary update, changed path or unknown additional
+terminal blocks further work; obtain and inspect a fresh review before confirming it.
+This is one protected peer, not an arbitrary process ignore list. It does not
+release legacy worker claims or startup slots, reconcile native work or substitute
+for idle/setup checks on the selected terminal.
+
+### Desktop client during a parked receipt upgrade
+
+The desktop installer may invoke `switch-verify-park` and `switch-replace-receipt`
+while its requesting `goat.exe desktop suite.installInternalQualification` client
+waits for the RPC response. That client is separate from the installer's native
+child process; it is not an MT5 runner. Only those two receipt-upgrade operations
+can recognize one exact launcher/embedded-Python pair from the executing bundle.
+The files on disk (executable, entrypoint and controller) must match the bundle's manifest,
+arguments must name internal qualification for this same terminal, and the child
+must forward the exact arguments. Unrecognized, changed or concurrent clients
+remain blocked. Ordinary session review/park/restore still rejects every unrelated
+launcher. This recognition grants no account admission, native control or trading
+permission and does not retry an interrupted installation. The file hashes do not
+attest the running image: process inventory precedes hashing. This is coordination
+among trusted local tools, not protection against a same-user actor replacing files.
+Portable mode is derived from the installed data/executable paths, including older
+receipts without an explicit portable field.

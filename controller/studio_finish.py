@@ -9,7 +9,9 @@ from studio_native_gate import exclusive_gate
 from native_control_transaction import restore,NAMES,contents,digest
 from studio_bridge import write_json
 
-def finish(controller,job_id):
+def finish(controller,job_id,*,expected_generation=None):
+    if expected_generation is not None and controller.state()['generation']!=expected_generation:
+        raise ValueError('Controller generation changed before finish')
     job=controller.job(job_id)
     if job['status'] in ('completed','cancelled','failed'):
         return dict(status=job['status'],result=job.get('completion'),reused=True)
@@ -39,6 +41,8 @@ def finish(controller,job_id):
     with exclusive_gate(gate):
         controller.runtime(require_idle=True,expected_batch_ongoing=False)
         state=controller.state();current=controller.job(job_id)
+        if expected_generation is not None and state['generation']!=expected_generation:
+            raise ValueError('Controller generation changed during finish')
         if state['owner']!='agent' or current.get('launch_intent')!=intent: raise ValueError('Attempt ownership changed')
         transaction=read_json(evidence/'transaction.json')
         if transaction['phase']!='restored':

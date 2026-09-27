@@ -8,13 +8,15 @@ from studio_bridge import write_json,display_state
 from studio_native_gate import exclusive_gate
 from studio_dispatch_observe import observe_dispatch
 
-def publish_cancel(controller, job):
+def publish_cancel(controller, job, *, expected_generation=None):
     if job['status'] not in ('starting','running','reconcile_required','verifying'):
         raise ValueError('An existing native attempt is required')
     attempt=job['launch_intent']['attempt_id'];request_id=sha([attempt,'cancel'])
     gate=controller.local/'native-gate'
     with exclusive_gate(gate):
         state=controller.state();current=controller.job(job['job_id'])
+        if expected_generation is not None and state['generation']!=expected_generation:
+            raise ValueError('Controller generation changed before cancel publication')
         if state['owner']!='agent' or current['launch_intent']['attempt_id']!=attempt:
             raise ValueError('Current agent ownership and exact attempt required')
         if (gate/('issued-'+request_id+'.json')).exists():

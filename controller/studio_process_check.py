@@ -36,8 +36,11 @@ def classify_processes(processes,binding,*,observed_unix,research_running=True):
         result[role].append(dict(pid=pid,executable=str(actual),created_utc=created))
     if type(research_running) is not bool:
         raise ValueError('Explicit research process state required')
-    if len(result['research'])!=int(research_running) or len(result['protected'])!=int(protected is not None):
+    allowed_protected = (0, 1) if protected is not None and binding.get('protected_may_be_stopped') is True else (int(protected is not None),)
+    if len(result['research'])!=int(research_running) or len(result['protected']) not in allowed_protected:
         raise ValueError('Expected research process state and one protected terminal required')
+    if binding.get('protected_process') is not None and result['protected'] and result['protected'] != [binding['protected_process']]:
+        raise ValueError('Protected peer process changed; obtain a fresh explicit review')
     return dict(observed_unix=observed_unix,**{key:(value[0] if value else None) for key,value in result.items()},
                 launch_permitted=False,limitation='Process identity does not establish native batch ownership')
 
@@ -57,7 +60,7 @@ def verify_research_exited(binding, baseline, *, max_age=120):
     """Read-only restart boundary; never stops or starts a process."""
     if not 0<=time.time()-baseline['observed_unix']<=max_age:
         raise ValueError('Process baseline is stale or future-dated')
-    if not baseline.get('research') or not baseline.get('protected'):
+    if not baseline.get('research') or (not baseline.get('protected') and binding.get('protected_may_be_stopped') is not True):
         raise ValueError('Both original process identities required')
     current=inspect_processes(binding,research_running=False)
     if current['protected']!=baseline['protected']:

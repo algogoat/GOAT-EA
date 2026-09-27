@@ -29,13 +29,15 @@ def recovery_status(controller):
     from studio_process_check import inspect_processes
     from studio_resilient_read import read_observation
     from studio_seed_slot import guard_active_seed
-    blockers, runtime, controls = [], None, None
+    blockers, runtime, controls, capability = [], None, None, False
     try:
         observation, _ = read_observation(controller.local/'ui-observation.json')
         batch = observation['runtime']['batch_ongoing']
         if type(batch) is not bool: raise ValueError('Unknown batch continuation flag')
         checked, _ = controller.runtime(require_idle=True, expected_batch_ongoing=batch)
         runtime = dict(batch_ongoing=batch, tester_state=checked['runtime']['tester_state'])
+        cap=checked.get('recovery_capability',{})
+        capability=controller.install['ea_version']=='1.49' and cap.get('protocol')==1 and cap.get('ea_version')=='1.49'
     except (OSError, ValueError, KeyError) as exc:
         blockers.append('Runtime inspection: '+str(exc))
     try:
@@ -55,12 +57,18 @@ def recovery_status(controller):
                for j in json.loads(queued['jobs'])):
             blockers.append('Unresolved controller attempt; use status/cancel/finish with its retained job identity')
             break
-    if any((controller.local/'native-gate'/name).exists() for name in ('request.json','permit.json')):
-        blockers.append('Unconsumed native request or permit requires reconciliation')
+    from studio_native_gate import assert_clear_controls, exclusive_gate
+    try:
+        with exclusive_gate(controller.local/'native-gate'):
+            assert_clear_controls(controller.store.db,controller.local/'native-gate')
+    except (OSError,ValueError) as exc:
+        blockers.append('Native request inspection: '+str(exc))
     possible_orphan = runtime is not None and runtime['batch_ongoing'] and not blockers
     return dict(status='possible_orphan_unqualified' if possible_orphan else 'inspection',
                 runtime=runtime, present_native_controls=controls, blockers=blockers,
-                orphan_recovery_supported=False, execution_effect=False, launch_permitted=False,
+                orphan_recovery_supported=capability, execution_effect=False, launch_permitted=False,
                 limitations=['Point-in-time diagnosis is not proof of orphan ownership',
                              'Legacy gates and other-version Common Files need review before any native recovery'],
-                next_action='For owned work use status/cancel/finish. An orphan continuation flag requires a compatible reviewed EA/controller recovery release; do not invoke Start/Stop as a reset, delete native files, edit terminal globals or fabricate an attempt.')
+                next_action=('For a reviewed orphan use orphan-recovery-prepare; foreign ownership and live work still block. ' if capability else
+                             'An orphan continuation flag requires the matched V1.49 EA/controller recovery capability. ')+
+                            'For owned work use status/cancel/finish. Do not invoke Start/Stop as a reset, delete native files, edit terminal globals or fabricate an attempt.')

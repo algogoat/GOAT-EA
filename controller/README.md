@@ -449,6 +449,48 @@ only reports an interrupted rejection settlement and cannot finish it. Diagnose
 the rejection before preparing any later recovery, which needs a fresh explicit
 human approval. These controller fixtures are not native qualification.
 
+### Current monitor journal diagnostics (V1.49 internal -6)
+
+`V1.49-ORPHAN-DIAGNOSTIC-6` adds journal-only visibility into the existing
+orphan-recovery runtime guard. A rejected runtime check records its first fixed
+reason. A bound, loaded, read-only monitor with `BatchOnGoing` set also observes
+the same guard during the existing managed observation cadence. Those messages
+say `CURRENT_MONITOR_OBSERVATION`, `NO_ACTION`, and
+`current_state_not_original_rejection`: they describe the current monitor, not
+the cause of an earlier request's rejection. `CURRENT_GUARD_PASS` does not approve
+or perform recovery. Settle any retained rejected request through its supported
+review before a monitor upgrade; never resend it to obtain diagnostics.
+
+Only fixed reason labels and numeric chart-query error values are logged; no
+account, server, monitor, request or path identifiers are printed. Query errors
+are captured before and after the failed read without resetting `_LastError`,
+so unchanged values can be stale and are not proof of a fresh platform error.
+Repeated identical diagnostic tuples are suppressed, with at most 16 journal
+messages per EA load. No new timer, request, receipt, observation field, flag
+change, grant or trading action is introduced. All original recovery guards,
+statuses and the reviewed native recovery action remain in place.
+
+Source contracts in `test_studio_recovery_diagnostics_source.py` check guard
+ordering, unchanged recovery action/observation bytes and logging boundaries.
+These tests do not execute MQL5 or qualify a native monitor. The V1.49 dependency
+policy pins this distinct -6 main source (SHA-256
+`838b4a8e0698b1ccbaecf5819655b8a4ceb142ea2d1ae519f87cd71f7bbdbb1e`);
+that source provenance alone is not compilation or admission.
+
+Root compiled clean source commit
+`94cf75f640ab014f885b7126980f94bbcab4e47a` with MetaEditor 5.0.0.6230:
+**0 errors, 0 warnings**. The source and staged main hashes matched. This PR
+tracks the resulting 2,255,896-byte candidate, SHA-256
+`30ae456630a962de99711de6321f465df9ef6dcd3dc53258cd57aeb8cf419d6c`.
+The retained compile receipt SHA-256 is
+`e64d428a733e019cd17456370924724cc23d2f7f3e42bbdfda1edec99670521d`.
+The admitted -5 artifact remains preserved in Git history at the compiled source
+commit, SHA-256
+`62a882c362880fe2682a9d427125f9a551727eabe1463f00a6523c60cd429f61`.
+No MQL source changed when the compiled candidate was promoted into this PR.
+This candidate is **not admitted or installed** and still requires admission
+and reviewed native qualification before use.
+
 ### Park and restore an entire research session
 
 If bootstrap refuses an existing Studio activation, never delete active.json,

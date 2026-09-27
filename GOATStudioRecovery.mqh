@@ -58,26 +58,82 @@ bool GoatStudioRecoveryCommonClear(void)
    FileFindClose(search);return ok;
   }
 
-bool GoatStudioRecoveryRuntime(const string login,const string server,const string instance)
+// Journal-only diagnostics: memory is private to this loaded EA instance.
+// Error values are observations, not a fresh error attribution: never reset _LastError.
+string g_StudioRecoveryDiagnosticKeys[16];
+int g_StudioRecoveryDiagnosticCount=0;
+void GoatStudioRecoveryDiagnostic(const string context,const string reason,const int before,const int after)
   {
+   if(g_StudioRecoveryDiagnosticCount>=16) return;
+   string key=context+"|"+reason+"|"+(string)before+"|"+(string)after;
+   for(int i=0;i<g_StudioRecoveryDiagnosticCount;i++)
+      if(g_StudioRecoveryDiagnosticKeys[i]==key) return;
+   g_StudioRecoveryDiagnosticKeys[g_StudioRecoveryDiagnosticCount++]=key;
+   PrintFormat("GOAT ORPHAN DIAGNOSTIC context=%s reason=%s query_error_before=%d query_error_after=%d diagnostic_only%s",
+               context,reason,before,after,
+               context=="CURRENT_MONITOR_OBSERVATION" ? " NO_ACTION current_state_not_original_rejection" : "");
+  }
+
+bool GoatStudioRecoveryRuntimeCheck(const bool ok,const string code,string &reason)
+  {
+   if(!ok) reason=code;
+   return ok;
+  }
+
+// Same ordered, short-circuit read guards used by recovery and current observation.
+// Capturing the first failure adds no permission, effect or alternate acceptance path.
+bool GoatStudioRecoveryRuntime(const string login,const string server,const string instance,
+                               string &reason,int &before,int &after)
+  {
+   reason="CURRENT_GUARD_PASS";before=0;after=0;
    long chart=ChartFirst();int charts=0;bool own=false;
    while(chart>=0)
      {
       string expert,script;
-      if(++charts>1000 || !ChartGetString(chart,CHART_EXPERT_NAME,expert)
-         || !ChartGetString(chart,CHART_SCRIPT_NAME,script) || script!="") return false;
+      if(++charts>1000) {reason="CHART_LIMIT";return false;}
+      int query_before=GetLastError();
+      if(!ChartGetString(chart,CHART_EXPERT_NAME,expert))
+        {after=GetLastError();before=query_before;reason="EXPERT_QUERY_FAILED";return false;}
+      query_before=GetLastError();
+      if(!ChartGetString(chart,CHART_SCRIPT_NAME,script))
+        {after=GetLastError();before=query_before;reason="SCRIPT_QUERY_FAILED";return false;}
+      if(script!="") {reason="SCRIPT_PRESENT";return false;}
       if(chart==ChartID()) own=true;
-      else if(expert!="") return false; // Another EA may own legacy continuation.
+      else if(expert!="") {reason="OTHER_EXPERT_PRESENT";return false;}
       chart=ChartNext(chart);
      }
-   if(!own) return false;
-   return !IsStopped() && g_GoatStudioReadOnlyMonitor && !MQLInfoInteger(MQL_TESTER)
-      && MQLInfoInteger(MQL_DLLS_ALLOWED) && GoatStudioTesterState()=="idle"
-      && TerminalInfoInteger(TERMINAL_CONNECTED) && !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)
-      && AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO
-      && login==(string)AccountInfoInteger(ACCOUNT_LOGIN) && server==AccountInfoString(ACCOUNT_SERVER)
-      && instance==GoatStudioRecoveryInstance() && GlobalVariableGet("BatchOnGoing")!=0
-      && GlobalVariableGet("TerminalRunning")==0 && GlobalVariableGet("GOAT_BatchRestartPending")==0;
+   if(!own) {reason="OWN_CHART_ABSENT";return false;}
+   return GoatStudioRecoveryRuntimeCheck(!IsStopped(),"EA_STOPPED",reason)
+      && GoatStudioRecoveryRuntimeCheck(g_GoatStudioReadOnlyMonitor,"NOT_READ_ONLY_MONITOR",reason)
+      && GoatStudioRecoveryRuntimeCheck(!MQLInfoInteger(MQL_TESTER),"IN_TESTER",reason)
+      && GoatStudioRecoveryRuntimeCheck(MQLInfoInteger(MQL_DLLS_ALLOWED),"DLL_NOT_ALLOWED",reason)
+      && GoatStudioRecoveryRuntimeCheck(GoatStudioTesterState()=="idle","TESTER_NOT_IDLE",reason)
+      && GoatStudioRecoveryRuntimeCheck(TerminalInfoInteger(TERMINAL_CONNECTED),"TERMINAL_DISCONNECTED",reason)
+      && GoatStudioRecoveryRuntimeCheck(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED),"ALGO_TRADING_ENABLED",reason)
+      && GoatStudioRecoveryRuntimeCheck(AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO,"NOT_DEMO",reason)
+      && GoatStudioRecoveryRuntimeCheck(login==(string)AccountInfoInteger(ACCOUNT_LOGIN),"ACCOUNT_CHANGED",reason)
+      && GoatStudioRecoveryRuntimeCheck(server==AccountInfoString(ACCOUNT_SERVER),"SERVER_CHANGED",reason)
+      && GoatStudioRecoveryRuntimeCheck(instance==GoatStudioRecoveryInstance(),"MONITOR_CHANGED",reason)
+      && GoatStudioRecoveryRuntimeCheck(GlobalVariableGet("BatchOnGoing")!=0,"BATCH_FLAG_ABSENT",reason)
+      && GoatStudioRecoveryRuntimeCheck(GlobalVariableGet("TerminalRunning")==0,"TERMINAL_RUNNING",reason)
+      && GoatStudioRecoveryRuntimeCheck(GlobalVariableGet("GOAT_BatchRestartPending")==0,"RESTART_PENDING",reason);
+  }
+
+bool GoatStudioRecoveryRuntime(const string login,const string server,const string instance)
+  {
+   string reason;int before,after;
+   bool ok=GoatStudioRecoveryRuntime(login,server,instance,reason,before,after);
+   if(!ok) GoatStudioRecoveryDiagnostic("RECOVERY_RUNTIME_REJECTED",reason,before,after);
+   return ok;
+  }
+
+void GoatStudioRecoveryObserveCurrent(void)
+  {
+   if(g_StudioRecoveryDiagnosticCount>=16) return;
+   string reason;int before,after;
+   GoatStudioRecoveryRuntime((string)AccountInfoInteger(ACCOUNT_LOGIN),AccountInfoString(ACCOUNT_SERVER),
+                             GoatStudioRecoveryInstance(),reason,before,after);
+   GoatStudioRecoveryDiagnostic("CURRENT_MONITOR_OBSERVATION",reason,before,after);
   }
 
 string GoatStudioRecoverOrphan(const string body,const string hash)

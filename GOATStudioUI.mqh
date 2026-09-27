@@ -19,6 +19,7 @@ bool g_StudioEmptyDraft=false;
 void GoatStudioDispatch(void);
 #ifdef GOAT_ORPHAN_RECOVERY_V149
 string GoatStudioRecoveryInstance(void);
+void GoatStudioRecoveryObserveCurrent(void);
 #endif
 
 bool GoatStudioManaged(void)
@@ -746,6 +747,11 @@ void CStrategyTesterDialog::ManagedObservation(const string status)
    string published=body+",\"observed_terminal_utc\":"+GoatStudioQuote(TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS))+"}";
    if(GoatStudioWriteUtf8("GOATStudio\\ui-observation.json",published,true))
      {g_StudioLastObservation=body; g_StudioObservationMillis=now;}
+#ifdef GOAT_ORPHAN_RECOVERY_V149
+   // Observe only the current inert monitor; never replay or attribute an old request.
+   if(g_GoatStudioReadOnlyMonitor && g_StudioBound && m_studioLoaded
+      && GlobalVariableGet("BatchOnGoing")!=0) GoatStudioRecoveryObserveCurrent();
+#endif
   }
 
 void CStrategyTesterDialog::ManagedSave(void)

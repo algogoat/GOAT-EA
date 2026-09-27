@@ -553,3 +553,9 @@ replacement review. Restart the prepared monitor through supported commands,
 then separately review native orphan recovery. This operation never clears
 `BatchOnGoing`, launches work or resumes a campaign. Fixture coverage is source
 evidence; packaged native qualification remains required.
+
+Before maintenance, every supported app/agent controller entrypoint must use the
+same verified controller bundle containing this pending-fence contract. Do not
+run a newer external maintenance CLI while the app still spawns an older
+controller that cannot recognize its fence. Updating an idle app's reviewed
+controller resources does not change the admitted EA binary or installed session.

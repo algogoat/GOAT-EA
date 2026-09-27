@@ -125,6 +125,14 @@ operation requires the selected terminal to be stopped and never enables trading
 An explicitly reviewed protected peer may be stopped; a different process still
 requires a new review.
 
+MT5 saves the GOAT input group headings as equals-framed label rows with an
+empty value inside the expert's input block. The saved-profile verifier accepts
+that heading syntax; it still rejects duplicate real input keys, scripts, changed
+EA paths, non-monitor inputs and changed permission flags. In particular, a
+saved `expertmode=4` remains refused: this parsing correction does not approve
+permissions or qualify a native relaunch. Preserve the saved chart and follow
+the reported human review/reopen instruction instead of editing its flags.
+
 If an MT5 update discarded the startup arguments, `monitor-repair --attempt-id
 <unique-id>` can recover an empty, never-started monitor session. The official
 MetaTrader5 Python adapter must be available in the controller runtime. It checks

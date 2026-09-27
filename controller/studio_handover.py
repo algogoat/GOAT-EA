@@ -294,7 +294,8 @@ def move_once(source, target, expected):
     if journal.exists():
         copy_move_once(source, target, expected, identity, transfer, journal)
         return
-    if transfer.exists():
+    scratch = safe_path(transfer.with_suffix('.part'))
+    if transfer.exists() or scratch.exists():
         raise ValueError('Unregistered handover transfer; preserve staging and source')
     if target.exists():
         if source.exists() or tree(target) != expected:

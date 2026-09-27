@@ -59,6 +59,15 @@ class TransferTests(unittest.TestCase):
         self.assertFalse(self.target.exists())
         self.assertEqual(list(self.target.parent.iterdir()), [])
 
+    def test_unregistered_scratch_collision_is_preserved(self):
+        identity = dict(source=str(self.source), target=str(self.target), files=self.expected)
+        scratch = self.target.parent/('.studio-transfer-'+handover.sha(identity)+'.part')
+        scratch.parent.mkdir(parents=True); scratch.write_bytes(b'unknown retained evidence')
+        with self.assertRaisesRegex(ValueError, 'Unregistered'): self.move()
+        self.assertEqual(scratch.read_bytes(), b'unknown retained evidence')
+        self.assertEqual(handover.tree(self.source), self.expected)
+        self.assertFalse(self.target.exists())
+
     def test_interrupted_partial_write_keeps_complete_source_and_resumes(self):
         original = handover.os.fsync
         def interrupt(fd):

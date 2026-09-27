@@ -141,7 +141,7 @@ authorized upgrade, closes normally once and retains the result without changing
 the profile or relaunching. Reuse the same ID to inspect an uncertain outcome;
 a reopened terminal is refused, never closed again or adopted.
 
-V1.49 MONITOR-ONBOARDING-4 displays a compact agent connection screen for an
+V1.49 MONITOR-ONBOARDING-5 corrects the compact agent connection screen for an
 empty session and small charts. A genuine human handoff is possible before the
 agent creates settings; no default trading/test settings are invented. Existing
 saved drafts and partial/malformed states still require recovery. Fresh OnInit
@@ -149,6 +149,11 @@ and UI observations, not a queued chart command, establish activation progress.
 Automatic activation reload is bounded to20seconds and reports
 `ACTIVATION_RELOAD_REQUIRED` on failure. The controller exposes the same reason
 for a fresh matching activation status. Native qualification is still pending.
+The -4 native screen exposed an overlapping legacy form because controls were
+registered in the dialog client area, not its empty backdrop. The -5 layout
+hides actual client children before showing only connection controls. The
+production-layout regression covers recursive reveal, compact sizes and all
+four stages after widening. Native visual acceptance of -5 is still pending.
 
 WebRequest setup uses only `https://goatedge.ai`. The agent provides that exact
 URL and checks readiness after the user's MT5 approval. DLL imports are separate

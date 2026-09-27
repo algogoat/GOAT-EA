@@ -1,0 +1,75 @@
+# Orphan continuation recovery: proposed native capability
+
+Status: design only. `native-recovery-status` diagnoses; no recovery action is
+implemented or authorized by this document. The historical V1.47/V1.48 binaries
+must not be rewritten or relabelled to add it.
+
+## Existing lifecycle is insufficient
+
+`Optimizer.mqh::ResolveBatchRunningState(true)` clears stale globals only through
+`OnClickStart`, after run-context preparation and before checking tester idleness.
+The same handler can proceed to launch work. Display refresh uses `false`.
+`OnClickStop` confirms and cancels the native queue, deletes controls and stops the
+tester. Neither is a controller recovery API. V1.48 native `cancel` requires an
+owned active job and exact Common Files owner/pointer hashes. `finish` needs an
+observed finished attempt with idle runtime and `batch_ongoing:false`. An orphan
+has none of those identities; constructing them would fabricate ownership.
+
+## Required forward-version implementation
+
+Introduce a versioned native action such as `recover_orphan_continuation`, advertised
+by the running monitor's runtime capability and the controller discovery contract.
+Use the existing native gate with a separate durable review/commit/consumption
+receipt, never a fake start/cancel. An explicit user-approved review freezes all
+observations. Native consumption must repeat every check under its gate:
+
+- Exact installed EA hash/source/receipt, compatible protocol capability, selected
+  executable/process creation identity, terminal data path, bound demo account and
+  server, fresh runtime, Algo Trading off and tester demonstrably idle.
+- Exact controller binding, agent owner, revision and generation. Review all
+  bindings and retained gate owners, including legacy gate databases, so no
+  starting/running/reserved/verifying/reconcile-required or unknown work exists.
+  Pending jobs remain untouched. Missing/ambiguous ownership fails closed.
+- No active seed slot, outstanding start/cancel permit or request, deferred restart,
+  native run pointer, native config, launch guard or owner file. Inspect relevant
+  EA versions in Common Files as well as terminal-local state; absence in one
+  version's directory is not proof that another version has no work.
+- Freeze native control/global observations, then recheck immediately before the
+  effect. Refuse changed state, non-idle tester, process restart or ownership drift.
+
+The sole effect is clearing the positively identified orphan continuation flag
+inside MT5, followed by GlobalVariablesFlush and fresh readback. If ancillary
+flags are included, name each in the versioned contract and refuse any unexplained
+active restart state. Never alter queues, account/session grants, trading settings,
+result files, pointer/config files or start/stop a process/tester. Preserve all
+before/after observations and a native consumed receipt. Repeated delivery returns
+the original receipt; uncertain effects require receipt/readback reconciliation.
+The public controller must report `recovered` only after exact native receipt and
+runtime evidence agree, and require a separate explicit start for future work.
+
+Native cannot directly attest a SQLite snapshot. The design must bind the full
+controller review digest into its frozen snapshot and exclude all participating
+writers with native/session gates; legacy writers or unreviewed databases block
+recovery. Runtime program path alone is not loaded-binary attestation: deployment
+must verify the running monitor's capability/version and immutable installed hash,
+plus the normal exact process/account binding checks.
+
+## Delivery and qualification dependencies
+
+Cut the next versioned EA entrypoint (expected V1.49, subject to release coordinator),
+advance default version/schema/dependency contracts, and compile a new EX5 with
+the approved MetaEditor flow. Preserve previous version files and binaries. Review
+the native dispatch/observation/controller changes together. Build a matched
+desktop suite with exact EA and controller source/hash pins and release activation.
+The selected legacy monitor must be upgraded through the supported installer and
+monitor prepare/launch workflow, with required human permissions/Give to Agent;
+a Python-only change cannot add an action to a running V1.47 monitor.
+
+Qualify native Windows cases: genuine orphan idle recovery; active/pending native
+attempt refusal; other-version controls; seed owner; changed process/account or
+generation; missing feedback; Algo-on/non-demo refusal; delivery replay and crash
+after native effect before receipt/readback; preserved pending/history/results;
+then a separately authorized fresh batch start/cancel/completion. Mocked tests and
+compile success do not substitute for these native checks. This capability cannot
+be advertised as shipped until the compatible monitor and controller are installed
+and the complete release evidence is accepted.

@@ -30,6 +30,8 @@ OPERATION_CONTRACTS = {
     'switch-verify-park':dict(required=['review-id'],effect='read-only verification of completed park, immutable archives, external databases and absent selected terminal/session; not admission or grant'),
     'switch-replace-receipt':dict(required=['review-id','candidate-receipt','expected-sha256'],effect='authenticated installer companion: atomic old-receipt CAS under exclusive session lock after verified park and unchanged physical target; preserves old receipt/research, never grants or starts; admission remains installer responsibility'),
     'switch-replace-build':dict(required=['review-id','candidate-receipt','candidate-ea','expected-sha256'],effect='authenticated installer companion: exact same-version EA and receipt exchange under exclusive parked-session and database locks; retained journal permits exact interrupted-pair reconciliation; no admission, control grant or launch'),
+    'historical-pointers-prepare':dict(required=[],effect='review older settled unowned UI pointers with every MT5/controller writer stopped; preserve historical runs, queues and native flags'),
+    'historical-pointers-apply':dict(required=['review-id','confirm-reviewed'],effect='archive only reviewed exact older UI pointers with durable intent and replay; no flags, grants, launches or historical result changes'),
     'bootstrap-retirement-prepare':dict(required=['specification','bootstrap-receipts'],effect='review failed legacy passive monitor startup, exact original receipts and idle replacement; no close or claim effects'),
     'bootstrap-retirement-apply':dict(required=['review-id'],effect='within authorised selected-terminal maintenance, normal-close exact reviewed idle monitor once, then retire original startup claim/slot atomically only after native process absence; retries inspect only, never resend or restart'),
     'peer-prepare':dict(required=['terminal-executable','data-root'],effect='review one existing protected peer and exact running process; never grants or manages the peer'),
@@ -287,6 +289,8 @@ def main(argv=None):
     p=sub.add_parser('switch-verify-park');p.add_argument('--review-id',required=True)
     p=sub.add_parser('switch-replace-receipt');p.add_argument('--review-id',required=True);p.add_argument('--candidate-receipt',type=Path,required=True);p.add_argument('--expected-sha256',required=True)
     p=sub.add_parser('switch-replace-build');p.add_argument('--review-id',required=True);p.add_argument('--candidate-receipt',type=Path,required=True);p.add_argument('--candidate-ea',type=Path,required=True);p.add_argument('--expected-sha256',required=True)
+    sub.add_parser('historical-pointers-prepare')
+    p=sub.add_parser('historical-pointers-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
     p=sub.add_parser('switch-plan');p.add_argument('--restore-id')
     p=sub.add_parser('switch-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
     p=sub.add_parser('switch-status');p.add_argument('--review-id',required=True)
@@ -331,6 +335,12 @@ def main(argv=None):
         controller=Controller(args.installation)
         from studio_build_upgrade import guard_pending
         guard_pending(controller.root)
+        if args.operation.startswith('historical-pointers-'):
+            from studio_historical_pointers import prepare as historical_prepare,apply as historical_apply
+            result=historical_prepare(controller) if args.operation=='historical-pointers-prepare' else historical_apply(controller,args.review_id,confirmed=args.confirm_reviewed)
+            print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
+        from studio_historical_pointers import guard_pending as historical_guard
+        historical_guard(controller)
         if args.operation not in ('peer-prepare','peer-apply','switch-plan','switch-apply','switch-status','switch-verify-park','switch-replace-receipt','discover','resource-profile') and not args.operation.startswith(('orphan-recovery-','bootstrap-retirement-')):
             from studio_handover import session_lock,guard
             locks.enter_context(session_lock(controller));guard(controller)

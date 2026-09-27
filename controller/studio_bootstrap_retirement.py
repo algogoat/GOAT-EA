@@ -154,7 +154,7 @@ def saved_profile(context):
     return result
 
 
-def classify_testers(c, snapshot):
+def classify_testers(c, snapshot, *, require_idle_services=False):
     """Permanent Windows tester services are not evidence of a running test.
 
     Only positively identified independent service agents may remain. A selected
@@ -185,10 +185,13 @@ def classify_testers(c, snapshot):
                 or (row.get('ExecutablePath') and PureWindowsPath(row['ExecutablePath'])!=image)):
             raise ValueError('Tester service executable is ambiguous')
         excluded.append(dict(pid=row['ProcessId'],service=service['Name'],executable=str(image)))
+    if require_idle_services and any(r['OwningProcess'] in {item['pid'] for item in excluded}
+                                    and str(r['State'])=='Established' for r in connections):
+        raise ValueError('Independent tester service has an active connection')
     return dict(status='no_selected_tester_or_updater_processes',independent_service_agents=excluded,observed_unix=time.time())
 
 
-def require_no_testers(c):
+def require_no_testers(c, *, require_idle_services=False):
     command=r'''$ErrorActionPreference='Stop'
 $processes=@(Get-CimInstance Win32_Process | Where-Object {$_.Name -match '^(terminal64|terminal|metatester64|metatester|metaupdate64|metaupdate|services)\.exe$'} | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath)
 $services=@(Get-CimInstance Win32_Service | Where-Object {$_.ProcessId -in @($processes.ProcessId) -and $_.State -eq 'Running'} | ForEach-Object {
@@ -201,7 +204,7 @@ $connections=@(Get-NetTCPConnection | Select-Object OwningProcess,@{Name='State'
 @{processes=$processes;services=$services;connections=$connections} | ConvertTo-Json -Depth 6 -Compress
 '''
     snapshot=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=20))
-    return classify_testers(c,snapshot)
+    return classify_testers(c,snapshot,require_idle_services=require_idle_services)
 
 
 def state_view(context):

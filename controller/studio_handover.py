@@ -399,9 +399,11 @@ def apply(c, review_id, confirmed=False):
         return public(plan)
 
 
-def guard(c, *, build_update_fence=None):
+def guard(c, *, build_update_fence=None, historical_review=None):
     from studio_build_upgrade import guard_pending
     guard_pending(c.root,build_update_fence)
+    from studio_historical_pointers import guard_pending as historical_guard
+    historical_guard(c,historical_review)
     if (c.root/'orphan-recovery-pending.json').exists():
         raise ValueError('Native orphan recovery requires exact orphan-recovery-status readback; do not start or switch sessions')
     _, _, archive, _ = paths(c)

@@ -528,3 +528,34 @@ which continues to reject a mismatched installed EA. It never launches MT5,
 creates a session, grants agent control or resumes research. Source fixture tests
 cover these boundaries; native qualification of the packaged command is still
 required before claiming a successful installed upgrade.
+
+### Historical UI pointers before orphan recovery
+
+An older UI-created run may leave `active_optimization_run.ini` after every
+member finishes. It has no controller owner transaction, so `finish` cannot
+claim it. Both host and EA orphan-recovery guards continue to reject it.
+
+With every MT5 terminal, MetaEditor and controller writer stopped, use
+`historical-pointers-prepare`, inspect the exact listed historical runs, then
+`historical-pointers-apply --review-id <id> --confirm-reviewed`. Only older,
+pointer-only Version 1 UI runs with completed/error/cancelled queue members are
+eligible. Current-version controls, launch/config/owner files, unknown queue
+states, active worker claims and known controller references block retirement.
+Unrelated paused pending jobs are preserved. Positively identified Windows
+tester services may remain only with no established service connections.
+
+The command locks shared maintenance, selected session and known controller
+databases, freezes run contents, backs up exact pointer bytes and moves only
+those pointers into a retained Common Files archive. Run folders, results,
+queues, session and agent grant remain unchanged. Interrupted operations retain
+their fence and must reconcile the same review; never delete it or create a
+replacement review. Restart the prepared monitor through supported commands,
+then separately review native orphan recovery. This operation never clears
+`BatchOnGoing`, launches work or resumes a campaign. Fixture coverage is source
+evidence; packaged native qualification remains required.
+
+Before maintenance, every supported app/agent controller entrypoint must use the
+same verified controller bundle containing this pending-fence contract. Do not
+run a newer external maintenance CLI while the app still spawns an older
+controller that cannot recognize its fence. Updating an idle app's reviewed
+controller resources does not change the admitted EA binary or installed session.

@@ -19,6 +19,24 @@ ambiguous native outcome remains `reconcile_required`; no command silently
 resends an issued request. Interrupted cleanup after durable success can complete
 on the next exact status call. Keep every review and native receipt.
 
+The separate `orphan-recovery-reconcile-rejection --review-id <original-id>
+--confirm-reviewed` command can settle one expired `ORPHAN_RUNTIME_REJECTED`
+receipt with no native consumption. This is controller transport reconciliation,
+not another native action or approval to retry. It requires originally absent
+controls, exact issued/request/permit/result bytes, and fresh unchanged process,
+monitor, account, grant, state and idle `BatchOnGoing=true` evidence under the
+session and native gates. Any consumed artifact in the selected local Studio
+tree, different status, missing evidence or changed identity remains fenced.
+
+The command fsyncs immutable evidence and a cleanup intent before retiring the
+exact permit and request, persists `rejected_settled` before removing its own
+fence, and retains the native result so the original request cannot execute
+again. Interrupted cleanup resumes only against that exact journal; ordinary
+status/apply never resume this cleanup or resend recovery. A settled historical
+status cannot touch a later fence or transport. No flag, queue, session, grant,
+EA binary or native wire field changes. Files are fsynced; this does not claim
+directory-metadata power-loss durability. Native qualification remains pending.
+
 This first implementation deliberately accepts only one known controller binding,
 database and native gate. Any retained legacy/foreign owner fails closed. Native
 checks reject other chart EAs/scripts, other-version active controls, a nonzero

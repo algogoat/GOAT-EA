@@ -177,6 +177,9 @@ def status(c,review_id):
 
 def status_locked(c,plan):
     if plan['status']=='review': return dict(status='review',review_id=plan['review_id'],launch_permitted=False)
+    if plan['status']=='rejected_settled':
+        from studio_orphan_rejection import settled_status
+        return settled_status(c,plan)
     if plan['status']=='recovered':
         fence=c.root/'orphan-recovery-pending.json'
         if fence.exists():

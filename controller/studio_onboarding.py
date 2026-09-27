@@ -218,10 +218,15 @@ def verify_saved_monitor(raw, ea_relative_path, symbol, data_root):
             continue
         if not stack or closed: raise ValueError('Invalid saved monitor chart content')
         scope=tuple(stack)
+        # MT5 persists GOAT's MQL input group labels as equals-framed rows
+        # followed by whitespace and an empty assignment. They are headings,
+        # not input keys; accept this exact shape only inside the input block.
+        if scope==('chart','expert','inputs') and re.fullmatch(r'={3,}[A-Z][A-Z0-9 /]{0,79}={3,}[ \t]+=',line):
+            continue
         if scope in (('chart',),('chart','expert'),('chart','expert','inputs'),('chart','window','indicator')):
             key,sep,value=line.partition('=')
             existing=fields.setdefault(scope,{})
-            if key != key.strip() or not sep or key.casefold() in {prior.casefold() for prior in existing}: raise ValueError('Ambiguous saved monitor chart fields')
+            if not key or key != key.strip() or not sep or key.casefold() in {prior.casefold() for prior in existing}: raise ValueError('Ambiguous saved monitor chart fields')
             fields[scope][key]=value
     if stack or not closed or counts.get(('chart','expert'))!=1 or counts.get(('chart','expert','inputs'))!=1:
         raise ValueError('Saved monitor must contain exactly one EA and input block')

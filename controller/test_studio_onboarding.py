@@ -8,11 +8,64 @@ import unittest
 from unittest.mock import patch
 
 from goat_studio import Controller
-from studio_onboarding import onboarding_status, monitor_prepare, monitor_launch
+from studio_onboarding import onboarding_status, monitor_prepare, monitor_launch, verify_saved_monitor
 import test_goat_studio as fixtures
 
 
 class OnboardingTests(unittest.TestCase):
+    def saved_group_chart(self):
+        # Reduced from an MT5-saved V1.49 chart: retain only structural tags,
+        # monitor identity fields and the exact input group rows. No customer
+        # paths, credentials, account IDs or other input values are retained.
+        return (Path(__file__).parent/'fixtures/saved-monitor-input-groups.chr.txt').read_text(encoding='utf-8')
+
+    def test_saved_native_input_groups_with_inert_permissions(self):
+        text=self.saved_group_chart().replace('expertmode=4','expertmode=0')
+        for encoding in ('utf-8','utf-16'):
+            verify_saved_monitor(text.encode(encoding),'GOAT-EA/GOAT V1.49.ex5','EURUSD',str(self.data))
+
+    def test_saved_native_groups_do_not_authorize_observed_permissions(self):
+        with self.assertRaisesRegex(ValueError,'permissions changed'):
+            verify_saved_monitor(self.saved_group_chart().encode(),'GOAT-EA/GOAT V1.49.ex5','EURUSD',str(self.data))
+
+    def test_saved_native_groups_launch_fixture_preserves_chart_bytes(self):
+        result=monitor_prepare(self.c,'EURUSD')
+        chart=Path(result['profile_path'])/'chart01.chr'
+        raw=self.saved_group_chart().replace('expertmode=4','expertmode=0').replace('GOAT V1.49.ex5','GOAT V1.48.ex5').encode('utf-16')
+        chart.write_bytes(raw)
+        monitor_launch(self.c,'saved-groups-fixture')
+        self.start.assert_called_once()
+        self.assertEqual(chart.read_bytes(),raw)
+
+    def test_saved_groups_preserve_monitor_rejections(self):
+        text=self.saved_group_chart().replace('expertmode=4','expertmode=0')
+        invalid=[text.replace('Mode_Operation=11','Mode_Operation=11\nMode_Operation=8'),
+                 text.replace('Mode_Operation=11','Mode_Operation=11\nmode_operation=11'),
+                 text.replace('Mode_Operation=11','Mode_Operation=11\nOtherInput=1\nOtherInput=2'),
+                 text.replace('Mode_Operation=11','Mode_Operation=8'),
+                 text.replace('Studio_ReadOnlyMonitor=true','Studio_ReadOnlyMonitor=false'),
+                 text.replace('Studio_MonitorRunPath=','Studio_MonitorRunPath=GOAT/another'),
+                 text.replace('expertmode=0','expertmode=5'),
+                 text.replace('expertmode=0','expertmode=0\nexpertmode=4'),
+                 text.replace('GOAT V1.49.ex5','other.ex5'),
+                 text.replace('</expert>','</expert>\n<script>\n</script>')]
+        for unsafe in invalid:
+            with self.subTest(chart=unsafe),self.assertRaises(ValueError):
+                verify_saved_monitor(unsafe.encode(),'GOAT-EA/GOAT V1.49.ex5','EURUSD',str(self.data))
+
+    def test_group_rows_only_in_inputs_with_empty_value(self):
+        text=self.saved_group_chart().replace('expertmode=4','expertmode=0')
+        group=next(line for line in text.splitlines() if 'GENERAL SETTINGS' in line)
+        invalid=[text.replace(group,group+'Mode_Operation=8'),
+                 text.replace(group,'=Mode_Operation=8'),
+                 text.replace(group,'=anything'),
+                 text.replace(group,'=')]
+        for tag in ('<chart>','<expert>','<indicator>'):
+            invalid.append(text.replace(tag,tag+'\n'+group))
+        for unsafe in invalid:
+            with self.subTest(chart=unsafe),self.assertRaises(ValueError):
+                verify_saved_monitor(unsafe.encode(),'GOAT-EA/GOAT V1.49.ex5','EURUSD',str(self.data))
+
     def setUp(self):
         self.fixture = fixtures.PortableControllerTests()
         self.fixture.setUp()

@@ -147,5 +147,16 @@ class BuildUpgradeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Duplicate'):self.run_upgrade()
         self.assertEqual(self.binary.read_bytes(),self.old_ea)
 
+    def test_backup_snapshot_must_still_match_previous_ea(self):
+        from studio_installation_upgrade import inspect_park
+        def mutate_after_inspection(*args,**kwargs):
+            result=inspect_park(*args,**kwargs)
+            self.binary.write_bytes(b'changed before backup')
+            return result
+        with patch('studio_build_upgrade.inspect_park',side_effect=mutate_after_inspection),self.assertRaisesRegex(ValueError,'before durable backup'):
+            self.run_upgrade()
+        self.assertEqual(self.receipt.read_bytes(),self.raw)
+        self.assertFalse((paths(self.c)[2]/self.review/'build-upgrade.json').exists())
+
 
 if __name__=='__main__':unittest.main()

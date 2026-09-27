@@ -138,7 +138,10 @@ def replace_build(receipt, review_id, candidate_receipt, candidate_ea, expected_
             raise ValueError('Ambiguous build publication pair; preserve recovery evidence')
         inspect_park(c,review_id,allowed_receipt_sha256=desired_sha,build_update_fence=fence)
         if retained is None:
-            retain(old_ea_path,binary.read_bytes());retain(saved_ea,new_ea);retain(saved_receipt,raw)
+            previous_ea=binary.read_bytes()
+            if hashlib.sha256(previous_ea).hexdigest()!=old['ea_sha256']:
+                raise ValueError('Previous EA changed before durable backup')
+            retain(old_ea_path,previous_ea);retain(saved_ea,new_ea);retain(saved_receipt,raw)
             write_json(journal,dict(expected,status='publication_intent'))
         pending.parent.mkdir(parents=True,exist_ok=True)
         if not pending.exists():write_json(pending,fence)

@@ -279,7 +279,9 @@ class RejectedRecoveryTests(unittest.TestCase):
     def test_cli_contract_and_help_expose_exact_review_confirmation(self):
         from goat_studio import OPERATION_CONTRACTS,main
         contract=OPERATION_CONTRACTS['orphan-recovery-reconcile-rejection']
-        self.assertEqual(contract['required'],['review-id','confirm-reviewed'])
+        self.assertEqual(contract['required'],['review-id'])
+        self.assertEqual(contract['authorization_required_one_of'],['confirm-reviewed','owner-research'])
+        self.assertIn('finite reviewed owner-demo',contract['authorization'])
         with patch('sys.stdout'),self.assertRaises(SystemExit) as exit:
             main(['orphan-recovery-reconcile-rejection','--help'])
         self.assertEqual(exit.exception.code,0)

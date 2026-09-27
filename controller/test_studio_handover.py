@@ -343,8 +343,13 @@ class HandoverTests(unittest.TestCase):
                             ('state',), ('onboarding-status',), ('cancel', '--job-id', 'beta-job'),
                             ('state',)]:
                 self.assertIsNone(child.poll(), 'serve exited before concurrent CLI assertion')
-                result = subprocess.run([sys.executable, 'goat_studio.py', *args, *command],
-                                        cwd=folder, capture_output=True, text=True, timeout=5)
+                started = time.monotonic()
+                try:
+                    result = subprocess.run([sys.executable, 'goat_studio.py', *args, *command],
+                                            cwd=folder, capture_output=True, text=True, timeout=5)
+                finally:
+                    print(f'concurrent CLI {command[0]}: {time.monotonic()-started:.3f}s; '
+                          f'serve_running={child.poll() is None}', file=sys.stderr)
                 body = json.loads(result.stdout)
                 if command[0] == 'switch-apply':
                     self.assertFalse(body['ok'], body)

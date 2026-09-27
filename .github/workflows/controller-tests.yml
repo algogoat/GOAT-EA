@@ -20,9 +20,6 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       FIRESTORE_EMULATOR_HOST: 127.0.0.1:1
-      # Hosted Windows TEMP defaults to a short-name alias; fixtures require canonical paths.
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     steps:
       - name: Check out proposed source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -41,6 +38,10 @@ jobs:
 
       - name: Verify native imports without connecting to MT5
         shell: python
+        env:
+          # Hosted Windows TEMP defaults to a short-name alias; require canonical fixtures.
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: |
           import sys
           import tempfile
@@ -58,4 +59,7 @@ jobs:
           print("Verified NumPy", numpy.__version__, "and MetaTrader5", MetaTrader5.__version__)
 
       - name: Run every controller fixture test
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: python -m unittest discover -s controller -p "test_*.py" -v

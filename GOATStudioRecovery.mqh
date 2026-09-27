@@ -98,7 +98,7 @@ bool GoatStudioRecoveryRuntime(const string login,const string server,const stri
       query_before=GetLastError();
       if(!ChartGetString(chart,CHART_SCRIPT_NAME,script))
         {after=GetLastError();before=query_before;reason="SCRIPT_QUERY_FAILED";return false;}
-      if(script!="")
+      if(StringLen(script)>0)
         {
          if(!g_StudioScriptDiagnosticLogged)
            {
@@ -108,7 +108,7 @@ bool GoatStudioRecoveryRuntime(const string login,const string server,const stri
          reason="SCRIPT_PRESENT";return false;
         }
       if(chart==ChartID()) own=true;
-      else if(expert!="") {reason="OTHER_EXPERT_PRESENT";return false;}
+      else if(StringLen(expert)>0) {reason="OTHER_EXPERT_PRESENT";return false;}
       chart=ChartNext(chart);
      }
    if(!own) {reason="OWN_CHART_ABSENT";return false;}

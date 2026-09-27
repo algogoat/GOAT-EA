@@ -672,3 +672,33 @@ same verified controller bundle containing this pending-fence contract. Do not
 run a newer external maintenance CLI while the app still spawns an older
 controller that cannot recognize its fence. Updating an idle app's reviewed
 controller resources does not change the admitted EA binary or installed session.
+
+### Empty chart program names (V1.49 internal -8)
+
+`V1.49-ORPHAN-EMPTY-NAME-8` corrects the chart-name presence checks in orphan
+recovery. MQL5 `NULL` and `""` are distinct strings. On September 27, the native
+`controller/native-tests/ChartStringProbe.mq5` probe on Banker build 6230 read
+its existing GOAT chart: the script query succeeded, returned `NULL`, and had
+length zero. The old `script!=""` predicate was true and caused the false
+`SCRIPT_PRESENT` refusal. The probe's own chart returned `ChartStringProbe`,
+length 16, and was correctly recognized as occupied. Explicit `NULL`, empty,
+and named-string cases were also executed. The temporary script performed no
+trading, recovery, grant or EA replacement; MT5 exited after completion.
+
+The corrected checks use `StringLen(name)>0` for script and other-chart expert
+names. Query failures still refuse recovery, every nonzero-length name still
+refuses (including whitespace), and all later runtime guards, reviewed recovery
+effects and wire fields are unchanged. The native probe validates the string
+and chart-query behavior; source contracts bind the fix to the guard. Neither
+is proof that the complete corrected EA has been installed or run a batch.
+That native qualification remains required after its exact internal admission.
+
+Reference: https://www.mql5.com/en/book/basis/builtin_types/strings
+
+Compiled candidate: clean source `ead17629e88b6e599da81430426f52845eddd8c9`,
+MetaEditor 6230, zero errors and warnings; EX5 SHA-256
+`931212a291c6296e46525cd11972cabe9568bcde7f50cf91966cf23cb6c2e449`
+(2,256,830 bytes), compile receipt SHA-256
+`b0499f6839d3112414f016711c78bb7949379c1a5e42be4d591bc137007639b5`.
+The full 391 controller fixtures passed; nine focused source/identity checks
+passed again after binding this binary. Corrected-EA native qualification is pending.

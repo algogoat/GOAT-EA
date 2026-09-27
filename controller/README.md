@@ -677,7 +677,7 @@ controller resources does not change the admitted EA binary or installed session
 
 `V1.49-ORPHAN-EMPTY-NAME-8` corrects the chart-name presence checks in orphan
 recovery. MQL5 `NULL` and `""` are distinct strings. On September 27, the native
-`controller/native-tests/ChartStringProbe.mq5` probe on Banker build 6230 read
+`controller/tests/native/ChartStringProbe.mq5` probe on Banker build 6230 read
 its existing GOAT chart: the script query succeeded, returned `NULL`, and had
 length zero. The old `script!=""` predicate was true and caused the false
 `SCRIPT_PRESENT` refusal. The probe's own chart returned `ChartStringProbe`,

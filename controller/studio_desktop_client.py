@@ -32,11 +32,12 @@ def windows_argv(command):
 
 
 def qualification_clients(controller, rows):
-    """Return only verified launcher/child pairs for this installed target.
+    """Recognize a bundle-file-hashed launcher/child pair for this target.
 
 The root comes from the executing controller, never from a process argument.
 Called only for an already completed PARK receipt verification/replacement.
-Any missing, changed or ambiguous evidence leaves the normal process fence on.
+    Any missing, changed or ambiguous evidence leaves the normal process fence on.
+    File hashes do not attest the running image: inventory precedes file reads.
 """
     root = Path(__file__).resolve().parent.parent
     try:
@@ -79,7 +80,8 @@ Any missing, changed or ambiguous evidence leaves the normal process fence on.
             params = read_json(params_path)
             expected = dict(terminalExecutable=controller.install['terminal_executable'],
                             terminalDataRoot=controller.install['terminal_data_root'],
-                            portable=controller.install.get('terminal_portable', False))
+                            portable=Path(controller.install['terminal_data_root']) ==
+                                     Path(controller.install['terminal_executable']).parent)
             if (set(params) != {'selection', 'accountId', 'buildId', 'parkReviewId'}
                     or params['selection'] != expected
                     or not re.fullmatch(r'[a-f0-9]{32}', str(params['parkReviewId']))

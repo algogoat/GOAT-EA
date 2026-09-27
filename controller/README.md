@@ -493,9 +493,13 @@ while its requesting `goat.exe desktop suite.installInternalQualification` clien
 waits for the RPC response. That client is separate from the installer's native
 child process; it is not an MT5 runner. Only those two receipt-upgrade operations
 can recognize one exact launcher/embedded-Python pair from the executing bundle.
-The executable, entrypoint and controller hashes must match that bundle's manifest,
+The files on disk (executable, entrypoint and controller) must match the bundle's manifest,
 arguments must name internal qualification for this same terminal, and the child
 must forward the exact arguments. Unrecognized, changed or concurrent clients
 remain blocked. Ordinary session review/park/restore still rejects every unrelated
 launcher. This recognition grants no account admission, native control or trading
-permission and does not retry an interrupted installation.
+permission and does not retry an interrupted installation. The file hashes do not
+attest the running image: process inventory precedes hashing. This is coordination
+among trusted local tools, not protection against a same-user actor replacing files.
+Portable mode is derived from the installed data/executable paths, including older
+receipts without an explicit portable field.

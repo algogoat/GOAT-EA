@@ -130,10 +130,10 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
     def test_source_and_compiled_candidate_identity(self):
         main = source('GOAT V1.49.mq5')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
-        self.assertIn('#define   GOAT_BUILD_ID "V1.49-ORPHAN-EMPTY-NAME-8"', main)
+        self.assertIn('#define   GOAT_BUILD_ID "V1.49-ORPHAN-DIRECTORY-9"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
-                         '931212a291c6296e46525cd11972cabe9568bcde7f50cf91966cf23cb6c2e449')
-        for name in ('GOATStudioRecovery.mqh', 'GOATStudioUI.mqh', 'GOAT V1.49.mq5'):
+                         'c59a3b318526304a12aea233f27365b85bc49626c0bec62721e0864adb5186ed')
+        for name in ('GOATStudioRecovery.mqh', 'GOATStudioRecoveryFiles.mqh', 'GOATStudioUI.mqh', 'GOAT V1.49.mq5'):
             raw = (ROOT/name).read_bytes()
             self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
             self.assertEqual(raw.count(b"\n"), raw.count(b"\r\n"))

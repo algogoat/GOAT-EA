@@ -12,6 +12,10 @@ from studio_installation import read_json
 from studio_native_gate import exclusive_gate
 from studio_orphan_recovery import inspect, plan_path, recovery_lock
 
+# Both outcomes precede native consumption/effects. A foreign-file refusal
+# additionally re-runs the complete host inventory through inspect below.
+PRECONSUMPTION_REJECTIONS = frozenset(('ORPHAN_RUNTIME_REJECTED', 'ORPHAN_FOREIGN_CONTROL'))
+
 
 def evidence_paths(c, review_id, request_id):
     gate=c.local/'native-gate'
@@ -52,7 +56,7 @@ def settled_status(c, plan):
     for name in ('issued.json','result.json'):
         if files[name].read_bytes()!=raw[name]: raise ValueError('Settled native rejection evidence changed')
     evidence=observe_dispatch(c.local/'native-gate',request_id)
-    if evidence.get('consumed') is not False or evidence.get('receipt',{}).get('status')!='ORPHAN_RUNTIME_REJECTED':
+    if evidence.get('consumed') is not False or evidence.get('receipt',{}).get('status') not in PRECONSUMPTION_REJECTIONS:
         raise ValueError('Settled native rejection evidence is no longer intact')
     fence=safe_path(c.root/'orphan-recovery-pending.json')
     pending=fence.exists() and read_json(fence)=={'review_id':plan['review_id']}
@@ -87,9 +91,9 @@ def verify_rejection(c, plan, raw, *, allow_missing_transport=False):
         raise ValueError('Native consumption exists; rejection settlement is forbidden')
     evidence=observe_dispatch(c.local/'native-gate',request_id)
     if (evidence['status']!='receipt_observed' or evidence.get('consumed') is not False
-            or evidence['receipt']['status']!='ORPHAN_RUNTIME_REJECTED'
+            or evidence['receipt']['status'] not in PRECONSUMPTION_REJECTIONS
             or evidence['receipt']!=json.loads(raw['result.json'])):
-        raise ValueError('Exact pre-consumption runtime rejection required')
+        raise ValueError('Exact supported pre-consumption rejection required')
     if inspect(c,expected_batch=True,allow_own_request=record)!=plan['observation']:
         raise ValueError('Rejected recovery process, monitor, account or control state changed')
     # Runtime observation may take time. Recheck bytes/consumption after it,

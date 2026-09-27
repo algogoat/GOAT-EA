@@ -20,7 +20,7 @@ resends an issued request. Interrupted cleanup after durable success can complet
 on the next exact status call. Keep every review and native receipt.
 
 The separate `orphan-recovery-reconcile-rejection --review-id <original-id>
---confirm-reviewed` command can settle one expired `ORPHAN_RUNTIME_REJECTED`
+--confirm-reviewed` command can settle one expired `ORPHAN_RUNTIME_REJECTED` or `ORPHAN_FOREIGN_CONTROL`
 receipt with no native consumption. This is controller transport reconciliation,
 not another native action or approval to retry. It requires originally absent
 controls, exact issued/request/permit/result bytes, and fresh unchanged process,

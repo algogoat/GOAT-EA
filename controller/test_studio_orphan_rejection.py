@@ -59,6 +59,30 @@ class RejectedRecoveryTests(unittest.TestCase):
         self.assertEqual(apply(self.c,self.review,confirmed=True)['status'],'rejected_settled')
         self.assertFalse((self.gate/'permit.json').exists())
 
+    def test_foreign_control_rejection_preserves_result_without_native_effect(self):
+        self.fixture.consume(self.review,'ORPHAN_FOREIGN_CONTROL',consumed=False)
+        result_file=self.gate/('result-'+self.request_id+'.json')
+        before=result_file.read_bytes()
+        self.assertEqual(self.run_settlement()['status'],'rejected_settled')
+        self.assertEqual(result_file.read_bytes(),before)
+        self.assertEqual(status(self.c,self.review)['status'],'rejected_settled')
+        self.assertEqual(self.c.state(),self.before);self.assertTrue(self.fixture.flags)
+        self.assertFalse((self.gate/'request.json').exists())
+        self.assertFalse((self.gate/'permit.json').exists())
+
+    def test_foreign_control_rejection_with_actual_foreign_owner_stays_fenced(self):
+        self.fixture.consume(self.review,'ORPHAN_FOREIGN_CONTROL',consumed=False)
+        foreign=self.c.local/'other/controller.json';foreign.parent.mkdir()
+        foreign.write_text('{}')
+        with self.assertRaisesRegex(ValueError,'Legacy/foreign'):self.run_settlement()
+        self.assert_fenced();self.assertEqual(foreign.read_text(),'{}')
+        self.assertFalse((self.root/'intent.json').exists())
+
+    def test_foreign_control_rejection_with_consumption_stays_fenced(self):
+        self.fixture.consume(self.review,'ORPHAN_FOREIGN_CONTROL',consumed=True)
+        with self.assertRaisesRegex(ValueError,'consumption'):self.run_settlement()
+        self.assert_fenced()
+
     def test_requires_review_confirmation_and_expired_request(self):
         with self.assertRaisesRegex(ValueError,'confirmation'):reconcile_rejection(self.c,self.review)
         for now in (self.request['expires_utc']-1,self.request['expires_utc']):
@@ -66,7 +90,7 @@ class RejectedRecoveryTests(unittest.TestCase):
                 self.run_settlement()
         self.assert_fenced();self.assertFalse((self.root/'intent.json').exists())
 
-    def test_only_runtime_rejection_with_no_consumption_is_supported(self):
+    def test_only_supported_rejection_with_no_consumption_is_supported(self):
         for outcome in ('ORPHAN_RECOVERED','ORPHAN_CHANGED_AFTER_CLAIM','ORPHAN_CLEAR_FAILED','ORPHAN_REVIEW_REJECTED','unknown'):
             self.fixture.consume(self.review,outcome,consumed=False)
             with self.subTest(outcome=outcome),self.assertRaisesRegex(ValueError,'pre-consumption'):

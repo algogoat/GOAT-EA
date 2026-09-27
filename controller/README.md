@@ -440,7 +440,8 @@ native control files. Ambiguous delivery remains fenced and requires review.
 Legacy monitors and foreign gate owners are refused. Native Windows qualification
 and a compatible installed monitor are still required before promotion.
 
-If the exact retained receipt is `ORPHAN_RUNTIME_REJECTED`, no consumption exists
+If the exact retained receipt is `ORPHAN_RUNTIME_REJECTED` or
+`ORPHAN_FOREIGN_CONTROL`, no consumption exists
 anywhere in the selected local Studio tree, and the request has expired, review
 that rejection before using `orphan-recovery-reconcile-rejection --review-id
 <original-id> --confirm-reviewed` within authorized recovery maintenance. This
@@ -702,3 +703,20 @@ MetaEditor 6230, zero errors and warnings; EX5 SHA-256
 `b0499f6839d3112414f016711c78bb7949379c1a5e42be4d591bc137007639b5`.
 The full 391 controller fixtures passed; nine focused source/identity checks
 passed again after binding this binary. Corrected-EA native qualification is pending.
+
+## Native directory enumeration correction
+
+Internal `V1.49-ORPHAN-DIRECTORY-9` normalizes the trailing directory separator
+returned by native FileFindFirst/Next before joining recovery inventory paths.
+Previously the resulting doubled separator caused the sole legitimate native
+controller file to fail its exact path check as foreign. File bounds, nested
+foreign owners/requests, pending work and Common Files controls still refuse.
+The standalone native fixture exercises actual filesystem enumeration and both
+accepted and rejected trees; Python source tests alone do not qualify the EA.
+Rejection settlement accepts the additional pre-consumption FOREIGN_CONTROL
+outcome only with unchanged exact evidence and a fresh clear host inventory.
+It never clears a flag or retries recovery; exact human confirmation remains.
+
+Native MT5 build6230 fixture result:27 checks,0 failures, including an actual
+trailing-separator enumeration and a held native lock. This qualifies the
+isolated inventory functions, not a complete Banker recovery or batch launch.

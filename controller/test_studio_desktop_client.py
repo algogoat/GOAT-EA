@@ -53,6 +53,85 @@ class DesktopClientTests(unittest.TestCase):
         with patch('studio_handover.subprocess.check_output', return_value=json.dumps(self.rows)):
             stopped(self.c, [], allow_qualification_client=allow)
 
+    def public_request(self):
+        receipt = self.c.root/'installation.json'
+        self.c.install['receipt_path'] = str(receipt)
+        receipt.write_text(json.dumps(self.c.install))
+        self.params.write_text(json.dumps(dict(receiptPath=str(receipt), parkReviewId='a'*32)))
+        self.args[2] = 'suite.migrateInstallation'
+        self.rows[1]['CommandLine'] = json.dumps(self.args)
+        child = [str(self.bundle/'python/python.exe'), '-B', str(self.bundle/'controller/goat_agent.py'), *self.args[1:]]
+        self.rows[2]['CommandLine'] = json.dumps(child)
+
+    def test_public_migration_waiting_client_is_allowed_only_during_receipt_upgrade(self):
+        self.public_request()
+        self.assertEqual(client.qualification_clients(self.c, self.rows), {98760, 98761})
+        self.guard()
+        with self.assertRaisesRegex(ValueError, 'Stop the existing'):
+            self.guard(allow=False)
+
+    def test_public_migration_rejects_wrong_receipt_path_schema_and_review(self):
+        self.public_request()
+        original = json.loads(self.params.read_text())
+        for change in [dict(receiptPath=str(self.c.root.parent/'other'/'installation.json')),
+                       dict(receiptPath='installation.json'), dict(receiptPath=None),
+                       dict(parkReviewId='invalid'), dict(confirmed=True),
+                       dict(selection={}), dict(accountId='123456')]:
+            with self.subTest(change=change):
+                self.params.write_text(json.dumps(original | change))
+                with self.assertRaises(ValueError): self.guard()
+        self.params.write_text(json.dumps(original))
+        self.c.install['receipt_path'] = str(self.c.root.parent/'foreign.json')
+        with self.assertRaises(ValueError): self.guard()
+        del self.c.install['receipt_path']
+        with self.assertRaises(ValueError): self.guard()
+
+    def test_public_migration_requires_strict_json_object_and_string_fields(self):
+        self.public_request()
+        original = json.loads(self.params.read_text())
+        invalid = [None, [], 'request', True,
+                   *[original | {'parkReviewId': value} for value in [None, True, 1, int('1'*32), [], {}]],
+                   *[original | {'receiptPath': value} for value in [None, True, 1, [], {}]]]
+        for value in invalid:
+            with self.subTest(value=value):
+                self.params.write_text(json.dumps(value))
+                with self.assertRaises(ValueError): self.guard()
+        self.params.write_text(json.dumps(original)[:-1] + ',"parkReviewId":"' + 'a'*32 + '"}')
+        with self.assertRaises(ValueError): self.guard()
+
+    def test_public_migration_wrong_method_and_launcher_path_remain_blocked(self):
+        self.public_request()
+        for method in ['suite.install', 'suite.applyUpdate', 'suite.installInternalQualification']:
+            with self.subTest(method=method):
+                args = self.args.copy()
+                args[2] = method
+                child = [str(self.bundle/'python/python.exe'), '-B', str(self.bundle/'controller/goat_agent.py'), *args[1:]]
+                self.rows[1]['CommandLine'] = json.dumps(args)
+                self.rows[2]['CommandLine'] = json.dumps(child)
+                with self.assertRaises(ValueError): self.guard()
+        self.public_request()
+        self.rows[1]['ExecutablePath'] = str(self.bundle.parent/'other'/'goat.exe')
+        with self.assertRaises(ValueError): self.guard()
+
+    def test_public_migration_changed_runtime_extra_flags_and_duplicate_callers_refused(self):
+        self.public_request()
+        target = self.bundle/'controller/goat_agent.py'
+        original = target.read_bytes()
+        target.write_bytes(b'changed')
+        with self.assertRaises(ValueError): self.guard()
+        target.write_bytes(original)
+        args = [*self.args, '--data-dir', str(self.bundle)]
+        child = [str(self.bundle/'python/python.exe'), '-B', str(self.bundle/'controller/goat_agent.py'), *args[1:]]
+        self.rows[1]['CommandLine'] = json.dumps(args)
+        self.rows[2]['CommandLine'] = json.dumps(child)
+        with self.assertRaises(ValueError): self.guard()
+        self.public_request()
+        duplicate = copy.deepcopy(self.rows[1:])
+        duplicate[0]['ProcessId'] = 98762
+        duplicate[1].update(ProcessId=98763, ParentProcessId=98762)
+        self.rows += duplicate
+        with self.assertRaises(ValueError): self.guard()
+
     def test_verified_waiting_client_is_allowed_only_during_receipt_upgrade(self):
         self.guard()
         with self.assertRaisesRegex(ValueError, 'Stop the existing'):

@@ -4,6 +4,7 @@ Use the installed receipt from GOAT Setup. Never copy another user's receipt,
 account, state database or native attempt. See README.md for complete workflows.
 """
 import argparse
+from contextlib import ExitStack
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -24,6 +25,9 @@ from studio_strategy_settings import read_values
 from studio_settings import FIELDS,PERIODS,validate_tester,validate_export
 
 OPERATION_CONTRACTS = {
+    'switch-plan':dict(required=[],effect='review offline session handover; optional restore-id restores a parked session; never grants or launches'),
+    'switch-status':dict(required=['review-id'],effect='read retained handover progress and recovery identity'),
+    'switch-apply':dict(required=['review-id','confirm-reviewed'],authorization='Only after the user confirms this exact review in the desktop app or explicitly in chat; never agent self-approval. Trusted-local coordination, not an OS-user security boundary.',effect='apply or recover the exact user-reviewed handover; preserve research and revoke prior agent control'),
     'seed-prepare':dict(required=['batch-id','plan'],effect='freeze a dedicated SeedFarming matrix; no launch'),
     'seed-start':dict(required=['batch-id'],defaults={'max-seconds':60},limits={'max-seconds':[1,3600]},effect='explicit bounded driver for dedicated SeedFarming; preserves active work on call timeout'),
     'seed-resume':dict(required=['batch-id'],defaults={'max-seconds':60},limits={'max-seconds':[1,3600]},effect='continue verified retained seed work; uncertain effects require reconciliation'),
@@ -52,6 +56,8 @@ OPERATION_CONTRACTS = {
     'status':dict(required=['job-id'],effect='observe retained attempt; update reconciled state without retry'),
     'reconcile':dict(required=['job-id'],effect='alias of status'),
     'cancel':dict(required=['job-id'],effect='cancel pending job or publish exact owned native stop; receipt is not stop proof'),
+    'clear-queue':dict(required=[],defaults={'apply':False},apply_required=['request-id','expected-revision'],effect='preview pending jobs; explicit apply removes only pending work atomically, preserving all history/packages/results; refuses unresolved native attempts, seed ownership and outstanding native controls; never resets EA flags or starts work'),
+    'native-recovery-status':dict(required=[],effect='diagnose runtime flags, native controls and unresolved controller work without resetting or launching; orphan continuation recovery is unsupported and requires a compatible reviewed EA/controller release'),
     'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls')
 }
 
@@ -65,10 +71,16 @@ class Controller:
         self.store = None
 
     def open(self):
+        from studio_handover import guard
+        guard(self)
         self.session = read_json(self.root/'session.json')
         if self.session['installation_sha256'] != sha(self.install):
             raise ValueError('Installation changed since bootstrap; reconcile before repair')
         if not (self.root/'studio.sqlite').is_file(): raise ValueError('Controller database missing; preserve remaining receipts')
+        expected = dict(directory_id=self.session['directory_id'],terminal_id=self.session['terminal_id'],
+                        run_id=self.session['run_id'],terminal_data_path=self.install['terminal_data_root'])
+        if read_json(self.local/'active.json') != expected:
+            raise ValueError('Controller session is not active; inspect the retained handover')
         self.store = StudioStore(self.root/'studio.sqlite',input_schema=self.schema,dependency_policy=self.policy)
         self.terminal,self.run = self.session['terminal_id'],self.session['run_id']
         self.bridge = StudioBridge(self.local/self.session['directory_id'],self.store,self.terminal,self.run)
@@ -76,15 +88,17 @@ class Controller:
 
     def state(self): return self.store.snapshot(self.terminal,self.run)
 
-    def submit(self,command,payload,request_id):
+    def submit(self,command,payload,request_id,*,expected_revision=None):
         state = self.state()
         request = dict(schema_version=1,request_id=request_id,terminal_id=self.terminal,run_id=self.run,
-                       expected_revision=state['revision'],generation=state['generation'],command=command,payload=payload)
+                       expected_revision=state['revision'] if expected_revision is None else expected_revision,generation=state['generation'],command=command,payload=payload)
         # Persist the exact envelope before submission, making transport retries idempotent.
         path = self.root/'requests'/(request_id+'.json')
         if path.exists():
             prior = read_json(path)
             if prior['command'] != command or prior['payload'] != payload: raise ValueError('Request ID content changed')
+            if expected_revision is not None and prior['expected_revision'] != expected_revision:
+                raise ValueError('Request ID revision changed; retry the exact original request')
             request = prior
         else: write_json(path,request)
         result = self.store.submit(request,actor='agent')
@@ -110,13 +124,15 @@ class Controller:
                     monitor_sha256=i['ea_sha256'],input_schema=self.schema)
 
     def bootstrap(self,login,server):
+        from studio_handover import guard
+        guard(self)
         if not login or not re.fullmatch('[0-9]+',login) or not server or not re.fullmatch('[A-Za-z0-9_. -]+',server):
             raise ValueError('Explicit demo account login and server required')
         if (self.root/'session.json').exists():
             self.open()
             if self.session['account'] != {'login':login,'server':server}: raise ValueError('Existing account binding differs')
             return self.session
-        if (self.local/'active.json').exists(): raise ValueError('Existing Studio activation requires reconciliation; no overwrite')
+        if (self.local/'active.json').exists(): raise ValueError('Existing Studio activation requires reconciliation; use switch-plan and user review, never overwrite')
         self.root.mkdir(parents=True,exist_ok=True)
         (self.root/'requests').mkdir(exist_ok=True)
         terminal='terminal-'+sha(self.install['terminal_data_root'])[:16]
@@ -242,6 +258,9 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--installation',type=Path,required=True)
     sub=parser.add_subparsers(dest='operation',required=True)
+    p=sub.add_parser('switch-plan');p.add_argument('--restore-id')
+    p=sub.add_parser('switch-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
+    p=sub.add_parser('switch-status');p.add_argument('--review-id',required=True)
     p=sub.add_parser('seed-prepare');p.add_argument('--batch-id',required=True);p.add_argument('--plan',type=Path,required=True)
     for command in ('seed-start','seed-resume'):
         p=sub.add_parser(command);p.add_argument('--batch-id',required=True);p.add_argument('--max-seconds',type=int,default=60)
@@ -261,14 +280,24 @@ def main(argv=None):
     p=sub.add_parser('build-set');p.add_argument('--source',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--spec',type=Path,required=True)
     p=sub.add_parser('bootstrap');p.add_argument('--account-login',required=True);p.add_argument('--account-server',required=True)
     p=sub.add_parser('serve');p.add_argument('--watch-seconds',type=float,default=3600)
+    p=sub.add_parser('clear-queue');p.add_argument('--apply',action='store_true');p.add_argument('--request-id');p.add_argument('--expected-revision',type=int)
+    sub.add_parser('native-recovery-status')
     p=sub.add_parser('submit');p.add_argument('--request',type=Path,required=True)
     p=sub.add_parser('prepare');p.add_argument('--job-id',required=True);p.add_argument('--set',type=Path,required=True);p.add_argument('--configuration',type=Path,required=True)
     for command in ('start','status','cancel','reconcile','finish'):
         p=sub.add_parser(command);p.add_argument('--job-id',required=True)
-    args=parser.parse_args(argv);controller=None
+    args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
         controller=Controller(args.installation)
-        if args.operation=='discover':
+        if args.operation not in ('switch-plan','switch-apply','switch-status','discover','resource-profile'):
+            from studio_handover import session_lock,guard
+            locks.enter_context(session_lock(controller));guard(controller)
+        if args.operation in ('switch-plan','switch-apply','switch-status'):
+            from studio_handover import review,apply,load_plan,public
+            if args.operation=='switch-plan': result=review(controller,args.restore_id)
+            elif args.operation=='switch-status': result=public(load_plan(controller,args.review_id))
+            else: result=apply(controller,args.review_id,args.confirm_reviewed)
+        elif args.operation=='discover':
             result=dict(controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 executable may be running for ordinary native batch activation','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
         elif args.operation=='resource-profile':
             from studio_resources import resource_profile
@@ -303,6 +332,12 @@ def main(argv=None):
                 else: result=getattr(runner,args.operation.removeprefix('seed-'))(args.batch_id)
             elif args.operation=='serve': result=pump_for(controller.bridge,args.watch_seconds)
             elif args.operation=='state': controller.bridge.pump();result=controller.state()
+            elif args.operation=='clear-queue':
+                from studio_queue_clear import clear_queue
+                result=clear_queue(controller,apply=args.apply,request_id=args.request_id,expected_revision=args.expected_revision)
+            elif args.operation=='native-recovery-status':
+                from studio_queue_clear import recovery_status
+                result=recovery_status(controller)
             elif args.operation=='submit':
                 result=controller.store.submit(read_json(args.request),actor='agent');controller.bridge.pump()
             elif args.operation=='prepare': result=controller.prepare(args.job_id,args.set,args.configuration)
@@ -332,5 +367,6 @@ def main(argv=None):
         print(json.dumps(dict(ok=False,error=str(exc),recovery='Preserve receipts; inspect state and matching job/attempt before retrying a mutation')));return 2
     finally:
         if controller and controller.store: controller.store.close()
+        locks.close()
 
 if __name__=='__main__': sys.exit(main())

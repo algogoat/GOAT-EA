@@ -18,6 +18,9 @@ def read_json(path):
     return json.loads(raw.decode('utf-8-sig'), object_pairs_hook=unique)
 
 def load_installation(path):
+    if not Path(path).exists():
+        from studio_handover import recovery_installation
+        path = recovery_installation(path)
     value = read_json(path)
     required = {'schema_version','controller_version','ea_version','terminal_executable',
                 'terminal_data_root','common_files_root','ea_relative_path','ea_sha256','controller_state_root'}

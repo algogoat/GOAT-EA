@@ -316,3 +316,79 @@ must also compile without warnings and be qualified with actual bound MT5
 start/status/cancel/finish before a release claims that lifecycle is verified.
 Customer documentation describes supported process; qualification evidence
 belongs in the release notes rather than copying a developer's paths here.
+
+## Safe switching and restoration
+
+### Clear pending work and prepare a fresh batch
+
+Use `clear-queue` to preview pending job IDs and the current revision. To remove
+that pending work, use `clear-queue --apply --request-id <unique-id>
+--expected-revision <preview-revision>`. Retry the exact same identity and revision
+after a transport failure. The operation is atomic and requires current agent
+ownership. A changed queue/revision requires a fresh review and a new request ID.
+It marks pending jobs removed while retaining their packages, configuration and
+history. Completed results, other settled jobs and drafts are unchanged. It refuses
+unresolved attempts across controller bindings, active seed work and unconsumed
+native requests/permits; it never treats clearing a queue as stopping a tester.
+
+Then run `prepare-batch --batch-id <new-id> --plan <plan.json>`, inspect
+`batch-status --batch-id <new-id>`, and explicitly `start --job-id <new-id>` when
+ready. Clearing and preparation never launch work. Old job IDs remain reserved
+for provenance; do not reuse them for a new experiment.
+
+For inconsistent native flags, run `native-recovery-status`. It reports runtime
+identity/readiness failures and remaining controls without clearing anything.
+`cancel` requires an exact owned attempt; `finish` requires its observed native
+completion and idle runtime. Neither repairs an orphan `BatchOnGoing` flag. A
+possible orphan requires the compatible reviewed native recovery capability;
+do not edit global-variable files, call Start/Stop as a reset or fabricate a launch
+receipt. See [native recovery contract](NATIVE-RECOVERY-CONTRACT.md).
+
+### Park and restore an entire research session
+
+If bootstrap refuses an existing Studio activation, never delete active.json,
+permits, gate owners, databases or pending jobs. Stop MT5, MetaEditor and all
+controller/runner processes first. The installed public CLI supports:
+
+```
+goat.exe studio --installation <installation.json> switch-plan
+goat.exe studio --installation <installation.json> switch-status --review-id <id>
+goat.exe studio --installation <installation.json> switch-apply --review-id <id> --confirm-reviewed
+```
+
+Explain every affected binding/database and pending-job count before the user
+confirms. An agent may use `--confirm-reviewed` only after that explicit user
+instruction. In the desktop app, the agent prepares `onboarding.prepareSwitch`
+and the user confirms the displayed review themselves; there is no agent
+confirmation RPC. Reviews expire after ten minutes and changes invalidate them.
+The next successful review prunes expired, never-applied review metadata only;
+completed/recoverable receipts and parked research are retained.
+
+Ordinary commands hold a shared session lock, so `serve` and bounded seed drivers
+can coexist with `state`, onboarding checks and cancellation. Handover apply takes
+the exclusive counterpart and refuses while any ordinary command is running;
+ordinary commands refuse while apply is in progress. Existing native mutation
+gates continue to serialize individual commits.
+
+The handover refuses running terminals/controllers, unresolved native jobs,
+seed ownership, unconsumed requests/permits, shared/ambiguous databases and
+filesystem aliases. It revokes old agent generations, then parks the entire
+terminal GOATStudio directory and app controller state under an attempt-specific
+archive outside both directories. The installation receipt remains registered.
+Queues, drafts, results, profiles outside GOATStudio, Common Files and credentials
+are not discarded. No process is stopped or launched automatically.
+
+After parking, run ordinary bootstrap for the explicitly selected demo account.
+The new session is human-owned and requires the user's fresh Give to Agent.
+Restoration is also reviewed: `switch-plan --restore-id <completed park id>` then
+apply that NEW review ID. This parks the newer session before restoring the old
+files. Old control remains human-owned. A changed app/EA installation or externally
+changed archived database requires a compatible migration; restoration refuses it.
+
+Keep the returned recovery ID. After any timeout or interrupted directory move,
+inspect `switch-status` and retry ONLY `switch-apply` with that same review ID.
+The journal can recover even if the original installation receipt is temporarily
+inside the parked state directory. Normal controller commands refuse until the
+retained handover completes. Never manufacture a new attempt to clear the fence.
+This is a trusted-local-user coordination protocol, not an OS security boundary.
+Native MT5 lifecycle qualification is still required separately from fixture tests.

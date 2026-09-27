@@ -143,3 +143,11 @@ budget. A portfolio export is not permission to attach it to a trading account.
 Honour pause/stop instructions across sessions. Before handoff, record terminal
 and run identities, ownership/revision/generation, job/attempt/request IDs, exact
 observed state, result locations and the next safe action.
+
+Existing-session setup refusal: read README.md#safe-switching-and-restoration. Use switch-plan and explicit user review; never delete a prior binding to make bootstrap pass.
+
+Starting a fresh batch on the same session: `clear-queue` previews pending work;
+`clear-queue --apply --request-id <unique-id> --expected-revision <preview-revision>`
+removes only pending jobs with history preserved. Then `prepare-batch` with a new
+identity, inspect `batch-status`, and explicitly `start`. For inconsistent runtime
+flags use `native-recovery-status`; there is no supported orphan reset in this EA.

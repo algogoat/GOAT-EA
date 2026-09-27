@@ -6,7 +6,7 @@ from studio_settings import validate_tester, validate_export
 from studio_strategy_settings import validate_strategy
 from studio_dependencies import audit_dependencies
 
-COMMANDS = ('queue.enqueue', 'queue.enqueue_batch', 'queue.revise', 'queue.cancel', 'queue.remove', 'queue.reorder', 'queue.reserve', 'queue.release_reservation')
+COMMANDS = ('queue.enqueue', 'queue.enqueue_batch', 'queue.revise', 'queue.cancel', 'queue.remove', 'queue.clear_pending', 'queue.reorder', 'queue.reserve', 'queue.release_reservation')
 
 
 def validate_batch_members(members, schema, policy):
@@ -140,6 +140,12 @@ def change_queue(command, payload, state, schema, policy):
         if job is None or job['status'] != 'pending':
             raise ValueError('Only an existing pending job can be cancelled or removed')
         job['status'] = 'cancelled' if command == 'queue.cancel' else 'removed'
+    elif command == 'queue.clear_pending':
+        if payload != {}:
+            raise ValueError('Clear pending requires an empty payload; selection is frozen by the state revision')
+        for job in jobs:
+            if job['status'] == 'pending':
+                job['status'] = 'removed'
     elif command == 'queue.reorder':
         ids = payload.get('job_ids')
         pending = {j['job_id']: j for j in jobs if j['status'] == 'pending'}

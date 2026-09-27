@@ -12,7 +12,7 @@ from unittest.mock import patch
 import test_goat_studio as fixtures
 from studio_bridge import write_json
 from studio_handover import tree,paths
-from studio_historical_pointers import prepare,apply,review_path,pending_path,known_sources
+from studio_historical_pointers import prepare,apply,review_path,pending_path,known_sources,references_target
 from studio_native_gate import shared_gate
 from studio_bootstrap_retirement import classify_testers
 
@@ -222,6 +222,50 @@ class IdleServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'active connection'):classify_testers(c,snapshot,require_idle_services=True)
         snapshot['connections']=[]
         self.assertEqual(len(classify_testers(c,snapshot,require_idle_services=True)['independent_service_agents']),1)
+
+
+class ReferenceFilterTests(unittest.TestCase):
+    @staticmethod
+    def original(value,needles):
+        if isinstance(value,str):
+            normalized=value.replace('\\','/').casefold()
+            while '//' in normalized:normalized=normalized.replace('//','/')
+            if any(n in normalized for n in needles):return True
+            try:decoded=json.loads(value)
+            except (ValueError,TypeError):return False
+            if isinstance(decoded,(dict,list)):return ReferenceFilterTests.original(decoded,needles)
+        elif isinstance(value,dict):
+            return any(ReferenceFilterTests.original(k,needles) or ReferenceFilterTests.original(v,needles) for k,v in value.items())
+        elif isinstance(value,(list,tuple)):
+            return any(ReferenceFilterTests.original(v,needles) for v in value)
+        return False
+
+    def test_unrelated_large_ascii_audit_json_does_not_decode(self):
+        payload=json.dumps({'audit':[{'description':'unrelated finished work','path':r'C:\Other\Strategy Files','result':[1,2,3]}]*1000})
+        with patch('studio_historical_pointers.json.loads',side_effect=AssertionError('negative raw filter must not decode')):
+            self.assertFalse(references_target(payload,['goat/goat v1.40-demo/old run']))
+
+    def test_unicode_escape_and_quote_control_targets_keep_decoder(self):
+        for target in ('GOAT/Old Run','GOAT/Größe','GOAT/a"b','GOAT/a\tb','GOAT/a\nb'):
+            needle=target.casefold();payload=json.dumps({'nested':{'path':target}},ensure_ascii=True)
+            if target=='GOAT/Old Run':payload=payload.replace('G','\\u0047')
+            with self.subTest(target=target):
+                self.assertTrue(self.original(payload,[needle]));self.assertTrue(references_target(payload,[needle]))
+
+    def test_differential_json_escaping_case_and_nested_structures(self):
+        cases=0
+        for name in ('Old Run','UPPER mixed','Größe','名😀','A"B','A\tB','A\nB'):
+            canonical='GOAT/GOAT V1.40-Demo/'+name
+            needles=[canonical.casefold(),'c:/common/'+canonical.casefold()]
+            for candidate in (canonical,canonical.upper(),canonical.replace('/','\\'),'C:/Common/'+canonical,'unrelated/'+name):
+                for ascii_mode in (True,False):
+                    base=json.dumps({'rows':[{'path':candidate,'message':'quoted "text" and slash /'},None,23]},ensure_ascii=ascii_mode)
+                    forms=[base,base.replace('/','\\/'),base.replace('G','\\u0047'),json.dumps({'serialized':base}),{'nested':[base]}]
+                    for value in forms:
+                        cases+=1
+                        with self.subTest(case=cases):
+                            self.assertEqual(references_target(value,needles),self.original(value,needles))
+        self.assertEqual(cases,350)
 
 
 if __name__=='__main__':unittest.main()

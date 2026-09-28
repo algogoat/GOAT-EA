@@ -191,6 +191,14 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
             now = clock.time()
             if not math.isfinite(now):
                 raise ValueError('Wall clock is not finite')
+            if inherited is not None and inherited.get('fresh_native_epoch') and 'authority_expires_utc' in inherited:
+                expiry=inherited['authority_expires_utc']
+                if type(expiry) not in (int,float) or not math.isfinite(expiry) or now>=expiry:
+                    raise ValueError('Research authority epoch expired before successor start')
+                remaining=math.floor(expiry-now)
+                if remaining<1:
+                    raise ValueError('Research authority epoch has no whole second for successor start')
+                max_seconds=min(max_seconds,remaining)
             record = dict(schema_version=2, binding=binding, max_seconds=max_seconds,
                           min_free_bytes=min_free_bytes, disk_observation=capacity,
                           started_wall=now, deadline_wall=now+max_seconds, last_wall=now,

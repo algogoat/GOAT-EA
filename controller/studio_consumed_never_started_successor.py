@@ -119,6 +119,7 @@ def proof(c,state,scope,first_proof,*,successor_id=None,require_released=True):
         if settled.get('request_id')!=stop_id or settled.get('attempt_id')!=attempt:
             raise ValueError('Consumed replacement controls are not released')
     return dict(fresh_native_epoch=True,authority_sha256=sha(scope),generation=scope['generation'],
+        authority_expires_utc=scope['expires_utc'],
         predecessor_job_id=job['job_id'],predecessor_attempt_id=attempt,
         predecessor_result_sha256=_digest(result_path),predecessor_driver_sha256=_digest(journal_path),
         consumed_start_sha256=_digest(gate/('consumed-'+attempt+'.json')),

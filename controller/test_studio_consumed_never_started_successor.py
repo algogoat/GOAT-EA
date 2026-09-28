@@ -53,6 +53,7 @@ class ConsumedNeverStartedSuccessorTests(unittest.TestCase):
         self.assertTrue(value['fresh_native_epoch'])
         self.assertEqual(value['predecessor_attempt_id'],self.attempt)
         self.assertEqual(value['max_seconds'],172800)
+        self.assertEqual(value['authority_expires_utc'],self.scope['expires_utc'])
         self.assertEqual(value['min_free_bytes'],5368709120)
         self.assertEqual(len(value['consumed_start_sha256']),64)
         self.assertEqual(len(value['cancelled_request_sha256']),64)

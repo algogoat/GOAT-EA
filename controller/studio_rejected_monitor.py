@@ -95,11 +95,15 @@ def reverify(controller,job_id):
     path=controller.root/'rejected-monitor-restarts'/job['launch_intent']['attempt_id']/'restart.json'
     with exclusive_gate(controller.local/'native-gate'):
         record=read_json(path)
-        if record['phase'] not in ('started_unverified','reverified') or record['authority_sha256']!=sha(scope):
+        if record['phase'] not in ('started_unverified','adopted_unverified','reverified') or record['authority_sha256']!=sha(scope):
             raise ValueError('No exact started monitor to reverify; never repeat launch')
-        native=inspect_idle_demo(controller);require_demo(native)
+        if record.get('human_reopened') is True:
+            from studio_human_reopen import verify_adopted
+            native=verify_adopted(controller,record,path)
+        else:
+            native=inspect_idle_demo(controller);require_demo(native)
         if native['process']!=record['process']:raise ValueError('Relaunch process changed')
-        if record['phase']=='started_unverified':
+        if record['phase']!='reverified':
             record.update(phase='reverified',after=native);write_json(path,record)
         return record
 

@@ -11,7 +11,8 @@ from studio_dispatch_observe import observe_dispatch
 def publish_cancel(controller, job, *, expected_generation=None):
     if job['status'] not in ('starting','running','reconcile_required','verifying'):
         raise ValueError('An existing native attempt is required')
-    attempt=job['launch_intent']['attempt_id'];request_id=sha([attempt,'cancel'])
+    from studio_cancel_successor import cancel_id
+    attempt=job['launch_intent']['attempt_id'];request_id=cancel_id(controller.root,job,controller.local/'native-gate')
     gate=controller.local/'native-gate'
     with exclusive_gate(gate):
         state=controller.state();current=controller.job(job['job_id'])

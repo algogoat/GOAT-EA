@@ -19,7 +19,7 @@ READ_OPERATIONS = frozenset(('discover','resource-profile','state','onboarding-s
 OPERATIONS = READ_OPERATIONS | frozenset(('owner-maintenance-bootstrap','monitor-prepare','monitor-launch',
     'serve','orphan-recovery-prepare','orphan-recovery-apply','orphan-recovery-status',
     'orphan-recovery-reconcile-rejection','prepare-batch','run-batch','start','status','reconcile',
-    'batch-status','cancel','finish','benchmark-report','save-batch'))
+    'batch-status','cancel','finish','benchmark-report','save-batch','research-monitor-restart','research-monitor-restart-status','cancel-rejected-successor'))
 
 
 @contextmanager

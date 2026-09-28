@@ -78,6 +78,9 @@ OPERATION_CONTRACTS = {
     'orphan-recovery-reconcile-rejection':dict(required=['review-id'],authorization_required_one_of=['confirm-reviewed','owner-research'],authorization='Exact reviewed rejection under explicit confirmation or finite reviewed owner-demo original-grant scope; settlement is not approval for another native recovery',effect='settle only an expired supported pre-consumption rejection with no consumption and unchanged idle orphan identity; retain evidence, never retry recovery or change native flags, queue or grant'),
     'run-batch':dict(required=['job-id'],start_required=['max-seconds'],limits={'max-seconds':[1,86400]},min_free_bytes_default=5368709120,resume='Use --resume without a new budget or disk threshold; retained deadline and guard do not reset',effect='bounded owned batch driver with durable dispatch deadline and one cancel request at budget, low disk or unavailable capacity; stop must be observed, never assumed; no force kill or uncertain relaunch'),
     'batch-driver-status':dict(required=['job-id'],effect='read retained driver journal and current binding match; never starts, resumes or cancels work'),
+    'research-monitor-restart':dict(required=['job-id'],effect='owner-only typed continuation: gracefully suspend exact old publisher and reload one idle monitor after verified pre-consumption rejection; preserves evidence and budget; no batch start'),
+    'research-monitor-restart-status':dict(required=['job-id'],effect='reverify an already launched recovery monitor; never close or launch again'),
+    'cancel-rejected-successor':dict(required=['job-id'],effect='owner-only: publish one new stop identity after exact expired unconsumed native cancel rejection and reverified monitor restart; keeps both stop receipts'),
     'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls')
 }
 
@@ -262,8 +265,8 @@ class Controller:
         if 'launch_intent' not in job: return dict(status=job['status'],native_attempt=False)
         from studio_dispatch_observe import observe_dispatch
         dispatch=observe_dispatch(self.local/'native-gate',job['launch_intent']['attempt_id'])
-        cancel_id=sha([job['launch_intent']['attempt_id'],'cancel'])
-        cancellation=observe_dispatch(self.local/'native-gate',cancel_id)
+        from studio_cancel_successor import cancel_id
+        cancellation=observe_dispatch(self.local/'native-gate',cancel_id(self.root,job,self.local/'native-gate'))
         if cancellation['status']=='awaiting_receipt':
             return dict(status='cancel_pending',dispatch=cancellation,job=job)
         if cancellation['status']=='not_issued' and dispatch['status']=='awaiting_receipt':
@@ -335,7 +338,7 @@ def main(argv=None):
     p=sub.add_parser('batch-driver-status');p.add_argument('--job-id',required=True)
     p=sub.add_parser('submit');p.add_argument('--request',type=Path,required=True)
     p=sub.add_parser('prepare');p.add_argument('--job-id',required=True);p.add_argument('--set',type=Path,required=True);p.add_argument('--configuration',type=Path,required=True)
-    for command in ('start','status','cancel','reconcile','finish'):
+    for command in ('start','status','cancel','reconcile','finish','research-monitor-restart','research-monitor-restart-status','cancel-rejected-successor'):
         p=sub.add_parser(command);p.add_argument('--job-id',required=True)
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
@@ -426,6 +429,15 @@ def main(argv=None):
                 from studio_batch_driver import run,status
                 if args.operation=='run-batch': result=run(controller,args.job_id,max_seconds=args.max_seconds,resume=args.resume,min_free_bytes=args.min_free_bytes)
                 else: result=status(controller,args.job_id)
+            elif args.operation=='research-monitor-restart':
+                from studio_rejected_monitor import restart
+                result=restart(controller,args.job_id)
+            elif args.operation=='research-monitor-restart-status':
+                from studio_rejected_monitor import reverify
+                result=reverify(controller,args.job_id)
+            elif args.operation=='cancel-rejected-successor':
+                from studio_cancel_successor import create
+                result=create(controller,args.job_id)
             elif args.operation=='serve': result=pump_for(controller.bridge,args.watch_seconds)
             elif args.operation=='state': controller.bridge.pump();result=controller.state()
             elif args.operation=='clear-queue':

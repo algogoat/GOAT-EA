@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from studio_bridge import write_json
 from studio_installation import read_json
-from studio_driver_suspend import suspend
+from studio_driver_suspend import suspend,require_no_publishers
 from test_studio_batch_driver import Clock
 
 
@@ -45,6 +45,19 @@ class DriverSuspendTests(unittest.TestCase):
         write_json(self.path,self.journal|dict(deadline_wall=999999))
         with self.assertRaisesRegex(ValueError,'budget'):suspend(self.c,self.job,self.folder,clock=Clock())
         self.interrupt.assert_called_once()
+
+    def test_publisher_inventory_allows_only_current_caller_and_own_launcher(self):
+        import os,sys
+        rows=[dict(ProcessId=os.getpid(),CommandLine='self'),
+              dict(ProcessId=os.getppid(),ExecutablePath=str(Path(sys.executable).parent.parent/'goat.exe'),CommandLine='parent')]
+        require_no_publishers(self.c,rows=rows)
+        rows.append(dict(ProcessId=123456,ExecutablePath='old/python.exe',CommandLine='old studio serve'))
+        with patch('studio_driver_suspend.arguments',return_value=['old','studio','--installation',str(self.root/'installation.json'),'serve']):
+            with self.assertRaisesRegex(ValueError,'Another controller publisher'):require_no_publishers(self.c,rows=rows)
+        with patch('studio_driver_suspend.arguments',return_value=['unrelated','other.py']):
+            require_no_publishers(self.c,rows=rows)
+        rows[-1]['CommandLine']=None
+        with self.assertRaisesRegex(ValueError,'Unknown publisher'):require_no_publishers(self.c,rows=rows)
 
 
 if __name__=='__main__':unittest.main()

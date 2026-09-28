@@ -13,7 +13,7 @@ def inspect_processes(binding, *, research_running=True):
     # Fixed command, no caller strings interpolated into shell syntax.
     command='ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter "Name=\'terminal64.exe\'" | Select-Object ProcessId,ExecutablePath,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
     output=subprocess.check_output(['powershell','-NoProfile','-Command',command],
-        text=True,encoding='utf-8-sig',timeout=20)
+        text=True,encoding='utf-8-sig',timeout=20,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     return classify_processes(json.loads(output),binding,observed_unix=time.time(),research_running=research_running)
 
 

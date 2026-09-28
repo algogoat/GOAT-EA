@@ -25,7 +25,7 @@ from studio_template_tools import source_bytes, validate_raw
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 MAX_RETAINED_SET_BYTES = 128 * 1024 * 1024
 
-def _json(path, limit=MAX_PLAN_BYTES):
+def _json(path, limit=MAX_PLAN_BYTES, *, with_raw=False):
     path = Path(path)
     if path.stat().st_size > limit: raise ValueError('Batch JSON exceeds its byte limit')
     with path.open('rb') as stream: raw = stream.read(limit + 1)
@@ -36,7 +36,8 @@ def _json(path, limit=MAX_PLAN_BYTES):
             if key in result: raise ValueError('Duplicate batch JSON key: ' + key)
             result[key] = value
         return result
-    return json.loads(raw.decode('utf-8-sig'), object_pairs_hook=unique)
+    value=json.loads(raw.decode('utf-8-sig'), object_pairs_hook=unique)
+    return (value,raw) if with_raw else value
 
 
 def _files(package):
@@ -85,11 +86,9 @@ def _verify_package(controller, job):
     return package, plan, manifest
 
 
-def prepare_batch(controller, batch_id, plan_path):
-    if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
-        raise ValueError('Batch ID must be 1..80 letters, digits, underscore or hyphen')
+def read_plan(controller, plan_path):
     plan_path = Path(plan_path)
-    spec = _json(plan_path)
+    spec, source_plan = _json(plan_path,with_raw=True)
     if not isinstance(spec, dict) or set(spec) != {'schema_version', 'export', 'members'} or spec['schema_version'] != 1:
         raise ValueError('Batch plan requires schema_version:1, export and members')
     if not isinstance(spec['members'], list) or not 1 <= len(spec['members']) <= 10000:
@@ -113,6 +112,19 @@ def prepare_batch(controller, batch_id, plan_path):
         retained.append((source, raw, inspect_set(raw)))
     checked = validate_batch_members(raw_members, controller.schema, controller.policy)
     config = dict(checked[0], batch_members=checked)
+    return config, raw_members, retained, hashlib.sha256(source_plan).hexdigest(), spec
+
+
+def prepare_batch(controller, batch_id, plan_path):
+    if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+        raise ValueError('Batch ID must be 1..80 letters, digits, underscore or hyphen')
+    config, raw_members, retained, source_hash, spec = read_plan(controller, plan_path)
+    from studio_research_authority import authority
+    from campaign_ledger import packed
+    scope = authority(controller.store.db,packed(dict(terminal_id=controller.terminal,run_id=controller.run)),controller.state())
+    if scope is not None and (source_hash!=scope['plan_sha256'] or sha(raw_members)!=scope['members_sha256']):
+        raise ValueError('Batch inputs differ from the immutable research continuation')
+    checked = config['batch_members']
     snapshot = controller.state()
     existing = next((j for j in snapshot['queue'] if j['job_id'] == batch_id), None)
     package = controller.root / 'packages' / batch_id

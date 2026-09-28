@@ -21,6 +21,9 @@ BINDING_KEYS = ('terminal_executable', 'terminal_data_root', 'common_files_root'
 
 def authorize(c, operation, review_id):
     """Caller holds the exclusive session and native gate. Recheck before effects."""
+    if c.session.get('authority_kind')=='research_continuation':
+        from studio_research_authority import recovery_authorization
+        return recovery_authorization(c,operation,review_id)
     policy = read_json(POLICY_PATH)
     if (policy.get('schema_version') != 1 or operation not in policy['operations']
             or not policy['not_before_utc'] <= time.time() < policy['expires_utc']):

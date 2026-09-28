@@ -1,5 +1,6 @@
 """Reviewed V1.49 orphan-flag recovery. Never launches or invents native ownership."""
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -154,12 +155,26 @@ def apply(c,review_id,*,confirmed=False,owner_research=False):
             if owner_research:
                 from studio_owner_research import authorize,record as record_authorization
                 record_authorization(c,authorize(c,'orphan-recovery-apply',review_id))
+            # The EA accepts at most 60 seconds from its own TimeGMT. Leave
+            # margin for clock differences and the five-second feedback cadence.
+            # This is a publication check, not part of the frozen review identity.
+            observation,clock=c.runtime(require_idle=True,expected_batch_ongoing=True)
+            try:
+                stamp=datetime.strptime(observation['observed_terminal_utc'],'%Y.%m.%d %H:%M:%S').replace(tzinfo=timezone.utc).timestamp()
+                modified=clock['modified']
+            except (KeyError,TypeError,ValueError) as error:
+                raise ValueError('Recovery needs a valid terminal UTC observation and file write time; no request published') from error
+            # Compare clocks at publication of the observation, not its later read.
+            # c.runtime separately enforces the existing 20-second freshness gate.
+            if type(modified) not in (int,float) or not abs(stamp-modified)<=5:
+                raise ValueError('Terminal UTC differs from its Windows file write time by more than 5 seconds or the write time is invalid. Check clock synchronization; no recovery request published')
+            expires_utc=int(time.time())+45
             state=c.state()
             write_json(c.bridge.root/'snapshot.json',dict(protocol_version=1,state=display_state(state),schema_hash=c.store.input_schema_hash,execution_ready=False))
             request_id=sha(['orphan-recovery',review_id,plan['observation']])
             request=dict(schema_version=1,recovery_protocol=1,action='recover_orphan_continuation',request_id=request_id,
                 terminal_id=c.terminal,run_id=c.run,owner='agent',revision=state['revision'],generation=state['generation'],
-                expires_utc=int(time.time())+60,ea_version=c.install['ea_version'],monitor_instance=plan['observation']['monitor_instance'],
+                expires_utc=expires_utc,ea_version=c.install['ea_version'],monitor_instance=plan['observation']['monitor_instance'],
                 data_path=c.install['terminal_data_root'],installation_path=str(Path(c.install['terminal_executable']).parent),
                 program_path=str(c.native_args()['monitor_path'].resolve()),account_login=c.session['account']['login'],account_server=c.session['account']['server'],
                 snapshot_sha256=digest(c.bridge.root/'snapshot.json'),owner_file_sha256=plan['observation']['owner_file_sha256'],active_sha256=plan['observation']['active_sha256'])

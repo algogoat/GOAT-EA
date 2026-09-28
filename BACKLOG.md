@@ -177,5 +177,19 @@ qualification are separate from full native EA/installed-package qualification.
   75d00db5865e4b0311faf91523504632ceb1d2269d8788622844955a541f4991.
   This is source/compile proof only; exact-head review, admission and native
   Banker readback remain required before the batch path.
+- **TESTER-WORKER-FARM-CAPTION-003 (2026-09-28):** Banker build 6230 consumed
+  an exact 115-member request and returned `WORKER_POLICY_NOT_VERIFIED` before
+  start intent or tester execution. An owned, read-only menu probe observed
+  command 33521 `Use Local Agents` checked, 33522 `Use Local Network Farm`
+  unchecked, and 33525 `Use MQL5 Cloud Network` unchecked. The existing reader
+  required 33522's caption to contain `remote`, so it refused the correct native
+  local-only state. Recognize only the observed 6230 caption as an additional
+  name for that same remote/LAN command; keep all IDs, checked-state checks,
+  popup closure, and unknown-caption refusal. The consumed attempt was
+  cancelled with its evidence retained; a new reviewed build and attempt need
+  native qualification before calling the batch running. Candidate
+  V1.49-WORKER-FARM-CAPTION-17 compiled on MetaEditor 6230 with 0 errors and
+  0 warnings, EX5 SHA-256
+  9c90b1493406e1cf849641d8eb1095ed9ea106767bb102fce520797ffdf32ffe.
 
 | CTRL-022 | Visible native Give/Take control feedback | Source implementation; qualification pending | Immediate pending button/status, Take Control Yes/No warning, 30-second delayed acknowledgement with original request retained, receipt-confirmed current owner, Give Control Back action, persistent actionable refusal; a later save/queue clears old feedback. The derived Report-only difference is ignored in refresh, enqueue and grant while all other settings still compare exactly. No fabricated grant, retry, permission or trading change. User requested September 28. |

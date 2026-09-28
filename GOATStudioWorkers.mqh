@@ -73,8 +73,11 @@ bool GoatStudioReadWorkerPolicy(bool &local,bool &remote,bool &cloud)
          string remote_name=ShortArrayToString(remote_text);
          string cloud_name=ShortArrayToString(cloud_text);
          StringToLower(local_name);StringToLower(remote_name);StringToLower(cloud_name);
+         // MT5 6230 calls the remote/LAN command "Use Local Network Farm".
+         // Its exact command ID is still 33522 and must remain unchecked.
          // Unknown or localized captions require an explicit capability update.
-         if(StringFind(local_name,"local")<0 || StringFind(remote_name,"remote")<0
+         if(StringFind(local_name,"local")<0
+            || (StringFind(remote_name,"remote")<0 && remote_name!="use local network farm")
             || StringFind(cloud_name,"cloud")<0) continue;
          want_local=(a&8)!=0;want_remote=(b&8)!=0;want_cloud=(c&8)!=0;
          PrintFormat("GOAT_STUDIO_WORKER_READBACK build=%d local=%s:%d remote=%s:%d cloud=%s:%d",(int)TerminalInfoInteger(TERMINAL_BUILD),local_name,(int)want_local,remote_name,(int)want_remote,cloud_name,(int)want_cloud);

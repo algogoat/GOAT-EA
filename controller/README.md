@@ -61,7 +61,8 @@ The timing reader requires exactly one ordered native `OnGoing`/`Completed`
 QUEUE_STATE pair per frozen alias, with valid nondecreasing local timestamps.
 Duplicate, regressing, retry, cancelled, incomplete or foreign-member timelines
 leave `timing.status: timing_unknown` and member `elapsed_seconds: null`.
-Absence is not zero. Valid observations return `native_timeline_observed`, member
+Absence is not zero. Valid observations return 
+ative_timeline_observed`, member
 elapsed seconds, `observed_batch_span_seconds` and `between_member_seconds`.
 These one-second local wall-clock stamps include native report migration and
 selected exports, but exclude initial launch and final controller finish.
@@ -175,7 +176,8 @@ state. It does not consume pending human requests; `serve` performs that step.
 A stale monitor, changed account, enabled Algo Trading, unknown tester state or
 mismatched owner/revision/generation remains blocked. `local_monitor_ready`
 means these local observations match; `execution_ready:false` and
-`native_qualification:false` remain explicit. Job start still rechecks runtime,
+
+ative_qualification:false` remain explicit. Job start still rechecks runtime,
 ownership, license-dependent initialization and frozen artifacts. Desktop beta
 eligibility and actual native execution qualification are separate evidence.
 
@@ -389,7 +391,8 @@ Then run `prepare-batch --batch-id <new-id> --plan <plan.json>`, inspect
 ready. Clearing and preparation never launch work. Old job IDs remain reserved
 for provenance; do not reuse them for a new experiment.
 
-For inconsistent native flags, run `native-recovery-status`. It reports runtime
+For inconsistent native flags, run 
+ative-recovery-status`. It reports runtime
 identity/readiness failures and remaining controls without clearing anything.
 `cancel` requires an exact owned attempt; `finish` requires its observed native
 completion and idle runtime. Neither repairs an orphan `BatchOnGoing` flag. A
@@ -781,7 +784,8 @@ transport identity. A central CLI dispatcher and command-store boundary default 
 refusing unlisted operations, including future operations. Only the frozen plan,
 member settings and resulting configuration may be prepared and dispatched. Missing
 or unknown authority on an agent-owned session refuses rather than becoming full
-control. New normal sessions are explicitly classified `native_human_control` and
+control. New normal sessions are explicitly classified 
+ative_human_control` and
 remain human-owned until an actual human grant. Legacy classification requires no
 typed authority markers and an actor-bound archived human grant matching its
 committed receipt and generation. Genuine new human grants classify atomically;
@@ -815,3 +819,5 @@ If the original stop expired while the monitor was blocked, `cancel-rejected-suc
 A typed owner continuation may prepare one replacement batch only after its original start has an exact unconsumed pre-start rejection, its cancellation has a consumed `CANCELLED_RECONCILE`, every native member is cancelled, canonical finish restored the controls, no work output exists and its original supervisor journal is stopped. Every original job and receipt stays retained. The replacement must have the same frozen plan, members and configuration; a second replacement refuses. `run-batch` inherits the original start/deadline/budget and at least its disk reserve, even if a caller supplies a new full duration. Only the live run-batch operation with its initial start intent may dispatch either original or replacement typed research; a retained failed journal never authorizes direct start. A suspended original supervisor remains stopped=false: finish its native cancellation using run-batch --resume before preparing the replacement. Preparation, reservation and dispatch recheck the predecessor; no uncertain start is retried.
 If Windows loses an exiting MT5 process's executable metadata after the normal close was issued, preserve the `close_issued` record. `research-monitor-restart-resume --job-id <id>` verifies that the original publisher remains suspended with the same journal, positively observes terminal absence, and performs only that record's never-issued first monitor relaunch. It never resends close and refuses any record whose launch has already been issued. The saved config/profile/preset, protected session/authority/draft hashes and post-launch SDK checks remain mandatory. This is recovery of the same attempt, not another restart.
 Before close and the first relaunch, recovery inventories every goat/python process and refuses any other publisher referencing this installation/root. Only the current recovery caller and its own exact launcher are excluded. Resume also preserves the active-seed exclusion. A changed retained draft remains a refusal requiring inspection; it is never rewritten automatically.
+
+Concurrent CLI and resident bridge pumps wait up to one second to acquire the exclusive worker lock. This waits before processing requests, never retries a mutation, and still refuses persistent contention.

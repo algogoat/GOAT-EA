@@ -17,7 +17,7 @@ def read_json(path):
     if len(raw) > 2_000_000: raise ValueError('JSON exceeds 2 MB')
     return json.loads(raw.decode('utf-8-sig'), object_pairs_hook=unique)
 
-def load_installation(path):
+def load_installation(path, *, verify_binary=True):
     if not Path(path).exists():
         from studio_handover import recovery_installation
         path = recovery_installation(path)
@@ -44,7 +44,7 @@ def load_installation(path):
     binary = (data/'MQL5/Experts').joinpath(*relative.parts).resolve()
     if not binary.is_relative_to(data/'MQL5/Experts'): raise ValueError('EA path escapes Experts')
     if not re.fullmatch('[a-f0-9]{64}',value['ea_sha256']): raise ValueError('EA SHA-256 required')
-    if hashlib.sha256(binary.read_bytes()).hexdigest() != value['ea_sha256']:
+    if verify_binary and hashlib.sha256(binary.read_bytes()).hexdigest() != value['ea_sha256']:
         raise ValueError('Installed EA hash differs from receipt; repair installation')
     state = Path(value['controller_state_root'])
     for root in (data,Path(value['terminal_executable']).parent,Path(value['common_files_root'])):

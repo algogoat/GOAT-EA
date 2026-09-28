@@ -121,6 +121,36 @@ class BatchDriverTests(unittest.TestCase):
         return run(self.c, 'batch', poll_seconds=1, cancel_grace_seconds=2,
                    clock=self.c.clock, finish_fn=self.c.finish, **kwargs)
 
+    def test_demo_owner_stop_cancels_existing_ea_batch_once(self):
+        self.c.session['authority_kind'] = 'demo_direct'
+        write_json(self.c.root/'session.json', self.c.session)
+        self.c.bridge = SimpleNamespace(root=self.c.local/self.c.run)
+        def request_stop():
+            marker = self.c.root/'demo-agent/STOP'
+            marker.parent.mkdir(exist_ok=True)
+            marker.write_text('owner stop')
+        self.c.clock.on_sleep = request_stop
+        result = self.drive(max_seconds=30)
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertEqual(result['cancel_reason'], 'owner_stop')
+        self.assertEqual((self.c.starts, self.c.cancels), (1, 1))
+
+    def test_demo_stop_after_driver_death_resumes_exact_attempt_then_cancels(self):
+        self.c.session['authority_kind'] = 'demo_direct'
+        write_json(self.c.root/'session.json', self.c.session)
+        self.c.bridge = SimpleNamespace(root=self.c.local/self.c.run)
+        self.c.clock.on_sleep = lambda: (_ for _ in ()).throw(HostDeath())
+        with self.assertRaises(HostDeath):
+            self.drive(max_seconds=30)
+        marker = self.c.root/'demo-agent/STOP'
+        marker.parent.mkdir(exist_ok=True)
+        marker.write_text('owner stop')
+        self.c.clock.on_sleep = None
+        result = self.drive(resume=True)
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertEqual(result['cancel_reason'], 'owner_stop')
+        self.assertEqual((self.c.starts, self.c.cancels), (1, 1))
+
     def test_replacement_driver_inherits_elapsed_budget_and_stronger_disk_reserve(self):
         inherited=dict(started_wall=900.0,deadline_wall=1003.0,max_seconds=103,min_free_bytes=DEFAULT_MIN_FREE_BYTES)
         with patch('studio_research_retry.inherited_budget',return_value=inherited):

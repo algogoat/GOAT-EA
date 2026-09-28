@@ -42,7 +42,7 @@ public static class GoatSeedClose {
   if(!EnumWindows(delegate(IntPtr window,IntPtr parameter) {
    uint actual; GetWindowThreadProcessId(window,out actual);
    var name=new StringBuilder(256); GetClassNameW(window,name,name.Capacity);
-   if(actual==pid && name.ToString()=="MetaQuotes::MetaTrader::5.00" && IsWindowVisible(window) && GetWindow(window,4)==IntPtr.Zero) frames.Add(window);
+   if(actual==pid && name.ToString().StartsWith("MetaQuotes::MetaTrader::",StringComparison.Ordinal) && IsWindowVisible(window) && GetWindow(window,4)==IntPtr.Zero) frames.Add(window);
    return true;
   },IntPtr.Zero)) throw new InvalidOperationException("Window enumeration failed");
   if(frames.Count!=1) throw new InvalidOperationException("Unique selected MT5 frame required");

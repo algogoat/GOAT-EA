@@ -46,30 +46,55 @@ safe to update while still unable to start the batch.
 the old EX5 and local identity files, normally closes only the selected idle
 demo terminal, copies the EX5, relaunches its existing monitor and reads back
 the physical hash, connected demo account, EA feedback and Algo-off state.
+The restart INI accepts only the retained Charts/Experts/StartUp monitor keys;
+account, tester, script and other directives are refused before MT5 closes.
 It keeps the old research proof as history. A retry with the same installed
-hash returns `already_installed`; an uncertain relaunch is an explicit error,
-never a reason to launch another process blindly.
+hash returns `already_installed` only with readback from that exact process.
+A 120-second readback allows normal broker and EA startup time. If MT5 exits
+after a swap, retrying `install-build` with the same candidate and hash brings
+back the exact inert monitor. If it exited before the swap, the retry first
+recovers the registered old build, then performs the install. An uncertain
+relaunch remains explicit and never dispatches a batch.
+
+```powershell
+& $py $tool --installation $install launch-terminal `
+  --monitor-config 'C:/existing-state/monitor-launches/exact-monitor.ini'
+```
+
+`launch-terminal` recovers a stopped registered demo terminal using its prior
+EA/agent ownership evidence and exact monitor config. It requires fresh broker,
+Algo-off, idle tester and EA feedback after startup. It cannot start a real
+account or an unregistered binary.
 
 ```powershell
 & $py $tool --installation $install prepare-batch `
   --batch-id 'new-unique-batch-id' --plan 'C:/frozen-plan.json'
 & $py $tool --installation $install run-batch `
   --batch-id 'new-unique-batch-id' --max-seconds 172800
+& $py $tool --installation $install resume-batch `
+  --batch-id 'new-unique-batch-id'
 & $py $tool --installation $install batch-status --batch-id 'new-unique-batch-id'
 & $py $tool --installation $install batch-driver-status --batch-id 'new-unique-batch-id'
 & $py $tool --installation $install stop
+& $py $tool --installation $install clear-stop
 ```
 
 `prepare-batch` uses Studio's native batch preparation and verifies the queued
-member count. `run-batch` uses the existing bounded Studio driver; it can run
-for up to 48 hours. Repeating its start call returns the original driver
-status and never resets the deadline. `batch-status` reads the EA's member
-state; `batch-driver-status` reads the retained driver journal. `stop` is
-idempotent and always writes the owner stop marker, including while the driver
-holds the terminal lock; the driver requests cancellation of its exact EA
-attempt and verifies the result. An MT5 tester Stop or human TAKE also prevents
-further agent dispatch. Treat `start_uncertain` or `stop_unconfirmed` as needing
-native inspection, not as completion.
+member count. `run-batch` starts a detached Windows worker and returns when its
+durable journal appears, without claiming native work is running. The worker
+uses the existing bounded Studio driver for up to 48 hours. `resume-batch`
+attaches a new detached worker to the retained attempt and original deadline;
+it never starts a pending job. Repeating `run-batch` returns the original
+worker/journal status and never resets the deadline. `batch-status` reads the
+EA's member state; `batch-driver-status` reads the retained driver journal.
+`stop` writes the owner STOP marker even while a worker holds the lock. It
+waits for the exact cancellation readback; if the worker died, it resumes the
+retained journal and requests cancellation through the existing EA path.
+It returns `cancelled`, another verified terminal result, or `stop_unconfirmed`,
+never an unverified “requested” success. `clear-stop` removes only a STOP marker
+written by this tool after a verified idle demo and terminal batch state. A
+human TAKE also prevents further agent dispatch. Treat `start_uncertain` or
+`stop_unconfirmed` as needing native inspection, not as completion.
 
 This is the first Tier A slice. Terminal discovery, compile, SET editing,
 report parsing and exports will be separate tools wrapping existing MT5/EA

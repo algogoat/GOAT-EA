@@ -33,14 +33,14 @@ def operation(name):
 
 
 @contextmanager
-def demo_agent_scope(*, root, installation_sha256, account):
+def demo_agent_scope(*, root, installation_sha256, account, job_id=None):
     """Trusted local adapter scope after a fresh broker-reported demo check.
 
     This changes the policy for the demo lane only. It never changes the stored
     history of human grants or permits a non-demo account to enter the lane.
     """
     value = dict(root=str(Path(root).resolve()), installation_sha256=installation_sha256,
-                 account=dict(account))
+                 account=dict(account), job_id=job_id)
     token = DEMO_AGENT_SCOPE.set(value)
     try:
         yield
@@ -173,6 +173,23 @@ def authority(db, binding, state):
 
 def command(db, binding, state, request, actor):
     if actor=='human' and request['command']=='control.takeover':return
+    if DEMO_AGENT_SCOPE.get() is not None:
+        scope = DEMO_AGENT_SCOPE.get()
+        authority(db, binding, state)
+        op = CURRENT_OPERATION.get()
+        command_name = request['command']
+        job_id = scope['job_id']
+        if actor != 'agent' or not isinstance(job_id, str):
+            raise ValueError('Demo agent scope requires an exact agent job')
+        allowed = (op == 'prepare-batch' and command_name == 'queue.enqueue_batch'
+                   and request['request_id'] == job_id + '-batch'
+                   and request['payload'].get('job_id') == job_id) or (
+                   op == 'run-batch' and command_name in ('queue.reserve', 'queue.cancel')
+                   and request['request_id'] == job_id + ('-reserve' if command_name == 'queue.reserve' else '-cancel')
+                   and request['payload'].get('job_id') == job_id)
+        if not allowed:
+            raise ValueError('Demo agent scope permits only this tool job and exact Studio command')
+        return
     if actor=='human' and request['command']=='control.grant_agent':
         row=db.execute('SELECT kind FROM studio_authorities WHERE binding=?',(binding,)).fetchone()
         if row is not None and row[0]=='research_continuation':

@@ -36,8 +36,15 @@ bool GoatStudioINIEntries(const string ini,string &entries[],string &error)
    return true;
   }
 
+#ifdef GOAT_TESTER_SEMANTIC_V149
+#include "GOATStudioSettingCompare.mqh"
+#endif
+
 bool GoatStudioINIEqual(const string wanted,const string observed,string &error)
   {
+#ifdef GOAT_TESTER_SEMANTIC_V149
+   return GoatStudioSemanticINIEqual(wanted,observed,error);
+#else
    string expected[],actual[];
    if(!GoatStudioINIEntries(wanted,expected,error) || !GoatStudioINIEntries(observed,actual,error)) return false;
    if(ArraySize(expected)!=ArraySize(actual)) {error="Tester setting count differs";return false;}
@@ -48,5 +55,6 @@ bool GoatStudioINIEqual(const string wanted,const string observed,string &error)
       if(!found) {error="Tester setting mismatch: "+StringSubstr(expected[i],0,StringFind(expected[i],"="));return false;}
      }
    error="";return true;
+#endif
   }
 #endif

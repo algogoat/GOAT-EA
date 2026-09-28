@@ -199,8 +199,17 @@ string GoatStudioExecuteRequest(const string body,const string request_hash)
       return "RESTART_ARMED_RECONCILE";
      }
    string observed;
+#ifdef GOAT_TESTER_SEMANTIC_V149
+   if(!MTTESTER::SetSettings2(ini,1))
+     {Print("Studio settings refused: native paste/readback failed");return "SETTINGS_NOT_VERIFIED";}
+   if(!MTTESTER::GetSettingsManaged(observed))
+     {Print("Studio settings refused: fresh native readback unavailable");return "SETTINGS_NOT_VERIFIED";}
+   if(!GoatStudioINIEqual(ini,observed,error))
+     {Print("Studio settings refused: "+StringSubstr(error,0,160));return "SETTINGS_NOT_VERIFIED";}
+#else
    if(!MTTESTER::SetSettings2(ini,1) || !MTTESTER::GetSettingsManaged(observed)
       || !GoatStudioINIEqual(ini,observed,error)) return "SETTINGS_NOT_VERIFIED";
+#endif
    bool worker_local,worker_remote,worker_cloud;
    if(!GoatStudioReadWorkerPolicy(worker_local,worker_remote,worker_cloud)
       || !worker_local || worker_remote || worker_cloud) return "WORKER_POLICY_NOT_VERIFIED";

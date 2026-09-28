@@ -96,5 +96,47 @@ class ResearchRetryTests(unittest.TestCase):
                    max_seconds=86400,deadline_wall=inherited['deadline_wall'],min_free_bytes=1))
         with operation('run-batch'),self.assertRaisesRegex(ValueError,'disk reserve'):before_native_dispatch(self.c,self.c.job('replacement'))
 
+    def test_explicit_owner_amendment_preserves_expired_original_and_requires_exact_new_budget(self):
+        from studio_owner_budget import effective_expiry,renewal
+        now=time.time()
+        policy=dict(schema_version=1,authority_sha256=sha(self.scope),account=self.scope['account'],binding=self.scope['binding'],
+                    predecessor_job_id='original',successor_job_id='replacement',max_seconds=172800,min_free_bytes=5368709120,
+                    not_before_utc=now-10,expires_utc=now+3*86400)
+        path=self.c.root/'fixture-owner-budget.json';write_json(path,policy)
+        expired=self.journal|dict(started_wall=now-86401,deadline_wall=now-1,last_wall=now-2)
+        write_json(self.path,expired);before=self.path.read_bytes()
+        with patch('studio_owner_budget.POLICY_PATH',path):
+            self.assertEqual(effective_expiry(self.scope),policy['expires_utc'])
+            self.assertIsNone(renewal(self.scope|dict(generation=999)))
+            with self.assertRaisesRegex(ValueError,'single replacement'):renewal(self.scope,successor_id='different')
+            with operation('prepare-batch'):prepare_batch(self.c,'replacement',self.plan)
+            inherited=predecessor(self.c.store.db,self.c.state(),self.scope,successor_id='replacement')
+            value=dict(status='start_issued',start_issued=True,attempt_id=None,binding=dict(job_id='replacement'),
+                       inherited_budget=inherited,budget_renewal=inherited['renewal_policy'],started_wall=now,
+                       replacement_created_wall=now,max_seconds=172800,deadline_wall=now+172800,min_free_bytes=5368709120)
+            target=self.c.root/'batch-drivers/replacement.json';write_json(target,value)
+            with operation('run-batch'):before_native_dispatch(self.c,self.c.job('replacement'))
+            for change in (dict(deadline_wall=now+172801),dict(min_free_bytes=1),dict(budget_renewal={}),dict(max_seconds=86400)):
+                write_json(target,value|change)
+                with operation('run-batch'),self.assertRaises(ValueError):before_native_dispatch(self.c,self.c.job('replacement'))
+            self.assertEqual(self.path.read_bytes(),before)
+            self.assertEqual(read_json(self.c.root/'research-authority.json'),self.scope)
+            with patch('studio_owner_budget.time.time',return_value=policy['expires_utc']):
+                self.assertIsNone(renewal(self.scope))
+
+    def test_budget_amendment_cannot_revive_human_revoked_generation(self):
+        from campaign_ledger import packed
+        from studio_research_authority import authority
+        from studio_owner_budget import effective_expiry
+        now=time.time()
+        policy=dict(schema_version=1,authority_sha256=sha(self.scope),account=self.scope['account'],binding=self.scope['binding'],
+                    predecessor_job_id='original',successor_job_id='replacement',max_seconds=172800,min_free_bytes=5368709120,
+                    not_before_utc=now-10,expires_utc=now+3*86400)
+        path=self.c.root/'fixture-owner-budget.json';write_json(path,policy)
+        with patch('studio_owner_budget.POLICY_PATH',path):
+            self.assertGreater(effective_expiry(self.scope),now+172800)
+            with operation('run-batch'),self.assertRaisesRegex(ValueError,'permanently revoked'):
+                authority(self.c.store.db,packed(self.scope['binding']),dict(owner='human',generation=self.scope['generation']+1))
+
 
 if __name__=='__main__':unittest.main()

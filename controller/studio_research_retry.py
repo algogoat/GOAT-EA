@@ -1,6 +1,7 @@
 """One exact-plan continuation after positively verified pre-start cancellation.
 
-No start replay, queue removal, new authority or budget reset. Uncertain native
+No start replay, queue removal or new grant. A separate reviewed owner budget
+amendment can authorize a fresh replacement window. Uncertain native
 evidence refuses. These are local controller guards, not an MT5 wire extension.
 """
 import hashlib
@@ -105,7 +106,11 @@ def predecessor(db, state, scope, *, successor_id=None, require_released=True):
             or any(type(journal.get(k)) not in (int,float) or not math.isfinite(journal[k]) for k in ('started_wall','deadline_wall','last_wall'))
             or journal['deadline_wall']!=journal['started_wall']+journal['max_seconds']):
         raise ValueError('Original driver must be verifiably stopped with its original budget')
-    if not journal['last_wall']<=time.time()<journal['deadline_wall']:
+    from studio_owner_budget import renewal
+    amendment=renewal(scope,successor_id=successor_id)
+    if amendment is not None and old['job_id']!=amendment['predecessor_job_id']:
+        raise ValueError('Owner budget predecessor differs from retained history')
+    if not journal['last_wall']<=time.time() or (amendment is None and time.time()>=journal['deadline_wall']):
         raise ValueError('Original research deadline elapsed or clock moved backwards')
     if require_released:
         from studio_native_gate import assert_clear_controls
@@ -116,12 +121,14 @@ def predecessor(db, state, scope, *, successor_id=None, require_released=True):
         base=safe_path(Path(transaction['base']))
         if (base/'agent-native-control-owner.json').exists() or any(digest(contents(base/n))!=transaction['files'][n]['before_sha256'] for n in NAMES):
             raise ValueError('Released native controls changed')
-    return dict(predecessor_job_id=old['job_id'],predecessor_attempt_id=attempt,
+    result=dict(predecessor_job_id=old['job_id'],predecessor_attempt_id=attempt,
                 plan_sha256=scope['plan_sha256'],configuration_sha256=scope['configuration_sha256'],
                 started_wall=journal['started_wall'],deadline_wall=journal['deadline_wall'],
                 max_seconds=journal['max_seconds'],min_free_bytes=journal['min_free_bytes'],
                 predecessor_result_sha256=hashlib.sha256(result_path.read_bytes()).hexdigest(),
                 predecessor_driver_sha256=hashlib.sha256(journal_path.read_bytes()).hexdigest())
+    if amendment is not None:result['renewal_policy']=amendment
+    return result
 
 
 def inherited_budget(controller, job_id):

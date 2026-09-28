@@ -916,3 +916,16 @@ New pointer receipts retain their complete original bytes in an exclusive public
 The human-launch checks are corroboration, not proof against a deliberate agent using the same Windows user token. Never substitute a scheduled task, shell handoff or other synthetic launch for the user's actual action. The current check requires the active physical-console session and refuses RDP sessions, different-case portable flags and short-path aliases. Initial adoption requires the original Explorer parent to be present. Re-verification retains that original evidence if Explorer exits, while rechecking the exact live target's identity, session and command line against it and the active console. It never substitutes a new parent or adopts a second process. No account or IAM changes are authorized by this workflow.
 
 Both adoption and re-verification also require the message's native observed_terminal_utc to be at least the process creation time minus one second, allowing its whole-second timestamp precision. A fresh file modification time cannot make an observation from the previous process acceptable. Existing runtime age, account, path, idle and Algo OFF checks still apply.
+
+### Explicit owner replacement budget
+
+`run-batch --max-seconds 172800` supports a 48-hour maximum. Resume retains its
+original deadline and disk guard. A typed research replacement normally inherits
+its predecessor's original window. A separately reviewed owner-only policy can
+bind one exact authority, account and replacement ID to a fresh 48-hour window;
+requesting 172800 explicitly records that policy hash plus the unchanged original
+predecessor proof. The new deadline must fit inside the finite policy period and
+the disk reserve cannot decrease. Original session, authority and failed-driver
+records are not edited. This budget amendment cannot grant control or revive a
+human-revoked generation. A revoked session still needs a genuine new connection
+and its supported transition; a larger budget cannot solve that ownership defect.

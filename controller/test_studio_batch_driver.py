@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from campaign_ledger import sha
 from studio_bridge import write_json
+from studio_installation import read_json
 from studio_native_gate import exclusive_gate
 from studio_batch_driver import DEFAULT_MIN_FREE_BYTES, run, status
 
@@ -131,6 +132,30 @@ class BatchDriverTests(unittest.TestCase):
         self.assertEqual(result['min_free_bytes'],DEFAULT_MIN_FREE_BYTES)
         self.assertEqual((self.c.starts,self.c.cancels),(1,1))
         self.assertLess(self.c.clock.wall,1010)
+
+    def test_explicit_48h_replacement_starts_fresh_and_resume_keeps_deadline(self):
+        amendment=dict(policy_sha256='a'*64,max_seconds=172800,min_free_bytes=DEFAULT_MIN_FREE_BYTES,expires_utc=999999)
+        inherited=dict(started_wall=1,deadline_wall=100,max_seconds=99,min_free_bytes=DEFAULT_MIN_FREE_BYTES,renewal_policy=amendment)
+        def die():raise HostDeath()
+        self.c.clock.on_sleep=die
+        with patch('studio_research_retry.inherited_budget',return_value=inherited),self.assertRaises(HostDeath):
+            self.drive(max_seconds=172800,min_free_bytes=1)
+        journal=read_json(self.c.root/'batch-drivers/batch.json')
+        self.assertEqual(journal['started_wall'],1000)
+        self.assertEqual(journal['deadline_wall'],173800)
+        self.assertEqual(journal['inherited_budget'],inherited)
+        self.assertEqual(journal['min_free_bytes'],DEFAULT_MIN_FREE_BYTES)
+        self.c.clock.on_sleep=None;self.c.finished=True
+        result=self.drive(resume=True)
+        self.assertEqual(result['deadline_wall'],173800);self.assertEqual(self.c.starts,1)
+
+    def test_48h_refuses_too_short_authorization_and_larger_window_before_start(self):
+        amendment=dict(policy_sha256='a'*64,max_seconds=172800,min_free_bytes=DEFAULT_MIN_FREE_BYTES,expires_utc=2000)
+        inherited=dict(started_wall=1,deadline_wall=100,max_seconds=99,min_free_bytes=DEFAULT_MIN_FREE_BYTES,renewal_policy=amendment)
+        with patch('studio_research_retry.inherited_budget',return_value=inherited),self.assertRaisesRegex(ValueError,'explicit owner budget'):
+            self.drive(max_seconds=172800)
+        with self.assertRaisesRegex(ValueError,'172800'):self.drive(max_seconds=172801)
+        self.assertEqual(self.c.starts,0)
 
 
     def test_capacity_refuses_each_output_volume_before_journal_or_start(self):
@@ -325,7 +350,7 @@ class BatchDriverTests(unittest.TestCase):
         self.assertEqual(self.c.starts, 0)
 
     def test_invalid_budget_does_not_issue_start(self):
-        for value in (None, 0, -1, 86401, 1.5, True, float('nan')):
+        for value in (None, 0, -1, 172801, 1.5, True, float('nan')):
             with self.assertRaises(ValueError):
                 self.drive(max_seconds=value)
         self.assertEqual(self.c.starts, 0)

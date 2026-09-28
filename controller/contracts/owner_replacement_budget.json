@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "authorization_reference": "https://github.com/algogoat/goatai/issues/1885#issuecomment-5873385558",
+  "authorization_text": "Vince: screw the original window; now it can be much larger than that window can be 48",
+  "authority_sha256": "6e32b62d5c2eb4471754944e1d7c50fbfe95fbe03a91fd4e3a360b483923a8f7",
+  "account": {"login": "3000082754", "server": "Darwinex-Demo"},
+  "binding": {"terminal_id": "terminal-9e8f1b2e48f1b35c", "run_id": "session-6d2dd5bc988941989279c983e551f468"},
+  "predecessor_job_id": "banker-year-20260928-owner9",
+  "successor_job_id": "banker-year-20260928-owner9-replacement1",
+  "max_seconds": 172800,
+  "min_free_bytes": 5368709120,
+  "not_before_utc": 1790609880,
+  "expires_utc": 1790955480
+}

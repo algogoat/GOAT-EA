@@ -188,7 +188,7 @@ def verify_adopted(c,record,path):
         raise ValueError('Chart changed after adoption')
     native=inspect_idle_demo(c);require_demo(native)
     if native['process']!=record['process']:raise ValueError('Adopted process changed; no second adoption')
-    if human_launch(c,native['process'])!=record['human_launch']:raise ValueError('Human launch evidence changed after adoption')
+    if human_launch(c,native['process'],retained=record['human_launch'])!=record['human_launch']:raise ValueError('Human launch evidence changed after adoption')
     observation,runtime=c.runtime(require_idle=True,expected_batch_ongoing=False)
     if runtime['modified']<datetime.fromisoformat(native['process']['created_utc'].replace('Z','+00:00')).timestamp():
         raise ValueError('Native feedback predates the adopted process')

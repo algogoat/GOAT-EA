@@ -142,3 +142,14 @@ qualification are separate from full native EA/installed-package qualification.
   that turn recurring fixes into tested shared recovery capabilities. No repeated
   manual reopen or routine approval loop. Acceptance and delivery order:
   [agent recovery tool contract](docs/operations/AGENT-RECOVERY-TOOLS.md).
+
+- **TESTER-SEMANTIC-ROUNDTRIP-001 (2026-09-28):** Compare native MT5 tester
+  readback using explicit V1.49 input types and exact active optimization ranges.
+  Accept equivalent numeric, datetime and inactive-range serialization; allow only
+  named startup fields and fixed native additions. Preserve all worker, grant,
+  request and trading gates. Candidate V1.49-TESTER-SEMANTIC-14 compiled with zero
+  errors and warnings, SHA-256
+  56b8be6891cbcb54c806e59ead210c3a4a5d951e146b7cc113d22c8bf2b97abb.
+  266 production-flow/schema fixture checks pass; full Windows CI, admission and
+  fresh native readback qualification are still required. Regression provenance
+  and limitations: [tester fixture](controller/fixtures/tester-roundtrip/README.md).

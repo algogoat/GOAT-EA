@@ -58,6 +58,9 @@ jobs:
           print(sys.version)
           print("Verified NumPy", numpy.__version__, "and MetaTrader5", MetaTrader5.__version__)
 
+      - name: Verify semantic tester settings round-trip fixtures
+        run: node scripts/test_studio_setting_compare.cjs
+
       - name: Run every controller fixture test
         env:
           TEMP: ${{ runner.temp }}

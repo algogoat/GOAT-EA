@@ -805,3 +805,9 @@ Validation is source/fixture coverage until an actual native result is recorded;
 these owner-only paths are not a customer rollout or general standing consent.
 
 Fresh agent batch snapshots project complete tester/export settings from the hash-verified queued configuration when both editor drafts are absent. This fills the existing native display fields without inventing defaults, editing stored human drafts, changing native protocol fields, granting control or replaying a launch. Partial editor drafts remain visibly incomplete.
+
+### Rejected owner-demo monitor recovery
+
+`research-monitor-restart --job-id <id>` is a one-shot recovery for the typed owner research continuation when an expired start has an exact native pre-consumption `REQUEST_REJECTED`, no consumed start exists, and the frozen native queue has no work outputs or checkpoints. It journals a graceful Ctrl+C of only the identified old controller console, verifies exit and lock release without changing its budget, then normally closes and relaunches the exact idle demo monitor using its retained monitor-only config. It keeps the draft, session, authority and every native receipt. Algo OFF, zero positions/orders and the same account/process are checked through the SDK before close and after restart. An uncertain close or launch is never repeated. `research-monitor-restart-status` can only reverify an already launched process.
+
+If the original stop expired while the monitor was blocked, `cancel-rejected-successor --job-id <id>` requires its native, expired, unconsumed `CANCEL_REJECTED` plus the reverified recovery before publishing one new stop identity. Both old receipts remain immutable; observations and finish bind explicitly to the successor. A second successor refuses. Source tests do not establish native recovery; verify native `CANCELLED_RECONCILE`, every member cancelled and idle before finish. This does not authorize another research start.

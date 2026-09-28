@@ -22,6 +22,14 @@ def finish(controller,job_id,*,expected_generation=None):
     if hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()!=intent['package_sha256']:
         raise ValueError('Frozen package changed')
     native=observe(package)
+    from studio_cancel_successor import cancel_id
+    from studio_dispatch_observe import observe_dispatch
+    stop_id=cancel_id(controller.root,job,controller.local/'native-gate')
+    successor_stop=None
+    if stop_id!=sha([intent['attempt_id'],'cancel']):
+        successor_stop=observe_dispatch(controller.local/'native-gate',stop_id)
+        if successor_stop.get('consumed') is not True or successor_stop.get('status')!='receipt_observed' or successor_stop['receipt']['status']!='CANCELLED_RECONCILE':
+            raise ValueError('Successor cancellation requires its exact consumed CANCELLED_RECONCILE')
     outcomes={'native_completed':'completed','native_cancelled':'cancelled','native_error':'failed'}
     if native['status'] not in outcomes: raise ValueError('Native queue is not finished; reconcile, do not reset')
     completed_members=any(member['status']=='native_completed' for member in native['members'])
@@ -35,6 +43,7 @@ def finish(controller,job_id,*,expected_generation=None):
                 performance_qualification='Native artifacts observed; portfolio evidence is independently validated on import',
                 matrix_result_required=True,ea_version=controller.install['ea_version'],ea_sha256=controller.install['ea_sha256'],
                 controller_version=controller.install['controller_version'],account_server=controller.session['account']['server'])
+    if successor_stop is not None:result['cancellation_dispatch']=successor_stop
     evidence=controller.root/'attempts'/intent['attempt_id']
     gate=controller.local/'native-gate'
     # Same gate excludes controller commits and native command consumption.

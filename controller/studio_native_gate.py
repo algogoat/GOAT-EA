@@ -146,7 +146,8 @@ def assert_clear_controls(db, root):
         action = request.get('action', 'start')
         if action not in ('start', 'arm_restart', 'cancel'):
             raise ValueError('Unsupported retained execution request')
-        expected_id = sha([attempt, 'cancel']) if action == 'cancel' else attempt
+        from studio_cancel_successor import cancel_id
+        expected_id = cancel_id(Path(database).parent,job,root) if action == 'cancel' else attempt
         if request_id != expected_id or (action == 'cancel' and request.get('attempt_id') != attempt):
             raise ValueError('Request belongs to another attempt')
         if sha(job['configuration']) != job['configuration_sha256'] or request['configuration_sha256'] != job['configuration_sha256']:

@@ -32,7 +32,7 @@ class HumanReopenTests(unittest.TestCase):
         self.native=self.f.native|dict(process=dict(pid=45,created_utc=datetime.now(timezone.utc).isoformat()))
         self.probe=patch('studio_human_reopen.inspect_idle_demo',side_effect=lambda c:self.native).start()
         self.runtime=patch.object(self.c,'runtime',side_effect=lambda **kw:(self.observation(),dict(modified=time.time()))).start()
-        patch('studio_human_reopen.human_launch',side_effect=lambda c,p:dict(process=dict(p),active_console_session_id=1)).start()
+        patch('studio_human_reopen.human_launch',side_effect=lambda c,p,**kw:dict(process=dict(p),active_console_session_id=1)).start()
         self.addCleanup(patch.stopall)
 
     def observation(self,age=0):

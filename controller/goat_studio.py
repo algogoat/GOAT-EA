@@ -38,7 +38,8 @@ OPERATION_CONTRACTS = {
     'peer-apply':dict(required=['review-id','confirm-reviewed'],authorization='Authorized caller confirms this exact review after inspection within the user-authorized setup scope; no grant or peer management authority',effect='persist protected peer outside switched session; replacement requires fresh review; unknown terminals still block'),
     'switch-plan':dict(required=[],effect='review offline session handover; optional restore-id restores a parked session; never grants or launches'),
     'switch-status':dict(required=['review-id'],effect='read retained handover progress and recovery identity'),
-    'switch-apply':dict(required=['review-id','confirm-reviewed'],authorization='Only after the user confirms this exact review in the desktop app or explicitly in chat; never agent self-approval. Trusted-local coordination, not an OS-user security boundary.',effect='apply or recover the exact user-reviewed handover; preserve research and revoke prior agent control'),
+    'owner-maintenance-prepare':dict(required=[],effect='owner-internal only: mint one short-lived exact maintenance record from the original genuine grant; no stop, PARK, install, bootstrap or grant'),
+    'switch-apply':dict(required=['review-id'],authorization_required_one_of=['confirm-reviewed','owner-maintenance'],authorization='Exact human confirmation, or the owner-internal one-use maintenance record with original grant/stop evidence. Never fabricated confirmation. Trusted-local coordination, not an OS-user security boundary.',effect='apply or recover the exact user-reviewed handover; preserve research and revoke prior agent control'),
     'seed-prepare':dict(required=['batch-id','plan'],effect='freeze a dedicated SeedFarming matrix; no launch'),
     'seed-start':dict(required=['batch-id'],defaults={'max-seconds':60},limits={'max-seconds':[1,3600]},effect='explicit bounded driver for dedicated SeedFarming; preserves active work on call timeout'),
     'seed-resume':dict(required=['batch-id'],defaults={'max-seconds':60},limits={'max-seconds':[1,3600]},effect='continue verified retained seed work; uncertain effects require reconciliation'),
@@ -293,7 +294,8 @@ def main(argv=None):
     sub.add_parser('historical-pointers-prepare')
     p=sub.add_parser('historical-pointers-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
     p=sub.add_parser('switch-plan');p.add_argument('--restore-id')
-    p=sub.add_parser('switch-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
+    p=sub.add_parser('owner-maintenance-prepare')
+    p=sub.add_parser('switch-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true');p.add_argument('--owner-maintenance',help='Owner-internal exact one-use record; refuses outside pinned scope')
     p=sub.add_parser('switch-status');p.add_argument('--review-id',required=True)
     p=sub.add_parser('seed-prepare');p.add_argument('--batch-id',required=True);p.add_argument('--plan',type=Path,required=True)
     for command in ('seed-start','seed-resume'):
@@ -343,12 +345,15 @@ def main(argv=None):
             print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
         from studio_historical_pointers import guard_pending as historical_guard
         historical_guard(controller)
-        if args.operation not in ('peer-prepare','peer-apply','switch-plan','switch-apply','switch-status','switch-verify-park','switch-replace-receipt','discover','resource-profile') and not args.operation.startswith(('orphan-recovery-','bootstrap-retirement-')):
+        if args.operation not in ('peer-prepare','peer-apply','switch-plan','switch-apply','switch-status','switch-verify-park','switch-replace-receipt','discover','resource-profile') and not args.operation.startswith(('orphan-recovery-','bootstrap-retirement-','owner-maintenance-')):
             from studio_handover import session_lock,guard
             locks.enter_context(session_lock(controller));guard(controller)
         if args.operation in ('switch-verify-park','switch-replace-receipt'):
             from studio_installation_upgrade import verify_park,replace_receipt
             result=verify_park(controller,args.review_id) if args.operation=='switch-verify-park' else replace_receipt(controller,args.review_id,args.candidate_receipt,args.expected_sha256)
+        elif args.operation=='owner-maintenance-prepare':
+            from studio_owner_maintenance import prepare
+            result=prepare(controller)
         elif args.operation.startswith('bootstrap-retirement-'):
             from studio_bootstrap_retirement import prepare,apply
             result=prepare(controller,args.specification,args.bootstrap_receipts) if args.operation=='bootstrap-retirement-prepare' else apply(controller,args.review_id)
@@ -359,7 +364,7 @@ def main(argv=None):
             from studio_handover import review,apply,load_plan,public
             if args.operation=='switch-plan': result=review(controller,args.restore_id)
             elif args.operation=='switch-status': result=public(load_plan(controller,args.review_id))
-            else: result=apply(controller,args.review_id,args.confirm_reviewed)
+            else: result=apply(controller,args.review_id,args.confirm_reviewed,owner_maintenance=args.owner_maintenance)
         elif args.operation=='discover':
             result=dict(controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 and an explicitly reviewed exact protected peer may be running; unknown/replaced processes block','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
         elif args.operation=='resource-profile':

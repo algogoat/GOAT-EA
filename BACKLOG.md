@@ -1,4 +1,4 @@
-# GOAT EA and controller work
+﻿# GOAT EA and controller work
 
 This branch starts from the retained R5 build. Entries below cover the agreed
 V1.48/dashboard work; they do not replace other branches' historical backlog.
@@ -69,3 +69,5 @@ altering any unrelated terminal or already attached strategy.
   No new grant, human command, wire field or trading behavior. Twelve focused source
   tests pass; full controller CI and Claude review required before use. Upgrade
   continuity and native Banker qualification remain separate work.
+
+- **OWNER-MAINT-002 (2026-09-27, in review):** one-use four-hour original-grant maintenance record and exact offline PARK route for Banker's owner demo. Preserves existing stopped-writer, native-control, journal/CAS and archive guards; pending takeover permanently revokes the chain. Exact target build, frozen-plan SHA and planned replacement session retained. No install/bootstrap/dispatch authority in this slice. Acceptance: negative scope/revocation/time/stop cases and interrupted PARK reconciliation; native qualification remains pending review/use.

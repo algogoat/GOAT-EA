@@ -741,3 +741,26 @@ standing consent, and it is not native qualification. Subsequent maintenance
 continuity requires a separate reviewed change; never copy grants or submit a
 human command on the user's behalf. Machine review expiry, exact consumption,
 foreign-control guards and uncertain-outcome reconciliation remain enforced.
+
+### Owner-internal maintenance record (2026-09-27)
+
+`owner-maintenance-prepare` is limited to the committed Banker demo policy. It
+verifies the original genuine human grant, current native idle demo, Algo OFF,
+zero positions/orders, empty unstarted research and no native controls. It mints
+one four-hour record bound to the original account/terminal/session/epoch, exact
+corrective9 SHA, frozen batch-plan SHA, a planned replacement session and nonce.
+The record references the grant; it does not copy it or manufacture confirmation.
+
+After the supported `monitor-stop` proves the same observed terminal exited,
+`switch-apply --review-id <id> --owner-maintenance <record-id>` can authorize only
+that exact PARK. The normal stopped-writer, exclusive-lock, inventory, database,
+archive and crash-reconciliation guards remain. A takeover, pending human event,
+changed research, expired record, different review after consumption or uncertain
+identity refuses. Human revocation permanently retires the chain. Repeated use of
+the same completed identity only reads/verifies completion; it never repeats an
+effect. Original grant evidence and research remain in the verified PARK archive.
+
+This slice does **not** authorize installation, bootstrap, a replacement-session
+grant or research dispatch. Those require the separately reviewed continuation
+implementation. Ordinary `--confirm-reviewed` remains a distinct explicit human
+route. This finite owner policy is not customer standing consent.

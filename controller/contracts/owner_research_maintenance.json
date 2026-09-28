@@ -18,8 +18,14 @@
   ],
   "operations": [
     "orphan-recovery-apply",
-    "orphan-recovery-reconcile-rejection"
+    "orphan-recovery-reconcile-rejection",
+    "owner-maintenance-prepare"
   ],
   "not_before_utc": 1790552700,
-  "expires_utc": 1791156900
+  "expires_utc": 1791156900,
+  "maintenance": {
+    "target_ea_sha256": "c59a3b318526304a12aea233f27365b85bc49626c0bec62721e0864adb5186ed",
+    "plan_sha256": "70e7c2d6b60902ee3d9d6ddf4e58ec9d08b1e99fcb097fce31b82228227bf303",
+    "max_seconds": 14400
+  }
 }

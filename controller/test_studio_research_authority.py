@@ -179,7 +179,7 @@ class ResearchAuthorityTests(unittest.TestCase):
         with operation('prepare-batch'),self.assertRaisesRegex(ValueError,'once'):
             prepare_batch(self.c,'second-batch',self.plan)
 
-    def test_human_takeover_permanently_ends_continuation_and_cannot_regrant(self):
+    def test_human_takeover_revokes_original_and_non_owner_cannot_regrant(self):
         self.boot()
         with operation('state'):
             state=self.c.state()
@@ -189,8 +189,10 @@ class ResearchAuthorityTests(unittest.TestCase):
             now=self.c.state();self.assertEqual(now['owner'],'human')
             self.assertGreater(now['generation'],state['generation'])
             request.update(request_id='cannot-regrant',expected_revision=now['revision'],generation=now['generation'],command='control.grant_agent')
-            with self.assertRaisesRegex(ValueError,'promote'):
+            with self.assertRaisesRegex(ValueError,'Owner demo research renewal scope required'):
                 self.c.store.submit(request,actor='human')
+            self.assertEqual(self.c.state(),now)
+            self.assertEqual(self.c.store.db.execute('SELECT COUNT(*) FROM studio_research_epochs').fetchone()[0],0)
         with operation('run-batch'),self.assertRaisesRegex(ValueError,'permanently revoked'):
             self.c.state()
 

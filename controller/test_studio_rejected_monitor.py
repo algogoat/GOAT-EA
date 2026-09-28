@@ -14,7 +14,7 @@ from studio_installation import read_json
 from studio_research_authority import operation
 from studio_batch import prepare_batch
 from studio_launch_intent import record_intent
-from studio_rejected_monitor import proof,restart
+from studio_rejected_monitor import proof,restart,resume
 from native_control_transaction import begin,NAMES
 import test_studio_research_authority as fixtures
 
@@ -90,7 +90,7 @@ class RejectedMonitorTests(unittest.TestCase):
         process.close.assert_not_called();process.start.assert_not_called()
         self.assertFalse(list((self.c.bridge.root/'human/processing').glob('*.json')))
 
-    def test_single_normal_restart_preserves_draft_and_budget(self):
+    def launch_fixture(self):
         from studio_onboarding import monitor_chart
         profile=dict(profile_name='GOAT-Studio-fixture')
         write_json(self.c.root/'monitor-profile.json',profile)
@@ -104,6 +104,10 @@ class RejectedMonitorTests(unittest.TestCase):
         driver_gate=self.c.root/'batch-driver-gate';driver_gate.mkdir(exist_ok=True)
         process=Mock();process.inspect.return_value=None;process.start.return_value=self.native['process']
         suspend=Mock(return_value=dict(supervisor_exited=True,native_stop_claimed=False))
+        return process,suspend,config,draft
+
+    def test_single_normal_restart_preserves_draft_and_budget(self):
+        process,suspend,config,draft=self.launch_fixture()
         with patch('studio_onboarding.verify_monitor_profile'),patch('studio_onboarding.saved_launch_policy'):
             result=restart(self.c,'original',process=process,suspend_fn=suspend)
             self.assertEqual(result['phase'],'reverified')
@@ -111,6 +115,39 @@ class RejectedMonitorTests(unittest.TestCase):
             self.assertFalse(result['native_started']);self.assertFalse(result['grant_created'])
             with self.assertRaisesRegex(ValueError,'already recorded'):restart(self.c,'original',process=process,suspend_fn=suspend)
         process.close.assert_called_once_with(self.native['process']);process.start.assert_called_once_with(config)
+
+    def retained_close(self):
+        process,suspend,config,draft=self.launch_fixture()
+        path=self.c.root/'batch-drivers/original.json';path.parent.mkdir(exist_ok=True);write_json(path,dict(deadline_wall=87400))
+        evidence=dict(supervisor_exited=True,native_stop_claimed=False,journal_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        def suspension(c,job,folder):
+            write_json(folder/'publisher-stopped.json',evidence)
+            return evidence
+        process.inspect.side_effect=ValueError('Unknown terminal executable; exiting process fixture')
+        with patch('studio_onboarding.verify_monitor_profile'),patch('studio_onboarding.saved_launch_policy'),self.assertRaisesRegex(ValueError,'Unknown terminal'):
+            restart(self.c,'original',process=process,suspend_fn=suspension)
+        process.inspect.side_effect=None;process.inspect.return_value=None
+        process.close.assert_called_once();process.start.assert_not_called()
+        return process,config,draft
+
+    def test_exit_race_resumes_same_intent_without_second_close_or_launch(self):
+        process,config,draft=self.retained_close()
+        before=draft.read_bytes()
+        with patch('studio_onboarding.verify_monitor_profile'),patch('studio_onboarding.saved_launch_policy'):
+            result=resume(self.c,'original',process=process)
+            self.assertEqual(result['phase'],'reverified')
+            with self.assertRaisesRegex(ValueError,'never repeat'):resume(self.c,'original',process=process)
+        self.assertEqual(draft.read_bytes(),before)
+        process.close.assert_called_once();process.start.assert_called_once_with(config)
+
+    def test_resume_refuses_present_monitor_and_changed_suspension_or_draft(self):
+        process,config,draft=self.retained_close()
+        process.inspect.return_value=self.native['process']
+        with self.assertRaisesRegex(ValueError,'still present'):resume(self.c,'original',process=process)
+        process.inspect.return_value=None;draft.write_bytes(b'changed retained draft')
+        with patch('studio_onboarding.verify_monitor_profile'),patch('studio_onboarding.saved_launch_policy'),self.assertRaisesRegex(ValueError,'draft changed'):
+            resume(self.c,'original',process=process)
+        process.start.assert_not_called();process.close.assert_called_once()
 
 
 if __name__=='__main__':unittest.main()

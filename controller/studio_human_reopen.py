@@ -52,8 +52,7 @@ def prepare(c,job_id,*,process=None):
         if audit.exists():return publish_pointer(c,path,process)
         intent=path.parent/'human-reopen-intent.json'
         if intent.exists():
-            with audit.open('xb') as stream:
-                stream.write(safe_path(intent).read_bytes());stream.flush();os.fsync(stream.fileno())
+            write_json(audit,read_json(safe_path(intent)))
             return publish_pointer(c,path,process)
         profile=read_json(c.root/'monitor-profile.json')
         # Validate identity/monitor inputs without treating opaque saved bits as

@@ -149,6 +149,13 @@ class HumanReopenTests(unittest.TestCase):
         with patch('studio_human_reopen.write_json',side_effect=fail_audit):
             with self.assertRaisesRegex(OSError,'interrupted receipt'):prepare(self.c,'original',process=self.process)
         raw=(self.path.parent/'human-reopen-intent.json').read_bytes()
+        original_replace=os.replace
+        def fail_replace(source,target):
+            if Path(target).name=='human-reopen.json':raise OSError('interrupted atomic publish')
+            return original_replace(source,target)
+        with patch('studio_human_reopen.os.replace',side_effect=fail_replace):
+            with self.assertRaisesRegex(OSError,'atomic publish'):prepare(self.c,'original',process=self.process)
+        self.assertFalse((self.path.parent/'human-reopen.json').exists())
         prepare(self.c,'original',process=self.process)
         self.assertEqual((self.path.parent/'human-reopen.json').read_bytes(),raw)
 

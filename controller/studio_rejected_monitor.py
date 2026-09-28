@@ -104,6 +104,68 @@ def reverify(controller,job_id):
         return record
 
 
+def _launch_stopped(controller,record,path,process,clock):
+    from studio_onboarding import verify_monitor_profile,saved_launch_policy
+    from studio_driver_suspend import require_no_publishers
+    if record['phase']!='stopped' or process.inspect() is not None:
+        raise ValueError('Recorded monitor exit required before its first relaunch')
+    saved_launch_policy(controller,controller.session)
+    profile=read_json(controller.root/'monitor-profile.json');verify_monitor_profile(controller,profile)
+    preset=safe_path(Path(controller.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set')
+    expected_preset='Mode_Operation=11\r\nStudio_ReadOnlyMonitor=true\r\nStudio_MonitorRunPath=\r\nEA_Desc=Studio Monitor\r\n'.encode('utf-16')
+    if preset.read_bytes()!=expected_preset:raise ValueError('Saved monitor preset changed after close')
+    expected=('[Charts]\r\nProfileLast='+profile['profile_name']+'\r\n[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n'
+              '[StartUp]\r\nExpert='+controller.install['ea_relative_path']+'\r\nExpertParameters='+preset.name+'\r\nPeriod=M1\r\n').encode('utf-16')
+    config=safe_path(Path(record['launch']['startup_config']))
+    if config.read_bytes()!=expected or hashlib.sha256(expected).hexdigest()!=record['launch']['startup_sha256']:
+        raise ValueError('Saved config changed after close')
+    protected={str(p) for p in (controller.root/'session.json',controller.root/'research-authority.json',controller.bridge.root/'human/ui-draft.json')}
+    if set(record['protected_sha256'])!=protected:raise ValueError('Protected evidence paths changed')
+    for p,digest in record['protected_sha256'].items():
+        if hashlib.sha256(safe_path(Path(p)).read_bytes()).hexdigest()!=digest:
+            raise ValueError('Protected session/draft changed during close; inspect before relaunch')
+    require_no_publishers(controller)
+    record['phase']='launch_issued';write_json(path,record)
+    record['process']=process.start(config)
+    record['phase']='started_unverified';write_json(path,record)
+    deadline=clock.monotonic()+30
+    while True:
+        try:
+            after=inspect_idle_demo(controller);require_demo(after)
+            if after['process']!=record['process']:raise ValueError('Relaunch process changed')
+            break
+        except ValueError:
+            if clock.monotonic()>=deadline:raise
+            clock.sleep(1)
+    record.update(phase='reverified',after=after);write_json(path,record)
+    return record
+
+
+def resume(controller,job_id,*,process=None,clock=time):
+    """Reconcile a retained close, then issue its not-yet-issued launch once."""
+    from studio_seed_slot import guard_active_seed
+    process=process or WindowsSeedProcess(controller)
+    controller.bridge.pump()
+    with exclusive_gate(controller.root/'batch-driver-gate'),exclusive_gate(controller.local/'native-gate'):
+        scope,job=proof(controller,job_id);guard_active_seed(controller.root)
+        path=controller.root/'rejected-monitor-restarts'/job['launch_intent']['attempt_id']/'restart.json'
+        record=read_json(path)
+        if (record['phase'] not in ('close_issued','stopped') or record['authority_sha256']!=sha(scope)
+                or record['job_id']!=job_id or record['attempt_id']!=job['launch_intent']['attempt_id']):
+            raise ValueError('Only the original unlaunched close can resume; never repeat a launch')
+        suspended=read_json(path.parent/'publisher-stopped.json')
+        if sha(suspended)!=record['suspension_sha256'] or suspended.get('supervisor_exited') is not True:
+            raise ValueError('Original publisher suspension proof changed')
+        driver=controller.root/'batch-drivers'/(job_id+'.json')
+        if hashlib.sha256(driver.read_bytes()).hexdigest()!=suspended['journal_sha256']:
+            raise ValueError('Original publisher journal changed after suspension')
+        current=process.inspect()
+        if current is not None:
+            raise ValueError('Monitor is still present or replaced; no repeated close or adoption')
+        record['phase']='stopped';write_json(path,record)
+        return _launch_stopped(controller,record,path,process,clock)
+
+
 def restart(controller,job_id,*,process=None,suspend_fn=None,clock=time):
     from studio_driver_suspend import suspend
     from studio_onboarding import verify_monitor_profile,saved_launch_policy
@@ -123,6 +185,7 @@ def restart(controller,job_id,*,process=None,suspend_fn=None,clock=time):
     # non-reentrant native gate; recheck authority after pending human actions.
     controller.bridge.pump()
     with exclusive_gate(controller.root/'batch-driver-gate'),exclusive_gate(controller.local/'native-gate'):
+        if record_path.exists():raise ValueError('One monitor restart already recorded; inspect, never repeat')
         scope,job=proof(controller,job_id);guard_active_seed(controller.root)
         native=inspect_idle_demo(controller);require_demo(native)
         preset=safe_path(Path(controller.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set')
@@ -144,6 +207,8 @@ def restart(controller,job_id,*,process=None,suspend_fn=None,clock=time):
         record=dict(schema_version=1,attempt_id=attempt,job_id=job_id,authority_sha256=sha(scope),
                     phase='close_issued',native=native,protected_sha256=hashes,launch=launch,
                     suspension_sha256=sha(stopped),created_utc=clock.time(),native_started=False,grant_created=False)
+        from studio_driver_suspend import require_no_publishers
+        require_no_publishers(controller)
         write_json(record_path,record)
         process.close(native['process'])
         deadline=clock.monotonic()+20
@@ -154,22 +219,5 @@ def restart(controller,job_id,*,process=None,suspend_fn=None,clock=time):
             if clock.monotonic()>=deadline:raise ValueError('Monitor close unconfirmed; never force kill or repeat')
             clock.sleep(.2)
         record['phase']='stopped';write_json(record_path,record)
-        saved_launch_policy(controller,controller.session)
-        verify_monitor_profile(controller,profile)
-        for p,digest in hashes.items():
-            if hashlib.sha256(Path(p).read_bytes()).hexdigest()!=digest:raise ValueError('Protected session/draft changed during close; inspect before relaunch')
-        if config.read_bytes()!=expected_config:raise ValueError('Saved config changed after close')
-        record['phase']='launch_issued';write_json(record_path,record)
-        record['process']=process.start(config)
-        record['phase']='started_unverified';write_json(record_path,record)
-        deadline=clock.monotonic()+30
-        while True:
-            try:
-                after=inspect_idle_demo(controller);require_demo(after)
-                if after['process']!=record['process']:raise ValueError('Relaunch process changed')
-                break
-            except ValueError:
-                if clock.monotonic()>=deadline:raise
-                clock.sleep(1)
-        record.update(phase='reverified',after=after);write_json(record_path,record)
+        _launch_stopped(controller,record,record_path,process,clock)
     return record

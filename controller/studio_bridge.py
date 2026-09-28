@@ -8,6 +8,7 @@ boundary. No MT5 execution, native queue writes or service installation occurs.
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+import errno
 import json
 import os
 from pathlib import Path
@@ -94,12 +95,23 @@ def worker_lock(root):
         if handle.tell()==0:
             handle.write(b'0'); handle.flush()
         handle.seek(0)
-        if os.name=='nt':
-            import msvcrt
-            msvcrt.locking(handle.fileno(),msvcrt.LK_NBLCK,1)
-        else:
-            import fcntl
-            fcntl.flock(handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+        # Concurrent CLI status and the resident publisher can reach this
+        # boundary together. Wait only for acquisition, before any inbox work;
+        # never repeat an operation or weaken the exclusive worker hold.
+        deadline=time.monotonic()+1
+        while True:
+            try:
+                if os.name=='nt':
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(),msvcrt.LK_NBLCK,1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if error.errno not in (errno.EACCES,errno.EAGAIN,errno.EDEADLK) or time.monotonic()>=deadline:
+                    raise
+                time.sleep(.02)
         try:
             yield
         finally:

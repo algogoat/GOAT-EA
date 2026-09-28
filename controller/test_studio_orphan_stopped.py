@@ -79,6 +79,26 @@ class StoppedRejectionTests(fixtures.ReviewRejectedRecoveryTests):
             self.assertEqual(path.read_bytes(),b'{"pending":"human takeover"}')
             self.assert_fenced();path.unlink()
 
+    def test_human_command_arriving_during_final_process_scan_keeps_fence(self):
+        original=stopped.inspect_processes
+        command=self.c.bridge.root/'human/inbox/human-takeover.json'
+        def arriving(*args,**kwargs):
+            result=original(*args,**kwargs)
+            # The final verifier runs after the terminal plan is durable but
+            # before the fence is removed. Exercise that specific boundary.
+            if read_json(self.path)['status']=='rejected_settled':
+                command.write_bytes(b'{"pending":"human takeover"}')
+            return result
+        with patch('studio_orphan_stopped.inspect_processes',side_effect=arriving),self.assertRaisesRegex(ValueError,'human control channel'):
+            self.run_settlement()
+        self.assert_fenced()
+        self.assertEqual(read_json(self.path)['status'],'rejected_settled')
+        self.assertEqual(command.read_bytes(),b'{"pending":"human takeover"}')
+        self.assertFalse((self.gate/'permit.json').exists())
+        self.assertFalse((self.gate/'request.json').exists())
+        command.unlink() # Fixture simulates later legitimate human-channel reconciliation.
+        self.assertEqual(self.run_settlement()['status'],'rejected_settled')
+
     def test_terminal_restart_during_cleanup_preserves_remaining_transport_and_fence(self):
         original=Path.unlink
         def restarted(path,*args,**kwargs):

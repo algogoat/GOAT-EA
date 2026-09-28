@@ -7,6 +7,13 @@ from studio_orphan_recovery import inspect_local
 from studio_process_check import inspect_processes
 
 
+def assert_clear_human_channels(c):
+    for name in ('inbox','processing'):
+        directory=safe_path(c.bridge.root/'human'/name)
+        if not directory.is_dir() or any(directory.iterdir()):
+            raise ValueError('Pending or unavailable human control channel; retain recovery evidence')
+
+
 def inspect_stopped(c, plan):
     request=plan['record']['request']
     current=inspect_local(c,allow_own_request=plan['record'])
@@ -26,13 +33,11 @@ def inspect_stopped(c, plan):
                 monitor_instance=plan['observation']['monitor_instance'])
     if any(request.get(key)!=value for key,value in fields.items()):
         raise ValueError('Stopped recovery request account or session identity changed')
-    for name in ('inbox','processing'):
-        directory=safe_path(c.bridge.root/'human'/name)
-        if not directory.is_dir() or any(directory.iterdir()):
-            raise ValueError('Pending or unavailable human control channel; retain recovery evidence')
+    assert_clear_human_channels(c)
     # Full process classification refuses running, unmapped, replaced peer or
     # ambiguous processes. Absence is not represented as a normal-exit receipt.
     processes=inspect_processes(c.binding(),research_running=False)
     if processes.get('research') is not None:
         raise ValueError('Selected terminal must remain stopped during rejection settlement')
+    assert_clear_human_channels(c)
     return processes

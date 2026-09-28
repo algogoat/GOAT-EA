@@ -24,6 +24,7 @@ class RejectedMonitorTests(unittest.TestCase):
         self.fixture=fixtures.ResearchAuthorityTests();self.fixture.setUp();self.addCleanup(self.fixture.doCleanups)
         self.fixture.boot();self.c=self.fixture.c
         self.addCleanup(patch.stopall)
+        self.publishers=patch('studio_driver_suspend.processes',return_value=[]).start()
         patch('studio_rejected_monitor.OWNER_LOGIN',self.c.session['account']['login']).start()
         self.op=operation('research-monitor-restart');self.op.__enter__();self.addCleanup(self.op.__exit__,None,None,None)
         with operation('prepare-batch'):prepare_batch(self.c,'original',self.fixture.plan)
@@ -147,6 +148,18 @@ class RejectedMonitorTests(unittest.TestCase):
         process.inspect.return_value=None;draft.write_bytes(b'changed retained draft')
         with patch('studio_onboarding.verify_monitor_profile'),patch('studio_onboarding.saved_launch_policy'),self.assertRaisesRegex(ValueError,'draft changed'):
             resume(self.c,'original',process=process)
+        process.start.assert_not_called();process.close.assert_called_once()
+
+    def test_lingering_serve_and_active_seed_refuse_before_first_relaunch(self):
+        process,config,draft=self.retained_close()
+        with patch('studio_onboarding.verify_monitor_profile'),patch('studio_onboarding.saved_launch_policy'):
+            self.publishers.return_value=[dict(ProcessId=12345,ExecutablePath='old/python.exe',CommandLine='old serve')]
+            with patch('studio_driver_suspend.arguments',return_value=['old','studio','--installation',str(self.c.root/'installation.json'),'serve']):
+                with self.assertRaisesRegex(ValueError,'Another controller publisher'):
+                    resume(self.c,'original',process=process)
+            self.publishers.return_value=[]
+            with patch('studio_seed_slot.guard_active_seed',side_effect=ValueError('active seed')):
+                with self.assertRaisesRegex(ValueError,'active seed'):resume(self.c,'original',process=process)
         process.start.assert_not_called();process.close.assert_called_once()
 
 

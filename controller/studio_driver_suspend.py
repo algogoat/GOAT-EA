@@ -6,6 +6,7 @@ suspension journal is not native stop proof and does not edit the batch journal.
 import ctypes
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -33,6 +34,24 @@ def arguments(command):
     finally:kernel.LocalFree(ctypes.cast(ptr,w.HLOCAL))
 
 
+def require_no_publishers(controller, *, rows=None, allowed=()):
+    """Exclude only this caller/its exact launcher and explicitly verified pair."""
+    rows=processes() if rows is None else rows
+    permitted={os.getpid(),*allowed}
+    for row in rows:
+        if (row['ProcessId']==os.getppid()
+                and Path(row.get('ExecutablePath') or '')==Path(sys.executable).parent.parent/'goat.exe'):
+            permitted.add(row['ProcessId'])
+    needle=str(controller.root).replace('\\','/').casefold()
+    for row in rows:
+        if row['ProcessId'] in permitted:continue
+        command=row.get('CommandLine')
+        if not command:raise ValueError('Unknown publisher command line; inspect before recovery')
+        args=arguments(command)
+        if any(needle in arg.replace('\\','/').casefold() for arg in args):
+            raise ValueError('Another controller publisher references this installation; recovery refused')
+
+
 def identify(controller, job_id, journal):
     rows=processes(); found=[]
     for row in rows:
@@ -54,6 +73,7 @@ def identify(controller, job_id, journal):
         if not row.get('CreatedUtc') or not parent.get('CreatedUtc'):raise ValueError('Process creation identity unavailable')
         found.append(dict(python=row,launcher=parent))
     if len(found)!=1:raise ValueError('Exactly one original publisher must be identified')
+    require_no_publishers(controller,rows=rows,allowed=[item['ProcessId'] for item in found[0].values()])
     return found[0]
 
 

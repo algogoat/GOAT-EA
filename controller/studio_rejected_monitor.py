@@ -106,6 +106,7 @@ def reverify(controller,job_id):
 
 def _launch_stopped(controller,record,path,process,clock):
     from studio_onboarding import verify_monitor_profile,saved_launch_policy
+    from studio_driver_suspend import require_no_publishers
     if record['phase']!='stopped' or process.inspect() is not None:
         raise ValueError('Recorded monitor exit required before its first relaunch')
     saved_launch_policy(controller,controller.session)
@@ -123,6 +124,7 @@ def _launch_stopped(controller,record,path,process,clock):
     for p,digest in record['protected_sha256'].items():
         if hashlib.sha256(safe_path(Path(p)).read_bytes()).hexdigest()!=digest:
             raise ValueError('Protected session/draft changed during close; inspect before relaunch')
+    require_no_publishers(controller)
     record['phase']='launch_issued';write_json(path,record)
     record['process']=process.start(config)
     record['phase']='started_unverified';write_json(path,record)
@@ -141,10 +143,11 @@ def _launch_stopped(controller,record,path,process,clock):
 
 def resume(controller,job_id,*,process=None,clock=time):
     """Reconcile a retained close, then issue its not-yet-issued launch once."""
+    from studio_seed_slot import guard_active_seed
     process=process or WindowsSeedProcess(controller)
     controller.bridge.pump()
     with exclusive_gate(controller.root/'batch-driver-gate'),exclusive_gate(controller.local/'native-gate'):
-        scope,job=proof(controller,job_id)
+        scope,job=proof(controller,job_id);guard_active_seed(controller.root)
         path=controller.root/'rejected-monitor-restarts'/job['launch_intent']['attempt_id']/'restart.json'
         record=read_json(path)
         if (record['phase'] not in ('close_issued','stopped') or record['authority_sha256']!=sha(scope)
@@ -182,6 +185,7 @@ def restart(controller,job_id,*,process=None,suspend_fn=None,clock=time):
     # non-reentrant native gate; recheck authority after pending human actions.
     controller.bridge.pump()
     with exclusive_gate(controller.root/'batch-driver-gate'),exclusive_gate(controller.local/'native-gate'):
+        if record_path.exists():raise ValueError('One monitor restart already recorded; inspect, never repeat')
         scope,job=proof(controller,job_id);guard_active_seed(controller.root)
         native=inspect_idle_demo(controller);require_demo(native)
         preset=safe_path(Path(controller.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set')
@@ -203,6 +207,8 @@ def restart(controller,job_id,*,process=None,suspend_fn=None,clock=time):
         record=dict(schema_version=1,attempt_id=attempt,job_id=job_id,authority_sha256=sha(scope),
                     phase='close_issued',native=native,protected_sha256=hashes,launch=launch,
                     suspension_sha256=sha(stopped),created_utc=clock.time(),native_started=False,grant_created=False)
+        from studio_driver_suspend import require_no_publishers
+        require_no_publishers(controller)
         write_json(record_path,record)
         process.close(native['process'])
         deadline=clock.monotonic()+20

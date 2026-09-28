@@ -446,7 +446,7 @@ def apply(c, review_id, confirmed=False, *, owner_maintenance=None):
         stopped(c, [v['path'] for v in observation['databases']])
         if owner_maintenance is not None:
             from studio_owner_maintenance import authorize_park
-            authorize_park(c, owner_maintenance, plan)
+            authorize_park(c, owner_maintenance, plan, publish=plan['status']!='review')
         if plan['status'] == 'review':
             if time.time() > plan['expires_at'] or inspect(c) != observation:
                 pending = archive/'pending.json'
@@ -462,6 +462,8 @@ def apply(c, review_id, confirmed=False, *, owner_maintenance=None):
                     if not Path(view['path']).is_relative_to(root) and database_view(view['path']) != view:
                         raise ValueError('Restore database changed since review')
             # Durable fence is checked by every updated public controller command.
+            if owner_maintenance is not None:
+                authorize_park(c, owner_maintenance, plan)
             pending = archive/'pending.json'
             if pending.exists() and read_json(pending) != {'review_id': review_id}:
                 raise ValueError('Another handover needs recovery first')

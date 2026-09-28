@@ -4,18 +4,21 @@ This slice cannot install a build, bootstrap, grant control or launch research.
 The external journal survives PARK and preserves the original grant provenance.
 """
 import hashlib
+import json
 import re
+import sqlite3
 import time
 import uuid
+from contextlib import closing
 
 from campaign_ledger import packed, sha
 from studio_bridge import write_json
 from studio_build_upgrade import retain
 from studio_handover import database_view, paths, safe_path, guard, tree
-from studio_installation import read_json
+from studio_installation import read_json, load_installation
 from studio_native_gate import assert_clear_controls, exclusive_gate
 from studio_orphan_recovery import recovery_lock
-from studio_owner_research import authorize, POLICY_PATH
+from studio_owner_research import authorize, POLICY_PATH, BINDING_KEYS
 
 
 def directory(c):
@@ -78,6 +81,10 @@ def prepare(c):
     with recovery_lock(c), exclusive_gate(c.local/'native-gate'):
         guard(c)
         assert_clear_controls(c.store.db, c.local/'native-gate')
+        for path in (c.root/'monitor-repairs').glob('*.json'):
+            repair=read_json(safe_path(path))
+            if repair.get('phase')!='launched' and not (repair.get('stop_only') is True and repair.get('phase')=='stopped'):
+                raise ValueError('Unfinished monitor repair must be reconciled before maintenance mint')
         if c.state()['queue'] or list((c.root/'attempts').glob('*')):
             raise ValueError('Owner maintenance requires an empty never-started session')
         policy = read_json(POLICY_PATH)
@@ -118,7 +125,45 @@ def prepare(c):
                     grants_control=False, starts_work=False)
 
 
-def authorize_park(c, record_id, plan):
+def original_grant(c, original_root, original_local, value, *, current_build):
+    """Independently verify provenance; a self-consistent record is not authority."""
+    policy=read_json(POLICY_PATH)
+    install=read_json(safe_path(original_root/'installation.json'))
+    session=read_json(safe_path(original_root/'session.json'))
+    binding={key:install[key] for key in BINDING_KEYS};binding['account']=session['account']
+    if (sha(binding)!=policy['binding_sha256'] or session.get('demo_only') is not True
+            or session['account']!=policy['account'] or session['run_id']!=policy['run_id']
+            or install['ea_version']!=policy['ea_version'] or install['ea_sha256'] not in policy['allowed_ea_sha256']
+            or install!=value['installation'] or session!=value['session']):
+        raise ValueError('Original grant installation/account/build provenance differs')
+    if current_build and load_installation(original_root/'installation.json')!=install:
+        raise ValueError('Original installed artifact differs')
+    key=packed(dict(terminal_id=session['terminal_id'],run_id=session['run_id']))
+    with closing(sqlite3.connect((original_root/'studio.sqlite').as_uri()+'?mode=ro',uri=True)) as db:
+        row=db.execute('SELECT payload_hash,receipt FROM studio_receipts WHERE binding=? AND request_id=?',
+                       (key,policy['grant_request_id'])).fetchone()
+    if not row or row[0]!=policy['grant_payload_hash']:
+        raise ValueError('Original genuine human grant receipt is missing or changed')
+    from studio_agent import unique_object
+    receipt=json.loads(row[1],object_pairs_hook=unique_object)
+    if (receipt.get('request_id')!=policy['grant_request_id'] or receipt.get('command')!='control.grant_agent'
+            or receipt.get('status')!='applied' or receipt.get('execution_effect') is not False
+            or receipt['state']['owner']!='agent' or receipt['state']['generation']!=policy['generation']
+            or receipt['state']['terminal_id']!=session['terminal_id'] or receipt['state']['run_id']!=session['run_id']):
+        raise ValueError('Original human grant receipt is not the policy-pinned grant')
+    human=safe_path(original_local/session['directory_id']/'human/archive')
+    files=list(human.glob(policy['grant_request_id']+'.*.json'))
+    if len(files)!=1:
+        raise ValueError('Exactly one original human grant archive is required')
+    request=read_json(safe_path(files[0]))
+    if (request.get('request_id')!=policy['grant_request_id'] or request.get('command')!='control.grant_agent'
+            or request.get('payload')!={} or request.get('generation')!=policy['generation']-1
+            or request.get('terminal_id')!=session['terminal_id'] or request.get('run_id')!=session['run_id']
+            or sha(dict(request=request,actor='human'))!=policy['grant_payload_hash']):
+        raise ValueError('Original archived human grant request differs from committed evidence')
+
+
+def authorize_park(c, record_id, plan, *, publish=True):
     """Called inside exclusive handover lock after every writer is proven stopped.
 
     Existing PARK transaction/archives are the only accepted state transitions.
@@ -156,6 +201,7 @@ def authorize_park(c, record_id, plan):
     if read_json(original_root/'session.json') != value['session']:
         revoke(root, 'original session changed')
     human_clear(root, original_local/value['session']['directory_id']/'human')
+    original_grant(c,original_root,original_local,value,current_build=plan['status']=='review')
     current = database_view(original_root/'studio.sqlite')
     # Only the known atomic PARK revocation may advance the original epoch.
     expected = value['database']
@@ -171,6 +217,7 @@ def authorize_park(c, record_id, plan):
     for path in repairs.glob('*.json'):
         stop = read_json(safe_path(path))
         if (stop.get('stop_only') is True and stop.get('phase') == 'stopped'
+                and type(stop.get('created_at')) in (int,float) and stop['created_at']>=value['created_utc']
                 and stop.get('installation_sha256') == sha(value['installation'])
                 and stop.get('session_sha256') == sha(value['session'])
                 and stop.get('native',{}).get('process') == value['authorization']['native']['process']):
@@ -181,9 +228,9 @@ def authorize_park(c, record_id, plan):
     # No active MT5 writer exists at this boundary. Handover's exclusive lock
     # excludes all supported controller/UI pumps until publication completes.
     human_clear(root, original_local/value['session']['directory_id']/'human')
-    if prior is None:
+    if prior is None and publish:
         retain(intent_path, (packed(identity)+'\n').encode())
-    elif prior != identity:
+    elif prior is not None and prior != identity:
         raise ValueError('Original terminal stop receipt changed')
     return root, identity
 

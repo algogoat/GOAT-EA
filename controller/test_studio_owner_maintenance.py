@@ -34,7 +34,7 @@ class OwnerMaintenanceTests(unittest.TestCase):
     def stop(self):
         repair = self.c.root/'monitor-repairs'
         repair.mkdir(exist_ok=True)
-        write_json(repair/'owner-stop.json', dict(stop_only=True, phase='stopped',
+        write_json(repair/'owner-stop.json', dict(stop_only=True, phase='stopped', created_at=time.time(),
                    installation_sha256=sha(self.c.install), session_sha256=sha(self.c.session),
                    native=self.fixture.native))
         self.c.store.close()
@@ -192,6 +192,59 @@ class OwnerMaintenanceTests(unittest.TestCase):
         intent=read_json(directory(self.c)/self.record_id/'park-intent.json')
         self.assertIn('stop',intent)
         self.assertEqual(apply(self.c,review_id,owner_maintenance=self.record_id)['status'],'complete')
+
+    def test_self_consistent_forged_record_without_original_grant_refuses(self):
+        self.mint()
+        self.c.store.db.execute('DELETE FROM studio_receipts')
+        folder=directory(self.c)/self.record_id
+        record=read_json(folder/'record.json');record['database']=database_view(self.c.root/'studio.sqlite')
+        write_json(folder/'record.json',record)
+        write_json(folder/'prepared.json',dict(record_sha256=sha(record),step='prepared',
+                   authorization=record['authorization'],grants_control=False,starts_work=False))
+        self.stop();review_id=review(self.c)['review_id']
+        with self.assertRaisesRegex(ValueError,'Original genuine human grant'):
+            apply(self.c,review_id,owner_maintenance=self.record_id)
+        self.assertFalse((folder/'park-intent.json').exists())
+
+    def test_freshness_drift_does_not_consume_record(self):
+        self.mint();self.stop();review_id=review(self.c)['review_id']
+        (self.c.root/'new-research-note.txt').write_text('preserve')
+        with self.assertRaisesRegex(ValueError,'research changed'):
+            apply(self.c,review_id,owner_maintenance=self.record_id)
+        self.assertFalse((directory(self.c)/self.record_id/'park-intent.json').exists())
+        fresh=review(self.c)['review_id']
+        self.assertEqual(apply(self.c,fresh,owner_maintenance=self.record_id)['status'],'complete')
+
+    def test_stop_before_mint_and_unfinished_repair_refuse(self):
+        repairs=self.c.root/'monitor-repairs';repairs.mkdir()
+        write_json(repairs/'uncertain.json',dict(phase='close_issued'))
+        with self.assertRaisesRegex(ValueError,'Unfinished'):self.mint()
+        (repairs/'uncertain.json').unlink();self.mint();self.stop()
+        stop=read_json(repairs/'owner-stop.json');write_json(repairs/'owner-stop.json',stop|dict(created_at=0))
+        review_id=review(self.c)['review_id']
+        with self.assertRaisesRegex(ValueError,'verified stop'):
+            apply(self.c,review_id,owner_maintenance=self.record_id)
+
+    def test_research_queued_after_mint_revokes_chain(self):
+        self.mint()
+        from campaign_ledger import packed
+        binding=packed(dict(terminal_id=self.c.terminal,run_id=self.c.run))
+        self.c.store.db.execute('INSERT OR REPLACE INTO studio_queues VALUES(?,?)',
+                               (binding,'[{"job_id":"late","status":"pending"}]'))
+        self.stop();review_id=review(self.c)['review_id']
+        with self.assertRaisesRegex(ValueError,'permanently revoked'):
+            apply(self.c,review_id,owner_maintenance=self.record_id)
+
+    def test_second_review_and_restore_action_cannot_reuse_record(self):
+        self.mint();self.stop()
+        first=review(self.c)['review_id'];second=review(self.c)['review_id']
+        plan=load_plan(self.c,first)
+        from studio_owner_maintenance import authorize_park
+        with self.assertRaisesRegex(ValueError,'cannot authorize'):
+            authorize_park(self.c,self.record_id,plan|dict(action='restore'))
+        apply(self.c,first,owner_maintenance=self.record_id)
+        with self.assertRaisesRegex(ValueError,'another review'):
+            apply(self.c,second,owner_maintenance=self.record_id)
 
 
 if __name__ == '__main__':

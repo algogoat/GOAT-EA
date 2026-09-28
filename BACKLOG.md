@@ -1,4 +1,4 @@
-﻿# GOAT EA and controller work
+# GOAT EA and controller work
 
 This branch starts from the retained R5 build. Entries below cover the agreed
 V1.48/dashboard work; they do not replace other branches' historical backlog.

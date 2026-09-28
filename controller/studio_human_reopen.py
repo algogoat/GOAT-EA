@@ -3,6 +3,7 @@
 No launch, close, trading, login, grant or permission modification is provided.
 """
 import hashlib
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +50,10 @@ def prepare(c,job_id,*,process=None):
         if process.inspect() is not None:raise ValueError('Selected MT5 must remain stopped during pointer preparation')
         audit=path.parent/'human-reopen.json'
         if audit.exists():return publish_pointer(c,path,process)
+        intent=path.parent/'human-reopen-intent.json'
+        if intent.exists():
+            write_json(audit,read_json(safe_path(intent)))
+            return publish_pointer(c,path,process)
         profile=read_json(c.root/'monitor-profile.json')
         # Validate identity/monitor inputs without treating opaque saved bits as
         # permission to launch. This operation never launches anything.
@@ -60,11 +65,15 @@ def prepare(c,job_id,*,process=None):
         # Only this single value changes; all permission/account bytes remain.
         for name,raw in (('common-before.ini',before),('common-after.ini',after)):
             with (path.parent/name).open('xb') as stream:stream.write(raw)
-        receipt=dict(schema_version=1,phase='pointer_prepared',job_id=job_id,created_utc=time.time(),
+        receipt=dict(schema_version=2,phase='pointer_prepared',job_id=job_id,created_utc=time.time(),
             restart_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),profile_name=profile['profile_name'],
             chart_path=str(chart),chart_sha256=hashlib.sha256(chart.read_bytes()).hexdigest(),
             common_path=str(common),before_sha256=hashlib.sha256(before).hexdigest(),after_sha256=hashlib.sha256(after).hexdigest(),
             launch_issued=False,permissions_changed=False,human_reopened=False)
+        # Retain the complete original receipt before publishing its working
+        # copy. Neither resumption nor adoption may mint a later timestamp.
+        raw=(json.dumps(receipt,ensure_ascii=False,allow_nan=False)+'\n').encode('utf-8')
+        with intent.open('xb') as stream:stream.write(raw);stream.flush();os.fsync(stream.fileno())
         write_json(audit,receipt)
         return publish_pointer(c,path,process)
 
@@ -85,6 +94,7 @@ def pointer_bytes(before,profile_name):
 
 def publish_pointer(c,path,process):
     """Complete the exact retained file CAS, never repeat a native operation."""
+    verify_receipt_intent(path)
     receipt=read_json(path.parent/'human-reopen.json')
     before=safe_path(path.parent/'common-before.ini').read_bytes();after=safe_path(path.parent/'common-after.ini').read_bytes()
     profile=read_json(c.root/'monitor-profile.json')
@@ -112,6 +122,13 @@ def publish_pointer(c,path,process):
     return receipt
 
 
+def verify_receipt_intent(path):
+    intent=path.parent/'human-reopen-intent.json'
+    if not intent.exists():raise ValueError('Original publication intent required for pointer resumption; never recreate it')
+    if safe_path(intent).read_bytes()!=safe_path(path.parent/'human-reopen.json').read_bytes():
+        raise ValueError('Original publication receipt bytes changed')
+
+
 def adopt(c,job_id,*,human_reopened=False,process=None):
     if human_reopened is not True:raise ValueError('Actual human reopen confirmation required; never infer it from a process')
     process=process or WindowsSeedProcess(c)
@@ -119,6 +136,7 @@ def adopt(c,job_id,*,human_reopened=False,process=None):
     with exclusive_gate(c.root/'batch-driver-gate'),exclusive_gate(c.local/'native-gate'):
         path,record=retained(c,job_id)
         receipt=read_json(path.parent/'human-reopen.json')
+        if receipt.get('schema_version')!=1 or (path.parent/'human-reopen-intent.json').exists():verify_receipt_intent(path)
         if receipt['restart_sha256']!=hashlib.sha256(path.read_bytes()).hexdigest() or receipt['job_id']!=job_id:
             raise ValueError('Human reopen preparation no longer matches stopped record')
         common=safe_path(Path(c.install['terminal_data_root'])/'config/common.ini')
@@ -153,6 +171,7 @@ def adopt(c,job_id,*,human_reopened=False,process=None):
 def verify_adopted(c,record,path):
     """Reconcile a recorded observation, without ever adopting a second PID."""
     receipt=read_json(path.parent/'human-reopen.json')
+    if receipt.get('schema_version')!=1 or (path.parent/'human-reopen-intent.json').exists():verify_receipt_intent(path)
     if record.get('human_reopened') is not True or sha(receipt)!=record.get('human_reopen_sha256'):
         raise ValueError('Exact retained human-reopen observation required')
     guard_active_seed(c.root);require_no_publishers(c);saved_launch_policy(c,c.session)

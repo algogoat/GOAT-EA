@@ -126,5 +126,48 @@ class HumanReopenTests(unittest.TestCase):
         self.assertEqual((self.path.parent/'human-reopen.json').read_bytes(),audit)
         self.process.start.assert_not_called()
 
+    def test_complete_receipt_mutation_refuses_resume_and_adoption(self):
+        self.prepared();audit=self.path.parent/'human-reopen.json';raw=audit.read_bytes()
+        self.process.inspect.return_value=None
+        for key,value in (('created_utc',time.time()-100),('schema_version',3),('launch_issued',True),('permissions_changed',True)):
+            with self.subTest(key=key):
+                write_json(audit,read_json(self.path.parent/'human-reopen-intent.json')|{key:value})
+                with self.assertRaisesRegex(ValueError,'receipt bytes changed'):prepare(self.c,'original',process=self.process)
+                self.process.inspect.return_value=self.native['process']
+                with self.assertRaisesRegex(ValueError,'receipt bytes changed'):adopt(self.c,'original',human_reopened=True,process=self.process)
+                self.process.inspect.return_value=None
+        audit.write_bytes(raw+b' ')
+        with self.assertRaisesRegex(ValueError,'receipt bytes changed'):prepare(self.c,'original',process=self.process)
+        audit.write_bytes(raw);prepare(self.c,'original',process=self.process)
+        self.assertEqual(audit.read_bytes(),raw)
+
+    def test_interrupted_receipt_copy_uses_original_intent(self):
+        original=write_json
+        def fail_audit(path,value):
+            if Path(path).name=='human-reopen.json':raise OSError('interrupted receipt copy')
+            return original(path,value)
+        with patch('studio_human_reopen.write_json',side_effect=fail_audit):
+            with self.assertRaisesRegex(OSError,'interrupted receipt'):prepare(self.c,'original',process=self.process)
+        raw=(self.path.parent/'human-reopen-intent.json').read_bytes()
+        original_replace=os.replace
+        def fail_replace(source,target):
+            if Path(target).name=='human-reopen.json':raise OSError('interrupted atomic publish')
+            return original_replace(source,target)
+        with patch('studio_human_reopen.os.replace',side_effect=fail_replace):
+            with self.assertRaisesRegex(OSError,'atomic publish'):prepare(self.c,'original',process=self.process)
+        self.assertFalse((self.path.parent/'human-reopen.json').exists())
+        prepare(self.c,'original',process=self.process)
+        self.assertEqual((self.path.parent/'human-reopen.json').read_bytes(),raw)
+
+    def test_missing_intent_refuses_new_adoption_and_legacy_republication(self):
+        self.prepared();audit=self.path.parent/'human-reopen.json'
+        (self.path.parent/'human-reopen-intent.json').unlink()
+        with self.assertRaisesRegex(ValueError,'Original publication intent'):adopt(self.c,'original',human_reopened=True,process=self.process)
+        write_json(audit,read_json(audit)|dict(schema_version=1))
+        self.process.inspect.return_value=None
+        with self.assertRaisesRegex(ValueError,'Original publication intent'):prepare(self.c,'original',process=self.process)
+        self.process.inspect.return_value=self.native['process']
+        self.assertEqual(adopt(self.c,'original',human_reopened=True,process=self.process)['phase'],'reverified')
+
 
 if __name__=='__main__':unittest.main()

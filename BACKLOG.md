@@ -169,6 +169,6 @@ qualification are separate from full native EA/installed-package qualification.
   flag and no pending native request. It logs the build/PID/account/tester state
   and local/remote/cloud menu result without reserving or starting a job.
   MetaEditor 6230 compiled with zero errors/warnings, SHA-256
-  b9f19ee2bb661558d7200ef79cc57e29cd14aa9da9bc7e9ccb16c2be4b730ddd.
+  998497df3ec5f3593b1fe01127a07fcf5a36e49a540c04e7ecb4928e42d0f2e3.
   This is source/compile proof only; exact-head review, admission and native
   Banker readback remain required before the batch path.

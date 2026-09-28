@@ -4655,12 +4655,21 @@ void GoatTimerBody(void)
             g_GoatStudioWorkerDiagnosticPending=false;
             bool worker_local=false,worker_remote=false,worker_cloud=false;
             bool readback=GoatStudioReadWorkerPolicy(worker_local,worker_remote,worker_cloud);
+            bool algo_off=!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED);
+            string after_state=GoatStudioTesterState();
+            bool still_idle=(algo_off && !IsStopped() && TerminalInfoInteger(TERMINAL_CONNECTED)
+               && AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO
+               && after_state=="idle" && GlobalVariableGet("BatchOnGoing")==0
+               && GlobalVariableGet("GOAT_BatchRestartPending")==0
+               && !FileIsExist("GOATStudio\\native-gate\\request.json")
+               && !FileIsExist("GOATStudio\\native-gate\\permit.json"));
             Print("GOAT_STUDIO_IDLE_WORKER_DIAGNOSTIC build_id="+GOAT_BUILD_ID
                +" pid="+(string)kernel32::GetCurrentProcessId()
                +" account="+(string)AccountInfoInteger(ACCOUNT_LOGIN)
                +" server="+AccountInfoString(ACCOUNT_SERVER)
                +" mt5_build="+(string)TerminalInfoInteger(TERMINAL_BUILD)
-               +" algo_off=1 tester=idle status="+(readback ? "READBACK_OK" : "READBACK_UNAVAILABLE")
+               +" algo_off="+(string)(int)algo_off+" tester="+after_state
+               +" status="+(readback && still_idle ? "READBACK_OK" : "READBACK_UNAVAILABLE")
                +" local="+(string)(int)worker_local+" remote="+(string)(int)worker_remote+" cloud="+(string)(int)worker_cloud);
          }
       }

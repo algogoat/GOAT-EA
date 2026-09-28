@@ -20,13 +20,27 @@ resends an issued request. Interrupted cleanup after durable success can complet
 on the next exact status call. Keep every review and native receipt.
 
 The separate `orphan-recovery-reconcile-rejection --review-id <original-id>
---confirm-reviewed` command can settle one expired `ORPHAN_RUNTIME_REJECTED` or `ORPHAN_FOREIGN_CONTROL`
+--confirm-reviewed` command can settle one expired `ORPHAN_REVIEW_REJECTED`,
+`ORPHAN_RUNTIME_REJECTED` or `ORPHAN_FOREIGN_CONTROL`
 receipt with no native consumption. This is controller transport reconciliation,
 not another native action or approval to retry. It requires originally absent
 controls, exact issued/request/permit/result bytes, and fresh unchanged process,
 monitor, account, grant, state and idle `BatchOnGoing=true` evidence under the
 session and native gates. Any consumed artifact in the selected local Studio
 tree, different status, missing evidence or changed identity remains fenced.
+
+ORPHAN_REVIEW_REJECTED is an initial native request-validation refusal, before
+the runtime and foreign-control checks. It does not identify which schema,
+identity, path or expiry predicate failed. Preserve the original request and
+native result to diagnose that difference; do not attribute it to a runtime
+script or foreign file without evidence. Settlement only retires the expired
+transport after all existing checks, and leaves BatchOnGoing unchanged.
+
+Older installed controllers may refuse this status. Use a released controller
+that explicitly supports it; do not edit the allowlist or install loose Python
+files in a signed/hash-verified bundle. The human approval is for this exact
+settlement, not a new recovery attempt. If process/account/state has changed,
+the preserving checks still refuse: retain evidence for supported recovery.
 
 The command fsyncs immutable evidence and a cleanup intent before retiring the
 exact permit and request, persists `rejected_settled` before removing its own

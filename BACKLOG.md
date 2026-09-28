@@ -94,3 +94,11 @@ OWNER-MAINT-010 accepted Banker review follow-ups before tester rollout: use ret
 OWNER-MAINT-010 timestamp follow-up: adoption and same-process re-verification reject embedded native observation timestamps older than process creation minus one second, even with freshly updated file mtime. Source regressions exercise copied prior-process feedback and retained interrupted-adoption refusal; native qualification remains separate. Parent-loss and early-artifact crash follow-ups remain open.
 
 OWNER-MAINT-010 parent-loss follow-up: re-verification validates retained original Explorer evidence and the unchanged live target against the current console instead of requiring the parent to remain alive. First adoption still requires the parent present; changed process creation, target session/argv/parent identity and console refuse. Missing/duplicate-parent and creation-mismatch source cases added. Early-artifact crash recovery remains open; native qualification is separate.
+
+- **RECOVERY-REVIEW-001 (2026-09-28):** Extend exact expired pre-consumption
+  rejection settlement to ORPHAN_REVIEW_REJECTED, reported by a public beta tester.
+  Keep all original evidence, confirmation, consumption, state and identity gates;
+  no recovery retry, native flag, grant, wire or EA binary change. Run the complete
+  settlement preservation/refusal/interruption matrix for both review and runtime
+  refusals. Source tests and matched installed delivery remain distinct; the
+  particular native validation predicate still needs the tester request/receipt.

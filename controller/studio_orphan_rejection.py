@@ -12,9 +12,9 @@ from studio_installation import read_json
 from studio_native_gate import exclusive_gate
 from studio_orphan_recovery import inspect, plan_path, recovery_lock
 
-# Both outcomes precede native consumption/effects. A foreign-file refusal
+# These outcomes precede native consumption/effects, including initial request validation. A foreign-file refusal
 # additionally re-runs the complete host inventory through inspect below.
-PRECONSUMPTION_REJECTIONS = frozenset(('ORPHAN_RUNTIME_REJECTED', 'ORPHAN_FOREIGN_CONTROL'))
+PRECONSUMPTION_REJECTIONS = frozenset(('ORPHAN_REVIEW_REJECTED', 'ORPHAN_RUNTIME_REJECTED', 'ORPHAN_FOREIGN_CONTROL'))
 
 
 def evidence_paths(c, review_id, request_id):

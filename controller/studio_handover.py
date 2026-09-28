@@ -421,14 +421,20 @@ def copy_move_once(source, target, expected, identity, transfer, journal):
     write_json(journal, record)
 
 
-def apply(c, review_id, confirmed=False):
-    if not confirmed:
+def apply(c, review_id, confirmed=False, *, owner_maintenance=None):
+    if type(confirmed) is not bool or (confirmed and owner_maintenance is not None):
+        raise ValueError('Choose one explicit handover authorization route')
+    if not confirmed and owner_maintenance is None:
         raise ValueError('Explicit user review confirmation required')
     root, local, archive, lock = paths(c)
     lock.mkdir(parents=True, exist_ok=True)
     with exclusive_gate(lock):
         plan = load_plan(c, review_id)
         if plan['status'] == 'complete':
+            if owner_maintenance is not None:
+                stopped(c, [v['path'] for v in plan['observation']['databases']])
+                from studio_owner_maintenance import park_complete
+                park_complete(c, owner_maintenance, plan)
             pending = archive/'pending.json'
             if pending.exists() and read_json(pending) == {'review_id': review_id}:
                 pending.unlink()
@@ -438,6 +444,9 @@ def apply(c, review_id, confirmed=False):
         from studio_bootstrap_retirement import handover_guard, handover_gate
         handover_guard(c)
         stopped(c, [v['path'] for v in observation['databases']])
+        if owner_maintenance is not None:
+            from studio_owner_maintenance import authorize_park
+            authorize_park(c, owner_maintenance, plan, publish=plan['status']!='review')
         if plan['status'] == 'review':
             if time.time() > plan['expires_at'] or inspect(c) != observation:
                 pending = archive/'pending.json'
@@ -453,6 +462,8 @@ def apply(c, review_id, confirmed=False):
                     if not Path(view['path']).is_relative_to(root) and database_view(view['path']) != view:
                         raise ValueError('Restore database changed since review')
             # Durable fence is checked by every updated public controller command.
+            if owner_maintenance is not None:
+                authorize_park(c, owner_maintenance, plan)
             pending = archive/'pending.json'
             if pending.exists() and read_json(pending) != {'review_id': review_id}:
                 raise ValueError('Another handover needs recovery first')
@@ -516,6 +527,9 @@ def apply(c, review_id, confirmed=False):
                             handle.write(raw); handle.flush(); os.fsync(handle.fileno())
             plan['status'] = 'complete'
             write_json(folder/'receipt.json', plan)
+        if owner_maintenance is not None:
+            from studio_owner_maintenance import park_complete
+            park_complete(c, owner_maintenance, plan)
         pending = archive/'pending.json'
         if pending.exists():
             if read_json(pending) != {'review_id': review_id}:

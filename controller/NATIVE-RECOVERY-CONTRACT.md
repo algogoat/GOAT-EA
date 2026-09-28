@@ -38,9 +38,13 @@ transport after all existing checks, and leaves BatchOnGoing unchanged.
 
 Older installed controllers may refuse this status. Use a released controller
 that explicitly supports it; do not edit the allowlist or install loose Python
-files in a signed/hash-verified bundle. The human approval is for this exact
-settlement, not a new recovery attempt. If process/account/state has changed,
-the preserving checks still refuse: retain evidence for supported recovery.
+files in a signed/hash-verified bundle. Authorization is either explicit human
+approval of this exact settlement (`--confirm-reviewed`) or the separately
+audited, owner-scoped `--owner-research` route, including its typed research
+authority checks. The latter does not represent human confirmation; its original
+grant, account/session and operation scope must still verify. Neither route
+authorizes a new recovery attempt. If process/account/state has changed, the
+preserving checks still refuse: retain evidence for supported recovery.
 
 The command fsyncs immutable evidence and a cleanup intent before retiring the
 exact permit and request, persists `rejected_settled` before removing its own

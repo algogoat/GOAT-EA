@@ -458,9 +458,13 @@ transport after all existing checks, and leaves BatchOnGoing unchanged.
 
 Older installed controllers may refuse this status. Use a released controller
 that explicitly supports it; do not edit the allowlist or install loose Python
-files in a signed/hash-verified bundle. The human approval is for this exact
-settlement, not a new recovery attempt. If process/account/state has changed,
-the preserving checks still refuse: retain evidence for supported recovery.
+files in a signed/hash-verified bundle. Authorization is either explicit human
+approval of this exact settlement (`--confirm-reviewed`) or the separately
+audited, owner-scoped `--owner-research` route, including its typed research
+authority checks. The latter does not represent human confirmation; its original
+grant, account/session and operation scope must still verify. Neither route
+authorizes a new recovery attempt. If process/account/state has changed, the
+preserving checks still refuse: retain evidence for supported recovery.
 
 Settlement retains the original review, issued/result receipts and transport
 bytes plus a durable cleanup intent. It removes only the exact rejected request
@@ -468,8 +472,9 @@ and permit, marks `rejected_settled`, then removes that review's pending fence.
 It does not clear BatchOnGoing or retry recovery. Resume interrupted cleanup with
 the same command and review ID; never remove evidence manually. A status call
 only reports an interrupted rejection settlement and cannot finish it. Diagnose
-the rejection before preparing any later recovery, which needs a fresh explicit
-human approval. These controller fixtures are not native qualification.
+the rejection before preparing any later recovery, which needs a fresh review
+and the applicable explicit human or audited owner-research authorization.
+These controller fixtures are not native qualification.
 
 ### Current monitor journal diagnostics (V1.49 internal -6)
 

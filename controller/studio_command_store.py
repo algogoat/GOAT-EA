@@ -28,6 +28,12 @@ class StudioStore:
         self.db.row_factory = sqlite3.Row
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS studio_native_gate(id INTEGER PRIMARY KEY CHECK(id=1), root TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS studio_authorities(binding TEXT PRIMARY KEY, kind TEXT NOT NULL, provenance TEXT NOT NULL);
+        CREATE TRIGGER IF NOT EXISTS studio_authority_immutable_insert BEFORE INSERT ON studio_authorities
+        WHEN EXISTS(SELECT 1 FROM studio_authorities WHERE binding=NEW.binding AND (kind!=NEW.kind OR provenance!=NEW.provenance))
+        BEGIN SELECT RAISE(ABORT,'Authority is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS studio_authority_immutable_update BEFORE UPDATE ON studio_authorities BEGIN SELECT RAISE(ABORT,'Authority is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS studio_authority_immutable_delete BEFORE DELETE ON studio_authorities BEGIN SELECT RAISE(ABORT,'Authority is immutable'); END;
         CREATE TABLE IF NOT EXISTS studio_state(
           binding TEXT PRIMARY KEY, revision INTEGER NOT NULL,
           generation INTEGER NOT NULL, owner TEXT NOT NULL);
@@ -43,6 +49,14 @@ class StudioStore:
         CREATE TABLE IF NOT EXISTS studio_strategy_drafts(
           binding TEXT PRIMARY KEY, settings TEXT NOT NULL);
         ''')
+        from studio_research_authority import legacy_human_grant
+        legacy_rows=self.db.execute('SELECT binding,owner,generation FROM studio_state WHERE binding NOT IN (SELECT binding FROM studio_authorities)').fetchall()
+        if legacy_rows:
+            with self.transaction():
+                for row in self.db.execute('SELECT binding,owner,generation FROM studio_state WHERE binding NOT IN (SELECT binding FROM studio_authorities)').fetchall():
+                    if legacy_human_grant(self.db,row['binding'],dict(owner=row['owner'],generation=row['generation'])):
+                        self.db.execute('INSERT INTO studio_authorities VALUES(?,?,?)',(row['binding'],'native_human_control',
+                            packed(dict(kind='native_human_control',binding=json.loads(row['binding'])))))
 
     def close(self):
         self.db.close()
@@ -65,9 +79,12 @@ class StudioStore:
         with self.transaction():
             self.db.execute('INSERT OR IGNORE INTO studio_state VALUES(?,0,0,?)',
                             (binding, 'human'))
+            if self.db.execute('SELECT owner,generation FROM studio_state WHERE binding=?',(binding,)).fetchone()[:] == ('human',0):
+                self.db.execute('INSERT OR IGNORE INTO studio_authorities VALUES(?,?,?)',
+                    (binding,'native_human_control',packed(dict(kind='native_human_control',binding=json.loads(binding)))))
         return self.snapshot(terminal_id, run_id)
 
-    def snapshot(self, terminal_id, run_id):
+    def snapshot(self, terminal_id, run_id, *, human_channel_view=False):
         binding = packed(dict(terminal_id=terminal_id, run_id=run_id))
         row = self.db.execute('SELECT s.*,d.settings,e.settings AS exports,i.settings AS strategy,q.jobs FROM studio_state s '
                               'LEFT JOIN studio_drafts d ON s.binding=d.binding '
@@ -77,6 +94,9 @@ class StudioStore:
                               'WHERE s.binding=?', (binding,)).fetchone()
         if row is None:
             raise ValueError('Unknown terminal/run binding')
+        from studio_research_authority import authority
+        if not human_channel_view:
+            authority(self.db,binding,dict(owner=row['owner'],generation=row['generation']))
         return dict(terminal_id=terminal_id, run_id=run_id, revision=row['revision'],
                     generation=row['generation'], owner=row['owner'],
                     tester_draft=None if row['settings'] is None else json.loads(row['settings']),
@@ -142,7 +162,10 @@ class StudioStore:
                 if prior['payload_hash'] != payload_hash:
                     raise Conflict('Request ID reused with different content or actor')
                 return json.loads(prior['receipt'])
-            state = self.snapshot(request['terminal_id'], request['run_id'])
+            state = self.snapshot(request['terminal_id'], request['run_id'],
+                                  human_channel_view=actor=='human' and command=='control.takeover')
+            from studio_research_authority import command as authorize_command
+            authorize_command(self.db,binding,state,request,actor)
             if state['revision'] != request['expected_revision']:
                 raise Conflict('Stale state revision')
             if state['generation'] != request['generation']:
@@ -204,6 +227,11 @@ class StudioStore:
                 # An agent cannot grant itself control or impersonate human takeover.
                 if actor != 'human':
                     raise Conflict('Human control action required')
+                # A real accepted human grant can classify a legacy human binding.
+                # Never classify an existing agent or replace restricted provenance.
+                if command == 'control.grant_agent' and state['owner'] == 'human':
+                    self.db.execute('INSERT OR IGNORE INTO studio_authorities VALUES(?,?,?)',
+                        (binding,'native_human_control',packed(dict(kind='native_human_control',binding=json.loads(binding)))))
                 owner = 'human' if command == 'control.takeover' else 'agent'
                 state.update(owner=owner, revision=state['revision']+1,
                              generation=state['generation']+1)

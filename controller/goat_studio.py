@@ -38,6 +38,8 @@ OPERATION_CONTRACTS = {
     'peer-apply':dict(required=['review-id','confirm-reviewed'],authorization='Authorized caller confirms this exact review after inspection within the user-authorized setup scope; no grant or peer management authority',effect='persist protected peer outside switched session; replacement requires fresh review; unknown terminals still block'),
     'switch-plan':dict(required=[],effect='review offline session handover; optional restore-id restores a parked session; never grants or launches'),
     'switch-status':dict(required=['review-id'],effect='read retained handover progress and recovery identity'),
+    'owner-maintenance-install-prepare':dict(required=['record-id'],effect='owner-internal: consume exact completed PARK into one authenticated installer input; no installation or control effect'),
+    'owner-maintenance-bootstrap':dict(required=['record-id','plan'],effect='owner-internal: verify exact installed9/CAS, immutable original grant archive and stopped terminal; create pre-bound typed continuation for only the frozen plan; no human grant or trading'),
     'owner-maintenance-prepare':dict(required=[],effect='owner-internal only: mint one short-lived exact maintenance record from the original genuine grant; no stop, PARK, install, bootstrap or grant'),
     'switch-apply':dict(required=['review-id'],authorization_required_one_of=['confirm-reviewed','owner-maintenance'],authorization='Exact human confirmation, or the owner-internal one-use maintenance record with original grant/stop evidence. Never fabricated confirmation. Trusted-local coordination, not an OS-user security boundary.',effect='apply or recover the exact user-reviewed handover; preserve research and revoke prior agent control'),
     'seed-prepare':dict(required=['batch-id','plan'],effect='freeze a dedicated SeedFarming matrix; no launch'),
@@ -166,7 +168,7 @@ class Controller:
         configure_gate(self.store,self.local/'native-gate')
         bridge=StudioBridge(self.local/run,self.store,terminal,run);bridge.pump()
         session=dict(schema_version=1,installation_sha256=sha(self.install),terminal_id=terminal,run_id=run,
-                     directory_id=run,account=dict(login=login,server=server),demo_only=True)
+                     directory_id=run,account=dict(login=login,server=server),demo_only=True,authority_kind='native_human_control')
         preset=Path(self.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set'
         raw='Mode_Operation=11\r\nStudio_ReadOnlyMonitor=true\r\nStudio_MonitorRunPath=\r\nEA_Desc=Studio Monitor\r\n'.encode('utf-16')
         preset.parent.mkdir(parents=True,exist_ok=True)
@@ -223,6 +225,8 @@ class Controller:
         if job['status']!='pending': raise ValueError('Only pending job can start; reconcile existing attempt')
         # Check runtime BEFORE recording an irreversible attempt.
         self.runtime(require_idle=True,expected_batch_ongoing=False)
+        from studio_research_authority import before_native_dispatch
+        before_native_dispatch(self,job)
         baseline=inspect_processes(binding)
         package=self.root/'packages'/job_id
         digest=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()
@@ -239,6 +243,7 @@ class Controller:
         state=self.state()
         def validate(state,job):
             revalidate_processes(binding,baseline)
+            before_native_dispatch(self,job)
             return validate_activated_job(state,job,**args,evidence=evidence)
         return publish(self.store,self.terminal,self.run,job_id,self.bridge.root,actor='agent',revision=state['revision'],generation=generation,validate_native=validate)
 
@@ -295,6 +300,8 @@ def main(argv=None):
     p=sub.add_parser('historical-pointers-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
     p=sub.add_parser('switch-plan');p.add_argument('--restore-id')
     p=sub.add_parser('owner-maintenance-prepare')
+    p=sub.add_parser('owner-maintenance-install-prepare');p.add_argument('--record-id',required=True)
+    p=sub.add_parser('owner-maintenance-bootstrap');p.add_argument('--record-id',required=True);p.add_argument('--plan',type=Path,required=True)
     p=sub.add_parser('switch-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true');p.add_argument('--owner-maintenance',help='Owner-internal exact one-use record; refuses outside pinned scope')
     p=sub.add_parser('switch-status');p.add_argument('--review-id',required=True)
     p=sub.add_parser('seed-prepare');p.add_argument('--batch-id',required=True);p.add_argument('--plan',type=Path,required=True)
@@ -332,6 +339,8 @@ def main(argv=None):
         p=sub.add_parser(command);p.add_argument('--job-id',required=True)
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
+        from studio_research_authority import operation,dispatch
+        locks.enter_context(operation(args.operation))
         if args.operation=='switch-replace-build':
             from studio_build_upgrade import replace_build
             result=replace_build(args.installation,args.review_id,args.candidate_receipt,args.candidate_ea,args.expected_sha256)
@@ -339,6 +348,7 @@ def main(argv=None):
         controller=Controller(args.installation)
         from studio_build_upgrade import guard_pending
         guard_pending(controller.root)
+        if args.operation!='owner-maintenance-bootstrap': dispatch(controller,args)
         if args.operation.startswith('historical-pointers-'):
             from studio_historical_pointers import prepare as historical_prepare,apply as historical_apply
             result=historical_prepare(controller) if args.operation=='historical-pointers-prepare' else historical_apply(controller,args.review_id,confirmed=args.confirm_reviewed)
@@ -351,6 +361,9 @@ def main(argv=None):
         if args.operation in ('switch-verify-park','switch-replace-receipt'):
             from studio_installation_upgrade import verify_park,replace_receipt
             result=verify_park(controller,args.review_id) if args.operation=='switch-verify-park' else replace_receipt(controller,args.review_id,args.candidate_receipt,args.expected_sha256)
+        elif args.operation in ('owner-maintenance-install-prepare','owner-maintenance-bootstrap'):
+            from studio_owner_continuation import prepare_install,bootstrap
+            result=prepare_install(controller,args.record_id) if args.operation=='owner-maintenance-install-prepare' else bootstrap(controller,args.record_id,args.plan)
         elif args.operation=='owner-maintenance-prepare':
             from studio_owner_maintenance import prepare
             result=prepare(controller)

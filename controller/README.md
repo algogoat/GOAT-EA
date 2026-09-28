@@ -764,3 +764,42 @@ This slice does **not** authorize installation, bootstrap, a replacement-session
 grant or research dispatch. Those require the separately reviewed continuation
 implementation. Ordinary `--confirm-reviewed` remains a distinct explicit human
 route. This finite owner policy is not customer standing consent.
+
+### Owner-internal restricted research continuation
+
+After owner maintenance PARK, `owner-maintenance-install-prepare --record-id <id>`
+freezes the exact input for the existing authenticated desktop internal installer.
+The installer still verifies the server admission and uses its normal byte/CAS
+upgrade journal. `owner-maintenance-bootstrap --record-id <id> --plan <frozen.json>`
+independently verifies that completed target build, the original grant/archive and
+stop evidence, unchanged terminal/account and saved Algo OFF. It publishes only the
+record's pre-bound replacement session while native writers are stopped.
+
+The replacement has immutable `research_continuation` authority, not a copied or
+synthetic human grant. The existing native `owner=agent` field remains a research
+transport identity. A central CLI dispatcher and command-store boundary default to
+refusing unlisted operations, including future operations. Only the frozen plan,
+member settings and resulting configuration may be prepared and dispatched. Missing
+or unknown authority on an agent-owned session refuses rather than becoming full
+control. New normal sessions are explicitly classified `native_human_control` and
+remain human-owned until an actual human grant. Legacy classification requires no
+typed authority markers and an actor-bound archived human grant matching its
+committed receipt and generation. Genuine new human grants classify atomically;
+missing evidence never classifies an agent. SQLite insert/update/delete guards
+and independent session/file checks prevent authority downgrade.
+
+A human takeover permanently revokes the continuation; no subsequent grant/promotion
+is available through it. The human channel can always submit a validated takeover,
+even when authority evidence is damaged. Human cancellation and reviewed PARK/restore
+remain available after takeover. Typed recovery refuses human-confirmation flags.
+An expired continuation can supervise/cancel/finish its retained batch, but cannot
+reserve or dispatch new work. Native dispatch rechecks the broker-confirmed demo, account,
+Algo OFF, empty positions/orders and idle tester. Recovery has its own distinct typed
+authorization and keeps every native recovery guard. Bootstrap starts no terminal,
+batch or trade. Use the supported monitor prepare/launch, verify actual native
+recovery, then prepare/start the frozen batch. Unknown or interrupted identities
+remain fenced. A completed maintenance record is retired and cannot mint another
+session; its journals and original grant evidence remain available for inspection.
+
+Validation is source/fixture coverage until an actual native result is recorded;
+these owner-only paths are not a customer rollout or general standing consent.

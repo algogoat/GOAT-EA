@@ -38,7 +38,7 @@ def corrected_draft(draft, *, terminal_id, run_id, ea_version, server, native_ru
         raise ValueError('Exact unsubmitted retained editor draft required')
     if (not re.fullmatch(r'GOAT\\R[0-9a-f]{12}', native_run)
             or not re.fullmatch(r'[0-9]+\.[0-9]+', ea_version)
-            or not re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', server)):
+            or not re.fullmatch(r'[A-Za-z0-9_. -]{1,80}', server) or server!=server.strip()):
         raise ValueError('Exact generated report namespace required')
     current = draft['tester_ini'] + draft['export_ini']
     baseline = draft['baseline']
@@ -109,7 +109,7 @@ def _no_human_pending(c):
             raise ValueError('Pending human action must be processed before recovery')
 
 
-def _profile(c, record=None):
+def _profile(c, record=None, *, expected_chart_sha256=None):
     profile = read_json(c.root/'monitor-profile.json')
     folder = safe_path(Path(profile['profile_path']))
     charts = list(folder.glob('*.chr'))
@@ -119,13 +119,15 @@ def _profile(c, record=None):
     flags = permission_bytes(raw, config)
     if record is not None and flags != record['permission_bytes']:
         raise ValueError('Saved permission bytes changed; no launch or recovery acknowledgement')
-    verify_monitor_profile(c, profile, preserved_permissions_sha256=hashlib.sha256(raw).hexdigest())
+    if record is None and expected_chart_sha256!=hashlib.sha256(raw).hexdigest():
+        raise ValueError('Prepare chart differs from the prior verified stopped chart')
+    verify_monitor_profile(c, profile, preserved_permissions_sha256=expected_chart_sha256 if record is None else hashlib.sha256(raw).hexdigest())
     saved_launch_policy(c, c.session)
     return chart, common, raw, config, flags
 
 
 def _guard(c, record, *, draft_hashes):
-    scope, job = proof(c, record['job_id'])
+    scope, job = proof(c, record['job_id'],revoked_maintenance=record.get('revoked_maintenance',False))
     if sha(scope) != record['authority_sha256'] or sha(c.install) != record['installation_sha256'] or load_installation(c.root/'installation.json') != c.install:
         raise ValueError('Recovery authority or installed build changed')
     state = c.state()
@@ -154,33 +156,35 @@ def _fresh(c, identity, *, aligned):
     return observation, native
 
 
-def recover(c, job_id, *, process=None, clock=time):
+def recover(c, job_id, *, process=None, clock=time, revoked_maintenance=False):
     """One journaled close/CAS/relaunch, resuming known phases without retries."""
     from studio_human_reopen import retained
     process = process or WindowsSeedProcess(c)
     c.bridge.pump()
     with exclusive_gate(c.root/'batch-driver-gate'), exclusive_gate(c.local/'native-gate'):
-        scope, job = proof(c, job_id)
+        scope, job = proof(c, job_id,revoked_maintenance=revoked_maintenance)
         original_path = c.root/'rejected-monitor-restarts'/job['launch_intent']['attempt_id']/'restart.json'
         folder = safe_path(original_path.parent/'derived-report-recovery')
         journal = folder/'transaction.json'
         draft_path = c.bridge.root/'human/ui-draft.json'
         if not journal.exists():
             if folder.exists(): raise ValueError('Partial recovery preparation retained; inspect before proceeding')
-            _, old = retained(c, job_id)
+            _, old = retained(c, job_id,revoked_maintenance=revoked_maintenance)
             current = process.inspect()
             if current is None: raise ValueError('Current idle selected monitor required for diagnosis')
             observation, native = _fresh(c, current, aligned=False)
             state = c.state(); draft = read_json(draft_path)
-            if (observation['owner'] != 'agent' or state['owner'] != 'agent'
+            expected_owner='human' if revoked_maintenance else 'agent'
+            if (observation['owner'] != expected_owner or state['owner'] != expected_owner
                     or observation['revision'] != draft['revision'] or observation['generation'] != draft['generation']
-                    or state['generation'] != draft['generation'] or state['revision'] <= draft['revision']
+                    or state['generation'] != draft['generation']+(1 if revoked_maintenance else 0) or state['revision'] <= draft['revision']
                     or observation['tester_ini'] + observation['export_ini'] != draft['tester_ini'] + draft['export_ini']):
                 raise ValueError('Only the proven retained generated-report revision mismatch is recoverable')
             manifest = read_json(c.root/'packages'/job_id/'manifest.json')
             after = corrected_draft(draft, terminal_id=c.terminal, run_id=c.run, ea_version=c.install['ea_version'],
                                     server=c.session['account']['server'], native_run=manifest['native_run_relative'])
-            chart, common, chart_raw, common_raw, flags = _profile(c)
+            prior_profile=read_json(original_path.parent/'human-reopen.json')
+            chart, common, chart_raw, common_raw, flags = _profile(c,expected_chart_sha256=prior_profile['chart_sha256'])
             preset = safe_path(Path(c.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set')
             expected_preset = 'Mode_Operation=11\r\nStudio_ReadOnlyMonitor=true\r\nStudio_MonitorRunPath=\r\nEA_Desc=Studio Monitor\r\n'.encode('utf-16')
             profile = read_json(c.root/'monitor-profile.json')
@@ -198,13 +202,15 @@ def recover(c, job_id, *, process=None, clock=time):
                           before_sha256=hashlib.sha256(before_raw).hexdigest(), after_sha256=hashlib.sha256(after_raw).hexdigest(),
                           original_sha256=_hash(original_path), permission_bytes=flags,
                           startup_config=str(config), startup_sha256=_hash(config), preset=str(preset), preset_sha256=_hash(preset),
-                          prior_process=current, phase='prepared', created_utc=clock.time(), grants_control=False, starts_research=False)
+                          prior_process=current, phase='prepared', created_utc=clock.time(), grants_control=False, starts_research=False,
+                          revoked_maintenance=revoked_maintenance)
             folder.mkdir()
             for name, raw in (('draft-before.json',before_raw),('draft-after.json',after_raw),('restart-before.json',original_path.read_bytes()),
                               ('chart-before.chr',chart_raw),('common-before.ini',common_raw)):
                 retain(folder/name,raw)
             write_json(journal,record)
         record = read_json(journal)
+        if record.get('revoked_maintenance',False)!=revoked_maintenance:raise ValueError('Recovery mode differs from retained transaction')
         if record.get('phase') not in ('prepared','close_issued','stopped','draft_repaired','launch_issued','started_unverified','verified_pending_publication','reverified'):
             raise ValueError('Unknown retained recovery phase; no effect authorized')
         if record['job_id'] != job_id or _hash(folder/'restart-before.json') != record['original_sha256']:

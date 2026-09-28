@@ -29,6 +29,12 @@ class StudioStore:
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS studio_native_gate(id INTEGER PRIMARY KEY CHECK(id=1), root TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS studio_authorities(binding TEXT PRIMARY KEY, kind TEXT NOT NULL, provenance TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS studio_research_epochs(binding TEXT NOT NULL, generation INTEGER NOT NULL, provenance TEXT NOT NULL, PRIMARY KEY(binding,generation));
+        CREATE TRIGGER IF NOT EXISTS studio_research_epoch_immutable_insert BEFORE INSERT ON studio_research_epochs
+        WHEN EXISTS(SELECT 1 FROM studio_research_epochs WHERE binding=NEW.binding AND generation=NEW.generation AND provenance!=NEW.provenance)
+        BEGIN SELECT RAISE(ABORT,'Research epoch is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS studio_research_epoch_immutable_update BEFORE UPDATE ON studio_research_epochs BEGIN SELECT RAISE(ABORT,'Research epoch is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS studio_research_epoch_immutable_delete BEFORE DELETE ON studio_research_epochs BEGIN SELECT RAISE(ABORT,'Research epoch is immutable'); END;
         CREATE TRIGGER IF NOT EXISTS studio_authority_immutable_insert BEFORE INSERT ON studio_authorities
         WHEN EXISTS(SELECT 1 FROM studio_authorities WHERE binding=NEW.binding AND (kind!=NEW.kind OR provenance!=NEW.provenance))
         BEGIN SELECT RAISE(ABORT,'Authority is immutable'); END;
@@ -163,9 +169,9 @@ class StudioStore:
                     raise Conflict('Request ID reused with different content or actor')
                 return json.loads(prior['receipt'])
             state = self.snapshot(request['terminal_id'], request['run_id'],
-                                  human_channel_view=actor=='human' and command=='control.takeover')
+                                  human_channel_view=actor=='human' and command in ('control.takeover','control.grant_agent'))
             from studio_research_authority import command as authorize_command
-            authorize_command(self.db,binding,state,request,actor)
+            new_epoch=authorize_command(self.db,binding,state,request,actor)
             if state['revision'] != request['expected_revision']:
                 raise Conflict('Stale state revision')
             if state['generation'] != request['generation']:
@@ -229,7 +235,7 @@ class StudioStore:
                     raise Conflict('Human control action required')
                 # A real accepted human grant can classify a legacy human binding.
                 # Never classify an existing agent or replace restricted provenance.
-                if command == 'control.grant_agent' and state['owner'] == 'human':
+                if command == 'control.grant_agent' and state['owner'] == 'human' and new_epoch is None:
                     self.db.execute('INSERT OR IGNORE INTO studio_authorities VALUES(?,?,?)',
                         (binding,'native_human_control',packed(dict(kind='native_human_control',binding=json.loads(binding)))))
                 owner = 'human' if command == 'control.takeover' else 'agent'
@@ -241,4 +247,6 @@ class StudioStore:
                            status='applied', state=state, execution_effect=False)
             self.db.execute('INSERT INTO studio_receipts VALUES(?,?,?,?)',
                             (binding, request['request_id'], payload_hash, packed(receipt)))
+            if new_epoch is not None:
+                self.db.execute('INSERT INTO studio_research_epochs VALUES(?,?,?)',(binding,state['generation'],packed(new_epoch)))
             return receipt

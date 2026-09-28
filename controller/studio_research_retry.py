@@ -16,6 +16,9 @@ from studio_native_observe import observe
 
 
 def predecessor(db, state, scope, *, successor_id=None, require_released=True):
+    if 'renewal' in scope:
+        from studio_never_started_retirement import replacement_proof
+        return replacement_proof(db,state,scope,successor_id=successor_id,require_released=require_released)
     jobs=state['queue']
     # Deliberately one replacement total. A cancelled replacement cannot form
     # an unattended retry loop or authorize another job.

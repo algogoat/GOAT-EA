@@ -19,17 +19,33 @@ from studio_seed_process import WindowsSeedProcess
 
 OWNER_LOGIN='3000082754'
 
-def proof(controller, job_id):
+def proof(controller, job_id, *, revoked_maintenance=False):
     from studio_research_authority import authority
     state=controller.state()
-    scope=authority(controller.store.db,packed(dict(terminal_id=controller.terminal,run_id=controller.run)),state)
-    if (scope is None or scope['kind']!='research_continuation' or state['owner']!='agent'
+    binding=packed(dict(terminal_id=controller.terminal,run_id=controller.run))
+    if revoked_maintenance:
+        from studio_research_regrant import takeover
+        _,scope,_=takeover(controller.store.db,binding,state)
+    else:
+        scope=authority(controller.store.db,binding,state)
+    if not revoked_maintenance and (scope is None or scope['kind']!='research_continuation' or state['owner']!='agent'
             or scope['generation']!=state['generation'] or controller.session['account']['login']!=OWNER_LOGIN
             or not scope['created_utc']<=time.time()<scope['expires_utc']):
         raise ValueError('Current owner-demo typed research continuation required')
+    return unstarted_proof(controller,job_id,scope)
+
+
+def unstarted_proof(controller,job_id,scope):
+    """Historical native proof only; caller separately verifies current authority."""
+    state=controller.state()
     if len(state['queue'])!=1 or state['queue'][0]['job_id']!=job_id:
         raise ValueError('Exactly one rejected original research job required')
-    job=state['queue'][0];attempt=job['launch_intent']['attempt_id']
+    return unstarted_material(controller,state['queue'][0],scope)
+
+
+def unstarted_material(controller,job,scope,*,request_path=None):
+    """Verify retained original evidence; this never grants current authority."""
+    job_id=job['job_id'];attempt=job['launch_intent']['attempt_id']
     if (job['status'] not in ('starting','reconcile_required') or 'restart_intent' in job
             or sha(job['configuration'])!=scope['configuration_sha256'] or job['configuration_sha256']!=scope['configuration_sha256']):
         raise ValueError('Rejected original job scope changed')
@@ -76,7 +92,7 @@ def proof(controller, job_id):
         raise ValueError('Tester work artifacts exist since bootstrap')
     # Preserve all transport, including an expired pending cancel. Neither a
     # permit nor an unknown consumed action may arm anything during restart.
-    current=read_json(gate/'request.json')
+    current=read_json(safe_path(request_path or gate/'request.json'))
     if current['request_id'] not in (attempt,sha([attempt,'cancel'])) or current['expires_utc']>=time.time():
         raise ValueError('Only the expired original start/cancel may remain')
     for path in gate.glob('consumed-*.json'):

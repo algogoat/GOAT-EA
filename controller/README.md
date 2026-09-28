@@ -1,5 +1,37 @@
 # GOAT Studio controller 1.49 beta candidate
 
+## Recovery after native takeover of an internal research continuation
+
+For the existing owner demo continuation only, a genuine native TAKE CONTROL
+followed by a fresh native GIVE TO AGENT can create one additive research epoch.
+The original scope remains immutable and revoked. The new scope retains the
+same account, plan and build and has a fresh 48-hour lifetime. No CLI actor or
+confirmation flag can create the native grant.
+
+`research-monitor-repair-revoked-report --job-id <original>` repairs the proven
+derived Report baseline mismatch while retaining human ownership. It closes and
+relaunches the idle selected monitor through its retained recovery transaction.
+`research-regrant-status` verifies native/editor readiness for a real grant; it
+does not grant control. Existing permission bytes and user settings are retained.
+
+After the genuine grant, `research-retire-never-started --job-id <original>`
+requires an expired, rejected, never-consumed original start, unchanged queued
+native members, no output and a stopped prior publisher. It archives the evidence,
+normally closes the idle monitor once, restores only the original owned controls,
+reconciles the generated Report root, records `retired_never_started`, and
+relaunches/reverifies once. It never invents a native cancellation receipt or
+deletes the historical queue. Repeating the command resumes the same transaction.
+
+Only that verified retirement permits one exact-plan replacement. Its driver
+receives the new epoch's 172800-second budget and at least 5 GiB free-space guard;
+host/process recovery never resets its deadline. The original driver's record
+is unchanged. Actual native execution still requires consumed START and tester
+activity; source fixtures and read-only rehearsal are not native qualification.
+
+These bounded owner-recovery commands are the current implementation, not the
+general customer setup/recovery toolset. See the proposed
+[customer agent tool contract](../docs/operations/AGENT-RECOVERY-TOOLS.md).
+
 This portable Windows controller uses the installed receipt and bundled Python.
 Only `goat_studio.py` is the public Studio entrypoint. The other Python modules
 implement its validation and durable storage; do not invoke internal helpers or

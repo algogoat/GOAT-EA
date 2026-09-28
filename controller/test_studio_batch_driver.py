@@ -121,6 +121,17 @@ class BatchDriverTests(unittest.TestCase):
         return run(self.c, 'batch', poll_seconds=1, cancel_grace_seconds=2,
                    clock=self.c.clock, finish_fn=self.c.finish, **kwargs)
 
+    def test_replacement_driver_inherits_elapsed_budget_and_stronger_disk_reserve(self):
+        inherited=dict(started_wall=900.0,deadline_wall=1003.0,max_seconds=103,min_free_bytes=DEFAULT_MIN_FREE_BYTES)
+        with patch('studio_research_retry.inherited_budget',return_value=inherited):
+            result=self.drive(max_seconds=86400,min_free_bytes=1)
+        self.assertEqual(result['deadline_wall'],1003.0)
+        self.assertEqual(result['started_wall'],900.0)
+        self.assertEqual(result['max_seconds'],103)
+        self.assertEqual(result['min_free_bytes'],DEFAULT_MIN_FREE_BYTES)
+        self.assertEqual((self.c.starts,self.c.cancels),(1,1))
+        self.assertLess(self.c.clock.wall,1010)
+
 
     def test_capacity_refuses_each_output_volume_before_journal_or_start(self):
         for role in ('terminal_data_root', 'common_files_root', 'controller_state_root'):

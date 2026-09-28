@@ -144,8 +144,11 @@ def command(db, binding, state, request, actor):
     op = CURRENT_OPERATION.get()
     if command_name=='queue.enqueue_batch' and op=='prepare-batch':
         payload = request['payload']
-        if sha(payload['members'])!=value['members_sha256'] or state['queue']:
+        if sha(payload['members'])!=value['members_sha256']:
             raise ValueError('Only the exact frozen research members may be queued once')
+        if state['queue']:
+            from studio_research_retry import predecessor
+            predecessor(db,state,value)
         return
     if command_name=='queue.reserve' and op in ('start','run-batch'):
         if not value['created_utc'] <= time.time() < value['expires_utc']:
@@ -153,6 +156,9 @@ def command(db, binding, state, request, actor):
         job = next((j for j in state['queue'] if j['job_id']==request['payload']['job_id']), None)
         if job is None or job['configuration_sha256']!=value['configuration_sha256']:
             raise ValueError('Reservation is outside the frozen research plan')
+        if len(state['queue'])>1:
+            from studio_research_retry import predecessor
+            predecessor(db,state,value,successor_id=job['job_id'])
         return
     if command_name=='queue.cancel' and op in ('cancel','run-batch'):
         return
@@ -196,6 +202,15 @@ def before_native_dispatch(controller, job):
             raise ValueError('Research continuation expired; no native dispatch')
         if job['configuration_sha256']!=value['configuration_sha256']:
             raise ValueError('Native dispatch differs from frozen research configuration')
+        state=controller.state()
+        if len(state['queue'])>1:
+            from studio_research_retry import predecessor
+            inherited=predecessor(controller.store.db,state,value,successor_id=job['job_id'],require_released=job['status']=='pending')
+            journal=read_json(controller.root/'batch-drivers'/(job['job_id']+'.json'))
+            if (journal.get('inherited_budget')!=inherited or journal['deadline_wall']!=inherited['deadline_wall']
+                    or journal['started_wall']!=inherited['started_wall'] or journal['max_seconds']!=inherited['max_seconds']
+                    or journal['min_free_bytes']<inherited['min_free_bytes'] or time.time()>=journal['deadline_wall']):
+                raise ValueError('Replacement requires the original bounded driver deadline and disk reserve')
         from studio_monitor_probe import inspect_idle_demo
         native = inspect_idle_demo(controller)
         if (native.get('demo') is not True or native.get('algo_trading') is not False

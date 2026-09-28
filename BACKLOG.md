@@ -122,3 +122,6 @@ named-terminal ambiguity and protected-peer checks. Record unreadable-system-pat
 limits explicitly. Restart during cleanup retains the fence and requires another
 stop before same-review resumption. Source cases and real PowerShell/helper
 qualification are separate from full native EA/installed-package qualification.
+- **OWNER-MAINT-009 (2026-09-28, source candidate):** Keep the prior accepted empty-draft flag when a queued/null or malformed settings snapshot is rejected. Commit candidate flag only after complete snapshot validation, preventing the retained-draft refresh trap. Compile/native invalid-snapshot recovery qualification still pending; no binary installed.
+
+- **OWNER-MAINT-014 (2026-09-28):** Controller-managed recovery priority. Compare Studio user settings independently of the generated Report destination, retaining every other byte and rejecting missing/empty/duplicate Report rows. Refresh, queue and handoff share the same comparison. Actual Banker evidence: only Report changed while native editor remained revision0 against controller revision6. Preserve actual edits; no revision guard bypass. V1.49-STUDIO-DRAFT-11 candidate, source/native qualification tracked separately. Controller-owned relaunch preserving saved permissions remains the next required part of this work.

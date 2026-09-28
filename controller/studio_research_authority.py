@@ -115,6 +115,15 @@ def authority(db, binding, state):
         if state['owner'] != 'agent':
             raise ValueError('Owner TAKE CONTROL wins over demo agent work')
         return None
+    root = Path(db.execute('PRAGMA database_list').fetchone()[2]).parent
+    session_path = root / 'session.json'
+    session = read_json(session_path) if session_path.is_file() else {}
+    if session.get('authority_kind') == 'demo_direct':
+        if {key: session.get(key) for key in ('terminal_id', 'run_id')} != json.loads(binding):
+            raise ValueError('Demo agent session binding changed')
+        if CURRENT_OPERATION.get() in READ_OPERATIONS | {'serve'}:
+            return None
+        raise ValueError('Demo mutation requires the broker-verified agent tool')
     row = db.execute('SELECT kind,provenance FROM studio_authorities WHERE binding=?', (binding,)).fetchone()
     if row is None:
         root=Path(db.execute('PRAGMA database_list').fetchone()[2]).parent
@@ -190,6 +199,15 @@ def command(db, binding, state, request, actor):
         if not allowed:
             raise ValueError('Demo agent scope permits only this tool job and exact Studio command')
         return
+    root = Path(db.execute('PRAGMA database_list').fetchone()[2]).parent
+    session_path = root / 'session.json'
+    session = read_json(session_path) if session_path.is_file() else {}
+    if session.get('authority_kind') == 'demo_direct':
+        if {key: session.get(key) for key in ('terminal_id', 'run_id')} != json.loads(binding):
+            raise ValueError('Demo agent session binding changed')
+        if actor == 'human' and state['owner'] == 'human' and request['command'] == 'control.grant_agent':
+            return
+        raise ValueError('Demo agent mutations require the broker-verified tool')
     if actor=='human' and request['command']=='control.grant_agent':
         row=db.execute('SELECT kind FROM studio_authorities WHERE binding=?',(binding,)).fetchone()
         if row is not None and row[0]=='research_continuation':

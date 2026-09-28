@@ -363,10 +363,24 @@ class DemoAgentTests(unittest.TestCase):
         with operation('state'):
             controller = Controller(self.installation).open()
             try:
-                with self.assertRaises(ValueError):
-                    controller.state()
+                self.assertEqual(controller.state()['owner'], 'agent')
             finally:
                 controller.store.close()
+        db = sqlite3.connect(self.root / 'studio.sqlite')
+        self.addCleanup(db.close)
+        binding = packed(dict(terminal_id='terminal-one', run_id='session-one'))
+        with operation('serve'), self.assertRaisesRegex(ValueError, 'broker-verified tool'):
+            command(db, binding, dict(owner='agent'), dict(command='draft.replace_strategy',
+                    request_id='stale-agent-edit', payload={}), actor='agent')
+        with operation('serve'):
+            self.assertIsNone(command(db, binding, dict(owner='human'),
+                    dict(command='control.grant_agent'), actor='human'))
+        with operation('state'), self.assertRaisesRegex(ValueError, 'binding changed'):
+            authority(db, packed(dict(terminal_id='other', run_id='session-one')),
+                      dict(owner='agent'))
+        with operation('serve'), self.assertRaisesRegex(ValueError, 'binding changed'):
+            command(db, packed(dict(terminal_id='other', run_id='session-one')),
+                    dict(owner='human'), dict(command='control.grant_agent'), actor='human')
 
     def test_repeated_batch_preparation_reads_count_from_existing_queue(self):
         plan = self.base / 'plan.json'; plan.write_text('{}')

@@ -60,7 +60,7 @@ def inspect_writers(c):
                 raise ValueError('Stop other controller/runner processes before orphan review')
 
 
-def inspect(c, *, expected_batch=True, allow_own_request=None):
+def inspect_local(c, *, allow_own_request=None):
     """Caller holds the native gate as well as the exclusive session hold."""
     if c.install['ea_version']!='1.49': raise ValueError('Orphan recovery requires the compatible V1.49 monitor; do not reset a legacy EA')
     # Rehash installed bytes on every boundary, not only at CLI construction.
@@ -105,19 +105,32 @@ def inspect(c, *, expected_batch=True, allow_own_request=None):
             for name in CONTROLS:
                 if (folder/name).exists(): raise ValueError('Native controls exist for a current or legacy EA version')
     inspect_writers(c)
+    active=read_json(c.local/'active.json')
+    expected=dict(directory_id=c.session['directory_id'],terminal_id=c.terminal,run_id=c.run,
+                  terminal_data_path=c.install['terminal_data_root'])
+    if active!=expected: raise ValueError('Active binding changed')
+    return dict(installation_sha256=sha(c.install),state_sha256=sha(state),revision=state['revision'],generation=state['generation'],
+                active_sha256=digest(c.local/'active.json'),
+                owner_file_sha256=digest(gate/'controller.json'),binding_sha256=digest(c.bridge.root/'binding.json'),prior_control=prior_control)
+
+
+def inspect(c, *, expected_batch=True, allow_own_request=None):
+    local=inspect_local(c,allow_own_request=allow_own_request)
     process=inspect_processes(c.binding())['research']
     observation,_=c.runtime(require_idle=True,expected_batch_ongoing=expected_batch)
     cap=observation.get('recovery_capability',{})
     if (cap.get('protocol')!=1 or cap.get('ea_version')!='1.49' or cap.get('terminal_running') is not False
             or not isinstance(cap.get('monitor_instance'),str) or not cap['monitor_instance']):
         raise ValueError('Running monitor lacks the exact orphan-recovery capability or has a terminal-running flag')
+    # Preserve the running path's final binding/owner reads after native probing.
     active=read_json(c.local/'active.json')
     expected=dict(directory_id=c.session['directory_id'],terminal_id=c.terminal,run_id=c.run,
                   terminal_data_path=c.install['terminal_data_root'])
     if active!=expected: raise ValueError('Active binding changed')
-    return dict(installation_sha256=sha(c.install),state_sha256=sha(state),revision=state['revision'],generation=state['generation'],
-                process=process,monitor_instance=cap['monitor_instance'],active_sha256=digest(c.local/'active.json'),
-                owner_file_sha256=digest(gate/'controller.json'),binding_sha256=digest(c.bridge.root/'binding.json'),prior_control=prior_control)
+    local.update(active_sha256=digest(c.local/'active.json'),
+                 owner_file_sha256=digest(c.local/'native-gate/controller.json'),
+                 binding_sha256=digest(c.bridge.root/'binding.json'))
+    return local | dict(process=process,monitor_instance=cap['monitor_instance'])
 
 
 def plan_path(c, review_id):

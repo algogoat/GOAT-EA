@@ -108,3 +108,10 @@ OWNER-MAINT-010 parent-loss follow-up: re-verification validates retained origin
   difference between terminal UTC and observation file write time. Retain the
   separate 20-second runtime freshness check. Source regression for a one-second-ahead controller and
   no-publication refusals; tester-specific cause and native qualification pending.
+
+- **RECOVERY-STOPPED-001 (2026-09-28):** Explicit human-confirmed settlement of
+  an expired pre-consumption rejection while the selected terminal is absent.
+  Retain exact result replay barrier, local binding/state checks, archives, locks,
+  consumed scan, ordered transport cleanup and durable mode. No offline owner
+  authority, native flag edits, launch or old-observation reuse. Source tests and
+  installed/native qualification required before customer delivery.

@@ -19,7 +19,7 @@ READ_OPERATIONS = frozenset(('discover','resource-profile','state','onboarding-s
 OPERATIONS = READ_OPERATIONS | frozenset(('owner-maintenance-bootstrap','monitor-prepare','monitor-launch',
     'serve','orphan-recovery-prepare','orphan-recovery-apply','orphan-recovery-status',
     'orphan-recovery-reconcile-rejection','prepare-batch','run-batch','start','status','reconcile',
-    'batch-status','cancel','finish','benchmark-report','save-batch','research-monitor-restart','research-monitor-restart-resume','research-monitor-restart-status','research-monitor-reopen-prepare','research-monitor-adopt-reopen','research-monitor-repair-derived-report','cancel-rejected-successor'))
+    'batch-status','cancel','finish','benchmark-report','save-batch','research-monitor-restart','research-monitor-restart-resume','research-monitor-restart-status','research-monitor-reopen-prepare','research-monitor-adopt-reopen','research-monitor-repair-derived-report','research-retire-never-started','cancel-rejected-successor'))
 
 
 @contextmanager
@@ -32,7 +32,7 @@ def operation(name):
 
 
 HUMAN_RECOVERY_OPERATIONS = READ_OPERATIONS | frozenset(('serve','cancel','switch-plan','switch-apply',
-    'switch-status','switch-verify-park','monitor-stop'))
+    'switch-status','switch-verify-park','monitor-stop','research-monitor-repair-revoked-report','research-regrant-status'))
 
 
 def _legacy_human_grant(db, binding, state):
@@ -106,6 +106,10 @@ def authority(db, binding, state):
         raise ValueError('Immutable research continuation provenance changed')
     if value.get('kind')!=kind or value.get('binding')!=json.loads(binding):
         raise ValueError('Research continuation binding changed')
+    original_value=value
+    if state['owner']=='agent' and state['generation']!=value['generation']:
+        from studio_research_regrant import active
+        value=active(db,binding,state,value)
     if (root/'continuation-revocation/revoked.json').exists() and CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve','cancel','status','reconcile','finish','batch-status'}:
         raise ValueError('Research continuation permanently revoked by pending human control')
     if state['generation']!=value['generation'] or state['owner']!='agent':
@@ -120,7 +124,7 @@ def authority(db, binding, state):
     if CURRENT_OPERATION.get() not in OPERATIONS:
         raise ValueError('Operation is not allowlisted for research continuation')
     session = read_json(root/'session.json')
-    if session.get('authority_kind')!=kind or session.get('authority_sha256')!=sha(value):
+    if session.get('authority_kind')!=kind or session.get('authority_sha256')!=sha(original_value):
         raise ValueError('Required session authority kind/provenance missing or changed')
     install = load_installation(root/'installation.json')
     if sha(install)!=value['installation_sha256'] or session['account']!=value['account']:
@@ -130,6 +134,11 @@ def authority(db, binding, state):
 
 def command(db, binding, state, request, actor):
     if actor=='human' and request['command']=='control.takeover':return
+    if actor=='human' and request['command']=='control.grant_agent':
+        row=db.execute('SELECT kind FROM studio_authorities WHERE binding=?',(binding,)).fetchone()
+        if row is not None and row[0]=='research_continuation':
+            from studio_research_regrant import prepare
+            return prepare(db,binding,state,request)
     value = authority(db, binding, state)
     if value is None:
         return
@@ -212,7 +221,12 @@ def before_native_dispatch(controller, job):
         if len(state['queue'])>1:
             from studio_research_retry import predecessor
             inherited=predecessor(controller.store.db,state,value,successor_id=job['job_id'],require_released=job['status']=='pending')
-            if (journal.get('inherited_budget')!=inherited or journal['deadline_wall']!=inherited['deadline_wall']
+            if inherited.get('fresh_native_epoch'):
+                if (journal.get('fresh_authority_budget')!=inherited or journal['max_seconds']!=inherited['max_seconds']
+                        or journal['started_wall']<value['created_utc'] or journal['deadline_wall']!=journal['started_wall']+journal['max_seconds']
+                        or journal['min_free_bytes']<inherited['min_free_bytes'] or time.time()>=journal['deadline_wall']):
+                    raise ValueError('Replacement requires its new native epoch budget and disk reserve')
+            elif (journal.get('inherited_budget')!=inherited or journal['deadline_wall']!=inherited['deadline_wall']
                     or journal['started_wall']!=inherited['started_wall'] or journal['max_seconds']!=inherited['max_seconds']
                     or journal['min_free_bytes']<inherited['min_free_bytes'] or time.time()>=journal['deadline_wall']):
                 raise ValueError('Replacement requires the original bounded driver deadline and disk reserve')

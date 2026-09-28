@@ -23,8 +23,8 @@ from studio_onboarding import saved_launch_policy,verify_monitor_profile
 from studio_human_launch import human_launch
 
 
-def retained(c,job_id):
-    scope,job=proof(c,job_id)
+def retained(c,job_id,*,revoked_maintenance=False):
+    scope,job=proof(c,job_id,revoked_maintenance=revoked_maintenance)
     path=c.root/'rejected-monitor-restarts'/job['launch_intent']['attempt_id']/'restart.json'
     record=read_json(path)
     if record['phase']!='stopped' or record['authority_sha256']!=sha(scope) or record['job_id']!=job_id:

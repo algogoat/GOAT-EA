@@ -145,6 +145,22 @@ class BatchDriverTests(unittest.TestCase):
         self.assertEqual(result['deadline_wall'],173800)
         self.assertEqual(self.c.starts,1)
 
+    def test_new_native_epoch_keeps_its_fresh_budget_proof_across_host_death(self):
+        proof=dict(fresh_native_epoch=True,authority_sha256='a'*64,generation=2,
+                   max_seconds=172800,min_free_bytes=DEFAULT_MIN_FREE_BYTES)
+        def die():raise HostDeath()
+        self.c.clock.on_sleep=die
+        with patch('studio_research_retry.inherited_budget',return_value=proof),self.assertRaises(HostDeath):
+            self.drive(max_seconds=1,min_free_bytes=1)
+        path=self.c.root/'batch-drivers/batch.json';record=json.loads(path.read_text())
+        self.assertEqual(record['fresh_authority_budget'],proof)
+        self.assertNotIn('inherited_budget',record)
+        self.assertEqual(record['deadline_wall'],173800)
+        self.assertEqual(record['min_free_bytes'],DEFAULT_MIN_FREE_BYTES)
+        self.c.clock.wall+=100;self.c.clock.on_sleep=None;self.c.finished=True
+        self.assertEqual(self.drive(resume=True)['deadline_wall'],173800)
+        self.assertEqual(self.c.starts,1)
+
 
     def test_capacity_refuses_each_output_volume_before_journal_or_start(self):
         for role in ('terminal_data_root', 'common_files_root', 'controller_state_root'):

@@ -60,11 +60,18 @@ class DerivedReportTests(unittest.TestCase):
         self.assertIn(b'expertmode=4',chart)
         common=b'[Experts]\r\nAllowDllImport=1\r\nEnabled=0\r\n[Charts]\r\nProfileLast=fixture\r\n'
         flags=permission_bytes(chart,common)
-        self.assertEqual(bytes.fromhex(flags['chart']),b'expertmode=4\r\n')
+        expected=next(line for line in chart.splitlines(keepends=True) if line.strip()==b'expertmode=4')
+        self.assertEqual(bytes.fromhex(flags['chart']),expected)
         self.assertEqual(permission_bytes(chart.replace(b'<indicator>',b'<indicator>\r\nexpertmode=0'),common),flags)
         self.assertNotEqual(permission_bytes(chart.replace(b'expertmode=4',b'expertmode=5'),common),flags)
         self.assertNotEqual(permission_bytes(chart,common.replace(b'AllowDllImport=1',b'AllowDllImport=0')),flags)
         with self.assertRaises(ValueError):permission_bytes(chart,common.replace(b'Enabled=0',b'Enabled=1'))
+
+    def test_broker_server_spaces_preserve_exact_derived_report_suffix(self):
+        value=copy.deepcopy(self.draft)
+        value['baseline']=value['baseline'].replace('Broker-Demo','Broker Demo 01')
+        result=corrected_draft(value,**(self.args|dict(server='Broker Demo 01')))
+        self.assertEqual(result['baseline'],value['tester_ini']+value['export_ini'])
 
 
 class ManagedReportRecoveryTests(unittest.TestCase):
@@ -128,6 +135,37 @@ class ManagedReportRecoveryTests(unittest.TestCase):
         write_json(self.draft_path,value)
         with self.assertRaises(ValueError):recover(self.c,'original',process=self.process)
         self.process.close.assert_not_called();self.process.start.assert_not_called()
+
+    def test_chart_different_from_retained_stopped_profile_refuses_before_close(self):
+        chart=Path(self.f.profile['profile_path'])/'chart01.chr'
+        chart.write_bytes(chart.read_bytes().decode('utf-16').replace('expertmode=4','expertmode=5').encode('utf-16'))
+        with self.assertRaisesRegex(ValueError,'prior verified stopped'):recover(self.c,'original',process=self.process)
+        self.process.close.assert_not_called();self.process.start.assert_not_called()
+
+    def test_revoked_maintenance_repairs_baseline_without_regrant_or_old_scope_revival(self):
+        from studio_research_authority import operation
+        state=self.c.state()
+        request=dict(schema_version=1,request_id='native-takeover',terminal_id=self.c.terminal,run_id=self.c.run,
+            expected_revision=state['revision'],generation=state['generation'],command='control.takeover',payload={})
+        write_json(self.c.bridge.root/'human/inbox/native-takeover.json',request)
+        with operation('serve'):self.assertTrue(self.c.bridge.pump()[0]['ok'])
+        prior=(self.c.root/'research-authority.json').read_bytes()
+        initial_runtime=self.f.runtime.side_effect
+        def observed(**kwargs):
+            value,details=initial_runtime(**kwargs)
+            if self.started:value['generation']=self.c.state()['generation']
+            return value,details
+        self.f.runtime.side_effect=observed
+        with operation('research-monitor-repair-revoked-report'),patch('studio_research_regrant.OWNER_ACCOUNT',self.c.session['account']):
+            result=recover(self.c,'original',process=self.process,revoked_maintenance=True)
+            self.assertEqual(result['phase'],'reverified')
+            self.assertEqual(self.c.state()['owner'],'human')
+            self.assertEqual(self.c.state()['generation'],state['generation']+1)
+            self.assertEqual(recover(self.c,'original',process=self.process,revoked_maintenance=True)['phase'],'reverified')
+        self.assertEqual((self.c.root/'research-authority.json').read_bytes(),prior)
+        self.assertEqual(self.c.store.db.execute('SELECT COUNT(*) FROM studio_research_epochs').fetchone()[0],0)
+        self.process.close.assert_called_once();self.process.start.assert_called_once()
+        with operation('run-batch'),self.assertRaisesRegex(ValueError,'revoked'):self.c.state()
 
     def test_uncertain_launch_never_repeats(self):
         self.process.start.side_effect=ValueError('uncertain startup')

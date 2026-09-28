@@ -83,6 +83,9 @@ OPERATION_CONTRACTS = {
     'research-monitor-reopen-prepare':dict(required=['job-id'],effect='prepare an audited profile-pointer-only change while stopped; no launch or permission edits'),
     'research-monitor-adopt-reopen':dict(required=['job-id','human-reopened'],effect='observe an actual human-reopened exact idle demo monitor once; never launch, grant or change permissions'),
     'research-monitor-repair-derived-report':dict(required=['job-id'],effect='repair only a proven generated report baseline, with controller-owned close/reopen and unchanged permissions; never start research or grant control'),
+    'research-monitor-repair-revoked-report':dict(required=['job-id'],effect='maintenance only after genuine takeover: repair derived baseline and reopen idle monitor, retaining human ownership and revoked old authority'),
+    'research-retire-never-started':dict(required=['job-id'],effect='after genuine native re-grant, stop the selected idle monitor, archive and retire the exact never-consumed original attempt, restore its owned controls, and reverify one inert relaunch; no native cancellation or research start is invented'),
+    'research-regrant-status':dict(required=[],effect='read-only proof of genuine takeover and current native connection readiness; never create a grant'),
     'research-monitor-restart-resume':dict(required=['job-id'],effect='reconcile an already-issued monitor close and perform only its never-issued first relaunch; no repeated close or launch'),
     'cancel-rejected-successor':dict(required=['job-id'],effect='owner-only: publish one new stop identity after exact expired unconsumed native cancel rejection and reverified monitor restart; keeps both stop receipts'),
     'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls')
@@ -347,6 +350,9 @@ def main(argv=None):
     p=sub.add_parser('research-monitor-reopen-prepare');p.add_argument('--job-id',required=True)
     p=sub.add_parser('research-monitor-adopt-reopen');p.add_argument('--job-id',required=True);p.add_argument('--human-reopened',action='store_true')
     p=sub.add_parser('research-monitor-repair-derived-report');p.add_argument('--job-id',required=True)
+    p=sub.add_parser('research-monitor-repair-revoked-report');p.add_argument('--job-id',required=True)
+    p=sub.add_parser('research-retire-never-started');p.add_argument('--job-id',required=True)
+    sub.add_parser('research-regrant-status')
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
         from studio_research_authority import operation,dispatch
@@ -445,6 +451,19 @@ def main(argv=None):
             elif args.operation=='research-monitor-repair-derived-report':
                 from studio_derived_report_recovery import recover
                 result=recover(controller,args.job_id)
+            elif args.operation=='research-monitor-repair-revoked-report':
+                from studio_derived_report_recovery import recover
+                result=recover(controller,args.job_id,revoked_maintenance=True)
+            elif args.operation=='research-retire-never-started':
+                from studio_never_started_retirement import retire
+                result=retire(controller,args.job_id)
+            elif args.operation=='research-regrant-status':
+                from studio_research_regrant import takeover,native
+                from campaign_ledger import packed
+                state=controller.state()
+                _,base,prior=takeover(controller.store.db,packed(dict(terminal_id=controller.terminal,run_id=controller.run)),state)
+                result=dict(owner=state['owner'],generation=state['generation'],original_scope_revoked=True,takeover=prior,
+                            native=native(controller,state),grant_created=False)
             elif args.operation=='research-monitor-adopt-reopen':
                 from studio_human_reopen import adopt
                 result=adopt(controller,args.job_id,human_reopened=args.human_reopened)

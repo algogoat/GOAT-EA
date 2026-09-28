@@ -197,9 +197,12 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
                           start_issued=True, attempt_id=None, cancel_issued=False,
                           stopped=False, status='start_issued', cancel_grace_seconds=cancel_grace_seconds)
             if inherited is not None:
-                if now>=inherited['deadline_wall']:raise ValueError('Original research deadline elapsed')
-                record.update(started_wall=inherited['started_wall'],deadline_wall=inherited['deadline_wall'],
-                              inherited_budget=inherited,replacement_created_wall=now)
+                if inherited.get('fresh_native_epoch'):
+                    record['fresh_authority_budget']=inherited
+                else:
+                    if now>=inherited['deadline_wall']:raise ValueError('Original research deadline elapsed')
+                    record.update(started_wall=inherited['started_wall'],deadline_wall=inherited['deadline_wall'],
+                                  inherited_budget=inherited,replacement_created_wall=now)
             # Durable intent precedes any dispatch, including a crash before start.
             _save(path, record, clock)
             try:

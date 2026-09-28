@@ -134,3 +134,11 @@ qualification are separate from full native EA/installed-package qualification.
   controller CI and native execution remain separate qualification requirements.
 
 - **RESEARCH-BUDGET-48H-001 (2026-09-28):** Support172800-second bounded research driver. Preserve no-reset resume and disk guards. Fresh window after takeover requires genuine native re-grant; no amendment to revoked authority.
+
+- **AGENT-SELF-REPAIR-001 (2026-09-28, Vince):** Customer agents should diagnose and repair stale-state mismatches, failed idle restarts and interrupted research locally through reusable evidence-preserving controller capabilities. Surface check/apply/reverify results, resumable transaction IDs and exact blockers; no bespoke support patch for each occurrence. Preserve actual connection/revocation and trading-permission boundaries. First qualification: Banker native re-grant and never-started-attempt recovery; then general customer coverage.
+  Expanded owner requirement: simple goal-level tools for GOAT, builder and MT5;
+  agent-managed WebRequest/DLL setup under retained user authorization; local
+  troubleshooting and clear repair receipts; customer-controlled redacted reports
+  that turn recurring fixes into tested shared recovery capabilities. No repeated
+  manual reopen or routine approval loop. Acceptance and delivery order:
+  [agent recovery tool contract](docs/operations/AGENT-RECOVERY-TOOLS.md).

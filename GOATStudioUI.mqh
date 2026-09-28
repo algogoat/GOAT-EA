@@ -2,6 +2,9 @@
 #define GOAT_STUDIO_UI_MQH
 #include "GOATStudioBridge.mqh"
 #include "GOATStudioNative.mqh"
+#ifdef GOAT_CONTROL_FEEDBACK_V149
+#include "GOATStudioControlFeedback.mqh"
+#endif
 CGoatStudioBridge g_StudioBridge;
 bool g_StudioBound=false;
 string g_StudioPendingId="",g_StudioPendingHash="",g_StudioPendingCommand="",g_StudioLastError="";
@@ -108,6 +111,9 @@ bool GoatStudioUIState(string &tester,string &exports,string &owner,long &revisi
    if(pending<0) {status="Pending command recovery failed; journal retained"; return false;}
    if(pending==1)
      {g_StudioPendingId=pending_id; g_StudioPendingHash=pending_hash; g_StudioPendingCommand=pending_command;}
+#ifdef GOAT_CONTROL_FEEDBACK_V149
+   if(g_StudioPendingId!="") GoatStudioControlBegin(g_StudioPendingId,g_StudioPendingCommand);
+#endif
    string body; SGOATJsonToken tokens[];
    status="Unable to read or verify controller snapshot";
    if(!g_StudioBridge.ReadSnapshot(body) || !GOATJsonParse(body,tokens,16384,2000000)) return false;
@@ -135,6 +141,10 @@ bool GoatStudioUIState(string &tester,string &exports,string &owner,long &revisi
          saved=applied && acknowledged==revision && g_StudioPendingCommand=="draft.replace_configuration";
          if(applied && acknowledged<revision) g_StudioLastError="Newer committed changes exist; review before saving retained edits";
          if(!applied) {SGOATJsonToken rt[]; string error; if(GOATJsonParse(receipt,rt)&&GOATJsonGetString(receipt,rt,0,"error",error)) g_StudioLastError=error;}
+#ifdef GOAT_CONTROL_FEEDBACK_V149
+         if(g_StudioPendingCommand=="control.grant_agent" || g_StudioPendingCommand=="control.takeover")
+            GoatStudioControlResolve(applied,applied ? "" : g_StudioLastError);
+#endif
          // Keep the original request recoverable until the editor has durably
          // recorded its acknowledged baseline and any later unsaved edits.
          g_StudioReceiptResolved=true;
@@ -177,6 +187,10 @@ bool GoatStudioUIState(string &tester,string &exports,string &owner,long &revisi
       g_StudioHasStrategy=(values>=0 && tokens[values].type==GOAT_JSON_OBJECT);
       GOATJsonGetString(body,tokens,values,"EA_Desc",g_StudioStrategyName);
      }
+#ifdef GOAT_CONTROL_FEEDBACK_V149
+   string feedback=GoatStudioControlText(owner);
+   if(feedback!="") status=feedback;
+#endif
    g_StudioQueueRevision=revision; g_StudioQueueGeneration=generation;
    return true;
   }
@@ -227,7 +241,11 @@ bool GoatStudioUISubmit(const string command,const string tester,const string ex
      }
    string id="ui-"+(string)ChartID()+"-"+(string)GetMicrosecondCount(),hash;
    if(!g_StudioBridge.SubmitHuman(id,command,payload,hash,revision,generation)) return false;
-   g_StudioPendingId=id; g_StudioPendingHash=hash; g_StudioPendingCommand=command; g_StudioLastError=""; return true;
+   g_StudioPendingId=id; g_StudioPendingHash=hash; g_StudioPendingCommand=command; g_StudioLastError="";
+#ifdef GOAT_CONTROL_FEEDBACK_V149
+   GoatStudioControlBegin(id,command);
+#endif
+   return true;
   }
 
 // Enable() in ControlsPlus restores its light-theme defaults and can reveal
@@ -418,6 +436,16 @@ void CStrategyTesterDialog::ManagedControls(void)
       StageMove(m_edtBatchErrors,16,208,D_Height>=270,w,26);
       StageMove(m_listQueue,16,250,!g_StudioEmptyDraft && D_Height>=350,w,D_Height-274);
      }
+#endif
+#ifdef GOAT_CONTROL_FEEDBACK_V149
+   // Apply after both layouts so compact reflow cannot erase click feedback.
+   if(g_StudioPendingId!="")
+     {
+      m_btnStart.Disable(); m_btnStop.Disable();
+      if(g_StudioPendingCommand=="control.grant_agent") m_btnStop.Text("CONNECTING...");
+      if(g_StudioPendingCommand=="control.takeover") m_btnStart.Text("TAKING CONTROL...");
+     }
+   else if(m_studioOwner=="agent") m_btnStop.Text("AGENT CONNECTED");
 #endif
   }
 
@@ -767,13 +795,40 @@ void CStrategyTesterDialog::ManagedSave(void)
   }
 void CStrategyTesterDialog::ManagedTakeover(void)
   {
-   if(!GoatStudioUISubmit("control.takeover","","",-1,-1)) m_edtBatchErrors.Text("Unable to request control");
+   if(!GoatStudioUISubmit("control.takeover","","",-1,-1))
+     {
+      m_edtBatchErrors.Text("Unable to request control");
+#ifdef GOAT_CONTROL_FEEDBACK_V149
+      GoatStudioControlFailure(g_StudioPendingId!="" ? "Wait for the pending command" : "Unable to send request; ask your agent to check the controller");
+#endif
+     }
+#ifdef GOAT_CONTROL_FEEDBACK_V149
+   m_edtBatchProgress.Text(GoatStudioControlText(m_studioOwner));
+   ManagedControls(); ChartRedraw(m_chart_id);
+#endif
   }
 void CStrategyTesterDialog::ManagedGrant(void)
   {
    if(GetTESTERsettingsString(true)+GetExportSettingsString()!=m_studioBaseline)
-     {m_edtBatchErrors.Text("Save or load saved settings before giving control to the agent"); return;}
-   if(!GoatStudioUISubmit("control.grant_agent","","",m_studioRevision,m_studioGeneration)) m_edtBatchErrors.Text("Unable to hand over control");
+     {
+      m_edtBatchErrors.Text("Save or load saved settings before giving control to the agent");
+#ifdef GOAT_CONTROL_FEEDBACK_V149
+      GoatStudioControlFailure("Save or load saved settings first");
+      m_edtBatchProgress.Text(GoatStudioControlText(m_studioOwner)); ChartRedraw(m_chart_id);
+#endif
+      return;
+     }
+   if(!GoatStudioUISubmit("control.grant_agent","","",m_studioRevision,m_studioGeneration))
+     {
+      m_edtBatchErrors.Text("Unable to hand over control");
+#ifdef GOAT_CONTROL_FEEDBACK_V149
+      GoatStudioControlFailure(g_StudioPendingId!="" ? "Wait for the pending command" : "Unable to send request; ask your agent to check the controller");
+#endif
+     }
+#ifdef GOAT_CONTROL_FEEDBACK_V149
+   m_edtBatchProgress.Text(GoatStudioControlText(m_studioOwner));
+   ManagedControls(); ChartRedraw(m_chart_id);
+#endif
   }
 void CStrategyTesterDialog::ManagedReload(void)
   {

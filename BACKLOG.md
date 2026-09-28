@@ -160,3 +160,5 @@ qualification are separate from full native EA/installed-package qualification.
   with zero errors/warnings, SHA-256 bd2d33b8d60f3a8b5296e740b9612ca1bd68801d33f326cdb93f65b0e8af4ed1. This is source/compile proof only;
   Banker 6230 native menu readback and admission remain required. Unknown/localized
   menu labels fail closed and require a reviewed capability adapter.
+
+| CTRL-014 | Visible native Give/Take control feedback | Source implementation; qualification pending | Immediate pending button/status, 30-second delayed acknowledgement notice with original request retained, receipt-confirmed current owner, persistent actionable refusal. No fabricated grant, retry, permission or trading change. User requested September 28. |

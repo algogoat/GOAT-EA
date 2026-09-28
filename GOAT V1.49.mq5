@@ -3,12 +3,13 @@
 #define GOAT_ORPHAN_RECOVERY_V149 1
 #define GOAT_MONITOR_ONBOARDING_V149 1
 #define GOAT_TESTER_SEMANTIC_V149 1
+#define GOAT_CONTROL_FEEDBACK_V149 1
 #define   GOAT_VERSION_LABEL "1.49"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-WORKER-CAPABILITY-15"
+#define   GOAT_BUILD_ID "V1.49-CONTROL-FEEDBACK-16"
 #include "GOAT_SequencePackage.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 #define   GOAT_BUILD_MARKER "UI1"

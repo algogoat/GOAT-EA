@@ -41,11 +41,19 @@ def retained_evidence(c, plan):
         raise ValueError('Rejected recovery settlement intent changed')
     if set(intent)!=expected_keys or intent['review_id']!=plan['review_id']:
         raise ValueError('Rejected recovery settlement intent changed')
-    if set(intent['sha256'])!={'review.json','issued.json','result.json','request.json','permit.json'}:
+    expected_files={'review.json','issued.json','result.json','request.json','permit.json'}
+    if intent.get('terminal_stopped') is True:
+        expected_files.add('process-observation.json')
+    if set(intent['sha256'])!=expected_files:
         raise ValueError('Rejected recovery evidence set changed')
     raw={name:safe_path(root/name).read_bytes() for name in intent['sha256']}
     if {name:hashlib.sha256(value).hexdigest() for name,value in raw.items()}!=intent['sha256']:
         raise ValueError('Retained rejected recovery evidence changed')
+    if intent.get('terminal_stopped') is True:
+        from studio_orphan_stopped import validate_observation
+        validate_observation(c,proof)
+        if json.loads(raw['process-observation.json'])!=proof:
+            raise ValueError('Stopped recovery retained process observation changed')
     original=json.loads(raw['review.json'])
     if original['status']!='issued' or original['review_id']!=intent['review_id'] or original['record']['request']['request_id']!=intent['request_id']:
         raise ValueError('Rejected recovery intent belongs to another review')
@@ -154,6 +162,17 @@ def reconcile_rejection(c, review_id, *, confirmed=False, owner_research=False, 
                 stopped_observation=verify_rejection(c,original,raw,owner_research=owner_research,terminal_stopped=terminal_stopped)
                 root.mkdir(exist_ok=True)
                 for name,value in raw.items(): retain(root/name,value)
+                if terminal_stopped:
+                    from studio_orphan_stopped import validate_observation
+                    observation_file=safe_path(root/'process-observation.json')
+                    if observation_file.exists():
+                        # Interrupted before intent: reuse the original proof;
+                        # current absence was independently rechecked above.
+                        stopped_observation=read_json(observation_file)
+                    validate_observation(c,stopped_observation)
+                    observation_bytes=json.dumps(stopped_observation,sort_keys=True).encode('utf-8')
+                    retain(observation_file,observation_bytes)
+                    raw['process-observation.json']=observation_bytes
                 intent=dict(schema_version=1,review_id=review_id,request_id=original['record']['request']['request_id'],
                             sha256={name:hashlib.sha256(value).hexdigest() for name,value in raw.items()})
                 if terminal_stopped:

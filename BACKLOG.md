@@ -115,3 +115,10 @@ OWNER-MAINT-010 parent-loss follow-up: re-verification validates retained origin
   consumed scan, ordered transport cleanup and durable mode. No offline owner
   authority, native flag edits, launch or old-observation reuse. Source tests and
   installed/native qualification required before customer delivery.
+
+RECOVERY-STOPPED-001 inventory follow-up: scan all Windows-visible executable
+paths under the selected install/data roots, regardless of process name; retain
+named-terminal ambiguity and protected-peer checks. Record unreadable-system-path
+limits explicitly. Restart during cleanup retains the fence and requires another
+stop before same-review resumption. Source cases and real PowerShell/helper
+qualification are separate from full native EA/installed-package qualification.

@@ -69,7 +69,9 @@ try {
         if self.inspect() is not None:raise ValueError('Selected terminal is still running')
         install=self.controller.install
         args=[install['terminal_executable']]
-        if install.get('terminal_portable',False):args.append('/portable')
+        if install.get('terminal_portable',
+                Path(install['terminal_data_root']) == Path(install['terminal_executable']).parent):
+            args.append('/portable')
         args.append('/config:'+str(Path(config).resolve()))
         child=subprocess.Popen(args,cwd=str(Path(install['terminal_executable']).parent),stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         deadline=time.monotonic()+20

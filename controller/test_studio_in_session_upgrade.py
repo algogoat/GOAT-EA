@@ -67,10 +67,14 @@ class InSessionUpgradeTests(unittest.TestCase):
         self.native=dict(account_matches=True,demo=True,connected=True,algo_trading=False,
             positions=0,orders=0,tester_state='idle')
         patch('studio_driver_suspend.require_no_publishers').start()
-        patch('studio_in_session_upgrade._monitor_config',side_effect=lambda c,f:(f/'monitor.ini','f'*64)).start()
+        patch('studio_in_session_upgrade._monitor_config',side_effect=self.monitor_config).start()
         patch('goat_studio.Controller.runtime',return_value=({},{})).start()
 
     def probe(self,controller):return dict(self.native,process=self.process.current)
+    def monitor_config(self,controller,folder):
+        config=folder/'monitor.ini';raw=b'fixture inert monitor startup'
+        config.write_bytes(raw)
+        return config,hashlib.sha256(raw).hexdigest(),'e'*64
     def fresh_observation(self):
         import os
         observation=self.c.local/'ui-observation.json'
@@ -95,6 +99,12 @@ class InSessionUpgradeTests(unittest.TestCase):
         self.assertEqual(self.c.store.db.execute('SELECT provenance FROM studio_research_epochs WHERE binding=?',(binding,)).fetchone()[0],epoch)
         self.assertEqual(verify_installation_chain(self.root,self.next,sha(self.old))['migrations'],1)
         self.assertEqual(self.binary.read_bytes(),self.ea.read_bytes())
+        launch=read_json(self.root/('monitor-launches/in-session-'+('a'*32)+'.json'))
+        self.assertEqual((launch['status'],launch['pid'],launch['installation_sha256']),
+            ('process_started_unverified',43,sha(self.next)))
+        self.assertEqual(launch['startup_sha256'],hashlib.sha256(b'fixture inert monitor startup').hexdigest())
+        self.assertEqual(self.run_upgrade(),result)
+        self.assertEqual((self.process.closes,self.process.starts),(1,1))
         with self.assertRaisesRegex(ValueError,'previous registered receipt changed'):
             upgrade(self.root/'installation.json','b'*32,self.candidate,self.ea,self.admission,
                 self.old_sha,process_factory=lambda c:self.process,native_probe=self.probe)
@@ -105,6 +115,18 @@ class InSessionUpgradeTests(unittest.TestCase):
         self.assertEqual((self.process.closes,self.process.starts),(0,0))
         self.assertEqual((self.root/'installation.json').read_bytes(),self.old_raw)
         self.assertEqual(self.binary.read_bytes(),self.old_ea)
+
+    def test_corrupt_published_ea_refuses_before_relaunch_and_keeps_fence(self):
+        from studio_build_upgrade import replace_bytes
+        def corrupt(target,raw):
+            replace_bytes(target,raw)
+            if target==self.binary:target.write_bytes(b'foreign EA bytes')
+        with patch('studio_in_session_upgrade.replace_bytes',side_effect=corrupt):
+            with self.assertRaisesRegex(ValueError,'Published EA/receipt readback differs'):
+                self.run_upgrade()
+        self.assertEqual((self.process.closes,self.process.starts),(1,0))
+        from studio_installation_migration import pending_path
+        self.assertTrue(pending_path(self.root).exists())
 
     def test_foreign_admission_refuses_before_native_effect(self):
         self.checked['admission']['accountId']='9999999999';write_json(self.admission,self.checked)
@@ -152,6 +174,23 @@ class InSessionUpgradeTests(unittest.TestCase):
         self.assertTrue(pending_path(self.root).exists())
         self.assertEqual(self.run_upgrade()['status'],'verified')
         self.assertEqual((self.process.closes,self.process.starts),(1,1))
+
+    def test_prepared_journal_exists_before_external_fence(self):
+        from studio_installation_migration import pending_path
+        from studio_in_session_upgrade import write_json as original
+        pending=pending_path(self.root)
+        def interrupted(path,value):
+            if path==pending:
+                stage=pending.parent/('a'*32)/'archive'
+                self.assertEqual(read_json(stage/'transaction.json')['phase'],'prepared')
+                raise ValueError('interrupted before fence publication')
+            return original(path,value)
+        with patch('studio_in_session_upgrade.write_json',side_effect=interrupted):
+            with self.assertRaisesRegex(ValueError,'interrupted before fence'):
+                self.run_upgrade()
+        self.assertFalse(pending.exists())
+        self.assertEqual((self.process.closes,self.process.starts),(0,0))
+        self.assertEqual(self.run_upgrade()['status'],'verified')
 
     def test_uncommitted_archive_copy_is_preserved_and_cannot_block_old_session(self):
         from studio_installation_migration import pending_path

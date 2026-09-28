@@ -151,7 +151,8 @@ def validate_candidate(old, new, ea_bytes, checked, account, now):
             or not re.fullmatch('[a-f0-9]{64}',str(identity.get('manifestSha256','')))
             or request.get('selection',{}).get('terminalExecutable') != new['terminal_executable']
             or request.get('selection',{}).get('terminalDataRoot') != new['terminal_data_root']
-            or request.get('selection',{}).get('portable') != new['terminal_portable']
+            or request.get('selection',{}).get('portable') != new.get('terminal_portable',
+                Path(new['terminal_data_root']) == Path(new['terminal_executable']).parent)
             or not isinstance(admission.get('checkedAtMs'),(int,float))
             or not isinstance(admission.get('validUntilMs'),(int,float))
             or not isinstance(admission.get('notBeforeMs'),(int,float))

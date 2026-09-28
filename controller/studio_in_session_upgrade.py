@@ -6,6 +6,7 @@ Algo Trading setting. Its durable fence makes ordinary controller calls fail
 closed across an interrupted EA/receipt exchange.
 """
 from contextlib import ExitStack
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -108,7 +109,18 @@ def _monitor_config(controller, folder):
            controller.install['ea_relative_path']+'\r\nExpertParameters='+preset.name+
            '\r\nPeriod=M1\r\n').encode('utf-16')
     retain(config,raw)
-    return config,hashlib.sha256(raw).hexdigest()
+    return config,hashlib.sha256(raw).hexdigest(),hashlib.sha256(expected_preset).hexdigest()
+
+
+def _launch_path(root, transaction_id):
+    return safe_path(root/'monitor-launches'/('in-session-'+transaction_id+'.json'))
+
+
+def _result(record, transaction_id):
+    return dict(status='verified',transaction_id=transaction_id,
+        installation_sha256=record['candidate_installation_sha256'],
+        epoch_expires_utc=record['epoch_expires_utc'],
+        grant_created=False,plan_changed=False,trading_enabled=False)
 
 
 def upgrade(receipt, transaction_id, candidate_receipt, candidate_ea, admission_path,
@@ -133,8 +145,11 @@ def upgrade(receipt, transaction_id, candidate_receipt, candidate_ea, admission_
     final=safe_path(directory/'000001')
     candidate_receipt,candidate_ea,admission_path = [safe_path(item) for item in
         (candidate_receipt,candidate_ea,admission_path)]
-    old_source = (final/'installation.before.json' if final.exists() else
-                  stage/'installation.before.json') if pending.exists() else receipt
+    completed = (not pending.exists() and (final/'transaction.json').is_file()
+        and read_json(final/'transaction.json').get('transaction_id') == transaction_id
+        and read_json(final/'transaction.json').get('phase') == 'verified')
+    old_source = ((final/'installation.before.json' if final.exists() else
+                  stage/'installation.before.json') if pending.exists() or completed else receipt)
     old_raw,old = receipt_snapshot(safe_path(old_source))
     if hashlib.sha256(old_raw).hexdigest() != expected_sha256 or old.get('controller_state_root') != str(root):
         raise ValueError('Exact previous registered receipt changed')
@@ -157,6 +172,27 @@ def upgrade(receipt, transaction_id, candidate_receipt, candidate_ea, admission_
     with exclusive_gate(lock),exclusive_gate(driver_gate),installation_recovery(),ExitStack() as opened:
         from goat_studio import Controller
         retained = read_json(pending) if pending.exists() else None
+        if retained is None and completed:
+            record=read_json(final/'migration.json')
+            journal=read_json(final/'transaction.json')
+            if (journal.get('transaction_id')!=transaction_id
+                    or journal.get('phase')!='verified'
+                    or record['previous_receipt_sha256']!=expected_sha256
+                    or record['candidate_receipt_sha256']!=expected['candidate_receipt_sha256']
+                    or record['candidate_ea_sha256']!=expected['candidate_ea_sha256']
+                    or record['admission_sha256']!=expected['admission_sha256']):
+                raise ValueError('Retained completed upgrade differs from exact candidate')
+            validate_candidate(old,new,ea_bytes,checked,record['account'],record['created_utc'])
+            if (digest(receipt)!=expected['candidate_receipt_sha256']
+                    or digest(binary)!=new['ea_sha256']):
+                raise ValueError('Completed EA/receipt readback changed')
+            verify_installation_chain(root,new,record['previous_installation_sha256'])
+            launch=read_json(_launch_path(root,transaction_id))
+            if (launch.get('status')!='process_started_unverified'
+                    or launch.get('pid')!=journal.get('process',{}).get('pid')
+                    or launch.get('installation_sha256')!=sha(new)):
+                raise ValueError('Completed monitor launch history changed')
+            return _result(record,transaction_id)
         if retained is not None:
             if retained != expected:
                 raise ValueError('Different in-session upgrade owns this fenced transaction')
@@ -225,9 +261,9 @@ def upgrade(receipt, transaction_id, candidate_receipt, candidate_ea, admission_
                     account=session['account'],plan_sha256=proof['epoch']['plan_sha256'])
                 retain(folder/'migration.json',_json_bytes(record))
                 pending.parent.mkdir(parents=True,exist_ok=True)
-                write_json(pending,expected)
                 journal=safe_path(folder/'transaction.json')
                 write_json(journal,dict(transaction_id=transaction_id,phase='prepared'))
+                write_json(pending,expected)
                 directory.mkdir(parents=True,exist_ok=True)
                 os.replace(stage,final)
                 folder=final
@@ -265,19 +301,34 @@ def upgrade(receipt, transaction_id, candidate_receipt, candidate_ea, admission_
                     _record(journal,'publication_intent')
                     if old_pair:replace_bytes(binary,ea_bytes)
                     if not new_pair:replace_bytes(receipt,new_raw)
-                    if digest(receipt)!=expected['candidate_receipt_sha256'] or load_installation(receipt)!=new:
+                    if (digest(binary)!=new['ea_sha256']
+                            or digest(receipt)!=expected['candidate_receipt_sha256']
+                            or load_installation(receipt)!=new):
                         raise ValueError('Published EA/receipt readback differs')
                     verify_installation_chain(root,new,record['previous_installation_sha256'])
                     _record(journal,'published')
                     phase='published'
         if phase in ('published','launch_issued','started_unverified'):
+            if digest(binary)!=new['ea_sha256'] or digest(receipt)!=expected['candidate_receipt_sha256']:
+                raise ValueError('Published EA/receipt changed before monitor readback')
             controller=opened.enter_context(_controller(Controller(receipt)))
             controller.open(recovery=True)
             _live_epoch(root,session,read_json(folder/'epoch.json'),clock.time())
             if phase=='published':
                 if process.inspect() is not None:
                     raise ValueError('Selected terminal reopened before controlled relaunch')
-                config,config_sha=_monitor_config(controller,folder)
+                config,config_sha,preset_sha=_monitor_config(controller,folder)
+                launch_path=_launch_path(root,transaction_id)
+                if launch_path.exists():
+                    raise ValueError('Retained monitor launch intent has uncertain process identity')
+                launch_path.parent.mkdir(parents=True,exist_ok=True)
+                launch=dict(schema_version=1,attempt_id='in-session-'+transaction_id,
+                    status='launch_intent',installation_sha256=sha(new),
+                    run_id=session['run_id'],created_at=datetime.now(timezone.utc).isoformat(),
+                    execution_ready=False,native_qualification=False,
+                    startup_config=str(config),startup_sha256=config_sha,
+                    preset_sha256=preset_sha)
+                write_json(launch_path,launch)
                 _record(journal,'launch_issued',config_sha256=config_sha,launch_issued_utc=clock.time())
                 selected=process_factory(controller).start(config)
                 _record(journal,'started_unverified',process=selected)
@@ -309,24 +360,37 @@ def upgrade(receipt, transaction_id, candidate_receipt, candidate_ea, admission_
                 except ValueError:
                     if clock.monotonic()>=deadline:raise
                     clock.sleep(1)
+            launch_path=_launch_path(root,transaction_id)
+            launch=read_json(launch_path)
+            if (launch.get('attempt_id')!='in-session-'+transaction_id
+                    or launch.get('installation_sha256')!=sha(new)
+                    or launch.get('status') not in ('launch_intent','process_started_unverified')
+                    or launch.get('pid') not in (None,selected['pid'])):
+                raise ValueError('Relaunched monitor history changed')
+            launch.update(status='process_started_unverified',pid=selected['pid'])
+            write_json(launch_path,launch)
             _record(journal,'verified',readback=observed)
             phase='verified'
         if phase=='verified':
+            if digest(binary)!=new['ea_sha256'] or digest(receipt)!=expected['candidate_receipt_sha256']:
+                raise ValueError('Verified EA/receipt changed before fence release')
             controller=opened.enter_context(_controller(Controller(receipt)))
             controller.open(recovery=True)
             if process.inspect()!=read_json(journal)['process']:
                 raise ValueError('Verified selected monitor changed before fence release')
             controller.runtime(require_idle=True,expected_batch_ongoing=False)
             _live_epoch(root,session,read_json(folder/'epoch.json'),clock.time())
+            launch=read_json(_launch_path(root,transaction_id))
+            if (launch.get('status')!='process_started_unverified'
+                    or launch.get('pid')!=read_json(journal)['process']['pid']
+                    or launch.get('installation_sha256')!=sha(new)):
+                raise ValueError('Verified monitor launch history changed')
             if pending.read_bytes()!=_json_bytes(expected):
                 raise ValueError('Upgrade fence changed before completion')
             pending.unlink()
         else:
             raise ValueError('Unknown retained upgrade phase')
-        return dict(status='verified',transaction_id=transaction_id,
-            installation_sha256=record['candidate_installation_sha256'],
-            epoch_expires_utc=record['epoch_expires_utc'],
-            grant_created=False,plan_changed=False,trading_enabled=False)
+        return _result(record,transaction_id)
 
 
 def _process_controller(install,root,local,session):

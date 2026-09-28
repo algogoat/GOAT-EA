@@ -8,7 +8,7 @@ import unittest
 from contextlib import closing
 
 from campaign_ledger import sha
-from studio_installation_migration import verify_installation_chain
+from studio_installation_migration import verify_installation_chain, validate_candidate
 from studio_installation import read_json
 
 
@@ -101,6 +101,13 @@ class InstallationMigrationTests(unittest.TestCase):
 
     def test_exact_archived_build_chain_is_accepted(self):
         self.assertEqual(verify_installation_chain(self.root,self.new,self.original_sha)['migrations'], 1)
+
+    def test_legacy_receipt_derives_portable_mode(self):
+        old={key:value for key,value in self.old.items() if key!='terminal_portable'}
+        new={key:value for key,value in self.new.items() if key!='terminal_portable'}
+        checked=read_json(self.folder/'admission.json')
+        self.assertEqual(validate_candidate(old,new,(self.folder/'ea.after.ex5').read_bytes(),
+            checked,self.account,100)['admission_sha256'],sha(checked))
 
     def test_old_receipt_cannot_silently_roll_back_an_anchored_migration(self):
         with self.assertRaisesRegex(ValueError,'not the end'):

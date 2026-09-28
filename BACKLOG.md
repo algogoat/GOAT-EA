@@ -132,3 +132,5 @@ qualification are separate from full native EA/installed-package qualification.
   Fourteen focused fixtures pass, including actual MT5 expertmode=4 structure,
   unchanged permissions, refusals and interrupted transaction resumption. Full
   controller CI and native execution remain separate qualification requirements.
+
+- **RESEARCH-BUDGET-48H-001 (2026-09-28):** Support172800-second bounded research driver. Preserve no-reset resume and disk guards. Fresh window after takeover requires genuine native re-grant; no amendment to revoked authority.

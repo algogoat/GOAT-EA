@@ -132,6 +132,19 @@ class BatchDriverTests(unittest.TestCase):
         self.assertEqual((self.c.starts,self.c.cancels),(1,1))
         self.assertLess(self.c.clock.wall,1010)
 
+    def test_fresh_48h_budget_is_retained_across_resume(self):
+        def die():raise HostDeath()
+        self.c.clock.on_sleep=die
+        with self.assertRaises(HostDeath):self.drive(max_seconds=172800)
+        path=self.c.root/'batch-drivers/batch.json'
+        record=json.loads(path.read_text())
+        self.assertEqual(record['started_wall'],1000)
+        self.assertEqual(record['deadline_wall'],173800)
+        self.c.clock.on_sleep=None;self.c.finished=True
+        result=self.drive(resume=True)
+        self.assertEqual(result['deadline_wall'],173800)
+        self.assertEqual(self.c.starts,1)
+
 
     def test_capacity_refuses_each_output_volume_before_journal_or_start(self):
         for role in ('terminal_data_root', 'common_files_root', 'controller_state_root'):
@@ -325,7 +338,7 @@ class BatchDriverTests(unittest.TestCase):
         self.assertEqual(self.c.starts, 0)
 
     def test_invalid_budget_does_not_issue_start(self):
-        for value in (None, 0, -1, 86401, 1.5, True, float('nan')):
+        for value in (None, 0, -1, 172801, 1.5, True, float('nan')):
             with self.assertRaises(ValueError):
                 self.drive(max_seconds=value)
         self.assertEqual(self.c.starts, 0)

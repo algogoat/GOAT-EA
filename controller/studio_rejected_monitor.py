@@ -97,7 +97,10 @@ def reverify(controller,job_id):
         record=read_json(path)
         if record['phase'] not in ('started_unverified','adopted_unverified','reverified') or record['authority_sha256']!=sha(scope):
             raise ValueError('No exact started monitor to reverify; never repeat launch')
-        if record.get('human_reopened') is True:
+        if record.get('controller_derived_report_recovery'):
+            from studio_derived_report_recovery import verify_completed
+            native=verify_completed(controller,record)
+        elif record.get('human_reopened') is True:
             from studio_human_reopen import verify_adopted
             native=verify_adopted(controller,record,path)
         else:

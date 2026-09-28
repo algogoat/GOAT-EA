@@ -36,7 +36,8 @@ def inspect_stopped(c, plan):
     assert_clear_human_channels(c)
     # Full process classification refuses running, unmapped, replaced peer or
     # ambiguous processes. Absence is not represented as a normal-exit receipt.
-    processes=inspect_processes(c.binding(),research_running=False)
+    processes=inspect_processes(c.binding(),research_running=False,
+        absent_roots=[str(Path(c.install['terminal_executable']).parent),c.install['terminal_data_root']])
     if processes.get('research') is not None:
         raise ValueError('Selected terminal must remain stopped during rejection settlement')
     assert_clear_human_channels(c)

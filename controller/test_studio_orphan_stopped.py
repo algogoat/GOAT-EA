@@ -20,8 +20,9 @@ class StoppedRejectionTests(fixtures.ReviewRejectedRecoveryTests):
     def setUp(self):
         super().setUp()
         self.processes=[]
-        def inventory(binding,*,research_running):
+        def inventory(binding,*,research_running,absent_roots):
             self.assertFalse(research_running)
+            self.assertEqual(absent_roots,[str(Path(self.c.install['terminal_executable']).parent),self.c.install['terminal_data_root']])
             return classify_processes(self.processes,binding,observed_unix=self.request['expires_utc']+1,research_running=False)
         patch('studio_orphan_stopped.inspect_processes',side_effect=inventory).start()
 

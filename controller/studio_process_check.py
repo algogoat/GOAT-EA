@@ -9,12 +9,55 @@ import subprocess
 import time
 
 
-def inspect_processes(binding, *, research_running=True):
+def inspect_processes(binding, *, research_running=True, absent_roots=None):
     # Fixed command, no caller strings interpolated into shell syntax.
     command='ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter "Name=\'terminal64.exe\'" | Select-Object ProcessId,ExecutablePath,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
+    if absent_roots is not None:
+        if research_running is not False:
+            raise ValueError('Root absence scan requires a stopped research terminal')
+        command='$ErrorActionPreference="Stop"; ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process | Select-Object ProcessId,Name,ExecutablePath,@{Name="CreatedUtc";Expression={if ($_.CreationDate) {$_.CreationDate.ToUniversalTime().ToString("o")}}})'
     output=subprocess.check_output(['powershell','-NoProfile','-Command',command],
         text=True,encoding='utf-8-sig',timeout=20,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-    return classify_processes(json.loads(output),binding,observed_unix=time.time(),research_running=research_running)
+    rows=json.loads(output)
+    visibility=None
+    if absent_roots is not None:
+        rows,visibility=stopped_candidates(rows,absent_roots)
+    result=classify_processes(rows,binding,observed_unix=time.time(),research_running=research_running)
+    if visibility is not None:
+        result['root_inventory']=visibility
+    return result
+
+
+def stopped_candidates(processes,roots):
+    """Select every named terminal and refuse any executable in stopped roots.
+
+    This is a Windows-visible inventory, not proof against hidden/privileged
+    processes. Unrelated system processes commonly have no readable image path.
+    """
+    if not isinstance(processes,list) or not isinstance(roots,(list,tuple)) or not roots:
+        raise ValueError('Complete process inventory and stopped roots required')
+    paths=[PureWindowsPath(root) for root in roots]
+    if any(not root.is_absolute() or root==PureWindowsPath(root.anchor) or '..' in root.parts for root in paths):
+        raise ValueError('Exact absolute terminal roots required')
+    selected=[];unknown=0;seen=set()
+    for process in processes:
+        pid=process.get('ProcessId');name=process.get('Name');path=process.get('ExecutablePath')
+        if type(pid) is not int or pid<0 or pid in seen or not isinstance(name,str) or not name:
+            raise ValueError('Incomplete or ambiguous Windows process inventory')
+        seen.add(pid)
+        if path:
+            actual=PureWindowsPath(path)
+            if not actual.is_absolute() or '..' in actual.parts:
+                raise ValueError('Ambiguous Windows executable path')
+            if any(actual.is_relative_to(root) for root in paths):
+                raise ValueError('Executable is running under a stopped terminal root')
+        else:
+            unknown+=1
+        if name.casefold()=='terminal64.exe':
+            selected.append(process)
+    return selected,dict(roots=[str(root) for root in paths],process_count=len(processes),
+        unavailable_path_count=unknown,
+        limitation='Windows-visible executable paths only; unrelated unreadable system paths cannot be attributed to a terminal')
 
 
 def classify_processes(processes,binding,*,observed_unix,research_running=True):

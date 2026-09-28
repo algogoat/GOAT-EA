@@ -8,7 +8,7 @@
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-WORKER-CAPABILITY-15R1"
+#define   GOAT_BUILD_ID "V1.49-WORKER-IDLE-DIAGNOSTIC-15R2"
 #include "GOAT_SequencePackage.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 #define   GOAT_BUILD_MARKER "UI1"
@@ -2716,6 +2716,8 @@ void DashboardBusProcessCommands(void)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 sinput bool Studio_ReadOnlyMonitor=false; // Optimization Studio: read-only batch monitor
 sinput string Studio_MonitorRunPath=""; // Read-only run folder; blank follows active batch
+bool g_GoatStudioWorkerDiagnosticPending=false;
+ulong g_GoatStudioWorkerDiagnosticDeadline=0;
 int OnInit()
   {
    g_GoatStudioReadOnlyMonitor=Studio_ReadOnlyMonitor;
@@ -3074,6 +3076,12 @@ int OnInit()
       TesterDialog.Caption("GOAT  /  OPTIMIZATION STUDIO  /  V"+GOAT_VERSION_LABEL+" "+GOAT_BUILD_MARKER+(g_GoatStudioReadOnlyMonitor ? "  /  READ-ONLY MONITOR" : ""));
        GUI_BG_Display();
        Sleep(100); TesterDialog.Run(); Sleep(100);
+       if(g_GoatStudioReadOnlyMonitor)
+       {
+          // The idle readback is separate from native Start and its consumed request.
+          g_GoatStudioWorkerDiagnosticPending=true;
+          g_GoatStudioWorkerDiagnosticDeadline=GetTickCount64()+10000;
+       }
        return (INIT_SUCCEEDED);
       }
       bool fresh_dashboard_launch=false;
@@ -4627,7 +4635,39 @@ void GoatTimerBody(void)
     return;
    }
    if(g_GoatStudioReadOnlyMonitor)
-   {TesterDialog.OnClickRefresh(true);return;}
+   {
+      if(g_GoatStudioWorkerDiagnosticPending)
+      {
+         bool unsafe_runtime=(IsStopped() || !MQLInfoInteger(MQL_DLLS_ALLOWED)
+            || !TerminalInfoInteger(TERMINAL_CONNECTED) || TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)
+            || AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO
+            || GlobalVariableGet("BatchOnGoing")!=0 || GlobalVariableGet("GOAT_BatchRestartPending")!=0
+            || FileIsExist("GOATStudio\\native-gate\\request.json")
+            || FileIsExist("GOATStudio\\native-gate\\permit.json"));
+         string tester_state=GoatStudioTesterState();
+         if(unsafe_runtime || tester_state=="running" || GetTickCount64()>=g_GoatStudioWorkerDiagnosticDeadline)
+         {
+            g_GoatStudioWorkerDiagnosticPending=false;
+            Print("GOAT_STUDIO_IDLE_WORKER_DIAGNOSTIC build_id="+GOAT_BUILD_ID+" status=REFUSED_OR_UNAVAILABLE tester="+tester_state);
+         }
+         else if(tester_state=="idle")
+         {
+            g_GoatStudioWorkerDiagnosticPending=false;
+            bool worker_local=false,worker_remote=false,worker_cloud=false;
+            bool readback=GoatStudioReadWorkerPolicy(worker_local,worker_remote,worker_cloud);
+            Print("GOAT_STUDIO_IDLE_WORKER_DIAGNOSTIC build_id="+GOAT_BUILD_ID
+               +" pid="+(string)kernel32::GetCurrentProcessId()
+               +" account="+(string)AccountInfoInteger(ACCOUNT_LOGIN)
+               +" server="+AccountInfoString(ACCOUNT_SERVER)
+               +" mt5_build="+(string)TerminalInfoInteger(TERMINAL_BUILD)
+               +" algo_off=1 tester=idle status="+(readback ? "READBACK_OK" : "READBACK_UNAVAILABLE")
+               +" local="+(string)(int)worker_local+" remote="+(string)(int)worker_remote+" cloud="+(string)(int)worker_cloud);
+         }
+      }
+      TesterDialog.OnClickRefresh(true);
+      TesterDialog.Caption("GOAT / AGENT CONNECTION / V"+GOAT_VERSION_LABEL+" / WORKER DIAGNOSTIC 15R2");
+      return;
+   }
    if(Mode_Operation==Operation_Batch && GoatBatchDeferredRestartPending())
    {
     ShowPrompt("Restarting Terminal for next optimization...","Waiting for Strategy Tester to stop.","Batch Running...","");

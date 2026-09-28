@@ -161,3 +161,14 @@ qualification are separate from full native EA/installed-package qualification.
   with zero errors/warnings, SHA-256 8907841d7a1003a0abdec5bdbf2c84e4d7efbdc35e375153d7f6c2abf94d9366. This is source/compile proof only;
   Banker 6230 native menu readback and admission remain required. Unknown/localized
   menu labels fail closed and require a reviewed capability adapter.
+- **TESTER-WORKER-IDLE-READBACK-002 (2026-09-28):** The 15R1 menu readback was
+  reachable only inside Start after request consumption, so Claude's idle-only
+  diagnostic approval could not be exercised. V1.49-WORKER-IDLE-DIAGNOSTIC-15R2
+  adds one bounded readback from the existing read-only monitor after it opens,
+  only on an idle connected demo with DLL permission, Algo Trading OFF, no batch
+  flag and no pending native request. It logs the build/PID/account/tester state
+  and local/remote/cloud menu result without reserving or starting a job.
+  MetaEditor 6230 compiled with zero errors/warnings, SHA-256
+  b9f19ee2bb661558d7200ef79cc57e29cd14aa9da9bc7e9ccb16c2be4b730ddd.
+  This is source/compile proof only; exact-head review, admission and native
+  Banker readback remain required before the batch path.

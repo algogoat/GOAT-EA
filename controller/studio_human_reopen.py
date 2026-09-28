@@ -5,7 +5,7 @@ No launch, close, trading, login, grant or permission modification is provided.
 import hashlib
 import json
 import os
-from datetime import datetime
+from datetime import datetime,timezone
 from pathlib import Path
 import time
 
@@ -156,6 +156,8 @@ def adopt(c,job_id,*,human_reopened=False,process=None):
         if native['process']!=current:raise ValueError('Human-reopened process changed during verification')
         observation,runtime=c.runtime(require_idle=True,expected_batch_ongoing=False)
         if runtime['modified']<created:raise ValueError('Native feedback predates the human-reopened process')
+        observed=datetime.strptime(observation['observed_terminal_utc'],'%Y.%m.%d %H:%M:%S').replace(tzinfo=timezone.utc).timestamp()
+        if observed<created-1:raise ValueError('Native observation timestamp predates the human-reopened process')
         state=c.state()
         if any(observation[k]!=state[k] for k in ('owner','revision','generation')):
             raise ValueError('Current native monitor has not confirmed this exact typed session')
@@ -190,6 +192,9 @@ def verify_adopted(c,record,path):
     observation,runtime=c.runtime(require_idle=True,expected_batch_ongoing=False)
     if runtime['modified']<datetime.fromisoformat(native['process']['created_utc'].replace('Z','+00:00')).timestamp():
         raise ValueError('Native feedback predates the adopted process')
+    observed=datetime.strptime(observation['observed_terminal_utc'],'%Y.%m.%d %H:%M:%S').replace(tzinfo=timezone.utc).timestamp()
+    if observed<datetime.fromisoformat(native['process']['created_utc'].replace('Z','+00:00')).timestamp()-1:
+        raise ValueError('Native observation timestamp predates the adopted process')
     state=c.state()
     if any(observation[k]!=state[k] for k in ('owner','revision','generation')):raise ValueError('Native session changed after adoption')
     return native

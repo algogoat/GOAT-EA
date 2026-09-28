@@ -1,4 +1,4 @@
-from datetime import datetime,timezone
+from datetime import datetime,timezone,timedelta
 import hashlib
 import time
 import os
@@ -31,9 +31,13 @@ class HumanReopenTests(unittest.TestCase):
         self.common.write_bytes(self.before)
         self.native=self.f.native|dict(process=dict(pid=45,created_utc=datetime.now(timezone.utc).isoformat()))
         self.probe=patch('studio_human_reopen.inspect_idle_demo',side_effect=lambda c:self.native).start()
-        self.runtime=patch.object(self.c,'runtime',side_effect=lambda **kw:(self.c.state(),dict(modified=time.time()))).start()
+        self.runtime=patch.object(self.c,'runtime',side_effect=lambda **kw:(self.observation(),dict(modified=time.time()))).start()
         patch('studio_human_reopen.human_launch',side_effect=lambda c,p:dict(process=dict(p),active_console_session_id=1)).start()
         self.addCleanup(patch.stopall)
+
+    def observation(self,age=0):
+        stamp=datetime.now(timezone.utc)-timedelta(seconds=age)
+        return self.c.state()|dict(observed_terminal_utc=stamp.strftime('%Y.%m.%d %H:%M:%S'))
 
     def prepared(self):
         receipt=prepare(self.c,'original',process=self.process)
@@ -81,7 +85,7 @@ class HumanReopenTests(unittest.TestCase):
         chart=Path(self.profile['profile_path'])/'chart01.chr';raw=chart.read_bytes();chart.write_bytes(raw+'\r\n'.encode('utf-16-le'))
         with self.assertRaisesRegex(ValueError,'chart changed'):adopt(self.c,'original',human_reopened=True,process=self.process)
         chart.write_bytes(raw)
-        self.runtime.side_effect=lambda **kw:(self.c.state()|dict(owner='human'),dict(modified=time.time()))
+        self.runtime.side_effect=lambda **kw:(self.observation()|dict(owner='human'),dict(modified=time.time()))
         with self.assertRaisesRegex(ValueError,'exact typed session'):adopt(self.c,'original',human_reopened=True,process=self.process)
         self.assertEqual(read_json(self.path)['phase'],'stopped');self.process.start.assert_not_called()
 
@@ -94,7 +98,10 @@ class HumanReopenTests(unittest.TestCase):
         self.runtime.side_effect=lambda **kw:(self.c.state(),dict(modified=time.time()-10))
         with self.assertRaisesRegex(ValueError,'predates'):reverify(self.c,'original')
         self.assertEqual(read_json(self.path)['phase'],'adopted_unverified')
-        self.runtime.side_effect=lambda **kw:(self.c.state(),dict(modified=time.time()))
+        self.runtime.side_effect=lambda **kw:(self.observation(age=10),dict(modified=time.time()))
+        with self.assertRaisesRegex(ValueError,'observation timestamp predates'):reverify(self.c,'original')
+        self.assertEqual(read_json(self.path)['phase'],'adopted_unverified')
+        self.runtime.side_effect=lambda **kw:(self.observation(),dict(modified=time.time()))
         result=reverify(self.c,'original');self.assertEqual(result['phase'],'reverified')
         self.native['process']=dict(pid=46,created_utc=datetime.now(timezone.utc).isoformat())
         with self.assertRaisesRegex(ValueError,'process changed'):reverify(self.c,'original')
@@ -104,6 +111,12 @@ class HumanReopenTests(unittest.TestCase):
         self.prepared()
         self.runtime.side_effect=lambda **kw:(self.c.state(),dict(modified=time.time()-10))
         with self.assertRaisesRegex(ValueError,'predates'):adopt(self.c,'original',human_reopened=True,process=self.process)
+        self.assertEqual(read_json(self.path)['phase'],'stopped');self.process.start.assert_not_called()
+
+    def test_recently_copied_previous_process_observation_refuses_adoption(self):
+        self.prepared()
+        self.runtime.side_effect=lambda **kw:(self.observation(age=10),dict(modified=time.time()))
+        with self.assertRaisesRegex(ValueError,'observation timestamp predates'):adopt(self.c,'original',human_reopened=True,process=self.process)
         self.assertEqual(read_json(self.path)['phase'],'stopped');self.process.start.assert_not_called()
 
     def test_interrupted_pointer_publication_resumes_exact_bytes_once(self):

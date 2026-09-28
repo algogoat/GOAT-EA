@@ -12,7 +12,6 @@ import time
 
 from campaign_ledger import packed, sha
 from studio_installation import read_json, load_installation
-from studio_owner_budget import effective_expiry
 
 CURRENT_OPERATION = ContextVar('studio_research_operation', default=None)
 READ_OPERATIONS = frozenset(('discover','resource-profile','state','onboarding-status',
@@ -113,7 +112,7 @@ def authority(db, binding, state):
         # Readback and human takeover remain possible after permanent revocation.
         if CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve'}:
             raise ValueError('Research continuation permanently revoked by human control')
-    elif not value['created_utc'] <= time.time() < effective_expiry(value):
+    elif not value['created_utc'] <= time.time() < value['expires_utc']:
         # The retained driver must still observe/cancel/finish its existing attempt.
         # New reservations and native dispatch separately require live authority.
         if CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve','cancel','status','reconcile','finish','batch-status','run-batch'}:
@@ -152,7 +151,7 @@ def command(db, binding, state, request, actor):
             predecessor(db,state,value)
         return
     if command_name=='queue.reserve' and op in ('start','run-batch'):
-        if not value['created_utc'] <= time.time() < effective_expiry(value):
+        if not value['created_utc'] <= time.time() < value['expires_utc']:
             raise ValueError('Research continuation expired; no new reservation')
         job = next((j for j in state['queue'] if j['job_id']==request['payload']['job_id']), None)
         if job is None or job['configuration_sha256']!=value['configuration_sha256']:
@@ -199,7 +198,7 @@ def before_native_dispatch(controller, job):
     binding = packed(dict(terminal_id=controller.terminal,run_id=controller.run))
     value = authority(controller.store.db,binding,controller.state())
     if value is not None:
-        if not value['created_utc'] <= time.time() < effective_expiry(value):
+        if not value['created_utc'] <= time.time() < value['expires_utc']:
             raise ValueError('Research continuation expired; no native dispatch')
         if job['configuration_sha256']!=value['configuration_sha256']:
             raise ValueError('Native dispatch differs from frozen research configuration')
@@ -213,12 +212,7 @@ def before_native_dispatch(controller, job):
         if len(state['queue'])>1:
             from studio_research_retry import predecessor
             inherited=predecessor(controller.store.db,state,value,successor_id=job['job_id'],require_released=job['status']=='pending')
-            if journal.get('budget_renewal') is not None:
-                from studio_owner_budget import verify_budget
-                if journal.get('inherited_budget')!=inherited or time.time()>=journal['deadline_wall']:
-                    raise ValueError('Replacement predecessor or renewed deadline changed')
-                verify_budget(journal,inherited)
-            elif (journal.get('inherited_budget')!=inherited or journal['deadline_wall']!=inherited['deadline_wall']
+            if (journal.get('inherited_budget')!=inherited or journal['deadline_wall']!=inherited['deadline_wall']
                     or journal['started_wall']!=inherited['started_wall'] or journal['max_seconds']!=inherited['max_seconds']
                     or journal['min_free_bytes']<inherited['min_free_bytes'] or time.time()>=journal['deadline_wall']):
                 raise ValueError('Replacement requires the original bounded driver deadline and disk reserve')

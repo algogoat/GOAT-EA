@@ -917,15 +917,4 @@ The human-launch checks are corroboration, not proof against a deliberate agent 
 
 Both adoption and re-verification also require the message's native observed_terminal_utc to be at least the process creation time minus one second, allowing its whole-second timestamp precision. A fresh file modification time cannot make an observation from the previous process acceptable. Existing runtime age, account, path, idle and Algo OFF checks still apply.
 
-### Explicit owner replacement budget
-
-`run-batch --max-seconds 172800` supports a 48-hour maximum. Resume retains its
-original deadline and disk guard. A typed research replacement normally inherits
-its predecessor's original window. A separately reviewed owner-only policy can
-bind one exact authority, account and replacement ID to a fresh 48-hour window;
-requesting 172800 explicitly records that policy hash plus the unchanged original
-predecessor proof. The new deadline must fit inside the finite policy period and
-the disk reserve cannot decrease. Original session, authority and failed-driver
-records are not edited. This budget amendment cannot grant control or revive a
-human-revoked generation. A revoked session still needs a genuine new connection
-and its supported transition; a larger budget cannot solve that ownership defect.
+The bounded driver accepts up to172800seconds (48hours). Existing resume never resets a deadline. This limit grants no control and does not extend a typed scope; a fresh window after takeover requires a genuine new native grant and supported renewal.

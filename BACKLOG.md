@@ -133,4 +133,4 @@ qualification are separate from full native EA/installed-package qualification.
   unchanged permissions, refusals and interrupted transaction resumption. Full
   controller CI and native execution remain separate qualification requirements.
 
-- **RESEARCH-BUDGET-48H-001 (2026-09-28):** Vince authorized a fresh48-hour replacement window. Support maximum172800 and exact reviewed owner budget amendment while preserving original evidence, no-reset resume, disk reserve and revocation. Validation32driver+7retry fixtures; native execution blocked by revoked continuation, not overridden by this budget.
+- **RESEARCH-BUDGET-48H-001 (2026-09-28):** Support172800-second bounded research driver. Preserve no-reset resume and disk guards. Fresh window after takeover requires genuine native re-grant; no amendment to revoked authority.

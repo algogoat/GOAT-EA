@@ -182,13 +182,9 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
                 raise ValueError('Existing native work requires reconciliation')
             from studio_research_retry import inherited_budget
             inherited=inherited_budget(controller,job_id)
-            renewal=None
             if inherited is not None:
                 min_free_bytes=max(min_free_bytes,inherited['min_free_bytes'])
-                renewal=inherited.get('renewal_policy') if max_seconds==172800 else None
-                if renewal is not None:
-                    min_free_bytes=max(min_free_bytes,renewal['min_free_bytes'])
-                else:max_seconds=inherited['max_seconds']
+                max_seconds=inherited['max_seconds']
             capacity = _capacity(controller, min_free_bytes)
             if capacity['reason']:
                 raise ValueError('Batch dispatch refused: '+capacity['reason'])
@@ -201,14 +197,9 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
                           start_issued=True, attempt_id=None, cancel_issued=False,
                           stopped=False, status='start_issued', cancel_grace_seconds=cancel_grace_seconds)
             if inherited is not None:
-                record.update(inherited_budget=inherited,replacement_created_wall=now)
-                if renewal is not None:
-                    record['budget_renewal']=renewal
-                    from studio_owner_budget import verify_budget
-                    verify_budget(record,inherited)
-                else:
-                    if now>=inherited['deadline_wall']:raise ValueError('Original research deadline elapsed')
-                    record.update(started_wall=inherited['started_wall'],deadline_wall=inherited['deadline_wall'])
+                if now>=inherited['deadline_wall']:raise ValueError('Original research deadline elapsed')
+                record.update(started_wall=inherited['started_wall'],deadline_wall=inherited['deadline_wall'],
+                              inherited_budget=inherited,replacement_created_wall=now)
             # Durable intent precedes any dispatch, including a crash before start.
             _save(path, record, clock)
             try:

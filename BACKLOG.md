@@ -61,3 +61,11 @@ altering any unrelated terminal or already attached strategy.
 | CTRL-021 | Recognize absent MT5 script/expert names represented by NULL | Native Banker build6230 probe reproduced false SCRIPT_PRESENT; V1.49-ORPHAN-EMPTY-NAME-8 correction prepared, full corrected-EA native qualification pending | Use nonzero string length after successful chart queries; retain refusal for query errors and every actual program name, all scalar guards, exact reviewed recovery effects and unchanged wire. Preserve prior binaries in Git history. |
 
 | CTRL-RECOVERY-009 | Normalize native directory enumeration in orphan recovery | V1.49-ORPHAN-DIRECTORY-9 source implemented; native inventory fixture27/27 passed; compiled EA and Banker recovery pending | Real FileFindFirst trailing-separator reproduction, valid single-owner tree accepted, foreign/pending controls rejected; exact pre-consumption settlement retains refusal and native state |
+
+- OWNER-RESEARCH-001: finite owner-demo recovery authorization from the existing
+  native human grant (request: goatai#1885 comment5860941567). First slice permits
+  reviewed orphan recovery/negative-request settlement only, with exact account,
+  terminal, build, session and revocation pins plus native idle/no-trades checks.
+  No new grant, human command, wire field or trading behavior. Twelve focused source
+  tests pass; full controller CI and Claude review required before use. Upgrade
+  continuity and native Banker qualification remain separate work.

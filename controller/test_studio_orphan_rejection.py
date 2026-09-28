@@ -15,13 +15,14 @@ import test_studio_orphan_recovery as fixtures
 
 
 class RejectedRecoveryTests(unittest.TestCase):
+    rejection_status='ORPHAN_RUNTIME_REJECTED'
     def setUp(self):
         self.fixture=fixtures.OrphanRecoveryTests();self.fixture.setUp()
         self.addCleanup(self.fixture.tearDown);self.addCleanup(self.fixture.doCleanups)
         self.c=self.fixture.c;self.gate=self.fixture.gate
         self.review=prepare(self.c)['review_id']
         apply(self.c,self.review,confirmed=True)
-        self.fixture.consume(self.review,'ORPHAN_RUNTIME_REJECTED',consumed=False)
+        self.fixture.consume(self.review,self.rejection_status,consumed=False)
         self.path=plan_path(self.c,self.review)
         self.plan=json.loads(self.path.read_text())
         self.request=self.plan['record']['request'];self.request_id=self.request['request_id']
@@ -91,7 +92,7 @@ class RejectedRecoveryTests(unittest.TestCase):
         self.assert_fenced();self.assertFalse((self.root/'intent.json').exists())
 
     def test_only_supported_rejection_with_no_consumption_is_supported(self):
-        for outcome in ('ORPHAN_RECOVERED','ORPHAN_CHANGED_AFTER_CLAIM','ORPHAN_CLEAR_FAILED','ORPHAN_REVIEW_REJECTED','unknown'):
+        for outcome in ('ORPHAN_RECOVERED','ORPHAN_CHANGED_AFTER_CLAIM','ORPHAN_CLEAR_FAILED','ORPHAN_BINDING_CHANGED','ORPHAN_CONTROL_CHANGED','unknown'):
             self.fixture.consume(self.review,outcome,consumed=False)
             with self.subTest(outcome=outcome),self.assertRaisesRegex(ValueError,'pre-consumption'):
                 self.run_settlement()
@@ -202,7 +203,7 @@ class RejectedRecoveryTests(unittest.TestCase):
         original_write=settlement.write_json
         def change_after_intent(path,value):
             original_write(path,value)
-            if path.name=='intent.json':self.fixture.consume(self.review,'ORPHAN_RUNTIME_REJECTED',consumed=True)
+            if path.name=='intent.json':self.fixture.consume(self.review,self.rejection_status,consumed=True)
         with patch('studio_orphan_rejection.write_json',side_effect=change_after_intent),self.assertRaisesRegex(ValueError,'consumption'):
             self.run_settlement()
         self.assert_fenced();self.assertTrue((self.gate/'permit.json').exists())
@@ -296,6 +297,12 @@ class RejectedRecoveryTests(unittest.TestCase):
         result=json.loads(output.getvalue())
         self.assertEqual(result['result']['status'],'rejected_settled')
         self.assertFalse((self.gate/'permit.json').exists())
+
+
+class ReviewRejectedRecoveryTests(RejectedRecoveryTests):
+    # Exercise the complete preserving/negative/interruption matrix for the
+    # initial-validation rejection, not only its newly admitted success case.
+    rejection_status='ORPHAN_REVIEW_REJECTED'
 
 
 if __name__=='__main__':unittest.main()

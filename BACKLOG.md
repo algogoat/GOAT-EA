@@ -150,6 +150,13 @@ qualification are separate from full native EA/installed-package qualification.
   request and trading gates. Candidate V1.49-TESTER-SEMANTIC-14 compiled with zero
   errors and warnings, SHA-256
   56b8be6891cbcb54c806e59ead210c3a4a5d951e146b7cc113d22c8bf2b97abb.
-  266 production-flow/schema fixture checks pass; full Windows CI, admission and
+  266 production-flow/schema fixture checks and exact-head Windows CI pass; admission and
   fresh native readback qualification are still required. Regression provenance
   and limitations: [tester fixture](controller/fixtures/tester-roundtrip/README.md).
+- **TESTER-WORKER-CAPABILITY-001 (2026-09-28):** Replace MT5 build 6182 equality
+  with a live owned-Agents-control/menu capability readback. Require local, remote
+  and cloud commands and matching captions; close the owned popup on success or
+  refusal. Candidate V1.49-WORKER-CAPABILITY-15 compiled on MetaEditor 6230
+  with zero errors/warnings, SHA-256 bd2d33b8d60f3a8b5296e740b9612ca1bd68801d33f326cdb93f65b0e8af4ed1. This is source/compile proof only;
+  Banker 6230 native menu readback and admission remain required. Unknown/localized
+  menu labels fail closed and require a reviewed capability adapter.

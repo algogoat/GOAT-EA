@@ -782,12 +782,18 @@ refusing unlisted operations, including future operations. Only the frozen plan,
 member settings and resulting configuration may be prepared and dispatched. Missing
 or unknown authority on an agent-owned session refuses rather than becoming full
 control. New normal sessions are explicitly classified `native_human_control` and
-remain human-owned until an actual human grant. This private owner controller does
-not silently migrate legacy agent-owned sessions; use their reviewed original kit
-for maintenance before the new typed bootstrap.
+remain human-owned until an actual human grant. Legacy classification requires no
+typed authority markers and an actor-bound archived human grant matching its
+committed receipt and generation. Genuine new human grants classify atomically;
+missing evidence never classifies an agent. SQLite insert/update/delete guards
+and independent session/file checks prevent authority downgrade.
 
 A human takeover permanently revokes the continuation; no subsequent grant/promotion
-is available through it. Native dispatch rechecks the broker-confirmed demo, account,
+is available through it. The human channel can always submit a validated takeover,
+even when authority evidence is damaged. Human cancellation and reviewed PARK/restore
+remain available after takeover. Typed recovery refuses human-confirmation flags.
+An expired continuation can supervise/cancel/finish its retained batch, but cannot
+reserve or dispatch new work. Native dispatch rechecks the broker-confirmed demo, account,
 Algo OFF, empty positions/orders and idle tester. Recovery has its own distinct typed
 authorization and keeps every native recovery guard. Bootstrap starts no terminal,
 batch or trade. Use the supported monitor prepare/launch, verify actual native

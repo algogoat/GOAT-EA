@@ -301,13 +301,22 @@ class ResearchAuthorityTests(unittest.TestCase):
         self.boot()
         with operation('prepare-batch'):prepare_batch(self.c,'frozen-batch',self.plan)
         native=dict(demo=True,connected=True,account_matches=True,algo_trading=False,positions=0,orders=0,tester_state='idle')
-        with operation('start'):
+        with operation('start'),self.assertRaisesRegex(ValueError,'live bounded'):
+            before_native_dispatch(self.c,self.c.job('frozen-batch'))
+        driver=self.c.root/'batch-drivers/frozen-batch.json'
+        driver.parent.mkdir(exist_ok=True)
+        intent=dict(status='start_issued',start_issued=True,attempt_id=None,binding=dict(job_id='frozen-batch'))
+        write_json(driver,intent)
+        with operation('run-batch'):
             job=self.c.job('frozen-batch')
             for key,value in [('algo_trading',True),('demo',False),('positions',1),('account_matches',False),('connected',False)]:
                 with patch('studio_monitor_probe.inspect_idle_demo',return_value=native|{key:value}):
                     with self.assertRaisesRegex(ValueError,'Algo OFF'):
                         before_native_dispatch(self.c,job)
             with patch('studio_monitor_probe.inspect_idle_demo',return_value=native):
+                before_native_dispatch(self.c,job)
+            write_json(driver,intent|dict(status='start_uncertain'))
+            with self.assertRaisesRegex(ValueError,'retained failed'):
                 before_native_dispatch(self.c,job)
 
     def test_bootstrap_saved_algo_or_login_refusal_has_no_session_effect(self):

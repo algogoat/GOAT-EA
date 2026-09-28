@@ -69,15 +69,27 @@ def predecessor(db, state, scope, *, successor_id=None, require_released=True):
             or result['native']['status_counts']!={'native_cancelled':count}
             or transaction['phase']!='restored' or transaction['owner']!=attempt):
         raise ValueError('Predecessor canonical finish/restoration proof differs')
-    # Any produced report/export means this is not an unstarted replacement.
+    # Recheck the whole activated run, not only conventional output folders.
+    # A root checkpoint or tester cache also means execution may have occurred.
     from studio_report_paths import report_paths
     manifest=read_json(package/'manifest.json');plan=read_json(package/'studio-plan.json')
     paths=report_paths(plan,manifest)
-    for run in (paths['local_run'],paths['common_run']):
-        for folder in ('reports','Exports','exports'):
-            target=safe_path(run/folder)
-            if target.exists() and any(p.is_file() for p in target.rglob('*')):
-                raise ValueError('Predecessor has work output; replacement refused')
+    local=safe_path(paths['local_run'])
+    if local.exists() and any(safe_path(p).is_file() for p in local.rglob('*')):
+        raise ValueError('Predecessor has work output; replacement refused')
+    expected_files={p.relative_to(package).as_posix():hashlib.sha256(safe_path(p).read_bytes()).hexdigest() for p in package.rglob('*') if p.is_file()}
+    for item in manifest['jobs']:
+        expected_files['inputs/'+item['run_alias']+'/config.ini']=hashlib.sha256((package/(item['run_alias']+'.ini')).read_bytes()).hexdigest()
+    expected_files['portfolio.goatbatch']=hashlib.sha256((package/'portfolio.goatbatch').read_bytes().decode('utf-16').replace(';Pending_',';Queued_',1).encode('utf-16')).hexdigest()
+    # observe() has already checked every Cancelled member's exact alias,
+    # ordered tester settings and immutable inputs; retain its actual bytes.
+    expected_files['queue.GOAT']=native['artifacts'][0]['sha256']
+    common=safe_path(paths['common_run'])
+    actual={p.relative_to(common).as_posix():hashlib.sha256(safe_path(p).read_bytes()).hexdigest() for p in common.rglob('*') if p.is_file()}
+    if actual!=expected_files:raise ValueError('Predecessor has work artifacts or changed native material')
+    cache=safe_path(Path(plan['research_binding']['research_data_root'])/'Tester/cache')
+    if cache.exists() and any(safe_path(p).is_file() and p.stat().st_mtime>=scope['created_utc'] for p in cache.rglob('*')):
+        raise ValueError('Tester work artifacts exist since bootstrap')
     journal_path=safe_path(root/'batch-drivers'/(old['job_id']+'.json'))
     journal=read_json(journal_path); binding=journal['binding']
     if (journal.get('schema_version')!=2 or journal.get('status')!='cancelled' or journal.get('stopped') is not True

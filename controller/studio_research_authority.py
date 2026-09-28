@@ -202,11 +202,16 @@ def before_native_dispatch(controller, job):
             raise ValueError('Research continuation expired; no native dispatch')
         if job['configuration_sha256']!=value['configuration_sha256']:
             raise ValueError('Native dispatch differs from frozen research configuration')
+        if CURRENT_OPERATION.get()!='run-batch':
+            raise ValueError('Typed research start requires the live bounded run-batch driver')
+        journal=read_json(controller.root/'batch-drivers'/(job['job_id']+'.json'))
+        if (journal.get('status')!='start_issued' or journal.get('start_issued') is not True
+                or journal.get('attempt_id') is not None or journal.get('binding',{}).get('job_id')!=job['job_id']):
+            raise ValueError('Typed research requires the live driver initial start intent, never a retained failed journal')
         state=controller.state()
         if len(state['queue'])>1:
             from studio_research_retry import predecessor
             inherited=predecessor(controller.store.db,state,value,successor_id=job['job_id'],require_released=job['status']=='pending')
-            journal=read_json(controller.root/'batch-drivers'/(job['job_id']+'.json'))
             if (journal.get('inherited_budget')!=inherited or journal['deadline_wall']!=inherited['deadline_wall']
                     or journal['started_wall']!=inherited['started_wall'] or journal['max_seconds']!=inherited['max_seconds']
                     or journal['min_free_bytes']<inherited['min_free_bytes'] or time.time()>=journal['deadline_wall']):

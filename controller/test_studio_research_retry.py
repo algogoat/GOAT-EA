@@ -1,6 +1,7 @@
 import hashlib
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from campaign_ledger import sha
@@ -57,17 +58,33 @@ class ResearchRetryTests(unittest.TestCase):
         write_json(self.path,self.journal|dict(stopped=False))
         with self.assertRaisesRegex(ValueError,'verifiably stopped'):predecessor(self.c.store.db,self.c.state(),self.scope)
 
+    def test_complete_inventory_refuses_root_checkpoint_local_output_and_tester_cache(self):
+        from studio_report_paths import report_paths
+        package=self.c.root/'packages/original'
+        paths=report_paths(read_json(package/'studio-plan.json'),read_json(package/'manifest.json'))
+        targets=[paths['common_run']/'checkpoint.bin',paths['local_run']/'raw-result.bin',
+                 Path(self.c.install['terminal_data_root'])/'Tester/cache/result.opt']
+        for path in targets:
+            with self.subTest(path=path.name):
+                path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'unexpected work')
+                with self.assertRaisesRegex(ValueError,'work'):predecessor(self.c.store.db,self.c.state(),self.scope)
+                path.unlink()
+        predecessor(self.c.store.db,self.c.state(),self.scope)
+
     def test_direct_start_without_inherited_driver_and_extended_deadline_refuse(self):
         with operation('prepare-batch'):prepare_batch(self.c,'replacement',self.plan)
-        with operation('start'),self.assertRaises(FileNotFoundError):before_native_dispatch(self.c,self.c.job('replacement'))
+        with operation('start'),self.assertRaisesRegex(ValueError,'live bounded'):before_native_dispatch(self.c,self.c.job('replacement'))
         inherited=predecessor(self.c.store.db,self.c.state(),self.scope,successor_id='replacement')
         path=self.c.root/'batch-drivers/replacement.json'
-        value=dict(inherited_budget=inherited,started_wall=inherited['started_wall'],max_seconds=86400,
+        value=dict(status='start_issued',start_issued=True,attempt_id=None,binding=dict(job_id='replacement'),inherited_budget=inherited,started_wall=inherited['started_wall'],max_seconds=86400,
                    deadline_wall=inherited['deadline_wall']+1,min_free_bytes=5368709120)
         write_json(path,value)
         with operation('run-batch'),self.assertRaisesRegex(ValueError,'original bounded'):before_native_dispatch(self.c,self.c.job('replacement'))
         write_json(path,value|dict(deadline_wall=inherited['deadline_wall']))
         with operation('run-batch'):before_native_dispatch(self.c,self.c.job('replacement'))
+        write_json(path,value|dict(deadline_wall=inherited['deadline_wall'],status='start_uncertain'))
+        with operation('start'),self.assertRaisesRegex(ValueError,'live bounded'):before_native_dispatch(self.c,self.c.job('replacement'))
+        with operation('run-batch'),self.assertRaisesRegex(ValueError,'retained failed'):before_native_dispatch(self.c,self.c.job('replacement'))
 
     def test_expired_original_budget_and_reduced_disk_guard_refuse(self):
         write_json(self.path,self.journal|dict(started_wall=time.time()-86401,deadline_wall=time.time()-1))
@@ -75,7 +92,7 @@ class ResearchRetryTests(unittest.TestCase):
         write_json(self.path,self.journal)
         with operation('prepare-batch'):prepare_batch(self.c,'replacement',self.plan)
         inherited=predecessor(self.c.store.db,self.c.state(),self.scope,successor_id='replacement')
-        write_json(self.c.root/'batch-drivers/replacement.json',dict(inherited_budget=inherited,started_wall=inherited['started_wall'],
+        write_json(self.c.root/'batch-drivers/replacement.json',dict(status='start_issued',start_issued=True,attempt_id=None,binding=dict(job_id='replacement'),inherited_budget=inherited,started_wall=inherited['started_wall'],
                    max_seconds=86400,deadline_wall=inherited['deadline_wall'],min_free_bytes=1))
         with operation('run-batch'),self.assertRaisesRegex(ValueError,'disk reserve'):before_native_dispatch(self.c,self.c.job('replacement'))
 

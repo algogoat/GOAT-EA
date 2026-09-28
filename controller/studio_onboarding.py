@@ -174,7 +174,7 @@ def monitor_prepare(controller, symbol):
         next_action='With the selected terminal stopped and saved Algo Trading off, run monitor-launch --attempt-id <new-id>')
 
 
-def verify_monitor_profile(controller, receipt):
+def verify_monitor_profile(controller, receipt, *, observed_human_reopen=False):
     session, _ = session_state(controller)
     name, profile = monitor_paths(controller, session)
     if receipt.get('installation_sha256') != sha(controller.install) or receipt.get('run_id') != session['run_id'] or receipt.get('profile_name') != name or receipt.get('profile_path') != str(profile):
@@ -188,11 +188,11 @@ def verify_monitor_profile(controller, receipt):
     raw = charts[0].read_bytes()
     if len(raw)>2_000_000:
         raise ValueError('Saved monitor chart exceeds size limit')
-    verify_saved_monitor(raw, controller.install['ea_relative_path'], receipt['symbol'], controller.install['terminal_data_root'])
+    verify_saved_monitor(raw, controller.install['ea_relative_path'], receipt['symbol'], controller.install['terminal_data_root'], observed_human_reopen=observed_human_reopen)
     return profile
 
 
-def verify_saved_monitor(raw, ea_relative_path, symbol, data_root):
+def verify_saved_monitor(raw, ea_relative_path, symbol, data_root, *, observed_human_reopen=False):
     # MT5 rewrites chart metadata and permission flags on a normal close.
     # Accept those changes only after rechecking the effective saved monitor.
     text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
@@ -235,7 +235,12 @@ def verify_saved_monitor(raw, ea_relative_path, symbol, data_root):
     chart=fields.get(('chart',),{});expert=fields.get(('chart','expert'),{});inputs=fields.get(('chart','expert','inputs'),{})
     relative=PureWindowsPath(ea_relative_path)
     allowed=[PureWindowsPath('Experts')/relative,PureWindowsPath(data_root)/'MQL5'/'Experts'/relative]
-    if chart.get('symbol')!=symbol or PureWindowsPath(expert.get('path','')) not in allowed or expert.get('expertmode') != '0':
+    mode=expert.get('expertmode','')
+    # This exception is observational only: the human has already reopened MT5.
+    # Its caller binds unchanged saved bytes and verifies global Algo OFF via SDK.
+    # Never infer undocumented bits, write a permission, or use this for launch.
+    permission_ok=(mode=='0' or (observed_human_reopen is True and re.fullmatch(r'[0-9]{1,3}',mode)))
+    if chart.get('symbol')!=symbol or PureWindowsPath(expert.get('path','')) not in allowed or not permission_ok:
         raise ValueError('Saved monitor symbol, EA identity or permissions changed; human must review and reopen the saved profile in MT5')
     if inputs.get('Mode_Operation')!='11' or inputs.get('Studio_ReadOnlyMonitor')!='true' or inputs.get('Studio_MonitorRunPath','')!='':
         raise ValueError('Saved chart is no longer an inert Studio monitor')

@@ -80,6 +80,8 @@ OPERATION_CONTRACTS = {
     'batch-driver-status':dict(required=['job-id'],effect='read retained driver journal and current binding match; never starts, resumes or cancels work'),
     'research-monitor-restart':dict(required=['job-id'],effect='owner-only typed continuation: gracefully suspend exact old publisher and reload one idle monitor after verified pre-consumption rejection; preserves evidence and budget; no batch start'),
     'research-monitor-restart-status':dict(required=['job-id'],effect='reverify an already launched recovery monitor; never close or launch again'),
+    'research-monitor-reopen-prepare':dict(required=['job-id'],effect='prepare an audited profile-pointer-only change while stopped; no launch or permission edits'),
+    'research-monitor-adopt-reopen':dict(required=['job-id','human-reopened'],effect='observe an actual human-reopened exact idle demo monitor once; never launch, grant or change permissions'),
     'research-monitor-restart-resume':dict(required=['job-id'],effect='reconcile an already-issued monitor close and perform only its never-issued first relaunch; no repeated close or launch'),
     'cancel-rejected-successor':dict(required=['job-id'],effect='owner-only: publish one new stop identity after exact expired unconsumed native cancel rejection and reverified monitor restart; keeps both stop receipts'),
     'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls')
@@ -341,6 +343,8 @@ def main(argv=None):
     p=sub.add_parser('prepare');p.add_argument('--job-id',required=True);p.add_argument('--set',type=Path,required=True);p.add_argument('--configuration',type=Path,required=True)
     for command in ('start','status','cancel','reconcile','finish','research-monitor-restart','research-monitor-restart-resume','research-monitor-restart-status','cancel-rejected-successor'):
         p=sub.add_parser(command);p.add_argument('--job-id',required=True)
+    p=sub.add_parser('research-monitor-reopen-prepare');p.add_argument('--job-id',required=True)
+    p=sub.add_parser('research-monitor-adopt-reopen');p.add_argument('--job-id',required=True);p.add_argument('--human-reopened',action='store_true')
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
         from studio_research_authority import operation,dispatch
@@ -433,6 +437,12 @@ def main(argv=None):
             elif args.operation=='research-monitor-restart':
                 from studio_rejected_monitor import restart
                 result=restart(controller,args.job_id)
+            elif args.operation=='research-monitor-reopen-prepare':
+                from studio_human_reopen import prepare
+                result=prepare(controller,args.job_id)
+            elif args.operation=='research-monitor-adopt-reopen':
+                from studio_human_reopen import adopt
+                result=adopt(controller,args.job_id,human_reopened=args.human_reopened)
             elif args.operation=='research-monitor-restart-status':
                 from studio_rejected_monitor import reverify
                 result=reverify(controller,args.job_id)

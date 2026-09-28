@@ -147,9 +147,9 @@ bool GoatStudioUIState(string &tester,string &exports,string &owner,long &revisi
 #ifdef GOAT_MONITOR_ONBOARDING_V149
    // A valid empty binding permits HUMAN handoff before the agent creates
    // settings. Never synthesize settings or accept partial/malformed drafts.
-   g_StudioEmptyDraft=(tester_token>=0 && export_token>=0
+   bool empty_draft=(tester_token>=0 && export_token>=0
       && tokens[tester_token].type==GOAT_JSON_NULL && tokens[export_token].type==GOAT_JSON_NULL);
-   if(g_StudioEmptyDraft)
+   if(empty_draft)
      {
       int queue=GOATJsonFindField(body,tokens,state,"queue");
       int strategy=GOATJsonFindField(body,tokens,state,"strategy_draft");
@@ -167,6 +167,11 @@ bool GoatStudioUIState(string &tester,string &exports,string &owner,long &revisi
    if(!GoatStudioSectionINI(body,tokens,tester_token,false,tester)
       || !GoatStudioSectionINI(body,tokens,export_token,true,exports))
      {status="Controller settings are incomplete; ask your agent to repair setup"; return false;}
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   // Rejected snapshots must not change the accepted editor's persistence mode.
+   // Otherwise a queued/null-settings snapshot can trap every later refresh.
+   g_StudioEmptyDraft=empty_draft;
+#endif
    g_StudioSnapshot=body;
    g_StudioHasStrategy=false; g_StudioStrategyName=""; g_StudioSchemaHash="";
    GOATJsonGetString(body,tokens,0,"schema_hash",g_StudioSchemaHash);

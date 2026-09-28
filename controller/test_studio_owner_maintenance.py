@@ -169,6 +169,30 @@ class OwnerMaintenanceTests(unittest.TestCase):
                 apply(self.c, review_id, owner_maintenance=self.record_id)
         self.assertEqual(apply(self.c, review_id, owner_maintenance=self.record_id)['status'], 'complete')
 
+    def test_expired_started_park_reconciles_but_cannot_authorize_another_step(self):
+        self.mint(); self.stop()
+        review_id = review(self.c)['review_id']
+        _, record = read_record(self.c,self.record_id)
+        with patch('studio_handover.move_once',side_effect=OSError('interrupt')):
+            with self.assertRaises(OSError): apply(self.c,review_id,owner_maintenance=self.record_id)
+        with patch('studio_owner_maintenance.time.time',return_value=record['expires_utc']+1):
+            self.assertEqual(apply(self.c,review_id,owner_maintenance=self.record_id)['status'],'complete')
+            with self.assertRaisesRegex(ValueError,'expired'):
+                read_record(self.c,self.record_id)
+
+    def test_single_intent_contains_stop_and_retry_after_publication_is_exact(self):
+        from studio_owner_maintenance import retain
+        self.mint(); self.stop()
+        review_id = review(self.c)['review_id']
+        def interrupt(path,raw):
+            retain(path,raw)
+            if path.name=='park-intent.json': raise OSError('intent published')
+        with patch('studio_owner_maintenance.retain',side_effect=interrupt):
+            with self.assertRaises(OSError): apply(self.c,review_id,owner_maintenance=self.record_id)
+        intent=read_json(directory(self.c)/self.record_id/'park-intent.json')
+        self.assertIn('stop',intent)
+        self.assertEqual(apply(self.c,review_id,owner_maintenance=self.record_id)['status'],'complete')
+
 
 if __name__ == '__main__':
     unittest.main()

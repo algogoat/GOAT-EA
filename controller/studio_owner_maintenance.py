@@ -22,7 +22,7 @@ def directory(c):
     return safe_path(paths(c)[2]/'owner-maintenance')
 
 
-def read_record(c, record_id):
+def read_record(c, record_id, *, reconcile_park=False):
     if not re.fullmatch('[a-f0-9]{32}', record_id):
         raise ValueError('Exact owner maintenance record ID required')
     root = directory(c)/record_id
@@ -38,7 +38,9 @@ def read_record(c, record_id):
             or value.get('original_grant_request_id') != policy['grant_request_id']
             or value.get('original_grant_payload_hash') != policy['grant_payload_hash']
             or value.get('original_generation') != policy['generation']
-            or not value['created_utc'] <= now < value['expires_utc'] <= policy['expires_utc']
+            or not value['created_utc'] <= now
+            or not value['created_utc'] < value['expires_utc'] <= policy['expires_utc']
+            or (not reconcile_park and now >= value['expires_utc'])
             or value['expires_utc']-value['created_utc'] > policy['maintenance']['max_seconds']
             or not re.fullmatch('session-[a-f0-9]{32}', value.get('replacement_run_id', ''))
             or not re.fullmatch('[a-f0-9]{64}', value.get('nonce', ''))):
@@ -122,7 +124,7 @@ def authorize_park(c, record_id, plan):
     Existing PARK transaction/archives are the only accepted state transitions.
     A pending human event or any other original-epoch change retires the record.
     """
-    root, value = read_record(c, record_id)
+    root, value = read_record(c, record_id, reconcile_park=plan['status']!='review')
     review_id = plan['review_id']
     if (plan['action'] != 'park' or plan.get('restore')
             or value['installation'] != c.install
@@ -137,7 +139,7 @@ def authorize_park(c, record_id, plan):
                     observation_sha256=sha(observation), step='park')
     intent_path = root/'park-intent.json'
     prior = read_json(intent_path) if intent_path.exists() else None
-    if prior is not None and prior != identity:
+    if prior is not None and {k:v for k,v in prior.items() if k!='stop'} != identity:
         raise ValueError('Owner maintenance PARK already belongs to another review')
     if plan['status'] != 'review' and prior is None:
         raise ValueError('PARK effect has no exact owner maintenance intent')
@@ -145,6 +147,8 @@ def authorize_park(c, record_id, plan):
     original_root, original_local = c.root, c.local
     for saved, expected in (('state','parked_state'), ('terminal','parked_terminal')):
         if (archive/saved).exists():
+            if saved=='terminal':
+                human_clear(root,archive/saved/value['session']['directory_id']/'human')
             if tree(archive/saved) != plan.get(expected):
                 raise ValueError('Published PARK archive differs; preserve all evidence')
             if saved=='state': original_root=archive/saved
@@ -173,13 +177,13 @@ def authorize_park(c, record_id, plan):
             matches.append(dict(path=path.name, sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
     if len(matches) != 1:
         raise ValueError('Exactly one verified stop of the originally observed terminal required')
+    identity['stop'] = matches[0]
     # No active MT5 writer exists at this boundary. Handover's exclusive lock
     # excludes all supported controller/UI pumps until publication completes.
     human_clear(root, original_local/value['session']['directory_id']/'human')
     if prior is None:
         retain(intent_path, (packed(identity)+'\n').encode())
-        retain(root/'park-stop.json', (packed(matches[0])+'\n').encode())
-    elif read_json(root/'park-stop.json') != matches[0]:
+    elif prior != identity:
         raise ValueError('Original terminal stop receipt changed')
     return root, identity
 

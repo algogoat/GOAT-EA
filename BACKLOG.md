@@ -1,4 +1,4 @@
-# GOAT EA and controller work
+﻿# GOAT EA and controller work
 
 This branch starts from the retained R5 build. Entries below cover the agreed
 V1.48/dashboard work; they do not replace other branches' historical backlog.
@@ -178,3 +178,5 @@ qualification are separate from full native EA/installed-package qualification.
   75d00db5865e4b0311faf91523504632ceb1d2269d8788622844955a541f4991.
   This is source/compile proof only; exact-head review, admission and native
   Banker readback remain required before the batch path.
+
+| CTRL-022 | Visible native Give/Take control feedback | Source implementation; qualification pending | Immediate pending button/status, Take Control Yes/No warning, 30-second delayed acknowledgement with original request retained, receipt-confirmed current owner, Give Control Back action, persistent actionable refusal; a later save/queue clears old feedback. The derived Report-only difference is ignored in refresh, enqueue and grant while all other settings still compare exactly. No fabricated grant, retry, permission or trading change. User requested September 28. |

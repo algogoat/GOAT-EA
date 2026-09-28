@@ -1,4 +1,4 @@
-"""Source contracts for journal diagnostics; these do not execute or qualify MQL5."""
+﻿"""Source contracts for journal diagnostics; these do not execute or qualify MQL5."""
 import hashlib
 import re
 import unittest
@@ -158,10 +158,11 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
     def test_source_and_compiled_candidate_identity(self):
         main = source('GOAT V1.49.mq5')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
-        self.assertIn('#define   GOAT_BUILD_ID "V1.49-WORKER-IDLE-DIAGNOSTIC-15R2"', main)
+        self.assertIn('#define   GOAT_BUILD_ID "V1.49-CONTROL-FEEDBACK-16R1"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
-                         '75d00db5865e4b0311faf91523504632ceb1d2269d8788622844955a541f4991')
-        for name in ('GOATStudioRecovery.mqh', 'GOATStudioRecoveryFiles.mqh', 'GOATStudioUI.mqh', 'GOAT V1.49.mq5'):
+                         '256dd41cb7194886ea15ac274abecd43c83678a2079377dbc5afe7a8ec30488d')
+        for name in ('GOATStudioRecovery.mqh', 'GOATStudioRecoveryFiles.mqh', 'GOATStudioUI.mqh',
+                     'GOATStudioWorkers.mqh', 'GOATStudioControlFeedback.mqh', 'GOAT V1.49.mq5'):
             raw = (ROOT/name).read_bytes()
             self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
             self.assertEqual(raw.count(b"\n"), raw.count(b"\r\n"))

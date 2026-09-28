@@ -61,6 +61,12 @@ jobs:
       - name: Verify semantic tester settings round-trip fixtures
         run: node scripts/test_studio_setting_compare.cjs
 
+      - name: Verify Studio control feedback state transitions
+        run: node scripts/test_studio_control_feedback.cjs
+
+      - name: Verify Studio derived Report handoff safety
+        run: node scripts/test_studio_derived_report.cjs
+
       - name: Run every controller fixture test
         env:
           TEMP: ${{ runner.temp }}

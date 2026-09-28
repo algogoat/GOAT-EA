@@ -156,7 +156,8 @@ qualification are separate from full native EA/installed-package qualification.
 - **TESTER-WORKER-CAPABILITY-001 (2026-09-28):** Replace MT5 build 6182 equality
   with a live owned-Agents-control/menu capability readback. Require local, remote
   and cloud commands and matching captions; close the owned popup on success or
-  refusal. Candidate V1.49-WORKER-CAPABILITY-15 compiled on MetaEditor 6230
-  with zero errors/warnings, SHA-256 bd2d33b8d60f3a8b5296e740b9612ca1bd68801d33f326cdb93f65b0e8af4ed1. This is source/compile proof only;
+  refusal. Candidate V1.49-WORKER-CAPABILITY-15R1 adds an independent
+  6182/6230 Start-message gate before intent or arming. MetaEditor 6230 compiled
+  with zero errors/warnings, SHA-256 8907841d7a1003a0abdec5bdbf2c84e4d7efbdc35e375153d7f6c2abf94d9366. This is source/compile proof only;
   Banker 6230 native menu readback and admission remain required. Unknown/localized
   menu labels fail closed and require a reviewed capability adapter.

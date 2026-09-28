@@ -1,4 +1,4 @@
-#ifndef GOAT_STUDIO_WORKERS_MQH
+﻿#ifndef GOAT_STUDIO_WORKERS_MQH
 #define GOAT_STUDIO_WORKERS_MQH
 // Read the native policy; no worker command is selected. Caller checks runtime
 // ownership and remains responsible for rechecking before a launch side effect.
@@ -77,6 +77,7 @@ bool GoatStudioReadWorkerPolicy(bool &local,bool &remote,bool &cloud)
          if(StringFind(local_name,"local")<0 || StringFind(remote_name,"remote")<0
             || StringFind(cloud_name,"cloud")<0) continue;
          want_local=(a&8)!=0;want_remote=(b&8)!=0;want_cloud=(c&8)!=0;
+         PrintFormat("GOAT_STUDIO_WORKER_READBACK build=%d local=%s:%d remote=%s:%d cloud=%s:%d",(int)TerminalInfoInteger(TERMINAL_BUILD),local_name,(int)want_local,remote_name,(int)want_remote,cloud_name,(int)want_cloud);
          found=true;
          break;
         }

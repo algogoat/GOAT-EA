@@ -102,3 +102,9 @@ OWNER-MAINT-010 parent-loss follow-up: re-verification validates retained origin
   settlement preservation/refusal/interruption matrix for both review and runtime
   refusals. Source tests and matched installed delivery remain distinct; the
   particular native validation predicate still needs the tester request/receipt.
+
+- **RECOVERY-CLOCK-001 (2026-09-28):** Leave 15 seconds under the unchanged native
+  recovery expiry ceiling; refuse publication on missing/invalid or over-five-second
+  difference between terminal UTC and observation file write time. Retain the
+  separate 20-second runtime freshness check. Source regression for a one-second-ahead controller and
+  no-publication refusals; tester-specific cause and native qualification pending.

@@ -48,7 +48,8 @@ class OwnerResearchTests(unittest.TestCase):
         def runtime(**kwargs):
             if kwargs['expected_batch_ongoing']!=self.fixture.flags: raise ValueError('Runtime policy mismatch: batch_ongoing')
             return dict(recovery_capability=self.fixture.cap,runtime=dict(batch_ongoing=self.fixture.flags),
-                        **{k:c.state()[k] for k in ('owner','revision','generation')}),{}
+                        observed_terminal_utc=self.fixture.terminal_utc(),
+                        **{k:c.state()[k] for k in ('owner','revision','generation')}),{'modified':time.time()-self.fixture.observation_age}
         c.runtime.side_effect=runtime
 
     def authorization(self): return authorize(self.c,'orphan-recovery-apply','a'*32)

@@ -1,4 +1,6 @@
 """Recovery protocol fixtures. Native terminal qualification is separate."""
+from datetime import datetime, timezone
+import time
 import hashlib
 import json
 from pathlib import Path
@@ -27,9 +29,12 @@ class OrphanRecoveryTests(unittest.TestCase):
         self.gate=self.c.local/'native-gate'
         self.cap=dict(protocol=1,ea_version='1.49',monitor_instance='instance-one',terminal_running=False)
         self.flags=True
+        self.clock_offset=0
+        self.observation_age=0
+        self.terminal_utc=lambda:datetime.fromtimestamp(time.time()-self.observation_age+self.clock_offset,timezone.utc).strftime('%Y.%m.%d %H:%M:%S')
         def runtime(**kwargs):
             if kwargs['expected_batch_ongoing']!=self.flags: raise ValueError('Runtime policy mismatch: batch_ongoing')
-            return dict(recovery_capability=self.cap,runtime=dict(batch_ongoing=self.flags)),{}
+            return dict(recovery_capability=self.cap,runtime=dict(batch_ongoing=self.flags),observed_terminal_utc=self.terminal_utc()),{'modified':time.time()-self.observation_age}
         self.addCleanup(patch.stopall)
         patch.object(self.c,'runtime',side_effect=runtime).start()
         patch('studio_orphan_recovery.inspect_writers').start()
@@ -62,6 +67,75 @@ class OrphanRecoveryTests(unittest.TestCase):
         self.assertEqual(self.c.state(),before)
         self.assertTrue(list(self.gate.glob('consumed-*.json')))
         self.assertEqual(status(self.c,review_id)['status'],'recovered')
+
+    def test_one_second_ahead_controller_fits_native_expiry_ceiling(self):
+        with patch('studio_orphan_recovery.time.time',return_value=1800000000):
+            self.clock_offset=-1
+            review=prepare(self.c)['review_id']
+            published=apply(self.c,review,confirmed=True)
+            request=json.loads((self.gate/'request.json').read_text())
+            terminal_now=1799999999
+            # Mirror the unchanged native validity interval: the old +60 fails.
+            self.assertGreater(1800000000+60,terminal_now+60)
+            self.assertGreater(request['expires_utc'],terminal_now)
+            self.assertLessEqual(request['expires_utc'],terminal_now+60)
+            self.assertEqual(request['expires_utc'],1800000045)
+            self.assertEqual(published['status'],'published_not_recovered')
+            self.assertFalse(published['launch_permitted'])
+
+    def test_clock_refusal_leaves_review_snapshot_transport_and_grant_unchanged(self):
+        with patch('studio_orphan_recovery.time.time',return_value=1800000000):
+            review=prepare(self.c)['review_id'];before=self.c.state()
+            review_bytes=plan_path(self.c,review).read_bytes()
+            snapshot=(self.c.bridge.root/'snapshot.json').read_bytes()
+            for offset in (-8,8,-3600,3600):
+                self.clock_offset=offset
+                with self.subTest(offset=offset),self.assertRaisesRegex(ValueError,'5 seconds'):
+                    apply(self.c,review,confirmed=True)
+                self.assertEqual(plan_path(self.c,review).read_bytes(),review_bytes)
+                self.assertEqual((self.c.bridge.root/'snapshot.json').read_bytes(),snapshot)
+                self.assertFalse((self.gate/'request.json').exists())
+                self.assertFalse((self.gate/'permit.json').exists())
+                self.assertFalse((self.c.root/'orphan-recovery-pending.json').exists())
+                self.assertEqual(list(self.gate.glob('issued-*.json')),[])
+                self.assertEqual(self.c.state(),before)
+            # A later fresh observation permits this still-valid review, once.
+            self.clock_offset=0
+            self.observation_age=15
+            self.assertEqual(apply(self.c,review,confirmed=True)['status'],'published_not_recovered')
+
+    def test_fifteen_second_old_zero_skew_feedback_passes_real_freshness_guard(self):
+        with patch('studio_orphan_recovery.time.time',return_value=1800000000):
+            review=prepare(self.c)['review_id']
+            install=self.c.install
+            observation=dict(schema_version=1,bound=True,recovery_capability=self.cap,runtime=dict(
+                batch_ongoing=True,tester_state='idle',connected=True,account_demo=True,
+                terminal_trade_allowed=False,restart_pending=False,
+                data_path=install['terminal_data_root'],
+                installation_path=str(Path(install['terminal_executable']).parent),
+                program_path=str(self.c.native_args()['monitor_path'].resolve()),
+                account_login=str(self.c.session['account']['login']),account_server=self.c.session['account']['server']))
+            def read_observation(unused):
+                observation['observed_terminal_utc']=self.terminal_utc()
+                return observation,time.time()-self.observation_age
+            # Exercise production freshness rather than bypassing it in this case.
+            self.c.runtime.side_effect=lambda **kwargs:type(self.c).runtime(self.c,**kwargs)
+            with patch('studio_resilient_read.read_observation',side_effect=read_observation):
+                self.observation_age=21
+                with self.assertRaisesRegex(ValueError,'stale or future-dated'):
+                    apply(self.c,review,confirmed=True)
+                self.assertFalse((self.gate/'permit.json').exists())
+                self.observation_age=15
+                self.assertEqual(apply(self.c,review,confirmed=True)['status'],'published_not_recovered')
+
+    def test_missing_or_malformed_terminal_time_never_publishes(self):
+        review=prepare(self.c)['review_id']
+        for value in (None,True,1800000000,'invalid','2026.13.01 00:00:00'):
+            self.terminal_utc=lambda:value
+            with self.subTest(value=value),self.assertRaisesRegex(ValueError,'valid terminal UTC'):
+                apply(self.c,review,confirmed=True)
+            self.assertFalse((self.gate/'permit.json').exists())
+            self.assertFalse((self.c.root/'orphan-recovery-pending.json').exists())
 
     def test_legacy_missing_capability_runtime_identity_and_changed_review_refuse(self):
         self.c.install['ea_version']='1.48'
@@ -152,8 +226,8 @@ class OrphanRecoveryTests(unittest.TestCase):
             write_json(c.root/'installation.json',c.install);write_json(c.root/'session.json',c.session)
             old=(fixture.gate/'request.json').read_bytes()
             preserved={p:p.read_bytes() for p in fixture.gate.iterdir() if p.name.startswith(('issued-','consumed-','result-'))}
-            observation={'recovery_capability':self.cap,'runtime':{'tester_state':'idle','batch_ongoing':True}}
-            with patch.object(c,'runtime',return_value=(observation,{})), \
+            observation={'recovery_capability':self.cap,'runtime':{'tester_state':'idle','batch_ongoing':True},'observed_terminal_utc':self.terminal_utc()}
+            with patch.object(c,'runtime',return_value=(observation,{'modified':time.time()})), \
                  patch('studio_resilient_read.read_observation',return_value=(observation,1)), \
                  patch('studio_process_check.inspect_processes'):
                 from studio_queue_clear import recovery_status

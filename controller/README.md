@@ -449,6 +449,16 @@ separate command requires the original process, monitor, account, agent grant,
 state and idle orphan flag to match. It supports only an originally empty native
 gate; other results or prior controls remain fenced.
 
+Recovery publication uses a 45-second expiry inside the EA's unchanged 60-second
+ceiling. Before writing transport, the controller requires a valid terminal UTC
+observation whose timestamp differs from its file write time by at most five
+seconds. This compares both clocks when feedback was written; fifteen-second-old
+feedback with matching clocks remains valid under the separate, unchanged
+20-second runtime freshness check. Check clock synchronization for a skew refusal
+or fresh monitor feedback for a freshness refusal, then retry only an unissued,
+still-valid review. Issued or uncertain requests are never resent. This prevents
+a zero-margin expiry rejection; it does not prove the cause of any tester report.
+
 ORPHAN_REVIEW_REJECTED is an initial native request-validation refusal, before
 the runtime and foreign-control checks. It does not identify which schema,
 identity, path or expiry predicate failed. Preserve the original request and

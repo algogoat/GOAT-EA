@@ -1,5 +1,7 @@
 from datetime import datetime,timezone
 import hashlib
+import time
+import os
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -29,7 +31,8 @@ class HumanReopenTests(unittest.TestCase):
         self.common.write_bytes(self.before)
         self.native=self.f.native|dict(process=dict(pid=45,created_utc=datetime.now(timezone.utc).isoformat()))
         self.probe=patch('studio_human_reopen.inspect_idle_demo',side_effect=lambda c:self.native).start()
-        self.runtime=patch.object(self.c,'runtime',side_effect=lambda **kw:(self.c.state(),None)).start()
+        self.runtime=patch.object(self.c,'runtime',side_effect=lambda **kw:(self.c.state(),dict(modified=time.time()))).start()
+        patch('studio_human_reopen.human_launch',side_effect=lambda c,p:dict(process=dict(p),active_console_session_id=1)).start()
         self.addCleanup(patch.stopall)
 
     def prepared(self):
@@ -78,7 +81,7 @@ class HumanReopenTests(unittest.TestCase):
         chart=Path(self.profile['profile_path'])/'chart01.chr';raw=chart.read_bytes();chart.write_bytes(raw+'\r\n'.encode('utf-16-le'))
         with self.assertRaisesRegex(ValueError,'chart changed'):adopt(self.c,'original',human_reopened=True,process=self.process)
         chart.write_bytes(raw)
-        self.runtime.side_effect=lambda **kw:(self.c.state()|dict(owner='human'),None)
+        self.runtime.side_effect=lambda **kw:(self.c.state()|dict(owner='human'),dict(modified=time.time()))
         with self.assertRaisesRegex(ValueError,'exact typed session'):adopt(self.c,'original',human_reopened=True,process=self.process)
         self.assertEqual(read_json(self.path)['phase'],'stopped');self.process.start.assert_not_called()
 
@@ -88,9 +91,39 @@ class HumanReopenTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'temporary SDK'):adopt(self.c,'original',human_reopened=True,process=self.process)
         self.assertEqual(read_json(self.path)['phase'],'adopted_unverified')
         self.probe.side_effect=lambda c:self.native
+        self.runtime.side_effect=lambda **kw:(self.c.state(),dict(modified=time.time()-10))
+        with self.assertRaisesRegex(ValueError,'predates'):reverify(self.c,'original')
+        self.assertEqual(read_json(self.path)['phase'],'adopted_unverified')
+        self.runtime.side_effect=lambda **kw:(self.c.state(),dict(modified=time.time()))
         result=reverify(self.c,'original');self.assertEqual(result['phase'],'reverified')
         self.native['process']=dict(pid=46,created_utc=datetime.now(timezone.utc).isoformat())
         with self.assertRaisesRegex(ValueError,'process changed'):reverify(self.c,'original')
+        self.process.start.assert_not_called()
+
+    def test_fresh_but_previous_process_feedback_refuses_adoption(self):
+        self.prepared()
+        self.runtime.side_effect=lambda **kw:(self.c.state(),dict(modified=time.time()-10))
+        with self.assertRaisesRegex(ValueError,'predates'):adopt(self.c,'original',human_reopened=True,process=self.process)
+        self.assertEqual(read_json(self.path)['phase'],'stopped');self.process.start.assert_not_called()
+
+    def test_interrupted_pointer_publication_resumes_exact_bytes_once(self):
+        original=os.replace
+        def fail_pointer(source,target):
+            if Path(target)==self.common:raise OSError('sharing violation')
+            return original(source,target)
+        with patch('studio_human_reopen.os.replace',side_effect=fail_pointer):
+            with self.assertRaisesRegex(OSError,'sharing violation'):prepare(self.c,'original',process=self.process)
+        audit=(self.path.parent/'human-reopen.json').read_bytes()
+        self.assertEqual(self.common.read_bytes(),self.before)
+        # A process appearing after the interrupted write still forbids replay.
+        self.process.inspect.return_value=self.native['process']
+        with self.assertRaisesRegex(ValueError,'remain stopped'):prepare(self.c,'original',process=self.process)
+        self.process.inspect.return_value=None
+        prepare(self.c,'original',process=self.process)
+        expected=self.before.decode('utf-16').replace('older-profile',self.profile['profile_name']).encode('utf-16')
+        self.assertEqual(self.common.read_bytes(),expected)
+        prepare(self.c,'original',process=self.process)
+        self.assertEqual((self.path.parent/'human-reopen.json').read_bytes(),audit)
         self.process.start.assert_not_called()
 
 

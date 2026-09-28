@@ -69,6 +69,28 @@ class ResearchAuthorityTests(unittest.TestCase):
         with operation('owner-maintenance-bootstrap'),self.assertRaisesRegex(ValueError,'retired'):
             bootstrap(self.c,self.record_id,self.plan)
 
+    def test_fresh_frozen_queue_publishes_complete_native_settings_without_editor_mutation(self):
+        from studio_bridge import display_state
+        import copy
+        self.boot()
+        with operation('prepare-batch'):prepare_batch(self.c,'fresh-queued',self.plan)
+        with operation('state'):
+            state=self.c.state();before=copy.deepcopy(state)
+            self.assertIsNone(state['tester_draft']);self.assertIsNone(state['export_draft'])
+            actual=read_json(self.c.bridge.root/'snapshot.json')['state']
+            expected=state['queue'][0]['configuration']
+            self.assertEqual(actual['tester_draft'],expected['tester'])
+            self.assertEqual(actual['export_draft'],expected['export'])
+            self.assertEqual(self.c.state(),before)
+            human=copy.deepcopy(state)
+            human['tester_draft']=expected['tester']|{'Symbol':'GBPUSD'}
+            human['export_draft']=expected['export']
+            self.assertEqual(display_state(human)['tester_draft']['Symbol'],'GBPUSD')
+            altered=copy.deepcopy(state);altered['queue'][0]['configuration']['tester']['Symbol']='USDJPY'
+            with self.assertRaisesRegex(ValueError,'configuration changed'):display_state(altered)
+            partial=copy.deepcopy(state);partial['tester_draft']=expected['tester']
+            self.assertIsNone(display_state(partial)['export_draft'])
+
     def test_expired_driver_keeps_supervision_but_cannot_reserve_or_dispatch(self):
         self.boot()
         with operation('prepare-batch'):prepare_batch(self.c,'frozen-batch',self.plan)

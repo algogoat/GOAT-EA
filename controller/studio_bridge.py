@@ -25,6 +25,21 @@ def display_state(state):
     adapter must retrieve and verify the immutable controller configuration.
     """
     result = dict(state)
+    # A fresh agent session has no editor drafts. Once a frozen job is queued,
+    # the existing native snapshot contract requires its complete settings.
+    # Project the validated queued configuration, never invented defaults, and
+    # leave the stored human editor drafts untouched.
+    if state.get('tester_draft') is None and state.get('export_draft') is None and state.get('queue'):
+        from campaign_ledger import sha
+        from studio_settings import validate_tester, validate_export
+        job=next((j for j in state['queue'] if j['status'] in ('reserved','starting','running','reconcile_required','verifying','pending')),state['queue'][0])
+        config=job['configuration']
+        if sha(config)!=job['configuration_sha256']:
+            raise ValueError('Queued display configuration changed')
+        tester=validate_tester(config['tester'])
+        exports=validate_export(config['export'],tester)
+        result['tester_draft']=tester
+        result['export_draft']=exports
     result['queue'] = [dict(job_id=job['job_id'], status=job['status'],
                             configuration_sha256=job['configuration_sha256'],
                             source_revision=job['source_revision'],

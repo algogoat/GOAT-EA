@@ -803,3 +803,5 @@ session; its journals and original grant evidence remain available for inspectio
 
 Validation is source/fixture coverage until an actual native result is recorded;
 these owner-only paths are not a customer rollout or general standing consent.
+
+Fresh agent batch snapshots project complete tester/export settings from the hash-verified queued configuration when both editor drafts are absent. This fills the existing native display fields without inventing defaults, editing stored human drafts, changing native protocol fields, granting control or replaying a launch. Partial editor drafts remain visibly incomplete.

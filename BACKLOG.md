@@ -122,3 +122,13 @@ named-terminal ambiguity and protected-peer checks. Record unreadable-system-pat
 limits explicitly. Restart during cleanup retains the fence and requires another
 stop before same-review resumption. Source cases and real PowerShell/helper
 qualification are separate from full native EA/installed-package qualification.
+
+- **CONTROLLER-REPORT-RECOVERY-001 (2026-09-28):** Controller-owned recovery of
+  the exact legacy-to-scoped generated Report baseline mismatch. Archive the
+  original draft/restart and saved permission bytes, gracefully close the selected
+  idle demo once, change baseline only while stopped, relaunch the existing inert
+  monitor once, and require actual fresh EA/session alignment. Never discard user
+  settings, manufacture a human reopen/grant, change permissions or start research.
+  Fourteen focused fixtures pass, including actual MT5 expertmode=4 structure,
+  unchanged permissions, refusals and interrupted transaction resumption. Full
+  controller CI and native execution remain separate qualification requirements.

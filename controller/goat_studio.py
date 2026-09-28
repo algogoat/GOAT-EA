@@ -82,6 +82,7 @@ OPERATION_CONTRACTS = {
     'research-monitor-restart-status':dict(required=['job-id'],effect='reverify an already launched recovery monitor; never close or launch again'),
     'research-monitor-reopen-prepare':dict(required=['job-id'],effect='prepare an audited profile-pointer-only change while stopped; no launch or permission edits'),
     'research-monitor-adopt-reopen':dict(required=['job-id','human-reopened'],effect='observe an actual human-reopened exact idle demo monitor once; never launch, grant or change permissions'),
+    'research-monitor-repair-derived-report':dict(required=['job-id'],effect='repair only a proven generated report baseline, with controller-owned close/reopen and unchanged permissions; never start research or grant control'),
     'research-monitor-restart-resume':dict(required=['job-id'],effect='reconcile an already-issued monitor close and perform only its never-issued first relaunch; no repeated close or launch'),
     'cancel-rejected-successor':dict(required=['job-id'],effect='owner-only: publish one new stop identity after exact expired unconsumed native cancel rejection and reverified monitor restart; keeps both stop receipts'),
     'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls')
@@ -345,6 +346,7 @@ def main(argv=None):
         p=sub.add_parser(command);p.add_argument('--job-id',required=True)
     p=sub.add_parser('research-monitor-reopen-prepare');p.add_argument('--job-id',required=True)
     p=sub.add_parser('research-monitor-adopt-reopen');p.add_argument('--job-id',required=True);p.add_argument('--human-reopened',action='store_true')
+    p=sub.add_parser('research-monitor-repair-derived-report');p.add_argument('--job-id',required=True)
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
         from studio_research_authority import operation,dispatch
@@ -440,6 +442,9 @@ def main(argv=None):
             elif args.operation=='research-monitor-reopen-prepare':
                 from studio_human_reopen import prepare
                 result=prepare(controller,args.job_id)
+            elif args.operation=='research-monitor-repair-derived-report':
+                from studio_derived_report_recovery import recover
+                result=recover(controller,args.job_id)
             elif args.operation=='research-monitor-adopt-reopen':
                 from studio_human_reopen import adopt
                 result=adopt(controller,args.job_id,human_reopened=args.human_reopened)

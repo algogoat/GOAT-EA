@@ -889,6 +889,26 @@ Concurrent CLI and resident bridge pumps wait up to one second to acquire the ex
 
 For a saved-profile permission refusal after a recorded owner-demo stop, `research-monitor-reopen-prepare --job-id <original>` audits before/after common.ini bytes and changes only Charts/ProfileLast to the existing typed-session profile while MT5 is stopped. Saved account and terminal-wide Algo OFF remain mandatory. It never launches MT5 or changes permissions. The user opens Banker normally; only after the user actually confirms that action may `research-monitor-adopt-reopen --job-id <original> --human-reopened` observe the exact newer terminal once. It verifies unchanged protected files and chart/config bytes, current native session and SDK demo/Algo OFF/zero trades/idle. Undocumented chart flag bits remain opaque; only this observation of an already human-opened monitor accepts them, never onboarding or automated launch. An interrupted adopted_unverified record can use research-monitor-restart-status to reverify that same PID; it never adopts a second process. Original cancellation and finish still must complete before the frozen replacement can run.
 
+For the proven generated-report editor discrepancy on that retained recovery,
+`research-monitor-repair-derived-report --job-id <original>` owns the normal
+close, stopped draft repair and monitor reopen. It needs no new human reopen or
+grant. It accepts only an unsubmitted retained draft whose sole difference from
+its baseline is the legacy report root becoming the exact package-owned scoped
+root. It archives both versions and the original restart, then changes only the
+baseline while the editor is stopped. The EA must subsequently acknowledge the
+real controller revision; the controller never writes a native revision.
+
+The transaction preserves the saved expert's exact `expertmode` row and all
+bytes of the common.ini Experts section. It compares these before close, after
+close and after launch; a difference refuses launch or acknowledgement. Opaque
+bits are preserved, not interpreted as grants. Structural checks still require
+the same inert EA, exact preset/config, same demo, Algo OFF, no trades and idle
+tester. The newly launched PID/creation/executable comes from the controller's
+own one-shot launch record, with fresh native feedback; Explorer or a fabricated
+human witness is never used. Resume reconciles known file/publication phases;
+an uncertain issued close/start is not repeated. Completion links the archived
+repair into the original recovery before its cancellation can continue.
+
 Adoption also records the original Explorer parent, its earlier creation time, the same active console session, and the exact executable command line (only the required `/portable` flag is allowed). Native feedback must have been written after this process started, both at adoption and re-verification. This evidence corroborates the user's actual reopen; it cannot substitute for that confirmation. Interrupted pointer publication can resume the exact retained before/after compare-and-swap while the terminal remains stopped, including an identical staged temporary file or already-published after bytes. The audit and its original time stay unchanged; any different bytes refuse. CR, LF and CRLF endings are preserved.
 
 New pointer receipts retain their complete original bytes in an exclusive publication-intent file before the receipt copy is written. Resumption compares every receipt byte against that intent, including its timestamp and permission/launch declarations. An interrupted receipt copy uses the original intent without resetting its time. Earlier completed schema-1 receipts remain observable through the existing adoption checks, but cannot resume pointer publication without original intent evidence; never manufacture that evidence retroactively.

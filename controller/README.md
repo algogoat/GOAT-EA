@@ -445,7 +445,7 @@ If the exact retained receipt is `ORPHAN_REVIEW_REJECTED`, `ORPHAN_RUNTIME_REJEC
 anywhere in the selected local Studio tree, and the request has expired, review
 that rejection before using `orphan-recovery-reconcile-rejection --review-id
 <original-id> --confirm-reviewed` within authorized recovery maintenance. This
-separate command requires the original process, monitor, account, agent grant,
+separate command in its default running mode requires the original process, monitor, account, agent grant,
 state and idle orphan flag to match. It supports only an originally empty native
 gate; other results or prior controls remain fenced.
 
@@ -485,6 +485,35 @@ only reports an interrupted rejection settlement and cannot finish it. Diagnose
 the rejection before preparing any later recovery, which needs a fresh review
 and the applicable explicit human or audited owner-research authorization.
 These controller fixtures are not native qualification.
+
+### Explicit stopped-terminal rejection settlement
+
+A released controller that includes this feature can use
+`orphan-recovery-reconcile-rejection --review-id <original-id> --confirm-reviewed
+--terminal-stopped` after the user approves this exact stopped cleanup. This is
+an explicit alternative to the default same-process route, never an automatic
+fallback. It does not stop or reopen MT5. Native qualification and matched
+packaged delivery remain required; source tests alone do not make it available
+in an older installed beta.
+
+The selected terminal must be positively absent from a complete process
+inventory at every cleanup boundary. Unmapped or ambiguous processes, changed
+protected peers, pending human commands, changed installation/session/account
+bindings or local state, and any native consumption refuse cleanup. The original
+byte-exact rejected result stays in place as the EA's one-shot replay barrier.
+No old monitor feedback is represented as a current idle/account/flag readback,
+and no normal-exit receipt is invented. The existing local ownership, transport,
+consumption, archive and permit-before-request checks still apply under the same
+locks. No native flag, history, queue, file outside this transport, or grant is
+changed.
+
+The journal records this stopped mode and the actual process-absence observation.
+Interrupted cleanup must resume with the same mode and review ID. Historical
+status cannot retire a later fence. The offline route requires explicit human
+confirmation; neither `--owner-research` nor typed research-continuation authority
+is accepted offline. After settlement, reopen through a supported path and obtain
+a fresh native observation and new recovery review. Never reuse the rejected
+request or its old observation, and never treat settlement as recovery or start.
 
 ### Current monitor journal diagnostics (V1.49 internal -6)
 

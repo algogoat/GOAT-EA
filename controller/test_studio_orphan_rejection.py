@@ -16,6 +16,9 @@ import test_studio_orphan_recovery as fixtures
 
 class RejectedRecoveryTests(unittest.TestCase):
     rejection_status='ORPHAN_RUNTIME_REJECTED'
+    inspection_module=settlement
+    inspection_name='inspect'
+    cli_flags=[]
     def setUp(self):
         self.fixture=fixtures.OrphanRecoveryTests();self.fixture.setUp()
         self.addCleanup(self.fixture.tearDown);self.addCleanup(self.fixture.doCleanups)
@@ -218,12 +221,12 @@ class RejectedRecoveryTests(unittest.TestCase):
         self.assert_fenced();self.assertTrue((self.gate/'permit.json').exists())
 
     def test_transport_change_during_runtime_observation_is_not_removed(self):
-        original_inspect=settlement.inspect
+        original_inspect=getattr(self.inspection_module,self.inspection_name)
         def changed(*args,**kwargs):
             result=original_inspect(*args,**kwargs)
             write_json(self.gate/'permit.json',{'foreign':'permit'})
             return result
-        with patch('studio_orphan_rejection.inspect',side_effect=changed),self.assertRaisesRegex(ValueError,'during runtime observation'):
+        with patch.object(self.inspection_module,self.inspection_name,side_effect=changed),self.assertRaisesRegex(ValueError,'during runtime observation'):
             self.run_settlement()
         self.assertEqual(read_json(self.gate/'permit.json'),{'foreign':'permit'})
         self.assert_fenced()
@@ -242,12 +245,12 @@ class RejectedRecoveryTests(unittest.TestCase):
     def test_observation_holds_both_session_and_native_locks(self):
         from studio_handover import paths
         from studio_native_gate import shared_gate,exclusive_gate
-        original_inspect=settlement.inspect
+        original_inspect=getattr(self.inspection_module,self.inspection_name)
         def locked(*args,**kwargs):
             with self.assertRaises(OSError),shared_gate(paths(self.c)[3]):pass
             with self.assertRaises(OSError),exclusive_gate(self.gate):pass
             return original_inspect(*args,**kwargs)
-        with patch('studio_orphan_rejection.inspect',side_effect=locked):
+        with patch.object(self.inspection_module,self.inspection_name,side_effect=locked):
             self.assertEqual(self.run_settlement()['status'],'rejected_settled')
 
     def test_changed_archived_bytes_after_intent_refuse_before_cleanup(self):
@@ -292,7 +295,7 @@ class RejectedRecoveryTests(unittest.TestCase):
         output=io.StringIO()
         with patch('goat_studio.Controller',return_value=self.c),patch('sys.stdout',output):
             code=main(['--installation',str(self.c.root/'installation.json'),'orphan-recovery-reconcile-rejection',
-                       '--review-id',self.review,'--confirm-reviewed'])
+                       '--review-id',self.review,'--confirm-reviewed',*self.cli_flags])
         self.assertEqual(code,0)
         result=json.loads(output.getvalue())
         self.assertEqual(result['result']['status'],'rejected_settled')

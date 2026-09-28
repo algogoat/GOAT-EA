@@ -29,7 +29,17 @@ def evidence_paths(c, review_id, request_id):
 def retained_evidence(c, plan):
     root=safe_path(plan_path(c,plan['review_id']).parent/'rejection-settlement')
     intent=read_json(safe_path(root/'intent.json'))
-    if set(intent)!={'schema_version','review_id','request_id','sha256'} or intent['schema_version']!=1 or intent['review_id']!=plan['review_id']:
+    expected_keys={'schema_version','review_id','request_id','sha256'}
+    if intent.get('schema_version')==2:
+        expected_keys|={'terminal_stopped','process_observation'}
+        proof=intent.get('process_observation')
+        if (intent.get('terminal_stopped') is not True or not isinstance(proof,dict)
+                or proof.get('research','missing') is not None or proof.get('launch_permitted') is not False
+                or type(proof.get('observed_unix')) not in (int,float)):
+            raise ValueError('Stopped recovery settlement intent changed')
+    elif intent.get('schema_version')!=1:
+        raise ValueError('Rejected recovery settlement intent changed')
+    if set(intent)!=expected_keys or intent['review_id']!=plan['review_id']:
         raise ValueError('Rejected recovery settlement intent changed')
     if set(intent['sha256'])!={'review.json','issued.json','result.json','request.json','permit.json'}:
         raise ValueError('Rejected recovery evidence set changed')
@@ -66,7 +76,7 @@ def settled_status(c, plan):
                     'Rejection settled without recovery. Diagnose the cause; any later recovery needs a fresh explicitly approved review')
 
 
-def verify_rejection(c, plan, raw, *, allow_missing_transport=False, owner_research=False):
+def verify_rejection(c, plan, raw, *, allow_missing_transport=False, owner_research=False, terminal_stopped=False):
     record=plan['record'];request=record['request'];request_id=request['request_id']
     if (plan['schema_version']!=1 or plan['status']!='issued' or 'prior_request_utf8' not in plan or plan['prior_request_utf8'] is not None
             or record['prior_control']!={'status':'absent'} or plan['observation']['prior_control']!={'status':'absent'}):
@@ -94,7 +104,11 @@ def verify_rejection(c, plan, raw, *, allow_missing_transport=False, owner_resea
             or evidence['receipt']['status'] not in PRECONSUMPTION_REJECTIONS
             or evidence['receipt']!=json.loads(raw['result.json'])):
         raise ValueError('Exact supported pre-consumption rejection required')
-    if inspect(c,expected_batch=True,allow_own_request=record)!=plan['observation']:
+    stopped_observation=None
+    if terminal_stopped:
+        from studio_orphan_stopped import inspect_stopped
+        stopped_observation=inspect_stopped(c,plan)
+    elif inspect(c,expected_batch=True,allow_own_request=record)!=plan['observation']:
         raise ValueError('Rejected recovery process, monitor, account or control state changed')
     if owner_research:
         from studio_owner_research import authorize,record as record_authorization
@@ -107,11 +121,14 @@ def verify_rejection(c, plan, raw, *, allow_missing_transport=False, owner_resea
         path=files[name]
         if not path.exists() and allow_missing_transport and name in ('permit.json','request.json'): continue
         if path.read_bytes()!=raw[name]: raise ValueError('Rejected recovery evidence changed during runtime observation')
+    return stopped_observation
 
 
-def reconcile_rejection(c, review_id, *, confirmed=False, owner_research=False):
+def reconcile_rejection(c, review_id, *, confirmed=False, owner_research=False, terminal_stopped=False):
     from studio_research_authority import refuse_typed_confirmation
     refuse_typed_confirmation(c,confirmed)
+    if type(terminal_stopped) is not bool or (terminal_stopped and (confirmed is not True or owner_research)):
+        raise ValueError('Stopped rejection settlement requires explicit human confirmation; owner-research is not an offline authority')
     if type(owner_research) is not bool or (confirmed and owner_research):
         raise ValueError('Choose one explicit recovery authorization route')
     if not confirmed and not owner_research: raise ValueError('Explicit review confirmation required for rejection settlement')
@@ -134,30 +151,34 @@ def reconcile_rejection(c, review_id, *, confirmed=False, owner_research=False):
                 raw={name:file.read_bytes() for name,file in files.items()}
                 original=plan
                 if json.loads(raw['review.json'])!=original: raise ValueError('Recovery review changed before settlement')
-                verify_rejection(c,original,raw,owner_research=owner_research)
+                stopped_observation=verify_rejection(c,original,raw,owner_research=owner_research,terminal_stopped=terminal_stopped)
                 root.mkdir(exist_ok=True)
                 for name,value in raw.items(): retain(root/name,value)
                 intent=dict(schema_version=1,review_id=review_id,request_id=original['record']['request']['request_id'],
                             sha256={name:hashlib.sha256(value).hexdigest() for name,value in raw.items()})
+                if terminal_stopped:
+                    intent.update(schema_version=2,terminal_stopped=True,process_observation=stopped_observation)
                 # All exact evidence is fsynced before publishing cleanup intent.
                 write_json(journal,intent)
                 intent,raw,original,settled=retained_evidence(c,plan)
+            if intent.get('terminal_stopped',False) is not terminal_stopped:
+                raise ValueError('Settlement mode differs from retained intent; resume the original mode')
             files=evidence_paths(c,review_id,intent['request_id'])
             # Recheck fresh identity, rejection and all bytes before every removal.
             for name in ('permit.json','request.json'):
-                verify_rejection(c,original,raw,allow_missing_transport=True,owner_research=owner_research)
+                verify_rejection(c,original,raw,allow_missing_transport=True,owner_research=owner_research,terminal_stopped=terminal_stopped)
                 retained_evidence(c,plan)
                 if read_json(path)!=plan or read_json(fence)!={'review_id':review_id}:
                     raise ValueError('Rejected recovery review or fence changed during cleanup')
                 if files[name].exists(): files[name].unlink()
-            verify_rejection(c,original,raw,allow_missing_transport=True,owner_research=owner_research)
+            verify_rejection(c,original,raw,allow_missing_transport=True,owner_research=owner_research,terminal_stopped=terminal_stopped)
             retained_evidence(c,plan)
             if read_json(path)!=plan or read_json(fence)!={'review_id':review_id}:
                 raise ValueError('Rejected recovery review or fence changed before settlement')
             # Durable terminal status precedes fence removal. Original evidence
             # and the native result stay forever; no original-ID replay can run.
             write_json(path,settled)
-            verify_rejection(c,original,raw,allow_missing_transport=True,owner_research=owner_research)
+            verify_rejection(c,original,raw,allow_missing_transport=True,owner_research=owner_research,terminal_stopped=terminal_stopped)
             retained_evidence(c,settled)
             if read_json(path)!=settled or read_json(fence)!={'review_id':review_id}:
                 raise ValueError('Rejected recovery settlement or fence changed')

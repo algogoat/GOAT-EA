@@ -143,6 +143,9 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
         self.assertIn('g_GoatStudioReadOnlyMonitor', timer)
         self.assertIn('tester_state=="idle"', timer)
         self.assertIn('GoatStudioReadWorkerPolicy(worker_local,worker_remote,worker_cloud)', timer)
+        self.assertIn('FileOpen("GOATStudio\\\\native-gate\\\\launch.lock",FILE_READ|FILE_WRITE|FILE_BIN)', timer)
+        self.assertLess(timer.index('int diagnostic_gate=FileOpen('), timer.index('GoatStudioReadWorkerPolicy('))
+        self.assertLess(timer.index('GoatStudioReadWorkerPolicy('), timer.index('FileClose(diagnostic_gate);'))
         self.assertIn('bool still_idle=(algo_off', timer)
         self.assertIn('readback && still_idle ? "READBACK_OK"', timer)
         self.assertLess(timer.index('GoatStudioReadWorkerPolicy('), timer.index('TesterDialog.OnClickRefresh(true);'))
@@ -157,7 +160,7 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
         self.assertIn('#define   GOAT_BUILD_ID "V1.49-WORKER-IDLE-DIAGNOSTIC-15R2"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
-                         '998497df3ec5f3593b1fe01127a07fcf5a36e49a540c04e7ecb4928e42d0f2e3')
+                         '75d00db5865e4b0311faf91523504632ceb1d2269d8788622844955a541f4991')
         for name in ('GOATStudioRecovery.mqh', 'GOATStudioRecoveryFiles.mqh', 'GOATStudioUI.mqh', 'GOAT V1.49.mq5'):
             raw = (ROOT/name).read_bytes()
             self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))

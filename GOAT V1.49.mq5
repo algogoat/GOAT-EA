@@ -4638,6 +4638,19 @@ void GoatTimerBody(void)
    {
       if(g_GoatStudioWorkerDiagnosticPending)
       {
+         // Match the controller/native dispatch lock so a request cannot appear
+         // and disappear during this bounded read-only menu probe.
+         int diagnostic_gate=FileOpen("GOATStudio\\native-gate\\launch.lock",FILE_READ|FILE_WRITE|FILE_BIN);
+         if(diagnostic_gate==INVALID_HANDLE)
+         {
+            if(GetTickCount64()>=g_GoatStudioWorkerDiagnosticDeadline)
+            {
+               g_GoatStudioWorkerDiagnosticPending=false;
+               Print("GOAT_STUDIO_IDLE_WORKER_DIAGNOSTIC build_id="+GOAT_BUILD_ID+" status=GATE_BUSY");
+            }
+         }
+         else
+         {
          bool unsafe_runtime=(IsStopped() || !MQLInfoInteger(MQL_DLLS_ALLOWED)
             || !TerminalInfoInteger(TERMINAL_CONNECTED) || TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)
             || AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO
@@ -4671,6 +4684,8 @@ void GoatTimerBody(void)
                +" algo_off="+(string)(int)algo_off+" tester="+after_state
                +" status="+(readback && still_idle ? "READBACK_OK" : "READBACK_UNAVAILABLE")
                +" local="+(string)(int)worker_local+" remote="+(string)(int)worker_remote+" cloud="+(string)(int)worker_cloud);
+         }
+         FileClose(diagnostic_gate);
          }
       }
       TesterDialog.OnClickRefresh(true);

@@ -16,7 +16,7 @@ from studio_handover import apply, database_view, filesystem_path, guard, inspec
 from studio_installation_upgrade import verify_park
 from studio_native_gate import exclusive_gate, shared_gate
 from studio_handover import stopped as inspect_stopped
-from studio_bridge import write_json
+from studio_bridge import write_json,worker_lock
 from test_goat_studio import PortableControllerTests
 
 
@@ -401,6 +401,31 @@ class HandoverTests(unittest.TestCase):
         finally:
             out, err = child.communicate(timeout=40)
             self.assertEqual(child.returncode, 0, out+err)
+
+
+class WorkerContentionTests(unittest.TestCase):
+    def test_real_exclusive_worker_contention_waits_before_any_work(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);(root/'worker.lock').write_bytes(b'0')
+            script='from studio_bridge import worker_lock; from pathlib import Path; import sys,time\nwith worker_lock(Path(sys.argv[1])):\n print("held",flush=True)\n time.sleep(float(sys.argv[2]))'
+            for duration,expires in ((.25,False),(1.5,True)):
+                child=subprocess.Popen([sys.executable,'-c',script,str(root),str(duration)],cwd=Path(__file__).parent,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+                try:
+                    self.assertEqual(child.stdout.readline().strip(),'held')
+                    started=time.monotonic();entered=False
+                    if expires:
+                        with self.assertRaises(OSError):
+                            with worker_lock(root):entered=True
+                        self.assertFalse(entered)
+                    else:
+                        with worker_lock(root):entered=True
+                        self.assertTrue(entered)
+                        self.assertGreater(time.monotonic()-started,.05)
+                    self.assertLess(time.monotonic()-started,1.4)
+                finally:
+                    out,err=child.communicate(timeout=5)
+                    self.assertEqual(child.returncode,0,out+err)
 
 
 if __name__ == '__main__': unittest.main()

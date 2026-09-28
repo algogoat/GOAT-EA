@@ -133,6 +133,14 @@ def prepare_batch(controller, batch_id, plan_path):
             raise ValueError('Batch ID already belongs to different members/settings; use a new revision ID')
         _, _, manifest = _verify_package(controller, existing)
         return dict(batch_id=batch_id, package=str(package), manifest=manifest, reused=True, native_started='launch_intent' in existing)
+    if scope is not None and snapshot['queue']:
+        from studio_research_retry import predecessor
+        # Read-only preflight before staging; store rechecks under its gate/CAS.
+        predecessor(controller.store.db,snapshot,scope)
+        controller.runtime(require_idle=True,expected_batch_ongoing=False)
+        from studio_monitor_probe import inspect_idle_demo
+        from studio_rejected_monitor import require_demo
+        require_demo(inspect_idle_demo(controller))
     if snapshot['owner'] != 'agent': raise ValueError('Current controller required: human must Give to Agent first')
     if package.exists(): raise ValueError('Unqueued preparation artifacts exist; preserve them and choose a new batch ID')
     # Stage every native artifact before queue publication. The original snapshot

@@ -222,8 +222,13 @@ def before_native_dispatch(controller, job):
             from studio_research_retry import predecessor
             inherited=predecessor(controller.store.db,state,value,successor_id=job['job_id'],require_released=job['status']=='pending')
             if inherited.get('fresh_native_epoch'):
-                if (journal.get('fresh_authority_budget')!=inherited or journal['max_seconds']!=inherited['max_seconds']
+                capped='authority_expires_utc' in inherited
+                valid_seconds=(type(journal.get('max_seconds')) is int and
+                    (1<=journal['max_seconds']<=inherited['max_seconds'] if capped else journal['max_seconds']==inherited['max_seconds']))
+                if (journal.get('fresh_authority_budget')!=inherited or not valid_seconds
                         or journal['started_wall']<value['created_utc'] or journal['deadline_wall']!=journal['started_wall']+journal['max_seconds']
+                        or (capped and (inherited['authority_expires_utc']!=value['expires_utc']
+                            or journal['deadline_wall']>value['expires_utc']))
                         or journal['min_free_bytes']<inherited['min_free_bytes'] or time.time()>=journal['deadline_wall']):
                     raise ValueError('Replacement requires its new native epoch budget and disk reserve')
             elif (journal.get('inherited_budget')!=inherited or journal['deadline_wall']!=inherited['deadline_wall']

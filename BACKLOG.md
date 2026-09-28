@@ -1,4 +1,4 @@
-# GOAT EA and controller work
+﻿# GOAT EA and controller work
 
 This branch starts from the retained R5 build. Entries below cover the agreed
 V1.48/dashboard work; they do not replace other branches' historical backlog.
@@ -136,6 +136,11 @@ qualification are separate from full native EA/installed-package qualification.
 - **RESEARCH-BUDGET-48H-001 (2026-09-28):** Support172800-second bounded research driver. Preserve no-reset resume and disk guards. Fresh window after takeover requires genuine native re-grant; no amendment to revoked authority.
 
 - **AGENT-SELF-REPAIR-001 (2026-09-28, Vince):** Customer agents should diagnose and repair stale-state mismatches, failed idle restarts and interrupted research locally through reusable evidence-preserving controller capabilities. Surface check/apply/reverify results, resumable transaction IDs and exact blockers; no bespoke support patch for each occurrence. Preserve actual connection/revocation and trading-permission boundaries. First qualification: Banker native re-grant and never-started-attempt recovery; then general customer coverage.
+  The consumed `SETTINGS_NOT_VERIFIED` plus canonical cancelled/no-work case now
+  has a read-only one-successor proof in the controller branch. Its synthetic
+  regression and read-only Banker evidence check pass; reviewed packaging and
+  native successor start remain pending. It cannot replay a consumed request,
+  silently extend a grant, or treat source tests as batch qualification.
   Expanded owner requirement: simple goal-level tools for GOAT, builder and MT5;
   agent-managed WebRequest/DLL setup under retained user authorization; local
   troubleshooting and clear repair receipts; customer-controlled redacted reports
@@ -161,5 +166,16 @@ qualification are separate from full native EA/installed-package qualification.
   with zero errors/warnings, SHA-256 8907841d7a1003a0abdec5bdbf2c84e4d7efbdc35e375153d7f6c2abf94d9366. This is source/compile proof only;
   Banker 6230 native menu readback and admission remain required. Unknown/localized
   menu labels fail closed and require a reviewed capability adapter.
+- **TESTER-WORKER-IDLE-READBACK-002 (2026-09-28):** The 15R1 menu readback was
+  reachable only inside Start after request consumption, so Claude's idle-only
+  diagnostic approval could not be exercised. V1.49-WORKER-IDLE-DIAGNOSTIC-15R2
+  adds one bounded readback from the existing read-only monitor after it opens,
+  only on an idle connected demo with DLL permission, Algo Trading OFF, no batch
+  flag and no pending native request. It logs the build/PID/account/tester state
+  and local/remote/cloud menu result without reserving or starting a job.
+  MetaEditor 6230 compiled with zero errors/warnings, SHA-256
+  75d00db5865e4b0311faf91523504632ceb1d2269d8788622844955a541f4991.
+  This is source/compile proof only; exact-head review, admission and native
+  Banker readback remain required before the batch path.
 
 | CTRL-022 | Visible native Give/Take control feedback | Source implementation; qualification pending | Immediate pending button/status, Take Control Yes/No warning, 30-second delayed acknowledgement with original request retained, receipt-confirmed current owner, Give Control Back action, persistent actionable refusal; a later save/queue clears old feedback. The derived Report-only difference is ignored in refresh, enqueue and grant while all other settings still compare exactly. No fabricated grant, retry, permission or trading change. User requested September 28. |

@@ -1,4 +1,4 @@
-"""Source contracts for journal diagnostics; these do not execute or qualify MQL5."""
+﻿"""Source contracts for journal diagnostics; these do not execute or qualify MQL5."""
 import hashlib
 import re
 import unittest
@@ -137,12 +137,30 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
         self.assertLess(execute.index(gate), execute.index('MTTESTER::ClickStart(false,1)'))
         self.assertIn('GOAT_STUDIO_WORKER_READBACK build=%d', source("GOATStudioWorkers.mqh"))
 
+    def test_idle_monitor_readback_does_not_require_a_start_request(self):
+        main = source('GOAT V1.49.mq5')
+        timer = function(main, 'void GoatTimerBody(void)\n')
+        self.assertIn('g_GoatStudioReadOnlyMonitor', timer)
+        self.assertIn('tester_state=="idle"', timer)
+        self.assertIn('GoatStudioReadWorkerPolicy(worker_local,worker_remote,worker_cloud)', timer)
+        self.assertIn('FileOpen("GOATStudio\\\\native-gate\\\\launch.lock",FILE_READ|FILE_WRITE|FILE_BIN)', timer)
+        self.assertLess(timer.index('int diagnostic_gate=FileOpen('), timer.index('GoatStudioReadWorkerPolicy('))
+        self.assertLess(timer.index('GoatStudioReadWorkerPolicy('), timer.index('FileClose(diagnostic_gate);'))
+        self.assertIn('bool still_idle=(algo_off', timer)
+        self.assertIn('readback && still_idle ? "READBACK_OK"', timer)
+        self.assertLess(timer.index('GoatStudioReadWorkerPolicy('), timer.index('TesterDialog.OnClickRefresh(true);'))
+        self.assertIn('WORKER DIAGNOSTIC 15R2', timer)
+        self.assertIn('FileIsExist("GOATStudio\\\\native-gate\\\\request.json")', timer)
+        self.assertIn('FileIsExist("GOATStudio\\\\native-gate\\\\permit.json")', timer)
+        self.assertNotIn('MTTESTER::ClickStart', timer)
+        self.assertNotIn('GlobalVariableSet("BatchOnGoing",1.0)', timer)
+
     def test_source_and_compiled_candidate_identity(self):
         main = source('GOAT V1.49.mq5')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
         self.assertIn('#define   GOAT_BUILD_ID "V1.49-CONTROL-FEEDBACK-16R1"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
-                         'd56f47725cb7b8b27bfcdbdddd3b72195210a95debb3d93df9882294728b8a39')
+                         '256dd41cb7194886ea15ac274abecd43c83678a2079377dbc5afe7a8ec30488d')
         for name in ('GOATStudioRecovery.mqh', 'GOATStudioRecoveryFiles.mqh', 'GOATStudioUI.mqh',
                      'GOATStudioWorkers.mqh', 'GOATStudioControlFeedback.mqh', 'GOAT V1.49.mq5'):
             raw = (ROOT/name).read_bytes()

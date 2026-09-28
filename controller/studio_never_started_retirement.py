@@ -97,12 +97,19 @@ def replacement_proof(db,state,scope,*,successor_id=None,require_released=True):
     from studio_research_regrant import context
     c=context(db);c.store=SimpleNamespace(db=db);c.state=lambda:state
     c.bridge=SimpleNamespace(root=c.local/c.session['directory_id'])
-    if (successor_id is None and len(state['queue'])!=1) or (successor_id is not None and
-            (len(state['queue'])!=2 or state['queue'][1]['job_id']!=successor_id)):
-        raise ValueError('Only one new-epoch replacement of the original job is allowed')
+    first=(successor_id is None and len(state['queue'])==1) or (successor_id is not None and
+           len(state['queue'])==2 and state['queue'][1]['job_id']==successor_id)
+    second=(successor_id is None and len(state['queue'])==2) or (successor_id is not None and
+            len(state['queue'])==3 and state['queue'][2]['job_id']==successor_id)
+    if not first and not second:
+        raise ValueError('Only one evidence-bound successor of the consumed, never-started replacement is allowed')
     old=state['queue'][0];folder=_folder(c,old);record=read_json(folder/'retirement.json')
     if record['phase']!='reverified' or old['status']!='failed':raise ValueError('Original never-started retirement is not verified')
-    _,current_scope,_,archived=_verify(c,record,folder,require_released=require_released)
+    # Once replacement1 has a retained consumed request, its start/cancel history
+    # must be checked by the successor proof rather than the original pre-consume
+    # classifier. The original archive and retirement result stay immutable.
+    _,current_scope,_,archived=_verify(c,record,folder,historical=first,
+                                     require_released=require_released and first)
     if current_scope!=scope or old['configuration_sha256']!=scope['configuration_sha256']:
         raise ValueError('Replacement plan or native grant differs')
     result_path=c.root/'attempts'/record['attempt_id']/'result.json';result=read_json(result_path)
@@ -112,14 +119,18 @@ def replacement_proof(db,state,scope,*,successor_id=None,require_released=True):
             or result.get('reports') is not None or result['configuration']!=archived['configuration']
             or result['package_sha256']!=archived['launch_intent']['package_sha256']):
         raise ValueError('Retirement completion proof differs')
-    if successor_id is not None and state['queue'][1]['configuration_sha256']!=scope['configuration_sha256']:
+    if first and successor_id is not None and state['queue'][1]['configuration_sha256']!=scope['configuration_sha256']:
         raise ValueError('Replacement configuration differs')
     tx=read_json(c.root/'attempts'/record['attempt_id']/'transaction.json')
     if tx['phase']!='restored' or tx['owner']!=record['attempt_id']:raise ValueError('Original controls are not retired')
-    return dict(fresh_native_epoch=True,authority_sha256=sha(scope),generation=scope['generation'],
+    first_proof=dict(fresh_native_epoch=True,authority_sha256=sha(scope),generation=scope['generation'],
         predecessor_job_id=old['job_id'],predecessor_attempt_id=record['attempt_id'],
         predecessor_result_sha256=digest(result_path.read_bytes()),retirement_sha256=digest((folder/'retirement.json').read_bytes()),
         max_seconds=scope['renewal']['max_seconds'],min_free_bytes=scope['renewal']['min_free_bytes'])
+    if second:
+        from studio_consumed_never_started_successor import proof
+        return proof(c,state,scope,first_proof,successor_id=successor_id,require_released=require_released)
+    return first_proof
 
 
 def retire(c,job_id,*,process=None,clock=time):

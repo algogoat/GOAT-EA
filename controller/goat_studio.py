@@ -104,8 +104,8 @@ class Controller:
         from studio_handover import guard
         if not recovery: guard(self)
         self.session = read_json(self.root/'session.json')
-        if self.session['installation_sha256'] != sha(self.install):
-            raise ValueError('Installation changed since bootstrap; reconcile before repair')
+        from studio_installation_migration import verify_installation_chain
+        verify_installation_chain(self.root,self.install,self.session['installation_sha256'])
         if not (self.root/'studio.sqlite').is_file(): raise ValueError('Controller database missing; preserve remaining receipts')
         expected = dict(directory_id=self.session['directory_id'],terminal_id=self.session['terminal_id'],
                         run_id=self.session['run_id'],terminal_data_path=self.install['terminal_data_root'])

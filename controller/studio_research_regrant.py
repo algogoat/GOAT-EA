@@ -8,6 +8,7 @@ import time
 
 from campaign_ledger import packed,sha
 from studio_installation import read_json,load_installation
+from studio_installation_migration import verify_installation_chain
 from studio_handover import safe_path
 from studio_monitor_probe import inspect_idle_demo
 from studio_rejected_monitor import require_demo
@@ -17,7 +18,7 @@ OWNER_ACCOUNT={'login':'3000082754','server':'Darwinex-Demo'}
 def context(db):
     root=Path(db.execute('PRAGMA database_list').fetchone()[2]).parent
     install=load_installation(root/'installation.json');session=read_json(root/'session.json')
-    if session['installation_sha256']!=sha(install):raise ValueError('Research installation changed')
+    verify_installation_chain(root,install,session['installation_sha256'])
     local=Path(install['terminal_data_root'])/'MQL5/Files/GOATStudio'
     expected=dict(directory_id=session['directory_id'],terminal_id=session['terminal_id'],run_id=session['run_id'],terminal_data_path=install['terminal_data_root'])
     if read_json(local/'active.json')!=expected:raise ValueError('Active research session changed')
@@ -29,9 +30,10 @@ def original(db,binding):
     if row is None or row[0]!='research_continuation':raise ValueError('Original typed research authority required')
     base=json.loads(row[1]);c=context(db)
     if (base!=read_json(c.root/'research-authority.json') or base['binding']!=json.loads(binding)
-            or c.session.get('authority_sha256')!=sha(base) or base['installation_sha256']!=sha(c.install)
+            or c.session.get('authority_sha256')!=sha(base)
             or base['account']!=c.session['account'] or c.session.get('demo_only') is not True):
         raise ValueError('Original research authority, plan, account or build changed')
+    verify_installation_chain(c.root,c.install,base['installation_sha256'])
     return c,base
 
 

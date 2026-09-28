@@ -67,8 +67,10 @@ def _binding(controller, job_id, verify_preparation=False):
         if not target.is_relative_to(package) or hashlib.sha256(target.read_bytes()).hexdigest() != expected:
             raise ValueError('Prepared batch bytes changed')
     session = read_json(controller.root/'session.json')
-    if session != controller.session or session['installation_sha256'] != sha(controller.install):
+    from studio_installation_migration import verify_installation_chain
+    if session != controller.session:
         raise ValueError('Installed session changed')
+    verify_installation_chain(controller.root,controller.install,session['installation_sha256'])
     expected_active = dict(directory_id=session['directory_id'], terminal_id=controller.terminal,
                            run_id=controller.run, terminal_data_path=controller.install['terminal_data_root'])
     if read_json(controller.local/'active.json') != expected_active:

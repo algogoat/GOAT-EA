@@ -127,7 +127,9 @@ def authority(db, binding, state):
     if session.get('authority_kind')!=kind or session.get('authority_sha256')!=sha(original_value):
         raise ValueError('Required session authority kind/provenance missing or changed')
     install = load_installation(root/'installation.json')
-    if sha(install)!=value['installation_sha256'] or session['account']!=value['account']:
+    from studio_installation_migration import verify_installation_chain
+    verify_installation_chain(root,install,value['installation_sha256'])
+    if session['account']!=value['account']:
         raise ValueError('Research continuation installation or account changed')
     return value
 

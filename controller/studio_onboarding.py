@@ -25,8 +25,8 @@ from studio_protected_peer import process_binding
 
 def session_state(controller):
     session = read_json(controller.root/'session.json')
-    if session['installation_sha256'] != sha(controller.install):
-        raise ValueError('Installation changed since bootstrap; reconcile before repair')
+    from studio_installation_migration import verify_installation_chain
+    verify_installation_chain(controller.root,controller.install,session['installation_sha256'])
     active = read_json(controller.local/'active.json')
     expected = dict(directory_id=session['directory_id'], terminal_id=session['terminal_id'],
                     run_id=session['run_id'], terminal_data_path=controller.install['terminal_data_root'])
@@ -177,7 +177,9 @@ def monitor_prepare(controller, symbol):
 def verify_monitor_profile(controller, receipt, *, observed_human_reopen=False, preserved_permissions_sha256=None):
     session, _ = session_state(controller)
     name, profile = monitor_paths(controller, session)
-    if receipt.get('installation_sha256') != sha(controller.install) or receipt.get('run_id') != session['run_id'] or receipt.get('profile_name') != name or receipt.get('profile_path') != str(profile):
+    from studio_installation_migration import verify_installation_chain
+    verify_installation_chain(controller.root, controller.install, receipt.get('installation_sha256'))
+    if receipt.get('run_id') != session['run_id'] or receipt.get('profile_name') != name or receipt.get('profile_path') != str(profile):
         raise ValueError('Monitor profile receipt belongs to another installation/session')
     if profile.resolve()!=profile:
         raise ValueError('Prepared profile is an alias; inspect before restart')

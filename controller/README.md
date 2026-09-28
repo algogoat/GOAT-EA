@@ -28,6 +28,17 @@ host/process recovery never resets its deadline. The original driver's record
 is unchanged. Actual native execution still requires consumed START and tester
 activity; source fixtures and read-only rehearsal are not native qualification.
 
+If that replacement's Start was consumed but returned exactly
+`SETTINGS_NOT_VERIFIED` before any start/arm intent, the stopped driver and
+canonical `CANCELLED_RECONCILE` finish may permit one more exact-plan successor.
+Preparation, reservation and dispatch independently recheck the original
+retirement, consumed refusal, all cancelled native members, absence of work
+output and tester cache, restored controls, stopped driver and unchanged grant.
+The prior request, result, queue and deadline stay retained; no consumed
+request is replayed. A third successor or uncertain/native-started outcome
+refuses. The new driver's 48-hour maximum and disk reserve are pinned to the
+same genuine native research epoch; this is not proof of native execution.
+
 These bounded owner-recovery commands are the current implementation, not the
 general customer setup/recovery toolset. See the proposed
 [customer agent tool contract](../docs/operations/AGENT-RECOVERY-TOOLS.md).

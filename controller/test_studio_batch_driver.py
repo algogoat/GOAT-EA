@@ -161,6 +161,25 @@ class BatchDriverTests(unittest.TestCase):
         self.assertEqual(self.drive(resume=True)['deadline_wall'],173800)
         self.assertEqual(self.c.starts,1)
 
+    def test_successor_epoch_deadline_is_capped_to_existing_grant(self):
+        proof=dict(fresh_native_epoch=True,authority_sha256='a'*64,generation=2,
+                   authority_expires_utc=1099,max_seconds=172800,min_free_bytes=DEFAULT_MIN_FREE_BYTES)
+        self.c.finished=True
+        with patch('studio_research_retry.inherited_budget',return_value=proof):
+            result=self.drive(max_seconds=172800)
+        self.assertEqual(result['max_seconds'],99)
+        self.assertEqual(result['deadline_wall'],1099)
+        self.assertEqual(self.c.starts,1)
+
+    def test_successor_epoch_refuses_when_grant_has_no_full_second(self):
+        proof=dict(fresh_native_epoch=True,authority_sha256='a'*64,generation=2,
+                   authority_expires_utc=1000.5,max_seconds=172800,min_free_bytes=DEFAULT_MIN_FREE_BYTES)
+        with patch('studio_research_retry.inherited_budget',return_value=proof):
+            with self.assertRaisesRegex(ValueError,'no whole second'):
+                self.drive(max_seconds=172800)
+        self.assertEqual(self.c.starts,0)
+        self.assertFalse((self.c.root/'batch-drivers/batch.json').exists())
+
 
     def test_capacity_refuses_each_output_volume_before_journal_or_start(self):
         for role in ('terminal_data_root', 'common_files_root', 'controller_state_root'):

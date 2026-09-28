@@ -77,6 +77,19 @@ class RejectedMonitorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'publisher'):restart(self.c,'original',process=process,suspend_fn=suspend)
         process.close.assert_not_called()
 
+    def test_pending_real_human_takeover_is_processed_outside_gate_and_blocks_close(self):
+        state=self.c.state()
+        request=dict(schema_version=1,request_id='human-takeover-during-recovery',terminal_id=self.c.terminal,run_id=self.c.run,
+                     expected_revision=state['revision'],generation=state['generation'],command='control.takeover',payload={})
+        write_json(self.c.bridge.root/'human/inbox/human-takeover-during-recovery.json',request)
+        (self.c.root/'batch-driver-gate').mkdir(exist_ok=True)
+        process=Mock();suspend=Mock(return_value=dict(supervisor_exited=True,native_stop_claimed=False))
+        with self.assertRaisesRegex(ValueError,'revoked'):
+            restart(self.c,'original',process=process,suspend_fn=suspend)
+        with operation('state'):self.assertEqual(self.c.state()['owner'],'human')
+        process.close.assert_not_called();process.start.assert_not_called()
+        self.assertFalse(list((self.c.bridge.root/'human/processing').glob('*.json')))
+
     def test_single_normal_restart_preserves_draft_and_budget(self):
         from studio_onboarding import monitor_chart
         profile=dict(profile_name='GOAT-Studio-fixture')

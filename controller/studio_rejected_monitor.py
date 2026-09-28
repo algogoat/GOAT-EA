@@ -119,6 +119,9 @@ def restart(controller,job_id,*,process=None,suspend_fn=None,clock=time):
     stopped=suspend_fn(controller,job,folder)
     if stopped.get('supervisor_exited') is not True or stopped.get('native_stop_claimed') is not False:
         raise ValueError('Old publisher has not verifiably stopped')
+    # Inbox processing can enter store mutation_gate. Never pump under the
+    # non-reentrant native gate; recheck authority after pending human actions.
+    controller.bridge.pump()
     with exclusive_gate(controller.root/'batch-driver-gate'),exclusive_gate(controller.local/'native-gate'):
         scope,job=proof(controller,job_id);guard_active_seed(controller.root)
         native=inspect_idle_demo(controller);require_demo(native)
@@ -138,7 +141,6 @@ def restart(controller,job_id,*,process=None,suspend_fn=None,clock=time):
             raise ValueError('Saved monitor-only startup config changed')
         protected=[controller.root/'session.json',controller.root/'research-authority.json',controller.bridge.root/'human/ui-draft.json']
         hashes={str(p):hashlib.sha256(safe_path(p).read_bytes()).hexdigest() for p in protected}
-        controller.bridge.pump()  # Current reviewed snapshot, before native reload.
         record=dict(schema_version=1,attempt_id=attempt,job_id=job_id,authority_sha256=sha(scope),
                     phase='close_issued',native=native,protected_sha256=hashes,launch=launch,
                     suspension_sha256=sha(stopped),created_utc=clock.time(),native_started=False,grant_created=False)

@@ -69,11 +69,75 @@ class ResearchAuthorityTests(unittest.TestCase):
         with operation('owner-maintenance-bootstrap'),self.assertRaisesRegex(ValueError,'retired'):
             bootstrap(self.c,self.record_id,self.plan)
 
+    def test_expired_driver_keeps_supervision_but_cannot_reserve_or_dispatch(self):
+        self.boot()
+        with operation('prepare-batch'):prepare_batch(self.c,'frozen-batch',self.plan)
+        value=read_json(self.c.root/'research-authority.json')
+        from studio_research_authority import command
+        with operation('run-batch'),patch('studio_research_authority.time.time',return_value=value['expires_utc']+1):
+            state=self.c.state()
+            binding=packed(dict(terminal_id=self.c.terminal,run_id=self.c.run))
+            # Cancellation stays authorized in the same retained driver scope.
+            command(self.c.store.db,binding,state,dict(command='queue.cancel',payload={'job_id':'frozen-batch'}),'agent')
+            with self.assertRaisesRegex(ValueError,'no new reservation'):
+                command(self.c.store.db,binding,state,dict(command='queue.reserve',payload={'job_id':'frozen-batch'}),'agent')
+            with self.assertRaisesRegex(ValueError,'no native dispatch'):
+                before_native_dispatch(self.c,self.c.job('frozen-batch'))
+
+    def test_running_driver_crosses_authority_expiry_and_cancels_at_deadline(self):
+        import test_studio_batch_driver as driver_fixtures
+        self.boot()
+        expiry=read_json(self.c.root/'research-authority.json')['expires_utc']
+        fixture=driver_fixtures.BatchDriverTests();fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.c.clock.wall=expiry-1
+        original=fixture.c.state
+        def scoped_state():
+            self.c.state()  # Real store authority checked on each driver observation.
+            return original()
+        fixture.c.state=scoped_state
+        with operation('run-batch'),patch('studio_research_authority.time.time',side_effect=fixture.c.clock.time):
+            result=fixture.drive(max_seconds=3)
+        self.assertEqual(result['status'],'cancelled')
+        self.assertTrue(result['stopped'])
+        self.assertEqual((fixture.c.starts,fixture.c.cancels),(1,1))
+
+    def test_legacy_human_grant_classifies_atomically_without_agent_fallback(self):
+        from studio_command_store import StudioStore
+        db=StudioStore(self.folder/'legacy.sqlite')
+        self.addCleanup(db.close)
+        state=db.bind('legacy','run')
+        db.db.execute('DROP TRIGGER IF EXISTS studio_authority_immutable_delete')
+        db.db.execute('DELETE FROM studio_authorities')
+        request=dict(schema_version=1,request_id='real-human',terminal_id='legacy',run_id='run',
+            expected_revision=state['revision'],generation=state['generation'],command='control.grant_agent',payload={})
+        with self.assertRaisesRegex(ValueError,'Human control'):
+            db.submit(request,actor='agent')
+        self.assertEqual(db.db.execute('SELECT COUNT(*) FROM studio_authorities').fetchone()[0],0)
+        bad=request|{'expected_revision':99}
+        with self.assertRaisesRegex(ValueError,'Stale state'):db.submit(bad,actor='human')
+        self.assertEqual(db.db.execute('SELECT COUNT(*) FROM studio_authorities').fetchone()[0],0)
+        db.submit(request,actor='human')
+        self.assertEqual(db.snapshot('legacy','run')['owner'],'agent')
+        self.assertEqual(db.db.execute('SELECT kind FROM studio_authorities').fetchone()[0],'native_human_control')
+        db.db.execute('DROP TRIGGER IF EXISTS studio_authority_immutable_delete')
+        db.db.execute('DELETE FROM studio_authorities')
+        with self.assertRaisesRegex(ValueError,'no classified authority'):db.snapshot('legacy','run')
+
     def test_unknown_operation_and_missing_or_unknown_authority_fail_closed(self):
         self.boot()
         for name in ('seed-start','new-future-operation',None):
             with operation(name),self.assertRaisesRegex(ValueError,'allowlisted'):
                 self.c.state()
+        with self.assertRaisesRegex(Exception,'immutable'):
+            self.c.store.db.execute("UPDATE studio_authorities SET kind='native_human_control'")
+        with self.assertRaisesRegex(Exception,'immutable'):
+            self.c.store.db.execute('DELETE FROM studio_authorities')
+        with self.assertRaisesRegex(Exception,'immutable'):
+            self.c.store.db.execute("INSERT OR REPLACE INTO studio_authorities SELECT binding,'native_human_control','{}' FROM studio_authorities")
+        # Deliberately damage the DB below to test refusal independent of triggers.
+        self.c.store.db.execute('DROP TRIGGER studio_authority_immutable_update')
+        self.c.store.db.execute('DROP TRIGGER studio_authority_immutable_delete')
         self.c.store.db.execute("UPDATE studio_authorities SET kind='unrecognized'")
         with operation('state'),self.assertRaisesRegex(ValueError,'Unknown authority'):
             self.c.state()
@@ -107,6 +171,88 @@ class ResearchAuthorityTests(unittest.TestCase):
                 self.c.store.submit(request,actor='human')
         with operation('run-batch'),self.assertRaisesRegex(ValueError,'permanently revoked'):
             self.c.state()
+
+    def test_legacy_agent_receipt_migrates_and_restored_human_is_classified(self):
+        import test_studio_owner_research as owner_fixtures
+        from studio_command_store import StudioStore
+        fixture=owner_fixtures.OwnerResearchTests();fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        c=fixture.c
+        session=read_json(c.root/'session.json');session.pop('authority_kind',None)
+        write_json(c.root/'session.json',session)
+        c.store.db.execute('DROP TRIGGER studio_authority_immutable_delete')
+        c.store.db.execute('DELETE FROM studio_authorities')
+        # Pre-migration read-only dispatch can verify the archived human grant.
+        with operation('start'):dispatch(c,SimpleNamespace(operation='start'))
+        c.store.close()
+        c.store=StudioStore(c.root/'studio.sqlite')
+        self.assertEqual(c.state()['owner'],'agent')
+        self.assertEqual(c.store.db.execute('SELECT kind FROM studio_authorities').fetchone()[0],'native_human_control')
+        # PARK revokes the generation; legacy restored human state remains human.
+        c.store.db.execute('DROP TRIGGER studio_authority_immutable_delete')
+        c.store.db.execute('DELETE FROM studio_authorities')
+        c.store.db.execute("UPDATE studio_state SET owner='human',generation=generation+1")
+        c.store.close();c.store=StudioStore(c.root/'studio.sqlite')
+        self.assertEqual(c.state()['owner'],'human')
+        self.assertEqual(c.store.db.execute('SELECT kind FROM studio_authorities').fetchone()[0],'native_human_control')
+
+    def test_human_channel_takeover_survives_unclassified_agent_authority(self):
+        self.boot()
+        with operation('state'):state=self.c.state()
+        self.c.store.db.execute('DROP TRIGGER studio_authority_immutable_delete')
+        self.c.store.db.execute('DELETE FROM studio_authorities')
+        request=dict(schema_version=1,request_id='real-takeover',terminal_id=self.c.terminal,run_id=self.c.run,
+            expected_revision=state['revision'],generation=state['generation'],command='control.takeover',payload={})
+        write_json(self.c.bridge.root/'human/inbox/real-takeover.json',request)
+        with operation('serve'):
+            self.assertTrue(self.c.bridge.pump()[0]['ok'])
+        with operation('state'):self.assertEqual(self.c.state()['owner'],'human')
+
+    def test_takeover_allows_reviewed_human_park_and_restore(self):
+        self.boot()
+        with operation('prepare-batch'):prepare_batch(self.c,'human-cancel',self.plan)
+        with operation('state'):
+            state=self.c.state()
+            self.c.store.submit(dict(schema_version=1,request_id='takeover-park',terminal_id=self.c.terminal,
+                run_id=self.c.run,expected_revision=state['revision'],generation=state['generation'],
+                command='control.takeover',payload={}),actor='human')
+        with operation('cancel'):
+            state=self.c.state()
+            self.c.store.submit(dict(schema_version=1,request_id='human-cancel',terminal_id=self.c.terminal,
+                run_id=self.c.run,expected_revision=state['revision'],generation=state['generation'],
+                command='queue.cancel',payload={'job_id':'human-cancel'}),actor='human')
+            self.assertEqual(self.c.job('human-cancel')['status'],'cancelled')
+        # Real handover journals; only stopped-process probe is a fixture.
+        with patch('studio_handover.stopped'),operation('switch-plan'):
+            park_id=review(self.c)['review_id']
+            dispatch(self.c,SimpleNamespace(operation='switch-plan'))
+        self.c.store.close();self.c.store=None
+        with patch('studio_handover.stopped'),operation('switch-apply'):
+            dispatch(self.c,SimpleNamespace(operation='switch-apply',confirm_reviewed=True))
+            apply(self.c,park_id,confirmed=True)
+        with patch('studio_handover.stopped'),operation('switch-plan'):
+            restore_id=review(self.c,park_id)['review_id']
+        with patch('studio_handover.stopped'),operation('switch-apply'):
+            apply(self.c,restore_id,confirmed=True)
+        with operation('state'):
+            self.c.open()
+            self.assertEqual(self.c.state()['owner'],'human')
+
+    def test_confirmation_flags_and_native_downgrade_are_refused(self):
+        self.boot()
+        for name in ('orphan-recovery-apply','orphan-recovery-reconcile-rejection'):
+            with operation(name),self.assertRaisesRegex(ValueError,'human-confirmation'):
+                dispatch(self.c,SimpleNamespace(operation=name,confirm_reviewed=True))
+        from studio_orphan_recovery import apply as recover
+        from studio_orphan_rejection import reconcile_rejection
+        for fn in (recover,reconcile_rejection):
+            with self.assertRaisesRegex(ValueError,'human-confirmation'):
+                fn(self.c,'a'*32,confirmed=True)
+        self.c.store.db.execute('DROP TRIGGER studio_authority_immutable_update')
+        binding=packed(dict(terminal_id=self.c.terminal,run_id=self.c.run))
+        self.c.store.db.execute('UPDATE studio_authorities SET kind=?,provenance=?',
+            ('native_human_control',packed(dict(kind='native_human_control',binding=json.loads(binding)))))
+        with operation('seed-start'),self.assertRaisesRegex(ValueError,'cannot downgrade'):self.c.state()
 
     def test_changed_session_authority_and_forged_install_refuse(self):
         journal=paths(self.old)[2]/self.review_id/'build-upgrade.json'

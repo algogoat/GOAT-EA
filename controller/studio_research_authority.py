@@ -31,17 +31,73 @@ def operation(name):
         CURRENT_OPERATION.reset(token)
 
 
+HUMAN_RECOVERY_OPERATIONS = READ_OPERATIONS | frozenset(('serve','cancel','switch-plan','switch-apply',
+    'switch-status','switch-verify-park','monitor-stop'))
+
+
+def _legacy_human_grant(db, binding, state):
+    """Recognize only an actor-bound archived real grant, never infer from owner."""
+    from studio_handover import safe_path
+    root=Path(db.execute('PRAGMA database_list').fetchone()[2]).parent
+    if (root/'research-authority.json').exists() or not (root/'session.json').is_file():return False
+    session=read_json(root/'session.json')
+    if 'authority_kind' in session:return False
+    if {k:session.get(k) for k in ('terminal_id','run_id')}!=json.loads(binding):return False
+    install=read_json(root/'installation.json')
+    human=safe_path(Path(install['terminal_data_root'])/'MQL5/Files/GOATStudio'/session['directory_id']/'human/archive')
+    for row in db.execute('SELECT request_id,payload_hash,receipt FROM studio_receipts WHERE binding=?',(binding,)):
+        receipt=json.loads(row[2]); granted=receipt.get('state',{})
+        if (receipt.get('command')!='control.grant_agent' or receipt.get('status')!='applied'
+                or receipt.get('execution_effect') is not False or receipt.get('request_id')!=row[0]
+                or granted.get('owner')!='agent' or {k:granted.get(k) for k in ('terminal_id','run_id')}!=json.loads(binding)
+                or granted.get('generation',-1)>state['generation']
+                or (state['owner']=='agent' and granted.get('generation')!=state['generation'])):continue
+        import re
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',row[0]):continue
+        files=list(human.glob(row[0]+'.*.json'))
+        if len(files)!=1:continue
+        request=read_json(safe_path(files[0]))
+        if (request.get('command')=='control.grant_agent' and request.get('payload')=={}
+                and request.get('request_id')==row[0]
+                and {k:request.get(k) for k in ('terminal_id','run_id')}==json.loads(binding)
+                and request.get('generation')==granted['generation']-1
+                and request.get('expected_revision')==granted['revision']-1
+                and sha(dict(request=request,actor='human'))==row[1]):return True
+    return False
+
+
+def legacy_human_grant(db, binding, state):
+    try:
+        return _legacy_human_grant(db,binding,state)
+    except (OSError,ValueError,KeyError,TypeError):
+        # Damaged evidence cannot classify an agent, but must not prevent opening
+        # the trusted human takeover channel to permanently revoke it.
+        return False
+
+
 def authority(db, binding, state):
     row = db.execute('SELECT kind,provenance FROM studio_authorities WHERE binding=?', (binding,)).fetchone()
     if row is None:
-        if state['owner']=='agent':
+        root=Path(db.execute('PRAGMA database_list').fetchone()[2]).parent
+        session=read_json(root/'session.json') if (root/'session.json').is_file() else {}
+        if (root/'research-authority.json').exists() or session.get('authority_kind') is not None:
+            if state['owner']=='human' and CURRENT_OPERATION.get() in HUMAN_RECOVERY_OPERATIONS:
+                return dict(kind='revoked_continuation',generation=-1)
+            raise ValueError('Typed agent session has no classified authority')
+        if state['owner']=='agent' and not legacy_human_grant(db,binding,state):
             raise ValueError('Agent session has no classified authority; continuation is refused')
         return None
     kind, raw = row
+    root = Path(db.execute('PRAGMA database_list').fetchone()[2]).parent
     if kind=='native_human_control':
+        session=read_json(root/'session.json') if (root/'session.json').exists() else {}
+        if (root/'research-authority.json').exists() or session.get('authority_kind') not in (None,'native_human_control'):
+            raise ValueError('Native authority cannot downgrade a typed continuation')
         if json.loads(raw) != {'kind':'native_human_control','binding':json.loads(binding)}:
             raise ValueError('Human-channel authority provenance changed')
         return None
+    if state['owner']=='human' and CURRENT_OPERATION.get() in HUMAN_RECOVERY_OPERATIONS:
+        return dict(kind='revoked_continuation',generation=-1)
     if kind!='research_continuation':
         raise ValueError('Unknown authority kind; no fallback to agent control')
     value = json.loads(raw)
@@ -57,7 +113,9 @@ def authority(db, binding, state):
         if CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve'}:
             raise ValueError('Research continuation permanently revoked by human control')
     elif not value['created_utc'] <= time.time() < value['expires_utc']:
-        if CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve','cancel','status','reconcile','finish','batch-status'}:
+        # The retained driver must still observe/cancel/finish its existing attempt.
+        # New reservations and native dispatch separately require live authority.
+        if CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve','cancel','status','reconcile','finish','batch-status','run-batch'}:
             raise ValueError('Research continuation expired; no new work')
     if CURRENT_OPERATION.get() not in OPERATIONS:
         raise ValueError('Operation is not allowlisted for research continuation')
@@ -71,14 +129,14 @@ def authority(db, binding, state):
 
 
 def command(db, binding, state, request, actor):
+    if actor=='human' and request['command']=='control.takeover':return
     value = authority(db, binding, state)
     if value is None:
         return
     command_name = request['command']
-    if actor=='human' and command_name=='control.takeover':
-        return
     if command_name.startswith('control.'):
         raise ValueError('Research continuation cannot create or promote a control grant')
+    if state['owner']=='human' and actor=='human' and command_name=='queue.cancel':return
     if state['owner']!='agent' or state['generation']!=value['generation']:
         raise ValueError('Research continuation permanently revoked')
     if actor!='agent':
@@ -90,6 +148,8 @@ def command(db, binding, state, request, actor):
             raise ValueError('Only the exact frozen research members may be queued once')
         return
     if command_name=='queue.reserve' and op in ('start','run-batch'):
+        if not value['created_utc'] <= time.time() < value['expires_utc']:
+            raise ValueError('Research continuation expired; no new reservation')
         job = next((j for j in state['queue'] if j['job_id']==request['payload']['job_id']), None)
         if job is None or job['configuration_sha256']!=value['configuration_sha256']:
             raise ValueError('Reservation is outside the frozen research plan')
@@ -113,10 +173,14 @@ def dispatch(controller, args):
         if state is None:
             raise ValueError('Session authority has no matching controller state')
         if 'studio_authorities' not in tables:
-            if state[0]=='agent' and args.operation not in READ_OPERATIONS:
+            if state[0]=='agent' and args.operation not in READ_OPERATIONS | {'serve'} and not legacy_human_grant(db,binding,dict(owner=state[0],generation=state[1])):
                 raise ValueError('Existing agent session requires explicit authority classification')
             return
+        if args.operation in ('state','serve'):
+            return  # Pump only: each mutation still checks the store authority.
         value = authority(db,binding,dict(owner=state[0],generation=state[1]))
+        if value is not None and state[0]=='agent' and getattr(args,'confirm_reviewed',False):
+            raise ValueError('Typed continuation forbids human-confirmation flags; use owner-research')
         if value is not None and args.operation=='prepare-batch':
             from studio_batch import _json
             _,raw=_json(args.plan,with_raw=True)
@@ -128,6 +192,8 @@ def before_native_dispatch(controller, job):
     binding = packed(dict(terminal_id=controller.terminal,run_id=controller.run))
     value = authority(controller.store.db,binding,controller.state())
     if value is not None:
+        if not value['created_utc'] <= time.time() < value['expires_utc']:
+            raise ValueError('Research continuation expired; no native dispatch')
         if job['configuration_sha256']!=value['configuration_sha256']:
             raise ValueError('Native dispatch differs from frozen research configuration')
         from studio_monitor_probe import inspect_idle_demo
@@ -168,3 +234,8 @@ def recovery_authorization(c, operation_name, review_id):
                 original_grant_request_id=value['original_grant_request_id'],
                 original_grant_payload_hash=value['original_grant_payload_hash'],
                 revocation_epoch=state['generation'],native=native,human_confirmation_fabricated=False)
+
+
+def refuse_typed_confirmation(c, confirmed):
+    if confirmed and read_json(c.root/'session.json').get('authority_kind')=='research_continuation':
+        raise ValueError('Typed continuation forbids human-confirmation flags; use owner-research')

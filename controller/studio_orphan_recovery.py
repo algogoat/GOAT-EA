@@ -138,6 +138,8 @@ def prepare(c):
 
 
 def apply(c,review_id,*,confirmed=False,owner_research=False):
+    from studio_research_authority import refuse_typed_confirmation
+    refuse_typed_confirmation(c,confirmed)
     if type(owner_research) is not bool or (confirmed and owner_research):
         raise ValueError('Choose one explicit recovery authorization route')
     if not confirmed and not owner_research: raise ValueError('Explicit user approval of this recovery review required')

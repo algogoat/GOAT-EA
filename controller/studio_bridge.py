@@ -98,7 +98,7 @@ class StudioBridge:
         self.root=Path(root).resolve()
         self.store=store
         self.terminal_id,self.run_id=terminal_id,run_id
-        store.snapshot(terminal_id,run_id)  # Existing binding only; never self-grant.
+        store.snapshot(terminal_id,run_id,human_channel_view=True)  # Identity only; each mutation checks authority.
         self.root.mkdir(parents=True,exist_ok=True)
         self.binding=dict(protocol_version=1,terminal_id=terminal_id,run_id=run_id)
         # Also prevent two different databases from publishing into the same root.
@@ -152,7 +152,7 @@ class StudioBridge:
                                 ('terminal_id','run_id','revision','generation','owner')}
                             response=dict(ok=True,receipt=summary,receipt_detail='revision_only')
                         except ValueError as exc:
-                            current=self.store.snapshot(self.terminal_id,self.run_id)
+                            current=self.store.snapshot(self.terminal_id,self.run_id,human_channel_view=True)
                             response=dict(ok=False,error=str(exc),state={key:current[key] for key in
                                 ('terminal_id','run_id','revision','generation','owner')})
                         response.update(request_id=processing.stem,request_sha256=fingerprint)
@@ -161,7 +161,7 @@ class StudioBridge:
                         archive=folders['archive']/(processing.stem+'.'+(fingerprint or uuid.uuid4().hex)+'.json')
                         os.replace(processing,archive)
                         results.append(dict(actor=actor,request_id=response['request_id'],ok=response['ok']))
-            state=self.store.snapshot(self.terminal_id,self.run_id)
+            state=self.store.snapshot(self.terminal_id,self.run_id,human_channel_view=True)
             write_json(self.root/'snapshot.json',dict(protocol_version=1,
                 observed_at=datetime.now(timezone.utc).isoformat(),state=display_state(state),
                 schema_hash=self.store.input_schema_hash,execution_ready=False))

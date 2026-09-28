@@ -541,6 +541,8 @@ def apply(c, review_id, confirmed=False, *, owner_maintenance=None):
 def guard(c, *, build_update_fence=None, historical_review=None):
     from studio_build_upgrade import guard_pending
     guard_pending(c.root,build_update_fence)
+    from studio_installation_migration import guard_pending as migration_guard
+    migration_guard(c.root)
     from studio_historical_pointers import guard_pending as historical_guard
     historical_guard(c,historical_review)
     if (c.root/'orphan-recovery-pending.json').exists():

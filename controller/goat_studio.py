@@ -30,6 +30,7 @@ OPERATION_CONTRACTS = {
     'switch-verify-park':dict(required=['review-id'],effect='read-only verification of completed park, immutable archives, external databases and absent selected terminal/session; not admission or grant'),
     'switch-replace-receipt':dict(required=['review-id','candidate-receipt','expected-sha256'],effect='authenticated installer companion: atomic old-receipt CAS under exclusive session lock after verified park and unchanged physical target; preserves old receipt/research, never grants or starts; admission remains installer responsibility'),
     'switch-replace-build':dict(required=['review-id','candidate-receipt','candidate-ea','expected-sha256'],effect='authenticated installer companion: exact same-version EA and receipt exchange under exclusive parked-session and database locks; retained journal permits exact interrupted-pair reconciliation; no admission, control grant or launch'),
+    'switch-upgrade-in-session':dict(required=['transaction-id','candidate-receipt','candidate-ea','admission','expected-sha256'],effect='authenticated internal installer: retain genuine active research epoch and frozen plan through one exact admitted same-version EA exchange; normal-close/reopen only the idle selected demo; append-only archive and same-ID reconciliation; never mint a grant, alter permissions, start research or trade'),
     'historical-pointers-prepare':dict(required=[],effect='review older settled unowned UI pointers with every MT5/controller writer stopped; preserve historical runs, queues and native flags'),
     'historical-pointers-apply':dict(required=['review-id','confirm-reviewed'],effect='archive only reviewed exact older UI pointers with durable intent and replay; no flags, grants, launches or historical result changes'),
     'bootstrap-retirement-prepare':dict(required=['specification','bootstrap-receipts'],effect='review failed legacy passive monitor startup, exact original receipts and idle replacement; no close or claim effects'),
@@ -306,6 +307,7 @@ def main(argv=None):
     p=sub.add_parser('switch-verify-park');p.add_argument('--review-id',required=True)
     p=sub.add_parser('switch-replace-receipt');p.add_argument('--review-id',required=True);p.add_argument('--candidate-receipt',type=Path,required=True);p.add_argument('--expected-sha256',required=True)
     p=sub.add_parser('switch-replace-build');p.add_argument('--review-id',required=True);p.add_argument('--candidate-receipt',type=Path,required=True);p.add_argument('--candidate-ea',type=Path,required=True);p.add_argument('--expected-sha256',required=True)
+    p=sub.add_parser('switch-upgrade-in-session');p.add_argument('--transaction-id',required=True);p.add_argument('--candidate-receipt',type=Path,required=True);p.add_argument('--candidate-ea',type=Path,required=True);p.add_argument('--admission',type=Path,required=True);p.add_argument('--expected-sha256',required=True)
     sub.add_parser('historical-pointers-prepare')
     p=sub.add_parser('historical-pointers-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
     p=sub.add_parser('switch-plan');p.add_argument('--restore-id')
@@ -360,6 +362,10 @@ def main(argv=None):
         if args.operation=='switch-replace-build':
             from studio_build_upgrade import replace_build
             result=replace_build(args.installation,args.review_id,args.candidate_receipt,args.candidate_ea,args.expected_sha256)
+            print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
+        if args.operation=='switch-upgrade-in-session':
+            from studio_in_session_upgrade import upgrade
+            result=upgrade(args.installation,args.transaction_id,args.candidate_receipt,args.candidate_ea,args.admission,args.expected_sha256)
             print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
         controller=Controller(args.installation)
         from studio_build_upgrade import guard_pending

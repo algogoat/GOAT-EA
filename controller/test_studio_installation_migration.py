@@ -29,7 +29,8 @@ class InstallationMigrationTests(unittest.TestCase):
         self.account = {'login': '3000082754', 'server': 'Darwinex-Demo'}
         old_ea = b'old reviewed EA'
         new_ea = b'new reviewed EA'
-        self.old = dict(ea_sha256=hashlib.sha256(old_ea).hexdigest(),
+        self.old = dict(ea_sha256=hashlib.sha256(old_ea).hexdigest(), ea_version='1.49',
+            controller_version='1.49-beta.1', terminal_portable=False,
             bundle_version='old', agent_guide_path='C:/old/guide', installed_at='before',
             terminal_executable='C:/MT5/terminal64.exe', terminal_data_root='C:/MT5/Data',
             catalog_root='C:/MT5/Common/Catalog', controller_state_root=str(self.root),
@@ -49,13 +50,14 @@ class InstallationMigrationTests(unittest.TestCase):
             authority_sha256=sha(authority))
         checked = dict(input=dict(accountId=self.account['login'], buildId='V1.49-DIAGNOSTIC',
             selection=dict(terminalExecutable=self.new['terminal_executable'],
-                terminalDataRoot=self.new['terminal_data_root'])),
+                terminalDataRoot=self.new['terminal_data_root'],portable=False)),
             admission=dict(mode='INTERNAL_REVIEWED', artifactSha256=self.new['ea_sha256'],
                 sourceCommit='b'*40, accountId=self.account['login'], buildId='V1.49-DIAGNOSTIC',
+                uid='owner', compileReceiptSha256='d'*64, admissionSha256='e'*64,
                 grantsControl=False, checkedAtMs=99000, validUntilMs=110000,
                 notBeforeMs=0, persistent=False, expiresAtMs=190000),
             identity=dict(manifestSha256='c'*64, eaSha256=self.new['ea_sha256'],
-                eaSourceRevision='b'*40))
+                eaSourceRevision='b'*40,eaVersion='1.49',controllerVersion='1.49-beta.1'))
         stored(folder/'admission.json', checked)
         archive = {}
         for name, value in (('session.json', session), ('research-authority.json', authority),
@@ -64,6 +66,7 @@ class InstallationMigrationTests(unittest.TestCase):
             archive[name] = stored(folder/name, value)
         archive['installation.before.json'] = old_raw
         archive['ea.before.ex5'] = raw(folder/'ea.before.ex5', old_ea)
+        archive['ea.after.ex5'] = raw(folder/'ea.after.ex5', new_ea)
         stored(folder/'archive.json', archive)
         record = dict(schema_version=1, sequence=1,
             previous_installation_sha256=self.original_sha,
@@ -91,11 +94,17 @@ class InstallationMigrationTests(unittest.TestCase):
             db.execute('UPDATE studio_build_migrations SET record_sha256=? WHERE sequence=1', (anchor,))
             db.commit()
 
-    def test_original_build_needs_no_migration(self):
+    def test_original_build_needs_no_migration_before_an_anchor(self):
+        import shutil
+        shutil.rmtree(self.root/'installation-migrations')
         self.assertEqual(verify_installation_chain(self.root,self.old,self.original_sha)['migrations'], 0)
 
     def test_exact_archived_build_chain_is_accepted(self):
         self.assertEqual(verify_installation_chain(self.root,self.new,self.original_sha)['migrations'], 1)
+
+    def test_old_receipt_cannot_silently_roll_back_an_anchored_migration(self):
+        with self.assertRaisesRegex(ValueError,'not the end'):
+            verify_installation_chain(self.root,self.old,self.original_sha)
 
     def test_changed_current_build_is_rejected(self):
         with self.assertRaises(ValueError):

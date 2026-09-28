@@ -737,6 +737,21 @@ command holds the exclusive session gate and external parked database locks
 across verification and both EA/receipt writes. Original bytes, candidate bytes
 and the exact publication journal remain in the PARK archive.
 
+For an already granted, idle demo Studio session, the authenticated desktop agent
+may instead call `suite.upgradeInSession`. Its native `switch-upgrade-in-session`
+companion requires the exact current installation SHA-256, staged same-version EA
+and receipt, fresh exact own-account admission, and an unchanged reviewed catalog.
+It verifies the genuine unexpired research epoch, frozen plan, settled queue and
+native controls, idle selected MT5 process, Algo Trading off and zero positions or
+orders under the session, driver and native gates. It archives the original
+receipt/EA and grant evidence, anchors an append-only migration, normally closes
+only that MT5, publishes the exact EA/receipt pair, and relaunches its saved inert
+monitor. The same transaction ID reconciles an interrupted close or publication;
+unknown launch identity stays fenced. Completion requires fresh post-launch EA and
+native readback. The grant and original expiry are never regenerated or extended;
+no research job or trading is started. Source tests do not replace Banker native
+qualification. Ordinary PARK remains the route for sessions outside these bounds.
+
 On Windows, the PARK verifier reads archived files through extended-length paths
 while retaining the original relative names and SHA-256 comparison in the
 review receipt. A completed PARK remains the authority if an older verifier

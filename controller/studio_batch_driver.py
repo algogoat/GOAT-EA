@@ -261,7 +261,15 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
             now, mono = clock.time(), clock.monotonic()
             rollback = rollback or now < record['last_wall'] or now-wall_start+.05 < mono-monotonic_start
             disk_reason = record.get('disk_observation', {}).get('reason')
-            if record['cancel_issued'] or disk_reason or rollback or now >= record['deadline_wall'] or mono >= monotonic_deadline:
+            owner_stop = None
+            if controller.session.get('authority_kind') == 'demo_direct':
+                if (controller.root/'demo-agent/STOP').exists():
+                    owner_stop = 'owner_stop'
+                else:
+                    human = controller.bridge.root/'human'
+                    if any(any((human/channel).glob('*.json')) for channel in ('inbox','processing')):
+                        owner_stop = 'human_take_control'
+            if record['cancel_issued'] or owner_stop or disk_reason or rollback or now >= record['deadline_wall'] or mono >= monotonic_deadline:
                 if not record['cancel_issued']:
                     try:
                         _owned_attempt(controller, record)
@@ -272,7 +280,7 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
                     grace = record['cancel_grace_seconds']
                     record.update(cancel_issued=True, status='cancel_requested_unconfirmed',
                                   cancel_deadline_wall=now+grace,
-                                  cancel_reason=disk_reason or ('clock_rollback' if rollback else 'deadline'))
+                                  cancel_reason=owner_stop or disk_reason or ('clock_rollback' if rollback else 'deadline'))
                     cancel_mono_deadline = mono+grace
                     _save(path, record, clock)
                     try:

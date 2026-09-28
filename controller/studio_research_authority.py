@@ -14,6 +14,7 @@ from campaign_ledger import packed, sha
 from studio_installation import read_json, load_installation
 
 CURRENT_OPERATION = ContextVar('studio_research_operation', default=None)
+DEMO_AGENT_SCOPE = ContextVar('studio_demo_agent_scope', default=None)
 READ_OPERATIONS = frozenset(('discover','resource-profile','state','onboarding-status',
                              'native-recovery-status','batch-driver-status','owner-maintenance-status'))
 OPERATIONS = READ_OPERATIONS | frozenset(('owner-maintenance-bootstrap','monitor-prepare','monitor-launch',
@@ -29,6 +30,34 @@ def operation(name):
         yield
     finally:
         CURRENT_OPERATION.reset(token)
+
+
+@contextmanager
+def demo_agent_scope(*, root, installation_sha256, account):
+    """Trusted local adapter scope after a fresh broker-reported demo check.
+
+    This changes the policy for the demo lane only. It never changes the stored
+    history of human grants or permits a non-demo account to enter the lane.
+    """
+    value = dict(root=str(Path(root).resolve()), installation_sha256=installation_sha256,
+                 account=dict(account))
+    token = DEMO_AGENT_SCOPE.set(value)
+    try:
+        yield
+    finally:
+        DEMO_AGENT_SCOPE.reset(token)
+
+
+def require_demo_agent_scope(root, installation, session):
+    scope = DEMO_AGENT_SCOPE.get()
+    if (scope is None or scope['root'] != str(Path(root).resolve())
+            or scope['installation_sha256'] != sha(installation)
+            or session.get('installation_sha256') != scope['installation_sha256']
+            or session.get('authority_kind') != 'demo_direct'
+            or session.get('demo_only') is not True
+            or session.get('account') != scope['account']):
+        raise ValueError('Fresh broker-verified demo agent scope required')
+    return scope
 
 
 HUMAN_RECOVERY_OPERATIONS = READ_OPERATIONS | frozenset(('serve','cancel','switch-plan','switch-apply',
@@ -76,6 +105,16 @@ def legacy_human_grant(db, binding, state):
 
 
 def authority(db, binding, state):
+    if DEMO_AGENT_SCOPE.get() is not None:
+        root = Path(db.execute('PRAGMA database_list').fetchone()[2]).parent
+        session = read_json(root / 'session.json')
+        installation = read_json(root / 'installation.json')
+        require_demo_agent_scope(root, installation, session)
+        if {key: session.get(key) for key in ('terminal_id', 'run_id')} != json.loads(binding):
+            raise ValueError('Demo agent session binding changed')
+        if state['owner'] != 'agent':
+            raise ValueError('Owner TAKE CONTROL wins over demo agent work')
+        return None
     row = db.execute('SELECT kind,provenance FROM studio_authorities WHERE binding=?', (binding,)).fetchone()
     if row is None:
         root=Path(db.execute('PRAGMA database_list').fetchone()[2]).parent

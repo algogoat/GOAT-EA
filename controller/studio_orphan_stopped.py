@@ -1,10 +1,28 @@
 """Verify stopped-terminal rejection cleanup; never infer a current native state."""
-from pathlib import Path
+import math
+from pathlib import Path, PureWindowsPath
 
 from studio_handover import safe_path
 from studio_installation import read_json
 from studio_orphan_recovery import inspect_local
 from studio_process_check import inspect_processes
+
+
+def validate_observation(c,proof):
+    inventory=proof.get('root_inventory') if isinstance(proof,dict) else None
+    expected=[str(PureWindowsPath(Path(c.install['terminal_executable']).parent)),
+              str(PureWindowsPath(c.install['terminal_data_root']))]
+    if (not isinstance(inventory,dict)
+            or set(inventory)!={'roots','process_count','unavailable_path_count','limitation'}
+            or inventory['roots']!=expected
+            or type(inventory['process_count']) is not int or inventory['process_count']<0
+            or type(inventory['unavailable_path_count']) is not int
+            or not 0<=inventory['unavailable_path_count']<=inventory['process_count']
+            or inventory['limitation']!='Windows-visible executable paths only; unrelated unreadable system paths cannot be attributed to a terminal'
+            or type(proof.get('observed_unix')) not in (int,float)
+            or not math.isfinite(proof['observed_unix']) or proof['observed_unix']<0
+            or proof.get('research','missing') is not None or proof.get('launch_permitted') is not False):
+        raise ValueError('Stopped recovery root inventory evidence changed')
 
 
 def assert_clear_human_channels(c):

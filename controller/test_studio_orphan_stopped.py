@@ -1,6 +1,6 @@
 """Stopped cleanup source fixtures; no installed terminal or human action is used."""
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
 from studio_bridge import write_json
@@ -23,7 +23,11 @@ class StoppedRejectionTests(fixtures.ReviewRejectedRecoveryTests):
         def inventory(binding,*,research_running,absent_roots):
             self.assertFalse(research_running)
             self.assertEqual(absent_roots,[str(Path(self.c.install['terminal_executable']).parent),self.c.install['terminal_data_root']])
-            return classify_processes(self.processes,binding,observed_unix=self.request['expires_utc']+1,research_running=False)
+            result=classify_processes(self.processes,binding,observed_unix=self.request['expires_utc']+1,research_running=False)
+            result['root_inventory']=dict(roots=[str(PureWindowsPath(root)) for root in absent_roots],
+                process_count=len(self.processes),unavailable_path_count=0,
+                limitation='Windows-visible executable paths only; unrelated unreadable system paths cannot be attributed to a terminal')
+            return result
         patch('studio_orphan_stopped.inspect_processes',side_effect=inventory).start()
 
     def run_settlement(self):
@@ -144,3 +148,41 @@ class StoppedRejectionTests(fixtures.ReviewRejectedRecoveryTests):
         with patch('studio_orphan_rejection.write_json',side_effect=changed),self.assertRaisesRegex(ValueError,'Stopped recovery settlement intent'):
             self.run_settlement()
         self.assert_fenced();self.assertTrue((self.gate/'permit.json').exists())
+
+    def test_interrupted_intent_refuses_missing_or_altered_inventory(self):
+        original=Path.unlink
+        def interrupted(path,*args,**kwargs):
+            if path==self.gate/'permit.json':raise OSError('before cleanup')
+            return original(path,*args,**kwargs)
+        with patch.object(Path,'unlink',interrupted),self.assertRaises(OSError):self.run_settlement()
+        saved=(self.root/'intent.json').read_bytes()
+        for change in ('missing','roots','valid_count','negative_count','unknown_count','limitation'):
+            intent=json.loads(saved);proof=intent['process_observation']
+            if change=='missing':proof.pop('root_inventory')
+            elif change=='roots':proof['root_inventory']['roots']=['C:\\wrong']
+            elif change=='valid_count':proof['root_inventory']['process_count']+=1
+            elif change=='negative_count':proof['root_inventory']['process_count']=-1
+            elif change=='unknown_count':proof['root_inventory']['unavailable_path_count']=1
+            else:proof['root_inventory']['limitation']='complete proof'
+            write_json(self.root/'intent.json',intent)
+            with self.subTest(change=change),self.assertRaisesRegex(ValueError,'inventory evidence|retained process observation'):
+                self.run_settlement()
+            self.assert_fenced();self.assertTrue((self.gate/'permit.json').exists())
+        (self.root/'intent.json').write_bytes(saved)
+        self.assertEqual(self.run_settlement()['status'],'rejected_settled')
+
+    def test_interrupted_before_intent_reuses_original_archived_observation(self):
+        original=settlement.write_json
+        def interrupted(path,value):
+            if path.name=='intent.json':raise OSError('before intent')
+            original(path,value)
+        with patch('studio_orphan_rejection.write_json',side_effect=interrupted),self.assertRaises(OSError):self.run_settlement()
+        before=(self.root/'process-observation.json').read_bytes()
+        self.assert_fenced();self.assertFalse((self.root/'intent.json').exists())
+        scan=stopped.inspect_processes
+        def later(*args,**kwargs):
+            result=scan(*args,**kwargs);result['observed_unix']+=10;return result
+        with patch('studio_orphan_stopped.inspect_processes',side_effect=later):
+            self.assertEqual(self.run_settlement()['status'],'rejected_settled')
+        self.assertEqual((self.root/'process-observation.json').read_bytes(),before)
+        self.assertEqual(read_json(self.root/'intent.json')['process_observation'],json.loads(before))

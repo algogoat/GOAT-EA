@@ -518,6 +518,9 @@ It also retains named-terminal checks for unmapped paths and changed protected
 peers. The receipt records the number of unreadable process paths: unrelated
 system processes may hide their paths, so this is not a security boundary against
 privileged or hidden processes. A named terminal with an unreadable path refuses.
+The original process observation is archived and hashed before cleanup intent;
+resumption validates its exact roots/counts/visibility fields and compares it
+with that retained copy. Later absence scans do not rewrite the original proof.
 Historical status cannot retire a later fence. The offline route requires explicit human
 confirmation; neither `--owner-research` nor typed research-continuation authority
 is accepted offline. After settlement, reopen through a supported path and obtain

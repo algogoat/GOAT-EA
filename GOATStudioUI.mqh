@@ -157,9 +157,9 @@ bool GoatStudioUIState(string &tester,string &exports,string &owner,long &revisi
 #ifdef GOAT_MONITOR_ONBOARDING_V149
    // A valid empty binding permits HUMAN handoff before the agent creates
    // settings. Never synthesize settings or accept partial/malformed drafts.
-   g_StudioEmptyDraft=(tester_token>=0 && export_token>=0
+   bool empty_draft=(tester_token>=0 && export_token>=0
       && tokens[tester_token].type==GOAT_JSON_NULL && tokens[export_token].type==GOAT_JSON_NULL);
-   if(g_StudioEmptyDraft)
+   if(empty_draft)
      {
       int queue=GOATJsonFindField(body,tokens,state,"queue");
       int strategy=GOATJsonFindField(body,tokens,state,"strategy_draft");
@@ -177,6 +177,10 @@ bool GoatStudioUIState(string &tester,string &exports,string &owner,long &revisi
    if(!GoatStudioSectionINI(body,tokens,tester_token,false,tester)
       || !GoatStudioSectionINI(body,tokens,export_token,true,exports))
      {status="Controller settings are incomplete; ask your agent to repair setup"; return false;}
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   // Rejected snapshots must not change the accepted editor persistence mode.
+   g_StudioEmptyDraft=empty_draft;
+#endif
    g_StudioSnapshot=body;
    g_StudioHasStrategy=false; g_StudioStrategyName=""; g_StudioSchemaHash="";
    GOATJsonGetString(body,tokens,0,"schema_hash",g_StudioSchemaHash);
@@ -446,6 +450,9 @@ void CStrategyTesterDialog::ManagedControls(void)
       if(g_StudioPendingCommand=="control.takeover") m_btnStart.Text("TAKING CONTROL...");
      }
    else if(m_studioOwner=="agent") m_btnStop.Text("AGENT CONNECTED");
+   else if(m_studioOwner=="human" && g_StudioControlOutcome==2
+           && g_StudioControlCommand=="control.takeover")
+      m_btnStop.Text("GIVE CONTROL BACK TO THE AGENT");
 #endif
   }
 
@@ -539,9 +546,24 @@ void CStrategyTesterDialog::ManagedQueueSubmit(const string command,const string
    g_StudioPendingId=id; g_StudioPendingHash=hash; g_StudioPendingCommand=command; g_StudioLastError="";
    m_edtBatchErrors.Text("Queue edit submitted; waiting for controller"); ManagedControls();
   }
+// Report is generated from the scoped output root, not an editable setting.
+// Preserve every other byte, including actual tester/export edits and headers.
+bool GoatStudioSameDraftSettings(const string current,const string baseline)
+  {
+   if(current==baseline) return true;
+   int current_start=StringFind(current,"\nReport="),baseline_start=StringFind(baseline,"\nReport=");
+   if(current_start<0 || baseline_start<0) return false;
+   int current_value=current_start+8,baseline_value=baseline_start+8;
+   int current_end=StringFind(current,"\n",current_value),baseline_end=StringFind(baseline,"\n",baseline_value);
+   if(current_end<=current_value || baseline_end<=baseline_value
+      || StringFind(current,"\nReport=",current_value)>=0
+      || StringFind(baseline,"\nReport=",baseline_value)>=0) return false;
+   return StringSubstr(current,0,current_value)==StringSubstr(baseline,0,baseline_value)
+      && StringSubstr(current,current_end)==StringSubstr(baseline,baseline_end);
+  }
 void CStrategyTesterDialog::ManagedQueueEnqueue(void)
   {
-   if(GetTESTERsettingsString(true)+GetExportSettingsString()!=m_studioBaseline)
+   if(!GoatStudioSameDraftSettings(GetTESTERsettingsString(true)+GetExportSettingsString(),m_studioBaseline))
      {m_edtBatchErrors.Text("Save your settings before queuing a job"); return;}
    ManagedQueueSubmit("queue.enqueue","{\"job_id\":"+GoatStudioQuote("job-"+(string)ChartID()+"-"+(string)GetMicrosecondCount())+"}");
   }
@@ -671,7 +693,7 @@ void CStrategyTesterDialog::ManagedRefresh(void)
       m_studioBaseline=m_studioSubmitted;
       m_studioRevision=revision; m_studioGeneration=generation;
      }
-   bool dirty=m_studioLoaded && current!=m_studioBaseline;
+   bool dirty=m_studioLoaded && !GoatStudioSameDraftSettings(current,m_studioBaseline);
    m_studioOwner=owner;
    if(!dirty)
      {
@@ -795,6 +817,11 @@ void CStrategyTesterDialog::ManagedSave(void)
   }
 void CStrategyTesterDialog::ManagedTakeover(void)
   {
+   if(m_studioOwner!="agent" || g_StudioPendingId!="") return;
+   int confirmation=MessageBox("This stops the agent's research and cancels its permission. Continue?",
+      "Take Control",MB_YESNO|MB_ICONQUESTION);
+   if(confirmation!=IDYES)
+     {m_edtBatchProgress.Text("Take control cancelled; agent remains connected"); ChartRedraw(m_chart_id); return;}
    if(!GoatStudioUISubmit("control.takeover","","",-1,-1))
      {
       m_edtBatchErrors.Text("Unable to request control");
@@ -809,7 +836,7 @@ void CStrategyTesterDialog::ManagedTakeover(void)
   }
 void CStrategyTesterDialog::ManagedGrant(void)
   {
-   if(GetTESTERsettingsString(true)+GetExportSettingsString()!=m_studioBaseline)
+   if(!GoatStudioSameDraftSettings(GetTESTERsettingsString(true)+GetExportSettingsString(),m_studioBaseline))
      {
       m_edtBatchErrors.Text("Save or load saved settings before giving control to the agent");
 #ifdef GOAT_CONTROL_FEEDBACK_V149

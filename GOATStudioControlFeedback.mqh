@@ -1,4 +1,4 @@
-#ifndef GOAT_STUDIO_CONTROL_FEEDBACK_MQH
+﻿#ifndef GOAT_STUDIO_CONTROL_FEEDBACK_MQH
 #define GOAT_STUDIO_CONTROL_FEEDBACK_MQH
 // Presentation only. A click never confirms authority; the verified receipt does.
 string g_StudioControlRequest="",g_StudioControlCommand="",g_StudioControlError="";
@@ -7,7 +7,13 @@ int g_StudioControlOutcome=0; // 0 none, 1 waiting, 2 applied receipt, 3 refused
 
 void GoatStudioControlBegin(const string id,const string command)
   {
-   if(command!="control.grant_agent" && command!="control.takeover") return;
+   if(command!="control.grant_agent" && command!="control.takeover")
+     {
+      // A later save/queue action owns the status area after prior handoff settled.
+      if(g_StudioControlOutcome!=1)
+        {g_StudioControlRequest="";g_StudioControlCommand="";g_StudioControlError="";g_StudioControlOutcome=0;}
+      return;
+     }
    if(id==g_StudioControlRequest) return; // Recovery/refresh must not reset the wait.
    g_StudioControlRequest=id; g_StudioControlCommand=command;
    g_StudioControlSince=GetTickCount64(); g_StudioControlOutcome=1; g_StudioControlError="";

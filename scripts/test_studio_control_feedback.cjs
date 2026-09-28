@@ -40,11 +40,15 @@ c.GoatStudioControlBegin('take2', 'control.takeover');
 assert.match(text('agent'), /^Taking control/);
 c.GoatStudioControlResolve(true, '');
 assert.equal(text('human'), 'Confirmed: you control settings');
+c.GoatStudioControlBegin('save-after-take', 'draft.replace_configuration');
+assert.equal(text('human'), '', 'later save clears confirmed takeover status');
 c.GoatStudioControlFailure('Save or load saved settings first');
 assert.match(text('human'), /Save or load saved settings first/);
 c.GoatStudioControlBegin('grant2', 'control.grant_agent');
 c.GoatStudioControlResolve(false, '');
 assert.match(text('human'), /Controller refused/);
+c.GoatStudioControlBegin('save1', 'draft.replace_configuration');
+assert.equal(text('human'), '', 'later save owns status instead of stale control refusal');
 // Integration order: only a bound receipt and visible committed snapshot resolve it.
 const ui = fs.readFileSync(path.join(root, 'GOATStudioUI.mqh'), 'utf8');
 const receipt = ui.indexOf('if(g_StudioBridge.ReadReceipt(');
@@ -56,6 +60,7 @@ assert.ok(ui.indexOf('g_StudioBridge.SubmitHuman(', submit) < ui.indexOf('GoatSt
 const controls = ui.slice(ui.indexOf('void CStrategyTesterDialog::ManagedControls('), ui.indexOf('void CStrategyTesterDialog::ManagedSelectStrategy('));
 assert.ok(controls.indexOf('m_btnStop.Text("CONNECTING...")') > controls.indexOf('// Keep handoff visible'));
 assert.match(controls, /m_btnStart.Disable\(\); m_btnStop.Disable\(\);/);
+assert.match(controls, /GIVE CONTROL BACK TO THE AGENT/);
 for (const method of ['ManagedTakeover', 'ManagedGrant']) {
  const begin = ui.indexOf(`void CStrategyTesterDialog::${method}(`);
  const end = ui.indexOf('\nvoid ', begin + 1);
@@ -63,5 +68,7 @@ for (const method of ['ManagedTakeover', 'ManagedGrant']) {
  assert.match(body, /m_edtBatchProgress.Text\(GoatStudioControlText\(m_studioOwner\)\)/);
  assert.match(body, /ChartRedraw\(m_chart_id\)/);
 }
+const takeover = ui.slice(ui.indexOf('void CStrategyTesterDialog::ManagedTakeover('), ui.indexOf('void CStrategyTesterDialog::ManagedGrant('));
+assert.ok(takeover.indexOf('MessageBox(') > 0 && takeover.indexOf('if(confirmation!=IDYES)') < takeover.indexOf('GoatStudioUISubmit("control.takeover"'));
 assert.doesNotMatch(native, /SubmitHuman|FileOpen|GlobalVariableSet|ClickStart|StartProcess/);
-console.log('Control feedback: 24 assertions passed; native visual qualification pending');
+console.log('Control feedback: 28 assertions passed; native visual qualification pending');

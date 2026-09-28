@@ -127,13 +127,24 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
         self.assertIn('GoatStudioRecoveryDiagnostic("CURRENT_MONITOR_OBSERVATION",reason,before,after);', self.observer)
         self.assertIn('reason="CURRENT_GUARD_PASS";before=0;after=0;', self.guard)
 
+    def test_unknown_start_protocol_refuses_before_intent_or_batch_arm(self):
+        dispatch = source("GOATStudioDispatch.mqh")
+        execute = function(dispatch, "string GoatStudioExecuteRequest(")
+        gate = 'if(start_build!=6182 && start_build!=6230) return "START_PROTOCOL_NOT_QUALIFIED";'
+        self.assertIn(gate, execute)
+        self.assertLess(execute.index(gate), execute.index('"GOATStudio\\\\native-gate\\\\consumed-"'))
+        self.assertLess(execute.index(gate), execute.index('GlobalVariableSet("BatchOnGoing",1.0)'))
+        self.assertLess(execute.index(gate), execute.index('MTTESTER::ClickStart(false,1)'))
+        self.assertIn('GOAT_STUDIO_WORKER_READBACK build=%d', source("GOATStudioWorkers.mqh"))
+
     def test_source_and_compiled_candidate_identity(self):
         main = source('GOAT V1.49.mq5')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
-        self.assertIn('#define   GOAT_BUILD_ID "V1.49-CONTROL-FEEDBACK-16"', main)
+        self.assertIn('#define   GOAT_BUILD_ID "V1.49-CONTROL-FEEDBACK-16R1"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
-                         '068cbebd146ff02d7e2f3499f8068d2e9c36aec17f3dc2fd6e673729adef301e')
-        for name in ('GOATStudioRecovery.mqh', 'GOATStudioRecoveryFiles.mqh', 'GOATStudioUI.mqh', 'GOAT V1.49.mq5'):
+                         'd56f47725cb7b8b27bfcdbdddd3b72195210a95debb3d93df9882294728b8a39')
+        for name in ('GOATStudioRecovery.mqh', 'GOATStudioRecoveryFiles.mqh', 'GOATStudioUI.mqh',
+                     'GOATStudioWorkers.mqh', 'GOATStudioControlFeedback.mqh', 'GOAT V1.49.mq5'):
             raw = (ROOT/name).read_bytes()
             self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
             self.assertEqual(raw.count(b"\n"), raw.count(b"\r\n"))

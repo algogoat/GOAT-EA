@@ -94,4 +94,30 @@ assert.equal(c.CompareCanonicalIni(exportObserved,exportWanted.replace('Sequence
 assert.equal(c.CompareCanonicalIni('[TesterInputs]\nRisk=500','[TesterInputs]\nRisk=500'),true);count++;
 
 assert.equal(c.CompareCanonicalIni('[TesterInputs]\nSequence_Export_Enabled=true','[TesterInputs]\nSequence_Export_Enabled=true'),false);count++;
+
+// Execute the real export-ID producer expression against the real native
+// consumer predicate. MQL datetime-to-string emits calendar text unless the
+// producer explicitly converts datetime to an integer first.
+const main=fs.readFileSync(path.join(root,'GOAT V1.49.mq5'),'utf8');
+const producer=main.match(/string captureId=([^;]+);/)[1];
+const expression=producer.replace(/\(string\)\(long\)TimeLocal\(\)/g,'String(epochSeconds)')
+ .replace(/\(string\)TimeLocal\(\)/g,'dateText')
+ .replace(/\(string\)GetMicrosecondCount\(\)/g,'String(micros)').replace(/\(string\)rowInd/g,'String(row)');
+const makeId=new Function('epochSeconds','dateText','micros','row','return '+expression);
+const sequenceSource=fs.readFileSync(path.join(root,'GOAT_SequencePackage.mqh'),'utf8');
+let safeId=sequenceSource.slice(sequenceSource.indexOf('bool GoatSeqSafeId('),sequenceSource.indexOf('string GoatSeqJson('));
+safeId=safeId.replace('bool GoatSeqSafeId(const string id)','function GoatSeqSafeId(id)')
+ .replace(/\bstring allowed=/,'let allowed=').replace(/for\(int i=/,'for(let i=');
+vm.runInContext(safeId,c);
+const ids=new Set();
+for(const stamp of [0,1790656341,32535215999]) for(const micros of [1,116518271]) for(const row of [0,1,29]) {
+ const id=makeId(stamp,'2026.09.28 21:32:21',micros,row);
+ assert.equal(c.GoatSeqSafeId(id),true,id);assert.equal(ids.has(id),false);ids.add(id);count++;
+}
+for(const id of ['export-2026.09.28 21:32:21-116518271-0','../old','x\\y','', 'x'.repeat(97)]) {
+ assert.equal(c.GoatSeqSafeId(id),false);count++;
+}
+const runSet=main.slice(main.indexOf('int RunAndStoreSet(int rowInd'),main.indexOf('const datetime t0 =',main.indexOf('int RunAndStoreSet(int rowInd')));
+assert.ok(runSet.indexOf('if(!GoatSeqSafeId(captureId))')<runSet.indexOf('GoatSeqMakePath(pendingRoot)'));
+assert.ok(runSet.indexOf('if(!GoatSeqSafeId(captureId))')<runSet.indexOf('StartTester(rowInd'));
 console.log(JSON.stringify({passed:count,nativeQualification:false}));

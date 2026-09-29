@@ -9,11 +9,11 @@
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-EXPORT-DATE-20"
+#define   GOAT_BUILD_ID "V1.49-EXPORT-IDENTITY-21"
 #define GOAT_CONFIG_REPORT_START_V149
 #include "GOAT_SequencePackage.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
-#define   GOAT_BUILD_MARKER "ED20"
+#define   GOAT_BUILD_MARKER "EI21"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -4356,6 +4356,7 @@ void OnTesterDeinit()
       GlobalVariableDel("GOAT_OPT_STUDIO_WIDTH");
       GlobalVariableDel("GOAT_OPT_STUDIO_HEIGHT");
       GlobalVariableDel("GOAT_OPT_STUDIO_FONT");
+      GlobalVariablesFlush(); // Persist completed-batch disarm before a later terminal exit.
      }
     }
     else
@@ -4530,7 +4531,8 @@ bool StartExporter(bool reportMode)
 int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[],bool Init=false,const int startAttempts=20)
   {
    if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return -1;
-   string captureId="export-"+(string)TimeLocal()+"-"+(string)GetMicrosecondCount()+"-"+(string)rowInd;
+   string captureId="export-"+(string)(long)TimeLocal()+"-"+(string)GetMicrosecondCount()+"-"+(string)rowInd;
+   if(!GoatSeqSafeId(captureId)) {LogOrPrint(reportMode,"Invalid generated export identity; no tester start issued",Key,EA_Name,Server);return -1;}
    string attemptRoot=GoatSeqAttemptRoot(captureId);
    if(attemptRoot=="") return -1;
    string sequenceSetting=FetchExportSetting("IncludeSequenceData",Key,EA_Name,Server);

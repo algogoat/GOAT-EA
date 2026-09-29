@@ -1,4 +1,7 @@
 ﻿#include "MTTester.mqh"
+#ifdef GOAT_TESTER_SEMANTIC_V149
+#include "GOATStudioExportDates.mqh"
+#endif
 #ifdef GOAT_SEQUENCE_EXPORT_V148
 #include "GOAT_SequenceHostIO.mqh"
 #endif
@@ -389,6 +392,11 @@ bool VerifyTesterSettings(const bool reportMode,const int MAX_ATTEMPTS = 5)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CompareCanonicalIni(const string iniA,const string iniB)
   {
+#ifdef GOAT_TESTER_SEMANTIC_V149
+   string date_error;
+   if(!GoatStudioExportDatesEqual(iniB,iniA,date_error))
+     {LogOrPrint(false,date_error,strT._K,strT._N,strT._S);return false;}
+#endif
    // --- Parse iniA into a map "Section|Key" -> "Value"
    string mapAKeys[], mapAValues[];
    int countA = 0;
@@ -466,6 +474,11 @@ bool CompareCanonicalIni(const string iniA,const string iniB)
      {
       string aKey = mapAKeys[i];
       string aVal = mapAValues[i];
+#ifdef GOAT_TESTER_SEMANTIC_V149
+      // These two dates were checked above by exact datetime value, including
+      // presence and duplicates. Do not compare their native display spelling.
+      if(aKey=="[TesterInputs]|Sequence_Export_Start" || aKey=="[TesterInputs]|Sequence_Export_End") continue;
+#endif
       // find same key in B
       int indexB=-1;
       for(int j=0; j<countB; j++)

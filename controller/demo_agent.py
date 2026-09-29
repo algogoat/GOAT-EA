@@ -470,22 +470,47 @@ class DemoAgent:
             self._owner_clear(); self._space()
             return dict(already_running=True, **self._readback_current(physical))
 
-    def install_build(self, candidate, expected_sha256, monitor_config):
+    def install_build(self, candidate, expected_sha256, monitor_config, *, require_running=False,
+                      linked_login=None, bundle_version=None, agent_guide_path=None):
         expected_sha256 = expected_sha256.lower()
         candidate = Path(candidate).resolve()
         monitor_config = self._validate_monitor_config(monitor_config)
         if (candidate.suffix.lower() != '.ex5' or not re.fullmatch('[0-9a-f]{64}', expected_sha256)
                 or digest(candidate) != expected_sha256):
             raise ValueError('Candidate SHA-256 mismatch')
+        if type(require_running) is not bool:
+            raise ValueError('Running-terminal requirement must be boolean')
+        if linked_login is not None and (not isinstance(linked_login,str)
+                or not re.fullmatch(r'[1-9][0-9]{0,19}',linked_login)):
+            raise ValueError('Exact linked login required')
+        metadata={}
+        if bundle_version is not None or agent_guide_path is not None:
+            if (not isinstance(bundle_version,str)
+                    or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-beta\.[0-9]+)?',bundle_version)
+                    or len(bundle_version)>60 or agent_guide_path is None
+                    or Path(agent_guide_path).resolve()!=Path(__file__).with_name('AGENT-START-HERE.md').resolve()
+                    or not Path(agent_guide_path).is_file()):
+                raise ValueError('Verified running controller bundle metadata required')
+            metadata=dict(bundle_version=bundle_version,agent_guide_path=str(Path(agent_guide_path).resolve()))
+        def finish(result):
+            if metadata:
+                self._owner_clear(); self._broker()
+                self._adopt_installed_binary(expected_sha256,metadata=metadata)
+                self._append('install_build','bundle_identity_verified',**metadata)
+            return result
         with self._exclusive():
+            if linked_login is not None and self._paired_account()['login']!=linked_login:
+                raise ValueError('Selected linked login differs from paired terminal')
             if self.process.inspect() is None:
+                if require_running:
+                    raise ValueError('Selected terminal stopped before demo update; no launch issued')
                 physical = digest(self.binary)
                 if physical not in (self.install['ea_sha256'], expected_sha256):
                     raise ValueError('Stopped terminal contains an unknown EA build')
                 recovered = self._launch_terminal(monitor_config, physical,
                                                   adopt=(physical == expected_sha256))
                 if physical == expected_sha256:
-                    return dict(installed=True, recovered=True, **recovered)
+                    return finish(dict(installed=True, recovered=True, **recovered))
             self._owner_clear(); self._space(); native = self._broker()
             old_sha = digest(self.binary)
             if old_sha != self.install['ea_sha256']:
@@ -502,7 +527,7 @@ class DemoAgent:
                         and PureWindowsPath(ui['runtime'].get('program_path', '')) == PureWindowsPath(self.binary)
                         and prior.get('ea_sha256') == expected_sha256
                         and prior.get('process') == native['process']):
-                    return dict(already_installed=True, sha256=old_sha, broker=native)
+                    return finish(dict(already_installed=True, sha256=old_sha, broker=native))
             backup = self.state_root / 'backups' / (old_sha + '.ex5')
             backup.parent.mkdir(parents=True, exist_ok=True)
             if backup.exists() and digest(backup) != old_sha:
@@ -534,9 +559,9 @@ class DemoAgent:
             verified = self._launch_terminal(monitor_config, expected_sha256)
             self._append('install_build', 'verified', new_sha256=expected_sha256,
                          broker=verified['broker'])
-            return dict(installed=True, **verified)
+            return finish(dict(installed=True, **verified))
 
-    def _adopt_installed_binary(self, expected_sha256):
+    def _adopt_installed_binary(self, expected_sha256, *, metadata=None):
         """Keep local app/controller identity aligned with the physical EX5.
 
         The old research proof remains archived in place; demo tools use the
@@ -554,8 +579,9 @@ class DemoAgent:
                     shutil.copyfileobj(source, output)
                     output.flush(); os.fsync(output.fileno())
         installed = read_json(self.installation_path)
-        if installed['ea_sha256'] != expected_sha256:
+        if installed['ea_sha256'] != expected_sha256 or any(installed.get(k)!=v for k,v in (metadata or {}).items()):
             installed['ea_sha256'] = expected_sha256
+            installed.update(metadata or {})
             installed['demo_installed_at'] = datetime.now(timezone.utc).isoformat()
             write_json(self.installation_path, installed)
         checked = load_installation(self.installation_path)
@@ -822,6 +848,10 @@ def main(argv=None):
     install.add_argument('--candidate', type=Path, required=True)
     install.add_argument('--sha256', required=True)
     install.add_argument('--monitor-config', type=Path, required=True)
+    install.add_argument('--require-running', action='store_true')
+    install.add_argument('--linked-login')
+    install.add_argument('--bundle-version')
+    install.add_argument('--agent-guide-path', type=Path)
     prepared = commands.add_parser('prepare-batch')
     prepared.add_argument('--batch-id', required=True)
     prepared.add_argument('--plan', type=Path, required=True)
@@ -848,7 +878,9 @@ def main(argv=None):
         elif args.command == 'clear-stop': result = agent.clear_stop()
         elif args.command == 'recover-orphan': result = agent.recover_orphan(args.review_id)
         elif args.command == 'launch-terminal': result = agent.launch_terminal(args.monitor_config)
-        elif args.command == 'install-build': result = agent.install_build(args.candidate, args.sha256, args.monitor_config)
+        elif args.command == 'install-build': result = agent.install_build(args.candidate, args.sha256, args.monitor_config,
+            require_running=args.require_running,linked_login=args.linked_login,
+            bundle_version=args.bundle_version,agent_guide_path=args.agent_guide_path)
         elif args.command == 'prepare-batch': result = agent.prepare_batch(args.batch_id, args.plan)
         elif args.command == 'run-batch': result = agent.run_batch(args.batch_id, args.max_seconds)
         elif args.command == 'resume-batch': result = agent.resume_batch(args.batch_id)

@@ -262,6 +262,32 @@ class DemoAgentTests(unittest.TestCase):
         self.assertFalse(self.process.closed)
         self.assertEqual(self.binary.read_bytes(), b'old-ea')
 
+    def test_desktop_update_refuses_stopped_or_different_linked_account(self):
+        candidate=self.base/'candidate.ex5';candidate.write_bytes(b'new-ea')
+        monitor=self.base/'monitor.ini'
+        monitor.write_text('[Charts]\nProfileLast=GOAT-Studio-test\n[Experts]\nEnabled=0\n'
+                           'AllowLiveTrading=0\n[StartUp]\nExpert=GOAT-EA\\GOAT V1.49.ex5\n'
+                           'ExpertParameters=GOAT Studio Agent.set\nPeriod=M1\n')
+        with patch.object(self.process,'start') as start:
+            self.process.closed=True
+            with self.assertRaisesRegex(ValueError,'stopped before demo update'):
+                self.agent.install_build(candidate,digest(candidate),monitor,
+                                         require_running=True,linked_login='3000082754')
+            start.assert_not_called()
+        self.process.closed=False
+        with patch.object(self.process,'close') as close:
+            with self.assertRaisesRegex(ValueError,'differs from paired'):
+                self.agent.install_build(candidate,digest(candidate),monitor,
+                                         require_running=True,linked_login='3000109270')
+            close.assert_not_called()
+        foreign=self.base/'AGENT-START-HERE.md';foreign.write_text('unverified guide')
+        for fields in (dict(bundle_version='0.5.0-beta.11',agent_guide_path=foreign),
+                       dict(bundle_version='0.5.0-beta.11'),
+                       dict(bundle_version='../bad',agent_guide_path=Path(__file__).with_name('AGENT-START-HERE.md'))):
+            with self.assertRaisesRegex(ValueError,'bundle metadata'):
+                self.agent.install_build(candidate,digest(candidate),monitor,**fields)
+        self.assertEqual(self.binary.read_bytes(),b'old-ea')
+
     def test_install_reads_back_restarted_demo_before_batch_ready(self):
         candidate = self.base / 'candidate.ex5'; candidate.write_bytes(b'new-ea')
         old_sha = digest(self.binary)
@@ -294,8 +320,15 @@ class DemoAgentTests(unittest.TestCase):
 
         self.process.on_start = ea_readback
         with patch('demo_agent.tester_state', return_value='idle'):
-            result = self.agent.install_build(candidate, digest(candidate), monitor)
+            guide=Path(__file__).with_name('AGENT-START-HERE.md').resolve()
+            result = self.agent.install_build(candidate, digest(candidate), monitor,
+                require_running=True,linked_login='3000082754',
+                bundle_version='0.5.0-beta.11',agent_guide_path=guide)
             self.assertTrue(result['installed'])
+            updated=read_json(self.installation)
+            self.assertEqual(updated['bundle_version'],'0.5.0-beta.11')
+            self.assertEqual(updated['agent_guide_path'],str(guide))
+            self.assertEqual(read_json(self.root/'session.json')['installation_sha256'],sha(updated))
             self.assertTrue(self.agent.preflight()['ready_for_batch'])
             self.assertTrue(self.agent.install_build(candidate, digest(candidate), monitor)['already_installed'])
             self.process.closed = True  # MT5 exits after the verified swap.

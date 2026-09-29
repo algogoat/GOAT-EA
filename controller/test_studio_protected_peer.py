@@ -67,7 +67,10 @@ class ProtectedPeerTests(unittest.TestCase):
         self.register()
         def check(binding,**kw):
             self.assertEqual(binding['protected_process']['pid'],7788)
-            return classify_processes(self.rows,binding,observed_unix=1,**kw)
+            selected=kw.pop('selected_stopped',False)
+            roots=kw.pop('absent_roots',None)
+            return classify_processes(self.rows,binding,observed_unix=1,
+                                      unrelated_roots=roots if selected else None,**kw)
         with patch('studio_onboarding.inspect_processes',side_effect=check):
             self.rows=[self.row,dict(self.row,ProcessId=9000,ExecutablePath=str(self.f.bin))]
             with self.assertRaises(ValueError): monitor_prepare(self.c,'EURUSD')

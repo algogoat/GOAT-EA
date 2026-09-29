@@ -35,6 +35,12 @@ class SameEaRebindTests(unittest.TestCase):
         self.process = SimpleNamespace(inspect=lambda: None)
 
     def test_exact_preserved_same_ea_receipt_rebinds_without_native_action(self):
+        with self.assertRaisesRegex(ValueError, 'Installation changed since bootstrap'):
+            Controller(self.fixture.path).open()
+        old_receipt = self.c.root / 'ea-update-backups' / 'plan-one' / 'installation.json'
+        previous = Controller(old_receipt).open()
+        self.assertEqual(previous.state()['run_id'], self.c.run)
+        previous.store.close()
         before_db = (self.c.root / 'studio.sqlite').read_bytes()
         result = rebind(self.fixture.path, process=self.process)
         self.assertEqual(result['status'], 'rebound')

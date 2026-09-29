@@ -103,3 +103,4 @@ assert.ok(stop.indexOf('if(res!=IDYES) return;') < stop.indexOf('GlobalVariableS
 assert.ok(stop.indexOf('GlobalVariableSet(GOAT_BATCH_HUMAN_CANCEL_GV,1.0)') < stop.indexOf('GlobalVariableSet(GOAT_BATCH_CANCELLED_GV,1.0)'));
 assert.equal((ui.match(/GlobalVariableDel\(GOAT_BATCH_HUMAN_CANCEL_GV\)/g) || []).length, 1);
 console.log(`${checks} production cancel-origin cases and native integration checks PASS`);
+require('./test_late_human_stop.cjs');

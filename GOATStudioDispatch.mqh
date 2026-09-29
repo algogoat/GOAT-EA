@@ -219,6 +219,9 @@ string GoatStudioExecuteRequest(const string body,const string request_hash)
 #endif
       if(GlobalVariableSet("BatchOnGoing",1.0)==0) return "ARM_FAILED";
       GlobalVariablesFlush();
+#ifdef GOAT_CANCEL_ORIGIN_V149
+      if(!GoatBatchVerifyArmedStart()) return "HUMAN_CANCEL_RETAINED";
+#endif
       return "RESTART_ARMED_RECONCILE";
      }
    string observed;
@@ -259,6 +262,9 @@ string GoatStudioExecuteRequest(const string body,const string request_hash)
 #endif
    if(GlobalVariableSet("BatchOnGoing",1.0)==0) return "ARM_FAILED";
    GlobalVariablesFlush();
+#ifdef GOAT_CANCEL_ORIGIN_V149
+   if(!GoatBatchVerifyArmedStart()) return "HUMAN_CANCEL_RETAINED";
+#endif
    // Check=false avoids helper retries/UI heuristics; one native start message.
    MTTESTER::ClickStart(false,1);
    return "START_SIGNAL_SENT_RECONCILE";

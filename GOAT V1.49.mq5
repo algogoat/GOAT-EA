@@ -3893,8 +3893,10 @@ bool g_batchStartupAccepted=false;
 int OnTesterInit()
   {
    g_batchStartupAccepted=false;
+   if(!GoatBatchStartAllowed()) return INIT_FAILED;
    Print(EA_Name+": "+Symbol()+" Optimization Initialization.");//,TerminalInfoString(TERMINAL_DATA_PATH));
    Sleep(100);
+   if(!GoatBatchStartAllowed()) return INIT_FAILED;
    bool seedFarming=SeedFarmingPrepareReceiver();
    if(!seedFarming && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)==0.0 && GlobalVariableGet("BatchOnGoing")!=0)
    {
@@ -3942,6 +3944,7 @@ int OnTesterInit()
     FileWrite(FileTester_handle,0.02);
     FileClose(FileTester_handle);
    }
+   if(!GoatBatchStartAllowed()) {g_batchStartupAccepted=false;return INIT_FAILED;}
    return INIT_SUCCEEDED;
   }
 //-----------------------------------------------------------------------------------

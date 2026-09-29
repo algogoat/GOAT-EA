@@ -33,4 +33,22 @@ bool GoatBatchReleaseControllerCancel(void)
    return GlobalVariableGet(GOAT_BATCH_HUMAN_CANCEL_GV)==0.0
       && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)==0.0;
   }
+
+// Recheck at the dispatch and tester-initialization boundaries. Never consume
+// a human/legacy stop here; only the existing explicit Start action clears it.
+bool GoatBatchStartAllowed(void)
+  {
+   return GlobalVariableGet(GOAT_BATCH_HUMAN_CANCEL_GV)==0.0
+      && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)==0.0;
+  }
+
+bool GoatBatchVerifyArmedStart(void)
+  {
+   if(GoatBatchStartAllowed()) return true;
+   // The caller still owns the native gate and has just armed this start.
+   // Roll back that flag only; cancellation markers and evidence stay intact.
+   GlobalVariableDel("BatchOnGoing");
+   GlobalVariablesFlush();
+   return false;
+  }
 #endif

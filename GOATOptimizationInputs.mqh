@@ -4,11 +4,11 @@
 // Native config only: keep the source SET, chosen values and Y ladders intact.
 string GoatStudioExplicitOptimizationInputs(const string source)
   {
-   string lines[],result="";
-   int count=StringSplit(source,'\n',lines);
+   string input_lines[],result="";
+   int count=StringSplit(source,'\n',input_lines);
    for(int i=0;i<count;i++)
      {
-      string line=lines[i];StringTrimRight(line);
+      string line=input_lines[i];StringTrimRight(line);
       int eq=StringFind(line,"=");
       if(eq>0)
         {
@@ -26,11 +26,11 @@ string GoatStudioExplicitOptimizationInputs(const string source)
 bool GoatStudioVerifyOptimizationInputs(const string source,const string description,string &error)
   {
    error="";
-   string lines[],keys[],values[],names[];
-   int count=StringSplit(source,'\n',lines);
+   string input_lines[],keys[],values[],names[];
+   int count=StringSplit(source,'\n',input_lines);
    for(int i=0;i<count;i++)
      {
-      string line=lines[i];StringTrimLeft(line);StringTrimRight(line);
+      string line=input_lines[i];StringTrimLeft(line);StringTrimRight(line);
       if(line=="" || StringSubstr(line,0,1)==";") continue;
       int eq=StringFind(line,"=");if(eq<=0) {error="Malformed selected member inputs";return false;}
       string key=StringSubstr(line,0,eq);

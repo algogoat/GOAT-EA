@@ -38,5 +38,25 @@ class BatchVisibilityTests(unittest.TestCase):
         state['queue'][1]['status']='pending';state['queue'][1].pop('native_observation')
         self.assertEqual(display_state(state)['batch_view']['pending'],115)
 
+    def test_large_batch_projection_is_bounded_and_keeps_active_member(self):
+        state=self.state();job=state['queue'][0]
+        job['configuration']['batch_members']*=87
+        job['configuration']['batch_members']=job['configuration']['batch_members'][:10000]
+        job['native_observation']['native']['members']=[dict(index=i,status=(
+            'native_completed' if i<9000 else 'native_ongoing' if i==9000 else 'native_pending'))
+            for i in range(10000)]
+        projected=display_state(state);view=projected['batch_view']
+        self.assertEqual((view['total'],view['completed'],view['remaining']),(10000,9000,1000))
+        self.assertTrue(view['truncated'])
+        self.assertLessEqual(len(view['members']),200)
+        self.assertTrue(any(row['index']==9000 for row in view['members']))
+        self.assertLessEqual(sum(len(row.get('batch_members',[])) for row in projected['queue']),200)
+        # Conservative JSON token budget counts object keys as tokens as well.
+        def tokens(value):
+            if isinstance(value,dict):return 1+sum(1+tokens(v) for v in value.values())
+            if isinstance(value,list):return 1+sum(tokens(v) for v in value)
+            return 1
+        self.assertLess(tokens(projected),16384)
+
 
 if __name__=='__main__': unittest.main()

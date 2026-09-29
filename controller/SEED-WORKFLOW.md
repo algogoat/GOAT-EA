@@ -46,8 +46,8 @@ broker symbol, dates and resource budget. These dates and cutoff are examples.
       "set_path": "C:\\Users\\You\\GOAT Research\\My strategy.set",
       "frame_target": 1000,
       "tester": {
-        "Expert": "GOAT-EA\\GOAT V1.48.ex5",
-        "Symbol": "EURUSD", "Period": "H1", "Model": 4,
+        "Expert": "GOAT-EA\\GOAT V1.49.ex5",
+        "Symbol": "EURUSD", "Period": "H1", "Model": 1,
         "ExecutionMode": 0, "Optimization": 2, "OptimizationCriterion": 6,
         "FromDate": "2026.01.01", "ToDate": "2026.03.01",
         "ForwardMode": 0, "ForwardDate": "",

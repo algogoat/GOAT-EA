@@ -331,6 +331,12 @@ class DemoAgentTests(unittest.TestCase):
             self.assertEqual(read_json(self.root/'session.json')['installation_sha256'],sha(updated))
             self.assertTrue(self.agent.preflight()['ready_for_batch'])
             self.assertTrue(self.agent.install_build(candidate, digest(candidate), monitor)['already_installed'])
+            metadata_only=self.agent.install_build(candidate,digest(candidate),monitor,
+                require_running=True,linked_login='3000082754',
+                bundle_version='0.5.0-beta.12',agent_guide_path=guide)
+            self.assertTrue(metadata_only['already_installed'])
+            self.assertEqual(read_json(self.installation)['bundle_version'],'0.5.0-beta.12')
+            self.assertEqual(read_json(self.root/'session.json')['installation_sha256'],sha(read_json(self.installation)))
             self.process.closed = True  # MT5 exits after the verified swap.
             recovered = self.agent.install_build(candidate, digest(candidate), monitor)
             self.assertTrue(recovered['recovered'])

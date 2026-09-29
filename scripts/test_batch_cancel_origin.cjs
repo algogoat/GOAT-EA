@@ -13,6 +13,11 @@ const c = {
   GOAT_BATCH_CANCELLED_GV: 'cancel', GOAT_BATCH_HUMAN_CANCEL_GV: 'human',
   GlobalVariableGet: k => values.get(k) ?? 0,
   GlobalVariableCheck: k => values.has(k),
+  GlobalVariableTemp: k => {
+    if (beforeCreate) { const f = beforeCreate; beforeCreate = null; f(); }
+    if (!values.has(k)) values.set(k, 0);
+    return true;
+  },
   GlobalVariableSet: (k, v) => {
     if (beforeCreate) { const f = beforeCreate; beforeCreate = null; f(); }
     values.set(k, v); return 1;
@@ -56,6 +61,10 @@ reset(undefined); beforeCreate = () => { values.set('human', 1); values.set('can
 c.GoatBatchRecordControllerCancel();
 assert.equal(c.GoatBatchReleaseControllerCancel(), false);
 assert.equal(values.get('human'), 1); checks++;
+reset(undefined); beforeCreate = () => values.set('cancel', 1);
+c.GoatBatchRecordControllerCancel();
+assert.equal(values.get('cancel'), 1);
+assert.equal(c.GoatBatchReleaseControllerCancel(), false); checks++;
 // Proven production call sites: both native start routes use the helper, while
 // only the explicitly confirmed human Start action clears the human marker.
 const dispatch = fs.readFileSync(path.join(root, 'GOATStudioDispatch.mqh'), 'utf8');

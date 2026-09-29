@@ -11,7 +11,13 @@ void GoatBatchRecordControllerCancel(void)
    if(GlobalVariableCheck(GOAT_BATCH_CANCELLED_GV))
       GlobalVariableSetOnCondition(GOAT_BATCH_CANCELLED_GV,2.0,0.0);
    else
-      GlobalVariableSet(GOAT_BATCH_CANCELLED_GV,2.0);
+     {
+      // Create-if-absent without overwriting a legacy stop created meanwhile.
+      // For a fresh latch the cancelled queue/STOP journal is durable; this
+      // temporary cell only guards callbacks until the terminal closes.
+      if(GlobalVariableTemp(GOAT_BATCH_CANCELLED_GV))
+         GlobalVariableSetOnCondition(GOAT_BATCH_CANCELLED_GV,2.0,0.0);
+     }
   }
 
 bool GoatBatchReleaseControllerCancel(void)

@@ -65,10 +65,10 @@ def selected_candidates(processes,roots,executable):
         if row.get('ExecutablePath') and PureWindowsPath(row['ExecutablePath'])==target:
             selected.append(row)
         elif (row.get('ExecutablePath') and PureWindowsPath(row['ExecutablePath']).parent==target.parent
-              and PureWindowsPath(row['ExecutablePath']).name.casefold() in ('metatester64.exe','metaeditor64.exe')
+              and PureWindowsPath(row['ExecutablePath']).name.casefold()=='metatester64.exe'
               and str(row.get('Name','')).casefold()==PureWindowsPath(row['ExecutablePath']).name.casefold()):
-            # The running terminal may own tester workers (or its editor may be
-            # open). These exact native helper images are observed, never managed.
+            # The running terminal may own tester workers. These exact native
+            # helper images are observed, never managed.
             helpers.append(dict(pid=row.get('ProcessId'),executable=str(PureWindowsPath(row['ExecutablePath'])),created_utc=row.get('CreatedUtc')))
         else:other.append(row)
     rows,visibility=stopped_candidates(other,roots)

@@ -965,3 +965,7 @@ The bounded driver accepts up to172800seconds (48hours). Existing resume never r
 ## Optimization model standard
 
 Use **1 minute OHLC (`Model=1`) for new optimization plans** unless the user explicitly requests another model. The Studio editor already selects OHLC for a fresh draft. Saved drafts and immutable jobs retain their explicit model; revise them into a new batch when the user changes the model. Keep export/replay model settings separate from the optimization model. Agent and human views show the model and each member of the active batch, including completed, failed, cancelled and remaining counts. These are native observations, not export qualification.
+
+### Stop when the selected MT5 has exited
+
+`demo_agent.py --installation <receipt> stop --monitor-config <existing-monitor-only.ini>` may reopen the exact previously verified demo monitor solely to consume an owned cancellation. It retains STOP, verifies genuine retained ownership and exact binary/preset, refuses a live supervisor, validates the existing attempt and publishes cancel before launch. The INI must contain no Tester section and must keep Algo Trading off. It never creates a grant or starts research. Expired, consumed, foreign or refused cancellation evidence is not replayed. Success still requires the normal broker/native finish readback; monitor launch alone is not a confirmed stop.

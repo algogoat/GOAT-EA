@@ -99,9 +99,11 @@ class DemoAgent:
             finally:
                 lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
-    def _owner_clear(self, *, require_fresh=True):
-        if (self.state_root / 'STOP').exists():
+    def _owner_clear(self, *, require_fresh=True, settling_stop=False):
+        if (self.state_root / 'STOP').exists() and not settling_stop:
             raise ValueError('Owner STOP is set')
+        if settling_stop and read_json(self.state_root / 'STOP').get('actor') != 'demo_agent':
+            raise ValueError('Stop settlement requires the retained demo-agent STOP')
         human = self.local / self.session['directory_id'] / 'human'
         for channel in ('inbox', 'processing'):
             if any((human / channel).glob('*.json')):
@@ -239,7 +241,7 @@ class DemoAgent:
         return [job['job_id'] for job in jobs if job['status'] in
                 ('reserved', 'starting', 'running', 'reconcile_required', 'verifying')]
 
-    def stop(self):
+    def stop(self, monitor_config=None):
         # This intentionally does not need the terminal lock: owner STOP wins
         # even while a driver holds it. A dead driver is reattached below.
         self.state_root.mkdir(parents=True, exist_ok=True)
@@ -262,6 +264,8 @@ class DemoAgent:
         if not active[0].is_file():
             return dict(status='stop_unconfirmed', batch_id=batch_id,
                         reason='Active native job has no bounded driver journal', owner_stop=True)
+        if self.process.inspect() is None and monitor_config is not None:
+            self._recover_stop_monitor(batch_id, monitor_config)
         deadline = time.monotonic() + 130
         last_error = None
         while time.monotonic() < deadline:
@@ -288,6 +292,69 @@ class DemoAgent:
             time.sleep(.5)
         return dict(status='stop_unconfirmed', batch_id=batch_id,
                     reason=last_error or 'No exact stop readback within 130 seconds', owner_stop=True)
+
+    def _recover_stop_monitor(self, batch_id, monitor_config):
+        """Open only the exact monitor to consume an owned cancellation after MT5 exits.
+
+        STOP remains set. No tester config, start permit, grant or new attempt is
+        created. The EA checks the live demo account before applying the cancel.
+        """
+        monitor_config = self._validate_monitor_config(monitor_config)
+        from studio_strategy_settings import read_values
+        preset = Path(self.install['terminal_data_root']) / 'MQL5/Presets/GOAT Studio Agent.set'
+        if read_values(preset.read_bytes()) != dict(Mode_Operation='11', Studio_ReadOnlyMonitor='true',
+                                                   Studio_MonitorRunPath='', EA_Desc='Studio Monitor'):
+            raise ValueError('Exact passive monitor preset required for stop settlement')
+        with self._exclusive():
+            self._owner_clear(require_fresh=False, settling_stop=True); self._space()
+            if self.process.inspect() is not None:
+                raise ValueError('Terminal appeared during stopped cancellation recovery')
+            if self._native_active_batches() != [batch_id]:
+                raise ValueError('Exact sole active batch required for stop recovery')
+            worker = self.state_root / 'workers' / (batch_id + '.json')
+            if worker.is_file() and self._worker_alive(read_json(worker)):
+                raise ValueError('Existing supervisor must settle STOP; no duplicate recovery')
+            physical = digest(self.binary)
+            verified = read_json(self.state_root / 'verified-build.json')
+            if physical != self.install['ea_sha256'] or verified.get('ea_sha256') != physical:
+                raise ValueError('Stopped monitor lacks exact previously verified installed build')
+            from goat_studio import Controller
+            from studio_batch_driver import _owned_attempt
+            from studio_research_authority import operation
+            # Read-only policy context: no broker scope is fabricated while MT5 is absent.
+            # publish_cancel itself checks the exact native owner/attempt; all store
+            # mutations remain forbidden until a real broker check after monitor launch.
+            with operation('stopped-cancel-observation'):
+                controller = Controller(self.installation_path).open()
+                try:
+                    record = read_json(self.root / 'batch-drivers' / (batch_id + '.json'))
+                    if record.get('stopped') or not record.get('start_issued') or not record.get('attempt_id'):
+                        raise ValueError('Retained started unresolved attempt required')
+                    _owned_attempt(controller, record)
+                    cancel = controller.cancel(batch_id, expected_generation=record['binding']['generation'])
+                    # Never relaunch against an expired/consumed/refused cancellation.
+                    gate = self.local / 'native-gate'
+                    request = read_json(gate / 'request.json')
+                    permit = read_json(gate / 'permit.json')
+                    request_id = cancel['request_id']
+                    if (request.get('action') != 'cancel' or request.get('request_id') != request_id
+                            or request.get('attempt_id') != record['attempt_id']
+                            or request.get('job_id') != batch_id
+                            or request.get('expires_utc',0) < self.clock()+30
+                            or permit.get('request_sha256') != digest(gate/'request.json')
+                            or (gate / ('consumed-'+request_id+'.json')).exists()):
+                        raise ValueError('Fresh exact unconsumed cancellation required; no replay')
+                    self._append('recover_stop', 'cancel_published_before_monitor_launch',
+                                 batch_id=batch_id, attempt_id=record['attempt_id'],
+                                 request_id=request_id, monitor_config=str(monitor_config),
+                                 monitor_sha256=digest(monitor_config), ea_sha256=physical)
+                    # This checked fixed monitor INI has no [Tester] section and has
+                    # both Algo Trading flags OFF. Preserve the stop marker throughout.
+                    before = (self.local / 'ui-observation.json').stat().st_mtime_ns
+                    self.process.start(monitor_config)
+                    return self._readback_current(physical, after_observation_ns=before)
+                finally:
+                    controller.store.close()
 
     def clear_stop(self):
         marker = self.state_root / 'STOP'
@@ -674,7 +741,9 @@ def main(argv=None):
     parser.add_argument('--installation', type=Path, required=True)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('status'); commands.add_parser('preflight')
-    commands.add_parser('disk-status'); commands.add_parser('stop')
+    commands.add_parser('disk-status')
+    stop = commands.add_parser('stop')
+    stop.add_argument('--monitor-config', type=Path, help='Exact monitor-only INI for cancellation recovery after MT5 exits; STOP remains set')
     commands.add_parser('clear-stop')
     launch = commands.add_parser('launch-terminal')
     launch.add_argument('--monitor-config', type=Path, required=True)
@@ -704,7 +773,7 @@ def main(argv=None):
         if args.command == 'status': result = agent.status()
         elif args.command == 'preflight': result = agent.preflight()
         elif args.command == 'disk-status': result = agent.disk_status()
-        elif args.command == 'stop': result = agent.stop()
+        elif args.command == 'stop': result = agent.stop(args.monitor_config)
         elif args.command == 'clear-stop': result = agent.clear_stop()
         elif args.command == 'launch-terminal': result = agent.launch_terminal(args.monitor_config)
         elif args.command == 'install-build': result = agent.install_build(args.candidate, args.sha256, args.monitor_config)

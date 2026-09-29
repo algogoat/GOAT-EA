@@ -339,6 +339,20 @@ class DemoAgentTests(unittest.TestCase):
         self.assertEqual(self.agent._dll_granted_restart_config(
             validated, {'dlls_allowed': True, 'process': self.process.identity}), generated)
 
+    def test_existing_dll_import_key_refuses_before_restart_config_write(self):
+        monitor = self.base / 'monitor.ini'
+        original = ('[Charts]\r\nProfileLast=GOAT-Studio-test\r\n[Experts]\r\n'
+                    'Enabled=0\r\nAllowLiveTrading=0\r\n[StartUp]\r\n'
+                    'Expert=GOAT-EA\\GOAT V1.49.ex5\r\n'
+                    'ExpertParameters=GOAT Studio Agent.set\r\nPeriod=M1\r\n')
+        for key in ('AllowDllImport=0', 'AllowDllImport=1', '  aLlOwDlLiMpOrT = 0'):
+            with self.subTest(key=key):
+                monitor.write_bytes(original.replace('[StartUp]', key + '\r\n[StartUp]').encode('utf-16'))
+                with self.assertRaisesRegex(ValueError, 'already declares DLL import'):
+                    self.agent._dll_granted_restart_config(
+                        monitor, {'dlls_allowed': True, 'process': self.process.identity})
+        self.assertFalse((self.agent.state_root / 'monitor-restarts').exists())
+
     def test_install_waits_for_late_normal_mt5_exit_without_force_kill(self):
         candidate = self.base / 'candidate.ex5'; candidate.write_bytes(b'new-ea')
         monitor = self.base / 'monitor.ini'

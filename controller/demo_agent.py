@@ -429,6 +429,8 @@ class DemoAgent:
         raw = monitor_config.read_bytes()
         encoding = 'utf-16' if raw.startswith(b'\xff\xfe') else 'utf-8-sig'
         text = raw.decode(encoding)
+        if re.search(r'(?im)^\s*AllowDllImport\s*=', text):
+            raise ValueError('Monitor startup already declares DLL import permission')
         newline = '\r\n' if '\r\n' in text else '\n'
         marker = 'AllowLiveTrading=0' + newline
         if text.count(marker) != 1:

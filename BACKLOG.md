@@ -277,6 +277,24 @@ frozen staged SETs contain those names. Source tests are not native qualificatio
 MetaEditor6230 compile and two-consecutive-member native smoke remain outstanding.
 No changes to the running Banker checkout, terminal or retained attempt.
 
+## CTRL-036 - Wait for the selected MT5 restart to become ready
+
+The isolated September 29 demo update showed a normal MT5 close taking about
+two minutes. The controller's 30-second wait refused before the process exited.
+Its recovery then called the broker SDK before the relaunched EA had produced
+new-process feedback; a second process for the same installation appeared
+during that readback. Wait up to 150 seconds for the exact process to exit normally;
+after launch, require fresh EA feedback tied to that process before calling the
+broker SDK. No force kill, new permission grant, or unrelated-terminal action is
+added. The EA needs DLL imports: a running update now refuses before close
+unless native MT5 reports `dlls_allowed=true`, then writes a separate inert
+restart config carrying only that observed grant (`AllowDllImport=1`). It
+leaves the original config intact and verifies DLL permission again after
+relaunch. Focused tests cover a 110-second close, broker deferral, refusal
+without the native grant, and the UTF-16 restart config. Native rehearsal
+still needs to prove one process and a loaded EA; the QA terminal currently
+needs its owner to sign in again after restart before that proof is possible.
+
 ## CTRL-039 - Rebind only a settled demo session after old same-EA update
 
 Tester report `1b6ff765` described beta.10's stopped update rewriting the
@@ -285,7 +303,8 @@ supported `studio same-ea-rebind` repairs only the local session hash after the
 original attempt is settled. It requires a stopped selected terminal, a
 demo-only session, exactly one preserved old desktop receipt matching the
 previous binding, identical EA and all non-metadata receipt fields, no native
-request/permit or human TAKE, 5 GiB free disk, and a fully settled queue. It retains the old session bytes,
-leaves the database unchanged and logs the action. It neither grants authority
-nor settles an attempt; a failed precondition leaves the receipt/session alone.
-Fixture tests pass; actual affected customer evidence has not been applied.
+request/permit or human TAKE, 5 GiB free disk, and a fully settled queue. It
+retains the old session bytes, leaves the database unchanged and logs the
+action. It neither grants authority nor settles an attempt; a failed
+precondition leaves the receipt/session alone. Fixture tests pass; actual
+affected customer evidence has not been applied.

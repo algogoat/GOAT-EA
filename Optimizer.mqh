@@ -1663,8 +1663,10 @@ void CStrategyTesterDialog::ApplyStudioStage(const int stage)
        StageMove(m_lblAdjustLots,label_x,y,true,pair_label);    StageMove(m_chkAdjustLots,label_x+pair_label+m_GapHoriz,y+(m_controlHeight-m_chkAdjustLots.Height())/2,true);
        StageMove(m_lblVerifyOOS,right_x,y,true,pair_label);     StageMove(m_chkVerifyOOS,right_control_x,y+(m_controlHeight-m_chkVerifyOOS.Height())/2,true); y+=row;
 #ifdef GOAT_SEQUENCE_EXPORT_V148
-       StageMove(m_lblSequenceData,label_x,y,true,m_labelWidth);
-       StageMove(m_chkSequenceData,control_x,y+(m_controlHeight-m_chkSequenceData.Height())/2,true); y+=row;
+       // Keep the long caption clear of the checkbox at compact chart widths.
+       int sequence_label_x=label_x+m_chkSequenceData.Width()+m_GapHoriz;
+       StageMove(m_chkSequenceData,label_x,y+(m_controlHeight-m_chkSequenceData.Height())/2,true);
+       StageMove(m_lblSequenceData,sequence_label_x,y,true,editor_width-(sequence_label_x-label_x)); y+=row;
        StageMove(m_lblSequenceCost,label_x,y,true,editor_width); y+=row;
 #else
        StageMove(m_lblDataSync,label_x,y,true,editor_width); y+=row;

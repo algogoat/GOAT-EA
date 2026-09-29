@@ -234,3 +234,7 @@ After the existing finish path verifies native idle, terminal member outcomes, c
 ## CTRL-032 - Preserve human batch cancellation across agent starts
 
 V1.49 controller cancellation uses distinct latch value2. Human UI stop first records a separate persistent human intent and retains latch value1. New agent starts refuse legacy/unknown/human stops before consumption, and release only value2 through compare-and-swap after exact start validation. Only an explicitly confirmed human Start clears human intent. Historical entrypoints retain their behavior. Actual helper execution tests include concurrent human cancellation at latch creation and compare-and-swap; native MT5 qualification remains pending. No active Banker reload.
+
+## CTRL-033 - Combined customer V1.49 beta candidate
+
+Combine Banker-proven EI21 with owner-review-approved report-junction cleanup, preserved human cancellation and Vince-requested sequence checkbox spacing. Use one distinct V1.49-TESTER-SAFETY-24 binary/receipt and paired controller. Exact diff, native non-Banker demo rehearsal, update-only Edward recovery, account access checks and protected desktop/EA publication remain required before customer delivery.

@@ -35,6 +35,13 @@ class SelectedTerminalScopeTests(unittest.TestCase):
         with patch('studio_process_check._demo_selected_roots',return_value=self.roots):
             result=self.scan([self.row('C:/Selected/terminal64.exe'),self.row('C:/Other/terminal64.exe',pid=2)])
         self.assertEqual(result['research']['pid'],1);self.assertEqual(result['unrelated'][0]['pid'],2)
+    def test_active_native_tester_worker_is_observed_but_stopped_setup_still_refuses(self):
+        worker=self.row('C:/Selected/metatester64.exe','metatester64.exe',2)
+        with patch('studio_process_check._demo_selected_roots',return_value=self.roots):
+            result=self.scan([self.row('C:/Selected/terminal64.exe'),worker])
+        self.assertEqual(result['root_inventory']['native_helpers'][0]['pid'],2)
+        with self.assertRaisesRegex(ValueError,'stopped terminal root'):
+            self.scan([worker],research_running=False,absent_roots=self.roots,selected_stopped=True)
     def test_active_scope_must_validate_installation_session_and_target(self):
         from studio_process_check import _demo_selected_roots
         install={'terminal_executable':'C:/Selected/terminal64.exe','terminal_data_root':'C:/Data/Selected'}

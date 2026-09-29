@@ -1,14 +1,19 @@
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm'), assert = require('node:assert/strict');
 const root = path.join(__dirname, '..');
-let mql = ['GOATStudioNative.mqh','GOATStudioSettingTypes.mqh','GOATStudioSettingValues.mqh','GOATStudioSettingCompare.mqh']
+let mql = ['GOATStudioNative.mqh','GOATStudioSettingTypes.mqh','GOATStudioSettingValues.mqh','GOATStudioSettingCompare.mqh','GOATStudioExportDates.mqh']
  .map(n => fs.readFileSync(path.join(root,n),'utf8').replace(/^\uFEFF/,'')).join('\n');
+const testerSource=fs.readFileSync(path.join(root,'Tester.mqh'),'utf8').replace(/\r\n/g,'\n');
+const exportStart=testerSource.indexOf('bool CompareCanonicalIni(');
+const exportEnd=testerSource.indexOf('void ExtractConfigSettings(',exportStart);
+assert.ok(exportStart>=0 && exportEnd>exportStart);
+mql+='\n'+testerSource.slice(exportStart,exportEnd);
 // Production MQL control flow runs with string/array/UTC intrinsics shimmed.
 // MetaEditor compilation and actual native MT5 readback remain separate checks.
 let js = mql.replace(/^#.*$/gm,'').replace(/\berror\b/g,'failure.value')
- .replace(/\b(bool|string) (GoatStudio\w+)\(([^)]*)\)/g,(_,type,name,args) =>
-  'function '+name+'('+args.replace(/failure\.value/g,'failure').replace(/\b(const|bool|string|int|long|ulong|ushort|datetime)\b\s*/g,'').replace(/&|\[\]/g,'')+')')
+ .replace(/\b(bool|string) (GoatStudio\w+|CompareCanonicalIni)\(([^)]*)\)/g,(_,type,name,args) =>
+  'function '+name+'('+args.replace(/failure\.value/g,'failure').replace(/\b(const|bool|string|int|long|ulong|ushort|datetime|double)\b\s*/g,'').replace(/&|\[\]/g,'')+')')
  .replace(/\(string\)\(long\)(\w+)/g,'String($1)').replace(/\(string\)(\w+)/g,'String($1)').replace(/\(int\)/g,'')
- .replace(/\b(?:string|bool|int|long|ulong|ushort|datetime)\s+([^;]+);/g,(_,declaration) =>
+ .replace(/\b(?:string|bool|int|long|ulong|ushort|datetime|double)\s+([^;]+);/g,(_,declaration) =>
   'let '+declaration.replace(/\b(\w+)\[\]/g,'$1=[]')+';');
 // MQL StringReplace mutates its first argument.
 js = js.replace(/StringReplace\((\w+),([^,]+),([^\)]+)\);/g,'$1=$1.split($2).join($3);');
@@ -25,6 +30,10 @@ js=js.replace(/GoatStudioINIEntries\(([^,]+),([^,]+),failure\.value\)/g,'GoatStu
 js=js.replace(/'((?:\\.|[^'])*)'/g,(_,ch)=>String(JSON.parse('"'+ch+'"').charCodeAt(0)));
 // Only existing parser trim calls mutate by reference.
 js=js.replace(/StringTrimLeft\((\w+)\);/g,'$1=$1.trimStart();').replace(/StringTrimRight\((\w+)\);/g,'$1=$1.trimEnd();');
+js=js.replace(/let date_error;/g,'let date_error={value:""};').replace(/LogOrPrint\(false,date_error,/g,'LogOrPrint(false,date_error.value,');
+js=js.replace(/\bln\[0\]/g,'StringGetCharacter(ln,0)');
+Object.assign(c,{StringTrim:s=>s.trim(),StringToDouble:s=>parseFloat(s)||0,MathAbs:Math.abs,
+ StringCompare:(a,b)=>a===b?0:1,StringFormat:(...args)=>args.join(' '),LogOrPrint:()=>{},strT:{_K:'',_N:'',_S:''}});
 vm.createContext(c);vm.runInContext(js,c);
 const fixture=path.join(root,'controller/fixtures/tester-roundtrip');
 const w=fs.readFileSync(path.join(fixture,'wanted.ini'),'utf8'),a=fs.readFileSync(path.join(fixture,'observed.ini'),'utf8');
@@ -67,4 +76,22 @@ for(const value of ['-6||1||-3','-5||1||-2']) {
 compare(w.replace('Optimization=2','Optimization=0'),a.replace('Optimization=2','Optimization=0'),false,'Visual');
 compare(w.replace('Optimization=2','Optimization=0'),w.replace('Optimization=2','Optimization=0'),true);
 compare(w.replace('Optimization=2','Optimization=3'),a.replace('Optimization=2','Optimization=3'),false,'Optimization');
+
+// Actual fixed-export comparison path, not just the shared normalization helper.
+const exportWanted='[Tester]\nOptimization=0\nModel=4\n[TesterInputs]\nRisk=500\nSequence_Export_Enabled=true\nSequence_Export_Start=2025.06.26\nSequence_Export_End=2026.06.26\n';
+const exportObserved=exportWanted.replace('2025.06.26','1750896000').replace('2026.06.26','1782432000');
+assert.equal(c.CompareCanonicalIni(exportObserved,exportWanted),true);count++;
+for(const changed of [
+ exportObserved.replace('1750896000','1750982400'),
+ exportObserved.replace('1782432000','1782518400'),
+ exportObserved.replace('1750896000','2025.02.30'),
+ exportObserved.replace('Sequence_Export_Start=1750896000\n',''),
+ exportObserved+'Sequence_Export_Start=1750896000\n',
+ exportObserved.replace('Risk=500','Risk=501'),
+ exportObserved.replace('Model=4','Model=1'),
+]) {assert.equal(c.CompareCanonicalIni(changed,exportWanted),false);count++;}
+assert.equal(c.CompareCanonicalIni(exportObserved,exportWanted.replace('Sequence_Export_End=2026.06.26\n','')),false);count++;
+assert.equal(c.CompareCanonicalIni('[TesterInputs]\nRisk=500','[TesterInputs]\nRisk=500'),true);count++;
+
+assert.equal(c.CompareCanonicalIni('[TesterInputs]\nSequence_Export_Enabled=true','[TesterInputs]\nSequence_Export_Enabled=true'),false);count++;
 console.log(JSON.stringify({passed:count,nativeQualification:false}));

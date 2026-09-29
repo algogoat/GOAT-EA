@@ -435,10 +435,11 @@ void CStrategyTesterDialog::ManagedControls(void)
       StageMove(m_btnStop,16,86,true,w,36);
       m_btnStart.Text("TAKE CONTROL");
       StageMove(m_btnStart,16,130,m_studioOwner=="agent",w,32);
-      m_lblBatchControl.Text("Your agent prepares the settings and batch.");
+      m_lblBatchControl.Text(StringFind(m_lblQueue.Text(),"BATCH ")==0 ? m_lblQueue.Text() : "Your agent prepares the settings and batch.");
       StageMove(m_lblBatchControl,16,174,D_Height>=230,w,26);
       StageMove(m_edtBatchErrors,16,208,D_Height>=270,w,26);
       StageMove(m_listQueue,16,250,!g_StudioEmptyDraft && D_Height>=350,w,D_Height-274);
+      m_listQueue.FitRows(m_rowHeight-1,Font_Size);
      }
 #endif
 #ifdef GOAT_CONTROL_FEEDBACK_V149
@@ -533,7 +534,7 @@ void CStrategyTesterDialog::ManagedQueueRefresh(void)
          && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"cancelled",cancelled)
          && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"remaining",remaining)
          && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"active",active))
-         batch_heading="BATCH: "+(string)total+" items | "+(string)done+" done | "+(string)remaining+" left | "+(string)active+" active | "+(string)failed+" failed | "+(string)cancelled+" cancelled";
+         batch_heading="BATCH "+(string)total+" | Done "+(string)done+" | Left "+(string)remaining+" | Active "+(string)active+" | Fail "+(string)failed+" | Cancel "+(string)cancelled;
       int members=GOATJsonFindField(g_StudioSnapshot,tokens,batch,"members");
       if(members>=0 && tokens[members].type==GOAT_JSON_ARRAY)
          for(int i=members+1;i<ArraySize(tokens);i++)

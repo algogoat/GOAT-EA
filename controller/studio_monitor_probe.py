@@ -6,6 +6,12 @@ from pathlib import Path
 from studio_process_check import inspect_processes
 from studio_protected_peer import process_binding
 
+def tester_caption_state(caption):
+    # Only captions observed for this exact MT5 tester control may certify a
+    # state. Unknown localizations remain a refusal rather than a guess.
+    return {'Start': 'idle', 'Старт': 'idle', 'Test starten': 'idle',
+            'Stop': 'running', 'Стоп': 'running'}.get(caption.strip(), 'unknown')
+
 
 def tester_state(pid, build):
     u = ctypes.WinDLL('user32', use_last_error=True)
@@ -38,7 +44,7 @@ def tester_state(pid, build):
     caption = ctypes.create_unicode_buffer(64)
     if u.GetWindowTextW(window, caption, 64) <= 0:
         raise ValueError('Native tester state unavailable; no close performed')
-    return {'Start': 'idle', 'Старт': 'idle', 'Stop': 'running', 'Стоп': 'running'}.get(caption.value, 'unknown')
+    return tester_caption_state(caption.value)
 
 
 def inspect_idle_demo(controller):

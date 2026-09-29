@@ -218,7 +218,13 @@ class StudioBridge:
                         response.update(request_id=processing.stem,request_sha256=fingerprint)
                         # If publication fails after commit, keep processing for receipt replay.
                         write_json(folders['outbox']/processing.name,response)
-                        archive=folders['archive']/(processing.stem+'.'+(fingerprint or uuid.uuid4().hex)+'.json')
+                        # A full 64-character digest makes the archive path exceed
+                        # MAX_PATH under a normal non-portable MT5 data root. The
+                        # outbox keeps the full digest; retain 96 bits in the
+                        # filename and refuse any different-content collision.
+                        archive=folders['archive']/(processing.stem+'.'+(fingerprint[:24] if fingerprint else uuid.uuid4().hex[:24])+'.json')
+                        if archive.exists() and archive.read_bytes()!=raw:
+                            raise ValueError('Human request archive name collision; preserve both requests')
                         os.replace(processing,archive)
                         results.append(dict(actor=actor,request_id=response['request_id'],ok=response['ok']))
             state=self.store.snapshot(self.terminal_id,self.run_id,human_channel_view=True)

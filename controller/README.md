@@ -15,8 +15,9 @@ goat.exe studio --installation <current installation.json> same-ea-rebind
 ```
 
 This demo-only metadata repair finds exactly one preserved receipt matching
-the bound session, requires identical EA bytes and all non-metadata receipt
-fields, a settled queue, no native request/permit, no pending human control,
+the bound session, requires a forward numbered private-beta update with
+identical EA bytes and all non-metadata receipt fields, a settled queue,
+no native request/permit, no pending human control,
 at least 5 GiB free disk and no running selected terminal. It backs up the
 prior session, changes only its installation hash,
 keeps the database unchanged and writes an append-only action log. It never

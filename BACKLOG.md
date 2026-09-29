@@ -302,7 +302,8 @@ installation receipt while Studio still had unconsumed native attempts. The
 supported `studio same-ea-rebind` repairs only the local session hash after the
 original attempt is settled. It requires a stopped selected terminal, a
 demo-only session, exactly one preserved old desktop receipt matching the
-previous binding, identical EA and all non-metadata receipt fields, no native
+previous binding, a forward numbered beta with identical EA and all
+non-metadata receipt fields, no native
 request/permit or human TAKE, 5 GiB free disk, and a fully settled queue. It
 retains the old session bytes, leaves the database unchanged and logs the
 action. It neither grants authority nor settles an attempt; a failed

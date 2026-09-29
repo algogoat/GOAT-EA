@@ -26,6 +26,13 @@ ALLOWED_RECEIPT_DELTA = {'bundle_version', 'installed_at', 'agent_guide_path'}
 SETTLED_JOBS = {'completed', 'failed', 'cancelled', 'removed', 'superseded'}
 
 
+def _beta(version):
+    match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)-beta\.(\d+)', str(version))
+    if not match:
+        raise ValueError('Same-EA rebind requires a numbered private beta receipt')
+    return tuple(map(int, match.groups()))
+
+
 def _digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -93,6 +100,9 @@ def rebind(receipt_path, *, process=None):
         for key in set(previous) | set(current):
             if key not in ALLOWED_RECEIPT_DELTA and previous.get(key) != current.get(key):
                 raise ValueError('Same-EA rebind refuses a changed installation field: ' + key)
+        old_version, new_version = _beta(previous.get('bundle_version')), _beta(current.get('bundle_version'))
+        if old_version[:3] != new_version[:3] or new_version[3] <= old_version[3]:
+            raise ValueError('Same-EA rebind refuses a downgrade or unrelated beta line')
         if previous['ea_sha256'] != current['ea_sha256']:
             raise ValueError('Same-EA rebind requires identical physical EA bytes')
         if (state / 'ea-update.pending.json').exists():

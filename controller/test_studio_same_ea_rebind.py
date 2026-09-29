@@ -18,6 +18,8 @@ class SameEaRebindTests(unittest.TestCase):
     def setUp(self):
         self.fixture = fixtures.PortableControllerTests()
         self.fixture.setUp()
+        self.fixture.receipt['bundle_version'] = '0.5.0-beta.7'
+        self.fixture.path.write_text(json.dumps(self.fixture.receipt))
         self.c = self.fixture.bound()
         self.addCleanup(self.fixture.tearDown)
         self.old = self.fixture.path.read_bytes()
@@ -75,6 +77,14 @@ class SameEaRebindTests(unittest.TestCase):
         duplicate.mkdir()
         (duplicate / 'installation.json').write_bytes(self.old)
         with self.assertRaisesRegex(ValueError, 'Exactly one preserved previous installation'):
+            rebind(self.fixture.path, process=self.process)
+        self.assertEqual(self.session_path.read_bytes(), self.old_session)
+
+    def test_downgrade_beta_receipt_refuses(self):
+        receipt = json.loads(self.fixture.path.read_text())
+        receipt['bundle_version'] = '0.5.0-beta.6'
+        self.fixture.path.write_text(json.dumps(receipt))
+        with self.assertRaisesRegex(ValueError, 'downgrade'):
             rebind(self.fixture.path, process=self.process)
         self.assertEqual(self.session_path.read_bytes(), self.old_session)
 

@@ -294,3 +294,23 @@ relaunch. Focused tests cover a 110-second close, broker deferral, refusal
 without the native grant, and the UTF-16 restart config. Native rehearsal
 still needs to prove one process and a loaded EA; the QA terminal currently
 needs its owner to sign in again after restart before that proof is possible.
+
+## CTRL-037 - Recognize the observed German idle tester caption
+
+Tester report `c27aafb8` observed MT5 build 6231's selected tester button
+caption `Test starten` while idle. The native passive probe now accepts that
+exact caption as idle, trimming surrounding whitespace. Unobserved translated
+stop captions and other languages remain `unknown` and fail closed. Focused
+tests cover the observed value and the unknown-state boundary; native German
+rehearsal remains pending.
+
+## CTRL-038 - Keep human request archives under default Windows path limits
+
+Tester report `c1d9c60f` recorded a 267-character archive destination after
+Give to Agent on Windows with long paths disabled. Keep the exact request ID
+in the filename but use a 24-hex-character digest prefix; the full SHA-256
+remains in the outbox receipt. A different-content collision refuses while
+retaining the processing request and receipt. A long-root Windows test proves
+the old name exceeds 260 characters, the new name fits, and bytes survive.
+Native customer update rehearsal and recovery of the existing failed archive
+are separate; no registry setting is changed.

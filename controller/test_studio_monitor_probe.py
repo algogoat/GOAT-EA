@@ -2,10 +2,16 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from studio_monitor_probe import inspect_idle_demo
+from studio_monitor_probe import inspect_idle_demo, tester_caption_state
 
 
 class MonitorProbeTests(unittest.TestCase):
+    def test_reported_german_start_caption_is_idle_without_guessing_stop(self):
+        self.assertEqual(tester_caption_state('Test starten'), 'idle')
+        self.assertEqual(tester_caption_state('  Test starten  '), 'idle')
+        self.assertEqual(tester_caption_state('Test stoppen'), 'unknown')
+        self.assertEqual(tester_caption_state('unrecognized'), 'unknown')
+
     def fixture(self):
         c=SimpleNamespace(install=dict(terminal_executable='C:/selected/terminal64.exe',terminal_data_root='C:/data'),
                           session=dict(account=dict(login='123',server='Demo')))

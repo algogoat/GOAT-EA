@@ -1,4 +1,4 @@
-"""Source contracts for journal diagnostics; these do not execute or qualify MQL5."""
+﻿"""Source contracts for journal diagnostics; these do not execute or qualify MQL5."""
 import hashlib
 import re
 import unittest

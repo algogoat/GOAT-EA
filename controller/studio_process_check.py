@@ -59,11 +59,17 @@ def inspect_processes(binding, *, research_running=True, absent_roots=None, sele
 def selected_candidates(processes,roots,executable):
     """Active demo inventory: only the exact selected image may occupy its roots."""
     target=PureWindowsPath(executable)
-    other=[]; selected=[]
+    other=[]; selected=[]; helpers=[]
     if not isinstance(processes,list):raise ValueError('Complete process inventory required')
     for row in processes:
         if row.get('ExecutablePath') and PureWindowsPath(row['ExecutablePath'])==target:
             selected.append(row)
+        elif (row.get('ExecutablePath') and PureWindowsPath(row['ExecutablePath']).parent==target.parent
+              and PureWindowsPath(row['ExecutablePath']).name.casefold() in ('metatester64.exe','metaeditor64.exe')
+              and str(row.get('Name','')).casefold()==PureWindowsPath(row['ExecutablePath']).name.casefold()):
+            # The running terminal may own tester workers (or its editor may be
+            # open). These exact native helper images are observed, never managed.
+            helpers.append(dict(pid=row.get('ProcessId'),executable=str(PureWindowsPath(row['ExecutablePath'])),created_utc=row.get('CreatedUtc')))
         else:other.append(row)
     rows,visibility=stopped_candidates(other,roots)
     # Keep the full inventory uniqueness check, including selected PIDs.
@@ -71,6 +77,7 @@ def selected_candidates(processes,roots,executable):
     if any(type(pid) is not int for pid in pids) or len(set(pids))!=len(pids):
         raise ValueError('Incomplete or ambiguous Windows process inventory')
     visibility['process_count']=len(processes)
+    visibility['native_helpers']=helpers
     return rows+selected,visibility
 
 

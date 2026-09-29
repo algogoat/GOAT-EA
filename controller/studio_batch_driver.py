@@ -110,7 +110,7 @@ def _summary(path, record):
         host_liveness_required=True, independent_hard_stop=False)
 
 
-def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=5,
+def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
         cancel_grace_seconds=120, min_free_bytes=None, clock=time, finish_fn=finish):
     """Start once, or explicitly observe a retained attempt against its old deadline.
 

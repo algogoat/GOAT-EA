@@ -9,7 +9,7 @@
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-WORKER-FARM-CAPTION-17"
+#define   GOAT_BUILD_ID "V1.49-BATCH-VISIBILITY-18"
 #include "GOAT_SequencePackage.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 #define   GOAT_BUILD_MARKER "WF17"
@@ -4318,7 +4318,7 @@ void OnTesterDeinit()
       else {error=true; WriteLog("DEINIT: ❌ Failed to Analyze and Combine xml reports. Aborting exports",true,Key,EA_Name,Server);
             ShowPrompt("Processing Optimization...","Failed to Analyze and Combine xml reports.","Aborting export cycle...",""); Sleep(999);}
      }
-     else {error=true; WriteLog("DEINIT: ❌ XML Migration not complete. Not enough xml reports. Aborting report processing and exports cycle...",true,Key,EA_Name,Server);}
+     else {error=true; WriteLog("DEINIT: XML Migration incomplete: root="+GoatOptReportRoot(EA_Name,Server)+" files="+(string)ArraySize(movedFiles)+"; paired main/forward reports required. Aborting exports.",true,Key,EA_Name,Server);}
     }
     else {error=true; WriteLog("DEINIT: ❌ Some XML files failed to move. Aborting report processing and exports cycle...",true,Key,EA_Name,Server);}
     Sleep(999);

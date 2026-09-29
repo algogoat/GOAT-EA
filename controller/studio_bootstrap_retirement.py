@@ -14,6 +14,7 @@ from pathlib import Path, PureWindowsPath
 import re
 import sqlite3
 import subprocess
+from studio_subprocess import background_creationflags
 import time
 import uuid
 
@@ -203,7 +204,7 @@ $services=@(Get-CimInstance Win32_Service | Where-Object {$_.ProcessId -in @($pr
 $connections=@(Get-NetTCPConnection | Select-Object OwningProcess,@{Name='State';Expression={$_.State.ToString()}},RemoteAddress)
 @{processes=$processes;services=$services;connections=$connections} | ConvertTo-Json -Depth 6 -Compress
 '''
-    snapshot=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=20))
+    snapshot=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=20, creationflags=background_creationflags()))
     return classify_testers(c,snapshot,require_idle_services=require_idle_services)
 
 

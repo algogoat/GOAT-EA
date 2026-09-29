@@ -522,16 +522,47 @@ void CStrategyTesterDialog::ManagedQueueRefresh(void)
       int n=ArraySize(ids); ArrayResize(ids,n+1); ArrayResize(statuses,n+1); ArrayResize(labels,n+1);
       ids[n]=id; statuses[n]=status; labels[n]=status+" | "+symbol+" "+period+" | "+id;
      }
+   string batch_heading="";
+   int batch=GOATJsonFindField(g_StudioSnapshot,tokens,state,"batch_view");
+   if(batch>=0)
+     {
+      long total=0,done=0,failed=0,cancelled=0,remaining=0,active=0;
+      if(GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"total",total)
+         && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"completed",done)
+         && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"failed",failed)
+         && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"cancelled",cancelled)
+         && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"remaining",remaining)
+         && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"active",active))
+         batch_heading="BATCH: "+(string)total+" items | "+(string)done+" done | "+(string)remaining+" left | "+(string)active+" active | "+(string)failed+" failed | "+(string)cancelled+" cancelled";
+      int members=GOATJsonFindField(g_StudioSnapshot,tokens,batch,"members");
+      if(members>=0 && tokens[members].type==GOAT_JSON_ARRAY)
+         for(int i=members+1;i<ArraySize(tokens);i++)
+           {
+            if(tokens[i].parent!=members) continue;
+            long member_index=0,model=0; string symbol,period,status,strategy;
+            if(!GOATJsonGetInteger(g_StudioSnapshot,tokens,i,"index",member_index)
+               || !GOATJsonGetInteger(g_StudioSnapshot,tokens,i,"model",model)
+               || !GOATJsonGetString(g_StudioSnapshot,tokens,i,"symbol",symbol)
+               || !GOATJsonGetString(g_StudioSnapshot,tokens,i,"period",period)
+               || !GOATJsonGetString(g_StudioSnapshot,tokens,i,"status",status)
+               || !GOATJsonGetString(g_StudioSnapshot,tokens,i,"strategy",strategy)) continue;
+            string model_label=(model==1 ? "OHLC" : model==4 ? "real ticks" : model==0 ? "every tick" : "open prices");
+            int n=ArraySize(ids); ArrayResize(ids,n+1); ArrayResize(statuses,n+1); ArrayResize(labels,n+1);
+            // Display-only children never address a parent queue command.
+            ids[n]=""; statuses[n]="member";
+            labels[n]="  "+(string)(member_index+1)+"/"+(string)total+" | "+status+" | "+symbol+" "+period+" | "+model_label+" | "+strategy;
+           }
+     }
    string selected=""; int index=m_listQueue.Current();
    if(index>=0 && index<ArraySize(g_StudioQueueIds)) selected=g_StudioQueueIds[index];
    ArrayCopy(g_StudioQueueIds,ids); ArrayResize(g_StudioQueueIds,ArraySize(ids));
    ArrayCopy(g_StudioQueueStatuses,statuses); ArrayResize(g_StudioQueueStatuses,ArraySize(statuses));
    m_listQueue.ItemsClear();
-   for(int i=0;i<ArraySize(ids);i++) {m_listQueue.AddItem(labels[i]); if(ids[i]==selected) m_listQueue.Select(i);}
+   for(int i=0;i<ArraySize(ids);i++) {m_listQueue.AddItem(labels[i]); if(selected!="" && ids[i]==selected) m_listQueue.Select(i);}
    int pending_count=0,completed_count=0;
    for(int i=0;i<ArraySize(statuses);i++)
      {if(statuses[i]=="pending") pending_count++; if(statuses[i]=="completed") completed_count++;}
-   m_lblQueue.Text("QUEUE: "+(string)pending_count+" pending / "+(string)completed_count+" completed");
+   m_lblQueue.Text(batch_heading!="" ? batch_heading : "QUEUE: "+(string)pending_count+" pending / "+(string)completed_count+" completed");
    Id(Id()); // ItemsClear/AddItem can recreate the scrollbar after initial Run().
    g_StudioQueueRendered=g_StudioSnapshot; m_listQueue.Show();
   }
@@ -570,11 +601,13 @@ void CStrategyTesterDialog::ManagedQueueEnqueue(void)
 void CStrategyTesterDialog::ManagedQueueCancel(void)
   {
    int i=m_listQueue.Current(); if(i<0 || i>=ArraySize(g_StudioQueueIds)) return;
+   if(g_StudioQueueIds[i]=="") return;
    ManagedQueueSubmit("queue.cancel","{\"job_id\":"+GoatStudioQuote(g_StudioQueueIds[i])+"}");
   }
 void CStrategyTesterDialog::ManagedQueueRemove(void)
   {
    int i=m_listQueue.Current(); if(i<0 || i>=ArraySize(g_StudioQueueIds)) return;
+   if(g_StudioQueueIds[i]=="") return;
    ManagedQueueSubmit("queue.remove","{\"job_id\":"+GoatStudioQuote(g_StudioQueueIds[i])+"}");
   }
 void CStrategyTesterDialog::ManagedQueueUp(void) {ManagedQueueMove(-1);}

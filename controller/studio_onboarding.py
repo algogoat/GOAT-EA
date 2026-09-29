@@ -321,7 +321,8 @@ def monitor_launch(controller, attempt_id):
         write_json(target, intent)
         # A crash/failure here retains uncertainty; no automatic retry or close.
         process = subprocess.Popen(arguments, cwd=str(Path(arguments[0]).parent),
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         intent.update(status='process_started_unverified', pid=process.pid)
         write_json(target, intent)
     return intent | dict(reused=False,

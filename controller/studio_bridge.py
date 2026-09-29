@@ -61,6 +61,30 @@ def display_state(state):
             for field in ('attempt_id', 'startup_sha256'):
                 if field in job['restart_intent']:
                     summary['restart_'+field] = job['restart_intent'][field]
+    batches=[job for job in state.get('queue', []) if job['configuration'].get('batch_members')
+             and job['status'] not in ('removed','superseded')]
+    if batches:
+        active=next((job for job in batches if job['status'] in
+                    ('reserved','starting','running','reconcile_required','verifying','pending')), batches[-1])
+        native=active.get('native_observation',{}).get('native',{})
+        observed={row['index']:row for row in native.get('members',[])}
+        members=[]
+        for index,member in enumerate(active['configuration']['batch_members']):
+            row=observed.get(index,{})
+            status=row.get('status', 'native_pending' if active['status']=='pending' else 'unobserved')
+            # Observed native state wins; never infer completion from parent state.
+            label=status.removeprefix('native_')
+            members.append(dict(index=index,symbol=member['tester']['Symbol'],
+                period=member['tester']['Period'],model=member['tester']['Model'],
+                strategy=member['strategy']['values'].get('EA_Desc',''),status=label))
+        counts={key:sum(row['status']==key for row in members)
+                for key in ('completed','error','cancelled','ongoing','queued','pending','unobserved')}
+        finished=counts['completed']+counts['error']+counts['cancelled']
+        result['batch_view']=dict(job_id=active['job_id'],status=active['status'],total=len(members),
+            completed=counts['completed'],failed=counts['error'],cancelled=counts['cancelled'],
+            remaining=len(members)-finished,active=counts['ongoing']+counts['queued'],
+            pending=counts['pending'],unobserved=counts['unobserved'],members=members,
+            observed_at=native.get('observed_at'))
     return result
 
 

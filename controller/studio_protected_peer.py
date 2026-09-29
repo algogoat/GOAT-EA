@@ -10,6 +10,7 @@ from pathlib import Path, PureWindowsPath
 import re
 import sqlite3
 import subprocess
+from studio_subprocess import background_creationflags
 import time
 import uuid
 
@@ -54,7 +55,7 @@ def material(c, executable, data_root):
 def observe(c, peer):
     from studio_process_check import classify_processes
     command='ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter "Name=\'terminal64.exe\' OR Name=\'terminal.exe\'" | Select-Object ProcessId,ExecutablePath,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
-    rows=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command], text=True,encoding='utf-8-sig',timeout=20))
+    rows=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command], text=True,encoding='utf-8-sig',timeout=20, creationflags=background_creationflags()))
     if not isinstance(rows,list): raise ValueError('Complete terminal inventory required')
     count=sum(PureWindowsPath(r.get('ExecutablePath') or '')==PureWindowsPath(c.install['terminal_executable']) for r in rows)
     if count not in (0,1): raise ValueError('Ambiguous selected terminal process')

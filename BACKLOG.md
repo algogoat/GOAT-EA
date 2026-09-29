@@ -193,3 +193,7 @@ qualification are separate from full native EA/installed-package qualification.
   9c90b1493406e1cf849641d8eb1095ed9ea106767bb102fce520797ffdf32ffe.
 
 | CTRL-022 | Visible native Give/Take control feedback | Source implementation; qualification pending | Immediate pending button/status, Take Control Yes/No warning, 30-second delayed acknowledgement with original request retained, receipt-confirmed current owner, Give Control Back action, persistent actionable refusal; a later save/queue clears old feedback. The derived Report-only difference is ignored in refresh, enqueue and grant while all other settings still compare exactly. No fabricated grant, retry, permission or trading change. User requested September 28. |
+
+## CTRL-024 — Visible agent batch and OHLC standard (2026-09-28)
+
+Owner-approved: show complete active batch in agent view, per-member model/status and total/completed/failed/cancelled/remaining counts. Child rows are read-only and cannot cancel/remove their parent. New optimization plans use 1-minute OHLC; explicit historical jobs remain immutable. Prevent background helper consoles and reduce expensive driver observations to 30 seconds. Focused visibility/process/driver tests pass; compile/native qualification tracked in PR. XML diagnostics name the scanned report root and file count. Report path/recovery fix remains a separate follow-up, not claimed complete here.

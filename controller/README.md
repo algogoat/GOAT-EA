@@ -961,3 +961,7 @@ The human-launch checks are corroboration, not proof against a deliberate agent 
 Both adoption and re-verification also require the message's native observed_terminal_utc to be at least the process creation time minus one second, allowing its whole-second timestamp precision. A fresh file modification time cannot make an observation from the previous process acceptable. Existing runtime age, account, path, idle and Algo OFF checks still apply.
 
 The bounded driver accepts up to172800seconds (48hours). Existing resume never resets a deadline. This limit grants no control and does not extend a typed scope; a fresh window after takeover requires a genuine new native grant and supported renewal.
+
+## Optimization model standard
+
+Use **1 minute OHLC (`Model=1`) for new optimization plans** unless the user explicitly requests another model. The Studio editor already selects OHLC for a fresh draft. Saved drafts and immutable jobs retain their explicit model; revise them into a new batch when the user changes the model. Keep export/replay model settings separate from the optimization model. Agent and human views show the model and each member of the active batch, including completed, failed, cancelled and remaining counts. These are native observations, not export qualification.

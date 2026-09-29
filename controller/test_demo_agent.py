@@ -45,6 +45,7 @@ class MetaTrader:
         self.trade_mode = 0
         self.server = 'Darwinex-Demo'
         self.trade_allowed = False
+        self.dlls_allowed = True
         self.account_trade_allowed = True
         self.positions = ()
         self.orders = ()
@@ -56,7 +57,8 @@ class MetaTrader:
 
     def terminal_info(self):
         return types.SimpleNamespace(path=str(self.exe.parent), data_path=str(self.data),
-                                     connected=True, trade_allowed=self.trade_allowed, build=6230)
+                                     connected=True, trade_allowed=self.trade_allowed,
+                                     dlls_allowed=self.dlls_allowed, build=6230)
 
     def account_info(self):
         return types.SimpleNamespace(login=self.login, server=self.server,
@@ -305,6 +307,38 @@ class DemoAgentTests(unittest.TestCase):
                                              expected_process=self.process.identity)
         broker.assert_not_called()
 
+    def test_install_refuses_missing_native_dll_grant_before_close(self):
+        candidate = self.base / 'candidate.ex5'; candidate.write_bytes(b'new-ea')
+        monitor = self.base / 'monitor.ini'
+        monitor.write_text('[Charts]\nProfileLast=GOAT-Studio-test\n[Experts]\nEnabled=0\n'
+                           'AllowLiveTrading=0\n[StartUp]\nExpert=GOAT-EA\\GOAT V1.49.ex5\n'
+                           'ExpertParameters=GOAT Studio Agent.set\nPeriod=M1\n')
+        self.mt5.dlls_allowed = False
+        with patch.object(self.agent, '_owner_clear'), patch.object(self.agent, '_space'), patch(
+                'demo_agent.tester_state', return_value='idle'), patch.object(
+                self.process, 'close') as close:
+            with self.assertRaisesRegex(ValueError, 'Human must enable DLL imports'):
+                self.agent.install_build(candidate, digest(candidate), monitor)
+        close.assert_not_called()
+        self.assertEqual(self.binary.read_bytes(), b'old-ea')
+
+    def test_native_dll_grant_is_carried_in_new_utf16_monitor_config(self):
+        monitor = self.base / 'monitor.ini'
+        original = ('[Charts]\r\nProfileLast=GOAT-Studio-test\r\n[Experts]\r\n'
+                    'Enabled=0\r\nAllowLiveTrading=0\r\n[StartUp]\r\n'
+                    'Expert=GOAT-EA\\GOAT V1.49.ex5\r\n'
+                    'ExpertParameters=GOAT Studio Agent.set\r\nPeriod=M1\r\n').encode('utf-16')
+        monitor.write_bytes(original)
+        validated = self.agent._validate_monitor_config(monitor)
+        generated = self.agent._dll_granted_restart_config(
+            validated, {'dlls_allowed': True, 'process': self.process.identity})
+        self.assertEqual(monitor.read_bytes(), original)
+        self.assertEqual(generated.read_bytes(), original.replace(
+            'AllowLiveTrading=0\r\n'.encode('utf-16-le'),
+            'AllowLiveTrading=0\r\nAllowDllImport=1\r\n'.encode('utf-16-le')))
+        self.assertEqual(self.agent._dll_granted_restart_config(
+            validated, {'dlls_allowed': True, 'process': self.process.identity}), generated)
+
     def test_install_waits_for_late_normal_mt5_exit_without_force_kill(self):
         candidate = self.base / 'candidate.ex5'; candidate.write_bytes(b'new-ea')
         monitor = self.base / 'monitor.ini'
@@ -326,8 +360,9 @@ class DemoAgentTests(unittest.TestCase):
         with patch.object(self.process, 'inspect', side_effect=inspect), patch.object(
                 self.process, 'close', side_effect=close) as normal_close, patch.object(
                 self.agent, '_owner_clear'), patch.object(self.agent, '_space'), patch.object(
-                self.agent, '_broker', return_value={'process': self.process.identity}), patch.object(
-                self.agent, '_launch_terminal', return_value={'broker': {'process': self.process.identity}}), patch(
+                self.agent, '_broker', return_value={'process': self.process.identity,
+                                                    'dlls_allowed': True}), patch.object(
+                self.agent, '_launch_terminal', return_value={'broker': {'process': self.process.identity}}) as launch, patch(
                 'demo_agent.time.monotonic', side_effect=lambda: clock[0]), patch(
                 'demo_agent.time.sleep', side_effect=sleep):
             result = self.agent.install_build(candidate, digest(candidate), monitor)
@@ -335,6 +370,9 @@ class DemoAgentTests(unittest.TestCase):
         self.assertGreaterEqual(clock[0], 110)
         normal_close.assert_called_once_with(self.process.identity)
         self.assertEqual(digest(self.binary), digest(candidate))
+        restart_config = launch.call_args.args[0]
+        self.assertIn('AllowDllImport=1', restart_config.read_text())
+        self.assertNotIn('AllowDllImport', monitor.read_text())
 
     def test_desktop_update_refuses_stopped_or_different_linked_account(self):
         candidate=self.base/'candidate.ex5';candidate.write_bytes(b'new-ea')

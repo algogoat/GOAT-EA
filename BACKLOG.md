@@ -285,7 +285,12 @@ Its recovery then called the broker SDK before the relaunched EA had produced
 new-process feedback; a second process for the same installation appeared
 during that readback. Wait up to 150 seconds for the exact process to exit normally;
 after launch, require fresh EA feedback tied to that process before calling the
-broker SDK. No force kill, permission change, or unrelated-terminal action is
-added. Focused tests cover a 110-second close and broker deferral. Native
-rehearsal still needs to prove one process and a loaded EA; the QA relaunch
-currently reports "DLL loading is not allowed" and is not qualified.
+broker SDK. No force kill, new permission grant, or unrelated-terminal action is
+added. The EA needs DLL imports: a running update now refuses before close
+unless native MT5 reports `dlls_allowed=true`, then writes a separate inert
+restart config carrying only that observed grant (`AllowDllImport=1`). It
+leaves the original config intact and verifies DLL permission again after
+relaunch. Focused tests cover a 110-second close, broker deferral, refusal
+without the native grant, and the UTF-16 restart config. Native rehearsal
+still needs to prove one process and a loaded EA; the QA terminal currently
+needs its owner to sign in again after restart before that proof is possible.

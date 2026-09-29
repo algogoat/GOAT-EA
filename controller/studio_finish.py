@@ -64,6 +64,18 @@ def finish(controller,job_id,*,expected_generation=None):
                 raise ValueError('Native pointer changed; cannot release another run')
             restore(evidence,{name:digest(contents(base/name)) for name in NAMES})
         (gate/'permit.json').unlink(missing_ok=True)
+        restart=current.get('restart_intent') or {}
+        if restart.get('report_bridge') is not None:
+            from studio_report_bridge import retire
+            receipt=read_json(evidence/'report-bridge.json')
+            if receipt!=restart['report_bridge']:
+                raise ValueError('Report bridge evidence changed before finish')
+            plan=read_json(package/'studio-plan.json')
+            manifest=read_json(package/'manifest.json')
+            if sha(plan)!=manifest['campaign_id']:
+                raise ValueError('Report cleanup plan changed')
+            result['report_bridge_retirement']=retire(plan['research_binding'],
+                manifest['native_run_relative'],receipt,evidence)
         # Filesystem receipt precedes the database finalization; interrupted
         # completion can replay from the restored transaction without relaunch.
         result_path=evidence/'result.json';write_json(result_path,result)

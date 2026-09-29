@@ -90,14 +90,15 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None):
         checkpoint(c,job_id,generation);revalidate_processes(bound,baseline)
         c.runtime(require_idle=True,expected_batch_ongoing=False)
     with exclusive_gate(c.local/'native-gate'):
-        _install_controls(c.state(),c.job(job_id),restart=True,**args,evidence=evidence,
-                          process_baseline=baseline,validate_ownership=owned)
+        arm_fields=_install_controls(c.state(),c.job(job_id),restart=True,**args,evidence=evidence,
+                                     process_baseline=baseline,validate_ownership=owned)
         manifest=material['manifest']
         bridge=bridge_prepare(binding,manifest['native_run_relative'])
         write_json(evidence/'report-bridge.json',bridge)
         startup=evidence/'startup.ini'
         with startup.open('xb') as output:output.write(material['startup_raw'])
-    phase(c,job_id,generation,'prepared','controls_installed',startup_path=str(startup),report_bridge=bridge)
+    phase(c,job_id,generation,'prepared','controls_installed',startup_path=str(startup),
+          report_bridge=bridge,arm_request_fields=arm_fields)
     def validate(state,job):
         checkpoint(c,job_id,generation);revalidate_processes(binding,baseline)
         bridge_verify(bridge)
@@ -116,7 +117,18 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None):
             break
         if time.monotonic()>=deadline:raise ValueError('Native arming unconfirmed; no close or launch issued')
         time.sleep(.25)
-    c.runtime(require_idle=True,expected_batch_ongoing=True)
+    # The EA writes the arm receipt after its current runtime sample. Wait for
+    # the next sample; retry this read only, never the arm or another command.
+    runtime_deadline=time.monotonic()+15
+    while True:
+        checkpoint(c,job_id,generation)
+        try:
+            c.runtime(require_idle=True,expected_batch_ongoing=True)
+            break
+        except ValueError as error:
+            if str(error)!='Runtime policy mismatch: batch_ongoing' or time.monotonic()>=runtime_deadline:
+                raise
+            time.sleep(.25)
     revalidate_processes(binding,baseline)
     process=process or WindowsSeedProcess(c)
     identity=process.inspect()

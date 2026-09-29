@@ -46,6 +46,7 @@ class ConfigStartTests(unittest.TestCase):
         (root/'batch-drivers/batch.json').write_text(json.dumps(dict(deadline_wall=time.time()+600)))
         (c.local/'native-gate').mkdir(parents=True)
         raw=b'[Experts]\r\nEnabled=0\r\n[Tester]\r\nModel=1\r\nReport=owned.xml\r\n'
+        self.arm_fields=dict(action='arm_restart',startup_sha256=hashlib.sha256(raw).hexdigest())
         self.material=dict(startup_raw=raw,startup_receipt={'sha256':hashlib.sha256(raw).hexdigest()},
                            manifest={'native_run_relative':r'GOAT\R123456789abc'})
         self.identity=dict(pid=11,executable=self.binding['research_terminal'],created_utc='2026-09-29T00:00:00Z')
@@ -62,14 +63,17 @@ class ConfigStartTests(unittest.TestCase):
         def install(*args,**kwargs):
             self.events.append('install');kwargs['evidence'].mkdir()
             (root/'data/MQL5/Files/GOAT/R123456789abc/reports').mkdir(parents=True)
+            return dict(self.arm_fields)
         def arm(*args,**kwargs):
-            self.events.append('arm');kwargs['validate_native'](c.state(),c.job('batch'))
+            self.events.append('arm')
+            fields=kwargs['validate_native'](c.state(),c.job('batch'))
+            self.assertEqual(c.job('batch')['restart_intent']['arm_request_fields'],fields)
             return {'request_id':self.attempt}
         self.stack=ExitStack();self.addCleanup(self.stack.close)
         replacements=dict(guard_active_seed=Mock(),before_native_dispatch=Mock(),
             inspect_processes=Mock(return_value=self.baseline),revalidate_processes=Mock(),
             record_intent=Mock(side_effect=intent),validate_launch_material=Mock(return_value=self.material),
-            _install_controls=Mock(side_effect=install),validate_restart_controls=Mock(return_value={}),
+            _install_controls=Mock(side_effect=install),validate_restart_controls=Mock(side_effect=lambda *args,**kwargs:dict(self.arm_fields)),
             publish_restart_arm=Mock(side_effect=arm),observe_dispatch=Mock(return_value=dict(
                 status='receipt_observed',consumed=True,receipt={'status':'RESTART_ARMED_RECONCILE'})),
             validate_restart_material=Mock(return_value=self.material))
@@ -86,6 +90,17 @@ class ConfigStartTests(unittest.TestCase):
                                  'launch_issued','process_started_unverified'])
         with self.assertRaisesRegex(ValueError,'new pending'):self.run_start()
         self.process.start.assert_called_once()
+
+    def test_runtime_sample_may_lag_arm_receipt_without_repeating_command(self):
+        self.c.runtime.side_effect=[None,ValueError('Runtime policy mismatch: batch_ongoing'),None]
+        self.run_start()
+        self.assertEqual(self.events.count('arm'),1)
+        self.process.close.assert_called_once();self.process.start.assert_called_once()
+
+    def test_other_runtime_mismatch_is_not_retried_or_closed(self):
+        self.c.runtime.side_effect=[None,ValueError('Runtime account mismatch')]
+        with self.assertRaisesRegex(ValueError,'account mismatch'):self.run_start()
+        self.process.close.assert_not_called();self.process.start.assert_not_called()
 
     def test_refused_or_unconsumed_arm_never_closes_or_launches(self):
         self.mocks['observe_dispatch'].return_value['consumed']=False
@@ -145,6 +160,33 @@ class ConfigStartTests(unittest.TestCase):
 
 
 class ConfigMaterialTests(unittest.TestCase):
+    def test_real_arm_transport_uses_the_retained_installed_fields(self):
+        from test_goat_studio import PortableControllerTests
+        from studio_dispatch_transport import publish_restart_arm
+        from campaign_ledger import packed
+        fixture=PortableControllerTests();fixture.setUp();self.addCleanup(fixture.tearDown)
+        c,_,_,_=fixture.activated_fixture()
+        state=c.state();job=state['queue'][0];attempt=job['launch_intent']['attempt_id']
+        fields=dict(action='arm_restart',startup_sha256='a'*64,native_config_sha256='b'*64)
+        job['restart_intent']=dict(phase='controls_installed',attempt_id=attempt,
+            startup_sha256=fields['startup_sha256'],arm_request_fields=dict(fields))
+        c.store.db.execute('UPDATE studio_queues SET jobs=?',(packed(state['queue']),))
+        arguments=dict(actor='agent',revision=state['revision'],generation=state['generation'])
+        with self.assertRaisesRegex(ValueError,'differ from installed attempt'):
+            publish_restart_arm(c.store,c.terminal,c.run,job['job_id'],c.bridge.root,
+                validate_native=lambda *args:fields|{'native_config_sha256':'c'*64},**arguments)
+        self.assertFalse((c.local/'native-gate/permit.json').exists())
+        result=publish_restart_arm(c.store,c.terminal,c.run,job['job_id'],c.bridge.root,
+            validate_native=lambda *args:dict(fields),**arguments)
+        self.assertEqual(result['status'],'arm_published_not_confirmed')
+        issued=json.loads((c.local/'native-gate'/('issued-'+attempt+'.json')).read_text())
+        self.assertEqual(issued['request']['action'],'arm_restart')
+        self.assertEqual(issued['request']['native_config_sha256'],fields['native_config_sha256'])
+        self.assertTrue((c.local/'native-gate/permit.json').is_file())
+        with self.assertRaisesRegex(Exception,'Existing publication'):
+            publish_restart_arm(c.store,c.terminal,c.run,job['job_id'],c.bridge.root,
+                validate_native=lambda *args:dict(fields),**arguments)
+
     def test_real_package_keeps_owned_profile_and_does_not_add_duplicate_monitor_chart(self):
         from test_studio_native_batch import NativeBatchTests
         from campaign_ledger import sha

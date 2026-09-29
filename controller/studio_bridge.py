@@ -68,7 +68,8 @@ def display_state(state):
              and job['status'] not in ('removed','superseded')]
     if batches:
         active=next((job for job in batches if job['status'] in
-                    ('reserved','starting','running','reconcile_required','verifying','pending')), batches[-1])
+                    ('reserved','starting','running','reconcile_required','verifying')),
+                    next((job for job in batches if job['status']=='pending'),batches[-1]))
         native=active.get('native_observation',{}).get('native',{})
         observed={row['index']:row for row in native.get('members',[])}
         members=[]

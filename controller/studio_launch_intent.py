@@ -58,7 +58,11 @@ def record_intent(store, terminal_id, run_id, job_id, package, *, actor, revisio
             sections=ini_sections((package/(alias+'.ini')).read_bytes())
             if sections.get('Tester')!={key:str(value) for key,value in item['tester'].items()}:
                 raise ValueError('Staged INI differs from manifest tester')
-            if sections.get('TesterInputs')!=read_values((package/(alias+'.set')).read_bytes()):
+            from studio_optimization_inputs import explicit_optimization_inputs
+            retained=(package/(alias+'.set')).read_bytes().decode('utf-16')
+            native_inputs=explicit_optimization_inputs(retained,store.input_schema) if plan['research_binding']['ea_version']=='1.49' else retained
+            expected=read_values(native_inputs.encode('utf-16'))
+            if sections.get('TesterInputs')!=expected:
                 raise ValueError('Staged INI input values differ from retained SET')
         intent=dict(attempt_id=sha([reservation['reservation_id'],digest]),
                     package=str(package),package_sha256=digest,

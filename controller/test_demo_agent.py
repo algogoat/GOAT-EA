@@ -45,6 +45,9 @@ class MetaTrader:
         self.trade_mode = 0
         self.server = 'Darwinex-Demo'
         self.trade_allowed = False
+        self.account_trade_allowed = True
+        self.positions = ()
+        self.orders = ()
         self.exe = exe
         self.data = data
 
@@ -57,16 +60,17 @@ class MetaTrader:
 
     def account_info(self):
         return types.SimpleNamespace(login=self.login, server=self.server,
-                                     trade_mode=self.trade_mode)
+                                     trade_mode=self.trade_mode,
+                                     trade_allowed=self.account_trade_allowed)
 
     def shutdown(self):
         pass
 
     def positions_get(self):
-        return ()
+        return self.positions
 
     def orders_get(self):
-        return ()
+        return self.orders
 
 
 class DemoAgentTests(unittest.TestCase):
@@ -114,6 +118,31 @@ class DemoAgentTests(unittest.TestCase):
             self.mt5.login = 3000082754
             self.mt5.trade_allowed = True
             with self.assertRaisesRegex(ValueError, 'Algo Trading is on'):
+                self.agent._broker()
+
+    def test_read_only_demo_can_research_while_other_terminal_holds_positions(self):
+        self.mt5.account_trade_allowed = False
+        self.mt5.positions = (types.SimpleNamespace(symbol='EURUSD'),)
+        self.mt5.orders = (types.SimpleNamespace(symbol='USDJPY'),)
+        with patch('demo_agent.tester_state', return_value='idle'):
+            broker = self.agent._broker()
+            self.assertEqual((broker['positions'], broker['orders']), (1, 1))
+            self.assertIs(broker['account_trade_allowed'], False)
+            self.mt5.account_trade_allowed = True
+            with self.assertRaisesRegex(ValueError, 'trade-capable'):
+                self.agent._broker()
+            self.assertIs(self.agent._broker(idle=False)['account_trade_allowed'], True)
+            self.mt5.account_trade_allowed = None
+            with self.assertRaisesRegex(ValueError, 'trade-capable'):
+                self.agent._broker()
+            self.assertIsNone(self.agent._broker(idle=False)['account_trade_allowed'])
+            self.mt5.account_trade_allowed = False
+            self.mt5.trade_allowed = True
+            with self.assertRaisesRegex(ValueError, 'Algo Trading is on'):
+                self.agent._broker()
+            self.mt5.trade_allowed = False
+            self.mt5.trade_mode = 1
+            with self.assertRaisesRegex(ValueError, 'demo and exact paired'):
                 self.agent._broker()
 
     def test_other_exact_paired_demo_is_supported_but_switched_or_live_account_refuses(self):

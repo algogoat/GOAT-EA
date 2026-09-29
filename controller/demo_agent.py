@@ -170,8 +170,8 @@ class DemoAgent:
             if terminal is None or account is None:
                 raise ValueError('Incomplete native broker state')
             positions, orders = (mt5.positions_get(), mt5.orders_get()) if idle else (None, None)
-            if idle and (positions is None or orders is None or positions or orders):
-                raise ValueError('Idle demo research requires no open positions or orders')
+            if idle and (positions is None or orders is None):
+                raise ValueError('Idle demo research requires a complete position and order readback')
             if self.process.inspect() != identity:
                 raise ValueError('Selected MT5 process changed during broker check')
             if (account.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO
@@ -183,11 +183,20 @@ class DemoAgent:
                 raise ValueError('Broker-reported demo and exact paired account required')
             if terminal.trade_allowed:
                 raise ValueError('Algo Trading is on; this demo research lane leaves it off')
+            account_trade_allowed = getattr(account, 'trade_allowed', None)
+            # Position/order snapshots are account-wide. An investor terminal
+            # cannot manage the positions held by a different trading terminal
+            # on the same demo login; retain the flat-account gate for every
+            # trade-capable or unproven account.
+            if idle and (positions or orders) and account_trade_allowed is not False:
+                raise ValueError('Idle trade-capable demo research requires no open positions or orders')
             state = tester_state(identity['pid'], terminal.build) if idle else None
             if idle and state != 'idle':
                 raise ValueError('Selected native tester is not positively idle')
             return dict(process=identity, login=str(account.login), server=account.server,
                         demo=True, connected=True, algo_trading=False, tester_state=state,
+                        account_trade_allowed=(account_trade_allowed
+                                               if type(account_trade_allowed) is bool else None),
                         positions=len(positions) if idle else None,
                         orders=len(orders) if idle else None, build=terminal.build)
         finally:

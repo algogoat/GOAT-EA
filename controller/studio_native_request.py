@@ -133,7 +133,7 @@ def _validate_material(state, job, *, account, monitor_path, monitor_sha256, inp
         if startup_monitor['expert']!=relative_monitor:
             raise ValueError('Startup monitor differs from verified monitor binary')
         preset_name=startup_monitor['preset']
-        if not re.fullmatch(r'[A-Za-z0-9_-]+\.set',preset_name):
+        if not re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_ -]{0,99}\.set',preset_name):
             raise ValueError('Unsafe monitor preset name')
         preset=(data/'MQL5/Presets'/preset_name).read_bytes()
         if hashlib.sha256(preset).hexdigest()!=startup_monitor['preset_sha256']:
@@ -142,8 +142,9 @@ def _validate_material(state, job, *, account, monitor_path, monitor_sha256, inp
         if values!={'Mode_Operation':'11','Studio_ReadOnlyMonitor':'true',
                     'Studio_MonitorRunPath':'','EA_Desc':'Studio Monitor'}:
             raise ValueError('Startup preset must be the monitor-only configuration')
-        material['startup_monitor']=dict(Expert=relative_monitor,ExpertParameters=preset_name,
-            Symbol=config['tester']['Symbol'],Period=config['tester']['Period'])
+        if not binding.get('research_profile'):
+            material['startup_monitor']=dict(Expert=relative_monitor,ExpertParameters=preset_name,
+                Symbol=config['tester']['Symbol'],Period=config['tester']['Period'])
     startup_raw,startup_receipt=startup_config(material)
     return material | dict(startup_raw=startup_raw,startup_receipt=startup_receipt)
 

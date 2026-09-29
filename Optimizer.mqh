@@ -3365,7 +3365,15 @@ bool ActivatePending(string QueueItem,string Key_,string EA_Name_,string Server_
       FileDelete(activeConfig,FILE_COMMON);
       return false;
    }
+#ifdef GOAT_CONFIG_REPORT_START_V149
+   if(!AddCommand(activeConfig,guardPath,launchId))
+     {
+      WriteLog("Headless next-member launcher failed; terminal remains open for recovery.",true,Key_,EA_Name_,Server_);
+      return false;
+     }
+#else
    AddCommand(activeConfig,guardPath,launchId);
+#endif
    return true;
   }
 //+------------------------------------------------------------------+

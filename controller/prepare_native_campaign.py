@@ -124,7 +124,10 @@ def prepare(plan_path, registry_path, output):
                     raise ValueError('Native forward report exceeds legacy path budget')
             elif tester['ForwardMode'] != 0:
                 raise ValueError('Initial engineering package supports standalone discovery only')
-            ini = '[Charts]\r\nProfileLast=GOAT Research\r\n[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n[Tester]\r\n'
+            profile=binding.get('research_profile','GOAT Research')
+            if profile!='GOAT Research' and not re.fullmatch(r'GOAT-Studio-[A-Za-z0-9_-]{1,100}',profile):
+                raise ValueError('Unsafe research profile')
+            ini = '[Charts]\r\nProfileLast='+profile+'\r\n[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n[Tester]\r\n'
             ini += ''.join(f'{key}={value}\r\n' for key,value in tester.items())
             ini += '[TesterInputs]\r\n' + updated
             staged.append((tag, raw, ini.encode('utf-16'), dict(job=job, run_alias=tag, tester=tester,

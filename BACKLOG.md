@@ -276,3 +276,21 @@ semantic-settings cases. Current source declaration coverage is90/90, and all115
 frozen staged SETs contain those names. Source tests are not native qualification:
 MetaEditor6230 compile and two-consecutive-member native smoke remain outstanding.
 No changes to the running Banker checkout, terminal or retained attempt.
+
+## CTRL-036 - Wait for the selected MT5 restart to become ready
+
+The isolated September 29 demo update showed a normal MT5 close taking about
+two minutes. The controller's 30-second wait refused before the process exited.
+Its recovery then called the broker SDK before the relaunched EA had produced
+new-process feedback; a second process for the same installation appeared
+during that readback. Wait up to 150 seconds for the exact process to exit normally;
+after launch, require fresh EA feedback tied to that process before calling the
+broker SDK. No force kill, new permission grant, or unrelated-terminal action is
+added. The EA needs DLL imports: a running update now refuses before close
+unless native MT5 reports `dlls_allowed=true`, then writes a separate inert
+restart config carrying only that observed grant (`AllowDllImport=1`). It
+leaves the original config intact and verifies DLL permission again after
+relaunch. Focused tests cover a 110-second close, broker deferral, refusal
+without the native grant, and the UTF-16 restart config. Native rehearsal
+still needs to prove one process and a loaded EA; the QA terminal currently
+needs its owner to sign in again after restart before that proof is possible.

@@ -32,7 +32,6 @@ from studio_native_request import ini_sections
 from studio_seed_process import WindowsSeedProcess
 
 
-BANKER_LOGIN = '3000082754'
 MIN_FREE_BYTES = 5 * 1024 ** 3
 
 
@@ -122,9 +121,8 @@ class DemoAgent:
                                       run_id=self.session['run_id'],
                                       terminal_data_path=self.install['terminal_data_root'])
                     or self.session.get('demo_only') is not True
-                    or self.session['account']['login'] != BANKER_LOGIN
                     or ui.get('runtime', {}).get('account_demo') is not True
-                    or ui['runtime'].get('account_login') != BANKER_LOGIN
+                    or ui['runtime'].get('account_login') != self._paired_account()['login']
                     or ui['runtime'].get('account_server') != self.session['account']['server']):
                 raise ValueError('Stopped-terminal recovery lacks exact prior demo/owner identity')
             binding = packed(dict(terminal_id=self.session['terminal_id'], run_id=self.session['run_id']))
@@ -146,7 +144,19 @@ class DemoAgent:
                 raise ValueError(role + ' has less than 5 GiB free')
         return volumes
 
+    def _paired_account(self):
+        expected = self.session.get('account')
+        if (self.session.get('demo_only') is not True or not isinstance(expected, dict)
+                or set(expected) != {'login', 'server'}
+                or not isinstance(expected['login'], str)
+                or not re.fullmatch(r'[1-9][0-9]{0,19}', expected['login'])
+                or not isinstance(expected['server'], str) or not 1 <= len(expected['server']) <= 256
+                or any(ch in expected['server'] for ch in '\x00\r\n\t')):
+            raise ValueError('Exact paired demo account and server required')
+        return expected
+
     def _broker(self, *, idle=True):
+        expected = self._paired_account()
         identity = self.process.inspect()
         if identity is None:
             raise ValueError('Selected MT5 is not running; broker demo mode cannot be proven')
@@ -164,15 +174,13 @@ class DemoAgent:
                 raise ValueError('Idle demo research requires no open positions or orders')
             if self.process.inspect() != identity:
                 raise ValueError('Selected MT5 process changed during broker check')
-            expected = self.session['account']
             if (account.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO
-                    or str(account.login) != BANKER_LOGIN
                     or str(account.login) != expected['login']
                     or account.server != expected['server']
                     or not terminal.connected
                     or PureWindowsPath(terminal.path) != PureWindowsPath(self.install['terminal_executable']).parent
                     or PureWindowsPath(terminal.data_path) != PureWindowsPath(self.install['terminal_data_root'])):
-                raise ValueError('Broker-reported demo and allowlisted account required')
+                raise ValueError('Broker-reported demo and exact paired account required')
             if terminal.trade_allowed:
                 raise ValueError('Algo Trading is on; this demo research lane leaves it off')
             state = tester_state(identity['pid'], terminal.build) if idle else None
@@ -417,7 +425,7 @@ class DemoAgent:
                         and self.clock() - observation.stat().st_mtime < 300
                         and ui.get('loaded') is True and ui.get('owner') == 'agent'
                         and ui.get('runtime', {}).get('account_demo') is True
-                        and ui['runtime'].get('account_login') == BANKER_LOGIN
+                        and ui['runtime'].get('account_login') == self._paired_account()['login']
                         and ui['runtime'].get('account_server') == self.session['account']['server']
                         and PureWindowsPath(ui['runtime']['program_path']) == PureWindowsPath(self.binary)):
                     write_json(self.state_root / 'verified-build.json', dict(
@@ -567,12 +575,18 @@ class DemoAgent:
         if owner_required:
             self._owner_clear(); self._space()
         broker = self._broker(idle=idle)
-        if self.session.get('authority_kind') != 'demo_direct':
+        legacy_recovery = (operation_name == 'demo-recover-orphan'
+                           and self.session.get('authority_kind') in (None, 'native_human_control'))
+        if self.session.get('authority_kind') != 'demo_direct' and not legacy_recovery:
             raise ValueError('Install and verify the selected V1.49 build before demo Studio control')
         physical = digest(self.binary)
         if physical != self.install['ea_sha256']:
             raise ValueError('Installed demo EA hash changed')
         if owner_required:
+            if legacy_recovery:
+                # Verify the already-running installed monitor without upgrading
+                # its binary or rewriting the session bound by the old review.
+                self._readback_current(physical)
             verified_path = self.state_root / 'verified-build.json'
             verified = read_json(verified_path) if verified_path.is_file() else {}
             if (verified.get('ea_sha256') != physical
@@ -583,7 +597,7 @@ class DemoAgent:
         with operation(operation_name), demo_agent_scope(
                 root=self.root, installation_sha256=sha(self.install),
                 account=dict(login=broker['login'], server=broker['server']),
-                job_id=job_id):
+                job_id=job_id, legacy_recovery=legacy_recovery):
             controller = Controller(self.installation_path).open(recovery=recovery)
             try:
                 yield controller, broker
@@ -597,6 +611,9 @@ class DemoAgent:
         request, or starts research. The EA remains the only flag writer.
         """
         from studio_orphan_recovery import prepare, apply, status
+        from studio_orphan_rejection import reconcile_rejection
+        from studio_handover import safe_path
+        explicit_observation = review_id is not None
         if type(wait_seconds) not in (int, float) or not 0 <= wait_seconds <= 60:
             raise ValueError('Recovery observation wait must be between 0 and 60 seconds')
         with self._exclusive(), self._studio('demo-recover-orphan', idle=True, recovery=True) as (controller, broker):
@@ -608,6 +625,37 @@ class DemoAgent:
                 review_id = read_json(pending)['review_id']
             if review_id is not None:
                 result = status(controller, review_id)
+                evidence = result.get('evidence', {})
+                # An explicit review-id remains observation-only. Only the known
+                # pre-consumption review refusal may gain a fresh successor.
+                if (not explicit_observation and result['status'] == 'reconcile_required'
+                        and evidence.get('status') == 'receipt_observed'
+                        and evidence.get('consumed') is False
+                        and evidence.get('receipt', {}).get('status') == 'ORPHAN_REVIEW_REJECTED'):
+                    links = safe_path(self.root / 'demo-agent/orphan-successors')
+                    records = [read_json(safe_path(p)) for p in links.glob('*.json')]
+                    if any(row['successor_review_id'] == review_id for row in records):
+                        return dict(result, automatic_successor_available=False,
+                                    next_action='The fresh successor was refused; diagnose it before any further recovery')
+                    # Settlement rechecks expiry, unchanged identity, exact bytes,
+                    # no consumption and fresh native state before retiring only
+                    # this rejected transport. Original request/result stay intact.
+                    original_id = review_id
+                    settled = reconcile_rejection(controller, original_id, owner_research=True)
+                    self._append('recover_orphan', 'rejection_settled', result=settled)
+                    if settled['status'] != 'rejected_settled':
+                        return settled
+                    review = prepare(controller)
+                    review_id = review['review_id']
+                    links.mkdir(parents=True, exist_ok=True)
+                    link = safe_path(links / (original_id + '.json'))
+                    if link.exists():
+                        raise ValueError('A retained successor already exists; inspect it without replay')
+                    write_json(link, dict(schema_version=1, original_review_id=original_id,
+                                          original_request_id=settled['request_id'], successor_review_id=review_id))
+                    self._append('recover_orphan', 'successor_prepared', review=review, original_review_id=original_id)
+                    result = apply(controller, review_id, owner_research=True)
+                    self._append('recover_orphan', 'successor_published', result=result, original_review_id=original_id)
             else:
                 review = prepare(controller)
                 review_id = review['review_id']

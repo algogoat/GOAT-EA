@@ -166,12 +166,29 @@ class OwnerResearchTests(unittest.TestCase):
 
 
 class DirectDemoRecoveryTests(OwnerResearchTests):
+    def recovery_agent(self, legacy=False):
+        from demo_agent import DemoAgent
+        agent=DemoAgent.__new__(DemoAgent);agent.root=self.c.root
+        agent._exclusive=lambda:nullcontext();agent._append=Mock()
+        binding=self.c.binding();patch.object(self.c,'binding',return_value=binding).start()
+        @contextmanager
+        def scoped(*args,**kwargs):
+            if legacy:
+                from studio_research_authority import demo_agent_scope, operation
+                with operation('demo-recover-orphan'), demo_agent_scope(root=self.c.root,
+                        installation_sha256=sha(self.c.install), account=self.c.session['account'], legacy_recovery=True):
+                    yield self.c,dict(demo=True,algo_trading=False)
+            else:
+                with self.direct():yield self.c,dict(demo=True,algo_trading=False)
+        agent._studio=scoped
+        return agent
+
     @contextmanager
-    def direct(self, operation_name='demo-recover-orphan'):
+    def direct(self, operation_name='demo-recover-orphan', account=None):
         from studio_research_authority import demo_agent_scope, operation
         c=self.c
         c.session.update(authority_kind='demo_direct',demo_only=True,
-                         account=dict(login='3000082754',server='Darwinex-Demo'))
+                         account=account or dict(login='3000082754',server='Darwinex-Demo'))
         write_json(c.root/'session.json',c.session)
         with operation(operation_name), demo_agent_scope(root=c.root,
                 installation_sha256=sha(c.install),account=c.session['account']):
@@ -205,7 +222,13 @@ class DirectDemoRecoveryTests(OwnerResearchTests):
         with self.assertRaisesRegex(ValueError,'broker-verified'):self.authorization()
         with self.direct('run-batch'),self.assertRaisesRegex(ValueError,'only for'):self.authorization()
         with self.direct(),self.assertRaisesRegex(ValueError,'only for'):
-            authorize(self.c,'orphan-recovery-reconcile-rejection','a'*32)
+            authorize(self.c,'owner-maintenance-prepare','a'*32)
+
+    def test_direct_recovery_uses_the_current_paired_customer_scope(self):
+        with self.direct(account=dict(login='55500012345',server='Customer-Demo')):
+            proof=self.authorization()
+            self.assertEqual(proof['authorization'],'broker_verified_demo_recovery')
+            self.assertEqual(proof['grant_request_id'],'human-grant')
 
     def test_direct_changed_archived_grant_human_owner_and_takeover_refuse(self):
         with self.direct():
@@ -261,6 +284,97 @@ class DirectDemoRecoveryTests(OwnerResearchTests):
         self.assertEqual(result['status'],'recovered')
         self.assertEqual(len(set(calls)),1)
         self.assertEqual(len(list(self.fixture.gate.glob('issued-*.json'))),1)
+
+    def rejected_review(self, *, consumed=False):
+        agent=self.recovery_agent()
+        with self.direct():
+            review=prepare(self.c)['review_id'];apply(self.c,review,confirmed=True)
+        self.fixture.consume(review,'ORPHAN_REVIEW_REJECTED',consumed=consumed)
+        plan=json.loads(plan_path(self.c,review).read_text())
+        return agent,review,plan
+
+    def test_edward_expired_review_rejection_retained_then_one_fresh_successor(self):
+        agent,original,plan=self.rejected_review()
+        request_id=plan['record']['request']['request_id']
+        request=(self.fixture.gate/'request.json').read_bytes()
+        receipt=(self.fixture.gate/('result-'+request_id+'.json')).read_bytes()
+        with self.direct():before=self.c.state()
+        with patch('studio_orphan_rejection.time.time',return_value=plan['record']['request']['expires_utc']+1):
+            result=agent.recover_orphan(wait_seconds=0)
+        successor=result['review_id']
+        self.assertNotEqual(successor,original)
+        self.assertEqual(result['status'],'published_not_recovered')
+        old=json.loads(plan_path(self.c,original).read_text())
+        self.assertEqual(old['status'],'rejected_settled')
+        retained=plan_path(self.c,original).parent/'rejection-settlement'
+        self.assertEqual((retained/'request.json').read_bytes(),request)
+        self.assertEqual((retained/'result.json').read_bytes(),receipt)
+        self.assertEqual((self.fixture.gate/('result-'+request_id+'.json')).read_bytes(),receipt)
+        self.assertEqual(len(list(self.fixture.gate.glob('issued-*.json'))),2)
+        with self.direct():self.assertEqual(self.c.state(),before)
+        new_request=(self.fixture.gate/'request.json').read_bytes()
+        self.assertEqual(agent.recover_orphan(wait_seconds=0)['status'],'reconcile_required')
+        self.assertEqual((self.fixture.gate/'request.json').read_bytes(),new_request)
+        self.fixture.consume(successor,'ORPHAN_REVIEW_REJECTED',consumed=False)
+        result=agent.recover_orphan(wait_seconds=0)
+        self.assertFalse(result['automatic_successor_available'])
+        self.assertEqual(len(list(self.fixture.gate.glob('issued-*.json'))),2)
+
+    def test_consumed_refusal_never_settles_or_reissues(self):
+        agent,review,plan=self.rejected_review(consumed=True)
+        original=(self.fixture.gate/'request.json').read_bytes()
+        result=agent.recover_orphan(wait_seconds=0)
+        self.assertEqual(result['status'],'reconcile_required')
+        self.assertEqual((self.fixture.gate/'request.json').read_bytes(),original)
+        self.assertEqual(len(list(self.fixture.gate.glob('issued-*.json'))),1)
+        self.assertFalse((plan_path(self.c,review).parent/'rejection-settlement').exists())
+
+    def test_explicit_observation_and_unexpired_refusal_do_not_replace(self):
+        agent,review,plan=self.rejected_review()
+        self.assertEqual(agent.recover_orphan(review,wait_seconds=0)['status'],'reconcile_required')
+        with self.assertRaisesRegex(ValueError,'expired'):
+            agent.recover_orphan(wait_seconds=0)
+        self.assertEqual(len(list(self.fixture.gate.glob('issued-*.json'))),1)
+
+    def test_existing_customer_review_can_recover_without_session_or_binary_adoption(self):
+        agent=self.recovery_agent(legacy=True)
+        before=(self.c.root/'session.json').read_bytes()
+        review=prepare(self.c)['review_id'];apply(self.c,review,confirmed=True)
+        self.fixture.consume(review,'ORPHAN_REVIEW_REJECTED',consumed=False)
+        plan=json.loads(plan_path(self.c,review).read_text())
+        with patch('studio_orphan_rejection.time.time',return_value=plan['record']['request']['expires_utc']+1):
+            result=agent.recover_orphan(wait_seconds=0)
+        self.assertEqual(result['status'],'published_not_recovered')
+        self.assertNotEqual(result['review_id'],review)
+        self.assertEqual((self.c.root/'session.json').read_bytes(),before)
+        self.assertEqual(self.c.session.get('authority_kind'),'native_human_control')
+
+    def test_legacy_scope_is_recovery_only_and_cannot_reserve_or_grant(self):
+        from studio_research_authority import demo_agent_scope, operation, require_demo_agent_scope
+        scope=dict(root=self.c.root,installation_sha256=sha(self.c.install),account=self.c.session['account'],legacy_recovery=True)
+        with operation('run-batch'),demo_agent_scope(**scope),self.assertRaisesRegex(ValueError,'broker-verified'):
+            require_demo_agent_scope(self.c.root,self.c.install,self.c.session)
+        with operation('demo-recover-orphan'),demo_agent_scope(**scope):
+            with self.assertRaisesRegex(ValueError,'exact agent job'):
+                self.c.submit('queue.reserve',dict(job_id='foreign'),'foreign-reserve')
+
+    def test_real_adapter_opens_legacy_recovery_without_adopting_session(self):
+        from demo_agent import DemoAgent, digest
+        c=self.c;agent=DemoAgent(c.root/'installation.json')
+        broker=dict(process=dict(pid=123,created_utc='fixed'),login=c.session['account']['login'],
+                    server=c.session['account']['server'],demo=True,algo_trading=False)
+        before=(c.root/'session.json').read_bytes()
+        def readback(expected):
+            agent.state_root.mkdir(parents=True,exist_ok=True)
+            write_json(agent.state_root/'verified-build.json',dict(ea_sha256=expected,process=broker['process']))
+        with patch.object(agent,'_owner_clear'),patch.object(agent,'_space'),patch.object(agent,'_broker',return_value=broker),patch.object(agent,'_readback_current',side_effect=readback) as verified:
+            with agent._studio('demo-recover-orphan',idle=True,recovery=True) as (opened,_):
+                self.assertEqual(opened.state()['owner'],'agent')
+                self.assertEqual(opened.session.get('authority_kind'),'native_human_control')
+            verified.assert_called_once_with(digest(agent.binary))
+            with self.assertRaisesRegex(ValueError,'Install and verify'):
+                with agent._studio('run-batch',idle=True):pass
+        self.assertEqual((c.root/'session.json').read_bytes(),before)
 
 
 if __name__=='__main__':unittest.main()

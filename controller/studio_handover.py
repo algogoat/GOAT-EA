@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+from studio_subprocess import background_creationflags
 import time
 import uuid
 
@@ -83,7 +84,7 @@ def stopped(c, databases, *, allow_qualification_client=False):
     """Read complete process identities, excluding only this invocation's parents."""
     command = 'ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
     raw = subprocess.check_output(['powershell', '-NoProfile', '-Command', command],
-                                  text=True, encoding='utf-8-sig', timeout=20)
+                                  text=True, encoding='utf-8-sig', timeout=20, creationflags=background_creationflags())
     rows = json.loads(raw)
     if not isinstance(rows, list):
         raise ValueError('Complete process inventory required')

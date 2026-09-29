@@ -159,3 +159,9 @@ described in README, with foreign/active ownership refused. A bounded experiment
 can use `run-batch --job-id <id> --max-seconds <1..86400>` after preparation;
 `batch-driver-status` reports retained progress. The driver requests stop at its
 deadline but requires actual native confirmation and must remain running.
+
+## Optimization model standard
+
+Read [the customer-agent optimization playbook](OPTIMIZATION-PLAYBOOK.md) for machine-aware model recommendations, timing, batch monitoring and audited repair/reporting.
+
+Use **1 minute OHLC (`Model=1`) for new optimization plans** unless the user explicitly requests another model. The Studio editor already selects OHLC for a fresh draft. Saved drafts and immutable jobs retain their explicit model; revise them into a new batch when the user changes the model. Keep export/replay model settings separate from the optimization model. Agent and human views show the model and each member of the active batch, including completed, failed, cancelled and remaining counts. These are native observations, not export qualification.

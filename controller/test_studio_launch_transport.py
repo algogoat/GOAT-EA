@@ -51,6 +51,11 @@ class LaunchTransportTests(unittest.TestCase):
         self.assertEqual(self.c.job('mixed')['status'], 'starting')
         self.assertFalse(result['native_launch_permitted'])
         self.assertEqual(self.source.read_bytes(), source_before)
+        from studio_native_request import _validate_material
+        args = self.c.native_args()
+        material = _validate_material(self.c.state(), self.c.job('mixed'),
+            **{key: value for key, value in args.items() if key != 'observation_path'})
+        self.assertEqual(material['sections']['TesterInputs']['RSI_Period'], '9||9||0||9||N')
 
     def test_changed_fixed_flag_refuses_even_when_manifest_hash_is_recomputed(self):
         item = self.manifest['jobs'][0]

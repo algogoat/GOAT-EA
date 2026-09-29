@@ -56,13 +56,14 @@ def phase(c,job_id,generation,expected,next_phase,**values):
     c.bridge.pump()
 
 
-def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None):
+def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resume_unissued=False):
     if c.session.get('authority_kind')!='demo_direct':
         raise ValueError('Config start is currently qualified for the direct demo lane only')
     guard_active_seed(c.root)
     state=c.state();job=c.job(job_id)
     generation=state['generation'] if expected_generation is None else expected_generation
-    if job['status']!='pending' or 'launch_intent' in job:
+    if type(resume_unissued) is not bool:raise ValueError('Explicit unissued resume flag required')
+    if not resume_unissued and (job['status']!='pending' or 'launch_intent' in job):
         raise ValueError('Only a new pending batch may use config start')
     checkpoint(c,job_id,generation)
     package=c.root/'packages'/job_id
@@ -76,11 +77,16 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None):
     before_native_dispatch(c,job)
     baseline=inspect_processes(binding)
     digest=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()
-    c.submit('queue.reserve',dict(job_id=job_id,configuration_sha256=job['configuration_sha256'],
-             package_sha256=digest),job_id+'-reserve',expected_generation=generation)
-    state=c.state()
-    intent=record_intent(c.store,c.terminal,c.run,job_id,package,actor='agent',
-                         revision=state['revision'],generation=generation)
+    if resume_unissued:
+        from studio_unissued_start import proof
+        with exclusive_gate(c.local/'native-gate'):
+            intent=proof(c,c.job(job_id),package)
+    else:
+        c.submit('queue.reserve',dict(job_id=job_id,configuration_sha256=job['configuration_sha256'],
+                 package_sha256=digest),job_id+'-reserve',expected_generation=generation)
+        state=c.state()
+        intent=record_intent(c.store,c.terminal,c.run,job_id,package,actor='agent',
+                             revision=state['revision'],generation=generation)
     if on_attempt is not None:on_attempt(intent)
     evidence=c.root/'attempts'/intent['attempt_id'];evidence.parent.mkdir(exist_ok=True)
     material=validate_launch_material(c.state(),c.job(job_id),**{k:v for k,v in args.items() if k!='evidence'})
@@ -90,6 +96,9 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None):
         checkpoint(c,job_id,generation);revalidate_processes(bound,baseline)
         c.runtime(require_idle=True,expected_batch_ongoing=False)
     with exclusive_gate(c.local/'native-gate'):
+        if resume_unissued:
+            from studio_unissued_start import native_absence
+            native_absence(c,c.job(job_id),package)
         arm_fields=_install_controls(c.state(),c.job(job_id),restart=True,**args,evidence=evidence,
                                      process_baseline=baseline,validate_ownership=owned)
         manifest=material['manifest']

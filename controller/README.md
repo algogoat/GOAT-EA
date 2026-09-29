@@ -1,5 +1,29 @@
 # GOAT Studio controller 1.49 beta candidate
 
+## Recover a stopped same-EA update without editing session files
+
+An older desktop update could rewrite `installation.json` while MT5 was closed
+even though Studio already had a session. The new receipt changes its binding
+hash, so normal controller commands refuse. Keep the desktop's
+`ea-update-backups/<plan-id>/installation.json` and all native attempt files.
+First reconcile any outstanding start/cancel request using the original
+receipt and the supported owned-attempt commands. Do not delete a request or
+permit to make this step pass. Then, with the selected terminal stopped, run:
+
+```text
+goat.exe studio --installation <current installation.json> same-ea-rebind
+```
+
+This demo-only metadata repair finds exactly one preserved receipt matching
+the bound session, requires identical EA bytes and all non-metadata receipt
+fields, a settled queue, no native request/permit, no pending human control,
+at least 5 GiB free disk and no running selected terminal. It backs up the
+prior session, changes only its installation hash,
+keeps the database unchanged and writes an append-only action log. It never
+grants control, launches MT5, clears an attempt or qualifies a batch. If it
+refuses, preserve its evidence and inspect the original attempt; do not edit
+the session or receipt by hand.
+
 ## Recovery after native takeover of an internal research continuation
 
 For the existing owner demo continuation only, a genuine native TAKE CONTROL

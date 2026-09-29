@@ -276,3 +276,16 @@ semantic-settings cases. Current source declaration coverage is90/90, and all115
 frozen staged SETs contain those names. Source tests are not native qualification:
 MetaEditor6230 compile and two-consecutive-member native smoke remain outstanding.
 No changes to the running Banker checkout, terminal or retained attempt.
+
+## CTRL-039 - Rebind only a settled demo session after old same-EA update
+
+Tester report `1b6ff765` described beta.10's stopped update rewriting the
+installation receipt while Studio still had unconsumed native attempts. The
+supported `studio same-ea-rebind` repairs only the local session hash after the
+original attempt is settled. It requires a stopped selected terminal, a
+demo-only session, exactly one preserved old desktop receipt matching the
+previous binding, identical EA and all non-metadata receipt fields, no native
+request/permit or human TAKE, 5 GiB free disk, and a fully settled queue. It retains the old session bytes,
+leaves the database unchanged and logs the action. It neither grants authority
+nor settles an attempt; a failed precondition leaves the receipt/session alone.
+Fixture tests pass; actual affected customer evidence has not been applied.

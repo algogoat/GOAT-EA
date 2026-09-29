@@ -328,3 +328,15 @@ retaining the processing request and receipt. A long-root Windows test proves
 the old name exceeds 260 characters, the new name fits, and bytes survive.
 Native customer update rehearsal and recovery of the existing failed archive
 are separate; no registry setting is changed.
+
+## EXP-028 - Match the back-export check to MT5's exclusive forward boundary
+
+The native AX26 USDJPY pilot optimized the intended seven axes but its back
+verification rerun included an extra day: 622 trades versus 617 in the back
+report. MT5 end dates are exclusive; remove the added 24 hours from only that
+verification window. Require both rounded profit and trade count to match.
+Candidate exports keep their original OOS dates, ETWRT model, thresholds and
+trading inputs. V1.49 build BD28 compiles on MetaEditor6230 with zero errors and
+warnings, EX5 a1c09bd858897b8a3c99ea46e8dfb05db0a89c5ad22c1d8baa717afce429a838.
+Date-expression and verification-predicate regressions pass. Native same-boundary
+replay and exact review remain required before customer publication.

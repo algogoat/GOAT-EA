@@ -9,7 +9,7 @@
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-OPTIMIZATION-AXES-26"
+#define   GOAT_BUILD_ID "V1.49-EXPORT-BACK-BOUNDARY-28"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 #include "GOAT_SequencePackage.mqh"
@@ -4398,7 +4398,7 @@ bool StartExporter(bool reportMode)
     if(!reportMode)
     {
      LogOrPrint(reportMode,"DEINIT: Running top Score Set on back history only",Key,EA_Name,Server);
-     strT.fromDate=TimeToString(xmlData.startD,TIME_DATE); strT.toDate=TimeToString(xmlData.forwardD+24*60*60,TIME_DATE);
+     strT.fromDate=TimeToString(xmlData.startD,TIME_DATE); strT.toDate=TimeToString(xmlData.forwardD,TIME_DATE);
      int initExportPass=RunAndStoreSet(0,"Mode_Operation="+(string)OP_Standard+"\n"+"EA_Desc="+strT.Strat+"@{mode=EXPORT}"+"\n",reportMode,g_allExports,true,EXPORT_START_ATTEMPTS); // Just Export enabling is required here
      if(initExportPass<0) LogOrPrint(reportMode,"DEINIT: Top-set export verification could not complete; continuing with candidate exports.",Key,EA_Name,Server);
      while(!MTTESTER::IsReady())
@@ -4583,7 +4583,8 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
    double profit=FetchMetric(exports[0],"Prf");
    double trades=FetchMetric(exports[0],"Trds");
 
-   if(Init && DoubleToString(profit,0)==DoubleToString(xmlData.Rows[0].back_profit,0))
+   if(Init && DoubleToString(profit,0)==DoubleToString(xmlData.Rows[0].back_profit,0)
+      && DoubleToString(trades,0)==DoubleToString(xmlData.Rows[0].back_trades,0))
    {
     ShowPrompt("Processing Optimization...","Top Set Verified","Running more sets for export...",""); Sleep(999);
     LogOrPrint(reportMode,"DEINIT: ✅ Top Set Export Verified, Export Profit="+DoubleToString(profit,0)+" Back Profit="+DoubleToString(xmlData.Rows[0].back_profit,0)

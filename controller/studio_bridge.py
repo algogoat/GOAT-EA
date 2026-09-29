@@ -49,10 +49,13 @@ def display_state(state):
                                                      for key in ('Symbol','Period')}})
                        for job in state.get('queue', [])]
     result['queue_detail'] = 'display_summary_only'
+    display_member_budget=200
     for summary, job in zip(result['queue'], state.get('queue', [])):
         if 'batch_members' in job['configuration']:
             summary['batch_member_count']=len(job['configuration']['batch_members'])
-            summary['batch_members']=[dict(index=index,symbol=member['tester']['Symbol'],period=member['tester']['Period']) for index,member in enumerate(job['configuration']['batch_members'])]
+            summary['batch_members']=[dict(index=index,symbol=member['tester']['Symbol'],period=member['tester']['Period']) for index,member in enumerate(job['configuration']['batch_members'][:display_member_budget])]
+            display_member_budget-=len(summary['batch_members'])
+            summary['batch_members_truncated']=len(summary['batch_members'])<summary['batch_member_count']
         if 'native_observation' in job:
             native=job['native_observation'].get('native',{})
             summary['native_progress']={key:native[key] for key in ('member_count','status_counts','completed_count','finished_count','active_indices') if key in native}
@@ -76,14 +79,19 @@ def display_state(state):
             label=status.removeprefix('native_')
             members.append(dict(index=index,symbol=member['tester']['Symbol'],
                 period=member['tester']['Period'],model=member['tester']['Model'],
-                strategy=member['strategy']['values'].get('EA_Desc',''),status=label))
+                strategy=member['strategy']['values'].get('EA_Desc','')[:160],status=label))
         counts={key:sum(row['status']==key for row in members)
                 for key in ('completed','error','cancelled','ongoing','queued','pending','unobserved')}
         finished=counts['completed']+counts['error']+counts['cancelled']
+        active_index=next((row['index'] for row in members if row['status'] in ('ongoing','queued')),0)
+        window_start=min(max(0,active_index-20),max(0,len(members)-200))
+        visible=members[window_start:window_start+200]
         result['batch_view']=dict(job_id=active['job_id'],status=active['status'],total=len(members),
             completed=counts['completed'],failed=counts['error'],cancelled=counts['cancelled'],
             remaining=len(members)-finished,active=counts['ongoing']+counts['queued'],
-            pending=counts['pending'],unobserved=counts['unobserved'],members=members,
+            pending=counts['pending'],unobserved=counts['unobserved'],members=visible,
+            window_start=window_start,window_end=window_start+len(visible),truncated=len(visible)<len(members),
+            detail_hint=('Showing active window; batch-status contains every member' if len(visible)<len(members) else 'All batch members shown'),
             observed_at=native.get('observed_at'))
     return result
 

@@ -226,3 +226,53 @@ ED20 pilot2 combined real OHLC reports and passed fixed-export settings verifica
 300 executable date/export-identity checks include the actual producer expression and native consumer predicate, uniqueness across timestamps/counters/rows, and rejection of the observed invalid ID. MetaEditor6230 compiled with0errors0warnings; EX5 SHA256 b9ff5a80d8ef8d739659d796f0ff1d2ff098f394efe80ca925946e31637b3042.62 focused Python checks pass. Native export qualification is still required. Failed ED20 pilot preserved and cancelled through the controller; no full115 batch start claimed.
 
 CTRL-029 interruption follow-up: persist successor phase=settling before the old pending fence is retired. Resume the retained settling/prepared/published successor after interruption; never fall through to an unlinked new request. Tests inject exits after old-fence removal, after new review preparation and after native publication with a lost reply.123focusedchecksPASS. This addresses review4129818979; original native rejection and successor identities remain retained.
+
+## CTRL-031 - Retire owned report junction after native completion
+
+After the existing finish path verifies native idle, terminal member outcomes, completed-member report pairs and exact attempt ownership, remove only the verified per-run installation junction. Bind the receipt to the frozen plan and journal retirement before unlink for interrupted replay. Preserve all data-root reports; refuse redirected or replaced paths and missing aliases without retained intent. Portable same-root runs keep their directory. Real Windows junction and controller finish tests pass; customer native batch smoke and bundled delivery remain pending. Running Banker checkout is unchanged.
+
+## CTRL-032 - Preserve human batch cancellation across agent starts
+
+V1.49 controller cancellation uses distinct latch value2. Human UI stop first records a separate persistent human intent and retains latch value1. New agent starts refuse legacy/unknown/human stops before consumption, and release only value2 through compare-and-swap after exact start validation. Only an explicitly confirmed human Start clears human intent. Historical entrypoints retain their behavior. Actual helper execution tests include concurrent human cancellation at latch creation and compare-and-swap; native MT5 qualification remains pending. No active Banker reload.
+
+## CTRL-033 - Combined customer V1.49 beta candidate
+
+Combine Banker-proven EI21 with owner-review-approved report-junction cleanup, preserved human cancellation and Vince-requested sequence checkbox spacing. Use one distinct V1.49-TESTER-SAFETY-24 binary/receipt and paired controller. Exact diff, native non-Banker demo rehearsal, update-only Edward recovery, account access checks and protected desktop/EA publication remain required before customer delivery.
+
+## CTRL-034 - Scope demo and onboarding inventory to the selected terminal
+
+Fresh customer setup must not require shutting down unrelated MT5 experiments.
+Monitor staging/launch now scans all Windows processes and proves both selected
+executable/data roots stopped, including renamed executables, while retaining
+known unrelated terminal identities in its read-only inventory. Missing named
+terminal paths, duplicate selected PIDs, changed protected peers and ambiguous
+roots remain refusals. Read-only onboarding status observes the same selected
+terminal; active research relaxes global peer enumeration only under the trusted
+fresh broker-verified demo scope bound to the current installation/session.
+Generic legacy/live process checks remain unchanged. 81 focused controller tests
+pass, including multi-terminal, duplicate/renamed target and unknown-path cases.
+Native VPS rehearsal is pending; no changes to the running Banker checkout.
+
+## CTRL-035 - Isolate each member's native optimization flags
+
+Banker evidence on September29 showed seven intended three-value axes per member,
+but native reports accumulated9,12 and14 varying axes from earlier members.
+Plain fixed SET scalars preserved MT5's prior optimization flags. Preserve source
+SET bytes and emit explicit inactive tuples only for typed optimizable scalars in
+native first-member and subsequent-member configs. V1.49 AX25 additionally reads
+all90 numeric input flags/values and active ladders through ParameterGetRange in
+OnTesterInit; refuse mismatches before queue acceptance or any passes. Strings,
+sinput metadata, intended values and explicit Y/N ladders remain unchanged.
+
+The report verifier now rejects extra varying input columns while admitting the
+known native performance metrics and constant metadata. Existing native reports
+for member1 still pass; members2–9 now refuse unexpected varying axes, retaining
+all original files. Actual executed-pass totals remain unknown; XML row counts
+are not presented as executed passes.
+
+Validation:72 focused Python cases; production MQL normalizer/readback exercised
+with a native-load/range shim across consecutive different strategies;300 existing
+semantic-settings cases. Current source declaration coverage is90/90, and all115
+frozen staged SETs contain those names. Source tests are not native qualification:
+MetaEditor6230 compile and two-consecutive-member native smoke remain outstanding.
+No changes to the running Banker checkout, terminal or retained attempt.

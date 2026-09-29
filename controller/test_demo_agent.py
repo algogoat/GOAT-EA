@@ -45,6 +45,9 @@ class MetaTrader:
         self.trade_mode = 0
         self.server = 'Darwinex-Demo'
         self.trade_allowed = False
+        self.account_trade_allowed = True
+        self.positions = ()
+        self.orders = ()
         self.exe = exe
         self.data = data
 
@@ -57,16 +60,17 @@ class MetaTrader:
 
     def account_info(self):
         return types.SimpleNamespace(login=self.login, server=self.server,
-                                     trade_mode=self.trade_mode)
+                                     trade_mode=self.trade_mode,
+                                     trade_allowed=self.account_trade_allowed)
 
     def shutdown(self):
         pass
 
     def positions_get(self):
-        return ()
+        return self.positions
 
     def orders_get(self):
-        return ()
+        return self.orders
 
 
 class DemoAgentTests(unittest.TestCase):
@@ -114,6 +118,31 @@ class DemoAgentTests(unittest.TestCase):
             self.mt5.login = 3000082754
             self.mt5.trade_allowed = True
             with self.assertRaisesRegex(ValueError, 'Algo Trading is on'):
+                self.agent._broker()
+
+    def test_read_only_demo_can_research_while_other_terminal_holds_positions(self):
+        self.mt5.account_trade_allowed = False
+        self.mt5.positions = (types.SimpleNamespace(symbol='EURUSD'),)
+        self.mt5.orders = (types.SimpleNamespace(symbol='USDJPY'),)
+        with patch('demo_agent.tester_state', return_value='idle'):
+            broker = self.agent._broker()
+            self.assertEqual((broker['positions'], broker['orders']), (1, 1))
+            self.assertIs(broker['account_trade_allowed'], False)
+            self.mt5.account_trade_allowed = True
+            with self.assertRaisesRegex(ValueError, 'trade-capable'):
+                self.agent._broker()
+            self.assertIs(self.agent._broker(idle=False)['account_trade_allowed'], True)
+            self.mt5.account_trade_allowed = None
+            with self.assertRaisesRegex(ValueError, 'trade-capable'):
+                self.agent._broker()
+            self.assertIsNone(self.agent._broker(idle=False)['account_trade_allowed'])
+            self.mt5.account_trade_allowed = False
+            self.mt5.trade_allowed = True
+            with self.assertRaisesRegex(ValueError, 'Algo Trading is on'):
+                self.agent._broker()
+            self.mt5.trade_allowed = False
+            self.mt5.trade_mode = 1
+            with self.assertRaisesRegex(ValueError, 'demo and exact paired'):
                 self.agent._broker()
 
     def test_other_exact_paired_demo_is_supported_but_switched_or_live_account_refuses(self):
@@ -262,6 +291,32 @@ class DemoAgentTests(unittest.TestCase):
         self.assertFalse(self.process.closed)
         self.assertEqual(self.binary.read_bytes(), b'old-ea')
 
+    def test_desktop_update_refuses_stopped_or_different_linked_account(self):
+        candidate=self.base/'candidate.ex5';candidate.write_bytes(b'new-ea')
+        monitor=self.base/'monitor.ini'
+        monitor.write_text('[Charts]\nProfileLast=GOAT-Studio-test\n[Experts]\nEnabled=0\n'
+                           'AllowLiveTrading=0\n[StartUp]\nExpert=GOAT-EA\\GOAT V1.49.ex5\n'
+                           'ExpertParameters=GOAT Studio Agent.set\nPeriod=M1\n')
+        with patch.object(self.process,'start') as start:
+            self.process.closed=True
+            with self.assertRaisesRegex(ValueError,'stopped before demo update'):
+                self.agent.install_build(candidate,digest(candidate),monitor,
+                                         require_running=True,linked_login='3000082754')
+            start.assert_not_called()
+        self.process.closed=False
+        with patch.object(self.process,'close') as close:
+            with self.assertRaisesRegex(ValueError,'differs from paired'):
+                self.agent.install_build(candidate,digest(candidate),monitor,
+                                         require_running=True,linked_login='3000109270')
+            close.assert_not_called()
+        foreign=self.base/'AGENT-START-HERE.md';foreign.write_text('unverified guide')
+        for fields in (dict(bundle_version='0.5.0-beta.11',agent_guide_path=foreign),
+                       dict(bundle_version='0.5.0-beta.11'),
+                       dict(bundle_version='../bad',agent_guide_path=Path(__file__).with_name('AGENT-START-HERE.md'))):
+            with self.assertRaisesRegex(ValueError,'bundle metadata'):
+                self.agent.install_build(candidate,digest(candidate),monitor,**fields)
+        self.assertEqual(self.binary.read_bytes(),b'old-ea')
+
     def test_install_reads_back_restarted_demo_before_batch_ready(self):
         candidate = self.base / 'candidate.ex5'; candidate.write_bytes(b'new-ea')
         old_sha = digest(self.binary)
@@ -294,10 +349,23 @@ class DemoAgentTests(unittest.TestCase):
 
         self.process.on_start = ea_readback
         with patch('demo_agent.tester_state', return_value='idle'):
-            result = self.agent.install_build(candidate, digest(candidate), monitor)
+            guide=Path(__file__).with_name('AGENT-START-HERE.md').resolve()
+            result = self.agent.install_build(candidate, digest(candidate), monitor,
+                require_running=True,linked_login='3000082754',
+                bundle_version='0.5.0-beta.11',agent_guide_path=guide)
             self.assertTrue(result['installed'])
+            updated=read_json(self.installation)
+            self.assertEqual(updated['bundle_version'],'0.5.0-beta.11')
+            self.assertEqual(updated['agent_guide_path'],str(guide))
+            self.assertEqual(read_json(self.root/'session.json')['installation_sha256'],sha(updated))
             self.assertTrue(self.agent.preflight()['ready_for_batch'])
             self.assertTrue(self.agent.install_build(candidate, digest(candidate), monitor)['already_installed'])
+            metadata_only=self.agent.install_build(candidate,digest(candidate),monitor,
+                require_running=True,linked_login='3000082754',
+                bundle_version='0.5.0-beta.12',agent_guide_path=guide)
+            self.assertTrue(metadata_only['already_installed'])
+            self.assertEqual(read_json(self.installation)['bundle_version'],'0.5.0-beta.12')
+            self.assertEqual(read_json(self.root/'session.json')['installation_sha256'],sha(read_json(self.installation)))
             self.process.closed = True  # MT5 exits after the verified swap.
             recovered = self.agent.install_build(candidate, digest(candidate), monitor)
             self.assertTrue(recovered['recovered'])

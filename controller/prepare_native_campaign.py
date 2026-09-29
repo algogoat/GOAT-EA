@@ -129,7 +129,12 @@ def prepare(plan_path, registry_path, output):
                 raise ValueError('Unsafe research profile')
             ini = '[Charts]\r\nProfileLast='+profile+'\r\n[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n[Tester]\r\n'
             ini += ''.join(f'{key}={value}\r\n' for key,value in tester.items())
-            ini += '[TesterInputs]\r\n' + updated
+            native_inputs=updated
+            if binding['ea_version']=='1.49':
+                from studio_optimization_inputs import explicit_optimization_inputs
+                schema=json.loads((Path(__file__).parent/'contracts/v149/inputs.json').read_text(encoding='utf-8-sig'))
+                native_inputs=explicit_optimization_inputs(updated,schema)
+            ini += '[TesterInputs]\r\n' + native_inputs
             staged.append((tag, raw, ini.encode('utf-16'), dict(job=job, run_alias=tag, tester=tester,
                            source_sha256=before['sha256'], staged_sha256=after['sha256'],
                            canonical_sha256=before['canonical_sha256'], report_relative=tester['Report'])))

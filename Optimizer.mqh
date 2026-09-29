@@ -1663,8 +1663,10 @@ void CStrategyTesterDialog::ApplyStudioStage(const int stage)
        StageMove(m_lblAdjustLots,label_x,y,true,pair_label);    StageMove(m_chkAdjustLots,label_x+pair_label+m_GapHoriz,y+(m_controlHeight-m_chkAdjustLots.Height())/2,true);
        StageMove(m_lblVerifyOOS,right_x,y,true,pair_label);     StageMove(m_chkVerifyOOS,right_control_x,y+(m_controlHeight-m_chkVerifyOOS.Height())/2,true); y+=row;
 #ifdef GOAT_SEQUENCE_EXPORT_V148
-       StageMove(m_lblSequenceData,label_x,y,true,m_labelWidth);
-       StageMove(m_chkSequenceData,control_x,y+(m_controlHeight-m_chkSequenceData.Height())/2,true); y+=row;
+       // Keep the long caption clear of the checkbox at compact chart widths.
+       int sequence_label_x=label_x+m_chkSequenceData.Width()+m_GapHoriz;
+       StageMove(m_chkSequenceData,label_x,y+(m_controlHeight-m_chkSequenceData.Height())/2,true);
+       StageMove(m_lblSequenceData,sequence_label_x,y,true,editor_width-(sequence_label_x-label_x)); y+=row;
        StageMove(m_lblSequenceCost,label_x,y,true,editor_width); y+=row;
 #else
        StageMove(m_lblDataSync,label_x,y,true,editor_width); y+=row;
@@ -3085,7 +3087,10 @@ void CStrategyTesterDialog::OnClickStart(void)
       MessageBox("Unable to save the run and export settings. Batch was not started.","Error",MB_OK|MB_ICONERROR);
       return;
    }
-   // Only an explicitly accepted new start releases the persistent cancellation latch.
+   // Only an explicitly accepted human start releases human or legacy cancellation.
+#ifdef GOAT_CANCEL_ORIGIN_V149
+   GlobalVariableDel(GOAT_BATCH_HUMAN_CANCEL_GV);
+#endif
    GlobalVariableDel(GOAT_BATCH_CANCELLED_GV);
    GoatBatchClearDeferredRestart();
    GlobalVariablesFlush();
@@ -3119,6 +3124,10 @@ void CStrategyTesterDialog::OnClickStop(void)
 
    // Disarm callbacks and terminal relaunch before requesting tester stop.
    // Persist even when the queue is missing or cannot be rewritten.
+#ifdef GOAT_CANCEL_ORIGIN_V149
+   // Separate persistent intent wins even if another native writer races the latch.
+   GlobalVariableSet(GOAT_BATCH_HUMAN_CANCEL_GV,1.0);
+#endif
    GlobalVariableSet(GOAT_BATCH_CANCELLED_GV,1.0);
    GlobalVariableDel("BatchOnGoing");
    GlobalVariableDel("TerminalRunning");
@@ -3327,6 +3336,9 @@ bool ActivatePending(string QueueItem,string Key_,string EA_Name_,string Server_
    EnsureCommonFolderTree(strategyDir);
    string testerInputs = GetFileContent(inputsPath);
    if(testerInputs=="") {WriteLog("Cannot Activate Queue Item. Inputs file missing or empty: "+inputsPath,true,Key_,EA_Name_,Server_); return false;}
+#ifdef GOAT_TESTER_SEMANTIC_V149
+   testerInputs=GoatStudioExplicitOptimizationInputs(testerInputs);
+#endif
    string configBody=(QueueItem=="" ? QueueItem : QueueItem+"\r\n[TesterInputs]\r\n"+testerInputs);
    string auditConfig=strategyDir+"\\config.ini";
    string activeConfig=GoatOptActiveConfigPath(EA_Name_,Server_);

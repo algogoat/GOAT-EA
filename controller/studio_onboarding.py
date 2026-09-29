@@ -58,7 +58,8 @@ def onboarding_status(controller):
         result['next_action']=steps[-1]['action']
         return result
     try:
-        processes = inspect_processes(process_binding(controller))
+        processes = inspect_processes(process_binding(controller),
+                    observation_roots=[str(Path(controller.install['terminal_executable']).parent),controller.install['terminal_data_root']])
         step('terminal_process', 'complete', 'Selected terminal is running; exact executable process observed')
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         processes = None
@@ -157,7 +158,11 @@ def monitor_prepare(controller, symbol):
     target = controller.root/'monitor-profile.json'
     with exclusive_gate(controller.local/'native-gate'):
         require_idle_control(controller, session)
-        inspect_processes(process_binding(controller), research_running=False)
+        processes=inspect_processes(process_binding(controller), research_running=False, selected_stopped=True,
+                          absent_roots=[str(Path(controller.install['terminal_executable']).parent),controller.install['terminal_data_root']])
+        with (controller.root/'monitor-inventory.jsonl').open('a',encoding='utf-8') as output:
+            output.write(json.dumps(dict(operation='monitor_prepare',process_inventory=processes),sort_keys=True)+'\n')
+            output.flush();os.fsync(output.fileno())
         if target.exists():
             if read_json(target)!=receipt:
                 raise ValueError('A different monitor profile is already prepared; preserve existing setup')
@@ -294,7 +299,8 @@ def monitor_launch(controller, attempt_id):
         receipt = read_json(controller.root/'monitor-profile.json')
         verify_monitor_profile(controller, receipt)
         portable = saved_launch_policy(controller, session)
-        inspect_processes(process_binding(controller), research_running=False)
+        processes=inspect_processes(process_binding(controller), research_running=False, selected_stopped=True,
+                          absent_roots=[str(Path(controller.install['terminal_executable']).parent),controller.install['terminal_data_root']])
         # MT5 can open a profile without applying its embedded expert inputs.
         # Explicit native startup is required for a reproducible monitor attach.
         preset = Path(controller.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set'
@@ -315,7 +321,7 @@ def monitor_launch(controller, attempt_id):
         if portable: arguments.append('/portable')
         intent = dict(schema_version=1, attempt_id=attempt_id, status='launch_intent',
                       installation_sha256=sha(controller.install), run_id=session['run_id'],
-                      created_at=datetime.now(timezone.utc).isoformat(), execution_ready=False,
+                      created_at=datetime.now(timezone.utc).isoformat(), execution_ready=False, process_inventory=processes,
                       native_qualification=False, startup_config=str(config),
                       startup_sha256=hashlib.sha256(startup).hexdigest(), preset_sha256=hashlib.sha256(expected).hexdigest())
         write_json(target, intent)

@@ -41,3 +41,46 @@ def verify(receipt):
           or source.resolve()!=target.resolve()):
         raise ValueError('Owned report junction changed')
     if not target.is_dir():raise ValueError('Report target disappeared')
+
+
+def retire(binding, relative, receipt, evidence):
+    """Remove only this run's verified alias after the caller proves native idle.
+
+    The journal permits replay after unlink but never adopts an already missing
+    or redirected path. Target reports and portable same-root paths stay intact.
+    """
+    from studio_bridge import write_json
+    from studio_installation import read_json
+    source,target=paths(binding,relative)
+    expected=dict(kind='same_root' if source==target else 'owned_run_junction',
+                  path=str(source),target=str(target))
+    if receipt!=expected:raise ValueError('Report cleanup receipt differs from frozen run')
+    journal=safe_path(Path(evidence)/'report-bridge-retirement.json')
+    retained=read_json(journal) if journal.exists() else None
+    if retained is not None and (retained.get('schema_version')!=1
+            or retained.get('receipt')!=expected
+            or retained.get('phase') not in ('retiring','retired')):
+        raise ValueError('Report cleanup journal changed')
+    safe_path(source.parent)
+    safe_path(target)
+    if not target.is_dir():raise ValueError('Report target disappeared')
+    if source==target:
+        result=dict(schema_version=1,receipt=expected,phase='retired',removed=False)
+        write_json(journal,result)
+        return result
+    exists=os.path.lexists(source)
+    if retained is not None and retained['phase']=='retired':
+        if exists:raise ValueError('Retired report alias was recreated')
+        return retained
+    if exists:
+        verify(expected)
+        if retained is None:
+            write_json(journal,dict(schema_version=1,receipt=expected,phase='retiring'))
+        # RemoveDirectory on a verified junction removes the link, not its target.
+        # Deliberately no recursive traversal or deletion of report contents.
+        source.rmdir()
+    elif retained is None:
+        raise ValueError('Report alias missing without retirement intent')
+    result=dict(schema_version=1,receipt=expected,phase='retired',removed=True)
+    write_json(journal,result)
+    return result

@@ -9,11 +9,12 @@
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-EXPORT-IDENTITY-21"
+#define   GOAT_BUILD_ID "V1.49-OPTIMIZATION-AXES-26"
+#define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 #include "GOAT_SequencePackage.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
-#define   GOAT_BUILD_MARKER "EI21"
+#define   GOAT_BUILD_MARKER "AX26"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -56,6 +57,7 @@ sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without star
 #define CONTROLS_DIALOG_COLOR_CAPTION_TEXT  C'231,238,246'
 #define CONTROLS_DIALOG_COLOR_CLIENT_BG     C'6,10,18'
 #define CONTROLS_DIALOG_COLOR_CLIENT_BORDER C'35,51,72'
+#include "GOATOptimizationInputs.mqh"
 #include "Optimizer.mqh"
 #define GOAT_DASH_AI_LAUNCH_POLICY_V147 1
 #define GOAT_DEPLOY_STARTUP_DIAGNOSTICS 1
@@ -3891,11 +3893,17 @@ bool g_batchStartupAccepted=false;
 int OnTesterInit()
   {
    g_batchStartupAccepted=false;
+   if(!GoatBatchStartAllowed()) return INIT_FAILED;
    Print(EA_Name+": "+Symbol()+" Optimization Initialization.");//,TerminalInfoString(TERMINAL_DATA_PATH));
    Sleep(100);
+   if(!GoatBatchStartAllowed()) return INIT_FAILED;
    bool seedFarming=SeedFarmingPrepareReceiver();
    if(!seedFarming && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)==0.0 && GlobalVariableGet("BatchOnGoing")!=0)
    {
+    string axis_error="";
+    string intended_inputs=GetFileContent(GoatOptStrategyDir(EA_Name,Server,EA_Desc)+"\\Inputs."+Key);
+    if(!GoatStudioVerifyOptimizationInputs(intended_inputs,EA_Desc,axis_error))
+      {Print("GOAT optimization refused before passes: ",axis_error);return INIT_FAILED;}
     bool terminalWasRunning=(GlobalVariableGet("TerminalRunning")!=0);
     if(!terminalWasRunning) GlobalVariableSet("TerminalRunning",1.0);
     WriteLog("INIT: ➡️➡️➡️➡️➡️ Batch Optimization Initialized, "+Symbol()+" ➡️➡️➡️➡️➡️",false,Key,EA_Name,Server);
@@ -3936,6 +3944,7 @@ int OnTesterInit()
     FileWrite(FileTester_handle,0.02);
     FileClose(FileTester_handle);
    }
+   if(!GoatBatchStartAllowed()) {g_batchStartupAccepted=false;return INIT_FAILED;}
    return INIT_SUCCEEDED;
   }
 //-----------------------------------------------------------------------------------

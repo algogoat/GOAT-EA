@@ -24,7 +24,9 @@ bool GoatBatchReleaseControllerCancel(void)
   {
    if(GlobalVariableGet(GOAT_BATCH_HUMAN_CANCEL_GV)!=0.0) return false;
    double cancelled=GlobalVariableGet(GOAT_BATCH_CANCELLED_GV);
-   if(cancelled==0.0) return true;
+   if(cancelled==0.0)
+      return GlobalVariableGet(GOAT_BATCH_HUMAN_CANCEL_GV)==0.0
+         && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)==0.0;
    if(cancelled!=2.0) return false;
    // Compare-and-swap cannot erase a human stop written since the read.
    if(!GlobalVariableSetOnCondition(GOAT_BATCH_CANCELLED_GV,0.0,2.0)) return false;

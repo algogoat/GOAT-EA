@@ -8,10 +8,16 @@ const executable = native.replace(/^\uFEFF/, '').replace(/^#.*$/gm, '')
   .replace(/\b(?:void|bool) (GoatBatch\w+)\(void\)/g, 'function $1()')
   .replace(/\bdouble /g, 'let ');
 const values = new Map();
-let beforeCas = null, beforeCreate = null;
+let beforeCas = null, beforeCreate = null, afterRead = null;
+const readCounts = new Map();
 const c = {
   GOAT_BATCH_CANCELLED_GV: 'cancel', GOAT_BATCH_HUMAN_CANCEL_GV: 'human',
-  GlobalVariableGet: k => values.get(k) ?? 0,
+  GlobalVariableGet: k => {
+    const value = values.get(k) ?? 0;
+    const count = (readCounts.get(k) ?? 0) + 1; readCounts.set(k, count);
+    afterRead?.(k, count);
+    return value;
+  },
   GlobalVariableCheck: k => values.has(k),
   GlobalVariableTemp: k => {
     if (beforeCreate) { const f = beforeCreate; beforeCreate = null; f(); }
@@ -32,7 +38,7 @@ vm.createContext(c); vm.runInContext(executable, c);
 let checks = 0;
 function reset(value, human = 0) {
   values.clear(); if (value !== undefined) values.set('cancel', value);
-  values.set('human', human); beforeCas = beforeCreate = null;
+  values.set('human', human); beforeCas = beforeCreate = afterRead = null; readCounts.clear();
 }
 for (const v of [1, -1, 3, 99]) {
   reset(v); c.GoatBatchRecordControllerCancel();
@@ -56,6 +62,27 @@ assert.equal(values.get('cancel'), 1); checks++;
 reset(2); beforeCas = () => values.set('human', 1);
 assert.equal(c.GoatBatchReleaseControllerCancel(), false);
 assert.equal(values.get('human'), 1); checks++;
+// A stop can arrive after the empty cancellation cell was read. Exercise both
+// globals independently, including the first half of the UI's marker-then-latch
+// publication. Run the production helper, not a duplicate of its decision logic.
+for (const initial of [undefined, 0]) {
+  for (const changed of [['human'], ['cancel'], ['human', 'cancel']]) {
+    reset(initial);
+    afterRead = (key, count) => {
+      if (key === 'cancel' && count === 1) {
+        for (const name of changed) values.set(name, 1);
+      }
+    };
+    assert.equal(c.GoatBatchReleaseControllerCancel(), false);
+    for (const name of changed) assert.equal(values.get(name), 1);
+    checks++;
+  }
+  // Stop begins after the first human-marker read, before the latch is read.
+  reset(initial);
+  afterRead = (key, count) => { if (key === 'human' && count === 1) values.set('human', 1); };
+  assert.equal(c.GoatBatchReleaseControllerCancel(), false); checks++;
+  reset(initial); assert.equal(c.GoatBatchReleaseControllerCancel(), true); checks++;
+}
 // A human stop while the controller creates an absent latch remains dominant.
 reset(undefined); beforeCreate = () => { values.set('human', 1); values.set('cancel', 1); };
 c.GoatBatchRecordControllerCancel();

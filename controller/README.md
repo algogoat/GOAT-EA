@@ -969,3 +969,9 @@ Use **1 minute OHLC (`Model=1`) for new optimization plans** unless the user exp
 ### Stop when the selected MT5 has exited
 
 `demo_agent.py --installation <receipt> stop --monitor-config <existing-monitor-only.ini>` may reopen the exact previously verified demo monitor solely to consume an owned cancellation. It retains STOP, verifies genuine retained ownership and exact binary/preset, refuses a live supervisor, validates the existing attempt and publishes cancel before launch. The INI must contain no Tester section and must keep Algo Trading off. It never creates a grant or starts research. Expired, consumed, foreign or refused cancellation evidence is not replayed. Success still requires the normal broker/native finish readback; monitor launch alone is not a confirmed stop.
+
+### Report-capable first-member startup
+
+The direct-demo bounded driver prepares a new package with the selected passive monitor profile and starts its first member through /config. This applies configuration-only Report settings that an in-place tester Start click cannot establish. It reuses the actual grant and the existing deadline. Native arming, close issuance, confirmed exit and launch issuance are retained separately; interrupted starts are never replayed. The exact native attempt is saved before any close so the normal stop/reconcile tools can recover it.
+
+MT5 resolves configured reports relative to its installation while GOAT reads its local data sandbox. A fresh, audited per-run junction connects only those owned report locations when they differ. Existing output directories or links are not overwritten. Paths and startup bytes are rechecked before launch. Older prepared packages remain unchanged and must be copied into a new preparation for this route. Native report pair/export completion must qualify the installed build; source tests and process launch do not establish that result.

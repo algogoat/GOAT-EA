@@ -147,10 +147,25 @@ class Controller:
         from studio_protected_peer import binding_fields
         i=self.install;s=self.session
         peer=binding_fields(self)
+        extra={}
+        if s.get('authority_kind')=='demo_direct':
+            from studio_strategy_settings import read_values
+            profile=read_json(self.root/'monitor-profile.json')
+            name=profile.get('profile_name','')
+            if not re.fullmatch(r'GOAT-Studio-[A-Za-z0-9_-]{1,100}',name):
+                raise ValueError('Bound passive monitor profile required')
+            preset=Path(i['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set'
+            raw=preset.read_bytes()
+            if read_values(raw)!=dict(Mode_Operation='11',Studio_ReadOnlyMonitor='true',
+                                      Studio_MonitorRunPath='',EA_Desc='Studio Monitor'):
+                raise ValueError('Exact passive monitor preset required')
+            extra=dict(research_profile=name,report_location_bridge='installation_to_data_v1',
+                startup_monitor=dict(expert=i['ea_relative_path'],preset=preset.name,
+                                     preset_sha256=hashlib.sha256(raw).hexdigest()))
         return dict(research_terminal=i['terminal_executable'],research_data_root=i['terminal_data_root'],
                     common_files_root=i['common_files_root'],ea_relative_path=i['ea_relative_path'],
                     ea_sha256=i['ea_sha256'],ea_version=i['ea_version'],account_server=s['account']['server'],
-                    account_confirmation_pending=False,live_trading_allowed=False,**({'protected_data_roots':[]}|peer))
+                    account_confirmation_pending=False,live_trading_allowed=False,**({'protected_data_roots':[]}|peer),**extra)
 
     def native_args(self):
         i=self.install
@@ -219,6 +234,10 @@ class Controller:
         result=stage_job(self.store,self.terminal,self.run,job_id,registry,revision,self.binding(),package)
         write_json(self.root/'packages'/(job_id+'.source.json'),dict(set_path=str(Path(set_path).resolve()),set_sha256=info['sha256']))
         return dict(job_id=job_id,package=str(package),manifest=result['receipt'],native_started=False)
+
+    def start_config(self,job_id,*,expected_generation=None,on_attempt=None):
+        from studio_config_start import start
+        return start(self,job_id,expected_generation=expected_generation,on_attempt=on_attempt)
 
     def start(self,job_id,*,expected_generation=None):
         from studio_seed_slot import guard_active_seed

@@ -197,3 +197,7 @@ qualification are separate from full native EA/installed-package qualification.
 ## CTRL-024 — Visible agent batch and OHLC standard (2026-09-28)
 
 Owner-approved: show complete active batch in agent view, per-member model/status and total/completed/failed/cancelled/remaining counts. Child rows are read-only and cannot cancel/remove their parent. New optimization plans use 1-minute OHLC; explicit historical jobs remain immutable. Prevent background helper consoles and reduce expensive driver observations to 30 seconds. Focused visibility/process/driver tests pass; compile/native qualification tracked in PR. XML diagnostics name the scanned report root and file count. Report path/recovery fix remains a separate follow-up, not claimed complete here.
+
+## CTRL-025 — Report-capable first-member launch
+
+Vince-authorized EA/controller correction: direct-demo bounded run-batch uses a retained native arm → normal close → verified exit → exact /config launch. Preserve the existing passive-monitor profile and native owner grant, retain the original budget/attempt before any close, refuse replay or identity drift, and use a per-run installation-to-data report junction. The V1.49 arm action clears an old cancellation latch only after validating and durably consuming the newly authorized start; old versions retain their behavior. Native next-member restart helpers launch headlessly and report launch failure without closing MT5. Source tests/compile are recorded in the PR; first real OHLC report/export qualification is still pending.

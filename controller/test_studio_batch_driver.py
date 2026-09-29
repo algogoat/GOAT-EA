@@ -355,6 +355,24 @@ class BatchDriverTests(unittest.TestCase):
                 self.assertEqual(self.c.cancels, 1)
                 self.c.clock.wall += 50
 
+    def test_config_start_retains_attempt_before_interrupted_close_and_stop_can_resume(self):
+        self.c.session['authority_kind']='demo_direct'
+        write_json(self.c.root/'session.json',self.c.session)
+        self.c.bridge=SimpleNamespace(root=self.c.local/self.c.run)
+        def config_start(job_id,*,expected_generation,on_attempt):
+            self.c.start(job_id,expected_generation=expected_generation)
+            on_attempt(self.c.current['launch_intent'])
+            raise OSError('close readback interrupted')
+        self.c.start_config=config_start
+        result=self.drive(max_seconds=86400)
+        self.assertEqual(result['status'],'start_uncertain')
+        self.assertEqual(result['attempt_id'],'a'*64)
+        stop=self.c.root/'demo-agent/STOP';stop.parent.mkdir();stop.write_text('{}')
+        resumed=self.drive(resume=True)
+        self.assertTrue(resumed['stopped'])
+        self.assertEqual((self.c.starts,self.c.cancels),(1,1))
+        self.assertEqual(resumed['deadline_wall'],result['deadline_wall'])
+
     def test_uncertain_start_never_retried_or_adopted_on_resume(self):
         self.c.start_error = True
         result = self.drive(max_seconds=3)

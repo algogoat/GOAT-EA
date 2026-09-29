@@ -216,7 +216,17 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
             try:
                 if _binding(controller, job_id) != binding:
                     raise ValueError('Batch authority changed before dispatch')
-                controller.start(job_id, expected_generation=binding['generation'])
+                def retain_attempt(intent):
+                    if (not re.fullmatch(r'[a-f0-9]{64}',intent.get('attempt_id',''))
+                            or intent.get('package_sha256')!=binding['package_sha256']):
+                        raise ValueError('Config start returned a different attempt')
+                    record['attempt_id']=intent['attempt_id']
+                    _owned_attempt(controller,record)
+                    _save(path,record,clock)
+                if controller.session.get('authority_kind')=='demo_direct' and hasattr(controller,'start_config'):
+                    controller.start_config(job_id,expected_generation=binding['generation'],on_attempt=retain_attempt)
+                else:
+                    controller.start(job_id,expected_generation=binding['generation'])
                 intent = controller.job(job_id).get('launch_intent', {})
                 if (not re.fullmatch(r'[a-f0-9]{64}', intent.get('attempt_id', ''))
                         or intent.get('package_sha256') != binding['package_sha256']):

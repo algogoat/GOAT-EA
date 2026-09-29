@@ -9,10 +9,11 @@
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-BATCH-VISIBILITY-18"
+#define   GOAT_BUILD_ID "V1.49-CONFIG-REPORT-19"
+#define GOAT_CONFIG_REPORT_START_V149
 #include "GOAT_SequencePackage.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
-#define   GOAT_BUILD_MARKER "WF17"
+#define   GOAT_BUILD_MARKER "CR19"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -4690,7 +4691,7 @@ void GoatTimerBody(void)
          }
       }
       TesterDialog.OnClickRefresh(true);
-      TesterDialog.Caption("GOAT / AGENT CONNECTION / V"+GOAT_VERSION_LABEL+" / WORKER DIAGNOSTIC 15R2");
+      TesterDialog.Caption("GOAT / Optimization Studio / "+GOAT_BUILD_ID);
       return;
    }
    if(Mode_Operation==Operation_Batch && GoatBatchDeferredRestartPending())

@@ -195,9 +195,15 @@ string GoatStudioExecuteRequest(const string body,const string request_hash)
          || AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO
          || login!=(string)AccountInfoInteger(ACCOUNT_LOGIN) || server!=AccountInfoString(ACCOUNT_SERVER)
          || GlobalVariableGet("BatchOnGoing")!=0 || GlobalVariableGet("GOAT_BatchRestartPending")!=0
-         || GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0) return "RESTART_RUNTIME_CHANGED";
+#ifndef GOAT_CONFIG_REPORT_START_V149
+         || GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0
+#endif
+         ) return "RESTART_RUNTIME_CHANGED";
       if(!GoatStudioWriteUtf8("GOATStudio\\native-gate\\arm-intent-"+id+".json",
          "{\"request_sha256\":"+GoatStudioQuote(request_hash)+",\"startup_sha256\":"+GoatStudioQuote(startup_hash)+"}")) return "ARM_INTENT_WRITE_FAILED";
+#ifdef GOAT_CONFIG_REPORT_START_V149
+      GlobalVariableDel(GOAT_BATCH_CANCELLED_GV);
+#endif
       if(GlobalVariableSet("BatchOnGoing",1.0)==0) return "ARM_FAILED";
       GlobalVariablesFlush();
       return "RESTART_ARMED_RECONCILE";

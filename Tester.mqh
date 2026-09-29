@@ -5,8 +5,13 @@
 #include "XmlProcessor.mqh"
 
 #import "shell32.dll"
-int ShellExecuteW(int hWnd, string lpOperation, string lpFile, string lpParameters, string lpDirectory, int nShowCmd);
+long ShellExecuteW(long hWnd, string lpOperation, string lpFile, string lpParameters, string lpDirectory, int nShowCmd);
 #import
+#ifdef GOAT_CONFIG_REPORT_START_V149
+#import "kernel32.dll"
+uint GetSystemDirectoryW(ushort &buffer[],uint size);
+#import
+#endif
 // Import the Windows API function to get the current process ID
 //#import "kernel32.dll"
 ////int GetCurrentProcessId();
@@ -18,7 +23,7 @@ string PowerShellSingleQuoted(string text)
    return text;
   }
 //+------------------------------------------------------------------+
-void AddCommand(string configPath,string guardPath="",string launchId="")
+bool AddCommand(string configPath,string guardPath="",string launchId="")
   {
    //if(!TerminalInfoInteger(TERMINAL_DLLS_ALLOWED)) MessageBox()
    string terminal_path = TerminalInfoString(TERMINAL_PATH) + "\\terminal64.exe";
@@ -71,7 +76,20 @@ void AddCommand(string configPath,string guardPath="",string launchId="")
    // Parameters to run PowerShell in no-profile, bypass execution policy
    string parameters = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"" + psCommand + "\"";
    // Launch PowerShell
+#ifdef GOAT_CONFIG_REPORT_START_V149
+   // A hidden PowerShell console can flash before it hides itself. Headless
+   // conhost never creates that viewport; resolve both executables explicitly.
+   ushort system_buffer[]; ArrayResize(system_buffer,32768);
+   uint system_length=GetSystemDirectoryW(system_buffer,(uint)ArraySize(system_buffer));
+   if(system_length==0 || system_length>=(uint)ArraySize(system_buffer)) return false;
+   string system_dir=ShortArrayToString(system_buffer,0,(int)system_length);
+   string launcher=system_dir+"\\conhost.exe";
+   string shell=system_dir+"\\WindowsPowerShell\\v1.0\\powershell.exe";
+   return ShellExecuteW(0,"open",launcher,"--headless \""+shell+"\" "+parameters,"",0)>32;
+#else
    ShellExecuteW(0, "open", "powershell.exe", parameters, "", 0);
+   return true;
+#endif
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 struct SettingsStrings

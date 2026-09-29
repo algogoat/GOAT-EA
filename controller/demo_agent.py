@@ -561,7 +561,7 @@ class DemoAgent:
                      installation_sha256=sha(checked), session_sha256=sha(session))
 
     @contextmanager
-    def _studio(self, operation_name, *, idle, owner_required=True, job_id=None):
+    def _studio(self, operation_name, *, idle, owner_required=True, job_id=None, recovery=False):
         # The local adapter is the only entry to the demo policy. The broker
         # supplies the demo bit; the saved session cannot assert it by itself.
         if owner_required:
@@ -584,11 +584,49 @@ class DemoAgent:
                 root=self.root, installation_sha256=sha(self.install),
                 account=dict(login=broker['login'], server=broker['server']),
                 job_id=job_id):
-            controller = Controller(self.installation_path).open()
+            controller = Controller(self.installation_path).open(recovery=recovery)
             try:
                 yield controller, broker
             finally:
                 controller.store.close()
+
+    def recover_orphan(self, review_id=None, *, wait_seconds=15):
+        """Publish one proven idle orphan recovery, or observe its retained result.
+
+        Never grants control, pretends human confirmation, replays an uncertain
+        request, or starts research. The EA remains the only flag writer.
+        """
+        from studio_orphan_recovery import prepare, apply, status
+        if type(wait_seconds) not in (int, float) or not 0 <= wait_seconds <= 60:
+            raise ValueError('Recovery observation wait must be between 0 and 60 seconds')
+        with self._exclusive(), self._studio('demo-recover-orphan', idle=True, recovery=True) as (controller, broker):
+            for worker in (self.root / 'demo-agent/workers').glob('*.json'):
+                if self._worker_alive(read_json(worker)):
+                    raise ValueError('A live demo driver/worker must finish before orphan recovery')
+            pending = self.root / 'orphan-recovery-pending.json'
+            if review_id is None and pending.exists():
+                review_id = read_json(pending)['review_id']
+            if review_id is not None:
+                result = status(controller, review_id)
+            else:
+                review = prepare(controller)
+                review_id = review['review_id']
+                self._append('recover_orphan', 'reviewed', broker=broker, review=review)
+                result = apply(controller, review_id, owner_research=True)
+                self._append('recover_orphan', 'published', result=result)
+            deadline = time.monotonic() + wait_seconds
+            while result['status'] in ('published_not_recovered', 'reconcile_required') and time.monotonic() < deadline:
+                time.sleep(.5)
+                try:
+                    result = status(controller, review_id)
+                except ValueError as exc:
+                    if str(exc) != 'Runtime policy mismatch: batch_ongoing':
+                        raise
+                    # A consumed recovery receipt may precede the next UI sample.
+                    # Retry that read only; never publish another native action.
+                    result = dict(result, last_readback_error=str(exc))
+            self._append('recover_orphan', 'observed', broker=broker, result=result)
+            return result
 
     def prepare_batch(self, batch_id, plan):
         from studio_batch import prepare_batch
@@ -745,6 +783,8 @@ def main(argv=None):
     stop = commands.add_parser('stop')
     stop.add_argument('--monitor-config', type=Path, help='Exact monitor-only INI for cancellation recovery after MT5 exits; STOP remains set')
     commands.add_parser('clear-stop')
+    orphan = commands.add_parser('recover-orphan')
+    orphan.add_argument('--review-id', help='Observe this retained recovery only; never resend')
     launch = commands.add_parser('launch-terminal')
     launch.add_argument('--monitor-config', type=Path, required=True)
     install = commands.add_parser('install-build')
@@ -775,6 +815,7 @@ def main(argv=None):
         elif args.command == 'disk-status': result = agent.disk_status()
         elif args.command == 'stop': result = agent.stop(args.monitor_config)
         elif args.command == 'clear-stop': result = agent.clear_stop()
+        elif args.command == 'recover-orphan': result = agent.recover_orphan(args.review_id)
         elif args.command == 'launch-terminal': result = agent.launch_terminal(args.monitor_config)
         elif args.command == 'install-build': result = agent.install_build(args.candidate, args.sha256, args.monitor_config)
         elif args.command == 'prepare-batch': result = agent.prepare_batch(args.batch_id, args.plan)

@@ -238,3 +238,17 @@ V1.49 controller cancellation uses distinct latch value2. Human UI stop first re
 ## CTRL-033 - Combined customer V1.49 beta candidate
 
 Combine Banker-proven EI21 with owner-review-approved report-junction cleanup, preserved human cancellation and Vince-requested sequence checkbox spacing. Use one distinct V1.49-TESTER-SAFETY-24 binary/receipt and paired controller. Exact diff, native non-Banker demo rehearsal, update-only Edward recovery, account access checks and protected desktop/EA publication remain required before customer delivery.
+
+## CTRL-034 - Scope demo and onboarding inventory to the selected terminal
+
+Fresh customer setup must not require shutting down unrelated MT5 experiments.
+Monitor staging/launch now scans all Windows processes and proves both selected
+executable/data roots stopped, including renamed executables, while retaining
+known unrelated terminal identities in its read-only inventory. Missing named
+terminal paths, duplicate selected PIDs, changed protected peers and ambiguous
+roots remain refusals. Read-only onboarding status observes the same selected
+terminal; active research relaxes global peer enumeration only under the trusted
+fresh broker-verified demo scope bound to the current installation/session.
+Generic legacy/live process checks remain unchanged. 81 focused controller tests
+pass, including multi-terminal, duplicate/renamed target and unknown-path cases.
+Native VPS rehearsal is pending; no changes to the running Banker checkout.

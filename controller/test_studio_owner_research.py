@@ -1,10 +1,11 @@
 """Owner recovery scope does not replace native guards or manufacture consent."""
 import hashlib
+from contextlib import contextmanager, nullcontext
 import json
 from pathlib import Path
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from campaign_ledger import sha
 from studio_bridge import write_json
@@ -162,6 +163,104 @@ class OwnerResearchTests(unittest.TestCase):
         review=prepare(self.c)['review_id']
         with self.assertRaisesRegex(ValueError,'Explicit user'):apply(self.c,review)
         with self.assertRaisesRegex(ValueError,'one explicit'):apply(self.c,review,confirmed=True,owner_research=True)
+
+
+class DirectDemoRecoveryTests(OwnerResearchTests):
+    @contextmanager
+    def direct(self, operation_name='demo-recover-orphan'):
+        from studio_research_authority import demo_agent_scope, operation
+        c=self.c
+        c.session.update(authority_kind='demo_direct',demo_only=True,
+                         account=dict(login='3000082754',server='Darwinex-Demo'))
+        write_json(c.root/'session.json',c.session)
+        with operation(operation_name), demo_agent_scope(root=c.root,
+                installation_sha256=sha(c.install),account=c.session['account']):
+            yield
+
+    def test_direct_wrapper_publishes_once_and_reconciles_without_grant_or_start(self):
+        from demo_agent import DemoAgent
+        agent=DemoAgent.__new__(DemoAgent);agent.root=self.c.root
+        agent._exclusive=lambda:nullcontext();agent._append=Mock()
+        binding=self.c.binding()
+        patch.object(self.c,'binding',return_value=binding).start()
+        @contextmanager
+        def scoped(*args,**kwargs):
+            with self.direct():yield self.c,dict(demo=True,algo_trading=False)
+        agent._studio=scoped
+        with self.direct():before=self.c.state()
+        result=agent.recover_orphan(wait_seconds=0);review=result['review_id']
+        self.assertEqual(result['status'],'published_not_recovered')
+        request=(self.fixture.gate/'request.json').read_bytes()
+        self.assertEqual(agent.recover_orphan(wait_seconds=0)['status'],'reconcile_required')
+        self.assertEqual((self.fixture.gate/'request.json').read_bytes(),request)
+        self.fixture.consume(review);self.fixture.flags=False
+        self.assertEqual(agent.recover_orphan(review)['status'],'recovered')
+        with self.direct():self.assertEqual(self.c.state(),before)
+        proof=json.loads((self.c.root/'owner-research-audit'/('orphan-recovery-apply-'+review+'.json')).read_text())
+        self.assertEqual(proof['authorization'],'broker_verified_demo_recovery')
+        self.assertFalse(proof['human_confirmation_fabricated'])
+
+    def test_direct_requires_fresh_adapter_scope_and_only_exact_operation(self):
+        with self.direct():self.assertEqual(self.authorization()['revocation_epoch'],1)
+        with self.assertRaisesRegex(ValueError,'broker-verified'):self.authorization()
+        with self.direct('run-batch'),self.assertRaisesRegex(ValueError,'only for'):self.authorization()
+        with self.direct(),self.assertRaisesRegex(ValueError,'only for'):
+            authorize(self.c,'orphan-recovery-reconcile-rejection','a'*32)
+
+    def test_direct_changed_archived_grant_human_owner_and_takeover_refuse(self):
+        with self.direct():
+            raw=self.original.read_bytes();self.original.write_text('{}')
+            with self.assertRaisesRegex(ValueError,'differs'):self.authorization()
+            self.original.write_bytes(raw)
+            self.c.store.db.execute("UPDATE studio_state SET owner='human'")
+            with self.assertRaisesRegex(ValueError,'TAKE CONTROL|revoked'):self.authorization()
+            self.c.store.db.execute("UPDATE studio_state SET owner='agent'")
+            (self.c.bridge.root/'human/inbox/takeover.json').write_text('{}')
+            with self.assertRaisesRegex(ValueError,'human control'):self.authorization()
+
+    def test_direct_nonidle_or_trading_native_state_refuses(self):
+        with self.direct():
+            for key,value in [('demo',False),('connected',False),('account_matches',False),
+                              ('algo_trading',True),('positions',1),('orders',1),('tester_state','running')]:
+                old=self.native[key];self.native[key]=value
+                with self.subTest(key=key),self.assertRaisesRegex(ValueError,'same idle demo'):self.authorization()
+                self.native[key]=old
+
+    def test_direct_live_worker_refuses_before_recovery_publication(self):
+        from demo_agent import DemoAgent
+        agent=DemoAgent.__new__(DemoAgent);agent.root=self.c.root
+        agent._exclusive=lambda:nullcontext();agent._append=Mock();agent._worker_alive=Mock(return_value=True)
+        worker=self.c.root/'demo-agent/workers/active.json';worker.parent.mkdir(parents=True);worker.write_text('{}')
+        @contextmanager
+        def scoped(*args,**kwargs):yield self.c,dict(demo=True)
+        agent._studio=scoped
+        with self.assertRaisesRegex(ValueError,'live demo driver'):agent.recover_orphan()
+        self.assertFalse((self.fixture.gate/'permit.json').exists())
+        agent._append.assert_not_called()
+
+    def test_direct_one_command_waits_for_native_receipt_and_delayed_readback(self):
+        from demo_agent import DemoAgent
+        from studio_orphan_recovery import status as real_status
+        agent=DemoAgent.__new__(DemoAgent);agent.root=self.c.root
+        agent._exclusive=lambda:nullcontext();agent._append=Mock()
+        binding=self.c.binding();patch.object(self.c,'binding',return_value=binding).start()
+        @contextmanager
+        def scoped(*args,**kwargs):
+            with self.direct():yield self.c,dict(demo=True,algo_trading=False)
+        agent._studio=scoped
+        calls=[]
+        def observe(c,review):
+            calls.append(review)
+            if len(calls)==1:
+                self.fixture.consume(review)
+                raise ValueError('Runtime policy mismatch: batch_ongoing')
+            self.fixture.flags=False
+            return real_status(c,review)
+        with patch('studio_orphan_recovery.status',side_effect=observe),patch('demo_agent.time.sleep'):
+            result=agent.recover_orphan()
+        self.assertEqual(result['status'],'recovered')
+        self.assertEqual(len(set(calls)),1)
+        self.assertEqual(len(list(self.fixture.gate.glob('issued-*.json'))),1)
 
 
 if __name__=='__main__':unittest.main()

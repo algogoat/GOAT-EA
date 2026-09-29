@@ -24,10 +24,37 @@ def authorize(c, operation, review_id):
     if c.session.get('authority_kind')=='research_continuation':
         from studio_research_authority import recovery_authorization
         return recovery_authorization(c,operation,review_id)
-    policy = read_json(POLICY_PATH)
-    if (policy.get('schema_version') != 1 or operation not in policy['operations']
-            or not policy['not_before_utc'] <= time.time() < policy['expires_utc']):
-        raise ValueError('Owner research maintenance is unavailable for this operation or time')
+    direct = c.session.get('authority_kind') == 'demo_direct'
+    if direct:
+        from studio_research_authority import require_demo_agent_scope, CURRENT_OPERATION
+        require_demo_agent_scope(c.root, c.install, c.session)
+        if operation != 'orphan-recovery-apply' or CURRENT_OPERATION.get() != 'demo-recover-orphan':
+            raise ValueError('Direct demo authority is only for the orphan recovery adapter')
+        if c.session['account'] != dict(login='3000082754', server='Darwinex-Demo'):
+            raise ValueError('Direct demo recovery account is outside the reviewed scope')
+        state = c.state()
+        key = packed(dict(terminal_id=c.terminal, run_id=c.run))
+        grants = []
+        for row in c.store.db.execute('SELECT request_id,payload_hash,receipt FROM studio_receipts WHERE binding=?', (key,)):
+            receipt = json.loads(row['receipt'], object_pairs_hook=unique_object)
+            if (receipt.get('command') == 'control.grant_agent' and receipt.get('status') == 'applied'
+                    and receipt.get('state', {}).get('generation') == state['generation']):
+                grants.append(row)
+        if len(grants) != 1:
+            raise ValueError('Exactly one genuine current-generation grant is required')
+        # This derives no new permission: the archived human request, receipt,
+        # hash, current owner and fresh native broker are all checked below.
+        binding = {key: c.install[key] for key in BINDING_KEYS}
+        binding['account'] = c.session['account']
+        policy = dict(schema_version=1, account=c.session['account'], binding_sha256=sha(binding),
+                      run_id=c.run, grant_request_id=grants[0]['request_id'],
+                      grant_payload_hash=grants[0]['payload_hash'], generation=state['generation'],
+                      ea_version='1.49', allowed_ea_sha256=[c.install['ea_sha256']])
+    else:
+        policy = read_json(POLICY_PATH)
+        if (policy.get('schema_version') != 1 or operation not in policy['operations']
+                or not policy['not_before_utc'] <= time.time() < policy['expires_utc']):
+            raise ValueError('Owner research maintenance is unavailable for this operation or time')
     install = load_installation(c.root/'installation.json')
     session = read_json(c.root/'session.json')
     if install != c.install or session != c.session:
@@ -93,7 +120,8 @@ def authorize(c, operation, review_id):
                 policy_sha256=sha(policy), binding_sha256=sha(binding), ea_sha256=install['ea_sha256'],
                 grant_request_id=policy['grant_request_id'], grant_payload_hash=row['payload_hash'],
                 revocation_epoch=state['generation'], native=native,
-                authorization='existing_owner_research_grant', human_confirmation_fabricated=False)
+                authorization='broker_verified_demo_recovery' if direct else 'existing_owner_research_grant',
+                human_confirmation_fabricated=False)
 
 
 def record(c, authorization):

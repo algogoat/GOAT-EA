@@ -291,6 +291,51 @@ class DemoAgentTests(unittest.TestCase):
         self.assertFalse(self.process.closed)
         self.assertEqual(self.binary.read_bytes(), b'old-ea')
 
+    def test_relaunch_waits_for_fresh_ea_feedback_before_broker_sdk(self):
+        # MetaTrader5.initialize(path) may auto-start a second copy while the
+        # first MT5 process is still loading. The EA's new-process feedback is
+        # the positive readiness signal for calling that SDK.
+        stale_ns = self.ui.stat().st_mtime_ns
+        with patch.object(self.agent, '_broker') as broker, patch(
+                'demo_agent.time.monotonic', side_effect=[0, 1, 121]), patch(
+                'demo_agent.time.sleep'):
+            with self.assertRaisesRegex(ValueError, 'Fresh EA owner feedback unavailable'):
+                self.agent._readback_current(digest(self.binary),
+                                             after_observation_ns=stale_ns,
+                                             expected_process=self.process.identity)
+        broker.assert_not_called()
+
+    def test_install_waits_for_late_normal_mt5_exit_without_force_kill(self):
+        candidate = self.base / 'candidate.ex5'; candidate.write_bytes(b'new-ea')
+        monitor = self.base / 'monitor.ini'
+        monitor.write_text('[Charts]\nProfileLast=GOAT-Studio-test\n[Experts]\nEnabled=0\n'
+                           'AllowLiveTrading=0\n[StartUp]\nExpert=GOAT-EA\\GOAT V1.49.ex5\n'
+                           'ExpertParameters=GOAT Studio Agent.set\nPeriod=M1\n')
+        clock = [0.0]
+        closing = [False]
+
+        def inspect():
+            return None if closing[0] and clock[0] >= 110 else self.process.identity
+
+        def close(_identity):
+            closing[0] = True
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with patch.object(self.process, 'inspect', side_effect=inspect), patch.object(
+                self.process, 'close', side_effect=close) as normal_close, patch.object(
+                self.agent, '_owner_clear'), patch.object(self.agent, '_space'), patch.object(
+                self.agent, '_broker', return_value={'process': self.process.identity}), patch.object(
+                self.agent, '_launch_terminal', return_value={'broker': {'process': self.process.identity}}), patch(
+                'demo_agent.time.monotonic', side_effect=lambda: clock[0]), patch(
+                'demo_agent.time.sleep', side_effect=sleep):
+            result = self.agent.install_build(candidate, digest(candidate), monitor)
+        self.assertTrue(result['installed'])
+        self.assertGreaterEqual(clock[0], 110)
+        normal_close.assert_called_once_with(self.process.identity)
+        self.assertEqual(digest(self.binary), digest(candidate))
+
     def test_desktop_update_refuses_stopped_or_different_linked_account(self):
         candidate=self.base/'candidate.ex5';candidate.write_bytes(b'new-ea')
         monitor=self.base/'monitor.ini'

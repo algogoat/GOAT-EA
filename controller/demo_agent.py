@@ -419,24 +419,34 @@ class DemoAgent:
             raise ValueError('Monitor restart must keep Algo Trading off and exact EA path')
         return monitor_config
 
-    def _readback_current(self, expected_sha256, *, after_observation_ns=0):
+    def _readback_current(self, expected_sha256, *, after_observation_ns=0,
+                          expected_process=None):
         observation = self.local / 'ui-observation.json'
         deadline = time.monotonic() + 120
         last_error = 'EA feedback unavailable'
         while time.monotonic() < deadline:
             try:
-                verified = self._broker()
-                ui = read_json(observation)
+                selected = self.process.inspect()
+                if selected is None or (expected_process is not None
+                                        and selected != expected_process):
+                    raise ValueError('Selected terminal process changed during launch')
                 process_started_ns = int(datetime.fromisoformat(
-                    verified['process']['created_utc'].replace('Z', '+00:00')).timestamp() * 1_000_000_000)
+                    selected['created_utc'].replace('Z', '+00:00')).timestamp() * 1_000_000_000)
+                if (observation.stat().st_mtime_ns <= max(after_observation_ns, process_started_ns)
+                        or self.clock() - observation.stat().st_mtime >= 300):
+                    last_error = 'Fresh EA owner feedback unavailable'
+                    time.sleep(.5)
+                    continue
+                ui = read_json(observation)
                 if (digest(self.binary) == expected_sha256
-                        and observation.stat().st_mtime_ns > max(after_observation_ns, process_started_ns)
-                        and self.clock() - observation.stat().st_mtime < 300
                         and ui.get('loaded') is True and ui.get('owner') == 'agent'
                         and ui.get('runtime', {}).get('account_demo') is True
                         and ui['runtime'].get('account_login') == self._paired_account()['login']
                         and ui['runtime'].get('account_server') == self.session['account']['server']
                         and PureWindowsPath(ui['runtime']['program_path']) == PureWindowsPath(self.binary)):
+                    verified = self._broker()
+                    if verified['process'] != selected:
+                        raise ValueError('Selected terminal process changed during broker readback')
                     write_json(self.state_root / 'verified-build.json', dict(
                         ea_sha256=expected_sha256, process=verified['process'],
                         observed_at=datetime.now(timezone.utc).isoformat()))
@@ -465,8 +475,9 @@ class DemoAgent:
         before = observation.stat().st_mtime_ns
         self._append('launch_terminal', 'before_start', ea_sha256=expected_sha256,
                      monitor_config=str(monitor_config))
-        self.process.start(monitor_config)
-        return self._readback_current(expected_sha256, after_observation_ns=before)
+        started = self.process.start(monitor_config)
+        return self._readback_current(expected_sha256, after_observation_ns=before,
+                                      expected_process=started)
 
     def launch_terminal(self, monitor_config):
         monitor_config = self._validate_monitor_config(monitor_config)
@@ -549,7 +560,9 @@ class DemoAgent:
                          new_sha256=expected_sha256, broker=native, backup=str(backup))
             self._owner_clear(); self._broker()
             self.process.close(native['process'])
-            deadline = time.monotonic() + 30
+            # MT5 can take more than a minute to flush and exit after SC_CLOSE.
+            # Wait for that exact process to exit normally; never force-kill it.
+            deadline = time.monotonic() + 150
             while self.process.inspect() is not None and time.monotonic() < deadline:
                 time.sleep(.25)
             if self.process.inspect() is not None:

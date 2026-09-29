@@ -10,6 +10,10 @@ strategy/asset matrix, Portfolio Builder and Python runtime. Development tools,
 private skills and source checkouts are unnecessary. Use `goat.exe` in the installed
 agent kit; its `studio` command forwards to the controller below.
 
+## Reusable product skills
+
+Use [the customer skill index](CUSTOMER-SKILLS.md) for optimization, templates, seed research, portfolio construction, repair/reporting and read-only observation audits. `discover.agent_skills` returns each installed SKILL.md path and SHA-256. These workflows need no private developer skill installation.
+
 ## Start safely and discover
 
 In the installed suite, begin with [the complete beta agent workflow](goat-beta-agent-guide.md).

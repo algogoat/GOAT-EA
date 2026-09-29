@@ -159,9 +159,9 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
     def test_source_and_compiled_candidate_identity(self):
         main = source('GOAT V1.49.mq5')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
-        self.assertIn('#define   GOAT_BUILD_ID "V1.49-TESTER-SAFETY-24"', main)
+        self.assertIn('#define   GOAT_BUILD_ID "V1.49-OPTIMIZATION-AXES-25"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
-                         '09ff4cb051a60105aebd43a3bf5857da8b1d4d304307800a47fc2fc8f731d2a9')
+                         '25ab8357d49bac163ca69cbc30405814e92730d5d5be9bd6a014f118588448b9')
         for name in ('GOATStudioRecovery.mqh', 'GOATStudioRecoveryFiles.mqh', 'GOATStudioUI.mqh',
                      'GOATStudioWorkers.mqh', 'GOATStudioExportDates.mqh', 'GOATStudioControlFeedback.mqh', 'GOAT V1.49.mq5'):
             raw = (ROOT/name).read_bytes()

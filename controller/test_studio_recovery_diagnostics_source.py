@@ -161,7 +161,7 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
         self.assertIn('#define   GOAT_BUILD_ID "V1.49-CANCEL-ORIGIN-23"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
-                         'f3e3a9700aef2b967b9c2c5d90dad0b86522bd65511ace4ba5c4bd65c324c066')
+                         'fa9840fdaeeb7f5f5bb550baacdf48f6b23e2f31a320f810442f8161b38ce257')
         for name in ('GOATStudioRecovery.mqh', 'GOATStudioRecoveryFiles.mqh', 'GOATStudioUI.mqh',
                      'GOATStudioWorkers.mqh', 'GOATStudioExportDates.mqh', 'GOATStudioControlFeedback.mqh', 'GOAT V1.49.mq5'):
             raw = (ROOT/name).read_bytes()

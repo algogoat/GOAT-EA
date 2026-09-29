@@ -25,6 +25,7 @@ from studio_strategy_settings import read_values
 from studio_settings import FIELDS,PERIODS,validate_tester,validate_export
 
 OPERATION_CONTRACTS = {
+    'same-ea-rebind':dict(required=[],effect='repair only a stopped demo session after a proven same-EA desktop receipt rewrite; requires exact preserved previous receipt and settled native attempts, retains previous session bytes and database, never launches, grants or clears a permit'),
     'monitor-stop':dict(required=['attempt-id'],effect='normal-close exact idle connected demo once for authorized upgrade; empty unstarted sessions only, no relaunch/grant/trading; retained stop refuses a replacement process'),
     'monitor-repair':dict(required=['attempt-id'],effect='within authorized setup, read native identity/demo/Algo-off/zero positions and idle tester; normal-close once, preserve and restore prepared profile and explicitly attach monitor; empty unstarted sessions only, no grant/trading/optimization'),
     'switch-verify-park':dict(required=['review-id'],effect='read-only verification of completed park, immutable archives, external databases and absent selected terminal/session; not admission or grant'),
@@ -346,6 +347,7 @@ def main(argv=None):
     sub.add_parser('resource-profile')
     p=sub.add_parser('benchmark-report');p.add_argument('--batch-id',required=True)
     sub.add_parser('discover');sub.add_parser('state');sub.add_parser('onboarding-status')
+    sub.add_parser('same-ea-rebind')
     p=sub.add_parser('monitor-prepare');p.add_argument('--symbol',required=True)
     p=sub.add_parser('monitor-launch');p.add_argument('--attempt-id',required=True)
     p=sub.add_parser('monitor-repair');p.add_argument('--attempt-id',required=True)
@@ -379,6 +381,10 @@ def main(argv=None):
         if args.operation=='switch-replace-build':
             from studio_build_upgrade import replace_build
             result=replace_build(args.installation,args.review_id,args.candidate_receipt,args.candidate_ea,args.expected_sha256)
+            print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
+        if args.operation=='same-ea-rebind':
+            from studio_same_ea_rebind import rebind
+            result=rebind(args.installation)
             print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
         controller=Controller(args.installation)
         from studio_build_upgrade import guard_pending

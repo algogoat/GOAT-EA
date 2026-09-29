@@ -127,6 +127,14 @@ Consult the installed matrix guide and its capability discovery for the supporte
 result/update commands. Do not invent endpoints if the installed version lacks a
 capability; record the missing capability and preserve the result JSON for import.
 
+If an older stopped same-EA desktop update left Studio reporting an installation
+change, keep the desktop's receipt backup. Reconcile any outstanding native
+attempt through the original receipt first. Then the installed controller may
+offer `studio same-ea-rebind` for an exact demo-only metadata repair; it refuses
+pending requests/permits, changed EA bytes, or a running terminal. Do not
+alter session hashes or native evidence yourself. This command does not prove
+that the EA loaded or that a customer update is qualified.
+
 ## Sequence evidence
 
 `IncludeSequenceData` defaults to true for older saved settings. It records the

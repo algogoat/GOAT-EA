@@ -105,16 +105,31 @@ class DemoAgentTests(unittest.TestCase):
         with patch('demo_agent.tester_state', return_value='idle'):
             self.assertTrue(self.agent._broker()['demo'])
             self.mt5.trade_mode = 1
-            with self.assertRaisesRegex(ValueError, 'demo and allowlisted'):
+            with self.assertRaisesRegex(ValueError, 'demo and exact paired'):
                 self.agent._broker()
             self.mt5.trade_mode = 0
             self.mt5.login = 3000082755
-            with self.assertRaisesRegex(ValueError, 'demo and allowlisted'):
+            with self.assertRaisesRegex(ValueError, 'demo and exact paired'):
                 self.agent._broker()
             self.mt5.login = 3000082754
             self.mt5.trade_allowed = True
             with self.assertRaisesRegex(ValueError, 'Algo Trading is on'):
                 self.agent._broker()
+
+    def test_other_exact_paired_demo_is_supported_but_switched_or_live_account_refuses(self):
+        self.agent.session['account']=dict(login='55500012345',server='Customer-Demo')
+        self.mt5.login=55500012345;self.mt5.server='Customer-Demo'
+        with patch('demo_agent.tester_state',return_value='idle'):
+            self.assertEqual(self.agent._broker()['login'],'55500012345')
+            self.mt5.login=55500012346
+            with self.assertRaisesRegex(ValueError,'exact paired'):self.agent._broker()
+            self.mt5.login=55500012345;self.mt5.trade_mode=1
+            with self.assertRaisesRegex(ValueError,'demo and exact paired'):self.agent._broker()
+            self.mt5.trade_mode=0
+            self.agent.session['account']['login']='***2345'
+            with self.assertRaisesRegex(ValueError,'Exact paired'):self.agent._broker()
+            self.agent.session['account']['login']=55500012345
+            with self.assertRaisesRegex(ValueError,'Exact paired'):self.agent._broker()
 
     def test_receipt_path_is_validated_before_binary_target_derivation(self):
         receipt = read_json(self.installation)

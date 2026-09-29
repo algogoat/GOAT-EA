@@ -1,4 +1,4 @@
-﻿# GOAT EA and controller work
+# GOAT EA and controller work
 
 This branch starts from the retained R5 build. Entries below cover the agreed
 V1.48/dashboard work; they do not replace other branches' historical backlog.
@@ -214,8 +214,15 @@ Native CR19 qualification produced the first paired OHLC reports. EURUSD Willow 
 
 After a completed CR19 pilot and subsequent terminal exit/reopen, Banker again reported BatchOnGoing=true while idle. ED20's first pilot correctly refused before reservation/native attempt. The old automatic recovery policy pins an obsolete session, so the current direct-demo adapter now exposes recover-orphan with its fresh broker scope plus archived genuine current-generation grant validation. Existing native recovery and no-active-work checks are reused; all original histories/epochs remain intact. One command publishes once and waits for actual receipt/readback; uncertain repetition only observes. No EA binary, backend release, human-confirmation flag, start or trading change. Focused scope/refusal/publication/readback tests pass; native qualification recorded separately.
 
+## CTRL-029 — Paired-demo recovery and rejected-review successor
+
+Vince's customer-agent repair requirement and Claude's review5883708342 identify two remaining gaps: Banker-only account constants and Edward's ORPHAN_REVIEW_REJECTED/consumed=false fence. The direct adapter now checks the full paired account/server plus actual broker demo mode instead of a host account constant. Legacy native-human sessions can enter only this recovery scope without session/build adoption, preserving the original review binding and genuine archived grant.
+
+An exact expired review refusal is settled through the existing guarded evidence-retaining transaction, then gets one fresh recovery identity. The original issued/result evidence remains intact. Explicit review-id calls, consumed/uncertain results, other failure codes and a rejected automatic successor never reissue. Fixture tests cover Edward's state, legacy binding preservation, no publication before expiry, no successor chain, live workers, account switches/live mode/masked IDs, grant revocation and denied research commands.120 focused checks pass; new customer native qualification and packaged delivery remain pending. No EA binary/trading/wire change.
 ## CTRL-028 — Export attempt identity accepted by native consumer
 
 ED20 pilot2 combined real OHLC reports and passed fixed-export settings verification, then the tester rejected its generated Sequence_Export_Id during OnInit: `(string)TimeLocal()` rendered `export-2026.09.28 21:32:21-116518271-0`, violating the existing safe-ID predicate. V1.49-EXPORT-IDENTITY-21 explicitly casts time to integer seconds before text conversion and checks the generated ID before any staging or StartTester call. The consumer refusal remains unchanged. Completed-batch global deletions are now flushed so a later terminal exit cannot restore an older persisted ongoing flag. No trading, frozen input, threshold, export model or wire change.
 
 300 executable date/export-identity checks include the actual producer expression and native consumer predicate, uniqueness across timestamps/counters/rows, and rejection of the observed invalid ID. MetaEditor6230 compiled with0errors0warnings; EX5 SHA256 b9ff5a80d8ef8d739659d796f0ff1d2ff098f394efe80ca925946e31637b3042.62 focused Python checks pass. Native export qualification is still required. Failed ED20 pilot preserved and cancelled through the controller; no full115 batch start claimed.
+
+CTRL-029 interruption follow-up: persist successor phase=settling before the old pending fence is retired. Resume the retained settling/prepared/published successor after interruption; never fall through to an unlinked new request. Tests inject exits after old-fence removal, after new review preparation and after native publication with a lost reply.123focusedchecksPASS. This addresses review4129818979; original native rejection and successor identities remain retained.

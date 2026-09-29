@@ -34,14 +34,14 @@ def operation(name):
 
 
 @contextmanager
-def demo_agent_scope(*, root, installation_sha256, account, job_id=None):
+def demo_agent_scope(*, root, installation_sha256, account, job_id=None, legacy_recovery=False):
     """Trusted local adapter scope after a fresh broker-reported demo check.
 
     This changes the policy for the demo lane only. It never changes the stored
     history of human grants or permits a non-demo account to enter the lane.
     """
     value = dict(root=str(Path(root).resolve()), installation_sha256=installation_sha256,
-                 account=dict(account), job_id=job_id)
+                 account=dict(account), job_id=job_id, legacy_recovery=legacy_recovery)
     token = DEMO_AGENT_SCOPE.set(value)
     try:
         yield
@@ -54,7 +54,9 @@ def require_demo_agent_scope(root, installation, session):
     if (scope is None or scope['root'] != str(Path(root).resolve())
             or scope['installation_sha256'] != sha(installation)
             or session.get('installation_sha256') != scope['installation_sha256']
-            or session.get('authority_kind') != 'demo_direct'
+            or (session.get('authority_kind') != 'demo_direct'
+                and not (scope.get('legacy_recovery') is True and session.get('authority_kind') in (None, 'native_human_control')
+                         and CURRENT_OPERATION.get() == 'demo-recover-orphan' and scope['job_id'] is None))
             or session.get('demo_only') is not True
             or session.get('account') != scope['account']):
         raise ValueError('Fresh broker-verified demo agent scope required')

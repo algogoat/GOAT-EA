@@ -24,14 +24,16 @@ def authorize(c, operation, review_id):
     if c.session.get('authority_kind')=='research_continuation':
         from studio_research_authority import recovery_authorization
         return recovery_authorization(c,operation,review_id)
-    direct = c.session.get('authority_kind') == 'demo_direct'
+    from studio_research_authority import DEMO_AGENT_SCOPE, CURRENT_OPERATION
+    direct = (c.session.get('authority_kind') == 'demo_direct' or
+              (DEMO_AGENT_SCOPE.get() is not None and CURRENT_OPERATION.get() == 'demo-recover-orphan'))
     if direct:
         from studio_research_authority import require_demo_agent_scope, CURRENT_OPERATION
         require_demo_agent_scope(c.root, c.install, c.session)
-        if operation != 'orphan-recovery-apply' or CURRENT_OPERATION.get() != 'demo-recover-orphan':
+        if operation not in ('orphan-recovery-apply', 'orphan-recovery-reconcile-rejection') or CURRENT_OPERATION.get() != 'demo-recover-orphan':
             raise ValueError('Direct demo authority is only for the orphan recovery adapter')
-        if c.session['account'] != dict(login='3000082754', server='Darwinex-Demo'):
-            raise ValueError('Direct demo recovery account is outside the reviewed scope')
+        # The trusted adapter has just proved this exact paired account is demo;
+        # native identity and the real current grant are rechecked below.
         state = c.state()
         key = packed(dict(terminal_id=c.terminal, run_id=c.run))
         grants = []

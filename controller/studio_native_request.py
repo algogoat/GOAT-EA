@@ -109,7 +109,9 @@ def _validate_material(state, job, *, account, monitor_path, monitor_sha256, inp
             raise ValueError('Staged tester differs from manifest')
         for key,value in member['tester'].items():
             if str(value)!=member_sections['Tester'].get(key):raise ValueError('Frozen tester mismatch: '+key)
-        if member_sections.get('TesterInputs')!=read_values(staged_set):raise ValueError('Inline input drift')
+        from studio_optimization_inputs import explicit_optimization_inputs
+        native_inputs=explicit_optimization_inputs(staged_set.decode('utf-16'),input_schema) if binding['ea_version']=='1.49' else staged_set.decode('utf-16')
+        if member_sections.get('TesterInputs')!=read_values(native_inputs.encode('utf-16')):raise ValueError('Inline input drift')
         member_paste=explicit_paste_inputs(member_sections['TesterInputs'],input_schema)
         materials.append(dict(sections=member_sections,paste_inputs=member_paste,alias=alias))
     sections=materials[0]['sections'];paste_inputs=materials[0]['paste_inputs']

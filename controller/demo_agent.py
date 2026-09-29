@@ -320,36 +320,41 @@ class DemoAgent:
                 raise ValueError('Stopped monitor lacks exact previously verified installed build')
             from goat_studio import Controller
             from studio_batch_driver import _owned_attempt
-            controller = Controller(self.installation_path).open()
-            try:
-                record = read_json(self.root / 'batch-drivers' / (batch_id + '.json'))
-                if record.get('stopped') or not record.get('start_issued') or not record.get('attempt_id'):
-                    raise ValueError('Retained started unresolved attempt required')
-                _owned_attempt(controller, record)
-                cancel = controller.cancel(batch_id, expected_generation=record['binding']['generation'])
-                # Never relaunch against an expired/consumed/refused cancellation.
-                gate = self.local / 'native-gate'
-                request = read_json(gate / 'request.json')
-                permit = read_json(gate / 'permit.json')
-                request_id = cancel['request_id']
-                if (request.get('action') != 'cancel' or request.get('request_id') != request_id
-                        or request.get('attempt_id') != record['attempt_id']
-                        or request.get('job_id') != batch_id
-                        or request.get('expires_utc',0) < self.clock()+30
-                        or permit.get('request_sha256') != digest(gate/'request.json')
-                        or (gate / ('consumed-'+request_id+'.json')).exists()):
-                    raise ValueError('Fresh exact unconsumed cancellation required; no replay')
-                self._append('recover_stop', 'cancel_published_before_monitor_launch',
-                             batch_id=batch_id, attempt_id=record['attempt_id'],
-                             request_id=request_id, monitor_config=str(monitor_config),
-                             monitor_sha256=digest(monitor_config), ea_sha256=physical)
-                # This checked fixed monitor INI has no [Tester] section and has
-                # both Algo Trading flags OFF. Preserve the stop marker throughout.
-                before = (self.local / 'ui-observation.json').stat().st_mtime_ns
-                self.process.start(monitor_config)
-                return self._readback_current(physical, after_observation_ns=before)
-            finally:
-                controller.store.close()
+            from studio_research_authority import operation
+            # Read-only policy context: no broker scope is fabricated while MT5 is absent.
+            # publish_cancel itself checks the exact native owner/attempt; all store
+            # mutations remain forbidden until a real broker check after monitor launch.
+            with operation('stopped-cancel-observation'):
+                controller = Controller(self.installation_path).open()
+                try:
+                    record = read_json(self.root / 'batch-drivers' / (batch_id + '.json'))
+                    if record.get('stopped') or not record.get('start_issued') or not record.get('attempt_id'):
+                        raise ValueError('Retained started unresolved attempt required')
+                    _owned_attempt(controller, record)
+                    cancel = controller.cancel(batch_id, expected_generation=record['binding']['generation'])
+                    # Never relaunch against an expired/consumed/refused cancellation.
+                    gate = self.local / 'native-gate'
+                    request = read_json(gate / 'request.json')
+                    permit = read_json(gate / 'permit.json')
+                    request_id = cancel['request_id']
+                    if (request.get('action') != 'cancel' or request.get('request_id') != request_id
+                            or request.get('attempt_id') != record['attempt_id']
+                            or request.get('job_id') != batch_id
+                            or request.get('expires_utc',0) < self.clock()+30
+                            or permit.get('request_sha256') != digest(gate/'request.json')
+                            or (gate / ('consumed-'+request_id+'.json')).exists()):
+                        raise ValueError('Fresh exact unconsumed cancellation required; no replay')
+                    self._append('recover_stop', 'cancel_published_before_monitor_launch',
+                                 batch_id=batch_id, attempt_id=record['attempt_id'],
+                                 request_id=request_id, monitor_config=str(monitor_config),
+                                 monitor_sha256=digest(monitor_config), ea_sha256=physical)
+                    # This checked fixed monitor INI has no [Tester] section and has
+                    # both Algo Trading flags OFF. Preserve the stop marker throughout.
+                    before = (self.local / 'ui-observation.json').stat().st_mtime_ns
+                    self.process.start(monitor_config)
+                    return self._readback_current(physical, after_observation_ns=before)
+                finally:
+                    controller.store.close()
 
     def clear_stop(self):
         marker = self.state_root / 'STOP'

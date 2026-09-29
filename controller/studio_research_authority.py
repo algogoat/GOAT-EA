@@ -16,7 +16,8 @@ from studio_installation import read_json, load_installation
 CURRENT_OPERATION = ContextVar('studio_research_operation', default=None)
 DEMO_AGENT_SCOPE = ContextVar('studio_demo_agent_scope', default=None)
 READ_OPERATIONS = frozenset(('discover','resource-profile','state','onboarding-status',
-                             'native-recovery-status','batch-driver-status','owner-maintenance-status'))
+                             'native-recovery-status','batch-driver-status','owner-maintenance-status',
+                             'stopped-cancel-observation'))
 OPERATIONS = READ_OPERATIONS | frozenset(('owner-maintenance-bootstrap','monitor-prepare','monitor-launch',
     'serve','orphan-recovery-prepare','orphan-recovery-apply','orphan-recovery-status',
     'orphan-recovery-reconcile-rejection','prepare-batch','run-batch','start','status','reconcile',

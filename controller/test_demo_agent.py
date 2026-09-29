@@ -382,6 +382,20 @@ class DemoAgentTests(unittest.TestCase):
             command(db, packed(dict(terminal_id='other', run_id='session-one')),
                     dict(owner='human'), dict(command='control.grant_agent'), actor='human')
 
+    def test_stopped_cancel_observation_can_read_but_cannot_mutate_or_fabricate_broker(self):
+        self.agent._adopt_installed_binary(digest(self.binary))
+        db=sqlite3.connect(self.root/'studio.sqlite');self.addCleanup(db.close)
+        binding=packed(dict(terminal_id='terminal-one',run_id='session-one'))
+        with self.assertRaisesRegex(ValueError,'broker-verified'):
+            authority(db,binding,dict(owner='agent'))
+        with operation('stopped-cancel-observation'):
+            self.assertIsNone(authority(db,binding,dict(owner='agent')))
+            with self.assertRaisesRegex(ValueError,'broker-verified'):
+                command(db,binding,dict(owner='agent'),dict(command='queue.reserve',
+                    request_id='new-reserve',payload=dict(job_id='new')),actor='agent')
+            with self.assertRaisesRegex(ValueError,'binding changed'):
+                authority(db,packed(dict(terminal_id='other',run_id='session-one')),dict(owner='agent'))
+
     def test_repeated_batch_preparation_reads_count_from_existing_queue(self):
         plan = self.base / 'plan.json'; plan.write_text('{}')
         controller = types.SimpleNamespace(job=lambda batch_id: dict(

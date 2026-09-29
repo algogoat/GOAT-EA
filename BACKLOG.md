@@ -252,3 +252,27 @@ fresh broker-verified demo scope bound to the current installation/session.
 Generic legacy/live process checks remain unchanged. 81 focused controller tests
 pass, including multi-terminal, duplicate/renamed target and unknown-path cases.
 Native VPS rehearsal is pending; no changes to the running Banker checkout.
+
+## CTRL-035 - Isolate each member's native optimization flags
+
+Banker evidence on September29 showed seven intended three-value axes per member,
+but native reports accumulated9,12 and14 varying axes from earlier members.
+Plain fixed SET scalars preserved MT5's prior optimization flags. Preserve source
+SET bytes and emit explicit inactive tuples only for typed optimizable scalars in
+native first-member and subsequent-member configs. V1.49 AX25 additionally reads
+all90 numeric input flags/values and active ladders through ParameterGetRange in
+OnTesterInit; refuse mismatches before queue acceptance or any passes. Strings,
+sinput metadata, intended values and explicit Y/N ladders remain unchanged.
+
+The report verifier now rejects extra varying input columns while admitting the
+known native performance metrics and constant metadata. Existing native reports
+for member1 still pass; members2–9 now refuse unexpected varying axes, retaining
+all original files. Actual executed-pass totals remain unknown; XML row counts
+are not presented as executed passes.
+
+Validation:72 focused Python cases; production MQL normalizer/readback exercised
+with a native-load/range shim across consecutive different strategies;300 existing
+semantic-settings cases. Current source declaration coverage is90/90, and all115
+frozen staged SETs contain those names. Source tests are not native qualification:
+MetaEditor6230 compile and two-consecutive-member native smoke remain outstanding.
+No changes to the running Banker checkout, terminal or retained attempt.

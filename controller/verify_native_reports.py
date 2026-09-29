@@ -8,6 +8,9 @@ import xml.etree.ElementTree as ET
 
 SS = 'urn:schemas-microsoft-com:office:spreadsheet'
 OFFICE = 'urn:schemas-microsoft-com:office:office'
+STATISTICS = {'Pass','Result','Back Result','Forward Result','Profit','Expected Payoff',
+              'Profit Factor','Recovery Factor','Sharpe Ratio','Custom','Equity DD %',
+              'Balance DD %','Trades','OnTester Result'}
 
 
 def normalized(value):
@@ -63,6 +66,9 @@ def read_report(path, expected_title, axes, forward):
         passes[identity] = record
     if not passes:
         raise ValueError('Empty optimization report needs explicit native outcome evidence')
+    for key in set(header)-set(axes)-STATISTICS:
+        if len({normalized(row[key]) for row in passes.values()})>1:
+            raise ValueError('Unexpected varying native input axis: '+key)
     return dict(path=str(path), sha256=hashlib.sha256(raw).hexdigest(), passes=passes)
 
 

@@ -3336,6 +3336,9 @@ bool ActivatePending(string QueueItem,string Key_,string EA_Name_,string Server_
    EnsureCommonFolderTree(strategyDir);
    string testerInputs = GetFileContent(inputsPath);
    if(testerInputs=="") {WriteLog("Cannot Activate Queue Item. Inputs file missing or empty: "+inputsPath,true,Key_,EA_Name_,Server_); return false;}
+#ifdef GOAT_TESTER_SEMANTIC_V149
+   testerInputs=GoatStudioExplicitOptimizationInputs(testerInputs);
+#endif
    string configBody=(QueueItem=="" ? QueueItem : QueueItem+"\r\n[TesterInputs]\r\n"+testerInputs);
    string auditConfig=strategyDir+"\\config.ini";
    string activeConfig=GoatOptActiveConfigPath(EA_Name_,Server_);

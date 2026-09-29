@@ -611,8 +611,7 @@ class DemoAgent:
         request, or starts research. The EA remains the only flag writer.
         """
         from studio_orphan_recovery import prepare, apply, status
-        from studio_orphan_rejection import reconcile_rejection
-        from studio_handover import safe_path
+        from studio_demo_orphan_successor import active as active_successor, recover as recover_successor, completed as complete_successor
         explicit_observation = review_id is not None
         if type(wait_seconds) not in (int, float) or not 0 <= wait_seconds <= 60:
             raise ValueError('Recovery observation wait must be between 0 and 60 seconds')
@@ -621,9 +620,13 @@ class DemoAgent:
                 if self._worker_alive(read_json(worker)):
                     raise ValueError('A live demo driver/worker must finish before orphan recovery')
             pending = self.root / 'orphan-recovery-pending.json'
+            retained = active_successor(self.root)
             if review_id is None and pending.exists():
                 review_id = read_json(pending)['review_id']
-            if review_id is not None:
+            if retained is not None and not explicit_observation:
+                result = recover_successor(controller, retained)
+                review_id = result['review_id']
+            elif review_id is not None:
                 result = status(controller, review_id)
                 evidence = result.get('evidence', {})
                 # An explicit review-id remains observation-only. Only the known
@@ -632,30 +635,8 @@ class DemoAgent:
                         and evidence.get('status') == 'receipt_observed'
                         and evidence.get('consumed') is False
                         and evidence.get('receipt', {}).get('status') == 'ORPHAN_REVIEW_REJECTED'):
-                    links = safe_path(self.root / 'demo-agent/orphan-successors')
-                    records = [read_json(safe_path(p)) for p in links.glob('*.json')]
-                    if any(row['successor_review_id'] == review_id for row in records):
-                        return dict(result, automatic_successor_available=False,
-                                    next_action='The fresh successor was refused; diagnose it before any further recovery')
-                    # Settlement rechecks expiry, unchanged identity, exact bytes,
-                    # no consumption and fresh native state before retiring only
-                    # this rejected transport. Original request/result stay intact.
-                    original_id = review_id
-                    settled = reconcile_rejection(controller, original_id, owner_research=True)
-                    self._append('recover_orphan', 'rejection_settled', result=settled)
-                    if settled['status'] != 'rejected_settled':
-                        return settled
-                    review = prepare(controller)
-                    review_id = review['review_id']
-                    links.mkdir(parents=True, exist_ok=True)
-                    link = safe_path(links / (original_id + '.json'))
-                    if link.exists():
-                        raise ValueError('A retained successor already exists; inspect it without replay')
-                    write_json(link, dict(schema_version=1, original_review_id=original_id,
-                                          original_request_id=settled['request_id'], successor_review_id=review_id))
-                    self._append('recover_orphan', 'successor_prepared', review=review, original_review_id=original_id)
-                    result = apply(controller, review_id, owner_research=True)
-                    self._append('recover_orphan', 'successor_published', result=result, original_review_id=original_id)
+                    result = recover_successor(controller, original_review_id=review_id, evidence=evidence)
+                    review_id = result['review_id']
             else:
                 review = prepare(controller)
                 review_id = review['review_id']
@@ -674,6 +655,8 @@ class DemoAgent:
                     # Retry that read only; never publish another native action.
                     result = dict(result, last_readback_error=str(exc))
             self._append('recover_orphan', 'observed', broker=broker, result=result)
+            if result['status'] == 'recovered':
+                complete_successor(self.root, review_id)
             return result
 
     def prepare_batch(self, batch_id, plan):

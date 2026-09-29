@@ -336,6 +336,46 @@ class DirectDemoRecoveryTests(OwnerResearchTests):
             agent.recover_orphan(wait_seconds=0)
         self.assertEqual(len(list(self.fixture.gate.glob('issued-*.json'))),1)
 
+    def test_successor_intent_survives_exit_after_old_fence_removed(self):
+        agent,review,plan=self.rejected_review()
+        with patch('studio_orphan_rejection.time.time',return_value=plan['record']['request']['expires_utc']+1):
+            with patch('studio_demo_orphan_successor.prepare',side_effect=RuntimeError('interrupted after settlement')):
+                with self.assertRaisesRegex(RuntimeError,'interrupted'):agent.recover_orphan(wait_seconds=0)
+            self.assertFalse((self.c.root/'orphan-recovery-pending.json').exists())
+            journal=self.c.root/'demo-agent/orphan-successors'/f'{review}.json'
+            self.assertEqual(json.loads(journal.read_text())['phase'],'settling')
+            result=agent.recover_orphan(wait_seconds=0)
+        self.assertNotEqual(result['review_id'],review)
+        self.assertEqual(json.loads(journal.read_text())['successor_review_id'],result['review_id'])
+        self.assertEqual(len(list(self.fixture.gate.glob('issued-*.json'))),2)
+
+    def test_successor_prepared_before_crash_resumes_same_identity(self):
+        agent,review,plan=self.rejected_review()
+        with patch('studio_orphan_rejection.time.time',return_value=plan['record']['request']['expires_utc']+1):
+            with patch('studio_demo_orphan_successor.apply',side_effect=RuntimeError('interrupted before publication')):
+                with self.assertRaisesRegex(RuntimeError,'interrupted'):agent.recover_orphan(wait_seconds=0)
+            journal=json.loads((self.c.root/'demo-agent/orphan-successors'/f'{review}.json').read_text())
+            self.assertEqual(journal['phase'],'prepared')
+            self.assertFalse((self.c.root/'orphan-recovery-pending.json').exists())
+            result=agent.recover_orphan(wait_seconds=0)
+        self.assertEqual(result['review_id'],journal['successor_review_id'])
+        self.assertEqual(len(list(self.fixture.gate.glob('issued-*.json'))),2)
+
+    def test_lost_publication_reply_never_creates_a_third_request(self):
+        agent,review,plan=self.rejected_review()
+        from studio_orphan_recovery import apply as real_apply
+        def lost(*args,**kwargs):
+            real_apply(*args,**kwargs)
+            raise RuntimeError('lost publication reply')
+        with patch('studio_orphan_rejection.time.time',return_value=plan['record']['request']['expires_utc']+1):
+            with patch('studio_demo_orphan_successor.apply',side_effect=lost):
+                with self.assertRaisesRegex(RuntimeError,'lost'):agent.recover_orphan(wait_seconds=0)
+            request=(self.fixture.gate/'request.json').read_bytes()
+            result=agent.recover_orphan(wait_seconds=0)
+        self.assertEqual(result['status'],'reconcile_required')
+        self.assertEqual((self.fixture.gate/'request.json').read_bytes(),request)
+        self.assertEqual(len(list(self.fixture.gate.glob('issued-*.json'))),2)
+
     def test_existing_customer_review_can_recover_without_session_or_binary_adoption(self):
         agent=self.recovery_agent(legacy=True)
         before=(self.c.root/'session.json').read_bytes()

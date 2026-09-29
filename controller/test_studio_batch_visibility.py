@@ -35,6 +35,9 @@ class BatchVisibilityTests(unittest.TestCase):
         state=self.state();old=copy.deepcopy(state['queue'][0]);old['job_id']='old';old['status']='cancelled'
         state['queue'].insert(0,old)
         self.assertEqual(display_state(state)['batch_view']['job_id'],'batch')
+        old['status']='pending'
+        self.assertEqual(display_state(state)['batch_view']['job_id'],'batch')
+        old['status']='cancelled'
         state['queue'][1]['status']='pending';state['queue'][1].pop('native_observation')
         self.assertEqual(display_state(state)['batch_view']['pending'],115)
 

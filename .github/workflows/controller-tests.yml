@@ -63,6 +63,8 @@ jobs:
 
       - name: Verify Studio control feedback state transitions
         run: node scripts/test_studio_control_feedback.cjs
+      - name: Native batch cancellation origin
+        run: node scripts/test_batch_cancel_origin.cjs
 
       - name: Verify Studio derived Report handoff safety
         run: node scripts/test_studio_derived_report.cjs

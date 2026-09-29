@@ -230,3 +230,7 @@ CTRL-029 interruption follow-up: persist successor phase=settling before the old
 ## CTRL-031 - Retire owned report junction after native completion
 
 After the existing finish path verifies native idle, terminal member outcomes, completed-member report pairs and exact attempt ownership, remove only the verified per-run installation junction. Bind the receipt to the frozen plan and journal retirement before unlink for interrupted replay. Preserve all data-root reports; refuse redirected or replaced paths and missing aliases without retained intent. Portable same-root runs keep their directory. Real Windows junction and controller finish tests pass; customer native batch smoke and bundled delivery remain pending. Running Banker checkout is unchanged.
+
+## CTRL-032 - Preserve human batch cancellation across agent starts
+
+V1.49 controller cancellation uses distinct latch value2. Human UI stop first records a separate persistent human intent and retains latch value1. New agent starts refuse legacy/unknown/human stops before consumption, and release only value2 through compare-and-swap after exact start validation. Only an explicitly confirmed human Start clears human intent. Historical entrypoints retain their behavior. Actual helper execution tests include concurrent human cancellation at latch creation and compare-and-swap; native MT5 qualification remains pending. No active Banker reload.

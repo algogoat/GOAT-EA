@@ -104,6 +104,9 @@ struct SettingsStrings
 SettingsStrings strT;
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #define GOAT_BATCH_CANCELLED_GV             "GOAT_BatchCancelled"
+#ifdef GOAT_CANCEL_ORIGIN_V149
+#include "GOATBatchCancelOrigin.mqh"
+#endif
 #define GOAT_BATCH_RESTART_PENDING_GV       "GOAT_BatchRestartPending"
 #define GOAT_BATCH_RESTART_REQUESTED_AT_GV  "GOAT_BatchRestartRequestedAt"
 #define GOAT_BATCH_RESTART_STOP_ATTEMPTS_GV "GOAT_BatchRestartStopAttempts"

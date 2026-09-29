@@ -3085,7 +3085,10 @@ void CStrategyTesterDialog::OnClickStart(void)
       MessageBox("Unable to save the run and export settings. Batch was not started.","Error",MB_OK|MB_ICONERROR);
       return;
    }
-   // Only an explicitly accepted new start releases the persistent cancellation latch.
+   // Only an explicitly accepted human start releases human or legacy cancellation.
+#ifdef GOAT_CANCEL_ORIGIN_V149
+   GlobalVariableDel(GOAT_BATCH_HUMAN_CANCEL_GV);
+#endif
    GlobalVariableDel(GOAT_BATCH_CANCELLED_GV);
    GoatBatchClearDeferredRestart();
    GlobalVariablesFlush();
@@ -3119,6 +3122,10 @@ void CStrategyTesterDialog::OnClickStop(void)
 
    // Disarm callbacks and terminal relaunch before requesting tester stop.
    // Persist even when the queue is missing or cannot be rewritten.
+#ifdef GOAT_CANCEL_ORIGIN_V149
+   // Separate persistent intent wins even if another native writer races the latch.
+   GlobalVariableSet(GOAT_BATCH_HUMAN_CANCEL_GV,1.0);
+#endif
    GlobalVariableSet(GOAT_BATCH_CANCELLED_GV,1.0);
    GlobalVariableDel("BatchOnGoing");
    GlobalVariableDel("TerminalRunning");

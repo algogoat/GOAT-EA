@@ -16,6 +16,7 @@ class StoppedRejectionTests(fixtures.ReviewRejectedRecoveryTests):
     inspection_module=stopped
     inspection_name='inspect_local'
     cli_flags=['--terminal-stopped']
+    initial_missing_permit_supported=True
 
     def setUp(self):
         super().setUp()
@@ -32,6 +33,101 @@ class StoppedRejectionTests(fixtures.ReviewRejectedRecoveryTests):
 
     def run_settlement(self):
         return reconcile_rejection(self.c,self.review,confirmed=True,terminal_stopped=True)
+
+    def test_retained_report_missing_permit_settles_only_exact_expired_rejection(self):
+        # Regression for report03afb685/fc60: issued+request+native rejection
+        # remain exact, but permit.json is absent before any cleanup intent.
+        (self.gate/'permit.json').unlink()
+        preserved={name:(self.gate/name).read_bytes() for name in ('request.json','issued-'+self.request_id+'.json','result-'+self.request_id+'.json')}
+        self.c.runtime.side_effect=AssertionError('Stopped cleanup must not claim fresh native feedback')
+        result=self.run_settlement()
+        self.assertEqual(result['status'],'rejected_settled')
+        self.assertIs(result['launch_permitted'],False);self.assertIs(result['recovery_retried'],False)
+        intent=read_json(self.root/'intent.json')
+        self.assertEqual(intent['schema_version'],3);self.assertEqual(intent['absent_transport'],['permit.json'])
+        self.assertNotIn('permit.json',intent['sha256']);self.assertFalse((self.root/'permit.json').exists())
+        self.assertEqual((self.root/'request.json').read_bytes(),preserved['request.json'])
+        for name in ('issued-'+self.request_id+'.json','result-'+self.request_id+'.json'):
+            self.assertEqual((self.gate/name).read_bytes(),preserved[name])
+        self.assertEqual(self.c.state(),self.before);self.assertTrue(self.fixture.flags)
+        self.assertFalse(self.fence.exists());self.assertFalse((self.gate/'request.json').exists())
+        self.assertEqual(self.run_settlement()['status'],'rejected_settled')
+
+    def test_missing_permit_does_not_prove_unknown_or_consumed_dispatch_safe(self):
+        (self.gate/'permit.json').unlink()
+        for name in ('request.json','issued-'+self.request_id+'.json','result-'+self.request_id+'.json'):
+            path=self.gate/name;raw=path.read_bytes();path.unlink()
+            with self.subTest(name=name),self.assertRaisesRegex(ValueError,'Required rejected recovery evidence'):
+                self.run_settlement()
+            self.assert_fenced();self.assertFalse((self.root/'intent.json').exists());path.write_bytes(raw)
+        for outcome in ('ORPHAN_RECOVERED','ORPHAN_CHANGED_AFTER_CLAIM','unknown'):
+            self.fixture.consume(self.review,outcome,consumed=False)
+            with self.subTest(outcome=outcome),self.assertRaisesRegex(ValueError,'pre-consumption'):
+                self.run_settlement()
+            self.assert_fenced();self.assertFalse((self.root/'intent.json').exists())
+        self.fixture.consume(self.review,self.rejection_status,consumed=True)
+        with self.assertRaisesRegex(ValueError,'consumption'):self.run_settlement()
+        self.assert_fenced();self.assertFalse((self.root/'intent.json').exists())
+
+    def test_null_malformed_or_foreign_permit_refuses_without_mutation(self):
+        permit=self.gate/'permit.json'
+        for raw in (b'null',b'{',b'[]',b'{"request_sha256":null}',b'{"request_sha256":"foreign"}'):
+            permit.write_bytes(raw)
+            with self.subTest(raw=raw),self.assertRaises(ValueError):self.run_settlement()
+            self.assertEqual(permit.read_bytes(),raw);self.assert_fenced();self.assertFalse((self.root/'intent.json').exists())
+
+    def test_missing_permit_unexpired_rejection_refuses(self):
+        (self.gate/'permit.json').unlink()
+        for now in (self.request['expires_utc']-1,self.request['expires_utc']):
+            with patch('studio_orphan_rejection.time.time',return_value=now),self.assertRaisesRegex(ValueError,'expired'):
+                self.run_settlement()
+            self.assert_fenced();self.assertFalse((self.root/'intent.json').exists())
+
+    def test_missing_permit_malformed_or_null_native_result_refuses_typed(self):
+        (self.gate/'permit.json').unlink()
+        result=self.gate/('result-'+self.request_id+'.json')
+        for raw in (b'null',b'{',b'[]',b'{}'):
+            result.write_bytes(raw)
+            with self.subTest(raw=raw),self.assertRaises(ValueError):self.run_settlement()
+            self.assertEqual(result.read_bytes(),raw);self.assert_fenced();self.assertFalse((self.root/'intent.json').exists())
+
+    def test_missing_permit_interrupted_intent_resumes_only_exact_absence(self):
+        (self.gate/'permit.json').unlink();original=Path.unlink
+        def interrupted(path,*args,**kwargs):
+            if path==self.gate/'request.json':raise OSError('before request cleanup')
+            return original(path,*args,**kwargs)
+        with patch.object(Path,'unlink',interrupted),self.assertRaises(OSError):self.run_settlement()
+        self.assert_fenced();intent_file=self.root/'intent.json';raw=intent_file.read_bytes()
+        intent=json.loads(raw);intent['absent_transport']=['request.json'];write_json(intent_file,intent)
+        with self.assertRaisesRegex(ValueError,'transport absence changed'):self.run_settlement()
+        self.assert_fenced();intent_file.write_bytes(raw)
+        self.assertEqual(self.run_settlement()['status'],'rejected_settled')
+
+    def test_missing_permit_different_consumption_also_blocks(self):
+        (self.gate/'permit.json').unlink();other=self.c.local/'other-evidence';other.mkdir()
+        (other/('consumed-'+'a'*64+'.json')).write_bytes(b'unknown')
+        with self.assertRaisesRegex(ValueError,'consumption'):self.run_settlement()
+        self.assert_fenced();self.assertFalse((self.root/'intent.json').exists())
+
+    def test_permit_appearing_after_absent_intent_stays_fenced_and_is_never_removed(self):
+        (self.gate/'permit.json').unlink()
+        original=settlement.write_json
+        def appeared(path,value):
+            original(path,value)
+            if path.name=='intent.json':write_json(self.gate/'permit.json',{'foreign':'permit'})
+        with patch('studio_orphan_rejection.write_json',side_effect=appeared),self.assertRaisesRegex(ValueError,'absent permit changed'):
+            self.run_settlement()
+        self.assertEqual(read_json(self.gate/'permit.json'),{'foreign':'permit'})
+        self.assert_fenced();self.assertTrue((self.gate/'request.json').exists())
+
+    def test_missing_permit_cli_returns_supported_settlement_not_errno(self):
+        from goat_studio import main
+        import io
+        (self.gate/'permit.json').unlink();output=io.StringIO()
+        with patch('goat_studio.Controller',return_value=self.c),patch('sys.stdout',output):
+            code=main(['--installation',str(self.c.root/'installation.json'),'orphan-recovery-reconcile-rejection',
+                       '--review-id',self.review,'--confirm-reviewed','--terminal-stopped'])
+        self.assertEqual(code,0);self.assertEqual(json.loads(output.getvalue())['result']['status'],'rejected_settled')
 
     def test_process_monitor_account_generation_and_batch_drift_refuse(self):
         # No stale native monitor/account/flag observation is used offline.

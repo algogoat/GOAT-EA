@@ -375,3 +375,15 @@ ownership, stop, grant, queue or exporter behavior. Source fixtures cover stale
 blank/malformed drafts, ownership round trips and revision/generation/capability
 transitions. Candidate build AE29 is isolated; active BD28 and immutable desktop
 bundles are untouched. Native chart verification and customer review remain open.
+
+## CTRL-044 - Preserve stopped rejection evidence when the permit is absent
+
+Report03afb685 retained an expired ORPHAN_REVIEW_REJECTED request but stopped
+settlement crashed while reading missing permit.json. Accept initial permit
+absence only for the explicitly confirmed stopped mode, backed by exact
+issued/request/result evidence and no consumption. Record absence in the
+existing immutable settlement intent; never recreate a permit, infer an
+unissued outcome, grant control or clear native flags. Unknown/malformed/native
+consumed outcomes and changed transport remain fenced. Regression coverage is
+in controller/test_studio_orphan_stopped.py; customer review and packaged
+delivery are pending. No EA binary or active research kit changed.

@@ -19,6 +19,7 @@ class RejectedRecoveryTests(unittest.TestCase):
     inspection_module=settlement
     inspection_name='inspect'
     cli_flags=[]
+    initial_missing_permit_supported=False
     def setUp(self):
         self.fixture=fixtures.OrphanRecoveryTests();self.fixture.setUp()
         self.addCleanup(self.fixture.tearDown);self.addCleanup(self.fixture.doCleanups)
@@ -112,6 +113,7 @@ class RejectedRecoveryTests(unittest.TestCase):
 
     def test_missing_or_changed_receipt_issuance_and_transport_preserve_fence(self):
         files=[self.gate/('result-'+self.request_id+'.json'),self.gate/('issued-'+self.request_id+'.json'),self.gate/'request.json',self.gate/'permit.json']
+        if self.initial_missing_permit_supported: files.remove(self.gate/'permit.json')
         for file in files:
             raw=file.read_bytes();file.unlink()
             with self.subTest(path=file),self.assertRaises((ValueError,OSError,KeyError)):

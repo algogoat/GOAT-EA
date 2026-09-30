@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -88,6 +89,7 @@ class SelfRepairTests(unittest.TestCase):
         result = self.run_repair()
         self.assertEqual(result['status'],'repaired_terminal_stopped',result)
         self.assertFalse(result['native_qualification']); self.assertFalse(result['native_cancellation_claimed'])
+        self.assertEqual(result['cancel_evidence'],'rejected')
         self.assertEqual(self.c.job('original')['completion']['executed_members'],0)
         self.assertEqual(self.c.state()['generation'],grant_before)
         self.assertEqual(self.c.state()['owner'],'agent')
@@ -103,6 +105,43 @@ class SelfRepairTests(unittest.TestCase):
     def test_absent_cancel_result_is_not_zero_execution_proof(self):
         (self.gate/('result-'+self.cancel+'.json')).unlink()
         self.assert_refused('cancel rejection')
+
+    def test_expired_unconsumed_start_and_cancel_without_permit_retire_never_started(self):
+        for identity in (self.attempt,self.cancel):
+            (self.gate/('result-'+identity+'.json')).unlink()
+        (self.gate/'permit.json').unlink()
+        original_request=(self.gate/'request.json').read_bytes()
+        result=self.run_repair()
+        self.assertEqual(result['status'],'repaired_terminal_stopped',result)
+        self.assertEqual(result['cancel_evidence'],'expired_unconsumed')
+        self.assertEqual(self.c.job('original')['completion']['classification'],'retired_never_started')
+        self.assertEqual(self.c.job('original')['completion']['executed_members'],0)
+        folder=self.c.root/'self-repair'/self.action
+        self.assertEqual((folder/'request-before.json').read_bytes(),original_request)
+        self.assertEqual(read_json(folder/'transaction.json')['cancel_evidence'],'expired_unconsumed')
+        self.assertFalse((self.gate/'request.json').exists())
+        self.assertEqual((self.common/'queue.GOAT').read_bytes(),self.queue_raw)
+        self.assertFalse(any((self.base/n).exists() for n in NAMES))
+        self.process.close.assert_called_once();self.process.start.assert_not_called()
+        self.assertEqual(self.run_repair(),result)
+
+    def test_unexpired_unconsumed_cancel_without_permit_refuses(self):
+        issued=read_json(self.gate/('issued-'+self.cancel+'.json'))
+        self.issue(self.cancel,issued['request']|dict(expires_utc=time.time()+3600))
+        (self.gate/('result-'+self.cancel+'.json')).unlink()
+        (self.gate/'permit.json').unlink()
+        self.assert_refused('cancel rejection')
+
+    def test_consumed_cancel_without_receipt_or_permit_refuses(self):
+        (self.gate/('result-'+self.cancel+'.json')).unlink()
+        (self.gate/'permit.json').unlink()
+        (self.gate/('consumed-'+self.cancel+'.json')).write_bytes((self.gate/'request.json').read_bytes())
+        self.assert_refused('cancel rejection')
+
+    def test_expired_unconsumed_start_without_cancel_proof_stays_rejected_only(self):
+        (self.gate/('result-'+self.attempt+'.json')).unlink()
+        (self.gate/'permit.json').unlink()
+        self.assert_refused('REQUEST_REJECTED')
 
     def test_consumed_start_refuses(self):
         issued = read_json(self.gate/('issued-'+self.attempt+'.json'))

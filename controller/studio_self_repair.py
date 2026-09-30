@@ -1,4 +1,4 @@
-"""Retire an exact rejected, never-consumed demo attempt without replaying it.
+"""Retire an exact expired, never-consumed demo attempt without replaying it.
 
 The native request, permit, rejected receipts, authored configuration and queue
 remain evidence. A local failed settlement is never a native cancellation claim.
@@ -102,8 +102,12 @@ def _proof(c, job):
     current = read_json(safe_path(gate/'request.json'))
     issued = read_json(safe_path(gate/('issued-'+cancel+'.json')))
     request = issued['request']
-    if (dispatch.get('consumed') is not False or dispatch.get('status') != 'receipt_observed'
-            or dispatch['receipt']['status'] != 'REQUEST_REJECTED' or current != request
+    permit = safe_path(gate/'permit.json')
+    rejected = (dispatch.get('status') == 'receipt_observed'
+                and dispatch['receipt']['status'] == 'REQUEST_REJECTED')
+    expired_unconsumed = (dispatch.get('status') == 'awaiting_receipt'
+                          and dispatch.get('consumed') is False and not permit.exists())
+    if (dispatch.get('consumed') is not False or not (rejected or expired_unconsumed) or current != request
             or digest((gate/'request.json').read_bytes()) != issued['request_sha256']
             or request.get('request_id') != cancel or request.get('attempt_id') != attempt
             or request.get('action') != 'cancel' or request.get('job_id') != job['job_id']
@@ -112,15 +116,15 @@ def _proof(c, job):
             or request.get('configuration_sha256') != job['configuration_sha256']
             or request.get('expires_utc', time.time()+1) >= time.time()):
         raise ValueError('Exact expired pre-consumption native cancel rejection required')
-    permit = safe_path(gate/'permit.json')
+    cancel_evidence = 'rejected' if rejected else 'expired_unconsumed'
     if permit.exists() and read_json(permit) != {'request_sha256': issued['request_sha256']}:
         raise ValueError('Permit differs from the retained original cancel')
-    # Causal zero-work proof includes rejected original start, unarmed activation,
+    # Causal zero-work proof includes expired unconsumed start, unarmed activation,
     # byte-exact native queue/input/control files and no local reports/tester cache.
     recorded = datetime.fromisoformat(job['launch_intent']['recorded_at']).timestamp()
     scope = dict(configuration_sha256=job['configuration_sha256'], generation=state['generation'],
                  binding=dict(terminal_id=c.terminal, run_id=c.run), created_utc=recorded)
-    unstarted_material(c, job, scope)
+    unstarted_material(c, job, scope, allow_expired_unconsumed=expired_unconsumed)
     evidence = safe_path(c.root/'attempts'/attempt)
     transaction = read_json(evidence/'transaction.json')
     base = safe_path(Path(transaction['base']))
@@ -140,7 +144,7 @@ def _proof(c, job):
     start = read_json(gate/('issued-'+attempt+'.json'))['request']
     if any(start.get(k) != v or request.get(k) != v for k,v in fields.items()):
         raise ValueError('Original start/cancel terminal, account or native-control identity differs')
-    return transaction
+    return transaction, cancel_evidence
 
 
 def _append(path, phase, **fields):
@@ -222,6 +226,10 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
                     while any(observe_dispatch(gate,identity).get('status') == 'awaiting_receipt'
                               for identity in (attempt,sha([attempt,'cancel']))):
                         _guard(c)
+                        stop = observe_dispatch(gate,sha([attempt,'cancel']))
+                        if (stop.get('status') == 'awaiting_receipt' and stop.get('consumed') is False
+                                and not (gate/'permit.json').exists()):
+                            break  # No remaining permit can produce the missing rejection receipt.
                         if clock.monotonic() >= deadline: break
                         clock.sleep(.2)
         with exclusive_gate(c.root/'batch-driver-gate'), exclusive_gate(c.local/'native-gate'):
@@ -232,7 +240,7 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
             evidence = safe_path(c.root/'attempts'/job['launch_intent']['attempt_id'])
             gate = c.local/'native-gate'
             if not path.exists():
-                transaction = _proof(c, job)
+                transaction, cancel_evidence = _proof(c, job)
                 native = inspect_idle_demo(c); require_demo(native)
                 if process.inspect() != native['process']:
                     raise ValueError('Selected native process changed before recovery')
@@ -250,6 +258,7 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
                                                  demo=True,observed_at=datetime.now(timezone.utc).isoformat(),
                                                  process=native['process']),
                               archive_sha256={n:digest(raw) for n,raw in files.items()},
+                              cancel_evidence=cancel_evidence,
                               native_cancellation_claimed=False, grant_created=False, research_started=False)
                 write_json(path, record)
                 _append(folder/'actions.jsonl', 'prepared', attempt_id=record['attempt_id'])
@@ -361,13 +370,15 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
                                 beforeSha256=record['archive_sha256']['session-before.json'],afterSha256=after_session))
         report = dict(schemaVersion=1,tool='studio.self-repair',
                       versions=dict(app=current.get('bundle_version'),ea=current['ea_version'],controller=current['controller_version']),
-                      outcome='repaired',summary='Retired a verified rejected, never-started demo attempt and restored its original controls. The verified monitor can reopen; no research or trading was started.',
-                      observed=[dict(name='attempt',value=record['attempt_id'])],
+                      outcome='repaired',summary='Retired a verified expired, never-started demo attempt and restored its original controls. The verified monitor can reopen; no research or trading was started.',
+                      observed=[dict(name='attempt',value=record['attempt_id']),
+                                dict(name='cancel_evidence',value=record.get('cancel_evidence','rejected'))],
                       before=[dict(name='phase',value=before['status'])],after=[dict(name='phase',value='retired_never_started')],
                       changes=changes,nativeAction=True)
         outcome = dict(status='repaired_terminal_stopped',action_id=action_id,repair=report,
                        report_action_id=str(uuid.uuid5(uuid.NAMESPACE_URL,'goat-self-repair:'+action_id+':'+sha(report))),
                        account_proof=record['account_proof'],
+                       cancel_evidence=record.get('cancel_evidence','rejected'),
                        native_cancellation_claimed=False,research_started=False,native_qualification=False,
                        next_action='Update may reopen the verified inert monitor. Existing research stop remains retained; never auto-resume the retired attempt.')
         write_json(folder/'outcome.json',outcome)

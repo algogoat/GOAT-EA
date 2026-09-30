@@ -340,3 +340,7 @@ trading inputs. V1.49 build BD28 compiles on MetaEditor6230 with zero errors and
 warnings, EX5 a1c09bd858897b8a3c99ea46e8dfb05db0a89c5ad22c1d8baa717afce429a838.
 Date-expression and verification-predicate regressions pass. Native same-boundary
 replay and exact review remain required before customer publication.
+
+## CTRL-042 - Retire rejected, never-consumed customer attempts with original evidence
+
+Jan's same-EA desktop receipt rewrite stranded an issued start/cancel; metadata rebind and unissued continuation cannot settle it. Add public `studio self-repair` before ordinary controller open, matching the app-verified full linked login to fresh native demo proof. Republish genuine ledger configuration and observe existing expired rejections without resending. Require unarmed activation, pristine frozen native members/inputs, no consumption/start/arm intent or work outputs and exact owned controls. Normally close the selected idle demo, retain original transport, restore controls and settle a local failed never-started result before same-EA rebind. Preserve human STOP/TAKE/latch, grant, configuration and queue; no native cancellation is invented. Return sanitized own-ticket repair receipt with replay-safe report identity. Source/fixture transitions and refusal tests pass; native local broken-state/update rehearsal and exact customer review remain required before delivery.

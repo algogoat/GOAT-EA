@@ -25,6 +25,7 @@ from studio_strategy_settings import read_values
 from studio_settings import FIELDS,PERIODS,validate_tester,validate_export
 
 OPERATION_CONTRACTS = {
+    'self-repair':dict(required=['job-id','action-id','linked-login'],effect='retire an exact expired rejected never-consumed demo start/cancel using original receipt and pristine native package proof; caller verifies linked-login eligibility, tool matches it against fresh native demo account. Republish genuine projection, normally close idle selected demo, archive transport and restore owned controls, then same-EA rebind. No research relaunch, grant, permissions, human-stop reset or native-cancellation claim; returns sanitized own-ticket repair payload'),
     'same-ea-rebind':dict(required=[],effect='repair only a stopped demo session after a proven same-EA desktop receipt rewrite; requires exact preserved previous receipt and settled native attempts, retains previous session bytes and database, never launches, grants or clears a permit'),
     'monitor-stop':dict(required=['attempt-id'],effect='normal-close exact idle connected demo once for authorized upgrade; empty unstarted sessions only, no relaunch/grant/trading; retained stop refuses a replacement process'),
     'monitor-repair':dict(required=['attempt-id'],effect='within authorized setup, read native identity/demo/Algo-off/zero positions and idle tester; normal-close once, preserve and restore prepared profile and explicitly attach monitor; empty unstarted sessions only, no grant/trading/optimization'),
@@ -348,6 +349,7 @@ def main(argv=None):
     p=sub.add_parser('benchmark-report');p.add_argument('--batch-id',required=True)
     sub.add_parser('discover');sub.add_parser('state');sub.add_parser('onboarding-status')
     sub.add_parser('same-ea-rebind')
+    p=sub.add_parser('self-repair');p.add_argument('--job-id',required=True);p.add_argument('--action-id',required=True);p.add_argument('--linked-login',required=True)
     p=sub.add_parser('monitor-prepare');p.add_argument('--symbol',required=True)
     p=sub.add_parser('monitor-launch');p.add_argument('--attempt-id',required=True)
     p=sub.add_parser('monitor-repair');p.add_argument('--attempt-id',required=True)
@@ -378,6 +380,11 @@ def main(argv=None):
     try:
         from studio_research_authority import operation,dispatch
         locks.enter_context(operation(args.operation))
+        if args.operation=='self-repair':
+            from studio_self_repair import repair
+            result=repair(args.installation,args.job_id,args.action_id,linked_login=args.linked_login)
+            print(json.dumps(dict(ok=result['status']=='repaired_terminal_stopped',result=result),ensure_ascii=False,allow_nan=False))
+            return 0 if result['status']=='repaired_terminal_stopped' else 2
         if args.operation=='switch-replace-build':
             from studio_build_upgrade import replace_build
             result=replace_build(args.installation,args.review_id,args.candidate_receipt,args.candidate_ea,args.expected_sha256)

@@ -121,6 +121,10 @@ class SelfRepairTests(unittest.TestCase):
         write_json(self.gate/'permit.json',dict(request_sha256='f'*64))
         self.assert_refused('Permit differs')
 
+    def test_changed_current_request_bytes_refuse_even_if_json_is_equivalent(self):
+        target=self.gate/'request.json';target.write_bytes(target.read_bytes()+b'\n')
+        self.assert_refused('cancel rejection')
+
     def test_live_sdk_refuses_before_projection_or_close(self):
         with patch('studio_self_repair.inspect_idle_demo',return_value=self.native|dict(demo=False)):
             self.assert_refused('SDK-confirmed')

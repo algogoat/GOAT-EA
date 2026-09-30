@@ -104,6 +104,7 @@ def _proof(c, job):
     request = issued['request']
     if (dispatch.get('consumed') is not False or dispatch.get('status') != 'receipt_observed'
             or dispatch['receipt']['status'] != 'REQUEST_REJECTED' or current != request
+            or digest((gate/'request.json').read_bytes()) != issued['request_sha256']
             or request.get('request_id') != cancel or request.get('attempt_id') != attempt
             or request.get('action') != 'cancel' or request.get('job_id') != job['job_id']
             or request.get('terminal_id') != c.terminal or request.get('run_id') != c.run

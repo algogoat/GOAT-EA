@@ -1008,3 +1008,18 @@ MT5 resolves configured reports relative to its installation while GOAT reads it
 An existing native human-control session can use this recovery without replacing its session, binary or grant. This narrowly scoped adapter entry cannot reserve or start research. It retains the before-state and exact native request, then waits up to 15 seconds for receipt plus readback. No human-confirmation flag or new grant is generated.
 
 For the reported `ORPHAN_REVIEW_REJECTED`, `consumed=false` case, the same command settles only the exact expired, unconsumed rejection after fresh checks, preserves its request/result archive, and prepares one new recovery identity. A retained link prevents automatic successor chains. Consumed, uncertain or other refusals remain fenced and are never resent. `--review-id` always observes only. Native customer qualification and installer delivery remain separate from these source/fixture checks.
+
+## Windows supervisor lifetime
+
+The candidate Windows demo launcher hosts its bounded supervisor in a
+windowless, demand-only task for the current interactive user. It does not
+add a recurring trigger, store a Windows password or enable trading. The
+native driver still proves the selected demo account and honors human STOP,
+disk, ownership and its original deadline. Task execution allowance includes
+shutdown grace; it never renews the research window.
+
+A registration timeout or missing bootstrap receipt preserves the launch
+envelope and refuses a second launch or ordinary process fallback. Inspect
+that exact task/nonce before recovery. Start/completion receipts prove only
+the supervisor process; obtain fresh MT5 and batch evidence before reporting
+that optimization is running. Final customer rehearsal is still pending.

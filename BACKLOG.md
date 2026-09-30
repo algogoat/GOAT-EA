@@ -340,3 +340,18 @@ trading inputs. V1.49 build BD28 compiles on MetaEditor6230 with zero errors and
 warnings, EX5 a1c09bd858897b8a3c99ea46e8dfb05db0a89c5ad22c1d8baa717afce429a838.
 Date-expression and verification-predicate regressions pass. Native same-boundary
 replay and exact review remain required before customer publication.
+## CTRL-041 - Keep native demo work outside an agent caller's Windows job
+
+The September30 local full-batch launch vanished near a cancelled agent turn:
+its terminal and detached supervisor were absent, with a stale OnGoing queue.
+A controlled Windows Job Object probe reproduced the lifetime hazard: killing
+the parent job killed its detached child while a demand-task child continued.
+The Windows demo launcher now uses windowless embedded Python in a demand-only
+interactive limited-user task. It retains exact batch/nonce/budget/path
+identity and start/completion receipts, preserves expired-resume cancellation,
+and has no ephemeral fallback after an uncertain task start. Unknown launches
+cannot silently duplicate a supervisor. Demo/STOP/disk/terminal ownership
+checks stay in the native driver. Unit and background-process tests pass;
+the task-lifetime mechanism is natively proven without MT5, while the complete
+new wrapper's customer-native rehearsal remains required. The active Banker
+kit is frozen and was not changed.

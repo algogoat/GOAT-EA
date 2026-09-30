@@ -250,13 +250,14 @@ class DemoAgentTests(unittest.TestCase):
             return types.SimpleNamespace(pid=123, poll=lambda: None)
 
         with patch.object(self.agent, '_studio', side_effect=studio), patch(
-                'demo_agent.subprocess.Popen', side_effect=spawn) as popen:
+                'studio_durable_driver.launch', side_effect=spawn) as popen:
             result = self.agent.run_batch('batch', 172800)
         self.assertEqual(result['status'], 'driver_journal_recorded')
         self.assertEqual(result['driver_status'], 'observing')
         self.assertTrue(result['native_running_unverified'])
         self.assertIn('_drive-batch', popen.call_args.args[0])
-        self.assertNotEqual(popen.call_args.kwargs['creationflags'], 0)
+        self.assertIn('log_path', popen.call_args.kwargs)
+        self.assertIn('worker_path', popen.call_args.kwargs)
 
     def test_resume_spawns_worker_for_existing_attempt_without_new_budget(self):
         journal = self.root / 'batch-drivers/batch.json'
@@ -269,7 +270,7 @@ class DemoAgentTests(unittest.TestCase):
 
         with patch.object(self.agent, '_studio', side_effect=studio), patch(
                 'studio_batch_driver.status', return_value=dict(stopped=False)), patch(
-                'demo_agent.subprocess.Popen', return_value=types.SimpleNamespace(
+                'studio_durable_driver.launch', return_value=types.SimpleNamespace(
                     pid=124, poll=lambda: None)) as popen:
             result = self.agent.resume_batch('batch')
         argv = popen.call_args.args[0]

@@ -1020,3 +1020,18 @@ Success leaves MT5 stopped for the updater's separately verified inert-monitor r
 Stdout returns `{ok,result}`. Only `result.repair` is the sanitized server repair payload; `local_reason` and the surrounding machine/account evidence must never be sent to support. Use `result.report_action_id` with the own-ticket `support.appendRepair` RPC and the current report revision. It is stable for an identical outcome; a changed interrupted-repair outcome has a new report identity. `result.action_id` remains the local repair journal identity. Fixture tests establish the recovery transitions and refusals, not native customer qualification.
 
 For the reported `ORPHAN_REVIEW_REJECTED`, `consumed=false` case, the same command settles only the exact expired, unconsumed rejection after fresh checks, preserves its request/result archive, and prepares one new recovery identity. A retained link prevents automatic successor chains. Consumed, uncertain or other refusals remain fenced and are never resent. `--review-id` always observes only. Native customer qualification and installer delivery remain separate from these source/fixture checks.
+
+## Windows supervisor lifetime
+
+The candidate Windows demo launcher hosts its bounded supervisor in a
+windowless, demand-only task for the current interactive user. It does not
+add a recurring trigger, store a Windows password or enable trading. The
+native driver still proves the selected demo account and honors human STOP,
+disk, ownership and its original deadline. Task execution allowance includes
+shutdown grace; it never renews the research window.
+
+A registration timeout or missing bootstrap receipt preserves the launch
+envelope and refuses a second launch or ordinary process fallback. Inspect
+that exact task/nonce before recovery. Start/completion receipts prove only
+the supervisor process; obtain fresh MT5 and batch evidence before reporting
+that optimization is running. Final customer rehearsal is still pending.

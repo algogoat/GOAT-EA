@@ -761,6 +761,21 @@ class DemoAgent:
             return dict(result, member_count=member_count)
 
     def _worker_alive(self, record):
+        envelope_path = record.get('launch_envelope')
+        if envelope_path:
+            envelope = read_json(envelope_path)
+            finished = Path(envelope['finished'])
+            if finished.is_file():
+                if read_json(finished).get('nonce') != record.get('nonce'):
+                    raise ValueError('Persistent driver completion identity changed')
+                return False
+            started = Path(envelope['started'])
+            if not started.is_file():
+                raise ValueError('Persistent driver launch unresolved; inspect its existing task, never duplicate')
+            native = read_json(started)
+            if native.get('nonce') != record.get('nonce'):
+                raise ValueError('Persistent driver bootstrap identity changed')
+            record = dict(record, pid=native['pid'])
         pid = record.get('pid')
         nonce = record.get('nonce')
         if type(pid) is not int or pid <= 0 or not isinstance(nonce, str):
@@ -823,10 +838,15 @@ class DemoAgent:
                      | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
                      | getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             try:
-                with log_path.open('ab') as log:
-                    child = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
-                        stdout=log, stderr=subprocess.STDOUT, close_fds=True,
-                        creationflags=flags)
+                if os.name == 'nt':
+                    from studio_durable_driver import launch
+                    child = launch(argv, log_path=log_path, worker_path=worker_path)
+                    worker = read_json(worker_path)
+                else:
+                    with log_path.open('ab') as log:
+                        child = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                            stdout=log, stderr=subprocess.STDOUT, close_fds=True,
+                            creationflags=flags)
             except OSError as exc:
                 worker.update(status='spawn_failed', error=str(exc))
                 write_json(worker_path, worker)

@@ -5,7 +5,7 @@ from campaign_ledger import packed,sha
 from studio_installation import read_json
 from studio_native_observe import observe
 from studio_report_observe import observe_reports
-from studio_native_gate import exclusive_gate
+from studio_native_gate import exclusive_gate,_read_gate_evidence
 from native_control_transaction import restore,NAMES,contents,digest
 from studio_bridge import write_json
 
@@ -59,7 +59,9 @@ def finish(controller,job_id,*,expected_generation=None):
             # Before releasing, require the active pointer to still address this run.
             from studio_native_request import ini_sections
             pointer=ini_sections((base/'active_optimization_run.ini').read_bytes())
-            manifest=read_json(package/'manifest.json')
+            # Batch manifests use the existing 64 MiB native-evidence bound;
+            # installation receipts keep their separate 2 MB limit.
+            manifest=_read_gate_evidence(package/'manifest.json')[1]
             if pointer!={'ActiveOptimizationRun':{'RunPath':manifest['native_run_relative']}}:
                 raise ValueError('Native pointer changed; cannot release another run')
             restore(evidence,{name:digest(contents(base/name)) for name in NAMES})
@@ -71,7 +73,7 @@ def finish(controller,job_id,*,expected_generation=None):
             if receipt!=restart['report_bridge']:
                 raise ValueError('Report bridge evidence changed before finish')
             plan=read_json(package/'studio-plan.json')
-            manifest=read_json(package/'manifest.json')
+            manifest=_read_gate_evidence(package/'manifest.json')[1]
             if sha(plan)!=manifest['campaign_id']:
                 raise ValueError('Report cleanup plan changed')
             result['report_bridge_retirement']=retire(plan['research_binding'],

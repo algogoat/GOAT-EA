@@ -180,12 +180,17 @@ class PortableControllerTests(unittest.TestCase):
         for rule in policy['rules']:
             self.assertIn(rule['input'],schema['inputs']);self.assertIn(rule['controller'],schema['inputs'])
 
-    def activated_fixture(self):
+    def activated_fixture(self,*,large_manifest=False):
         """Exact real package/store/ownership files; MT5 itself is not started."""
         from studio_launch_intent import record_intent
         from native_control_transaction import begin,NAMES
         c=self.bound();self.grant(c);result=self.prepare(c)
         package=Path(result['package']);manifest=result['manifest'];job=c.job('beta-job')
+        if large_manifest:
+            # Valid JSON formatting makes the frozen package exceed the small
+            # installation-receipt bound without inventing manifest fields.
+            path=package/'manifest.json'
+            path.write_bytes(b' ' * 2_000_001 + path.read_bytes())
         c.submit('queue.reserve',dict(job_id='beta-job',configuration_sha256=job['configuration_sha256'],package_sha256=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()),'beta-job-reserve')
         state=c.state();intent=record_intent(c.store,c.terminal,c.run,'beta-job',package,actor='agent',revision=state['revision'],generation=state['generation'])
         native=self.common/manifest['native_run_relative'].replace('\\','/');shutil.copytree(package,native)
@@ -231,6 +236,22 @@ class PortableControllerTests(unittest.TestCase):
         self.assertFalse((base/'agent-native-control-owner.json').exists())
         self.assertEqual(c.job('beta-job')['status'],'cancelled')
         self.assertEqual(finish(c,'beta-job')['reused'],True)
+
+    def test_finish_cancelled_large_batch_manifest_keeps_small_receipt_bound(self):
+        from studio_finish import finish
+        from studio_installation import read_json
+        c,native,base,evidence=self.activated_fixture(large_manifest=True)
+        package=Path(c.job('beta-job')['launch_intent']['package'])
+        with self.assertRaisesRegex(ValueError,'JSON exceeds 2 MB'):
+            read_json(package/'manifest.json')
+        queue=native/'queue.GOAT'
+        queue.write_bytes(queue.read_bytes().decode('utf-16').replace(';Pending_',';Cancelled_').encode('utf-16'))
+        with patch.object(c,'runtime',return_value=({},{})):
+            result=finish(c,'beta-job')
+        self.assertEqual(result['status'],'cancelled')
+        self.assertFalse((base/'agent-native-control-owner.json').exists())
+        self.assertEqual(c.job('beta-job')['status'],'cancelled')
+        self.assertTrue(Path(result['result_path']).is_file())
 
     def test_finish_unknown_state_preserves_ownership(self):
         from studio_finish import finish

@@ -43,7 +43,7 @@ def unstarted_proof(controller,job_id,scope):
     return unstarted_material(controller,state['queue'][0],scope)
 
 
-def unstarted_material(controller,job,scope,*,request_path=None):
+def unstarted_material(controller,job,scope,*,request_path=None,allow_expired_unconsumed=False):
     """Verify retained original evidence; this never grants current authority."""
     job_id=job['job_id'];attempt=job['launch_intent']['attempt_id']
     if (job['status'] not in ('starting','reconcile_required') or 'restart_intent' in job
@@ -56,8 +56,13 @@ def unstarted_material(controller,job,scope,*,request_path=None):
             raise ValueError('A consumed start exists; monitor restart refused')
     dispatch=observe_dispatch(gate,attempt)
     request=read_json(safe_path(gate/('issued-'+attempt+'.json')))['request']
-    if (dispatch.get('status')!='receipt_observed' or dispatch.get('consumed') is not False
-            or dispatch['receipt']['status']!='REQUEST_REJECTED' or request['expires_utc']>=time.time()
+    rejected=(dispatch.get('status')=='receipt_observed' and dispatch['receipt']['status']=='REQUEST_REJECTED')
+    # Customer self-repair separately proves the exact expired cancel and absent
+    # permit. Keep owner research monitor-restart callers rejection-only.
+    expired_unconsumed=(allow_expired_unconsumed and dispatch.get('status')=='awaiting_receipt'
+                        and dispatch.get('consumed') is False and not safe_path(gate/'permit.json').exists())
+    if (not (rejected or expired_unconsumed) or dispatch.get('consumed') is not False
+            or request['expires_utc']>=time.time()
             or request.get('action','start')!='start' or request['generation']!=scope['generation']
             or request['job_id']!=job_id or request['configuration_sha256']!=scope['configuration_sha256']
             or {k:request[k] for k in ('terminal_id','run_id')}!=scope['binding']):

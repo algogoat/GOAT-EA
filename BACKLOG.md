@@ -355,3 +355,8 @@ checks stay in the native driver. Unit and background-process tests pass;
 the task-lifetime mechanism is natively proven without MT5, while the complete
 new wrapper's customer-native rehearsal remains required. The active Banker
 kit is frozen and was not changed.
+
+
+## CTRL-042 - Retire rejected, never-consumed customer attempts with original evidence
+
+Jan's same-EA desktop receipt rewrite stranded an issued start/cancel; metadata rebind and unissued continuation cannot settle it. Add public `studio self-repair` before ordinary controller open, matching the app-verified full linked login to fresh native demo proof. Republish genuine ledger configuration and observe existing expired rejections without resending. Require unarmed activation, pristine frozen native members/inputs, no consumption/start/arm intent or work outputs and exact owned controls. Normally close the selected idle demo, retain original transport, restore controls and settle a local failed never-started result before same-EA rebind. Preserve human STOP/TAKE/latch, grant, configuration and queue; no native cancellation is invented. Return sanitized own-ticket repair receipt with replay-safe report identity. Source/fixture transitions and refusal tests pass; native local broken-state/update rehearsal and exact customer review remain required before delivery.

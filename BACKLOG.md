@@ -361,7 +361,22 @@ kit is frozen and was not changed.
 
 Jan's same-EA desktop receipt rewrite stranded an issued start/cancel; metadata rebind and unissued continuation cannot settle it. Add public `studio self-repair` before ordinary controller open, matching the app-verified full linked login to fresh native demo proof. Republish genuine ledger configuration and observe existing expired rejections without resending. Require unarmed activation, pristine frozen native members/inputs, no consumption/start/arm intent or work outputs and exact owned controls. Normally close the selected idle demo, retain original transport, restore controls and settle a local failed never-started result before same-EA rebind. Preserve human STOP/TAKE/latch, grant, configuration and queue; no native cancellation is invented. Return sanitized own-ticket repair receipt with replay-safe report identity. Source/fixture transitions and refusal tests pass; native local broken-state/update rehearsal and exact customer review remain required before delivery.
 
-## CTRL-043 - Preserve stopped rejection evidence when the permit is absent
+## CTRL-043 - Separate agent settings display from retained human editor data
+
+The Banker monitor showed blank export thresholds and unchecked flags even though
+the committed snapshot and frozen export file were correct. A revision1094 local
+human draft differed from its valid baseline, so refresh protected it as unsaved
+edits and masked the agent's newer committed settings. Agent-owned display now
+always hydrates the accepted snapshot; agent refresh/destruction never restores
+or persists human editor data. When a human regains the editor, retained unsaved
+values return, with a clear label separating them from running settings. No-edit
+restoration preserves the existing file bytes and formatting. This changes no
+ownership, stop, grant, queue or exporter behavior. Source fixtures cover stale
+blank/malformed drafts, ownership round trips and revision/generation/capability
+transitions. Candidate build AE29 is isolated; active BD28 and immutable desktop
+bundles are untouched. Native chart verification and customer review remain open.
+
+## CTRL-044 - Preserve stopped rejection evidence when the permit is absent
 
 Report03afb685 retained an expired ORPHAN_REVIEW_REJECTED request but stopped
 settlement crashed while reading missing permit.json. Accept initial permit

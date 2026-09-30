@@ -2,6 +2,7 @@
 #define GOAT_STUDIO_UI_MQH
 #include "GOATStudioBridge.mqh"
 #include "GOATStudioNative.mqh"
+#include "GOATStudioDraftDisplayPolicy.mqh"
 #ifdef GOAT_CONTROL_FEEDBACK_V149
 #include "GOATStudioControlFeedback.mqh"
 #endif
@@ -627,27 +628,41 @@ void CStrategyTesterDialog::ManagedQueueMove(const int direction)
    ManagedQueueSubmit("queue.reorder",payload+"]}");
   }
 
-bool CStrategyTesterDialog::ManagedPersistDraft(void)
+string CStrategyTesterDialog::ManagedDraftBody(void)
   {
-   if(!m_studioLoaded || !g_StudioBound || m_studioDraftFailed || g_StudioEditorLock==INVALID_HANDLE) return false;
-#ifdef GOAT_MONITOR_ONBOARDING_V149
-   // Empty setup must not persist stale UI defaults as user settings.
-   if(g_StudioEmptyDraft) return !FileIsExist(g_StudioBridge.DraftPath());
-#endif
-   string body="{\"schema_version\":1,\"terminal_id\":"+GoatStudioQuote(g_StudioBridge.TerminalId())
+   return "{\"schema_version\":1,\"terminal_id\":"+GoatStudioQuote(g_StudioBridge.TerminalId())
       +",\"run_id\":"+GoatStudioQuote(g_StudioBridge.RunId())
       +",\"revision\":"+(string)m_studioRevision+",\"generation\":"+(string)m_studioGeneration
       +",\"tester_ini\":"+GoatStudioQuote(GetTESTERsettingsString(true))
       +",\"export_ini\":"+GoatStudioQuote(GetExportSettingsString())
       +",\"baseline\":"+GoatStudioQuote(m_studioBaseline)
       +",\"submitted\":"+GoatStudioQuote(m_studioSubmitted)+"}";
+  }
+
+bool CStrategyTesterDialog::ManagedPersistDraft(void)
+  {
+   // Read-only agent mirrors must not serialize committed fields over a retained
+   // human draft, including during refresh or dialog destruction.
+   if(!GoatStudioHumanDraftIO(m_studioOwner=="human")) return true;
+   if(!m_studioLoaded || !g_StudioBound || m_studioDraftFailed || g_StudioEditorLock==INVALID_HANDLE) return false;
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   // Empty setup must not persist stale UI defaults as user settings.
+   if(g_StudioEmptyDraft) return !FileIsExist(g_StudioBridge.DraftPath());
+#endif
+   string body=ManagedDraftBody();
+   // Restoring or displaying an editor is not a human edit. Retain the exact
+   // old file bytes/format until its represented content or metadata changes.
+   if(body==m_studioRetainedDraftBody) return true;
    string path=g_StudioBridge.DraftPath(),previous;
-   if(GoatStudioReadUtf8(path,previous) && previous==body) return true;
-   return GoatStudioWriteUtf8(path,body,true);
+   if(GoatStudioReadUtf8(path,previous) && previous==body)
+     {m_studioRetainedDraftBody=body; return true;}
+   if(!GoatStudioWriteUtf8(path,body,true)) return false;
+   m_studioRetainedDraftBody=body; return true;
   }
 
 bool CStrategyTesterDialog::ManagedRestoreDraft(void)
   {
+   if(!GoatStudioHumanDraftIO(m_studioOwner=="human")) return true;
    if(m_studioDraftChecked) return !m_studioDraftFailed;
    if(!g_StudioBound) return false;
    // The UI-state reader claims this handle before processing human receipts.
@@ -687,6 +702,7 @@ bool CStrategyTesterDialog::ManagedRestoreDraft(void)
    m_edtCurrency.Text(GoatOptReadIniValue(tester,"Currency"));
    m_studioBaseline=baseline; m_studioSubmitted=submitted;
    m_studioRevision=revision; m_studioGeneration=generation; m_studioLoaded=true;
+   m_studioRetainedDraftBody=ManagedDraftBody();
    return true;
   }
 
@@ -718,30 +734,38 @@ void CStrategyTesterDialog::ManagedRefresh(void)
    if(g_StudioEmptyDraft && FileIsExist(g_StudioBridge.DraftPath()))
      {m_studioOwner=""; m_studioDraftFailed=true; m_edtBatchProgress.Text("Saved edits need recovery; ask your agent"); ManagedControls(); ManagedObservation("Empty state conflicts with saved draft"); return;}
 #endif
+   // Preserve and re-read retained edits when a human regains the editor. Agent
+   // snapshot hydration never changes the on-disk draft or its old revision.
+   if(owner=="human" && m_studioOwner!="human")
+     {m_studioDraftChecked=false; m_studioDraftFailed=false;}
+   m_studioOwner=owner;
    if(!ManagedRestoreDraft())
      {m_studioOwner=""; ManagedControls(); m_edtBatchErrors.Text("Editor busy or draft recovery failed; local file retained"); return;}
    current=GetTESTERsettingsString(true)+GetExportSettingsString();
-   if(saved)
+   bool agent_mirror=(owner=="agent");
+   if(saved && !agent_mirror)
      {
       // Edits made while saving stay dirty, but now build on our acknowledged revision.
       m_studioBaseline=m_studioSubmitted;
       m_studioRevision=revision; m_studioGeneration=generation;
      }
    bool dirty=m_studioLoaded && !GoatStudioSameDraftSettings(current,m_studioBaseline);
-   m_studioOwner=owner;
-   if(!dirty)
+   if(GoatStudioHydrateSnapshot(agent_mirror,dirty,m_studioLoaded,
+                               revision!=m_studioRevision || generation!=m_studioGeneration))
      {
-      if(!m_studioLoaded || revision!=m_studioRevision)
-        {
 #ifdef GOAT_MONITOR_ONBOARDING_V149
          if(!g_StudioEmptyDraft)
 #endif
            {ApplyTesterSettingsToControls(tester); ApplyExportSettingsToControls(exports);}
          m_studioBaseline=GetTESTERsettingsString(true)+GetExportSettingsString();
          m_studioRevision=revision; m_studioGeneration=generation; m_studioLoaded=true;
-        }
      }
-   else status+=" / Unsaved edits retained";
+   else if(dirty) status+=" / Unsaved human edits retained; not applied to the running batch";
+   if(agent_mirror)
+     {
+      status+=" / Showing committed agent settings";
+      if(FileIsExist(g_StudioBridge.DraftPath())) status+="; local human draft retained";
+     }
    m_edtBatchProgress.Text(status);
 #ifdef GOAT_MONITOR_ONBOARDING_V149
    m_edtBatchErrors.Text("Connecting an agent does not enable trading.");

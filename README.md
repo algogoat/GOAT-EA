@@ -205,5 +205,15 @@ Keeping multiple versioned `.mq5` files side by side preserves the released entr
 
 If exact historical reproducibility becomes important, version the shared include graph together with each main `.mq5` release or keep release tags that point to the exact source tree used for that version.
 
+### Agent display and retained human edits
+
+The managed agent view displays committed snapshot settings, while preserving
+any separate local human draft for later human ownership. Retained unsaved edits
+are labelled and do not describe the running batch. Taking control stops the
+agent's research; saving a future draft does not rewrite an already frozen native
+package. Export thresholds are captured at each member's exporter start, while
+sequence capture is read for each candidate. There is no supported policy for
+editing a frozen active run by changing its native files directly.
+
 Following these rules ensures the repository remains a complete, reproducible history of all GOAT-EA versions, source code, binaries, and visual assets.
 

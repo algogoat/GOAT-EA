@@ -119,7 +119,8 @@ public:
 #ifdef GOAT_STUDIO_UNIFIED_V147
    bool m_studioLoaded,m_studioDraftChecked,m_studioDraftFailed;
    long m_studioRevision,m_studioGeneration;
-   string m_studioOwner,m_studioBaseline,m_studioSubmitted;
+   string m_studioOwner,m_studioBaseline,m_studioSubmitted,m_studioRetainedDraftBody;
+   string ManagedDraftBody(void);
    void ManagedRefresh(void);
    void ManagedObservation(const string status);
    void ManagedResize(void);

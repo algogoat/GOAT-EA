@@ -63,6 +63,8 @@ jobs:
 
       - name: Verify Studio control feedback state transitions
         run: node scripts/test_studio_control_feedback.cjs
+      - name: Verify agent committed export display and retained human draft
+        run: node scripts/test_studio_agent_export_display.cjs
       - name: Native batch cancellation origin
         run: node scripts/test_batch_cancel_origin.cjs
       - name: Native optimization axis isolation and pre-start readback

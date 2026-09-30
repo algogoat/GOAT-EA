@@ -30,18 +30,26 @@ def retained_evidence(c, plan):
     root=safe_path(plan_path(c,plan['review_id']).parent/'rejection-settlement')
     intent=read_json(safe_path(root/'intent.json'))
     expected_keys={'schema_version','review_id','request_id','sha256'}
-    if intent.get('schema_version')==2:
+    if intent.get('schema_version') in (2,3):
         expected_keys|={'terminal_stopped','process_observation'}
         proof=intent.get('process_observation')
         if (intent.get('terminal_stopped') is not True or not isinstance(proof,dict)
                 or proof.get('research','missing') is not None or proof.get('launch_permitted') is not False
                 or type(proof.get('observed_unix')) not in (int,float)):
             raise ValueError('Stopped recovery settlement intent changed')
+        if intent['schema_version']==3:
+            expected_keys.add('absent_transport')
+            if intent.get('absent_transport')!=['permit.json']:
+                raise ValueError('Stopped recovery transport absence changed')
     elif intent.get('schema_version')!=1:
         raise ValueError('Rejected recovery settlement intent changed')
     if set(intent)!=expected_keys or intent['review_id']!=plan['review_id']:
         raise ValueError('Rejected recovery settlement intent changed')
     expected_files={'review.json','issued.json','result.json','request.json','permit.json'}
+    if intent.get('schema_version')==3:
+        expected_files.remove('permit.json')
+        if safe_path(root/'permit.json').exists():
+            raise ValueError('Stopped recovery absent permit has unexpected archived bytes')
     if intent.get('terminal_stopped') is True:
         expected_files.add('process-observation.json')
     if set(intent['sha256'])!=expected_files:
@@ -94,12 +102,22 @@ def verify_rejection(c, plan, raw, *, allow_missing_transport=False, owner_resea
             or type(request.get('expires_utc')) is not int or time.time()<=request['expires_utc']):
         raise ValueError('Exact expired orphan recovery request required')
     files=evidence_paths(c,plan['review_id'],request_id)
-    if json.loads(raw['issued.json'])!=record or json.loads(raw['request.json'])!=request or json.loads(raw['permit.json'])!={'request_sha256':record['request_sha256']}:
+    absent_permit='permit.json' not in raw
+    if absent_permit and (not terminal_stopped or files['permit.json'].exists()):
+        raise ValueError('Stopped recovery absent permit changed; retain rejection evidence')
+    if (json.loads(raw['issued.json'])!=record or json.loads(raw['request.json'])!=request
+            or (not absent_permit and json.loads(raw['permit.json'])!={'request_sha256':record['request_sha256']})):
         raise ValueError('Rejected recovery issuance or transport differs')
     if hashlib.sha256(raw['request.json']).hexdigest()!=record['request_sha256']:
         raise ValueError('Rejected recovery request bytes changed')
+    receipt=json.loads(raw['result.json'])
+    if (not isinstance(receipt,dict) or receipt.get('request_id')!=request_id
+            or receipt.get('request_sha256')!=record['request_sha256']
+            or receipt.get('status') not in PRECONSUMPTION_REJECTIONS):
+        raise ValueError('Exact supported pre-consumption rejection required')
     for name in ('issued.json','result.json','permit.json','request.json'):
         path=files[name]
+        if name=='permit.json' and absent_permit: continue
         if not path.exists() and allow_missing_transport and name in ('permit.json','request.json'): continue
         if path.read_bytes()!=raw[name]: raise ValueError('Rejected recovery evidence or transport changed')
     # A missing request with a remaining permit is not a prefix of our cleanup.
@@ -110,7 +128,7 @@ def verify_rejection(c, plan, raw, *, allow_missing_transport=False, owner_resea
     evidence=observe_dispatch(c.local/'native-gate',request_id)
     if (evidence['status']!='receipt_observed' or evidence.get('consumed') is not False
             or evidence['receipt']['status'] not in PRECONSUMPTION_REJECTIONS
-            or evidence['receipt']!=json.loads(raw['result.json'])):
+            or evidence['receipt']!=receipt):
         raise ValueError('Exact supported pre-consumption rejection required')
     stopped_observation=None
     if terminal_stopped:
@@ -127,6 +145,9 @@ def verify_rejection(c, plan, raw, *, allow_missing_transport=False, owner_resea
         raise ValueError('Native consumption appeared during rejection review')
     for name in ('issued.json','result.json','permit.json','request.json'):
         path=files[name]
+        if name=='permit.json' and absent_permit:
+            if path.exists(): raise ValueError('Stopped recovery absent permit changed during runtime observation')
+            continue
         if not path.exists() and allow_missing_transport and name in ('permit.json','request.json'): continue
         if path.read_bytes()!=raw[name]: raise ValueError('Rejected recovery evidence changed during runtime observation')
     return stopped_observation
@@ -156,7 +177,16 @@ def reconcile_rejection(c, review_id, *, confirmed=False, owner_research=False, 
             else:
                 if plan['status']!='issued': raise ValueError('Missing rejected recovery settlement intent')
                 files=evidence_paths(c,review_id,plan['record']['request']['request_id'])
-                raw={name:file.read_bytes() for name,file in files.items()}
+                raw={}
+                for name,file in files.items():
+                    try:
+                        raw[name]=file.read_bytes()
+                    except FileNotFoundError as exc:
+                        # Native rejection/issuance and byte-exact request, not
+                        # permit absence, prove the expired unconsumed outcome.
+                        # Never invent permit bytes or treat absence as unissued.
+                        if name=='permit.json' and terminal_stopped: continue
+                        raise ValueError('Required rejected recovery evidence is missing; retain review and inspect exact issuance/result') from exc
                 original=plan
                 if json.loads(raw['review.json'])!=original: raise ValueError('Recovery review changed before settlement')
                 stopped_observation=verify_rejection(c,original,raw,owner_research=owner_research,terminal_stopped=terminal_stopped)
@@ -177,6 +207,8 @@ def reconcile_rejection(c, review_id, *, confirmed=False, owner_research=False, 
                             sha256={name:hashlib.sha256(value).hexdigest() for name,value in raw.items()})
                 if terminal_stopped:
                     intent.update(schema_version=2,terminal_stopped=True,process_observation=stopped_observation)
+                    if 'permit.json' not in raw:
+                        intent.update(schema_version=3,absent_transport=['permit.json'])
                 # All exact evidence is fsynced before publishing cleanup intent.
                 write_json(journal,intent)
                 intent,raw,original,settled=retained_evidence(c,plan)
@@ -189,7 +221,7 @@ def reconcile_rejection(c, review_id, *, confirmed=False, owner_research=False, 
                 retained_evidence(c,plan)
                 if read_json(path)!=plan or read_json(fence)!={'review_id':review_id}:
                     raise ValueError('Rejected recovery review or fence changed during cleanup')
-                if files[name].exists(): files[name].unlink()
+                if name in raw and files[name].exists(): files[name].unlink()
             verify_rejection(c,original,raw,allow_missing_transport=True,owner_research=owner_research,terminal_stopped=terminal_stopped)
             retained_evidence(c,plan)
             if read_json(path)!=plan or read_json(fence)!={'review_id':review_id}:

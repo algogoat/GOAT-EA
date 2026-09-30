@@ -81,6 +81,13 @@ inventory at every cleanup boundary. Unmapped or ambiguous processes, changed
 protected peers, pending human commands, changed installation/session/account
 bindings or local state, and any native consumption refuse cleanup. The original
 byte-exact rejected result stays in place as the EA's one-shot replay barrier.
+An initially absent `permit.json` is accepted only in this explicit stopped mode
+with the same exact issued record, retained request bytes, expired supported
+native rejection and no consumption. The existing settlement intent records
+the absence without creating permit bytes. Absence alone never proves an
+unissued or unconsumed request. Missing issuance/request/result, malformed or
+foreign permits, uncertain outcomes and a permit appearing during inspection
+remain fenced. No native permission or launch authorization is created.
 No old monitor feedback is represented as a current idle/account/flag readback,
 and no normal-exit receipt is invented. The existing local ownership, transport,
 consumption, archive and permit-before-request checks still apply under the same

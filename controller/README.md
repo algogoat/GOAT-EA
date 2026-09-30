@@ -556,6 +556,13 @@ These controller fixtures are not native qualification.
 
 ### Explicit stopped-terminal rejection settlement
 
+Missing-permit handling is evidence-bound: a released controller can settle an
+initially absent `permit.json` only with the exact retained issuance/request,
+expired supported native rejection, no consumption and unchanged stopped
+identity. It records absence in the existing settlement intent and never
+creates a replacement permit. Missing or uncertain outcomes remain fenced;
+settlement does not grant permission, recover flags or start work.
+
 A released controller that includes this feature can use
 `orphan-recovery-reconcile-rejection --review-id <original-id> --confirm-reviewed
 --terminal-stopped` after the user approves this exact stopped cleanup. This is

@@ -62,6 +62,14 @@ def original_receipt(receipt):
 
 
 def _guard(c):
+    from studio_build_upgrade import guard_pending as build_guard
+    from studio_historical_pointers import guard_pending as pointer_guard
+    build_guard(c.root); pointer_guard(c)
+    if (c.root/'ea-update.pending.json').exists():
+        raise ValueError('Interrupted desktop EA update must be resolved first')
+    binary = safe_path(Path(c.install['terminal_data_root'])/'MQL5/Experts'/c.install['ea_relative_path'].replace('\\','/'))
+    if digest(binary.read_bytes()) != c.install['ea_sha256']:
+        raise ValueError('Physical EA changed during recovery')
     state = c.state()
     if c.session.get('demo_only') is not True or state['owner'] != 'agent':
         raise ValueError('Existing demo binding and current agent ownership required')
@@ -302,7 +310,8 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
                 observed = {n:digest(contents(base/n)) for n in NAMES}
                 if any(observed[n] not in (prior['files'][n]['before_sha256'],prior['files'][n]['after_sha256']) for n in NAMES):
                     raise ValueError('New native controls refuse restoration')
-                if tx['phase'] != 'restored': restore(evidence, observed)
+                if tx['phase'] != 'restored' or (base/'agent-native-control-owner.json').exists():
+                    restore(evidence, observed)
                 if any(digest(contents(base/n)) != prior['files'][n]['before_sha256'] for n in NAMES):
                     raise ValueError('Restored controls differ from original bytes')
                 for name in ('request.json','permit.json'): (gate/name).unlink(missing_ok=True)
@@ -388,6 +397,12 @@ def repair(receipt, job_id, action_id, **kwargs):
                       outcome='failed' if native_action else 'refused',
                       summary='Automatic recovery retained the original evidence because a required demo, ownership or never-started proof is unavailable. No request was replayed and no human stop was cleared.',
                       observed=[],before=[],after=[],changes=[],nativeAction=native_action)
+        try:
+            if current and folder.is_dir():
+                _append(folder/'actions.jsonl',report['outcome'],error_type=type(error).__name__,
+                        native_action=native_action,report_sha256=sha(report))
+        except (OSError, ValueError, UnboundLocalError):
+            pass  # Preserve the original refusal; never claim a log write succeeded.
         # The local-only reason is useful to the caller; report is the sole
         # network payload. Report plumbing must never serialize this envelope.
         return dict(status=report['outcome'],action_id=action_id,repair=report,

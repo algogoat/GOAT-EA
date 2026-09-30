@@ -213,5 +213,30 @@ class SelfRepairTests(unittest.TestCase):
         self.assertEqual(self.run_repair()['status'],'failed')
         self.process.close.assert_called_once();self.process.start.assert_not_called()
 
+    def test_pending_update_refuses_without_touching_original_transport(self):
+        write_json(self.c.root/'ea-update.pending.json',dict(interrupted=True))
+        self.assert_refused('Interrupted desktop EA update')
+
+    def test_physical_ea_drift_refuses_before_native_action(self):
+        binary=Path(self.c.install['terminal_data_root'])/'MQL5/Experts'/self.c.install['ea_relative_path'].replace('\\','/')
+        binary.write_bytes(b'different EA')
+        self.assert_refused('Physical EA changed')
+
+    def test_restored_transaction_with_retained_owner_marker_resumes_cleanup(self):
+        from studio_self_repair import write_json as real
+        def interrupt(path,value):
+            if path.name == 'transaction.json' and value.get('phase') == 'controls_restored':
+                # Represents interruption after the restore receipt but before
+                # marker retirement. Replay must verify and retire this owner.
+                write_json(self.base/'agent-native-control-owner.json',dict(owner=self.attempt,evidence=str(self.evidence)))
+                raise OSError('marker cleanup interrupted')
+            return real(path,value)
+        with patch('studio_self_repair.write_json',side_effect=interrupt):
+            self.assertEqual(self.run_repair()['status'],'failed')
+        self.assertTrue((self.base/'agent-native-control-owner.json').exists())
+        self.assertEqual(self.run_repair()['status'],'repaired_terminal_stopped')
+        self.assertFalse((self.base/'agent-native-control-owner.json').exists())
+        self.process.close.assert_called_once()
+
 
 if __name__ == '__main__': unittest.main()

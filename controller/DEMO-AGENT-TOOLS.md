@@ -96,6 +96,55 @@ written by this tool after a verified idle demo and terminal batch state. A
 human TAKE also prevents further agent dispatch. Treat `start_uncertain` or
 `stop_unconfirmed` as needing native inspection, not as completion.
 
+## Seed Farming on the demo lane
+
+On a `demo_direct` installation the raw `goat.exe studio seed-*` mutations
+refuse with `Demo mutation requires the broker-verified agent tool`. Use these
+tools instead. They drive the same `SeedRunner` and the same frozen plan format
+as [SEED-WORKFLOW.md](SEED-WORKFLOW.md); nothing about seed evidence changes.
+
+```powershell
+& $py $tool --installation $install seed-validate --plan 'C:/seed-plan.json'
+& $py $tool --installation $install seed-prepare --batch-id 'seed-weekend-01' --plan 'C:/seed-plan.json'
+& $py $tool --installation $install seed-start --batch-id 'seed-weekend-01' --max-seconds 600
+& $py $tool --installation $install seed-resume --batch-id 'seed-weekend-01' --max-seconds 600
+& $py $tool --installation $install seed-status --batch-id 'seed-weekend-01'
+& $py $tool --installation $install seed-cancel --batch-id 'seed-weekend-01'
+& $py $tool --installation $install seed-report --batch-id 'seed-weekend-01'
+```
+
+`seed-validate` checks the whole plan and every SET it names (tester rules,
+frame target, exact axis precision, duplicates, size limits) and writes nothing:
+no SET, startup INI or seed folder, and no terminal, process or broker access.
+Only the validation itself is appended to `actions.jsonl`.
+
+`seed-prepare` and `seed-start` need the same fresh checks as batches: the
+terminal lock, a broker-reported demo account on the exact paired login and
+server, Algo Trading off, an idle tester, no open positions or orders on a
+trade-capable account, no owner STOP or pending human TAKE, 5 GiB free on every
+volume, and the registered EA with its native readback. They also refuse while
+any ordinary native batch is active or a live batch worker exists. While a seed
+run owns the terminal, ordinary batches stay blocked by `seed-active.json`.
+
+`seed-start` writes `demo-agent/seed-starts/<batch-id>.json` once, before any
+effect: the manifest hash, generation, paired account and the broker readback.
+A second `seed-start` for a started batch refuses; continue with `seed-resume`.
+A seed run closes the selected MT5 and relaunches it per member, so between
+members no live broker can answer. `seed-resume`, `seed-status`,
+`seed-cancel` and `seed-report` then continue only that original attempt, and
+only when its start record matches this installation, the registered EA and the
+exact paired demo account. When MT5 is running they take a fresh broker readback
+instead. Completed or attempted members are never retried.
+
+Start and resume drive in short slices of a few seconds within `--max-seconds`
+(1..3600, default 60). Before every slice they check owner STOP, a pending human
+TAKE and free disk. If any appears, they request a normal close of the exact
+owned member, cancel the pending members and return `stopped_by` with the
+reason. `stop` also settles a seed run that no command is currently driving.
+STOP is never cleared by these tools, and `clear-stop` refuses until the seed
+run has reached a verified terminal state. Real native qualification of this
+lane is still pending; every seed result keeps `native_launch_qualified: false`.
+
 This is the first Tier A slice. Terminal discovery, compile, SET editing,
 report parsing and exports will be separate tools wrapping existing MT5/EA
 features. Native smoke evidence is required before calling this lane qualified.

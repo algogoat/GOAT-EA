@@ -95,6 +95,12 @@ frame target; oversized evidence is a failed result, never silent truncation or 
 An existing batch ID is reusable only with the same plan and intact frozen bytes.
 Edit a new plan/new ID for changes. This command never starts MT5.
 
+On a demo-agent (`demo_direct`) installation, use the broker-verified demo tools
+in [DEMO-AGENT-TOOLS.md](DEMO-AGENT-TOOLS.md#seed-farming-on-the-demo-lane)
+instead of `goat.exe studio seed-*`: `seed-validate` checks a plan without writing
+anything, and `seed-prepare/start/resume/status/cancel/report` add the demo,
+owner STOP, human TAKE and disk checks around this same workflow.
+
 ## Run, resume and cancel
 
 `--max-seconds` defaults to 60 and accepts 1..3600. It bounds that invocation of
@@ -188,7 +194,8 @@ sequence evidence, and must not be uploaded as a portfolio strategy pool.
 
 ## Internal extension contract
 
-`studio_seed.SeedRunner(controller)` exposes `prepare(batch_id, plan_dict)`,
+`studio_seed.SeedRunner(controller)` exposes `validate(plan_dict)` (no writes),
+`prepare(batch_id, plan_dict)`,
 `start(batch_id, max_seconds=60)`, `status(batch_id)`, `cancel(batch_id)`,
 `resume(batch_id, max_seconds=60)` and `report(batch_id)`. The controller must
 already be open. Process/clock/sleep injection supports deterministic tests;

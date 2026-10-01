@@ -15,6 +15,15 @@ value or global control. A file-write failure reports a logging failure and neve
 returns into a trading decision. File I/O adds latency and can affect platform
 error diagnostics; source tests do not establish runtime equivalence.
 
+The separate proposed timing change changes only DEMO HTTP503 failure cooldown to
+60 seconds. Retry runs at the first existing minute/tick evaluation at or after
+that elapsed interval; tickless runtime has no exact wall-clock retry guarantee.
+Every attempt still clears old state, and failed state remains unverified. Other
+HTTP, authentication, transport, parse and verification failures keep the compiled
+10-minute policy. No new input, timer, wire schema, model or permissive fallback is
+added. This may recover valid permission earlier; it does not enable failed wire.
+The EURJPY1003 origin remains unproven and its cadence is unchanged.
+
 `TAKE`, `VETO` and `NO_WIRE` describe the AI gate permission. Control records TAKE
 with `CONTROL_AI_DISABLED`; that does **not** mean other entry gates passed or a
 trade filled. News blocking is explicit; later exposure, sequence, side, opposite

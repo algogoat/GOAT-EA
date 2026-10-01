@@ -7,8 +7,12 @@ campaign and desktop release bytes remain unchanged.
 
 The observer is a no-op on real accounts and in Tester, optimization and forward
 testing. On the live DEMO runtime it appends local `MQL5/Files/GOATExp2Signals/*.csv`.
-It records each true indicator-side conjunction at the existing signal-entry
-evaluation, using the AI gate booleans and wire state already consumed by the
+It records each false-to-true indicator-side conjunction edge at the existing
+signal-entry evaluation, using independent observer state per strategy, symbol
+and side. A true condition held for multiple ticks writes one gate row; a false
+evaluation resets that side. Repeated evaluations keep the episode ID for later
+actual order joins without repeating gate or no-order records. Trading signal
+flags and counters are untouched. It uses the gate booleans/state consumed by the
 existing minute update. It does not call GetState, WebRequest, OrderSend or
 HistoryDealSelect. It does not alter any gate, risk, size, order argument, return
 value or global control. A file-write failure reports a logging failure and never
@@ -23,6 +27,12 @@ HTTP, authentication, transport, parse and verification failures keep the compil
 10-minute policy. No new input, timer, wire schema, model or permissive fallback is
 added. This may recover valid permission earlier; it does not enable failed wire.
 The EURJPY1003 origin remains unproven and its cadence is unchanged.
+
+Any approved native rollout must land the same build on BOTH Exp02 DEMO arms
+before the preregistration boundary2026-10-05T00:00Z, with dated per-arm change-log
+entries and first CSV-row readbacks. If that cannot happen, hold native rollout
+for a separately agreed boundary amendment. This is separate from the unchanged
+local1518 campaign deadline. No real-account install or use is permitted.
 
 `TAKE`, `VETO` and `NO_WIRE` describe the AI gate permission. Control records TAKE
 with `CONTROL_AI_DISABLED`; that does **not** mean other entry gates passed or a

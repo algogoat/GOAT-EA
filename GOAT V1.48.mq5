@@ -5881,6 +5881,7 @@ void UpdateCurrentSignals(int shift)
 void SignalEntryTrigger()//int Buys,int Sells)
   {
    static bool LastBuySignal=false,LastSellSignal=false;
+   GoatExp2EvaluationBegin();
    if(//!Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long)
          ( RSI_Mode==RSI_Disabled  || RSI_Sig==OP_BUY)
       && ( EMA_Mode==Trade_Disabled|| EMA_Sig==OP_BUY|| EMA_Sig==OP_BUYSELL)
@@ -5951,6 +5952,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
     LastSellSignal=true; // whether skipped of not the signal was present
    }
    else LastSellSignal=false;
+   GoatExp2EvaluationEnd();
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CloseAllPositions(int OP,int magic=0)

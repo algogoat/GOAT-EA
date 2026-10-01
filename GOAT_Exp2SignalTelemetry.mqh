@@ -3,6 +3,10 @@
 // Passive demo-only observation. No wire request, permission or trade result is changed.
 SGOATAIWireV2State g_exp2_consumed_wire;
 bool g_exp2_wire_applied=false,g_exp2_wire_verified=false,g_exp2_signal_context=false,g_exp2_order_attempted=false;
+bool g_exp2_signal_edge=false,g_exp2_active[2],g_exp2_seen[2];
+string g_exp2_episode[2],g_exp2_context_key="";
+long g_exp2_cached_magic=-1;
+ulong g_exp2_signal_ordinal=0;
 string g_exp2_strategy_key="",g_exp2_boot="",g_exp2_signal_id="",g_exp2_decision="",g_exp2_reason="",g_exp2_gate_utc="";
 int g_exp2_side=0,g_exp2_indicator_side=0;
 ulong g_exp2_ordinal=0;
@@ -79,23 +83,46 @@ void GoatExp2ConsumedWire(const bool applied,const bool verified,SGOATAIWireV2St
    if(applied) g_exp2_consumed_wire=state;
   }
 
+void GoatExp2EvaluationBegin()
+  {
+   g_exp2_signal_context=false;
+   g_exp2_seen[0]=false;g_exp2_seen[1]=false;
+  }
+
+void GoatExp2EvaluationEnd()
+  {
+   for(int side=0;side<2;side++)
+      if(!g_exp2_seen[side]) {g_exp2_active[side]=false;g_exp2_episode[side]="";}
+  }
+
 void GoatExp2Signal(const int indicator_side,const int side,const bool bias_allowed,const bool news_allowed)
   {
    if(!GoatExp2ObserverEnabled()) return;
-   if(g_exp2_strategy_key=="" && !GOATSha256Utf8((string)MAGIC1,g_exp2_strategy_key)) return;
+   if(g_exp2_cached_magic!=(long)MAGIC1 || g_exp2_context_key!=_Symbol)
+     {
+      if(!GOATSha256Utf8((string)MAGIC1,g_exp2_strategy_key)) return;
+      g_exp2_cached_magic=(long)MAGIC1;g_exp2_context_key=_Symbol;
+      g_exp2_active[0]=false;g_exp2_active[1]=false;
+      g_exp2_episode[0]="";g_exp2_episode[1]="";
+     }
    if(g_exp2_boot=="") g_exp2_boot=(string)GetTickCount64()+"-"+(string)GetMicrosecondCount();
-   g_exp2_signal_id=g_exp2_strategy_key+"-"+g_exp2_boot+"-signal-"+(string)(g_exp2_ordinal+1);
+   g_exp2_seen[side]=true;
+   g_exp2_signal_edge=!g_exp2_active[side];
+   g_exp2_active[side]=true;
+   if(g_exp2_signal_edge)
+      g_exp2_episode[side]=g_exp2_strategy_key+"-"+g_exp2_boot+"-signal-"+(string)(++g_exp2_signal_ordinal);
+   g_exp2_signal_id=g_exp2_episode[side];
    g_exp2_side=side;g_exp2_indicator_side=indicator_side;g_exp2_signal_context=true;g_exp2_order_attempted=false;
    g_exp2_decision=!g_exp2_wire_applied?"TAKE":(bias_allowed?"TAKE":(g_exp2_wire_verified && g_exp2_consumed_wire.directive_available?"VETO":"NO_WIRE"));
    g_exp2_reason=!g_exp2_wire_applied?"CONTROL_AI_DISABLED":
       (bias_allowed?"AI_GATE_ALLOWED":(g_exp2_consumed_wire.reason_code!=""?g_exp2_consumed_wire.reason_code:"AI_GATE_BLOCKED"));
-   GoatExp2Write("signal_ai_gate",g_exp2_signal_id,side,indicator_side,g_exp2_decision,g_exp2_reason,
+   if(g_exp2_signal_edge) GoatExp2Write("signal_ai_gate",g_exp2_signal_id,side,indicator_side,g_exp2_decision,g_exp2_reason,
                 news_allowed?"LATER_ENTRY_GATES_NOT_EVALUATED":"NEWS_BLOCKED");
   }
 
 void GoatExp2SignalEnd()
   {
-   if(g_exp2_signal_context && !g_exp2_order_attempted)
+   if(g_exp2_signal_context && g_exp2_signal_edge && !g_exp2_order_attempted)
       GoatExp2Write("signal_execution",g_exp2_signal_id,g_exp2_side,g_exp2_indicator_side,g_exp2_decision,g_exp2_reason,"NO_ORDER_SEND_OBSERVED");
    g_exp2_signal_context=false;g_exp2_signal_id="";
   }

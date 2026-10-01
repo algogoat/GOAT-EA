@@ -4,7 +4,7 @@ const observer=fs.readFileSync('GOAT_Exp2SignalTelemetry.mqh','utf8').replace(/^
 const original=cp.execFileSync('git',['show','14ada7104a82052f7f966da4f7b745890781d553:GOAT V1.48.mq5'],{encoding:'utf8'}).replace(/^\uFEFF/,'').replace(/\r\n/g,'\n');
 // Removing only passive call lines/include/build stamp must reproduce the exact
 // reviewed R2 entry/order/risk/size code. No reordered or recomputed gate passes.
-const stripped=main.split('\n').filter(l=>!l.includes('#include "GOAT_Exp2SignalTelemetry.mqh"')&&!/^\s*GoatExp2(?:ConsumedWire|Signal|SignalEnd|OrderResult|Deal)\(/.test(l)).join('\n').replace('V1.48-DASHBOARD-AI-PAIR-R2-OBS1','V1.48-DASHBOARD-AI-PAIR-R2');
+const stripped=main.split('\n').filter(l=>!l.includes('#include "GOAT_Exp2SignalTelemetry.mqh"')&&!/^\s*GoatExp2(?:ConsumedWire|Signal|SignalEnd|OrderResult|Deal|EvaluationBegin|EvaluationEnd)\(/.test(l)).join('\n').replace('V1.48-DASHBOARD-AI-PAIR-R2-OBS1','V1.48-DASHBOARD-AI-PAIR-R2');
 assert.equal(stripped,original);
 for(const forbidden of ['WebRequest(','GetState(','OrderSend(','HistoryDealSelect(','GlobalVariableSet(','FILE_COMMON','ACCOUNT_LOGIN','ACCOUNT_SERVER']) assert(!observer.includes(forbidden),forbidden);
 assert(observer.includes('ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO'));

@@ -19,6 +19,16 @@ value or global control. A file-write failure reports a logging failure and neve
 returns into a trading decision. File I/O adds latency and can affect platform
 error diagnostics; source tests do not establish runtime equivalence.
 
+When the entry evaluator is not called (for example paused or Friday/December
+outer gates), no false observation is invented. A true signal across that gap is
+one episode; this can undercount but cannot inflate observed signal episodes.
+
+AI TAKE/VETO is derived from the already-consumed wire's verification,
+availability, actionability and indicator-side direction. Combined bias flags
+can also include rescue suppression; `non_ai_suppression=BIAS_RESCUE_ACTIVE`
+records that separately, including when the AI itself would TAKE. Such a record
+is not an executable counterfactual. The actual combined gate is not changed.
+
 The separate proposed timing change changes only DEMO HTTP503 failure cooldown to
 60 seconds. Retry runs at the first existing minute/tick evaluation at or after
 that elapsed interval; tickless runtime has no exact wall-clock retry guarantee.
@@ -27,6 +37,9 @@ HTTP, authentication, transport, parse and verification failures keep the compil
 10-minute policy. No new input, timer, wire schema, model or permissive fallback is
 added. This may recover valid permission earlier; it does not enable failed wire.
 The EURJPY1003 origin remains unproven and its cadence is unchanged.
+The shorter cooldown is behind the experiment entrypoint-only
+`GOAT_EXP2_DEMO_503_NEXT_MINUTE` compile define. Older entrypoints including the
+shared wire header retain their original retry behavior on future rebuilds.
 
 Any approved native rollout must land the same build on BOTH Exp02 DEMO arms
 before the preregistration boundary2026-10-05T00:00Z, with dated per-arm change-log

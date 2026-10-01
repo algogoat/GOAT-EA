@@ -55,6 +55,7 @@ sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without star
 #include "Dashboard.mqh"
 #define GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER 1
 #define GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED 1
+#define GOAT_EXP2_DEMO_503_NEXT_MINUTE 1
 #include "GOATAIWireV2.mqh"
 #include "GOAT_Exp2SignalTelemetry.mqh"
 #include "GOATStudioUI.mqh"
@@ -5890,7 +5891,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL))
    {
-    GoatExp2Signal(OP_BUY,Reverse_Seq?OP_SELL:OP_BUY,Sequence_New_Bias_B,Sequence_New_News);
+    GoatExp2Signal(OP_BUY,Reverse_Seq?OP_SELL:OP_BUY,Sequence_New_Bias_B,Sequence_New_News,Seq_Buy.BiasRescueActive);
     if(Sequence_New_News&&Sequence_New_Bias_B)
     {
      if(Reverse_Seq)
@@ -5926,7 +5927,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_SELL||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL))
    {
-    GoatExp2Signal(OP_SELL,Reverse_Seq?OP_BUY:OP_SELL,Sequence_New_Bias_S,Sequence_New_News);
+    GoatExp2Signal(OP_SELL,Reverse_Seq?OP_BUY:OP_SELL,Sequence_New_Bias_S,Sequence_New_News,Seq_Sell.BiasRescueActive);
     if(Sequence_New_News&&Sequence_New_Bias_S)
     {
      if(Reverse_Seq)

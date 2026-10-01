@@ -7,7 +7,7 @@ bool g_exp2_signal_edge=false,g_exp2_active[2],g_exp2_seen[2];
 string g_exp2_episode[2],g_exp2_context_key="";
 long g_exp2_cached_magic=-1;
 ulong g_exp2_signal_ordinal=0;
-string g_exp2_strategy_key="",g_exp2_boot="",g_exp2_signal_id="",g_exp2_decision="",g_exp2_reason="",g_exp2_gate_utc="";
+string g_exp2_strategy_key="",g_exp2_boot="",g_exp2_signal_id="",g_exp2_decision="",g_exp2_reason="",g_exp2_gate_utc="",g_exp2_non_ai_suppression="";
 int g_exp2_side=0,g_exp2_indicator_side=0;
 ulong g_exp2_ordinal=0;
 ulong g_exp2_orders[],g_exp2_positions[];
@@ -52,7 +52,7 @@ void GoatExp2Write(const string kind,const string signal,const int side,const in
       FileWrite(file,"schema","event_type","event_id","utc_time","utc_precision","broker_time",
                 "symbol","strategy_key","side","indicator_side","signal_id","ai_lean","ai_probability",
                 "probability_authority","wire_verified","wire_available","wire_read_at","wire_valid_until","wire_freshness","gate_updated_utc",
-                "decision","reason_code","execution_status","ticket_hash","order_hash","position_hash",
+                "decision","reason_code","non_ai_suppression","execution_status","ticket_hash","order_hash","position_hash",
                 "retcode","net_cash","deal_server_time_msc");
    FileSeek(file,0,SEEK_END);
    string lean="",probability="",authority="NONE",read_at="",valid_until="";
@@ -71,7 +71,8 @@ void GoatExp2Write(const string kind,const string signal,const int side,const in
              side==OP_BUY?"BUY":"SELL",indicator_side<0?"":(indicator_side==OP_BUY?"BUY":"SELL"),signal,lean,probability,
              authority,(kind=="signal_ai_gate"?g_exp2_wire_verified:false),available,read_at,valid_until,
              kind!="signal_ai_gate"?"NOT_APPLICABLE":(!g_exp2_wire_applied?"NOT_APPLIED":(g_exp2_wire_verified?"VERIFIED_AT_GATE_UPDATE":"UNVERIFIED_AT_GATE_UPDATE")),
-             kind=="signal_ai_gate"?g_exp2_gate_utc:"",decision,reason,execution,
+             kind=="signal_ai_gate"?g_exp2_gate_utc:"",decision,reason,
+             (kind=="signal_ai_gate" || kind=="signal_execution" || kind=="order_result")?g_exp2_non_ai_suppression:"",execution,
              ticket_hash,order_hash,position_hash,retcode,DoubleToString(net_cash,12),deal_time_msc);
    FileFlush(file);FileClose(file);
   }
@@ -95,7 +96,7 @@ void GoatExp2EvaluationEnd()
       if(!g_exp2_seen[side]) {g_exp2_active[side]=false;g_exp2_episode[side]="";}
   }
 
-void GoatExp2Signal(const int indicator_side,const int side,const bool bias_allowed,const bool news_allowed)
+void GoatExp2Signal(const int indicator_side,const int side,const bool bias_allowed,const bool news_allowed,const bool rescue_suppressed)
   {
    if(!GoatExp2ObserverEnabled()) return;
    if(g_exp2_cached_magic!=(long)MAGIC1 || g_exp2_context_key!=_Symbol)
@@ -113,9 +114,13 @@ void GoatExp2Signal(const int indicator_side,const int side,const bool bias_allo
       g_exp2_episode[side]=g_exp2_strategy_key+"-"+g_exp2_boot+"-signal-"+(string)(++g_exp2_signal_ordinal);
    g_exp2_signal_id=g_exp2_episode[side];
    g_exp2_side=side;g_exp2_indicator_side=indicator_side;g_exp2_signal_context=true;g_exp2_order_attempted=false;
-   g_exp2_decision=!g_exp2_wire_applied?"TAKE":(bias_allowed?"TAKE":(g_exp2_wire_verified && g_exp2_consumed_wire.directive_available?"VETO":"NO_WIRE"));
+   bool ai_allows=!g_exp2_wire_applied || (g_exp2_wire_verified && g_exp2_consumed_wire.directive_available
+      && g_exp2_consumed_wire.actionable
+      && (indicator_side==OP_BUY ? g_exp2_consumed_wire.signed_probability_percent>0 : g_exp2_consumed_wire.signed_probability_percent<0));
+   g_exp2_decision=!g_exp2_wire_applied?"TAKE":(ai_allows?"TAKE":(g_exp2_wire_verified && g_exp2_consumed_wire.directive_available?"VETO":"NO_WIRE"));
+   g_exp2_non_ai_suppression=rescue_suppressed?"BIAS_RESCUE_ACTIVE":(!bias_allowed && ai_allows?"OTHER_BIAS_GATE_STATE":"");
    g_exp2_reason=!g_exp2_wire_applied?"CONTROL_AI_DISABLED":
-      (bias_allowed?"AI_GATE_ALLOWED":(g_exp2_consumed_wire.reason_code!=""?g_exp2_consumed_wire.reason_code:"AI_GATE_BLOCKED"));
+      (ai_allows?"AI_GATE_ALLOWED":(g_exp2_consumed_wire.reason_code!=""?g_exp2_consumed_wire.reason_code:"AI_GATE_BLOCKED"));
    if(g_exp2_signal_edge) GoatExp2Write("signal_ai_gate",g_exp2_signal_id,side,indicator_side,g_exp2_decision,g_exp2_reason,
                 news_allowed?"LATER_ENTRY_GATES_NOT_EVALUATED":"NEWS_BLOCKED");
   }

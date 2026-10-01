@@ -725,7 +725,9 @@ class CGOATAIWireV2
    private:
    SGOATAIWireV2State m_state;
    ulong              m_last_attempt_tick;
+   #ifdef GOAT_EXP2_DEMO_503_NEXT_MINUTE
    bool               m_retry_after_503;
+   #endif
    ulong              m_verified_tick;
    long               m_read_at_ms;
    long               m_valid_until_ms;
@@ -738,7 +740,9 @@ class CGOATAIWireV2
      {
       GOATResetWireV2State(m_state,"NOT_FETCHED");
       m_last_attempt_tick=0;
+      #ifdef GOAT_EXP2_DEMO_503_NEXT_MINUTE
       m_retry_after_503=false;
+      #endif
       m_verified_tick=0;
       m_read_at_ms=0;
       m_valid_until_ms=0;
@@ -748,7 +752,9 @@ class CGOATAIWireV2
      {
       GOATResetWireV2State(m_state,"NOT_FETCHED");
       m_last_attempt_tick=0;
+      #ifdef GOAT_EXP2_DEMO_503_NEXT_MINUTE
       m_retry_after_503=false;
+      #endif
       m_verified_tick=0;
       m_read_at_ms=0;
       m_valid_until_ms=0;
@@ -877,7 +883,11 @@ class CGOATAIWireV2
       asset=ConvertToGOATsymbol(asset);
       ulong now_tick=GetTickCount64();
       // Reuse the normal minute evaluation; only transient503 gets a shorter cooldown.
+#ifdef GOAT_EXP2_DEMO_503_NEXT_MINUTE
       ulong refresh_ms=(m_retry_after_503 && AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO) ? 60000 : (ulong)MathMax(1,Bias_RegenerateMinutes)*60000;
+#else
+      ulong refresh_ms=(ulong)MathMax(1,Bias_RegenerateMinutes)*60000;
+#endif
       bool refresh=(m_last_attempt_tick==0 || now_tick<m_last_attempt_tick || now_tick-m_last_attempt_tick>=refresh_ms);
       if(m_state.verified)
         {
@@ -956,7 +966,9 @@ class CGOATAIWireV2
 bool CGOATAIWireV2::Refresh(const string asset)
   {
    GOATResetWireV2State(m_state,"REQUEST_FAILED");
+#ifdef GOAT_EXP2_DEMO_503_NEXT_MINUTE
    m_retry_after_503=false;
+#endif
    m_read_at_ms=0;
    m_valid_until_ms=0;
    m_verified_tick=0;
@@ -994,7 +1006,9 @@ bool CGOATAIWireV2::Refresh(const string asset)
      }
    if(response!=200)
      {
+#ifdef GOAT_EXP2_DEMO_503_NEXT_MINUTE
       m_retry_after_503=(response==503 && AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO);
+#endif
       m_state.reason_code="HTTP_NON_200";
       PrintFormat("GOAT AI wire v2 unavailable: HTTP_NON_200 (%d).",response);
       return false;

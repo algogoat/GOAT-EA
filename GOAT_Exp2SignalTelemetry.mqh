@@ -3,6 +3,7 @@
 // Passive demo-only observation. No wire request, permission or trade result is changed.
 SGOATAIWireV2State g_exp2_consumed_wire;
 bool g_exp2_wire_applied=false,g_exp2_wire_verified=false,g_exp2_signal_context=false,g_exp2_order_attempted=false;
+bool g_exp2_combined_bias_allowed=false;
 bool g_exp2_signal_edge=false,g_exp2_active[2],g_exp2_seen[2];
 string g_exp2_episode[2],g_exp2_context_key="";
 long g_exp2_cached_magic=-1;
@@ -52,7 +53,7 @@ void GoatExp2Write(const string kind,const string signal,const int side,const in
       FileWrite(file,"schema","event_type","event_id","utc_time","utc_precision","broker_time",
                 "symbol","strategy_key","side","indicator_side","signal_id","ai_lean","ai_probability",
                 "probability_authority","wire_verified","wire_available","wire_read_at","wire_valid_until","wire_freshness","gate_updated_utc",
-                "decision","reason_code","non_ai_suppression","execution_status","ticket_hash","order_hash","position_hash",
+                "decision","combined_bias_allowed","reason_code","non_ai_suppression","execution_status","ticket_hash","order_hash","position_hash",
                 "retcode","net_cash","deal_server_time_msc");
    FileSeek(file,0,SEEK_END);
    string lean="",probability="",authority="NONE",read_at="",valid_until="";
@@ -71,7 +72,8 @@ void GoatExp2Write(const string kind,const string signal,const int side,const in
              side==OP_BUY?"BUY":"SELL",indicator_side<0?"":(indicator_side==OP_BUY?"BUY":"SELL"),signal,lean,probability,
              authority,(kind=="signal_ai_gate"?g_exp2_wire_verified:false),available,read_at,valid_until,
              kind!="signal_ai_gate"?"NOT_APPLICABLE":(!g_exp2_wire_applied?"NOT_APPLIED":(g_exp2_wire_verified?"VERIFIED_AT_GATE_UPDATE":"UNVERIFIED_AT_GATE_UPDATE")),
-             kind=="signal_ai_gate"?g_exp2_gate_utc:"",decision,reason,
+             kind=="signal_ai_gate"?g_exp2_gate_utc:"",decision,
+             kind=="signal_ai_gate"?(g_exp2_combined_bias_allowed?"true":"false"):"",reason,
              (kind=="signal_ai_gate" || kind=="signal_execution" || kind=="order_result")?g_exp2_non_ai_suppression:"",execution,
              ticket_hash,order_hash,position_hash,retcode,DoubleToString(net_cash,12),deal_time_msc);
    FileFlush(file);FileClose(file);
@@ -114,6 +116,7 @@ void GoatExp2Signal(const int indicator_side,const int side,const bool bias_allo
       g_exp2_episode[side]=g_exp2_strategy_key+"-"+g_exp2_boot+"-signal-"+(string)(++g_exp2_signal_ordinal);
    g_exp2_signal_id=g_exp2_episode[side];
    g_exp2_side=side;g_exp2_indicator_side=indicator_side;g_exp2_signal_context=true;g_exp2_order_attempted=false;
+   g_exp2_combined_bias_allowed=bias_allowed;
    bool ai_allows=!g_exp2_wire_applied || (g_exp2_wire_verified && g_exp2_consumed_wire.directive_available
       && g_exp2_consumed_wire.actionable
       && (indicator_side==OP_BUY ? g_exp2_consumed_wire.signed_probability_percent>0 : g_exp2_consumed_wire.signed_probability_percent<0));

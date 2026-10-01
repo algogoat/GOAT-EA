@@ -28,6 +28,9 @@ availability, actionability and indicator-side direction. Combined bias flags
 can also include rescue suppression; `non_ai_suppression=BIAS_RESCUE_ACTIVE`
 records that separately, including when the AI itself would TAKE. Such a record
 is not an executable counterfactual. The actual combined gate is not changed.
+The signal gate row also records `combined_bias_allowed`, the actual raw
+Sequence_New_Bias_B/S boolean passed by the EA. Derived-permission disagreement
+can therefore be counted in both directions; neither value changes trading.
 
 The separate proposed timing change changes only DEMO HTTP503 failure cooldown to
 60 seconds. Retry runs at the first existing minute/tick evaluation at or after

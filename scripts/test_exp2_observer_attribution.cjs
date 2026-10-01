@@ -4,6 +4,12 @@ const main=fs.readFileSync('GOAT V1.48.mq5','utf8');
 const wire=fs.readFileSync('GOATAIWireV2.mqh','utf8').replace(/\r\n/g,'\n');
 assert(observer.includes('g_exp2_consumed_wire.actionable')&&observer.includes('signed_probability_percent>0'));
 assert(observer.includes('rescue_suppressed?"BIAS_RESCUE_ACTIVE"'));
+assert(observer.includes('g_exp2_combined_bias_allowed=bias_allowed;'));
+assert(observer.includes('"combined_bias_allowed"'));
+assert(observer.includes('kind=="signal_ai_gate"?(g_exp2_combined_bias_allowed?"true":"false")'));
+const mismatch=(permission,combined)=> (permission==='TAKE')!==combined;
+assert(mismatch('TAKE',false));assert(mismatch('VETO',true));
+assert(!mismatch('TAKE',true));assert(!mismatch('VETO',false));
 assert(main.includes('Sequence_New_News,Seq_Buy.BiasRescueActive')&&main.includes('Sequence_New_News,Seq_Sell.BiasRescueActive'));
 // A valid favorable AI state is TAKE even when non-AI rescue suppresses entry;
 // contrary AI is still VETO, with rescue separately recorded as a confounder.

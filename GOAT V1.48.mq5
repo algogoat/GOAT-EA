@@ -4,7 +4,7 @@
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
 #define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-balanced35-ai-20260923.token"
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.48-DASHBOARD-AI-PAIR-R2"
+#define   GOAT_BUILD_ID "V1.48-DASHBOARD-AI-PAIR-R2-OBS1"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 #define   GOAT_BUILD_MARKER "UI1"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -55,7 +55,9 @@ sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without star
 #include "Dashboard.mqh"
 #define GOAT_AI_WIRE_V2_RELEASE_ADMITTED_POINTER 1
 #define GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED 1
+#define GOAT_EXP2_DEMO_503_NEXT_MINUTE 1
 #include "GOATAIWireV2.mqh"
+#include "GOAT_Exp2SignalTelemetry.mqh"
 #include "GOATStudioUI.mqh"
 #include "GOATStudioCompletion.mqh"
 #undef PANEL_WIDTH
@@ -4636,6 +4638,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
    if(MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return;
    if(!HistoryDealSelect(trans.deal)) return;
+   GoatExp2Deal(trans.deal);
    if(HistoryDealGetInteger(trans.deal,DEAL_MAGIC)!=MAGIC1) return;
    if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=_Symbol) return;
 
@@ -5008,6 +5011,7 @@ void OnTick()
          }
       }
     else CurBias=Bias.GetCurentBiasScore(Symbol(),idx);
+    GoatExp2ConsumedWire(control_tower_v2 && Mode_Bias!=Bias_Disabled,control_tower_verified,control_tower_state);
     if(GlobalVariableCheck("Dashboard_ChartID") && MAGIC1!=0)
     {
      GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),"AI_VERIFIED"),(control_tower_verified ? 1.0 : 0.0));
@@ -5878,6 +5882,7 @@ void UpdateCurrentSignals(int shift)
 void SignalEntryTrigger()//int Buys,int Sells)
   {
    static bool LastBuySignal=false,LastSellSignal=false;
+   GoatExp2EvaluationBegin();
    if(//!Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long)
          ( RSI_Mode==RSI_Disabled  || RSI_Sig==OP_BUY)
       && ( EMA_Mode==Trade_Disabled|| EMA_Sig==OP_BUY|| EMA_Sig==OP_BUYSELL)
@@ -5886,6 +5891,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_BUY||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_BUY||RSI2_Sig==OP_BUYSELL))
    {
+    GoatExp2Signal(OP_BUY,Reverse_Seq?OP_SELL:OP_BUY,Sequence_New_Bias_B,Sequence_New_News,Seq_Buy.BiasRescueActive);
     if(Sequence_New_News&&Sequence_New_Bias_B)
     {
      if(Reverse_Seq)
@@ -5908,6 +5914,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
      if(!Sequence_New_News&&!LastBuySignal)   Sequence_Skipped_News++;
      if(!Sequence_New_Bias_B&&!LastBuySignal) Sequence_Skipped_Bias_B++;
     }
+    GoatExp2SignalEnd();
     LastBuySignal=true; // whether skipped of not the signal was present
    }
    else LastBuySignal=false;
@@ -5920,6 +5927,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
       && (MACD_Mode==Trade_Disabled||MACD_Sig==OP_SELL||MACD_Sig==OP_BUYSELL)
       && (RSI2_Mode==RSI_Disabled  ||RSI2_Sig==OP_SELL||RSI2_Sig==OP_BUYSELL))
    {
+    GoatExp2Signal(OP_SELL,Reverse_Seq?OP_BUY:OP_SELL,Sequence_New_Bias_S,Sequence_New_News,Seq_Sell.BiasRescueActive);
     if(Sequence_New_News&&Sequence_New_Bias_S)
     {
      if(Reverse_Seq)
@@ -5941,9 +5949,11 @@ void SignalEntryTrigger()//int Buys,int Sells)
      if(!Sequence_New_News&&!LastSellSignal)   Sequence_Skipped_News++;
      if(!Sequence_New_Bias_S&&!LastSellSignal) Sequence_Skipped_Bias_S++;
     }
+    GoatExp2SignalEnd();
     LastSellSignal=true; // whether skipped of not the signal was present
    }
    else LastSellSignal=false;
+   GoatExp2EvaluationEnd();
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 void CloseAllPositions(int OP,int magic=0)
@@ -6136,6 +6146,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
    //TradesInDay++;
     }
     LastRetCode=result.retcode;
+    GoatExp2OrderResult(OP,sent,result);
     orders++;
    }
 //-------------------------------------------------------------------------
@@ -6188,6 +6199,7 @@ int OpenPosition(int OP,int magic,double lots,double Level_SL,double Size_SL,dou
    //TradesInDay++;
     }
     LastRetCode=result.retcode;
+    GoatExp2OrderResult(OP,sent,result);
     orders++;
    }
    // Partial-fill sequence metadata must remain representable by the existing

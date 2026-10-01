@@ -26,7 +26,7 @@ from studio_handover import safe_path
 from studio_installation import load_installation, read_json
 from studio_monitor_probe import inspect_idle_demo
 from studio_native_gate import exclusive_gate
-from studio_rejected_monitor import require_demo, unstarted_material
+from studio_rejected_monitor import require_demo, unstarted_material, zero_work_material
 from studio_same_ea_rebind import ALLOWED_RECEIPT_DELTA, _beta, rebind
 from studio_seed_process import WindowsSeedProcess
 from studio_seed_slot import guard_active_seed
@@ -91,8 +91,101 @@ def _guard(c):
     return state
 
 
+# EA refusals returned before consumed-<id> is written and before the tester is set
+# (GOATStudioDispatch.mqh): the refused start provably never ran.
+PRE_CONSUMPTION_REFUSALS = frozenset(('START_PROTOCOL_NOT_QUALIFIED', 'RESTART_INTENT_REJECTED',
+                                      'NATIVE_CONTROL_DRIFT', 'INVALID_TESTER_INI', 'ACTION_REJECTED',
+                                      'HUMAN_CANCEL_RETAINED'))
+
+
+def _owned_controls(c, job, attempt, requests):
+    """The attempt's own installed controls, untouched, with no original controls displaced."""
+    evidence = safe_path(c.root/'attempts'/attempt)
+    transaction = read_json(evidence/'transaction.json')
+    base = safe_path(Path(transaction['base']))
+    expected_base = safe_path(Path(c.install['common_files_root'])/'GOAT'/
+                             ('GOAT V'+c.install['ea_version']+'-'+c.session['account']['server']))
+    if (base != expected_base or transaction['owner'] != attempt or transaction['phase'] != 'installed'
+            or read_json(base/'agent-native-control-owner.json') != dict(owner=attempt, evidence=str(evidence))
+            or any(transaction['files'][n]['before'] is not None for n in NAMES)
+            or any(digest(contents(base/n)) != transaction['files'][n]['after_sha256'] for n in NAMES)):
+        raise ValueError('Exact untouched owned controls with absent original controls required')
+    fields = dict(owner='agent', data_path=c.install['terminal_data_root'],
+                  installation_path=str(Path(c.install['terminal_executable']).parent),
+                  account_login=c.session['account']['login'], account_server=c.session['account']['server'],
+                  native_run=read_json(Path(job['launch_intent']['package'])/'manifest.json')['native_run_relative'],
+                  pointer_sha256=digest((base/'active_optimization_run.ini').read_bytes()),
+                  native_owner_sha256=digest((base/'agent-native-control-owner.json').read_bytes()))
+    if any(request.get(k) != v for request in requests for k, v in fields.items()):
+        raise ValueError('Original start/cancel terminal, account or native-control identity differs')
+    return transaction
+
+
+def _refused_restart_proof(c, job, state):
+    """A restart-arm start the EA refused before consuming it: no close, launch or tester effect.
+
+    Jan df1c3c7d: a beta.15 EA answered arm_restart with START_PROTOCOL_NOT_QUALIFIED. The
+    controller recorded start_uncertain, yet the EA's own records prove the attempt never ran.
+    """
+    attempt = job['launch_intent']['attempt_id']
+    intent = job['restart_intent']
+    gate = c.local/'native-gate'
+    if (job['status'] not in ('starting', 'reconcile_required') or intent.get('phase') != 'controls_installed'
+            or intent.get('attempt_id') != attempt):
+        raise ValueError('Installed, never-armed restart attempt required')
+    if any(gate.glob('start-intent-*.json')) or any(gate.glob('arm-intent-*.json')):
+        raise ValueError('Native start or arm intent exists; execution outcome is uncertain')
+    for path in gate.glob('consumed-*.json'):
+        if read_json(safe_path(path)).get('action', 'start') in ('start', 'arm_restart'):
+            raise ValueError('A consumed start exists; the refusal is not zero-work proof')
+    arm = observe_dispatch(gate, attempt)
+    if (arm.get('status') != 'receipt_observed' or arm.get('consumed') is not False
+            or arm['receipt']['status'] not in PRE_CONSUMPTION_REFUSALS):
+        raise ValueError("The EA's own pre-consumption refusal of this exact start is required")
+    issued = read_json(safe_path(gate/('issued-'+attempt+'.json')))
+    request = issued['request']
+    if (request.get('request_id') != attempt or request.get('action') != 'arm_restart'
+            or request.get('job_id') != job['job_id'] or request.get('terminal_id') != c.terminal
+            or request.get('run_id') != c.run or request.get('generation') != state['generation']
+            or request.get('configuration_sha256') != job['configuration_sha256']
+            or request.get('startup_sha256') != intent.get('startup_sha256')
+            or request.get('expires_utc', time.time()+1) >= time.time()):
+        raise ValueError('Refused start differs from the retained, expired restart attempt')
+    requests = [request]
+    cancel = sha([attempt, 'cancel'])
+    stop = observe_dispatch(gate, cancel)
+    if stop.get('status') != 'not_issued':
+        stop_request = read_json(safe_path(gate/('issued-'+cancel+'.json')))['request']
+        stop_rejected = stop.get('status') == 'receipt_observed' and stop['receipt']['status'] == 'REQUEST_REJECTED'
+        stop_expired = (stop.get('status') == 'awaiting_receipt' and not (gate/'permit.json').exists()
+                        and stop_request.get('expires_utc', time.time()+1) < time.time())
+        if stop.get('consumed') is not False or not (stop_rejected or stop_expired):
+            raise ValueError('An issued cancel must be provably unconsumed and finished')
+        requests.append(stop_request)
+    current_path = safe_path(gate/'request.json')
+    if current_path.exists():
+        current = read_json(current_path)
+        if current.get('request_id') not in (attempt, cancel) or current.get('expires_utc', time.time()+1) >= time.time():
+            raise ValueError('Only the expired original start/cancel may remain')
+        named = read_json(safe_path(gate/('issued-'+current['request_id']+'.json')))
+        if digest(current_path.read_bytes()) != named['request_sha256']:
+            raise ValueError('Current request bytes differ from the retained original request')
+    permit = safe_path(gate/'permit.json')
+    if permit.exists():
+        holder = attempt if not current_path.exists() or read_json(current_path).get('request_id') == attempt else cancel
+        expected = read_json(safe_path(gate/('issued-'+holder+'.json')))['request_sha256']
+        if read_json(permit) != {'request_sha256': expected}:
+            raise ValueError('Permit differs from the retained original request')
+    recorded = datetime.fromisoformat(job['launch_intent']['recorded_at']).timestamp()
+    zero_work_material(c, job, dict(configuration_sha256=job['configuration_sha256'], created_utc=recorded))
+    transaction = _owned_controls(c, job, attempt, requests)
+    return transaction, 'refused:'+arm['receipt']['status']
+
+
 def _proof(c, job):
     state = _guard(c)
+    if 'restart_intent' in job:
+        return _refused_restart_proof(c, job, state)
     attempt = job['launch_intent']['attempt_id']
     gate = c.local/'native-gate'
     cancel = sha([attempt, 'cancel'])
@@ -125,25 +218,8 @@ def _proof(c, job):
     scope = dict(configuration_sha256=job['configuration_sha256'], generation=state['generation'],
                  binding=dict(terminal_id=c.terminal, run_id=c.run), created_utc=recorded)
     unstarted_material(c, job, scope, allow_expired_unconsumed=expired_unconsumed)
-    evidence = safe_path(c.root/'attempts'/attempt)
-    transaction = read_json(evidence/'transaction.json')
-    base = safe_path(Path(transaction['base']))
-    expected_base = safe_path(Path(c.install['common_files_root'])/'GOAT'/
-                             ('GOAT V'+c.install['ea_version']+'-'+c.session['account']['server']))
-    if (base != expected_base or transaction['owner'] != attempt or transaction['phase'] != 'installed'
-            or read_json(base/'agent-native-control-owner.json') != dict(owner=attempt, evidence=str(evidence))
-            or any(transaction['files'][n]['before'] is not None for n in NAMES)
-            or any(digest(contents(base/n)) != transaction['files'][n]['after_sha256'] for n in NAMES)):
-        raise ValueError('Exact untouched owned controls with absent original controls required')
-    fields = dict(owner='agent', data_path=c.install['terminal_data_root'],
-                  installation_path=str(Path(c.install['terminal_executable']).parent),
-                  account_login=c.session['account']['login'], account_server=c.session['account']['server'],
-                  native_run=read_json(Path(job['launch_intent']['package'])/'manifest.json')['native_run_relative'],
-                  pointer_sha256=digest((base/'active_optimization_run.ini').read_bytes()),
-                  native_owner_sha256=digest((base/'agent-native-control-owner.json').read_bytes()))
     start = read_json(gate/('issued-'+attempt+'.json'))['request']
-    if any(start.get(k) != v or request.get(k) != v for k,v in fields.items()):
-        raise ValueError('Original start/cancel terminal, account or native-control identity differs')
+    transaction = _owned_controls(c, job, attempt, [start, request])
     return transaction, cancel_evidence
 
 
@@ -246,8 +322,8 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
                     raise ValueError('Selected native process changed before recovery')
                 files = {'job-before.json': (packed(job)+'\n').encode(),
                          'session-before.json': (c.root/'session.json').read_bytes(),
-                         'transaction-before.json': (evidence/'transaction.json').read_bytes(),
-                         'request-before.json': (gate/'request.json').read_bytes()}
+                         'transaction-before.json': (evidence/'transaction.json').read_bytes()}
+                if (gate/'request.json').exists(): files['request-before.json'] = (gate/'request.json').read_bytes()
                 if (gate/'permit.json').exists(): files['permit-before.json'] = (gate/'permit.json').read_bytes()
                 for name, raw in files.items(): retain(folder/name, raw)
                 record = dict(schema_version=1, phase='prepared', job_id=job_id,
@@ -306,7 +382,8 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
                 if read_json(evidence/'transaction.json')['phase'] == 'installed':
                     _proof(c, job)
                 for identity in (record['attempt_id'], sha([record['attempt_id'],'cancel'])):
-                    if observe_dispatch(gate, identity).get('consumed') is not False:
+                    observed_dispatch = observe_dispatch(gate, identity)
+                    if observed_dispatch.get('status') != 'not_issued' and observed_dispatch.get('consumed') is not False:
                         raise ValueError('Native action was consumed; preserve unresolved evidence')
                 for name in ('request.json','permit.json'):
                     target = safe_path(gate/name)
@@ -325,6 +402,12 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
                 if any(digest(contents(base/n)) != prior['files'][n]['before_sha256'] for n in NAMES):
                     raise ValueError('Restored controls differ from original bytes')
                 for name in ('request.json','permit.json'): (gate/name).unlink(missing_ok=True)
+                bridge = before.get('restart_intent', {}).get('report_bridge')
+                if bridge is not None:
+                    from studio_report_bridge import retire as retire_report_bridge
+                    package = Path(before['launch_intent']['package'])
+                    plan, manifest = read_json(package/'studio-plan.json'), read_json(package/'manifest.json')
+                    retire_report_bridge(plan['research_binding'], manifest['native_run_relative'], bridge, evidence)
                 record['phase'] = 'controls_restored'; write_json(path, record)
             result = dict(schema_version=1, status='failed', classification='retired_never_started',
                           job_id=job_id, attempt_id=record['attempt_id'], configuration=before['configuration'],
@@ -368,9 +451,11 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
         if after_session != record['archive_sha256']['session-before.json']:
             changes.append(dict(target='controller/session.json',action='rewrote',
                                 beforeSha256=record['archive_sha256']['session-before.json'],afterSha256=after_session))
+        refused = str(record.get('cancel_evidence','')).startswith('refused:')
         report = dict(schemaVersion=1,tool='studio.self-repair',
                       versions=dict(app=current.get('bundle_version'),ea=current['ea_version'],controller=current['controller_version']),
-                      outcome='repaired',summary='Retired a verified expired, never-started demo attempt and restored its original controls. The verified monitor can reopen; no research or trading was started.',
+                      outcome='repaired',summary=('Cleared a demo start the EA refused before it ran, and restored the original controls. Nothing ran; the batch can be started again.'
+                                                  if refused else 'Retired a verified expired, never-started demo attempt and restored its original controls. The verified monitor can reopen; no research or trading was started.'),
                       observed=[dict(name='attempt',value=record['attempt_id']),
                                 dict(name='cancel_evidence',value=record.get('cancel_evidence','rejected'))],
                       before=[dict(name='phase',value=before['status'])],after=[dict(name='phase',value='retired_never_started')],

@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import Mock, patch
 import uuid
 
-from campaign_ledger import sha
+from campaign_ledger import packed, sha
 from native_control_transaction import begin, NAMES
 from studio_bridge import write_json
 from studio_installation import read_json
@@ -19,7 +19,8 @@ from studio_self_repair import repair, original_receipt
 import test_studio_batch as fixtures
 
 
-class SelfRepairTests(unittest.TestCase):
+class SelfRepairFixture(unittest.TestCase):
+    """Shared real-controller fixture: one reserved, controls-installed attempt; no tests."""
     def setUp(self):
         self.f = fixtures.NativeBatchTests(); self.f.setUp(); self.addCleanup(self.f.tearDown)
         self.c = self.f.controller
@@ -84,6 +85,8 @@ class SelfRepairTests(unittest.TestCase):
         self.assertEqual(self.c.job('original'),self.before)
         self.assertTrue((self.gate/'request.json').exists())
 
+
+class SelfRepairTests(SelfRepairFixture):
     def test_rejected_never_started_retirement_preserves_queue_grant_and_receipts(self):
         grant_before = self.c.state()['generation']
         result = self.run_repair()
@@ -281,5 +284,132 @@ class SelfRepairTests(unittest.TestCase):
         self.assertFalse((self.base/'agent-native-control-owner.json').exists())
         self.process.close.assert_called_once()
 
+
+
+class RefusedRestartStartTests(SelfRepairFixture):
+    """Jan df1c3c7d: a config restart-arm start the EA refused before consuming it."""
+    def setUp(self):
+        super().setUp()
+        self.make_restart()
+
+    def make_restart(self, status='START_PROTOCOL_NOT_QUALIFIED', cancel=False):
+        job = self.c.job('original')
+        self.startup = 'e'*64
+        job['restart_intent'] = dict(attempt_id=self.attempt, phase='controls_installed', startup_sha256=self.startup,
+                                     history=[dict(phase='prepared', at=1.0), dict(phase='controls_installed', at=2.0)])
+        self.store_job(job)
+        start = read_json(self.gate/('issued-'+self.attempt+'.json'))['request']
+        for identity in (self.attempt, self.cancel):
+            for prefix in ('issued-', 'result-'): (self.gate/(prefix+identity+'.json')).unlink(missing_ok=True)
+        (self.gate/'permit.json').unlink(missing_ok=True)
+        if cancel:
+            self.issue(self.cancel, start|dict(request_id=self.cancel, attempt_id=self.attempt, action='cancel'))
+        self.issue(self.attempt, start|dict(action='arm_restart', startup_sha256=self.startup), status=status)
+        self.permit_for(self.attempt)
+        self.before = self.c.job('original')
+
+    def store_job(self, job):
+        binding = packed(dict(terminal_id=self.c.terminal, run_id=self.c.run))
+        self.c.store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?', (packed([job]), binding))
+        self.c.store.db.execute('UPDATE studio_state SET revision=revision+1 WHERE binding=?', (binding,))
+        self.c.store.db.commit()
+
+    def permit_for(self, identity):
+        issued = read_json(self.gate/('issued-'+identity+'.json'))
+        write_json(self.gate/'permit.json', dict(request_sha256=issued['request_sha256']))
+
+    def issue(self, identity, request, status='REQUEST_REJECTED'):
+        super().issue(identity, request)
+        result = read_json(self.gate/('result-'+identity+'.json'))
+        write_json(self.gate/('result-'+identity+'.json'), result|dict(status=status))
+
+    def set_arm_status(self, status):
+        result = read_json(self.gate/('result-'+self.attempt+'.json'))
+        write_json(self.gate/('result-'+self.attempt+'.json'), result|dict(status=status))
+
+    def test_refused_restart_arm_retires_never_started_and_says_so_plainly(self):
+        grant_before = self.c.state()['generation']
+        result = self.run_repair()
+        self.assertEqual(result['status'], 'repaired_terminal_stopped', result)
+        self.assertEqual(result['cancel_evidence'], 'refused:START_PROTOCOL_NOT_QUALIFIED')
+        self.assertFalse(result['research_started']); self.assertFalse(result['native_cancellation_claimed'])
+        self.assertIn('refused before it ran', result['repair']['summary'])
+        completion = self.c.job('original')['completion']
+        self.assertEqual((completion['classification'], completion['executed_members']), ('retired_never_started', 0))
+        self.assertEqual(self.c.state()['generation'], grant_before)
+        self.assertEqual((self.common/'queue.GOAT').read_bytes(), self.queue_raw)
+        self.assertFalse(any((self.base/n).exists() for n in NAMES))
+        self.assertFalse((self.gate/'request.json').exists()); self.assertFalse((self.gate/'permit.json').exists())
+        for prefix in ('issued-', 'result-'): self.assertTrue((self.gate/(prefix+self.attempt+'.json')).exists())
+        self.assertFalse((self.gate/('consumed-'+self.attempt+'.json')).exists())
+        self.process.close.assert_called_once_with(self.native['process']); self.process.start.assert_not_called()
+        self.assertEqual(self.run_repair(), result)                      # replay-safe: no second close
+        self.process.close.assert_called_once()
+
+    def test_every_pre_consumption_refusal_is_accepted(self):
+        from studio_self_repair import PRE_CONSUMPTION_REFUSALS, _proof
+        for status in sorted(PRE_CONSUMPTION_REFUSALS):
+            with self.subTest(status):
+                self.set_arm_status(status)
+                _, evidence = _proof(self.c, self.c.job('original'))
+                self.assertEqual(evidence, 'refused:'+status)
+
+    def test_a_success_or_unknown_receipt_is_not_a_refusal(self):
+        for status in ('RESTART_ARMED_RECONCILE', 'START_SENT', 'SOMETHING_NEW'):
+            with self.subTest(status):
+                self.set_arm_status(status)
+                self.assert_refused('pre-consumption refusal')
+
+    def test_consumed_arm_refuses(self):
+        (self.gate/('consumed-'+self.attempt+'.json')).write_bytes((self.gate/'request.json').read_bytes())
+        self.assert_refused('consum')
+
+    def test_arm_intent_refuses(self):
+        (self.gate/('arm-intent-'+self.attempt+'.json')).write_text('{}')
+        self.assert_refused('arm intent')
+
+    def test_unexpired_refused_request_refuses(self):
+        issued = read_json(self.gate/('issued-'+self.attempt+'.json'))
+        self.issue(self.attempt, issued['request']|dict(expires_utc=time.time()+3600), status='START_PROTOCOL_NOT_QUALIFIED')
+        self.permit_for(self.attempt)
+        self.assert_refused('expired restart attempt')
+
+    def test_rejected_cancel_alongside_refusal_is_accepted(self):
+        self.make_restart(cancel=True)
+        result = self.run_repair()
+        self.assertEqual(result['status'], 'repaired_terminal_stopped', result)
+
+    def test_consumed_cancel_refuses(self):
+        self.make_restart(cancel=True)
+        stop = read_json(self.gate/('issued-'+self.cancel+'.json'))['request']
+        (self.gate/('consumed-'+self.cancel+'.json')).write_bytes((json.dumps(stop, ensure_ascii=False, allow_nan=False)+'\n').encode())
+        self.assert_refused('cancel')
+
+    def test_native_output_refuses_on_restart_route(self):
+        (self.common/'work.bin').write_bytes(b'native output')
+        self.assert_refused('artifacts')
+
+    def test_start_action_with_restart_intent_refuses(self):
+        issued = read_json(self.gate/('issued-'+self.attempt+'.json'))
+        self.issue(self.attempt, issued['request']|dict(action='start'), status='START_PROTOCOL_NOT_QUALIFIED')
+        self.permit_for(self.attempt)
+        self.assert_refused('Refused start differs')
+
+    def test_changed_current_request_bytes_refuse_on_restart_route(self):
+        raw = (self.gate/'request.json').read_bytes()
+        (self.gate/'request.json').write_bytes(json.dumps(json.loads(raw), indent=2).encode())
+        self.assert_refused('request bytes')
+
+    def test_owned_report_junction_is_retired_with_the_frozen_run(self):
+        bridge = dict(kind='owned_run_junction', path='C:/install/MQL5/Files/GOAT/R000000000000',
+                      target='C:/data/MQL5/Files/GOAT/R000000000000')
+        job = self.c.job('original'); job['restart_intent']['report_bridge'] = bridge
+        self.store_job(job); self.before = self.c.job('original')
+        plan = read_json(self.package/'studio-plan.json')
+        with patch('studio_report_bridge.retire') as retire:
+            result = self.run_repair()
+        self.assertEqual(result['status'], 'repaired_terminal_stopped', result)
+        retire.assert_called_once()
+        self.assertEqual(retire.call_args.args[:3], (plan['research_binding'], self.manifest['native_run_relative'], bridge))
 
 if __name__ == '__main__': unittest.main()

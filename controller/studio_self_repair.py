@@ -91,11 +91,13 @@ def _guard(c):
     return state
 
 
-# EA refusals returned before consumed-<id> is written and before the tester is set
-# (GOATStudioDispatch.mqh): the refused start provably never ran.
+# EA refusals returned only before consumed-<id> is written and before the tester is set
+# (GOATStudioDispatch.mqh): the refused start provably never ran. Excluded on purpose:
+# HUMAN_CANCEL_RETAINED (also returned after consumption, arm intent and BatchOnGoing, and
+# a retained human cancel must stay the human's) and NATIVE_CONTROL_DRIFT (the EA saw the
+# controls differ, which contradicts the byte-exact proof below).
 PRE_CONSUMPTION_REFUSALS = frozenset(('START_PROTOCOL_NOT_QUALIFIED', 'RESTART_INTENT_REJECTED',
-                                      'NATIVE_CONTROL_DRIFT', 'INVALID_TESTER_INI', 'ACTION_REJECTED',
-                                      'HUMAN_CANCEL_RETAINED'))
+                                      'INVALID_TESTER_INI', 'ACTION_REJECTED'))
 
 
 def _owned_controls(c, job, attempt, requests):
@@ -454,7 +456,7 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
         refused = str(record.get('cancel_evidence','')).startswith('refused:')
         report = dict(schemaVersion=1,tool='studio.self-repair',
                       versions=dict(app=current.get('bundle_version'),ea=current['ea_version'],controller=current['controller_version']),
-                      outcome='repaired',summary=('Cleared a demo start the EA refused before it ran, and restored the original controls. Nothing ran; the batch can be started again.'
+                      outcome='repaired',summary=('Cleared a demo start the EA refused before it ran, and restored the original controls. Nothing ran or traded, and any stop you set is still in place.'
                                                   if refused else 'Retired a verified expired, never-started demo attempt and restored its original controls. The verified monitor can reopen; no research or trading was started.'),
                       observed=[dict(name='attempt',value=record['attempt_id']),
                                 dict(name='cancel_evidence',value=record.get('cancel_evidence','rejected'))],

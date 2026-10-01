@@ -334,6 +334,8 @@ class RefusedRestartStartTests(SelfRepairFixture):
         self.assertEqual(result['cancel_evidence'], 'refused:START_PROTOCOL_NOT_QUALIFIED')
         self.assertFalse(result['research_started']); self.assertFalse(result['native_cancellation_claimed'])
         self.assertIn('refused before it ran', result['repair']['summary'])
+        self.assertIn('any stop you set is still in place', result['repair']['summary'])
+        self.assertNotIn('started again', result['repair']['summary'])
         completion = self.c.job('original')['completion']
         self.assertEqual((completion['classification'], completion['executed_members']), ('retired_never_started', 0))
         self.assertEqual(self.c.state()['generation'], grant_before)
@@ -355,7 +357,8 @@ class RefusedRestartStartTests(SelfRepairFixture):
                 self.assertEqual(evidence, 'refused:'+status)
 
     def test_a_success_or_unknown_receipt_is_not_a_refusal(self):
-        for status in ('RESTART_ARMED_RECONCILE', 'START_SENT', 'SOMETHING_NEW'):
+        for status in ('RESTART_ARMED_RECONCILE', 'START_SENT', 'SOMETHING_NEW',
+                       'HUMAN_CANCEL_RETAINED', 'NATIVE_CONTROL_DRIFT'):
             with self.subTest(status):
                 self.set_arm_status(status)
                 self.assert_refused('pre-consumption refusal')

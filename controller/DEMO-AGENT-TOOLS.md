@@ -146,9 +146,11 @@ reason. `stop` also settles a seed run that no command is currently driving.
 
 Nothing supervises a member between commands. After `driver_budget_exhausted`,
 the member's job timeout, a human TAKE and the disk check are only acted on by
-the next `seed-resume`; owner `stop` works at any time. Keep calling
-`seed-resume` until the batch reports `completed`, `stopped` or
-`reconcile_required`.
+the next `seed-resume`. `--max-seconds` is the budget for that one call, not an
+autonomous hard stop, and no background service enforces anything between calls.
+Owner STOP is a separate explicit path: `stop` works at any time. Keep calling
+`seed-resume` until the batch reports `completed` or `stopped`, or holds
+`reconcile_required` for inspection.
 STOP is never cleared by these tools, and `clear-stop` refuses until the seed
 run has reached a verified terminal state. Real native qualification of this
 lane is still pending; every seed result keeps `native_launch_qualified: false`.

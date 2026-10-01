@@ -113,8 +113,10 @@ Call `seed-resume` to observe that same retained process and continue pending
 members. This is a bounded agent loop, not an installed background service.
 Between calls nothing supervises the running member: its job timeout, a human
 TAKE and (on the demo tools) the disk check are only acted on during the next
-`seed-resume`. Keep calling `seed-resume` until the batch reaches `completed`,
-`stopped` or `reconcile_required`; owner STOP still works between calls.
+`seed-resume`. `--max-seconds` is that call's budget, not an autonomous hard stop.
+Keep calling `seed-resume` until the batch reaches `completed` or `stopped`, or holds
+`reconcile_required` for inspection; owner STOP is a separate explicit command
+and still works between calls.
 
 The EA stops at the frame target. Natural genetic convergence may finish below
 target; startup `ShutdownTerminal=1` also requests exit after normal completion.

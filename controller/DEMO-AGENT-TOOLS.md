@@ -134,13 +134,21 @@ members no live broker can answer. `seed-resume`, `seed-status`,
 `seed-cancel` and `seed-report` then continue only that original attempt, and
 only when its start record matches this installation, the registered EA and the
 exact paired demo account. When MT5 is running they take a fresh broker readback
-instead. Completed or attempted members are never retried.
+instead. Completed or attempted members are never retried. A batch that is still
+`prepared` has had no native effect: `seed-status`, `seed-cancel` and
+`seed-report` work on it with a fresh broker readback while MT5 runs.
 
 Start and resume drive in short slices of a few seconds within `--max-seconds`
 (1..3600, default 60). Before every slice they check owner STOP, a pending human
 TAKE and free disk. If any appears, they request a normal close of the exact
 owned member, cancel the pending members and return `stopped_by` with the
 reason. `stop` also settles a seed run that no command is currently driving.
+
+Nothing supervises a member between commands. After `driver_budget_exhausted`,
+the member's job timeout, a human TAKE and the disk check are only acted on by
+the next `seed-resume`; owner `stop` works at any time. Keep calling
+`seed-resume` until the batch reports `completed`, `stopped` or
+`reconcile_required`.
 STOP is never cleared by these tools, and `clear-stop` refuses until the seed
 run has reached a verified terminal state. Real native qualification of this
 lane is still pending; every seed result keeps `native_launch_qualified: false`.

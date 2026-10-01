@@ -966,13 +966,23 @@ class DemoAgent:
 
     @contextmanager
     def _seed_scope(self, operation_name, batch_id):
-        """Policy scope for continuing, observing or cancelling the original seed attempt."""
-        record = self._seed_start_record(batch_id)
+        """Policy scope for observing, cancelling or continuing a demo seed batch.
+
+        While MT5 runs, a fresh broker readback is taken. A batch still 'prepared'
+        has had no native effect, so it needs no start record for status, cancel
+        or report; any batch that has left 'prepared' must have its start record.
+        """
+        record = self._seed_start_record(batch_id) if self._seed_start_path(batch_id).exists() else None
         if self.process.inspect() is not None:
+            if record is None and self._seed_left_prepared(batch_id):
+                raise ValueError('Seed batch has native effects but no broker-verified demo start record')
             with self._studio(operation_name, idle=False, owner_required=False,
                               job_id=batch_id) as (controller, broker):
                 yield controller, dict(broker=broker, start=record)
             return
+        if record is None:
+            raise ValueError('No broker-verified demo seed start exists for this batch; '
+                             'open the selected MT5 for a fresh demo check, or use seed-start')
         # MT5 is closed between seed members, so no live broker can answer now.
         # Nothing is inferred from the session: the retained start readback must
         # match this installation, registered EA and exact paired demo account.
@@ -1090,7 +1100,7 @@ class DemoAgent:
         with self._exclusive(), self._seed_scope('seed-resume', batch_id) as (controller, evidence):
             runner = self._seed_runner(controller)
             current = runner.status(batch_id)
-            if current['status'] == 'prepared':
+            if current['status'] == 'prepared' or evidence['start'] is None:
                 raise ValueError('Seed batch has no native effect yet; use seed-start with a fresh broker check')
             if current['manifest_sha256'] != evidence['start']['manifest_sha256']:
                 raise ValueError('Seed state differs from its broker-verified start record')

@@ -263,7 +263,7 @@ class DemoSeedAgentTests(unittest.TestCase):
 
     def test_retained_resume_refuses_changed_build_account_or_missing_start(self):
         self.agent.seed_prepare('batch', self.plan)
-        with self.assertRaisesRegex(ValueError, 'No broker-verified demo seed start'):
+        with self.assertRaisesRegex(ValueError, 'no native effect yet; use seed-start'):
             self.agent.seed_resume('batch', 30)
         self.agent.seed_start('batch', 6)
         self.finish_member(0)
@@ -309,6 +309,30 @@ class DemoSeedAgentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Active seed run must reach a verified terminal state'):
             self.process.current = dict(MONITOR)                          # broker reachable again, seed still unsettled
             self.agent.clear_stop()
+
+    def test_prepared_batch_can_be_observed_cancelled_and_reported_without_a_start_record(self):
+        self.agent.seed_prepare('batch', self.plan)
+        status = self.agent.seed_status('batch')
+        self.assertEqual((status['seed']['status'], status['broker']['demo']), ('prepared', True))
+        self.assertEqual(self.agent.seed_report('batch')['status'], 'prepared')
+        with self.assertRaisesRegex(ValueError, 'no native effect yet; use seed-start'):
+            self.agent.seed_resume('batch', 30)
+        cancelled = self.agent.seed_cancel('batch')
+        self.assertEqual((cancelled['status'], cancelled['native_started']), ('stopped', False))
+        self.assertEqual((self.process.starts, self.process.closes), ([], []))   # ledger only, no native effect
+        self.assertFalse((self.root / 'demo-agent/seed-starts/batch.json').exists())
+
+    def test_without_a_start_record_closed_mt5_or_native_effects_refuse(self):
+        self.agent.seed_prepare('batch', self.plan)
+        self.process.current = None                                               # MT5 closed: no fresh check possible
+        with self.assertRaisesRegex(ValueError, 'open the selected MT5 for a fresh demo check'):
+            self.agent.seed_status('batch')
+        self.process.current = dict(MONITOR)
+        state_path = self.root / 'seeds/batch/state.json'
+        state = read_json(state_path); state['status'] = 'active'                 # effects without a start record
+        state_path.write_text(json.dumps(state))
+        with self.assertRaisesRegex(ValueError, 'native effects but no broker-verified demo start record'):
+            self.agent.seed_status('batch')
 
     # ---------------------------------------------------------------- default deny
     def test_raw_studio_demo_direct_seed_mutation_is_still_refused(self):

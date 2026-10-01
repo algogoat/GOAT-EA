@@ -111,6 +111,10 @@ returns; each process adapter operation has a bounded timeout, so this is not a
 hard real-time deadline.
 Call `seed-resume` to observe that same retained process and continue pending
 members. This is a bounded agent loop, not an installed background service.
+Between calls nothing supervises the running member: its job timeout, a human
+TAKE and (on the demo tools) the disk check are only acted on during the next
+`seed-resume`. Keep calling `seed-resume` until the batch reaches `completed`,
+`stopped` or `reconcile_required`; owner STOP still works between calls.
 
 The EA stops at the frame target. Natural genetic convergence may finish below
 target; startup `ShutdownTerminal=1` also requests exit after normal completion.

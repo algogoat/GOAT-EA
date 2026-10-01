@@ -130,7 +130,7 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
     def test_unknown_start_protocol_refuses_before_intent_or_batch_arm(self):
         dispatch = source("GOATStudioDispatch.mqh")
         execute = function(dispatch, "string GoatStudioExecuteRequest(")
-        gate = 'if(start_build!=6182 && start_build!=6230) return "START_PROTOCOL_NOT_QUALIFIED";'
+        gate = 'if(action=="start" && start_build!=6182 && start_build!=6230) return "START_PROTOCOL_NOT_QUALIFIED";'
         self.assertIn(gate, execute)
         self.assertLess(execute.index(gate), execute.index('"GOATStudio\\\\native-gate\\\\consumed-"'))
         self.assertLess(execute.index(gate), execute.index('GlobalVariableSet("BatchOnGoing",1.0)'))

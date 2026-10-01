@@ -322,6 +322,64 @@ class DemoSeedAgentTests(unittest.TestCase):
         self.assertEqual((self.process.starts, self.process.closes), ([], []))   # ledger only, no native effect
         self.assertFalse((self.root / 'demo-agent/seed-starts/batch.json').exists())
 
+    def test_cancelled_never_started_batch_stays_manageable_and_idempotent(self):
+        self.agent.seed_prepare('batch', self.plan)
+        first = self.agent.seed_cancel('batch')
+        self.assertEqual((first['status'], first['native_started']), ('stopped', False))
+        status = self.agent.seed_status('batch')['seed']
+        self.assertEqual((status['status'], [m['status'] for m in status['members']]), ('stopped', ['cancelled', 'cancelled']))
+        self.assertTrue(all(m['attempts'] == 0 for m in status['members']))
+        report = self.agent.seed_report('batch')
+        self.assertEqual((report['status'], [r['actual_frames'] for r in report['members']]), ('stopped', [None, None]))
+        self.assertEqual(self.agent.seed_cancel('batch')['status'], 'stopped')      # repeated cancel is idempotent
+        with self.assertRaisesRegex(ValueError, 'cancelled before any native effect; prepare a new batch ID'):
+            self.agent.seed_resume('batch', 30)
+        with self.assertRaisesRegex(ValueError, 'Only a prepared seed batch can start'):
+            self.agent.seed_start('batch', 30)
+        self.assertEqual((self.process.starts, self.process.closes), ([], []))
+        self.assertFalse((self.root / 'demo-agent/seed-starts/batch.json').exists())
+        self.assertFalse((self.root / 'seed-active.json').exists())
+
+    def test_tampered_or_attempted_never_started_claims_refuse(self):
+        self.agent.seed_prepare('batch', self.plan)
+        self.agent.seed_cancel('batch')
+        state_path = self.root / 'seeds/batch/state.json'
+        clean = read_json(state_path)
+        member = self.manifest()['members'][0]
+
+        def tamper(change):
+            value = copy.deepcopy(clean); change(value); state_path.write_text(json.dumps(value))
+        cases = [
+            ('attempted member', lambda s: s['members'][0].update(attempts=1)),
+            ('process recorded', lambda s: s['members'][0].update(process=dict(MONITOR))),
+            ('start time recorded', lambda s: s['members'][0].update(started_unix=1.0)),
+            ('result recorded', lambda s: s['members'][0].update(result=dict(path='x'))),
+            ('completed member', lambda s: s['members'][0].update(status='completed')),
+            ('generation recorded', lambda s: s.update(generation=1)),
+            ('preflight recorded', lambda s: s.update(preflight={})),
+            ('active batch', lambda s: s.update(status='active')),
+            ('manifest hash changed', lambda s: s.update(manifest_sha256='0' * 64)),
+        ]
+        for label, change in cases:
+            with self.subTest(label):
+                tamper(change)
+                with self.assertRaisesRegex(ValueError, 'native effects but no broker-verified demo start record'):
+                    self.agent.seed_status('batch')
+        tamper(lambda s: None)
+        (self.root / 'seed-active.json').write_text(json.dumps(dict(status='released', batch_id='batch')))
+        with self.assertRaisesRegex(ValueError, 'native effects but no broker-verified demo start record'):
+            self.agent.seed_status('batch')                                           # the slot once named this batch
+        (self.root / 'seed-active.json').unlink()
+        output = self.common / 'GOAT/SeedFarmingXML' / (member['output_base'] + '_N0_x.xml')
+        output.parent.mkdir(parents=True, exist_ok=True); output.write_bytes(b'<x/>')
+        with self.assertRaisesRegex(ValueError, 'native effects but no broker-verified demo start record'):
+            self.agent.seed_status('batch')                                           # seed output exists
+        output.unlink()
+        self.assertEqual(self.agent.seed_status('batch')['seed']['status'], 'stopped')
+        with self.assertRaisesRegex(ValueError, 'Unknown seed batch'):
+            self.agent.seed_status('missing')
+        self.assertEqual((self.process.starts, self.process.closes), ([], []))
+
     def test_without_a_start_record_closed_mt5_or_native_effects_refuse(self):
         self.agent.seed_prepare('batch', self.plan)
         self.process.current = None                                               # MT5 closed: no fresh check possible

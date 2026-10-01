@@ -973,8 +973,12 @@ class DemoAgent:
         or report; any batch that has left 'prepared' must have its start record.
         """
         record = self._seed_start_record(batch_id) if self._seed_start_path(batch_id).exists() else None
+        if record is None and not (self.root / 'seeds' / batch_id / 'state.json').is_file():
+            raise ValueError('Unknown seed batch; use seed-prepare')
         if self.process.inspect() is not None:
-            if record is None and self._seed_left_prepared(batch_id):
+            # Without a start record only a provably never-started batch is managed,
+            # and only under this fresh broker readback; nothing offline is granted.
+            if record is None and not self._seed_never_started(batch_id):
                 raise ValueError('Seed batch has native effects but no broker-verified demo start record')
             with self._studio(operation_name, idle=False, owner_required=False,
                               job_id=batch_id) as (controller, broker):
@@ -1063,6 +1067,41 @@ class DemoAgent:
         state = self.root / 'seeds' / batch_id / 'state.json'
         return state.is_file() and read_json(state).get('status') != 'prepared'
 
+    def _seed_never_started(self, batch_id):
+        """Read-only proof that a seed batch never had a native effect.
+
+        True only for a batch still 'prepared', or 'stopped' by cancelling it before
+        any start: the manifest hash matches, no generation, preflight or process was
+        ever recorded, every member is unattempted with no result, the seed slot never
+        named this batch, and no seed output exists for any member.
+        """
+        root = self.root / 'seeds' / batch_id
+        state_path, manifest_path = root / 'state.json', root / 'manifest.json'
+        if not state_path.is_file() or not manifest_path.is_file():
+            return False
+        state, manifest = read_json(state_path), read_json(manifest_path)
+        if state.get('manifest_sha256') != digest(manifest_path) or state.get('batch_id') != batch_id:
+            return False
+        member_status = {'prepared': 'pending', 'stopped': 'cancelled'}.get(state.get('status'))
+        if member_status is None or state.get('generation') is not None:
+            return False
+        if any(key in state for key in ('preflight', 'initial_process', 'error')):
+            return False
+        members, specs = state.get('members'), manifest.get('members')
+        if not isinstance(members, list) or not isinstance(specs, list) or len(members) != len(specs):
+            return False
+        for item in members:
+            if (item.get('status') != member_status or item.get('attempts') != 0 or item.get('result') is not None
+                    or any(key in item for key in ('process', 'started_unix', 'finished_unix', 'error'))):
+                return False
+        slot = self.root / 'seed-active.json'
+        if slot.is_file() and read_json(slot).get('batch_id') == batch_id:
+            return False
+        outputs = Path(self.install['common_files_root']) / 'GOAT/SeedFarmingXML'
+        if outputs.is_dir() and any(any(outputs.glob(spec['output_base'] + '_N*.xml')) for spec in specs):
+            return False
+        return True
+
     def seed_start(self, batch_id, max_seconds):
         self._seed_budget(max_seconds)
         path = self._seed_start_path(batch_id)
@@ -1100,8 +1139,10 @@ class DemoAgent:
         with self._exclusive(), self._seed_scope('seed-resume', batch_id) as (controller, evidence):
             runner = self._seed_runner(controller)
             current = runner.status(batch_id)
-            if current['status'] == 'prepared' or evidence['start'] is None:
+            if current['status'] == 'prepared':
                 raise ValueError('Seed batch has no native effect yet; use seed-start with a fresh broker check')
+            if evidence['start'] is None:
+                raise ValueError('Seed batch was cancelled before any native effect; prepare a new batch ID')
             if current['manifest_sha256'] != evidence['start']['manifest_sha256']:
                 raise ValueError('Seed state differs from its broker-verified start record')
             self._append('seed_resume', 'continue', batch_id=batch_id, status=current['status'],

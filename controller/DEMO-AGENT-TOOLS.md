@@ -136,7 +136,11 @@ only when its start record matches this installation, the registered EA and the
 exact paired demo account. When MT5 is running they take a fresh broker readback
 instead. Completed or attempted members are never retried. A batch that is still
 `prepared` has had no native effect: `seed-status`, `seed-cancel` and
-`seed-report` work on it with a fresh broker readback while MT5 runs.
+`seed-report` work on it with a fresh broker readback while MT5 runs. They keep
+working after it is cancelled before any start, and a repeated cancel is
+idempotent, but only while the retained files prove no native effect ever
+happened: no start record, slot, generation, process, attempt, result or seed
+output. Anything else without a start record refuses.
 
 Start and resume drive in short slices of a few seconds within `--max-seconds`
 (1..3600, default 60). Before every slice they check owner STOP, a pending human

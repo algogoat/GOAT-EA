@@ -182,9 +182,9 @@ string GoatStudioExecuteRequest(const string body,const string request_hash)
       string hash;if(!GOATJsonGetString(body,t,0,fields[i],hash) || !GoatStudioCommonDigest(paths[i],hash)) return "NATIVE_CONTROL_DRIFT";
      }
    // The Start message is undocumented and not covered by the Agents menu check.
-   // Permit native launch only on builds separately qualified for this message.
+   // Gate only the direct Start route; arm_restart uses the recorded /config route.
    int start_build=(int)TerminalInfoInteger(TERMINAL_BUILD);
-   if(start_build!=6182 && start_build!=6230) return "START_PROTOCOL_NOT_QUALIFIED";
+   if(action=="start" && start_build!=6182 && start_build!=6230) return "START_PROTOCOL_NOT_QUALIFIED";
    string error,entries[];
    if(!GoatStudioINIEntries(ini,entries,error)) return "INVALID_TESTER_INI";
 #ifdef GOAT_CANCEL_ORIGIN_V149

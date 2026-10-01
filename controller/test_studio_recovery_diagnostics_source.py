@@ -130,7 +130,7 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
     def test_unknown_start_protocol_refuses_before_intent_or_batch_arm(self):
         dispatch = source("GOATStudioDispatch.mqh")
         execute = function(dispatch, "string GoatStudioExecuteRequest(")
-        gate = 'if(start_build!=6182 && start_build!=6230) return "START_PROTOCOL_NOT_QUALIFIED";'
+        gate = 'if(action=="start" && start_build!=6182 && start_build!=6230) return "START_PROTOCOL_NOT_QUALIFIED";'
         self.assertIn(gate, execute)
         self.assertLess(execute.index(gate), execute.index('"GOATStudio\\\\native-gate\\\\consumed-"'))
         self.assertLess(execute.index(gate), execute.index('GlobalVariableSet("BatchOnGoing",1.0)'))
@@ -159,7 +159,7 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
     def test_source_and_compiled_candidate_identity(self):
         main = source('GOAT V1.49.mq5')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
-        self.assertIn('#define   GOAT_BUILD_ID "V1.49-AGENT-EXPORT-DISPLAY-29"', main)
+        self.assertIn('#define   GOAT_BUILD_ID "V1.49-START-PROTOCOL-ROUTE-30"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
                          '05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9')
         for name in ('GOATStudioRecovery.mqh', 'GOATStudioRecoveryFiles.mqh', 'GOATStudioUI.mqh',

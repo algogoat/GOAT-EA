@@ -398,6 +398,16 @@ class RefusedRestartStartTests(SelfRepairFixture):
         self.permit_for(self.attempt)
         self.assert_refused('Refused start differs')
 
+    def test_drifted_frozen_configuration_refuses_on_restart_route(self):
+        job = self.c.job('original')
+        job['configuration'] = job['configuration'] | dict(drifted=True)   # digest field left as frozen
+        self.store_job(job); self.before = self.c.job('original')
+        # The queue guard refuses first; the proof's own digest check is defence in depth.
+        self.assert_refused('configuration')
+        from studio_self_repair import _refused_restart_proof
+        with self.assertRaisesRegex(ValueError, 'frozen digest'):
+            _refused_restart_proof(self.c, self.c.job('original'), self.c.state())
+
     def test_changed_current_request_bytes_refuse_on_restart_route(self):
         raw = (self.gate/'request.json').read_bytes()
         (self.gate/'request.json').write_bytes(json.dumps(json.loads(raw), indent=2).encode())

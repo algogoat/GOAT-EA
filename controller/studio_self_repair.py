@@ -135,6 +135,8 @@ def _refused_restart_proof(c, job, state):
     if (job['status'] not in ('starting', 'reconcile_required') or intent.get('phase') != 'controls_installed'
             or intent.get('attempt_id') != attempt):
         raise ValueError('Installed, never-armed restart attempt required')
+    if sha(job['configuration']) != job['configuration_sha256']:
+        raise ValueError('Retained job configuration no longer matches its frozen digest')
     if any(gate.glob('start-intent-*.json')) or any(gate.glob('arm-intent-*.json')):
         raise ValueError('Native start or arm intent exists; execution outcome is uncertain')
     for path in gate.glob('consumed-*.json'):

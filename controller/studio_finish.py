@@ -26,10 +26,20 @@ def finish(controller,job_id,*,expected_generation=None):
     from studio_dispatch_observe import observe_dispatch
     stop_id=cancel_id(controller.root,job,controller.local/'native-gate')
     successor_stop=None
+    signal_only=False
     if stop_id!=sha([intent['attempt_id'],'cancel']):
         successor_stop=observe_dispatch(controller.local/'native-gate',stop_id)
-        if successor_stop.get('consumed') is not True or successor_stop.get('status')!='receipt_observed' or successor_stop['receipt']['status']!='CANCELLED_RECONCILE':
-            raise ValueError('Successor cancellation requires its exact consumed CANCELLED_RECONCILE')
+        receipt=successor_stop.get('receipt') or {}
+        # A cancel consumed mid-member answers CANCEL_SIGNAL_SENT_RECONCILE when the
+        # tester takes longer than the EA's single 100 ms idle check to stop (g6,
+        # 19:18Z): the stop was sent, not yet confirmed. It is accepted only with the
+        # same independent proof the release already demands below: a settled native
+        # queue and, under the gate, a fresh idle tester with no batch ongoing.
+        if (successor_stop.get('consumed') is not True or successor_stop.get('status')!='receipt_observed'
+                or receipt.get('status') not in ('CANCELLED_RECONCILE','CANCEL_SIGNAL_SENT_RECONCILE')):
+            raise ValueError('Successor cancellation requires its exact consumed CANCELLED_RECONCILE '
+                             'or CANCEL_SIGNAL_SENT_RECONCILE')
+        signal_only=receipt['status']=='CANCEL_SIGNAL_SENT_RECONCILE'
     outcomes={'native_completed':'completed','native_cancelled':'cancelled','native_error':'failed'}
     if native['status'] not in outcomes: raise ValueError('Native queue is not finished; reconcile, do not reset')
     completed_members=any(member['status']=='native_completed' for member in native['members'])
@@ -44,6 +54,10 @@ def finish(controller,job_id,*,expected_generation=None):
                 matrix_result_required=True,ea_version=controller.install['ea_version'],ea_sha256=controller.install['ea_sha256'],
                 controller_version=controller.install['controller_version'],account_server=controller.session['account']['server'])
     if successor_stop is not None:result['cancellation_dispatch']=successor_stop
+    if signal_only:
+        # Written only if the gated idle check below passes; a failure raises first.
+        result['stop_confirmation']=dict(receipt='CANCEL_SIGNAL_SENT_RECONCILE',
+                                         confirmed_by=['native_queue_settled','tester_idle_under_gate','batch_ongoing_false'])
     evidence=controller.root/'attempts'/intent['attempt_id']
     gate=controller.local/'native-gate'
     # Same gate excludes controller commits and native command consumption.

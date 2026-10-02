@@ -6,10 +6,12 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import studio_catchup as sc
 from studio_installation import read_json
 from studio_seed_slot import guard_active_seed
+from studio_terminal_isolation import relative_base
 from test_studio_catchup_verdict import TESTER, VALUES, daily, make_unit, trading
 
 AFTER_CLOSE = datetime(2026, 10, 3, 8, tzinfo=timezone.utc)      # Saturday: auto = Fri 2026-10-02
@@ -47,7 +49,11 @@ class CatchupCase(unittest.TestCase):
         self.owner = dict(owner='agent', generation=1, queue=[])
         c.state = lambda: copy.deepcopy(self.owner)
         c.bridge = SimpleNamespace(pump=lambda: None)
-        c.runtime = lambda **kw: ({'loaded': True, 'owner': self.owner['owner'], 'generation': self.owner['generation']}, {})
+        # The isolation-aware EA publishes the batch folder it resolves (terminal isolation, #113).
+        state_base = relative_base(c.install['ea_version'], c.session['account']['server'], c.session['account']['login'], c.install['terminal_data_root'])
+        c.runtime = lambda **kw: ({'loaded': True, 'owner': self.owner['owner'], 'generation': self.owner['generation'], 'state_base': state_base}, {})
+        # Never inspect this PC's real MT5 processes from a test.
+        isolation = patch('studio_terminal_isolation.live_terminals', return_value=[]); isolation.start(); self.addCleanup(isolation.stop)
         self.controller = c
         self.process = SimpleNamespace(inspect=lambda: copy.deepcopy(self.process_state), close=self.close, start=self.start)
         self.runner = sc.CatchupRunner(c, process=self.process, clock=lambda: self.now, sleep=self.sleep, now=AFTER_CLOSE)

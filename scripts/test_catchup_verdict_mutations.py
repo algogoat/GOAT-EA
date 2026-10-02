@@ -11,7 +11,8 @@ import tempfile
 from pathlib import Path
 
 CONTROLLER = Path(__file__).resolve().parent.parent / 'controller'
-TESTS = ['test_studio_catchup_verdict', 'test_studio_catchup', 'test_studio_research_status', 'test_studio_batch']
+TESTS = ['test_studio_catchup_verdict', 'test_studio_catchup', 'test_studio_research_status', 'test_studio_batch',
+         'test_demo_catchup_agent']  # the DemoAgent harness: prepare -> start -> report end to end
 RUNNER = ('import sys,unittest\n'
           'root=sys.argv[1]\n'
           'sys.path[:]=[p for p in sys.path if not p.rstrip("\\\\/").lower().endswith("controller")]\n'

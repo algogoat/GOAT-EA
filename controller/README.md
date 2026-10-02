@@ -628,7 +628,8 @@ never read them. The import writes the stamp on the strategy as `catchUp` and
 `oosRanges.catchUp`, so
 a portfolio chosen before `added_at` saw none of those weeks ("unseen when
 chosen"), while one built after importing them saw them ("seen when chosen"). For
-an out-of-sample check, build first, then catch up.
+an out-of-sample check, build first, then catch up. A `not_comparable` or
+`unjudged` version is imported with its verdict only: it adds no new-weeks window.
 
 Follow-up (answer to review question b): an EA `EvidenceEnd` export setting, as
 its own EA PR after the native single-pass proof, so batch exports can end on the

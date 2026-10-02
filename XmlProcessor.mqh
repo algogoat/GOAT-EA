@@ -776,15 +776,15 @@ int ForwardReportRows(const string filename)
   {
    int h=FileOpen(filename,FILE_READ|FILE_COMMON|FILE_ANSI,'\t',CP_UTF8);
    if(h==INVALID_HANDLE) return -1;
-   int rows=0; bool closed=false;
+   int rows=0; bool table_closed=false;
    while(!FileIsEnding(h))
      {
       string line=FileReadString(h);
       if(line=="<Row>") rows++;
-      else if(StringFind(line,"</Table>")>=0) {closed=true; break;}
+      else if(StringFind(line,"</Table>")>=0) {table_closed=true; break;}
      }
    FileClose(h);
-   return (closed && rows>0) ? rows-1 : -1;   // the first row is the header
+   return (table_closed && rows>0) ? rows-1 : -1;   // the first row is the header
   }
 //+------------------------------------------------------------------+
 private:

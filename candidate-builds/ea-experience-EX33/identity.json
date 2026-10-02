@@ -45,7 +45,7 @@
     "NewsBiasFilter.mqh": "34405f975b55d8dbf5fdc24005b15102f48f441c2f1119bc5f188690114ef278",
     "Optimizer.mqh": "32c0589904947cbd70bf9e3c1d698f8287b88a4974cda1a10ad4fe960ca35999",
     "Tester.mqh": "2d109fa8be126804ed80e0b92bf5198d54acb35e5075d13b9cd443dd1d02418e",
-    "XmlProcessor.mqh": "d8e2e726161fcf1f8726e7b9f16bc2598aecfa8617256339f8021752ba6d3247"
+    "XmlProcessor.mqh": "772324de0ca37a85f756ddbcbdc798e7091c77f2fbf27ad8a78ce5c213cbb30e"
   },
   "binary": null,
   "compile": "pending",

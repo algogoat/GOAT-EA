@@ -38,7 +38,7 @@ const mutations=[
   ['losing trades cell not checked','XmlProcessor.mqh',R`if(line=="</Row>" || !IsNumberCell(line)) malformedSeen++;`,R`if(false) malformedSeen++;`,outcome],
   ['unreadable profit not counted','XmlProcessor.mqh',R`if(!IsNumberCell(passCell) || !IsNumberCell(profitCell)) malformedSeen++;`,'',outcome],
   ['table closure assumed','XmlProcessor.mqh',R`reportClosed=(StringFind(rowStart,"</Table>")>=0);`,R`reportClosed=true;`,outcome],
-  ['unclosed forward report accepted','XmlProcessor.mqh',R`return (closed && rows>0) ? rows-1 : -1;`,R`return rows>0 ? rows-1 : -1;`,outcome],
+  ['unclosed forward report accepted','XmlProcessor.mqh',R`return (table_closed && rows>0) ? rows-1 : -1;`,R`return rows>0 ? rows-1 : -1;`,outcome],
   ['skipped row loops forever at EOF','XmlProcessor.mqh',R`while(line!="</Row>" && !FileIsEnding(hBack))line=FileReadString(hBack);
                i--; continue;`,R`while(line!="</Row>")line=FileReadString(hBack);
                i--; continue;`,outcome],

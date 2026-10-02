@@ -91,6 +91,9 @@ OPERATION_CONTRACTS = {
     'research-regrant-status':dict(required=[],effect='read-only proof of genuine takeover and current native connection readiness; never create a grant'),
     'research-monitor-restart-resume':dict(required=['job-id'],effect='reconcile an already-issued monitor close and perform only its never-issued first relaunch; no repeated close or launch'),
     'cancel-rejected-successor':dict(required=['job-id'],effect='owner-only: publish one new stop identity after exact expired unconsumed native cancel rejection and reverified monitor restart; keeps both stop receipts'),
+    'batch-pause':dict(required=['job-id'],optional=['immediate','supervise-seconds'],limits={'supervise-seconds':[1,172800]},demo_lane='goat.exe demo batch-pause --batch-id <id> (broker-verified; starts its own bounded supervisor)',effect='durable idempotent pause request: one cancel only at a safe point (right after a member turns OnGoing, or tester idle after the member-boundary relaunch) while the bound monitor reports; an expired unconsumed cancel is answered by the EA with CANCEL_REJECTED and only that exact receipt admits exactly one successor stop (cancel-rejected-successor identity rules, both receipts kept, never blind replay); a closed, unbound or unlicensed monitor is a named blocker with its fix; the driver keeps its disk guard and finish, never records cancel_issued for a pause and adopts an outstanding unconfirmed stop; finish harvests completed members and records paused with a resume token. States: pausing, paused, pause_failed (one sentence + fix), finished. Optional supervise-seconds runs the bounded pause supervisor in this call'),
+    'batch-resume':dict(required=['job-id'],optional=['new-batch-id','resume-token','include-failed'],demo_lane='goat.exe demo batch-resume --batch-id <id> (also refreshes a restarted protected peer and starts the bounded driver)',effect='after paused: verify the exact paused result and resume token, build the remaining-work plan from per-member native evidence (resume-batch) tolerating only a refreshed protected-peer process, prepare the successor under a new ID (default <id>-rN) and record lineage paused batch -> successor; no start in this CLI, run-batch starts it'),
+    'research-status':dict(required=[],effect='read-only lane status for one installation: terminal, account, EA build, current batch or seed hunt (status, members done/total, qualifying, last member, pace and ETA, lineage, pause), driver health, disk headroom and monitor/licence state with the plain reason and fix when unbound; never opens the mutable store, launches or signals MT5'),
     'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls')
 }
 
@@ -368,6 +371,9 @@ def main(argv=None):
     p=sub.add_parser('orphan-recovery-reconcile-rejection',help='Settle one reviewed expired pre-consumption review/runtime/foreign-control rejection; never retry recovery');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true');p.add_argument('--owner-research',action='store_true',help='Use the reviewed owner-demo grant scope; never represents a human confirmation');p.add_argument('--terminal-stopped',action='store_true',help='Explicit human-confirmed cleanup with the selected terminal stopped; no offline owner authority or native flag changes')
     p=sub.add_parser('run-batch');p.add_argument('--job-id',required=True);p.add_argument('--max-seconds',type=int);p.add_argument('--resume',action='store_true');p.add_argument('--min-free-bytes',type=int,help='Positive free-space reserve on each output filesystem; default 5368709120 (5 GiB), frozen at start; omit on resume')
     p=sub.add_parser('batch-driver-status');p.add_argument('--job-id',required=True)
+    p=sub.add_parser('batch-pause');p.add_argument('--job-id',required=True);p.add_argument('--immediate',action='store_true');p.add_argument('--supervise-seconds',type=int)
+    p=sub.add_parser('batch-resume');p.add_argument('--job-id',required=True);p.add_argument('--new-batch-id');p.add_argument('--resume-token');p.add_argument('--include-failed',action='store_true')
+    sub.add_parser('research-status')
     p=sub.add_parser('submit');p.add_argument('--request',type=Path,required=True)
     p=sub.add_parser('prepare');p.add_argument('--job-id',required=True);p.add_argument('--set',type=Path,required=True);p.add_argument('--configuration',type=Path,required=True)
     for command in ('start','status','cancel','reconcile','finish','research-monitor-restart','research-monitor-restart-resume','research-monitor-restart-status','cancel-rejected-successor'):
@@ -405,6 +411,15 @@ def main(argv=None):
             print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
         from studio_historical_pointers import guard_pending as historical_guard
         historical_guard(controller)
+        if args.operation=='research-status':
+            from studio_research_status import research_status
+            from studio_seed_process import WindowsSeedProcess
+            try:process=WindowsSeedProcess(controller).inspect()
+            except (OSError,ValueError,subprocess.SubprocessError):process='unknown'
+            result=research_status(root=controller.root,install=controller.install,session=read_json(controller.root/'session.json'),
+                                   local=controller.local,now=time.time(),process=process,
+                                   owner_stop=(controller.root/'demo-agent/STOP').exists())
+            print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
         if args.operation not in ('peer-prepare','peer-apply','switch-plan','switch-apply','switch-status','switch-verify-park','switch-replace-receipt','discover','resource-profile') and not args.operation.startswith(('orphan-recovery-','bootstrap-retirement-','owner-maintenance-')):
             from studio_handover import session_lock,guard
             locks.enter_context(session_lock(controller));guard(controller)
@@ -480,6 +495,27 @@ def main(argv=None):
                 from studio_batch_driver import run,status
                 if args.operation=='run-batch': result=run(controller,args.job_id,max_seconds=args.max_seconds,resume=args.resume,min_free_bytes=args.min_free_bytes)
                 else: result=status(controller,args.job_id)
+            elif args.operation=='batch-pause':
+                from studio_batch_pause import request as request_pause,load as load_pause,public as public_pause
+                journal_path=controller.root/'batch-drivers'/(args.job_id+'.json')
+                record,_=request_pause(controller.root,controller.job(args.job_id),read_json(journal_path) if journal_path.is_file() else None,
+                                       now=time.time(),requested_by='studio_cli',immediate=args.immediate)
+                driver=None
+                if args.supervise_seconds is not None and record['state']=='pausing':
+                    from studio_batch_driver import run
+                    driver=run(controller,args.job_id,resume=True,pause_seconds=args.supervise_seconds)
+                result=dict(public_pause(load_pause(controller.root,args.job_id)),driver=driver)
+            elif args.operation=='batch-resume':
+                from studio_batch import resume_batch
+                from studio_batch_pause import verify_resumable,successor_id,plan_resume,mark_resumed,load as load_pause
+                verify_resumable(controller,args.job_id,args.resume_token)
+                retained=load_pause(controller.root,args.job_id)
+                new_id=args.new_batch_id or retained.get('resume_batch_id') or retained.get('successor_batch_id') or successor_id(args.job_id,{j['job_id'] for j in controller.state()['queue']})
+                plan_resume(controller.root,args.job_id,new_id,now=time.time())
+                prepared=resume_batch(controller,args.job_id,new_id,include_failed=args.include_failed,allow_peer_refresh=True)
+                mark_resumed(controller.root,args.job_id,new_id,now=time.time(),selected=prepared.get('member_count'))
+                result=dict(state='resumed',source_batch_id=args.job_id,batch_id=new_id,prepared=prepared,
+                            next_action='run-batch --job-id '+new_id+' --max-seconds <budget> starts the successor')
             elif args.operation=='research-monitor-restart':
                 from studio_rejected_monitor import restart
                 result=restart(controller,args.job_id)

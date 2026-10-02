@@ -121,8 +121,21 @@ The controller enforces: 1 to 10,000 members; all 18 tester fields; `Optimizatio
 17. Check first: every `result.disks[].free_bytes` from `Studio @('resource-profile')` is at least 5 GiB; `onboarding-status` is `local_monitor_ready`; only the selected MT5 is running, plus the one peer you protected with `peer-apply` (see "Keep another MT5 running"), if any. Then start the **bounded driver once** with the agreed budget in seconds: `Start-Batch 'pilot-1' -MaxSeconds 14400`. It starts the batch, refuses when an output disk is below 5 GiB, cancels by itself when the budget runs out, and keeps a journal that survives restarts. `Studio @('batch-driver-status','--job-id','pilot-1')` shows its view.
     - Never call `start`, or `Start-Batch` with `-MaxSeconds`, again for a batch that started. If the driver process is gone (PC restart, closed shell), `Start-Batch 'pilot-1'` without `-MaxSeconds` resumes it against its original deadline.
     - If the driver reports `start_uncertain` with no `attempt_id`, the start was refused before anything reached MT5: fix the cause it names, then run the same `Start-Batch 'pilot-1' -MaxSeconds ...` again. The controller allows that retry only when nothing was dispatched.
-18. Run `Wait-Batch 'pilot-1'` in the background and tell the user the progress lines. To stop: `Studio @('cancel','--job-id','pilot-1')`, then keep polling; a cancel request is not proof that MT5 stopped.
+18. Run `Wait-Batch 'pilot-1'` in the background and tell the user the progress lines. `Studio @('research-status')` is the one read-only call for "what is this terminal doing": members done/total, qualifying members, the last member's result, minutes per member, ETA, driver health, disk headroom and the monitor's sign-in state with a plain reason and fix. To stop without losing work, **pause** (next section); `Studio @('cancel','--job-id','pilot-1')` is the raw stop and its request is not proof that MT5 stopped.
 19. On `NATIVE QUEUE FINISHED`: `Studio @('finish','--job-id','pilot-1')`. If it refuses with a runtime or tester-idle error, wait a minute and repeat. `finish` is safe to repeat.
+
+## Pause and resume (keep every finished member)
+
+Pause is the supported way to stop research and continue it later. It never wastes a running member and never replays a stop blindly.
+
+1. `Studio @('batch-pause','--job-id','pilot-1')` (demo lane: `& $goat demo --installation $receipt batch-pause --batch-id pilot-1`). It returns at once with `state: pausing` and a `plain` sentence; repeating it is safe and returns the same pause. The demo tool starts a bounded supervisor itself when no driver is running; the raw CLI accepts `--supervise-seconds N` to supervise in that call.
+2. GOAT sends one stop at the next **safe point**: right after the next member turns OnGoing (so the running member finishes and is kept), or when the tester is idle after MT5's between-member relaunch. `--immediate` skips the member wait (the monitor must still be reporting). Owner STOP, low disk or the driver deadline make it immediate by themselves.
+3. If MT5 does not take that stop in time (for example it was relaunching), GOAT waits for MT5's own `CANCEL_REJECTED` answer and then sends exactly **one** replacement at the next safe point. It never re-sends the same request and never sends a third.
+4. While it waits, `blocker` names what is in the way in one sentence with its fix, for example `This terminal's GOAT sign-in was replaced by another terminal — re-pair it.` Do the fix (the user approves the pairing code MT5 shows); the pause continues by itself.
+5. When MT5 confirms, the driver finishes the batch, keeps every completed member's reports and exports, and records `state: paused` with `resume_token`, `members_completed` and `members_remaining`. Record the completed members (step 20) now.
+6. Resume: `& $goat demo --installation $receipt batch-resume --batch-id pilot-1` builds the remaining members from MT5's own per-member evidence as a successor batch (`pilot-1-r1`, then `-r2` ...), refreshes a protected peer whose process restarted (same reviewed executable and data folder only), prepares it and starts it under the bounded driver. Add `--clear-stop` to lift an owner STOP written by GOAT. The raw CLI `batch-resume` prepares the successor; start it with `run-batch` as in step 17. `research-status` shows the lineage `pilot-1 -> pilot-1-r1` so results stay together.
+
+States: `pausing` (with `phase` and maybe `blocker`), `paused`, `finished` (every member completed before the stop landed; nothing to resume), `pause_failed` (one sentence plus fix; nothing was replayed and the batch keeps running under supervision), and `resumed`. A seed hunt pauses between members the same way: the running member finishes, pending members stay pending, and `batch-resume` continues them.
 
 ## Step 20: results go into the matrix
 
@@ -188,6 +201,9 @@ Report the exact error text, the command and the IDs. Never delete state to get 
 | `Unresolved monitor launch intent; ...` | Stop. Report the `monitor-launches` record to support. |
 | `Monitor and controller revision/generation/owner differ; run serve and recheck` / `Monitor has not loaded controller state` | Start `serve`, wait a minute, rerun `onboarding-status`. |
 | `Native queue is not finished; reconcile, do not reset` | Keep polling `batch-status`; run `finish` only after the native queue finishes. |
+| `stop_unconfirmed` from `stop` or a driver | MT5 never confirmed the stop. Run `batch-pause` for that batch: it adopts the outstanding stop, waits for MT5's answer and sends one replacement if needed. |
+| Pause `blocker` `monitor_unlicensed` (`... re-pair it.`) | The terminal's GOAT sign-in is gone. Ask the user to approve the pairing code on the GOAT chart; the pause continues by itself. |
+| `pause_failed` | Read `failure.message` and `failure.fix` to the user. Nothing was replayed; never delete the pause or cancel files. |
 | `Only pending job can start; reconcile existing attempt` | It already started. Never start again; poll `batch-status`. |
 | `Batch ID already belongs to different members/settings; ...` / `Unqueued preparation artifacts exist; ...` / `Prior batch request retained; ...` | Use a new batch ID. Keep the old files. |
 | `Unresolved native batch must finish before seed workflow` | Finish the current batch first. |

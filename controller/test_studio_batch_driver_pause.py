@@ -3,6 +3,7 @@
 Driver fixtures from test_studio_batch_driver with the pause step injected: the
 step's own native rules are covered by test_studio_batch_pause.
 """
+from collections import Counter
 import json
 from types import SimpleNamespace
 import unittest
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 from studio_bridge import write_json
 import studio_batch_pause as pause
-from studio_batch_driver import run, status
+from studio_batch_driver import FAST_POLL_SECONDS, FAST_WATCH_SECONDS, run, status
 import test_studio_batch_driver as fixtures
 
 ATTEMPT = 'a' * 64
@@ -27,6 +28,7 @@ class DriverPauseTests(unittest.TestCase):
         self.steps = []
         self.step_result = 'pausing'
         self.finish_on_step = None
+        self.safe_waits = None  # steps that miss the safe point before one publishes
         stepper = patch('studio_batch_pause.step', side_effect=self.fake_step); stepper.start()
         self.addCleanup(stepper.stop)
 
@@ -39,10 +41,16 @@ class DriverPauseTests(unittest.TestCase):
         return record
 
     def fake_step(self, controller, job_id, *, now, monitor, escalation=None, finish_error=None):
-        self.steps.append(dict(now=now, escalation=escalation, monitor=monitor))
+        self.steps.append(dict(now=now, escalation=escalation, monitor=monitor, reconciles=self.c.reconciles))
         record = pause.load(controller.root, job_id)
         if self.step_result == 'pause_failed':
             record.update(state='pause_failed', failure=dict(code='cancel_refused', message='m', fix='f'))
+            write_json(pause.path(controller.root, job_id), record)
+        if self.safe_waits is not None and len(self.steps) <= self.safe_waits + 1:
+            missed = len(self.steps) <= self.safe_waits
+            record.update(phase='waiting_safe_point' if missed else 'cancel_published',
+                          safe_point=dict(ok=not missed, kind=None if missed else 'member_started',
+                                          reason='member_too_close_to_end' if missed else None))
             write_json(pause.path(controller.root, job_id), record)
         if self.finish_on_step is not None and len(self.steps) >= self.finish_on_step:
             self.c.finished = True
@@ -124,6 +132,64 @@ class DriverPauseTests(unittest.TestCase):
         self.assertEqual([step['escalation'] for step in self.steps], [None, None, None])
         self.assertTrue(marker.exists())
         # Low disk escalation is covered by test_pause_never_sets_cancel_issued_keeps_disk_guard_and_records_paused.
+
+    def test_fast_watch_rechecks_a_waiting_pause_between_slow_passes(self):
+        # g6 live (16:18-17:23Z): one pass took ~3 min on 1,265 members, the safe window ~40 s.
+        self.c.clock.on_sleep = lambda: None if (self.c.root / 'batch-pauses' / 'batch.json').exists() else self.write_pause()
+        self.safe_waits = 4
+        self.finish_on_step = 6
+        with self.completes():
+            result = self.drive(max_seconds=86400)
+        self.assertEqual((result['status'], result['cancel_issued']), ('paused', False))
+        # Steps 2-5 re-check inside the first pass: no reconcile between them, FAST_POLL_SECONDS apart.
+        self.assertEqual({step['reconciles'] for step in self.steps[:5]}, {self.steps[0]['reconciles']})
+        self.assertEqual([round(b['now'] - a['now']) for a, b in zip(self.steps[:4], self.steps[1:5])],
+                         [FAST_POLL_SECONDS] * 4)
+        # Published: supervision is back to full passes.
+        self.assertGreater(self.steps[5]['reconciles'], self.steps[4]['reconciles'])
+        self.assertEqual(self.c.cancels, 0)
+
+    def test_fast_watch_is_bounded_so_full_passes_keep_running(self):
+        self.die_on_first_sleep()
+        self.write_pause()
+        self.safe_waits = 10 ** 6
+        result = self.drive(resume=True, pause_seconds=400)
+        self.assertEqual((result['status'], result['pause_supervision'], result['cancel_issued']),
+                         ('pausing', 'budget_exhausted', False))
+        per_pass = Counter(step['reconciles'] for step in self.steps)
+        self.assertGreaterEqual(len(per_pass), 2)
+        self.assertLessEqual(max(per_pass.values()), 1 + FAST_WATCH_SECONDS // FAST_POLL_SECONDS)
+
+    def test_low_disk_during_the_fast_watch_hands_back_to_the_full_pass(self):
+        self.die_on_first_sleep()
+        self.write_pause()
+        self.safe_waits = 10 ** 6
+        def low_disk_after_three_steps():
+            if len(self.steps) == 3:
+                self.disk.return_value = SimpleNamespace(free=1)
+        self.c.clock.on_sleep = low_disk_after_three_steps
+        self.finish_on_step = 5
+        with self.completes():
+            result = self.drive(resume=True, pause_seconds=3600)
+        self.assertEqual(result['status'], 'paused')
+        self.assertEqual([step['escalation'] for step in self.steps[:4]], [None, None, None, 'disk_low'])
+        self.assertEqual(self.steps[2]['reconciles'], self.steps[0]['reconciles'])
+        self.assertGreater(self.steps[3]['reconciles'], self.steps[2]['reconciles'])
+
+    def test_clock_rollback_during_the_fast_watch_never_steps_on_the_suspect_clock(self):
+        self.die_on_first_sleep()
+        self.write_pause()
+        self.safe_waits = 10 ** 6
+        def roll_back_after_two_steps():
+            if len(self.steps) == 2 and not getattr(self, 'rolled', False):
+                self.rolled = True; self.c.clock.wall -= 3600
+        self.c.clock.on_sleep = roll_back_after_two_steps
+        self.finish_on_step = 4
+        with self.completes():
+            result = self.drive(resume=True, pause_seconds=3600)
+        self.assertEqual(result['status'], 'paused')
+        self.assertEqual([step['escalation'] for step in self.steps[:3]], [None, None, 'clock_rollback'])
+        self.assertGreater(self.steps[2]['reconciles'], self.steps[1]['reconciles'])
 
     def test_supervisor_budget_ends_pausing_without_poisoning_and_can_resume(self):
         self.die_on_first_sleep()

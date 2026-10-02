@@ -4,6 +4,7 @@
 #define GOAT_MONITOR_ONBOARDING_V149 1
 #define GOAT_TESTER_SEMANTIC_V149 1
 #define GOAT_CONTROL_FEEDBACK_V149 1
+#define GOAT_RESEARCH_OUTCOME_V149 1
 #define   GOAT_VERSION_LABEL "1.49"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
@@ -13,14 +14,14 @@
 #define GOAT_API_BEARER_LEGACY_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #define GOAT_API_BEARER_FILE GOATApiBearerFile()
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-TERMINAL-ISOLATION-32"
+#define   GOAT_BUILD_ID "V1.49-EA-EXPERIENCE-33"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 #include "GOAT_SequencePackage.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
 long g_goat_fitness_nonce=0;
-#define   GOAT_BUILD_MARKER "SM32"
+#define   GOAT_BUILD_MARKER "EX33"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -2303,7 +2304,9 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
     Print("WebRequest failed: ", native_error);
     HidePrompt();
     if(MQLInfoInteger(MQL_VISUAL_MODE)) Print("For security purposes, visual testing mode is limited in features.");
-    ShowPrompt("Connection not allowed!","Copy the URL below and add to"," Tools > Options > Experts > Allowed URLs.",URL_API);
+    // 4014 is the WebRequest allow-list; anything else is the network, not a permission.
+    if(native_error==4014) ShowPrompt("Allow GOAT to reach goatedge.ai","Tools > Options > Expert Advisors > Allow WebRequest","Add the URL below, click OK, then re-attach GOAT.",URL_API);
+    else                   ShowPrompt("Can't reach goatedge.ai","Check this PC is online (MT5 error "+(string)native_error+").","Then re-attach GOAT to this chart.","");
     return res;
    }
    else if(res!=200&&res!=1003) Print("License check HTTP response ",res);
@@ -2329,22 +2332,23 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
      if(response_text=="no")
      {
       Print("License not valid for this MT5 account.");
-      ShowPrompt("Validation Failed!","Check your MT5 Acc# in your GOATedge client area.","Visit the URL below to buy or activate the GOAT EA.",URL_Web);
+      ShowPrompt("This MT5 account isn't licensed for GOAT","Add account "+(string)AccNum+" in your GOAT portal (EA tab).","Then approve the connection code GOAT shows next.","https://goatedge.ai/user-portal?tab=ea");
       // The legacy-compatible endpoint deliberately transports an entitlement
       // denial as HTTP 200 + "no". Preserve that wire contract while returning
       // the typed authorization result OnInit needs for safe device reactivation.
       return 403;
     }
     // unexpected 200 body
-    ShowPrompt("Validation Failed!","Unexpected response from server."," ","");
+    ShowPrompt("GOAT licence check failed","GOAT sent an unexpected reply.","Try again in a minute; contact support if it repeats.","");
     return res;
    }
-   if(res==400) {ShowPrompt("Bad Request","Missing/invalid MT5 account id (id)."," ",""); return res;}
-   if(res==401) {ShowPrompt("Authorization Failed","Missing/invalid bearer token."," ",""); return res;}
-   if(res==403) {ShowPrompt("Not Entitled","Account exists but is not entitled for EA."," ",""); return res;}
-   if(res==503) {ShowPrompt("Server Auth Issue","Server auth token misconfiguration."," ",""); return res;}
-   if(res==1001){ShowPrompt("No Connection!","Ensure your MT5 terminal is online and has stable internet.","GOAT EA requires an active connection to function properly.",""); return res;}
-                 ShowPrompt("Validation Failed!","Unexpected HTTP status: "+(string)res,"","");
+   if(res==400) {ShowPrompt("GOAT licence check failed","GOAT could not read this MT5 account number.","Contact GOAT support.",""); return res;}
+   // 401/403 hand off to a new connection code in OnInit; say so instead of an alarm.
+   if(res==401) {ShowPrompt("GOAT sign-in needs renewing","This chart will show a new connection code."," ",""); return res;}
+   if(res==403) {ShowPrompt("This MT5 account isn't licensed for GOAT","Add account "+(string)AccNum+" in your GOAT portal (EA tab).","Then approve the connection code GOAT shows next.",""); return res;}
+   if(res==503) {ShowPrompt("GOAT licence service unavailable","GOAT is having a server problem.","Re-attach GOAT in a few minutes.",""); return res;}
+   if(res==1001){ShowPrompt("Can't reach goatedge.ai","Check this PC and MT5 are online.","GOAT needs a connection to check its licence.",""); return res;}
+                 ShowPrompt("GOAT licence check failed","Unexpected reply from GOAT (HTTP "+(string)res+").","Contact GOAT support if it repeats.","");
    return res;
   }
 //+------------------------------------------------------------------+
@@ -2442,7 +2446,8 @@ void ShowPrompt(string heading,string sub_heading,string sub_heading2,string tex
    ObjectSetInteger(ChartID(), "Prompt_Edit", OBJPROP_BGCOLOR,   clrWhite);  // background
    ObjectSetInteger(ChartID(), "Prompt_Edit", OBJPROP_BORDER_COLOR, clrBlack);
    ObjectSetInteger(ChartID(), "Prompt_Edit", OBJPROP_FONTSIZE,  MathMax(Font_Size+0,7));
- //ObjectSetInteger(ChartID(), "Prompt_Descp", OBJPROP_READONLY,  true);
+   // Read-only so a stray keystroke cannot corrupt a link or URL the user copies.
+   ObjectSetInteger(ChartID(), "Prompt_Edit", OBJPROP_READONLY,  true);
    }
    Sleep(20); ChartRedraw(); Sleep(50);
   }
@@ -2848,7 +2853,7 @@ int OnInit()
      News.Key_=Key;
      if(FileIsExist(nf, FILE_COMMON))
        {
-        int ret = MessageBox("High impact news history will download and overwrite the file "+nf+" in Terminal/Common/File folder. Continue ?","Download News File",MB_OKCANCEL);
+        int ret = MessageBox("High impact news history will download and overwrite the file "+nf+" in the MT5 Common\\Files folder. Continue?","Download News File",MB_OKCANCEL);
         if(ret==IDOK) News.BacktestNewsFileDownloader(Download_StartDate);
         else          Alert("News History downloading cancelled");
        }
@@ -2865,7 +2870,7 @@ int OnInit()
      Bias.Key_=Key;
      if(FileIsExist(bf, FILE_COMMON))
        {
-        int ret = MessageBox("Bias sentiment history for this symbol will download and overwrite the file "+bf+" in Terminal/Common/File folder. Continue ?","Download Bias File",MB_OKCANCEL);
+        int ret = MessageBox("Bias sentiment history for this symbol will download and overwrite the file "+bf+" in the MT5 Common\\Files folder. Continue?","Download Bias File",MB_OKCANCEL);
         if(ret==IDOK) Bias.BacktestBiasFileDownloader(Download_StartDate);
         else          Alert("Bias History downloading cancelled");
        }
@@ -3028,7 +3033,7 @@ int OnInit()
      if(MAGIC1==0 && (Mode_Operation==Operation_Batch || Mode_Operation==Operation_Dash))
      {
       if(!g_GoatStudioReadOnlyMonitor && !MQLInfoInteger(MQL_DLLS_ALLOWED))
-      {int ret=MessageBox("DLL should be enabled for proper working of this mode.\n\nMT5 > Tools > Options > Experts > Allowed DLL","Enable DLL",MB_OK|MB_ICONERROR); Sleep(5000); return(INIT_FAILED);}
+      {int ret=MessageBox("Optimization Studio and the Dashboard need DLL imports.\n\nRe-attach GOAT and tick 'Allow DLL imports' on its Common tab (or in Tools > Options > Expert Advisors).","Allow DLL imports for GOAT",MB_OK|MB_ICONERROR); Sleep(5000); return(INIT_FAILED);}
     //string filename; int handle=FileFindFirst("*",filename,FILE_COMMON); Print(filename); FileFindNext(handle,filename);
       if(!ChartGetInteger(0,CHART_IS_MAXIMIZED,0)) Sleep(999);
       int chartWidth  = (int)ChartGetInteger(ChartID(), CHART_WIDTH_IN_PIXELS);
@@ -3111,7 +3116,7 @@ int OnInit()
        if(ChartID() != ChartFirst())
        {
         int ret=MessageBox("Dashboard mode must run on the first/oldest chart of the terminal for proper navigation and deployment.\nThis is not the first/oldest chart."+
-                           "\n\n""Close all other charts now?","Confirmation",MB_YESNO|MB_ICONQUESTION);
+                           "\n\n""Close all other charts now? This closes every other chart in this MT5, including other GOAT charts.","Close other charts?",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
         if(ret==IDYES)
         {
          long id = ChartFirst();                      // first chart in terminal
@@ -3953,7 +3958,7 @@ int OnTesterInit()
      if(terminalWasRunning)
      {
       WriteLog("INIT: Batch is running but terminal state does not match the queue. Chance of duplicate Optimization.",true,Key,EA_Name,Server);
-      ShowPrompt("Optimization Error...","Batch terminal state does not match queue!","Chance of duplicate Optimization...","");
+      ShowPrompt("Batch stopped: queue mismatch","MT5 restarted, but the queue doesn't match this item.","Nothing was rerun. Check the queue in Studio.","");
      }
      WriteLog("INIT: ❌ Batch Queue update Error",false,Key,EA_Name,Server);
      GlobalVariableDel("BatchOnGoing");
@@ -4369,8 +4374,21 @@ void OnTesterDeinit()
        DeleteEmptyFolders("TEMP"); DeleteEmptyFolders(GoatOptExportsPath(EA_Name,Server));
        Print("Empty Folders in TEMP and Exports, deleted.");
       }
-      else {error=true; WriteLog("DEINIT: ❌ Failed to Analyze and Combine xml reports. Aborting exports",true,Key,EA_Name,Server);
-            ShowPrompt("Processing Optimization...","Failed to Analyze and Combine xml reports.","Aborting export cycle...",""); Sleep(999);}
+      else {error=true;
+#ifdef GOAT_RESEARCH_OUTCOME_V149
+            // Passes ran but none was profitable with enough trades: a research result for
+            // this window, recorded apart from real errors. The queue status stays Error.
+            if(xmlData.outcome==GOAT_XML_NO_PROFITABLE_PASSES)
+            {
+             GoatOptAppendItemStats(EA_Name,Server,Symbol(),Strat,"NoProfitablePasses",0,0,0.0,0,xmlData.OutcomeDetails());
+             WriteLog("DEINIT: "+xmlData.OutcomeSentence()+" No exports.",true,Key,EA_Name,Server);
+             ShowPrompt("No profitable settings in this window","Tested "+(string)xmlData.passesSeen+" settings, "+xmlData.OutcomeWindow()+".",
+                        "None profitable with 50+ trades; kept as a result.",""); Sleep(999);
+            }
+            else
+#endif
+            {WriteLog("DEINIT: ❌ Failed to Analyze and Combine xml reports. Aborting exports",true,Key,EA_Name,Server);
+            ShowPrompt("Processing Optimization...","Failed to Analyze and Combine xml reports.","Aborting export cycle...",""); Sleep(999);}}
      }
      else {error=true; WriteLog("DEINIT: XML Migration incomplete: root="+GoatOptReportRoot(EA_Name,Server)+" files="+(string)ArraySize(movedFiles)+"; paired main/forward reports required. Aborting exports.",true,Key,EA_Name,Server);}
     }
@@ -4399,7 +4417,7 @@ void OnTesterDeinit()
       if(GoatStudioCompletionText(EA_Name,Server,queueProgress,queueNext))
          ShowPrompt("Optimization complete",queueProgress,queueNext,batchSummary3);
       else if(FileIsExist(GoatOptBasePath(EA_Name,Server)+"\\agent-native-control-owner.json",FILE_COMMON))
-         ShowPrompt("Optimization complete","Queue progress unavailable; see Optimization Studio.","Waiting for controller verification.",batchSummary3);
+         ShowPrompt("Optimization complete","Queue progress unavailable; see Optimization Studio.","Your agent is checking the result.",batchSummary3);
       else ShowPrompt("Optimization batch complete",batchSummary1,batchSummary2,batchSummary3);
       WriteLog("DEINIT: Batch Summary: "+batchSummary1+" | "+batchSummary2+" | "+batchSummary3,false,Key,EA_Name,Server);
       string summaryPath=GoatOptSummaryPath(EA_Name,Server);
@@ -4414,7 +4432,7 @@ void OnTesterDeinit()
     }
     else
     {
-     ShowPrompt("Optimization Processing Complete!","Failed to update and continue Batch Queue."," ","");
+     ShowPrompt("Batch queue not updated","GOAT couldn't update the batch queue to continue.","Check the queue in Studio before restarting.","");
      WriteLog("DEINIT: ❌ Failed to update and continue Batch Queue.",true,Key,EA_Name,Server);
     }
    }
@@ -4635,7 +4653,7 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
                                                            +", Export Trades="+DoubleToString(trades,0)+" Back Trades="+DoubleToString(xmlData.Rows[0].back_trades,0),Key,EA_Name,Server); return 1;
    }
    else if(Init) {
-    ShowPrompt("Processing Optimization...","Top Set verification failed !","Running more sets for export...",""); Sleep(999);
+    ShowPrompt("Processing Optimization...","Top set check didn't match the report.","Running more sets for export...",""); Sleep(999);
     LogOrPrint(reportMode,"DEINIT: ❌ Export verification failed, Export Profit="+DoubleToString(profit,0)+" Back Profit="+DoubleToString(xmlData.Rows[0].back_profit,0)
                                                               +", Export Trades="+DoubleToString(trades,0)+" Back Trades="+DoubleToString(xmlData.Rows[0].back_trades,0),Key,EA_Name,Server); return 0;}
 
@@ -4747,7 +4765,13 @@ void GoatTimerBody(void)
          }
       }
       TesterDialog.OnClickRefresh(true);
-      TesterDialog.Caption("GOAT / Optimization Studio / "+GOAT_BUILD_ID);
+      // One caption names the mode first (MT5 cuts edit text at 63 characters, so a long
+      // server name can only cut the build), then the account and build. "agent" only while
+      // the agent really holds control; two terminals on one broker are never confused.
+      string studio_mode=!GoatStudioManaged() ? "read-only" : (TesterDialog.m_studioOwner=="agent" ? "agent control"
+                         : (TesterDialog.m_studioOwner=="human" ? "your control" : "connecting"));
+      TesterDialog.Caption("GOAT "+studio_mode+" | "+(string)AccountInfoInteger(ACCOUNT_LOGIN)+" "+AccountInfoString(ACCOUNT_SERVER)
+                           +" | V"+GOAT_VERSION_LABEL+" "+GOAT_BUILD_MARKER);
       return;
    }
    if(Mode_Operation==Operation_Batch && GoatBatchDeferredRestartPending())
@@ -5476,7 +5500,7 @@ void GoatTickBody()
      else                  {SetEdit(PanelDialog.m_edit_Det3_1,"Daily Change");
                             SetEdit(PanelDialog.m_edit_Det3_2,DoubleToString(DChangeEquity,1)+"  "+DoubleToString(-CurrentDDD,2)+"%",clr_Text,Font_Size);}
 
-                        SetEdit(PanelDialog.m_edit_Det4_1,"Running P&L / Max");     SetEdit(PanelDialog.m_edit_Det4_2,DoubleToString(PL_Total,1)+" / "+DoubleToString(MaxLossLocal,0));
+                        SetEdit(PanelDialog.m_edit_Det4_1,"Running P&L / Max");     SetEdit(PanelDialog.m_edit_Det4_2,DoubleToString(PL_Total,1)+" / "+(MaxLossLocal!=0.0 ? DoubleToString(MaxLossLocal,0) : "no limit"));
      //if(PL_Today==0)   {SetEdit(PanelDialog.m_edit_Det5_1,"Magic Number");          SetEdit(PanelDialog.m_edit_Det5_2,(string)MAGIC1);}
      //else              {SetEdit(PanelDialog.m_edit_Det5_1,"Daily Local P&L / Max"); SetEdit(PanelDialog.m_edit_Det5_2,DoubleToString(PL_Today,1)+" / "+DoubleToString(MaxDailyLossLocal,0));}
      SetEdit(PanelDialog.m_edit_Det5_1,"Volume Method");          //SetEdit(PanelDialog.m_edit_Det5_2,Volume_mode_String);

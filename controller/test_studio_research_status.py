@@ -62,7 +62,7 @@ class MonitorTests(unittest.TestCase):
         value = self.state()
         self.assertEqual((value['state'], value['blocker']['code']), ('unlicensed', 'monitor_unlicensed'))
         self.assertEqual(value['blocker']['message'], "This terminal's GOAT sign-in was replaced by another terminal — re-pair it.")
-        self.assertIn('pairing code', value['blocker']['fix'])
+        self.assertIn('connection code', value['blocker']['fix'])
 
     def test_waiting_sign_in_build_and_network_reasons_are_plain(self):
         self.observe(3600)

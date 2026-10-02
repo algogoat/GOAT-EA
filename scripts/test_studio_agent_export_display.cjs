@@ -69,5 +69,6 @@ check(()=>assert.ok(restore.indexOf('if(!GoatStudioHumanDraftIO(m_studioOwner=="
 check(()=>assert.ok(restore.includes('m_studioRetainedDraftBody=ManagedDraftBody();')));
 check(()=>assert.ok(refresh.indexOf('m_studioOwner=owner;')<refresh.indexOf('if(!ManagedRestoreDraft())')));
 check(()=>assert.ok(refresh.includes('if(GoatStudioHydrateSnapshot(agent_mirror,dirty,m_studioLoaded,')));
-check(()=>assert.ok(refresh.includes('Showing committed agent settings')&&refresh.includes('local human draft retained')));
+check(()=>assert.ok(refresh.includes('status+=" (view only)";')&&refresh.includes('your draft is kept')));
+check(()=>assert.ok(refresh.indexOf('&& !g_StudioEmptyDraft')<refresh.indexOf('status+=" (view only)";'),'An empty agent draft never claims to show settings'));
 console.log(`Studio agent committed export display: ${checks}/${checks} source fixtures passed; no native UI or trading exercised.`);

@@ -173,11 +173,53 @@ def _summary(path, record):
 
 
 PAUSE_OVERRUN_SECONDS = 240
+# A safe point is a short window at each member start (g6: ~40 s), but one
+# supervision pass (reconcile + finish over every member's native evidence) takes
+# minutes on a large batch, so the pause step only ran every 3-10 minutes and
+# missed the window for over an hour. While a pause waits for a safe point, the
+# driver re-checks only the pause every FAST_POLL_SECONDS for up to
+# FAST_WATCH_SECONDS between passes. The step and its rules are unchanged.
+FAST_WATCH_SECONDS = 150
+FAST_POLL_SECONDS = 5
+SAFE_POINT_WAITS = frozenset(('waiting_safe_point', 'cancel_rejected_waiting_safe_point'))
 
 
 def _pause(controller, job_id):
     from studio_batch_pause import load
     return load(controller.root, job_id, quiet=True)
+
+
+def _waiting_safe_point(pause):
+    point = pause.get('safe_point') if isinstance(pause, dict) else None
+    return (isinstance(point, dict) and point.get('ok') is False and pause.get('state') == 'pausing'
+            and pause.get('phase') in SAFE_POINT_WAITS)
+
+
+def _fast_watch(controller, job_id, record, path, clock, monitor_fn, pause, escalation, *, until, wall_start, monotonic_start):
+    """Re-step a pause waiting for a safe point until it leaves the wait or ``until``.
+
+    Anything the outer pass escalates on (a clock rollback, low disk) hands back to
+    it at once, so a fast step never runs on a suspect clock or past the disk guard.
+    """
+    from studio_batch_pause import step, observe_monitor
+    while _waiting_safe_point(pause) and clock.monotonic() + FAST_POLL_SECONDS <= until:
+        clock.sleep(FAST_POLL_SECONDS)
+        now, mono = clock.time(), clock.monotonic()
+        if now < record['last_wall'] or now-wall_start+.05 < mono-monotonic_start:
+            break
+        record['disk_observation'] = _capacity(controller, record['min_free_bytes'])
+        if record['disk_observation'].get('reason'):
+            break
+        try:
+            monitor = (monitor_fn or observe_monitor)(controller, now)
+            pause = step(controller, job_id, now=now, monitor=monitor, escalation=escalation,
+                         finish_error=record.get('last_error'))
+        except Exception as error:
+            record['last_error'] = 'Pause step: ' + str(error)
+            break
+        finally:
+            _save(path, record, clock)
+    return pause
 
 
 def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
@@ -393,6 +435,11 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                                  finish_error=record.get('last_error'))
                 except Exception as error:
                     record['last_error'] = 'Pause step: ' + str(error)
+                else:
+                    pause = _fast_watch(controller, job_id, record, path, clock, monitor_fn, pause, escalation,
+                                        until=min(mono+FAST_WATCH_SECONDS, supervision_deadline),
+                                        wall_start=wall_start, monotonic_start=monotonic_start)
+                    mono = clock.monotonic()
                 if pause is not None and pause.get('state') == 'pause_failed':
                     # A failed pause sent nothing it could not prove; the original
                     # driver keeps supervising the still-running batch normally.

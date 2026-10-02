@@ -1,11 +1,12 @@
-"""Keep the forward SP30 candidate distinct from retained release artifacts."""
+"""Keep the forward SM31 candidate, and the retained SP30 one, distinct from release artifacts."""
 import hashlib
 import json
 from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-CANDIDATE = ROOT / 'candidate-builds/start-protocol-SP30'
+CANDIDATE = ROOT / 'candidate-builds/ndx-symbol-map-SM31'
+RETAINED = ROOT / 'candidate-builds/start-protocol-SP30'
 
 
 class StartProtocolCandidateTests(unittest.TestCase):
@@ -17,7 +18,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', text)
         self.assertIn('#define   GOAT_BUILD_ID "' + identity['build_id'] + '"', text)
         self.assertIn('#define   GOAT_BUILD_MARKER "' + identity['build_marker'] + '"', text)
-        self.assertEqual(identity['build_marker'], 'SP30')
+        self.assertEqual(identity['build_marker'], 'SM31')
         for relative, expected in identity['sources'].items():
             self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
         binary = CANDIDATE / 'GOAT V1.49.ex5'
@@ -44,6 +45,17 @@ class StartProtocolCandidateTests(unittest.TestCase):
             self.assertNotIn('C:\\', serialized)
             self.assertNotIn('G:\\', serialized)
             self.assertNotIn('AppData', serialized)
+
+    def test_retained_sp30_candidate_keeps_its_own_exact_binary(self):
+        identity = json.loads((RETAINED / 'identity.json').read_text(encoding='utf-8'))
+        receipt = json.loads((RETAINED / 'compile-receipt.json').read_text(encoding='utf-8'))
+        self.assertEqual(identity['build_marker'], 'SP30')
+        digest = hashlib.sha256((RETAINED / 'GOAT V1.49.ex5').read_bytes()).hexdigest()
+        self.assertEqual(digest, identity['binary']['sha256'])
+        self.assertEqual(digest, receipt['output']['sha256'])
+        forward = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
+        self.assertNotEqual(digest, forward['binary']['sha256'])
+        self.assertEqual(forward['supersedes_candidate'], 'start-protocol-SP30')
 
 
 if __name__ == '__main__':

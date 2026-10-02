@@ -162,6 +162,43 @@ def evidence_scan(sources, *, value='auto', broker_clock=None, now=None, control
                 next_action='catchup-prepare with the behind SETs re-tests them to %s; nothing runs until catchup-start' % target['iso'])
 
 
+class _NoProcess:
+    """Process stand-in for previews: any terminal effect is a defect."""
+    def inspect(self):
+        raise ValueError('Catch-up preview never inspects the terminal')
+
+    def start(self, config):
+        raise ValueError('Catch-up preview never starts the terminal')
+
+    def close(self, identity):
+        raise ValueError('Catch-up preview never closes the terminal')
+
+
+def read_operation(controller, args, *, now=None):
+    """The read-only CLI operations: evidence-end, evidence-scan, evidence-versions, catchup-validate."""
+    clock = getattr(args, 'broker_clock', None)
+    if args.operation == 'evidence-end':
+        result = resolve_target(args.value, broker_clock=clock, now=now)
+        local = getattr(controller, 'local', None)
+        return result | dict(batch_exports_now=evidence_end.legacy_end(now, clock=clock or evidence_end.DEFAULT_CLOCK),
+                             ea_evidence_end_setting=evidence_end.ea_capability(controller.install, Path(local) / 'ui-observation.json')
+                             if local else None)
+    if args.operation == 'evidence-scan':
+        return evidence_scan([str(p) for p in args.source], value=args.evidence_end, broker_clock=clock, now=now,
+                             controller_root=controller.root, include_below_threshold=args.include_below_threshold)
+    if args.operation == 'evidence-versions':
+        rows = versions(controller.root)
+        if args.values_sha256:
+            rows = [r for r in rows if r.get('values_sha256') == args.values_sha256]
+        return dict(schema_version=1, count=len(rows), versions=rows[:MAX_PUBLIC], versions_omitted=max(0, len(rows) - MAX_PUBLIC))
+    if args.operation == 'catchup-validate':
+        from studio_batch import _json
+        from studio_installation import read_json
+        controller.session = read_json(Path(controller.root) / 'session.json')
+        return CatchupRunner(controller, process=_NoProcess(), now=now).validate(_json(args.plan))
+    raise ValueError('Not a read-only evidence operation: ' + args.operation)
+
+
 def _tester_conditions(export, assume):
     """Original tester conditions for a single re-test, with provenance per field."""
     capture, tester, windows = export.get('capture') or {}, export.get('tester') or {}, export.get('windows') or {}

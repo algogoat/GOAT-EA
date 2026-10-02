@@ -316,12 +316,15 @@ def batch_progress(root, install, job, *, now, journal=None):
     return result
 
 
-def seed_progress(root, batch_id, *, now):
-    """Seed hunt members done/total, qualifying candidates and pace, from retained state."""
-    folder = Path(root) / 'seeds' / batch_id
+def seed_progress(root, batch_id, *, now, kind='seed'):
+    """Seed hunt (or OOS catch-up) members done/total, qualifying results and pace, from retained state.
+
+    A catch-up member "qualifies" when its new-weeks verdict is held_up.
+    """
+    folder = Path(root) / ('catchups' if kind == 'catchup' else 'seeds') / batch_id
     state, _ = _bounded_json(folder / 'state.json', 32 * 1024 * 1024)
     if not isinstance(state, dict) or not isinstance(state.get('members'), list):
-        return dict(batch_id=batch_id, kind='seed', status='unknown', evidence='seed_state_unreadable')
+        return dict(batch_id=batch_id, kind=kind, status='unknown', evidence='seed_state_unreadable')
     members = state['members']
     done = [m for m in members if m.get('status') == 'completed']
     finished = [m for m in members if m.get('status') in ('completed', 'cancelled', 'timeout', 'failed', 'missing_output')]
@@ -337,10 +340,12 @@ def seed_progress(root, batch_id, *, now):
         eta = now + max(0.0, remaining * cycle - (min(age, cycle * .95) if age is not None else 0))
     candidates = sum((m.get('result') or {}).get('summary', {}).get('qualifying_count', 0) or 0 for m in done)
     qualifying_members = sum(1 for m in done if ((m.get('result') or {}).get('summary', {}).get('qualifying_count') or 0) > 0)
+    if kind == 'catchup':
+        candidates = qualifying_members = sum(1 for m in done if (m.get('result') or {}).get('summary', {}).get('verdict') == 'held_up')
     last = max(finished, key=lambda m: m.get('finished_unix') or 0, default=None)
     paused = (folder / 'pause.json').is_file()
     status = state.get('status')
-    return dict(batch_id=batch_id, kind='seed', status=('paused' if paused and running is None and status == 'active'
+    return dict(batch_id=batch_id, kind=kind, status=('paused' if paused and running is None and status == 'active'
                                                          else 'pausing' if paused and status == 'active' else status),
                 members_total=len(members), members_done=len(done), members_finished=len(finished),
                 qualifying=qualifying_members, qualifying_candidates=candidates,
@@ -397,7 +402,7 @@ def headline(activity):
     if kind == 'idle':
         return 'No research is running on this terminal.'
     total, done = activity.get('members_total'), activity.get('members_done')
-    name = 'seed hunt' if kind == 'seed' else 'batch'
+    name = 'seed hunt' if kind == 'seed' else 'catch-up' if kind == 'catchup' else 'batch'
     status = activity.get('status')
     pace_value = activity.get('pace') or {}
     eta = pace_value.get('eta_wall')
@@ -415,7 +420,7 @@ def headline(activity):
     if status in ('running', 'starting', 'reconcile_required', 'verifying', 'active'):
         current = activity.get('current_member') or {}
         member = (' on ' + current['symbol'] + ' ' + current['timeframe']) if current.get('symbol') else ''
-        return 'Running' + member + ';' + counts + left + '.'
+        return 'Running' + (' OOS catch-up' if kind == 'catchup' else '') + member + ';' + counts + left + '.'
     return name[0].upper() + name[1:] + ' ' + str(status) + ';' + counts + '.'
 
 
@@ -444,7 +449,11 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
     journal = None
     activity = dict(kind='idle', status='idle')
     if seed_id and not active and isinstance(seed_id, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,80}', seed_id):
-        activity = seed_progress(root, seed_id, now=now)
+        # Seeds and catch-ups share the slot; the slot names the manifest it belongs to.
+        catchup, _ = _bounded_json(root / 'catchups' / seed_id / 'state.json', 32 * 1024 * 1024)
+        kind = ('catchup' if isinstance(catchup, dict) and catchup.get('manifest_sha256') == seed_slot.get('manifest_sha256')
+                else 'seed')
+        activity = seed_progress(root, seed_id, now=now, kind=kind)
     elif current is not None:
         journal, _ = _bounded_json(root / 'batch-drivers' / (current['job_id'] + '.json'))
         pause = pauses.get(current['job_id'])

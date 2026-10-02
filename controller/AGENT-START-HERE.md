@@ -64,6 +64,12 @@ function Wait-Batch([string]$BatchId, [int]$MaxMinutes = 110) {
     if ($low.Count) { return 'DISK BELOW 5 GiB: cancel the batch now' }
     Start-Sleep -Seconds 60 }
   'STILL RUNNING: run Wait-Batch again' }
+function Start-Batch([string]$BatchId, [int]$MaxSeconds = 0) {   # bounded driver in its own process; no -MaxSeconds = resume
+  $a = @('studio', '--installation', "`"$receipt`"", 'run-batch', '--job-id', $BatchId)
+  if ($MaxSeconds -gt 0) { $a += @('--max-seconds', "$MaxSeconds") } else { $a += '--resume' }
+  $log = Join-Path $logs ("driver-$BatchId-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log')
+  $p = Start-Process -FilePath $goat -ArgumentList $a -WindowStyle Hidden -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+  "driver pid $($p.Id); log $log" }
 ```
 
 Check it: `. "<work>\goat.ps1"; Desktop 'app.info'`. Long-running commands (`serve` up to 1 hour, `Wait-Batch`, `seed-start`/`seed-resume` up to 1 hour): in Claude Code use the PowerShell tool with `run_in_background: true` (you are re-invoked when it exits); otherwise use `Start-Process` as in step 11.
@@ -112,7 +118,9 @@ The controller enforces: 1 to 10,000 members; all 18 tester fields; `Optimizatio
 
 ## Steps 17-19: start once, watch, finish
 
-17. Check first: every `result.disks[].free_bytes` from `Studio @('resource-profile')` is at least 5 GiB; `onboarding-status` is `local_monitor_ready`; only the selected MT5 is running. Then, **once**: `Studio @('start','--job-id','pilot-1')`. Never run `start` again for that batch, even after an error; poll instead. Do not use `run-batch`: it keeps the shell busy in a loop for its whole budget.
+17. Check first: every `result.disks[].free_bytes` from `Studio @('resource-profile')` is at least 5 GiB; `onboarding-status` is `local_monitor_ready`; only the selected MT5 is running, plus the one peer you protected with `peer-apply` (see "Keep another MT5 running"), if any. Then start the **bounded driver once** with the agreed budget in seconds: `Start-Batch 'pilot-1' -MaxSeconds 14400`. It starts the batch, refuses when an output disk is below 5 GiB, cancels by itself when the budget runs out, and keeps a journal that survives restarts. `Studio @('batch-driver-status','--job-id','pilot-1')` shows its view.
+    - Never call `start`, or `Start-Batch` with `-MaxSeconds`, again for a batch that started. If the driver process is gone (PC restart, closed shell), `Start-Batch 'pilot-1'` without `-MaxSeconds` resumes it against its original deadline.
+    - If the driver reports `start_uncertain` with no `attempt_id`, the start was refused before anything reached MT5: fix the cause it names, then run the same `Start-Batch 'pilot-1' -MaxSeconds ...` again. The controller allows that retry only when nothing was dispatched.
 18. Run `Wait-Batch 'pilot-1'` in the background and tell the user the progress lines. To stop: `Studio @('cancel','--job-id','pilot-1')`, then keep polling; a cancel request is not proof that MT5 stopped.
 19. On `NATIVE QUEUE FINISHED`: `Studio @('finish','--job-id','pilot-1')`. If it refuses with a runtime or tester-idle error, wait a minute and repeat. `finish` is safe to repeat.
 

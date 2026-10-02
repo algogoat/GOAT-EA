@@ -52,8 +52,8 @@ cannot invent pairing or click a human-only grant on their behalf.
 Use validated templates and explicit tester/export settings. Check broker symbols,
 active optimization axes, date/forward ordering, model, local workers, free disk
 and output paths. Prepare a new immutable batch identity for changed conditions.
-Start each batch once with `start --job-id`, poll `batch-status`, cancel at the agreed
-budget and `finish` after the native queue finishes (see `AGENT-START-HERE.md`). Observe
+Start each batch once with the bounded driver (`run-batch --job-id <id> --max-seconds <budget>`,
+which cancels at the budget), poll `batch-status`, and `finish` after the native queue finishes (see `AGENT-START-HERE.md`). Observe
 before retrying any timeout; a timeout does not prove that a native command failed.
 
 During a batch, show its ID, total, active member, each member's symbol/strategy/model,

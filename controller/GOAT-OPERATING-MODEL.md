@@ -14,7 +14,7 @@ GOAT turns strategy templates into tested, exportable strategy files and then in
 
 - **Demo accounts only.** GOAT research runs on a demo account the user signed into themselves. The controller checks the broker's demo flag; if anything reports a real account, stop and tell the user.
 - **Algo Trading stays off** in the research MT5. GOAT never needs it for research.
-- **Never double-start.** Run `start` exactly once per batch. If anything is uncertain, observe with `batch-status`; never start again, never prepare a copy of the same batch to "retry" an uncertain start.
+- **Never double-start.** Start each batch exactly once, with the bounded driver (`Start-Batch` / `run-batch`). If anything is uncertain, observe with `batch-status` and `batch-driver-status`; resume the driver, never start again (the one exception: a start refused before anything reached MT5, which the controller itself verifies), never prepare a copy of the same batch to "retry" an uncertain start.
 - **The human's STOP and TAKE CONTROL win.** If the user presses TAKE CONTROL or Stop in Studio, or tells you to stop, you stop. Do not take control back; only the human's GIVE TO AGENT hands it to you.
 - **At least 5 GiB free** on the MT5 data, Common Files and controller-state drives before a start and while running. If it drops below, cancel the batch and tell the user.
 - **No faked human confirmation.** Never click, type or pass a flag on the user's behalf for: pairing approval, GIVE TO AGENT, DLL/WebRequest permissions, `--confirm-reviewed`, or a support submission they have not seen.
@@ -28,7 +28,7 @@ GOAT turns strategy templates into tested, exportable strategy files and then in
 |---|---|---|
 | Read-only checks: `discover`, `state`, `onboarding-status`, `batch-status`, `seed-status`, `resource-profile`, `benchmark-report`, `validate-set`, desktop status/matrix reads | Linking a demo account (`onboarding.accounts`) and installing into a terminal (`suite.install`) | Signing in to GOAT and to MT5 |
 | Writing plan files, lineage files, local template variants (`build-set`) | `monitor-launch` (opens MT5) and `seed-start` (closes and restarts MT5) | Turning Algo Trading off, closing and opening MT5 |
-| `prepare-batch`, `seed-prepare`, `save-batch` (nothing starts) | `start` of each batch, after showing members, dates, settings and the time/disk budget | Allowing DLL imports and the WebRequest URL |
+| `prepare-batch`, `seed-prepare`, `save-batch` (nothing starts) | Starting each batch (`Start-Batch`), after showing members, dates, settings and the time/disk budget | Allowing DLL imports and the WebRequest URL |
 | Running `serve`, polling, `finish` after the native queue finished | Retrying failed members (`resume-batch --include-failed`), clearing pending work (`clear-queue --apply`) | Reading the pairing code and clicking **Approve this connection** |
 | `cancel` when the user asks, the agreed budget is reached, or disk falls below 5 GiB | `peer-apply` to protect another running MT5 | Clicking **GIVE TO AGENT** / **TAKE CONTROL** |
 | Recording results with `strategy.recordResult` | Sending a support report (`support.submitReport`) | Anything with real money or a live account |
@@ -56,7 +56,7 @@ Rules for honest results: a technical failure is not a bad strategy; seed result
 ## Budget and pacing
 
 - Start with a pilot: one template on one symbol. Use its `benchmark-report` timing, not CPU specs, to estimate bigger batches.
-- Agree a time budget, disk budget and stop rule before every larger batch. Cancel when the budget is reached; a cancel request is not proof of stop, so keep polling until the native queue reports finished, then `finish`.
+- Agree a time budget, disk budget and stop rule before every larger batch. The bounded driver (`Start-Batch`) cancels by itself when the budget runs out; cancel earlier when the user asks or a disk falls below 5 GiB. A cancel request is not proof of stop, so keep polling until the native queue reports finished, then `finish`.
 - Use 1-minute OHLC (`Model=1`) for optimization unless the user chooses another model. Keep the export settings the user approved.
 - Bigger pools of distinct, validated strategies give Portfolio Builder more choice. More near-duplicates do not.
 

@@ -35,6 +35,7 @@ import uuid
 from campaign_ledger import sha
 from studio_bridge import write_json
 from studio_evidence import RunContext, read_export, read_json_bounded, scan, server_date, server_msc, weekdays
+from studio_catchup_verdict import validate_rules
 import studio_evidence_end as evidence_end
 from studio_seed import SeedRunner, digest
 from studio_seed_results import MAX_MANIFEST_BYTES, read_seed_json
@@ -44,7 +45,7 @@ from studio_template_tools import validate_raw
 MODE = 'OOSCatchup'
 VERSION_SCHEMA = 'goat-evidence-version-v1'
 PLAN_KEYS = {'schema_version', 'evidence_end', 'sets', 'job_timeout_seconds'}
-PLAN_OPTIONAL = {'broker_clock', 'assume', 'include_below_threshold'}
+PLAN_OPTIONAL = {'broker_clock', 'assume', 'include_below_threshold', 'verdict_rules'}
 MAX_MEMBERS = 2000
 MAX_PUBLIC = 100
 OUTPUT_PATH_ROOM = 140  # longest EA export file name below a member folder, plus margin
@@ -94,7 +95,7 @@ def classify(export, target, *, include_below_threshold=False, known_versions=()
     row = dict(set_path=export['set_path'], member=export.get('member'), run_id=(export.get('run') or {}).get('run_id'),
                symbol=export.get('symbol'), period=export.get('period'), values_sha256=export['values_sha256'],
                evidence_start=export.get('evidence_start'), evidence_end=end, evidence_end_source=export.get('evidence_end_source'),
-               threshold_passing=export['threshold']['passing'], metrics=export.get('metrics'),
+               threshold_passing=export['threshold']['passing'], threshold=export['threshold'], metrics=export.get('metrics'),
                capture_status=(export.get('capture') or {}).get('status'), history_short=export.get('history_short', False))
     if not export['threshold']['passing'] and not include_below_threshold:
         problems.append('Below the batch export thresholds (profit > 0, ARF >= %g, SR >= %g)'
@@ -158,8 +159,30 @@ def evidence_scan(sources, *, value='auto', broker_clock=None, now=None, control
     known = versions(controller_root) if controller_root else ()
     rows = [classify(e, target['iso'], include_below_threshold=include_below_threshold, known_versions=known) for e in exports]
     return dict(schema_version=1, target=target, summary=summarize(rows, target['iso'], resolved=target), exports=rows, unreadable=unreadable,
+                rules=dict(evidence_end=target['rule'], thresholds_applied_to_eligibility=not include_below_threshold,
+                           thresholds='each export carries its own threshold, basis and margins'),
                 writes=False, native_launch_qualified=False,
                 next_action='catchup-prepare with the behind SETs re-tests them to %s; nothing runs until catchup-start' % target['iso'])
+
+
+QUALIFICATION_SCHEMA = 'goat-qualification-inputs-v1'
+
+
+def qualification_inputs(spec, manifest, verdict):
+    """Everything a later scored, explained qualification needs, with the rules that produced it.
+
+    Nothing is scored here: the export thresholds (and how far the export sits from each),
+    the evidence-end rule, the verdict rules and the raw signals are recorded so another
+    rule set can re-judge the same evidence without re-running MT5.
+    """
+    target = manifest['evidence_end']
+    return dict(schema=QUALIFICATION_SCHEMA, scored=False,
+                evidence_end=dict(rule=target['rule'], mode=target['mode'], requested=target['requested'], date=target['iso']),
+                export_thresholds=spec['original'].get('threshold'),
+                thresholds_applied_to_eligibility=not manifest.get('include_below_threshold', False),
+                verdict_rules=verdict.get('rules') or manifest.get('verdict_rules'),
+                signals=verdict.get('signals'), verdict=verdict.get('verdict'), confidence=verdict.get('confidence'),
+                assumed=spec.get('assumed', []))
 
 
 class _NoProcess:
@@ -253,7 +276,7 @@ class CatchupRunner(SeedRunner):
     def _plan(self, plan):
         if not isinstance(plan, dict) or not PLAN_KEYS <= set(plan) or set(plan) - PLAN_KEYS - PLAN_OPTIONAL or plan['schema_version'] != 1:
             raise ValueError('Catch-up plan requires schema_version:1, evidence_end, sets and job_timeout_seconds '
-                             '(optional: broker_clock, assume, include_below_threshold)')
+                             '(optional: broker_clock, assume, include_below_threshold, verdict_rules)')
         if type(plan['job_timeout_seconds']) is not int or not 60 <= plan['job_timeout_seconds'] <= 86400:
             raise ValueError('job_timeout_seconds must be 60..86400')
         sets = plan['sets']
@@ -267,6 +290,7 @@ class CatchupRunner(SeedRunner):
             raise ValueError('assume may only give a fixed ExecutionMode delay 0..600000 (random delay -1 cannot reproduce)')
         if type(plan.get('include_below_threshold', False)) is not bool:
             raise ValueError('include_below_threshold must be true or false')
+        validate_rules(plan.get('verdict_rules'))
         return assume
 
     def _freeze(self, root, plan):
@@ -387,7 +411,7 @@ class CatchupRunner(SeedRunner):
                                     member=export.get('member'), run_id=(export.get('run') or {}).get('run_id'),
                                     evidence_start=export['evidence_start'], evidence_end=export['evidence_end'],
                                     evidence_end_source=export['evidence_end_source'], metrics=export.get('metrics'),
-                                    tester=export.get('tester')),
+                                    tester=export.get('tester'), threshold=export['threshold']),
                       new_window=dict(first_day=(date.fromisoformat(export['evidence_end']) + timedelta(days=1)).isoformat(),
                                       last_day=target['iso'], weekdays=weekdays(date.fromisoformat(export['evidence_end']) + timedelta(days=1),
                                                                                 date.fromisoformat(target['iso']))))
@@ -423,7 +447,8 @@ class CatchupRunner(SeedRunner):
             raise ValueError('Nothing to catch up to %s. %s' % (target['iso'], summarize(rows, target['iso'], resolved=target)['plain']))
         manifest = dict(schema_version=1, batch_id=batch_id, installation_sha256=sha(self.c.install), schema_sha256=sha(self.c.schema),
                         plan_sha256=sha(plan), plan=plan, created_unix=self.clock(), members=members, mode=MODE,
-                        evidence_end=target, exports=rows, native_launch_qualified=False)
+                        evidence_end=target, exports=rows, verdict_rules=validate_rules(plan.get('verdict_rules')),
+                        include_below_threshold=plan.get('include_below_threshold', False), native_launch_qualified=False)
         if len(json.dumps(manifest).encode('utf-8')) > MAX_MANIFEST_BYTES:
             raise ValueError('Catch-up manifest exceeds 128 MiB; split the plan')
         root.mkdir(parents=True, exist_ok=False)
@@ -491,7 +516,7 @@ class CatchupRunner(SeedRunner):
             raise ValueError('Re-test export has no evidence end')
         try:
             verdict = evaluate(original, retest, new_end=min(retest['evidence_end'], manifest['evidence_end']['iso']),
-                               tester=spec['original'].get('tester'))
+                               tester=spec['original'].get('tester'), rules=manifest.get('verdict_rules'))
         except (OSError, ValueError, KeyError, ArithmeticError) as exc:
             # The re-test evidence is kept either way; only the judgement is unavailable.
             reason = 'Could not judge the new weeks: ' + str(exc)
@@ -509,6 +534,7 @@ class CatchupRunner(SeedRunner):
                                                                          manifest_sha256=retest['capture']['manifest_sha256'])),
                        tester=tester, assumed=spec['assumed'],
                        verdict={k: verdict[k] for k in ('verdict', 'confidence', 'plain', 'reasons')},
+                       qualification=qualification_inputs(spec, manifest, verdict),
                        history_short=retest['history_short'], ea_desc_metadata=spec['optimization_window']['source'])
         version_path = Path(spec['evidence_dir']) / 'evidence-version.json'
         with version_path.open('x', encoding='utf-8', newline='\n') as stream:
@@ -559,9 +585,13 @@ class CatchupRunner(SeedRunner):
             rows.append(dict(alias=spec['alias'], status=item['status'], symbol=spec['tester']['Symbol'], period=spec['tester']['Period'],
                              original_set=spec['original']['set_path'], original_end=spec['original']['evidence_end'],
                              new_end=manifest['evidence_end']['iso'], summary=result['summary'] if result else None,
-                             version_path=result['version_path'] if result else None, error=item.get('error')))
+                             version_path=result['version_path'] if result else None, error=item.get('error'),
+                             export_thresholds=spec['original'].get('threshold'),
+                             signals=(result.get('verdict') or {}).get('signals') if result else None))
         value = dict(schema_version=1, batch_id=batch_id, mode=MODE, status=state['status'], evidence_end=manifest['evidence_end'],
-                     counts=counts, members=rows, verdict_rules='goat-catchup-verdict-v1', native_launch_qualified=False,
+                     counts=counts, members=rows, verdict_rules=manifest.get('verdict_rules') or validate_rules(),
+                     thresholds_applied_to_eligibility=not manifest.get('include_below_threshold', False),
+                     qualification_schema=QUALIFICATION_SCHEMA, scored=False, native_launch_qualified=False,
                      scope='New-weeks-only verdicts on unseen data; a few weeks is a small sample.')
         write_json(root / 'report.json', value)
         if len(rows) > MAX_PUBLIC:

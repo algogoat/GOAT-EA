@@ -141,6 +141,19 @@ class DecideTests(unittest.TestCase):
             with self.subTest(new=new):
                 self.assertEqual(cv.decide(new, prior, self.PACE)[0], expected)
 
+    def test_rules_are_defaults_with_bounded_overrides(self):
+        self.assertEqual(cv.validate_rules(), cv.DEFAULT_RULES)
+        loose = cv.validate_rules(dict(min_trades=2, held_pace=0.25))
+        self.assertEqual((loose['min_trades'], loose['held_pace'], loose['failed_pf'], loose['overridden']), (2, 0.25, 0.8, ['held_pace', 'min_trades']))
+        self.assertEqual(loose['id'], 'goat-catchup-verdict-v1')
+        for bad in (dict(min_trades=0), dict(min_trades=2.5), dict(failed_pf=3), dict(held_pace=True), dict(score=1), [1]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                cv.validate_rules(bad)
+        # Rules are not rigid: the same numbers judged under a looser trade floor and pace.
+        few = self.new(trades=3, net=15.0)  # 3/day: below the default half pace (5/day), above a quarter (2.5/day)
+        self.assertEqual(cv.decide(few, 100, self.PACE)[0], 'too_few_trades')
+        self.assertEqual(cv.decide(few, 100, self.PACE, loose)[0], 'held_up')
+
     def test_losing_forward_window_skips_the_pace_check(self):
         self.assertEqual(cv.decide(self.new(net=1), 100, dict(net_per_day=-3.0))[0], 'held_up')
         self.assertEqual(cv.decide(self.new(net=1), 100, None)[0], 'held_up')
@@ -192,6 +205,19 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(result['confidence'], 'moderate')
         self.assertIn('Held up over the new weeks 2026-09-25 to 2026-10-09', result['plain'])
         self.assertEqual(result['schema'], 'goat-catchup-verdict-v1')
+        # Stamped for a later scored qualification: the exact rules and the raw signals.
+        self.assertEqual(result['rules'], cv.DEFAULT_RULES)
+        signals = result['signals']
+        self.assertEqual((signals['schema'], signals['weekdays'], signals['trades'], signals['expected_trades']), ('goat-catchup-signals-v1', 11, 22, 22.0))
+        self.assertEqual((signals['trades_vs_pace'], signals['pace_ratio'], signals['net_per_day'], signals['forward_net_per_day']), (1.0, 1.0, 10.0, 10.0))
+        self.assertEqual((signals['dd_vs_prior'], signals['prior_dd'], signals['reproduced'], signals['capture_complete']), (0.0, 120.0, True, True))
+
+    def test_overridden_rules_are_stamped(self):
+        rules = cv.validate_rules(dict(min_trades=1))
+        scenario = Scenario(self.root, new_last=date(2026, 9, 28), new_trades=1)
+        result = cv.evaluate(read_export(scenario.original), read_export(scenario.retest), new_end=scenario.new_last, tester=TESTER, rules=rules)
+        self.assertEqual(result['verdict'], 'held_up')
+        self.assertEqual(result['rules']['overridden'], ['min_trades'])
 
     def test_new_worst_drawdown_fails(self):
         result = Scenario(self.root, dips_new=[(date(2026, 10, 1), 400)]).evaluate()

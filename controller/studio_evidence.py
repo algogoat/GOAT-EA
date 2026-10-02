@@ -302,6 +302,11 @@ def read_export(set_path, *, runs=None):
     limits = thresholds(run)
     metrics = named['metrics'] if named else None
     passing = bool(metrics and metrics['profit'] > 0 and metrics['arf'] >= limits['min_arf'] and metrics['sr'] >= limits['min_sr'])
+    # Margins say how far inside or outside each bar the export sits, so a later scored
+    # qualification can weigh a near miss instead of treating the bars as rigid.
+    if metrics:
+        limits = dict(limits, profit_positive=metrics['profit'] > 0, arf_margin=round(metrics['arf'] - limits['min_arf'], 6),
+                      sr_margin=round(metrics['sr'] - limits['min_sr'], 6), source='export_file_name_metrics')
     return dict(schema='goat-export-evidence-v1', set_path=str(paths['set']), set_sha256=info['sha256'],
                 values_sha256=info['canonical_sha256'], alias=alias, member=member,
                 ea_name=named and named['ea_name'], symbol=named and named['symbol'], period=named and named['period'],

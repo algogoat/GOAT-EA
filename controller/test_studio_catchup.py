@@ -226,9 +226,24 @@ class PrepareTests(CatchupCase):
         self.assertIn('Other-Live', reasons['EURJPY'])
         self.assertIn('Mode_Operation=9', reasons['EURCHF'])
 
+    def test_verdict_rules_and_threshold_choice_are_frozen_and_stamped(self):
+        self.runner.prepare('cu1', self.plan(include_below_threshold=True, verdict_rules=dict(min_trades=3, held_pace=0.4)))
+        manifest = read_json(self.runner.path('cu1') / 'manifest.json')
+        self.assertEqual((manifest['verdict_rules']['min_trades'], manifest['verdict_rules']['held_pace']), (3, 0.4))
+        self.assertEqual(manifest['verdict_rules']['overridden'], ['held_pace', 'min_trades'])
+        self.assertTrue(manifest['include_below_threshold'])
+        weak = next(m for m in manifest['members'] if m['tester']['Symbol'] == 'USDJPY')
+        self.assertFalse(weak['original']['threshold']['passing'])  # queued anyway, its miss stays on record
+        self.assertEqual(weak['original']['threshold']['arf_margin'], -0.1)
+        scan = sc.evidence_scan([self.run], now=AFTER_CLOSE)
+        self.assertEqual(scan['rules']['evidence_end'], 'goat-closed-week-v1')
+        self.assertTrue(scan['rules']['thresholds_applied_to_eligibility'])
+        self.assertIn('sr_margin', scan['exports'][0]['threshold'])
+
     def test_plan_shape_is_strict(self):
         for change in (dict(job_timeout_seconds=10), dict(sets=[]), dict(sets=['relative.set']), dict(assume=dict(ExecutionMode=-1)),
-                       dict(assume=dict(Deposit=5)), dict(include_below_threshold='yes'), dict(extra=1)):
+                       dict(assume=dict(Deposit=5)), dict(include_below_threshold='yes'), dict(extra=1),
+                       dict(verdict_rules=dict(min_trades=0)), dict(verdict_rules=dict(score=1))):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.runner.validate(self.plan() | change)
         with self.assertRaisesRegex(ValueError, 'Duplicate SET path'):
@@ -262,9 +277,21 @@ class NativeCycleTests(CatchupCase):
         self.assertEqual(version['original']['set_path'], str(self.behind))
         self.assertEqual(version['values_sha256'], version['original']['values_sha256'])
         self.assertEqual(version['verdict']['verdict'], 'held_up')
+        # The inputs a later scored qualification needs, with the rules that produced this verdict.
+        qualification = version['qualification']
+        self.assertEqual((qualification['schema'], qualification['scored'], qualification['verdict']), ('goat-qualification-inputs-v1', False, 'held_up'))
+        self.assertEqual(qualification['evidence_end'], dict(rule='goat-closed-week-v1', mode='auto', requested='auto', date='2026-10-02'))
+        self.assertEqual(qualification['export_thresholds']['basis'], 'run_export_settings')
+        self.assertEqual((qualification['export_thresholds']['arf_margin'], qualification['export_thresholds']['sr_margin']), (0.3, 0.5))
+        self.assertTrue(qualification['thresholds_applied_to_eligibility'])
+        self.assertEqual(qualification['verdict_rules']['id'], 'goat-catchup-verdict-v1')
+        self.assertEqual(qualification['signals']['trades'], 12)
         self.assertEqual({p: p.read_bytes() for p in self.run.rglob('*') if p.is_file()}, original)
         report = self.runner.report('cu1')
         self.assertEqual(report['counts'], dict(held_up=1, too_few_trades=1))
+        self.assertEqual((report['verdict_rules']['min_trades'], report['scored'], report['qualification_schema']), (5, False, 'goat-qualification-inputs-v1'))
+        self.assertEqual(report['members'][0]['export_thresholds']['min_sr'], 2.5)
+        self.assertEqual(report['members'][0]['signals']['weekdays'], 6)
         row = report['members'][0]
         self.assertEqual((row['summary']['weekdays'], row['summary']['trades'], row['summary']['reproduced']), (6, 12, True))
         # The versions now count: both exports are caught up to Fri Oct 2.

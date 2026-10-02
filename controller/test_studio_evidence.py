@@ -48,7 +48,8 @@ class ReadExportTests(FixtureCase):
         self.assertTrue(export['capture']['complete'])
         self.assertTrue(export['capture']['set_binding_matches'])
         self.assertEqual(export['capture']['initial_equity'], 100000)
-        self.assertEqual(export['threshold'], dict(min_arf=0.2, min_sr=2.5, basis='run_export_settings', passing=True))
+        self.assertEqual(export['threshold'], dict(min_arf=0.2, min_sr=2.5, basis='run_export_settings', passing=True, profit_positive=True,
+                                                   arf_margin=0.115, sr_margin=0.42, source='export_file_name_metrics'))
         self.assertEqual(export['tester']['ForwardDate'], '2026.07.17')
         self.assertEqual(export['tester']['ExecutionMode'], 0)
         self.assertEqual(export['run']['run_id'], 'g6')
@@ -67,6 +68,7 @@ class ReadExportTests(FixtureCase):
     def test_below_threshold_keep_is_flagged(self):
         export = ev.read_export(self.path(G6_XAUUSD))
         self.assertFalse(export['threshold']['passing'])
+        self.assertEqual((export['threshold']['arf_margin'], export['threshold']['sr_margin']), (-0.168, -2.01))
         self.assertEqual(export['evidence_end'], '2026-10-01')
 
     def test_earlier_run_ends_last_thursday(self):

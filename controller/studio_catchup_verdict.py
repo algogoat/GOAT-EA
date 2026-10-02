@@ -31,6 +31,13 @@ Verdict rules, in order:
 4. held_up: net > 0, pf >= 1 (when known), dd <= prior_dd, and the profit pace is
    at least HELD_PACE of the forward pace (skipped when the forward window lost).
 5. weakened: everything else (profitable but well below pace, or a small loss).
+
+The numbers above are defaults, not fixed law: a plan may override them within
+bounds (``validate_rules``). Every verdict stamps the exact rules it used, the raw
+``signals`` it was decided from, and (in the evidence version) the export
+thresholds with their margins, so a later scored, explained qualification can
+re-judge the same evidence under other rules without re-running MT5. No score is
+computed here.
 """
 import csv
 from datetime import date, datetime, timedelta, timezone
@@ -47,11 +54,32 @@ FAILED_PF = 0.8
 HELD_PACE = 0.5
 MODERATE_TRADES = 20
 MODERATE_DAYS = 10
+DEFAULT_RULES = dict(id=RULES, min_trades=MIN_TRADES, failed_pf=FAILED_PF, held_pace=HELD_PACE,
+                     moderate_trades=MODERATE_TRADES, moderate_days=MODERATE_DAYS, overridden=[])
+# Bounds keep an override meaningful: (type, low, high).
+RULE_BOUNDS = dict(min_trades=(int, 1, 1000), failed_pf=(float, 0.0, 2.0), held_pace=(float, 0.0, 2.0),
+                   moderate_trades=(int, 1, 100000), moderate_days=(int, 1, 1000))
 MAX_EQUITY_CSV = 64 * 1024 * 1024
 MAX_DEALS_CSV = 256 * 1024 * 1024
 TOLERANCE = Decimal('0.005')
 CAVEAT = ('The new weeks are unseen data, but a few weeks is a small sample: treat held_up as "no warning sign yet", '
           'not as proof of an edge.')
+
+
+def validate_rules(overrides=None):
+    """Defaults merged with bounded overrides; the result is stamped on every verdict."""
+    if overrides is None:
+        return dict(DEFAULT_RULES)
+    if not isinstance(overrides, dict) or set(overrides) - set(RULE_BOUNDS):
+        raise ValueError('verdict_rules may set only: ' + ', '.join(sorted(RULE_BOUNDS)))
+    rules = dict(DEFAULT_RULES, overridden=sorted(overrides))
+    for key, value in overrides.items():
+        kind, low, high = RULE_BOUNDS[key]
+        if type(value) is bool or (kind is int and type(value) is not int) or (kind is float and type(value) not in (int, float)) \
+                or not low <= value <= high:
+            raise ValueError('verdict_rules.%s must be %s %g..%g' % (key, 'a whole number' if kind is int else 'a number', low, high))
+        rules[key] = kind(value)
+    return rules
 
 
 def equity_rows(csv_path):
@@ -197,8 +225,10 @@ def inputs_match(original_set, retest_set):
     return a['canonical_sha256'] == b['canonical_sha256']
 
 
-def decide(new, prior_dd, pace):
+def decide(new, prior_dd, pace, rules=None):
     """Apply the verdict rules to measured numbers. Pure; see module docstring."""
+    rules = rules or DEFAULT_RULES
+    min_trades, failed_pf, held_pace = rules['min_trades'], rules['failed_pf'], rules['held_pace']
     trades, net, dd, pf = new['trades'], new['net'], new['dd'], new.get('pf')
     days = max(new['weekdays'], 1)
     forward_per_day = pace.get('net_per_day') if pace else None
@@ -206,18 +236,18 @@ def decide(new, prior_dd, pace):
     if dd > prior_dd:
         reasons.append('new weeks set a new worst drawdown (%.0f vs %.0f before)' % (dd, prior_dd))
         return 'failed', reasons
-    if trades is not None and trades >= MIN_TRADES and net < 0:
-        if pf is not None and pf < FAILED_PF:
+    if trades is not None and trades >= min_trades and net < 0:
+        if pf is not None and pf < failed_pf:
             reasons.append('lost %.0f with profit factor %.2f' % (-net, pf))
             return 'failed', reasons
         if pf is None and forward_per_day is not None and -net > abs(forward_per_day) * days:
             reasons.append('lost %.0f, more than a forward-pace window of profit' % -net)
             return 'failed', reasons
-    if trades is None or trades < MIN_TRADES:
+    if trades is None or trades < min_trades:
         reasons.append('%s trades in the new weeks; too few to judge' % ('unknown' if trades is None else trades))
         return 'too_few_trades', reasons
     held = net > 0 and (pf is None or pf >= 1.0)
-    if held and forward_per_day is not None and forward_per_day > 0 and net / days < HELD_PACE * forward_per_day:
+    if held and forward_per_day is not None and forward_per_day > 0 and net / days < held_pace * forward_per_day:
         held = False
         reasons.append('profitable but at %.0f%% of the forward pace' % (100 * net / days / forward_per_day))
     if held:
@@ -226,6 +256,24 @@ def decide(new, prior_dd, pace):
     if not reasons:
         reasons.append('lost %.0f' % -net if net < 0 else 'flat' if net == 0 else 'profit factor below 1')
     return 'weakened', reasons
+
+
+def signals(new, prior_dd, pace, repro, same_inputs, capture):
+    """Raw numbers the verdict was decided from, for a later scored qualification.
+
+    Ratios are null when their base is missing or not positive, never guessed.
+    """
+    days = new['weekdays'] or 0
+    per_day = new['net'] / days if days else None
+    forward = pace.get('net_per_day') if pace else None
+    expected = new.get('expected_trades_at_forward_pace')
+    ratio = lambda value, base: round(value / base, 4) if value is not None and base not in (None, 0) and base > 0 else None
+    return dict(schema='goat-catchup-signals-v1', weekdays=days, trades=new['trades'], expected_trades=expected,
+                trades_vs_pace=ratio(new['trades'], expected), net=new['net'], net_per_day=per_day,
+                forward_net_per_day=forward, pace_ratio=ratio(per_day, forward), pf=new.get('pf'), dd=new['dd'],
+                dd_pct=new.get('dd_pct'), prior_dd=prior_dd, dd_vs_prior=ratio(new['dd'], prior_dd),
+                reproduced=repro.get('reproduced'), inputs_match=same_inputs, capture_complete=bool((capture or {}).get('complete')),
+                trade_source=new.get('trade_source'))
 
 
 def _plain(verdict, new, pace, reasons, reproduced):
@@ -247,13 +295,15 @@ def _plain(verdict, new, pace, reasons, reproduced):
     return sentence
 
 
-def evaluate(original, retest, *, new_end, tester=None):
+def evaluate(original, retest, *, new_end, tester=None, rules=None):
     """Verdict for one catch-up member.
 
     ``original``: the original export's evidence record (studio_evidence.read_export).
     ``retest``: the re-test unit's evidence record. ``tester``: original optimization
-    window (FromDate/ToDate/ForwardDate) when the run manifest supplied it.
+    window (FromDate/ToDate/ForwardDate) when the run manifest supplied it. `rules`: the frozen plan's
+    `validate_rules` result (defaults when absent).
     """
+    rules = rules or validate_rules()
     original_end = date.fromisoformat(original['evidence_end'])
     new_end = date.fromisoformat(new_end) if isinstance(new_end, str) else new_end
     first_new = original_end + timedelta(days=1)
@@ -300,10 +350,10 @@ def evaluate(original, retest, *, new_end, tester=None):
     if not same_inputs:
         verdict, reasons = 'not_comparable', ['the re-test SET inputs differ from the original export']
     else:
-        verdict, reasons = decide(window, prior, pace)
+        verdict, reasons = decide(window, prior, pace, rules)
     confidence = 'low'
     if (verdict != 'not_comparable' and repro['reproduced'] and window['trades'] is not None
-            and window['trades'] >= MODERATE_TRADES and window['weekdays'] >= MODERATE_DAYS):
+            and window['trades'] >= rules['moderate_trades'] and window['weekdays'] >= rules['moderate_days']):
         confidence = 'moderate'
     return dict(schema=RULES, verdict=verdict, confidence=confidence, reasons=reasons,
                 plain=_plain(verdict, window, pace, reasons, repro['reproduced']),
@@ -312,4 +362,4 @@ def evaluate(original, retest, *, new_end, tester=None):
                               values_sha256=original['values_sha256']),
                 retest=dict(set_path=retest['set_path'], set_sha256=retest['set_sha256'], evidence_end=retest['evidence_end'],
                             capture_status=new_capture.get('status')),
-                rules=dict(min_trades=MIN_TRADES, failed_pf=FAILED_PF, held_pace=HELD_PACE), caveat=CAVEAT)
+                rules=rules, signals=signals(window, prior, pace, repro, same_inputs, new_capture), caveat=CAVEAT)

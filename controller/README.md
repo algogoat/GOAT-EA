@@ -578,6 +578,20 @@ drawdown, the forward pace, whether the re-test reproduced the original export
 least 20 trades over 10 trading days reproduced). A few weeks is a small sample.
 `evidence-versions` lists retained versions.
 
+These rules and the export thresholds are not rigid. A plan may override the
+verdict numbers within bounds (`verdict_rules: {min_trades, failed_pf, held_pace,
+moderate_trades, moderate_days}`) and queue members below the run's export
+thresholds (`include_below_threshold: true`, which the desktop builder uses for
+members the person chose). Every verdict stamps the exact `rules` it used and its
+raw `signals` (`goat-catchup-signals-v1`: trades vs forward pace, profit pace ratio,
+PF, drawdown vs prior drawdown, reproduction, capture). Each evidence version adds a
+`qualification` block (`goat-qualification-inputs-v1`, `scored: false`): the
+evidence-end rule, the export's thresholds with their basis and margins
+(`arf_margin`, `sr_margin`, `profit_positive`), whether thresholds gated
+eligibility, the verdict rules and the signals. A later scored, explained
+qualification can re-judge the same evidence under other rules from this block
+without re-running MT5; no score is computed now.
+
 ### Reviewed orphan continuation recovery (V1.49)
 
 `orphan-recovery-prepare` freezes exact idle demo/runtime and single-owner evidence.

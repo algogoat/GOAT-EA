@@ -5,7 +5,9 @@ description: Prepare, observe and report bounded GOAT Seed Farming template-by-a
 
 Read [the portable Seed Farming workflow](../../SEED-WORKFLOW.md). Require the
 installed `seed-prepare/start/status/resume/cancel/report` capabilities and check
-their current native qualification status. Ordinary forward/export batches and
+their current native qualification status. On a demo-agent installation use the
+broker-verified `demo_agent.py seed-*` tools, and run `seed-validate` on every new
+plan first; it writes nothing. Ordinary forward/export batches and
 dedicated Seed Farming are different execution modes; do not substitute one for
 the other. If native qualification is absent, begin only with the authorized small
 demo qualification described by the installed guide.

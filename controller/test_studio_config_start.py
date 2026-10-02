@@ -33,8 +33,10 @@ class ConfigStartTests(unittest.TestCase):
         c.runtime=Mock();c.native_args=lambda:dict(account=c.session['account'],
             observation_path=c.local/'ui-observation.json',monitor_path=root/'monitor.ex5',
             monitor_sha256='binary',input_schema={})
+        self.reserve_ids=[]
         def submit(*args,**kwargs):
             self.events.append('reserve');self.state['queue'][0]['status']='reserved'
+            self.reserve_ids.append(args[2])
         c.submit=submit
         self.package=root/'packages/batch';self.package.mkdir(parents=True)
         self.binding=dict(research_terminal=str(root/'install/terminal64.exe'),research_data_root=str(root/'data'),
@@ -90,6 +92,12 @@ class ConfigStartTests(unittest.TestCase):
                                  'launch_issued','process_started_unverified'])
         with self.assertRaisesRegex(ValueError,'new pending'):self.run_start()
         self.process.start.assert_called_once()
+
+    def test_a_retried_start_reserves_under_a_fresh_command_id(self):
+        archive=self.c.root/'batch-driver-refusals';archive.mkdir()
+        (archive/'batch.refused-1.json').write_text('{}')
+        self.run_start()
+        self.assertEqual(self.reserve_ids,['batch-reserve-r1'])
 
     def test_runtime_sample_may_lag_arm_receipt_without_repeating_command(self):
         self.c.runtime.side_effect=[None,ValueError('Runtime policy mismatch: batch_ongoing'),None]

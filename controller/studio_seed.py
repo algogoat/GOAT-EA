@@ -87,18 +87,14 @@ class SeedRunner:
         slot=read_json(self.slot)
         if slot.get('batch_id')!=batch_id or slot.get('manifest_sha256')!=state['manifest_sha256'] or slot.get('status')!='active':raise ValueError('Seed ownership receipt differs')
 
-    def prepare(self,batch_id,plan):
-        root=self.path(batch_id)
+    def _freeze(self,root,plan):
+        """Validate the whole plan and build every frozen member in memory. Writes nothing."""
         keys={'schema_version','max_attempts_per_job','job_timeout_seconds','cutoff','jobs'}
         if not isinstance(plan,dict) or set(plan)!=keys or plan['schema_version']!=1 or type(plan['max_attempts_per_job']) is not int or plan['max_attempts_per_job']!=1:raise ValueError('Seed plan requires schema_version=1, max_attempts_per_job=1, job_timeout_seconds, cutoff and jobs')
         if type(plan['job_timeout_seconds']) is not int or not 30<=plan['job_timeout_seconds']<=86400:raise ValueError('job_timeout_seconds must be 30..86400')
         cutoff=plan['cutoff']
         if not isinstance(cutoff,dict) or set(cutoff)!={'min_fitness','min_trades'} or type(cutoff['min_fitness']) not in (int,float) or not math.isfinite(cutoff['min_fitness']) or type(cutoff['min_trades']) is not int or cutoff['min_trades']<0:raise ValueError('Explicit finite min_fitness and nonnegative integer min_trades cutoff required')
         if not isinstance(plan['jobs'],list) or not 1<=len(plan['jobs'])<=10000:raise ValueError('Seed jobs must contain 1..10000 explicit file/asset configurations')
-        if root.exists():
-            _,old,_=self._read(batch_id)
-            if old['plan_sha256']!=sha(plan):raise ValueError('Seed batch ID already belongs to a different plan')
-            return self.status(batch_id)
         members=[];payloads=[];identities=set();retained_bytes=0;nonce=uuid.uuid4().hex[:16]
         account=self.c.session['account']
         for index,job in enumerate(plan['jobs']):
@@ -144,6 +140,27 @@ class SeedRunner:
                 xml_title=Path(self.c.install['ea_relative_path'].replace('\\','/')).stem+' '+tester['Symbol']+','+tester['Period']+' '+tester['FromDate']+'-'+tester['ToDate']+' '+alias,
                 output_base=Path(self.c.install['ea_relative_path'].replace('\\','/')).stem+' '+tester['Symbol']+','+tester['Period']+' '+tester['FromDate']+'-'+tester['ToDate']+' '+re.sub('[^A-Za-z0-9]','',alias)[:52])
             members.append(member);payloads.extend([(setpath,frozen),(configpath,config)])
+        return members,payloads
+
+    def validate(self,plan):
+        """Non-executing check of a seed plan and every SET it names: no file, process or terminal effect."""
+        members,_=self._freeze(self.base/'validation-only',plan)
+        # Same aggregate bound prepare enforces, so a validated plan cannot fail it later.
+        manifest=dict(schema_version=1,batch_id='validation-only',installation_sha256=sha(self.c.install),schema_sha256=sha(self.c.schema),plan_sha256=sha(plan),
+            plan=plan,created_unix=self.clock(),members=members,mode='SeedFarming',native_launch_qualified=False)
+        if len(json.dumps(manifest).encode('utf-8'))>MAX_MANIFEST_BYTES:raise ValueError('Seed manifest exceeds 128 MiB; split the matrix')
+        return dict(schema_version=1,valid=True,writes=False,native_launch_qualified=False,plan_sha256=sha(plan),job_count=len(members),
+            jobs=[dict(index=m['index'],symbol=m['tester']['Symbol'],period=m['tester']['Period'],from_date=m['tester']['FromDate'],to_date=m['tester']['ToDate'],
+                       frame_target=m['frame_target'],axes=m['axes'],source_path=m['source_path'],source_sha256=m['source_sha256']) for m in members[:MAX_PUBLIC_MEMBERS]],
+            jobs_omitted=max(0,len(members)-MAX_PUBLIC_MEMBERS))
+
+    def prepare(self,batch_id,plan):
+        root=self.path(batch_id)
+        if root.exists():
+            _,old,_=self._read(batch_id)
+            if old['plan_sha256']!=sha(plan):raise ValueError('Seed batch ID already belongs to a different plan')
+            return self.status(batch_id)
+        members,payloads=self._freeze(root,plan)
         manifest=dict(schema_version=1,batch_id=batch_id,installation_sha256=sha(self.c.install),schema_sha256=sha(self.c.schema),plan_sha256=sha(plan),
             plan=plan,created_unix=self.clock(),members=members,mode='SeedFarming',native_launch_qualified=False)
         if len(json.dumps(manifest).encode('utf-8'))>MAX_MANIFEST_BYTES:raise ValueError('Seed manifest exceeds 128 MiB; split the matrix')

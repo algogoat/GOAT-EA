@@ -53,9 +53,12 @@ def reserve_job(state, payload, reservation_id):
                    for k in ('configuration_sha256','package_sha256'))):
         raise ValueError('Job identity and explicit configuration/package hashes required')
     jobs = copy.deepcopy(state['queue'])
-    pending = next((j for j in jobs if j['status'] == 'pending'), None)
-    if pending is None or pending['job_id'] != payload['job_id']:
-        raise ValueError('Only the first pending job can be reserved')
+    # The named pending job, wherever it sits: one dead or stale pending job must
+    # never block every later batch. Only one job is ever reserved at a time
+    # (callers refuse while any job is reserved/starting/running).
+    pending = next((j for j in jobs if j['job_id'] == payload['job_id'] and j['status'] == 'pending'), None)
+    if pending is None:
+        raise ValueError('Only a pending job can be reserved')
     if sha(pending['configuration']) != payload['configuration_sha256'] or pending['configuration_sha256'] != payload['configuration_sha256']:
         raise ValueError('Reservation configuration mismatch')
     pending.update(status='reserved', reservation=dict(reservation_id=reservation_id,

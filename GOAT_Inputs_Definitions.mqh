@@ -1158,6 +1158,9 @@ string ConvertToGOATsymbol(string symbol)
    p = StringFind(key,"NAS100");    if(p>=0) { if(p+6>=StringLen(key)) return "NAS100"; nch=StringGetCharacter(key,p+6); if(!(nch>='0' && nch<='9')) return "NAS100"; }
    p = StringFind(key,"US100");     if(p>=0) { if(p+5>=StringLen(key)) return "NAS100"; nch=StringGetCharacter(key,p+5); if(!(nch>='0' && nch<='9')) return "NAS100"; }
    if(StringFind(key,"USTEC")>=0)   return "NAS100";
+   // Darwinex lists the Nasdaq 100 as NDX. Only a symbol that STARTS with NDX
+   // (NDX, NDX100, NDXm, NDX.cash) maps, so no other name containing "NDX" can match.
+   if(StringFind(key,"NDX")==0)      return "NAS100";
 
    p = StringFind(key,"USA30");   if(p>=0) { if(p+5>=StringLen(key)) return "US30"; nch=StringGetCharacter(key,p+5); if(!(nch>='0' && nch<='9')) return "US30"; }
    p = StringFind(key,"WS30");    if(p>=0) { if(p+4>=StringLen(key)) return "US30"; nch=StringGetCharacter(key,p+4); if(!(nch>='0' && nch<='9')) return "US30"; }

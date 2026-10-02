@@ -82,8 +82,10 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
         with exclusive_gate(c.local/'native-gate'):
             intent=proof(c,c.job(job_id),package)
     else:
+        from studio_batch_driver import command_id,retry_index
         c.submit('queue.reserve',dict(job_id=job_id,configuration_sha256=job['configuration_sha256'],
-                 package_sha256=digest),job_id+'-reserve',expected_generation=generation)
+                 package_sha256=digest),command_id(job_id,'-reserve',retry_index(c.root,job_id)),
+                 expected_generation=generation)
         state=c.state()
         intent=record_intent(c.store,c.terminal,c.run,job_id,package,actor='agent',
                              revision=state['revision'],generation=generation)

@@ -45,6 +45,7 @@ as [SEED-WORKFLOW.md](SEED-WORKFLOW.md); nothing about seed evidence changes.
 & $py $tool --installation $install seed-status --batch-id 'seed-weekend-01'
 & $py $tool --installation $install seed-cancel --batch-id 'seed-weekend-01'
 & $py $tool --installation $install seed-report --batch-id 'seed-weekend-01'
+& $py $tool --installation $install seed-promote --batch-id 'seed-weekend-01' --candidate '<candidate_sha256>' --name 'My EURUSD discovery'
 ```
 
 `seed-validate` checks the whole plan and every SET it names (tester rules,

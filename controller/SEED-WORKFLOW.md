@@ -199,6 +199,18 @@ conditions and config hash. Do not inherit parent variant measurements or overwr
 earlier findings. Publisher catalog updates remain separate from local evidence.
 Choose candidates within the authorized research scope, freeze their exact input
 values, and validate on independent periods with the normal export workflow.
+
+`seed-promote --batch-id <id> --candidate <candidate_sha256> --name <plain name> [--neighborhood 0..5]`
+does the freezing in one step. It re-verifies the retained seed evidence, merges
+`base_values` with the candidate's `value_overrides`, checks that the merge reproduces
+`candidate_sha256`, and writes, create-only under `seeds/<id>/promoted/<candidate>/`:
+a fixed SET (exact values, optimized axes switched off), a validation SET (each
+optimized axis narrowed to the candidate value plus or minus `neighborhood` ladder
+steps, clipped to the seed ladder; boolean axes keep their ladder) and `promotion.json`
+(provenance, seed metrics and window, file hashes). Both SETs carry the new plain
+`EA_Desc`. Repeating the same request returns the receipt; a different name or
+neighborhood for the same candidate refuses. Validate the validation SET in an
+ordinary batch on dates after the seed window. It has no native, queue or terminal effect.
 Seed XML is not ordinary back/forward XML, exported SET/CSV pairs, or exposure
 sequence evidence, and must not be uploaded as a portfolio strategy pool.
 

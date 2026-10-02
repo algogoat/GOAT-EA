@@ -50,6 +50,7 @@ OPERATION_CONTRACTS = {
     'seed-status':dict(required=['batch-id'],effect='observe dedicated seed campaign state and native process evidence'),
     'seed-cancel':dict(required=['batch-id'],effect='request normal close of exact owned seed process; receipt is not exit proof'),
     'seed-report':dict(required=['batch-id'],effect='report actual seed XML metrics and frozen provenance; missing evidence remains unavailable'),
+    'seed-promote':dict(required=['batch-id','candidate','name'],defaults={'neighborhood':1},limits={'neighborhood':[0,5]},effect='write a fixed SET and a narrow validation SET for one verified seed candidate; local files only, create-only'),
     'prepare-batch':dict(required=['batch-id','plan'],effect='validate and freeze a full native Studio batch; no launch'),
     'batch-status':dict(required=['batch-id'],effect='reconcile whole native batch and report member progress'),
     'save-batch':dict(required=['batch-id','output'],effect='save native .goatbatch without overwriting'),
@@ -340,6 +341,7 @@ def main(argv=None):
         p=sub.add_parser(command);p.add_argument('--batch-id',required=True);p.add_argument('--max-seconds',type=int,default=60)
     for command in ('seed-status','seed-cancel','seed-report'):
         p=sub.add_parser(command);p.add_argument('--batch-id',required=True)
+    p=sub.add_parser('seed-promote');p.add_argument('--batch-id',required=True);p.add_argument('--candidate',required=True);p.add_argument('--name',required=True);p.add_argument('--neighborhood',type=int,default=1)
     p=sub.add_parser('prepare-batch');p.add_argument('--batch-id',required=True);p.add_argument('--plan',type=Path,required=True)
     p=sub.add_parser('batch-status');p.add_argument('--batch-id',required=True)
     p=sub.add_parser('save-batch');p.add_argument('--batch-id',required=True);p.add_argument('--output',type=Path,required=True)
@@ -462,6 +464,9 @@ def main(argv=None):
                     from studio_orphan_rejection import reconcile_rejection
                     result=reconcile_rejection(controller,args.review_id,confirmed=args.confirm_reviewed,owner_research=args.owner_research,terminal_stopped=args.terminal_stopped)
                 else: result=status(controller,args.review_id)
+            elif args.operation=='seed-promote':
+                from studio_seed_promote import promote
+                result=promote(controller,args.batch_id,args.candidate,args.name,neighborhood=args.neighborhood)
             elif args.operation.startswith('seed-'):
                 from studio_seed import SeedRunner
                 runner=SeedRunner(controller)

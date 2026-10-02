@@ -44,6 +44,8 @@ const mutations=[
                i--; continue;`,outcome],
   ['partial-trades sentence says none was profitable','XmlProcessor.mqh',R`(profitableSeen>0 ? (string)profitableSeen+" profitable on fewer, " : "")`,R`""`,outcome],
   ['summary counts items the queue does not mark Error','Optimizer.mqh',R`if(StringFind(errorAliases,"\n"+fields[2]+"\n")<0) continue;`,'',outcome],
+  ['partial back report still combines','XmlProcessor.mqh',R`if(backRead && (!xmlData.reportClosed || xmlData.malformedSeen>0))`,R`if(false)`,outcome],
+  ['unreadable rows still combine','XmlProcessor.mqh',R`(!xmlData.reportClosed || xmlData.malformedSeen>0))`,R`(!xmlData.reportClosed))`,outcome],
   ['code back in the query string','GOATEADeviceActivation.mqh',R`verification_url+"#ea-connect="+user_code`,R`verification_url+"&code="+user_code`,code],
   ['pairing wording returns','GOATEADeviceActivation.mqh',R`"Connection code: "+user_code`,R`"Enter pairing code: "+user_code`,code],
 ];

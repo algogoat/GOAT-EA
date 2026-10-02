@@ -996,6 +996,11 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
          if(!titleMatches)
          {LogOrPrint(reportMode,"❌ xml File name and internal title do not match,\nTitle: "+xmlData.Title+"\nFilename: "+fileMain,Key_,EA_Name_,Server_); ret=false;}
 #ifdef GOAT_RESEARCH_OUTCOME_V149
+         // A partial or unreadable back report never combines: its trailing or short rows
+         // are not results. It stays a real error (retried by --include-failed), never no-edge.
+         if(backRead && (!xmlData.reportClosed || xmlData.malformedSeen>0))
+         {LogOrPrint(reportMode,"❌ Back report is partial or has unreadable rows (table closed="+(xmlData.reportClosed ? "yes" : "no")
+                     +", unreadable rows="+(string)xmlData.malformedSeen+"): "+FileNameOnly(fileMain),Key_,EA_Name_,Server_); ret=false;}
          // Passes ran and none was kept: there is nothing to combine or export for
          // this window. Recorded as a research outcome below, not as a combine error.
          xmlData.forwardRows=xmlData.ForwardReportRows(forwardFile);

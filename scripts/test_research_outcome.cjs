@@ -233,6 +233,25 @@ for(const [saved,forwardOk,wantRet] of [[3,true,true],[0,true,false],[3,false,fa
   check(()=>assert.ok(c.logs.includes('No further back <Row> Found. Rows Saved=2/5 (profitable=2, min trades=50)')));
   check(()=>assert.ok(c.calls.includes('forward')));
 }
+// 3b) A partial or unreadable back report never combines, even with kept rows (review
+// APPROVE follow-up): the combine fails, the member stays a real error, never no-edge.
+{
+  const keptRows=losing(3).concat([{pass:50,result:0.9,profit:900,trades:120},{pass:51,result:0.8,profit:400,trades:60}]);
+  const whole=report(TITLE,keptRows);
+  const cutMidRow=whole.slice(0,-6);                                          // killed inside the last kept row
+  const unclosed=whole.map(l=>l==='</Table>'?'</Worksheet>':l);               // table never closed
+  const unreadable=whole.map((l,k)=>l===cell('Number',-1501)?cell('String',-1501):l); // one profit cell unreadable
+  for(const [label,lines] of [['back report cut mid-row',cutMidRow],['back report table never closed',unclosed],
+                              ['back report with an unreadable row',unreadable]]){
+    const {ret,c}=combine([{name:back(),back:lines}],{saved:3,forwardOk:true});
+    check(()=>assert.equal(ret,false,label+': the combine fails'));
+    check(()=>assert.equal(c.outcome,'',label+': never no-edge'));
+    check(()=>assert.ok(c.logs.some(l=>/^❌ Back report is partial or has unreadable rows/.test(l)),label+': says why'));
+  }
+  const ok=combine([{name:back(),back:whole}],{saved:3,forwardOk:true});
+  check(()=>assert.equal(ok.ret,true,'a whole report with kept rows still combines'));
+  check(()=>assert.ok(!ok.c.logs.some(l=>/partial or has unreadable rows/.test(l))));
+}
 // 4) Every other failure stays an error: no passes, no window, wrong file, missing evidence.
 for(const [label,pair] of [
   ['report without passes',{name:back(),back:report(TITLE,[])}],

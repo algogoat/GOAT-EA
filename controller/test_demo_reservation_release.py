@@ -35,6 +35,27 @@ class DemoReservationReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 command(db, binding, dict(owner='human', generation=3), exact, actor='agent')
 
+    def test_a_retried_start_may_use_its_numbered_queue_command_ids(self):
+        f = self.fixture
+        f.agent._adopt_installed_binary(digest(f.binary))
+        session = read_json(f.root / 'session.json')
+        db = sqlite3.connect(f.root / 'studio.sqlite')
+        self.addCleanup(db.close)
+        binding = packed(dict(terminal_id='terminal-one', run_id='session-one'))
+        state = dict(owner='agent', generation=2)
+        with operation('run-batch'), demo_agent_scope(root=f.root,
+            installation_sha256=sha(f.agent.install), account=session['account'], job_id='chosen'):
+            for name, request_id in (('queue.reserve', 'chosen-reserve-r1'),
+                                     ('queue.release_reservation', 'chosen-release-reservation-r2'),
+                                     ('queue.cancel', 'chosen-cancel-r12')):
+                self.assertIsNone(command(db, binding, state, dict(command=name, request_id=request_id,
+                    payload=dict(job_id='chosen')), actor='agent'))
+            for request_id in ('chosen-reserve-r0', 'chosen-reserve-rx', 'chosen-reserve-r1-r1',
+                               'chosen-reserve-r10000', 'other-reserve-r1', 'chosen-cancel-r1'):
+                with self.subTest(request_id=request_id), self.assertRaises(ValueError):
+                    command(db, binding, state, dict(command='queue.reserve', request_id=request_id,
+                        payload=dict(job_id='chosen')), actor='agent')
+
 
 if __name__ == '__main__':
     unittest.main()

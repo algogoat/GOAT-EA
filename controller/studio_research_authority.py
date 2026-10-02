@@ -8,6 +8,7 @@ from contextvars import ContextVar
 import hashlib
 import json
 from pathlib import Path
+import re
 import time
 
 from campaign_ledger import packed, sha
@@ -197,8 +198,9 @@ def command(db, binding, state, request, actor):
                    and request['request_id'] == job_id + '-batch'
                    and request['payload'].get('job_id') == job_id) or (
                    op == 'run-batch' and command_name in ('queue.reserve', 'queue.cancel', 'queue.release_reservation')
-                   and request['request_id'] == job_id + {'queue.reserve':'-reserve', 'queue.cancel':'-cancel',
-                                                        'queue.release_reservation':'-release-reservation'}[command_name]
+                   and re.fullmatch(re.escape(job_id + {'queue.reserve':'-reserve', 'queue.cancel':'-cancel',
+                                                        'queue.release_reservation':'-release-reservation'}[command_name])
+                                    + r'(-r[1-9][0-9]{0,3})?', request['request_id']) is not None
                    and request['payload'].get('job_id') == job_id)
         if not allowed:
             raise ValueError('Demo agent scope permits only this tool job and exact Studio command')

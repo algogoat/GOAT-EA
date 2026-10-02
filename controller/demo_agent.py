@@ -379,6 +379,22 @@ class DemoAgent:
                 finally:
                     controller.store.close()
 
+    def cancel_pending(self, batch_id):
+        """Cancel one batch that never started (pending, no launch intent).
+
+        Uses the controller's own pending-job cancel under that exact job's scope;
+        a started, reserved or running job is refused and must be stopped instead.
+        """
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid prepared batch ID')
+        with self._exclusive(), self._studio('run-batch', idle=True, job_id=batch_id) as (controller, broker):
+            job = controller.job(batch_id)
+            if job['status'] != 'pending' or 'launch_intent' in job:
+                raise ValueError('Only a never-started pending batch can be cancelled here; use stop for running work')
+            controller.cancel(batch_id, expected_generation=controller.state()['generation'])
+            self._append('studio_cancel_pending', 'cancelled', batch_id=batch_id, broker=broker)
+            return dict(status=controller.job(batch_id)['status'], batch_id=batch_id)
+
     def clear_stop(self):
         marker = self.state_root / 'STOP'
         if not marker.exists():
@@ -814,10 +830,17 @@ class DemoAgent:
         with self._exclusive(), self._studio('run-batch', idle=not resume,
                 owner_required=not resume, job_id=batch_id) as (controller, broker):
             if journal.is_file():
-                from studio_batch_driver import status
+                from studio_batch_driver import status, refused_before_dispatch
                 previous = status(controller, batch_id)
-                if previous.get('stopped') is True or not resume:
+                retry = not resume and refused_before_dispatch(read_json(journal), controller.job(batch_id))
+                if not retry and (previous.get('stopped') is True or not resume):
                     return dict(status='existing_driver', driver=previous)
+                if retry:
+                    # Archive the refused journal now, so the wait below only sees the new worker's.
+                    from studio_batch_driver import _retire_refused_journal
+                    from studio_native_gate import exclusive_gate
+                    with exclusive_gate(self.root / 'batch-driver-gate'):
+                        _retire_refused_journal(controller, batch_id, journal, time)
             elif resume:
                 raise ValueError('No retained driver journal exists to resume')
             else:
@@ -1199,6 +1222,8 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('status'); commands.add_parser('preflight')
     commands.add_parser('disk-status')
+    cancel_pending = commands.add_parser('cancel-pending')
+    cancel_pending.add_argument('--batch-id', required=True)
     stop = commands.add_parser('stop')
     stop.add_argument('--monitor-config', type=Path, help='Exact monitor-only INI for cancellation recovery after MT5 exits; STOP remains set')
     commands.add_parser('clear-stop')
@@ -1247,6 +1272,7 @@ def main(argv=None):
         if args.command == 'status': result = agent.status()
         elif args.command == 'preflight': result = agent.preflight()
         elif args.command == 'disk-status': result = agent.disk_status()
+        elif args.command == 'cancel-pending': result = agent.cancel_pending(args.batch_id)
         elif args.command == 'stop': result = agent.stop(args.monitor_config)
         elif args.command == 'clear-stop': result = agent.clear_stop()
         elif args.command == 'recover-orphan': result = agent.recover_orphan(args.review_id)

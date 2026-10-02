@@ -15,6 +15,12 @@ import subprocess
 import sys
 import time
 
+# Same anchoring as demo_agent.py: the embedded GOAT Python lists its installed
+# controller (../controller) ahead of this script's directory, so without this
+# the demand task would import an older demo_agent and refuse newer arguments
+# (seen live: `_drive-batch --pause-seconds` rejected, supervisor exit 2).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from studio_handover import safe_path
 from studio_installation import load_installation, read_json
 

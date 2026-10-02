@@ -48,6 +48,7 @@ SAFE_START_SECONDS = 300
 MIN_REMAINING_SECONDS = 180
 FINISH_PATIENCE_SECONDS = 900
 HISTORY_LIMIT = 200
+MAX_MANIFEST_BYTES = 64 * 1024 * 1024  # package manifests scale with member count
 ACTIVE = frozenset(('starting', 'running', 'reconcile_required', 'verifying'))
 TERMINAL = frozenset(('completed', 'cancelled', 'failed'))
 JOB_ID = re.compile(r'[A-Za-z0-9_-]{1,80}')
@@ -288,13 +289,18 @@ def _entry(record, request_id, kind, issued):
 
 def _native(controller, job, now):
     from studio_native_observe import observe
-    from studio_research_status import timeline, pace
+    from studio_research_status import timeline, pace, _bounded_json
     package = Path(job['launch_intent']['package'])
     native = observe(package)
     if native.get('status') == 'native_evidence_missing':
         return native, [], None, None
     statuses = [member['status'] for member in native['members']]
-    manifest = read_json(package / 'manifest.json')
+    # Package manifests grow with the batch (g6's 1,265 members are ~2.8 MB), past
+    # read_json's 2 MB envelope cap; read it like the native observer does, bounded.
+    # Unreadable evidence only ever means "keep waiting", never "publish".
+    manifest, _ = _bounded_json(package / 'manifest.json', MAX_MANIFEST_BYTES)
+    if not isinstance(manifest, dict) or not isinstance(manifest.get('jobs'), list):
+        return native, [], None, None
     common_run = Path(controller.install['common_files_root']) / manifest['native_run_relative'].replace('\\', '/')
     timing = timeline(common_run, [item['run_alias'] for item in manifest['jobs']])
     member = pace(timing, statuses, now=now)['member_minutes_median']

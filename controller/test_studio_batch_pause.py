@@ -205,6 +205,20 @@ class SafePointTests(PauseFixture):
         self.assertIsNone(record['blocker'])
         self.assertEqual(self.issued(), [])
 
+    def test_large_package_manifest_is_read_not_refused(self):
+        """g6 live (15:56Z): a 1,265-member manifest (~2.8 MB) hit read_json's 2 MB cap on every step."""
+        path = self.package / 'manifest.json'
+        manifest = json.loads(path.read_text(encoding='utf-8'))
+        manifest['padding'] = 'x' * 2_100_000
+        path.write_text(json.dumps(manifest), encoding='utf-8')
+        self.assertGreater(path.stat().st_size, 2_000_000)
+        self.request()
+        self.queue(['Completed', 'OnGoing', 'Pending'])
+        self.event(0, 'Completed', NOW - 400); self.event(1, 'OnGoing', NOW - 30)
+        record = self.step()
+        self.assertEqual((record['phase'], record['safe_point']['kind']), ('cancel_published', 'member_started'))
+        self.assertEqual(len(self.issued()), 1)
+
     def test_member_start_seen_between_polls_counts_without_a_timeline(self):
         self.request()
         self.queue(['OnGoing', 'Pending', 'Pending'])

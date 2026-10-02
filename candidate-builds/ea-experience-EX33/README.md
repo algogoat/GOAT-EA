@@ -1,13 +1,17 @@
 EX33 is an inert forward V1.49 candidate. It is SM31 plus the EA experience track:
 
-- **No profitable passes is a research outcome, not an error.** When a back report holds passes
-  but none is profitable with at least 50 trades, `XmlProcessor.mqh` classifies the member as
+- **No profitable passes is a research outcome, not an error.** When a whole back report (table
+  closed, every row parsed, a whole forward report with no more rows than passes) holds passes, at
+  least one of them traded, and none is profitable with at least 50 trades, `XmlProcessor.mqh` classifies the member as
   `no_profitable_passes` (`GOAT_RESEARCH_OUTCOME_V149`) instead of failing the combine with
   `No Rows!`. `OnTesterDeinit` writes one `NoProfitablePasses` row to the run's `item_stats.tsv`
   with the pass count, profitable count, best profit, best score and the back-test window. The
   native queue status stays `Error`, so the controller wire is unchanged; the controller tells
   these members apart (`research-status`, `finish`, `batch-pause`, `batch-resume --include-failed`).
-  The back-row log now reports kept/total passes instead of `Rows Saved=0/0`.
+  A report whose EA never traded, that cannot be read or that is partial stays a real error, and
+  `--include-failed` retries it; `--include-no-edge` deliberately re-runs no-edge members.
+  The back-row log now reports kept/total passes instead of `Rows Saved=0/0`. Whether MT5 writes a
+  partial report after a manual tester Stop still needs native verification.
 - **Connection code.** The activation card says "Connection code: XXXX-XXXX" and its link carries
   the code in the `#ea-connect=` URL fragment (never a query string). The server contract is unchanged.
 - Studio, Dashboard and prompt copy, state and layout fixes from the 2026-10-02 UX audit

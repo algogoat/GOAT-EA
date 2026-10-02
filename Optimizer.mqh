@@ -1442,6 +1442,16 @@ void BuildOptimizationBatchPromptSummary(const string queueFile,const string log
    int noEdge=0;
    if(loaded && stats.errors>0)
      {
+      // Only items the queue itself marks Error are counted (status check).
+      string errorAliases="\n",queueItems[];
+      int queueCount=StringSplit(GetFileContent(queueFile),(ushort)31,queueItems);
+      for(int q=0;q<queueCount;q++)
+        {
+         string head=queueItems[q]; StringTrimLeft(head);
+         int headEnd=StringFind(head,";",1),colon=-1;
+         for(int k=headEnd-1;k>0 && colon<0;k--) if(StringGetCharacter(head,k)==':') colon=k;
+         if(StringFind(head,";Error_")==0 && colon>0) errorAliases+=StringSubstr(head,colon+1,headEnd-colon-1)+"\n";
+        }
       string seen="\n";
       string statLines[];
       int statCount=StringSplit(GoatOptReadTextFile(GoatOptFolderOf(queueFile)+"\\item_stats.tsv"),'\n',statLines);
@@ -1449,6 +1459,7 @@ void BuildOptimizationBatchPromptSummary(const string queueFile,const string log
         {
          string fields[];
          if(StringSplit(statLines[i],'\t',fields)<9 || fields[3]!="NoProfitablePasses") continue;
+         if(StringFind(errorAliases,"\n"+fields[2]+"\n")<0) continue;
          string itemKey=fields[1]+"\t"+fields[2]+"\n";
          if(StringFind(seen,"\n"+itemKey)>=0) continue;
          seen+=itemKey; noEdge++;

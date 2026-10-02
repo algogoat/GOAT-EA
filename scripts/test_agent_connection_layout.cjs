@@ -141,4 +141,27 @@ for (let selected = 0; selected < 4; selected++) {
   assert.ok(actions.at(-1).x + actions.at(-1).w <= 1555, 'Queue actions overflow');
   passed++;
 }
+// Batch heading fits MT5's 63-character edit cut with four-digit counts (review LOW).
+{
+  const line = ui.match(/batch_heading="BATCH "[^;]+;/)[0].replace(/\(string\)/g, '');
+  for (const n of [0, 7, 113, 9999]) {
+    const c = {done: n, total: n, remaining: n, failed: n, cancelled: n, batch_heading: ''};
+    vm.runInNewContext(line, c);
+    assert.ok(c.batch_heading.startsWith('BATCH ') && c.batch_heading.length <= 63, c.batch_heading);
+    assert.match(c.batch_heading, / cancelled$/, 'the cancelled count is never the part that gets cut');
+    passed++;
+  }
+}
+// Every queue state has its own plain word; reconcile is never shown as "Running".
+{
+  const at = ui.indexOf('string GoatStudioStatusWord(');
+  const body = ui.slice(ui.indexOf('{', at), ui.indexOf('\n  }', at) + 4);
+  const word = new Function('status', body.replace(/^\{|\}$/g, ''));
+  assert.equal(word('reconcile_required'), 'Needs reconcile');
+  assert.equal(word('verifying'), 'Verifying');
+  assert.equal(word('ongoing'), 'Running');
+  assert.equal(word('pending'), 'Waiting');
+  assert.equal(word('error'), 'Error');
+  passed++;
+}
 console.log(JSON.stringify({passed, nativeVisualQualification: false}));

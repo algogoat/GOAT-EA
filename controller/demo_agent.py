@@ -1049,7 +1049,7 @@ class DemoAgent:
         return 'refreshed'
 
     def batch_resume(self, batch_id, *, new_batch_id=None, resume_token=None, max_seconds=None,
-                     clear_stop=False, include_failed=False):
+                     clear_stop=False, include_failed=False, include_no_edge=False):
         """Continue a paused batch: remaining work under a new ID, started under the bounded driver."""
         from studio_batch import resume_batch
         from studio_batch_pause import (PauseRefused, load, mark_resumed, plan_resume, refusal, successor_id,
@@ -1095,7 +1095,8 @@ class DemoAgent:
             peer = refresh_process(controller)
             self._append('batch_resume', 'intent', batch_id=batch_id, successor_batch_id=new_id,
                          peer=peer.get('status'), broker=broker)
-            prepared = resume_batch(controller, batch_id, new_id, include_failed=include_failed, allow_peer_refresh=True)
+            prepared = resume_batch(controller, batch_id, new_id, include_failed=include_failed,
+                                    include_no_edge=include_no_edge, allow_peer_refresh=True)
             job = controller.job(new_id)
             if job['status'] != 'pending' or 'launch_intent' in job:
                 raise ValueError('Successor batch is not an unstarted prepared batch')
@@ -1455,6 +1456,8 @@ def main(argv=None):
     resumed.add_argument('--max-seconds', type=int)
     resumed.add_argument('--clear-stop', action='store_true', help='Lift an owner STOP written by GOAT before resuming')
     resumed.add_argument('--include-failed', action='store_true')
+    resumed.add_argument('--include-no-edge', action='store_true',
+                         help='Also re-run members tested with no profitable settings (results, not failures)')
     batch = commands.add_parser('batch-status')
     batch.add_argument('--batch-id', required=True)
     driver = commands.add_parser('batch-driver-status')
@@ -1498,7 +1501,7 @@ def main(argv=None):
         elif args.command == 'batch-pause': result = agent.batch_pause(args.batch_id, immediate=args.immediate)
         elif args.command == 'batch-resume': result = agent.batch_resume(args.batch_id, new_batch_id=args.new_batch_id,
             resume_token=args.resume_token, max_seconds=args.max_seconds, clear_stop=args.clear_stop,
-            include_failed=args.include_failed)
+            include_failed=args.include_failed, include_no_edge=args.include_no_edge)
         elif args.command == 'batch-status': result = agent.batch_status(args.batch_id)
         elif args.command == 'batch-driver-status': result = agent.batch_driver_status(args.batch_id)
         elif args.command == 'seed-validate': result = agent.seed_validate(args.plan)

@@ -21,8 +21,10 @@ from studio_research_status import (ITEM_STATS_HEADER, batch_progress, headline,
 import test_studio_batch_pause as pause_fixtures
 
 NOW = 1_800_000_000
-DETAILS = ('outcome=no_profitable_passes;passes=175;profitable=0;best_profit=-1261.09;best_score=0.0500;min_trades=50;'
+DETAILS = ('outcome=no_profitable_passes;passes=175;profitable=0;traded=175;malformed=0;complete=1;forward_rows=175;'
+           'best_profit=-1261.09;best_score=0.0500;min_trades=50;'
            'window_start=2024.01.08;window_end=2025.01.06;forward_end=2025.03.15')
+TIMING = dict(started={0: NOW - 3600, 1: NOW - 3600, 2: NOW - 3600}, ended={}, outcome={})
 
 
 def local(epoch):
@@ -52,9 +54,10 @@ class ItemStatsTests(unittest.TestCase):
 
     def test_g6_row_is_read_with_its_window_and_numbers(self):
         write_stats(self.run, [stats_row('A0', 'USDCAD')])
-        found = item_outcomes(self.run, self.members)
+        found = item_outcomes(self.run, self.members, TIMING)
         self.assertEqual(list(found), [0])
         outcome = found[0]
+        self.assertEqual((outcome['traded'], outcome['malformed'], outcome['complete'], outcome['forward_rows']), (175, 0, '1', 175))
         self.assertEqual((outcome['outcome'], outcome['passes'], outcome['profitable'], outcome['best_profit'], outcome['best_score']),
                          ('no_profitable_passes', 175, 0, -1261.09, 0.05))
         self.assertEqual(outcome['window'], dict(start='2024.01.08', end='2025.01.06', forward_end='2025.03.15'))
@@ -70,7 +73,29 @@ class ItemStatsTests(unittest.TestCase):
             stats_row('A2', 'EURUSD', details=DETAILS.replace('profitable=0', 'profitable=900')),
             stats_row('A2', 'EURUSD', details='outcome=no_profitable_passes'),
         ])
+        self.assertEqual(item_outcomes(self.run, self.members, TIMING), {})
+
+    def test_mirrors_the_ea_guard_never_traded_unreadable_or_partial_stays_an_error(self):
+        """Review HIGH/MEDIUM: only proof of trading and a whole report make a no-edge result."""
+        for label, details in [
+                ('no pass traded (EA never traded)', DETAILS.replace('traded=175', 'traded=0')),
+                ('more traded passes than passes', DETAILS.replace('traded=175', 'traded=176')),
+                ('a row did not parse', DETAILS.replace('malformed=0', 'malformed=3')),
+                ('results table never closed', DETAILS.replace('complete=1', 'complete=0')),
+                ('forward report empty or unreadable', DETAILS.replace('forward_rows=175', 'forward_rows=0')),
+                ('forward rows exceed passes', DETAILS.replace('forward_rows=175', 'forward_rows=176')),
+                ('no losses yet best profit is positive', DETAILS.replace('best_profit=-1261.09', 'best_profit=12.00')),
+                ('older build without trade proof', DETAILS.replace('traded=175;malformed=0;complete=1;forward_rows=175;', ''))]:
+            with self.subTest(label):
+                write_stats(self.run, [stats_row('A0', 'USDCAD', details=details)])
+                self.assertEqual(item_outcomes(self.run, self.members, TIMING), {}, label)
+        write_stats(self.run, [stats_row('A0', 'USDCAD', details=DETAILS.replace('traded=175', 'traded=1'))])
+        self.assertEqual(list(item_outcomes(self.run, self.members, TIMING)), [0], 'one traded pass is enough proof')
+
+    def test_without_timeline_evidence_nothing_is_relabelled(self):
+        write_stats(self.run, [stats_row('A0', 'USDCAD')])
         self.assertEqual(item_outcomes(self.run, self.members), {})
+        self.assertEqual(item_outcomes(self.run, self.members, dict(started={1: NOW - 3600})), {})
 
     def test_a_row_from_an_older_attempt_never_relabels_a_later_failure(self):
         write_stats(self.run, [stats_row('A0', 'USDCAD', at=NOW - 3000)])
@@ -83,22 +108,22 @@ class ItemStatsTests(unittest.TestCase):
         self.assertEqual(list(item_outcomes(self.run, self.members, timing)), [0])
 
     def test_missing_unreadable_or_foreign_files_are_unknown_not_errors(self):
-        self.assertEqual(item_outcomes(self.run, self.members), {})
+        self.assertEqual(item_outcomes(self.run, self.members, TIMING), {})
         Path(self.run, 'item_stats.tsv').write_bytes(b'\xff\xfe\x00')
-        self.assertEqual(item_outcomes(self.run, self.members), {})
+        self.assertEqual(item_outcomes(self.run, self.members, TIMING), {})
         Path(self.run, 'item_stats.tsv').write_text('Other\theader\n' + stats_row('A0', 'USDCAD'), encoding='utf-8')
-        self.assertEqual(item_outcomes(self.run, self.members), {})
+        self.assertEqual(item_outcomes(self.run, self.members, TIMING), {})
         write_stats(self.run, [stats_row('A0', 'USDCAD')], encoding='utf-8-sig')
-        self.assertEqual(list(item_outcomes(self.run, self.members)), [0])
+        self.assertEqual(list(item_outcomes(self.run, self.members, TIMING)), [0])
 
     def test_only_native_error_members_are_relabelled(self):
         write_stats(self.run, [stats_row('A0', 'USDCAD'), stats_row('A1', 'USDCHF')])
-        found = no_edge_members(self.run, self.members, ['native_error', 'native_completed', 'native_error'])
+        found = no_edge_members(self.run, self.members, ['native_error', 'native_completed', 'native_error'], TIMING)
         self.assertEqual(list(found), [0])
 
     def test_summary_states_the_window_and_is_not_a_verdict(self):
         write_stats(self.run, [stats_row('A0', 'USDCAD', details=DETAILS.replace('profitable=0', 'profitable=3'))])
-        text = no_edge_summary('USDCAD', 'M1', item_outcomes(self.run, self.members)[0])
+        text = no_edge_summary('USDCAD', 'M1', item_outcomes(self.run, self.members, TIMING)[0])
         self.assertEqual(text, 'USDCAD M1: tested, no edge in 2024.01.08 to 2025.01.06 — 175 settings, none profitable '
                                'with 50+ trades (3 profitable on fewer trades), best profit -1,261.09. '
                                'A result for this window only, not a verdict on the strategy.')
@@ -120,6 +145,8 @@ class ProgressTests(unittest.TestCase):
         self.run = self.common / 'GOAT' / 'Rabcdef012345'; self.run.mkdir(parents=True)
         self.install = dict(common_files_root=str(self.common))
         self.job = dict(job_id='g6', launch_intent={}, configuration=dict(batch_members=[{}] * len(self.SYMBOLS)))
+        # Every member started an hour ago (the EA's QUEUE_STATE OnGoing evidence).
+        write_timeline(self.run, [(alias, 'OnGoing', NOW - 3600) for alias in self.aliases])
 
     def progress(self, statuses, now=NOW):
         native = dict(status='native_ongoing' if 'native_ongoing' in statuses else 'native_error',
@@ -168,6 +195,17 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(headline(dict(kind='batch', status='failed', **value)),
                          'Batch finished; 1 of 4 members done, 0 qualifying, 3 tested with no edge in 2024.01.08 to 2025.01.06.')
 
+    def test_cancelled_members_are_named_and_never_called_finished(self):
+        """Review MEDIUM: one no-edge member plus two cancelled ones stopped early."""
+        write_stats(self.run, [stats_row(self.aliases[1], 'USDCAD')])
+        value = self.progress(['native_cancelled', 'native_error', 'native_cancelled', 'native_completed'])
+        self.assertEqual(value['members_cancelled'], 2)
+        self.assertEqual(headline(dict(kind='batch', status='failed', **value)),
+                         'Batch stopped early; 1 of 4 members done, 0 qualifying, 1 tested with no edge in '
+                         '2024.01.08 to 2025.01.06, 2 cancelled.')
+        paused = headline(dict(kind='batch', status='paused', **value))
+        self.assertNotIn('cancelled', paused)   # a pause cancels the rest by design
+
     def test_different_windows_are_never_merged_into_one(self):
         other = DETAILS.replace('window_start=2024.01.08', 'window_start=2023.06.01')
         write_stats(self.run, [stats_row(self.aliases[1], 'USDCAD'), stats_row(self.aliases[2], 'USDCHF', details=other)])
@@ -187,6 +225,7 @@ class FinishTests(unittest.TestCase):
     def test_finish_records_no_edge_members_for_the_scoreboard(self):
         with tempfile.TemporaryDirectory() as folder:
             write_stats(folder, [stats_row('A1', 'USDCAD')])
+            write_timeline(folder, [('A0', 'OnGoing', NOW - 3600), ('A1', 'OnGoing', NOW - 3600)])
             members = [dict(run_alias='A0', symbol='EURUSD', status='native_completed', tester=dict(Period='M1')),
                        dict(run_alias='A1', symbol='USDCAD', status='native_error', tester=dict(Period='M1'))]
             outcomes, error = _research_outcomes(dict(native_run=folder, members=members))
@@ -230,6 +269,22 @@ class PauseAndResumeTests(pause_fixtures.PauseFixture):
         prepared = resume_batch(self.c, 'g6', 'g6-r1', include_failed=True)
         self.assertEqual(prepared['member_count'], 1)
         self.assertEqual([m['tester']['Symbol'] for m in self.c.job('g6-r1')['configuration']['batch_members']], ['USDJPY.c'])
+
+    def test_include_no_edge_deliberately_reruns_them(self):
+        """Review HIGH: an explicit override re-runs no-edge members, alone or with failures."""
+        self.finish_with_outcomes(['Completed', 'Error', 'Error'], [1])
+        only = resume_batch(self.c, 'g6', 'g6-r1', include_no_edge=True)
+        self.assertEqual([m['tester']['Symbol'] for m in self.c.job('g6-r1')['configuration']['batch_members']], ['GBPUSD.c'])
+        both = resume_batch(self.c, 'g6', 'g6-r2', include_failed=True, include_no_edge=True)
+        self.assertEqual((only['member_count'], both['member_count']), (1, 2))
+        with self.assertRaisesRegex(ValueError, 'No unfinished members selected'):
+            resume_batch(self.c, 'g6', 'g6-r3')
+
+    def test_resume_cli_and_demo_lane_expose_the_override(self):
+        for name in ('goat_studio.py', 'demo_agent.py'):
+            source = Path(__file__).with_name(name).read_text(encoding='utf-8')
+            self.assertIn('--include-no-edge', source, name)
+            self.assertIn('include_no_edge=args.include_no_edge', source, name)
 
 
 if __name__ == '__main__':

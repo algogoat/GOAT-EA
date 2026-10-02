@@ -45,6 +45,10 @@ public:
    // whose passes all lost is told apart from a report that could not be read.
    int passesSeen, profitableSeen;
    double bestProfit, bestResult;
+   // Proof the optimization really ran and the report is whole: passes with trades,
+   // rows that did not parse, and whether the results table closed normally.
+   int tradedSeen, malformedSeen, forwardRows;
+   bool reportClosed;
    string outcome;   // set by ReportAnalyzerCombiner; "" unless every pair was tested without edge
 //+------------------------------------------------------------------+
    bool ProcessBackXml(const string &filename)
@@ -108,18 +112,27 @@ public:
       ArrayResize(Rows,1,3000);
       for(int i=0; !FileIsEnding(hBack); i++)
       {
-         if(FileReadString(hBack)=="<Row>")
+         string rowStart=FileReadString(hBack);
+         if(rowStart=="<Row>")
          {
-            Rows[i].pass=(int)ExtractDataAsDouble(FileReadString(hBack));
+            string passCell=FileReadString(hBack);
+            Rows[i].pass=(int)ExtractDataAsDouble(passCell);
             Rows[i].back_result=ExtractDataAsDouble(FileReadString(hBack));
-            Rows[i].back_profit=ExtractDataAsDouble(FileReadString(hBack));
+            string profitCell=FileReadString(hBack);
+            Rows[i].back_profit=ExtractDataAsDouble(profitCell);
             if(passesSeen==0 || Rows[i].back_profit>bestProfit) bestProfit=Rows[i].back_profit;
             if(passesSeen==0 || Rows[i].back_result>bestResult) bestResult=Rows[i].back_result;
             passesSeen++;
+            if(!IsNumberCell(passCell) || !IsNumberCell(profitCell)) malformedSeen++;
             if(Rows[i].back_profit<0.001)
             {
+               // Read on to this pass's Trades cell (the 10th): a report whose EA never
+               // traded, or that cannot be read, is never taken for a tested loss.
                line="";
-               while(line!="</Row>")line=FileReadString(hBack);
+               for(int cell=3;cell<=9 && line!="</Row>" && !FileIsEnding(hBack);cell++) line=FileReadString(hBack);
+               if(line=="</Row>" || !IsNumberCell(line)) malformedSeen++;
+               else if(ExtractDataAsDouble(line)>0) tradedSeen++;
+               while(line!="</Row>" && !FileIsEnding(hBack))line=FileReadString(hBack);
                i--; continue;
             }
             profitableSeen++;
@@ -129,11 +142,14 @@ public:
             Rows[i].back_SR=ExtractDataAsDouble(FileReadString(hBack));
             string dump2=FileReadString(hBack);
             Rows[i].back_DD_pc=ExtractDataAsDouble(FileReadString(hBack));
-            Rows[i].back_trades=(int)ExtractDataAsDouble(FileReadString(hBack));
+            string tradesCell=FileReadString(hBack);
+            Rows[i].back_trades=(int)ExtractDataAsDouble(tradesCell);
+            if(!IsNumberCell(tradesCell)) malformedSeen++;
+            else if(Rows[i].back_trades>0) tradedSeen++;
             if(Rows[i].back_trades<GOAT_XML_MIN_BACK_TRADES)//<=90
             {
                line="";
-               while(line!="</Row>")line=FileReadString(hBack);
+               while(line!="</Row>" && !FileIsEnding(hBack))line=FileReadString(hBack);
                i--;
                continue;
             }
@@ -142,12 +158,15 @@ public:
             {
                line=FileReadString(hBack);
                if(line=="</Row>")break;
+               if(FileIsEnding(hBack)) {malformedSeen++; break;}   // truncated report: never loop at EOF
                Rows[i].Inputs+=","+ExtractDataFromCell(line);
             }
             ArrayResize(Rows,ArraySize(Rows)+1,3000);
          }
          else
          {
+            // A whole report ends its results table here; a truncated one never does.
+            reportClosed=(StringFind(rowStart,"</Table>")>=0);
             ArrayResize(Rows,ArraySize(Rows)-1);
             // i counts kept rows only (skipped rows rewind it), so report kept/total passes.
             LogOrPrint(reportMode,"No further back <Row> Found. Rows Saved="+(string)ArraySize(Rows)+"/"+(string)passesSeen
@@ -736,6 +755,8 @@ bool ExtractSymbolTfFromTitle(const string &title,
 string OutcomeDetails(void)
   {
    return "outcome="+outcome+";passes="+(string)passesSeen+";profitable="+(string)profitableSeen
+          +";traded="+(string)tradedSeen+";malformed="+(string)malformedSeen+";complete="+(reportClosed ? "1" : "0")
+          +";forward_rows="+(string)forwardRows
           +";best_profit="+DoubleToString(bestProfit,2)+";best_score="+DoubleToString(bestResult,4)
           +";min_trades="+(string)GOAT_XML_MIN_BACK_TRADES+";window_start="+TimeToString(startD,TIME_DATE)
           +";window_end="+TimeToString(forwardD,TIME_DATE)+";forward_end="+TimeToString(endD,TIME_DATE);
@@ -747,11 +768,27 @@ string OutcomeWindow(void)
 string OutcomeSentence(void)
   {
    return "Tested "+(string)passesSeen+" settings on "+symbol_+" "+TF_+" in "+OutcomeWindow()
-          +": none was profitable with "+(string)GOAT_XML_MIN_BACK_TRADES+"+ trades (best profit "
-          +DoubleToString(bestProfit,2)+"). A result for this window, not an error.";
+          +": none was profitable with "+(string)GOAT_XML_MIN_BACK_TRADES+"+ trades ("+(profitableSeen>0 ? (string)profitableSeen+" profitable on fewer, " : "")
+          +"best profit "+DoubleToString(bestProfit,2)+"). A result for this window, not an error.";
+  }
+// Data rows in a forward report, or -1 when it cannot be read or its table never closed.
+int ForwardReportRows(const string filename)
+  {
+   int h=FileOpen(filename,FILE_READ|FILE_COMMON|FILE_ANSI,'\t',CP_UTF8);
+   if(h==INVALID_HANDLE) return -1;
+   int rows=0; bool closed=false;
+   while(!FileIsEnding(h))
+     {
+      string line=FileReadString(h);
+      if(line=="<Row>") rows++;
+      else if(StringFind(line,"</Table>")>=0) {closed=true; break;}
+     }
+   FileClose(h);
+   return (closed && rows>0) ? rows-1 : -1;   // the first row is the header
   }
 //+------------------------------------------------------------------+
 private:
+   bool IsNumberCell(const string cell) {return(StringFind(cell,"ss:Type=\"Number\">")>=0);}
    int GetBackPassRow(int Forward_pass)
    {
       for(int i=0;i<ArraySize(Rows);i++)
@@ -875,21 +912,28 @@ private:
       metadataWithWorkbookStart=""; DocumentProperties=""; WorksheetLine="";
       InputsNames=""; startD=endD=0; ArrayResize(m_inputVarNames,0);
       passesSeen=0; profitableSeen=0; bestProfit=0; bestResult=0;
+      tradedSeen=0; malformedSeen=0; reportClosed=false;
    }
 };
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 SXmlData xmlData;
 //----------------------------------------------------------------------------------------------------------------------------------------------------
-// A pair whose back report was read and matches its file name, with a known
-// back/forward window and at least one pass, but no pass kept (profitable with
-// enough trades), was tested without edge in that window. Anything else stays an error.
+// A pair is tested without edge only when its back report was read whole (table
+// closed, every row parsed), matches its file name, has a known back/forward window,
+// at least one pass really traded, none was kept (profitable with enough trades), and
+// its forward report is whole with no more rows than back passes. A report whose EA
+// never traded, that cannot be read, or that is partial stays an error and is retried.
 #define GOAT_XML_NO_PROFITABLE_PASSES "no_profitable_passes"
 string GoatXmlResearchOutcome(const bool back_read,const bool title_matches,const datetime window_start,
-                              const datetime forward_date,const datetime window_end,const int passes,const int kept)
+                              const datetime forward_date,const datetime window_end,const int passes,const int kept,
+                              const int traded,const int malformed,const bool report_closed,const int forward_rows)
   {
    if(!back_read || !title_matches) return "";
    if(window_start<=0 || forward_date<=window_start || window_end<=forward_date) return "";
    if(passes<=0 || kept!=0) return "";
+   if(!report_closed || malformed!=0) return "";
+   if(traded<=0 || traded>passes) return "";
+   if(forward_rows<=0 || forward_rows>passes) return "";
    return GOAT_XML_NO_PROFITABLE_PASSES;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -954,8 +998,10 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
 #ifdef GOAT_RESEARCH_OUTCOME_V149
          // Passes ran and none was kept: there is nothing to combine or export for
          // this window. Recorded as a research outcome below, not as a combine error.
+         xmlData.forwardRows=xmlData.ForwardReportRows(forwardFile);
          if(GoatXmlResearchOutcome(backRead,titleMatches,xmlData.startD,ForwardDate,xmlData.endD,
-                                   xmlData.passesSeen,ArraySize(xmlData.Rows))!="")
+                                   xmlData.passesSeen,ArraySize(xmlData.Rows),xmlData.tradedSeen,xmlData.malformedSeen,
+                                   xmlData.reportClosed,xmlData.forwardRows)!="")
          {
           noEdgePairs++;
           LogOrPrint(reportMode,xmlData.OutcomeSentence(),Key_,EA_Name_,Server_);

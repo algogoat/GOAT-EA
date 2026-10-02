@@ -330,8 +330,13 @@ def load_batch(controller, batch_id, source):
     return result
 
 
-def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False, allow_peer_refresh=False):
-    """Create a new native queue containing explicitly selected unfinished work."""
+def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False, include_no_edge=False,
+                 allow_peer_refresh=False):
+    """Create a new native queue containing explicitly selected unfinished work.
+
+    `include_failed` retries real failures; members tested with no profitable
+    settings are results, so only `include_no_edge` deliberately re-runs them.
+    """
     previous = controller.job(source_batch_id)
     if previous['status'] not in ('completed', 'cancelled', 'failed'):
         raise ValueError('Stop/reconcile/finish the original batch before preparing its remaining work')
@@ -349,7 +354,8 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
     configurations = configuration_members(previous['configuration'])
     if len(configurations) != len(manifest['jobs']): raise ValueError('Remaining-work configuration count mismatch')
     # Members tested with no profitable settings are results for their window, not
-    # failures: retrying failures never re-runs them (finish recorded them).
+    # failures: retrying failures never re-runs them (finish recorded them); only the
+    # explicit include_no_edge override does.
     no_edge = {item['index'] for item in (previous.get('completion') or {}).get('research_outcomes') or []
                if isinstance(item, dict) and type(item.get('index')) is int}
     selected = []
@@ -358,7 +364,8 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
             raise ValueError('Remaining-work identity mismatch')
         status = evidence['status'].lower().removeprefix('native_')
         if status == 'completed': continue
-        if status == 'error' and (not include_failed or index in no_edge): continue
+        if status == 'error' and index in no_edge and not include_no_edge: continue
+        if status == 'error' and index not in no_edge and not include_failed: continue
         if status not in ('pending', 'queued', 'cancelled', 'error'):
             raise ValueError('Native member remains unresolved; do not infer stopped from process absence')
         selected.append(dict(set_path=str(package / (native['run_alias'] + '.set')), tester=config['tester']))
@@ -368,5 +375,6 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
     write_json(plan_path, dict(schema_version=1, export=previous['configuration']['export'], members=selected))
     result = prepare_batch(controller, batch_id, plan_path)
     write_json(inputs / 'provenance.json', dict(source_batch_id=source_batch_id, new_batch_id=batch_id,
-        include_failed=include_failed, selected_count=len(selected), skipped_no_edge=len(no_edge)))
+        include_failed=include_failed, include_no_edge=include_no_edge, selected_count=len(selected),
+        no_edge_members=len(no_edge)))
     return result

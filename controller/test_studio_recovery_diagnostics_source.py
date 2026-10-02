@@ -149,9 +149,11 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
         self.assertIn('bool still_idle=(algo_off', timer)
         self.assertIn('readback && still_idle ? "READBACK_OK"', timer)
         self.assertLess(timer.index('GoatStudioReadWorkerPolicy('), timer.index('TesterDialog.OnClickRefresh(true);'))
-        # One caption names the account, build marker and mode; read-only stays visible.
-        self.assertIn('TesterDialog.Caption("GOAT | "+(string)AccountInfoInteger(ACCOUNT_LOGIN)', timer)
-        self.assertIn('GOAT_BUILD_MARKER+(GoatStudioManaged() ? " | agent" : " | read-only")', timer)
+        # One caption names the mode first (so MT5's 63-character cut never hides it), then the
+        # account and build; "agent" only while the agent really holds control.
+        self.assertIn('TesterDialog.Caption("GOAT "+studio_mode+" | "+(string)AccountInfoInteger(ACCOUNT_LOGIN)', timer)
+        self.assertIn('string studio_mode=!GoatStudioManaged() ? "read-only" : (TesterDialog.m_studioOwner=="agent" ? "agent control"', timer)
+        self.assertLess(timer.index('studio_mode+'), timer.index('GOAT_BUILD_MARKER);'))
         self.assertIn('GOAT_BUILD_ID', timer)
         self.assertIn('FileIsExist("GOATStudio\\\\native-gate\\\\request.json")', timer)
         self.assertIn('FileIsExist("GOATStudio\\\\native-gate\\\\permit.json")', timer)

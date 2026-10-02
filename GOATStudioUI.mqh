@@ -530,7 +530,9 @@ void CStrategyTesterDialog::ManagedSelectStrategy(void)
 string GoatStudioStatusWord(const string status)
   {
    if(status=="pending" || status=="queued") return "Waiting";
-   if(status=="reserved" || status=="starting" || status=="running" || status=="ongoing" || status=="verifying" || status=="reconcile_required") return "Running";
+   if(status=="reserved" || status=="starting" || status=="running" || status=="ongoing") return "Running";
+   if(status=="verifying") return "Verifying";
+   if(status=="reconcile_required") return "Needs reconcile";
    if(status=="completed") return "Done";
    if(status=="failed") return "Failed";
    if(status=="error") return "Error";
@@ -573,7 +575,8 @@ void CStrategyTesterDialog::ManagedQueueRefresh(void)
          && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"cancelled",cancelled)
          && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"remaining",remaining)
          && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"active",active))
-         batch_heading="BATCH  "+(string)done+" of "+(string)total+" done | "+(string)active+" running | "+(string)remaining+" left | "+(string)failed+" errors | "+(string)cancelled+" cancelled";
+         // Fits MT5's 63-character edit cut with four-digit counts; running shows in the rows.
+         batch_heading="BATCH "+(string)done+"/"+(string)total+" done | "+(string)remaining+" left | "+(string)failed+" errors | "+(string)cancelled+" cancelled";
       int members=GOATJsonFindField(g_StudioSnapshot,tokens,batch,"members");
       if(members>=0 && tokens[members].type==GOAT_JSON_ARRAY)
          for(int i=members+1;i<ArraySize(tokens);i++)

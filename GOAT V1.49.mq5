@@ -4339,7 +4339,7 @@ void OnTesterDeinit()
              GoatOptAppendItemStats(EA_Name,Server,Symbol(),Strat,"NoProfitablePasses",0,0,0.0,0,xmlData.OutcomeDetails());
              WriteLog("DEINIT: "+xmlData.OutcomeSentence()+" No exports.",true,Key,EA_Name,Server);
              ShowPrompt("No profitable settings in this window","Tested "+(string)xmlData.passesSeen+" settings, "+xmlData.OutcomeWindow()+".",
-                        "None was profitable. Saved as a result, not an error.",""); Sleep(999);
+                        "None profitable with 50+ trades; kept as a result.",""); Sleep(999);
             }
             else
 #endif
@@ -4721,10 +4721,13 @@ void GoatTimerBody(void)
          }
       }
       TesterDialog.OnClickRefresh(true);
-      // One caption (under MT5's 63-character edit limit) names the account, build and
-      // mode, so two terminals on one broker are never confused and read-only stays shown.
-      TesterDialog.Caption("GOAT | "+(string)AccountInfoInteger(ACCOUNT_LOGIN)+" "+AccountInfoString(ACCOUNT_SERVER)
-                           +" | V"+GOAT_VERSION_LABEL+" "+GOAT_BUILD_MARKER+(GoatStudioManaged() ? " | agent" : " | read-only"));
+      // One caption names the mode first (MT5 cuts edit text at 63 characters, so a long
+      // server name can only cut the build), then the account and build. "agent" only while
+      // the agent really holds control; two terminals on one broker are never confused.
+      string studio_mode=!GoatStudioManaged() ? "read-only" : (TesterDialog.m_studioOwner=="agent" ? "agent control"
+                         : (TesterDialog.m_studioOwner=="human" ? "your control" : "connecting"));
+      TesterDialog.Caption("GOAT "+studio_mode+" | "+(string)AccountInfoInteger(ACCOUNT_LOGIN)+" "+AccountInfoString(ACCOUNT_SERVER)
+                           +" | V"+GOAT_VERSION_LABEL+" "+GOAT_BUILD_MARKER);
       return;
    }
    if(Mode_Operation==Operation_Batch && GoatBatchDeferredRestartPending())

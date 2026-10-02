@@ -12,7 +12,6 @@ const mutations=[
   ['mismatched file name classified','XmlProcessor.mqh',R`if(!back_read || !title_matches) return "";`,R`if(!back_read) return "";`,outcome],
   ['unknown window classified','XmlProcessor.mqh',R`if(window_start<=0 || forward_date<=window_start || window_end<=forward_date) return "";`,'',outcome],
   ['forward date outside the window accepted','XmlProcessor.mqh',R`if(window_start<=0 || forward_date<=window_start || window_end<=forward_date) return "";`,R`if(window_start<=0) return "";`,outcome],
-  ['report without passes classified','XmlProcessor.mqh',R`if(passes<=0 || kept!=0) return "";`,R`if(kept!=0) return "";`,outcome],
   ['kept rows classified','XmlProcessor.mqh',R`if(passes<=0 || kept!=0) return "";`,R`if(passes<=0) return "";`,outcome],
   ['mixed pairs classified','XmlProcessor.mqh',R`if(ret && noEdgePairs==pairs) xmlData.outcome`,R`if(ret) xmlData.outcome`,outcome],
   ['another failure masked','XmlProcessor.mqh',R`if(ret && noEdgePairs==pairs) xmlData.outcome`,R`if(noEdgePairs==pairs) xmlData.outcome`,outcome],
@@ -28,17 +27,37 @@ const mutations=[
   ['summary counts other statuses','Optimizer.mqh',R`fields[3]!="NoProfitablePasses"`,R`fields[3]==""`,outcome],
   ['summary counts repeated items','Optimizer.mqh',R`if(StringFind(seen,"\n"+itemKey)>=0) continue;`,'',outcome],
   ['summary not bounded by errors','Optimizer.mqh',R`noEdge=(int)MathMin(noEdge,stats.errors);`,'',outcome],
+  // Review HIGH/MEDIUM: proof of trading and a whole report.
+  ['zero-trade report classified','XmlProcessor.mqh',R`if(traded<=0 || traded>passes) return "";`,R`if(traded>passes) return "";`,outcome],
+  ['traded count unbounded','XmlProcessor.mqh',R`if(traded<=0 || traded>passes) return "";`,R`if(traded<=0) return "";`,outcome],
+  ['unparsed rows classified','XmlProcessor.mqh',R`if(!report_closed || malformed!=0) return "";`,R`if(!report_closed) return "";`,outcome],
+  ['partial report classified','XmlProcessor.mqh',R`if(!report_closed || malformed!=0) return "";`,R`if(malformed!=0) return "";`,outcome],
+  ['forward report not required','XmlProcessor.mqh',R`if(forward_rows<=0 || forward_rows>passes) return "";`,'',outcome],
+  ['forward rows unbounded','XmlProcessor.mqh',R`if(forward_rows<=0 || forward_rows>passes) return "";`,R`if(forward_rows<=0) return "";`,outcome],
+  ['losing passes counted as traded','XmlProcessor.mqh',R`else if(ExtractDataAsDouble(line)>0) tradedSeen++;`,R`else tradedSeen++;`,outcome],
+  ['losing trades cell not checked','XmlProcessor.mqh',R`if(line=="</Row>" || !IsNumberCell(line)) malformedSeen++;`,R`if(false) malformedSeen++;`,outcome],
+  ['unreadable profit not counted','XmlProcessor.mqh',R`if(!IsNumberCell(passCell) || !IsNumberCell(profitCell)) malformedSeen++;`,'',outcome],
+  ['table closure assumed','XmlProcessor.mqh',R`reportClosed=(StringFind(rowStart,"</Table>")>=0);`,R`reportClosed=true;`,outcome],
+  ['unclosed forward report accepted','XmlProcessor.mqh',R`return (closed && rows>0) ? rows-1 : -1;`,R`return rows>0 ? rows-1 : -1;`,outcome],
+  ['skipped row loops forever at EOF','XmlProcessor.mqh',R`while(line!="</Row>" && !FileIsEnding(hBack))line=FileReadString(hBack);
+               i--; continue;`,R`while(line!="</Row>")line=FileReadString(hBack);
+               i--; continue;`,outcome],
+  ['partial-trades sentence says none was profitable','XmlProcessor.mqh',R`(profitableSeen>0 ? (string)profitableSeen+" profitable on fewer, " : "")`,R`""`,outcome],
+  ['summary counts items the queue does not mark Error','Optimizer.mqh',R`if(StringFind(errorAliases,"\n"+fields[2]+"\n")<0) continue;`,'',outcome],
   ['code back in the query string','GOATEADeviceActivation.mqh',R`verification_url+"#ea-connect="+user_code`,R`verification_url+"&code="+user_code`,code],
   ['pairing wording returns','GOATEADeviceActivation.mqh',R`"Connection code: "+user_code`,R`"Enter pairing code: "+user_code`,code],
 ];
 const scratch=fs.mkdtempSync(path.join(process.env.GOAT_MUTATION_TMP||os.tmpdir(),'goat-outcome-mutation-'));
-function run(dir,harness){return spawnSync(process.execPath,[path.join(__dirname,harness)],{env:{...process.env,GOAT_EA_ROOT:dir},encoding:'utf8'});}
+// A mutation that hangs (an EOF loop) is killed by the timeout and counts as caught.
+function run(dir,harness){return spawnSync(process.execPath,[path.join(__dirname,harness)],{env:{...process.env,GOAT_EA_ROOT:dir},encoding:'utf8',timeout:60000});}
 let killed=0;const survivors=[];
 try{
   const base=path.join(scratch,'base');fs.mkdirSync(base);
   for(const f of files)fs.copyFileSync(path.join(repo,f),path.join(base,f));
   for(const harness of [outcome,code]){const clean=run(base,harness);if(clean.status!==0)throw new Error('unmutated sources fail '+harness+':\n'+clean.stdout+clean.stderr);}
-  mutations.forEach(([label,file,from,to,harness],n)=>{
+  mutations.forEach(([label,file,rawFrom,rawTo,harness],n)=>{
+    // Sources are CRLF; template literals are LF. Match and write CRLF either way.
+    const from=rawFrom.replace(/\r?\n/g,'\r\n'),to=rawTo.replace(/\r?\n/g,'\r\n');
     const dir=path.join(scratch,'m'+n);fs.mkdirSync(dir);
     for(const f of files)fs.copyFileSync(path.join(base,f),path.join(dir,f));
     const target=path.join(dir,file),text=fs.readFileSync(target,'utf8');

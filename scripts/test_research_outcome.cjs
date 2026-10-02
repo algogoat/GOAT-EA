@@ -55,7 +55,9 @@ function block(text,from){
 const TYPES='string|bool|int|uint|long|ulong|datetime|double|SBatchProgressStats';
 function convert(body,macros){
   for(const [name,value] of Object.entries(macros))body=body.replace(new RegExp('\\b'+name+'\\b','g'),value);
-  body=body.replace(/\((?:string|int|long|double|datetime|ulong)\)/g,'');
+  // MQL char literals are ushort codes ('\t', ':', ...); keep that type in JS.
+  body=body.replace(/'(\\.|[^'\\])'/g,(_,ch)=>String(({'\\n':10,'\\t':9,'\\\\':92,"\\'":39}[ch])??ch.charCodeAt(0)));
+  body=body.replace(/\((?:string|int|long|double|datetime|ulong|ushort)\)/g,'');
   body=body.replace(/\bSBatchProgressStats\s+(\w+);/g,'let $1={};');
   body=body.replace(new RegExp('(^|[;{(]|\\n)(\\s*)(?:const\\s+)?(?:'+TYPES+')\\s+(?=[A-Za-z_])','g'),'$1$2let ');
   body=body.replace(/let ([^;]*);/g,(m,decl)=>'let '+decl.replace(/(\w+)\[\]/g,'$1=[]')+';');
@@ -89,7 +91,7 @@ function makeContext(files){
   const c={logs,alerts,calls,Rows:rows,topRowsNoDup:[],RowsUnique:[],m_inputVarNames:[],
     reportMode:false,_K:'',_N:'',_S:'',Title:'',symbol_:'',TF_:'',startD:0,endD:0,forwardD:0,
     metadataWithWorkbookStart:'',DocumentProperties:'',WorksheetLine:'',InputsNames:'',
-    passesSeen:0,profitableSeen:0,bestProfit:0,bestResult:0,outcome:'',
+    passesSeen:0,profitableSeen:0,bestProfit:0,bestResult:0,outcome:'',tradedSeen:0,malformedSeen:0,forwardRows:0,reportClosed:false,
     FILE_READ:1,FILE_COMMON:2,FILE_ANSI:4,CP_UTF8:65001,INVALID_HANDLE:-1,TIME_DATE:1,__FUNCTION__:'SXmlData::ProcessBackXml',
     FileOpen:name=>{if(!(name in files))return -1;handles.push({lines:files[name],at:0});return handles.length-1;},
     FileIsEnding:h=>handles[h].at>=handles[h].lines.length,
@@ -98,7 +100,7 @@ function makeContext(files){
     StringFind:(s,t,from=0)=>String(s).indexOf(t,from),StringLen:s=>String(s).length,
     StringSubstr:(s,a,n)=>n===undefined?String(s).slice(a):String(s).substr(a,n),
     StringCompare:(a,b)=>a===b?0:(a<b?-1:1),StringToDouble:s=>parseFloat(s)||0,
-    StringSplit:(s,sep,out)=>{out.length=0;out.push(...String(s).split(sep));return out.length;},
+    StringSplit:(s,sep,out)=>{out.length=0;out.push(...String(s).split(typeof sep==='number'?String.fromCharCode(sep):sep));return out.length;},
     ArraySize:a=>a.length,ArrayResize:(a,n)=>{while(a.length<n)a.push(a.make?a.make():'');a.length=n;return n;},
     DoubleToString:(x,n)=>Number(x).toFixed(n),TimeToString:t=>date(t),
     LogOrPrint:(mode,text)=>logs.push(text),Alert:text=>alerts.push(text),FileNameOnly:p=>p.split('\\').pop(),
@@ -115,7 +117,7 @@ function makeContext(files){
   vm.createContext(c);
   vm.runInContext('var xmlData=globalThis;',c);
   for(const name of ['ProcessBackXml','ExtractDataAsDouble','ExtractDataFromCell','ParseInputVariableNames','ResetData',
-                     'OutcomeDetails','OutcomeWindow','OutcomeSentence'])vm.runInContext(method(name),c);
+                     'OutcomeDetails','OutcomeWindow','OutcomeSentence','IsNumberCell','ForwardReportRows'])vm.runInContext(method(name),c);
   vm.runInContext(extract(X,/^string\s+GoatXmlResearchOutcome\s*\(/m,'GoatXmlResearchOutcome',macros),c);
   const combiner=extract(X,/^bool\s+ReportAnalyzerCombiner\s*\(/m,'ReportAnalyzerCombiner',macros)
     .replace('xmlData.ExtractForwardDate(fileMain,ForwardDate)','((ForwardDate=__forwardDate(fileMain))!=0)');
@@ -136,6 +138,12 @@ function report(title,rows){
   lines.push('</Table>','</Worksheet>','</Workbook>');
   return lines;
 }
+function forwardReport(rows,closed=true){
+  const lines=['<?xml version="1.0"?>','<Workbook>','<Table>','<Row>',cell('String','Pass'),'</Row>'];
+  for(let i=0;i<rows;i++)lines.push('<Row>',cell('Number',i),cell('Number',0.01),cell('Number',0.01),'</Row>');
+  if(closed)lines.push('</Table>','</Worksheet>','</Workbook>');
+  return lines;
+}
 const TITLE='GOAT V1.49 USDCAD,M1 2024.01.08-2025.03.15';
 const FOLDER='GOAT\\Rabcdef012345\\reports\\R0123456789abcdef0123\\USDCAD\\';
 const back=(title=TITLE,forward='2025.01.06')=>FOLDER+title+(forward?' ('+forward+')':'')+'.xml';
@@ -145,7 +153,10 @@ function combine(pairs,{reportMode=false,saved,forwardOk}={}){
   for(const p of pairs){
     if(p.back!==null)files[p.name]=p.back;
     names.push(p.name);
-    if(p.forward!==false){const fwd=p.name.slice(0,-4)+'.forward.xml';files[fwd]=['<Row>'];names.push(fwd);}
+    if(p.forward!==false){
+      const fwd=p.name.slice(0,-4)+'.forward.xml',n=p.forwardRows??Math.max(1,p.back?p.back.filter(l=>l==='<Row>').length-1:1);
+      files[fwd]=p.forwardLines??forwardReport(n);names.push(fwd);
+    }
   }
   const c=makeContext(files);
   if(saved!==undefined)c.saved=saved;
@@ -162,7 +173,7 @@ let passed=0;const check=fn=>{fn();passed++;};
   check(()=>assert.equal(c.outcome,'no_profitable_passes'));
   check(()=>assert.equal(c.passesSeen,175));
   check(()=>assert.equal(c.profitableSeen,0));
-  check(()=>assert.equal(c.OutcomeDetails(),'outcome=no_profitable_passes;passes=175;profitable=0;best_profit=-1261.09;best_score=0.0500;min_trades=50;window_start=2024.01.08;window_end=2025.01.06;forward_end=2025.03.15'));
+  check(()=>assert.equal(c.OutcomeDetails(),'outcome=no_profitable_passes;passes=175;profitable=0;traded=175;malformed=0;complete=1;forward_rows=175;best_profit=-1261.09;best_score=0.0500;min_trades=50;window_start=2024.01.08;window_end=2025.01.06;forward_end=2025.03.15'));
   check(()=>assert.ok(c.logs.includes('No further back <Row> Found. Rows Saved=0/175 (profitable=0, min trades=50)'),'log reports kept/total passes, never 0/0'));
   check(()=>assert.deepEqual(c.calls,[],'forward merge and combined writers are skipped for a no-edge pair'));
   check(()=>assert.match(c.OutcomeSentence(),/^Tested 175 settings on USDCAD M1 in 2024\.01\.08 to 2025\.01\.06: none was profitable with 50\+ trades \(best profit -1261\.09\)\. A result for this window, not an error\.$/));
@@ -173,7 +184,45 @@ let passed=0;const check=fn=>{fn();passed++;};
   const rows=losing(20).concat([{pass:90,result:0.2,profit:310.5,trades:12},{pass:91,result:0.3,profit:120,trades:49}]);
   const {c}=combine([{name:back(),back:report(TITLE,rows)}]);
   check(()=>assert.equal(c.outcome,'no_profitable_passes'));
-  check(()=>assert.match(c.OutcomeDetails(),/;passes=22;profitable=2;best_profit=310\.50;best_score=0\.3000;/));
+  check(()=>assert.match(c.OutcomeDetails(),/;passes=22;profitable=2;traded=22;malformed=0;complete=1;forward_rows=22;best_profit=310\.50;best_score=0\.3000;/));
+  check(()=>assert.match(c.OutcomeSentence(),/with 50\+ trades \(2 profitable on fewer, best profit 310\.50\)/),'never says "none was profitable" when some were');
+}
+// 2b) Proof of trading and a whole report are required (review HIGH + MEDIUM): a
+// member whose EA never traded, a report that cannot be read, or a partial report is
+// a real error that --include-failed retries, never "tested, no edge".
+{
+  const zero=Array.from({length:175},(_,i)=>({pass:i,result:-0.01,profit:0,trades:0}));
+  const unreadable=[];let row=-1;
+  for(const l of report(TITLE,losing(40))){if(l==='<Row>')row=0;else if(row>=0&&row<20)row++;unreadable.push(row===3?l.replace('ss:Type="Number"','ss:Type="String"'):l);}
+  const truncated=report(TITLE,losing(30)).slice(0,-3);           // killed before the table closed
+  const midRow=report(TITLE,losing(30)).slice(0,-8);              // ends inside a row
+  const shortRows=report(TITLE,losing(5)).map(l=>l===cell('Number',175)?'</Row>':l); // rows end before Trades
+  for(const [label,lines,extra] of [
+    ['every pass has 0 trades (EA never traded)',report(TITLE,zero),{}],
+    ['profit cells cannot be read',unreadable,{}],
+    ['report truncated before its table closed',truncated,{}],
+    ['report ends inside a row',midRow,{}],
+    ['rows end before the Trades cell',shortRows,{}],
+    ['trades cells cannot be read',report(TITLE,losing(30)).map((l,k,a)=>l===cell('Number',175)&&a.indexOf(l)!==k?cell('String',175):l),{}],
+    ['results table interrupted (never closed)',report(TITLE,losing(30)).map(l=>l==='</Table>'?'</Worksheet>':l),{}],
+    ['forward report never closed',report(TITLE,losing(30)),{forwardLines:forwardReport(30,false)}],
+    ['forward report has no rows',report(TITLE,losing(30)),{forwardRows:0}],
+    ['forward report has more rows than back passes',report(TITLE,losing(30)),{forwardRows:31}],
+  ]){
+    const {c}=combine([{name:back(),back:lines,...extra}]);
+    check(()=>assert.equal(c.outcome,'',label));
+    check(()=>assert.ok(!c.logs.some(l=>/^Tested \d+ settings/.test(l)),label));
+  }
+  const z=combine([{name:back(),back:report(TITLE,zero)}]).c;
+  check(()=>assert.deepEqual([z.passesSeen,z.tradedSeen],[175,0],'zero-trade passes are counted, but never as traded'));
+  const u=combine([{name:back(),back:unreadable}]).c;
+  check(()=>assert.equal(u.malformedSeen,40));
+  const t=combine([{name:back(),back:truncated}]).c;
+  check(()=>assert.equal(t.reportClosed,false));
+  // One real traded pass among zero-trade passes is enough proof that the EA ran.
+  const mixed=combine([{name:back(),back:report(TITLE,zero.slice(0,10).concat(losing(1)))}]).c;
+  check(()=>assert.equal(mixed.outcome,'no_profitable_passes'));
+  check(()=>assert.match(mixed.OutcomeDetails(),/;passes=11;profitable=0;traded=1;malformed=0;complete=1;/));
 }
 // 3) Kept rows are never a research outcome, whatever happens after (unchanged errors).
 for(const [saved,forwardOk,wantRet] of [[3,true,true],[0,true,false],[3,false,false]]){
@@ -203,10 +252,17 @@ for(const [label,pair] of [
 {
   const c=makeContext({}),W=[epoch('2024.01.08'),epoch('2025.01.06'),epoch('2025.03.15')];
   const guard=(...a)=>vm.runInContext('GoatXmlResearchOutcome('+a.map(v=>JSON.stringify(v)).join(',')+')',c);
-  check(()=>assert.equal(guard(true,true,...W,175,0),'no_profitable_passes'));
-  for(const [label,args] of [['back report unread',[false,true,...W,175,0]],['file name mismatch',[true,false,...W,175,0]],
-    ['no window start',[true,true,0,W[1],W[2],175,0]],['forward before start',[true,true,W[1],W[0],W[2],175,0]],
-    ['forward after end',[true,true,W[0],W[2],W[1],175,0]],['no passes',[true,true,...W,0,0]],['kept rows',[true,true,...W,175,1]]])
+  // args: back_read, title_matches, start, forward, end, passes, kept, traded, malformed, closed, forward_rows
+  const ok=[true,true,...W,175,0,175,0,true,175];
+  const at=(i,v)=>ok.map((x,k)=>k===i?v:x);
+  check(()=>assert.equal(guard(...ok),'no_profitable_passes'));
+  check(()=>assert.equal(guard(...at(7,1)),'no_profitable_passes','one traded pass is enough'));
+  for(const [label,args] of [['back report unread',at(0,false)],['file name mismatch',at(1,false)],
+    ['no window start',at(2,0)],['forward before start',[true,true,W[1],W[0],W[2],175,0,175,0,true,175]],
+    ['forward after end',[true,true,W[0],W[2],W[1],175,0,175,0,true,175]],['no passes',[true,true,...W,0,0,0,0,true,1]],
+    ['kept rows',at(6,1)],['no pass traded',at(7,0)],['more traded than passes',at(7,176)],['a row did not parse',at(8,1)],
+    ['results table never closed',at(9,false)],['forward report unreadable or unclosed',at(10,-1)],['forward report empty',at(10,0)],
+    ['forward rows exceed back passes',at(10,176)]])
     check(()=>assert.equal(guard(...args),'',label));
 }
 // 5) Several pairs: only all-no-edge is the outcome; a mix keeps the old error result.
@@ -266,13 +322,18 @@ const O=stripComments(preprocess(optimizerSource,{}));
 const summaryAt=O.search(/^void BuildOptimizationBatchPromptSummary\(/m);
 const [sb,se]=block(O,summaryAt);
 const summaryBody=convert(O.slice(sb,se),{});
-function summary(itemStats,stats={total:8,completed:3,errors:5,pending:0,queued:0,ongoing:0,cancelled:0}){
+// The native queue (char 31 separated); its Error items are the only ones a no-edge row may relabel.
+const queueOf=states=>Object.entries(states).map(([alias,state])=>';'+state+'_USDCAD,M1 2024.01.08-2025.03.15_OHLC:'+alias+';\r\n[Tester]\r\nSymbol=USDCAD').join('\x1f')+'\x1f';
+const ERRORS=queueOf(Object.fromEntries(Array.from({length:9},(_,i)=>['A'+i,'Error'])));
+function summary(itemStats,stats={total:8,completed:3,errors:5,pending:0,queued:0,ongoing:0,cancelled:0},queue=ERRORS){
   const c={queueFile:'GOAT\\GOAT V1.49-Darwinex-Demo\\g6\\queue.GOAT',logFile:'log.GOAT',
     ReadBatchProgressStats:(q,s)=>{Object.assign(s,stats);return true;},
     GoatOptFolderOf:p=>p.slice(0,p.lastIndexOf('\\')),
     GoatOptReadTextFile:p=>p==='GOAT\\GOAT V1.49-Darwinex-Demo\\g6\\item_stats.tsv'?itemStats:'',
-    StringSplit:(s,sep,out)=>{out.length=0;out.push(...String(s).split(sep));return out.length;},
+    GetFileContent:p=>p==='GOAT\\GOAT V1.49-Darwinex-Demo\\g6\\queue.GOAT'?queue:'',
+    StringSplit:(s,sep,out)=>{out.length=0;out.push(...String(s).split(typeof sep==='number'?String.fromCharCode(sep):sep));return out.length;},
     StringFind:(s,t,from=0)=>String(s).indexOf(t,from),ArraySize:a=>a.length,ArrayResize:(a,n)=>{a.length=n;return n;},
+    StringGetCharacter:(s,k)=>String(s).charCodeAt(k),StringSubstr:(s,a,n)=>n===undefined?String(s).slice(a):String(s).substr(a,n),
     MathMin:Math.min,MathMax:Math.max,FileOpen:()=>-1,INVALID_HANDLE:-1,FILE_READ:1,FILE_SHARE_READ:2,FILE_SHARE_WRITE:4,FILE_TXT:8,FILE_COMMON:16,
     IntegerToString:String,StringFormat:(f,...a)=>{let k=0;return f.replace(/%d/g,()=>String(a[k++]));}};
   vm.runInNewContext('(function()'+summaryBody+')()',c);
@@ -286,4 +347,8 @@ check(()=>assert.equal(summary([HEADER,row('USDCAD','A1','NoProfitablePasses'),r
   'Runs OK: 3/8 | No edge: 3 | Errors: 2 | Left: 0'));
 check(()=>assert.equal(summary([HEADER,...Array.from({length:9},(_,i)=>row('S'+i,'A'+i,'NoProfitablePasses'))].join('\n')),
   'Runs OK: 3/8 | No edge: 5 | Errors: 0 | Left: 0','never more no-edge items than queue errors'));
+// Status check (review LOW): a row whose queue item is not Error (completed on a rerun,
+// still pending, or from another queue) is never counted.
+check(()=>assert.equal(summary([HEADER,row('USDCAD','A1','NoProfitablePasses'),row('USDCHF','A2','NoProfitablePasses'),row('EURUSD','A3','NoProfitablePasses')].join('\n'),
+  undefined,queueOf({A1:'Error',A2:'Completed',A3:'Pending',A4:'Error'})),'Runs OK: 3/8 | No edge: 1 | Errors: 4 | Left: 0'));
 console.log(JSON.stringify({passed,productionFunctions:true,nativeExecution:false}));

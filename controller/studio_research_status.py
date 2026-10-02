@@ -226,17 +226,29 @@ _DATE = re.compile(r'\d{4}\.\d{2}\.\d{2}')
 
 
 def _no_edge_outcome(details):
-    """The EA's key=value details for one NoProfitablePasses row, or None if malformed."""
+    """The EA's key=value details for one NoProfitablePasses row, or None.
+
+    Mirrors the EA guard (XmlProcessor.mqh GoatXmlResearchOutcome) exactly: at
+    least one pass really traded, every row parsed, the results table closed and
+    the forward report is whole with no more rows than back passes. A row from an
+    older build without that proof, or a report whose EA never traded, cannot be
+    read or is partial, is never accepted: that member stays a real error.
+    """
     values = dict(part.split('=', 1) for part in details.split(';') if '=' in part)
     try:
         outcome = dict(outcome=values['outcome'], passes=int(values['passes']), profitable=int(values['profitable']),
+                       traded=int(values['traded']), malformed=int(values['malformed']), complete=values['complete'],
+                       forward_rows=int(values['forward_rows']),
                        best_profit=float(values['best_profit']), best_score=float(values['best_score']),
                        min_trades=int(values['min_trades']),
                        window=dict(start=values['window_start'], end=values['window_end'], forward_end=values['forward_end']))
     except (KeyError, ValueError):
         return None
-    window = outcome['window']
-    if (outcome['outcome'] != NO_PROFITABLE_PASSES or outcome['passes'] <= 0 or not 0 <= outcome['profitable'] <= outcome['passes']
+    window, passes = outcome['window'], outcome['passes']
+    if (outcome['outcome'] != NO_PROFITABLE_PASSES or passes <= 0 or not 0 <= outcome['profitable'] <= passes
+            or not 1 <= outcome['traded'] <= passes or outcome['malformed'] != 0 or outcome['complete'] != '1'
+            or not 1 <= outcome['forward_rows'] <= passes
+            or (outcome['profitable'] == 0 and outcome['best_profit'] >= 0.001)
             or outcome['min_trades'] <= 0 or not all(_DATE.fullmatch(window[key]) for key in ('start', 'end', 'forward_end'))
             or not window['start'] < window['end'] < window['forward_end']):
         return None
@@ -259,10 +271,11 @@ def item_outcomes(native_run, members, timing=None):
     ``members`` are (run_alias, symbol) pairs in queue order. The EA writes one
     ``NoProfitablePasses`` row to ``item_stats.tsv`` when a member's optimization
     ran but no pass was profitable with enough trades; its queue status stays
-    ``Error``. A row counts only for the same alias and symbol and, when the
-    timeline shows the member's last start, only if written after that start, so
-    an older attempt never relabels a later real failure. Lenient: missing or
-    unreadable evidence returns {} and every member keeps its native status.
+    ``Error``. A row counts only for the same alias and symbol, and only when the
+    timeline shows the member's last start and the row was written after it, so
+    an older attempt never relabels a later real failure; without timeline
+    evidence nothing is relabelled. Lenient: missing or unreadable evidence
+    returns {} and every member keeps its native status.
     """
     path = Path(native_run) / 'item_stats.tsv'
     try:
@@ -284,7 +297,7 @@ def item_outcomes(native_run, members, timing=None):
             continue
         i = index.get((fields[2], fields[1]))
         written = _local_epoch(fields[0])
-        if i is None or written is None or (i in started and written < started[i] - 1):
+        if i is None or written is None or i not in started or written < started[i] - 1:
             continue
         outcome = _no_edge_outcome(fields[8])
         if outcome is not None:
@@ -346,7 +359,7 @@ def batch_progress(root, install, job, *, now, journal=None):
     package = Path(root) / 'packages' / job['job_id']
     members = job['configuration'].get('batch_members') or [job['configuration']]
     result = dict(members_total=len(members), members_done=0, members_finished=0, qualifying=None,
-                  exported_sets=None, members_no_edge=None, members_failed=None, no_edge_window=None,
+                  exported_sets=None, members_no_edge=None, members_failed=None, members_cancelled=None, no_edge_window=None,
                   no_edge=None, last_member=None, current_member=None, pace=None, evidence='unavailable')
     manifest, _ = _bounded_json(package / 'manifest.json', 64 * 1024 * 1024)
     if not isinstance(manifest, dict) or 'launch_intent' not in job:
@@ -379,6 +392,7 @@ def batch_progress(root, install, job, *, now, journal=None):
     result.update(members_done=native['completed_count'], members_finished=native['finished_count'],
                   qualifying=qualifying, exported_sets=exported, status_counts=native['status_counts'],
                   members_no_edge=len(no_edge), members_failed=statuses.count('native_error') - len(no_edge),
+                  members_cancelled=statuses.count('native_cancelled'),
                   no_edge_window=shared_window(no_edge.values()) if no_edge else None,
                   no_edge=[dict(index=i, number=i + 1, symbol=manifest['jobs'][i]['tester']['Symbol'],
                                 timeframe=manifest['jobs'][i]['tester']['Period'], **no_edge[i],
@@ -522,6 +536,9 @@ def headline(activity):
                    + (window['start'] + ' to ' + window['end'] if window else 'their test window'))
     if failed:
         counts += ', ' + str(failed) + ' failed'
+    cancelled = activity.get('members_cancelled')
+    if cancelled and status not in ('pausing', 'paused'):   # a pause cancels the rest by design
+        counts += ', ' + str(cancelled) + ' cancelled'
     if status == 'pausing':
         return 'Pausing this ' + name + ' at the next safe point;' + counts + '.'
     if status == 'paused':
@@ -532,7 +549,8 @@ def headline(activity):
         return 'Running' + member + ';' + counts + left + '.'
     if status == 'failed' and no_edge and failed == 0:
         # The queue calls it failed only because no-edge members keep an Error status.
-        return name[0].upper() + name[1:] + ' finished;' + counts + '.'
+        # Cancelled members mean it stopped early: never "finished" (counts name them).
+        return name[0].upper() + name[1:] + (' stopped early;' if cancelled else ' finished;') + counts + '.'
     return name[0].upper() + name[1:] + ' ' + str(status) + ';' + counts + '.'
 
 

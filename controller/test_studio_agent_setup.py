@@ -1,0 +1,424 @@
+"""Agent pairing-code readback, inert close-terminal and demo dashboard deploy. Fixture-only.
+
+A fake EA thread answers the real Common Files mailboxes with the exact receipt shapes of
+GOATSetupControl.mqh and GOATPortfolioSetupControl.mqh. No MT5 terminal is touched.
+"""
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import threading
+import time
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+import studio_agent_mailbox as mailbox
+import studio_agent_setup as agent_setup
+import studio_demo_deploy as deploy
+import test_goat_studio as fixtures
+
+BUILD = 'V1.48-TEST-BUILD-01'
+
+
+class FakeProcess:
+    def __init__(self, running=True):
+        self.identity = dict(pid=55, executable='terminal64.exe', created_utc='2026-10-02T00:00:00+00:00') if running else None
+        self.closed = []
+
+    def inspect(self, timeout=20):
+        return self.identity
+
+    def close(self, identity):
+        if identity != self.identity:
+            raise ValueError('changed')
+        self.closed.append(identity)
+        self.identity = None
+
+
+class FakeMT5:
+    ACCOUNT_TRADE_MODE_DEMO = 0
+
+    def __init__(self, controller, *, trade_mode=0, algo=False, positions=0, orders=0, login='123456', connected=True):
+        self.c, self.trade_mode, self.algo, self.positions, self.orders, self.login, self.connected = controller, trade_mode, algo, positions, orders, login, connected
+
+    def initialize(self, path, timeout=0): return True
+    def shutdown(self): pass
+    def terminal_info(self):
+        return SimpleNamespace(path=str(Path(self.c.install['terminal_executable']).parent), data_path=self.c.install['terminal_data_root'],
+                               connected=self.connected, trade_allowed=self.algo, build=5200)
+    def account_info(self):
+        return SimpleNamespace(login=int(self.login), server='Customer-Demo', trade_mode=self.trade_mode)
+    def positions_get(self): return [object()] * self.positions
+    def orders_get(self): return [object()] * self.orders
+
+
+class FakeEA(threading.Thread):
+    """Answers the two mailboxes the way the EA does, including its demo/inert gates."""
+
+    def __init__(self, controller, *, demo=True, algo=False, positions=0, pairing='available', setup_host=True,
+                 settings_match=True, child_trade=1, attach_failures=0):
+        super().__init__(daemon=True)
+        self.c, self.demo, self.algo, self.positions = controller, demo, algo, positions
+        self.pairing, self.setup_host, self.settings_match, self.child_trade = pairing, setup_host, settings_match, child_trade
+        self.attach_failures = attach_failures
+        self.stop_event = threading.Event()
+        self.rows = []
+        self.command = 0
+        self.shutdowns = 0
+        self.code = 'ABCD-EF23'
+        self.on_shutdown = lambda: None
+
+    def stop(self):
+        self.stop_event.set(); self.join(5)
+
+    def run(self):
+        while not self.stop_event.is_set():
+            try:
+                self.serve_setup(); self.serve_portfolio()
+            except (OSError, ValueError, KeyError):
+                pass
+            time.sleep(0.02)
+
+    def base(self, request_id, result, ident):
+        return dict(schema=1, id=request_id, result=result, account=ident['account'], server=ident['server'],
+                    directory=ident['directory'], buildId=ident['buildId'], observedAtUtc=int(time.time()),
+                    connected=True, tradingAllowed=self.algo, activationOnly=self.pairing == 'available',
+                    positions=self.positions, orders=0, charts=1)
+
+    def serve_setup(self):
+        root = mailbox.setup_root(self.c)
+        request = root / 'request.json'
+        if not self.setup_host or not self.demo or not request.exists() or not (root / 'registration.json').exists():
+            return
+        envelope = json.loads(request.read_text())
+        receipt = root / (envelope['id'] + '.json')
+        if receipt.exists():
+            return
+        inert = not self.algo and self.positions == 0
+        action = envelope['action']
+        ident = dict(account=envelope['account'], server=envelope['server'], directory=envelope['directory'], buildId=envelope['buildId'])
+        if envelope['expiresAtUtc'] < time.time():
+            body = self.base(envelope['id'], 'rejected_envelope', ident)
+        elif action == 'shutdown':
+            body = self.base(envelope['id'], 'shutdown_requested' if inert else 'rejected_not_inert', ident)
+        elif action == 'pairing':
+            if not inert:
+                body = self.base(envelope['id'], 'rejected_not_inert', ident)
+            elif self.pairing != 'available':
+                body = self.base(envelope['id'], 'pairing_unavailable', ident)
+            else:
+                body = self.base(envelope['id'], 'pairing_available', ident)
+                now = body['observedAtUtc']
+                body.update(userCode=self.code, activationId='a' * 32, responseExpiresAtUtc=now + 30, pairingExpiresAtMs=(now + 600) * 1000)
+        else:
+            body = self.base(envelope['id'], 'observed', ident)
+        mailbox.atomic(receipt, body)
+        if body['result'] == 'shutdown_requested':
+            self.shutdowns += 1
+            self.on_shutdown()  # TerminalClose(0): the selected terminal exits normally
+
+    def serve_portfolio(self):
+        root = mailbox.portfolio_root(self.c)
+        request, registration = root / 'request.json', root / 'registration.json'
+        if not self.demo or not request.exists() or not registration.exists():
+            return
+        raw = registration.read_bytes(); reg = json.loads(raw)
+        envelope = json.loads(request.read_text())
+        receipt = root / (envelope['id'] + '.json')
+        if receipt.exists() or envelope['registrationSha256'] != hashlib.sha256(raw).hexdigest():
+            return
+        if not self.rows:
+            self.rows = [dict(cid=0, magic=0, ack=0) for _ in reg['members']]
+        inert = not self.algo and self.positions == 0
+        action, result = envelope['action'], 'observed'
+        if action != 'status' and not inert:
+            result = 'rejected_not_inert'
+        elif action == 'deploy_next':
+            pending = [i for i, row in enumerate(self.rows) if row['cid'] == 0]
+            if not pending:
+                result = 'all_attached'
+            elif self.attach_failures:
+                self.attach_failures -= 1; result = 'child_attach_failed'
+            else:
+                self.rows[pending[0]].update(cid=1000 + pending[0], magic=5000 + pending[0]); result = 'child_attached'
+        elif action == 'apply_policy':
+            self.command += 1
+            for row in self.rows:
+                row['ack'] = self.command
+            result = 'policy_dispatched'
+        rows = [dict(index=i, symbol=m['symbol'], chartId=self.rows[i]['cid'], magic=self.rows[i]['magic'], linkedFresh=self.rows[i]['cid'] > 0,
+                     settingsMatch=action == 'audit' and self.rows[i]['cid'] > 0 and self.settings_match,
+                     exposureMode=reg['exposureMode'], ackId=self.rows[i]['ack'], ackStatus=1 if self.rows[i]['ack'] else 0,
+                     AI_MODE=1, AI_PROTOCOL=2, AI_THRESHOLD=reg['aiThreshold'], AI_SCOPE=0, AI_VERIFIED=0, AI_AVAILABLE=0, AI_AT=None,
+                     EA_TRADE_ALLOWED=self.child_trade if self.rows[i]['cid'] > 0 else None) for i, m in enumerate(reg['members'])]
+        body = dict(schema=1, id=envelope['id'], action=action, registrationSha256=envelope['registrationSha256'], result=result,
+                    account=reg['account'], server=reg['server'], directory=reg['directory'], buildId=reg['buildId'],
+                    observedAtUtc=int(time.time()), connected=True, tradingAllowed=self.algo, positions=self.positions, orders=0,
+                    aiMode=reg['aiMode'], aiThreshold=reg['aiThreshold'], aiProtocol=reg['aiProtocol'], commandId=self.command,
+                    commandPending=False, brokerTime=int(time.time()), rows=rows)
+        mailbox.atomic(receipt, body)
+
+
+def member(index, symbol='EURUSD', content=None, name=None):
+    raw = content if content is not None else ('EA_Desc=Trend ' + str(index) + '\r\nLots=0.1\r\n').encode('utf-16')
+    return dict(index=index, fileName=name or f'GOAT V1.48 {symbol},M15_Trds{index}.set', symbol=symbol, strategy='Trend ' + str(index),
+                sha256=hashlib.sha256(raw).hexdigest(), contentBase64=base64.b64encode(raw).decode())
+
+
+class AgentSetupTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = fixtures.PortableControllerTests(); self.fixture.setUp(); self.addCleanup(self.fixture.tearDown)
+        self.c = self.fixture.bound()
+        self.data = self.fixture.data
+        (self.data / 'origin.txt').write_text(str(self.fixture.bin.parent))
+        (self.data / 'config').mkdir()
+        (self.data / 'config/common.ini').write_text('[Common]\nLogin=123456\nServer=Customer-Demo\n[Experts]\nEnabled=0\n')
+        self.process = FakeProcess()
+        patcher = patch('studio_seed_process.WindowsSeedProcess', return_value=self.process)
+        patcher.start(); self.addCleanup(patcher.stop)
+        self.idle = patch('studio_monitor_probe.inspect_idle_demo', side_effect=lambda controller: dict(process=self.process.inspect(), demo=True,
+                                                                                                    algo_trading=False, positions=0, orders=0, tester_state='idle'))
+        self.idle.start(); self.addCleanup(self.idle.stop)
+        self.ident = mailbox.identity(self.c, self.c.session, BUILD)
+        self.ea = None
+
+    def tearDown(self):
+        if self.ea:
+            self.ea.stop()
+
+    def start_ea(self, **options):
+        self.ea = FakeEA(self.c, **options)
+        self.ea.on_shutdown = lambda: setattr(self.process, 'identity', None)
+        self.ea.start()
+        return self.ea
+
+    # ---------------------------------------------------------------- pairing
+
+    def test_pairing_code_reads_and_consumes_the_native_challenge(self):
+        self.start_ea()
+        result = agent_setup.pairing_code(self.c, BUILD)
+        self.assertEqual(result['status'], 'pairing_available')
+        self.assertEqual((result['userCode'], result['accountLast4'], result['buildId']), ('ABCD-EF23', '3456', BUILD))
+        registration = json.loads((mailbox.setup_root(self.c) / 'registration.json').read_text())
+        self.assertEqual(registration['schema'], 2); self.assertTrue(registration['allowPairingRead'])
+        self.assertLessEqual(registration['expiresAtUtc'], time.time() + 900, 'pairing registration is at most 15 minutes')
+        stored = json.loads((mailbox.setup_root(self.c) / (result['receiptId'] + '.json')).read_text())
+        self.assertEqual(stored['result'], 'pairing_consumed'); self.assertNotIn('userCode', stored, 'the code never stays on disk')
+
+    def test_pairing_without_pending_code_or_host_or_terminal(self):
+        self.start_ea(pairing='none')
+        self.assertEqual(agent_setup.pairing_code(self.c, BUILD)['status'], 'no_pending_pairing')
+        self.ea.stop(); self.ea = None
+        # A Studio monitor chart (older EA build) does not host the mailbox.
+        with patch.object(mailbox, 'setup_request', return_value=dict(id='b' * 32, result='receipt_timeout')), \
+             patch.object(agent_setup, 'setup_request', return_value=dict(id='b' * 32, result='receipt_timeout')):
+            self.assertEqual(agent_setup.pairing_code(self.c, BUILD)['status'], 'no_native_answer')
+        self.process.identity = None
+        self.assertEqual(agent_setup.pairing_code(self.c, BUILD)['status'], 'terminal_stopped')
+
+    def test_pairing_refuses_algo_on_protected_accounts_and_bad_build(self):
+        self.start_ea(algo=True)
+        with self.assertRaisesRegex(ValueError, 'Algo Trading off'):
+            agent_setup.pairing_code(self.c, BUILD)
+        with self.assertRaisesRegex(ValueError, 'build ID'):
+            agent_setup.pairing_code(self.c, 'x')
+        self.c.session['account']['login'] = '3000109427'
+        with patch('studio_agent_setup.session_state', return_value=(self.c.session, {})):
+            with self.assertRaisesRegex(ValueError, 'running GOAT experiment'):
+                agent_setup.pairing_code(self.c, BUILD)
+
+    def test_setup_receipt_rejects_foreign_or_stale_payloads(self):
+        good = dict(schema=1, id='c' * 32, result='pairing_available', account=123456, server='Customer-Demo', directory=self.ident['directory'],
+                    buildId=BUILD, observedAtUtc=int(time.time()), connected=True, tradingAllowed=False, activationOnly=True, positions=0, orders=0,
+                    charts=1, userCode='ABCD-EF23', activationId='a' * 32, responseExpiresAtUtc=int(time.time()) + 30,
+                    pairingExpiresAtMs=(int(time.time()) + 600) * 1000)
+        mailbox.setup_receipt(good, 'c' * 32, self.ident, pairing=True, fresh=True)
+        for change in (dict(account=999999), dict(buildId='V1.48-OTHER-BUILD'), dict(tradingAllowed=True), dict(positions=1),
+                       dict(userCode='abcd-ef23'), dict(responseExpiresAtUtc=int(time.time()) + 120)):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                mailbox.setup_receipt(good | change, 'c' * 32, self.ident, pairing=True)
+        with self.assertRaisesRegex(ValueError, 'Unexpected pairing'):
+            mailbox.setup_receipt(good, 'c' * 32, self.ident, pairing=False)
+        with self.assertRaisesRegex(ValueError, 'Stale'):
+            mailbox.setup_receipt(good, 'c' * 32, self.ident, pairing=True, fresh=True, now=time.time() + 60)
+
+    def test_unanswered_live_request_is_never_overwritten_but_expired_one_retires(self):
+        mailbox.setup_register(self.c, self.ident)
+        root = mailbox.setup_root(self.c)
+        mailbox.atomic(root / 'request.json', dict(schema=1, id='d' * 32, account=123456, server='Customer-Demo', directory=self.ident['directory'],
+                                                   buildId=BUILD, expiresAtUtc=int(time.time()) + 60, action='shutdown'))
+        with self.assertRaisesRegex(ValueError, 'still live'):
+            mailbox.setup_request(self.c, self.ident, 'status', timeout=1)
+        mailbox.atomic(root / 'request.json', dict(schema=1, id='d' * 32, account=123456, server='Customer-Demo', directory=self.ident['directory'],
+                                                   buildId=BUILD, expiresAtUtc=int(time.time()) - 60, action='shutdown'))
+        self.assertEqual(mailbox.setup_request(self.c, self.ident, 'status', timeout=1)['result'], 'receipt_timeout')
+        self.assertTrue((root / ('d' * 32 + '.expired.request.json')).exists())
+
+    # ---------------------------------------------------------- close-terminal
+
+    def test_close_uses_ea_inert_shutdown_and_is_never_repeated(self):
+        ea = self.start_ea(pairing='none')
+        result = agent_setup.close_terminal(self.c, 'close-1', build_id=BUILD)
+        self.assertEqual((result['phase'], result['method']), ('stopped', 'ea_inert_shutdown'))
+        self.assertEqual(ea.shutdowns, 1); self.assertEqual(self.process.closed, [])
+        self.assertEqual(agent_setup.close_terminal(self.c, 'close-1', build_id=BUILD)['phase'], 'stopped')
+        self.assertEqual(ea.shutdowns, 1, 'a retained close is returned, not resent')
+
+    def test_close_falls_back_to_one_normal_close_without_a_mailbox_host(self):
+        result = agent_setup.close_terminal(self.c, 'close-2')
+        self.assertEqual((result['phase'], result['method']), ('stopped', 'controller_normal_close'))
+        self.assertEqual(len(self.process.closed), 1)
+        self.assertEqual(agent_setup.close_terminal(self.c, 'close-3')['phase'], 'already_stopped')
+
+    def test_close_refuses_unless_inert(self):
+        self.idle.stop()
+        with patch('studio_monitor_probe.inspect_idle_demo', side_effect=ValueError('Repair requires a connected demo, Algo Trading off and no positions/orders')):
+            with self.assertRaisesRegex(ValueError, 'Algo Trading off'):
+                agent_setup.close_terminal(self.c, 'close-4')
+        self.idle.start()
+        self.assertEqual(self.process.closed, [])
+        self.start_ea(algo=True)
+        with self.assertRaisesRegex(ValueError, 'refused to close'):
+            agent_setup.close_terminal(self.c, 'close-5', build_id=BUILD)
+        (Path(self.c.root) / 'demo-agent').mkdir(exist_ok=True); (Path(self.c.root) / 'demo-agent/STOP').write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'Owner STOP'):
+            agent_setup.close_terminal(self.c, 'close-6', build_id=BUILD)
+        self.assertEqual(self.process.closed, [])
+
+    def test_broker_proof_refuses_real_money_unconnected_and_other_accounts(self):
+        self.assertTrue(agent_setup.broker_proof(self.c, self.c.session, mt5=FakeMT5(self.c))['demo'])
+        for mt5, message in ((FakeMT5(self.c, trade_mode=2), 'real-money'), (FakeMT5(self.c, connected=False), 'not connected'),
+                             (FakeMT5(self.c, login='654321'), 'different account'), (FakeMT5(self.c, positions=1), 'open positions')):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                agent_setup.broker_proof(self.c, self.c.session, mt5=mt5)
+
+    # ------------------------------------------------------------------ deploy
+
+    def plan(self, members=None, **changes):
+        value = dict(schema='goat-demo-deploy-v1', deploymentId='e' * 32, portfolio=dict(id='cloud-1', name='Pilot portfolio'),
+                     buildId=BUILD, accountLogin='123456', policy=dict(aiMode=0, aiThreshold=50, aiProtocol=2, exposureMode=0),
+                     members=members if members is not None else [member(0), member(1, 'GBPUSD')])
+        value.update(changes)
+        path = Path(self.c.root) / 'plan.json'; path.write_text(json.dumps(value))
+        return path
+
+    def relaunch(self):
+        return patch('studio_demo_deploy.subprocess.Popen', side_effect=lambda *a, **k: (setattr(self.process, 'identity', dict(
+            pid=77, executable='terminal64.exe', created_utc='2026-10-02T01:00:00+00:00')), SimpleNamespace(pid=77))[1])
+
+    def test_deploy_loads_the_reviewed_portfolio_and_reads_back_exact_hashes_with_algo_off(self):
+        ea = self.start_ea(pairing='none')
+        with self.relaunch() as launch:
+            result = deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
+        self.assertEqual(result['phase'], 'ready'); self.assertEqual(result['instruction'], 'Turn on Algo Trading in MT5 to start trading (demo)')
+        readback = result['readback']
+        self.assertEqual([row['sha256'] for row in readback['rows']], [m['sha256'] for m in json.loads(self.plan().read_text())['members']])
+        self.assertTrue(all(row['settingsMatch'] for row in readback['rows']))
+        self.assertFalse(readback['trading_allowed']); self.assertFalse(readback['algo_trading']); self.assertTrue(readback['demo'])
+        self.assertEqual(ea.shutdowns, 1, 'the inert monitor terminal is closed once before the dashboard launch')
+        config = launch.call_args.args[0][1]
+        self.assertTrue(config.startswith('/config:'))
+        text = Path(config.removeprefix('/config:')).read_bytes().decode('utf-16')
+        self.assertIn('[Experts]\r\nEnabled=0', text); self.assertIn('ExpertParameters=GOAT Dashboard Agent.set', text)
+        state = deploy.paths(self.c, 'e' * 32)['state'].read_bytes().decode('utf-16').splitlines()
+        self.assertEqual(state[0], '#GOAT_AI_LAUNCH_V147_2\t0\t50\t2')
+        self.assertTrue(state[1].endswith('\t0\t0') and '\tEURUSD\t' in state[1])
+        self.assertEqual(deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c))['phase'], 'ready', 'a ready deploy is idempotent')
+        launch.assert_called_once()
+
+    def test_deploy_refuses_hash_mismatch_version_mismatch_and_wrong_or_protected_account(self):
+        bad = member(0); bad['sha256'] = 'f' * 64
+        cases = [([bad], {}, 'reviewed SHA-256'), ([member(0, name='GOAT V1.47 EURUSD,M15_Trds0.set')], {}, 'exported by GOAT V1.47'),
+                 ([member(0, symbol='EURUSD', name='GOAT V1.48 GBPUSD,M15_Trds0.set')], {}, 'symbol does not match'),
+                 (None, dict(accountLogin='999999'), 'differs from this installation')]
+        for members, changes, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                deploy.load(self.c, self.plan(members, **changes), mt5=FakeMT5(self.c))
+        self.c.session['account']['login'] = '3000109421'
+        with patch('studio_demo_deploy.session_state', return_value=(self.c.session, {})), self.assertRaisesRegex(ValueError, 'running GOAT experiment'):
+            deploy.load(self.c, self.plan(accountLogin='3000109421'), mt5=FakeMT5(self.c, login='3000109421'))
+        self.assertFalse(deploy.paths(self.c, 'e' * 32)['state'].exists(), 'nothing is staged after a refusal')
+
+    def test_deploy_refuses_real_money_algo_on_and_an_existing_dashboard(self):
+        with self.assertRaisesRegex(ValueError, 'real-money'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c, trade_mode=2))
+        Path(self.c.root, 'demo-deployments', 'e' * 32 + '.json').unlink()
+        state = deploy.paths(self.c, 'e' * 32)['state']; state.parent.mkdir(parents=True, exist_ok=True); state.write_bytes(b'x')
+        with self.assertRaisesRegex(ValueError, 'already has a saved GOAT dashboard'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c))
+        state.unlink(); Path(self.c.root, 'demo-deployments', 'e' * 32 + '.json').unlink()
+        self.start_ea(pairing='none', algo=True)
+        with self.relaunch(), self.assertRaisesRegex(ValueError, 'refused to close|Algo Trading'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
+
+    def test_deploy_never_claims_ready_when_child_inputs_differ_or_children_cannot_trade(self):
+        for options, message in ((dict(settings_match=False), 'did not complete|differ from the frozen SET'), (dict(child_trade=0), 'not allowed to trade')):
+            with self.subTest(message=message):
+                self.process.identity = dict(pid=55, executable='terminal64.exe', created_utc='2026-10-02T00:00:00+00:00')
+                for path in [*Path(self.c.root).glob('demo-deployments/*'), *Path(self.c.root).glob('terminal-closes/*')]:
+                    path.unlink()
+                for path in (deploy.paths(self.c, 'e' * 32)['state'], mailbox.portfolio_root(self.c) / 'registration.json', mailbox.portfolio_root(self.c) / 'request.json'):
+                    if path.exists(): path.unlink()
+                self.start_ea(pairing='none', **options)
+                with self.relaunch(), patch.object(deploy, 'AUDIT_WAIT_SECONDS', 2), self.assertRaisesRegex(ValueError, message):
+                    deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
+                record = json.loads(Path(self.c.root, 'demo-deployments', 'e' * 32 + '.json').read_text())
+                self.assertNotEqual(record['phase'], 'ready')
+                self.ea.stop(); self.ea = None
+
+    def test_stop_refuses_algo_on_or_open_positions_and_never_closes_them(self):
+        self.start_ea(pairing='none')
+        with self.relaunch():
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
+        with self.assertRaisesRegex(ValueError, 'Turn Algo Trading off'):
+            deploy.stop(self.c, 'stop-1', mt5=FakeMT5(self.c, algo=True))
+        with self.assertRaisesRegex(ValueError, 'never closes them automatically'):
+            deploy.stop(self.c, 'stop-1', mt5=FakeMT5(self.c, positions=2))
+        result = deploy.stop(self.c, 'stop-1', mt5=FakeMT5(self.c))
+        self.assertEqual((result['status'], result['positions_closed'], result['trading_changed']), ('stopped', False, False))
+        self.assertFalse(deploy.paths(self.c, 'e' * 32)['state'].exists())
+        self.assertTrue(any('.stopped-' in name for name in result['archived']))
+        self.assertIsNone(deploy.current_deployment(self.c))
+
+    def test_a_stopped_deployment_can_be_replaced_by_a_new_one(self):
+        self.start_ea(pairing='none')
+        with self.relaunch():
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
+        deploy.stop(self.c, 'stop-2', mt5=FakeMT5(self.c))
+        self.process.identity = dict(pid=88, executable='terminal64.exe', created_utc='2026-10-02T02:00:00+00:00')  # research monitor relaunched
+        self.ea.rows = []
+        with self.relaunch():
+            result = deploy.load(self.c, self.plan(deploymentId='1' * 32, members=[member(0, 'USDJPY')]), mt5=FakeMT5(self.c), sleep=lambda s: None)
+        self.assertEqual((result['phase'], result['deployment_id']), ('ready', '1' * 32))
+        with self.relaunch(), self.assertRaisesRegex(ValueError, 'Another demo deployment is live'):
+            deploy.load(self.c, self.plan(deploymentId='2' * 32), mt5=FakeMT5(self.c))
+
+    def test_cli_exposes_the_agent_operations_with_their_contracts(self):
+        from goat_studio import OPERATION_CONTRACTS, main
+        for name in ('pairing-code', 'close-terminal', 'deploy-preflight', 'deploy-load', 'deploy-status', 'deploy-stop'):
+            self.assertIn(name, OPERATION_CONTRACTS)
+        self.assertIn('never kills or repeats', OPERATION_CONTRACTS['close-terminal']['effect'])
+        self.assertIn('never closes positions', OPERATION_CONTRACTS['deploy-stop']['effect'])
+        self.c.store.close(); self.c.store = None
+        from io import StringIO
+        from contextlib import redirect_stdout
+        output = StringIO()
+        with redirect_stdout(output):
+            code = main(['--installation', str(self.fixture.path), 'deploy-status'])
+        reply = json.loads(output.getvalue())
+        self.assertEqual((code, reply['ok'], reply['result']['deployment']), (0, True, None))
+
+    def test_preflight_is_read_only_and_reports_the_broker_facts(self):
+        with patch('studio_monitor_probe.tester_state', return_value='idle'):
+            result = deploy.preflight(self.c, mt5=FakeMT5(self.c, algo=True))
+        self.assertEqual(result['broker']['algo_trading'], True); self.assertTrue(result['broker']['demo'])
+        self.assertEqual((result['tester_state'], result['existing_dashboard'], result['deployment']), ('idle', False, None))
+        self.assertFalse(list(Path(self.c.install['common_files_root']).rglob('*.tsv')))
+        result = deploy.preflight(self.c, mt5=FakeMT5(self.c, trade_mode=2))
+        self.assertIn('real-money', result['broker_error'])
+
+
+if __name__ == '__main__':
+    unittest.main()

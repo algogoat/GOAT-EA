@@ -91,7 +91,7 @@ Check it: `. "<work>\goat.ps1"; Desktop 'app.info'`. Long-running commands (`ser
 ## Steps 9-12: approvals, pairing, control
 
 9. Ask the user, in MT5: allow DLL imports in the GOAT EA's properties dialog; add `https://goatedge.ai` under Tools > Options > Expert Advisors > Allow WebRequest for listed URL; keep Algo Trading off.
-10. The EA shows "Enter pairing code: ...". Ask the user to read it to you, then `Desktop 'onboarding.preparePairing' @{userCode='<code>'}`. Ask them to check the account and build in GOAT desktop and click **Approve this connection**. You cannot approve it.
+10. The EA shows "Enter pairing code: ...". First try `Desktop 'onboarding.readPairingCode' @{receiptPath=$receipt}`: it reads the code from MT5 itself (`studio pairing-code`) and prepares the review. If it reports `no_native_answer` (this chart does not host the local setup mailbox), ask the user to read the code to you, then `Desktop 'onboarding.preparePairing' @{userCode='<code>'}`. The user checks the account's last 4 digits and the build in GOAT desktop and clicks **Approve this connection**. Only if the user has turned on **Let my agent connect my own demo terminals** in GOAT (Terminals) may you call `Desktop 'onboarding.agentApprovePairing' @{reviewId='<reviewId>'}`; it refuses real-money, unlinked and other users' accounts and every typed code.
 11. Start `serve` in the background: Claude Code: `. "<work>\goat.ps1"; & $goat studio --installation $receipt serve --watch-seconds 3600` with `run_in_background: true`. Others: `Start-Process -FilePath $goat -ArgumentList @('studio','--installation',"""$receipt""",'serve','--watch-seconds','3600') -WindowStyle Hidden`. It stops after at most 3600 s; restart it whenever the user needs to click in Studio.
 12. Ask the user to click **GIVE TO AGENT** in the Studio panel on the GOAT chart. Repeat `Studio @('onboarding-status')` until `result.status` is `local_monitor_ready` (otherwise do its `next_action`), and `Desktop 'onboarding.status' @{receiptPath=$receipt}` until `data.ready` is true. If a step reports `ACTIVATION_RELOAD_REQUIRED`, ask the user to change the chart timeframe once.
 
@@ -148,6 +148,17 @@ foreach ($m in $res.member_outcomes) { $i = $m.index; $t = $res.configuration.ba
 ```
 
 Replace `unavailable` with real facts when known. Then `Studio @('benchmark-report','--batch-id','pilot-1')` gives the measured timing; use it to size the next batch with the user. A `failed` or `interrupted` result is a technical outcome, not evidence that the strategy is bad. To build a portfolio, import the export folders with `library.prepareImport` / `library.finalizeImport` as described in the installed `goat-beta-agent-guide.md` (sections 7 and 8).
+
+## Step 21: deploy a saved portfolio to demo
+
+Demo accounts only; GOAT refuses real-money accounts in the desktop, the server link and the controller. The user turns on **Demo autopilot** for the account once (Portfolios > Deploy to demo). After that:
+
+1. `Desktop 'deploy.prepareDemo' @{savedPortfolioId='<id>'; receiptPath=$receipt}` returns a review: broker-verified demo, linked account, EA build, every member SET hash and a `refusals` list. Fix what it names; never work around a refusal.
+2. `Desktop 'deploy.demo' @{reviewId='<reviewId>'} -RequestId 'deploy-1'` uploads the portfolio, links it for live tracking, closes the inert MT5 once, reopens it with the GOAT Portfolio Dashboard, attaches every child and audits each one against its SET (`studio deploy-load`). It returns when the EA reports the exact SET hashes loaded with Algo Trading still off.
+3. Tell the user the one remaining step: **Turn on Algo Trading in MT5 to start trading (demo)**. You never turn it on.
+4. `Desktop 'deploy.status' @{receiptPath=$receipt}` shows what the dashboard runs. `Desktop 'deploy.stop' @{receiptPath=$receipt}` unloads it only when Algo Trading is off and the account has no open positions or orders; it never closes positions. The terminal stays closed afterwards: `monitor-launch` with a new attempt ID returns it to research.
+
+`Desktop 'suite.closeTerminal' @{receiptPath=$receipt}` closes MT5 for the user when it is inert (demo, Algo Trading off, no positions or orders, idle tester, no batch); use it instead of asking the user to close MT5 in steps 5 and 8.
 
 ## Seed loop (find candidates before spending full batches)
 

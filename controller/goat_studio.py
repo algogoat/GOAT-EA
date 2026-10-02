@@ -91,7 +91,13 @@ OPERATION_CONTRACTS = {
     'research-regrant-status':dict(required=[],effect='read-only proof of genuine takeover and current native connection readiness; never create a grant'),
     'research-monitor-restart-resume':dict(required=['job-id'],effect='reconcile an already-issued monitor close and perform only its never-issued first relaunch; no repeated close or launch'),
     'cancel-rejected-successor':dict(required=['job-id'],effect='owner-only: publish one new stop identity after exact expired unconsumed native cancel rejection and reverified monitor restart; keeps both stop receipts'),
-    'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls')
+    'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls'),
+    'pairing-code':dict(required=['build-id'],effect='register the EA 5-minute pairing-read capability and return the pending public connection code from a connected inert demo; consumes the native payload; no approval, credential or trading effect'),
+    'close-terminal':dict(required=['attempt-id'],optional=['build-id'],effect='normal-close the selected MT5 once, only when broker-reported demo, connected, Algo Trading off, no positions/orders, tester idle and no batch/seed/native job; uses the EA inert shutdown when a dashboard hosts it, else one controller normal close; never kills or repeats'),
+    'deploy-preflight':dict(required=[],effect='read-only broker demo/Algo/positions/tester readback, existing dashboard state and live deployment record for a desktop deploy review'),
+    'deploy-load':dict(required=['plan'],effect='stage reviewed hash-bound member SETs and a saved dashboard in Common Files, close the inert demo terminal, relaunch it with the Portfolio Dashboard first, attach children, apply exposure policy and audit every child against its SET; Algo Trading stays off; resumable phase journal'),
+    'deploy-status':dict(required=[],effect='read the live deployment record and dashboard status; no mutation'),
+    'deploy-stop':dict(required=['attempt-id'],effect='unload the deployed dashboard from an inert terminal: refuses with Algo Trading on or open positions/orders, normal-closes once, renames the saved dashboard state and deploy profile aside; never closes positions')
 }
 
 
@@ -378,6 +384,11 @@ def main(argv=None):
     p=sub.add_parser('research-monitor-repair-revoked-report');p.add_argument('--job-id',required=True)
     p=sub.add_parser('research-retire-never-started');p.add_argument('--job-id',required=True)
     sub.add_parser('research-regrant-status')
+    p=sub.add_parser('pairing-code');p.add_argument('--build-id',required=True)
+    p=sub.add_parser('close-terminal');p.add_argument('--attempt-id',required=True);p.add_argument('--build-id')
+    sub.add_parser('deploy-preflight');sub.add_parser('deploy-status')
+    p=sub.add_parser('deploy-load');p.add_argument('--plan',type=Path,required=True)
+    p=sub.add_parser('deploy-stop');p.add_argument('--attempt-id',required=True)
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
         from studio_research_authority import operation,dispatch
@@ -453,7 +464,16 @@ def main(argv=None):
                 forbidden_roots=[controller.install['catalog_root']] if controller.install.get('catalog_root') else [])
         else:
             if not args.operation.startswith('orphan-recovery-'): controller.open()
-            if args.operation in ('monitor-repair','monitor-stop'):
+            if args.operation in ('pairing-code','close-terminal'):
+                from studio_agent_setup import pairing_code,close_terminal
+                result=pairing_code(controller,args.build_id) if args.operation=='pairing-code' else close_terminal(controller,args.attempt_id,build_id=args.build_id)
+            elif args.operation.startswith('deploy-'):
+                import studio_demo_deploy as deploy
+                if args.operation=='deploy-preflight': result=deploy.preflight(controller)
+                elif args.operation=='deploy-load': result=deploy.load(controller,args.plan)
+                elif args.operation=='deploy-status': result=deploy.status(controller)
+                else: result=deploy.stop(controller,args.attempt_id)
+            elif args.operation in ('monitor-repair','monitor-stop'):
                 from studio_monitor_repair import repair
                 result=repair(controller,args.attempt_id,stop_only=args.operation=='monitor-stop')
             elif args.operation.startswith('orphan-recovery-'):

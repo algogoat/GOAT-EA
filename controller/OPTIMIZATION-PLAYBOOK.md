@@ -1,6 +1,7 @@
 # GOAT optimization playbook for customer agents
 
-Use this alongside `AGENT-START-HERE.md` and the command reference in `README.md`.
+Use this alongside `AGENT-START-HERE.md` (the exact step-by-step procedure),
+`GOAT-OPERATING-MODEL.md` (the rules) and the command reference in `README.md`.
 It is part of the product agent kit. No developer checkout, private skill,
 developer machine paths or copied account credentials are required.
 
@@ -51,8 +52,9 @@ cannot invent pairing or click a human-only grant on their behalf.
 Use validated templates and explicit tester/export settings. Check broker symbols,
 active optimization axes, date/forward ordering, model, local workers, free disk
 and output paths. Prepare a new immutable batch identity for changed conditions.
-Use the installed bounded driver and its retained deadline. Observe before retrying
-any timeout; a timeout does not prove that a native command failed.
+Start each batch once with `start --job-id`, poll `batch-status`, cancel at the agreed
+budget and `finish` after the native queue finishes (see `AGENT-START-HERE.md`). Observe
+before retrying any timeout; a timeout does not prove that a native command failed.
 
 During a batch, show its ID, total, active member, each member's symbol/strategy/model,
 completed, failed, cancelled and remaining counts. Include observation freshness.

@@ -1,101 +1,31 @@
-# Demo MT5 agent tools
+# Demo agent tools (owner and maintainer lane)
 
-`demo_agent.py` is the demo-account tool entry point. It operates one selected
-MT5 installation from its existing `installation.json`. It never sends trades
-or turns on Algo Trading. Its Studio calls control the EA's existing
-`Mode_Operation=11` Studio queue and `Mode_Operation=9` Optimizer/MTTester;
-there is no second tester or portfolio engine.
+**Customers and their agents: do not use these tools.** Follow [AGENT-START-HERE.md](AGENT-START-HERE.md) (`goat.exe studio ...`) and [GOAT-OPERATING-MODEL.md](GOAT-OPERATING-MODEL.md). This lane exists for GOAT's own demo research and for reviewed build installs; its commands refuse to drive Studio until `install-build` has converted the selected session to this lane.
 
-The first lane is intentionally bound to the Banker demo login `3000082754`
-and the installation's exact server and data folder. Mutations require a fresh
-broker-reported `ACCOUNT_TRADE_MODE_DEMO`, the selected process, an idle native
-tester, Algo Trading off, at least 5 GiB free on every output volume, and no
-owner STOP or pending human TAKE. A real-account report always refuses. The
-`demo-agent/actions.jsonl` file only appends intent and readback events. Each
-command prints one JSON object; errors include a `code` and message.
+`demo_agent.py` (installed as `goat.exe demo --installation <receipt> <command>`) operates one selected MT5 installation from its existing `installation.json`. It never sends trades or turns on Algo Trading. It drives the EA's existing Studio queue and optimizer; there is no second tester or portfolio engine.
 
-Use the Python runtime bundled with a GOAT suite. Replace `python.exe`,
-`installation.json`, the candidate EX5, and the plan paths with the selected
-installation's absolute paths. These examples are PowerShell commands:
+The account is the demo login and server already paired in that installation's controller session (from `bootstrap`); there is no built-in account. Every command that can change the terminal or its files requires a fresh broker-reported demo account matching that pairing, the selected process, Algo Trading off, an idle native tester, at least 5 GiB free on the terminal-data, Common Files and controller-state volumes, and no owner STOP or pending human TAKE CONTROL. A real account always refuses. `demo-agent/actions.jsonl` records intent and readback events.
+
+Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors print `{"ok":false,"code":"REFUSED"|"IO_ERROR"|"INTERNAL_ERROR","error":"..."}` to stderr (exit 1). `stop` that cannot confirm the stop prints `code: STOP_UNCONFIRMED` (exit 2).
 
 ```powershell
-$py = 'C:/path/to/goat-suite/python/python.exe'
-$tool = 'C:/path/to/goat-suite/controller/demo_agent.py'
-$install = 'C:/path/to/GOAT Portfolio Desktop/suite/selected/installation.json'
-& $py $tool --installation $install status
-& $py $tool --installation $install disk-status
-& $py $tool --installation $install preflight
+& $goat demo --installation $receipt status          # process, broker, EA hash, owner feedback age, driver journals
+& $goat demo --installation $receipt disk-status     # free bytes against the 5 GiB reserve
+& $goat demo --installation $receipt preflight       # read-only; reports ready_for_install and ready_for_batch
+& $goat demo --installation $receipt install-build --candidate '<reviewed .ex5>' --sha256 '<64 hex>' --monitor-config '<existing monitor-only .ini>'
+& $goat demo --installation $receipt launch-terminal --monitor-config '<existing monitor-only .ini>'
+& $goat demo --installation $receipt prepare-batch --batch-id '<new id>' --plan '<plan.json>'
+& $goat demo --installation $receipt run-batch --batch-id '<id>' --max-seconds 172800
+& $goat demo --installation $receipt resume-batch --batch-id '<id>'
+& $goat demo --installation $receipt batch-status --batch-id '<id>'
+& $goat demo --installation $receipt batch-driver-status --batch-id '<id>'
+& $goat demo --installation $receipt stop            # optional: --monitor-config '<monitor-only .ini>'
+& $goat demo --installation $receipt clear-stop
+& $goat demo --installation $receipt recover-orphan  # optional: --review-id '<id>' to observe only
 ```
 
-`status` reads process, broker account, binary hash, EA owner feedback with its
-age, and retained batch driver journals. A journal alone does not prove the
-native tester is running.
-`disk-status` reads free bytes and the 5 GiB reserve. `preflight` positively
-checks demo/owner/tester/space without changing MT5. It reports separate
-`ready_for_install` and `ready_for_batch` flags; an old installation can be
-safe to update while still unable to start the batch.
-
-```powershell
-& $py $tool --installation $install install-build `
-  --candidate 'C:/reviewed-build/GOAT V1.49.ex5' `
-  --sha256 '<64 lowercase hex characters>' `
-  --monitor-config 'C:/existing-state/monitor-launches/exact-monitor.ini'
-```
-
-`install-build` verifies the candidate hash and inert monitor profile, archives
-the old EX5 and local identity files, normally closes only the selected idle
-demo terminal, copies the EX5, relaunches its existing monitor and reads back
-the physical hash, connected demo account, EA feedback and Algo-off state.
-The restart INI accepts only the retained Charts/Experts/StartUp monitor keys;
-account, tester, script and other directives are refused before MT5 closes.
-It keeps the old research proof as history. A retry with the same installed
-hash returns `already_installed` only with readback from that exact process.
-A 120-second readback allows normal broker and EA startup time. If MT5 exits
-after a swap, retrying `install-build` with the same candidate and hash brings
-back the exact inert monitor. If it exited before the swap, the retry first
-recovers the registered old build, then performs the install. An uncertain
-relaunch remains explicit and never dispatches a batch.
-
-```powershell
-& $py $tool --installation $install launch-terminal `
-  --monitor-config 'C:/existing-state/monitor-launches/exact-monitor.ini'
-```
-
-`launch-terminal` recovers a stopped registered demo terminal using its prior
-EA/agent ownership evidence and exact monitor config. It requires fresh broker,
-Algo-off, idle tester and EA feedback after startup. It cannot start a real
-account or an unregistered binary.
-
-```powershell
-& $py $tool --installation $install prepare-batch `
-  --batch-id 'new-unique-batch-id' --plan 'C:/frozen-plan.json'
-& $py $tool --installation $install run-batch `
-  --batch-id 'new-unique-batch-id' --max-seconds 172800
-& $py $tool --installation $install resume-batch `
-  --batch-id 'new-unique-batch-id'
-& $py $tool --installation $install batch-status --batch-id 'new-unique-batch-id'
-& $py $tool --installation $install batch-driver-status --batch-id 'new-unique-batch-id'
-& $py $tool --installation $install stop
-& $py $tool --installation $install clear-stop
-```
-
-`prepare-batch` uses Studio's native batch preparation and verifies the queued
-member count. `run-batch` starts a detached Windows worker and returns when its
-durable journal appears, without claiming native work is running. The worker
-uses the existing bounded Studio driver for up to 48 hours. `resume-batch`
-attaches a new detached worker to the retained attempt and original deadline;
-it never starts a pending job. Repeating `run-batch` returns the original
-worker/journal status and never resets the deadline. `batch-status` reads the
-EA's member state; `batch-driver-status` reads the retained driver journal.
-`stop` writes the owner STOP marker even while a worker holds the lock. It
-waits for the exact cancellation readback; if the worker died, it resumes the
-retained journal and requests cancellation through the existing EA path.
-It returns `cancelled`, another verified terminal result, or `stop_unconfirmed`,
-never an unverified “requested” success. `clear-stop` removes only a STOP marker
-written by this tool after a verified idle demo and terminal batch state. A
-human TAKE also prevents further agent dispatch. Treat `start_uncertain` or
-`stop_unconfirmed` as needing native inspection, not as completion.
-
-This is the first Tier A slice. Terminal discovery, compile, SET editing,
-report parsing and exports will be separate tools wrapping existing MT5/EA
-features. Native smoke evidence is required before calling this lane qualified.
+- `install-build` verifies the candidate hash and the inert monitor INI (only Charts/Experts/StartUp monitor keys; account, tester and script directives refuse before MT5 closes), archives the old EX5 and identity files, closes only the selected idle demo terminal, copies the EX5, relaunches its monitor and reads back the physical hash, demo account, EA feedback and Algo-off state within 120 seconds. Repeating it with the same candidate and hash returns `already_installed` or completes an interrupted swap; an uncertain relaunch never dispatches a batch.
+- `launch-terminal` reopens a stopped registered demo terminal with its exact monitor INI and requires fresh broker, Algo-off, idle-tester and EA feedback afterwards.
+- `run-batch` (`--max-seconds` required, 1..172800) starts a detached Windows worker and returns when its journal exists; that is not proof that native work runs. Repeating it returns the original worker and never resets the deadline. `resume-batch` attaches a new worker to the retained attempt and original deadline and never starts a pending job.
+- `stop` writes the owner STOP marker and waits for the exact cancellation readback; it returns `cancelled`, another verified terminal result or `stop_unconfirmed`. `clear-stop` removes only a STOP written by this tool, after a verified idle demo and a terminal batch state.
+- Treat `start_uncertain` or `stop_unconfirmed` as "inspect the native state", never as completion.

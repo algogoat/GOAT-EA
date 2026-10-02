@@ -105,9 +105,13 @@ def _owned_controls(c, job, attempt, requests):
     evidence = safe_path(c.root/'attempts'/attempt)
     transaction = read_json(evidence/'transaction.json')
     base = safe_path(Path(transaction['base']))
-    expected_base = safe_path(Path(c.install['common_files_root'])/'GOAT'/
-                             ('GOAT V'+c.install['ea_version']+'-'+c.session['account']['server']))
-    if (base != expected_base or transaction['owner'] != attempt or transaction['phase'] != 'installed'
+    from studio_terminal_isolation import controller_base, legacy_base_name
+    # This installation's own folder; an attempt installed before terminal
+    # isolation keeps the shared folder its transaction recorded.
+    expected_bases = {safe_path(controller_base(c)),
+                      safe_path(Path(c.install['common_files_root'])/'GOAT'/
+                                legacy_base_name(c.install['ea_version'], c.session['account']['server']))}
+    if (base not in expected_bases or transaction['owner'] != attempt or transaction['phase'] != 'installed'
             or read_json(base/'agent-native-control-owner.json') != dict(owner=attempt, evidence=str(evidence))
             or any(transaction['files'][n]['before'] is not None for n in NAMES)
             or any(digest(contents(base/n)) != transaction['files'][n]['after_sha256'] for n in NAMES)):

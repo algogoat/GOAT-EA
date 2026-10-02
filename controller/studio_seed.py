@@ -20,6 +20,7 @@ from studio_strategy_settings import read_values,numeric
 from studio_template_tools import source_bytes,validate_raw
 from studio_seed_results import collect,read_seed_json,MAX_MANIFEST_BYTES,MAX_STATE_BYTES,MAX_RESULT_BYTES
 from studio_seed_slot import guard_active_seed
+from studio_terminal_isolation import controller_preflight
 
 TERMINAL={'completed','cancelled','timeout','failed','missing_output'}
 MAX_RETAINED_INPUT_BYTES=128*1024*1024
@@ -258,6 +259,8 @@ class SeedRunner:
         current=self.process.inspect()
         if current is None:raise ValueError('First seed start requires chosen running demo terminal and loaded licensed Studio')
         guard_active_seed(self.c.root)
+        # INV-BATCH-01: the running EA and every other live terminal keep their own batch folders.
+        controller_preflight(self.c,observation)
         for spec in manifest['members']:
             if self._outputs(spec):raise ValueError('Seed output identity already exists before first attempt')
         state['generation']=owner['generation'];state['status']='closing_monitor';state['preflight']=observation;state['initial_process']=current

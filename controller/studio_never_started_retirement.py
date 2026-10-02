@@ -32,7 +32,9 @@ def clean_legacy_draft(value,c,job):
         raise ValueError('Clean bound editor required before retirement')
     manifest=read_json(c.root/'packages'/job['job_id']/'manifest.json')
     scoped='MQL5\\Files\\'+manifest['native_run_relative']+'\\reports\\'
-    legacy='MQL5\\Files\\GOAT\\GOAT V'+c.install['ea_version']+'-'+c.session['account']['server']+'\\'
+    # The idle monitor regenerates Report under this terminal's own batch folder.
+    from studio_terminal_isolation import controller_base_name
+    legacy='MQL5\\Files\\GOAT\\'+controller_base_name(c)+'\\'
     matches=list(re.finditer(r'(?m)^Report=([^\r\n]+)',value['tester_ini']))
     if len(matches)!=1 or not matches[0][1].startswith(scoped):
         raise ValueError('Exact original derived Report path required')

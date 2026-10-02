@@ -935,9 +935,129 @@ bool GOATIsSafeApiBearerToken(const string token)
    return true;
   }
 
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+// INV-CRED-01: the GOAT user credential is stored per MT5 account login, so
+// pairing one terminal never replaces another account's credential. The login
+// comes only from this terminal's AccountInfoInteger(ACCOUNT_LOGIN) and must be
+// digits; without an account there is no credential path at all.
+bool GOATLoginDigitsValid(const string text)
+  {
+   if(StringLen(text)<1 || StringLen(text)>20 || StringGetCharacter(text,0)=='0') return false;
+   for(int i=0;i<StringLen(text);i++)
+     {
+      ushort c=StringGetCharacter(text,i);
+      if(c<'0' || c>'9') return false;
+     }
+   return true;
+  }
+
+string GOATAccountLoginDigits(void)
+  {
+   long login=AccountInfoInteger(ACCOUNT_LOGIN);
+   if(login<=0) return "";
+   string text=IntegerToString(login);
+   return (GOATLoginDigitsValid(text) ? text : "");
+  }
+
+string GOATApiBearerFileFor(const string login)
+  {
+   // The legacy shared file ends in ".token"; the per-login file sits beside it.
+   string stem=StringSubstr(GOAT_API_BEARER_LEGACY_FILE,0,StringLen(GOAT_API_BEARER_LEGACY_FILE)-6);
+   return stem+"-"+login+".token";
+  }
+
+string GOATApiBearerFile(void)
+  {
+   string login=GOATAccountLoginDigits();
+   // Never fall back to the shared legacy file. This name is never written:
+   // activation refuses an account ID of zero and checks the login first.
+   if(login=="") return "GOAT\\Credentials\\no-account.token";
+   return GOATApiBearerFileFor(login);
+  }
+
+bool GOATCredentialStatusApproved(const string record)
+  {
+   // Only "approved" is written solely after this terminal stored the credential.
+   // The reload statuses also follow a credential merely found on disk (possibly
+   // another login's), so they are not proof of authorship.
+   return(StringFind(record,"\"reason\":\"approved\"")>0);
+  }
+
+bool g_GOATCredentialMigrationChecked=false;
+// One-time copy of the legacy shared credential, only when this login provably
+// wrote it: an "approved" activation status for this login, from the same EA
+// version, written no earlier than the shared file, and no such status for any
+// other login. Later reload statuses usually replace "approved" within seconds,
+// so most terminals pair once. The shared file is never deleted or changed, and
+// another login's token is never opened.
+void GOATCredentialMigrateLegacyOnce(void)
+  {
+   if(g_GOATCredentialMigrationChecked || MQLInfoInteger(MQL_TESTER)) return;
+   string login=GOATAccountLoginDigits();
+   if(login=="") return;
+   g_GOATCredentialMigrationChecked=true;
+   string target=GOATApiBearerFileFor(login),legacy=GOAT_API_BEARER_LEGACY_FILE;
+   if(FileIsExist(target,FILE_COMMON) || !FileIsExist(legacy,FILE_COMMON)) return;
+   datetime written=(datetime)FileGetInteger(legacy,FILE_MODIFY_DATE,true);
+   if(written<=0) return;
+   string family="\"buildId\":\"V"+GOAT_VERSION_LABEL+"-";
+   string own_prefix="{\"accountId\":\""+login+"\",";
+   bool ours=false,foreign=false;
+   string name;
+   long search=FileFindFirst(Key+"\\activation-status-*.json",name,FILE_COMMON);
+   if(search==INVALID_HANDLE) return;
+   do
+     {
+      string path=Key+"\\"+name;
+      if((datetime)FileGetInteger(path,FILE_MODIFY_DATE,true)<written) continue;
+      int status=FileOpen(path,FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+      if(status==INVALID_HANDLE) continue;
+      string record=FileReadString(status);
+      FileClose(status);
+      if(StringFind(record,family)<0 || !GOATCredentialStatusApproved(record)) continue;
+      if(StringFind(record,own_prefix)==0) ours=true;
+      else foreign=true;
+     }
+   while(FileFindNext(search,name));
+   FileFindClose(search);
+   if(!ours || foreign)
+     {
+      Print("GOAT sign-in: the shared V"+GOAT_VERSION_LABEL+" credential is not provably this MT5 account's, so it was left untouched; this account signs in once for its own credential.");
+      return;
+     }
+   int handle=FileOpen(legacy,FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
+   if(handle==INVALID_HANDLE) return;
+   ulong size=FileSize(handle);
+   string token=(size>=64 && size<=1024 ? FileReadString(handle) : "");
+   bool extra=false;
+   while(!FileIsEnding(handle)) if(StringLen(FileReadString(handle))>0) extra=true;
+   FileClose(handle);
+   if(extra || !GOATIsSafeApiBearerToken(token)) {token="";return;}
+   string temporary=target+".pending";
+   FileDelete(temporary,FILE_COMMON);
+   int out=FileOpen(temporary,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(out==INVALID_HANDLE) {token="";return;}
+   uint count=FileWriteString(out,token);
+   FileFlush(out);
+   FileClose(out);
+   bool complete=((int)count==StringLen(token));
+   token="";
+   // Create-only: an existing per-login credential is never replaced.
+   if(!complete || !FileMove(temporary,FILE_COMMON,target,FILE_COMMON))
+     {
+      FileDelete(temporary,FILE_COMMON);
+      return;
+     }
+   Print("GOAT sign-in: copied the shared V"+GOAT_VERSION_LABEL+" credential to this MT5 account's own file; the shared file is unchanged.");
+  }
+#endif
+
 bool GOATBuildAuthenticatedRequestHeaders(string &headers)
   {
    headers="";
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+   GOATCredentialMigrateLegacyOnce();
+#endif
    int handle=FileOpen(GOAT_API_BEARER_FILE,FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
    if(handle==INVALID_HANDLE) return false;
    ulong file_size=FileSize(handle);
@@ -1511,9 +1631,57 @@ string GoatOptSafePathPart(string text)
    return text;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
-string GoatOptBasePath(const string ea_name,const string server_name)
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+// INV-BATCH-01: every MT5 terminal/account keeps its own Common batch state:
+// GOAT\<EA>-<server>-<login>-<terminal hash>. The hash is the first 8 hex of
+// SHA-256 over this terminal's data path (separators '\', no trailing '\',
+// ASCII A-Z lowered) so two terminals on one login stay independent. The
+// controller computes the same name (controller/studio_terminal_isolation.py).
+// Only terminal-side code resolves it; tester agents never do.
+string g_goat_opt_terminal_hash="",g_goat_opt_login="";
+string GoatOptLegacyBasePath(const string ea_name,const string server_name)
   {
    return Key+"\\"+ea_name+"-"+server_name;
+  }
+
+string GoatOptTerminalHash(void)
+  {
+   if(g_goat_opt_terminal_hash!="") return g_goat_opt_terminal_hash;
+   string path=TerminalInfoString(TERMINAL_DATA_PATH);
+   StringReplace(path,"/","\\");
+   while(StringLen(path)>3 && StringSubstr(path,StringLen(path)-1)=="\\") path=StringSubstr(path,0,StringLen(path)-1);
+   ushort chars[];
+   int total=StringToShortArray(path,chars,0,StringLen(path));
+   for(int i=0;i<total;i++) if(chars[i]>='A' && chars[i]<='Z') chars[i]=(ushort)(chars[i]+32);
+   string lowered=ShortArrayToString(chars,0,total);
+   uchar data[],key[],digest[];
+   int length=StringToCharArray(lowered,data,0,WHOLE_ARRAY,CP_UTF8)-1;
+   if(length<=0) return "00000000";
+   ArrayResize(data,length);
+   if(CryptEncode(CRYPT_HASH_SHA256,data,key,digest)!=32) return "00000000";
+   string token="";
+   for(int i=0;i<4;i++) token+=StringFormat("%02x",(int)digest[i]);
+   g_goat_opt_terminal_hash=token;
+   return token;
+  }
+
+string GoatOptLoginToken(void)
+  {
+   // Keep the last real login if the account briefly reads as zero while the
+   // terminal reconnects; an actual account switch changes the namespace.
+   long login=AccountInfoInteger(ACCOUNT_LOGIN);
+   if(login>0) g_goat_opt_login=IntegerToString(login);
+   return (g_goat_opt_login=="" ? "0" : g_goat_opt_login);
+  }
+#endif
+
+string GoatOptBasePath(const string ea_name,const string server_name)
+  {
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+   return GoatOptLegacyBasePath(ea_name,server_name)+"-"+GoatOptLoginToken()+"-"+GoatOptTerminalHash();
+#else
+   return Key+"\\"+ea_name+"-"+server_name;
+#endif
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 string GoatOptRunsPath(const string ea_name,const string server_name)
@@ -1611,15 +1779,26 @@ string GoatOptTimestampFolder(void)
    return StringFormat("%04d%02d%02d_%02d%02d%02d",tm.year,tm.mon,tm.day,tm.hour,tm.min,tm.sec);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+string g_goat_opt_active_run_base="";
+#endif
 bool GoatOptWriteActiveRunPath(const string ea_name,const string server_name,const string run_path)
   {
    g_goat_opt_active_run_path=run_path;
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+   g_goat_opt_active_run_base=GoatOptBasePath(ea_name,server_name);
+#endif
    string text="[ActiveOptimizationRun]\r\nRunPath="+run_path+"\r\nUpdatedAt="+TimeToString(TimeLocal(),TIME_DATE|TIME_SECONDS)+"\r\n";
    return GoatOptWriteTextFile(GoatOptActivePointerPath(ea_name,server_name),text);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 string GoatOptCurrentRunPath(const string ea_name,const string server_name)
   {
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+   // A cached run belongs to one namespace; an account switch re-reads its own pointer.
+   string active_base=GoatOptBasePath(ea_name,server_name);
+   if(active_base!=g_goat_opt_active_run_base) {g_goat_opt_active_run_path="";g_goat_opt_active_run_base=active_base;}
+#endif
    if(g_goat_opt_active_run_path!="") return g_goat_opt_active_run_path;
    string text=GoatOptReadTextFile(GoatOptActivePointerPath(ea_name,server_name));
    string run_path=GoatOptReadIniValue(text,"RunPath");
@@ -1749,6 +1928,269 @@ string GoatOptLeftoverPath(const string ea_name,const string server_name)
    if(run_path=="") return "LeftoverXMLs";
    return run_path+"\\leftover_xml";
   }
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+#define GOAT_OPT_ISOLATION_RECEIPT "terminal-isolation.ini"
+#define GOAT_OPT_ISOLATION_CLAIM   "terminal-isolation-claim.ini"
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// Tester side of INV-BATCH-01. OnTester's running fitness file is per optimization
+// run: OnTesterInit draws a nonce and hands it to every agent through the
+// GOAT_FitnessRunNonce input (ParameterSetRange), so two terminals optimizing the
+// same EA_Desc and symbol never share it. Agents never resolve the namespace.
+string GoatOptTesterFitnessFile(const string desc,const string symbol,const long nonce)
+  {
+   string token="shared";
+   uchar data[],key[],digest[];
+   int length=StringToCharArray(EA_Name+"|"+desc+"|"+symbol+"|"+IntegerToString(nonce),data,0,WHOLE_ARRAY,CP_UTF8)-1;
+   if(length>0)
+     {
+      ArrayResize(data,length);
+      if(CryptEncode(CRYPT_HASH_SHA256,data,key,digest)==32)
+        {
+         token="";
+         for(int i=0;i<8;i++) token+=StringFormat("%02x",(int)digest[i]);
+        }
+     }
+   return Key+"\\Tester-"+token+".txt";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatOptIsolationFlagsHeld(void)
+  {
+   // Per-terminal globals: only a terminal with these set can own an in-flight batch.
+   return(GlobalVariableGet("BatchOnGoing")!=0 || GlobalVariableGet("TerminalRunning")!=0
+          || GlobalVariableGet("GOAT_BatchRestartPending")!=0);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptIsolationReceipt(const string decision,const string legacy,const string base,
+                               const string planned,const string moved,const string left,const string guard_before)
+  {
+   return "[TerminalIsolation]\r\nVersion=1\r\nDecision="+decision+"\r\nLegacyBase="+legacy+"\r\nBase="+base
+          +"\r\nLogin="+GoatOptLoginToken()+"\r\nTerminalHash="+GoatOptTerminalHash()
+          +"\r\nDataPath="+TerminalInfoString(TERMINAL_DATA_PATH)+"\r\nPlanned="+planned+"\r\nMoved="+moved
+          +"\r\nLeft="+left+"\r\nGuardConfigPathBefore="+guard_before
+          +"\r\nDecidedBy=EA V"+GOAT_VERSION_LABEL+"\r\nDecidedAtUtc="+TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS)+"\r\n";
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// A claim names a real terminal only as <login digits>-<8 lowercase hex>. Anything
+// else (unwritable or unreadable claim, empty values) is transient: decide nothing.
+// Mirror: controller/studio_terminal_isolation.py holder_valid().
+bool GoatOptIsolationHolderValid(const string holder)
+  {
+   int dash=StringFind(holder,"-");
+   if(dash<1 || dash>20 || StringLen(holder)!=dash+9 || StringSubstr(holder,0,1)=="0") return false;
+   for(int i=0;i<dash;i++)
+      if(StringFind("0123456789",StringSubstr(holder,i,1))<0) return false;
+   for(int i=dash+1;i<StringLen(holder);i++)
+      if(StringFind("0123456789abcdef",StringSubstr(holder,i,1))<0) return false;
+   return true;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// Set by the last GoatOptIsolationClaim: true when the claim could not be written
+// or read (no well-formed holder), so the caller must record no decision.
+bool g_goat_opt_claim_transient=false;
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// Create-only claim in the shared folder. Chart locks and native gates are per
+// terminal, so only the terminal named by this claim may move anything out of the
+// shared folder. A rename without FILE_REWRITE fails when another terminal won.
+bool GoatOptIsolationClaim(const string legacy,const string base,string &holder)
+  {
+   g_goat_opt_claim_transient=false;
+   string me=GoatOptLoginToken()+"-"+GoatOptTerminalHash();
+   string claim=legacy+"\\"+GOAT_OPT_ISOLATION_CLAIM;
+   if(!FileIsExist(claim,FILE_COMMON))
+     {
+      string temporary=legacy+"\\terminal-isolation-claim-"+me+".tmp";
+      if(GoatOptWriteTextFile(temporary,"[TerminalIsolationClaim]\r\nLogin="+GoatOptLoginToken()+"\r\nTerminalHash="+GoatOptTerminalHash()
+                              +"\r\nBase="+base+"\r\nClaimedAtUtc="+TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS)+"\r\n")
+         && !FileMove(temporary,FILE_COMMON,claim,FILE_COMMON))
+         FileDelete(temporary,FILE_COMMON); // Our own temporary: another terminal claimed first.
+     }
+   string text=GoatOptReadTextFile(claim);
+   holder=GoatOptReadIniValue(text,"Login")+"-"+GoatOptReadIniValue(text,"TerminalHash");
+   g_goat_opt_claim_transient=(holder!=me && !GoatOptIsolationHolderValid(holder));
+   return (holder==me);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// One-time move of the shared pre-isolation batch files into this terminal's own
+// folder. Files are moved, never discarded or overwritten. The launch guard is the
+// one rewrite: its ConfigPath line follows the moved config, the old value goes in
+// the receipt, and the old copy is removed only after the new one is in place.
+// Run folders stay where they are (the moved pointer still references them).
+// Owned controller controls are never moved; "both exist" is refused; only the
+// terminal holding the shared folder's claim moves; an interrupted move resumes.
+// Mirror: controller/studio_terminal_isolation.py migrate_legacy(). Returns a
+// plain sentence for the user, or "" when nothing needs saying.
+string GoatOptMigrateLegacyBatchStateLocked(const string ea_name,const string server_name,const bool batch_flags)
+  {
+   string files[]={"GOAT Batch Queue.GOAT","GOAT Export Settings.GOAT","log.GOAT","portfolio.goatbatch",
+                   "active_optimization_config.ini","active_optimization_launch.ini","active_optimization_run.ini"};
+   string base=GoatOptBasePath(ea_name,server_name),legacy=GoatOptLegacyBasePath(ea_name,server_name);
+   string receipt=base+"\\"+GOAT_OPT_ISOLATION_RECEIPT;
+   string prior=GoatOptReadTextFile(receipt),decision=GoatOptReadIniValue(prior,"Decision");
+   if(decision!="" && decision!="moving") return "";
+   string planned="",holder="",guard_before="";
+   if(decision=="moving")
+     {
+      planned=GoatOptReadIniValue(prior,"Planned");
+      guard_before=GoatOptReadIniValue(prior,"GuardConfigPathBefore");
+      if(!GoatOptIsolationClaim(legacy,base,holder))
+         return "Batch state move stopped: the shared folder "+legacy+" is claimed by another MT5 terminal ("+holder+"). Nothing more was moved.";
+     }
+   else
+     {
+      string present="",existing="";
+      for(int i=0;i<ArraySize(files);i++)
+        {
+         if(FileIsExist(legacy+"\\"+files[i],FILE_COMMON)) present+=(present=="" ? "" : "|")+files[i];
+         if(FileIsExist(base+"\\"+files[i],FILE_COMMON)) existing+=(existing=="" ? "" : "|")+files[i];
+        }
+      if(FileIsExist(legacy+"\\agent-native-control-owner.json",FILE_COMMON))
+         return "Batch state was not moved: the shared folder "+legacy+" holds controls of an unfinished controller attempt. Let that attempt finish, then reload this chart.";
+      if(present=="")
+        {
+         GoatOptWriteTextFile(receipt,GoatOptIsolationReceipt("nothing_to_move",legacy,base,"","","",""));
+         return "";
+        }
+      bool inflight=(FileIsExist(legacy+"\\active_optimization_config.ini",FILE_COMMON)
+                     || FileIsExist(legacy+"\\active_optimization_launch.ini",FILE_COMMON));
+      // Evidence this terminal owns the shared state: its own batch flags, or (for an
+      // idle pointer) the pointed run's report folder in this terminal's local Files.
+      bool here=batch_flags;
+      if(!here && !inflight)
+        {
+         string run=GoatOptReadIniValue(GoatOptReadTextFile(legacy+"\\active_optimization_run.ini"),"RunPath");
+         StringTrimLeft(run);
+         StringTrimRight(run);
+         ResetLastError();
+         here=(run=="" || (!FileIsExist(run) && GetLastError()==ERR_FILE_IS_DIRECTORY));
+        }
+      if(!here)
+        {
+         GoatOptWriteTextFile(receipt,GoatOptIsolationReceipt("left_for_other_terminal",legacy,base,"","",present,""));
+         return "The batch in the shared folder "+legacy+" was not run on this MT5 terminal, so it was left there. This terminal keeps its own batch state in "+base+".";
+        }
+      if(existing!="")
+         return "Batch state was not moved: both the shared folder "+legacy+" ("+present+") and this terminal's folder "+base+" ("+existing+") hold batch state. Keep one, archive the other, then reload this chart.";
+      // Copied terminals carry the same flags and local runs: the claim decides.
+      if(!GoatOptIsolationClaim(legacy,base,holder))
+        {
+         if(g_goat_opt_claim_transient)
+            return "Batch state was not moved yet: the shared folder "+legacy+" claim could not be written or read. Nothing was decided; reload this chart in a moment.";
+         GoatOptWriteTextFile(receipt,GoatOptIsolationReceipt("left_for_other_terminal",legacy,base,"","",present,""));
+         return "Another MT5 terminal ("+holder+") claimed the shared folder "+legacy+" first, so its batch state was left for that terminal. This terminal keeps its own batch state in "+base+".";
+        }
+      planned=present;
+      guard_before=GoatOptReadIniValue(GoatOptReadTextFile(legacy+"\\active_optimization_launch.ini"),"ConfigPath");
+      if(!GoatOptWriteTextFile(receipt,GoatOptIsolationReceipt("moving",legacy,base,planned,"","",guard_before)))
+         return "Batch state was not moved: this terminal's folder "+base+" could not be written.";
+     }
+   string names[];
+   int total=StringSplit(planned,'|',names);
+   for(int i=0;i<total;i++)
+     {
+      bool known=false;
+      for(int j=0;j<ArraySize(files);j++) if(names[i]==files[j]) known=true;
+      if(!known) return "Batch state move stopped: the receipt in "+base+" lists an unexpected file. Preserve it for review.";
+     }
+   string moved="";
+   for(int i=0;i<total;i++)
+     {
+      string source=legacy+"\\"+names[i],target=base+"\\"+names[i];
+      bool have_source=FileIsExist(source,FILE_COMMON),have_target=FileIsExist(target,FILE_COMMON);
+      if(!have_source) continue; // already moved
+      if(names[i]=="active_optimization_launch.ini")
+        {
+         string guard=GoatOptReadTextFile(source);
+         StringReplace(guard,"ConfigPath="+legacy+"\\active_optimization_config.ini","ConfigPath="+base+"\\active_optimization_config.ini");
+         string expected=guard;
+         if(have_target)
+           {
+            // Only an interrupted move of this very guard may be completed.
+            if(GoatOptReadTextFile(target)!=expected)
+               return "Batch state move stopped: "+names[i]+" exists in both "+legacy+" and "+base+". Keep one, archive the other, then reload this chart.";
+           }
+         else
+           {
+            string staged=target+".moving";
+            StringReplace(guard,"\n","\r\n");
+            if(!GoatOptWriteTextFile(staged,guard+"\r\n") || GoatOptReadTextFile(staged)!=expected
+               || !FileMove(staged,FILE_COMMON,target,FILE_COMMON))
+               return "Batch state move stopped: the launch guard could not be written to "+base+".";
+           }
+         FileDelete(source,FILE_COMMON); // The new guard is in place: this completes its move.
+        }
+      else
+        {
+         if(have_target)
+            return "Batch state move stopped: "+names[i]+" exists in both "+legacy+" and "+base+". Keep one, archive the other, then reload this chart.";
+         if(!FileMove(source,FILE_COMMON,target,FILE_COMMON))
+            return "Batch state move stopped: "+names[i]+" could not be moved to "+base+".";
+        }
+      Print("GOAT state: moved "+source+" -> "+target);
+      moved+=(moved=="" ? "" : "|")+names[i];
+     }
+   GoatOptWriteTextFile(receipt,GoatOptIsolationReceipt("moved",legacy,base,planned,moved,"",guard_before));
+   GoatOptWriteTextFile(legacy+"\\migrated-to-"+GoatOptLoginToken()+"-"+GoatOptTerminalHash()+".ini",
+                        GoatOptIsolationReceipt("moved",legacy,base,planned,moved,"",guard_before));
+   return (moved=="" ? "" : "This terminal's batch state moved to its own folder "+base+" ("+moved+").");
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+string GoatOptMigrateLegacyBatchState(const string ea_name,const string server_name)
+  {
+   if(MQLInfoInteger(MQL_TESTER) || GoatOptLoginToken()=="0") return "";
+   // Decided once: no lock or gate is taken again.
+   string decided=GoatOptReadIniValue(GoatOptReadTextFile(GoatOptBasePath(ea_name,server_name)+"\\"+GOAT_OPT_ISOLATION_RECEIPT),"Decision");
+   if(decided!="" && decided!="moving") return "";
+   // One mover per terminal (charts and the optimization frame share these globals),
+   // and never while the controller holds this terminal's native gate. Across
+   // terminals the shared folder's claim file decides.
+   string lock="GOAT_StateIsolationLock";
+   GlobalVariableTemp(lock);
+   bool held=GlobalVariableSetOnCondition(lock,1.0,0.0);
+   for(int i=0;i<50 && !held;i++) {Sleep(100);held=GlobalVariableSetOnCondition(lock,1.0,0.0);}
+   if(!held) return "Batch state check skipped: another GOAT chart in this terminal is running it. Reload this chart if the queue looks empty.";
+   int gate=INVALID_HANDLE;
+   string gate_path="GOATStudio\\native-gate\\launch.lock";
+   if(FileIsExist(gate_path))
+     {
+      gate=FileOpen(gate_path,FILE_READ|FILE_WRITE|FILE_BIN);
+      if(gate==INVALID_HANDLE)
+        {
+         GlobalVariableSet(lock,0.0);
+         return "Batch state check deferred: the GOAT controller is busy and runs the same check before it starts work.";
+        }
+     }
+   string outcome=GoatOptMigrateLegacyBatchStateLocked(ea_name,server_name,GoatOptIsolationFlagsHeld());
+   if(gate!=INVALID_HANDLE) FileClose(gate);
+   GlobalVariableSet(lock,0.0);
+   return outcome;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// A Common GOAT folder that is another terminal's own namespace: it ends with
+// -<digits>-<8 hex> and that hash (any case) is not this terminal's. This
+// terminal's folder under any login, its -0- folder and case variants still block.
+bool GoatOptForeignNamespaceFolder(const string folder,const string own_hash)
+  {
+   int last=StringLen(folder)-9;
+   if(last<3 || StringSubstr(folder,last,1)!="-") return false;
+   ushort chars[];
+   int total=StringToShortArray(StringSubstr(folder,last+1),chars,0,8);
+   if(total!=8) return false;
+   for(int i=0;i<total;i++)
+     {
+      if(chars[i]>='A' && chars[i]<='F') chars[i]=(ushort)(chars[i]+32);
+      if(!((chars[i]>='0' && chars[i]<='9') || (chars[i]>='a' && chars[i]<='f'))) return false;
+     }
+   if(ShortArrayToString(chars,0,total)==own_hash) return false;
+   int digits=0;
+   for(int i=last-1;i>=0;i--)
+     {
+      ushort c=StringGetCharacter(folder,i);
+      if(c>='0' && c<='9') {digits++;continue;}
+      return (c=='-' && digits>0);
+     }
+   return false;
+  }
+#endif
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 string GoatOptTsvSafe(string text)
   {

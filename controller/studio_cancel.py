@@ -23,7 +23,8 @@ def publish_cancel(controller, job, *, expected_generation=None):
         if (gate/('issued-'+request_id+'.json')).exists():
             return dict(request_id=request_id,dispatch=observe_dispatch(gate,request_id),stopped=False)
         manifest=json.loads((Path(job['launch_intent']['package'])/'manifest.json').read_text())
-        base=Path(controller.install['common_files_root'])/'GOAT'/('GOAT V'+controller.install['ea_version']+'-'+controller.session['account']['server'])
+        from studio_terminal_isolation import controller_base
+        base=controller_base(controller)
         owner=json.loads((base/'agent-native-control-owner.json').read_text())
         if owner['owner']!=attempt: raise ValueError('Native controls belong to another attempt')
         request=dict(schema_version=1,action='cancel',request_id=request_id,attempt_id=attempt,

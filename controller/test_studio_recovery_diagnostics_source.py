@@ -42,10 +42,17 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
                 "   if(g_GoatStudioReadOnlyMonitor && g_StudioBound && m_studioLoaded\n"
                 '      && GlobalVariableGet("BatchOnGoing")!=0) GoatStudioRecoveryObserveCurrent();\n'
                 "#endif\n")
+        # Terminal isolation adds one top-level field, the batch folder the EA resolves.
+        isolation = ("#ifdef GOAT_TERMINAL_ISOLATION_V149\n"
+                     "   // The controller refuses native work unless it resolves this same folder.\n"
+                     '   body+=",\\"state_base\\":"+GoatStudioQuote(GoatOptBasePath(EA_Name,Server));\n'
+                     "#endif\n")
         observation = ui[ui.index("void CStrategyTesterDialog::ManagedObservation("):ui.index("\nvoid CStrategyTesterDialog::ManagedSave")]
         self.assertEqual(observation.count(hook), 1)
+        self.assertEqual(observation.count(isolation), 1)
+        self.assertLess(observation.index(isolation), observation.index('ulong now=GetTickCount64();'))
         self.assertLess(observation.index('now-g_StudioObservationMillis<5000'), observation.index(hook))
-        self.assertEqual(hashlib.sha256(observation.replace(hook, "").encode()).hexdigest(),
+        self.assertEqual(hashlib.sha256(observation.replace(hook, "").replace(isolation, "").encode()).hexdigest(),
                          "ccb0895972457bd25c75d808792e8def54728ab85ec07bb3d1d9bf7156b296e2")
         self.assertEqual(ui.count("GoatStudioRecoveryObserveCurrent();"), 1)
 
@@ -159,7 +166,7 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
     def test_source_and_compiled_candidate_identity(self):
         main = source('GOAT V1.49.mq5')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
-        self.assertIn('#define   GOAT_BUILD_ID "V1.49-NDX-SYMBOL-MAP-31"', main)
+        self.assertIn('#define   GOAT_BUILD_ID "V1.49-TERMINAL-ISOLATION-32"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
                          '05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9')
         for name in ('GOATStudioRecovery.mqh', 'GOATStudioRecoveryFiles.mqh', 'GOATStudioUI.mqh',

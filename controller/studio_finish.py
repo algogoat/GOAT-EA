@@ -14,7 +14,10 @@ def finish(controller,job_id,*,expected_generation=None):
         raise ValueError('Controller generation changed before finish')
     job=controller.job(job_id)
     if job['status'] in ('completed','cancelled','failed'):
-        return dict(status=job['status'],result=job.get('completion'),reused=True)
+        reused=dict(status=job['status'],result_path=job.get('completion_path'),result=job.get('completion'),reused=True)
+        if (job.get('completion') or {}).get('native_error_evidence') is not None:
+            reused['native_error_evidence']=job['completion']['native_error_evidence']
+        return reused
     if 'launch_intent' not in job: raise ValueError('No native attempt to finish')
     intent=job['launch_intent'];package=Path(intent['package'])
     if sha(job['configuration'])!=job['configuration_sha256']:
@@ -54,6 +57,10 @@ def finish(controller,job_id,*,expected_generation=None):
                 matrix_result_required=True,ea_version=controller.install['ea_version'],ea_sha256=controller.install['ea_sha256'],
                 controller_version=controller.install['controller_version'],account_server=controller.session['account']['server'])
     if successor_stop is not None:result['cancellation_dispatch']=successor_stop
+    if native['status']=='native_error':
+        from studio_native_diagnostics import for_job
+        # Read-only EA journal quote; it never changes the outcome or authorizes a retry.
+        result['native_error_evidence']=for_job(controller,job,native)
     if signal_only:
         # Written only if the gated idle check below passes; a failure raises first.
         result['stop_confirmation']=dict(receipt='CANCEL_SIGNAL_SENT_RECONCILE',
@@ -106,4 +113,6 @@ def finish(controller,job_id,*,expected_generation=None):
         except BaseException:
             controller.store.db.execute('ROLLBACK');raise
     controller.bridge.pump()
-    return dict(status=result['status'],result_path=str(result_path),result=result)
+    finished=dict(status=result['status'],result_path=str(result_path),result=result)
+    if 'native_error_evidence' in result:finished['native_error_evidence']=result['native_error_evidence']
+    return finished

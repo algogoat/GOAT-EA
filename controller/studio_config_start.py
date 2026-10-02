@@ -2,6 +2,14 @@
 
 All phases are retained. Interrupted close/launch is observation-only: this function
 never resumes a consumed start, repeats a close, resets a deadline or creates a grant.
+
+Qualified lanes: the broker-verified direct demo lane, and the customer native
+human-control lane (`goat.exe studio` after bootstrap). MT5 writes the tester
+`Report=` main/forward XML only for a /config startup launch, never for an
+in-place Start click, so without this route every customer batch ends with zero
+reports and the EA aborts its exports. The customer lane additionally requires
+the user's MT5 restart consent retained in this batch's driver journal and an
+SDK-confirmed same idle demo (Algo OFF, zero positions/orders) before arming.
 """
 import hashlib
 import json
@@ -21,6 +29,35 @@ from studio_research_authority import before_native_dispatch
 from studio_seed_process import WindowsSeedProcess
 from studio_seed_slot import guard_active_seed
 from studio_report_bridge import prepare as bridge_prepare,verify as bridge_verify
+
+CONFIG_START_LANES=('demo_direct','native_human_control')
+RESTART_CONSENT_SCOPE='close_and_reopen_selected_mt5_for_this_batch_start'
+
+
+def config_start_lane(session):
+    """True for a session whose bounded driver must use the report-capable /config route."""
+    return isinstance(session,dict) and session.get('authority_kind') in CONFIG_START_LANES
+
+
+def require_restart_consent(c,job_id):
+    """The customer lane closes the user's own MT5: their retained consent is mandatory."""
+    if c.session.get('authority_kind')!='native_human_control':return None
+    journal=json.loads((c.root/'batch-drivers'/(job_id+'.json')).read_text(encoding='utf-8'))
+    consent=journal.get('mt5_restart_consent')
+    if (not isinstance(consent,dict) or consent.get('granted') is not True
+            or consent.get('scope')!=RESTART_CONSENT_SCOPE or journal.get('binding',{}).get('job_id')!=job_id):
+        raise ValueError('MT5 restart consent required: tell the user GOAT will close and reopen the selected MT5 '
+                         'for this batch, then start with --mt5-restart-consent')
+    return consent
+
+
+def sdk_idle_demo(c):
+    """Broker-reported same demo, Algo OFF, zero positions/orders and idle tester (no trading calls)."""
+    from studio_monitor_probe import inspect_idle_demo
+    from studio_rejected_monitor import require_demo
+    native=inspect_idle_demo(c)
+    require_demo(native)
+    return native
 
 
 def checkpoint(c,job_id,generation):
@@ -57,25 +94,34 @@ def phase(c,job_id,generation,expected,next_phase,**values):
 
 
 def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resume_unissued=False):
-    if c.session.get('authority_kind')!='demo_direct':
-        raise ValueError('Config start is currently qualified for the direct demo lane only')
+    if not config_start_lane(c.session):
+        raise ValueError('Config start is qualified for the direct demo and native human-control lanes only')
+    customer=c.session.get('authority_kind')=='native_human_control'
     guard_active_seed(c.root)
     state=c.state();job=c.job(job_id)
     generation=state['generation'] if expected_generation is None else expected_generation
     if type(resume_unissued) is not bool:raise ValueError('Explicit unissued resume flag required')
+    if customer and resume_unissued:
+        raise ValueError('Unissued-start resume is qualified for the direct demo lane only')
     if not resume_unissued and (job['status']!='pending' or 'launch_intent' in job):
         raise ValueError('Only a new pending batch may use config start')
     checkpoint(c,job_id,generation)
+    require_restart_consent(c,job_id)
     package=c.root/'packages'/job_id
     plan=json.loads((package/'studio-plan.json').read_text(encoding='utf-8'))
     binding=plan['research_binding']
     if (binding.get('report_location_bridge')!='installation_to_data_v1'
             or not binding.get('startup_monitor') or not binding.get('research_profile')):
-        raise ValueError('Prepare a new config-start package; historical package remains unchanged')
+        raise ValueError('Prepare a new config-start package under a new batch ID; historical package remains unchanged')
     args=c.native_args()
     c.runtime(require_idle=True,expected_batch_ongoing=False)
     before_native_dispatch(c,job)
     baseline=inspect_processes(binding)
+    if customer:
+        # Fresh broker proof before anything is reserved, armed or closed.
+        native=sdk_idle_demo(c)
+        if native.get('process')!=baseline['research']:
+            raise ValueError('SDK-observed MT5 differs from the selected process; no close or launch issued')
     digest=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()
     if resume_unissued:
         from studio_unissued_start import proof

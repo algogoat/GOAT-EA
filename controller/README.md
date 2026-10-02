@@ -476,7 +476,10 @@ running: an agent/process crash is not an autonomous native deadline mechanism.
 `batch-driver-status --job-id <id>` reads progress; `run-batch --job-id <id> --resume`
 uses the original deadline without replenishing its budget or retrying uncertain
 starts. Driver authority remains tied to the original generation. A changed
-grant, configuration or native identity requires reconciliation.
+grant, configuration or native identity requires reconciliation. On the customer
+native human-control lane a new start also needs `--mt5-restart-consent`, because
+the first member starts through the report-capable /config route (see
+"Report-capable first-member startup").
 
 The driver also requires 5 GiB of free space on each terminal-data, Common-files
 and controller-state filesystem. `--min-free-bytes <positive integer>` selects a
@@ -1018,6 +1021,14 @@ Use **1 minute OHLC (`Model=1`) for new optimization plans** unless the user exp
 ### Report-capable first-member startup
 
 The direct-demo bounded driver prepares a new package with the selected passive monitor profile and starts its first member through /config. This applies configuration-only Report settings that an in-place tester Start click cannot establish. It reuses the actual grant and the existing deadline. Native arming, close issuance, confirmed exit and launch issuance are retained separately; interrupted starts are never replayed. The exact native attempt is saved before any close so the normal stop/reconcile tools can recover it.
+
+The customer native human-control lane (`goat.exe studio` after `bootstrap`) uses the same route, so its batches export too. With the in-place Start click, MT5 wrote no `Report=` XML, the EA aborted its exports, and every customer batch ended `native_error` with 0 exports (beta.16 QA, 2026-10-02). The route closes the user's own MT5, so on this lane:
+- `run-batch` requires `--mt5-restart-consent`, which the agent passes only after the user's yes. Without it, nothing is written or dispatched.
+- The consent is retained in the driver journal, and config start rechecks it.
+- Before any reservation, arm or close, a fresh SDK read must show the same idle demo, with Algo OFF, zero positions/orders and the same selected process. The usual runtime, process-inventory, ownership, human-inbox and deadline checks still apply.
+- The binding gains the route material only once onboarding has staged the monitor profile.
+- Older customer packages still verify for status and finish. The driver refuses to start them and asks for a new batch ID.
+- The demo-only unissued-start resume stays demo-only.
 
 MT5 resolves configured reports relative to its installation while GOAT reads its local data sandbox. A fresh, audited per-run junction connects only those owned report locations when they differ. Existing output directories or links are not overwritten. Paths and startup bytes are rechecked before launch. Older prepared packages remain unchanged and must be copied into a new preparation for this route. Native report pair/export completion must qualify the installed build; source tests and process launch do not establish that result.
 

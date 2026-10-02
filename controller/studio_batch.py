@@ -50,7 +50,13 @@ def _files(package):
     return result
 
 
-def _verify_package(controller, job):
+def _verify_package(controller, job, *, allow_peer_refresh=False):
+    """Verify a frozen package against this installation.
+
+    ``allow_peer_refresh`` is only for reading a finished package's remaining
+    work: the protected peer's process instance (and so its reviewed policy hash)
+    may have changed since preparation; every other binding field must match.
+    """
     package = controller.root / 'packages' / job['job_id']
     receipt = _json(package / 'preparation.json')
     plan = _json(package / 'studio-plan.json'); manifest = _json(package / 'manifest.json')
@@ -61,7 +67,14 @@ def _verify_package(controller, job):
     if source != dict(terminal_id=controller.terminal, run_id=controller.run, job_id=job['job_id'],
                       source_revision=job['source_revision'], configuration_sha256=job['configuration_sha256']):
         raise ValueError('Prepared batch belongs to another queue revision')
-    if plan['research_binding'] != controller.binding() or manifest['campaign_id'] != sha(plan):
+    recorded, current = plan['research_binding'], controller.binding()
+    if allow_peer_refresh:
+        if job['status'] not in ('completed', 'cancelled', 'failed'):
+            raise ValueError('A refreshed protected peer only reads a finished package')
+        from studio_protected_peer import PEER_BINDING_KEYS
+        recorded = {key: value for key, value in recorded.items() if key not in PEER_BINDING_KEYS}
+        current = {key: value for key, value in current.items() if key not in PEER_BINDING_KEYS}
+    if recorded != current or manifest['campaign_id'] != sha(plan):
         raise ValueError('Prepared batch installation or plan identity changed')
     if 'launch_intent' in job and hashlib.sha256((package / 'manifest.json').read_bytes()).hexdigest() != job['launch_intent']['package_sha256']:
         raise ValueError('Attempt package identity changed')
@@ -315,12 +328,12 @@ def load_batch(controller, batch_id, source):
     return result
 
 
-def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False):
+def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False, allow_peer_refresh=False):
     """Create a new native queue containing explicitly selected unfinished work."""
     previous = controller.job(source_batch_id)
     if previous['status'] not in ('completed', 'cancelled', 'failed'):
         raise ValueError('Stop/reconcile/finish the original batch before preparing its remaining work')
-    package, _, manifest = _verify_package(controller, previous)
+    package, _, manifest = _verify_package(controller, previous, allow_peer_refresh=allow_peer_refresh)
     from studio_native_observe import observe
     if 'launch_intent' not in previous:
         if previous['status'] != 'cancelled': raise ValueError('Unstarted remaining work requires an explicit cancelled batch')

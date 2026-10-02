@@ -43,10 +43,18 @@ def validate(argv, log_path, worker_path):
     if worker.get('status') != 'reserved' or worker.get('nonce') != nonce or worker.get('batch_id') != batch_id:
         raise ValueError('Current reserved supervisor identity required')
     if worker.get('resume') is True:
-        if len(argv) != 9 or worker.get('max_seconds') is not None:
+        if worker.get('max_seconds') is not None:
             raise ValueError('Resume must keep the original driver budget')
-        deadline = read_json(safe_path(root / 'batch-drivers' / (batch_id + '.json')))['deadline_wall']
-        remaining = max(0, math.ceil(deadline - time.time()))
+        if worker.get('pause_seconds') is None:
+            if len(argv) != 9:
+                raise ValueError('Resume must keep the original driver budget')
+            deadline = read_json(safe_path(root / 'batch-drivers' / (batch_id + '.json')))['deadline_wall']
+            remaining = max(0, math.ceil(deadline - time.time()))
+        else:
+            # A pause supervisor has its own bounded budget; the batch deadline is unchanged.
+            if len(argv) != 11 or argv[9] != '--pause-seconds' or str(worker['pause_seconds']) != argv[10]:
+                raise ValueError('Pause supervision budget changed')
+            remaining = worker['pause_seconds']
     else:
         if len(argv) != 11 or argv[9] != '--max-seconds' or str(worker.get('max_seconds')) != argv[10]:
             raise ValueError('Initial driver budget changed')

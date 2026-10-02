@@ -223,7 +223,32 @@ class SeedRunner:
             root,manifest,state=self._read(batch_id)
             self._observe(root,manifest,state)
         members=[item|dict(tester=spec['tester'],source_sha256=spec['source_sha256'],frozen_set_sha256=spec['set_sha256'],config_sha256=spec['config_sha256'],requested_frames=spec['frame_target']) for spec,item in zip(manifest['members'],state['members'])]
-        return self._public(root,state|dict(members=members,native_launch_qualified=False,manifest_path=str(root/'manifest.json'),report_path=str(root/'report.json')))
+        return self._public(root,state|dict(members=members,native_launch_qualified=False,manifest_path=str(root/'manifest.json'),report_path=str(root/'report.json'),pause_requested=self.paused(batch_id)))
+
+    # A seed pause is a between-members stop: the running member finishes and is
+    # kept, pending members stay pending (never cancelled), so resume continues
+    # the same original attempt. The marker is the only effect; like STOP it needs
+    # no terminal lock, and a live driver honours it before its next launch.
+    def pause_path(self,batch_id):return self.path(batch_id)/'pause.json'
+
+    def paused(self,batch_id):return self.pause_path(batch_id).is_file()
+
+    def request_pause(self,batch_id,*,now):
+        root,manifest,state=self._read(batch_id)
+        if state['status'] not in ('active','closing_monitor'):
+            raise ValueError('Seed hunt '+batch_id+' is '+str(state['status'])+', not running, so there is nothing to pause')
+        path=self.pause_path(batch_id)
+        if not path.exists():
+            write_json(path,dict(schema_version=1,batch_id=batch_id,manifest_sha256=state['manifest_sha256'],requested_unix=now))
+        return self._public(root,state|dict(pause_requested=True))
+
+    def release_pause(self,batch_id,*,now):
+        path=self.pause_path(batch_id)
+        if not path.exists():return False
+        # Retain the pause evidence beside the seed state; never delete it.
+        target=path.with_name('pause-released-'+str(int(now*1000))+'.json')
+        path.replace(target)
+        return True
 
     def _activate(self,batch_id,root,manifest,state):
         owner=self._owner()
@@ -265,6 +290,9 @@ class SeedRunner:
                     if running['status']=='running' and self.clock()-running['started_unix']>=manifest['plan']['job_timeout_seconds']:
                         running['status']='timeout_requested';self._save(root,state)
                         self.process.close(running['process'])
+                elif current is None and state['status']=='active' and self.paused(batch_id):
+                    return self._public(root,state)|dict(paused=True,pause_requested=True,
+                        next_action='Paused between members; batch-resume releases the pause and continues the pending members')
                 elif current is None and state['status']=='active' and self.clock()<deadline:
                     index=next((i for i,m in enumerate(state['members']) if m['status']=='pending'),None)
                     if index is not None:

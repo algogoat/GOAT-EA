@@ -814,11 +814,14 @@ class DemoAgent:
         row = json.loads(raw) if raw else None
         return bool(row and row.get('ProcessId') == pid and nonce in (row.get('CommandLine') or ''))
 
-    def _spawn_driver(self, batch_id, *, max_seconds=None, resume=False):
+    def _spawn_driver(self, batch_id, *, max_seconds=None, resume=False, pause_seconds=None):
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
             raise ValueError('Invalid prepared batch ID')
         if not resume and (type(max_seconds) is not int or not 1 <= max_seconds <= 172800):
             raise ValueError('Batch deadline must be 1..172800 seconds')
+        if pause_seconds is not None and (not resume or type(pause_seconds) is not int
+                                          or not 1 <= pause_seconds <= 172800):
+            raise ValueError('A pause supervisor resumes a retained journal for 1..172800 seconds')
         journal = self.root / 'batch-drivers' / (batch_id + '.json')
         worker_path = self.state_root / 'workers' / (batch_id + '.json')
         if worker_path.is_file():
@@ -853,16 +856,21 @@ class DemoAgent:
             worker = dict(schema_version=1, batch_id=batch_id, nonce=nonce,
                           status='reserved', resume=resume, max_seconds=max_seconds,
                           created_at=datetime.now(timezone.utc).isoformat())
+            if pause_seconds is not None:
+                worker['pause_seconds'] = pause_seconds
             worker_path.parent.mkdir(parents=True, exist_ok=True)
             write_json(worker_path, worker)
             self._append('studio_run_batch', 'worker_reserved', batch_id=batch_id,
-                         resume=resume, max_seconds=max_seconds, broker=broker, nonce=nonce)
+                         resume=resume, max_seconds=max_seconds, broker=broker, nonce=nonce,
+                         pause_seconds=pause_seconds)
             log_path = worker_path.with_name(batch_id + '-' + nonce + '.log')
             argv = [sys.executable, str(Path(__file__).resolve()), '--installation',
                     str(self.installation_path), '_drive-batch', '--batch-id', batch_id,
                     '--nonce', nonce]
             if not resume:
                 argv += ['--max-seconds', str(max_seconds)]
+            elif pause_seconds is not None:
+                argv += ['--pause-seconds', str(pause_seconds)]
             flags = (getattr(subprocess, 'DETACHED_PROCESS', 0)
                      | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
                      | getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -902,14 +910,14 @@ class DemoAgent:
     def resume_batch(self, batch_id):
         return self._spawn_driver(batch_id, resume=True)
 
-    def _drive_batch(self, batch_id, nonce, max_seconds):
+    def _drive_batch(self, batch_id, nonce, max_seconds, pause_seconds=None):
         from studio_batch_driver import run
         worker_path = self.state_root / 'workers' / (batch_id + '.json')
         worker = read_json(worker_path)
         if worker.get('nonce') != nonce or worker.get('batch_id') != batch_id:
             raise ValueError('Detached worker identity changed')
         resume = worker['resume']
-        if (max_seconds != worker.get('max_seconds')
+        if (max_seconds != worker.get('max_seconds') or pause_seconds != worker.get('pause_seconds')
                 or worker.get('status') not in ('reserved', 'spawned')):
             raise ValueError('Detached worker budget or launch state changed')
         with self._exclusive(wait_seconds=20), self._studio('run-batch', idle=not resume,
@@ -917,8 +925,8 @@ class DemoAgent:
             worker.update(status='supervising', pid=os.getpid())
             write_json(worker_path, worker)
             self._append('studio_run_batch', 'supervising', batch_id=batch_id,
-                         resume=resume, broker=broker, nonce=nonce)
-            result = (run(controller, batch_id, resume=True) if resume else
+                         resume=resume, broker=broker, nonce=nonce, pause_seconds=pause_seconds)
+            result = (run(controller, batch_id, resume=True, pause_seconds=pause_seconds) if resume else
                       run(controller, batch_id, max_seconds=max_seconds,
                           min_free_bytes=MIN_FREE_BYTES))
             worker.update(status='returned', result_status=result['status'])
@@ -937,6 +945,179 @@ class DemoAgent:
         with self._studio('batch-status', idle=False, owner_required=False, job_id=batch_id) as (controller, broker):
             result = batch_status(controller, batch_id)
             return dict(broker=broker, studio=result)
+
+    # ------------------------------------------------------------ research operations
+    #
+    # research-status is one read-only call for a UI lane or an agent. batch-pause
+    # and batch-resume are the supported way to stop and continue research without
+    # losing work; see studio_batch_pause for the safety rules.
+
+    PAUSE_SUPERVISION_SECONDS = 6 * 3600
+
+    def _jobs_readonly(self):
+        from studio_research_status import queue_jobs
+        return queue_jobs(self.root, self.session)
+
+    def _process_or_unknown(self):
+        try:
+            return self.process.inspect()
+        except (ValueError, OSError, subprocess.SubprocessError):
+            return 'unknown'
+
+    def research_status(self):
+        """Read-only: terminal, account, build, activity, pace/ETA, pause, driver, disk, monitor."""
+        from studio_research_status import research_status
+        try:
+            jobs = self._jobs_readonly()
+        except (OSError, sqlite3.Error, ValueError):
+            jobs = None   # research_status reports the queue error itself
+        return research_status(root=self.root, install=self.install, session=self.session, local=self.local,
+                               now=self.clock(), process=self._process_or_unknown(), jobs=jobs,
+                               worker_alive=self._worker_alive, owner_stop=(self.state_root / 'STOP').exists())
+
+    def _is_seed(self, batch_id):
+        return ((self.root / 'seeds' / batch_id / 'state.json').is_file()
+                and not any(job['job_id'] == batch_id for job in self._jobs_readonly()))
+
+    def _ensure_pause_supervisor(self, batch_id):
+        """A live driver keeps supervising; otherwise start one bounded pause supervisor."""
+        worker_path = self.state_root / 'workers' / (batch_id + '.json')
+        try:
+            if worker_path.is_file() and self._worker_alive(read_json(worker_path)):
+                return dict(status='driver_supervising', supervising=True)
+        except ValueError as exc:
+            return dict(status='supervisor_unknown', supervising=None, reason=str(exc))
+        try:
+            spawned = self._spawn_driver(batch_id, resume=True, pause_seconds=self.PAUSE_SUPERVISION_SECONDS)
+        except ValueError as exc:
+            return dict(status='not_supervising', supervising=False, reason=str(exc),
+                        fix='Open this MT5 terminal so its demo account can be verified, then pause again.')
+        return dict(status=spawned['status'], supervising=spawned['status'] in (
+            'already_supervising', 'driver_journal_recorded', 'driver_starting'),
+            budget_seconds=self.PAUSE_SUPERVISION_SECONDS)
+
+    def batch_pause(self, batch_id, *, immediate=False):
+        """Pause a running batch (or seed hunt) at its next safe point; idempotent.
+
+        Like STOP this takes no terminal lock: a live driver honours the pause on
+        its next tick. Without a live driver a bounded pause supervisor starts.
+        """
+        from studio_batch_pause import PauseRefused, load, public, request
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid batch ID')
+        if type(immediate) is not bool:
+            raise ValueError('immediate must be a boolean')
+        if self._is_seed(batch_id):
+            return self._seed_pause(batch_id)
+        job = next((item for item in self._jobs_readonly() if item['job_id'] == batch_id), None)
+        if job is None:
+            raise PauseRefused('Unknown batch ' + batch_id + '; research-status lists this terminal\'s batches.')
+        journal_path = self.root / 'batch-drivers' / (batch_id + '.json')
+        journal = read_json(journal_path) if journal_path.is_file() else None
+        before = load(self.root, batch_id)
+        record, created = request(self.root, job, journal, now=self.clock(), requested_by='agent', immediate=immediate)
+        if created or before is None:
+            self._append('batch_pause', 'requested', batch_id=batch_id, pause_id=record['pause_id'],
+                         immediate=immediate, adopted_stop=record.get('adopted_stop'))
+        if record['state'] != 'pausing':
+            return dict(public(record), supervisor=None)
+        supervisor = self._ensure_pause_supervisor(batch_id)
+        return dict(public(load(self.root, batch_id)), supervisor=supervisor)
+
+    def _seed_pause(self, batch_id):
+        with self._seed_scope('seed-status', batch_id) as (controller, evidence):
+            result = self._seed_runner(controller).request_pause(batch_id, now=self.clock())
+        self._append('seed_pause', 'requested', batch_id=batch_id)
+        return dict(kind='seed', job_id=batch_id, state='pausing', seed=result,
+                    plain='The running seed member finishes and is kept; no new member starts until you resume.')
+
+    def _refresh_readback(self):
+        """After a terminal restart, re-read the build/owner proof the start gate requires."""
+        from studio_batch_pause import PauseRefused
+        current = self.process.inspect()
+        if current is None:
+            raise PauseRefused('MT5 for this terminal is closed; open it, then resume.')
+        physical = digest(self.binary)
+        if physical != self.install['ea_sha256']:
+            raise PauseRefused('The installed EA differs from this installation receipt; reinstall the build before resuming.')
+        verified_path = self.state_root / 'verified-build.json'
+        verified = read_json(verified_path) if verified_path.is_file() else {}
+        if verified.get('process') == current and verified.get('ea_sha256') == physical:
+            return 'unchanged'
+        with self._exclusive():
+            self._readback_current(physical, expected_process=current)
+        return 'refreshed'
+
+    def batch_resume(self, batch_id, *, new_batch_id=None, resume_token=None, max_seconds=None,
+                     clear_stop=False, include_failed=False):
+        """Continue a paused batch: remaining work under a new ID, started under the bounded driver."""
+        from studio_batch import resume_batch
+        from studio_batch_pause import (PauseRefused, load, mark_resumed, plan_resume, refusal, successor_id,
+                                        verify_resumable)
+        from studio_protected_peer import refresh_process
+        from studio_research_status import lineage, monitor_state
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid batch ID')
+        if max_seconds is not None and (type(max_seconds) is not int or not 1 <= max_seconds <= 172800):
+            raise ValueError('max_seconds must be 1..172800')
+        if self._is_seed(batch_id):
+            return self._seed_unpause(batch_id)
+        record = load(self.root, batch_id)
+        if record is None:
+            raise PauseRefused('No pause is recorded for batch ' + batch_id + '; pause it first.')
+        if record['state'] == 'resumed':
+            new_id = record['successor_batch_id']
+            job = next((item for item in self._jobs_readonly() if item['job_id'] == new_id), None)
+            journal = self.root / 'batch-drivers' / (new_id + '.json')
+            driver = None
+            if job is not None and job['status'] == 'pending' and not journal.is_file():
+                driver = self._spawn_driver(new_id, max_seconds=max_seconds or self._resume_budget(batch_id))
+            return dict(state='resumed', source_batch_id=batch_id, batch_id=new_id, reused=True, driver=driver,
+                        lineage=lineage(self.root, new_id))
+        if record['state'] != 'paused':
+            raise refusal(record)
+        monitor = monitor_state(self.install, self.session, self.local, now=self.clock(), process=self._process_or_unknown())
+        if monitor.get('blocker'):
+            raise PauseRefused(monitor['blocker']['message'] + ' ' + monitor['blocker']['fix'])
+        if (self.state_root / 'STOP').exists():
+            if clear_stop is not True:
+                raise PauseRefused('Owner STOP is on for this terminal. Resume with clear_stop to lift it '
+                                   '(only a STOP written by GOAT can be lifted).')
+            self.clear_stop()
+        readback = self._refresh_readback()
+        existing = {item['job_id'] for item in self._jobs_readonly()}
+        new_id = new_batch_id or record.get('resume_batch_id') or successor_id(batch_id, existing)
+        if not isinstance(new_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', new_id):
+            raise ValueError('Invalid successor batch ID')
+        plan_resume(self.root, batch_id, new_id, now=self.clock())
+        with self._exclusive(), self._studio('prepare-batch', idle=True, job_id=new_id) as (controller, broker):
+            verify_resumable(controller, batch_id, resume_token)
+            peer = refresh_process(controller)
+            self._append('batch_resume', 'intent', batch_id=batch_id, successor_batch_id=new_id,
+                         peer=peer.get('status'), broker=broker)
+            prepared = resume_batch(controller, batch_id, new_id, include_failed=include_failed, allow_peer_refresh=True)
+            job = controller.job(new_id)
+            if job['status'] != 'pending' or 'launch_intent' in job:
+                raise ValueError('Successor batch is not an unstarted prepared batch')
+            mark_resumed(self.root, batch_id, new_id, now=self.clock(), selected=prepared.get('member_count'))
+            self._append('batch_resume', 'prepared', batch_id=batch_id, successor_batch_id=new_id,
+                         members=prepared.get('member_count'), configuration_sha256=job['configuration_sha256'])
+        driver = self._spawn_driver(new_id, max_seconds=max_seconds or self._resume_budget(batch_id))
+        return dict(state='resumed', source_batch_id=batch_id, batch_id=new_id, members=prepared.get('member_count'),
+                    peer=peer, readback=readback, driver=driver, lineage=lineage(self.root, new_id))
+
+    def _resume_budget(self, batch_id):
+        journal = self.root / 'batch-drivers' / (batch_id + '.json')
+        value = read_json(journal).get('max_seconds') if journal.is_file() else None
+        return value if type(value) is int and 1 <= value <= 172800 else 172800
+
+    def _seed_unpause(self, batch_id):
+        with self._exclusive(), self._seed_scope('seed-resume', batch_id) as (controller, evidence):
+            released = self._seed_runner(controller).release_pause(batch_id, now=self.clock())
+        self._append('seed_pause', 'released', batch_id=batch_id, released=released)
+        result = self.seed_resume(batch_id, 60)
+        return dict(kind='seed', source_batch_id=batch_id, batch_id=batch_id, state='resumed', released=released, seed=result,
+                    next_action='Keep calling seed-resume until the seed hunt reports completed or stopped')
 
     # ------------------------------------------------------------------ SeedFarming
     #
@@ -1054,7 +1235,7 @@ class DemoAgent:
             result = (runner.start if initial else runner.resume)(batch_id, max_seconds=slice_seconds)
             initial = False
             self._append('seed_drive', 'slice', batch_id=batch_id, status=result['status'])
-            if result['status'] in ('completed', 'stopped', 'reconcile_required'):
+            if result['status'] in ('completed', 'stopped', 'reconcile_required') or result.get('paused'):
                 return result
         return dict(runner.status(batch_id), driver_budget_exhausted=True,
                     next_action='seed-resume continues the retained original attempt; no retry')
@@ -1262,6 +1443,18 @@ def main(argv=None):
     worker.add_argument('--batch-id', required=True)
     worker.add_argument('--nonce', required=True)
     worker.add_argument('--max-seconds', type=int)
+    worker.add_argument('--pause-seconds', type=int)
+    commands.add_parser('research-status', help='Read-only lane status: activity, pace/ETA, pause, driver, disk, monitor')
+    pause = commands.add_parser('batch-pause', help='Pause a running batch or seed hunt at its next safe point')
+    pause.add_argument('--batch-id', required=True)
+    pause.add_argument('--immediate', action='store_true', help='Skip the member-start wait; the monitor must still be reporting')
+    resumed = commands.add_parser('batch-resume', help='Continue a paused batch as a successor batch')
+    resumed.add_argument('--batch-id', required=True)
+    resumed.add_argument('--new-batch-id')
+    resumed.add_argument('--resume-token')
+    resumed.add_argument('--max-seconds', type=int)
+    resumed.add_argument('--clear-stop', action='store_true', help='Lift an owner STOP written by GOAT before resuming')
+    resumed.add_argument('--include-failed', action='store_true')
     batch = commands.add_parser('batch-status')
     batch.add_argument('--batch-id', required=True)
     driver = commands.add_parser('batch-driver-status')
@@ -1300,7 +1493,12 @@ def main(argv=None):
         elif args.command == 'prepare-batch': result = agent.prepare_batch(args.batch_id, args.plan)
         elif args.command == 'run-batch': result = agent.run_batch(args.batch_id, args.max_seconds)
         elif args.command == 'resume-batch': result = agent.resume_batch(args.batch_id)
-        elif args.command == '_drive-batch': result = agent._drive_batch(args.batch_id, args.nonce, args.max_seconds)
+        elif args.command == '_drive-batch': result = agent._drive_batch(args.batch_id, args.nonce, args.max_seconds, args.pause_seconds)
+        elif args.command == 'research-status': result = agent.research_status()
+        elif args.command == 'batch-pause': result = agent.batch_pause(args.batch_id, immediate=args.immediate)
+        elif args.command == 'batch-resume': result = agent.batch_resume(args.batch_id, new_batch_id=args.new_batch_id,
+            resume_token=args.resume_token, max_seconds=args.max_seconds, clear_stop=args.clear_stop,
+            include_failed=args.include_failed)
         elif args.command == 'batch-status': result = agent.batch_status(args.batch_id)
         elif args.command == 'batch-driver-status': result = agent.batch_driver_status(args.batch_id)
         elif args.command == 'seed-validate': result = agent.seed_validate(args.plan)

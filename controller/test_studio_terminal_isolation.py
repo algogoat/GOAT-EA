@@ -5,6 +5,7 @@ Pins are shared with scripts/test_terminal_isolation.cjs, which runs the EA side
 """
 import configparser
 import json
+import os
 from pathlib import Path
 import re
 import tempfile
@@ -56,12 +57,15 @@ class NamespaceFormulaTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 iso.base_name('1.49', bad, LOGIN, BANKER)
 
-    def test_foreign_namespace_detection(self):
-        own = iso.base_name('1.49', SERVER, LOGIN, BANKER)
+    def test_foreign_namespace_is_decided_by_terminal_hash_only(self):
+        own = iso.terminal_hash(BANKER)
         self.assertTrue(iso.foreign_namespace(iso.base_name('1.49', SERVER, LOGIN, PEER), own))
-        self.assertTrue(iso.foreign_namespace(iso.base_name('1.49', SERVER, OTHER_LOGIN, BANKER), own))
-        for name in (own, 'GOAT V1.49-Darwinex-Demo', 'GOAT V1.48-Customer-Demo', 'GOAT V1.49-Demo-1-ABCDEF12',
-                     'GOAT V1.49-Demo-x-0123abcd', 'Workers', 'SeedFarmingXML'):
+        self.assertTrue(iso.foreign_namespace(iso.base_name('1.49', SERVER, LOGIN, PEER).upper(), own))
+        # This terminal under any login, its -0- folder and case variants still block.
+        for name in (iso.base_name('1.49', SERVER, LOGIN, BANKER), iso.base_name('1.49', SERVER, OTHER_LOGIN, BANKER),
+                     'GOAT V1.49-Darwinex-Demo-0-' + own, 'GOAT V1.49-Darwinex-Demo-3000082754-' + own.upper(),
+                     'GOAT V1.49-Darwinex-Demo', 'GOAT V1.48-Customer-Demo', 'GOAT V1.49-Demo-x-0123abcd',
+                     'GOAT V1.49-Demo-1-0123abcg', 'Workers', 'SeedFarmingXML'):
             with self.subTest(name=name):
                 self.assertFalse(iso.foreign_namespace(name, own))
 
@@ -191,6 +195,116 @@ class MigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unexpected file'):
             self.migrate()
 
+    def shared_in_flight(self):
+        guard = ('[ActiveOptimizationLaunch]\r\nLaunchId=1_2\r\nRunPath=GOAT\\Rabcdefabcdef\r\nConfigPath=GOAT\\GOAT V1.49-Darwinex-Demo'
+                 '\\active_optimization_config.ini\r\nCreatedAt=x\r\n')
+        for name, raw in ((iso.POINTER, self.pointer), (iso.CONFIG, b'[Tester]\r\n'), (iso.GUARD, guard.encode('utf-16'))):
+            (self.legacy / name).write_bytes(raw)
+        return guard
+
+    def test_copied_terminal_never_adopts_the_claim_holders_state(self):
+        # A copied portable terminal carries the same batch flags and local runs.
+        self.shared_in_flight()
+        (self.peer / 'MQL5/Files/GOAT/Rabcdefabcdef').mkdir(parents=True)
+        self.assertEqual(self.migrate(batch_flags=True)['moved'], [iso.CONFIG, iso.GUARD, iso.POINTER])
+        claim = ini(self.legacy / iso.CLAIM)[0]
+        self.assertEqual((claim['Login'], claim['TerminalHash']), (LOGIN, iso.terminal_hash(self.data)))
+        copy = self.migrate(data=self.peer, batch_flags=True)
+        self.assertEqual(copy['decision'], 'nothing_to_move')
+        # Shared state that reappears later stays with the claim holder.
+        self.shared_in_flight()
+        late = iso.migrate_legacy(self.common, '1.49', SERVER, LOGIN, self.common.parent / 'Terminal 3', batch_flags=True)
+        self.assertEqual((late['decision'], late['claimed_by']), ('left_for_other_terminal', LOGIN + '-' + iso.terminal_hash(self.data)))
+        self.assertEqual(sorted(p.name for p in self.legacy.iterdir() if p.name in iso.MOVABLE), sorted([iso.CONFIG, iso.GUARD, iso.POINTER]))
+
+    def test_resume_refuses_when_another_terminal_holds_the_claim(self):
+        (self.legacy / 'log.GOAT').write_bytes(b'log')
+        (self.legacy / iso.CLAIM).write_bytes('[TerminalIsolationClaim]\r\nLogin=3000107825\r\nTerminalHash=30d46804\r\n'.encode('utf-16'))
+        self.base.mkdir(parents=True)
+        (self.base / iso.RECEIPT).write_bytes('[TerminalIsolation]\r\nDecision=moving\r\nPlanned=log.GOAT\r\n'.encode('utf-16'))
+        with self.assertRaisesRegex(ValueError, 'claimed by another MT5 terminal'):
+            self.migrate()
+        self.assertEqual((self.legacy / 'log.GOAT').read_bytes(), b'log')
+
+    def test_crash_between_guard_write_and_delete_completes_on_resume(self):
+        guard = self.shared_in_flight()
+        self.assertEqual(self.migrate(batch_flags=True)['decision'], 'moved')
+        moved = (self.base / iso.GUARD).read_bytes()
+        # Recreate the crash point: the new guard is in place, the old one is still there.
+        (self.legacy / iso.GUARD).write_bytes(guard.encode('utf-16'))
+        (self.base / iso.RECEIPT).write_bytes('[TerminalIsolation]\r\nDecision=moving\r\nPlanned=active_optimization_launch.ini\r\nGuardConfigPathBefore=x\r\n'.encode('utf-16'))
+        self.assertEqual(self.migrate()['moved'], [iso.GUARD])
+        self.assertFalse((self.legacy / iso.GUARD).exists())
+        self.assertEqual((self.base / iso.GUARD).read_bytes(), moved)
+        self.assertEqual(ini(self.base / iso.RECEIPT)[0]['GuardConfigPathBefore'], 'x')
+        # A different guard in both folders is a real conflict.
+        (self.legacy / iso.GUARD).write_bytes(guard.encode('utf-16'))
+        (self.base / iso.GUARD).write_bytes('[ActiveOptimizationLaunch]\r\nLaunchId=other\r\n'.encode('utf-16'))
+        (self.base / iso.RECEIPT).write_bytes('[TerminalIsolation]\r\nDecision=moving\r\nPlanned=active_optimization_launch.ini\r\n'.encode('utf-16'))
+        with self.assertRaisesRegex(ValueError, 'exists in both'):
+            self.migrate()
+
+    def test_stale_temporaries_from_a_crash_never_block(self):
+        self.base.mkdir(parents=True)
+        for name in (iso.RECEIPT + '.controller-tmp', iso.GUARD + '.moving', iso.CLAIM + '.controller-tmp'):
+            (self.base / name).write_bytes(b'partial'); (self.legacy / name).write_bytes(b'partial')
+        self.shared_in_flight()
+        self.assertEqual(self.migrate(batch_flags=True)['decision'], 'moved')
+        self.assertTrue((self.base / iso.GUARD).exists())
+
+    def test_two_terminals_moving_at_once_only_the_claim_holder_receives_state(self):
+        """Terminal B runs its whole move between any two of terminal A's file operations."""
+        real_rename, real_link, real_unlink = os.rename, os.link, Path.unlink
+        def count_steps():
+            counter = [0]
+            def step(*args, **kwargs): counter[0] += 1
+            return counter, step
+        self.shared_in_flight()
+        counter, step = count_steps()
+        with patch.object(iso.os, 'rename', lambda *a: (step(), real_rename(*a))[1]), \
+             patch.object(iso.os, 'link', lambda *a: (step(), real_link(*a))[1]):
+            self.migrate(batch_flags=True)
+        steps = counter[0]
+        self.assertGreaterEqual(steps, 5)
+        for k in range(steps + 1):
+            for same_login in (False, True):
+                with self.subTest(step=k, same_login=same_login):
+                    self.setUp()
+                    self.shared_in_flight()
+                    login_b = LOGIN if same_login else OTHER_LOGIN
+                    state = dict(seen=0, fired=False)
+                    def run_b():
+                        state['fired'] = True
+                        try:
+                            iso.migrate_legacy(self.common, '1.49', SERVER, login_b, self.peer, batch_flags=True)
+                        except ValueError:
+                            pass
+                    def hooked(real):
+                        def call(*args):
+                            if not state['fired']:
+                                state['seen'] += 1
+                                if state['seen'] == k + 1:
+                                    run_b()
+                            return real(*args)
+                        return call
+                    with patch.object(iso.os, 'rename', hooked(real_rename)), patch.object(iso.os, 'link', hooked(real_link)):
+                        try:
+                            self.migrate(batch_flags=True)
+                        except ValueError:
+                            pass
+                    if not state['fired']:
+                        run_b()
+                    base_b = iso.state_base(self.common, '1.49', SERVER, login_b, self.peer)
+                    folders = (self.legacy, self.base, base_b)
+                    for name in (iso.POINTER, iso.CONFIG, iso.GUARD):
+                        self.assertEqual(sum((f / name).exists() for f in folders), 1, name)
+                    in_a = [n for n in (iso.POINTER, iso.CONFIG, iso.GUARD) if (self.base / n).exists()]
+                    in_b = [n for n in (iso.POINTER, iso.CONFIG, iso.GUARD) if (base_b / n).exists()]
+                    claim = ini(self.legacy / iso.CLAIM)[0]
+                    holder = in_a if claim['TerminalHash'] == iso.terminal_hash(self.data) else in_b
+                    self.assertTrue(not in_a or not in_b)
+                    self.assertEqual(len(holder), 3)
+
     def test_nothing_shared_records_one_decision_and_pre_isolation_versions_do_nothing(self):
         self.assertEqual(self.migrate()['decision'], 'nothing_to_move')
         self.assertEqual(ini(self.base / iso.RECEIPT)[0]['Decision'], 'nothing_to_move')
@@ -240,6 +354,15 @@ class PreflightTests(unittest.TestCase):
             iso.preflight(binding, self.account, observation=observation, appdata=self.appdata,
                           processes=[self.row(1, self.a), dict(ProcessId=3, ExecutablePath=str(install / 'terminal64.exe'))])
         self.assertFalse((self.common / 'GOAT').exists())  # Refusal precedes any migration effect.
+
+    def test_unreadable_or_unmatched_terminals_fail_closed(self):
+        for row in (dict(ProcessId=7, ExecutablePath=None), dict(ProcessId=8), dict(ProcessId=9, ExecutablePath='')):
+            with self.subTest(row=row), self.assertRaisesRegex(ValueError, r'cannot be matched to a data folder'):
+                self.preflight([self.row(1, self.a), row])
+        nowhere = Path(self.temp.name) / 'Unknown'; nowhere.mkdir()
+        with self.assertRaisesRegex(ValueError, r'PID 4, .*Unknown.*terminal64.exe\) cannot be matched'):
+            self.preflight([self.row(1, self.a), dict(ProcessId=4, ExecutablePath=str(nowhere / 'terminal64.exe'))])
+        self.assertFalse((self.common / 'GOAT').exists())
 
     def test_running_ea_must_resolve_the_same_folder(self):
         with self.assertRaisesRegex(ValueError, 'predates terminal isolation'):

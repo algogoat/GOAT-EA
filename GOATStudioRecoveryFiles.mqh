@@ -48,8 +48,8 @@ bool GoatStudioRecoveryCommonClear(void)
       if(StringFind(lower,"goat v")!=0) continue;
 #ifdef GOAT_TERMINAL_ISOLATION_V149
       // Another terminal's own batch state is independent of this terminal's flag.
-      // This terminal's folder and every shared pre-isolation folder still block.
-      if(GoatOptForeignNamespaceFolder(name,StringSubstr(GoatOptBasePath(EA_Name,Server),5))) continue;
+      // This terminal's folders (any login, any case) and every shared one still block.
+      if(GoatOptForeignNamespaceFolder(name,GoatOptTerminalHash())) continue;
 #endif
       string base="GOAT\\"+name;
       string controls[]={"active_optimization_run.ini","active_optimization_config.ini",

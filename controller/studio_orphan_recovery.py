@@ -100,13 +100,13 @@ def inspect_local(c, *, allow_own_request=None):
         prior_control=assert_clear_controls(c.store.db,gate)
     common=safe_path(Path(c.install['common_files_root'])/'GOAT')
     if not common.is_dir(): raise ValueError('GOAT Common Files inventory unavailable')
-    from studio_terminal_isolation import controller_base_name, foreign_namespace
-    own_name=controller_base_name(c)
+    from studio_terminal_isolation import controller_hash, foreign_namespace
+    own_hash=controller_hash(c)
     for folder in common.iterdir():
         safe_path(folder)
         # Mirrors GoatStudioRecoveryCommonClear: another terminal's own batch state
         # is independent; this terminal's folder and every shared folder still block.
-        if foreign_namespace(folder.name,own_name): continue
+        if foreign_namespace(folder.name,own_hash): continue
         if folder.name.lower().startswith('goat v'):
             for name in CONTROLS:
                 if (folder/name).exists(): raise ValueError('Native controls exist for a current or legacy EA version')

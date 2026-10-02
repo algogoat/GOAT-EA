@@ -74,6 +74,10 @@ jobs:
         run: node scripts/test_studio_derived_report.cjs
       - name: Terminal isolation (per-terminal batch state, per-login credential)
         run: node scripts/test_terminal_isolation.cjs
+      - name: Terminal isolation mutation check (every guard is load-bearing)
+        run: |
+          node scripts/test_terminal_isolation_mutations.cjs
+          python scripts/test_terminal_isolation_controller_mutations.py
 
       - name: Run every controller fixture test
         env:

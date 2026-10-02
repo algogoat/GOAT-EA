@@ -165,15 +165,17 @@ class OrphanRecoveryTests(unittest.TestCase):
 
     def test_other_terminal_batch_state_never_blocks_but_own_and_shared_folders_do(self):
         # INV-BATCH-01: mirrors GoatStudioRecoveryCommonClear in the EA.
-        from studio_terminal_isolation import controller_base_name, legacy_base_name
+        from studio_terminal_isolation import controller_base_name, controller_hash, legacy_base_name
         common=self.fixture.common/'GOAT'; account=self.c.session['account']
-        own=controller_base_name(self.c)
+        own=controller_base_name(self.c); own_hash=controller_hash(self.c)
         other=common/('GOAT V1.49-'+account['server']+'-'+account['login']+'-00000000')
         self.assertNotEqual(other.name,own)
         other.mkdir(); (other/'active_optimization_run.ini').write_text('other terminal'); (other/'agent-native-control-owner.json').write_text('{}')
         self.assertEqual(prepare(self.c)['status'],'review')
         self.assertEqual((other/'active_optimization_run.ini').read_text(),'other terminal')
-        for name in (own, legacy_base_name('1.49',account['server'])):
+        # This terminal's folder under another login, its -0- folder and an upper-case spelling all block.
+        for name in (own, legacy_base_name('1.49',account['server']), 'GOAT V1.49-'+account['server']+'-987654-'+own_hash,
+                     'GOAT V1.49-'+account['server']+'-0-'+own_hash, 'GOAT V1.49-'+account['server']+'-'+account['login']+'-'+own_hash.upper()):
             folder=common/name; folder.mkdir(exist_ok=True); pointer=folder/'active_optimization_run.ini'; pointer.write_text('retained')
             with self.assertRaisesRegex(ValueError,'Native controls exist'): prepare(self.c)
             pointer.unlink()

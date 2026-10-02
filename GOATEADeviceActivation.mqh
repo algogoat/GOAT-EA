@@ -188,15 +188,20 @@ bool GOATDeviceActivationWriteCredential(void)
       || StringFind(g_GOATDeviceActivationCandidate,"goat_ea_")!=0
       || !GOATIsSafeApiBearerToken(g_GOATDeviceActivationCandidate)) return false;
 #ifdef GOAT_TERMINAL_ISOLATION_V149
-   // The per-login path must name the very account the user just approved.
-   if(GOATAccountLoginDigits()=="" || GOATAccountLoginDigits()!=g_GOATDeviceActivationAccountId) return false;
+   // One path for the whole write, from the account the user just approved. It
+   // is never re-read mid-write, and the terminal must still be on that account.
+   if(!GOATLoginDigitsValid(g_GOATDeviceActivationAccountId)
+      || GOATAccountLoginDigits()!=g_GOATDeviceActivationAccountId) return false;
+   string credential=GOATApiBearerFileFor(g_GOATDeviceActivationAccountId);
+#else
+   string credential=GOAT_API_BEARER_FILE;
 #endif
 
    // Pre-isolation builds share one user-scoped FILE_COMMON credential; isolation
-   // builds keep one per MT5 login (GOAT_API_BEARER_FILE). The server
+   // builds keep one per MT5 login (INV-CRED-01). The server
    // rechecks MT5-account membership and entitlement on every feed request.
    string directory="GOAT\\Credentials";
-   string temporary=GOAT_API_BEARER_FILE+".pending";
+   string temporary=credential+".pending";
    FolderCreate(directory,FILE_COMMON);
    FileDelete(temporary,FILE_COMMON);
    int handle=FileOpen(temporary,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
@@ -209,7 +214,7 @@ bool GOATDeviceActivationWriteCredential(void)
       FileDelete(temporary,FILE_COMMON);
       return false;
      }
-   if(!FileMove(temporary,FILE_COMMON,GOAT_API_BEARER_FILE,FILE_COMMON|FILE_REWRITE))
+   if(!FileMove(temporary,FILE_COMMON,credential,FILE_COMMON|FILE_REWRITE))
      {
       FileDelete(temporary,FILE_COMMON);
       return false;

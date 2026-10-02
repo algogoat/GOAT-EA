@@ -2,10 +2,13 @@ SM32 is an inert forward V1.49 candidate. It is SM31 plus terminal isolation, so
 MT5 terminal and account on one PC runs its batch state and its GOAT sign-in independently:
 
 - Common batch state lives in `GOAT\<EA>-<server>-<login>-<terminal hash>` (INV-BATCH-01),
-  with a one-time move of the shared pre-isolation files and a refusal when both folders hold state.
+  with a one-time move of the shared pre-isolation files that only the holder of the shared folder's
+  create-only claim performs, that resumes after a crash, and that is refused when both folders hold state.
+  Load SM32 on the terminal that ran the shared batch first (Banker on this PC).
 - The GOAT user credential is stored per MT5 login, `GOAT\Credentials\api-bearer-v149-<login>.token`
-  (INV-CRED-01), with a copy-only migration of the shared file when this login provably wrote it.
-- The tester's running fitness file is per optimization run instead of one shared `GOAT\Tester.txt`.
+  (INV-CRED-01), with a copy-only migration of the shared file only on an `approved` status for this login.
+- The tester's running fitness file is per optimization run (a nonce handed to agents through the
+  `GOAT_FitnessRunNonce` input) instead of one shared `GOAT\Tester.txt`.
 - The Studio observation reports `state_base`, which the controller must match before native work.
 
 Its `GOAT_BUILD_ID` is `V1.49-TERMINAL-ISOLATION-32`, with marker `SM32`. `identity.json` binds the

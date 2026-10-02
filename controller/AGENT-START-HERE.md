@@ -173,8 +173,10 @@ on one terminal never reads or changes another terminal's queue, pointer, config
 even when both use the same EA, server and account. Do not copy these files between terminals.
 The first time the updated EA chart loads, it moves this terminal's shared pre-isolation files
 into its own folder and writes `terminal-isolation.ini`; a batch that another terminal ran is
-left where it is. Older EA builds still share the old folder, so update every terminal on the
-PC before running batches on more than one. Details: [INVARIANTS.md](../docs/operations/INVARIANTS.md).
+left where it is. Only one terminal can take the old shared state (a claim file decides), so load
+the updated EA on the terminal that ran it first; a copied terminal must come second. Older EA
+builds still share the old folder, so update every terminal on the PC before running batches on
+more than one. Details: [INVARIANTS.md](../docs/operations/INVARIANTS.md).
 
 ## Keep another MT5 running
 
@@ -210,6 +212,8 @@ Report the exact error text, the command and the IDs. Never delete state to get 
 | `The GOAT EA running on this terminal predates terminal isolation. ...` | The chart still runs the old EA. Ask the user to remove and re-add the GOAT Studio chart (or restart MT5) so the installed EA loads, then retry. |
 | `The GOAT EA on this terminal uses batch folder ..., but this controller expects ...` | The terminal is signed in to a different account or folder than `bootstrap`. Ask the user to sign in to the bound demo account. |
 | `Another running MT5 terminal (...) resolves to this terminal's batch folder ...` | Two MT5 processes share this terminal's data folder. Ask the user to close the named one. |
+| `A running MT5 terminal (PID ...) cannot be matched to a data folder, ...` | GOAT cannot see which folder that MT5 uses (often another Windows user or an elevated MT5). Ask the user to close it, or start it normally as this user. |
+| `Batch state move stopped: the shared folder ... is claimed by another MT5 terminal ...` | Stop. Another terminal owns the old shared state; this terminal keeps its own folder. Report both folder listings to support. |
 | `Batch state was not moved: both the shared folder ... and this terminal's folder ... hold batch state. ...` | Stop. Never delete either folder. Report both folder listings to support; a human chooses which to keep. |
 | `Batch state was not moved: the shared folder ... still holds controls of an unfinished attempt from this controller. ...` | Run `status`/`finish` for that attempt first, then retry. |
 

@@ -46,17 +46,17 @@ def repair(controller, attempt_id, *, stop_only=False):
             if record['phase'] == 'launched':
                 return record
         else:
-            from studio_terminal_isolation import controller_base_name, foreign_namespace, legacy_base_name
+            from studio_terminal_isolation import controller_base_name, controller_hash, foreign_namespace, legacy_base_name
             common = safe_path(Path(controller.install['common_files_root'])/'GOAT')
             # This terminal's own folder and the shared pre-isolation folder of the
             # installed version (which the EA may move here) both block repair.
             current_bases = {controller_base_name(controller).casefold(),
                              legacy_base_name(controller.install['ea_version'], session['account']['server']).casefold()}
-            own_name = controller_base_name(controller)
+            own_hash = controller_hash(controller)
             retained_other_versions = {}
             for folder in common.iterdir():
                 safe_path(folder)
-                if foreign_namespace(folder.name, own_name):
+                if foreign_namespace(folder.name, own_hash):
                     continue  # Another terminal's independent batch state.
                 if folder.name.lower().startswith('goat v'):
                     for name in ('active_optimization_run.ini', 'active_optimization_config.ini', 'active_optimization_launch.ini', 'agent-native-control-owner.json'):

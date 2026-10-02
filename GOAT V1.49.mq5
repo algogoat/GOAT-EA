@@ -18,6 +18,8 @@
 #define GOAT_CONFIG_REPORT_START_V149
 #include "GOAT_SequencePackage.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
+input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
+long g_goat_fitness_nonce=0;
 #define   GOAT_BUILD_MARKER "SM32"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
@@ -3904,6 +3906,16 @@ int OnTesterInit()
    Print(EA_Name+": "+Symbol()+" Optimization Initialization.");//,TerminalInfoString(TERMINAL_DATA_PATH));
    Sleep(100);
    if(!GoatBatchStartAllowed()) return INIT_FAILED;
+   // INV-BATCH-01 tester side: one fitness file per optimization run, keyed by a
+   // nonce every agent receives as GOAT_FitnessRunNonce. Refuse before any batch
+   // state changes rather than run with a different fitness meaning.
+   g_goat_fitness_nonce=0;
+   if(Mode_Opti==Opti_PF_MRFp || Mode_Opti==Opti_PF_MRF_SRp)
+     {
+      g_goat_fitness_nonce=(long)TimeGMT()*1000000+(long)(GetMicrosecondCount()%1000000);
+      if(!ParameterSetRange("GOAT_FitnessRunNonce",false,g_goat_fitness_nonce,g_goat_fitness_nonce,1,g_goat_fitness_nonce))
+        {Print("GOAT optimization refused before passes: the per-run fitness key could not be set");return INIT_FAILED;}
+     }
    bool seedFarming=SeedFarmingPrepareReceiver();
    if(!seedFarming && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)==0.0 && GlobalVariableGet("BatchOnGoing")!=0)
    {
@@ -3950,7 +3962,7 @@ int OnTesterInit()
    if(Mode_Opti==Opti_PF_MRFp || Mode_Opti==Opti_PF_MRF_SRp)
    {
     //if(FileIsExist(Key+"\\"+"Tester.txt",FILE_COMMON))
-    FileTester_handle = FileOpen(GoatOptTesterFitnessFile(EA_Desc,Symbol()),FILE_TXT|FILE_WRITE|FILE_READ|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+    FileTester_handle = FileOpen(GoatOptTesterFitnessFile(EA_Desc,Symbol(),g_goat_fitness_nonce),FILE_TXT|FILE_WRITE|FILE_READ|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
     FileWrite(FileTester_handle,0.02);
     FileClose(FileTester_handle);
    }
@@ -4164,25 +4176,33 @@ double OnTester()
 
    if((Mode_Opti==Opti_PF_MRFp||Mode_Opti==Opti_PF_MRF_SRp) && MQLInfoInteger(MQL_OPTIMIZATION) && !MQLInfoInteger(MQL_FORWARD))
    {
+    // Tester agents return from Sleep() at once, so waits are bounded by real
+    // time. The running maximum is rewritten only after it was actually read.
+    string fitness_file=GoatOptTesterFitnessFile(EA_Desc,Symbol(),GOAT_FitnessRunNonce);
+    bool fitness_read=false;
+    ulong fitness_deadline=GetTickCount64()+5000;
     FileTester_handle=INVALID_HANDLE;
-    // Bounded: a missing per-run file can no longer hang an agent pass forever.
-    for(int open_attempt=0;open_attempt<500 && FileTester_handle==INVALID_HANDLE;open_attempt++)
-      {
-       FileTester_handle = FileOpen(GoatOptTesterFitnessFile(EA_Desc,Symbol()),FILE_TXT|FILE_READ|FILE_SHARE_READ|FILE_COMMON);
-       if(FileTester_handle==INVALID_HANDLE) Sleep(10);
-      }
+    while(FileTester_handle==INVALID_HANDLE && GetTickCount64()<fitness_deadline)
+       FileTester_handle = FileOpen(fitness_file,FILE_TXT|FILE_READ|FILE_SHARE_READ|FILE_COMMON);
     readVal=0;
-    if(FileTester_handle!=INVALID_HANDLE) {readVal=StringToDouble(FileReadString(FileTester_handle)); FileClose(FileTester_handle);}
+    if(FileTester_handle!=INVALID_HANDLE)
+      {
+       string stored=FileReadString(FileTester_handle); FileClose(FileTester_handle);
+       fitness_read=(stored!="");
+       readVal=StringToDouble(stored);
+      }
 
     if(fitness>readVal && readVal!=0)
     {
      fitness = AdjustFitness(fitness_real,trades,mean_duration);
     }
-    if(fitness>readVal)
+    if(fitness_read && fitness>readVal)
     {
+     fitness_deadline=GetTickCount64()+5000;
      FileTester_handle=INVALID_HANDLE;
-     while(FileTester_handle==INVALID_HANDLE) {FileTester_handle = FileOpen(GoatOptTesterFitnessFile(EA_Desc,Symbol()),FILE_TXT|FILE_WRITE|FILE_SHARE_WRITE|FILE_COMMON); Sleep(10);}
-     FileWrite(FileTester_handle,fitness);                         FileClose(FileTester_handle);
+     while(FileTester_handle==INVALID_HANDLE && GetTickCount64()<fitness_deadline)
+        FileTester_handle = FileOpen(fitness_file,FILE_TXT|FILE_WRITE|FILE_SHARE_WRITE|FILE_COMMON);
+     if(FileTester_handle!=INVALID_HANDLE) {FileWrite(FileTester_handle,fitness); FileClose(FileTester_handle);}
     }
    }
 //-----------------------------------------------------------------------------------
@@ -4284,7 +4304,7 @@ void OnTesterDeinit()
    Print(EA_Name+": "+Symbol()+" Optimization Ended");                     Sleep(100);
    if(FileCSV_handle    != INVALID_HANDLE) {FileClose(FileCSV_handle);     Sleep(100);}
    if(FileTester_handle != INVALID_HANDLE) {FileClose(FileTester_handle);  Sleep(100);}
-   FileDelete(GoatOptTesterFitnessFile(EA_Desc,Symbol()),FILE_COMMON);     Sleep(500);
+   FileDelete(GoatOptTesterFitnessFile(EA_Desc,Symbol(),g_goat_fitness_nonce),FILE_COMMON); Sleep(500);
    ChartSetInteger(0, CHART_BRING_TO_TOP, true);                           Sleep(100);
 
    bool seedFarming=g_seedFarmingActive;

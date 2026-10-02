@@ -12,9 +12,11 @@ the verified session receipt and is validated as digits.
 
 Native batch starts call ``preflight`` under the native gate. It refuses, in one
 plain sentence, when the running EA resolves a different folder, when another
-live MT5 terminal resolves to this terminal's folder, or when the one-time move
-of shared pre-isolation state cannot complete. Nothing here launches, stops or
-grants anything, and nothing is ever deleted.
+live MT5 terminal resolves to this terminal's folder or cannot be matched to a
+data folder (fails closed), or when the one-time move of shared pre-isolation
+state cannot complete. Across terminals, only the holder of the shared folder's
+create-only claim (terminal-isolation-claim.ini) moves anything. Nothing here
+launches, stops or grants anything, and no batch state is ever discarded.
 """
 import configparser
 from datetime import datetime, timezone
@@ -24,6 +26,7 @@ import os
 from pathlib import Path, PureWindowsPath
 import re
 import subprocess
+import uuid
 
 from studio_subprocess import background_creationflags
 
@@ -38,7 +41,8 @@ MOVABLE = ('GOAT Batch Queue.GOAT', 'GOAT Export Settings.GOAT', 'log.GOAT', 'po
            CONFIG, GUARD, POINTER)
 LOGIN = re.compile(r'[1-9][0-9]{0,19}')
 SERVER = re.compile(r'[A-Za-z0-9_. -]+')
-NAMESPACE_SUFFIX = re.compile(r'-[0-9]+-[0-9a-f]{8}$')
+CLAIM = 'terminal-isolation-claim.ini'
+NAMESPACE_SUFFIX = re.compile(r'-[0-9]+-([0-9a-fA-F]{8})$')
 
 
 def valid_login(login):
@@ -125,10 +129,20 @@ def controller_base_name(c):
     return base_name(i['ea_version'], a['server'], a['login'], i['terminal_data_root'])
 
 
-def foreign_namespace(folder_name, own_name):
-    """A folder that is another terminal/account's own batch state (never ours)."""
-    return (folder_name != own_name and folder_name.lower().startswith('goat v')
-            and NAMESPACE_SUFFIX.search(folder_name) is not None)
+def controller_hash(c):
+    return terminal_hash(c.install['terminal_data_root'])
+
+
+def foreign_namespace(folder_name, own_hash):
+    """A folder that is another terminal's own batch state.
+
+    Only the terminal hash decides, case-insensitively: this terminal's folder
+    under any login, its -0- folder and case variants are never foreign.
+    Mirrors GoatOptForeignNamespaceFolder.
+    """
+    match = NAMESPACE_SUFFIX.search(folder_name)
+    return (folder_name.lower().startswith('goat v') and match is not None
+            and match[1].lower() != str(own_hash).lower())
 
 
 def credential_relative_path(legacy_relative, login):
@@ -175,8 +189,9 @@ def _receipt_text(decision, *, legacy_rel, base_rel, login, data_root, planned='
 
 
 def _write_receipt(path, text, *, replace):
-    # UTF-16 with BOM, as the EA's FILE_UNICODE writer and reader expect.
-    temporary = path.with_name(path.name + '.controller-tmp')
+    # UTF-16 with BOM, as the EA's FILE_UNICODE writer and reader expect. A unique
+    # temporary name: a crash between write and publish never blocks a later run.
+    temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.controller-tmp')
     with temporary.open('xb') as stream:
         stream.write(text.encode('utf-16'))
         stream.flush()
@@ -185,9 +200,32 @@ def _write_receipt(path, text, *, replace):
         os.replace(temporary, path)
     else:
         try:
-            os.link(temporary, path)
+            os.link(temporary, path)  # Create-only: fails if another writer published first.
         finally:
             temporary.unlink()
+
+
+def _claim(legacy, base_rel, login, data_root):
+    """Create-only claim in the shared folder; mirrors GoatOptIsolationClaim.
+
+    Only the terminal named by the claim may move anything out of the shared folder.
+    Returns (ours, holder).
+    """
+    me = login + '-' + terminal_hash(data_root)
+    claim = legacy / CLAIM
+    if not claim.exists():
+        text = ('[TerminalIsolationClaim]\r\nLogin=' + login + '\r\nTerminalHash=' + terminal_hash(data_root)
+                + '\r\nBase=' + base_rel + '\r\nClaimedAtUtc=' + datetime.now(timezone.utc).strftime('%Y.%m.%d %H:%M:%S') + '\r\n')
+        try:
+            _write_receipt(claim, text, replace=False)
+        except FileExistsError:
+            pass  # Another terminal claimed first.
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    parser.optionxform = str
+    parser.read_string(_read_text(claim)[0])
+    values = dict(parser['TerminalIsolationClaim']) if parser.has_section('TerminalIsolationClaim') else {}
+    holder = values.get('Login', '') + '-' + values.get('TerminalHash', '').lower()
+    return holder == me, holder
 
 
 # -------------------------------------------------------------------- migration
@@ -209,13 +247,21 @@ def _owned_here(owner_path, controller_root):
     return evidence.is_relative_to(Path(controller_root).resolve())
 
 
+def _guard_value(path):
+    if not path.exists():
+        return ''
+    match = re.search(r'(?m)^ConfigPath=([^\r\n]*)', _read_text(path)[0])
+    return match[1] if match else ''
+
+
 def migrate_legacy(common, ea_version, server, login, data_root, *, batch_flags=False, controller_root=None):
     """One-time move of shared pre-isolation batch files into this terminal's folder.
 
     Mirrors the EA. Files are moved, never discarded or overwritten; the launch
-    guard's ConfigPath follows the moved config. Raises ValueError with one plain
-    sentence when the move must not happen (unsettled owned controls, or state in
-    both folders). Returns the decision record otherwise.
+    guard's ConfigPath follows the moved config. Only the terminal holding the
+    shared folder's create-only claim moves, and an interrupted move resumes.
+    Raises ValueError with one plain sentence when the move must not happen
+    (unsettled owned controls, or state in both folders). Returns the decision.
     """
     if not isolated(ea_version):
         return dict(decision='not_isolated')
@@ -229,8 +275,13 @@ def migrate_legacy(common, ea_version, server, login, data_root, *, batch_flags=
         return dict(decision='decided', receipt=prior)
     if prior:
         planned = [n for n in prior.get('Planned', '').split('|') if n]
+        guard_before = prior.get('GuardConfigPathBefore', '')
         if any(n not in MOVABLE for n in planned):
             raise ValueError('The terminal isolation receipt lists an unexpected file; preserve it for review.')
+        ours, holder = _claim(legacy, base_rel, login, data_root)
+        if not ours:
+            raise ValueError('Batch state move stopped: the shared folder ' + str(legacy)
+                             + ' is claimed by another MT5 terminal (' + holder + '). Nothing more was moved.')
     else:
         present = [n for n in MOVABLE if (legacy / n).exists()]
         existing = [n for n in MOVABLE if (base / n).exists()]
@@ -260,38 +311,55 @@ def migrate_legacy(common, ea_version, server, login, data_root, *, batch_flags=
             raise ValueError('Batch state was not moved: both the shared folder ' + str(legacy) + ' (' + ', '.join(present)
                              + ') and this terminal\'s folder ' + str(base) + ' (' + ', '.join(existing)
                              + ') hold batch state. Keep one, archive the other, then retry.')
+        # Copied terminals carry the same flags and local runs: the claim decides.
+        ours, holder = _claim(legacy, base_rel, login, data_root)
+        if not ours:
+            _write_receipt(base / RECEIPT, _receipt_text('left_for_other_terminal', left='|'.join(present), **text), replace=False)
+            return dict(decision='left_for_other_terminal', legacy=str(legacy), base=str(base), left=present, claimed_by=holder)
         planned = present
-        _write_receipt(base / RECEIPT, _receipt_text('moving', planned='|'.join(planned), **text), replace=False)
-    moved, guard_before = [], ''
+        guard_before = _guard_value(legacy / GUARD)
+        _write_receipt(base / RECEIPT, _receipt_text('moving', planned='|'.join(planned), guard_before=guard_before, **text),
+                       replace=False)
+    moved = []
     for name in planned:
         source, target = legacy / name, base / name
         if not source.exists():
-            continue  # Already moved, or another terminal took it first.
-        if target.exists():
-            raise ValueError('Batch state move stopped: ' + name + ' exists in both ' + str(legacy) + ' and '
-                             + str(base) + '. Keep one, archive the other, then retry.')
+            continue  # Already moved.
         if name == GUARD:
             body, utf16 = _read_text(source)
-            match = re.search(r'(?m)^ConfigPath=([^\r\n]*)', body)
-            guard_before = match[1] if match else ''
             body = body.replace('ConfigPath=' + legacy_rel + '\\' + CONFIG, 'ConfigPath=' + base_rel + '\\' + CONFIG)
             raw = body.encode('utf-16') if utf16 else body.encode('utf-8')
-            with target.open('xb') as stream:
-                stream.write(raw)
-                stream.flush()
-                os.fsync(stream.fileno())
-            if target.read_bytes() != raw:
-                raise ValueError('Batch state move stopped: the launch guard could not be written to ' + str(base) + '.')
-            source.unlink()  # The verified rewritten copy completes this one move.
+            if target.exists():
+                # Only an interrupted move of this very guard may be completed.
+                if _read_text(target)[0] != body:
+                    raise ValueError('Batch state move stopped: ' + name + ' exists in both ' + str(legacy) + ' and '
+                                     + str(base) + '. Keep one, archive the other, then retry.')
+            else:
+                staged = target.with_name(target.name + '.' + uuid.uuid4().hex + '.moving')
+                with staged.open('xb') as stream:
+                    stream.write(raw)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                try:
+                    os.link(staged, target)  # Atomic create: a partial guard is never published.
+                finally:
+                    staged.unlink()
+            source.unlink()  # The new guard is in place: this completes its move.
         else:
+            if target.exists():
+                raise ValueError('Batch state move stopped: ' + name + ' exists in both ' + str(legacy) + ' and '
+                                 + str(base) + '. Keep one, archive the other, then retry.')
             os.rename(source, target)
         moved.append(name)
     _write_receipt(base / RECEIPT, _receipt_text('moved', planned='|'.join(planned), moved='|'.join(moved),
                                                  guard_before=guard_before, **text), replace=True)
     marker = legacy / ('migrated-to-' + login + '-' + terminal_hash(data_root) + '.ini')
     if not marker.exists():
-        _write_receipt(marker, _receipt_text('moved', planned='|'.join(planned), moved='|'.join(moved),
-                                             guard_before=guard_before, **text), replace=False)
+        try:
+            _write_receipt(marker, _receipt_text('moved', planned='|'.join(planned), moved='|'.join(moved),
+                                                 guard_before=guard_before, **text), replace=False)
+        except FileExistsError:
+            pass
     return dict(decision='moved', legacy=str(legacy), base=str(base), moved=moved)
 
 
@@ -329,20 +397,28 @@ def candidate_data_roots(executable, appdata=None):
 
 
 def other_terminal_conflicts(data_root, research_terminal, *, processes, appdata=None):
-    """Other live terminals whose data folder resolves to this terminal's batch folder."""
+    """Other live terminals whose data folder resolves to this terminal's batch folder.
+
+    Fails closed: a terminal whose program path or data folder cannot be read is
+    reported as a conflict, never skipped.
+    """
     own_root = PureWindowsPath(str(data_root))
     own_hash = terminal_hash(data_root)
     own_exe = PureWindowsPath(str(research_terminal))
     conflicts, seen = [], 0
     for row in processes:
         executable = row.get('ExecutablePath')
-        if not executable:
+        if not isinstance(executable, str) or not executable.strip():
+            conflicts.append(dict(pid=row.get('ProcessId'), executable='program path unreadable', data_root=None))
             continue
         image = PureWindowsPath(executable)
         if image == own_exe and seen == 0:
             seen += 1  # The selected terminal itself.
             continue
-        for root in candidate_data_roots(executable, appdata):
+        roots = candidate_data_roots(executable, appdata)
+        if not roots:
+            conflicts.append(dict(pid=row.get('ProcessId'), executable=str(image), data_root=None))
+        for root in roots:
             if PureWindowsPath(str(root)) == own_root or terminal_hash(root) == own_hash:
                 conflicts.append(dict(pid=row.get('ProcessId'), executable=str(image), data_root=str(root)))
     return conflicts
@@ -371,6 +447,11 @@ def preflight(binding, account, *, observation=None, processes=None, appdata=Non
         processes = live_terminals()
     conflicts = other_terminal_conflicts(binding['research_data_root'], binding['research_terminal'],
                                          processes=processes, appdata=appdata)
+    unknown = next((c for c in conflicts if c['data_root'] is None), None)
+    if unknown:
+        raise ValueError('A running MT5 terminal (PID ' + str(unknown['pid']) + ', ' + unknown['executable'] + ') cannot be matched to '
+                         'a data folder, so GOAT cannot prove it uses a different batch folder. Close it, or run it as this '
+                         'Windows user, before starting a batch.')
     if conflicts:
         raise ValueError('Another running MT5 terminal (' + conflicts[0]['executable'] + ') resolves to this terminal\'s batch folder '
                          + relative + '. Close it, or give it its own data folder, before starting a batch.')

@@ -195,14 +195,18 @@ def qualification_inputs(spec, manifest, verdict):
 CATCH_UP_SCHEMA = 'goat-catch-up-import-v1'
 
 
-def catch_up_stamp(spec, manifest, verdict, created_utc):
+def catch_up_stamp(spec, manifest, verdict, created_utc, original_foos=None):
     """What a desktop import writes on the strategy (``catchUp``): when these weeks were added.
 
     A portfolio chosen before ``added_at`` never saw these weeks; one built from a library
     that already held them saw them when choosing, so they are not an unseen test of it.
+    ``original_foos`` is the original export's FOOS header window: the re-test's own FOOS
+    runs through the new weeks, so the importer restores this one and keeps the new weeks
+    only in ``catchUp``.
     """
     window = verdict.get('new_weeks') or {}
     return dict(schema=CATCH_UP_SCHEMA, evidence_end=manifest['evidence_end']['iso'], added_at=created_utc,
+                original_end=spec['original']['evidence_end'], original_foos=original_foos,
                 first_day=spec['new_window']['first_day'], last_day=window.get('last_day') or manifest['evidence_end']['iso'],
                 verdict=verdict.get('verdict'), confidence=verdict.get('confidence'),
                 comparable=(verdict.get('comparability') or {}).get('comparable'),
@@ -572,7 +576,8 @@ class CatchupRunner(SeedRunner):
         version = dict(schema=VERSION_SCHEMA, values_sha256=retest['values_sha256'], symbol=retest['symbol'], period=retest['period'],
                        evidence_start=retest['evidence_start'], evidence_end=retest['evidence_end'], evidence_end_source=retest['evidence_end_source'],
                        target_end=manifest['evidence_end']['iso'], catchup_id=manifest['batch_id'], alias=spec['alias'],
-                       created_utc=created, catch_up=catch_up_stamp(spec, manifest, verdict, created),
+                       created_utc=created, catch_up=catch_up_stamp(spec, manifest, verdict, created,
+                                                                    (original.get('windows') or {}).get('FOOS')),
                        original=dict(spec['original'], csv_path=original['csv_path']),
                        retest=dict(set_path=retest['set_path'], set_sha256=retest['set_sha256'], csv_path=retest['csv_path'],
                                    capture=retest.get('capture') and dict(path=retest['capture']['path'], status=retest['capture']['status'],

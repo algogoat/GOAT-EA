@@ -614,8 +614,12 @@ separately and never as "qualifying". `evidence-versions` lists retained version
 
 Each version also carries `catch_up` (`goat-catch-up-import-v1`: `evidence_end`,
 `added_at` = when the re-test was collected, `first_day`/`last_day`, `verdict`,
-`confidence`, `comparable`, `rules`, the original SET and values hashes). The
-desktop import writes it on the strategy as `catchUp` and `oosRanges.catchUp`, so
+`confidence`, `comparable`, `rules`, the original SET and values hashes,
+`original_end` and `original_foos`, the original export's FOOS header window). The
+re-test's own FOOS runs through the new weeks, so the desktop import restores the
+original FOOS and keeps the new weeks only in `catchUp`: the sift's FOOS gates
+never read them. The import writes the stamp on the strategy as `catchUp` and
+`oosRanges.catchUp`, so
 a portfolio chosen before `added_at` saw none of those weeks ("unseen when
 chosen"), while one built after importing them saw them ("seen when chosen"). For
 an out-of-sample check, build first, then catch up.

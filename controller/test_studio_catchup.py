@@ -312,6 +312,8 @@ class NativeCycleTests(CatchupCase):
                          ('goat-catch-up-import-v1', '2026-10-02', '2026-09-25', '2026-10-02', 'held_up', True))
         self.assertEqual((stamp['rules'], stamp['added_at'], stamp['original_set_sha256']),
                          ('goat-catchup-verdict-v2', version['created_utc'], version['original']['set_sha256']))
+        self.assertEqual((stamp['original_end'], stamp['original_foos']),
+                         ('2026-09-24', dict(start='2026-08-29', end='2026-09-24', days=18, trades=38, pl=190.0)))
         checks = {item['check']: item['ok'] for item in version['comparability']['checks']}
         self.assertTrue(version['comparability']['comparable'])
         self.assertEqual({k for k, ok in checks.items() if ok}, {'inputs', 'ea_build', 'ea_name', 'model', 'symbol', 'server', 'deposit',

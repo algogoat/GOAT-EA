@@ -19,6 +19,7 @@ from campaign_ledger import packed, sha
 from demo_agent import DemoAgent, digest, read_json
 from studio_research_authority import authority, operation, CURRENT_OPERATION, DEMO_AGENT_SCOPE
 from studio_seed_slot import guard_active_seed
+from studio_terminal_isolation import relative_base
 from test_demo_agent import MetaTrader
 from test_studio_seed import xml_result
 
@@ -68,7 +69,10 @@ class FakeController:
         return dict(owner=self.t.owner, generation=1, queue=[])
 
     def runtime(self, **kwargs):
-        return dict(loaded=True, owner=self.t.owner, generation=1), {}
+        # The isolation-aware EA publishes the batch folder it resolves.
+        state_base = relative_base(self.install['ea_version'], self.session['account']['server'],
+                                   self.session['account']['login'], self.install['terminal_data_root'])
+        return dict(loaded=True, owner=self.t.owner, generation=1, state_base=state_base), {}
 
 
 class DemoSeedAgentTests(unittest.TestCase):
@@ -119,6 +123,7 @@ class DemoSeedAgentTests(unittest.TestCase):
         self.now = time.time()
         self.process = SeedProcess(); self.mt5 = MetaTrader(self.exe, self.data)
         self.patches = [patch('demo_agent.tester_state', return_value='idle'),
+                        patch('studio_terminal_isolation.live_terminals', return_value=[]),
                         patch('goat_studio.Controller', side_effect=lambda path: FakeController(self, path))]
         for item in self.patches: item.start(); self.addCleanup(item.stop)
         self.agent = self.new_agent()

@@ -1436,6 +1436,39 @@ void BuildOptimizationBatchPromptSummary(const string queueFile,const string log
       line1=StringFormat("Runs OK: %d/%d | Errors: %d | Left: %d",stats.completed,stats.total,stats.errors,left);
    else
       line1="Runs OK: n/a | Queue not found";
+#ifdef GOAT_RESEARCH_OUTCOME_V149
+   // Items tested without a profitable pass keep the queue status Error, but they
+   // are results, not failures: count them apart from errors (item_stats.tsv).
+   int noEdge=0;
+   if(loaded && stats.errors>0)
+     {
+      // Only items the queue itself marks Error are counted (status check).
+      string errorAliases="\n",queueItems[];
+      int queueCount=StringSplit(GetFileContent(queueFile),(ushort)31,queueItems);
+      for(int q=0;q<queueCount;q++)
+        {
+         string head=queueItems[q]; StringTrimLeft(head);
+         int headEnd=StringFind(head,";",1),colon=-1;
+         for(int k=headEnd-1;k>0 && colon<0;k--) if(StringGetCharacter(head,k)==':') colon=k;
+         if(StringFind(head,";Error_")==0 && colon>0) errorAliases+=StringSubstr(head,colon+1,headEnd-colon-1)+"\n";
+        }
+      string seen="\n";
+      string statLines[];
+      int statCount=StringSplit(GoatOptReadTextFile(GoatOptFolderOf(queueFile)+"\\item_stats.tsv"),'\n',statLines);
+      for(int i=1;i<statCount;i++)
+        {
+         string fields[];
+         if(StringSplit(statLines[i],'\t',fields)<9 || fields[3]!="NoProfitablePasses") continue;
+         if(StringFind(errorAliases,"\n"+fields[2]+"\n")<0) continue;
+         string itemKey=fields[1]+"\t"+fields[2]+"\n";
+         if(StringFind(seen,"\n"+itemKey)>=0) continue;
+         seen+=itemKey; noEdge++;
+        }
+      noEdge=(int)MathMin(noEdge,stats.errors);
+     }
+   if(noEdge>0)
+      line1=StringFormat("Runs OK: %d/%d | No edge: %d | Errors: %d | Left: %d",stats.completed,stats.total,noEdge,stats.errors-noEdge,left);
+#endif
 
    string logLines[];
    int lineCount=0;
@@ -3120,7 +3153,7 @@ void CStrategyTesterDialog::OnClickStart(void)
 //+------------------------------------------------------------------+
 void CStrategyTesterDialog::OnClickStop(void)
   {
-   int res=MessageBox("Terminate this batch?\n\nThe running optimization will be stopped and all Pending, Queued and OnGoing items cancelled.","Confirmation",MB_YESNO|MB_ICONWARNING);
+   int res=MessageBox("Stop this batch?\n\nThe running optimization stops and every waiting or running item is cancelled. Finished results are kept.","Stop batch?",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
    if(res!=IDYES) return;
 
    // Disarm callbacks and terminal relaunch before requesting tester stop.

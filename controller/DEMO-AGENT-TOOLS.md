@@ -22,13 +22,94 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 & $goat demo --installation $receipt stop            # optional: --monitor-config '<monitor-only .ini>'
 & $goat demo --installation $receipt clear-stop
 & $goat demo --installation $receipt recover-orphan  # optional: --review-id '<id>' to observe only
+& $goat demo --installation $receipt research-status # read-only lane: activity, pace/ETA, pause, driver, disk, monitor
+& $goat demo --installation $receipt batch-pause --batch-id '<id>'    # optional: --immediate
+& $goat demo --installation $receipt batch-resume --batch-id '<id>'   # optional: --new-batch-id, --resume-token, --max-seconds, --clear-stop, --include-failed
 ```
 
 - `install-build` verifies the candidate hash and the inert monitor INI (only Charts/Experts/StartUp monitor keys; account, tester and script directives refuse before MT5 closes), archives the old EX5 and identity files, closes only the selected idle demo terminal, copies the EX5, relaunches its monitor and reads back the physical hash, demo account, EA feedback and Algo-off state within 120 seconds. Repeating it with the same candidate and hash returns `already_installed` or completes an interrupted swap; an uncertain relaunch never dispatches a batch.
 - `launch-terminal` reopens a stopped registered demo terminal with its exact monitor INI and requires fresh broker, Algo-off, idle-tester and EA feedback afterwards.
 - `run-batch` (`--max-seconds` required, 1..172800) starts a detached Windows worker and returns when its journal exists; that is not proof that native work runs. Repeating it returns the original worker and never resets the deadline. `resume-batch` attaches a new worker to the retained attempt and original deadline and never starts a pending job.
 - `stop` writes the owner STOP marker and waits for the exact cancellation readback; it returns `cancelled`, another verified terminal result or `stop_unconfirmed`. `clear-stop` removes only a STOP written by this tool, after a verified idle demo and a terminal batch state.
-- Treat `start_uncertain` or `stop_unconfirmed` as "inspect the native state", never as completion.
+- Treat `start_uncertain` or `stop_unconfirmed` as "inspect the native state", never as completion. A `stop_unconfirmed` batch is settled with `batch-pause`, which adopts its outstanding stop.
+
+## Research operations: status, pause and resume
+
+`research-status` is one read-only call per installation, built for a UI lane or
+an agent loop. It never takes the terminal lock, opens the mutable store,
+launches, closes or signals MT5. It returns the terminal (process, build), the
+paired account, the EA build, the current batch or seed hunt (`status`,
+`members_done`/`members_total`, `qualifying` = completed members with at least
+one exported SET that passed the batch's export gates, `last_member`,
+`current_member`, `pace.minutes_per_member`, `pace.eta_utc`, `lineage`,
+`pause`, a one-sentence `headline`), driver health (`unsupervised` when a running
+batch has no live driver), disk headroom against the driver's reserve, owner
+STOP, and the monitor: `ticking`, `relaunching` (an ordinary member-boundary
+restart), or a `blocker` with `code`, `message` and `fix`. Codes include
+`terminal_closed`, `monitor_unlicensed` (the EA's sign-in status is newer than
+its last heartbeat; when another terminal's sign-in was approved after it, the
+message is "This terminal's GOAT sign-in was replaced by another terminal —
+re-pair it."), `monitor_build_not_admitted`, `monitor_webrequest_permission_required`,
+`monitor_unbound`, `human_took_control` and `monitor_silent`.
+
+A member whose optimization ran (at least one pass traded) and whose back and forward
+reports are whole, but had no pass profitable with 50+ trades, is a research result for its
+tested window, not a failure. A report whose EA never traded, that cannot be read, or that is
+partial stays a real error and `--include-failed` retries it. The EA keeps its native
+queue status `Error` (no protocol change) and writes a `NoProfitablePasses` row to
+the run's `item_stats.tsv` (passes, profitable count, best profit, best score and
+the back-test window). `research-status` reports these as `members_no_edge` (with
+`no_edge` details and `no_edge_window`) apart from `members_failed`; the headline
+says `N tested with no edge in <window>`, and `last_member.status` is
+`no_profitable_passes` with a one-line `summary`. `finish` records them as
+`research_outcomes` for the scoreboard, a pause whose only errors are no-edge members
+is `finished`, and `--include-failed` never re-runs them; `--include-no-edge` (`batch-resume`,
+or `resume-batch` for a batch already recorded finished) deliberately re-runs them. Always quote the window:
+"no profitable settings in this window" never means "this strategy never works".
+
+`batch-pause` needs no terminal lock (like `stop`): it writes one durable pause
+intent (`batch-pauses/<id>.json`) and returns `state: pausing`. A live driver
+honours it on its next tick; otherwise one bounded pause supervisor starts
+(`_drive-batch ... --pause-seconds 21600`, its own Windows demand task). The
+safety rules, in `studio_batch_pause.py`:
+
+- One stop is published only at a safe point while the bound monitor reports:
+  within the first 5 minutes of a member that just turned OnGoing (never inside
+  its last 3 minutes once the pace is known), or with no member active and the
+  tester idle after the between-member relaunch. Owner STOP, a pending human
+  TAKE, low disk, a clock rollback or the driver deadline drop the member-age
+  rule, never the reporting-monitor rule.
+- An expired, unconsumed stop is never replaced while unanswered. The EA answers
+  it with `CANCEL_REJECTED` on its first bound tick; only that exact receipt,
+  observed after expiry, admits exactly one successor identity, linked first in
+  `cancel-successors/<attempt>.json` under the `cancel-rejected-successor`
+  identity rules, so `finish` binds it. Both stop receipts are kept. A rejection
+  observed before expiry (an identity check), a rejected successor or any other
+  refusal ends in `pause_failed` with one sentence and its fix.
+- The driver never records `cancel_issued` for a pause, so its journal is never
+  poisoned. It keeps the disk guard and finish throughout, and a resumed driver
+  keeps supervising. A journal an owner STOP left at `stop_unconfirmed` is
+  adopted: its outstanding stop becomes the pause's (`adopted_stop: true`).
+- After MT5 confirms, finish harvests the completed members and the pause records
+  `paused` with `resume_token`; a batch that completed every member first records
+  `finished`. A failed pause hands the batch back to normal supervision.
+
+`batch-resume` refuses in plain words while the batch is still pausing, failed,
+finished, its monitor has a blocker, or an owner STOP is set (pass `--clear-stop`
+to lift a STOP written by this tool). Otherwise it re-verifies the paused result
+and token, refreshes `verified-build.json` after a terminal restart, refreshes the
+protected peer when only its process instance restarted (same reviewed executable
+bytes, data root and origin; anything else still needs `peer-prepare`/`peer-apply`),
+builds the remaining members from per-member native evidence, prepares them as a
+successor (`<id>-rN`, fixed in the pause record before preparation so a retry
+reuses it), records `batch-lineage/<successor>.json`, and starts the successor
+under the bounded driver with the original budget (or `--max-seconds`). Repeating
+it returns the same successor.
+
+A seed hunt pauses between members: `batch-pause` writes `seeds/<id>/pause.json`,
+the running member finishes and is kept, no new member starts and pending members
+stay pending (never cancelled). `seed-resume` honours the pause; `batch-resume`
+releases it (the marker is retained as `pause-released-<ms>.json`) and continues.
 
 ## Seed Farming on the demo lane
 

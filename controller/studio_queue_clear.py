@@ -45,7 +45,8 @@ def recovery_status(controller):
     except (OSError, ValueError) as exc:
         blockers.append('Terminal process inspection: '+str(exc))
     try:
-        native = inventory(controller.install['common_files_root'], controller.session['account']['server'], controller.install['ea_version'])
+        native = inventory(controller.install['common_files_root'], controller.session['account']['server'], controller.install['ea_version'],
+                           login=controller.session['account']['login'], data_root=controller.install['terminal_data_root'])
         controls = [name for name, value in native['controls'].items() if value is not None]
         if controls: blockers.append('Existing native controls require their original owned attempt to be reconciled')
         guard_active_seed(controller.root)

@@ -50,7 +50,13 @@ def _files(package):
     return result
 
 
-def _verify_package(controller, job):
+def _verify_package(controller, job, *, allow_peer_refresh=False):
+    """Verify a frozen package against this installation.
+
+    ``allow_peer_refresh`` is only for reading a finished package's remaining
+    work: the protected peer's process instance (and so its reviewed policy hash)
+    may have changed since preparation; every other binding field must match.
+    """
     package = controller.root / 'packages' / job['job_id']
     receipt = _json(package / 'preparation.json')
     plan = _json(package / 'studio-plan.json'); manifest = _json(package / 'manifest.json')
@@ -61,7 +67,14 @@ def _verify_package(controller, job):
     if source != dict(terminal_id=controller.terminal, run_id=controller.run, job_id=job['job_id'],
                       source_revision=job['source_revision'], configuration_sha256=job['configuration_sha256']):
         raise ValueError('Prepared batch belongs to another queue revision')
-    if plan['research_binding'] != controller.binding() or manifest['campaign_id'] != sha(plan):
+    recorded, current = plan['research_binding'], controller.binding()
+    if allow_peer_refresh:
+        if job['status'] not in ('completed', 'cancelled', 'failed'):
+            raise ValueError('A refreshed protected peer only reads a finished package')
+        from studio_protected_peer import PEER_BINDING_KEYS
+        recorded = {key: value for key, value in recorded.items() if key not in PEER_BINDING_KEYS}
+        current = {key: value for key, value in current.items() if key not in PEER_BINDING_KEYS}
+    if recorded != current or manifest['campaign_id'] != sha(plan):
         raise ValueError('Prepared batch installation or plan identity changed')
     if 'launch_intent' in job and hashlib.sha256((package / 'manifest.json').read_bytes()).hexdigest() != job['launch_intent']['package_sha256']:
         raise ValueError('Attempt package identity changed')
@@ -225,7 +238,9 @@ def batch_status(controller, batch_id):
         native=job.get('native_observation'), result_path=job.get('completion_path'),
         members=[dict(index=index, symbol=member['tester']['Symbol'], timeframe=member['tester']['Period'],
             ea_desc=member['strategy']['values']['EA_Desc'], configuration_sha256=sha(member)) for index, member in enumerate(members)],
-        configuration_sha256=job['configuration_sha256'])
+        configuration_sha256=job['configuration_sha256'],
+        # Tested with no profitable settings in their window: results, not failures.
+        research_outcomes=(job.get('completion') or {}).get('research_outcomes'))
 
 
 def _section(text, name):
@@ -315,12 +330,17 @@ def load_batch(controller, batch_id, source):
     return result
 
 
-def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False):
-    """Create a new native queue containing explicitly selected unfinished work."""
+def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False, include_no_edge=False,
+                 allow_peer_refresh=False):
+    """Create a new native queue containing explicitly selected unfinished work.
+
+    `include_failed` retries real failures; members tested with no profitable
+    settings are results, so only `include_no_edge` deliberately re-runs them.
+    """
     previous = controller.job(source_batch_id)
     if previous['status'] not in ('completed', 'cancelled', 'failed'):
         raise ValueError('Stop/reconcile/finish the original batch before preparing its remaining work')
-    package, _, manifest = _verify_package(controller, previous)
+    package, _, manifest = _verify_package(controller, previous, allow_peer_refresh=allow_peer_refresh)
     from studio_native_observe import observe
     if 'launch_intent' not in previous:
         if previous['status'] != 'cancelled': raise ValueError('Unstarted remaining work requires an explicit cancelled batch')
@@ -333,13 +353,19 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False)
     from studio_batch_contract import configuration_members
     configurations = configuration_members(previous['configuration'])
     if len(configurations) != len(manifest['jobs']): raise ValueError('Remaining-work configuration count mismatch')
+    # Members tested with no profitable settings are results for their window, not
+    # failures: retrying failures never re-runs them (finish recorded them); only the
+    # explicit include_no_edge override does.
+    no_edge = {item['index'] for item in (previous.get('completion') or {}).get('research_outcomes') or []
+               if isinstance(item, dict) and type(item.get('index')) is int}
     selected = []
-    for native, config, evidence in zip(manifest['jobs'], configurations, observed):
+    for index, (native, config, evidence) in enumerate(zip(manifest['jobs'], configurations, observed)):
         if evidence.get('run_alias') != native['run_alias']:
             raise ValueError('Remaining-work identity mismatch')
         status = evidence['status'].lower().removeprefix('native_')
         if status == 'completed': continue
-        if status == 'error' and not include_failed: continue
+        if status == 'error' and index in no_edge and not include_no_edge: continue
+        if status == 'error' and index not in no_edge and not include_failed: continue
         if status not in ('pending', 'queued', 'cancelled', 'error'):
             raise ValueError('Native member remains unresolved; do not infer stopped from process absence')
         selected.append(dict(set_path=str(package / (native['run_alias'] + '.set')), tester=config['tester']))
@@ -349,5 +375,6 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False)
     write_json(plan_path, dict(schema_version=1, export=previous['configuration']['export'], members=selected))
     result = prepare_batch(controller, batch_id, plan_path)
     write_json(inputs / 'provenance.json', dict(source_batch_id=source_batch_id, new_batch_id=batch_id,
-        include_failed=include_failed, selected_count=len(selected)))
+        include_failed=include_failed, include_no_edge=include_no_edge, selected_count=len(selected),
+        no_edge_members=len(no_edge)))
     return result

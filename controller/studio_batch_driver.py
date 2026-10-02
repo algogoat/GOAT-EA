@@ -164,25 +164,86 @@ def _save(path, record, clock):
 def _summary(path, record):
     return {key: record.get(key) for key in ('status', 'max_seconds', 'started_wall', 'deadline_wall',
             'attempt_id', 'start_issued', 'cancel_issued', 'stopped', 'last_error', 'result_path',
-            'min_free_bytes', 'cancel_reason', 'disk_observation')} | dict(
+            'min_free_bytes', 'cancel_reason', 'disk_observation', 'pause_id', 'pause_failure',
+            'pause_supervision')} | dict(
         journal_path=str(path), job_id=record['binding']['job_id'],
         disk_guard_available=(record.get('schema_version') == 2 and type(record.get('min_free_bytes')) is int
                               and record['min_free_bytes'] > 0),
         host_liveness_required=True, independent_hard_stop=False)
 
 
+PAUSE_OVERRUN_SECONDS = 240
+# A safe point is a short window at each member start (g6: ~40 s), but one
+# supervision pass (reconcile + finish over every member's native evidence) takes
+# minutes on a large batch, so the pause step only ran every 3-10 minutes and
+# missed the window for over an hour. While a pause waits for a safe point, the
+# driver re-checks only the pause every FAST_POLL_SECONDS for up to
+# FAST_WATCH_SECONDS between passes. The step and its rules are unchanged.
+FAST_WATCH_SECONDS = 150
+FAST_POLL_SECONDS = 5
+SAFE_POINT_WAITS = frozenset(('waiting_safe_point', 'cancel_rejected_waiting_safe_point'))
+
+
+def _pause(controller, job_id):
+    from studio_batch_pause import load
+    return load(controller.root, job_id, quiet=True)
+
+
+def _waiting_safe_point(pause):
+    point = pause.get('safe_point') if isinstance(pause, dict) else None
+    return (isinstance(point, dict) and point.get('ok') is False and pause.get('state') == 'pausing'
+            and pause.get('phase') in SAFE_POINT_WAITS)
+
+
+def _fast_watch(controller, job_id, record, path, clock, monitor_fn, pause, escalation, *, until, wall_start, monotonic_start):
+    """Re-step a pause waiting for a safe point until it leaves the wait or ``until``.
+
+    Anything the outer pass escalates on (a clock rollback, low disk) hands back to
+    it at once, so a fast step never runs on a suspect clock or past the disk guard.
+    """
+    from studio_batch_pause import step, observe_monitor
+    while _waiting_safe_point(pause) and clock.monotonic() + FAST_POLL_SECONDS <= until:
+        clock.sleep(FAST_POLL_SECONDS)
+        now, mono = clock.time(), clock.monotonic()
+        if now < record['last_wall'] or now-wall_start+.05 < mono-monotonic_start:
+            break
+        record['disk_observation'] = _capacity(controller, record['min_free_bytes'])
+        if record['disk_observation'].get('reason'):
+            break
+        try:
+            monitor = (monitor_fn or observe_monitor)(controller, now)
+            pause = step(controller, job_id, now=now, monitor=monitor, escalation=escalation,
+                         finish_error=record.get('last_error'))
+        except Exception as error:
+            record['last_error'] = 'Pause step: ' + str(error)
+            break
+        finally:
+            _save(path, record, clock)
+    return pause
+
+
 def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
-        cancel_grace_seconds=120, min_free_bytes=None, clock=time, finish_fn=finish):
+        cancel_grace_seconds=120, min_free_bytes=None, clock=time, finish_fn=finish,
+        pause_seconds=None, monitor_fn=None):
     """Start once, or explicitly observe a retained attempt against its old deadline.
 
     Controller must already be open. CLI callers can hold their normal shared
     session lock too. No resume path starts a pending job, retries a start or
     acquires agent ownership. All journals remain available for reviewed recovery.
+
+    While a batch pause is pausing (studio_batch_pause), the driver hands every
+    stop to the pause: it never sets cancel_issued, keeps its disk guard and
+    finish, and adopts an outstanding unconfirmed stop instead of giving up on
+    it. ``pause_seconds`` bounds a pause supervisor that resumes a retained
+    journal; without it a pausing driver ends PAUSE_OVERRUN_SECONDS after its
+    own deadline, before its host's execution limit.
     """
     if not isinstance(job_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', job_id):
         raise ValueError('Invalid prepared batch ID')
     if type(resume) is not bool:
         raise ValueError('Resume must be an explicit boolean')
+    if pause_seconds is not None and (not resume or type(pause_seconds) is not int or not 1 <= pause_seconds <= 172800):
+        raise ValueError('A pause supervisor resumes a retained journal with 1..172800 seconds of supervision')
     if resume and min_free_bytes is not None:
         raise ValueError('Resume preserves the original disk guard; do not supply min_free_bytes')
     if not resume:
@@ -222,7 +283,14 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
             if _binding(controller, job_id) != record['binding']:
                 raise ValueError('Batch/session/ownership changed; resume refused')
             if record['stopped']:
+                pause = _pause(controller, job_id)
+                if pause is not None and pause['state'] == 'pausing' and controller.job(job_id)['status'] in TERMINAL:
+                    # Interrupted between the journal's stop and the pause record.
+                    from studio_batch_pause import complete
+                    complete(controller, job_id, now=clock.time())
                 return _summary(path, record)
+            if pause_seconds is not None and (_pause(controller, job_id) or {}).get('state') != 'pausing':
+                raise ValueError('A pause supervisor requires a pausing batch')
             if (record.get('schema_version') != 2 or type(record.get('min_free_bytes')) is not int
                     or record['min_free_bytes'] <= 0):
                 raise ValueError('Retained disk guard unavailable; active legacy driver needs reviewed recovery, not resume')
@@ -304,6 +372,8 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
         wall_start, monotonic_start = call_wall, call_monotonic
         rollback = clock.time() < record['last_wall']
         monotonic_deadline = monotonic_start+max(0, record['deadline_wall']-wall_start)
+        supervision_deadline = (monotonic_start+pause_seconds if pause_seconds is not None
+                                else monotonic_deadline+PAUSE_OVERRUN_SECONDS)
         cancel_mono_deadline = None
         if record['cancel_issued']:
             cancel_mono_deadline = monotonic_start+min(record['cancel_grace_seconds'], max(0, record['cancel_deadline_wall']-wall_start))
@@ -316,7 +386,9 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 record['status'] = 'ownership_or_binding_changed'; record['last_error'] = str(error)
                 _save(path, record, clock)
                 return _summary(path, record)
-            if not record['cancel_issued']:
+            pause = _pause(controller, job_id)
+            pausing = pause is not None and pause['state'] == 'pausing'
+            if not record['cancel_issued'] or pausing:
                 record['disk_observation'] = _capacity(controller, record['min_free_bytes'])
             try:
                 if controller.job(job_id)['status'] not in TERMINAL:
@@ -328,6 +400,12 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 record.update(status=result['status'], stopped=True, last_error=None,
                               result_path=result.get('result_path') or controller.job(job_id).get('completion_path'))
                 _save(path, record, clock)
+                if pausing:
+                    from studio_batch_pause import complete
+                    done = complete(controller, job_id, now=clock.time())
+                    record.update(status='paused' if done['state'] == 'paused' else record['status'],
+                                  pause_id=done['pause_id'])
+                    _save(path, record, clock)
                 return _summary(path, record)
             except Exception as error:
                 record['last_error'] = str(error)
@@ -342,6 +420,47 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     human = controller.bridge.root/'human'
                     if any(any((human/channel).glob('*.json')) for channel in ('inbox','processing')):
                         owner_stop = 'human_take_control'
+            if pausing:
+                # Every stop belongs to the pause: no cancel_issued, no grace give-up.
+                from studio_batch_pause import step, observe_monitor
+                # Owner STOP and the driver deadline never escalate a running pause: the
+                # pause is already the stop, and its single cancel must still wait for a
+                # safe point (the 06:33Z cancel expired at a member-boundary relaunch).
+                # Only low disk and a clock rollback justify publishing immediately.
+                escalation = disk_reason or ('clock_rollback' if rollback else None)
+                record.update(status='pausing', pause_id=pause['pause_id'])
+                try:
+                    monitor = (monitor_fn or observe_monitor)(controller, now)
+                    pause = step(controller, job_id, now=now, monitor=monitor, escalation=escalation,
+                                 finish_error=record.get('last_error'))
+                except Exception as error:
+                    record['last_error'] = 'Pause step: ' + str(error)
+                else:
+                    pause = _fast_watch(controller, job_id, record, path, clock, monitor_fn, pause, escalation,
+                                        until=min(mono+FAST_WATCH_SECONDS, supervision_deadline),
+                                        wall_start=wall_start, monotonic_start=monotonic_start)
+                    mono = clock.monotonic()
+                if pause is not None and pause.get('state') == 'pause_failed':
+                    # A failed pause sent nothing it could not prove; the original
+                    # driver keeps supervising the still-running batch normally.
+                    record.update(status='pause_failed' if pause_seconds is not None else 'observing',
+                                  pause_failure=pause.get('failure'))
+                    _save(path, record, clock)
+                    if pause_seconds is not None:
+                        return _summary(path, record)
+                    clock.sleep(min(poll_seconds, max(.01, monotonic_deadline-mono)))
+                    continue
+                if mono >= supervision_deadline:
+                    record['pause_supervision'] = 'budget_exhausted'
+                    _save(path, record, clock)
+                    return _summary(path, record)
+                _save(path, record, clock)
+                clock.sleep(min(poll_seconds, max(.01, supervision_deadline-mono)))
+                continue
+            if pause_seconds is not None:
+                # The pause settled elsewhere; this supervisor has nothing left to do.
+                _save(path, record, clock)
+                return _summary(path, record)
             if record['cancel_issued'] or owner_stop or disk_reason or rollback or now >= record['deadline_wall'] or mono >= monotonic_deadline:
                 if not record['cancel_issued']:
                     try:

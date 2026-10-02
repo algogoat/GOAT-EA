@@ -381,9 +381,11 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
             if pausing:
                 # Every stop belongs to the pause: no cancel_issued, no grace give-up.
                 from studio_batch_pause import step, observe_monitor
-                deadline_reached = now >= record['deadline_wall'] or mono >= monotonic_deadline
-                escalation = (owner_stop or disk_reason or ('clock_rollback' if rollback else None)
-                              or ('deadline' if deadline_reached else None))
+                # Owner STOP and the driver deadline never escalate a running pause: the
+                # pause is already the stop, and its single cancel must still wait for a
+                # safe point (the 06:33Z cancel expired at a member-boundary relaunch).
+                # Only low disk and a clock rollback justify publishing immediately.
+                escalation = disk_reason or ('clock_rollback' if rollback else None)
                 record.update(status='pausing', pause_id=pause['pause_id'])
                 try:
                     monitor = (monitor_fn or observe_monitor)(controller, now)

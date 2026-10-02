@@ -50,6 +50,11 @@ def native_base(c):
     return controller_base(c)
 
 
+def launched(epoch):
+    """A WindowsSeedProcess-shaped MT5 process started at epoch."""
+    return dict(pid=4242, created_utc=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(epoch)))
+
+
 def ticking(now=NOW, **extra):
     return dict(state='ticking', ticking=True, transient=False, heartbeat_wall=now, heartbeat_age_seconds=0,
                 tester_state='running', restart_pending=False, blocker=None, process=None) | extra
@@ -217,8 +222,26 @@ class SafePointTests(PauseFixture):
         self.assertEqual((record['mode'], record['escalation']), ('immediate', 'disk_low'))
         self.assertEqual(self.issued(), [])
         self.assertEqual(record['blocker']['code'], 'monitor_silent')
-        record = self.step(escalation='disk_low')
+        record = self.step(ticking(process=launched(NOW - 600)), escalation='disk_low')
         self.assertEqual((record['phase'], record['safe_point']['kind']), ('cancel_published', 'immediate'))
+
+    def test_immediate_still_refuses_a_pending_restart_and_a_monitor_older_than_mt5(self):
+        self.request()
+        self.queue(['Completed', 'OnGoing', 'Pending']); self.event(1, 'OnGoing', NOW - 1200)
+        cases = [
+            (ticking(restart_pending=True, process=launched(NOW - 600)), 'restart_pending'),
+            (ticking(restart_pending=None, process=launched(NOW - 600)), 'restart_pending'),
+            (ticking(process=None), 'monitor_not_ticked_since_process_start'),
+            (ticking(heartbeat_wall=NOW - 900, process=launched(NOW - 600)), 'monitor_not_ticked_since_process_start'),
+        ]
+        for monitor, reason in cases:
+            with self.subTest(reason=reason, monitor=monitor):
+                record = self.step(monitor, escalation='disk_low')
+                self.assertEqual(record['mode'], 'immediate')
+                self.assertEqual(record['safe_point']['reason'], reason)
+                self.assertEqual(self.issued(), [])
+        record = self.step(ticking(process=launched(NOW - 600)), escalation='disk_low')
+        self.assertEqual(record['phase'], 'cancel_published')
 
 
 class RelaunchWindowTests(PauseFixture):
@@ -395,6 +418,28 @@ class UnlicensedMonitorTests(PauseFixture):
         record = self.step(ticking(self.now))
         self.assertEqual(record['phase'], 'successor_published')
         self.assertEqual(len(self.issued()), 2)
+
+    def test_g6_shaped_successor_waits_at_a_member_end_with_restart_pending(self):
+        """Owner STOP plus an expired driver deadline: the one successor must still wait."""
+        self.queue(['Completed', 'OnGoing', 'Pending'])
+        self.now = NOW - 600
+        self.c.cancel('g6', expected_generation=self.c.state()['generation'])
+        original = sha([self.attempt, 'cancel'])
+        self.journal.update(cancel_issued=True, status='stop_unconfirmed', cancel_reason='owner_stop')
+        self.request()
+        self.now = NOW
+        self.answer(original, 'CANCEL_REJECTED', consumed=False, observed=NOW - 10)
+        # ~400 s members; this one is 390 s in and MT5 already queued its restart.
+        for index in range(2):
+            self.event(index, 'OnGoing', NOW - 1600 + index * 800); self.event(index, 'Completed', NOW - 1200 + index * 800)
+        self.queue(['Completed', 'Completed', 'OnGoing']); self.event(2, 'OnGoing', NOW - 390)
+        ending = ticking(restart_pending=True, process=launched(NOW - 395))
+        for escalation in (None, 'disk_low'):
+            with self.subTest(escalation=escalation):
+                record = self.step(ending, escalation=escalation)
+                self.assertEqual(record['phase'], 'cancel_rejected_waiting_safe_point')
+                self.assertEqual(self.issued(), ['issued-' + original + '.json'])
+                self.assertFalse((self.c.root / 'cancel-successors').exists())
 
 
 class ResumeTests(PauseFixture):

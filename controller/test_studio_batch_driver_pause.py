@@ -101,7 +101,29 @@ class DriverPauseTests(unittest.TestCase):
         self.assertEqual((result['status'], result['stopped']), ('paused', True))
         self.assertEqual(self.c.cancels, 1)
         self.assertEqual(len(self.steps), 4)
-        self.assertEqual(self.steps[0]['escalation'], 'deadline')
+        # The expired driver deadline no longer forces an immediate cancel.
+        self.assertEqual([step['escalation'] for step in self.steps], [None] * 4)
+
+    def test_owner_stop_and_deadline_never_escalate_a_running_pause(self):
+        # g6's shape: owner STOP still present and the driver deadline already passed.
+        self.c.session['authority_kind'] = 'demo_direct'
+        write_json(self.c.root / 'session.json', self.c.session)
+        self.c.bridge = SimpleNamespace(root=self.c.local / self.c.run)
+        marker = self.c.root / 'demo-agent/STOP'
+        marker.parent.mkdir(exist_ok=True)
+        marker.write_text('owner stop')
+        self.c.finish_on_cancel = False; self.c.cancel_error = True
+        first = self.drive(max_seconds=2)
+        self.assertEqual((first['status'], first['cancel_reason']), ('stop_unconfirmed', 'owner_stop'))
+        self.c.clock.wall += 2 * 86400
+        self.write_pause(adopted_stop=True)
+        self.finish_on_step = 3
+        with self.completes():
+            result = self.drive(resume=True, pause_seconds=3600)
+        self.assertEqual(result['status'], 'paused')
+        self.assertEqual([step['escalation'] for step in self.steps], [None, None, None])
+        self.assertTrue(marker.exists())
+        # Low disk escalation is covered by test_pause_never_sets_cancel_issued_keeps_disk_guard_and_records_paused.
 
     def test_supervisor_budget_ends_pausing_without_poisoning_and_can_resume(self):
         self.die_on_first_sleep()

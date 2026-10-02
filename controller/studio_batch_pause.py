@@ -236,6 +236,15 @@ def safe_point(record, monitor, statuses, timing, *, now, member_seconds=None, p
         return dict(ok=False, kind=None, reason='monitor_not_ticking')
     current = next((i for i, status in enumerate(statuses) if status == 'native_ongoing'), None)
     if record.get('mode') == 'immediate':
+        # Escalation drops the member-age rule, never the relaunch rules: a cancel sent
+        # into a pending restart, or to a monitor that has not ticked since MT5 last
+        # started, can expire unconsumed exactly like the 06:33Z cancel.
+        if monitor.get('restart_pending') is not False:
+            return dict(ok=False, kind=None, reason='restart_pending')
+        launched = _process_started(process) if isinstance(process, dict) else None
+        heartbeat = monitor.get('heartbeat_wall')
+        if launched is None or heartbeat is None or heartbeat < launched:
+            return dict(ok=False, kind=None, reason='monitor_not_ticked_since_process_start')
         return dict(ok=True, kind='immediate', reason=record.get('escalation') or 'requested_immediate')
     watch = record.get('member_watch') or {}
     if current is not None:

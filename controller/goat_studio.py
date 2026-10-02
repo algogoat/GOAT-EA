@@ -50,7 +50,7 @@ OPERATION_CONTRACTS = {
     'seed-status':dict(required=['batch-id'],effect='observe dedicated seed campaign state and native process evidence'),
     'seed-cancel':dict(required=['batch-id'],effect='request normal close of exact owned seed process; receipt is not exit proof'),
     'seed-report':dict(required=['batch-id'],effect='report actual seed XML metrics and frozen provenance; missing evidence remains unavailable'),
-    'seed-promote':dict(required=['batch-id','candidate','name'],defaults={'neighborhood':1},limits={'neighborhood':[0,5]},effect='write a fixed SET and a narrow validation SET for one verified seed candidate; local files only, create-only'),
+    'seed-promote':dict(required=['batch-id','candidate','name'],defaults={'neighborhood':1},limits={'neighborhood':[1,5]},effect='write a fixed SET and a narrow robustness SET (local stability check around the candidate; only the forward window is out-of-sample) for one verified seed candidate; local files only, create-only'),
     'prepare-batch':dict(required=['batch-id','plan'],effect='validate and freeze a full native Studio batch; no launch'),
     'batch-status':dict(required=['batch-id'],effect='reconcile whole native batch and report member progress'),
     'save-batch':dict(required=['batch-id','output'],effect='save native .goatbatch without overwriting'),

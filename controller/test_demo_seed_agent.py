@@ -238,13 +238,17 @@ class DemoSeedAgentTests(unittest.TestCase):
         self.assertTrue(guard_active_seed(self.root))                     # slot released after completion
         report = self.agent.seed_report('batch')
         self.assertEqual([row['status'] for row in report['members']], ['completed', 'completed'])
-        # A discovery becomes a validation SET through the same demo scope, with append-only evidence.
+        # A discovery becomes a robustness SET through the same demo scope, with append-only evidence.
         candidate = read_json(report['members'][0]['result_path'])['candidates'][0]['candidate_sha256']
         alias = report['members'][0]['alias']
         promoted = self.agent.seed_promote('batch', candidate, 'Demo Discovery One', member=alias)
-        self.assertTrue(Path(promoted['validation_set']['path']).is_file())
-        self.assertEqual(self.agent.seed_promote('batch', candidate, 'Demo Discovery One', member=alias), promoted)
-        self.assertEqual([a['operation'] for a in self.actions()].count('seed_promote'), 2)
+        self.assertEqual(promoted['status'], 'written')
+        self.assertTrue(Path(promoted['robustness_set']['path']).is_file())
+        repeat = self.agent.seed_promote('batch', candidate, 'Demo Discovery One', member=alias)
+        self.assertEqual(repeat, promoted | {'status': 'retained'})
+        logged = [a for a in self.actions() if a['operation'] == 'seed_promote']
+        self.assertEqual([a['phase'] for a in logged], ['written', 'retained'])
+        self.assertTrue(all(a['robustness_sha256'] == promoted['robustness_set']['sha256'] for a in logged))
 
     def test_duplicate_start_refused_and_restart_resumes_only_the_original_attempt(self):
         self.agent.seed_prepare('batch', self.plan)

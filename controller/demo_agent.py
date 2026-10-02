@@ -1192,13 +1192,14 @@ class DemoAgent:
             return result
 
     def seed_promote(self, batch_id, candidate, name, neighborhood=1, member=None):
-        """Freeze one verified seed candidate as SET files for validation; local files only, same scope as seed-report."""
+        """Freeze one verified seed candidate as fixed + robustness SETs; local files only, same scope as seed-report."""
         with self._seed_scope('seed-report', batch_id) as (controller, evidence):
             from studio_seed_promote import promote
             result = promote(controller, batch_id, candidate, name, neighborhood=neighborhood, member=member,
                              runner=self._seed_runner(controller))
-            self._append('seed_promote', 'written', batch_id=batch_id, candidate_sha256=candidate,
-                         validation_sha256=result['validation_set']['sha256'])
+            # `written` for a new promotion, `retained` when a repeat returns the existing receipt.
+            self._append('seed_promote', result['status'], batch_id=batch_id, candidate_sha256=candidate,
+                         robustness_sha256=result['robustness_set']['sha256'])
             return result
 
     def _stop_seed(self, seed):
@@ -1276,11 +1277,11 @@ def main(argv=None):
         seed_drive.add_argument('--max-seconds', type=int, default=60)
     for name in ('seed-status', 'seed-cancel', 'seed-report'):
         commands.add_parser(name).add_argument('--batch-id', required=True)
-    seed_promote = commands.add_parser('seed-promote', help='Freeze one seed candidate as fixed + validation SETs')
+    seed_promote = commands.add_parser('seed-promote', help='Freeze one seed candidate as fixed + robustness SETs')
     seed_promote.add_argument('--batch-id', required=True)
     seed_promote.add_argument('--candidate', required=True)
     seed_promote.add_argument('--name', required=True)
-    seed_promote.add_argument('--neighborhood', type=int, default=1)
+    seed_promote.add_argument('--neighborhood', type=int, default=1, help='Robustness ladder steps either side, 1..5 (default 1)')
     seed_promote.add_argument('--member')
     args = parser.parse_args(argv)
     try:

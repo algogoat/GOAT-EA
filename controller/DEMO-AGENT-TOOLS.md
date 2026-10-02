@@ -53,6 +53,13 @@ frame target, exact axis precision, duplicates, size limits) and writes nothing:
 no SET, startup INI or seed folder, and no terminal, process or broker access.
 Only the validation itself is appended to `actions.jsonl`.
 
+`seed-promote` (`--neighborhood` 1..5, default 1; add `--member <alias>` when
+the candidate appears in several members) writes `fixed.set` and
+`robustness.set` for one verified candidate under the same checks as
+`seed-report`, with no terminal effect, and appends `written`, or `retained`
+when a repeat returns the existing receipt. The robustness SET is a local
+stability check around the candidate; only the forward window is out-of-sample.
+
 `seed-prepare` and `seed-start` need the same fresh checks as batches: the
 terminal lock, a broker-reported demo account on the exact paired login and
 server, Algo Trading off, an idle tester, no open positions or orders on a

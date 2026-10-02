@@ -16,7 +16,7 @@ You are helping one person run GOAT on their own Windows PC: optimize GOAT strat
 2. Has their broker's MT5 with a **demo** account and has opened it once. GOAT's own research uses Darwinex demo accounts; any suitable demo broker is fine.
 3. Clicks **Copy setup instructions** (sign-in screen or Get started), or after a terminal is installed **Copy instructions for my agent**, and pastes it to you. It contains the real `goat.exe` path (inside the GOAT app folder at `resources\goat-suite\goat.exe`) and, for the second button, the receipt path.
 
-Later you will ask them, one thing at a time, to: sign in to the demo in MT5, turn Algo Trading off, close MT5, approve DLL imports and the WebRequest URL, read you the pairing code, click Approve, click GIVE TO AGENT, and say yes to your batch plan.
+Later you will ask them, one thing at a time, to: sign in to the demo in MT5, turn Algo Trading off, close MT5, approve DLL imports and the WebRequest URL, read you the connection code, click Approve, click GIVE TO AGENT, and say yes to your batch plan.
 
 ## Step 0: work folder and goat.ps1 (once)
 
@@ -91,7 +91,7 @@ Check it: `. "<work>\goat.ps1"; Desktop 'app.info'`. Long-running commands (`ser
 ## Steps 9-12: approvals, pairing, control
 
 9. Ask the user, in MT5: allow DLL imports in the GOAT EA's properties dialog; add `https://goatedge.ai` under Tools > Options > Expert Advisors > Allow WebRequest for listed URL; keep Algo Trading off.
-10. The EA shows "Enter pairing code: ...". Ask the user to read it to you, then `Desktop 'onboarding.preparePairing' @{userCode='<code>'}`. Ask them to check the account and build in GOAT desktop and click **Approve this connection**. You cannot approve it.
+10. The EA shows "Connection code: ..." (its link carries the code after `#ea-connect=`, so the portal fills it in). Ask the user to read it to you, then `Desktop 'onboarding.preparePairing' @{userCode='<code>'}`. Ask them to check the account and build in GOAT desktop and click **Approve this connection**. You cannot approve it.
 11. Start `serve` in the background: Claude Code: `. "<work>\goat.ps1"; & $goat studio --installation $receipt serve --watch-seconds 3600` with `run_in_background: true`. Others: `Start-Process -FilePath $goat -ArgumentList @('studio','--installation',"""$receipt""",'serve','--watch-seconds','3600') -WindowStyle Hidden`. It stops after at most 3600 s; restart it whenever the user needs to click in Studio.
 12. Ask the user to click **GIVE TO AGENT** in the Studio panel on the GOAT chart. Repeat `Studio @('onboarding-status')` until `result.status` is `local_monitor_ready` (otherwise do its `next_action`), and `Desktop 'onboarding.status' @{receiptPath=$receipt}` until `data.ready` is true. If a step reports `ACTIVATION_RELOAD_REQUIRED`, ask the user to change the chart timeframe once.
 
@@ -121,7 +121,7 @@ The controller enforces: 1 to 10,000 members; all 18 tester fields; `Optimizatio
 17. Check first: every `result.disks[].free_bytes` from `Studio @('resource-profile')` is at least 5 GiB; `onboarding-status` is `local_monitor_ready`; only the selected MT5 is running, plus the one peer you protected with `peer-apply` (see "Keep another MT5 running"), if any. Then start the **bounded driver once** with the agreed budget in seconds: `Start-Batch 'pilot-1' -MaxSeconds 14400`. It starts the batch, refuses when an output disk is below 5 GiB, cancels by itself when the budget runs out, and keeps a journal that survives restarts. `Studio @('batch-driver-status','--job-id','pilot-1')` shows its view.
     - Never call `start`, or `Start-Batch` with `-MaxSeconds`, again for a batch that started. If the driver process is gone (PC restart, closed shell), `Start-Batch 'pilot-1'` without `-MaxSeconds` resumes it against its original deadline.
     - If the driver reports `start_uncertain` with no `attempt_id`, the start was refused before anything reached MT5: fix the cause it names, then run the same `Start-Batch 'pilot-1' -MaxSeconds ...` again. The controller allows that retry only when nothing was dispatched.
-18. Run `Wait-Batch 'pilot-1'` in the background and tell the user the progress lines. `Studio @('research-status')` is the one read-only call for "what is this terminal doing": members done/total, qualifying members, the last member's result, minutes per member, ETA, driver health, disk headroom and the monitor's sign-in state with a plain reason and fix. To stop without losing work, **pause** (next section); `Studio @('cancel','--job-id','pilot-1')` is the raw stop and its request is not proof that MT5 stopped.
+18. Run `Wait-Batch 'pilot-1'` in the background and tell the user the progress lines. `Studio @('research-status')` is the one read-only call for "what is this terminal doing": members done/total, qualifying members, the last member's result, minutes per member, ETA, driver health, disk headroom and the monitor's sign-in state with a plain reason and fix. Members tested with no profitable settings are reported as `tested, no edge in <window>` (`members_no_edge`), never as failures; always tell the user the window. To stop without losing work, **pause** (next section); `Studio @('cancel','--job-id','pilot-1')` is the raw stop and its request is not proof that MT5 stopped.
 19. On `NATIVE QUEUE FINISHED`: `Studio @('finish','--job-id','pilot-1')`. If it refuses with a runtime or tester-idle error, wait a minute and repeat. `finish` is safe to repeat.
 
 ## Pause and resume (keep every finished member)
@@ -131,7 +131,7 @@ Pause is the supported way to stop research and continue it later. It never wast
 1. `Studio @('batch-pause','--job-id','pilot-1')` (demo lane: `& $goat demo --installation $receipt batch-pause --batch-id pilot-1`). It returns at once with `state: pausing` and a `plain` sentence; repeating it is safe and returns the same pause. The demo tool starts a bounded supervisor itself when no driver is running; the raw CLI accepts `--supervise-seconds N` to supervise in that call.
 2. GOAT sends one stop at the next **safe point**: right after the next member turns OnGoing (so the running member finishes and is kept), or when the tester is idle after MT5's between-member relaunch. `--immediate` skips the member wait (the monitor must still be reporting). Owner STOP, low disk or the driver deadline make it immediate by themselves.
 3. If MT5 does not take that stop in time (for example it was relaunching), GOAT waits for MT5's own `CANCEL_REJECTED` answer and then sends exactly **one** replacement at the next safe point. It never re-sends the same request and never sends a third.
-4. While it waits, `blocker` names what is in the way in one sentence with its fix, for example `This terminal's GOAT sign-in was replaced by another terminal — re-pair it.` Do the fix (the user approves the pairing code MT5 shows); the pause continues by itself.
+4. While it waits, `blocker` names what is in the way in one sentence with its fix, for example `This terminal's GOAT sign-in was replaced by another terminal — re-pair it.` Do the fix (the user approves the connection code MT5 shows); the pause continues by itself.
 5. When MT5 confirms, the driver finishes the batch, keeps every completed member's reports and exports, and records `state: paused` with `resume_token`, `members_completed` and `members_remaining`. Record the completed members (step 20) now.
 6. Resume: `& $goat demo --installation $receipt batch-resume --batch-id pilot-1` builds the remaining members from MT5's own per-member evidence as a successor batch (`pilot-1-r1`, then `-r2` ...), refreshes a protected peer whose process restarted (same reviewed executable and data folder only), prepares it and starts it under the bounded driver. Add `--clear-stop` to lift an owner STOP written by GOAT. The raw CLI `batch-resume` prepares the successor; start it with `run-batch` as in step 17. `research-status` shows the lineage `pilot-1 -> pilot-1-r1` so results stay together.
 
@@ -177,6 +177,20 @@ Seed farming runs fast in-sample searches with no forward window and no exports.
 
 Not in this beta: automatic recording of seed or batch results, automatic ordering of the next batch, a background seed driver. You do these steps. Details: [SEED-WORKFLOW.md](SEED-WORKFLOW.md).
 
+## Several MT5 terminals on one PC
+
+Terminals are independent. With the SM32 EA (V1.49 terminal isolation), every terminal and
+account keeps its own batch state in `Common\Files\GOAT\GOAT V1.49-<server>-<login>-<hash>`
+and its own GOAT sign-in in `GOAT\Credentials\api-bearer-v149-<login>.token`. A batch or seed
+on one terminal never reads or changes another terminal's queue, pointer, config or sign-in,
+even when both use the same EA, server and account. Do not copy these files between terminals.
+The first time the updated EA chart loads, it moves this terminal's shared pre-isolation files
+into its own folder and writes `terminal-isolation.ini`; a batch that another terminal ran is
+left where it is. Only one terminal can take the old shared state (a claim file decides), so load
+the updated EA on the terminal that ran it first; a copied terminal must come second. Older EA
+builds still share the old folder, so update every terminal on the PC before running batches on
+more than one. Details: [INVARIANTS.md](../docs/operations/INVARIANTS.md).
+
 ## Keep another MT5 running
 
 Only the selected MT5 and at most **one** reviewed peer may run during GOAT work. With that peer running and no batch active: `Studio @('peer-prepare','--terminal-executable','<its terminal64.exe>','--data-root','<its data folder>')`. Show the user the returned paths and PID. With their yes, within 10 minutes: `Studio @('peer-apply','--review-id','<review_id>','--confirm-reviewed')`. If the peer restarts, repeat the review.
@@ -202,7 +216,7 @@ Report the exact error text, the command and the IDs. Never delete state to get 
 | `Monitor and controller revision/generation/owner differ; run serve and recheck` / `Monitor has not loaded controller state` | Start `serve`, wait a minute, rerun `onboarding-status`. |
 | `Native queue is not finished; reconcile, do not reset` | Keep polling `batch-status`; run `finish` only after the native queue finishes. |
 | `stop_unconfirmed` from `stop` or a driver | MT5 never confirmed the stop. Run `batch-pause` for that batch: it adopts the outstanding stop, waits for MT5's answer and sends one replacement if needed. |
-| Pause `blocker` `monitor_unlicensed` (`... re-pair it.`) | The terminal's GOAT sign-in is gone. Ask the user to approve the pairing code on the GOAT chart; the pause continues by itself. |
+| Pause `blocker` `monitor_unlicensed` (`... re-pair it.`) | The terminal's GOAT sign-in is gone. Ask the user to approve the connection code on the GOAT chart; the pause continues by itself. |
 | `pause_failed` | Read `failure.message` and `failure.fix` to the user. Nothing was replayed; never delete the pause or cancel files. |
 | `Only pending job can start; reconcile existing attempt` | It already started. Never start again; poll `batch-status`. |
 | `Batch ID already belongs to different members/settings; ...` / `Unqueued preparation artifacts exist; ...` / `Prior batch request retained; ...` | Use a new batch ID. Keep the old files. |
@@ -211,5 +225,12 @@ Report the exact error text, the command and the IDs. Never delete state to get 
 | `Existing Studio activation requires reconciliation; ...` / `Installation changed since bootstrap; ...` | Stop. Do not re-bootstrap. Prepare a support report. |
 | `Desktop discovery unavailable. Start GOAT or select its data directory.` | Ask the user to open GOAT desktop. |
 | seed status `reconcile_required` | Stop. Do not start or cancel again; report it with `seed-status` output. |
+| `The GOAT EA running on this terminal predates terminal isolation. ...` | The chart still runs the old EA. Ask the user to remove and re-add the GOAT Studio chart (or restart MT5) so the installed EA loads, then retry. |
+| `The GOAT EA on this terminal uses batch folder ..., but this controller expects ...` | The terminal is signed in to a different account or folder than `bootstrap`. Ask the user to sign in to the bound demo account. |
+| `Another running MT5 terminal (...) resolves to this terminal's batch folder ...` | Two MT5 processes share this terminal's data folder. Ask the user to close the named one. |
+| `A running MT5 terminal (PID ...) cannot be matched to a data folder, ...` | GOAT cannot see which folder that MT5 uses (often another Windows user or an elevated MT5). Ask the user to close it, or start it normally as this user. |
+| `Batch state move stopped: the shared folder ... is claimed by another MT5 terminal ...` | Stop. Another terminal owns the old shared state; this terminal keeps its own folder. Report both folder listings to support. |
+| `Batch state was not moved: both the shared folder ... and this terminal's folder ... hold batch state. ...` | Stop. Never delete either folder. Report both folder listings to support; a human chooses which to keep. |
+| `Batch state was not moved: the shared folder ... still holds controls of an unfinished attempt from this controller. ...` | Run `status`/`finish` for that attempt first, then retry. |
 
 To report a product problem: `Desktop 'support.prepareReport' @{category='studio'; summary='...'; reproduction='...'; expected='...'; actual='...'; errorCodes=@()}`, show the user the returned preview, and only after their yes send it with `support.submitReport` (`reportId`, `previewSha256`, `reviewed=$true`).

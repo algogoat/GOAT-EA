@@ -22,7 +22,7 @@ void GoatStudioControlBegin(const string id,const string command)
 void GoatStudioControlResolve(const bool applied,const string error)
   {
    g_StudioControlOutcome=applied ? 2 : 3;
-   g_StudioControlError=error!="" ? error : "Controller refused the request";
+   g_StudioControlError=error!="" ? error : "the GOAT app refused the request";
   }
 
 void GoatStudioControlFailure(const string error)
@@ -35,12 +35,14 @@ string GoatStudioControlText(const string owner)
   {
    if(g_StudioControlOutcome==1)
      {
-      if(GetTickCount64()-g_StudioControlSince>=30000)
-         return "Still waiting for controller; request retained";
+      // The request stays retained either way; say what the human can check.
+      ulong waited=GetTickCount64()-g_StudioControlSince;
+      if(waited>=120000) return "Open the GOAT app on this PC to finish this request";
+      if(waited>=30000) return "Still waiting. Is the GOAT app open on this PC?";
       return g_StudioControlCommand=="control.grant_agent"
          ? "Connecting agent... waiting for confirmation" : "Taking control... waiting for confirmation";
      }
-   if(g_StudioControlOutcome==3) return "Request not applied: "+g_StudioControlError;
+   if(g_StudioControlOutcome==3) return "Not applied: "+g_StudioControlError;
    if(g_StudioControlOutcome==2)
      {
       // A newer committed snapshot can supersede the acknowledged handover.

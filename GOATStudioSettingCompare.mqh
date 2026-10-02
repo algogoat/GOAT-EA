@@ -12,10 +12,31 @@ string GoatStudioTesterType(const string key)
    return "";
   }
 
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+bool GoatStudioRunNonceValue(const string value)
+  {
+   // Internal per-run fitness key (INV-BATCH-01): a non-negative integer, never an
+   // optimized axis. OnTesterInit replaces it for every run; no strategy reads it.
+   string parts[];StringSplit(value,'|',parts);
+   int count=ArraySize(parts);
+   if(count!=1 && !(count==9 && parts[1]=="" && parts[3]=="" && parts[5]=="" && parts[7]=="" && parts[8]=="N")) return false;
+   for(int p=0;p<(count==1 ? 1 : 7);p+=2)
+     {
+      if(StringLen(parts[p])<1 || StringLen(parts[p])>19) return false;
+      for(int i=0;i<StringLen(parts[p]);i++)
+        {ushort c=StringGetCharacter(parts[p],i);if(c<'0' || c>'9') return false;}
+     }
+   return true;
+  }
+#endif
+
 bool GoatStudioFixedInternal(const string identity,const string value)
   {
    // These are research defaults, not arbitrary tolerated native additions.
    if(identity=="[Tester]|ProfitInPips") return GoatStudioSettingValueEqual("0",value,"int");
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+   if(identity=="[TesterInputs]|GOAT_FitnessRunNonce") return GoatStudioRunNonceValue(value);
+#endif
    if(StringFind("|Sequence_Export_Enabled|Dashboard_Resume_Saved|Studio_ReadOnlyMonitor|","|"+StringSubstr(identity,15)+"|")>=0
       && StringSubstr(identity,0,15)=="[TesterInputs]|") return value=="false" || value=="0";
    if(identity=="[TesterInputs]|Sequence_Export_Id" || identity=="[TesterInputs]|Studio_MonitorRunPath") return value=="";

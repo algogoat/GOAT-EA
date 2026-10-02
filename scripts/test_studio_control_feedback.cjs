@@ -24,6 +24,10 @@ now = 31000;
 c.GoatStudioControlBegin('grant1', 'control.grant_agent');
 assert.match(text('human'), /^Still waiting/); // Timer retained across recovery/refresh.
 c.GoatStudioControlFailure('duplicate click');
+now = 121000;
+assert.match(text('human'), /^Open the GOAT app on this PC/); // After 2 min, name the one thing to check.
+assert.ok(text('human').length <= 60);
+now = 31000;
 assert.match(text('human'), /^Still waiting/); // Never erase or reissue a pending request.
 c.GoatStudioControlResolve(true, '');
 assert.equal(text('agent'), 'Confirmed: agent controls settings');
@@ -42,11 +46,11 @@ c.GoatStudioControlResolve(true, '');
 assert.equal(text('human'), 'Confirmed: you control settings');
 c.GoatStudioControlBegin('save-after-take', 'draft.replace_configuration');
 assert.equal(text('human'), '', 'later save clears confirmed takeover status');
-c.GoatStudioControlFailure('Save or load saved settings first');
-assert.match(text('human'), /Save or load saved settings first/);
+c.GoatStudioControlFailure('save or discard your edits first');
+assert.equal(text('human'), 'Not applied: save or discard your edits first');
 c.GoatStudioControlBegin('grant2', 'control.grant_agent');
 c.GoatStudioControlResolve(false, '');
-assert.match(text('human'), /Controller refused/);
+assert.match(text('human'), /the GOAT app refused/);
 c.GoatStudioControlBegin('save1', 'draft.replace_configuration');
 assert.equal(text('human'), '', 'later save owns status instead of stale control refusal');
 // Integration order: only a bound receipt and visible committed snapshot resolve it.
@@ -60,7 +64,7 @@ assert.ok(ui.indexOf('g_StudioBridge.SubmitHuman(', submit) < ui.indexOf('GoatSt
 const controls = ui.slice(ui.indexOf('void CStrategyTesterDialog::ManagedControls('), ui.indexOf('void CStrategyTesterDialog::ManagedSelectStrategy('));
 assert.ok(controls.indexOf('m_btnStop.Text("CONNECTING...")') > controls.indexOf('// Keep handoff visible'));
 assert.match(controls, /m_btnStart.Disable\(\); m_btnStop.Disable\(\);/);
-assert.match(controls, /GIVE CONTROL BACK TO THE AGENT/);
+assert.match(controls, /GIVE BACK TO AGENT/);
 for (const method of ['ManagedTakeover', 'ManagedGrant']) {
  const begin = ui.indexOf(`void CStrategyTesterDialog::${method}(`);
  const end = ui.indexOf('\nvoid ', begin + 1);
@@ -71,4 +75,5 @@ for (const method of ['ManagedTakeover', 'ManagedGrant']) {
 const takeover = ui.slice(ui.indexOf('void CStrategyTesterDialog::ManagedTakeover('), ui.indexOf('void CStrategyTesterDialog::ManagedGrant('));
 assert.ok(takeover.indexOf('MessageBox(') > 0 && takeover.indexOf('if(confirmation!=IDYES)') < takeover.indexOf('GoatStudioUISubmit("control.takeover"'));
 assert.doesNotMatch(native, /SubmitHuman|FileOpen|GlobalVariableSet|ClickStart|StartProcess/);
-console.log('Control feedback: 28 assertions passed; native visual qualification pending');
+for (const line of [...native.matchAll(/return "([^"]+)"/g)].map(m => m[1])) assert.ok(line.length <= 60, line); // MT5 cuts edits at 63
+console.log('Control feedback: 31 assertions passed; native visual qualification pending');

@@ -61,7 +61,12 @@ string GoatStudioCancelRequest(const string body)
          && GOATJsonGetString(snapshot,s,i,"status",status)
          && (status=="starting" || status=="running" || status=="verifying" || status=="reconcile_required")) matched=true;
      }
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+   // login and server were verified against this terminal's account above.
+   string base=GoatOptBasePath("GOAT V"+GOAT_VERSION_LABEL,server);
+#else
    string base="GOAT\\GOAT V"+GOAT_VERSION_LABEL+"-"+server;
+#endif
    if(!matched || !GoatStudioCommonDigest(base+"\\agent-native-control-owner.json",owner_hash)
       || !GoatStudioCommonDigest(base+"\\active_optimization_run.ini",pointer_hash)) return "CANCEL_NATIVE_OWNER_CHANGED";
    // Pointer identity was frozen by the controller while holding this gate.
@@ -172,7 +177,12 @@ string GoatStudioExecuteRequest(const string body,const string request_hash)
      }
    if(action=="start" && has_restart) return "RESTART_ROUTE_SELECTED";
    if(action=="arm_restart" && !restart_matched) return "RESTART_INTENT_REJECTED";
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+   // login and server were verified against this terminal's account above.
+   string base=GoatOptBasePath("GOAT V"+GOAT_VERSION_LABEL,server);
+#else
    string base="GOAT\\GOAT V"+GOAT_VERSION_LABEL+"-"+server;
+#endif
    string paths[]={native_run+"\\queue.GOAT",native_run+"\\inputs\\"+alias+"\\Inputs.GOAT",
                    base+"\\active_optimization_run.ini",base+"\\active_optimization_config.ini",
                    base+"\\active_optimization_launch.ini",base+"\\agent-native-control-owner.json"};

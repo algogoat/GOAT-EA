@@ -16,6 +16,7 @@ from studio_batch import prepare_batch
 from studio_launch_intent import record_intent
 from studio_rejected_monitor import proof,restart,resume
 from native_control_transaction import begin,NAMES
+from studio_terminal_isolation import controller_base
 import test_studio_research_authority as fixtures
 
 
@@ -42,7 +43,7 @@ class RejectedMonitorTests(unittest.TestCase):
         for member in self.manifest['jobs']:
             (self.common/'inputs'/member['run_alias']/'config.ini').write_bytes((self.package/(member['run_alias']+'.ini')).read_bytes())
         self.evidence=self.c.root/'attempts'/self.attempt;self.evidence.parent.mkdir(exist_ok=True)
-        self.base=Path(self.c.install['common_files_root'])/'GOAT'/('GOAT V'+self.c.install['ea_version']+'-'+self.c.session['account']['server'])
+        self.base=controller_base(self.c)
         self.base.mkdir(parents=True,exist_ok=True)
         begin(self.base,self.evidence,dict(zip(NAMES,[('[ActiveOptimizationRun]\r\nRunPath='+self.manifest['native_run_relative']+'\r\n').encode('utf-16'),b'config',b'guard'])),{n:None for n in NAMES},self.attempt)
         write_json(self.evidence/'activation.json',dict(stage='CONTROLS_INSTALLED_NOT_ARMED',attempt_id=self.attempt))

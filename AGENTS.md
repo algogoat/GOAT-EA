@@ -46,6 +46,8 @@ Work on GOAT-EA like a surgical MQL5 engineer.
 
 ## Agent-native product programme
 
+- [docs/operations/INVARIANTS.md](docs/operations/INVARIANTS.md) lists the operating invariants (INV-BATCH-01 per-terminal batch state, INV-CRED-01 per-login credential). Keep their tests passing when touching an enforcement point.
+
 - Start terminal/portfolio operations with [the controller-first operating guide](docs/operations/AGENT-START-HERE.md). It maps supported tools, readiness stages and current bootstrap gaps. Use APIs and native controllers for setup; screen use is for visual verification.
 
 - For operating the current research/portfolio stack, start with [the agent operating pack](docs/experiments/AI-EXPOSURE-PILOT/AGENT-OPERATING-PACK.md). It maps supported tools, current host paths, evidence, recovery and incomplete orchestration. Do not treat a prepared campaign as running or reuse historical launch IDs.

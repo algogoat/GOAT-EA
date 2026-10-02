@@ -26,7 +26,9 @@ from studio_seed_slot import guard_active_seed
 from studio_onboarding import verify_monitor_profile, saved_launch_policy
 
 
-def corrected_draft(draft, *, terminal_id, run_id, ea_version, server, native_run):
+def corrected_draft(draft, *, terminal_id, run_id, ea_version, server, native_run, base_names=None):
+    """base_names: generated-root folder names the retained baseline may use
+    (this terminal's isolated folder, and the shared pre-isolation one)."""
     required = {'schema_version', 'terminal_id', 'run_id', 'revision', 'generation',
                 'tester_ini', 'export_ini', 'baseline', 'submitted'}
     if (not isinstance(draft, dict) or set(draft) != required
@@ -57,7 +59,12 @@ def corrected_draft(draft, *, terminal_id, run_id, ea_version, server, native_ru
             raise ValueError('Generated report path is not canonical')
         reports.append((match, value, parts))
     old, new = reports
-    legacy = ('MQL5', 'Files', 'GOAT', 'GOAT V' + ea_version + '-' + server)
+    from studio_terminal_isolation import legacy_base_name
+    shared = legacy_base_name(ea_version, server)
+    names = tuple(base_names) if base_names else (shared,)
+    if any(not n.startswith(shared) for n in names):
+        raise ValueError('Exact generated report namespace required')
+    legacy = next((('MQL5', 'Files', 'GOAT', n) for n in names if old[2][:4] == ('MQL5', 'Files', 'GOAT', n)), ('MQL5', 'Files', 'GOAT', names[0]))
     scoped = ('MQL5', 'Files', *PureWindowsPath(native_run).parts, 'reports')
     if old[2][:len(legacy)] != legacy or new[2][:len(scoped)] != scoped or old[2][len(legacy):] != new[2][len(scoped):]:
         raise ValueError('Only the bound legacy-to-scoped generated root may change')
@@ -67,6 +74,12 @@ def corrected_draft(draft, *, terminal_id, run_id, ea_version, server, native_ru
     result = copy.deepcopy(draft)
     result['baseline'] = current
     return result
+
+
+def _report_base_names(c):
+    """This terminal's isolated folder first, then the shared pre-isolation one."""
+    from studio_terminal_isolation import controller_base_name, legacy_base_name
+    return (controller_base_name(c), legacy_base_name(c.install['ea_version'], c.session['account']['server']))
 
 
 def permission_bytes(chart, common):
@@ -182,7 +195,8 @@ def recover(c, job_id, *, process=None, clock=time, revoked_maintenance=False):
                 raise ValueError('Only the proven retained generated-report revision mismatch is recoverable')
             manifest = read_json(c.root/'packages'/job_id/'manifest.json')
             after = corrected_draft(draft, terminal_id=c.terminal, run_id=c.run, ea_version=c.install['ea_version'],
-                                    server=c.session['account']['server'], native_run=manifest['native_run_relative'])
+                                    server=c.session['account']['server'], native_run=manifest['native_run_relative'],
+                                    base_names=_report_base_names(c))
             prior_profile=read_json(original_path.parent/'human-reopen.json')
             chart, common, chart_raw, common_raw, flags = _profile(c,expected_chart_sha256=prior_profile['chart_sha256'])
             preset = safe_path(Path(c.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set')
@@ -221,7 +235,8 @@ def recover(c, job_id, *, process=None, clock=time, revoked_maintenance=False):
         old = read_json(folder/'restart-before.json')
         manifest=read_json(c.root/'packages'/job_id/'manifest.json')
         recalculated=corrected_draft(read_json(folder/'draft-before.json'),terminal_id=c.terminal,run_id=c.run,
-                                    ea_version=c.install['ea_version'],server=c.session['account']['server'],native_run=manifest['native_run_relative'])
+                                    ea_version=c.install['ea_version'],server=c.session['account']['server'],native_run=manifest['native_run_relative'],
+                                    base_names=_report_base_names(c))
         if recalculated!=read_json(folder/'draft-after.json') or old['phase']!='stopped' or old['authority_sha256']!=sha(scope):
             raise ValueError('Retained baseline repair no longer matches the original proof')
         if permission_bytes((folder/'chart-before.chr').read_bytes(),(folder/'common-before.ini').read_bytes())!=record['permission_bytes']:

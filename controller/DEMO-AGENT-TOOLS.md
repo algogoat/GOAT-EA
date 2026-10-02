@@ -96,6 +96,73 @@ the running member finishes and is kept, no new member starts and pending member
 stay pending (never cancelled). `seed-resume` honours the pause; `batch-resume`
 releases it (the marker is retained as `pause-released-<ms>.json`) and continues.
 
+## Gate calibration: qualification gates from our own evidence
+
+The export gates (`MinScore 60`, `MinSR 2.5`, `MinARF 0.2`, `SetsToExport 2`,
+`TargetDD 100`) and the EA back-row filter (in-sample profit > 0.001, >= 50
+trades) were fixed by hand. `gate-recommend` replaces "fixed" with "chosen per run
+from what our past exports actually did". It is read only: it opens the export
+folders under Common Files for reading and writes nothing except `--output`. It
+needs no terminal, lock, session or broker; `--installation` is accepted as for
+every command and not read.
+
+```powershell
+& $py $tool --installation $install gate-recommend --target forward --min-survival 0.8
+& $py $tool --installation $install gate-recommend --target post --min-survival 0.75 --runs 'Rad870a22d237,Re7e282f93d41' --output 'C:/gates/rec.json'
+& $py $tool --installation $install gate-recommend --target held_up --verdicts 'C:/catchup/verdicts' --output 'C:/gates/held.json'
+& $py $tool --installation $install gate-stamp --plan 'C:/plan.json' --recommendation 'C:/gates/rec.json' --output 'C:/plan-gated.json'
+```
+
+How it decides (`studio_gate_calibration.py`, schema `goat-gate-calibration-v1`):
+
+- Every finished sequence capture in `<run>/deploy` and `<run>/exports` is split by
+  server date into back OOS `[BackOOSDate, FromDate)`, in-sample `[FromDate,
+  ForwardDate)`, forward `[ForwardDate, ToDate)` and post `[ToDate, end of the
+  export run]`, from `deals.csv` (trades, PF) and the exported equity CSV (net,
+  drawdown, recovery, daily Sharpe, monthly ARF-style ratio). The optimizer's own
+  in-sample columns and Score come from the member's `UniqueRows` XML. A capture
+  that hit its row limit keeps its equity numbers; its trades and PF after the cut
+  are unknown, never partial. Identical sets found in two runs count once.
+- Survival = the set made money in the target window: `forward`, `post`, or
+  `held_up` (catch-up verdicts, `goat-catchup-verdict-v1`, matched by the SET's
+  SHA-256; `not_comparable` and `too_few_trades` are not judged).
+- Leakage rule: a predictor may only use data the target window could not have
+  influenced. Forward: in-sample, back OOS and the optimizer's in-sample columns;
+  never the forward window, the Score (built from in-sample and forward results)
+  or the file-name metrics (measured over the whole export run). Post also allows
+  forward and Score; held_up also allows the file-name metrics. `MinScore` can
+  therefore only move for post/held_up and `MinSR`/`MinARF` only for held_up;
+  every other gate is a portfolio qualification gate.
+- For each allowed metric and threshold: kept sets, kept members, yield, raw and
+  monotone (isotonic) survival, and a 95% Wilson interval whose sample size is the
+  number of distinct members (a member's sets are near copies). A gate qualifies
+  when it keeps `--min-sets` sets from `--min-members` members, its interval lower
+  bound reaches `--min-survival` (`--confidence point` uses the estimate instead),
+  a plan field stays at or above its floor, and the metric shows a clear overall
+  signal (member-bootstrap AUC range above 0.5). The loosest qualifying gate (most
+  sets kept) wins. Symbol classes and run designs are also calibrated alone and
+  get their own gate only when they clear the same bar.
+- Status: `calibrated`, `defaults_already_meet_target`,
+  `fallback_no_qualifying_gate` or `fallback_thin_evidence`. Every fallback keeps
+  today's values and says why in `summary`. Tails that would pass but whose metric
+  has no clear overall signal are listed under `watchlist`, never chosen.
+- `evidence_digest` is a SHA-256 over the judged sets, outcomes and features, so
+  the same evidence gives the same digest in any order.
+
+`gate-stamp` writes a NEW plan (never the source, never an existing file) whose
+`export` fields carry the recommended values, validated by the same
+`validate_export` as preparation, plus `<plan>.gates.json` holding
+`gates={values, method, evidence_digest, generated_at, plan_sha256,
+source_plan_sha256}`. The stamp is a sidecar because `prepare-batch` accepts only
+`schema_version`, `export` and `members`; the plan itself stays a normal plan.
+Pass `--generated-at` for a byte-identical repeat. `apply_qualify` checks one
+exported set against the stamped qualification gates (a missing number fails).
+
+`scripts/gate_calibration_report.py --out-dir <new folder>` writes the full
+evidence report (`report.md`, `report.json`) for several targets;
+`scripts/test_gate_calibration_mutations.py` checks that the guards above are
+each covered by a failing test.
+
 ## Seed Farming on the demo lane
 
 On a `demo_direct` installation the raw `goat.exe studio seed-*` mutations

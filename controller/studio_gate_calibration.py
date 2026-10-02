@@ -713,6 +713,17 @@ def recommend(records, *, target='forward', verdicts=None, min_survival=0.6, min
             best = max(passing, key=lambda p: (p['kept_sets'], p['interval'][0], -p['threshold']))
             choices.append((name, best))
     choices.sort(key=lambda item: (-item[1]['kept_sets'], -item[1]['interval'][0], item[0]))
+    # Only when no gate reaches the target: tails that would pass (and beat the baseline)
+    # but whose feature shows no clear overall signal. With many features and thresholds
+    # scanned these can be chance, so they are shown and never chosen.
+    watchlist = []
+    for name, info in sorted(result['features'].items()):
+        passing = [point for point in info['curve'] if point['qualifies'] and point['interval'][0] > baseline['interval'][0]]
+        if info['direction'] == 'no_clear_signal' and passing:
+            best = max(passing, key=lambda p: (p['kept_sets'], p['interval'][0]))
+            watchlist.append(dict(feature=name, threshold=best['threshold'], kept_sets=best['kept_sets'],
+                                  kept_members=best['kept_members'], survival=best['survival'],
+                                  interval=best['interval'], auc=info['auc'], auc_interval=info['auc_interval']))
     reasons, chosen = [], None
     if baseline['sets'] < min_sets or baseline['members'] < min_members:
         status = 'fallback_thin_evidence'
@@ -729,6 +740,8 @@ def recommend(records, *, target='forward', verdicts=None, min_survival=0.6, min
     else:
         status = 'calibrated'
         chosen = choices[0]
+    if status != 'fallback_no_qualifying_gate':
+        watchlist = []
     export = dict(current)
     qualify = dict(DEFAULT_QUALIFY)
     if chosen:
@@ -751,8 +764,10 @@ def recommend(records, *, target='forward', verdicts=None, min_survival=0.6, min
             members = len({r['member'] for r, _ in kept})
             hits = sum(1 for _, hit in kept if hit)
             low, high = wilson(hits / len(kept) * members, members) if kept else (0.0, 1.0)
-            cross_run[run] = dict(sets=len(rows), kept=len(kept), survival=round(hits / len(kept), 4) if kept else None,
-                                  interval=[round(low, 4), round(high, 4)])
+            cross_run[run] = dict(sets=len(rows), kept=len(kept), kept_members=members,
+                                  survival=round(hits / len(kept), 4) if kept else None,
+                                  interval=[round(low, 4), round(high, 4)],
+                                  checkable=members >= min_members)
     splits = {key: _split_table(labelled, key) for key in ('symbol_class', 'family', 'timeframe', 'design', 'run')}
     by_split = {}
     for key in split_keys or ():
@@ -776,13 +791,23 @@ def recommend(records, *, target='forward', verdicts=None, min_survival=0.6, min
     alternatives = [dict(feature=name, threshold=point['threshold'], kept_sets=point['kept_sets'],
                          survival=point['survival'], interval=point['interval']) for name, point in choices[1:6]]
     return dict(schema=SCHEMA, status=status, target=target, settings=result['settings'], baseline=baseline,
-                gate=gate, alternatives=alternatives, reasons=reasons,
+                gate=gate, alternatives=alternatives, watchlist=watchlist, reasons=reasons,
                 values=dict(export=export, qualify=qualify, qualify_by_split=split_qualify),
                 current=dict(export=current, qualify=dict(DEFAULT_QUALIFY)),
                 features=result['features'], splits=splits, by_split=by_split, cross_run=cross_run, evidence_digest=digest,
                 leakage_rule={name: list(FEATURES[name][2]) for name in FEATURES},
                 summary=summarize(status, target, baseline, gate, reasons, min_survival, splits, cross_run, result['features'])
-                + _split_sentence(by_split))
+                + _split_sentence(by_split) + _watch_sentence(watchlist))
+
+
+def _watch_sentence(watchlist):
+    if not watchlist:
+        return ''
+    best = max(watchlist, key=lambda w: (w['interval'][0], w['kept_sets']))
+    return (' Closest miss (not recommended, could be chance because %s shows no clear signal overall, AUC %s): '
+            '%s >= %s kept %d sets with %.0f%% surviving (95%% range %.0f-%.0f%%); recheck it on the next run.'
+            % (best['feature'], best['auc'], best['feature'], best['threshold'], best['kept_sets'],
+               100 * best['survival'], 100 * best['interval'][0], 100 * best['interval'][1]))
 
 
 def _split_sentence(by_split):
@@ -817,9 +842,14 @@ def summarize(status, target, baseline, gate, reasons, min_survival, splits, cro
             lines.append('This sets the plan field %s.' % gate['plan_field'])
         else:
             lines.append('It is a portfolio qualification gate; the export plan fields stay at their current values.')
-        weak = [run for run, info in cross_run.items() if info['survival'] is not None and info['interval'][0] < min_survival]
+        checked = {run: info for run, info in cross_run.items() if info['checkable'] and info['survival'] is not None}
+        weak = ['%s (%.0f%%)' % (run, 100 * info['survival']) for run, info in sorted(checked.items())
+                if info['survival'] < min_survival]
         if weak:
-            lines.append('Per run, the lower bound stays under target for: %s. Treat it as a pooled result.' % ', '.join(weak))
+            lines.append('Run by run it misses the target in: %s, so treat it as a pooled result.' % ', '.join(weak))
+        elif checked:
+            lines.append('Run by run it holds in every run large enough to check (%s).'
+                         % ', '.join('%s %.0f%%' % (run, 100 * info['survival']) for run, info in sorted(checked.items())))
     else:
         lines.append('Keeping the current gates. ' + ' '.join(reasons))
     inverse = sorted(name for name, info in features.items() if info['direction'] == 'higher_is_worse')

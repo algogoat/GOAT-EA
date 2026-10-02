@@ -49,6 +49,9 @@ MUTATIONS = [
     ('plan field qualifies below its floor',
      "                and (plan_field is None or point['threshold'] >= EXPORT_FLOORS[plan_field]))",
      "                and True)"),
+    ('a tail with no overall signal is chosen',
+     "        if info['direction'] != 'higher_is_better':\n            continue\n        passing = [point for point in info['curve'] if point['qualifies']]\n",
+     "        passing = [point for point in info['curve'] if point['qualifies']]\n"),
     ('partial capture counts trades it never saw',
      "    covered = deals_until is None or deals_until >= hi\n", "    covered = True\n"),
 ]

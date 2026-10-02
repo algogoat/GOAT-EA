@@ -346,6 +346,20 @@ class FallbackTests(unittest.TestCase):
         self.assertIn(result['status'], ('fallback_no_qualifying_gate',))
         self.assertEqual(result['values']['export'], gates.DEFAULT_EXPORT)
 
+    def test_a_tail_without_overall_signal_is_watched_not_chosen(self):
+        rows = []
+        for member in range(80):  # low and high is_sr survive, the middle fails: AUC ~0.5
+            survived = member < 20 or member >= 60
+            for index in range(2):
+                rows.append(record('M%03d' % member, index=index, is_sr=member / 20, survived=survived))
+        result = gates.recommend(rows, target='forward', min_survival=0.75)
+        self.assertEqual(result['features']['is_sr']['direction'], 'no_clear_signal')
+        self.assertEqual(result['status'], 'fallback_no_qualifying_gate')
+        self.assertIsNone(result['gate'])
+        self.assertIn('is_sr', [w['feature'] for w in result['watchlist']])
+        self.assertIn('Closest miss (not recommended', result['summary'])
+        self.assertEqual(result['values']['qualify'], gates.DEFAULT_QUALIFY)
+
     def test_defaults_already_meet_target(self):
         rows = [record('M%03d' % m, index=i, survived=True, is_sr=m / 10) for m in range(40) for i in range(2)]
         self.assertEqual(gates.recommend(rows, min_survival=0.6)['status'], 'defaults_already_meet_target')

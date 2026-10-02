@@ -12,9 +12,9 @@ MT5 terminal and account on one PC runs its batch state and its GOAT sign-in ind
 - The Studio observation reports `state_base`, which the controller must match before native work.
 
 Its `GOAT_BUILD_ID` is `V1.49-TERMINAL-ISOLATION-32`, with marker `SM32`. `identity.json` binds the
-exact forward source. **The compile is pending:** there is no `GOAT V1.49.ex5` or `compile-receipt.json`
-here yet. After the reviewed head is compiled, add the binary and the sanitized receipt, set
-`identity.json` `binary` and `compile`, and keep the candidate test in step.
+exact forward source. **Compiled** from the approved head `3585e84` with MetaEditor 5.0.0.6230 (0 errors,
+0 warnings): `GOAT V1.49.ex5` sha256 `96ce46e6…` (2,364,188 bytes) with its sanitized `compile-receipt.json`.
+Native qualification has NOT been performed.
 
 **Rollout conditions (mandatory):**
 - **Banker loads SM32 first.** The terminal that ran the shared batch takes the shared folder's claim and

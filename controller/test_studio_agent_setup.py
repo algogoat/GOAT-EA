@@ -266,6 +266,35 @@ class AgentSetupTests(unittest.TestCase):
         self.assertEqual(mailbox.setup_request(self.c, self.ident, 'status', timeout=1)['result'], 'receipt_timeout')
         self.assertTrue((root / ('d' * 32 + '.expired.request.json')).exists())
 
+    def test_a_request_the_ea_is_still_reading_is_retired_once_the_share_frees(self):
+        # The EA (or any reader) can hold request.json open for a moment, and Windows then
+        # denies the rename with a sharing violation. Only that is retried, and only briefly.
+        mailbox.setup_register(self.c, self.ident)
+        root = mailbox.setup_root(self.c)
+        mailbox.atomic(root / 'request.json', dict(schema=1, id='e' * 32, account=123456, server='Customer-Demo', directory=self.ident['directory'],
+                                                   buildId=BUILD, expiresAtUtc=int(time.time()) - 60, action='shutdown'))
+        real_rename, denials = Path.rename, []
+        def busy_rename(path, target):
+            if path.name == 'request.json' and len(denials) < 3:
+                denials.append(str(path))
+                raise PermissionError(13, 'The process cannot access the file because it is being used by another process', str(path), 32)
+            return real_rename(path, target)
+        with patch.object(Path, 'rename', busy_rename):
+            self.assertEqual(mailbox.setup_request(self.c, self.ident, 'status', timeout=1)['result'], 'receipt_timeout')
+        self.assertEqual(len(denials), 3)
+        self.assertTrue((root / ('e' * 32 + '.expired.request.json')).exists())
+        calls = []
+        def shared():
+            calls.append('shared'); raise PermissionError(13, 'busy', 'request.json', 32)
+        with self.assertRaises(PermissionError):
+            mailbox.sharing_retry(shared, attempts=3, sleep=lambda seconds: None)
+        self.assertEqual(calls.count('shared'), 3, 'the retry is bounded')
+        def denied():
+            calls.append('denied'); raise PermissionError(13, 'Access is denied', 'request.json', 5)
+        with self.assertRaises(PermissionError):
+            mailbox.sharing_retry(denied, sleep=lambda seconds: None)
+        self.assertEqual(calls.count('denied'), 1, 'only a sharing violation is retried')
+
     # ---------------------------------------------------------- close-terminal
 
     def test_close_uses_ea_inert_shutdown_and_is_never_repeated(self):

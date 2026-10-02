@@ -26,7 +26,7 @@ import re
 import subprocess
 import time
 
-from studio_agent_mailbox import identity, portfolio_register, portfolio_request, portfolio_root, read_bounded
+from studio_agent_mailbox import identity, portfolio_register, portfolio_request, portfolio_root, read_bounded, sharing_retry
 from studio_agent_setup import PROTECTED_ACCOUNTS, broker_proof, close_terminal, demo_terminal_lock, require_unprotected
 from studio_bridge import write_json
 from studio_installation import read_json
@@ -488,7 +488,7 @@ def stop(controller, attempt_id, *, mt5=None, process=None, close=None):
         for source in (where['state'], where['profile'], mailbox_root / 'request.json', mailbox_root / 'registration.json'):
             if source.exists():
                 target = source.with_name(source.name + '.stopped-' + stamp)
-                source.rename(target); archived.append(str(target))
+                sharing_retry(lambda: source.rename(target)); archived.append(str(target))
     journal.update(phase='stopped', stopped_utc=datetime.now(timezone.utc).isoformat(), archived=archived)
     write_json(where['journal'], journal)
     return public(journal) | dict(status='stopped', terminal='stopped', trading_changed=False, positions_closed=False,

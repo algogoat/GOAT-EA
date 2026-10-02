@@ -33,16 +33,19 @@ def unique_object(pairs):
     return result
 
 
-def sharing_retry(operation):
-    # A native atomic move or terminal exit can briefly deny a Windows share.
-    # Retry only that condition, never by issuing another native request.
-    for attempt in range(5):
+SHARING_RETRY_ATTEMPTS = 40  # About one second in total: an EA read of a small mailbox file is far shorter.
+
+
+def sharing_retry(operation, *, attempts=SHARING_RETRY_ATTEMPTS, sleep=time.sleep):
+    # A native atomic move, an EA reading the same file, or a terminal exit can briefly
+    # deny a Windows share. Retry only that condition, never by issuing another native request.
+    for attempt in range(attempts):
         try:
             return operation()
         except OSError as error:
-            if getattr(error, 'winerror', None) not in (32, 33) or attempt == 4:
+            if getattr(error, 'winerror', None) not in (32, 33) or attempt == attempts - 1:
                 raise
-            time.sleep(0.025)
+            sleep(0.025)
 
 
 def read_bounded(path, limit=16384):
@@ -209,7 +212,7 @@ def _retire_retained(root, ident, *, now):
     archived = root / (previous + ('.request.json' if receipt.exists() else '.expired.request.json'))
     if archived.exists():
         raise ValueError('Setup request archive already exists; inspect retained state')
-    pending.rename(archived)
+    sharing_retry(lambda: pending.rename(archived))
 
 
 def setup_request(controller, ident, action, *, timeout=30, clock=time.monotonic, sleep=time.sleep):
@@ -422,9 +425,9 @@ def portfolio_request(controller, ident, action, *, timeout=60, clock=time.monot
                 portfolio_receipt(retained, previous, ident, registration['members'])
                 if retained['result'] == 'started':
                     raise ValueError('An unresolved dashboard mutation is retained; inspect deploy-status before continuing')
-                pending.rename(root / (previous['id'] + '.request.json'))
+                sharing_retry(lambda: pending.rename(root / (previous['id'] + '.request.json')))
             elif previous['expiresAtUtc'] + 5 < time.time():
-                pending.rename(root / (previous['id'] + '.expired.request.json'))
+                sharing_retry(lambda: pending.rename(root / (previous['id'] + '.expired.request.json')))
             else:
                 raise ValueError('An unanswered portfolio request is still live; wait for it to expire')
         envelope = dict(schema=1, id=uuid.uuid4().hex, action=action, registrationSha256=digest,

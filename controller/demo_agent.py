@@ -1416,7 +1416,8 @@ def _gate_command(args):
         runs = [run.strip() for run in args.runs.split(',') if run.strip()] if args.runs else None
         result = gates.gate_recommend(common_root=args.common_root, runs=runs, target=args.target,
                                       min_survival=args.min_survival, min_sets=args.min_sets,
-                                      min_members=args.min_members, confidence=args.confidence,
+                                      min_members=args.min_members, min_trades=args.min_trades,
+                                      min_clusters=args.min_clusters, cluster=args.cluster,
                                       verdicts=args.verdicts, curves=args.curves)
         if args.output is not None:
             output = Path(args.output)
@@ -1502,17 +1503,19 @@ def main(argv=None):
     seed_promote.add_argument('--member')
     gate = commands.add_parser('gate-recommend', help='Read-only: recommend qualification gates for a new run from our own export evidence')
     gate.add_argument('--target', choices=('forward', 'post', 'held_up'), default='forward',
-                      help='Window a set must stay profitable in: forward, post (after ToDate) or held_up (catch-up verdicts)')
+                      help='held_up (catch-up verdicts) is the only actionable target; forward and post are diagnostics')
     gate.add_argument('--min-survival', type=float, default=0.6, help='Required share of kept sets that survive (lower 95%% bound by default)')
     gate.add_argument('--min-sets', type=int, default=20, help='Fewest sets a gate must keep')
     gate.add_argument('--min-members', type=int, default=8, help='Fewest distinct optimization members a gate must keep')
-    gate.add_argument('--confidence', choices=('lower', 'point'), default='lower')
+    gate.add_argument('--min-trades', type=int, default=5, help='Fewest trades in the target window for a set to be judged (forward/post)')
+    gate.add_argument('--min-clusters', type=int, default=4, help='Fewest independent runs (or periods) for any recommendation')
+    gate.add_argument('--cluster', choices=('run', 'period'), default='run', help='Independent unit for bootstraps and leave-one-out')
     gate.add_argument('--runs', help='Comma-separated run folders (R...); default: every run with sequence exports')
     gate.add_argument('--common-root', type=Path, help='GOAT Common Files folder; default %%APPDATA%%\\MetaQuotes\\Terminal\\Common\\Files\\GOAT')
-    gate.add_argument('--verdicts', type=Path, help='Catch-up verdict JSON/JSONL file or folder (goat-catchup-verdict-v1)')
+    gate.add_argument('--verdicts', type=Path, help='Catch-up verdict JSON/JSONL file or folder (comparable goat-catchup-verdict-v2 only)')
     gate.add_argument('--curves', action='store_true', help='Include every threshold point, not only the qualifying ones')
     gate.add_argument('--output', type=Path, help='Also write the recommendation JSON to this new file')
-    stamp = commands.add_parser('gate-stamp', help='Write a new batch plan carrying recommended gates plus a <plan>.gates.json stamp')
+    stamp = commands.add_parser('gate-stamp', help='Write a new batch plan that only tightens to a held_up recommendation, plus a <plan>.gates.json stamp')
     stamp.add_argument('--plan', type=Path, required=True)
     stamp.add_argument('--recommendation', type=Path, required=True, help='JSON written by gate-recommend --output')
     stamp.add_argument('--output', type=Path, required=True, help='New plan path; never the source plan')

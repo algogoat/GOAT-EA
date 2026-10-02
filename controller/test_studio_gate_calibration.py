@@ -1,9 +1,11 @@
-"""Gate calibration: window split, monotone survival, thin-data fallback, leakage guard,
-deterministic stamp and read-only behaviour. Synthetic fixtures copy the real export
+"""Gate calibration v2: window split, #118-aligned PF, trade minimum, v2 verdicts, member
+aggregation, within-run signal, leave-one-run-out validation, coverage simulation,
+thin-data fallback, leakage guard, tighten-only deterministic stamp and read-only behaviour. Synthetic fixtures copy the real export
 file shapes (UTF-16 equity CSV and SET siblings, UTF-8 capture files, UTF-16
 SpreadsheetML optimizer rows that declare UTF-8); no real data is used."""
 from datetime import date, datetime, timedelta
 import hashlib
+import math
 import io
 import json
 from pathlib import Path
@@ -105,7 +107,7 @@ def write_set(root, run, alias, symbol, pnl, *, grid=-2.25, rsi=5, score=80.0, c
     return folder
 
 
-def write_manifest(root, run, members):
+def write_manifest(root, run, members, **settings):
     jobs = [dict(run_alias=alias, tester=dict(Symbol=symbol, Period='M1', FromDate=START.strftime('%Y.%m.%d'),
                                               ForwardDate=FORWARD.strftime('%Y.%m.%d'), ToDate=TO.strftime('%Y.%m.%d')))
             for alias, symbol in members]
@@ -113,34 +115,50 @@ def write_manifest(root, run, members):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(dict(schema_version=1, export_settings=dict(
         gates.DEFAULT_EXPORT, BackOOSDate=BOOS.strftime('%Y.%m.%d'), IncludeBackOOS=True, AdjustLots=False,
-        IncludeSequenceData=True), jobs=jobs)), encoding='utf-8')
+        IncludeSequenceData=True, **settings), jobs=jobs)), encoding='utf-8')
+
 
 
 def record(member, *, run='R1', survived=True, is_sr=1.0, fwd_net=None, file_sr=3.0, score=80.0, index=0,
-           symbol_class='fx_majors', post_survived=None):
+           symbol_class='fx_majors', post_survived=None, fwd_trades=40, filler=False, symbol='EURUSD'):
     """A loaded-evidence record without files, for the statistics tests."""
     window = lambda net, first, end, **extra: dict(dict(first_day=first.isoformat(), end_day=end.isoformat(), weekdays=20,
                                                         trades=40, net=net, dd=10.0, pf=1.5, recovery=1.0, sr=1.0, arf=0.1), **extra)
     windows = dict(back_oos=window(5.0, BOOS, START), in_sample=window(100.0, START, FORWARD, sr=is_sr),
-                   forward=window(fwd_net if fwd_net is not None else (10.0 if survived else -10.0), FORWARD, TO),
+                   forward=window(fwd_net if fwd_net is not None else (10.0 if survived else -10.0), FORWARD, TO,
+                                  trades=fwd_trades),
                    post=window(10.0 if (post_survived if post_survived is not None else survived) else -10.0, TO, END))
-    return dict(run=run, member=member, set_sha256=hashlib.sha256(('%s/%d' % (member, index)).encode()).hexdigest(),
-                symbol_class=symbol_class, family='RSI+EMA', timeframe='TF15', design='IS4m/F5w/B4w',
+    return dict(run=run, member=member, member_key=run + '/' + member, symbol=symbol,
+                set_sha256=hashlib.sha256(('%s/%s/%d' % (run, member, index)).encode()).hexdigest(),
+                symbol_class=symbol_class, family='RSI+EMA', timeframe='TF15', design='IS4m/F5w/B4w', period='P-' + run,
                 windows=windows, observed_end=END.isoformat(), optimizer={'Score': score, 'SR(Back)': is_sr,
                                                                           'PF(Back)': 1.5, 'RF(Back)': 2.0},
-                file_name=dict(trades=100, net=100.0, dd=10.0, pf=1.5, sr=file_sr, arf=0.3), path=member)
+                file_name=dict(trades=100, net=100.0, dd=10.0, pf=1.5, sr=file_sr, arf=0.3), path=member, filler=filler)
 
 
-def graded(n_members=120, seed=7, sets_per_member=2):
-    """Forward survival rises with is_sr; nothing else carries signal."""
+def graded(runs=8, members=30, seed=7, sets_per_member=2):
+    """Forward survival rises with is_sr inside every run; nothing else carries signal."""
     rng, rows = random.Random(seed), []
-    for member in range(n_members):
-        level = member / n_members * 4
-        for index in range(sets_per_member):
-            value = round(level + rng.uniform(-0.05, 0.05), 3)
-            rows.append(record('M%03d' % member, is_sr=value, survived=rng.random() < 0.1 + 0.9 * member / n_members,
-                               index=index))
+    for run in range(runs):
+        for member in range(members):
+            level = member / members * 4
+            survived = rng.random() < 0.05 + 0.95 * member / members
+            for index in range(sets_per_member):
+                rows.append(record('M%03d' % member, run='R%d' % run, is_sr=round(level + rng.uniform(-0.02, 0.02), 3),
+                                   survived=survived, index=index))
     return rows
+
+
+def verdicts_for(rows, held):
+    """held: callable(record) -> verdict string; the in-memory form load_verdicts returns."""
+    return {r['set_sha256']: dict(verdict=held(r), evidence_end='2026-10-02') for r in rows}
+
+
+def verdict_node(sha, verdict='held_up', *, schema=gates.VERDICT_SCHEMA, comparable=True, overridden=(), end='2026-10-02'):
+    return dict(schema=schema, verdict=verdict, confidence='low', comparability=dict(comparable=comparable, checks=[]),
+                rules=dict(id=gates.VERDICT_SCHEMA, overridden=list(overridden)),
+                original=dict(set_sha256=sha, set_path='x.set', evidence_end='2026-09-25', values_sha256='0' * 64),
+                retest=dict(set_sha256=sha, set_path='y.set', evidence_end=end))
 
 
 class WindowSplitTests(unittest.TestCase):
@@ -166,7 +184,7 @@ class WindowSplitTests(unittest.TestCase):
             self.assertEqual(windows['back_oos']['end_day'], START.isoformat())
             self.assertGreater(windows['forward']['dd'], 0)
             self.assertEqual(windows['forward']['pf'], 0.0)
-            self.assertEqual(windows['in_sample']['pf'], 25.0)
+            self.assertIsNone(windows['in_sample']['pf'])  # no losing deal: unknown, as in goat-catchup-verdict-v2
             self.assertLess(windows['forward']['recovery'], 0)
             self.assertEqual(record_['optimizer']['Score'], 91.5)
             self.assertEqual(record_['file_name']['sr'], 3.45)
@@ -174,6 +192,18 @@ class WindowSplitTests(unittest.TestCase):
             self.assertEqual(record_['family'], 'RSI+EMA')
             self.assertEqual(record_['timeframe'], 'TF15')
             self.assertEqual(record_['capture'], 'complete')
+            self.assertEqual(record_['member_key'], 'R1/A1')
+            self.assertFalse(record_['filler'])
+
+    def test_pf_counts_only_positions_opened_in_the_window(self):
+        rows = [(gates.msc(date(2025, 1, 30)), 0, 'P1', -1.0), (gates.msc(date(2025, 2, 4)), 1, 'P1', -50.0),
+                (gates.msc(date(2025, 2, 5)), 0, 'P2', -1.0), (gates.msc(date(2025, 2, 6)), 1, 'P2', 9.0),
+                (gates.msc(date(2025, 2, 7)), 0, 'P3', -1.0), (gates.msc(date(2025, 2, 8)), 1, 'P3', -1.0)]
+        equity_rows = [(datetime(2025, 1, 6), 100000.0)]
+        window = gates.window_metrics(rows, equity_rows, date(2025, 2, 3), date(2025, 3, 3), 100000.0)
+        self.assertEqual(window['trades'], 2)
+        self.assertEqual(window['closes'], 3)
+        self.assertAlmostEqual(window['pf'], 9.0 / 3.0)  # P1 opened earlier: its -50 counts in net, not PF
 
     def test_partial_capture_keeps_equity_but_never_counts_uncovered_trades(self):
         with tempfile.TemporaryDirectory() as root:
@@ -187,6 +217,7 @@ class WindowSplitTests(unittest.TestCase):
             self.assertIsNone(record_['windows']['forward']['trades'])
             self.assertIsNone(record_['windows']['forward']['pf'])
             self.assertGreater(record_['windows']['post']['net'], 0)
+            self.assertIsNone(gates.outcome(record_, 'post'))  # trade count unknown: not judged
             self.assertEqual(record_['symbol_class'], 'metals')
 
     def test_capture_still_being_written_is_skipped(self):
@@ -199,11 +230,74 @@ class WindowSplitTests(unittest.TestCase):
             self.assertEqual(loaded['records'], [])
             self.assertIn('still being written', loaded['skipped'][0]['reason'])
 
+    def test_only_byte_identical_evidence_is_deduplicated(self):
+        with tempfile.TemporaryDirectory() as root:
+            pnl = dict(back_oos=1.0, in_sample=1.0, forward=1.0, post=1.0)
+            for run in ('R1', 'R2', 'R3'):
+                write_manifest(root, run, [('A1', 'EURUSD')])
+            write_set(root, 'R1', 'A1', 'EURUSD', pnl)
+            write_set(root, 'R2', 'A1', 'EURUSD', pnl)                    # same inputs, same evidence
+            write_set(root, 'R3', 'A1', 'EURUSD', dict(pnl, post=-1.0))   # same inputs, different evidence
+            evidence = gates.load_evidence(root)
+            self.assertEqual(evidence['duplicates_removed'], 1)
+            self.assertEqual(sorted(r['run'] for r in evidence['records']), ['R1', 'R3'])
+
+    def test_fillers_are_labelled_against_their_own_run_thresholds(self):
+        self.assertTrue(gates.is_filler(dict(sr=2.9, arf=0.5), dict(MinSR=3.0, MinARF=0.2)))
+        self.assertFalse(gates.is_filler(dict(sr=2.9, arf=0.5), dict(MinSR=2.5, MinARF=0.2)))
+        self.assertTrue(gates.is_filler(dict(sr=4.0, arf=0.1), dict(MinSR=2.5, MinARF=0.2)))
+        self.assertIsNone(gates.is_filler(None, {}))
+        with tempfile.TemporaryDirectory() as root:
+            write_manifest(root, 'R1', [('A1', 'EURUSD')], MinSR=4.0)
+            write_set(root, 'R1', 'A1', 'EURUSD', dict(back_oos=1.0, in_sample=1.0, forward=1.0, post=1.0))
+            evidence = gates.load_evidence(root)
+            self.assertTrue(evidence['records'][0]['filler'])   # SR 3.45 < this run's MinSR 4.0
+            self.assertEqual(evidence['runs'][0]['fillers'], 1)
+
     def test_symbol_classes(self):
         self.assertEqual(gates.symbol_class('EURUSD'), 'fx_majors')
         self.assertEqual(gates.symbol_class('GBPNZD'), 'fx_crosses')
         self.assertEqual(gates.symbol_class('WS30'), 'indices')
         self.assertEqual(gates.symbol_class('XAGUSD'), 'metals')
+
+
+class OutcomeTests(unittest.TestCase):
+    def test_survival_needs_a_minimum_trade_count(self):
+        self.assertTrue(gates.outcome(record('M1', fwd_trades=5), 'forward'))
+        self.assertIsNone(gates.outcome(record('M1', fwd_trades=4), 'forward'))
+        self.assertIsNone(gates.outcome(record('M1', fwd_trades=0, survived=False), 'forward'))
+        self.assertIsNone(gates.outcome(record('M1', fwd_trades=None), 'forward'))
+        self.assertIsNone(gates.outcome(record('M1', fwd_trades=9), 'forward', min_trades=10))
+
+    def test_verdicts_accept_only_comparable_v2_with_default_rules(self):
+        sha = lambda i: hashlib.sha256(str(i).encode()).hexdigest()
+        nodes = [verdict_node(sha(1)), verdict_node(sha(2), schema='goat-catchup-verdict-v1'),
+                 verdict_node(sha(3), comparable=False), verdict_node(sha(4), overridden=['min_trades']),
+                 verdict_node(sha(5), verdict='great'), verdict_node(sha(6), verdict='failed'),
+                 verdict_node(sha(7), verdict='not_comparable', comparable=False)]
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'verdicts.json'
+            path.write_text(json.dumps(dict(members=nodes)), encoding='utf-8')
+            found, rejected = gates.load_verdicts(path)
+        self.assertEqual(set(found), {sha(1), sha(6), sha(7)})
+        self.assertEqual(sum(rejected.values()), 4)
+        self.assertIn('not comparable', rejected)
+        probe = record('M1')
+        probe['set_sha256'] = sha(7)
+        self.assertIsNone(gates.outcome(probe, 'held_up', found))
+        probe['set_sha256'] = sha(6)
+        self.assertFalse(gates.outcome(probe, 'held_up', found))
+        probe['set_sha256'] = sha(1)
+        self.assertTrue(gates.outcome(probe, 'held_up', found))
+
+    def test_the_newest_verdict_for_a_set_wins_whatever_the_file_order(self):
+        sha = hashlib.sha256(b'x').hexdigest()
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / 'a.json').write_text(json.dumps(verdict_node(sha, 'held_up', end='2026-11-06')), encoding='utf-8')
+            (Path(root) / 'b.json').write_text(json.dumps(verdict_node(sha, 'failed', end='2026-10-09')), encoding='utf-8')
+            found, _ = gates.load_verdicts(Path(root))
+        self.assertEqual(found[sha]['verdict'], 'held_up')
+        self.assertEqual(found[sha]['evidence_end'], '2026-11-06')
 
 
 class LeakageTests(unittest.TestCase):
@@ -235,19 +329,19 @@ class LeakageTests(unittest.TestCase):
                     self.assertNotEqual(target, 'forward')
 
     def test_a_perfect_but_leaky_predictor_is_never_chosen(self):
-        # file_sr and Score separate survivors perfectly; nothing clean does.
         rows = []
-        for member in range(80):
-            survived = member % 2 == 0
-            for index in range(2):
-                rows.append(record('M%03d' % member, survived=survived, is_sr=1.0, index=index,
-                                   file_sr=9.0 if survived else 2.6, score=99.0 if survived else 61.0))
-        result = gates.recommend(rows, target='forward', min_survival=0.8)
+        for run in range(6):
+            for member in range(20):
+                survived = member % 2 == 0
+                for index in range(2):
+                    rows.append(record('M%03d' % member, run='R%d' % run, survived=survived, is_sr=1.0, index=index,
+                                       file_sr=9.0 if survived else 2.6, score=99.0 if survived else 61.0))
+        result = gates.recommend(rows, target='forward', min_survival=0.75, split_keys=())
         self.assertEqual(result['status'], 'fallback_no_qualifying_gate')
         self.assertIsNone(result['gate'])
         self.assertNotIn('file_sr', result['features'])
         self.assertNotIn('opt_score', result['features'])
-        self.assertEqual(result['values']['export'], gates.DEFAULT_EXPORT)
+        self.assertEqual(result['values']['export_changes'], {})
 
 
 class SurvivalTests(unittest.TestCase):
@@ -256,153 +350,278 @@ class SurvivalTests(unittest.TestCase):
         self.assertTrue(all(a <= b + 1e-12 for a, b in zip(fitted, fitted[1:])))
         self.assertAlmostEqual(sum(fitted), 6.0)
 
-    def test_survival_curve_is_monotone_and_counts_members(self):
-        rows = graded()
-        result = gates.calibrate(rows, target='forward')
+    def test_curve_is_monotone_member_aggregated_and_signal_is_within_run(self):
+        result = gates.recommend(graded(), target='forward', min_survival=0.75, split_keys=())
         curve = result['features']['is_sr']['curve']
         smooth = [point['survival_monotone'] for point in curve]
         self.assertTrue(all(a <= b + 1e-9 for a, b in zip(smooth, smooth[1:])), smooth)
         self.assertGreater(smooth[-1], smooth[0])
         for point in curve:
-            low, high = gates.wilson(point['survival'] * point['kept_members'], point['kept_members'])
-            self.assertAlmostEqual(point['interval'][0], low, delta=3e-4)
-            self.assertAlmostEqual(point['interval'][1], high, delta=3e-4)
             self.assertLessEqual(point['kept_members'], point['kept_sets'])
+            if point['lower_band'] is not None:
+                self.assertLessEqual(point['lower_band'], point['wilson'][0] + 1e-9)
         self.assertEqual(result['features']['is_sr']['direction'], 'higher_is_better')
         self.assertEqual(result['features']['is_pf']['direction'], 'no_clear_signal')
 
-    def test_recommends_the_loosest_gate_whose_lower_bound_meets_the_target(self):
-        rows = graded()
-        result = gates.recommend(rows, target='forward', min_survival=0.7)
-        self.assertEqual(result['status'], 'calibrated')
-        gate = result['gate']
+    def test_member_outcomes_are_averaged_before_counting(self):
+        rows = [record('A', run='R1', survived=True, index=i) for i in range(9)] + [record('B', run='R1', survived=False)]
+        base = gates.recommend(rows, target='forward', split_keys=())['baseline']
+        self.assertEqual(base['members'], 2)
+        self.assertEqual(base['survival'], 0.5)  # one member of two, not 9 sets of 10
+
+    def test_forward_gate_validates_as_a_diagnostic_only(self):
+        result = gates.recommend(graded(), target='forward', min_survival=0.75, split_keys=())
+        self.assertEqual(result['status'], 'validated')
+        self.assertFalse(result['actionable'])
+        self.assertEqual(result['values']['export_changes'], {})
+        self.assertEqual(result['values']['qualify'], gates.DEFAULT_QUALIFY)
+        gate, validation = result['gate'], result['validation']
         self.assertIn(gate['feature'], ('is_sr', 'opt_is_sr'))
-        self.assertGreaterEqual(gate['point']['interval'][0], 0.7)
-        self.assertGreaterEqual(gate['point']['kept_sets'], 20)
-        self.assertGreaterEqual(gate['point']['kept_members'], 8)
-        looser = [p for p in result['features'][gate['feature']]['curve'] if p['threshold'] < gate['threshold']]
-        self.assertFalse([p for p in looser if p['qualifies']])
-        self.assertEqual(result['values']['qualify'][gate['feature']], gate['threshold'])
-        self.assertEqual(result['values']['export'], gates.DEFAULT_EXPORT)
-        self.assertIn('Recommended gate', result['summary'])
+        self.assertGreaterEqual(validation['lower'], 0.75)
+        self.assertGreaterEqual(validation['judged_clusters'], 4)
+        self.assertGreaterEqual(gate['threshold'], gate['full_data_threshold'])
+        self.assertIn('diagnostic', result['summary'])
 
-    def test_point_estimate_alone_never_qualifies_by_default(self):
-        rows = graded(n_members=40, seed=3)
-        lower = gates.recommend(rows, target='forward', min_survival=0.8, min_sets=10, min_members=8)
-        point = gates.recommend(rows, target='forward', min_survival=0.8, min_sets=10, min_members=8, confidence='point')
-        if lower['gate'] and point['gate']:
-            self.assertGreaterEqual(point['gate']['point']['kept_sets'], lower['gate']['point']['kept_sets'])
-        for name, info in lower['features'].items():
-            for p in info['curve']:
-                if p['qualifies']:
-                    self.assertGreaterEqual(p['interval'][0], 0.8, name)
-        self.assertTrue(any(p['qualifies'] and p['interval'][0] < 0.8
-                            for info in point['features'].values() for p in info['curve']))
+    def test_held_up_gate_is_actionable(self):
+        rows = graded()
+        verdicts = verdicts_for(rows, lambda r: 'held_up' if r['windows']['forward']['net'] > 0 else 'failed')
+        result = gates.recommend(rows, target='held_up', verdicts=verdicts, min_survival=0.75, split_keys=())
+        self.assertEqual(result['status'], 'validated')
+        self.assertTrue(result['actionable'])
+        self.assertIn(result['gate']['feature'], result['values']['qualify'])
 
-    def test_a_gate_concentrated_in_few_members_does_not_qualify(self):
+    def test_a_gate_held_by_a_few_members_does_not_qualify(self):
         rows = []
-        for member in range(30):
-            rows.append(record('M%03d' % member, is_sr=0.5, survived=member % 2 == 0))
-        for member in range(6):  # six members (< 8), near-copy sets, all survived, high is_sr
-            for index in range(5):
-                rows.append(record('H%d' % member, is_sr=3.0, survived=True, index=index))
-        result = gates.recommend(rows, target='forward', min_survival=0.6)
+        for run in range(6):
+            for member in range(10):
+                rows.append(record('M%03d' % member, run='R%d' % run, is_sr=0.5 + member / 100, survived=member % 2 == 0))
+            rows.append(record('H', run='R%d' % run, is_sr=3.0, survived=True))  # six members across six runs
+        for index in range(30):
+            rows.append(record('H', run='R0', is_sr=3.0, survived=True, index=index + 1))
+        result = gates.recommend(rows, target='forward', min_survival=0.6, split_keys=())
         point = next(p for p in result['features']['is_sr']['curve'] if p['threshold'] == 3.0)
         self.assertEqual(point['kept_members'], 6)
-        self.assertEqual(point['kept_sets'], 30)
-        self.assertGreaterEqual(point['interval'][0], 0.6)  # the interval alone would admit it
-        self.assertFalse(point['qualifies'])
+        self.assertGreaterEqual(point['kept_sets'], 20)
+        self.assertFalse(point['eligible'])
         self.assertTrue(result['gate'] is None or result['gate']['point']['kept_members'] >= 8)
+
+    def test_a_signal_that_only_exists_between_runs_is_not_a_signal(self):
+        rows = []
+        for run in range(8):
+            good = run < 4  # good runs: every member has a high is_sr and survives; bad runs: low and fails
+            for member in range(15):
+                for index in range(2):
+                    rows.append(record('M%03d' % member, run='R%d' % run, index=index, survived=good,
+                                       is_sr=(3.0 if good else 0.5) + member / 100))
+        result = gates.recommend(rows, target='forward', min_survival=0.75, split_keys=())
+        self.assertEqual(result['features']['is_sr']['direction'], 'no_clear_signal')
+        self.assertNotEqual(result['status'], 'validated')
+
+    def test_a_run_that_clearly_misses_blocks_validation(self):
+        rows = []
+        for run in range(10):
+            for member in range(40):
+                high = member < 20 if run < 9 else member < 8
+                survived = (high and (run < 9 or member < 3))
+                rows.append(record('M%03d' % member, run='R%d' % run, is_sr=(3.0 if high else 0.5) + member / 1000,
+                                   survived=survived))
+        result = gates.recommend(rows, target='forward', min_survival=0.75, split_keys=())
+        self.assertEqual(result['status'], 'fallback_not_validated')
+        self.assertEqual(result['validation']['contradicted'], ['R9'])
+        self.assertGreaterEqual(result['validation']['lower'], 0.75)  # the pooled number alone would have passed
+
+    def test_point_estimates_never_qualify(self):
+        result = gates.recommend(graded(runs=5, members=12, seed=3), target='forward', min_survival=0.85,
+                                 min_sets=10, split_keys=())
+        for name, info in result['features'].items():
+            for point in info['curve']:
+                if point['eligible'] and point['lower_band'] is not None and point['survival'] >= 0.85:
+                    self.assertLessEqual(point['lower_band'], point['survival'])
+        if result['status'] == 'validated':
+            self.assertGreaterEqual(result['validation']['lower'], 0.85)
+
+
+def simulate(seed, sigma, runs=9, members=21, a=-0.5, b=1.2):
+    """9 runs x 21 members x 2 near-copy sets; one real signal (is_sr); a shared shock per run."""
+    rng, rows = random.Random(seed), []
+    for run in range(runs):
+        shock = rng.gauss(0, sigma)
+        for member in range(members):
+            x = rng.uniform(0, 4)
+            survived = rng.random() < 1 / (1 + math.exp(-(a + b * x + shock)))
+            for index in range(2):
+                rows.append(record('M%02d' % member, run='R%d' % run, index=index, survived=survived,
+                                   is_sr=round(x + rng.uniform(-0.02, 0.02), 3)))
+    return rows
+
+
+def true_survival(threshold, sigma, a=-0.5, b=1.2):
+    """Survival of future members passing the gate, over new run shocks (numerical integral)."""
+    shocks = [-4 + 0.1 * i for i in range(81)]
+    weights = [math.exp(-u * u / 2) for u in shocks]
+    xs = [threshold + (4 - threshold) * (i + 0.5) / 200 for i in range(200)]
+    total = sum(w * sum(1 / (1 + math.exp(-(a + b * x + sigma * u))) for x in xs) / len(xs)
+                for u, w in zip(shocks, weights))
+    return total / sum(weights)
+
+
+class CoverageSimulationTests(unittest.TestCase):
+    """When a gate validates, its true survival must clear the target at least at the
+    nominal 97.5% one-sided level, also with run-level shocks (the review's failing case)."""
+
+    def check(self, sigma, target, seeds):
+        validated = misses = 0
+        base_covered = base_total = 0
+        for seed in range(seeds):
+            result = gates.recommend(simulate(seed, sigma), target='forward', min_survival=target, split_keys=())
+            base_total += 1
+            low, high = result['baseline']['interval']
+            base_covered += low <= true_survival(0.0, sigma) <= high
+            if result['status'] == 'validated':
+                validated += 1
+                misses += true_survival(result['gate']['threshold'], sigma) < target
+        return validated, misses, base_covered / base_total
+
+    def test_validated_gates_hold_their_target_with_run_shocks(self):
+        for sigma, target in ((0.0, 0.9), (0.8, 0.85)):
+            validated, misses, _ = self.check(sigma, target, 40)
+            self.assertGreaterEqual(validated, 5, (sigma, target))     # not vacuous
+            self.assertLessEqual(misses / validated, 0.025, (sigma, target, validated, misses))
+
+    def test_baseline_interval_covers_the_true_rate_with_run_shocks(self):
+        _, _, coverage = self.check(0.8, 0.99, 40)
+        self.assertGreaterEqual(coverage, 0.9)
 
 
 class FallbackTests(unittest.TestCase):
-    def test_thin_evidence_keeps_current_defaults_and_says_so(self):
+    def test_thin_evidence_keeps_current_values_and_says_so(self):
         rows = [record('M%d' % (i // 2), index=i, survived=i % 3 != 0, is_sr=i) for i in range(10)]
         result = gates.recommend(rows, target='forward')
         self.assertEqual(result['status'], 'fallback_thin_evidence')
         self.assertIsNone(result['gate'])
-        self.assertEqual(result['values']['export'], gates.DEFAULT_EXPORT)
+        self.assertEqual(result['values']['export_changes'], {})
         self.assertEqual(result['values']['qualify'], gates.DEFAULT_QUALIFY)
         self.assertIn('Keeping the current gates', result['summary'])
-        self.assertIn('Only 10 judged sets from 5 members', result['summary'])
+        self.assertIn('Only 10 judged sets from 5 members in 1 independent runs', result['summary'])
 
-    def test_many_sets_from_few_members_is_still_thin(self):
-        rows = [record('M%d' % (i % 4), index=i, survived=i % 2 == 0, is_sr=i / 10) for i in range(60)]
-        self.assertEqual(gates.recommend(rows)['status'], 'fallback_thin_evidence')
+    def test_many_members_in_too_few_runs_is_still_thin(self):
+        rows = graded(runs=3, members=40)
+        self.assertEqual(gates.recommend(rows, split_keys=())['status'], 'fallback_thin_evidence')
+        rows = graded(runs=6, members=24)
+        period = gates.recommend([dict(r, period='one-window') for r in rows], cluster='period', split_keys=())
+        self.assertEqual(period['status'], 'fallback_thin_evidence')
 
-    def test_thin_splits_fall_back_while_the_pool_calibrates(self):
+    def test_thin_splits_fall_back_while_the_pool_validates(self):
         rows = graded()
-        rows += [record('X%d' % i, symbol_class='metals', is_sr=3.9, survived=True) for i in range(3)]
-        result = gates.recommend(rows, target='forward', min_survival=0.7)
+        rows += [record('X%d' % i, run='R0', symbol_class='metals', is_sr=3.9, survived=True) for i in range(3)]
+        result = gates.recommend(rows, target='forward', min_survival=0.75)
         self.assertEqual(result['by_split']['symbol_class=metals']['status'], 'fallback_thin_evidence')
         self.assertNotIn('symbol_class=metals', result['values']['qualify_by_split'])
-        self.assertIn('thin', result['summary'])
+        self.assertIn('too thin', result['summary'])
 
     def test_no_signal_falls_back(self):
         rng = random.Random(5)
-        rows = [record('M%03d' % m, index=i, survived=rng.random() < 0.5, is_sr=rng.uniform(0, 4))
-                for m in range(80) for i in range(2)]
-        result = gates.recommend(rows, target='forward', min_survival=0.8)
-        self.assertIn(result['status'], ('fallback_no_qualifying_gate',))
-        self.assertEqual(result['values']['export'], gates.DEFAULT_EXPORT)
+        rows = [record('M%03d' % m, run='R%d' % (m % 6), index=i, survived=rng.random() < 0.5, is_sr=rng.uniform(0, 4))
+                for m in range(120) for i in range(2)]
+        result = gates.recommend(rows, target='forward', min_survival=0.75, split_keys=())
+        self.assertEqual(result['status'], 'fallback_no_qualifying_gate')
+        self.assertEqual(result['values']['export_changes'], {})
 
-    def test_a_tail_without_overall_signal_is_watched_not_chosen(self):
+    def test_a_tail_without_overall_signal_is_not_chosen(self):
         rows = []
-        for member in range(80):  # low and high is_sr survive, the middle fails: AUC ~0.5
-            survived = member < 20 or member >= 60
-            for index in range(2):
-                rows.append(record('M%03d' % member, index=index, is_sr=member / 20, survived=survived))
-        result = gates.recommend(rows, target='forward', min_survival=0.75)
+        for run in range(6):
+            for member in range(40):  # low and high is_sr survive, the middle fails: within-run AUC ~0.5
+                survived = member < 10 or member >= 30
+                for index in range(2):
+                    rows.append(record('M%03d' % member, run='R%d' % run, index=index, is_sr=member / 10,
+                                       survived=survived))
+        result = gates.recommend(rows, target='forward', min_survival=0.75, split_keys=())
         self.assertEqual(result['features']['is_sr']['direction'], 'no_clear_signal')
         self.assertEqual(result['status'], 'fallback_no_qualifying_gate')
         self.assertIsNone(result['gate'])
-        self.assertIn('is_sr', [w['feature'] for w in result['watchlist']])
-        self.assertIn('Closest miss (not recommended', result['summary'])
-        self.assertEqual(result['values']['qualify'], gates.DEFAULT_QUALIFY)
 
     def test_defaults_already_meet_target(self):
-        rows = [record('M%03d' % m, index=i, survived=True, is_sr=m / 10) for m in range(40) for i in range(2)]
-        self.assertEqual(gates.recommend(rows, min_survival=0.6)['status'], 'defaults_already_meet_target')
+        rows = [record('M%03d' % m, run='R%d' % (m % 5), index=i, survived=True, is_sr=m / 10)
+                for m in range(40) for i in range(2)]
+        self.assertEqual(gates.recommend(rows, min_survival=0.6, split_keys=())['status'], 'defaults_already_meet_target')
 
-    def test_plan_fields_never_drop_below_the_floor(self):
+    def test_plan_fields_move_only_on_held_up_and_never_below_the_floor(self):
         rows = []
-        for member in range(60):
-            for index in range(2):
-                rows.append(record('M%03d' % member, index=index, post_survived=member >= 20, score=20 + member))
-        result = gates.recommend(rows, target='post', min_survival=0.7)
-        self.assertEqual(result['status'], 'calibrated')
+        for run in range(6):
+            for member in range(30):
+                rows.append(record('M%03d' % member, run='R%d' % run, score=40 + 2 * member, survived=True))
+        verdicts = verdicts_for(rows, lambda r: 'held_up' if r['optimizer']['Score'] >= 50 else 'failed')
+        post = gates.recommend(rows, target='post', min_survival=0.9, split_keys=())
+        self.assertEqual(post['values']['export_changes'], {})
+        result = gates.recommend(rows, target='held_up', verdicts=verdicts, min_survival=0.9, split_keys=())
+        self.assertEqual(result['status'], 'validated')
         self.assertEqual(result['gate']['feature'], 'opt_score')
         self.assertEqual(result['gate']['plan_field'], 'MinScore')
         self.assertGreaterEqual(result['gate']['threshold'], 60.0)
-        self.assertGreaterEqual(result['values']['export']['MinScore'], 60.0)
+        self.assertGreaterEqual(result['values']['export_changes']['MinScore'], 60.0)
         below = [p for p in result['features']['opt_score']['curve'] if p['threshold'] < 60]
-        self.assertTrue(below and not any(p['qualifies'] for p in below))
-        for field, floor in gates.EXPORT_FLOORS.items():
-            self.assertGreaterEqual(result['values']['export'][field], floor)
+        self.assertTrue(below)
+        self.assertTrue(any(p['eligible'] and p['lower_band'] >= 0.9 for p in below))  # only the floor stops them
 
 
 class StampTests(unittest.TestCase):
-    def plan(self, root):
+    def plan(self, root, **export):
         path = Path(root) / 'plan.json'
-        path.write_text(json.dumps(dict(schema_version=1, export=dict(
-            SetsToExport=2, MinScore=60.0, TargetDD=100, AdjustLots=False, BackOOSDate='2025.01.06', MinARF=0.2,
-            MinSR=2.5, IncludeBackOOS=True, IncludeSequenceData=True), members=[dict(set_path='C:/x.set', tester={})])),
-            encoding='utf-8')
+        values = dict(SetsToExport=2, MinScore=60.0, TargetDD=100, AdjustLots=False, BackOOSDate='2025.01.06',
+                      MinARF=0.2, MinSR=2.5, IncludeBackOOS=True, IncludeSequenceData=True)
+        values.update(export)
+        path.write_text(json.dumps(dict(schema_version=1, export=values, members=[dict(set_path='C:/x.set', tester={})]),
+                                   indent=2), encoding='utf-8')
         return path
 
-    def test_stamp_is_deterministic_and_keeps_the_plan_valid(self):
+    def held_up(self, changes):
         rows = graded()
-        shuffled = list(rows); random.Random(1).shuffle(shuffled)
-        first, second = gates.recommend(rows, min_survival=0.7), gates.recommend(shuffled, min_survival=0.7)
-        self.assertEqual(first['evidence_digest'], second['evidence_digest'])
-        self.assertEqual(first['values'], second['values'])
+        verdicts = verdicts_for(rows, lambda r: 'held_up' if r['windows']['forward']['net'] > 0 else 'failed')
+        result = gates.recommend(rows, target='held_up', verdicts=verdicts, min_survival=0.75, split_keys=())
+        self.assertTrue(result['actionable'])
+        result['values']['export_changes'] = dict(changes)
+        return result
+
+    def test_stamp_only_tightens_explicit_plan_values(self):
+        with tempfile.TemporaryDirectory() as root:
+            plan = self.plan(root, MinSR=3.0, MinScore=70.0, MinARF=0.3, SetsToExport=4, TargetDD=150)
+            looser = gates.stamp_plan(plan, self.held_up(dict(MinSR=2.6)), Path(root) / 'a.json',
+                                      generated_at='2026-10-02T12:00:00Z')
+            self.assertEqual(looser['applied'], {})
+            self.assertEqual(Path(looser['plan']).read_bytes(), plan.read_bytes())
+            stricter = gates.stamp_plan(plan, self.held_up(dict(MinSR=3.4)), Path(root) / 'b.json',
+                                        generated_at='2026-10-02T12:00:00Z')
+            export = json.loads(Path(stricter['plan']).read_text(encoding='utf-8'))['export']
+            self.assertEqual(export['MinSR'], 3.4)
+            self.assertEqual((export['MinScore'], export['MinARF'], export['SetsToExport'], export['TargetDD']),
+                             (70.0, 0.3, 4, 150))
+            self.assertEqual(stricter['applied'], dict(MinSR=dict(before=3.0, after=3.4)))
+
+    def test_fallback_and_diagnostics_never_change_a_plan(self):
+        with tempfile.TemporaryDirectory() as root:
+            plan = self.plan(root, MinSR=3.0, MinScore=70.0)
+            rows = graded(runs=2)
+            verdicts = verdicts_for(rows, lambda r: 'held_up')
+            fallback = gates.recommend(rows, target='held_up', verdicts=verdicts, split_keys=())
+            self.assertFalse(fallback['actionable'])
+            out = gates.stamp_plan(plan, fallback, Path(root) / 'c.json', generated_at='2026-10-02T12:00:00Z')
+            self.assertEqual(Path(out['plan']).read_bytes(), plan.read_bytes())
+            forward = gates.recommend(graded(), target='forward', min_survival=0.75, split_keys=())
+            with self.assertRaises(ValueError):
+                gates.stamp_plan(plan, forward, Path(root) / 'd.json', generated_at='2026-10-02T12:00:00Z')
+
+    def test_stamp_is_deterministic(self):
+        first = self.held_up(dict(MinSR=3.4))
+        rows = graded(); shuffled = list(rows); random.Random(1).shuffle(shuffled)
+        verdicts = verdicts_for(rows, lambda r: 'held_up' if r['windows']['forward']['net'] > 0 else 'failed')
+        again = gates.recommend(shuffled, target='held_up', verdicts=verdicts, min_survival=0.75, split_keys=())
+        self.assertEqual(first['evidence_digest'], again['evidence_digest'])
+        self.assertEqual(first['gate']['threshold'], again['gate']['threshold'])
         with tempfile.TemporaryDirectory() as root:
             plan = self.plan(root)
-            before = plan.read_bytes()
             one = gates.stamp_plan(plan, first, Path(root) / 'a' / 'plan.json', generated_at='2026-10-02T12:00:00Z')
-            two = gates.stamp_plan(plan, gates.public(second), Path(root) / 'b' / 'plan.json',
+            two = gates.stamp_plan(plan, gates.public(first), Path(root) / 'b' / 'plan.json',
                                    generated_at='2026-10-02T12:00:00Z')
-            self.assertEqual(plan.read_bytes(), before)
             self.assertEqual(Path(one['plan']).read_bytes(), Path(two['plan']).read_bytes())
             self.assertEqual(Path(one['sidecar']).read_bytes(), Path(two['sidecar']).read_bytes())
             stamped = json.loads(Path(one['plan']).read_text(encoding='utf-8'))
@@ -410,9 +629,8 @@ class StampTests(unittest.TestCase):
             from studio_settings import validate_export
             validate_export(stamped['export'])
             sidecar = json.loads(Path(one['sidecar']).read_text(encoding='utf-8'))['gates']
-            self.assertEqual(set(sidecar) >= {'values', 'method', 'evidence_digest', 'generated_at'}, True)
+            self.assertTrue(set(sidecar) >= {'values', 'method', 'evidence_digest', 'generated_at', 'plan_sha256'})
             self.assertEqual(sidecar['plan_sha256'], hashlib.sha256(Path(one['plan']).read_bytes()).hexdigest())
-            self.assertEqual(sidecar['evidence_digest'], first['evidence_digest'])
             with self.assertRaises(ValueError):
                 gates.stamp_plan(plan, first, Path(one['plan']), generated_at='2026-10-02T12:00:00Z')
             with self.assertRaises(ValueError):
@@ -430,6 +648,20 @@ class StampTests(unittest.TestCase):
         self.assertFalse(gates.apply_qualify(sample, dict(qualify=dict(is_sr=0.0)))[0])
 
 
+class FillerComparisonTests(unittest.TestCase):
+    def test_fillers_are_compared_only_within_run_and_symbol_on_held_up(self):
+        rows = []
+        for run in range(5):
+            for member in range(12):
+                rows.append(record('M%02d' % member, run='R%d' % run, filler=member >= 6))
+        self.assertEqual(gates.filler_comparison(rows, None)['status'], 'no_held_up_verdicts')
+        verdicts = verdicts_for(rows, lambda r: 'failed' if r['filler'] else 'held_up')
+        result = gates.filler_comparison(rows, verdicts)
+        self.assertEqual(result['status'], 'compared')
+        self.assertEqual(result['passed_minus_filler'], 1.0)
+        self.assertEqual(result['per_run']['R0']['fillers'], 6)
+
+
 class ReadOnlyTests(unittest.TestCase):
     @staticmethod
     def snapshot(root):
@@ -440,16 +672,33 @@ class ReadOnlyTests(unittest.TestCase):
                                                    None if path.is_dir() else hashlib.sha256(path.read_bytes()).hexdigest())
         return result
 
-    def test_cli_reads_evidence_and_writes_only_its_output(self):
-        import demo_agent
-        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as out:
-            common = Path(root) / 'GOAT'
-            members = [('A%02d' % i, 'EURUSD' if i % 2 else 'WS30') for i in range(12)]
-            write_manifest(common, 'R1', members)
+    def build(self, root):
+        common = Path(root) / 'GOAT'
+        for run in range(4):
+            members = [('A%02d' % i, 'EURUSD' if i % 2 else 'WS30') for i in range(6)]
+            write_manifest(common, 'R%d' % run, members)
             for i, (alias, symbol) in enumerate(members):
                 for k in range(2):
-                    write_set(common, 'R1', alias, symbol, dict(back_oos=1.0, in_sample=1.0 + i, forward=1.0 if i > 3 else -1.0,
-                                                                post=1.0), grid=-2.25 - k, rsi=5 + i, score=70 + i)
+                    write_set(common, 'R%d' % run, alias, symbol,
+                              dict(back_oos=1.0, in_sample=1.0 + i, forward=1.0 if i > 1 else -1.0, post=1.0),
+                              grid=-2.25 - k, rsi=5 + i + 10 * run, score=70 + i)
+        return common
+
+    def test_recommendation_reads_evidence_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            common = self.build(root)
+            before = self.snapshot(root)
+            result = gates.gate_recommend(common_root=common, target='forward')
+            self.assertEqual(self.snapshot(root), before)
+            self.assertEqual(result['evidence']['sets'], 48)
+            self.assertIn('summary', result)
+            self.assertEqual(result['fillers']['status'], 'no_held_up_verdicts')
+
+    @unittest.skipUnless(sys.platform == 'win32', 'demo_agent imports the Windows-only msvcrt')
+    def test_cli_writes_only_its_output(self):
+        import demo_agent
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as out:
+            common = self.build(root)
             before = self.snapshot(root)
             output = Path(out) / 'recommendation.json'
             stdout, stderr = io.StringIO(), io.StringIO()
@@ -461,23 +710,18 @@ class ReadOnlyTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in Path(out).iterdir()), ['recommendation.json'])
             reply = json.loads(stdout.getvalue())
             self.assertTrue(reply['ok'])
-            self.assertEqual(reply['result']['evidence']['sets'], 24)
-            self.assertIn('summary', reply['result'])
             saved = json.loads(output.read_text(encoding='utf-8'))
             self.assertEqual(saved['evidence_digest'], reply['result']['evidence_digest'])
-            # Repeating never overwrites the output.
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 self.assertEqual(demo_agent.main(['--installation', 'x', 'gate-recommend', '--common-root', str(common),
                                                   '--output', str(output)]), 1)
             plan = StampTests.plan(self, out)
-            stamped = Path(out) / 'stamped' / 'plan.json'
-            with redirect_stdout(io.StringIO()) as stamp_out, redirect_stderr(io.StringIO()):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(demo_agent.main(['--installation', 'x', 'gate-stamp', '--plan', str(plan),
-                                                  '--recommendation', str(output), '--output', str(stamped),
-                                                  '--generated-at', '2026-10-02T12:00:00Z']), 0)
-            self.assertTrue(json.loads(stamp_out.getvalue())['ok'])
+                                                  '--recommendation', str(output), '--output', str(Path(out) / 's.json'),
+                                                  '--generated-at', '2026-10-02T12:00:00Z']), 1)
+            self.assertIn('Only held_up', err.getvalue())
             self.assertEqual(self.snapshot(root), before)
-            self.assertTrue((stamped.parent / 'plan.json.gates.json').is_file())
 
 
 if __name__ == '__main__':

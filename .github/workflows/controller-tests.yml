@@ -74,6 +74,8 @@ jobs:
         run: node scripts/test_research_outcome.cjs
       - name: Connection code prompt and fragment link
         run: node scripts/test_connection_code.cjs
+      - name: Studio monitor hosts the setup mailbox (pairing read, gated inert shutdown)
+        run: node scripts/test_setup_mailbox_host.cjs
       - name: Research outcome mutation check (every EA guard is load-bearing)
         run: node scripts/test_research_outcome_mutations.cjs
       - name: Research outcome controller mutation check

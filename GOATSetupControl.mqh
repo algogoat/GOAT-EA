@@ -241,7 +241,12 @@ void GoatSetupControlPoll(void)
       && ((request_schema==1 && (action=="status" || action=="shutdown"))
          || (request_schema==2 && action=="pairing" && allow_pairing));
    bool inert=TerminalInfoInteger(TERMINAL_CONNECTED) && !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) && PositionsTotal()==0 && OrdersTotal()==0;
-   bool closable=inert && GoatSetupResearchIdle();
+   // On the Studio monitor the research launch gate is held from the idle check through
+   // TerminalClose, exactly like the V1.49 idle diagnostic, so no batch can start between them.
+   int research_gate=INVALID_HANDLE;
+   if(valid && action=="shutdown" && Mode_Operation==Operation_Batch)
+      research_gate=FileOpen("GOATStudio\\native-gate\\launch.lock",FILE_READ|FILE_WRITE|FILE_BIN);
+   bool closable=inert && (Mode_Operation!=Operation_Batch || (research_gate!=INVALID_HANDLE && GoatSetupResearchIdle()));
    string result=(!valid ? "rejected_envelope" : (action=="shutdown" && !closable ? "rejected_not_inert" : (action=="shutdown" ? "shutdown_requested" : "observed")));
    bool pairing_available=false;
    if(valid && action=="pairing")
@@ -268,5 +273,6 @@ void GoatSetupControlPoll(void)
      }
    bool saved=GoatSetupWrite(receipt,body);
    if(saved && result=="shutdown_requested") TerminalClose(0);
+   if(research_gate!=INVALID_HANDLE) FileClose(research_gate);
    FileClose(lock);
 }

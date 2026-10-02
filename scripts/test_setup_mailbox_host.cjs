@@ -32,7 +32,9 @@ for (const busy of [{ testerState: 'running' }, { testerState: 'unknown' }, { gl
 // The poll itself uses the host predicate, and a shutdown needs the idle research state.
 const poll = source.slice(source.indexOf('void GoatSetupControlPoll(void)'));
 check(() => assert.match(poll, /if\(!GoatSetupMailboxHost\(\)\) return;/));
-check(() => assert.match(poll, /bool closable=inert && GoatSetupResearchIdle\(\);/));
+check(() => assert.match(poll, /research_gate=FileOpen\("GOATStudio\\\\native-gate\\\\launch\.lock",FILE_READ\|FILE_WRITE\|FILE_BIN\);/, 'the monitor takes the research launch gate like the V1.49 diagnostic'));
+check(() => assert.match(poll, /bool closable=inert && \(Mode_Operation!=Operation_Batch \|\| \(research_gate!=INVALID_HANDLE && GoatSetupResearchIdle\(\)\)\);/, 'no gate, no close'));
+check(() => assert.ok(poll.indexOf('TerminalClose(0);') < poll.indexOf('FileClose(research_gate);'), 'the gate is held through TerminalClose'));
 check(() => assert.match(poll, /action=="shutdown" && !closable \? "rejected_not_inert"/));
 check(() => assert.match(poll, /AccountInfoInteger\(ACCOUNT_TRADE_MODE\)!=ACCOUNT_TRADE_MODE_DEMO\) return;/, 'still demo-only'));
 console.log(`test_setup_mailbox_host: ${checks}/${checks} passed`);

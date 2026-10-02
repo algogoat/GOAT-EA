@@ -112,7 +112,7 @@ $plan = Save-Json "plan-$id.json" @{schema_version=1; export=$export; members=@(
 Studio @('prepare-batch','--batch-id',$id,'--plan',$plan)
 ```
 
-The controller enforces: 1 to 10,000 members; all 18 tester fields; `Optimization=2` (genetic), `OptimizationCriterion=6` (custom), `ForwardMode=4`, local workers only, `Model` 0/1/2/4 (use `1`, 1-minute OHLC, unless the user chooses otherwise); `BackOOSDate < FromDate < ForwardDate < ToDate` (BOOS = the "back out-of-sample" period before the optimization window); `SetsToExport >= 2`, `MinScore >= 60`, `TargetDD >= 100`, `MinARF >= 0.2`, `MinSR >= 2.5`; one export policy and forward date per batch; every SET must have at least one optimization axis. Members run in the order listed. A batch ID can never be reused for different inputs.
+Optionally add `evidence_end='auto'` (or a closed date such as `'2026-09-25'`) to the plan: it records the batch's target evidence end; see "OOS catch-up" below. The controller enforces: 1 to 10,000 members; all 18 tester fields; `Optimization=2` (genetic), `OptimizationCriterion=6` (custom), `ForwardMode=4`, local workers only, `Model` 0/1/2/4 (use `1`, 1-minute OHLC, unless the user chooses otherwise); `BackOOSDate < FromDate < ForwardDate < ToDate` (BOOS = the "back out-of-sample" period before the optimization window); `SetsToExport >= 2`, `MinScore >= 60`, `TargetDD >= 100`, `MinARF >= 0.2`, `MinSR >= 2.5`; one export policy and forward date per batch; every SET must have at least one optimization axis. Members run in the order listed. A batch ID can never be reused for different inputs.
 
 16. `Studio @('batch-status','--batch-id','pilot-1')`. Show the user every member and the settings and get an explicit "yes, start".
 
@@ -161,6 +161,18 @@ foreach ($m in $res.member_outcomes) { $i = $m.index; $t = $res.configuration.ba
 ```
 
 Replace `unavailable` with real facts when known. Then `Studio @('benchmark-report','--batch-id','pilot-1')` gives the measured timing; use it to size the next batch with the user. A `failed` or `interrupted` result is a technical outcome, not evidence that the strategy is bad. To build a portfolio, import the export folders with `library.prepareImport` / `library.finalizeImport` as described in the installed `goat-beta-agent-guide.md` (sections 7 and 8).
+
+## OOS catch-up: one timeline before you build a portfolio
+
+Exports end where their export test ended, so exports from different weeks end on different dates (the EA ends each export at its own last Friday, which MT5 excludes, so Thursday). Before building a portfolio, bring every member to one **evidence end** and check whether it held up in the new weeks.
+
+1. `Studio @('evidence-end')`: `auto` is the latest fully closed Friday (broker time; on a Friday before the close it is still last Friday, and `auto.next_switch_utc` says when it moves). Use `--value <date>` for an explicit closed day.
+2. `Studio @('evidence-scan','--source','<run folder>','--source','<another run>')` (read-only). Each kept export is `behind`, `current`, `ahead` (ends later: clip it, no re-test), `caught_up` or `ineligible` (with reasons, for example below the run's thresholds). `summary.plain` is the sentence for the user.
+3. Write a plan with the behind SETs: `{schema_version:1, evidence_end:'auto', sets:[<set_path of each behind export>], job_timeout_seconds:1800}`. A SET copied out of its run folder also needs `assume:{ExecutionMode:0}` (recorded as an assumption). `Studio @('catchup-validate','--plan',$plan)` previews it with no effect.
+4. Tell the user GOAT will close their MT5 and relaunch it once per SET (one non-optimized pass each, from the export's original start to the evidence end). With their yes: `catchup-prepare --catchup-id <id> --plan <file>`, then `catchup-start --catchup-id <id> --max-seconds 600` and `catchup-resume` until `completed` or `stopped` (demo lane: `& $goat demo ... catchup-*`, see DEMO-AGENT-TOOLS.md). Originals are never changed.
+5. `catchup-report --catchup-id <id>`: one verdict per SET from the new weeks only: `held_up`, `weakened`, `failed`, `too_few_trades` (or `not_comparable`), with trades, profit, PF, drawdown, the forward pace and `reproduced`. Read `plain` to the user and be honest: a week or two is a small sample, and `too_few_trades` means "cannot judge yet", not "good". Import the new evidence folders (`version_path`'s folder) instead of the old exports.
+
+Native single-pass launch is not yet qualified (`native_launch_qualified: false`): start with one SET the user approved. After a catch-up, MT5 is closed; ask the user to open it normally with the GOAT Studio chart.
 
 ## Seed loop (find candidates before spending full batches)
 

@@ -509,6 +509,75 @@ remaining members as `<id>-rN` with lineage (the demo lane also starts it).
 `research-status` is the read-only lane view. Rules and states:
 [AGENT-START-HERE.md](AGENT-START-HERE.md) and [DEMO-AGENT-TOOLS.md](DEMO-AGENT-TOOLS.md).
 
+### Evidence end and OOS catch-up
+
+An export's evidence ends where its export test ended, so exports from different
+weeks end on different dates. The **evidence end** ("front OOS" end) is either
+`auto`, the latest fully closed Friday on the broker's New York-close clock
+(UTC+3 in US daylight time, UTC+2 otherwise; the week closes at server Saturday
+00:00, so on a Friday before the close `auto` is still last Friday), or an
+explicit broker date that has already closed. Dates are inclusive server dates;
+MT5 `ToDate` is exclusive, so evidence ending on day D tests with `ToDate` D+1.
+
+- `evidence-end [--value auto|YYYY-MM-DD] [--broker-clock ny-close|utc+N]`
+  resolves it (read-only) and shows what this EA build ends batch exports at now:
+  the EA's own last Friday as `ToDate`, so Thursday evidence. The current EA has no
+  EvidenceEnd export setting (`ea_evidence_end_setting.supported: false`).
+- A batch plan may carry `"evidence_end": "auto"` (or a date). `prepare-batch`
+  records the resolved target in `studio-plan.json` (`native_batch.evidence_end`),
+  `resume-batch` keeps the original request, and `batch-status` shows it. The EA
+  still ends its exports natively; catch-up brings them to the target.
+- `evidence-scan --source <run, deploy or member folder, or .set> [...]
+  [--evidence-end auto|date] [--include-below-threshold]` reads every kept export
+  (SET header windows, equity CSV, `.goatseq` manifest; never `account.csv`) and
+  classifies it against the target: `behind` (needs catch-up), `current`, `ahead`
+  (already ends later; clip it to the shared end, no re-test), `caught_up` (a
+  retained catch-up version already ends there) or `ineligible` with reasons
+  (below the run's MinARF/MinSR thresholds, another broker server, unknown tester
+  settings, not standard mode). The capture's observed end is authoritative; a
+  capture stopped by the row limit falls back to the SET header's FOOS end.
+- `catchup-validate --plan` previews and `catchup-prepare --catchup-id --plan`
+  freezes a plan `{schema_version:1, evidence_end, sets:[absolute .set paths],
+  job_timeout_seconds[, broker_clock, assume:{ExecutionMode}, include_below_threshold]}`.
+  Each behind export becomes one member: its exact kept SET (frozen values, no
+  optimization) from the export's original start to the evidence end, with the
+  original deposit, currency, leverage and delay from the run's `manifest.json`
+  (a library copy without its run folder needs `assume.ExecutionMode`, recorded as
+  assumed and checked by the reproduction test below). Original exports are never
+  changed.
+- `catchup-start`/`catchup-resume` (`--max-seconds` 1..3600), `catchup-status`,
+  `catchup-cancel` and `catchup-report` drive and read it.
+
+How it runs natively, with no EA change: the native Studio queue only runs
+optimizations, so catch-up reuses the SeedRunner process driver. Each member is one
+MT5 start with a `/config` INI: `[Tester]` `Optimization=0`, `Model=4`,
+`ForwardMode=0`, `ShutdownTerminal=1`, `FromDate` = original start, `ToDate` =
+evidence end + 1; `[TesterInputs]` = the frozen values plus the EA's own export
+inputs (`EA_Desc=<alias>@{mode=EXPORT,dt_BOOS_end,dt_FOOS_start,dt_FWD_start,dt_FWD_end}`
+and `Sequence_Export_*`, exactly as `RunAndStoreSet` passes them). The runner
+stages the capture's `GOATSequencePending\<id>\source-inputs.set` before launch;
+the EA writes its usual SET/CSV/`.goatseq` unit into `Common Files\TEMP\SQ\<token>`
+and the runner moves it to `<controller state>\evidence\<catch-up id>\<alias>\`
+with an `evidence-version.json` that links the original (same `values_sha256`, new
+end date). Catch-up shares the seed terminal slot (`seed-active.json`), owner STOP,
+pause and broker-verified start record rules, and stops after any failed member.
+It is `native_launch_qualified: false` until a native proof run shows: the EA
+accepts a `/config` single pass with plain-valued `[TesterInputs]` and writes the
+export unit to the attempt root; MT5 exits after the pass; the moved unit's
+`effective-inputs.set` and equity rows reproduce the original before the new weeks.
+
+New-weeks-only verdict (`goat-catchup-verdict-v1`, `studio_catchup_verdict.py`):
+only the days after the original evidence end are judged; the original forward
+window measured inside the same re-test gives the pace. `not_comparable` (inputs
+differ), `failed` (a new worst drawdown, or at least 5 trades with a loss and PF
+below 0.8), `too_few_trades` (fewer than 5 trades opened), `held_up` (profitable,
+PF at least 1, drawdown within what it had already shown, and at least half the
+forward profit pace) or `weakened`. Every verdict carries the trades, net, PF,
+drawdown, the forward pace, whether the re-test reproduced the original export
+(equity rows and deals before the new weeks) and `confidence` (`low` unless at
+least 20 trades over 10 trading days reproduced). A few weeks is a small sample.
+`evidence-versions` lists retained versions.
+
 ### Reviewed orphan continuation recovery (V1.49)
 
 `orphan-recovery-prepare` freezes exact idle demo/runtime and single-owner evidence.

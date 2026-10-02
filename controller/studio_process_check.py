@@ -4,9 +4,35 @@ Executable identity does not prove an EA's activity. Native queue ownership and
 fresh in-terminal runtime feedback must also pass before launch.
 """
 import json
+import ntpath
 from pathlib import Path, PureWindowsPath
 import subprocess
 import time
+
+
+def windows_image(path):
+    """The image path Windows itself opens for an inventory ExecutablePath.
+
+    Win32 resolves `.` and `..` lexically (GetFullPathNameW) before opening a
+    file, so `C:\\Program Files\\Git\\bin\\..\\usr\\bin\\bash.exe` (how Git for
+    Windows, and so Claude Code, starts its shell) IS `C:\\...\\Git\\usr\\bin\\bash.exe`.
+    Comparing the resolved path keeps every root check exact without refusing
+    ordinary tools. A `\\\\?\\` path is opened verbatim, unresolved, so the prefix is
+    stripped for comparison, and any `..` left inside one stays ambiguous. A
+    `\\\\.\\` device path IS normalised by Win32, so it is stripped and resolved like
+    an ordinary path. Either prefix therefore compares against the same roots and
+    cannot evade them. A relative path is ambiguous as well.
+    """
+    text=str(path)
+    verbatim=False
+    if text.startswith(('\\\\?\\UNC\\','//?/UNC/')):text,verbatim='\\\\'+text[8:],True
+    elif text.startswith(('\\\\?\\','\\??\\','//?/')):text,verbatim=text[4:],True
+    elif text.startswith(('\\\\.\\UNC\\','//./UNC/')):text='\\\\'+text[8:]
+    elif text.startswith(('\\\\.\\','//./')):text=text[4:]
+    raw=PureWindowsPath(text)
+    if not raw.is_absolute() or (verbatim and '..' in raw.parts):
+        raise ValueError('Ambiguous Windows executable path')
+    return PureWindowsPath(ntpath.normpath(text))
 
 
 def _demo_selected_roots(binding):
@@ -62,14 +88,15 @@ def selected_candidates(processes,roots,executable):
     other=[]; selected=[]; helpers=[]
     if not isinstance(processes,list):raise ValueError('Complete process inventory required')
     for row in processes:
-        if row.get('ExecutablePath') and PureWindowsPath(row['ExecutablePath'])==target:
+        image=windows_image(row['ExecutablePath']) if row.get('ExecutablePath') else None
+        if image is not None and image==target:
             selected.append(row)
-        elif (row.get('ExecutablePath') and PureWindowsPath(row['ExecutablePath']).parent==target.parent
-              and PureWindowsPath(row['ExecutablePath']).name.casefold()=='metatester64.exe'
-              and str(row.get('Name','')).casefold()==PureWindowsPath(row['ExecutablePath']).name.casefold()):
+        elif (image is not None and image.parent==target.parent
+              and image.name.casefold()=='metatester64.exe'
+              and str(row.get('Name','')).casefold()==image.name.casefold()):
             # The running terminal may own tester workers. These exact native
             # helper images are observed, never managed.
-            helpers.append(dict(pid=row.get('ProcessId'),executable=str(PureWindowsPath(row['ExecutablePath'])),created_utc=row.get('CreatedUtc')))
+            helpers.append(dict(pid=row.get('ProcessId'),executable=str(image),created_utc=row.get('CreatedUtc')))
         else:other.append(row)
     rows,visibility=stopped_candidates(other,roots)
     # Keep the full inventory uniqueness check, including selected PIDs.
@@ -99,9 +126,7 @@ def stopped_candidates(processes,roots):
             raise ValueError('Incomplete or ambiguous Windows process inventory')
         seen.add(pid)
         if path:
-            actual=PureWindowsPath(path)
-            if not actual.is_absolute() or '..' in actual.parts:
-                raise ValueError('Ambiguous Windows executable path')
+            actual=windows_image(path)
             if any(actual.is_relative_to(root) for root in paths):
                 raise ValueError('Executable is running under a stopped terminal root')
         else:
@@ -128,9 +153,7 @@ def classify_processes(processes,binding,*,observed_unix,research_running=True,u
         if type(pid) is not int or pid<=0 or pid in seen or not path or not created:
             raise ValueError('Unknown or ambiguous terminal process identity')
         seen.add(pid)
-        actual=PureWindowsPath(path)
-        if not actual.is_absolute() or '..' in actual.parts:
-            raise ValueError('Ambiguous Windows executable path')
+        actual=windows_image(path)
         if actual==research:role='research'
         elif actual==protected:role='protected'
         elif roots is not None and not any(actual.is_relative_to(root) for root in roots):

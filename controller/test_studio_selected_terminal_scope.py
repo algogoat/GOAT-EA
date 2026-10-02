@@ -50,6 +50,15 @@ class SelectedTerminalScopeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'stale proof'):_demo_selected_roots(self.binding)
             with patch('studio_installation.load_installation',return_value=install),patch('studio_installation.read_json',return_value={}),patch('studio_research_authority.require_demo_agent_scope',return_value={}):
                 with self.assertRaisesRegex(ValueError,'another selected'):_demo_selected_roots({'research_terminal':'C:/Other/terminal64.exe'})
+    def test_active_demo_ignores_git_bash_and_keeps_image_identity_under_prefixes(self):
+        bash=self.row('C:\\Program Files\\Git\\bin\\..\\usr\\bin\\bash.exe','bash.exe',3)
+        with patch('studio_process_check._demo_selected_roots',return_value=self.roots):
+            result=self.scan([self.row('\\\\?\\C:\\Selected\\terminal64.exe'),bash])
+            self.assertEqual(result['research']['pid'],1)
+            for duplicate in (self.row('\\\\.\\C:\\Selected\\terminal64.exe',pid=2),
+                              self.row('C:/Selected/sub/../terminal64.exe',pid=2)):
+                with self.subTest(duplicate=duplicate),self.assertRaises(ValueError):
+                    self.scan([self.row('C:/Selected/terminal64.exe'),duplicate])
     def test_selected_stopped_cannot_be_used_for_active_launch_scope(self):
         with self.assertRaisesRegex(ValueError,'stopped roots'):self.scan([],selected_stopped=True)
 

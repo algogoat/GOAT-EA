@@ -56,9 +56,35 @@ class StoppedInventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Protected peer process changed'):
             self.scan([self.row('C:/Peer/terminal64.exe',name='terminal64.exe')])
 
+    def test_git_bash_dotdot_image_outside_roots_is_ordinary(self):
+        # Git for Windows (and so Claude Code) starts bash as bin\..\usr\bin\bash.exe.
+        result=self.scan([self.row('C:\\Program Files\\Git\\bin\\..\\usr\\bin\\bash.exe',name='bash.exe')])
+        self.assertEqual(result['root_inventory']['process_count'],1)
+
+    def test_dotdot_resolving_into_a_stopped_root_still_refuses(self):
+        for path in ('C:/MT5/Other/../Banker/copy.exe','C:\\Data\\Banker\\x\\..\\copy.exe',
+                     'C:\\MT5\\.\\Banker\\copy.exe'):
+            with self.subTest(path=path),self.assertRaisesRegex(ValueError,'stopped terminal root'):
+                self.scan([self.row(path)])
+
+    def test_verbatim_and_device_prefixes_cannot_evade_a_root(self):
+        for path in ('\\\\?\\C:\\MT5\\Banker\\copy.exe','\\\\?\\c:\\data\\banker\\copy.exe',
+                     '\\\\.\\C:\\MT5\\Banker\\copy.exe','\\\\.\\C:\\MT5\\x\\..\\Banker\\copy.exe',
+                     '//?/C:/MT5/Banker/copy.exe'):
+            with self.subTest(path=path),self.assertRaisesRegex(ValueError,'stopped terminal root'):
+                self.scan([self.row(path)])
+
+    def test_mixed_separators_resolve_like_windows(self):
+        with self.assertRaisesRegex(ValueError,'stopped terminal root'):
+            self.scan([self.row('C:/MT5\\Banker/sub\\..\\copy.exe')])
+        result=self.scan([self.row('C:/Tools\\bin/../x.exe')])
+        self.assertEqual(result['root_inventory']['process_count'],1)
+
     def test_inventory_or_root_ambiguity_refuses(self):
+        # Relative images, and `..` inside a verbatim \\?\ path (Win32 opens it unresolved), stay ambiguous.
         for rows in ({},[self.row('relative.exe')],[self.row('C:/Other/a.exe')]*2,
-                     [self.row('C:/MT5/Banker/../copy.exe')],[dict(ProcessId=8)]):
+                     [self.row('..\\copy.exe')],[self.row('\\\\?\\C:\\Other\\x\\..\\copy.exe')],
+                     [dict(ProcessId=8)]):
             with self.subTest(rows=rows),self.assertRaises(ValueError):self.scan(rows)
         for roots in ([],['C:/'],['relative'],['C:/MT5/../Banker']):
             with self.subTest(roots=roots),self.assertRaises(ValueError):stopped_candidates([],roots)

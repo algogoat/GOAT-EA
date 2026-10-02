@@ -70,7 +70,11 @@ tradeoff between research cost, useful diversity and validation quality.
    pause note. A new installation needs no research `CONTINUE.md`.
 2. Resolve the exact executable, data directory, Common Files directory, account,
    server, build ID, EX5 hash and process creation time. A terminal nickname is
-   not a sufficient identity.
+   not a sufficient identity. Terminals are independent: with V1.49 terminal
+   isolation each terminal/account has its own batch folder
+   (`GOAT\<EA>-<server>-<login>-<hash>`) and its own sign-in file, so read the
+   folder and credential of the terminal you were given, never another terminal's
+   (see [INVARIANTS.md](INVARIANTS.md), INV-BATCH-01 and INV-CRED-01).
 3. Read active requests, receipts, producer ownership and expiry. Do not create
    another request while an earlier mutation has an unresolved outcome.
 4. Check current native account, connection, trading state and position/order

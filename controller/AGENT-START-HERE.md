@@ -164,6 +164,18 @@ Seed farming runs fast in-sample searches with no forward window and no exports.
 
 Not in this beta: automatic recording of seed or batch results, automatic ordering of the next batch, a background seed driver. You do these steps. Details: [SEED-WORKFLOW.md](SEED-WORKFLOW.md).
 
+## Several MT5 terminals on one PC
+
+Terminals are independent. With the SM32 EA (V1.49 terminal isolation), every terminal and
+account keeps its own batch state in `Common\Files\GOAT\GOAT V1.49-<server>-<login>-<hash>`
+and its own GOAT sign-in in `GOAT\Credentials\api-bearer-v149-<login>.token`. A batch or seed
+on one terminal never reads or changes another terminal's queue, pointer, config or sign-in,
+even when both use the same EA, server and account. Do not copy these files between terminals.
+The first time the updated EA chart loads, it moves this terminal's shared pre-isolation files
+into its own folder and writes `terminal-isolation.ini`; a batch that another terminal ran is
+left where it is. Older EA builds still share the old folder, so update every terminal on the
+PC before running batches on more than one. Details: [INVARIANTS.md](../docs/operations/INVARIANTS.md).
+
 ## Keep another MT5 running
 
 Only the selected MT5 and at most **one** reviewed peer may run during GOAT work. With that peer running and no batch active: `Studio @('peer-prepare','--terminal-executable','<its terminal64.exe>','--data-root','<its data folder>')`. Show the user the returned paths and PID. With their yes, within 10 minutes: `Studio @('peer-apply','--review-id','<review_id>','--confirm-reviewed')`. If the peer restarts, repeat the review.
@@ -195,5 +207,10 @@ Report the exact error text, the command and the IDs. Never delete state to get 
 | `Existing Studio activation requires reconciliation; ...` / `Installation changed since bootstrap; ...` | Stop. Do not re-bootstrap. Prepare a support report. |
 | `Desktop discovery unavailable. Start GOAT or select its data directory.` | Ask the user to open GOAT desktop. |
 | seed status `reconcile_required` | Stop. Do not start or cancel again; report it with `seed-status` output. |
+| `The GOAT EA running on this terminal predates terminal isolation. ...` | The chart still runs the old EA. Ask the user to remove and re-add the GOAT Studio chart (or restart MT5) so the installed EA loads, then retry. |
+| `The GOAT EA on this terminal uses batch folder ..., but this controller expects ...` | The terminal is signed in to a different account or folder than `bootstrap`. Ask the user to sign in to the bound demo account. |
+| `Another running MT5 terminal (...) resolves to this terminal's batch folder ...` | Two MT5 processes share this terminal's data folder. Ask the user to close the named one. |
+| `Batch state was not moved: both the shared folder ... and this terminal's folder ... hold batch state. ...` | Stop. Never delete either folder. Report both folder listings to support; a human chooses which to keep. |
+| `Batch state was not moved: the shared folder ... still holds controls of an unfinished attempt from this controller. ...` | Run `status`/`finish` for that attempt first, then retry. |
 
 To report a product problem: `Desktop 'support.prepareReport' @{category='studio'; summary='...'; reproduction='...'; expected='...'; actual='...'; errorCodes=@()}`, show the user the returned preview, and only after their yes send it with `support.submitReport` (`reportId`, `previewSha256`, `reviewed=$true`).

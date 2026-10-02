@@ -145,7 +145,10 @@ observations. Native consumption must repeat every check under its gate:
 - No active seed slot, outstanding start/cancel permit or request, deferred restart,
   native run pointer, native config, launch guard or owner file. Inspect relevant
   EA versions in Common Files as well as terminal-local state; absence in one
-  version's directory is not proof that another version has no work.
+  version's directory is not proof that another version has no work. With V1.49
+  terminal isolation (INV-BATCH-01), another terminal/account's own folder
+  (`GOAT V<ver>-<server>-<login>-<hash>`) is independent and never blocks; this
+  terminal's folder and every shared pre-isolation folder still do.
 - Freeze native control/global observations, then recheck immediately before the
   effect. Refuse changed state, non-idle tester, process restart or ownership drift.
 

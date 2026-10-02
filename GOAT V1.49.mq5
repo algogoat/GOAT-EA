@@ -7,14 +7,18 @@
 #define   GOAT_VERSION_LABEL "1.49"
 #define   GOAT_DEFAULT_BIAS_MODE Bias_Opens
 #define   GOAT_AI_SIGNAL_FILTER_V147 1
-#define GOAT_API_BEARER_FILE "GOAT\\Credentials\\api-bearer-v149.token"
+// Terminal isolation: per-terminal/account Common batch state and per-login
+// credential. The shared pre-isolation credential is read only for migration.
+#define GOAT_TERMINAL_ISOLATION_V149 1
+#define GOAT_API_BEARER_LEGACY_FILE "GOAT\\Credentials\\api-bearer-v149.token"
+#define GOAT_API_BEARER_FILE GOATApiBearerFile()
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-NDX-SYMBOL-MAP-31"
+#define   GOAT_BUILD_ID "V1.49-TERMINAL-ISOLATION-32"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 #include "GOAT_SequencePackage.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
-#define   GOAT_BUILD_MARKER "SM31"
+#define   GOAT_BUILD_MARKER "SM32"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -3075,6 +3079,9 @@ int OnInit()
       Sleep(100); ObjectsDeleteAll(ChartID(),0); Sleep(100);
       if(Mode_Operation==Operation_Batch)
       {
+      // One-time move of shared pre-isolation batch state into this terminal's folder.
+      string isolation=GoatOptMigrateLegacyBatchState(EA_Name,Server);
+      if(isolation!="") Print("GOAT state: "+isolation);
       TesterDialog.SetFlags(Key,EA_Name,Server,Font_Size,newWidth,newHeight);
       if(!TesterDialog.Create(ChartID(),"StrategyTesterGUI",0, left,top,left+newWidth,top+dialogOuterHeight)) {Alert("Tester GUI creation Failed, please try again."); return(INIT_FAILED);}
       TesterDialog.Caption("GOAT  /  OPTIMIZATION STUDIO  /  V"+GOAT_VERSION_LABEL+" "+GOAT_BUILD_MARKER+(g_GoatStudioReadOnlyMonitor ? "  /  READ-ONLY MONITOR" : ""));
@@ -3900,6 +3907,9 @@ int OnTesterInit()
    bool seedFarming=SeedFarmingPrepareReceiver();
    if(!seedFarming && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)==0.0 && GlobalVariableGet("BatchOnGoing")!=0)
    {
+    // A batch armed before this build: move its shared state here before reading it.
+    string isolation=GoatOptMigrateLegacyBatchState(EA_Name,Server);
+    if(isolation!="") Print("GOAT state: "+isolation);
     string axis_error="";
     string intended_inputs=GetFileContent(GoatOptStrategyDir(EA_Name,Server,EA_Desc)+"\\Inputs."+Key);
     if(!GoatStudioVerifyOptimizationInputs(intended_inputs,EA_Desc,axis_error))
@@ -3940,7 +3950,7 @@ int OnTesterInit()
    if(Mode_Opti==Opti_PF_MRFp || Mode_Opti==Opti_PF_MRF_SRp)
    {
     //if(FileIsExist(Key+"\\"+"Tester.txt",FILE_COMMON))
-    FileTester_handle = FileOpen(Key+"\\"+"Tester.txt",FILE_TXT|FILE_WRITE|FILE_READ|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
+    FileTester_handle = FileOpen(GoatOptTesterFitnessFile(EA_Desc,Symbol()),FILE_TXT|FILE_WRITE|FILE_READ|FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_COMMON);
     FileWrite(FileTester_handle,0.02);
     FileClose(FileTester_handle);
    }
@@ -4155,8 +4165,14 @@ double OnTester()
    if((Mode_Opti==Opti_PF_MRFp||Mode_Opti==Opti_PF_MRF_SRp) && MQLInfoInteger(MQL_OPTIMIZATION) && !MQLInfoInteger(MQL_FORWARD))
    {
     FileTester_handle=INVALID_HANDLE;
-    while(FileTester_handle==INVALID_HANDLE) FileTester_handle = FileOpen(Key+"\\"+"Tester.txt",FILE_TXT|FILE_READ|FILE_SHARE_READ|FILE_COMMON);
-    readVal=StringToDouble(FileReadString(FileTester_handle));   FileClose(FileTester_handle);
+    // Bounded: a missing per-run file can no longer hang an agent pass forever.
+    for(int open_attempt=0;open_attempt<500 && FileTester_handle==INVALID_HANDLE;open_attempt++)
+      {
+       FileTester_handle = FileOpen(GoatOptTesterFitnessFile(EA_Desc,Symbol()),FILE_TXT|FILE_READ|FILE_SHARE_READ|FILE_COMMON);
+       if(FileTester_handle==INVALID_HANDLE) Sleep(10);
+      }
+    readVal=0;
+    if(FileTester_handle!=INVALID_HANDLE) {readVal=StringToDouble(FileReadString(FileTester_handle)); FileClose(FileTester_handle);}
 
     if(fitness>readVal && readVal!=0)
     {
@@ -4165,7 +4181,7 @@ double OnTester()
     if(fitness>readVal)
     {
      FileTester_handle=INVALID_HANDLE;
-     while(FileTester_handle==INVALID_HANDLE) {FileTester_handle = FileOpen(Key+"\\"+"Tester.txt",FILE_TXT|FILE_WRITE|FILE_SHARE_WRITE|FILE_COMMON); Sleep(10);}
+     while(FileTester_handle==INVALID_HANDLE) {FileTester_handle = FileOpen(GoatOptTesterFitnessFile(EA_Desc,Symbol()),FILE_TXT|FILE_WRITE|FILE_SHARE_WRITE|FILE_COMMON); Sleep(10);}
      FileWrite(FileTester_handle,fitness);                         FileClose(FileTester_handle);
     }
    }
@@ -4268,7 +4284,7 @@ void OnTesterDeinit()
    Print(EA_Name+": "+Symbol()+" Optimization Ended");                     Sleep(100);
    if(FileCSV_handle    != INVALID_HANDLE) {FileClose(FileCSV_handle);     Sleep(100);}
    if(FileTester_handle != INVALID_HANDLE) {FileClose(FileTester_handle);  Sleep(100);}
-   FileDelete(Key+"\\"+"Tester.txt",FILE_COMMON);                          Sleep(500);
+   FileDelete(GoatOptTesterFitnessFile(EA_Desc,Symbol()),FILE_COMMON);     Sleep(500);
    ChartSetInteger(0, CHART_BRING_TO_TOP, true);                           Sleep(100);
 
    bool seedFarming=g_seedFarmingActive;

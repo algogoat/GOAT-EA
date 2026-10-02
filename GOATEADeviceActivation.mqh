@@ -187,8 +187,13 @@ bool GOATDeviceActivationWriteCredential(void)
    if(StringLen(g_GOATDeviceActivationCandidate)!=72
       || StringFind(g_GOATDeviceActivationCandidate,"goat_ea_")!=0
       || !GOATIsSafeApiBearerToken(g_GOATDeviceActivationCandidate)) return false;
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+   // The per-login path must name the very account the user just approved.
+   if(GOATAccountLoginDigits()=="" || GOATAccountLoginDigits()!=g_GOATDeviceActivationAccountId) return false;
+#endif
 
-   // One user-scoped FILE_COMMON credential is shared locally. The server
+   // Pre-isolation builds share one user-scoped FILE_COMMON credential; isolation
+   // builds keep one per MT5 login (GOAT_API_BEARER_FILE). The server
    // rechecks MT5-account membership and entitlement on every feed request.
    string directory="GOAT\\Credentials";
    string temporary=GOAT_API_BEARER_FILE+".pending";

@@ -850,6 +850,10 @@ void CStrategyTesterDialog::ManagedObservation(const string status)
       +",\"monitor_instance\":"+GoatStudioQuote(GoatStudioRecoveryInstance())
       +",\"terminal_running\":"+(GlobalVariableGet("TerminalRunning")!=0 ? "true" : "false")+"}";
 #endif
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+   // The controller refuses native work unless it resolves this same folder.
+   body+=",\"state_base\":"+GoatStudioQuote(GoatOptBasePath(EA_Name,Server));
+#endif
    ulong now=GetTickCount64();
    if(body==g_StudioLastObservation && now-g_StudioObservationMillis<5000) return;
    string published=body+",\"observed_terminal_utc\":"+GoatStudioQuote(TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS))+"}";

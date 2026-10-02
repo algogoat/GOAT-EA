@@ -163,6 +163,21 @@ class OrphanRecoveryTests(unittest.TestCase):
         self.c.store.bind('foreign','binding')
         with self.assertRaisesRegex(ValueError,'Multiple controller'): prepare(self.c)
 
+    def test_other_terminal_batch_state_never_blocks_but_own_and_shared_folders_do(self):
+        # INV-BATCH-01: mirrors GoatStudioRecoveryCommonClear in the EA.
+        from studio_terminal_isolation import controller_base_name, legacy_base_name
+        common=self.fixture.common/'GOAT'; account=self.c.session['account']
+        own=controller_base_name(self.c)
+        other=common/('GOAT V1.49-'+account['server']+'-'+account['login']+'-00000000')
+        self.assertNotEqual(other.name,own)
+        other.mkdir(); (other/'active_optimization_run.ini').write_text('other terminal'); (other/'agent-native-control-owner.json').write_text('{}')
+        self.assertEqual(prepare(self.c)['status'],'review')
+        self.assertEqual((other/'active_optimization_run.ini').read_text(),'other terminal')
+        for name in (own, legacy_base_name('1.49',account['server'])):
+            folder=common/name; folder.mkdir(exist_ok=True); pointer=folder/'active_optimization_run.ini'; pointer.write_text('retained')
+            with self.assertRaisesRegex(ValueError,'Native controls exist'): prepare(self.c)
+            pointer.unlink()
+
     def test_crash_after_consumption_or_missing_consumption_never_reports_success(self):
         review_id=prepare(self.c)['review_id']; apply(self.c,review_id,confirmed=True)
         self.consume(review_id,consumed=False); self.flags=False

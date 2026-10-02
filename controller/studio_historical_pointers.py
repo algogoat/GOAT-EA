@@ -90,8 +90,12 @@ def inventory(c, retired=None):
     retired=retired or {};seen=set();result=[]
     folders=list(common.iterdir())
     if len(folders)>10000:raise ValueError('Common root inventory exceeds supported size')
+    from studio_terminal_isolation import controller_base_name, foreign_namespace
+    own_name=controller_base_name(c)
     for folder in sorted(folders):
         safe_path(folder)
+        # Another terminal's own batch state is never a historical UI pointer here.
+        if foreign_namespace(folder.name,own_name):continue
         if folder.name=='Workers':
             for item in folder.rglob('*'):
                 safe_path(item)

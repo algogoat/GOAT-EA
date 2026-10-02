@@ -162,9 +162,27 @@ void GoatSetupCleanupExpiredPairing(const string root)
    FileClose(lock);
 }
 
+// The read-only Studio monitor never trades, so it hosts the same opt-in mailbox:
+// an agent can read the pending pairing code and close an idle research terminal
+// without a click. A shutdown there also needs an idle tester and no batch state.
+bool GoatSetupMailboxHost(void)
+{
+   if(MQLInfoInteger(MQL_TESTER)) return false;
+   return(Mode_Operation==Operation_Dash || (Mode_Operation==Operation_Batch && g_GoatStudioReadOnlyMonitor));
+}
+
+bool GoatSetupResearchIdle(void)
+{
+   if(Mode_Operation!=Operation_Batch) return true;
+   return(GoatStudioTesterState()=="idle" && GlobalVariableGet("BatchOnGoing")==0
+      && GlobalVariableGet("GOAT_BatchRestartPending")==0
+      && !FileIsExist("GOATStudio\\native-gate\\request.json")
+      && !FileIsExist("GOATStudio\\native-gate\\permit.json"));
+}
+
 void GoatSetupControlPoll(void)
 {
-   if(Mode_Operation!=Operation_Dash || MQLInfoInteger(MQL_TESTER)) return;
+   if(!GoatSetupMailboxHost()) return;
    string root="GOAT\\AgentSetup\\"+GoatTerminalToken()+"\\";
    if(AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO) GoatSetupCleanupExpiredPairing(root);
    string registration="",request="";
@@ -223,7 +241,8 @@ void GoatSetupControlPoll(void)
       && ((request_schema==1 && (action=="status" || action=="shutdown"))
          || (request_schema==2 && action=="pairing" && allow_pairing));
    bool inert=TerminalInfoInteger(TERMINAL_CONNECTED) && !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) && PositionsTotal()==0 && OrdersTotal()==0;
-   string result=(!valid ? "rejected_envelope" : (action=="shutdown" && !inert ? "rejected_not_inert" : (action=="shutdown" ? "shutdown_requested" : "observed")));
+   bool closable=inert && GoatSetupResearchIdle();
+   string result=(!valid ? "rejected_envelope" : (action=="shutdown" && !closable ? "rejected_not_inert" : (action=="shutdown" ? "shutdown_requested" : "observed")));
    bool pairing_available=false;
    if(valid && action=="pairing")
      {

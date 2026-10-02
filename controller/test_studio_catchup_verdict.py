@@ -92,8 +92,11 @@ class Scenario:
     """An original export ending Thu 2026-09-24 and its re-test to Fri 2026-10-09 (11 new weekdays)."""
 
     def __init__(self, root, *, new_per_day=10, new_trades=2, new_result=6.0, dips_new=(), new_last=date(2026, 10, 9),
-                 retest_capture=True, retest_complete=True, change_inputs=False, alter_history=False, retest=None):
+                 retest_capture=True, retest_complete=True, change_inputs=False, alter_history=False, retest=None, tail_drop=None):
         history = daily(date(2026, 1, 5), ORIGINAL_END, 10000, 10, dips=[(date(2026, 3, 4), 120)])
+        if tail_drop:   # the original ends in a drawdown already under way: its last three rows sit tail_drop below the peak
+            low = history[-4][2] - Decimal(str(tail_drop))
+            history[-3:] = [(stamp, low, low) for stamp, _, _ in history[-3:]]
         history_deals = trading(date(2026, 1, 5), ORIGINAL_END, 2, 5.1)
         forced = (datetime.combine(ORIGINAL_END, time(23, 59)), history[-1][1], history[-1][2])
         foos = [('BOOS', date(2026, 1, 5), date(2026, 1, 19), 20, 100), ('FWD', date(2026, 7, 17), date(2026, 8, 28), 60, 300)]
@@ -256,6 +259,14 @@ class EvaluateTests(unittest.TestCase):
         result = Scenario(self.root, dips_new=[(date(2026, 10, 1), 400)]).evaluate()
         self.assertEqual(result['verdict'], 'failed')
         self.assertIn('worst drawdown already shown', result['reasons'][0])
+
+    def test_drawdown_under_way_before_the_new_weeks_counts(self):
+        # Down 70 from the peak at the original's end, then 80 more on the first new day: 140 from the peak beats the prior 120.
+        result = Scenario(self.root, tail_drop=70, dips_new=[(date(2026, 9, 25), 80)]).evaluate()
+        new = result['new_weeks']
+        self.assertEqual((new['dd'], new['dd_from_open'], new['dd_basis'], result['prior_dd']), (140.0, 80.0, 'running_peak_incl_prior', 120.0))
+        self.assertEqual(result['verdict'], 'failed')
+        self.assertIn('140 from the peak vs 120 before', result['reasons'][0])
 
     def test_few_trades_is_too_few_to_judge(self):
         result = Scenario(self.root, new_last=date(2026, 9, 28), new_trades=1).evaluate()

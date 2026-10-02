@@ -89,9 +89,56 @@ def broker_proof(controller, session, *, mt5=None, require_flat=True):
     return proof
 
 
+def activation_reason(controller, login):
+    """This terminal's EA sign-in reason from ``GOAT/activation-status-<data folder>.json``.
+
+    Operational metadata only (the EA never writes the code there). With per-login
+    activation (SM32/EX33) the file is still keyed by the data folder token, and a
+    status written for another login is ignored.
+    """
+    from studio_research_status import activation
+    mine, _ = activation(controller.install, login)
+    return (mine or {}).get('reason')
+
+
+def saved_login(controller):
+    """(login, server) MT5 saved in ``<data root>\\config\\common.ini``, or (None, None). Read-only."""
+    import configparser
+    try:
+        raw = (Path(controller.install['terminal_data_root']) / 'config' / 'common.ini').read_bytes()[:1 << 20]
+        text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+        ini = configparser.ConfigParser(interpolation=None, strict=False)
+        ini.read_string(text)
+        return ini.get('Common', 'Login', fallback=None), ini.get('Common', 'Server', fallback=None)
+    except (OSError, UnicodeError, configparser.Error):
+        return None, None
+
+
+def account_facts(controller, proof):
+    """Where the login and server came from: the broker readback, never typed input.
+
+    ``savedLoginMatches`` is the common.ini cross-check (None when MT5 saved none).
+    """
+    login, server = saved_login(controller)
+    matches = None if login is None else (login == proof['login'] and server == proof['server'])
+    return dict(source='mt5_broker_readback', login=proof['login'], server=proof['server'],
+                demo=proof['demo'] is True, savedLoginMatches=matches)
+
+
+def _no_code_action(reason):
+    if reason == 'approved':
+        return 'This terminal is already connected to GOAT; there is nothing to approve.'
+    if reason == 'build_not_admitted':
+        return 'GOAT refused this EA build at sign-in, so it shows no code. Install the approved GOAT build, then reopen MT5.'
+    if reason == 'webrequest_permission_required':
+        return 'MT5 is blocking the GOAT sign-in request. Allow WebRequest for https://goatedge.ai, then reload the GOAT chart.'
+    return 'This EA has no pending connection code: it is already paired or has not asked for one.'
+
+
 def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
     session, _ = session_state(controller)
-    require_unprotected(session['account']['login'])
+    login = session['account']['login']
+    require_unprotected(login)
     from studio_seed_process import WindowsSeedProcess
     if WindowsSeedProcess(controller).inspect() is None:
         return dict(status='terminal_stopped', userCodeReturned=False,
@@ -100,24 +147,27 @@ def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
     # A fresh broker readback, not the binding, proves demo before any request; the EA
     # itself also answers only on ACCOUNT_TRADE_MODE_DEMO.
     proof = broker_proof(controller, session, mt5=mt5, require_flat=False)
+    reason = activation_reason(controller, login)
     setup_register(controller, ident, allow_pairing=True)
     result = (request or setup_request)(controller, ident, 'pairing', timeout=timeout)
     outcome = result['result']
     if outcome == 'pairing_available':
-        login = session['account']['login']
         return dict(status='pairing_available', userCode=result['userCode'], activationId=result['activationId'],
                     pairingExpiresAtMs=result['pairingExpiresAtMs'], responseExpiresAtUtc=result['responseExpiresAtUtc'],
                     observedAtUtc=result['observedAtUtc'], accountLogin=login, accountLast4=login[-4:],
                     server=proof['server'], buildId=ident['buildId'], demo=proof['demo'] is True, tradingAllowed=False,
-                    receiptId=result['id'])
+                    activationReason=reason, accountFacts=account_facts(controller, proof), receiptId=result['id'])
     if outcome == 'pairing_unavailable':
-        return dict(status='no_pending_pairing', userCodeReturned=False,
-                    next_action='This EA has no pending connection code: it is already paired or has not asked for one.')
+        return dict(status='no_pending_pairing', userCodeReturned=False, activationReason=reason,
+                    next_action=_no_code_action(reason))
     if outcome == 'rejected_not_inert':
         raise ValueError('MT5 is not inert: turn Algo Trading off and close demo positions before pairing')
     if outcome == 'receipt_timeout':
-        return dict(status='no_native_answer', userCodeReturned=False, requestId=result['id'],
-                    next_action='No GOAT chart answered the local request. This build answers from the Portfolio Dashboard; read the code shown in MT5 instead.')
+        waiting = reason == 'awaiting_approval'
+        return dict(status='no_native_answer', userCodeReturned=False, requestId=result['id'], activationReason=reason,
+                    next_action=('The EA is waiting for approval and shows a connection code, but no GOAT chart on this build answers the local read. '
+                                 'Read the code shown in MT5 instead.' if waiting else
+                                 'No GOAT chart answered the local request. This build answers from the Portfolio Dashboard; read the code shown in MT5 instead.'))
     raise ValueError('The EA refused the pairing request (' + outcome + ')')
 
 
@@ -150,7 +200,20 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
     inspect = inspect or inspect_idle_demo
     request = request or setup_request
     path = _journal(controller, 'terminal-closes', attempt_id)
-    with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
+    gate = controller.local / 'native-gate'
+
+    def refuse_pending_native():
+        # A native-gate request or permit means a batch start or control is in flight; the
+        # controller cannot read the EA's BatchOnGoing flag, so this is a hard refusal.
+        if any((gate / name).exists() or (gate / name).is_symlink() for name in ('request.json', 'permit.json')):
+            raise ValueError('A native Studio request or permit is pending on this terminal; GOAT will not close MT5 during it')
+
+    # The terminal lock is held throughout. The native gate (launch.lock, opened with no
+    # sharing) is held only for the controller's own checks and its own fallback close:
+    # the EA's inert shutdown takes launch.lock itself from its idle check through
+    # TerminalClose (GOAT-EA #112), so holding it across that request would make every
+    # monitor close refuse.
+    with demo_terminal_lock(controller):
         if path.exists():
             record = read_json(path)
             if record.get('phase') in ('stopped', 'already_stopped'):
@@ -163,26 +226,23 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
                     return record
                 return record | dict(status='close_outcome_unresolved', close_will_not_be_repeated=True)
             raise ValueError('Retained close attempt is unresolved; inspect it before another close')
-        require_idle_control(controller, session)
-        if (Path(controller.root) / 'demo-agent' / 'STOP').exists():
-            raise ValueError('Owner STOP is set on this terminal; clear it deliberately before agents act')
-        # A native-gate request or permit means a batch start or control is in flight; the
-        # controller cannot read the EA's BatchOnGoing flag, so this is a hard refusal.
-        gate = controller.local / 'native-gate'
-        if any((gate / name).exists() or (gate / name).is_symlink() for name in ('request.json', 'permit.json')):
-            raise ValueError('A native Studio request or permit is pending on this terminal; GOAT will not close MT5 during it')
-        running = process.inspect()
-        if running is None:
-            record = dict(schema_version=1, attempt_id=attempt_id, phase='already_stopped', status='already_stopped')
+        with exclusive_gate(gate):
+            require_idle_control(controller, session)
+            if (Path(controller.root) / 'demo-agent' / 'STOP').exists():
+                raise ValueError('Owner STOP is set on this terminal; clear it deliberately before agents act')
+            refuse_pending_native()
+            running = process.inspect()
+            if running is None:
+                record = dict(schema_version=1, attempt_id=attempt_id, phase='already_stopped', status='already_stopped')
+                write_json(path, record)
+                return record
+            native = inspect(controller)
+            if native.get('process') != running:
+                raise ValueError('The terminal changed while it was inspected; nothing was closed')
+            record = dict(schema_version=1, attempt_id=attempt_id, phase='close_intent', process=running,
+                          native=native, created_utc=datetime.now(timezone.utc).isoformat(), trading_changed=False,
+                          positions_closed=False)
             write_json(path, record)
-            return record
-        native = inspect(controller)
-        if native.get('process') != running:
-            raise ValueError('The terminal changed while it was inspected; nothing was closed')
-        record = dict(schema_version=1, attempt_id=attempt_id, phase='close_intent', process=running,
-                      native=native, created_utc=datetime.now(timezone.utc).isoformat(), trading_changed=False,
-                      positions_closed=False)
-        write_json(path, record)
         method = None
         if build_id:
             ident = identity(controller, session, build_id)
@@ -206,14 +266,20 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
                 record.update(phase='refused', status=receipt['result']); write_json(path, record)
                 raise ValueError('The EA refused the close request (' + receipt['result'] + ')')
         if method is None:
-            # No mailbox host answered (for example a Studio monitor chart). Re-prove
-            # inert state immediately before the single normal close.
-            again = inspect(controller)
-            if again.get('process') != running:
-                raise ValueError('The terminal changed before close; nothing was closed')
-            method = 'controller_normal_close'
-            record['phase'] = 'close_issued'; record['method'] = method; write_json(path, record)
-            process.close(running)
+            # No mailbox host answered (for example an older Studio monitor chart). Under
+            # the native gate, re-prove inert state immediately before the single normal close.
+            with exclusive_gate(gate):
+                try:
+                    refuse_pending_native()
+                except ValueError:
+                    record.update(phase='refused', status='native_request_pending'); write_json(path, record)
+                    raise
+                again = inspect(controller)
+                if again.get('process') != running:
+                    raise ValueError('The terminal changed before close; nothing was closed')
+                method = 'controller_normal_close'
+                record['phase'] = 'close_issued'; record['method'] = method; write_json(path, record)
+                process.close(running)
         else:
             record['phase'] = 'close_issued'; record['method'] = method; write_json(path, record)
         stopped = _wait_exit(process, running, wait_seconds)

@@ -327,7 +327,10 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         try:
             with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
                 require_idle_control(controller, session)
-                if where['state'].exists():
+                # A crash after staging but before the journal said 'staged' leaves this
+                # plan's own exact resume file; only a different one blocks the deploy.
+                if where['state'].exists() and (where['state'].is_symlink()
+                                                or where['state'].read_bytes() != staged_bytes(controller, plan, members)[where['state']]):
                     raise ValueError('This terminal already has a saved GOAT dashboard portfolio; stop or remove it before deploying another')
                 if (portfolio_root(controller) / 'registration.json').exists():
                     raise ValueError('Another dashboard portfolio registration is retained for this terminal; inspect it before deploying')

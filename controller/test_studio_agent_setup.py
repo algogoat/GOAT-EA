@@ -17,6 +17,7 @@ from unittest.mock import patch
 import studio_agent_mailbox as mailbox
 import studio_agent_setup as agent_setup
 import studio_demo_deploy as deploy
+from studio_native_gate import exclusive_gate
 import test_goat_studio as fixtures
 
 BUILD = 'V1.48-TEST-BUILD-01'
@@ -68,8 +69,10 @@ class FakeEA(threading.Thread):
         self.rows = []
         self.command = 0
         self.shutdowns = 0
+        self.gate_refusals = 0
         self.code = 'ABCD-EF23'
         self.on_shutdown = lambda: None
+        self.audit_registration = None  # Audit a different registration than the request names.
 
     def stop(self):
         self.stop_event.set(); self.join(5)
@@ -103,7 +106,17 @@ class FakeEA(threading.Thread):
         if envelope['expiresAtUtc'] < time.time():
             body = self.base(envelope['id'], 'rejected_envelope', ident)
         elif action == 'shutdown':
-            body = self.base(envelope['id'], 'shutdown_requested' if inert and not self.batch else 'rejected_not_inert', ident)
+            # Like the #112 Studio monitor, the EA holds GOATStudio\native-gate\launch.lock
+            # (no sharing) from its idle check through TerminalClose; if the lock cannot be
+            # opened it refuses instead of closing.
+            gate = self.c.local / 'native-gate'; gate.mkdir(parents=True, exist_ok=True)
+            try:
+                with exclusive_gate(gate):
+                    result = 'shutdown_requested' if inert and not self.batch else 'rejected_not_inert'
+            except OSError:
+                result = 'rejected_not_inert'
+                self.gate_refusals += 1
+            body = self.base(envelope['id'], result, ident)
         elif action == 'pairing':
             if not inert:
                 body = self.base(envelope['id'], 'rejected_not_inert', ident)
@@ -154,7 +167,8 @@ class FakeEA(threading.Thread):
                      exposureMode=reg['exposureMode'], ackId=self.rows[i]['ack'], ackStatus=1 if self.rows[i]['ack'] else 0,
                      AI_MODE=1, AI_PROTOCOL=2, AI_THRESHOLD=reg['aiThreshold'], AI_SCOPE=0, AI_VERIFIED=0, AI_AVAILABLE=0, AI_AT=None,
                      EA_TRADE_ALLOWED=self.child_trade if self.rows[i]['cid'] > 0 else None) for i, m in enumerate(reg['members'])]
-        body = dict(schema=1, id=envelope['id'], action=action, registrationSha256=envelope['registrationSha256'], result=result,
+        audited = self.audit_registration if action == 'audit' and self.audit_registration else envelope['registrationSha256']
+        body = dict(schema=1, id=envelope['id'], action=action, registrationSha256=audited, result=result,
                     account=reg['account'], server=reg['server'], directory=reg['directory'], buildId=reg['buildId'],
                     observedAtUtc=int(time.time()), connected=True, tradingAllowed=self.algo, positions=self.positions, orders=0,
                     aiMode=reg['aiMode'], aiThreshold=reg['aiThreshold'], aiProtocol=reg['aiProtocol'], commandId=self.command,
@@ -202,6 +216,8 @@ class AgentSetupTests(unittest.TestCase):
         result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
         self.assertEqual(result['status'], 'pairing_available')
         self.assertEqual((result['userCode'], result['accountLast4'], result['buildId']), ('ABCD-EF23', '3456', BUILD))
+        self.assertEqual(result['accountFacts'], dict(source='mt5_broker_readback', login='123456', server='Customer-Demo',
+                                                      demo=True, savedLoginMatches=True), 'login and server come from MT5, cross-checked with common.ini')
         registration = json.loads((mailbox.setup_root(self.c) / 'registration.json').read_text())
         self.assertEqual(registration['schema'], 2); self.assertTrue(registration['allowPairingRead'])
         self.assertLessEqual(registration['expiresAtUtc'], time.time() + 900, 'pairing registration is at most 15 minutes')
@@ -238,6 +254,37 @@ class AgentSetupTests(unittest.TestCase):
         self.assertFalse((mailbox.setup_root(self.c) / 'registration.json').exists(), 'no registration or request on a non-demo account')
         result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
         self.assertEqual((result['status'], result['demo'], result['server']), ('pairing_available', True, 'Customer-Demo'))
+
+    def activation_status(self, reason, account='123456', token=None):
+        folder = Path(self.c.install['common_files_root']) / 'GOAT'; folder.mkdir(parents=True, exist_ok=True)
+        name = token or Path(self.c.install['terminal_data_root']).name
+        (folder / ('activation-status-' + name + '.json')).write_text(json.dumps(dict(
+            accountId=account, buildId=BUILD, reason=reason, httpStatus=201, nativeError=0, retrySeconds=5, observedAtUtc=int(time.time()))))
+
+    def test_pairing_reads_a_per_login_activation_awaiting_approval(self):
+        # SM32/EX33: the status file is keyed by the data-folder token and names the login;
+        # it never carries the code, which only the mailbox receipt returns.
+        self.activation_status('awaiting_approval')
+        self.start_ea()
+        result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+        self.assertEqual((result['status'], result['activationReason'], result['userCode']), ('pairing_available', 'awaiting_approval', 'ABCD-EF23'))
+        self.ea.stop(); self.ea = None
+        with patch.object(agent_setup, 'setup_request', return_value=dict(id='b' * 32, result='receipt_timeout')):
+            result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+        self.assertEqual((result['status'], result['activationReason']), ('no_native_answer', 'awaiting_approval'))
+        self.assertIn('waiting for approval', result['next_action']); self.assertNotIn('userCode', result)
+
+    def test_pairing_explains_an_approved_or_refused_activation_and_ignores_other_logins(self):
+        self.start_ea(pairing='none')
+        self.activation_status('approved')
+        result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+        self.assertEqual((result['status'], result['activationReason']), ('no_pending_pairing', 'approved'))
+        self.assertIn('already connected', result['next_action'])
+        self.activation_status('build_not_admitted')
+        self.assertIn('approved GOAT build', agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))['next_action'])
+        self.activation_status('approved', account='999999')
+        self.assertIsNone(agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))['activationReason'],
+                          'a status written for another login on this data folder is ignored')
 
     def test_setup_receipt_rejects_foreign_or_stale_payloads(self):
         good = dict(schema=1, id='c' * 32, result='pairing_available', account=123456, server='Customer-Demo', directory=self.ident['directory'],
@@ -356,6 +403,27 @@ class AgentSetupTests(unittest.TestCase):
             result = agent_setup.close_terminal(self.c, 'withdraw-2', build_id=BUILD, wait_seconds=0.5,
                                                 retire=lambda *args: (setattr(self.process, 'identity', None), answered)[1])
         self.assertEqual(result['method'], 'ea_inert_shutdown'); self.assertEqual(len(self.process.closed), 1, 'only the first test closed through the controller')
+
+    def test_the_ea_shutdown_is_sent_without_the_native_gate_held(self):
+        # Regression for #112: the controller must not hold launch.lock across the EA request.
+        ea = self.start_ea(pairing='none')
+        result = agent_setup.close_terminal(self.c, 'gate-free-1', build_id=BUILD)
+        self.assertEqual((result['method'], ea.shutdowns, ea.gate_refusals), ('ea_inert_shutdown', 1, 0))
+        # Someone else holding the gate (a batch start) makes the EA refuse, and no fallback close follows.
+        self.process.identity = FakeProcess().identity
+        gate = self.c.local / 'native-gate'; gate.mkdir(parents=True, exist_ok=True)
+        holding, release = threading.Event(), threading.Event()
+        def hold():
+            with exclusive_gate(gate):
+                holding.set(); release.wait(10)
+        holder = threading.Thread(target=hold, daemon=True); holder.start(); holding.wait(5)
+        try:
+            with patch.object(agent_setup, 'exclusive_gate', lambda root: __import__('contextlib').nullcontext()):
+                with self.assertRaisesRegex(ValueError, 'refused to close'):
+                    agent_setup.close_terminal(self.c, 'gate-held-1', build_id=BUILD)
+        finally:
+            release.set(); holder.join(5)
+        self.assertEqual((ea.gate_refusals, self.process.closed), (1, []))
 
     def test_broker_proof_refuses_real_money_unconnected_and_other_accounts(self):
         self.assertTrue(agent_setup.broker_proof(self.c, self.c.session, mt5=FakeMT5(self.c))['demo'])
@@ -518,6 +586,37 @@ class AgentSetupTests(unittest.TestCase):
         self.start_ea(pairing='none')
         with self.relaunch():
             self.assertEqual(deploy.load(self.c, self.plan(deploymentId='3' * 32), mt5=FakeMT5(self.c), sleep=lambda s: None)['phase'], 'ready')
+
+    def test_readiness_requires_the_audit_to_name_this_attempts_registration(self):
+        self.start_ea(pairing='none')
+        # The mailbox refuses a receipt for another registration (see the next test);
+        # readiness independently binds the audit to the journal's registration too.
+        def other_registration(controller, ident, action, timeout=20):
+            receipt = mailbox.portfolio_request(controller, ident, action, timeout=timeout)
+            return receipt | dict(registrationSha256='f' * 64) if action == 'audit' else receipt
+        with self.relaunch(), self.assertRaisesRegex(ValueError, 'audited a different registration'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=other_registration, sleep=lambda s: None)
+        self.assertEqual(json.loads(deploy.paths(self.c, 'e' * 32)['journal'].read_text())['phase'], 'policy_applied')
+
+    def test_a_receipt_for_another_registration_is_refused_by_the_mailbox(self):
+        self.start_ea(pairing='none').audit_registration = 'f' * 64
+        with self.relaunch(), self.assertRaisesRegex(ValueError, 'Portfolio receipt request mismatch'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
+        self.assertNotEqual(json.loads(deploy.paths(self.c, 'e' * 32)['journal'].read_text())['phase'], 'ready')
+
+    def test_a_crash_after_staging_resumes_the_same_plan(self):
+        real, crashed = deploy.write_json, []
+        def crash_once(path, value):
+            if value.get('phase') == 'staged' and not crashed:
+                crashed.append(True); raise RuntimeError('power loss')
+            return real(path, value)
+        with patch.object(deploy, 'write_json', crash_once), self.assertRaisesRegex(RuntimeError, 'power loss'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
+        self.assertEqual(json.loads(deploy.paths(self.c, 'e' * 32)['journal'].read_text())['phase'], 'validated')
+        self.assertTrue(deploy.paths(self.c, 'e' * 32)['state'].exists())
+        self.start_ea(pairing='none')
+        with self.relaunch():
+            self.assertEqual(deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)['phase'], 'ready')
 
     def test_a_data_folder_name_used_by_another_terminal_is_refused(self):
         claim = deploy.paths(self.c, 'e' * 32)['namespace']

@@ -52,6 +52,22 @@ class SeedPromoteTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'promoted SET changed'):
             promote(self.controller, 'batch', candidate, 'Keeper', runner=self.runner)
 
+    def test_identical_values_in_two_members_require_the_member(self):
+        import copy
+        second = copy.deepcopy(self.plan['jobs'][0]); second['tester']['Symbol'] = 'GBPUSD'; self.plan['jobs'].append(second)
+        self.prepare(); self.auto = True
+        self.assertEqual(self.runner.start('batch', 10)['status'], 'completed')
+        rows = self.runner.report('batch')['members']
+        shared = read_json(rows[1]['result_path'])['candidates'][0]['candidate_sha256']
+        self.assertEqual(shared, read_json(rows[0]['result_path'])['candidates'][0]['candidate_sha256'], 'same values, same hash')
+        with self.assertRaisesRegex(ValueError, 'matches 2 seed members; pass member'):
+            promote(self.controller, 'batch', shared, 'Ambiguous', runner=self.runner)
+        gbp = promote(self.controller, 'batch', shared, 'GBPUSD pick', member=rows[1]['alias'], runner=self.runner)
+        self.assertEqual(gbp['seed_window']['symbol'], 'GBPUSD'); self.assertEqual(gbp['alias'], rows[1]['alias'])
+        eur = promote(self.controller, 'batch', shared, 'EURUSD pick', member=rows[0]['member_id'], runner=self.runner)
+        self.assertEqual(eur['seed_window']['symbol'], 'EURUSD')
+        self.assertNotEqual(gbp['validation_set']['path'], eur['validation_set']['path'])
+
     def test_refuses_unknown_candidates_bad_names_and_changed_evidence(self):
         candidates = self.run_seed()
         with self.assertRaisesRegex(ValueError, 'not in this seed batch'):

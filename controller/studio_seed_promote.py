@@ -43,32 +43,37 @@ def _rewrite(frozen, lines):
     return b'\xff\xfe' + ''.join(out).encode('utf-16-le')
 
 
-def promote(controller, batch_id, candidate_sha256, name, *, neighborhood=1, runner=None):
+def promote(controller, batch_id, candidate_sha256, name, *, neighborhood=1, member=None, runner=None):
     if not isinstance(candidate_sha256, str) or not re.fullmatch('[0-9a-f]{64}', candidate_sha256):
         raise ValueError('Candidate must be the 64-character candidate_sha256 from the seed result')
     if not isinstance(name, str) or not NAME.fullmatch(name) or 'SeedFarming' in name or '@{' in name:
         raise ValueError('Name must be 1..63 plain letters, digits, spaces or _ . # - without SeedFarming metadata')
     if type(neighborhood) is not int or not 0 <= neighborhood <= MAX_NEIGHBORHOOD:
         raise ValueError('neighborhood must be an integer from 0 to %d ladder steps' % MAX_NEIGHBORHOOD)
+    if member is not None and (not isinstance(member, str) or not member):
+        raise ValueError('member must be a seed member alias or member_id')
     runner = runner or SeedRunner(controller, process=object())
     root, manifest, state = runner._read(batch_id)
-    found = None
+    # The candidate hash covers input values only, so identical values from two members
+    # (another symbol or window) share it: the member must then be named explicitly.
+    matches = []
     for spec, item in zip(manifest['members'], state['members']):
-        if not item.get('result'):
+        if not item.get('result') or (member is not None and member not in (spec['alias'], spec['member_id'])):
             continue
         result = read_seed_json(item['result']['path'], MAX_RESULT_BYTES)
         candidate = next((c for c in result['candidates'] if c['candidate_sha256'] == candidate_sha256), None)
         if candidate:
-            found = (spec, result, candidate)
-            break
-    if not found:
-        raise ValueError('Candidate is not in this seed batch\'s verified results')
-    spec, result, candidate = found
+            matches.append((spec, result, candidate))
+    if not matches:
+        raise ValueError('Candidate is not in this seed batch\'s verified results' + ('' if member is None else ' for that member'))
+    if len(matches) > 1:
+        raise ValueError('Candidate matches %d seed members; pass member with one of: %s' % (len(matches), ', '.join(m[0]['alias'] for m in matches)))
+    spec, result, candidate = matches[0]
     if candidate['source_sha256'] != spec['source_sha256'] or candidate['frozen_sha256'] != spec['set_sha256']:
         raise ValueError('Candidate provenance differs from its frozen seed member')
-    out = root / 'promoted' / candidate_sha256
-    receipt_path = out / 'promotion.json'
     request = dict(batch_id=batch_id, candidate_sha256=candidate_sha256, name=name, neighborhood=neighborhood)
+    out = root / 'promoted' / spec['alias'] / candidate_sha256
+    receipt_path = out / 'promotion.json'
     if receipt_path.exists():
         receipt = read_json(receipt_path)
         if {k: receipt.get(k) for k in request} != request:

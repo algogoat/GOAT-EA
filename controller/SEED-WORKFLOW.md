@@ -200,10 +200,11 @@ earlier findings. Publisher catalog updates remain separate from local evidence.
 Choose candidates within the authorized research scope, freeze their exact input
 values, and validate on independent periods with the normal export workflow.
 
-`seed-promote --batch-id <id> --candidate <candidate_sha256> --name <plain name> [--neighborhood 0..5]`
-does the freezing in one step. It re-verifies the retained seed evidence, merges
+`seed-promote --batch-id <id> --candidate <candidate_sha256> --name <plain name> [--neighborhood 0..5] [--member <alias>]`
+does the freezing in one step. The candidate hash covers input values only, so when the same values appear in
+several members (another symbol or window) it refuses and names them; pass `--member` with the member's alias. It re-verifies the retained seed evidence, merges
 `base_values` with the candidate's `value_overrides`, checks that the merge reproduces
-`candidate_sha256`, and writes, create-only under `seeds/<id>/promoted/<candidate>/`:
+`candidate_sha256`, and writes, create-only under `seeds/<id>/promoted/<alias>/<candidate>/`:
 a fixed SET (exact values, optimized axes switched off), a validation SET (each
 optimized axis narrowed to the candidate value plus or minus `neighborhood` ladder
 steps, clipped to the seed ladder; boolean axes keep their ladder) and `promotion.json`

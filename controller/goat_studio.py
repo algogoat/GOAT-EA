@@ -341,7 +341,7 @@ def main(argv=None):
         p=sub.add_parser(command);p.add_argument('--batch-id',required=True);p.add_argument('--max-seconds',type=int,default=60)
     for command in ('seed-status','seed-cancel','seed-report'):
         p=sub.add_parser(command);p.add_argument('--batch-id',required=True)
-    p=sub.add_parser('seed-promote');p.add_argument('--batch-id',required=True);p.add_argument('--candidate',required=True);p.add_argument('--name',required=True);p.add_argument('--neighborhood',type=int,default=1)
+    p=sub.add_parser('seed-promote');p.add_argument('--batch-id',required=True);p.add_argument('--candidate',required=True);p.add_argument('--name',required=True);p.add_argument('--neighborhood',type=int,default=1);p.add_argument('--member')
     p=sub.add_parser('prepare-batch');p.add_argument('--batch-id',required=True);p.add_argument('--plan',type=Path,required=True)
     p=sub.add_parser('batch-status');p.add_argument('--batch-id',required=True)
     p=sub.add_parser('save-batch');p.add_argument('--batch-id',required=True);p.add_argument('--output',type=Path,required=True)
@@ -466,7 +466,7 @@ def main(argv=None):
                 else: result=status(controller,args.review_id)
             elif args.operation=='seed-promote':
                 from studio_seed_promote import promote
-                result=promote(controller,args.batch_id,args.candidate,args.name,neighborhood=args.neighborhood)
+                result=promote(controller,args.batch_id,args.candidate,args.name,neighborhood=args.neighborhood,member=args.member)
             elif args.operation.startswith('seed-'):
                 from studio_seed import SeedRunner
                 runner=SeedRunner(controller)

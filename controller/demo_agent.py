@@ -1191,11 +1191,11 @@ class DemoAgent:
                          report_sha256=result.get('report_sha256'))
             return result
 
-    def seed_promote(self, batch_id, candidate, name, neighborhood=1):
+    def seed_promote(self, batch_id, candidate, name, neighborhood=1, member=None):
         """Freeze one verified seed candidate as SET files for validation; local files only, same scope as seed-report."""
         with self._seed_scope('seed-report', batch_id) as (controller, evidence):
             from studio_seed_promote import promote
-            result = promote(controller, batch_id, candidate, name, neighborhood=neighborhood,
+            result = promote(controller, batch_id, candidate, name, neighborhood=neighborhood, member=member,
                              runner=self._seed_runner(controller))
             self._append('seed_promote', 'written', batch_id=batch_id, candidate_sha256=candidate,
                          validation_sha256=result['validation_set']['sha256'])
@@ -1281,6 +1281,7 @@ def main(argv=None):
     seed_promote.add_argument('--candidate', required=True)
     seed_promote.add_argument('--name', required=True)
     seed_promote.add_argument('--neighborhood', type=int, default=1)
+    seed_promote.add_argument('--member')
     args = parser.parse_args(argv)
     try:
         agent = DemoAgent(args.installation)
@@ -1308,7 +1309,7 @@ def main(argv=None):
         elif args.command == 'seed-status': result = agent.seed_status(args.batch_id)
         elif args.command == 'seed-cancel': result = agent.seed_cancel(args.batch_id)
         elif args.command == 'seed-report': result = agent.seed_report(args.batch_id)
-        elif args.command == 'seed-promote': result = agent.seed_promote(args.batch_id, args.candidate, args.name, args.neighborhood)
+        elif args.command == 'seed-promote': result = agent.seed_promote(args.batch_id, args.candidate, args.name, args.neighborhood, args.member)
         if args.command == 'stop' and result.get('status') == 'stop_unconfirmed':
             print(json.dumps(dict(ok=False, code='STOP_UNCONFIRMED', result=result),
                              sort_keys=True, default=str), file=sys.stderr)

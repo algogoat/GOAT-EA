@@ -240,9 +240,10 @@ class DemoSeedAgentTests(unittest.TestCase):
         self.assertEqual([row['status'] for row in report['members']], ['completed', 'completed'])
         # A discovery becomes a validation SET through the same demo scope, with append-only evidence.
         candidate = read_json(report['members'][0]['result_path'])['candidates'][0]['candidate_sha256']
-        promoted = self.agent.seed_promote('batch', candidate, 'Demo Discovery One')
+        alias = report['members'][0]['alias']
+        promoted = self.agent.seed_promote('batch', candidate, 'Demo Discovery One', member=alias)
         self.assertTrue(Path(promoted['validation_set']['path']).is_file())
-        self.assertEqual(self.agent.seed_promote('batch', candidate, 'Demo Discovery One'), promoted)
+        self.assertEqual(self.agent.seed_promote('batch', candidate, 'Demo Discovery One', member=alias), promoted)
         self.assertEqual([a['operation'] for a in self.actions()].count('seed_promote'), 2)
 
     def test_duplicate_start_refused_and_restart_resumes_only_the_original_attempt(self):

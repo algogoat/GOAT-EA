@@ -42,10 +42,17 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
                 "   if(g_GoatStudioReadOnlyMonitor && g_StudioBound && m_studioLoaded\n"
                 '      && GlobalVariableGet("BatchOnGoing")!=0) GoatStudioRecoveryObserveCurrent();\n'
                 "#endif\n")
+        # Terminal isolation adds one top-level field, the batch folder the EA resolves.
+        isolation = ("#ifdef GOAT_TERMINAL_ISOLATION_V149\n"
+                     "   // The controller refuses native work unless it resolves this same folder.\n"
+                     '   body+=",\\"state_base\\":"+GoatStudioQuote(GoatOptBasePath(EA_Name,Server));\n'
+                     "#endif\n")
         observation = ui[ui.index("void CStrategyTesterDialog::ManagedObservation("):ui.index("\nvoid CStrategyTesterDialog::ManagedSave")]
         self.assertEqual(observation.count(hook), 1)
+        self.assertEqual(observation.count(isolation), 1)
+        self.assertLess(observation.index(isolation), observation.index('ulong now=GetTickCount64();'))
         self.assertLess(observation.index('now-g_StudioObservationMillis<5000'), observation.index(hook))
-        self.assertEqual(hashlib.sha256(observation.replace(hook, "").encode()).hexdigest(),
+        self.assertEqual(hashlib.sha256(observation.replace(hook, "").replace(isolation, "").encode()).hexdigest(),
                          "ccb0895972457bd25c75d808792e8def54728ab85ec07bb3d1d9bf7156b296e2")
         self.assertEqual(ui.count("GoatStudioRecoveryObserveCurrent();"), 1)
 

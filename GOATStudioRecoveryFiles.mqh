@@ -46,6 +46,11 @@ bool GoatStudioRecoveryCommonClear(void)
       if(++count>10000 || !GoatStudioRecoveryFindName(name)) {ok=false;break;}
       string lower=name;StringToLower(lower);
       if(StringFind(lower,"goat v")!=0) continue;
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+      // Another terminal's own batch state is independent of this terminal's flag.
+      // This terminal's folders (any login, any case) and every shared one still block.
+      if(GoatOptForeignNamespaceFolder(name,GoatOptTerminalHash())) continue;
+#endif
       string base="GOAT\\"+name;
       string controls[]={"active_optimization_run.ini","active_optimization_config.ini",
                          "active_optimization_launch.ini","agent-native-control-owner.json"};

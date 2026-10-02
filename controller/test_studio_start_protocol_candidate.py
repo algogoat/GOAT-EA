@@ -1,4 +1,4 @@
-"""Keep the forward EX33 candidate, and the retained SM31 and SP30 ones, distinct from release artifacts."""
+"""Keep the forward EX33 candidate, and the retained SM32, SM31 and SP30 ones, distinct from release artifacts."""
 import hashlib
 import json
 from pathlib import Path
@@ -6,6 +6,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 CANDIDATE = ROOT / 'candidate-builds/ea-experience-EX33'
+RETAINED_SM32 = ROOT / 'candidate-builds/terminal-isolation-SM32'
 RETAINED_SM31 = ROOT / 'candidate-builds/ndx-symbol-map-SM31'
 RETAINED = ROOT / 'candidate-builds/start-protocol-SP30'
 RETAINED_ROOT_BINARY = '05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9'
@@ -19,7 +20,9 @@ class StartProtocolCandidateTests(unittest.TestCase):
         self.assertIn('#define   GOAT_BUILD_ID "' + identity['build_id'] + '"', text)
         self.assertIn('#define   GOAT_BUILD_MARKER "' + identity['build_marker'] + '"', text)
         self.assertEqual((identity['build_id'], identity['build_marker']), ('V1.49-EA-EXPERIENCE-33', 'EX33'))
-        self.assertEqual(identity['supersedes_candidate'], 'ndx-symbol-map-SM31')
+        self.assertEqual(identity['supersedes_candidate'], 'terminal-isolation-SM32')
+        # EX33 is SM32 plus the EA experience track: SM32's isolation stays in the source.
+        self.assertIn('#define GOAT_TERMINAL_ISOLATION_V149 1', text)
         for relative, expected in identity['sources'].items():
             self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
         self.assertFalse(identity['native_qualified'])
@@ -27,9 +30,9 @@ class StartProtocolCandidateTests(unittest.TestCase):
         policy = json.loads((ROOT / 'controller/contracts/v149/dependencies.json').read_text(encoding='utf-8-sig'))
         self.assertEqual(policy['main_sha256'], identity['sources']['GOAT V1.49.mq5'])
         self.assertEqual(policy['header_sha256'], identity['sources']['GOAT_Inputs_Definitions.mqh'])
-        # The pinned input header is unchanged from SM31, so saved batch packages stay valid.
-        sm31 = json.loads((RETAINED_SM31 / 'identity.json').read_text(encoding='utf-8'))
-        self.assertEqual(identity['sources']['GOAT_Inputs_Definitions.mqh'], sm31['sources']['GOAT_Inputs_Definitions.mqh'])
+        # The pinned input header is SM32's, unchanged by EX33, so SM32 batch packages stay valid.
+        sm32 = json.loads((RETAINED_SM32 / 'identity.json').read_text(encoding='utf-8'))
+        self.assertEqual(identity['sources']['GOAT_Inputs_Definitions.mqh'], sm32['sources']['GOAT_Inputs_Definitions.mqh'])
         self.assertEqual(hashlib.sha256((ROOT / 'GOAT V1.49.ex5').read_bytes()).hexdigest(), RETAINED_ROOT_BINARY)
         serialized = json.dumps(identity)
         for host in ('C:\\', 'G:\\', 'AppData'):
@@ -59,7 +62,8 @@ class StartProtocolCandidateTests(unittest.TestCase):
 
     def test_retained_candidates_keep_their_own_exact_binaries(self):
         forward = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
-        for folder, marker, supersedes in ((RETAINED_SM31, 'SM31', 'start-protocol-SP30'), (RETAINED, 'SP30', None)):
+        for folder, marker, supersedes in ((RETAINED_SM32, 'SM32', 'ndx-symbol-map-SM31'),
+                                           (RETAINED_SM31, 'SM31', 'start-protocol-SP30'), (RETAINED, 'SP30', None)):
             identity = json.loads((folder / 'identity.json').read_text(encoding='utf-8'))
             receipt = json.loads((folder / 'compile-receipt.json').read_text(encoding='utf-8'))
             self.assertEqual(identity['build_marker'], marker)

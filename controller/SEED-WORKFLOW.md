@@ -199,6 +199,29 @@ conditions and config hash. Do not inherit parent variant measurements or overwr
 earlier findings. Publisher catalog updates remain separate from local evidence.
 Choose candidates within the authorized research scope, freeze their exact input
 values, and validate on independent periods with the normal export workflow.
+
+`seed-promote --batch-id <id> --candidate <candidate_sha256> --name <plain name> [--neighborhood 1..5] [--member <alias>]`
+does the freezing in one step. The candidate hash covers input values only, so when the same values appear in
+several members (another symbol or window) it refuses and names them; pass `--member` with the member's alias. It re-verifies the retained seed evidence, merges
+`base_values` with the candidate's `value_overrides`, checks that the merge reproduces
+`candidate_sha256`, and publishes, create-only, the folder `seeds/<id>/promoted/<alias>/<candidate>/` with:
+`fixed.set` (exact values, every optimized axis switched off), `robustness.set` (each
+optimized axis narrowed to the candidate value plus or minus `neighborhood` ladder
+steps, default 1, clipped to the seed ladder; boolean axes keep their ladder) and `promotion.json`
+(provenance, seed metrics and window, file hashes). Both SETs carry the new plain
+`EA_Desc`. The files are written into a hidden temporary sibling folder, read back
+(the fixed SET must reproduce `candidate_sha256` and have no active axis) and
+published with one rename, so a failed write leaves nothing behind and can be retried.
+A promotion folder without a valid `promotion.json` refuses with
+`Incomplete promotion folder at <path>`; inspect and remove it by hand, it is never
+deleted automatically. Repeating the same request returns the receipt with
+`status: retained` (a new promotion has `status: written`); a different name or
+neighborhood for the same candidate refuses. It has no native, queue or terminal effect.
+
+The robustness SET is a local stability check around the candidate; only the forward
+window is out-of-sample. Its batch re-optimizes the neighborhood, so the back window
+picks the best neighbor: that pick is in-sample. Run it in an ordinary batch on
+dates after the seed window, with a forward window, and judge it on the forward result.
 Seed XML is not ordinary back/forward XML, exported SET/CSV pairs, or exposure
 sequence evidence, and must not be uploaded as a portfolio strategy pool.
 

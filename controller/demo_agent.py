@@ -1191,6 +1191,17 @@ class DemoAgent:
                          report_sha256=result.get('report_sha256'))
             return result
 
+    def seed_promote(self, batch_id, candidate, name, neighborhood=1, member=None):
+        """Freeze one verified seed candidate as fixed + robustness SETs; local files only, same scope as seed-report."""
+        with self._seed_scope('seed-report', batch_id) as (controller, evidence):
+            from studio_seed_promote import promote
+            result = promote(controller, batch_id, candidate, name, neighborhood=neighborhood, member=member,
+                             runner=self._seed_runner(controller))
+            # `written` for a new promotion, `retained` when a repeat returns the existing receipt.
+            self._append('seed_promote', result['status'], batch_id=batch_id, candidate_sha256=candidate,
+                         robustness_sha256=result['robustness_set']['sha256'])
+            return result
+
     def _stop_seed(self, seed):
         batch_id = seed.get('batch_id')
         try:
@@ -1266,6 +1277,12 @@ def main(argv=None):
         seed_drive.add_argument('--max-seconds', type=int, default=60)
     for name in ('seed-status', 'seed-cancel', 'seed-report'):
         commands.add_parser(name).add_argument('--batch-id', required=True)
+    seed_promote = commands.add_parser('seed-promote', help='Freeze one seed candidate as fixed + robustness SETs')
+    seed_promote.add_argument('--batch-id', required=True)
+    seed_promote.add_argument('--candidate', required=True)
+    seed_promote.add_argument('--name', required=True)
+    seed_promote.add_argument('--neighborhood', type=int, default=1, help='Robustness ladder steps either side, 1..5 (default 1)')
+    seed_promote.add_argument('--member')
     args = parser.parse_args(argv)
     try:
         agent = DemoAgent(args.installation)
@@ -1293,6 +1310,7 @@ def main(argv=None):
         elif args.command == 'seed-status': result = agent.seed_status(args.batch_id)
         elif args.command == 'seed-cancel': result = agent.seed_cancel(args.batch_id)
         elif args.command == 'seed-report': result = agent.seed_report(args.batch_id)
+        elif args.command == 'seed-promote': result = agent.seed_promote(args.batch_id, args.candidate, args.name, args.neighborhood, args.member)
         if args.command == 'stop' and result.get('status') == 'stop_unconfirmed':
             print(json.dumps(dict(ok=False, code='STOP_UNCONFIRMED', result=result),
                              sort_keys=True, default=str), file=sys.stderr)

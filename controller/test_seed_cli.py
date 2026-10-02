@@ -39,10 +39,12 @@ class SeedCliTests(unittest.TestCase):
     def test_discovery_exposes_every_seed_command_and_driver_limits(self):
         code,result=self.cli('discover');self.assertEqual(code,0)
         info=result['result']
-        for operation in ('seed-prepare','seed-start','seed-resume','seed-status','seed-cancel','seed-report'):
+        for operation in ('seed-prepare','seed-start','seed-resume','seed-status','seed-cancel','seed-report','seed-promote'):
             self.assertIn(operation,info['operations']);self.assertIn(operation,info['operation_contracts'])
         self.assertEqual(info['operation_contracts']['seed-start']['defaults']['max-seconds'],60)
         self.assertEqual(info['operation_contracts']['seed-resume']['limits']['max-seconds'],[1,3600])
+        self.assertEqual(info['operation_contracts']['seed-promote']['limits']['neighborhood'],[1,5])
+        self.assertIn('only the forward window is out-of-sample',info['operation_contracts']['seed-promote']['effect'])
         self.assertFalse(info['execution_ready'])
 
     def test_help_exposes_only_declared_seed_driver_flags(self):

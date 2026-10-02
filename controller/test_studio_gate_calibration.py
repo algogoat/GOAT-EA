@@ -221,6 +221,18 @@ class LeakageTests(unittest.TestCase):
     def test_forward_calibration_never_reads_forward_scores_or_file_names(self):
         allowed = gates.allowed_features('forward')
         self.assertFalse([name for name in allowed if name.startswith(('fwd_', 'file_')) or name == 'opt_score'])
+        self.assertIn('is_sr', allowed)
+
+    def test_no_feature_is_allowed_to_predict_a_window_it_reads_or_precedes_it(self):
+        order = ['back_oos', 'in_sample', 'forward', 'post']
+        for name, (source, _, allowed, _) in gates.FEATURES.items():
+            for target in allowed:
+                if source in order and target in order:
+                    self.assertLess(order.index(source), order.index(target), name)
+                if source == 'file_name':
+                    self.assertEqual(target, 'held_up', name)
+                if name == 'opt_score':
+                    self.assertNotEqual(target, 'forward')
 
     def test_a_perfect_but_leaky_predictor_is_never_chosen(self):
         # file_sr and Score separate survivors perfectly; nothing clean does.
@@ -291,12 +303,14 @@ class SurvivalTests(unittest.TestCase):
         rows = []
         for member in range(30):
             rows.append(record('M%03d' % member, is_sr=0.5, survived=member % 2 == 0))
-        for member in range(3):  # three members, many near-copy sets, all survived, high is_sr
-            for index in range(15):
+        for member in range(6):  # six members (< 8), near-copy sets, all survived, high is_sr
+            for index in range(5):
                 rows.append(record('H%d' % member, is_sr=3.0, survived=True, index=index))
         result = gates.recommend(rows, target='forward', min_survival=0.6)
         point = next(p for p in result['features']['is_sr']['curve'] if p['threshold'] == 3.0)
-        self.assertEqual(point['kept_members'], 3)
+        self.assertEqual(point['kept_members'], 6)
+        self.assertEqual(point['kept_sets'], 30)
+        self.assertGreaterEqual(point['interval'][0], 0.6)  # the interval alone would admit it
         self.assertFalse(point['qualifies'])
         self.assertTrue(result['gate'] is None or result['gate']['point']['kept_members'] >= 8)
 

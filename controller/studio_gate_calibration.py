@@ -515,7 +515,7 @@ def feature(record, name, target):
 
 
 def allowed_features(target):
-    return [name for name, spec in FEATURES.items() if target in spec[2] and spec[0] != target]
+    return [name for name, spec in FEATURES.items() if target in spec[2]]
 
 
 # ---------------------------------------------------------------- statistics

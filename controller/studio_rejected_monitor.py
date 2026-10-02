@@ -67,6 +67,22 @@ def unstarted_material(controller,job,scope,*,request_path=None,allow_expired_un
             or request['job_id']!=job_id or request['configuration_sha256']!=scope['configuration_sha256']
             or {k:request[k] for k in ('terminal_id','run_id')}!=scope['binding']):
         raise ValueError('Verified expired pre-consumption REQUEST_REJECTED required')
+    zero_work_material(controller,job,scope)
+    # Preserve all transport, including an expired pending cancel. Neither a
+    # permit nor an unknown consumed action may arm anything during restart.
+    current=read_json(safe_path(request_path or gate/'request.json'))
+    if current['request_id'] not in (attempt,sha([attempt,'cancel'])) or current['expires_utc']>=time.time():
+        raise ValueError('Only the expired original start/cancel may remain')
+    for path in gate.glob('consumed-*.json'):
+        if read_json(path).get('action') not in ('recover_orphan_continuation',):
+            raise ValueError('Only prior orphan recovery consumption is allowed')
+    return scope,job
+
+
+def zero_work_material(controller,job,scope):
+    """Causal zero-work evidence for one attempt: untouched package, native queue and run
+    folders, an unarmed activation and no tester output. Grants no authority."""
+    job_id=job['job_id'];attempt=job['launch_intent']['attempt_id']
     package=safe_path(controller.root/'packages'/job_id)
     if Path(job['launch_intent']['package']).resolve()!=package or hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()!=job['launch_intent']['package_sha256']:
         raise ValueError('Original package identity changed')
@@ -95,15 +111,6 @@ def unstarted_material(controller,job,scope,*,request_path=None,allow_expired_un
     cache=Path(controller.install['terminal_data_root'])/'Tester/cache'
     if cache.exists() and any(p.is_file() and p.stat().st_mtime>=scope['created_utc'] for p in cache.rglob('*')):
         raise ValueError('Tester work artifacts exist since bootstrap')
-    # Preserve all transport, including an expired pending cancel. Neither a
-    # permit nor an unknown consumed action may arm anything during restart.
-    current=read_json(safe_path(request_path or gate/'request.json'))
-    if current['request_id'] not in (attempt,sha([attempt,'cancel'])) or current['expires_utc']>=time.time():
-        raise ValueError('Only the expired original start/cancel may remain')
-    for path in gate.glob('consumed-*.json'):
-        if read_json(path).get('action') not in ('recover_orphan_continuation',):
-            raise ValueError('Only prior orphan recovery consumption is allowed')
-    return scope,job
 
 
 def require_demo(native):

@@ -56,7 +56,7 @@ def write_json(path, value):
 
 
 class DemoAgent:
-    def __init__(self, installation, *, process=None, mt5=None, clock=time.time):
+    def __init__(self, installation, *, process=None, mt5=None, clock=time.time, sleep=time.sleep):
         self.installation_path = Path(installation).resolve()
         # Validate every path/version before deriving a writable target. The
         # binary check is deferred only so an interrupted swap can be resumed.
@@ -68,6 +68,7 @@ class DemoAgent:
         self.process = process or WindowsSeedProcess(self)
         self.mt5 = mt5
         self.clock = clock
+        self.sleep = sleep
         self.binary = (Path(self.install['terminal_data_root']) / 'MQL5/Experts'
                        / self.install['ea_relative_path'].replace('\\', '/')).resolve()
 
@@ -274,6 +275,9 @@ class DemoAgent:
                 pass
         active = [self.root / 'batch-drivers' / (batch_id + '.json')
                   for batch_id in self._native_active_batches()]
+        seed = self._active_seed()
+        if not active and seed is not None:
+            return self._stop_seed(seed)
         if not active:
             return dict(status='no_active_batch', owner_stop=True)
         if len(active) != 1:
@@ -389,6 +393,8 @@ class DemoAgent:
             broker = self._broker()
             if self._native_active_batches():
                 raise ValueError('Active batch must reach a verified terminal state before clearing STOP')
+            if self._active_seed() is not None:
+                raise ValueError('Active seed run must reach a verified terminal state before clearing STOP')
             human = self.local / self.session['directory_id'] / 'human'
             if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):
                 raise ValueError('Pending human TAKE CONTROL')
@@ -909,6 +915,282 @@ class DemoAgent:
             result = batch_status(controller, batch_id)
             return dict(broker=broker, studio=result)
 
+    # ------------------------------------------------------------------ SeedFarming
+    #
+    # The raw Studio CLI keeps refusing demo_direct mutations. These tools are the
+    # broker-verified demo path for the existing SeedRunner: every effect runs under
+    # the terminal lock and the same fresh demo/owner/STOP/TAKE/disk/build checks as
+    # batches. A seed run closes the selected MT5 and relaunches it per member, so a
+    # resume between members continues only the original attempt whose start record
+    # carries a fresh broker readback of this exact paired demo login and server.
+
+    SEED_SLICE_SECONDS = 5
+
+    def _seed_budget(self, max_seconds):
+        if type(max_seconds) is not int or not 1 <= max_seconds <= 3600:
+            raise ValueError('Seed driver budget must be 1..3600 seconds')
+
+    def _seed_start_path(self, batch_id):
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Seed batch ID must use 1..80 letters/digits/underscore/hyphen')
+        return self.state_root / 'seed-starts' / (batch_id + '.json')
+
+    def _seed_start_record(self, batch_id):
+        path = self._seed_start_path(batch_id)
+        if not path.is_file():
+            raise ValueError('No broker-verified demo seed start exists for this batch; use seed-start')
+        record = read_json(path)
+        if (record.get('batch_id') != batch_id or record.get('installation_sha256') != sha(self.install)
+                or record.get('account') != self._paired_account()
+                or record.get('broker', {}).get('demo') is not True):
+            raise ValueError('Seed start record differs from this installation or paired demo account')
+        return record
+
+    def _active_seed(self):
+        slot = self.root / 'seed-active.json'
+        if not slot.is_file():
+            return None
+        value = read_json(slot)
+        return value if value.get('status') != 'released' else None
+
+    def _seed_unoccupied(self):
+        if self._native_active_batches():
+            raise ValueError('An ordinary native batch is active; seed work waits for it to finish')
+        for worker in (self.state_root / 'workers').glob('*.json'):
+            if self._worker_alive(read_json(worker)):
+                raise ValueError('A live demo batch driver owns this terminal; seed work waits')
+
+    def _seed_runner(self, controller):
+        from studio_seed import SeedRunner
+        return SeedRunner(controller, process=self.process, clock=self.clock, sleep=self.sleep)
+
+    @contextmanager
+    def _seed_scope(self, operation_name, batch_id):
+        """Policy scope for observing, cancelling or continuing a demo seed batch.
+
+        While MT5 runs, a fresh broker readback is taken. A batch still 'prepared'
+        has had no native effect, so it needs no start record for status, cancel
+        or report; any batch that has left 'prepared' must have its start record.
+        """
+        record = self._seed_start_record(batch_id) if self._seed_start_path(batch_id).exists() else None
+        if record is None and not (self.root / 'seeds' / batch_id / 'state.json').is_file():
+            raise ValueError('Unknown seed batch; use seed-prepare')
+        if self.process.inspect() is not None:
+            # Without a start record only a provably never-started batch is managed,
+            # and only under this fresh broker readback; nothing offline is granted.
+            if record is None and not self._seed_never_started(batch_id):
+                raise ValueError('Seed batch has native effects but no broker-verified demo start record')
+            with self._studio(operation_name, idle=False, owner_required=False,
+                              job_id=batch_id) as (controller, broker):
+                yield controller, dict(broker=broker, start=record)
+            return
+        if record is None:
+            raise ValueError('No broker-verified demo seed start exists for this batch; '
+                             'open the selected MT5 for a fresh demo check, or use seed-start')
+        # MT5 is closed between seed members, so no live broker can answer now.
+        # Nothing is inferred from the session: the retained start readback must
+        # match this installation, registered EA and exact paired demo account.
+        if self.session.get('authority_kind') != 'demo_direct':
+            raise ValueError('Install and verify the selected V1.49 build before demo Studio control')
+        if digest(self.binary) != self.install['ea_sha256']:
+            raise ValueError('Installed demo EA hash changed')
+        from goat_studio import Controller
+        from studio_research_authority import demo_agent_scope, operation
+        with operation(operation_name), demo_agent_scope(
+                root=self.root, installation_sha256=sha(self.install),
+                account=dict(record['account']), job_id=batch_id):
+            controller = Controller(self.installation_path).open()
+            try:
+                yield controller, dict(broker=None, start=record)
+            finally:
+                controller.store.close()
+
+    def _seed_stop_reason(self):
+        reason = self._stop_requested()
+        if reason:
+            return reason
+        try:
+            self._space()
+        except ValueError:
+            return 'low_disk'
+        return None
+
+    def _seed_drive(self, runner, batch_id, max_seconds, *, initial):
+        deadline = self.clock() + max_seconds
+        while True:
+            reason = self._seed_stop_reason()
+            if reason:
+                result = runner.cancel(batch_id)
+                self._append('seed_drive', 'stopped', batch_id=batch_id, reason=reason,
+                             status=result['status'], stop_verified=result.get('stop_verified'))
+                return dict(result, stopped_by=reason)
+            remaining = deadline - self.clock()
+            if remaining < 1:
+                break
+            slice_seconds = int(min(self.SEED_SLICE_SECONDS, remaining))
+            result = (runner.start if initial else runner.resume)(batch_id, max_seconds=slice_seconds)
+            initial = False
+            self._append('seed_drive', 'slice', batch_id=batch_id, status=result['status'])
+            if result['status'] in ('completed', 'stopped', 'reconcile_required'):
+                return result
+        return dict(runner.status(batch_id), driver_budget_exhausted=True,
+                    next_action='seed-resume continues the retained original attempt; no retry')
+
+    def seed_validate(self, plan):
+        """Non-executing plan and SET validation: no file, process, broker or terminal effect."""
+        from goat_studio import Controller
+        from studio_seed import SeedRunner
+        plan_path = Path(plan).resolve()
+        value = read_json(plan_path)
+        controller = Controller(self.installation_path)   # installation and input contracts only; no store
+        controller.session = self.session
+        result = SeedRunner(controller, process=_NoTerminal()).validate(value)
+        self._append('seed_validate', 'checked', plan=str(plan_path), plan_sha256=digest(plan_path),
+                     job_count=result['job_count'])
+        return result
+
+    def seed_prepare(self, batch_id, plan):
+        plan_path = Path(plan).resolve()
+        value = read_json(plan_path)
+        self._seed_start_path(batch_id)
+        with self._exclusive(), self._studio('seed-prepare', idle=True, job_id=batch_id) as (controller, broker):
+            self._seed_unoccupied()
+            self._append('seed_prepare', 'intent', batch_id=batch_id, plan=str(plan_path),
+                         plan_sha256=digest(plan_path), broker=broker)
+            result = self._seed_runner(controller).prepare(batch_id, value)
+            self._append('seed_prepare', 'verified', batch_id=batch_id, status=result['status'],
+                         manifest_sha256=result.get('manifest_sha256'))
+            return result
+
+    def _seed_left_prepared(self, batch_id):
+        """Read-only: has this seed batch moved past 'prepared' (any native effect recorded)?"""
+        state = self.root / 'seeds' / batch_id / 'state.json'
+        return state.is_file() and read_json(state).get('status') != 'prepared'
+
+    def _seed_never_started(self, batch_id):
+        """Read-only proof that a seed batch never had a native effect.
+
+        True only for a batch still 'prepared', or 'stopped' by cancelling it before
+        any start: the manifest hash matches, no generation, preflight or process was
+        ever recorded, every member is unattempted with no result, the seed slot never
+        named this batch, and no seed output exists for any member.
+        """
+        root = self.root / 'seeds' / batch_id
+        state_path, manifest_path = root / 'state.json', root / 'manifest.json'
+        if not state_path.is_file() or not manifest_path.is_file():
+            return False
+        state, manifest = read_json(state_path), read_json(manifest_path)
+        if state.get('manifest_sha256') != digest(manifest_path) or state.get('batch_id') != batch_id:
+            return False
+        member_status = {'prepared': 'pending', 'stopped': 'cancelled'}.get(state.get('status'))
+        if member_status is None or state.get('generation') is not None:
+            return False
+        if any(key in state for key in ('preflight', 'initial_process', 'error')):
+            return False
+        members, specs = state.get('members'), manifest.get('members')
+        if not isinstance(members, list) or not isinstance(specs, list) or len(members) != len(specs):
+            return False
+        for item in members:
+            if (item.get('status') != member_status or item.get('attempts') != 0 or item.get('result') is not None
+                    or any(key in item for key in ('process', 'started_unix', 'finished_unix', 'error'))):
+                return False
+        slot = self.root / 'seed-active.json'
+        if slot.is_file() and read_json(slot).get('batch_id') == batch_id:
+            return False
+        outputs = Path(self.install['common_files_root']) / 'GOAT/SeedFarmingXML'
+        if outputs.is_dir() and any(any(outputs.glob(spec['output_base'] + '_N*.xml')) for spec in specs):
+            return False
+        return True
+
+    def seed_start(self, batch_id, max_seconds):
+        self._seed_budget(max_seconds)
+        path = self._seed_start_path(batch_id)
+        if path.exists() and self._seed_left_prepared(batch_id):
+            raise ValueError('Seed batch already started; use seed-resume for the original attempt')
+        with self._exclusive(), self._studio('seed-start', idle=True, job_id=batch_id) as (controller, broker):
+            self._seed_unoccupied()
+            runner = self._seed_runner(controller)
+            current = runner.status(batch_id)
+            if path.exists():
+                # Only an attempt that never left 'prepared' may re-run its start, and only
+                # under this fresh broker check; anything later is the original attempt.
+                record = self._seed_start_record(batch_id)
+                if current['status'] != 'prepared' or record['manifest_sha256'] != current['manifest_sha256']:
+                    raise ValueError('Seed batch already started; use seed-resume for the original attempt')
+                self._append('seed_start', 'start_record_reused', batch_id=batch_id, broker=broker)
+            else:
+                if current['status'] != 'prepared':
+                    raise ValueError('Only a prepared seed batch can start')
+                record = dict(schema_version=1, batch_id=batch_id, manifest_sha256=current['manifest_sha256'],
+                              installation_sha256=sha(self.install), account=self._paired_account(),
+                              generation=controller.state()['generation'], broker=broker,
+                              started_at=datetime.now(timezone.utc).isoformat())
+                path.parent.mkdir(parents=True, exist_ok=True)
+                # Exclusive create: the start record is written once, before any effect.
+                with path.open('x', encoding='utf-8', newline='\n') as output:
+                    json.dump(record, output, sort_keys=True, separators=(',', ':'))
+                    output.write('\n'); output.flush(); os.fsync(output.fileno())
+                self._append('seed_start', 'start_recorded', batch_id=batch_id,
+                             manifest_sha256=record['manifest_sha256'], broker=broker)
+            return self._seed_drive(runner, batch_id, max_seconds, initial=True)
+
+    def seed_resume(self, batch_id, max_seconds):
+        self._seed_budget(max_seconds)
+        with self._exclusive(), self._seed_scope('seed-resume', batch_id) as (controller, evidence):
+            runner = self._seed_runner(controller)
+            current = runner.status(batch_id)
+            if current['status'] == 'prepared':
+                raise ValueError('Seed batch has no native effect yet; use seed-start with a fresh broker check')
+            if evidence['start'] is None:
+                raise ValueError('Seed batch was cancelled before any native effect; prepare a new batch ID')
+            if current['manifest_sha256'] != evidence['start']['manifest_sha256']:
+                raise ValueError('Seed state differs from its broker-verified start record')
+            self._append('seed_resume', 'continue', batch_id=batch_id, status=current['status'],
+                         broker=evidence['broker'], retained_start=evidence['broker'] is None)
+            return self._seed_drive(runner, batch_id, max_seconds, initial=False)
+
+    def seed_status(self, batch_id):
+        with self._seed_scope('seed-status', batch_id) as (controller, evidence):
+            return dict(broker=evidence['broker'], retained_start=evidence['broker'] is None,
+                        seed=self._seed_runner(controller).status(batch_id))
+
+    def seed_cancel(self, batch_id):
+        with self._exclusive(), self._seed_scope('seed-cancel', batch_id) as (controller, evidence):
+            result = self._seed_runner(controller).cancel(batch_id)
+            self._append('seed_cancel', 'requested', batch_id=batch_id, status=result['status'],
+                         stop_verified=result.get('stop_verified'))
+            return result
+
+    def seed_report(self, batch_id):
+        with self._seed_scope('seed-report', batch_id) as (controller, evidence):
+            result = self._seed_runner(controller).report(batch_id)
+            self._append('seed_report', 'written', batch_id=batch_id, status=result['status'],
+                         report_sha256=result.get('report_sha256'))
+            return result
+
+    def _stop_seed(self, seed):
+        batch_id = seed.get('batch_id')
+        try:
+            result = self.seed_cancel(batch_id)
+        except ValueError as exc:
+            if 'Another demo agent operation owns this terminal' in str(exc):
+                # A live seed driver holds the lock; it sees STOP before its next slice.
+                return dict(status='seed_stop_requested', batch_id=batch_id, owner_stop=True,
+                            reason='Live seed driver settles STOP within one slice')
+            return dict(status='stop_unconfirmed', batch_id=batch_id, owner_stop=True, reason=str(exc))
+        return dict(status='seed_' + result['status'], batch_id=batch_id, owner_stop=True,
+                    stop_verified=result.get('stop_verified'))
+
+
+class _NoTerminal:
+    """Process stand-in for validation: any terminal effect is a defect, not a fallback."""
+    def inspect(self):
+        raise ValueError('Seed validation never inspects the terminal')
+    def start(self, config):
+        raise ValueError('Seed validation never starts the terminal')
+    def close(self, identity):
+        raise ValueError('Seed validation never closes the terminal')
+
 
 
 def main(argv=None):
@@ -948,6 +1230,17 @@ def main(argv=None):
     batch.add_argument('--batch-id', required=True)
     driver = commands.add_parser('batch-driver-status')
     driver.add_argument('--batch-id', required=True)
+    seed_check = commands.add_parser('seed-validate', help='Non-executing seed plan/SET validation')
+    seed_check.add_argument('--plan', type=Path, required=True)
+    seed_prep = commands.add_parser('seed-prepare')
+    seed_prep.add_argument('--batch-id', required=True)
+    seed_prep.add_argument('--plan', type=Path, required=True)
+    for name in ('seed-start', 'seed-resume'):
+        seed_drive = commands.add_parser(name)
+        seed_drive.add_argument('--batch-id', required=True)
+        seed_drive.add_argument('--max-seconds', type=int, default=60)
+    for name in ('seed-status', 'seed-cancel', 'seed-report'):
+        commands.add_parser(name).add_argument('--batch-id', required=True)
     args = parser.parse_args(argv)
     try:
         agent = DemoAgent(args.installation)
@@ -967,6 +1260,13 @@ def main(argv=None):
         elif args.command == '_drive-batch': result = agent._drive_batch(args.batch_id, args.nonce, args.max_seconds)
         elif args.command == 'batch-status': result = agent.batch_status(args.batch_id)
         elif args.command == 'batch-driver-status': result = agent.batch_driver_status(args.batch_id)
+        elif args.command == 'seed-validate': result = agent.seed_validate(args.plan)
+        elif args.command == 'seed-prepare': result = agent.seed_prepare(args.batch_id, args.plan)
+        elif args.command == 'seed-start': result = agent.seed_start(args.batch_id, args.max_seconds)
+        elif args.command == 'seed-resume': result = agent.seed_resume(args.batch_id, args.max_seconds)
+        elif args.command == 'seed-status': result = agent.seed_status(args.batch_id)
+        elif args.command == 'seed-cancel': result = agent.seed_cancel(args.batch_id)
+        elif args.command == 'seed-report': result = agent.seed_report(args.batch_id)
         if args.command == 'stop' and result.get('status') == 'stop_unconfirmed':
             print(json.dumps(dict(ok=False, code='STOP_UNCONFIRMED', result=result),
                              sort_keys=True, default=str), file=sys.stderr)

@@ -18,7 +18,7 @@ supervisor when no driver is alive, calls ``step`` on every tick:
   identity rules, so ``finish`` and the settled-gate checks bind it. Both stop
   receipts are kept.
 * A closed, unbound or unlicensed monitor is a named blocker with a fix, never a
-  silent wait.
+  silent wait. So is a member pace too fast for any safe window.
 * A pause never sets the driver journal's ``cancel_issued``, so the journal is
   never poisoned: the driver keeps its disk guard and finish throughout, and a
   resumed driver keeps supervising. A journal an owner STOP already left at
@@ -46,6 +46,9 @@ FOLDER = 'batch-pauses'
 LINEAGE = 'batch-lineage'
 SAFE_START_SECONDS = 300
 MIN_REMAINING_SECONDS = 180
+# Below this, the median member is too short for the remaining-time rule to ever
+# admit a member start; that is a named blocker, never a silent wait.
+MIN_SAFE_WINDOW_SECONDS = 20
 FINISH_PATIENCE_SECONDS = 900
 HISTORY_LIMIT = 200
 MAX_MANIFEST_BYTES = 64 * 1024 * 1024  # package manifests scale with member count
@@ -256,6 +259,9 @@ def safe_point(record, monitor, statuses, timing, *, now, member_seconds=None, p
             started, source = watch.get('first_seen_wall'), 'observed_transition'
         if started is None:
             return dict(ok=False, kind=None, reason='waiting_next_member', member=current + 1)
+        if member_seconds and member_seconds - MIN_REMAINING_SECONDS < MIN_SAFE_WINDOW_SECONDS:
+            return dict(ok=False, kind=None, reason='pace_leaves_no_safe_window', member=current + 1,
+                        member_seconds=round(member_seconds))
         age = now - started
         if age > SAFE_START_SECONDS:
             return dict(ok=False, kind=None, reason='waiting_next_member', member=current + 1, member_age_seconds=round(age))
@@ -272,6 +278,19 @@ def safe_point(record, monitor, statuses, timing, *, now, member_seconds=None, p
                 and started is not None and started >= max(ended)):
             return dict(ok=True, kind='tester_idle_after_relaunch')
     return dict(ok=False, kind=None, reason='between_members')
+
+
+def _pace_blocker(record, point):
+    """Name the wait the pace makes endless, unless a monitor blocker already explains it."""
+    if point.get('reason') != 'pace_leaves_no_safe_window' or record.get('blocker') is not None:
+        return
+    minutes = round(point.get('member_seconds', 0) / 60, 1)
+    record['blocker'] = dict(
+        code='pace_leaves_no_safe_window',
+        message=('Members finish in about ' + str(minutes) + ' min, too fast for the safe pause window: a member must '
+                 'still have ' + str(MIN_REMAINING_SECONDS) + ' s to run when the pause is sent, so it is not sent.'),
+        fix=('The pause keeps checking and is sent once members take longer on average. To stop now, use STOP in '
+             'the GOAT Studio panel in MT5 and follow NATIVE-RECOVERY-CONTRACT.md to keep finished members.'))
 
 
 def _entry(record, request_id, kind, issued):
@@ -418,6 +437,7 @@ def step(controller, job_id, *, now, monitor, escalation=None, finish_error=None
         point = safe_point(record, monitor, statuses, timing, now=now, member_seconds=member_seconds,
                            process=monitor.get('process'))
         record['safe_point'] = point
+        _pace_blocker(record, point)
         if not point['ok']:
             _note(record, now, 'waiting_safe_point' if kind == 'original' else 'cancel_rejected_waiting_safe_point')
             _save(root, record)
@@ -467,6 +487,7 @@ def step(controller, job_id, *, now, monitor, escalation=None, finish_error=None
         point = safe_point(record, monitor, statuses, timing, now=now, member_seconds=member_seconds,
                            process=monitor.get('process')) if statuses else dict(ok=False, reason='native_evidence_missing')
         record['safe_point'] = point
+        _pace_blocker(record, point)
         if not point['ok']:
             _note(record, now, 'cancel_rejected_waiting_safe_point')
             _save(root, record)

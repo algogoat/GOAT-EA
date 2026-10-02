@@ -205,6 +205,22 @@ class SafePointTests(PauseFixture):
         self.assertIsNone(record['blocker'])
         self.assertEqual(self.issued(), [])
 
+    def test_a_pace_too_fast_for_any_safe_window_is_a_named_blocker(self):
+        self.request()
+        # Members take 3 minutes: "180 s still to run" can never hold at a member start.
+        for index in range(2):
+            self.event(index, 'OnGoing', NOW - 4000 + index * 1000); self.event(index, 'Completed', NOW - 3820 + index * 1000)
+        self.queue(['Completed', 'Completed', 'OnGoing']); self.event(2, 'OnGoing', NOW - 5)
+        record = self.step()
+        self.assertEqual(record['safe_point']['reason'], 'pace_leaves_no_safe_window')
+        self.assertEqual(record['blocker']['code'], 'pace_leaves_no_safe_window')
+        self.assertIn('about 3.0 min', record['blocker']['message'])
+        self.assertIn('STOP in the GOAT Studio panel', record['blocker']['fix'])
+        self.assertEqual(self.issued(), [])
+        # A monitor blocker explains the wait first and is never overwritten.
+        closed = dict(ticking(), blocker=dict(code='monitor_closed', message='m', fix='f'))
+        self.assertEqual(self.step(closed)['blocker']['code'], 'monitor_closed')
+
     def test_large_package_manifest_is_read_not_refused(self):
         """g6 live (15:56Z): a 1,265-member manifest (~2.8 MB) hit read_json's 2 MB cap on every step."""
         path = self.package / 'manifest.json'

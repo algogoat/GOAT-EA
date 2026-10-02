@@ -18,11 +18,12 @@ CURRENT_OPERATION = ContextVar('studio_research_operation', default=None)
 DEMO_AGENT_SCOPE = ContextVar('studio_demo_agent_scope', default=None)
 READ_OPERATIONS = frozenset(('discover','resource-profile','state','onboarding-status',
                              'native-recovery-status','batch-driver-status','owner-maintenance-status',
-                             'stopped-cancel-observation'))
+                             'stopped-cancel-observation','research-status'))
 OPERATIONS = READ_OPERATIONS | frozenset(('owner-maintenance-bootstrap','monitor-prepare','monitor-launch',
     'serve','orphan-recovery-prepare','orphan-recovery-apply','orphan-recovery-status',
     'orphan-recovery-reconcile-rejection','prepare-batch','run-batch','start','status','reconcile',
-    'batch-status','cancel','finish','benchmark-report','save-batch','research-monitor-restart','research-monitor-restart-resume','research-monitor-restart-status','research-monitor-reopen-prepare','research-monitor-adopt-reopen','research-monitor-repair-derived-report','research-retire-never-started','cancel-rejected-successor'))
+    'batch-status','cancel','finish','benchmark-report','save-batch','research-monitor-restart','research-monitor-restart-resume','research-monitor-restart-status','research-monitor-reopen-prepare','research-monitor-adopt-reopen','research-monitor-repair-derived-report','research-retire-never-started','cancel-rejected-successor',
+    'batch-pause'))
 
 
 @contextmanager
@@ -162,7 +163,7 @@ def authority(db, binding, state):
     if state['owner']=='agent' and state['generation']!=value['generation']:
         from studio_research_regrant import active
         value=active(db,binding,state,value)
-    if (root/'continuation-revocation/revoked.json').exists() and CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve','cancel','status','reconcile','finish','batch-status'}:
+    if (root/'continuation-revocation/revoked.json').exists() and CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve','cancel','status','reconcile','finish','batch-status','batch-pause'}:
         raise ValueError('Research continuation permanently revoked by pending human control')
     if state['generation']!=value['generation'] or state['owner']!='agent':
         # Readback and human takeover remain possible after permanent revocation.
@@ -171,7 +172,7 @@ def authority(db, binding, state):
     elif not value['created_utc'] <= time.time() < value['expires_utc']:
         # The retained driver must still observe/cancel/finish its existing attempt.
         # New reservations and native dispatch separately require live authority.
-        if CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve','cancel','status','reconcile','finish','batch-status','run-batch'}:
+        if CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve','cancel','status','reconcile','finish','batch-status','run-batch','batch-pause'}:
             raise ValueError('Research continuation expired; no new work')
     if CURRENT_OPERATION.get() not in OPERATIONS:
         raise ValueError('Operation is not allowlisted for research continuation')

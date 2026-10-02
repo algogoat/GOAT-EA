@@ -496,6 +496,19 @@ history or tester-agent storage. A rapid disk loss or failed journal write can
 still leave stop unconfirmed. Never infer a stopped tester from a cancellation
 request or delete history/queues to manufacture free space.
 
+### Pausing and resuming a batch
+
+`batch-pause --job-id <id>` (demo lane: `demo batch-pause --batch-id <id>`) is the
+supported way to stop research without losing work. It sends one cancel only at
+a safe point while the bound monitor reports, waits for the EA's own
+`CANCEL_REJECTED` before sending exactly one successor for an expired cancel,
+never sets the driver journal's `cancel_issued`, keeps the driver's disk guard
+and finish running, and records `paused` with a resume token. A journal left at
+`stop_unconfirmed` is adopted. `batch-resume --job-id <id>` prepares the
+remaining members as `<id>-rN` with lineage (the demo lane also starts it).
+`research-status` is the read-only lane view. Rules and states:
+[AGENT-START-HERE.md](AGENT-START-HERE.md) and [DEMO-AGENT-TOOLS.md](DEMO-AGENT-TOOLS.md).
+
 ### Reviewed orphan continuation recovery (V1.49)
 
 `orphan-recovery-prepare` freezes exact idle demo/runtime and single-owner evidence.

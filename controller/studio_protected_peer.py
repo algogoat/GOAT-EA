@@ -79,11 +79,38 @@ def policy(c):
     return value
 
 
+PEER_BINDING_KEYS=frozenset(('protected_terminal','protected_data_roots','protected_process',
+                             'protected_policy_sha256','protected_may_be_stopped'))
+
+
 def binding_fields(c):
     value=policy(c)
     if value is None: return {}
     return dict(protected_terminal=value['peer']['executable'],protected_data_roots=[value['peer']['data_root']],
                 protected_process=value['process'],protected_policy_sha256=sha(value),protected_may_be_stopped=True)
+
+
+def refresh_process(c):
+    """Re-review the already reviewed peer when only its running process instance changed.
+
+    The executable bytes, data root and origin binding must equal the policy the
+    user reviewed; only a restarted process identity is refreshed. Anything else
+    (a different peer, binary or data root) still needs an explicit human review.
+    Called by the broker-verified demo agent between batches; never grants or
+    manages the peer and never runs while a native attempt is unresolved.
+    """
+    value=policy(c)
+    if value is None:
+        return dict(status='no_protected_peer')
+    current=observe(c,value['peer'])
+    if current is None or current==value['process']:
+        return dict(status='unchanged',process=value['process'])
+    review=prepare(c,value['peer']['executable'],value['peer']['data_root'])
+    if review['peer']!=value['peer'] or review['process']!=current:
+        raise ValueError('Protected peer executable, data root or process changed during review; review it explicitly')
+    applied=apply(c,review['review_id'],True)
+    return dict(status='refreshed',previous_process=value['process'],process=applied['policy']['process'],
+                review_id=review['review_id'])
 
 
 def process_binding(c):

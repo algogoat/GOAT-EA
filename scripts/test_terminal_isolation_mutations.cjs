@@ -41,7 +41,10 @@ const mutations=[
   ['transient claim recorded as another terminal winning','GOAT_Inputs_Definitions.mqh',R`if(g_goat_opt_claim_transient)`,R`if(false)`],
   ['unreadable holder not treated as transient','GOAT_Inputs_Definitions.mqh',R`g_goat_opt_claim_transient=(holder!=me && !GoatOptIsolationHolderValid(holder));`,R`g_goat_opt_claim_transient=false;`],
   ['refused nonce keeps a key the agents never see','GOAT V1.49.mq5',R`g_goat_fitness_nonce=GOAT_FitnessRunNonce;`,''],
-  ['keyless agents still wait on a shared file','GOAT V1.49.mq5',R`if(GOAT_FitnessRunNonce==0)`,R`if(false)`],
+  ['keyless agents skip the de-noise step','GOAT V1.49.mq5',R`string fitness_file=GoatOptTesterFitnessFile(EA_Desc,Symbol(),GOAT_FitnessRunNonce);`,
+   R`if(GOAT_FitnessRunNonce==0) return fitness; string fitness_file=GoatOptTesterFitnessFile(EA_Desc,Symbol(),GOAT_FitnessRunNonce);`],
+  ['keyless agents keep the noisy fitness','GOAT V1.49.mq5',R`fitness = AdjustFitness(fitness_real,trades,mean_duration);`,R`if(GOAT_FitnessRunNonce!=0) fitness = AdjustFitness(fitness_real,trades,mean_duration);`],
+  ['fallback seeds a key the agents never read','GOAT V1.49.mq5',R`FileOpen(GoatOptTesterFitnessFile(EA_Desc,Symbol(),g_goat_fitness_nonce),FILE_TXT|FILE_WRITE`,R`FileOpen(GoatOptTesterFitnessFile(EA_Desc,Symbol(),g_goat_fitness_nonce+1),FILE_TXT|FILE_WRITE`],
 ];
 const work=fs.mkdtempSync(path.join(os.tmpdir(),'goat-isolation-mutation-'));
 let caught=0;

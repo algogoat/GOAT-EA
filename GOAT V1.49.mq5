@@ -20,7 +20,6 @@
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
 long g_goat_fitness_nonce=0;
-bool g_goat_fitness_keyless_logged=false;   // agents log a missing per-run key once
 #define   GOAT_BUILD_MARKER "SM32"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
@@ -3909,9 +3908,9 @@ int OnTesterInit()
    if(!GoatBatchStartAllowed()) return INIT_FAILED;
    // INV-BATCH-01 tester side: one fitness file per optimization run, keyed by a
    // nonce every agent receives as GOAT_FitnessRunNonce. If the key cannot be set,
-   // fall back to the value the agents will actually see so both sides agree; the
-   // agents then skip the shared-maximum adjustment (only same-strategy + same-symbol
-   // concurrency is affected), instead of refusing every optimization in this mode.
+   // fall back to the value the agents will actually see so both sides agree on one
+   // file (key 0 by default) and the de-noise step is kept, instead of refusing every
+   // optimization in this mode. Only cross-terminal concurrency is then unprotected.
    g_goat_fitness_nonce=0;
    if(Mode_Opti==Opti_PF_MRFp || Mode_Opti==Opti_PF_MRF_SRp)
      {
@@ -3920,7 +3919,7 @@ int OnTesterInit()
         {
          g_goat_fitness_nonce=GOAT_FitnessRunNonce;
          Print("GOAT optimization warning: the per-run fitness key could not be set (error "+(string)GetLastError()
-               +"); agents use key "+(string)g_goat_fitness_nonce+" and skip the shared fitness adjustment.");
+               +"); agents share the key-"+(string)g_goat_fitness_nonce+" fitness file; two terminals optimizing the same strategy and symbol at once could interfere.");
         }
      }
    bool seedFarming=SeedFarmingPrepareReceiver();
@@ -4183,16 +4182,10 @@ double OnTester()
 
    if((Mode_Opti==Opti_PF_MRFp||Mode_Opti==Opti_PF_MRF_SRp) && MQLInfoInteger(MQL_OPTIMIZATION) && !MQLInfoInteger(MQL_FORWARD))
    {
-    if(GOAT_FitnessRunNonce==0)
-      {
-       // No per-run key reached this agent: never wait on or share a keyless file.
-       if(!g_goat_fitness_keyless_logged)
-         {Print("GOAT fitness: no per-run key on this agent; the shared fitness adjustment is skipped."); g_goat_fitness_keyless_logged=true;}
-      }
-    else
-    {
     // Tester agents return from Sleep() at once, so waits are bounded by real
     // time. The running maximum is rewritten only after it was actually read.
+    // Every agent keeps this de-noise step, keyless ones included: with key 0 they
+    // share the key-0 file OnTesterInit wrote and OnTesterDeinit deletes.
     string fitness_file=GoatOptTesterFitnessFile(EA_Desc,Symbol(),GOAT_FitnessRunNonce);
     bool fitness_read=false;
     ulong fitness_deadline=GetTickCount64()+5000;
@@ -4218,7 +4211,6 @@ double OnTester()
      while(FileTester_handle==INVALID_HANDLE && GetTickCount64()<fitness_deadline)
         FileTester_handle = FileOpen(fitness_file,FILE_TXT|FILE_WRITE|FILE_SHARE_WRITE|FILE_COMMON);
      if(FileTester_handle!=INVALID_HANDLE) {FileWrite(FileTester_handle,fitness); FileClose(FileTester_handle);}
-    }
     }
    }
 //-----------------------------------------------------------------------------------

@@ -100,7 +100,7 @@ function terminal(h,login,dataPath,{globals=new Map(),name=''}={}){
   const mutate=op=>{t.mutations++;if(h.hook)h.hook(t,op);};
   const c={...F,INVALID_HANDLE:-1,ACCOUNT_LOGIN:1,TERMINAL_DATA_PATH:2,MQL_TESTER:3,MQL_OPTIMIZATION:4,MQL_FORWARD:5,WHOLE_ARRAY:-1,CP_UTF8:65001,
     CRYPT_HASH_SHA256:6,FILE_MODIFY_DATE:9,ERR_FILE_IS_DIRECTORY:5018,TIME_DATE:1,TIME_SECONDS:4,INIT_FAILED:1,INIT_SUCCEEDED:0,
-    Opti_PF_MRFp:1,Opti_PF_MRF_SRp:2,Mode_Opti:0,EA_Desc:'Rabcdefabcdefabcdefabcd',GOAT_FitnessRunNonce:0,g_goat_fitness_nonce:0,g_goat_fitness_keyless_logged:false,g_goat_opt_claim_transient:false,
+    Opti_PF_MRFp:1,Opti_PF_MRF_SRp:2,Mode_Opti:0,EA_Desc:'Rabcdefabcdefabcdefabcd',GOAT_FitnessRunNonce:0,g_goat_fitness_nonce:0,g_goat_opt_claim_transient:false,
     tester:0,optimization:0,forward:0,__found:'',
     AccountInfoInteger:()=>t.login,TerminalInfoString:()=>t.dataPath,
     MQLInfoInteger:k=>k===3?c.tester:k===4?c.optimization:k===5?c.forward:0,IntegerToString:n=>String(n),
@@ -201,16 +201,21 @@ let passed=0;const ok=(cond,msg)=>{assert.ok(cond,msg);passed++;};
   ok(run(agent,{stored:undefined,fitness:5})===undefined,'missing file: bounded wait, nothing written');
   ok(run(agent,{stored:'',fitness:5})==='','unreadable (empty) maximum is never overwritten');
   // A nonce that cannot be handed to agents no longer blocks the optimization: OnTesterInit
-  // falls back to the key the agents will actually see, and keyless agents skip the
-  // shared-maximum adjustment at once (no wait, no read, no write) and log it once.
+  // falls back to the key the agents will actually see (0), seeds that key-0 file, and
+  // keyless agents keep the de-noise step on it, so SM31 fitness meaning is unchanged.
   const refused=terminal(h,3000082754,BANKER);refused.parameterRefused=true;refused.c.Mode_Opti=2;refused.c.GOAT_FitnessRunNonce=0;
   ok(refused.c.OnTesterInit()===0,'a refused nonce no longer refuses the optimization');
   ok(refused.c.g_goat_fitness_nonce===refused.c.GOAT_FitnessRunNonce,'fallback key equals what the agents see');
-  ok(refused.logs.some(m=>/per-run fitness key could not be set/.test(m)),'the fallback is logged as a warning');
-  const keyless=terminal(h,3000082754,BANKER);Object.assign(keyless.c,{Mode_Opti:2,optimization:1,forward:0,GOAT_FitnessRunNonce:0,fitness:5,fitness_real:5});
-  const opened=h.opened.length,ticks=h.ticks;keyless.c.AgentFitness();keyless.c.AgentFitness();
-  ok(h.opened.length===opened&&h.ticks===ticks,'keyless agent: no file opened and no bounded wait');
-  ok(keyless.logs.filter(m=>/no per-run key on this agent/.test(m)).length===1,'keyless agent logs once, not every pass');
+  ok(refused.logs.some(m=>/per-run fitness key could not be set.*share the key-0 fitness file.*could interfere/.test(m)),
+    'the fallback warning names the shared key-0 file and the concurrency risk');
+  const keyFile=refused.c.GoatOptTesterFitnessFile(refused.c.EA_Desc,'EURUSD',0);
+  ok(get(h,keyFile)==='0.02\r\n','OnTesterInit seeds the key-0 file the keyless agents will read');
+  const keyless=terminal(h,3000082754,BANKER);
+  Object.assign(keyless.c,{Mode_Opti:2,optimization:1,forward:0,GOAT_FitnessRunNonce:0,fitness:7,fitness_real:5});
+  keyless.c.AgentFitness();
+  ok(h.opened.includes('C|'+keyFile.toLowerCase()),'keyless agent reads the key-0 file');
+  ok(get(h,keyFile)==='5\r\n','keyless agent de-noises a new best and writes the noise-free fitness');
+  ok(keyless.c.fitness===5,'keyless agent returns the noise-free fitness for a new best');
   // The native readback tolerates only a plain non-optimized integer for the nonce.
   for(const v of ['0','1759363200123456','5||5||1||5||N'])ok(init.c.GoatStudioRunNonceValue(v),'nonce readback accepted: '+v);
   for(const v of ['','-1','x','5||5||1||5||Y','5||5||1||N','1.5'])ok(!init.c.GoatStudioRunNonceValue(v),'nonce readback refused: '+v);

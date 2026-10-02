@@ -27,12 +27,15 @@ here yet. After the reviewed head is compiled, add the binary and the sanitized 
 - No batch may be in flight on any terminal of the PC during the upgrade. Re-prepare saved batch
   packages afterwards (the header hash changed).
 - If the per-run fitness key cannot be set (`ParameterSetRange` refused), the optimization still runs.
-  OnTesterInit and the agents agree on the fallback key, and keyless agents skip the shared fitness
-  adjustment (logged once). Only same-strategy + same-symbol concurrency on two terminals is then
-  unprotected.
+  OnTesterInit falls back to the key the agents actually see (key 0 by default), seeds that file and
+  deletes it in OnTesterDeinit. Agents share the key-0 fitness file and keep the de-noise step, so the
+  fitness meaning is SM31's. Only two terminals optimizing the same strategy and symbol at once could
+  then interfere, which the warning says.
 
 **Prove natively after compile:**
 - OnTesterInit and the agents compute the same nonce;
+- whether `ParameterSetRange` refuses in any mode the batches use (if it does, the key-0 fallback is
+  the main path, not an edge case, and same-strategy + same-symbol concurrency needs another key);
 - whether batch restarts relied on MT5's optimization cache (a new nonce per run means a restarted
   item recomputes every pass; measure the cost);
 - two concurrent batches (same and different strategy, including one login on both terminals);

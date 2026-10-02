@@ -9,6 +9,19 @@ from studio_native_gate import exclusive_gate,_read_gate_evidence
 from native_control_transaction import restore,NAMES,contents,digest
 from studio_bridge import write_json
 
+def _research_outcomes(native):
+    """([outcome per no-edge member], error or None). Read-only; never blocks a finish."""
+    from studio_research_status import no_edge_members,no_edge_summary,timeline
+    try:
+        members=native['members'];run=native['native_run']
+        found=no_edge_members(run,[(m['run_alias'],m['symbol']) for m in members],[m['status'] for m in members],
+                              timeline(run,[m['run_alias'] for m in members]))
+        return [dict(index=i,run_alias=members[i]['run_alias'],symbol=members[i]['symbol'],timeframe=members[i]['tester']['Period'],
+                     **found[i],summary=no_edge_summary(members[i]['symbol'],members[i]['tester']['Period'],found[i]))
+                for i in sorted(found)],None
+    except (OSError,ValueError,KeyError,TypeError) as error:
+        return [],str(error)[:240]
+
 def finish(controller,job_id,*,expected_generation=None):
     if expected_generation is not None and controller.state()['generation']!=expected_generation:
         raise ValueError('Controller generation changed before finish')
@@ -36,6 +49,7 @@ def finish(controller,job_id,*,expected_generation=None):
     reports=observe_reports(package,job['configuration'],controller.schema,member_statuses=[member['status'] for member in native['members']]) if completed_members else None
     if reports and reports['status'] not in ('report_pair_verified','report_batch_verified'):
         raise ValueError('Completed queue members still require verified report pairs')
+    research_outcomes,research_error=_research_outcomes(native)
     result=dict(schema_version=1,member_outcomes=native['members'],attempt_id=intent['attempt_id'],job_id=job_id,status=outcomes[native['status']],
                 configuration_sha256=job['configuration_sha256'],configuration=job['configuration'],native=native,reports=reports,
                 source=read_json(controller.root/'packages'/(job_id+'.source.json')),
@@ -43,6 +57,10 @@ def finish(controller,job_id,*,expected_generation=None):
                 performance_qualification='Native artifacts observed; portfolio evidence is independently validated on import',
                 matrix_result_required=True,ea_version=controller.install['ea_version'],ea_sha256=controller.install['ea_sha256'],
                 controller_version=controller.install['controller_version'],account_server=controller.session['account']['server'])
+    # Members tested with no profitable settings keep native_error; this tells the
+    # scoreboard they are results for their window, not failures (studio_research_status).
+    result['research_outcomes']=research_outcomes
+    if research_error is not None:result['research_outcomes_error']=research_error
     if successor_stop is not None:result['cancellation_dispatch']=successor_stop
     evidence=controller.root/'attempts'/intent['attempt_id']
     gate=controller.local/'native-gate'

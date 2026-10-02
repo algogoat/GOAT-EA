@@ -238,7 +238,9 @@ def batch_status(controller, batch_id):
         native=job.get('native_observation'), result_path=job.get('completion_path'),
         members=[dict(index=index, symbol=member['tester']['Symbol'], timeframe=member['tester']['Period'],
             ea_desc=member['strategy']['values']['EA_Desc'], configuration_sha256=sha(member)) for index, member in enumerate(members)],
-        configuration_sha256=job['configuration_sha256'])
+        configuration_sha256=job['configuration_sha256'],
+        # Tested with no profitable settings in their window: results, not failures.
+        research_outcomes=(job.get('completion') or {}).get('research_outcomes'))
 
 
 def _section(text, name):
@@ -346,13 +348,17 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
     from studio_batch_contract import configuration_members
     configurations = configuration_members(previous['configuration'])
     if len(configurations) != len(manifest['jobs']): raise ValueError('Remaining-work configuration count mismatch')
+    # Members tested with no profitable settings are results for their window, not
+    # failures: retrying failures never re-runs them (finish recorded them).
+    no_edge = {item['index'] for item in (previous.get('completion') or {}).get('research_outcomes') or []
+               if isinstance(item, dict) and type(item.get('index')) is int}
     selected = []
-    for native, config, evidence in zip(manifest['jobs'], configurations, observed):
+    for index, (native, config, evidence) in enumerate(zip(manifest['jobs'], configurations, observed)):
         if evidence.get('run_alias') != native['run_alias']:
             raise ValueError('Remaining-work identity mismatch')
         status = evidence['status'].lower().removeprefix('native_')
         if status == 'completed': continue
-        if status == 'error' and not include_failed: continue
+        if status == 'error' and (not include_failed or index in no_edge): continue
         if status not in ('pending', 'queued', 'cancelled', 'error'):
             raise ValueError('Native member remains unresolved; do not infer stopped from process absence')
         selected.append(dict(set_path=str(package / (native['run_alias'] + '.set')), tester=config['tester']))
@@ -362,5 +368,5 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
     write_json(plan_path, dict(schema_version=1, export=previous['configuration']['export'], members=selected))
     result = prepare_batch(controller, batch_id, plan_path)
     write_json(inputs / 'provenance.json', dict(source_batch_id=source_batch_id, new_batch_id=batch_id,
-        include_failed=include_failed, selected_count=len(selected)))
+        include_failed=include_failed, selected_count=len(selected), skipped_no_edge=len(no_edge)))
     return result

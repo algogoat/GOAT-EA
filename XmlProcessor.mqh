@@ -1,4 +1,6 @@
-﻿//+------------------------------------------------------------------+
+﻿// A back pass is kept only with profit >= 0.001 and at least this many back trades.
+#define GOAT_XML_MIN_BACK_TRADES 50
+//+------------------------------------------------------------------+
 //| Data structure for a single row (Back/Forward test record)      |
 //+------------------------------------------------------------------+
 struct SRowDefinition
@@ -39,6 +41,11 @@ public:
    string metadataWithWorkbookStart, DocumentProperties, Title, WorksheetLine, InputsNames, symbol_,TF_;
    datetime startD, endD, forwardD;
    string m_inputVarNames[];
+   // Every back pass is counted before the profit/trade filter below, so a report
+   // whose passes all lost is told apart from a report that could not be read.
+   int passesSeen, profitableSeen;
+   double bestProfit, bestResult;
+   string outcome;   // set by ReportAnalyzerCombiner; "" unless every pair was tested without edge
 //+------------------------------------------------------------------+
    bool ProcessBackXml(const string &filename)
    {
@@ -106,12 +113,16 @@ public:
             Rows[i].pass=(int)ExtractDataAsDouble(FileReadString(hBack));
             Rows[i].back_result=ExtractDataAsDouble(FileReadString(hBack));
             Rows[i].back_profit=ExtractDataAsDouble(FileReadString(hBack));
+            if(passesSeen==0 || Rows[i].back_profit>bestProfit) bestProfit=Rows[i].back_profit;
+            if(passesSeen==0 || Rows[i].back_result>bestResult) bestResult=Rows[i].back_result;
+            passesSeen++;
             if(Rows[i].back_profit<0.001)
             {
                line="";
                while(line!="</Row>")line=FileReadString(hBack);
                i--; continue;
             }
+            profitableSeen++;
             string dump=FileReadString(hBack);
             Rows[i].back_PF=ExtractDataAsDouble(FileReadString(hBack));
             Rows[i].back_RF=ExtractDataAsDouble(FileReadString(hBack));
@@ -119,7 +130,7 @@ public:
             string dump2=FileReadString(hBack);
             Rows[i].back_DD_pc=ExtractDataAsDouble(FileReadString(hBack));
             Rows[i].back_trades=(int)ExtractDataAsDouble(FileReadString(hBack));
-            if(Rows[i].back_trades<50)//<=90
+            if(Rows[i].back_trades<GOAT_XML_MIN_BACK_TRADES)//<=90
             {
                line="";
                while(line!="</Row>")line=FileReadString(hBack);
@@ -138,7 +149,9 @@ public:
          else
          {
             ArrayResize(Rows,ArraySize(Rows)-1);
-            LogOrPrint(reportMode,"No further back <Row> Found. Rows Saved="+(string)ArraySize(Rows)+"/"+(string)i,_K,_N,_S);
+            // i counts kept rows only (skipped rows rewind it), so report kept/total passes.
+            LogOrPrint(reportMode,"No further back <Row> Found. Rows Saved="+(string)ArraySize(Rows)+"/"+(string)passesSeen
+                       +" (profitable="+(string)profitableSeen+", min trades="+(string)GOAT_XML_MIN_BACK_TRADES+")",_K,_N,_S);
             break;
          }
       }
@@ -716,6 +729,28 @@ bool ExtractSymbolTfFromTitle(const string &title,
    return true;
 }
 //+------------------------------------------------------------------+
+//| Research outcome of the last back report (see ReportAnalyzer-    |
+//| Combiner). key=value pairs for item_stats.tsv; the tested window |
+//| is always stated, so "no edge here" never reads as "never works".|
+//+------------------------------------------------------------------+
+string OutcomeDetails(void)
+  {
+   return "outcome="+outcome+";passes="+(string)passesSeen+";profitable="+(string)profitableSeen
+          +";best_profit="+DoubleToString(bestProfit,2)+";best_score="+DoubleToString(bestResult,4)
+          +";min_trades="+(string)GOAT_XML_MIN_BACK_TRADES+";window_start="+TimeToString(startD,TIME_DATE)
+          +";window_end="+TimeToString(forwardD,TIME_DATE)+";forward_end="+TimeToString(endD,TIME_DATE);
+  }
+string OutcomeWindow(void)
+  {
+   return TimeToString(startD,TIME_DATE)+" to "+TimeToString(forwardD,TIME_DATE);
+  }
+string OutcomeSentence(void)
+  {
+   return "Tested "+(string)passesSeen+" settings on "+symbol_+" "+TF_+" in "+OutcomeWindow()
+          +": none was profitable with "+(string)GOAT_XML_MIN_BACK_TRADES+"+ trades (best profit "
+          +DoubleToString(bestProfit,2)+"). A result for this window, not an error.";
+  }
+//+------------------------------------------------------------------+
 private:
    int GetBackPassRow(int Forward_pass)
    {
@@ -839,14 +874,33 @@ private:
       ArrayResize(Rows,0); ArrayResize(topRowsNoDup,0); ArrayResize(RowsUnique,0);
       metadataWithWorkbookStart=""; DocumentProperties=""; WorksheetLine="";
       InputsNames=""; startD=endD=0; ArrayResize(m_inputVarNames,0);
+      passesSeen=0; profitableSeen=0; bestProfit=0; bestResult=0;
    }
 };
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 SXmlData xmlData;
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// A pair whose back report was read and matches its file name, with a known
+// back/forward window and at least one pass, but no pass kept (profitable with
+// enough trades), was tested without edge in that window. Anything else stays an error.
+#define GOAT_XML_NO_PROFITABLE_PASSES "no_profitable_passes"
+string GoatXmlResearchOutcome(const bool back_read,const bool title_matches,const datetime window_start,
+                              const datetime forward_date,const datetime window_end,const int passes,const int kept)
+  {
+   if(!back_read || !title_matches) return "";
+   if(window_start<=0 || forward_date<=window_start || window_end<=forward_date) return "";
+   if(passes<=0 || kept!=0) return "";
+   return GOAT_XML_NO_PROFITABLE_PASSES;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string EA_Name_,string Server_)
   {
    xmlData.reportMode=reportMode; xmlData._K=Key_; xmlData._N=EA_Name_; xmlData._S=Server_;
    bool ret=true;
+#ifdef GOAT_RESEARCH_OUTCOME_V149
+   xmlData.outcome="";
+   int pairs=0,noEdgePairs=0;
+#endif
    // Loop over moved files to find matching pairs.
    for(int i=0; i<ArraySize(Files); i++)
      {
@@ -882,6 +936,9 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
         }
       if(forwardFound)
         {
+#ifdef GOAT_RESEARCH_OUTCOME_V149
+         pairs++;
+#endif
          LogOrPrint(reportMode,"File: "+fileMain+" found.",Key_,EA_Name_,Server_);
          // 1) (Optionally) set the forward date from your EA logic
          datetime ForwardDate=0;
@@ -889,9 +946,22 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
          else                                                {LogOrPrint(reportMode,"❌ Forward Date cannot be extracted from: "+fileMain,Key_,EA_Name_,Server_); ret=false;}
          xmlData.forwardD = ForwardDate; // or some other known forward date
          // 2) Process the back test XML => populates Rows[] and extracts startD, endD
-         if(!xmlData.ProcessBackXml(fileMain)) ret=false;
-         if(StringFind(fileMain,xmlData.Title)<0)
+         bool backRead=xmlData.ProcessBackXml(fileMain);
+         if(!backRead) ret=false;
+         bool titleMatches=(StringFind(fileMain,xmlData.Title)>=0);
+         if(!titleMatches)
          {LogOrPrint(reportMode,"❌ xml File name and internal title do not match,\nTitle: "+xmlData.Title+"\nFilename: "+fileMain,Key_,EA_Name_,Server_); ret=false;}
+#ifdef GOAT_RESEARCH_OUTCOME_V149
+         // Passes ran and none was kept: there is nothing to combine or export for
+         // this window. Recorded as a research outcome below, not as a combine error.
+         if(GoatXmlResearchOutcome(backRead,titleMatches,xmlData.startD,ForwardDate,xmlData.endD,
+                                   xmlData.passesSeen,ArraySize(xmlData.Rows))!="")
+         {
+          noEdgePairs++;
+          LogOrPrint(reportMode,xmlData.OutcomeSentence(),Key_,EA_Name_,Server_);
+          continue;
+         }
+#endif
          // 3) Process the forward test => merges forward data, calculates Score, then sorts
          if(!xmlData.ProcessForwardXml(forwardFile)) ret=false;
          if(ForwardDate!=0)
@@ -910,6 +980,20 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
         }
       else {LogOrPrint(reportMode,"❌ No matching forward file found for: "+fileMain,Key_,EA_Name_,Server_); ret=false;}
      }
+#ifdef GOAT_RESEARCH_OUTCOME_V149
+   // Only when every pair was tested without edge and nothing else failed is this
+   // the outcome; it still returns false (nothing combined, nothing to export).
+   if(noEdgePairs>0)
+     {
+      if(ret && noEdgePairs==pairs) xmlData.outcome=GOAT_XML_NO_PROFITABLE_PASSES;
+      ret=false;
+     }
+   if(xmlData.outcome!="")
+     {
+      if(reportMode) Alert(xmlData.OutcomeSentence());
+      return ret;
+     }
+#endif
    if(!ret && reportMode) Alert("One or more error(s) in Report Analyzer+Combiner function, check Experts logs.");
    return ret;
   }

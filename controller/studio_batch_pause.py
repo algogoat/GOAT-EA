@@ -137,7 +137,7 @@ def plain(record):
 def public(record):
     keys = ('job_id', 'pause_id', 'state', 'phase', 'mode', 'escalation', 'requested_utc', 'requested_by', 'updated_utc',
             'paused_utc', 'blocker', 'failure', 'resume_token', 'members_completed', 'members_remaining',
-            'members_failed', 'result_path', 'successor_batch_id', 'safe_point', 'adopted_stop')
+            'members_failed', 'members_no_edge', 'result_path', 'successor_batch_id', 'safe_point', 'adopted_stop')
     value = {key: record.get(key) for key in keys}
     value['cancels'] = [{key: item.get(key) for key in ('request_id', 'kind', 'published_utc', 'expires_utc', 'receipt',
                                                        'adopted')} for item in record.get('cancels', [])]
@@ -500,12 +500,16 @@ def complete(controller, job_id, *, now):
     result_path = Path(job['completion_path'])
     digest = hashlib.sha256(result_path.read_bytes()).hexdigest()
     outcomes = [member['status'] for member in job['completion']['member_outcomes']]
+    # Tested with no profitable settings (recorded by finish): a result, not a failure.
+    no_edge = {item['index'] for item in job['completion'].get('research_outcomes') or []
+               if isinstance(item, dict) and type(item.get('index')) is int
+               and 0 <= item['index'] < len(outcomes) and outcomes[item['index']] == 'native_error'}
     completed = outcomes.count('native_completed')
-    failed = outcomes.count('native_error')
-    remaining = len(outcomes) - completed - failed
+    failed = outcomes.count('native_error') - len(no_edge)
+    remaining = len(outcomes) - completed - failed - len(no_edge)
     record.update(result_path=str(result_path), result_sha256=digest, members_completed=completed,
-                  members_remaining=remaining, members_failed=failed, paused_utc=now, blocker=None,
-                  batch_status=job['status'])
+                  members_remaining=remaining, members_failed=failed, members_no_edge=len(no_edge),
+                  paused_utc=now, blocker=None, batch_status=job['status'])
     if remaining == 0 and failed == 0:
         record['state'] = 'finished'
         _note(record, now, 'finished')

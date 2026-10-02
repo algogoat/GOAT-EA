@@ -257,7 +257,6 @@ def _verify_ready(audit, registration):
 
 
 def load(controller, plan_path, *, mt5=None, process=None, request=None, close=None, sleep=time.sleep):
-    from studio_monitor_probe import inspect_idle_demo
     from studio_seed_process import WindowsSeedProcess
     session, _ = session_state(controller)
     plan = read_json(plan_path)
@@ -369,9 +368,11 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         if dispatched['result'] != 'policy_dispatched':
             raise ValueError('The exposure policy was not dispatched (' + dispatched['result'] + ')')
         command = dispatched['commandId']
-        acked = _poll_until(controller, ident, 'status', lambda r: r['result'] == 'observed' and not r['commandPending']
-                            and all(row['ackId'] == command and row['ackStatus'] == 1 for row in r['rows']), seconds=ACK_WAIT_SECONDS, request=request, sleep=sleep)
-        if acked is None or acked['result'] != 'observed' or acked['commandPending']:
+        def acknowledged(r):
+            return (r['result'] == 'observed' and not r['commandPending']
+                    and all(row['ackId'] == command and row['ackStatus'] == 1 for row in r['rows']))
+        acked = _poll_until(controller, ident, 'status', acknowledged, seconds=ACK_WAIT_SECONDS, request=request, sleep=sleep)
+        if acked is None or not acknowledged(acked):
             raise ValueError('Child charts did not acknowledge the exposure policy in time; run deploy-load again')
         phase('policy_applied', command_id=command)
 

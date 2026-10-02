@@ -21,7 +21,7 @@ from pathlib import Path
 import re
 import time
 
-from studio_agent_mailbox import identity, setup_register, setup_request
+from studio_agent_mailbox import identity, setup_register, setup_request, setup_retire
 from studio_bridge import write_json
 from studio_installation import read_json
 from studio_native_gate import exclusive_gate
@@ -89,7 +89,7 @@ def broker_proof(controller, session, *, mt5=None, require_flat=True):
     return proof
 
 
-def pairing_code(controller, build_id, *, timeout=30):
+def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
     session, _ = session_state(controller)
     require_unprotected(session['account']['login'])
     from studio_seed_process import WindowsSeedProcess
@@ -97,15 +97,18 @@ def pairing_code(controller, build_id, *, timeout=30):
         return dict(status='terminal_stopped', userCodeReturned=False,
                     next_action='Open the selected MT5 so GOAT can show and read its connection code.')
     ident = identity(controller, session, build_id)
+    # A fresh broker readback, not the binding, proves demo before any request; the EA
+    # itself also answers only on ACCOUNT_TRADE_MODE_DEMO.
+    proof = broker_proof(controller, session, mt5=mt5, require_flat=False)
     setup_register(controller, ident, allow_pairing=True)
-    result = setup_request(controller, ident, 'pairing', timeout=timeout)
+    result = (request or setup_request)(controller, ident, 'pairing', timeout=timeout)
     outcome = result['result']
     if outcome == 'pairing_available':
         login = session['account']['login']
         return dict(status='pairing_available', userCode=result['userCode'], activationId=result['activationId'],
                     pairingExpiresAtMs=result['pairingExpiresAtMs'], responseExpiresAtUtc=result['responseExpiresAtUtc'],
                     observedAtUtc=result['observedAtUtc'], accountLogin=login, accountLast4=login[-4:],
-                    server=ident['server'], buildId=ident['buildId'], demo=True, tradingAllowed=False,
+                    server=proof['server'], buildId=ident['buildId'], demo=proof['demo'] is True, tradingAllowed=False,
                     receiptId=result['id'])
     if outcome == 'pairing_unavailable':
         return dict(status='no_pending_pairing', userCodeReturned=False,
@@ -137,7 +140,7 @@ def _wait_exit(process, identity_value, seconds, *, clock=time.monotonic, sleep=
     return current is None
 
 
-def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspect=None, request=None, wait_seconds=30):
+def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspect=None, request=None, retire=None, wait_seconds=30):
     """Inert-only normal close of the selected terminal. Retained; never repeated."""
     from studio_monitor_probe import inspect_idle_demo
     from studio_seed_process import WindowsSeedProcess
@@ -163,6 +166,11 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
         require_idle_control(controller, session)
         if (Path(controller.root) / 'demo-agent' / 'STOP').exists():
             raise ValueError('Owner STOP is set on this terminal; clear it deliberately before agents act')
+        # A native-gate request or permit means a batch start or control is in flight; the
+        # controller cannot read the EA's BatchOnGoing flag, so this is a hard refusal.
+        gate = controller.local / 'native-gate'
+        if any((gate / name).exists() or (gate / name).is_symlink() for name in ('request.json', 'permit.json')):
+            raise ValueError('A native Studio request or permit is pending on this terminal; GOAT will not close MT5 during it')
         running = process.inspect()
         if running is None:
             record = dict(schema_version=1, attempt_id=attempt_id, phase='already_stopped', status='already_stopped')
@@ -180,6 +188,14 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
             ident = identity(controller, session, build_id)
             setup_register(controller, ident)
             receipt = request(controller, ident, 'shutdown', timeout=10)
+            if receipt['result'] == 'receipt_timeout':
+                # Withdraw the unanswered shutdown so no EA can act on it during or after our
+                # own close; an EA that answered before the withdrawal wins and is honoured.
+                answered = (retire or setup_retire)(controller, ident, receipt['id'])
+                if answered is not None:
+                    receipt = answered
+                else:
+                    record['withdrawn_request_id'] = receipt['id']
             if receipt['result'] == 'shutdown_requested':
                 method = 'ea_inert_shutdown'
                 record['ea_receipt'] = {k: receipt[k] for k in ('id', 'result', 'tradingAllowed', 'positions', 'orders', 'observedAtUtc')}

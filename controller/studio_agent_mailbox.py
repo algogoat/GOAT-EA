@@ -247,6 +247,38 @@ def setup_request(controller, ident, action, *, timeout=30, clock=time.monotonic
         return dict(id=request_id, result='receipt_timeout', requestRetained=True)
 
 
+def setup_retire(controller, ident, request_id, *, grace=1.5, sleep=time.sleep):
+    """Withdraw one unanswered request so no EA host can act on it later.
+
+    Returns the EA's validated receipt when it answered before or during the withdrawal
+    (an EA mid-poll finishes within one timer tick), otherwise None.
+    """
+    root = setup_root(controller)
+    receipt = root / (request_id + '.json')
+    def answered():
+        if not receipt.exists():
+            return None
+        value, _ = read_bounded(receipt)
+        result = setup_receipt(value, request_id, ident, pairing=True)
+        if result['result'] == 'pairing_available':
+            consume_pairing(receipt, result)
+        return result
+    with producer_lock(root):
+        early = answered()
+        if early is not None:
+            return early
+        pending = root / 'request.json'
+        if pending.exists():
+            current, _ = read_bounded(pending)
+            if current.get('id') == request_id:
+                archived = root / (request_id + '.withdrawn.request.json')
+                if archived.exists():
+                    raise ValueError('Withdrawn request archive already exists; inspect retained state')
+                sharing_retry(lambda: pending.rename(archived))
+    sleep(grace)
+    return answered()
+
+
 # -------------------------------------------------------------- portfolio mailbox
 
 PORTFOLIO_ACTIONS = ('status', 'audit', 'configure', 'deploy_next', 'apply_policy')

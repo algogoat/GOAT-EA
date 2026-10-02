@@ -131,7 +131,38 @@ def paths(controller, deployment_id):
         profile=data / 'MQL5' / 'Profiles' / 'Charts' / ('GOAT-Deploy-' + deployment_id[:16]),
         preset=data / 'MQL5' / 'Presets' / PRESET_NAME,
         journal=Path(controller.root) / 'demo-deployments' / (deployment_id + '.json'),
-        config=Path(controller.root) / 'demo-deployments' / (deployment_id + '.ini'))
+        config=Path(controller.root) / 'demo-deployments' / (deployment_id + '.ini'),
+        # The EA keys its saved dashboard and mailboxes by the data folder NAME only; this
+        # claim binds that name to one full directory so two terminals can never share it.
+        namespace=common / 'GOAT' / 'Deployments' / 'namespaces' / (data.name + '.json'))
+
+
+def namespace_claim(controller):
+    return (json.dumps(dict(schema=1, directory=str(Path(controller.install['terminal_data_root']).resolve()).casefold()),
+                       sort_keys=True, separators=(',', ':')) + '\n').encode()
+
+
+def namespace_conflict(controller):
+    claim = paths(controller, '0' * 32)['namespace']
+    return claim.exists() and claim.read_bytes() != namespace_claim(controller)
+
+
+def staged_bytes(controller, plan, members):
+    """Every file the relaunched dashboard will read, as the reviewed plan defines it."""
+    where = paths(controller, plan['deploymentId'])
+    policy = plan['policy']
+    expected = {Path(m['path']): m['raw'] for m in members}
+    expected[where['preset']] = PRESET
+    expected[where['profile'] / 'chart01.chr'] = chart_bytes(members[0]['symbol'])
+    expected[where['state']] = state_bytes(dict(policy='\t'.join(str(policy[k]) for k in ('aiMode', 'aiThreshold', 'aiProtocol')), members=members))
+    expected[where['namespace']] = namespace_claim(controller)
+    return expected
+
+
+def verify_staged(controller, plan, members):
+    for path, raw in staged_bytes(controller, plan, members).items():
+        if not path.is_file() or path.is_symlink() or path.read_bytes() != raw:
+            raise ValueError('A staged dashboard file changed after the review (' + path.name + '); nothing was launched. Stop this deployment and deploy again.')
 
 
 def state_bytes(rows):
@@ -183,7 +214,7 @@ def preflight(controller, *, mt5=None, process=None):
                   protected_account=session['account']['login'] in PROTECTED_ACCOUNTS,
                   ea_version=controller.install['ea_version'], ea_sha256=controller.install['ea_sha256'],
                   existing_dashboard=paths(controller, '0' * 32)['state'].exists(), deployment=current_deployment(controller),
-                  trading_changed=False)
+                  namespace_conflict=namespace_conflict(controller), trading_changed=False)
     try:
         require_idle_control(controller, session)
         result['active_work'] = None
@@ -211,7 +242,8 @@ def current_deployment(controller):
     if not root.is_dir():
         return None
     records = [read_json(path) for path in root.glob('*.json')]
-    live = [r for r in records if r.get('phase') not in ('stopped', 'failed_before_launch')]
+    # A refused first attempt staged nothing and blocks nothing.
+    live = [r for r in records if r.get('phase') not in ('stopped', 'refused_before_stage')]
     if not live:
         return None
     if len(live) > 1:
@@ -278,6 +310,8 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         raise ValueError('Another demo deployment is live on this terminal; stop it first')
     if record and record.get('phase') == 'ready':
         return public(record)
+    if record and record.get('phase') == 'refused_before_stage':
+        record = None  # Nothing was staged; the same reviewed plan starts again.
     if record is None:
         record = dict(schema_version=1, deployment_id=deployment_id, plan_sha256=plan_sha256, phase='validated',
                       portfolio=plan['portfolio'], account=dict(session['account']), build_id=plan['buildId'],
@@ -290,22 +324,24 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         write_json(where['journal'], record)
 
     if record['phase'] == 'validated':
-        with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
-            require_idle_control(controller, session)
-            if where['state'].exists():
-                raise ValueError('This terminal already has a saved GOAT dashboard portfolio; stop or remove it before deploying another')
-            if (portfolio_root(controller) / 'registration.json').exists():
-                raise ValueError('Another dashboard portfolio registration is retained for this terminal; inspect it before deploying')
-            if process.inspect() is None:
-                raise ValueError('Open the selected MT5 on the demo account first so GOAT can verify it is a demo account')
-            broker_proof(controller, session, mt5=mt5)
-            for member in members:
-                write_exact(Path(member['path']), member['raw'])
-            write_exact(where['preset'], PRESET)
-            write_exact(where['profile'] / 'chart01.chr', chart_bytes(members[0]['symbol']))
-            policy = plan['policy']
-            write_exact(where['state'], state_bytes(dict(policy='\t'.join(str(policy[k]) for k in ('aiMode', 'aiThreshold', 'aiProtocol')),
-                                                         members=members)))
+        try:
+            with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
+                require_idle_control(controller, session)
+                if where['state'].exists():
+                    raise ValueError('This terminal already has a saved GOAT dashboard portfolio; stop or remove it before deploying another')
+                if (portfolio_root(controller) / 'registration.json').exists():
+                    raise ValueError('Another dashboard portfolio registration is retained for this terminal; inspect it before deploying')
+                if namespace_conflict(controller):
+                    raise ValueError('Another MT5 terminal with the same data folder name already uses GOAT\'s dashboard files; GOAT will not deploy here')
+                if process.inspect() is None:
+                    raise ValueError('Open the selected MT5 on the demo account first so GOAT can verify it is a demo account')
+                broker_proof(controller, session, mt5=mt5)
+                for path, raw in staged_bytes(controller, plan, members).items():
+                    write_exact(path, raw)
+        except (OSError, ValueError):
+            if not where['state'].exists() or where['state'].read_bytes() != staged_bytes(controller, plan, members)[where['state']]:
+                phase('refused_before_stage')
+            raise
         phase('staged')
 
     if record['phase'] == 'staged':
@@ -323,9 +359,11 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             if process.inspect() is not None:
                 raise ValueError('The selected MT5 reopened before the dashboard launch; nothing was launched')
             portable = saved_launch_policy(controller, session)
-            if where['preset'].read_bytes() != PRESET or not where['state'].exists():
-                raise ValueError('The staged dashboard preset or state changed; inspect before launch')
-            config = ('[Charts]\r\nProfileLast=' + where['profile'].name + '\r\n[Experts]\r\nEnabled=0\r\n'
+            # Byte-exact: the SETs, resume file, chart, preset and namespace claim the EA will read.
+            verify_staged(controller, plan, members)
+            # Enabled=0 keeps Algo Trading off; Account=1 turns it off again if MT5 is later
+            # signed in to another account (MT5 "disable on account change").
+            config = ('[Charts]\r\nProfileLast=' + where['profile'].name + '\r\n[Experts]\r\nEnabled=0\r\nAccount=1\r\n'
                       '[StartUp]\r\nExpert=' + controller.install['ea_relative_path'] + '\r\nExpertParameters=' + PRESET_NAME +
                       '\r\nPeriod=M1\r\n').encode('utf-16')
             write_exact(where['config'], config)
@@ -382,6 +420,8 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
                             seconds=AUDIT_WAIT_SECONDS, request=request, sleep=sleep)
         if audit is None or audit['result'] != 'observed':
             raise ValueError('The dashboard settings audit did not complete (' + (audit['result'] if audit else 'receipt_timeout') + ')')
+        if audit['registrationSha256'] != record.get('registration_sha256'):
+            raise ValueError('The dashboard audited a different registration than this deployment registered; readiness is not claimed')
         _verify_ready(audit, registration)
         proof = broker_proof(controller, session, mt5=mt5)
         if proof['algo_trading']:

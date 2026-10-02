@@ -58,11 +58,12 @@ class FakeEA(threading.Thread):
     """Answers the two mailboxes the way the EA does, including its demo/inert gates."""
 
     def __init__(self, controller, *, demo=True, algo=False, positions=0, pairing='available', setup_host=True,
-                 settings_match=True, child_trade=1, attach_failures=0):
+                 settings_match=True, child_trade=1, attach_failures=0, batch=False):
         super().__init__(daemon=True)
         self.c, self.demo, self.algo, self.positions = controller, demo, algo, positions
         self.pairing, self.setup_host, self.settings_match, self.child_trade = pairing, setup_host, settings_match, child_trade
         self.attach_failures = attach_failures
+        self.batch = batch  # A Studio monitor mid-batch refuses shutdown (GoatSetupResearchIdle).
         self.stop_event = threading.Event()
         self.rows = []
         self.command = 0
@@ -102,7 +103,7 @@ class FakeEA(threading.Thread):
         if envelope['expiresAtUtc'] < time.time():
             body = self.base(envelope['id'], 'rejected_envelope', ident)
         elif action == 'shutdown':
-            body = self.base(envelope['id'], 'shutdown_requested' if inert else 'rejected_not_inert', ident)
+            body = self.base(envelope['id'], 'shutdown_requested' if inert and not self.batch else 'rejected_not_inert', ident)
         elif action == 'pairing':
             if not inert:
                 body = self.base(envelope['id'], 'rejected_not_inert', ident)
@@ -198,7 +199,7 @@ class AgentSetupTests(unittest.TestCase):
 
     def test_pairing_code_reads_and_consumes_the_native_challenge(self):
         self.start_ea()
-        result = agent_setup.pairing_code(self.c, BUILD)
+        result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
         self.assertEqual(result['status'], 'pairing_available')
         self.assertEqual((result['userCode'], result['accountLast4'], result['buildId']), ('ABCD-EF23', '3456', BUILD))
         registration = json.loads((mailbox.setup_root(self.c) / 'registration.json').read_text())
@@ -209,25 +210,34 @@ class AgentSetupTests(unittest.TestCase):
 
     def test_pairing_without_pending_code_or_host_or_terminal(self):
         self.start_ea(pairing='none')
-        self.assertEqual(agent_setup.pairing_code(self.c, BUILD)['status'], 'no_pending_pairing')
+        self.assertEqual(agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))['status'], 'no_pending_pairing')
         self.ea.stop(); self.ea = None
         # A Studio monitor chart (older EA build) does not host the mailbox.
         with patch.object(mailbox, 'setup_request', return_value=dict(id='b' * 32, result='receipt_timeout')), \
              patch.object(agent_setup, 'setup_request', return_value=dict(id='b' * 32, result='receipt_timeout')):
-            self.assertEqual(agent_setup.pairing_code(self.c, BUILD)['status'], 'no_native_answer')
+            self.assertEqual(agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))['status'], 'no_native_answer')
         self.process.identity = None
-        self.assertEqual(agent_setup.pairing_code(self.c, BUILD)['status'], 'terminal_stopped')
+        self.assertEqual(agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))['status'], 'terminal_stopped')
 
     def test_pairing_refuses_algo_on_protected_accounts_and_bad_build(self):
         self.start_ea(algo=True)
         with self.assertRaisesRegex(ValueError, 'Algo Trading off'):
-            agent_setup.pairing_code(self.c, BUILD)
+            agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
         with self.assertRaisesRegex(ValueError, 'build ID'):
-            agent_setup.pairing_code(self.c, 'x')
+            agent_setup.pairing_code(self.c, 'x', mt5=FakeMT5(self.c))
         self.c.session['account']['login'] = '3000109427'
         with patch('studio_agent_setup.session_state', return_value=(self.c.session, {})):
             with self.assertRaisesRegex(ValueError, 'running GOAT experiment'):
-                agent_setup.pairing_code(self.c, BUILD)
+                agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+
+    def test_pairing_proves_demo_from_the_broker_before_any_request(self):
+        ea = self.start_ea()
+        for mt5, message in ((FakeMT5(self.c, trade_mode=2), 'real-money'), (FakeMT5(self.c, login='654321'), 'different account')):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                agent_setup.pairing_code(self.c, BUILD, mt5=mt5)
+        self.assertFalse((mailbox.setup_root(self.c) / 'registration.json').exists(), 'no registration or request on a non-demo account')
+        result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+        self.assertEqual((result['status'], result['demo'], result['server']), ('pairing_available', True, 'Customer-Demo'))
 
     def test_setup_receipt_rejects_foreign_or_stale_payloads(self):
         good = dict(schema=1, id='c' * 32, result='pairing_available', account=123456, server='Customer-Demo', directory=self.ident['directory'],
@@ -286,6 +296,37 @@ class AgentSetupTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Owner STOP'):
             agent_setup.close_terminal(self.c, 'close-6', build_id=BUILD)
         self.assertEqual(self.process.closed, [])
+
+    def test_close_refuses_while_a_native_gate_request_or_permit_exists(self):
+        gate = self.c.local / 'native-gate'; gate.mkdir(parents=True, exist_ok=True)
+        for name in ('request.json', 'permit.json'):
+            (gate / name).write_text('{}')
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'native Studio request or permit'):
+                agent_setup.close_terminal(self.c, 'gate-' + name[:4], build_id=BUILD)
+            (gate / name).unlink()
+        self.assertEqual(self.process.closed, [])
+
+    def test_ea_shutdown_refusal_mid_batch_is_final_and_sends_no_fallback_close(self):
+        ea = self.start_ea(pairing='none', batch=True)
+        with self.assertRaisesRegex(ValueError, 'refused to close'):
+            agent_setup.close_terminal(self.c, 'batch-1', build_id=BUILD)
+        self.assertEqual((ea.shutdowns, self.process.closed), (0, []))
+        self.assertIsNotNone(self.process.identity, 'MT5 keeps running its batch')
+
+    def test_an_unanswered_shutdown_is_withdrawn_before_the_fallback_close(self):
+        result = agent_setup.close_terminal(self.c, 'withdraw-1', build_id=BUILD, retire=lambda c, ident, rid: mailbox.setup_retire(c, ident, rid, grace=0))
+        self.assertEqual((result['phase'], result['method']), ('stopped', 'controller_normal_close'))
+        root = mailbox.setup_root(self.c)
+        self.assertFalse((root / 'request.json').exists(), 'no live shutdown request survives the close')
+        self.assertTrue((root / (result['withdrawn_request_id'] + '.withdrawn.request.json')).exists())
+        # A host that answered during the withdrawal wins: the EA's own close is used, not ours.
+        late = FakeProcess()
+        self.process.identity = late.identity
+        answered = dict(id='e' * 32, result='shutdown_requested', tradingAllowed=False, positions=0, orders=0, observedAtUtc=int(time.time()))
+        with patch.object(agent_setup, 'setup_request', return_value=dict(id='e' * 32, result='receipt_timeout')):
+            result = agent_setup.close_terminal(self.c, 'withdraw-2', build_id=BUILD, wait_seconds=0.5,
+                                                retire=lambda *args: (setattr(self.process, 'identity', None), answered)[1])
+        self.assertEqual(result['method'], 'ea_inert_shutdown'); self.assertEqual(len(self.process.closed), 1, 'only the first test closed through the controller')
 
     def test_broker_proof_refuses_real_money_unconnected_and_other_accounts(self):
         self.assertTrue(agent_setup.broker_proof(self.c, self.c.session, mt5=FakeMT5(self.c))['demo'])
@@ -394,6 +435,68 @@ class AgentSetupTests(unittest.TestCase):
         self.assertEqual((result['phase'], result['deployment_id']), ('ready', '1' * 32))
         with self.relaunch(), self.assertRaisesRegex(ValueError, 'Another demo deployment is live'):
             deploy.load(self.c, self.plan(deploymentId='2' * 32), mt5=FakeMT5(self.c))
+
+    def staged_then(self, mutate):
+        """Run deploy-load with a close step that changes something after staging."""
+        def close(controller, attempt_id, build_id=None):
+            mutate(); self.process.identity = None
+            return dict(phase='stopped')
+        return close
+
+    def test_a_set_or_resume_file_changed_after_staging_is_never_launched(self):
+        where = deploy.paths(self.c, 'e' * 32)
+        set_path = where['sets'] / 'GOAT V1.48 EURUSD,M15_Trds0.set'
+        for label, mutate in (('SET', lambda: set_path.write_bytes(set_path.read_bytes() + b'X\x00')),
+                              ('resume file', lambda: where['state'].write_bytes(where['state'].read_bytes().replace('EURUSD'.encode('utf-16-le'), 'USDJPY'.encode('utf-16-le'))))):
+            with self.subTest(label=label):
+                for path in [*Path(self.c.root).glob('demo-deployments/*'), *where['sets'].glob('*'), where['state'], where['profile'] / 'chart01.chr', where['namespace']]:
+                    if path.exists(): path.unlink()
+                self.process.identity = FakeProcess().identity
+                with self.relaunch() as launch, self.assertRaisesRegex(ValueError, 'changed after the review'):
+                    deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), close=self.staged_then(mutate), sleep=lambda s: None)
+                launch.assert_not_called()
+
+    def test_the_saved_login_switched_before_relaunch_is_refused(self):
+        ini = self.data / 'config/common.ini'
+        with self.relaunch() as launch, self.assertRaisesRegex(ValueError, 'Saved broker login/server differs'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None,
+                        close=self.staged_then(lambda: ini.write_text('[Common]\nLogin=999999\nServer=Real-Live\n[Experts]\nEnabled=0\n')))
+        launch.assert_not_called()
+
+    def test_an_account_turned_real_mid_flow_is_never_reported_ready(self):
+        class Switching(FakeMT5):
+            calls = 0
+            def account_info(self):
+                Switching.calls += 1
+                return SimpleNamespace(login=123456, server='Customer-Demo', trade_mode=0 if Switching.calls < 3 else 2)
+        self.start_ea(pairing='none')
+        with self.relaunch(), self.assertRaisesRegex(ValueError, 'real-money'):
+            deploy.load(self.c, self.plan(), mt5=Switching(self.c), sleep=lambda s: None)
+        self.assertNotEqual(json.loads(deploy.paths(self.c, 'e' * 32)['journal'].read_text())['phase'], 'ready')
+
+    def test_startup_config_turns_algo_off_on_account_change(self):
+        self.start_ea(pairing='none')
+        with self.relaunch() as launch:
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
+        text = Path(launch.call_args.args[0][1].removeprefix('/config:')).read_bytes().decode('utf-16')
+        self.assertIn('[Experts]\r\nEnabled=0\r\nAccount=1\r\n', text)
+
+    def test_a_refused_first_attempt_leaves_no_live_deployment(self):
+        with self.assertRaisesRegex(ValueError, 'real-money'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c, trade_mode=2))
+        self.assertEqual(json.loads(deploy.paths(self.c, 'e' * 32)['journal'].read_text())['phase'], 'refused_before_stage')
+        self.assertIsNone(deploy.current_deployment(self.c))
+        self.start_ea(pairing='none')
+        with self.relaunch():
+            self.assertEqual(deploy.load(self.c, self.plan(deploymentId='3' * 32), mt5=FakeMT5(self.c), sleep=lambda s: None)['phase'], 'ready')
+
+    def test_a_data_folder_name_used_by_another_terminal_is_refused(self):
+        claim = deploy.paths(self.c, 'e' * 32)['namespace']
+        claim.parent.mkdir(parents=True, exist_ok=True)
+        claim.write_bytes(json.dumps(dict(schema=1, directory='c:\\other parent\\customer data')).encode())
+        with self.assertRaisesRegex(ValueError, 'same data folder name'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c))
+        self.assertTrue(deploy.preflight(self.c, mt5=FakeMT5(self.c))['namespace_conflict'])
 
     def test_cli_exposes_the_agent_operations_with_their_contracts(self):
         from goat_studio import OPERATION_CONTRACTS, main

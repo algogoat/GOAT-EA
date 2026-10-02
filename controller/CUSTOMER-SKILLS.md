@@ -1,5 +1,8 @@
 # GOAT skills for customer agents
 
+New to this installation? Follow [AGENT-START-HERE.md](AGENT-START-HERE.md) first and read
+[GOAT-OPERATING-MODEL.md](GOAT-OPERATING-MODEL.md) for the rules. The skills below go deeper.
+
 These portable skills are included in the controller bundle. `discover` returns
 their installed paths and hashes. Agents can read the matching `SKILL.md` directly;
 hosts that support local skills can register these same folders without copying

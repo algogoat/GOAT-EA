@@ -1,5 +1,9 @@
 # Portable Seed Farming workflow
 
+Start with the "Seed loop" section of [AGENT-START-HERE.md](AGENT-START-HERE.md) and the
+feedback loop in [GOAT-OPERATING-MODEL.md](GOAT-OPERATING-MODEL.md). This page is the
+detailed reference for the same `seed-*` commands.
+
 Seed Farming is a dedicated EA mode for bounded template/asset searches. It emits
 `GOAT/SeedFarmingXML` results in the selected terminal's Common Files directory.
 It does not run the normal Studio forward/export pipeline, produce a portfolio,

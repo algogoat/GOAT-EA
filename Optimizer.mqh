@@ -1442,7 +1442,8 @@ void BuildOptimizationBatchPromptSummary(const string queueFile,const string log
    int noEdge=0;
    if(loaded && stats.errors>0)
      {
-      string seen="\n",statLines[];
+      string seen="\n";
+      string statLines[];
       int statCount=StringSplit(GoatOptReadTextFile(GoatOptFolderOf(queueFile)+"\\item_stats.tsv"),'\n',statLines);
       for(int i=1;i<statCount;i++)
         {

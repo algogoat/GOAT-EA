@@ -2298,7 +2298,9 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
     Print("WebRequest failed: ", native_error);
     HidePrompt();
     if(MQLInfoInteger(MQL_VISUAL_MODE)) Print("For security purposes, visual testing mode is limited in features.");
-    ShowPrompt("Connection not allowed!","Copy the URL below and add to"," Tools > Options > Experts > Allowed URLs.",URL_API);
+    // 4014 is the WebRequest allow-list; anything else is the network, not a permission.
+    if(native_error==4014) ShowPrompt("Allow GOAT to reach goatedge.ai","Tools > Options > Expert Advisors > Allow WebRequest","Add the URL below, click OK, then re-attach GOAT.",URL_API);
+    else                   ShowPrompt("Can't reach goatedge.ai","Check this PC is online (MT5 error "+(string)native_error+").","Then re-attach GOAT to this chart.","");
     return res;
    }
    else if(res!=200&&res!=1003) Print("License check HTTP response ",res);
@@ -2324,22 +2326,23 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
      if(response_text=="no")
      {
       Print("License not valid for this MT5 account.");
-      ShowPrompt("Validation Failed!","Check your MT5 Acc# in your GOATedge client area.","Visit the URL below to buy or activate the GOAT EA.",URL_Web);
+      ShowPrompt("This MT5 account isn't licensed for GOAT","Add account "+(string)AccNum+" in your GOAT portal (EA tab).","Then approve the connection code GOAT shows next.","https://goatedge.ai/user-portal?tab=ea");
       // The legacy-compatible endpoint deliberately transports an entitlement
       // denial as HTTP 200 + "no". Preserve that wire contract while returning
       // the typed authorization result OnInit needs for safe device reactivation.
       return 403;
     }
     // unexpected 200 body
-    ShowPrompt("Validation Failed!","Unexpected response from server."," ","");
+    ShowPrompt("GOAT licence check failed","GOAT sent an unexpected reply.","Try again in a minute; contact support if it repeats.","");
     return res;
    }
-   if(res==400) {ShowPrompt("Bad Request","Missing/invalid MT5 account id (id)."," ",""); return res;}
-   if(res==401) {ShowPrompt("Authorization Failed","Missing/invalid bearer token."," ",""); return res;}
-   if(res==403) {ShowPrompt("Not Entitled","Account exists but is not entitled for EA."," ",""); return res;}
-   if(res==503) {ShowPrompt("Server Auth Issue","Server auth token misconfiguration."," ",""); return res;}
-   if(res==1001){ShowPrompt("No Connection!","Ensure your MT5 terminal is online and has stable internet.","GOAT EA requires an active connection to function properly.",""); return res;}
-                 ShowPrompt("Validation Failed!","Unexpected HTTP status: "+(string)res,"","");
+   if(res==400) {ShowPrompt("GOAT licence check failed","GOAT could not read this MT5 account number.","Contact GOAT support.",""); return res;}
+   // 401/403 hand off to a new connection code in OnInit; say so instead of an alarm.
+   if(res==401) {ShowPrompt("GOAT sign-in needs renewing","This chart will show a new connection code."," ",""); return res;}
+   if(res==403) {ShowPrompt("This MT5 account isn't licensed for GOAT","Add account "+(string)AccNum+" in your GOAT portal (EA tab).","Then approve the connection code GOAT shows next.",""); return res;}
+   if(res==503) {ShowPrompt("GOAT licence service unavailable","GOAT is having a server problem.","Re-attach GOAT in a few minutes.",""); return res;}
+   if(res==1001){ShowPrompt("Can't reach goatedge.ai","Check this PC and MT5 are online.","GOAT needs a connection to check its licence.",""); return res;}
+                 ShowPrompt("GOAT licence check failed","Unexpected reply from GOAT (HTTP "+(string)res+").","Contact GOAT support if it repeats.","");
    return res;
   }
 //+------------------------------------------------------------------+

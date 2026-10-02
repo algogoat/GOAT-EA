@@ -1,0 +1,51 @@
+// Mutation check for scripts/test_research_outcome.cjs and test_connection_code.cjs: every
+// guard below is removed or weakened in a temporary copy of the production sources and the
+// harness must fail. MQL-free; the repository files are never modified.
+const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),{spawnSync}=require('node:child_process');
+const repo=path.join(__dirname,'..');
+const files=['XmlProcessor.mqh','GOAT V1.49.mq5','Optimizer.mqh','GOATEADeviceActivation.mqh'];
+const R=String.raw;
+// [label, file, from, to, harness]
+const outcome='test_research_outcome.cjs',code='test_connection_code.cjs';
+const mutations=[
+  ['unread back report classified','XmlProcessor.mqh',R`if(!back_read || !title_matches) return "";`,R`if(!title_matches) return "";`,outcome],
+  ['mismatched file name classified','XmlProcessor.mqh',R`if(!back_read || !title_matches) return "";`,R`if(!back_read) return "";`,outcome],
+  ['unknown window classified','XmlProcessor.mqh',R`if(window_start<=0 || forward_date<=window_start || window_end<=forward_date) return "";`,'',outcome],
+  ['forward date outside the window accepted','XmlProcessor.mqh',R`if(window_start<=0 || forward_date<=window_start || window_end<=forward_date) return "";`,R`if(window_start<=0) return "";`,outcome],
+  ['report without passes classified','XmlProcessor.mqh',R`if(passes<=0 || kept!=0) return "";`,R`if(kept!=0) return "";`,outcome],
+  ['kept rows classified','XmlProcessor.mqh',R`if(passes<=0 || kept!=0) return "";`,R`if(passes<=0) return "";`,outcome],
+  ['mixed pairs classified','XmlProcessor.mqh',R`if(ret && noEdgePairs==pairs) xmlData.outcome`,R`if(ret) xmlData.outcome`,outcome],
+  ['another failure masked','XmlProcessor.mqh',R`if(ret && noEdgePairs==pairs) xmlData.outcome`,R`if(noEdgePairs==pairs) xmlData.outcome`,outcome],
+  ['no-edge reported as success','XmlProcessor.mqh',"xmlData.outcome=GOAT_XML_NO_PROFITABLE_PASSES;\r\n      ret=false;","xmlData.outcome=GOAT_XML_NO_PROFITABLE_PASSES;\r\n",outcome],
+  ['no-edge pair still merged and written','XmlProcessor.mqh',"LogOrPrint(reportMode,xmlData.OutcomeSentence(),Key_,EA_Name_,Server_);\r\n          continue;","LogOrPrint(reportMode,xmlData.OutcomeSentence(),Key_,EA_Name_,Server_);\r\n",outcome],
+  ['passes counted after the profit filter','XmlProcessor.mqh',"            passesSeen++;\r\n","",outcome],
+  ['best profit only from kept rows','XmlProcessor.mqh',R`if(passesSeen==0 || Rows[i].back_profit>bestProfit) bestProfit=Rows[i].back_profit;`,'',outcome],
+  ['log back to Rows Saved=0/0','XmlProcessor.mqh',R`"/"+(string)passesSeen`,R`"/"+(string)i`,outcome],
+  ['report-mode alert says check logs','XmlProcessor.mqh',R`if(reportMode) Alert(xmlData.OutcomeSentence());`,'',outcome],
+  ['outcome written as Error','GOAT V1.49.mq5',R`Strat,"NoProfitablePasses",`,R`Strat,"Error",`,outcome],
+  ['real combine errors written as outcomes','GOAT V1.49.mq5',R`if(xmlData.outcome==GOAT_XML_NO_PROFITABLE_PASSES)`,R`if(true)`,outcome],
+  ['queue status cleared for no-edge','GOAT V1.49.mq5',R`GoatOptAppendItemStats(EA_Name,Server,Symbol(),Strat,"NoProfitablePasses",`,R`error=false; GoatOptAppendItemStats(EA_Name,Server,Symbol(),Strat,"NoProfitablePasses",`,outcome],
+  ['summary counts other statuses','Optimizer.mqh',R`fields[3]!="NoProfitablePasses"`,R`fields[3]==""`,outcome],
+  ['summary counts repeated items','Optimizer.mqh',R`if(StringFind(seen,"\n"+itemKey)>=0) continue;`,'',outcome],
+  ['summary not bounded by errors','Optimizer.mqh',R`noEdge=(int)MathMin(noEdge,stats.errors);`,'',outcome],
+  ['code back in the query string','GOATEADeviceActivation.mqh',R`verification_url+"#ea-connect="+user_code`,R`verification_url+"&code="+user_code`,code],
+  ['pairing wording returns','GOATEADeviceActivation.mqh',R`"Connection code: "+user_code`,R`"Enter pairing code: "+user_code`,code],
+];
+const scratch=fs.mkdtempSync(path.join(process.env.GOAT_MUTATION_TMP||os.tmpdir(),'goat-outcome-mutation-'));
+function run(dir,harness){return spawnSync(process.execPath,[path.join(__dirname,harness)],{env:{...process.env,GOAT_EA_ROOT:dir},encoding:'utf8'});}
+let killed=0;const survivors=[];
+try{
+  const base=path.join(scratch,'base');fs.mkdirSync(base);
+  for(const f of files)fs.copyFileSync(path.join(repo,f),path.join(base,f));
+  for(const harness of [outcome,code]){const clean=run(base,harness);if(clean.status!==0)throw new Error('unmutated sources fail '+harness+':\n'+clean.stdout+clean.stderr);}
+  mutations.forEach(([label,file,from,to,harness],n)=>{
+    const dir=path.join(scratch,'m'+n);fs.mkdirSync(dir);
+    for(const f of files)fs.copyFileSync(path.join(base,f),path.join(dir,f));
+    const target=path.join(dir,file),text=fs.readFileSync(target,'utf8');
+    if(text.split(from).length!==2)throw new Error('mutation anchor is not unique: '+label);
+    fs.writeFileSync(target,text.replace(from,()=>to));
+    if(run(dir,harness).status===0)survivors.push(label);else killed++;
+  });
+}finally{fs.rmSync(scratch,{recursive:true,force:true});}
+if(survivors.length){console.error('Surviving mutations: '+survivors.join('; '));process.exit(1);}
+console.log(JSON.stringify({mutations:mutations.length,killed}));

@@ -138,10 +138,11 @@ void GOATDeviceActivationShowNetworkHelp(void)
 void GOATDeviceActivationShowCode(const string user_code,const string verification_url)
   {
    HidePrompt();
-   long minutes=(g_GOATDeviceActivationExpiresAtMs-(long)TimeGMT()*1000+59999)/60000;
+   // An absolute local time stays true while the card is shown; a countdown would go stale.
+   datetime until=TimeLocal()+(int)((g_GOATDeviceActivationExpiresAtMs-(long)TimeGMT()*1000)/1000);
    ShowPrompt("Connection code: "+user_code,
                "Approve MT5 account "+g_GOATDeviceActivationAccountId+" in the GOAT portal (EA tab).",
-               "Open the link below; the code is filled in. Valid "+(string)minutes+" min.",
+               "Open the link below (code filled in). Valid until "+TimeToString(until,TIME_MINUTES)+".",
                verification_url+"#ea-connect="+user_code);
   }
 

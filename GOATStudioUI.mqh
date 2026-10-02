@@ -526,6 +526,19 @@ void CStrategyTesterDialog::ManagedSelectStrategy(void)
    ManagedQueueSubmit("draft.replace_strategy","{\"schema_hash\":"+GoatStudioQuote(g_StudioSchemaHash)+",\"values\":"+values+"}");
   }
 
+// Plain words for controller and native queue states; unknown states stay visible as-is.
+string GoatStudioStatusWord(const string status)
+  {
+   if(status=="pending" || status=="queued") return "Waiting";
+   if(status=="reserved" || status=="starting" || status=="running" || status=="ongoing" || status=="verifying" || status=="reconcile_required") return "Running";
+   if(status=="completed") return "Done";
+   if(status=="failed") return "Failed";
+   if(status=="error") return "Error";
+   if(status=="cancelled") return "Cancelled";
+   if(status=="unobserved") return "Not seen yet";
+   return status;
+  }
+
 void CStrategyTesterDialog::ManagedQueueRefresh(void)
   {
    if(g_StudioSnapshot=="" || g_StudioSnapshot==g_StudioQueueRendered) return;
@@ -547,7 +560,7 @@ void CStrategyTesterDialog::ManagedQueueRefresh(void)
       if(!GOATJsonGetString(g_StudioSnapshot,tokens,tester,"Symbol",symbol)
          || !GOATJsonGetString(g_StudioSnapshot,tokens,tester,"Period",period)) return;
       int n=ArraySize(ids); ArrayResize(ids,n+1); ArrayResize(statuses,n+1); ArrayResize(labels,n+1);
-      ids[n]=id; statuses[n]=status; labels[n]=status+" | "+symbol+" "+period+" | "+id;
+      ids[n]=id; statuses[n]=status; labels[n]=GoatStudioStatusWord(status)+" | "+symbol+" "+period+" | "+id;
      }
    string batch_heading="";
    int batch=GOATJsonFindField(g_StudioSnapshot,tokens,state,"batch_view");
@@ -560,7 +573,7 @@ void CStrategyTesterDialog::ManagedQueueRefresh(void)
          && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"cancelled",cancelled)
          && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"remaining",remaining)
          && GOATJsonGetInteger(g_StudioSnapshot,tokens,batch,"active",active))
-         batch_heading="BATCH "+(string)total+" | Done "+(string)done+" | Left "+(string)remaining+" | Active "+(string)active+" | Fail "+(string)failed+" | Cancel "+(string)cancelled;
+         batch_heading="BATCH  "+(string)done+" of "+(string)total+" done | "+(string)active+" running | "+(string)remaining+" left | "+(string)failed+" errors | "+(string)cancelled+" cancelled";
       int members=GOATJsonFindField(g_StudioSnapshot,tokens,batch,"members");
       if(members>=0 && tokens[members].type==GOAT_JSON_ARRAY)
          for(int i=members+1;i<ArraySize(tokens);i++)
@@ -577,7 +590,7 @@ void CStrategyTesterDialog::ManagedQueueRefresh(void)
             int n=ArraySize(ids); ArrayResize(ids,n+1); ArrayResize(statuses,n+1); ArrayResize(labels,n+1);
             // Display-only children never address a parent queue command.
             ids[n]=""; statuses[n]="member";
-            labels[n]="  "+(string)(member_index+1)+"/"+(string)total+" | "+status+" | "+symbol+" "+period+" | "+model_label+" | "+strategy;
+            labels[n]="  "+(string)(member_index+1)+" of "+(string)total+" | "+GoatStudioStatusWord(status)+" | "+symbol+" "+period+" | "+model_label+" | "+strategy;
            }
      }
    string selected=""; int index=m_listQueue.Current();
@@ -787,11 +800,11 @@ void CStrategyTesterDialog::ManagedRefresh(void)
    else if(dirty) status+="; unsaved edits (not used yet)";
    // Under 60 characters: MT5 cuts status fields at 63. An empty agent draft has
    // no settings to show, so it never claims to be showing them.
-   if(agent_mirror
+   bool show_agent_settings=agent_mirror;
 #ifdef GOAT_MONITOR_ONBOARDING_V149
-      && !g_StudioEmptyDraft
+   show_agent_settings=show_agent_settings && !g_StudioEmptyDraft;
 #endif
-     )
+   if(show_agent_settings)
      {
       status+=" (view only)";
       if(FileIsExist(g_StudioBridge.DraftPath())) status+="; your draft is kept";

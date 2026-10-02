@@ -384,6 +384,35 @@ class BatchDriverTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'explicit resume'):
             self.drive(max_seconds=3)
 
+    def test_start_refused_before_dispatch_retries_under_the_same_batch_id(self):
+        self.c.start_error = True
+        first = self.drive(max_seconds=3)
+        self.assertEqual((first['status'], self.c.current['status']), ('start_uncertain', 'pending'))
+        self.c.start_error = False
+        self.c.finished = True
+        result = self.drive(max_seconds=30)
+        self.assertEqual(self.c.starts, 2)
+        self.assertEqual(result['status'], 'completed')
+        archived = list((self.c.root/'batch-driver-refusals').glob('batch-*.json'))
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(json.loads(archived[0].read_text())['status'], 'start_uncertain')
+
+    def test_journal_with_any_native_trace_is_never_retried(self):
+        from studio_batch_driver import refused_before_dispatch
+        refused = dict(status='start_uncertain', start_issued=True, attempt_id=None, cancel_issued=False, stopped=False)
+        pending = dict(status='pending')
+        self.assertTrue(refused_before_dispatch(refused, pending))
+        self.assertTrue(refused_before_dispatch(refused, dict(status='reserved', reservation=dict(launch_permitted=False))))
+        for record, job in ((dict(refused, attempt_id='a'*64), pending),
+                            (dict(refused, cancel_issued=True), pending),
+                            (dict(refused, stopped=True), pending),
+                            (dict(refused, status='observing'), pending),
+                            (refused, dict(status='pending', launch_intent=dict(attempt_id='a'*64))),
+                            (refused, dict(status='starting')),
+                            (refused, dict(status='reserved', reservation=dict(launch_permitted=True)))):
+            with self.subTest(record=record, job=job):
+                self.assertFalse(refused_before_dispatch(record, job))
+
     def test_resume_keeps_original_deadline_after_host_death(self):
         def crash():
             raise HostDeath()

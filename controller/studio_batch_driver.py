@@ -44,18 +44,43 @@ def refused_before_dispatch(record, job):
                  or (job.get('status') == 'reserved' and reservation.get('launch_permitted') is False)))
 
 
+REFUSALS = 'batch-driver-refusals'
+
+
+def retry_index(root, job_id):
+    """How many refused starts of this job are archived; '.' never occurs in a job ID."""
+    archive = Path(root) / REFUSALS
+    pattern = re.compile(re.escape(job_id) + r'\.refused-[1-9][0-9]*\.json')
+    return sum(1 for item in archive.iterdir() if pattern.fullmatch(item.name)) if archive.is_dir() else 0
+
+
+def command_id(job_id, suffix, index):
+    """Queue command ID for a start attempt. Receipts replay by ID, so each retry needs a fresh one."""
+    return job_id + suffix + ('' if index == 0 else f'-r{index}')
+
+
 def _retire_refused_journal(controller, job_id, path, clock):
-    """Archive a refused-before-dispatch journal and release an unstarted reservation."""
+    """Archive a refused-before-dispatch journal and release an unstarted reservation.
+
+    Archives are numbered per job and never overwrite: an existing name refuses,
+    so every refusal stays available as evidence.
+    """
+    root = safe_path(controller.root)
+    index = retry_index(root, job_id)
     job = controller.job(job_id)
     if job['status'] == 'reserved':
         controller.submit('queue.release_reservation',
                           dict(job_id=job_id, reservation_id=job['reservation']['reservation_id']),
-                          job_id + '-release-reservation', expected_generation=controller.state()['generation'])
+                          command_id(job_id, '-release-reservation', index),
+                          expected_generation=controller.state()['generation'])
         if controller.job(job_id)['status'] != 'pending':
             raise ValueError('Unstarted reservation was not released; refused start remains retained')
-    archive = safe_path(path.parent.parent / 'batch-driver-refusals')
+    archive = safe_path(root / REFUSALS)
     archive.mkdir(exist_ok=True)
-    os.replace(path, safe_path(archive / f'{job_id}-{int(clock.time() * 1000)}.json'))
+    target = safe_path(archive / f'{job_id}.refused-{index + 1}.json')
+    if target.exists():
+        raise ValueError('Refused-start archive already exists; retained journal left in place')
+    os.replace(path, target)
 DEFAULT_MIN_FREE_BYTES = 5 * 1024**3
 
 

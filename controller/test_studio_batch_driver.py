@@ -393,9 +393,32 @@ class BatchDriverTests(unittest.TestCase):
         result = self.drive(max_seconds=30)
         self.assertEqual(self.c.starts, 2)
         self.assertEqual(result['status'], 'completed')
-        archived = list((self.c.root/'batch-driver-refusals').glob('batch-*.json'))
-        self.assertEqual(len(archived), 1)
+        archived = sorted((self.c.root/'batch-driver-refusals').iterdir())
+        self.assertEqual([item.name for item in archived], ['batch.refused-1.json'])
         self.assertEqual(json.loads(archived[0].read_text())['status'], 'start_uncertain')
+
+    def test_each_refusal_is_archived_under_a_new_name_and_never_overwritten(self):
+        from studio_batch_driver import command_id, retry_index
+        self.c.start_error = True
+        self.drive(max_seconds=3)
+        for expected in (1, 2):
+            self.drive(max_seconds=3)
+            self.assertEqual(retry_index(self.c.root, 'batch'), expected)
+        archive = self.c.root/'batch-driver-refusals'
+        self.assertEqual(sorted(item.name for item in archive.iterdir()),
+                         ['batch.refused-1.json', 'batch.refused-2.json'])
+        # A gap in the numbering (lost file) must refuse, never overwrite refused-2.
+        (archive/'batch.refused-1.json').unlink()
+        kept = (archive/'batch.refused-2.json').read_bytes()
+        with self.assertRaisesRegex(ValueError, 'archive already exists'):
+            self.drive(max_seconds=3)
+        self.assertEqual((archive/'batch.refused-2.json').read_bytes(), kept)
+        self.assertTrue((self.c.root/'batch-drivers'/'batch.json').is_file())
+        self.assertEqual([command_id('batch', '-reserve', n) for n in (0, 1, 2)],
+                         ['batch-reserve', 'batch-reserve-r1', 'batch-reserve-r2'])
+        (archive/'batch2.refused-1.json').write_text('{}')
+        (archive/'batch-x.refused-1.json').write_text('{}')
+        self.assertEqual(retry_index(self.c.root, 'batch'), 1)
 
     def test_journal_with_any_native_trace_is_never_retried(self):
         from studio_batch_driver import refused_before_dispatch

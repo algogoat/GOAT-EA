@@ -829,6 +829,12 @@ class DemoAgent:
                 retry = not resume and refused_before_dispatch(read_json(journal), controller.job(batch_id))
                 if not retry and (previous.get('stopped') is True or not resume):
                     return dict(status='existing_driver', driver=previous)
+                if retry:
+                    # Archive the refused journal now, so the wait below only sees the new worker's.
+                    from studio_batch_driver import _retire_refused_journal
+                    from studio_native_gate import exclusive_gate
+                    with exclusive_gate(self.root / 'batch-driver-gate'):
+                        _retire_refused_journal(controller, batch_id, journal, time)
             elif resume:
                 raise ValueError('No retained driver journal exists to resume')
             else:

@@ -222,10 +222,18 @@ def _claim(legacy, base_rel, login, data_root):
             pass  # Another terminal claimed first.
     parser = configparser.ConfigParser(interpolation=None, strict=False)
     parser.optionxform = str
-    parser.read_string(_read_text(claim)[0])
+    try:
+        parser.read_string(_read_text(claim)[0])
+    except (OSError, UnicodeError, configparser.Error):
+        return False, '-'  # Unreadable claim: no decision; the caller retries later.
     values = dict(parser['TerminalIsolationClaim']) if parser.has_section('TerminalIsolationClaim') else {}
     holder = values.get('Login', '') + '-' + values.get('TerminalHash', '').lower()
     return holder == me, holder
+
+
+def holder_valid(holder):
+    """A claim names a real terminal only as <login digits>-<8 hex>; anything else is transient."""
+    return bool(re.fullmatch(r'[1-9][0-9]{0,19}-[0-9a-f]{8}', holder or ''))
 
 
 # -------------------------------------------------------------------- migration
@@ -314,6 +322,11 @@ def migrate_legacy(common, ea_version, server, login, data_root, *, batch_flags=
         # Copied terminals carry the same flags and local runs: the claim decides.
         ours, holder = _claim(legacy, base_rel, login, data_root)
         if not ours:
+            if not holder_valid(holder):
+                # A claim that could not be written or read is not another terminal's
+                # win: record nothing, so the next start decides again.
+                raise ValueError('Batch state was not moved yet: the shared folder ' + str(legacy)
+                                 + ' claim could not be written or read. Nothing was decided; retry in a moment.')
             _write_receipt(base / RECEIPT, _receipt_text('left_for_other_terminal', left='|'.join(present), **text), replace=False)
             return dict(decision='left_for_other_terminal', legacy=str(legacy), base=str(base), left=present, claimed_by=holder)
         planned = present

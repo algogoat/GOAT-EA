@@ -81,7 +81,7 @@ const M=stripComments(preprocess(main,isolation)),C=stripComments(preprocess(com
 const names=['GOATIsSafeApiBearerToken','GOATLoginDigitsValid','GOATAccountLoginDigits','GOATApiBearerFileFor','GOATApiBearerFile','GOATCredentialStatusApproved',
   'GOATCredentialMigrateLegacyOnce','GOATBuildAuthenticatedRequestHeaders','GoatOptLegacyBasePath','GoatOptTerminalHash','GoatOptLoginToken',
   'GoatOptBasePath','GoatOptFolderOf','GoatOptEnsureCommonFolderTree','GoatOptWriteTextFile','GoatOptReadTextFile','GoatOptReadIniValue',
-  'GoatOptIsolationFlagsHeld','GoatOptIsolationReceipt','GoatOptIsolationClaim','GoatOptMigrateLegacyBatchStateLocked','GoatOptMigrateLegacyBatchState',
+  'GoatOptIsolationFlagsHeld','GoatOptIsolationReceipt','GoatOptIsolationClaim','GoatOptIsolationHolderValid','GoatOptMigrateLegacyBatchStateLocked','GoatOptMigrateLegacyBatchState',
   'GoatOptForeignNamespaceFolder','GoatOptTesterFitnessFile'];
 const fitnessStart=M.indexOf('if((Mode_Opti==Opti_PF_MRFp||Mode_Opti==Opti_PF_MRF_SRp) && MQLInfoInteger(MQL_OPTIMIZATION)');
 assert.ok(fitnessStart>0,'agent fitness block');
@@ -100,7 +100,7 @@ function terminal(h,login,dataPath,{globals=new Map(),name=''}={}){
   const mutate=op=>{t.mutations++;if(h.hook)h.hook(t,op);};
   const c={...F,INVALID_HANDLE:-1,ACCOUNT_LOGIN:1,TERMINAL_DATA_PATH:2,MQL_TESTER:3,MQL_OPTIMIZATION:4,MQL_FORWARD:5,WHOLE_ARRAY:-1,CP_UTF8:65001,
     CRYPT_HASH_SHA256:6,FILE_MODIFY_DATE:9,ERR_FILE_IS_DIRECTORY:5018,TIME_DATE:1,TIME_SECONDS:4,INIT_FAILED:1,INIT_SUCCEEDED:0,
-    Opti_PF_MRFp:1,Opti_PF_MRF_SRp:2,Mode_Opti:0,EA_Desc:'Rabcdefabcdefabcdefabcd',GOAT_FitnessRunNonce:0,g_goat_fitness_nonce:0,
+    Opti_PF_MRFp:1,Opti_PF_MRF_SRp:2,Mode_Opti:0,EA_Desc:'Rabcdefabcdefabcdefabcd',GOAT_FitnessRunNonce:0,g_goat_fitness_nonce:0,g_goat_fitness_keyless_logged:false,g_goat_opt_claim_transient:false,
     tester:0,optimization:0,forward:0,__found:'',
     AccountInfoInteger:()=>t.login,TerminalInfoString:()=>t.dataPath,
     MQLInfoInteger:k=>k===3?c.tester:k===4?c.optimization:k===5?c.forward:0,IntegerToString:n=>String(n),
@@ -200,9 +200,17 @@ let passed=0;const ok=(cond,msg)=>{assert.ok(cond,msg);passed++;};
   ok(run(agent,{stored:'9\r\n',fitness:5})==='9\r\n','a lower fitness never overwrites the maximum');
   ok(run(agent,{stored:undefined,fitness:5})===undefined,'missing file: bounded wait, nothing written');
   ok(run(agent,{stored:'',fitness:5})==='','unreadable (empty) maximum is never overwritten');
-  init.parameterRefused=true;const refused=terminal(h,3000082754,BANKER);refused.parameterRefused=true;refused.c.Mode_Opti=2;
-  ok(refused.c.OnTesterInit()===1,'optimization refused when the nonce cannot be handed to agents');
-  ok(Object.keys(refused.parameters).length===1&&[...h.files.keys()].filter(k=>k.includes('tester-')).length===2,'refusal precedes any fitness file');
+  // A nonce that cannot be handed to agents no longer blocks the optimization: OnTesterInit
+  // falls back to the key the agents will actually see, and keyless agents skip the
+  // shared-maximum adjustment at once (no wait, no read, no write) and log it once.
+  const refused=terminal(h,3000082754,BANKER);refused.parameterRefused=true;refused.c.Mode_Opti=2;refused.c.GOAT_FitnessRunNonce=0;
+  ok(refused.c.OnTesterInit()===0,'a refused nonce no longer refuses the optimization');
+  ok(refused.c.g_goat_fitness_nonce===refused.c.GOAT_FitnessRunNonce,'fallback key equals what the agents see');
+  ok(refused.logs.some(m=>/per-run fitness key could not be set/.test(m)),'the fallback is logged as a warning');
+  const keyless=terminal(h,3000082754,BANKER);Object.assign(keyless.c,{Mode_Opti:2,optimization:1,forward:0,GOAT_FitnessRunNonce:0,fitness:5,fitness_real:5});
+  const opened=h.opened.length,ticks=h.ticks;keyless.c.AgentFitness();keyless.c.AgentFitness();
+  ok(h.opened.length===opened&&h.ticks===ticks,'keyless agent: no file opened and no bounded wait');
+  ok(keyless.logs.filter(m=>/no per-run key on this agent/.test(m)).length===1,'keyless agent logs once, not every pass');
   // The native readback tolerates only a plain non-optimized integer for the nonce.
   for(const v of ['0','1759363200123456','5||5||1||5||N'])ok(init.c.GoatStudioRunNonceValue(v),'nonce readback accepted: '+v);
   for(const v of ['','-1','x','5||5||1||5||Y','5||5||1||N','1.5'])ok(!init.c.GoatStudioRunNonceValue(v),'nonce readback refused: '+v);
@@ -306,6 +314,13 @@ const wrapper=t=>t.c.GoatOptMigrateLegacyBatchState('GOAT V1.49','Darwinex-Demo'
   h=host();sharedState(h);put(h,legacyBase+'\\terminal-isolation-claim.ini','[TerminalIsolationClaim]\r\nLogin=3000082754\r\nTerminalHash=c2408708\r\n');
   const late=terminal(h,3000082754,T2,{globals:flags()});
   ok(/claimed the shared folder .* first/.test(move(late,true))&&SHARED.every(n=>get(h,legacyBase+'\\'+n)!==undefined),'claim held by another terminal: nothing moves');
+  // A claim that cannot be read names no terminal: decide nothing, so the next load retries.
+  for(const bad of ['garbage','[TerminalIsolationClaim]\r\nLogin=\r\nTerminalHash=\r\n','[TerminalIsolationClaim]\r\nLogin=3000082754\r\nTerminalHash=C2408708\r\n']){
+    h=host();sharedState(h);put(h,legacyBase+'\\terminal-isolation-claim.ini',bad);
+    const shaky=terminal(h,3000082754,BANKER,{globals:flags()});
+    ok(/could not be written or read/.test(move(shaky,true))&&get(h,bankerBase+'\\terminal-isolation.ini')===undefined
+       &&SHARED.every(n=>get(h,legacyBase+'\\'+n)!==undefined),'transient claim records no decision and moves nothing: '+JSON.stringify(bad.slice(0,30)));
+  }
 }
 
 // ---- Interrupted moves resume; unexpected receipts never move arbitrary files.

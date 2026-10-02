@@ -38,6 +38,10 @@ const mutations=[
   ['nonce not handed to agents','GOAT V1.49.mq5',R`if(!ParameterSetRange("GOAT_FitnessRunNonce",false,g_goat_fitness_nonce,g_goat_fitness_nonce,1,g_goat_fitness_nonce))`,R`if(false)`],
   ['agents ignore the nonce','GOAT V1.49.mq5',R`GoatOptTesterFitnessFile(EA_Desc,Symbol(),GOAT_FitnessRunNonce)`,R`GoatOptTesterFitnessFile(EA_Desc,Symbol(),0)`],
   ['nonce readback accepts an optimized axis','GOATStudioSettingCompare.mqh',R`parts[8]=="N"`,R`parts[8]!=""`],
+  ['transient claim recorded as another terminal winning','GOAT_Inputs_Definitions.mqh',R`if(g_goat_opt_claim_transient)`,R`if(false)`],
+  ['unreadable holder not treated as transient','GOAT_Inputs_Definitions.mqh',R`g_goat_opt_claim_transient=(holder!=me && !GoatOptIsolationHolderValid(holder));`,R`g_goat_opt_claim_transient=false;`],
+  ['refused nonce keeps a key the agents never see','GOAT V1.49.mq5',R`g_goat_fitness_nonce=GOAT_FitnessRunNonce;`,''],
+  ['keyless agents still wait on a shared file','GOAT V1.49.mq5',R`if(GOAT_FitnessRunNonce==0)`,R`if(false)`],
 ];
 const work=fs.mkdtempSync(path.join(os.tmpdir(),'goat-isolation-mutation-'));
 let caught=0;

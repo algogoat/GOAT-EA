@@ -1970,11 +1970,30 @@ string GoatOptIsolationReceipt(const string decision,const string legacy,const s
           +"\r\nDecidedBy=EA V"+GOAT_VERSION_LABEL+"\r\nDecidedAtUtc="+TimeToString(TimeGMT(),TIME_DATE|TIME_SECONDS)+"\r\n";
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// A claim names a real terminal only as <login digits>-<8 lowercase hex>. Anything
+// else (unwritable or unreadable claim, empty values) is transient: decide nothing.
+// Mirror: controller/studio_terminal_isolation.py holder_valid().
+bool GoatOptIsolationHolderValid(const string holder)
+  {
+   int dash=StringFind(holder,"-");
+   if(dash<1 || dash>20 || StringLen(holder)!=dash+9 || StringSubstr(holder,0,1)=="0") return false;
+   for(int i=0;i<dash;i++)
+      if(StringFind("0123456789",StringSubstr(holder,i,1))<0) return false;
+   for(int i=dash+1;i<StringLen(holder);i++)
+      if(StringFind("0123456789abcdef",StringSubstr(holder,i,1))<0) return false;
+   return true;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// Set by the last GoatOptIsolationClaim: true when the claim could not be written
+// or read (no well-formed holder), so the caller must record no decision.
+bool g_goat_opt_claim_transient=false;
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 // Create-only claim in the shared folder. Chart locks and native gates are per
 // terminal, so only the terminal named by this claim may move anything out of the
 // shared folder. A rename without FILE_REWRITE fails when another terminal won.
 bool GoatOptIsolationClaim(const string legacy,const string base,string &holder)
   {
+   g_goat_opt_claim_transient=false;
    string me=GoatOptLoginToken()+"-"+GoatOptTerminalHash();
    string claim=legacy+"\\"+GOAT_OPT_ISOLATION_CLAIM;
    if(!FileIsExist(claim,FILE_COMMON))
@@ -1987,6 +2006,7 @@ bool GoatOptIsolationClaim(const string legacy,const string base,string &holder)
      }
    string text=GoatOptReadTextFile(claim);
    holder=GoatOptReadIniValue(text,"Login")+"-"+GoatOptReadIniValue(text,"TerminalHash");
+   g_goat_opt_claim_transient=(holder!=me && !GoatOptIsolationHolderValid(holder));
    return (holder==me);
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2053,6 +2073,8 @@ string GoatOptMigrateLegacyBatchStateLocked(const string ea_name,const string se
       // Copied terminals carry the same flags and local runs: the claim decides.
       if(!GoatOptIsolationClaim(legacy,base,holder))
         {
+         if(g_goat_opt_claim_transient)
+            return "Batch state was not moved yet: the shared folder "+legacy+" claim could not be written or read. Nothing was decided; reload this chart in a moment.";
          GoatOptWriteTextFile(receipt,GoatOptIsolationReceipt("left_for_other_terminal",legacy,base,"","",present,""));
          return "Another MT5 terminal ("+holder+") claimed the shared folder "+legacy+" first, so its batch state was left for that terminal. This terminal keeps its own batch state in "+base+".";
         }

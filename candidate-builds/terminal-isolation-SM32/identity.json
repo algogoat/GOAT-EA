@@ -8,7 +8,7 @@
   "supersedes_candidate": "ndx-symbol-map-SM31",
   "sources": {
     "Dashboard.mqh": "fe32702480f8920cb0fc05d6d5736cc27ac69132656ecb85cd8babedb6c96b4a",
-    "GOAT V1.49.mq5": "8798e2fbfd13ecb288863a1f06709c71a4d5fb22a778c24be01c537984481ad6",
+    "GOAT V1.49.mq5": "3ebe92a62ec38c8857be9366d663ca01872d317c28a5ae5292232c84ce06f19b",
     "GOATAIWireV2.mqh": "34e090028dbb9f7a3560644b4753965ca1113b43b3b28a41dd1035bde886fe3e",
     "GOATBatchCancelOrigin.mqh": "03a24684cf7c0e4e6dac7ef2ccce661a228a2bae10ff2f56ad72d722fd74f0f1",
     "GOATDeploymentDiagnostics.mqh": "e6ccb9439213cc8eff31b5a0a4783bfe6c408571cf74298ef87d28c34b071c2f",
@@ -37,7 +37,7 @@
     "GOAT_DashboardOverview.mqh": "f7011e51e21ffe25a026d24cab548713c7bb9095d46d6e210efe62c56e3284ad",
     "GOAT_DirectionGuard.mqh": "a682957659fa16f534d2dab54cdfa5d4def759cde522f4991487cb62bf10bfea",
     "GOAT_DirectionGuardCore.mqh": "dc46e1c6f1deef1414af73126fbd58098ae32ac54cbf163565a9d2ee4d602f78",
-    "GOAT_Inputs_Definitions.mqh": "49053c8d1cdcf4e1ac5e9bdf0ce7682adeaee346fc0699f4458f36baa76cd683",
+    "GOAT_Inputs_Definitions.mqh": "1408e1eeb5c3ea8bb2678097538a74f3dc7fea7cc8f27bc72205751ad2291722",
     "GOAT_SequenceExport.mqh": "52b3668e655b72c88a6c674c24d9ae4183aefd4ca8db81467f66b32c7a4577b7",
     "GOAT_SequenceHostIO.mqh": "fbde0abaa7d1f9bca3318f2707b2d278581c2887dea419fe5495146004c1d9d9",
     "GOAT_SequencePackage.mqh": "5db878a58b7080dbdc110554bc46a64c2dad867c9f1f3d0972974b8f3ad9fc9a",

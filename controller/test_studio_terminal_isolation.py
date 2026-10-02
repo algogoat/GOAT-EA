@@ -217,6 +217,28 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual((late['decision'], late['claimed_by']), ('left_for_other_terminal', LOGIN + '-' + iso.terminal_hash(self.data)))
         self.assertEqual(sorted(p.name for p in self.legacy.iterdir() if p.name in iso.MOVABLE), sorted([iso.CONFIG, iso.GUARD, iso.POINTER]))
 
+    def test_unreadable_or_malformed_claim_decides_nothing_and_retries(self):
+        # Review of #113: a claim that cannot be written or read must not become a
+        # permanent left_for_other_terminal decision; the next start decides again.
+        for bad in (b'\xff\xfe\x00garbage', '[TerminalIsolationClaim]\r\nLogin=\r\nTerminalHash=\r\n'.encode('utf-16'),
+                    '[TerminalIsolationClaim]\r\nLogin=0300\r\nTerminalHash=zz\r\n'.encode('utf-16')):
+            with self.subTest(claim=bad[:24]):
+                self.shared_in_flight()
+                (self.legacy / iso.CLAIM).write_bytes(bad)
+                with self.assertRaisesRegex(ValueError, 'could not be written or read'):
+                    self.migrate(batch_flags=True)
+                self.assertFalse((self.base / iso.RECEIPT).exists())
+                self.assertTrue(all((self.legacy / n).exists() for n in (iso.CONFIG, iso.GUARD, iso.POINTER)))
+                (self.legacy / iso.CLAIM).unlink()
+        # Once the claim is writable again, the same terminal claims and moves.
+        self.assertEqual(self.migrate(batch_flags=True)['moved'], [iso.CONFIG, iso.GUARD, iso.POINTER])
+
+    def test_holder_shape(self):
+        self.assertTrue(iso.holder_valid('3000082754-c2408708'))
+        for holder in ('-', '', '0300-c2408708', '3000082754-C2408708', '3000082754-c240870', 'x-c2408708', '3000082754-c2408708-1'):
+            with self.subTest(holder=holder):
+                self.assertFalse(iso.holder_valid(holder))
+
     def test_resume_refuses_when_another_terminal_holds_the_claim(self):
         (self.legacy / 'log.GOAT').write_bytes(b'log')
         (self.legacy / iso.CLAIM).write_bytes('[TerminalIsolationClaim]\r\nLogin=3000107825\r\nTerminalHash=30d46804\r\n'.encode('utf-16'))

@@ -19,8 +19,10 @@ RUNNER = ('import sys,unittest\n'
           'result=unittest.TextTestRunner(stream=open(sys.argv[2],"w"),verbosity=1).run(suite)\n'
           'sys.exit(0 if result.wasSuccessful() else 1)\n')
 MUTATIONS = [
-    ('claim ignored on a fresh move', "        ours, holder = _claim(legacy, base_rel, login, data_root)\n        if not ours:\n            _write_receipt",
-     "        ours, holder = True, ''\n        if not ours:\n            _write_receipt"),
+    ('claim ignored on a fresh move', "        ours, holder = _claim(legacy, base_rel, login, data_root)\n        if not ours:\n            if not holder_valid(holder):",
+     "        ours, holder = True, ''\n        if not ours:\n            if not holder_valid(holder):"),
+    ('transient claim recorded as another terminal winning', "            if not holder_valid(holder):\n", "            if False:\n"),
+    ('holder shape accepts anything', "    return bool(re.fullmatch(r'[1-9][0-9]{0,19}-[0-9a-f]{8}', holder or ''))", "    return bool(holder)"),
     ('claim ignored on resume', "        ours, holder = _claim(legacy, base_rel, login, data_root)\n        if not ours:\n            raise",
      "        ours, holder = True, ''\n        if not ours:\n            raise"),
     ('claim not create-only', "            os.link(temporary, path)  # Create-only", "            os.replace(temporary, path)  # Create-only"),

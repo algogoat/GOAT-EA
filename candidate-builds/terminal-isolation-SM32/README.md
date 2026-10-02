@@ -16,6 +16,29 @@ exact forward source. **The compile is pending:** there is no `GOAT V1.49.ex5` o
 here yet. After the reviewed head is compiled, add the binary and the sanitized receipt, set
 `identity.json` `binary` and `compile`, and keep the candidate test in step.
 
+**Rollout conditions (mandatory):**
+- **Banker loads SM32 first.** The terminal that ran the shared batch takes the shared folder's claim and
+  moves its state. There is no automated recovery yet for a stale or wrong claim. If one needs clearing,
+  the operator archives `terminal-isolation-claim.ini` and the claim holder's `terminal-isolation.ini`
+  receipt (never deletes), and only after the holder's receipt shows nothing in flight.
+- **Every terminal, Banker included, re-pairs once after the upgrade.** The credential copy only
+  fires on an `approved` status, and `activation_reload_pending` overwrites that status in the same
+  timer call, so in practice each login signs in once for its own token file. Plan the pairings with Vince.
+- No batch may be in flight on any terminal of the PC during the upgrade. Re-prepare saved batch
+  packages afterwards (the header hash changed).
+- If the per-run fitness key cannot be set (`ParameterSetRange` refused), the optimization still runs.
+  OnTesterInit and the agents agree on the fallback key, and keyless agents skip the shared fitness
+  adjustment (logged once). Only same-strategy + same-symbol concurrency on two terminals is then
+  unprotected.
+
+**Prove natively after compile:**
+- OnTesterInit and the agents compute the same nonce;
+- whether batch restarts relied on MT5's optimization cache (a new nonce per run means a restarted
+  item recomputes every pass; measure the cost);
+- two concurrent batches (same and different strategy, including one login on both terminals);
+- the A/B pairing test;
+- the first-load move with a copied terminal present.
+
 SM31 stays retained unchanged in `candidate-builds/ndx-symbol-map-SM31`. The root `GOAT V1.49.ex5`
 and all installed artifacts remain unchanged. Compilation does not qualify native use: exact-head
 review, isolated native DEMO/owner/STOP/Algo-off qualification and a separately reviewed customer

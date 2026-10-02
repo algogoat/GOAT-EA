@@ -21,10 +21,9 @@ No trading, risk, sizing, order or controller wire behaviour changes. The pinned
 (`GOAT_Inputs_Definitions.mqh`) is SM32's, unchanged by EX33, so SM32 batch packages stay valid.
 
 Its `GOAT_BUILD_ID` is `V1.49-EA-EXPERIENCE-33`, with marker `EX33`. `identity.json` binds the
-exact forward source. **The compile is pending:** there is no `GOAT V1.49.ex5` or
-`compile-receipt.json` here yet. After Claude-Mac approves the exact head, compile it with
-MetaEditor, add the binary and the sanitized receipt, set `identity.json` `binary` and `compile`,
-and keep the candidate test in step. The new build ID needs server admission before activation.
+exact forward source. **Compiled** from `6159f6bd` with MetaEditor 5.0.0.6230 (0 errors, 0 warnings):
+`GOAT V1.49.ex5` sha256 `e7e1c97f…` (2,388,890 bytes) with its sanitized `compile-receipt.json`.
+Native qualification has NOT been performed. The new build ID needs server admission before activation.
 
 EX33 supersedes `terminal-isolation-SM32`; its identity is rebuilt on the merged #113 source.
 

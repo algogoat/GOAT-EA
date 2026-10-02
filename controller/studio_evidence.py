@@ -220,14 +220,15 @@ class RunContext:
         key = str(root)
         if key not in self._runs:
             settings = read_ini(root / 'export_settings.GOAT')
-            jobs = {}
+            jobs, ea_sha256 = {}, None
             manifest_path = root / 'manifest.json'
             if manifest_path.is_file():
                 manifest = read_json_bounded(manifest_path, MAX_RUN_MANIFEST)
+                ea_sha256 = manifest.get('ea_sha256') if isinstance(manifest.get('ea_sha256'), str) else None
                 for job in manifest.get('jobs') or []:
                     if isinstance(job, dict) and isinstance(job.get('run_alias'), str) and isinstance(job.get('tester'), dict):
                         jobs[job['run_alias']] = job['tester']
-            self._runs[key] = dict(root=key, run_id=root.name, export_settings=settings, testers=jobs)
+            self._runs[key] = dict(root=key, run_id=root.name, export_settings=settings, testers=jobs, ea_sha256=ea_sha256)
         return self._runs[key]
 
 
@@ -316,7 +317,7 @@ def read_export(set_path, *, runs=None):
                 requested_end=requested_end and requested_end.isoformat(),
                 history_short=bool(capture and capture['complete'] and requested_end and end and end < requested_end),
                 run=run and dict(root=run['root'], run_id=run['run_id'], back_oos_date=run['export_settings'].get('BackOOSDate'),
-                                 include_back_oos=run['export_settings'].get('IncludeBackOOS')),
+                                 include_back_oos=run['export_settings'].get('IncludeBackOOS'), ea_sha256=run.get('ea_sha256')),
                 tester=tester, threshold=dict(limits, passing=passing), problems=problems)
 
 

@@ -57,7 +57,8 @@ class CatchupCase(unittest.TestCase):
         (self.run / 'deploy').mkdir(parents=True)
         export_settings(self.run)
         self.behind = self.export('Rbehind01', 'EURUSD', self.history)
-        self.ahead = self.export('Rahead001', 'GBPUSD', daily(date(2026, 1, 5), date(2026, 10, 1), 10000, 10))
+        self.histories = dict(GBPUSD=daily(date(2026, 1, 5), date(2026, 10, 1), 10000, 10))
+        self.ahead = self.export('Rahead001', 'GBPUSD', self.histories['GBPUSD'])
         self.weak = self.export('Rweak0001', 'USDJPY', self.history, name_metrics='Trds=100_Prf=50_DD=50_PF=1.1_SR=1_ARF=0.1')
         self.write_run_manifest()
 
@@ -71,10 +72,10 @@ class CatchupCase(unittest.TestCase):
         return make_unit(self.run / 'deploy' / alias / symbol, rows=rows + [forced], deals=self.deals, alias=alias, symbol=symbol,
                          windows=windows, **kw)
 
-    def write_run_manifest(self, aliases=('Rbehind01', 'Rahead001', 'Rweak0001'), **tester):
+    def write_run_manifest(self, aliases=('Rbehind01', 'Rahead001', 'Rweak0001'), ea_sha256=None, **tester):
         jobs = [dict(run_alias=a, tester=dict(TESTER, Symbol='x', Period='M1', Deposit=10000, Currency='USD', Leverage='1:100', ExecutionMode=0, **tester))
                 for a in aliases]
-        (self.run / 'manifest.json').write_text(json.dumps(dict(ea_sha256='e' * 64, jobs=jobs)), encoding='utf-8')
+        (self.run / 'manifest.json').write_text(json.dumps(dict(ea_sha256=ea_sha256 or hashlib.sha256(b'ex5').hexdigest(), jobs=jobs)), encoding='utf-8')
 
     def plan(self, sets=None, **extra):
         return dict(schema_version=1, evidence_end='auto', sets=[str(p) for p in (sets or [self.behind, self.ahead, self.weak])],
@@ -103,8 +104,10 @@ class CatchupCase(unittest.TestCase):
         """What the EA writes for one /config single pass: the export unit in TEMP\\SQ\\<token>."""
         tester = member['tester']
         to_date = datetime.strptime(tester['ToDate'], '%Y.%m.%d').date()
-        rows = self.history + daily(date(2026, 9, 25), to_date - timedelta(days=1), self.history[-1][2], new_per_day)
-        deals = self.deals + trading(date(2026, 9, 25), to_date - timedelta(days=1), 2, 6.0)
+        base = self.histories.get(tester['Symbol'], self.history)     # a faithful EA reproduces each export's own history
+        first = base[-1][0].date() + timedelta(days=1)
+        rows = base + daily(first, to_date - timedelta(days=1), base[-1][2], new_per_day)
+        deals = self.deals + trading(first, to_date - timedelta(days=1), 2, 6.0)
         windows = [('BOOS', date(2026, 1, 5), date(2026, 1, 19), 20, 100), ('FWD', date(2026, 7, 17), date(2026, 8, 28), 60, 300),
                    ('FOOS', date(2026, 8, 29), to_date - timedelta(days=1), 54, 270)]
         folder = Path(self.controller.install['common_files_root']) / 'TEMP' / 'SQ' / member['attempt_token']
@@ -226,6 +229,31 @@ class PrepareTests(CatchupCase):
         self.assertIn('Other-Live', reasons['EURJPY'])
         self.assertIn('Mode_Operation=9', reasons['EURCHF'])
 
+    def test_another_or_unknown_ea_build_is_ineligible(self):
+        self.write_run_manifest(ea_sha256='f' * 64)
+        refused = self.runner.validate(self.plan(sets=[self.behind]))
+        self.assertEqual(refused['member_count'], 0)
+        self.assertIn('another EA binary', refused['exports'][0]['reasons'][0])
+        unknown = make_unit(self.root / 'library', rows=self.history, alias='Rbehind01', capture=False,
+                            windows=[('SAMPLE', date(2026, 1, 19), date(2026, 8, 29), 200, 900), ('FWD', date(2026, 7, 17), date(2026, 8, 28), 60, 300),
+                                     ('FOOS', date(2026, 8, 29), date(2026, 9, 24), 38, 190)])
+        result = self.runner.validate(self.plan(sets=[unknown], assume=dict(ExecutionMode=0)))
+        self.assertIn('EA build that made this export is unknown', ' '.join(result['exports'][0]['reasons']))
+        self.write_run_manifest()
+        accepted = self.runner.validate(self.plan(sets=[self.behind]))
+        self.assertEqual(accepted['member_count'], 1)
+        pins = self.runner._build(self.runner.base / 'x', self.plan(sets=[self.behind]))[0][0]['pins']
+        self.assertEqual((pins['installed_ea_sha256'], pins['original_ea_sha256'], pins['model']),
+                         (hashlib.sha256(b'ex5').hexdigest(), hashlib.sha256(b'ex5').hexdigest(), 4))
+
+    def test_single_pass_tester_goes_through_the_shared_validator(self):
+        manifest = self.runner._build(self.runner.base / 'x', self.plan(sets=[self.behind]))[0][0]
+        sc._validate_single_pass(manifest['tester'])
+        for change in (dict(Optimization=2), dict(Model=1), dict(ForwardMode=1), dict(ShutdownTerminal=0),
+                       dict(Leverage='lots'), dict(FromDate='2026-01-05'), dict(UseCloud=1)):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                sc._validate_single_pass(manifest['tester'] | change)
+
     def test_verdict_rules_and_threshold_choice_are_frozen_and_stamped(self):
         self.runner.prepare('cu1', self.plan(include_below_threshold=True, verdict_rules=dict(min_trades=3, held_pace=0.4)))
         manifest = read_json(self.runner.path('cu1') / 'manifest.json')
@@ -277,6 +305,18 @@ class NativeCycleTests(CatchupCase):
         self.assertEqual(version['original']['set_path'], str(self.behind))
         self.assertEqual(version['values_sha256'], version['original']['values_sha256'])
         self.assertEqual(version['verdict']['verdict'], 'held_up')
+        self.assertIn('Low confidence: 12 trades over 6 trading days.', version['verdict']['plain'])
+        # What the desktop import writes as catchUp; #2170 compares added_at with a portfolio's chosenAt.
+        stamp = version['catch_up']
+        self.assertEqual((stamp['schema'], stamp['evidence_end'], stamp['first_day'], stamp['last_day'], stamp['verdict'], stamp['comparable']),
+                         ('goat-catch-up-import-v1', '2026-10-02', '2026-09-25', '2026-10-02', 'held_up', True))
+        self.assertEqual((stamp['rules'], stamp['added_at'], stamp['original_set_sha256']),
+                         ('goat-catchup-verdict-v2', version['created_utc'], version['original']['set_sha256']))
+        checks = {item['check']: item['ok'] for item in version['comparability']['checks']}
+        self.assertTrue(version['comparability']['comparable'])
+        self.assertEqual({k for k, ok in checks.items() if ok}, {'inputs', 'ea_build', 'ea_name', 'model', 'symbol', 'server', 'deposit',
+                                                                 'leverage', 'currency', 'execution_delay', 'reproduced'})
+        self.assertIn('not as proof', version['caveat'])
         # The inputs a later scored qualification needs, with the rules that produced this verdict.
         qualification = version['qualification']
         self.assertEqual((qualification['schema'], qualification['scored'], qualification['verdict']), ('goat-qualification-inputs-v1', False, 'held_up'))
@@ -284,11 +324,12 @@ class NativeCycleTests(CatchupCase):
         self.assertEqual(qualification['export_thresholds']['basis'], 'run_export_settings')
         self.assertEqual((qualification['export_thresholds']['arf_margin'], qualification['export_thresholds']['sr_margin']), (0.3, 0.5))
         self.assertTrue(qualification['thresholds_applied_to_eligibility'])
-        self.assertEqual(qualification['verdict_rules']['id'], 'goat-catchup-verdict-v1')
+        self.assertEqual(qualification['verdict_rules']['id'], 'goat-catchup-verdict-v2')
         self.assertEqual(qualification['signals']['trades'], 12)
         self.assertEqual({p: p.read_bytes() for p in self.run.rglob('*') if p.is_file()}, original)
         report = self.runner.report('cu1')
         self.assertEqual(report['counts'], dict(held_up=1, too_few_trades=1))
+        self.assertTrue(all(row['summary']['comparable'] for row in report['members']))
         self.assertEqual((report['verdict_rules']['min_trades'], report['scored'], report['qualification_schema']), (5, False, 'goat-qualification-inputs-v1'))
         self.assertEqual(report['members'][0]['export_thresholds']['min_sr'], 2.5)
         self.assertEqual(report['members'][0]['signals']['weekdays'], 6)
@@ -318,6 +359,23 @@ class NativeCycleTests(CatchupCase):
         self.assertEqual(state['status'], 'stopped')
         self.runner.resume('cu1', 1)
         self.assertEqual(len(self.starts), 1)  # a failed member stops the run; nothing is retried
+        # "Bring all" re-queues under a new attempt id: the failed and the never-run member are both still behind.
+        again = self.runner.validate(self.plan())
+        self.assertEqual([m['symbol'] for m in again['members']], ['EURUSD', 'GBPUSD'])
+
+    def test_requeue_skips_caught_up_members_and_retries_unjudged_ones(self):
+        self.runner.prepare('cu1', self.plan())
+        self.auto = True
+        self.runner.start('cu1', 30)
+        self.assertEqual(self.runner.validate(self.plan())['member_count'], 0)   # idempotent: nothing left to bring
+        gbp = next(v for v in sc.versions(self.controller.root) if v['symbol'] == 'GBPUSD')
+        record = read_json(Path(gbp['version_path']))
+        record['verdict'] = dict(record['verdict'], verdict='not_comparable', reasons=['EA build differs'])
+        Path(gbp['version_path']).write_text(json.dumps(record), encoding='utf-8')
+        scan = sc.evidence_scan([self.run], now=AFTER_CLOSE, controller_root=self.controller.root)
+        row = next(r for r in scan['exports'] if r['symbol'] == 'GBPUSD')
+        self.assertEqual((row['status'], row['previous_attempt']['verdict']), ('behind', 'not_comparable'))
+        self.assertEqual([m['symbol'] for m in self.runner.validate(self.plan())['members']], ['GBPUSD'])
 
     def test_ambiguous_outputs_fail(self):
         self.runner.prepare('cu1', self.plan(sets=[self.behind]))

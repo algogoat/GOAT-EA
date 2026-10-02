@@ -360,7 +360,7 @@ def load_batch(controller, batch_id, source):
     return result
 
 
-def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False, allow_peer_refresh=False):
+def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False, allow_peer_refresh=False, now=None):
     """Create a new native queue containing explicitly selected unfinished work."""
     previous = controller.job(source_batch_id)
     if previous['status'] not in ('completed', 'cancelled', 'failed'):
@@ -392,12 +392,13 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
     inputs = controller.root / 'batch-imports' / uuid.uuid4().hex; inputs.mkdir(parents=True)
     plan_path = inputs / 'remaining.json'
     remaining = dict(schema_version=1, export=previous['configuration']['export'], members=selected)
-    customer = package / 'customer-plan.json'
-    if customer.is_file() and isinstance(_json(customer).get('evidence_end'), str):
-        # The successor keeps the original request (auto stays auto), not a re-resolved date.
-        remaining['evidence_end'] = _json(customer)['evidence_end']
+    recorded = ((_json(package / 'studio-plan.json').get('native_batch') or {}).get('evidence_end')
+                if (package / 'studio-plan.json').is_file() else None)
+    if isinstance(recorded, dict) and isinstance(recorded.get('target'), str):
+        # The successor keeps the original batch's resolved date: "auto" must not move to a later Friday.
+        remaining['evidence_end'] = recorded['target']
     write_json(plan_path, remaining)
-    result = prepare_batch(controller, batch_id, plan_path)
+    result = prepare_batch(controller, batch_id, plan_path, now=now)
     write_json(inputs / 'provenance.json', dict(source_batch_id=source_batch_id, new_batch_id=batch_id,
         include_failed=include_failed, selected_count=len(selected)))
     return result

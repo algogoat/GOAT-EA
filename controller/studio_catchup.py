@@ -35,7 +35,7 @@ import uuid
 from campaign_ledger import sha
 from studio_bridge import write_json
 from studio_evidence import RunContext, read_export, read_json_bounded, scan, server_date, server_msc, weekdays
-from studio_catchup_verdict import validate_rules
+from studio_catchup_verdict import CAVEAT, validate_rules
 import studio_evidence_end as evidence_end
 from studio_seed import SeedRunner, digest
 from studio_seed_results import MAX_MANIFEST_BYTES, read_seed_json
@@ -52,6 +52,7 @@ OUTPUT_PATH_ROOM = 140  # longest EA export file name below a member folder, plu
 OP_STANDARD = '9'
 SAFE_SYMBOL = re.compile(r'[A-Za-z0-9_.# -]{1,64}')
 STATUSES = ('behind', 'current', 'ahead', 'caught_up', 'ineligible')
+UNJUDGED = ('not_comparable', 'unjudged')   # retained, but they do not put the export on the shared timeline
 
 
 def attempt_token(capture_id):
@@ -105,7 +106,13 @@ def classify(export, target, *, include_below_threshold=False, known_versions=()
     if problems:
         return row | dict(status='ineligible', reasons=problems)
     target_day, end_day = date.fromisoformat(target), date.fromisoformat(end)
-    match = [v for v in known_versions if _version_key(v) == _version_key(row) and (v.get('evidence_end') or '') >= target]
+    mine = [v for v in known_versions if _version_key(v) == _version_key(row) and (v.get('evidence_end') or '') >= target]
+    # A not_comparable or unjudged re-test judged nothing, so it never carries the export forward; a re-queue may try again.
+    match = [v for v in mine if (v.get('verdict') or {}).get('verdict') not in UNJUDGED]
+    refused = [v for v in mine if v not in match]
+    if refused:
+        row['previous_attempt'] = dict(verdict=(refused[0].get('verdict') or {}).get('verdict'), version_path=refused[0]['version_path'],
+                                       reasons=(refused[0].get('verdict') or {}).get('reasons'))
     if end_day < target_day and match:
         # A retained catch-up version already carries this export to (or past) the target.
         best = min(match, key=lambda v: v['evidence_end'])
@@ -185,6 +192,23 @@ def qualification_inputs(spec, manifest, verdict):
                 assumed=spec.get('assumed', []))
 
 
+CATCH_UP_SCHEMA = 'goat-catch-up-import-v1'
+
+
+def catch_up_stamp(spec, manifest, verdict, created_utc):
+    """What a desktop import writes on the strategy (``catchUp``): when these weeks were added.
+
+    A portfolio chosen before ``added_at`` never saw these weeks; one built from a library
+    that already held them saw them when choosing, so they are not an unseen test of it.
+    """
+    window = verdict.get('new_weeks') or {}
+    return dict(schema=CATCH_UP_SCHEMA, evidence_end=manifest['evidence_end']['iso'], added_at=created_utc,
+                first_day=spec['new_window']['first_day'], last_day=window.get('last_day') or manifest['evidence_end']['iso'],
+                verdict=verdict.get('verdict'), confidence=verdict.get('confidence'),
+                comparable=(verdict.get('comparability') or {}).get('comparable'),
+                rules=(verdict.get('rules') or manifest.get('verdict_rules') or {}).get('id'),
+                original_set_sha256=spec['original']['set_sha256'], values_sha256=spec['original']['values_sha256'])
+
 class _NoProcess:
     """Process stand-in for previews: any terminal effect is a defect."""
     def inspect(self):
@@ -247,6 +271,15 @@ def _tester_conditions(export, assume):
         if not all(window[k] for k in ('FromDate', 'ToDate', 'ForwardDate')):
             window = dict(FromDate=None, ToDate=None, ForwardDate=None, source='unknown')
     return facts, window, assumed, missing
+
+
+def _validate_single_pass(tester):
+    """The shared tester validator, applied to a single pass (it only admits optimization batches as-is)."""
+    from studio_settings import FIELDS, validate_tester
+    if tester.get('Optimization') != 0 or tester.get('ForwardMode') != 0 or tester.get('Model') != 4 or tester.get('ShutdownTerminal') != 1:
+        raise ValueError('A catch-up re-test is one real-tick pass with no optimization or forward window that closes MT5 after')
+    view = {key: tester[key] for key in FIELDS if key in tester}
+    validate_tester(view | dict(Optimization=2, OptimizationCriterion=6, ForwardDate=''))
 
 
 def _export_desc(alias, window):
@@ -343,6 +376,12 @@ class CatchupRunner(SeedRunner):
             problems.append('Export was not tested with real ticks (Model 4)')
         if capture.get('asset') and capture['asset'] != export.get('symbol'):
             problems.append('Capture symbol differs from the export file name')
+        # A re-test is only comparable on the same EA build: refuse what can already be seen to differ or be unknown.
+        run_ea = (export.get('run') or {}).get('ea_sha256')
+        if run_ea and run_ea != self.c.install['ea_sha256']:
+            problems.append('Export was made by another EA binary than the installed one, so a re-test would not be comparable')
+        elif not run_ea and not capture.get('build_id'):
+            problems.append('The EA build that made this export is unknown (no run manifest or capture), so a re-test could not be compared')
         values = read_values(Path(export['set_path']).read_bytes())
         if values.get('Mode_Operation') != OP_STANDARD:
             problems.append('Exported SET is not in standard operation mode (Mode_Operation=9)')
@@ -365,6 +404,7 @@ class CatchupRunner(SeedRunner):
                       Optimization=0, FromDate=_mt5(start), ToDate=_mt5(to_date), ForwardMode=0, Deposit=deposit,
                       Currency=facts['Currency'], Leverage=facts['Leverage'], UseLocal=1, UseRemote=0, UseCloud=0, Visual=0,
                       ShutdownTerminal=1, ReplaceReport=0, Report='MQL5\\Files\\GOATStudio\\CatchupReports\\' + alias)
+        _validate_single_pass(tester)
         raw = Path(export['set_path']).read_bytes()
         if hashlib.sha256(raw).hexdigest() != export['set_sha256']:
             raise ValueError('Export SET changed while planning: ' + export['set_path'])
@@ -411,7 +451,11 @@ class CatchupRunner(SeedRunner):
                                     member=export.get('member'), run_id=(export.get('run') or {}).get('run_id'),
                                     evidence_start=export['evidence_start'], evidence_end=export['evidence_end'],
                                     evidence_end_source=export['evidence_end_source'], metrics=export.get('metrics'),
-                                    tester=export.get('tester'), threshold=export['threshold']),
+                                    tester=export.get('tester'), threshold=export['threshold'], ea_name=export.get('ea_name')),
+                      pins=dict(installed_ea_sha256=self.c.install['ea_sha256'], original_ea_sha256=(export.get('run') or {}).get('ea_sha256'),
+                                original_build_id=(capture or {}).get('build_id'), original_server=(capture or {}).get('server'),
+                                server=account['server'], model=4, deposit=deposit, currency=facts['Currency'], leverage=facts['Leverage'],
+                                execution_mode=facts['ExecutionMode'], assumed=assumed, original_tester=export.get('tester') or {}),
                       new_window=dict(first_day=(date.fromisoformat(export['evidence_end']) + timedelta(days=1)).isoformat(),
                                       last_day=target['iso'], weekdays=weekdays(date.fromisoformat(export['evidence_end']) + timedelta(days=1),
                                                                                 date.fromisoformat(target['iso']))))
@@ -516,24 +560,26 @@ class CatchupRunner(SeedRunner):
             raise ValueError('Re-test export has no evidence end')
         try:
             verdict = evaluate(original, retest, new_end=min(retest['evidence_end'], manifest['evidence_end']['iso']),
-                               tester=spec['original'].get('tester'), rules=manifest.get('verdict_rules'))
+                               tester=spec['original'].get('tester'), rules=manifest.get('verdict_rules'), pins=spec.get('pins'))
         except (OSError, ValueError, KeyError, ArithmeticError) as exc:
             # The re-test evidence is kept either way; only the judgement is unavailable.
             reason = 'Could not judge the new weeks: ' + str(exc)
             verdict = dict(verdict='unjudged', confidence='none', reasons=[reason], plain=reason,
                            new_weeks=dict(first_day=spec['new_window']['first_day'], last_day=retest['evidence_end'], weekdays=None,
                                           trades=None, net=None, dd=None, pf=None),
-                           reproduction=dict(reproduced=None))
+                           reproduction=dict(reproduced=None), comparability=None, rules=manifest.get('verdict_rules'))
+        created = datetime.now(timezone.utc).isoformat(timespec='seconds')
         version = dict(schema=VERSION_SCHEMA, values_sha256=retest['values_sha256'], symbol=retest['symbol'], period=retest['period'],
                        evidence_start=retest['evidence_start'], evidence_end=retest['evidence_end'], evidence_end_source=retest['evidence_end_source'],
                        target_end=manifest['evidence_end']['iso'], catchup_id=manifest['batch_id'], alias=spec['alias'],
-                       created_utc=datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                       created_utc=created, catch_up=catch_up_stamp(spec, manifest, verdict, created),
                        original=dict(spec['original'], csv_path=original['csv_path']),
                        retest=dict(set_path=retest['set_path'], set_sha256=retest['set_sha256'], csv_path=retest['csv_path'],
                                    capture=retest.get('capture') and dict(path=retest['capture']['path'], status=retest['capture']['status'],
                                                                          manifest_sha256=retest['capture']['manifest_sha256'])),
                        tester=tester, assumed=spec['assumed'],
-                       verdict={k: verdict[k] for k in ('verdict', 'confidence', 'plain', 'reasons')},
+                       verdict={k: verdict[k] for k in ('verdict', 'confidence', 'plain', 'reasons')}, caveat=CAVEAT,
+                       comparability=verdict.get('comparability'),
                        qualification=qualification_inputs(spec, manifest, verdict),
                        history_short=retest['history_short'], ea_desc_metadata=spec['optimization_window']['source'])
         version_path = Path(spec['evidence_dir']) / 'evidence-version.json'
@@ -544,7 +590,7 @@ class CatchupRunner(SeedRunner):
         summary = dict(verdict=verdict['verdict'], confidence=verdict['confidence'], new_first_day=window['first_day'],
                        new_last_day=window['last_day'], weekdays=window['weekdays'], trades=window['trades'], net=window['net'],
                        dd=window['dd'], pf=window.get('pf'), reproduced=verdict['reproduction']['reproduced'], plain=verdict['plain'],
-                       history_short=retest['history_short'])
+                       history_short=retest['history_short'], comparable=(verdict.get('comparability') or {}).get('comparable'))
         return dict(status='verified_catchup_retest', path=retest['set_path'], sha256=retest['set_sha256'], schema_version=1,
                     member_id=spec['member_id'], summary=summary, verdict=verdict, version_path=str(version_path),
                     native_launch_qualification=False)

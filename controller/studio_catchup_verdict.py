@@ -1,43 +1,51 @@
-"""New-weeks-only verdict for one OOS catch-up re-test (goat-catchup-verdict-v1).
+"""New-weeks-only verdict for one OOS catch-up re-test (goat-catchup-verdict-v2).
 
 The re-test is one non-optimized pass of the frozen exported values from the
 original start to the new evidence end. Only the days after the original export's
-evidence end are judged: they are genuinely unseen by the optimizer and by the
-original export. Everything before them is used as the baseline (same run, same
-definitions), and to check that the re-test reproduces the original export.
+evidence end are judged: they are unseen by the optimizer and by the original
+export. Everything before them is the baseline (same run, same definitions) and
+must reproduce the original export, or nothing is judged.
+
+Comparability (``comparability``): the re-test is judged only when it ran the same
+trading inputs, the same EA build (capture build id, else the run's EA binary hash
+against the installed one), the same tester model (real ticks), symbol, broker
+server, deposit, currency and leverage, and reproduced the original's equity and
+deals before the new weeks. The execution delay is pinned in the tester INI and
+checked through that reproduction. Symbol specification (contract size, digits) is
+not captured by this EA build; a change would alter the pre-window trades and fail
+the reproduction check. Any failed check makes the verdict ``not_comparable``.
 
 Definitions (broker server time, half-open windows [start 00:00, end+1 00:00)):
 - net: equity change over the window from the export equity CSV (includes the
   floating result of positions open at either boundary); realized: balance change.
 - trades: positions opened in the window (entry deals), the same count the EA
-  writes as "Trades" in its BOOS/SAMPLE/FWD/FOOS header lines. From the capture's
-  deals.csv when the capture completed, else the difference of the FOOS header
-  trade counts (re-test minus original), which needs a reproduced re-test.
-- pf: sum of winning deal results / sum of losing deal results (profit + swap +
-  commission + fee per deal); only with a complete capture.
-- dd: largest peak-to-trough fall of the sampled equity inside the window,
-  starting from the window's opening equity. prior_dd is the same measure over
-  everything before the window (the worst drawdown the export had already shown).
-  Equity is sampled at one-minute events, so intrabar extremes can be deeper.
-- pace: the original forward window [ForwardDate, ToDate) measured the same way
-  in the re-test, per Mon-Fri day.
+  writes as "Trades" in its window header lines. From the capture's deals.csv when
+  the capture completed, else the difference of the FOOS header trade counts.
+- pf: winning / losing deal results (profit + swap + commission + fee) of the
+  positions opened in the window; only with a complete capture. Closes of positions
+  opened earlier count in net, not in pf.
+- dd: the deepest fall of the sampled equity inside the window below the running
+  peak, which includes every equity row before the window, so a drawdown already
+  under way is carried in. prior_dd is the worst such fall before the window.
+  Equity is sampled at one-minute events; intrabar extremes can be deeper.
+- pace: the original forward window [ForwardDate, ToDate) measured in the re-test.
 
 Verdict rules, in order:
-1. not_comparable: the re-test did not run the same inputs.
-2. failed: the new weeks set a new worst drawdown (dd > prior_dd), or, with at
-   least MIN_TRADES trades, lost money with pf < FAILED_PF (no pf: lost more than
-   one forward-pace window's worth of profit).
-3. too_few_trades: fewer than MIN_TRADES trades; too few to judge either way.
-4. held_up: net > 0, pf >= 1 (when known), dd <= prior_dd, and the profit pace is
-   at least HELD_PACE of the forward pace (skipped when the forward window lost).
-5. weakened: everything else (profitable but well below pace, or a small loss).
+1. not_comparable: any comparability check failed.
+2. failed: the new weeks went below the worst drawdown already shown (dd >
+   prior_dd), or, with at least min_trades trades, lost money with pf < failed_pf
+   (no pf: lost more than one forward-pace window of profit).
+3. too_few_trades: fewer than min_trades trades; too few to judge either way.
+4. held_up: net > 0, a known pf >= 1, and at least held_pace of the forward profit
+   pace and min_pace_trades of the forward trade pace (when that pace is known).
+5. weakened: everything else (pf unknown, profitable but slow, few trades for its
+   pace, or a small loss).
 
-The numbers above are defaults, not fixed law: a plan may override them within
-bounds (``validate_rules``). Every verdict stamps the exact rules it used, the raw
-``signals`` it was decided from, and (in the evidence version) the export
-thresholds with their margins, so a later scored, explained qualification can
-re-judge the same evidence under other rules without re-running MT5. No score is
-computed here.
+The numbers are defaults a plan may override within bounds (``validate_rules``).
+Every verdict stamps the rules it used and the raw ``signals`` it was decided from;
+the evidence version adds the export thresholds and margins, so a later scored,
+explained qualification can re-judge without re-running MT5. Confidence is never
+above moderate. No score is computed here.
 """
 import csv
 from datetime import date, datetime, timedelta, timezone
@@ -48,22 +56,25 @@ import re
 from strategy_registry import inspect_set
 from studio_evidence import server_msc, weekdays
 
-RULES = 'goat-catchup-verdict-v1'
+RULES = 'goat-catchup-verdict-v2'
 MIN_TRADES = 5
 FAILED_PF = 0.8
 HELD_PACE = 0.5
+MIN_PACE_TRADES = 0.3
 MODERATE_TRADES = 20
 MODERATE_DAYS = 10
-DEFAULT_RULES = dict(id=RULES, min_trades=MIN_TRADES, failed_pf=FAILED_PF, held_pace=HELD_PACE,
+DEFAULT_RULES = dict(id=RULES, min_trades=MIN_TRADES, failed_pf=FAILED_PF, held_pace=HELD_PACE, min_pace_trades=MIN_PACE_TRADES,
                      moderate_trades=MODERATE_TRADES, moderate_days=MODERATE_DAYS, overridden=[])
 # Bounds keep an override meaningful: (type, low, high).
 RULE_BOUNDS = dict(min_trades=(int, 1, 1000), failed_pf=(float, 0.0, 2.0), held_pace=(float, 0.0, 2.0),
-                   moderate_trades=(int, 1, 100000), moderate_days=(int, 1, 1000))
+                   min_pace_trades=(float, 0.0, 1.0), moderate_trades=(int, 1, 100000), moderate_days=(int, 1, 1000))
 MAX_EQUITY_CSV = 64 * 1024 * 1024
 MAX_DEALS_CSV = 256 * 1024 * 1024
 TOLERANCE = Decimal('0.005')
 CAVEAT = ('The new weeks are unseen data, but a few weeks is a small sample: treat held_up as "no warning sign yet", '
           'not as proof of an edge.')
+SYMBOL_SPEC = ('Symbol specification (contract size, digits) is not captured by this EA build; a change would alter '
+               'the trades before the new weeks and fail the reproduction check.')
 
 
 def validate_rules(overrides=None):
@@ -117,8 +128,13 @@ def _midnight(day):
     return datetime.combine(day, datetime.min.time())
 
 
-def equity_window(rows, first_day, last_day, *, opening=None):
-    """Net/realized/dd over [first_day, last_day] (inclusive dates) from equity rows."""
+def equity_window(rows, first_day, last_day, *, opening=None, carry_peak=False):
+    """Net/realized/dd over [first_day, last_day] (inclusive dates) from equity rows.
+
+    With ``carry_peak`` the drawdown is measured from the running peak of every row
+    before the window too (a drawdown already under way counts); ``dd_from_open``
+    is always measured from the window's opening equity.
+    """
     start, end = _midnight(first_day), _midnight(last_day + timedelta(days=1))
     before = [row for row in rows if row[0] < start]
     inside = [row for row in rows if start <= row[0] < end]
@@ -128,16 +144,17 @@ def equity_window(rows, first_day, last_day, *, opening=None):
         open_balance = open_equity = Decimal(str(opening))
     else:
         open_balance, open_equity = rows[0][1], rows[0][2]
-    last = inside[-1] if inside else (open_balance, open_equity)
-    close_balance, close_equity = (last[1], last[2]) if inside else last
-    peak, dd = open_equity, Decimal(0)
+    close_balance, close_equity = (inside[-1][1], inside[-1][2]) if inside else (open_balance, open_equity)
+    peak = max([open_equity] + ([row[2] for row in before] if carry_peak else []))
+    open_peak, dd, dd_open = open_equity, Decimal(0), Decimal(0)
     for _, _, equity in inside:
-        peak = max(peak, equity)
-        dd = max(dd, peak - equity)
+        peak, open_peak = max(peak, equity), max(open_peak, equity)
+        dd, dd_open = max(dd, peak - equity), max(dd_open, open_peak - equity)
     return dict(first_day=first_day.isoformat(), last_day=last_day.isoformat(), weekdays=weekdays(first_day, last_day),
                 samples=len(inside), open_equity=float(open_equity), close_equity=float(close_equity),
                 net=float(close_equity - open_equity), realized=float(close_balance - open_balance), dd=float(dd),
-                dd_pct=float(dd / open_equity * 100) if open_equity > 0 else None)
+                dd_from_open=float(dd_open), dd_basis='running_peak_incl_prior' if carry_peak else 'window_open',
+                dd_pct=float(dd / peak * 100) if peak > 0 else None)
 
 
 def prior_drawdown(rows, before_day):
@@ -153,31 +170,32 @@ def prior_drawdown(rows, before_day):
 
 
 def deal_window(deals_csv, first_day, last_day):
-    """Entry/close counts and pf from a capture deals.csv over [first_day, last_day]."""
+    """Entries/closes in [first_day, last_day]; pf over the positions opened in it."""
     lo, hi = server_msc(first_day), server_msc(last_day + timedelta(days=1))
     path = Path(deals_csv)
     if path.stat().st_size > MAX_DEALS_CSV:
         raise ValueError('deals.csv exceeds its byte bound')
-    entries = closes = 0
-    wins, losses = Decimal(0), Decimal(0)
+    inside = []
     with path.open(encoding='utf-8-sig', newline='') as stream:
         for row in csv.DictReader(stream):
-            stamp = int(row['server_time_msc'])
-            if not lo <= stamp < hi:
-                continue
-            entry = row['deal_entry']
-            if entry == '0':
-                entries += 1
-            elif entry in ('1', '2', '3'):
-                closes += 1
-            result = sum(Decimal(row[key]) for key in ('profit', 'commission', 'fee', 'swap'))
-            if result > 0:
-                wins += result
-            else:
-                losses -= result
+            if lo <= int(row['server_time_msc']) < hi:
+                inside.append(row)
+    opened = {row['position_id'] for row in inside if row['deal_entry'] == '0'}
+    entries = sum(row['deal_entry'] == '0' for row in inside)
+    closes = sum(row['deal_entry'] in ('1', '2', '3') for row in inside)
+    carried = sum(row['deal_entry'] in ('1', '2', '3') and row['position_id'] not in opened for row in inside)
+    wins, losses = Decimal(0), Decimal(0)
+    for row in inside:
+        if row['position_id'] not in opened:
+            continue
+        result = sum(Decimal(row[key]) for key in ('profit', 'commission', 'fee', 'swap'))
+        if result > 0:
+            wins += result
+        else:
+            losses -= result
     pf = float(wins / losses) if losses > 0 else None
-    return dict(entries=entries, closes=closes, gross_win=float(wins), gross_loss=float(losses), pf=pf,
-                pf_note=None if losses > 0 else ('no losing deals' if wins > 0 else 'no deal results'))
+    return dict(entries=entries, closes=closes, closes_of_earlier_positions=carried, gross_win=float(wins), gross_loss=float(losses),
+                pf=pf, pf_note=None if losses > 0 else ('no losing deals' if wins > 0 else 'no deal results'))
 
 
 def _deal_signature(deals_csv, cut_msc):
@@ -225,16 +243,68 @@ def inputs_match(original_set, retest_set):
     return a['canonical_sha256'] == b['canonical_sha256']
 
 
+def comparability(original, retest, *, pins=None, repro, same_inputs):
+    """Every check the re-test must pass before its new weeks are judged (see module docstring).
+
+    ``pins`` are the frozen member's tester settings and EA identities; they stand in for
+    the re-test's values when its capture was off, and for the original's when the run
+    manifest supplied them. An unknown original value fails its check.
+    """
+    pins = pins or {}
+    oc, rc = original.get('capture') or {}, retest.get('capture') or {}
+    tester = pins.get('original_tester') or {}
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append(dict(check=name, ok=bool(ok), detail=detail))
+
+    def pair(name, original_value, retest_value):
+        if original_value is None or retest_value is None:
+            check(name, False, 'unknown (%s / %s)' % (original_value, retest_value))
+        else:
+            check(name, str(original_value) == str(retest_value), '%s / %s' % (original_value, retest_value))
+
+    check('inputs', same_inputs, 'every SET value except EA_Desc')
+    if oc.get('build_id') or rc.get('build_id'):
+        pair('ea_build', oc.get('build_id'), rc.get('build_id'))
+    elif pins.get('original_ea_sha256') and pins.get('installed_ea_sha256'):
+        check('ea_build', pins['original_ea_sha256'] == pins['installed_ea_sha256'], 'EA binary: run manifest / installed')
+    else:
+        check('ea_build', False, 'the EA build of the original or the re-test is unknown')
+    pair('ea_name', original.get('ea_name'), retest.get('ea_name'))
+    # The EA's export pass always forces real ticks (Model 4), so an original without a capture is Model 4.
+    pair('model', oc.get('model') if oc else 4, rc.get('model') if rc else pins.get('model'))
+    pair('symbol', oc.get('asset') or original.get('symbol'), rc.get('asset') or retest.get('symbol'))
+    pair('server', oc.get('server') or pins.get('original_server'), rc.get('server') or pins.get('server'))
+    number = lambda value: None if value is None else float(value)
+    pair('deposit', number(oc.get('initial_equity') if oc.get('initial_equity') is not None else tester.get('Deposit')),
+         number(rc.get('initial_equity') if rc.get('initial_equity') is not None else pins.get('deposit')))
+    leverage = ('1:%d' % oc['leverage']) if type(oc.get('leverage')) is int else tester.get('Leverage')
+    pair('leverage', leverage, ('1:%d' % rc['leverage']) if type(rc.get('leverage')) is int else pins.get('leverage'))
+    pair('currency', oc.get('currency') or tester.get('Currency'), rc.get('currency') or pins.get('currency'))
+    check('execution_delay', True, 'pinned at %s in the tester INI%s; verified by the reproduction check'
+          % (pins.get('execution_mode', 'the original value'), ' (assumed)' if 'ExecutionMode' in pins.get('assumed', []) else ''))
+    check('reproduced', repro.get('reproduced'), 'equity rows and deals before the new weeks'
+          + ('' if repro.get('reproduced') else ': first difference %s' % repro.get('first_difference')))
+    return dict(comparable=all(item['ok'] for item in checks), checks=checks, symbol_spec=SYMBOL_SPEC)
+
+
+def _pf_known(new):
+    return new.get('pf') is not None or new.get('pf_note') == 'no losing deals'
+
+
 def decide(new, prior_dd, pace, rules=None):
-    """Apply the verdict rules to measured numbers. Pure; see module docstring."""
+    """Apply the verdict rules to measured numbers (comparability already passed). Pure."""
     rules = rules or DEFAULT_RULES
     min_trades, failed_pf, held_pace = rules['min_trades'], rules['failed_pf'], rules['held_pace']
+    min_pace_trades = rules.get('min_pace_trades', MIN_PACE_TRADES)
     trades, net, dd, pf = new['trades'], new['net'], new['dd'], new.get('pf')
     days = max(new['weekdays'], 1)
     forward_per_day = pace.get('net_per_day') if pace else None
+    expected = new.get('expected_trades_at_forward_pace')
     reasons = []
     if dd > prior_dd:
-        reasons.append('new weeks set a new worst drawdown (%.0f vs %.0f before)' % (dd, prior_dd))
+        reasons.append('went below the worst drawdown already shown (%.0f from the peak vs %.0f before)' % (dd, prior_dd))
         return 'failed', reasons
     if trades is not None and trades >= min_trades and net < 0:
         if pf is not None and pf < failed_pf:
@@ -246,16 +316,23 @@ def decide(new, prior_dd, pace, rules=None):
     if trades is None or trades < min_trades:
         reasons.append('%s trades in the new weeks; too few to judge' % ('unknown' if trades is None else trades))
         return 'too_few_trades', reasons
-    held = net > 0 and (pf is None or pf >= 1.0)
-    if held and forward_per_day is not None and forward_per_day > 0 and net / days < held_pace * forward_per_day:
-        held = False
-        reasons.append('profitable but at %.0f%% of the forward pace' % (100 * net / days / forward_per_day))
-    if held:
-        reasons.append('profitable, drawdown within what it had already shown')
-        return 'held_up', reasons
-    if not reasons:
-        reasons.append('lost %.0f' % -net if net < 0 else 'flat' if net == 0 else 'profit factor below 1')
-    return 'weakened', reasons
+    if net <= 0:
+        reasons.append('lost %.0f' % -net if net < 0 else 'flat')
+        return 'weakened', reasons
+    if not _pf_known(new):
+        reasons.append('profitable, but the profit factor is unknown (needs a complete capture)')
+        return 'weakened', reasons
+    if pf is not None and pf < 1.0:
+        reasons.append('profit factor %.2f below 1' % pf)
+        return 'weakened', reasons
+    if forward_per_day is not None and forward_per_day > 0 and net / days < held_pace * forward_per_day:
+        reasons.append('profitable but at %.0f%% of the forward profit pace' % (100 * net / days / forward_per_day))
+        return 'weakened', reasons
+    if expected and trades < min_pace_trades * expected:
+        reasons.append('%d trades, under %.0f%% of the ~%g expected at the forward pace' % (trades, 100 * min_pace_trades, expected))
+        return 'weakened', reasons
+    reasons.append('profitable, drawdown within what it had already shown')
+    return 'held_up', reasons
 
 
 def signals(new, prior_dd, pace, repro, same_inputs, capture):
@@ -268,40 +345,42 @@ def signals(new, prior_dd, pace, repro, same_inputs, capture):
     forward = pace.get('net_per_day') if pace else None
     expected = new.get('expected_trades_at_forward_pace')
     ratio = lambda value, base: round(value / base, 4) if value is not None and base not in (None, 0) and base > 0 else None
-    return dict(schema='goat-catchup-signals-v1', weekdays=days, trades=new['trades'], expected_trades=expected,
+    return dict(schema='goat-catchup-signals-v2', weekdays=days, trades=new['trades'], expected_trades=expected,
                 trades_vs_pace=ratio(new['trades'], expected), net=new['net'], net_per_day=per_day,
-                forward_net_per_day=forward, pace_ratio=ratio(per_day, forward), pf=new.get('pf'), dd=new['dd'],
-                dd_pct=new.get('dd_pct'), prior_dd=prior_dd, dd_vs_prior=ratio(new['dd'], prior_dd),
-                reproduced=repro.get('reproduced'), inputs_match=same_inputs, capture_complete=bool((capture or {}).get('complete')),
-                trade_source=new.get('trade_source'))
+                forward_net_per_day=forward, pace_ratio=ratio(per_day, forward), pf=new.get('pf'), pf_note=new.get('pf_note'),
+                dd=new['dd'], dd_from_open=new.get('dd_from_open'), dd_pct=new.get('dd_pct'), prior_dd=prior_dd,
+                dd_vs_prior=ratio(new['dd'], prior_dd), reproduced=repro.get('reproduced'), inputs_match=same_inputs,
+                capture_complete=bool((capture or {}).get('complete')), trade_source=new.get('trade_source'))
 
 
-def _plain(verdict, new, pace, reasons, reproduced):
+def _plain(verdict, new, pace, reasons, confidence, comparable):
     span = '%s to %s (%d trading days)' % (new['first_day'], new['last_day'], new['weekdays'])
-    numbers = '%+.0f, %s trades, DD %.0f' % (new['net'], '?' if new['trades'] is None else new['trades'], new['dd'])
-    if new.get('pf') is not None:
-        numbers += ', PF %.2f' % new['pf']
     text = {'held_up': 'Held up', 'weakened': 'Weakened', 'failed': 'Failed', 'too_few_trades': 'Too few trades to judge',
             'not_comparable': 'Not comparable'}[verdict]
+    if not comparable:
+        return '%s: the re-test over %s is not the same test as the original (%s), so its new weeks are not judged.' % (
+            text, span, '; '.join(reasons))
+    numbers = '%+.0f, %s trades, DD %.0f' % (new['net'], '?' if new['trades'] is None else new['trades'], new['dd'])
+    numbers += ', PF %.2f' % new['pf'] if new.get('pf') is not None else ', PF unknown' if new.get('pf_note') != 'no losing deals' else ', no losing trades'
     sentence = '%s over the new weeks %s: %s' % (text, span, numbers)
     if pace and pace.get('net_per_day') is not None:
         sentence += '; forward pace was %+.1f/day, new weeks %+.1f/day' % (pace['net_per_day'], new['net'] / max(new['weekdays'], 1))
     sentence += '. ' + '; '.join(reasons).capitalize()
     if verdict == 'too_few_trades' and new.get('expected_trades_at_forward_pace') is not None:
         sentence += ' (about %g expected at the forward pace)' % new['expected_trades_at_forward_pace']
-    sentence += '.'
-    if reproduced is False:
-        sentence += ' The re-test did not exactly repeat the original export before the new weeks; judge with care.'
+    sentence += '. %s confidence: %s trades over %d trading days.' % (
+        confidence.capitalize(), '?' if new['trades'] is None else new['trades'], new['weekdays'])
     return sentence
 
 
-def evaluate(original, retest, *, new_end, tester=None, rules=None):
+def evaluate(original, retest, *, new_end, tester=None, rules=None, pins=None):
     """Verdict for one catch-up member.
 
     ``original``: the original export's evidence record (studio_evidence.read_export).
     ``retest``: the re-test unit's evidence record. ``tester``: original optimization
-    window (FromDate/ToDate/ForwardDate) when the run manifest supplied it. `rules`: the frozen plan's
-    `validate_rules` result (defaults when absent).
+    window (FromDate/ToDate/ForwardDate) when the run manifest supplied it. ``rules``:
+    the frozen plan's ``validate_rules`` result. ``pins``: the frozen member's tester
+    settings and EA identities (studio_catchup), used by ``comparability``.
     """
     rules = rules or validate_rules()
     original_end = date.fromisoformat(original['evidence_end'])
@@ -319,12 +398,14 @@ def evaluate(original, retest, *, new_end, tester=None, rules=None):
     if old_deals and not Path(old_deals).is_file():
         old_deals = None
     repro = reproduction(old_rows, new_rows, original_deals=old_deals, retest_deals=new_deals)
+    comparable = comparability(original, retest, pins=pins, repro=repro, same_inputs=same_inputs)
     opening = new_capture.get('initial_equity')
-    window = equity_window(new_rows, first_new, new_end, opening=opening)
+    window = equity_window(new_rows, first_new, new_end, opening=opening, carry_peak=True)
     covered = bool(new_capture.get('complete')) and new_capture.get('observed_end_msc', 0) >= server_msc(new_end) and new_deals
     if covered:
         deals = deal_window(new_deals, first_new, new_end)
-        window.update(trades=deals['entries'], closes=deals['closes'], pf=deals['pf'], pf_note=deals['pf_note'], trade_source='capture_deals')
+        window.update(trades=deals['entries'], closes=deals['closes'], closes_of_earlier_positions=deals['closes_of_earlier_positions'],
+                      pf=deals['pf'], pf_note=deals['pf_note'], trade_source='capture_deals')
     else:
         old_foos, new_foos = (original.get('windows') or {}).get('FOOS'), (retest.get('windows') or {}).get('FOOS')
         trades = new_foos['trades'] - old_foos['trades'] if old_foos and new_foos and repro['reproduced'] else None
@@ -347,17 +428,19 @@ def evaluate(original, retest, *, new_end, tester=None, rules=None):
                     trades_per_day=None if fwd_trades is None else fwd_trades / days)
         if window['weekdays'] and pace['trades_per_day'] is not None:
             window['expected_trades_at_forward_pace'] = round(pace['trades_per_day'] * window['weekdays'], 1)
-    if not same_inputs:
-        verdict, reasons = 'not_comparable', ['the re-test SET inputs differ from the original export']
+    if not comparable['comparable']:
+        verdict = 'not_comparable'
+        reasons = ['%s: %s' % (item['check'], item['detail']) for item in comparable['checks'] if not item['ok']]
+        confidence = 'none'
     else:
         verdict, reasons = decide(window, prior, pace, rules)
-    confidence = 'low'
-    if (verdict != 'not_comparable' and repro['reproduced'] and window['trades'] is not None
-            and window['trades'] >= rules['moderate_trades'] and window['weekdays'] >= rules['moderate_days']):
-        confidence = 'moderate'
+        confidence = 'low'
+        if window['trades'] is not None and window['trades'] >= rules['moderate_trades'] and window['weekdays'] >= rules['moderate_days']:
+            confidence = 'moderate'  # never higher: a few weeks is a small sample
     return dict(schema=RULES, verdict=verdict, confidence=confidence, reasons=reasons,
-                plain=_plain(verdict, window, pace, reasons, repro['reproduced']),
+                plain=_plain(verdict, window, pace, reasons, confidence, comparable['comparable']),
                 new_weeks=window, prior_dd=prior, forward_pace=pace, inputs_match=same_inputs, reproduction=repro,
+                comparability=comparable,
                 original=dict(set_path=original['set_path'], set_sha256=original['set_sha256'], evidence_end=original['evidence_end'],
                               values_sha256=original['values_sha256']),
                 retest=dict(set_path=retest['set_path'], set_sha256=retest['set_sha256'], evidence_end=retest['evidence_end'],

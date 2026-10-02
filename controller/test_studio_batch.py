@@ -166,8 +166,9 @@ class NativeBatchTests(unittest.TestCase):
         self.assertEqual(json.loads((Path(result['package']) / 'customer-plan.json').read_text(encoding='utf-8'))['evidence_end'], 'auto')
         self.assertEqual(batch_status(self.controller, 'evidence-batch')['evidence_end']['target'], '2026-10-02')
         self.controller.cancel('evidence-batch')
-        successor = resume_batch(self.controller, 'evidence-batch', 'evidence-batch-r1')
-        self.assertEqual(successor['evidence_end']['requested'], 'auto')
+        successor = resume_batch(self.controller, 'evidence-batch', 'evidence-batch-r1', now=saturday)
+        # The successor keeps the resolved date, so a later Friday close never moves it.
+        self.assertEqual((successor['evidence_end']['requested'], successor['evidence_end']['target']), ('2026-10-02', '2026-10-02'))
 
     def test_evidence_end_must_be_closed_and_after_the_window(self):
         from datetime import datetime, timezone

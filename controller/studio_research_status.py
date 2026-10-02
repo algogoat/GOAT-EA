@@ -319,7 +319,7 @@ def batch_progress(root, install, job, *, now, journal=None):
 def seed_progress(root, batch_id, *, now, kind='seed'):
     """Seed hunt (or OOS catch-up) members done/total, qualifying results and pace, from retained state.
 
-    A catch-up member "qualifies" when its new-weeks verdict is held_up.
+    Catch-up results are never "qualifying": held_up members are counted as ``held_up``.
     """
     folder = Path(root) / ('catchups' if kind == 'catchup' else 'seeds') / batch_id
     state, _ = _bounded_json(folder / 'state.json', 32 * 1024 * 1024)
@@ -340,15 +340,18 @@ def seed_progress(root, batch_id, *, now, kind='seed'):
         eta = now + max(0.0, remaining * cycle - (min(age, cycle * .95) if age is not None else 0))
     candidates = sum((m.get('result') or {}).get('summary', {}).get('qualifying_count', 0) or 0 for m in done)
     qualifying_members = sum(1 for m in done if ((m.get('result') or {}).get('summary', {}).get('qualifying_count') or 0) > 0)
+    held_up = None
     if kind == 'catchup':
-        candidates = qualifying_members = sum(1 for m in done if (m.get('result') or {}).get('summary', {}).get('verdict') == 'held_up')
+        # A few new weeks never qualify anything: report held_up separately, not as qualifying.
+        held_up = sum(1 for m in done if (m.get('result') or {}).get('summary', {}).get('verdict') == 'held_up')
+        candidates = qualifying_members = None
     last = max(finished, key=lambda m: m.get('finished_unix') or 0, default=None)
     paused = (folder / 'pause.json').is_file()
     status = state.get('status')
     return dict(batch_id=batch_id, kind=kind, status=('paused' if paused and running is None and status == 'active'
                                                          else 'pausing' if paused and status == 'active' else status),
                 members_total=len(members), members_done=len(done), members_finished=len(finished),
-                qualifying=qualifying_members, qualifying_candidates=candidates,
+                qualifying=qualifying_members, qualifying_candidates=candidates, held_up=held_up,
                 last_member=None if last is None else dict(alias=last.get('alias'), status=last.get('status'),
                     qualifying_candidates=(last.get('result') or {}).get('summary', {}).get('qualifying_count'),
                     best_fitness=(last.get('result') or {}).get('summary', {}).get('best_fitness')),
@@ -412,7 +415,8 @@ def headline(activity):
         left = ', about ' + (str(minutes // 60) + ' h ' if minutes >= 60 else '') + str(minutes % 60) + ' min left'
     qualifying = activity.get('qualifying')
     counts = ('' if total is None else ' ' + str(done) + ' of ' + str(total) + ' members done') + (
-        '' if qualifying is None else ', ' + str(qualifying) + ' qualifying')
+        '' if qualifying is None else ', ' + str(qualifying) + ' qualifying') + (
+        '' if activity.get('held_up') is None else ', ' + str(activity['held_up']) + ' held up (low-sample verdicts)')
     if status == 'pausing':
         return 'Pausing this ' + name + ' at the next safe point;' + counts + '.'
     if status == 'paused':

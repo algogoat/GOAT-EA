@@ -189,7 +189,8 @@ def _control_fields(job, material, *, account, evidence):
     native=observe(package)
     if native['status']!='native_queued':raise ValueError('Native job must be queued and unstarted')
     common=Path(binding['common_files_root']).resolve();run=common/relative.replace('\\','/')
-    base=common/'GOAT'/('GOAT V'+binding['ea_version']+'-'+server);evidence=Path(evidence).resolve()
+    from studio_terminal_isolation import binding_base,binding_relative
+    base=binding_base(binding,account);evidence=Path(evidence).resolve()
     transaction=json.loads((evidence/'transaction.json').read_text())
     marker=base/'agent-native-control-owner.json';ownership=json.loads(marker.read_text())
     if transaction['phase']!='installed' or Path(transaction['base']).resolve()!=base:
@@ -209,7 +210,7 @@ def _control_fields(job, material, *, account, evidence):
     if installed!=sections:raise ValueError('Native config differs from staged configuration')
     guard=ini_sections((base/'active_optimization_launch.ini').read_bytes()).get('ActiveOptimizationLaunch',{})
     expected=dict(LaunchId=transaction['owner'],RunPath=relative,Strategy=alias,Symbol=config['tester']['Symbol'],
-        ConfigPath='GOAT\\GOAT V'+binding['ea_version']+'-'+server+'\\active_optimization_config.ini',
+        ConfigPath=binding_relative(binding,account)+'\\active_optimization_config.ini',
         AuditConfigPath=relative+'\\inputs\\'+alias+'\\config.ini')
     if any(guard.get(k)!=v for k,v in expected.items()):raise ValueError('Native launch guard mismatch')
     # Startup INI uses 1:N, but native paste parses leverage as integer N.

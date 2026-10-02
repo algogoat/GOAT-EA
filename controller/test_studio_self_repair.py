@@ -12,6 +12,7 @@ import uuid
 
 from campaign_ledger import packed, sha
 from native_control_transaction import begin, NAMES
+from studio_terminal_isolation import controller_base
 from studio_bridge import write_json
 from studio_installation import read_json
 from studio_launch_intent import record_intent
@@ -39,7 +40,7 @@ class SelfRepairFixture(unittest.TestCase):
         for item in self.manifest['jobs']:
             (self.common/'inputs'/item['run_alias']/'config.ini').write_bytes((self.package/(item['run_alias']+'.ini')).read_bytes())
         self.evidence = self.c.root/'attempts'/self.attempt
-        self.base = Path(self.c.install['common_files_root'])/'GOAT'/('GOAT V'+self.c.install['ea_version']+'-'+self.c.session['account']['server'])
+        self.base = controller_base(self.c)
         self.base.mkdir(parents=True,exist_ok=True)
         begin(self.base,self.evidence,dict(zip(NAMES,[b'pointer',b'config',b'guard'])),{n:None for n in NAMES},self.attempt)
         write_json(self.evidence/'activation.json',dict(stage='CONTROLS_INSTALLED_NOT_ARMED',attempt_id=self.attempt))

@@ -29,7 +29,7 @@ GOAT turns strategy templates into tested, exportable strategy files and then in
 | Read-only checks: `discover`, `state`, `onboarding-status`, `batch-status`, `seed-status`, `resource-profile`, `benchmark-report`, `validate-set`, desktop status/matrix reads | Linking a demo account (`onboarding.accounts`) and installing into a terminal (`suite.install`) | Signing in to GOAT and to MT5 |
 | Writing plan files, lineage files, local template variants (`build-set`) | `monitor-launch` (opens MT5) and `seed-start` (closes and restarts MT5) | Turning Algo Trading off, closing and opening MT5 |
 | `prepare-batch`, `seed-prepare`, `save-batch` (nothing starts) | Starting each batch (`Start-Batch`), after showing members, dates, settings and the time/disk budget | Allowing DLL imports and the WebRequest URL |
-| Running `serve`, polling, `finish` after the native queue finished | Retrying failed members (`resume-batch --include-failed`), clearing pending work (`clear-queue --apply`) | Reading the pairing code and clicking **Approve this connection** |
+| Running `serve`, polling, `finish` after the native queue finished | Retrying failed members (`resume-batch --include-failed`), clearing pending work (`clear-queue --apply`) | Reading the connection code and clicking **Approve this connection** |
 | `cancel` when the user asks, the agreed budget is reached, or disk falls below 5 GiB | `peer-apply` to protect another running MT5 | Clicking **GIVE TO AGENT** / **TAKE CONTROL** |
 | Recording results with `strategy.recordResult` | Sending a support report (`support.submitReport`) | Anything with real money or a live account |
 

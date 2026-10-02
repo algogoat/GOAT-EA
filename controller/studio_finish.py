@@ -9,6 +9,19 @@ from studio_native_gate import exclusive_gate,_read_gate_evidence
 from native_control_transaction import restore,NAMES,contents,digest
 from studio_bridge import write_json
 
+def _research_outcomes(native):
+    """([outcome per no-edge member], error or None). Read-only; never blocks a finish."""
+    from studio_research_status import no_edge_members,no_edge_summary,timeline
+    try:
+        members=native['members'];run=native['native_run']
+        found=no_edge_members(run,[(m['run_alias'],m['symbol']) for m in members],[m['status'] for m in members],
+                              timeline(run,[m['run_alias'] for m in members]))
+        return [dict(index=i,run_alias=members[i]['run_alias'],symbol=members[i]['symbol'],timeframe=members[i]['tester']['Period'],
+                     **found[i],summary=no_edge_summary(members[i]['symbol'],members[i]['tester']['Period'],found[i]))
+                for i in sorted(found)],None
+    except (OSError,ValueError,KeyError,TypeError) as error:
+        return [],str(error)[:240]
+
 def finish(controller,job_id,*,expected_generation=None):
     if expected_generation is not None and controller.state()['generation']!=expected_generation:
         raise ValueError('Controller generation changed before finish')
@@ -26,16 +39,27 @@ def finish(controller,job_id,*,expected_generation=None):
     from studio_dispatch_observe import observe_dispatch
     stop_id=cancel_id(controller.root,job,controller.local/'native-gate')
     successor_stop=None
+    signal_only=False
     if stop_id!=sha([intent['attempt_id'],'cancel']):
         successor_stop=observe_dispatch(controller.local/'native-gate',stop_id)
-        if successor_stop.get('consumed') is not True or successor_stop.get('status')!='receipt_observed' or successor_stop['receipt']['status']!='CANCELLED_RECONCILE':
-            raise ValueError('Successor cancellation requires its exact consumed CANCELLED_RECONCILE')
+        receipt=successor_stop.get('receipt') or {}
+        # A cancel consumed mid-member answers CANCEL_SIGNAL_SENT_RECONCILE when the
+        # tester takes longer than the EA's single 100 ms idle check to stop (g6,
+        # 19:18Z): the stop was sent, not yet confirmed. It is accepted only with the
+        # same independent proof the release already demands below: a settled native
+        # queue and, under the gate, a fresh idle tester with no batch ongoing.
+        if (successor_stop.get('consumed') is not True or successor_stop.get('status')!='receipt_observed'
+                or receipt.get('status') not in ('CANCELLED_RECONCILE','CANCEL_SIGNAL_SENT_RECONCILE')):
+            raise ValueError('Successor cancellation requires its exact consumed CANCELLED_RECONCILE '
+                             'or CANCEL_SIGNAL_SENT_RECONCILE')
+        signal_only=receipt['status']=='CANCEL_SIGNAL_SENT_RECONCILE'
     outcomes={'native_completed':'completed','native_cancelled':'cancelled','native_error':'failed'}
     if native['status'] not in outcomes: raise ValueError('Native queue is not finished; reconcile, do not reset')
     completed_members=any(member['status']=='native_completed' for member in native['members'])
     reports=observe_reports(package,job['configuration'],controller.schema,member_statuses=[member['status'] for member in native['members']]) if completed_members else None
     if reports and reports['status'] not in ('report_pair_verified','report_batch_verified'):
         raise ValueError('Completed queue members still require verified report pairs')
+    research_outcomes,research_error=_research_outcomes(native)
     result=dict(schema_version=1,member_outcomes=native['members'],attempt_id=intent['attempt_id'],job_id=job_id,status=outcomes[native['status']],
                 configuration_sha256=job['configuration_sha256'],configuration=job['configuration'],native=native,reports=reports,
                 source=read_json(controller.root/'packages'/(job_id+'.source.json')),
@@ -43,7 +67,15 @@ def finish(controller,job_id,*,expected_generation=None):
                 performance_qualification='Native artifacts observed; portfolio evidence is independently validated on import',
                 matrix_result_required=True,ea_version=controller.install['ea_version'],ea_sha256=controller.install['ea_sha256'],
                 controller_version=controller.install['controller_version'],account_server=controller.session['account']['server'])
+    # Members tested with no profitable settings keep native_error; this tells the
+    # scoreboard they are results for their window, not failures (studio_research_status).
+    result['research_outcomes']=research_outcomes
+    if research_error is not None:result['research_outcomes_error']=research_error
     if successor_stop is not None:result['cancellation_dispatch']=successor_stop
+    if signal_only:
+        # Written only if the gated idle check below passes; a failure raises first.
+        result['stop_confirmation']=dict(receipt='CANCEL_SIGNAL_SENT_RECONCILE',
+                                         confirmed_by=['native_queue_settled','tester_idle_under_gate','batch_ongoing_false'])
     evidence=controller.root/'attempts'/intent['attempt_id']
     gate=controller.local/'native-gate'
     # Same gate excludes controller commits and native command consumption.

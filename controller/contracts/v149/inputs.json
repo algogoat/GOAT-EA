@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source_sha256": "ee505d71061cc499acb0e6cefed8c92c79b60b4dc90fb622a1f63796d86d8dec",
+  "source_sha256": "1408e1eeb5c3ea8bb2678097538a74f3dc7fea7cc8f27bc72205751ad2291722",
   "defines": {
     "GOAT_VERSION_LABEL": "\"1.49\"",
     "GOAT_DEFAULT_BIAS_MODE": "Bias_Opens",

@@ -136,6 +136,11 @@ Live API authentication is never stored in source or `.set` files. Provision the
 rotated bearer as the only non-empty line in
 `Common\Files\GOAT\Credentials\api-bearer.token` on each MT5 host. The EA
 validates the local file and fails initialization when it is missing or malformed.
+V1.49 terminal-isolation builds (SM32 and later) keep one credential per MT5 login,
+`Common\Files\GOAT\Credentials\api-bearer-v149-<login>.token`, written by the EA's
+own activation, so several licensed terminals can run on one PC (INV-CRED-01 in
+`docs/operations/INVARIANTS.md`). Their Common batch state is likewise per
+terminal/account (INV-BATCH-01).
 The production `LICENSE_GATEWAY_TOKEN` must be rotated whenever a prior token may
 have appeared in repository history; deploy/provision the replacement before
 retiring the old value to avoid an unsafe partial cutover.

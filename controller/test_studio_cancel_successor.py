@@ -53,14 +53,48 @@ class CancelSuccessorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'orphan recovery'):create(self.c,'original')
         self.assertFalse((self.c.root/'cancel-successors'/(self.attempt+'.json')).exists())
 
-    def test_prior_evidence_tamper_and_signal_only_stop_refuse(self):
-        result=create(self.c,'original');identity=result['request_id']
+    def signal_only(self, *, consumed=True):
+        identity=create(self.c,'original')['request_id']
+        request=(self.gate/'request.json').read_bytes()
+        if consumed:(self.gate/('consumed-'+identity+'.json')).write_bytes(request)
+        write_json(self.gate/('result-'+identity+'.json'),dict(request_id=identity,request_sha256=hashlib.sha256(request).hexdigest(),status='CANCEL_SIGNAL_SENT_RECONCILE'))
+        return identity
+
+    def settle_queue(self):
+        queue=self.fixture.common/'queue.GOAT'
+        queue.write_bytes(queue.read_bytes().decode('utf-16').replace(';Queued_',';Cancelled_').replace(';Pending_',';Cancelled_').encode('utf-16'))
+
+    def test_prior_evidence_tamper_and_signal_only_stop_with_a_live_queue_refuse(self):
+        self.signal_only();before=self.c.job('original')['status']
         path=self.gate/('result-'+self.original+'.json');raw=path.read_bytes();path.write_bytes(raw+b' ')
         with self.assertRaisesRegex(ValueError,'prior cancellation'):cancel_id(self.c.root,self.c.job('original'),self.gate)
         path.write_bytes(raw)
+        # Signal sent but members still queued: never released.
+        with self.assertRaisesRegex(ValueError,'Native queue is not finished'):finish(self.c,'original')
+        self.assertEqual(self.c.job('original')['status'],before)
+
+    def test_signal_only_successor_finishes_on_a_settled_queue_and_idle_tester(self):
+        # g6 live (19:18Z): consumed mid-member, the tester stopped after the EA's single idle check.
+        identity=self.signal_only();self.settle_queue()
+        result=finish(self.c,'original')
+        self.assertEqual(result['status'],'cancelled')
+        self.assertEqual(result['result']['cancellation_dispatch']['receipt']['request_id'],identity)
+        self.assertEqual(result['result']['stop_confirmation']['receipt'],'CANCEL_SIGNAL_SENT_RECONCILE')
+        self.runtime.assert_called_with(require_idle=True,expected_batch_ongoing=False)
+
+    def test_signal_only_successor_refuses_while_the_tester_is_not_idle(self):
+        self.signal_only();self.settle_queue();before=self.c.job('original')['status']
+        self.runtime.side_effect=ValueError('Tester idleness not confirmed: running')
+        with self.assertRaisesRegex(ValueError,'Tester idleness not confirmed'):finish(self.c,'original')
+        self.assertEqual(self.c.job('original')['status'],before)
+        self.assertFalse((self.c.root/'attempts'/self.attempt/'result.json').exists())
+
+    def test_unconsumed_or_other_successor_receipts_still_refuse(self):
+        identity=self.signal_only(consumed=False);self.settle_queue()
+        with self.assertRaisesRegex(ValueError,'Successor cancellation requires'):finish(self.c,'original')
         request=(self.gate/'request.json').read_bytes();(self.gate/('consumed-'+identity+'.json')).write_bytes(request)
-        write_json(self.gate/('result-'+identity+'.json'),dict(request_id=identity,request_sha256=hashlib.sha256(request).hexdigest(),status='CANCEL_SIGNAL_SENT_RECONCILE'))
-        with self.assertRaisesRegex(ValueError,'CANCELLED_RECONCILE'):finish(self.c,'original')
+        write_json(self.gate/('result-'+identity+'.json'),dict(request_id=identity,request_sha256=hashlib.sha256(request).hexdigest(),status='CANCEL_RUN_CHANGED'))
+        with self.assertRaisesRegex(ValueError,'Successor cancellation requires'):finish(self.c,'original')
 
 
 if __name__=='__main__':unittest.main()

@@ -25,12 +25,12 @@ assert.match(optimizer, /Add\(cmb\)/);
 assert.match(optimizer, /Add\(c_Wnd_OPT\)/);
 assert.match(optimizer, /Add\(c_Wnd_Export\)/);
 const names = [...new Set(optimizer.match(/\bm_(?:lbl|edt|btn|cmb|dt|dp|chk|list)\w+/g))];
-function fixture(width, height, owner, empty, loaded) {
+function fixture(width, height, owner, empty, loaded, batchFlag = 0, queued = []) {
   const controls = Object.fromEntries(names.map(name => [name, {
     name, visible: true, bounds: null,
     Hide() { this.visible = false; }, Show() { this.visible = true; },
-    Text() {}, Color() {}, ColorBackground() {}, ColorBorder() {},
-    Enable() {}, Disable() {}, Height() { return 24; }, FitRows() {},
+    Text(value) { if (value === undefined) return this.text || ''; this.text = value; }, Color() {}, ColorBackground() {}, ColorBorder() {},
+    Enable() {}, Disable() {}, Height() { return 24; }, Width() { return 24; }, FitRows() {},
   }]));
   const container = children => ({
     visible: true, bounds: null,
@@ -42,7 +42,9 @@ function fixture(width, height, owner, empty, loaded) {
     c_Wnd_OPT: backdrop, c_Wnd_Export: exportTray, shown: [],
     D_Width: width, D_Height: height, m_studioOwner: owner,
     m_studioLoaded: loaded, g_StudioEmptyDraft: empty, handoff: owner === 'human',
-    MathMax: Math.max, MathMin: Math.min,
+    m_rowHeight: 34, Font_Size: 10,
+    MathMax: Math.max, MathMin: Math.min, StringFind: (s, t) => String(s).indexOf(t),
+    GlobalVariableGet: name => (name === 'BatchOnGoing' ? batchFlag : 0), ArraySize: a => a.length, g_StudioQueueIds: queued,
     StageMove(control, x, y, visible, w, h) {
       control.bounds = {x, y, w, h}; control.visible = visible;
       if (visible) c.shown.push(control);
@@ -88,6 +90,13 @@ for (const [width, height, empty, loaded] of [
     passed++;
   }
 }
+// The compact card says what is queued, including an armed flag with nothing queued.
+for (const [flag, queued, want] of [[1, [], /^A batch flag is set, but nothing is queued here\.$/],
+  [0, [], /^No batch queued yet\./], [1, ['job-1'], /^No batch queued yet\./]]) {
+  const {c, controls} = fixture(1555, 640, 'agent', true, true, flag, queued);
+  vm.runInNewContext(production, c);
+  assert.match(controls.m_lblBatchControl.text, want); passed++;
+}
 function preprocess(text) {
   const stack = [true];
   return text.split('\n').filter(line => {
@@ -126,6 +135,33 @@ for (let selected = 0; selected < 4; selected++) {
   const stageControls = ['m_edtRunName', 'm_dtFrom', 'm_edtDeposit', 'm_edtSetsToExport'];
   stageControls.forEach((name, index) => assert.equal(controls[name].visible, index === selected));
   assert.ok(controls.m_btnStop.bounds.y > 400, 'Handoff stayed in compact position');
+  assert.equal(controls.m_btnDelQ.visible, false, 'Delete All has no managed handler and stays hidden');
+  const actions = ['m_btnDelQitem', 'm_btnUpQitem', 'm_btnDownQitem', 'm_btnCancelSelected', 'm_btnMakePending'].map(n => controls[n].bounds);
+  actions.slice(1).forEach((b, i) => assert.ok(actions[i].x + actions[i].w <= b.x, 'Queue actions overlap'));
+  assert.ok(actions.at(-1).x + actions.at(-1).w <= 1555, 'Queue actions overflow');
+  passed++;
+}
+// Batch heading fits MT5's 63-character edit cut with four-digit counts (review LOW).
+{
+  const line = ui.match(/batch_heading="BATCH "[^;]+;/)[0].replace(/\(string\)/g, '');
+  for (const n of [0, 7, 113, 9999]) {
+    const c = {done: n, total: n, remaining: n, failed: n, cancelled: n, batch_heading: ''};
+    vm.runInNewContext(line, c);
+    assert.ok(c.batch_heading.startsWith('BATCH ') && c.batch_heading.length <= 63, c.batch_heading);
+    assert.match(c.batch_heading, / cancelled$/, 'the cancelled count is never the part that gets cut');
+    passed++;
+  }
+}
+// Every queue state has its own plain word; reconcile is never shown as "Running".
+{
+  const at = ui.indexOf('string GoatStudioStatusWord(');
+  const body = ui.slice(ui.indexOf('{', at), ui.indexOf('\n  }', at) + 4);
+  const word = new Function('status', body.replace(/^\{|\}$/g, ''));
+  assert.equal(word('reconcile_required'), 'Needs reconcile');
+  assert.equal(word('verifying'), 'Verifying');
+  assert.equal(word('ongoing'), 'Running');
+  assert.equal(word('pending'), 'Waiting');
+  assert.equal(word('error'), 'Error');
   passed++;
 }
 console.log(JSON.stringify({passed, nativeVisualQualification: false}));

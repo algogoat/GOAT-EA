@@ -576,7 +576,7 @@ bool GOATNewsFilter::DownloadAndFillNews(datetime startdate,int news_threshold,b
    if(res == -1)
      {
       int err = GetLastError();
-      if(DownloadMode && showSummary) Alert("News downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.",err);
+      if(DownloadMode && showSummary) Alert(StringFormat("News download failed (MT5 error %d). Add the URL in Tools > Options > Expert Advisors > Allow WebRequest.",err));
       PrintFormat("News downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.",err);
       return false;
      }
@@ -807,7 +807,7 @@ bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool D
    if(res == -1)
      {
       int err = GetLastError();
-      if(DownloadMode && showSummary) Alert("Bias downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.", err);
+      if(DownloadMode && showSummary) Alert(StringFormat("AI bias download failed (MT5 error %d). Add the URL in Tools > Options > Expert Advisors > Allow WebRequest.",err));
       PrintFormat("Bias downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.", err);
       return false;
      }
@@ -1216,7 +1216,7 @@ bool LoadOrSaveBrokerTimeFiles(int &gmt_offset_sec,int &dst_enabled,bool LoadOrS
          return true;
         }
 
-      int ret = MessageBox("Does your broker adjusts with day light savings time?","Broker DST",MB_YESNOCANCEL);
+      int ret = MessageBox("Does your broker's server time follow daylight saving time?","Broker DST",MB_YESNOCANCEL);
       if(ret == IDYES)
         {
          dst_enabled = 1;
@@ -1266,7 +1266,7 @@ bool LoadOrSaveBrokerTimeFiles(int &gmt_offset_sec,int &dst_enabled,bool LoadOrS
         }
       else
         {
-         int ret = MessageBox("Does your broker adjusts with day light savings time?","Broker DST",MB_YESNOCANCEL);
+         int ret = MessageBox("Does your broker's server time follow daylight saving time?","Broker DST",MB_YESNOCANCEL);
          if(ret == IDYES) dst = 1;
          else if(ret == IDNO) dst = 0;
          else return false; // cancel -> don't save anything

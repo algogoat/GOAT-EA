@@ -69,9 +69,28 @@ jobs:
         run: node scripts/test_batch_cancel_origin.cjs
       - name: Native optimization axis isolation and pre-start readback
         run: node scripts/test_optimization_axis_isolation.cjs
+      # One command per step: a multi-line pwsh step only fails on its last exit code.
+      - name: No-profitable-passes research outcome
+        run: node scripts/test_research_outcome.cjs
+      - name: Connection code prompt and fragment link
+        run: node scripts/test_connection_code.cjs
+      - name: Research outcome mutation check (every EA guard is load-bearing)
+        run: node scripts/test_research_outcome_mutations.cjs
+      - name: Research outcome controller mutation check
+        run: python scripts/test_research_outcome_controller_mutations.py
+      - name: Agent connection compact and full layout
+        run: node scripts/test_agent_connection_layout.cjs
+      - name: Dashboard overview presentation
+        run: node scripts/test_dashboard_overview.cjs
 
       - name: Verify Studio derived Report handoff safety
         run: node scripts/test_studio_derived_report.cjs
+      - name: Terminal isolation (per-terminal batch state, per-login credential)
+        run: node scripts/test_terminal_isolation.cjs
+      - name: Terminal isolation mutation check (every guard is load-bearing)
+        run: |
+          node scripts/test_terminal_isolation_mutations.cjs
+          python scripts/test_terminal_isolation_controller_mutations.py
 
       - name: Run every controller fixture test
         env:

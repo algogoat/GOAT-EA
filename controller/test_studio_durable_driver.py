@@ -102,5 +102,27 @@ class DurableDriverTests(unittest.TestCase):
         self.assertEqual(json.loads(finished.read_text())['exit_code'],0)
         self.assertIn('not native qualification',self.log.read_text())
 
+    def test_imports_this_checkout_even_when_an_older_controller_is_first_on_sys_path(self):
+        """The embedded python313._pth lists ../controller (an older bundle) and not the script dir.
+
+        Live failure 2026-10-02 15:32Z: the demand task imported the bundled demo_agent,
+        which refused `_drive-batch --pause-seconds`, so the pause supervisor exited 2.
+        """
+        import tempfile, textwrap
+        here = Path(durable.__file__).resolve().parent
+        with tempfile.TemporaryDirectory() as shadow:
+            for name in ('demo_agent.py', 'studio_handover.py', 'studio_installation.py'):
+                Path(shadow, name).write_text("raise ImportError('older controller shadowed this checkout')\n", encoding='utf-8')
+            code = textwrap.dedent(f'''
+                import runpy, sys
+                sys.path[:] = [{shadow!r}] + [p for p in sys.path if p and p != {str(here)!r}]
+                runpy.run_path({str(here / 'studio_durable_driver.py')!r}, run_name='driver_import_only')
+                import demo_agent
+                print(demo_agent.__file__)
+            ''')
+            done = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(Path(done.stdout.strip()).resolve().parent, here)
+
 
 if __name__=='__main__':unittest.main()

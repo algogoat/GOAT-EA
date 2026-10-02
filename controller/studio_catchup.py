@@ -368,6 +368,18 @@ class CatchupRunner(SeedRunner):
             raise ValueError('Duplicate export values/window in catch-up plan')
         return members, payloads, rows, target
 
+    def _installed_build_id(self):
+        """The build ID the installed EA last reported (its activation status in Common Files), or None. Read-only."""
+        path = (Path(self.c.install['common_files_root']) / 'GOAT'
+                / ('activation-status-' + Path(self.c.install['terminal_data_root']).name + '.json'))
+        try:
+            if not path.is_file() or path.stat().st_size > 256 * 1024:
+                return None
+            build = json.loads(path.read_text(encoding='utf-8-sig')).get('buildId')
+        except (OSError, ValueError, AttributeError):
+            return None
+        return build if isinstance(build, str) and 0 < len(build) <= 96 else None
+
     def _member_problems(self, export, account):
         problems = []
         capture = export.get('capture') or {}
@@ -386,6 +398,16 @@ class CatchupRunner(SeedRunner):
             problems.append('Export was made by another EA binary than the installed one, so a re-test would not be comparable')
         elif not run_ea and not capture.get('build_id'):
             problems.append('The EA build that made this export is unknown (no run manifest or capture), so a re-test could not be compared')
+        elif not run_ea:
+            # Known only from the capture: compare it with the installed EA's reported build before spending a run.
+            installed = self._installed_build_id()
+            if installed is None:
+                problems.append('The EA build that made this export (%s) is known only from its capture, and the installed EA build '
+                                'cannot be read yet (no EA activation status), so a re-test could not be compared; open MT5 with '
+                                'the GOAT chart once, or import the export with its run folder' % capture['build_id'])
+            elif installed != capture['build_id']:
+                problems.append('Export was made by EA build %s; the installed EA reports %s, so a re-test would not be comparable'
+                                % (capture['build_id'], installed))
         values = read_values(Path(export['set_path']).read_bytes())
         if values.get('Mode_Operation') != OP_STANDARD:
             problems.append('Exported SET is not in standard operation mode (Mode_Operation=9)')

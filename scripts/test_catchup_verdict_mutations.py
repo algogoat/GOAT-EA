@@ -39,11 +39,14 @@ MUTATIONS = [
     (VERDICT, 'PF counts earlier positions', "        if row['position_id'] not in opened:\n            continue\n",
      "        if False:\n            continue\n"),
     (VERDICT, 'trade-pace floor dropped', "    if expected and trades < min_pace_trades * expected:", "    if False:"),
+    (VERDICT, 'losing forward window can hold up', "    if forward_per_day is not None and forward_per_day <= 0:\n", "    if False:\n"),
     # Low confidence in the text.
     (VERDICT, 'confidence missing from the sentence', "'. %s confidence: %s trades over %d trading days.'", "'.%.0s%.0s%.0s'"),
     # Prepare-time eligibility and the shared tester validator.
     (CATCHUP, 'another EA binary eligible', "        if run_ea and run_ea != self.c.install['ea_sha256']:", "        if False:"),
     (CATCHUP, 'unknown EA build eligible', "        elif not run_ea and not capture.get('build_id'):", "        elif False:"),
+    (CATCHUP, 'capture-only build not compared with the installed EA', "            elif installed != capture['build_id']:", "            elif False:"),
+    (CATCHUP, 'unreadable installed build accepted', "            if installed is None:", "            if False:"),
     (CATCHUP, 'single pass not validated', "    validate_tester(view | dict(Optimization=2, OptimizationCriterion=6, ForwardDate=''))",
      "    pass"),
     # catchUp import stamp and re-queue.

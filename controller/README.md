@@ -549,7 +549,12 @@ MT5 `ToDate` is exclusive, so evidence ending on day D tests with `ToDate` D+1.
   assumed and checked by the reproduction test below). Original exports are never
   changed. An export made by another EA binary than the installed one (run
   `manifest.json` `ea_sha256`), or whose build is unknown (no run manifest and no
-  capture build id), is ineligible: its re-test could not be compared. The member's
+  capture build id), is ineligible: its re-test could not be compared. When the
+  build is known only from the capture (a library copy), it must equal the build
+  the installed EA last reported (`Common Files\GOAT\activation-status-<data
+  folder>.json`, read-only); if that status is missing, the export is ineligible
+  until MT5 has run the GOAT chart once, so no run is spent on a re-test that
+  could only come back `not_comparable`. The member's
   tester settings pass the shared tester validator, and the member freezes `pins`
   (installed and original EA hashes, capture build id, server, model, deposit,
   currency, leverage, delay) for the verdict's comparability check.
@@ -600,8 +605,9 @@ window measured inside the same re-test gives the pace.
   below 0.8.
 - `too_few_trades`: fewer than 5 trades opened in the new weeks.
 - `weakened`: flat or losing; PF unknown (an incomplete capture); PF below 1;
-  under half the forward profit pace; or fewer than 0.3x the trades expected at
-  the forward pace.
+  a forward window that lost or was flat ("forward window lost; profitable
+  since": a recovery, not a hold); under half the forward profit pace; or fewer
+  than 0.3x the trades expected at the forward pace.
 - `held_up`: comparable, profitable, a known PF of at least 1 (PF counts only
   positions opened in the new weeks), drawdown within what it had already shown,
   and at the forward pace.

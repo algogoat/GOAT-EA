@@ -64,7 +64,7 @@ class DemoCatchupAgentTests(unittest.TestCase):
         self.sets = [make_unit(run / 'deploy' / alias / symbol, rows=self.history + [forced], deals=self.deals, alias=alias, symbol=symbol,
                                windows=windows, server='Test-Demo') for alias, symbol in (('Rone00001', 'EURUSD'), ('Rtwo00002', 'GBPUSD'))]
         jobs = [dict(run_alias=a, tester=dict(TESTER, Deposit=10000, Currency='USD', Leverage='1:100', ExecutionMode=0)) for a in ('Rone00001', 'Rtwo00002')]
-        (run / 'manifest.json').write_text(json.dumps(dict(jobs=jobs)), encoding='utf-8')
+        (run / 'manifest.json').write_text(json.dumps(dict(ea_sha256=digest(self.binary), jobs=jobs)), encoding='utf-8')
         self.run = run
         self.plan = base / 'catchup-plan.json'
         self.plan.write_text(json.dumps(dict(schema_version=1, evidence_end='2026-10-02', sets=[str(p) for p in self.sets],

@@ -77,6 +77,15 @@ class CatchupCase(unittest.TestCase):
                 for a in aliases]
         (self.run / 'manifest.json').write_text(json.dumps(dict(ea_sha256=ea_sha256 or hashlib.sha256(b'ex5').hexdigest(), jobs=jobs)), encoding='utf-8')
 
+    def activation(self, build_id):
+        """The installed EA's activation status (Common Files\\GOAT), as the EA writes it; None removes it."""
+        path = Path(self.controller.install['common_files_root']) / 'GOAT' / 'activation-status-terminal.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if build_id is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_text(json.dumps(dict(buildId=build_id, accountId='123')), encoding='utf-8')
+
     def plan(self, sets=None, **extra):
         return dict(schema_version=1, evidence_end='auto', sets=[str(p) for p in (sets or [self.behind, self.ahead, self.weak])],
                     job_timeout_seconds=3600, **extra)
@@ -206,6 +215,7 @@ class PrepareTests(CatchupCase):
         self.assertFalse(self.runner.base.exists())
 
     def test_library_copy_needs_an_explicit_delay(self):
+        self.activation('TEST')   # the installed EA reports the capture's build
         copy_dir = self.root / 'library'
         unit = make_unit(copy_dir, rows=self.history + [(datetime(2026, 9, 24, 23, 59), self.history[-1][1], self.history[-1][2])],
                          deals=self.deals, alias='Rbehind01', windows=[('SAMPLE', date(2026, 1, 19), date(2026, 8, 29), 200, 900),
@@ -245,6 +255,20 @@ class PrepareTests(CatchupCase):
         pins = self.runner._build(self.runner.base / 'x', self.plan(sets=[self.behind]))[0][0]['pins']
         self.assertEqual((pins['installed_ea_sha256'], pins['original_ea_sha256'], pins['model']),
                          (hashlib.sha256(b'ex5').hexdigest(), hashlib.sha256(b'ex5').hexdigest(), 4))
+
+    def test_capture_only_build_must_match_the_installed_ea_before_a_run(self):
+        # Claude-Mac round 2: a library copy (no run manifest) whose build is known only from its capture.
+        unit = make_unit(self.root / 'library', rows=self.history, alias='Rbehind01', build_id='V1.49-OLD-1',
+                         windows=[('SAMPLE', date(2026, 1, 19), date(2026, 8, 29), 200, 900), ('FWD', date(2026, 7, 17), date(2026, 8, 28), 60, 300),
+                                  ('FOOS', date(2026, 8, 29), date(2026, 9, 24), 38, 190)])
+        plan = self.plan(sets=[unit], assume=dict(ExecutionMode=0))
+        self.activation(None)
+        self.assertIn('installed EA build cannot be read yet', ' '.join(self.runner.validate(plan)['exports'][0]['reasons']))
+        self.activation('V1.49-NEW-2')
+        reasons = ' '.join(self.runner.validate(plan)['exports'][0]['reasons'])
+        self.assertIn('EA build V1.49-OLD-1; the installed EA reports V1.49-NEW-2', reasons)
+        self.activation('V1.49-OLD-1')
+        self.assertEqual(self.runner.validate(plan)['member_count'], 1)
 
     def test_single_pass_tester_goes_through_the_shared_validator(self):
         manifest = self.runner._build(self.runner.base / 'x', self.plan(sets=[self.behind]))[0][0]

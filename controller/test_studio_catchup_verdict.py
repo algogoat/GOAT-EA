@@ -167,9 +167,22 @@ class DecideTests(unittest.TestCase):
         self.assertIn('expected at the forward pace', cv.decide(slow, 100, self.PACE)[1][0])
         self.assertEqual(cv.decide(self.new(trades=9, expected_trades_at_forward_pace=30.0), 100, self.PACE)[0], 'held_up')
 
-    def test_losing_forward_window_skips_the_pace_check(self):
-        self.assertEqual(cv.decide(self.new(net=1), 100, dict(net_per_day=-3.0))[0], 'held_up')
+    def test_losing_forward_window_caps_at_weakened(self):
+        # Claude-Mac round 2: +1 after a losing forward window is a recovery, never "held up".
+        verdict, reasons = cv.decide(self.new(net=1), 100, dict(net_per_day=-3.0))
+        self.assertEqual(verdict, 'weakened')
+        self.assertIn('forward window lost (-3.0/day); profitable since', reasons[0])
+        self.assertEqual(cv.decide(self.new(net=500), 100, dict(net_per_day=0.0))[0], 'weakened', 'a flat forward window too')
+        self.assertEqual(cv.decide(self.new(net=-60, pf=0.5), 100, dict(net_per_day=-3.0))[0], 'failed', 'losses still fail')
+        # No forward window measured at all: nothing to compare, the other rules decide.
         self.assertEqual(cv.decide(self.new(net=1), 100, None)[0], 'held_up')
+
+    def test_losing_forward_window_in_a_full_evaluation(self):
+        # The forward window (Tue 22 to Thu 24 Sep) lost 70; the new weeks then made a little.
+        result = Scenario(Path(tempfile.mkdtemp()), new_per_day=2, tail_drop=70).evaluate(tester=dict(TESTER, ForwardDate='2026.09.22', ToDate='2026.09.25'))
+        self.assertLess(result['forward_pace']['net_per_day'], 0)
+        self.assertEqual(result['verdict'], 'weakened')
+        self.assertIn('Forward window lost (-23.3/day); profitable since', result['plain'])
 
 
 class MeasureTests(unittest.TestCase):

@@ -325,6 +325,10 @@ def decide(new, prior_dd, pace, rules=None):
     if pf is not None and pf < 1.0:
         reasons.append('profit factor %.2f below 1' % pf)
         return 'weakened', reasons
+    if forward_per_day is not None and forward_per_day <= 0:
+        # A forward window that lost (or was flat) gives no pace to hold: profit since then is a recovery, not a hold.
+        reasons.append('forward window lost (%+.1f/day); profitable since' % forward_per_day)
+        return 'weakened', reasons
     if forward_per_day is not None and forward_per_day > 0 and net / days < held_pace * forward_per_day:
         reasons.append('profitable but at %.0f%% of the forward profit pace' % (100 * net / days / forward_per_day))
         return 'weakened', reasons

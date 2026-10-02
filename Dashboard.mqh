@@ -297,7 +297,7 @@ public:
           string file_label=(trim_pos>0 ? StringSubstr(file,0,trim_pos) : file);
           int ret=MessageBox("EA Version not matching in set file:\n\n"+file_label+
                              "\n\nDo you want to accept this set file?"+
-                             "\nThis may affect your portfolio profitibility."+
+                             "\nThis may affect your portfolio profitability."+
                              "\n\nPress Abort to discard once\nPress Retry to accept once\nPress Ignore to accept all further mismatches",
                              "EA Version Mismatch",MB_ABORTRETRYIGNORE|MB_ICONQUESTION);
           if(ret==IDABORT) continue;
@@ -832,9 +832,10 @@ private:
   }
   string ExposurePolicyButtonText(void) const
   {
-   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_SYMBOL_DIRECTION)   return "Asset Filter: ON";
-   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_CURRENCY_DIRECTION) return "Exposure: Ccy";
-   return "Asset Filter: OFF";
+   // One vocabulary for this control, its confirmation and the summary: Off / Asset / Currency.
+   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_SYMBOL_DIRECTION)   return "Exposure: Asset";
+   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_CURRENCY_DIRECTION) return "Exposure: Currency";
+   return "Exposure: Off";
   }
    string CurrencyFilterButtonText(const string currency,const ENUM_GOAT_CURRENCY_FILTER_STATE state) const
    {
@@ -1604,8 +1605,8 @@ bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
       if(m_portfolio_command_pending)
          return(true);
       int next_mode=NextExposurePolicyMode((int)m_exposure_policy_mode);
-      string next_text=(next_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION ? "Exposure: Asset" : (next_mode==GOAT_EXPOSURE_CURRENCY_DIRECTION ? "Exposure: Ccy" : "Exposure: Allow"));
-      string prompt="Set exposure policy to "+next_text+"?\n\nAsset mode: one sequence owns each symbol and direction until it finishes. Its adds and partial closes remain managed. Buy and Sell are independent; there is no cooldown.\n\nScope: this terminal and account only. Existing positions and pending orders (including manual trades) block new asset-direction admission. Existing sequences keep normal management. Turning off allows new overlap; it does not close trades.";
+      string next_text=(next_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION ? "Asset" : (next_mode==GOAT_EXPOSURE_CURRENCY_DIRECTION ? "Currency" : "Off"));
+      string prompt="Set exposure to "+next_text+"?\n\nAsset mode: one sequence owns each symbol and direction until it finishes. Its adds and partial closes remain managed. Buy and Sell are independent; there is no cooldown.\n\nScope: this terminal and account only. Existing positions and pending orders (including manual trades) block new asset-direction admission. Existing sequences keep normal management. Turning off allows new overlap; it does not close trades.";
       int ret=MessageBox(prompt,"Exposure Policy",MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2);
       if(ret==IDYES)
          SendExposurePolicyCommand(next_mode);
@@ -2732,7 +2733,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
       int tabs_total=4*tab_width+3*tab_gap;
       int tabs_x=columns_right-tabs_total;
       int heading_width=MathMax(80,tabs_x-columns_left-tab_gap);
-      CreateInfoOverlayEdit(edt_Heading,"FleetHeading","STRATEGIES  /  OVERVIEW",columns_left,view_toolbar_top,heading_width,rowTallH,C'9,24,39',C'35,77,103');
+      CreateInfoOverlayEdit(edt_Heading,"FleetHeading","STRATEGY FLEET  /  OVERVIEW",columns_left,view_toolbar_top,heading_width,rowTallH,C'9,24,39',C'35,77,103');
       CreateHeaderStateButton(btn_ViewOverview,"ViewOverview","Overview",tabs_x,view_toolbar_top,tab_width,rowTallH,C'20,63,86',C'92,210,247',C'225,238,248');
       tabs_x+=tab_width+tab_gap;
       CreateHeaderStateButton(btn_ViewIntelligence,"ViewIntelligence","Risk & Signals",tabs_x,view_toolbar_top,tab_width,rowTallH,C'11,28,44',C'35,60,82',C'135,181,216');
@@ -2922,7 +2923,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 	prefix="R1_";
 	ArrayResize(edt_Symbol,2);    x=PlaceEditLabel(edt_Symbol[1]   ,prefix+"SYM","Portfolio",x,y,Width_Symbol);
 	ArrayResize(edt_Strategy,2);  x=PlaceEditLabel(edt_Strategy[1] ,prefix+"STR","Mixed",x,y,Width_Strategy);
-	ArrayResize(btn_Action,2);    CreateButtonCtrl2(btn_Action[1]  ,prefix+"BTN",x,y,Width_Action,m_controlHeight,"ActivateAll"); x+=Width_Action+m_GapHoriz;
+	ArrayResize(btn_Action,2);    CreateButtonCtrl2(btn_Action[1]  ,prefix+"BTN",x,y,Width_Action,m_controlHeight,"Activate all"); x+=Width_Action+m_GapHoriz;
 	ArrayResize(edt_Status,2);    x=PlaceEditLabel(edt_Status[1]   ,prefix+"STS","Pending",x,y,Width_Status); //edt_Status[1].Color(clrYellow);
 	ArrayResize(edt_Comment,2);   x=PlaceEditLabel(edt_Comment[1]  ,prefix+"CMT","Mixed",x,y,Width_Comment);
 	ArrayResize(edt_News,2);      x=PlaceEditLabel(edt_News[1]     ,prefix+"NWS","Mixed",x,y,Width_News);
@@ -3134,7 +3135,7 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    GoatDeploymentPhase(cid==0 ? "chart_open_failed" : "chart_open_returned",cid,"",open_error);
    if(cid==0)
    {
-      if(!m_agent_setup_quiet) Alert("  ChartOpen FAILED  err=%d", open_error);
+      if(!m_agent_setup_quiet) Alert(StringFormat("Couldn't open a chart for %s (MT5 error %d).",symbol,open_error));
       DeleteCopiedTemplate(tplName);
       return false;
    }
@@ -3997,8 +3998,9 @@ void CGOATDashboard::UpdatePortfolioRow()
     string portfolio_status=(pending_rows>0 ? "Pending" : "Deployed");
     if(m_portfolio_command_pending) portfolio_status=((m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE || m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE) ? "Closing" : "Syncing");
     else if(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_PAUSED) portfolio_status="Paused";
-    color portfolio_status_clr=(portfolio_status=="Pending" ? clrRed : (portfolio_status=="Deployed" ? clrWhite : StatusColor(portfolio_status)));
-    string action_text=(all_deployed ? "Activated" : "ActivateAll");
+    // "Pending" (not yet activated) is a normal state: brass, not error red.
+    color portfolio_status_clr=(portfolio_status=="Pending" ? C'201,163,91' : (portfolio_status=="Deployed" ? clrWhite : StatusColor(portfolio_status)));
+    string action_text=(all_deployed ? "All active" : "Activate all");
     color action_text_clr=(all_deployed ? C'87,153,122' : clrWhite);
     double portfolio_hist_dd=StringToDouble(Portfolio_Target_DD);
     color pl_open_clr=(open_sum>0.0 ? C'0,180,0' : (open_sum<0.0 ? clrRed : clrWhite));

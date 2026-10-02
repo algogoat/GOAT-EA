@@ -52,6 +52,21 @@ message is "This terminal's GOAT sign-in was replaced by another terminal —
 re-pair it."), `monitor_build_not_admitted`, `monitor_webrequest_permission_required`,
 `monitor_unbound`, `human_took_control` and `monitor_silent`.
 
+A member whose optimization ran (at least one pass traded) and whose back and forward
+reports are whole, but had no pass profitable with 50+ trades, is a research result for its
+tested window, not a failure. A report whose EA never traded, that cannot be read, or that is
+partial stays a real error and `--include-failed` retries it. The EA keeps its native
+queue status `Error` (no protocol change) and writes a `NoProfitablePasses` row to
+the run's `item_stats.tsv` (passes, profitable count, best profit, best score and
+the back-test window). `research-status` reports these as `members_no_edge` (with
+`no_edge` details and `no_edge_window`) apart from `members_failed`; the headline
+says `N tested with no edge in <window>`, and `last_member.status` is
+`no_profitable_passes` with a one-line `summary`. `finish` records them as
+`research_outcomes` for the scoreboard, a pause whose only errors are no-edge members
+is `finished`, and `--include-failed` never re-runs them; `--include-no-edge` (`batch-resume`,
+or `resume-batch` for a batch already recorded finished) deliberately re-runs them. Always quote the window:
+"no profitable settings in this window" never means "this strategy never works".
+
 `batch-pause` needs no terminal lock (like `stop`): it writes one durable pause
 intent (`batch-pauses/<id>.json`) and returns `state: pausing`. A live driver
 honours it on its next tick; otherwise one bounded pause supervisor starts

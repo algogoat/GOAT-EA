@@ -37,11 +37,12 @@ bool GoatStudioCompletionText(const string ea_name,const string server_name,
         {position=total;matches++;}
      }
    if(matches!=1) return false;
-   progress=StringFormat("Queue item %d / %d | %d finished | %d waiting",position,total,finished,pending);
+   // "Item n of m finished", never a bare "complete" while other items still wait.
+   progress=StringFormat("Item %d of %d finished in MT5 | %d done before | %d waiting",position,total,finished,pending);
    // Completion is displayed before the host verifies/records this result.
    // Do not promise restart while the host may be paused or at its cutoff.
-   next_step=controller_owner=="human" ? "Waiting for human control." :
-      (pending>0 ? "Checking result before next restart." : "Final result: checking before batch completion.");
+   next_step=controller_owner=="human" ? "Waiting for you to give control back to the agent." :
+      (pending>0 ? "Your agent checks this result before the next item." : "Your agent checks the final result.");
    return true;
   }
 #endif

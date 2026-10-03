@@ -79,7 +79,7 @@ OPERATION_CONTRACTS = {
     'state':dict(required=[],effect='process UI inbox then return full controller state'),
     'submit':dict(required=['request'],effect='apply exact agent envelope with revision and generation checks'),
     'prepare':dict(required=['job-id','set','configuration'],effect='freeze explicit settings and stage pending native package'),
-    'start':dict(required=['job-id'],effect='explicit one-time native dispatch for first pending job; reconcile receipt'),
+    'start':dict(required=['job-id'],refused_lanes=['native_human_control'],refused_lane_route='run-batch --mt5-restart-consent (an in-place Start never makes MT5 write batch reports)',effect='explicit one-time native dispatch for first pending job; reconcile receipt'),
     'status':dict(required=['job-id'],effect='observe retained attempt; update reconciled state without retry'),
     'reconcile':dict(required=['job-id'],effect='alias of status'),
     'cancel':dict(required=['job-id'],effect='cancel pending job or publish exact owned native stop; receipt is not stop proof'),
@@ -89,7 +89,7 @@ OPERATION_CONTRACTS = {
     'orphan-recovery-apply':dict(required=['review-id'],authorization_required_one_of=['confirm-reviewed','owner-research'],authorization='Explicit user confirmation (--confirm-reviewed), or the finite reviewed owner-demo original-grant scope (--owner-research); never fabricate human confirmation',effect='publish one exact V1.49 recovery action; no launch, stop, queue or grant change; receipt/readback required'),
     'orphan-recovery-status':dict(required=['review-id'],effect='reconcile exact native receipt and fresh readback; retain fence on uncertain effects; never resend'),
     'orphan-recovery-reconcile-rejection':dict(required=['review-id'],optional=['terminal-stopped'],terminal_stopped_authorization='Explicit human confirmation only; no offline owner or typed research authority',authorization_required_one_of=['confirm-reviewed','owner-research'],authorization='Exact reviewed rejection under explicit confirmation or finite reviewed owner-demo original-grant scope; settlement is not approval for another native recovery',effect='settle only an expired supported pre-consumption rejection with no consumption and either unchanged idle orphan identity or explicitly confirmed stopped-terminal local identity; retain evidence, never retry recovery or change native flags, queue or grant'),
-    'run-batch':dict(required=['job-id'],start_required=['max-seconds'],limits={'max-seconds':[1,172800]},min_free_bytes_default=5368709120,resume='Use --resume without a new budget or disk threshold; retained deadline and guard do not reset',effect='bounded owned batch driver with durable dispatch deadline and one cancel request at budget, low disk or unavailable capacity; stop must be observed, never assumed; no force kill or uncertain relaunch'),
+    'run-batch':dict(required=['job-id'],start_required=['max-seconds'],limits={'max-seconds':[1,172800]},min_free_bytes_default=5368709120,resume='Use --resume without a new budget or disk threshold; retained deadline and guard do not reset',native_human_control_start_required=['mt5-restart-consent'],mt5_restart='Customer lane: the first member starts through /config so MT5 writes its main/forward reports; the driver closes the selected MT5 normally once and reopens it with the batch startup file (MT5 also restarts itself between members). Tell the user first; pass --mt5-restart-consent only after their yes. The consent binds the running selected MT5 process and expires after 600 s; positions/orders/account are re-proved right before the close; a start that stops after arming returns recovery with where MT5 was left and the plain next step',effect='bounded owned batch driver with durable dispatch deadline and one cancel request at budget, low disk or unavailable capacity; stop must be observed, never assumed; no force kill or uncertain relaunch'),
     'retire-unactivated':dict(required=['job-id'],demo_lane='goat.exe demo retire-unactivated --batch-id <id> (broker-verified; allowed under owner STOP)',effect='settle a start refused before MT5 was touched (launch intent and reservation, restart phase absent or prepared) to cancelled after proving under the native gate: no attempt folder or controls, no gate file naming the attempt/cancel/job, any current request belongs to a settled other job, no native run or report folder, no native queue, and a fresh idle EA sample with no batch ongoing; sends nothing to MT5, never claims a native cancellation, keeps reservation/intent/journal as evidence; idempotent. continue/resume-batch then prepares every member under a new ID'),
     'batch-driver-status':dict(required=['job-id'],effect='read retained driver journal and current binding match; never starts, resumes or cancels work'),
     'research-monitor-restart':dict(required=['job-id'],effect='owner-only typed continuation: gracefully suspend exact old publisher and reload one idle monitor after verified pre-consumption rejection; preserves evidence and budget; no batch start'),
@@ -165,7 +165,11 @@ class Controller:
         i=self.install;s=self.session
         peer=binding_fields(self)
         extra={}
-        if s.get('authority_kind')=='demo_direct':
+        # Report-capable /config route material. The customer lane gains it once
+        # onboarding staged its monitor profile (monitor-prepare); a session
+        # without one keeps its historical binding and cannot use config start.
+        if s.get('authority_kind')=='demo_direct' or (s.get('authority_kind')=='native_human_control'
+                                                      and (self.root/'monitor-profile.json').is_file()):
             from studio_strategy_settings import read_values
             profile=read_json(self.root/'monitor-profile.json')
             name=profile.get('profile_name','')
@@ -389,7 +393,7 @@ def main(argv=None):
     p=sub.add_parser('orphan-recovery-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true');p.add_argument('--owner-research',action='store_true',help='Use the reviewed owner-demo grant scope; never represents a human confirmation')
     p=sub.add_parser('orphan-recovery-status');p.add_argument('--review-id',required=True)
     p=sub.add_parser('orphan-recovery-reconcile-rejection',help='Settle one reviewed expired pre-consumption review/runtime/foreign-control rejection; never retry recovery');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true');p.add_argument('--owner-research',action='store_true',help='Use the reviewed owner-demo grant scope; never represents a human confirmation');p.add_argument('--terminal-stopped',action='store_true',help='Explicit human-confirmed cleanup with the selected terminal stopped; no offline owner authority or native flag changes')
-    p=sub.add_parser('run-batch');p.add_argument('--job-id',required=True);p.add_argument('--max-seconds',type=int);p.add_argument('--resume',action='store_true');p.add_argument('--min-free-bytes',type=int,help='Positive free-space reserve on each output filesystem; default 5368709120 (5 GiB), frozen at start; omit on resume')
+    p=sub.add_parser('run-batch');p.add_argument('--job-id',required=True);p.add_argument('--max-seconds',type=int);p.add_argument('--resume',action='store_true');p.add_argument('--mt5-restart-consent',action='store_true',help='The user agreed that GOAT closes and reopens the selected MT5 once to start this batch through /config (required to start on the customer lane)');p.add_argument('--min-free-bytes',type=int,help='Positive free-space reserve on each output filesystem; default 5368709120 (5 GiB), frozen at start; omit on resume')
     p=sub.add_parser('batch-driver-status');p.add_argument('--job-id',required=True)
     p=sub.add_parser('retire-unactivated');p.add_argument('--job-id',required=True)
     p=sub.add_parser('batch-pause');p.add_argument('--job-id',required=True);p.add_argument('--immediate',action='store_true');p.add_argument('--supervise-seconds',type=int)
@@ -527,7 +531,7 @@ def main(argv=None):
                 else: result=getattr(runner,args.operation.removeprefix('seed-'))(args.batch_id)
             elif args.operation in ('run-batch','batch-driver-status'):
                 from studio_batch_driver import run,status
-                if args.operation=='run-batch': result=run(controller,args.job_id,max_seconds=args.max_seconds,resume=args.resume,min_free_bytes=args.min_free_bytes)
+                if args.operation=='run-batch': result=run(controller,args.job_id,max_seconds=args.max_seconds,resume=args.resume,min_free_bytes=args.min_free_bytes,restart_consent=args.mt5_restart_consent)
                 else: result=status(controller,args.job_id)
             elif args.operation=='retire-unactivated':
                 from studio_retire_unactivated import retire
@@ -552,7 +556,9 @@ def main(argv=None):
                 prepared=resume_batch(controller,args.job_id,new_id,include_failed=args.include_failed,include_no_edge=args.include_no_edge,allow_peer_refresh=True)
                 mark_resumed(controller.root,args.job_id,new_id,now=time.time(),selected=prepared.get('member_count'))
                 result=dict(state='resumed',source_batch_id=args.job_id,batch_id=new_id,prepared=prepared,
-                            next_action='run-batch --job-id '+new_id+' --max-seconds <budget> starts the successor')
+                            next_action='run-batch --job-id '+new_id+' --max-seconds <budget> starts the successor'+
+                            (' (add --mt5-restart-consent after the user agrees GOAT closes and reopens their MT5)'
+                             if controller.session.get('authority_kind')=='native_human_control' else ''))
             elif args.operation=='research-monitor-restart':
                 from studio_rejected_monitor import restart
                 result=restart(controller,args.job_id)
@@ -613,7 +619,10 @@ def main(argv=None):
             elif args.operation=='resume-batch':
                 from studio_batch import resume_batch
                 result=resume_batch(controller,args.source_batch_id,args.batch_id,include_failed=args.include_failed,include_no_edge=args.include_no_edge)
-            elif args.operation=='start': result=controller.start(args.job_id)
+            elif args.operation=='start':
+                from studio_config_start import refuse_raw_start
+                refuse_raw_start(controller.session)
+                result=controller.start(args.job_id)
             elif args.operation=='cancel': result=controller.cancel(args.job_id)
             elif args.operation=='finish':
                 from studio_finish import finish

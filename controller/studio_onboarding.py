@@ -105,6 +105,12 @@ def onboarding_status(controller):
         action = ('Activation completed, but the EA did not confirm restart. Use the controller monitor repair on an idle session, or change the chart timeframe once.' if reason else
                   'Inspect the selected MT5 monitor: sign in to your demo, complete GOAT activation, approve DLL imports and required WebRequest URL, keep Algo Trading off, run serve and recheck.')
         profile = None if reason else wrong_chart_profile(controller, session)
+        if profile and launched_monitor(controller, processes):
+            # MT5 runs from GOAT's own monitor-launch, which names the monitor EA as its startup expert; ProfileLast in
+            # common.ini changes only when MT5 closes, so the saved profile is not why feedback is missing yet.
+            action = ('MT5 was started by monitor-launch with the GOAT monitor EA. Finish GOAT activation in that MT5 (Activate GOAT window), '
+                      'approve DLL imports and the WebRequest URL, keep Algo Trading off, run serve and recheck.')
+            profile = None
         if profile:
             action = ('MT5 saved chart profile '+profile['profile_last']+' as its last profile, not the GOAT Studio monitor profile '+profile['monitor_profile']+
                       '. Ask the user to choose File > Profiles > '+profile['monitor_profile']+' in MT5 (or, with MT5 closed, run monitor-launch --attempt-id <new id>), then recheck.')
@@ -148,6 +154,40 @@ def wrong_chart_profile(controller, session):
     except (OSError, ValueError, KeyError, TypeError, UnicodeError):
         pass
     return None
+
+
+def launched_monitor(controller, processes):
+    """Read-only: the running selected MT5 is the process GOAT's own monitor-launch started.
+
+    True only when the observed process ID is the one a retained monitor-launch record names and that
+    record's untouched startup configuration sets the installed GOAT EA as the startup expert.
+    """
+    try:
+        research = (processes or {}).get('research') or {}
+        pid = research.get('pid')
+        if type(pid) is not int or pid <= 0:
+            return False
+        directory = controller.root/'monitor-launches'
+        if not directory.is_dir():
+            return False
+        for record in directory.glob('*.json'):
+            launch = read_json(record)
+            if launch.get('status') != 'process_started_unverified' or launch.get('pid') != pid:
+                continue
+            # A reused process ID is not this launch: the process must have started right after the launch record.
+            started = datetime.fromisoformat(str(research['created_utc']).replace('Z','+00:00')).timestamp()
+            if not -5 <= started-datetime.fromisoformat(launch['created_at']).timestamp() <= 120:
+                continue
+            config = Path(launch['startup_config'])
+            raw = config.read_bytes()
+            if config.parent != directory or len(raw) > 64_000 or hashlib.sha256(raw).hexdigest() != launch.get('startup_sha256'):
+                continue
+            text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+            if ('\r\n[StartUp]\r\nExpert='+controller.install['ea_relative_path']+'\r\n') in text:
+                return True
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError):
+        pass
+    return False
 
 
 def monitor_paths(controller, session):
@@ -310,9 +350,16 @@ def saved_launch_policy(controller, session):
     except configparser.Error as exc: raise ValueError('Invalid saved MT5 common.ini') from exc
     if ini.defaults() or len({s.casefold() for s in ini.sections()}) != len(ini.sections()) or any(s.casefold() in ('startup','tester','testerinputs') for s in ini.sections()):
         raise ValueError('Ambiguous or automatic-start saved MT5 configuration; inspect manually')
-    if ini.get('Experts','Enabled',fallback=None) != '0':
+    # A key MT5 has never saved (a fresh terminal) is named plainly; it is not a real Algo ON or another login.
+    enabled = ini.get('Experts','Enabled',fallback=None)
+    if enabled is None:
+        raise ValueError('MT5 has not saved the Algo Trading setting yet (fresh terminal): open Tools > Options once and press OK, or use Connect in GOAT, then close MT5 normally before monitor launch')
+    if enabled != '0':
         raise ValueError('Human must turn Algo Trading off and close the selected terminal normally before monitor launch')
-    if ini.get('Common','Login',fallback=None) != session['account']['login'] or ini.get('Common','Server',fallback=None) != session['account']['server']:
+    login, server = ini.get('Common','Login',fallback=None), ini.get('Common','Server',fallback=None)
+    if login is None or server is None:
+        raise ValueError('MT5 has not saved the broker '+('login' if login is None else 'server')+' yet (fresh terminal): sign in to your demo in the selected MT5 once and close it normally, or use Connect in GOAT')
+    if login != session['account']['login'] or server != session['account']['server']:
         raise ValueError('Saved broker login/server differs; user must sign in directly in selected MT5, turn Algo Trading off and close normally')
     return portable
 

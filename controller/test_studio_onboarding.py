@@ -199,6 +199,45 @@ class OnboardingTests(unittest.TestCase):
         with self.assertRaises(ValueError):monitor_launch(self.c,'wrong-origin')
         self.start.assert_not_called()
 
+    def test_launch_refusal_names_the_key_a_fresh_terminal_has_not_saved(self):
+        monitor_prepare(self.c,'EURUSD')
+        cases=(('[Common]\nLogin=123456\nServer=Customer-Demo\n[Experts]\nAllowDllImport=1\n','has not saved the Algo Trading setting yet'),
+               ('[Common]\nLogin=123456\nServer=Customer-Demo\n','has not saved the Algo Trading setting yet'),
+               ('[Common]\nServer=Customer-Demo\n[Experts]\nEnabled=0\n','has not saved the broker login yet'),
+               ('[Common]\nLogin=123456\n[Experts]\nEnabled=0\n','has not saved the broker server yet'),
+               ('[Common]\nLogin=123456\nServer=Customer-Demo\n[Experts]\nEnabled=1\n','turn Algo Trading off'),
+               ('[Common]\nLogin=998877\nServer=Customer-Demo\n[Experts]\nEnabled=0\n','Saved broker login/server differs'))
+        for text,message in cases:
+            self.common_ini.write_text(text)
+            with self.subTest(text=text),self.assertRaisesRegex(ValueError,message):monitor_launch(self.c,'fresh')
+        # A real Algo ON never reads as a fresh terminal.
+        self.common_ini.write_text(cases[4][0])
+        with self.assertRaises(ValueError) as caught:monitor_launch(self.c,'fresh')
+        self.assertNotIn('fresh terminal',str(caught.exception))
+        self.start.assert_not_called()
+
+    def test_status_does_not_blame_the_saved_profile_when_monitor_launch_started_mt5(self):
+        monitor_prepare(self.c,'EURUSD')
+        launch=monitor_launch(self.c,'first-open')
+        # MT5 rewrites ProfileLast only on close, so common.ini still names the old profile while activation is pending.
+        self.common_ini.write_text('[Common]\nLogin=123456\nServer=Customer-Demo\n[Charts]\nProfileLast=Default\n[Experts]\nEnabled=0\n')
+        now=datetime.now(timezone.utc).isoformat()
+        self.inspector.return_value={'research':{'created_utc':now,'pid':launch['pid']}}
+        step=onboarding_status(self.c)['steps'][-1]
+        self.assertEqual(step['state'],'blocked')
+        self.assertIn('started by monitor-launch with the GOAT monitor EA',step['action'])
+        self.assertNotIn('profile_last',step)
+        # Another process (a plain MT5 open, or a reused process ID long after the launch) keeps the profile hint.
+        for research in ({'created_utc':now,'pid':launch['pid']+1},{'created_utc':'2099-01-01T00:00:00+00:00','pid':launch['pid']}):
+            self.inspector.return_value={'research':research}
+            step=onboarding_status(self.c)['steps'][-1]
+            with self.subTest(research=research):
+                self.assertEqual(step.get('profile_last'),'Default'); self.assertIn('File > Profiles',step['action'])
+        # A startup configuration changed after launch proves nothing.
+        self.inspector.return_value={'research':{'created_utc':now,'pid':launch['pid']}}
+        Path(launch['startup_config']).write_bytes(b'[StartUp]\r\nExpert=other.ex5\r\n')
+        self.assertEqual(onboarding_status(self.c)['steps'][-1].get('profile_last'),'Default')
+
     def test_launch_crash_retains_intent_blocks_automatic_relaunch(self):
         monitor_prepare(self.c,'EURUSD');self.start.side_effect=OSError('fixture launch failure')
         with self.assertRaises(OSError):monitor_launch(self.c,'crash')

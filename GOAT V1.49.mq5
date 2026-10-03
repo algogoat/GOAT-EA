@@ -14,14 +14,14 @@
 #define GOAT_API_BEARER_LEGACY_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #define GOAT_API_BEARER_FILE GOATApiBearerFile()
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-SETUP-MONITOR-HOST-34"
+#define   GOAT_BUILD_ID "V1.49-LOCAL-PAIRING-CODE-36"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 #include "GOAT_SequencePackage.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
 long g_goat_fitness_nonce=0;
-#define   GOAT_BUILD_MARKER "MH34"
+#define   GOAT_BUILD_MARKER "LC36"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -3460,7 +3460,7 @@ void OnDeinit(const int reason)
    GoatTraceClose(reason);
    GoatDirectionGuardDeinit();
    if(g_GoatStudioReadOnlyMonitor)
-   {TesterDialog.Destroy(reason);EventKillTimer();return;}
+   {GOATDeviceActivationWithdrawCode();TesterDialog.Destroy(reason);EventKillTimer();return;}
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Deinit Start"+"================");
    if(GOATDeviceActivationOnly())
      {

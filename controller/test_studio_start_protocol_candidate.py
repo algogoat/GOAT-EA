@@ -1,11 +1,12 @@
-"""Keep the forward MH34 candidate, and the retained EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
+"""Keep the forward LC36 candidate, the retained uncompiled MH34 and the retained EX33, SM32, SM31 and SP30 ones distinct from release artifacts."""
 import hashlib
 import json
 from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-CANDIDATE = ROOT / 'candidate-builds/setup-monitor-host-MH34'
+CANDIDATE = ROOT / 'candidate-builds/local-pairing-code-LC36'
+RETAINED_MH34 = ROOT / 'candidate-builds/setup-monitor-host-MH34'
 RETAINED_EX33 = ROOT / 'candidate-builds/ea-experience-EX33'
 RETAINED_SM32 = ROOT / 'candidate-builds/terminal-isolation-SM32'
 RETAINED_SM31 = ROOT / 'candidate-builds/ndx-symbol-map-SM31'
@@ -20,9 +21,9 @@ class StartProtocolCandidateTests(unittest.TestCase):
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', text)
         self.assertIn('#define   GOAT_BUILD_ID "' + identity['build_id'] + '"', text)
         self.assertIn('#define   GOAT_BUILD_MARKER "' + identity['build_marker'] + '"', text)
-        self.assertEqual((identity['build_id'], identity['build_marker']), ('V1.49-SETUP-MONITOR-HOST-34', 'MH34'))
-        self.assertEqual(identity['supersedes_candidate'], 'ea-experience-EX33')
-        # MH34 is EX33 plus the Studio monitor setup mailbox host: SM32's isolation stays in the source.
+        self.assertEqual((identity['build_id'], identity['build_marker']), ('V1.49-LOCAL-PAIRING-CODE-36', 'LC36'))
+        self.assertEqual(identity['supersedes_candidate'], 'setup-monitor-host-MH34')
+        # LC36 is MH34 plus the local pairing read: SM32's isolation stays in the source.
         self.assertIn('#define GOAT_TERMINAL_ISOLATION_V149 1', text)
         for relative, expected in identity['sources'].items():
             self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
@@ -31,7 +32,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
         policy = json.loads((ROOT / 'controller/contracts/v149/dependencies.json').read_text(encoding='utf-8-sig'))
         self.assertEqual(policy['main_sha256'], identity['sources']['GOAT V1.49.mq5'])
         self.assertEqual(policy['header_sha256'], identity['sources']['GOAT_Inputs_Definitions.mqh'])
-        # The pinned input header is SM32's, unchanged by EX33 and MH34, so SM32 batch packages stay valid.
+        # The pinned input header is SM32's, unchanged by EX33, MH34 and LC36, so SM32 batch packages stay valid.
         sm32 = json.loads((RETAINED_SM32 / 'identity.json').read_text(encoding='utf-8'))
         self.assertEqual(identity['sources']['GOAT_Inputs_Definitions.mqh'], sm32['sources']['GOAT_Inputs_Definitions.mqh'])
         self.assertEqual(hashlib.sha256((ROOT / 'GOAT V1.49.ex5').read_bytes()).hexdigest(), RETAINED_ROOT_BINARY)
@@ -60,6 +61,12 @@ class StartProtocolCandidateTests(unittest.TestCase):
         self.assertTrue(receipt['stage_cleaned'])
         self.assertFalse(receipt['runtime_output_overwritten'])
         self.assertNotEqual(digest, RETAINED_ROOT_BINARY)
+
+    def test_retained_mh34_stays_uncompiled_and_superseded(self):
+        mh34 = json.loads((RETAINED_MH34 / 'identity.json').read_text(encoding='utf-8'))
+        self.assertEqual((mh34['build_marker'], mh34['compile'], mh34['binary']), ('MH34', 'pending', None))
+        self.assertFalse((RETAINED_MH34 / 'GOAT V1.49.ex5').exists())
+        self.assertEqual(mh34['supersedes_candidate'], 'ea-experience-EX33')
 
     def test_retained_candidates_keep_their_own_exact_binaries(self):
         forward = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))

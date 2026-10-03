@@ -202,6 +202,35 @@ def revalidate_processes(binding,baseline,*,max_age=120):
     return current
 
 
+class RollingBaseline:
+    """Process identity continuity across a long start, with every gap bounded.
+
+    Each check must see exactly the original research/protected identities and
+    happen within ``max_age`` of the previous successful check, which then becomes
+    the new reference. A start of any size is therefore checked as strictly as a
+    small one: no gap is longer than 120 s and no identity may change.
+    """
+    def __init__(self, binding, first, *, revalidate=None):
+        self.binding = binding
+        self.revalidate = revalidate or revalidate_processes
+        self.original = {role: first[role] for role in ('research', 'protected')}
+        self.current = first
+
+    def take_over(self, precheck):
+        """A fresh baseline after controller-only work must equal the earlier precheck."""
+        for role in ('research', 'protected'):
+            if self.current[role] != precheck[role]:
+                raise ValueError(role + ' terminal process changed; inspect before launch')
+        return self
+
+    def check(self, binding=None):
+        current = self.revalidate(binding or self.binding, self.current)
+        if any(current[role] != self.original[role] for role in ('research', 'protected')):
+            raise ValueError('Terminal process changed during start; inspect before launch')
+        self.current = current
+        return current
+
+
 def verify_research_exited(binding, baseline, *, max_age=120):
     """Read-only restart boundary; never stops or starts a process."""
     if not 0<=time.time()-baseline['observed_unix']<=max_age:

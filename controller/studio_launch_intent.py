@@ -48,7 +48,8 @@ def record_intent(store, terminal_id, run_id, job_id, package, *, actor, revisio
             raise ValueError('Reserved package/configuration mismatch')
         members=configuration_members(job['configuration'])
         if len(members)!=len(manifest['jobs']):raise ValueError('Frozen package member count mismatch')
-        for member,item in zip(members,manifest['jobs']):
+        from studio_batch_seal import sealed
+        for member,item in ([] if sealed(package,job,store.input_schema) else zip(members,manifest['jobs'])):
             alias=item['run_alias']
             if read_values((package/(alias+'.set')).read_bytes())!=(member['strategy']['values']|{'EA_Desc':alias}):
                 raise ValueError('Staged member differs from frozen strategy')

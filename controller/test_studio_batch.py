@@ -214,6 +214,13 @@ class NativeBatchTests(unittest.TestCase):
         self.assertEqual([m['tester']['Symbol'] for m in self.controller.job('remaining-only')['configuration']['batch_members']], ['PAIR1'])
         self.assertEqual([m['tester']['Symbol'] for m in self.controller.job('remaining-and-errors')['configuration']['batch_members']], ['PAIR1', 'PAIR2'])
 
+    def test_remaining_work_runs_never_run_members_before_failure_retries(self):
+        original, _ = self.started_fixture(['Error', 'Completed', 'Cancelled', 'Pending'])
+        with patch.object(self.controller, 'job', return_value=original):
+            resume_batch(self.controller, 'customer-batch', 'ordered', include_failed=True)
+        self.assertEqual([m['tester']['Symbol'] for m in self.controller.job('ordered')['configuration']['batch_members']],
+                         ['PAIR2', 'PAIR3', 'PAIR0'])
+
     def test_started_remaining_requires_stopped_complete_member_evidence(self):
         original, run = self.started_fixture(['Completed', 'OnGoing'])
         with patch.object(self.controller, 'job', return_value=original):

@@ -265,9 +265,12 @@ class DemoAgent:
         return [job['job_id'] for job in jobs if job['status'] in
                 ('reserved', 'starting', 'running', 'reconcile_required', 'verifying')]
 
-    def stop(self, monitor_config=None):
+    def stop(self, monitor_config=None, batch_id=None):
         # This intentionally does not need the terminal lock: owner STOP wins
         # even while a driver holds it. A dead driver is reattached below.
+        if batch_id is not None and batch_id not in self._native_active_batches():
+            # A batch that never left the queue is cancelled alone; owner STOP is not set.
+            return self._stop_unstarted(batch_id)
         self.state_root.mkdir(parents=True, exist_ok=True)
         marker = self.state_root / 'STOP'
         if not marker.exists():
@@ -419,6 +422,80 @@ class DemoAgent:
         from studio_research_status import queue_jobs
         job = next((item for item in queue_jobs(self.root, self.session) if item['job_id'] == batch_id), None)
         return job is not None and unactivated_hint(self.root, job)
+
+    def _stop_unstarted(self, batch_id):
+        from studio_fast_lane import stop as fast_stop
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid prepared batch ID')
+        with self._exclusive(wait_seconds=5), self._studio('run-batch', idle=False, owner_required=False,
+                                                           job_id=batch_id) as (controller, broker):
+            result = fast_stop(controller, batch_id)
+            self._append('stop_batch', 'settled', batch_id=batch_id, result=result, broker=broker)
+            return result
+
+    def start(self, batch_id, max_seconds=None):
+        """One start for any prepared batch: the bounded driver, default 48 h budget."""
+        if (self.state_root / 'STOP').exists():
+            raise ValueError('Owner STOP is on; run clear-stop, then start again.')
+        return self.run_batch(batch_id, max_seconds or 172800)
+
+    def continue_batch(self, batch_id, *, new_batch_id=None, max_seconds=None, clear_stop=False,
+                       include_failed=False, include_no_edge=False):
+        """Continue a stopped, paused or finished batch: prepare the remaining work, then start it.
+
+        A start refused before activation is retired first. Across an EA build change
+        the members are re-prepared under the current installation (never by relaxing
+        a check on the old package: it is only read, never launched).
+        """
+        from studio_fast_lane import continue_batch
+        from studio_protected_peer import refresh_process
+        from studio_research_status import lineage, monitor_state
+        from studio_retire_unactivated import unactivated_hint
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid batch ID')
+        if max_seconds is not None and (type(max_seconds) is not int or not 1 <= max_seconds <= 172800):
+            raise ValueError('max_seconds must be 1..172800')
+        kind = self._lane_kind(batch_id)
+        if kind:
+            return self._seed_unpause(batch_id, kind)
+        job = next((item for item in self._jobs_readonly() if item['job_id'] == batch_id), None)
+        if job is None:
+            raise ValueError('Unknown batch ' + batch_id + '; research-status lists the batches of this terminal.')
+        if unactivated_hint(self.root, job):
+            self.retire_unactivated(batch_id)
+        monitor = monitor_state(self.install, self.session, self.local, now=self.clock(), process=self._process_or_unknown())
+        if monitor.get('blocker'):
+            raise ValueError(monitor['blocker']['message'] + ' ' + monitor['blocker']['fix'])
+        if (self.state_root / 'STOP').exists():
+            if clear_stop is not True:
+                raise ValueError('Owner STOP is on; continue with --clear-stop to lift it.')
+            self.clear_stop()
+        readback = self._refresh_readback()
+        # The core's resolver: a retained, never-started successor of this batch (for
+        # example after the driver failed to spawn) is reused instead of a new -rN, and
+        # an explicit ID that collides with an unrelated batch refuses.
+        from studio_fast_lane import resolve_successor
+        queue = {item['job_id']: item for item in self._jobs_readonly()}
+        new_id = resolve_successor(self.root, queue, batch_id, new_batch_id)
+        with self._exclusive(), self._studio('prepare-batch', idle=True, job_id=new_id) as (controller, broker):
+            peer = refresh_process(controller)
+            prepared = continue_batch(controller, batch_id, new_batch_id=new_id, include_failed=include_failed,
+                                      include_no_edge=include_no_edge)
+            self._append('continue_batch', 'prepared', batch_id=batch_id, successor_batch_id=new_id,
+                         members=prepared.get('members'), binding_changed_keys=prepared.get('binding_changed_keys'),
+                         broker=broker)
+        driver = self._spawn_driver(new_id, max_seconds=max_seconds or self._resume_budget(batch_id))
+        return dict(prepared, peer=peer, readback=readback, driver=driver, lineage=lineage(self.root, new_id))
+
+    def compact_evidence(self, apply=False):
+        """Move finished jobs' in-row evidence history to verified logs (studio_evidence_log)."""
+        from studio_evidence_log import compact
+        with self._exclusive(wait_seconds=5), self._studio('compact-evidence', idle=False, owner_required=False) as (controller, broker):
+            result = compact(controller, apply=apply)
+            if result.get('applied'):
+                self._append('compact_evidence', 'applied', jobs=[job['job_id'] for job in result['jobs']],
+                             queue_bytes_before=result['queue_bytes_before'], queue_bytes_after=result['queue_bytes_after'])
+            return result
 
     def cancel_pending(self, batch_id):
         """Cancel one batch that never started (pending, no launch intent).
@@ -1143,8 +1220,10 @@ class DemoAgent:
             peer = refresh_process(controller)
             self._append('batch_resume', 'intent', batch_id=batch_id, successor_batch_id=new_id,
                          peer=peer.get('status'), broker=broker)
+            from studio_fast_lane import binding_changed
             prepared = resume_batch(controller, batch_id, new_id, include_failed=include_failed,
-                                    include_no_edge=include_no_edge, allow_peer_refresh=True)
+                                    include_no_edge=include_no_edge, allow_peer_refresh=True,
+                                    allow_binding_change=bool(binding_changed(controller, batch_id)))
             job = controller.job(new_id)
             if job['status'] != 'pending' or 'launch_intent' in job:
                 raise ValueError('Successor batch is not an unstarted prepared batch')
@@ -1587,8 +1666,21 @@ def main(argv=None):
     retire = commands.add_parser('retire-unactivated',
                                  help='Settle a start refused before MT5 was touched to cancelled; allowed under owner STOP')
     retire.add_argument('--batch-id', required=True)
-    stop = commands.add_parser('stop')
+    stop = commands.add_parser('stop', help='Stop: settle the active batch (or --batch-id for one unstarted batch) to a verified terminal state')
     stop.add_argument('--monitor-config', type=Path, help='Exact monitor-only INI for cancellation recovery after MT5 exits; STOP remains set')
+    stop.add_argument('--batch-id', help='Cancel this pending or reserved-not-started batch without setting owner STOP')
+    compact = commands.add_parser('compact-evidence', help='Preview, then --apply: move finished in-row evidence history to verified logs')
+    compact.add_argument('--apply', action='store_true')
+    begin = commands.add_parser('start', help='Start any prepared batch under the bounded driver')
+    begin.add_argument('--batch-id', required=True)
+    begin.add_argument('--max-seconds', type=int)
+    onward = commands.add_parser('continue', help='Continue a stopped, paused or finished batch as a successor and start it')
+    onward.add_argument('--batch-id', required=True)
+    onward.add_argument('--new-batch-id')
+    onward.add_argument('--max-seconds', type=int)
+    onward.add_argument('--clear-stop', action='store_true')
+    onward.add_argument('--include-failed', action='store_true')
+    onward.add_argument('--include-no-edge', action='store_true')
     commands.add_parser('clear-stop')
     orphan = commands.add_parser('recover-orphan')
     orphan.add_argument('--review-id', help='Observe this retained recovery only; never resend')
@@ -1703,7 +1795,12 @@ def main(argv=None):
         elif args.command == 'preflight': result = agent.preflight()
         elif args.command == 'disk-status': result = agent.disk_status()
         elif args.command == 'cancel-pending': result = agent.cancel_pending(args.batch_id)
-        elif args.command == 'stop': result = agent.stop(args.monitor_config)
+        elif args.command == 'stop': result = agent.stop(args.monitor_config, args.batch_id)
+        elif args.command == 'start': result = agent.start(args.batch_id, args.max_seconds)
+        elif args.command == 'compact-evidence': result = agent.compact_evidence(args.apply)
+        elif args.command == 'continue': result = agent.continue_batch(args.batch_id, new_batch_id=args.new_batch_id,
+            max_seconds=args.max_seconds, clear_stop=args.clear_stop, include_failed=args.include_failed,
+            include_no_edge=args.include_no_edge)
         elif args.command == 'retire-unactivated': result = agent.retire_unactivated(args.batch_id)
         elif args.command == 'clear-stop': result = agent.clear_stop()
         elif args.command == 'recover-orphan': result = agent.recover_orphan(args.review_id)

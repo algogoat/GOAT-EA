@@ -24,7 +24,12 @@ OPERATIONS = READ_OPERATIONS | frozenset(('owner-maintenance-bootstrap','monitor
     'serve','orphan-recovery-prepare','orphan-recovery-apply','orphan-recovery-status',
     'orphan-recovery-reconcile-rejection','prepare-batch','run-batch','start','status','reconcile',
     'batch-status','cancel','finish','benchmark-report','save-batch','research-monitor-restart','research-monitor-restart-resume','research-monitor-restart-status','research-monitor-reopen-prepare','research-monitor-adopt-reopen','research-monitor-repair-derived-report','research-retire-never-started','cancel-rejected-successor',
-    'batch-pause','retire-unactivated'))
+    'batch-pause','retire-unactivated','batch-stop','compact-evidence'))
+
+
+CONTINUE_REFUSAL = ('Continue is not available in a typed research continuation session, because it authorizes '
+                    'only its exact frozen plan; run batch-status for the batch, then ask the owner for a new '
+                    'research grant that covers the remaining members.')
 
 
 @contextmanager
@@ -164,7 +169,7 @@ def authority(db, binding, state):
     if state['owner']=='agent' and state['generation']!=value['generation']:
         from studio_research_regrant import active
         value=active(db,binding,state,value)
-    if (root/'continuation-revocation/revoked.json').exists() and CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve','cancel','status','reconcile','finish','batch-status','batch-pause','retire-unactivated'}:
+    if (root/'continuation-revocation/revoked.json').exists() and CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve','cancel','status','reconcile','finish','batch-status','batch-pause','retire-unactivated','batch-stop'}:
         raise ValueError('Research continuation permanently revoked by pending human control')
     if state['generation']!=value['generation'] or state['owner']!='agent':
         # Readback and human takeover remain possible after permanent revocation.
@@ -173,8 +178,12 @@ def authority(db, binding, state):
     elif not value['created_utc'] <= time.time() < value['expires_utc']:
         # The retained driver must still observe/cancel/finish its existing attempt.
         # New reservations and native dispatch separately require live authority.
-        if CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve','cancel','status','reconcile','finish','batch-status','run-batch','batch-pause','retire-unactivated'}:
+        if CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve','cancel','status','reconcile','finish','batch-status','run-batch','batch-pause','retire-unactivated','batch-stop'}:
             raise ValueError('Research continuation expired; no new work')
+    if CURRENT_OPERATION.get() == 'batch-continue':
+        # A typed continuation authorizes only its exact frozen plan (members_sha256);
+        # a generated remaining-members plan needs its own reviewed authority (follow-up).
+        raise ValueError(CONTINUE_REFUSAL)
     if CURRENT_OPERATION.get() not in OPERATIONS:
         raise ValueError('Operation is not allowlisted for research continuation')
     session = read_json(root/'session.json')
@@ -251,7 +260,7 @@ def command(db, binding, state, request, actor):
             from studio_research_retry import predecessor
             predecessor(db,state,value,successor_id=job['job_id'])
         return
-    if command_name=='queue.cancel' and op in ('cancel','run-batch'):
+    if command_name=='queue.cancel' and op in ('cancel','run-batch','batch-stop'):
         return
     raise ValueError('Command is not allowlisted for research continuation')
 

@@ -203,7 +203,7 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     # A restarted reviewed peer is accepted here and recorded append-only; an
     # unknown terminal or a changed peer executable/data root refused above.
     from studio_protected_peer import record_observed
-    record_observed(c,binding,precheck['protected'],source='config_start:'+job_id)
+    record_observed(c,binding,precheck.get('protected'),source='config_start:'+job_id)
     if customer:
         # The yes was for this exact MT5 process; then fresh broker proof before
         # anything is reserved, armed or closed.

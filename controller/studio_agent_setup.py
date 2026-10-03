@@ -1,9 +1,11 @@
 """Agent-safe setup helpers: read the pending pairing code, close an inert terminal.
 
-pairing-code  Registers the EA's 15-minute (here 5-minute) pairing-read capability and
-              returns the short-lived public challenge the activation dialog shows, so
-              the user no longer reads it out. The EA answers only on a connected demo
-              with Algo Trading off and no positions or orders.
+pairing-code  Returns the short-lived public challenge the activation dialog shows, so
+              the user no longer reads it out. It first reads the code the EA shares in
+              GOAT/activation-code-<data folder>.json (LC36 and later, any chart); then it
+              registers the EA's 15-minute (here 5-minute) pairing-read capability on the
+              setup mailbox (Portfolio Dashboard, MH34 Studio monitor). Either way only on a
+              connected demo with Algo Trading off and no positions or orders.
 close-terminal Normal close of the selected MT5, never a kill, and only when inert:
               broker-reported demo, connected, Algo Trading off, no positions or orders,
               idle Strategy Tester, no batch, seed or unresolved native job. The EA's
@@ -92,7 +94,8 @@ def broker_proof(controller, session, *, mt5=None, require_flat=True):
 def activation_reason(controller, login):
     """This terminal's EA sign-in reason from ``GOAT/activation-status-<data folder>.json``.
 
-    Operational metadata only (the EA never writes the code there). With per-login
+    Operational metadata only (the EA never writes the code there; LC36 shares it in the
+    sibling ``activation-code-<data folder>.json``, see ``shared_code``). With per-login
     activation (SM32/EX33) the file is still keyed by the data folder token, and a
     status written for another login is ignored.
     """
@@ -125,6 +128,49 @@ def account_facts(controller, proof):
                 demo=proof['demo'] is True, savedLoginMatches=matches)
 
 
+SHARED_CODE = re.compile(r'[A-Z2-9]{4}-[A-Z2-9]{4}')
+SHARED_ACTIVATION = re.compile(r'[A-Za-z0-9_-]{32}')
+SHARED_CODE_MAX_BYTES = 4096
+
+
+def shared_code(controller, login, server, build_id, *, now=None):
+    """The connection code the EA shares locally (LC36): ``GOAT/activation-code-<data folder>.json``.
+
+    The file lives in this Windows user's Common Files and holds only the short-lived public
+    challenge MT5 is showing (never a credential). It counts only when it names exactly this
+    login, server and build, is well formed and has 15 s to 15 min left; anything else is
+    ignored, never repaired. The code is returned to the caller only, never logged.
+    """
+    from studio_research_status import terminal_token
+    path = Path(controller.install['common_files_root']) / 'GOAT' / ('activation-code-' + terminal_token(controller.install) + '.json')
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        with path.open('rb') as handle:
+            raw = handle.read(SHARED_CODE_MAX_BYTES + 1)
+        if len(raw) > SHARED_CODE_MAX_BYTES:
+            return None
+        value = json.loads(raw.decode('utf-8-sig'))
+    except (OSError, ValueError, UnicodeError):
+        return None
+    now_ms = int((time.time() if now is None else now) * 1000)
+    if not isinstance(value, dict) or value.get('schema') != 1:
+        return None
+    code, activation, expires, observed = (value.get('userCode'), value.get('activationId'),
+                                           value.get('expiresAtMs'), value.get('observedAtUtc'))
+    if (value.get('accountId') != str(login) or value.get('server') != server or value.get('buildId') != build_id
+            or not isinstance(code, str) or not SHARED_CODE.fullmatch(code)
+            or not isinstance(activation, str) or not SHARED_ACTIVATION.fullmatch(activation)
+            or type(expires) is not int or not now_ms + 15000 < expires <= now_ms + 900000
+            or type(observed) is not int or observed * 1000 > now_ms + 5000 or observed * 1000 > expires):
+        return None
+    return dict(userCode=code, activationId=activation, pairingExpiresAtMs=expires, observedAtUtc=observed)
+
+
+ENTER_CODE = 'Enter the 8-character code MT5 shows in its GOAT window under Connect the EA.'
+NO_SHARED_CODE = 'This EA build does not share its connection code with GOAT (SM31 and earlier). ' + ENTER_CODE
+
+
 def _no_code_action(reason):
     if reason == 'approved':
         return 'This terminal is already connected to GOAT; there is nothing to approve.'
@@ -148,11 +194,23 @@ def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
     # itself also answers only on ACCOUNT_TRADE_MODE_DEMO.
     proof = broker_proof(controller, session, mt5=mt5, require_flat=False)
     reason = activation_reason(controller, login)
+    # Screenshot-free path first: the code the EA shares locally (LC36 and later, any chart).
+    shared = shared_code(controller, login, proof['server'], ident['buildId'])
+    if shared is not None:
+        # The same inert rule the EA applies to a mailbox read, from the fresh broker readback.
+        if proof['algo_trading'] or proof['positions'] or proof['orders']:
+            raise ValueError('MT5 is not inert: turn Algo Trading off and close demo positions before pairing')
+        return dict(status='pairing_available', source='activation_code_file', userCode=shared['userCode'],
+                    activationId=shared['activationId'], pairingExpiresAtMs=shared['pairingExpiresAtMs'],
+                    responseExpiresAtUtc=min(int(time.time()) + 60, shared['pairingExpiresAtMs'] // 1000),
+                    observedAtUtc=shared['observedAtUtc'], accountLogin=login, accountLast4=login[-4:],
+                    server=proof['server'], buildId=ident['buildId'], demo=proof['demo'] is True, tradingAllowed=False,
+                    activationReason=reason, accountFacts=account_facts(controller, proof), receiptId=None)
     setup_register(controller, ident, allow_pairing=True)
     result = (request or setup_request)(controller, ident, 'pairing', timeout=timeout)
     outcome = result['result']
     if outcome == 'pairing_available':
-        return dict(status='pairing_available', userCode=result['userCode'], activationId=result['activationId'],
+        return dict(status='pairing_available', source='setup_mailbox', userCode=result['userCode'], activationId=result['activationId'],
                     pairingExpiresAtMs=result['pairingExpiresAtMs'], responseExpiresAtUtc=result['responseExpiresAtUtc'],
                     observedAtUtc=result['observedAtUtc'], accountLogin=login, accountLast4=login[-4:],
                     server=proof['server'], buildId=ident['buildId'], demo=proof['demo'] is True, tradingAllowed=False,
@@ -165,9 +223,8 @@ def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
     if outcome == 'receipt_timeout':
         waiting = reason == 'awaiting_approval'
         return dict(status='no_native_answer', userCodeReturned=False, requestId=result['id'], activationReason=reason,
-                    next_action=('The EA is waiting for approval and shows a connection code, but no GOAT chart on this build answers the local read. '
-                                 'Read the code shown in MT5 instead.' if waiting else
-                                 'No GOAT chart answered the local request. This build answers from the Portfolio Dashboard; read the code shown in MT5 instead.'))
+                    next_action=('The EA is waiting for approval and shows a connection code, but this build does not share it with GOAT. '
+                                 + ENTER_CODE if waiting else NO_SHARED_CODE))
     raise ValueError('The EA refused the pairing request (' + outcome + ')')
 
 

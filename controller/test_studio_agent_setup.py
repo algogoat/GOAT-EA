@@ -286,6 +286,61 @@ class AgentSetupTests(unittest.TestCase):
         self.assertIsNone(agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))['activationReason'],
                           'a status written for another login on this data folder is ignored')
 
+    def shared_code_file(self, token=None, raw=None, **changes):
+        """The LC36 EA's GOAT/activation-code-<data folder>.json, as GOATDeviceActivationShareCode writes it."""
+        folder = Path(self.c.install['common_files_root']) / 'GOAT'; folder.mkdir(parents=True, exist_ok=True)
+        path = folder / ('activation-code-' + (token or Path(self.c.install['terminal_data_root']).name) + '.json')
+        now = int(time.time())
+        record = dict(schema=1, accountId='123456', server='Customer-Demo', buildId=BUILD, activationId='s' * 32, userCode='WXYZ-2345',
+                      expiresAtMs=(now + 600) * 1000, observedAtUtc=now, chart=133464893834552370) | changes
+        path.write_bytes(raw if raw is not None else json.dumps(record).encode('ascii'))
+        return path
+
+    def test_pairing_reads_the_code_the_ea_shares_locally_without_a_mailbox_host(self):
+        # LC36: no Portfolio Dashboard or Studio monitor answers the mailbox, and no screenshot is needed.
+        self.shared_code_file()
+        with patch.object(agent_setup, 'setup_request', side_effect=AssertionError('the mailbox is not used')):
+            result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+        self.assertEqual((result['status'], result['source'], result['userCode'], result['activationId']),
+                         ('pairing_available', 'activation_code_file', 'WXYZ-2345', 's' * 32))
+        self.assertEqual((result['accountLogin'], result['accountLast4'], result['server'], result['buildId'], result['demo']),
+                         ('123456', '3456', 'Customer-Demo', BUILD, True))
+        self.assertEqual(result['accountFacts']['source'], 'mt5_broker_readback')
+        self.assertLessEqual(result['responseExpiresAtUtc'], int(time.time()) + 60)
+        self.assertFalse((mailbox.setup_root(self.c) / 'registration.json').exists(), 'no mailbox capability was registered')
+
+    def test_shared_code_keeps_the_inert_demo_rules(self):
+        self.shared_code_file()
+        for mt5, message in ((FakeMT5(self.c, algo=True), 'Algo Trading off'), (FakeMT5(self.c, positions=1), 'Algo Trading off'),
+                             (FakeMT5(self.c, orders=1), 'Algo Trading off'), (FakeMT5(self.c, trade_mode=2), 'real-money'),
+                             (FakeMT5(self.c, login='654321'), 'different account'), (FakeMT5(self.c, connected=False), 'not connected')):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                agent_setup.pairing_code(self.c, BUILD, mt5=mt5)
+
+    def test_a_foreign_stale_or_malformed_shared_code_is_ignored_and_the_mailbox_answers(self):
+        self.start_ea()
+        now = int(time.time())
+        cases = [dict(accountId='999999'), dict(accountId=123456), dict(server='Other-Demo'), dict(buildId='V1.48-OTHER-BUILD-02'),
+                 dict(schema=2), dict(userCode='wxyz-2345'), dict(userCode='WXYZ-2341'), dict(userCode='WXYZ2345'),
+                 dict(activationId='s' * 31), dict(activationId='s' * 31 + '"'), dict(expiresAtMs=(now + 10) * 1000),
+                 dict(expiresAtMs=(now + 1200) * 1000), dict(expiresAtMs=str((now + 600) * 1000)), dict(observedAtUtc=now + 60),
+                 dict(raw=b'{not json'), dict(raw=b' ' * 5000), dict(token='Terminal 1 - Banker')]
+        for change in cases:
+            with self.subTest(change=change):
+                path = self.shared_code_file(**change)
+                result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+                self.assertEqual((result['status'], result['source'], result['userCode']), ('pairing_available', 'setup_mailbox', 'ABCD-EF23'))
+                path.unlink()
+
+    def test_an_ea_that_shares_nothing_gets_one_plain_fallback(self):
+        # SM31 and earlier on a strategy chart: no shared file and no mailbox host.
+        with patch.object(agent_setup, 'setup_request', return_value=dict(id='b' * 32, result='receipt_timeout')):
+            result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+        self.assertEqual((result['status'], result['next_action']), ('no_native_answer', agent_setup.NO_SHARED_CODE))
+        self.assertNotIn('userCode', result)
+        self.assertEqual(agent_setup.NO_SHARED_CODE, 'This EA build does not share its connection code with GOAT (SM31 and earlier). '
+                         'Enter the 8-character code MT5 shows in its GOAT window under Connect the EA.')
+
     def test_setup_receipt_rejects_foreign_or_stale_payloads(self):
         good = dict(schema=1, id='c' * 32, result='pairing_available', account=123456, server='Customer-Demo', directory=self.ident['directory'],
                     buildId=BUILD, observedAtUtc=int(time.time()), connected=True, tradingAllowed=False, activationOnly=True, positions=0, orders=0,

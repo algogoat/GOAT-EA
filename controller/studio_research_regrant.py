@@ -10,6 +10,7 @@ from campaign_ledger import packed,sha
 from studio_installation import read_json,load_installation
 from studio_handover import safe_path
 from studio_monitor_probe import inspect_idle_demo
+from studio_receipt_digest import receipt_views
 from studio_rejected_monitor import require_demo
 
 OWNER_ACCOUNT={'login':'3000082754','server':'Darwinex-Demo'}
@@ -42,8 +43,10 @@ def takeover(db,binding,state):
     if state['owner']!='human' or state['generation']!=base['generation']+1:
         raise ValueError('Exactly one genuine takeover of the original epoch required')
     found=[]
-    for row in db.execute('SELECT request_id,payload_hash,receipt FROM studio_receipts WHERE binding=?',(binding,)):
-        receipt=json.loads(row[2]);s=receipt.get('state',{})
+    # Runs on every renewed-epoch authority check: SQLite drops state.queue
+    # first, so legacy multi-hundred-MB receipts are never parsed in Python.
+    for row in receipt_views(db,binding):
+        receipt=row[2];s=receipt.get('state',{})
         if (receipt.get('command')!='control.takeover' or receipt.get('status')!='applied'
                 or receipt.get('execution_effect') is not False or s.get('owner')!='human'
                 or s.get('generation')!=state['generation'] or s.get('revision')!=state['revision']):continue
@@ -119,10 +122,10 @@ def active(db,binding,state,base):
     c,checked=original(db,binding)
     if value['expires_utc']!=value['created_utc']+172800 or link['max_seconds']!=172800 or link['min_free_bytes']!=5368709120:
         raise ValueError('New native research window changed')
-    receipt=db.execute('SELECT payload_hash,receipt FROM studio_receipts WHERE binding=? AND request_id=?',(binding,request['request_id'])).fetchone()
-    if receipt is None or receipt[0]!=link['grant_payload_hash'] or receipt[0]!=sha(dict(request=request,actor='human')):
+    rows=receipt_views(db,binding,request['request_id'])
+    if not rows or rows[0][1]!=link['grant_payload_hash'] or rows[0][1]!=sha(dict(request=request,actor='human')):
         raise ValueError('New native grant receipt is missing or changed')
-    result=json.loads(receipt[1]);granted=result['state']
+    result=rows[0][2];granted=result['state']
     if (result.get('command')!='control.grant_agent' or result.get('status')!='applied' or result.get('execution_effect') is not False
             or granted['owner']!='agent' or granted['generation']!=value['generation']
             or request['generation']!=base['generation']+1 or granted['revision']!=request['expected_revision']+1):

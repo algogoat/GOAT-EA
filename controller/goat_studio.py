@@ -94,6 +94,7 @@ OPERATION_CONTRACTS = {
     'batch-stop':dict(required=['job-id'],demo_lane='goat.exe demo stop --batch-id <id>',effect='one stop for any state: pending -> cancelled; reserved-not-started -> released and cancelled; start refused before MT5 was touched -> retire-unactivated; dispatched -> the EA native cancel (same queue/flag effect as the Studio STOP button), then run-batch --resume observes and finishes it; finished -> no-op. Refusals are one sentence with the next action'),
     'batch-continue':dict(required=['job-id'],optional=['new-batch-id','include-failed','include-no-edge'],demo_lane='goat.exe demo continue --batch-id <id> (also starts the bounded driver)',effect='prepare the remaining work of a finished, stopped or paused batch as a successor (default <id>-rN): never-run members first, then failures with include-failed; across an EA build change the members are re-prepared and fully verified under the current installation, with lineage and binding_changed_keys recorded; a retained never-started successor is reused, and an existing --new-batch-id is reused only when its lineage names this batch; a start refused before activation is retired first; refuses in a typed research continuation session (it authorizes only its exact frozen plan). No launch'),
     'compact-evidence':dict(required=[],optional=['apply'],effect='preview, then with --apply move the in-row native evidence history of finished jobs into verified append-only logs (native-evidence/*.history.jsonl) so every state read stays fast; refuses while a batch is active (rechecked inside the queue transaction); skips a job whose never-started retirement proof compares the whole row; archives are temp-written, fsynced, sha256-verified and atomically renamed; no native effect'),
+    'compact-receipts':dict(required=[],optional=['apply'],effect='preview, then with --apply rewrite each legacy receipt that still embeds the whole queue (state.queue) to the digest form new receipts use (state.queue_digest = {sha256, job_count}); the exact original receipt bytes are first archived one file per receipt (native-evidence/receipt-archive/<request_id>.<binding12>.receipt.json: temp-written, fsynced, sha256-verified, atomically renamed, never deleted); each row is rewritten in its own transaction under the mutation gate after re-checking that no batch is active, the session authority, and that the row still equals its archive by sha256; streams one receipt at a time; journal native-evidence/receipt-compactions.jsonl; no VACUUM (the file keeps its size until a separate reviewed VACUUM); no native effect'),
     'batch-driver-status':dict(required=['job-id'],effect='read retained driver journal and current binding match; never starts, resumes or cancels work'),
     'research-monitor-restart':dict(required=['job-id'],effect='owner-only typed continuation: gracefully suspend exact old publisher and reload one idle monitor after verified pre-consumption rejection; preserves evidence and budget; no batch start'),
     'research-monitor-restart-status':dict(required=['job-id'],effect='reverify an already launched recovery monitor; never close or launch again'),
@@ -402,6 +403,7 @@ def main(argv=None):
     p=sub.add_parser('batch-stop');p.add_argument('--job-id',required=True)
     p=sub.add_parser('batch-continue');p.add_argument('--job-id',required=True);p.add_argument('--new-batch-id');p.add_argument('--include-failed',action='store_true');p.add_argument('--include-no-edge',action='store_true')
     p=sub.add_parser('compact-evidence');p.add_argument('--apply',action='store_true')
+    p=sub.add_parser('compact-receipts');p.add_argument('--apply',action='store_true')
     p=sub.add_parser('batch-pause');p.add_argument('--job-id',required=True);p.add_argument('--immediate',action='store_true');p.add_argument('--supervise-seconds',type=int)
     p=sub.add_parser('batch-resume');p.add_argument('--job-id',required=True);p.add_argument('--new-batch-id');p.add_argument('--resume-token');p.add_argument('--include-failed',action='store_true');p.add_argument('--include-no-edge',action='store_true',help='Also re-run members tested with no profitable settings')
     sub.add_parser('research-status')
@@ -545,6 +547,9 @@ def main(argv=None):
             elif args.operation=='compact-evidence':
                 from studio_evidence_log import compact
                 result=compact(controller,apply=args.apply)
+            elif args.operation=='compact-receipts':
+                from studio_receipt_digest import compact as compact_receipts
+                result=compact_receipts(controller,apply=args.apply)
             elif args.operation=='retire-unactivated':
                 from studio_retire_unactivated import retire
                 result=retire(controller,args.job_id)

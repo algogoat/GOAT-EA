@@ -24,7 +24,7 @@ OPERATIONS = READ_OPERATIONS | frozenset(('owner-maintenance-bootstrap','monitor
     'serve','orphan-recovery-prepare','orphan-recovery-apply','orphan-recovery-status',
     'orphan-recovery-reconcile-rejection','prepare-batch','run-batch','start','status','reconcile',
     'batch-status','cancel','finish','benchmark-report','save-batch','research-monitor-restart','research-monitor-restart-resume','research-monitor-restart-status','research-monitor-reopen-prepare','research-monitor-adopt-reopen','research-monitor-repair-derived-report','research-retire-never-started','cancel-rejected-successor',
-    'batch-pause','retire-unactivated','batch-stop','compact-evidence'))
+    'batch-pause','retire-unactivated','batch-stop','compact-evidence','compact-receipts'))
 
 
 CONTINUE_REFUSAL = ('Continue is not available in a typed research continuation session, because it authorizes '
@@ -85,8 +85,10 @@ def _legacy_human_grant(db, binding, state):
     if {k:session.get(k) for k in ('terminal_id','run_id')}!=json.loads(binding):return False
     install=read_json(root/'installation.json')
     human=safe_path(Path(install['terminal_data_root'])/'MQL5/Files/GOATStudio'/session['directory_id']/'human/archive')
-    for row in db.execute('SELECT request_id,payload_hash,receipt FROM studio_receipts WHERE binding=?',(binding,)):
-        receipt=json.loads(row[2]); granted=receipt.get('state',{})
+    from studio_receipt_digest import receipt_views
+    # SQLite drops state.queue first: a legacy multi-hundred-MB receipt is not parsed in Python.
+    for row in receipt_views(db,binding):
+        receipt=row[2]; granted=receipt.get('state',{})
         if (receipt.get('command')!='control.grant_agent' or receipt.get('status')!='applied'
                 or receipt.get('execution_effect') is not False or receipt.get('request_id')!=row[0]
                 or granted.get('owner')!='agent' or {k:granted.get(k) for k in ('terminal_id','run_id')}!=json.loads(binding)

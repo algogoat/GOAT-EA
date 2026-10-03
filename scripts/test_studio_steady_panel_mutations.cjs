@@ -21,6 +21,7 @@ const mutations=[
   ['agent chip loses its lime border','GOATStudioUI.mqh',R`stop_text_color=C'190,242,100'; stop_border=C'190,242,100';`,R`stop_text_color=C'190,242,100';`],
   ['handoff loses its lime fill','GOATStudioUI.mqh',R`{stop_back=C'190,242,100'; stop_border=C'190,242,100'; stop_text_color=C'11,12,14';}`,R`{}`],
   ['status line pre-painted in ManagedRefresh','GOATStudioUI.mqh',R`   // The status line is written once, below, after the draft and receipt checks.`,R`   m_edtBatchProgress.Text(status);`],
+  ['forward date stays enabled outside Custom','GOATStudioUI.mqh',R`GoatStudioSteadyEnabled(m_dtForward,m_cmbForward.Select()=="Custom");`,R`if(m_cmbForward.Select()=="Custom") GoatStudioSteadyEnabled(m_dtForward,true);`],
   ['read-only stage pre-paints the managed buttons','Optimizer.mqh',R`      if(!GoatStudioManaged())`,R`      if(true)`],
 ];
 const scratch=fs.mkdtempSync(path.join(process.env.GOAT_MUTATION_TMP||os.tmpdir(),'goat-steady-panel-mutation-'));

@@ -393,7 +393,7 @@ void CStrategyTesterDialog::ManagedControls(void)
    if(edit)
      {
       GoatStudioSteadyEnabled(m_cmbSymbol,true); GoatStudioSteadyEnabled(m_cmbPeriod,true); GoatStudioSteadyEnabled(m_dtFrom,true); GoatStudioSteadyEnabled(m_dtTo,true);
-      GoatStudioSteadyEnabled(m_cmbForward,true); if(m_cmbForward.Select()=="Custom") GoatStudioSteadyEnabled(m_dtForward,true);
+      GoatStudioSteadyEnabled(m_cmbForward,true); GoatStudioSteadyEnabled(m_dtForward,m_cmbForward.Select()=="Custom");
       GoatStudioSteadyEnabled(m_cmbDelay,true); GoatStudioSteadyEnabled(m_cmbModel,true); GoatStudioSteadyEnabled(m_edtDeposit,true); GoatStudioSteadyEnabled(m_edtCurrency,true);
       GoatStudioSteadyEnabled(m_cmbLeverage,true); GoatStudioSteadyEnabled(m_edtSetsToExport,true); GoatStudioSteadyEnabled(m_dpBackOOS,true);
       GoatStudioSteadyEnabled(m_edtMinScore,true); GoatStudioSteadyEnabled(m_edtMinARF,true); GoatStudioSteadyEnabled(m_edtTargetDD,true); GoatStudioSteadyEnabled(m_edtMinSR,true);

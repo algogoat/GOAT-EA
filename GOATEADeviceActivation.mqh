@@ -155,10 +155,18 @@ void GOATDeviceActivationWithdrawCode(void)
    body="";
   }
 
-// Every activation tick: a shared code that is no longer the one MT5 shows is withdrawn.
+// Every activation tick: a shared code that is no longer the one MT5 shows is withdrawn,
+// and a code MT5 still shows that the file does not carry (a failed first write, or a
+// record another chart of this terminal replaced and then withdrew) is shared again.
+// A newer record another chart wrote is never overwritten.
 void GOATDeviceActivationSyncCode(void)
   {
-   if(g_GOATDeviceActivationCodeShared && !GOATDeviceActivationCodeShareable()) GOATDeviceActivationWithdrawCode();
+   if(!GOATDeviceActivationCodeShareable())
+     {
+      if(g_GOATDeviceActivationCodeShared) GOATDeviceActivationWithdrawCode();
+      return;
+     }
+   if(!g_GOATDeviceActivationCodeShared || !FileIsExist(GOATDeviceActivationCodePath(),FILE_COMMON)) GOATDeviceActivationShareCode();
   }
 
 bool GOATDeviceActivationOnly(void)

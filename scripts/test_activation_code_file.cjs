@@ -47,7 +47,7 @@ function terminal(state = {}) {
     StringGetCharacter: (s, i) => s.charCodeAt(i), ShortToString: n => String.fromCharCode(n),
     StringFormat: (_f, n) => '\\u' + n.toString(16).padStart(4, '0'), StringFind: (s, v) => s.indexOf(v),
     GOATIsSafeId: (v, min, max) => typeof v === 'string' && v.length >= min && v.length <= max && /^[A-Za-z0-9_-]+$/.test(v),
-    FolderCreate: () => true,
+    FolderCreate: () => true, FileIsExist: name => files.has(name),
     FileOpen: (name, flags) => {
       if (state.unwritable && flags & 2) return -1;
       if (flags & 1 && !files.has(name)) return -1;
@@ -105,6 +105,32 @@ check(() => {
   assert.equal(t.files.has(PATH), true); assert.deepEqual(t.deleted, []);
 });
 check(() => { const t = terminal(); t.files.set(PATH, '{"chart":7}'); t.c.GOATDeviceActivationWithdrawCode(); assert.equal(t.files.has(PATH), true, 'a chart that shared nothing deletes nothing'); });
+// 5b. B38 (Codex P2s on #125): the file is reconciled every tick, never only once.
+check(() => {
+  // The first write failed: the next tick shares the code MT5 still shows.
+  const state = { unwritable: true }; const t = terminal(state);
+  t.c.GOATDeviceActivationShareCode(); assert.equal(t.files.has(PATH), false);
+  state.unwritable = false; t.c.GOATDeviceActivationSyncCode();
+  assert.equal(JSON.parse(t.files.get(PATH)).chart, 7); assert.equal(t.c.g_GOATDeviceActivationCodeShared, true);
+});
+check(() => {
+  // Another chart replaced our record and then withdrew its own: ours comes back.
+  const t = terminal(); t.c.GOATDeviceActivationShareCode(); t.files.delete(PATH);
+  t.c.GOATDeviceActivationSyncCode();
+  assert.equal(JSON.parse(t.files.get(PATH)).userCode, 'ABCD-EF23');
+});
+check(() => {
+  // A newer record another chart shared is left alone while it is there.
+  const t = terminal(); t.c.GOATDeviceActivationShareCode();
+  const theirs = t.files.get(PATH).replace('"chart":7}', '"chart":8}'); t.files.set(PATH, theirs);
+  t.c.GOATDeviceActivationSyncCode(); t.c.GOATDeviceActivationSyncCode();
+  assert.equal(t.files.get(PATH), theirs);
+});
+check(() => {
+  // Nothing shareable and nothing shared: a tick writes nothing.
+  const t = terminal({ real: true }); t.c.GOATDeviceActivationSyncCode();
+  assert.equal(t.files.size, 0); assert.equal(t.c.g_GOATDeviceActivationCodeShared, false);
+});
 // 6. Wiring in the EA: shared right after the code is shown; withdrawn on scrub, approval/reload and monitor close; synced every tick.
 const body = name => { const at = src.indexOf(name); return src.slice(at, src.indexOf('\n  }\r\n', at)); };
 check(() => assert.match(body('bool GOATDeviceActivationRequestStart(void)'), /GOATDeviceActivationShowCode\(user_code,verification_url\);\r?\n   GOATDeviceActivationShareCode\(\);/));
@@ -117,5 +143,5 @@ check(() => assert.match(main, /if\(g_GoatStudioReadOnlyMonitor\)\r?\n   \{GOATD
 check(() => { const status = src.slice(src.indexOf('void GOATDeviceActivationStatus'), src.indexOf('int GOATDeviceActivationRetrySeconds'));
   for (const secret of ['UserCode', 'user_code', 'Candidate']) assert.equal(status.includes(secret), false, secret); });
 check(() => { for (const line of src.split('\n').filter(text => /\bPrint(Format)?\(/.test(text))) assert.equal(/UserCode|user_code/.test(line), false, line); });
-check(() => assert.match(main, /#define   GOAT_BUILD_ID "V1\.49-LOCAL-PAIRING-CODE-36"/));
+check(() => assert.match(main, /#define   GOAT_BUILD_ID "V1\.49-BETA17-38"/));
 console.log(`test_activation_code_file: ${checks}/${checks} passed`);

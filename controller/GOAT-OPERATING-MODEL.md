@@ -27,8 +27,8 @@ GOAT turns strategy templates into tested, exportable strategy files and then in
 | The agent does on its own | Needs the user's "yes" in chat first | Only the human can do it |
 |---|---|---|
 | Read-only checks: `discover`, `state`, `onboarding-status`, `batch-status`, `seed-status`, `resource-profile`, `benchmark-report`, `validate-set`, desktop status/matrix reads | Linking a demo account (`onboarding.accounts`) and installing into a terminal (`suite.install`) | Signing in to GOAT and to MT5 |
-| Writing plan files, lineage files, local template variants (`build-set`) | `monitor-launch` (opens MT5) and `seed-start` (closes and restarts MT5) | Turning Algo Trading off, closing and opening MT5 |
-| `prepare-batch`, `seed-prepare`, `save-batch` (nothing starts) | Starting each batch (`Start-Batch ... -Mt5RestartConsent`), after showing members, dates, settings and the time/disk budget and telling the user GOAT closes and reopens their MT5 to start it. The yes covers one start, on the MT5 running now, for 10 minutes | Allowing DLL imports and the WebRequest URL |
+| Writing plan files, lineage files, local template variants (`build-set`) | `monitor-launch` (opens MT5) and `seed-start` (closes and restarts MT5) | Turning Algo Trading off, opening MT5, and closing it before `bootstrap` (afterwards `suite.closeTerminal` closes an inert MT5 for them) |
+| `prepare-batch`, `seed-prepare`, `save-batch` (nothing starts) | Starting each batch (`Start-Batch ... -Mt5RestartConsent`), after showing members, dates, settings and the time/disk budget and telling the user GOAT closes and reopens their MT5 to start it. The yes covers one start, on the MT5 running now, for 10 minutes | Allowing DLL imports and the WebRequest URL (a **Connect ••1234 to my agent** click in GOAT saves everything but the URL) |
 | Running `serve`, polling, `finish` after the native queue finished | Retrying failed members (`resume-batch --include-failed`), clearing pending work (`clear-queue --apply`) | Reading the connection code and clicking **Approve this connection** |
 | `cancel` when the user asks, the agreed budget is reached, or disk falls below 5 GiB | `peer-apply` to protect another running MT5 | Clicking **GIVE TO AGENT** / **TAKE CONTROL** |
 | Recording results with `strategy.recordResult` | Sending a support report (`support.submitReport`) | Anything with real money or a live account |
@@ -57,7 +57,7 @@ Rules for honest results: a technical failure is not a bad strategy; seed result
 
 - Start with a pilot: one template on one symbol. Use its `benchmark-report` timing, not CPU specs, to estimate bigger batches.
 - Agree a time budget, disk budget and stop rule before every larger batch. The bounded driver (`Start-Batch`) cancels by itself when the budget runs out; cancel earlier when the user asks or a disk falls below 5 GiB. A cancel request is not proof of stop, so keep polling until the native queue reports finished, then `finish`.
-- Use 1-minute OHLC (`Model=1`) for optimization unless the user chooses another model. Keep the export settings the user approved.
+- Use 1-minute OHLC (`Model=1`) on timeframe M1 (`Period='M1'`, the timeframe the GOAT EA is built and traded on) unless the user chooses otherwise. Keep the export settings the user approved.
 - Bigger pools of distinct, validated strategies give Portfolio Builder more choice. More near-duplicates do not.
 
 ## Reporting to the user

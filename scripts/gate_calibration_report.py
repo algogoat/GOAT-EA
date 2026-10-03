@@ -1,4 +1,4 @@
-"""Real-data gate calibration report: recommended gates plus the evidence table.
+"""Real-data gate calibration report (goat-gate-calibration-v2): recommendations plus the evidence.
 
 Reads the export evidence once (read only), runs the calibration for several targets
 and writes report.json and report.md into a NEW output folder. Never writes anywhere
@@ -6,6 +6,11 @@ else. Usage (the embedded Python ignores cwd, so the controller path is set here
 
     python scripts/gate_calibration_report.py --out-dir G:/GOAT-Build-Artifacts/gate-calibration-YYYYMMDD
         [--common-root <GOAT Common Files>] [--runs R1,R2] [--verdicts <catch-up verdicts>]
+        [--captured-before 2026-10-02T21:00:00Z]
+
+Only the held_up target (comparable goat-catchup-verdict-v2 verdicts) can change a
+gate. Forward and post are reported as diagnostics: what would validate, never
+applied.
 """
 import argparse
 from datetime import datetime, timezone
@@ -19,7 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'controller'))
 import studio_gate_calibration as gates  # noqa: E402
 
 SCENARIOS = [('forward', 0.6), ('forward', 0.8), ('forward', 0.9), ('post', 0.6), ('post', 0.75), ('post', 0.8)]
-DETAIL = ('is_sr', 'is_pf', 'is_recovery', 'is_net', 'boos_net', 'opt_is_pf', 'opt_is_rf', 'opt_score', 'fwd_recovery')
 
 
 def pct(value):
@@ -27,141 +31,135 @@ def pct(value):
 
 
 def interval(pair):
-    return '%s-%s' % (pct(pair[0]), pct(pair[1]))
+    return '-' if not pair else '%s-%s' % (pct(pair[0]), pct(pair[1]))
 
 
-def descriptive_file_gates(records):
-    """Today's EA gate (file-name SR/ARF over the whole export window) against each window.
+def capture_mtime(common, record):
+    """Modification time of the set's capture manifest (``path`` is run/area/member/<capture folder>)."""
+    run, area, member, folder = record['path'].split('/', 3)
+    return (Path(common) / run / area / member / record['symbol'] / folder / 'manifest.json').stat().st_mtime
 
-    Descriptive only: the export window contains forward and most of post, so this is
-    never calibration input."""
+
+def labelled_split(records, target, verdicts):
+    """Passed vs filler, pooled, per target. Descriptive only: fillers come from
+    members that found nothing better, so the pooled gap is confounded by construction."""
     rows = []
-    for target in ('forward', 'post'):
-        for label, test in (('file-name SR >= 2.5 and ARF >= 0.2 (EA "passed thresholds")',
-                             lambda r: r['file_name'] and r['file_name']['sr'] >= 2.5 and r['file_name']['arf'] >= 0.2),
-                            ('below the EA thresholds (kept to fill SetsToExport)',
-                             lambda r: r['file_name'] and not (r['file_name']['sr'] >= 2.5 and r['file_name']['arf'] >= 0.2))):
-            judged = [(r, gates.outcome(r, target)) for r in records if test(r)]
-            judged = [(r, hit) for r, hit in judged if hit is not None]
-            members = len({r['member'] for r, _ in judged})
-            hits = sum(1 for _, hit in judged if hit)
-            share = hits / len(judged) if judged else None
-            low, high = gates.wilson(share * members, members) if judged else (0.0, 1.0)
-            rows.append(dict(target=target, group=label, sets=len(judged), members=members, survival=share,
-                             interval=[round(low, 4), round(high, 4)]))
+    for label, flag in (('passed the run\'s MinSR/MinARF', False), ('filler (below them, kept to fill SetsToExport)', True)):
+        subset = [r for r in records if r['filler'] is flag]
+        judged = [(r, gates.outcome(r, target, verdicts)) for r in subset]
+        judged = [(r, hit) for r, hit in judged if hit is not None]
+        if not judged:
+            rows.append(dict(target=target, group=label, sets=0, members=0, runs=0, survival=None, interval=None))
+            continue
+        clusters = sorted({r['run'] for r, _ in judged})
+        base = gates._baseline(judged, clusters, lambda r: r['run'])
+        rows.append(dict(target=target, group=label, sets=base['sets'], members=base['members'], runs=base['clusters'],
+                         survival=base['survival'], interval=base['interval']))
     return rows
 
 
 def markdown(report):
-    lines = ['# Gate calibration report (%s)' % report['generated_at'][:10], '',
-             'Generated %s by `scripts/gate_calibration_report.py` (schema `%s`), read only over %s.'
-             % (report['generated_at'], gates.SCHEMA, report['evidence']['common_root']), '']
     ev = report['evidence']
+    lines = ['# Gate calibration report v2 (%s)' % report['generated_at'][:10], '',
+             'Generated %s by `scripts/gate_calibration_report.py` (schema `%s`), read only over %s.'
+             % (report['generated_at'], gates.SCHEMA, ev['common_root']), '']
+    lines += ['## Bottom line', '', report['bottom_line'], '']
     lines += ['## Evidence', '',
-              '%d distinct exported sets with a finished sequence capture (%d identical copies removed). '
-              'Survival = the set made money (equity net > 0) in the target window. Intervals are 95%% Wilson '
-              'intervals whose sample size is the number of distinct optimization members, not sets.'
-              % (ev['sets'], ev['duplicates_removed']), '',
-              '| Run | Sets | Skipped | Export gates at the time |', '|---|---:|---:|---|']
+              '%d distinct exported sets with a finished sequence capture (%d byte-identical copies removed%s). '
+              'A member\'s sets are near copies, so outcomes are averaged per member first; runs are the independent '
+              'unit for every interval, bootstrap and hold-out.'
+              % (ev['sets'], ev['duplicates_removed'],
+                 '' if not ev.get('captured_before') else '; captures written before %s only' % ev['captured_before']), '',
+              '| Run | Sets | Fillers | Skipped | Export gates at the time |', '|---|---:|---:|---:|---|']
     for run in ev['runs']:
         s = run['export_settings']
-        lines.append('| %s | %d | %d | MinScore %s, MinSR %s, MinARF %s, SetsToExport %s, BOOS %s |'
-                     % (run['run'], run['sets'], run['skipped'], s.get('MinScore'), s.get('MinSR'), s.get('MinARF'),
-                        s.get('SetsToExport'), s.get('BackOOSDate')))
-    lines += ['', 'Windows (server time, half-open): back OOS [BackOOSDate, FromDate), in-sample [FromDate, ForwardDate), '
-              'forward [ForwardDate, ToDate), post [ToDate, end of the export run]. Two run designs are present: '
-              + ', '.join('`%s` (%d sets)' % (name, info['sets'])
-                          for name, info in report['scenarios'][0]['splits']['design'].items()) + '.', '']
-    lines += ['## Recommended gates', '',
-              '| Target | Needed (lower bound) | Status | Gate | Kept sets (members) | Survival (95% range) | Plan fields |',
-              '|---|---:|---|---|---:|---|---|']
+        lines.append('| %s | %d | %d | %d | MinScore %s, MinSR %s, MinARF %s, SetsToExport %s, BOOS %s |'
+                     % (run['run'], run['sets'], run['fillers'], run['skipped'], s.get('MinScore'), s.get('MinSR'),
+                        s.get('MinARF'), s.get('SetsToExport'), s.get('BackOOSDate')))
+    lines += ['', 'Verdicts: %s.' % ('none supplied (no comparable goat-catchup-verdict-v2 records exist yet), so the '
+                                    'held_up target, the only one that can move a gate, could not run'
+                                    if not ev['verdicts'] else '%d accepted, rejected %s' % (ev['verdicts'],
+                                                                                              ev['verdicts_rejected'])), '']
+    lines += ['## Scenarios', '',
+              'Method: a threshold is chosen only on a metric whose survivors beat failures inside the same run '
+              '(run-bootstrap AUC range above 0.5), on a simultaneous lower band over the whole threshold grid '
+              '(sup-t, run bootstrap), and then leave-one-run-out: the whole selection is repeated without each run and '
+              'judged on that run. It validates only when the pooled held-out lower bound clears the target with '
+              '>= %d runs judged and no run clearly contradicts it.' % report['scenarios'][0]['settings']['min_clusters'], '',
+              '| Target | Needed | Status | Actionable | Best full-data gate | Kept sets (members) | Held-out survival (lower) | Baseline (95% range) |',
+              '|---|---:|---|---|---|---:|---|---|']
     for item in report['scenarios']:
-        gate = item['gate']
-        lines.append('| %s | %s | %s | %s | %s | %s | %s |' % (
-            item['target'], pct(item['settings']['min_survival']), item['status'],
+        gate, validation = item['gate'], item['validation']
+        lines.append('| %s | %s | %s | %s | %s | %s | %s | %s |' % (
+            item['target'], pct(item['settings']['min_survival']), item['status'], 'yes' if item['actionable'] else 'no',
             '-' if not gate else '`%s >= %s`' % (gate['feature'], gate['threshold']),
             '-' if not gate else '%d (%d)' % (gate['point']['kept_sets'], gate['point']['kept_members']),
-            ('baseline %s (%s)' % (pct(item['baseline']['survival']), interval(item['baseline']['interval']))) if not gate
-            else '%s (%s)' % (pct(gate['point']['survival']), interval(gate['point']['interval'])),
-            ', '.join('%s %s' % (k, v) for k, v in sorted(item['values']['export'].items()))))
-    lines += ['', 'Today\'s fixed gates: MinScore 60, MinSR 2.5, MinARF 0.2, SetsToExport 2, TargetDD 100 (export plan) '
-              'plus the EA back-row filter (in-sample profit > 0.001 and >= 50 trades).', '']
+            '-' if not validation else '%s (%s), %d runs judged%s' % (
+                pct(validation['survival']), pct(validation['lower']), validation['judged_clusters'],
+                '' if not validation['contradicted'] else ', contradicted by ' + ', '.join(validation['contradicted'])),
+            '%s (%s), %d sets / %d members / %d runs' % (pct(item['baseline']['survival']), interval(item['baseline']['interval']),
+                                                         item['baseline']['sets'], item['baseline']['members'],
+                                                         item['baseline']['clusters'])))
+    lines.append('')
     for item in report['scenarios']:
         lines += ['**%s, %s:** %s' % (item['target'], pct(item['settings']['min_survival']), item['summary']), '']
-    watched = [(item['target'], item['settings']['min_survival'], w) for item in report['scenarios']
-               if item['status'] != 'calibrated' for w in item['watchlist']]
-    if watched:
-        lines += ['### Watchlist (not recommended)', '',
-                  'Tails that would meet the target but belong to a feature with no clear overall signal. With this many '
-                  'features and thresholds scanned they can be chance; recheck them on the next run before using them.', '',
-                  '| Target | Needed | Gate | Kept sets (members) | Survival (95% range) | Feature AUC |',
-                  '|---|---:|---|---:|---|---|']
-        for target, needed, w in watched:
-            lines.append('| %s | %s | `%s >= %s` | %d (%d) | %s (%s) | %s (%s) |' % (
-                target, pct(needed), w['feature'], w['threshold'], w['kept_sets'], w['kept_members'], pct(w['survival']),
-                interval(w['interval']), w['auc'], '-' if not w['auc_interval'] else '%.2f-%.2f' % tuple(w['auc_interval'])))
-        lines.append('')
-    lines += ['## Which numbers predict survival', '',
-              'AUC = chance a surviving set scores higher than a failing one (0.5 = no signal); the range is a member-level '
-              'bootstrap. Only features clean for the target are listed (leakage rule).', '']
+    lines += ['## Which numbers predict survival (inside each run)', '',
+              'AUC = chance a surviving set scores higher than a failing one of the same run (0.5 = no signal); the '
+              'range is a run bootstrap. Only features clean for the target are listed (leakage rule).', '']
     for target in ('forward', 'post'):
         item = next(s for s in report['scenarios'] if s['target'] == target)
-        lines += ['### Target: %s window (baseline %s, %s; %d sets, %d members)'
-                  % (target, pct(item['baseline']['survival']), interval(item['baseline']['interval']),
-                     item['baseline']['sets'], item['baseline']['members']), '',
-                  '| Feature | Source | Coverage | AUC | AUC range | Reading |', '|---|---|---:|---:|---|---|']
+        lines += ['### %s window' % target, '', '| Feature | Source | Coverage | AUC | AUC range | Reading |',
+                  '|---|---|---:|---:|---|---|']
         for name, info in sorted(item['features'].items(), key=lambda kv: -(kv[1]['auc'] or 0)):
             lines.append('| %s | %s %s | %d | %s | %s | %s |' % (
-                name, info['source'], info['metric'], info['coverage'], info['auc'],
+                name, info['source'], info['metric'], info['coverage'], '-' if info['auc'] is None else info['auc'],
                 '-' if not info['auc_interval'] else '%.2f-%.2f' % tuple(info['auc_interval']), info['direction']))
         lines.append('')
-    lines += ['## Threshold curves (selected features)', '',
-              'Each row: keep sets with feature >= threshold. Yield = share of judged sets kept. Monotone = the isotonic '
-              '(never-decreasing) estimate.', '']
-    for target in ('forward', 'post'):
-        item = next(s for s in report['curves'] if s['target'] == target)
-        for name in DETAIL:
-            if name not in item['features']:
-                continue
-            curve = item['features'][name]['curve']
-            picks = curve[::max(1, len(curve) // 6)] + ([curve[-1]] if curve and curve[-1] not in curve[::max(1, len(curve) // 6)] else [])
-            lines += ['**%s / %s** (AUC %s)' % (target, name, item['features'][name]['auc']), '',
-                      '| Threshold | Kept sets | Members | Yield | Survival | Monotone | 95% range |',
-                      '|---:|---:|---:|---:|---:|---:|---|']
-            for p in picks:
-                lines.append('| %s | %d | %d | %s | %s | %s | %s |' % (
-                    p['threshold'], p['kept_sets'], p['kept_members'], pct(p['yield_']), pct(p['survival']),
-                    pct(p['survival_monotone']), interval(p['interval'])))
-            lines.append('')
-    lines += ['## Splits', '']
+    lines += ['## Splits (descriptive)', '',
+              'Ranges are run-robust, so a split seen in one run only shows 0-100%: one run says nothing about the next.', '']
     for target in ('forward', 'post'):
         item = next(s for s in report['scenarios'] if s['target'] == target)
-        lines += ['### %s window' % target, '', '| Split | Sets | Members | Survival | 95% range |', '|---|---:|---:|---:|---|']
-        for key in ('symbol_class', 'design', 'timeframe', 'family', 'run'):
+        lines += ['### %s window' % target, '', '| Split | Sets | Members | Runs | Survival | 95% range |',
+                  '|---|---:|---:|---:|---:|---|']
+        for key in ('symbol_class', 'design', 'timeframe', 'family', 'run', 'filler'):
             for name, info in item['splits'][key].items():
-                lines.append('| %s=%s | %d | %d | %s | %s |' % (key, name, info['sets'], info['members'],
-                                                             pct(info['survival']), interval(info['interval'])))
+                lines.append('| %s=%s | %d | %d | %d | %s | %s |' % (key, name, info['sets'], info['members'], info['runs'],
+                                                                   pct(info['survival']), interval(info['interval'])))
         lines.append('')
-        calibrated = {k: v for k, v in item['by_split'].items() if v['status'] == 'calibrated'}
-        if calibrated:
-            lines += ['Split gates that clear the bar on their own at %s:' % pct(item['settings']['min_survival']), '']
-            for name, info in calibrated.items():
-                g = info['gate']
-                lines.append('- %s: `%s >= %s`, %d sets (%d members), %s (%s)' % (
-                    name, g['feature'], g['threshold'], g['kept_sets'], g['kept_members'], pct(g['survival']),
-                    interval(g['interval'])))
-            lines.append('')
-    lines += ['## Today\'s EA export gate, descriptively', '',
-              'The EA judges MinSR/MinARF on the whole export run (back OOS through the export date), which contains the '
-              'forward window and most of the post window, so these rows are NOT calibration evidence. They show what '
-              'the current gate let through.', '',
-              '| Window | Group | Sets | Members | Survival | 95% range |', '|---|---|---:|---:|---:|---|']
-    for row in report['descriptive_ea_gate']:
-        lines.append('| %s | %s | %d | %d | %s | %s |' % (row['target'], row['group'], row['sets'], row['members'],
-                                                       pct(row['survival']), interval(row['interval'])))
+    lines += ['## Fillers', '',
+              'Fillers are sets the EA exported below its run\'s own MinSR/MinARF to fill SetsToExport. They are labelled '
+              '(`filler`), never excluded. The pooled split below is confounded by construction (fillers come from '
+              'members that found nothing better), so the decision test is within run and symbol on held_up only: %s.'
+              % report['fillers'].get('reading', report['fillers']['status'].replace('_', ' ')), '',
+              '| Window | Group | Sets | Members | Runs | Survival | 95% range |', '|---|---|---:|---:|---:|---:|---|']
+    for row in report['filler_pooled']:
+        lines.append('| %s | %s | %d | %d | %d | %s | %s |' % (row['target'], row['group'], row['sets'], row['members'],
+                                                             row['runs'], pct(row['survival']), interval(row['interval'])))
     lines += ['', '## Caveats', '']
     lines += ['- ' + text for text in report['caveats']]
     return '\n'.join(lines) + '\n'
+
+
+def bottom_line(results, verdicts):
+    actionable = [r for r in results if r['actionable']]
+    if actionable:
+        return 'Actionable: ' + '; '.join('%s at %s: %s >= %s' % (r['target'], pct(r['settings']['min_survival']),
+                                                                   r['gate']['feature'], r['gate']['threshold'])
+                                           for r in actionable) + '. Stamp with `gate-stamp` (tighten only).'
+    diagnostic = [r for r in results if r['status'] == 'validated']
+    text = ('Keep today\'s gates (MinScore 60, MinSR 2.5, MinARF 0.2, SetsToExport 2, TargetDD 100 and the EA back-row '
+            'filter). ')
+    text += ('No held_up verdicts exist yet, so nothing is actionable. ' if not verdicts
+             else 'No held_up gate validated. ')
+    if diagnostic:
+        text += 'Diagnostics that validate (not applied, the window lies inside the export run): ' + '; '.join(
+            '%s at %s: %s >= %s (held-out %s, lower %s)' % (r['target'], pct(r['settings']['min_survival']),
+                                                            r['gate']['feature'], r['gate']['threshold'],
+                                                            pct(r['validation']['survival']), pct(r['validation']['lower']))
+            for r in diagnostic) + '.'
+    else:
+        text += 'No diagnostic gate validated either.'
+    return text
 
 
 def main(argv=None):
@@ -170,6 +168,7 @@ def main(argv=None):
     parser.add_argument('--common-root', type=Path)
     parser.add_argument('--runs')
     parser.add_argument('--verdicts', type=Path)
+    parser.add_argument('--captured-before', help='Only sets whose capture manifest was written before this UTC time')
     args = parser.parse_args(argv)
     out = args.out_dir
     if (out / 'report.json').exists() or (out / 'report.md').exists():
@@ -177,36 +176,34 @@ def main(argv=None):
     common = args.common_root or gates.default_common_root()
     runs = [r.strip() for r in args.runs.split(',')] if args.runs else None
     evidence = gates.load_evidence(common, runs)
-    verdicts = gates.load_verdicts(args.verdicts) if args.verdicts else None
-    scenarios = list(SCENARIOS) + ([('held_up', 0.6)] if verdicts else [])
-    results, curves = [], []
+    records = evidence['records']
+    if args.captured_before:
+        cutoff = datetime.strptime(args.captured_before, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc).timestamp()
+        records = [r for r in records if capture_mtime(common, r) < cutoff]
+    verdicts, rejected = gates.load_verdicts(args.verdicts) if args.verdicts else (None, {})
+    scenarios = list(SCENARIOS) + ([('held_up', 0.6), ('held_up', 0.75)] if verdicts else [])
+    results = []
     for target, survival in scenarios:
-        result = gates.recommend(evidence['records'], target=target, verdicts=verdicts, min_survival=survival)
-        if not any(c['target'] == target for c in curves):
-            curves.append(dict(target=target, features={k: dict(auc=v['auc'], curve=v['curve'])
-                                                         for k, v in result['features'].items()}))
-        results.append(gates.public(result))
+        results.append(gates.public(gates.recommend(records, target=target, verdicts=verdicts, min_survival=survival)))
     report = dict(schema=gates.SCHEMA + '-report', generated_at=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-                  evidence=dict(common_root=str(common), runs=evidence['runs'], sets=len(evidence['records']),
-                                duplicates_removed=evidence['duplicates_removed'],
-                                verdicts=None if verdicts is None else len(verdicts)),
-                  scenarios=results, curves=curves, descriptive_ea_gate=descriptive_file_gates(evidence['records']),
+                  evidence=dict(common_root=str(common), runs=evidence['runs'], sets=len(records),
+                                duplicates_removed=evidence['duplicates_removed'], captured_before=args.captured_before,
+                                verdicts=None if verdicts is None else len(verdicts), verdicts_rejected=rejected),
+                  scenarios=results, bottom_line=bottom_line(results, verdicts),
+                  fillers=gates.filler_comparison(records, verdicts),
+                  filler_pooled=[row for target in ('forward', 'post') for row in labelled_split(records, target, verdicts)],
                   caveats=[
-                      'Selection bias: every set here was chosen by the EA using its Score (built from in-sample AND forward '
-                      'results) and full-window file-name metrics, so forward survival is inflated and the forward window '
-                      'cannot validate the plan fields. The post window (after ToDate) is cleaner but was still inside the '
-                      'export run that the EA judged; the catch-up held_up verdicts (weeks after the export) are the clean '
-                      'target, and this tool takes them through --verdicts once they exist.',
-                      'Two run designs only (IS 9 months with a 6-week or 3-month forward window); the post windows are about '
-                      '1 and 3 months of one market period. Treat the numbers as this period\'s evidence, not a law.',
-                      'Near-copy sets: the sets of one member share most inputs, so intervals count members, not sets.',
-                      'Sharpe, recovery and ARF here are computed per window from the exported equity curve (daily, sampled '
-                      'equity); they are close to, not identical with, MT5\'s own SR and the EA\'s mean-DD ARF. The optimizer '
-                      'columns (opt_*) are MT5\'s own in-sample numbers.',
-                      'Captures that hit the 2,000,000-row limit keep their full equity curve, so net, drawdown and Sharpe '
-                      'stay exact, but their trade counts and PF are unknown after the cut and count as missing (a gate on '
-                      'a missing number fails).',
-                      'The g6 run (Re7e282f93d41) was still exporting when this was read; only finished captures count.',
+                      'Selection: every set here was chosen by the EA using its Score (in-sample AND forward) and '
+                      'whole-export-run file-name metrics, so forward survival is inflated, and forward and post both lie '
+                      'inside the export run the EA judged. They are diagnostics only; the catch-up held_up verdicts '
+                      '(weeks after the export, comparable re-tests) are the only target that can move a gate.',
+                      'Few independent runs: most sets come from three large runs; intervals and hold-outs count runs, '
+                      'so they are wide on purpose. Treat the numbers as this market period\'s evidence, not a law.',
+                      'Sharpe, recovery and ARF are computed per window from the exported equity curve (daily, sampled '
+                      'equity); close to, not identical with, MT5\'s SR and the EA\'s ARF. opt_* are MT5\'s own '
+                      'in-sample columns.',
+                      'Captures that hit the 2,000,000-row limit keep their full equity curve but their trade counts and '
+                      'PF after the cut are unknown, so they are not judged where a trade minimum applies.',
                   ])
     out.mkdir(parents=True, exist_ok=True)
     with (out / 'report.json').open('x', encoding='utf-8', newline='\n') as stream:
@@ -214,9 +211,11 @@ def main(argv=None):
         stream.write('\n')
     with (out / 'report.md').open('x', encoding='utf-8', newline='\n') as stream:
         stream.write(markdown(report))
-    print(json.dumps(dict(ok=True, out_dir=str(out), sets=len(evidence['records']),
+    print(json.dumps(dict(ok=True, out_dir=str(out), sets=len(records), bottom_line=report['bottom_line'],
                           statuses=[(s['target'], s['settings']['min_survival'], s['status'],
-                                     s['gate'] and (s['gate']['feature'], s['gate']['threshold'])) for s in results])))
+                                     s['gate'] and (s['gate']['feature'], s['gate']['threshold']),
+                                     s['validation'] and (s['validation']['survival'], s['validation']['lower']))
+                                    for s in results])))
     return 0
 
 

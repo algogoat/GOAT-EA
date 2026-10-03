@@ -29,8 +29,9 @@ What it does
      threshold grid (run bootstrap, max deviation), never a per-point interval;
    - leave one run out: the whole selection is repeated without each run and
      judged on that run. A gate is only validated when the pooled held-out lower
-     bound clears the target, enough runs were judged, and no run clearly
-     contradicts it. The recommended threshold is the strictest one any fold
+     bound (the lowest of a cluster t interval, a design-effect Wilson interval and
+     a run bootstrap) clears the target, enough runs were judged, and no run
+     clearly contradicts it. The recommended threshold is the strictest one any fold
      chose for the same metric.
 5. Only the held_up target can change anything. Forward and post lie inside the
    export run the EA already judged, so they are diagnostics: they report what
@@ -631,6 +632,28 @@ def cluster_ratio_interval(sums, counts):
     return (max(0.0, rate - half), min(1.0, rate + half))
 
 
+def clustered_wilson(sums, counts):
+    """Wilson score interval on the design-effect sample size (Kish).
+
+    A cluster t interval is too narrow when the rate is near 1 and the few clusters
+    happen to agree (the sampling distribution is skewed there). The score interval
+    handles the boundary; deflating n by the observed design effect (never below 1)
+    pays for the clustering. Callers take the lower of this and the t interval."""
+    sums, counts = np.asarray(sums, float), np.asarray(counts, float)
+    keep = counts > 0
+    sums, counts = sums[keep], counts[keep]
+    k, total = len(counts), float(counts.sum())
+    if k < 2 or total <= 0:
+        return (0.0, 1.0)
+    rate = float(sums.sum()) / total
+    residual = sums - rate * counts
+    cluster_var = k / (k - 1) * float((residual ** 2).sum()) / (total * total)
+    binomial_var = rate * (1 - rate) / total
+    # Every member survived (or none did): no spread to read, members count as is.
+    deff = max(1.0, cluster_var / binomial_var) if binomial_var > 0 else 1.0
+    return wilson(rate * total / deff, total / deff)
+
+
 def isotonic(values, weights=None):
     """Pool-adjacent-violators: the closest non-decreasing sequence (weighted least squares)."""
     weights = weights or [1.0] * len(values)
@@ -785,6 +808,23 @@ def _choose(datas, include, settings):
     return (None if best is None else (best[1], best[2])), evaluated
 
 
+def pooled_interval(sums, counts, resamples=BOOTSTRAP):
+    """Held-out survival interval over runs: the LOWEST lower bound of a cluster t
+    interval, the design-effect Wilson interval and a percentile bootstrap over runs
+    (each fails in a different corner: few runs, a rate near 1, skew)."""
+    total = float(sum(counts))
+    if len(sums) < 1 or total <= 0:
+        return (0.0, 1.0)
+    t_low, t_high = cluster_ratio_interval(sums, counts)
+    w_low, w_high = clustered_wilson(sums, counts)
+    boot_low = 0.0
+    if len(sums) >= 2:
+        weights = boot_matrix(np.ones(len(sums), bool), resamples, SEED + 1)
+        bs, bn = weights @ np.asarray(sums, float), weights @ np.asarray(counts, float)
+        boot_low = float(np.quantile(np.where(bn > 0, bs / np.maximum(bn, 1e-12), 0.0), ALPHA))
+    return (min(t_low, w_low, boot_low), max(t_high, w_high))
+
+
 def _validate(datas, clusters, settings, full_choice):
     """Leave one cluster out: rerun the whole selection without it, judge it on it."""
     folds = []
@@ -806,21 +846,14 @@ def _validate(datas, clusters, settings, full_choice):
     counts = [f['kept_members'] for f in judged]
     total = sum(counts)
     rate = sum(sums) / total if total else None
-    t_low, t_high = cluster_ratio_interval(sums, counts)
-    w_low, w_high = wilson(sum(sums), total) if total else (0.0, 1.0)
-    boot_low = 0.0
-    if len(judged) >= 2:
-        weights = boot_matrix(np.ones(len(judged), bool), settings['resamples'], SEED + 1)
-        bs, bn = weights @ np.asarray(sums, float), weights @ np.asarray(counts, float)
-        boot_low = float(np.quantile(np.where(bn > 0, bs / np.maximum(bn, 1e-12), 0.0), ALPHA))
-    lower = min(t_low, w_low, boot_low) if judged else 0.0
+    lower, upper = pooled_interval(sums, counts, settings['resamples'])
     contradicted = []
     for f in judged:
         if f['kept_members'] >= settings['min_members'] and wilson(f['survivors'], f['kept_members'])[1] < settings['min_survival']:
             contradicted.append(f['cluster'])
     same = [f['threshold'] for f in judged if full_choice and f['feature'] == full_choice[0]]
     return dict(folds=folds, judged_clusters=len(judged), survival=None if rate is None else round(rate, 4),
-                lower=round(lower, 4), interval=[round(lower, 4), round(max(t_high, w_high), 4)],
+                lower=round(lower, 4), interval=[round(lower, 4), round(upper, 4)],
                 contradicted=contradicted, same_feature_thresholds=same,
                 no_gate_clusters=[f['cluster'] for f in folds if f['feature'] is None])
 
@@ -836,7 +869,7 @@ def _baseline(labelled, clusters, cluster_of):
         counts[c] += 1
     total = counts.sum()
     rate = sums.sum() / total if total else None
-    w_low, w_high = wilson(sums.sum(), total) if total else (0.0, 1.0)
+    w_low, w_high = clustered_wilson(sums, counts) if total else (0.0, 1.0)
     c_low, c_high = cluster_ratio_interval(sums, counts)
     return dict(sets=len(labelled), members=int(total), clusters=int((counts > 0).sum()),
                 survivors=round(float(sums.sum()), 2), survival=None if rate is None else round(rate, 4),

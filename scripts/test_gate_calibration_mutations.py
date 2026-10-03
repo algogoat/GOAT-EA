@@ -1,9 +1,10 @@
 """Mutation check for the gate calibration guards (controller/studio_gate_calibration.py).
 
 Each guard is removed in a temporary copy of controller/ and the gate calibration tests
-must fail. The key guards: thin evidence falls back to today's defaults, and no
-predictor may read the window it is calibrated against (the forward window never
-predicts itself; Score and file-name metrics never predict a window they contain).
+must fail. The key guards: thin evidence falls back to today's values; no predictor
+reads the window it is calibrated against; selection is paid for (member counting,
+simultaneous band, within-run signal, leave-one-run-out with a hard per-run gate);
+only comparable v2 held_up verdicts act; a stamp only tightens.
 The repository is never modified. Works with an embedded Python that ignores cwd
 (sys.path is set here).
 """
@@ -24,7 +25,8 @@ RUNNER = ('import sys,unittest\n'
           'sys.exit(0 if result.wasSuccessful() else 1)\n')
 MUTATIONS = [
     ('thin evidence does not fall back',
-     "    if baseline['sets'] < min_sets or baseline['members'] < min_members:\n", "    if False:\n"),
+     "    if baseline['sets'] < min_sets or baseline['members'] < min_members or baseline['clusters'] < min_clusters:\n",
+     "    if False:\n"),
     ('leaky feature read without refusal',
      "    if target not in allowed:\n        raise ValueError('Feature %s would leak",
      "    if False:\n        raise ValueError('Feature %s would leak"),
@@ -37,25 +39,60 @@ MUTATIONS = [
     ('Score admitted to predict the forward window it contains',
      "    'opt_score': ('optimizer', 'Score', ('post', 'held_up'), 'MinScore'),\n",
      "    'opt_score': ('optimizer', 'Score', TARGETS, 'MinScore'),\n"),
-    ('interval counts near-copy sets instead of members',
-     "        low, high = wilson(raw * members, members) if kept else (0.0, 1.0)\n",
-     "        low, high = wilson(hits, len(kept)) if kept else (0.0, 1.0)\n"),
-    ('gate held by a few members qualifies',
-     "point['kept_sets'] >= min_sets and point['kept_members'] >= min_members\n",
-     "point['kept_sets'] >= min_sets\n"),
-    ('point estimate replaces the lower bound',
-     "(point['interval'][0] if confidence == 'lower' else point['survival_monotone'])",
-     "point['survival_monotone']"),
+    ('near-copy sets counted instead of members',
+     "            self.S[c, has] += (kept * hits[None, :]).sum(axis=1)[has] / k[has]\n            self.N[c, has] += 1\n",
+     "            self.S[c] += (kept * hits[None, :]).sum(axis=1)\n            self.N[c] += k\n"),
+    ('gate held by a few members is eligible',
+     "eligible = (K >= settings['min_sets']) & (N >= settings['min_members']) & (clusters_kept >= 2)",
+     "eligible = (K >= settings['min_sets']) & (clusters_kept >= 2)"),
+    ('per-point interval replaces the simultaneous band',
+     "        lower[t] = min(band[t], wilson(S[t], N[t])[0])\n",
+     "        lower[t] = (S[t] / N[t] + wilson(S[t], N[t])[0]) / 2\n"),
+    ('signal pooled across runs instead of within each run',
+     "            by_cluster.setdefault(index[cluster], ([], []))[0 if hit else 1].append(value)\n",
+     "            by_cluster.setdefault(0, ([], []))[0 if hit else 1].append(value)\n"),
+    ('a metric with no clear signal is chosen',
+     "        if result['direction'] != 'higher_is_better':\n            continue\n        floor",
+     "        floor"),
+    ('held-out interval drops the design-effect Wilson bound',
+     "    w_low, w_high = clustered_wilson(sums, counts)\n", "    w_low, w_high = wilson(sum(sums), total)\n"),
+    ('design effect ignored (members counted as independent)',
+     "    deff = max(1.0, cluster_var / binomial_var) if binomial_var > 0 else 1.0\n", "    deff = 1.0\n"),
+    ('held-out validation ignored',
+     "        if validation['lower'] < min_survival:\n",
+     "        if False:\n"),
+    ('a run that clearly misses does not block',
+     "        if validation['contradicted']:\n",
+     "        if False:\n"),
     ('plan field qualifies below its floor',
-     "                and (plan_field is None or point['threshold'] >= EXPORT_FLOORS[plan_field]))",
-     "                and True)"),
-    ('a tail with no overall signal is chosen',
-     "        if info['direction'] != 'higher_is_better':\n            continue\n        passing = [point for point in info['curve'] if point['qualifies']]\n",
-     "        passing = [point for point in info['curve'] if point['qualifies']]\n"),
+     "            if floor is not None and data.thresholds[t] < floor:\n                continue\n",
+     ""),
+    ('forward/post diagnostics become actionable',
+     "    actionable = status == 'validated' and target in ACTIONABLE_TARGETS\n",
+     "    actionable = status == 'validated'\n"),
+    ('survival judged without a trade minimum',
+     "    if window.get('trades') is None or window['trades'] < min_trades:\n        return None\n",
+     ""),
+    ('verdicts of another schema accepted',
+     "        if node.get('schema') != VERDICT_SCHEMA:\n", "        if False:\n"),
+    ('non-comparable verdicts accepted',
+     "        if verdict != 'not_comparable' and comparable is not True:\n", "        if False:\n"),
+    ('verdicts with overridden rules accepted',
+     "        if rules.get('id') != VERDICT_SCHEMA or rules.get('overridden'):\n", "        if False:\n"),
+    ('the last verdict read wins instead of the newest',
+     "        if prior is None or (entry['evidence_end'], entry['key']) > (prior['evidence_end'], prior['key']):\n",
+     "        if True:\n"),
+    ('stamp loosens a stricter plan',
+     "            tightened = max(float(export[field]), float(value))\n",
+     "            tightened = float(value)\n"),
+    ('forward/post recommendations can be stamped',
+     "    if recommendation.get('target') not in ACTIONABLE_TARGETS:\n", "    if False:\n"),
+    ('different evidence collapsed as a duplicate',
+     "                 hashlib.sha256(deals_raw).hexdigest(), hashlib.sha256(equity_raw).hexdigest()],\n",
+     "                 ],\n"),
     ('partial capture counts trades it never saw',
      "    covered = deals_until is None or deals_until >= hi\n", "    covered = True\n"),
 ]
-
 
 def main():
     caught = 0

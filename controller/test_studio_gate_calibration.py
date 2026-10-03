@@ -363,6 +363,21 @@ class SurvivalTests(unittest.TestCase):
         self.assertEqual(result['features']['is_sr']['direction'], 'higher_is_better')
         self.assertEqual(result['features']['is_pf']['direction'], 'no_clear_signal')
 
+    def test_held_out_interval_pays_for_run_spread_near_one(self):
+        # Eight runs where every kept member survived and one where 12 of 20 did: pooled 96%.
+        sums, counts = [20.0] * 8 + [12.0], [20.0] * 9
+        plain = gates.wilson(sum(sums), sum(counts))[0]
+        t_low = gates.cluster_ratio_interval(sums, counts)[0]
+        clustered = gates.clustered_wilson(sums, counts)[0]
+        self.assertLess(clustered, t_low)          # near 1 the t interval is the optimistic one
+        self.assertLess(clustered, plain - 0.05)   # members are not independent draws
+        low, high = gates.pooled_interval(sums, counts)
+        self.assertLessEqual(low, clustered)
+        self.assertGreater(high, sum(sums) / sum(counts))
+        even = gates.clustered_wilson([18.0] * 9, [20.0] * 9)  # no spread between runs: plain Wilson
+        self.assertAlmostEqual(even[0], gates.wilson(162, 180)[0], places=9)
+        self.assertEqual(gates.pooled_interval([], []), (0.0, 1.0))
+
     def test_member_outcomes_are_averaged_before_counting(self):
         rows = [record('A', run='R1', survived=True, index=i) for i in range(9)] + [record('B', run='R1', survived=False)]
         base = gates.recommend(rows, target='forward', split_keys=())['baseline']
@@ -430,6 +445,21 @@ class SurvivalTests(unittest.TestCase):
         self.assertEqual(result['validation']['contradicted'], ['R9'])
         self.assertGreaterEqual(result['validation']['lower'], 0.75)  # the pooled number alone would have passed
 
+    def test_a_held_out_lower_bound_under_the_target_blocks_validation(self):
+        rows = graded()
+        self.assertEqual(gates.recommend(rows, target='forward', min_survival=0.75, split_keys=())['status'], 'validated')
+        original = gates._validate
+
+        def weak(*args, **kwargs):  # same folds, but the pooled held-out bound misses: nothing else objects
+            return dict(original(*args, **kwargs), survival=0.8, lower=0.7, contradicted=[])
+        gates._validate = weak
+        try:
+            result = gates.recommend(rows, target='forward', min_survival=0.75, split_keys=())
+        finally:
+            gates._validate = original
+        self.assertEqual(result['status'], 'fallback_not_validated')
+        self.assertIn('held-out survival 80% with lower bound 70%', result['summary'])
+
     def test_point_estimates_never_qualify(self):
         result = gates.recommend(graded(runs=5, members=12, seed=3), target='forward', min_survival=0.85,
                                  min_sets=10, split_keys=())
@@ -441,17 +471,32 @@ class SurvivalTests(unittest.TestCase):
             self.assertGreaterEqual(result['validation']['lower'], 0.85)
 
 
-def simulate(seed, sigma, runs=9, members=21, a=-0.5, b=1.2):
-    """9 runs x 21 members x 2 near-copy sets; one real signal (is_sr); a shared shock per run."""
+NOISE_WINDOWS = [('in_sample', 'pf'), ('in_sample', 'net'), ('in_sample', 'recovery'), ('in_sample', 'arf'),
+                 ('in_sample', 'trades'), ('back_oos', 'net'), ('back_oos', 'pf'), ('back_oos', 'recovery')]
+NOISE_OPTIMIZER = ['PF(Back)', 'RF(Back)']
+
+
+def simulate(seed, sigma, runs=9, members=21, a=-0.5, b=1.2, noise=True):
+    """9 runs x 21 members x 2 near-copy sets (the real evidence's shape); one real signal
+    (is_sr, and opt_is_sr which mirrors it), a shared survival shock per run, and with
+    ``noise`` ten more features that carry no signal, so the selection scans about 250
+    feature/threshold candidates on the same data, as the review's failing case did."""
     rng, rows = random.Random(seed), []
     for run in range(runs):
         shock = rng.gauss(0, sigma)
         for member in range(members):
             x = rng.uniform(0, 4)
+            junk = [rng.uniform(0, 4) for _ in NOISE_WINDOWS + NOISE_OPTIMIZER]
             survived = rng.random() < 1 / (1 + math.exp(-(a + b * x + shock)))
             for index in range(2):
-                rows.append(record('M%02d' % member, run='R%d' % run, index=index, survived=survived,
-                                   is_sr=round(x + rng.uniform(-0.02, 0.02), 3)))
+                row = record('M%02d' % member, run='R%d' % run, index=index, survived=survived,
+                             is_sr=round(x + rng.uniform(-0.02, 0.02), 3))
+                if noise:
+                    for (window, metric), value in zip(NOISE_WINDOWS, junk):
+                        row['windows'][window][metric] = round(value + rng.uniform(-0.02, 0.02), 3)
+                    for metric, value in zip(NOISE_OPTIMIZER, junk[len(NOISE_WINDOWS):]):
+                        row['optimizer'][metric] = round(value + rng.uniform(-0.02, 0.02), 3)
+                rows.append(row)
     return rows
 
 
@@ -466,31 +511,62 @@ def true_survival(threshold, sigma, a=-0.5, b=1.2):
 
 
 class CoverageSimulationTests(unittest.TestCase):
-    """When a gate validates, its true survival must clear the target at least at the
-    nominal 97.5% one-sided level, also with run-level shocks (the review's failing case)."""
+    """The review's failing case: about 250 feature/threshold candidates scanned on the
+    same data, near-copy sets, run-level shocks. The chosen gate's stated lower bound
+    (pooled leave-one-run-out) must hold its nominal 97.5% one-sided coverage against
+    the gate's TRUE survival on new runs, and at most 2.5% of evidence draws may
+    validate a gate that really misses the target. The per-point, member-counted
+    Wilson rule (v1) is checked alongside on the same draws and must do worse."""
 
-    def check(self, sigma, target, seeds):
-        validated = misses = 0
-        base_covered = base_total = 0
+    @staticmethod
+    def naive(result, target):
+        best = None
+        for name, info in result['features'].items():
+            for point in info['curve']:
+                if point['kept_sets'] >= 20 and point['kept_members'] >= 8 and point['wilson'][0] >= target:
+                    if best is None or point['kept_sets'] > best[0]:
+                        best = (point['kept_sets'], name, point['threshold'])
+        return best
+
+    def run_seeds(self, sigma, target, seeds):
+        cache = {}
+
+        def truth(feature, threshold):
+            threshold = threshold if feature in ('is_sr', 'opt_is_sr') else 0.0  # noise gates keep a random subset
+            key = round(threshold, 3)
+            if key not in cache:
+                cache[key] = true_survival(threshold, sigma)
+            return cache[key]
+        stats = dict(evaluated=0, bound_missed=0, validated=0, below_target=0, naive=0, naive_below=0,
+                     base_covered=0, seeds=seeds)
         for seed in range(seeds):
             result = gates.recommend(simulate(seed, sigma), target='forward', min_survival=target, split_keys=())
-            base_total += 1
             low, high = result['baseline']['interval']
-            base_covered += low <= true_survival(0.0, sigma) <= high
-            if result['status'] == 'validated':
-                validated += 1
-                misses += true_survival(result['gate']['threshold'], sigma) < target
-        return validated, misses, base_covered / base_total
+            stats['base_covered'] += low <= true_survival(0.0, sigma) <= high
+            if result['validation'] is not None:
+                true = truth(result['gate']['feature'], result['gate']['threshold'])
+                stats['evaluated'] += 1
+                stats['bound_missed'] += true < result['validation']['lower']
+                if result['status'] == 'validated':
+                    stats['validated'] += 1
+                    stats['below_target'] += true < target
+            pick = self.naive(result, target)
+            if pick:
+                stats['naive'] += 1
+                stats['naive_below'] += truth(pick[1], pick[2]) < target
+        return stats
 
-    def test_validated_gates_hold_their_target_with_run_shocks(self):
-        for sigma, target in ((0.0, 0.9), (0.8, 0.85)):
-            validated, misses, _ = self.check(sigma, target, 40)
-            self.assertGreaterEqual(validated, 5, (sigma, target))     # not vacuous
-            self.assertLessEqual(misses / validated, 0.025, (sigma, target, validated, misses))
+    def test_chosen_gates_hold_their_stated_coverage_under_selection_and_run_shocks(self):
+        for sigma, target in ((0.0, 0.8), (0.8, 0.85)):
+            s = self.run_seeds(sigma, target, 100)
+            self.assertGreaterEqual(s['validated'], 10, s)                              # not vacuous
+            self.assertLessEqual(s['bound_missed'], 0.025 * s['evaluated'], s)         # stated bound holds
+            self.assertLessEqual(s['below_target'], 0.025 * s['seeds'], s)             # false validations
+            self.assertGreater(s['naive_below'], s['below_target'], s)                 # v1's rule is worse
 
     def test_baseline_interval_covers_the_true_rate_with_run_shocks(self):
-        _, _, coverage = self.check(0.8, 0.99, 40)
-        self.assertGreaterEqual(coverage, 0.9)
+        s = self.run_seeds(0.8, 0.99, 40)
+        self.assertGreaterEqual(s['base_covered'] / s['seeds'], 0.9, s)
 
 
 class FallbackTests(unittest.TestCase):

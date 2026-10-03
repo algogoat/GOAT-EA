@@ -25,7 +25,11 @@ READ_OPERATIONS = frozenset(('discover','resource-profile','state','onboarding-s
                              'validate-set','benchmark-report',
                              # Library scoring v1 (goatai#2221): the verified lock registry and the
                              # trial journal/count, read from retained journals only.
-                             'heldout-status','trial-journal','trial-count'))
+                             'heldout-status','trial-journal','trial-count',
+                             # Trading-equivalence research tooling: reads git and exports; the only write is a
+                             # create-only certificate/canary record under <controller state>\equivalence.
+                             # No terminal, session, queue or grant effect.
+                             'equivalence-certificate','equivalence-status','equivalence-canary-plan','equivalence-canary-ingest'))
 OPERATIONS = READ_OPERATIONS | frozenset(('owner-maintenance-bootstrap','monitor-prepare','monitor-launch',
     'serve','orphan-recovery-prepare','orphan-recovery-apply','orphan-recovery-status',
     'orphan-recovery-reconcile-rejection','prepare-batch','run-batch','start','status','reconcile',

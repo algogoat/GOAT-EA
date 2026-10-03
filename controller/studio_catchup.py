@@ -21,6 +21,20 @@ the same SET/CSV/.goatseq unit it writes for a batch export, into
 ``Common Files\\TEMP\\SQ\\<token>``; the runner moves it into the evidence store.
 The close/relaunch cycle is the seed driver's and shares its terminal slot, so it
 is ``native_launch_qualified: false`` until a native proof run.
+
+Same-model rule (#1885, Claude-Mac APPROVE): a re-test uses the export's own tester
+model (the capture's ``model``; without a capture, the EA's export pass, which every
+build since V1.35 forces to real ticks, Model 4). Models 0, 1, 2 and 4 are accepted;
+the sequence capture only runs on Model 4, so other models re-test without it. Every
+verdict carries ``evidence_model`` (studio_catchup_verdict.model_tag): the model, the
+timeframe, the model rung and the trade-list summary, for the library scorer.
+
+Build rule: the re-test runs on the installed EA. It is comparable when that is the
+export's own build (same binary, or the same reported build id), or when the plan names
+an ACTIVE trading-equivalence certificate (studio_equivalence) for exactly this export
+build and this installed build. A canary plan (``canary_certificate``) runs a pending
+certificate's export build on purpose: its verdicts stay ``not_comparable``; its deal
+lists are what ``equivalence-canary-ingest`` compares.
 """
 from datetime import date, datetime, timedelta, timezone
 import hashlib
@@ -35,7 +49,8 @@ import uuid
 from campaign_ledger import sha
 from studio_bridge import write_json
 from studio_evidence import RunContext, read_export, read_json_bounded, scan, server_date, server_msc, weekdays
-from studio_catchup_verdict import CAVEAT, validate_rules
+from studio_catchup_verdict import CAVEAT, model_tag, validate_rules
+import studio_equivalence as equivalence
 import studio_evidence_end as evidence_end
 from studio_seed import SeedRunner, digest
 from studio_seed_results import MAX_MANIFEST_BYTES, read_seed_json
@@ -48,7 +63,22 @@ PLAN_KEYS = {'schema_version', 'evidence_end', 'sets', 'job_timeout_seconds'}
 PLAN_OPTIONAL = {'broker_clock', 'assume', 'include_below_threshold', 'verdict_rules',
                  # Library scoring v1 (goatai#2221): one strategy_ref (or null) per set, and the
                  # held-out lock this plan reveals (only its frozen candidate, while revealing).
-                 'strategy_refs', 'heldout_reveal'}
+                 'strategy_refs', 'heldout_reveal',
+                 # Same-model rule and trading-equivalence certificates (#1885, GOAT-EA#141).
+                 'equivalence_certificates', 'canary_certificate'}
+MAX_CERTIFICATES = 20
+RETEST_MODELS = (0, 1, 2, 4)   # every tick, 1 minute OHLC, open prices, real ticks (3 = math calculations, no prices)
+EXPORT_PASS_MODEL = 4          # the EA forces real ticks on its export pass (GOAT V1.35+: strT.Model="4")
+
+
+def export_model(export):
+    """The tester model of an export's own test, with where that comes from."""
+    capture = export.get('capture') or {}
+    if type(capture.get('model')) is int:
+        return capture['model'], 'capture'
+    return EXPORT_PASS_MODEL, 'ea_export_pass'
+
+
 MAX_MEMBERS = 2000
 MAX_PUBLIC = 100
 OUTPUT_PATH_ROOM = 140  # longest EA export file name below a member folder, plus margin
@@ -214,7 +244,12 @@ def catch_up_stamp(spec, manifest, verdict, created_utc, original_foos=None):
                 verdict=verdict.get('verdict'), confidence=verdict.get('confidence'),
                 comparable=(verdict.get('comparability') or {}).get('comparable'),
                 rules=(verdict.get('rules') or manifest.get('verdict_rules') or {}).get('id'),
-                original_set_sha256=spec['original']['set_sha256'], values_sha256=spec['original']['values_sha256'])
+                original_set_sha256=spec['original']['set_sha256'], values_sha256=spec['original']['values_sha256'],
+                model=(verdict.get('evidence_model') or {}).get('model'), timeframe=(verdict.get('evidence_model') or {}).get('timeframe'),
+                model_rung=(verdict.get('evidence_model') or {}).get('model_rung'),
+                m1_open_price_like=(verdict.get('evidence_model') or {}).get('m1_open_price_like'),
+                fidelity_table_version=(verdict.get('evidence_model') or {}).get('fidelity_table_version'),
+                equivalence_certificate=((spec.get('pins') or {}).get('equivalence') or {}).get('certificate_digest'))
 
 class _NoProcess:
     """Process stand-in for previews: any terminal effect is a defect."""
@@ -283,8 +318,10 @@ def _tester_conditions(export, assume):
 def _validate_single_pass(tester):
     """The shared tester validator, applied to a single pass (it only admits optimization batches as-is)."""
     from studio_settings import FIELDS, validate_tester
-    if tester.get('Optimization') != 0 or tester.get('ForwardMode') != 0 or tester.get('Model') != 4 or tester.get('ShutdownTerminal') != 1:
-        raise ValueError('A catch-up re-test is one real-tick pass with no optimization or forward window that closes MT5 after')
+    if tester.get('Optimization') != 0 or tester.get('ForwardMode') != 0 or tester.get('Model') not in RETEST_MODELS \
+            or type(tester.get('Model')) is not int or tester.get('ShutdownTerminal') != 1:
+        raise ValueError('A catch-up re-test is one pass in the export\'s own price model (0, 1, 2 or 4) with no optimization '
+                         'or forward window that closes MT5 after')
     view = {key: tester[key] for key in FIELDS if key in tester}
     validate_tester(view | dict(Optimization=2, OptimizationCriterion=6, ForwardDate=''))
 
@@ -317,7 +354,15 @@ class CatchupRunner(SeedRunner):
     def _plan(self, plan):
         if not isinstance(plan, dict) or not PLAN_KEYS <= set(plan) or set(plan) - PLAN_KEYS - PLAN_OPTIONAL or plan['schema_version'] != 1:
             raise ValueError('Catch-up plan requires schema_version:1, evidence_end, sets and job_timeout_seconds '
-                             '(optional: broker_clock, assume, include_below_threshold, verdict_rules, strategy_refs, heldout_reveal)')
+                             '(optional: broker_clock, assume, include_below_threshold, verdict_rules, strategy_refs, heldout_reveal, '
+                             'equivalence_certificates, canary_certificate)')
+        certificates = plan.get('equivalence_certificates', [])
+        if not isinstance(certificates, list) or len(certificates) > MAX_CERTIFICATES or len(set(map(str, certificates))) != len(certificates) \
+                or any(not isinstance(d, str) or not re.fullmatch('[0-9a-f]{64}', d) for d in certificates):
+            raise ValueError('equivalence_certificates must list up to %d distinct certificate digests' % MAX_CERTIFICATES)
+        canary = plan.get('canary_certificate')
+        if canary is not None and (not isinstance(canary, str) or not re.fullmatch('[0-9a-f]{64}', canary) or certificates):
+            raise ValueError('canary_certificate is one certificate digest, and a canary plan names no other certificates')
         if type(plan['job_timeout_seconds']) is not int or not 60 <= plan['job_timeout_seconds'] <= 86400:
             raise ValueError('job_timeout_seconds must be 60..86400')
         sets = plan['sets']
@@ -350,6 +395,7 @@ class CatchupRunner(SeedRunner):
         runs, rows, members, payloads = RunContext(), [], [], []
         nonce = uuid.uuid4().hex[:16]
         known = versions(self.c.root)
+        certificates = self._certificates(plan)
         for path in plan['sets']:
             try:
                 export = read_export(path, runs=runs)
@@ -358,7 +404,7 @@ class CatchupRunner(SeedRunner):
                 continue
             row = classify(export, target['iso'], include_below_threshold=plan.get('include_below_threshold', False), known_versions=known)
             if row['status'] == 'behind':
-                reasons = self._member_problems(export, account)
+                reasons, bridge = self._member_problems(export, account, certificates=certificates)
                 facts, window, assumed, missing = _tester_conditions(export, assume)
                 if missing:
                     reasons.append('Unknown original tester settings: ' + ', '.join(missing)
@@ -366,7 +412,8 @@ class CatchupRunner(SeedRunner):
                 if reasons:
                     row = row | dict(status='ineligible', reasons=reasons)
                 else:
-                    member, files = self._member(root, export, target, facts, window, assumed, account, expert, nonce, len(members))
+                    member, files = self._member(root, export, target, facts, window, assumed, account, expert, nonce, len(members),
+                                                 bridge=bridge)
                     ref = self._strategy_refs.get(str(Path(path)).lower())
                     if ref is not None:
                         member['strategy_ref'] = ref
@@ -394,34 +441,75 @@ class CatchupRunner(SeedRunner):
             return None
         return build if isinstance(build, str) and 0 < len(build) <= 96 else None
 
-    def _member_problems(self, export, account):
-        problems = []
+    def _certificates(self, plan):
+        """Trading-equivalence certificate states the plan names, as (mode, state). Missing or altered ones refuse the plan."""
+        named = [('active', digest) for digest in plan.get('equivalence_certificates', [])]
+        if plan.get('canary_certificate'):
+            named.append(('canary', plan['canary_certificate']))
+        return [(mode, equivalence.state(self.c.root, digest)) for mode, digest in named]
+
+    @staticmethod
+    def _bridge(mode, cert):
+        return dict(mode=mode, certificate_digest=cert['digest'], canary_digest=cert.get('canary_digest'), status=cert['status'],
+                    export_build=cert['export_build'], installed_build=cert['installed_build'])
+
+    def _member_problems(self, export, account, *, certificates=()):
+        """Reasons this export cannot be re-tested here, and the equivalence bridge it needs (None: the same build)."""
+        problems, bridge = [], None
         capture = export.get('capture') or {}
         if not export.get('symbol') or not SAFE_SYMBOL.fullmatch(export['symbol']):
             problems.append('Symbol cannot be used in a tester file name')
         if capture.get('server') and capture['server'] != account['server']:
             problems.append('Export came from broker server %s; this terminal is on %s, so ticks and symbols differ'
                             % (capture['server'], account['server']))
-        if capture.get('model') not in (None, 4):
-            problems.append('Export was not tested with real ticks (Model 4)')
+        model, _ = export_model(export)
+        if model not in RETEST_MODELS:
+            problems.append('Export was tested with model %s; a re-test repeats the export\'s own model and can only use 0, 1, 2 or 4' % model)
         if capture.get('asset') and capture['asset'] != export.get('symbol'):
             problems.append('Capture symbol differs from the export file name')
-        # A re-test is only comparable on the same EA build: refuse what can already be seen to differ or be unknown.
-        run_ea = (export.get('run') or {}).get('ea_sha256')
-        if run_ea and run_ea != self.c.install['ea_sha256']:
-            problems.append('Export was made by another EA binary than the installed one, so a re-test would not be comparable')
-        elif not run_ea and not capture.get('build_id'):
-            problems.append('The EA build that made this export is unknown (no run manifest or capture), so a re-test could not be compared')
-        elif not run_ea:
-            # Known only from the capture: compare it with the installed EA's reported build before spending a run.
-            installed = self._installed_build_id()
-            if installed is None:
+        # A re-test is only comparable on the same EA build, or on an installed build an ACTIVE
+        # trading-equivalence certificate binds to the export's build (studio_equivalence).
+        run_ea, build_id = (export.get('run') or {}).get('ea_sha256'), capture.get('build_id')
+        installed_sha = self.c.install['ea_sha256']
+        canary = next((cert for mode, cert in certificates if mode == 'canary'), None)
+        covering = lambda cert: equivalence.covers(cert, export_ea_sha256=run_ea, export_build_id=None if run_ea else build_id,
+                                                   installed_ea_sha256=installed_sha)
+        if canary is not None:
+            if not covering(canary):
+                problems.append('Canary plan for certificate %s: this export was not made by its export build, or this terminal does '
+                                'not run its installed build' % canary['digest'][:12])
+            elif canary['status'] not in ('pending_canary', 'active'):
+                problems.append('Canary plan: certificate %s is %s; only a source-equivalent certificate is canaried'
+                                % (canary['digest'][:12], canary['status']))
+            elif not capture.get('complete') or model != 4:
+                problems.append('Canary plan: the export needs a complete Model-4 capture; its deal list is the reference')
+            else:
+                bridge = self._bridge('canary', canary)
+        elif run_ea and run_ea != installed_sha or not run_ea and build_id:
+            same = False
+            if not run_ea:
+                installed = self._installed_build_id()
+                same = installed == build_id
+            cert = None if same else next((c for mode, c in certificates if mode == 'active' and covering(c)), None)
+            if same:
+                pass
+            elif cert and cert['active']:
+                bridge = self._bridge('active', cert)
+            elif cert:
+                problems.append('Trading-equivalence certificate %s covers this export but is %s (it needs a matching canary), so a '
+                                're-test would not be comparable' % (cert['digest'][:12], cert['status']))
+            elif run_ea:
+                problems.append('Export was made by another EA binary than the installed one, so a re-test would not be comparable'
+                                ' (no active trading-equivalence certificate covers it)')
+            elif installed is None:
                 problems.append('The EA build that made this export (%s) is known only from its capture, and the installed EA build '
                                 'cannot be read yet (no EA activation status), so a re-test could not be compared; open MT5 with '
-                                'the GOAT chart once, or import the export with its run folder' % capture['build_id'])
-            elif installed != capture['build_id']:
+                                'the GOAT chart once, or import the export with its run folder' % build_id)
+            else:
                 problems.append('Export was made by EA build %s; the installed EA reports %s, so a re-test would not be comparable'
-                                % (capture['build_id'], installed))
+                                % (build_id, installed))
+        elif not run_ea:
+            problems.append('The EA build that made this export is unknown (no run manifest or capture), so a re-test could not be compared')
         values = read_values(Path(export['set_path']).read_bytes())
         if values.get('Mode_Operation') != OP_STANDARD:
             problems.append('Exported SET is not in standard operation mode (Mode_Operation=9)')
@@ -429,9 +517,9 @@ class CatchupRunner(SeedRunner):
             validate_raw(Path(export['set_path']).read_bytes(), self.c.schema, self.c.policy)
         except ValueError as exc:
             problems.append('SET does not match the installed EA inputs: ' + str(exc))
-        return problems
+        return problems, bridge
 
-    def _member(self, root, export, target, facts, window, assumed, account, expert, nonce, index):
+    def _member(self, root, export, target, facts, window, assumed, account, expert, nonce, index, *, bridge=None):
         alias = 'C' + nonce + '_' + str(index + 1).zfill(5)
         capture_id = 'catchup-' + nonce + '-' + str(index + 1).zfill(5)
         start, to_date = date.fromisoformat(export['evidence_start']), _date(target['tester_to_date'])
@@ -440,7 +528,8 @@ class CatchupRunner(SeedRunner):
             deposit = int(deposit)
         if type(deposit) not in (int, float) or deposit <= 0:
             raise ValueError('Original deposit must be a positive number: ' + export['set_path'])
-        tester = dict(Expert=expert, Symbol=export['symbol'], Period=export['period'], Model=4, ExecutionMode=facts['ExecutionMode'],
+        model, model_source = export_model(export)
+        tester = dict(Expert=expert, Symbol=export['symbol'], Period=export['period'], Model=model, ExecutionMode=facts['ExecutionMode'],
                       Optimization=0, FromDate=_mt5(start), ToDate=_mt5(to_date), ForwardMode=0, Deposit=deposit,
                       Currency=facts['Currency'], Leverage=facts['Leverage'], UseLocal=1, UseRemote=0, UseCloud=0, Visual=0,
                       ShutdownTerminal=1, ReplaceReport=0, Report='MQL5\\Files\\GOATStudio\\CatchupReports\\' + alias)
@@ -455,10 +544,12 @@ class CatchupRunner(SeedRunner):
         frozen = b'\xff\xfe' + frozen_text.encode('utf-16-le')
         capture = export.get('capture')
         source_inputs = None
-        if capture:
+        if capture and model == 4:   # the EA's sequence capture only runs on real ticks
             candidate = Path(capture['path']).parent / 'source-inputs.set'
             if candidate.is_file() and candidate.stat().st_size <= 1024 * 1024:
                 source_inputs = candidate.read_bytes()
+        if bridge and bridge['mode'] == 'canary' and source_inputs is None:
+            raise ValueError('A canary member needs the export capture\'s source-inputs.set: ' + export['set_path'])
         values = read_values(frozen)
         inputs = dict(values, EA_Desc=_export_desc(alias, window), Sequence_Export_Enabled='true' if source_inputs is not None else 'false',
                       Sequence_Export_Id=capture_id, Sequence_Export_Start=tester['FromDate'], Sequence_Export_End=tester['ToDate'],
@@ -494,8 +585,11 @@ class CatchupRunner(SeedRunner):
                                     tester=export.get('tester'), threshold=export['threshold'], ea_name=export.get('ea_name')),
                       pins=dict(installed_ea_sha256=self.c.install['ea_sha256'], original_ea_sha256=(export.get('run') or {}).get('ea_sha256'),
                                 original_build_id=(capture or {}).get('build_id'), original_server=(capture or {}).get('server'),
-                                server=account['server'], model=4, deposit=deposit, currency=facts['Currency'], leverage=facts['Leverage'],
-                                execution_mode=facts['ExecutionMode'], assumed=assumed, original_tester=export.get('tester') or {}),
+                                installed_build_id=self._installed_build_id(),
+                                server=account['server'], model=model, original_model=model, model_source=model_source,
+                                timeframe=export['period'], deposit=deposit, currency=facts['Currency'], leverage=facts['Leverage'],
+                                execution_mode=facts['ExecutionMode'], assumed=assumed, original_tester=export.get('tester') or {},
+                                equivalence=bridge),
                       new_window=dict(first_day=(date.fromisoformat(export['evidence_end']) + timedelta(days=1)).isoformat(),
                                       last_day=target['iso'], weekdays=weekdays(date.fromisoformat(export['evidence_end']) + timedelta(days=1),
                                                                                 date.fromisoformat(target['iso']))))
@@ -517,7 +611,9 @@ class CatchupRunner(SeedRunner):
                     exports=rows[:MAX_PUBLIC], exports_omitted=max(0, len(rows) - MAX_PUBLIC),
                     members=[dict(alias=m['alias'], symbol=m['tester']['Symbol'], period=m['tester']['Period'], from_date=m['tester']['FromDate'],
                                   to_date=m['tester']['ToDate'], original_end=m['original']['evidence_end'], new_weekdays=m['new_window']['weekdays'],
-                                  assumed=m['assumed'], capture=m['capture']) for m in members[:MAX_PUBLIC]])
+                                  assumed=m['assumed'], capture=m['capture'], model=m['tester']['Model'],
+                                  equivalence=(m['pins'].get('equivalence') or {}).get('mode'),
+                                  certificate=(m['pins'].get('equivalence') or {}).get('certificate_digest')) for m in members[:MAX_PUBLIC]])
 
     def prepare(self, batch_id, plan):
         root = self.path(batch_id)
@@ -604,16 +700,29 @@ class CatchupRunner(SeedRunner):
         retest = read_export(moved)
         if not retest['evidence_end']:
             raise ValueError('Re-test export has no evidence end')
+        pins = dict(spec.get('pins') or {})
+        if pins.get('equivalence'):
+            # The certificate is checked again now: a later drifting canary refutes it for every pending verdict.
+            bridge = dict(pins['equivalence'])
+            try:
+                current = equivalence.state(self.c.root, bridge['certificate_digest'])
+            except (OSError, ValueError) as exc:
+                current = dict(status='unreadable: ' + str(exc), active=False, canary_digest=None)
+            bridge.update(status_at_collect=current['status'], canary_digest=current.get('canary_digest') or bridge.get('canary_digest'),
+                          valid_at_collect=bridge['mode'] == 'active' and bool(current['active']))
+            pins['equivalence'] = bridge
         try:
             verdict = evaluate(original, retest, new_end=min(retest['evidence_end'], manifest['evidence_end']['iso']),
-                               tester=spec['original'].get('tester'), rules=manifest.get('verdict_rules'), pins=spec.get('pins'))
+                               tester=spec['original'].get('tester'), rules=manifest.get('verdict_rules'), pins=pins)
         except (OSError, ValueError, KeyError, ArithmeticError) as exc:
             # The re-test evidence is kept either way; only the judgement is unavailable.
             reason = 'Could not judge the new weeks: ' + str(exc)
             verdict = dict(verdict='unjudged', confidence='none', reasons=[reason], plain=reason,
                            new_weeks=dict(first_day=spec['new_window']['first_day'], last_day=retest['evidence_end'], weekdays=None,
                                           trades=None, net=None, dd=None, pf=None),
-                           reproduction=dict(reproduced=None), comparability=None, rules=manifest.get('verdict_rules'))
+                           reproduction=dict(reproduced=None), comparability=None, rules=manifest.get('verdict_rules'),
+                           evidence_model=model_tag(tester['Model'], tester['Period'], source=pins.get('model_source')),
+                           equivalence=pins.get('equivalence'))
         created = datetime.now(timezone.utc).isoformat(timespec='seconds')
         version = dict(schema=VERSION_SCHEMA, values_sha256=retest['values_sha256'], symbol=retest['symbol'], period=retest['period'],
                        evidence_start=retest['evidence_start'], evidence_end=retest['evidence_end'], evidence_end_source=retest['evidence_end_source'],
@@ -626,7 +735,8 @@ class CatchupRunner(SeedRunner):
                                                                          manifest_sha256=retest['capture']['manifest_sha256'])),
                        tester=tester, assumed=spec['assumed'],
                        verdict={k: verdict[k] for k in ('verdict', 'confidence', 'plain', 'reasons')}, caveat=CAVEAT,
-                       comparability=verdict.get('comparability'),
+                       comparability=verdict.get('comparability'), evidence_model=verdict.get('evidence_model'),
+                       equivalence=pins.get('equivalence'),
                        qualification=qualification_inputs(spec, manifest, verdict),
                        history_short=retest['history_short'], ea_desc_metadata=spec['optimization_window']['source'])
         version_path = Path(spec['evidence_dir']) / 'evidence-version.json'
@@ -637,7 +747,10 @@ class CatchupRunner(SeedRunner):
         summary = dict(verdict=verdict['verdict'], confidence=verdict['confidence'], new_first_day=window['first_day'],
                        new_last_day=window['last_day'], weekdays=window['weekdays'], trades=window['trades'], net=window['net'],
                        dd=window['dd'], pf=window.get('pf'), reproduced=verdict['reproduction']['reproduced'], plain=verdict['plain'],
-                       history_short=retest['history_short'], comparable=(verdict.get('comparability') or {}).get('comparable'))
+                       history_short=retest['history_short'], comparable=(verdict.get('comparability') or {}).get('comparable'),
+                       model=(verdict.get('evidence_model') or {}).get('model'), model_rung=(verdict.get('evidence_model') or {}).get('model_rung'),
+                       equivalence_certificate=(pins.get('equivalence') or {}).get('certificate_digest'),
+                       equivalence_mode=(pins.get('equivalence') or {}).get('mode'))
         return dict(status='verified_catchup_retest', path=retest['set_path'], sha256=retest['set_sha256'], schema_version=1,
                     member_id=spec['member_id'], summary=summary, verdict=verdict, version_path=str(version_path),
                     native_launch_qualification=False)

@@ -391,3 +391,16 @@ unissued outcome, grant control or clear native flags. Unknown/malformed/native
 consumed outcomes and changed transport remain fenced. Regression coverage is
 in controller/test_studio_orphan_stopped.py; customer review and packaged
 delivery are pending. No EA binary or active research kit changed.
+## CTRL-045 - Customer batches export: report-capable /config start for native human control
+
+P0 from beta.16 tester QA (2026-10-02): on the `goat.exe studio` customer lane every batch ended native_error with 0 exports. The bounded driver used the in-place Start click, MT5 wrote no `Report=` XML, and the EA aborted its exports. The native_human_control driver now uses the CTRL-025 arm, normal close, verified exit, /config launch route. `run-batch --mt5-restart-consent` (the user's yes, retained in the journal and rechecked by config start) is required. A fresh SDK proof must show the same idle demo, with Algo OFF, zero positions/orders and the same selected process, before any reservation. The binding gains the route material only from the staged onboarding monitor profile. Older customer packages verify for status/finish but must be prepared again under a new batch ID to start. batch-status and finish quote the EA journal's native_error reason, and a reused finish returns result_path. No EA change. Source tests pass. Native qualification on T2 is pending Claude-Mac review.
+
+Review round 1 (Claude-Mac REQUEST CHANGES on 74426c03): the consent is bound to the selected MT5 process (PID, executable, creation time) and expires after 10 minutes; the SDK proof (positions/orders/account/Algo) runs again right before the close; raw `start` is refused on the customer lane and `prepare-batch` points to `run-batch --mt5-restart-consent`; a start that stops after arming records `recovery` (retained phase, whether MT5 was left open, closing or closed, plain next step) and AGENT-START-HERE has an If-stuck row per post-arm error; the config-start SDK check takes tester idleness from the EA runtime sample (caption read advisory, so an MT5 UI language outside EN/RU/DE is not refused there); native_error evidence names no-edge members apart and stores only the relative `MQL5\Logs` folder.
+
+## CTRL-046 - Locale-independent tester idle state in the EA
+
+The EA's own tester-state read accepts only the English and Russian Start/Stop captions (`GoatStudioTesterState` in GOATStudioUI.mqh, `MTTESTER::IsReady2` in MTTester.mqh). On an MT5 in any other UI language it reports `unknown`, so every `require_idle` gate (onboarding-status, prepare, run-batch, finish) refuses with `Tester idleness not confirmed`. Testers use non-English MT5. Needs an EA change (compile and Claude-Mac approval) with a locale-independent idle signal, then native QA on at least one non-English MT5. The controller's config-start SDK check no longer adds a second caption gate (CTRL-045 review round 1).
+
+## CTRL-047 - Human-only MT5 restart consent receipt
+
+`--mt5-restart-consent` is still supplied by the agent (bound to the process and an expiry, like `--confirm-reviewed`). Follow-up: the desktop records the user's own yes as a receipt the controller verifies, so an agent cannot fabricate it.

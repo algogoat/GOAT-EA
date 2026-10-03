@@ -161,8 +161,10 @@ def proof(c, job_id):
         _refuse('The attempt, reservation or package identity of ' + job_id + ' changed; inspect it instead of retiring.')
     if restart is not None and restart.get('attempt_id') != attempt:
         _refuse('The restart record belongs to another attempt; inspect it instead of retiring.')
-    manifest = read_json(safe_path(package / 'manifest.json'))
-    plan = read_json(safe_path(package / 'studio-plan.json'))
+    # Batch manifests and plans use the 64 MiB batch bound (1122 members exceed 2 MB).
+    from studio_batch import _json
+    manifest = _json(safe_path(package / 'manifest.json'))
+    plan = _json(safe_path(package / 'studio-plan.json'))
     if manifest.get('campaign_id') != sha(plan):
         _refuse('The prepared package of ' + job_id + ' changed; inspect it instead of retiring.')
     gate = safe_path(c.local / 'native-gate')

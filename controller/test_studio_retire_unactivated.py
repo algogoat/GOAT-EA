@@ -84,6 +84,13 @@ class RetireUnactivatedTests(unittest.TestCase):
         self.assertTrue(again['reused']); self.assertEqual(again['result_path'], result['result_path'])
         self.assertFalse((self.c.root / 'attempts' / attempt).exists())
 
+    def test_large_batch_manifest_over_2_mb_retires(self):
+        # Banker's 1122-member manifest exceeds the 2 MB receipt bound; batch files use 64 MiB.
+        manifest = self.package / 'manifest.json'
+        manifest.write_bytes(b' ' * 2_000_001 + manifest.read_bytes())
+        self.unactivated()
+        self.assertEqual(retire(self.c, 'g6-r1')['status'], 'cancelled')
+
     def test_retired_batch_prepares_every_member_again_under_a_new_id(self):
         self.unactivated(); retire(self.c, 'g6-r1')
         result = resume_batch(self.c, 'g6-r1', 'g6-r1b')

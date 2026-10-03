@@ -558,7 +558,8 @@ MT5 `ToDate` is exclusive, so evidence ending on day D tests with `ToDate` D+1.
   stays `behind` with `previous_attempt`, so a re-queue may try it again.
 - `catchup-validate --plan` previews and `catchup-prepare --catchup-id --plan`
   freezes a plan `{schema_version:1, evidence_end, sets:[absolute .set paths],
-  job_timeout_seconds[, broker_clock, assume:{ExecutionMode}, include_below_threshold]}`.
+  job_timeout_seconds[, broker_clock, assume:{ExecutionMode}, include_below_threshold,
+  equivalence_certificates:[digest], canary_certificate:digest]}`.
   Each behind export becomes one member: its exact kept SET (frozen values, no
   optimization) from the export's original start to the evidence end, with the
   original deposit, currency, leverage and delay from the run's `manifest.json`
@@ -566,7 +567,9 @@ MT5 `ToDate` is exclusive, so evidence ending on day D tests with `ToDate` D+1.
   assumed and checked by the reproduction test below). Original exports are never
   changed. An export made by another EA binary than the installed one (run
   `manifest.json` `ea_sha256`), or whose build is unknown (no run manifest and no
-  capture build id), is ineligible: its re-test could not be compared. When the
+  capture build id), is ineligible: its re-test could not be compared, unless the
+  plan names an ACTIVE trading-equivalence certificate for exactly that export
+  build and the installed build (see "Trading-equivalence certificate" below). When the
   build is known only from the capture (a library copy), it must equal the build
   the installed EA last reported (`Common Files\GOAT\activation-status-<data
   folder>.json`, read-only); if that status is missing, the export is ineligible
@@ -583,7 +586,8 @@ MT5 `ToDate` is exclusive, so evidence ending on day D tests with `ToDate` D+1.
 
 How it runs natively, with no EA change: the native Studio queue only runs
 optimizations, so catch-up reuses the SeedRunner process driver. Each member is one
-MT5 start with a `/config` INI: `[Tester]` `Optimization=0`, `Model=4`,
+MT5 start with a `/config` INI: `[Tester]` `Optimization=0`, `Model` = the export's own
+model (same-model rule; capture runs only on Model 4),
 `ForwardMode=0`, `ShutdownTerminal=1`, `FromDate` = original start, `ToDate` =
 evidence end + 1; `[TesterInputs]` = the frozen values plus the EA's own export
 inputs (`EA_Desc=<alias>@{mode=EXPORT,dt_BOOS_end,dt_FOOS_start,dt_FWD_start,dt_FWD_end}`
@@ -608,7 +612,8 @@ window measured inside the same re-test gives the pace.
 
 - `not_comparable` first: the re-test must be the same test. `comparability`
   checks the SET inputs (all but `EA_Desc`), the EA build (capture build ids, else
-  the run's ex5 sha256 against the installed one), EA name, model (real ticks),
+  the run's ex5 sha256 against the installed one, or an active trading-equivalence
+  certificate naming both builds), EA name, model (the original's own model),
   symbol, broker server, deposit, leverage and currency, and that the re-test
   reproduced the original (equity rows and deals before the new weeks, the
   forced final minute excluded). An unknown value fails its check. The execution
@@ -667,6 +672,72 @@ evidence-end rule, the export's thresholds with their basis and margins
 eligibility, the verdict rules and the signals. A later scored, explained
 qualification can re-judge the same evidence under other rules from this block
 without re-running MT5; no score is computed now.
+
+#### Same-model rule and the model tag (contract for the library scorer)
+
+A re-test repeats the export's own tester model: the capture's `model`, else the
+EA's export pass, which every build since V1.35 forces to real ticks (Model 4).
+Models 0, 1, 2 and 4 are accepted; model 3 (math calculations) is ineligible. The
+EA's sequence capture runs only on Model 4, so other models re-test without a
+capture (trades from the SET header difference, PF unknown). Every verdict,
+evidence version and `catch_up` stamp carries `evidence_model`
+(`goat-evidence-model-v1`):
+
+- `model`, `model_name`, `model_source` (`capture` or `ea_export_pass`), `timeframe`;
+- `model_rung`: 3 real ticks (Model 4) > 2 Model 1 (1-minute OHLC) > 1 any other
+  model > 0 Model 1 or 2 on an M1 strategy; `rung_label`;
+- `m1_open_price_like: true` for rung 0: on M1 bars, Model 1 is close to
+  open-price-only, so intrabar fills, grid levels and stops are mispriced;
+- `trade_list`: the new-weeks trade summary (trades, closes, closes of earlier
+  positions, gross win/loss, PF, trade source, `deals_csv` when captured);
+- `fidelity_table_version: null`.
+
+The catch-up tool only tags; it caps nothing. The library scorer down-weights by
+applying its Model-1 fidelity table keyed by model, timeframe and the trade-list
+summary (Claude-Mac, #1885 5974369496), and stamps the table version it used.
+
+#### Trading-equivalence certificate (`studio_equivalence.py`)
+
+A newer installed build may stand in for the export's build only under an ACTIVE
+certificate (Claude-Mac, #1885 5974343541):
+
+1. **Source, by exclusion.** The certificate hashes the EA's full source closure
+   from `GOAT V1.49.mq5`: every `#include "..."`, `#resource`, `#property icon`, and
+   every `input`/`sinput` (kind, type, name, default) in closure order, plus the
+   names of external dependencies (`#include <...>`, MQL5-root resources such as
+   the MACD indicator, unversioned resources such as `RunMe.ex5`, `#import` DLLs,
+   `iCustom` literals). It is source-equivalent when the input header and the
+   external names are identical and every closure file NOT on the reviewed
+   non-trading allowlist (`ALLOWLIST`: panel/UI, Studio chart-side control,
+   activation, telemetry, pairing, images) has a byte-identical normalized hash.
+   Normalization is only encoding, line endings and the `GOAT_BUILD_ID` /
+   `GOAT_BUILD_MARKER` strings. A changed line in an allowlisted file that touches
+   trade/position/order calls, indicator handles or price copies, `#define`/`#undef`,
+   inputs, lots, risk, grid, SL/TP or TSL fails the certificate anyway. A missing
+   `#include` or an unrecoverable build makes it `not_comparable`.
+2. **Source recovery.** In order: a `candidate-builds/*/identity.json` whose
+   binary matches, at its `compile-receipt.json` `source_head` (every file hash in
+   the identity is checked); the git commit that introduced an `.ex5` blob with
+   the export's binary hash; or every commit whose entrypoint defines the reported
+   `GOAT_BUILD_ID`, only when all of them have the same closure (else `ambiguous`).
+3. **Canary.** About ten exports of the export build with complete Model-4
+   captures are re-run on the installed build over the same window and model.
+   Every buy/sell deal (time, type, entry, lots, price) must equal the export's
+   deal list up to the export's last minute. A matching canary (at least 10 sets
+   with trades) stored with its digest makes the certificate `active`; any drift
+   makes it `refuted` for good, and a re-test collected after that is
+   `not_comparable`.
+
+Operations (no MT5 effect; writes only `<controller state>\equivalence\<digest>\`):
+`equivalence-certificate --repo <GOAT-EA checkout> --export-ea-sha256 |
+--export-build-id | --export-commit [--installed-ea-sha256 | --installed-commit]`,
+`equivalence-status --certificate`, `equivalence-canary-plan --certificate --source
+... [--output plan.json]` (a catch-up plan with `canary_certificate`; run it with
+`catchup-prepare`/`catchup-start` on the installed build; its verdicts stay
+`not_comparable`), and `equivalence-canary-ingest --certificate (--catchup-id |
+--pairs file.json) [--min-sets 10]`. Each re-test under a certificate stores
+`equivalence` (certificate digest, canary digest, status at collection) on its
+verdict and evidence version.
 
 ### Reviewed orphan continuation recovery (V1.49)
 

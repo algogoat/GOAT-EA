@@ -22,7 +22,11 @@ READ_OPERATIONS = frozenset(('discover','resource-profile','state','onboarding-s
                              'evidence-end','evidence-scan','evidence-versions','catchup-validate',
                              # Pure reads: a .set file checked against the schema, and a completed
                              # batch's benchmark from a read-only queue snapshot. Nothing is written.
-                             'validate-set','benchmark-report'))
+                             'validate-set','benchmark-report',
+                             # Trading-equivalence research tooling: reads git and exports; the only write is a
+                             # create-only certificate/canary record under <controller state>\equivalence.
+                             # No terminal, session, queue or grant effect.
+                             'equivalence-certificate','equivalence-status','equivalence-canary-plan','equivalence-canary-ingest'))
 OPERATIONS = READ_OPERATIONS | frozenset(('owner-maintenance-bootstrap','monitor-prepare','monitor-launch',
     'serve','orphan-recovery-prepare','orphan-recovery-apply','orphan-recovery-status',
     'orphan-recovery-reconcile-rejection','prepare-batch','run-batch','start','status','reconcile',

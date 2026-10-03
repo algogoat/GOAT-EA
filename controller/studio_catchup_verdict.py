@@ -8,7 +8,8 @@ must reproduce the original export, or nothing is judged.
 
 Comparability (``comparability``): the re-test is judged only when it ran the same
 trading inputs, the same EA build (capture build id, else the run's EA binary hash
-against the installed one), the same tester model (real ticks), symbol, broker
+against the installed one; or an ACTIVE trading-equivalence certificate naming both
+builds, studio_equivalence), the original's own tester model (same-model rule), symbol, broker
 server, deposit, currency and leverage, and reproduced the original's equity and
 deals before the new weeks. The execution delay is pinned in the tester INI and
 checked through that reproduction. Symbol specification (contract size, digits) is
@@ -29,6 +30,10 @@ Definitions (broker server time, half-open windows [start 00:00, end+1 00:00)):
   under way is carried in. prior_dd is the worst such fall before the window.
   Equity is sampled at one-minute events; intrabar extremes can be deeper.
 - pace: the original forward window [ForwardDate, ToDate) measured in the re-test.
+
+Every verdict carries ``evidence_model`` (``model_tag``): model, timeframe, model rung,
+``m1_open_price_like`` and the trade-list summary, with ``fidelity_table_version`` null.
+The library scorer applies its fidelity table to these; this tool caps nothing.
 
 Verdict rules, in order:
 1. not_comparable: any comparability check failed.
@@ -75,6 +80,39 @@ CAVEAT = ('The new weeks are unseen data, but a few weeks is a small sample: tre
           'not as proof of an edge.')
 SYMBOL_SPEC = ('Symbol specification (contract size, digits) is not captured by this EA build; a change would alter '
                'the trades before the new weeks and fail the reproduction check.')
+
+
+MODEL_SCHEMA = 'goat-evidence-model-v1'
+MODEL_NAMES = {0: 'every tick (generated)', 1: '1 minute OHLC', 2: 'open prices only', 3: 'math calculations', 4: 'every tick based on real ticks'}
+RUNG_LABELS = {3: 'real_ticks', 2: 'ohlc_m1_bars', 1: 'other_model', 0: 'm1_open_price_like'}
+
+
+def model_tag(model, timeframe, *, source=None, new_weeks=None, deals=None):
+    """The model tag every catch-up verdict carries, for the library scorer (contract below).
+
+    ``model_rung`` orders the evidence by price-model fidelity: 3 real ticks (Model 4) > 2
+    Model 1 (1-minute OHLC) > 1 any other model > 0 Model 1 or 2 on an M1 strategy, which is
+    close to open-price-only (``m1_open_price_like: true``: intrabar fills, grid levels and
+    stops are mispriced). The catch-up tool only tags; it applies no cap. The scorer weighs
+    the evidence with its Model-1 fidelity table, keyed by model, timeframe and the trade-list
+    summary given here; ``fidelity_table_version`` stays null until a table is applied.
+    """
+    if model == 4:
+        rung = 3
+    elif model in (1, 2) and timeframe == 'M1':
+        rung = 0
+    elif model == 1:
+        rung = 2
+    else:
+        rung = 1
+    window = new_weeks or {}
+    trades = dict(scope='new_weeks', trades=window.get('trades'), closes=window.get('closes'),
+                  closes_of_earlier_positions=window.get('closes_of_earlier_positions'), gross_win=window.get('gross_win'),
+                  gross_loss=window.get('gross_loss'), pf=window.get('pf'), pf_note=window.get('pf_note'),
+                  trade_source=window.get('trade_source'), deals_csv=deals)
+    return dict(schema=MODEL_SCHEMA, model=model, model_name=MODEL_NAMES.get(model), model_source=source, timeframe=timeframe,
+                model_rung=rung, rung_label=RUNG_LABELS[rung], rung_order='3 real ticks > 2 Model 1 > 1 other > 0 Model 1/2 on M1',
+                m1_open_price_like=rung == 0, fidelity_table_version=None, trade_list=trades)
 
 
 def validate_rules(overrides=None):
@@ -265,15 +303,36 @@ def comparability(original, retest, *, pins=None, repro, same_inputs):
             check(name, str(original_value) == str(retest_value), '%s / %s' % (original_value, retest_value))
 
     check('inputs', same_inputs, 'every SET value except EA_Desc')
-    if oc.get('build_id') or rc.get('build_id'):
+    bridge = pins.get('equivalence')
+    if bridge:
+        # A different build stands in only under an ACTIVE trading-equivalence certificate that names both builds.
+        export_build, installed_build = bridge.get('export_build') or {}, bridge.get('installed_build') or {}
+        original_ok = (pins.get('original_ea_sha256') and pins['original_ea_sha256'] == export_build.get('ea_sha256')) or \
+            (not pins.get('original_ea_sha256') and oc.get('build_id') and oc['build_id'] == export_build.get('build_id'))
+        retest_ok = pins.get('installed_ea_sha256') == installed_build.get('ea_sha256') and \
+            (not rc.get('build_id') or not installed_build.get('build_id') or rc['build_id'] == installed_build['build_id'])
+        if bridge.get('mode') != 'active':
+            check('ea_build', False, 'canary run for trading-equivalence certificate %s: no verdict until the certificate is active'
+                  % str(bridge.get('certificate_digest'))[:12])
+        else:
+            check('ea_build', bool(original_ok and retest_ok and bridge.get('valid_at_collect', True)),
+                  'trading-equivalent build: certificate %s (%s), canary %s; export %s / installed %s'
+                  % (str(bridge.get('certificate_digest'))[:12], bridge.get('status_at_collect', bridge.get('status')),
+                     str(bridge.get('canary_digest'))[:12], oc.get('build_id') or pins.get('original_ea_sha256'),
+                     rc.get('build_id') or pins.get('installed_ea_sha256')))
+    elif oc.get('build_id') and rc.get('build_id'):
         pair('ea_build', oc.get('build_id'), rc.get('build_id'))
     elif pins.get('original_ea_sha256') and pins.get('installed_ea_sha256'):
+        # A re-test without a capture (any model but 4) is identified by the installed binary it ran on.
         check('ea_build', pins['original_ea_sha256'] == pins['installed_ea_sha256'], 'EA binary: run manifest / installed')
+    elif oc.get('build_id') or rc.get('build_id'):
+        pair('ea_build', oc.get('build_id'), rc.get('build_id') or pins.get('installed_build_id'))
     else:
         check('ea_build', False, 'the EA build of the original or the re-test is unknown')
     pair('ea_name', original.get('ea_name'), retest.get('ea_name'))
-    # The EA's export pass always forces real ticks (Model 4), so an original without a capture is Model 4.
-    pair('model', oc.get('model') if oc else 4, rc.get('model') if rc else pins.get('model'))
+    # Same-model rule: the re-test repeats the original's own tester model. The EA's export pass
+    # forces real ticks (Model 4), so an original without a capture is Model 4 unless pinned.
+    pair('model', oc.get('model') if oc else pins.get('original_model', 4), rc.get('model') if rc else pins.get('model'))
     pair('symbol', oc.get('asset') or original.get('symbol'), rc.get('asset') or retest.get('symbol'))
     pair('server', oc.get('server') or pins.get('original_server'), rc.get('server') or pins.get('server'))
     number = lambda value: None if value is None else float(value)
@@ -409,7 +468,8 @@ def evaluate(original, retest, *, new_end, tester=None, rules=None, pins=None):
     if covered:
         deals = deal_window(new_deals, first_new, new_end)
         window.update(trades=deals['entries'], closes=deals['closes'], closes_of_earlier_positions=deals['closes_of_earlier_positions'],
-                      pf=deals['pf'], pf_note=deals['pf_note'], trade_source='capture_deals')
+                      pf=deals['pf'], pf_note=deals['pf_note'], gross_win=deals['gross_win'], gross_loss=deals['gross_loss'],
+                      trade_source='capture_deals')
     else:
         old_foos, new_foos = (original.get('windows') or {}).get('FOOS'), (retest.get('windows') or {}).get('FOOS')
         trades = new_foos['trades'] - old_foos['trades'] if old_foos and new_foos and repro['reproduced'] else None
@@ -449,4 +509,7 @@ def evaluate(original, retest, *, new_end, tester=None, rules=None, pins=None):
                               values_sha256=original['values_sha256']),
                 retest=dict(set_path=retest['set_path'], set_sha256=retest['set_sha256'], evidence_end=retest['evidence_end'],
                             capture_status=new_capture.get('status')),
-                rules=rules, signals=signals(window, prior, pace, repro, same_inputs, new_capture), caveat=CAVEAT)
+                rules=rules, signals=signals(window, prior, pace, repro, same_inputs, new_capture), caveat=CAVEAT,
+                evidence_model=model_tag(new_capture.get('model') if new_capture.get('model') is not None else (pins or {}).get('model', 4),
+                                         retest.get('period'), source=(pins or {}).get('model_source'), new_weeks=window, deals=new_deals),
+                equivalence=(pins or {}).get('equivalence'))

@@ -16,7 +16,7 @@ from studio_native_gate import exclusive_gate
 from studio_native_request import (validate_launch_material,validate_restart_controls,
                                    validate_restart_material)
 from studio_open_activation import _install_controls
-from studio_process_check import inspect_processes,revalidate_processes
+from studio_process_check import RollingBaseline,inspect_processes,revalidate_processes
 from studio_research_authority import before_native_dispatch
 from studio_seed_process import WindowsSeedProcess
 from studio_seed_slot import guard_active_seed
@@ -75,7 +75,9 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     args=c.native_args()
     c.runtime(require_idle=True,expected_batch_ongoing=False)
     before_native_dispatch(c,job)
-    baseline=inspect_processes(binding)
+    # Fast precheck before any reservation; the guarding baseline is taken below,
+    # after the O(members) controller work, so a large batch never outlives it.
+    precheck=inspect_processes(binding)
     digest=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()
     if resume_unissued:
         from studio_unissued_start import proof
@@ -92,17 +94,19 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     if on_attempt is not None:on_attempt(intent)
     evidence=c.root/'attempts'/intent['attempt_id'];evidence.parent.mkdir(exist_ok=True)
     material=validate_launch_material(c.state(),c.job(job_id),**{k:v for k,v in args.items() if k!='evidence'})
+    rolling=RollingBaseline(binding,inspect_processes(binding),revalidate=revalidate_processes).take_over(precheck)
+    baseline=rolling.current
     phase(c,job_id,generation,None,'prepared',startup_sha256=material['startup_receipt']['sha256'],
           process_baseline=baseline,account=dict(c.session['account']))
     def owned(bound,inventory):
-        checkpoint(c,job_id,generation);revalidate_processes(bound,baseline)
+        checkpoint(c,job_id,generation);rolling.check(bound)
         c.runtime(require_idle=True,expected_batch_ongoing=False)
     with exclusive_gate(c.local/'native-gate'):
         if resume_unissued:
             from studio_unissued_start import native_absence
             native_absence(c,c.job(job_id),package)
         arm_fields=_install_controls(c.state(),c.job(job_id),restart=True,**args,evidence=evidence,
-                                     process_baseline=baseline,validate_ownership=owned)
+                                     process_baseline=rolling.current,validate_ownership=owned)
         manifest=material['manifest']
         bridge=bridge_prepare(binding,manifest['native_run_relative'])
         write_json(evidence/'report-bridge.json',bridge)
@@ -111,7 +115,7 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     phase(c,job_id,generation,'prepared','controls_installed',startup_path=str(startup),
           report_bridge=bridge,arm_request_fields=arm_fields)
     def validate(state,job):
-        checkpoint(c,job_id,generation);revalidate_processes(binding,baseline)
+        checkpoint(c,job_id,generation);rolling.check()
         bridge_verify(bridge)
         before_native_dispatch(c,job)
         return validate_restart_controls(state,job,**args,evidence=evidence)
@@ -140,7 +144,7 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
             if str(error)!='Runtime policy mismatch: batch_ongoing' or time.monotonic()>=runtime_deadline:
                 raise
             time.sleep(.25)
-    revalidate_processes(binding,baseline)
+    rolling.check()
     process=process or WindowsSeedProcess(c)
     identity=process.inspect()
     expected=baseline['research']

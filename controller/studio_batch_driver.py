@@ -8,6 +8,7 @@ pending or reserved-but-never-permitted) is not uncertain: it may start again
 under the same batch ID; its journal is archived, never deleted.
 """
 import hashlib
+import json
 import math
 import os
 import re
@@ -205,6 +206,72 @@ PAUSE_OVERRUN_SECONDS = 240
 FAST_WATCH_SECONDS = 150
 FAST_POLL_SECONDS = 5
 SAFE_POINT_WAITS = frozenset(('waiting_safe_point', 'cancel_rejected_waiting_safe_point'))
+
+
+# Stop latency (beta.17 T2 QA round 3, r3-speed-2): the EA consumed the owner-stop cancel
+# 0.4 s after it was issued and wrote its result 1.3 s later, yet Stop took 33-38 s. The
+# driver slept its whole poll (30 s) before it saw owner STOP, then again before it read the
+# settled cancel. Between passes it now watches for a stop every STOP_WATCH_SECONDS (file
+# stats only), and while a cancel of this attempt is outstanding it polls every
+# CANCEL_POLL_SECONDS. Verification is unchanged: the same reconcile + finish readback.
+STOP_WATCH_SECONDS = .5
+CANCEL_POLL_SECONDS = 1
+
+
+def _stop_signals(controller, record, now=None):
+    """Cheap, read-only stop signals: (owner STOP, human TAKE CONTROL, cancel of this attempt published)."""
+    owner = human = False
+    if controller.session.get('authority_kind') == 'demo_direct':
+        owner = (controller.root/'demo-agent/STOP').exists()
+        bridge = getattr(controller, 'bridge', None)
+        if bridge is not None:
+            folder = bridge.root/'human'
+            human = any(any((folder/channel).glob('*.json')) for channel in ('inbox', 'processing'))
+    return owner, human, _cancel_outstanding(controller, record, now)
+
+
+def _cancel_outstanding(controller, record, now=None):
+    """A live cancel request for this exact attempt (published by this driver or by a batch-stop)."""
+    local = getattr(controller, 'local', None)
+    if local is None or not record.get('attempt_id'):
+        return False
+    try:
+        path = Path(local)/'native-gate'/'request.json'
+        if not path.is_file() or path.stat().st_size > 64*1024:
+            return False
+        request = json.loads(path.read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError, UnicodeError):
+        return False
+    now = time.time() if now is None else now
+    return (isinstance(request, dict) and request.get('action') == 'cancel'
+            and request.get('attempt_id') == record['attempt_id']
+            and type(request.get('expires_utc')) in (int, float) and request['expires_utc'] + 30 > now)
+
+
+def _wait(controller, record, clock, seconds):
+    """Sleep up to ``seconds`` between passes, returning early when a stop appears.
+
+    With a cancel of this attempt outstanding the pass repeats every CANCEL_POLL_SECONDS.
+    Otherwise the wait ends as soon as owner STOP, a human TAKE CONTROL or a published
+    cancel newly appears; a signal already present when the wait began never spins it.
+    """
+    if seconds <= 0:
+        return
+    if seconds <= CANCEL_POLL_SECONDS:
+        clock.sleep(seconds)   # already a fast poll: nothing to watch for in between
+        return
+    before = _stop_signals(controller, record, clock.time())
+    if record.get('cancel_issued') or before[2]:
+        clock.sleep(min(seconds, CANCEL_POLL_SECONDS))
+        return
+    end = clock.monotonic()+seconds
+    while True:
+        remaining = end-clock.monotonic()
+        if remaining <= 0:
+            return
+        clock.sleep(min(STOP_WATCH_SECONDS, remaining))
+        if any(seen and not then for seen, then in zip(_stop_signals(controller, record, clock.time()), before)):
+            return
 
 
 def _pause(controller, job_id):
@@ -547,7 +614,7 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     return _summary(path, record)
             _save(path, record, clock)
             remaining = (cancel_mono_deadline if record['cancel_issued'] else monotonic_deadline)-mono
-            clock.sleep(min(poll_seconds, max(.01, remaining)))
+            _wait(controller, record, clock, min(poll_seconds, max(.01, remaining)))
 
 
 def status(controller, job_id):

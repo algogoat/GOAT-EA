@@ -51,7 +51,7 @@ broker symbol, dates and resource budget. These dates and cutoff are examples.
       "frame_target": 1000,
       "tester": {
         "Expert": "GOAT-EA\\GOAT V1.49.ex5",
-        "Symbol": "EURUSD", "Period": "H1", "Model": 1,
+        "Symbol": "EURUSD", "Period": "M1", "Model": 1,
         "ExecutionMode": 0, "Optimization": 2, "OptimizationCriterion": 6,
         "FromDate": "2026.01.01", "ToDate": "2026.03.01",
         "ForwardMode": 0, "ForwardDate": "",
@@ -92,7 +92,7 @@ configuration, schema, installation and retained result has a SHA-256 binding.
 and range in the terminal's saved tester profile
 (`<data root>\MQL5\Profiles\Tester\<expert>.set`). A plain `ADX_Level=22.0` in the
 startup `[TesterInputs]` replaces only the value, so a flag left at `Y` by an earlier
-tester session (for example a Banker plan that searched `ADX_Level` 27/30/33) would
+tester session (for example an earlier plan that searched `ADX_Level` 27/30/33) would
 silently add an axis. So the frozen SET and startup INI write:
 
 - each frozen axis with its exact range and `Y`, byte for byte as in the template
@@ -111,7 +111,7 @@ new batch ID"). A member already running is still observed and kept; only the ne
 launch is refused.
 The XML check stays strict: an XML that still varies a non-axis input fails with
 `Seed XML axes differ from frozen template`. Native batches (V1.49) have pinned
-their startup `[TesterInputs]` the same way since AX26. Promoted fixed/robustness
+their startup `[TesterInputs]` the same way. Promoted fixed/robustness
 SETs inherit the pinned form; `base_values` and candidate hashes use the plain value.
 Axes must be exactly representable by the native seed XML's eight-decimal output;
 unrepresentable search precision is rejected instead of silently changing it.
@@ -224,11 +224,16 @@ After a normal stopped/completed
 batch has been observed with no selected terminal process, its slot is released.
 MT5 stays closed after the last member. The reply then carries `monitor_profile`
 and a `next_action`: reopen the monitor with `monitor-launch --attempt-id <new id>`,
-which opens the `GOAT-Studio-...` chart profile with the monitor attached. A plain
-MT5 open can load an older chart profile (the seed run's `/config` session does not
-restore it), which leaves runtime feedback stale. If the user already opened MT5
-that way, `onboarding-status` names the saved profile and the one to pick in
-File > Profiles. On the owner demo lane (`goat.exe demo`) the seed run reopens
+which opens the `GOAT-Studio-...` chart profile with the monitor attached. Try it
+once. After the user approved DLL imports on the chart, it is normally refused with
+`Saved monitor symbol, EA identity or permissions changed; ...` or `Prepared profile
+changed; ...`; nothing was launched. Then ask the user to open MT5 normally and
+choose File > Profiles > the `monitor_profile` name. A plain MT5 open can load an
+older chart profile (the seed run's `/config` session does not restore it), which
+leaves runtime feedback stale. If the user already opened MT5 that way,
+`onboarding-status` names the saved profile and the one to pick in File > Profiles.
+While seeds run, MT5 shows a plain chart and its Strategy Tester, without the GOAT
+Studio panel or queue; tell the user that is expected. On the owner demo lane (`goat.exe demo`) the seed run reopens
 MT5 itself on that profile after the last member and reads the build back
 (`monitor_reopen`); `demo launch-terminal` with no arguments does the same by hand.
 

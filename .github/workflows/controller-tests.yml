@@ -80,6 +80,10 @@ jobs:
         run: python scripts/test_research_outcome_controller_mutations.py
       - name: Agent connection compact and full layout
         run: node scripts/test_agent_connection_layout.cjs
+      - name: Steady Studio panel (one paint per refresh) and its mutation check
+        run: |
+          node scripts/test_studio_steady_panel.cjs
+          node scripts/test_studio_steady_panel_mutations.cjs
       - name: Dashboard overview presentation
         run: node scripts/test_dashboard_overview.cjs
 

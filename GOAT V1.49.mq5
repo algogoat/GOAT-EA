@@ -3465,7 +3465,7 @@ void OnDeinit(const int reason)
    GoatTraceClose(reason);
    GoatDirectionGuardDeinit();
    if(g_GoatStudioReadOnlyMonitor)
-   {TesterDialog.Destroy(reason);EventKillTimer();return;}
+   {GOATDeviceActivationWithdrawCode();TesterDialog.Destroy(reason);EventKillTimer();return;}
    Print("================"+Server+"-"+EA_Name+" ("+Symbol()+") Deinit Start"+"================");
    if(GOATDeviceActivationOnly())
      {

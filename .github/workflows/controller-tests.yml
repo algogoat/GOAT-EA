@@ -74,6 +74,8 @@ jobs:
         run: node scripts/test_research_outcome.cjs
       - name: Connection code prompt and fragment link
         run: node scripts/test_connection_code.cjs
+      - name: The EA shares its pending connection code locally (LC36 activation-code file)
+        run: node scripts/test_activation_code_file.cjs
       - name: Research outcome mutation check (every EA guard is load-bearing)
         run: node scripts/test_research_outcome_mutations.cjs
       - name: Research outcome controller mutation check

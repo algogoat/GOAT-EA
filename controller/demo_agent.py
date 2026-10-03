@@ -33,6 +33,11 @@ from studio_seed_process import WindowsSeedProcess
 
 
 MIN_FREE_BYTES = 5 * 1024 ** 3
+# Readback windows. A running terminal answers within 2 minutes; a cold MT5 start after an
+# update took ~3 minutes on beta.17 T2 QA (process 09:44:19Z, EA loaded 09:47:18Z), so a
+# relaunch gets 7 minutes before GOAT calls the readback unconfirmed.
+RUNNING_READBACK_SECONDS = 120
+COLD_START_READBACK_SECONDS = 420
 # Seed hunts and OOS catch-ups share one runner driver, one terminal slot and one
 # broker-verified start discipline; only their state folders and wording differ.
 LANES = {'seed': dict(folder='seeds', starts='seed-starts', word='seed', title='Seed', unit='seed hunt'),
@@ -392,7 +397,8 @@ class DemoAgent:
                     # both Algo Trading flags OFF. Preserve the stop marker throughout.
                     before = (self.local / 'ui-observation.json').stat().st_mtime_ns
                     self.process.start(monitor_config)
-                    return self._readback_current(physical, after_observation_ns=before)
+                    return self._readback_current(physical, after_observation_ns=before,
+                                                  seconds=COLD_START_READBACK_SECONDS)
                 finally:
                     controller.store.close()
 
@@ -602,10 +608,36 @@ class DemoAgent:
                      restart_config_sha256=hashlib.sha256(updated).hexdigest(), broker=broker)
         return target
 
+    def _pairing_pending(self, expected_sha256, process_started_ns):
+        """The relaunched EA asked GOAT for sign-in and waits for the person's approval.
+
+        A build the account has not paired yet cannot send owner feedback, so the owner readback
+        can never pass before pairing. This is proven from the EA's own sign-in status for this
+        terminal (``GOAT/activation-status-<data folder>.json``), written by the new process for
+        exactly the paired demo login, while the physical EX5 is the expected build. Read-only.
+        """
+        from studio_research_status import terminal_token
+        path = Path(self.install['common_files_root']) / 'GOAT' / ('activation-status-' + terminal_token(self.install) + '.json')
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 64 * 1024:
+                return None
+            value = read_json(path)
+        except (OSError, ValueError, UnicodeError):
+            return None
+        observed = value.get('observedAtUtc') if isinstance(value, dict) else None
+        if (not isinstance(value, dict) or value.get('reason') != 'awaiting_approval'
+                or value.get('accountId') != self._paired_account()['login']
+                or type(observed) is not int or observed * 1_000_000_000 < process_started_ns
+                or observed > self.clock() + 5 or digest(self.binary) != expected_sha256):
+            return None
+        build_id = value.get('buildId')
+        return dict(reason='awaiting_approval', observed_utc=observed,
+                    build_id=build_id if isinstance(build_id, str) and re.fullmatch(r'[A-Za-z0-9._-]{1,96}', build_id) else None)
+
     def _readback_current(self, expected_sha256, *, after_observation_ns=0,
-                          expected_process=None):
+                          expected_process=None, seconds=RUNNING_READBACK_SECONDS, pairing_ok=False):
         observation = self.local / 'ui-observation.json'
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + seconds
         last_error = 'EA feedback unavailable'
         while time.monotonic() < deadline:
             try:
@@ -618,6 +650,18 @@ class DemoAgent:
                 if (observation.stat().st_mtime_ns <= max(after_observation_ns, process_started_ns)
                         or self.clock() - observation.stat().st_mtime >= 300):
                     last_error = 'Fresh EA owner feedback unavailable'
+                    pending = self._pairing_pending(expected_sha256, process_started_ns) if pairing_ok else None
+                    if pending is not None:
+                        # Updated, and the new build waits for the person to approve its connection. Not a
+                        # verified owner readback: no verified-build record, so research still refuses until
+                        # a fresh readback after pairing.
+                        verified = self._broker()
+                        if verified['process'] != selected:
+                            raise ValueError('Selected terminal process changed during broker readback')
+                        self._append('launch_terminal', 'pairing_required', ea_sha256=expected_sha256,
+                                     broker=verified, activation=pending)
+                        return dict(sha256=expected_sha256, broker=verified, terminal=verified['process'],
+                                    pairing_required=True, activation=pending)
                     time.sleep(.5)
                     continue
                 ui = read_json(observation)
@@ -644,16 +688,16 @@ class DemoAgent:
             time.sleep(.5)
         self._append('launch_terminal', 'readback_failed', ea_sha256=expected_sha256,
                      error=last_error)
-        raise ValueError('Terminal launch/readback unconfirmed after 120 seconds: ' + last_error)
+        raise ValueError('Terminal launch/readback unconfirmed after ' + str(seconds) + ' seconds: ' + last_error)
 
-    def _launch_terminal(self, monitor_config, expected_sha256, *, adopt=False):
+    def _launch_terminal(self, monitor_config, expected_sha256, *, adopt=False, metadata=None, pairing_ok=False):
         self._owner_clear(require_fresh=False); self._space()
         if self.process.inspect() is not None:
             raise ValueError('Selected terminal already runs; use status or retry readback')
         if digest(self.binary) != expected_sha256:
             raise ValueError('Physical EA differs from requested launch SHA-256')
         if adopt:
-            self._adopt_installed_binary(expected_sha256)
+            self._adopt_installed_binary(expected_sha256, metadata=metadata)
         elif self.install['ea_sha256'] != expected_sha256:
             raise ValueError('Stopped-terminal launch requires the registered EA hash')
         observation = self.local / 'ui-observation.json'
@@ -662,7 +706,8 @@ class DemoAgent:
                      monitor_config=str(monitor_config))
         started = self.process.start(monitor_config)
         return self._readback_current(expected_sha256, after_observation_ns=before,
-                                      expected_process=started)
+                                      expected_process=started, seconds=COLD_START_READBACK_SECONDS,
+                                      pairing_ok=pairing_ok)
 
     def launch_terminal(self, monitor_config):
         monitor_config = self._validate_monitor_config(monitor_config)
@@ -699,7 +744,11 @@ class DemoAgent:
             metadata=dict(bundle_version=bundle_version,agent_guide_path=str(Path(agent_guide_path).resolve()))
         def finish(result):
             if metadata:
-                self._owner_clear(); self._broker()
+                # A build waiting for its pairing approval cannot send owner feedback yet; the
+                # receipt was already written whole (EA hash and bundle identity in one write).
+                if not result.get('pairing_required'):
+                    self._owner_clear()
+                self._broker()
                 self._adopt_installed_binary(expected_sha256,metadata=metadata)
                 self._append('install_build','bundle_identity_verified',**metadata)
             return result
@@ -713,7 +762,9 @@ class DemoAgent:
                 if physical not in (self.install['ea_sha256'], expected_sha256):
                     raise ValueError('Stopped terminal contains an unknown EA build')
                 recovered = self._launch_terminal(monitor_config, physical,
-                                                  adopt=(physical == expected_sha256))
+                                                  adopt=(physical == expected_sha256),
+                                                  metadata=metadata if physical == expected_sha256 else None,
+                                                  pairing_ok=physical == expected_sha256)
                 if physical == expected_sha256:
                     return finish(dict(installed=True, recovered=True, **recovered))
             self._owner_clear(); self._space(); native = self._broker()
@@ -733,6 +784,13 @@ class DemoAgent:
                         and prior.get('ea_sha256') == expected_sha256
                         and prior.get('process') == native['process']):
                     return finish(dict(already_installed=True, sha256=old_sha, broker=native))
+                if (ui.get('loaded') is True and ui.get('owner') == 'agent'
+                        and ui.get('runtime', {}).get('account_demo') is True
+                        and PureWindowsPath(ui['runtime'].get('program_path', '')) == PureWindowsPath(self.binary)):
+                    # Installed earlier (for example while its pairing was pending) and answering now:
+                    # verify it where it runs instead of closing MT5 for the same bytes again.
+                    verified = self._readback_current(expected_sha256, expected_process=native['process'])
+                    return finish(dict(already_installed=True, **verified))
             backup = self.state_root / 'backups' / (old_sha + '.ex5')
             backup.parent.mkdir(parents=True, exist_ok=True)
             if backup.exists() and digest(backup) != old_sha:
@@ -766,10 +824,12 @@ class DemoAgent:
                 temporary.unlink(missing_ok=True)
             self._append('install_build', 'binary_replaced', old_sha256=old_sha,
                          new_sha256=expected_sha256)
-            self._adopt_installed_binary(expected_sha256)
-            verified = self._launch_terminal(restart_config, expected_sha256)
-            self._append('install_build', 'verified', new_sha256=expected_sha256,
-                         broker=verified['broker'])
+            # One receipt write: the new EA hash together with this bundle's identity, so the
+            # receipt never names the new EA under the previous app version.
+            self._adopt_installed_binary(expected_sha256, metadata=metadata)
+            verified = self._launch_terminal(restart_config, expected_sha256, pairing_ok=True)
+            self._append('install_build', 'pairing_required' if verified.get('pairing_required') else 'verified',
+                         new_sha256=expected_sha256, broker=verified['broker'])
             return finish(dict(installed=True, **verified))
 
     def _adopt_installed_binary(self, expected_sha256, *, metadata=None):

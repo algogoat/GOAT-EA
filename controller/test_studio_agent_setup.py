@@ -344,6 +344,61 @@ class AgentSetupTests(unittest.TestCase):
             self.assertIsNone(agent_setup.shared_code(self.c, '123456', 'Customer-Demo', BUILD))
         self.assertIsNotNone(agent_setup.shared_code(self.c, '123456', 'Customer-Demo', BUILD), 'the same file read directly is accepted')
 
+    def demo_lane(self):
+        session = dict(self.c.session, authority_kind='demo_direct')
+        return patch('studio_agent_setup.session_state', return_value=(session, {}))
+
+    def test_demo_direct_reads_the_shared_code_and_never_registers_the_mailbox(self):
+        # beta.17 T2 QA round 2 (P0): Banker and T2 are demo_direct; the B38 EA shares its code locally.
+        self.shared_code_file()
+        with self.demo_lane(), patch.object(agent_setup, 'setup_register', side_effect=AssertionError('no registration')), \
+             patch.object(agent_setup, 'setup_request', side_effect=AssertionError('no mailbox request')):
+            result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+        self.assertEqual((result['status'], result['source'], result['userCode'], result['accountLogin']),
+                         ('pairing_available', 'activation_code_file', 'WXYZ-2345', '123456'))
+        self.assertEqual(result['accountFacts']['source'], 'mt5_broker_readback')
+        self.assertFalse(mailbox.setup_root(self.c).exists(), 'nothing was written on the demo lane')
+
+    def test_demo_direct_keeps_every_pairing_guardrail(self):
+        self.shared_code_file()
+        with self.demo_lane():
+            for mt5, message in ((FakeMT5(self.c, algo=True), 'Algo Trading off'), (FakeMT5(self.c, positions=1), 'Algo Trading off'),
+                                 (FakeMT5(self.c, trade_mode=2), 'real-money'), (FakeMT5(self.c, login='654321'), 'different account'),
+                                 (FakeMT5(self.c, connected=False), 'not connected')):
+                with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                    agent_setup.pairing_code(self.c, BUILD, mt5=mt5)
+            with self.assertRaisesRegex(ValueError, 'build ID'):
+                agent_setup.pairing_code(self.c, 'x', mt5=FakeMT5(self.c))
+        protected = dict(self.c.session, authority_kind='demo_direct', account=dict(self.c.session['account'], login='3000109427'))
+        with patch('studio_agent_setup.session_state', return_value=(protected, {})), self.assertRaisesRegex(ValueError, 'running GOAT experiment'):
+            agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+        # A file for another build or login is ignored, and the demo lane then falls back without a mailbox write.
+        self.shared_code_file(buildId='V1.48-OTHER-BUILD-02')
+        with self.demo_lane(), patch.object(agent_setup, 'setup_register', side_effect=AssertionError('no registration')):
+            result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+        self.assertEqual((result['status'], result['next_action']), ('no_native_answer', agent_setup.DEMO_LANE_NO_SHARED_CODE))
+        self.assertNotIn('userCode', result)
+
+    def test_demo_direct_without_a_shared_code_explains_by_activation_reason(self):
+        with self.demo_lane(), patch.object(agent_setup, 'setup_register', side_effect=AssertionError('no registration')):
+            self.activation_status('awaiting_approval')
+            result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+            self.assertEqual((result['status'], result['next_action']), ('no_pending_pairing', agent_setup.DEMO_LANE_NOT_SHARED))
+            self.activation_status('approved')
+            result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+            self.assertEqual(result['status'], 'no_pending_pairing'); self.assertIn('already connected', result['next_action'])
+
+    def test_native_human_control_still_uses_the_shared_code_then_the_mailbox(self):
+        # Testers' installations: unchanged behaviour on both paths.
+        session = dict(self.c.session, authority_kind='native_human_control')
+        self.shared_code_file()
+        with patch('studio_agent_setup.session_state', return_value=(session, {})):
+            self.assertEqual(agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))['source'], 'activation_code_file')
+        self.shared_code_file(buildId='V1.48-OTHER-BUILD-02')
+        self.start_ea()
+        with patch('studio_agent_setup.session_state', return_value=(session, {})):
+            self.assertEqual(agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))['source'], 'setup_mailbox')
+
     def test_an_ea_that_shares_nothing_gets_one_plain_fallback(self):
         # SM31 and earlier on a strategy chart: no shared file and no mailbox host.
         with patch.object(agent_setup, 'setup_request', return_value=dict(id='b' * 32, result='receipt_timeout')):

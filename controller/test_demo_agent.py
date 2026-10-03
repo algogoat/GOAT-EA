@@ -474,6 +474,99 @@ class DemoAgentTests(unittest.TestCase):
         self.assertEqual(read_json(self.installation)['ea_sha256'], digest(candidate))
         self.assertEqual((self.agent.state_root / 'backups' / (old_sha + '.ex5')).read_bytes(), b'old-ea')
 
+    def activation_status(self, reason='awaiting_approval', account='3000082754', observed=None):
+        folder = self.common / 'GOAT'; folder.mkdir(parents=True, exist_ok=True)
+        import time as clock
+        (folder / ('activation-status-' + self.data.name + '.json')).write_text(json.dumps(dict(
+            accountId=account, buildId='V1.49-BETA17-38', reason=reason, httpStatus=201,
+            observedAtUtc=int(clock.time()) if observed is None else observed)))
+
+    def install_ready(self):
+        (self.agent.local / 'active.json').write_text(json.dumps(dict(
+            directory_id='session-one', terminal_id='terminal-one', run_id='session-one',
+            terminal_data_path=str(self.data))))
+        store = StudioStore(self.root / 'studio.sqlite')
+        try:
+            initial = store.bind('terminal-one', 'session-one')
+            store.submit(dict(schema_version=1, request_id='human-give-for-install',
+                terminal_id='terminal-one', run_id='session-one',
+                expected_revision=initial['revision'], generation=initial['generation'],
+                command='control.grant_agent', payload={}), actor='human')
+        finally:
+            store.close()
+        monitor = self.base / 'monitor.ini'
+        monitor.write_text('[Charts]\nProfileLast=GOAT-Studio-test\n[Experts]\nEnabled=0\n'
+                           'AllowLiveTrading=0\n[StartUp]\nExpert=GOAT-EA\\GOAT V1.49.ex5\n'
+                           'ExpertParameters=GOAT Studio Agent.set\nPeriod=M1\n')
+        return monitor
+
+    def test_update_to_an_unpaired_build_is_updated_with_pairing_needed(self):
+        # beta.17 T2 QA round 2: a new build cannot send owner feedback before it is paired, so the
+        # readback reports "updated; pairing needed" from the EA's own sign-in status, and the
+        # receipt carries the new EA and this bundle's version from one write.
+        candidate = self.base / 'candidate.ex5'; candidate.write_bytes(b'new-ea')
+        monitor = self.install_ready()
+        seen_at_launch = {}
+
+        def relaunched_waiting_for_pairing():
+            seen_at_launch.update(read_json(self.installation))
+            self.activation_status()
+
+        self.process.on_start = relaunched_waiting_for_pairing
+        guide = Path(__file__).with_name('AGENT-START-HERE.md').resolve()
+        with patch('demo_agent.tester_state', return_value='idle'):
+            result = self.agent.install_build(candidate, digest(candidate), monitor, require_running=True,
+                linked_login='3000082754', bundle_version='0.5.0-beta.17', agent_guide_path=guide)
+            self.assertTrue(result['installed']); self.assertTrue(result['pairing_required'])
+            self.assertEqual(result['activation']['reason'], 'awaiting_approval')
+            self.assertEqual(result['activation']['build_id'], 'V1.49-BETA17-38')
+            self.assertEqual(result['sha256'], digest(candidate))
+            self.assertEqual((seen_at_launch['ea_sha256'], seen_at_launch['bundle_version']), (digest(candidate), '0.5.0-beta.17'),
+                             'the receipt never names the new EA under the previous app version')
+            updated = read_json(self.installation)
+            self.assertEqual((updated['ea_sha256'], updated['bundle_version'], updated['agent_guide_path']),
+                             (digest(candidate), '0.5.0-beta.17', str(guide)))
+            self.assertEqual(read_json(self.root / 'session.json')['installation_sha256'], sha(updated))
+            self.assertFalse(self.agent.preflight()['ready_for_batch'], 'pairing pending is not a verified owner readback')
+            # After the person approves the connection the EA answers; the same update verifies in place.
+            self.ui.write_text(json.dumps(dict(owner='agent', loaded=True, runtime=dict(account_demo=True,
+                account_login='3000082754', account_server='Darwinex-Demo', program_path=str(self.binary)))))
+            with patch.object(self.process, 'close', side_effect=AssertionError('no second close')):
+                again = self.agent.install_build(candidate, digest(candidate), monitor, require_running=True,
+                    linked_login='3000082754', bundle_version='0.5.0-beta.17', agent_guide_path=guide)
+            self.assertTrue(again['already_installed']); self.assertNotIn('pairing_required', again)
+            self.assertTrue(self.agent.preflight()['ready_for_batch'])
+
+    def test_pairing_pending_needs_this_login_this_process_and_the_new_bytes(self):
+        expected = digest(self.binary)
+        started_ns = 1_790_000_000 * 1_000_000_000
+        self.activation_status(observed=1_789_999_999)
+        self.assertIsNone(self.agent._pairing_pending(expected, started_ns), 'written before this process started')
+        self.activation_status(account='3000082755', observed=1_790_000_001)
+        self.assertIsNone(self.agent._pairing_pending(expected, started_ns), 'another login')
+        self.activation_status(reason='approved', observed=1_790_000_001)
+        self.assertIsNone(self.agent._pairing_pending(expected, started_ns), 'not waiting for approval')
+        self.activation_status(observed=1_790_000_001)
+        self.assertIsNone(self.agent._pairing_pending('0' * 64, started_ns), 'different EA bytes')
+        self.assertEqual(self.agent._pairing_pending(expected, started_ns)['reason'], 'awaiting_approval')
+
+    def test_cold_start_readback_window_and_no_pairing_shortcut_without_status(self):
+        import demo_agent
+        self.assertGreaterEqual(demo_agent.COLD_START_READBACK_SECONDS, 300)
+        stale_ns = self.ui.stat().st_mtime_ns
+        with patch('demo_agent.time.monotonic', side_effect=[0, 1, demo_agent.COLD_START_READBACK_SECONDS + 1]), \
+             patch('demo_agent.time.sleep'), patch.object(self.agent, '_broker') as broker:
+            with self.assertRaisesRegex(ValueError, 'after 420 seconds: Fresh EA owner feedback unavailable'):
+                self.agent._readback_current(digest(self.binary), after_observation_ns=stale_ns,
+                    expected_process=self.process.identity, seconds=demo_agent.COLD_START_READBACK_SECONDS, pairing_ok=True)
+        broker.assert_not_called()
+        # The relaunch path uses the cold-start window.
+        with patch.object(self.agent, '_owner_clear'), patch.object(self.agent, '_space'), \
+             patch.object(self.agent, '_readback_current', return_value={}) as readback:
+            self.process.closed = True
+            self.agent._launch_terminal(self.base / 'monitor.ini', digest(self.binary))
+        self.assertEqual(readback.call_args.kwargs['seconds'], demo_agent.COLD_START_READBACK_SECONDS)
+
     def test_local_install_identity_and_scoped_demo_authority(self):
         self.binary.write_bytes(b'new-ea')
         self.agent._adopt_installed_binary(digest(self.binary))

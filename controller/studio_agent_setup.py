@@ -5,7 +5,8 @@ pairing-code  Returns the short-lived public challenge the activation dialog sho
               GOAT/activation-code-<data folder>.json (LC36 and later, any chart); then it
               registers the EA's 15-minute (here 5-minute) pairing-read capability on the
               setup mailbox (Portfolio Dashboard, MH34 Studio monitor). Either way only on a
-              connected demo with Algo Trading off and no positions or orders.
+              connected demo with Algo Trading off and no positions or orders. On a demo_direct
+              (owner demo lane) installation only the shared file is read: no registration, no write.
 close-terminal Normal close of the selected MT5, never a kill, and only when inert:
               broker-reported demo, connected, Algo Trading off, no positions or orders,
               idle Strategy Tester, no batch, seed or unresolved native job. The EA's
@@ -185,6 +186,21 @@ def _no_code_action(reason):
     return 'This EA has no pending connection code: it is already paired or has not asked for one.'
 
 
+DEMO_LANE_NOT_SHARED = ('MT5 has not shared its connection code with GOAT yet; GOAT reads it again in a moment. '
+                        'If MT5 shows a code under Connect the EA, enter that code instead.')
+DEMO_LANE_NO_SHARED_CODE = ('On this demo terminal GOAT reads only the code the EA shares (LC36 and later), and this EA '
+                            'build does not share it. ' + ENTER_CODE)
+
+
+def _demo_lane_without_shared_code(reason):
+    """demo_direct: the raw CLI reads the shared file only, never the setup mailbox (a registration is a write)."""
+    if reason == 'awaiting_approval':
+        return dict(status='no_pending_pairing', userCodeReturned=False, activationReason=reason, next_action=DEMO_LANE_NOT_SHARED)
+    if reason in ('approved', 'build_not_admitted', 'webrequest_permission_required'):
+        return dict(status='no_pending_pairing', userCodeReturned=False, activationReason=reason, next_action=_no_code_action(reason))
+    return dict(status='no_native_answer', userCodeReturned=False, activationReason=reason, next_action=DEMO_LANE_NO_SHARED_CODE)
+
+
 def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
     session, _ = session_state(controller)
     login = session['account']['login']
@@ -210,6 +226,8 @@ def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
                     observedAtUtc=shared['observedAtUtc'], accountLogin=login, accountLast4=login[-4:],
                     server=proof['server'], buildId=ident['buildId'], demo=proof['demo'] is True, tradingAllowed=False,
                     activationReason=reason, accountFacts=account_facts(controller, proof), receiptId=None)
+    if session.get('authority_kind') == 'demo_direct':
+        return _demo_lane_without_shared_code(reason)
     setup_register(controller, ident, allow_pairing=True)
     result = (request or setup_request)(controller, ident, 'pairing', timeout=timeout)
     outcome = result['result']

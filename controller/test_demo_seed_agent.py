@@ -416,6 +416,15 @@ class DemoSeedAgentTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'Demo mutation requires the broker-verified agent tool'):
                         authority(db, self.binding, dict(owner='agent', generation=1))
 
+    def test_demo_direct_pairing_code_is_a_read_but_mutations_still_refuse(self):
+        # beta.17 T2 QA round 2: reading the code the EA shares is read-only, so the raw CLI may run it on the demo lane.
+        with self.database() as db:
+            with operation('pairing-code'):
+                self.assertIsNone(authority(db, self.binding, dict(owner='agent', generation=1)))
+            for name in ('close-terminal', 'deploy-load', 'deploy-stop', 'run-batch', 'prepare-batch'):
+                with operation(name), self.assertRaisesRegex(ValueError, 'Demo mutation requires the broker-verified agent tool'):
+                    authority(db, self.binding, dict(owner='agent', generation=1))
+
 
 if __name__ == '__main__':
     unittest.main()

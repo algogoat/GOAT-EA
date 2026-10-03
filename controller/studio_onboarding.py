@@ -19,7 +19,7 @@ from campaign_ledger import packed, sha
 from studio_installation import read_json
 from studio_bridge import write_json
 from studio_native_gate import exclusive_gate
-from studio_process_check import inspect_processes
+from studio_process_check import StoppedRootProcess, inspect_processes
 from studio_protected_peer import process_binding
 
 
@@ -63,7 +63,10 @@ def onboarding_status(controller):
         step('terminal_process', 'complete', 'Selected terminal is running; exact executable process observed')
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         processes = None
-        step('terminal_process', 'blocked', 'Inspect terminal processes. For a stopped selected terminal use monitor-prepare then monitor-launch; never stop unrelated terminals.', detail=str(exc))
+        if isinstance(exc, StoppedRootProcess):
+            step('terminal_process', 'blocked', exc.next_action(), detail=str(exc), program=exc.program, pid=exc.pid, program_path=exc.path)
+        else:
+            step('terminal_process', 'blocked', 'Inspect terminal processes. For a stopped selected terminal use monitor-prepare then monitor-launch; never stop unrelated terminals.', detail=str(exc))
     try:
         from studio_resilient_read import read_observation
         from studio_runtime_check import check_runtime
@@ -101,7 +104,11 @@ def onboarding_status(controller):
             pass
         action = ('Activation completed, but the EA did not confirm restart. Use the controller monitor repair on an idle session, or change the chart timeframe once.' if reason else
                   'Inspect the selected MT5 monitor: sign in to your demo, complete GOAT activation, approve DLL imports and required WebRequest URL, keep Algo Trading off, run serve and recheck.')
-        step('native_monitor', 'blocked', action, detail=str(exc), **({'reason_code':reason} if reason else {}))
+        profile = None if reason else wrong_chart_profile(controller, session)
+        if profile:
+            action = ('MT5 saved chart profile '+profile['profile_last']+' as its last profile, not the GOAT Studio monitor profile '+profile['monitor_profile']+
+                      '. Ask the user to choose File > Profiles > '+profile['monitor_profile']+' in MT5 (or, with MT5 closed, run monitor-launch --attempt-id <new id>), then recheck.')
+        step('native_monitor', 'blocked', action, detail=str(exc), **({'reason_code':reason} if reason else {}), **(profile or {}))
     if all(s['state']=='complete' for s in steps):
         result['status']='local_monitor_ready'
     result['next_action'] = next((s['action'] for s in steps if s['state']!='complete'),
@@ -113,6 +120,34 @@ def onboarding_status(controller):
         dll_imports='User approves DLL imports in MT5 and the monitor EA properties',
         broker_login='User signs in directly in MT5; never pass broker passwords through controller arguments')
     return result
+
+
+def wrong_chart_profile(controller, session):
+    """Read-only: the saved MT5 ProfileLast when it is not this session's monitor profile.
+
+    A seed or research /config launch can leave common.ini on an older profile, so
+    a plain MT5 open shows charts without the GOAT Studio monitor.
+    """
+    try:
+        name, profile = monitor_paths(controller, session)
+        if not profile.is_dir():
+            return None
+        raw = (Path(controller.install['terminal_data_root'])/'config/common.ini').read_bytes()
+        if len(raw) > 4_000_000:
+            return None
+        text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+        section = None; last = None
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith('[') and line.endswith(']'):
+                section = line[1:-1].casefold()
+            elif section == 'charts' and line.casefold().startswith('profilelast='):
+                last = line.split('=', 1)[1].strip()
+        if last and last != name:
+            return dict(profile_last=last, monitor_profile=name)
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        pass
+    return None
 
 
 def monitor_paths(controller, session):

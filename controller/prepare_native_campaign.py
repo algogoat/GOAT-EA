@@ -131,9 +131,16 @@ def prepare(plan_path, registry_path, output):
             ini += ''.join(f'{key}={value}\r\n' for key,value in tester.items())
             native_inputs=updated
             if binding['ea_version']=='1.49':
-                from studio_optimization_inputs import explicit_optimization_inputs
+                from studio_optimization_inputs import explicit_optimization_inputs,verify_explicit_inputs
+                from studio_strategy_settings import read_values
                 schema=json.loads((Path(__file__).parent/'contracts/v149/inputs.json').read_text(encoding='utf-8-sig'))
                 native_inputs=explicit_optimization_inputs(updated,schema)
+                # Every optimizable input carries its own flag, so the terminal's saved
+                # tester profile cannot add an axis; Y stays exactly on the source axes.
+                source_values=read_values(updated.encode('utf-16'))
+                axes={k for k,v in source_values.items() if k in schema['inputs'] and schema['inputs'][k]['type']!='string'
+                      and len(v.split('||'))==5 and v.split('||')[4]=='Y'}
+                verify_explicit_inputs(read_values(native_inputs.encode('utf-16')),schema,axes)
             ini += '[TesterInputs]\r\n' + native_inputs
             staged.append((tag, raw, ini.encode('utf-16'), dict(job=job, run_alias=tag, tester=tester,
                            source_sha256=before['sha256'], staged_sha256=after['sha256'],

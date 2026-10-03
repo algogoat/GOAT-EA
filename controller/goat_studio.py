@@ -51,6 +51,16 @@ OPERATION_CONTRACTS = {
     'seed-cancel':dict(required=['batch-id'],effect='request normal close of exact owned seed process; receipt is not exit proof'),
     'seed-report':dict(required=['batch-id'],effect='report actual seed XML metrics and frozen provenance; missing evidence remains unavailable'),
     'seed-promote':dict(required=['batch-id','candidate','name'],defaults={'neighborhood':1},limits={'neighborhood':[1,5]},effect='write a fixed SET and a narrow robustness SET (local stability check around the candidate; only the forward window is out-of-sample) for one verified seed candidate; local files only, create-only'),
+    'evidence-end':dict(required=[],defaults={'value':'auto','broker-clock':'ny-close'},effect='read-only: resolve the evidence end (AUTO = latest fully closed Friday on the broker NY-close clock, or an explicit closed day) and report what this EA build ends batch exports at; no file or terminal effect'),
+    'evidence-scan':dict(required=['source'],repeatable=['source'],defaults={'evidence-end':'auto','include-below-threshold':False},effect='read-only: every kept export (SET + equity CSV + .goatseq) under each source with its evidence end, threshold status and behind/current/ahead/caught_up against one target; never writes or launches'),
+    'evidence-versions':dict(required=[],optional=['values-sha256'],effect='read-only: catch-up evidence versions retained under controller state, linked to their original exports'),
+    'catchup-validate':dict(required=['plan'],effect='non-executing preview of a catch-up plan {schema_version:1, evidence_end, sets, job_timeout_seconds[, broker_clock, assume:{ExecutionMode}, include_below_threshold]}; no file or terminal effect'),
+    'catchup-prepare':dict(required=['catchup-id','plan'],effect='freeze one single-pass (Optimization=0, Model=4) re-test per behind export from its original start to the evidence end; original exports are never changed; no launch'),
+    'catchup-start':dict(required=['catchup-id'],defaults={'max-seconds':60},limits={'max-seconds':[1,3600]},effect='explicit bounded driver: closes the selected MT5 and relaunches it once per member with the frozen /config INI (SeedRunner process discipline, shared terminal slot, native launch not yet qualified)'),
+    'catchup-resume':dict(required=['catchup-id'],defaults={'max-seconds':60},limits={'max-seconds':[1,3600]},effect='continue the retained catch-up attempt; uncertain effects require reconciliation, never a retry'),
+    'catchup-status':dict(required=['catchup-id'],effect='observe catch-up state and collect finished re-tests into new evidence versions'),
+    'catchup-cancel':dict(required=['catchup-id'],effect='request normal close of the exact owned catch-up process; receipt is not exit proof'),
+    'catchup-report':dict(required=['catchup-id'],effect='new-weeks-only verdicts (held_up/weakened/failed/too_few_trades) with their metrics and evidence version paths'),
     'prepare-batch':dict(required=['batch-id','plan'],effect='validate and freeze a full native Studio batch; no launch'),
     'batch-status':dict(required=['batch-id'],effect='reconcile whole native batch and report member progress'),
     'save-batch':dict(required=['batch-id','output'],effect='save native .goatbatch without overwriting'),
@@ -69,7 +79,7 @@ OPERATION_CONTRACTS = {
     'state':dict(required=[],effect='process UI inbox then return full controller state'),
     'submit':dict(required=['request'],effect='apply exact agent envelope with revision and generation checks'),
     'prepare':dict(required=['job-id','set','configuration'],effect='freeze explicit settings and stage pending native package'),
-    'start':dict(required=['job-id'],effect='explicit one-time native dispatch for first pending job; reconcile receipt'),
+    'start':dict(required=['job-id'],refused_lanes=['native_human_control'],refused_lane_route='run-batch --mt5-restart-consent (an in-place Start never makes MT5 write batch reports)',effect='explicit one-time native dispatch for first pending job; reconcile receipt'),
     'status':dict(required=['job-id'],effect='observe retained attempt; update reconciled state without retry'),
     'reconcile':dict(required=['job-id'],effect='alias of status'),
     'cancel':dict(required=['job-id'],effect='cancel pending job or publish exact owned native stop; receipt is not stop proof'),
@@ -79,7 +89,12 @@ OPERATION_CONTRACTS = {
     'orphan-recovery-apply':dict(required=['review-id'],authorization_required_one_of=['confirm-reviewed','owner-research'],authorization='Explicit user confirmation (--confirm-reviewed), or the finite reviewed owner-demo original-grant scope (--owner-research); never fabricate human confirmation',effect='publish one exact V1.49 recovery action; no launch, stop, queue or grant change; receipt/readback required'),
     'orphan-recovery-status':dict(required=['review-id'],effect='reconcile exact native receipt and fresh readback; retain fence on uncertain effects; never resend'),
     'orphan-recovery-reconcile-rejection':dict(required=['review-id'],optional=['terminal-stopped'],terminal_stopped_authorization='Explicit human confirmation only; no offline owner or typed research authority',authorization_required_one_of=['confirm-reviewed','owner-research'],authorization='Exact reviewed rejection under explicit confirmation or finite reviewed owner-demo original-grant scope; settlement is not approval for another native recovery',effect='settle only an expired supported pre-consumption rejection with no consumption and either unchanged idle orphan identity or explicitly confirmed stopped-terminal local identity; retain evidence, never retry recovery or change native flags, queue or grant'),
-    'run-batch':dict(required=['job-id'],start_required=['max-seconds'],limits={'max-seconds':[1,172800]},min_free_bytes_default=5368709120,resume='Use --resume without a new budget or disk threshold; retained deadline and guard do not reset',effect='bounded owned batch driver with durable dispatch deadline and one cancel request at budget, low disk or unavailable capacity; stop must be observed, never assumed; no force kill or uncertain relaunch'),
+    'run-batch':dict(required=['job-id'],start_required=['max-seconds'],limits={'max-seconds':[1,172800]},min_free_bytes_default=5368709120,resume='Use --resume without a new budget or disk threshold; retained deadline and guard do not reset',native_human_control_start_required=['mt5-restart-consent'],mt5_restart='Customer lane: the first member starts through /config so MT5 writes its main/forward reports; the driver closes the selected MT5 normally once and reopens it with the batch startup file (MT5 also restarts itself between members). Tell the user first; pass --mt5-restart-consent only after their yes. The consent binds the running selected MT5 process and expires after 600 s; positions/orders/account are re-proved right before the close; a start that stops after arming returns recovery with where MT5 was left and the plain next step',effect='bounded owned batch driver with durable dispatch deadline and one cancel request at budget, low disk or unavailable capacity; stop must be observed, never assumed; no force kill or uncertain relaunch'),
+    'retire-unactivated':dict(required=['job-id'],demo_lane='goat.exe demo retire-unactivated --batch-id <id> (broker-verified; allowed under owner STOP)',effect='settle a start refused before MT5 was touched (launch intent and reservation, restart phase absent or prepared) to cancelled after proving under the native gate: no attempt folder or controls, no gate file naming the attempt/cancel/job, any current request belongs to a settled other job, no native run or report folder, no native queue, and a fresh idle EA sample with no batch ongoing; sends nothing to MT5, never claims a native cancellation, keeps reservation/intent/journal as evidence; idempotent. continue/resume-batch then prepares every member under a new ID'),
+    'batch-stop':dict(required=['job-id'],demo_lane='goat.exe demo stop --batch-id <id>',effect='one stop for any state: pending -> cancelled; reserved-not-started -> released and cancelled; start refused before MT5 was touched -> retire-unactivated; dispatched -> the EA native cancel (same queue/flag effect as the Studio STOP button), then run-batch --resume observes and finishes it; finished -> no-op. Refusals are one sentence with the next action'),
+    'batch-continue':dict(required=['job-id'],optional=['new-batch-id','include-failed','include-no-edge'],demo_lane='goat.exe demo continue --batch-id <id> (also starts the bounded driver)',effect='prepare the remaining work of a finished, stopped or paused batch as a successor (default <id>-rN): never-run members first, then failures with include-failed; across an EA build change the members are re-prepared and fully verified under the current installation, with lineage and binding_changed_keys recorded; a retained never-started successor is reused, and an existing --new-batch-id is reused only when its lineage names this batch; a start refused before activation is retired first; refuses in a typed research continuation session (it authorizes only its exact frozen plan). No launch'),
+    'compact-evidence':dict(required=[],optional=['apply'],effect='preview, then with --apply move the in-row native evidence history of finished jobs into verified append-only logs (native-evidence/*.history.jsonl) so every state read stays fast; refuses while a batch is active (rechecked inside the queue transaction); skips a job whose never-started retirement proof compares the whole row; archives are temp-written, fsynced, sha256-verified and atomically renamed; no native effect'),
+    'compact-receipts':dict(required=[],optional=['apply'],effect='preview, then with --apply rewrite each legacy receipt that still embeds the whole queue (state.queue) to the digest form new receipts use (state.queue_digest = {sha256, job_count}); the exact original receipt bytes are first archived one file per receipt (native-evidence/receipt-archive/<request_id>.<binding12>.receipt.json: temp-written, fsynced, sha256-verified, atomically renamed, never deleted); each row is rewritten in its own transaction under the mutation gate after re-checking that no batch is active, the session authority, and that the row still equals its archive by sha256; streams one receipt at a time; journal native-evidence/receipt-compactions.jsonl; no VACUUM (the file keeps its size until a separate reviewed VACUUM); no native effect'),
     'batch-driver-status':dict(required=['job-id'],effect='read retained driver journal and current binding match; never starts, resumes or cancels work'),
     'research-monitor-restart':dict(required=['job-id'],effect='owner-only typed continuation: gracefully suspend exact old publisher and reload one idle monitor after verified pre-consumption rejection; preserves evidence and budget; no batch start'),
     'research-monitor-restart-status':dict(required=['job-id'],effect='reverify an already launched recovery monitor; never close or launch again'),
@@ -91,7 +106,7 @@ OPERATION_CONTRACTS = {
     'research-regrant-status':dict(required=[],effect='read-only proof of genuine takeover and current native connection readiness; never create a grant'),
     'research-monitor-restart-resume':dict(required=['job-id'],effect='reconcile an already-issued monitor close and perform only its never-issued first relaunch; no repeated close or launch'),
     'cancel-rejected-successor':dict(required=['job-id'],effect='owner-only: publish one new stop identity after exact expired unconsumed native cancel rejection and reverified monitor restart; keeps both stop receipts'),
-    'pairing-code':dict(required=['build-id'],effect='register the EA 5-minute pairing-read capability and return the pending public connection code from a connected inert demo; consumes the native payload; no approval, credential or trading effect'),
+    'pairing-code':dict(required=['build-id'],effect='return the pending public connection code from a connected inert demo: first the code the EA shares locally (LC36 and later; read-only, registers and consumes nothing), else register the EA 5-minute pairing-read capability and consume its mailbox answer; no approval, credential or trading effect'),
     'close-terminal':dict(required=['attempt-id'],optional=['build-id'],effect='normal-close the selected MT5 once, only when broker-reported demo, connected, Algo Trading off, no positions/orders, tester idle and no batch/seed/native job; uses the EA inert shutdown when a dashboard hosts it, else one controller normal close; never kills or repeats'),
     'deploy-preflight':dict(required=[],effect='read-only broker demo/Algo/positions/tester readback, existing dashboard state and live deployment record for a desktop deploy review'),
     'deploy-load':dict(required=['plan'],effect='stage reviewed hash-bound member SETs and a saved dashboard in Common Files, close the inert demo terminal, relaunch it with the Portfolio Dashboard first, attach children, apply exposure policy and audit every child against its SET; Algo Trading stays off; resumable phase journal'),
@@ -160,7 +175,11 @@ class Controller:
         i=self.install;s=self.session
         peer=binding_fields(self)
         extra={}
-        if s.get('authority_kind')=='demo_direct':
+        # Report-capable /config route material. The customer lane gains it once
+        # onboarding staged its monitor profile (monitor-prepare); a session
+        # without one keeps its historical binding and cannot use config start.
+        if s.get('authority_kind')=='demo_direct' or (s.get('authority_kind')=='native_human_control'
+                                                      and (self.root/'monitor-profile.json').is_file()):
             from studio_strategy_settings import read_values
             profile=read_json(self.root/'monitor-profile.json')
             name=profile.get('profile_name','')
@@ -351,6 +370,15 @@ def main(argv=None):
     for command in ('seed-status','seed-cancel','seed-report'):
         p=sub.add_parser(command);p.add_argument('--batch-id',required=True)
     p=sub.add_parser('seed-promote');p.add_argument('--batch-id',required=True);p.add_argument('--candidate',required=True);p.add_argument('--name',required=True);p.add_argument('--neighborhood',type=int,default=1);p.add_argument('--member')
+    p=sub.add_parser('evidence-end');p.add_argument('--value',default='auto');p.add_argument('--broker-clock')
+    p=sub.add_parser('evidence-scan');p.add_argument('--source',type=Path,action='append',required=True);p.add_argument('--evidence-end',default='auto');p.add_argument('--broker-clock');p.add_argument('--include-below-threshold',action='store_true')
+    p=sub.add_parser('evidence-versions');p.add_argument('--values-sha256')
+    p=sub.add_parser('catchup-validate');p.add_argument('--plan',type=Path,required=True)
+    p=sub.add_parser('catchup-prepare');p.add_argument('--catchup-id',required=True);p.add_argument('--plan',type=Path,required=True)
+    for command in ('catchup-start','catchup-resume'):
+        p=sub.add_parser(command);p.add_argument('--catchup-id',required=True);p.add_argument('--max-seconds',type=int,default=60)
+    for command in ('catchup-status','catchup-cancel','catchup-report'):
+        p=sub.add_parser(command);p.add_argument('--catchup-id',required=True)
     p=sub.add_parser('prepare-batch');p.add_argument('--batch-id',required=True);p.add_argument('--plan',type=Path,required=True)
     p=sub.add_parser('batch-status');p.add_argument('--batch-id',required=True)
     p=sub.add_parser('save-batch');p.add_argument('--batch-id',required=True);p.add_argument('--output',type=Path,required=True)
@@ -375,8 +403,13 @@ def main(argv=None):
     p=sub.add_parser('orphan-recovery-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true');p.add_argument('--owner-research',action='store_true',help='Use the reviewed owner-demo grant scope; never represents a human confirmation')
     p=sub.add_parser('orphan-recovery-status');p.add_argument('--review-id',required=True)
     p=sub.add_parser('orphan-recovery-reconcile-rejection',help='Settle one reviewed expired pre-consumption review/runtime/foreign-control rejection; never retry recovery');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true');p.add_argument('--owner-research',action='store_true',help='Use the reviewed owner-demo grant scope; never represents a human confirmation');p.add_argument('--terminal-stopped',action='store_true',help='Explicit human-confirmed cleanup with the selected terminal stopped; no offline owner authority or native flag changes')
-    p=sub.add_parser('run-batch');p.add_argument('--job-id',required=True);p.add_argument('--max-seconds',type=int);p.add_argument('--resume',action='store_true');p.add_argument('--min-free-bytes',type=int,help='Positive free-space reserve on each output filesystem; default 5368709120 (5 GiB), frozen at start; omit on resume')
+    p=sub.add_parser('run-batch');p.add_argument('--job-id',required=True);p.add_argument('--max-seconds',type=int);p.add_argument('--resume',action='store_true');p.add_argument('--mt5-restart-consent',action='store_true',help='The user agreed that GOAT closes and reopens the selected MT5 once to start this batch through /config (required to start on the customer lane)');p.add_argument('--min-free-bytes',type=int,help='Positive free-space reserve on each output filesystem; default 5368709120 (5 GiB), frozen at start; omit on resume')
     p=sub.add_parser('batch-driver-status');p.add_argument('--job-id',required=True)
+    p=sub.add_parser('retire-unactivated');p.add_argument('--job-id',required=True)
+    p=sub.add_parser('batch-stop');p.add_argument('--job-id',required=True)
+    p=sub.add_parser('batch-continue');p.add_argument('--job-id',required=True);p.add_argument('--new-batch-id');p.add_argument('--include-failed',action='store_true');p.add_argument('--include-no-edge',action='store_true')
+    p=sub.add_parser('compact-evidence');p.add_argument('--apply',action='store_true')
+    p=sub.add_parser('compact-receipts');p.add_argument('--apply',action='store_true')
     p=sub.add_parser('batch-pause');p.add_argument('--job-id',required=True);p.add_argument('--immediate',action='store_true');p.add_argument('--supervise-seconds',type=int)
     p=sub.add_parser('batch-resume');p.add_argument('--job-id',required=True);p.add_argument('--new-batch-id');p.add_argument('--resume-token');p.add_argument('--include-failed',action='store_true');p.add_argument('--include-no-edge',action='store_true',help='Also re-run members tested with no profitable settings')
     sub.add_parser('research-status')
@@ -430,6 +463,10 @@ def main(argv=None):
             result=research_status(root=controller.root,install=controller.install,session=read_json(controller.root/'session.json'),
                                    local=controller.local,now=time.time(),process=process,
                                    owner_stop=(controller.root/'demo-agent/STOP').exists())
+            print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
+        if args.operation in ('evidence-end','evidence-scan','evidence-versions','catchup-validate'):
+            from studio_catchup import read_operation
+            result=read_operation(controller,args)
             print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
         if args.operation not in ('peer-prepare','peer-apply','switch-plan','switch-apply','switch-status','switch-verify-park','switch-replace-receipt','discover','resource-profile') and not args.operation.startswith(('orphan-recovery-','bootstrap-retirement-','owner-maintenance-')):
             from studio_handover import session_lock,guard
@@ -502,6 +539,15 @@ def main(argv=None):
             elif args.operation=='seed-promote':
                 from studio_seed_promote import promote
                 result=promote(controller,args.batch_id,args.candidate,args.name,neighborhood=args.neighborhood,member=args.member)
+            elif args.operation.startswith('catchup-'):
+                from studio_catchup import CatchupRunner
+                runner=CatchupRunner(controller)
+                if args.operation=='catchup-prepare':
+                    from studio_batch import _json
+                    result=runner.prepare(args.catchup_id,_json(args.plan))
+                elif args.operation in ('catchup-start','catchup-resume'):
+                    result=getattr(runner,args.operation.removeprefix('catchup-'))(args.catchup_id,max_seconds=args.max_seconds)
+                else: result=getattr(runner,args.operation.removeprefix('catchup-'))(args.catchup_id)
             elif args.operation.startswith('seed-'):
                 from studio_seed import SeedRunner
                 runner=SeedRunner(controller)
@@ -513,8 +559,20 @@ def main(argv=None):
                 else: result=getattr(runner,args.operation.removeprefix('seed-'))(args.batch_id)
             elif args.operation in ('run-batch','batch-driver-status'):
                 from studio_batch_driver import run,status
-                if args.operation=='run-batch': result=run(controller,args.job_id,max_seconds=args.max_seconds,resume=args.resume,min_free_bytes=args.min_free_bytes)
+                if args.operation=='run-batch': result=run(controller,args.job_id,max_seconds=args.max_seconds,resume=args.resume,min_free_bytes=args.min_free_bytes,restart_consent=args.mt5_restart_consent)
                 else: result=status(controller,args.job_id)
+            elif args.operation in ('batch-stop','batch-continue'):
+                from studio_fast_lane import stop as fast_stop,continue_batch
+                result=fast_stop(controller,args.job_id) if args.operation=='batch-stop' else continue_batch(controller,args.job_id,new_batch_id=args.new_batch_id,include_failed=args.include_failed,include_no_edge=args.include_no_edge)
+            elif args.operation=='compact-evidence':
+                from studio_evidence_log import compact
+                result=compact(controller,apply=args.apply)
+            elif args.operation=='compact-receipts':
+                from studio_receipt_digest import compact as compact_receipts
+                result=compact_receipts(controller,apply=args.apply)
+            elif args.operation=='retire-unactivated':
+                from studio_retire_unactivated import retire
+                result=retire(controller,args.job_id)
             elif args.operation=='batch-pause':
                 from studio_batch_pause import request as request_pause,load as load_pause,public as public_pause
                 journal_path=controller.root/'batch-drivers'/(args.job_id+'.json')
@@ -535,7 +593,9 @@ def main(argv=None):
                 prepared=resume_batch(controller,args.job_id,new_id,include_failed=args.include_failed,include_no_edge=args.include_no_edge,allow_peer_refresh=True)
                 mark_resumed(controller.root,args.job_id,new_id,now=time.time(),selected=prepared.get('member_count'))
                 result=dict(state='resumed',source_batch_id=args.job_id,batch_id=new_id,prepared=prepared,
-                            next_action='run-batch --job-id '+new_id+' --max-seconds <budget> starts the successor')
+                            next_action='run-batch --job-id '+new_id+' --max-seconds <budget> starts the successor'+
+                            (' (add --mt5-restart-consent after the user agrees GOAT closes and reopens their MT5)'
+                             if controller.session.get('authority_kind')=='native_human_control' else ''))
             elif args.operation=='research-monitor-restart':
                 from studio_rejected_monitor import restart
                 result=restart(controller,args.job_id)
@@ -596,7 +656,10 @@ def main(argv=None):
             elif args.operation=='resume-batch':
                 from studio_batch import resume_batch
                 result=resume_batch(controller,args.source_batch_id,args.batch_id,include_failed=args.include_failed,include_no_edge=args.include_no_edge)
-            elif args.operation=='start': result=controller.start(args.job_id)
+            elif args.operation=='start':
+                from studio_config_start import refuse_raw_start
+                refuse_raw_start(controller.session)
+                result=controller.start(args.job_id)
             elif args.operation=='cancel': result=controller.cancel(args.job_id)
             elif args.operation=='finish':
                 from studio_finish import finish

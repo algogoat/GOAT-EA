@@ -345,6 +345,28 @@ void CStrategyTesterDialog::ManagedResize(void)
    ManagedControls();
   }
 
+// A refresh runs ManagedControls up to three times (both ManagedResize passes and the
+// final call), and MT5 can draw the chart between two object writes. A property written
+// once and then overwritten in the same refresh therefore shows as a flash: EX33's handoff
+// button alternated "GIVE TO AGENT" (grey) and "AGENT CONNECTED" (lime). Each property is
+// decided first and written at most once, and only when it differs from the control.
+void GoatStudioSteadyText(CWndObj &control,const string value)
+  {
+   if(control.Text()!=value) control.Text(value);
+  }
+// clrNONE leaves that colour as it is (the control keeps its created colour).
+void GoatStudioSteadyColors(CWndObj &control,const color text,const color back=clrNONE,const color border=clrNONE)
+  {
+   if(text!=clrNONE && control.Color()!=text) control.Color(text);
+   if(back!=clrNONE && control.ColorBackground()!=back) control.ColorBackground(back);
+   if(border!=clrNONE && control.ColorBorder()!=border) control.ColorBorder(border);
+  }
+void GoatStudioSteadyEnabled(CWnd &control,const bool enabled)
+  {
+   if(control.IsEnabled()==enabled) return;
+   if(enabled) control.Enable(); else control.Disable();
+  }
+
 void CStrategyTesterDialog::ManagedControls(void)
   {
    bool edit=m_studioLoaded && !m_studioDraftFailed && m_studioOwner=="human";
@@ -352,52 +374,51 @@ void CStrategyTesterDialog::ManagedControls(void)
    bool handoff=edit && g_StudioPendingId=="";
    edit=edit && !g_StudioEmptyDraft;
 #endif
-   m_btnStart.Text("TAKE CONTROL"); m_btnStart.Enable();
-   m_btnStop.Text("GIVE TO AGENT");
-   m_btnAddQueue.Text("SAVE SETTINGS"); m_btnSetPresets.Text("DISCARD EDITS");
-   m_btnSetPresets.Enable();
-   if(edit) {m_btnAddQueue.Enable(); m_btnStop.Enable();}
-   else {m_btnAddQueue.Disable(); m_btnStop.Disable();}
+   // The handoff buttons' final text, state and colours; painted once at the end.
+   string start_text="TAKE CONTROL",stop_text="GIVE TO AGENT";
+   bool start_enabled=true,stop_enabled=edit;
+   color start_text_color=C'225,238,248',start_back=clrNONE,start_border=clrNONE;
+   color stop_text_color=(edit ? C'225,238,248' : C'100,120,140'),stop_back=clrNONE,stop_border=clrNONE;
 #ifdef GOAT_MONITOR_ONBOARDING_V149
-   if(handoff) m_btnStop.Enable(); else m_btnStop.Disable();
+   stop_enabled=handoff;
+   // Handoff buttons are not START/TERMINATE: "Take control" is a secondary outline
+   // action, never the green go button; red stays reserved for stop/cancel.
+   start_back=C'15,17,19'; start_border=C'201,163,91';
+   stop_back=C'15,17,19'; stop_border=C'60,64,70';
 #endif
+   GoatStudioSteadyText(m_btnAddQueue,"SAVE SETTINGS"); GoatStudioSteadyText(m_btnSetPresets,"DISCARD EDITS");
+   GoatStudioSteadyEnabled(m_btnSetPresets,true);
+   GoatStudioSteadyEnabled(m_btnAddQueue,edit);
    // All other actions remain disabled by the monitor's base layout.
    if(edit)
      {
-      m_cmbSymbol.Enable(); m_cmbPeriod.Enable(); m_dtFrom.Enable(); m_dtTo.Enable();
-      m_cmbForward.Enable(); if(m_cmbForward.Select()=="Custom") m_dtForward.Enable();
-      m_cmbDelay.Enable(); m_cmbModel.Enable(); m_edtDeposit.Enable(); m_edtCurrency.Enable();
-      m_cmbLeverage.Enable(); m_edtSetsToExport.Enable(); m_dpBackOOS.Enable();
-      m_edtMinScore.Enable(); m_edtMinARF.Enable(); m_edtTargetDD.Enable(); m_edtMinSR.Enable();
-      m_chkAdjustLots.Enable(); m_chkVerifyOOS.Enable();
+      GoatStudioSteadyEnabled(m_cmbSymbol,true); GoatStudioSteadyEnabled(m_cmbPeriod,true); GoatStudioSteadyEnabled(m_dtFrom,true); GoatStudioSteadyEnabled(m_dtTo,true);
+      GoatStudioSteadyEnabled(m_cmbForward,true); GoatStudioSteadyEnabled(m_dtForward,m_cmbForward.Select()=="Custom");
+      GoatStudioSteadyEnabled(m_cmbDelay,true); GoatStudioSteadyEnabled(m_cmbModel,true); GoatStudioSteadyEnabled(m_edtDeposit,true); GoatStudioSteadyEnabled(m_edtCurrency,true);
+      GoatStudioSteadyEnabled(m_cmbLeverage,true); GoatStudioSteadyEnabled(m_edtSetsToExport,true); GoatStudioSteadyEnabled(m_dpBackOOS,true);
+      GoatStudioSteadyEnabled(m_edtMinScore,true); GoatStudioSteadyEnabled(m_edtMinARF,true); GoatStudioSteadyEnabled(m_edtTargetDD,true); GoatStudioSteadyEnabled(m_edtMinSR,true);
+      GoatStudioSteadyEnabled(m_chkAdjustLots,true); GoatStudioSteadyEnabled(m_chkVerifyOOS,true);
 #ifdef GOAT_SEQUENCE_EXPORT_V148
-      if(StringFind(GoatStudioFields(true),",IncludeSequenceData")>=0) m_chkSequenceData.Enable();
-      else m_chkSequenceData.Disable();
+      if(StringFind(GoatStudioFields(true),",IncludeSequenceData")>=0) GoatStudioSteadyEnabled(m_chkSequenceData,true);
+      else GoatStudioSteadyEnabled(m_chkSequenceData,false);
 #endif
 
      }
    else
      {
-      m_cmbSymbol.Disable(); m_cmbPeriod.Disable(); m_dtFrom.Disable(); m_dtTo.Disable();
-      m_cmbForward.Disable(); m_dtForward.Disable(); m_cmbDelay.Disable(); m_cmbModel.Disable();
-      m_edtDeposit.Disable(); m_edtCurrency.Disable(); m_cmbLeverage.Disable();
-      m_edtSetsToExport.Disable(); m_dpBackOOS.Disable(); m_edtMinScore.Disable();
-      m_edtMinARF.Disable(); m_edtTargetDD.Disable(); m_edtMinSR.Disable();
-      m_chkAdjustLots.Disable(); m_chkVerifyOOS.Disable();
+      GoatStudioSteadyEnabled(m_cmbSymbol,false); GoatStudioSteadyEnabled(m_cmbPeriod,false); GoatStudioSteadyEnabled(m_dtFrom,false); GoatStudioSteadyEnabled(m_dtTo,false);
+      GoatStudioSteadyEnabled(m_cmbForward,false); GoatStudioSteadyEnabled(m_dtForward,false); GoatStudioSteadyEnabled(m_cmbDelay,false); GoatStudioSteadyEnabled(m_cmbModel,false);
+      GoatStudioSteadyEnabled(m_edtDeposit,false); GoatStudioSteadyEnabled(m_edtCurrency,false); GoatStudioSteadyEnabled(m_cmbLeverage,false);
+      GoatStudioSteadyEnabled(m_edtSetsToExport,false); GoatStudioSteadyEnabled(m_dpBackOOS,false); GoatStudioSteadyEnabled(m_edtMinScore,false);
+      GoatStudioSteadyEnabled(m_edtMinARF,false); GoatStudioSteadyEnabled(m_edtTargetDD,false); GoatStudioSteadyEnabled(m_edtMinSR,false);
+      GoatStudioSteadyEnabled(m_chkAdjustLots,false); GoatStudioSteadyEnabled(m_chkVerifyOOS,false);
 #ifdef GOAT_SEQUENCE_EXPORT_V148
-      m_chkSequenceData.Disable();
+      GoatStudioSteadyEnabled(m_chkSequenceData,false);
 #endif
 
      }
-   m_btnStart.Color(C'225,238,248'); m_btnSetPresets.Color(C'225,238,248');
-   m_btnAddQueue.Color(edit ? C'225,238,248' : C'100,120,140');
-   m_btnStop.Color(edit ? C'225,238,248' : C'100,120,140');
-#ifdef GOAT_MONITOR_ONBOARDING_V149
-   // Handoff buttons are not START/TERMINATE: "Take control" is a secondary outline
-   // action, never the green go button; red stays reserved for stop/cancel.
-   m_btnStart.ColorBackground(C'15,17,19'); m_btnStart.ColorBorder(C'201,163,91');
-   m_btnStop.ColorBackground(C'15,17,19'); m_btnStop.ColorBorder(C'60,64,70');
-#endif
+   GoatStudioSteadyColors(m_btnSetPresets,C'225,238,248');
+   GoatStudioSteadyColors(m_btnAddQueue,edit ? C'225,238,248' : C'100,120,140');
    GoatStudioComboTheme(m_cmbSymbol,m_activeStage==0,edit);
    GoatStudioComboTheme(m_cmbPeriod,m_activeStage==0,edit);
    GoatStudioComboTheme(m_cmbForward,m_activeStage==1,edit);
@@ -412,45 +433,52 @@ void CStrategyTesterDialog::ManagedControls(void)
 
 #ifdef GOAT_SEQUENCE_EXPORT_V148
    bool sequenceSupported=StringFind(GoatStudioFields(true),",IncludeSequenceData")>=0;
-   m_lblSequenceCost.Text(sequenceSupported ? "Adds export time and disk use; off requires a later capture." : "This controller cannot change sequence-data export settings.");
+   GoatStudioSteadyText(m_lblSequenceCost,sequenceSupported ? "Adds export time and disk use; off requires a later capture." : "This controller cannot change sequence-data export settings.");
 #endif
    int selected=m_listQueue.Current();
    bool pending=selected>=0 && selected<ArraySize(g_StudioQueueStatuses) && g_StudioQueueStatuses[selected]=="pending";
    bool queue_edit=edit && g_StudioPendingId=="";
-   if(queue_edit && GOATIsLowerHex(g_StudioSchemaHash,64)) m_btnSelectFile.Enable(); else m_btnSelectFile.Disable();
-   m_btnSelectFile.Color(queue_edit ? C'225,238,248' : C'100,120,140');
-   m_edtStrategy.Text(g_StudioHasStrategy ? g_StudioStrategyName : "Select a strategy SET file");
-   m_btnDelQitem.Text("Remove"); m_btnMakePending.Text("Add to queue");
-   if(queue_edit && g_StudioHasStrategy) m_btnMakePending.Enable(); else m_btnMakePending.Disable();
-   if(queue_edit && pending)
-     {m_btnDelQitem.Enable(); m_btnCancelSelected.Enable(); m_btnUpQitem.Enable(); m_btnDownQitem.Enable();}
-   else
-     {m_btnDelQitem.Disable(); m_btnCancelSelected.Disable(); m_btnUpQitem.Disable(); m_btnDownQitem.Disable();}
-   m_btnMakePending.Color(queue_edit && g_StudioHasStrategy ? C'225,238,248' : C'100,120,140');
-   color qcolor=queue_edit && pending ? C'225,238,248' : C'100,120,140';
-   m_btnDelQitem.Color(qcolor); m_btnCancelSelected.Color(qcolor); m_btnUpQitem.Color(qcolor); m_btnDownQitem.Color(qcolor);
+   GoatStudioSteadyEnabled(m_btnSelectFile,queue_edit && GOATIsLowerHex(g_StudioSchemaHash,64));
+   GoatStudioSteadyColors(m_btnSelectFile,queue_edit ? C'225,238,248' : C'100,120,140');
+   GoatStudioSteadyText(m_edtStrategy,g_StudioHasStrategy ? g_StudioStrategyName : "Select a strategy SET file");
+   GoatStudioSteadyText(m_btnDelQitem,"Remove"); GoatStudioSteadyText(m_btnMakePending,"Add to queue");
+   GoatStudioSteadyEnabled(m_btnMakePending,queue_edit && g_StudioHasStrategy);
+   bool queue_item=queue_edit && pending;
+   GoatStudioSteadyEnabled(m_btnDelQitem,queue_item); GoatStudioSteadyEnabled(m_btnCancelSelected,queue_item);
+   GoatStudioSteadyEnabled(m_btnUpQitem,queue_item); GoatStudioSteadyEnabled(m_btnDownQitem,queue_item);
+   GoatStudioSteadyColors(m_btnMakePending,queue_edit && g_StudioHasStrategy ? C'225,238,248' : C'100,120,140');
+   color qcolor=queue_item ? C'225,238,248' : C'100,120,140';
+   GoatStudioSteadyColors(m_btnDelQitem,qcolor); GoatStudioSteadyColors(m_btnCancelSelected,qcolor);
+   GoatStudioSteadyColors(m_btnUpQitem,qcolor); GoatStudioSteadyColors(m_btnDownQitem,qcolor);
 #ifdef GOAT_MONITOR_ONBOARDING_V149
    // Keep handoff visible without showing empty settings or off-screen actions.
    if(!m_studioLoaded || g_StudioEmptyDraft || D_Width<1000 || D_Height<480)
      {
       // CDialog::Add registers every form control in m_client_area.
       // c_Wnd_OPT is only a sibling backdrop, not their parent.
+      // Hide only what this card does not place below: hiding a kept control and
+      // showing it again in the same refresh would flash it.
       for(int i=0;i<m_client_area.ControlsTotal();i++)
-        {CWnd *child=m_client_area.Control(i); if(child!=NULL) child.Hide();}
+        {
+         CWnd *child=m_client_area.Control(i);
+         if(child==NULL || child==GetPointer(c_Wnd_OPT) || child==GetPointer(m_lblHeading)
+            || child==GetPointer(m_edtBatchProgress) || child==GetPointer(m_btnStop)
+            || child==GetPointer(m_btnStart) || child==GetPointer(m_lblBatchControl)
+            || child==GetPointer(m_edtBatchErrors) || child==GetPointer(m_listQueue)) continue;
+         child.Hide();
+        }
       // Restore the client-area backdrop before the foreground controls.
       StageMove(c_Wnd_OPT,0,0,true,D_Width-16,D_Height-4);
       c_Wnd_Export.Hide();
       int w=(int)MathMax(100,D_Width-48);
-      m_lblHeading.Text("GOAT / AGENT CONNECTION");
+      GoatStudioSteadyText(m_lblHeading,"GOAT / AGENT CONNECTION");
       StageMove(m_lblHeading,16,12,true,w,26);
       StageMove(m_edtBatchProgress,16,48,true,w,26);
-      m_btnStop.Text("GIVE TO AGENT");
-      m_btnStop.Color(handoff ? C'225,238,248' : C'100,120,140');
+      stop_text_color=(handoff ? C'225,238,248' : C'100,120,140');
       StageMove(m_btnStop,16,86,true,w,36);
-      m_btnStart.Text("TAKE CONTROL");
       StageMove(m_btnStart,16,130,m_studioOwner=="agent",w,32);
       // Say what is queued here, including an armed batch flag with nothing queued.
-      m_lblBatchControl.Text(StringFind(m_lblQueue.Text(),"BATCH ")==0 ? m_lblQueue.Text()
+      GoatStudioSteadyText(m_lblBatchControl,StringFind(m_lblQueue.Text(),"BATCH ")==0 ? m_lblQueue.Text()
          : (GlobalVariableGet("BatchOnGoing")!=0 && ArraySize(g_StudioQueueIds)==0
             ? "A batch flag is set, but nothing is queued here." : "No batch queued yet. Your agent prepares it."));
       StageMove(m_lblBatchControl,16,174,D_Height>=230,w,26);
@@ -460,27 +488,32 @@ void CStrategyTesterDialog::ManagedControls(void)
      }
 #endif
 #ifdef GOAT_CONTROL_FEEDBACK_V149
-   // Apply after both layouts so compact reflow cannot erase click feedback.
+   // Decided after both layouts so compact reflow cannot erase click feedback.
    if(g_StudioPendingId!="")
      {
-      m_btnStart.Disable(); m_btnStop.Disable();
-      if(g_StudioPendingCommand=="control.grant_agent") m_btnStop.Text("CONNECTING...");
-      if(g_StudioPendingCommand=="control.takeover") m_btnStart.Text("TAKING CONTROL...");
+      start_enabled=false; stop_enabled=false;
+      if(g_StudioPendingCommand=="control.grant_agent") stop_text="CONNECTING...";
+      if(g_StudioPendingCommand=="control.takeover") start_text="TAKING CONTROL...";
      }
    else if(m_studioOwner=="agent")
      {
       // A healthy state, shown as a status chip rather than a red disabled button.
-      m_btnStop.Text("AGENT CONNECTED"); m_btnStop.Color(C'190,242,100'); m_btnStop.ColorBorder(C'190,242,100');
+      stop_text="AGENT CONNECTED"; stop_text_color=C'190,242,100'; stop_border=C'190,242,100';
      }
    else if(m_studioOwner=="human" && g_StudioControlOutcome==2
            && g_StudioControlCommand=="control.takeover")
-      m_btnStop.Text("GIVE BACK TO AGENT");
+      stop_text="GIVE BACK TO AGENT";
 #endif
 #ifdef GOAT_MONITOR_ONBOARDING_V149
    // The positive handoff is the primary action: lime fill, graphite text.
    if(handoff)
-     {m_btnStop.ColorBackground(C'190,242,100'); m_btnStop.ColorBorder(C'190,242,100'); m_btnStop.Color(C'11,12,14');}
+     {stop_back=C'190,242,100'; stop_border=C'190,242,100'; stop_text_color=C'11,12,14';}
 #endif
+   // The only writes to the handoff buttons in a refresh.
+   GoatStudioSteadyText(m_btnStart,start_text); GoatStudioSteadyEnabled(m_btnStart,start_enabled);
+   GoatStudioSteadyColors(m_btnStart,start_text_color,start_back,start_border);
+   GoatStudioSteadyText(m_btnStop,stop_text); GoatStudioSteadyEnabled(m_btnStop,stop_enabled);
+   GoatStudioSteadyColors(m_btnStop,stop_text_color,stop_back,stop_border);
   }
 
 void CStrategyTesterDialog::ManagedSelectStrategy(void)
@@ -812,9 +845,9 @@ void CStrategyTesterDialog::ManagedRefresh(void)
       status+=" (view only)";
       if(FileIsExist(g_StudioBridge.DraftPath())) status+="; your draft is kept";
      }
-   m_edtBatchProgress.Text(status);
+   // The status line is written once, below, after the draft and receipt checks.
 #ifdef GOAT_MONITOR_ONBOARDING_V149
-   m_edtBatchErrors.Text(MQLInfoInteger(MQL_DLLS_ALLOWED) ? "Connecting an agent does not enable trading."
+   GoatStudioSteadyText(m_edtBatchErrors,MQLInfoInteger(MQL_DLLS_ALLOWED) ? "Connecting an agent does not enable trading."
                          : "DLL imports are off; your agent can't start batches here.");
 #else
    m_edtBatchErrors.Text("Managed settings / native execution not connected");
@@ -830,7 +863,7 @@ void CStrategyTesterDialog::ManagedRefresh(void)
          g_StudioReceiptResolved=false;
         }
      }
-   m_edtBatchProgress.Text(status);
+   GoatStudioSteadyText(m_edtBatchProgress,status);
    ManagedQueueRefresh();
 #ifdef GOAT_MONITOR_ONBOARDING_V149
    ManagedResize();
@@ -900,6 +933,10 @@ void CStrategyTesterDialog::ManagedObservation(const string status)
 #ifdef GOAT_TERMINAL_ISOLATION_V149
    // The controller refuses native work unless it resolves this same folder.
    body+=",\"state_base\":"+GoatStudioQuote(GoatOptBasePath(EA_Name,Server));
+#endif
+#ifdef GOAT_EVIDENCE_END_V149
+   // studio_evidence_end.ea_capability: this build honours the EvidenceEnd export setting.
+   body+=",\"evidence_end\":"+GoatStudioQuote(GOAT_EVIDENCE_END_CAPABILITY);
 #endif
    ulong now=GetTickCount64();
    if(body==g_StudioLastObservation && now-g_StudioObservationMillis<5000) return;

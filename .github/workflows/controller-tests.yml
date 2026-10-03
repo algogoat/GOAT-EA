@@ -74,14 +74,26 @@ jobs:
         run: node scripts/test_research_outcome.cjs
       - name: Connection code prompt and fragment link
         run: node scripts/test_connection_code.cjs
+      - name: The EA shares its pending connection code locally (LC36 activation-code file)
+        run: node scripts/test_activation_code_file.cjs
       - name: Research outcome mutation check (every EA guard is load-bearing)
         run: node scripts/test_research_outcome_mutations.cjs
       - name: Research outcome controller mutation check
         run: python scripts/test_research_outcome_controller_mutations.py
       - name: Agent connection compact and full layout
         run: node scripts/test_agent_connection_layout.cjs
+      - name: Steady Studio panel (one paint per refresh) and its mutation check
+        run: |
+          node scripts/test_studio_steady_panel.cjs
+          node scripts/test_studio_steady_panel_mutations.cjs
       - name: Dashboard overview presentation
         run: node scripts/test_dashboard_overview.cjs
+      - name: FU35 cancel stop confirmation and EvidenceEnd export boundary
+        run: node scripts/test_ea_followups.cjs
+      - name: FU35 mutation check (every EA guard is load-bearing)
+        run: node scripts/test_ea_followups_mutations.cjs
+      - name: EvidenceEnd controller staging mutation check
+        run: python scripts/test_evidence_end_export_controller_mutations.py
 
       - name: Verify Studio derived Report handoff safety
         run: node scripts/test_studio_derived_report.cjs

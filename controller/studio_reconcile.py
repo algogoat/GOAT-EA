@@ -65,7 +65,12 @@ def reconcile(store, terminal_id, run_id, job_id, attempt_id, *, revision,
             raise Conflict('Attempt is not awaiting native reconciliation')
         if current.get('native_evidence_sha256')==evidence_hash:
             return dict(changed=False,status=current['status'],revision=state['revision'])
-        current.setdefault('native_evidence_history',[]).append(evidence)
+        # Every changed observation is retained, but in an append-only per-attempt log,
+        # not in the queue row: that row is parsed by every state read, and an
+        # in-row history grew Banker's store to 7.8 GB (minutes per start).
+        from studio_evidence_log import append
+        current['native_evidence_log']=append(store,job_id,attempt_id,evidence,
+                                              previous=current.get('native_evidence_log'))
         current.update(status=status,native_evidence_sha256=evidence_hash,native_observation=evidence)
         binding=packed(dict(terminal_id=terminal_id,run_id=run_id))
         store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?',(packed(state['queue']),binding))

@@ -48,7 +48,9 @@ class SeedPromoteTests(unittest.TestCase):
         self.assertEqual(fixed['EA_Desc'], 'EURUSD Period Ten'); self.assertEqual(robustness['EA_Desc'], 'EURUSD Period Ten')
         self.assertEqual(fixed['Period'], '10||10||5||20||N', 'fixed SET keeps the ladder but turns the axis off')
         self.assertEqual(robustness['Period'], '10||10||5||15||Y', 'one step either side, clipped to the seed ladder')
-        self.assertEqual(fixed['Size'], '1.5'); self.assertEqual(robustness['Size'], '1.5')
+        # The frozen seed SET pins non-axis inputs with an explicit ||N flag (same value), and
+        # promotion keeps that, so a later tester profile cannot turn Size into an axis.
+        self.assertEqual(fixed['Size'], '1.5||1.5||0||1.5||N'); self.assertEqual(robustness['Size'], '1.5||1.5||0||1.5||N')
         self.assertTrue(Path(first['robustness_set']['path']).read_bytes().startswith(b'\xff\xfe'))
         folder = self.folder(candidates[0]['candidate_sha256'])
         self.assertEqual(sorted(p.name for p in folder.iterdir()), ['fixed.set', 'promotion.json', 'robustness.set'])

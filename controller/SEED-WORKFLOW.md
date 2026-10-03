@@ -84,9 +84,35 @@ research selection thresholds, not profitability guarantees.
 
 Preparation validates the entire matrix before writing frozen SETs and startup
 INIs. Original SETs remain unchanged. Frozen SETs retain UTF-16 LE BOM, CRLF,
-sections and trading inputs; only `EA_Desc` receives a unique short run alias and
+sections and trading values; `EA_Desc` receives a unique short run alias and
 `@{mode=SeedFarming,n=...,from=...,to=...}` metadata. Each source, frozen SET,
 configuration, schema, installation and retained result has a SHA-256 binding.
+
+**Every optimization flag is explicit.** MT5 remembers each input's optimize flag
+and range in the terminal's saved tester profile
+(`<data root>\MQL5\Profiles\Tester\<expert>.set`). A plain `ADX_Level=22.0` in the
+startup `[TesterInputs]` replaces only the value, so a flag left at `Y` by an earlier
+tester session (for example a Banker plan that searched `ADX_Level` 27/30/33) would
+silently add an axis. So the frozen SET and startup INI write:
+
+- each frozen axis with its exact range and `Y`, byte for byte as in the template
+  (`Grid_Size=-4.0||-5||1||-3||Y`);
+- every other optimizable input as `value||value||0||value||N` with the template's
+  own value (`ADX_Level=22.0||22.0||0||22.0||N`). MT5's own disabled form keeps a
+  remembered range (for example `true||false||0||true||N`); only the final `N`
+  matters;
+- literal strings and non-optimizable (`sinput`) inputs unchanged.
+
+Preparation refuses the plan if pinning would change any trading value or axis.
+A seed batch prepared before this fix has plain non-axis values in its manifest.
+`seed-prepare` with that same ID, `seed-start` and `seed-resume` all refuse it
+before any process effect ("prepared before explicit optimization flags; prepare a
+new batch ID"). A member already running is still observed and kept; only the next
+launch is refused.
+The XML check stays strict: an XML that still varies a non-axis input fails with
+`Seed XML axes differ from frozen template`. Native batches (V1.49) have pinned
+their startup `[TesterInputs]` the same way since AX26. Promoted fixed/robustness
+SETs inherit the pinned form; `base_values` and candidate hashes use the plain value.
 Axes must be exactly representable by the native seed XML's eight-decimal output;
 unrepresentable search precision is rejected instead of silently changing it.
 
@@ -156,7 +182,13 @@ retain logs for support. This beta intentionally has no automatic repair for an
 unattributed launch, invalid frozen evidence or revoked grant. Human takeover
 prevents further agent close/start actions. After a normal stopped/completed
 batch has been observed with no selected terminal process, its slot is released.
-The user can reopen MT5 and the monitor for the next normal optimization workflow.
+MT5 stays closed after the last member. The reply then carries `monitor_profile`
+and a `next_action`: reopen the monitor with `monitor-launch --attempt-id <new id>`,
+which opens the `GOAT-Studio-...` chart profile with the monitor attached. A plain
+MT5 open can load an older chart profile (the seed run's `/config` session does not
+restore it), which leaves runtime feedback stale. If the user already opened MT5
+that way, `onboarding-status` names the saved profile and the one to pick in
+File > Profiles.
 
 ## Read results and update the living matrix
 
@@ -165,7 +197,10 @@ Each member exposes source path/hash, frozen SET hash, complete tester settings,
 startup config hash, requested target, status and `actual_frames`. Missing output
 has `actual_frames: null`; verified zero-frame native output has `0`. These are
 different outcomes. Preserve all requested members, including cancellations,
-failures, empty results and those never started.
+failures, empty results and those never started. A failed member also shows its
+`error` and, when MT5 wrote an XML the controller refused, `observed_xml`
+(`path`, `sha256`, `frames_from_filename`, `accepted: false`). `xml_path` and
+`actual_frames` stay reserved for accepted evidence.
 
 Verified reports contain actual rows, average/best fitness, health percentage,
 zero-trade count, average trades and qualifying count. Native health means the

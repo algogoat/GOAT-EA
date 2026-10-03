@@ -81,6 +81,29 @@ def _retire_refused_journal(controller, job_id, path, clock):
     if target.exists():
         raise ValueError('Refused-start archive already exists; retained journal left in place')
     os.replace(path, target)
+def _retire_if_unactivated(controller, job_id, record, path, clock):
+    """A start refused before MT5 was touched settles itself, so it never needs a human.
+
+    Only studio_retire_unactivated's full proof (no attempt folder, controls, gate
+    file, run folder or queue; idle tester, no batch ongoing) may settle it. Any
+    refusal leaves the journal start_uncertain exactly as before.
+    """
+    if record.get('attempt_id') is None and 'launch_intent' not in controller.job(job_id):
+        return None  # refused_before_dispatch already lets the next start proceed
+    try:
+        from studio_retire_unactivated import retire
+        result = retire(controller, job_id, clock=clock.time, reason='driver_start_refused_before_activation',
+                        settle_journal=False)
+    except Exception as error:
+        record['retire_unactivated_refused'] = str(error)[:240]
+        _save(path, record, clock)
+        return None
+    record.update(stopped=True, status='cancelled', retired=result['kind'],
+                  result_path=result['result_path'], retired_wall=clock.time())
+    _save(path, record, clock)
+    return result
+
+
 DEFAULT_MIN_FREE_BYTES = 5 * 1024**3
 
 
@@ -165,7 +188,7 @@ def _summary(path, record):
     return {key: record.get(key) for key in ('status', 'max_seconds', 'started_wall', 'deadline_wall',
             'attempt_id', 'start_issued', 'cancel_issued', 'stopped', 'last_error', 'result_path',
             'min_free_bytes', 'cancel_reason', 'disk_observation', 'pause_id', 'pause_failure',
-            'pause_supervision')} | dict(
+            'pause_supervision', 'start_route', 'mt5_restart_consent', 'recovery')} | dict(
         journal_path=str(path), job_id=record['binding']['job_id'],
         disk_guard_available=(record.get('schema_version') == 2 and type(record.get('min_free_bytes')) is int
                               and record['min_free_bytes'] > 0),
@@ -224,7 +247,7 @@ def _fast_watch(controller, job_id, record, path, clock, monitor_fn, pause, esca
 
 def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
         cancel_grace_seconds=120, min_free_bytes=None, clock=time, finish_fn=finish,
-        pause_seconds=None, monitor_fn=None):
+        pause_seconds=None, monitor_fn=None, restart_consent=False):
     """Start once, or explicitly observe a retained attempt against its old deadline.
 
     Controller must already be open. CLI callers can hold their normal shared
@@ -237,11 +260,22 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
     it. ``pause_seconds`` bounds a pause supervisor that resumes a retained
     journal; without it a pausing driver ends PAUSE_OVERRUN_SECONDS after its
     own deadline, before its host's execution limit.
+
+    Direct-demo and customer native human-control sessions start through the
+    report-capable /config route (studio_config_start): an in-place Start click
+    never makes MT5 write the main/forward XML the EA needs for exports. On the
+    customer lane that route closes and reopens the user's own MT5 once, so a
+    new start requires ``restart_consent`` (the user's yes, retained in the
+    journal before any effect); without it nothing is written or dispatched.
     """
     if not isinstance(job_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', job_id):
         raise ValueError('Invalid prepared batch ID')
     if type(resume) is not bool:
         raise ValueError('Resume must be an explicit boolean')
+    if type(restart_consent) is not bool:
+        raise ValueError('MT5 restart consent must be an explicit boolean')
+    if resume and restart_consent:
+        raise ValueError('Resume never starts or restarts MT5; do not supply restart consent')
     if pause_seconds is not None and (not resume or type(pause_seconds) is not int or not 1 <= pause_seconds <= 172800):
         raise ValueError('A pause supervisor resumes a retained journal with 1..172800 seconds of supervision')
     if resume and min_free_bytes is not None:
@@ -300,6 +334,22 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 _save(path, record, clock)
                 return _summary(path, record)
         else:
+            from studio_config_start import config_start_lane, consent_record
+            customer = controller.session.get('authority_kind') == 'native_human_control'
+            if customer and restart_consent is not True:
+                # Refused before any journal, archive, reservation or native effect.
+                raise ValueError('MT5 restart consent required: tell the user GOAT will close and reopen the selected '
+                                 'MT5 once to start this batch (MT5 writes the batch reports only for that start), '
+                                 'then run run-batch again with --mt5-restart-consent after their yes')
+            config_route = config_start_lane(controller.session) and hasattr(controller, 'start_config')
+            if customer and config_route:
+                from studio_batch import CONFIG_START_BINDING_KEYS
+                plan_path = safe_path(root/'packages'/job_id/'studio-plan.json')
+                recorded = read_json(plan_path).get('research_binding', {}) if plan_path.is_file() else None
+                if recorded is not None and any(key not in recorded for key in CONFIG_START_BINDING_KEYS):
+                    raise ValueError('This batch was prepared without the report-capable MT5 start, so it could '
+                                     'never export. Prepare the same plan under a new batch ID (the GOAT Studio '
+                                     'monitor profile from monitor-prepare is required); nothing was started')
             if path.exists():
                 if not refused_before_dispatch(read_json(path), controller.job(job_id)):
                     raise ValueError('Driver journal exists; explicit resume required, never restart')
@@ -334,7 +384,11 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                           min_free_bytes=min_free_bytes, disk_observation=capacity,
                           started_wall=now, deadline_wall=now+max_seconds, last_wall=now,
                           start_issued=True, attempt_id=None, cancel_issued=False,
-                          stopped=False, status='start_issued', cancel_grace_seconds=cancel_grace_seconds)
+                          stopped=False, status='start_issued', cancel_grace_seconds=cancel_grace_seconds,
+                          start_route='config_restart' if config_route else 'in_place_start')
+            if customer:
+                # Bound to the exact running MT5 (PID, image, creation time) and an expiry.
+                record['mt5_restart_consent'] = consent_record(controller, job_id, now)
             if inherited is not None:
                 if inherited.get('fresh_native_epoch'):
                     record['fresh_authority_budget']=inherited
@@ -354,7 +408,7 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     record['attempt_id']=intent['attempt_id']
                     _owned_attempt(controller,record)
                     _save(path,record,clock)
-                if controller.session.get('authority_kind')=='demo_direct' and hasattr(controller,'start_config'):
+                if config_route:
                     controller.start_config(job_id,expected_generation=binding['generation'],on_attempt=retain_attempt)
                 else:
                     controller.start(job_id,expected_generation=binding['generation'])
@@ -367,7 +421,15 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 _save(path, record, clock)
             except Exception as error:
                 record['status'] = 'start_uncertain'; record['last_error'] = str(error)
+                if config_route:
+                    # Plain next step from the retained restart phase: MT5 may be closed.
+                    from studio_config_start import restart_recovery
+                    try:
+                        record['recovery'] = restart_recovery(controller.job(job_id))
+                    except Exception:
+                        record['recovery'] = restart_recovery(None)
                 _save(path, record, clock)
+                _retire_if_unactivated(controller, job_id, record, path, clock)
                 return _summary(path, record)
         wall_start, monotonic_start = call_wall, call_monotonic
         rollback = clock.time() < record['last_wall']

@@ -368,6 +368,19 @@ selected fixed exports use their existing real-tick policy independently of the
 genetic search model. Adjusted-lot export results retain a qualification notice
 until the builder verifies their exact evidence.
 
+EvidenceEnd is not one of the nine fields: it is the batch plan's
+`evidence_end` ("auto" or a closed broker date), resolved once by
+`prepare-batch`. When the bound monitor reports `evidence_end:
+goat-evidence-end-v1` (EA FU35 and later), the resolved date is staged as
+`EvidenceEnd=YYYY.MM.DD` in the batch's `export_settings.GOAT` and the EA runs
+every export to that day + 1 (exclusive `ToDate`), so every member's deals,
+equity rows and sequence frames end on the same day. `auto` is never staged: the
+EA would resolve it again per member and a Friday close mid-batch would split the
+timeline. `native_batch.evidence_end.native_export_end` says which applies
+(`evidence_end_setting`, or `ea_last_friday_exclusive` on older builds, which
+catch-up re-tests later). The EA refuses, without falling back, an EvidenceEnd
+that is not a closed server day or precedes the optimization window end.
+
 SET files retain UTF-16 LE BOM, CRLF, scalar values and full optimization tuples.
 The only native staging change is the unique EA_Desc attempt alias; the package
 retains source hash and unchanged canonical trading inputs. Every active axis is
@@ -454,7 +467,8 @@ native requests/permits; it never treats clearing a queue as stopping a tester.
 
 Then run `prepare-batch --batch-id <new-id> --plan <plan.json>`, inspect
 `batch-status --batch-id <new-id>`, and explicitly `start --job-id <new-id>` when
-ready. Clearing and preparation never launch work. Old job IDs remain reserved
+ready (customer native human-control lane: `run-batch --job-id <new-id> --max-seconds <budget>
+--mt5-restart-consent`; raw `start` is refused there). Clearing and preparation never launch work. Old job IDs remain reserved
 for provenance; do not reuse them for a new experiment.
 
 For inconsistent native flags, run `native-recovery-status`. It reports runtime
@@ -476,7 +490,10 @@ running: an agent/process crash is not an autonomous native deadline mechanism.
 `batch-driver-status --job-id <id>` reads progress; `run-batch --job-id <id> --resume`
 uses the original deadline without replenishing its budget or retrying uncertain
 starts. Driver authority remains tied to the original generation. A changed
-grant, configuration or native identity requires reconciliation.
+grant, configuration or native identity requires reconciliation. On the customer
+native human-control lane a new start also needs `--mt5-restart-consent`, because
+the first member starts through the report-capable /config route (see
+"Report-capable first-member startup").
 
 The driver also requires 5 GiB of free space on each terminal-data, Common-files
 and controller-state filesystem. `--min-free-bytes <positive integer>` selects a
@@ -508,6 +525,148 @@ and finish running, and records `paused` with a resume token. A journal left at
 remaining members as `<id>-rN` with lineage (the demo lane also starts it).
 `research-status` is the read-only lane view. Rules and states:
 [AGENT-START-HERE.md](AGENT-START-HERE.md) and [DEMO-AGENT-TOOLS.md](DEMO-AGENT-TOOLS.md).
+
+### Evidence end and OOS catch-up
+
+An export's evidence ends where its export test ended, so exports from different
+weeks end on different dates. The **evidence end** ("front OOS" end) is either
+`auto`, the latest fully closed Friday on the broker's New York-close clock
+(UTC+3 in US daylight time, UTC+2 otherwise; the week closes at server Saturday
+00:00, so on a Friday before the close `auto` is still last Friday), or an
+explicit broker date that has already closed. Dates are inclusive server dates;
+MT5 `ToDate` is exclusive, so evidence ending on day D tests with `ToDate` D+1.
+
+- `evidence-end [--value auto|YYYY-MM-DD] [--broker-clock ny-close|utc+N]`
+  resolves it (read-only) and shows what this EA build ends batch exports at now:
+  the EA's own last Friday as `ToDate`, so Thursday evidence. The current EA has no
+  EvidenceEnd export setting (`ea_evidence_end_setting.supported: false`).
+- A batch plan may carry `"evidence_end": "auto"` (or a date). `prepare-batch`
+  records the resolved target in `studio-plan.json` (`native_batch.evidence_end`),
+  `resume-batch` keeps the resolved date (an `auto` batch never moves to a later
+  Friday when resumed), and `batch-status` shows it. The EA
+  still ends its exports natively; catch-up brings them to the target.
+- `evidence-scan --source <run, deploy or member folder, or .set> [...]
+  [--evidence-end auto|date] [--include-below-threshold]` reads every kept export
+  (SET header windows, equity CSV, `.goatseq` manifest; never `account.csv`) and
+  classifies it against the target: `behind` (needs catch-up), `current`, `ahead`
+  (already ends later; clip it to the shared end, no re-test), `caught_up` (a
+  retained catch-up version already ends there) or `ineligible` with reasons
+  (below the run's MinARF/MinSR thresholds, another broker server, unknown tester
+  settings, not standard mode). The capture's observed end is authoritative; a
+  capture stopped by the row limit falls back to the SET header's FOOS end. A
+  retained `not_comparable` or `unjudged` version does not catch an export up: it
+  stays `behind` with `previous_attempt`, so a re-queue may try it again.
+- `catchup-validate --plan` previews and `catchup-prepare --catchup-id --plan`
+  freezes a plan `{schema_version:1, evidence_end, sets:[absolute .set paths],
+  job_timeout_seconds[, broker_clock, assume:{ExecutionMode}, include_below_threshold]}`.
+  Each behind export becomes one member: its exact kept SET (frozen values, no
+  optimization) from the export's original start to the evidence end, with the
+  original deposit, currency, leverage and delay from the run's `manifest.json`
+  (a library copy without its run folder needs `assume.ExecutionMode`, recorded as
+  assumed and checked by the reproduction test below). Original exports are never
+  changed. An export made by another EA binary than the installed one (run
+  `manifest.json` `ea_sha256`), or whose build is unknown (no run manifest and no
+  capture build id), is ineligible: its re-test could not be compared. When the
+  build is known only from the capture (a library copy), it must equal the build
+  the installed EA last reported (`Common Files\GOAT\activation-status-<data
+  folder>.json`, read-only); if that status is missing, the export is ineligible
+  until MT5 has run the GOAT chart once, so no run is spent on a re-test that
+  could only come back `not_comparable`. The member's
+  tester settings pass the shared tester validator, and the member freezes `pins`
+  (installed and original EA hashes, capture build id, server, model, deposit,
+  currency, leverage, delay) for the verdict's comparability check.
+- Re-queue ("Bring all" again) is a new catch-up id over the same SETs: members
+  already caught up are skipped, and failed, never-run or not comparable members
+  are queued again. Repeating it with nothing behind prepares nothing.
+- `catchup-start`/`catchup-resume` (`--max-seconds` 1..3600), `catchup-status`,
+  `catchup-cancel` and `catchup-report` drive and read it.
+
+How it runs natively, with no EA change: the native Studio queue only runs
+optimizations, so catch-up reuses the SeedRunner process driver. Each member is one
+MT5 start with a `/config` INI: `[Tester]` `Optimization=0`, `Model=4`,
+`ForwardMode=0`, `ShutdownTerminal=1`, `FromDate` = original start, `ToDate` =
+evidence end + 1; `[TesterInputs]` = the frozen values plus the EA's own export
+inputs (`EA_Desc=<alias>@{mode=EXPORT,dt_BOOS_end,dt_FOOS_start,dt_FWD_start,dt_FWD_end}`
+and `Sequence_Export_*`, exactly as `RunAndStoreSet` passes them). The runner
+stages the capture's `GOATSequencePending\<id>\source-inputs.set` before launch;
+the EA writes its usual SET/CSV/`.goatseq` unit into `Common Files\TEMP\SQ\<token>`
+and the runner moves it to `<controller state>\evidence\<catch-up id>\<alias>\`
+with an `evidence-version.json` that links the original (same `values_sha256`, new
+end date). Catch-up shares the seed terminal slot (`seed-active.json`), owner STOP,
+pause and broker-verified start record rules, and stops after any failed member
+(kept until `native_launch_qualified`; after that, continue past member-only
+failures such as missing output, short history or unjudged, and still stop on
+reconcile, identity, timeout or process errors).
+It is `native_launch_qualified: false` until a native proof run shows: the EA
+accepts a `/config` single pass with plain-valued `[TesterInputs]` and writes the
+export unit to the attempt root; MT5 exits after the pass; the moved unit's
+`effective-inputs.set` and equity rows reproduce the original before the new weeks.
+
+New-weeks-only verdict (`goat-catchup-verdict-v2`, `studio_catchup_verdict.py`):
+only the days after the original evidence end are judged; the original forward
+window measured inside the same re-test gives the pace.
+
+- `not_comparable` first: the re-test must be the same test. `comparability`
+  checks the SET inputs (all but `EA_Desc`), the EA build (capture build ids, else
+  the run's ex5 sha256 against the installed one), EA name, model (real ticks),
+  symbol, broker server, deposit, leverage and currency, and that the re-test
+  reproduced the original (equity rows and deals before the new weeks, the
+  forced final minute excluded). An unknown value fails its check. The execution
+  delay is pinned in the INI and verified by reproduction; the symbol
+  specification is not captured by this EA build, so a change shows up as a
+  reproduction failure. A `not_comparable` re-test judges nothing (`confidence:
+  none`) and its sentence says why.
+- `failed`: a new worst drawdown, measured from the running peak including all
+  equity before the new weeks (a drawdown already under way counts;
+  `dd_from_open` is kept as a signal), or at least 5 trades with a loss and PF
+  below 0.8.
+- `too_few_trades`: fewer than 5 trades opened in the new weeks.
+- `weakened`: flat or losing; PF unknown (an incomplete capture); PF below 1;
+  a forward window that lost or was flat ("forward window lost; profitable
+  since": a recovery, not a hold); under half the forward profit pace; or fewer
+  than 0.3x the trades expected at the forward pace.
+- `held_up`: comparable, profitable, a known PF of at least 1 (PF counts only
+  positions opened in the new weeks), drawdown within what it had already shown,
+  and at the forward pace.
+
+`confidence` is `low` unless at least 20 trades over 10 trading days, and never
+higher than `moderate`; the `plain` sentence ends with it ("Low confidence: 8
+trades over 4 trading days."). Each version keeps the `caveat` (held_up means
+"no warning sign yet", not proof). Research status counts catch-up `held_up`
+separately and never as "qualifying". `evidence-versions` lists retained versions.
+
+Each version also carries `catch_up` (`goat-catch-up-import-v1`: `evidence_end`,
+`added_at` = when the re-test was collected, `first_day`/`last_day`, `verdict`,
+`confidence`, `comparable`, `rules`, the original SET and values hashes,
+`original_end` and `original_foos`, the original export's FOOS header window). The
+re-test's own FOOS runs through the new weeks, so the desktop import restores the
+original FOOS and keeps the new weeks only in `catchUp`: the sift's FOOS gates
+never read them. The import writes the stamp on the strategy as `catchUp` and
+`oosRanges.catchUp`, so
+a portfolio chosen before `added_at` saw none of those weeks ("unseen when
+chosen"), while one built after importing them saw them ("seen when chosen"). For
+an out-of-sample check, build first, then catch up. A `not_comparable` or
+`unjudged` version is imported with its verdict only: it adds no new-weeks window.
+
+Follow-up (answer to review question b): an EA `EvidenceEnd` export setting, as
+its own EA PR after the native single-pass proof, so batch exports can end on the
+Friday itself (ToDate = end + 1, refuses an unclosed day, stamped in the SET header
+and capture manifest).
+
+These rules and the export thresholds are not rigid. A plan may override the
+verdict numbers within bounds (`verdict_rules: {min_trades, failed_pf, held_pace,
+min_pace_trades, moderate_trades, moderate_days}`) and queue members below the run's
+export thresholds (`include_below_threshold: true`, which the desktop builder uses
+for members the person chose). Every verdict stamps the exact `rules` it used, its
+`comparability` checks and its raw `signals` (`goat-catchup-signals-v2`: trades vs
+forward pace, profit pace ratio, PF, drawdown from the peak and from the window
+open vs prior drawdown, reproduction, capture). Each evidence version adds a
+`qualification` block (`goat-qualification-inputs-v1`, `scored: false`): the
+evidence-end rule, the export's thresholds with their basis and margins
+(`arf_margin`, `sr_margin`, `profit_positive`), whether thresholds gated
+eligibility, the verdict rules and the signals. A later scored, explained
+qualification can re-judge the same evidence under other rules from this block
+without re-running MT5; no score is computed now.
 
 ### Reviewed orphan continuation recovery (V1.49)
 
@@ -1018,6 +1177,16 @@ Use **1 minute OHLC (`Model=1`) for new optimization plans** unless the user exp
 ### Report-capable first-member startup
 
 The direct-demo bounded driver prepares a new package with the selected passive monitor profile and starts its first member through /config. This applies configuration-only Report settings that an in-place tester Start click cannot establish. It reuses the actual grant and the existing deadline. Native arming, close issuance, confirmed exit and launch issuance are retained separately; interrupted starts are never replayed. The exact native attempt is saved before any close so the normal stop/reconcile tools can recover it.
+
+The customer native human-control lane (`goat.exe studio` after `bootstrap`) uses the same route, so its batches export too. With the in-place Start click, MT5 wrote no `Report=` XML, the EA aborted its exports, and every customer batch ended `native_error` with 0 exports (beta.16 QA, 2026-10-02). The route closes the user's own MT5, so on this lane:
+- `run-batch` requires `--mt5-restart-consent`, which the agent passes only after the user's yes. Without it, nothing is written or dispatched.
+- The consent is retained in the driver journal, bound to the selected MT5 process (PID, executable, creation time) and valid for 10 minutes. Config start rechecks it before the reservation (process and expiry) and right before the close (process).
+- Before any reservation, arm or close, a fresh SDK read must show the same demo, with Algo OFF, zero positions/orders and the same selected process; the same SDK read runs again right before the close. Tester idleness comes from the EA runtime sample; the SDK's window-caption read is advisory here (a recognised running caption refuses, an unrecognised MT5 language defers to the EA). The usual runtime, process-inventory, ownership, human-inbox and deadline checks still apply.
+- Raw `start` is refused on this lane, and `prepare-batch` points to `run-batch --mt5-restart-consent`.
+- A start that stops after arming leaves `recovery` in the driver journal: the retained phase, whether MT5 was left open, closing or closed, and the plain next safe action (AGENT-START-HERE "If stuck").
+- The binding gains the route material only once onboarding has staged the monitor profile.
+- Older customer packages still verify for status and finish. The driver refuses to start them and asks for a new batch ID.
+- The demo-only unissued-start resume stays demo-only.
 
 MT5 resolves configured reports relative to its installation while GOAT reads its local data sandbox. A fresh, audited per-run junction connects only those owned report locations when they differ. Existing output directories or links are not overwritten. Paths and startup bytes are rechecked before launch. Older prepared packages remain unchanged and must be copied into a new preparation for this route. Native report pair/export completion must qualify the installed build; source tests and process launch do not establish that result.
 

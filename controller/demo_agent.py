@@ -33,6 +33,10 @@ from studio_seed_process import WindowsSeedProcess
 
 
 MIN_FREE_BYTES = 5 * 1024 ** 3
+# Seed hunts and OOS catch-ups share one runner driver, one terminal slot and one
+# broker-verified start discipline; only their state folders and wording differ.
+LANES = {'seed': dict(folder='seeds', starts='seed-starts', word='seed', title='Seed', unit='seed hunt'),
+         'catchup': dict(folder='catchups', starts='catchup-starts', word='catch-up', title='Catch-up', unit='catch-up')}
 
 
 def digest(path):
@@ -261,9 +265,12 @@ class DemoAgent:
         return [job['job_id'] for job in jobs if job['status'] in
                 ('reserved', 'starting', 'running', 'reconcile_required', 'verifying')]
 
-    def stop(self, monitor_config=None):
+    def stop(self, monitor_config=None, batch_id=None):
         # This intentionally does not need the terminal lock: owner STOP wins
         # even while a driver holds it. A dead driver is reattached below.
+        if batch_id is not None and batch_id not in self._native_active_batches():
+            # A batch that never left the queue is cancelled alone; owner STOP is not set.
+            return self._stop_unstarted(batch_id)
         self.state_root.mkdir(parents=True, exist_ok=True)
         marker = self.state_root / 'STOP'
         if not marker.exists():
@@ -284,6 +291,16 @@ class DemoAgent:
             return dict(status='stop_unconfirmed', reason='Multiple active journals require exact inspection',
                         journals=[str(path) for path in active])
         batch_id = active[0].stem
+        if self._unactivated(batch_id):
+            # A start refused before MT5 was touched has nothing to cancel natively.
+            try:
+                retired = self.retire_unactivated(batch_id)
+                return dict(status='cancelled', batch_id=batch_id, attempt_id=retired.get('attempt_id'),
+                            retired='retired_never_activated', owner_stop=True)
+            except ValueError as exc:
+                if not active[0].is_file():
+                    return dict(status='stop_unconfirmed', batch_id=batch_id, owner_stop=True,
+                                reason='Start never activated, but retirement refused: ' + str(exc))
         if not active[0].is_file():
             return dict(status='stop_unconfirmed', batch_id=batch_id,
                         reason='Active native job has no bounded driver journal', owner_stop=True)
@@ -378,6 +395,118 @@ class DemoAgent:
                     return self._readback_current(physical, after_observation_ns=before)
                 finally:
                     controller.store.close()
+
+    def retire_unactivated(self, batch_id):
+        """Settle a start refused before MT5 was touched to cancelled (studio_retire_unactivated).
+
+        Allowed while owner STOP is set: it sends nothing to MT5. A fresh broker
+        readback proves the paired demo; the EA runtime sample proves the tester
+        idle with no batch ongoing. A human TAKE CONTROL still refuses it.
+        """
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid prepared batch ID')
+        from studio_retire_unactivated import retire
+        with self._exclusive(wait_seconds=5), self._studio('retire-unactivated', idle=False, owner_required=False,
+                                                           job_id=batch_id) as (controller, broker):
+            human = self.local / self.session['directory_id'] / 'human'
+            if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):
+                raise ValueError('A human TAKE CONTROL is pending; nothing was retired.')
+            self._append('retire_unactivated', 'intent', batch_id=batch_id, broker=broker)
+            result = retire(controller, batch_id)
+            self._append('retire_unactivated', 'retired', batch_id=batch_id, attempt_id=result.get('attempt_id'),
+                         result_path=result.get('result_path'), reused=result.get('reused'))
+            return result
+
+    def _unactivated(self, batch_id):
+        from studio_retire_unactivated import unactivated_hint
+        from studio_research_status import queue_jobs
+        job = next((item for item in queue_jobs(self.root, self.session) if item['job_id'] == batch_id), None)
+        return job is not None and unactivated_hint(self.root, job)
+
+    def _stop_unstarted(self, batch_id):
+        from studio_fast_lane import stop as fast_stop
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid prepared batch ID')
+        with self._exclusive(wait_seconds=5), self._studio('run-batch', idle=False, owner_required=False,
+                                                           job_id=batch_id) as (controller, broker):
+            result = fast_stop(controller, batch_id)
+            self._append('stop_batch', 'settled', batch_id=batch_id, result=result, broker=broker)
+            return result
+
+    def start(self, batch_id, max_seconds=None):
+        """One start for any prepared batch: the bounded driver, default 48 h budget."""
+        if (self.state_root / 'STOP').exists():
+            raise ValueError('Owner STOP is on; run clear-stop, then start again.')
+        return self.run_batch(batch_id, max_seconds or 172800)
+
+    def continue_batch(self, batch_id, *, new_batch_id=None, max_seconds=None, clear_stop=False,
+                       include_failed=False, include_no_edge=False):
+        """Continue a stopped, paused or finished batch: prepare the remaining work, then start it.
+
+        A start refused before activation is retired first. Across an EA build change
+        the members are re-prepared under the current installation (never by relaxing
+        a check on the old package: it is only read, never launched).
+        """
+        from studio_fast_lane import continue_batch
+        from studio_protected_peer import refresh_process
+        from studio_research_status import lineage, monitor_state
+        from studio_retire_unactivated import unactivated_hint
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid batch ID')
+        if max_seconds is not None and (type(max_seconds) is not int or not 1 <= max_seconds <= 172800):
+            raise ValueError('max_seconds must be 1..172800')
+        kind = self._lane_kind(batch_id)
+        if kind:
+            return self._seed_unpause(batch_id, kind)
+        job = next((item for item in self._jobs_readonly() if item['job_id'] == batch_id), None)
+        if job is None:
+            raise ValueError('Unknown batch ' + batch_id + '; research-status lists the batches of this terminal.')
+        if unactivated_hint(self.root, job):
+            self.retire_unactivated(batch_id)
+        monitor = monitor_state(self.install, self.session, self.local, now=self.clock(), process=self._process_or_unknown())
+        if monitor.get('blocker'):
+            raise ValueError(monitor['blocker']['message'] + ' ' + monitor['blocker']['fix'])
+        if (self.state_root / 'STOP').exists():
+            if clear_stop is not True:
+                raise ValueError('Owner STOP is on; continue with --clear-stop to lift it.')
+            self.clear_stop()
+        readback = self._refresh_readback()
+        # The core's resolver: a retained, never-started successor of this batch (for
+        # example after the driver failed to spawn) is reused instead of a new -rN, and
+        # an explicit ID that collides with an unrelated batch refuses.
+        from studio_fast_lane import resolve_successor
+        queue = {item['job_id']: item for item in self._jobs_readonly()}
+        new_id = resolve_successor(self.root, queue, batch_id, new_batch_id)
+        with self._exclusive(), self._studio('prepare-batch', idle=True, job_id=new_id) as (controller, broker):
+            peer = refresh_process(controller)
+            prepared = continue_batch(controller, batch_id, new_batch_id=new_id, include_failed=include_failed,
+                                      include_no_edge=include_no_edge)
+            self._append('continue_batch', 'prepared', batch_id=batch_id, successor_batch_id=new_id,
+                         members=prepared.get('members'), binding_changed_keys=prepared.get('binding_changed_keys'),
+                         broker=broker)
+        driver = self._spawn_driver(new_id, max_seconds=max_seconds or self._resume_budget(batch_id))
+        return dict(prepared, peer=peer, readback=readback, driver=driver, lineage=lineage(self.root, new_id))
+
+    def compact_evidence(self, apply=False):
+        """Move finished jobs' in-row evidence history to verified logs (studio_evidence_log)."""
+        from studio_evidence_log import compact
+        with self._exclusive(wait_seconds=5), self._studio('compact-evidence', idle=False, owner_required=False) as (controller, broker):
+            result = compact(controller, apply=apply)
+            if result.get('applied'):
+                self._append('compact_evidence', 'applied', jobs=[job['job_id'] for job in result['jobs']],
+                             queue_bytes_before=result['queue_bytes_before'], queue_bytes_after=result['queue_bytes_after'])
+            return result
+
+    def compact_receipts(self, apply=False):
+        """Archive legacy full-queue receipts and store their queue digest (studio_receipt_digest)."""
+        from studio_receipt_digest import compact
+        with self._exclusive(wait_seconds=5), self._studio('compact-receipts', idle=False, owner_required=False) as (controller, broker):
+            result = compact(controller, apply=apply)
+            if result.get('applied'):
+                self._append('compact_receipts', 'applied', receipts=[item['request_id'] for item in result['receipts']],
+                             receipt_bytes_before=result['receipt_bytes_before'],
+                             receipt_bytes_after=result['receipt_bytes_after'])
+            return result
 
     def cancel_pending(self, batch_id):
         """Cancel one batch that never started (pending, no launch intent).
@@ -975,9 +1104,13 @@ class DemoAgent:
                                now=self.clock(), process=self._process_or_unknown(), jobs=jobs,
                                worker_alive=self._worker_alive, owner_stop=(self.state_root / 'STOP').exists())
 
-    def _is_seed(self, batch_id):
-        return ((self.root / 'seeds' / batch_id / 'state.json').is_file()
-                and not any(job['job_id'] == batch_id for job in self._jobs_readonly()))
+    def _lane_kind(self, batch_id):
+        """'seed' or 'catchup' when this ID names a runner batch (not a native queue job), else None."""
+        for kind, lane in LANES.items():
+            if ((self.root / lane['folder'] / batch_id / 'state.json').is_file()
+                    and not any(job['job_id'] == batch_id for job in self._jobs_readonly())):
+                return kind
+        return None
 
     def _ensure_pause_supervisor(self, batch_id):
         """A live driver keeps supervising; otherwise start one bounded pause supervisor."""
@@ -1007,8 +1140,9 @@ class DemoAgent:
             raise ValueError('Invalid batch ID')
         if type(immediate) is not bool:
             raise ValueError('immediate must be a boolean')
-        if self._is_seed(batch_id):
-            return self._seed_pause(batch_id)
+        kind = self._lane_kind(batch_id)
+        if kind:
+            return self._seed_pause(batch_id, kind)
         job = next((item for item in self._jobs_readonly() if item['job_id'] == batch_id), None)
         if job is None:
             raise PauseRefused('Unknown batch ' + batch_id + '; research-status lists this terminal\'s batches.')
@@ -1024,12 +1158,13 @@ class DemoAgent:
         supervisor = self._ensure_pause_supervisor(batch_id)
         return dict(public(load(self.root, batch_id)), supervisor=supervisor)
 
-    def _seed_pause(self, batch_id):
-        with self._seed_scope('seed-status', batch_id) as (controller, evidence):
-            result = self._seed_runner(controller).request_pause(batch_id, now=self.clock())
-        self._append('seed_pause', 'requested', batch_id=batch_id)
-        return dict(kind='seed', job_id=batch_id, state='pausing', seed=result,
-                    plain='The running seed member finishes and is kept; no new member starts until you resume.')
+    def _seed_pause(self, batch_id, kind='seed'):
+        word = LANES[kind]['word']
+        with self._seed_scope(kind + '-status', batch_id, kind) as (controller, evidence):
+            result = self._seed_runner(controller, kind).request_pause(batch_id, now=self.clock())
+        self._append(kind + '_pause', 'requested', batch_id=batch_id)
+        return dict(kind=kind, job_id=batch_id, state='pausing', seed=result,
+                    plain='The running ' + word + ' member finishes and is kept; no new member starts until you resume.')
 
     def _refresh_readback(self):
         """After a terminal restart, re-read the build/owner proof the start gate requires."""
@@ -1060,11 +1195,21 @@ class DemoAgent:
             raise ValueError('Invalid batch ID')
         if max_seconds is not None and (type(max_seconds) is not int or not 1 <= max_seconds <= 172800):
             raise ValueError('max_seconds must be 1..172800')
-        if self._is_seed(batch_id):
-            return self._seed_unpause(batch_id)
+        kind = self._lane_kind(batch_id)
+        if kind:
+            return self._seed_unpause(batch_id, kind)
         record = load(self.root, batch_id)
         if record is None:
             raise PauseRefused('No pause is recorded for batch ' + batch_id + '; pause it first.')
+        # A reserved successor that never ran (retired unactivated / never started, or
+        # cancelled before its start) releases the lineage, recorded append-only.
+        from studio_batch_pause import release_unactivated
+        released = release_unactivated(self.root, batch_id, {item['job_id']: item for item in self._jobs_readonly()},
+                                       now=self.clock())
+        if released:
+            self._append('batch_resume', 'successor_released', batch_id=batch_id,
+                         successor_batch_id=released['successor_batch_id'], proof=released['proof'])
+            record = load(self.root, batch_id)
         if record['state'] == 'resumed':
             new_id = record['successor_batch_id']
             job = next((item for item in self._jobs_readonly() if item['job_id'] == new_id), None)
@@ -1095,8 +1240,10 @@ class DemoAgent:
             peer = refresh_process(controller)
             self._append('batch_resume', 'intent', batch_id=batch_id, successor_batch_id=new_id,
                          peer=peer.get('status'), broker=broker)
+            from studio_fast_lane import binding_changed
             prepared = resume_batch(controller, batch_id, new_id, include_failed=include_failed,
-                                    include_no_edge=include_no_edge, allow_peer_refresh=True)
+                                    include_no_edge=include_no_edge, allow_peer_refresh=True,
+                                    allow_binding_change=bool(binding_changed(controller, batch_id)))
             job = controller.job(new_id)
             if job['status'] != 'pending' or 'launch_intent' in job:
                 raise ValueError('Successor batch is not an unstarted prepared batch')
@@ -1112,13 +1259,13 @@ class DemoAgent:
         value = read_json(journal).get('max_seconds') if journal.is_file() else None
         return value if type(value) is int and 1 <= value <= 172800 else 172800
 
-    def _seed_unpause(self, batch_id):
-        with self._exclusive(), self._seed_scope('seed-resume', batch_id) as (controller, evidence):
-            released = self._seed_runner(controller).release_pause(batch_id, now=self.clock())
-        self._append('seed_pause', 'released', batch_id=batch_id, released=released)
-        result = self.seed_resume(batch_id, 60)
-        return dict(kind='seed', source_batch_id=batch_id, batch_id=batch_id, state='resumed', released=released, seed=result,
-                    next_action='Keep calling seed-resume until the seed hunt reports completed or stopped')
+    def _seed_unpause(self, batch_id, kind='seed'):
+        with self._exclusive(), self._seed_scope(kind + '-resume', batch_id, kind) as (controller, evidence):
+            released = self._seed_runner(controller, kind).release_pause(batch_id, now=self.clock())
+        self._append(kind + '_pause', 'released', batch_id=batch_id, released=released)
+        result = self._lane_resume(kind, batch_id, 60)
+        return dict(kind=kind, source_batch_id=batch_id, batch_id=batch_id, state='resumed', released=released, seed=result,
+                    next_action='Keep calling ' + kind + '-resume until the ' + LANES[kind]['unit'] + ' reports completed or stopped')
 
     # ------------------------------------------------------------------ SeedFarming
     #
@@ -1131,24 +1278,24 @@ class DemoAgent:
 
     SEED_SLICE_SECONDS = 5
 
-    def _seed_budget(self, max_seconds):
+    def _seed_budget(self, max_seconds, kind='seed'):
         if type(max_seconds) is not int or not 1 <= max_seconds <= 3600:
-            raise ValueError('Seed driver budget must be 1..3600 seconds')
+            raise ValueError(LANES[kind]['title'] + ' driver budget must be 1..3600 seconds')
 
-    def _seed_start_path(self, batch_id):
+    def _seed_start_path(self, batch_id, kind='seed'):
         if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
-            raise ValueError('Seed batch ID must use 1..80 letters/digits/underscore/hyphen')
-        return self.state_root / 'seed-starts' / (batch_id + '.json')
+            raise ValueError(LANES[kind]['title'] + ' batch ID must use 1..80 letters/digits/underscore/hyphen')
+        return self.state_root / LANES[kind]['starts'] / (batch_id + '.json')
 
-    def _seed_start_record(self, batch_id):
-        path = self._seed_start_path(batch_id)
+    def _seed_start_record(self, batch_id, kind='seed'):
+        path = self._seed_start_path(batch_id, kind)
         if not path.is_file():
-            raise ValueError('No broker-verified demo seed start exists for this batch; use seed-start')
+            raise ValueError('No broker-verified demo ' + LANES[kind]['word'] + ' start exists for this batch; use ' + kind + '-start')
         record = read_json(path)
         if (record.get('batch_id') != batch_id or record.get('installation_sha256') != sha(self.install)
                 or record.get('account') != self._paired_account()
                 or record.get('broker', {}).get('demo') is not True):
-            raise ValueError('Seed start record differs from this installation or paired demo account')
+            raise ValueError(LANES[kind]['title'] + ' start record differs from this installation or paired demo account')
         return record
 
     def _active_seed(self):
@@ -1158,40 +1305,44 @@ class DemoAgent:
         value = read_json(slot)
         return value if value.get('status') != 'released' else None
 
-    def _seed_unoccupied(self):
+    def _seed_unoccupied(self, kind='seed'):
         if self._native_active_batches():
-            raise ValueError('An ordinary native batch is active; seed work waits for it to finish')
+            raise ValueError('An ordinary native batch is active; ' + LANES[kind]['word'] + ' work waits for it to finish')
         for worker in (self.state_root / 'workers').glob('*.json'):
             if self._worker_alive(read_json(worker)):
-                raise ValueError('A live demo batch driver owns this terminal; seed work waits')
+                raise ValueError('A live demo batch driver owns this terminal; ' + LANES[kind]['word'] + ' work waits')
 
-    def _seed_runner(self, controller):
+    def _seed_runner(self, controller, kind='seed'):
+        if kind == 'catchup':
+            from studio_catchup import CatchupRunner
+            return CatchupRunner(controller, process=self.process, clock=self.clock, sleep=self.sleep)
         from studio_seed import SeedRunner
         return SeedRunner(controller, process=self.process, clock=self.clock, sleep=self.sleep)
 
     @contextmanager
-    def _seed_scope(self, operation_name, batch_id):
+    def _seed_scope(self, operation_name, batch_id, kind='seed'):
         """Policy scope for observing, cancelling or continuing a demo seed batch.
 
         While MT5 runs, a fresh broker readback is taken. A batch still 'prepared'
         has had no native effect, so it needs no start record for status, cancel
         or report; any batch that has left 'prepared' must have its start record.
         """
-        record = self._seed_start_record(batch_id) if self._seed_start_path(batch_id).exists() else None
-        if record is None and not (self.root / 'seeds' / batch_id / 'state.json').is_file():
-            raise ValueError('Unknown seed batch; use seed-prepare')
+        lane = LANES[kind]
+        record = self._seed_start_record(batch_id, kind) if self._seed_start_path(batch_id, kind).exists() else None
+        if record is None and not (self.root / lane['folder'] / batch_id / 'state.json').is_file():
+            raise ValueError('Unknown ' + lane['word'] + ' batch; use ' + kind + '-prepare')
         if self.process.inspect() is not None:
             # Without a start record only a provably never-started batch is managed,
             # and only under this fresh broker readback; nothing offline is granted.
-            if record is None and not self._seed_never_started(batch_id):
-                raise ValueError('Seed batch has native effects but no broker-verified demo start record')
+            if record is None and not self._seed_never_started(batch_id, kind):
+                raise ValueError(lane['title'] + ' batch has native effects but no broker-verified demo start record')
             with self._studio(operation_name, idle=False, owner_required=False,
                               job_id=batch_id) as (controller, broker):
                 yield controller, dict(broker=broker, start=record)
             return
         if record is None:
-            raise ValueError('No broker-verified demo seed start exists for this batch; '
-                             'open the selected MT5 for a fresh demo check, or use seed-start')
+            raise ValueError('No broker-verified demo ' + lane['word'] + ' start exists for this batch; '
+                             'open the selected MT5 for a fresh demo check, or use ' + kind + '-start')
         # MT5 is closed between seed members, so no live broker can answer now.
         # Nothing is inferred from the session: the retained start readback must
         # match this installation, registered EA and exact paired demo account.
@@ -1220,13 +1371,13 @@ class DemoAgent:
             return 'low_disk'
         return None
 
-    def _seed_drive(self, runner, batch_id, max_seconds, *, initial):
+    def _seed_drive(self, runner, batch_id, max_seconds, *, initial, kind='seed'):
         deadline = self.clock() + max_seconds
         while True:
             reason = self._seed_stop_reason()
             if reason:
                 result = runner.cancel(batch_id)
-                self._append('seed_drive', 'stopped', batch_id=batch_id, reason=reason,
+                self._append(kind + '_drive', 'stopped', batch_id=batch_id, reason=reason,
                              status=result['status'], stop_verified=result.get('stop_verified'))
                 return dict(result, stopped_by=reason)
             remaining = deadline - self.clock()
@@ -1235,52 +1386,61 @@ class DemoAgent:
             slice_seconds = int(min(self.SEED_SLICE_SECONDS, remaining))
             result = (runner.start if initial else runner.resume)(batch_id, max_seconds=slice_seconds)
             initial = False
-            self._append('seed_drive', 'slice', batch_id=batch_id, status=result['status'])
+            self._append(kind + '_drive', 'slice', batch_id=batch_id, status=result['status'])
             if result['status'] in ('completed', 'stopped', 'reconcile_required') or result.get('paused'):
                 return result
         return dict(runner.status(batch_id), driver_budget_exhausted=True,
-                    next_action='seed-resume continues the retained original attempt; no retry')
+                    next_action=kind + '-resume continues the retained original attempt; no retry')
 
-    def seed_validate(self, plan):
+    def _lane_validate(self, kind, plan):
         """Non-executing plan and SET validation: no file, process, broker or terminal effect."""
         from goat_studio import Controller
-        from studio_seed import SeedRunner
         plan_path = Path(plan).resolve()
         value = read_json(plan_path)
+        if kind == 'catchup':
+            from studio_catchup import CatchupRunner as Runner
+        else:
+            from studio_seed import SeedRunner as Runner
         controller = Controller(self.installation_path)   # installation and input contracts only; no store
         controller.session = self.session
-        result = SeedRunner(controller, process=_NoTerminal()).validate(value)
-        self._append('seed_validate', 'checked', plan=str(plan_path), plan_sha256=digest(plan_path),
-                     job_count=result['job_count'])
+        result = Runner(controller, process=_NoTerminal()).validate(value)
+        self._append(kind + '_validate', 'checked', plan=str(plan_path), plan_sha256=digest(plan_path),
+                     job_count=result.get('job_count', result.get('member_count')))
         return result
 
-    def seed_prepare(self, batch_id, plan):
+    def seed_validate(self, plan):
+        return self._lane_validate('seed', plan)
+
+    def _lane_prepare(self, kind, batch_id, plan):
         plan_path = Path(plan).resolve()
         value = read_json(plan_path)
-        self._seed_start_path(batch_id)
-        with self._exclusive(), self._studio('seed-prepare', idle=True, job_id=batch_id) as (controller, broker):
-            self._seed_unoccupied()
-            self._append('seed_prepare', 'intent', batch_id=batch_id, plan=str(plan_path),
+        self._seed_start_path(batch_id, kind)
+        with self._exclusive(), self._studio(kind + '-prepare', idle=True, job_id=batch_id) as (controller, broker):
+            self._seed_unoccupied(kind)
+            self._append(kind + '_prepare', 'intent', batch_id=batch_id, plan=str(plan_path),
                          plan_sha256=digest(plan_path), broker=broker)
-            result = self._seed_runner(controller).prepare(batch_id, value)
-            self._append('seed_prepare', 'verified', batch_id=batch_id, status=result['status'],
+            result = self._seed_runner(controller, kind).prepare(batch_id, value)
+            self._append(kind + '_prepare', 'verified', batch_id=batch_id, status=result['status'],
                          manifest_sha256=result.get('manifest_sha256'))
             return result
 
-    def _seed_left_prepared(self, batch_id):
-        """Read-only: has this seed batch moved past 'prepared' (any native effect recorded)?"""
-        state = self.root / 'seeds' / batch_id / 'state.json'
+    def seed_prepare(self, batch_id, plan):
+        return self._lane_prepare('seed', batch_id, plan)
+
+    def _seed_left_prepared(self, batch_id, kind='seed'):
+        """Read-only: has this runner batch moved past 'prepared' (any native effect recorded)?"""
+        state = self.root / LANES[kind]['folder'] / batch_id / 'state.json'
         return state.is_file() and read_json(state).get('status') != 'prepared'
 
-    def _seed_never_started(self, batch_id):
-        """Read-only proof that a seed batch never had a native effect.
+    def _seed_never_started(self, batch_id, kind='seed'):
+        """Read-only proof that a seed (or catch-up) batch never had a native effect.
 
         True only for a batch still 'prepared', or 'stopped' by cancelling it before
         any start: the manifest hash matches, no generation, preflight or process was
         ever recorded, every member is unattempted with no result, the seed slot never
-        named this batch, and no seed output exists for any member.
+        named this batch, and no runner output exists for any member.
         """
-        root = self.root / 'seeds' / batch_id
+        root = self.root / LANES[kind]['folder'] / batch_id
         state_path, manifest_path = root / 'state.json', root / 'manifest.json'
         if not state_path.is_file() or not manifest_path.is_file():
             return False
@@ -1302,30 +1462,36 @@ class DemoAgent:
         slot = self.root / 'seed-active.json'
         if slot.is_file() and read_json(slot).get('batch_id') == batch_id:
             return False
+        if kind == 'catchup':
+            attempts = Path(self.install['common_files_root']) / 'TEMP' / 'SQ'
+            if any(any((attempts / spec['attempt_token']).glob('*.set')) for spec in specs):
+                return False
+            return True
         outputs = Path(self.install['common_files_root']) / 'GOAT/SeedFarmingXML'
         if outputs.is_dir() and any(any(outputs.glob(spec['output_base'] + '_N*.xml')) for spec in specs):
             return False
         return True
 
-    def seed_start(self, batch_id, max_seconds):
-        self._seed_budget(max_seconds)
-        path = self._seed_start_path(batch_id)
-        if path.exists() and self._seed_left_prepared(batch_id):
-            raise ValueError('Seed batch already started; use seed-resume for the original attempt')
-        with self._exclusive(), self._studio('seed-start', idle=True, job_id=batch_id) as (controller, broker):
-            self._seed_unoccupied()
-            runner = self._seed_runner(controller)
+    def _lane_start(self, kind, batch_id, max_seconds):
+        lane = LANES[kind]
+        self._seed_budget(max_seconds, kind)
+        path = self._seed_start_path(batch_id, kind)
+        if path.exists() and self._seed_left_prepared(batch_id, kind):
+            raise ValueError(lane['title'] + ' batch already started; use ' + kind + '-resume for the original attempt')
+        with self._exclusive(), self._studio(kind + '-start', idle=True, job_id=batch_id) as (controller, broker):
+            self._seed_unoccupied(kind)
+            runner = self._seed_runner(controller, kind)
             current = runner.status(batch_id)
             if path.exists():
                 # Only an attempt that never left 'prepared' may re-run its start, and only
                 # under this fresh broker check; anything later is the original attempt.
-                record = self._seed_start_record(batch_id)
+                record = self._seed_start_record(batch_id, kind)
                 if current['status'] != 'prepared' or record['manifest_sha256'] != current['manifest_sha256']:
-                    raise ValueError('Seed batch already started; use seed-resume for the original attempt')
-                self._append('seed_start', 'start_record_reused', batch_id=batch_id, broker=broker)
+                    raise ValueError(lane['title'] + ' batch already started; use ' + kind + '-resume for the original attempt')
+                self._append(kind + '_start', 'start_record_reused', batch_id=batch_id, broker=broker)
             else:
                 if current['status'] != 'prepared':
-                    raise ValueError('Only a prepared seed batch can start')
+                    raise ValueError('Only a prepared ' + lane['word'] + ' batch can start')
                 record = dict(schema_version=1, batch_id=batch_id, manifest_sha256=current['manifest_sha256'],
                               installation_sha256=sha(self.install), account=self._paired_account(),
                               generation=controller.state()['generation'], broker=broker,
@@ -1335,43 +1501,99 @@ class DemoAgent:
                 with path.open('x', encoding='utf-8', newline='\n') as output:
                     json.dump(record, output, sort_keys=True, separators=(',', ':'))
                     output.write('\n'); output.flush(); os.fsync(output.fileno())
-                self._append('seed_start', 'start_recorded', batch_id=batch_id,
+                self._append(kind + '_start', 'start_recorded', batch_id=batch_id,
                              manifest_sha256=record['manifest_sha256'], broker=broker)
-            return self._seed_drive(runner, batch_id, max_seconds, initial=True)
+            return self._seed_drive(runner, batch_id, max_seconds, initial=True, kind=kind)
 
-    def seed_resume(self, batch_id, max_seconds):
-        self._seed_budget(max_seconds)
-        with self._exclusive(), self._seed_scope('seed-resume', batch_id) as (controller, evidence):
-            runner = self._seed_runner(controller)
+    def seed_start(self, batch_id, max_seconds):
+        return self._lane_start('seed', batch_id, max_seconds)
+
+    def _lane_resume(self, kind, batch_id, max_seconds):
+        lane = LANES[kind]
+        self._seed_budget(max_seconds, kind)
+        with self._exclusive(), self._seed_scope(kind + '-resume', batch_id, kind) as (controller, evidence):
+            runner = self._seed_runner(controller, kind)
             current = runner.status(batch_id)
             if current['status'] == 'prepared':
-                raise ValueError('Seed batch has no native effect yet; use seed-start with a fresh broker check')
+                raise ValueError(lane['title'] + ' batch has no native effect yet; use ' + kind + '-start with a fresh broker check')
             if evidence['start'] is None:
-                raise ValueError('Seed batch was cancelled before any native effect; prepare a new batch ID')
+                raise ValueError(lane['title'] + ' batch was cancelled before any native effect; prepare a new batch ID')
             if current['manifest_sha256'] != evidence['start']['manifest_sha256']:
-                raise ValueError('Seed state differs from its broker-verified start record')
-            self._append('seed_resume', 'continue', batch_id=batch_id, status=current['status'],
+                raise ValueError(lane['title'] + ' state differs from its broker-verified start record')
+            self._append(kind + '_resume', 'continue', batch_id=batch_id, status=current['status'],
                          broker=evidence['broker'], retained_start=evidence['broker'] is None)
-            return self._seed_drive(runner, batch_id, max_seconds, initial=False)
+            return self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind)
+
+    def seed_resume(self, batch_id, max_seconds):
+        return self._lane_resume('seed', batch_id, max_seconds)
+
+    def _lane_status(self, kind, batch_id):
+        with self._seed_scope(kind + '-status', batch_id, kind) as (controller, evidence):
+            return dict(broker=evidence['broker'], retained_start=evidence['broker'] is None,
+                        **{'seed' if kind == 'seed' else 'catchup': self._seed_runner(controller, kind).status(batch_id)})
 
     def seed_status(self, batch_id):
-        with self._seed_scope('seed-status', batch_id) as (controller, evidence):
-            return dict(broker=evidence['broker'], retained_start=evidence['broker'] is None,
-                        seed=self._seed_runner(controller).status(batch_id))
+        return self._lane_status('seed', batch_id)
 
-    def seed_cancel(self, batch_id):
-        with self._exclusive(), self._seed_scope('seed-cancel', batch_id) as (controller, evidence):
-            result = self._seed_runner(controller).cancel(batch_id)
-            self._append('seed_cancel', 'requested', batch_id=batch_id, status=result['status'],
+    def _lane_cancel(self, kind, batch_id):
+        with self._exclusive(), self._seed_scope(kind + '-cancel', batch_id, kind) as (controller, evidence):
+            result = self._seed_runner(controller, kind).cancel(batch_id)
+            self._append(kind + '_cancel', 'requested', batch_id=batch_id, status=result['status'],
                          stop_verified=result.get('stop_verified'))
             return result
 
-    def seed_report(self, batch_id):
-        with self._seed_scope('seed-report', batch_id) as (controller, evidence):
-            result = self._seed_runner(controller).report(batch_id)
-            self._append('seed_report', 'written', batch_id=batch_id, status=result['status'],
+    def seed_cancel(self, batch_id):
+        return self._lane_cancel('seed', batch_id)
+
+    def _lane_report(self, kind, batch_id):
+        with self._seed_scope(kind + '-report', batch_id, kind) as (controller, evidence):
+            result = self._seed_runner(controller, kind).report(batch_id)
+            self._append(kind + '_report', 'written', batch_id=batch_id, status=result['status'],
                          report_sha256=result.get('report_sha256'))
             return result
+
+    def seed_report(self, batch_id):
+        return self._lane_report('seed', batch_id)
+
+    # ------------------------------------------------------------------ OOS catch-up
+    #
+    # One non-optimized pass per stale exported SET, from its original start to a
+    # new evidence end (studio_catchup). Same lane as seeds: MT5 closes and
+    # relaunches per member, under the same broker-verified start record rules.
+
+    def catchup_validate(self, plan):
+        return self._lane_validate('catchup', plan)
+
+    def catchup_prepare(self, catchup_id, plan):
+        return self._lane_prepare('catchup', catchup_id, plan)
+
+    def catchup_start(self, catchup_id, max_seconds):
+        return self._lane_start('catchup', catchup_id, max_seconds)
+
+    def catchup_resume(self, catchup_id, max_seconds):
+        return self._lane_resume('catchup', catchup_id, max_seconds)
+
+    def catchup_status(self, catchup_id):
+        return self._lane_status('catchup', catchup_id)
+
+    def catchup_cancel(self, catchup_id):
+        return self._lane_cancel('catchup', catchup_id)
+
+    def catchup_report(self, catchup_id):
+        return self._lane_report('catchup', catchup_id)
+
+    def evidence_scan(self, sources, value='auto', *, broker_clock=None, include_below_threshold=False):
+        """Read-only: every kept export under ``sources`` against one evidence end; no terminal effect."""
+        from studio_catchup import evidence_scan
+        return evidence_scan(sources, value=value, broker_clock=broker_clock, controller_root=self.root,
+                             include_below_threshold=include_below_threshold)
+
+    def evidence_end(self, value='auto', *, broker_clock=None):
+        """Read-only: resolve AUTO / an explicit evidence end, and what this EA build's batch exports end at."""
+        from studio_evidence_end import DEFAULT_CLOCK, ea_capability, legacy_end, resolve
+        clock = broker_clock or DEFAULT_CLOCK
+        return dict(resolve(value, clock=clock), batch_exports_now=legacy_end(clock=clock),
+                    ea_evidence_end_setting=ea_capability(self.install, self.local / 'ui-observation.json'))
 
     def seed_promote(self, batch_id, candidate, name, neighborhood=1, member=None):
         """Freeze one verified seed candidate as fixed + robustness SETs; local files only, same scope as seed-report."""
@@ -1384,8 +1606,27 @@ class DemoAgent:
                          robustness_sha256=result['robustness_set']['sha256'])
             return result
 
+    def _slot_kind(self, slot):
+        """Which runner holds the shared terminal slot: the catch-up whose manifest the slot names, else seed."""
+        batch_id = slot.get('batch_id')
+        state = self.root / LANES['catchup']['folder'] / str(batch_id) / 'state.json'
+        if isinstance(batch_id, str) and state.is_file() and read_json(state).get('manifest_sha256') == slot.get('manifest_sha256'):
+            return 'catchup'
+        return 'seed'
+
     def _stop_seed(self, seed):
         batch_id = seed.get('batch_id')
+        kind = self._slot_kind(seed)
+        if kind != 'seed':
+            try:
+                result = self._lane_cancel(kind, batch_id)
+            except ValueError as exc:
+                if 'Another demo agent operation owns this terminal' in str(exc):
+                    return dict(status=kind + '_stop_requested', batch_id=batch_id, owner_stop=True,
+                                reason='Live catch-up driver settles STOP within one slice')
+                return dict(status='stop_unconfirmed', batch_id=batch_id, owner_stop=True, reason=str(exc))
+            return dict(status=kind + '_' + result['status'], batch_id=batch_id, owner_stop=True,
+                        stop_verified=result.get('stop_verified'))
         try:
             result = self.seed_cancel(batch_id)
         except ValueError as exc:
@@ -1409,6 +1650,31 @@ class _NoTerminal:
 
 
 
+def _gate_command(args):
+    import studio_gate_calibration as gates
+    if args.command == 'gate-recommend':
+        if args.output is not None and Path(args.output).exists():
+            raise ValueError('Recommendation output already exists; choose a new path')
+        runs = [run.strip() for run in args.runs.split(',') if run.strip()] if args.runs else None
+        result = gates.gate_recommend(common_root=args.common_root, runs=runs, target=args.target,
+                                      min_survival=args.min_survival, min_sets=args.min_sets,
+                                      min_members=args.min_members, min_trades=args.min_trades,
+                                      min_clusters=args.min_clusters, cluster=args.cluster,
+                                      verdicts=args.verdicts, curves=args.curves)
+        if args.output is not None:
+            output = Path(args.output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with output.open('x', encoding='utf-8', newline='\n') as stream:
+                json.dump(result, stream, sort_keys=True, indent=1, default=str)
+                stream.write('\n')
+            result = dict(result, output=str(output))
+        return result
+    recommendation = read_json(args.recommendation)
+    recommendation = recommendation.get('result', recommendation)
+    generated = args.generated_at or datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    return gates.stamp_plan(args.plan, recommendation, args.output, generated_at=generated)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--installation', type=Path, required=True)
@@ -1417,8 +1683,27 @@ def main(argv=None):
     commands.add_parser('disk-status')
     cancel_pending = commands.add_parser('cancel-pending')
     cancel_pending.add_argument('--batch-id', required=True)
-    stop = commands.add_parser('stop')
+    retire = commands.add_parser('retire-unactivated',
+                                 help='Settle a start refused before MT5 was touched to cancelled; allowed under owner STOP')
+    retire.add_argument('--batch-id', required=True)
+    stop = commands.add_parser('stop', help='Stop: settle the active batch (or --batch-id for one unstarted batch) to a verified terminal state')
     stop.add_argument('--monitor-config', type=Path, help='Exact monitor-only INI for cancellation recovery after MT5 exits; STOP remains set')
+    stop.add_argument('--batch-id', help='Cancel this pending or reserved-not-started batch without setting owner STOP')
+    compact = commands.add_parser('compact-evidence', help='Preview, then --apply: move finished in-row evidence history to verified logs')
+    compact.add_argument('--apply', action='store_true')
+    receipts = commands.add_parser('compact-receipts',
+                                   help='Preview, then --apply: archive legacy full-queue receipts and keep only their queue digest')
+    receipts.add_argument('--apply', action='store_true')
+    begin =commands.add_parser('start', help='Start any prepared batch under the bounded driver')
+    begin.add_argument('--batch-id', required=True)
+    begin.add_argument('--max-seconds', type=int)
+    onward = commands.add_parser('continue', help='Continue a stopped, paused or finished batch as a successor and start it')
+    onward.add_argument('--batch-id', required=True)
+    onward.add_argument('--new-batch-id')
+    onward.add_argument('--max-seconds', type=int)
+    onward.add_argument('--clear-stop', action='store_true')
+    onward.add_argument('--include-failed', action='store_true')
+    onward.add_argument('--include-no-edge', action='store_true')
     commands.add_parser('clear-stop')
     orphan = commands.add_parser('recover-orphan')
     orphan.add_argument('--review-id', help='Observe this retained recovery only; never resend')
@@ -1479,14 +1764,68 @@ def main(argv=None):
     seed_promote.add_argument('--name', required=True)
     seed_promote.add_argument('--neighborhood', type=int, default=1, help='Robustness ladder steps either side, 1..5 (default 1)')
     seed_promote.add_argument('--member')
+    gate = commands.add_parser('gate-recommend', help='Read-only: recommend qualification gates for a new run from our own export evidence')
+    gate.add_argument('--target', choices=('forward', 'post', 'held_up'), default='forward',
+                      help='held_up (catch-up verdicts) is the only actionable target; forward and post are diagnostics')
+    gate.add_argument('--min-survival', type=float, default=0.6, help='Required share of kept sets that survive (lower 95%% bound by default)')
+    gate.add_argument('--min-sets', type=int, default=20, help='Fewest sets a gate must keep')
+    gate.add_argument('--min-members', type=int, default=8, help='Fewest distinct optimization members a gate must keep')
+    gate.add_argument('--min-trades', type=int, default=5, help='Fewest trades in the target window for a set to be judged (forward/post)')
+    gate.add_argument('--min-clusters', type=int, default=4, help='Fewest independent runs (or periods) for any recommendation')
+    gate.add_argument('--cluster', choices=('run', 'period'), default='run', help='Independent unit for bootstraps and leave-one-out')
+    gate.add_argument('--runs', help='Comma-separated run folders (R...); default: every run with sequence exports')
+    gate.add_argument('--common-root', type=Path, help='GOAT Common Files folder; default %%APPDATA%%\\MetaQuotes\\Terminal\\Common\\Files\\GOAT')
+    gate.add_argument('--verdicts', type=Path, help='Catch-up verdict JSON/JSONL file or folder (comparable goat-catchup-verdict-v2 only)')
+    gate.add_argument('--curves', action='store_true', help='Include every threshold point, not only the qualifying ones')
+    gate.add_argument('--output', type=Path, help='Also write the recommendation JSON to this new file')
+    stamp = commands.add_parser('gate-stamp', help='Write a new batch plan that only tightens to a held_up recommendation, plus a <plan>.gates.json stamp')
+    stamp.add_argument('--plan', type=Path, required=True)
+    stamp.add_argument('--recommendation', type=Path, required=True, help='JSON written by gate-recommend --output')
+    stamp.add_argument('--output', type=Path, required=True, help='New plan path; never the source plan')
+    stamp.add_argument('--generated-at', help='UTC time to stamp (YYYY-MM-DDTHH:MM:SSZ); default now')
+    end = commands.add_parser('evidence-end', help='Read-only: resolve AUTO (latest closed Friday) or an explicit evidence end')
+    end.add_argument('--value', default='auto')
+    end.add_argument('--broker-clock')
+    scan = commands.add_parser('evidence-scan', help='Read-only: kept exports and their evidence ends against one target')
+    scan.add_argument('--source', type=Path, action='append', required=True, help='Run, deploy or member folder, or a .set; repeatable')
+    scan.add_argument('--evidence-end', default='auto')
+    scan.add_argument('--broker-clock')
+    scan.add_argument('--include-below-threshold', action='store_true')
+    commands.add_parser('catchup-validate', help='Non-executing catch-up plan preview').add_argument('--plan', type=Path, required=True)
+    catchup_prep = commands.add_parser('catchup-prepare', help='Freeze one single-pass re-test per stale export; no launch')
+    catchup_prep.add_argument('--catchup-id', required=True)
+    catchup_prep.add_argument('--plan', type=Path, required=True)
+    for name in ('catchup-start', 'catchup-resume'):
+        catchup_drive = commands.add_parser(name)
+        catchup_drive.add_argument('--catchup-id', required=True)
+        catchup_drive.add_argument('--max-seconds', type=int, default=60)
+    for name in ('catchup-status', 'catchup-cancel', 'catchup-report'):
+        commands.add_parser(name).add_argument('--catchup-id', required=True)
     args = parser.parse_args(argv)
+    if args.command in ('gate-recommend', 'gate-stamp'):
+        # Evidence-only commands: no terminal, session or controller state is read or written.
+        try:
+            result = _gate_command(args)
+            print(json.dumps(dict(ok=True, result=result), sort_keys=True, default=str))
+            return 0
+        except Exception as exc:
+            code = 'REFUSED' if isinstance(exc, ValueError) else 'IO_ERROR' if isinstance(exc, OSError) else 'INTERNAL_ERROR'
+            print(json.dumps(dict(ok=False, code=code, error=str(exc)), sort_keys=True), file=sys.stderr)
+            return 1
     try:
         agent = DemoAgent(args.installation)
         if args.command == 'status': result = agent.status()
         elif args.command == 'preflight': result = agent.preflight()
         elif args.command == 'disk-status': result = agent.disk_status()
         elif args.command == 'cancel-pending': result = agent.cancel_pending(args.batch_id)
-        elif args.command == 'stop': result = agent.stop(args.monitor_config)
+        elif args.command == 'stop': result = agent.stop(args.monitor_config, args.batch_id)
+        elif args.command == 'start': result = agent.start(args.batch_id, args.max_seconds)
+        elif args.command == 'compact-evidence': result = agent.compact_evidence(args.apply)
+        elif args.command == 'compact-receipts': result = agent.compact_receipts(args.apply)
+        elif args.command == 'continue': result = agent.continue_batch(args.batch_id, new_batch_id=args.new_batch_id,
+            max_seconds=args.max_seconds, clear_stop=args.clear_stop, include_failed=args.include_failed,
+            include_no_edge=args.include_no_edge)
+        elif args.command == 'retire-unactivated': result = agent.retire_unactivated(args.batch_id)
         elif args.command == 'clear-stop': result = agent.clear_stop()
         elif args.command == 'recover-orphan': result = agent.recover_orphan(args.review_id)
         elif args.command == 'launch-terminal': result = agent.launch_terminal(args.monitor_config)
@@ -1512,6 +1851,16 @@ def main(argv=None):
         elif args.command == 'seed-cancel': result = agent.seed_cancel(args.batch_id)
         elif args.command == 'seed-report': result = agent.seed_report(args.batch_id)
         elif args.command == 'seed-promote': result = agent.seed_promote(args.batch_id, args.candidate, args.name, args.neighborhood, args.member)
+        elif args.command == 'evidence-end': result = agent.evidence_end(args.value, broker_clock=args.broker_clock)
+        elif args.command == 'evidence-scan': result = agent.evidence_scan([str(p) for p in args.source], args.evidence_end,
+            broker_clock=args.broker_clock, include_below_threshold=args.include_below_threshold)
+        elif args.command == 'catchup-validate': result = agent.catchup_validate(args.plan)
+        elif args.command == 'catchup-prepare': result = agent.catchup_prepare(args.catchup_id, args.plan)
+        elif args.command == 'catchup-start': result = agent.catchup_start(args.catchup_id, args.max_seconds)
+        elif args.command == 'catchup-resume': result = agent.catchup_resume(args.catchup_id, args.max_seconds)
+        elif args.command == 'catchup-status': result = agent.catchup_status(args.catchup_id)
+        elif args.command == 'catchup-cancel': result = agent.catchup_cancel(args.catchup_id)
+        elif args.command == 'catchup-report': result = agent.catchup_report(args.catchup_id)
         if args.command == 'stop' and result.get('status') == 'stop_unconfirmed':
             print(json.dumps(dict(ok=False, code='STOP_UNCONFIRMED', result=result),
                              sort_keys=True, default=str), file=sys.stderr)

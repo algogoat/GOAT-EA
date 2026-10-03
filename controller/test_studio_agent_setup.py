@@ -332,6 +332,18 @@ class AgentSetupTests(unittest.TestCase):
                 self.assertEqual((result['status'], result['source'], result['userCode']), ('pairing_available', 'setup_mailbox', 'ABCD-EF23'))
                 path.unlink()
 
+    def test_a_symlinked_shared_code_is_ignored_and_the_mailbox_answers(self):
+        # A well-formed file behind a link is not the EA's own file: it is never read.
+        self.start_ea()
+        path = self.shared_code_file()
+        original = Path.is_symlink
+        with patch.object(Path, 'is_symlink', lambda item: item == path or original(item)):
+            result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+        self.assertEqual((result['status'], result['source'], result['userCode']), ('pairing_available', 'setup_mailbox', 'ABCD-EF23'))
+        with patch.object(Path, 'is_symlink', lambda item: item == path or original(item)):
+            self.assertIsNone(agent_setup.shared_code(self.c, '123456', 'Customer-Demo', BUILD))
+        self.assertIsNotNone(agent_setup.shared_code(self.c, '123456', 'Customer-Demo', BUILD), 'the same file read directly is accepted')
+
     def test_an_ea_that_shares_nothing_gets_one_plain_fallback(self):
         # SM31 and earlier on a strategy chart: no shared file and no mailbox host.
         with patch.object(agent_setup, 'setup_request', return_value=dict(id='b' * 32, result='receipt_timeout')):

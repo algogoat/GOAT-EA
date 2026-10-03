@@ -73,7 +73,7 @@ class ConfigStartTests(unittest.TestCase):
             return {'request_id':self.attempt}
         self.stack=ExitStack();self.addCleanup(self.stack.close)
         replacements=dict(guard_active_seed=Mock(),before_native_dispatch=Mock(),
-            inspect_processes=Mock(return_value=self.baseline),revalidate_processes=Mock(),
+            inspect_processes=Mock(return_value=self.baseline),revalidate_processes=Mock(side_effect=lambda binding,baseline:dict(baseline)),
             record_intent=Mock(side_effect=intent),validate_launch_material=Mock(return_value=self.material),
             _install_controls=Mock(side_effect=install),validate_restart_controls=Mock(side_effect=lambda *args,**kwargs:dict(self.arm_fields)),
             publish_restart_arm=Mock(side_effect=arm),observe_dispatch=Mock(return_value=dict(

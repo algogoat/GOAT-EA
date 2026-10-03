@@ -91,6 +91,15 @@ def _validate_material(state, job, *, account, monitor_path, monitor_sha256, inp
     if not re.fullmatch(r'GOAT\\R[0-9a-f]{12}',relative):
         raise ValueError('Invalid native path')
     materials=[];aliases=set()
+    from studio_batch_seal import sealed,verify_member
+    if sealed(package,job,input_schema):
+        # Sealed at preparation and byte-identical: only member 0 feeds the native
+        # paste and startup payload, so only it is rebuilt; every member's expert is
+        # still checked against this installation.
+        if any(member['tester']['Expert']!=binding['ea_relative_path'] for member in members):
+            raise ValueError('Frozen member expert differs from installation')
+        materials=[verify_member(package,members[0],manifest['jobs'][0],input_schema,binding['ea_version'])]
+        members=[]
     for member,item in zip(members,manifest['jobs']):
         if input_schema is None or sha(input_schema)!=member['strategy']['schema_hash']:
             raise ValueError('Trusted input schema does not match frozen member')

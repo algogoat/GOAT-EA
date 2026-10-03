@@ -436,12 +436,15 @@ def batch_progress(root, install, job, *, now, journal=None):
     return result
 
 
-def seed_progress(root, batch_id, *, now):
-    """Seed hunt members done/total, qualifying candidates and pace, from retained state."""
-    folder = Path(root) / 'seeds' / batch_id
+def seed_progress(root, batch_id, *, now, kind='seed'):
+    """Seed hunt (or OOS catch-up) members done/total, qualifying results and pace, from retained state.
+
+    Catch-up results are never "qualifying": held_up members are counted as ``held_up``.
+    """
+    folder = Path(root) / ('catchups' if kind == 'catchup' else 'seeds') / batch_id
     state, _ = _bounded_json(folder / 'state.json', 32 * 1024 * 1024)
     if not isinstance(state, dict) or not isinstance(state.get('members'), list):
-        return dict(batch_id=batch_id, kind='seed', status='unknown', evidence='seed_state_unreadable')
+        return dict(batch_id=batch_id, kind=kind, status='unknown', evidence='seed_state_unreadable')
     members = state['members']
     done = [m for m in members if m.get('status') == 'completed']
     finished = [m for m in members if m.get('status') in ('completed', 'cancelled', 'timeout', 'failed', 'missing_output')]
@@ -457,13 +460,18 @@ def seed_progress(root, batch_id, *, now):
         eta = now + max(0.0, remaining * cycle - (min(age, cycle * .95) if age is not None else 0))
     candidates = sum((m.get('result') or {}).get('summary', {}).get('qualifying_count', 0) or 0 for m in done)
     qualifying_members = sum(1 for m in done if ((m.get('result') or {}).get('summary', {}).get('qualifying_count') or 0) > 0)
+    held_up = None
+    if kind == 'catchup':
+        # A few new weeks never qualify anything: report held_up separately, not as qualifying.
+        held_up = sum(1 for m in done if (m.get('result') or {}).get('summary', {}).get('verdict') == 'held_up')
+        candidates = qualifying_members = None
     last = max(finished, key=lambda m: m.get('finished_unix') or 0, default=None)
     paused = (folder / 'pause.json').is_file()
     status = state.get('status')
-    return dict(batch_id=batch_id, kind='seed', status=('paused' if paused and running is None and status == 'active'
+    return dict(batch_id=batch_id, kind=kind, status=('paused' if paused and running is None and status == 'active'
                                                          else 'pausing' if paused and status == 'active' else status),
                 members_total=len(members), members_done=len(done), members_finished=len(finished),
-                qualifying=qualifying_members, qualifying_candidates=candidates,
+                qualifying=qualifying_members, qualifying_candidates=candidates, held_up=held_up,
                 last_member=None if last is None else dict(alias=last.get('alias'), status=last.get('status'),
                     qualifying_candidates=(last.get('result') or {}).get('summary', {}).get('qualifying_count'),
                     best_fitness=(last.get('result') or {}).get('summary', {}).get('best_fitness')),
@@ -517,7 +525,7 @@ def headline(activity):
     if kind == 'idle':
         return 'No research is running on this terminal.'
     total, done = activity.get('members_total'), activity.get('members_done')
-    name = 'seed hunt' if kind == 'seed' else 'batch'
+    name = 'seed hunt' if kind == 'seed' else 'catch-up' if kind == 'catchup' else 'batch'
     status = activity.get('status')
     pace_value = activity.get('pace') or {}
     eta = pace_value.get('eta_wall')
@@ -527,7 +535,8 @@ def headline(activity):
         left = ', about ' + (str(minutes // 60) + ' h ' if minutes >= 60 else '') + str(minutes % 60) + ' min left'
     qualifying = activity.get('qualifying')
     counts = ('' if total is None else ' ' + str(done) + ' of ' + str(total) + ' members done') + (
-        '' if qualifying is None else ', ' + str(qualifying) + ' qualifying')
+        '' if qualifying is None else ', ' + str(qualifying) + ' qualifying') + (
+        '' if activity.get('held_up') is None else ', ' + str(activity['held_up']) + ' held up (low-sample verdicts)')
     # No-edge members are results for their window, reported apart and never as failures.
     no_edge, failed = activity.get('members_no_edge'), activity.get('members_failed')
     if no_edge:
@@ -539,6 +548,9 @@ def headline(activity):
     cancelled = activity.get('members_cancelled')
     if cancelled and status not in ('pausing', 'paused'):   # a pause cancels the rest by design
         counts += ', ' + str(cancelled) + ' cancelled'
+    if status == 'start_failed_unactivated':
+        return ('Start failed before MT5 was touched; nothing ran. Settle it with retire-unactivated --batch-id '
+                + str(activity.get('batch_id')) + ', then prepare its members again under a new batch ID.')
     if status == 'pausing':
         return 'Pausing this ' + name + ' at the next safe point;' + counts + '.'
     if status == 'paused':
@@ -546,7 +558,7 @@ def headline(activity):
     if status in ('running', 'starting', 'reconcile_required', 'verifying', 'active'):
         current = activity.get('current_member') or {}
         member = (' on ' + current['symbol'] + ' ' + current['timeframe']) if current.get('symbol') else ''
-        return 'Running' + member + ';' + counts + left + '.'
+        return 'Running' + (' OOS catch-up' if kind == 'catchup' else '') + member + ';' + counts + left + '.'
     if status == 'failed' and no_edge and failed == 0:
         # The queue calls it failed only because no-edge members keep an Error status.
         # Cancelled members mean it stopped early: never "finished" (counts name them).
@@ -579,13 +591,22 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
     journal = None
     activity = dict(kind='idle', status='idle')
     if seed_id and not active and isinstance(seed_id, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,80}', seed_id):
-        activity = seed_progress(root, seed_id, now=now)
+        # Seeds and catch-ups share the slot; the slot names the manifest it belongs to.
+        catchup, _ = _bounded_json(root / 'catchups' / seed_id / 'state.json', 32 * 1024 * 1024)
+        kind = ('catchup' if isinstance(catchup, dict) and catchup.get('manifest_sha256') == seed_slot.get('manifest_sha256')
+                else 'seed')
+        activity = seed_progress(root, seed_id, now=now, kind=kind)
     elif current is not None:
         journal, _ = _bounded_json(root / 'batch-drivers' / (current['job_id'] + '.json'))
         pause = pauses.get(current['job_id'])
         progress = batch_progress(root, install, current, now=now, journal=journal)
         status = current['status']
-        if pause is not None and pause.get('state') in ('pausing', 'paused', 'pause_failed', 'resumed', 'finished'):
+        from studio_retire_unactivated import unactivated_hint
+        if unactivated_hint(root, current) and progress.get('evidence') == 'native_evidence_missing':
+            # Intent recorded, but no attempt folder, controls or native queue: MT5 was
+            # never touched. It is not running and needs retire-unactivated.
+            status = 'start_failed_unactivated'
+        elif pause is not None and pause.get('state') in ('pausing', 'paused', 'pause_failed', 'resumed', 'finished'):
             status = pause['state']
         elif status in ('reserved', 'starting', 'reconcile_required', 'verifying'):
             status = 'running' if status in ('reconcile_required', 'verifying') else status

@@ -140,6 +140,10 @@ def shared_code(controller, login, server, build_id, *, now=None):
     challenge MT5 is showing (never a credential). It counts only when it names exactly this
     login, server and build, is well formed and has 15 s to 15 min left; anything else is
     ignored, never repaired. The code is returned to the caller only, never logged.
+
+    Known limit: the file is named by the data folder's name, so two terminals whose data folders
+    share a name write the same file. The exact login, server and build match above refuses a
+    code from the other terminal unless both are signed in to the same account on the same build.
     """
     from studio_research_status import terminal_token
     path = Path(controller.install['common_files_root']) / 'GOAT' / ('activation-code-' + terminal_token(controller.install) + '.json')

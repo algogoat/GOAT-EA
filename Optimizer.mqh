@@ -821,6 +821,9 @@ bool CStrategyTesterDialog::SaveCurrentBatchPackage(void)
    string queue=GetFileContent(Path_QueueBatch);
    // Save the values currently displayed, not a previous run/start snapshot.
    string exportSettings=(m_compactLayout ? GetFileContent(Path_ExportSettings) : GetExportSettingsString());
+#ifdef GOAT_EVIDENCE_END_V149
+   exportSettings=GoatEvidenceEndCarry(exportSettings,GetFileContent(Path_ExportSettings));
+#endif
    if(exportSettings!="" && !GoatOptWriteTextFile(Path_ExportSettings,exportSettings)) return false;
    string runName=m_edtRunName.Text();
    StringTrimLeft(runName);
@@ -875,6 +878,9 @@ bool CStrategyTesterDialog::RehomeRunIfEditedNameChanged(void)
    string oldExportSettingsPath=Path_ExportSettings;
    string queue=GetFileContent(oldQueuePath);
    string exportSettings=(m_compactLayout ? GetFileContent(oldExportSettingsPath) : GetExportSettingsString());
+#ifdef GOAT_EVIDENCE_END_V149
+   exportSettings=GoatEvidenceEndCarry(exportSettings,GetFileContent(oldExportSettingsPath));
+#endif
    if(queue=="") return true;
 
    Path_RunFolder=GoatOptCreateRunPath(EA_Name_,Server_,requestedSafe,oldRunFolder);
@@ -1720,47 +1726,53 @@ void CStrategyTesterDialog::ApplyStudioStage(const int stage)
    if(g_GoatStudioReadOnlyMonitor)
    {
       // Disable editing controls, never the parent client area or navigation.
-      m_btnSelectFile.Disable();
-      m_btnAddQueue.Disable();
-      m_btnSetPresets.Disable();
       m_btnDelQ.Disable();
-      m_btnDelQitem.Disable();
-      m_btnUpQitem.Disable();
-      m_btnDownQitem.Disable();
-      m_btnCancelSelected.Disable();
-      m_btnMakePending.Disable();
-      m_btnStart.Disable();
-      m_btnStop.Disable();
       m_btnSyncBias.Disable();
       m_btnViewBias.Disable();
       m_btnSyncNews.Disable();
       m_edtRunName.Disable();
       m_cmbExpert.Disable();
-      m_cmbSymbol.Disable();
-      m_cmbPeriod.Disable();
-      m_dtFrom.Disable();
-      m_dtTo.Disable();
-      m_cmbForward.Disable();
-      m_dtForward.Disable();
-      m_cmbDelay.Disable();
-      m_cmbModel.Disable();
-      m_edtDeposit.Disable();
-      m_edtCurrency.Disable();
-      m_cmbLeverage.Disable();
       m_cmbOptimization.Disable();
-      m_edtSetsToExport.Disable();
-      m_dpBackOOS.Disable();
-      m_edtMinScore.Disable();
-      m_edtMinARF.Disable();
-      m_edtTargetDD.Disable();
-      m_edtMinSR.Disable();
-      m_chkAdjustLots.Disable();
-      m_chkVerifyOOS.Disable();
-#ifdef GOAT_SEQUENCE_EXPORT_V148
-      m_chkSequenceData.Disable();
+#ifdef GOAT_STUDIO_UNIFIED_V147
+      // Managed Studio decides the controls below once, in ManagedControls, so a
+      // refresh never disables and re-enables them or pre-paints the handoff buttons.
+      if(!GoatStudioManaged())
 #endif
-      m_btnStart.Text("AGENT CONTROLS BATCH");
-      m_btnStop.Text("READ-ONLY VIEW");
+        {
+         m_btnSelectFile.Disable();
+         m_btnAddQueue.Disable();
+         m_btnSetPresets.Disable();
+         m_btnDelQitem.Disable();
+         m_btnUpQitem.Disable();
+         m_btnDownQitem.Disable();
+         m_btnCancelSelected.Disable();
+         m_btnMakePending.Disable();
+         m_cmbSymbol.Disable();
+         m_cmbPeriod.Disable();
+         m_dtFrom.Disable();
+         m_dtTo.Disable();
+         m_cmbForward.Disable();
+         m_dtForward.Disable();
+         m_cmbDelay.Disable();
+         m_cmbModel.Disable();
+         m_edtDeposit.Disable();
+         m_edtCurrency.Disable();
+         m_cmbLeverage.Disable();
+         m_edtSetsToExport.Disable();
+         m_dpBackOOS.Disable();
+         m_edtMinScore.Disable();
+         m_edtMinARF.Disable();
+         m_edtTargetDD.Disable();
+         m_edtMinSR.Disable();
+         m_chkAdjustLots.Disable();
+         m_chkVerifyOOS.Disable();
+#ifdef GOAT_SEQUENCE_EXPORT_V148
+         m_chkSequenceData.Disable();
+#endif
+         m_btnStart.Disable(); m_btnStop.Disable();
+         m_btnStart.Text("AGENT CONTROLS BATCH");
+         m_btnStop.Text("READ-ONLY VIEW");
+        }
    }
 #ifdef GOAT_STUDIO_UNIFIED_V147
    if(GoatStudioManaged()) ManagedControls();

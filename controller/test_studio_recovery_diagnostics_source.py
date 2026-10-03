@@ -47,12 +47,19 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
                      "   // The controller refuses native work unless it resolves this same folder.\n"
                      '   body+=",\\"state_base\\":"+GoatStudioQuote(GoatOptBasePath(EA_Name,Server));\n'
                      "#endif\n")
+        # FU35 adds one top-level capability field read by studio_evidence_end.ea_capability.
+        evidence_end = ("#ifdef GOAT_EVIDENCE_END_V149\n"
+                        "   // studio_evidence_end.ea_capability: this build honours the EvidenceEnd export setting.\n"
+                        '   body+=",\\"evidence_end\\":"+GoatStudioQuote(GOAT_EVIDENCE_END_CAPABILITY);\n'
+                        "#endif\n")
         observation = ui[ui.index("void CStrategyTesterDialog::ManagedObservation("):ui.index("\nvoid CStrategyTesterDialog::ManagedSave")]
         self.assertEqual(observation.count(hook), 1)
         self.assertEqual(observation.count(isolation), 1)
+        self.assertEqual(observation.count(evidence_end), 1)
         self.assertLess(observation.index(isolation), observation.index('ulong now=GetTickCount64();'))
+        self.assertLess(observation.index(evidence_end), observation.index('ulong now=GetTickCount64();'))
         self.assertLess(observation.index('now-g_StudioObservationMillis<5000'), observation.index(hook))
-        self.assertEqual(hashlib.sha256(observation.replace(hook, "").replace(isolation, "").encode()).hexdigest(),
+        self.assertEqual(hashlib.sha256(observation.replace(hook, "").replace(isolation, "").replace(evidence_end, "").encode()).hexdigest(),
                          "ccb0895972457bd25c75d808792e8def54728ab85ec07bb3d1d9bf7156b296e2")
         self.assertEqual(ui.count("GoatStudioRecoveryObserveCurrent();"), 1)
 
@@ -170,11 +177,12 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
     def test_source_and_compiled_candidate_identity(self):
         main = source('GOAT V1.49.mq5')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
-        self.assertIn('#define   GOAT_BUILD_ID "V1.49-EA-EXPERIENCE-33"', main)
+        self.assertIn('#define   GOAT_BUILD_ID "V1.49-BETA17-38"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
                          '05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9')
         for name in ('GOATStudioRecovery.mqh', 'GOATStudioRecoveryFiles.mqh', 'GOATStudioUI.mqh',
-                     'GOATStudioWorkers.mqh', 'GOATStudioExportDates.mqh', 'GOATStudioControlFeedback.mqh', 'GOAT V1.49.mq5'):
+                     'GOATStudioWorkers.mqh', 'GOATStudioExportDates.mqh', 'GOATStudioControlFeedback.mqh', 'GOAT V1.49.mq5',
+                     'GOATEvidenceEnd.mqh', 'GOATTesterStopConfirm.mqh', 'GOATStudioDispatch.mqh'):
             raw = (ROOT/name).read_bytes()
             self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
             self.assertEqual(raw.count(b"\n"), raw.count(b"\r\n"))

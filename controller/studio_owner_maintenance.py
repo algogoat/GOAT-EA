@@ -4,7 +4,6 @@ This slice cannot install a build, bootstrap, grant control or launch research.
 The external journal survives PARK and preserves the original grant provenance.
 """
 import hashlib
-import json
 import re
 import sqlite3
 import time
@@ -139,13 +138,13 @@ def original_grant(c, original_root, original_local, value, *, current_build):
     if current_build and load_installation(original_root/'installation.json')!=install:
         raise ValueError('Original installed artifact differs')
     key=packed(dict(terminal_id=session['terminal_id'],run_id=session['run_id']))
-    with closing(sqlite3.connect((original_root/'studio.sqlite').as_uri()+'?mode=ro',uri=True)) as db:
-        row=db.execute('SELECT payload_hash,receipt FROM studio_receipts WHERE binding=? AND request_id=?',
-                       (key,policy['grant_request_id'])).fetchone()
-    if not row or row[0]!=policy['grant_payload_hash']:
-        raise ValueError('Original genuine human grant receipt is missing or changed')
     from studio_agent import unique_object
-    receipt=json.loads(row[1],object_pairs_hook=unique_object)
+    from studio_receipt_digest import receipt_views
+    with closing(sqlite3.connect((original_root/'studio.sqlite').as_uri()+'?mode=ro',uri=True)) as db:
+        rows=receipt_views(db,key,policy['grant_request_id'],object_pairs_hook=unique_object)
+    if not rows or rows[0][1]!=policy['grant_payload_hash']:
+        raise ValueError('Original genuine human grant receipt is missing or changed')
+    receipt=rows[0][2]
     if (receipt.get('request_id')!=policy['grant_request_id'] or receipt.get('command')!='control.grant_agent'
             or receipt.get('status')!='applied' or receipt.get('execution_effect') is not False
             or receipt['state']['owner']!='agent' or receipt['state']['generation']!=policy['generation']

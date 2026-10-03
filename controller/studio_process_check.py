@@ -10,6 +10,24 @@ import subprocess
 import time
 
 
+class StoppedRootProcess(ValueError):
+    """A program from a terminal folder that must be closed (e.g. MetaEditor64.exe).
+
+    The message keeps its historical prefix and names the program, PID and path,
+    so a user can close exactly that window instead of guessing.
+    """
+    def __init__(self,image,pid):
+        self.program=PureWindowsPath(image).name;self.pid=pid;self.path=str(image)
+        super().__init__('Executable is running under a stopped terminal root: '+self.program+' (PID '+str(pid)+', '+self.path+')')
+
+    def next_action(self):
+        if self.program.casefold()=='metaeditor64.exe':
+            return ('Ask the user to close MetaEditor (PID '+str(self.pid)+') normally with File > Exit, saving any work, then re-run onboarding-status. '
+                    'Leave MT5 itself running; do not use monitor-prepare or monitor-launch for this.')
+        return ('Ask the user to close '+self.program+' (PID '+str(self.pid)+') from '+self.path+' normally, then re-run onboarding-status. '
+                'Never stop unrelated terminals or force-kill a process.')
+
+
 def windows_image(path):
     """The image path Windows itself opens for an inventory ExecutablePath.
 
@@ -128,7 +146,7 @@ def stopped_candidates(processes,roots):
         if path:
             actual=windows_image(path)
             if any(actual.is_relative_to(root) for root in paths):
-                raise ValueError('Executable is running under a stopped terminal root')
+                raise StoppedRootProcess(actual,pid)
         else:
             unknown+=1
         if name.casefold() in ('terminal64.exe','terminal.exe'):

@@ -115,6 +115,109 @@ the running member finishes and is kept, no new member starts and pending member
 stay pending (never cancelled). `seed-resume` honours the pause; `batch-resume`
 releases it (the marker is retained as `pause-released-<ms>.json`) and continues.
 
+## Gate calibration: qualification gates from our own evidence
+
+The export gates (`MinScore 60`, `MinSR 2.5`, `MinARF 0.2`, `SetsToExport 2`,
+`TargetDD 100`) and the EA back-row filter (in-sample profit > 0.001, >= 50
+trades) were fixed by hand. `gate-recommend` replaces "fixed" with "chosen per run
+from what our past exports actually did". It is read only: it opens the export
+folders under Common Files for reading and writes nothing except `--output`. It
+needs no terminal, lock, session or broker; `--installation` is accepted as for
+every command and not read.
+
+```powershell
+& $py $tool --installation $install gate-recommend --target forward --min-survival 0.8
+& $py $tool --installation $install gate-recommend --target post --min-survival 0.75 --runs 'Rad870a22d237,Re7e282f93d41' --output 'C:/gates/rec.json'
+& $py $tool --installation $install gate-recommend --target held_up --verdicts 'C:/catchup/verdicts' --output 'C:/gates/held.json'
+& $py $tool --installation $install gate-stamp --plan 'C:/plan.json' --recommendation 'C:/gates/held.json' --output 'C:/plan-gated.json'
+```
+
+How it decides (`studio_gate_calibration.py`, schema `goat-gate-calibration-v2`):
+
+- Every finished sequence capture in `<run>/deploy` and `<run>/exports` is split by
+  server date into back OOS `[BackOOSDate, FromDate)`, in-sample `[FromDate,
+  ForwardDate)`, forward `[ForwardDate, ToDate)` and post `[ToDate, end of the
+  export run]`, from `deals.csv` (trades = positions opened in the window; PF over
+  only those positions, as in `goat-catchup-verdict-v2`) and the exported equity
+  CSV (net, drawdown, recovery, daily Sharpe, monthly ARF-style ratio). The
+  optimizer's own in-sample columns and Score come from the member's `UniqueRows`
+  XML. A capture that hit its row limit keeps its equity numbers; its trades and PF
+  after the cut are unknown, never partial. Only byte-identical evidence (same
+  inputs AND same deals and equity files) collapses across runs.
+- Survival: `forward`/`post` need at least `--min-trades` (default 5) positions in
+  the window and then net > 0 (post also >= 10 weekdays); fewer trades = not
+  judged. `held_up` uses catch-up verdicts matched by the exported SET's SHA-256,
+  accepted only as schema `goat-catchup-verdict-v2`, `comparability.comparable`
+  true and default rules (`rules.id` v2, nothing `overridden`); for one SET the
+  newest evidence end wins. `too_few_trades`/`not_comparable` are not judged.
+- **Only `held_up` is actionable.** Forward and post lie inside the export run the
+  EA already judged, so they are diagnostics: they report what would validate but
+  never move a plan field, and `gate-stamp` refuses them.
+- Leakage rule: a predictor may only use data the target window could not have
+  influenced. Forward: in-sample, back OOS and the optimizer's in-sample columns;
+  never the forward window, the Score (built from in-sample and forward results)
+  or the file-name metrics (measured over the whole export run). Post also allows
+  forward and Score; held_up also allows the file-name metrics, so `MinScore`,
+  `MinSR` and `MinARF` can only move on held_up; every other gate is a portfolio
+  qualification gate. Plan fields never drop below the controller floors.
+- Selection is paid for. Outcomes are averaged per optimization member first (a
+  member's sets are near copies), and runs (`--cluster run`, or the stricter
+  `period`) are the independent unit. A metric is a candidate only when survivors
+  beat failures **inside the same run** (run-bootstrap AUC range above 0.5), so a
+  difference between runs cannot fake a signal. A threshold is chosen (loosest,
+  most sets kept) only where a **simultaneous** lower band over the whole
+  threshold grid (sup-t over a run bootstrap, also capped by the member Wilson
+  bound) clears `--min-survival`, with `--min-sets` sets from `--min-members`
+  members in at least two runs.
+- **Leave one run out:** the whole selection is repeated without each run and the
+  gate it picks is judged on that run. The gate validates only when the pooled
+  held-out lower bound (the lowest of a cluster t interval, Wilson and a bootstrap
+  over held-out runs) clears the target, at least `--min-clusters` (default 4)
+  runs were judged, and no run with enough members clearly misses (its Wilson
+  upper bound under the target). The recommended threshold is the strictest one any
+  fold chose for that metric. If that threshold does not clear the full-data band,
+  the result is `fallback_not_validated` (fail closed); the looser full-data
+  threshold is never stamped in its place.
+- Status: `validated`, `defaults_already_meet_target`,
+  `fallback_no_qualifying_gate`, `fallback_not_validated` or
+  `fallback_thin_evidence` (fewer than `--min-sets` judged sets, `--min-members`
+  members or `--min-clusters` runs). Every fallback keeps today's values and says
+  why in `summary`. Symbol classes and run designs are calibrated alone with the
+  same procedure and only get their own gate when they validate.
+- Fillers (sets the EA exported below its run's own MinSR/MinARF to fill
+  `SetsToExport`) are labelled `filler`, never excluded. `fillers` in the result
+  compares passed and filler sets inside each run and symbol on held_up only
+  (Mantel-Haenszel risk difference, run bootstrap); the pooled gap is confounded by
+  construction.
+- Simulation (`CoverageSimulationTests`): when a gate validates, its true survival
+  clears the target at the nominal 97.5% one-sided rate, also with run-level shocks.
+- **"Validated" is per draw, not per gate.** Across evidence draws, few validate a
+  gate that really misses the target. Among the gates that do validate, a larger
+  share is still slightly under it (correlated proxies, judged on fresh periods).
+  `scripts/gate_calibration_coverage.py` measures both; the numbers live in
+  `VALIDATED_GATE_MISS` and travel as `validation_meaning` in every recommendation,
+  summary, `<plan>.gates.json` stamp and report. A miss over-tightens, never loosens.
+- `evidence_digest` is a SHA-256 over the judged sets, outcomes and features, so
+  the same evidence gives the same digest in any order.
+
+`gate-stamp` writes a NEW plan (never the source, never an existing file) and
+**only tightens**: it accepts only a `held_up` recommendation; each recommended
+field becomes `max(plan value, recommended value)`, every other field keeps the
+plan's own value, and when nothing tightens (or the recommendation is a fallback)
+the plan is copied byte for byte. The new plan is validated by the same
+`validate_export` as preparation; `<plan>.gates.json` holds
+`gates={values (with export_applied), method, evidence_digest, generated_at,
+plan_sha256, source_plan_sha256}`. The stamp is a sidecar because `prepare-batch`
+accepts only `schema_version`, `export` and `members`; the plan itself stays a
+normal plan. Pass `--generated-at` for a byte-identical repeat. `apply_qualify`
+checks one exported set against the stamped qualification gates (a missing number
+fails).
+
+`scripts/gate_calibration_report.py --out-dir <new folder>` writes the full
+evidence report (`report.md`, `report.json`) for several targets;
+`scripts/test_gate_calibration_mutations.py` checks that the guards above are
+each covered by a failing test.
+
 ## Seed Farming on the demo lane
 
 On a `demo_direct` installation the raw `goat.exe studio seed-*` mutations

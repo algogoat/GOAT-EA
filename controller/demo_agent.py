@@ -1641,6 +1641,31 @@ class _NoTerminal:
 
 
 
+def _gate_command(args):
+    import studio_gate_calibration as gates
+    if args.command == 'gate-recommend':
+        if args.output is not None and Path(args.output).exists():
+            raise ValueError('Recommendation output already exists; choose a new path')
+        runs = [run.strip() for run in args.runs.split(',') if run.strip()] if args.runs else None
+        result = gates.gate_recommend(common_root=args.common_root, runs=runs, target=args.target,
+                                      min_survival=args.min_survival, min_sets=args.min_sets,
+                                      min_members=args.min_members, min_trades=args.min_trades,
+                                      min_clusters=args.min_clusters, cluster=args.cluster,
+                                      verdicts=args.verdicts, curves=args.curves)
+        if args.output is not None:
+            output = Path(args.output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with output.open('x', encoding='utf-8', newline='\n') as stream:
+                json.dump(result, stream, sort_keys=True, indent=1, default=str)
+                stream.write('\n')
+            result = dict(result, output=str(output))
+        return result
+    recommendation = read_json(args.recommendation)
+    recommendation = recommendation.get('result', recommendation)
+    generated = args.generated_at or datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    return gates.stamp_plan(args.plan, recommendation, args.output, generated_at=generated)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--installation', type=Path, required=True)
@@ -1730,6 +1755,25 @@ def main(argv=None):
     seed_promote.add_argument('--name', required=True)
     seed_promote.add_argument('--neighborhood', type=int, default=1, help='Robustness ladder steps either side, 1..5 (default 1)')
     seed_promote.add_argument('--member')
+    gate = commands.add_parser('gate-recommend', help='Read-only: recommend qualification gates for a new run from our own export evidence')
+    gate.add_argument('--target', choices=('forward', 'post', 'held_up'), default='forward',
+                      help='held_up (catch-up verdicts) is the only actionable target; forward and post are diagnostics')
+    gate.add_argument('--min-survival', type=float, default=0.6, help='Required share of kept sets that survive (lower 95%% bound by default)')
+    gate.add_argument('--min-sets', type=int, default=20, help='Fewest sets a gate must keep')
+    gate.add_argument('--min-members', type=int, default=8, help='Fewest distinct optimization members a gate must keep')
+    gate.add_argument('--min-trades', type=int, default=5, help='Fewest trades in the target window for a set to be judged (forward/post)')
+    gate.add_argument('--min-clusters', type=int, default=4, help='Fewest independent runs (or periods) for any recommendation')
+    gate.add_argument('--cluster', choices=('run', 'period'), default='run', help='Independent unit for bootstraps and leave-one-out')
+    gate.add_argument('--runs', help='Comma-separated run folders (R...); default: every run with sequence exports')
+    gate.add_argument('--common-root', type=Path, help='GOAT Common Files folder; default %%APPDATA%%\\MetaQuotes\\Terminal\\Common\\Files\\GOAT')
+    gate.add_argument('--verdicts', type=Path, help='Catch-up verdict JSON/JSONL file or folder (comparable goat-catchup-verdict-v2 only)')
+    gate.add_argument('--curves', action='store_true', help='Include every threshold point, not only the qualifying ones')
+    gate.add_argument('--output', type=Path, help='Also write the recommendation JSON to this new file')
+    stamp = commands.add_parser('gate-stamp', help='Write a new batch plan that only tightens to a held_up recommendation, plus a <plan>.gates.json stamp')
+    stamp.add_argument('--plan', type=Path, required=True)
+    stamp.add_argument('--recommendation', type=Path, required=True, help='JSON written by gate-recommend --output')
+    stamp.add_argument('--output', type=Path, required=True, help='New plan path; never the source plan')
+    stamp.add_argument('--generated-at', help='UTC time to stamp (YYYY-MM-DDTHH:MM:SSZ); default now')
     end = commands.add_parser('evidence-end', help='Read-only: resolve AUTO (latest closed Friday) or an explicit evidence end')
     end.add_argument('--value', default='auto')
     end.add_argument('--broker-clock')
@@ -1749,6 +1793,16 @@ def main(argv=None):
     for name in ('catchup-status', 'catchup-cancel', 'catchup-report'):
         commands.add_parser(name).add_argument('--catchup-id', required=True)
     args = parser.parse_args(argv)
+    if args.command in ('gate-recommend', 'gate-stamp'):
+        # Evidence-only commands: no terminal, session or controller state is read or written.
+        try:
+            result = _gate_command(args)
+            print(json.dumps(dict(ok=True, result=result), sort_keys=True, default=str))
+            return 0
+        except Exception as exc:
+            code = 'REFUSED' if isinstance(exc, ValueError) else 'IO_ERROR' if isinstance(exc, OSError) else 'INTERNAL_ERROR'
+            print(json.dumps(dict(ok=False, code=code, error=str(exc)), sort_keys=True), file=sys.stderr)
+            return 1
     try:
         agent = DemoAgent(args.installation)
         if args.command == 'status': result = agent.status()

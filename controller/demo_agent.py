@@ -943,7 +943,10 @@ class DemoAgent:
             line = reader(process)
         except (ValueError, OSError, subprocess.SubprocessError):
             return False
-        match = re.search(r'(?i)(?:^|\s)/config:(?:"([^"]+)"|(\S+))', line or '')
+        # Windows writes GOAT's own launch as `"...\terminal64.exe" "/config:C:\path with
+        # spaces\startup.ini"`: the quote comes before /config and the path has spaces. Accept
+        # /config after start, whitespace or a quote; a quoted value, or an unquoted path up to .ini.
+        match = re.search(r'(?i)(?:^|\s|")/config:(?:"([^"]+)"|(.+?\.ini)(?="|\s|$))', line or '')
         if match is None:
             return False
         try:

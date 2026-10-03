@@ -90,6 +90,20 @@ class RelaunchReadbackTests(unittest.TestCase):
         self.process.line = '"' + str(self.exe) + '" /config:"' + str(self.data / 'config/GOATStudio/Seeds/S1_00001.ini') + '"'
         self.assertEqual(self.studio()['process'], self.new)                 # a seed / catch-up member
 
+    def test_real_windows_command_line_with_quote_before_config_qualifies(self):
+        # T2 round 4: Windows wrote `"...terminal64.exe" "/config:C:\path with spaces\startup.ini`
+        # (a quote before /config, spaces in the path, no closing quote) and the old pattern missed it.
+        spaced = self.root / 'attempts with space' / ('b' * 64) / 'startup.ini'
+        for line in ('"' + str(self.exe) + '" "/config:' + str(spaced),
+                     '"' + str(self.exe) + '" "/config:' + str(spaced) + '"'):
+            self.verified_path.write_text(json.dumps(dict(ea_sha256=digest(self.binary), process=self.old)))
+            self.process.line = line
+            self.assertEqual(self.studio()['process'], self.new)
+
+    def test_quoted_config_outside_goat_folders_still_refuses(self):
+        self.process.line = '"' + str(self.exe) + '" "/config:' + str(self.base / 'else where' / 'start.ini') + '"'
+        self.refuses()
+
     def refuses(self):
         before = self.verified_path.read_bytes()
         self.assertFalse(self.agent.preflight()['ready_for_batch'])

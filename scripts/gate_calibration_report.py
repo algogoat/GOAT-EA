@@ -64,6 +64,16 @@ def markdown(report):
              'Generated %s by `scripts/gate_calibration_report.py` (schema `%s`), read only over %s.'
              % (report['generated_at'], gates.SCHEMA, ev['common_root']), '']
     lines += ['## Bottom line', '', report['bottom_line'], '']
+    meaning = report['validation_meaning']
+    lines += ['## What "validated" means: per draw, not per gate', '', meaning['text'], '',
+              '| Run shock sigma | Target | Draws | Validated | Validated but under target | Per draw | Per validated gate | Shortfall (points) |',
+              '|---:|---:|---:|---:|---:|---:|---:|---|']
+    for row in meaning['simulation']['rows']:
+        lines.append('| %s | %s | %d | %d | %d | %.1f%% | %s | %s |' % (
+            row['run_shock_sigma'], pct(row['target']), row['draws'], row['validated'], row['validated_below_target'],
+            100 * row['per_draw'], pct(row['per_validated_gate']),
+            '-' if not row['shortfall_points'] else '%.1f-%.1f' % tuple(row['shortfall_points'])))
+    lines.append('')
     lines += ['## Evidence', '',
               '%d distinct exported sets with a finished sequence capture (%d byte-identical copies removed%s). '
               'A member\'s sets are near copies, so outcomes are averaged per member first; runs are the independent '
@@ -145,7 +155,8 @@ def bottom_line(results, verdicts):
     if actionable:
         return 'Actionable: ' + '; '.join('%s at %s: %s >= %s' % (r['target'], pct(r['settings']['min_survival']),
                                                                    r['gate']['feature'], r['gate']['threshold'])
-                                           for r in actionable) + '. Stamp with `gate-stamp` (tighten only).'
+                                           for r in actionable) + '. Stamp with `gate-stamp` (tighten only). ' + \
+            gates.validation_meaning(actionable[0]['settings']['min_survival'])['text']
     diagnostic = [r for r in results if r['status'] == 'validated']
     text = ('Keep today\'s gates (MinScore 60, MinSR 2.5, MinARF 0.2, SetsToExport 2, TargetDD 100 and the EA back-row '
             'filter). ')
@@ -190,6 +201,7 @@ def main(argv=None):
                                 duplicates_removed=evidence['duplicates_removed'], captured_before=args.captured_before,
                                 verdicts=None if verdicts is None else len(verdicts), verdicts_rejected=rejected),
                   scenarios=results, bottom_line=bottom_line(results, verdicts),
+                  validation_meaning=gates.validation_meaning(),
                   fillers=gates.filler_comparison(records, verdicts),
                   filler_pooled=[row for target in ('forward', 'post') for row in labelled_split(records, target, verdicts)],
                   caveats=[

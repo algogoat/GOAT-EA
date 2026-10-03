@@ -92,6 +92,10 @@ MUTATIONS = [
      "                 ],\n"),
     ('partial capture counts trades it never saw',
      "    covered = deals_until is None or deals_until >= hi\n", "    covered = True\n"),
+    ('strictest fold threshold off the full-data band still validates',
+     "        if not strictest_ok:\n            problems.append(", "        if False:\n            problems.append("),
+    ('validated summary drops "per draw, not per gate"',
+     "        lines.append(result['validation_meaning']['text'])\n", ""),
 ]
 
 def main():

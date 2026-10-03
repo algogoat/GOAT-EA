@@ -171,7 +171,9 @@ How it decides (`studio_gate_calibration.py`, schema `goat-gate-calibration-v2`)
   over held-out runs) clears the target, at least `--min-clusters` (default 4)
   runs were judged, and no run with enough members clearly misses (its Wilson
   upper bound under the target). The recommended threshold is the strictest one any
-  fold chose for that metric (when it still clears the full-data band).
+  fold chose for that metric. If that threshold does not clear the full-data band,
+  the result is `fallback_not_validated` (fail closed); the looser full-data
+  threshold is never stamped in its place.
 - Status: `validated`, `defaults_already_meet_target`,
   `fallback_no_qualifying_gate`, `fallback_not_validated` or
   `fallback_thin_evidence` (fewer than `--min-sets` judged sets, `--min-members`
@@ -185,6 +187,12 @@ How it decides (`studio_gate_calibration.py`, schema `goat-gate-calibration-v2`)
   construction.
 - Simulation (`CoverageSimulationTests`): when a gate validates, its true survival
   clears the target at the nominal 97.5% one-sided rate, also with run-level shocks.
+- **"Validated" is per draw, not per gate.** Across evidence draws, few validate a
+  gate that really misses the target. Among the gates that do validate, a larger
+  share is still slightly under it (correlated proxies, judged on fresh periods).
+  `scripts/gate_calibration_coverage.py` measures both; the numbers live in
+  `VALIDATED_GATE_MISS` and travel as `validation_meaning` in every recommendation,
+  summary, `<plan>.gates.json` stamp and report. A miss over-tightens, never loosens.
 - `evidence_digest` is a SHA-256 over the judged sets, outcomes and features, so
   the same evidence gives the same digest in any order.
 

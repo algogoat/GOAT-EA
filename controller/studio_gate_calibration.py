@@ -32,7 +32,12 @@ What it does
      bound (the lowest of a cluster t interval, a design-effect Wilson interval and
      a run bootstrap) clears the target, enough runs were judged, and no run
      clearly contradicts it. The recommended threshold is the strictest one any fold
-     chose for the same metric.
+     chose for the same metric; when that threshold does not clear the full-data
+     band the gate is not validated (fail closed, never the looser full-data value).
+   - "validated" holds per evidence draw, not per gate: among gates that validate,
+     a larger share is still slightly under the target (``VALIDATED_GATE_MISS``,
+     measured by scripts/gate_calibration_coverage.py). Every summary, stamp and
+     report says so.
 5. Only the held_up target can change anything. Forward and post lie inside the
    export run the EA already judged, so they are diagnostics: they report what
    would validate but never move a plan field or stamp a qualification gate.
@@ -113,6 +118,48 @@ FEATURES = {
     'file_arf': ('file_name', 'arf', ('held_up',), 'MinARF'),
     'file_pf': ('file_name', 'pf', ('held_up',), None),
 }
+# What "validated" guarantees, measured by scripts/gate_calibration_coverage.py (the
+# test suite's model with correlated proxies, every chosen gate judged on fresh
+# periods). Per draw: share of ALL evidence draws that validate a gate whose true
+# survival is under the target. Per validated gate: that count among the draws that
+# validated. The second is much larger; reports and stamps must say so.
+def _miss_row(sigma, target, validated, below, bound_missed, evaluated, shortfall):
+    return dict(run_shock_sigma=sigma, target=target, draws=4000, validated=validated, validated_below_target=below,
+                bound_missed=bound_missed, evaluated=evaluated, per_draw=round(below / 4000, 4),
+                per_validated_gate=round(below / validated, 4) if validated else None, shortfall_points=shortfall)
+
+
+VALIDATED_GATE_MISS = dict(
+    source='scripts/gate_calibration_coverage.py --draws 4000',
+    rows=[_miss_row(0.0, 0.9, 447, 13, 31, 2828, [0.1, 2.5]), _miss_row(0.5, 0.9, 308, 15, 56, 2528, [0.0, 5.0]),
+          _miss_row(0.8, 0.9, 209, 27, 55, 2184, [0.1, 2.7]), _miss_row(0.0, 0.8, 1780, 0, 10, 3925, None),
+          _miss_row(0.5, 0.8, 1158, 2, 23, 3916, [0.1, 0.5]), _miss_row(0.8, 0.8, 716, 8, 32, 3887, [0.1, 1.2])],
+    # Claude-Mac's independent simulation in the #119 v2 approval (1,000 draws per row,
+    # target 90%, run shock sigma 0/0.5/0.8): 1/21, 4/23, 7/19 validated gates short.
+    review=dict(source='Claude-Mac #119 review simulation', per_draw_max=0.007, per_validated_gate_max=0.37,
+                shortfall_points_max=5.5))
+
+
+def validation_meaning(min_survival=None):
+    """The disclosure that travels with every recommendation, summary, stamp and report."""
+    rows = VALIDATED_GATE_MISS['rows']
+    if min_survival is not None and any(r['target'] == min_survival for r in rows):
+        rows = [r for r in rows if r['target'] == min_survival]
+    review = VALIDATED_GATE_MISS['review']
+    per_draw = max((r['per_draw'] for r in rows), default=0.0)
+    per_gate = max((r['per_validated_gate'] for r in rows if r['per_validated_gate'] is not None), default=0.0)
+    shortfall = max((r['shortfall_points'][1] for r in rows if r['shortfall_points']), default=0.0)
+    text = ('"Validated" holds per draw, not per gate. In simulation (%s), at most %.1f%% of evidence draws validated a '
+            'gate whose true survival on fresh periods was under the target, but among the gates that validated, up to '
+            '%.0f%% were still under it (by at most %.1f points); %s found up to %.0f%% (by at most %.1f points). Gates '
+            'only tighten and only from held_up, so a miss over-tightens rather than loosens.'
+            % (VALIDATED_GATE_MISS['source'], 100 * per_draw, 100 * per_gate, shortfall, review['source'],
+               100 * review['per_validated_gate_max'], review['shortfall_points_max']))
+    return dict(scope='per_draw_not_per_gate', text=text, per_draw_max=per_draw, per_validated_gate_max=per_gate,
+                shortfall_points_max=shortfall, review=dict(review),
+                simulation=dict(source=VALIDATED_GATE_MISS['source'], rows=rows))
+
+
 SURVIVAL_DEFINITION = {
     'forward': 'at least min_trades positions opened in [ForwardDate, ToDate) and equity net > 0 there',
     'post': 'at least min_trades positions opened in [ToDate, end of the export run) (>= 10 weekdays) and equity net > 0',
@@ -966,12 +1013,21 @@ def recommend(records, *, target='forward', verdicts=None, min_survival=0.6, min
         data = datas[name]
         strictest = max([data.thresholds[t]] + validation['same_feature_thresholds'])
         t_final = data.thresholds.index(strictest)
-        if not evaluated[name]['eligible'][t_final] or evaluated[name]['lower'][t_final] < min_survival:
-            t_final = t
+        # Fail closed: when the strictest fold threshold does not clear the full-data
+        # band, the gate is not validated. Never fall back to the looser full-data
+        # threshold the folds did not support.
+        strictest_ok = bool(evaluated[name]['eligible'][t_final]) and bool(evaluated[name]['lower'][t_final] >= min_survival)
         point = next(p for p in features[name]['curve'] if p['threshold'] == data.thresholds[t_final])
         gate = dict(feature=name, threshold=data.thresholds[t_final], plan_field=data.plan_field, point=point,
-                    full_data_threshold=data.thresholds[t])
+                    full_data_threshold=data.thresholds[t], strictest_fold_clears_full_data=strictest_ok)
         problems = []
+        if not strictest_ok:
+            problems.append('the strictest held-out fold threshold %s >= %s does not clear the full-data band (%s), and '
+                            'the looser full-data threshold %s is never stamped in its place'
+                            % (name, strictest, 'too few sets or members kept' if not point['eligible'] else
+                               'lower band %s under the %.0f%% target' % (
+                                   '-' if point['lower_band'] is None else '%.0f%%' % (100 * point['lower_band']),
+                                   100 * min_survival), data.thresholds[t]))
         if validation['judged_clusters'] < min_clusters:
             problems.append('only %d held-out %ss could judge it (need %d)' % (validation['judged_clusters'], cluster,
                                                                                  min_clusters))
@@ -1019,6 +1075,7 @@ def recommend(records, *, target='forward', verdicts=None, min_survival=0.6, min
                   values=dict(export_changes=export_changes, qualify=qualify if actionable else dict(DEFAULT_QUALIFY),
                               qualify_by_split=split_qualify),
                   current=dict(export=dict(DEFAULT_EXPORT), qualify=dict(DEFAULT_QUALIFY)),
+                  validation_meaning=validation_meaning(min_survival),
                   features=features, splits=splits, by_split=by_split, evidence_digest=digest,
                   leakage_rule={name: list(FEATURES[name][2]) for name in FEATURES})
     result['summary'] = summarize(result)
@@ -1061,6 +1118,7 @@ def summarize(result):
                      % (gate['feature'], gate['threshold'], point['kept_sets'], point['kept_members'], settings['cluster'],
                         100 * validation['survival'], 100 * validation['lower'], validation['judged_clusters'],
                         settings['cluster'], 100 * settings['min_survival']))
+        lines.append(result['validation_meaning']['text'])
         if result['actionable']:
             lines.append('It sets the plan field %s (only ever tightening).' % gate['plan_field'] if gate['plan_field']
                          else 'It is a portfolio qualification gate; export plan fields are unchanged.')
@@ -1147,7 +1205,8 @@ def gate_stamp(recommendation, *, generated_at, applied):
                             validation=None if validation is None else dict(
                                 survival=validation['survival'], lower=validation['lower'],
                                 judged_clusters=validation['judged_clusters']),
-                            baseline=recommendation['baseline'], reasons=recommendation['reasons']),
+                            baseline=recommendation['baseline'], reasons=recommendation['reasons'],
+                            validation_meaning=validation_meaning(recommendation['settings']['min_survival'])),
                 evidence_digest=recommendation['evidence_digest'], generated_at=generated_at)
 
 

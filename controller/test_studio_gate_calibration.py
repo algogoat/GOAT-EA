@@ -460,6 +460,47 @@ class SurvivalTests(unittest.TestCase):
         self.assertEqual(result['status'], 'fallback_not_validated')
         self.assertIn('held-out survival 80% with lower bound 70%', result['summary'])
 
+    def test_strictest_fold_threshold_off_the_full_data_band_fails_closed(self):
+        rows = graded()
+        verdicts = verdicts_for(rows, lambda r: 'held_up' if r['windows']['forward']['net'] > 0 else 'failed')
+        for r in rows:
+            r['windows']['forward']['net'] = 1.0  # only is_sr carries the signal, on a fine threshold grid
+        honest = gates.recommend(rows, target='held_up', verdicts=verdicts, min_survival=0.75, split_keys=())
+        self.assertEqual(honest['status'], 'validated')
+        self.assertTrue(honest['gate']['strictest_fold_clears_full_data'])
+        feature = honest['gate']['feature']
+        strict = max(p['threshold'] for p in honest['features'][feature]['curve'])
+        self.assertGreater(strict, honest['gate']['full_data_threshold'])
+        original_validate, original_choose = gates._validate, gates._choose
+
+        def one_strict_fold(datas, clusters, settings, full_choice):
+            result = original_validate(datas, clusters, settings, full_choice)
+            return dict(result, same_feature_thresholds=result['same_feature_thresholds'] + [strict])
+
+        def full_data_band_misses_it(datas, include, settings):
+            # One fold chose `strict`; on the full data that threshold keeps too few sets.
+            choice, evaluated = original_choose(datas, include, settings)
+            if all(include):
+                evaluated[feature]['eligible'][datas[feature].thresholds.index(strict)] = False
+            return choice, evaluated
+        gates._validate, gates._choose = one_strict_fold, full_data_band_misses_it
+        try:
+            result = gates.recommend(rows, target='held_up', verdicts=verdicts, min_survival=0.75, split_keys=())
+        finally:
+            gates._validate, gates._choose = original_validate, original_choose
+        self.assertEqual(result['status'], 'fallback_not_validated')
+        self.assertFalse(result['actionable'])
+        self.assertEqual(result['gate']['threshold'], strict, 'the looser full-data threshold is not substituted')
+        self.assertFalse(result['gate']['strictest_fold_clears_full_data'])
+        self.assertEqual(result['values']['qualify'], gates.DEFAULT_QUALIFY)
+        self.assertEqual(result['values']['export_changes'], {})
+        self.assertIn('never stamped in its place', result['summary'])
+        with tempfile.TemporaryDirectory() as root:
+            plan = StampTests.plan(self, root, MinSR=3.0)
+            out = gates.stamp_plan(plan, result, Path(root) / 'out.json', generated_at='2026-10-02T12:00:00Z')
+            self.assertEqual(out['applied'], {})
+            self.assertEqual(Path(out['plan']).read_bytes(), plan.read_bytes())
+
     def test_point_estimates_never_qualify(self):
         result = gates.recommend(graded(runs=5, members=12, seed=3), target='forward', min_survival=0.85,
                                  min_sets=10, split_keys=())
@@ -498,6 +539,86 @@ def simulate(seed, sigma, runs=9, members=21, a=-0.5, b=1.2, noise=True):
                         row['optimizer'][metric] = round(value + rng.uniform(-0.02, 0.02), 3)
                 rows.append(row)
     return rows
+
+
+PROXIES = {'is_pf': (('in_sample', 'pf'), 0.8), 'boos_net': (('back_oos', 'net'), 0.6),
+           'opt_is_pf': (('optimizer', 'PF(Back)'), 0.4)}  # feature: (where it lives, correlation with the signal)
+
+
+def proxy_value(x, z, rho):
+    """A proxy on the signal's scale (uniform 0..4) with correlation ``rho`` to it."""
+    return 2 + 1.1547 * (rho * (x - 2) / 1.1547 + math.sqrt(1 - rho * rho) * z)
+
+
+def simulate_proxies(seed, sigma, runs=9, members=21, a=-0.5, b=1.2):
+    """``simulate`` plus correlated proxies: three noise slots are replaced by features
+    that track the real signal (correlation 0.8, 0.6, 0.4), the case where a validated
+    gate is most often slightly short of the target on fresh periods."""
+    rng, rows = random.Random(seed), []
+    slots = {place: name for name, (place, _) in PROXIES.items()}
+    for run in range(runs):
+        shock = rng.gauss(0, sigma)
+        for member in range(members):
+            x = rng.uniform(0, 4)
+            values = {}
+            for place in NOISE_WINDOWS + [('optimizer', m) for m in NOISE_OPTIMIZER]:
+                name = slots.get(place)
+                values[place] = proxy_value(x, rng.gauss(0, 1), PROXIES[name][1]) if name else rng.uniform(0, 4)
+            survived = rng.random() < 1 / (1 + math.exp(-(a + b * x + shock)))
+            for index in range(2):
+                row = record('M%02d' % member, run='R%d' % run, index=index, survived=survived,
+                             is_sr=round(x + rng.uniform(-0.02, 0.02), 3))
+                for (window, metric), value in values.items():
+                    target = row['optimizer'] if window == 'optimizer' else row['windows'][window]
+                    target[metric] = round(value + rng.uniform(-0.02, 0.02), 3)
+                rows.append(row)
+    return rows
+
+
+class FreshPeriods:
+    """True survival of a gate on FRESH periods (new run shocks, new members): a large
+    Monte Carlo population drawn from the same model, judged by each feature."""
+
+    def __init__(self, sigma, n=200000, seed=99, a=-0.5, b=1.2):
+        import numpy as np
+        rng = np.random.default_rng(seed)
+        x = rng.uniform(0, 4, n)
+        shocks = np.repeat(rng.normal(0, 1, n // 20 + 1), 20)[:n] * sigma
+        self.p = 1 / (1 + np.exp(-(a + b * x + shocks)))
+        self.values = {'is_sr': x, 'opt_is_sr': x}
+        for name, (_, rho) in PROXIES.items():
+            self.values[name] = 2 + 1.1547 * (rho * (x - 2) / 1.1547 + math.sqrt(1 - rho * rho) * rng.normal(0, 1, n))
+        self.base = float(self.p.mean())
+
+    def survival(self, feature, threshold):
+        values = self.values.get(feature)
+        if values is None:
+            return self.base  # a pure-noise gate keeps a random subset
+        kept = values >= threshold
+        return float(self.p[kept].mean()) if kept.any() else 0.0
+
+
+def validated_gate_misses(sigma, target, draws, generator=simulate_proxies, seed0=0):
+    """Per draw AND per validated gate: how often a gate validates while its true
+    survival on fresh periods is under the target, and by how much."""
+    fresh = FreshPeriods(sigma)
+    stats = dict(sigma=sigma, target=target, draws=draws, validated=0, validated_below=0, shortfalls=[],
+                 bound_missed=0, evaluated=0)
+    for seed in range(seed0, seed0 + draws):
+        result = gates.recommend(generator(seed, sigma), target='forward', min_survival=target, split_keys=())
+        if result['validation'] is None:
+            continue
+        true = fresh.survival(result['gate']['feature'], result['gate']['threshold'])
+        stats['evaluated'] += 1
+        stats['bound_missed'] += true < result['validation']['lower']
+        if result['status'] == 'validated':
+            stats['validated'] += 1
+            if true < target:
+                stats['validated_below'] += 1
+                stats['shortfalls'].append(round(100 * (target - true), 1))
+    stats['per_draw'] = stats['validated_below'] / draws
+    stats['per_validated_gate'] = stats['validated_below'] / stats['validated'] if stats['validated'] else None
+    return stats
 
 
 def true_survival(threshold, sigma, a=-0.5, b=1.2):
@@ -567,6 +688,69 @@ class CoverageSimulationTests(unittest.TestCase):
     def test_baseline_interval_covers_the_true_rate_with_run_shocks(self):
         s = self.run_seeds(0.8, 0.99, 40)
         self.assertGreaterEqual(s['base_covered'] / s['seeds'], 0.9, s)
+
+    def test_validated_gate_misses_are_counted_per_draw_and_per_gate_on_fresh_periods(self):
+        s = validated_gate_misses(0.8, 0.8, 60)
+        self.assertGreaterEqual(s['validated'], 5, s)  # not vacuous
+        self.assertLessEqual(s['per_draw'], 0.05, s)
+        self.assertGreaterEqual(s['per_validated_gate'], s['per_draw'], s)  # the per-gate share is never smaller
+        self.assertEqual(len(s['shortfalls']), s['validated_below'])
+        fresh = FreshPeriods(0.0, n=20000)
+        self.assertGreater(fresh.survival('is_pf', 3.0), fresh.base)       # a proxy carries some signal
+        self.assertLess(fresh.survival('is_pf', 3.0), fresh.survival('is_sr', 3.0))  # but less than the signal
+
+
+class DisclosureTests(unittest.TestCase):
+    """Claude-Mac's #119 follow-up: "validated" is a per-draw guarantee, not per gate."""
+
+    def test_simulated_miss_rates_are_recorded_and_per_gate_is_never_smaller(self):
+        rows = gates.VALIDATED_GATE_MISS['rows']
+        self.assertGreaterEqual(len(rows), 3)
+        for row in rows:
+            self.assertGreater(row['draws'], 0)
+            self.assertLessEqual(row['validated_below_target'], row['validated'])
+            self.assertAlmostEqual(row['per_draw'], row['validated_below_target'] / row['draws'], places=3)
+            if row['validated']:
+                self.assertAlmostEqual(row['per_validated_gate'], row['validated_below_target'] / row['validated'], places=3)
+                self.assertGreaterEqual(row['per_validated_gate'], row['per_draw'])
+
+    def test_every_validated_summary_and_stamp_says_per_draw_not_per_gate(self):
+        rows = graded()
+        verdicts = verdicts_for(rows, lambda r: 'held_up' if r['windows']['forward']['net'] > 0 else 'failed')
+        result = gates.recommend(rows, target='held_up', verdicts=verdicts, min_survival=0.75, split_keys=())
+        self.assertEqual(result['status'], 'validated')
+        meaning = result['validation_meaning']
+        self.assertEqual(meaning['scope'], 'per_draw_not_per_gate')
+        self.assertIn('per draw, not per gate', meaning['text'])
+        self.assertIn('among the gates that validated', meaning['text'])
+        self.assertIn(meaning['text'], result['summary'])
+        with tempfile.TemporaryDirectory() as root:
+            plan = StampTests.plan(self, root)
+            out = gates.stamp_plan(plan, gates.public(result), Path(root) / 'p.json', generated_at='2026-10-02T12:00:00Z')
+            stamped = json.loads(Path(out['sidecar']).read_text(encoding='utf-8'))['gates']['method']['validation_meaning']
+            self.assertEqual(stamped['scope'], 'per_draw_not_per_gate')
+            self.assertEqual(stamped['text'], gates.validation_meaning(0.75)['text'])
+
+    def test_report_shows_the_validated_gate_miss_rate(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gate_calibration_report',
+                                                      Path(__file__).resolve().parent.parent / 'scripts' / 'gate_calibration_report.py')
+        report = importlib.util.module_from_spec(spec)
+        saved = list(sys.path)
+        try:
+            spec.loader.exec_module(report)
+        finally:
+            sys.path[:] = saved
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as out:
+            common = ReadOnlyTests.build(self, root)
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(report.main(['--out-dir', str(Path(out) / 'r'), '--common-root', str(common)]), 0)
+            text = (Path(out) / 'r' / 'report.md').read_text(encoding='utf-8')
+            self.assertIn('## What "validated" means: per draw, not per gate', text)
+            self.assertIn('| Per draw | Per validated gate |', text)
+            data = json.loads((Path(out) / 'r' / 'report.json').read_text(encoding='utf-8'))
+            self.assertEqual(data['validation_meaning']['scope'], 'per_draw_not_per_gate')
+            self.assertEqual(len(data['validation_meaning']['simulation']['rows']), len(gates.VALIDATED_GATE_MISS['rows']))
 
 
 class FallbackTests(unittest.TestCase):

@@ -1079,6 +1079,8 @@ class DemoAgent:
 
     def prepare_batch(self, batch_id, plan):
         from studio_batch import prepare_batch
+        from studio_seed_slot import refuse_prepare_while_seed_owns
+        refuse_prepare_while_seed_owns(self.root)   # before any broker or terminal check
         with self._exclusive(), self._studio('prepare-batch', idle=True, job_id=batch_id) as (controller, broker):
             self._append('studio_prepare_batch', 'intent', batch_id=batch_id,
                          plan=str(Path(plan).resolve()), plan_sha256=digest(plan), broker=broker)
@@ -1773,6 +1775,28 @@ class DemoAgent:
     def seed_report(self, batch_id):
         return self._lane_report('seed', batch_id)
 
+    def _lane_reconcile(self, kind, batch_id):
+        """Settle a reconcile_required member from its own verified output once MT5 is proven idle NOW.
+
+        With MT5 open, the broker readback of _seed_scope and a fresh inventory must name the same
+        process; the runner then proves no MT5 runs a member (command lines, idle monitor). Sends
+        no close or launch and never synthesises a result (studio_seed.reconcile).
+        """
+        with self._exclusive(), self._seed_scope(kind + '-reconcile', batch_id, kind) as (controller, evidence):
+            broker = evidence['broker']
+            if broker is not None and broker.get('process') != self.process.inspect():
+                raise ValueError('The selected MT5 changed during the broker check; nothing was settled')
+            result = self._seed_runner(controller, kind).reconcile(batch_id)
+            self._append(kind + '_reconcile', 'settled' if result.get('settled') else 'unsettled', batch_id=batch_id,
+                         status=result['status'], reasons=result.get('reasons'), broker=broker)
+            return result
+
+    def seed_reconcile(self, batch_id):
+        return self._lane_reconcile('seed', batch_id)
+
+    def catchup_reconcile(self, catchup_id):
+        return self._lane_reconcile('catchup', catchup_id)
+
     # ------------------------------------------------------------------ OOS catch-up
     #
     # One non-optimized pass per stale exported SET, from its original start to a
@@ -1976,7 +2000,7 @@ def main(argv=None):
         seed_drive = commands.add_parser(name)
         seed_drive.add_argument('--batch-id', required=True)
         seed_drive.add_argument('--max-seconds', type=int, default=60)
-    for name in ('seed-status', 'seed-cancel', 'seed-report'):
+    for name in ('seed-status', 'seed-cancel', 'seed-report', 'seed-reconcile'):
         commands.add_parser(name).add_argument('--batch-id', required=True)
     seed_promote = commands.add_parser('seed-promote', help='Freeze one seed candidate as fixed + robustness SETs')
     seed_promote.add_argument('--batch-id', required=True)
@@ -2019,7 +2043,7 @@ def main(argv=None):
         catchup_drive = commands.add_parser(name)
         catchup_drive.add_argument('--catchup-id', required=True)
         catchup_drive.add_argument('--max-seconds', type=int, default=60)
-    for name in ('catchup-status', 'catchup-cancel', 'catchup-report'):
+    for name in ('catchup-status', 'catchup-cancel', 'catchup-report', 'catchup-reconcile'):
         commands.add_parser(name).add_argument('--catchup-id', required=True)
     args = parser.parse_args(argv)
     if args.command in ('gate-recommend', 'gate-stamp'):
@@ -2070,6 +2094,7 @@ def main(argv=None):
         elif args.command == 'seed-status': result = agent.seed_status(args.batch_id)
         elif args.command == 'seed-cancel': result = agent.seed_cancel(args.batch_id)
         elif args.command == 'seed-report': result = agent.seed_report(args.batch_id)
+        elif args.command == 'seed-reconcile': result = agent.seed_reconcile(args.batch_id)
         elif args.command == 'seed-promote': result = agent.seed_promote(args.batch_id, args.candidate, args.name, args.neighborhood, args.member)
         elif args.command == 'evidence-end': result = agent.evidence_end(args.value, broker_clock=args.broker_clock)
         elif args.command == 'evidence-scan': result = agent.evidence_scan([str(p) for p in args.source], args.evidence_end,
@@ -2080,6 +2105,7 @@ def main(argv=None):
         elif args.command == 'catchup-resume': result = agent.catchup_resume(args.catchup_id, args.max_seconds)
         elif args.command == 'catchup-status': result = agent.catchup_status(args.catchup_id)
         elif args.command == 'catchup-cancel': result = agent.catchup_cancel(args.catchup_id)
+        elif args.command == 'catchup-reconcile': result = agent.catchup_reconcile(args.catchup_id)
         elif args.command == 'catchup-report': result = agent.catchup_report(args.catchup_id)
         if args.command == 'stop' and result.get('status') == 'stop_unconfirmed':
             print(json.dumps(dict(ok=False, code='STOP_UNCONFIRMED', result=result),

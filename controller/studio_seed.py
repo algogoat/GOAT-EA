@@ -255,35 +255,114 @@ class SeedRunner:
             item['observed_xml']=self._observed_xml(paths[0])
             return None
 
-    def _reconcile_finished(self,root,manifest,state):
-        """MT5 is closed: a reconcile_required member whose own output exists is collected, never re-run.
+    LIVE_MEMBER={'running','starting','closing','cancel_requested','timeout_requested'}
 
-        The start of such a member was issued (attempts=1) but its process identity was not
-        confirmed, for example while Windows briefly reported a terminal with no executable path.
-        MT5 still ran the frozen INI and shut down (ShutdownTerminal=1). Its output name carries
-        the member's unique alias; age, identity and content are checked as for any member. With
-        no output nothing is inferred and the member stays reconcile_required.
+    def _idle_proof(self,manifest,state,current):
+        """Fresh proof that nothing of this batch can still run or write. None when proven, else the reason.
+
+        ``current`` is the selected MT5 from the inventory taken NOW (an earlier refusal such as an
+        unknown executable is never replayed). Required: no member is live; no terminal64 process
+        anywhere has a member's frozen INI or alias on its command line (no terminal64 child of the
+        seed); and an open selected MT5 is none of the recorded member processes, names no member
+        on its own command line and reports, through the bound monitor, a loaded EA with the tester
+        idle and no batch ongoing. The demo lane adds its broker process check around the call.
         """
-        changed=False
-        if state.get('error') is not None:return changed   # batch-level doubt (an unowned process) needs a person
-        for spec,item in zip(manifest['members'],state['members']):
-            if item['status']!='reconcile_required' or item.get('attempts')!=1 or item.get('result') or 'started_unix' not in item:continue
-            paths=self._outputs(spec)
-            if len(paths)!=1:continue
-            prior=item.get('error')
-            item['status']='completed' if self._collect_member(root,manifest,spec,item,paths) else item['status']
-            item['reconciled']=dict(from_status='reconcile_required',prior_error=prior,reconciled_unix=self.clock(),
-                                    basis='MT5 closed; the member wrote its own output after its start')
-            if item['status']=='completed':item.pop('error',None)
-            item['finished_unix']=self.clock();changed=True
-        if changed and state['status']=='reconcile_required' and state.get('error') is None and not any(
-                m['status']=='reconcile_required' for m in state['members']):
-            state['status']='active'
-        return changed
+        if any(item['status'] in self.LIVE_MEMBER for item in state['members']):
+            return 'A member of this seed batch is still starting or running'
+        names=[Path(spec['config_path']).name for spec in manifest['members']]+[spec['alias'] for spec in manifest['members']]
+        users=getattr(self.process,'config_users',None)
+        if users is not None:
+            try:
+                if users(names):return 'An MT5 process is still running a member of this seed batch'
+            except Exception as exc:
+                return 'The MT5 process inventory could not be read ('+str(exc)+')'
+        elif current is not None:
+            return 'This process tool cannot prove which MT5 runs a seed member'
+        if current is None:return None
+        if any(current==item.get('process') for item in state['members']):
+            return 'The selected MT5 is the process a member started'
+        reader=getattr(self.process,'command_line',None)
+        if reader is None:return 'The selected MT5 command line cannot be read'
+        try:line=(reader(current) or '').casefold()
+        except Exception as exc:return 'The selected MT5 command line cannot be read ('+str(exc)+')'
+        if any(name.casefold() in line for name in names):return 'The selected MT5 was started for a member of this seed batch'
+        try:observation,_=self.c.runtime(require_idle=True,expected_batch_ongoing=False)
+        except (ValueError,OSError,KeyError) as exc:return 'The GOAT monitor does not report an idle tester ('+str(exc)+')'
+        if not isinstance(observation,dict) or observation.get('loaded') is not True:
+            return 'The GOAT monitor is not loaded in the selected MT5'
+        if (getattr(self.c,'session',None) or {}).get('authority_kind')=='native_human_control':
+            # Customer lane: the broker SDK proves this exact process is the same idle demo (Algo off, no trades).
+            # The owner demo lane takes its own broker readback around the call (demo_agent._lane_reconcile).
+            from studio_config_start import sdk_idle_demo
+            try:sdk_idle_demo(self.c,current)
+            except (ValueError,OSError) as exc:return 'The broker check of the selected MT5 did not pass ('+str(exc)+')'
+        return None
+
+    def _own_output(self,spec,item):
+        """The member's single output, inside its output folder, not a link, written after its start. (path, reason)."""
+        directory=(Path(self.c.install['common_files_root'])/'GOAT/SeedFarmingXML')
+        paths=self._outputs(spec)
+        if not paths:return None,'No output from this member exists; nothing is inferred'
+        if len(paths)>1:return None,'More than one output names this member; a person decides'
+        path=paths[0]
+        try:
+            if path.is_symlink() or not path.is_file():return None,'The member output is a link or not a regular file'
+            if path.resolve().parent!=directory.resolve():return None,'The member output is outside its output folder'
+            if path.stat().st_mtime<item.get('started_unix',0)-2:return None,'The member output predates its start'
+        except OSError as exc:return None,'The member output cannot be read ('+str(exc)+')'
+        return path,None
+
+    def _settle_member(self,root,manifest,spec,item,current,basis):
+        """Collect one reconcile_required member exactly as a normal completion. Never synthesises a result."""
+        path,reason=self._own_output(spec,item)
+        if reason:return reason
+        try:
+            before=digest(path)
+            result=self._collect(path,spec,manifest)
+            if result.get('sha256')!=before or digest(result['path'])!=result['sha256']:
+                raise ValueError('The member output changed while it was collected')
+        except (ValueError,OSError,KeyError) as exc:
+            item['observed_xml']=self._observed_xml(path)
+            return 'The member output did not pass the completion checks: '+str(exc)
+        write_json(root/(spec['alias']+'.result.json'),result)
+        item['result']=dict(path=str(root/(spec['alias']+'.result.json')),sha256=digest(root/(spec['alias']+'.result.json')),
+                            summary=result['summary'],xml_path=result['path'],xml_sha256=result['sha256'])
+        item['reconciled']=dict(from_status='reconcile_required',prior_error=item.get('error'),reconciled_unix=self.clock(),
+                                basis=basis,process=current,xml_sha256=result['sha256'])
+        item.pop('error',None);item.pop('reconcile_reason',None)
+        item['status']='completed';item['finished_unix']=self.clock()
+        return None
+
+    def _reconcile(self,root,manifest,state,current):
+        """Settle reconcile_required members whose own output passes every completion check. Returns the reasons left."""
+        targets=[(spec,item) for spec,item in zip(manifest['members'],state['members'])
+                 if item['status']=='reconcile_required' and item.get('attempts')==1 and not item.get('result') and 'started_unix' in item]
+        if not targets:reasons=[]
+        elif state.get('error') is not None:
+            reasons=[state['error']+'; seed-cancel settles it once MT5 is idle']
+        else:
+            idle=self._idle_proof(manifest,state,current)
+            reasons=[idle] if idle else []
+        basis=('MT5 closed' if current is None else 'MT5 open on the idle GOAT monitor')+', re-inspected now; the member wrote its own output after its start'
+        for spec,item in targets:
+            reason=reasons[0] if reasons else self._settle_member(root,manifest,spec,item,current,basis)
+            if reason:item['reconcile_reason']=reason
+        statuses={m['status'] for m in state['members']}
+        if (state['status']=='reconcile_required' and 'reconcile_required' not in statuses and state.get('error') is None
+                and (targets or self._idle_proof(manifest,state,current) is None)):
+            if 'pending' not in statuses:
+                state['status']='completed' if statuses<={'completed'} else 'stopped'
+                if current is not None:state['idle_settled']=dict(process=current,unix=self.clock())
+            elif current is None:state['status']='active'          # the driver continues the pending members
+            # Pending members while MT5 is open: seed-cancel settles them; nothing is closed or relaunched here.
+        return [item['reconcile_reason'] for _,item in targets if item['status']=='reconcile_required']
 
     def _observe(self,root,manifest,state):
+        # Always the CURRENT inventory: an earlier refusal (e.g. an unknown executable) is never replayed.
         current=self.process.inspect()
-        if current is None:self._reconcile_finished(root,manifest,state)
+        if state['status']=='reconcile_required':
+            state['last_inspection']=dict(process=current,unix=self.clock())
+            if current is None:self._reconcile(root,manifest,state,current)   # MT5 closed (#132); open MT5: seed-reconcile
         if state['status']=='active' and current is not None and not any(m['status'] in ('running','starting','cancel_requested','timeout_requested') for m in state['members']):
             state['status']='reconcile_required';state['error']='Unowned selected-terminal process appeared between seed members'
         for spec,item in zip(manifest['members'],state['members']):
@@ -308,11 +387,7 @@ class SeedRunner:
         if 'reconcile_required' in statuses:state['status']='reconcile_required'
         elif statuses<={'completed'}:state['status']='completed'
         elif any(s in statuses for s in ('failed','timeout','missing_output','cancelled')):state['status']='stopped'
-        self._save(root,state)
-        if state['status'] in ('completed','stopped') and current is None and self.slot.exists():
-            slot=read_json(self.slot)
-            if slot.get('batch_id')==manifest['batch_id'] and slot.get('manifest_sha256')==state['manifest_sha256']:
-                write_json(self.slot,slot|{'status':'released'})
+        self._settle_slot(root,manifest,state,current)
         return current
 
     def status(self,batch_id):
@@ -332,6 +407,9 @@ class SeedRunner:
 
     def request_pause(self,batch_id,*,now):
         root,manifest,state=self._read(batch_id)
+        if state['status']=='reconcile_required':
+            raise ValueError('Seed hunt '+batch_id+' is not running (GOAT could not confirm how a member started), so there is '
+                             'nothing to pause; settle it with seed-reconcile --batch-id '+batch_id)
         if state['status'] not in ('active','closing_monitor'):
             raise ValueError('Seed hunt '+batch_id+' is '+str(state['status'])+', not running, so there is nothing to pause')
         path=self.pause_path(batch_id)
@@ -426,7 +504,21 @@ class SeedRunner:
                 state['status']='stopped';self._save(root,state)
                 return self._public(root,state)|dict(stop_verified=True,native_started=False)
             current=self._observe(root,manifest,state)
-            if state['status']=='reconcile_required':raise ValueError('Uncertain process provenance requires human inspection; no close sent')
+            if state['status'] in ('completed','stopped'):
+                return self._public(root,state)|dict(stop_verified=True,settled='reconciled_from_output')
+            if state['status']=='reconcile_required':
+                # Same settle as seed-reconcile first: a member's own verified output is kept, never discarded.
+                reasons=self._reconcile(root,manifest,state,current)
+                if state['status'] in ('completed','stopped'):
+                    self._settle_slot(root,manifest,state,current)
+                    return self._public(root,state)|dict(stop_verified=True,settled='reconciled_from_output',close_sent=False)
+                settled=self._settle_idle(root,manifest,state,current)
+                if settled is not None:return settled
+                self._save(root,state)
+                if self._idle_proof(manifest,state,current) is None and reasons:
+                    raise ValueError('A member wrote output that could not be settled ('+reasons[0]+'); nothing was cancelled. '
+                                     'Inspect it, then run seed-reconcile again.')
+                raise ValueError('Uncertain process provenance requires human inspection; no close sent')
             for item in state['members']:
                 if item['status']=='pending':item['status']='cancelled'
                 elif item['status']=='running':item['status']='cancel_requested'
@@ -436,6 +528,67 @@ class SeedRunner:
                 self.process.close(current)
             else:self._observe(root,manifest,state)
             return self._public(root,state)|dict(stop_verified=current is None)
+
+    def reconcile(self,batch_id):
+        """seed-reconcile: settle reconcile_required members from their own output once MT5 is proven idle.
+
+        Takes the process inventory NOW. Each settled member passes the same checks as a normal
+        completion; anything unproven stays reconcile_required with its reason. Sends no close or
+        launch, never re-runs a member and never writes a result it did not collect.
+        """
+        self.c.bridge.pump()
+        with exclusive_gate(self.gate):
+            root,manifest,state=self._read(batch_id)
+            if state['status']=='prepared':raise ValueError('Seed batch '+batch_id+' never started; nothing to reconcile')
+            self._owner(state['generation'])
+            current=self._observe(root,manifest,state)
+            reasons=self._reconcile(root,manifest,state,current) if state['status']=='reconcile_required' else []
+            self._settle_slot(root,manifest,state,current)
+        settled=not any(item['status']=='reconcile_required' for item in state['members'])
+        result=self._public(root,state)|dict(settled=settled,close_sent=False,launch_sent=False)
+        if settled and state['status']=='reconcile_required':
+            result['next_action']=('Every uncertain member is settled; pending members remain while MT5 is open. Run seed-cancel to stop '
+                                   'them (completed results are kept), or close MT5 and run seed-resume to continue them.')
+        elif not settled:
+            result['reasons']=reasons or [state.get('error') or 'No reconcile_required member can be settled from its own output']
+            result['next_action']=('MT5 must be idle on the GOAT monitor (or closed) and the member must have written its own output. '
+                                   'With no output, seed-cancel settles the batch once MT5 is idle.')
+        return result
+
+    def _settle_slot(self,root,manifest,state,current):
+        """Persist a settled state and release the terminal slot it held (closed or idle-settled MT5 only)."""
+        self._save(root,state)
+        released=current is None or (state.get('idle_settled') or {}).get('process')==current
+        if state['status'] in ('completed','stopped') and released and self.slot.exists():
+            slot=read_json(self.slot)
+            if slot.get('batch_id')==manifest['batch_id'] and slot.get('manifest_sha256')==state['manifest_sha256']:
+                write_json(self.slot,slot|{'status':'released'})
+
+    def _settle_idle(self,root,manifest,state,current):
+        """seed-cancel of a reconcile_required batch while the selected MT5 is idle.
+
+        Re-inspected NOW (``current`` is the fresh inventory, never an earlier refusal): when no
+        member is live and MT5 is closed or provably runs only the idle monitor, nothing of this
+        batch can still be consumed or written. Members with any output of their own are left to
+        seed-reconcile; members with none are cancelled (never re-run, no evidence invented), pending
+        members are cancelled, the batch is stopped and the terminal slot released. No close or
+        launch is sent. Returns None when that proof is missing.
+        """
+        if self._idle_proof(manifest,state,current) is not None:return None
+        for spec,item in zip(manifest['members'],state['members']):
+            # Any output of an unsettled member means a person (or seed-reconcile) decides; never discard evidence.
+            if item['status']=='reconcile_required' and self._outputs(spec):return None
+        now=self.clock()
+        for item in state['members']:
+            if item['status']=='reconcile_required':
+                item['reconciled']=dict(from_status='reconcile_required',prior_error=item.get('error'),reconciled_unix=now,
+                                        basis='seed-cancel with MT5 idle (re-inspected now) and no output from this member',process=current)
+                item['status']='cancelled';item['finished_unix']=now
+            elif item['status']=='pending':item['status']='cancelled'
+        state['settled']=dict(by='seed-cancel',prior_error=state.get('error'),process=current,unix=now)
+        state['error']=None;state['status']='stopped';state['idle_settled']=dict(process=current,unix=now)
+        self._settle_slot(root,manifest,state,current)
+        return self._public(root,state)|dict(stop_verified=True,settled='idle_terminal',close_sent=False)
 
     def report(self,batch_id):
         self.status(batch_id);root,manifest,state=self._read(batch_id);rows=[]

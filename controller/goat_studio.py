@@ -50,6 +50,7 @@ OPERATION_CONTRACTS = {
     'seed-status':dict(required=['batch-id'],effect='observe dedicated seed campaign state and native process evidence'),
     'seed-cancel':dict(required=['batch-id'],effect='request normal close of exact owned seed process; receipt is not exit proof'),
     'seed-report':dict(required=['batch-id'],effect='report actual seed XML metrics and frozen provenance; missing evidence remains unavailable'),
+    'seed-reconcile':dict(required=['batch-id'],effect='settle a reconcile_required member from its own verified output once MT5 is proven idle now; never closes, launches, re-runs or synthesises a result'),
     'seed-promote':dict(required=['batch-id','candidate','name'],defaults={'neighborhood':1},limits={'neighborhood':[1,5]},effect='write a fixed SET and a narrow robustness SET (local stability check around the candidate; only the forward window is out-of-sample) for one verified seed candidate; local files only, create-only'),
     'evidence-end':dict(required=[],defaults={'value':'auto','broker-clock':'ny-close'},effect='read-only: resolve the evidence end (AUTO = latest fully closed Friday on the broker NY-close clock, or an explicit closed day) and report what this EA build ends batch exports at; no file or terminal effect'),
     'evidence-scan':dict(required=['source'],repeatable=['source'],defaults={'evidence-end':'auto','include-below-threshold':False},effect='read-only: every kept export (SET + equity CSV + .goatseq) under each source with its evidence end, threshold status and behind/current/ahead/caught_up against one target; never writes or launches'),
@@ -60,6 +61,7 @@ OPERATION_CONTRACTS = {
     'catchup-resume':dict(required=['catchup-id'],defaults={'max-seconds':60},limits={'max-seconds':[1,3600]},effect='continue the retained catch-up attempt; uncertain effects require reconciliation, never a retry'),
     'catchup-status':dict(required=['catchup-id'],effect='observe catch-up state and collect finished re-tests into new evidence versions'),
     'catchup-cancel':dict(required=['catchup-id'],effect='request normal close of the exact owned catch-up process; receipt is not exit proof'),
+    'catchup-reconcile':dict(required=['catchup-id'],effect='settle a reconcile_required catch-up member from its own verified output once MT5 is proven idle now; never closes or launches'),
     'catchup-report':dict(required=['catchup-id'],effect='new-weeks-only verdicts (held_up/weakened/failed/too_few_trades) with their metrics and evidence version paths'),
     'prepare-batch':dict(required=['batch-id','plan'],effect='validate and freeze a full native Studio batch; no launch'),
     'batch-status':dict(required=['batch-id'],effect='reconcile whole native batch and report member progress'),
@@ -369,7 +371,7 @@ def main(argv=None):
     p=sub.add_parser('seed-prepare');p.add_argument('--batch-id',required=True);p.add_argument('--plan',type=Path,required=True)
     for command in ('seed-start','seed-resume'):
         p=sub.add_parser(command);p.add_argument('--batch-id',required=True);p.add_argument('--max-seconds',type=int,default=60)
-    for command in ('seed-status','seed-cancel','seed-report'):
+    for command in ('seed-status','seed-cancel','seed-report','seed-reconcile'):
         p=sub.add_parser(command);p.add_argument('--batch-id',required=True)
     p=sub.add_parser('seed-promote');p.add_argument('--batch-id',required=True);p.add_argument('--candidate',required=True);p.add_argument('--name',required=True);p.add_argument('--neighborhood',type=int,default=1);p.add_argument('--member')
     p=sub.add_parser('evidence-end');p.add_argument('--value',default='auto');p.add_argument('--broker-clock')
@@ -379,7 +381,7 @@ def main(argv=None):
     p=sub.add_parser('catchup-prepare');p.add_argument('--catchup-id',required=True);p.add_argument('--plan',type=Path,required=True)
     for command in ('catchup-start','catchup-resume'):
         p=sub.add_parser(command);p.add_argument('--catchup-id',required=True);p.add_argument('--max-seconds',type=int,default=60)
-    for command in ('catchup-status','catchup-cancel','catchup-report'):
+    for command in ('catchup-status','catchup-cancel','catchup-report','catchup-reconcile'):
         p=sub.add_parser(command);p.add_argument('--catchup-id',required=True)
     p=sub.add_parser('prepare-batch');p.add_argument('--batch-id',required=True);p.add_argument('--plan',type=Path,required=True)
     p=sub.add_parser('batch-status');p.add_argument('--batch-id',required=True)

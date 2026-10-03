@@ -14,6 +14,8 @@ MAX_LOG_FILES = 3
 MAX_TAIL_BYTES = 8 * 1024 * 1024
 MAX_LINES = 5
 MAX_LINE_CHARS = 500
+# Relative to the terminal data folder: never the absolute path (it holds the Windows user name).
+LOG_FOLDER = 'MQL5\\Logs'
 REASON = re.compile(r'incomplete|abort|error|fail|refus|reject', re.IGNORECASE)
 
 
@@ -40,7 +42,7 @@ def native_error_evidence(terminal_data_root, native_run_relative):
     logs = Path(terminal_data_root)/'MQL5'/'Logs'
     try:
         if logs.is_symlink() or not logs.is_dir():
-            return dict(status='unavailable', reason='terminal EA journal folder not found', folder=str(logs))
+            return dict(status='unavailable', reason='terminal EA journal folder not found', folder=LOG_FOLDER)
         files = sorted((item for item in logs.iterdir()
                         if re.fullmatch(r'\d{8}\.log', item.name) and item.is_file() and not item.is_symlink()),
                        key=lambda item: item.name)[-MAX_LOG_FILES:]
@@ -50,23 +52,40 @@ def native_error_evidence(terminal_data_root, native_run_relative):
                 if run in line and REASON.search(line):
                     lines.append(dict(log=item.name, line=line.strip()[:MAX_LINE_CHARS]))
     except OSError as error:
-        return dict(status='unavailable', reason='terminal EA journal unreadable: ' + type(error).__name__, folder=str(logs))
+        return dict(status='unavailable', reason='terminal EA journal unreadable: ' + type(error).__name__, folder=LOG_FOLDER)
     if not lines:
-        return dict(status='not_found', folder=str(logs),
+        return dict(status='not_found', folder=LOG_FOLDER,
                     note='No EA journal line names this run with an error; inspect the MT5 Experts journal')
-    return dict(status='observed', folder=str(logs), lines=lines[-MAX_LINES:],
+    return dict(status='observed', folder=LOG_FOLDER, lines=lines[-MAX_LINES:],
                 note='Quoted from the EA journal; read-only diagnostic, not a retry or qualification')
 
 
-def for_job(controller, job, native):
-    """Evidence for a job whose native observation ended in native_error, else None."""
+def for_job(controller, job, native, no_edge=None):
+    """Evidence for a job whose native observation ended in native_error, else None.
+
+    `no_edge` holds the member indexes tested with no profitable settings
+    (studio_finish research_outcomes). MT5 also ends those members in Error, but
+    they are research results, so they are named apart and never as failures.
+    """
     if not isinstance(native, dict) or native.get('status') != 'native_error':
         return None
+    no_edge = sorted({i for i in (no_edge or ()) if type(i) is int})
+    members = native.get('members') if isinstance(native.get('members'), list) else []
+    errored = [i for i, m in enumerate(members) if isinstance(m, dict) and m.get('status') == 'native_error']
+    failed = [i for i in errored if i not in no_edge]
+    if no_edge and errored and not failed:
+        return dict(status='no_edge_only', members_no_edge=no_edge, members_failed=[],
+                    note='Every member MT5 ended in Error was tested with no profitable settings in its window: '
+                         'a research result, not a failure. Nothing to diagnose.')
     try:
         path = Path(job['launch_intent']['package'])/'manifest.json'
         if path.stat().st_size > 64 * 1024 * 1024:
             raise ValueError('manifest exceeds read bound')
         manifest = json.loads(path.read_text(encoding='utf-8-sig'))
-        return native_error_evidence(controller.install['terminal_data_root'], manifest.get('native_run_relative'))
+        evidence = native_error_evidence(controller.install['terminal_data_root'], manifest.get('native_run_relative'))
     except (OSError, ValueError, KeyError, TypeError) as error:
-        return dict(status='unavailable', reason='native run identity unreadable: ' + type(error).__name__)
+        evidence = dict(status='unavailable', reason='native run identity unreadable: ' + type(error).__name__)
+    if no_edge:
+        evidence.update(members_no_edge=no_edge, members_failed=failed,
+                        no_edge_note='Members in members_no_edge were tested with no profitable settings: results, not failures')
+    return evidence

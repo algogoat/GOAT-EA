@@ -454,7 +454,8 @@ native requests/permits; it never treats clearing a queue as stopping a tester.
 
 Then run `prepare-batch --batch-id <new-id> --plan <plan.json>`, inspect
 `batch-status --batch-id <new-id>`, and explicitly `start --job-id <new-id>` when
-ready. Clearing and preparation never launch work. Old job IDs remain reserved
+ready (customer native human-control lane: `run-batch --job-id <new-id> --max-seconds <budget>
+--mt5-restart-consent`; raw `start` is refused there). Clearing and preparation never launch work. Old job IDs remain reserved
 for provenance; do not reuse them for a new experiment.
 
 For inconsistent native flags, run `native-recovery-status`. It reports runtime
@@ -1166,8 +1167,10 @@ The direct-demo bounded driver prepares a new package with the selected passive 
 
 The customer native human-control lane (`goat.exe studio` after `bootstrap`) uses the same route, so its batches export too. With the in-place Start click, MT5 wrote no `Report=` XML, the EA aborted its exports, and every customer batch ended `native_error` with 0 exports (beta.16 QA, 2026-10-02). The route closes the user's own MT5, so on this lane:
 - `run-batch` requires `--mt5-restart-consent`, which the agent passes only after the user's yes. Without it, nothing is written or dispatched.
-- The consent is retained in the driver journal, and config start rechecks it.
-- Before any reservation, arm or close, a fresh SDK read must show the same idle demo, with Algo OFF, zero positions/orders and the same selected process. The usual runtime, process-inventory, ownership, human-inbox and deadline checks still apply.
+- The consent is retained in the driver journal, bound to the selected MT5 process (PID, executable, creation time) and valid for 10 minutes. Config start rechecks it before the reservation (process and expiry) and right before the close (process).
+- Before any reservation, arm or close, a fresh SDK read must show the same demo, with Algo OFF, zero positions/orders and the same selected process; the same SDK read runs again right before the close. Tester idleness comes from the EA runtime sample; the SDK's window-caption read is advisory here (a recognised running caption refuses, an unrecognised MT5 language defers to the EA). The usual runtime, process-inventory, ownership, human-inbox and deadline checks still apply.
+- Raw `start` is refused on this lane, and `prepare-batch` points to `run-batch --mt5-restart-consent`.
+- A start that stops after arming leaves `recovery` in the driver journal: the retained phase, whether MT5 was left open, closing or closed, and the plain next safe action (AGENT-START-HERE "If stuck").
 - The binding gains the route material only once onboarding has staged the monitor profile.
 - Older customer packages still verify for status and finish. The driver refuses to start them and asks for a new batch ID.
 - The demo-only unissued-start resume stays demo-only.

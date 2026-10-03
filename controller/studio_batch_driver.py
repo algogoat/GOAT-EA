@@ -188,7 +188,7 @@ def _summary(path, record):
     return {key: record.get(key) for key in ('status', 'max_seconds', 'started_wall', 'deadline_wall',
             'attempt_id', 'start_issued', 'cancel_issued', 'stopped', 'last_error', 'result_path',
             'min_free_bytes', 'cancel_reason', 'disk_observation', 'pause_id', 'pause_failure',
-            'pause_supervision', 'start_route', 'mt5_restart_consent')} | dict(
+            'pause_supervision', 'start_route', 'mt5_restart_consent', 'recovery')} | dict(
         journal_path=str(path), job_id=record['binding']['job_id'],
         disk_guard_available=(record.get('schema_version') == 2 and type(record.get('min_free_bytes')) is int
                               and record['min_free_bytes'] > 0),
@@ -334,7 +334,7 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 _save(path, record, clock)
                 return _summary(path, record)
         else:
-            from studio_config_start import config_start_lane, RESTART_CONSENT_SCOPE
+            from studio_config_start import config_start_lane, consent_record
             customer = controller.session.get('authority_kind') == 'native_human_control'
             if customer and restart_consent is not True:
                 # Refused before any journal, archive, reservation or native effect.
@@ -387,8 +387,8 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                           stopped=False, status='start_issued', cancel_grace_seconds=cancel_grace_seconds,
                           start_route='config_restart' if config_route else 'in_place_start')
             if customer:
-                record['mt5_restart_consent'] = dict(granted=True, recorded_wall=now, scope=RESTART_CONSENT_SCOPE,
-                                                     source='run-batch --mt5-restart-consent')
+                # Bound to the exact running MT5 (PID, image, creation time) and an expiry.
+                record['mt5_restart_consent'] = consent_record(controller, job_id, now)
             if inherited is not None:
                 if inherited.get('fresh_native_epoch'):
                     record['fresh_authority_budget']=inherited
@@ -421,6 +421,13 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 _save(path, record, clock)
             except Exception as error:
                 record['status'] = 'start_uncertain'; record['last_error'] = str(error)
+                if config_route:
+                    # Plain next step from the retained restart phase: MT5 may be closed.
+                    from studio_config_start import restart_recovery
+                    try:
+                        record['recovery'] = restart_recovery(controller.job(job_id))
+                    except Exception:
+                        record['recovery'] = restart_recovery(None)
                 _save(path, record, clock)
                 _retire_if_unactivated(controller, job_id, record, path, clock)
                 return _summary(path, record)

@@ -78,7 +78,7 @@ def finish(controller,job_id,*,expected_generation=None):
     if native['status']=='native_error':
         from studio_native_diagnostics import for_job
         # Read-only EA journal quote; it never changes the outcome or authorizes a retry.
-        result['native_error_evidence']=for_job(controller,job,native)
+        result['native_error_evidence']=for_job(controller,job,native,[item['index'] for item in research_outcomes])
     if signal_only:
         # Written only if the gated idle check below passes; a failure raises first.
         result['stop_confirmation']=dict(receipt='CANCEL_SIGNAL_SENT_RECONCILE',

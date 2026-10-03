@@ -242,7 +242,16 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
     controller.bridge.pump()
 
     return dict(batch_id=batch_id, member_count=len(planned), package=str(package), manifest=manifest, evidence_end=evidence,
-        native_started=False, next_action='Review settings and use start --job-id with this batch ID; Studio runs the entire native queue')
+        native_started=False, next_action=_start_next_action(controller, batch_id))
+
+
+def _start_next_action(controller, batch_id):
+    if (getattr(controller, 'session', None) or {}).get('authority_kind') == 'native_human_control':
+        # Raw start is refused here: an in-place Start never makes MT5 write the batch reports.
+        return ('Review settings with the user, tell them GOAT closes and reopens their MT5 to start the batch, then after '
+                'their yes run run-batch --job-id ' + batch_id + ' --max-seconds <budget> --mt5-restart-consent; '
+                'Studio runs the entire native queue')
+    return 'Review settings and use start --job-id with this batch ID; Studio runs the entire native queue'
 
 
 def save_batch(controller, batch_id, output):
@@ -272,7 +281,8 @@ def batch_status(controller, batch_id):
     if isinstance(observed, dict) and observed.get('status') == 'native_error' and 'launch_intent' in job:
         from studio_native_diagnostics import for_job
         # The EA journal says why the native queue ended in Error (read-only quote).
-        extra['native_error_evidence'] = for_job(controller, job, observed)
+        no_edge = [item.get('index') for item in (job.get('completion') or {}).get('research_outcomes') or [] if isinstance(item, dict)]
+        extra['native_error_evidence'] = for_job(controller, job, observed, no_edge)
     evidence = None
     plan_path = controller.root / 'packages' / batch_id / 'studio-plan.json'
     if plan_path.is_file():

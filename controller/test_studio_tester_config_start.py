@@ -23,10 +23,15 @@ import test_studio_config_start as config_fixtures
 from studio_batch_driver import run
 
 
-def consent_journal(job_id='batch', **overrides):
+IDENTITY = dict(pid=11, executable='terminal64.exe', created_utc='2026-09-29T00:00:00Z')
+
+
+def consent_journal(job_id='batch', process=None, **overrides):
     import time
-    record = dict(deadline_wall=time.time()+600, binding=dict(job_id=job_id),
-                  mt5_restart_consent=dict(granted=True, scope=RESTART_CONSENT_SCOPE, recorded_wall=time.time(),
+    now = time.time()
+    record = dict(deadline_wall=now+600, binding=dict(job_id=job_id),
+                  mt5_restart_consent=dict(granted=True, scope=RESTART_CONSENT_SCOPE, recorded_wall=now,
+                                           expires_wall=now+600, job_id=job_id, process=dict(process or IDENTITY),
                                            source='run-batch --mt5-restart-consent'))
     record.update(overrides)
     return record
@@ -38,17 +43,20 @@ class CustomerConfigStartTests(config_fixtures.ConfigStartTests):
     def setUp(self):
         super().setUp()
         self.c.session['authority_kind'] = 'native_human_control'
-        (self.c.root/'batch-drivers/batch.json').write_text(json.dumps(consent_journal()))
-        def sdk(c):
+        (self.c.root/'batch-drivers/batch.json').write_text(json.dumps(consent_journal(process=self.identity)))
+        def sdk(c, expected=None):
             self.events.append('sdk')
-            return dict(process=dict(self.identity), demo=True, connected=True, algo_trading=False,
-                        positions=0, orders=0, account_matches=True, tester_state='idle')
+            native = dict(process=dict(self.identity), demo=True, connected=True, algo_trading=False,
+                          positions=0, orders=0, account_matches=True, tester_state='idle')
+            if expected is not None and native['process'] != expected:
+                raise ValueError('SDK-observed MT5 differs from the selected process; no close or launch issued')
+            return native
         self.mocks['sdk_idle_demo'] = self.stack.enter_context(patch.object(start, 'sdk_idle_demo', side_effect=sdk))
 
     def test_one_arm_close_config_launch_and_retained_phases(self):
         # Customer lane: broker-proved idle demo before reserve, then arm, close, /config launch.
         result = self.run_start()
-        self.assertEqual(self.events, ['sdk', 'reserve', 'install', 'arm', 'close', 'launch'])
+        self.assertEqual(self.events, ['sdk', 'reserve', 'install', 'arm', 'sdk', 'close', 'launch'])
         self.assertEqual(result['status'], 'config_process_started_unverified')
         self.assertFalse(result['native_running_verified'])
         phases = [row['phase'] for row in self.c.job('batch')['restart_intent']['history']]
@@ -105,8 +113,8 @@ class CustomerConfigStartTests(config_fixtures.ConfigStartTests):
         self.process.close.assert_not_called(); self.process.start.assert_not_called()
 
     def test_sdk_observing_another_process_refuses_before_reserve(self):
-        def other(c):
-            return dict(process=dict(self.identity, pid=999), demo=True)
+        def other(c, expected=None):
+            raise ValueError('SDK-observed MT5 differs from the selected process; no close or launch issued')
         self.mocks['sdk_idle_demo'].side_effect = other
         with self.assertRaisesRegex(ValueError, 'differs from the selected process'):
             self.run_start()
@@ -150,6 +158,7 @@ class CustomerDriverRouteTests(unittest.TestCase):
             journal = json.loads((self.c.root/'batch-drivers/batch.json').read_text())
             self.assertEqual(journal['mt5_restart_consent']['scope'], RESTART_CONSENT_SCOPE)
             self.assertEqual(journal['start_route'], 'config_restart')
+            self.assertEqual(journal['mt5_restart_consent']['process'], IDENTITY)
             self.config_starts += 1
             self.c.start(job_id, expected_generation=expected_generation)
             on_attempt(self.c.current['launch_intent'])
@@ -158,6 +167,8 @@ class CustomerDriverRouteTests(unittest.TestCase):
             patcher = patch(target); patcher.start(); self.addCleanup(patcher.stop)
         disk = patch('studio_batch_driver.shutil.disk_usage', return_value=SimpleNamespace(free=100*1024**3))
         disk.start(); self.addCleanup(disk.stop)
+        self.processes = patch('studio_config_start.inspect_processes', return_value=dict(research=dict(IDENTITY), protected=None))
+        self.processes.start(); self.addCleanup(self.processes.stop)
 
     def drive(self, **kwargs):
         return run(self.c, 'batch', poll_seconds=1, cancel_grace_seconds=2,

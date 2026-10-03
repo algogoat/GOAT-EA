@@ -32,6 +32,10 @@ from studio_report_bridge import prepare as bridge_prepare,verify as bridge_veri
 
 CONFIG_START_LANES=('demo_direct','native_human_control')
 RESTART_CONSENT_SCOPE='close_and_reopen_selected_mt5_for_this_batch_start'
+# The user's yes covers one start of this batch on the MT5 that was running when
+# they gave it, for a short time: a restarted MT5 or a later start needs a new yes.
+RESTART_CONSENT_SECONDS=600
+SDK_REFUSAL='SDK-confirmed same idle demo, Algo OFF and zero trades required'
 
 
 def config_start_lane(session):
@@ -39,25 +43,102 @@ def config_start_lane(session):
     return isinstance(session,dict) and session.get('authority_kind') in CONFIG_START_LANES
 
 
-def require_restart_consent(c,job_id):
-    """The customer lane closes the user's own MT5: their retained consent is mandatory."""
+def refuse_raw_start(session):
+    """The raw in-place `start` can never make MT5 write reports on the customer lane."""
+    if isinstance(session,dict) and session.get('authority_kind')=='native_human_control':
+        raise ValueError('Raw start is not available on this lane: an in-place Start never makes MT5 write the batch '
+                         'reports, so the batch would end with 0 exports. Nothing was started. Tell the user GOAT '
+                         'closes and reopens their MT5 to start the batch, then after their yes run run-batch '
+                         '--job-id <id> --max-seconds <budget> --mt5-restart-consent (goat.ps1: Start-Batch <id> '
+                         '-MaxSeconds <budget> -Mt5RestartConsent)')
+
+
+def _identity(process):
+    return {k:process.get(k) for k in ('pid','executable','created_utc')} if isinstance(process,dict) else None
+
+
+def consent_record(c,job_id,now):
+    """Consent bound to the exact selected MT5 process (PID, image, creation time) and an expiry."""
+    from studio_installation import read_json
+    plan=read_json(c.root/'packages'/job_id/'studio-plan.json')
+    observed=inspect_processes(plan['research_binding'])
+    process=_identity(observed.get('research'))
+    if not process or type(process['pid']) is not int or not process['executable'] or not process['created_utc']:
+        raise ValueError('MT5 restart consent needs the selected MT5 running: ask the user to open it normally, '
+                         'then start again; nothing was started')
+    return dict(granted=True,recorded_wall=now,expires_wall=now+RESTART_CONSENT_SECONDS,scope=RESTART_CONSENT_SCOPE,
+                job_id=job_id,process=process,source='run-batch --mt5-restart-consent')
+
+
+def require_restart_consent(c,job_id,process=None,*,now=None,expiry=True):
+    """The customer lane closes the user's own MT5: their retained, bound, unexpired consent is mandatory."""
     if c.session.get('authority_kind')!='native_human_control':return None
     journal=json.loads((c.root/'batch-drivers'/(job_id+'.json')).read_text(encoding='utf-8'))
     consent=journal.get('mt5_restart_consent')
     if (not isinstance(consent,dict) or consent.get('granted') is not True
-            or consent.get('scope')!=RESTART_CONSENT_SCOPE or journal.get('binding',{}).get('job_id')!=job_id):
+            or consent.get('scope')!=RESTART_CONSENT_SCOPE or journal.get('binding',{}).get('job_id')!=job_id
+            or consent.get('job_id')!=job_id):
         raise ValueError('MT5 restart consent required: tell the user GOAT will close and reopen the selected MT5 '
                          'for this batch, then start with --mt5-restart-consent')
+    now=time.time() if now is None else now
+    recorded,expires=consent.get('recorded_wall'),consent.get('expires_wall')
+    if (type(recorded) not in (int,float) or type(expires) not in (int,float)
+            or not recorded<=expires<=recorded+RESTART_CONSENT_SECONDS or (expiry and not recorded-5<=now<expires)):
+        raise ValueError('MT5 restart consent expired or invalid: nothing was closed. Ask the user again, then start '
+                         'with --mt5-restart-consent')
+    if process is not None and _identity(process)!=consent.get('process'):
+        raise ValueError('MT5 restart consent was given for another MT5 process (it restarted since): nothing was '
+                         'closed. Ask the user again, then start with --mt5-restart-consent')
     return consent
 
 
-def sdk_idle_demo(c):
-    """Broker-reported same demo, Algo OFF, zero positions/orders and idle tester (no trading calls)."""
+def sdk_idle_demo(c,expected=None):
+    """Broker-reported same demo, Algo OFF and zero positions/orders (no trading calls).
+
+    Tester idleness comes from the EA runtime sample checked just before. The
+    window-caption read is advisory here so a non-English MT5 is not refused:
+    a recognised running caption still refuses, an unrecognised one defers to
+    the EA (studio_monitor_probe.tester_caption_state).
+    """
     from studio_monitor_probe import inspect_idle_demo
-    from studio_rejected_monitor import require_demo
-    native=inspect_idle_demo(c)
-    require_demo(native)
+    try:
+        native=inspect_idle_demo(c,tester='advisory')
+    except ValueError as error:
+        raise ValueError(SDK_REFUSAL+': '+str(error)) from error
+    if any(native.get(k)!=v for k,v in dict(demo=True,connected=True,algo_trading=False,positions=0,orders=0,
+                                            account_matches=True).items()) or native.get('tester_state')=='running':
+        raise ValueError(SDK_REFUSAL)
+    if expected is not None and native.get('process')!=expected:
+        raise ValueError('SDK-observed MT5 differs from the selected process; no close or launch issued')
     return native
+
+
+def restart_recovery(job):
+    """Plain next step after a config start stopped part-way, from the retained phase. Read-only."""
+    never='Do not run Start-Batch or start again for this batch, and do not click Start in the MT5 Strategy Tester. '
+    report='Then run batch-status for this batch and send a support report with the batch ID and this message.'
+    if not isinstance(job,dict):
+        return dict(phase='unknown',mt5='unknown',plain='GOAT could not read how far the start got. MT5 may have been closed.',
+                    next_safe_action='If MT5 is not open, ask the user to open MT5 normally from its usual shortcut. '+never+report)
+    intent=job.get('restart_intent') or {}
+    reached=intent.get('phase')
+    if reached in (None,'prepared'):
+        return dict(phase=reached,mt5='not_touched',plain='GOAT stopped before it changed anything in MT5. MT5 was not closed.',
+                    next_safe_action='Follow the row for the error text (retire-unactivated settles a start refused before MT5 was touched).')
+    if reached=='controls_installed':
+        return dict(phase=reached,mt5='open_may_be_armed',
+                    plain='MT5 was not closed. GOAT may already have told the EA a batch is starting, so the EA can show a batch as running.',
+                    next_safe_action='Leave MT5 open and do not close or restart it yourself. '+never+report)
+    if reached=='close_issued':
+        return dict(phase=reached,mt5='closing_or_closed',
+                    plain='GOAT asked MT5 to close normally for the start. MT5 may still be closing (for example it shows a question) or may be closed. GOAT did not reopen it.',
+                    next_safe_action='If MT5 is still open, leave it and do not answer for the user. If it is closed, ask the user to open MT5 normally from its usual shortcut; it opens on the GOAT Studio chart with the same account. '+never+report)
+    if reached in ('research_exited','launch_issued'):
+        return dict(phase=reached,mt5='closed_not_reopened' if reached=='research_exited' else 'reopen_uncertain',
+                    plain='MT5 was closed for the start and GOAT did not confirm reopening it.',
+                    next_safe_action='If MT5 is not open, ask the user to open MT5 normally from its usual shortcut; it opens on the GOAT Studio chart with the same account. Keep Algo Trading off. '+never+report)
+    return dict(phase=reached,mt5='reopened_unverified',plain='MT5 was reopened with the batch. GOAT is checking that the batch runs.',
+                next_safe_action='Keep polling batch-status; do not start again.')
 
 
 def checkpoint(c,job_id,generation):
@@ -118,10 +199,10 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     before_native_dispatch(c,job)
     baseline=inspect_processes(binding)
     if customer:
-        # Fresh broker proof before anything is reserved, armed or closed.
-        native=sdk_idle_demo(c)
-        if native.get('process')!=baseline['research']:
-            raise ValueError('SDK-observed MT5 differs from the selected process; no close or launch issued')
+        # The yes was for this exact MT5 process; then fresh broker proof before
+        # anything is reserved, armed or closed.
+        require_restart_consent(c,job_id,baseline['research'])
+        sdk_idle_demo(c,baseline['research'])
     digest=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()
     if resume_unissued:
         from studio_unissued_start import proof
@@ -192,6 +273,14 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     expected=baseline['research']
     if identity is None or identity['pid']!=expected['pid']:
         raise ValueError('Selected process changed before close')
+    if customer:
+        # Up to ~80 s passed since the first SDK read: the user may have opened a
+        # trade or switched account. Re-prove right before the only close. The
+        # expiry was proved before reserve; refusing on it now would only strand
+        # an armed MT5, so this check binds the process only.
+        require_restart_consent(c,job_id,expected,expiry=False)
+        sdk_idle_demo(c,expected)
+        checkpoint(c,job_id,generation)
     phase(c,job_id,generation,'controls_installed','close_issued',close_identity=identity)
     process.close(identity)
     deadline=time.monotonic()+30

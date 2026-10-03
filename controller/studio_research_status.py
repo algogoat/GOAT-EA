@@ -539,6 +539,9 @@ def headline(activity):
     cancelled = activity.get('members_cancelled')
     if cancelled and status not in ('pausing', 'paused'):   # a pause cancels the rest by design
         counts += ', ' + str(cancelled) + ' cancelled'
+    if status == 'start_failed_unactivated':
+        return ('Start failed before MT5 was touched; nothing ran. Settle it with retire-unactivated --batch-id '
+                + str(activity.get('batch_id')) + ', then prepare its members again under a new batch ID.')
     if status == 'pausing':
         return 'Pausing this ' + name + ' at the next safe point;' + counts + '.'
     if status == 'paused':
@@ -585,7 +588,12 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
         pause = pauses.get(current['job_id'])
         progress = batch_progress(root, install, current, now=now, journal=journal)
         status = current['status']
-        if pause is not None and pause.get('state') in ('pausing', 'paused', 'pause_failed', 'resumed', 'finished'):
+        from studio_retire_unactivated import unactivated_hint
+        if unactivated_hint(root, current) and progress.get('evidence') == 'native_evidence_missing':
+            # Intent recorded, but no attempt folder, controls or native queue: MT5 was
+            # never touched. It is not running and needs retire-unactivated.
+            status = 'start_failed_unactivated'
+        elif pause is not None and pause.get('state') in ('pausing', 'paused', 'pause_failed', 'resumed', 'finished'):
             status = pause['state']
         elif status in ('reserved', 'starting', 'reconcile_required', 'verifying'):
             status = 'running' if status in ('reconcile_required', 'verifying') else status

@@ -342,7 +342,10 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
         raise ValueError('Stop/reconcile/finish the original batch before preparing its remaining work')
     package, _, manifest = _verify_package(controller, previous, allow_peer_refresh=allow_peer_refresh)
     from studio_native_observe import observe
-    if 'launch_intent' not in previous:
+    # A start retired before activation never reached MT5: every member is unstarted.
+    never_activated = (previous['status'] == 'cancelled'
+                       and (previous.get('completion') or {}).get('kind') == 'retired_never_activated')
+    if 'launch_intent' not in previous or never_activated:
         if previous['status'] != 'cancelled': raise ValueError('Unstarted remaining work requires an explicit cancelled batch')
         observed = [dict(run_alias=member['run_alias'], status='native_cancelled') for member in manifest['jobs']]
     else:

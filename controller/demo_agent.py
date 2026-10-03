@@ -284,6 +284,16 @@ class DemoAgent:
             return dict(status='stop_unconfirmed', reason='Multiple active journals require exact inspection',
                         journals=[str(path) for path in active])
         batch_id = active[0].stem
+        if self._unactivated(batch_id):
+            # A start refused before MT5 was touched has nothing to cancel natively.
+            try:
+                retired = self.retire_unactivated(batch_id)
+                return dict(status='cancelled', batch_id=batch_id, attempt_id=retired.get('attempt_id'),
+                            retired='retired_never_activated', owner_stop=True)
+            except ValueError as exc:
+                if not active[0].is_file():
+                    return dict(status='stop_unconfirmed', batch_id=batch_id, owner_stop=True,
+                                reason='Start never activated, but retirement refused: ' + str(exc))
         if not active[0].is_file():
             return dict(status='stop_unconfirmed', batch_id=batch_id,
                         reason='Active native job has no bounded driver journal', owner_stop=True)
@@ -378,6 +388,33 @@ class DemoAgent:
                     return self._readback_current(physical, after_observation_ns=before)
                 finally:
                     controller.store.close()
+
+    def retire_unactivated(self, batch_id):
+        """Settle a start refused before MT5 was touched to cancelled (studio_retire_unactivated).
+
+        Allowed while owner STOP is set: it sends nothing to MT5. A fresh broker
+        readback proves the paired demo; the EA runtime sample proves the tester
+        idle with no batch ongoing. A human TAKE CONTROL still refuses it.
+        """
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid prepared batch ID')
+        from studio_retire_unactivated import retire
+        with self._exclusive(wait_seconds=5), self._studio('retire-unactivated', idle=False, owner_required=False,
+                                                           job_id=batch_id) as (controller, broker):
+            human = self.local / self.session['directory_id'] / 'human'
+            if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):
+                raise ValueError('A human TAKE CONTROL is pending; nothing was retired.')
+            self._append('retire_unactivated', 'intent', batch_id=batch_id, broker=broker)
+            result = retire(controller, batch_id)
+            self._append('retire_unactivated', 'retired', batch_id=batch_id, attempt_id=result.get('attempt_id'),
+                         result_path=result.get('result_path'), reused=result.get('reused'))
+            return result
+
+    def _unactivated(self, batch_id):
+        from studio_retire_unactivated import unactivated_hint
+        from studio_research_status import queue_jobs
+        job = next((item for item in queue_jobs(self.root, self.session) if item['job_id'] == batch_id), None)
+        return job is not None and unactivated_hint(self.root, job)
 
     def cancel_pending(self, batch_id):
         """Cancel one batch that never started (pending, no launch intent).
@@ -1417,6 +1454,9 @@ def main(argv=None):
     commands.add_parser('disk-status')
     cancel_pending = commands.add_parser('cancel-pending')
     cancel_pending.add_argument('--batch-id', required=True)
+    retire = commands.add_parser('retire-unactivated',
+                                 help='Settle a start refused before MT5 was touched to cancelled; allowed under owner STOP')
+    retire.add_argument('--batch-id', required=True)
     stop = commands.add_parser('stop')
     stop.add_argument('--monitor-config', type=Path, help='Exact monitor-only INI for cancellation recovery after MT5 exits; STOP remains set')
     commands.add_parser('clear-stop')
@@ -1487,6 +1527,7 @@ def main(argv=None):
         elif args.command == 'disk-status': result = agent.disk_status()
         elif args.command == 'cancel-pending': result = agent.cancel_pending(args.batch_id)
         elif args.command == 'stop': result = agent.stop(args.monitor_config)
+        elif args.command == 'retire-unactivated': result = agent.retire_unactivated(args.batch_id)
         elif args.command == 'clear-stop': result = agent.clear_stop()
         elif args.command == 'recover-orphan': result = agent.recover_orphan(args.review_id)
         elif args.command == 'launch-terminal': result = agent.launch_terminal(args.monitor_config)

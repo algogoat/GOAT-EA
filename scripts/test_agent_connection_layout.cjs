@@ -45,6 +45,7 @@ function fixture(width, height, owner, empty, loaded, batchFlag = 0, queued = []
     m_rowHeight: 34, Font_Size: 10,
     MathMax: Math.max, MathMin: Math.min, StringFind: (s, t) => String(s).indexOf(t),
     GlobalVariableGet: name => (name === 'BatchOnGoing' ? batchFlag : 0), ArraySize: a => a.length, g_StudioQueueIds: queued,
+    GetPointer: x => x, GoatStudioSteadyText(target, value) { if (target.Text() !== value) target.Text(value); },
     StageMove(control, x, y, visible, w, h) {
       control.bounds = {x, y, w, h}; control.visible = visible;
       if (visible) c.shown.push(control);

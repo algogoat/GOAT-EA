@@ -277,6 +277,29 @@ STOP is never cleared by these tools, and `clear-stop` refuses until the seed
 run has reached a verified terminal state. Real native qualification of this
 lane is still pending; every seed result keeps `native_launch_qualified: false`.
 
+## OOS catch-up on the demo lane
+
+Bring kept exports to one evidence end before building a portfolio (rules and
+verdicts: [README.md](README.md#evidence-end-and-oos-catch-up)). The read-only
+tools need no broker; the rest use the seed lane's checks, start record
+(`demo-agent/catchup-starts/<id>.json`), slot, STOP, pause and slices unchanged.
+
+```powershell
+& $py $tool --installation $install evidence-end                       # auto = latest closed Friday
+& $py $tool --installation $install evidence-scan --source 'C:/.../Common/Files/GOAT/Re7e282f93d41' --source 'C:/.../GOAT/Rad870a22d237'
+& $py $tool --installation $install catchup-validate --plan 'C:/catchup-plan.json'
+& $py $tool --installation $install catchup-prepare --catchup-id 'catchup-20261002' --plan 'C:/catchup-plan.json'
+& $py $tool --installation $install catchup-start --catchup-id 'catchup-20261002' --max-seconds 600
+& $py $tool --installation $install catchup-resume --catchup-id 'catchup-20261002' --max-seconds 600
+& $py $tool --installation $install catchup-report --catchup-id 'catchup-20261002'
+```
+
+The plan is `{"schema_version":1,"evidence_end":"auto","sets":[<absolute .set
+paths of the behind exports>],"job_timeout_seconds":1800}`. A catch-up closes the
+selected MT5 and relaunches it once per member like a seed run; tell the owner
+first. `batch-pause --batch-id <catchup id>` pauses between members and
+`batch-resume` continues. `research-status` shows it as an OOS catch-up.
+
 This is the first Tier A slice. Terminal discovery, compile, SET editing,
 report parsing and exports will be separate tools wrapping existing MT5/EA
 features. Native smoke evidence is required before calling this lane qualified.

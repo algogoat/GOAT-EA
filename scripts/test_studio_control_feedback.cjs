@@ -62,8 +62,10 @@ assert.ok(receipt < committed && committed < resolved);
 const submit = ui.indexOf('bool GoatStudioUISubmit(');
 assert.ok(ui.indexOf('g_StudioBridge.SubmitHuman(', submit) < ui.indexOf('GoatStudioControlBegin(id,command)', submit));
 const controls = ui.slice(ui.indexOf('void CStrategyTesterDialog::ManagedControls('), ui.indexOf('void CStrategyTesterDialog::ManagedSelectStrategy('));
-assert.ok(controls.indexOf('m_btnStop.Text("CONNECTING...")') > controls.indexOf('// Keep handoff visible'));
-assert.match(controls, /m_btnStart.Disable\(\); m_btnStop.Disable\(\);/);
+// Feedback is decided after both layouts and painted once at the end (PS37 steady panel).
+assert.ok(controls.indexOf('stop_text="CONNECTING..."') > controls.indexOf('// Keep handoff visible'));
+assert.match(controls, /start_enabled=false; stop_enabled=false;/);
+assert.ok(controls.lastIndexOf('GoatStudioSteadyText(m_btnStop,stop_text)') > controls.indexOf('stop_text="CONNECTING..."'));
 assert.match(controls, /GIVE BACK TO AGENT/);
 for (const method of ['ManagedTakeover', 'ManagedGrant']) {
  const begin = ui.indexOf(`void CStrategyTesterDialog::${method}(`);

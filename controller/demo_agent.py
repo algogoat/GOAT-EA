@@ -1190,6 +1190,15 @@ class DemoAgent:
         record = load(self.root, batch_id)
         if record is None:
             raise PauseRefused('No pause is recorded for batch ' + batch_id + '; pause it first.')
+        # A reserved successor that never ran (retired unactivated / never started, or
+        # cancelled before its start) releases the lineage, recorded append-only.
+        from studio_batch_pause import release_unactivated
+        released = release_unactivated(self.root, batch_id, {item['job_id']: item for item in self._jobs_readonly()},
+                                       now=self.clock())
+        if released:
+            self._append('batch_resume', 'successor_released', batch_id=batch_id,
+                         successor_batch_id=released['successor_batch_id'], proof=released['proof'])
+            record = load(self.root, batch_id)
         if record['state'] == 'resumed':
             new_id = record['successor_batch_id']
             job = next((item for item in self._jobs_readonly() if item['job_id'] == new_id), None)

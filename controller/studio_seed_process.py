@@ -49,6 +49,24 @@ class WindowsSeedProcess:
             raise ValueError('Selected terminal process changed before its command line was read')
         return rows[0].get('CommandLine') or ''
 
+    def config_users(self,names,timeout=20):
+        """Read-only: every terminal64 process (any install) whose command line names one of ``names``.
+
+        Used to prove no MT5 still runs a seed member's frozen INI. A row whose command line
+        cannot be read is re-read like a missing path; still unreadable, it refuses (no proof).
+        """
+        command=('[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process '
+                 '-Filter "Name=\'terminal64.exe\'" | Select-Object ProcessId,ExecutablePath,CommandLine)')
+        folded=[str(name).casefold() for name in names if name]
+        deadline=self.monotonic()+UNKNOWN_SETTLE_SECONDS
+        while True:
+            rows=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=timeout,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
+            if all(row.get('CommandLine') for row in rows):break
+            if self.monotonic()>=deadline:raise ValueError('A terminal64 command line cannot be read; inspect ownership first')
+            self.sleep(UNKNOWN_RETRY_SECONDS)
+        return [dict(pid=row.get('ProcessId'),executable=row.get('ExecutablePath')) for row in rows
+                if any(name in row['CommandLine'].casefold() for name in folded)]
+
     def close(self,identity):
         if self.inspect()!=identity:raise ValueError('Selected terminal process changed before close')
         # JSON over stdin; never insert account/user strings into PowerShell code.

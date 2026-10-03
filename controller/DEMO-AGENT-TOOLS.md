@@ -273,7 +273,7 @@ tools instead. They drive the same `SeedRunner` and the same frozen plan format
 as [SEED-WORKFLOW.md](SEED-WORKFLOW.md); nothing about seed evidence changes.
 Read-only studio commands still run there with the raw CLI: `validate-set`,
 `benchmark-report`, `research-status`, `onboarding-status`, `state`, `discover`
-and the other reads.
+and the other reads. A `reconcile_required` seed or catch-up is settled with `seed-reconcile --batch-id <id>` (`catchup-reconcile`) under the broker check; see [SEED-WORKFLOW.md](SEED-WORKFLOW.md).
 
 ```powershell
 & $py $tool --installation $install seed-validate --plan 'C:/seed-plan.json'

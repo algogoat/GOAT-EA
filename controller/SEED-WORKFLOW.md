@@ -194,6 +194,32 @@ batch-level doubt (an unowned process between members) is recorded, the member
 stays `reconcile_required`. The process inventory itself re-reads a row with a
 missing path for up to 10 seconds before it refuses.
 
+When MT5 is open again (for example a person reopened it on the GOAT monitor),
+`seed-reconcile --batch-id <id>` (`catchup-reconcile --catchup-id <id>`) settles such
+a member. `seed-status` and `seed-report` re-inspect the process inventory every
+time (`last_inspection`) and never replay an earlier refusal. `seed-reconcile`
+settles a member only when all of these hold, taken now:
+
+- MT5 is idle for that terminal. No member is starting or running, and no
+  terminal64 process anywhere has a member's INI or alias on its command line
+  (no MT5 child of the seed). The selected MT5 is not a member process and was
+  not started for a member. The GOAT monitor reports itself loaded with the tester
+  idle and no batch ongoing. On the demo lane, the broker check must also name
+  the same process.
+- The member's own output XML exists, is the only one, sits in
+  `GOAT\SeedFarmingXML` (not a link) and was written after the member started.
+  Its hash is the same before and after collection, and the collected result is
+  stored with that hash.
+- The result passes the same checks as a normal completion.
+
+Otherwise the member stays `reconcile_required` and the reply lists `reasons`.
+Nothing is closed, launched, re-run or invented. `seed-cancel` uses the same
+proof: with MT5 idle it keeps a member's verified output, cancels members with no
+output and pending members, and releases the terminal. Without that proof it
+still refuses with "Uncertain process provenance requires human inspection".
+While a seed holds the terminal, `prepare-batch` refuses at once and names the
+settle command.
+
 After a normal stopped/completed
 batch has been observed with no selected terminal process, its slot is released.
 MT5 stays closed after the last member. The reply then carries `monitor_profile`

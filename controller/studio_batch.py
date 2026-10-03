@@ -174,6 +174,8 @@ def read_plan(controller, plan_path):
 def prepare_batch(controller, batch_id, plan_path, *, now=None):
     if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
         raise ValueError('Batch ID must be 1..80 letters, digits, underscore or hyphen')
+    from studio_seed_slot import refuse_prepare_while_seed_owns
+    refuse_prepare_while_seed_owns(controller.root)   # a start would refuse later with start_uncertain
     config, raw_members, retained, source_hash, spec = read_plan(controller, plan_path)
     evidence = (evidence_end_policy(spec['evidence_end'], [m['tester'] for m in config['batch_members']], now=now)
                 if 'evidence_end' in spec else None)

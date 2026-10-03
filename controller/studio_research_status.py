@@ -478,7 +478,14 @@ def seed_progress(root, batch_id, *, now, kind='seed'):
                 pace=dict(minutes_per_member=None if cycle is None else round(cycle / 60, 1), remaining_members=remaining,
                           eta_utc=None if eta is None else datetime.fromtimestamp(eta, timezone.utc).isoformat(timespec='seconds'),
                           basis='seed_member_timestamps' if cycle is not None else None),
-                pause_requested=paused, evidence='seed_state')
+                pause_requested=paused, evidence='seed_state',
+                # A start GOAT could not confirm: nothing runs, so there is nothing to pause. One action settles it.
+                needs_settle=status == 'reconcile_required',
+                settle=(dict(command=('catchup' if kind == 'catchup' else 'seed') + '-reconcile',
+                             argument=('--catchup-id ' if kind == 'catchup' else '--batch-id ') + batch_id,
+                             reasons=[m.get('reconcile_reason') or m.get('error') for m in members if m.get('status') == 'reconcile_required'],
+                             plain='GOAT could not confirm how a member started. Settle checks that MT5 is idle and keeps the member''s own result if it passes every check.')
+                        if status == 'reconcile_required' else None))
 
 
 def disk(install, root, minimum):
@@ -555,6 +562,10 @@ def headline(activity):
         return 'Pausing this ' + name + ' at the next safe point;' + counts + '.'
     if status == 'paused':
         return 'Paused;' + counts + '. Resume continues the remaining members.'
+    if kind in ('seed', 'catchup') and status == 'reconcile_required':
+        return (name[0].upper() + name[1:] + ' ' + str(activity.get('batch_id')) + ' needs settling: GOAT could not confirm how a member started, '
+                'so nothing is running and there is nothing to pause. Settle it with ' + (activity.get('settle') or {}).get('command', 'seed-reconcile')
+                + ' ' + (activity.get('settle') or {}).get('argument', '') + ';' + counts + '.')
     if status in ('running', 'starting', 'reconcile_required', 'verifying', 'active'):
         current = activity.get('current_member') or {}
         member = (' on ' + current['symbol'] + ' ' + current['timeframe']) if current.get('symbol') else ''

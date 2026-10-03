@@ -13,6 +13,7 @@ from studio_build_upgrade import retain
 from studio_handover import safe_path
 from studio_installation import load_installation, read_json
 from studio_monitor_probe import inspect_idle_demo
+from studio_receipt_digest import receipt_views
 
 POLICY_PATH = Path(__file__).parent/'contracts/owner_research_maintenance.json'
 BINDING_KEYS = ('terminal_executable', 'terminal_data_root', 'common_files_root',
@@ -37,11 +38,11 @@ def authorize(c, operation, review_id):
         state = c.state()
         key = packed(dict(terminal_id=c.terminal, run_id=c.run))
         grants = []
-        for row in c.store.db.execute('SELECT request_id,payload_hash,receipt FROM studio_receipts WHERE binding=?', (key,)):
-            receipt = json.loads(row['receipt'], object_pairs_hook=unique_object)
+        # SQLite drops state.queue first: legacy receipts are not parsed in Python.
+        for request_id, payload_hash, receipt in receipt_views(c.store.db, key, object_pairs_hook=unique_object):
             if (receipt.get('command') == 'control.grant_agent' and receipt.get('status') == 'applied'
                     and receipt.get('state', {}).get('generation') == state['generation']):
-                grants.append(row)
+                grants.append(dict(request_id=request_id, payload_hash=payload_hash))
         if len(grants) != 1:
             raise ValueError('Exactly one genuine current-generation grant is required')
         # This derives no new permission: the archived human request, receipt,
@@ -80,11 +81,11 @@ def authorize(c, operation, review_id):
         if not folder.is_dir() or any(folder.iterdir()):
             raise ValueError('Pending or unavailable human control channel; reconcile it first')
     key = packed(dict(terminal_id=c.terminal, run_id=c.run))
-    row = c.store.db.execute('SELECT payload_hash,receipt FROM studio_receipts WHERE binding=? AND request_id=?',
-                            (key, policy['grant_request_id'])).fetchone()
-    if not row or row['payload_hash'] != policy['grant_payload_hash']:
+    rows = receipt_views(c.store.db, key, policy['grant_request_id'], object_pairs_hook=unique_object)
+    if not rows or rows[0][1] != policy['grant_payload_hash']:
         raise ValueError('Original human grant receipt is missing or changed')
-    receipt = json.loads(row['receipt'], object_pairs_hook=unique_object)
+    row = dict(payload_hash=rows[0][1])
+    receipt = rows[0][2]
     if (receipt.get('status') != 'applied' or receipt.get('command') != 'control.grant_agent'
             or receipt.get('execution_effect') is not False
             or receipt.get('request_id') != policy['grant_request_id']

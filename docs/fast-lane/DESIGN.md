@@ -68,7 +68,8 @@ Result: a hybrid. The controller keeps planning, provenance, research and the fi
 | Stop | `demo_agent.py stop` (active batch; owner STOP set) or `stop --batch-id <id>` (one unstarted batch, no STOP) | `goat_studio batch-stop --job-id <id>` | one sentence plus the next command |
 | Start | `demo_agent.py start --batch-id <id> [--max-seconds N]` | `goat_studio run-batch --job-id <id> --max-seconds N` | "Owner STOP is on; run clear-stop, then start again." |
 | Continue | `demo_agent.py continue --batch-id <id> [--include-failed] [--clear-stop]` (prepares and starts) | `goat_studio batch-continue --job-id <id>` (prepares only) | "Batch X is still running; stop it first: stop --batch-id X." |
-| Keep reads fast | — | `goat_studio compact-evidence [--apply]` | refuses while a batch is active (checked before any archive and again inside the queue transaction); skips a job whose never-started retirement proof compares the whole row |
+| Keep reads fast | `demo_agent.py compact-evidence [--apply]` | `goat_studio compact-evidence [--apply]` | refuses while a batch is active (checked before any archive and again inside the queue transaction); skips a job whose never-started retirement proof compares the whole row |
+| Shrink legacy receipts | `demo_agent.py compact-receipts [--apply]` | `goat_studio compact-receipts [--apply]` | refuses while any batch is active (checked before any archive and again inside each row's transaction); skips a row that is not in the canonical layout; see "Receipts" below |
 
 Evidence log and compaction details:
 
@@ -76,11 +77,37 @@ Evidence log and compaction details:
 - **Compaction memory.** The size comes from `SELECT length(jobs)`. Archives are serialised one entry at a time, written to a temp file, fsynced, verified by sha256 and atomically renamed. The first parsed copy is dropped before the transaction parses the row again. Inside the transaction, each archived history is re-hashed against the current row. The result and the `native-evidence/compactions.jsonl` journal come from the transaction, with no read after the commit.
 - **Scale test.** `LargeQueueRowTests` builds Banker's shape scaled down: 29 jobs, about 42 MB of history and 4 MB of other data. The real row is 818 MB, 770 MB of it history. Compaction must shrink the row to about the non-history size, and a state read must stay bounded.
 
+## Receipts: a queue digest, not the queue
+
+Every `studio_receipts` row used to embed the full `state`, queue included. On Banker (`studio.sqlite` 11.4 GB) the queue row was 818 MB, so each reserve/batch/cancel receipt was 818 MB too: 62 receipts held 9.78 GB. Each start attempt wrote about 1.6 GB of receipts. Every renewed-epoch authority check (the regrant `takeover` scan plus the grant read) parsed every receipt in Python, about 9.8 GB per check, even after `compact-evidence` shrank the queue row.
+
+What reads a receipt (verified in code):
+
+| Reader | Fields |
+|---|---|
+| Replay (`StudioStore.submit`, same request ID) | compares `payload_hash` only, then returns the stored receipt |
+| "Request ID content changed" (`Controller.submit`) | the saved request file, not the receipt |
+| Bridge outbox (`studio_bridge.py`) | `state.terminal_id/run_id/revision/generation/owner` plus `request_id`, `command`, `status`, `execution_effect`; the MQL side reads `state.revision`, also on replay |
+| Regrant `takeover`/`active`, owner-research, owner-maintenance, legacy grant classification | `request_id`, `command`, `status`, `execution_effect` and the same five state fields |
+| CLI results (`clear-queue --apply`, `submit`) | printed as output only |
+
+Nothing reads `receipt.state.queue`. So:
+
+- **New receipts** store `state.queue_digest = {"sha256", "job_count"}` in place of `state.queue`; every other state field is unchanged. `sha256` is over the queue's canonical JSON (`campaign_ledger.packed`), so it equals `campaign_ledger.sha(queue)`. It is computed once per command: a queue command hashes the same packed string it writes to `studio_queues`, any other command packs the observed queue once. The fresh result and every replay are the same stored bytes. Anything that needs the queue reads current state.
+- **Scans** call `studio_receipt_digest.receipt_views`. SQLite checks `json_valid` and drops `state.queue` with `json_remove` before Python parses anything, so a legacy row costs one C-level JSON pass and no Python objects for its queue. Every other field comes back exactly as stored, duplicates included, so `unique_object` still refuses duplicate fields where it did before. Invalid JSON raises `ValueError`, as `json.loads` did. Measured on this PC: about 85 ms for a 45 MB receipt against 460 ms for `json.loads`, with no Python memory for the queue. Tests cover new-format and legacy-format receipts for the regrant, owner-research and legacy-grant decisions.
+- **`compact-receipts`** migrates legacy rows. Preview by default; `--apply` acts. It processes one receipt at a time:
+  1. SQLite returns the receipt without its queue (small), and the canonical bytes before and after the queue are rebuilt from it.
+  2. The stored bytes are streamed from the row (`blobopen`, 1 MiB chunks; never the whole receipt in Python) into `native-evidence/receipt-archive/<request_id>.<binding12>.receipt.json`: temp file, fsync, sha256 readback, `os.replace`. The same pass checks that the bytes around the queue equal the canonical frame and hashes the bytes in between, which is `sha256(packed(queue))`. A row that is not in the canonical layout is skipped and left as is. An identical archive from an interrupted run is reused; a different one refuses and is kept.
+  3. One `BEGIN IMMEDIATE` transaction under the mutation gate re-checks that no batch is active (SQLite `json_each` over every queue), re-checks the session authority, re-streams the row and requires its sha256 to equal the archive's (re-read from disk), takes the job count from the locked row, and rewrites only that row. The journal line (`native-evidence/receipt-compactions.jsonl`) comes from that transaction's result.
+
+  It refuses while any batch is starting or running, never deletes an archive (the only copy of the original queue snapshot), and never runs `VACUUM`. Rerunning it finds no candidates. A migrated receipt has exactly the new-receipt shape, so its replay returns the digest form; the original bytes are in its archive.
+- **Scale test.** `LargeReceiptTests` puts 10 legacy receipts of about 5 MB each into a renewed epoch. The authority check must return the same scope, Python must never receive more than 100 kB of JSON at once, and after `compact-receipts` the receipts total under 50 kB and the check stays under 1 s and faster than before. On this PC: 50 MB of receipts became 4.2 kB; the check went from 74 ms (legacy, SQLite-cut) to 6 ms. `json.loads` of one of those receipts alone took 46 ms.
+
 ## Follow-ups
 
 - Desktop buttons (goatai, `claude-pc/fast-lane-buttons`): Stop / Start / Continue on the lane card, calling these commands.
-- Banker: after #123, run `compact-evidence --apply` once while idle. It moves the retained in-row history to verified logs and shrinks the parsed queue row. The SQLite file stays the same size until a separate reviewed `VACUUM`.
+- Banker: after #123, run `compact-evidence --apply` once while idle, then `compact-receipts --apply`. The first shrinks the parsed queue row; the second shrinks the 62 receipts to their digest form, so starts stop writing ~1.6 GB and authority checks stop scanning ~9.8 GB. The SQLite file stays the same size until a separate reviewed `VACUUM`. Both change the store content hash, so prepare a handover or owner-maintenance record afterwards.
 - The open-terminal `start` route (non-demo, `Controller.start`) keeps its single baseline; #120 replaces that route with config start.
-- **Receipts store a queue digest, not the queue.** Every `studio_receipts` row embeds the full `state`, queue included. On Banker each receipt is 818 MB (62 receipts = 9.78 GB of an 11.4 GB DB), which is why each start attempt grows the DB by ~1.6 GB and reserve + intent takes ~121 s. Nothing reads `receipt.state.queue` back: the bridge outbox and the authority/regrant/owner-research scans read only `owner`, `generation`, `revision`, `terminal_id` and `run_id`. Idempotent replay compares only `payload_hash`. Replacing the queue with `{sha256, job_count}` is safe. Legacy rows must be migrated, or the scans must stop parsing whole receipts.
+- Replay of an *unmigrated* legacy receipt still loads that receipt whole (it returns the stored bytes). `compact-receipts` removes that cost.
 - **Typed research continuation + Continue.** `batch-continue` refuses in a `research_continuation` session with one sentence, because that authority covers only the exact frozen plan (`members_sha256`). Authorizing a generated remaining-members plan needs its own reviewed provenance.
 - **Seal binding.** Bind the seal or manifest digest into the job row at enqueue and require it in `sealed()` (see the seal note above).

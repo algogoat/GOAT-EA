@@ -13,6 +13,7 @@ from studio_settings import validate_tester, validate_export
 from studio_strategy_settings import validate_strategy
 from studio_dependencies import audit_dependencies
 from studio_queue import COMMANDS as QUEUE_COMMANDS, change_queue, reserve_job
+from studio_receipt_digest import receipt_state
 
 
 class Conflict(ValueError):
@@ -176,6 +177,7 @@ class StudioStore:
                 raise Conflict('Stale state revision')
             if state['generation'] != request['generation']:
                 raise Conflict('Revoked controller generation')
+            raw_queue = None  # packed queue, built once when a queue command writes it
             if command in ('draft.replace_tester', 'draft.replace_export', 'draft.replace_configuration', 'draft.replace_strategy', *QUEUE_COMMANDS):
                 if actor != state['owner']:
                     raise Conflict('Current controller required; take over explicitly')
@@ -205,7 +207,8 @@ class StudioStore:
                         jobs = reserve_job(state,request['payload'],sha([binding,request['request_id'],payload_hash]))
                     else:
                         jobs = change_queue(command,request['payload'],state,self.input_schema,self.dependency_policy)
-                    self.db.execute('INSERT OR REPLACE INTO studio_queues VALUES(?,?)',(binding,packed(jobs)))
+                    raw_queue = packed(jobs)
+                    self.db.execute('INSERT OR REPLACE INTO studio_queues VALUES(?,?)',(binding,raw_queue))
                     state['queue'] = jobs
                 elif command == 'draft.replace_strategy':
                     self.db.execute('INSERT OR REPLACE INTO studio_strategy_drafts VALUES(?,?)',
@@ -243,8 +246,11 @@ class StudioStore:
                              generation=state['generation']+1)
             self.db.execute('UPDATE studio_state SET revision=?,generation=?,owner=? WHERE binding=?',
                             (state['revision'], state['generation'], state['owner'], binding))
+            # The receipt keeps a digest of the queue, never the queue: nothing
+            # reads it back, and on Banker each full copy was 818 MB. Replays
+            # return these same stored bytes; current state holds the queue.
             receipt = dict(request_id=request['request_id'], command=command,
-                           status='applied', state=state, execution_effect=False)
+                           status='applied', state=receipt_state(state, raw_queue), execution_effect=False)
             self.db.execute('INSERT INTO studio_receipts VALUES(?,?,?,?)',
                             (binding, request['request_id'], payload_hash, packed(receipt)))
             if new_epoch is not None:

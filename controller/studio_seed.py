@@ -209,6 +209,13 @@ class SeedRunner:
         match=re.search(r'_N(\d{1,7})_',Path(path).name)
         return dict(path=str(path),sha256=sha256,frames_from_filename=int(match[1]) if match else None,accepted=False)
 
+    # Hooks for runners that reuse this process driver (studio_catchup). Seeds keep the defaults.
+    def _collect(self,path,spec,manifest):
+        return collect(path,spec,self.c.schema,manifest['plan']['cutoff'])
+
+    def _before_start(self,spec):
+        """Stage per-member inputs before the start receipt; must raise before any process effect."""
+
     def _observe(self,root,manifest,state):
         current=self.process.inspect()
         if state['status']=='active' and current is not None and not any(m['status'] in ('running','starting','cancel_requested','timeout_requested') for m in state['members']):
@@ -228,8 +235,9 @@ class SeedRunner:
                 item['status']='failed';item['error']='Ambiguous seed XML outputs'
             elif paths:
                 try:
-                    result=collect(paths[0],spec,self.c.schema,manifest['plan']['cutoff'])
+                    # Age check first: a collector may move the output it verified.
                     if paths[0].stat().st_mtime<item.get('started_unix',manifest['created_unix'])-2:raise ValueError('Seed XML predates attempt')
+                    result=self._collect(paths[0],spec,manifest)
                     write_json(root/(spec['alias']+'.result.json'),result)
                     item['result']=dict(path=str(root/(spec['alias']+'.result.json')),sha256=digest(root/(spec['alias']+'.result.json')),summary=result['summary'],xml_path=result['path'],xml_sha256=result['sha256'])
                 except (ValueError,OSError) as exc:
@@ -334,6 +342,7 @@ class SeedRunner:
                         if item['attempts']!=0:raise ValueError('Seed retry forbidden')
                         if self._outputs(spec):raise ValueError('Output already exists for unstarted seed member')
                         self._owner(state['generation'])
+                        self._before_start(spec)
                         item.update(status='starting',attempts=1,started_unix=self.clock());self._save(root,state)
                         try:
                             identity=self.process.start(spec['config_path'])

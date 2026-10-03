@@ -1,0 +1,17 @@
+key,value
+tester_finished,true
+deinit_reason,1
+observed_end_server_msc,1790812798000
+sequence_allocations,171
+joined_deals,782
+real_sequences,171
+entry_deals,376
+final_active_real_sequences,0
+final_positions,0
+final_orders,0
+rows,719139
+native_final_balance,100278.02
+native_final_equity,100278.02
+error,
+capture_status,complete-awaiting-external-reconciliation
+footer,END

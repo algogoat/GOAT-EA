@@ -368,6 +368,19 @@ selected fixed exports use their existing real-tick policy independently of the
 genetic search model. Adjusted-lot export results retain a qualification notice
 until the builder verifies their exact evidence.
 
+EvidenceEnd is not one of the nine fields: it is the batch plan's
+`evidence_end` ("auto" or a closed broker date), resolved once by
+`prepare-batch`. When the bound monitor reports `evidence_end:
+goat-evidence-end-v1` (EA FU35 and later), the resolved date is staged as
+`EvidenceEnd=YYYY.MM.DD` in the batch's `export_settings.GOAT` and the EA runs
+every export to that day + 1 (exclusive `ToDate`), so every member's deals,
+equity rows and sequence frames end on the same day. `auto` is never staged: the
+EA would resolve it again per member and a Friday close mid-batch would split the
+timeline. `native_batch.evidence_end.native_export_end` says which applies
+(`evidence_end_setting`, or `ea_last_friday_exclusive` on older builds, which
+catch-up re-tests later). The EA refuses, without falling back, an EvidenceEnd
+that is not a closed server day or precedes the optimization window end.
+
 SET files retain UTF-16 LE BOM, CRLF, scalar values and full optimization tuples.
 The only native staging change is the unique EA_Desc attempt alias; the package
 retains source hash and unchanged canonical trading inputs. Every active axis is

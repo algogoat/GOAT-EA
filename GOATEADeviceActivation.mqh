@@ -68,6 +68,107 @@ void GOATDeviceActivationFailure(const int status,const int native_error,const b
    else GOATDeviceActivationShowRetry((status<0 ? "Can't reach goatedge.ai" : "GOAT service error (HTTP "+IntegerToString(status)+")")+". Retrying in 60 s.");
   }
 
+// LC36 local pairing read: the connection code MT5 is already showing, shared with GOAT on
+// this PC so the desktop and its agent read it without a screenshot. It is the short-lived
+// public challenge only (never the credential candidate), on demo accounts only, in one file
+// per terminal data folder in this Windows user's Common Files. It is withdrawn as soon as the
+// code is cleared, expires, is approved or the chart closes, and is never printed or logged.
+bool g_GOATDeviceActivationCodeShared=false;
+string GOATDeviceActivationCodePath(void)
+  {
+   return Key+"\\activation-code-"+GoatTerminalToken()+".json";
+  }
+
+string GOATDeviceActivationCodeQuote(const string value)
+  {
+   string result="\"";
+   for(int i=0;i<StringLen(value);i++)
+     {
+      ushort c=StringGetCharacter(value,i);
+      if(c=='\"' || c=='\\') result+="\\"+ShortToString(c);
+      else if(c<32 || c>126) result+=StringFormat("\\u%04x",(int)c);
+      else result+=ShortToString(c);
+     }
+   return result+"\"";
+  }
+
+// The same request MT5 shows: pending, a well-formed code, this login and server, unexpired.
+bool GOATDeviceActivationCodeShareable(void)
+  {
+   string code=g_GOATDeviceActivationUserCode;
+   if(StringLen(code)!=9 || StringGetCharacter(code,4)!='-') return false;
+   for(int i=0;i<9;i++)
+     {
+      if(i==4) continue;
+      ushort c=StringGetCharacter(code,i);
+      if(!((c>='A' && c<='Z') || (c>='2' && c<='9'))) return false;
+     }
+   long now_ms=(long)TimeGMT()*1000;
+   return(g_GOATDeviceActivationState==GOAT_DEVICE_ACTIVATION_PENDING
+      && !MQLInfoInteger(MQL_TESTER)
+      && AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO
+      && g_GOATDeviceActivationAccountId==IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))
+      && g_GOATDeviceActivationServer==AccountInfoString(ACCOUNT_SERVER)
+      && GOATIsSafeId(g_GOATDeviceActivationId,32,128)
+      && g_GOATDeviceActivationExpiresAtMs>now_ms
+      && g_GOATDeviceActivationExpiresAtMs<=now_ms+900000);
+  }
+
+void GOATDeviceActivationShareCode(void)
+  {
+   if(!GOATDeviceActivationCodeShareable()) return;
+   FolderCreate(Key,FILE_COMMON);
+   string path=GOATDeviceActivationCodePath();
+   string temporary=path+"."+IntegerToString(ChartID())+"."+IntegerToString((long)GetTickCount64())+".pending";
+   int h=FileOpen(temporary,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(h==INVALID_HANDLE) return;
+   string record="{\"schema\":1,\"accountId\":\""+g_GOATDeviceActivationAccountId
+      +"\",\"server\":"+GOATDeviceActivationCodeQuote(g_GOATDeviceActivationServer)
+      +",\"buildId\":"+GOATDeviceActivationCodeQuote(g_GOATDeviceActivationBuildId)
+      +",\"activationId\":"+GOATDeviceActivationCodeQuote(g_GOATDeviceActivationId)
+      +",\"userCode\":\""+g_GOATDeviceActivationUserCode
+      +"\",\"expiresAtMs\":"+IntegerToString(g_GOATDeviceActivationExpiresAtMs)
+      +",\"observedAtUtc\":"+IntegerToString((long)TimeGMT())
+      +",\"chart\":"+IntegerToString(ChartID())+"}";
+   uint written=FileWriteString(h,record);
+   FileFlush(h);FileClose(h);
+   bool moved=((int)written==StringLen(record) && FileMove(temporary,FILE_COMMON,path,FILE_COMMON|FILE_REWRITE));
+   if(!moved) FileDelete(temporary,FILE_COMMON);
+   if(moved) g_GOATDeviceActivationCodeShared=true;
+   record="";
+  }
+
+// Only this chart's own record is withdrawn; a newer code another chart shared stays.
+void GOATDeviceActivationWithdrawCode(void)
+  {
+   if(!g_GOATDeviceActivationCodeShared) return;
+   g_GOATDeviceActivationCodeShared=false;
+   string path=GOATDeviceActivationCodePath(),body="";
+   int h=FileOpen(path,FILE_READ|FILE_BIN|FILE_COMMON);
+   if(h==INVALID_HANDLE) return;
+   ulong size=FileSize(h);
+   uchar bytes[];
+   if(size>0 && size<=4096 && ArrayResize(bytes,(int)size)==(int)size && FileReadArray(h,bytes)==(uint)size)
+      body=CharArrayToString(bytes,0,(int)size,CP_UTF8);
+   FileClose(h);
+   if(StringFind(body,",\"chart\":"+IntegerToString(ChartID())+"}")>=0) FileDelete(path,FILE_COMMON);
+   body="";
+  }
+
+// Every activation tick: a shared code that is no longer the one MT5 shows is withdrawn,
+// and a code MT5 still shows that the file does not carry (a failed first write, or a
+// record another chart of this terminal replaced and then withdrew) is shared again.
+// A newer record another chart wrote is never overwritten.
+void GOATDeviceActivationSyncCode(void)
+  {
+   if(!GOATDeviceActivationCodeShareable())
+     {
+      if(g_GOATDeviceActivationCodeShared) GOATDeviceActivationWithdrawCode();
+      return;
+     }
+   if(!g_GOATDeviceActivationCodeShared || !FileIsExist(GOATDeviceActivationCodePath(),FILE_COMMON)) GOATDeviceActivationShareCode();
+  }
+
 bool GOATDeviceActivationOnly(void)
   {
    return(g_GOATDeviceActivationState!=GOAT_DEVICE_ACTIVATION_INACTIVE);
@@ -75,6 +176,7 @@ bool GOATDeviceActivationOnly(void)
 
 void GOATDeviceActivationScrub(void)
   {
+   GOATDeviceActivationWithdrawCode();
    g_GOATDeviceActivationUserCode="";
    g_GOATDeviceActivationServer="";
    g_GOATDeviceActivationId="";
@@ -349,6 +451,7 @@ bool GOATActivationReloadOnInit(void)
 void GOATDeviceActivationRequestReload(void)
   {
    g_GOATDeviceActivationUserCode="";
+   GOATDeviceActivationWithdrawCode();
    if(g_GOATDeviceActivationReloadRequested) return;
    g_GOATDeviceActivationReloadRequested=true;
    HidePrompt();
@@ -483,6 +586,7 @@ bool GOATDeviceActivationRequestStart(void)
    credential_candidate="";
    GOATDeviceActivationStatus("awaiting_approval",201,0,poll_seconds);
    GOATDeviceActivationShowCode(user_code,verification_url);
+   GOATDeviceActivationShareCode();
    user_code="";
    return true;
   }
@@ -504,6 +608,7 @@ bool GOATDeviceActivationBegin(const long account_id,const string build_id,
 void GOATDeviceActivationTimer(void)
   {
    if((long)TimeGMT()*1000>=g_GOATDeviceActivationExpiresAtMs) g_GOATDeviceActivationUserCode="";
+   GOATDeviceActivationSyncCode();
 #ifdef GOAT_MONITOR_ONBOARDING_V149
    if(g_GOATDeviceActivationReloadRequested && g_GOATActivationReloadDeadline>0
       && GetTickCount64()>=g_GOATActivationReloadDeadline) GOATActivationReloadRequired();

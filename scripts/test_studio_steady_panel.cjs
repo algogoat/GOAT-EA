@@ -55,7 +55,7 @@ function control(name) {
     // MT5 Show/Hide of an already shown/hidden control changes nothing on screen.
     Show() { if (!c.visible) { c.visible = true; record('visible', true); } return true; },
     Hide() { if (c.visible) { c.visible = false; record('visible', false); } return true; },
-    Select() { return 'Custom'; }, Current() { return 0; }, FitRows() {}, Height() { return 24; }, Width() { return 24; },
+    Select() { return c.selected ?? 'Custom'; }, Current() { return 0; }, FitRows() {}, Height() { return 24; }, Width() { return 24; },
   });
   return c;
 }
@@ -194,6 +194,23 @@ for (const s of scenarios) {
   assert.equal((normal.match(/m_edtBatchProgress\.Text\(/g) || []).length, 0, 'status line pre-painted');
   assert.equal((normal.match(/GoatStudioSteadyText\(m_edtBatchProgress,status\)/g) || []).length, 1);
   assert.ok(normal.indexOf('GoatStudioSteadyText(m_edtBatchProgress,status)') > normal.indexOf('AcknowledgePending'));
+  passed++;
+}
+// B38 (Codex P2 on #124): while a human edits, the forward date picker is enabled exactly
+// when the forward mode is Custom; leaving Custom disables it, with one write and no flash.
+{
+  const { c, controls } = fixture({ owner: 'human', loaded: true, empty: false, width: 1567, height: 691 });
+  c.m_activeStage = 1;
+  for (const [mode, enabled] of [['Custom', true], ['No', false], ['1/2', false], ['Custom', true], ['1/4', false]]) {
+    controls.m_cmbForward.selected = mode;
+    writes = [];
+    c.ManagedControls();
+    assert.equal(controls.m_dtForward.enabled, enabled, `forward ${mode}: date picker enabled=${!enabled}`);
+    assert.ok(writes.filter(w => w.name === 'm_dtForward' && w.prop === 'enabled').length <= 1);
+    writes = [];
+    c.ManagedControls();
+    assert.deepEqual(writes.filter(w => w.name === 'm_dtForward'), [], `forward ${mode}: steady pass rewrote the date picker`);
+  }
   passed++;
 }
 console.log(JSON.stringify({ passed, nativeVisualQualification: false }));

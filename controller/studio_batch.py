@@ -24,6 +24,8 @@ from studio_template_tools import source_bytes, validate_raw
 
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 MAX_RETAINED_SET_BYTES = 128 * 1024 * 1024
+# Binding fields that select the report-capable /config start route (goat_studio.binding).
+CONFIG_START_BINDING_KEYS = ('research_profile', 'report_location_bridge', 'startup_monitor')
 
 def _json(path, limit=MAX_PLAN_BYTES, *, with_raw=False):
     path = Path(path)
@@ -74,6 +76,12 @@ def _verify_package(controller, job, *, allow_peer_refresh=False):
         from studio_protected_peer import PEER_BINDING_KEYS
         recorded = {key: value for key, value in recorded.items() if key not in PEER_BINDING_KEYS}
         current = {key: value for key, value in current.items() if key not in PEER_BINDING_KEYS}
+    if ((getattr(controller, 'session', None) or {}).get('authority_kind') == 'native_human_control'
+            and not any(key in recorded for key in CONFIG_START_BINDING_KEYS)):
+        # A customer package prepared before the lane gained the report-capable
+        # route stays readable for status/finish with every other identity field
+        # exact. Config start still refuses it (no profile/bridge recorded).
+        current = {key: value for key, value in current.items() if key not in CONFIG_START_BINDING_KEYS}
     if recorded != current or manifest['campaign_id'] != sha(plan):
         raise ValueError('Prepared batch installation or plan identity changed')
     if 'launch_intent' in job and hashlib.sha256((package / 'manifest.json').read_bytes()).hexdigest() != job['launch_intent']['package_sha256']:
@@ -234,7 +242,16 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
     controller.bridge.pump()
 
     return dict(batch_id=batch_id, member_count=len(planned), package=str(package), manifest=manifest, evidence_end=evidence,
-        native_started=False, next_action='Review settings and use start --job-id with this batch ID; Studio runs the entire native queue')
+        native_started=False, next_action=_start_next_action(controller, batch_id))
+
+
+def _start_next_action(controller, batch_id):
+    if (getattr(controller, 'session', None) or {}).get('authority_kind') == 'native_human_control':
+        # Raw start is refused here: an in-place Start never makes MT5 write the batch reports.
+        return ('Review settings with the user, tell them GOAT closes and reopens their MT5 to start the batch, then after '
+                'their yes run run-batch --job-id ' + batch_id + ' --max-seconds <budget> --mt5-restart-consent; '
+                'Studio runs the entire native queue')
+    return 'Review settings and use start --job-id with this batch ID; Studio runs the entire native queue'
 
 
 def save_batch(controller, batch_id, output):
@@ -259,6 +276,13 @@ def batch_status(controller, batch_id):
         controller.reconcile(batch_id)
         job = controller.job(batch_id)
     members = job['configuration'].get('batch_members', [job['configuration']])
+    extra = {}
+    observed = (job.get('native_observation') or {}).get('native') or (job.get('completion') or {}).get('native')
+    if isinstance(observed, dict) and observed.get('status') == 'native_error' and 'launch_intent' in job:
+        from studio_native_diagnostics import for_job
+        # The EA journal says why the native queue ended in Error (read-only quote).
+        no_edge = [item.get('index') for item in (job.get('completion') or {}).get('research_outcomes') or [] if isinstance(item, dict)]
+        extra['native_error_evidence'] = for_job(controller, job, observed, no_edge)
     evidence = None
     plan_path = controller.root / 'packages' / batch_id / 'studio-plan.json'
     if plan_path.is_file():
@@ -266,7 +290,7 @@ def batch_status(controller, batch_id):
             evidence = (_json(plan_path).get('native_batch') or {}).get('evidence_end')
         except (OSError, ValueError):
             evidence = None
-    return dict(batch_id=batch_id, status=job['status'], member_count=len(members), evidence_end=evidence,
+    return dict(batch_id=batch_id, status=job['status'], member_count=len(members), evidence_end=evidence, **extra,
         native=job.get('native_observation'), result_path=job.get('completion_path'),
         members=[dict(index=index, symbol=member['tester']['Symbol'], timeframe=member['tester']['Period'],
             ea_desc=member['strategy']['values']['EA_Desc'], configuration_sha256=sha(member)) for index, member in enumerate(members)],

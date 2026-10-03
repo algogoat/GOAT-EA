@@ -47,7 +47,17 @@ def tester_state(pid, build):
     return tester_caption_state(caption.value)
 
 
-def inspect_idle_demo(controller):
+def inspect_idle_demo(controller, *, tester='require'):
+    """Same bound demo, Algo OFF, zero positions/orders; tester per ``tester``.
+
+    ``tester='require'`` (default, every repair path) needs a recognised idle
+    caption. ``tester='advisory'`` is for callers that already hold a fresh EA
+    runtime sample proving the tester idle: a recognised running caption still
+    refuses, but an unreadable or unrecognised caption (any MT5 UI language
+    outside the table above) defers to the EA instead of refusing.
+    """
+    if tester not in ('require', 'advisory'):
+        raise ValueError('Explicit tester observation mode required')
     try:
         import MetaTrader5 as mt5
     except ImportError as exc:
@@ -72,11 +82,20 @@ def inspect_idle_demo(controller):
             raise ValueError('Native terminal/account differs from the installation')
         if account.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO or not terminal.connected or terminal.trade_allowed or positions or orders:
             raise ValueError('Repair requires a connected demo, Algo Trading off and no positions/orders')
-        state = tester_state(current['research']['pid'], terminal.build)
-        if state != 'idle':
-            raise ValueError('Repair requires positively observed idle native tester')
+        if tester == 'require':
+            state = tester_state(current['research']['pid'], terminal.build)
+            if state != 'idle':
+                raise ValueError('Repair requires positively observed idle native tester')
+        else:
+            try:
+                state = tester_state(current['research']['pid'], terminal.build)
+            except (ValueError, OSError):
+                state = 'unknown'
+            if state == 'running':
+                raise ValueError('The MT5 Strategy Tester is running; no close performed')
         return dict(process=current['research'], protected=current['protected'], account_matches=True,
                     demo=True, connected=True, algo_trading=False, positions=0, orders=0,
-                    tester_state=state, build=terminal.build, sdk_version=mt5.__version__)
+                    tester_state=state, tester_source='window_caption' if state != 'unknown' else 'ea_runtime',
+                    build=terminal.build, sdk_version=mt5.__version__)
     finally:
         mt5.shutdown()

@@ -53,7 +53,8 @@ Use validated templates and explicit tester/export settings. Check broker symbol
 active optimization axes, date/forward ordering, model, local workers, free disk
 and output paths. Prepare a new immutable batch identity for changed conditions.
 Start each batch once with the bounded driver (`run-batch --job-id <id> --max-seconds <budget>`,
-which cancels at the budget), poll `batch-status`, and `finish` after the native queue finishes (see `AGENT-START-HERE.md`). Observe
+which cancels at the budget; on the customer lane add `--mt5-restart-consent` after the user agrees
+that GOAT closes and reopens their MT5 for the start), poll `batch-status`, and `finish` after the native queue finishes (see `AGENT-START-HERE.md`). Observe
 before retrying any timeout; a timeout does not prove that a native command failed.
 
 During a batch, show its ID, total, active member, each member's symbol/strategy/model,

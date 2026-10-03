@@ -97,14 +97,39 @@ safety rules, in `studio_batch_pause.py`:
 `batch-resume` refuses in plain words while the batch is still pausing, failed,
 finished, its monitor has a blocker, or an owner STOP is set (pass `--clear-stop`
 to lift a STOP written by this tool). Otherwise it re-verifies the paused result
-and token, refreshes `verified-build.json` after a terminal restart, refreshes the
-protected peer when only its process instance restarted (same reviewed executable
-bytes, data root and origin; anything else still needs `peer-prepare`/`peer-apply`),
-builds the remaining members from per-member native evidence, prepares them as a
+and token, refreshes `verified-build.json` after a terminal restart, accepts the
+protected peer when only its process instance restarted, closed or reopened (same
+reviewed executable bytes, data root and origin; anything else still needs
+`peer-prepare`/`peer-apply`; see "Protected peer restarts" below), builds the remaining members from per-member native evidence, prepares them as a
 successor (`<id>-rN`, fixed in the pause record before preparation so a retry
 reuses it), records `batch-lineage/<successor>.json`, and starts the successor
 under the bounded driver with the original budget (or `--max-seconds`). Repeating
 it returns the same successor.
+
+### Protected peer restarts
+
+Two MT5 terminals on one PC run independently. The reviewed peer is identified
+by its executable (path and bytes), data root and `origin.txt` binding, not by a
+PID. When this lane runs an isolated EA (V1.49: per-terminal/login batch folder)
+and the peer's data root hashes to a different batch folder, a peer that
+restarted, closed or reopened is the same reviewed peer:
+
+- `continue`, `batch-resume` and every start accept it with no review. Each new
+  instance is appended to `peer-instances.jsonl` in the peer policy folder
+  (`previous_pid`, `pid`, review ID, peer hash, source). `policy.json` is never
+  rewritten for a restart.
+- A closed peer never blocks this lane (`peer_closed`).
+- Package bindings carry `protected_peer_sha256`, not a PID, so a peer restart
+  never invalidates a prepared or sealed package. A package prepared by the
+  older exact-instance code still verifies when a retained reviewed policy with
+  its recorded hash names the same unchanged peer.
+- A running driver takes no terminal inventory: MT5 advances members itself, so
+  a peer restart never touches a running batch.
+
+Still refused: an unknown MT5 (different executable), two processes of the
+peer, a changed peer executable, data root or `origin.txt` (review again with
+`peer-prepare`/`peer-apply`). Without the isolation proof (older EA builds) the
+exact-instance rule is unchanged.
 
 A seed hunt pauses between members: `batch-pause` writes `seeds/<id>/pause.json`,
 the running member finishes and is kept, no new member starts and pending members

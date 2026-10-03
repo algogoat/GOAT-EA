@@ -95,6 +95,8 @@ jobs:
         run: |
           node scripts/test_terminal_isolation_mutations.cjs
           python scripts/test_terminal_isolation_controller_mutations.py
+      - name: Protected peer restart mutation check (every refusal is load-bearing)
+        run: python scripts/test_peer_restart_mutations.py
 
       - name: Run every controller fixture test
         env:

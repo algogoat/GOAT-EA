@@ -156,6 +156,44 @@ def stopped_candidates(processes,roots):
         limitation='Windows-visible executable paths only; unrelated unreadable system paths cannot be attributed to a terminal')
 
 
+def restart_tolerant(binding):
+    """True when a restarted reviewed peer is still the same peer for ``binding``.
+
+    The peer is identified by its reviewed executable, data root and origin
+    (studio_protected_peer.policy re-proves those bytes on every read), not by
+    the PID of one process instance. A new instance of it is accepted only when
+    the two lanes provably keep separate batch state: this research lane runs an
+    isolated EA (INV-BATCH-01, per-terminal/login namespace, GOAT-EA#113), and
+    the peer's data root is a different folder that hashes to a different
+    namespace. Every native start still proves the lane's own namespace at
+    runtime (studio_terminal_isolation.preflight). Unknown terminals, two
+    processes of the peer and a changed executable or data root still refuse.
+    """
+    from studio_terminal_isolation import isolated, terminal_hash
+    roots=binding.get('protected_data_roots')
+    own=binding.get('research_data_root')
+    if (not binding.get('protected_terminal') or binding.get('protected_may_be_stopped') is not True
+            or not isinstance(roots,list) or len(roots)!=1 or not isinstance(roots[0],str) or not roots[0]
+            or not isinstance(own,str) or not own or not isolated(binding.get('ea_version'))):
+        return False
+    if PureWindowsPath(roots[0])==PureWindowsPath(own):
+        return False
+    return terminal_hash(roots[0])!=terminal_hash(own)
+
+
+def role_unchanged(binding,role,current,baseline):
+    """Process identity continuity for one role between two classified observations.
+
+    Under ``restart_tolerant`` a restarted (or closed/reopened) peer is the same
+    reviewed peer: both observations already passed classify_processes, so each
+    holds at most one process of the reviewed executable and nothing unmapped.
+    The research terminal is always compared exactly.
+    """
+    if role=='protected' and restart_tolerant(binding):
+        return True
+    return current==baseline
+
+
 def classify_processes(processes,binding,*,observed_unix,research_running=True,unrelated_roots=None):
     if not isinstance(processes,list):raise ValueError('Complete process inventory required')
     research=PureWindowsPath(binding['research_terminal'])
@@ -184,7 +222,8 @@ def classify_processes(processes,binding,*,observed_unix,research_running=True,u
     allowed_protected = (0, 1) if protected is not None and binding.get('protected_may_be_stopped') is True else (int(protected is not None),)
     if len(result['research'])!=int(research_running) or len(result['protected']) not in allowed_protected:
         raise ValueError('Expected research process state and one protected terminal required')
-    if binding.get('protected_process') is not None and result['protected'] and result['protected'] != [binding['protected_process']]:
+    if (binding.get('protected_process') is not None and result['protected'] and result['protected'] != [binding['protected_process']]
+            and not restart_tolerant(binding)):
         raise ValueError('Protected peer process changed; obtain a fresh explicit review')
     return dict(observed_unix=observed_unix,**{key:(value[0] if value else None) for key,value in result.items()},
                 **({'unrelated':unrelated} if roots is not None else {}),
@@ -197,7 +236,7 @@ def revalidate_processes(binding,baseline,*,max_age=120):
         raise ValueError('Process baseline is stale or future-dated')
     current=inspect_processes(binding)
     for role in ('research','protected'):
-        if current[role]!=baseline[role]:
+        if not role_unchanged(binding,role,current[role],baseline[role]):
             raise ValueError(role+' terminal process changed; inspect before launch')
     return current
 
@@ -219,13 +258,14 @@ class RollingBaseline:
     def take_over(self, precheck):
         """A fresh baseline after controller-only work must equal the earlier precheck."""
         for role in ('research', 'protected'):
-            if self.current[role] != precheck[role]:
+            if not role_unchanged(self.binding, role, self.current[role], precheck[role]):
                 raise ValueError(role + ' terminal process changed; inspect before launch')
         return self
 
     def check(self, binding=None):
         current = self.revalidate(binding or self.binding, self.current)
-        if any(current[role] != self.original[role] for role in ('research', 'protected')):
+        if any(not role_unchanged(binding or self.binding, role, current[role], self.original[role])
+               for role in ('research', 'protected')):
             raise ValueError('Terminal process changed during start; inspect before launch')
         self.current = current
         return current
@@ -238,6 +278,6 @@ def verify_research_exited(binding, baseline, *, max_age=120):
     if not baseline.get('research') or (not baseline.get('protected') and binding.get('protected_may_be_stopped') is not True):
         raise ValueError('Both original process identities required')
     current=inspect_processes(binding,research_running=False)
-    if current['protected']!=baseline['protected']:
+    if not role_unchanged(binding,'protected',current['protected'],baseline['protected']):
         raise ValueError('Protected terminal process changed during research exit')
     return current

@@ -83,6 +83,11 @@ def _verify_package(controller, job, *, allow_peer_refresh=False, allow_binding_
         from studio_protected_peer import PEER_BINDING_KEYS
         recorded = {key: value for key, value in recorded.items() if key not in PEER_BINDING_KEYS}
         current = {key: value for key, value in current.items() if key not in PEER_BINDING_KEYS}
+    # A restarted protected peer is the same reviewed peer (studio_protected_peer):
+    # a package prepared under the exact-instance rule still verifies when its
+    # recorded policy names this peer's unchanged executable, data root and bytes.
+    from studio_protected_peer import comparable
+    recorded, current = comparable(controller, recorded, current)
     if ((getattr(controller, 'session', None) or {}).get('authority_kind') == 'native_human_control'
             and not any(key in recorded for key in CONFIG_START_BINDING_KEYS)):
         # A customer package prepared before the lane gained the report-capable

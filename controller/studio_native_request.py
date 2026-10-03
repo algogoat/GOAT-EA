@@ -52,7 +52,7 @@ def _runtime_material(state, job, *, account, observation_path,
 
 
 def validate_restart_material(state, job, *, account, monitor_path, monitor_sha256, input_schema):
-    from studio_process_check import inspect_processes
+    from studio_process_check import inspect_processes, role_unchanged
     restart=job.get('restart_intent')
     if not restart or restart['phase']!='research_exited' or job['status'] not in ('starting','reconcile_required'):
         raise ValueError('Verified research exit required')
@@ -62,8 +62,9 @@ def validate_restart_material(state, job, *, account, monitor_path, monitor_sha2
         monitor_sha256=monitor_sha256,input_schema=input_schema)
     if material['startup_receipt']['sha256']!=restart['startup_sha256']:
         raise ValueError('Startup configuration changed after close')
-    current=inspect_processes(material['plan']['research_binding'],research_running=False)
-    if current['protected']!=restart['process_baseline']['protected']:
+    binding=material['plan']['research_binding']
+    current=inspect_processes(binding,research_running=False)
+    if not role_unchanged(binding,'protected',current['protected'],restart['process_baseline']['protected']):
         raise ValueError('Protected terminal changed after close')
     return material | dict(stopped_process_observation=current)
 

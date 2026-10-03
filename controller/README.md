@@ -894,9 +894,15 @@ Preparation and apply do not close, launch, grant control over or write to the p
 The retained policy verifies its executable hash, origin/data binding and
 nonoverlapping paths. It lives outside both parked session directories and
 survives a session switch or EA version upgrade on the same installation target.
-Onboarding, switch reviews and native package process checks require the exact
-recorded peer process. A restart, binary update, changed path or unknown additional
-terminal blocks further work; obtain and inspect a fresh review before confirming it.
+When the selected installation runs an isolated EA (V1.49, INV-BATCH-01) and the
+peer's data root resolves to a different batch folder, the peer is identified by
+its executable, data root and origin binding: a restarted, closed or reopened peer
+is accepted without a new review and each new instance is appended to
+`peer-instances.jsonl` (DEMO-AGENT-TOOLS.md, "Protected peer restarts").
+Otherwise onboarding, switch reviews and native package process checks require
+the exact recorded peer process. A binary update, changed path or data binding,
+a second peer process or an unknown additional terminal always blocks further
+work; obtain and inspect a fresh review before confirming it.
 This is one protected peer, not an arbitrary process ignore list. It does not
 release legacy worker claims or startup slots, reconcile native work or substitute
 for idle/setup checks on the selected terminal.

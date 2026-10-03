@@ -1,4 +1,4 @@
-﻿"""Source contracts for journal diagnostics; these do not execute or qualify MQL5."""
+"""Source contracts for journal diagnostics; these do not execute or qualify MQL5."""
 import hashlib
 import re
 import unittest
@@ -156,7 +156,11 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
         self.assertIn('bool still_idle=(algo_off', timer)
         self.assertIn('readback && still_idle ? "READBACK_OK"', timer)
         self.assertLess(timer.index('GoatStudioReadWorkerPolicy('), timer.index('TesterDialog.OnClickRefresh(true);'))
-        self.assertIn('GOAT / Optimization Studio / ', timer)
+        # One caption names the mode first (so MT5's 63-character cut never hides it), then the
+        # account and build; "agent" only while the agent really holds control.
+        self.assertIn('TesterDialog.Caption("GOAT "+studio_mode+" | "+(string)AccountInfoInteger(ACCOUNT_LOGIN)', timer)
+        self.assertIn('string studio_mode=!GoatStudioManaged() ? "read-only" : (TesterDialog.m_studioOwner=="agent" ? "agent control"', timer)
+        self.assertLess(timer.index('studio_mode+'), timer.index('GOAT_BUILD_MARKER);'))
         self.assertIn('GOAT_BUILD_ID', timer)
         self.assertIn('FileIsExist("GOATStudio\\\\native-gate\\\\request.json")', timer)
         self.assertIn('FileIsExist("GOATStudio\\\\native-gate\\\\permit.json")', timer)
@@ -166,7 +170,7 @@ class RecoveryDiagnosticsSourceTests(unittest.TestCase):
     def test_source_and_compiled_candidate_identity(self):
         main = source('GOAT V1.49.mq5')
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', main)
-        self.assertIn('#define   GOAT_BUILD_ID "V1.49-TERMINAL-ISOLATION-32"', main)
+        self.assertIn('#define   GOAT_BUILD_ID "V1.49-EA-EXPERIENCE-33"', main)
         self.assertEqual(hashlib.sha256((ROOT/'GOAT V1.49.ex5').read_bytes()).hexdigest(),
                          '05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9')
         for name in ('GOATStudioRecovery.mqh', 'GOATStudioRecoveryFiles.mqh', 'GOATStudioUI.mqh',

@@ -81,6 +81,29 @@ def _retire_refused_journal(controller, job_id, path, clock):
     if target.exists():
         raise ValueError('Refused-start archive already exists; retained journal left in place')
     os.replace(path, target)
+def _retire_if_unactivated(controller, job_id, record, path, clock):
+    """A start refused before MT5 was touched settles itself, so it never needs a human.
+
+    Only studio_retire_unactivated's full proof (no attempt folder, controls, gate
+    file, run folder or queue; idle tester, no batch ongoing) may settle it. Any
+    refusal leaves the journal start_uncertain exactly as before.
+    """
+    if record.get('attempt_id') is None and 'launch_intent' not in controller.job(job_id):
+        return None  # refused_before_dispatch already lets the next start proceed
+    try:
+        from studio_retire_unactivated import retire
+        result = retire(controller, job_id, clock=clock.time, reason='driver_start_refused_before_activation',
+                        settle_journal=False)
+    except Exception as error:
+        record['retire_unactivated_refused'] = str(error)[:240]
+        _save(path, record, clock)
+        return None
+    record.update(stopped=True, status='cancelled', retired=result['kind'],
+                  result_path=result['result_path'], retired_wall=clock.time())
+    _save(path, record, clock)
+    return result
+
+
 DEFAULT_MIN_FREE_BYTES = 5 * 1024**3
 
 
@@ -399,6 +422,7 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
             except Exception as error:
                 record['status'] = 'start_uncertain'; record['last_error'] = str(error)
                 _save(path, record, clock)
+                _retire_if_unactivated(controller, job_id, record, path, clock)
                 return _summary(path, record)
         wall_start, monotonic_start = call_wall, call_monotonic
         rollback = clock.time() < record['last_wall']

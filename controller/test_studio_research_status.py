@@ -62,7 +62,7 @@ class MonitorTests(unittest.TestCase):
         value = self.state()
         self.assertEqual((value['state'], value['blocker']['code']), ('unlicensed', 'monitor_unlicensed'))
         self.assertEqual(value['blocker']['message'], "This terminal's GOAT sign-in was replaced by another terminal — re-pair it.")
-        self.assertIn('pairing code', value['blocker']['fix'])
+        self.assertIn('connection code', value['blocker']['fix'])
 
     def test_waiting_sign_in_build_and_network_reasons_are_plain(self):
         self.observe(3600)
@@ -143,6 +143,21 @@ class SeedAndStatusTests(unittest.TestCase):
             self.assertEqual(value['pace']['minutes_per_member'], 10.0)
             write_json(seed / 'pause.json', dict(batch_id='hunt'))
             self.assertEqual(seed_progress(root, 'hunt', now=NOW)['status'], 'pausing')
+
+    def test_catchup_progress_counts_held_up_never_qualifying(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); catchup = root / 'catchups' / 'cu1'; catchup.mkdir(parents=True)
+            members = [dict(alias='C1', status='completed', started_unix=NOW - 1200, finished_unix=NOW - 600,
+                            result=dict(summary=dict(verdict='held_up', qualifying_count=3))),
+                       dict(alias='C2', status='completed', started_unix=NOW - 600, finished_unix=NOW - 300,
+                            result=dict(summary=dict(verdict='not_comparable'))),
+                       dict(alias='C3', status='running', started_unix=NOW - 100)]
+            write_json(catchup / 'state.json', dict(status='active', members=members))
+            value = seed_progress(root, 'cu1', now=NOW, kind='catchup')
+            self.assertEqual((value['qualifying'], value['qualifying_candidates'], value['held_up']), (None, None, 1))
+            text = headline(dict(value, current_member=dict(symbol='EURUSD', timeframe='M1')))
+            self.assertIn('2 of 3 members done, 1 held up (low-sample verdicts)', text)
+            self.assertNotIn('qualifying', text)
 
     def test_status_without_controller_queue_is_idle_and_read_only(self):
         with tempfile.TemporaryDirectory() as folder:

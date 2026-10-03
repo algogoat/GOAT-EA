@@ -195,6 +195,8 @@ qualification are separate from full native EA/installed-package qualification.
   9c90b1493406e1cf849641d8eb1095ed9ea106767bb102fce520797ffdf32ffe.
 
 | CTRL-022 | Visible native Give/Take control feedback | Source implementation; qualification pending | Immediate pending button/status, Take Control Yes/No warning, 30-second delayed acknowledgement with original request retained, receipt-confirmed current owner, Give Control Back action, persistent actionable refusal; a later save/queue clears old feedback. The derived Report-only difference is ignored in refresh, enqueue and grant while all other settings still compare exactly. No fabricated grant, retry, permission or trading change. User requested September 28. |
+| EXP-149-01 | "No profitable passes" is a research outcome, not an error | Forward EX33 source, controller, JS harness and mutation checks implemented; MetaEditor compile, exact-head review and native batch qualification pending | A back report with passes but none profitable with 50+ trades writes a NoProfitablePasses item_stats row (passes, best profit/score, window) with the queue status unchanged; research-status, finish, pause and resume report "tested, no edge in <window>" apart from failures and never re-run them as failures |
+| UX-149-01 | EA connection code wording and Studio/Dashboard audit P1 fixes | Forward EX33 source and harnesses implemented; native visual qualification pending | Activation says "connection code" and links carry it in #ea-connect=; Studio/Dashboard copy, state and layout P1s from the 2026-10-02 audit without trading, risk, order or wire changes |
 
 ## CTRL-024 — Visible agent batch and OHLC standard (2026-09-28)
 

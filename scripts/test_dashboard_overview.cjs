@@ -65,10 +65,10 @@ for(const [rows,want] of [[[{cid:0,magic:0}],1],[[{cid:100,magic:10}],0],[[{cid:
  fn(ui,'CGOATDashboard::HandleObjectClick','control_name',c)('all');assert.equal(activated,want);cases++;
 }
 for(const [rows,wantAction,wantAI] of [
- [[{cid:0,magic:0,bias_label:'OFF'}],'ActivateAll','OFF'],
- [[{cid:1,magic:2,bias_label:'ON / DEMO / 50%'},{cid:3,magic:4,bias_label:'ON / DEMO / 50%'}],'Activated','ON / DEMO / 50%'],
- [[{cid:1,magic:0,bias_label:'OFF'}],'ActivateAll','OFF'],
- [[{cid:1,magic:2,bias_label:'OFF'},{cid:3,magic:4,bias_label:'ON / DEMO / 50%'}],'Activated','Mixed']]){
+ [[{cid:0,magic:0,bias_label:'OFF'}],'Activate all','OFF'],
+ [[{cid:1,magic:2,bias_label:'ON / DEMO / 50%'},{cid:3,magic:4,bias_label:'ON / DEMO / 50%'}],'All active','ON / DEMO / 50%'],
+ [[{cid:1,magic:0,bias_label:'OFF'}],'Activate all','OFF'],
+ [[{cid:1,magic:2,bias_label:'OFF'},{cid:3,magic:4,bias_label:'ON / DEMO / 50%'}],'All active','Mixed']]){
  const out={};const control=k=>({Text:v=>out[k]=v,Color:()=>{}});const rows2=rows.map(r=>({...r,strat:'Example',risk_lots_label:'500 $',open_trades:0,open_lots:0,Trades_total:0,open_pl:0,PL_daily:0,PL_weekly:0,PL_total:0}));
  const names=['edt_Symbol','edt_Strategy','btn_Action','edt_Comment','edt_News','edt_AIBias','edt_RiskLots','edt_Status','edt_HistDD','edt_Trades','edt_Positions','edt_Lots','edt_PL_Open','edt_PL_D1','edt_PL_W1','edt_PL_All'];
  const c={...base,g_sets:rows2,TimeCurrent:()=>100,DisplayStatusForRow:()=> 'Not deployed',m_portfolio_command_pending:false,m_portfolio_run_state:0,GOAT_PORTFOLIO_RUN_PAUSED:1,clrRed:1,clrWhite:2,StatusColor:()=>1,Portfolio_Target_DD:'2000',StringToDouble:Number,FormatIntegerText:String,UpdatePortfolioInfoHeader:()=>{},m_ai_launch_mode:0,GOAT_AI_LAUNCH_AS_OPTIMIZED:0,...Object.fromEntries(names.map(n=>[n,[{},control(n)]]))};

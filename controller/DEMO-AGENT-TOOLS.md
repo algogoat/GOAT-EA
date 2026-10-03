@@ -52,6 +52,21 @@ message is "This terminal's GOAT sign-in was replaced by another terminal —
 re-pair it."), `monitor_build_not_admitted`, `monitor_webrequest_permission_required`,
 `monitor_unbound`, `human_took_control` and `monitor_silent`.
 
+A member whose optimization ran (at least one pass traded) and whose back and forward
+reports are whole, but had no pass profitable with 50+ trades, is a research result for its
+tested window, not a failure. A report whose EA never traded, that cannot be read, or that is
+partial stays a real error and `--include-failed` retries it. The EA keeps its native
+queue status `Error` (no protocol change) and writes a `NoProfitablePasses` row to
+the run's `item_stats.tsv` (passes, profitable count, best profit, best score and
+the back-test window). `research-status` reports these as `members_no_edge` (with
+`no_edge` details and `no_edge_window`) apart from `members_failed`; the headline
+says `N tested with no edge in <window>`, and `last_member.status` is
+`no_profitable_passes` with a one-line `summary`. `finish` records them as
+`research_outcomes` for the scoreboard, a pause whose only errors are no-edge members
+is `finished`, and `--include-failed` never re-runs them; `--include-no-edge` (`batch-resume`,
+or `resume-batch` for a batch already recorded finished) deliberately re-runs them. Always quote the window:
+"no profitable settings in this window" never means "this strategy never works".
+
 `batch-pause` needs no terminal lock (like `stop`): it writes one durable pause
 intent (`batch-pauses/<id>.json`) and returns `state: pausing`. A live driver
 honours it on its next tick; otherwise one bounded pause supervisor starts
@@ -166,6 +181,29 @@ Owner STOP is a separate explicit path: `stop` works at any time. Keep calling
 STOP is never cleared by these tools, and `clear-stop` refuses until the seed
 run has reached a verified terminal state. Real native qualification of this
 lane is still pending; every seed result keeps `native_launch_qualified: false`.
+
+## OOS catch-up on the demo lane
+
+Bring kept exports to one evidence end before building a portfolio (rules and
+verdicts: [README.md](README.md#evidence-end-and-oos-catch-up)). The read-only
+tools need no broker; the rest use the seed lane's checks, start record
+(`demo-agent/catchup-starts/<id>.json`), slot, STOP, pause and slices unchanged.
+
+```powershell
+& $py $tool --installation $install evidence-end                       # auto = latest closed Friday
+& $py $tool --installation $install evidence-scan --source 'C:/.../Common/Files/GOAT/Re7e282f93d41' --source 'C:/.../GOAT/Rad870a22d237'
+& $py $tool --installation $install catchup-validate --plan 'C:/catchup-plan.json'
+& $py $tool --installation $install catchup-prepare --catchup-id 'catchup-20261002' --plan 'C:/catchup-plan.json'
+& $py $tool --installation $install catchup-start --catchup-id 'catchup-20261002' --max-seconds 600
+& $py $tool --installation $install catchup-resume --catchup-id 'catchup-20261002' --max-seconds 600
+& $py $tool --installation $install catchup-report --catchup-id 'catchup-20261002'
+```
+
+The plan is `{"schema_version":1,"evidence_end":"auto","sets":[<absolute .set
+paths of the behind exports>],"job_timeout_seconds":1800}`. A catch-up closes the
+selected MT5 and relaunches it once per member like a seed run; tell the owner
+first. `batch-pause --batch-id <catchup id>` pauses between members and
+`batch-resume` continues. `research-status` shows it as an OOS catch-up.
 
 This is the first Tier A slice. Terminal discovery, compile, SET editing,
 report parsing and exports will be separate tools wrapping existing MT5/EA

@@ -32,7 +32,7 @@ UNLICENSED = frozenset(('awaiting_approval', 'waiting_for_host_activation', 'hos
                         'activation_not_pending', 'ACTIVATION_RELOAD_REQUIRED', 'activation_reload_pending',
                         'activation_storage_error', 'network_error', 'service_error', 'build_not_admitted',
                         'webrequest_permission_required', 'rate_limited'))
-REPAIR_FIX = ('Re-pair it: the GOAT chart in this MT5 shows a pairing code; approve it in the GOAT portal '
+REPAIR_FIX = ('Re-pair it: the GOAT chart in this MT5 shows a connection code; approve it in the GOAT portal '
               '(your agent can read the code). Paused or running work continues by itself once the monitor reports again.')
 ACTIVATION_HELP = {
     'build_not_admitted': ('GOAT refused this EA build at sign-in, so its monitor cannot start.',
@@ -159,7 +159,7 @@ def monitor_state(install, session, local, *, now, process='unknown'):
     minutes = max(1, int(age // 60))
     return block('silent', 'monitor_silent', 'The GOAT monitor in MT5 stopped reporting ' + str(minutes) + ' minute'
                  + ('s' if minutes != 1 else '') + ' ago.',
-                 'Check the GOAT chart is still open in this MT5 with DLL imports allowed; if it shows a pairing code, approve it.')
+                 'Check the GOAT chart is still open in this MT5 with DLL imports allowed; if it shows a connection code, approve it.')
 
 
 def queue_jobs(root, session):
@@ -218,9 +218,112 @@ def timeline(native_run, aliases):
     return dict(started=started, ended=ended, outcome=outcome)
 
 
-def pace(timing, statuses, *, now, fallback_started=None):
-    """Observed minutes per member and an ETA. Observations, never a promise."""
-    completed = [i for i, s in enumerate(statuses) if s == 'native_completed']
+ITEM_STATS_HEADER = 'LocalTime\tSymbol\tStrategy\tStatus\tXmlRows\tUniqueRows\tTopScore\tFinalExports\tDetails'
+MAX_ITEM_STATS_BYTES = 16 * 1024 * 1024
+NO_PROFITABLE_PASSES = 'no_profitable_passes'
+MAX_NO_EDGE_LISTED = 200
+_DATE = re.compile(r'\d{4}\.\d{2}\.\d{2}')
+
+
+def _no_edge_outcome(details):
+    """The EA's key=value details for one NoProfitablePasses row, or None.
+
+    Mirrors the EA guard (XmlProcessor.mqh GoatXmlResearchOutcome) exactly: at
+    least one pass really traded, every row parsed, the results table closed and
+    the forward report is whole with no more rows than back passes. A row from an
+    older build without that proof, or a report whose EA never traded, cannot be
+    read or is partial, is never accepted: that member stays a real error.
+    """
+    values = dict(part.split('=', 1) for part in details.split(';') if '=' in part)
+    try:
+        outcome = dict(outcome=values['outcome'], passes=int(values['passes']), profitable=int(values['profitable']),
+                       traded=int(values['traded']), malformed=int(values['malformed']), complete=values['complete'],
+                       forward_rows=int(values['forward_rows']),
+                       best_profit=float(values['best_profit']), best_score=float(values['best_score']),
+                       min_trades=int(values['min_trades']),
+                       window=dict(start=values['window_start'], end=values['window_end'], forward_end=values['forward_end']))
+    except (KeyError, ValueError):
+        return None
+    window, passes = outcome['window'], outcome['passes']
+    if (outcome['outcome'] != NO_PROFITABLE_PASSES or passes <= 0 or not 0 <= outcome['profitable'] <= passes
+            or not 1 <= outcome['traded'] <= passes or outcome['malformed'] != 0 or outcome['complete'] != '1'
+            or not 1 <= outcome['forward_rows'] <= passes
+            or (outcome['profitable'] == 0 and outcome['best_profit'] >= 0.001)
+            or outcome['min_trades'] <= 0 or not all(_DATE.fullmatch(window[key]) for key in ('start', 'end', 'forward_end'))
+            or not window['start'] < window['end'] < window['forward_end']):
+        return None
+    return outcome
+
+
+def no_edge_summary(symbol, timeframe, outcome):
+    """One honest sentence: what was tested, in which window, and that it is not a verdict."""
+    window = outcome['window']
+    profitable = outcome['profitable']
+    near = (' (' + str(profitable) + ' profitable on fewer trades)') if profitable else ''
+    return (symbol + ' ' + timeframe + ': tested, no edge in ' + window['start'] + ' to ' + window['end'] + ' — '
+            + str(outcome['passes']) + ' settings, none profitable with ' + str(outcome['min_trades']) + '+ trades' + near
+            + ', best profit ' + format(outcome['best_profit'], ',.2f') + '. A result for this window only, not a verdict on the strategy.')
+
+
+def item_outcomes(native_run, members, timing=None):
+    """{member index: outcome} the EA recorded as tested with no profitable settings.
+
+    ``members`` are (run_alias, symbol) pairs in queue order. The EA writes one
+    ``NoProfitablePasses`` row to ``item_stats.tsv`` when a member's optimization
+    ran but no pass was profitable with enough trades; its queue status stays
+    ``Error``. A row counts only for the same alias and symbol, and only when the
+    timeline shows the member's last start and the row was written after it, so
+    an older attempt never relabels a later real failure; without timeline
+    evidence nothing is relabelled. Lenient: missing or unreadable evidence
+    returns {} and every member keeps its native status.
+    """
+    path = Path(native_run) / 'item_stats.tsv'
+    try:
+        if not path.is_file() or path.stat().st_size > MAX_ITEM_STATS_BYTES:
+            return {}
+        raw = path.read_bytes()
+        text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+    except (OSError, UnicodeError):
+        return {}
+    lines = text.splitlines()
+    if not lines or lines[0] != ITEM_STATS_HEADER:
+        return {}
+    index = {(alias, symbol): i for i, (alias, symbol) in enumerate(members)}
+    started = (timing or {}).get('started', {})
+    found = {}
+    for line in lines[1:]:
+        fields = line.split('\t')
+        if len(fields) != 9 or fields[3] != 'NoProfitablePasses':
+            continue
+        i = index.get((fields[2], fields[1]))
+        written = _local_epoch(fields[0])
+        if i is None or written is None or i not in started or written < started[i] - 1:
+            continue
+        outcome = _no_edge_outcome(fields[8])
+        if outcome is not None:
+            found[i] = dict(outcome, recorded_local=fields[0])
+    return found
+
+
+def no_edge_members(native_run, members, statuses, timing=None):
+    """item_outcomes restricted to members whose native status is ``native_error``."""
+    found = item_outcomes(native_run, members, timing)
+    return {i: outcome for i, outcome in found.items() if i < len(statuses) and statuses[i] == 'native_error'}
+
+
+def shared_window(outcomes):
+    """The one tested window every no-edge member shares, or None when they differ."""
+    windows = {(o['window']['start'], o['window']['end']) for o in outcomes}
+    return dict(start=next(iter(windows))[0], end=next(iter(windows))[1]) if len(windows) == 1 else None
+
+
+def pace(timing, statuses, *, now, fallback_started=None, tested=()):
+    """Observed minutes per member and an ETA. Observations, never a promise.
+
+    ``tested`` are member indices that ran to a research result without a
+    completed queue status (no profitable passes); they took a full cycle too.
+    """
+    completed = [i for i, s in enumerate(statuses) if s == 'native_completed' or i in tested]
     remaining = sum(s in ('native_pending', 'native_queued', 'native_ongoing') for s in statuses)
     cycle, member, basis = None, None, None
     if timing:
@@ -256,7 +359,8 @@ def batch_progress(root, install, job, *, now, journal=None):
     package = Path(root) / 'packages' / job['job_id']
     members = job['configuration'].get('batch_members') or [job['configuration']]
     result = dict(members_total=len(members), members_done=0, members_finished=0, qualifying=None,
-                  exported_sets=None, last_member=None, current_member=None, pace=None, evidence='unavailable')
+                  exported_sets=None, members_no_edge=None, members_failed=None, members_cancelled=None, no_edge_window=None,
+                  no_edge=None, last_member=None, current_member=None, pace=None, evidence='unavailable')
     manifest, _ = _bounded_json(package / 'manifest.json', 64 * 1024 * 1024)
     if not isinstance(manifest, dict) or 'launch_intent' not in job:
         result['evidence'] = 'not_started' if 'launch_intent' not in job else 'package_unreadable'
@@ -282,8 +386,19 @@ def batch_progress(root, install, job, *, now, journal=None):
             count = 0
         exported += count
         qualifying += count > 0
+    # Tested with no profitable settings in their window: results, never failures.
+    no_edge = no_edge_members(common_run, [(item['run_alias'], item['tester']['Symbol']) for item in manifest['jobs']],
+                              statuses, timing)
     result.update(members_done=native['completed_count'], members_finished=native['finished_count'],
                   qualifying=qualifying, exported_sets=exported, status_counts=native['status_counts'],
+                  members_no_edge=len(no_edge), members_failed=statuses.count('native_error') - len(no_edge),
+                  members_cancelled=statuses.count('native_cancelled'),
+                  no_edge_window=shared_window(no_edge.values()) if no_edge else None,
+                  no_edge=[dict(index=i, number=i + 1, symbol=manifest['jobs'][i]['tester']['Symbol'],
+                                timeframe=manifest['jobs'][i]['tester']['Period'], **no_edge[i],
+                                summary=no_edge_summary(manifest['jobs'][i]['tester']['Symbol'],
+                                                        manifest['jobs'][i]['tester']['Period'], no_edge[i]))
+                           for i in sorted(no_edge)[:MAX_NO_EDGE_LISTED]],
                   native_status=native['status'], evidence='native_queue')
     finished = [i for i, s in enumerate(statuses) if s in ('native_completed', 'native_error', 'native_cancelled')]
     if finished:
@@ -301,13 +416,18 @@ def batch_progress(root, install, job, *, now, journal=None):
             if timing and last in timing['started'] and last in timing['ended']:
                 minutes = round((timing['ended'][last] - timing['started'][last]) / 60, 1)
             result['last_member'] = dict(index=last, number=last + 1, symbol=tester['Symbol'], timeframe=tester['Period'],
-                                         status=statuses[last].removeprefix('native_'), exported_sets=sets,
+                                         status=(NO_PROFITABLE_PASSES if last in no_edge else statuses[last].removeprefix('native_')),
+                                         exported_sets=sets,
                                          qualifies=statuses[last] == 'native_completed' and sets > 0,
                                          minutes=minutes,
                                          finished_utc=(datetime.fromtimestamp(timing['ended'][last], timezone.utc).isoformat(timespec='seconds')
                                                        if timing and last in timing['ended'] else None))
+            if last in no_edge:
+                result['last_member'].update(outcome=no_edge[last],
+                                             summary=no_edge_summary(tester['Symbol'], tester['Period'], no_edge[last]))
     started = journal.get('started_wall') if isinstance(journal, dict) else None
-    result['pace'] = pace(timing, statuses, now=now, fallback_started=started if type(started) in (int, float) else None)
+    result['pace'] = pace(timing, statuses, now=now, fallback_started=started if type(started) in (int, float) else None,
+                          tested=frozenset(no_edge))
     current = result['pace']['current_index']
     if current is not None:
         tester = manifest['jobs'][current]['tester']
@@ -316,12 +436,15 @@ def batch_progress(root, install, job, *, now, journal=None):
     return result
 
 
-def seed_progress(root, batch_id, *, now):
-    """Seed hunt members done/total, qualifying candidates and pace, from retained state."""
-    folder = Path(root) / 'seeds' / batch_id
+def seed_progress(root, batch_id, *, now, kind='seed'):
+    """Seed hunt (or OOS catch-up) members done/total, qualifying results and pace, from retained state.
+
+    Catch-up results are never "qualifying": held_up members are counted as ``held_up``.
+    """
+    folder = Path(root) / ('catchups' if kind == 'catchup' else 'seeds') / batch_id
     state, _ = _bounded_json(folder / 'state.json', 32 * 1024 * 1024)
     if not isinstance(state, dict) or not isinstance(state.get('members'), list):
-        return dict(batch_id=batch_id, kind='seed', status='unknown', evidence='seed_state_unreadable')
+        return dict(batch_id=batch_id, kind=kind, status='unknown', evidence='seed_state_unreadable')
     members = state['members']
     done = [m for m in members if m.get('status') == 'completed']
     finished = [m for m in members if m.get('status') in ('completed', 'cancelled', 'timeout', 'failed', 'missing_output')]
@@ -337,13 +460,18 @@ def seed_progress(root, batch_id, *, now):
         eta = now + max(0.0, remaining * cycle - (min(age, cycle * .95) if age is not None else 0))
     candidates = sum((m.get('result') or {}).get('summary', {}).get('qualifying_count', 0) or 0 for m in done)
     qualifying_members = sum(1 for m in done if ((m.get('result') or {}).get('summary', {}).get('qualifying_count') or 0) > 0)
+    held_up = None
+    if kind == 'catchup':
+        # A few new weeks never qualify anything: report held_up separately, not as qualifying.
+        held_up = sum(1 for m in done if (m.get('result') or {}).get('summary', {}).get('verdict') == 'held_up')
+        candidates = qualifying_members = None
     last = max(finished, key=lambda m: m.get('finished_unix') or 0, default=None)
     paused = (folder / 'pause.json').is_file()
     status = state.get('status')
-    return dict(batch_id=batch_id, kind='seed', status=('paused' if paused and running is None and status == 'active'
+    return dict(batch_id=batch_id, kind=kind, status=('paused' if paused and running is None and status == 'active'
                                                          else 'pausing' if paused and status == 'active' else status),
                 members_total=len(members), members_done=len(done), members_finished=len(finished),
-                qualifying=qualifying_members, qualifying_candidates=candidates,
+                qualifying=qualifying_members, qualifying_candidates=candidates, held_up=held_up,
                 last_member=None if last is None else dict(alias=last.get('alias'), status=last.get('status'),
                     qualifying_candidates=(last.get('result') or {}).get('summary', {}).get('qualifying_count'),
                     best_fitness=(last.get('result') or {}).get('summary', {}).get('best_fitness')),
@@ -397,7 +525,7 @@ def headline(activity):
     if kind == 'idle':
         return 'No research is running on this terminal.'
     total, done = activity.get('members_total'), activity.get('members_done')
-    name = 'seed hunt' if kind == 'seed' else 'batch'
+    name = 'seed hunt' if kind == 'seed' else 'catch-up' if kind == 'catchup' else 'batch'
     status = activity.get('status')
     pace_value = activity.get('pace') or {}
     eta = pace_value.get('eta_wall')
@@ -407,7 +535,22 @@ def headline(activity):
         left = ', about ' + (str(minutes // 60) + ' h ' if minutes >= 60 else '') + str(minutes % 60) + ' min left'
     qualifying = activity.get('qualifying')
     counts = ('' if total is None else ' ' + str(done) + ' of ' + str(total) + ' members done') + (
-        '' if qualifying is None else ', ' + str(qualifying) + ' qualifying')
+        '' if qualifying is None else ', ' + str(qualifying) + ' qualifying') + (
+        '' if activity.get('held_up') is None else ', ' + str(activity['held_up']) + ' held up (low-sample verdicts)')
+    # No-edge members are results for their window, reported apart and never as failures.
+    no_edge, failed = activity.get('members_no_edge'), activity.get('members_failed')
+    if no_edge:
+        window = activity.get('no_edge_window')
+        counts += (', ' + str(no_edge) + ' tested with no edge in '
+                   + (window['start'] + ' to ' + window['end'] if window else 'their test window'))
+    if failed:
+        counts += ', ' + str(failed) + ' failed'
+    cancelled = activity.get('members_cancelled')
+    if cancelled and status not in ('pausing', 'paused'):   # a pause cancels the rest by design
+        counts += ', ' + str(cancelled) + ' cancelled'
+    if status == 'start_failed_unactivated':
+        return ('Start failed before MT5 was touched; nothing ran. Settle it with retire-unactivated --batch-id '
+                + str(activity.get('batch_id')) + ', then prepare its members again under a new batch ID.')
     if status == 'pausing':
         return 'Pausing this ' + name + ' at the next safe point;' + counts + '.'
     if status == 'paused':
@@ -415,7 +558,11 @@ def headline(activity):
     if status in ('running', 'starting', 'reconcile_required', 'verifying', 'active'):
         current = activity.get('current_member') or {}
         member = (' on ' + current['symbol'] + ' ' + current['timeframe']) if current.get('symbol') else ''
-        return 'Running' + member + ';' + counts + left + '.'
+        return 'Running' + (' OOS catch-up' if kind == 'catchup' else '') + member + ';' + counts + left + '.'
+    if status == 'failed' and no_edge and failed == 0:
+        # The queue calls it failed only because no-edge members keep an Error status.
+        # Cancelled members mean it stopped early: never "finished" (counts name them).
+        return name[0].upper() + name[1:] + (' stopped early;' if cancelled else ' finished;') + counts + '.'
     return name[0].upper() + name[1:] + ' ' + str(status) + ';' + counts + '.'
 
 
@@ -444,13 +591,22 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
     journal = None
     activity = dict(kind='idle', status='idle')
     if seed_id and not active and isinstance(seed_id, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,80}', seed_id):
-        activity = seed_progress(root, seed_id, now=now)
+        # Seeds and catch-ups share the slot; the slot names the manifest it belongs to.
+        catchup, _ = _bounded_json(root / 'catchups' / seed_id / 'state.json', 32 * 1024 * 1024)
+        kind = ('catchup' if isinstance(catchup, dict) and catchup.get('manifest_sha256') == seed_slot.get('manifest_sha256')
+                else 'seed')
+        activity = seed_progress(root, seed_id, now=now, kind=kind)
     elif current is not None:
         journal, _ = _bounded_json(root / 'batch-drivers' / (current['job_id'] + '.json'))
         pause = pauses.get(current['job_id'])
         progress = batch_progress(root, install, current, now=now, journal=journal)
         status = current['status']
-        if pause is not None and pause.get('state') in ('pausing', 'paused', 'pause_failed', 'resumed', 'finished'):
+        from studio_retire_unactivated import unactivated_hint
+        if unactivated_hint(root, current) and progress.get('evidence') == 'native_evidence_missing':
+            # Intent recorded, but no attempt folder, controls or native queue: MT5 was
+            # never touched. It is not running and needs retire-unactivated.
+            status = 'start_failed_unactivated'
+        elif pause is not None and pause.get('state') in ('pausing', 'paused', 'pause_failed', 'resumed', 'finished'):
             status = pause['state']
         elif status in ('reserved', 'starting', 'reconcile_required', 'verifying'):
             status = 'running' if status in ('reconcile_required', 'verifying') else status

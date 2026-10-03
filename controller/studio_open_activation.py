@@ -12,7 +12,7 @@ import shutil
 from native_control_transaction import begin,NAMES
 from studio_native_inventory import inventory
 from studio_native_request import validate_launch_material,validate_activated_job,validate_restart_controls
-from studio_process_check import revalidate_processes
+from studio_process_check import revalidate_processes, role_unchanged
 from studio_report_paths import report_paths
 from studio_resilient_read import read_observation
 from studio_terminal_isolation import binding_base, binding_relative, preflight as isolation_preflight
@@ -40,7 +40,7 @@ def _install_controls(state,job,*,restart,account,observation_path,monitor_path,
             raise ValueError('Prepared restart attempt required')
         if prior['startup_sha256']!=material['startup_receipt']['sha256'] or prior['account']!=dict(login=str(account['login']),server=server):
             raise ValueError('Restart configuration or account changed')
-        if any(prior['process_baseline'][role]!=processes[role] for role in ('research','protected')):
+        if any(not role_unchanged(binding,role,processes[role],prior['process_baseline'][role]) for role in ('research','protected')):
             raise ValueError('Terminal identity changed after preparation')
     # INV-BATCH-01: this terminal's own batch folder, proven before any control is read.
     isolation=isolation_preflight(binding,account,observation=read_observation(Path(observation_path))[0],

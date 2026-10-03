@@ -288,6 +288,8 @@ class Controller:
         from studio_research_authority import before_native_dispatch
         before_native_dispatch(self,job)
         baseline=inspect_processes(binding)
+        from studio_protected_peer import record_observed
+        record_observed(self,binding,baseline.get('protected'),source='start:'+job_id)
         package=self.root/'packages'/job_id
         digest=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()
         self.submit('queue.reserve',dict(job_id=job_id,configuration_sha256=job['configuration_sha256'],package_sha256=digest),job_id+'-reserve',expected_generation=generation)

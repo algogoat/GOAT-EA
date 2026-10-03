@@ -60,6 +60,7 @@ Result: a hybrid. The controller keeps planning, provenance, research and the fi
 - **Not weakened:**
   - Continue reads an old package across a build change only when it is **finished**. That package is never launched again. Its successor is prepared and verified under the current installation, and prepare still checks the physical EA hash. A schema change that invalidates old inputs still refuses.
   - `retire-unactivated` sends nothing to MT5 and proves no contact under the native gate.
+- **Protected peer: identity, not PID.** The rolling baseline compares the research terminal exactly at every check. The reviewed peer (for example QA next to Banker) is compared by identity: its executable, data root and origin binding, re-proved from the files on every binding read. When the lane's EA is isolated (V1.49 per-terminal/login batch folder) and the peer's data root hashes to a different folder, a peer that restarts, closes or reopens before or during a start is accepted and journaled (`peer-instances.jsonl`, old and new PID), never re-reviewed. `continue` / `batch-resume` no longer re-review a restarted peer, so the policy hash and every package binding stay the same and nothing prepared is invalidated. Unknown MT5 processes, a second peer process and a changed peer executable or data root still refuse. A running driver never inventories terminals (the EA advances members), so a peer restart cannot affect a running batch.
 
 ## One command per intent
 

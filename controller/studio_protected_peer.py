@@ -1,11 +1,25 @@
 """Reviewed protection of one existing peer; never ignore unknown terminals.
 
-The policy lives outside both switched directories. It records a particular
-running process, not permission to manage it. Replacement requires a new review.
+The policy lives outside both switched directories. It records the peer's
+executable, data root and origin binding (and the process instance seen at
+review), not permission to manage it. A different peer, binary or data root
+requires a new review.
+
+Peer restarts (studio_process_check.restart_tolerant): when this lane runs an
+isolated EA whose batch namespace cannot be the peer's, a restarted, closed or
+reopened peer whose executable, data root and origin are unchanged is the same
+reviewed peer. It is accepted without a new review and each new instance is
+recorded append-only in ``peer-instances.jsonl`` (old and new PID). The policy
+itself is never rewritten for a restart, and package bindings then carry the
+peer's identity (``protected_peer_sha256``), not a PID, so a peer restart never
+invalidates a prepared package. Without that isolation proof the historical
+exact-instance rule applies unchanged.
 """
 from contextlib import closing
+from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path, PureWindowsPath
 import re
 import sqlite3
@@ -59,7 +73,11 @@ def observe(c, peer):
     if not isinstance(rows,list): raise ValueError('Complete terminal inventory required')
     count=sum(PureWindowsPath(r.get('ExecutablePath') or '')==PureWindowsPath(c.install['terminal_executable']) for r in rows)
     if count not in (0,1): raise ValueError('Ambiguous selected terminal process')
-    result=classify_processes(rows,dict(research_terminal=c.install['terminal_executable'],protected_terminal=peer['executable']),
+    # A closed peer is observed as None, never as an error: every package binding
+    # already lets the peer be stopped. Unknown terminals and a second process of
+    # the peer still refuse in classify_processes.
+    result=classify_processes(rows,dict(research_terminal=c.install['terminal_executable'],protected_terminal=peer['executable'],
+                                        protected_may_be_stopped=True),
                              observed_unix=time.time(),research_running=bool(count))
     return result['protected']
 
@@ -80,30 +98,114 @@ def policy(c):
 
 
 PEER_BINDING_KEYS=frozenset(('protected_terminal','protected_data_roots','protected_process',
-                             'protected_policy_sha256','protected_may_be_stopped'))
+                             'protected_policy_sha256','protected_may_be_stopped','protected_peer_sha256'))
+JOURNAL='peer-instances.jsonl'
+RESTART_RULE='same_executable_data_root_origin_isolated_namespace_v1'
+
+
+def _lane(c):
+    """The binding fields restart_tolerant reads about this research lane."""
+    return dict(research_data_root=c.install['terminal_data_root'],ea_version=c.install['ea_version'])
+
+
+def tolerant(c, value):
+    from studio_process_check import restart_tolerant
+    return restart_tolerant(dict(_lane(c),protected_terminal=value['peer']['executable'],
+                                 protected_data_roots=[value['peer']['data_root']],protected_may_be_stopped=True))
 
 
 def binding_fields(c):
     value=policy(c)
     if value is None: return {}
-    return dict(protected_terminal=value['peer']['executable'],protected_data_roots=[value['peer']['data_root']],
-                protected_process=value['process'],protected_policy_sha256=sha(value),protected_may_be_stopped=True)
+    fields=dict(protected_terminal=value['peer']['executable'],protected_data_roots=[value['peer']['data_root']],
+                protected_may_be_stopped=True)
+    if tolerant(c,value):
+        # Identity only: executable, data root, executable bytes and origin binding.
+        return fields|dict(protected_peer_sha256=sha(value['peer']))
+    return fields|dict(protected_process=value['process'],protected_policy_sha256=sha(value))
+
+
+def _journal_instances(folder):
+    path=folder/JOURNAL
+    if not path.is_file(): return []
+    rows=[]
+    for line in path.read_text(encoding='utf-8').splitlines():
+        try:
+            row=json.loads(line)
+        except ValueError:
+            continue  # A torn final line from an interrupted append records nothing.
+        if isinstance(row,dict) and isinstance(row.get('process'),dict):
+            rows.append(row)
+    return rows
+
+
+def last_instance(c, value=None):
+    """The peer instance last accepted: the newest journal line, else the reviewed one."""
+    value=value or policy(c)
+    rows=[row for row in _journal_instances(directory(c)) if row.get('review_id')==value['review_id']]
+    return rows[-1]['process'] if rows else value['process']
+
+
+def accept_instance(c, value, current, *, source):
+    """Record a restarted instance of the reviewed peer, append-only. Never rewrites the policy."""
+    if current is None:
+        return dict(status='peer_closed',process=None,last_process=last_instance(c,value),
+                    plain='The protected peer MT5 is closed; that never blocks this terminal.')
+    if PureWindowsPath(current.get('executable',''))!=PureWindowsPath(value['peer']['executable']):
+        raise ValueError('Protected peer executable changed; review the peer again')
+    folder=directory(c)
+    with exclusive_gate(folder):
+        previous=last_instance(c,value)
+        if current==previous:
+            return dict(status='unchanged',process=current)
+        line=dict(schema_version=1,event='peer_restart_accepted',rule=RESTART_RULE,
+                  recorded_utc=datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                  review_id=value['review_id'],peer_sha256=sha(value['peer']),
+                  executable=value['peer']['executable'],data_root=value['peer']['data_root'],
+                  previous_pid=previous.get('pid'),pid=current['pid'],previous_process=previous,process=current,
+                  source=source)
+        with (folder/JOURNAL).open('a',encoding='utf-8',newline='\n') as stream:
+            stream.write(json.dumps(line,sort_keys=True)+'\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        return dict(status='restart_accepted',previous_process=previous,process=current,
+                    journal=str(folder/JOURNAL),rule=RESTART_RULE)
+
+
+def record_observed(c, binding, observed, *, source):
+    """Journal a restarted peer seen by a start's own process check (tolerant bindings only)."""
+    from studio_process_check import restart_tolerant
+    if observed is None or not restart_tolerant(binding):
+        return None
+    value=policy(c)
+    if value is None or not tolerant(c,value):
+        return None
+    return accept_instance(c,value,observed,source=source)
 
 
 def refresh_process(c):
-    """Re-review the already reviewed peer when only its running process instance changed.
+    """Accept the already reviewed peer after its process restarted, closed or reopened.
 
     The executable bytes, data root and origin binding must equal the policy the
-    user reviewed; only a restarted process identity is refreshed. Anything else
-    (a different peer, binary or data root) still needs an explicit human review.
-    Called by the broker-verified demo agent between batches; never grants or
-    manages the peer and never runs while a native attempt is unresolved.
+    user reviewed (policy() re-proves them); anything else (a different peer,
+    binary or data root) still needs an explicit human review. A closed peer is
+    reported, never refused. When the lanes keep separate batch state
+    (restart_tolerant) a new instance is recorded append-only and the policy and
+    every package binding stay unchanged. Otherwise the exact instance is
+    re-reviewed as before: called by the broker-verified demo agent between
+    batches; never grants or manages the peer and never runs while a native
+    attempt is unresolved.
     """
     value=policy(c)
     if value is None:
         return dict(status='no_protected_peer')
     current=observe(c,value['peer'])
-    if current is None or current==value['process']:
+    if tolerant(c,value):
+        return accept_instance(c,value,current,source='refresh_process')
+    if current is None:
+        return dict(status='peer_closed',process=None,reviewed_process=value['process'],
+                    plain='The protected peer MT5 is closed; that never blocks this terminal.')
+    if current==value['process']:
         return dict(status='unchanged',process=value['process'])
     review=prepare(c,value['peer']['executable'],value['peer']['data_root'])
     if review['peer']!=value['peer'] or review['process']!=current:
@@ -113,8 +215,58 @@ def refresh_process(c):
                 review_id=review['review_id'])
 
 
+def _reviewed_policies(c):
+    """Every policy this folder ever applied: the current one and each retained review."""
+    folder=directory(c)
+    for path in sorted(folder.glob('*.json')):
+        try:
+            value=read_json(path)
+        except (OSError,ValueError):
+            continue
+        if not isinstance(value,dict): continue
+        candidate={key:value.get(key) for key in ('schema_version','review_id','target','peer','process')}
+        if candidate['target']==target(c) and isinstance(candidate['peer'],dict):
+            yield candidate
+
+
+def _peer_identity(c, binding):
+    """(terminal, data roots, peer material hash) a binding names, or None when unprovable."""
+    terminal,roots=binding.get('protected_terminal'),binding.get('protected_data_roots')
+    if binding.get('protected_peer_sha256'):
+        return (terminal,roots,binding['protected_peer_sha256'])
+    recorded=binding.get('protected_policy_sha256')
+    if not recorded: return None
+    # A package prepared under the exact-instance rule records the whole policy hash.
+    # It names this peer only when a retained reviewed policy has that exact hash.
+    for candidate in _reviewed_policies(c):
+        if (sha(candidate)==recorded and candidate['process']==binding.get('protected_process')
+                and candidate['peer'].get('executable')==terminal and [candidate['peer'].get('data_root')]==roots):
+            return (terminal,roots,sha(candidate['peer']))
+    return None
+
+
+def comparable(c, recorded, current):
+    """A package's recorded binding and the current one, with the peer reduced to its identity.
+
+    Only when both are restart tolerant and name the same reviewed executable,
+    data root and peer bytes. Every other field still compares exactly; any other
+    pair is returned unchanged, so it compares exactly too.
+    """
+    from studio_process_check import restart_tolerant
+    if recorded==current or not (restart_tolerant(recorded) and restart_tolerant(current)):
+        return recorded,current
+    if recorded.get('protected_may_be_stopped') is not True or current.get('protected_may_be_stopped') is not True:
+        return recorded,current
+    mine,theirs=_peer_identity(c,recorded),_peer_identity(c,current)
+    if mine is None or mine!=theirs:
+        return recorded,current
+    def strip(binding):
+        return {key:value for key,value in binding.items() if key not in PEER_BINDING_KEYS}|dict(protected_peer_identity=list(mine))
+    return strip(recorded),strip(current)
+
+
 def process_binding(c):
-    return dict(research_terminal=c.install['terminal_executable'],**binding_fields(c))
+    return dict(research_terminal=c.install['terminal_executable'],**_lane(c),**binding_fields(c))
 
 
 def _idle(c):
@@ -139,6 +291,8 @@ def prepare(c, executable, data_root):
             _idle(c)
             peer=material(c,executable,data_root)
             process=observe(c,peer)
+            if process is None:
+                raise ValueError('Open the peer MT5 normally, then review it again; a closed peer cannot be reviewed')
             existing=folder/'policy.json'
             review=dict(schema_version=1,review_id=uuid.uuid4().hex,status='review',expires_at=time.time()+600,
                         target=target(c),peer=peer,process=process,

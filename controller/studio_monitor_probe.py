@@ -3,7 +3,7 @@ import ctypes
 from ctypes import wintypes as w
 from pathlib import Path
 
-from studio_process_check import inspect_processes
+from studio_process_check import inspect_processes, role_unchanged
 from studio_protected_peer import process_binding
 
 def tester_caption_state(caption):
@@ -74,7 +74,7 @@ def inspect_idle_demo(controller, *, tester='require'):
         if any(value is None for value in (terminal, account, positions, orders)):
             raise ValueError('Incomplete native account/terminal observation')
         current = inspect_processes(binding)
-        if any(current[k] != before[k] for k in ('research', 'protected')):
+        if any(not role_unchanged(binding, k, current[k], before[k]) for k in ('research', 'protected')):
             raise ValueError('Native process changed during inspection; no adoption')
         if (Path(terminal.path) != Path(controller.install['terminal_executable']).parent
                 or Path(terminal.data_path) != Path(controller.install['terminal_data_root'])

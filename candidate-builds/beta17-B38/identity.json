@@ -1,19 +1,41 @@
 {
   "schema": "goat-forward-candidate-identity-v1",
   "version": "1.49",
-  "build_id": "V1.49-EA-FOLLOWUPS-35",
-  "build_marker": "FU35",
-  "source_base": "6a57d4d96c329e73ccb5422826fb0be0d80075ca",
-  "change": "EA follow-ups on top of EX33: a controller cancel answers CANCELLED_RECONCILE only after a bounded idle confirmation (passive tester caption, 3 consecutive idle reads, at most 40 polls 250 ms apart = 10 s, Stop sent only right after a running read and at most 3 times) instead of one 100 ms read that raced MT5 tester shutdown; the EvidenceEnd export setting (AUTO = last closed Friday on the server clock, or an explicit closed server day not before the optimization window end) ends every export at that day + 1 (exclusive ToDate), refuses without fallback, and the monitor advertises goat-evidence-end-v1. Absent EvidenceEnd keeps the legacy last-Friday end. No trading, risk, sizing, order or receipt-format change.",
+  "build_id": "V1.49-BETA17-38",
+  "build_marker": "B38",
+  "source_base": "c7a3a223072847f2dbc3d99e2527322202a3e607",
+  "consolidates": [
+    "FU35",
+    "PS37",
+    "LC36"
+  ],
+  "consolidated_heads": {
+    "FU35": {
+      "pr": "algogoat/GOAT-EA#122",
+      "head": "689808c253095f81c2714c442ad37fa420355797"
+    },
+    "PS37": {
+      "pr": "algogoat/GOAT-EA#124",
+      "head": "7388c01f9c784a33da32e0fda6901f52e8e91b3d"
+    },
+    "LC36": {
+      "pr": "algogoat/GOAT-EA#125",
+      "head": "0d9ddd21dc7496b23216fea0cd44e6d6e3671ad9",
+      "source_commit": "49e7f35927f1c5c153b8935b065d7be0a1da5848",
+      "ea_part_only": true,
+      "mh34_included": false
+    }
+  },
+  "change": "One consolidated beta.17 candidate on top of EX33 (supersedes FU35, PS37 and LC36 for admission). FU35: a controller cancel answers CANCELLED_RECONCILE only after a bounded idle confirmation, and the EvidenceEnd export setting ends every export at that day + 1. FU35 fold-ins: the Stop toggle (0x31, shared with Start) is sent directly and only when a fresh passive caption read still says running, never through ClickStop/IsIdle; the Studio writer carries EvidenceEnd through save, rename, .goatbatch load and human Start, an absent setting is journaled, and each kept export's real end is checked against the staged date at finish. PS37: steady Studio panel (each control property written once per refresh), plus the forward date picker enabled exactly in Custom mode. LC36: the pending connection code (never the credential) is shared in Common Files GOAT/activation-code-<data folder>.json on demo accounts only, withdrawn when it is no longer shown, and reconciled every activation tick. No trading, risk, sizing, order, wire or input-header change.",
   "supersedes_candidate": "ea-experience-EX33",
   "sources": {
     "Dashboard.mqh": "ffd2543bf08ee473ea78ca55936bd696966548d43848f8f2255a22e7ac80ea80",
-    "GOAT V1.49.mq5": "f1d7d7657b1d6fd0684448863ba3786d2c91d5b5cac4da619c3a54221f7a2987",
+    "GOAT V1.49.mq5": "74fd0c329eb0c3be1f20eaf3aa19e08f5b5fc9d54ef9766be4a7bfe46fbbc2f8",
     "GOATAIWireV2.mqh": "34e090028dbb9f7a3560644b4753965ca1113b43b3b28a41dd1035bde886fe3e",
     "GOATBatchCancelOrigin.mqh": "03a24684cf7c0e4e6dac7ef2ccce661a228a2bae10ff2f56ad72d722fd74f0f1",
     "GOATDeploymentDiagnostics.mqh": "e6ccb9439213cc8eff31b5a0a4783bfe6c408571cf74298ef87d28c34b071c2f",
-    "GOATEADeviceActivation.mqh": "420760a8b39dea6c3e2259df0390f4ee6c1011b5b0d779431f4afca692244715",
-    "GOATEvidenceEnd.mqh": "1da8fd7875e77ab38633ed059930bd8932e49936f3afbf8ec11c9e6c2a610295",
+    "GOATEADeviceActivation.mqh": "7d802309cf86b9200a5abfb50779b980fed341f44677a0b402944e6449c4f91b",
+    "GOATEvidenceEnd.mqh": "c4765e143bf005cd326b8e388639fb90f34ac9fc99a89c77334b3b561e15ec7f",
     "GOATLicenseInitRetry.mqh": "e8ebe975238350d7838791eccb0e1cd844a13dd0f73c9d5765e13425fc192379",
     "GOATOptimizationInputs.mqh": "5896ee257a4562fb0a6a9857324047e21cec368bf65dbc64692f9bc92b4f773c",
     "GOATPortfolioChildAudit.mqh": "59cd42d73f7be56ff361bfa348ef0cfd6ebfb1a4a8482e772414f663ee5b0c87",
@@ -32,9 +54,9 @@
     "GOATStudioSettingCompare.mqh": "26d7ba7960079aaefd6778fabf6d00ed9320c498e72e6d7742d78981d72254cb",
     "GOATStudioSettingTypes.mqh": "d9c2b2c616b8ab0ebcd701f0adb543106fb393c5122ea94a2b8c9b4f8bb34221",
     "GOATStudioSettingValues.mqh": "8483511a7e9a7498d268c95923342f620a8a6de6eaffa7afcd8d228c8daadabf",
-    "GOATStudioUI.mqh": "bcecbd8d96642d66f055a8504333d285aaf6fcb9e3e6a44c87ab7d4a62cdb380",
+    "GOATStudioUI.mqh": "88313c21db89bb0293619191eb988503c3aa1b06dcf2cd26bfb822f666d8666a",
     "GOATStudioWorkers.mqh": "5ef12818f142840e9f6964caa0a231fff6d1a2742ceca1ed0c6449d5a42640e2",
-    "GOATTesterStopConfirm.mqh": "bf5f32909ff13bd860e9ac467f1a2b2eadb2666d011477cbbd08ba26ce36e590",
+    "GOATTesterStopConfirm.mqh": "796cd047c12d633bef8616ae63b356f265a87efebc50f6651d3a2a2f7afd3732",
     "GOAT_DashboardAILaunchPolicy.mqh": "835a1e98906353fed9b6f3f668b6a4e2f5c1f1381fbd2de33dc6b70579f920c8",
     "GOAT_DashboardOverview.mqh": "f7011e51e21ffe25a026d24cab548713c7bb9095d46d6e210efe62c56e3284ad",
     "GOAT_DirectionGuard.mqh": "a682957659fa16f534d2dab54cdfa5d4def759cde522f4991487cb62bf10bfea",
@@ -45,16 +67,12 @@
     "GOAT_SequencePackage.mqh": "5db878a58b7080dbdc110554bc46a64c2dad867c9f1f3d0972974b8f3ad9fc9a",
     "MTTester.mqh": "a86dbdee543c944357ca45f28c69f4f01e247138d14a879eec5ad04f74c3b179",
     "NewsBiasFilter.mqh": "34405f975b55d8dbf5fdc24005b15102f48f441c2f1119bc5f188690114ef278",
-    "Optimizer.mqh": "32c0589904947cbd70bf9e3c1d698f8287b88a4974cda1a10ad4fe960ca35999",
+    "Optimizer.mqh": "41d0a31116e536ba91950bb35d6ca8e580f900426e630cdc01c94734b474e8ad",
     "Tester.mqh": "2d109fa8be126804ed80e0b92bf5198d54acb35e5075d13b9cd443dd1d02418e",
     "XmlProcessor.mqh": "772324de0ca37a85f756ddbcbdc798e7091c77f2fbf27ad8a78ce5c213cbb30e"
   },
-  "binary": {
-    "name": "GOAT V1.49.ex5",
-    "sha256": "d86e6b6362d2cbb402d069ec4ab65909f346e69fe328fcd05fcc1c8925b008cd",
-    "bytes": 2394800
-  },
-  "compile": "compile-receipt.json",
+  "binary": null,
+  "compile": "pending",
   "native_qualified": false,
   "customer_delivery": false,
   "retained_root_binary_sha256": "05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9",

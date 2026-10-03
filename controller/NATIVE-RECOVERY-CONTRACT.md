@@ -127,6 +127,24 @@ owned active job and exact Common Files owner/pointer hashes. `finish` needs an
 observed finished attempt with idle runtime and `batch_ongoing:false`. An orphan
 has none of those identities; constructing them would fabricate ownership.
 
+### Cancel stop confirmation (FU35)
+
+A consumed V1.49 `cancel` answers `CANCELLED_RECONCILE` only when its queue rows
+were saved, its launch files removed and the tester was confirmed idle. Before
+FU35 the idle check was one 100 ms read after the Stop click (`ClickStop(1)`),
+which raced MT5's tester shutdown and answered `CANCEL_SIGNAL_SENT_RECONCILE` for
+batches that did stop. FU35 (`GOATTesterStopConfirm.mqh`) reads the passive tester
+caption up to 40 times, 250 ms apart (10 s bound, inside the 20 s monitor
+freshness window), and confirms idle only after three consecutive "Start"
+captions; a blank or unknown caption never counts. Stop is sent only right after
+a "running" read, once per run observed (at most three in total), because Start
+and Stop share one MT5 toggle. The Experts journal records
+`GOAT_CANCEL_STOP_CONFIRM ... idle_confirmed= polls= stop_clicks= elapsed_ms=`.
+The receipt format and controller semantics are unchanged: `CANCEL_SIGNAL_SENT_RECONCILE`
+still means stop was not proven, and finish still requires native idle evidence.
+The EA holds the native gate for that bound; controller transactions that meet
+the busy gate retry on their next tick, as they already do during a Start.
+
 ## Native protocol requirements
 
 The versioned native action is `recover_orphan_continuation`, advertised

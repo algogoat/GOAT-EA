@@ -15,10 +15,11 @@ from campaign_ledger import sha
 from studio_bridge import write_json
 from studio_installation import read_json
 from studio_native_gate import exclusive_gate
+from studio_optimization_inputs import explicit_optimization_inputs,verify_explicit_inputs
 from studio_settings import validate_tester
 from studio_strategy_settings import read_values,numeric
 from studio_template_tools import source_bytes,validate_raw
-from studio_seed_results import collect,read_seed_json,MAX_MANIFEST_BYTES,MAX_STATE_BYTES,MAX_RESULT_BYTES
+from studio_seed_results import collect,read_seed_json,MAX_MANIFEST_BYTES,MAX_STATE_BYTES,MAX_RESULT_BYTES,MAX_XML_BYTES
 from studio_seed_slot import guard_active_seed
 from studio_terminal_isolation import controller_preflight
 
@@ -67,7 +68,16 @@ class SeedRunner:
         if len(json.dumps(state).encode('utf-8'))>MAX_STATE_BYTES:raise ValueError('Seed state exceeds 32 MiB')
         write_json(root/'state.json',state)
 
+    def _restore_hint(self,state):
+        """After the batch ends MT5 stays closed; a plain open may load an old chart profile."""
+        if state.get('status') not in ('completed','stopped') or state.get('generation') is None:return {}
+        run=str(getattr(self.c,'session',{}).get('run_id',''))
+        profile='GOAT-Studio-'+run.removeprefix('session-') if re.fullmatch(r'session-[a-f0-9]{32}',run) else 'GOAT-Studio-<session>'
+        return dict(monitor_profile=profile,next_action='Seed batch ended and MT5 is closed. Reopen the monitor with monitor-launch --attempt-id <new id>; it opens chart profile '+
+            profile+' with the GOAT Studio monitor. A plain MT5 open can load the previous chart profile, which leaves runtime feedback stale (in MT5: File > Profiles > '+profile+').')
+
     def _public(self,root,state):
+        state=state|{key:value for key,value in self._restore_hint(state).items() if key not in state}
         if len(state['members'])<=MAX_PUBLIC_MEMBERS:return state
         counts={}
         for item in state['members']:counts[item['status']]=counts.get(item['status'],0)+1
@@ -119,9 +129,19 @@ class SeedRunner:
             identities.add(identity)
             alias='S'+nonce+'_'+str(index+1).zfill(5)
             desc=alias+'@{mode=SeedFarming,n='+str(target)+',from='+tester['FromDate']+',to='+tester['ToDate']+'}'
-            frozen=b'\xff\xfe'+''.join('EA_Desc='+desc+'\r\n' if line.startswith('EA_Desc=') else line for line in text.splitlines(keepends=True)).encode('utf-16-le')
+            tagged=''.join('EA_Desc='+desc+'\r\n' if line.startswith('EA_Desc=') else line for line in text.splitlines(keepends=True))
+            # Pin every non-axis optimizable input with an explicit ||N tuple so MT5's
+            # saved tester profile cannot re-enable a stale optimize flag (extra axis).
+            frozen=b'\xff\xfe'+explicit_optimization_inputs(tagged,self.c.schema).encode('utf-16-le')
             values=read_values(frozen)
-            validate_raw(frozen,self.c.schema,self.c.policy,require_optimization=True)
+            pinned=validate_raw(frozen,self.c.schema,self.c.policy,require_optimization=True)
+            if pinned['active_axes']!=valid['active_axes'] or any(values[name]!=original_values[name] for name in valid['active_axes']):
+                raise ValueError('Pinned seed inputs changed the frozen template axes')
+            if set(values)!=set(original_values) or any(values[name].split('||')[0]!=original_values[name].split('||')[0]
+                    for name in values if name!='EA_Desc' and self.c.schema['inputs'][name]['type']!='string') or any(
+                    values[name]!=original_values[name] for name in values if name!='EA_Desc' and self.c.schema['inputs'][name]['type']=='string'):
+                raise ValueError('Pinned seed inputs changed a template trading value')
+            verify_explicit_inputs(values,self.c.schema,valid['active_axes'])
             setpath=root/(alias+'.set')
             configpath=Path(self.c.install['terminal_data_root'])/'config/GOATStudio/Seeds'/(alias+'.ini')
             sections={'Common':{'Login':account['login'],'Server':account['server']},'Experts':{'Enabled':0,'AllowLiveTrading':0},
@@ -160,6 +180,7 @@ class SeedRunner:
         if root.exists():
             _,old,_=self._read(batch_id)
             if old['plan_sha256']!=sha(plan):raise ValueError('Seed batch ID already belongs to a different plan')
+            self._verify_prepared(batch_id,old)
             return self.status(batch_id)
         members,payloads=self._freeze(root,plan)
         manifest=dict(schema_version=1,batch_id=batch_id,installation_sha256=sha(self.c.install),schema_sha256=sha(self.c.schema),plan_sha256=sha(plan),
@@ -181,12 +202,43 @@ class SeedRunner:
         directory=Path(self.c.install['common_files_root'])/'GOAT/SeedFarmingXML'
         return list(directory.glob(member['output_base']+'_N*.xml')) if directory.exists() else []
 
+    @staticmethod
+    def _observed_xml(path):
+        """Path, hash and filename frame count of an XML the controller did not accept.
+
+        Hashed in chunks and only up to the collector's XML bound, so a refused
+        oversized file is recorded without being loaded into memory.
+        """
+        sha256=None;size=None
+        try:
+            size=Path(path).stat().st_size
+            if size<=MAX_XML_BYTES:
+                h=hashlib.sha256()
+                with Path(path).open('rb') as stream:
+                    for chunk in iter(lambda:stream.read(1024*1024),b''):h.update(chunk)
+                sha256=h.hexdigest()
+        except OSError:sha256=None
+        match=re.search(r'_N(\d{1,7})_',Path(path).name)
+        return dict(path=str(path),sha256=sha256,size_bytes=size,frames_from_filename=int(match[1]) if match else None,accepted=False)
+
     # Hooks for runners that reuse this process driver (studio_catchup). Seeds keep the defaults.
     def _collect(self,path,spec,manifest):
         return collect(path,spec,self.c.schema,manifest['plan']['cutoff'])
 
     def _before_start(self,spec):
         """Stage per-member inputs before the start receipt; must raise before any process effect."""
+
+    def _verify_prepared(self,batch_id,manifest):
+        """Refuse a seed package frozen before explicit ||N flags (MT5 could add axes).
+
+        Runs before every process effect: prepare of an existing ID, activation,
+        and each member launch, so start and resume cannot drive an old package.
+        """
+        for member in manifest['members']:
+            try:verify_explicit_inputs(member['values'],self.c.schema,member['axes'])
+            except ValueError as exc:
+                raise ValueError('Seed batch '+batch_id+' was prepared before explicit optimization flags ('+str(exc)+
+                    '); prepare a new batch ID') from None
 
     def _observe(self,root,manifest,state):
         current=self.process.inspect()
@@ -212,7 +264,10 @@ class SeedRunner:
                     result=self._collect(paths[0],spec,manifest)
                     write_json(root/(spec['alias']+'.result.json'),result)
                     item['result']=dict(path=str(root/(spec['alias']+'.result.json')),sha256=digest(root/(spec['alias']+'.result.json')),summary=result['summary'],xml_path=result['path'],xml_sha256=result['sha256'])
-                except (ValueError,OSError) as exc:item['status']='failed';item['error']=str(exc)
+                except (ValueError,OSError) as exc:
+                    item['status']='failed';item['error']=str(exc)
+                    # Keep the refused XML visible (never as accepted evidence) for diagnosis.
+                    item['observed_xml']=self._observed_xml(paths[0])
             if item['status'] in ('running','closing','cancel_requested','timeout_requested'):
                 item['status']='cancelled' if item['status']=='cancel_requested' else 'timeout' if item['status']=='timeout_requested' else 'completed' if result else 'missing_output'
             item['finished_unix']=self.clock()
@@ -289,6 +344,7 @@ class SeedRunner:
                 if state['status'] in ('completed','stopped','reconcile_required'):return self._public(root,state)
                 if state['status']=='prepared':
                     if not initial:raise ValueError('Use seed-start for a prepared batch')
+                    self._verify_prepared(batch_id,manifest)
                     self._activate(batch_id,root,manifest,state)
                 self._owner(state['generation']);self._slot(batch_id,state)
                 current=self._observe(root,manifest,state)
@@ -311,6 +367,7 @@ class SeedRunner:
                         if item['attempts']!=0:raise ValueError('Seed retry forbidden')
                         if self._outputs(spec):raise ValueError('Output already exists for unstarted seed member')
                         self._owner(state['generation'])
+                        self._verify_prepared(batch_id,manifest)
                         self._before_start(spec)
                         item.update(status='starting',attempts=1,started_unix=self.clock());self._save(root,state)
                         try:
@@ -352,9 +409,15 @@ class SeedRunner:
                 saved=item['result']
                 if digest(saved['path'])!=saved['sha256'] or digest(saved['xml_path'])!=saved['xml_sha256']:raise ValueError('Retained seed result changed')
                 result=read_seed_json(saved['path'],MAX_RESULT_BYTES)
+            observed=item.get('observed_xml')
+            if result is None and observed is None and item['status'] in TERMINAL:
+                # Older state (or a member that ended without collection): show any XML on disk.
+                paths=self._outputs(spec)
+                if len(paths)==1:observed=self._observed_xml(paths[0])
             rows.append(dict(member_id=spec['member_id'],alias=spec['alias'],symbol=spec['tester']['Symbol'],tester=spec['tester'],source_path=spec['source_path'],source_sha256=spec['source_sha256'],frozen_set_sha256=spec['set_sha256'],config_sha256=spec['config_sha256'],status=item['status'],requested_frames=spec['frame_target'],actual_frames=result['summary']['actual_frames'] if result else None,summary=result['summary'] if result else None,
                 result_path=item['result']['path'] if result else None,result_sha256=item['result']['sha256'] if result else None,
-                xml_path=item['result']['xml_path'] if result else None,xml_sha256=item['result']['xml_sha256'] if result else None))
+                xml_path=item['result']['xml_path'] if result else None,xml_sha256=item['result']['xml_sha256'] if result else None,
+                error=item.get('error'),observed_xml=observed))
         value=dict(schema_version=1,batch_id=batch_id,status=state['status'],members=rows,cutoff=manifest['plan']['cutoff'],
             missing_output_is_zero=False,scope='Seed search only; freeze exact candidates for independent validation before portfolios',native_launch_qualified=False)
         write_json(root/'report.json',value)

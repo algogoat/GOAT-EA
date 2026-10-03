@@ -1,11 +1,12 @@
-"""Keep the forward B38 candidate, and the retained EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
+"""Keep the forward B39 candidate, and the retained B38, EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
 import hashlib
 import json
 from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-CANDIDATE = ROOT / 'candidate-builds/beta17-B38'
+CANDIDATE = ROOT / 'candidate-builds/beta17-B39'
+RETAINED_B38 = ROOT / 'candidate-builds/beta17-B38'
 RETAINED_EX33 = ROOT / 'candidate-builds/ea-experience-EX33'
 RETAINED_SM32 = ROOT / 'candidate-builds/terminal-isolation-SM32'
 RETAINED_SM31 = ROOT / 'candidate-builds/ndx-symbol-map-SM31'
@@ -20,17 +21,24 @@ class StartProtocolCandidateTests(unittest.TestCase):
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', text)
         self.assertIn('#define   GOAT_BUILD_ID "' + identity['build_id'] + '"', text)
         self.assertIn('#define   GOAT_BUILD_MARKER "' + identity['build_marker'] + '"', text)
-        self.assertEqual((identity['build_id'], identity['build_marker']), ('V1.49-BETA17-38', 'B38'))
-        self.assertEqual(identity['supersedes_candidate'], 'ea-experience-EX33')
-        # B38 is EX33 plus FU35 (with its two fold-ins), PS37 and LC36's activation-code file:
-        # SM32's isolation and EX33's outcome stay in the source.
+        self.assertEqual((identity['build_id'], identity['build_marker']), ('V1.49-BETA17-39', 'B39'))
+        self.assertEqual(identity['supersedes_candidate'], 'beta17-B38')
+        # B39 is B38 plus the broker facts for zero-click demo pairing (goatai#1885). B38 is EX33
+        # plus FU35 (with its two fold-ins), PS37 and LC36's activation-code file: SM32's
+        # isolation and EX33's outcome stay in the source.
         self.assertIn('#define GOAT_TERMINAL_ISOLATION_V149 1', text)
         self.assertIn('#define GOAT_RESEARCH_OUTCOME_V149 1', text)
         for flag in ('GOAT_STOP_CONFIRM_V149', 'GOAT_EVIDENCE_END_V149'):
             self.assertIn('#define ' + flag + '\n', text)
         for header in ('GOATEvidenceEnd.mqh', 'GOATTesterStopConfirm.mqh', 'GOATEADeviceActivation.mqh'):
             self.assertIn(header, identity['sources'])
-        self.assertEqual(sorted(identity['consolidates']), ['FU35', 'LC36', 'PS37'])
+        self.assertEqual(sorted(identity['consolidates']), ['BF39'])
+        self.assertIn('GOATBrokerFactsJson("ea-device-start")', (ROOT / 'GOATEADeviceActivation.mqh').read_text(encoding='utf-8-sig'))
+        b38 = json.loads((RETAINED_B38 / 'identity.json').read_text(encoding='utf-8'))
+        self.assertEqual(sorted(b38['consolidates']), ['FU35', 'LC36', 'PS37'])
+        # Only the entrypoint (build ID and license-check payload) and the activation header differ from B38.
+        self.assertEqual(sorted(name for name in identity['sources'] if identity['sources'][name] != b38['sources'].get(name)),
+                         ['GOAT V1.49.mq5', 'GOATEADeviceActivation.mqh'])
         for relative, expected in identity['sources'].items():
             self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), expected, relative)
         self.assertFalse(identity['native_qualified'])
@@ -38,7 +46,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
         policy = json.loads((ROOT / 'controller/contracts/v149/dependencies.json').read_text(encoding='utf-8-sig'))
         self.assertEqual(policy['main_sha256'], identity['sources']['GOAT V1.49.mq5'])
         self.assertEqual(policy['header_sha256'], identity['sources']['GOAT_Inputs_Definitions.mqh'])
-        # The pinned input header is SM32's, unchanged by EX33 and B38, so SM32 batch packages stay valid.
+        # The pinned input header is SM32's, unchanged by EX33, B38 and B39, so SM32 batch packages stay valid.
         sm32 = json.loads((RETAINED_SM32 / 'identity.json').read_text(encoding='utf-8'))
         self.assertEqual(identity['sources']['GOAT_Inputs_Definitions.mqh'], sm32['sources']['GOAT_Inputs_Definitions.mqh'])
         self.assertEqual(hashlib.sha256((ROOT / 'GOAT V1.49.ex5').read_bytes()).hexdigest(), RETAINED_ROOT_BINARY)
@@ -75,7 +83,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
 
     def test_retained_candidates_keep_their_own_exact_binaries(self):
         forward = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
-        for folder, marker, supersedes in ((RETAINED_EX33, 'EX33', 'terminal-isolation-SM32'),
+        for folder, marker, supersedes in ((RETAINED_B38, 'B38', 'ea-experience-EX33'), (RETAINED_EX33, 'EX33', 'terminal-isolation-SM32'),
                                            (RETAINED_SM32, 'SM32', 'ndx-symbol-map-SM31'),
                                            (RETAINED_SM31, 'SM31', 'start-protocol-SP30'), (RETAINED, 'SP30', None)):
             identity = json.loads((folder / 'identity.json').read_text(encoding='utf-8'))

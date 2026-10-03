@@ -14,7 +14,7 @@
 #define GOAT_API_BEARER_LEGACY_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #define GOAT_API_BEARER_FILE GOATApiBearerFile()
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-BETA17-38"
+#define   GOAT_BUILD_ID "V1.49-BETA17-39"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 // FU35: bounded idle confirmation before CANCELLED_RECONCILE, and the
@@ -26,7 +26,7 @@
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
 long g_goat_fitness_nonce=0;
-#define   GOAT_BUILD_MARKER "B38"
+#define   GOAT_BUILD_MARKER "B39"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -2290,7 +2290,9 @@ int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
    string URL = URL_API+"/api/ea/check";
    //if(Key=="GOAT") URL += "/api/metatrader/check-id/goat";
    //else            URL += "/api/metatrader/check-id";
-   string json_data = "{\"id\":\""+(string)AccNum+"\"}";             // Prepare JSON payload
+   // brokerFacts: this terminal's trade mode and server, which GOAT's server compares with an
+   // agent-approved demo pairing (GOATEADeviceActivation.mqh). Payload only.
+   string json_data = "{\"id\":\""+(string)AccNum+"\",\"brokerFacts\":"+GOATBrokerFactsJson("")+"}"; // Prepare JSON payload
  //if(AccNum<999999) json_data = "{\"id\":\"000"+(string)AccNum+"\"}";
  //int json_len = StringLen(json_data);                              // Prepare the post_data array
    char post_data[],result[];

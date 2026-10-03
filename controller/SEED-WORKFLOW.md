@@ -180,7 +180,21 @@ slot, alter receipts, kill an arbitrary process, or replay the configuration.
 Inspect the exact PID/path/creation time and the selected terminal with the user;
 retain logs for support. This beta intentionally has no automatic repair for an
 unattributed launch, invalid frozen evidence or revoked grant. Human takeover
-prevents further agent close/start actions. After a normal stopped/completed
+prevents further agent close/start actions.
+
+One case is repaired from evidence: a member whose start was issued but whose
+process identity was not confirmed (for example Windows briefly listed a
+terminal64 process with no executable path while another MT5 started or exited).
+MT5 still runs the frozen INI and shuts down. Once the selected terminal is
+closed and exactly one output named for that member exists, written after its
+start, `seed-status`/`seed-resume` collect it with the usual identity and
+content checks and record `reconciled` (`prior_error`) on the member; it is never
+re-run, and remaining pending members then continue. With no output, or while a
+batch-level doubt (an unowned process between members) is recorded, the member
+stays `reconcile_required`. The process inventory itself re-reads a row with a
+missing path for up to 10 seconds before it refuses.
+
+After a normal stopped/completed
 batch has been observed with no selected terminal process, its slot is released.
 MT5 stays closed after the last member. The reply then carries `monitor_profile`
 and a `next_action`: reopen the monitor with `monitor-launch --attempt-id <new id>`,
@@ -188,7 +202,9 @@ which opens the `GOAT-Studio-...` chart profile with the monitor attached. A pla
 MT5 open can load an older chart profile (the seed run's `/config` session does not
 restore it), which leaves runtime feedback stale. If the user already opened MT5
 that way, `onboarding-status` names the saved profile and the one to pick in
-File > Profiles.
+File > Profiles. On the owner demo lane (`goat.exe demo`) the seed run reopens
+MT5 itself on that profile after the last member and reads the build back
+(`monitor_reopen`); `demo launch-terminal` with no arguments does the same by hand.
 
 ## Read results and update the living matrix
 

@@ -11,9 +11,9 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 ```powershell
 & $goat demo --installation $receipt status          # process, broker, EA hash, owner feedback age, driver journals
 & $goat demo --installation $receipt disk-status     # free bytes against the 5 GiB reserve
-& $goat demo --installation $receipt preflight       # read-only; reports ready_for_install and ready_for_batch
+& $goat demo --installation $receipt preflight       # read-only; reports ready_for_install, ready_for_batch and readback_refresh_on_start
 & $goat demo --installation $receipt install-build --candidate '<reviewed .ex5>' --sha256 '<64 hex>' --monitor-config '<existing monitor-only .ini>'
-& $goat demo --installation $receipt launch-terminal --monitor-config '<existing monitor-only .ini>'
+& $goat demo --installation $receipt launch-terminal  # optional: --monitor-config '<monitor-only .ini>'; default: the saved GOAT Studio profile
 & $goat demo --installation $receipt prepare-batch --batch-id '<new id>' --plan '<plan.json>'
 & $goat demo --installation $receipt run-batch --batch-id '<id>' --max-seconds 172800
 & $goat demo --installation $receipt resume-batch --batch-id '<id>'
@@ -32,9 +32,11 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 - `compact-evidence` and `compact-receipts` are local store maintenance with no native effect. Each previews by default and, with `--apply`, refuses while any batch is starting or running (checked before any archive and again inside each transaction). Archives are temp-written, fsynced, sha256-verified and atomically renamed, and are never deleted. Run `compact-evidence --apply` first, then `compact-receipts --apply`. Neither shrinks `studio.sqlite` on disk: that needs a separate reviewed `VACUUM`. Both change the store's content hash, so prepare a handover or owner-maintenance record after compacting, not before.
 
 - `install-build` verifies the candidate hash and the inert monitor INI (only Charts/Experts/StartUp monitor keys; account, tester and script directives refuse before MT5 closes), archives the old EX5 and identity files, closes only the selected idle demo terminal, copies the EX5, relaunches its monitor and reads back the physical hash, demo account, EA feedback and Algo-off state within 120 seconds. Repeating it with the same candidate and hash returns `already_installed` or completes an interrupted swap; an uncertain relaunch never dispatches a batch.
-- `launch-terminal` reopens a stopped registered demo terminal with its exact monitor INI and requires fresh broker, Algo-off, idle-tester and EA feedback afterwards.
+- `launch-terminal` reopens a stopped registered demo terminal and requires fresh broker, Algo-off, idle-tester and EA feedback afterwards. Without `--monitor-config` it opens the saved GOAT Studio profile (`monitor-profile.json`) through the same monitor-only INI `monitor-launch` writes (kept content-addressed in `demo-agent/monitor-restarts/monitor-<sha>.ini`). Given the retained `dll-granted-<sha>.ini` from an install, it launches that file's monitor-only original: the DLL grant is never re-asserted, and the readback refuses if MT5 no longer allows DLL imports. On a running terminal it only re-reads the build (the manual readback refresh).
+- After GOAT's own MT5 relaunch (a batch's /config start, the EA's member-boundary restart, a seed or catch-up member, or `launch-terminal`) `verified-build.json` still names the previous process. The next `prepare-batch`/`start`/`continue` re-reads the build on the new process by itself when the proof is for the same EA bytes, the new process runs the same terminal executable (the broker proves the data root and paired demo), it started later, and its command line has a `/config:` INI inside the controller state or Common Files folders. A person's reopen (no such `/config`) is never refreshed silently: run `launch-terminal`. `preflight` reports `readback_refresh_on_start`.
+- After the last seed or catch-up member MT5 stays closed; `seed-start`/`seed-resume` (and the catch-up commands) then reopen it on the saved GOAT Studio profile and read the build back (`monitor_reopen`), unless owner STOP, a pause or a person stopped the run. If that reopen cannot be confirmed the batch result is unchanged and `next_action` says to run `launch-terminal`.
 - `run-batch` (`--max-seconds` required, 1..172800) starts a detached Windows worker and returns when its journal exists; that is not proof that native work runs. Repeating it returns the original worker and never resets the deadline. `resume-batch` attaches a new worker to the retained attempt and original deadline and never starts a pending job.
-- `stop` writes the owner STOP marker and waits for the exact cancellation readback; it returns `cancelled`, another verified terminal result or `stop_unconfirmed`. `clear-stop` removes only a STOP written by this tool, after a verified idle demo and a terminal batch state.
+- `stop` writes the owner STOP marker and waits for the exact cancellation readback; it returns `cancelled`, another verified terminal result or `stop_unconfirmed`. The live driver watches for STOP every 0.5 s between its passes and, once a cancel of its attempt is out, re-reads every second, so a running batch settles in seconds (the EA answers a cancel in about 1.5 s); the readback itself is unchanged. `clear-stop` removes only a STOP written by this tool, after a verified idle demo and a terminal batch state.
 - Treat `start_uncertain` or `stop_unconfirmed` as "inspect the native state", never as completion. A `stop_unconfirmed` batch is settled with `batch-pause`, which adopts its outstanding stop.
 
 ## Research operations: status, pause and resume
@@ -269,6 +271,9 @@ On a `demo_direct` installation the raw `goat.exe studio seed-*` mutations
 refuse with `Demo mutation requires the broker-verified agent tool`. Use these
 tools instead. They drive the same `SeedRunner` and the same frozen plan format
 as [SEED-WORKFLOW.md](SEED-WORKFLOW.md); nothing about seed evidence changes.
+Read-only studio commands still run there with the raw CLI: `validate-set`,
+`benchmark-report`, `research-status`, `onboarding-status`, `state`, `discover`
+and the other reads.
 
 ```powershell
 & $py $tool --installation $install seed-validate --plan 'C:/seed-plan.json'

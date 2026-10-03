@@ -242,15 +242,18 @@ class DemoAgent:
         physical = digest(self.binary)
         verified_path = self.state_root / 'verified-build.json'
         verified = read_json(verified_path) if verified_path.is_file() else {}
-        batch_ready = (self.session.get('authority_kind') == 'demo_direct'
-                       and physical == self.install['ea_sha256']
-                       and self.session.get('installation_sha256') == sha(self.install)
-                       and verified.get('ea_sha256') == physical
-                       and verified.get('process') == broker['process'])
+        lane_ready = (self.session.get('authority_kind') == 'demo_direct'
+                      and physical == self.install['ea_sha256']
+                      and self.session.get('installation_sha256') == sha(self.install))
+        current = verified.get('ea_sha256') == physical and verified.get('process') == broker['process']
+        # After GOAT's own relaunch the next prepare/start re-reads the build on the new
+        # process by itself (_relaunch_readback); preflight only reports it, read-only.
+        refresh = lane_ready and not current and self._relaunch_qualifies(verified, broker['process'], physical)
         return dict(broker=broker, owner=owner['owner'], free_bytes=space,
                     binary_sha256=physical,
                     ready_for_install=physical == self.install['ea_sha256'],
-                    ready_for_batch=batch_ready)
+                    ready_for_batch=lane_ready and (current or refresh),
+                    readback_refresh_on_start=refresh)
 
     def disk_status(self):
         return {role:dict(path=str(path), free_bytes=shutil.disk_usage(path).free,
@@ -562,8 +565,65 @@ class DemoAgent:
             return 'human_take_control'
         return None
 
-    def _validate_monitor_config(self, monitor_config):
-        monitor_config = Path(monitor_config).resolve()
+    def _profile_monitor_config(self):
+        """The saved GOAT Studio monitor profile as a monitor-only INI, GOAT-owned and content-addressed.
+
+        Byte for byte what monitor-launch writes for the same profile: [Charts] ProfileLast,
+        Algo Trading off, the registered EA with the passive monitor preset. No DLL grant
+        and no [Tester] section; MT5 keeps its own saved DLL setting, which the readback checks.
+        """
+        from studio_strategy_settings import read_values
+        profile = read_json(self.root / 'monitor-profile.json')
+        name = profile.get('profile_name', '') if isinstance(profile, dict) else ''
+        if not isinstance(name, str) or not re.fullmatch(r'GOAT-Studio-[A-Za-z0-9_-]{1,100}', name):
+            raise ValueError('Saved GOAT Studio monitor profile required (monitor-profile.json)')
+        preset = Path(self.install['terminal_data_root']) / 'MQL5/Presets/GOAT Studio Agent.set'
+        if read_values(preset.read_bytes()) != dict(Mode_Operation='11', Studio_ReadOnlyMonitor='true',
+                                                   Studio_MonitorRunPath='', EA_Desc='Studio Monitor'):
+            raise ValueError('Exact passive monitor preset required')
+        raw = ('[Charts]\r\nProfileLast=' + name + '\r\n[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n'
+               '[StartUp]\r\nExpert=' + self.install['ea_relative_path'] + '\r\nExpertParameters=' + preset.name
+               + '\r\nPeriod=M1\r\n').encode('utf-16')
+        return self._retained_config('monitor-', raw)
+
+    def _retained_config(self, prefix, raw):
+        folder = self.state_root / 'monitor-restarts'
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / (prefix + hashlib.sha256(raw).hexdigest() + '.ini')
+        if target.exists():
+            if target.read_bytes() != raw:
+                raise ValueError('Existing verified monitor configuration changed')
+        else:
+            with target.open('xb') as output:
+                output.write(raw)
+                output.flush(); os.fsync(output.fileno())
+        return target
+
+    def _base_of_dll_granted(self, monitor_config):
+        """A GOAT-retained DLL restart INI, read back as the monitor-only INI it was derived from.
+
+        install-build derives monitor-restarts/dll-granted-<sha>.ini by inserting exactly one
+        AllowDllImport=1 line. A later reopen never re-asserts that grant: it removes that one
+        line again (content hash and shape checked) and launches the original monitor INI.
+        """
+        folder = (self.state_root / 'monitor-restarts').resolve()
+        if monitor_config.parent != folder or not re.fullmatch(r'dll-granted-[0-9a-f]{64}\.ini', monitor_config.name):
+            return monitor_config
+        raw = monitor_config.read_bytes()
+        if 'dll-granted-' + hashlib.sha256(raw).hexdigest() + '.ini' != monitor_config.name:
+            raise ValueError('Retained DLL restart configuration changed')
+        encoding = 'utf-16' if raw.startswith(b'\xff\xfe') else 'utf-8-sig'
+        text = raw.decode(encoding)
+        newline = '\r\n' if '\r\n' in text else '\n'
+        grant = 'AllowLiveTrading=0' + newline + 'AllowDllImport=1' + newline
+        if text.count(grant) != 1 or len(re.findall(r'(?im)^\s*AllowDllImport\s*=', text)) != 1:
+            raise ValueError('Exact retained DLL restart configuration required')
+        return self._retained_config('monitor-', text.replace(grant, 'AllowLiveTrading=0' + newline, 1).encode(encoding))
+
+    def _validate_monitor_config(self, monitor_config=None):
+        if monitor_config is None:
+            monitor_config = self._profile_monitor_config()
+        monitor_config = self._base_of_dll_granted(Path(monitor_config).resolve()).resolve()
         sections = ini_sections(monitor_config.read_bytes())
         profile = read_json(self.root / 'monitor-profile.json')
         if (set(sections) != {'Charts', 'Experts', 'StartUp'}
@@ -709,7 +769,9 @@ class DemoAgent:
                                       expected_process=started, seconds=COLD_START_READBACK_SECONDS,
                                       pairing_ok=pairing_ok)
 
-    def launch_terminal(self, monitor_config):
+    def launch_terminal(self, monitor_config=None):
+        """Reopen a stopped terminal on its monitor (default: the saved GOAT Studio profile),
+        or re-read the build on a running one; either way the full owner readback runs."""
         monitor_config = self._validate_monitor_config(monitor_config)
         with self._exclusive():
             physical = digest(self.binary)
@@ -865,6 +927,64 @@ class DemoAgent:
         self._append('install_build', 'local_identity_verified', ea_sha256=expected_sha256,
                      installation_sha256=sha(checked), session_sha256=sha(session))
 
+    def _goat_relaunched(self, process):
+        """True when GOAT itself started this MT5 process: a /config file in a GOAT-owned folder.
+
+        Every GOAT relaunch passes /config: the batch config start (controller state
+        attempts/<id>/startup.ini), the EA's own member-boundary restart (Common Files),
+        a seed or catch-up member (<data root>/config/GOATStudio) and a monitor reopen
+        (controller state monitor-restarts or monitor-launches). A person's shortcut or a manual
+        reopen has no such /config, so it never qualifies. Read-only; any doubt is False.
+        """
+        reader = getattr(self.process, 'command_line', None)
+        if reader is None:
+            return False
+        try:
+            line = reader(process)
+        except (ValueError, OSError, subprocess.SubprocessError):
+            return False
+        match = re.search(r'(?i)(?:^|\s)/config:(?:"([^"]+)"|(\S+))', line or '')
+        if match is None:
+            return False
+        try:
+            config = Path(match.group(1) or match.group(2)).resolve()
+            roots = [Path(self.install['controller_state_root']).resolve(),
+                     Path(self.install['common_files_root']).resolve(),
+                     (Path(self.install['terminal_data_root']) / 'config' / 'GOATStudio').resolve()]
+        except (OSError, ValueError, KeyError):
+            return False
+        return config.suffix.lower() == '.ini' and any(config.is_relative_to(root) for root in roots)
+
+    def _relaunch_readback(self, verified, broker, physical):
+        """Re-prove the build after GOAT's own MT5 relaunch instead of stranding the next batch.
+
+        Only when the last verified proof is for these exact EA bytes, the new process
+        runs the same terminal executable (the broker proves the same data root and the
+        paired demo), it started after the verified one, and GOAT launched it. The full
+        owner readback still runs on the new process; nothing is relaxed.
+        """
+        if not self._relaunch_qualifies(verified, broker.get('process'), physical):
+            return False
+        current = broker['process']
+        self._append('readback_refresh', 'goat_relaunch', ea_sha256=physical,
+                     prior_process=verified['process'], process=current)
+        self._readback_current(physical, expected_process=current)
+        return True
+
+    def _relaunch_qualifies(self, verified, current, physical):
+        prior = verified.get('process')
+        if (verified.get('ea_sha256') != physical or physical != self.install['ea_sha256']
+                or not isinstance(prior, dict) or not isinstance(current, dict)
+                or not prior.get('executable') or not current.get('executable')
+                or PureWindowsPath(prior['executable']) != PureWindowsPath(current['executable'])
+                or PureWindowsPath(current['executable']) != PureWindowsPath(self.install['terminal_executable'])):
+            return False
+        try:
+            started = [datetime.fromisoformat(item['created_utc'].replace('Z', '+00:00')) for item in (prior, current)]
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return False
+        return started[1] > started[0] and self._goat_relaunched(current)
+
     @contextmanager
     def _studio(self, operation_name, *, idle, owner_required=True, job_id=None, recovery=False):
         # The local adapter is the only entry to the demo policy. The broker
@@ -888,7 +1008,8 @@ class DemoAgent:
             verified = read_json(verified_path) if verified_path.is_file() else {}
             if (verified.get('ea_sha256') != physical
                     or verified.get('process') != broker['process']):
-                raise ValueError('Selected build lacks native readback for this terminal process')
+                if not self._relaunch_readback(verified, broker, physical):
+                    raise ValueError('Selected build lacks native readback for this terminal process')
         from goat_studio import Controller
         from studio_research_authority import demo_agent_scope, operation
         with operation(operation_name), demo_agent_scope(
@@ -1563,7 +1684,41 @@ class DemoAgent:
                     output.write('\n'); output.flush(); os.fsync(output.fileno())
                 self._append(kind + '_start', 'start_recorded', batch_id=batch_id,
                              manifest_sha256=record['manifest_sha256'], broker=broker)
-            return self._seed_drive(runner, batch_id, max_seconds, initial=True, kind=kind)
+            return self._reopen_after_lane(kind, batch_id,
+                                           self._seed_drive(runner, batch_id, max_seconds, initial=True, kind=kind))
+
+    def _reopen_after_lane(self, kind, batch_id, result):
+        """MT5 stays closed after the last seed or catch-up member: reopen it on the saved GOAT Studio profile.
+
+        Only for a batch that ended by itself (completed, or stopped by a member outcome, not by
+        owner STOP, a pause or a human), with the selected MT5 closed and the terminal slot released.
+        The launch is the monitor-only INI (Algo off, no tester) and the full owner readback runs.
+        A failure never changes the batch result; it is reported with the one-step fix.
+        """
+        if (not isinstance(result, dict) or result.get('status') not in ('completed', 'stopped')
+                or result.get('stopped_by') or result.get('paused') or result.get('generation') is None):
+            return result
+        try:
+            if self.process.inspect() is not None:
+                return result
+            slot = self.root / 'seed-active.json'
+            if slot.is_file() and read_json(slot).get('status') == 'active':
+                return result
+            config = self._validate_monitor_config()
+            physical = digest(self.binary)
+            if physical != self.install['ea_sha256']:
+                raise ValueError('Installed EA differs from registered receipt; retry install-build')
+            self._append(kind + '_reopen', 'intent', batch_id=batch_id, monitor_config=str(config))
+            reopened = self._launch_terminal(config, physical)
+        except (ValueError, OSError, KeyError, subprocess.SubprocessError) as exc:
+            self._append(kind + '_reopen', 'unconfirmed', batch_id=batch_id, error=str(exc))
+            return dict(result, monitor_reopen=dict(status='unconfirmed', error=str(exc)),
+                        next_action='MT5 did not reopen by itself. Run demo launch-terminal: it reopens MT5 on the '
+                                    'saved GOAT Studio profile and re-reads the build.')
+        self._append(kind + '_reopen', 'verified', batch_id=batch_id, process=reopened.get('terminal'))
+        return dict(result, monitor_reopen=dict(status='verified', process=reopened.get('terminal')),
+                    next_action='MT5 was reopened on the GOAT Studio profile and the build was re-read; '
+                                'the next batch can start.')
 
     def seed_start(self, batch_id, max_seconds):
         return self._lane_start('seed', batch_id, max_seconds)
@@ -1582,7 +1737,10 @@ class DemoAgent:
                 raise ValueError(lane['title'] + ' state differs from its broker-verified start record')
             self._append(kind + '_resume', 'continue', batch_id=batch_id, status=current['status'],
                          broker=evidence['broker'], retained_start=evidence['broker'] is None)
-            return self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind)
+            # A batch that ended while MT5 stayed closed (including a member reconciled from its
+            # retained output) also reopens here: seed-resume is the one-step recovery.
+            return self._reopen_after_lane(kind, batch_id,
+                                           self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind))
 
     def seed_resume(self, batch_id, max_seconds):
         return self._lane_resume('seed', batch_id, max_seconds)
@@ -1767,8 +1925,10 @@ def main(argv=None):
     commands.add_parser('clear-stop')
     orphan = commands.add_parser('recover-orphan')
     orphan.add_argument('--review-id', help='Observe this retained recovery only; never resend')
-    launch = commands.add_parser('launch-terminal')
-    launch.add_argument('--monitor-config', type=Path, required=True)
+    launch = commands.add_parser('launch-terminal', help='Reopen MT5 on the saved GOAT Studio monitor profile, '
+                                 'or re-read the build on a running terminal')
+    launch.add_argument('--monitor-config', type=Path,
+                        help='Monitor-only INI; default: the saved GOAT Studio profile (monitor-profile.json)')
     install = commands.add_parser('install-build')
     install.add_argument('--candidate', type=Path, required=True)
     install.add_argument('--sha256', required=True)

@@ -19,7 +19,10 @@ DEMO_AGENT_SCOPE = ContextVar('studio_demo_agent_scope', default=None)
 READ_OPERATIONS = frozenset(('discover','resource-profile','state','onboarding-status',
                              'native-recovery-status','batch-driver-status','owner-maintenance-status',
                              'stopped-cancel-observation','research-status',
-                             'evidence-end','evidence-scan','evidence-versions','catchup-validate'))
+                             'evidence-end','evidence-scan','evidence-versions','catchup-validate',
+                             # Pure reads: a .set file checked against the schema, and a completed
+                             # batch's benchmark from a read-only queue snapshot. Nothing is written.
+                             'validate-set','benchmark-report'))
 OPERATIONS = READ_OPERATIONS | frozenset(('owner-maintenance-bootstrap','monitor-prepare','monitor-launch',
     'serve','orphan-recovery-prepare','orphan-recovery-apply','orphan-recovery-status',
     'orphan-recovery-reconcile-rejection','prepare-batch','run-batch','start','status','reconcile',

@@ -5,20 +5,49 @@ import subprocess
 import time
 
 
+UNKNOWN_EXECUTABLE='Unknown terminal executable; inspect ownership first'
+# Windows reports no ExecutablePath for a terminal64 process for a moment while it is
+# being created or torn down (seen beside another terminal's own relaunch). That row is
+# re-read, never assumed: only a path still missing after this window refuses.
+UNKNOWN_SETTLE_SECONDS=10
+UNKNOWN_RETRY_SECONDS=.5
+
+
 class WindowsSeedProcess:
-    def __init__(self,controller):self.controller=controller
+    def __init__(self,controller,*,sleep=time.sleep,monotonic=time.monotonic):
+        self.controller=controller;self.sleep=sleep;self.monotonic=monotonic
+
+    def _rows(self,timeout):
+        command='[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter "Name=\'terminal64.exe\'" | Select-Object ProcessId,ExecutablePath,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
+        return json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=timeout,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
 
     def inspect(self,timeout=20):
-        command='[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter "Name=\'terminal64.exe\'" | Select-Object ProcessId,ExecutablePath,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
-        rows=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=timeout,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
+        deadline=self.monotonic()+UNKNOWN_SETTLE_SECONDS
+        while True:
+            rows=self._rows(timeout)
+            if all(row.get('ExecutablePath') for row in rows):break
+            # A transient missing path: re-read the whole inventory; never guess the row's owner.
+            if self.monotonic()>=deadline:raise ValueError(UNKNOWN_EXECUTABLE)
+            self.sleep(UNKNOWN_RETRY_SECONDS)
         target=PureWindowsPath(self.controller.install['terminal_executable']);found=[]
         for row in rows:
-            if not row.get('ExecutablePath'):raise ValueError('Unknown terminal executable; inspect ownership first')
             if PureWindowsPath(row['ExecutablePath'])==target:
                 if not row.get('CreatedUtc') or type(row.get('ProcessId')) is not int:raise ValueError('Missing terminal identity')
                 found.append(dict(pid=row['ProcessId'],executable=str(target),created_utc=row['CreatedUtc']))
         if len(found)>1:raise ValueError('Multiple selected-terminal processes; inspect ownership first')
         return found[0] if found else None
+
+    def command_line(self,identity,timeout=20):
+        """Read-only: the command line of exactly this selected process (PID, image and creation time)."""
+        if not isinstance(identity,dict) or type(identity.get('pid')) is not int:raise ValueError('Exact process identity required')
+        command=('[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter "ProcessId='
+                 +str(identity['pid'])+'" | Select-Object ProcessId,ExecutablePath,CommandLine,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})')
+        rows=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=timeout,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
+        if (len(rows)!=1 or rows[0].get('ProcessId')!=identity['pid'] or not rows[0].get('ExecutablePath')
+                or PureWindowsPath(rows[0]['ExecutablePath'])!=PureWindowsPath(identity.get('executable') or '')
+                or rows[0].get('CreatedUtc')!=identity.get('created_utc')):
+            raise ValueError('Selected terminal process changed before its command line was read')
+        return rows[0].get('CommandLine') or ''
 
     def close(self,identity):
         if self.inspect()!=identity:raise ValueError('Selected terminal process changed before close')

@@ -240,8 +240,50 @@ class SeedRunner:
                 raise ValueError('Seed batch '+batch_id+' was prepared before explicit optimization flags ('+str(exc)+
                     '); prepare a new batch ID') from None
 
+    def _collect_member(self,root,manifest,spec,item,paths):
+        """Collect this member's single output (age, identity and content checked), else mark it failed."""
+        try:
+            # Age check first: a collector may move the output it verified.
+            if paths[0].stat().st_mtime<item.get('started_unix',manifest['created_unix'])-2:raise ValueError('Seed XML predates attempt')
+            result=self._collect(paths[0],spec,manifest)
+            write_json(root/(spec['alias']+'.result.json'),result)
+            item['result']=dict(path=str(root/(spec['alias']+'.result.json')),sha256=digest(root/(spec['alias']+'.result.json')),summary=result['summary'],xml_path=result['path'],xml_sha256=result['sha256'])
+            return result
+        except (ValueError,OSError) as exc:
+            item['status']='failed';item['error']=str(exc)
+            # Keep the refused XML visible (never as accepted evidence) for diagnosis.
+            item['observed_xml']=self._observed_xml(paths[0])
+            return None
+
+    def _reconcile_finished(self,root,manifest,state):
+        """MT5 is closed: a reconcile_required member whose own output exists is collected, never re-run.
+
+        The start of such a member was issued (attempts=1) but its process identity was not
+        confirmed, for example while Windows briefly reported a terminal with no executable path.
+        MT5 still ran the frozen INI and shut down (ShutdownTerminal=1). Its output name carries
+        the member's unique alias; age, identity and content are checked as for any member. With
+        no output nothing is inferred and the member stays reconcile_required.
+        """
+        changed=False
+        if state.get('error') is not None:return changed   # batch-level doubt (an unowned process) needs a person
+        for spec,item in zip(manifest['members'],state['members']):
+            if item['status']!='reconcile_required' or item.get('attempts')!=1 or item.get('result') or 'started_unix' not in item:continue
+            paths=self._outputs(spec)
+            if len(paths)!=1:continue
+            prior=item.get('error')
+            item['status']='completed' if self._collect_member(root,manifest,spec,item,paths) else item['status']
+            item['reconciled']=dict(from_status='reconcile_required',prior_error=prior,reconciled_unix=self.clock(),
+                                    basis='MT5 closed; the member wrote its own output after its start')
+            if item['status']=='completed':item.pop('error',None)
+            item['finished_unix']=self.clock();changed=True
+        if changed and state['status']=='reconcile_required' and state.get('error') is None and not any(
+                m['status']=='reconcile_required' for m in state['members']):
+            state['status']='active'
+        return changed
+
     def _observe(self,root,manifest,state):
         current=self.process.inspect()
+        if current is None:self._reconcile_finished(root,manifest,state)
         if state['status']=='active' and current is not None and not any(m['status'] in ('running','starting','cancel_requested','timeout_requested') for m in state['members']):
             state['status']='reconcile_required';state['error']='Unowned selected-terminal process appeared between seed members'
         for spec,item in zip(manifest['members'],state['members']):
@@ -258,16 +300,7 @@ class SeedRunner:
             if len(paths)>1:
                 item['status']='failed';item['error']='Ambiguous seed XML outputs'
             elif paths:
-                try:
-                    # Age check first: a collector may move the output it verified.
-                    if paths[0].stat().st_mtime<item.get('started_unix',manifest['created_unix'])-2:raise ValueError('Seed XML predates attempt')
-                    result=self._collect(paths[0],spec,manifest)
-                    write_json(root/(spec['alias']+'.result.json'),result)
-                    item['result']=dict(path=str(root/(spec['alias']+'.result.json')),sha256=digest(root/(spec['alias']+'.result.json')),summary=result['summary'],xml_path=result['path'],xml_sha256=result['sha256'])
-                except (ValueError,OSError) as exc:
-                    item['status']='failed';item['error']=str(exc)
-                    # Keep the refused XML visible (never as accepted evidence) for diagnosis.
-                    item['observed_xml']=self._observed_xml(paths[0])
+                result=self._collect_member(root,manifest,spec,item,paths)
             if item['status'] in ('running','closing','cancel_requested','timeout_requested'):
                 item['status']='cancelled' if item['status']=='cancel_requested' else 'timeout' if item['status']=='timeout_requested' else 'completed' if result else 'missing_output'
             item['finished_unix']=self.clock()
@@ -341,6 +374,9 @@ class SeedRunner:
             self.c.bridge.pump()
             with exclusive_gate(self.gate):
                 root,manifest,state=self._read(batch_id)
+                if state['status']=='reconcile_required':
+                    # A member MT5 finished while its start was unconfirmed is collected from its own output.
+                    self._observe(root,manifest,state)
                 if state['status'] in ('completed','stopped','reconcile_required'):return self._public(root,state)
                 if state['status']=='prepared':
                     if not initial:raise ValueError('Use seed-start for a prepared batch')

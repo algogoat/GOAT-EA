@@ -110,6 +110,16 @@ reuses it), records `batch-lineage/<successor>.json`, and starts the successor
 under the bounded driver with the original budget (or `--max-seconds`). Repeating
 it returns the same successor.
 
+If that reserved successor was settled without ever running (retired by
+`retire-unactivated`, retired never-started, or cancelled while still pending),
+`continue` and `batch-resume` release it first: one line with the retirement
+proof is appended to `batch-lineage-releases/<id>.jsonl`, the pause goes back to
+`paused` (same result and token), and the next free `-rN` is prepared and started.
+No `--new-batch-id` is needed; an explicit new ID is also accepted. The released
+successor and its files are kept. A successor that actually ran (even if it was
+cancelled later) is not released: `continue --batch-id <successor>` continues its
+own remaining members.
+
 A seed hunt pauses between members: `batch-pause` writes `seeds/<id>/pause.json`,
 the running member finishes and is kept, no new member starts and pending members
 stay pending (never cancelled). `seed-resume` honours the pause; `batch-resume`

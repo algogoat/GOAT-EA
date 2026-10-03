@@ -596,6 +596,107 @@ def plan_resume(root, job_id, new_id, *, now):
     return record
 
 
+RELEASES = 'batch-lineage-releases'
+
+
+def unactivated_proof(row):
+    """Retained proof that a queued successor never ran a member, or None.
+
+    * ``retired_never_activated``: retire-unactivated (studio_retire_unactivated)
+      proved under the native gate that the start never reached MT5;
+    * ``retired_never_started``: the reviewed never-started retirement
+      (studio_never_started_retirement) settled a rejected attempt with zero
+      executed members;
+    * ``cancelled_before_start``: cancelled while still pending, with no launch
+      intent ever recorded.
+
+    A successor that started, even if it was cancelled later, has no such proof.
+    """
+    if not isinstance(row, dict) or not isinstance(row.get('job_id'), str):
+        return None
+    completion = row.get('completion') if isinstance(row.get('completion'), dict) else {}
+    proof = None
+    if row.get('status') == 'cancelled' and 'launch_intent' not in row and not completion:
+        proof = dict(kind='cancelled_before_start')
+    elif (row.get('status') == 'cancelled' and completion.get('kind') == 'retired_never_activated'
+            and completion.get('job_id') == row['job_id'] and completion.get('executed_members') == 0
+            and completion.get('native_cancellation_claimed') is False
+            and completion.get('attempt_id') == (row.get('launch_intent') or {}).get('attempt_id')):
+        proof = dict(kind='retired_never_activated', attempt_id=completion['attempt_id'])
+    elif (row.get('status') == 'failed' and completion.get('classification') == 'retired_never_started'
+            and completion.get('job_id') == row['job_id'] and completion.get('executed_members') == 0
+            and completion.get('native_cancellation_claimed') is False
+            and completion.get('attempt_id') == (row.get('launch_intent') or {}).get('attempt_id')):
+        proof = dict(kind='retired_never_started', attempt_id=completion['attempt_id'])
+    if proof is None:
+        return None
+    if completion:
+        proof.update(completion_sha256=sha(completion), completion_path=row.get('completion_path'))
+    return proof | dict(status=row['status'], configuration_sha256=row.get('configuration_sha256'))
+
+
+def planned_successor(record):
+    """The successor a pause record reserves: planned before preparation, or resumed into."""
+    if not isinstance(record, dict):
+        return None
+    if record.get('state') == 'resumed':
+        return record.get('successor_batch_id') or record.get('resume_batch_id')
+    return record.get('resume_batch_id')
+
+
+def releasable(record, queue):
+    """Read-only: (successor ID, proof) when the reserved successor never ran, else None."""
+    if not isinstance(record, dict) or record.get('state') not in ('paused', 'resumed'):
+        return None
+    successor = planned_successor(record)
+    proof = unactivated_proof(queue.get(successor)) if successor else None
+    return (successor, proof) if proof else None
+
+
+def release_unactivated(root, job_id, queue, *, now):
+    """Free a paused batch's resume lineage from a successor that never ran. Idempotent.
+
+    The release is appended to ``batch-lineage-releases/<job>.jsonl`` with the
+    retirement proof before the pause record changes, and the pause returns to
+    ``paused`` (same result, same resume token) so the next Continue prepares a
+    new ``-rN``. The released successor, its package, lineage file and journals are
+    kept. Returns the release line, or None when nothing needs releasing.
+    """
+    record = load(root, job_id)
+    found = releasable(record, queue)
+    if found is None:
+        return None
+    successor, proof = found
+    folder = safe_path(Path(root) / RELEASES)
+    folder.mkdir(exist_ok=True)
+    journal = safe_path(folder / (job_id + '.jsonl'))
+    line = dict(schema_version=1, event='successor_released', predecessor_batch_id=job_id,
+                successor_batch_id=successor, pause_id=record['pause_id'], previous_state=record['state'],
+                result_sha256=record.get('result_sha256'), proof=proof, released_utc=now)
+    prior = []
+    if journal.is_file():
+        for text in journal.read_text(encoding='utf-8').splitlines():
+            try:
+                prior.append(json.loads(text))
+            except ValueError:
+                continue  # A torn final line from an interrupted append records nothing.
+    if not any(isinstance(item, dict) and item.get('successor_batch_id') == successor
+               and item.get('pause_id') == record['pause_id'] for item in prior):
+        with journal.open('a', encoding='utf-8', newline='\n') as stream:
+            stream.write(json.dumps(line, sort_keys=True) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+    released = record.setdefault('released_successors', [])
+    if successor not in [item.get('batch_id') for item in released]:
+        released.append(dict(batch_id=successor, kind=proof['kind'], released_utc=now))
+    for key in ('resume_batch_id', 'successor_batch_id', 'resumed_utc'):
+        record.pop(key, None)
+    record['state'] = 'paused'
+    _note(record, now, 'paused', released_successor=successor, proof=proof['kind'])
+    _save(root, record)
+    return line | dict(journal=str(journal))
+
+
 def mark_resumed(root, job_id, new_id, *, now, selected):
     record = load(root, job_id)
     lineage_path = safe_path(Path(root) / LINEAGE / (new_id + '.json'))

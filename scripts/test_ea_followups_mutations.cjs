@@ -49,6 +49,18 @@ const mutations=[
   ['click diagnostics not reset',S,R`   g_GoatStopConfirmClicks=0;
    for`,R`   for`],
   ['result ignores the stable count',S,R`   return stable>=GOAT_STOP_CONFIRM_STABLE;`,R`   return true;`],
+  // B38 click guard (Claude-Mac fold-in 1 on #122).
+  ['guard back to ClickStop (IsIdle fallback can send Start)',S,R`            && GoatTesterSendStopIfRunning())`,R`            && MTTESTER::ClickStop(1))`],
+  ['toggle sent without the fresh running re-read',S,R`   if(GoatStudioTesterState()!="running") return false;
+`,''],
+  ['toggle sent on a blank caption',S,R`if(GoatStudioTesterState()!="running") return false;`,R`if(GoatStudioTesterState()=="idle") return false;`],
+  ['disarmed although nothing was sent',S,R`            && GoatTesterSendStopIfRunning())`,R`            && (GoatTesterSendStopIfRunning() || true))`],
+  ['toggle not sent to the tester pane',S,R`   if(handle!=0) handle=user32::GetDlgItem(handle,0x804E);
+`,''],
+  ['pane path ignores the terminal build',S,R`TerminalInfoInteger(TERMINAL_BUILD)<=5000`,R`TerminalInfoInteger(TERMINAL_BUILD)>5000`],
+  ['wrong toggle message',S,R`user32::SendMessageW(handle,message,0x31,0);`,R`user32::SendMessageW(handle,message,0x32,0);`],
+  ['send reported although no pane',S,R`   if(handle==0) return false;
+`,''],
   ['cancel back to one 100 ms read',D,R`   bool stopped=GoatTesterStopConfirmed();`,R`   bool stopped=MTTESTER::ClickStop(1);`],
   ['receipt ignores the stop',D,R`return (stopped && saved && cleared) ? "CANCELLED_RECONCILE"`,R`return (saved && cleared) ? "CANCELLED_RECONCILE"`],
   ['timing not journaled',D,R`         +" elapsed_ms="+(string)g_GoatStopConfirmElapsedMs);`,R`         );`],

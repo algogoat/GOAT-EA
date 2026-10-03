@@ -49,7 +49,7 @@ function convert(source){
   for(const [name,value] of Object.entries(macros))text=text.replace(new RegExp('\\b'+name+'\\b','g'),value);
   text=text.replace(/'(\\.|[^'\\])'/g,(_,ch)=>String(ch.charCodeAt(0)));
   text=text.replace(/\((?:string|int|long|ulong|ushort|datetime|double)\)/g,'');
-  text=text.replace(/MTTESTER::/g,'MTTESTER.');
+  text=text.replace(/MTTESTER::/g,'MTTESTER.').replace(/user32::/g,'user32.');
   const refs={};
   text=text.replace(new RegExp('^(?:'+TYPES+')\\s+(\\w+)\\(([^)]*)\\)','gm'),(_,name,params)=>{
     const names=[];const boxed=[];
@@ -98,16 +98,48 @@ function stringToTime(text){
   if(!m)return 0;
   return Date.UTC(+m[1],+m[2]-1,+m[3],+(m[4]||0),+(m[5]||0))/1000;
 }
-const tester={states:[],clicks:0,afterClick:null,polls:0,slept:0,clock:0};
+// Simulated tester. Each poll takes one entry from `states`: a caption, or
+// [first read, re-read] when the caption changes between the poll's read and the
+// click guard's fresh re-read. Start and Stop are ONE MT5 message (0x31 to the
+// tester pane), so a toggle sent while the tester is not really running is a
+// Start: `starts` must stay 0 in every case. A blank ("unknown") caption hides
+// an idle tester unless `unknownTruth` says otherwise.
+const PANE=2000,ROOT=1000,TOGGLE_MESSAGE=0xC0DE;
+const tester={states:[],clicks:0,starts:0,afterClick:null,polls:0,slept:0,clock:0,lastPoll:-1,current:null,reads:0,caption:'idle',unknownTruth:'idle',build:5100};
 const context={
-  TIME_DATE:1,
+  TIME_DATE:1,TERMINAL_BUILD:5,
   StringLen:s=>s.length,StringSubstr:(s,a,n)=>n===undefined?s.substr(a):s.substr(a,n),
   StringGetCharacter:(s,i)=>s.charCodeAt(i),StringToTime:stringToTime,
+  StringFind:(s,v,from=0)=>s.indexOf(v,from),
   TimeToString:(t,mode)=>{assert.equal(mode,1);return mqlDate(t);},
   GetTickCount64:()=>tester.clock,
   Sleep:ms=>{tester.slept++;tester.clock+=ms;},
-  GoatStudioTesterState:()=>{const s=tester.states.length?tester.states.shift():tester.rest;tester.polls++;return s;},
-  MTTESTER:{ClickStop:attempts=>{assert.equal(attempts,1);tester.clicks++;if(tester.afterClick)tester.afterClick(tester.clicks);return true;}},
+  TerminalInfoInteger:key=>{assert.equal(key,5);return tester.build;},
+  GoatStudioTesterState:()=>{
+    const poll=context.g_GoatStopConfirmPolls;
+    if(poll!==tester.lastPoll){tester.lastPoll=poll;tester.reads=0;tester.current=tester.states.length?tester.states.shift():tester.rest;}
+    const entry=tester.current;
+    const s=Array.isArray(entry)?entry[Math.min(tester.reads,entry.length-1)]:entry;
+    tester.reads++;tester.polls++;tester.caption=s;return s;
+  },
+  MTTESTER:{
+    GetTerminalHandle:()=>ROOT,
+    ClickStop:()=>{throw new Error('ClickStop re-enters IsIdle(), whose fallback can send Start; the guard must not call it');},
+  },
+  user32:{
+    // Build 5000+ terminals have no 0xE81E frame between the root and the tester pane.
+    GetDlgItem:(handle,id)=>tester.noPane?0:tester.build>5000
+      ? (handle===ROOT&&id===0x804E?PANE:0)
+      : (handle===ROOT&&id===0xE81E?1500:handle===1500&&id===0x804E?PANE:0),
+    RegisterWindowMessageW:name=>name==='MetaTrader5_Internal_Message'?TOGGLE_MESSAGE:0,
+    SendMessageW:(handle,message,wparam,lparam)=>{
+      assert.deepEqual([handle,message,wparam,lparam],[PANE,TOGGLE_MESSAGE,0x31,0],'the shared Start/Stop toggle goes to the tester pane');
+      const truth=tester.caption==='unknown'?tester.unknownTruth:tester.caption;
+      if(truth!=='running')tester.starts++;
+      tester.clicks++;if(tester.afterClick)tester.afterClick(tester.clicks);
+      return 0;
+    },
+  },
 };
 vm.createContext(context);
 vm.runInContext(convert(read('GOATEvidenceEnd.mqh')),context);
@@ -167,9 +199,12 @@ assert.match(evidence('AUTO',0,'2026.06.01').error,/server time is unavailable/)
 assert.equal(evidence('AUTO',0,'2026.06.01').to_date,'');checks++;
 
 // ---- Stop confirmation against a simulated tester caption.
-function stop(states,{rest='running',afterClick=null}={}){
-  Object.assign(tester,{states:[...states],rest,clicks:0,afterClick,polls:0,slept:0,clock:0});
+function stop(states,{rest='running',afterClick=null,unknownTruth='idle',build=5100,noPane=false}={}){
+  Object.assign(tester,{states:[...states],rest,clicks:0,starts:0,afterClick,polls:0,slept:0,clock:0,lastPoll:-1,current:null,reads:0,caption:'idle',unknownTruth,build,noPane});
   const ok=context.GoatTesterStopConfirmed();
+  // Whatever the captions did, the guard never sent the toggle to a tester that was not running.
+  assert.equal(tester.starts,0,'a Stop toggle reached a tester that was not running (that is a Start)');
+  assert.equal(context.g_GoatStopConfirmClicks,tester.clicks,'reported clicks are the toggles actually sent');
   return {ok,clicks:tester.clicks,polls:context.g_GoatStopConfirmPolls,reported:context.g_GoatStopConfirmClicks,slept:tester.slept,elapsed:context.g_GoatStopConfirmElapsedMs,read:tester.polls};
 }
 // Already idle: three reads, no click (Start and Stop share one toggle), no trailing sleep.
@@ -204,6 +239,32 @@ assert.deepEqual([r.ok,r.clicks,r.polls],[false,3,40]);checks++;
 // Diagnostics reset on every call.
 stop([],{rest:'running'});r=stop([],{rest:'idle'});
 assert.deepEqual([r.reported,r.polls],[0,3]);checks++;
+// ---- B38 click guard: the toggle is sent directly, only on a fresh "running" re-read.
+// The caption goes blank between the read and the re-read while the tester is really
+// idle: nothing is sent (it would have been a Start), and the guard stays armed.
+r=stop([['running','unknown'],'idle','idle','idle'],{rest:'idle'});
+assert.deepEqual([r.ok,r.clicks],[true,0]);checks++;
+// Same blank re-read on a tester that is still running: no send yet, still armed, so the
+// next "running" poll sends exactly one Stop.
+r=stop([['running','unknown'],'running','running','idle','idle','idle'],{rest:'idle',unknownTruth:'running'});
+assert.deepEqual([r.ok,r.clicks,r.reported],[true,1,1]);checks++;
+// The run ended between the read and the re-read: an idle re-read never toggles.
+r=stop([['running','idle'],'idle','idle'],{rest:'idle'});
+assert.deepEqual([r.ok,r.clicks,r.polls],[true,0,4]);checks++;
+// A blank caption all along on an idle tester: 40 polls, no toggle, honest false, and
+// one passive read per poll (the fresh re-read happens only after a "running" read).
+r=stop([],{rest:'unknown'});
+assert.deepEqual([r.ok,r.clicks,r.polls,r.read],[false,0,40,40]);checks++;
+// Older terminals (build 5000 and below) reach the pane through the 0xE81E frame.
+r=stop(['running','running'],{rest:'idle',build:4900});
+assert.deepEqual([r.ok,r.clicks],[true,1]);checks++;
+// No tester pane found: nothing is sent, nothing is counted, the guard stays armed.
+r=stop([],{rest:'running',noPane:true});
+assert.deepEqual([r.ok,r.clicks,r.reported],[false,0,0]);checks++;
+// The guard never routes through MTTESTER::ClickStop (and its IsIdle() fallback).
+const stopSource=read('GOATTesterStopConfirm.mqh').replace(/\/\/.*$/gm,'');
+assert.doesNotMatch(stopSource,/ClickStop\s*\(/);
+assert.match(stopSource,/bool GoatTesterSendStopIfRunning\(void\)\n  \{\n   if\(GoatStudioTesterState\(\)!="running"\) return false;/);checks++;
 
 // ---- V1.49 call sites.
 const main=read('GOAT V1.49.mq5'),dispatch=read('GOATStudioDispatch.mqh'),ui=read('GOATStudioUI.mqh');

@@ -22,6 +22,24 @@ int   g_GoatStopConfirmPolls=0;
 int   g_GoatStopConfirmClicks=0;
 ulong g_GoatStopConfirmElapsedMs=0;
 
+// B38 click guard. MTTESTER::ClickStop() re-reads the tester through IsIdle(),
+// whose blank-caption fallback (clipboard nudge, status-text guess) can still send
+// the 0x31 toggle, which is also Start, or skip it. Here the toggle is sent
+// directly, and only when a fresh passive read of the caption still says
+// "running"; a blank, unknown or idle caption never sends anything.
+bool GoatTesterSendStopIfRunning(void)
+  {
+   if(GoatStudioTesterState()!="running") return false;
+   long handle=MTTESTER::GetTerminalHandle();
+   if(handle!=0 && TerminalInfoInteger(TERMINAL_BUILD)<=5000) handle=user32::GetDlgItem(handle,0xE81E);
+   if(handle!=0) handle=user32::GetDlgItem(handle,0x804E);
+   if(handle==0) return false;
+   uint message=user32::RegisterWindowMessageW("MetaTrader5_Internal_Message");
+   if(message==0) return false;
+   user32::SendMessageW(handle,message,0x31,0);
+   return true;
+  }
+
 bool GoatTesterStopConfirmed(void)
   {
    ulong started=GetTickCount64();
@@ -40,12 +58,14 @@ bool GoatTesterStopConfirmed(void)
         }
       else
         {
+         // Disarmed only once a Stop was actually sent: a caption that went blank
+         // between the two reads leaves the next "running" read free to send it.
          stable=0;
-         if(state=="running" && armed && g_GoatStopConfirmClicks<GOAT_STOP_CONFIRM_CLICKS)
+         if(state=="running" && armed && g_GoatStopConfirmClicks<GOAT_STOP_CONFIRM_CLICKS
+            && GoatTesterSendStopIfRunning())
            {
             g_GoatStopConfirmClicks++;
             armed=false;
-            MTTESTER::ClickStop(1);
            }
         }
       if(stable>=GOAT_STOP_CONFIRM_STABLE) break;

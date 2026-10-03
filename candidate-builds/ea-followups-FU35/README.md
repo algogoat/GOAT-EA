@@ -21,7 +21,9 @@ No trading, risk, sizing, order or receipt-format change. The pinned input heade
 (`GOAT_Inputs_Definitions.mqh`) is unchanged, so SM32/EX33 batch packages stay valid.
 
 Its `GOAT_BUILD_ID` is `V1.49-EA-FOLLOWUPS-35`, with marker `FU35`. `identity.json` binds the
-exact forward source. **Compile pending.** Native qualification has NOT been performed. The new
+exact forward source. **Compiled** from `69962a64` with MetaEditor 5.0.0.6230 (0 errors, 0 warnings):
+`GOAT V1.49.ex5` sha256 `d86e6b6362d2cbb402d069ec4ab65909f346e69fe328fcd05fcc1c8925b008cd` (2,394,800 bytes) with its
+sanitized `compile-receipt.json`. Native qualification has NOT been performed. The new
 build ID needs server admission before activation.
 
 FU35 supersedes `ea-experience-EX33`. EX33, SM32, SM31 and SP30 stay retained unchanged in

@@ -25,6 +25,11 @@ OPERATIONS = READ_OPERATIONS | frozenset(('owner-maintenance-bootstrap','monitor
     'orphan-recovery-reconcile-rejection','prepare-batch','run-batch','start','status','reconcile',
     'batch-status','cancel','finish','benchmark-report','save-batch','research-monitor-restart','research-monitor-restart-resume','research-monitor-restart-status','research-monitor-reopen-prepare','research-monitor-adopt-reopen','research-monitor-repair-derived-report','research-retire-never-started','cancel-rejected-successor',
     'batch-pause','retire-unactivated','batch-stop','compact-evidence','compact-receipts'))
+# Reads that a demo_direct (owner demo lane) installation may run with the raw studio CLI. pairing-code
+# there reads only the code the EA shares in GOAT/activation-code-<data folder>.json (LC36 and later):
+# it never registers the setup-mailbox capability, writes nothing and approves nothing; every pairing
+# guardrail (fresh broker demo proof, inert terminal, protected logins, exact build) still applies.
+DEMO_DIRECT_READ_OPERATIONS = frozenset(('pairing-code',))
 
 
 CONTINUE_REFUSAL = ('Continue is not available in a typed research continuation session, because it authorizes '
@@ -134,7 +139,7 @@ def authority(db, binding, state):
     if session.get('authority_kind') == 'demo_direct':
         if {key: session.get(key) for key in ('terminal_id', 'run_id')} != json.loads(binding):
             raise ValueError('Demo agent session binding changed')
-        if CURRENT_OPERATION.get() in READ_OPERATIONS | {'serve'}:
+        if CURRENT_OPERATION.get() in READ_OPERATIONS | DEMO_DIRECT_READ_OPERATIONS | {'serve'}:
             return None
         raise ValueError('Demo mutation requires the broker-verified agent tool')
     row = db.execute('SELECT kind,provenance FROM studio_authorities WHERE binding=?', (binding,)).fetchone()

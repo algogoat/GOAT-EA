@@ -94,6 +94,7 @@ OPERATION_CONTRACTS = {
     'batch-stop':dict(required=['job-id'],demo_lane='goat.exe demo stop --batch-id <id>',effect='one stop for any state: pending -> cancelled; reserved-not-started -> released and cancelled; start refused before MT5 was touched -> retire-unactivated; dispatched -> the EA native cancel (same queue/flag effect as the Studio STOP button), then run-batch --resume observes and finishes it; finished -> no-op. Refusals are one sentence with the next action'),
     'batch-continue':dict(required=['job-id'],optional=['new-batch-id','include-failed','include-no-edge'],demo_lane='goat.exe demo continue --batch-id <id> (also starts the bounded driver)',effect='prepare the remaining work of a finished, stopped or paused batch as a successor (default <id>-rN): never-run members first, then failures with include-failed; across an EA build change the members are re-prepared and fully verified under the current installation, with lineage and binding_changed_keys recorded; a retained never-started successor is reused, and an existing --new-batch-id is reused only when its lineage names this batch; a start refused before activation is retired first; refuses in a typed research continuation session (it authorizes only its exact frozen plan). No launch'),
     'compact-evidence':dict(required=[],optional=['apply'],effect='preview, then with --apply move the in-row native evidence history of finished jobs into verified append-only logs (native-evidence/*.history.jsonl) so every state read stays fast; refuses while a batch is active (rechecked inside the queue transaction); skips a job whose never-started retirement proof compares the whole row; archives are temp-written, fsynced, sha256-verified and atomically renamed; no native effect'),
+    'compact-receipts':dict(required=[],optional=['apply'],effect='preview, then with --apply rewrite each legacy receipt that still embeds the whole queue (state.queue) to the digest form new receipts use (state.queue_digest = {sha256, job_count}); the exact original receipt bytes are first archived one file per receipt (native-evidence/receipt-archive/<request_id>.<binding12>.receipt.json: temp-written, fsynced, sha256-verified, atomically renamed, never deleted); each row is rewritten in its own transaction under the mutation gate after re-checking that no batch is active, the session authority, and that the row still equals its archive by sha256; streams one receipt at a time; journal native-evidence/receipt-compactions.jsonl; no VACUUM (the file keeps its size until a separate reviewed VACUUM); no native effect'),
     'batch-driver-status':dict(required=['job-id'],effect='read retained driver journal and current binding match; never starts, resumes or cancels work'),
     'research-monitor-restart':dict(required=['job-id'],effect='owner-only typed continuation: gracefully suspend exact old publisher and reload one idle monitor after verified pre-consumption rejection; preserves evidence and budget; no batch start'),
     'research-monitor-restart-status':dict(required=['job-id'],effect='reverify an already launched recovery monitor; never close or launch again'),
@@ -105,6 +106,12 @@ OPERATION_CONTRACTS = {
     'research-regrant-status':dict(required=[],effect='read-only proof of genuine takeover and current native connection readiness; never create a grant'),
     'research-monitor-restart-resume':dict(required=['job-id'],effect='reconcile an already-issued monitor close and perform only its never-issued first relaunch; no repeated close or launch'),
     'cancel-rejected-successor':dict(required=['job-id'],effect='owner-only: publish one new stop identity after exact expired unconsumed native cancel rejection and reverified monitor restart; keeps both stop receipts'),
+    'pairing-code':dict(required=['build-id'],effect='return the pending public connection code from a connected inert demo: first the code the EA shares locally (LC36 and later; read-only, registers and consumes nothing), else register the EA 5-minute pairing-read capability and consume its mailbox answer; no approval, credential or trading effect'),
+    'close-terminal':dict(required=['attempt-id'],optional=['build-id'],effect='normal-close the selected MT5 once, only when broker-reported demo, connected, Algo Trading off, no positions/orders, tester idle and no batch/seed/native job; uses the EA inert shutdown when a dashboard hosts it, else one controller normal close; never kills or repeats'),
+    'deploy-preflight':dict(required=[],effect='read-only broker demo/Algo/positions/tester readback, existing dashboard state and live deployment record for a desktop deploy review'),
+    'deploy-load':dict(required=['plan'],effect='stage reviewed hash-bound member SETs and a saved dashboard in Common Files, close the inert demo terminal, relaunch it with the Portfolio Dashboard first, attach children, apply exposure policy and audit every child against its SET; Algo Trading stays off; resumable phase journal'),
+    'deploy-status':dict(required=[],effect='read the live deployment record and dashboard status; no mutation'),
+    'deploy-stop':dict(required=['attempt-id'],effect='unload the deployed dashboard from an inert terminal: refuses with Algo Trading on or open positions/orders, normal-closes once, renames the saved dashboard state and deploy profile aside; never closes positions'),
     'batch-pause':dict(required=['job-id'],optional=['immediate','supervise-seconds'],limits={'supervise-seconds':[1,172800]},demo_lane='goat.exe demo batch-pause --batch-id <id> (broker-verified; starts its own bounded supervisor)',effect='durable idempotent pause request: one cancel only at a safe point (right after a member turns OnGoing, or tester idle after the member-boundary relaunch) while the bound monitor reports; an expired unconsumed cancel is answered by the EA with CANCEL_REJECTED and only that exact receipt admits exactly one successor stop (cancel-rejected-successor identity rules, both receipts kept, never blind replay); a closed, unbound or unlicensed monitor is a named blocker with its fix; the driver keeps its disk guard and finish, never records cancel_issued for a pause and adopts an outstanding unconfirmed stop; finish harvests completed members and records paused with a resume token. States: pausing, paused, pause_failed (one sentence + fix), finished. Optional supervise-seconds runs the bounded pause supervisor in this call'),
     'batch-resume':dict(required=['job-id'],optional=['new-batch-id','resume-token','include-failed','include-no-edge'],demo_lane='goat.exe demo batch-resume --batch-id <id> (also refreshes a restarted protected peer and starts the bounded driver)',effect='after paused: verify the exact paused result and resume token, build the remaining-work plan from per-member native evidence (resume-batch) tolerating only a refreshed protected-peer process, prepare the successor under a new ID (default <id>-rN) and record lineage paused batch -> successor; no start in this CLI, run-batch starts it'),
     'research-status':dict(required=[],effect='read-only lane status for one installation: terminal, account, EA build, current batch or seed hunt (status, members done/total, qualifying, last member, pace and ETA, lineage, pause), driver health, disk headroom and monitor/licence state with the plain reason and fix when unbound; never opens the mutable store, launches or signals MT5'),
@@ -404,6 +411,7 @@ def main(argv=None):
     p=sub.add_parser('batch-stop');p.add_argument('--job-id',required=True)
     p=sub.add_parser('batch-continue');p.add_argument('--job-id',required=True);p.add_argument('--new-batch-id');p.add_argument('--include-failed',action='store_true');p.add_argument('--include-no-edge',action='store_true')
     p=sub.add_parser('compact-evidence');p.add_argument('--apply',action='store_true')
+    p=sub.add_parser('compact-receipts');p.add_argument('--apply',action='store_true')
     p=sub.add_parser('batch-pause');p.add_argument('--job-id',required=True);p.add_argument('--immediate',action='store_true');p.add_argument('--supervise-seconds',type=int)
     p=sub.add_parser('batch-resume');p.add_argument('--job-id',required=True);p.add_argument('--new-batch-id');p.add_argument('--resume-token');p.add_argument('--include-failed',action='store_true');p.add_argument('--include-no-edge',action='store_true',help='Also re-run members tested with no profitable settings')
     sub.add_parser('research-status')
@@ -417,6 +425,11 @@ def main(argv=None):
     p=sub.add_parser('research-monitor-repair-revoked-report');p.add_argument('--job-id',required=True)
     p=sub.add_parser('research-retire-never-started');p.add_argument('--job-id',required=True)
     sub.add_parser('research-regrant-status')
+    p=sub.add_parser('pairing-code');p.add_argument('--build-id',required=True)
+    p=sub.add_parser('close-terminal');p.add_argument('--attempt-id',required=True);p.add_argument('--build-id')
+    sub.add_parser('deploy-preflight');sub.add_parser('deploy-status')
+    p=sub.add_parser('deploy-load');p.add_argument('--plan',type=Path,required=True)
+    p=sub.add_parser('deploy-stop');p.add_argument('--attempt-id',required=True)
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
         from studio_research_authority import operation,dispatch
@@ -505,7 +518,16 @@ def main(argv=None):
                 forbidden_roots=[controller.install['catalog_root']] if controller.install.get('catalog_root') else [])
         else:
             if not args.operation.startswith('orphan-recovery-'): controller.open()
-            if args.operation in ('monitor-repair','monitor-stop'):
+            if args.operation in ('pairing-code','close-terminal'):
+                from studio_agent_setup import pairing_code,close_terminal
+                result=pairing_code(controller,args.build_id) if args.operation=='pairing-code' else close_terminal(controller,args.attempt_id,build_id=args.build_id)
+            elif args.operation.startswith('deploy-'):
+                import studio_demo_deploy as deploy
+                if args.operation=='deploy-preflight': result=deploy.preflight(controller)
+                elif args.operation=='deploy-load': result=deploy.load(controller,args.plan)
+                elif args.operation=='deploy-status': result=deploy.status(controller)
+                else: result=deploy.stop(controller,args.attempt_id)
+            elif args.operation in ('monitor-repair','monitor-stop'):
                 from studio_monitor_repair import repair
                 result=repair(controller,args.attempt_id,stop_only=args.operation=='monitor-stop')
             elif args.operation.startswith('orphan-recovery-'):
@@ -547,6 +569,9 @@ def main(argv=None):
             elif args.operation=='compact-evidence':
                 from studio_evidence_log import compact
                 result=compact(controller,apply=args.apply)
+            elif args.operation=='compact-receipts':
+                from studio_receipt_digest import compact as compact_receipts
+                result=compact_receipts(controller,apply=args.apply)
             elif args.operation=='retire-unactivated':
                 from studio_retire_unactivated import retire
                 result=retire(controller,args.job_id)

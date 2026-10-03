@@ -393,7 +393,7 @@ void CStrategyTesterDialog::ManagedControls(void)
    if(edit)
      {
       GoatStudioSteadyEnabled(m_cmbSymbol,true); GoatStudioSteadyEnabled(m_cmbPeriod,true); GoatStudioSteadyEnabled(m_dtFrom,true); GoatStudioSteadyEnabled(m_dtTo,true);
-      GoatStudioSteadyEnabled(m_cmbForward,true); if(m_cmbForward.Select()=="Custom") GoatStudioSteadyEnabled(m_dtForward,true);
+      GoatStudioSteadyEnabled(m_cmbForward,true); GoatStudioSteadyEnabled(m_dtForward,m_cmbForward.Select()=="Custom");
       GoatStudioSteadyEnabled(m_cmbDelay,true); GoatStudioSteadyEnabled(m_cmbModel,true); GoatStudioSteadyEnabled(m_edtDeposit,true); GoatStudioSteadyEnabled(m_edtCurrency,true);
       GoatStudioSteadyEnabled(m_cmbLeverage,true); GoatStudioSteadyEnabled(m_edtSetsToExport,true); GoatStudioSteadyEnabled(m_dpBackOOS,true);
       GoatStudioSteadyEnabled(m_edtMinScore,true); GoatStudioSteadyEnabled(m_edtMinARF,true); GoatStudioSteadyEnabled(m_edtTargetDD,true); GoatStudioSteadyEnabled(m_edtMinSR,true);
@@ -933,6 +933,10 @@ void CStrategyTesterDialog::ManagedObservation(const string status)
 #ifdef GOAT_TERMINAL_ISOLATION_V149
    // The controller refuses native work unless it resolves this same folder.
    body+=",\"state_base\":"+GoatStudioQuote(GoatOptBasePath(EA_Name,Server));
+#endif
+#ifdef GOAT_EVIDENCE_END_V149
+   // studio_evidence_end.ea_capability: this build honours the EvidenceEnd export setting.
+   body+=",\"evidence_end\":"+GoatStudioQuote(GOAT_EVIDENCE_END_CAPABILITY);
 #endif
    ulong now=GetTickCount64();
    if(body==g_StudioLastObservation && now-g_StudioObservationMillis<5000) return;

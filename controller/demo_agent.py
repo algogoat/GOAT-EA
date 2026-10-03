@@ -497,6 +497,17 @@ class DemoAgent:
                              queue_bytes_before=result['queue_bytes_before'], queue_bytes_after=result['queue_bytes_after'])
             return result
 
+    def compact_receipts(self, apply=False):
+        """Archive legacy full-queue receipts and store their queue digest (studio_receipt_digest)."""
+        from studio_receipt_digest import compact
+        with self._exclusive(wait_seconds=5), self._studio('compact-receipts', idle=False, owner_required=False) as (controller, broker):
+            result = compact(controller, apply=apply)
+            if result.get('applied'):
+                self._append('compact_receipts', 'applied', receipts=[item['request_id'] for item in result['receipts']],
+                             receipt_bytes_before=result['receipt_bytes_before'],
+                             receipt_bytes_after=result['receipt_bytes_after'])
+            return result
+
     def cancel_pending(self, batch_id):
         """Cancel one batch that never started (pending, no launch intent).
 
@@ -1190,6 +1201,15 @@ class DemoAgent:
         record = load(self.root, batch_id)
         if record is None:
             raise PauseRefused('No pause is recorded for batch ' + batch_id + '; pause it first.')
+        # A reserved successor that never ran (retired unactivated / never started, or
+        # cancelled before its start) releases the lineage, recorded append-only.
+        from studio_batch_pause import release_unactivated
+        released = release_unactivated(self.root, batch_id, {item['job_id']: item for item in self._jobs_readonly()},
+                                       now=self.clock())
+        if released:
+            self._append('batch_resume', 'successor_released', batch_id=batch_id,
+                         successor_batch_id=released['successor_batch_id'], proof=released['proof'])
+            record = load(self.root, batch_id)
         if record['state'] == 'resumed':
             new_id = record['successor_batch_id']
             job = next((item for item in self._jobs_readonly() if item['job_id'] == new_id), None)
@@ -1671,7 +1691,10 @@ def main(argv=None):
     stop.add_argument('--batch-id', help='Cancel this pending or reserved-not-started batch without setting owner STOP')
     compact = commands.add_parser('compact-evidence', help='Preview, then --apply: move finished in-row evidence history to verified logs')
     compact.add_argument('--apply', action='store_true')
-    begin = commands.add_parser('start', help='Start any prepared batch under the bounded driver')
+    receipts = commands.add_parser('compact-receipts',
+                                   help='Preview, then --apply: archive legacy full-queue receipts and keep only their queue digest')
+    receipts.add_argument('--apply', action='store_true')
+    begin =commands.add_parser('start', help='Start any prepared batch under the bounded driver')
     begin.add_argument('--batch-id', required=True)
     begin.add_argument('--max-seconds', type=int)
     onward = commands.add_parser('continue', help='Continue a stopped, paused or finished batch as a successor and start it')
@@ -1798,6 +1821,7 @@ def main(argv=None):
         elif args.command == 'stop': result = agent.stop(args.monitor_config, args.batch_id)
         elif args.command == 'start': result = agent.start(args.batch_id, args.max_seconds)
         elif args.command == 'compact-evidence': result = agent.compact_evidence(args.apply)
+        elif args.command == 'compact-receipts': result = agent.compact_receipts(args.apply)
         elif args.command == 'continue': result = agent.continue_batch(args.batch_id, new_batch_id=args.new_batch_id,
             max_seconds=args.max_seconds, clear_stop=args.clear_stop, include_failed=args.include_failed,
             include_no_edge=args.include_no_edge)

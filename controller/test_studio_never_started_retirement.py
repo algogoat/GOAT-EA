@@ -82,6 +82,33 @@ class NeverStartedRetirementTests(unittest.TestCase):
             write_json(self.c.root/'batch-drivers/replacement.json',journal|dict(deadline_wall=now+172801))
             with self.assertRaisesRegex(ValueError,'new native epoch budget'):before_native_dispatch(self.c,self.c.job('replacement'))
 
+    def test_evidence_compaction_keeps_the_retired_row_so_the_replacement_proof_still_passes(self):
+        from studio_evidence_log import compact
+        binding=packed(dict(terminal_id=self.c.terminal,run_id=self.c.run))
+        with operation('serve'):state=self.c.state()
+        history=[dict(native=dict(status='native_rejected',n=i)) for i in range(5)]
+        state['queue'][0]['native_evidence_history']=history
+        self.c.store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?',(packed(state['queue']),binding))
+        self.run_retire()
+        with operation('prepare-batch'):prepare_batch(self.c,'replacement',self.f.f.f.fixture.plan)
+        with operation('compact-evidence'):result=compact(self.c,apply=True)
+        with operation('run-batch'):
+            state=self.c.state();scope=authority(self.c.store.db,binding,state)
+            # Compacting this row would make the proof refuse 'Retirement original job changed'.
+            proof=replacement_proof(self.c.store.db,state,scope,successor_id='replacement')
+            self.assertEqual(state['queue'][0]['native_evidence_history'],history)
+        self.assertEqual(proof['predecessor_job_id'],'original')
+        self.assertFalse(result['applied'])
+        self.assertEqual([(s['job_id'],s['reason']) for s in result['skipped']],[('original','never_started_retirement_proof')])
+
+    def test_continue_refuses_in_a_typed_research_continuation_with_one_sentence(self):
+        from studio_fast_lane import continue_batch
+        self.run_retire()
+        with operation('batch-continue'),self.assertRaisesRegex(ValueError,
+                r'^Continue is not available in a typed research continuation session, because it authorizes only its exact frozen plan; '
+                r'run batch-status for the batch, then ask the owner for a new research grant that covers the remaining members\.$'):
+            continue_batch(self.c,'original')
+
     def test_restoration_publication_interruption_resumes_without_repeated_close(self):
         from studio_never_started_retirement import write_json as real
         def fail(path,value):

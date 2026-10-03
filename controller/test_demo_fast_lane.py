@@ -41,7 +41,7 @@ class DemoFastLaneTests(unittest.TestCase):
 
     def test_continue_names_unknown_batches_plainly(self):
         with patch.object(self.agent, '_jobs_readonly', return_value=[]), \
-                patch.object(self.agent, '_is_seed', return_value=False):
+                patch.object(self.agent, '_lane_kind', return_value=None):
             with self.assertRaisesRegex(ValueError, r'^Unknown batch batch-9; research-status lists the batches of this terminal\.$'):
                 self.agent.continue_batch('batch-9')
 
@@ -50,7 +50,7 @@ class DemoFastLaneTests(unittest.TestCase):
         (self.root / 'demo-agent/STOP').write_text('{"actor":"demo_agent"}')
         job = dict(job_id='batch-1', status='cancelled')
         with patch.object(self.agent, '_jobs_readonly', return_value=[job]), \
-                patch.object(self.agent, '_is_seed', return_value=False), \
+                patch.object(self.agent, '_lane_kind', return_value=None), \
                 patch('studio_research_status.monitor_state', return_value={}):
             with self.assertRaisesRegex(ValueError, r'^Owner STOP is on; continue with --clear-stop to lift it\.$'):
                 self.agent.continue_batch('batch-1')

@@ -455,8 +455,9 @@ class DemoAgent:
             raise ValueError('Invalid batch ID')
         if max_seconds is not None and (type(max_seconds) is not int or not 1 <= max_seconds <= 172800):
             raise ValueError('max_seconds must be 1..172800')
-        if self._is_seed(batch_id):
-            return self._seed_unpause(batch_id)
+        kind = self._lane_kind(batch_id)
+        if kind:
+            return self._seed_unpause(batch_id, kind)
         job = next((item for item in self._jobs_readonly() if item['job_id'] == batch_id), None)
         if job is None:
             raise ValueError('Unknown batch ' + batch_id + '; research-status lists the batches of this terminal.')
@@ -470,9 +471,12 @@ class DemoAgent:
                 raise ValueError('Owner STOP is on; continue with --clear-stop to lift it.')
             self.clear_stop()
         readback = self._refresh_readback()
-        existing = {item['job_id'] for item in self._jobs_readonly()}
-        from studio_batch_pause import load as load_pause, successor_id
-        new_id = new_batch_id or (load_pause(self.root, batch_id, quiet=True) or {}).get('resume_batch_id') or successor_id(batch_id, existing)
+        # The core's resolver: a retained, never-started successor of this batch (for
+        # example after the driver failed to spawn) is reused instead of a new -rN, and
+        # an explicit ID that collides with an unrelated batch refuses.
+        from studio_fast_lane import resolve_successor
+        queue = {item['job_id']: item for item in self._jobs_readonly()}
+        new_id = resolve_successor(self.root, queue, batch_id, new_batch_id)
         with self._exclusive(), self._studio('prepare-batch', idle=True, job_id=new_id) as (controller, broker):
             peer = refresh_process(controller)
             prepared = continue_batch(controller, batch_id, new_batch_id=new_id, include_failed=include_failed,

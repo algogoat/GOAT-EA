@@ -27,6 +27,11 @@ OPERATIONS = READ_OPERATIONS | frozenset(('owner-maintenance-bootstrap','monitor
     'batch-pause','retire-unactivated','batch-stop','compact-evidence'))
 
 
+CONTINUE_REFUSAL = ('Continue is not available in a typed research continuation session, because it authorizes '
+                    'only its exact frozen plan; run batch-status for the batch, then ask the owner for a new '
+                    'research grant that covers the remaining members.')
+
+
 @contextmanager
 def operation(name):
     token = CURRENT_OPERATION.set(name)
@@ -175,6 +180,10 @@ def authority(db, binding, state):
         # New reservations and native dispatch separately require live authority.
         if CURRENT_OPERATION.get() not in READ_OPERATIONS | {'serve','cancel','status','reconcile','finish','batch-status','run-batch','batch-pause','retire-unactivated','batch-stop'}:
             raise ValueError('Research continuation expired; no new work')
+    if CURRENT_OPERATION.get() == 'batch-continue':
+        # A typed continuation authorizes only its exact frozen plan (members_sha256);
+        # a generated remaining-members plan needs its own reviewed authority (follow-up).
+        raise ValueError(CONTINUE_REFUSAL)
     if CURRENT_OPERATION.get() not in OPERATIONS:
         raise ValueError('Operation is not allowlisted for research continuation')
     session = read_json(root/'session.json')

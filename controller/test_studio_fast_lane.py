@@ -222,6 +222,193 @@ class EvidenceLogTests(unittest.TestCase):
         self.assertEqual(read(archive['path']), history)
         self.assertFalse(compact(c, apply=True)['applied'])
 
+    def test_crash_between_log_fsync_and_queue_commit_never_duplicates_a_line(self):
+        fixture = fixtures.PortableControllerTests(); fixture.setUp(); self.addCleanup(fixture.tearDown)
+        c, native, base, evidence = fixture.activated_fixture()
+        import studio_evidence_log
+        real = studio_evidence_log.append
+        def crash(*args, **kwargs):
+            real(*args, **kwargs)                     # line written and fsynced ...
+            raise RuntimeError('crash before the queue commit')
+        with patch('studio_evidence_log.append', side_effect=crash):
+            with self.assertRaises(Exception):
+                c.reconcile('beta-job')
+        self.assertNotIn('native_evidence_log', c.job('beta-job'))
+        c.reconcile('beta-job')                       # the retry adopts or sets aside the uncommitted tail
+        log = c.job('beta-job')['native_evidence_log']
+        raw = Path(log['path']).read_bytes()
+        self.assertEqual((log['entries'], raw.count(b'\n'), log['bytes']), (1, 1, len(raw)))
+        self.assertEqual(studio_evidence_log.read(log['path'])[0]['attempt_id'], c.job('beta-job')['launch_intent']['attempt_id'])
+        aside = Path(log['path'] + '.uncommitted')
+        if aside.exists():                            # the re-observation differed (fresh sample time)
+            self.assertEqual(aside.read_bytes().count(b'\n'), 1)
+
+    def test_a_different_uncommitted_tail_is_moved_aside_and_the_count_stays_exact(self):
+        import shutil
+        import sqlite3
+        import tempfile
+        from types import SimpleNamespace
+        from studio_evidence_log import append, read
+        folder = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, folder, True)
+        Store = SimpleNamespace(db=sqlite3.connect(str(folder / 'studio.sqlite')))
+        self.addCleanup(Store.db.close)
+        attempt = 'a' * 64
+        first = append(Store, 'job', attempt, dict(n=1))
+        append(Store, 'job', attempt, dict(n=2), previous=first)        # fsynced, commit lost
+        third = append(Store, 'job', attempt, dict(n=3), previous=first)
+        self.assertEqual((third['entries'], read(third['path'])), (2, [dict(n=1), dict(n=3)]))
+        self.assertEqual(Path(third['path']).stat().st_size, third['bytes'])
+        self.assertEqual(read(third['path'] + '.uncommitted'), [dict(n=2)])
+        again = append(Store, 'job', attempt, dict(n=4), previous=third)
+        self.assertEqual(append(Store, 'job', attempt, dict(n=4), previous=third), again)  # same identity, no new line
+        self.assertEqual(read(again['path']), [dict(n=1), dict(n=3), dict(n=4)])
+        self.assertEqual(read(again['path'], entries=2), [dict(n=1), dict(n=3)])
+
+
+class CompactionGuardTests(unittest.TestCase):
+    """Each guard of compact() has a test that fails when the guard is deleted."""
+
+    def setUp(self):
+        self.fixture = fixtures.PortableControllerTests(); self.fixture.setUp(); self.addCleanup(self.fixture.tearDown)
+        self.c = self.fixture.bound(); self.fixture.grant(self.c)
+        prepare_batch(self.c, 'old', synthetic(self.fixture, self.c, 2))
+        self.history = [dict(native=dict(status='native_ongoing', n=i)) for i in range(20)]
+        self.binding = packed(dict(terminal_id=self.c.terminal, run_id=self.c.run))
+        def finish(queue):
+            queue[0].update(status='completed', native_evidence_history=self.history)
+        self.put(finish)
+
+    def put(self, mutate):
+        state = self.c.state(); mutate(state['queue'])
+        self.c.store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?', (packed(state['queue']), self.binding))
+
+    def archives(self):
+        return sorted(p.name for p in (self.c.root / 'native-evidence').glob('*')) if (self.c.root / 'native-evidence').is_dir() else []
+
+    def assertRowUnchanged(self):
+        job = self.c.job('old')
+        self.assertEqual(job['native_evidence_history'], self.history)
+        self.assertNotIn('native_evidence_archive', job)
+
+    def test_refuses_while_a_batch_is_active_before_writing_any_archive(self):
+        from studio_evidence_log import compact
+        self.put(lambda queue: queue.append(dict(job_id='live', status='running')))
+        with self.assertRaisesRegex(ValueError, r'^Batch live is active; compact evidence when no batch is starting or running\.$'):
+            compact(self.c, apply=True)
+        self.assertEqual(self.archives(), [])
+        self.assertRowUnchanged()
+
+    def test_a_batch_that_becomes_active_mid_compaction_refuses_inside_the_transaction(self):
+        import studio_evidence_log
+        real = studio_evidence_log.write_archive
+        def then_start(*args):
+            result = real(*args)
+            self.put(lambda queue: queue.append(dict(job_id='late', status='starting')))
+            return result
+        with patch('studio_evidence_log.write_archive', side_effect=then_start):
+            with self.assertRaisesRegex(ValueError, r'^Batch late is active'):
+                studio_evidence_log.compact(self.c, apply=True)
+        self.assertRowUnchanged()
+
+    def test_a_job_changing_mid_compaction_refuses_and_changes_nothing(self):
+        import studio_evidence_log
+        real = studio_evidence_log.write_archive
+        def then_change(*args):
+            result = real(*args)
+            self.put(lambda queue: queue[0]['native_evidence_history'].__setitem__(3, dict(native=dict(status='edited'))))
+            return result
+        with patch('studio_evidence_log.write_archive', side_effect=then_change):
+            with self.assertRaisesRegex(ValueError, r'^Job old changed during compaction; nothing was changed, retry$'):
+                studio_evidence_log.compact(self.c, apply=True)
+        self.assertNotIn('native_evidence_archive', self.c.job('old'))
+        self.assertEqual(len(self.c.job('old')['native_evidence_history']), 20)
+
+    def test_a_different_existing_archive_refuses_and_is_kept(self):
+        from studio_evidence_log import compact, _archive_path
+        path = _archive_path(self.c.root, self.c.job('old')); path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b'{"other":"evidence"}\n')
+        with self.assertRaisesRegex(ValueError, 'A different evidence archive already exists for old'):
+            compact(self.c, apply=True)
+        self.assertEqual(path.read_bytes(), b'{"other":"evidence"}\n')
+        self.assertEqual(self.archives(), [path.name])          # no temporary file left behind
+        self.assertRowUnchanged()
+
+    def test_archive_is_atomic_a_failed_readback_leaves_no_final_file(self):
+        from studio_evidence_log import compact, _archive_path
+        path = _archive_path(self.c.root, self.c.job('old'))
+        with patch('studio_evidence_log.file_sha256', return_value='0' * 64):
+            with self.assertRaisesRegex(ValueError, 'Evidence archive readback differs for old'):
+                compact(self.c, apply=True)
+        self.assertFalse(path.exists())
+        self.assertEqual(self.archives(), [])
+        self.assertRowUnchanged()
+
+    def test_journal_comes_from_the_transaction_result_with_no_post_commit_read(self):
+        from studio_evidence_log import compact, file_sha256, queue_bytes, read
+        real = self.c.state
+        calls = []
+        def once():
+            calls.append(1)
+            if len(calls) > 1:
+                raise RuntimeError('post-commit read')
+            return real()
+        with patch.object(self.c, 'state', side_effect=once):
+            done = compact(self.c, apply=True)
+        self.assertEqual(done['queue_bytes_after'], queue_bytes(self.c))
+        journal = read(done['journal'])[-1]
+        self.assertEqual((journal['queue_bytes_after'], journal['revision']), (done['queue_bytes_after'], self.c.state()['revision']))
+        archive = self.c.job('old')['native_evidence_archive']
+        self.assertEqual(file_sha256(archive['path']), archive['sha256'])
+        self.assertEqual(read(archive['path']), self.history)
+
+
+class LargeQueueRowTests(unittest.TestCase):
+    """Banker's failure, scaled down: an 818 MB row of 29 jobs, 770 MB of it history.
+
+    Here 29 finished jobs carry about 42 MB of in-row history and about 4 MB of
+    configuration and completion. Compaction must shrink the row to about the
+    non-history size, archives must verify by sha256, and a state read must be bounded.
+    """
+    JOBS, ENTRIES, ENTRY_BYTES = 29, 6, 240_000
+
+    def test_compaction_shrinks_a_large_row_to_its_non_history_size(self):
+        from studio_evidence_log import compact, file_sha256, queue_bytes, read
+        fixture = fixtures.PortableControllerTests(); fixture.setUp(); self.addCleanup(fixture.tearDown)
+        c = fixture.bound(); fixture.grant(c)
+        binding = packed(dict(terminal_id=c.terminal, run_id=c.run))
+        blob = 'h' * self.ENTRY_BYTES
+        jobs = [dict(job_id='bank-%02d' % j, status='completed', configuration=dict(blob='c' * 80_000, index=j),
+                     completion=dict(blob='p' * 60_000, index=j),
+                     native_evidence_history=[dict(native=dict(status='native_ongoing', observed=i, report=blob))
+                                              for i in range(self.ENTRIES)]) for j in range(self.JOBS)]
+        non_history = len(packed([{k: v for k, v in job.items() if k != 'native_evidence_history'} for job in jobs]))
+        c.store.db.execute('INSERT OR REPLACE INTO studio_queues VALUES(?,?)', (binding, packed(jobs)))
+        del jobs
+        before = queue_bytes(c)
+        self.assertGreater(before, 40_000_000)
+
+        def read_seconds():
+            best = None
+            for _ in range(3):
+                started = time.perf_counter(); c.state(); elapsed = time.perf_counter() - started
+                best = elapsed if best is None else min(best, elapsed)
+            return best
+        slow = read_seconds()
+        done = compact(c, apply=True)
+        fast = read_seconds()
+        print('\nfast-lane large row: %.1f MB -> %.1f MB (non-history %.1f MB); state() %.3fs -> %.3fs' %
+              (before / 1e6, done['queue_bytes_after'] / 1e6, non_history / 1e6, slow, fast))
+        self.assertEqual((done['queue_bytes_before'], len(done['archives'])), (before, self.JOBS))
+        self.assertEqual(done['queue_bytes_after'], queue_bytes(c))
+        self.assertGreaterEqual(done['queue_bytes_after'], non_history)
+        self.assertLess(done['queue_bytes_after'], non_history + self.JOBS * 600)   # archive references only
+        for archive in done['archives']:
+            self.assertEqual(file_sha256(archive['path']), archive['sha256'])
+            self.assertEqual(len(read(archive['path'])), self.ENTRIES)
+        self.assertNotIn('native_evidence_history', c.job('bank-00'))
+        self.assertLess(fast, 1.0)
+        self.assertLess(fast * 2, slow)
+
 
 class StopContinueTests(unittest.TestCase):
     def setUp(self):
@@ -266,6 +453,56 @@ class StopContinueTests(unittest.TestCase):
         from studio_fast_lane import continue_batch
         with self.assertRaisesRegex(ValueError, r'is still pending; stop it first: stop --batch-id batch\.'):
             continue_batch(self.c, 'batch')
+
+    def reserve(self, request_id):
+        job = self.c.job('batch')
+        digest = hashlib.sha256((self.c.root / 'packages/batch/manifest.json').read_bytes()).hexdigest()
+        self.c.submit('queue.reserve', dict(job_id='batch', configuration_sha256=job['configuration_sha256'],
+                                            package_sha256=digest), request_id)
+        return self.c.job('batch')['reservation']['reservation_id']
+
+    def test_stop_release_never_reuses_the_drivers_earlier_release_request_id(self):
+        from studio_fast_lane import stop
+        # The driver's first refused start: reserve, release under <id>-release-reservation, archive.
+        first = self.reserve('batch-reserve')
+        self.c.submit('queue.release_reservation', dict(job_id='batch', reservation_id=first), 'batch-release-reservation')
+        (self.c.root / 'batch-driver-refusals').mkdir()
+        (self.c.root / 'batch-driver-refusals/batch.refused-1.json').write_text('{}')
+        second = self.reserve('batch-reserve-r1')
+        self.assertNotEqual(first, second)
+        self.assertEqual(stop(self.c, 'batch')['status'], 'cancelled')
+        self.assertTrue((self.c.root / 'requests/batch-release-reservation-r1.json').is_file())
+
+    def test_continue_reuses_its_retained_successor_instead_of_a_new_rN(self):
+        from studio_fast_lane import stop, continue_batch, resolve_successor
+        stop(self.c, 'batch')
+        self.assertEqual(continue_batch(self.c, 'batch')['batch_id'], 'batch-r1')
+        # The demo lane resolves the ID before its scope; after a failed driver spawn the
+        # retry must name batch-r1 again, never batch-r2.
+        queue = {row['job_id']: row for row in self.c.state()['queue']}
+        self.assertEqual(resolve_successor(self.c.root, queue, 'batch'), 'batch-r1')
+        again = continue_batch(self.c, 'batch', new_batch_id=resolve_successor(self.c.root, queue, 'batch'))
+        self.assertEqual((again['batch_id'], again.get('reused')), ('batch-r1', True))
+        self.assertNotIn('batch-r2', {row['job_id'] for row in self.c.state()['queue']})
+
+    def test_an_explicit_new_batch_id_is_reused_only_for_this_predecessor(self):
+        from studio_fast_lane import stop, continue_batch
+        prepare_batch(self.c, 'other', synthetic(self.fixture, self.c, 1))
+        stop(self.c, 'batch')
+        with self.assertRaisesRegex(ValueError, r'^Batch other already exists and is not a successor of batch; pass a new --new-batch-id\.$'):
+            continue_batch(self.c, 'batch', new_batch_id='other')
+        self.assertEqual(self.c.job('other')['status'], 'pending')
+        self.assertEqual(continue_batch(self.c, 'batch', new_batch_id='next')['batch_id'], 'next')
+        self.assertTrue(continue_batch(self.c, 'batch', new_batch_id='next')['reused'])
+
+    def test_an_interrupted_continue_reuses_the_same_successor_id(self):
+        from studio_fast_lane import stop, continue_batch
+        stop(self.c, 'batch')
+        with patch('studio_batch.resume_batch', side_effect=OSError('interrupted')):
+            with self.assertRaises(OSError):
+                continue_batch(self.c, 'batch')
+        self.assertTrue((self.c.root / 'batch-lineage/batch-r1.json').is_file())
+        self.assertEqual(continue_batch(self.c, 'batch')['batch_id'], 'batch-r1')
 
 
 if __name__ == '__main__':

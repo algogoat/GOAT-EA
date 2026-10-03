@@ -11,6 +11,15 @@ valid seal stands in for the semantic pass. Any mismatch, or no seal (packages
 prepared before this change), falls back to the full checks, which raise the
 precise error. The seal lives next to the package (``packages/<id>.seal.json``),
 outside the hashed package tree, with the same local trust as preparation.json.
+
+The seal is a cache / performance aid, NOT a safety boundary. ``seal_sha256``
+only hashes the seal body itself, and the manifest it binds is a local file too:
+anyone able to rewrite a staged SET together with the manifest can also write a
+matching seal, and then members 1..N skip their semantic re-check at start
+(member 0, every byte hash and the frozen configuration hash are still checked).
+TODO(fast-lane follow-up): bind the seal (or manifest) digest into the job row at
+enqueue (queue.enqueue_batch payload/contract change) and require it in
+``sealed()``, so a forged seal no longer matches the trusted store.
 """
 import hashlib
 import json
@@ -30,7 +39,8 @@ def seal_path(package):
 
 
 CHECKER_SOURCES = ('studio_batch_seal.py', 'studio_optimization_inputs.py', 'studio_input_readback.py',
-                   'studio_strategy_settings.py', 'studio_native_request.py')
+                   'studio_strategy_settings.py', 'studio_native_request.py', 'studio_batch.py',
+                   'studio_launch_intent.py', 'studio_batch_contract.py')
 
 
 def checker_sha256():

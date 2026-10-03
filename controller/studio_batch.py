@@ -99,11 +99,32 @@ def _verify_package(controller, job, *, allow_peer_refresh=False):
     return package, plan, manifest
 
 
+def evidence_end_policy(value, testers, *, now=None):
+    """Batch evidence end ("front OOS" end): AUTO or an explicit closed broker day, recorded at prepare.
+
+    The current EA ends each export at its own last Friday (exclusive), so the
+    exports' actual end is recorded by the EA; OOS catch-up brings them to this
+    target. Never later than a closed broker day, never before the window end.
+    """
+    from studio_evidence_end import legacy_end, resolve
+    if not isinstance(value, str):
+        raise ValueError('evidence_end must be "auto" or a closed broker date such as 2026-09-25')
+    window_end = max(datetime.strptime(t['ToDate'], '%Y.%m.%d').date() for t in testers)
+    target = resolve(value, now, not_before=[(window_end, 'the optimization window end (ToDate)')])
+    return dict(requested=target['requested'], mode=target['mode'], target=target['iso'], target_label=target['label'],
+                tester_to_date=target['tester_to_date'], rule=target['rule'], warnings=target['warnings'],
+                resolved_utc=datetime.now(timezone.utc).isoformat(timespec='seconds') if now is None else now.isoformat(timespec='seconds'),
+                native_export_end='ea_last_friday_exclusive', native_end_if_exported_now=legacy_end(now)['iso'],
+                catch_up=('This EA build ends each export at its own last Friday (Thursday evidence). After the batch, '
+                          'evidence-scan shows each export\'s end and catchup-prepare re-tests the stale ones to the target.'))
+
+
 def read_plan(controller, plan_path):
     plan_path = Path(plan_path)
     spec, source_plan = _json(plan_path,with_raw=True)
-    if not isinstance(spec, dict) or set(spec) != {'schema_version', 'export', 'members'} or spec['schema_version'] != 1:
-        raise ValueError('Batch plan requires schema_version:1, export and members')
+    if (not isinstance(spec, dict) or set(spec) - {'evidence_end'} != {'schema_version', 'export', 'members'}
+            or spec['schema_version'] != 1):
+        raise ValueError('Batch plan requires schema_version:1, export and members (optional: evidence_end)')
     if not isinstance(spec['members'], list) or not 1 <= len(spec['members']) <= 10000:
         raise ValueError('Specify 1..10000 explicit file/asset members')
     raw_members, retained = [], []
@@ -128,10 +149,12 @@ def read_plan(controller, plan_path):
     return config, raw_members, retained, hashlib.sha256(source_plan).hexdigest(), spec
 
 
-def prepare_batch(controller, batch_id, plan_path):
+def prepare_batch(controller, batch_id, plan_path, *, now=None):
     if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
         raise ValueError('Batch ID must be 1..80 letters, digits, underscore or hyphen')
     config, raw_members, retained, source_hash, spec = read_plan(controller, plan_path)
+    evidence = (evidence_end_policy(spec['evidence_end'], [m['tester'] for m in config['batch_members']], now=now)
+                if 'evidence_end' in spec else None)
     from studio_research_authority import authority
     from campaign_ledger import packed
     scope = authority(controller.store.db,packed(dict(terminal_id=controller.terminal,run_id=controller.run)),controller.state())
@@ -187,6 +210,8 @@ def prepare_batch(controller, batch_id, plan_path):
             job_id=batch_id, source_revision=job['source_revision'], configuration_sha256=job['configuration_sha256']),
         native_batch=dict(export_end_policy='native_last_friday_record_actual', back_oos_date=exports['BackOOSDate'],
             forward_start=checked[0]['tester']['ForwardDate'], export_settings=exports), jobs=planned)
+    if evidence is not None:
+        plan['native_batch']['evidence_end'] = evidence
     plan['native_batch']['run_relative'] = native_run_relative(plan)
     package.parent.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='goat-batch-plan-') as temporary:
@@ -208,7 +233,7 @@ def prepare_batch(controller, batch_id, plan_path):
         raise ValueError('Prepared package retained; queue publication was not confirmed. Inspect queue state and use a new ID after reconciling ownership/revision: ' + str(exc)) from exc
     controller.bridge.pump()
 
-    return dict(batch_id=batch_id, member_count=len(planned), package=str(package), manifest=manifest,
+    return dict(batch_id=batch_id, member_count=len(planned), package=str(package), manifest=manifest, evidence_end=evidence,
         native_started=False, next_action='Review settings and use start --job-id with this batch ID; Studio runs the entire native queue')
 
 
@@ -234,7 +259,14 @@ def batch_status(controller, batch_id):
         controller.reconcile(batch_id)
         job = controller.job(batch_id)
     members = job['configuration'].get('batch_members', [job['configuration']])
-    return dict(batch_id=batch_id, status=job['status'], member_count=len(members),
+    evidence = None
+    plan_path = controller.root / 'packages' / batch_id / 'studio-plan.json'
+    if plan_path.is_file():
+        try:
+            evidence = (_json(plan_path).get('native_batch') or {}).get('evidence_end')
+        except (OSError, ValueError):
+            evidence = None
+    return dict(batch_id=batch_id, status=job['status'], member_count=len(members), evidence_end=evidence,
         native=job.get('native_observation'), result_path=job.get('completion_path'),
         members=[dict(index=index, symbol=member['tester']['Symbol'], timeframe=member['tester']['Period'],
             ea_desc=member['strategy']['values']['EA_Desc'], configuration_sha256=sha(member)) for index, member in enumerate(members)],
@@ -331,7 +363,7 @@ def load_batch(controller, batch_id, source):
 
 
 def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False, include_no_edge=False,
-                 allow_peer_refresh=False):
+                 allow_peer_refresh=False, now=None):
     """Create a new native queue containing explicitly selected unfinished work.
 
     `include_failed` retries real failures; members tested with no profitable
@@ -375,8 +407,14 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
     if not selected: raise ValueError('No unfinished members selected')
     inputs = controller.root / 'batch-imports' / uuid.uuid4().hex; inputs.mkdir(parents=True)
     plan_path = inputs / 'remaining.json'
-    write_json(plan_path, dict(schema_version=1, export=previous['configuration']['export'], members=selected))
-    result = prepare_batch(controller, batch_id, plan_path)
+    remaining = dict(schema_version=1, export=previous['configuration']['export'], members=selected)
+    recorded = ((_json(package / 'studio-plan.json').get('native_batch') or {}).get('evidence_end')
+                if (package / 'studio-plan.json').is_file() else None)
+    if isinstance(recorded, dict) and isinstance(recorded.get('target'), str):
+        # The successor keeps the original batch's resolved date: "auto" must not move to a later Friday.
+        remaining['evidence_end'] = recorded['target']
+    write_json(plan_path, remaining)
+    result = prepare_batch(controller, batch_id, plan_path, now=now)
     write_json(inputs / 'provenance.json', dict(source_batch_id=source_batch_id, new_batch_id=batch_id,
         include_failed=include_failed, include_no_edge=include_no_edge, selected_count=len(selected),
         no_edge_members=len(no_edge)))

@@ -78,7 +78,7 @@ Check it: `. "<work>\goat.ps1"; Desktop 'app.info'`. Long-running commands (`ser
 ## Steps 1-4: account link, terminal, receipt
 
 1. `Desktop 'onboarding.status'`; follow `data.steps` / `data.nextStep`. Sign-in, beta access and the published release are for the user and GOAT.
-2. Ask for the demo **login number** (never a password): `Desktop 'onboarding.accounts' @{operation='add'; accountId='<login>'} -RequestId 'link-<login>'`.
+2. Link the demo account. If `Desktop 'agent.next'` reports the one-time agent-connect consent is on, skip this: at step 10 the desktop links the demo login and server it reads from MT5 itself (broker readback, cross-checked with `common.ini`), never from typed input, and only for a demo with a free account slot. Otherwise ask for the demo **login number** (never a password): `Desktop 'onboarding.accounts' @{operation='add'; accountId='<login>'} -RequestId 'link-<login>'`. Real-money accounts are never linked or paired by an agent; the user does that.
 3. `Desktop 'suite.discover'` and show the terminals; the user picks one. With `$sel = @{terminalExecutable='<exe>'; terminalDataRoot='<data folder>'; portable=$false}` run `Desktop 'suite.validate' $sel`, then `Desktop 'suite.install' $sel -RequestId 'install-1'`. Put `data.receipt_path` into `$receipt` in goat.ps1. (Already installed? `Desktop 'suite.status'` lists `data.installations[].receipt_path`.)
 4. `Studio @('discover')`. Note `result.installation.ea_relative_path` and `terminal_data_root`.
 
@@ -92,7 +92,7 @@ Check it: `. "<work>\goat.ps1"; Desktop 'app.info'`. Long-running commands (`ser
 ## Steps 9-12: approvals, pairing, control
 
 9. Ask the user, in MT5: allow DLL imports in the GOAT EA's properties dialog; add `https://goatedge.ai` under Tools > Options > Expert Advisors > Allow WebRequest for listed URL; keep Algo Trading off.
-10. The EA shows "Connection code: ..." (its link carries the code after `#ea-connect=`, so the portal fills it in). Ask the user to read it to you, then `Desktop 'onboarding.preparePairing' @{userCode='<code>'}`. Ask them to check the account and build in GOAT desktop and click **Approve this connection**. You cannot approve it.
+10. The EA shows "Connection code: ..." (its link carries the code after `#ea-connect=`, so the portal fills it in). First try `Desktop 'onboarding.readPairingCode' @{receiptPath=$receipt}`: it reads the code from MT5 itself (`studio pairing-code`: the code the EA shares locally on LC36 and later, else the setup mailbox) and prepares the review, so never screenshot MT5 for it. If the review expires, GOAT desktop reads the fresh code and prepares a new review by itself. If it reports `no_native_answer` (an EA build that does not share its code, such as SM31), ask the user to read the code to you, then `Desktop 'onboarding.preparePairing' @{userCode='<code>'}`. With the one-time "Let my agent connect my own demo terminals" consent on for this demo login and broker server, `readPairingCode` also links that demo login when it is not linked yet, through GOAT's server, which links it only when its own records say the account is demo (when every account slot is used it refuses and says so; free one with `onboarding.accounts` operation `remove` only with the user's yes). Then follow `agent.next`. Only when it names `onboarding.agentApprovePairing` (Vince, 2026-10-03: agents may approve pairing for demo accounts only; the consent covers this login, and GOAT's server confirmed the demo) do you call it with the same request ID on every retry. It re-checks the consent, the link, the build and the server's demo check right before approving, audits each step, and refuses real money, GOAT experiment accounts and a login that differs from the pending connection. If the server cannot confirm a demo, the review says so and the user approves it. Otherwise the user checks the account's last 4 digits and the build in GOAT desktop and clicks **Approve this connection**; you cannot approve it, and you never call `onboarding.approvePairing`.
 11. Start `serve` in the background: Claude Code: `. "<work>\goat.ps1"; & $goat studio --installation $receipt serve --watch-seconds 3600` with `run_in_background: true`. Others: `Start-Process -FilePath $goat -ArgumentList @('studio','--installation',"""$receipt""",'serve','--watch-seconds','3600') -WindowStyle Hidden`. It stops after at most 3600 s; restart it whenever the user needs to click in Studio.
 12. Ask the user to click **GIVE TO AGENT** in the Studio panel on the GOAT chart. Repeat `Studio @('onboarding-status')` until `result.status` is `local_monitor_ready` (otherwise do its `next_action`), and `Desktop 'onboarding.status' @{receiptPath=$receipt}` until `data.ready` is true. If a step reports `ACTIVATION_RELOAD_REQUIRED`, ask the user to change the chart timeframe once.
 
@@ -176,6 +176,17 @@ foreach ($m in $res.member_outcomes) { $i = $m.index; $t = $res.configuration.ba
 ```
 
 Replace `unavailable` with real facts when known. Then `Studio @('benchmark-report','--batch-id','pilot-1')` gives the measured timing; use it to size the next batch with the user. A `failed` or `interrupted` result is a technical outcome, not evidence that the strategy is bad. To build a portfolio, import the export folders with `library.prepareImport` / `library.finalizeImport` as described in the installed `goat-beta-agent-guide.md` (sections 7 and 8).
+
+## Step 21: deploy a saved portfolio to demo
+
+Demo accounts only; GOAT refuses real-money accounts in the desktop, the server link and the controller. The user turns on **Demo autopilot** for the account once (Portfolios > Deploy to demo). After that:
+
+1. `Desktop 'deploy.prepareDemo' @{savedPortfolioId='<id>'; receiptPath=$receipt}` returns a review: broker-verified demo, linked account, EA build, every member SET hash and a `refusals` list. Fix what it names; never work around a refusal.
+2. `Desktop 'deploy.demo' @{reviewId='<reviewId>'} -RequestId 'deploy-1'` uploads the portfolio, links it for live tracking, closes the inert MT5 once, reopens it with the GOAT Portfolio Dashboard, attaches every child and audits each one against its SET (`studio deploy-load`). It returns when the EA reports the exact SET hashes loaded with Algo Trading still off.
+3. Tell the user the one remaining step: **Turn on Algo Trading in MT5 to start trading (demo)**. You never turn it on.
+4. `Desktop 'deploy.status' @{receiptPath=$receipt}` shows what the dashboard runs. `Desktop 'deploy.stop' @{receiptPath=$receipt}` unloads it only when Algo Trading is off and the account has no open positions or orders; it never closes positions. The terminal stays closed afterwards: `monitor-launch` with a new attempt ID returns it to research.
+
+`Desktop 'suite.closeTerminal' @{receiptPath=$receipt}` closes MT5 for the user when it is inert (demo, Algo Trading off, no positions or orders, idle tester, no batch); use it instead of asking the user to close MT5 in steps 5 and 8.
 
 ## OOS catch-up: one timeline before you build a portfolio
 

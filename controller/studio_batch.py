@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import re
 import tempfile
+import time
 import configparser
 import uuid
 
@@ -291,13 +292,53 @@ def save_batch(controller, batch_id, output):
         state='saved_unstarted_native_batch', source_batch_id=batch_id)
 
 
+GATE_BUSY_WAIT_SECONDS = 3.0
+GATE_BUSY_POLL_SECONDS = 0.1
+
+
+def gate_busy(error):
+    """The native gate (or a file it guards) is held by another process right now.
+
+    The gate is opened without any FILE_SHARE flag, so a concurrent opener gets
+    ERROR_SHARING_VIOLATION (32) or ERROR_LOCK_VIOLATION (33) at once instead of
+    waiting; POSIX flock(LOCK_NB) raises BlockingIOError.
+    """
+    return getattr(error, 'winerror', None) in (32, 33) or isinstance(error, BlockingIOError)
+
+
+def _observe_when_gate_free(controller, batch_id, *, wait=GATE_BUSY_WAIT_SECONDS,
+                            poll=GATE_BUSY_POLL_SECONDS, clock=time.monotonic, sleep=time.sleep):
+    """Reconcile is an observation; while a start/stop holds the gate, wait briefly, then defer.
+
+    A refused gate acquisition commits nothing, so retrying it is safe and never
+    repeats a command. After the wait, status answers from the retained state
+    instead of failing the read (T3 2026-10-03: WinError 32 during each start).
+    """
+    deadline = clock() + wait
+    while True:
+        try:
+            controller.reconcile(batch_id)
+            return None
+        except OSError as error:
+            if not gate_busy(error):
+                raise
+            if clock() >= deadline:
+                return dict(reason='native_gate_busy', retained_state_only=True,
+                            plain='A start or stop is using the native gate right now, so this answer is the '
+                                  'last retained state without a new observation. Poll batch-status again.')
+            sleep(poll)
+
+
 def batch_status(controller, batch_id):
     job = controller.job(batch_id)
+    deferred = None
     if 'launch_intent' in job and job['status'] not in ('completed', 'failed', 'cancelled'):
-        controller.reconcile(batch_id)
+        # Never changes a start in flight: studio_reconcile leaves a 'starting'
+        # attempt with nothing dispatched untouched (no transaction, no revision).
+        deferred = _observe_when_gate_free(controller, batch_id)
         job = controller.job(batch_id)
     members = job['configuration'].get('batch_members', [job['configuration']])
-    extra = {}
+    extra = {} if deferred is None else dict(observation_deferred=deferred)
     observed = (job.get('native_observation') or {}).get('native') or (job.get('completion') or {}).get('native')
     if isinstance(observed, dict) and observed.get('status') == 'native_error' and 'launch_intent' in job:
         from studio_native_diagnostics import for_job

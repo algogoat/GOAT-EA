@@ -266,6 +266,56 @@ class SeedPinningTests(unittest.TestCase):
         state = self.runner.prepare('batch', self.plan)
         self.assertNotIn('monitor_profile', state)
 
+    def make_pre_fix(self, **state_changes):
+        """Rewrite the prepared package as a pre-fix one: plain non-axis values in the manifest."""
+        from studio_bridge import write_json
+        from studio_seed import digest
+        self.runner.prepare('batch', self.plan)
+        root = self.runner.path('batch'); manifest = read_json(root/'manifest.json')
+        for member in manifest['members']:
+            member['values'] = {k: (v.split('||')[0] if v.endswith('||N') else v) for k, v in member['values'].items()}
+        write_json(root/'manifest.json', manifest)
+        state = read_json(root/'state.json'); state['manifest_sha256'] = digest(root/'manifest.json'); state.update(state_changes)
+        write_json(root/'state.json', state)
+        self.closes = []
+        self.runner.process.close = lambda identity: self.closes.append(identity)
+        return root
+
+    def test_pre_fix_package_is_refused_by_prepare_with_the_same_id(self):
+        self.make_pre_fix()
+        with self.assertRaisesRegex(ValueError, r'prepared before explicit optimization flags \(.*no explicit optimization flag: Size\); prepare a new batch ID'):
+            self.runner.prepare('batch', self.plan)
+
+    def test_pre_fix_package_is_refused_by_start_before_any_process_effect(self):
+        root = self.make_pre_fix()
+        with self.assertRaisesRegex(ValueError, 'prepared before explicit optimization flags'):
+            self.runner.start('batch', 10)
+        self.assertEqual((self.starts, self.closes), ([], []), 'monitor never closed, no member started')
+        self.assertEqual(read_json(root/'state.json')['status'], 'prepared')
+        self.assertFalse(self.runner.slot.exists())
+
+    def test_pre_fix_package_is_refused_by_resume_before_the_next_launch(self):
+        root = self.make_pre_fix(status='active', generation=1)
+        from studio_bridge import write_json
+        write_json(self.runner.slot, dict(status='active', batch_id='batch', manifest_sha256=read_json(root/'state.json')['manifest_sha256'], generation=1))
+        self.process_state = None
+        with self.assertRaisesRegex(ValueError, 'prepared before explicit optimization flags'):
+            self.runner.resume('batch', 10)
+        self.assertEqual(self.starts, [])
+        self.assertEqual(read_json(root/'state.json')['members'][0]['status'], 'pending', 'member is not consumed')
+
+    def test_fresh_package_passes_the_pre_fix_guard(self):
+        self.runner.prepare('batch', self.plan)
+        self.assertEqual(self.runner.prepare('batch', self.plan)['status'], 'prepared')
+
+    def test_oversized_refused_xml_is_recorded_without_hashing(self):
+        path = self.root/'x_N7_big.xml'; path.write_bytes(b'0123456789')
+        with patch('studio_seed.MAX_XML_BYTES', 5):
+            row = SeedRunner._observed_xml(path)
+        self.assertEqual((row['sha256'], row['size_bytes'], row['frames_from_filename'], row['accepted']), (None, 10, 7, False))
+        row = SeedRunner._observed_xml(path)
+        self.assertEqual(row['sha256'], hashlib.sha256(b'0123456789').hexdigest())
+
 
 class StoppedRootMessageTests(unittest.TestCase):
     def test_names_program_pid_and_metaeditor_action(self):

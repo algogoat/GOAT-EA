@@ -19,7 +19,7 @@ from studio_optimization_inputs import explicit_optimization_inputs,verify_expli
 from studio_settings import validate_tester
 from studio_strategy_settings import read_values,numeric
 from studio_template_tools import source_bytes,validate_raw
-from studio_seed_results import collect,read_seed_json,MAX_MANIFEST_BYTES,MAX_STATE_BYTES,MAX_RESULT_BYTES
+from studio_seed_results import collect,read_seed_json,MAX_MANIFEST_BYTES,MAX_STATE_BYTES,MAX_RESULT_BYTES,MAX_XML_BYTES
 from studio_seed_slot import guard_active_seed
 from studio_terminal_isolation import controller_preflight
 
@@ -180,6 +180,7 @@ class SeedRunner:
         if root.exists():
             _,old,_=self._read(batch_id)
             if old['plan_sha256']!=sha(plan):raise ValueError('Seed batch ID already belongs to a different plan')
+            self._verify_prepared(batch_id,old)
             return self.status(batch_id)
         members,payloads=self._freeze(root,plan)
         manifest=dict(schema_version=1,batch_id=batch_id,installation_sha256=sha(self.c.install),schema_sha256=sha(self.c.schema),plan_sha256=sha(plan),
@@ -203,11 +204,22 @@ class SeedRunner:
 
     @staticmethod
     def _observed_xml(path):
-        """Path, hash and filename frame count of an XML the controller did not accept."""
-        try:sha256=digest(path)
+        """Path, hash and filename frame count of an XML the controller did not accept.
+
+        Hashed in chunks and only up to the collector's XML bound, so a refused
+        oversized file is recorded without being loaded into memory.
+        """
+        sha256=None;size=None
+        try:
+            size=Path(path).stat().st_size
+            if size<=MAX_XML_BYTES:
+                h=hashlib.sha256()
+                with Path(path).open('rb') as stream:
+                    for chunk in iter(lambda:stream.read(1024*1024),b''):h.update(chunk)
+                sha256=h.hexdigest()
         except OSError:sha256=None
         match=re.search(r'_N(\d{1,7})_',Path(path).name)
-        return dict(path=str(path),sha256=sha256,frames_from_filename=int(match[1]) if match else None,accepted=False)
+        return dict(path=str(path),sha256=sha256,size_bytes=size,frames_from_filename=int(match[1]) if match else None,accepted=False)
 
     # Hooks for runners that reuse this process driver (studio_catchup). Seeds keep the defaults.
     def _collect(self,path,spec,manifest):
@@ -215,6 +227,18 @@ class SeedRunner:
 
     def _before_start(self,spec):
         """Stage per-member inputs before the start receipt; must raise before any process effect."""
+
+    def _verify_prepared(self,batch_id,manifest):
+        """Refuse a seed package frozen before explicit ||N flags (MT5 could add axes).
+
+        Runs before every process effect: prepare of an existing ID, activation,
+        and each member launch, so start and resume cannot drive an old package.
+        """
+        for member in manifest['members']:
+            try:verify_explicit_inputs(member['values'],self.c.schema,member['axes'])
+            except ValueError as exc:
+                raise ValueError('Seed batch '+batch_id+' was prepared before explicit optimization flags ('+str(exc)+
+                    '); prepare a new batch ID') from None
 
     def _observe(self,root,manifest,state):
         current=self.process.inspect()
@@ -320,6 +344,7 @@ class SeedRunner:
                 if state['status'] in ('completed','stopped','reconcile_required'):return self._public(root,state)
                 if state['status']=='prepared':
                     if not initial:raise ValueError('Use seed-start for a prepared batch')
+                    self._verify_prepared(batch_id,manifest)
                     self._activate(batch_id,root,manifest,state)
                 self._owner(state['generation']);self._slot(batch_id,state)
                 current=self._observe(root,manifest,state)
@@ -342,6 +367,7 @@ class SeedRunner:
                         if item['attempts']!=0:raise ValueError('Seed retry forbidden')
                         if self._outputs(spec):raise ValueError('Output already exists for unstarted seed member')
                         self._owner(state['generation'])
+                        self._verify_prepared(batch_id,manifest)
                         self._before_start(spec)
                         item.update(status='starting',attempts=1,started_unix=self.clock());self._save(root,state)
                         try:

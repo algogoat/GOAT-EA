@@ -543,6 +543,10 @@ class CatchupRunner(SeedRunner):
             return []
         return sorted(p for p in folder.glob('*.set') if p.is_file())
 
+    def _verify_prepared(self, batch_id, manifest):
+        """Catch-up members are single Optimization=0 passes with no axes, so saved
+        tester-profile optimize flags cannot add a search axis; nothing to refuse."""
+
     def _before_start(self, spec):
         """Stage the EA's capture input snapshot (GoatTraceInit refuses without it). Create-only."""
         if not spec['capture']:

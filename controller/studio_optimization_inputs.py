@@ -7,8 +7,9 @@ left at Y by an earlier tester session silently becomes an extra search axis.
 Only an explicit five-part ``value||start||step||stop||N`` tuple clears it.
 Every controller-generated tester input set therefore spells out the flag of
 each optimizable input: active axes keep their exact frozen tuple (Y), all
-other optimizable inputs become ``value||value||0||value||N`` (the form MT5
-itself writes for a disabled input). Literal strings are never touched.
+other optimizable inputs become ``value||value||0||value||N``. (MT5's own
+disabled form keeps a remembered range, e.g. ``true||false||0||true||N``; only
+the final ``N`` matters.) Literal strings are never touched.
 """
 
 

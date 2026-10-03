@@ -98,11 +98,17 @@ silently add an axis. So the frozen SET and startup INI write:
 - each frozen axis with its exact range and `Y`, byte for byte as in the template
   (`Grid_Size=-4.0||-5||1||-3||Y`);
 - every other optimizable input as `value||value||0||value||N` with the template's
-  own value (`ADX_Level=22.0||22.0||0||22.0||N`), which is the form MT5 itself
-  writes for a disabled input;
+  own value (`ADX_Level=22.0||22.0||0||22.0||N`). MT5's own disabled form keeps a
+  remembered range (for example `true||false||0||true||N`); only the final `N`
+  matters;
 - literal strings and non-optimizable (`sinput`) inputs unchanged.
 
 Preparation refuses the plan if pinning would change any trading value or axis.
+A seed batch prepared before this fix has plain non-axis values in its manifest.
+`seed-prepare` with that same ID, `seed-start` and `seed-resume` all refuse it
+before any process effect ("prepared before explicit optimization flags; prepare a
+new batch ID"). A member already running is still observed and kept; only the next
+launch is refused.
 The XML check stays strict: an XML that still varies a non-axis input fails with
 `Seed XML axes differ from frozen template`. Native batches (V1.49) have pinned
 their startup `[TesterInputs]` the same way since AX26. Promoted fixed/robustness

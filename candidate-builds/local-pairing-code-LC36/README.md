@@ -17,8 +17,9 @@ No trading, risk, sizing, order or controller wire behaviour changes. The pinned
 (`GOAT_Inputs_Definitions.mqh`) is SM32's, unchanged by EX33, MH34 and LC36, so SM32 batch packages stay valid.
 
 Its `GOAT_BUILD_ID` is `V1.49-LOCAL-PAIRING-CODE-36`, with marker `LC36` (MH34 is #112, FU35 is #122).
-`identity.json` binds the exact forward source. **Compile is pending** until the compile commit adds the
-binary and its sanitized receipt. The new build ID needs server admission before activation.
+`identity.json` binds the exact forward source. **Compiled** from `49e7f359` with MetaEditor 5.0.0.6230 (0 errors, 0 warnings):
+`GOAT V1.49.ex5` sha256 `59325061…` (2,397,574 bytes) with its sanitized `compile-receipt.json`.
+Native qualification has NOT been performed. The new build ID needs server admission before activation.
 
 LC36 supersedes `setup-monitor-host-MH34`, which stays retained unchanged (compile pending, never compiled
 on its own), as do EX33, SM32, SM31 and SP30. The root `GOAT V1.49.ex5` and all installed artifacts

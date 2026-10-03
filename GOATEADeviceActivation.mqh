@@ -92,6 +92,28 @@ string GOATDeviceActivationCodeQuote(const string value)
    return result+"\"";
   }
 
+// Zero-click demo pairing (goatai agent_demo_pairing.js): this terminal's own MT5 readback of its
+// trade mode and broker server. GOAT's server lets an agent approve a pairing only for a demo trade
+// mode on a reviewed demo server, and revokes an agent-approved credential when a later license
+// check reports anything else. An unknown trade mode is reported as real, never as demo.
+// Payload only: nothing here reads or changes trading, trade events or the model route.
+string GOATBrokerFactsTradeMode(void)
+  {
+   long mode=AccountInfoInteger(ACCOUNT_TRADE_MODE);
+   if(mode==ACCOUNT_TRADE_MODE_DEMO) return "demo";
+   if(mode==ACCOUNT_TRADE_MODE_CONTEST) return "contest";
+   return "real";
+  }
+
+// `source` names the request: "ea-device-start" (the server's BROKER_FACTS_SOURCE) on
+// device/start, "" (omitted) on later calls.
+string GOATBrokerFactsJson(const string source)
+  {
+   return "{"+(source=="" ? "" : "\"source\":"+GOATDeviceActivationCodeQuote(source)+",")
+      +"\"tradeMode\":\""+GOATBrokerFactsTradeMode()
+      +"\",\"server\":"+GOATDeviceActivationCodeQuote(AccountInfoString(ACCOUNT_SERVER))+"}";
+  }
+
 // The same request MT5 shows: pending, a well-formed code, this login and server, unexpired.
 bool GOATDeviceActivationCodeShareable(void)
   {
@@ -512,7 +534,8 @@ bool GOATDeviceActivationRequestStart(void)
    g_GOATDeviceActivationNextAttemptTick=now_tick+30000;
 
    string json="{\"accountId\":\""+g_GOATDeviceActivationAccountId
-               +"\",\"buildId\":\""+g_GOATDeviceActivationBuildId+"\"}";
+               +"\",\"buildId\":\""+g_GOATDeviceActivationBuildId
+               +"\",\"brokerFacts\":"+GOATBrokerFactsJson("ea-device-start")+"}";
    string response="";
    // All terminals under this Windows user share one admission cooldown.
    // The exclusive file handle spans the request; never overwrite another lease.

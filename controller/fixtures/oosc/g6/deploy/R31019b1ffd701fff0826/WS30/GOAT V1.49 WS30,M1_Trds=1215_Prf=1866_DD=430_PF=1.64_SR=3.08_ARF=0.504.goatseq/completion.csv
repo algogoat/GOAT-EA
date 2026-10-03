@@ -1,0 +1,17 @@
+key,value
+tester_finished,false
+deinit_reason,1
+observed_end_server_msc,1789447020000
+sequence_allocations,716
+joined_deals,2206
+real_sequences,716
+entry_deals,1067
+final_active_real_sequences,1
+final_positions,0
+final_orders,0
+rows,2000003
+native_final_balance,101865.65
+native_final_equity,101865.65
+error,2000000 row resource limit exceeded
+capture_status,incomplete
+footer,END

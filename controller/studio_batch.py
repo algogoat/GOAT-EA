@@ -156,6 +156,9 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
     evidence = (evidence_end_policy(spec['evidence_end'], [m['tester'] for m in config['batch_members']], now=now)
                 if 'evidence_end' in spec else None)
     from studio_research_authority import authority
+    # FU35+ EAs receive the one resolved date as EvidenceEnd; older builds keep the recorded legacy end.
+    from studio_evidence_end_export import for_controller
+    evidence = for_controller(controller, evidence)
     from campaign_ledger import packed
     scope = authority(controller.store.db,packed(dict(terminal_id=controller.terminal,run_id=controller.run)),controller.state())
     if scope is not None and (source_hash!=scope['plan_sha256'] or sha(raw_members)!=scope['members_sha256']):
@@ -300,7 +303,9 @@ def load_batch(controller, batch_id, source):
     if parser.defaults() or parser.sections() != ['Export']:
         raise ValueError('Unexpected export settings in saved batch')
     export = {}
-    for key, value in parser['Export'].items():
+    from studio_evidence_end_export import saved_value
+    saved_evidence_end = saved_value(dict(parser['Export']))
+    for key, value in ((k, v) for k, v in parser['Export'].items() if k != 'EvidenceEnd'):
         if key in ('AdjustLots', 'IncludeBackOOS', 'IncludeSequenceData'):
             if value not in ('0', '1'):
                 raise ValueError('Invalid saved export boolean')
@@ -353,7 +358,11 @@ def load_batch(controller, batch_id, source):
         set_path = imported / f'{index + 1:05d}.set'; set_path.write_bytes(set_raw)
         plan_members.append(dict(set_path=str(set_path), tester=member['tester']))
     plan_path = imported / 'plan.json'
-    write_json(plan_path, dict(schema_version=1, export=export, members=plan_members))
+    imported_plan = dict(schema_version=1, export=export, members=plan_members)
+    if saved_evidence_end is not None:
+        # A saved EvidenceEnd is revalidated at prepare; it never bypasses the closed-day rule.
+        imported_plan['evidence_end'] = saved_evidence_end
+    write_json(plan_path, imported_plan)
     write_json(imported / 'provenance.json', dict(source_path=str(source), source_sha256=hashlib.sha256(raw).hexdigest(),
         imported_as_new_batch=True, prior_states_do_not_authorize_execution=True))
     result = prepare_batch(controller, batch_id, plan_path)

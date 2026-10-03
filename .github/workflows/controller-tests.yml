@@ -86,6 +86,12 @@ jobs:
           node scripts/test_studio_steady_panel_mutations.cjs
       - name: Dashboard overview presentation
         run: node scripts/test_dashboard_overview.cjs
+      - name: FU35 cancel stop confirmation and EvidenceEnd export boundary
+        run: node scripts/test_ea_followups.cjs
+      - name: FU35 mutation check (every EA guard is load-bearing)
+        run: node scripts/test_ea_followups_mutations.cjs
+      - name: EvidenceEnd controller staging mutation check
+        run: python scripts/test_evidence_end_export_controller_mutations.py
 
       - name: Verify Studio derived Report handoff safety
         run: node scripts/test_studio_derived_report.cjs

@@ -2,6 +2,9 @@
 #define GOAT_STUDIO_DISPATCH_MQH
 #include "GOATStudioWorkers.mqh"
 #include "GOATStudioRecovery.mqh"
+#ifdef GOAT_STOP_CONFIRM_V149
+#include "GOATTesterStopConfirm.mqh"
+#endif
 // Included after Studio UI helpers. Requests are terminal-local and require the
 // same exclusive launch.lock used by every configured controller transaction.
 bool GoatStudioCommonDigest(const string path,const string expected)
@@ -84,7 +87,15 @@ string GoatStudioCancelRequest(const string body)
    string guard=base+"\\active_optimization_launch.ini",cfg=base+"\\active_optimization_config.ini";
    if(FileIsExist(guard,FILE_COMMON) && !FileDelete(guard,FILE_COMMON)) cleared=false;
    if(FileIsExist(cfg,FILE_COMMON) && !FileDelete(cfg,FILE_COMMON)) cleared=false;
+#ifdef GOAT_STOP_CONFIRM_V149
+   // Bounded multi-read idle confirmation; one 100 ms read raced MT5's shutdown.
+   bool stopped=GoatTesterStopConfirmed();
+   Print("GOAT_CANCEL_STOP_CONFIRM build_id="+GOAT_BUILD_ID+" request="+id+" idle_confirmed="+(stopped ? "true" : "false")
+         +" polls="+(string)g_GoatStopConfirmPolls+" stop_clicks="+(string)g_GoatStopConfirmClicks
+         +" elapsed_ms="+(string)g_GoatStopConfirmElapsedMs);
+#else
    bool stopped=MTTESTER::ClickStop(1);
+#endif
    string items[];StringSplit(GetFileContent(native_run+"\\queue.GOAT"),(ushort)31,items);
    bool saved=(ArraySize(items)>0);
    for(int i=0;i<ArraySize(items);i++)

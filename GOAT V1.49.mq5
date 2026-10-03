@@ -14,14 +14,19 @@
 #define GOAT_API_BEARER_LEGACY_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #define GOAT_API_BEARER_FILE GOATApiBearerFile()
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-PANEL-STEADY-37"
+#define   GOAT_BUILD_ID "V1.49-BETA17-38"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
+// FU35: bounded idle confirmation before CANCELLED_RECONCILE, and the
+// EvidenceEnd export setting (one shared export boundary per batch).
+#define GOAT_STOP_CONFIRM_V149
+#define GOAT_EVIDENCE_END_V149
 #include "GOAT_SequencePackage.mqh"
+#include "GOATEvidenceEnd.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
 long g_goat_fitness_nonce=0;
-#define   GOAT_BUILD_MARKER "PS37"
+#define   GOAT_BUILD_MARKER "B38"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -4456,6 +4461,18 @@ bool StartExporter(bool reportMode)
     bool   InclBackOOS = StringToInteger(FetchExportSetting("IncludeBackOOS",Key,EA_Name,Server))!=0;//Print(InclBackOOS);
     const int EXPORT_START_ATTEMPTS = 3;
     const int EXPORT_ERROR_ABORTS   = 2;
+#ifdef GOAT_EVIDENCE_END_V149
+    // Resolve the shared export boundary before any tester run; a refused
+    // EvidenceEnd stops the search and never falls back to another end.
+    string evidenceSetting=FetchExportSetting("EvidenceEnd",Key,EA_Name,Server);
+    string evidenceToDate="",evidenceEnd="",evidenceError="";
+    if(evidenceSetting!="")
+    {
+     evidenceToDate=GoatEvidenceEndToDate(evidenceSetting,TimeTradeServer(),xmlData.endD,evidenceEnd,evidenceError);
+     if(evidenceToDate=="") {LogOrPrint(reportMode,"❌ "+evidenceError+". No exports were run.",Key,EA_Name,Server); return false;}
+     LogOrPrint(reportMode,"Evidence end "+evidenceEnd+" (EvidenceEnd="+evidenceSetting+"): every export ends there.",Key,EA_Name,Server);
+    }
+#endif
 
     if(!reportMode)
     {
@@ -4471,7 +4488,11 @@ bool StartExporter(bool reportMode)
     }
     if(InclBackOOS && BackOOSDate!="") {strT.fromDate=BackOOSDate; LogOrPrint(reportMode,"⚠️ Back Out-Of-Sample (OOS) history is enabled.",Key,EA_Name,Server);}
     else                                strT.fromDate=TimeToString(xmlData.startD,TIME_DATE);
+#ifdef GOAT_EVIDENCE_END_V149
+                                        strT.toDate=(evidenceToDate!="" ? evidenceToDate : GetLastFridayDate());
+#else
                                         strT.toDate=GetLastFridayDate();//TimeToString(TimeCurrent()-7*24*3600,TIME_DATE);//TimeToString(xmlData.endD,TIME_DATE);
+#endif
     LogOrPrint(reportMode,"Adjusting Test Dates, StartDate="+strT.fromDate+" EndDate="+strT.toDate,Key,EA_Name,Server);
     if(strT.Model!="4") {strT.Model="4"; LogOrPrint(reportMode,"Modelling set to ETWRT",Key,EA_Name,Server);}
     //int hndl = FileOpen(Key+"\\"+EA_Name+"-"+Server+"\\"+"WriteFlag",FILE_WRITE|FILE_COMMON); //if(hndl!=INVALID_HANDLE) return false;

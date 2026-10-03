@@ -4446,6 +4446,27 @@ void OnTesterDeinit()
    //GlobalVariableDel("BatchOnGoing");
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+#ifdef GOAT_EVIDENCE_END_V149
+// B38: at finish, every kept export's real end (its .set header range, i.e. the last
+// tick the tester reached) is checked against the staged evidence end and journaled.
+void GoatEvidenceEndCheckExports(const ExportRecord &expArr[],const string evidenceEnd,const bool reportMode)
+  {
+   if(evidenceEnd=="") return;
+   int total=ArraySize(expArr),matched=0,earlier=0,later=0,unreadable=0;
+   datetime staged=StringToTime(evidenceEnd);
+   for(int i=0;i<total;i++)
+     {
+      string end=GoatEvidenceExportEnd(GoatExportReadTextCommon(expArr[i].setFile,0));
+      if(end=="") {unreadable++; LogOrPrint(reportMode,"⚠️ Export "+FileNameOnly(expArr[i].setFile)+": its end date could not be read to check it against the evidence end "+evidenceEnd+".",Key,EA_Name,Server); continue;}
+      if(end==evidenceEnd) {matched++; continue;}
+      if(StringToTime(end)>staged) later++; else earlier++;
+      LogOrPrint(reportMode,"⚠️ Export "+FileNameOnly(expArr[i].setFile)+" ends on "+end+", not on the evidence end "+evidenceEnd+".",Key,EA_Name,Server);
+     }
+   Print("GOAT_EVIDENCE_END_CHECK build_id="+GOAT_BUILD_ID+" staged="+evidenceEnd+" exports="+(string)total
+         +" matched="+(string)matched+" earlier="+(string)earlier+" later="+(string)later+" unreadable="+(string)unreadable);
+   if(total>0 && matched==total) LogOrPrint(reportMode,"✅ All "+(string)total+" exports end on the evidence end "+evidenceEnd+".",Key,EA_Name,Server);
+  }
+#endif
 bool StartExporter(bool reportMode)
   {
    if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
@@ -4471,6 +4492,12 @@ bool StartExporter(bool reportMode)
      evidenceToDate=GoatEvidenceEndToDate(evidenceSetting,TimeTradeServer(),xmlData.endD,evidenceEnd,evidenceError);
      if(evidenceToDate=="") {LogOrPrint(reportMode,"❌ "+evidenceError+". No exports were run.",Key,EA_Name,Server); return false;}
      LogOrPrint(reportMode,"Evidence end "+evidenceEnd+" (EvidenceEnd="+evidenceSetting+"): every export ends there.",Key,EA_Name,Server);
+    }
+    else
+    {
+     // B38: an absent setting keeps the legacy end, and says so instead of failing silently.
+     Print("GOAT_EVIDENCE_END_ABSENT build_id="+GOAT_BUILD_ID+" legacy_to_date="+GetLastFridayDate());
+     LogOrPrint(reportMode,"⚠️ No EvidenceEnd in the export settings: exports end before "+GetLastFridayDate()+" (the legacy last-Friday end).",Key,EA_Name,Server);
     }
 #endif
 
@@ -4604,6 +4631,9 @@ bool StartExporter(bool reportMode)
        SortAndTrimExports(SetsToExport,MinARF,MinSR,AdjustedExports);
        if(MoveKeptExports(AdjustedExports,GoatOptDeployPath(EA_Name,Server))) LogOrPrint(reportMode,"✅ All Shortlisted and Adjusted Exports migrated & saved.",Key,EA_Name,Server);
        else                                     LogOrPrint(reportMode,"❌ Problem migrating the adjusted export package.",Key,EA_Name,Server);
+#ifdef GOAT_EVIDENCE_END_V149
+       GoatEvidenceEndCheckExports(AdjustedExports,evidenceEnd,reportMode);
+#endif
       }
       else {LogOrPrint(reportMode,"❌ zero adjusted exports available after the export cycle.",Key,EA_Name,Server);}
      }
@@ -4612,6 +4642,9 @@ bool StartExporter(bool reportMode)
       if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return false;
       if(MoveKeptExports(g_allExports,GoatOptDeployPath(EA_Name,Server))) LogOrPrint(reportMode,"✅ All Shortlisted Exports migrated & saved.",Key,EA_Name,Server);
       else                                  LogOrPrint(reportMode,"❌ Problem migrating the finalized export package.",Key,EA_Name,Server);
+#ifdef GOAT_EVIDENCE_END_V149
+      GoatEvidenceEndCheckExports(g_allExports,evidenceEnd,reportMode);
+#endif
      }
     }
     else {LogOrPrint(reportMode,"❌ zero exports available after the export cycle.",Key,EA_Name,Server);}

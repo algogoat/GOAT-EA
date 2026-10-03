@@ -69,4 +69,53 @@ string GoatEvidenceEndToDate(const string setting,const datetime server_now,cons
    evidence_end=TimeToString(end,TIME_DATE);
    return TimeToString(end+GOAT_EVIDENCE_DAY_SECONDS,TIME_DATE);
   }
+
+// The EvidenceEnd value of an [Export] settings text (trimmed), or "" when absent.
+string GoatEvidenceSettingValue(const string settings)
+  {
+   string text="\n"+settings;
+   string key="\nEvidenceEnd=";
+   int at=StringFind(text,key);
+   if(at<0) return "";
+   at+=StringLen(key);
+   int stop=StringFind(text,"\n",at);
+   string found=(stop<0 ? StringSubstr(text,at) : StringSubstr(text,at,stop-at));
+   StringTrimLeft(found);
+   StringTrimRight(found);
+   return found;
+  }
+
+// B38: the Studio has no EvidenceEnd control, so every rewrite of
+// export_settings.GOAT from the controls (save, rename, .goatbatch load, human
+// Start) carries the staged EvidenceEnd forward from the settings it replaces.
+// Dropping it would silently end every export on the legacy Thursday.
+string GoatEvidenceEndCarry(const string rewritten,const string previous)
+  {
+   if(rewritten=="" || GoatEvidenceSettingValue(rewritten)!="") return rewritten;
+   string value=GoatEvidenceSettingValue(previous);
+   if(value=="") return rewritten;
+   string separator=(StringSubstr(rewritten,StringLen(rewritten)-1)=="\n" ? "" : "\n");
+   return rewritten+separator+"EvidenceEnd="+value+"\n";
+  }
+
+// The day an export really ended, from its .set header: the end of the
+// "; FOOS:   from-to" range (the tester clock at OnTester, i.e. the last tick),
+// else the "; SAMPLE: from-to" range; "" when neither is readable.
+string GoatEvidenceHeaderEnd(const string set_text,const string tag)
+  {
+   int at=StringFind(set_text,tag);
+   if(at<0) return "";
+   int dash=StringFind(set_text,"-",at);
+   if(dash<0) return "";
+   string end=StringSubstr(set_text,dash+1,10);
+   datetime day=0;
+   if(!GoatEvidenceParseDay(end,day)) return "";
+   return end;
+  }
+
+string GoatEvidenceExportEnd(const string set_text)
+  {
+   string end=GoatEvidenceHeaderEnd(set_text,"; FOOS:");
+   return (end!="" ? end : GoatEvidenceHeaderEnd(set_text,"; SAMPLE:"));
+  }
 #endif

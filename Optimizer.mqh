@@ -821,6 +821,9 @@ bool CStrategyTesterDialog::SaveCurrentBatchPackage(void)
    string queue=GetFileContent(Path_QueueBatch);
    // Save the values currently displayed, not a previous run/start snapshot.
    string exportSettings=(m_compactLayout ? GetFileContent(Path_ExportSettings) : GetExportSettingsString());
+#ifdef GOAT_EVIDENCE_END_V149
+   exportSettings=GoatEvidenceEndCarry(exportSettings,GetFileContent(Path_ExportSettings));
+#endif
    if(exportSettings!="" && !GoatOptWriteTextFile(Path_ExportSettings,exportSettings)) return false;
    string runName=m_edtRunName.Text();
    StringTrimLeft(runName);
@@ -875,6 +878,9 @@ bool CStrategyTesterDialog::RehomeRunIfEditedNameChanged(void)
    string oldExportSettingsPath=Path_ExportSettings;
    string queue=GetFileContent(oldQueuePath);
    string exportSettings=(m_compactLayout ? GetFileContent(oldExportSettingsPath) : GetExportSettingsString());
+#ifdef GOAT_EVIDENCE_END_V149
+   exportSettings=GoatEvidenceEndCarry(exportSettings,GetFileContent(oldExportSettingsPath));
+#endif
    if(queue=="") return true;
 
    Path_RunFolder=GoatOptCreateRunPath(EA_Name_,Server_,requestedSafe,oldRunFolder);

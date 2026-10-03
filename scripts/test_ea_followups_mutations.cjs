@@ -3,9 +3,9 @@
 // MQL-free; the repository files are never modified.
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),{spawnSync}=require('node:child_process');
 const repo=path.join(__dirname,'..');
-const files=['GOATEvidenceEnd.mqh','GOATTesterStopConfirm.mqh','GOAT V1.49.mq5','GOAT V1.47.mq5','GOAT V1.48.mq5','GOATStudioDispatch.mqh','GOATStudioUI.mqh'];
+const files=['GOATEvidenceEnd.mqh','GOATTesterStopConfirm.mqh','GOAT V1.49.mq5','GOAT V1.47.mq5','GOAT V1.48.mq5','GOATStudioDispatch.mqh','GOATStudioUI.mqh','Optimizer.mqh'];
 const R=String.raw;
-const E='GOATEvidenceEnd.mqh',S='GOATTesterStopConfirm.mqh',M='GOAT V1.49.mq5',D='GOATStudioDispatch.mqh',U='GOATStudioUI.mqh';
+const E='GOATEvidenceEnd.mqh',S='GOATTesterStopConfirm.mqh',M='GOAT V1.49.mq5',D='GOATStudioDispatch.mqh',U='GOATStudioUI.mqh',O='Optimizer.mqh';
 // [label, file, from, to]
 const mutations=[
   ['Friday counted as a closed week',E,R`return back==0 ? 7 : back;`,R`return back;`],
@@ -61,7 +61,31 @@ const mutations=[
   ['wrong toggle message',S,R`user32::SendMessageW(handle,message,0x31,0);`,R`user32::SendMessageW(handle,message,0x32,0);`],
   ['send reported although no pane',S,R`   if(handle==0) return false;
 `,''],
-  ['cancel back to one 100 ms read',D,R`   bool stopped=GoatTesterStopConfirmed();`,R`   bool stopped=MTTESTER::ClickStop(1);`],
+  // B38 EvidenceEnd writer and finish check (Claude-Mac fold-in 2 on #122).
+  ['Studio save drops EvidenceEnd',O,R`   exportSettings=GoatEvidenceEndCarry(exportSettings,GetFileContent(Path_ExportSettings));
+`,''],
+  ['rename drops EvidenceEnd',O,R`   exportSettings=GoatEvidenceEndCarry(exportSettings,GetFileContent(oldExportSettingsPath));
+`,''],
+  ['rename carries from the new folder',O,R`GoatEvidenceEndCarry(exportSettings,GetFileContent(oldExportSettingsPath))`,R`GoatEvidenceEndCarry(exportSettings,GetFileContent(Path_ExportSettings))`],
+  ['carry overrides a value already written',E,R`if(rewritten=="" || GoatEvidenceSettingValue(rewritten)!="") return rewritten;`,R`if(rewritten=="") return rewritten;`],
+  ['carry turns an empty rewrite into a header-less file',E,R`if(rewritten=="" || GoatEvidenceSettingValue`,R`if(GoatEvidenceSettingValue`],
+  ['setting key matched mid-line',E,R`string key="\nEvidenceEnd=";`,R`string key="EvidenceEnd=";`],
+  ['setting value not trimmed',E,R`   StringTrimLeft(found);
+`,''],
+  ['carry doubles the newline',E,R`=="\n" ? "" : "\n");`,R`=="\n" ? "\n" : "\n");`],
+  ['export end read from the range start',E,R`string end=StringSubstr(set_text,dash+1,10);`,R`string end=StringSubstr(set_text,dash-10,10);`],
+  ['SAMPLE fallback lost',E,R`: GoatEvidenceHeaderEnd(set_text,"; SAMPLE:"));`,R`: "");`],
+  ['malformed export end accepted',E,R`   if(!GoatEvidenceParseDay(end,day)) return "";
+`,''],
+  ['absent EvidenceEnd is silent',M,R`     Print("GOAT_EVIDENCE_END_ABSENT build_id="+GOAT_BUILD_ID+" legacy_to_date="+GetLastFridayDate());
+`,''],
+  ['kept exports not checked at finish',M,R`      GoatEvidenceEndCheckExports(g_allExports,evidenceEnd,reportMode);
+`,''],
+  ['adjusted exports not checked at finish',M,R`       GoatEvidenceEndCheckExports(AdjustedExports,evidenceEnd,reportMode);
+`,''],
+  ['a mismatched end counts as matched',M,R`if(end==evidenceEnd) {matched++; continue;}`,R`{matched++; continue;}`],
+  ['a later end counts as earlier',M,R`if(StringToTime(end)>staged) later++; else earlier++;`,R`if(StringToTime(end)<staged) later++; else earlier++;`],
+  ['check journal line missing',M,R`   Print("GOAT_EVIDENCE_END_CHECK build_id="`,R`   ("GOAT_EVIDENCE_END_CHECK build_id="`],  ['cancel back to one 100 ms read',D,R`   bool stopped=GoatTesterStopConfirmed();`,R`   bool stopped=MTTESTER::ClickStop(1);`],
   ['receipt ignores the stop',D,R`return (stopped && saved && cleared) ? "CANCELLED_RECONCILE"`,R`return (saved && cleared) ? "CANCELLED_RECONCILE"`],
   ['timing not journaled',D,R`         +" elapsed_ms="+(string)g_GoatStopConfirmElapsedMs);`,R`         );`],
   ['stop confirm header not included',D,R`#include "GOATTesterStopConfirm.mqh"`,''],

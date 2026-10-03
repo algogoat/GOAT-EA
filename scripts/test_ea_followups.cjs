@@ -266,6 +266,27 @@ const stopSource=read('GOATTesterStopConfirm.mqh').replace(/\/\/.*$/gm,'');
 assert.doesNotMatch(stopSource,/ClickStop\s*\(/);
 assert.match(stopSource,/bool GoatTesterSendStopIfRunning\(void\)\n  \{\n   if\(GoatStudioTesterState\(\)!="running"\) return false;/);checks++;
 
+// ---- B38 fold-in 2: the Studio writer keeps EvidenceEnd, and finished exports are checked.
+const controls='[Export]\nSetsToExport=6\nMinScore=60\nTargetDD=1000\nAdjustLots=0\nBackOOSDate=2024.01.08\nMinARF=0.2\nMinSR=2.5\nIncludeBackOOS=0\nIncludeSequenceData=1\n';
+const staged='[Export]\r\nSetsToExport=6\r\nMinScore=60\r\nEvidenceEnd=2026.09.25\r\nIncludeSequenceData=1\r\n';
+for(const [text,value] of [[staged,'2026.09.25'],['EvidenceEnd=2026.09.25',''+'2026.09.25'],['[Export]\nEvidenceEnd= 2026.10.02 \n','2026.10.02'],
+  [controls,''],['',''],['[Export]\nNoEvidenceEnd=2026.09.25\n',''],['[Export]\nXEvidenceEnd=2026.09.25\n','']])
+  assert.equal(context.GoatEvidenceSettingValue(text),value,JSON.stringify(text)),checks++;
+// A rewrite from the controls carries the staged value; it never invents, doubles or overrides one.
+assert.equal(context.GoatEvidenceEndCarry(controls,staged),controls+'EvidenceEnd=2026.09.25\n');checks++;
+assert.equal(context.GoatEvidenceEndCarry(controls.slice(0,-1),staged),controls+'EvidenceEnd=2026.09.25\n','a missing trailing newline is added once');checks++;
+assert.equal(context.GoatEvidenceEndCarry(controls,controls),controls,'nothing staged: legacy settings stay as they are');checks++;
+assert.equal(context.GoatEvidenceEndCarry(controls,''),controls);checks++;
+const already=controls+'EvidenceEnd=2026.10.02\n';
+assert.equal(context.GoatEvidenceEndCarry(already,staged),already,'a value already in the rewrite wins');checks++;
+assert.equal(context.GoatEvidenceEndCarry('',staged),'','an empty rewrite is never turned into a header-less file');checks++;
+assert.equal(context.GoatEvidenceSettingValue(context.GoatEvidenceEndCarry(controls,staged)),'2026.09.25');checks++;
+// The real end of an export, from its .set header.
+const header=(foos,sample)=>'; ----\n; GOAT V1.49 EURUSD,M1\n'+(sample?'; SAMPLE: '+sample+' Days=80 Trades=12 PL=100\n':'')+(foos?'; FOOS:   '+foos+' Days=5 Trades=2 PL=10\n':'')+'; ----\nMode_Operation=0\n';
+for(const [text,end] of [[header('2026.06.02-2026.09.25','2026.01.05-2026.06.02'),'2026.09.25'],[header('2026.06.02-2026.09.24','2026.01.05-2026.06.02'),'2026.09.24'],
+  [header(null,'2026.01.05-2026.09.25'),'2026.09.25'],[header('2026.06.02-2026.9.25',null),''],[header('2026.06.02-',null),''],[header(null,null),''],['','']])
+  assert.equal(context.GoatEvidenceExportEnd(text),end,text),checks++;
+
 // ---- V1.49 call sites.
 const main=read('GOAT V1.49.mq5'),dispatch=read('GOATStudioDispatch.mqh'),ui=read('GOATStudioUI.mqh');
 assert.match(main,/#define GOAT_STOP_CONFIRM_V149\n/);assert.match(main,/#define GOAT_EVIDENCE_END_V149\n/);
@@ -293,6 +314,29 @@ const observation=ui.slice(ui.indexOf('void CStrategyTesterDialog::ManagedObserv
 assert.match(observation,/#ifdef GOAT_EVIDENCE_END_V149\n.*\n\s*body\+=",\\"evidence_end\\":"\+GoatStudioQuote\(GOAT_EVIDENCE_END_CAPABILITY\);\n#endif/);
 assert.ok(observation.indexOf('GOAT_EVIDENCE_END_CAPABILITY')<observation.indexOf('observed_terminal_utc'));
 assert.match(read('GOATEvidenceEnd.mqh'),/#define GOAT_EVIDENCE_END_CAPABILITY "goat-evidence-end-v1"/);checks++;
+// B38: every Studio rewrite of export_settings.GOAT carries EvidenceEnd before it is written.
+const optimizer=read('Optimizer.mqh');
+const save=optimizer.slice(optimizer.indexOf('bool CStrategyTesterDialog::SaveCurrentBatchPackage(void)'),optimizer.indexOf('bool CStrategyTesterDialog::RehomeRunIfEditedNameChanged(void)'));
+assert.match(save,/GetExportSettingsString\(\)\);\n#ifdef GOAT_EVIDENCE_END_V149\n   exportSettings=GoatEvidenceEndCarry\(exportSettings,GetFileContent\(Path_ExportSettings\)\);\n#endif\n   if\(exportSettings!="" && !GoatOptWriteTextFile\(Path_ExportSettings,exportSettings\)\) return false;/);checks++;
+const rehome=optimizer.slice(optimizer.indexOf('bool CStrategyTesterDialog::RehomeRunIfEditedNameChanged(void)'),optimizer.indexOf('bool CStrategyTesterDialog::LoadBatchPackage('));
+assert.match(rehome,/GetExportSettingsString\(\)\);\n#ifdef GOAT_EVIDENCE_END_V149\n   exportSettings=GoatEvidenceEndCarry\(exportSettings,GetFileContent\(oldExportSettingsPath\)\);\n#endif\n/);
+assert.ok(rehome.indexOf('GoatEvidenceEndCarry(')<rehome.indexOf('GoatOptCreateRunPath('),'carried from the old run folder before it moves');checks++;
+// Load and human Start both rewrite through SaveCurrentBatchPackage, after the package's own settings are on disk.
+const load=optimizer.slice(optimizer.indexOf('bool CStrategyTesterDialog::LoadBatchPackage('),optimizer.indexOf('bool CStrategyTesterDialog::SaveStrategyInputsFromSet('));
+assert.ok(load.indexOf('GoatOptWriteTextFile(Path_ExportSettings,exportSettings)')<load.indexOf('SaveCurrentBatchPackage();'));checks++;
+assert.equal((optimizer.match(/GetExportSettingsString\(\)\);\n#ifdef GOAT_EVIDENCE_END_V149\n   exportSettings=GoatEvidenceEndCarry\(/g)||[]).length,2,'both control rewrites carry it');checks++;
+// Absent settings are journaled; finished exports are checked after they are moved.
+assert.match(exporter,/else\n    \{\n.*\n     Print\("GOAT_EVIDENCE_END_ABSENT build_id="\+GOAT_BUILD_ID\+" legacy_to_date="\+GetLastFridayDate\(\)\);/);checks++;
+for(const [array,moved] of [['AdjustedExports','"✅ All Shortlisted and Adjusted Exports migrated & saved."'],['g_allExports','"✅ All Shortlisted Exports migrated & saved."']]){
+  const at=exporter.indexOf(moved),check=exporter.indexOf('GoatEvidenceEndCheckExports('+array+',evidenceEnd,reportMode);');
+  assert.ok(at>0 && check>at && check-at<400,array+' is checked right after it is moved');checks++;
+}
+const verify=main.slice(main.indexOf('void GoatEvidenceEndCheckExports('),main.indexOf('bool StartExporter(bool reportMode)'));
+assert.match(verify,/GoatEvidenceExportEnd\(GoatExportReadTextCommon\(expArr\[i\]\.setFile,0\)\)/);
+assert.match(verify,/if\(evidenceEnd==""\) return;/);
+assert.match(verify,/Print\("GOAT_EVIDENCE_END_CHECK build_id="\+GOAT_BUILD_ID\+" staged="\+evidenceEnd/);
+assert.match(verify,/if\(end==evidenceEnd\) \{matched\+\+; continue;\}/);
+assert.match(verify,/if\(StringToTime\(end\)>staged\) later\+\+; else earlier\+\+;/);checks++;
 // Older entrypoints keep their behaviour.
 for(const version of ['1.47','1.48']){
   const old=read('GOAT V'+version+'.mq5');

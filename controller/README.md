@@ -524,7 +524,9 @@ never sets the driver journal's `cancel_issued`, keeps the driver's disk guard
 and finish running, and records `paused` with a resume token. A journal left at
 `stop_unconfirmed` is adopted. `batch-resume --job-id <id>` prepares the
 remaining members as `<id>-rN` with lineage (the demo lane also starts it).
-`research-status` is the read-only lane view. Rules and states:
+`research-status` is the read-only lane view; `research-queue` is the read-only
+list of every batch (Refine), seed hunt (Explore) and catch-up (Prove), one row
+each, with results redacted by the held-out guard per key and window. Rules and states:
 [AGENT-START-HERE.md](AGENT-START-HERE.md) and [DEMO-AGENT-TOOLS.md](DEMO-AGENT-TOOLS.md).
 
 ### Evidence end and OOS catch-up

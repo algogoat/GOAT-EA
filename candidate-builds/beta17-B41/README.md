@@ -47,6 +47,12 @@ unchanged.
 
 **Still owed:** the candidate compile commit (after B40's own compile commit lands), server
 admission of `V1.49-BETA17-41`, and a native tester run on a recorded file that shows below-threshold rows
-reaching the bias block as unavailable. Claude-Mac approved the design (goatai#1885, 5980940867). The
-parity test still pins the export's half-percent rounding band; it is removed once goatai#2230 (truncate
-|score| toward zero) merges.
+reaching the bias block as unavailable. Claude-Mac approved the design (goatai#1885, 5980940867).
+
+**Export truncation (goatai#2230, merged).** The CSV now holds floor(100p), so the tester acts exactly
+when live does at every `Bias_threshold` from 1 up, for every probability the wire carries as a decimal;
+the parity test expects zero disagreements there. Two edges remain, both pinned exactly in the test:
+at `Bias_threshold` <= 0, a directional probability below 1% truncates to 0 (the CSV's neutral); and
+#2230's 1e-9 epsilon lifts a double a float hair below a whole percent (0.7*0.1 = 0.06999999999999999)
+to that percent, which live does not act on. Stepping the truncation back when percent/100 > p closes
+the second.

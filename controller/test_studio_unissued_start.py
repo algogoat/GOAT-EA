@@ -1,9 +1,15 @@
 """Do not equate missing consumption with never-issued native activation."""
+import hashlib
 import json
+from pathlib import Path
 import unittest
 
+from studio_batch import prepare_batch
+from studio_bridge import write_json
+from studio_launch_intent import record_intent
 from studio_unissued_start import proof, settled_other_request
 import test_studio_launch_transport as fixtures
+from test_settled_native_request import PENDING_VARIANTS, gate_files, retain_pending_variant, retain_request
 
 
 class UnissuedStartTests(unittest.TestCase):
@@ -33,6 +39,46 @@ class UnissuedStartTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'request or permit'):
                 proof(self.c,self.job,self.fixture.package)
             path.unlink()
+
+    def test_pending_or_mismatched_request_still_refuses_first_activation(self):
+        gate=self.c.local/'native-gate'
+        for name in PENDING_VARIANTS:
+            with self.subTest(name):
+                retain_pending_variant(name,gate,self.c.terminal,self.c.run)
+                before=gate_files(gate)
+                with self.assertRaisesRegex(ValueError,'request or permit'):
+                    proof(self.c,self.job,self.fixture.package)
+                self.assertEqual(gate_files(gate),before)
+
+    def test_settled_request_still_needs_its_job_durably_finished(self):
+        # The request.json presence check accepts the Terminal 3 shape (goatai#1885), but the
+        # unchanged history check still requires the other job's durable completion.
+        gate=self.c.local/'native-gate'
+        retain_request(gate,self.c.terminal,self.c.run)
+        with self.assertRaisesRegex(ValueError,'no settled controller job'):
+            proof(self.c,self.job,self.fixture.package)
+
+    def test_finished_batch_request_left_on_the_gate_does_not_block_first_activation(self):
+        # Terminal 3 shape with a real finished batch: request.json is kept beside its exact
+        # consumed/result pair after finish (goatai#1885); a fresh batch's unissued intent resumes.
+        import test_studio_settled_gate as settled
+        fixture=settled.SettledGateTests();fixture.setUp();self.addCleanup(fixture.tearDown)
+        fixture.settle('start')
+        c,gate,files=fixture.c,fixture.gate,fixture.fixture
+        self.assertTrue((gate/'request.json').exists())
+        plan=files.root/'fresh-batch.json'
+        write_json(plan,dict(schema_version=1,export=files.exports,
+                             members=[dict(set_path=str(files.root/'strategy.set'),tester=files.tester)]))
+        package=Path(prepare_batch(c,'fresh-batch',plan)['package'])
+        digest=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()
+        c.submit('queue.reserve',dict(job_id='fresh-batch',configuration_sha256=c.job('fresh-batch')['configuration_sha256'],
+                 package_sha256=digest),'fresh-reservation')
+        state=c.state()
+        intent=record_intent(c.store,c.terminal,c.run,'fresh-batch',package,actor='agent',
+                             revision=state['revision'],generation=state['generation'])
+        before=gate_files(gate)
+        self.assertEqual(proof(c,c.job('fresh-batch'),package),intent)
+        self.assertEqual(gate_files(gate),before)
 
     def test_hash_only_orphan_dispatch_history_refuses(self):
         gate=self.c.local/'native-gate'

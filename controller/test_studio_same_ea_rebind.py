@@ -12,6 +12,7 @@ from goat_studio import Controller
 from studio_installation import load_installation, read_json
 from studio_same_ea_rebind import rebind
 import test_goat_studio as fixtures
+from test_settled_native_request import PENDING_VARIANTS, gate_files, retain_pending_variant, retain_request
 
 
 class SameEaRebindTests(unittest.TestCase):
@@ -60,6 +61,32 @@ class SameEaRebindTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Unresolved native request or permit'):
             rebind(self.fixture.path, process=self.process)
         self.assertEqual(self.session_path.read_bytes(), self.old_session)
+
+    def test_a_request_the_ea_already_consumed_and_answered_does_not_block_rebind(self):
+        # Terminal 3 shape (goatai#1885): request.json retained beside its exact consumed/result pair.
+        gate = self.c.local / 'native-gate'
+        session = read_json(self.session_path)
+        request_id, raw = retain_request(gate, session['terminal_id'], session['run_id'])
+        before = gate_files(gate)
+        result = rebind(self.fixture.path, process=self.process)
+        self.assertEqual(result['status'], 'rebound')
+        self.assertIs(result['native_action'], False)
+        self.assertEqual(gate_files(gate), before, 'the request and its receipts stay as evidence')
+        log = [json.loads(line) for line in (self.c.root / 'same-ea-rebind' / 'actions.jsonl').read_text().splitlines()]
+        self.assertEqual(log[0]['phase'], 'before_rebind')
+        self.assertEqual(log[0]['settled_native_request']['request_id'], request_id)
+
+    def test_a_pending_or_mismatched_native_request_still_refuses(self):
+        gate = self.c.local / 'native-gate'
+        session = read_json(self.session_path)
+        for name in PENDING_VARIANTS:
+            with self.subTest(name):
+                retain_pending_variant(name, gate, session['terminal_id'], session['run_id'])
+                before = gate_files(gate)
+                with self.assertRaisesRegex(ValueError, 'Unresolved native request or permit'):
+                    rebind(self.fixture.path, process=self.process)
+                self.assertEqual(self.session_path.read_bytes(), self.old_session)
+                self.assertEqual(gate_files(gate), before)
 
     def test_running_process_and_changed_backup_refuse(self):
         with self.assertRaisesRegex(ValueError, 'must be stopped'):

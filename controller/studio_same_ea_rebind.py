@@ -18,7 +18,7 @@ from campaign_ledger import sha
 from studio_bridge import write_json
 from studio_handover import safe_path
 from studio_installation import load_installation, read_json
-from studio_native_gate import exclusive_gate
+from studio_native_gate import exclusive_gate, settled_native_request
 from studio_seed_process import WindowsSeedProcess
 
 
@@ -67,7 +67,13 @@ def rebind(receipt_path, *, process=None):
             process = WindowsSeedProcess(SimpleNamespace(install=current))
         if process.inspect() is not None:
             raise ValueError('Selected terminal must be stopped for same-EA receipt rebind')
-        if any((local / 'native-gate' / name).exists() for name in ('request.json', 'permit.json')):
+        # A request.json retained after the EA consumed and answered it for this session is
+        # settled evidence (goatai#1885), not an unresolved request; a permit always refuses.
+        gate = local / 'native-gate'
+        request_path = gate / 'request.json'
+        requested = request_path.exists() or request_path.is_symlink()
+        settled = settled_native_request(gate, session) if requested else None
+        if (gate / 'permit.json').exists() or (requested and settled is None):
             raise ValueError('Unresolved native request or permit; reconcile with the original receipt first')
         human = local / session['directory_id'] / 'human'
         if any(any((human / channel).glob('*.json')) for channel in ('inbox', 'processing')):
@@ -119,8 +125,11 @@ def rebind(receipt_path, *, process=None):
             with saved.open('xb') as output:
                 output.write(session_raw); output.flush(); os.fsync(output.fileno())
         log = record_root / 'actions.jsonl'
-        _append(log, dict(phase='before_rebind', old_sha256=sha(previous), new_sha256=sha(current),
-                          backup=str(backup_path), db_sha256=db_before, native_action=False))
+        before = dict(phase='before_rebind', old_sha256=sha(previous), new_sha256=sha(current),
+                      backup=str(backup_path), db_sha256=db_before, native_action=False)
+        if settled is not None:
+            before['settled_native_request'] = settled
+        _append(log, before)
         session['installation_sha256'] = sha(current)
         write_json(session_path, session)
         if db_before != _digest(db_path.read_bytes()):

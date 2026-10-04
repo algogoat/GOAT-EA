@@ -12,6 +12,7 @@ from studio_derived_report_recovery import recover
 from studio_never_started_retirement import retire,replacement_proof
 from studio_batch import prepare_batch
 import test_studio_derived_report_recovery as fixtures
+from test_settled_native_request import PENDING_VARIANTS,gate_files,retain_pending_variant,retain_request
 
 
 class NeverStartedRetirementTests(unittest.TestCase):
@@ -81,6 +82,26 @@ class NeverStartedRetirementTests(unittest.TestCase):
             with patch('studio_monitor_probe.inspect_idle_demo',side_effect=self.native):before_native_dispatch(self.c,self.c.job('replacement'))
             write_json(self.c.root/'batch-drivers/replacement.json',journal|dict(deadline_wall=now+172801))
             with self.assertRaisesRegex(ValueError,'new native epoch budget'):before_native_dispatch(self.c,self.c.job('replacement'))
+
+    def test_a_request_consumed_and_answered_after_retirement_is_settled_not_new(self):
+        result=self.run_retire()
+        # Terminal 3 shape (goatai#1885): a later orphan-recovery continuation (the only consumption
+        # the retirement proof admits) kept on the gate beside its exact consumed/result pair.
+        retain_request(self.gate,self.c.terminal,self.c.run,action='recover_orphan_continuation',status='ORPHAN_RECOVERED')
+        before=gate_files(self.gate)
+        self.assertEqual(self.run_retire(),result)
+        self.assertEqual(gate_files(self.gate),before)
+        self.process.close.assert_called_once();self.process.start.assert_called_once()
+
+    def test_a_pending_or_mismatched_request_after_retirement_still_refuses(self):
+        self.run_retire()
+        for name in PENDING_VARIANTS:
+            with self.subTest(name):
+                retain_pending_variant(name,self.gate,self.c.terminal,self.c.run,action='recover_orphan_continuation')
+                before=gate_files(self.gate)
+                with self.assertRaisesRegex(ValueError,'New native request appeared after retirement'):self.run_retire()
+                self.assertEqual(gate_files(self.gate),before)
+        self.process.close.assert_called_once();self.process.start.assert_called_once()
 
     def test_evidence_compaction_keeps_the_retired_row_so_the_replacement_proof_still_passes(self):
         from studio_evidence_log import compact

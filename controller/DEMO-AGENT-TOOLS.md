@@ -25,6 +25,7 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 & $goat demo --installation $receipt clear-stop
 & $goat demo --installation $receipt recover-orphan  # optional: --review-id '<id>' to observe only
 & $goat demo --installation $receipt research-status # read-only lane: activity, pace/ETA, pause, driver, disk, monitor
+& $goat demo --installation $receipt research-queue  # read-only queue: every batch, seed hunt and catch-up; optional: --finished 0..50
 & $goat demo --installation $receipt batch-pause --batch-id '<id>'    # optional: --immediate
 & $goat demo --installation $receipt batch-resume --batch-id '<id>'   # optional: --new-batch-id, --resume-token, --max-seconds, --clear-stop, --include-failed
 & $goat demo --installation $receipt compact-evidence   # preview; --apply moves finished in-row evidence history to verified logs
@@ -66,6 +67,38 @@ its last heartbeat; when another terminal's sign-in was approved after it, the
 message is "This terminal's GOAT sign-in was replaced by another terminal —
 re-pair it."), `monitor_build_not_admitted`, `monitor_webrequest_permission_required`,
 `monitor_unbound`, `human_took_control` and `monitor_silent`.
+
+`research-queue` lists every job beside that one activity, one row each, so the
+desktop's Research queue and an agent see everything the terminal has run, runs
+and will run from one call (goatai#2240). It reads the same retained state as
+`research-status` and is just as read-only:
+
+- **Refine**: native batches from the session's queue rows.
+- **Explore**: seed hunts from `seeds\<id>\state.json` and `manifest.json`.
+- **Prove**: OOS catch-ups from `catchups\<id>\`.
+
+Each row has `batch_id`, `kind` (`batch`, `seed`, `catchup`) and `stage`
+(`refine`, `explore`, `prove`). Its `state` is `queued`, `running`, `pausing`,
+`paused`, `blocked` (nothing runs until someone acts, such as a seed member that
+needs `seed-reconcile` or a start refused before MT5 was touched), `finished`,
+`stopped` or `failed`. A row also carries:
+
+- the queue or runner `status` and a plain `note`;
+- `symbols` and `timeframes` in member order;
+- `members_done` (ran to a result or a failure; a cancelled member never ran) and
+  `members_total`;
+- `started_utc` and `finished_utc`;
+- `eta_utc`, only while `running` and only from members that already finished;
+- the results: `qualifying` (seed: candidates with qualifying passes; batch:
+  members with exported SETs), `qualifying_candidates`, `held_up` (catch-ups),
+  `members_no_edge` and `members_failed`.
+
+Unfinished jobs are always listed. Only the `--finished` most recent ended jobs
+are kept (default 5, 0..50). A run whose files cannot be read whole, or whose
+state and manifest disagree, is listed in `skipped` with its reason, never
+guessed. Every row names its run, so the held-out guard redacts each row's
+results and note per strategy key and window, exactly as it does for
+`research-status`; progress, dates and state stay readable.
 
 A member whose optimization ran (at least one pass traded) and whose back and forward
 reports are whole, but had no pass profitable with 50+ trades, is a research result for its

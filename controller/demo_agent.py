@@ -1615,6 +1615,16 @@ class DemoAgent:
                                now=self.clock(), process=self._process_or_unknown(), jobs=jobs,
                                worker_alive=self._worker_alive, owner_stop=(self.state_root / 'STOP').exists())
 
+    def research_queue(self, finished=None):
+        """Read-only: every batch, seed hunt and catch-up of this installation, one row each (goatai#2240)."""
+        from studio_research_queue import FINISHED_DEFAULT, research_queue
+        try:
+            jobs = self._jobs_readonly()
+        except (OSError, sqlite3.Error, ValueError):
+            jobs = None   # research_queue reports the queue error itself
+        return research_queue(root=self.root, install=self.install, session=self.session, now=self.clock(), jobs=jobs,
+                              finished=FINISHED_DEFAULT if finished is None else finished)
+
     def _lane_kind(self, batch_id):
         """'seed' or 'catchup' when this ID names a runner batch (not a native queue job), else None."""
         for kind, lane in LANES.items():
@@ -2316,6 +2326,8 @@ def main(argv=None):
     worker.add_argument('--max-seconds', type=int)
     worker.add_argument('--pause-seconds', type=int)
     commands.add_parser('research-status', help='Read-only lane status: activity, pace/ETA, pause, driver, disk, monitor')
+    queue = commands.add_parser('research-queue', help='Read-only queue: every batch, seed hunt and catch-up, one row each')
+    queue.add_argument('--finished', type=int, help='Ended jobs to keep, most recent first (0..50, default 5)')
     pause = commands.add_parser('batch-pause', help='Pause a running batch or seed hunt at its next safe point')
     pause.add_argument('--batch-id', required=True)
     pause.add_argument('--immediate', action='store_true', help='Skip the member-start wait; the monitor must still be reporting')
@@ -2425,6 +2437,7 @@ def main(argv=None):
         elif args.command == 'resume-batch': result = agent.resume_batch(args.batch_id)
         elif args.command == '_drive-batch': result = agent._drive_batch(args.batch_id, args.nonce, args.max_seconds, args.pause_seconds)
         elif args.command == 'research-status': result = agent.research_status()
+        elif args.command == 'research-queue': result = agent.research_queue(args.finished)
         elif args.command == 'batch-pause': result = agent.batch_pause(args.batch_id, immediate=args.immediate)
         elif args.command == 'batch-resume': result = agent.batch_resume(args.batch_id, new_batch_id=args.new_batch_id,
             resume_token=args.resume_token, max_seconds=args.max_seconds, clear_stop=args.clear_stop,

@@ -18,7 +18,7 @@ CURRENT_OPERATION = ContextVar('studio_research_operation', default=None)
 DEMO_AGENT_SCOPE = ContextVar('studio_demo_agent_scope', default=None)
 READ_OPERATIONS = frozenset(('discover','resource-profile','state','onboarding-status',
                              'native-recovery-status','batch-driver-status','owner-maintenance-status',
-                             'stopped-cancel-observation','research-status',
+                             'stopped-cancel-observation','research-status','research-queue',
                              'evidence-end','evidence-scan','evidence-versions','catchup-validate',
                              # Pure reads: a .set file checked against the schema, and a completed
                              # batch's benchmark from a read-only queue snapshot. Nothing is written.

@@ -18,6 +18,7 @@ Neither command enables trading, types credentials or changes MT5 permissions.
 """
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -269,6 +270,46 @@ def _wait_exit(process, identity_value, seconds, *, clock=time.monotonic, sleep=
     return current is None
 
 
+def settled_native_request(gate, session):
+    """The retained native-gate request.json the EA already consumed and answered, else None.
+
+    Nothing removes request.json once a dispatch is answered and its permit revoked, so it
+    stays behind as evidence after the batch. It is settled, not pending, only when its
+    exact receipt pair is on disk for this session's binding: issued-<request_id> binds
+    sha256(request.json) to the controller's issuance, consumed-<request_id> (the EA's claim,
+    written before any native effect) is byte-identical to it, and result-<request_id>
+    (written once the EA's handler returned) names that same request_sha256. request_id is
+    the request's own field (the attempt or cancel identity), not a hash of its bytes.
+    Read-only: deletes nothing. The caller still refuses for permit.json.
+    """
+    from studio_dispatch_observe import observe_dispatch
+    request_path = gate / 'request.json'
+    try:
+        if request_path.is_symlink() or not request_path.is_file() or request_path.stat().st_size > 2_000_000:
+            return None
+        raw = request_path.read_bytes()
+        request = json.loads(raw.decode('utf-8'))
+        request_id = request['request_id']
+        if not isinstance(request_id, str) or not re.fullmatch(r'[0-9a-f]{64}', request_id):
+            return None
+        # The controller's queue check (require_idle_control) covers only this session's binding.
+        if (request.get('terminal_id'), request.get('run_id')) != (session['terminal_id'], session['run_id']):
+            return None
+        receipts = [gate / (prefix + request_id + '.json') for prefix in ('issued-', 'consumed-', 'result-')]
+        if any(path.is_symlink() or not path.is_file() for path in receipts):
+            return None
+        if receipts[1].read_bytes() != raw:
+            return None
+        digest = hashlib.sha256(raw).hexdigest()
+        dispatch = observe_dispatch(gate, request_id)
+        if dispatch['status'] != 'receipt_observed' or dispatch['consumed'] is not True or dispatch['request_sha256'] != digest:
+            return None
+        return dict(request_id=request_id, request_sha256=digest, action=request.get('action', 'start'),
+                    result=dispatch['receipt']['status'])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
 def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspect=None, request=None, retire=None, wait_seconds=30):
     """Inert-only normal close of the selected terminal. Retained; never repeated."""
     from studio_monitor_probe import inspect_idle_demo
@@ -282,10 +323,16 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
     gate = controller.local / 'native-gate'
 
     def refuse_pending_native():
-        # A native-gate request or permit means a batch start or control is in flight; the
-        # controller cannot read the EA's BatchOnGoing flag, so this is a hard refusal.
-        if any((gate / name).exists() or (gate / name).is_symlink() for name in ('request.json', 'permit.json')):
+        # A permit, or a request the EA has not consumed and answered, means a batch start or
+        # control is in flight; the controller cannot read the EA's BatchOnGoing flag, so this
+        # is a hard refusal. A request.json retained after its exact consumed/result pair is
+        # settled evidence (goatai#1885): it is left in place and the close may proceed.
+        permit, request_path = gate / 'permit.json', gate / 'request.json'
+        requested = request_path.exists() or request_path.is_symlink()
+        settled = settled_native_request(gate, session) if requested else None
+        if permit.exists() or permit.is_symlink() or (requested and settled is None):
             raise ValueError('A native Studio request or permit is pending on this terminal; GOAT will not close MT5 during it')
+        return settled
 
     # The terminal lock is held throughout. The native gate (launch.lock, opened with no
     # sharing) is held only for the controller's own checks and its own fallback close:
@@ -309,7 +356,7 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
             require_idle_control(controller, session)
             if (Path(controller.root) / 'demo-agent' / 'STOP').exists():
                 raise ValueError('Owner STOP is set on this terminal; clear it deliberately before agents act')
-            refuse_pending_native()
+            settled = refuse_pending_native()
             running = process.inspect()
             if running is None:
                 record = dict(schema_version=1, attempt_id=attempt_id, phase='already_stopped', status='already_stopped')
@@ -321,6 +368,8 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
             record = dict(schema_version=1, attempt_id=attempt_id, phase='close_intent', process=running,
                           native=native, created_utc=datetime.now(timezone.utc).isoformat(), trading_changed=False,
                           positions_closed=False)
+            if settled is not None:
+                record['settled_native_request'] = settled
             write_json(path, record)
         method = None
         if build_id:
@@ -349,7 +398,9 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
             # the native gate, re-prove inert state immediately before the single normal close.
             with exclusive_gate(gate):
                 try:
-                    refuse_pending_native()
+                    # Only the same settled request (or none) may remain: anything newer refuses.
+                    if refuse_pending_native() != settled:
+                        raise ValueError('A native Studio request or permit is pending on this terminal; GOAT will not close MT5 during it')
                 except ValueError:
                     record.update(phase='refused', status='native_request_pending'); write_json(path, record)
                     raise

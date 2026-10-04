@@ -504,6 +504,85 @@ class AgentSetupTests(unittest.TestCase):
             (gate / name).unlink()
         self.assertEqual(self.process.closed, [])
 
+    def retained_native_request(self, seed='pilot-2-r3', *, consumed=True, result=True, permit=False, binding=None):
+        """The Terminal 3 shape (goatai#1885): request.json kept after the EA consumed and answered it.
+
+        request_id is the attempt identity carried in the request, not a hash of its bytes; the
+        receipts bind sha256(request.json) as request_sha256, and consumed-<request_id> is the
+        EA's byte-identical claim copy.
+        """
+        gate = self.c.local / 'native-gate'; gate.mkdir(parents=True, exist_ok=True)
+        request_id = hashlib.sha256(seed.encode()).hexdigest()
+        terminal_id, run_id = binding or (self.c.session['terminal_id'], self.c.session['run_id'])
+        request = dict(data_path=str(self.data), action='arm_restart', startup_sha256='d' * 64, schema_version=1,
+                       request_id=request_id, terminal_id=terminal_id, run_id=run_id, owner='agent', revision=7, generation=3,
+                       job_id=seed, configuration_sha256='c' * 64, expires_utc=int(time.time()) - 4 * 3600)
+        raw = (json.dumps(request, ensure_ascii=False, allow_nan=False) + '\n').encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        (gate / ('issued-' + request_id + '.json')).write_bytes(json.dumps(dict(request_sha256=digest, request=request)).encode())
+        (gate / 'request.json').write_bytes(raw)
+        if consumed:
+            (gate / ('consumed-' + request_id + '.json')).write_bytes(raw)
+            (gate / ('arm-intent-' + request_id + '.json')).write_bytes(json.dumps(dict(request_sha256=digest, startup_sha256='d' * 64)).encode())
+        if result:
+            (gate / ('result-' + request_id + '.json')).write_bytes(json.dumps(dict(
+                request_id=request_id, request_sha256=digest, status='RESTART_ARMED_RECONCILE', observed_utc='2026.10.03 21:58:06')).encode())
+        if permit:
+            (gate / 'permit.json').write_bytes(json.dumps(dict(request_sha256=digest)).encode())
+        return gate, request_id, raw
+
+    def assert_close_refused(self, attempt_id):
+        with self.assertRaisesRegex(ValueError, 'native Studio request or permit is pending'):
+            agent_setup.close_terminal(self.c, attempt_id, build_id=BUILD)
+        self.assertEqual(self.process.closed, [])
+        self.assertIsNotNone(self.process.identity, 'MT5 keeps running')
+
+    def test_close_proceeds_past_a_request_the_ea_already_consumed_and_answered(self):
+        # Terminal 3: the batch finished hours ago, the permit is revoked, and request.json is still
+        # on disk beside its byte-identical consumed-<request_id> copy, issuance, arm intent and result.
+        gate, request_id, raw = self.retained_native_request()
+        evidence = {path.name: path.read_bytes() for path in gate.iterdir() if path.name != 'launch.lock'}
+        ea = self.start_ea(pairing='none')
+        result = agent_setup.close_terminal(self.c, 'settled-1', build_id=BUILD)
+        self.assertEqual((result['phase'], result['method'], ea.shutdowns), ('stopped', 'ea_inert_shutdown', 1))
+        self.assertEqual(result['settled_native_request'], dict(request_id=request_id, request_sha256=hashlib.sha256(raw).hexdigest(),
+                                                                action='arm_restart', result='RESTART_ARMED_RECONCILE'))
+        self.assertEqual({path.name: path.read_bytes() for path in gate.iterdir() if path.name != 'launch.lock'}, evidence,
+                         'the request and its receipt pair are evidence: nothing is deleted or rewritten')
+        # Without a mailbox host the controller's own close re-proves the same settled request.
+        ea.stop(); self.ea = None
+        self.process.identity = FakeProcess().identity
+        result = agent_setup.close_terminal(self.c, 'settled-2')
+        self.assertEqual((result['phase'], result['method']), ('stopped', 'controller_normal_close'))
+        self.assertEqual(result['settled_native_request']['request_id'], request_id)
+        self.assertTrue((gate / 'request.json').exists())
+
+    def test_close_still_refuses_a_request_the_ea_has_not_consumed_and_answered(self):
+        cases = (('unconsumed', dict(consumed=False, result=False)),       # issued, never claimed by the EA
+                 ('unanswered', dict(result=False)),                       # claimed, handler not returned
+                 ('other-binding', dict(binding=('terminal-other', 'session-other'))),
+                 ('permit', dict(permit=True)))                            # last: a permit always refuses
+        for name, options in cases:
+            with self.subTest(name):
+                gate, _, raw = self.retained_native_request(name, **options)
+                self.assert_close_refused('pending-' + name)
+                self.assertEqual((gate / 'request.json').read_bytes(), raw)
+
+    def test_close_refuses_when_the_consumed_copy_does_not_match_the_request(self):
+        with self.subTest('different bytes under the request id'):
+            gate, request_id, raw = self.retained_native_request('tampered')
+            (gate / ('consumed-' + request_id + '.json')).write_bytes(raw.replace(b'"revision": 7', b'"revision": 8'))
+            self.assert_close_refused('mismatch-bytes')
+        with self.subTest('identical bytes under another request id'):
+            gate, request_id, raw = self.retained_native_request('renamed', consumed=False)
+            (gate / ('consumed-' + hashlib.sha256(b'another').hexdigest() + '.json')).write_bytes(raw)
+            self.assert_close_refused('mismatch-name')
+        with self.subTest('result bound to another request hash'):
+            gate, request_id, raw = self.retained_native_request('rebound')
+            (gate / ('result-' + request_id + '.json')).write_bytes(json.dumps(dict(
+                request_id=request_id, request_sha256='e' * 64, status='RESTART_ARMED_RECONCILE')).encode())
+            self.assert_close_refused('mismatch-result')
+
     def test_ea_shutdown_refusal_mid_batch_is_final_and_sends_no_fallback_close(self):
         ea = self.start_ea(pairing='none', batch=True)
         with self.assertRaisesRegex(ValueError, 'refused to close'):

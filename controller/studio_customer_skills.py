@@ -4,7 +4,8 @@ from pathlib import Path
 import re
 
 NAMES=('goat-optimize','goat-template-create','goat-seed-research',
-       'goat-portfolio-build','goat-repair-report','goat-observation-audit')
+       'goat-portfolio-build','goat-repair-report','goat-observation-audit',
+       'goat-vps-setup')
 
 
 def customer_skills():

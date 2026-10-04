@@ -708,13 +708,23 @@ certificate (Claude-Mac, #1885 5974343541):
    the MACD indicator, unversioned resources such as `RunMe.ex5`, `#import` DLLs,
    `iCustom` literals). It is source-equivalent when the input header and the
    external names are identical and every closure file NOT on the reviewed
-   non-trading allowlist (`ALLOWLIST`: panel/UI, Studio chart-side control,
-   activation, telemetry, pairing, images) has a byte-identical normalized hash.
+   non-trading allowlist has a byte-identical normalized hash. The allowlist is a
+   receipt (`contracts/equivalence/non-trading-allowlist-v1.json`: panel/UI,
+   Studio chart-side control, activation, telemetry, pairing, images) pinned by
+   full repo path AND by the normalized hash of every reviewed version: any other
+   version of an allowlisted file is in scope until a new review adds its hash.
    Normalization is only encoding, line endings and the `GOAT_BUILD_ID` /
-   `GOAT_BUILD_MARKER` strings. A changed line in an allowlisted file that touches
-   trade/position/order calls, indicator handles or price copies, `#define`/`#undef`,
-   inputs, lots, risk, grid, SL/TP or TSL fails the certificate anyway. A missing
-   `#include` or an unrecoverable build makes it `not_comparable`.
+   `GOAT_BUILD_MARKER` strings. As defence in depth, a changed line in an
+   allowlisted file that touches trade/position/order calls, indicator handles or
+   price copies, `#define`/`#undef`, inputs, lots, risk, grid, SL/TP or TSL fails
+   the certificate anyway. Every external except system-DLL `#import`s (MQL5-root
+   resources such as the MACD indicator, unversioned resources such as
+   `RunMe.ex5`, standard-library includes with their nested includes, `iCustom`
+   indicators) must carry a hash for each build (`--*-externals` file, or
+   `--*-mql5-root` to hash the MQL5 folder the build was compiled in), and both
+   builds need a known, equal compiler (`compile-receipt.json` `compiler_sha256`,
+   or `--*-compiler-sha256`). A missing `#include`, external hash or compiler,
+   or an unrecoverable build makes it `not_comparable`.
 2. **Source recovery.** In order: a `candidate-builds/*/identity.json` whose
    binary matches, at its `compile-receipt.json` `source_head` (every file hash in
    the identity is checked); the git commit that introduced an `.ex5` blob with
@@ -723,10 +733,17 @@ certificate (Claude-Mac, #1885 5974343541):
 3. **Canary.** About ten exports of the export build with complete Model-4
    captures are re-run on the installed build over the same window and model.
    Every buy/sell deal (time, type, entry, lots, price) must equal the export's
-   deal list up to the export's last minute. A matching canary (at least 10 sets
-   with trades) stored with its digest makes the certificate `active`; any drift
-   makes it `refuted` for good, and a re-test collected after that is
-   `not_comparable`.
+   deal list up to the export's last minute. Each deal file is bound to the binary
+   that made it. A canary with identical deals in at least 10 distinct sets with
+   trades (10 is a hard floor; a repeated set counts once), no protocol error and
+   no unfinished member, stored with its digest, makes the certificate `active` for
+   the models it ran (a Model-4 canary covers Model-4 exports only). Activation is
+   re-derived from the stored sets, never from a flag. Drift in any protocol-clean
+   set makes the certificate `refuted` for good, whatever else that canary holds,
+   and a re-test collected after that is `not_comparable`. A known
+   binary hash that matches no recovered source is `not_comparable` (no fallback
+   to its build-id label), and a certificate for a binary never covers an export
+   that does not record that binary.
 
 Operations (no MT5 effect; writes only `<controller state>\equivalence\<digest>\`):
 `equivalence-certificate --repo <GOAT-EA checkout> --export-ea-sha256 |

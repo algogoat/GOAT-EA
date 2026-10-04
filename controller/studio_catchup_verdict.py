@@ -315,7 +315,7 @@ def comparability(original, retest, *, pins=None, repro, same_inputs):
             check('ea_build', False, 'canary run for trading-equivalence certificate %s: no verdict until the certificate is active'
                   % str(bridge.get('certificate_digest'))[:12])
         else:
-            check('ea_build', bool(original_ok and retest_ok and bridge.get('valid_at_collect', True)),
+            check('ea_build', bool(original_ok and retest_ok and bridge.get('valid_at_collect', False)),
                   'trading-equivalent build: certificate %s (%s), canary %s; export %s / installed %s'
                   % (str(bridge.get('certificate_digest'))[:12], bridge.get('status_at_collect', bridge.get('status')),
                      str(bridge.get('canary_digest'))[:12], oc.get('build_id') or pins.get('original_ea_sha256'),

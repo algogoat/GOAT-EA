@@ -1,0 +1,332 @@
+{
+ "files": {
+  "Dashboard.mqh": {
+   "category": "panel_ui",
+   "reviewed_sha256": {
+    "9bc0e202fff14796c15d58275c5e930f93e7e2520faaf88fa729d0115bf3686e": [
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ],
+    "f8e18df8fe4d8c6e84d01dc132ed964e9d578c9a7a6d904cbcde953e1aa55084": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28"
+    ]
+   }
+  },
+  "GOAT Gradient Logo.png": {
+   "category": "resource_image",
+   "reviewed_sha256": {
+    "7b1110024fa6f7adea30d9e285fd478190df440a26f4b4590c8c258b88eb0478": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOAT Head Transparent.png": {
+   "category": "resource_image",
+   "reviewed_sha256": {
+    "72491d7265c8af7fd74b1617da5e37351b1063d229db066cde040403eb4ae72c": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOAT.ico": {
+   "category": "resource_image",
+   "reviewed_sha256": {
+    "7e39f690780a1cd8849250a6146fe93f7ca89623fcafd64ad4c0fe9cacfd85f0": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATBatchCancelOrigin.mqh": {
+   "category": "studio_control",
+   "reviewed_sha256": {
+    "5383954f5a0aba8886dbefb8e15d92be2eb2c3021880c61a250f209137836b57": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATDeploymentDiagnostics.mqh": {
+   "category": "telemetry",
+   "reviewed_sha256": {
+    "9c552a7b508a86f225e15a5c2836fbbc6f7c36e79b9d6b02bbce2363ca9865ef": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATEADeviceActivation.mqh": {
+   "category": "activation",
+   "reviewed_sha256": {
+    "0df3e8162ba1c70106b103853e591e90d96c5714b9a2341d28df4ad3900ff6ed": [
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ],
+    "94f979dce60e7756aeb927e065f3ce4782832e63651c8075b47a36ae5761ae34": [
+     "V1.49-EA-EXPERIENCE-33"
+    ],
+    "a3a7e0b7ad1676a967c11905993bd06d23ba27ff84095a7e9e764aaa2a13eed7": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28"
+    ],
+    "d1f6a007d38e166db902b29c1fde1ec19241ec83d609480f9ef744436dc29da4": [
+     "V1.49-BETA17-38"
+    ]
+   }
+  },
+  "GOATLicenseInitRetry.mqh": {
+   "category": "activation",
+   "reviewed_sha256": {
+    "3cdf4a6f0a8f349798ced95ea8d44864fe20d36b01ed80b303881f5b3061d69b": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATPortfolioChildAudit.mqh": {
+   "category": "pairing_setup",
+   "reviewed_sha256": {
+    "5d275540604e775cb1b6fe6132b399f2153856ad73f0e6dc7800fc1c0b315b76": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATPortfolioSetupControl.mqh": {
+   "category": "pairing_setup",
+   "reviewed_sha256": {
+    "6e941917fbdce981eee101ab9416689464ac1c48b8611754c144d85c94b76a3f": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATSetupControl.mqh": {
+   "category": "pairing_setup",
+   "reviewed_sha256": {
+    "ec394f0551b0bf1c6025f83c334baa576f6bd50e45b5566374fed83c34281850": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATStudioBridge.mqh": {
+   "category": "studio_control",
+   "reviewed_sha256": {
+    "90caf5a7947193e9e1c24d4b27b1fa0f2ab94fb3922aaf08f75adbec03933648": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATStudioCompletion.mqh": {
+   "category": "panel_ui",
+   "reviewed_sha256": {
+    "05970a79885551299a49c2b91e49638858091d2d5755e9318938372859bdf13a": [
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ],
+    "94e904e3b407b126059efb2e92ec9f71f3c83b229cb8d4f2f9466f2fa8ec7bfc": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28"
+    ]
+   }
+  },
+  "GOATStudioControlFeedback.mqh": {
+   "category": "panel_ui",
+   "reviewed_sha256": {
+    "2e3ba199b82a93368d585183c407aec0fd641289d9d39c6e8f215e5e0db224b0": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28"
+    ],
+    "f298792ad26bb54e9de278a6095abe4ac01808bc9c673efd28b18e5f16f4d137": [
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATStudioDispatch.mqh": {
+   "category": "studio_control",
+   "reviewed_sha256": {
+    "281ff874fd2e08afd2a5ee7985b1fd544b31578152dba45343bf33cdf7b7782e": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28"
+    ],
+    "ca9722d81f9af12d924b84f431826f2fb047a323e9abcc0daab4f514d5c82a98": [
+     "V1.49-EA-EXPERIENCE-33"
+    ],
+    "fd63565184e1375c1552f06ad9c76633eecb41ccd9beaa4168c8c72fda5ed1b2": [
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATStudioDraftDisplayPolicy.mqh": {
+   "category": "panel_ui",
+   "reviewed_sha256": {
+    "3d8d908509b0b0ccda79a39ff5f2545461d4c73c6507d61375a09831c0d109a0": [
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATStudioNative.mqh": {
+   "category": "studio_control",
+   "reviewed_sha256": {
+    "ee6253e5056652e3a2be33458aa125f3ed0a9da934f0c8486749fc5ddd390c61": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATStudioQueueList.mqh": {
+   "category": "panel_ui",
+   "reviewed_sha256": {
+    "cfffee94b71cd2d2fcddea61a41c814f57fefda73cf1686cae40f81c8bfa450f": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATStudioRecovery.mqh": {
+   "category": "studio_control",
+   "reviewed_sha256": {
+    "6be8d8d3bc9c80c1fb6122a94d4b7cf3652095b39fcda0505ef3e9b6a3c04cd0": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATStudioRecoveryFiles.mqh": {
+   "category": "studio_control",
+   "reviewed_sha256": {
+    "1f53157b787363d9ad70db0d5bc517f67a6f8a314684fdb0d7d5574268e44b45": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28"
+    ],
+    "db3559f3741f947fb36aa9a83d75dc7105b2b55dd7f04f07903917c137c6384e": [
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATStudioUI.mqh": {
+   "category": "panel_ui",
+   "reviewed_sha256": {
+    "3299b8d26c768e9cb88fe894e8d486dd0d079f28d7fd265a80201bdac2767aa0": [
+     "V1.49-EA-EXPERIENCE-33"
+    ],
+    "8376ec4de884962fef7b8672878640b048bd83156283645c75a840c2e3b1e088": [
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ],
+    "eff768fd7cdf9473fd581ac95bd8f15b1d99b7e804dffca97ab429f3bae50629": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28"
+    ]
+   }
+  },
+  "GOATStudioWorkers.mqh": {
+   "category": "studio_control",
+   "reviewed_sha256": {
+    "1607f29c556e6591c3b29cc5d0587ae931b2ca9607faac6bfa8b4436369a1d9d": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOATTesterStopConfirm.mqh": {
+   "category": "studio_control",
+   "reviewed_sha256": {
+    "f72ca6eeaa42eb49a1a50ccc5b813670579d76dab63a6d7220cc9e7ea6da6243": [
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  },
+  "GOAT_DashboardOverview.mqh": {
+   "category": "panel_ui",
+   "reviewed_sha256": {
+    "5ece6d12ecca2bf8d4412fb2e03dd27ffdc874a67ea5f04ef17332387f1b6500": [
+     "V1.49-EXPORT-BACK-BOUNDARY-28",
+     "V1.49-EA-EXPERIENCE-33",
+     "V1.49-BETA17-38",
+     "V1.49-BETA17-39 (candidate, a56febe)"
+    ]
+   }
+  }
+ },
+ "id": "goat-non-trading-allowlist-v1",
+ "kept_in_scope": {
+  "GOAT V1.49.mq5": "entrypoint: trading, risk, sizing, order and signal logic",
+  "GOATAIWireV2.mqh": "AI bias signal wire",
+  "GOATEvidenceEnd.mqh": "export end date",
+  "GOATOptimizationInputs.mqh": "inputs",
+  "GOATStudioExportDates.mqh": "export windows",
+  "GOATStudioSettingCompare.mqh": "setting comparison used by inputs",
+  "GOATStudioSettingTypes.mqh": "setting types used by inputs",
+  "GOATStudioSettingValues.mqh": "setting values used by inputs",
+  "GOAT_DashboardAILaunchPolicy.mqh": "rewrites AI bias inputs at launch",
+  "GOAT_DirectionGuard.mqh": "direction guard (trade gating)",
+  "GOAT_DirectionGuardCore.mqh": "direction guard (trade gating)",
+  "GOAT_Inputs_Definitions.mqh": "input header and enums",
+  "GOAT_SequenceExport.mqh": "capture runs inside the tester pass",
+  "GOAT_SequenceHostIO.mqh": "capture host I/O",
+  "GOAT_SequencePackage.mqh": "capture inputs",
+  "MTTester.mqh": "tester automation",
+  "NewsBiasFilter.mqh": "news/bias trade filter",
+  "Optimizer.mqh": "optimizer, export pass and OnTester code",
+  "Tester.mqh": "tester settings and export pass",
+  "XmlProcessor.mqh": "optimization result parsing (choice of exported sets)"
+ },
+ "review_ref": "algogoat/GOAT-EA#141",
+ "reviewed_builds": [
+  {
+   "build": "V1.49-EXPORT-BACK-BOUNDARY-28",
+   "commit": "e6eaaa191917300187798efef69d39307f352171"
+  },
+  {
+   "build": "V1.49-EA-EXPERIENCE-33",
+   "commit": "6159f6bd7700c2b79ee1e1323fa54a4b218c05db"
+  },
+  {
+   "build": "V1.49-BETA17-38",
+   "commit": "e4e9ccfc1ceff46dfa2da6249828e488dd077f92"
+  },
+  {
+   "build": "V1.49-BETA17-39 (candidate, a56febe)",
+   "commit": "a56febe"
+  }
+ ],
+ "reviewed_by": "Claude-PC (proposed 2026-10-03); Claude-Mac review on algogoat/GOAT-EA#141",
+ "rule": "A path here is non-trading only in a version whose normalized sha256 is listed under reviewed_sha256. Any other version of the file is in scope until a new review adds its hash.",
+ "schema": "goat-non-trading-allowlist-receipt-v1"
+}

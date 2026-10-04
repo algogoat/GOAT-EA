@@ -71,11 +71,11 @@ class CatchupCase(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def export(self, alias, symbol, rows, **kw):
+    def export(self, alias, symbol, rows, deals=None, **kw):
         forced = (datetime.combine(rows[-1][0].date(), time(23, 59)), rows[-1][1], rows[-1][2])
         windows = [('BOOS', date(2026, 1, 5), date(2026, 1, 19), 20, 100), ('FWD', date(2026, 7, 17), date(2026, 8, 28), 60, 300),
                    ('FOOS', date(2026, 8, 29), rows[-1][0].date(), 38, 190)]
-        return make_unit(self.run / 'deploy' / alias / symbol, rows=rows + [forced], deals=self.deals, alias=alias, symbol=symbol,
+        return make_unit(self.run / 'deploy' / alias / symbol, rows=rows + [forced], deals=self.deals if deals is None else deals, alias=alias, symbol=symbol,
                          windows=windows, **kw)
 
     def write_run_manifest(self, aliases=('Rbehind01', 'Rahead001', 'Rweak0001'), ea_sha256=None, **tester):
@@ -122,7 +122,7 @@ class CatchupCase(unittest.TestCase):
         base = self.histories.get(tester['Symbol'], self.history)     # a faithful EA reproduces each export's own history
         first = base[-1][0].date() + timedelta(days=1)
         rows = base + daily(first, to_date - timedelta(days=1), base[-1][2], new_per_day)
-        deals = self.deals + trading(first, to_date - timedelta(days=1), 2, 6.0)
+        deals = getattr(self, 'deals_by', {}).get(tester['Symbol'], self.deals) + trading(first, to_date - timedelta(days=1), 2, 6.0)
         windows = [('BOOS', date(2026, 1, 5), date(2026, 1, 19), 20, 100), ('FWD', date(2026, 7, 17), date(2026, 8, 28), 60, 300),
                    ('FOOS', date(2026, 8, 29), to_date - timedelta(days=1), 54, 270)]
         folder = Path(self.controller.install['common_files_root']) / 'TEMP' / 'SQ' / member['attempt_token']
@@ -477,10 +477,24 @@ class SameModelAndEquivalenceTests(CatchupCase):
 
     def activate(self, cert, count=10):
         import studio_equivalence as eq
-        from test_studio_equivalence import DEALS, deals_csv
-        pairs = [dict(label=str(n), reference_deals=deals_csv(self.root / ('r%d.csv' % n), DEALS), candidate_deals=deals_csv(self.root / ('c%d.csv' % n), DEALS),
-                      reference_model=4, candidate_model=4, reference_window=['a', 'b'], candidate_window=['a', 'b']) for n in range(count)]
-        eq.save_canary(self.controller.root, eq.canary_result(cert, pairs))
+        from test_studio_equivalence import canary_pairs
+        folder = self.root / ('canary-%s' % cert['digest'][:8])
+        folder.mkdir()
+        eq.save_canary(self.controller.root, eq.canary_result(cert, canary_pairs(folder, cert, count)))
+
+    def ten_exports(self):
+        """Ten exports of the old build on distinct symbols, values and deal lists (a canary counts each set once)."""
+        symbols = ['EURUSD', 'GBPUSD', 'AUDUSD', 'NZDUSD', 'USDCAD', 'USDCHF', 'EURJPY', 'EURGBP', 'AUDJPY', 'CADJPY']
+        self.deals_by = {}
+        sets, aliases = [], []
+        for n, symbol in enumerate(symbols):
+            alias = 'Rcan%05d' % n
+            self.deals_by[symbol] = trading(date(2026, 1, 5), date(2026, 9, 24), 2, 5.1 + n / 100)
+            sets.append(self.export(alias, symbol, self.history, deals=self.deals_by[symbol], values=dict(VALUES, Grid_Size=str(-2.0 - n / 4))))
+            aliases.append(alias)
+        self.histories.pop('GBPUSD')
+        self.write_run_manifest(aliases=tuple(aliases), ea_sha256=self.OLD_EA)
+        return sets
 
     def test_model_one_export_is_retested_on_model_one_without_capture_and_tagged(self):
         unit = self.export('Rmodel101', 'AUDUSD', self.history, model=1)
@@ -543,8 +557,30 @@ class SameModelAndEquivalenceTests(CatchupCase):
         self.assertIn('trading-equivalent build: certificate ' + cert['digest'][:12] + ' (active)', checks['ea_build']['detail'])
         self.assertEqual(version['equivalence']['certificate_digest'], cert['digest'])
         self.assertTrue(version['equivalence']['valid_at_collect'])
-        self.assertEqual(version['catch_up']['equivalence_certificate'], cert['digest'])
+        state = __import__('studio_equivalence').state(self.controller.root, cert['digest'])
+        stamp = version['catch_up']   # LOW 8: what was true at collection, not at prepare
+        self.assertEqual((stamp['equivalence_certificate'], stamp['equivalence_canary'], stamp['equivalence_status_at_collect']),
+                         (cert['digest'], state['canary_digest'], 'active'))
         self.assertEqual(self.runner.report('cu1')['members'][0]['summary']['equivalence_mode'], 'active')
+
+    def test_low7_an_active_certificate_covers_only_its_canary_models(self):
+        cert = self.certificate()
+        self.activate(cert)   # a Model-4 canary
+        unit = self.export('Rmodel101', 'AUDUSD', self.history, model=1)
+        self.write_run_manifest(aliases=('Rmodel101',), ea_sha256=self.OLD_EA)
+        reasons = ' '.join(self.runner.validate(self.plan(sets=[unit], equivalence_certificates=[cert['digest']]))['exports'][0]['reasons'])
+        self.assertIn('is active only for model(s) [4]', reasons)
+
+    def test_low8_a_bridge_without_a_collection_check_is_not_comparable(self):
+        from studio_catchup_verdict import comparability
+        bridge = dict(mode='active', certificate_digest='a' * 64, canary_digest='b' * 64, status='active',
+                      export_build=dict(ea_sha256=self.OLD_EA), installed_build=dict(ea_sha256='c' * 64))
+        pins = dict(original_ea_sha256=self.OLD_EA, installed_ea_sha256='c' * 64, model=4, equivalence=bridge)
+        result = comparability(dict(capture=None), dict(capture=None), pins=pins, repro=dict(reproduced=True), same_inputs=True)
+        self.assertFalse(next(c for c in result['checks'] if c['check'] == 'ea_build')['ok'])
+        result = comparability(dict(capture=None), dict(capture=None), pins=dict(pins, equivalence=dict(bridge, valid_at_collect=True)),
+                               repro=dict(reproduced=True), same_inputs=True)
+        self.assertTrue(next(c for c in result['checks'] if c['check'] == 'ea_build')['ok'])
 
     def test_not_equivalent_or_uncovered_certificates_refuse(self):
         self.write_run_manifest(ea_sha256=self.OLD_EA)
@@ -562,34 +598,35 @@ class SameModelAndEquivalenceTests(CatchupCase):
 
     def test_canary_run_then_ingest_activates_and_a_refuted_certificate_stops_verdicts(self):
         import studio_equivalence as eq
-        self.write_run_manifest(ea_sha256=self.OLD_EA)
+        sets = self.ten_exports()
         cert = self.certificate()
-        self.runner.prepare('cu1', self.plan(sets=[self.behind, self.ahead], canary_certificate=cert['digest']))
+        self.runner.prepare('cu1', self.plan(sets=sets, canary_certificate=cert['digest']))
         self.auto = True
-        self.runner.start('cu1', 30)
+        self.runner.start('cu1', 120)
         manifest = read_json(self.runner.path('cu1') / 'manifest.json')
+        self.assertEqual(len(manifest['members']), 10)
         for member in manifest['members']:
             version = read_json(Path(member['evidence_dir']) / 'evidence-version.json')
             self.assertEqual(version['verdict']['verdict'], 'not_comparable')
             self.assertIn('canary run for trading-equivalence certificate', ' '.join(version['verdict']['reasons']))
-        pairs, skipped = eq.catchup_pairs(self.controller.root, 'cu1', cert['digest'])
-        self.assertEqual((len(pairs), skipped), (2, []))
-        self.assertEqual(pairs[0]['reference_model'], 4)
-        canary = eq.canary_result(cert, pairs, min_sets=2, source='catchup:cu1')
+        pairs, skipped, incomplete = eq.catchup_pairs(self.controller.root, 'cu1', cert['digest'])
+        self.assertEqual((len(pairs), skipped, incomplete), (10, [], []))
+        self.assertEqual((pairs[0]['reference_model'], pairs[0]['reference_ea'], pairs[0]['candidate_ea']),
+                         (4, self.OLD_EA, self.controller.install['ea_sha256']))
+        canary = eq.canary_result(cert, pairs, source='catchup:cu1')
         self.assertTrue(canary['matched'], canary['plain'])
         self.assertGreater(canary['sets'][0]['reference_deals'], 100)
         eq.save_canary(self.controller.root, canary)
         self.assertEqual(eq.state(self.controller.root, cert['digest'])['status'], 'active')
         # A later drifting canary refutes the certificate; pending members are judged not comparable at collection.
-        self.runner.prepare('cu2', self.plan(sets=[self.behind], equivalence_certificates=[cert['digest']]))
+        self.runner.prepare('cu2', self.plan(sets=sets[:1], equivalence_certificates=[cert['digest']]))
         drift = [dict(p) for p in pairs]
-        changed = Path(drift[0]['candidate_deals'])
-        text = changed.read_text(encoding='utf-8').splitlines()
+        text = Path(drift[0]['candidate_deals']).read_text(encoding='utf-8').splitlines()
         text[5] = text[5].replace(',0.05,', ',0.06,')
         drifted = self.root / 'drift.csv'
         drifted.write_text('\n'.join(text) + '\n', encoding='utf-8')
         drift[0]['candidate_deals'] = str(drifted)
-        eq.save_canary(self.controller.root, eq.canary_result(cert, drift, min_sets=2))
+        eq.save_canary(self.controller.root, eq.canary_result(cert, drift))
         self.starts.clear(); self.catchup_id = 'cu2'
         self.process_state = dict(pid=10, executable='terminal64.exe', created_utc='monitor')
         self.runner.start('cu2', 30)
@@ -598,17 +635,33 @@ class SameModelAndEquivalenceTests(CatchupCase):
         self.assertEqual(version['verdict']['verdict'], 'not_comparable')
         self.assertEqual((version['equivalence']['status_at_collect'], version['equivalence']['valid_at_collect']), ('refuted', False))
 
-    def test_canary_plan_takes_only_the_certificate_export_build_with_captures(self):
+    def test_low7_unfinished_canary_members_count_against_the_canary(self):
+        import studio_equivalence as eq
+        sets = self.ten_exports()
+        cert = self.certificate()
+        self.runner.prepare('cu1', self.plan(sets=sets, canary_certificate=cert['digest']))
+        self.runner.start('cu1', 1)
+        self.process_state = None   # the first member never wrote its output
+        self.runner.status('cu1')
+        pairs, _, incomplete = eq.catchup_pairs(self.controller.root, 'cu1', cert['digest'])
+        self.assertEqual((len(pairs), len(incomplete)), (0, 10))
+        self.assertIn('not completed (missing_output)', incomplete[0]['reason'])
+
+    def test_canary_plan_takes_only_behind_exports_of_the_certificate_export_build(self):
         cert = self.certificate()
         self.write_run_manifest(ea_sha256='e' * 64)
         reasons = ' '.join(self.runner.validate(self.plan(sets=[self.behind], canary_certificate=cert['digest']))['exports'][0]['reasons'])
         self.assertIn('not made by its export build', reasons)
         import studio_equivalence as eq
         self.write_run_manifest(ea_sha256=self.OLD_EA)
-        planned = eq.canary_plan(self.controller.root, cert['digest'], [self.run])
+        planned = eq.canary_plan(self.controller.root, cert['digest'], [self.run], now=BEFORE_CLOSE)
         self.assertEqual(planned['plan']['canary_certificate'], cert['digest'])
-        self.assertEqual(sorted(c['symbol'] for c in planned['chosen']), ['EURUSD', 'GBPUSD', 'USDJPY'])
+        # Codex P2: GBPUSD already ends after the 2026-09-25 target, so a catch-up would not run it.
+        self.assertEqual((sorted(c['symbol'] for c in planned['chosen']), planned['not_behind'], planned['target']),
+                         (['EURUSD', 'USDJPY'], 1, '2026-09-25'))
         self.assertFalse(planned['enough'])
+        with self.assertRaisesRegex(ValueError, 'max_sets'):
+            eq.canary_plan(self.controller.root, cert['digest'], [self.run], max_sets=3, now=BEFORE_CLOSE)
 
 
 if __name__ == '__main__':

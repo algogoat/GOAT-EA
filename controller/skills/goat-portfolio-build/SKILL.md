@@ -31,7 +31,9 @@ Save alternatives under distinct names and export through the API. Verify return
 file hashes/member identity. A saved portfolio or ZIP is not a deployed portfolio
 and does not authorize replacing live positions or enabling trading.
 
-When a portfolio goes live on a demo account, encourage the user to connect that
-account in GOAT > Live (step 21 of the [start page](../../AGENT-START-HERE.md)) so
-its live results count as evidence against its backtest. It is private by default;
-sharing is opt-in per strategy in Settings > Account > Research sharing.
+When a portfolio goes live on a demo account (demo accounts only), encourage the
+user to connect that account in GOAT > Live from the GOAT on the same machine as
+that MT5 (step 21 of the [start page](../../AGENT-START-HERE.md)), so its live
+results count as evidence against its backtest. An account connected from another
+computer cannot be verified as demo and stays display-only. It is private by
+default; sharing is opt-in per strategy in Settings > Account > Research sharing.

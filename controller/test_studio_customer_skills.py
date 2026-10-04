@@ -44,8 +44,11 @@ class CustomerSkillsTests(unittest.TestCase):
         root=Path(__file__).parent
         body=' '.join((root/'skills/goat-vps-setup/SKILL.md').read_text(encoding='utf-8').split())
         # The disclosure is said word for word before every partner link.
-        self.assertIn('GOAT may earn a commission if you sign up through this link; your price is the same '
-                      'or lower. Our ranking comes from our own benchmark, not commission.',body)
+        self.assertIn('GOAT may earn a commission if you sign up through this link. '
+                      'Our ranking comes from our own benchmark, not commission.',body)
+        # No price promise until a signed partner agreement says so.
+        for claim in ('same or lower','price is the same','lower price','far faster per dollar'):
+            self.assertNotIn(claim,body)
         # Links come only from the partner configuration placeholder; none are shipped yet.
         self.assertIn('<GOAT_VPS_REFERRAL_LINKS>',body)
         self.assertIsNone(re.search(r'https?://',body))
@@ -54,19 +57,39 @@ class CustomerSkillsTests(unittest.TestCase):
                        'Trade','Lab','Pro Lab','2 vCPU, 4 GB RAM, 80 GB','4-6 **dedicated** vCPU, 16 GB RAM, 200 GB NVMe',
                        '8-16 **dedicated** vCPU, 32 GB RAM, 400 GB+ NVMe','resource-profile','benchmark-report',
                        'powercfg','Remote Control','**disconnects**','30 GB','Demo accounts only',
-                       'GOAT > Live','cockpit.connectAccount','Research sharing','private by default'):
+                       'long, strong and used nowhere else','Establish it before they buy',
+                       'at most 18 hours','**Download only**'):
             self.assertIn(phrase,body)
 
-    def test_going_live_guides_point_to_the_live_connect_step(self):
-        root=Path(__file__).parent
-        for guide in ('AGENT-START-HERE.md','GOAT-OPERATING-MODEL.md','skills/goat-portfolio-build/SKILL.md'):
-            text=' '.join((root/guide).read_text(encoding='utf-8').split())
-            self.assertIn('GOAT > Live',text,guide)
-            self.assertIn('Settings > Account > Research sharing',text,guide)
-        start=' '.join((root/'AGENT-START-HERE.md').read_text(encoding='utf-8').split())
-        for phrase in ('cockpit.discoverAccounts','cockpit.connectAccount','live.connected','cockpit.linkPortfolio',
-                       'goat-vps-setup'):
-            self.assertIn(phrase,start)
+    def test_vps_setup_size_check_has_tolerance_and_never_accuses(self):
+        body=' '.join((Path(__file__).parent/'skills/goat-vps-setup/SKILL.md').read_text(encoding='utf-8').split())
+        for phrase in ('with tolerance','15.9 GB','within 10 %','logical cores are at least',
+                       'please check it with the provider','Never say they received less than they paid for'):
+            self.assertIn(phrase,body)
+        self.assertNotIn('smaller plan than they paid for',body)
 
+    def test_live_connect_is_demo_only_and_same_machine(self):
+        # Mirrors goatai liveCockpitService: linkPortfolio refuses any account not verified demo, and an account
+        # connected from another machine (source ea-reporting) can never be verified, so it stays display-only.
+        root=Path(__file__).parent
+        skill=' '.join((root/'skills/goat-vps-setup/SKILL.md').read_text(encoding='utf-8').split())
+        start=' '.join((root/'AGENT-START-HERE.md').read_text(encoding='utf-8').split())
+        for text,name in ((skill,'skill'),(start,'start page')):
+            for phrase in ('emo accounts only','same machine as that MT5','cockpit.discoverAccounts',
+                           'cockpit.connectAccount @{candidateId=...}','live.connected','**Check account type**',
+                           "ui.highlight' @{target='live.account.checkType'}",'cockpit.linkPortfolio @{accountKey=...}',
+                           'cockpit.linkPortfolio` refuses it','display-only','Research sharing'):
+                self.assertIn(phrase,text,name)
+            # The cross-machine route is never offered as a way to connect.
+            self.assertNotIn('ea-reporting',text,name)
+            self.assertNotIn('host:"vps"',text,name)
+        self.assertIn('Not supported: connecting an account from a **different** computer',skill)
+        self.assertIn('**private by default**',skill)
+        for guide in ('GOAT-OPERATING-MODEL.md','skills/goat-portfolio-build/SKILL.md'):
+            text=' '.join((root/guide).read_text(encoding='utf-8').split())
+            for phrase in ('GOAT > Live','emo accounts only','same machine as that MT5','display-only',
+                           'Settings > Account > Research sharing'):
+                self.assertIn(phrase,text,guide)
+        self.assertIn('goat-vps-setup',start)
 
 if __name__=='__main__':unittest.main()

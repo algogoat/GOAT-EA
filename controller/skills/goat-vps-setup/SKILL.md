@@ -10,6 +10,13 @@ accounts only. You never spend money, never sign up for anything, never type or
 ask for a password, card number or one-time code, and never accept terms for the
 user. Signup, payment, every password and every licence acceptance are the user's.
 
+A VPS ("virtual private server") is a Windows computer rented in a datacentre that
+stays on all the time; the user reaches it over the internet with Remote Desktop.
+Explain any term you use: a **vCPU** is one processor core of that rented computer;
+**dedicated** cores are reserved for the user, while **shared** or **burst** cores are
+shared with other customers and slow down when they are busy; **NVMe** is a fast
+kind of disk.
+
 ## 1. Ask about their situation
 
 Ask, one at a time, and say why you ask:
@@ -20,10 +27,13 @@ Ask, one at a time, and say why you ask:
 2. Do they want to **research** (optimize strategies) or **only trade** strategies
    they already have?
 3. Can that Windows PC stay on, awake and online 24/7? Most cannot.
-4. Which broker and demo server do they use? Its trade servers' location decides the
-   best VPS location (London or New York for most FX brokers). Use the location the
-   broker publishes; if it publishes none, say it is unknown and choose London for
-   European brokers or New York for US ones, then check the ping in step 7.
+4. Which broker and demo server do they use? Where that broker's trade servers are
+   decides the best VPS location. **Establish it before they buy**, from evidence:
+   the location the broker publishes for its MT5 servers, or the access point and
+   ping an existing MT5 already shows in its journal. A broker's home country does
+   not tell you where its servers are. If the location stays unknown, say so, and
+   suggest a plan they can change cheaply if the ping turns out high (hourly
+   billing, a free region move or a refund window), so a wrong guess costs little.
 
 ## 2. Recommend a tier
 
@@ -33,16 +43,16 @@ Ask, one at a time, and say why you ask:
 | **Lab** | 4-6 **dedicated** vCPU, 16 GB RAM, 200 GB NVMe | Mac or no PC: the whole lab, moderate research. |
 | **Pro Lab** | 8-16 **dedicated** vCPU, 32 GB RAM, 400 GB+ NVMe | Mac or no PC, heavy or continuous research. |
 
-- **Windows PC that can do the research:** keep optimizing on the PC (it is usually
-  far faster per dollar) and put trading on a **Trade** VPS, so a reboot, sleep or
-  update on the PC never stops live demo trading.
+- **Windows PC that can do the research:** keep optimizing on the PC (they already
+  own it, so research there costs nothing extra) and put trading on a **Trade** VPS,
+  so a reboot, sleep or update on the PC never stops demo trading.
 - **Mac, phone only, or a PC too small or not always on:** run the whole lab on a
   **Lab** VPS; **Pro Lab** when they want many batches a week. Research speed comes
-  from cores: MT5 runs one tester agent per core, so shared ("burst") vCPUs and
-  oversold hosts slow every batch. Recommend dedicated cores for Lab and Pro Lab.
+  from cores: MT5 tests on every core it has, so shared cores slow every batch.
+  Recommend dedicated cores for Lab and Pro Lab.
 - **Only trading, and the PC is always on:** a VPS is optional. Say so honestly.
 
-Disk matters: tick history and tester caches grow quickly and GOAT warns below
+Disk matters: price history and test files grow quickly and GOAT warns below
 30 GB free (a start is refused below 5 GiB). Never recommend less than the tier's disk.
 
 ## 3. Provider and signup link (with disclosure, every time)
@@ -52,12 +62,12 @@ It names, per tier, only providers that passed GOAT's own VPS benchmark, with th
 signup links. If it is empty or still the placeholder, say: "GOAT has not finished
 benchmarking VPS providers yet, so I have no recommended provider or link." Then
 give the tier specs only, so the user can compare any provider themselves. Never
-invent a provider ranking, price or link.
+invent a provider ranking, price, discount or link, and make no claim about the
+price they will pay beyond what the provider's own page shows.
 
-Whenever you show a link from that list, say this sentence word for word, before
-the link:
+Whenever you show a link from that list, say this word for word, before the link:
 
-> GOAT may earn a commission if you sign up through this link; your price is the same or lower. Our ranking comes from our own benchmark, not commission.
+> GOAT may earn a commission if you sign up through this link. Our ranking comes from our own benchmark, not commission.
 
 Then the user signs up and pays on the provider's site themselves. Ask them to
 choose: Windows Server (2022 or newer) with the licence included, the location from
@@ -69,11 +79,22 @@ the VPS IP address and the Windows user name, never the password.
 1. The user connects with Remote Desktop: Windows **Remote Desktop Connection**
    (`mstsc`), on a Mac **Windows App** (formerly Microsoft Remote Desktop), on a
    phone the Windows App mobile app. They type the password themselves.
-2. Change the provider's initial password if the provider set it (the user, not you).
-3. **Windows Update:** the user opens Settings > Windows Update, installs updates
-   and restarts once now, before MT5 runs, then sets active hours to their trading
-   week if their Windows offers it.
-4. Tell them how to leave the VPS: close the Remote Desktop window (this
+2. Remote Desktop is usually reachable from the whole internet, so the Windows
+   password must be **long, strong and used nowhere else**. If the provider set the
+   first password, the user changes it now (the user, not you), and stores it in
+   their password manager.
+3. **Windows Update:** the user installs all updates and restarts once now, before
+   MT5 runs.
+4. **Update restarts:** Windows' "active hours" cover at most 18 hours a day, so
+   they cannot protect a 24/7 trading week. Agree a maintenance policy instead and
+   apply it with the user's yes: on Windows Server, `sconfig` > Windows Update
+   settings > **Download only** (updates download, nothing installs or restarts by
+   itself). Then the user installs updates and restarts in a weekly window when
+   their markets are closed (for FX, the weekend). Tell them what remains: a
+   download-only server still needs that weekly install, a provider's host
+   maintenance can restart it, and step 6 brings MT5 and GOAT back after any
+   restart. Remind them of the weekly window in each session's handoff.
+5. Tell them how to leave the VPS: close the Remote Desktop window (this
    **disconnects** and keeps MT5 running). Never **Sign out** or **Shut down**:
    signing out closes MT5 and stops trading.
 
@@ -88,7 +109,7 @@ the VPS IP address and the Windows user name, never the password.
    pairing (the user approves the connection code or clicks **Connect ••1234 to my
    agent**) and GIVE TO AGENT. Nothing changes because it is a VPS.
 4. Trade tier: no research. Deploy the user's saved portfolio with step 21 of the
-   start page; the user turns on Algo Trading themselves.
+   start page **from the GOAT on the VPS**; the user turns on Algo Trading themselves.
 
 ## 6. Always on: no sleep, restart after reboot
 
@@ -104,9 +125,10 @@ Explain each change and get the user's yes before running it:
 - Sign in automatically after a reboot: Windows needs automatic sign-in for that
   (for example Microsoft's Sysinternals **Autologon**). It stores the Windows
   password, so **the user sets it up and types the password**; you only explain it
-  and the trade-off (anyone with console access to the VPS gets a signed-in session).
-  Without it, after every reboot the user must connect once with Remote Desktop
-  before MT5 starts again.
+  and the trade-off: anyone who reaches the VPS console gets a signed-in session,
+  which is one more reason for the long, unique password from step 4. Without it,
+  after every reboot the user must connect once with Remote Desktop before MT5
+  starts again.
 - Test it with the user's yes: one restart, then check MT5 reconnects to the demo,
   the GOAT chart is loaded, Algo Trading is in the state the user left it, and GOAT
   desktop is signed in. Report what you observed.
@@ -125,13 +147,18 @@ Run these read-only checks and report each with its number and a pass or a plain
 
 1. `Studio @('resource-profile')`: CPU model, physical and logical cores, total and
    available RAM, and free disk on every drive it lists. Free disk below 30 GB is
-   a warning; below 5 GiB research cannot start. Cores and RAM below the chosen tier
-   mean the user received a smaller plan than they paid for: tell them.
+   a warning; below 5 GiB research cannot start. Compare with the plan **with
+   tolerance**: Windows shows a little less RAM than the plan (about 15.9 GB on a
+   16 GB plan) and a plan's vCPUs appear as **logical** cores (physical cores can
+   read lower). Treat it as matching when logical cores are at least the plan's
+   vCPUs and RAM is within 10 % of the plan. Only outside that, say: "This looks
+   smaller than the plan you chose; please check it with the provider." Never say
+   they received less than they paid for.
 2. The broker ping: the newest MT5 journal (`<terminal_data_root>\logs\<yyyymmdd>.log`)
    records each sign-in with its access point and ping. Under about 20 ms is good
    for a VPS in the broker's city; above 50 ms, suggest a closer location.
-3. `powercfg /query` shows no standby or hibernate timeout, and the startup entries
-   from step 6 exist.
+3. `powercfg /query` shows no standby or hibernate timeout, the startup entries
+   from step 6 exist, and Windows Update is on the agreed policy from step 4.
 4. `Studio @('onboarding-status')` reaches `local_monitor_ready`, and
    `Desktop 'onboarding.status' @{receiptPath=$receipt}` reports `ready`.
 5. Lab and Pro Lab: run the first one-template, one-symbol pilot of the start page
@@ -141,16 +168,34 @@ Run these read-only checks and report each with its number and a pass or a plain
 Write the results into the session's `handoff.md`, with the VPS tier, location and
 provider (no IP address, no user name, no password).
 
-## 9. When a strategy goes live: connect the account
+## 9. When a strategy goes live: connect the account (demo accounts only)
 
-When a portfolio starts trading on a demo account (on the VPS or anywhere), ask the
-user to connect that account in **GOAT > Live** if it is not there yet (a demo GOAT
-deployed with `deploy.demo` appears there by itself, already linked). Use
-`cockpit.discoverAccounts`, then `cockpit.connectAccount` (an EA on another machine:
-`{source:"ea-reporting", login, server, host:"vps"}`); the user confirms once in the
-app; wait for `live.connected`, then `cockpit.linkPortfolio` so Live compares it
-with the backtest it came from. Explain why: live demo results are the strongest
-evidence a strategy can earn short of real money, and the agent can then check
-whether it is holding up. It is **private by default**; sharing with the GOAT
-library is opt-in, per strategy, in **Settings > Account > Research sharing**, and
-only the user switches it on. Never connect a real-money account for the user.
+**Demo accounts only.** Never connect, link or advise a real-money account; if
+anything shows real money, stop and tell the user.
+
+Connect the account **from the GOAT that runs on the same machine as that MT5**:
+for a VPS, the GOAT installed on the VPS (step 5), driven by the agent on the VPS
+(step 7). Only there can GOAT confirm with the broker that the account is demo.
+
+1. A demo GOAT deployed with `deploy.demo` (start page step 21) is already in
+   **GOAT > Live**, verified demo and linked to its backtest. Nothing more to do.
+2. Any other demo terminal on that machine running a GOAT portfolio:
+   `cockpit.discoverAccounts`, then `cockpit.connectAccount @{candidateId=...}` for
+   that terminal; the user clicks **Connect** in the app; wait for `live.connected`
+   with `events.wait`. Then the user presses **Check account type** in Live while MT5
+   runs (their click, never yours; you may point at it with
+   `Desktop 'ui.highlight' @{target='live.account.checkType'}`). Only after it reads **demo**,
+   `cockpit.linkPortfolio @{accountKey=...}` links it to the saved backtest by the
+   SET files' hashes. If it reads real money, stop: GOAT never links, reports or
+   advises real-money accounts.
+
+Not supported: connecting an account from a **different** computer (for example
+from the user's PC to the MT5 on their VPS). GOAT cannot verify from there that
+the account is demo, so it is shown as display-only with equity only (no trades),
+`cockpit.linkPortfolio` refuses it, and it is not compared with its backtest. Do
+not use that route for this step; connect it on the VPS itself.
+
+Explain why it matters: live demo results show whether a strategy holds up against
+its backtest, and they count as evidence for it. It is **private by default**;
+sharing with the GOAT library is opt-in, per strategy, in **Settings > Account >
+Research sharing**, and only the user switches it on.

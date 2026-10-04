@@ -1,4 +1,4 @@
-B41 is B39 plus the recorded-bias live gate agreed on goatai#1885 with Claude-Mac: in the Strategy
+B41 is B40 plus the recorded-bias live gate agreed on goatai#1885 with Claude-Mac: in the Strategy
 Tester and optimization, AI bias from `GOAT_AI_Bias_<SYM>.csv` reaches the bias logic exactly as live
 V1.49 would hand it over, at every `Bias_threshold`. Compile pending; see **Build**.
 
@@ -10,7 +10,7 @@ where live would not, and a neutral 0 counted as a valid bias. Baking a threshol
 fix one N and make the threshold impossible to optimise, so the reader applies the gate with the run's
 own input instead.
 
-**What changes from B39**
+**What changes from B40**
 
 | Where | What it does |
 |---|---|
@@ -35,8 +35,8 @@ flag, so they compile exactly as before.
 
 **Build**
 
-- `GOAT_BUILD_ID` is `V1.49-BETA17-41`, marker `B41`. B40 is claimed by GOAT-EA#142 (open). `identity.json`
-  binds the 41 sources; only `GOAT V1.49.mq5`, `GOATAIWireV2.mqh` and `NewsBiasFilter.mqh` differ from B39.
+- `GOAT_BUILD_ID` is `V1.49-BETA17-41`, marker `B41`, on top of B40 (GOAT-EA#142, merged). `identity.json`
+  binds the 41 sources; only `GOAT V1.49.mq5`, `GOATAIWireV2.mqh` and `NewsBiasFilter.mqh` differ from B40.
 - Review compile (not committed): MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`, the B39 compiler) on a scratch
   stage outside every terminal folder, with B39's include root: V1.49, V1.48 and V1.47 each 0 errors,
   0 warnings. MetaEditor output is not byte-reproducible across stages, so the candidate binary is owed by
@@ -45,7 +45,7 @@ flag, so they compile exactly as before.
 **Not done.** No candidate binary, no native qualification, nothing installed. The root `GOAT V1.49.ex5` is
 unchanged.
 
-**Still owed:** the candidate compile commit, a renumber or rebase onto B40 if #142 merges first, server
+**Still owed:** the candidate compile commit (after B40's own compile commit lands), server
 admission of `V1.49-BETA17-41`, and a native tester run on a recorded file that shows below-threshold rows
 reaching the bias block as unavailable. Claude-Mac approved the design (goatai#1885, 5980940867). The
 parity test still pins the export's half-percent rounding band; it is removed once goatai#2230 (truncate

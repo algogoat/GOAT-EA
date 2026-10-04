@@ -274,7 +274,8 @@ distinguishes precreated `/profile` charts from disposable `[StartUp]` charts.
 |---|---|---|
 | `discover` | None | Read-only installation/hash/schema/capability inspection |
 | `validate-set` | `--set`, optional `--require-optimization` | Read-only encoding, complete input, active range and partial dependency validation |
-| `build-set` | `--source`, `--output`, `--spec` | Clone a real SET with narrow typed replacements; new unique identity, support notes and provenance |
+| `build-set` | `--source`, `--output`, `--spec` | Clone a real SET with narrow typed replacements; new unique identity, support notes and provenance (a starter source is recorded as parent `starter:<shape>`) |
+| `starter-set` | `--shape single\|sequence`, `--output` | Write a blank starting SET generated from the installed schema (no entry filter, no search axis) and its `.starter.json` receipt; create-only, outside the catalog, never opens MT5 |
 | `bootstrap` | `--account-login`, `--account-server` | Create local human-owned binding and monitor preset; never launch |
 | `onboarding-status` | None | Read-only local binding, process, fresh monitor and human ownership stages; exact recovery steps |
 | `monitor-prepare` | `--symbol` | Stage a separate persistent inert monitor profile while terminals are stopped; preserve other profiles |

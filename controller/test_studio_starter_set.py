@@ -1,0 +1,282 @@
+"""Blank starter SETs (beta.20 "build a new strategy from scratch"): generated from the installed schema,
+accepted by validate-set, create-only, outside the catalog, and recorded as a build-set parent."""
+from contextlib import redirect_stdout
+import copy
+import hashlib
+from io import StringIO
+import json
+from pathlib import Path
+import re
+import tempfile
+import unittest
+
+from campaign_ledger import sha
+from studio_installation import contracts
+from studio_research_authority import LOCAL_FILE_OPERATIONS, OPERATIONS, READ_OPERATIONS, authority, operation
+from studio_strategy_settings import read_values
+from studio_template_tools import (STARTER_SHAPES, build_set, schema_default, signal_modes, starter_set,
+                                   validate_set)
+import test_demo_seed_agent as seed_agent_fixture
+
+CONTRACTS = {version: contracts(version) for version in ('1.48', '1.49')}
+
+
+def spec(changes, rationale=None, **notes):
+    return dict(ea_desc=notes.pop('ea_desc', 'My EURUSD pullback'), changes=changes,
+                rationale=rationale or {name: 'Needed by the idea: ' + name for name in changes},
+                summary='Untested new idea built from a blank starter.',
+                entry_logic=notes.pop('entry_logic', 'RSI overbought/oversold on M15 decides the entry; no other filter.'),
+                ladder_exits='Exits as in the starter; reviewed against the changed entry.',
+                intended_role='Exploration candidate; no performance claim before testing.')
+
+
+class StarterSetTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def starter(self, shape='single', version='1.49', name=None, **kw):
+        schema, policy = CONTRACTS[version]
+        return starter_set(shape, self.root / (name or f'{version}-{shape}.set'), schema, policy,
+                           controller_version='test', ea_version=version, **kw)
+
+    def test_both_shapes_validate_against_both_installed_schemas(self):
+        for version, (schema, policy) in CONTRACTS.items():
+            for shape in STARTER_SHAPES:
+                with self.subTest(version=version, shape=shape):
+                    result = self.starter(shape, version)
+                    path = Path(result['output']['path']); raw = path.read_bytes()
+                    self.assertTrue(raw.startswith(b'\xff\xfe'))
+                    text = raw[2:].decode('utf-16-le')
+                    self.assertNotIn('\n', text.replace('\r\n', '')); self.assertTrue(text.endswith('\r\n'))
+                    report = validate_set(path, schema, policy)
+                    self.assertEqual((report['kind'], report['active_axes'], report['input_count']),
+                                     ('fixed_settings', {}, len(schema['inputs'])))
+                    self.assertEqual(report['dependency_audit']['findings'], [])
+                    with self.assertRaisesRegex(ValueError, 'No enabled optimization axes'):
+                        validate_set(path, schema, policy, require_optimization=True)
+                    self.assertEqual(result['output']['sha256'], hashlib.sha256(raw).hexdigest())
+
+    def test_values_are_schema_defaults_except_the_documented_fixes(self):
+        for version, (schema, policy) in CONTRACTS.items():
+            for shape in STARTER_SHAPES:
+                with self.subTest(version=version, shape=shape):
+                    result = self.starter(shape, version)
+                    values = read_values(Path(result['output']['path']).read_bytes())
+                    defaults = {n: schema_default(n, d, schema['defines']) for n, d in schema['inputs'].items()}
+                    fixed = {f['input']: f['value'] for f in result['fixes']}
+                    self.assertEqual({n for n in values if values[n] != defaults[n]}, set(fixed))
+                    self.assertEqual({n: values[n] for n in fixed}, fixed)
+                    for mode, disabled in signal_modes(policy).items():
+                        self.assertEqual(values[mode], disabled, mode)
+                    self.assertTrue(all(values[n] == 'false' for n in values if n.endswith('_MustCheck')))
+                    self.assertEqual((values['Mode_Bias'], values['Mode_News']), ('1', '1'))   # Bias_Disabled, News_Disabled
+                    self.assertTrue(all(values[n] == defaults[n] for n in values if n.startswith('Grid_')))
+                    self.assertEqual(values['CloseAtMaxLevels'], 'true')
+                    if shape == 'single':
+                        self.assertEqual((values['EA_Desc'], values['Max_Seq_Trades'], values['Mode_Lots']),
+                                         ('Starter Single Trade', '1', '0'))   # FixedLots: RiskperSeq needs >1 trade
+                    else:
+                        self.assertEqual((values['EA_Desc'], values['Max_Seq_Trades'], values['Mode_Lots'],
+                                          values['Sequence_MLPS_Hard_Close']), ('Starter Sequence', '5', '2', 'true'))
+                        self.assertGreater(int(values['Max_Seq_Trades']), 1)
+
+    def test_receipt_binds_schema_versions_shape_and_hash(self):
+        result = self.starter('sequence')
+        receipt = Path(result['receipt_path'])
+        self.assertEqual(receipt.name, '1.49-sequence.starter.json')
+        stored = json.loads(receipt.read_text(encoding='utf-8'))
+        schema, _ = CONTRACTS['1.49']
+        self.assertEqual((stored['kind'], stored['shape'], stored['parent_label'], stored['status']),
+                         ('goat_starter_set', 'sequence', 'starter:sequence', 'untested_starter'))
+        self.assertEqual((stored['schema_hash'], stored['controller_version'], stored['ea_version']), (sha(schema), 'test', '1.49'))
+        self.assertEqual(stored['output']['sha256'], hashlib.sha256(Path(result['output']['path']).read_bytes()).hexdigest())
+        self.assertEqual(result['receipt_sha256'], hashlib.sha256(receipt.read_bytes()).hexdigest())
+        self.assertEqual((stored['entry_filters_enabled'], stored['active_axes'], stored['execution_ready']), ([], {}, False))
+        self.assertIn('zero evidence', stored['performance_evidence'])
+
+    def test_generated_from_the_installed_schema_not_a_static_file(self):
+        schema, policy = copy.deepcopy(CONTRACTS['1.49'][0]), CONTRACTS['1.49'][1]
+        schema['inputs']['Grid_Size']['default_expression'] = '12.5'
+        schema['inputs']['New_Input'] = dict(type='int', declaration='input', default_expression='7', optimizable=True,
+                                             enum_choices=None, dependency_audited=False)
+        result = starter_set('single', self.root / 'drift.set', schema, policy, controller_version='t', ea_version='1.49')
+        values = read_values(Path(result['output']['path']).read_bytes())
+        self.assertEqual((values['Grid_Size'], values['New_Input']), ('12.5', '7'))
+        self.assertEqual(list(values), list(schema['inputs']))                       # declaration order
+
+    def test_unresolvable_default_fails_closed_without_writing(self):
+        schema, policy = copy.deepcopy(CONTRACTS['1.49'][0]), CONTRACTS['1.49'][1]
+        schema['inputs']['Grid_Size']['default_expression'] = 'Grid_Min*2'
+        with self.assertRaisesRegex(ValueError, 'not a plain literal.*Grid_Size'):
+            starter_set('single', self.root / 'bad.set', schema, policy, controller_version='t', ea_version='1.49')
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_never_overwrites_and_refuses_catalog_and_bad_paths(self):
+        target = self.root / 'mine.set'; target.write_bytes(b'user bytes')
+        with self.assertRaisesRegex(ValueError, 'already exists'):
+            self.starter(name='mine.set')
+        self.assertEqual(target.read_bytes(), b'user bytes')
+        (self.root / 'other.starter.json').write_text('user receipt')
+        with self.assertRaisesRegex(ValueError, 'already exists'):
+            self.starter(name='other.set')
+        self.assertFalse((self.root / 'other.set').exists())
+        catalog = self.root / 'catalog'; catalog.mkdir()
+        with self.assertRaisesRegex(ValueError, 'publisher catalog'):
+            self.starter(name='catalog/x.set', forbidden_roots=[catalog])
+        self.assertEqual(list(catalog.iterdir()), [])
+        with self.assertRaisesRegex(ValueError, '.set extension'):
+            self.starter(name='x.txt')
+        with self.assertRaisesRegex(ValueError, 'single or sequence'):
+            self.starter('grid')
+        self.starter(name='again.set')
+        with self.assertRaisesRegex(ValueError, 'already exists'):
+            self.starter(name='again.set')
+
+    def test_classified_as_local_file_operation_not_a_native_one(self):
+        self.assertIn('starter-set', LOCAL_FILE_OPERATIONS)
+        self.assertIn('starter-set', READ_OPERATIONS)
+        self.assertNotIn('build-set', READ_OPERATIONS)          # build-set keeps its mutation policy
+        self.assertTrue(LOCAL_FILE_OPERATIONS <= OPERATIONS)
+
+
+class BuildFromStarterTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.schema, self.policy = CONTRACTS['1.49']
+
+    def starter(self, shape):
+        return starter_set(shape, self.root / f'{shape}.set', self.schema, self.policy, controller_version='t', ea_version='1.49')
+
+    def build(self, source, changes, output='variant.set', **notes):
+        return build_set(source, self.root / output, spec(changes, **notes), self.schema, self.policy,
+                         controller_version='t', ea_version='1.49')
+
+    def test_starter_is_a_valid_build_source_and_parent_is_recorded(self):
+        for shape in STARTER_SHAPES:
+            with self.subTest(shape=shape):
+                starter = self.starter(shape)
+                result = self.build(starter['output']['path'], {'RSI_Mode': '1', 'RSI_TF_': '15', 'RSI_Period': '14||7||7||21||Y'},
+                                    output=f'{shape}-variant.set')
+                self.assertEqual(result['parent'], 'starter:' + shape)
+                self.assertEqual(result['starter']['receipt_sha256'], starter['receipt_sha256'])
+                self.assertEqual(result['starter']['starter_sha256'], starter['output']['sha256'])
+                self.assertEqual(result['starter']['entry_filters_enabled'], ['RSI_Mode'])
+                self.assertEqual(result['starter']['warnings'], [])
+                self.assertEqual(result['validation']['active_axes'], {'RSI_Period': 3})
+                stored = json.loads(Path(result['receipt_path']).read_text(encoding='utf-8'))
+                self.assertEqual((stored['parent'], stored['starter']['label']), ('starter:' + shape, 'starter:' + shape))
+                notes = Path(result['support_path']).read_text(encoding='utf-8')
+                self.assertIn('zero evidence', notes); self.assertNotIn('source-reference evidence only', notes)
+                self.assertEqual(hashlib.sha256(Path(starter['output']['path']).read_bytes()).hexdigest(),
+                                 starter['output']['sha256'])                       # the starter itself is untouched
+
+    def test_build_from_a_starter_still_needs_an_active_axis(self):
+        starter = self.starter('single')
+        with self.assertRaisesRegex(ValueError, 'No enabled optimization axes'):
+            self.build(starter['output']['path'], {'RSI_Mode': '1'})
+        self.assertFalse((self.root / 'variant.set').exists())
+
+    def test_ordinary_sources_record_a_set_parent(self):
+        starter = self.starter('single')
+        first = self.build(starter['output']['path'], {'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
+        second = self.build(first['output']['path'], {'RSI_Level': '75||70||5||80||Y'}, output='second.set')
+        self.assertEqual(second['parent'], 'set'); self.assertNotIn('starter', second)
+
+    def test_changed_starter_bytes_or_other_schema_are_refused(self):
+        starter = self.starter('single'); path = Path(starter['output']['path'])
+        text = path.read_bytes().decode('utf-16').replace('TP_Pips=2.0', 'TP_Pips=3.0')
+        path.write_bytes(text.encode('utf-16'))
+        with self.assertRaisesRegex(ValueError, 'Starter SET changed'):
+            self.build(path, {'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
+        other = self.starter('sequence')
+        receipt = Path(other['receipt_path']); stored = json.loads(receipt.read_text(encoding='utf-8'))
+        receipt.write_text(json.dumps(stored | {'schema_hash': '0' * 64}), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'different installed input schema'):
+            self.build(other['output']['path'], {'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
+
+    def test_risk_sizing_with_a_single_trade_is_refused(self):
+        sequence = self.starter('sequence')
+        with self.assertRaisesRegex(ValueError, 'RiskperSeq with Max_Seq_Trades=1'):
+            self.build(sequence['output']['path'], {'Max_Seq_Trades': '1', 'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
+        with self.assertRaisesRegex(ValueError, 'RiskperSeq with Max_Seq_Trades=1'):
+            self.build(sequence['output']['path'], {'Max_Seq_Trades': '3||1||1||5||Y'})
+        single = self.starter('single')
+        with self.assertRaisesRegex(ValueError, 'RiskperSeq with Max_Seq_Trades=1'):
+            self.build(single['output']['path'], {'Mode_Lots': '2', 'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
+        self.assertEqual(sorted(p.name for p in self.root.iterdir() if 'variant' in p.name), [])
+
+    def test_no_entry_signal_is_built_with_an_honest_warning(self):
+        starter = self.starter('sequence')
+        result = self.build(starter['output']['path'], {'Grid_Size': '10.0||5.0||5.0||20.0||Y'},
+                            entry_logic='No indicator: a sequence opens whenever none is open, inside the default sessions.')
+        self.assertEqual(result['starter']['entry_filters_enabled'], [])
+        self.assertRegex(result['starter']['warnings'][0], 'No entry signal is enabled')
+        self.assertIn('**Warning:** No entry signal', Path(result['support_path']).read_text(encoding='utf-8'))
+
+
+class StarterCliTests(unittest.TestCase):
+    """The installed CLI on a demo_direct installation: starter-set runs there like validate-set; build-set stays a mutation."""
+    def setUp(self):
+        seed_agent_fixture.DemoSeedAgentTests.setUp(self)
+        self.patches[-1].stop()                                                     # the real Controller for the CLI
+
+    database, new_agent, sleep = (seed_agent_fixture.DemoSeedAgentTests.database, seed_agent_fixture.DemoSeedAgentTests.new_agent,
+                                  seed_agent_fixture.DemoSeedAgentTests.sleep)
+
+    def cli(self, *argv):
+        from goat_studio import main
+        output = StringIO()
+        with redirect_stdout(output):
+            code = main(['--installation', str(self.installation), *argv])
+        return code, json.loads(output.getvalue())
+
+    def test_starter_set_and_validate_set_through_the_cli(self):
+        target = Path(self.temp.name) / 'my strategies' / 'Starter.set'
+        code, reply = self.cli('starter-set', '--shape', 'single', '--output', str(target))
+        self.assertEqual(code, 0, reply)
+        self.assertEqual((reply['result']['shape'], reply['result']['ea_version']), ('single', '1.49'))
+        self.assertTrue(target.is_file() and target.with_suffix('.starter.json').is_file())
+        code, report = self.cli('validate-set', '--set', str(target))
+        self.assertEqual((code, report['result']['kind']), (0, 'fixed_settings'))
+        code, again = self.cli('starter-set', '--shape', 'single', '--output', str(target))
+        self.assertEqual(code, 2); self.assertIn('already exists', again['error'])
+
+    def test_discover_advertises_the_contract_and_build_set_still_refuses_on_demo_lane(self):
+        from goat_studio import OPERATION_CONTRACTS
+        contract = OPERATION_CONTRACTS['starter-set']
+        self.assertEqual((contract['required'], contract['choices']['shape']), (['shape', 'output'], ['single', 'sequence']))
+        self.assertIn('never opens the store or MT5', contract['effect'])
+        with self.database() as db:
+            with operation('starter-set'):
+                self.assertIsNone(authority(db, self.binding, dict(owner='agent', generation=1)))
+            with operation('build-set'), self.assertRaisesRegex(ValueError, 'Demo mutation requires the broker-verified agent tool'):
+                authority(db, self.binding, dict(owner='agent', generation=1))
+
+
+class StrategyCreateSkillTests(unittest.TestCase):
+    root = Path(__file__).parent
+
+    def test_registered_in_names_and_the_customer_skills_table(self):
+        from studio_customer_skills import NAMES, customer_skills
+        self.assertIn('goat-strategy-create', NAMES)
+        table = (self.root / 'CUSTOMER-SKILLS.md').read_text(encoding='utf-8')
+        linked = re.findall(r'\| \[([a-z0-9-]+)\]\(skills/([a-z0-9-]+)/SKILL\.md\) \|', table)
+        self.assertEqual([name for name, _ in linked], list(NAMES))
+        self.assertTrue(all(name == folder for name, folder in linked))
+        self.assertIn('goat-strategy-create', [row['name'] for row in customer_skills()])
+
+    def test_skill_keeps_the_honesty_and_safety_rules(self):
+        body = ' '.join((self.root / 'skills/goat-strategy-create/SKILL.md').read_text(encoding='utf-8').split())
+        for phrase in ('starter-set', 'build-set', 'validate-set --require-optimization', 'strategy.forkTemplate',
+                       "starter: 'single'", 'contentBase64', 'UNTESTED', 'a new idea starts with zero evidence',
+                       'heldOut.declare', '13-week', 'demo', 'Explore', 'Refine', 'Prove', 'strategy.matrix',
+                       'money lost per sequence', 'INPUT-REFERENCE.md', 'discover'):
+            self.assertIn(phrase, body)
+        for guide in ('AGENT-START-HERE.md', 'TEMPLATE-WORKFLOW.md'):
+            self.assertIn('goat-strategy-create', (self.root / guide).read_text(encoding='utf-8'), guide)
+
+
+if __name__ == '__main__':
+    unittest.main()

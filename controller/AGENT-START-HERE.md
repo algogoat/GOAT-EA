@@ -193,6 +193,10 @@ foreach ($m in $res.member_outcomes) { $i = $m.index; $t = $res.configuration.ba
 
 Replace `unavailable` with real facts when known. For a member tested with no edge, use its `research_outcomes` sentence (`$noEdge[[int]$i]`) as the summary. Then `Studio @('benchmark-report','--batch-id','pilot-1')` gives the measured timing; use it to size the next batch with the user. A `failed` or `interrupted` result is a technical outcome, not evidence that the strategy is bad. To build a portfolio, import the export folders with `library.prepareImport` / `library.finalizeImport` as described in the installed `goat-beta-agent-guide.md` (sections 7 and 8).
 
+## Build a new strategy from scratch
+
+When the user wants their own idea rather than a catalog template, follow [goat-strategy-create](skills/goat-strategy-create/SKILL.md): a plain-language interview (the idea, single trade or sequence with the risk explained first, entry filters, exits and sizing), a catalog check before building (prefer a close template that has results), then `Studio @('starter-set','--shape','single','--output',...)` (or `sequence`), `build-set` from that starter, `validate-set --require-optimization` and `Desktop 'strategy.forkTemplate' @{starter='single'; name=...; contentBase64=...}`. It is the user's own UNTESTED strategy with zero evidence: it goes through Explore, Refine and Prove like any template, with the held-out lock declared at Prove. Building files never touches MT5.
+
 ## Step 21: deploy a saved portfolio to demo
 
 Demo accounts only; GOAT refuses real-money accounts in the desktop, the server link and the controller. The user turns on **Demo autopilot** for the account once (Portfolios > Deploy to demo). After that:

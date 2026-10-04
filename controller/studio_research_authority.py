@@ -16,7 +16,12 @@ from studio_installation import read_json, load_installation
 
 CURRENT_OPERATION = ContextVar('studio_research_operation', default=None)
 DEMO_AGENT_SCOPE = ContextVar('studio_demo_agent_scope', default=None)
-READ_OPERATIONS = frozenset(('discover','resource-profile','state','onboarding-status',
+# Local create-only file writers with no store, terminal, session, queue or grant effect, classified with the
+# reads (like equivalence-certificate below): starter-set writes one blank SET generated from the installed
+# schema plus its .starter.json receipt at a caller-chosen path outside the publisher catalog, never
+# overwrites and never opens the mutable store or MT5. build-set stays a mutation (unchanged policy).
+LOCAL_FILE_OPERATIONS = frozenset(('starter-set',))
+READ_OPERATIONS = LOCAL_FILE_OPERATIONS | frozenset(('discover','resource-profile','state','onboarding-status',
                              'native-recovery-status','batch-driver-status','owner-maintenance-status',
                              'stopped-cancel-observation','research-status','research-queue',
                              'evidence-end','evidence-scan','evidence-versions','catchup-validate',

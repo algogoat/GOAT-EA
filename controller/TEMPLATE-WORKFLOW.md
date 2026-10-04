@@ -24,9 +24,45 @@ broker constraints, useful economic effects, profitability or native readiness.
 Use `discover` to inspect each input's own enum; never reuse numeric meanings
 from a different enum or assume every integer between valid endpoints is valid.
 
+## Start from blank
+
+To build a new strategy from an idea rather than from a catalog template, follow
+the [goat-strategy-create skill](skills/goat-strategy-create/SKILL.md). Check the
+catalog first: when a template is already close, start from it instead.
+
+```powershell
+& '<agent kit>\goat.exe' studio --installation '<receipt.json>' starter-set --shape single --output '<My strategies>\Starter.set'
+```
+
+`--shape single` or `--shape sequence`. The starter is generated from the installed
+input schema, so it always matches the EA's input interface: UTF-16 LE BOM and CRLF,
+every input at its declared default except what the same-stem `.starter.json`
+receipt lists in `fixes`. Every indicator signal mode of the dependency policy
+(RSI, EMA, ADX, BB, MACD, RSI2) and its MustCheck are off, the AI bias filter is
+`Bias_Disabled` and news is `News_Disabled`; nothing is searched. `single` sets
+`Max_Seq_Trades=1` and `CloseAtMaxLevels=true` (the next gap against the trade
+closes it; fixed lots). `sequence` sets `Max_Seq_Trades=5`, `CloseAtMaxLevels=true`,
+`Mode_Lots=RiskperSeq` and `Sequence_MLPS_Hard_Close=true`, keeping the default
+`Grid_*` gaps and lot growth. The receipt binds shape, schema hash, controller and
+EA versions and the SET's SHA-256. Existing outputs or receipts are never
+overwritten and the publisher catalog is refused. It never opens MT5.
+
+A starter is structurally valid with no entry rule, but it is a blank, not a
+strategy: the EA treats a disabled signal mode as "pass", so an unchanged starter
+would open a new sequence at every signal check whenever none is open (both
+directions with the default `Long_and_Short` and `Allow_Opposite_Seq=true`).
+`validate-set` accepts it as `fixed_settings`; `build-set` takes it as `--source`,
+adds the idea and must still leave at least one search axis. Its `.build.json`
+records `parent: "starter:single"` (or `starter:sequence`) and `starter` with the
+receipt hash, the entry signals enabled and any warnings. A starter whose bytes or
+schema no longer match its receipt is refused. From a starter parent, build-set
+also refuses `Mode_Lots=RiskperSeq` with a `Max_Seq_Trades` that can be 1: the EA
+plans no loss for a single trade and would size it at the broker maximum.
+
 ## Build a documented variant
 
-Clone a real compatible SET; never hand-author a replacement file from scratch.
+Clone a real compatible SET (or a starter from `starter-set`); never hand-author a
+replacement file from scratch.
 Choose a new local output path outside the publisher catalog. Existing outputs,
 source paths and existing support/provenance files are never overwritten.
 
@@ -67,7 +103,9 @@ last; missing receipt means an incomplete write requiring inspection. Never
 overwrite a partial output to hide the failure.
 
 Register the validated result with the desktop's `strategy.forkTemplate`
-operation, using the selected parent template ID and exact output bytes. Keep
+operation, using the selected parent template ID and exact output bytes
+(`{templateId, name, contentBase64}`; for a starter parent
+`{starter: 'single' | 'sequence', name, contentBase64}` instead). Keep
 the support notes and build receipt with the fork. Fork storage does not perform
 this typed construction/validation itself. Record the candidate as **untested**
 in the living matrix. Catalog updates must preserve this local fork.

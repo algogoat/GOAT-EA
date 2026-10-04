@@ -12,6 +12,7 @@ private developer tooling. Start with one relevant skill, not the whole library.
 | --- | --- | --- |
 | Plan, time and monitor an optimization batch | [goat-optimize](skills/goat-optimize/SKILL.md) | Installed Studio controller |
 | Create or audit an optimization template | [goat-template-create](skills/goat-template-create/SKILL.md) | Installed schema, validate-set/build-set and local matrix |
+| Build a new strategy from scratch with the user | [goat-strategy-create](skills/goat-strategy-create/SKILL.md) | Guided interview, catalog check, starter-set/build-set/validate-set and an untested desktop fork |
 | Run a bounded seed research matrix | [goat-seed-research](skills/goat-seed-research/SKILL.md) | Dedicated seed-* commands, subject to installed native qualification |
 | Build, compare and export portfolios | [goat-portfolio-build](skills/goat-portfolio-build/SKILL.md) | Authenticated desktop agent API |
 | Diagnose, repair and submit findings | [goat-repair-report](skills/goat-repair-report/SKILL.md) | Installed recovery commands and support preview/submission |

@@ -73,7 +73,8 @@ OPERATION_CONTRACTS = {
     'load-batch':dict(required=['batch-id','file'],effect='validate saved .goatbatch as a new unstarted batch on this installation'),
     'resume-batch':dict(required=['source-batch-id','batch-id'],effect='prepare remaining members under a new identity after original stop/finish; failed members require include-failed; members tested with no profitable settings only with include-no-edge'),
     'validate-set':dict(required=['set'],defaults={'require-optimization':False},effect='read-only exact schema, encoding, range and partial dependency validation; no launch'),
-    'build-set':dict(required=['source','output','spec'],effect='clone real SET with narrow typed changes, unique EA_Desc, support notes and provenance; never overwrite'),
+    'build-set':dict(required=['source','output','spec'],effect='clone real SET with narrow typed changes, unique EA_Desc, support notes and provenance; never overwrite. A starter-set source is recorded as parent starter:single|sequence with its starter receipt hash; the output still needs at least one active search axis'),
+    'starter-set':dict(required=['shape','output'],choices={'shape':['single','sequence']},effect='write a blank starting SET generated from the installed input schema plus a same-stem .starter.json receipt (schema hash, versions, shape, sha256, every input it sets away from its declared default): indicator signal modes, AI bias and news filters off, no search axes; single = Max_Seq_Trades 1 with CloseAtMaxLevels, sequence = 5 trades with CloseAtMaxLevels, RiskperSeq sizing and hard close at Risk, default Grid_* gaps. Local create-only file outside the publisher catalog; never overwrites, never opens the store or MT5. A starter is untested and has zero evidence: build-set adds the idea'),
     'discover':dict(required=[],effect='read installation and schema; runtime readiness not evaluated'),
     'bootstrap':dict(required=['account-login','account-server'],effect='create human-owned local binding and monitor preset; no launch'),
     'resource-profile':dict(required=[],effect='read-only current CPU, RAM and filesystem capacity; no throughput or worker estimate'),
@@ -411,6 +412,7 @@ def main(argv=None):
     p=sub.add_parser('monitor-stop');p.add_argument('--attempt-id',required=True)
     p=sub.add_parser('validate-set');p.add_argument('--set',type=Path,required=True);p.add_argument('--require-optimization',action='store_true')
     p=sub.add_parser('build-set');p.add_argument('--source',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--spec',type=Path,required=True)
+    p=sub.add_parser('starter-set');p.add_argument('--shape',choices=('single','sequence'),required=True);p.add_argument('--output',type=Path,required=True)
     p=sub.add_parser('bootstrap');p.add_argument('--account-login',required=True);p.add_argument('--account-server',required=True)
     p=sub.add_parser('serve');p.add_argument('--watch-seconds',type=float,default=3600)
     p=sub.add_parser('clear-queue');p.add_argument('--apply',action='store_true');p.add_argument('--request-id');p.add_argument('--expected-revision',type=int)
@@ -567,11 +569,15 @@ def main(argv=None):
         elif args.operation=='validate-set':
             from studio_template_tools import validate_set
             result=validate_set(args.set,controller.schema,controller.policy,require_optimization=args.require_optimization)
-        elif args.operation=='build-set':
-            from studio_template_tools import build_set
-            result=build_set(args.source,args.output,read_json(args.spec),controller.schema,controller.policy,
-                controller_version=VERSION,ea_version=controller.install['ea_version'],
-                forbidden_roots=[controller.install['catalog_root']] if controller.install.get('catalog_root') else [])
+        elif args.operation in ('build-set','starter-set'):
+            from studio_template_tools import build_set,starter_set
+            catalog=[controller.install['catalog_root']] if controller.install.get('catalog_root') else []
+            if args.operation=='build-set':
+                result=build_set(args.source,args.output,read_json(args.spec),controller.schema,controller.policy,
+                    controller_version=VERSION,ea_version=controller.install['ea_version'],forbidden_roots=catalog)
+            else:
+                result=starter_set(args.shape,args.output,controller.schema,controller.policy,
+                    controller_version=VERSION,ea_version=controller.install['ea_version'],forbidden_roots=catalog)
         else:
             if not args.operation.startswith('orphan-recovery-'): controller.open()
             if args.operation in ('pairing-code','close-terminal'):

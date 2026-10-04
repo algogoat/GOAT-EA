@@ -664,4 +664,14 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
                              blocker=monitor.get('blocker')),
                 activity=activity, driver=driver, owner_stop=bool(owner_stop),
                 disk=disk(install, root, minimum), queue_error=jobs_error,
+                heldout_locks=_heldout(install, root, activity.get('batch_id'), now),
                 read_only=True, launch_permitted=False)
+
+
+def _heldout(install, root, run_id, now):
+    """Active held-out locks of this activity's strategies (goatai#2221 §4.3); never fails the read."""
+    try:
+        from studio_heldout_guard import run_locks
+        return run_locks(install, root, run_id, now=datetime.fromtimestamp(now, timezone.utc))
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return dict(registry='unknown', active_locks=[], plain='Held-out locks could not be read: ' + str(error)[:200])

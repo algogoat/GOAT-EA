@@ -401,6 +401,10 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 _save(path, record, clock)
                 return _summary(path, record)
         else:
+            # Held-out lock (goatai#2221 §4.3): a lock declared after prepare refuses this start,
+            # before any consent, journal, archive, reservation or native effect.
+            from studio_heldout_guard import check_native_start
+            check_native_start(controller, job_id)
             from studio_config_start import config_start_lane, consent_record
             customer = controller.session.get('authority_kind') == 'native_human_control'
             if customer and restart_consent is not True:

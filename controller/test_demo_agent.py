@@ -174,7 +174,7 @@ class DemoAgentTests(unittest.TestCase):
             before = self.agent.preflight()
             self.assertTrue(before['ready_for_install'])
             self.assertFalse(before['ready_for_batch'])
-            self.agent._adopt_installed_binary(digest(self.binary))
+            self.agent._adopt_installed_binary(digest(self.binary), enter_demo_lane=True)
             self.assertFalse(self.agent.preflight()['ready_for_batch'])
             (self.agent.state_root / 'verified-build.json').write_text(json.dumps(dict(
                 ea_sha256=digest(self.binary), process=self.process.inspect())))
@@ -415,6 +415,13 @@ class DemoAgentTests(unittest.TestCase):
                 self.agent.install_build(candidate,digest(candidate),monitor,**fields)
         self.assertEqual(self.binary.read_bytes(),b'old-ea')
 
+    def owner_demo_lane(self):
+        """One of GOAT's own demo terminals: already enrolled in the owner demo lane."""
+        session = read_json(self.root / 'session.json')
+        session['authority_kind'] = 'demo_direct'
+        (self.root / 'session.json').write_text(json.dumps(session))
+        self.agent.session = session
+
     def test_install_reads_back_restarted_demo_before_batch_ready(self):
         candidate = self.base / 'candidate.ex5'; candidate.write_bytes(b'new-ea')
         old_sha = digest(self.binary)
@@ -430,6 +437,7 @@ class DemoAgentTests(unittest.TestCase):
                 command='control.grant_agent', payload={}), actor='human')
         finally:
             store.close()
+        self.owner_demo_lane()
         monitor = self.base / 'monitor.ini'
         monitor.write_text('[Charts]\nProfileLast=GOAT-Studio-test\n[Experts]\nEnabled=0\n'
                            'AllowLiveTrading=0\n[StartUp]\nExpert=GOAT-EA\\GOAT V1.49.ex5\n'
@@ -506,6 +514,7 @@ class DemoAgentTests(unittest.TestCase):
         # receipt carries the new EA and this bundle's version from one write.
         candidate = self.base / 'candidate.ex5'; candidate.write_bytes(b'new-ea')
         monitor = self.install_ready()
+        self.owner_demo_lane()
         seen_at_launch = {}
 
         def relaunched_waiting_for_pairing():
@@ -569,7 +578,7 @@ class DemoAgentTests(unittest.TestCase):
 
     def test_local_install_identity_and_scoped_demo_authority(self):
         self.binary.write_bytes(b'new-ea')
-        self.agent._adopt_installed_binary(digest(self.binary))
+        self.agent._adopt_installed_binary(digest(self.binary), enter_demo_lane=True)
         receipt = read_json(self.installation)
         session = read_json(self.root / 'session.json')
         self.assertEqual(receipt['ea_sha256'], digest(self.binary))
@@ -588,7 +597,7 @@ class DemoAgentTests(unittest.TestCase):
         self.assertEqual(list((self.agent.state_root / 'backups').glob('installation-*.json')).__len__(), 1)
 
     def test_demo_scope_rejects_unrelated_inbox_commands(self):
-        self.agent._adopt_installed_binary(digest(self.binary))
+        self.agent._adopt_installed_binary(digest(self.binary), enter_demo_lane=True)
         session = read_json(self.root / 'session.json')
         db = sqlite3.connect(self.root / 'studio.sqlite')
         self.addCleanup(db.close)
@@ -622,7 +631,8 @@ class DemoAgentTests(unittest.TestCase):
         finally:
             store.close()
         self.binary.write_bytes(b'new-ea')
-        self.agent._adopt_installed_binary(digest(self.binary))
+        # The owner enrolls one of GOAT's own demo terminals: the only way into the demo lane.
+        self.agent._adopt_installed_binary(digest(self.binary), enter_demo_lane=True)
         active = self.agent.local / 'active.json'
         active.write_text(json.dumps(dict(directory_id='session-one', terminal_id='terminal-one',
                                           run_id='session-one', terminal_data_path=str(self.data))))
@@ -657,7 +667,7 @@ class DemoAgentTests(unittest.TestCase):
                     dict(owner='human'), dict(command='control.grant_agent'), actor='human')
 
     def test_stopped_cancel_observation_can_read_but_cannot_mutate_or_fabricate_broker(self):
-        self.agent._adopt_installed_binary(digest(self.binary))
+        self.agent._adopt_installed_binary(digest(self.binary), enter_demo_lane=True)
         db=sqlite3.connect(self.root/'studio.sqlite');self.addCleanup(db.close)
         binding=packed(dict(terminal_id='terminal-one',run_id='session-one'))
         with self.assertRaisesRegex(ValueError,'broker-verified'):

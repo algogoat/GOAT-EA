@@ -16,7 +16,7 @@ class DemoReservationReleaseTests(unittest.TestCase):
 
     def test_only_current_tool_job_and_exact_release_request_are_admitted(self):
         f = self.fixture
-        f.agent._adopt_installed_binary(digest(f.binary))
+        f.agent._adopt_installed_binary(digest(f.binary), enter_demo_lane=True)
         session = read_json(f.root / 'session.json')
         db = sqlite3.connect(f.root / 'studio.sqlite')
         self.addCleanup(db.close)
@@ -37,7 +37,7 @@ class DemoReservationReleaseTests(unittest.TestCase):
 
     def test_a_retried_start_may_use_its_numbered_queue_command_ids(self):
         f = self.fixture
-        f.agent._adopt_installed_binary(digest(f.binary))
+        f.agent._adopt_installed_binary(digest(f.binary), enter_demo_lane=True)
         session = read_json(f.root / 'session.json')
         db = sqlite3.connect(f.root / 'studio.sqlite')
         self.addCleanup(db.close)

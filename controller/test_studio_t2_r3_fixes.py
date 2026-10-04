@@ -55,7 +55,7 @@ class RelaunchReadbackTests(unittest.TestCase):
         startup = self.root / 'attempts' / ('a' * 64) / 'startup.ini'
         self.process = RelaunchProcess(self.new, '"' + str(self.exe) + '" /config:"' + str(startup) + '"')
         self.agent = DemoAgent(self.installation, process=self.process, mt5=self.mt5)
-        self.agent._adopt_installed_binary(digest(self.binary))
+        self.agent._adopt_installed_binary(digest(self.binary), enter_demo_lane=True)
         self.verified_path = self.agent.state_root / 'verified-build.json'
         self.verified_path.write_text(json.dumps(dict(ea_sha256=digest(self.binary), process=self.old)))
         self.ui.write_text(json.dumps(dict(owner='agent', run_id='session-one', loaded=True,
@@ -306,7 +306,7 @@ class MonitorConfigTests(unittest.TestCase):
             self.agent._validate_monitor_config(granted)
 
     def test_launch_terminal_without_a_path_reopens_on_the_profile(self):
-        self.agent._adopt_installed_binary(digest(self.binary))
+        self.agent._adopt_installed_binary(digest(self.binary), enter_demo_lane=True)
         self.process.closed = True
         starts = []
         self.process.on_start = lambda: starts.append(True)
@@ -317,7 +317,7 @@ class MonitorConfigTests(unittest.TestCase):
         self.assertEqual(readback.call_args.kwargs['expected_process'], self.process.identity)
 
     def test_running_terminal_launch_terminal_is_the_readback_refresh(self):
-        self.agent._adopt_installed_binary(digest(self.binary))
+        self.agent._adopt_installed_binary(digest(self.binary), enter_demo_lane=True)
         with patch.object(DemoAgent, '_readback_current', return_value=dict(terminal=self.process.identity)) as readback:
             result = self.agent.launch_terminal()
         self.assertTrue(result['already_running'])

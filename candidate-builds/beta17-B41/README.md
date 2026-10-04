@@ -15,12 +15,23 @@ own input instead.
 | Where | What it does |
 |---|---|
 | `GOATAIWireV2.mqh` | `GOATRecordedBiasLiveScore(score)` rebuilds the wire state a recorded score stands for (+ BULLISH, - BEARISH, 0 NEUTRAL, probability \|score\|/100) and runs the live `GOATFinalizeWireV2Actionability` with the same clamped cutoff `GetState` uses. It returns the score when actionable, otherwise -999. A value outside [-100,100] (the export's -999) stays -999. |
-| `NewsBiasFilter.mqh` | `GetCurentBiasScore`: in the tester, optimization and forward only, the selected point goes through that gate after the existing future and staleness checks. The live legacy reader is unchanged. |
+| `NewsBiasFilter.mqh` | `GetCurentBiasScore`: in the tester, optimization and forward only, the selected point goes through that gate after the existing future check. It holds until the export's own -999 row at the wire's `validUntil` (65 minutes), as live holds a record until it expires: the ~2×-row-spacing staleness heuristic, and its per-call average over the whole file, no longer apply to the gated tester path. The live legacy reader is unchanged, staleness rule included. |
 | `GOAT V1.49.mq5` | Enables the gate (`GOAT_RECORDED_BIAS_LIVE_GATE_V149`). When the tester's recorded point is unavailable, additions pause under `Bias_SeqTrade`, as live v2 already does for an unavailable wire. Without this, the gate would make `Bias_Opens` + `Bias_SeqTrade` diverge more, not less. Build ID `V1.49-BETA17-41`, marker `B41`. |
 
 Tester and optimization consumption only. No live path, input, input header (`1408e1ee…`, SM32's),
 Astra input, trade-event policy, bias wire or model route changes. V1.47 and V1.48 do not define the
 flag, so they compile exactly as before.
+
+**Release notes**
+
+- Strategy Tester and optimization now read recorded AI bias exactly as the live EA acts on it, at the
+  run's own `Bias_threshold`: below-threshold and neutral points count as unavailable, and a point lasts
+  until the export's expiry row.
+- **Re-run any sign-only bias-mode optimisation done on recorded data** (`Bias_Close_low`, and
+  `Close_med`/`Close_high` at threshold 0, or any mode with `Bias_SeqTrade`): those results did not match
+  live. This includes runs on older legacy-sentiment CSVs, which are gated too.
+- Recorded files need the export's explicit -999 expiry rows (goatai#2224). A file without them holds
+  each point until the next row.
 
 **Build**
 
@@ -34,6 +45,8 @@ flag, so they compile exactly as before.
 **Not done.** No candidate binary, no native qualification, nothing installed. The root `GOAT V1.49.ex5` is
 unchanged.
 
-**Still owed:** Claude-Mac review, the candidate compile commit, a renumber or rebase onto B40 if #142
-merges first, server admission of `V1.49-BETA17-41`, and a native tester run on a recorded file that shows
-below-threshold rows reaching the bias block as unavailable.
+**Still owed:** the candidate compile commit, a renumber or rebase onto B40 if #142 merges first, server
+admission of `V1.49-BETA17-41`, and a native tester run on a recorded file that shows below-threshold rows
+reaching the bias block as unavailable. Claude-Mac approved the design (goatai#1885, 5980940867). The
+parity test still pins the export's half-percent rounding band; it is removed once goatai#2230 (truncate
+|score| toward zero) merges.

@@ -3,7 +3,7 @@
   "version": "1.49",
   "build_id": "V1.49-BETA17-41",
   "build_marker": "B41",
-  "source_base": "e742fb9ab45bb34f60ece26ba8c266aca8decd5b",
+  "source_base": "4a165c690403c52e1abeba585757844dea2743d2",
   "consolidates": [
     "BR41"
   ],
@@ -13,7 +13,7 @@
       "coordination": "algogoat/goatai#1885"
     }
   },
-  "change": "B39 plus the recorded-bias live gate (goatai#1885, agreed with Claude-Mac). In the Strategy Tester, optimization and forward, GetCurentBiasScore passes the recorded GOAT_AI_Bias_<SYM>.csv score through GOATRecordedBiasLiveScore, which rebuilds the wire state and runs the live GOATFinalizeWireV2Actionability at the run's own Bias_threshold: the score when live would act on it, otherwise -999 (below the threshold, neutral, or outside [-100,100]). A recorded point the EA treats as unavailable also pauses additions under Bias_SeqTrade, as live v2 does. The tester therefore hands the bias logic exactly what live hands it at every threshold, and the threshold stays optimisable. Tester and optimization consumption only: live paths, the input header, Astra's inputs, the trade-event policy, the bias wire and the model route are unchanged.",
+  "change": "B39 plus the recorded-bias live gate (goatai#1885, agreed with Claude-Mac). In the Strategy Tester, optimization and forward, GetCurentBiasScore passes the recorded GOAT_AI_Bias_<SYM>.csv score through GOATRecordedBiasLiveScore, which rebuilds the wire state and runs the live GOATFinalizeWireV2Actionability at the run's own Bias_threshold: the score when live would act on it, otherwise -999 (below the threshold, neutral, or outside [-100,100]). A point holds until the export's own -999 row at the wire's validUntil, as live holds a record until it expires: the ~2x-row-spacing staleness heuristic does not apply to gated recorded files. A recorded point the EA treats as unavailable also pauses additions under Bias_SeqTrade, as live v2 does. The tester therefore hands the bias logic exactly what live hands it at every threshold, and the threshold stays optimisable. Tester and optimization consumption only: live paths, the input header, Astra's inputs, the trade-event policy, the bias wire and the model route are unchanged.",
   "supersedes_candidate": "beta17-B39",
   "sources": {
     "Dashboard.mqh": "ffd2543bf08ee473ea78ca55936bd696966548d43848f8f2255a22e7ac80ea80",
@@ -53,7 +53,7 @@
     "GOAT_SequenceHostIO.mqh": "fbde0abaa7d1f9bca3318f2707b2d278581c2887dea419fe5495146004c1d9d9",
     "GOAT_SequencePackage.mqh": "5db878a58b7080dbdc110554bc46a64c2dad867c9f1f3d0972974b8f3ad9fc9a",
     "MTTester.mqh": "a86dbdee543c944357ca45f28c69f4f01e247138d14a879eec5ad04f74c3b179",
-    "NewsBiasFilter.mqh": "b23487d2184d51cfab02a6ba42a352340247838b312d9af17d4ea7e2598ec56e",
+    "NewsBiasFilter.mqh": "d0aa07a7e8dbe1c64a90d8e3b43293428a0eff398e47987c28ce270eb4b50285",
     "Optimizer.mqh": "41d0a31116e536ba91950bb35d6ca8e580f900426e630cdc01c94734b474e8ad",
     "Tester.mqh": "2d109fa8be126804ed80e0b92bf5198d54acb35e5075d13b9cd443dd1d02418e",
     "XmlProcessor.mqh": "772324de0ca37a85f756ddbcbdc798e7091c77f2fbf27ad8a78ce5c213cbb30e"

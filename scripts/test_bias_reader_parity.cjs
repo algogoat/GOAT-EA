@@ -1,13 +1,16 @@
 // AI bias: tester == live at every Bias_threshold (BR41, GOAT_RECORDED_BIAS_LIVE_GATE_V149,
-// goatai#1885). The same served wire records go down both V1.49 decision paths:
-//   live:   CGOATAIWireV2::GetState (demo-raw authority, then GOATFinalizeWireV2Actionability at
-//           the run's Bias_threshold) and the OnTick bias block with control_tower_v2;
-//   tester: each record as goatai's export writes it to Common\Files\<Key>\BiasFiles\
-//           GOAT_AI_Bias_<SYM>.csv (Time,Asset,SentimentScore; -999 when dark or expired), read by
-//           GOATBiasHistory::LoadBacktestFileAndFillBias and GetCurentBiasScore, then the same block.
+// goatai#1885). The same wire timeline goes down both V1.49 decision paths:
+//   live:   the current record (valid for 65 minutes after publishing, superseded by the next
+//           publish), through CGOATAIWireV2::GetState (demo-raw authority, then
+//           GOATFinalizeWireV2Actionability at the run's Bias_threshold) and the OnTick bias block;
+//   tester: the timeline as goatai's export writes it to Common\Files\<Key>\BiasFiles\
+//           GOAT_AI_Bias_<SYM>.csv (Time,Asset,SentimentScore; -999 when dark, and an explicit -999
+//           row at validUntil when no publish came first), read by GOATBiasHistory::
+//           LoadBacktestFileAndFillBias and GetCurentBiasScore, then the same block.
 // Every decision the block makes (CurBias, Sequence_New/Pause_Bias_B/S, StopOut_Flag_B/S and the
 // dashboard bias) must match at N = -10, 0, 1, 20, 40, 59, 60, 61, 80, 99, 100 and 150, in every
-// bias mode and restriction, for both protocols, in the tester, optimization and forward contexts.
+// bias mode and restriction, for both protocols, in the tester, optimization and forward contexts,
+// at publishes, inside long gaps and on both sides of every expiry.
 // Runs the production MQL translated to JS in a VM: no MetaEditor, MT5 or network. Source
 // semantics only, not native proof. GOAT_EA_ROOT may point at another source tree
 // (test_bias_reader_parity_mutations.cjs runs every guard mutation through this file).
@@ -162,7 +165,7 @@ function terminal({flags=[],protocol,mode,trades,threshold,csv=null}){
   return c;
 }
 // ParseAndVerify's verified state for a served record (GOATAIWireV2.mqh, the tail of ParseAndVerify).
-// An expired record (read after validUntil) fails verification, so Refresh leaves the reset state.
+// A record read at or after validUntil fails verification, so Refresh leaves the reset state.
 function servedState(c,rec){
   const s={};c.GOATResetWireV2State(s,'REQUEST_FAILED');
   if(rec.kind==='expired')return s;
@@ -176,7 +179,8 @@ function servedState(c,rec){
 // goatai scripts/export_bias_history_csv.cjs (goatai#2224): the score is the EA's own
 // signed_probability_percent. AVAILABLE uses the calibrated probability; demo-raw (the default)
 // also promotes a row whose only withhold is CALIBRATION_ARTIFACT_UNAVAILABLE; every other withhold
-// and an expiry are -999. Probabilities here are whole percents, which the integer CSV carries exactly.
+// is -999 (expiry rows: exportRows). Probabilities here are whole percents, which the integer CSV
+// carries exactly.
 function exportScore(rec,exportProtocol){
   const promoted=rec.kind==='available'||(exportProtocol==='demo-raw'&&rec.kind==='withheld'&&rec.reason==='CALIBRATION_ARTIFACT_UNAVAILABLE');
   if(!promoted)return -999;
@@ -184,7 +188,7 @@ function exportScore(rec,exportProtocol){
 }
 
 // ---- The served records: every edge probability in both directions and both kinds, then a long
-// deterministic mix with neutral, withheld and expired records, runs of one sign and flips.
+// deterministic mix with neutral and withheld records, runs of one sign and flips.
 // A directional record below 0.5% exports as 0 (neutral): that is check 6's band, not this one's.
 const EDGES=[1,19,20,21,39,40,41,50,59,60,61,79,80,81,99,100];
 const RECORDS=[];
@@ -198,19 +202,48 @@ for(let i=0;i<110;i++){
   const roll=rand(100),direction=rand(10)===0?'NEUTRAL':(rand(4)===0?(i%2?'BULLISH':'BEARISH'):(Math.floor(i/6)%2?'BULLISH':'BEARISH'));
   const p=rand(3)===0?EDGES[rand(EDGES.length)]:1+rand(100);
   if(roll<45)RECORDS.push({kind:'withheld',reason:'CALIBRATION_ARTIFACT_UNAVAILABLE',direction,p});
-  else if(roll<80)RECORDS.push({kind:'available',direction,p});
-  else if(roll<92)RECORDS.push({kind:'withheld',reason:['BELIEF_MAXIMUM_AGE_EXCEEDED','EXPECTATION_VIOLATED_AFTER_LAST_WAKE','LIVE_PRICING_UNAVAILABLE'][rand(3)],direction,p});
-  else RECORDS.push({kind:'expired',direction,p});
+  else if(roll<85)RECORDS.push({kind:'available',direction,p});
+  else RECORDS.push({kind:'withheld',reason:['BELIEF_MAXIMUM_AGE_EXCEEDED','EXPECTATION_VIOLATED_AFTER_LAST_WAKE','LIVE_PRICING_UNAVAILABLE'][rand(3)],direction,p});
 }
-const T0=toTime('2026.09.29 00:00:29'),CADENCE=900;
-const csvFor=exportProtocol=>'Time,Asset,SentimentScore\r\n'+RECORDS.map((rec,i)=>toText(T0+i*CADENCE)+',EURUSD,'+exportScore(rec,exportProtocol)).join('\r\n')+'\r\n';
+// ---- The wire timeline: one publish per record, normally every 15 minutes. A record is valid for
+// 65 minutes (validUntil) unless the next publish supersedes it. Some gaps are longer: 50 minutes
+// (still valid when the next record lands: no expiry row, live keeps acting), exactly 65 minutes
+// (the next publish lands on validUntil and supersedes the expiry), 90 and 150 minutes (the record
+// expires first: the export writes an explicit -999 row at validUntil).
+const T0=toTime('2026.09.29 00:00:29'),CADENCE=900,VALID=3900;
+const GAP=i=>i%17===5?3000:i%19===7?5400:i%23===11?9000:i%29===13?3900:CADENCE;
+const PUBLISHES=[];{let t=T0;RECORDS.forEach((rec,i)=>{PUBLISHES.push({t,rec});t+=GAP(i);});}
+const END=PUBLISHES[PUBLISHES.length-1].t+5400;
+// goatai#2224: a value lasts until the next publish; if none arrives before validUntil, a -999
+// EXPIRED row at validUntil ends it (a publish in that same second wins the collapse).
+function exportRows(exportProtocol){
+  const rows=[];
+  PUBLISHES.forEach(({t,rec},i)=>{
+    rows.push([t,exportScore(rec,exportProtocol)]);
+    const next=i+1<PUBLISHES.length?PUBLISHES[i+1].t:Infinity;
+    if(next>t+VALID)rows.push([t+VALID,-999]);
+  });
+  return rows;
+}
+const csvFor=exportProtocol=>'Time,Asset,SentimentScore\r\n'+exportRows(exportProtocol).map(([t,s])=>toText(t)+',EURUSD,'+s).join('\r\n')+'\r\n';
+// Evaluate at each publish, a minute later, through every gap (every 10 minutes at the regular
+// cadence, every 5 inside a long gap) and a second either side of every expiry.
+const INSTANTS=[];
+PUBLISHES.forEach(({t},i)=>{
+  const next=i+1<PUBLISHES.length?PUBLISHES[i+1].t:END,step=next-t>CADENCE?300:600,at=new Set([t,t+60]);
+  for(let s=t+step;s<next;s+=step)at.add(s);
+  for(const s of [t+VALID-1,t+VALID,t+VALID+1])at.add(s);
+  for(const s of [...at].filter(s=>s<next).sort((a,b)=>a-b))INSTANTS.push({now:s,publish:i});
+});
+// What the live EA reads at `now`: the current record, or nothing once it has expired.
+const served=({now,publish})=>now<PUBLISHES[publish].t+VALID?PUBLISHES[publish].rec:{kind:'expired'};
 const decision=(c,cur)=>[cur,c.Sequence_New_Bias_B,c.Sequence_New_Bias_S,c.Sequence_Pause_Bias_B,c.Sequence_Pause_Bias_S,c.StopOut_Flag_B,c.StopOut_Flag_S,c.DashboardBusBiasSentiment];
 const rescue=i=>({buy:i%11===4,sell:i%13===7});
 
 function liveRun({protocol,mode,trades,threshold}){
   const c=terminal({protocol,mode,trades,threshold}),out=[];
-  RECORDS.forEach((rec,i)=>{
-    c.__now=T0+i*CADENCE+60;c.__served=rec;c.Seq_Buy.BiasRescueActive=rescue(i).buy;c.Seq_Sell.BiasRescueActive=rescue(i).sell;
+  INSTANTS.forEach((instant,i)=>{
+    c.__now=instant.now;c.__served=served(instant);c.Seq_Buy.BiasRescueActive=rescue(i).buy;c.Seq_Sell.BiasRescueActive=rescue(i).sell;
     c.GOATResetWireV2State(c.m_state,'NOT_FETCHED');c.m_last_attempt_tick=0;c.m_verified_tick=0;c.m_read_at_ms=0;c.m_valid_until_ms=0;
     out.push(decision(c,c.BiasRegion()));
   });
@@ -220,9 +253,9 @@ function testerRun({flags,exportProtocol,mode,trades,threshold}){
   const c=terminal({flags,protocol:ENUMS.BiasProtocol_LegacyRecorded,mode,trades,threshold,csv:csvFor(exportProtocol)}),out=[];
   c.__now=T0;
   // OnInit: `if(Mode_Bias!=Bias_Disabled && Bias_Protocol==BiasProtocol_LegacyRecorded) Bias.Init(Key);`
-  if(c.Mode_Bias!==ENUMS.Bias_Disabled){assert.equal(c.LoadBacktestFileAndFillBias(),true);assert.equal(c.BiasList.length,RECORDS.length);}
-  RECORDS.forEach((rec,i)=>{
-    c.__now=T0+i*CADENCE+60;c.Seq_Buy.BiasRescueActive=rescue(i).buy;c.Seq_Sell.BiasRescueActive=rescue(i).sell;
+  if(c.Mode_Bias!==ENUMS.Bias_Disabled){assert.equal(c.LoadBacktestFileAndFillBias(),true);assert.equal(c.BiasList.length,exportRows(exportProtocol).length);}
+  INSTANTS.forEach((instant,i)=>{
+    c.__now=instant.now;c.Seq_Buy.BiasRescueActive=rescue(i).buy;c.Seq_Sell.BiasRescueActive=rescue(i).sell;
     out.push(decision(c,c.BiasRegion()));
   });
   return out;
@@ -261,28 +294,44 @@ check(()=>{
   }
 });
 
-// 4. The full decision paths over the same records: identical decisions on every row. Every N runs
-// in the tester; N = 0, 60 and 150 also run in optimization and forward.
+// 4. The full decision paths over the same timeline: identical decisions at every instant. Every N
+// runs in the tester; N = 0, 60 and 150 also run in optimization and forward.
 const THRESHOLDS=[-10,0,1,20,40,59,60,61,80,99,100,150];
 const CONTEXTS=[['tester'],['tester','optimization'],['tester','forward']];
 const PAIRS=[['demo-raw',ENUMS.BiasProtocol_ControlTowerV2DemoRaw],['strict',ENUMS.BiasProtocol_ControlTowerV2]];
-let rowsCompared=0,belowThresholdRows=0;
+let rowsCompared=0,heldInstants=0,expiredInstants=0;
 for(const [exportProtocol,protocol] of PAIRS)for(const mode of MODES)for(const trades of ['Bias_Seq','Bias_SeqTrade'])for(const threshold of THRESHOLDS){
   const live=liveRun({protocol,mode,trades,threshold});
   for(const flags of [0,60,150].includes(threshold)?CONTEXTS:CONTEXTS.slice(0,1))check(()=>{
     const tester=testerRun({flags,exportProtocol,mode,trades,threshold});
-    tester.forEach((row,i)=>assert.deepEqual(row,live[i],JSON.stringify({exportProtocol,mode,trades,threshold,flags,row:i,record:RECORDS[i],
-      csv:exportScore(RECORDS[i],exportProtocol),fields:'CurBias,New_B,New_S,Pause_B,Pause_S,StopOut_B,StopOut_S,DashboardBias'})));
+    tester.forEach((row,i)=>assert.deepEqual(row,live[i],JSON.stringify({exportProtocol,mode,trades,threshold,flags,instant:i,
+      sincePublish:INSTANTS[i].now-PUBLISHES[INSTANTS[i].publish].t,record:PUBLISHES[INSTANTS[i].publish].rec,
+      fields:'CurBias,New_B,New_S,Pause_B,Pause_S,StopOut_B,StopOut_S,DashboardBias'})));
     rowsCompared+=tester.length;
   });
-  if(exportProtocol==='demo-raw'&&mode==='Bias_Close_low'&&trades==='Bias_Seq'&&threshold===60)
-    belowThresholdRows=RECORDS.filter(rec=>{const s=exportScore(rec,exportProtocol);return s!==-999&&Math.abs(s)<60;}).length;
 }
-// The records reach the case that motivated the fix: sign-only modes below the threshold.
-check(()=>assert.ok(belowThresholdRows>25,'below-threshold rows exercised: '+belowThresholdRows));
+// The timeline reaches every case that motivated the fix.
+check(()=>{
+  const rows=exportRows('demo-raw'),spacing=(rows[rows.length-1][0]-rows[0][0])/(rows.length-1);
+  const acting=({publish})=>exportScore(PUBLISHES[publish].rec,'demo-raw')!==-999;
+  const since=({now,publish})=>now-PUBLISHES[publish].t;
+  // Sign-only modes below the threshold.
+  const below=RECORDS.filter(rec=>{const s=exportScore(rec,'demo-raw');return s!==-999&&Math.abs(s)<60;}).length;
+  assert.ok(below>25,'below-threshold records: '+below);
+  // A long gap with no -999 row: live still acts past twice the row spacing, so the tester must too.
+  const held=INSTANTS.filter(x=>acting(x)&&since(x)>2*spacing&&since(x)<VALID).length;
+  assert.ok(held>=10,'instants a spacing heuristic would have called stale while live acts: '+held);heldInstants=held;
+  // Explicit expiry rows: live has nothing from validUntil until the next publish.
+  const expired=INSTANTS.filter(x=>acting(x)&&since(x)>=VALID).length;
+  expiredInstants=expired;
+  assert.ok(expired>=10&&rows.filter(([,s])=>s===-999).length>RECORDS.filter(rec=>exportScore(rec,'demo-raw')===-999).length,'expiry rows: '+expired);
+  // The 65-minute gap: the next publish lands on validUntil and no expiry row is written.
+  assert.ok(PUBLISHES.some(({t},i)=>i+1<PUBLISHES.length&&PUBLISHES[i+1].t===t+VALID));
+});
 
-// 5. Live is unchanged: the live legacy reader still hands over every score, and a dark live legacy
-// point still never pauses additions; only the tester takes the live gate.
+// 5. Live is unchanged: the live legacy reader still hands over every score and still applies its
+// spacing staleness rule, and a dark live legacy point still never pauses additions. Only the
+// tester takes the live gate and holds a point until the export's own -999 row.
 check(()=>{
   const rows=[0,1,2].map(i=>({time:T0+i*CADENCE,asset:'EURUSD',sentiment_score:35}));
   const live=terminal({protocol:ENUMS.BiasProtocol_LegacyRecorded,mode:'Bias_Close_low',trades:'Bias_SeqTrade',threshold:60});
@@ -290,6 +339,14 @@ check(()=>{
   for(const c of [live,tester]){c.BiasList.push(...rows.map(r=>({...r})));c.__now=T0+2*CADENCE+60;}
   assert.equal(live.GetCurentBiasScore('EURUSD',0),35);
   assert.equal(tester.GetCurentBiasScore('EURUSD',0),-999);
+  // Rows 15 minutes apart: live legacy calls a point stale after twice that (30 minutes).
+  for(const c of [live,tester])c.Bias_threshold=20;
+  for(const [after,legacy] of [[1500,35],[1799,35],[1801,-999],[3000,-999]]){
+    for(const c of [live,tester])c.__now=T0+2*CADENCE+after;
+    assert.equal(live.GetCurentBiasScore('EURUSD',0),legacy,'live legacy staleness at +'+after);
+    assert.equal(tester.GetCurentBiasScore('EURUSD',0),35,'the gated tester holds the point at +'+after);
+  }
+  for(const c of [live,tester])c.Bias_threshold=60;
   for(const c of [live,tester]){c.BiasList.length=0;c.BiasRegion();}
   assert.deepEqual([live.Sequence_Pause_Bias_B,live.Sequence_Pause_Bias_S],[false,false],'live legacy keeps its old dark-point behaviour');
   assert.deepEqual([tester.Sequence_Pause_Bias_B,tester.Sequence_Pause_Bias_S],[true,true],'the tester pauses additions as live v2 does');
@@ -300,6 +357,8 @@ check(()=>{
 // That band is the only place the paths can disagree on acting. Elsewhere both act with the same
 // sign and |CurBias| >= N, so every comparison in the bias block agrees; the value itself can
 // differ by the export's rounding of a sub-percent probability (dashboard display only).
+// PINNED UNTIL goatai#2230 MERGES: it makes the export truncate |score| toward zero, which removes
+// the band; then this check expects zero disagreements (Claude-Mac, goatai#1885 5980940867).
 check(()=>{
   const c=terminal({flags:['tester'],protocol:ENUMS.BiasProtocol_ControlTowerV2,mode:'Bias_Opens',trades:'Bias_Seq',threshold:60});
   let band=0;
@@ -319,4 +378,4 @@ check(()=>{
   }
   assert.ok(band>0,'the half-percent band is real for sub-percent probabilities');
 });
-console.log(`test_bias_reader_parity: ${checks}/${checks} passed (${rowsCompared} rows compared)`);
+console.log(`test_bias_reader_parity: ${checks}/${checks} passed (${rowsCompared} instants compared; ${heldInstants} past twice the row spacing with no expiry row, ${expiredInstants} after an explicit -999 expiry row)`);

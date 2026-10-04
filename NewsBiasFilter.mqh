@@ -235,6 +235,9 @@ int GOATBiasHistory::GetCurentBiasScore(string asset,int &idxx)
    //--- calculate average duration (seconds) between consecutive bias points (used for staleness)
    long sum = 0;
    int  cnt = 0;
+#ifdef GOAT_RECORDED_BIAS_LIVE_GATE_V149
+   if(!is_tester) // the gated tester path below uses no spacing average
+#endif
    for(int i = 1; i < ArraySize(BiasList); i++)
      {
       long d = (long)(BiasList[i].time - BiasList[i - 1].time);
@@ -267,12 +270,14 @@ int GOATBiasHistory::GetCurentBiasScore(string asset,int &idxx)
    int      latest_score = BiasList[idx].sentiment_score;
 
    idxx=idx;
-   //--- staleness check: if selected bias is too old relative to typical cadence, treat as neutral
-   if(avg > 0 && (now - latest_time) > (datetime)(2 * avg)) return -999;
 #ifdef GOAT_RECORDED_BIAS_LIVE_GATE_V149
-   //--- tester/optimization: the live wire gate at this run's Bias_threshold (GOATAIWireV2.mqh)
+   //--- tester/optimization: the export ends each point with its own -999 row at the wire's
+   //--- validUntil, so a point holds until that row, as live holds a record until it expires.
+   //--- No spacing heuristic; the live wire gate at this run's Bias_threshold (GOATAIWireV2.mqh).
    if(is_tester) return GOATRecordedBiasLiveScore(latest_score);
 #endif
+   //--- staleness check: if selected bias is too old relative to typical cadence, treat as neutral
+   if(avg > 0 && (now - latest_time) > (datetime)(2 * avg)) return -999;
 
    return latest_score;
   }

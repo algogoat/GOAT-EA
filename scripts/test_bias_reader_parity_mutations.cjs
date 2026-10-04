@@ -22,6 +22,19 @@ const mutations=[
   ['probability scaled wrongly','GOATAIWireV2.mqh',[[R`state.decision_probability=MathAbs(recorded_score)/100.0;`,R`state.decision_probability=MathAbs(recorded_score)/101.0;`]]],
   ['threshold not clamped like live','GOATAIWireV2.mqh',[[R`GOATFinalizeWireV2Actionability(state,MathMax(0.0,MathMin(100.0,(double)Bias_threshold))/100.0);`,R`GOATFinalizeWireV2Actionability(state,(double)Bias_threshold/100.0);`]]],
   ['below-threshold score passed through','GOATAIWireV2.mqh',[[R`return(state.actionable ? state.signed_probability_percent : -999);`,R`return(state.directive_available ? state.signed_probability_percent : -999);`]]],
+  ['gated tester keeps the spacing staleness heuristic','NewsBiasFilter.mqh',[
+    ["#ifdef GOAT_RECORDED_BIAS_LIVE_GATE_V149\n   if(!is_tester) // the gated tester path below uses no spacing average\n#endif\n",''],
+    [R`   if(is_tester) return GOATRecordedBiasLiveScore(latest_score);
+#endif
+   //--- staleness check: if selected bias is too old relative to typical cadence, treat as neutral
+   if(avg > 0 && (now - latest_time) > (datetime)(2 * avg)) return -999;
+`,R`#endif
+   if(avg > 0 && (now - latest_time) > (datetime)(2 * avg)) return -999;
+#ifdef GOAT_RECORDED_BIAS_LIVE_GATE_V149
+   if(is_tester) return GOATRecordedBiasLiveScore(latest_score);
+#endif
+`]]],
+  ['live legacy loses its spacing average','NewsBiasFilter.mqh',[[R`   if(!is_tester) // the gated tester path below uses no spacing average`,R`   if(false)`]]],
   ['tester dark point does not pause additions','GOAT V1.49.mq5',[[TESTER_PAUSE,'']]],
   ['tester pauses additions under Bias_Seq too','GOAT V1.49.mq5',[[R`pause_v2_additions=(bias_filter_active && Mode_Bias_Trades==Bias_SeqTrade);`,R`pause_v2_additions=bias_filter_active;`]]],
   ['live legacy dark point pauses additions','GOAT V1.49.mq5',[[R`if(!control_tower_v2 && (MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)))`,R`if(!control_tower_v2)`]]],

@@ -9,22 +9,25 @@ of these hold (Claude-Mac, algogoat/goatai#1885, comments 5974337974 and 5974343
    input declaration reachable from the entrypoint (``GOAT V1.49.mq5``), plus the names of
    every external dependency (standard-library ``#include <...>``, MQL5-root resources such
    as the MACD indicator, unversioned binary resources such as MTTester's ``RunMe.ex5``,
-   ``#import`` DLLs and ``iCustom`` literals; these cannot be hashed from git, so they are
-   compared by name and covered by the canary). A missing ``#include`` is unknown source.
-   Equivalence means:
-   the same input header (kind, type, name and default of every ``input``/``sinput``, in
-   closure order), the same external dependency names, and byte-identical normalized
-   hashes of every closure file that is NOT on the reviewed non-trading allowlist
-   (``ALLOWLIST``: panel/UI, Studio chart-side control, activation, telemetry, pairing).
-   Allowlisted files may differ, but a changed line in one that touches a trading or
-   signal API, a ``#define``/``#undef`` or an input fails the certificate anyway
-   (``GUARD``), so a signal change cannot slip through as "not trading". A file whose
-   source cannot be recovered makes the export build ``not_comparable``.
-2. **Empirical canary.** About ten historical sets are re-run over the same window and
-   model on the installed build, and every deal (time, type, entry, volume, price) must
-   equal the export build's deal list. Only a stored canary result with matching deals,
-   bound to the certificate digest, makes the certificate ``active``. A canary that
-   shows any drift refutes the certificate for good.
+   ``#import`` DLLs and ``iCustom`` literals). Git cannot hold these, so each build must
+   carry their hashes (``externals_sha256``; ``hash_externals`` reads an MQL5 folder) and a
+   known compiler (``compiler_sha256``); only system-DLL imports are compared by name.
+   Anything missing fails closed (``not_comparable``), as does a missing ``#include``.
+   Equivalence means: the same input header (kind, type, name and default of every
+   ``input``/``sinput``, in closure order), the same external names and hashes, the same
+   compiler, and byte-identical normalized hashes of every closure file that is NOT on the
+   reviewed non-trading allowlist. The allowlist is a receipt
+   (``contracts/equivalence/non-trading-allowlist-v1.json``) pinned by full repo path and
+   by the normalized hash of each reviewed version: an unreviewed version of an
+   allowlisted file is in scope (Claude-Mac #141 HIGH 3). The changed-line ``GUARD``
+   (trading or signal API, ``#define``/``#undef``, inputs) is defence in depth.
+2. **Empirical canary.** At least ten distinct historical sets are re-run over the same
+   window and model on the installed build, each deal file bound to the binary that made
+   it, and every deal (time, type, entry, volume, price) must equal the export build's
+   deal list. Only a stored canary with matching deals in 10+ distinct sets, no protocol
+   error and no unfinished member, bound to the certificate digest, makes the certificate
+   ``active``, for the models it ran; activation is re-derived from the stored sets. Drift
+   in any protocol-clean set refutes the certificate for good.
 
 Normalizations before hashing text files (``NORMALIZATIONS``, stamped on every
 certificate): byte-order mark and encoding (UTF-8/UTF-16 decoded, re-encoded UTF-8), line
@@ -67,65 +70,31 @@ MAX_DEALS_CSV = 256 * 1024 * 1024
 TEXT_SUFFIXES = ('.mq5', '.mqh', '.mq4')
 STATUSES = ('not_comparable', 'not_equivalent', 'pending_canary', 'active', 'refuted')
 
-# Reviewed non-trading allowlist (Claude-PC 2026-10-03, for Claude-Mac's review on #1885).
-# Each entry was read for trade/position/order calls, indicator handles, signal state and
-# inputs. Anything not listed here stays in scope, including the entrypoint.
-ALLOWLIST = dict(
-    id='goat-non-trading-allowlist-v1',
-    files={
-        # panel / UI
-        'Dashboard.mqh': 'panel_ui',
-        'GOAT_DashboardOverview.mqh': 'panel_ui',
-        'GOATStudioUI.mqh': 'panel_ui',
-        'GOATStudioControlFeedback.mqh': 'panel_ui',
-        'GOATStudioDraftDisplayPolicy.mqh': 'panel_ui',
-        'GOATStudioQueueList.mqh': 'panel_ui',
-        'GOATStudioCompletion.mqh': 'panel_ui',
-        # Studio chart-side control of the MT5 tester window (never runs inside a tester pass)
-        'GOATStudioBridge.mqh': 'studio_control',
-        'GOATStudioNative.mqh': 'studio_control',
-        'GOATStudioDispatch.mqh': 'studio_control',
-        'GOATStudioWorkers.mqh': 'studio_control',
-        'GOATStudioRecovery.mqh': 'studio_control',
-        'GOATStudioRecoveryFiles.mqh': 'studio_control',
-        'GOATTesterStopConfirm.mqh': 'studio_control',
-        'GOATBatchCancelOrigin.mqh': 'studio_control',
-        # activation / licensing
-        'GOATEADeviceActivation.mqh': 'activation',
-        'GOATLicenseInitRetry.mqh': 'activation',
-        # telemetry
-        'GOATDeploymentDiagnostics.mqh': 'telemetry',
-        # pairing / demo setup RPC
-        'GOATSetupControl.mqh': 'pairing_setup',
-        'GOATPortfolioSetupControl.mqh': 'pairing_setup',
-        'GOATPortfolioChildAudit.mqh': 'pairing_setup',
-        # image resources
-        'GOAT Gradient Logo.png': 'resource_image',
-        'GOAT Head Transparent.png': 'resource_image',
-        'GOAT.ico': 'resource_image',
-    },
-    kept_in_scope={
-        'GOAT V1.49.mq5': 'entrypoint: trading, risk, sizing, order and signal logic',
-        'GOAT_Inputs_Definitions.mqh': 'input header and enums',
-        'GOATOptimizationInputs.mqh': 'inputs',
-        'GOAT_DashboardAILaunchPolicy.mqh': 'rewrites AI bias inputs at launch',
-        'GOATAIWireV2.mqh': 'AI bias signal wire',
-        'NewsBiasFilter.mqh': 'news/bias trade filter',
-        'GOAT_DirectionGuard.mqh': 'direction guard (trade gating)',
-        'GOAT_DirectionGuardCore.mqh': 'direction guard (trade gating)',
-        'Optimizer.mqh': 'optimizer, export pass and OnTester code',
-        'Tester.mqh': 'tester settings and export pass',
-        'MTTester.mqh': 'tester automation',
-        'XmlProcessor.mqh': 'optimization result parsing (choice of exported sets)',
-        'GOATStudioExportDates.mqh': 'export windows',
-        'GOATStudioSettingTypes.mqh': 'setting types used by inputs',
-        'GOATStudioSettingValues.mqh': 'setting values used by inputs',
-        'GOATStudioSettingCompare.mqh': 'setting comparison used by inputs',
-        'GOATEvidenceEnd.mqh': 'export end date',
-        'GOAT_SequenceExport.mqh': 'capture runs inside the tester pass',
-        'GOAT_SequencePackage.mqh': 'capture inputs',
-        'GOAT_SequenceHostIO.mqh': 'capture host I/O',
-    })
+# Reviewed non-trading allowlist: a receipt pinned by full repo path AND by the normalized content
+# hash of every reviewed version (Claude-Mac #141 review, HIGH 3). A version that is not in the
+# receipt is in scope until a new review adds it; the text GUARD is defence in depth only.
+ALLOWLIST_PATH = Path(__file__).resolve().parent / 'contracts' / 'equivalence' / 'non-trading-allowlist-v1.json'
+
+
+def load_allowlist(path=None):
+    record = json.loads(Path(path or ALLOWLIST_PATH).read_text(encoding='utf-8'))
+    if record.get('schema') != 'goat-non-trading-allowlist-receipt-v1' or not isinstance(record.get('files'), dict):
+        raise ValueError('Not a non-trading allowlist receipt')
+    for rel, entry in record['files'].items():
+        if not isinstance(entry, dict) or not entry.get('category') or not isinstance(entry.get('reviewed_sha256'), dict):
+            raise ValueError('Allowlist entry %s needs a category and reviewed_sha256 versions' % rel)
+    return record
+
+
+ALLOWLIST = load_allowlist()
+
+
+def allowed(allowlist, rel):
+    """The receipt entry for this exact repo-relative path (case-insensitive), or None."""
+    key = rel.replace('\\', '/').lower()
+    return next((dict(entry, path=path) for path, entry in allowlist['files'].items() if path.lower() == key), None)
+
+
 # A changed line in an allowlisted file that matches this is never "non-trading".
 GUARD = re.compile(r'OrderSend|OrderSendAsync|OrderModify|OrderDelete|OrderCalcMargin|OrderCalcProfit|Position(Close|Modify|Open)'
                    r'|\bCTrade\b|\.(Buy|Sell|BuyLimit|SellLimit|BuyStop|SellStop|PositionClose|PositionModify|OrderOpen)\s*\('
@@ -367,6 +336,8 @@ def _identity_candidates(repo):
 
 def _verify_identity(source, identity):
     """Every file hash the identity lists must equal the recovered source (working-tree bytes)."""
+    if not isinstance(identity.get('sources'), dict) or not identity['sources']:
+        return ['<the identity lists no source hashes>']
     names, mismatched = source.names(), []
     for rel, expected in sorted((identity.get('sources') or {}).items()):
         actual = names.get(rel.lower())
@@ -485,7 +456,9 @@ def resolve_build(repo, *, ea_sha256=None, build_id=None, commit=None, main=DEFA
                 notes.append('%s: compile source %s differs from the identity for %s' % (item['path'], head[:12], ', '.join(mismatched[:5])))
                 continue
             return base | dict(status='resolved', provenance='candidate_identity', identity_path=item['path'], commit=source.commit,
-                               source=source, label=source.label, build_id=identity.get('build_id') or build_id, notes=notes)
+                               source=source, label=source.label, build_id=identity.get('build_id') or build_id, notes=notes,
+                               compiler_sha256=item['receipt'].get('compiler_sha256'),
+                               externals_sha256=identity.get('externals_sha256') if isinstance(identity.get('externals_sha256'), dict) else None)
         introduced = _commits_introducing_blob(repo, _ex5_for(main), ea_sha256)
         if introduced:
             sources = [GitSource(repo, c) for c in introduced]
@@ -500,7 +473,9 @@ def resolve_build(repo, *, ea_sha256=None, build_id=None, commit=None, main=DEFA
                                    source=source, label=source.label, build_id=build_id or found_id, notes=notes)
             return base | dict(status='ambiguous', reason='The binary was introduced by commits with different sources',
                                commits=[s.commit for s in sources], notes=notes)
+        # A known binary that matches nothing stays unknown: a build-id label is no proof of that binary's source.
         notes.append('no candidate identity or git EX5 blob has binary ' + ea_sha256[:12])
+        return base | dict(status='unknown', reason='No recoverable source for binary %s' % ea_sha256[:12], notes=notes)
     if build_id:
         matching = _commits_defining(repo, main, build_id)
         if matching:
@@ -541,21 +516,68 @@ def _guard_hits(lines):
     return hits
 
 
-def _public_build(build, tree):
-    keep = ('status', 'provenance', 'ea_sha256', 'build_id', 'commit', 'commits', 'identity_path', 'label', 'reason', 'notes', 'main')
+def _public_build(build, tree, allowlist):
+    keep = ('status', 'provenance', 'ea_sha256', 'build_id', 'commit', 'commits', 'identity_path', 'label', 'reason', 'notes', 'main',
+            'compiler_sha256', 'externals_sha256')
     value = {k: build[k] for k in keep if build.get(k) is not None}
     if tree:
         value.update(closure_sha256=tree['closure_sha256'], input_header_sha256=tree['input_header_sha256'],
-                     files={k: dict(sha256=v['sha256'], raw_sha256=v['raw_sha256'], allowlisted=ALLOWLIST['files'].get(PurePosixPath(k).name))
+                     files={k: dict(sha256=v['sha256'], raw_sha256=v['raw_sha256'], allowlisted=(allowed(allowlist, k) or {}).get('category'))
                             for k, v in sorted(tree['files'].items())},
                      externals=tree['externals'], input_count=len(tree['inputs']), missing=tree['missing'])
     return value
 
 
+def hashed_externals(externals):
+    """Externals that must be hashed per build: everything but #import of system DLLs (compared by name)."""
+    return [name for name in externals if not name.startswith('import:')]
+
+
+def _include_closure(root, rel, seen):
+    path = root / rel
+    if rel.lower() in seen or not path.is_file():
+        return
+    seen[rel.lower()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    code = strip_comments(decode(path.read_bytes()))
+    for local, system in _INCLUDE.findall(code):
+        child = ('Include/' + system) if system else str(PurePosixPath(rel).parent / local)
+        _include_closure(root, child.replace('\\', '/'), seen)
+
+
+def hash_externals(mql5_root, externals, *, expert_dir='Experts/GOAT-EA'):
+    """Hashes of a build's external dependencies, read from the MQL5 folder it was compiled in.
+
+    ``include:<X>`` hashes the standard-library file and every file it includes; MQL5-root
+    resources and ``icustom:`` indicators hash the .ex5 under MQL5; unversioned resources are
+    looked up next to the EA (``expert_dir``). A missing file is left out, so the certificate
+    fails closed on it.
+    """
+    root, result = Path(mql5_root), {}
+    for name in hashed_externals(externals):
+        kind, _, target = name.partition(':')
+        target = target.replace('\\', '/')
+        if kind == 'include':
+            seen = {}
+            _include_closure(root, 'Include/' + target.strip('<>'), seen)
+            if seen:
+                result[name] = digest_of(dict(sorted(seen.items())))
+            continue
+        if kind in ('resource', 'icon'):
+            path = root / target.lstrip('/')
+        elif kind in ('resource-unversioned', 'icon-unversioned'):
+            path = root / expert_dir / target
+        elif kind == 'icustom':
+            path = root / 'Indicators' / (target if target.lower().endswith('.ex5') else target + '.ex5')
+        else:
+            continue
+        if path.is_file():
+            result[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return result
+
+
 def certificate(export_build, installed_build, *, allowlist=None):
     """Compare two resolved builds. Returns the certificate body with its digest."""
     allowlist = allowlist or ALLOWLIST
-    allowed = allowlist['files']
     trees, problems = {}, []
     for side, build in (('export', export_build), ('installed', installed_build)):
         if build.get('status') != 'resolved':
@@ -568,6 +590,14 @@ def certificate(export_build, installed_build, *, allowlist=None):
             continue
         if trees[side]['missing']:
             problems.append('%s build closure has unresolved files: %s' % (side, trees[side]['missing'][:5]))
+        # Fail closed on what git cannot hold: every non-DLL external needs this build's hash, and the compiler identity.
+        hashes = build.get('externals_sha256') or {}
+        unhashed = [n for n in hashed_externals(trees[side]['externals']) if not hashes.get(n)]
+        if unhashed:
+            problems.append('%s build: no hash for external dependencies %s (resources, indicators and standard-library '
+                            'includes are part of the trading closure)' % (side, unhashed[:6]))
+        if not build.get('compiler_sha256'):
+            problems.append('%s build: compiler identity unknown (compile receipt compiler_sha256)' % side)
     comparison = None
     if not problems:
         old, new = trees['export'], trees['installed']
@@ -575,11 +605,12 @@ def certificate(export_build, installed_build, *, allowlist=None):
         differing, blocking = [], []
         for key in sorted(set(old_by) | set(new_by)):
             a, b = old_by.get(key), new_by.get(key)
-            name = PurePosixPath(a or b).name
-            category = allowed.get(name)
             if a and b and old['files'][a]['sha256'] == new['files'][b]['sha256']:
                 continue
-            item = dict(file=a or b, allowlisted=category, change='changed' if a and b else ('removed' if a else 'added'))
+            entry = allowed(allowlist, a or b)
+            category = entry and entry['category']
+            item = dict(file=a or b, allowlisted=category, change='changed' if a and b else ('removed' if a else 'added'),
+                        export_sha256=a and old['files'][a]['sha256'], installed_sha256=b and new['files'][b]['sha256'])
             if (a or b).lower().endswith(TEXT_SUFFIXES):
                 old_text = normalize(decode(export_build['source'].read(a))) if a else ''
                 new_text = normalize(decode(installed_build['source'].read(b))) if b else ''
@@ -588,16 +619,24 @@ def certificate(export_build, installed_build, *, allowlist=None):
                 hits = _guard_hits(lines) if category else []
                 if hits:
                     item['guard_hits'] = hits[:20]
+            unreviewed = [h for h in (item['export_sha256'], item['installed_sha256']) if h and entry and h not in entry['reviewed_sha256']]
             if not category:
                 item['blocking'] = 'not on the non-trading allowlist'
+            elif unreviewed:
+                item['blocking'] = 'allowlisted path, but version %s is not in the reviewed receipt' % ', '.join(h[:12] for h in unreviewed)
             elif item.get('guard_hits'):
                 item['blocking'] = 'allowlisted, but a changed line touches trading, signal, #define or input code'
             differing.append(item)
             if item.get('blocking'):
                 blocking.append(item['file'])
         inputs_equal = old['input_header_sha256'] == new['input_header_sha256']
-        externals_equal = old['externals'] == new['externals']
+        old_hashes, new_hashes = export_build.get('externals_sha256') or {}, installed_build.get('externals_sha256') or {}
+        externals_differ = sorted(n for n in set(hashed_externals(old['externals'])) | set(hashed_externals(new['externals']))
+                                  if old_hashes.get(n) != new_hashes.get(n))
+        externals_equal = old['externals'] == new['externals'] and not externals_differ
+        compiler_equal = export_build['compiler_sha256'] == installed_build['compiler_sha256']
         comparison = dict(differing=differing, blocking=blocking, input_header_equal=inputs_equal, externals_equal=externals_equal,
+                          externals_hash_differs=externals_differ, compiler_equal=compiler_equal,
                           externals_only_export=sorted(set(old['externals']) - set(new['externals'])),
                           externals_only_installed=sorted(set(new['externals']) - set(old['externals'])),
                           identical_files=len(set(old_by) & set(new_by)) - sum(1 for d in differing if d['change'] == 'changed'))
@@ -608,15 +647,16 @@ def certificate(export_build, installed_build, *, allowlist=None):
     if problems:
         status, source_equivalent = 'not_comparable', None
     else:
-        source_equivalent = not comparison['blocking'] and comparison['input_header_equal'] and comparison['externals_equal']
+        source_equivalent = (not comparison['blocking'] and comparison['input_header_equal'] and comparison['externals_equal']
+                             and comparison['compiler_equal'])
         status = 'pending_canary' if source_equivalent else 'not_equivalent'
-    body = dict(schema=SCHEMA, export_build=_public_build(export_build, trees.get('export')),
-                installed_build=_public_build(installed_build, trees.get('installed')),
-                allowlist=dict(id=allowlist['id'], sha256=digest_of(allowlist), files=allowlist['files'], kept_in_scope=allowlist.get('kept_in_scope')),
+    body = dict(schema=SCHEMA, export_build=_public_build(export_build, trees.get('export'), allowlist),
+                installed_build=_public_build(installed_build, trees.get('installed'), allowlist),
+                allowlist=dict(id=allowlist['id'], sha256=digest_of(allowlist), review_ref=allowlist.get('review_ref')),
                 normalizations=NORMALIZATIONS, guard=GUARD.pattern, problems=problems, comparison=comparison,
                 source_equivalent=source_equivalent, source_status=status,
                 canary_rule=dict(min_sets=MIN_CANARY_SETS, compare='every buy/sell deal: server_time_msc, deal_type, deal_entry, lots, price',
-                                 same='window and tester model per set'))
+                                 same='window and tester model per set; distinct sets; binaries recorded per deal file'))
     return body | dict(digest=digest_of(body), created_utc=_now())
 
 
@@ -670,47 +710,78 @@ def _file_sha(path):
     return digest.hexdigest()
 
 
-def canary_result(cert, pairs, *, min_sets=MIN_CANARY_SETS, source='pairs'):
-    """Judge canary pairs for one certificate. Each pair: label, reference/candidate deals paths,
-    reference/candidate model and window (``[from, to]``), optional cut_msc."""
+def _binary_matches(build, identity):
+    """A deal file's producing binary (sha256, else build id) against one certificate side."""
+    if not identity:
+        return False
+    if build.get('ea_sha256'):
+        return identity == build['ea_sha256']
+    return bool(build.get('build_id')) and identity == build['build_id']
+
+
+def canary_result(cert, pairs, *, min_sets=MIN_CANARY_SETS, source='pairs', incomplete=()):
+    """Judge canary pairs for one certificate.
+
+    Each pair: label, values_sha256, reference/candidate deals paths, reference/candidate binary
+    (``reference_ea``/``candidate_ea``: sha256, else build id), model and window (``[from, to]``),
+    optional cut_msc. ``min_sets`` can only raise the floor of MIN_CANARY_SETS. A set counts once
+    (distinct values and distinct reference deal files). Drift in any protocol-clean pair refutes
+    the certificate, whatever else the canary holds; a protocol error or an incomplete member only
+    stops activation.
+    """
     verify_certificate(cert)
-    if type(min_sets) is not int or not 1 <= min_sets <= MAX_CANARY_SETS:
-        raise ValueError('min_sets must be 1..%d' % MAX_CANARY_SETS)
+    if type(min_sets) is not int or not MIN_CANARY_SETS <= min_sets <= MAX_CANARY_SETS:
+        raise ValueError('min_sets must be %d..%d (10 is a hard floor)' % (MIN_CANARY_SETS, MAX_CANARY_SETS))
     if not isinstance(pairs, list) or not 1 <= len(pairs) <= MAX_CANARY_SETS:
         raise ValueError('A canary needs 1..%d set pairs' % MAX_CANARY_SETS)
-    sets, protocol = [], []
+    sets, seen_values, seen_reference = [], set(), set()
     for index, pair in enumerate(pairs):
         label = str(pair.get('label') or index + 1)
+        errors = []
         if pair.get('reference_model') is None or pair.get('reference_model') != pair.get('candidate_model'):
-            protocol.append('%s: the two runs used different or unknown tester models (%s / %s)' % (label, pair.get('reference_model'), pair.get('candidate_model')))
+            errors.append('different or unknown tester models (%s / %s)' % (pair.get('reference_model'), pair.get('candidate_model')))
         if not pair.get('reference_window') or list(pair.get('reference_window')) != list(pair.get('candidate_window') or []):
-            protocol.append('%s: the two runs covered different or unknown windows' % label)
+            errors.append('different or unknown windows')
+        if not _binary_matches(cert['export_build'], pair.get('reference_ea')):
+            errors.append('reference deals not recorded as made by the export build (%s)' % pair.get('reference_ea'))
+        if not _binary_matches(cert['installed_build'], pair.get('candidate_ea')):
+            errors.append('candidate deals not recorded as made by the installed build (%s)' % pair.get('candidate_ea'))
         cut = pair.get('cut_msc')
         if cut is not None and type(cut) is not int:
-            protocol.append('%s: cut_msc must be integer milliseconds' % label)
+            errors.append('cut_msc must be integer milliseconds')
             cut = None
-        reference = deal_list(pair['reference_deals'], cut_msc=cut)
-        candidate = deal_list(pair['candidate_deals'], cut_msc=cut)
-        compared = compare_deals(reference, candidate)
-        sets.append(dict(label=label, values_sha256=pair.get('values_sha256'), model=pair.get('reference_model'),
-                         window=pair.get('reference_window'), cut_msc=cut,
-                         reference_deals_sha256=_file_sha(pair['reference_deals']), candidate_deals_sha256=_file_sha(pair['candidate_deals']),
-                         **compared))
-    counted = [s for s in sets if s['matched'] and s['reference_deals'] > 0]
-    drift = [s['label'] for s in sets if not s['matched']]
-    matched = not protocol and not drift and len(counted) >= min_sets
-    if protocol:
-        plain = 'Canary protocol error: ' + '; '.join(protocol[:5])
-    elif drift:
+        values = pair.get('values_sha256')
+        reference_sha, candidate_sha = _file_sha(pair['reference_deals']), _file_sha(pair['candidate_deals'])
+        if not isinstance(values, str) or not values:
+            errors.append('values_sha256 is required')
+        elif values in seen_values or reference_sha in seen_reference:
+            errors.append('repeats a set already in this canary')
+        seen_values.add(values)
+        seen_reference.add(reference_sha)
+        compared = compare_deals(deal_list(pair['reference_deals'], cut_msc=cut), deal_list(pair['candidate_deals'], cut_msc=cut))
+        sets.append(dict(label=label, values_sha256=values, model=pair.get('reference_model'), window=pair.get('reference_window'), cut_msc=cut,
+                         reference_ea=pair.get('reference_ea'), candidate_ea=pair.get('candidate_ea'),
+                         reference_deals_sha256=reference_sha, candidate_deals_sha256=candidate_sha, protocol_errors=errors, **compared))
+    protocol = ['%s: %s' % (s['label'], e) for s in sets for e in s['protocol_errors']]
+    clean = [s for s in sets if not s['protocol_errors']]
+    drift = [s['label'] for s in clean if not s['matched']]
+    counted = [s for s in clean if s['matched'] and s['reference_deals'] > 0]
+    incomplete = list(incomplete or ())
+    matched = not protocol and not drift and not incomplete and len(counted) >= min_sets
+    if drift:
         plain = 'Deal drift in %d of %d sets (%s): the builds do not trade the same.' % (len(drift), len(sets), ', '.join(drift[:5]))
+    elif protocol:
+        plain = 'Canary protocol error: ' + '; '.join(protocol[:5])
+    elif incomplete:
+        plain = '%d canary members did not finish; they count against the canary.' % len(incomplete)
     elif len(counted) < min_sets:
-        plain = 'Deals matched, but only %d sets with trades (%d needed).' % (len(counted), min_sets)
+        plain = 'Deals matched, but only %d distinct sets with trades (%d needed).' % (len(counted), min_sets)
     else:
         plain = 'Identical deal lists in all %d sets (%d deals).' % (len(sets), sum(s['reference_deals'] for s in sets))
     body = dict(schema=CANARY_SCHEMA, certificate_digest=cert['digest'], export_ea_sha256=cert['export_build'].get('ea_sha256'),
                 installed_ea_sha256=cert['installed_build'].get('ea_sha256'), source=source, min_sets=min_sets,
-                sets=sets, sets_with_trades=len(counted), drift=drift, protocol_errors=protocol, matched=matched,
-                refutes=bool(drift) and not protocol, plain=plain)
+                sets=sets, sets_with_trades=len(counted), models=sorted({s['model'] for s in counted}), drift=drift,
+                protocol_errors=protocol, incomplete=incomplete, matched=matched, refutes=bool(drift), plain=plain)
     return body | dict(digest=digest_of(body), created_utc=_now())
 
 
@@ -719,6 +790,26 @@ def verify_canary(record):
     if record.get('schema') != CANARY_SCHEMA or digest_of(body) != record.get('digest'):
         raise ValueError('Canary digest does not match its contents')
     return record
+
+
+def _canary_activates(canary, cert):
+    """Re-derive activation from the stored sets: the floor, distinctness and cleanliness are never trusted from flags."""
+    floor = max(MIN_CANARY_SETS, (cert.get('canary_rule') or {}).get('min_sets') or 0)
+    sets = canary.get('sets') or []
+    if canary.get('protocol_errors') or canary.get('incomplete') or any(s.get('protocol_errors') for s in sets):
+        return False, []
+    if any(not s.get('matched') for s in sets):
+        return False, []
+    counted = [s for s in sets if s.get('reference_deals', 0) > 0]
+    values = {s.get('values_sha256') for s in counted}
+    references = {s.get('reference_deals_sha256') for s in counted}
+    if None in values or len(values) != len(counted) or len(references) != len(counted):
+        return False, []
+    return len(counted) >= floor, sorted({s.get('model') for s in counted})
+
+
+def _canary_refutes(canary):
+    return any(not s.get('matched') and not s.get('protocol_errors') for s in canary.get('sets') or [])
 
 
 # ---- store ---------------------------------------------------------------------------------
@@ -766,7 +857,10 @@ def load_certificate(controller_root, digest):
 
 
 def state(controller_root, digest):
-    """The certificate with its canaries and its effective status (see STATUSES)."""
+    """The certificate with its canaries and its effective status (see STATUSES).
+
+    Any bound canary with drift in a protocol-clean set refutes the certificate for good; an
+    unreadable canary file blocks activation (it might be the refuting one)."""
     cert = load_certificate(controller_root, digest)
     canaries, invalid = [], []
     for path in sorted((store_root(controller_root) / digest).glob('canary-*.json')):
@@ -777,17 +871,20 @@ def state(controller_root, digest):
             continue
         bound = (canary['certificate_digest'] == digest and canary['export_ea_sha256'] == cert['export_build'].get('ea_sha256')
                  and canary['installed_ea_sha256'] == cert['installed_build'].get('ea_sha256'))
-        canaries.append(dict(path=str(path), digest=canary['digest'], matched=canary['matched'] and bound, refutes=canary['refutes'] and bound,
-                             sets=len(canary['sets']), sets_with_trades=canary['sets_with_trades'], plain=canary['plain']))
+        activates, models = _canary_activates(canary, cert)
+        canaries.append(dict(path=str(path), digest=canary['digest'], matched=activates and bound, models=models,
+                             refutes=_canary_refutes(canary) and bound, sets=len(canary['sets']),
+                             sets_with_trades=canary['sets_with_trades'], plain=canary['plain']))
     status = cert['source_status']
     active = None
     if status == 'pending_canary':
         if any(c['refutes'] for c in canaries):
             status = 'refuted'
-        else:
+        elif not invalid:
             active = next((c for c in canaries if c['matched']), None)
             status = 'active' if active else 'pending_canary'
     return dict(digest=digest, status=status, active=status == 'active', canary_digest=active and active['digest'],
+                canary_models=active['models'] if active else [],
                 export_build=dict((k, cert['export_build'].get(k)) for k in ('ea_sha256', 'build_id', 'commit', 'provenance')),
                 installed_build=dict((k, cert['installed_build'].get(k)) for k in ('ea_sha256', 'build_id', 'commit', 'provenance')),
                 source_equivalent=cert['source_equivalent'], canaries=canaries, invalid_canaries=invalid,
@@ -796,13 +893,16 @@ def state(controller_root, digest):
 
 
 def covers(cert_state, *, export_ea_sha256=None, export_build_id=None, installed_ea_sha256=None):
-    """Does this certificate cover an export of this build re-tested on this installed build?"""
+    """Does this certificate cover an export of this build re-tested on this installed build?
+
+    A certificate for a specific binary covers only exports that record that binary; one made
+    from a build id alone covers exports known only by that build id."""
     export, installed = cert_state['export_build'], cert_state['installed_build']
     if not installed_ea_sha256 or installed.get('ea_sha256') != installed_ea_sha256:
         return False
-    if export_ea_sha256:
-        return export.get('ea_sha256') == export_ea_sha256
-    return bool(export_build_id) and export.get('build_id') == export_build_id
+    if export.get('ea_sha256'):
+        return export_ea_sha256 == export['ea_sha256']
+    return not export_ea_sha256 and bool(export_build_id) and export.get('build_id') == export_build_id
 
 
 # ---- canary from a catch-up run, canary planning -------------------------------------------
@@ -812,7 +912,8 @@ def _msc(moment):
 
 def catchup_pairs(controller_root, catchup_id, digest):
     """Canary pairs from a finished canary catch-up: the original export's capture deals (export
-    build) against the re-test's capture deals (installed build), up to the original's last minute."""
+    build) against the re-test's capture deals (installed build), up to the original's last minute.
+    Canary members that did not finish with both captures are returned as ``incomplete``."""
     from studio_catchup_verdict import equity_rows
     from studio_evidence import read_export
     from studio_seed_results import read_seed_json
@@ -821,14 +922,15 @@ def catchup_pairs(controller_root, catchup_id, digest):
     root = Path(controller_root) / 'catchups' / catchup_id
     manifest = read_seed_json(root / 'manifest.json')
     run_state = read_seed_json(root / 'state.json')
-    pairs, skipped = [], []
+    pairs, skipped, incomplete = [], [], []
     for spec, item in zip(manifest['members'], run_state['members']):
-        bridge = (spec.get('pins') or {}).get('equivalence') or {}
+        pins = spec.get('pins') or {}
+        bridge = pins.get('equivalence') or {}
         if bridge.get('mode') != 'canary' or bridge.get('certificate_digest') != digest:
             skipped.append(dict(alias=spec['alias'], reason='not a canary member of this certificate'))
             continue
         if item.get('status') != 'completed' or not item.get('result'):
-            skipped.append(dict(alias=spec['alias'], reason='not completed (%s)' % item.get('status')))
+            incomplete.append(dict(alias=spec['alias'], reason='not completed (%s)' % item.get('status')))
             continue
         result = read_seed_json(item['result']['path'])
         version = json.loads(Path(result['version_path']).read_text(encoding='utf-8'))
@@ -836,8 +938,8 @@ def catchup_pairs(controller_root, catchup_id, digest):
         if original['set_sha256'] != spec['original']['set_sha256']:
             raise ValueError('Original export changed since the canary was prepared: ' + spec['original']['set_path'])
         reference_capture, candidate_capture = original.get('capture') or {}, (version.get('retest') or {}).get('capture') or {}
-        if not reference_capture.get('complete') or not candidate_capture.get('path'):
-            skipped.append(dict(alias=spec['alias'], reason='a capture is missing or incomplete'))
+        if not reference_capture.get('complete') or not candidate_capture.get('path') or candidate_capture.get('status') != COMPLETE_CAPTURE:
+            incomplete.append(dict(alias=spec['alias'], reason='a capture is missing or incomplete'))
             continue
         cut = equity_rows(original['csv_path'])[-1][0]
         retest = read_export(version['retest']['set_path'])
@@ -846,29 +948,43 @@ def catchup_pairs(controller_root, catchup_id, digest):
         pairs.append(dict(label=spec['alias'] + ' ' + spec['tester']['Symbol'], values_sha256=spec['original']['values_sha256'],
                           reference_deals=str(Path(reference_capture['path']).parent / 'deals.csv'),
                           candidate_deals=str(Path(candidate_capture['path']).parent / 'deals.csv'),
-                          reference_model=reference_capture.get('model'), candidate_model=(retest.get('capture') or {}).get('model', spec['tester']['Model']),
+                          reference_ea=pins.get('original_ea_sha256') or pins.get('original_build_id'),
+                          candidate_ea=pins.get('installed_ea_sha256'),
+                          reference_model=reference_capture.get('model'), candidate_model=(retest.get('capture') or {}).get('model'),
                           reference_window=window_ref, candidate_window=window_new, cut_msc=_msc(cut)))
-    return pairs, skipped
+    return pairs, skipped, incomplete
 
 
-def canary_plan(controller_root, digest, sources, *, max_sets=MIN_CANARY_SETS, evidence_end='auto', job_timeout_seconds=7200):
-    """A catch-up plan that canaries one source-equivalent certificate on ~10 diverse exports of its export build."""
+COMPLETE_CAPTURE = 'complete-awaiting-import-verification'
+
+
+def canary_plan(controller_root, digest, sources, *, max_sets=MIN_CANARY_SETS, evidence_end='auto', job_timeout_seconds=7200,
+                broker_clock=None, now=None):
+    """A catch-up plan that canaries one source-equivalent certificate on ~10 diverse exports of its
+    export build. Only exports the catch-up will actually run (``behind`` the resolved end) are chosen."""
+    from studio_catchup import classify, resolve_target
     from studio_evidence import scan
     cert_state = state(controller_root, digest)
     if cert_state['status'] not in ('pending_canary', 'active'):
         raise ValueError('Certificate %s is %s; only a source-equivalent certificate is canaried' % (digest[:12], cert_state['status']))
-    if type(max_sets) is not int or not 1 <= max_sets <= MAX_CANARY_SETS:
-        raise ValueError('max_sets must be 1..%d' % MAX_CANARY_SETS)
+    if type(max_sets) is not int or not MIN_CANARY_SETS <= max_sets <= MAX_CANARY_SETS:
+        raise ValueError('max_sets must be %d..%d' % (MIN_CANARY_SETS, MAX_CANARY_SETS))
+    target = resolve_target(evidence_end, broker_clock=broker_clock, now=now)
     exports, unreadable = scan([str(s) for s in sources])
     export_build = cert_state['export_build']
-    eligible = []
+    eligible, not_behind = [], 0
     for export in exports:
         capture = export.get('capture') or {}
         run_ea = (export.get('run') or {}).get('ea_sha256')
-        same = (run_ea == export_build.get('ea_sha256')) if run_ea else (capture.get('build_id') == export_build.get('build_id'))
+        same = covers(cert_state, export_ea_sha256=run_ea, export_build_id=None if run_ea else capture.get('build_id'),
+                      installed_ea_sha256=cert_state['installed_build'].get('ea_sha256'))
         deals = capture.get('path') and Path(capture['path']).parent / 'deals.csv'
-        if same and capture.get('complete') and capture.get('model') == 4 and deals and deals.is_file() and not export.get('problems'):
-            eligible.append(export)
+        if not (same and capture.get('complete') and capture.get('model') == 4 and deals and deals.is_file() and not export.get('problems')):
+            continue
+        if classify(export, target['iso'], include_below_threshold=True)['status'] != 'behind':
+            not_behind += 1
+            continue
+        eligible.append(export)
     # Diverse: round-robin over symbols, threshold passers first, then by file name for a stable choice.
     by_symbol = {}
     for export in sorted(eligible, key=lambda e: (not e['threshold']['passing'], e['set_path'])):
@@ -880,14 +996,27 @@ def canary_plan(controller_root, digest, sources, *, max_sets=MIN_CANARY_SETS, e
                 chosen.append(by_symbol[symbol].pop(0))
     plan = dict(schema_version=1, evidence_end=evidence_end, sets=[e['set_path'] for e in chosen], job_timeout_seconds=job_timeout_seconds,
                 canary_certificate=digest, include_below_threshold=True)
-    return dict(plan=plan, eligible=len(eligible), chosen=[dict(symbol=e['symbol'], set_path=e['set_path'], passing=e['threshold']['passing'])
-                                                              for e in chosen],
+    if broker_clock:
+        plan['broker_clock'] = broker_clock
+    return dict(plan=plan, target=target['iso'], eligible=len(eligible), not_behind=not_behind,
+                chosen=[dict(symbol=e['symbol'], set_path=e['set_path'], passing=e['threshold']['passing']) for e in chosen],
                 unreadable=len(unreadable), enough=len(chosen) >= MIN_CANARY_SETS,
                 next_action='catchup-prepare with this plan, catchup-start on the installed build, then equivalence-canary-ingest --catchup-id')
 
 
 # ---- CLI -----------------------------------------------------------------------------------
 OPERATIONS = ('equivalence-certificate', 'equivalence-status', 'equivalence-canary-plan', 'equivalence-canary-ingest')
+
+
+def _externals_arg(path, mql5_root, tree_externals):
+    if path:
+        value = json.loads(Path(path).read_text(encoding='utf-8-sig'))
+        if not isinstance(value, dict) or any(not isinstance(v, str) for v in value.values()):
+            raise ValueError('An externals file maps external names to sha256 strings')
+        return value
+    if mql5_root:
+        return hash_externals(mql5_root, tree_externals)
+    return None
 
 
 def operation(controller, args):
@@ -899,12 +1028,22 @@ def operation(controller, args):
         installed_sha = args.installed_ea_sha256 or controller.install['ea_sha256']
         installed = resolve_build(args.repo, ea_sha256=None if args.installed_commit else installed_sha, commit=args.installed_commit, main=main)
         installed['ea_sha256'] = installed_sha
+        for build, prefix in ((export, 'export'), (installed, 'installed')):
+            compiler = getattr(args, prefix + '_compiler_sha256', None)
+            if compiler:
+                build['compiler_sha256'] = compiler
+            if build.get('status') == 'resolved':
+                names = closure(build['source'], main)['externals']
+                given = _externals_arg(getattr(args, prefix + '_externals', None), getattr(args, prefix + '_mql5_root', None), names)
+                if given is not None:
+                    build['externals_sha256'] = given
         cert = certificate(export, installed)
         path = save_certificate(root, cert)
         comparison = cert.get('comparison') or {}
         return dict(state(root, cert['digest']), certificate_path=str(path), problems=cert['problems'],
                     differing=[{k: d.get(k) for k in ('file', 'change', 'allowlisted', 'changed_lines', 'blocking')} for d in comparison.get('differing', [])],
-                    input_header_equal=comparison.get('input_header_equal'), externals_equal=comparison.get('externals_equal'))
+                    input_header_equal=comparison.get('input_header_equal'), externals_equal=comparison.get('externals_equal'),
+                    compiler_equal=comparison.get('compiler_equal'))
     if args.operation == 'equivalence-status':
         return state(root, args.certificate)
     if args.operation == 'equivalence-canary-plan':
@@ -919,12 +1058,13 @@ def operation(controller, args):
         if bool(args.catchup_id) == bool(args.pairs):
             raise ValueError('Give exactly one of --catchup-id or --pairs')
         if args.catchup_id:
-            pairs, skipped = catchup_pairs(root, args.catchup_id, args.certificate)
+            pairs, skipped, incomplete = catchup_pairs(root, args.catchup_id, args.certificate)
             source = 'catchup:' + args.catchup_id
         else:
-            pairs, skipped, source = json.loads(Path(args.pairs).read_text(encoding='utf-8-sig')), [], 'pairs:' + str(args.pairs)
-        canary = canary_result(cert, pairs, min_sets=args.min_sets, source=source)
+            pairs, skipped, incomplete = json.loads(Path(args.pairs).read_text(encoding='utf-8-sig')), [], []
+            source = 'pairs:' + str(args.pairs)
+        canary = canary_result(cert, pairs, min_sets=args.min_sets, source=source, incomplete=incomplete)
         path = save_canary(root, canary)
         return dict(canary_path=str(path), canary_digest=canary['digest'], matched=canary['matched'], refutes=canary['refutes'],
-                    plain=canary['plain'], skipped=skipped, state=state(root, args.certificate))
+                    plain=canary['plain'], skipped=skipped, incomplete=incomplete, state=state(root, args.certificate))
     raise ValueError('Not an equivalence operation: ' + args.operation)

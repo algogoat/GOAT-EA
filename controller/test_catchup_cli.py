@@ -110,11 +110,23 @@ class CatchupCliTests(unittest.TestCase):
             subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True)
         head = subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout.strip()
         import hashlib
-        code, result = self.cli('equivalence-certificate', '--repo', str(repo), '--export-ea-sha256', hashlib.sha256(b'old-binary').hexdigest(),
-                                '--installed-commit', head)
+        old_sha = hashlib.sha256(b'old-binary').hexdigest()
+        code, result = self.cli('equivalence-certificate', '--repo', str(repo), '--export-ea-sha256', old_sha, '--installed-commit', head)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result['result']['status'], 'not_comparable')   # fail closed: no compiler or external hashes
+        self.assertIn('compiler identity unknown', ' '.join(result['result']['problems']))
+        from test_studio_equivalence import EXTERNALS
+        externals = self.fixture.root / 'externals.json'
+        externals.write_text(json.dumps({name: 'e' * 64 for name in EXTERNALS}), encoding='utf-8')
+        code, result = self.cli('equivalence-certificate', '--repo', str(repo), '--export-ea-sha256', old_sha, '--installed-commit', head,
+                                '--export-externals', str(externals), '--installed-externals', str(externals),
+                                '--export-compiler-sha256', 'c' * 64, '--installed-compiler-sha256', 'c' * 64)
         self.assertEqual(code, 0, result)
         cert = result['result']
-        self.assertEqual((cert['status'], cert['active']), ('pending_canary', False))   # same source; no canary yet
+        self.assertEqual((cert['status'], cert['active'], cert['compiler_equal']), ('pending_canary', False, True))   # same source; no canary yet
+        code, refused = self.cli('equivalence-canary-ingest', '--certificate', cert['digest'], '--pairs', str(externals), '--min-sets', '1')
+        self.assertEqual(code, 2)
+        self.assertIn('hard floor', refused['error'])
         self.assertEqual(cert['export_build']['provenance'], 'git_ex5_blob')
         code, status = self.cli('equivalence-status', '--certificate', cert['digest'])
         self.assertEqual((code, status['result']['digest']), (0, cert['digest']))

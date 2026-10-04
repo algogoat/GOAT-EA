@@ -242,7 +242,9 @@ def catch_up_stamp(spec, manifest, verdict, created_utc, original_foos=None):
                 model_rung=(verdict.get('evidence_model') or {}).get('model_rung'),
                 m1_open_price_like=(verdict.get('evidence_model') or {}).get('m1_open_price_like'),
                 fidelity_table_version=(verdict.get('evidence_model') or {}).get('fidelity_table_version'),
-                equivalence_certificate=((spec.get('pins') or {}).get('equivalence') or {}).get('certificate_digest'))
+                equivalence_certificate=((spec.get('pins') or {}).get('equivalence') or {}).get('certificate_digest'),
+                equivalence_canary=((spec.get('pins') or {}).get('equivalence') or {}).get('canary_digest'),
+                equivalence_status_at_collect=((spec.get('pins') or {}).get('equivalence') or {}).get('status_at_collect'))
 
 class _NoProcess:
     """Process stand-in for previews: any terminal effect is a defect."""
@@ -475,8 +477,11 @@ class CatchupRunner(SeedRunner):
             cert = None if same else next((c for mode, c in certificates if mode == 'active' and covering(c)), None)
             if same:
                 pass
-            elif cert and cert['active']:
+            elif cert and cert['active'] and model in cert['canary_models']:
                 bridge = self._bridge('active', cert)
+            elif cert and cert['active']:
+                problems.append('Trading-equivalence certificate %s is active only for model(s) %s (its canary); this export is '
+                                'model %s, so a re-test would not be comparable' % (cert['digest'][:12], cert['canary_models'], model))
             elif cert:
                 problems.append('Trading-equivalence certificate %s covers this export but is %s (it needs a matching canary), so a '
                                 're-test would not be comparable' % (cert['digest'][:12], cert['status']))
@@ -707,7 +712,7 @@ class CatchupRunner(SeedRunner):
         version = dict(schema=VERSION_SCHEMA, values_sha256=retest['values_sha256'], symbol=retest['symbol'], period=retest['period'],
                        evidence_start=retest['evidence_start'], evidence_end=retest['evidence_end'], evidence_end_source=retest['evidence_end_source'],
                        target_end=manifest['evidence_end']['iso'], catchup_id=manifest['batch_id'], alias=spec['alias'],
-                       created_utc=created, catch_up=catch_up_stamp(spec, manifest, verdict, created,
+                       created_utc=created, catch_up=catch_up_stamp(dict(spec, pins=pins), manifest, verdict, created,
                                                                     (original.get('windows') or {}).get('FOOS')),
                        original=dict(spec['original'], csv_path=original['csv_path']),
                        retest=dict(set_path=retest['set_path'], set_sha256=retest['set_sha256'], csv_path=retest['csv_path'],

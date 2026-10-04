@@ -55,9 +55,21 @@ directions with the default `Long_and_Short` and `Allow_Opposite_Seq=true`).
 adds the idea and must still leave at least one search axis. Its `.build.json`
 records `parent: "starter:single"` (or `starter:sequence`) and `starter` with the
 receipt hash, the entry signals enabled and any warnings. A starter whose bytes or
-schema no longer match its receipt is refused. From a starter parent, build-set
-also refuses `Mode_Lots=RiskperSeq` with a `Max_Seq_Trades` that can be 1: the EA
-plans no loss for a single trade and would size it at the broker maximum.
+schema no longer match its receipt, or an unmodified starter without its receipt,
+is refused. The sequence starter keeps `Risk` at the schema value only as a
+placeholder, listed in the receipt's `user_choices_required` and its header:
+build-set from it refuses with `RISK_NOT_CHOSEN` until `changes` sets `Risk` to the
+amount the user chose (an unchanged amount is accepted there when stated).
+
+**Risk-per-sequence needs at least 2 trades, for every SET.** `validate-set`,
+`build-set` and every controller path that validates a SET (batches, seeds,
+catch-ups, promotions) refuse any reachable combination of `Mode_Lots=RiskperSeq`
+and `Max_Seq_Trades<=1`: current values, every value of an active ladder and the
+first field of a dormant `N` tuple, which MT5 runs. Reason code
+`RISK_PER_SEQUENCE_NEEDS_TWO_TRADES`: "Risk-per-sequence sizing needs at least 2
+sequence trades; use fixed lots or raise Max_Seq_Trades (single-trade % risk
+returns in the next EA build)." With fewer than 2 trades the EA's planned loss path
+is empty, so its lot solver climbs to the broker's maximum volume.
 
 ## Build a documented variant
 

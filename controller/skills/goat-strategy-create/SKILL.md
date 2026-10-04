@@ -35,8 +35,13 @@ and news filters are separate choices the user makes explicitly.
 words (negative pip values mean ATR multiples). Single trade: fixed lots; the starter
 sets `CloseAtMaxLevels` so the next gap against the trade closes it; add `SL_Pips`
 for a hard stop (with RSI on, that gap check also waits for RSI). Never risk-based
-sizing with one trade: the EA has no loss path to size from and would use the broker
-maximum, so build-set refuses it. Sequence: `RiskperSeq` with a `Risk` the user chose.
+sizing with fewer than 2 trades: the EA has no loss path to size from and would use
+the broker maximum, so every validate-set and build-set refuses it
+(`RISK_PER_SEQUENCE_NEEDS_TWO_TRADES`). Sequence: `RiskperSeq`, and **ask the user
+for `Risk`**, the money one failed sequence may lose, as an amount of their demo
+currency. The starter's 500 is only a placeholder (half of a 1,000 demo); build-set
+from a sequence starter refuses with `RISK_NOT_CHOSEN` until `Risk` is in the changes
+with the user's own amount, even when they choose 500.
 
 **5. Catalog check before building.** Read `Desktop 'strategy.matrix'` and compare
 the answers with each template's description, support notes and SET (enabled

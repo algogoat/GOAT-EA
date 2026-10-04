@@ -14,8 +14,9 @@ from campaign_ledger import sha
 from studio_installation import contracts
 from studio_research_authority import LOCAL_FILE_OPERATIONS, OPERATIONS, READ_OPERATIONS, authority, operation
 from studio_strategy_settings import read_values
-from studio_template_tools import (STARTER_SHAPES, build_set, schema_default, signal_modes, starter_set,
-                                   validate_set)
+from studio_template_tools import (RISK_SIZING_CODE, RISK_SIZING_MESSAGE, STARTER_SHAPES, build_set, schema_default,
+                                   signal_modes, starter_set, validate_set)
+from unittest.mock import patch
 import test_demo_seed_agent as seed_agent_fixture
 
 CONTRACTS = {version: contracts(version) for version in ('1.48', '1.49')}
@@ -157,8 +158,9 @@ class BuildFromStarterTests(unittest.TestCase):
         for shape in STARTER_SHAPES:
             with self.subTest(shape=shape):
                 starter = self.starter(shape)
-                result = self.build(starter['output']['path'], {'RSI_Mode': '1', 'RSI_TF_': '15', 'RSI_Period': '14||7||7||21||Y'},
-                                    output=f'{shape}-variant.set')
+                changes = {'RSI_Mode': '1', 'RSI_TF_': '15', 'RSI_Period': '14||7||7||21||Y'}
+                if shape == 'sequence': changes['Risk'] = '100.0'                  # the user's own amount
+                result = self.build(starter['output']['path'], changes, output=f'{shape}-variant.set')
                 self.assertEqual(result['parent'], 'starter:' + shape)
                 self.assertEqual(result['starter']['receipt_sha256'], starter['receipt_sha256'])
                 self.assertEqual(result['starter']['starter_sha256'], starter['output']['sha256'])
@@ -198,18 +200,108 @@ class BuildFromStarterTests(unittest.TestCase):
 
     def test_risk_sizing_with_a_single_trade_is_refused(self):
         sequence = self.starter('sequence')
-        with self.assertRaisesRegex(ValueError, 'RiskperSeq with Max_Seq_Trades=1'):
-            self.build(sequence['output']['path'], {'Max_Seq_Trades': '1', 'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
-        with self.assertRaisesRegex(ValueError, 'RiskperSeq with Max_Seq_Trades=1'):
-            self.build(sequence['output']['path'], {'Max_Seq_Trades': '3||1||1||5||Y'})
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
+            self.build(sequence['output']['path'], {'Max_Seq_Trades': '1', 'Risk': '100.0', 'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
+            self.build(sequence['output']['path'], {'Max_Seq_Trades': '3||1||1||5||Y', 'Risk': '100.0'})
         single = self.starter('single')
-        with self.assertRaisesRegex(ValueError, 'RiskperSeq with Max_Seq_Trades=1'):
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
             self.build(single['output']['path'], {'Mode_Lots': '2', 'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
         self.assertEqual(sorted(p.name for p in self.root.iterdir() if 'variant' in p.name), [])
 
+    # ---- Claude-Mac's review of f584b85a: each bypass of the max-lot guard, now refused for every SET
+    def test_bypass_1_dormant_mode_lots_tuple_is_read_as_mt5_reads_it(self):
+        single = self.starter('single')
+        for encoded in ('2||0||1||2||N', '2||0||0||0||N'):
+            with self.subTest(encoded=encoded), self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
+                self.build(single['output']['path'], {'Mode_Lots': encoded, 'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
+        self.assertFalse((self.root / 'variant.set').exists())
+
+    def test_bypass_2_rebuilding_a_variant_parent_set_is_refused(self):
+        sequence = self.starter('sequence')
+        first = self.build(sequence['output']['path'], {'Risk': '100.0', 'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
+            self.build(first['output']['path'], {'Max_Seq_Trades': '1'}, output='second.set')
+        self.assertFalse((self.root / 'second.set').exists())
+
+    def test_bypass_3_deleted_or_moved_receipt_is_refused(self):
+        single = self.starter('single'); path = Path(single['output']['path'])
+        Path(single['receipt_path']).unlink()
+        with self.assertRaisesRegex(ValueError, 'without its .starter.json receipt'):
+            self.build(path, {'Mode_Lots': '2', 'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
+        moved = self.root / 'elsewhere'; moved.mkdir(); (moved / 'copy.set').write_bytes(path.read_bytes())
+        with self.assertRaisesRegex(ValueError, 'without its .starter.json receipt'):
+            self.build(moved / 'copy.set', {'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
+        # An edited copy that no longer looks like a starter is an ordinary SET: the unconditional rule still holds.
+        text = path.read_bytes().decode('utf-16').replace('; GOAT starter SET', '; my copy').replace('Mode_Lots=0', 'Mode_Lots=2')
+        (moved / 'edited.set').write_bytes(text.encode('utf-16'))
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
+            validate_set(moved / 'edited.set', self.schema, self.policy)
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
+            self.build(moved / 'edited.set', {'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
+
+    def test_bypass_4_max_seq_trades_zero_or_ladders_reaching_one(self):
+        sequence = self.starter('sequence')
+        for encoded in ('0', '4||0||1||8||Y', '3||1||1||5||Y', '1||2||1||5||Y', '1||2||1||5||N', '-3'):
+            with self.subTest(encoded=encoded), self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
+                self.build(sequence['output']['path'], {'Max_Seq_Trades': encoded, 'Risk': '100.0'})
+        ok = self.build(sequence['output']['path'], {'Max_Seq_Trades': '5||2||1||8||Y', 'Risk': '100.0'})
+        self.assertEqual(ok['validation']['active_axes'], {'Max_Seq_Trades': 7})
+
+    def test_mode_lots_ladder_reaching_risk_per_sequence_is_refused(self):
+        schema = copy.deepcopy(self.schema); schema['inputs']['Mode_Lots']['optimizable'] = True
+        single = starter_set('single', self.root / 'opt.set', schema, self.policy, controller_version='t', ea_version='1.49')
+        for encoded, refused in (('0||0||1||2||Y', True), ('0||0||2||2||Y', True), ('0||0||1||1||Y', False)):
+            with self.subTest(encoded=encoded):
+                build = lambda: build_set(single['output']['path'], self.root / ('l' + encoded.replace('|', '') + '.set'),
+                                          spec({'Mode_Lots': encoded}), schema, self.policy, controller_version='t', ea_version='1.49')
+                if refused:
+                    with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE): build()
+                else:
+                    self.assertEqual(build()['validation']['active_axes'], {'Mode_Lots': 2})
+
+    def test_rule_is_unconditional_with_one_reason_code_and_released_exports_still_pass(self):
+        fixtures = sorted((Path(__file__).parent / 'fixtures/oosc').glob('*/deploy/*/*/*.set'))
+        self.assertGreaterEqual(len(fixtures), 5)
+        for path in fixtures:
+            values = read_values(path.read_bytes())
+            self.assertEqual(values['Mode_Lots'], '2')                                 # real RiskperSeq exports
+            validate_set(path, self.schema, self.policy)
+            single = path.read_bytes().decode('utf-16').replace('Max_Seq_Trades=' + values['Max_Seq_Trades'], 'Max_Seq_Trades=1')
+            target = self.root / path.name; target.write_bytes(single.encode('utf-16'))
+            with self.assertRaises(ValueError) as refused:
+                validate_set(target, self.schema, self.policy)
+            self.assertEqual(str(refused.exception), RISK_SIZING_CODE + ': ' + RISK_SIZING_MESSAGE)
+        self.assertEqual(RISK_SIZING_MESSAGE, 'Risk-per-sequence sizing needs at least 2 sequence trades; use fixed lots or '
+                         'raise Max_Seq_Trades (single-trade % risk returns in the next EA build).')
+        self.assertTrue(validate_set(self.starter('single')['output']['path'], self.schema, self.policy))   # FixedLots + 1 trade
+
+    def test_risk_is_never_silently_inherited_from_a_sequence_starter(self):
+        sequence = self.starter('sequence')
+        stored = json.loads(Path(sequence['receipt_path']).read_text(encoding='utf-8'))
+        self.assertEqual([c['input'] for c in stored['user_choices_required']], ['Risk'])
+        self.assertEqual(stored['user_choices_required'][0]['placeholder'], '500.0')
+        self.assertIn('; Risk=500.0 is a placeholder', Path(sequence['output']['path']).read_bytes().decode('utf-16'))
+        with self.assertRaisesRegex(ValueError, 'RISK_NOT_CHOSEN'):
+            self.build(sequence['output']['path'], {'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
+        same = self.build(sequence['output']['path'], {'Risk': '500.0', 'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
+        self.assertIn({'input': 'Risk', 'before': '500.0', 'after': '500.0', 'rationale': 'Needed by the idea: Risk'}, same['changes'])
+        single = json.loads(Path(self.starter('single')['receipt_path']).read_text(encoding='utf-8'))
+        self.assertEqual(single['user_choices_required'], [])                       # fixed lots: Risk is unused
+
+    def test_receipt_write_failure_rolls_back_the_starter(self):
+        import studio_template_tools
+        real = studio_template_tools._write_new
+        def fail_receipt(files):
+            if files[0][0].name.endswith('.starter.json'): raise OSError('disk full')
+            return real(files)
+        with patch('studio_template_tools._write_new', side_effect=fail_receipt), self.assertRaisesRegex(OSError, 'disk full'):
+            self.starter('single')
+        self.assertEqual(list(self.root.iterdir()), [])
+
     def test_no_entry_signal_is_built_with_an_honest_warning(self):
         starter = self.starter('sequence')
-        result = self.build(starter['output']['path'], {'Grid_Size': '10.0||5.0||5.0||20.0||Y'},
+        result = self.build(starter['output']['path'], {'Grid_Size': '10.0||5.0||5.0||20.0||Y', 'Risk': '100.0'},
                             entry_logic='No indicator: a sequence opens whenever none is open, inside the default sessions.')
         self.assertEqual(result['starter']['entry_filters_enabled'], [])
         self.assertRegex(result['starter']['warnings'][0], 'No entry signal is enabled')
@@ -242,6 +334,10 @@ class StarterCliTests(unittest.TestCase):
         self.assertEqual((code, report['result']['kind']), (0, 'fixed_settings'))
         code, again = self.cli('starter-set', '--shape', 'single', '--output', str(target))
         self.assertEqual(code, 2); self.assertIn('already exists', again['error'])
+        risky = target.with_name('risky.set')
+        risky.write_bytes(target.read_bytes().decode('utf-16').replace('Mode_Lots=0', 'Mode_Lots=2||0||1||2||N').encode('utf-16'))
+        code, refused = self.cli('validate-set', '--set', str(risky))
+        self.assertEqual((code, refused['error']), (2, RISK_SIZING_CODE + ': ' + RISK_SIZING_MESSAGE))
 
     def test_discover_advertises_the_contract_and_build_set_still_refuses_on_demo_lane(self):
         from goat_studio import OPERATION_CONTRACTS
@@ -272,7 +368,8 @@ class StrategyCreateSkillTests(unittest.TestCase):
         for phrase in ('starter-set', 'build-set', 'validate-set --require-optimization', 'strategy.forkTemplate',
                        "starter: 'single'", 'contentBase64', 'UNTESTED', 'a new idea starts with zero evidence',
                        'heldOut.declare', '13-week', 'demo', 'Explore', 'Refine', 'Prove', 'strategy.matrix',
-                       'money lost per sequence', 'INPUT-REFERENCE.md', 'discover'):
+                       'money lost per sequence', 'INPUT-REFERENCE.md', 'discover', 'ask the user for `Risk`',
+                       'RISK_NOT_CHOSEN', 'RISK_PER_SEQUENCE_NEEDS_TWO_TRADES'):
             self.assertIn(phrase, body)
         for guide in ('AGENT-START-HERE.md', 'TEMPLATE-WORKFLOW.md'):
             self.assertIn('goat-strategy-create', (self.root / guide).read_text(encoding='utf-8'), guide)

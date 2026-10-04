@@ -46,7 +46,8 @@ class CatchupCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         info = result['result']
         for operation in ('evidence-end', 'evidence-scan', 'evidence-versions', 'catchup-validate', 'catchup-prepare',
-                          'catchup-start', 'catchup-resume', 'catchup-status', 'catchup-cancel', 'catchup-report'):
+                          'catchup-start', 'catchup-resume', 'catchup-status', 'catchup-cancel', 'catchup-report',
+                          'equivalence-certificate', 'equivalence-status', 'equivalence-canary-plan', 'equivalence-canary-ingest'):
             self.assertIn(operation, info['operations'])
             self.assertIn(operation, info['operation_contracts'])
         self.assertEqual(info['operation_contracts']['catchup-start']['limits']['max-seconds'], [1, 3600])
@@ -97,6 +98,42 @@ class CatchupCliTests(unittest.TestCase):
         self.assertEqual(runner.prepare.call_args[0][1]['evidence_end'], 'auto')
         runner.start.assert_called_once_with('cu1', max_seconds=60)
         runner.report.assert_called_once_with('cu1')
+
+    def test_equivalence_routes_store_and_read_a_certificate_without_a_terminal(self):
+        from test_studio_equivalence import FILES, tree
+        import subprocess
+        repo = self.fixture.root / 'ea-repo'
+        tree(repo)
+        (repo / 'GOAT V1.49.ex5').write_bytes(b'old-binary')
+        for args in (('init', '-q'), ('config', 'user.email', 't@example.invalid'), ('config', 'user.name', 't'), ('config', 'core.autocrlf', 'false'),
+                     ('add', '-A'), ('commit', '-q', '-m', 'old')):
+            subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True)
+        head = subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout.strip()
+        import hashlib
+        old_sha = hashlib.sha256(b'old-binary').hexdigest()
+        code, result = self.cli('equivalence-certificate', '--repo', str(repo), '--export-ea-sha256', old_sha, '--installed-commit', head)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result['result']['status'], 'not_comparable')   # fail closed: no compiler or external hashes
+        self.assertIn('compiler identity unknown', ' '.join(result['result']['problems']))
+        from test_studio_equivalence import EXTERNALS
+        externals = self.fixture.root / 'externals.json'
+        externals.write_text(json.dumps({name: 'e' * 64 for name in EXTERNALS}), encoding='utf-8')
+        code, result = self.cli('equivalence-certificate', '--repo', str(repo), '--export-ea-sha256', old_sha, '--installed-commit', head,
+                                '--export-externals', str(externals), '--installed-externals', str(externals),
+                                '--export-compiler-sha256', 'c' * 64, '--installed-compiler-sha256', 'c' * 64)
+        self.assertEqual(code, 0, result)
+        cert = result['result']
+        self.assertEqual((cert['status'], cert['active'], cert['compiler_equal']), ('pending_canary', False, True))   # same source; no canary yet
+        code, refused = self.cli('equivalence-canary-ingest', '--certificate', cert['digest'], '--pairs', str(externals), '--min-sets', '1')
+        self.assertEqual(code, 2)
+        self.assertIn('hard floor', refused['error'])
+        self.assertEqual(cert['export_build']['provenance'], 'git_ex5_blob')
+        code, status = self.cli('equivalence-status', '--certificate', cert['digest'])
+        self.assertEqual((code, status['result']['digest']), (0, cert['digest']))
+        code, refused = self.cli('equivalence-canary-ingest', '--certificate', cert['digest'])
+        self.assertEqual(code, 2)
+        self.assertIn('exactly one of --catchup-id or --pairs', refused['error'])
+        self.process.start.assert_not_called(); self.process.close.assert_not_called()
 
     def test_versions_listing_is_empty_until_a_catchup_completes(self):
         code, result = self.cli('evidence-versions')

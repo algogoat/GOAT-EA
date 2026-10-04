@@ -56,13 +56,17 @@ OPERATION_CONTRACTS = {
     'evidence-scan':dict(required=['source'],repeatable=['source'],defaults={'evidence-end':'auto','include-below-threshold':False},effect='read-only: every kept export (SET + equity CSV + .goatseq) under each source with its evidence end, threshold status and behind/current/ahead/caught_up against one target; never writes or launches'),
     'evidence-versions':dict(required=[],optional=['values-sha256'],effect='read-only: catch-up evidence versions retained under controller state, linked to their original exports'),
     'catchup-validate':dict(required=['plan'],effect='non-executing preview of a catch-up plan {schema_version:1, evidence_end, sets, job_timeout_seconds[, broker_clock, assume:{ExecutionMode}, include_below_threshold]}; no file or terminal effect'),
-    'catchup-prepare':dict(required=['catchup-id','plan'],effect='freeze one single-pass (Optimization=0, Model=4) re-test per behind export from its original start to the evidence end; original exports are never changed; no launch'),
+    'catchup-prepare':dict(required=['catchup-id','plan'],effect='freeze one single-pass (Optimization=0, the export\'s own tester model) re-test per behind export on its own EA build or under an active trading-equivalence certificate (plan equivalence_certificates; canary_certificate for a canary run) from its original start to the evidence end; original exports are never changed; no launch'),
     'catchup-start':dict(required=['catchup-id'],defaults={'max-seconds':60},limits={'max-seconds':[1,3600]},effect='explicit bounded driver: closes the selected MT5 and relaunches it once per member with the frozen /config INI (SeedRunner process discipline, shared terminal slot, native launch not yet qualified)'),
     'catchup-resume':dict(required=['catchup-id'],defaults={'max-seconds':60},limits={'max-seconds':[1,3600]},effect='continue the retained catch-up attempt; uncertain effects require reconciliation, never a retry'),
     'catchup-status':dict(required=['catchup-id'],effect='observe catch-up state and collect finished re-tests into new evidence versions'),
     'catchup-cancel':dict(required=['catchup-id'],effect='request normal close of the exact owned catch-up process; receipt is not exit proof'),
     'catchup-reconcile':dict(required=['catchup-id'],effect='settle a reconcile_required catch-up member from its own verified output once MT5 is proven idle now; never closes or launches'),
     'catchup-report':dict(required=['catchup-id'],effect='new-weeks-only verdicts (held_up/weakened/failed/too_few_trades) with their metrics and evidence version paths'),
+    'equivalence-certificate':dict(required=['repo'],optional=['export-ea-sha256','export-build-id','export-commit','installed-ea-sha256','installed-commit','main','export-externals','installed-externals','export-mql5-root','installed-mql5-root','export-compiler-sha256','installed-compiler-sha256'],effect='trading-equivalence certificate (export build -> installed build): full source closure from the GOAT-EA git history, a reviewed non-trading allowlist pinned by path and content hash, input header, hashed external dependencies and compiler identity (missing ones fail closed); stored under controller state equivalence\\<digest>; status not_comparable/not_equivalent/pending_canary; no terminal effect'),
+    'equivalence-status':dict(required=['certificate'],effect='read-only: certificate status (active only with a stored matching canary), canaries and blocking files'),
+    'equivalence-canary-plan':dict(required=['certificate','source'],repeatable=['source'],defaults={'max-sets':10,'evidence-end':'auto'},optional=['output'],effect='read-only selection of ~10 diverse exports of the certificate export build with complete Model-4 captures, as a catch-up plan with canary_certificate; the native run is catchup-prepare/start on the installed build'),
+    'equivalence-canary-ingest':dict(required=['certificate'],required_one_of=['catchup-id','pairs'],defaults={'min-sets':10},limits={'min-sets':[10,50]},effect='compare deal lists (time, type, entry, volume, price) of a canary catch-up or explicit pairs and store the canary result with its digest; matching deals activate the certificate, any drift refutes it; no terminal effect'),
     'prepare-batch':dict(required=['batch-id','plan'],effect='validate and freeze a full native Studio batch; no launch'),
     'batch-status':dict(required=['batch-id'],effect='reconcile whole native batch and report member progress'),
     'save-batch':dict(required=['batch-id','output'],effect='save native .goatbatch without overwriting'),
@@ -383,6 +387,10 @@ def main(argv=None):
         p=sub.add_parser(command);p.add_argument('--catchup-id',required=True);p.add_argument('--max-seconds',type=int,default=60)
     for command in ('catchup-status','catchup-cancel','catchup-report','catchup-reconcile'):
         p=sub.add_parser(command);p.add_argument('--catchup-id',required=True)
+    p=sub.add_parser('equivalence-certificate');p.add_argument('--repo',type=Path,required=True);p.add_argument('--export-ea-sha256');p.add_argument('--export-build-id');p.add_argument('--export-commit');p.add_argument('--installed-ea-sha256');p.add_argument('--installed-commit');p.add_argument('--main');p.add_argument('--export-externals',type=Path);p.add_argument('--installed-externals',type=Path);p.add_argument('--export-mql5-root',type=Path);p.add_argument('--installed-mql5-root',type=Path);p.add_argument('--export-compiler-sha256');p.add_argument('--installed-compiler-sha256')
+    p=sub.add_parser('equivalence-status');p.add_argument('--certificate',required=True)
+    p=sub.add_parser('equivalence-canary-plan');p.add_argument('--certificate',required=True);p.add_argument('--source',type=Path,action='append',required=True);p.add_argument('--max-sets',type=int,default=10);p.add_argument('--evidence-end',default='auto');p.add_argument('--output',type=Path)
+    p=sub.add_parser('equivalence-canary-ingest');p.add_argument('--certificate',required=True);p.add_argument('--catchup-id');p.add_argument('--pairs',type=Path);p.add_argument('--min-sets',type=int,default=10)
     p=sub.add_parser('prepare-batch');p.add_argument('--batch-id',required=True);p.add_argument('--plan',type=Path,required=True)
     p=sub.add_parser('batch-status');p.add_argument('--batch-id',required=True)
     p=sub.add_parser('save-batch');p.add_argument('--batch-id',required=True);p.add_argument('--output',type=Path,required=True)
@@ -471,6 +479,10 @@ def main(argv=None):
         if args.operation in ('evidence-end','evidence-scan','evidence-versions','catchup-validate'):
             from studio_catchup import read_operation
             result=read_operation(controller,args)
+            print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
+        if args.operation.startswith('equivalence-'):
+            from studio_equivalence import operation as equivalence_operation
+            result=equivalence_operation(controller,args)
             print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
         if args.operation not in ('peer-prepare','peer-apply','switch-plan','switch-apply','switch-status','switch-verify-park','switch-replace-receipt','discover','resource-profile') and not args.operation.startswith(('orphan-recovery-','bootstrap-retirement-','owner-maintenance-')):
             from studio_handover import session_lock,guard

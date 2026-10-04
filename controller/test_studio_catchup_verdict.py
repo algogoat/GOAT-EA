@@ -49,7 +49,7 @@ def window_line(kind, first, last, trades, pl):
 
 def make_unit(folder, *, rows, deals=(), alias='R0001', symbol='EURUSD', period='M1', values=None, start=date(2026, 1, 5),
               requested_to=None, observed_end=None, capture=True, complete=True, windows=(), run_id='export-1', initial=10000,
-              server='Test-Demo', name_metrics='Trds=100_Prf=500_DD=50_PF=1.5_SR=3_ARF=0.5', build_id='TEST'):
+              server='Test-Demo', name_metrics='Trds=100_Prf=500_DD=50_PF=1.5_SR=3_ARF=0.5', build_id='TEST', model=4):
     """Write one export unit (SET + equity CSV + optional .goatseq) the way the EA lays it out."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -67,7 +67,7 @@ def make_unit(folder, *, rows, deals=(), alias='R0001', symbol='EURUSD', period=
         requested_to = requested_to or (rows[-1][0].date() + timedelta(days=1))
         observed_end = observed_end or msc(datetime.combine(requested_to, time()) - timedelta(seconds=2))
         manifest = dict(schemaVersion='goat-sequence-export-v1', status='complete-awaiting-import-verification' if complete else 'incomplete',
-                        reason='' if complete else '2000000 row resource limit exceeded', runId=run_id, asset=symbol, buildId=build_id, model=4,
+                        reason='' if complete else '2000000 row resource limit exceeded', runId=run_id, asset=symbol, buildId=build_id, model=model,
                         currency='USD', initialEquity=initial, leverage=100, timeBasis=dict(kind='broker-server', server=server),
                         requestedPeriod=dict(startServerMsc=server_msc(start), endServerMsc=server_msc(requested_to)),
                         observedPeriod=dict(startServerMsc=server_msc(start), endServerMsc=observed_end),

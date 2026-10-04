@@ -176,16 +176,19 @@ function servedState(c,rec){
     probability_authority:available?'ISOTONIC_CALIBRATED':'NONE',reason_code:available?'':rec.reason});
   return s;
 }
-// goatai scripts/export_bias_history_csv.cjs (goatai#2224, truncation from goatai#2230): the score
-// is the signed probability percent TRUNCATED, signedProbabilityPercent: floor(100p + 1e-9), + for
-// BULLISH, - for BEARISH (0 stays 0), 0 for NEUTRAL. AVAILABLE uses the calibrated probability;
+// goatai scripts/export_bias_history_csv.cjs signedProbabilityPercent (goatai#2224; truncation from
+// goatai#2230, exact step-back from goatai#2237): percent = floor(100p + 1e-9), then one less when
+// percent/100 > p, so it is the largest N with p >= N/100 in doubles, exactly live's comparison;
+// + for BULLISH, - for BEARISH (0 stays 0), 0 for NEUTRAL. AVAILABLE uses the calibrated probability;
 // demo-raw (the default) also promotes a row whose only withhold is CALIBRATION_ARTIFACT_UNAVAILABLE;
 // every other withhold is -999 (expiry rows: exportRows). rec.p is the probability in percent.
 const TRUNCATE_EPSILON=1e-9;
 function exportScore(rec,exportProtocol){
   const promoted=rec.kind==='available'||(exportProtocol==='demo-raw'&&rec.kind==='withheld'&&rec.reason==='CALIBRATION_ARTIFACT_UNAVAILABLE');
   if(!promoted)return -999;
-  const percent=Math.floor((rec.p/100)*100+TRUNCATE_EPSILON);
+  const probability=rec.p/100;
+  let percent=Math.floor(probability*100+TRUNCATE_EPSILON);
+  if(percent/100>probability)percent-=1;
   return rec.direction==='BULLISH'?percent:rec.direction==='BEARISH'?(percent===0?0:-percent):0;
 }
 
@@ -354,9 +357,9 @@ check(()=>{
   assert.deepEqual([tester.Sequence_Pause_Bias_B,tester.Sequence_Pause_Bias_S],[true,true],'the tester pauses additions as live v2 does');
 });
 
-// 6. Sub-percent wire probabilities through the truncating export (goatai#2230): ZERO disagreements
-// on acting at every N from 1 to 100 and above. floor(100p) >= N exactly when p >= N/100, so the
-// tester acts exactly when live does, with the same sign and |CurBias| >= N on both sides, and every
+// 6. Sub-percent wire probabilities through the exact truncating export (goatai#2230, #2237): ZERO
+// disagreements on acting at every N from 1 to 100 and above. The export's percent >= N exactly when
+// p >= N/100, so the tester acts exactly when live does, with the same sign and |CurBias| >= N on both sides, and every
 // comparison in the bias block agrees. Only the displayed value can differ, by under one point (live
 // shows MathRound(100p), the CSV holds the truncation). The probabilities are the wire's JSON
 // decimals: every thousandth and every hundredth, as parsed.
@@ -401,27 +404,20 @@ check(()=>{
   });
   assert.ok(subPercent>0);
 });
-// 8. #2230's 1e-9 epsilon (so 0.57*100 = 56.999... still exports 57) also lifts a double a hair BELOW
-// a whole percent to that percent: 0.7*0.1 = 0.06999999999999999 exports 7, while live compares
-// 0.06999999999999999 >= 0.07 and does not act. That float band (< 1e-11 below the cutoff) is the only
-// disagreement for noisy doubles. Stepping the truncation back when percent/100 > p closes it: with that
-// exact rule there are zero disagreements on these doubles too.
+// 8. Float-noisy doubles: ZERO disagreements too (goatai#2237). The epsilon lifts 0.57*100 =
+// 56.999... to 57 (live: 0.57 >= 0.57 acts at N=57), and the step back keeps 0.7*0.1 =
+// 0.06999999999999999 at 6 (live: 0.06999999999999999 >= 0.07 does not act at N=7).
 check(()=>{
   const c=terminal({flags:['tester'],protocol:ENUMS.BiasProtocol_ControlTowerV2,mode:'Bias_Opens',trades:'Bias_Seq',threshold:60});
-  const exact=rec=>{
-    const s=exportScore(rec,'strict');if(s===-999||s===0)return s;
-    const p=rec.p/100,k=Math.abs(s);return Math.sign(s)*(k/100>p?k-1:k);
-  };
-  let band=0;
-  for(const n of PRACTICAL_N){
-    const cutoff=Math.min(n,100)/100;
-    sweep(c,n,NOISY_PROBABILITIES,(p,direction,live,tester)=>{
-      swept++;
-      if((live===-999)===(tester===-999))return;
-      band++;assert.ok(live===-999&&p<cutoff&&cutoff-p<1e-11,'only the epsilon band: p='+p+' N='+n);
-    });
-    sweep(c,n,NOISY_PROBABILITIES,(p,direction,live,tester)=>assert.equal(live===-999,tester===-999,'exact rule: p='+p+' N='+n),exact);
-  }
-  assert.ok(band>0,'0.7*0.1 is in the epsilon band');
+  const at=(p,direction)=>exportScore({kind:'available',direction,p:p*100},'strict');
+  assert.equal(at(0.7*0.1,'BULLISH'),6,'a computed 0.0699... stays below 7');
+  assert.equal(at(0.57,'BEARISH'),-57,'0.57 is 57');
+  for(const n of PRACTICAL_N)sweep(c,n,NOISY_PROBABILITIES,(p,direction,live,tester)=>{
+    swept++;
+    assert.equal(live===-999,tester===-999,'acting disagrees on a noisy double: p='+p+' '+direction+' N='+n);
+    if(live===-999)return;
+    assert.equal(Math.sign(live),Math.sign(tester));assert.ok(Math.abs(live-tester)<=1,'display rounding only');
+    assert.ok(n>100?live===tester:Math.abs(live)>=n&&Math.abs(tester)>=n,'both clear the threshold');
+  });
 });
 console.log(`test_bias_reader_parity: ${checks}/${checks} passed (${rowsCompared} instants compared; ${heldInstants} past twice the row spacing with no expiry row, ${expiredInstants} after an explicit -999 expiry row; ${swept} wire probabilities through the truncating export)`);

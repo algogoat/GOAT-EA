@@ -261,7 +261,7 @@ each covered by a failing test.
 
 `goat.exe studio pairing-code --build-id <id>` is a read and runs on a `demo_direct`
 installation too. There it reads only the code the EA shares in
-`Common\Files\GOAT\activation-code-<data folder>.json` (LC36 and later), after the same fresh
+`Common\Files\GOAT\activation-code-<data folder>.json` (EA builds that share their pending code), after the same fresh
 broker demo proof, inert check (Algo Trading off, no positions or orders), protected-login refusal
 and exact build/login/server match. It never registers the setup-mailbox pairing capability on the
 demo lane; when no shared code is there it answers `no_pending_pairing` or `no_native_answer` with

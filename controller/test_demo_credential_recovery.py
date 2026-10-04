@@ -130,6 +130,15 @@ class CredentialRecoveryTests(unittest.TestCase):
         self.assertEqual((close[0]['credential_recovery'], close[0]['login']), (True, LOGIN))
         self.assertEqual(self.agent._recovery_attempts_today(), 1)
 
+    def test_the_cli_flag_reaches_install_build(self):
+        self.f.process.on_start = self.f.activation_status
+        code, reply = self.cli('install-build', '--candidate', str(self.candidate), '--sha256', digest(self.candidate),
+                               '--monitor-config', str(self.monitor), '--require-running', '--linked-login', LOGIN,
+                               '--bundle-version', '0.5.0-beta.19', '--agent-guide-path', str(GUIDE), '--credential-recovery')
+        self.assertEqual((code, reply['ok'], reply['result']['pairing_required']), (0, True, True))
+        rows = [json.loads(line) for line in (self.agent.state_root / 'actions.jsonl').read_text().splitlines()]
+        self.assertTrue(any(row['phase'] == 'before_close' and row.get('credential_recovery') is True for row in rows))
+
     def test_recovery_install_refuses_without_its_preconditions_before_anything_closes(self):
         with patch.object(self.f.process, 'close') as close:
             for extra, message in ((dict(require_running=False), 'only a running terminal'),

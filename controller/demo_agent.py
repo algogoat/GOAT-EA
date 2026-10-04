@@ -391,8 +391,10 @@ class DemoAgent:
         never loads, so ``preflight`` refuses with FeedbackUnavailable and no update could be planned.
         This proves the same things from MT5 itself instead: the broker reports the exact paired
         demo on an allowlisted server (MetaTrader5, not the EA licence), the agent still owns the
-        session, MT5 is idle, flat or read-only and Algo Trading is off, and the installed EA is the
-        registered one. It refuses when the EA *is* reporting: then the normal path applies.
+        session by an observation from the installed build, MT5 is idle and strictly flat (0
+        positions, 0 orders) with Algo Trading off, the installed EA is the registered one, and fewer
+        than RECOVERY_DAILY_LIMIT recoveries reached the close for this login today (UTC). It refuses
+        when the EA *is* reporting: then the normal path applies.
         """
         try:
             self._owner_clear()
@@ -960,9 +962,10 @@ class DemoAgent:
 
         ``credential_recovery`` (``--credential-recovery``, the desktop app only, after its own linked,
         consented and broker-verified demo checks): the EA lost its GOAT sign-in and cannot report, so
-        the owner checks before the close accept the last EA observation at any age
-        (``_recovery_owner``) and the broker must show an allowlisted demo server. Only for a running
-        terminal, the linked login and a different build; the readback after the relaunch is unchanged.
+        the owner checks before the close accept the last EA observation at any age when it comes from
+        the installed build (``_recovery_owner``), the broker must show an allowlisted, strictly flat
+        demo (``_recovery_broker``) and the daily limit holds. Only for a running terminal, the linked
+        login and a different build; the readback after the relaunch is unchanged.
         """
         expected_sha256 = expected_sha256.lower()
         candidate = Path(candidate).resolve()

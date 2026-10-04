@@ -216,6 +216,13 @@ Exports end where their export test ended, so exports from different weeks end o
 
 Native single-pass launch is not yet qualified (`native_launch_qualified: false`): start with one SET the user approved. Until it is, one failed member stops the catch-up. After a catch-up, MT5 is closed; reopen it as in seed step 8.
 
+## Held-out locks: `locked` is not missing data
+
+A strategy entering Prove gets one held-out lock from the desktop (`heldOut.declare`): a 13-week window per strategy key, across every asset and inherited by forks. While it is active:
+- Every prepare (`prepare-batch`, `seed-prepare`, `catchup-validate`/`catchup-prepare`, `batch-continue`, `batch-resume`) and every start refuses a member of that strategy whose dates overlap the window (`HELDOUT_LOCKED_WINDOW`), and a member without a `strategy_ref` that overlaps any lock (`HELDOUT_UNATTRIBUTED_MEMBER`). Give each plan member `strategy_ref: {strategy_key, template_id, template_revision, template_sha256, catalog_revision}` (catch-up plans: `strategy_refs`, one per `sets` entry). Then end its dates before the lock start, or wait for the reveal.
+- Replies replace every value derived from a locked window with `{locked: true, lock_id, reveal_after, plain}` and list `locked_windows`; export file names read `Prf=locked`. `locked` is neither missing data nor a failure. Never work around it, and never open raw export, report or log files to recover a locked value.
+- `heldout-status` shows the locks, `research-status` shows `heldout_locks` for the current batch, and `trial-journal` / `trial-count --strategy <key>` show what has been tested. `HELDOUT_REGISTRY_UNAVAILABLE` refuses every prepare and start: tell the user, because only the desktop can repair the registry.
+
 ## Seed loop (find candidates before spending full batches)
 
 Seed farming runs fast in-sample searches with no forward window and no exports. Its real-MT5 close/relaunch cycle is **not yet qualified** (`native_launch_qualified: false`): start with a tiny run the user approved. Needs: monitor ready, GIVE TO AGENT done, no unfinished batch.

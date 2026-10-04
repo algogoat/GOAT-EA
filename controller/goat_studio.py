@@ -117,6 +117,9 @@ OPERATION_CONTRACTS = {
     'batch-pause':dict(required=['job-id'],optional=['immediate','supervise-seconds'],limits={'supervise-seconds':[1,172800]},demo_lane='goat.exe demo batch-pause --batch-id <id> (broker-verified; starts its own bounded supervisor)',effect='durable idempotent pause request: one cancel only at a safe point (right after a member turns OnGoing, or tester idle after the member-boundary relaunch) while the bound monitor reports; an expired unconsumed cancel is answered by the EA with CANCEL_REJECTED and only that exact receipt admits exactly one successor stop (cancel-rejected-successor identity rules, both receipts kept, never blind replay); a closed, unbound or unlicensed monitor is a named blocker with its fix; the driver keeps its disk guard and finish, never records cancel_issued for a pause and adopts an outstanding unconfirmed stop; finish harvests completed members and records paused with a resume token. States: pausing, paused, pause_failed (one sentence + fix), finished. Optional supervise-seconds runs the bounded pause supervisor in this call'),
     'batch-resume':dict(required=['job-id'],optional=['new-batch-id','resume-token','include-failed','include-no-edge'],demo_lane='goat.exe demo batch-resume --batch-id <id> (also refreshes a restarted protected peer and starts the bounded driver)',effect='after paused: verify the exact paused result and resume token, build the remaining-work plan from per-member native evidence (resume-batch) tolerating only a refreshed protected-peer process, prepare the successor under a new ID (default <id>-rN) and record lineage paused batch -> successor; no start in this CLI, run-batch starts it'),
     'research-status':dict(required=[],effect='read-only lane status for one installation: terminal, account, EA build, current batch or seed hunt (status, members done/total, qualifying, last member, pace and ETA, lineage, pause), driver health, disk headroom and monitor/licence state with the plain reason and fix when unbound; never opens the mutable store, launches or signals MT5'),
+    'heldout-status':dict(required=[],effect='read-only: verify the desktop held-out lock registry (<evidence root>/heldout/locks.jsonl, hash chain checked) and list every lock with status locked|revealable|revealing|revealed|breached, its window and plain sentence; while a lock is active every prepare/start of an overlapping member of its strategy is refused and every value derived from its window is redacted from replies; an unverifiable registry refuses all prepares/starts (HELDOUT_REGISTRY_UNAVAILABLE). Never writes'),
+    'trial-journal':dict(required=[],optional=['since','strategy'],effect='read-only: one normalized entry per member of every native batch, seed hunt and catch-up from the retained controller journals only (queue rows, packages, attempt results, retired starts, native evidence histories, seeds, catchups): strategy attribution (declared, receipt, ledger record, fingerprint or unattributed), variant, windows, exposure, dispatched, outcome, OOS output and whether it counts as a peek; byte-identical across compact-evidence and retirement; never writes or touches MT5'),
+    'trial-count':dict(required=['strategy'],optional=['window-start','window-end'],effect='read-only: this suite\'s trial counter for one strategy key (spec goatai#2221 section 5): OOS peeks, variants, optimizer candidates seen and not-dispatched members per strategy, cell and window, reconstructable/worst_case per window (unattributed overlap), the per-window worst-case rule (1000, not applied in phase 1) and the exposure end a held-out lock must wait for'),
     'finish':dict(required=['job-id'],effect='verify finished queue and idle runtime, retain result, restore owned controls')
 }
 
@@ -417,6 +420,9 @@ def main(argv=None):
     p=sub.add_parser('batch-pause');p.add_argument('--job-id',required=True);p.add_argument('--immediate',action='store_true');p.add_argument('--supervise-seconds',type=int)
     p=sub.add_parser('batch-resume');p.add_argument('--job-id',required=True);p.add_argument('--new-batch-id');p.add_argument('--resume-token');p.add_argument('--include-failed',action='store_true');p.add_argument('--include-no-edge',action='store_true',help='Also re-run members tested with no profitable settings')
     sub.add_parser('research-status')
+    sub.add_parser('heldout-status')
+    p=sub.add_parser('trial-journal');p.add_argument('--since',help='UTC instant; dispatched entries from then on');p.add_argument('--strategy',help='strategy key; unattributed entries are kept, they count for every key')
+    p=sub.add_parser('trial-count');p.add_argument('--strategy',required=True);p.add_argument('--window-start');p.add_argument('--window-end')
     p=sub.add_parser('submit');p.add_argument('--request',type=Path,required=True)
     p=sub.add_parser('prepare');p.add_argument('--job-id',required=True);p.add_argument('--set',type=Path,required=True);p.add_argument('--configuration',type=Path,required=True)
     for command in ('start','status','cancel','reconcile','finish','research-monitor-restart','research-monitor-restart-resume','research-monitor-restart-status','cancel-rejected-successor'):
@@ -456,7 +462,7 @@ def main(argv=None):
         if args.operation.startswith('historical-pointers-'):
             from studio_historical_pointers import prepare as historical_prepare,apply as historical_apply
             result=historical_prepare(controller) if args.operation=='historical-pointers-prepare' else historical_apply(controller,args.review_id,confirmed=args.confirm_reviewed)
-            print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
+            return _emit(controller,result)
         from studio_historical_pointers import guard_pending as historical_guard
         historical_guard(controller)
         if args.operation=='research-status':
@@ -467,11 +473,32 @@ def main(argv=None):
             result=research_status(root=controller.root,install=controller.install,session=read_json(controller.root/'session.json'),
                                    local=controller.local,now=time.time(),process=process,
                                    owner_stop=(controller.root/'demo-agent/STOP').exists())
+            return _emit(controller,result)
+        if args.operation in ('heldout-status','trial-journal','trial-count'):
+            # Library scoring v1 (goatai#2221): read-only, never opens the mutable store.
+            if args.operation=='heldout-status':
+                from studio_heldout import status as heldout_status
+                result=heldout_status(controller.install)
+            elif args.operation=='trial-journal':
+                from studio_trial_journal import journal
+                result=journal(controller.root,controller.install,since=args.since,strategy=args.strategy)
+            else:
+                from studio_trial_journal import count
+                from studio_heldout import day
+                window=None
+                if args.window_start or args.window_end:
+                    window=(day(args.window_start),day(args.window_end))
+                    if not window[0]<window[1]: raise ValueError('--window-start must be before --window-end (half-open broker days)')
+                result=count(controller.root,controller.install,args.strategy,window=window)
+            if args.operation=='trial-journal':
+                # Dates and dispatch facts stay (the counter needs them); a locked entry's outcome does not.
+                from studio_heldout_guard import guard_trial_journal
+                result=guard_trial_journal(controller.install,result,root=controller.root)
             print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
         if args.operation in ('evidence-end','evidence-scan','evidence-versions','catchup-validate'):
             from studio_catchup import read_operation
             result=read_operation(controller,args)
-            print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
+            return _emit(controller,result)
         if args.operation not in ('peer-prepare','peer-apply','switch-plan','switch-apply','switch-status','switch-verify-park','switch-replace-receipt','discover','resource-profile') and not args.operation.startswith(('orphan-recovery-','bootstrap-retirement-','owner-maintenance-')):
             from studio_handover import session_lock,guard
             locks.enter_context(session_lock(controller));guard(controller)
@@ -497,7 +524,15 @@ def main(argv=None):
             else: result=apply(controller,args.review_id,args.confirm_reviewed,owner_maintenance=args.owner_maintenance)
         elif args.operation=='discover':
             from studio_customer_skills import customer_skills
-            result=dict(agent_skills=customer_skills(),controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),tester_recommendations=dict(Model=1,model_name='1 minute OHLC',policy='Default for new optimization plans; retain explicit user overrides and never rewrite frozen runs'),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 and an explicitly reviewed exact protected peer may be running; unknown/replaced processes block','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','GOAT-OPERATING-MODEL.md','CUSTOMER-SKILLS.md','OPTIMIZATION-PLAYBOOK.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
+            from studio_heldout import read_registry,SCHEMA as LOCK_SCHEMA
+            from studio_trial_journal import SCHEMA as TRIAL_SCHEMA,COUNT_SCHEMA
+            # Library scoring v1 (goatai#2221 §4.1): the desktop fails closed unless every suite's
+            # controller reports both capabilities and a verifiable lock registry.
+            registry=read_registry(controller.install)
+            capabilities=dict(heldout_enforcement=dict(supported=True,schema=LOCK_SCHEMA,registry=registry['state'],
+                                                       registry_path=registry['path'],registry_head=registry['head']),
+                              trial_journal=dict(supported=True,schema=TRIAL_SCHEMA,count_schema=COUNT_SCHEMA))
+            result=dict(agent_skills=customer_skills(),capabilities=capabilities,controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),tester_recommendations=dict(Model=1,model_name='1 minute OHLC',policy='Default for new optimization plans; retain explicit user overrides and never rewrite frozen runs'),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 and an explicitly reviewed exact protected peer may be running; unknown/replaced processes block','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','GOAT-OPERATING-MODEL.md','CUSTOMER-SKILLS.md','OPTIMIZATION-PLAYBOOK.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
         elif args.operation=='resource-profile':
             from studio_resources import resource_profile
             result=resource_profile(controller.install)
@@ -669,11 +704,26 @@ def main(argv=None):
                 from studio_finish import finish
                 result=finish(controller,args.job_id)
             else: result=controller.reconcile(args.job_id)
-        print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
+        return _emit(controller,result)
     except (OSError,ValueError,KeyError,sqlite3.Error,subprocess.SubprocessError) as exc:
-        print(json.dumps(dict(ok=False,error=str(exc),recovery='Preserve receipts; inspect state and matching job/attempt before retrying a mutation')));return 2
+        error=dict(ok=False,error=str(exc),recovery='Preserve receipts; inspect state and matching job/attempt before retrying a mutation')
+        from studio_heldout import HeldOutRefused
+        if isinstance(exc,HeldOutRefused):
+            error.update(code=exc.code,plain=exc.plain,locked_windows=exc.locked_windows,
+                         recovery='Nothing was prepared or started. A held-out lock is neither missing data nor a failure; never work around it.')
+        elif controller is not None:
+            from studio_heldout_guard import guard_error
+            error['error']=guard_error(controller.install,error['error'],root=controller.root)
+        print(json.dumps(error));return 2
     finally:
         if controller and controller.store: controller.store.close()
         locks.close()
+
+
+def _emit(controller,result):
+    """Print a reply after the held-out lock guard (goatai#2221 §4.3): unchanged unless a lock binds it."""
+    from studio_heldout_guard import guard_output
+    result=guard_output(controller.install,result,root=controller.root)
+    print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
 
 if __name__=='__main__': sys.exit(main())

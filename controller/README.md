@@ -668,6 +668,69 @@ eligibility, the verdict rules and the signals. A later scored, explained
 qualification can re-judge the same evidence under other rules from this block
 without re-running MT5; no score is computed now.
 
+### Held-out lock and trial journal (library scoring v1, phase 1)
+
+The controller half of goatai#2221 (`docs/research/library-scoring-v1-phase1.md`
+§4.3 and §5, with Claude-Mac's answers). The desktop owns the ledger and declares
+locks; the controller only reads and enforces them, and derives trial counts from its
+own journals.
+
+- **Registry.** `<evidence root>/heldout/locks.jsonl`. The evidence root is
+  `evidence_root` in installation.json, else the desktop layout
+  (`<desktop data>/suite/<id>` -> `<desktop data>/evidence`), so an existing receipt
+  (whose sha256 the session binds) never needs a new key. Each line is
+  `canonical({seq, at, op, ref, lock, prev, hash})` with
+  `hash = sha256(prev || canonical(line without hash))`, 64 zeros before the first
+  line, sorted keys, no whitespace and integer numbers only. `op` is `declare`
+  (`lock = {lockId, strategyKey, start, end, revealableAfter, ...}`, half-open broker
+  days, `lockId = sha256(canonical(lock without lockId))`), `freeze`
+  (`{lockId, cells:[{symbol, timeframe, setSha256}]}`), `reveal`, `revealed` or
+  `breach`. `fixtures/heldout/locks.golden.jsonl` is the byte-exact golden file for the
+  desktop writer. The whole chain is verified on every read; a missing file means no
+  lock, while any changed byte, a torn last line or an impossible history (a second
+  active lock for one key, a reveal before a freeze) makes the registry unavailable:
+  every prepare and start is then refused and every reply redacted
+  (`HELDOUT_REGISTRY_UNAVAILABLE`).
+- **Status.** `locked` until the AUTO evidence end reaches `revealableAfter`, then
+  `revealable`; `revealing` after the desktop's reveal event; `revealed` and `breached`
+  locks bind nothing. `heldout-status` lists them; `discover` reports
+  `capabilities.heldout_enforcement` and `capabilities.trial_journal`.
+- **Enforcement.** A member reads `[min(BackOOSDate, FromDate), max(ToDate, export
+  end))`; an EA build without EvidenceEnd has no known export end before it runs, so
+  its span is open. `prepare-batch` (and load-batch, resume-batch, batch-continue,
+  batch-resume through it), `seed-prepare`, `catchup-validate`/`catchup-prepare`,
+  `run-batch`, `start`, the /config start, and `seed-start`/`catchup-start` before each
+  member launch refuse an overlapping member of the locked key
+  (`HELDOUT_LOCKED_WINDOW`) and an overlapping member that declares no
+  `strategy_ref` (`HELDOUT_UNATTRIBUTED_MEMBER`). `strategy_ref` is per plan member
+  (catch-up: `strategy_refs`, one per set) and is bound into the frozen plan
+  (`studio-plan.json` `strategy_refs`, hash-bound by the manifest; seed and catch-up
+  manifests per member); successors keep it. A catch-up plan with
+  `heldout_reveal: {lock_id}` is that lock's reveal: allowed only while the lock is
+  `revealing`, for exactly its frozen cells under its own key, through
+  `revealableAfter`.
+- **Redaction.** Every reply of the studio CLI and the demo lane passes one guard. A
+  part of a reply that names a batch, seed, catch-up or export whose span overlaps a
+  lock of its strategy (an unattributed one: any lock) loses every derived value
+  (metrics, outcomes, verdicts, qualifying counts, sentences, log lines) to
+  `{locked: true, lock_id, reveal_after, plain}`, metric tokens in file names become
+  `Prf=locked`, and the reply lists `locked_windows`. With no active lock the reply is
+  unchanged.
+- **Trial journal.** `trial-journal [--since] [--strategy]` emits one entry per member
+  of every native batch, seed and catch-up (spec §5 fields plus `kind`, `attempt_key`,
+  `strategy_keys`, `exposure`, `oos_output`, `counts_as_peek`, `gaps`) and a digest;
+  `compact-evidence --apply` and retirements leave it byte-identical. Attribution:
+  declared `strategy_ref`, else an exact selection/fork/catalog SET sha256, else a v0
+  record of the member (attempt key, configuration hash, or the attempt result
+  join), else a unique template fingerprint (non-axis values + axis names + revision;
+  any ambiguity stays `unattributed`). A failed or cancelled dispatch counts unless the
+  journal proves no OOS output (zero paired and forward rows, no export, no metric log
+  line); a cancelled member never seen running is `not_dispatched` only when the
+  native evidence history proves it. `trial-count --strategy <key>` applies §5:
+  peeks, variants, optimizer candidates seen, not-dispatched, per cell and window,
+  `reconstructable`/`worst_case` (rule: 1,000 per window, not applied in phase 1) and
+  the `exposure_end` a lock must wait for.
+
 ### Reviewed orphan continuation recovery (V1.49)
 
 `orphan-recovery-prepare` freezes exact idle demo/runtime and single-owner evidence.

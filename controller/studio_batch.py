@@ -153,8 +153,8 @@ def read_plan(controller, plan_path):
     raw_members, retained = [], []
     retained_bytes = 0
     for member in spec['members']:
-        if not isinstance(member, dict) or set(member) != {'set_path', 'tester'}:
-            raise ValueError('Every member requires set_path and complete tester settings')
+        if not isinstance(member, dict) or set(member) - {'strategy_ref'} != {'set_path', 'tester'}:
+            raise ValueError('Every member requires set_path and complete tester settings (optional: strategy_ref)')
         if not isinstance(member['set_path'], str) or not Path(member['set_path']).is_absolute():
             raise ValueError('Batch SET paths must be absolute on this installation')
         source, raw, _ = source_bytes(member['set_path'])
@@ -184,6 +184,10 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
     # FU35+ EAs receive the one resolved date as EvidenceEnd; older builds keep the recorded legacy end.
     from studio_evidence_end_export import for_controller
     evidence = for_controller(controller, evidence)
+    # Held-out lock (goatai#2221 §4.3): refuse a member overlapping an active lock of its
+    # strategy before anything is staged; its strategy_ref is bound into the frozen plan.
+    from studio_heldout_guard import check_batch_plan
+    strategy_refs = check_batch_plan(controller, spec, config, retained, evidence=evidence, now=now)
     from campaign_ledger import packed
     scope = authority(controller.store.db,packed(dict(terminal_id=controller.terminal,run_id=controller.run)),controller.state())
     if scope is not None and (source_hash!=scope['plan_sha256'] or sha(raw_members)!=scope['members_sha256']):
@@ -229,6 +233,8 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
                     timeframe=tester['Period'], forward_mode=4, execution_mode=tester['ExecutionMode'])))
             sources.append(dict(set_path=str(source), set_sha256=info['sha256'], symbol=tester['Symbol'],
                 template_id=template, revision_id=revision))
+            if strategy_refs[len(sources) - 1] is not None:
+                sources[-1]['strategy_ref'] = strategy_refs[len(sources) - 1]
         db.commit()
     finally:
         db.close()
@@ -240,6 +246,9 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
             forward_start=checked[0]['tester']['ForwardDate'], export_settings=exports), jobs=planned)
     if evidence is not None:
         plan['native_batch']['evidence_end'] = evidence
+    if any(ref is not None for ref in strategy_refs):
+        # Per member, in member order; hash-bound by manifest.campaign_id = sha(plan).
+        plan['strategy_refs'] = strategy_refs
     plan['native_batch']['run_relative'] = native_run_relative(plan)
     package.parent.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='goat-batch-plan-') as temporary:
@@ -489,6 +498,8 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
     # explicit include_no_edge override does.
     no_edge = {item['index'] for item in (previous.get('completion') or {}).get('research_outcomes') or []
                if isinstance(item, dict) and type(item.get('index')) is int}
+    # A successor keeps each member's declared strategy (held-out lock and trial attribution).
+    refs = source_plan.get('strategy_refs') if isinstance(source_plan.get('strategy_refs'), list) else []
     selected, retries = [], []
     for index, (native, config, evidence) in enumerate(zip(manifest['jobs'], configurations, observed)):
         if evidence.get('run_alias') != native['run_alias']:
@@ -505,7 +516,8 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
                  # Across a build change the successor targets this installation's EA; its
                  # inputs are then validated against this build's schema by prepare_batch.
                  tester=config['tester'] | ({'Expert': controller.install['ea_relative_path']}
-                                           if allow_binding_change else {})))
+                                           if allow_binding_change else {}),
+                 **({'strategy_ref': refs[index]} if index < len(refs) and isinstance(refs[index], dict) else {})))
     selected += retries
     if not selected: raise ValueError('No unfinished members selected')
     inputs = controller.root / 'batch-imports' / uuid.uuid4().hex; inputs.mkdir(parents=True)

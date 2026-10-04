@@ -45,7 +45,10 @@ from studio_template_tools import validate_raw
 MODE = 'OOSCatchup'
 VERSION_SCHEMA = 'goat-evidence-version-v1'
 PLAN_KEYS = {'schema_version', 'evidence_end', 'sets', 'job_timeout_seconds'}
-PLAN_OPTIONAL = {'broker_clock', 'assume', 'include_below_threshold', 'verdict_rules'}
+PLAN_OPTIONAL = {'broker_clock', 'assume', 'include_below_threshold', 'verdict_rules',
+                 # Library scoring v1 (goatai#2221): one strategy_ref (or null) per set, and the
+                 # held-out lock this plan reveals (only its frozen candidate, while revealing).
+                 'strategy_refs', 'heldout_reveal'}
 MAX_MEMBERS = 2000
 MAX_PUBLIC = 100
 OUTPUT_PATH_ROOM = 140  # longest EA export file name below a member folder, plus margin
@@ -303,6 +306,7 @@ class CatchupRunner(SeedRunner):
         self.base = controller.root / 'catchups'
         self.evidence = controller.root / 'evidence'
         self.now = now
+        self.heldout_reveal, self._strategy_refs = None, {}
 
     def path(self, batch_id):
         if not isinstance(batch_id, str) or not re.fullmatch('[A-Za-z0-9_-]{1,80}', batch_id):
@@ -313,7 +317,7 @@ class CatchupRunner(SeedRunner):
     def _plan(self, plan):
         if not isinstance(plan, dict) or not PLAN_KEYS <= set(plan) or set(plan) - PLAN_KEYS - PLAN_OPTIONAL or plan['schema_version'] != 1:
             raise ValueError('Catch-up plan requires schema_version:1, evidence_end, sets and job_timeout_seconds '
-                             '(optional: broker_clock, assume, include_below_threshold, verdict_rules)')
+                             '(optional: broker_clock, assume, include_below_threshold, verdict_rules, strategy_refs, heldout_reveal)')
         if type(plan['job_timeout_seconds']) is not int or not 60 <= plan['job_timeout_seconds'] <= 86400:
             raise ValueError('job_timeout_seconds must be 60..86400')
         sets = plan['sets']
@@ -328,6 +332,9 @@ class CatchupRunner(SeedRunner):
         if type(plan.get('include_below_threshold', False)) is not bool:
             raise ValueError('include_below_threshold must be true or false')
         validate_rules(plan.get('verdict_rules'))
+        from studio_strategy_attribution import parse_ref_list
+        self._strategy_refs = dict(zip((str(Path(p)).lower() for p in sets),
+                                       parse_ref_list(plan.get('strategy_refs'), len(sets), 'Catch-up set')))
         return assume
 
     def _freeze(self, root, plan):
@@ -360,12 +367,19 @@ class CatchupRunner(SeedRunner):
                     row = row | dict(status='ineligible', reasons=reasons)
                 else:
                     member, files = self._member(root, export, target, facts, window, assumed, account, expert, nonce, len(members))
+                    ref = self._strategy_refs.get(str(Path(path)).lower())
+                    if ref is not None:
+                        member['strategy_ref'] = ref
                     members.append(member)
                     payloads.extend(files)
                     row = row | dict(alias=member['alias'])
             rows.append(row)
         if len({m['member_id'] for m in members}) != len(members):
             raise ValueError('Duplicate export values/window in catch-up plan')
+        # Held-out lock (goatai#2221 §4.3): catch-up re-tests run to the evidence end, so they are
+        # the likeliest to read a locked window. A reveal plan must be its lock's frozen candidate.
+        from studio_heldout_guard import check_catchup
+        self.heldout_reveal = check_catchup(self.c, plan, members, target, now=self.now)
         return members, payloads, rows, target
 
     def _installed_build_id(self):
@@ -519,6 +533,8 @@ class CatchupRunner(SeedRunner):
                         plan_sha256=sha(plan), plan=plan, created_unix=self.clock(), members=members, mode=MODE,
                         evidence_end=target, exports=rows, verdict_rules=validate_rules(plan.get('verdict_rules')),
                         include_below_threshold=plan.get('include_below_threshold', False), native_launch_qualified=False)
+        if self.heldout_reveal is not None:
+            manifest['heldout_reveal'] = self.heldout_reveal
         if len(json.dumps(manifest).encode('utf-8')) > MAX_MANIFEST_BYTES:
             raise ValueError('Catch-up manifest exceeds 128 MiB; split the plan')
         root.mkdir(parents=True, exist_ok=False)

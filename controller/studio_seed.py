@@ -109,7 +109,9 @@ class SeedRunner:
         members=[];payloads=[];identities=set();retained_bytes=0;nonce=uuid.uuid4().hex[:16]
         account=self.c.session['account']
         for index,job in enumerate(plan['jobs']):
-            if not isinstance(job,dict) or set(job)!={'set_path','tester','frame_target'}:raise ValueError('Each seed job requires set_path, full tester and frame_target')
+            if not isinstance(job,dict) or set(job)-{'strategy_ref'}!={'set_path','tester','frame_target'}:raise ValueError('Each seed job requires set_path, full tester and frame_target (optional: strategy_ref)')
+            from studio_strategy_attribution import validate_ref
+            strategy_ref=validate_ref(job.get('strategy_ref'),'Seed job %d'%(index+1))
             tester=validate_tester(job['tester'])
             if tester['ForwardMode']!=0 or tester['Expert']!=self.c.install['ea_relative_path']:raise ValueError('Seed tester must use installed Expert and ForwardMode=0')
             if not re.fullmatch(r'[A-Za-z0-9_.# -]{1,80}',tester['Symbol']):raise ValueError('Symbol cannot contain filename/protocol delimiters')
@@ -160,7 +162,11 @@ class SeedRunner:
                 config_path=str(configpath),config_sha256=hashlib.sha256(config).hexdigest(),values=values,axes=valid['active_axes'],
                 xml_title=Path(self.c.install['ea_relative_path'].replace('\\','/')).stem+' '+tester['Symbol']+','+tester['Period']+' '+tester['FromDate']+'-'+tester['ToDate']+' '+alias,
                 output_base=Path(self.c.install['ea_relative_path'].replace('\\','/')).stem+' '+tester['Symbol']+','+tester['Period']+' '+tester['FromDate']+'-'+tester['ToDate']+' '+re.sub('[^A-Za-z0-9]','',alias)[:52])
+            if strategy_ref is not None:member['strategy_ref']=strategy_ref
             members.append(member);payloads.extend([(setpath,frozen),(configpath,config)])
+        # Held-out lock (goatai#2221 §4.3): no member of a locked strategy may read its window.
+        from studio_heldout_guard import check_seed_jobs
+        check_seed_jobs(self.c,plan,members)
         return members,payloads
 
     def validate(self,plan):
@@ -459,6 +465,9 @@ class SeedRunner:
                 if state['status']=='prepared':
                     if not initial:raise ValueError('Use seed-start for a prepared batch')
                     self._verify_prepared(batch_id,manifest)
+                    # Held-out lock: a lock declared after prepare refuses the start (before the monitor closes).
+                    from studio_heldout_guard import check_runner_start
+                    check_runner_start(self.c,manifest)
                     self._activate(batch_id,root,manifest,state)
                 self._owner(state['generation']);self._slot(batch_id,state)
                 current=self._observe(root,manifest,state)
@@ -482,6 +491,9 @@ class SeedRunner:
                         if self._outputs(spec):raise ValueError('Output already exists for unstarted seed member')
                         self._owner(state['generation'])
                         self._verify_prepared(batch_id,manifest)
+                        # Each member is its own MT5 launch: re-check the lock before it (nothing is sent on refusal).
+                        from studio_heldout_guard import check_runner_start
+                        check_runner_start(self.c,manifest,spec)
                         self._before_start(spec)
                         item.update(status='starting',attempts=1,started_unix=self.clock());self._save(root,state)
                         try:

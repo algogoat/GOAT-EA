@@ -2263,11 +2263,18 @@ def main(argv=None):
             print(json.dumps(dict(ok=False, code='STOP_UNCONFIRMED', result=result),
                              sort_keys=True, default=str), file=sys.stderr)
             return 2
+        # Held-out lock (goatai#2221 §4.3): a reply is unchanged unless a lock binds part of it.
+        from studio_heldout_guard import guard_output
+        result = guard_output(agent.install, result, root=agent.root)
         print(json.dumps(dict(ok=True, result=result), sort_keys=True, default=str))
         return 0
     except Exception as exc:
         code = 'REFUSED' if isinstance(exc, ValueError) else 'IO_ERROR' if isinstance(exc, OSError) else 'INTERNAL_ERROR'
-        print(json.dumps(dict(ok=False, code=code, error=str(exc)), sort_keys=True), file=sys.stderr)
+        error = dict(ok=False, code=code, error=str(exc))
+        from studio_heldout import HeldOutRefused
+        if isinstance(exc, HeldOutRefused):
+            error.update(code=exc.code, plain=exc.plain, locked_windows=exc.locked_windows)
+        print(json.dumps(error, sort_keys=True), file=sys.stderr)
         return 1
 
 

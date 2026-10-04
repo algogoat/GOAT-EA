@@ -22,7 +22,10 @@ READ_OPERATIONS = frozenset(('discover','resource-profile','state','onboarding-s
                              'evidence-end','evidence-scan','evidence-versions','catchup-validate',
                              # Pure reads: a .set file checked against the schema, and a completed
                              # batch's benchmark from a read-only queue snapshot. Nothing is written.
-                             'validate-set','benchmark-report'))
+                             'validate-set','benchmark-report',
+                             # Library scoring v1 (goatai#2221): the verified lock registry and the
+                             # trial journal/count, read from retained journals only.
+                             'heldout-status','trial-journal','trial-count'))
 OPERATIONS = READ_OPERATIONS | frozenset(('owner-maintenance-bootstrap','monitor-prepare','monitor-launch',
     'serve','orphan-recovery-prepare','orphan-recovery-apply','orphan-recovery-status',
     'orphan-recovery-reconcile-rejection','prepare-batch','run-batch','start','status','reconcile',
@@ -305,6 +308,9 @@ def dispatch(controller, args):
 
 
 def before_native_dispatch(controller, job):
+    # Held-out lock (goatai#2221 §4.3): every native start route re-checks the frozen plan.
+    from studio_heldout_guard import check_native_start
+    check_native_start(controller, job['job_id'])
     binding = packed(dict(terminal_id=controller.terminal,run_id=controller.run))
     value = authority(controller.store.db,binding,controller.state())
     if value is not None:

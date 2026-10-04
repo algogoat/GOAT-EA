@@ -2,3 +2,4 @@
 *.mqh text eol=crlf
 
 controller/fixtures/oosc/** -text
+controller/fixtures/heldout/** -text

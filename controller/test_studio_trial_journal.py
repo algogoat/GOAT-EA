@@ -5,16 +5,14 @@ like this PC's journals (attempts/<id>/result.json, native evidence histories,
 retired-starts, seeds, catchups) and a desktop strategy library beside the evidence root.
 """
 from contextlib import redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime
 import hashlib
 import io
 import json
-from pathlib import Path
 import unittest
 from unittest.mock import patch
 
 import goat_studio
-import studio_evidence_end
 import test_goat_studio as fixtures
 from campaign_ledger import packed, sha
 from studio_batch import prepare_batch

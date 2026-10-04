@@ -65,8 +65,9 @@ refuses. The new driver's 48-hour maximum and disk reserve are pinned to the
 same genuine native research epoch; this is not proof of native execution.
 
 These bounded owner-recovery commands are the current implementation, not the
-general customer setup/recovery toolset. See the proposed
-[customer agent tool contract](../docs/operations/AGENT-RECOVERY-TOOLS.md).
+general customer setup/recovery toolset. Customers and their agents follow
+[AGENT-START-HERE.md](AGENT-START-HERE.md) and
+[GOAT-OPERATING-MODEL.md](GOAT-OPERATING-MODEL.md) for setup and recovery.
 
 This portable Windows controller uses the installed receipt and bundled Python.
 Only `goat_studio.py` is the public Studio entrypoint. The other Python modules
@@ -336,7 +337,7 @@ These commands require the installation receipt but no Studio binding or running
 ```json
 {
   "tester": {
-    "Expert": "GOAT-EA\\GOAT V1.48.ex5", "Symbol": "EURUSD", "Period": "M15",
+    "Expert": "GOAT-EA\\GOAT V1.49.ex5", "Symbol": "EURUSD", "Period": "M1",
     "Model": 1, "ExecutionMode": 0, "Optimization": 2, "OptimizationCriterion": 6,
     "FromDate": "2025.01.01", "ToDate": "2026.01.01",
     "ForwardMode": 4, "ForwardDate": "2025.10.01",
@@ -371,8 +372,8 @@ until the builder verifies their exact evidence.
 EvidenceEnd is not one of the nine fields: it is the batch plan's
 `evidence_end` ("auto" or a closed broker date), resolved once by
 `prepare-batch`. When the bound monitor reports `evidence_end:
-goat-evidence-end-v1` (EA FU35 and later), the resolved date is staged as
-`EvidenceEnd=YYYY.MM.DD` in the batch's `export_settings.GOAT` and the EA runs
+goat-evidence-end-v1` (EA builds that support EvidenceEnd), the resolved date
+is staged as `EvidenceEnd=YYYY.MM.DD` in the batch's `export_settings.GOAT` and the EA runs
 every export to that day + 1 (exclusive `ToDate`), so every member's deals,
 equity rows and sequence frames end on the same day. `auto` is never staged: the
 EA would resolve it again per member and a Friday close mid-batch would split the
@@ -1068,8 +1069,8 @@ controller resources does not change the admitted EA binary or installed session
 
 `V1.49-ORPHAN-EMPTY-NAME-8` corrects the chart-name presence checks in orphan
 recovery. MQL5 `NULL` and `""` are distinct strings. On September 27, the native
-`controller/tests/native/ChartStringProbe.mq5` probe on Banker build 6230 read
-its existing GOAT chart: the script query succeeded, returned `NULL`, and had
+`controller/tests/native/ChartStringProbe.mq5` probe on the owner's research
+terminal (MT5 build 6230) read its existing GOAT chart: the script query succeeded, returned `NULL`, and had
 length zero. The old `script!=""` predicate was true and caused the false
 `SCRIPT_PRESENT` refusal. The probe's own chart returned `ChartStringProbe`,
 length 16, and was correctly recognized as occupied. Explicit `NULL`, empty,
@@ -1109,7 +1110,7 @@ It never clears a flag or retries recovery; exact human confirmation remains.
 
 Native MT5 build6230 fixture result:27 checks,0 failures, including an actual
 trailing-separator enumeration and a held native lock. This qualifies the
-isolated inventory functions, not a complete Banker recovery or batch launch.
+isolated inventory functions, not a complete terminal recovery or batch launch.
 
 ### Finite owner recovery authority (internal qualification only)
 
@@ -1134,8 +1135,8 @@ foreign-control guards and uncertain-outcome reconciliation remain enforced.
 
 ### Owner-internal maintenance record (2026-09-27)
 
-`owner-maintenance-prepare` is limited to the committed Banker demo policy. It
-verifies the original genuine human grant, current native idle demo, Algo OFF,
+`owner-maintenance-prepare` is limited to the committed owner research demo
+policy. It verifies the original genuine human grant, current native idle demo, Algo OFF,
 zero positions/orders, empty unstarted research and no native controls. It mints
 one four-hour record bound to the original account/terminal/session/epoch, exact
 corrective9 SHA, frozen batch-plan SHA, a planned replacement session and nonce.
@@ -1208,7 +1209,7 @@ Before close and the first relaunch, recovery inventories every goat/python proc
 
 Concurrent CLI and resident bridge pumps wait up to one second to acquire the exclusive worker lock. This waits before processing requests, never retries a mutation, and still refuses persistent contention.
 
-For a saved-profile permission refusal after a recorded owner-demo stop, `research-monitor-reopen-prepare --job-id <original>` audits before/after common.ini bytes and changes only Charts/ProfileLast to the existing typed-session profile while MT5 is stopped. Saved account and terminal-wide Algo OFF remain mandatory. It never launches MT5 or changes permissions. The user opens Banker normally; only after the user actually confirms that action may `research-monitor-adopt-reopen --job-id <original> --human-reopened` observe the exact newer terminal once. It verifies unchanged protected files and chart/config bytes, current native session and SDK demo/Algo OFF/zero trades/idle. Undocumented chart flag bits remain opaque; only this observation of an already human-opened monitor accepts them, never onboarding or automated launch. An interrupted adopted_unverified record can use research-monitor-restart-status to reverify that same PID; it never adopts a second process. Original cancellation and finish still must complete before the frozen replacement can run.
+For a saved-profile permission refusal after a recorded owner-demo stop, `research-monitor-reopen-prepare --job-id <original>` audits before/after common.ini bytes and changes only Charts/ProfileLast to the existing typed-session profile while MT5 is stopped. Saved account and terminal-wide Algo OFF remain mandatory. It never launches MT5 or changes permissions. The user opens the owner's research terminal normally; only after the user actually confirms that action may `research-monitor-adopt-reopen --job-id <original> --human-reopened` observe the exact newer terminal once. It verifies unchanged protected files and chart/config bytes, current native session and SDK demo/Algo OFF/zero trades/idle. Undocumented chart flag bits remain opaque; only this observation of an already human-opened monitor accepts them, never onboarding or automated launch. An interrupted adopted_unverified record can use research-monitor-restart-status to reverify that same PID; it never adopts a second process. Original cancellation and finish still must complete before the frozen replacement can run.
 
 For the proven generated-report editor discrepancy on that retained recovery,
 `research-monitor-repair-derived-report --job-id <original>` owns the normal
@@ -1266,7 +1267,7 @@ MT5 resolves configured reports relative to its installation while GOAT reads it
 
 ### Direct demo stale-flag repair
 
-`demo_agent.py --installation <receipt> recover-orphan` performs one bounded repair of an idle native `BatchOnGoing` flag. It requires the exact existing paired demo account and server, current agent ownership with its archived genuine grant, fresh broker proof, Algo Trading OFF, zero positions/orders, no active driver/worker, and every existing orphan protocol check. The broker's demo flag is authoritative; an account switch, live account or masked account ID refuses. The former Banker account constant is no longer a restriction.
+`demo_agent.py --installation <receipt> recover-orphan` performs one bounded repair of an idle native `BatchOnGoing` flag. It requires the exact existing paired demo account and server, current agent ownership with its archived genuine grant, fresh broker proof, Algo Trading OFF, zero positions/orders, no active driver/worker, and every existing orphan protocol check. The broker's demo flag is authoritative; an account switch, live account or masked account ID refuses. The former hard-coded owner account constant is no longer a restriction.
 
 An existing native human-control session can use this recovery without replacing its session, binary or grant. This narrowly scoped adapter entry cannot reserve or start research. It retains the before-state and exact native request, then waits up to 15 seconds for receipt plus readback. No human-confirmation flag or new grant is generated.
 

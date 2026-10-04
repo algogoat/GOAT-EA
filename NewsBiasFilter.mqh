@@ -269,6 +269,10 @@ int GOATBiasHistory::GetCurentBiasScore(string asset,int &idxx)
    idxx=idx;
    //--- staleness check: if selected bias is too old relative to typical cadence, treat as neutral
    if(avg > 0 && (now - latest_time) > (datetime)(2 * avg)) return -999;
+#ifdef GOAT_RECORDED_BIAS_LIVE_GATE_V149
+   //--- tester/optimization: the live wire gate at this run's Bias_threshold (GOATAIWireV2.mqh)
+   if(is_tester) return GOATRecordedBiasLiveScore(latest_score);
+#endif
 
    return latest_score;
   }

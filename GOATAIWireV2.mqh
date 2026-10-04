@@ -718,6 +718,26 @@ void GOATFinalizeWireV2Actionability(SGOATAIWireV2State &state,const double conf
       else if(state.direction=="BEARISH") state.signed_probability_percent=-probability_percent;
      }
   }
+
+#ifdef GOAT_RECORDED_BIAS_LIVE_GATE_V149
+// Tester/optimization only (goatai#1885). A recorded SentimentScore is the live
+// signed_probability_percent: +round(100p) BULLISH, -round(100p) BEARISH, 0 NEUTRAL, and any
+// value outside [-100,100] (the export's -999) was dark at the EA. Rebuild that state and run
+// the live gate above with this run's Bias_threshold, so the tester hands the bias logic what
+// live does: the score when it is actionable, otherwise -999.
+int GOATRecordedBiasLiveScore(const int recorded_score)
+  {
+   if(recorded_score<-100 || recorded_score>100) return -999;
+   SGOATAIWireV2State state;
+   GOATResetWireV2State(state,"RECORDED_BIAS");
+   state.verified=true;
+   state.directive_available=true;
+   state.direction=(recorded_score>0 ? "BULLISH" : (recorded_score<0 ? "BEARISH" : "NEUTRAL"));
+   state.decision_probability=MathAbs(recorded_score)/100.0;
+   GOATFinalizeWireV2Actionability(state,MathMax(0.0,MathMin(100.0,(double)Bias_threshold))/100.0);
+   return(state.actionable ? state.signed_probability_percent : -999);
+  }
+#endif
 #endif
 
 class CGOATAIWireV2

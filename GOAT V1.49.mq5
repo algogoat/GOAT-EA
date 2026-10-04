@@ -14,19 +14,22 @@
 #define GOAT_API_BEARER_LEGACY_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #define GOAT_API_BEARER_FILE GOATApiBearerFile()
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-BETA17-40"
+#define   GOAT_BUILD_ID "V1.49-BETA17-41"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 // FU35: bounded idle confirmation before CANCELLED_RECONCILE, and the
 // EvidenceEnd export setting (one shared export boundary per batch).
 #define GOAT_STOP_CONFIRM_V149
 #define GOAT_EVIDENCE_END_V149
+// BR41: the tester/optimization bias reader applies the live wire gate at the run's own
+// Bias_threshold, so recorded bias reaches the bias logic exactly as live would (goatai#1885).
+#define GOAT_RECORDED_BIAS_LIVE_GATE_V149
 #include "GOAT_SequencePackage.mqh"
 #include "GOATEvidenceEnd.mqh"
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
 long g_goat_fitness_nonce=0;
-#define   GOAT_BUILD_MARKER "B40"
+#define   GOAT_BUILD_MARKER "B41"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -5462,12 +5465,18 @@ void GoatTickBody()
     {
      DashboardBusBiasSentiment=0.0;
      // Wire-v2 unavailable, withheld, neutral, or below-cutoff state cannot add risk.
-     // It never force-closes an existing position. Legacy behavior remains unchanged.
+     // It never force-closes an existing position. Live legacy behavior remains unchanged.
      bool bias_filter_active = (Mode_Bias!=Bias_Display && Mode_Bias!=Bias_Disabled);
      Sequence_New_Bias_B   = !bias_filter_active; Sequence_New_Bias_S = !bias_filter_active;
      bool pause_v2_additions=(bias_filter_active
                               && control_tower_v2
                               && Mode_Bias_Trades==Bias_SeqTrade);
+#ifdef GOAT_RECORDED_BIAS_LIVE_GATE_V149
+     // Tester/optimization replays recorded live bias through the live gate, so a point live
+     // would not act on also pauses additions here as it does live. Live is unchanged.
+     if(!control_tower_v2 && (MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)))
+        pause_v2_additions=(bias_filter_active && Mode_Bias_Trades==Bias_SeqTrade);
+#endif
      Sequence_Pause_Bias_B = pause_v2_additions; Sequence_Pause_Bias_S = pause_v2_additions;
      StopOut_Flag_B        = false; StopOut_Flag_S        = false;
      // no need to redraw inactive lines as that is already covered in the news section

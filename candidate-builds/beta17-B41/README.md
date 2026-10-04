@@ -1,6 +1,7 @@
 B41 is B40 plus the recorded-bias live gate agreed on goatai#1885 with Claude-Mac: in the Strategy
 Tester and optimization, AI bias from `GOAT_AI_Bias_<SYM>.csv` reaches the bias logic exactly as live
-V1.49 would hand it over, at every `Bias_threshold`. Compile pending; see **Build**.
+V1.49 would hand it over, at every `Bias_threshold`. Compiled once from `278ec109` (the #147 merge); see
+**Build**.
 
 **Why.** Live V1.49 hands the bias block a score only when the wire state is actionable
 (`GOATFinalizeWireV2Actionability`: a direction, and a probability at or above `Bias_threshold`).
@@ -35,19 +36,26 @@ flag, so they compile exactly as before.
 
 **Build**
 
-- `GOAT_BUILD_ID` is `V1.49-BETA17-41`, marker `B41`, on top of B40 (GOAT-EA#142, compiled in #149). `identity.json`
-  binds the 41 sources; only `GOAT V1.49.mq5`, `GOATAIWireV2.mqh` and `NewsBiasFilter.mqh` differ from B40.
-- Review compile (not committed): MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`, the B39 compiler) on a scratch
-  stage outside every terminal folder, with B39's include root: V1.49, V1.48 and V1.47 each 0 errors,
-  0 warnings. MetaEditor output is not byte-reproducible across stages, so the candidate binary is owed by
-  a separate compile commit with its sanitized receipt.
+- `GOAT_BUILD_ID` is `V1.49-BETA17-41`, marker `B41`, on top of B40 (GOAT-EA#142, compiled in #149).
+- Compiled once from `278ec109` with MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`, the same compiler as B39 and
+  B40): 0 errors, 0 warnings. The stage was a scratch copy outside every terminal folder; its 307 standard
+  includes and the `MACD - GOAT 2.ex5` resource are hash-equal to the B40 compile's (and so to B39's and
+  Terminal 2's).
+- `GOAT V1.49.ex5`: sha256 `d5cbcbfd182f7ff18afce79c4245c2ac8ff1044ca3b7ec6e7cbfa663deee8913`, 2,428,472 bytes.
+- Entrypoint `GOAT V1.49.mq5`: sha256 `16af9bb9…2269f4c9a`, pinned in `controller/contracts/v149/dependencies.json`.
+- Pin check at `278ec109`: all 41 sources in `identity.json` match the tree and the staged copy; only
+  `GOAT V1.49.mq5`, `GOATAIWireV2.mqh` and `NewsBiasFilter.mqh` differ from B40. The input header is still
+  `1408e1ee…`. The sanitized `compile-receipt.json` is in this folder.
+- MetaEditor output is not byte-reproducible across stages: the pre-merge review compiles on
+  `claude-pc/bias-reader-parity` are superseded and must not be admitted. V1.48 and V1.47, which share the
+  changed headers but do not define the flag, compiled with 0 errors, 0 warnings in those reviews.
 
-**Not done.** No candidate binary, no native qualification, nothing installed. The root `GOAT V1.49.ex5` is
-unchanged.
+**Not done.** Native qualification has not been performed, and nothing was installed. The root
+`GOAT V1.49.ex5` is unchanged.
 
-**Still owed:** the candidate compile commit (B40's landed in #149), server
-admission of `V1.49-BETA17-41`, and a native tester run on a recorded file that shows below-threshold rows
-reaching the bias block as unavailable. Claude-Mac approved the design (goatai#1885, 5980940867).
+**Still owed:** Claude-Mac's server admission of `V1.49-BETA17-41`, the registry publish, and a native tester
+run on a recorded file that shows below-threshold rows reaching the bias block as unavailable. Claude-Mac
+approved the design (goatai#1885, 5980940867).
 
 **Export truncation (goatai#2230, merged).** The CSV now holds floor(100p), so the tester acts exactly
 when live does at every `Bias_threshold` from 1 up, for every probability the wire carries as a decimal;

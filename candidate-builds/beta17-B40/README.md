@@ -2,7 +2,7 @@ B40 is B39 plus the no-qualifying-rows research outcome. Seen live on Banker, ba
 `banker-desk33-1518-short-year-20260930-g6-r1b` (EX33): 5 of 14 members ended `native_error` with
 `SXmlData::WriteUniqueRowsToXml: No Rows!` after 7 of 158 passes were profitable in-sample and the best
 combined score was 48.1, below the export score of 60. That is "tested, nothing qualified in this
-window", not an error. Compile pending; see **Build**.
+window", not an error. Compiled once from `daa60928` (the #142 merge); see **Build**.
 
 **What changes from B39**
 
@@ -17,16 +17,21 @@ change. The input header is still SM32's (`1408e1ee…`), so SM32 batch packages
 
 **Build**
 
-- `GOAT_BUILD_ID` is `V1.49-BETA17-40`, marker `B40`. `identity.json` binds the 41 sources; only
-  `GOAT V1.49.mq5`, `XmlProcessor.mqh` and `Optimizer.mqh` differ from B39.
-- Review compile (not committed): MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`, the B39 compiler) on a scratch
-  stage outside every terminal folder, with B39's include root (hash-equal to Terminal 2's): V1.49 0 errors,
-  0 warnings (`GOAT V1.49.ex5` 2,427,136 bytes, sha256 `91350843…`, after the Codex P1 fix; the earlier `ffd581e3…` compile is superseded); V1.48 and V1.47, which share
-  `Optimizer.mqh`, 0 errors, 0 warnings each. MetaEditor output is not byte-reproducible across stages, so the
-  candidate binary is owed by a separate compile commit with its sanitized receipt.
+- `GOAT_BUILD_ID` is `V1.49-BETA17-40`, marker `B40`.
+- Compiled once from `daa60928` with MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`, the same compiler as B39):
+  0 errors, 0 warnings. The stage was a scratch copy outside every terminal folder; its standard includes and
+  the `MACD - GOAT 2.ex5` resource are hash-equal to the B39 compile's (and so to Terminal 2's).
+- `GOAT V1.49.ex5`: sha256 `55d3e393ec80e73612b4305732d4066a925f429c98f80afbe46b41f67088b99b`, 2,427,662 bytes.
+- Entrypoint `GOAT V1.49.mq5`: sha256 `36142571…15b597`, pinned in `controller/contracts/v149/dependencies.json`.
+- Pin check at `daa60928`: all 41 sources in `identity.json` match the tree and the staged copy; only
+  `GOAT V1.49.mq5`, `XmlProcessor.mqh` and `Optimizer.mqh` differ from B39. The input header is still `1408e1ee…`.
+  The sanitized `compile-receipt.json` is in this folder.
+- MetaEditor output is not byte-reproducible across stages: the pre-merge review compiles (`ffd581e3…`,
+  `91350843…`) are superseded and must not be admitted. V1.48 and V1.47, which share `Optimizer.mqh` and
+  `XmlProcessor.mqh`, compiled with 0 errors, 0 warnings in those reviews.
 
-**Not done.** No candidate binary, no native qualification, nothing installed. The root `GOAT V1.49.ex5` is
-unchanged.
+**Not done.** Native qualification has not been performed, and nothing was installed. The root
+`GOAT V1.49.ex5` is unchanged.
 
-**Still owed:** Claude-Mac review, the candidate compile commit, server admission of `V1.49-BETA17-40`, and
-native proof on a member that ends with kept passes and no qualifying row.
+**Still owed:** Claude-Mac's server admission of `V1.49-BETA17-40` for Banker, the registry publish, and native
+proof on a member that ends with kept passes and no qualifying row.

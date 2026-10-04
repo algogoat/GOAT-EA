@@ -328,7 +328,8 @@ class DemoAgent:
         return ui
 
     def _recovery_attempts_today(self):
-        """Credential-recovery installs that reached the MT5 close for this paired login today (UTC)."""
+        """Credential-recovery installs that reached the MT5 close for this paired login today (UTC): the
+        ``credential_recovery_close`` rows written right before ``process.close``, never a refused attempt."""
         login, today = self._paired_account()['login'], datetime.now(timezone.utc).date().isoformat()
         log = self.state_root / 'actions.jsonl'
         count = 0
@@ -342,8 +343,8 @@ class DemoAgent:
                     row = json.loads(line)
                 except ValueError as exc:
                     raise ValueError('Demo action log unreadable; credential recovery refuses') from exc
-                if (isinstance(row, dict) and row.get('operation') == 'install_build' and row.get('phase') == 'before_close'
-                        and row.get('credential_recovery') is True and row.get('login') == login
+                if (isinstance(row, dict) and row.get('operation') == 'install_build'
+                        and row.get('phase') == 'credential_recovery_close' and row.get('login') == login
                         and str(row.get('at', ''))[:10] == today):
                     count += 1
         return count
@@ -1075,6 +1076,11 @@ class DemoAgent:
             if restart_broker['process'] != native['process']:
                 raise ValueError('Selected MT5 changed before restart')
             restart_config = self._dll_granted_restart_config(monitor_config, restart_broker)
+            if credential_recovery:
+                # Counted here, after every check and right before the close: a refusal above never
+                # spends the day's allowance, and a close is never uncounted (_recovery_attempts_today).
+                self._append('install_build', 'credential_recovery_close', login=native['login'],
+                             old_sha256=old_sha, new_sha256=expected_sha256, process=native['process'])
             self.process.close(native['process'])
             # MT5 can take more than a minute to flush and exit after SC_CLOSE.
             # Wait for that exact process to exit normally; never force-kill it.

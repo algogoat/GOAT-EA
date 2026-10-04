@@ -65,8 +65,8 @@ class CredentialRecoveryTests(unittest.TestCase):
         return code, json.loads(printed.call_args.args[0])
 
     def recovery_rows(self, login=LOGIN, at=None):
-        row = dict(at=(at or datetime.now(timezone.utc)).isoformat(), operation='install_build', phase='before_close',
-                   credential_recovery=True, login=login)
+        row = dict(at=(at or datetime.now(timezone.utc)).isoformat(), operation='install_build',
+                   phase='credential_recovery_close', login=login)
         self.agent.state_root.mkdir(parents=True, exist_ok=True)
         with (self.agent.state_root / 'actions.jsonl').open('a', encoding='utf-8') as log:
             log.write(json.dumps(row) + '\n')
@@ -128,6 +128,22 @@ class CredentialRecoveryTests(unittest.TestCase):
         close = [row for row in rows if row['phase'] == 'before_close']
         self.assertEqual(len(close), 1)
         self.assertEqual((close[0]['credential_recovery'], close[0]['login']), (True, LOGIN))
+        counted = [row for row in rows if row['phase'] == 'credential_recovery_close']
+        self.assertEqual([(row['login'], row['new_sha256']) for row in counted], [(LOGIN, digest(self.candidate))])
+        self.assertLess(rows.index(counted[0]), rows.index(next(row for row in rows if row['phase'] == 'binary_replaced')))
+        self.assertEqual(self.agent._recovery_attempts_today(), 1)
+
+    def test_a_refusal_before_the_close_never_spends_the_daily_allowance(self):
+        # Codex review on GOAT-EA#151: DLL imports off refuses after before_close but before MT5 is closed.
+        self.f.mt5.dlls_allowed = False
+        for _ in range(3):
+            with patch.object(self.f.process, 'close') as close, self.assertRaisesRegex(ValueError, 'enable DLL imports'):
+                self.recover()
+            close.assert_not_called()
+        self.assertEqual(self.agent._recovery_attempts_today(), 0)
+        self.f.mt5.dlls_allowed = True
+        self.f.process.on_start = self.f.activation_status
+        self.assertTrue(self.recover()['installed'], 'the person fixed MT5; the allowance is intact')
         self.assertEqual(self.agent._recovery_attempts_today(), 1)
 
     def test_the_cli_flag_reaches_install_build(self):

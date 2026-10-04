@@ -83,15 +83,17 @@ assert.match(X,/back_trades<GOAT_XML_MIN_BACK_TRADES|back_trades<50/);
 const DAY=86400;
 const epoch=s=>Date.UTC(+s.slice(0,4),+s.slice(5,7)-1,+s.slice(8,10))/1000;
 const date=t=>new Date(t*1000).toISOString().slice(0,10).replace(/-/g,'.');
-function makeContext(files){
+function makeContext(files,{realForward=false}={}){
   const handles=[],logs=[],alerts=[],calls=[];
   const newRow=()=>({pass:-1,back_result:0,back_profit:0,back_PF:0,back_RF:0,back_SR:0,back_DD_pc:0,back_trades:0,
-    forward_result:0,forward_profit:0,forward_PF:0,forward_RF:0,forward_SR:0,forward_DD_pc:0,forward_trades:0,Inputs:'',Score:0});
+    forward_result:0,forward_profit:0,forward_PF:0,forward_RF:0,forward_SR:0,forward_DD_pc:0,forward_trades:0,Inputs:'',Score:0,forward_seen:false});
   const rows=[];rows.make=newRow;
   const c={logs,alerts,calls,Rows:rows,topRowsNoDup:[],RowsUnique:[],m_inputVarNames:[],
     reportMode:false,_K:'',_N:'',_S:'',Title:'',symbol_:'',TF_:'',startD:0,endD:0,forwardD:0,
     metadataWithWorkbookStart:'',DocumentProperties:'',WorksheetLine:'',InputsNames:'',
     passesSeen:0,profitableSeen:0,bestProfit:0,bestResult:0,outcome:'',tradedSeen:0,malformedSeen:0,forwardRows:0,reportClosed:false,
+    forwardMatched:0,forwardMismatches:0,forwardMalformed:0,bestCombinedScore:0,pairOutcome:'',
+    MathLog:Math.log,MathAbs:Math.abs,MathMin:Math.min,MathMax:Math.max,double:x=>x,
     FILE_READ:1,FILE_COMMON:2,FILE_ANSI:4,CP_UTF8:65001,INVALID_HANDLE:-1,TIME_DATE:1,__FUNCTION__:'SXmlData::ProcessBackXml',
     FileOpen:name=>{if(!(name in files))return -1;handles.push({lines:files[name],at:0});return handles.length-1;},
     FileIsEnding:h=>handles[h].at>=handles[h].lines.length,
@@ -117,8 +119,13 @@ function makeContext(files){
   vm.createContext(c);
   vm.runInContext('var xmlData=globalThis;',c);
   for(const name of ['ProcessBackXml','ExtractDataAsDouble','ExtractDataFromCell','ParseInputVariableNames','ResetData',
-                     'OutcomeDetails','OutcomeWindow','OutcomeSentence','IsNumberCell','ForwardReportRows'])vm.runInContext(method(name),c);
+                     'OutcomeDetails','OutcomeWindow','OutcomeSentence','IsNumberCell','ForwardReportRows',
+                     'GetBackPassRow','CalculateCustomScore','CalculateCustomScore2'])vm.runInContext(method(name),c);
+  vm.runInContext(method('SortRowsByScoreDescending').replace(/\bSRowDefinition\s+temp=/,'let temp='),c);
+  // The production forward merge and scoring (no-qualifying-rows cases); older cases keep the stub.
+  if(realForward)vm.runInContext(method('ProcessForwardXml'),c);
   vm.runInContext(extract(X,/^string\s+GoatXmlResearchOutcome\s*\(/m,'GoatXmlResearchOutcome',macros),c);
+  vm.runInContext(extract(X,/^string\s+GoatXmlNoQualifierOutcome\s*\(/m,'GoatXmlNoQualifierOutcome',macros),c);
   const combiner=extract(X,/^bool\s+ReportAnalyzerCombiner\s*\(/m,'ReportAnalyzerCombiner',macros)
     .replace('xmlData.ExtractForwardDate(fileMain,ForwardDate)','((ForwardDate=__forwardDate(fileMain))!=0)');
   assert.ok(combiner.includes('__forwardDate('),'forward date extraction still precedes the back report');
@@ -148,7 +155,7 @@ const TITLE='GOAT V1.49 USDCAD,M1 2024.01.08-2025.03.15';
 const FOLDER='GOAT\\Rabcdef012345\\reports\\R0123456789abcdef0123\\USDCAD\\';
 const back=(title=TITLE,forward='2025.01.06')=>FOLDER+title+(forward?' ('+forward+')':'')+'.xml';
 const losing=n=>Array.from({length:n},(_,i)=>({pass:i,result:i===7?0.05:0.01,profit:i===7?-1261.09:-1500-i,pf:0.66,trades:175}));
-function combine(pairs,{reportMode=false,saved,forwardOk}={}){
+function combine(pairs,{reportMode=false,saved,forwardOk,realForward=false}={}){
   const files={},names=[];
   for(const p of pairs){
     if(p.back!==null)files[p.name]=p.back;
@@ -158,7 +165,7 @@ function combine(pairs,{reportMode=false,saved,forwardOk}={}){
       files[fwd]=p.forwardLines??forwardReport(n);names.push(fwd);
     }
   }
-  const c=makeContext(files);
+  const c=makeContext(files,{realForward});
   if(saved!==undefined)c.saved=saved;
   if(forwardOk!==undefined)c.forwardOk=forwardOk;
   const ret=vm.runInContext('ReportAnalyzerCombiner(__names,'+reportMode+',"GOAT","GOAT V1.49","Darwinex-Demo")',Object.assign(c,{__names:names}));
@@ -304,8 +311,141 @@ for(const [label,pair] of [
   check(()=>assert.match(err.c.alerts[0],/One or more error/));
 }
 
+// ---- No qualifying rows (Banker g6-r1b, EX33): profitable back passes were kept, merged with
+// the forward report by the production reader and scored, and none reached the export score.
+// Before: WriteTopToXml wrote 0 rows, WriteUniqueRowsToXml logged "No Rows!", member Error.
+const FHEAD=['Pass','Forward Result','Back Result','Profit','Expected Payoff','Profit Factor','Recovery Factor','Sharpe Ratio','Custom','Equity DD %','Trades'];
+function forwardFull(rows,{closed=true}={}){
+  const lines=['<?xml version="1.0"?>','<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet">','<Worksheet ss:Name="Tester Optimizator Results">',
+    '<Table>','<Row>',...FHEAD.map(h=>cell('String',h)),cell('String','InpPeriod'),'</Row>'];
+  for(const r of rows)lines.push('<Row>',cell('Number',r.pass),cell('Number',r.fresult??0.01),cell(r.bresultType??'Number',r.bresult),
+    cell(r.profitType??'Number',r.profit),cell('Number',0),cell('Number',r.pf??1),cell('Number',r.rf??1),cell('Number',r.sr??1),cell('Number',0),
+    cell('Number',r.dd??5),cell('Number',r.trades),cell('Number',r.input??10),'</Row>');
+  if(closed)lines.push('</Table>','</Worksheet>','</Workbook>');
+  return lines;
+}
+// 151 losing passes and 7 kept ones (profitable, 50+ trades). Kept passes go on trading in the
+// forward period, but far below their in-sample pace: every combined score stays under 60.
+const keptBack=k=>({pass:151+k,result:0.5+k/100,profit:600+10*k,pf:1.4,rf:2,sr:1.5,trades:80,input:20+k});
+const weakForward=k=>({pass:151+k,bresult:0.5+k/100,profit:k<5?30+k:-40,pf:1.1,rf:0.15,sr:0.8,trades:15,input:20+k});
+const strongForward=k=>{const b=keptBack(k),ratio=364/68;   // forward period matches the in-sample pace exactly
+  return {pass:b.pass,bresult:b.result,profit:b.profit/ratio,pf:b.pf,rf:(b.profit/ratio)/(b.profit/b.rf),sr:b.sr,trades:Math.round(b.trades/ratio),input:b.input};};
+const losingForward=n=>Array.from({length:n},(_,i)=>({pass:i,bresult:i===7?0.05:0.01,profit:-20,trades:30}));
+const g6Back=()=>report(TITLE,losing(151).concat(Array.from({length:7},(_,k)=>keptBack(k))));
+const g6Forward=(kept=Array.from({length:7},(_,k)=>weakForward(k)))=>losingForward(151).concat(kept);
+const noQualifier=(forwardRows,opts={})=>combine([{name:back(),back:opts.back??g6Back(),forwardLines:forwardFull(forwardRows,opts)}],{realForward:true,saved:3});
+{
+  const {ret,c}=noQualifier(g6Forward());
+  check(()=>assert.equal(ret,false,'nothing combined: still not a success, so no export runs'));
+  check(()=>assert.equal(c.outcome,'no_qualifying_rows'));
+  check(()=>assert.ok(c.logs.includes('No further back <Row> Found. Rows Saved=7/158 (profitable=7, min trades=50)')));
+  check(()=>assert.ok(c.logs.includes('No further forward <Row> Found. Discarded=151/158'),'the production forward reader ran'));
+  check(()=>assert.deepEqual([c.forwardMatched,c.forwardMismatches,c.forwardMalformed],[7,0,0]));
+  check(()=>assert.ok(c.bestCombinedScore>30&&c.bestCombinedScore<60,'scored by the production formula, below the export score: '+c.bestCombinedScore));
+  check(()=>assert.equal(c.bestCombinedScore,c.Rows[0].Score,'best is the top row after sorting'));
+  check(()=>assert.equal(c.OutcomeDetails(),'outcome=no_qualifying_rows;passes=158;profitable=7;traded=158;malformed=0;complete=1;forward_rows=158;'
+    +'best_profit=660.00;best_score=0.5600;min_trades=50;window_start=2024.01.08;window_end=2025.01.06;forward_end=2025.03.15;'
+    +'back_rows=7;forward_matched=7;forward_discarded=151;forward_mismatches=0;forward_malformed=0;best_combined_score='+c.bestCombinedScore.toFixed(1)+';score_threshold=60.0'));
+  check(()=>assert.equal(c.OutcomeSentence(),'Tested 158 settings on USDCAD M1 in 2024.01.08 to 2025.01.06: 7 were profitable with 50+ trades in-sample '
+    +'but none scored 60+ once the forward period to 2025.03.15 was included (best '+c.bestCombinedScore.toFixed(1)+'). A result for this window, not an error.'));
+  check(()=>assert.ok(c.logs.includes(c.OutcomeSentence()),'the plain sentence is logged'));
+  check(()=>assert.deepEqual(c.calls,[],'the combined writers are skipped: no 0-row CombinedRows file, no "No Rows!"'));
+  check(()=>assert.ok(!c.logs.some(l=>/No Rows!|❌/.test(l)),'no error is logged'));
+  // One kept pass: singular wording.
+  const one=combine([{name:back(),back:report(TITLE,losing(20).concat([keptBack(0)])),forwardLines:forwardFull(losingForward(20).concat([weakForward(0)]))}],{realForward:true});
+  check(()=>assert.equal(one.c.outcome,'no_qualifying_rows'));
+  check(()=>assert.match(one.c.OutcomeSentence(),/: 1 was profitable with 50\+ trades in-sample/));
+  // Report mode says what happened.
+  const rm=combine([{name:back(),back:g6Back(),forwardLines:forwardFull(g6Forward())}],{realForward:true,reportMode:true});
+  check(()=>assert.deepEqual(rm.c.alerts,[rm.c.OutcomeSentence()]));
+}
+// A kept pass that holds up in the forward period still combines and exports as before.
+{
+  const kept=Array.from({length:7},(_,k)=>k===3?strongForward(k):weakForward(k));
+  const {ret,c}=noQualifier(g6Forward(kept));
+  check(()=>assert.ok(c.bestCombinedScore>=60,'the strong pass scores 60+: '+c.bestCombinedScore));
+  check(()=>assert.equal(c.outcome,''));
+  check(()=>assert.equal(ret,true));
+  check(()=>assert.deepEqual(c.calls,['top','unique']));
+  check(()=>assert.ok(!c.logs.some(l=>/in-sample but none scored/.test(l))));
+}
+// Real failures stay errors (retried by --include-failed), never "nothing qualified".
+{
+  const weak=g6Forward();
+  const without=(i)=>weak.filter((_,k)=>k!==i);
+  const edit=(i,patch)=>weak.map((r,k)=>k===i?{...r,...patch}:r);
+  for(const [label,rows,opts] of [
+    ['a kept pass is missing from the forward report',without(155),{}],
+    ['forward back-result disagrees with the back report',edit(153,{bresult:0.99}),{}],
+    ['forward inputs disagree with the back report',edit(154,{input:99}),{}],
+    ['a kept pass appears twice in the forward report',without(3).concat([weakForward(2)]),{}],
+    ['a forward profit cell cannot be read',edit(152,{profitType:'String'}),{}],
+    ['forward report never closed',weak,{closed:false}],
+    ['forward report cut inside a kept row',null,{cut:true}],
+    ['forward report has more rows than back passes',weak.concat([{pass:999,bresult:0.01,profit:-1,trades:1}]),{}],
+  ]){
+    const lines=opts.cut?forwardFull(weak).slice(0,-12):forwardFull(rows,opts);
+    const {ret,c}=combine([{name:back(),back:g6Back(),forwardLines:lines}],{realForward:true,saved:0});
+    check(()=>assert.equal(c.outcome,'',label));
+    check(()=>assert.equal(ret,false,label+': still an error'));
+    check(()=>assert.ok(!c.logs.some(l=>/in-sample but none scored/.test(l)),label+' is never described as a tested result'));
+  }
+  // A partial or unreadable back report with kept rows never becomes "nothing qualified".
+  const whole=g6Back();
+  for(const [label,lines] of [['back report table never closed',whole.map(l=>l==='</Table>'?'</Worksheet>':l)],
+                              ['back report with an unreadable row',whole.map(l=>l===cell('Number',-1501)?cell('String',-1501):l)]]){
+    const {c}=combine([{name:back(),back:lines,forwardLines:forwardFull(weak)}],{realForward:true,saved:0});
+    check(()=>assert.equal(c.outcome,'',label));
+  }
+  // No forward date, or no forward report at all: errors as before.
+  check(()=>assert.equal(combine([{name:back(TITLE,''),back:g6Back(),forwardLines:forwardFull(weak)}],{realForward:true,saved:0}).c.outcome,''));
+  check(()=>assert.equal(combine([{name:back(),back:g6Back(),forward:false}],{realForward:true,saved:0}).c.outcome,''));
+}
+// Several pairs: all "nothing qualified" is the outcome; a mix with "no profitable passes"
+// or with a real failure keeps the old error result.
+{
+  const other='GOAT V1.49 USDCAD,M5 2024.01.08-2025.03.15';
+  const otherBack=report(other,losing(151).concat(Array.from({length:7},(_,k)=>keptBack(k))));
+  const both=combine([{name:back(),back:g6Back(),forwardLines:forwardFull(g6Forward())},
+                      {name:back(other),back:otherBack,forwardLines:forwardFull(g6Forward())}],{realForward:true});
+  check(()=>assert.equal(both.c.outcome,'no_qualifying_rows'));
+  const mixed=combine([{name:back(),back:report(TITLE,losing(4))},
+                       {name:back(other),back:otherBack,forwardLines:forwardFull(g6Forward())}],{realForward:true});
+  check(()=>assert.equal(mixed.c.outcome,'','mixed outcomes are not described by one pair\'s details'));
+  check(()=>assert.equal(mixed.ret,false));
+  const broken=combine([{name:back(),back:g6Back(),forwardLines:forwardFull(g6Forward())},
+                        {name:back(other),back:otherBack,forward:false}],{realForward:true});
+  check(()=>assert.equal(broken.c.outcome,'','a real failure in another pair is never masked'));
+}
+// The guard on its own: every input must hold, one at a time.
+{
+  const c=makeContext({}),W=[epoch('2024.01.08'),epoch('2025.01.06'),epoch('2025.03.15')];
+  const guard=(...a)=>vm.runInContext('GoatXmlNoQualifierOutcome('+a.map(v=>Number.isNaN(v)?'NaN':JSON.stringify(v)).join(',')+')',c);
+  // back_read, title_matches, start, forward, end, passes, kept, profitable, traded, malformed, closed,
+  // forward_rows, forward_read, forward_matched, forward_mismatches, forward_malformed, best_score, min_score
+  const ok=[true,true,...W,158,7,7,158,0,true,158,true,7,0,0,48.1,60];
+  const at=(i,v)=>ok.map((x,k)=>k===i?v:x);
+  check(()=>assert.equal(guard(...ok),'no_qualifying_rows'));
+  check(()=>assert.equal(guard(...at(16,0)),'no_qualifying_rows','every kept pass lost in the forward period'));
+  check(()=>assert.equal(guard(...at(8,7)),'no_qualifying_rows','only the kept passes traded'));
+  for(const [label,args] of [['back report unread',at(0,false)],['file name mismatch',at(1,false)],
+    ['no window start',at(2,0)],['forward before start',[true,true,W[1],W[0],W[2],...ok.slice(5)]],
+    ['forward after end',[true,true,W[0],W[2],W[1],...ok.slice(5)]],['no passes',at(5,0)],
+    ['no kept rows (that is no_profitable_passes)',at(6,0).map((x,k)=>k===13?0:x)],['more kept than profitable',at(6,8)],['more profitable than passes',at(7,159)],
+    ['fewer traded than kept',at(8,6)],['more traded than passes',at(8,159)],['a row did not parse',at(9,1)],
+    ['results table never closed',at(10,false)],['forward report unreadable or unclosed',at(11,-1)],['forward report empty',at(11,0)],
+    ['forward rows exceed back passes',at(11,159)],['forward merge failed',at(12,false)],['a kept pass not in the forward report',at(13,6)],
+    ['forward disagrees with back',at(14,1)],['a forward row did not parse',at(15,1)],
+    ['best score reaches the threshold',at(16,60)],['best score above the threshold',at(16,72.5)],['negative score',at(16,-1)],
+    ['score not a number',at(16,NaN)],['no threshold',at(17,0)]])
+    check(()=>assert.equal(guard(...args),'',label));
+}
+
 // ---- V1.49 OnTesterDeinit: the outcome is written to item_stats apart from real errors.
-const mainMacros={GOAT_XML_NO_PROFITABLE_PASSES:'"no_profitable_passes"'};
+const mainMacros={GOAT_XML_NO_PROFITABLE_PASSES:'"no_profitable_passes"',GOAT_XML_NO_QUALIFYING_ROWS:macros.GOAT_XML_NO_QUALIFYING_ROWS};
+assert.equal(macros.GOAT_XML_NO_QUALIFYING_ROWS,'"no_qualifying_rows"');
+assert.equal(macros.GOAT_XML_MIN_COMBINED_SCORE,'60.0','the export score and the reported threshold share one constant');
+assert.match(X,/_CombinedRows_Score="\+scorePostfix\+"\.xml",100,GOAT_XML_MIN_COMBINED_SCORE\)/);
 const M=stripComments(preprocess(mainSource,{}));
 const deinit=M.slice(M.indexOf('void OnTesterDeinit()'),M.indexOf('bool StartExporter(bool reportMode)'));
 const combineCall=deinit.indexOf('if(ReportAnalyzerCombiner(movedFiles,false,Key,EA_Name,Server))');
@@ -316,10 +456,14 @@ check(()=>assert.ok(deinit.indexOf('UpdateBatchQueueAndWriteConfigFile(false,err
 const branch=convert(deinit.slice(branchStart+'else '.length,branchEnd),mainMacros);
 function deinitRun(outcome){
   const out={stats:[],logs:[],prompts:[]};
-  const xmlData={outcome,passesSeen:175,OutcomeDetails:()=>'outcome=no_profitable_passes;passes=175',
-    OutcomeSentence:()=>'Tested 175 settings on USDCAD M1 in 2024.01.08 to 2025.01.06: none was profitable with 50+ trades (best profit -1261.09). A result for this window, not an error.',
+  const qualifier=outcome==='no_qualifying_rows';
+  const xmlData={outcome,passesSeen:qualifier?158:175,Rows:qualifier?Array(7).fill({}):[],bestCombinedScore:48.1,
+    OutcomeDetails:()=>'outcome='+(outcome||'no_profitable_passes')+';passes='+(qualifier?158:175),
+    OutcomeSentence:()=>qualifier
+      ?'Tested 158 settings on USDCAD M1 in 2024.01.08 to 2025.01.06: 7 were profitable with 50+ trades in-sample but none scored 60+ once the forward period to 2025.03.15 was included (best 48.1). A result for this window, not an error.'
+      :'Tested 175 settings on USDCAD M1 in 2024.01.08 to 2025.01.06: none was profitable with 50+ trades (best profit -1261.09). A result for this window, not an error.',
     OutcomeWindow:()=>'2024.01.08 to 2025.01.06'};
-  const c={xmlData,error:false,EA_Name:'GOAT V1.49',Server:'Darwinex-Demo',Key:'GOAT',Strat:'R0123456789abcdef0123',
+  const c={xmlData,error:false,EA_Name:'GOAT V1.49',Server:'Darwinex-Demo',Key:'GOAT',Strat:'R0123456789abcdef0123',ArraySize:a=>a.length,
     Symbol:()=>'USDCAD',Sleep:()=>{},GoatOptAppendItemStats:(...a)=>out.stats.push(a),WriteLog:t=>out.logs.push(t),ShowPrompt:(...a)=>out.prompts.push(a)};
   vm.runInNewContext(branch,c);
   return {...out,error:c.error};
@@ -334,6 +478,14 @@ function deinitRun(outcome){
   const e=deinitRun('');
   check(()=>assert.deepEqual(e.stats,[]));
   check(()=>assert.ok(e.error&&/Failed to Analyze and Combine/.test(e.logs[0]),'a real combine error is unchanged'));
+  // No qualifying rows: its own item_stats status, kept-row count and best combined score.
+  const q=deinitRun('no_qualifying_rows');
+  check(()=>assert.equal(q.error,true,'queue status stays Error: no wire change'));
+  check(()=>assert.deepEqual(q.stats,[['GOAT V1.49','Darwinex-Demo','USDCAD','R0123456789abcdef0123','NoQualifyingRows',7,0,48.1,0,'outcome=no_qualifying_rows;passes=158']]));
+  check(()=>assert.ok(q.logs.length===1&&!/❌|Failed to Analyze/.test(q.logs[0])&&/none scored 60\+/.test(q.logs[0])&&/ No exports\.$/.test(q.logs[0])));
+  check(()=>assert.ok(q.prompts.length===1&&q.prompts[0].slice(0,3).every(line=>line.length<=60),'prompt lines fit the card'));
+  check(()=>assert.deepEqual(q.prompts[0].slice(0,3),['Nothing qualified in this window','Tested 158 settings, 2024.01.08 to 2025.01.06.',
+    '7 profitable, none scored 60+; kept as a result.']));
 }
 
 // ---- End-of-batch summary counts no-edge items apart from errors.
@@ -370,4 +522,7 @@ check(()=>assert.equal(summary([HEADER,...Array.from({length:9},(_,i)=>row('S'+i
 // still pending, or from another queue) is never counted.
 check(()=>assert.equal(summary([HEADER,row('USDCAD','A1','NoProfitablePasses'),row('USDCHF','A2','NoProfitablePasses'),row('EURUSD','A3','NoProfitablePasses')].join('\n'),
   undefined,queueOf({A1:'Error',A2:'Completed',A3:'Pending',A4:'Error'})),'Runs OK: 3/8 | No edge: 1 | Errors: 4 | Left: 0'));
+// Nothing qualified counts with no edge, apart from errors; other statuses still never do.
+check(()=>assert.equal(summary([HEADER,row('USDCAD','A1','NoProfitablePasses'),row('USDCHF','A2','NoQualifyingRows'),row('EURUSD','A3','NoQualifyingRows'),
+  row('NZDUSD','A4','Error'),row('AUDUSD','A5','Completed')].join('\n')),'Runs OK: 3/8 | No edge: 3 | Errors: 2 | Left: 0'));
 console.log(JSON.stringify({passed,productionFunctions:true,nativeExecution:false}));

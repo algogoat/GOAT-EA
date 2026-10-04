@@ -14,7 +14,7 @@
 #define GOAT_API_BEARER_LEGACY_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #define GOAT_API_BEARER_FILE GOATApiBearerFile()
 #include "GOAT_Inputs_Definitions.mqh"
-#define   GOAT_BUILD_ID "V1.49-BETA17-39"
+#define   GOAT_BUILD_ID "V1.49-BETA17-40"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
 // FU35: bounded idle confirmation before CANCELLED_RECONCILE, and the
@@ -26,7 +26,7 @@
 sinput bool Dashboard_Resume_Saved=false; // Resume saved dashboard without startup prompts
 input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness key, set by OnTesterInit
 long g_goat_fitness_nonce=0;
-#define   GOAT_BUILD_MARKER "B39"
+#define   GOAT_BUILD_MARKER "B40"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #property copyright        "GOATedge.ai"
 #property link             "https://www.goatedge.ai"//"https://www.Biiionic.com"
@@ -4391,6 +4391,15 @@ void OnTesterDeinit()
              WriteLog("DEINIT: "+xmlData.OutcomeSentence()+" No exports.",true,Key,EA_Name,Server);
              ShowPrompt("No profitable settings in this window","Tested "+(string)xmlData.passesSeen+" settings, "+xmlData.OutcomeWindow()+".",
                         "None profitable with 50+ trades; kept as a result.",""); Sleep(999);
+            }
+            // Profitable passes were kept but none scored high enough once the forward
+            // period was included: also a research result for this window, not an error.
+            else if(xmlData.outcome==GOAT_XML_NO_QUALIFYING_ROWS)
+            {
+             GoatOptAppendItemStats(EA_Name,Server,Symbol(),Strat,"NoQualifyingRows",ArraySize(xmlData.Rows),0,xmlData.bestCombinedScore,0,xmlData.OutcomeDetails());
+             WriteLog("DEINIT: "+xmlData.OutcomeSentence()+" No exports.",true,Key,EA_Name,Server);
+             ShowPrompt("Nothing qualified in this window","Tested "+(string)xmlData.passesSeen+" settings, "+xmlData.OutcomeWindow()+".",
+                        (string)ArraySize(xmlData.Rows)+" profitable, none scored 60+; kept as a result.",""); Sleep(999);
             }
             else
 #endif

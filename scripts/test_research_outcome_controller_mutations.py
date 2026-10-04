@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 CONTROLLER = Path(__file__).resolve().parent.parent / 'controller'
@@ -75,27 +76,35 @@ MUTATIONS = [
 ]
 
 
+def run_mutation(mutation, scratch):
+    label, name, old, new = mutation
+    with tempfile.TemporaryDirectory(dir=scratch) as work:
+        copy = Path(work) / 'controller'
+        shutil.copytree(CONTROLLER, copy, ignore=shutil.ignore_patterns('__pycache__'))
+        module = copy / name
+        text = module.read_text(encoding='utf-8').replace('\r\n', '\n')
+        if text.count(old) != 1:
+            raise SystemExit('mutation anchor missing or repeated: ' + label)
+        module.write_text(text.replace(old, new, 1), encoding='utf-8')
+        log = Path(work) / 'log.txt'
+        result = subprocess.run([sys.executable, '-B', '-c', RUNNER, str(copy), str(log)], timeout=900,
+                                capture_output=True, text=True,
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        report = log.read_text(encoding='utf-8') if log.exists() else ''
+        # Caught means the outcome tests ran and failed, not that the copy broke.
+        return result.returncode == 1 and 'FAILED (' in report and 'ImportError' not in report and 'SyntaxError' not in report
+
+
 def main():
-    caught = 0
     scratch = os.environ.get('GOAT_MUTATION_TMP') or None
-    for label, name, old, new in MUTATIONS:
-        with tempfile.TemporaryDirectory(dir=scratch) as work:
-            copy = Path(work) / 'controller'
-            shutil.copytree(CONTROLLER, copy, ignore=shutil.ignore_patterns('__pycache__'))
-            module = copy / name
-            text = module.read_text(encoding='utf-8').replace('\r\n', '\n')
-            if text.count(old) != 1:
-                raise SystemExit('mutation anchor missing or repeated: ' + label)
-            module.write_text(text.replace(old, new, 1), encoding='utf-8')
-            log = Path(work) / 'log.txt'
-            result = subprocess.run([sys.executable, '-B', '-c', RUNNER, str(copy), str(log)], timeout=900,
-                                    capture_output=True, text=True,
-                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-            report = log.read_text(encoding='utf-8') if log.exists() else ''
-            # Caught means the outcome tests ran and failed, not that the copy broke.
-            failed = result.returncode == 1 and 'FAILED (' in report and 'ImportError' not in report and 'SyntaxError' not in report
-            caught += failed
-            print(('CAUGHT ' if failed else 'MISSED ') + label)
+    # Each mutation is an isolated copy plus its own interpreter, so they run side by side;
+    # results are printed in list order. GOAT_MUTATION_JOBS overrides the worker count.
+    jobs = int(os.environ.get('GOAT_MUTATION_JOBS') or min(8, os.cpu_count() or 1))
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        results = list(pool.map(lambda m: run_mutation(m, scratch), MUTATIONS))
+    for (label, _, _, _), failed in zip(MUTATIONS, results):
+        print(('CAUGHT ' if failed else 'MISSED ') + label)
+    caught = sum(results)
     print(f'{caught}/{len(MUTATIONS)} mutations caught')
     return 0 if caught == len(MUTATIONS) else 1
 

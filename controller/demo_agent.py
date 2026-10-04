@@ -47,6 +47,21 @@ ACTIVE_NATIVE_STATUSES = ('reserved', 'starting', 'running', 'reconcile_required
 # operation there is owner demo-lane work, which restore-lane never undoes.
 UPDATE_OPERATIONS = frozenset(('install_build', 'launch_terminal', 'readback_refresh', 'recover_orphan', 'restore_lane'))
 LANE_IDENTITY_EXCLUDED = ('authority_kind', 'installation_sha256')
+# Credential recovery (goatai#1885, T2 2026-10-04): the broker servers on which an app update may
+# replace the EA without fresh EA feedback. Exact names only; a demo-looking name is not enough.
+RECOVERY_DEMO_SERVERS = frozenset(('Darwinex-Demo',))
+# Credential recoveries that reach the MT5 close, per paired login per UTC day (Claude-Mac, #1885).
+RECOVERY_DAILY_LIMIT = 2
+
+
+class FeedbackUnavailable(ValueError):
+    """The EA has not reported recently (or ever) for this terminal: no fresh ``ui-observation.json``.
+
+    Typically its GOAT sign-in was rejected and it waits for a new connection, so its Studio UI never
+    loads. Still a ValueError (a refusal) everywhere; the CLI adds ``reason`` so the desktop can offer
+    credential recovery for exactly this refusal and no other.
+    """
+    reason = 'ea_feedback_unavailable'
 
 
 def digest(path):
@@ -124,7 +139,7 @@ class DemoAgent:
                 raise ValueError('Pending human TAKE CONTROL')
         observation = self.local / 'ui-observation.json'
         if not observation.is_file() or (require_fresh and self.clock() - observation.stat().st_mtime > 300):
-            raise ValueError('Fresh EA owner feedback unavailable')
+            raise FeedbackUnavailable('Fresh EA owner feedback unavailable')
         ui = read_json(observation)
         if ui.get('owner') != 'agent' or ui.get('run_id', self.session['run_id']) != self.session['run_id']:
             raise ValueError('Human owns the EA or native session changed')
@@ -139,7 +154,7 @@ class DemoAgent:
                     or ui.get('runtime', {}).get('account_demo') is not True
                     or ui['runtime'].get('account_login') != self._paired_account()['login']
                     or ui['runtime'].get('account_server') != self.session['account']['server']):
-                raise ValueError('Stopped-terminal recovery lacks exact prior demo/owner identity')
+                raise ValueError('Recovery without fresh EA feedback lacks exact prior demo/owner identity')
             binding = packed(dict(terminal_id=self.session['terminal_id'], run_id=self.session['run_id']))
             db_path = self.root / 'studio.sqlite'
             with closing(sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True)) as db:
@@ -259,6 +274,148 @@ class DemoAgent:
                     ready_for_install=physical == self.install['ea_sha256'],
                     ready_for_batch=lane_ready and (current or refresh),
                     readback_refresh_on_start=refresh)
+
+    def _last_placed_ns(self, sha256):
+        """When GOAT last swapped these EX5 bytes in (the latest ``binary_replaced`` row), in ns; 0 if never."""
+        log = self.state_root / 'actions.jsonl'
+        latest = 0
+        if not log.is_file():
+            return latest
+        with log.open(encoding='utf-8') as rows:
+            for line in rows:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                    if (isinstance(row, dict) and row.get('operation') == 'install_build'
+                            and row.get('phase') == 'binary_replaced' and row.get('new_sha256') == sha256):
+                        at = datetime.fromisoformat(str(row['at']).replace('Z', '+00:00'))
+                        latest = max(latest, int(at.timestamp() * 1_000_000_000))
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise ValueError('Demo action log unreadable; credential recovery refuses') from exc
+        return latest
+
+    def _recovery_owner(self):
+        """Owner proof for credential recovery: everything ``_owner_clear`` proves except freshness.
+
+        No owner STOP or pending TAKE CONTROL; the last EA observation (any age) says the agent owns
+        this session with the exact paired demo login and server; the session and active.json are
+        unchanged; and the controller store's owner for this binding is the agent.
+
+        The stale observation must also come from the installed build (Claude-Mac, #1885), so one left
+        over from a previous install can never vouch for the current one: it names the installed EX5
+        file, it was written after GOAT last placed these exact bytes (the EX5's own write time and the
+        latest ``binary_replaced`` row), and when GOAT's verified readback recorded this build's marker,
+        the observation's ``build`` is that marker.
+        """
+        ui = self._owner_clear(require_fresh=False)
+        physical = digest(self.binary)
+        if physical != self.install['ea_sha256']:
+            raise ValueError('Installed EA differs from registered receipt; credential recovery refuses')
+        runtime = ui.get('runtime') if isinstance(ui.get('runtime'), dict) else {}
+        if PureWindowsPath(str(runtime.get('program_path', ''))) != PureWindowsPath(self.binary):
+            raise ValueError('The last EA observation is not from the installed EA file; credential recovery refuses')
+        observed_ns = (self.local / 'ui-observation.json').stat().st_mtime_ns
+        if observed_ns <= max(self.binary.stat().st_mtime_ns, self._last_placed_ns(physical)):
+            raise ValueError('The last EA observation predates the installed EA build, so it cannot vouch for it; '
+                             'credential recovery refuses')
+        verified_path = self.state_root / 'verified-build.json'
+        verified = read_json(verified_path) if verified_path.is_file() else {}
+        marker = verified.get('build') if verified.get('ea_sha256') == physical else None
+        if isinstance(marker, str) and ui.get('build') != marker:
+            raise ValueError('The last EA observation names build ' + str(ui.get('build')) + ', not the installed build '
+                             + marker + '; credential recovery refuses')
+        return ui
+
+    def _recovery_attempts_today(self):
+        """Credential-recovery installs that reached the MT5 close for this paired login today (UTC)."""
+        login, today = self._paired_account()['login'], datetime.now(timezone.utc).date().isoformat()
+        log = self.state_root / 'actions.jsonl'
+        count = 0
+        if not log.is_file():
+            return count
+        with log.open(encoding='utf-8') as rows:
+            for line in rows:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError as exc:
+                    raise ValueError('Demo action log unreadable; credential recovery refuses') from exc
+                if (isinstance(row, dict) and row.get('operation') == 'install_build' and row.get('phase') == 'before_close'
+                        and row.get('credential_recovery') is True and row.get('login') == login
+                        and str(row.get('at', ''))[:10] == today):
+                    count += 1
+        return count
+
+    def _require_recovery_budget(self):
+        """At most RECOVERY_DAILY_LIMIT credential recoveries per login per UTC day (Claude-Mac, #1885): no loop
+        can close and reopen MT5 again and again without the EA's own word."""
+        if self._recovery_attempts_today() >= RECOVERY_DAILY_LIMIT:
+            raise ValueError('Credential recovery already ran ' + str(RECOVERY_DAILY_LIMIT)
+                             + ' times today (UTC) for this login; a person should look at this terminal')
+
+    def _recovery_broker(self):
+        """The paired demo read from MT5 itself (MetaTrader5 account_info/terminal_info), on an allowlisted
+        server and strictly flat: no read-only allowance without the EA's own word (Claude-Mac, #1885)."""
+        broker = self._broker()
+        if broker['server'] not in RECOVERY_DEMO_SERVERS:
+            raise ValueError('Credential recovery updates only a demo on ' + ', '.join(sorted(RECOVERY_DEMO_SERVERS))
+                             + '; MT5 shows ' + str(broker['server']))
+        if broker.get('positions') != 0 or broker.get('orders') != 0:
+            raise ValueError('Credential recovery needs a flat demo: 0 open positions and 0 pending orders')
+        return broker
+
+    def _sign_in_status(self):
+        """What the EA last wrote about its own GOAT sign-in for this terminal, or None. Read-only, informational."""
+        from studio_research_status import terminal_token
+        path = Path(self.install['common_files_root']) / 'GOAT' / ('activation-status-' + terminal_token(self.install) + '.json')
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 64 * 1024:
+                return None
+            value = read_json(path)
+        except (OSError, ValueError, UnicodeError):
+            return None
+        if not isinstance(value, dict):
+            return None
+        reason, build_id, observed = value.get('reason'), value.get('buildId'), value.get('observedAtUtc')
+        return dict(reason=reason if isinstance(reason, str) and re.fullmatch(r'[a-z_]{1,60}', reason) else None,
+                    build_id=build_id if isinstance(build_id, str) and re.fullmatch(r'[A-Za-z0-9._-]{1,96}', build_id) else None,
+                    observed_utc=observed if type(observed) is int else None,
+                    this_login=value.get('accountId') == self._paired_account()['login'])
+
+    def credential_recovery_preflight(self):
+        """Read-only: may an app update replace the EA here although the EA cannot report?
+
+        For a terminal whose EA lost its GOAT sign-in (goatai#1885, T2 2026-10-04): its Studio UI
+        never loads, so ``preflight`` refuses with FeedbackUnavailable and no update could be planned.
+        This proves the same things from MT5 itself instead: the broker reports the exact paired
+        demo on an allowlisted server (MetaTrader5, not the EA licence), the agent still owns the
+        session by an observation from the installed build, MT5 is idle and strictly flat (0
+        positions, 0 orders) with Algo Trading off, the installed EA is the registered one, and fewer
+        than RECOVERY_DAILY_LIMIT recoveries reached the close for this login today (UTC). It refuses
+        when the EA *is* reporting: then the normal path applies.
+        """
+        try:
+            self._owner_clear()
+        except FeedbackUnavailable:
+            pass
+        else:
+            raise ValueError('The EA is reporting; use preflight and a normal install-build')
+        owner = self._recovery_owner()
+        self._require_recovery_budget()
+        space = self._space()
+        broker = self._recovery_broker()
+        physical = digest(self.binary)
+        observation = self.local / 'ui-observation.json'
+        build = owner.get('build')
+        return dict(broker=broker, owner=owner['owner'], free_bytes=space, binary_sha256=physical,
+                    ready_for_install=physical == self.install['ea_sha256'], ready_for_batch=False,
+                    credential_recovery=dict(reason=FeedbackUnavailable.reason, server=broker['server'],
+                                             feedback_age_seconds=max(0, int(self.clock() - observation.stat().st_mtime)),
+                                             observed_build=build if isinstance(build, str) and re.fullmatch(r'[A-Za-z0-9._-]{1,40}', build) else None,
+                                             attempts_today=self._recovery_attempts_today(), daily_limit=RECOVERY_DAILY_LIMIT,
+                                             ea_sign_in=self._sign_in_status()))
 
     def disk_status(self):
         return {role:dict(path=str(path), free_bytes=shutil.disk_usage(path).free,
@@ -740,9 +897,13 @@ class DemoAgent:
                         raise ValueError('Selected terminal process changed during broker readback')
                     if verified['dlls_allowed'] is not True:
                         raise ValueError('Selected MT5 lost DLL imports on relaunch')
+                    # The EA's own build marker is kept with the bytes it was verified for, so a later
+                    # credential recovery can tell an observation of this build from an older one.
+                    marker = ui.get('build')
                     write_json(self.state_root / 'verified-build.json', dict(
                         ea_sha256=expected_sha256, process=verified['process'],
-                        observed_at=datetime.now(timezone.utc).isoformat()))
+                        observed_at=datetime.now(timezone.utc).isoformat(),
+                        **(dict(build=marker) if isinstance(marker, str) and re.fullmatch(r'[A-Za-z0-9._-]{1,40}', marker) else {})))
                     self._append('launch_terminal', 'verified', ea_sha256=expected_sha256,
                                  broker=verified)
                     return dict(sha256=expected_sha256, broker=verified, terminal=verified['process'])
@@ -788,7 +949,8 @@ class DemoAgent:
             return dict(already_running=True, **self._readback_current(physical))
 
     def install_build(self, candidate, expected_sha256, monitor_config, *, require_running=False,
-                      linked_login=None, bundle_version=None, agent_guide_path=None, enter_demo_lane=False):
+                      linked_login=None, bundle_version=None, agent_guide_path=None, enter_demo_lane=False,
+                      credential_recovery=False):
         """Install a verified EX5 into the selected running demo and read it back.
 
         The session keeps its lane. A customer session (``native_human_control``, written by
@@ -797,6 +959,13 @@ class DemoAgent:
         demo_direct. Only ``enter_demo_lane`` (``--enter-demo-lane``, the owner enrolling one of
         GOAT's own demo terminals) moves a session into the owner demo lane, and never together with
         the app's bundle metadata: an app update never changes a lane (goatai#1885, Terminal 3).
+
+        ``credential_recovery`` (``--credential-recovery``, the desktop app only, after its own linked,
+        consented and broker-verified demo checks): the EA lost its GOAT sign-in and cannot report, so
+        the owner checks before the close accept the last EA observation at any age when it comes from
+        the installed build (``_recovery_owner``), the broker must show an allowlisted, strictly flat
+        demo (``_recovery_broker``) and the daily limit holds. Only for a running terminal, the linked
+        login and a different build; the readback after the relaunch is unchanged.
         """
         expected_sha256 = expected_sha256.lower()
         candidate = Path(candidate).resolve()
@@ -808,12 +977,20 @@ class DemoAgent:
             raise ValueError('Running-terminal requirement must be boolean')
         if type(enter_demo_lane) is not bool:
             raise ValueError('Demo-lane enrollment must be boolean')
+        if type(credential_recovery) is not bool:
+            raise ValueError('Credential recovery must be boolean')
+        if credential_recovery and (not require_running or linked_login is None or enter_demo_lane):
+            raise ValueError('Credential recovery updates only a running terminal on the linked login, '
+                             'with --require-running and --linked-login and never --enter-demo-lane')
         if enter_demo_lane and (bundle_version is not None or agent_guide_path is not None):
             raise ValueError('An app update keeps the session lane; enroll a GOAT demo terminal '
                              'with install-build --enter-demo-lane and no bundle metadata')
         if linked_login is not None and (not isinstance(linked_login,str)
                 or not re.fullmatch(r'[1-9][0-9]{0,19}',linked_login)):
             raise ValueError('Exact linked login required')
+        # Before the close: the EA's fresh feedback, or (credential recovery) everything but its freshness.
+        owner_clear = self._recovery_owner if credential_recovery else self._owner_clear
+        broker_read = self._recovery_broker if credential_recovery else self._broker
         metadata={}
         if bundle_version is not None or agent_guide_path is not None:
             if (not isinstance(bundle_version,str)
@@ -849,10 +1026,16 @@ class DemoAgent:
                                                   enter_demo_lane=enter_demo_lane)
                 if physical == expected_sha256:
                     return finish(dict(installed=True, recovered=True, **recovered))
-            self._owner_clear(); self._space(); native = self._broker()
+            owner_clear(); self._space(); native = broker_read()
             old_sha = digest(self.binary)
             if old_sha != self.install['ea_sha256']:
                 raise ValueError('Running EA differs from registered receipt; no close or swap')
+            if credential_recovery:
+                if old_sha == expected_sha256:
+                    # Reinstalling the build whose sign-in was rejected fixes nothing: it needs a new connection.
+                    raise ValueError('Credential recovery installs a different build; this one is already installed, '
+                                     'so approve its connection code instead')
+                self._require_recovery_budget()
             # The same bytes already run here: verify them where they run instead of closing MT5.
             # An owner enrollment still takes the full path below unless the session is already
             # demo_direct; every other install keeps the session's lane.
@@ -885,9 +1068,10 @@ class DemoAgent:
                     shutil.copyfileobj(source, output)
                     output.flush(); os.fsync(output.fileno())
             self._append('install_build', 'before_close', old_sha256=old_sha,
-                         new_sha256=expected_sha256, broker=native, backup=str(backup))
-            self._owner_clear()
-            restart_broker = self._broker()
+                         new_sha256=expected_sha256, broker=native, backup=str(backup),
+                         **(dict(credential_recovery=True, login=native['login']) if credential_recovery else {}))
+            owner_clear()
+            restart_broker = broker_read()
             if restart_broker['process'] != native['process']:
                 raise ValueError('Selected MT5 changed before restart')
             restart_config = self._dll_granted_restart_config(monitor_config, restart_broker)
@@ -2066,6 +2250,9 @@ def main(argv=None):
     parser.add_argument('--installation', type=Path, required=True)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('status'); commands.add_parser('preflight')
+    commands.add_parser('credential-recovery-preflight',
+                        help='Read-only: whether an app update may replace an EA that cannot report (lost GOAT sign-in), '
+                             'proven from MT5 itself on an allowlisted demo server')
     commands.add_parser('disk-status')
     cancel_pending = commands.add_parser('cancel-pending')
     cancel_pending.add_argument('--batch-id', required=True)
@@ -2108,6 +2295,10 @@ def main(argv=None):
     install.add_argument('--enter-demo-lane', action='store_true',
                          help='Owner only: also move this session into the owner demo lane (demo_direct). '
                               'Without it the session keeps its lane; an app update never passes it')
+    install.add_argument('--credential-recovery', action='store_true',
+                         help='Desktop app only, after credential-recovery-preflight and its own linked/consent checks: '
+                              'the EA cannot report (lost GOAT sign-in), so the owner checks accept its last observation '
+                              'at any age; needs --require-running and --linked-login')
     restore = commands.add_parser('restore-lane', help='Preview, then --apply: return a customer session an app update '
                                   'moved into the owner demo lane back to native_human_control; nothing native runs')
     restore.add_argument('--apply', action='store_true')
@@ -2210,6 +2401,7 @@ def main(argv=None):
         agent = DemoAgent(args.installation)
         if args.command == 'status': result = agent.status()
         elif args.command == 'preflight': result = agent.preflight()
+        elif args.command == 'credential-recovery-preflight': result = agent.credential_recovery_preflight()
         elif args.command == 'disk-status': result = agent.disk_status()
         elif args.command == 'cancel-pending': result = agent.cancel_pending(args.batch_id)
         elif args.command == 'stop': result = agent.stop(args.monitor_config, args.batch_id)
@@ -2226,7 +2418,7 @@ def main(argv=None):
         elif args.command == 'install-build': result = agent.install_build(args.candidate, args.sha256, args.monitor_config,
             require_running=args.require_running,linked_login=args.linked_login,
             bundle_version=args.bundle_version,agent_guide_path=args.agent_guide_path,
-            enter_demo_lane=args.enter_demo_lane)
+            enter_demo_lane=args.enter_demo_lane,credential_recovery=args.credential_recovery)
         elif args.command == 'restore-lane': result = agent.restore_lane(args.apply)
         elif args.command == 'prepare-batch': result = agent.prepare_batch(args.batch_id, args.plan)
         elif args.command == 'run-batch': result = agent.run_batch(args.batch_id, args.max_seconds)
@@ -2271,6 +2463,9 @@ def main(argv=None):
     except Exception as exc:
         code = 'REFUSED' if isinstance(exc, ValueError) else 'IO_ERROR' if isinstance(exc, OSError) else 'INTERNAL_ERROR'
         error = dict(ok=False, code=code, error=str(exc))
+        if isinstance(exc, FeedbackUnavailable):
+            # The one refusal the desktop may answer with credential recovery; `code` stays REFUSED.
+            error.update(reason=FeedbackUnavailable.reason)
         from studio_heldout import HeldOutRefused
         if isinstance(exc, HeldOutRefused):
             error.update(code=exc.code, plain=exc.plain, locked_windows=exc.locked_windows)

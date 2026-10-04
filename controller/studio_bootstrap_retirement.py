@@ -21,7 +21,7 @@ import uuid
 from campaign_ledger import packed, sha
 from studio_bridge import write_json
 from studio_installation import read_json
-from studio_native_gate import exclusive_gate, assert_clear_controls
+from studio_native_gate import exclusive_gate, assert_clear_controls, settled_native_request
 from studio_process_check import inspect_processes
 from studio_process_exit import prove_exited
 from studio_runtime_check import check_runtime
@@ -229,13 +229,22 @@ def state_view(context):
         if 'studio_fixed_tasks' in tables and db.execute('SELECT 1 FROM studio_fixed_tasks WHERE released=0').fetchone():
             raise ValueError('Fixed task still owns the selected controller')
         gates = [safe(row[0]) for row in db.execute('SELECT root FROM studio_native_gate')]
+        settled_requests = []
         for gate in gates:
             if not gate.is_relative_to(local): raise ValueError('Legacy gate escapes selected terminal')
             if read_json(gate/'controller.json') != {'database':str(database)}:
                 raise ValueError('Legacy gate database ownership changed')
             if (gate/'request.json').exists() or (gate/'request.json').is_symlink():
-                from studio_legacy_settled_gate import assert_legacy_settled_request
-                assert_legacy_settled_request(db,gate,context['registry'])
+                # A request the EA already consumed and answered for this binding is settled
+                # evidence (goatai#1885); otherwise only the legacy settled schema is accepted.
+                permit = gate/'permit.json'
+                settled = None if permit.exists() or permit.is_symlink() else settled_native_request(
+                    gate, dict(terminal_id=spec['terminal_id'], run_id=spec['run_id']))
+                if settled is None:
+                    from studio_legacy_settled_gate import assert_legacy_settled_request
+                    assert_legacy_settled_request(db,gate,context['registry'])
+                else:
+                    settled_requests.append(dict(settled, gate=str(gate)))
             else:
                 assert_clear_controls(db,gate)
         native = safe(b['common_files_root'])/'GOAT/Workers'/context['scope']
@@ -248,7 +257,11 @@ def state_view(context):
             for queue in ('inbox','processing'):
                 if any((bridge/channel/queue).glob('*.json')):
                     raise ValueError('Unprocessed controller inbox requires reconciliation')
-        return dict(states=[list(row) for row in states], queue_sha256=sha(queues), gates=[str(p) for p in gates])
+        view = dict(states=[list(row) for row in states], queue_sha256=sha(queues), gates=[str(p) for p in gates])
+        if settled_requests:
+            # The review binds the exact settled request: apply refuses if any other appears.
+            view['settled_native_requests'] = settled_requests
+        return view
 
 
 def process_binding(c, context):

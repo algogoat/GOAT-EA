@@ -14,7 +14,7 @@ from campaign_ledger import packed,sha
 from studio_bridge import write_json
 from studio_handover import safe_path
 from studio_installation import read_json
-from studio_native_gate import exclusive_gate
+from studio_native_gate import exclusive_gate,settled_native_request
 from studio_seed_process import WindowsSeedProcess
 from studio_driver_suspend import require_no_publishers
 from studio_seed_slot import guard_active_seed
@@ -89,7 +89,11 @@ def _verify(c,record,folder,*,historical=True,require_released=True):
                 or (root/'agent-native-control-owner.json').exists()
                 or any(digest(contents(root/n))!=prior['files'][n]['before_sha256'] for n in NAMES)):
             raise ValueError('Retired native controls changed')
-        if any((c.local/'native-gate'/n).exists() for n in ('request.json','permit.json')):
+        # A request the EA already consumed and answered for this session is settled
+        # evidence (goatai#1885), not a new pending request; a permit always refuses.
+        gate=c.local/'native-gate';request_path=gate/'request.json'
+        requested=request_path.exists() or request_path.is_symlink()
+        if (gate/'permit.json').exists() or (requested and settled_native_request(gate,dict(terminal_id=c.terminal,run_id=c.run)) is None):
             raise ValueError('New native request appeared after retirement')
     return state,scope,base,old
 

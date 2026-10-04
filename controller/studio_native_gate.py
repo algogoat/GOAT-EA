@@ -180,6 +180,51 @@ def assert_clear_controls(db, root):
         raise ValueError('Native request or permit remains unresolved: '+str(error)) from error
 
 
+def settled_native_request(gate, session):
+    """The retained native-gate request.json the EA already consumed and answered, else None.
+
+    Nothing removes request.json once a dispatch is answered and its permit revoked, so it
+    stays behind as evidence after the batch. It is settled, not pending, only when its
+    exact receipt pair is on disk for this session's binding: issued-<request_id> binds
+    sha256(request.json) to the controller's issuance, consumed-<request_id> (the EA's claim,
+    written before any native effect) is byte-identical to it, and result-<request_id>
+    (written once the EA's handler returned) names that same request_sha256. request_id is
+    the request's own field (the attempt or cancel identity), not a hash of its bytes.
+    Read-only: deletes nothing. The caller still refuses for permit.json.
+
+    This is the one classifier for every check that would otherwise refuse on the mere
+    presence of native-gate request.json (goatai#1885); test_settled_native_request guards
+    that no controller code refuses on request.json existence without it.
+    """
+    from studio_dispatch_observe import observe_dispatch
+    gate = Path(gate)
+    request_path = gate / 'request.json'
+    try:
+        if request_path.is_symlink() or not request_path.is_file() or request_path.stat().st_size > 2_000_000:
+            return None
+        raw = request_path.read_bytes()
+        request = json.loads(raw.decode('utf-8'))
+        request_id = request['request_id']
+        if not isinstance(request_id, str) or not re.fullmatch(r'[0-9a-f]{64}', request_id):
+            return None
+        # The caller's own queue check (e.g. require_idle_control) covers only this session's binding.
+        if (request.get('terminal_id'), request.get('run_id')) != (session['terminal_id'], session['run_id']):
+            return None
+        receipts = [gate / (prefix + request_id + '.json') for prefix in ('issued-', 'consumed-', 'result-')]
+        if any(path.is_symlink() or not path.is_file() for path in receipts):
+            return None
+        if receipts[1].read_bytes() != raw:
+            return None
+        digest = hashlib.sha256(raw).hexdigest()
+        dispatch = observe_dispatch(gate, request_id)
+        if dispatch['status'] != 'receipt_observed' or dispatch['consumed'] is not True or dispatch['request_sha256'] != digest:
+            return None
+        return dict(request_id=request_id, request_sha256=digest, action=request.get('action', 'start'),
+                    result=dispatch['receipt']['status'])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
 @contextmanager
 def mutation_gate(db, *, require_clear_controls=False):
     row=db.execute('SELECT root FROM studio_native_gate WHERE id=1').fetchone()

@@ -14,6 +14,7 @@ import test_goat_studio as fixtures
 import studio_bootstrap_retirement as retirement
 from studio_bridge import write_json
 from studio_handover import guard
+from test_settled_native_request import PENDING_VARIANTS,gate_files,retain_pending_variant,retain_request
 
 
 class BootstrapRetirementTests(unittest.TestCase):
@@ -154,6 +155,37 @@ class BootstrapRetirementTests(unittest.TestCase):
     def test_gate_owner_mismatch_blocks_even_without_request(self):
         gate=self.c.local/'native-gate/controller.json';write_json(gate,dict(database='elsewhere'))
         with self.assertRaisesRegex(ValueError,'gate database'):self.prepare()
+
+    def test_request_the_ea_already_consumed_and_answered_is_settled_for_preview_and_retirement(self):
+        # Terminal 3 shape (goatai#1885): request.json retained beside its exact consumed/result pair.
+        gate=self.c.local/'native-gate'
+        request_id,raw=retain_request(gate,self.c.terminal,self.c.run)
+        before=gate_files(gate)
+        review=self.prepare()
+        plan=json.loads((retirement.folder(self.c)/review/'review.json').read_bytes())
+        settled=plan['snapshot']['controller']['settled_native_requests']
+        self.assertEqual([(item['request_id'],item['request_sha256']) for item in settled],[(request_id,hashlib.sha256(raw).hexdigest())])
+        result=retirement.apply(self.c,review)
+        self.assertEqual(result['status'],'retired');self.patches[-1].assert_called_once()
+        self.assertEqual(gate_files(gate),before)
+
+    def test_pending_or_mismatched_request_still_needs_the_legacy_settled_schema(self):
+        gate=self.c.local/'native-gate'
+        for name in PENDING_VARIANTS:
+            with self.subTest(name):
+                retain_pending_variant(name,gate,self.c.terminal,self.c.run)
+                before=gate_files(gate)
+                with self.assertRaisesRegex(ValueError,'Legacy settled request not verified'):self.prepare()
+                self.assertEqual(gate_files(gate),before)
+        self.patches[-1].assert_not_called()
+
+    def test_a_different_settled_request_after_review_prevents_close(self):
+        gate=self.c.local/'native-gate'
+        retain_request(gate,self.c.terminal,self.c.run,'reviewed-request')
+        review=self.prepare()
+        retain_request(gate,self.c.terminal,self.c.run,'newer-request')
+        with self.assertRaisesRegex(ValueError,'state changed'):retirement.apply(self.c,review)
+        self.patches[-1].assert_not_called()
 
     def test_script_configuration_rejected_even_when_rehashed(self):
         raw=self.config.read_bytes().decode('utf-16')+'Script=other\n';self.config.write_bytes(raw.encode('utf-16'))

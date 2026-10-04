@@ -9,6 +9,7 @@ from studio_handover import safe_path
 from studio_installation import read_json
 from studio_report_paths import report_paths
 from studio_dispatch_observe import observe_dispatch
+from studio_native_gate import settled_native_request
 
 
 def proof(c, job, package):
@@ -34,10 +35,13 @@ def native_absence(c, job, package):
     if evidence.exists():
         raise ValueError('Native activation evidence exists; never repeat an issued operation')
     gate = safe_path(c.local / 'native-gate')
-    for name in ('request.json', 'permit.json'):
-        target = gate / name
-        if target.exists() or target.is_symlink():
-            raise ValueError('Native request or permit exists; reconcile before any first activation')
+    # A request.json the EA already consumed and answered for this session is settled evidence
+    # (goatai#1885); the history checks below still require its job's durable completion.
+    permit, request_path = gate / 'permit.json', gate / 'request.json'
+    requested = request_path.exists() or request_path.is_symlink()
+    if (permit.exists() or permit.is_symlink()
+            or (requested and settled_native_request(gate, dict(terminal_id=c.terminal, run_id=c.run)) is None)):
+        raise ValueError('Native request or permit exists; reconcile before any first activation')
     for item in gate.glob('*.json'):
         item = safe_path(item)
         marker = re.fullmatch(r'(issued|consumed|result)-([a-f0-9]{64})\.json', item.name)

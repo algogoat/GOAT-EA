@@ -18,7 +18,6 @@ Neither command enables trading, types credentials or changes MT5 permissions.
 """
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,7 +27,7 @@ import time
 from studio_agent_mailbox import identity, setup_register, setup_request, setup_retire
 from studio_bridge import write_json
 from studio_installation import read_json
-from studio_native_gate import exclusive_gate
+from studio_native_gate import exclusive_gate, settled_native_request
 from studio_onboarding import session_state, require_idle_control
 
 # Experiment 02 runs live research on these demo logins. Agent setup and deploy never touch them.
@@ -268,46 +267,6 @@ def _wait_exit(process, identity_value, seconds, *, clock=time.monotonic, sleep=
         sleep(0.25)
         current = process.inspect()
     return current is None
-
-
-def settled_native_request(gate, session):
-    """The retained native-gate request.json the EA already consumed and answered, else None.
-
-    Nothing removes request.json once a dispatch is answered and its permit revoked, so it
-    stays behind as evidence after the batch. It is settled, not pending, only when its
-    exact receipt pair is on disk for this session's binding: issued-<request_id> binds
-    sha256(request.json) to the controller's issuance, consumed-<request_id> (the EA's claim,
-    written before any native effect) is byte-identical to it, and result-<request_id>
-    (written once the EA's handler returned) names that same request_sha256. request_id is
-    the request's own field (the attempt or cancel identity), not a hash of its bytes.
-    Read-only: deletes nothing. The caller still refuses for permit.json.
-    """
-    from studio_dispatch_observe import observe_dispatch
-    request_path = gate / 'request.json'
-    try:
-        if request_path.is_symlink() or not request_path.is_file() or request_path.stat().st_size > 2_000_000:
-            return None
-        raw = request_path.read_bytes()
-        request = json.loads(raw.decode('utf-8'))
-        request_id = request['request_id']
-        if not isinstance(request_id, str) or not re.fullmatch(r'[0-9a-f]{64}', request_id):
-            return None
-        # The controller's queue check (require_idle_control) covers only this session's binding.
-        if (request.get('terminal_id'), request.get('run_id')) != (session['terminal_id'], session['run_id']):
-            return None
-        receipts = [gate / (prefix + request_id + '.json') for prefix in ('issued-', 'consumed-', 'result-')]
-        if any(path.is_symlink() or not path.is_file() for path in receipts):
-            return None
-        if receipts[1].read_bytes() != raw:
-            return None
-        digest = hashlib.sha256(raw).hexdigest()
-        dispatch = observe_dispatch(gate, request_id)
-        if dispatch['status'] != 'receipt_observed' or dispatch['consumed'] is not True or dispatch['request_sha256'] != digest:
-            return None
-        return dict(request_id=request_id, request_sha256=digest, action=request.get('action', 'start'),
-                    result=dispatch['receipt']['status'])
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return None
 
 
 def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspect=None, request=None, retire=None, wait_seconds=30):

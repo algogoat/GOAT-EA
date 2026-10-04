@@ -42,6 +42,11 @@ COLD_START_READBACK_SECONDS = 420
 # broker-verified start discipline; only their state folders and wording differ.
 LANES = {'seed': dict(folder='seeds', starts='seed-starts', word='seed', title='Seed', unit='seed hunt'),
          'catchup': dict(folder='catchups', starts='catchup-starts', word='catch-up', title='Catch-up', unit='catch-up')}
+ACTIVE_NATIVE_STATUSES = ('reserved', 'starting', 'running', 'reconcile_required', 'verifying')
+# What an app update (install-build and its relaunch) writes to the demo action log. Any other
+# operation there is owner demo-lane work, which restore-lane never undoes.
+UPDATE_OPERATIONS = frozenset(('install_build', 'launch_terminal', 'readback_refresh', 'recover_orphan', 'restore_lane'))
+LANE_IDENTITY_EXCLUDED = ('authority_kind', 'installation_sha256')
 
 
 def digest(path):
@@ -270,8 +275,7 @@ class DemoAgent:
         if row is None:
             raise ValueError('Selected Studio queue is unavailable')
         jobs = json.loads(row[0])
-        return [job['job_id'] for job in jobs if job['status'] in
-                ('reserved', 'starting', 'running', 'reconcile_required', 'verifying')]
+        return [job['job_id'] for job in jobs if job['status'] in ACTIVE_NATIVE_STATUSES]
 
     def stop(self, monitor_config=None, batch_id=None):
         # This intentionally does not need the terminal lock: owner STOP wins
@@ -750,14 +754,15 @@ class DemoAgent:
                      error=last_error)
         raise ValueError('Terminal launch/readback unconfirmed after ' + str(seconds) + ' seconds: ' + last_error)
 
-    def _launch_terminal(self, monitor_config, expected_sha256, *, adopt=False, metadata=None, pairing_ok=False):
+    def _launch_terminal(self, monitor_config, expected_sha256, *, adopt=False, metadata=None, pairing_ok=False,
+                         enter_demo_lane=False):
         self._owner_clear(require_fresh=False); self._space()
         if self.process.inspect() is not None:
             raise ValueError('Selected terminal already runs; use status or retry readback')
         if digest(self.binary) != expected_sha256:
             raise ValueError('Physical EA differs from requested launch SHA-256')
         if adopt:
-            self._adopt_installed_binary(expected_sha256, metadata=metadata)
+            self._adopt_installed_binary(expected_sha256, metadata=metadata, enter_demo_lane=enter_demo_lane)
         elif self.install['ea_sha256'] != expected_sha256:
             raise ValueError('Stopped-terminal launch requires the registered EA hash')
         observation = self.local / 'ui-observation.json'
@@ -783,7 +788,16 @@ class DemoAgent:
             return dict(already_running=True, **self._readback_current(physical))
 
     def install_build(self, candidate, expected_sha256, monitor_config, *, require_running=False,
-                      linked_login=None, bundle_version=None, agent_guide_path=None):
+                      linked_login=None, bundle_version=None, agent_guide_path=None, enter_demo_lane=False):
+        """Install a verified EX5 into the selected running demo and read it back.
+
+        The session keeps its lane. A customer session (``native_human_control``, written by
+        ``studio bootstrap``) stays on the customer lane, so its ``goat.exe studio`` tools keep
+        working after the desktop app's update with MT5 open; an owner ``demo_direct`` session stays
+        demo_direct. Only ``enter_demo_lane`` (``--enter-demo-lane``, the owner enrolling one of
+        GOAT's own demo terminals) moves a session into the owner demo lane, and never together with
+        the app's bundle metadata: an app update never changes a lane (goatai#1885, Terminal 3).
+        """
         expected_sha256 = expected_sha256.lower()
         candidate = Path(candidate).resolve()
         monitor_config = self._validate_monitor_config(monitor_config)
@@ -792,6 +806,11 @@ class DemoAgent:
             raise ValueError('Candidate SHA-256 mismatch')
         if type(require_running) is not bool:
             raise ValueError('Running-terminal requirement must be boolean')
+        if type(enter_demo_lane) is not bool:
+            raise ValueError('Demo-lane enrollment must be boolean')
+        if enter_demo_lane and (bundle_version is not None or agent_guide_path is not None):
+            raise ValueError('An app update keeps the session lane; enroll a GOAT demo terminal '
+                             'with install-build --enter-demo-lane and no bundle metadata')
         if linked_login is not None and (not isinstance(linked_login,str)
                 or not re.fullmatch(r'[1-9][0-9]{0,19}',linked_login)):
             raise ValueError('Exact linked login required')
@@ -811,7 +830,7 @@ class DemoAgent:
                 if not result.get('pairing_required'):
                     self._owner_clear()
                 self._broker()
-                self._adopt_installed_binary(expected_sha256,metadata=metadata)
+                self._adopt_installed_binary(expected_sha256,metadata=metadata,enter_demo_lane=enter_demo_lane)
                 self._append('install_build','bundle_identity_verified',**metadata)
             return result
         with self._exclusive():
@@ -826,16 +845,20 @@ class DemoAgent:
                 recovered = self._launch_terminal(monitor_config, physical,
                                                   adopt=(physical == expected_sha256),
                                                   metadata=metadata if physical == expected_sha256 else None,
-                                                  pairing_ok=physical == expected_sha256)
+                                                  pairing_ok=physical == expected_sha256,
+                                                  enter_demo_lane=enter_demo_lane)
                 if physical == expected_sha256:
                     return finish(dict(installed=True, recovered=True, **recovered))
             self._owner_clear(); self._space(); native = self._broker()
             old_sha = digest(self.binary)
             if old_sha != self.install['ea_sha256']:
                 raise ValueError('Running EA differs from registered receipt; no close or swap')
+            # The same bytes already run here: verify them where they run instead of closing MT5.
+            # An owner enrollment still takes the full path below unless the session is already
+            # demo_direct; every other install keeps the session's lane.
             if (old_sha == expected_sha256
                     and self.install['ea_sha256'] == expected_sha256
-                    and self.session.get('authority_kind') == 'demo_direct'
+                    and (not enter_demo_lane or self.session.get('authority_kind') == 'demo_direct')
                     and self.session.get('installation_sha256') == sha(self.install)):
                 ui = read_json(self.local / 'ui-observation.json')
                 verified_path = self.state_root / 'verified-build.json'
@@ -888,17 +911,20 @@ class DemoAgent:
                          new_sha256=expected_sha256)
             # One receipt write: the new EA hash together with this bundle's identity, so the
             # receipt never names the new EA under the previous app version.
-            self._adopt_installed_binary(expected_sha256, metadata=metadata)
+            self._adopt_installed_binary(expected_sha256, metadata=metadata, enter_demo_lane=enter_demo_lane)
             verified = self._launch_terminal(restart_config, expected_sha256, pairing_ok=True)
             self._append('install_build', 'pairing_required' if verified.get('pairing_required') else 'verified',
                          new_sha256=expected_sha256, broker=verified['broker'])
             return finish(dict(installed=True, **verified))
 
-    def _adopt_installed_binary(self, expected_sha256, *, metadata=None):
+    def _adopt_installed_binary(self, expected_sha256, *, metadata=None, enter_demo_lane=False):
         """Keep local app/controller identity aligned with the physical EX5.
 
         The old research proof remains archived in place; demo tools use the
         broker check and owner STOP instead of treating that proof as a gate.
+
+        The session is rebound to the new receipt and keeps its lane (authority_kind):
+        only ``enter_demo_lane`` moves it into the owner demo lane (demo_direct).
         """
         if digest(self.binary) != expected_sha256:
             raise ValueError('Physical EA changed before local identity update')
@@ -919,13 +945,128 @@ class DemoAgent:
             write_json(self.installation_path, installed)
         checked = load_installation(self.installation_path)
         session = read_json(self.root / 'session.json')
-        if session.get('authority_kind') != 'demo_direct' or session.get('installation_sha256') != sha(checked):
-            session['authority_kind'] = 'demo_direct'
+        lane = session.get('authority_kind')
+        if (enter_demo_lane and lane != 'demo_direct') or session.get('installation_sha256') != sha(checked):
+            if enter_demo_lane:
+                session['authority_kind'] = 'demo_direct'
             session['installation_sha256'] = sha(checked)
             write_json(self.root / 'session.json', session)
         self.install, self.session = checked, session
         self._append('install_build', 'local_identity_verified', ea_sha256=expected_sha256,
-                     installation_sha256=sha(checked), session_sha256=sha(session))
+                     installation_sha256=sha(checked), session_sha256=sha(session),
+                     authority_kind=session.get('authority_kind'), previous_authority_kind=lane)
+
+    def _lane_restore_review(self):
+        """Read-only: prove this demo_direct session is a customer session an app update moved.
+
+        Before this fix every install-build moved the session it updated into the owner demo lane,
+        including the desktop app's update with MT5 open (goatai#1885: Terminal 3, 2026-10-04).
+        The proof needs all of: this tool's own retained backup of this exact session on the
+        customer lane (native_human_control), the session bound to the current receipt, the
+        controller store still holding the customer lane's native_human_control authority for this
+        binding, no typed research continuation, an action log that shows only update and relaunch
+        steps (never owner demo-lane work), and no owner STOP, batch, driver or seed in flight.
+        """
+        session = read_json(self.root / 'session.json')
+        lane = session.get('authority_kind')
+        if lane == 'native_human_control':
+            return dict(status='already_customer_lane', authority_kind=lane)
+        if lane != 'demo_direct':
+            raise ValueError('restore-lane returns only a demo_direct session to the customer lane')
+        if session.get('installation_sha256') != sha(self.install):
+            raise ValueError('Session is not bound to the current receipt; finish or retry the update first')
+        identity = {key: value for key, value in session.items() if key not in LANE_IDENTITY_EXCLUDED}
+        evidence = None
+        for path in sorted((self.state_root / 'backups').glob('session-*.json')):
+            try:
+                if path.is_symlink() or path.name != 'session-' + digest(path) + '.json':
+                    continue
+                saved = read_json(path)
+            except (OSError, ValueError, UnicodeError):
+                continue
+            if (isinstance(saved, dict) and saved.get('authority_kind') == 'native_human_control'
+                    and {key: value for key, value in saved.items() if key not in LANE_IDENTITY_EXCLUDED} == identity):
+                evidence = path
+                break
+        if evidence is None:
+            raise ValueError('No retained customer-lane backup of this exact session; restore-lane changes nothing')
+        if (self.root / 'research-authority.json').exists():
+            raise ValueError('A typed research continuation is bound here; restore-lane changes nothing')
+        binding = packed(dict(terminal_id=session['terminal_id'], run_id=session['run_id']))
+        try:
+            with closing(sqlite3.connect((self.root / 'studio.sqlite').as_uri() + '?mode=ro', uri=True)) as db:
+                row = db.execute('SELECT kind,provenance FROM studio_authorities WHERE binding=?', (binding,)).fetchone()
+                queue = db.execute('SELECT jobs FROM studio_queues WHERE binding=?', (binding,)).fetchone()
+        except sqlite3.Error as exc:
+            raise ValueError('Controller store unreadable; restore-lane changes nothing') from exc
+        if (row is None or row[0] != 'native_human_control'
+                or json.loads(row[1]) != dict(kind='native_human_control', binding=json.loads(binding))):
+            raise ValueError('The controller store holds no customer-lane authority for this session; restore-lane changes nothing')
+        updates, work = 0, set()
+        log = self.state_root / 'actions.jsonl'
+        if log.is_file():
+            with log.open(encoding='utf-8') as rows:
+                for line in rows:
+                    if not line.strip():
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except ValueError as exc:
+                        raise ValueError('Demo action log unreadable; restore-lane changes nothing') from exc
+                    operation = entry.get('operation') if isinstance(entry, dict) else None
+                    if operation not in UPDATE_OPERATIONS:
+                        work.add(str(operation))
+                    elif operation == 'install_build' and entry.get('phase') == 'local_identity_verified':
+                        updates += 1
+        if not updates:
+            raise ValueError('No retained install-build record for this session; restore-lane changes nothing')
+        if work:
+            raise ValueError('This session has done owner demo-lane work (' + ', '.join(sorted(work))
+                             + '); restore-lane only undoes an app update\'s lane change')
+        if (self.state_root / 'STOP').exists():
+            raise ValueError('Owner STOP is set; restore-lane changes nothing')
+        active = [job['job_id'] for job in (json.loads(queue[0]) if queue else [])
+                  if job['status'] in ACTIVE_NATIVE_STATUSES]
+        if active:
+            raise ValueError('Batch ' + ', '.join(active) + ' is active; restore-lane waits for it to finish')
+        for worker in (self.state_root / 'workers').glob('*.json'):
+            if self._worker_alive(read_json(worker)):
+                raise ValueError('A live demo batch driver owns this terminal; restore-lane waits')
+        if self._active_seed() is not None:
+            raise ValueError('A seed or catch-up run holds this terminal; restore-lane waits for it to finish')
+        return dict(status='ready_to_restore', authority_kind=lane, restores_to='native_human_control',
+                    evidence=str(evidence), session_sha256=sha(session),
+                    next_action='Run restore-lane --apply. It rewrites only this session\'s lane; MT5, the EA and the queue are untouched.')
+
+    def restore_lane(self, apply=False):
+        """Preview, then with ``apply`` return a customer session an app update moved into the owner
+        demo lane (demo_direct) to native_human_control. Local session file only: never touches MT5,
+        the EA, the receipt or the controller store. The previous session bytes are kept in backups."""
+        if type(apply) is not bool:
+            raise ValueError('restore-lane --apply must be boolean')
+        review = self._lane_restore_review()
+        if not apply or review['status'] == 'already_customer_lane':
+            return review
+        with self._exclusive():
+            review = self._lane_restore_review()
+            if review['status'] == 'already_customer_lane':
+                return review
+            current = self.root / 'session.json'
+            backup = self.state_root / 'backups' / ('session-' + digest(current) + '.json')
+            if not backup.exists():
+                with backup.open('xb') as output, current.open('rb') as source:
+                    shutil.copyfileobj(source, output)
+                    output.flush(); os.fsync(output.fileno())
+            restored = dict(read_json(current), authority_kind='native_human_control')
+            write_json(current, restored)
+            self.session = restored
+            self._append('restore_lane', 'restored', previous_authority_kind=review['authority_kind'],
+                         authority_kind='native_human_control', evidence=review['evidence'],
+                         demo_direct_backup=str(backup), session_sha256=sha(restored))
+            return dict(status='restored', authority_kind='native_human_control',
+                        previous_authority_kind=review['authority_kind'], evidence=review['evidence'],
+                        demo_direct_backup=str(backup), session_sha256=sha(restored),
+                        next_action='Customer-lane tools (goat.exe studio, suite.closeTerminal) work again. Nothing in MT5 changed.')
 
     def _goat_relaunched(self, process):
         """True when GOAT itself started this MT5 process: a /config file in a GOAT-owned folder.
@@ -1964,6 +2105,12 @@ def main(argv=None):
     install.add_argument('--linked-login')
     install.add_argument('--bundle-version')
     install.add_argument('--agent-guide-path', type=Path)
+    install.add_argument('--enter-demo-lane', action='store_true',
+                         help='Owner only: also move this session into the owner demo lane (demo_direct). '
+                              'Without it the session keeps its lane; an app update never passes it')
+    restore = commands.add_parser('restore-lane', help='Preview, then --apply: return a customer session an app update '
+                                  'moved into the owner demo lane back to native_human_control; nothing native runs')
+    restore.add_argument('--apply', action='store_true')
     prepared = commands.add_parser('prepare-batch')
     prepared.add_argument('--batch-id', required=True)
     prepared.add_argument('--plan', type=Path, required=True)
@@ -2078,7 +2225,9 @@ def main(argv=None):
         elif args.command == 'launch-terminal': result = agent.launch_terminal(args.monitor_config)
         elif args.command == 'install-build': result = agent.install_build(args.candidate, args.sha256, args.monitor_config,
             require_running=args.require_running,linked_login=args.linked_login,
-            bundle_version=args.bundle_version,agent_guide_path=args.agent_guide_path)
+            bundle_version=args.bundle_version,agent_guide_path=args.agent_guide_path,
+            enter_demo_lane=args.enter_demo_lane)
+        elif args.command == 'restore-lane': result = agent.restore_lane(args.apply)
         elif args.command == 'prepare-batch': result = agent.prepare_batch(args.batch_id, args.plan)
         elif args.command == 'run-batch': result = agent.run_batch(args.batch_id, args.max_seconds)
         elif args.command == 'resume-batch': result = agent.resume_batch(args.batch_id)

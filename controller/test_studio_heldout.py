@@ -113,6 +113,11 @@ class RegistryTests(unittest.TestCase):
 
     def test_no_file_binds_nothing_and_no_evidence_root_is_not_configured(self):
         self.assertEqual(self.read()['state'], 'absent')
+        (self.root / 'evidence' / 'heldout').mkdir(parents=True)       # a present root without locks.jsonl: no locks
+        self.assertEqual((self.read()['state'], self.read()['locks']), ('absent', []))
+        (self.root / 'evidence' / 'heldout' / 'locks.jsonl').mkdir()     # present but not a readable file: fail closed
+        self.assertEqual(self.read()['state'], 'unavailable')
+        (self.root / 'evidence' / 'heldout' / 'locks.jsonl').rmdir()
         self.assertEqual(read_registry(dict(controller_state_root=str(self.root / 'state')))['state'], 'not_configured')
         # The desktop layout needs no installation key: <data>/suite/<id> -> <data>/evidence.
         layout = read_registry(dict(controller_state_root=str(self.root / 'suite' / 'abc')))
@@ -310,6 +315,41 @@ class EnforcementTests(unittest.TestCase):
             before_native_dispatch(self.c, self.c.job('alpha-batch'))
         self.assertEqual(self.c.job('alpha-batch')['status'], 'pending')
         self.assertNotIn('launch_intent', self.c.job('alpha-batch'))
+
+    def test_an_edited_strategy_ref_after_prepare_refuses_the_start(self):
+        """Claude-Mac (#1885 5975997350): strategy_ref is read only from the plan its manifest
+        hashed; editing it after prepare refuses the start, lock or no lock."""
+        result = prepare_batch(self.c, 'alpha-batch', self.plan('alpha-batch', (self.ref(), self.ref())))
+        plan_path = Path(result['package']) / 'studio-plan.json'
+        plan = json.loads(plan_path.read_text(encoding='utf-8'))
+        plan['strategy_refs'] = [self.ref('beta'), self.ref('beta')]          # try to step out from under alpha
+        plan_path.write_text(json.dumps(plan), encoding='utf-8')
+        from studio_batch_driver import run
+        from studio_research_authority import before_native_dispatch
+        # No lock: the package check every start runs before its journal refuses the edited plan.
+        from studio_batch import _verify_package
+        with self.assertRaisesRegex(ValueError, 'identity changed'):
+            _verify_package(self.c, self.c.job('alpha-batch'))
+        with self.assertRaises(ValueError):
+            run(self.c, 'alpha-batch', max_seconds=60, restart_consent=True)
+        self.assertFalse((self.c.root / 'batch-drivers' / 'alpha-batch.json').exists())
+        # A lock on the declared strategy: the held-out check itself refuses the edited plan.
+        self.lock('alpha')
+        with self.assertRaises(HeldOutRefused) as refused:
+            run(self.c, 'alpha-batch', max_seconds=60)
+        self.assertEqual(refused.exception.code, 'HELDOUT_PLAN_MISMATCH')
+        self.assertIn('no longer matches the hash its manifest recorded at prepare', refused.exception.plain)
+        with self.assertRaises(HeldOutRefused) as refused:
+            before_native_dispatch(self.c, self.c.job('alpha-batch'))
+        self.assertEqual(refused.exception.code, 'HELDOUT_PLAN_MISMATCH')
+        self.assertFalse((self.c.root / 'batch-drivers' / 'alpha-batch.json').exists())
+        self.assertNotIn('launch_intent', self.c.job('alpha-batch'))
+        # Replies and the trial journal never trust the edited strategy either.
+        self.assertEqual(guard_output(self.c.install, dict(batch_id='alpha-batch', profit=1990))['profit']['locked'], True)
+        from studio_trial_journal import journal
+        entries = [e for e in journal(self.c.root, self.c.install)['entries'] if e['batch_id'] == 'alpha-batch']
+        self.assertEqual({e['attribution'] for e in entries}, {'unattributed'})
+        self.assertIn('frozen plan differs from its manifest hash: declared strategy_refs ignored', entries[0]['gaps'])
 
     def test_cli_refusal_names_its_code_and_lock_and_nothing_runs(self):
         self.lock()

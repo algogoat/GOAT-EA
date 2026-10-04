@@ -705,7 +705,10 @@ own journals.
   `strategy_ref` (`HELDOUT_UNATTRIBUTED_MEMBER`). `strategy_ref` is per plan member
   (catch-up: `strategy_refs`, one per set) and is bound into the frozen plan
   (`studio-plan.json` `strategy_refs`, hash-bound by the manifest; seed and catch-up
-  manifests per member); successors keep it. A catch-up plan with
+  manifests per member); successors keep it. While a lock is active a start reads the
+  plan only through that hash and refuses an edited one (`HELDOUT_PLAN_MISMATCH`);
+  replies treat an edited plan as unknown (locked) and the trial journal ignores its
+  declared refs. A catch-up plan with
   `heldout_reveal: {lock_id}` is that lock's reveal: allowed only while the lock is
   `revealing`, for exactly its frozen cells under its own key, through
   `revealableAfter`.
@@ -715,7 +718,9 @@ own journals.
   (metrics, outcomes, verdicts, qualifying counts, sentences, log lines) to
   `{locked: true, lock_id, reveal_after, plain}`, metric tokens in file names become
   `Prf=locked`, and the reply lists `locked_windows`. With no active lock the reply is
-  unchanged.
+  unchanged. Raw files are never rewritten (evidence does not change), and an MT5 run
+  started by hand outside GOAT writes its own `log.GOAT`, reports and exports
+  unredacted: agents must not read those for a locked strategy and window.
 - **Trial journal.** `trial-journal [--since] [--strategy]` emits one entry per member
   of every native batch, seed and catch-up (spec §5 fields plus `kind`, `attempt_key`,
   `strategy_keys`, `exposure`, `oos_output`, `counts_as_peek`, `gaps`) and a digest;

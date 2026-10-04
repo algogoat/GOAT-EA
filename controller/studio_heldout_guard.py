@@ -25,7 +25,8 @@ import re
 import sqlite3
 from contextlib import closing
 
-from studio_heldout import (HeldOutRefused, UNAVAILABLE, active_locks, canonical, enforce, iso_day, legacy_export_end,
+from campaign_ledger import sha
+from studio_heldout import (HeldOutRefused, PLAN_MISMATCH, UNAVAILABLE, active_locks, canonical, enforce, iso_day, legacy_export_end,
                             member_span, native_export_end, overlaps, public_window, read_registry, reveal_lock, window)
 from studio_strategy_attribution import Library, set_values, stable, suggestion, validate_ref
 
@@ -149,17 +150,32 @@ def _plan_members(context, plan, *, export_bound=None):
     return members
 
 
+def hashed_plan(root, job_id):
+    """The frozen plan a start may trust: ``studio-plan.json`` exactly as its manifest
+    hashed it at prepare (``campaign_id = sha(plan)``). Returns None when either file is
+    missing or unreadable; refuses when the plan no longer matches its manifest, so an
+    edited ``strategy_ref`` can never move a member out from under a lock."""
+    package = Path(root) / 'packages' / job_id
+    plan, manifest = _json_file(package / 'studio-plan.json'), _json_file(package / 'manifest.json')
+    if not isinstance(plan, dict) or not isinstance(manifest, dict):
+        return None
+    if manifest.get('campaign_id') != sha(plan):
+        raise HeldOutRefused(PLAN_MISMATCH, 'Prepared batch installation or plan identity changed: batch %s\'s frozen plan '
+                             'no longer matches the hash its manifest recorded at prepare, so its strategy_ref and dates '
+                             'cannot be trusted. Nothing was started; prepare the plan again under a new batch ID.' % job_id)
+    return plan
+
+
 def check_native_start(controller, job_id, *, now=None):
-    """run-batch / start / config start: re-check the frozen plan (a lock declared after prepare refuses it)."""
+    """run-batch / start / config start: re-check the frozen plan (a lock declared after prepare
+    refuses it). Its dates and strategy_ref are read only through the manifest hash: an edited
+    plan is refused here. With no active lock nothing here reads the plan; the package check
+    that follows (``_verify_package``) refuses the same mismatch before any journal."""
     context = Context(controller.install, controller.root, now=now)
     _registry_or_refuse(context)
     if not context.active:
         return None
-    plan_path = controller.root / 'packages' / job_id / 'studio-plan.json'
-    try:
-        plan = json.loads(plan_path.read_bytes().decode('utf-8-sig'))
-    except (OSError, ValueError):
-        plan = None
+    plan = hashed_plan(controller.root, job_id)
     if not isinstance(plan, dict):
         members = [dict(label='(frozen plan unreadable)', span=None, declared=None, keys=[], reveal=False)]
     else:
@@ -248,8 +264,13 @@ def _run_members(context, run_id):
         return context._runs[run_id]
     members = None
     if re.fullmatch(r'[A-Za-z0-9_-]{1,80}', run_id or ''):
-        plan = _json_file(context.root / 'packages' / run_id / 'studio-plan.json')
-        if isinstance(plan, dict):
+        try:
+            plan = hashed_plan(context.root, run_id)
+        except HeldOutRefused:
+            plan = False        # an edited plan is unknown: locked while any lock is active
+        if plan is False:
+            pass
+        elif isinstance(plan, dict):
             bound = None
             if native_export_end(plan.get('native_batch'))[1]:
                 bound = _export_bound(context, run_id)

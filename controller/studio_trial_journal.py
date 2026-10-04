@@ -187,7 +187,12 @@ def _native_entries(root, suite_id, job, library):
     _, manifest = _read(Path(root) / 'packages' / job_id / 'manifest.json')
     _, sources = _read(Path(root) / 'packages' / (job_id + '.source.json'))
     plan = plan if isinstance(plan, dict) else {}
+    gaps_job = []
     refs = plan.get('strategy_refs') if isinstance(plan.get('strategy_refs'), list) else []
+    if refs and (manifest or {}).get('campaign_id') != sha(plan):
+        # A declared strategy is trusted only from the plan its manifest hashed at prepare.
+        refs = []
+        gaps_job.append('frozen plan differs from its manifest hash: declared strategy_refs ignored')
     source_members = (sources or {}).get('members') or []
     manifest_jobs = (manifest or {}).get('jobs') or []
     launch = job.get('launch_intent') or {}
@@ -198,7 +203,6 @@ def _native_entries(root, suite_id, job, library):
         result_raw, result = _read(Path(root) / 'attempts' / attempt_id / 'result.json', MAX_RESULT)
     if not isinstance(result, dict) and completion.get('member_outcomes'):
         result = completion
-    gaps_job = []
     retired = completion.get('kind') == 'retired_never_activated' or (result or {}).get('classification') == 'retired_never_started'
     observation = job.get('native_observation') or {}
     in_flight = (not retired and not (result or {}).get('member_outcomes') and attempt_id is not None and (

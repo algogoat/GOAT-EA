@@ -1,0 +1,4 @@
+# Existing publisher wheels: algogoat/goatai desktop/tools/suiteRuntimeDependencies.cjs.
+# CPython 3.13, Windows x64 only. Direct URLs and hashes prevent resolution drift.
+MetaTrader5 @ https://files.pythonhosted.org/packages/00/cb/edc9bd6efff880c65b63ceffaa971f0cf70b8e4ec781eafd4fdee6c3c26c/metatrader5-5.0.6180-cp313-cp313-win_amd64.whl --hash=sha256:41a89f9c87ab690f7c404ca0dd1bbdfd41630fff3860d4145ed464547860fb97
+numpy @ https://files.pythonhosted.org/packages/cb/3b/d58c12eafcb298d4e6d0d40216866ab15f59e55d148a5658bb3132311fcf/numpy-2.2.6-cp313-cp313-win_amd64.whl --hash=sha256:b0544343a702fa80c95ad5d3d608ea3599dd54d4632df855e4c8d24eb6ecfa1c

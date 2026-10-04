@@ -1,6 +1,10 @@
-#ifndef GOAT_STUDIO_DISPATCH_MQH
+﻿#ifndef GOAT_STUDIO_DISPATCH_MQH
 #define GOAT_STUDIO_DISPATCH_MQH
 #include "GOATStudioWorkers.mqh"
+#include "GOATStudioRecovery.mqh"
+#ifdef GOAT_STOP_CONFIRM_V149
+#include "GOATTesterStopConfirm.mqh"
+#endif
 // Included after Studio UI helpers. Requests are terminal-local and require the
 // same exclusive launch.lock used by every configured controller transaction.
 bool GoatStudioCommonDigest(const string path,const string expected)
@@ -60,21 +64,38 @@ string GoatStudioCancelRequest(const string body)
          && GOATJsonGetString(snapshot,s,i,"status",status)
          && (status=="starting" || status=="running" || status=="verifying" || status=="reconcile_required")) matched=true;
      }
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+   // login and server were verified against this terminal's account above.
+   string base=GoatOptBasePath("GOAT V"+GOAT_VERSION_LABEL,server);
+#else
    string base="GOAT\\GOAT V"+GOAT_VERSION_LABEL+"-"+server;
+#endif
    if(!matched || !GoatStudioCommonDigest(base+"\\agent-native-control-owner.json",owner_hash)
       || !GoatStudioCommonDigest(base+"\\active_optimization_run.ini",pointer_hash)) return "CANCEL_NATIVE_OWNER_CHANGED";
    // Pointer identity was frozen by the controller while holding this gate.
    string pointer=GoatOptReadTextFile(base+"\\active_optimization_run.ini");
    if(GoatOptReadIniValue(pointer,"RunPath")!=native_run) return "CANCEL_RUN_CHANGED";
    if(!GoatStudioWriteUtf8("GOATStudio\\native-gate\\consumed-"+id+".json",body)) return "CANCEL_ALREADY_CONSUMED";
+#ifdef GOAT_CANCEL_ORIGIN_V149
+   GoatBatchRecordControllerCancel();
+#else
    GlobalVariableSet(GOAT_BATCH_CANCELLED_GV,1.0);
+#endif
    GlobalVariableDel("BatchOnGoing");GlobalVariableDel("TerminalRunning");
    GoatBatchClearDeferredRestart();GlobalVariablesFlush();
    bool cleared=true;
    string guard=base+"\\active_optimization_launch.ini",cfg=base+"\\active_optimization_config.ini";
    if(FileIsExist(guard,FILE_COMMON) && !FileDelete(guard,FILE_COMMON)) cleared=false;
    if(FileIsExist(cfg,FILE_COMMON) && !FileDelete(cfg,FILE_COMMON)) cleared=false;
+#ifdef GOAT_STOP_CONFIRM_V149
+   // Bounded multi-read idle confirmation; one 100 ms read raced MT5's shutdown.
+   bool stopped=GoatTesterStopConfirmed();
+   Print("GOAT_CANCEL_STOP_CONFIRM build_id="+GOAT_BUILD_ID+" request="+id+" idle_confirmed="+(stopped ? "true" : "false")
+         +" polls="+(string)g_GoatStopConfirmPolls+" stop_clicks="+(string)g_GoatStopConfirmClicks
+         +" elapsed_ms="+(string)g_GoatStopConfirmElapsedMs);
+#else
    bool stopped=MTTESTER::ClickStop(1);
+#endif
    string items[];StringSplit(GetFileContent(native_run+"\\queue.GOAT"),(ushort)31,items);
    bool saved=(ArraySize(items)>0);
    for(int i=0;i<ArraySize(items);i++)
@@ -90,6 +111,11 @@ string GoatStudioCancelRequest(const string body)
 
 string GoatStudioExecuteRequest(const string body,const string request_hash)
   {
+#ifdef GOAT_ORPHAN_RECOVERY_V149
+   SGOATJsonToken recovery_tokens[];string recovery_action;
+   if(GOATJsonParse(body,recovery_tokens) && GOATJsonGetString(body,recovery_tokens,0,"action",recovery_action)
+      && recovery_action=="recover_orphan_continuation") return GoatStudioRecoverOrphan(body,request_hash);
+#endif
 #ifdef GOAT_SEQUENCE_EXPORT_V148
    SGOATJsonToken action_tokens[];string requested_action;
    if(GOATJsonParse(body,action_tokens) && GOATJsonGetString(body,action_tokens,0,"action",requested_action) && requested_action=="cancel")
@@ -162,7 +188,12 @@ string GoatStudioExecuteRequest(const string body,const string request_hash)
      }
    if(action=="start" && has_restart) return "RESTART_ROUTE_SELECTED";
    if(action=="arm_restart" && !restart_matched) return "RESTART_INTENT_REJECTED";
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+   // login and server were verified against this terminal's account above.
+   string base=GoatOptBasePath("GOAT V"+GOAT_VERSION_LABEL,server);
+#else
    string base="GOAT\\GOAT V"+GOAT_VERSION_LABEL+"-"+server;
+#endif
    string paths[]={native_run+"\\queue.GOAT",native_run+"\\inputs\\"+alias+"\\Inputs.GOAT",
                    base+"\\active_optimization_run.ini",base+"\\active_optimization_config.ini",
                    base+"\\active_optimization_launch.ini",base+"\\agent-native-control-owner.json"};
@@ -171,8 +202,17 @@ string GoatStudioExecuteRequest(const string body,const string request_hash)
      {
       string hash;if(!GOATJsonGetString(body,t,0,fields[i],hash) || !GoatStudioCommonDigest(paths[i],hash)) return "NATIVE_CONTROL_DRIFT";
      }
+   // The Start message is undocumented and not covered by the Agents menu check.
+   // Gate only the direct Start route; arm_restart uses the recorded /config route.
+   int start_build=(int)TerminalInfoInteger(TERMINAL_BUILD);
+   if(action=="start" && start_build!=6182 && start_build!=6230) return "START_PROTOCOL_NOT_QUALIFIED";
    string error,entries[];
    if(!GoatStudioINIEntries(ini,entries,error)) return "INVALID_TESTER_INI";
+#ifdef GOAT_CANCEL_ORIGIN_V149
+   double prior_cancel=GlobalVariableGet(GOAT_BATCH_CANCELLED_GV);
+   if(GlobalVariableGet(GOAT_BATCH_HUMAN_CANCEL_GV)!=0.0
+      || (prior_cancel!=0.0 && prior_cancel!=2.0)) return "HUMAN_CANCEL_RETAINED";
+#endif
    // This immutable record precedes even setting the tester; any interruption
    // after consumption must be reconciled, never automatically sent again.
    if(!GoatStudioWriteUtf8("GOATStudio\\native-gate\\consumed-"+id+".json",body)) return "ALREADY_CONSUMED_OR_CLAIM_FAILED";
@@ -185,16 +225,38 @@ string GoatStudioExecuteRequest(const string body,const string request_hash)
          || AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO
          || login!=(string)AccountInfoInteger(ACCOUNT_LOGIN) || server!=AccountInfoString(ACCOUNT_SERVER)
          || GlobalVariableGet("BatchOnGoing")!=0 || GlobalVariableGet("GOAT_BatchRestartPending")!=0
-         || GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0) return "RESTART_RUNTIME_CHANGED";
+#ifndef GOAT_CONFIG_REPORT_START_V149
+         || GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0
+#endif
+         ) return "RESTART_RUNTIME_CHANGED";
       if(!GoatStudioWriteUtf8("GOATStudio\\native-gate\\arm-intent-"+id+".json",
          "{\"request_sha256\":"+GoatStudioQuote(request_hash)+",\"startup_sha256\":"+GoatStudioQuote(startup_hash)+"}")) return "ARM_INTENT_WRITE_FAILED";
+#ifdef GOAT_CONFIG_REPORT_START_V149
+#ifdef GOAT_CANCEL_ORIGIN_V149
+      if(!GoatBatchReleaseControllerCancel()) return "HUMAN_CANCEL_RETAINED";
+#else
+      GlobalVariableDel(GOAT_BATCH_CANCELLED_GV);
+#endif
+#endif
       if(GlobalVariableSet("BatchOnGoing",1.0)==0) return "ARM_FAILED";
       GlobalVariablesFlush();
+#ifdef GOAT_CANCEL_ORIGIN_V149
+      if(!GoatBatchVerifyArmedStart()) return "HUMAN_CANCEL_RETAINED";
+#endif
       return "RESTART_ARMED_RECONCILE";
      }
    string observed;
+#ifdef GOAT_TESTER_SEMANTIC_V149
+   if(!MTTESTER::SetSettings2(ini,1))
+     {Print("Studio settings refused: native paste/readback failed");return "SETTINGS_NOT_VERIFIED";}
+   if(!MTTESTER::GetSettingsManaged(observed))
+     {Print("Studio settings refused: fresh native readback unavailable");return "SETTINGS_NOT_VERIFIED";}
+   if(!GoatStudioINIEqual(ini,observed,error))
+     {Print("Studio settings refused: "+StringSubstr(error,0,160));return "SETTINGS_NOT_VERIFIED";}
+#else
    if(!MTTESTER::SetSettings2(ini,1) || !MTTESTER::GetSettingsManaged(observed)
       || !GoatStudioINIEqual(ini,observed,error)) return "SETTINGS_NOT_VERIFIED";
+#endif
    bool worker_local,worker_remote,worker_cloud;
    if(!GoatStudioReadWorkerPolicy(worker_local,worker_remote,worker_cloud)
       || !worker_local || worker_remote || worker_cloud) return "WORKER_POLICY_NOT_VERIFIED";
@@ -209,13 +271,21 @@ string GoatStudioExecuteRequest(const string body,const string request_hash)
      {
       string hash;if(!GOATJsonGetString(body,t,0,fields[i],hash) || !GoatStudioCommonDigest(paths[i],hash)) return "NATIVE_CONTROL_DRIFT";
      }
+
    // Persist intent before arming: a failed receipt must not leave a batch armed.
    if(IsStopped() || expires<=(long)TimeGMT()) return "REQUEST_EXPIRED_BEFORE_START";
    if(!GoatStudioWriteUtf8("GOATStudio\\native-gate\\start-intent-"+id+".json",
        "{\"request_sha256\":"+GoatStudioQuote(request_hash)+"}")) return "START_INTENT_WRITE_FAILED";
+#ifdef GOAT_CANCEL_ORIGIN_V149
+   if(!GoatBatchReleaseControllerCancel()) return "HUMAN_CANCEL_RETAINED";
+#else
    GlobalVariableDel(GOAT_BATCH_CANCELLED_GV);
+#endif
    if(GlobalVariableSet("BatchOnGoing",1.0)==0) return "ARM_FAILED";
    GlobalVariablesFlush();
+#ifdef GOAT_CANCEL_ORIGIN_V149
+   if(!GoatBatchVerifyArmedStart()) return "HUMAN_CANCEL_RETAINED";
+#endif
    // Check=false avoids helper retries/UI heuristics; one native start message.
    MTTESTER::ClickStart(false,1);
    return "START_SIGNAL_SENT_RECONCILE";

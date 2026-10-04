@@ -12,7 +12,10 @@ def startup_config(material):
     sections = material['sections']
     if set(sections) != {'Charts', 'Experts', 'Tester', 'TesterInputs'}:
         raise ValueError('Unexpected startup sections')
-    if sections['Charts'] != {'ProfileLast': 'GOAT Research'}:
+    profile=material.get('plan',{}).get('research_binding',{}).get('research_profile','GOAT Research')
+    if profile!='GOAT Research' and not re.fullmatch(r'GOAT-Studio-[A-Za-z0-9_-]{1,100}',profile):
+        raise ValueError('Unsafe bound research profile')
+    if sections['Charts'] != {'ProfileLast': profile}:
         raise ValueError('Research profile required')
     if sections['Experts'] != {'Enabled': '0', 'AllowLiveTrading': '0'}:
         raise ValueError('Disabled chart trading required')

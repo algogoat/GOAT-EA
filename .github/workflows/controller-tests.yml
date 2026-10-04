@@ -1,0 +1,115 @@
+name: Controller Windows tests
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: controller-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  controller:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: "1"
+      PYTHONNOUSERSITE: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      FIRESTORE_EMULATOR_HOST: 127.0.0.1:1
+    steps:
+      - name: Check out proposed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Windows x64 Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+          architecture: x64
+
+      - name: Install only the publisher's hash-pinned native wheels
+        run: |
+          python -m pip install --no-index --no-deps --only-binary=:all: --require-hashes -r controller/ci-requirements.txt
+
+      - name: Verify native imports without connecting to MT5
+        shell: python
+        env:
+          # Hosted Windows TEMP defaults to a short-name alias; require canonical fixtures.
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          import sys
+          import tempfile
+          from pathlib import Path
+          import numpy
+          import MetaTrader5
+          assert sys.platform == "win32" and sys.version_info[:2] == (3, 13)
+          fixture_temp = Path(tempfile.gettempdir())
+          assert fixture_temp.is_absolute() and fixture_temp.resolve() == fixture_temp
+          print("Canonical fixture temp", fixture_temp)
+          assert numpy.__version__ == "2.2.6"
+          assert MetaTrader5.__version__ == "5.0.6180"
+          assert numpy.dot(numpy.array([2, 3]), numpy.array([4, 5])).item() == 23
+          print(sys.version)
+          print("Verified NumPy", numpy.__version__, "and MetaTrader5", MetaTrader5.__version__)
+
+      - name: Verify semantic tester settings round-trip fixtures
+        run: node scripts/test_studio_setting_compare.cjs
+
+      - name: Verify Studio control feedback state transitions
+        run: node scripts/test_studio_control_feedback.cjs
+      - name: Verify agent committed export display and retained human draft
+        run: node scripts/test_studio_agent_export_display.cjs
+      - name: Native batch cancellation origin
+        run: node scripts/test_batch_cancel_origin.cjs
+      - name: Native optimization axis isolation and pre-start readback
+        run: node scripts/test_optimization_axis_isolation.cjs
+      # One command per step: a multi-line pwsh step only fails on its last exit code.
+      - name: No-profitable-passes research outcome
+        run: node scripts/test_research_outcome.cjs
+      - name: Connection code prompt and fragment link
+        run: node scripts/test_connection_code.cjs
+      - name: The EA shares its pending connection code locally (LC36 activation-code file)
+        run: node scripts/test_activation_code_file.cjs
+      - name: Broker facts on device/start and the license check (zero-click demo pairing, goatai#1885)
+        run: node scripts/test_broker_facts_payload.cjs
+      - name: Research outcome mutation check (every EA guard is load-bearing)
+        run: node scripts/test_research_outcome_mutations.cjs
+      - name: Research outcome controller mutation check
+        run: python scripts/test_research_outcome_controller_mutations.py
+      - name: Agent connection compact and full layout
+        run: node scripts/test_agent_connection_layout.cjs
+      - name: Steady Studio panel (one paint per refresh) and its mutation check
+        run: |
+          node scripts/test_studio_steady_panel.cjs
+          node scripts/test_studio_steady_panel_mutations.cjs
+      - name: Dashboard overview presentation
+        run: node scripts/test_dashboard_overview.cjs
+      - name: FU35 cancel stop confirmation and EvidenceEnd export boundary
+        run: node scripts/test_ea_followups.cjs
+      - name: FU35 mutation check (every EA guard is load-bearing)
+        run: node scripts/test_ea_followups_mutations.cjs
+      - name: EvidenceEnd controller staging mutation check
+        run: python scripts/test_evidence_end_export_controller_mutations.py
+
+      - name: Verify Studio derived Report handoff safety
+        run: node scripts/test_studio_derived_report.cjs
+      - name: Terminal isolation (per-terminal batch state, per-login credential)
+        run: node scripts/test_terminal_isolation.cjs
+      - name: Terminal isolation mutation check (every guard is load-bearing)
+        run: |
+          node scripts/test_terminal_isolation_mutations.cjs
+          python scripts/test_terminal_isolation_controller_mutations.py
+      - name: Protected peer restart mutation check (every refusal is load-bearing)
+        run: python scripts/test_peer_restart_mutations.py
+
+      - name: Run every controller fixture test
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: python -m unittest discover -s controller -p "test_*.py" -v

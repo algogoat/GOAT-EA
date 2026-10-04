@@ -11,6 +11,7 @@ import argparse
 from campaign_ledger import sha
 from strategy_registry import inspect_set
 from studio_settings import validate_export, serialize_export
+from studio_evidence_end_export import serialize as with_evidence_end, setting as evidence_end_setting
 
 
 def native_run_relative(plan):
@@ -45,6 +46,7 @@ def prepare(plan_path, registry_path, output):
             BackOOSDate=native['back_oos_date'],MinARF=0.2,MinSR=2.5,IncludeBackOOS=True)))
         if export_settings['BackOOSDate'] != native['back_oos_date']:
             raise ValueError('Export BOOS date differs from native window')
+        evidence_end_setting(native)  # Refuse a staged EvidenceEnd that differs from the resolved one.
     # The packer is never allowed to write into either terminal or Common Files.
     out = output.resolve()
     roots = [Path(binding['research_data_root']).resolve(),
@@ -124,9 +126,24 @@ def prepare(plan_path, registry_path, output):
                     raise ValueError('Native forward report exceeds legacy path budget')
             elif tester['ForwardMode'] != 0:
                 raise ValueError('Initial engineering package supports standalone discovery only')
-            ini = '[Charts]\r\nProfileLast=GOAT Research\r\n[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n[Tester]\r\n'
+            profile=binding.get('research_profile','GOAT Research')
+            if profile!='GOAT Research' and not re.fullmatch(r'GOAT-Studio-[A-Za-z0-9_-]{1,100}',profile):
+                raise ValueError('Unsafe research profile')
+            ini = '[Charts]\r\nProfileLast='+profile+'\r\n[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n[Tester]\r\n'
             ini += ''.join(f'{key}={value}\r\n' for key,value in tester.items())
-            ini += '[TesterInputs]\r\n' + updated
+            native_inputs=updated
+            if binding['ea_version']=='1.49':
+                from studio_optimization_inputs import explicit_optimization_inputs,verify_explicit_inputs
+                from studio_strategy_settings import read_values
+                schema=json.loads((Path(__file__).parent/'contracts/v149/inputs.json').read_text(encoding='utf-8-sig'))
+                native_inputs=explicit_optimization_inputs(updated,schema)
+                # Every optimizable input carries its own flag, so the terminal's saved
+                # tester profile cannot add an axis; Y stays exactly on the source axes.
+                source_values=read_values(updated.encode('utf-16'))
+                axes={k for k,v in source_values.items() if k in schema['inputs'] and schema['inputs'][k]['type']!='string'
+                      and len(v.split('||'))==5 and v.split('||')[4]=='Y'}
+                verify_explicit_inputs(read_values(native_inputs.encode('utf-16')),schema,axes)
+            ini += '[TesterInputs]\r\n' + native_inputs
             staged.append((tag, raw, ini.encode('utf-16'), dict(job=job, run_alias=tag, tester=tester,
                            source_sha256=before['sha256'], staged_sha256=after['sha256'],
                            canonical_sha256=before['canonical_sha256'], report_relative=tester['Report'])))
@@ -158,7 +175,8 @@ def prepare(plan_path, registry_path, output):
             (folder/'Inputs.GOAT').write_bytes(raw)
             (folder/'Queue.GOAT').write_bytes((queue_parts[-1]+'\x1f\r\n').encode('utf-16'))
         queue = '\x1f\r\n'.join(queue_parts) + '\x1f\r\n'
-        export = serialize_export(export_settings)
+        # FU35+: the batch's one resolved evidence end, so every member's export ends on the same day.
+        export = with_evidence_end(serialize_export(export_settings), native)
         manifest = ('[OptimizationRun]\r\nVersion=1\r\nRunName=GOAT Studio\r\nRunPath=' +
                     native['run_relative'] + '\r\nEA=GOAT V'+binding['ea_version']+'\r\nServer='+safe_token(binding['account_server'])+'\r\n')
         package = manifest.replace('[OptimizationRun]', '[GOATBATCH]') + '[GOAT_EXPORT_SETTINGS]\r\n' + export + '[/GOAT_EXPORT_SETTINGS]\r\n[GOAT_QUEUE]\r\n' + queue + '[/GOAT_QUEUE]\r\n[GOAT_INPUTS]\r\n'
@@ -170,6 +188,8 @@ def prepare(plan_path, registry_path, output):
         receipt['native_run_relative'] = native['run_relative']
         receipt['export_end_policy'] = native['export_end_policy']
         receipt['export_settings'] = export_settings
+        if evidence_end_setting(native) is not None:
+            receipt['export_evidence_end'] = evidence_end_setting(native)
     (output / 'manifest.json').write_text(json.dumps(receipt, indent=2), encoding='utf-8')
     return receipt
 

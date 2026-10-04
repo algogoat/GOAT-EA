@@ -70,7 +70,7 @@ jobs:
       - name: Native optimization axis isolation and pre-start readback
         run: node scripts/test_optimization_axis_isolation.cjs
       # One command per step: a multi-line pwsh step only fails on its last exit code.
-      - name: No-profitable-passes research outcome
+      - name: Research outcomes (no profitable passes, no qualifying rows)
         run: node scripts/test_research_outcome.cjs
       - name: Connection code prompt and fragment link
         run: node scripts/test_connection_code.cjs

@@ -10,13 +10,45 @@ const outcome='test_research_outcome.cjs',code='test_connection_code.cjs';
 const mutations=[
   ['unread back report classified','XmlProcessor.mqh',R`if(!back_read || !title_matches) return "";`,R`if(!title_matches) return "";`,outcome],
   ['mismatched file name classified','XmlProcessor.mqh',R`if(!back_read || !title_matches) return "";`,R`if(!back_read) return "";`,outcome],
-  ['unknown window classified','XmlProcessor.mqh',R`if(window_start<=0 || forward_date<=window_start || window_end<=forward_date) return "";`,'',outcome],
-  ['forward date outside the window accepted','XmlProcessor.mqh',R`if(window_start<=0 || forward_date<=window_start || window_end<=forward_date) return "";`,R`if(window_start<=0) return "";`,outcome],
+  // Anchors that the nothing-qualified guard repeats start one line earlier to stay unique.
+  ['unknown window classified','XmlProcessor.mqh',R`if(!back_read || !title_matches) return "";
+   if(window_start<=0 || forward_date<=window_start || window_end<=forward_date) return "";`,R`if(!back_read || !title_matches) return "";`,outcome],
+  ['forward date outside the window accepted','XmlProcessor.mqh',R`if(!back_read || !title_matches) return "";
+   if(window_start<=0 || forward_date<=window_start || window_end<=forward_date) return "";`,R`if(!back_read || !title_matches) return "";
+   if(window_start<=0) return "";`,outcome],
   ['kept rows classified','XmlProcessor.mqh',R`if(passes<=0 || kept!=0) return "";`,R`if(passes<=0) return "";`,outcome],
   ['mixed pairs classified','XmlProcessor.mqh',R`if(ret && noEdgePairs==pairs) xmlData.outcome`,R`if(ret) xmlData.outcome`,outcome],
   ['another failure masked','XmlProcessor.mqh',R`if(ret && noEdgePairs==pairs) xmlData.outcome`,R`if(noEdgePairs==pairs) xmlData.outcome`,outcome],
-  ['no-edge reported as success','XmlProcessor.mqh',"xmlData.outcome=GOAT_XML_NO_PROFITABLE_PASSES;\r\n      ret=false;","xmlData.outcome=GOAT_XML_NO_PROFITABLE_PASSES;\r\n",outcome],
-  ['no-edge pair still merged and written','XmlProcessor.mqh',"LogOrPrint(reportMode,xmlData.OutcomeSentence(),Key_,EA_Name_,Server_);\r\n          continue;","LogOrPrint(reportMode,xmlData.OutcomeSentence(),Key_,EA_Name_,Server_);\r\n",outcome],
+  ['no-edge reported as success','XmlProcessor.mqh',"xmlData.outcome=GOAT_XML_NO_QUALIFYING_ROWS;\r\n      ret=false;","xmlData.outcome=GOAT_XML_NO_QUALIFYING_ROWS;\r\n",outcome],
+  ['no-edge pair still merged and written','XmlProcessor.mqh',"xmlData.pairOutcome=GOAT_XML_NO_PROFITABLE_PASSES;\r\n          LogOrPrint(reportMode,xmlData.OutcomeSentence(),Key_,EA_Name_,Server_);\r\n          continue;","xmlData.pairOutcome=GOAT_XML_NO_PROFITABLE_PASSES;\r\n          LogOrPrint(reportMode,xmlData.OutcomeSentence(),Key_,EA_Name_,Server_);\r\n",outcome],
+  // No qualifying rows (Banker g6-r1b): kept passes merged with the forward report, none scored 60+.
+  ['nothing-qualified pair still written','XmlProcessor.mqh',"xmlData.pairOutcome=GOAT_XML_NO_QUALIFYING_ROWS;\r\n          LogOrPrint(reportMode,xmlData.OutcomeSentence(),Key_,EA_Name_,Server_);\r\n          continue;","xmlData.pairOutcome=GOAT_XML_NO_QUALIFYING_ROWS;\r\n          LogOrPrint(reportMode,xmlData.OutcomeSentence(),Key_,EA_Name_,Server_);\r\n",outcome],
+  ['mixed outcomes classified as nothing qualified','XmlProcessor.mqh',R`if(ret && noQualifierPairs==pairs) xmlData.outcome`,R`if(ret) xmlData.outcome`,outcome],
+  ['nothing qualified masks another failure','XmlProcessor.mqh',R`if(ret && noQualifierPairs==pairs) xmlData.outcome`,R`if(noQualifierPairs==pairs) xmlData.outcome`,outcome],
+  ['failed forward merge classified','XmlProcessor.mqh',R` || !forward_read) return "";`,R`) return "";`,outcome],
+  ['nothing-qualified window not checked','XmlProcessor.mqh',R`!forward_read) return "";
+   if(window_start<=0 || forward_date<=window_start || window_end<=forward_date) return "";`,R`!forward_read) return "";`,outcome],
+  ['nothing kept classified as nothing qualified','XmlProcessor.mqh',R`if(passes<=0 || kept<=0 || kept>profitable || profitable>passes) return "";`,R`if(passes<=0 || kept>profitable || profitable>passes) return "";`,outcome],
+  ['kept count unbounded','XmlProcessor.mqh',R`if(passes<=0 || kept<=0 || kept>profitable || profitable>passes) return "";`,R`if(passes<=0 || kept<=0) return "";`,outcome],
+  ['nothing-qualified partial back report','XmlProcessor.mqh',R`profitable>passes) return "";
+   if(!report_closed || malformed!=0) return "";`,R`profitable>passes) return "";`,outcome],
+  ['kept passes need not have traded','XmlProcessor.mqh',R`if(traded<kept || traded>passes) return "";`,'',outcome],
+  ['nothing-qualified forward rows unbounded','XmlProcessor.mqh',R`if(traded<kept || traded>passes) return "";
+   if(forward_rows<=0 || forward_rows>passes) return "";`,R`if(traded<kept || traded>passes) return "";`,outcome],
+  ['kept pass missing from forward accepted','XmlProcessor.mqh',R`if(forward_matched!=kept || forward_mismatches!=0 || forward_malformed!=0) return "";`,R`if(forward_mismatches!=0 || forward_malformed!=0) return "";`,outcome],
+  ['back/forward disagreement accepted','XmlProcessor.mqh',R`if(forward_matched!=kept || forward_mismatches!=0 || forward_malformed!=0) return "";`,R`if(forward_matched!=kept || forward_malformed!=0) return "";`,outcome],
+  ['unreadable forward rows accepted','XmlProcessor.mqh',R`if(forward_matched!=kept || forward_mismatches!=0 || forward_malformed!=0) return "";`,R`if(forward_matched!=kept || forward_mismatches!=0) return "";`,outcome],
+  ['qualifying score classified','XmlProcessor.mqh',R`if(min_score<=0 || best_score<0 || !(best_score<min_score)) return "";`,R`if(min_score<=0 || best_score<0) return "";`,outcome],
+  ['best combined score never recorded','XmlProcessor.mqh',R`bestCombinedScore=(ArraySize(Rows)>0 ? Rows[0].Score : 0.0);`,'',outcome],
+  ['back-result mismatch not counted','XmlProcessor.mqh',R`forwardMismatches++;
+               LogOrPrint(reportMode,"❌ Back result mismatch`,R`LogOrPrint(reportMode,"❌ Back result mismatch`,outcome],
+  ['inputs mismatch not counted','XmlProcessor.mqh',R`forwardMismatches++;
+               LogOrPrint(reportMode,"❌ Inputs mismatch`,R`LogOrPrint(reportMode,"❌ Inputs mismatch`,outcome],
+  ['unreadable forward cells not counted','XmlProcessor.mqh',R`if(!IsNumberCell(profitCell) || !IsNumberCell(tradesCell)) forwardMalformed++;`,'',outcome],
+  ['forward row loops forever at EOF','XmlProcessor.mqh',R`if(FileIsEnding(hForward)) {forwardMalformed++; break;}   // truncated report: never loop at EOF`,'',outcome],
+  ['nothing qualified written as Error','GOAT V1.49.mq5',R`Strat,"NoQualifyingRows",`,R`Strat,"Error",`,outcome],
+  ['real combine errors written as nothing qualified','GOAT V1.49.mq5',R`else if(xmlData.outcome==GOAT_XML_NO_QUALIFYING_ROWS)`,R`else if(true)`,outcome],
+  ['summary ignores nothing qualified','Optimizer.mqh',R` && fields[3]!="NoQualifyingRows"`,'',outcome],
   ['passes counted after the profit filter','XmlProcessor.mqh',"            passesSeen++;\r\n","",outcome],
   ['best profit only from kept rows','XmlProcessor.mqh',R`if(passesSeen==0 || Rows[i].back_profit>bestProfit) bestProfit=Rows[i].back_profit;`,'',outcome],
   ['log back to Rows Saved=0/0','XmlProcessor.mqh',R`"/"+(string)passesSeen`,R`"/"+(string)i`,outcome],
@@ -30,10 +62,17 @@ const mutations=[
   // Review HIGH/MEDIUM: proof of trading and a whole report.
   ['zero-trade report classified','XmlProcessor.mqh',R`if(traded<=0 || traded>passes) return "";`,R`if(traded>passes) return "";`,outcome],
   ['traded count unbounded','XmlProcessor.mqh',R`if(traded<=0 || traded>passes) return "";`,R`if(traded<=0) return "";`,outcome],
-  ['unparsed rows classified','XmlProcessor.mqh',R`if(!report_closed || malformed!=0) return "";`,R`if(!report_closed) return "";`,outcome],
-  ['partial report classified','XmlProcessor.mqh',R`if(!report_closed || malformed!=0) return "";`,R`if(malformed!=0) return "";`,outcome],
-  ['forward report not required','XmlProcessor.mqh',R`if(forward_rows<=0 || forward_rows>passes) return "";`,'',outcome],
-  ['forward rows unbounded','XmlProcessor.mqh',R`if(forward_rows<=0 || forward_rows>passes) return "";`,R`if(forward_rows<=0) return "";`,outcome],
+  ['unparsed rows classified','XmlProcessor.mqh',R`if(passes<=0 || kept!=0) return "";
+   if(!report_closed || malformed!=0) return "";`,R`if(passes<=0 || kept!=0) return "";
+   if(!report_closed) return "";`,outcome],
+  ['partial report classified','XmlProcessor.mqh',R`if(passes<=0 || kept!=0) return "";
+   if(!report_closed || malformed!=0) return "";`,R`if(passes<=0 || kept!=0) return "";
+   if(malformed!=0) return "";`,outcome],
+  ['forward report not required','XmlProcessor.mqh',R`if(traded<=0 || traded>passes) return "";
+   if(forward_rows<=0 || forward_rows>passes) return "";`,R`if(traded<=0 || traded>passes) return "";`,outcome],
+  ['forward rows unbounded','XmlProcessor.mqh',R`if(traded<=0 || traded>passes) return "";
+   if(forward_rows<=0 || forward_rows>passes) return "";`,R`if(traded<=0 || traded>passes) return "";
+   if(forward_rows<=0) return "";`,outcome],
   ['losing passes counted as traded','XmlProcessor.mqh',R`else if(ExtractDataAsDouble(line)>0) tradedSeen++;`,R`else tradedSeen++;`,outcome],
   ['losing trades cell not checked','XmlProcessor.mqh',R`if(line=="</Row>" || !IsNumberCell(line)) malformedSeen++;`,R`if(false) malformedSeen++;`,outcome],
   ['unreadable profit not counted','XmlProcessor.mqh',R`if(!IsNumberCell(passCell) || !IsNumberCell(profitCell)) malformedSeen++;`,'',outcome],

@@ -22,7 +22,8 @@ RUNNER = ('import sys,unittest\n'
           'sys.exit(0 if result.wasSuccessful() else 1)\n')
 STATUS = 'studio_research_status.py'
 MUTATIONS = [
-    ('any item_stats status relabels', STATUS, "if len(fields) != 9 or fields[3] != 'NoProfitablePasses':", "if len(fields) != 9:"),
+    ('any item_stats status relabels', STATUS, "RESEARCH_OUTCOME_STATUSES.get(fields[3]) if",
+     "RESEARCH_OUTCOME_STATUSES.get(fields[3], NO_PROFITABLE_PASSES) if"),
     ('alias alone identifies the member', STATUS, "index = {(alias, symbol): i for i, (alias, symbol) in enumerate(members)}",
      "index = {(alias, s): i for i, (alias, _) in enumerate(members) for s in ('USDCAD', 'USDCHF', 'USDJPY', 'EURUSD', 'NZDUSD')}"),
     ('older attempt relabels a later failure', STATUS, " or written < started[i] - 1:", ":"),
@@ -52,6 +53,25 @@ MUTATIONS = [
     ('include-no-edge override ignored', 'studio_batch.py', "if status == 'error' and index in no_edge and not include_no_edge: continue",
      "if status == 'error' and index in no_edge: continue"),
     ('finish drops the outcomes', 'studio_finish.py', "                for i in sorted(found)],None", "                for i in sorted(found) if False],None"),
+    # No qualifying rows (Banker g6-r1b): the controller mirrors GoatXmlNoQualifierOutcome exactly.
+    ('status and outcome need not agree', STATUS, "    if outcome['outcome'] != expected:\n        return None\n", ""),
+    ('nothing qualified read as no profitable passes', STATUS, "    if expected == NO_QUALIFYING_ROWS:\n        return _no_qualifier_outcome(values, outcome)\n", ""),
+    ('nothing kept accepted', STATUS, "not 1 <= kept <= o['profitable'] <= passes", "not 0 <= kept <= o['profitable'] <= passes"),
+    ('kept passes need not have traded', STATUS, "or not kept <= o['traded'] <= passes ", "or False "),
+    ('unparsed back rows accepted', STATUS, " or o['malformed'] != 0 or o['complete'] != '1'", " or o['complete'] != '1'"),
+    ('partial back report accepted', STATUS, " or o['malformed'] != 0 or o['complete'] != '1'", " or o['malformed'] != 0"),
+    ('empty forward report accepted', STATUS, "            or not 1 <= o['forward_rows'] <= passes\n", ""),
+    ('kept pass missing from forward accepted', STATUS, "or x['forward_matched'] != kept ", "or False "),
+    ('back/forward disagreement accepted', STATUS, " or x['forward_mismatches'] != 0", ""),
+    ('unreadable forward rows accepted', STATUS, " or x['forward_malformed'] != 0", ""),
+    ('discarded count unchecked', STATUS, "            or x['forward_discarded'] != o['forward_rows'] - x['forward_matched']\n", ""),
+    ('qualifying score accepted', STATUS, "or not 0 <= x['best_combined_score'] < x['score_threshold']", "or False"),
+    ('threshold unchecked', STATUS, "or not 0 < x['score_threshold'] < float('inf') ", "or False "),
+    ('unprofitable kept passes accepted', STATUS, "            or o['best_profit'] < 0.001\n", ""),
+    ('nothing-qualified window order unchecked', STATUS, "            or not span['start'] < span['end'] < span['forward_end']):", "            ):"),
+    ('last member called no profitable passes', STATUS, "status=(no_edge[last]['outcome'] if", "status=(NO_PROFITABLE_PASSES if"),
+    ('nothing-qualified summary reads as none profitable', STATUS, "    if outcome['outcome'] == NO_QUALIFYING_ROWS:\n        kept = outcome['back_rows']\n",
+     "    if False:\n        kept = outcome['back_rows']\n"),
 ]
 
 

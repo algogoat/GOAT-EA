@@ -1443,8 +1443,9 @@ void BuildOptimizationBatchPromptSummary(const string queueFile,const string log
    else
       line1="Runs OK: n/a | Queue not found";
 #ifdef GOAT_RESEARCH_OUTCOME_V149
-   // Items tested without a profitable pass keep the queue status Error, but they
-   // are results, not failures: count them apart from errors (item_stats.tsv).
+   // Items tested without a profitable pass, or whose profitable passes all scored
+   // below the export score with the forward period, keep the queue status Error, but
+   // they are results, not failures: count them apart from errors (item_stats.tsv).
    int noEdge=0;
    if(loaded && stats.errors>0)
      {
@@ -1464,7 +1465,7 @@ void BuildOptimizationBatchPromptSummary(const string queueFile,const string log
       for(int i=1;i<statCount;i++)
         {
          string fields[];
-         if(StringSplit(statLines[i],'\t',fields)<9 || fields[3]!="NoProfitablePasses") continue;
+         if(StringSplit(statLines[i],'\t',fields)<9 || (fields[3]!="NoProfitablePasses" && fields[3]!="NoQualifyingRows")) continue;
          if(StringFind(errorAliases,"\n"+fields[2]+"\n")<0) continue;
          string itemKey=fields[1]+"\t"+fields[2]+"\n";
          if(StringFind(seen,"\n"+itemKey)>=0) continue;

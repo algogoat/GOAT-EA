@@ -221,18 +221,55 @@ def timeline(native_run, aliases):
 ITEM_STATS_HEADER = 'LocalTime\tSymbol\tStrategy\tStatus\tXmlRows\tUniqueRows\tTopScore\tFinalExports\tDetails'
 MAX_ITEM_STATS_BYTES = 16 * 1024 * 1024
 NO_PROFITABLE_PASSES = 'no_profitable_passes'
+NO_QUALIFYING_ROWS = 'no_qualifying_rows'
+# item_stats.tsv Status -> the one outcome a row with that status may carry.
+RESEARCH_OUTCOME_STATUSES = {'NoProfitablePasses': NO_PROFITABLE_PASSES, 'NoQualifyingRows': NO_QUALIFYING_ROWS}
 MAX_NO_EDGE_LISTED = 200
 _DATE = re.compile(r'\d{4}\.\d{2}\.\d{2}')
 
 
-def _no_edge_outcome(details):
-    """The EA's key=value details for one NoProfitablePasses row, or None.
+def _no_qualifier_outcome(values, outcome):
+    """``outcome`` extended with the forward-merge evidence of a NoQualifyingRows row, or None.
 
-    Mirrors the EA guard (XmlProcessor.mqh GoatXmlResearchOutcome) exactly: at
+    Mirrors the EA guard (XmlProcessor.mqh GoatXmlNoQualifierOutcome) exactly: the
+    same whole-report proof as no_profitable_passes, at least one kept pass (profitable
+    with enough trades), every kept pass found once in a whole forward report with
+    matching back values and inputs, and a best combined score below the export score.
+    A forward report that is partial, unreadable or disagrees with the back report is
+    never accepted: that member stays a real error.
+    """
+    try:
+        extra = dict(back_rows=int(values['back_rows']), forward_matched=int(values['forward_matched']),
+                     forward_discarded=int(values['forward_discarded']), forward_mismatches=int(values['forward_mismatches']),
+                     forward_malformed=int(values['forward_malformed']),
+                     best_combined_score=float(values['best_combined_score']), score_threshold=float(values['score_threshold']))
+    except (KeyError, ValueError):
+        return None
+    o, x = outcome, extra
+    span, passes, kept = o['window'], o['passes'], x['back_rows']
+    if (passes <= 0 or not 1 <= kept <= o['profitable'] <= passes
+            or not kept <= o['traded'] <= passes or o['malformed'] != 0 or o['complete'] != '1'
+            or not 1 <= o['forward_rows'] <= passes
+            or x['forward_matched'] != kept or x['forward_mismatches'] != 0 or x['forward_malformed'] != 0
+            or x['forward_discarded'] != o['forward_rows'] - x['forward_matched']
+            or not 0 < x['score_threshold'] < float('inf') or not 0 <= x['best_combined_score'] < x['score_threshold']
+            or o['best_profit'] < 0.001
+            or o['min_trades'] <= 0 or not all(_DATE.fullmatch(span[key]) for key in ('start', 'end', 'forward_end'))
+            or not span['start'] < span['end'] < span['forward_end']):
+        return None
+    return dict(o, **x)
+
+
+def _no_edge_outcome(details, expected=NO_PROFITABLE_PASSES):
+    """The EA's key=value details for one research-outcome row, or None.
+
+    ``expected`` is the outcome the row's Status allows. For NoProfitablePasses this
+    mirrors the EA guard (XmlProcessor.mqh GoatXmlResearchOutcome) exactly: at
     least one pass really traded, every row parsed, the results table closed and
     the forward report is whole with no more rows than back passes. A row from an
     older build without that proof, or a report whose EA never traded, cannot be
     read or is partial, is never accepted: that member stays a real error.
+    NoQualifyingRows rows are checked by _no_qualifier_outcome.
     """
     values = dict(part.split('=', 1) for part in details.split(';') if '=' in part)
     try:
@@ -244,6 +281,10 @@ def _no_edge_outcome(details):
                        window=dict(start=values['window_start'], end=values['window_end'], forward_end=values['forward_end']))
     except (KeyError, ValueError):
         return None
+    if outcome['outcome'] != expected:
+        return None
+    if expected == NO_QUALIFYING_ROWS:
+        return _no_qualifier_outcome(values, outcome)
     window, passes = outcome['window'], outcome['passes']
     if (outcome['outcome'] != NO_PROFITABLE_PASSES or passes <= 0 or not 0 <= outcome['profitable'] <= passes
             or not 1 <= outcome['traded'] <= passes or outcome['malformed'] != 0 or outcome['complete'] != '1'
@@ -258,6 +299,14 @@ def _no_edge_outcome(details):
 def no_edge_summary(symbol, timeframe, outcome):
     """One honest sentence: what was tested, in which window, and that it is not a verdict."""
     window = outcome['window']
+    if outcome['outcome'] == NO_QUALIFYING_ROWS:
+        kept = outcome['back_rows']
+        return (symbol + ' ' + timeframe + ': tested, nothing qualified in ' + window['start'] + ' to ' + window['end'] + ' — '
+                + str(outcome['passes']) + ' settings, ' + str(kept) + (' was' if kept == 1 else ' were') + ' profitable with '
+                + str(outcome['min_trades']) + '+ trades but none scored ' + format(outcome['score_threshold'], 'g')
+                + '+ once the forward period to ' + window['forward_end'] + ' was included (best '
+                + format(outcome['best_combined_score'], '.1f')
+                + (': the forward period scored zero' if outcome['best_combined_score'] == 0 else '') + '). A result for this window only, not a verdict on the strategy.')
     profitable = outcome['profitable']
     near = (' (' + str(profitable) + ' profitable on fewer trades)') if profitable else ''
     return (symbol + ' ' + timeframe + ': tested, no edge in ' + window['start'] + ' to ' + window['end'] + ' — '
@@ -266,12 +315,14 @@ def no_edge_summary(symbol, timeframe, outcome):
 
 
 def item_outcomes(native_run, members, timing=None):
-    """{member index: outcome} the EA recorded as tested with no profitable settings.
+    """{member index: outcome} the EA recorded as tested with no edge in its window.
 
     ``members`` are (run_alias, symbol) pairs in queue order. The EA writes one
     ``NoProfitablePasses`` row to ``item_stats.tsv`` when a member's optimization
-    ran but no pass was profitable with enough trades; its queue status stays
-    ``Error``. A row counts only for the same alias and symbol, and only when the
+    ran but no pass was profitable with enough trades, and one ``NoQualifyingRows``
+    row when profitable passes were kept but none scored high enough once the
+    forward period was included; its queue status stays ``Error`` either way.
+    A row counts only for the same alias and symbol, and only when the
     timeline shows the member's last start and the row was written after it, so
     an older attempt never relabels a later real failure; without timeline
     evidence nothing is relabelled. Lenient: missing or unreadable evidence
@@ -293,13 +344,14 @@ def item_outcomes(native_run, members, timing=None):
     found = {}
     for line in lines[1:]:
         fields = line.split('\t')
-        if len(fields) != 9 or fields[3] != 'NoProfitablePasses':
+        expected = RESEARCH_OUTCOME_STATUSES.get(fields[3]) if len(fields) == 9 else None
+        if expected is None:
             continue
         i = index.get((fields[2], fields[1]))
         written = _local_epoch(fields[0])
         if i is None or written is None or i not in started or written < started[i] - 1:
             continue
-        outcome = _no_edge_outcome(fields[8])
+        outcome = _no_edge_outcome(fields[8], expected)
         if outcome is not None:
             found[i] = dict(outcome, recorded_local=fields[0])
     return found
@@ -416,7 +468,7 @@ def batch_progress(root, install, job, *, now, journal=None):
             if timing and last in timing['started'] and last in timing['ended']:
                 minutes = round((timing['ended'][last] - timing['started'][last]) / 60, 1)
             result['last_member'] = dict(index=last, number=last + 1, symbol=tester['Symbol'], timeframe=tester['Period'],
-                                         status=(NO_PROFITABLE_PASSES if last in no_edge else statuses[last].removeprefix('native_')),
+                                         status=(no_edge[last]['outcome'] if last in no_edge else statuses[last].removeprefix('native_')),
                                          exported_sets=sets,
                                          qualifies=statuses[last] == 'native_completed' and sets > 0,
                                          minutes=minutes,

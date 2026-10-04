@@ -75,6 +75,16 @@ is `finished`, and `--include-failed` never re-runs them; `--include-no-edge` (`
 or `resume-batch` for a batch already recorded finished) deliberately re-runs them. Always quote the window:
 "no profitable settings in this window" never means "this strategy never works".
 
+The sibling result: profitable passes with 50+ trades were kept, every one was found in a
+whole forward report with matching back values and inputs, and none reached the export score
+(60) once the forward period was included. Before B40 this ended as `No Rows!` and a combine
+error. The EA writes a `NoQualifyingRows` row (outcome `no_qualifying_rows`, plus
+`back_rows`, `forward_matched`, `forward_discarded`, `best_combined_score`, `score_threshold`)
+and the controller counts it in `members_no_edge` exactly like `no_profitable_passes`;
+`last_member.status` is `no_qualifying_rows` and its `summary` says "tested, nothing qualified
+in <window>" with the best score. A forward report that is partial, unreadable, missing a kept
+pass, or disagrees with the back report stays a real error.
+
 `batch-pause` needs no terminal lock (like `stop`): it writes one durable pause
 intent (`batch-pauses/<id>.json`) and returns `state: pausing`. A live driver
 honours it on its next tick; otherwise one bounded pause supervisor starts

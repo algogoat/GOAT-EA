@@ -1,8 +1,13 @@
-"""Members tested with no profitable settings are research results for their window, never failures.
+"""Members tested with no profitable or no qualifying settings are research results for their window, never failures.
 
 The EA keeps their native queue status ``Error`` (no wire change) and writes one
 ``NoProfitablePasses`` row to ``item_stats.tsv``. These fixtures replay the g6
 shape: USDCAD M1, 175 passes, none profitable, best -1,261.09, score 0.05.
+
+``NoQualifyingRows`` rows replay the Banker g6-r1b shape (EX33): 158 passes, 7
+profitable with 50+ trades, forward report merged (151 discarded), best combined
+score 48.1 below the export score 60. Before, the combine logged ``No Rows!``
+and the member was counted as failed.
 """
 import json
 from pathlib import Path
@@ -24,6 +29,11 @@ NOW = 1_800_000_000
 DETAILS = ('outcome=no_profitable_passes;passes=175;profitable=0;traded=175;malformed=0;complete=1;forward_rows=175;'
            'best_profit=-1261.09;best_score=0.0500;min_trades=50;'
            'window_start=2024.01.08;window_end=2025.01.06;forward_end=2025.03.15')
+QDETAILS = ('outcome=no_qualifying_rows;passes=158;profitable=7;traded=158;malformed=0;complete=1;forward_rows=158;'
+            'best_profit=660.00;best_score=0.5600;min_trades=50;'
+            'window_start=2024.01.08;window_end=2025.01.06;forward_end=2025.03.15;'
+            'back_rows=7;forward_matched=7;forward_discarded=151;forward_mismatches=0;forward_malformed=0;'
+            'best_combined_score=48.1;score_threshold=60.0')
 TIMING = dict(started={0: NOW - 3600, 1: NOW - 3600, 2: NOW - 3600}, ended={}, outcome={})
 
 
@@ -33,6 +43,10 @@ def local(epoch):
 
 def stats_row(alias, symbol, *, at=NOW - 600, status='NoProfitablePasses', details=DETAILS):
     return '\t'.join([local(at), symbol, alias, status, '0', '0', '0.0', '0', details])
+
+
+def q_row(alias, symbol, *, at=NOW - 600, details=QDETAILS):
+    return '\t'.join([local(at), symbol, alias, 'NoQualifyingRows', '7', '0', '48.1', '0', details])
 
 
 def write_stats(folder, rows, *, encoding='utf-16'):
@@ -239,11 +253,156 @@ class FinishTests(unittest.TestCase):
         self.assertLess(source.index("result['research_outcomes']=research_outcomes"), source.index("write_json(result_path,result)"))
 
 
+class NoQualifyingRowsItemStatsTests(unittest.TestCase):
+    """Kept profitable passes, none scoring 60+ with the forward period: a result, never a failure."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.run = Path(self.temp.name)
+        self.members = [('A0', 'USDCAD'), ('A1', 'USDCHF'), ('A2', 'EURUSD')]
+
+    def read(self, details, status='NoQualifyingRows'):
+        row = q_row('A0', 'USDCAD', details=details) if status == 'NoQualifyingRows' else stats_row('A0', 'USDCAD', status=status, details=details)
+        write_stats(self.run, [row])
+        return item_outcomes(self.run, self.members, TIMING)
+
+    def test_banker_row_is_read_with_its_forward_evidence(self):
+        found = self.read(QDETAILS)
+        self.assertEqual(list(found), [0])
+        outcome = found[0]
+        self.assertEqual((outcome['outcome'], outcome['passes'], outcome['profitable'], outcome['back_rows']),
+                         ('no_qualifying_rows', 158, 7, 7))
+        self.assertEqual((outcome['forward_rows'], outcome['forward_matched'], outcome['forward_discarded']), (158, 7, 151))
+        self.assertEqual((outcome['best_combined_score'], outcome['score_threshold']), (48.1, 60.0))
+        self.assertEqual(outcome['window'], dict(start='2024.01.08', end='2025.01.06', forward_end='2025.03.15'))
+
+    def test_status_and_outcome_must_agree(self):
+        self.assertEqual(self.read(QDETAILS, status='NoProfitablePasses'), {})
+        self.assertEqual(self.read(DETAILS), {}, 'a NoQualifyingRows row without forward evidence')
+        self.assertEqual(self.read(QDETAILS.replace('outcome=no_qualifying_rows', 'outcome=no_profitable_passes')), {},
+                         'a no_profitable_passes outcome under the NoQualifyingRows status')
+        self.assertEqual(self.read(QDETAILS, status='Error'), {})
+
+    def test_mirrors_the_ea_guard_real_failures_stay_errors(self):
+        for label, details in [
+                ('nothing kept (that is no_profitable_passes)',
+                 QDETAILS.replace('back_rows=7', 'back_rows=0').replace('forward_matched=7', 'forward_matched=0')
+                 .replace('forward_discarded=151', 'forward_discarded=158')),
+                ('more kept than profitable', QDETAILS.replace('back_rows=7', 'back_rows=8').replace('forward_matched=7', 'forward_matched=8')
+                 .replace('forward_discarded=151', 'forward_discarded=150')),
+                ('more profitable than passes', QDETAILS.replace('profitable=7', 'profitable=159')),
+                ('kept passes did not trade', QDETAILS.replace('traded=158', 'traded=6')),
+                ('more traded than passes', QDETAILS.replace('traded=158', 'traded=159')),
+                ('a back row did not parse', QDETAILS.replace('malformed=0;complete', 'malformed=1;complete')),
+                ('back table never closed', QDETAILS.replace('complete=1', 'complete=0')),
+                ('forward report empty or unreadable', QDETAILS.replace('forward_rows=158', 'forward_rows=0')),
+                ('forward rows exceed passes', QDETAILS.replace('forward_rows=158', 'forward_rows=159').replace('forward_discarded=151', 'forward_discarded=152')),
+                ('a kept pass missing from the forward report', QDETAILS.replace('forward_matched=7', 'forward_matched=6')
+                 .replace('forward_discarded=151', 'forward_discarded=152')),
+                ('forward disagrees with back', QDETAILS.replace('forward_mismatches=0', 'forward_mismatches=1')),
+                ('a forward row did not parse', QDETAILS.replace('forward_malformed=0', 'forward_malformed=2')),
+                ('discarded count inconsistent', QDETAILS.replace('forward_discarded=151', 'forward_discarded=150')),
+                ('best score reaches the threshold', QDETAILS.replace('best_combined_score=48.1', 'best_combined_score=60.0')),
+                ('best score above the threshold', QDETAILS.replace('best_combined_score=48.1', 'best_combined_score=72.5')),
+                ('negative score', QDETAILS.replace('best_combined_score=48.1', 'best_combined_score=-1.0')),
+                ('score not a number', QDETAILS.replace('best_combined_score=48.1', 'best_combined_score=nan')),
+                ('no threshold', QDETAILS.replace('score_threshold=60.0', 'score_threshold=0.0')),
+                ('unbounded threshold', QDETAILS.replace('score_threshold=60.0', 'score_threshold=inf')),
+                ('kept passes yet no profit', QDETAILS.replace('best_profit=660.00', 'best_profit=-5.00')),
+                ('window out of order', QDETAILS.replace('window_end=2025.01.06', 'window_end=2026.01.06')),
+                ('older build without forward evidence', QDETAILS.split(';back_rows=')[0])]:
+            with self.subTest(label):
+                self.assertEqual(self.read(details), {}, label)
+
+    def test_summary_says_what_was_kept_and_how_far_it_fell_short(self):
+        text = no_edge_summary('USDCAD', 'M1', self.read(QDETAILS)[0])
+        self.assertEqual(text, 'USDCAD M1: tested, nothing qualified in 2024.01.08 to 2025.01.06 — 158 settings, 7 were profitable '
+                               'with 50+ trades but none scored 60+ once the forward period to 2025.03.15 was included (best 48.1). '
+                               'A result for this window only, not a verdict on the strategy.')
+        one = self.read(QDETAILS.replace('profitable=7', 'profitable=1').replace('back_rows=7', 'back_rows=1')
+                        .replace('forward_matched=7', 'forward_matched=1').replace('forward_discarded=151', 'forward_discarded=157'))
+        self.assertIn('1 was profitable', no_edge_summary('USDCAD', 'M1', one[0]))
+        self.assertNotIn('scored zero', text)
+        zero = self.read(QDETAILS.replace('best_combined_score=48.1', 'best_combined_score=0.0'))
+        self.assertIn('(best 0.0: the forward period scored zero). A result', no_edge_summary('USDCAD', 'M1', zero[0]))
+
+    def test_unreadable_score_cells_carried_by_the_ea_stay_errors(self):
+        """Codex P1 mirror: the EA counts an unreadable PF/RF/SR/profit/trades cell as malformed."""
+        for details in (QDETAILS.replace('malformed=0;complete', 'malformed=1;complete'),
+                        QDETAILS.replace('forward_malformed=0', 'forward_malformed=1')):
+            self.assertEqual(self.read(details), {})
+
+
+class NoQualifyingRowsProgressTests(unittest.TestCase):
+    # The ProgressTests fixture, without re-running its tests.
+    SYMBOLS, setUp, progress, finish_member = ProgressTests.SYMBOLS, ProgressTests.setUp, ProgressTests.progress, ProgressTests.finish_member
+
+    def test_banker_shape_counts_nothing_qualified_with_no_edge_apart_from_failures(self):
+        events = []
+        for index, status in enumerate(['Completed', 'Error', 'Error', 'Error']):
+            events += self.finish_member(index, status, NOW - 2400 + index * 600, NOW - 1800 + index * 600)
+        write_timeline(self.run, events)
+        # Member 1: nothing qualified; member 2: no profitable passes; member 3: a real Error (no row).
+        write_stats(self.run, [q_row(self.aliases[1], 'USDCAD', at=NOW - 1220), stats_row(self.aliases[2], 'USDCHF', at=NOW - 620)])
+        value = self.progress(['native_completed', 'native_error', 'native_error', 'native_error'])
+        self.assertEqual((value['members_no_edge'], value['members_failed']), (2, 1))
+        self.assertEqual([(item['symbol'], item['outcome']) for item in value['no_edge']],
+                         [('USDCAD', 'no_qualifying_rows'), ('USDCHF', 'no_profitable_passes')])
+        self.assertIn('tested, nothing qualified in 2024.01.08 to 2025.01.06', value['no_edge'][0]['summary'])
+        text = headline(dict(kind='batch', status='failed', **value))
+        self.assertTrue(text.startswith('Batch failed;'), text)
+        self.assertIn('2 tested with no edge in 2024.01.08 to 2025.01.06, 1 failed', text)
+
+    def test_last_member_names_the_outcome(self):
+        events = self.finish_member(0, 'Completed', NOW - 2400, NOW - 1800) + self.finish_member(1, 'Error', NOW - 1800, NOW - 1200)
+        write_timeline(self.run, events)
+        write_stats(self.run, [q_row(self.aliases[1], 'USDCAD', at=NOW - 1220)])
+        value = self.progress(['native_completed', 'native_error', 'native_pending', 'native_pending'])
+        last = value['last_member']
+        self.assertEqual((last['symbol'], last['status'], last['qualifies']), ('USDCAD', 'no_qualifying_rows', False))
+        self.assertIn('none scored 60+', last['summary'])
+
+    def test_only_errors_are_nothing_qualified_reads_finished(self):
+        write_stats(self.run, [q_row(alias, symbol) for alias, symbol in zip(self.aliases[1:], self.SYMBOLS[1:])])
+        value = self.progress(['native_completed', 'native_error', 'native_error', 'native_error'])
+        self.assertEqual(headline(dict(kind='batch', status='failed', **value)),
+                         'Batch finished; 1 of 4 members done, 0 qualifying, 3 tested with no edge in 2024.01.08 to 2025.01.06.')
+
+    def test_a_real_error_is_still_a_failure(self):
+        """Negative: an Error whose row lacks the forward proof, or has no row at all, stays failed."""
+        broken = QDETAILS.replace('forward_mismatches=0', 'forward_mismatches=3')
+        write_stats(self.run, [q_row(self.aliases[1], 'USDCAD', details=broken)])
+        value = self.progress(['native_completed', 'native_error', 'native_error', 'native_pending'])
+        self.assertEqual((value['members_no_edge'], value['members_failed'], value['no_edge']), (0, 2, []))
+        self.assertIn('2 failed', headline(dict(kind='batch', status='running', **value)))
+        self.assertNotIn('no edge', headline(dict(kind='batch', status='running', **value)))
+
+
+class NoQualifyingRowsFinishTests(unittest.TestCase):
+    def test_finish_records_nothing_qualified_for_the_scoreboard(self):
+        with tempfile.TemporaryDirectory() as folder:
+            write_stats(folder, [q_row('A1', 'USDCAD'), stats_row('A2', 'USDCHF')])
+            write_timeline(folder, [(alias, 'OnGoing', NOW - 3600) for alias in ('A0', 'A1', 'A2', 'A3')])
+            members = [dict(run_alias='A0', symbol='EURUSD', status='native_completed', tester=dict(Period='M1')),
+                       dict(run_alias='A1', symbol='USDCAD', status='native_error', tester=dict(Period='M1')),
+                       dict(run_alias='A2', symbol='USDCHF', status='native_error', tester=dict(Period='M1')),
+                       dict(run_alias='A3', symbol='NZDUSD', status='native_error', tester=dict(Period='M1'))]
+            outcomes, error = _research_outcomes(dict(native_run=folder, members=members))
+        self.assertIsNone(error)
+        self.assertEqual([(o['index'], o['outcome']) for o in outcomes], [(1, 'no_qualifying_rows'), (2, 'no_profitable_passes')])
+        self.assertIn('nothing qualified', outcomes[0]['summary'])
+        # Member 3 has no row: it stays a real failure, with native error evidence.
+        from studio_native_diagnostics import for_job
+        evidence = for_job(None, dict(launch_intent=dict(package='missing')), dict(status='native_error', members=members),
+                           [o['index'] for o in outcomes])
+        self.assertEqual((evidence['members_no_edge'], evidence['members_failed']), ([1, 2], [3]))
+
+
 class PauseAndResumeTests(pause_fixtures.PauseFixture):
-    def finish_with_outcomes(self, states, no_edge):
+    def finish_with_outcomes(self, states, no_edge, outcome='no_profitable_passes'):
         self.finish_natively(states)
         state = self.c.state(); job = next(j for j in state['queue'] if j['job_id'] == 'g6')
-        job['completion']['research_outcomes'] = [dict(index=i, outcome='no_profitable_passes') for i in no_edge]
+        job['completion']['research_outcomes'] = [dict(index=i, outcome=outcome) for i in no_edge]
         Path(job['completion_path']).write_text(json.dumps(job['completion']), encoding='utf-8')
         from campaign_ledger import packed
         binding = packed(dict(terminal_id=self.c.terminal, run_id=self.c.run))
@@ -257,6 +416,18 @@ class PauseAndResumeTests(pause_fixtures.PauseFixture):
         self.assertEqual((record['state'], record['members_failed'], record['members_no_edge'], record['members_remaining']),
                          ('finished', 0, 2, 0))
         self.assertEqual(pause.public(record)['members_no_edge'], 2)
+
+    def test_pause_counts_nothing_qualified_apart_and_keeps_real_failures(self):
+        self.request()
+        self.finish_with_outcomes(['Completed', 'Error', 'Error'], [1], outcome='no_qualifying_rows')
+        record = pause.complete(self.c, 'g6', now=NOW)
+        self.assertEqual((record['state'], record['members_failed'], record['members_no_edge']), ('paused', 1, 1))
+
+    def test_retrying_failures_never_reruns_nothing_qualified_members(self):
+        self.finish_with_outcomes(['Completed', 'Error', 'Error'], [1], outcome='no_qualifying_rows')
+        prepared = resume_batch(self.c, 'g6', 'g6-r1', include_failed=True)
+        self.assertEqual(prepared['member_count'], 1)
+        self.assertEqual([m['tester']['Symbol'] for m in self.c.job('g6-r1')['configuration']['batch_members']], ['USDJPY.c'])
 
     def test_pause_keeps_real_failures_resumable(self):
         self.request()

@@ -1,5 +1,9 @@
 ﻿// A back pass is kept only with profit >= 0.001 and at least this many back trades.
 #define GOAT_XML_MIN_BACK_TRADES 50
+// A combined (back + forward) row is exported only with at least this score.
+#define GOAT_XML_MIN_COMBINED_SCORE 60.0
+// Kept passes were scored with their forward period and none reached the export score.
+#define GOAT_XML_NO_QUALIFYING_ROWS "no_qualifying_rows"
 //+------------------------------------------------------------------+
 //| Data structure for a single row (Back/Forward test record)      |
 //+------------------------------------------------------------------+
@@ -12,12 +16,13 @@ struct SRowDefinition
    int forward_trades;
    string Inputs; // e.g. "10,1.0,0.02" for 3 input values
    double Score;  // custom score
+   bool forward_seen; // this kept back pass was found in the forward report
 
    SRowDefinition()
    {
       pass=-1; back_result=0; back_profit=0; back_PF=0; back_RF=0; back_SR=0; back_DD_pc=0; back_trades=0;
       forward_result=0; forward_profit=0; forward_PF=0; forward_RF=0; forward_SR=0; forward_DD_pc=0; forward_trades=0;
-      Inputs=""; Score=0;
+      Inputs=""; Score=0; forward_seen=false;
    }
    SRowDefinition(const SRowDefinition &src)
    {
@@ -27,6 +32,7 @@ struct SRowDefinition
       forward_DD_pc=src.forward_DD_pc; forward_trades=src.forward_trades;
       Inputs=src.Inputs;
       Score=src.Score;
+      forward_seen=src.forward_seen;
    }
 };
 //+------------------------------------------------------------------+
@@ -49,7 +55,13 @@ public:
    // rows that did not parse, and whether the results table closed normally.
    int tradedSeen, malformedSeen, forwardRows;
    bool reportClosed;
-   string outcome;   // set by ReportAnalyzerCombiner; "" unless every pair was tested without edge
+   // Forward merge evidence: kept passes found in the forward report, passes whose back
+   // values or inputs disagree (or repeat), forward rows that did not parse, and the
+   // best combined score after sorting.
+   int forwardMatched, forwardMismatches, forwardMalformed;
+   double bestCombinedScore;
+   string outcome;     // set by ReportAnalyzerCombiner; "" unless every pair was tested without edge
+   string pairOutcome; // the research outcome of the last pair read, "" when it was not one
 //+------------------------------------------------------------------+
    bool ProcessBackXml(const string &filename)
    {
@@ -137,9 +149,15 @@ public:
             }
             profitableSeen++;
             string dump=FileReadString(hBack);
-            Rows[i].back_PF=ExtractDataAsDouble(FileReadString(hBack));
-            Rows[i].back_RF=ExtractDataAsDouble(FileReadString(hBack));
-            Rows[i].back_SR=ExtractDataAsDouble(FileReadString(hBack));
+            // Every cell the combined score reads must parse: an unreadable one is a
+            // processing error, never a low score.
+            string pfCell=FileReadString(hBack), rfCell=FileReadString(hBack), srCell=FileReadString(hBack);
+            Rows[i].back_PF=ExtractDataAsDouble(pfCell);
+            Rows[i].back_RF=ExtractDataAsDouble(rfCell);
+            Rows[i].back_SR=ExtractDataAsDouble(srCell);
+            if(!IsNumberCell(pfCell)) malformedSeen++;
+            if(!IsNumberCell(rfCell)) malformedSeen++;
+            if(!IsNumberCell(srCell)) malformedSeen++;
             string dump2=FileReadString(hBack);
             Rows[i].back_DD_pc=ExtractDataAsDouble(FileReadString(hBack));
             string tradesCell=FileReadString(hBack);
@@ -192,42 +210,61 @@ public:
          if(StringFind(line,"</Row>")>=0)break;
       }
       int discarded=0;
+      forwardMatched=0; forwardMismatches=0; forwardMalformed=0; bestCombinedScore=0;
       for(int i=0; !FileIsEnding(hForward); i++)
       {
          if(FileReadString(hForward)=="<Row>")
          {
-            int pass=(int)ExtractDataAsDouble(FileReadString(hForward));
+            string passCell=FileReadString(hForward);
+            int pass=(int)ExtractDataAsDouble(passCell);
+            if(!IsNumberCell(passCell)) forwardMalformed++;
             int bPos=GetBackPassRow(pass);
             if(bPos==-1)
             {
                line="";
-               while(line!="</Row>")line=FileReadString(hForward);
+               while(line!="</Row>" && !FileIsEnding(hForward))line=FileReadString(hForward);
+               if(line!="</Row>") forwardMalformed++;   // truncated report: never loop at EOF
                discarded++; continue;
             }
+            // A pass seen twice is not a clean merge: its forward values are overwritten.
+            if(Rows[bPos].forward_seen) forwardMismatches++;
+            else {Rows[bPos].forward_seen=true; forwardMatched++;}
             Rows[bPos].forward_result=ExtractDataAsDouble(FileReadString(hForward));
             double tmpBackResult=ExtractDataAsDouble(FileReadString(hForward));
             if(Rows[bPos].back_result!=tmpBackResult)
             {
+               forwardMismatches++;
                LogOrPrint(reportMode,"❌ Back result mismatch in forward xml. Pass="+(string)pass,_K,_N,_S);
                //return false;
             }
-            Rows[bPos].forward_profit=ExtractDataAsDouble(FileReadString(hForward));
+            string profitCell=FileReadString(hForward);
+            Rows[bPos].forward_profit=ExtractDataAsDouble(profitCell);
             string dump=FileReadString(hForward);
-            Rows[bPos].forward_PF=ExtractDataAsDouble(FileReadString(hForward));
-            Rows[bPos].forward_RF=ExtractDataAsDouble(FileReadString(hForward));
-            Rows[bPos].forward_SR=ExtractDataAsDouble(FileReadString(hForward));
+            string pfCell=FileReadString(hForward), rfCell=FileReadString(hForward), srCell=FileReadString(hForward);
+            Rows[bPos].forward_PF=ExtractDataAsDouble(pfCell);
+            Rows[bPos].forward_RF=ExtractDataAsDouble(rfCell);
+            Rows[bPos].forward_SR=ExtractDataAsDouble(srCell);
             string dump2=FileReadString(hForward);
             Rows[bPos].forward_DD_pc=ExtractDataAsDouble(FileReadString(hForward));
-            Rows[bPos].forward_trades=(int)ExtractDataAsDouble(FileReadString(hForward));
+            string tradesCell=FileReadString(hForward);
+            Rows[bPos].forward_trades=(int)ExtractDataAsDouble(tradesCell);
+            // Every cell the combined score reads must parse (profit, PF, RF, SR, trades).
+            if(!IsNumberCell(profitCell)) forwardMalformed++;
+            if(!IsNumberCell(pfCell)) forwardMalformed++;
+            if(!IsNumberCell(rfCell)) forwardMalformed++;
+            if(!IsNumberCell(srCell)) forwardMalformed++;
+            if(!IsNumberCell(tradesCell)) forwardMalformed++;
             string Inputsforward=ExtractDataFromCell(FileReadString(hForward));
             while(true)
             {
                line=FileReadString(hForward);
                if(line=="</Row>")break;
+               if(FileIsEnding(hForward)) {forwardMalformed++; break;}   // truncated report: never loop at EOF
                Inputsforward+=","+ExtractDataFromCell(line);
             }
             if(Inputsforward!=Rows[bPos].Inputs)
             {
+               forwardMismatches++;
                LogOrPrint(reportMode,"❌ Inputs mismatch in back vs. forward. Pass="+(string)pass,_K,_N,_S);
                LogOrPrint(reportMode,"Forward Inputs="+Inputsforward,_K,_N,_S);
                LogOrPrint(reportMode,"Back    Inputs="+Rows[bPos].Inputs,_K,_N,_S);
@@ -252,6 +289,7 @@ public:
       //LogOrPrint(reportMode,"Forward XML reading End.",_K,_N,_S);
       FileClose(hForward);
       SortRowsByScoreDescending();
+      bestCombinedScore=(ArraySize(Rows)>0 ? Rows[0].Score : 0.0);
       return true;
    }
 //+------------------------------------------------------------------+
@@ -754,12 +792,19 @@ bool ExtractSymbolTfFromTitle(const string &title,
 //+------------------------------------------------------------------+
 string OutcomeDetails(void)
   {
-   return "outcome="+outcome+";passes="+(string)passesSeen+";profitable="+(string)profitableSeen
+   string details="outcome="+outcome+";passes="+(string)passesSeen+";profitable="+(string)profitableSeen
           +";traded="+(string)tradedSeen+";malformed="+(string)malformedSeen+";complete="+(reportClosed ? "1" : "0")
           +";forward_rows="+(string)forwardRows
           +";best_profit="+DoubleToString(bestProfit,2)+";best_score="+DoubleToString(bestResult,4)
           +";min_trades="+(string)GOAT_XML_MIN_BACK_TRADES+";window_start="+TimeToString(startD,TIME_DATE)
           +";window_end="+TimeToString(forwardD,TIME_DATE)+";forward_end="+TimeToString(endD,TIME_DATE);
+   // Kept passes were merged with the forward report: say how many, and how far the best one fell short.
+   if(outcome==GOAT_XML_NO_QUALIFYING_ROWS)
+      details+=";back_rows="+(string)ArraySize(Rows)+";forward_matched="+(string)forwardMatched
+               +";forward_discarded="+(string)(forwardRows-forwardMatched)+";forward_mismatches="+(string)forwardMismatches
+               +";forward_malformed="+(string)forwardMalformed+";best_combined_score="+DoubleToString(bestCombinedScore,1)
+               +";score_threshold="+DoubleToString(GOAT_XML_MIN_COMBINED_SCORE,1);
+   return details;
   }
 string OutcomeWindow(void)
   {
@@ -767,6 +812,11 @@ string OutcomeWindow(void)
   }
 string OutcomeSentence(void)
   {
+   if(pairOutcome==GOAT_XML_NO_QUALIFYING_ROWS)
+      return "Tested "+(string)passesSeen+" settings on "+symbol_+" "+TF_+" in "+OutcomeWindow()
+             +": "+(string)ArraySize(Rows)+" "+(ArraySize(Rows)==1 ? "was" : "were")+" profitable with "+(string)GOAT_XML_MIN_BACK_TRADES
+             +"+ trades in-sample but none scored "+DoubleToString(GOAT_XML_MIN_COMBINED_SCORE,0)+"+ once the forward period to "
+             +TimeToString(endD,TIME_DATE)+" was included (best "+DoubleToString(bestCombinedScore,1)+(bestCombinedScore<=0 ? ": the forward period scored zero" : "")+"). A result for this window, not an error.";
    return "Tested "+(string)passesSeen+" settings on "+symbol_+" "+TF_+" in "+OutcomeWindow()
           +": none was profitable with "+(string)GOAT_XML_MIN_BACK_TRADES+"+ trades ("+(profitableSeen>0 ? (string)profitableSeen+" profitable on fewer, " : "")
           +"best profit "+DoubleToString(bestProfit,2)+"). A result for this window, not an error.";
@@ -788,7 +838,33 @@ int ForwardReportRows(const string filename)
   }
 //+------------------------------------------------------------------+
 private:
-   bool IsNumberCell(const string cell) {return(StringFind(cell,"ss:Type=\"Number\">")>=0);}
+   // A Number cell whose text is strictly a decimal number ([+-]digits[.digits][e[+-]digits]).
+   // ExtractDataAsDouble turns anything else into 0.0, which must never pass for a result.
+   bool IsNumberCell(const string cell)
+   {
+      string tag="ss:Type=\"Number\">";
+      int start=StringFind(cell,tag); if(start<0) return false;
+      start+=StringLen(tag);
+      int end=StringFind(cell,"</Data>",start); if(end<0) return false;
+      string text=StringSubstr(cell,start,end-start);
+      StringTrimLeft(text); StringTrimRight(text);
+      int n=StringLen(text), digits=0, expDigits=0, dots=0, exps=0;
+      for(int k=0;k<n;k++)
+      {
+         ushort ch=StringGetCharacter(text,k);
+         if(ch>='0' && ch<='9') {if(exps>0) expDigits++; else digits++;}
+         else if(ch=='.') {if(dots>0 || exps>0) return false; dots++;}
+         else if(ch=='e' || ch=='E') {if(exps>0 || digits==0) return false; exps++;}
+         else if(ch=='+' || ch=='-')
+         {
+            if(k==0) continue;
+            ushort prev=StringGetCharacter(text,k-1);
+            if(prev!='e' && prev!='E') return false;
+         }
+         else return false;
+      }
+      return digits>0 && (exps==0 || expDigits>0);
+   }
    int GetBackPassRow(int Forward_pass)
    {
       for(int i=0;i<ArraySize(Rows);i++)
@@ -913,6 +989,7 @@ private:
       InputsNames=""; startD=endD=0; ArrayResize(m_inputVarNames,0);
       passesSeen=0; profitableSeen=0; bestProfit=0; bestResult=0;
       tradedSeen=0; malformedSeen=0; reportClosed=false;
+      forwardMatched=0; forwardMismatches=0; forwardMalformed=0; bestCombinedScore=0; pairOutcome="";
    }
 };
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -937,13 +1014,36 @@ string GoatXmlResearchOutcome(const bool back_read,const bool title_matches,cons
    return GOAT_XML_NO_PROFITABLE_PASSES;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// A pair is tested with nothing qualified only when the same whole-report proof holds,
+// at least one pass was kept (profitable with enough trades), the forward report was
+// read whole and every kept pass was found in it exactly once with matching back
+// values and inputs, and the best combined score is below the export score. A forward
+// report that is partial, unreadable, or disagrees with the back report stays an error.
+string GoatXmlNoQualifierOutcome(const bool back_read,const bool title_matches,const datetime window_start,
+                                 const datetime forward_date,const datetime window_end,const int passes,const int kept,
+                                 const int profitable,const int traded,const int malformed,const bool report_closed,
+                                 const int forward_rows,const bool forward_read,const int forward_matched,
+                                 const int forward_mismatches,const int forward_malformed,const double best_score,
+                                 const double min_score)
+  {
+   if(!back_read || !title_matches || !forward_read) return "";
+   if(window_start<=0 || forward_date<=window_start || window_end<=forward_date) return "";
+   if(passes<=0 || kept<=0 || kept>profitable || profitable>passes) return "";
+   if(!report_closed || malformed!=0) return "";
+   if(traded<kept || traded>passes) return "";
+   if(forward_rows<=0 || forward_rows>passes) return "";
+   if(forward_matched!=kept || forward_mismatches!=0 || forward_malformed!=0) return "";
+   if(min_score<=0 || best_score<0 || !(best_score<min_score)) return "";
+   return GOAT_XML_NO_QUALIFYING_ROWS;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string EA_Name_,string Server_)
   {
    xmlData.reportMode=reportMode; xmlData._K=Key_; xmlData._N=EA_Name_; xmlData._S=Server_;
    bool ret=true;
 #ifdef GOAT_RESEARCH_OUTCOME_V149
    xmlData.outcome="";
-   int pairs=0,noEdgePairs=0;
+   int pairs=0,noEdgePairs=0,noQualifierPairs=0;
 #endif
    // Loop over moved files to find matching pairs.
    for(int i=0; i<ArraySize(Files); i++)
@@ -1009,12 +1109,30 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
                                    xmlData.reportClosed,xmlData.forwardRows)!="")
          {
           noEdgePairs++;
+          xmlData.pairOutcome=GOAT_XML_NO_PROFITABLE_PASSES;
           LogOrPrint(reportMode,xmlData.OutcomeSentence(),Key_,EA_Name_,Server_);
           continue;
          }
 #endif
          // 3) Process the forward test => merges forward data, calculates Score, then sorts
-         if(!xmlData.ProcessForwardXml(forwardFile)) ret=false;
+         bool forwardRead=xmlData.ProcessForwardXml(forwardFile);
+         if(!forwardRead) ret=false;
+#ifdef GOAT_RESEARCH_OUTCOME_V149
+         // Kept passes were scored with their forward period and none reached the export
+         // score: nothing to combine or export for this window. Recorded as a research
+         // outcome below, not as a combine error ("No Rows!").
+         if(GoatXmlNoQualifierOutcome(backRead,titleMatches,xmlData.startD,ForwardDate,xmlData.endD,
+                                      xmlData.passesSeen,ArraySize(xmlData.Rows),xmlData.profitableSeen,xmlData.tradedSeen,
+                                      xmlData.malformedSeen,xmlData.reportClosed,xmlData.forwardRows,forwardRead,
+                                      xmlData.forwardMatched,xmlData.forwardMismatches,xmlData.forwardMalformed,
+                                      xmlData.bestCombinedScore,GOAT_XML_MIN_COMBINED_SCORE)!="")
+         {
+          noQualifierPairs++;
+          xmlData.pairOutcome=GOAT_XML_NO_QUALIFYING_ROWS;
+          LogOrPrint(reportMode,xmlData.OutcomeSentence(),Key_,EA_Name_,Server_);
+          continue;
+         }
+#endif
          if(ForwardDate!=0)
          {
           double topScore=0.0;
@@ -1023,7 +1141,7 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
            topScore=xmlData.Rows[0].Score;
           }
           string scorePostfix=DoubleToString(topScore,1);
-          int saved=xmlData.WriteTopToXml (baseName+"_CombinedRows_Score="+scorePostfix+".xml",100,60.0); if(saved==0) ret=false;
+          int saved=xmlData.WriteTopToXml (baseName+"_CombinedRows_Score="+scorePostfix+".xml",100,GOAT_XML_MIN_COMBINED_SCORE); if(saved==0) ret=false;
           int wanted=saved/3; if(saved>0&&wanted==0) wanted=saved;
           if(!xmlData.WriteUniqueRowsToXml(baseName+"_UniqueRows_Score="+scorePostfix+".xml",100,wanted,0.0)) ret=false;
          }
@@ -1032,11 +1150,14 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
       else {LogOrPrint(reportMode,"❌ No matching forward file found for: "+fileMain,Key_,EA_Name_,Server_); ret=false;}
      }
 #ifdef GOAT_RESEARCH_OUTCOME_V149
-   // Only when every pair was tested without edge and nothing else failed is this
-   // the outcome; it still returns false (nothing combined, nothing to export).
-   if(noEdgePairs>0)
+   // Only when every pair was tested to the same research outcome and nothing else
+   // failed is this the outcome; it still returns false (nothing combined, nothing to
+   // export). Pairs that mix both outcomes keep the old error result: the details
+   // describe one pair only, so they could not honestly describe the member.
+   if(noEdgePairs+noQualifierPairs>0)
      {
       if(ret && noEdgePairs==pairs) xmlData.outcome=GOAT_XML_NO_PROFITABLE_PASSES;
+      if(ret && noQualifierPairs==pairs) xmlData.outcome=GOAT_XML_NO_QUALIFYING_ROWS;
       ret=false;
      }
    if(xmlData.outcome!="")

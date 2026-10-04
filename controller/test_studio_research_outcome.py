@@ -322,6 +322,15 @@ class NoQualifyingRowsItemStatsTests(unittest.TestCase):
         one = self.read(QDETAILS.replace('profitable=7', 'profitable=1').replace('back_rows=7', 'back_rows=1')
                         .replace('forward_matched=7', 'forward_matched=1').replace('forward_discarded=151', 'forward_discarded=157'))
         self.assertIn('1 was profitable', no_edge_summary('USDCAD', 'M1', one[0]))
+        self.assertNotIn('scored zero', text)
+        zero = self.read(QDETAILS.replace('best_combined_score=48.1', 'best_combined_score=0.0'))
+        self.assertIn('(best 0.0: the forward period scored zero). A result', no_edge_summary('USDCAD', 'M1', zero[0]))
+
+    def test_unreadable_score_cells_carried_by_the_ea_stay_errors(self):
+        """Codex P1 mirror: the EA counts an unreadable PF/RF/SR/profit/trades cell as malformed."""
+        for details in (QDETAILS.replace('malformed=0;complete', 'malformed=1;complete'),
+                        QDETAILS.replace('forward_malformed=0', 'forward_malformed=1')):
+            self.assertEqual(self.read(details), {})
 
 
 class NoQualifyingRowsProgressTests(unittest.TestCase):

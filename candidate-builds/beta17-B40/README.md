@@ -8,7 +8,7 @@ window", not an error. Compile pending; see **Build**.
 
 | Where | What it does |
 |---|---|
-| `XmlProcessor.mqh` | The forward reader counts kept passes found in the forward report (`forwardMatched`), back-result or input disagreements and repeated passes (`forwardMismatches`), and forward rows whose pass, profit or trades cell does not parse (`forwardMalformed`). Its two inner loops can no longer spin at end of file. `GoatXmlNoQualifierOutcome` returns `no_qualifying_rows` only with the same whole-report proof as `no_profitable_passes`, at least one kept pass, a whole forward report whose rows number 1 to passes, every kept pass matched exactly once with no disagreement or unreadable row, and a best combined score below `GOAT_XML_MIN_COMBINED_SCORE` (60, now one constant shared with `WriteTopToXml`). Such a pair skips the combined writers (no 0-row `CombinedRows` file, no `No Rows!`). Pairs that mix both outcomes keep the old error result. |
+| `XmlProcessor.mqh` | The forward reader counts kept passes found in the forward report (`forwardMatched`), back-result or input disagreements and repeated passes (`forwardMismatches`), and forward rows whose pass, profit, PF, RF, SR or trades cell does not parse strictly (`forwardMalformed`; the back reader counts unreadable PF, RF and SR cells of profitable passes the same way, and `IsNumberCell` now requires the text to be a decimal number, not just the Number type). Its two inner loops can no longer spin at end of file. `GoatXmlNoQualifierOutcome` returns `no_qualifying_rows` only with the same whole-report proof as `no_profitable_passes`, at least one kept pass, a whole forward report whose rows number 1 to passes, every kept pass matched exactly once with no disagreement or unreadable row, and a best combined score below `GOAT_XML_MIN_COMBINED_SCORE` (60, now one constant shared with `WriteTopToXml`). Such a pair skips the combined writers (no 0-row `CombinedRows` file, no `No Rows!`). Pairs that mix both outcomes keep the old error result. |
 | `GOAT V1.49.mq5` | `OnTesterDeinit` writes a `NoQualifyingRows` item_stats row (kept rows, best combined score, details with `back_rows`, `forward_matched`, `forward_discarded`, `best_combined_score`, `score_threshold` and the window), logs the plain sentence and shows "Nothing qualified in this window". The queue status stays `Error` (no wire change). Build ID `V1.49-BETA17-40`, marker `B40`. |
 | `Optimizer.mqh` | The end-of-batch summary counts `NoQualifyingRows` items under "No edge", apart from errors, under the same queue-status and de-duplication rules. |
 
@@ -21,7 +21,7 @@ change. The input header is still SM32's (`1408e1ee…`), so SM32 batch packages
   `GOAT V1.49.mq5`, `XmlProcessor.mqh` and `Optimizer.mqh` differ from B39.
 - Review compile (not committed): MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`, the B39 compiler) on a scratch
   stage outside every terminal folder, with B39's include root (hash-equal to Terminal 2's): V1.49 0 errors,
-  0 warnings (`GOAT V1.49.ex5` 2,426,282 bytes, sha256 `ffd581e3…`); V1.48 and V1.47, which share
+  0 warnings (`GOAT V1.49.ex5` 2,427,136 bytes, sha256 `91350843…`, after the Codex P1 fix; the earlier `ffd581e3…` compile is superseded); V1.48 and V1.47, which share
   `Optimizer.mqh`, 0 errors, 0 warnings each. MetaEditor output is not byte-reproducible across stages, so the
   candidate binary is owed by a separate compile commit with its sanitized receipt.
 

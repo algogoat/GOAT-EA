@@ -73,6 +73,7 @@ MUTATIONS = [
     ('last member called no profitable passes', STATUS, "status=(no_edge[last]['outcome'] if", "status=(NO_PROFITABLE_PASSES if"),
     ('nothing-qualified summary reads as none profitable', STATUS, "    if outcome['outcome'] == NO_QUALIFYING_ROWS:\n        kept = outcome['back_rows']\n",
      "    if False:\n        kept = outcome['back_rows']\n"),
+    ('best zero reads as rounding', STATUS, "(': the forward period scored zero' if outcome['best_combined_score'] == 0 else '')", "''"),
 ]
 
 

@@ -305,7 +305,8 @@ def no_edge_summary(symbol, timeframe, outcome):
                 + str(outcome['passes']) + ' settings, ' + str(kept) + (' was' if kept == 1 else ' were') + ' profitable with '
                 + str(outcome['min_trades']) + '+ trades but none scored ' + format(outcome['score_threshold'], 'g')
                 + '+ once the forward period to ' + window['forward_end'] + ' was included (best '
-                + format(outcome['best_combined_score'], '.1f') + '). A result for this window only, not a verdict on the strategy.')
+                + format(outcome['best_combined_score'], '.1f')
+                + (': the forward period scored zero' if outcome['best_combined_score'] == 0 else '') + '). A result for this window only, not a verdict on the strategy.')
     profitable = outcome['profitable']
     near = (' (' + str(profitable) + ' profitable on fewer trades)') if profitable else ''
     return (symbol + ' ' + timeframe + ': tested, no edge in ' + window['start'] + ' to ' + window['end'] + ' — '

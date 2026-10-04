@@ -149,9 +149,15 @@ public:
             }
             profitableSeen++;
             string dump=FileReadString(hBack);
-            Rows[i].back_PF=ExtractDataAsDouble(FileReadString(hBack));
-            Rows[i].back_RF=ExtractDataAsDouble(FileReadString(hBack));
-            Rows[i].back_SR=ExtractDataAsDouble(FileReadString(hBack));
+            // Every cell the combined score reads must parse: an unreadable one is a
+            // processing error, never a low score.
+            string pfCell=FileReadString(hBack), rfCell=FileReadString(hBack), srCell=FileReadString(hBack);
+            Rows[i].back_PF=ExtractDataAsDouble(pfCell);
+            Rows[i].back_RF=ExtractDataAsDouble(rfCell);
+            Rows[i].back_SR=ExtractDataAsDouble(srCell);
+            if(!IsNumberCell(pfCell)) malformedSeen++;
+            if(!IsNumberCell(rfCell)) malformedSeen++;
+            if(!IsNumberCell(srCell)) malformedSeen++;
             string dump2=FileReadString(hBack);
             Rows[i].back_DD_pc=ExtractDataAsDouble(FileReadString(hBack));
             string tradesCell=FileReadString(hBack);
@@ -234,14 +240,20 @@ public:
             string profitCell=FileReadString(hForward);
             Rows[bPos].forward_profit=ExtractDataAsDouble(profitCell);
             string dump=FileReadString(hForward);
-            Rows[bPos].forward_PF=ExtractDataAsDouble(FileReadString(hForward));
-            Rows[bPos].forward_RF=ExtractDataAsDouble(FileReadString(hForward));
-            Rows[bPos].forward_SR=ExtractDataAsDouble(FileReadString(hForward));
+            string pfCell=FileReadString(hForward), rfCell=FileReadString(hForward), srCell=FileReadString(hForward);
+            Rows[bPos].forward_PF=ExtractDataAsDouble(pfCell);
+            Rows[bPos].forward_RF=ExtractDataAsDouble(rfCell);
+            Rows[bPos].forward_SR=ExtractDataAsDouble(srCell);
             string dump2=FileReadString(hForward);
             Rows[bPos].forward_DD_pc=ExtractDataAsDouble(FileReadString(hForward));
             string tradesCell=FileReadString(hForward);
             Rows[bPos].forward_trades=(int)ExtractDataAsDouble(tradesCell);
-            if(!IsNumberCell(profitCell) || !IsNumberCell(tradesCell)) forwardMalformed++;
+            // Every cell the combined score reads must parse (profit, PF, RF, SR, trades).
+            if(!IsNumberCell(profitCell)) forwardMalformed++;
+            if(!IsNumberCell(pfCell)) forwardMalformed++;
+            if(!IsNumberCell(rfCell)) forwardMalformed++;
+            if(!IsNumberCell(srCell)) forwardMalformed++;
+            if(!IsNumberCell(tradesCell)) forwardMalformed++;
             string Inputsforward=ExtractDataFromCell(FileReadString(hForward));
             while(true)
             {
@@ -804,7 +816,7 @@ string OutcomeSentence(void)
       return "Tested "+(string)passesSeen+" settings on "+symbol_+" "+TF_+" in "+OutcomeWindow()
              +": "+(string)ArraySize(Rows)+" "+(ArraySize(Rows)==1 ? "was" : "were")+" profitable with "+(string)GOAT_XML_MIN_BACK_TRADES
              +"+ trades in-sample but none scored "+DoubleToString(GOAT_XML_MIN_COMBINED_SCORE,0)+"+ once the forward period to "
-             +TimeToString(endD,TIME_DATE)+" was included (best "+DoubleToString(bestCombinedScore,1)+"). A result for this window, not an error.";
+             +TimeToString(endD,TIME_DATE)+" was included (best "+DoubleToString(bestCombinedScore,1)+(bestCombinedScore<=0 ? ": the forward period scored zero" : "")+"). A result for this window, not an error.";
    return "Tested "+(string)passesSeen+" settings on "+symbol_+" "+TF_+" in "+OutcomeWindow()
           +": none was profitable with "+(string)GOAT_XML_MIN_BACK_TRADES+"+ trades ("+(profitableSeen>0 ? (string)profitableSeen+" profitable on fewer, " : "")
           +"best profit "+DoubleToString(bestProfit,2)+"). A result for this window, not an error.";
@@ -826,7 +838,33 @@ int ForwardReportRows(const string filename)
   }
 //+------------------------------------------------------------------+
 private:
-   bool IsNumberCell(const string cell) {return(StringFind(cell,"ss:Type=\"Number\">")>=0);}
+   // A Number cell whose text is strictly a decimal number ([+-]digits[.digits][e[+-]digits]).
+   // ExtractDataAsDouble turns anything else into 0.0, which must never pass for a result.
+   bool IsNumberCell(const string cell)
+   {
+      string tag="ss:Type=\"Number\">";
+      int start=StringFind(cell,tag); if(start<0) return false;
+      start+=StringLen(tag);
+      int end=StringFind(cell,"</Data>",start); if(end<0) return false;
+      string text=StringSubstr(cell,start,end-start);
+      StringTrimLeft(text); StringTrimRight(text);
+      int n=StringLen(text), digits=0, expDigits=0, dots=0, exps=0;
+      for(int k=0;k<n;k++)
+      {
+         ushort ch=StringGetCharacter(text,k);
+         if(ch>='0' && ch<='9') {if(exps>0) expDigits++; else digits++;}
+         else if(ch=='.') {if(dots>0 || exps>0) return false; dots++;}
+         else if(ch=='e' || ch=='E') {if(exps>0 || digits==0) return false; exps++;}
+         else if(ch=='+' || ch=='-')
+         {
+            if(k==0) continue;
+            ushort prev=StringGetCharacter(text,k-1);
+            if(prev!='e' && prev!='E') return false;
+         }
+         else return false;
+      }
+      return digits>0 && (exps==0 || expDigits>0);
+   }
    int GetBackPassRow(int Forward_pass)
    {
       for(int i=0;i<ArraySize(Rows);i++)

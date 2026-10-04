@@ -52,7 +52,7 @@ function block(text,from){
   }
   return [brace,end];
 }
-const TYPES='string|bool|int|uint|long|ulong|datetime|double|SBatchProgressStats';
+const TYPES='string|bool|int|uint|long|ulong|ushort|datetime|double|SBatchProgressStats';
 function convert(body,macros){
   for(const [name,value] of Object.entries(macros))body=body.replace(new RegExp('\\b'+name+'\\b','g'),value);
   // MQL char literals are ushort codes ('\t', ':', ...); keep that type in JS.
@@ -101,6 +101,7 @@ function makeContext(files,{realForward=false}={}){
     FileClose:()=>{},
     StringFind:(s,t,from=0)=>String(s).indexOf(t,from),StringLen:s=>String(s).length,
     StringSubstr:(s,a,n)=>n===undefined?String(s).slice(a):String(s).substr(a,n),
+    StringGetCharacter:(s,k)=>String(s).charCodeAt(k),
     StringCompare:(a,b)=>a===b?0:(a<b?-1:1),StringToDouble:s=>parseFloat(s)||0,
     StringSplit:(s,sep,out)=>{out.length=0;out.push(...String(s).split(typeof sep==='number'?String.fromCharCode(sep):sep));return out.length;},
     ArraySize:a=>a.length,ArrayResize:(a,n)=>{while(a.length<n)a.push(a.make?a.make():'');a.length=n;return n;},
@@ -132,15 +133,19 @@ function makeContext(files,{realForward=false}={}){
   vm.runInContext(combiner,c);
   return c;
 }
+// replay_research_outcome.cjs reuses the production functions over real report copies.
+if(process.env.GOAT_OUTCOME_HARNESS_ONLY){module.exports={makeContext};return;}
 const HEAD=['Pass','Result','Profit','Expected Payoff','Profit Factor','Recovery Factor','Sharpe Ratio','Custom','Equity DD %','Trades'];
 const cell=(type,v)=>'<Cell><Data ss:Type="'+type+'">'+v+'</Data></Cell>';
+// A score cell: r.types[key] overrides its type, r.raw[key] its text (e.g. '1.#INF' typed Number).
+const sc=(r,key,def)=>cell(r.types?.[key]??'Number',r.raw?.[key]??r[key]??def);
 function report(title,rows){
   const lines=['<?xml version="1.0"?>','<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet">',
     '<DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">','<Title>'+title+'</Title>','<Author>MetaQuotes</Author>',
     '</DocumentProperties>','<Styles></Styles>','<Worksheet ss:Name="Tester Optimizator Results">','<Table>','<Row>',
     ...HEAD.map(h=>cell('String',h)),cell('String','InpPeriod'),'</Row>'];
-  for(const r of rows)lines.push('<Row>',cell('Number',r.pass),cell('Number',r.result),cell('Number',r.profit),cell('Number',0),
-    cell('Number',r.pf??1),cell('Number',r.rf??1),cell('Number',r.sr??1),cell('Number',0),cell('Number',r.dd??5),cell('Number',r.trades),
+  for(const r of rows)lines.push('<Row>',cell('Number',r.pass),cell('Number',r.result),sc(r,'profit'),cell('Number',0),
+    sc(r,'pf',1),sc(r,'rf',1),sc(r,'sr',1),cell('Number',0),cell('Number',r.dd??5),sc(r,'trades'),
     cell('Number',r.input??10),'</Row>');
   lines.push('</Table>','</Worksheet>','</Workbook>');
   return lines;
@@ -319,8 +324,8 @@ function forwardFull(rows,{closed=true}={}){
   const lines=['<?xml version="1.0"?>','<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet">','<Worksheet ss:Name="Tester Optimizator Results">',
     '<Table>','<Row>',...FHEAD.map(h=>cell('String',h)),cell('String','InpPeriod'),'</Row>'];
   for(const r of rows)lines.push('<Row>',cell('Number',r.pass),cell('Number',r.fresult??0.01),cell(r.bresultType??'Number',r.bresult),
-    cell(r.profitType??'Number',r.profit),cell('Number',0),cell('Number',r.pf??1),cell('Number',r.rf??1),cell('Number',r.sr??1),cell('Number',0),
-    cell('Number',r.dd??5),cell('Number',r.trades),cell('Number',r.input??10),'</Row>');
+    r.profitType?cell(r.profitType,r.profit):sc(r,'profit'),cell('Number',0),sc(r,'pf',1),sc(r,'rf',1),sc(r,'sr',1),cell('Number',0),
+    cell('Number',r.dd??5),sc(r,'trades'),cell('Number',r.input??10),'</Row>');
   if(closed)lines.push('</Table>','</Worksheet>','</Workbook>');
   return lines;
 }
@@ -355,6 +360,11 @@ const noQualifier=(forwardRows,opts={})=>combine([{name:back(),back:opts.back??g
   const one=combine([{name:back(),back:report(TITLE,losing(20).concat([keptBack(0)])),forwardLines:forwardFull(losingForward(20).concat([weakForward(0)]))}],{realForward:true});
   check(()=>assert.equal(one.c.outcome,'no_qualifying_rows'));
   check(()=>assert.match(one.c.OutcomeSentence(),/: 1 was profitable with 50\+ trades in-sample/));
+  // Every kept pass lost in the forward period: best 0.0 says why, so it never reads as rounding.
+  const zero=combine([{name:back(),back:g6Back(),forwardLines:forwardFull(g6Forward(Array.from({length:7},(_,k)=>({...weakForward(k),profit:-40}))))}],{realForward:true});
+  check(()=>assert.equal(zero.c.outcome,'no_qualifying_rows'));
+  check(()=>assert.match(zero.c.OutcomeSentence(),/ \(best 0\.0: the forward period scored zero\)\. A result for this window, not an error\.$/));
+  check(()=>assert.ok(!/scored zero/.test(c.OutcomeSentence()),'only when the best is zero'));
   // Report mode says what happened.
   const rm=combine([{name:back(),back:g6Back(),forwardLines:forwardFull(g6Forward())}],{realForward:true,reportMode:true});
   check(()=>assert.deepEqual(rm.c.alerts,[rm.c.OutcomeSentence()]));
@@ -389,6 +399,35 @@ const noQualifier=(forwardRows,opts={})=>combine([{name:back(),back:opts.back??g
     check(()=>assert.equal(c.outcome,'',label));
     check(()=>assert.equal(ret,false,label+': still an error'));
     check(()=>assert.ok(!c.logs.some(l=>/in-sample but none scored/.test(l)),label+' is never described as a tested result'));
+  }
+  // Codex P1: every cell the combined score reads must parse strictly, back and forward. An
+  // unreadable PF, RF, SR, profit or trades cell would read as 0.0 and could pull the best
+  // score under 60; it is a processing error, never "nothing qualified".
+  for(const key of ['profit','pf','rf','sr','trades'])
+    for(const [how,patch] of [['typed String',{types:{[key]:'String'}}],['not a number',{raw:{[key]:'1.#INF'}}],['empty',{raw:{[key]:''}}]]){
+      const label='forward '+key+' cell '+how;
+      const lines=forwardFull(weak.map((r,k)=>k===154?{...r,...patch}:r));
+      const {ret,c}=combine([{name:back(),back:g6Back(),forwardLines:lines}],{realForward:true,saved:0});
+      check(()=>assert.equal(c.outcome,'',label));
+      check(()=>assert.equal(ret,false,label+': still an error'));
+      check(()=>assert.ok(c.forwardMalformed>0,label+' is counted'));
+    }
+  for(const key of ['pf','rf','sr'])
+    for(const [how,patch] of [['typed String',{types:{[key]:'String'}}],['not a number',{raw:{[key]:'n/a'}}]]){
+      const label='back '+key+' cell '+how+' on a kept pass';
+      const backLines=report(TITLE,losing(151).concat(Array.from({length:7},(_,k)=>k===2?{...keptBack(k),...patch}:keptBack(k))));
+      const {ret,c}=combine([{name:back(),back:backLines,forwardLines:forwardFull(weak)}],{realForward:true,saved:0});
+      check(()=>assert.equal(c.outcome,'',label));
+      check(()=>assert.equal(ret,false,label+': still an error'));
+      check(()=>assert.ok(c.malformedSeen>0&&c.logs.some(l=>/^❌ Back report is partial or has unreadable rows/.test(l)),label+' is counted and named'));
+    }
+  // The strict cell parser itself.
+  {
+    const p=makeContext({});
+    const num=v=>vm.runInContext('IsNumberCell('+JSON.stringify(cell('Number',v))+')',p);
+    for(const v of ['0','12','-1261.09','+3.5','0.03','1e5','1.5E-3','2.e+10','.5',' 7 '])check(()=>assert.equal(num(v),true,v));
+    for(const v of ['','-','1.#INF','inf','nan','1,5','1.2.3','e5','1e','1e+','--1','1-2','12a'])check(()=>assert.equal(num(v),false,JSON.stringify(v)));
+    check(()=>assert.equal(vm.runInContext('IsNumberCell('+JSON.stringify(cell('String','12'))+')',p),false,'String type'));
   }
   // A partial or unreadable back report with kept rows never becomes "nothing qualified".
   const whole=g6Back();

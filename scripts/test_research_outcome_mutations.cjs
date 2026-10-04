@@ -44,8 +44,24 @@ const mutations=[
                LogOrPrint(reportMode,"❌ Back result mismatch`,R`LogOrPrint(reportMode,"❌ Back result mismatch`,outcome],
   ['inputs mismatch not counted','XmlProcessor.mqh',R`forwardMismatches++;
                LogOrPrint(reportMode,"❌ Inputs mismatch`,R`LogOrPrint(reportMode,"❌ Inputs mismatch`,outcome],
-  ['unreadable forward cells not counted','XmlProcessor.mqh',R`if(!IsNumberCell(profitCell) || !IsNumberCell(tradesCell)) forwardMalformed++;`,'',outcome],
   ['forward row loops forever at EOF','XmlProcessor.mqh',R`if(FileIsEnding(hForward)) {forwardMalformed++; break;}   // truncated report: never loop at EOF`,'',outcome],
+  // Codex P1: every score cell, back and forward, must parse strictly.
+  ['forward profit cell unchecked','XmlProcessor.mqh',R`if(!IsNumberCell(profitCell)) forwardMalformed++;`,'',outcome],
+  ['forward PF cell unchecked','XmlProcessor.mqh',R`if(!IsNumberCell(pfCell)) forwardMalformed++;`,'',outcome],
+  ['forward RF cell unchecked','XmlProcessor.mqh',R`if(!IsNumberCell(rfCell)) forwardMalformed++;`,'',outcome],
+  ['forward SR cell unchecked','XmlProcessor.mqh',R`if(!IsNumberCell(srCell)) forwardMalformed++;`,'',outcome],
+  ['forward trades cell unchecked','XmlProcessor.mqh',R`if(!IsNumberCell(tradesCell)) forwardMalformed++;`,'',outcome],
+  ['back PF cell unchecked','XmlProcessor.mqh',R`if(!IsNumberCell(pfCell)) malformedSeen++;`,'',outcome],
+  ['back RF cell unchecked','XmlProcessor.mqh',R`if(!IsNumberCell(rfCell)) malformedSeen++;`,'',outcome],
+  ['back SR cell unchecked','XmlProcessor.mqh',R`if(!IsNumberCell(srCell)) malformedSeen++;`,'',outcome],
+  ['non-numeric text accepted','XmlProcessor.mqh',R`         else return false;
+      }
+      return digits>0`,R`         else continue;
+      }
+      return digits>0`,outcome],
+  ['number type alone accepted','XmlProcessor.mqh',R`return digits>0 && (exps==0 || expDigits>0);`,R`return true;`,outcome],
+  ['dangling exponent accepted','XmlProcessor.mqh',R`return digits>0 && (exps==0 || expDigits>0);`,R`return digits>0;`,outcome],
+  ['best zero reads as rounding','XmlProcessor.mqh',R`(bestCombinedScore<=0 ? ": the forward period scored zero" : "")`,R`""`,outcome],
   ['nothing qualified written as Error','GOAT V1.49.mq5',R`Strat,"NoQualifyingRows",`,R`Strat,"Error",`,outcome],
   ['real combine errors written as nothing qualified','GOAT V1.49.mq5',R`else if(xmlData.outcome==GOAT_XML_NO_QUALIFYING_ROWS)`,R`else if(true)`,outcome],
   ['summary ignores nothing qualified','Optimizer.mqh',R` && fields[3]!="NoQualifyingRows"`,'',outcome],

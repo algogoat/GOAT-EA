@@ -13,7 +13,7 @@
       "coordination": "algogoat/goatai#1885"
     }
   },
-  "change": "B39 plus the no-qualifying-rows research outcome (Banker g6-r1b, EX33). When profitable back passes were kept, every one was found exactly once in a whole forward report with matching back values and inputs, and none reached the export score (60) once the forward period was included, the member is recorded as a research result (item_stats NoQualifyingRows, outcome no_qualifying_rows, with back_rows, forward_matched, forward_discarded, best_combined_score and score_threshold) instead of failing the combine with \"No Rows!\". A partial, unreadable or disagreeing forward report stays a real error. The queue status stays Error (no wire change). Report processing only: no trading, risk, sizing, order, trade-event, AI-wire, model-route or input-header change.",
+  "change": "B39 plus the no-qualifying-rows research outcome (Banker g6-r1b, EX33). When profitable back passes were kept, every one was found exactly once in a whole forward report with matching back values and inputs, and none reached the export score (60) once the forward period was included, the member is recorded as a research result (item_stats NoQualifyingRows, outcome no_qualifying_rows, with back_rows, forward_matched, forward_discarded, best_combined_score and score_threshold) instead of failing the combine with \"No Rows!\". A partial, unreadable or disagreeing forward report, or any unreadable score cell (profit, PF, RF, SR, trades; back or forward), stays a real error. The queue status stays Error (no wire change). Report processing only: no trading, risk, sizing, order, trade-event, AI-wire, model-route or input-header change.",
   "supersedes_candidate": "beta17-B39",
   "sources": {
     "Dashboard.mqh": "ffd2543bf08ee473ea78ca55936bd696966548d43848f8f2255a22e7ac80ea80",
@@ -56,7 +56,7 @@
     "NewsBiasFilter.mqh": "34405f975b55d8dbf5fdc24005b15102f48f441c2f1119bc5f188690114ef278",
     "Optimizer.mqh": "0f21071b8418b0ef32663c5d7a3ee4b9807989000e1d435104065c6f6bd729c0",
     "Tester.mqh": "2d109fa8be126804ed80e0b92bf5198d54acb35e5075d13b9cd443dd1d02418e",
-    "XmlProcessor.mqh": "a44f01f92ded5d07e3b2d641d1df2d55ec478caa4932d2e8293d7e527e0b169b"
+    "XmlProcessor.mqh": "fd218b06ece97721bd7335f69ac7739bcb5d1fcf34c8a92593c538fb22b902d0"
   },
   "binary": null,
   "compile": "pending",

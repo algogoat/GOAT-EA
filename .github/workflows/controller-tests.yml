@@ -78,6 +78,10 @@ jobs:
         run: node scripts/test_activation_code_file.cjs
       - name: Broker facts on device/start and the license check (zero-click demo pairing, goatai#1885)
         run: node scripts/test_broker_facts_payload.cjs
+      - name: Recorded AI bias reaches the bias logic as live does, at every Bias_threshold (goatai#1885)
+        run: node scripts/test_bias_reader_parity.cjs
+      - name: Recorded bias gate mutation check (every guard is load-bearing)
+        run: node scripts/test_bias_reader_parity_mutations.cjs
       - name: Research outcome mutation check (every EA guard is load-bearing)
         run: node scripts/test_research_outcome_mutations.cjs
       - name: Research outcome controller mutation check

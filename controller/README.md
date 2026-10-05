@@ -760,6 +760,52 @@ Operations (no MT5 effect; writes only `<controller state>\equivalence\<digest>\
 `equivalence` (certificate digest, canary digest, status at collection) on its
 verdict and evidence version.
 
+#### Function-level comparison of the entrypoint and `Optimizer.mqh` (`studio_function_units.py`)
+
+Every build changes `GOAT V1.49.mq5` or `Optimizer.mqh`, so whole-file comparison can
+never certify. When either differs, the certificate splits both versions into units
+(functions with their exact signature, overloads apart; class/struct/enum shells and
+inline methods; globals; inputs; declarations; every preprocessor line; the standard
+`EVENT_MAP_BEGIN/END` pair as `Class::OnEvent`) and hashes each with the same
+normalization. Units and the comment/whitespace gaps between them must tile the file
+exactly. The file passes only when every differing unit is on the reviewed receipt
+`contracts/equivalence/non-trading-function-allowlist-v1.json` (keyed by file and unit,
+pinned by the hash of each reviewed version, `confirmed` by Claude-Mac), has no GUARD
+hit, and, when a conservative name-level call graph reaches it from `OnTick`,
+`OnTester`, `OnTesterInit`, `OnTesterPass`, `OnTesterDeinit` or `OnTradeTransaction`,
+its entry says `trading_path_reviewed`. Never allowlistable: any preprocessor line,
+any input, a changed global or declaration, a changed directive sequence or global
+order, a unit moved across a directive. A gap blocks only when a token other than a
+comment or whitespace changed (or the file uses `__LINE__`). Any parse doubt
+(unbalanced braces, conditionals that change unit boundaries, macros that can define
+functions, unclassifiable statements, `#include`/`#define` inside a body, duplicate or
+ambiguous signatures) makes the certificate `not_comparable` with the reason.
+
+For a reviewer: `python controller/studio_function_units.py units-diff --repo <GOAT-EA>
+--export-commit <a> --installed-commit <b> [--json report.json]` prints the differing
+units with reachability, per-unit diffs and receipt stubs (hashes filled in, category
+and reason left to the review).
+
+#### Build externals manifest (`candidate-builds/<build>/externals.json`)
+
+Every candidate compile records what the compiler actually read outside the staged EA
+source: `python controller/studio_function_units.py externals-manifest --repo <GOAT-EA>
+--mql5-root <compile MQL5> --compile-log <compile.log> --stage <staged EA folder>
+[--log-stage <stage path as the log names it>] --compiler <MetaEditor64.exe> --binary
+<GOAT V1.49.ex5> --identity <identity.json> --receipt <compile-receipt.json> --output
+candidate-builds/<build>/externals.json`. It hashes every include and resource the log
+names (standard library and ControlsPlus with their bitmap resources, the MACD
+indicator), the per-name externals the certificate uses, and checks the stage against
+the identity, the binary against the receipt, the compiler hash, a clean result line,
+full coverage, and that no external changed after the compile started; any doubt is
+listed in `problems`, and a manifest with problems is never used. An unversioned
+resource the log shows was never read (`RunMe.ex5` under an undefined
+`RUNEX5_SILENT`) is recorded as `not-consumed (compile log)`, accepted only from such a
+manifest. `resolve_build` loads `externals.json` next to a matching identity (bound to
+its binary, compile commit and compiler), and `--export-externals` /
+`--installed-externals` accept a manifest too; when both builds carry one, every file
+the compiler read is compared.
+
 ### Held-out lock and trial journal (library scoring v1, phase 1)
 
 The controller half of goatai#2221 (`docs/research/library-scoring-v1-phase1.md`

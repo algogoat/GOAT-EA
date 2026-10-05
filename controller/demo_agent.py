@@ -2543,6 +2543,24 @@ def _lane_detached(args):
 
 def _gate_command(args):
     import studio_gate_calibration as gates
+    from studio_heldout import HeldOutRefused, UNAVAILABLE
+    from studio_heldout_guard import guard_output, require_no_active_lock
+    # Held-out guard, fail closed (Claude-Mac, goatai#1885): gate-recommend and gate-stamp aggregate every
+    # export on this PC, so they run only with a readable installation, a verified registry and no active
+    # lock. They refuse before reading evidence or writing a file; the reply still passes guard_output.
+    try:
+        install = load_installation(Path(args.installation).resolve(), verify_binary=False)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise HeldOutRefused(UNAVAILABLE, '%s needs a readable --installation to check the held-out locks: %s'
+                             % (args.command, str(error)[:200] or type(error).__name__))
+    require_no_active_lock(install, command=args.command, root=install['controller_state_root'])
+
+    def guarded(result):
+        return guard_output(install, result, root=install['controller_state_root'])
+    return guarded(_gate_result(args, gates))
+
+
+def _gate_result(args, gates):
     if args.command == 'gate-recommend':
         if args.output is not None and Path(args.output).exists():
             raise ValueError('Recommendation output already exists; choose a new path')
@@ -2748,7 +2766,11 @@ def main(argv=None):
             return 0
         except Exception as exc:
             code = 'REFUSED' if isinstance(exc, ValueError) else 'IO_ERROR' if isinstance(exc, OSError) else 'INTERNAL_ERROR'
-            print(json.dumps(dict(ok=False, code=code, error=str(exc)), sort_keys=True), file=sys.stderr)
+            error = dict(ok=False, code=code, error=str(exc))
+            from studio_heldout import HeldOutRefused
+            if isinstance(exc, HeldOutRefused):
+                error.update(code=exc.code, plain=exc.plain, locked_windows=exc.locked_windows)
+            print(json.dumps(error, sort_keys=True), file=sys.stderr)
             return 1
     try:
         agent = DemoAgent(args.installation)

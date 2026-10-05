@@ -249,8 +249,20 @@ The export gates (`MinScore 60`, `MinSR 2.5`, `MinARF 0.2`, `SetsToExport 2`,
 trades) were fixed by hand. `gate-recommend` replaces "fixed" with "chosen per run
 from what our past exports actually did". It is read only: it opens the export
 folders under Common Files for reading and writes nothing except `--output`. It
-needs no terminal, lock, session or broker; `--installation` is accepted as for
-every command and not read.
+needs no terminal, lock, session or broker.
+
+`--installation` is read, for the held-out guard only. `gate-recommend` and
+`gate-stamp` aggregate every export on this PC, and their numbers cannot be
+attributed to one strategy or window. So both refuse before reading evidence or
+writing a file when:
+
+- the installation is unreadable, or the registry cannot be verified
+  (`HELDOUT_REGISTRY_UNAVAILABLE`);
+- any held-out lock is active (`HELDOUT_LOCKED_WINDOW`, with `locked_windows`).
+
+Their replies also pass `guard_output`. `guard_output` itself fails closed: when its
+context cannot be built, it redacts every derived value instead of returning the
+reply unchanged.
 
 ```powershell
 & $py $tool --installation $install gate-recommend --target forward --min-survival 0.8

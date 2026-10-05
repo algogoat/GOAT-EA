@@ -2124,9 +2124,38 @@ class DemoAgent:
     def seed_start(self, batch_id, max_seconds):
         return self._lane_start('seed', batch_id, max_seconds)
 
+    def _seed_resumable_stopped(self, batch_id, kind='seed'):
+        """Read-only: a batch stopped by failed members with pending members left (studio_seed.SeedRunner.resumable)."""
+        from studio_seed import SeedRunner
+        state = self.root / LANES[kind]['folder'] / batch_id / 'state.json'
+        try:
+            return state.is_file() and SeedRunner.resumable(read_json(state))
+        except (OSError, ValueError):
+            return False
+
+    def _lane_reactivate(self, kind, batch_id, max_seconds):
+        """Resume a batch stopped by failed members: a start-grade check (fresh broker readback of this paired demo,
+        idle tester, owner grant, no STOP/TAKE, disk, no other work), then the runner re-activates it and continues
+        only its pending members. The original broker-verified start record must still match."""
+        lane = LANES[kind]
+        with self._exclusive(), self._studio(kind + '-resume', idle=True, job_id=batch_id) as (controller, broker):
+            self._seed_unoccupied(kind)
+            record = self._seed_start_record(batch_id, kind)
+            runner = self._seed_runner(controller, kind)
+            current = runner.status(batch_id)
+            if current['manifest_sha256'] != record['manifest_sha256']:
+                raise ValueError(lane['title'] + ' state differs from its broker-verified start record')
+            self._append(kind + '_resume', 'reactivate', batch_id=batch_id, broker=broker,
+                         stopped_reason=(current.get('stopped_reason') or {}).get('rules'),
+                         pending=sum(m['status'] == 'pending' for m in current['members']) if 'members' in current else None)
+            return self._reopen_after_lane(kind, batch_id,
+                                           self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind))
+
     def _lane_resume(self, kind, batch_id, max_seconds):
         lane = LANES[kind]
         self._seed_budget(max_seconds, kind)
+        if self._seed_resumable_stopped(batch_id, kind):
+            return self._lane_reactivate(kind, batch_id, max_seconds)
         with self._exclusive(), self._seed_scope(kind + '-resume', batch_id, kind) as (controller, evidence):
             runner = self._seed_runner(controller, kind)
             current = runner.status(batch_id)

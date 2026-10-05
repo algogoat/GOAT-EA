@@ -339,6 +339,8 @@ def _export_desc(alias, window):
 
 class CatchupRunner(SeedRunner):
     """SeedRunner driver with catch-up members: one non-optimized MT5 pass each."""
+    OUTPUT_NOUN = 're-test export (SET and CSV under Common Files\\TEMP\\SQ)'
+    COMMAND_PREFIX = 'catchup'
 
     def __init__(self, controller, *, process=None, clock=time.time, sleep=time.sleep, now=None):
         super().__init__(controller, process=process, clock=clock, sleep=sleep)

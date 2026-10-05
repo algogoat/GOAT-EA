@@ -86,7 +86,8 @@ CUSTOMER_RESPONSIVE_PERCENT = 50
 OWNER_STAGES_PERCENT = (17, 33)
 PAUSE_AFTER_BREACHES = 2
 GUARD_SECONDS = 10          # publisher budgets are evaluated at most this often
-KEEPER_PERIOD_SECONDS = 2   # keeper loop: agent priority (idle_split) and heartbeat
+KEEPER_PERIOD_SECONDS = 2   # keeper loop: agent priority (idle_split)
+KEEPER_HEARTBEAT_SECONDS = 10
 KEEPER_IDLE_SECONDS = 90    # the keeper exits once the job has been empty this long
 KEEPER_READY_SECONDS = 5
 CYCLE_TAIL_BYTES = 256 * 1024
@@ -574,7 +575,9 @@ def start_keeper(root, name, *, now=None, wait=KEEPER_READY_SECONDS):
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
         beat = _read_json(Path(root) / STATE_FOLDER / 'keeper.json')
-        if beat and beat.get('job') == name and beat.get('state') == 'holding' and (beat.get('heartbeat_wall') or 0) >= now - 1:
+        # A keeper that already holds this job (the previous member's) counts: its heartbeat is <= 10 s old.
+        if (beat and beat.get('job') == name and beat.get('state') == 'holding'
+                and (beat.get('heartbeat_wall') or 0) >= now - KEEPER_HEARTBEAT_SECONDS - 2):
             return dict(state='holding', pid=beat.get('pid'), spawned_pid=pid)
         time.sleep(.1)
     return dict(state='unconfirmed', spawned_pid=pid)
@@ -589,13 +592,16 @@ def keep(root, name, *, api=None, clock=time.time, sleep=time.sleep, idle_second
         if existed:return 0                     # another keeper already holds this job
         job = api.open_job(name, write=True)
         if job is None:return 2
-        idle_since = None;loops = 0
+        idle_since = None;loops = 0;beat_wall = None;beat_active = None
         try:
             while max_loops is None or loops < max_loops:
                 loops += 1;now = clock()
                 active = api.active_processes(job)
-                _atomic_json(root / STATE_FOLDER / 'keeper.json', dict(schema=SCHEMA, pid=os.getpid(), job=name, state='holding',
-                                                                       heartbeat_wall=now, active_processes=active))
+                if beat_wall is None or now - beat_wall >= KEEPER_HEARTBEAT_SECONDS or (active == 0) != (beat_active == 0):
+                    # A small heartbeat, not every loop: the 2 s loop is for idle_split agents only.
+                    _atomic_json(root / STATE_FOLDER / 'keeper.json', dict(schema=SCHEMA, pid=os.getpid(), job=name, state='holding',
+                                                                           heartbeat_wall=now, active_processes=active))
+                    beat_wall, beat_active = now, active
                 if active == 0:
                     idle_since = now if idle_since is None else idle_since
                     if now - idle_since >= idle_seconds:return 0

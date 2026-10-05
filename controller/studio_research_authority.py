@@ -17,10 +17,13 @@ from studio_installation import read_json, load_installation
 CURRENT_OPERATION = ContextVar('studio_research_operation', default=None)
 DEMO_AGENT_SCOPE = ContextVar('studio_demo_agent_scope', default=None)
 # Local create-only file writers with no store, terminal, session, queue or grant effect, classified with the
-# reads (like equivalence-certificate below): starter-set writes one blank SET generated from the installed
-# schema plus its .starter.json receipt at a caller-chosen path outside the publisher catalog, never
-# overwrites and never opens the mutable store or MT5. build-set stays a mutation (unchanged policy).
-LOCAL_FILE_OPERATIONS = frozenset(('starter-set',))
+# reads (like equivalence-certificate below), so a demo-only (demo_direct) agent can build its own SETs.
+# Both run in goat_studio before controller.open(), i.e. they never open studio.sqlite, MT5 or the mailbox:
+# - starter-set writes one blank SET generated from the installed schema plus its .starter.json receipt.
+# - build-set reads a source SET (and its .starter.json/.build.json beside it) and writes the new SET plus
+#   its .md support notes and .build.json provenance (studio_template_tools.build_set, _write_new 'xb').
+# Each writes at a caller-chosen path outside the publisher catalog and never overwrites (goatai#1885).
+LOCAL_FILE_OPERATIONS = frozenset(('starter-set', 'build-set'))
 READ_OPERATIONS = LOCAL_FILE_OPERATIONS | frozenset(('discover','resource-profile','state','onboarding-status',
                              'native-recovery-status','batch-driver-status','owner-maintenance-status',
                              'stopped-cancel-observation','research-status','research-queue',

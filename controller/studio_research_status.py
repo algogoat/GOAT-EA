@@ -224,10 +224,23 @@ ITEM_STATS_HEADER = 'LocalTime\tSymbol\tStrategy\tStatus\tXmlRows\tUniqueRows\tT
 MAX_ITEM_STATS_BYTES = 16 * 1024 * 1024
 NO_PROFITABLE_PASSES = 'no_profitable_passes'
 NO_QUALIFYING_ROWS = 'no_qualifying_rows'
+# Sets scored high enough with the forward period, but every one re-tested over the export
+# window lost money, so the EA exported nothing and wrote a plain Error row (goatai#1885).
+NO_PROFITABLE_EXPORTS = 'no_profitable_exports'
+OUTCOME_ORDER = (NO_PROFITABLE_PASSES, NO_QUALIFYING_ROWS, NO_PROFITABLE_EXPORTS)
 # item_stats.tsv Status -> the one outcome a row with that status may carry.
 RESEARCH_OUTCOME_STATUSES = {'NoProfitablePasses': NO_PROFITABLE_PASSES, 'NoQualifyingRows': NO_QUALIFYING_ROWS}
 MAX_NO_EDGE_LISTED = 200
+MAX_LOG_BYTES = 64 * 1024 * 1024
 _DATE = re.compile(r'\d{4}\.\d{2}\.\d{2}')
+_LOG_LINE = re.compile(r'(\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}) \d{2}:\d{2}:\d{2}\s+(.*)')
+_EXPORT_SEQUENCE = re.compile(r'Export sequence complete: (\d+) attempts \S (\d+) profitable, (\d+) losses, (\d+) errors, '
+                              r'(\d+) duplicates, (\d+) passed thresholds\.')
+_EXPORT_DISCARDED = re.compile(r'Export Profit=(-?\d+(?:\.\d+)?)<0, Discarding completed Set')
+_TOP_ROWS = re.compile(r'SXmlData::WriteTopToXml: wrote \d+ distinct row\(s\) \(Score≥(\d+(?:\.\d+)?)\)')
+_BACK_RANGE = re.compile(r'Extracted Back Test range: (\d{4}\.\d{2}\.\d{2}) - (\d{4}\.\d{2}\.\d{2})$')
+_FORWARD_DATE = re.compile(r'Forward Date Extracted: (\d{4}\.\d{2}\.\d{2})$')
+_EXPORT_DATES = re.compile(r'Adjusting Test Dates, StartDate=(\d{4}\.\d{2}\.\d{2}) EndDate=(\d{4}\.\d{2}\.\d{2})$')
 
 
 def _no_qualifier_outcome(values, outcome):
@@ -301,6 +314,15 @@ def _no_edge_outcome(details, expected=NO_PROFITABLE_PASSES):
 def no_edge_summary(symbol, timeframe, outcome):
     """One honest sentence: what was tested, in which window, and that it is not a verdict."""
     window = outcome['window']
+    if outcome['outcome'] == NO_PROFITABLE_EXPORTS:
+        sets, retested, export = outcome['unique_sets'], outcome['sets_retested'], outcome['export_window']
+        return (symbol + ' ' + timeframe + ': tested, nothing held up in ' + window['start'] + ' to ' + window['end'] + ' — '
+                + str(sets) + (' set' if sets == 1 else ' sets') + ' scored ' + format(outcome['score_threshold'], 'g')
+                + '+ once the forward period to ' + window['forward_end'] + ' was included (best '
+                + format(outcome['best_combined_score'], '.1f') + '), but '
+                + ('the 1 set' if retested == 1 else 'all ' + str(retested) + ' sets') + ' re-tested over '
+                + export['start'] + ' to ' + export['end'] + ' lost money (best ' + format(outcome['best_export_profit'], ',.2f')
+                + '). A result for this window only, not a verdict on the strategy.')
     if outcome['outcome'] == NO_QUALIFYING_ROWS:
         kept = outcome['back_rows']
         return (symbol + ' ' + timeframe + ': tested, nothing qualified in ' + window['start'] + ' to ' + window['end'] + ' — '
@@ -316,8 +338,123 @@ def no_edge_summary(symbol, timeframe, outcome):
             + ', best profit ' + format(outcome['best_profit'], ',.2f') + '. A result for this window only, not a verdict on the strategy.')
 
 
+def _log_lines(native_run):
+    """The run's EA log (``log.GOAT``) as (local epoch or None, text) pairs, or None when unreadable."""
+    path = Path(native_run) / 'log.GOAT'
+    try:
+        if not path.is_file() or path.stat().st_size > MAX_LOG_BYTES:
+            return None
+        raw = path.read_bytes()
+        text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+    except (OSError, UnicodeError):
+        return None
+    lines = []
+    for line in text.splitlines():
+        match = _LOG_LINE.fullmatch(line.rstrip())
+        lines.append((_local_epoch(match.group(1)), match.group(2)) if match else (None, line.rstrip()))
+    return lines
+
+
+def _member_log(lines, alias, started, ended):
+    """The EA log lines of a member's last attempt, from its own start to its own Error, or None.
+
+    The attempt must be the one the timeline names: the log's start and end lines carry
+    the same local times (within 2 s) as the timeline's last OnGoing and its Error.
+    """
+    tail = ':' + alias + ';'
+    begin = None
+    for k, (_, text) in enumerate(lines):
+        if 'Queued->OnGoing: ;OnGoing_' in text and text.endswith(tail):
+            begin = k
+    if begin is None or lines[begin][0] is None or abs(lines[begin][0] - started) > 2:
+        return None
+    for k in range(begin + 1, len(lines)):
+        stamp, text = lines[k]
+        if '->OnGoing: ' in text:
+            return None   # another member started before this one ended
+        if 'OnGoing->' in text and text.endswith(tail):
+            if 'OnGoing->Error: ;Error_' not in text or stamp is None or abs(stamp - ended) > 2:
+                return None
+            return [line for _, line in lines[begin + 1:k]]
+    return None
+
+
+def _export_loss_outcome(segment):
+    """The export-loss evidence of one member's log, or None when anything else happened.
+
+    Mirrors StartExporter (GOAT V1.49.mq5): the optimization ended once, the reports were
+    combined once, the top set reproduced its report, and exactly one export sequence ran
+    in which every set re-tested over the export window completed and lost money (no
+    errors, nothing profitable, nothing passed, no lot-adjustment run), each loss
+    logged with its negative profit. Any tester error, timeout, start or move failure
+    (any other ❌ line) keeps the member a real failure.
+    """
+    def count(words):
+        return sum(words in line for line in segment)
+
+    def one(pattern):
+        found = [m for m in (pattern.search(line) for line in segment) if m]
+        return found[0] if len(found) == 1 else None
+
+    sequence, top, back, forward, export = (one(p) for p in (_EXPORT_SEQUENCE, _TOP_ROWS, _BACK_RANGE, _FORWARD_DATE, _EXPORT_DATES))
+    if None in (sequence, top, back, forward, export):
+        return None
+    attempts, profitable, losses, errors, duplicates, passed = (int(value) for value in sequence.groups())
+    if attempts < 1 or losses != attempts or profitable != 0 or errors != 0 or passed != 0:
+        return None
+    if (count('DEINIT: Optimization Ended') != 1 or count('DEINIT: ✅ XML files Combined and Analyzed.') != 1
+            or count('DEINIT: ✅ Top Set Export Verified') != 1 or count('Export Adjustment sequence complete') != 0
+            or count('❌ zero exports available after the export cycle.') != 1 or count('Export found in ') != attempts + 1
+            or any('❌' in line and '❌ zero exports available after the export cycle.' not in line for line in segment)):
+        return None
+    profits = [float(m.group(1)) for m in (_EXPORT_DISCARDED.search(line) for line in segment) if m]
+    if len(profits) != losses or not all(profit < 0 for profit in profits):
+        return None
+    window = dict(start=back.group(1), end=forward.group(1), forward_end=back.group(2))
+    export_window = dict(start=export.group(1), end=export.group(2))
+    threshold = float(top.group(1))
+    if (not window['start'] < window['end'] < window['forward_end'] or not export_window['start'] < export_window['end']
+            or not 0 < threshold < float('inf')):
+        return None
+    return dict(outcome=NO_PROFITABLE_EXPORTS, window=window, export_window=export_window, score_threshold=threshold,
+                sets_retested=attempts, export_losses=losses, duplicates=duplicates, best_export_profit=max(profits))
+
+
+def _export_loss_outcomes(native_run, index, timing, rows):
+    """{member index: outcome} for plain ``Error`` rows whose log proves every re-tested set lost money.
+
+    The EA writes ``Error`` with ``Export cycle finished`` and no exports both for a tester
+    failure during the export cycle and for sets that ran and lost money; only the log
+    tells them apart (Banker r1c-b40-r2: NZDCAD and AUDJPY lost money, NZDJPY and CADCHF
+    timed out). The row must belong to the timeline's last attempt, which ended in Error.
+    """
+    started, ended, ends = (timing or {}).get('started', {}), (timing or {}).get('ended', {}), (timing or {}).get('outcome', {})
+    candidates = {}
+    for fields in rows:
+        i = index.get((fields[2], fields[1]))
+        written = _local_epoch(fields[0])
+        if (i is None or written is None or ends.get(i) != 'Error' or i not in ended or started.get(i) is None
+                or written + 1 < started[i]):
+            continue
+        try:
+            back_rows, unique, top, exports = int(fields[4]), int(fields[5]), float(fields[6]), int(fields[7])
+        except ValueError:
+            continue
+        if exports == 0 and 1 <= unique <= back_rows and 0 < top < float('inf'):
+            candidates[i] = dict(back_rows=back_rows, unique_sets=unique, best_combined_score=top, recorded_local=fields[0],
+                                 alias=fields[2])
+    lines = _log_lines(native_run) if candidates else None
+    found = {}
+    for i, row in (candidates.items() if lines is not None else ()):
+        segment = _member_log(lines, row.pop('alias'), started[i], ended[i])
+        outcome = _export_loss_outcome(segment) if segment is not None else None
+        if outcome is not None and row['best_combined_score'] >= outcome['score_threshold']:
+            found[i] = dict(outcome, **row)
+    return found
+
+
 def item_outcomes(native_run, members, timing=None):
-    """{member index: outcome} the EA recorded as tested with no edge in its window.
+    """{member index: outcome} the EA recorded as tested with nothing qualifying in its window.
 
     ``members`` are (run_alias, symbol) pairs in queue order. The EA writes one
     ``NoProfitablePasses`` row to ``item_stats.tsv`` when a member's optimization
@@ -329,6 +466,10 @@ def item_outcomes(native_run, members, timing=None):
     an older attempt never relabels a later real failure; without timeline
     evidence nothing is relabelled. Lenient: missing or unreadable evidence
     returns {} and every member keeps its native status.
+
+    A plain ``Error`` row from a finished export cycle with no exports is a result
+    (``no_profitable_exports``) only when the run's own EA log proves every set
+    re-tested over the export window completed and lost money (_export_loss_outcome).
     """
     path = Path(native_run) / 'item_stats.tsv'
     try:
@@ -343,11 +484,13 @@ def item_outcomes(native_run, members, timing=None):
         return {}
     index = {(alias, symbol): i for i, (alias, symbol) in enumerate(members)}
     started = (timing or {}).get('started', {})
-    found = {}
+    found, export_rows = {}, []
     for line in lines[1:]:
         fields = line.split('\t')
         expected = RESEARCH_OUTCOME_STATUSES.get(fields[3]) if len(fields) == 9 else None
         if expected is None:
+            if len(fields) == 9 and fields[3] == 'Error' and fields[8] == 'Export cycle finished':
+                export_rows.append(fields)
             continue
         i = index.get((fields[2], fields[1]))
         written = _local_epoch(fields[0])
@@ -356,6 +499,8 @@ def item_outcomes(native_run, members, timing=None):
         outcome = _no_edge_outcome(fields[8], expected)
         if outcome is not None:
             found[i] = dict(outcome, recorded_local=fields[0])
+    for i, outcome in _export_loss_outcomes(native_run, index, timing, export_rows).items():
+        found.setdefault(i, outcome)
     return found
 
 
@@ -415,7 +560,7 @@ def batch_progress(root, install, job, *, now, journal=None):
     result = dict(members_total=len(members), members_done=0, members_finished=0, qualifying=None,
                   exported_sets=None, passing_sets=None, below_threshold_members=None, below_threshold_sets=None,
                   unknown_members=None, unknown_sets=None, thresholds=None, qualifying_basis=None,
-                  members_no_edge=None, members_failed=None, members_cancelled=None, no_edge_window=None,
+                  members_no_edge=None, no_edge_counts=None, members_failed=None, members_cancelled=None, no_edge_window=None,
                   no_edge=None, last_member=None, current_member=None, pace=None, evidence='unavailable')
     manifest, _ = _bounded_json(package / 'manifest.json', 64 * 1024 * 1024)
     if not isinstance(manifest, dict) or 'launch_intent' not in job:
@@ -469,7 +614,8 @@ def batch_progress(root, install, job, *, now, journal=None):
         counted['qualifying'] += summary['member'] == 'passed'
         counted['below_threshold_members'] += summary['member'] == 'below_threshold'
         counted['unknown_members'] += summary['member'] == 'unknown'
-    # Tested with no profitable settings in their window: results, never failures.
+    # Tested with nothing qualifying in their window (no profitable settings, none scoring
+    # high enough with the forward period, or every re-tested set lost money): results, never failures.
     no_edge = no_edge_members(common_run, [(item['run_alias'], item['tester']['Symbol']) for item in manifest['jobs']],
                               statuses, timing)
     result.update(**counted, qualifying_basis=QUALIFICATION_SCHEMA,
@@ -478,6 +624,8 @@ def batch_progress(root, install, job, *, now, journal=None):
     result.update(members_done=native['completed_count'], members_finished=native['finished_count'],
                   status_counts=native['status_counts'],
                   members_no_edge=len(no_edge), members_failed=statuses.count('native_error') - len(no_edge),
+                  no_edge_counts={kind: n for kind in OUTCOME_ORDER
+                                  if (n := sum(o['outcome'] == kind for o in no_edge.values()))},
                   members_cancelled=statuses.count('native_cancelled'),
                   no_edge_window=shared_window(no_edge.values()) if no_edge else None,
                   no_edge=[dict(index=i, number=i + 1, symbol=manifest['jobs'][i]['tester']['Symbol'],
@@ -649,8 +797,19 @@ def headline(activity):
     no_edge, failed = activity.get('members_no_edge'), activity.get('members_failed')
     if no_edge:
         window = activity.get('no_edge_window')
-        counts += (', ' + str(no_edge) + ' tested with no edge in '
-                   + (window['start'] + ' to ' + window['end'] if window else 'their test window'))
+        where = (window['start'] + ' to ' + window['end'] if window else 'their test window')
+        kinds = {kind: n for kind, n in (activity.get('no_edge_counts') or {}).items() if n}
+        if set(kinds) <= {NO_PROFITABLE_PASSES}:
+            counts += ', ' + str(no_edge) + ' tested with no edge in ' + where
+        else:
+            # Not "no edge": settings were profitable in-sample. Say what fell short, per kind.
+            scores = {o.get('score_threshold') for o in activity.get('no_edge') or [] if o.get('outcome') != NO_PROFITABLE_PASSES}
+            reached = ('scored ' + format(next(iter(scores)), 'g') + '+') if len(scores) == 1 and None not in scores else 'reached the export score'
+            words = {NO_PROFITABLE_PASSES: 'with no profitable settings',
+                     NO_QUALIFYING_ROWS: 'none ' + reached + ' once the forward period was included',
+                     NO_PROFITABLE_EXPORTS: 'lost money on the export re-test'}
+            counts += (', ' + str(no_edge) + ' tested, nothing qualified in ' + where + ' ('
+                       + ', '.join(str(kinds[kind]) + ' ' + words[kind] for kind in OUTCOME_ORDER if kind in kinds) + ')')
     if failed:
         counts += ', ' + str(failed) + ' failed'
     cancelled = activity.get('members_cancelled')

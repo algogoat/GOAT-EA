@@ -40,6 +40,8 @@ METRIC_KEYS = frozenset((
     'prior_dd', 'reproduction', 'original_foos', 'windows', 'catch_up', 'qualification', 'candidates', 'candidate_values',
     'seed_metrics', 'seed_qualifies', 'average_fitness', 'health_percent', 'zero_trade_count', 'average_trades',
     'actual_frames', 'no_edge', 'members_no_edge', 'no_edge_window', 'counts', 'comparability', 'comparable', 'reproduced',
+    # Export-loss outcomes (studio_research_status no_profitable_exports): re-test figures of the tested window.
+    'no_edge_counts', 'best_export_profit', 'export_losses', 'sets_retested', 'unique_sets', 'export_window',
     'passes', 'profitable', 'traded', 'forward_rows', 'back_rows', 'paired_rows', 'actual_back_report_rows',
     'actual_forward_report_rows', 'matching_pass_ids', 'performance_qualification', 'export_qualification',
     # Hold-up test results (studio_holdup): MT5 report figures, weekly/daily realised P/L, split segments, deals.

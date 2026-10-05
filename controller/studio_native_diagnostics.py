@@ -63,7 +63,7 @@ def native_error_evidence(terminal_data_root, native_run_relative):
 def for_job(controller, job, native, no_edge=None):
     """Evidence for a job whose native observation ended in native_error, else None.
 
-    `no_edge` holds the member indexes tested with no profitable settings
+    `no_edge` holds the member indexes tested with nothing qualifying
     (studio_finish research_outcomes). MT5 also ends those members in Error, but
     they are research results, so they are named apart and never as failures.
     """
@@ -75,7 +75,7 @@ def for_job(controller, job, native, no_edge=None):
     failed = [i for i in errored if i not in no_edge]
     if no_edge and errored and not failed:
         return dict(status='no_edge_only', members_no_edge=no_edge, members_failed=[],
-                    note='Every member MT5 ended in Error was tested with no edge in its window (no profitable or no qualifying settings): '
+                    note='Every member MT5 ended in Error was tested with nothing qualifying in its window (no profitable settings, none qualifying with the forward period, or every re-tested set lost money): '
                          'a research result, not a failure. Nothing to diagnose.')
     try:
         path = Path(job['launch_intent']['package'])/'manifest.json'
@@ -87,5 +87,5 @@ def for_job(controller, job, native, no_edge=None):
         evidence = dict(status='unavailable', reason='native run identity unreadable: ' + type(error).__name__)
     if no_edge:
         evidence.update(members_no_edge=no_edge, members_failed=failed,
-                        no_edge_note='Members in members_no_edge were tested with no profitable or no qualifying settings: results, not failures')
+                        no_edge_note='Members in members_no_edge were tested with nothing qualifying (no profitable settings, none qualifying with the forward period, or every re-tested set lost money): results, not failures')
     return evidence

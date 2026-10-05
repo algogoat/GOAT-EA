@@ -356,15 +356,59 @@ BACKFILL_SCHEMA = 'goat-export-qualification-run-v1'
 MAX_LOG_BYTES = 256 * 1024 * 1024
 MAX_RUN_SETS = 20000
 CROSSCHECK_MISMATCH = 'log_crosscheck_mismatch'
-_SEQUENCE = re.compile(r'Export sequence complete: (\d+) attempts.*?(\d+) passed thresholds')
-_ADJUSTED = re.compile(r'Export Adjustment sequence complete: (\d+) attempts.*?(\d+) passed thresholds')
+_SEQUENCE = re.compile(r'Export sequence complete: \d+ attempts.*?(\d+) passed thresholds')
+_ADJUSTED = re.compile(r'Export Adjustment sequence complete: \d+ attempts.*?(\d+) passed thresholds')
+_TRIM = re.compile(r'SortAndTrimExports: Total=(\d+) Passing=(\d+) Kept=(\d+)')
 
 
-def log_passes(log_path, adjust_lots):
-    """The EA's own per-member "N passed thresholds" counts from ``log.GOAT``, or None when unreadable.
+def log_cycles(text):
+    """The EA's export cycles in ``log.GOAT`` order: one per "Export sequence complete" line.
 
-    With AdjustLots the kept sets are the lot-adjusted re-runs, so their "Export Adjustment sequence
-    complete" line is the one that counts (GOAT V1.49.mq5:4641-4646)."""
+    Each cycle keeps its "N passed thresholds" count, the ``SortAndTrimExports: Total= Passing= Kept=``
+    lines that follow it, and, with AdjustLots, the "Export Adjustment sequence complete" count and the
+    trim of the adjusted re-runs (GOAT V1.49.mq5:4600-4646)."""
+    cycles = []
+    for line in text.splitlines():
+        match = _SEQUENCE.search(line)
+        if match:
+            cycles.append(dict(passed=int(match.group(1)), trims=[], adjusted=None, adjusted_trims=[]))
+            continue
+        if not cycles:
+            continue
+        match = _ADJUSTED.search(line)
+        if match:
+            cycles[-1]['adjusted'] = int(match.group(1))
+            continue
+        match = _TRIM.search(line)
+        if match:
+            cycle = cycles[-1]
+            trim = dict(total=int(match.group(1)), passing=int(match.group(2)), kept=int(match.group(3)))
+            (cycle['adjusted_trims'] if cycle['adjusted'] is not None else cycle['trims']).append(trim)
+    return cycles
+
+
+def kept_passing(cycle, adjust_lots):
+    """(passing sets the EA kept, basis) for one cycle.
+
+    The count that matters is the one AFTER trimming: ``SortAndTrimExports`` logs ``Passing=`` for the
+    sets it keeps (Tester.mqh:708-717; Claude-Mac review of GOAT-EA#164). A cycle with one stored set
+    never logs it: ``SortAndTrimExports`` returns before its log line when n <= 1 (Tester.mqh:694), and
+    a cycle with none never calls it (GOAT V1.49.mq5:4602). For those, the cycle's own "N passed
+    thresholds" count is exact (0 or 1, the single set kept as it is). With AdjustLots the kept sets are
+    the adjusted re-runs, so their adjustment count and trim decide."""
+    if adjust_lots:
+        if cycle['adjusted'] is None:
+            return 0, 'no_adjusted_exports'
+        if cycle['adjusted_trims']:
+            return cycle['adjusted_trims'][-1]['passing'], 'sort_and_trim'
+        return cycle['adjusted'], 'single_export_passed_thresholds'
+    if cycle['trims']:
+        return cycle['trims'][-1]['passing'], 'sort_and_trim'
+    return cycle['passed'], 'single_export_passed_thresholds'
+
+
+def read_log(log_path):
+    """``log.GOAT`` as text (UTF-16 as the EA writes it), or None when missing, too large or unreadable."""
     path = Path(log_path)
     try:
         if not path.is_file() or path.stat().st_size > MAX_LOG_BYTES:
@@ -372,19 +416,22 @@ def log_passes(log_path, adjust_lots):
         raw = path.read_bytes()
     except OSError:
         return None
-    text = raw.decode('utf-16', errors='replace') if raw.startswith(b'\xff\xfe') or b'\x00' in raw[:400] else \
+    return raw.decode('utf-16', errors='replace') if raw.startswith(b'\xff\xfe') or b'\x00' in raw[:400] else \
         raw.decode('utf-8', errors='replace')
-    pattern = _ADJUSTED if adjust_lots else _SEQUENCE
-    return [int(match.group(2)) for match in pattern.finditer(text)]
 
 
 def scan_run(run_root, *, generated_at=None):
     """Every kept export of one run folder, stamped, with the EA log cross-check (read only).
 
-    The cross-check compares what the EA's own file-name comparison reproduces (``ea_native_passed``)
-    with the sum and the member count of the log's "N passed thresholds" lines. When they differ,
-    nothing in this run may read as passed: each passed stamp becomes unknown
-    (``missed: ['log_crosscheck_mismatch']``), so a stale or partial folder can never overstate.
+    Each entry is ``{set_path, set_name, set_sha256, member, symbol, qualification}``; the judgement sits
+    under ``qualification`` so the held-out guard redacts it whole for a locked export. The cross-check
+    compares what the EA's own file-name comparison reproduces (``ea_native_passed``) with the passing
+    sets the EA logged as kept (``kept_passing``): their sum and the number of members with any. When
+    they differ, or the log is unreadable, nothing in this run may read as passed: each passed stamp
+    becomes unknown (``missed: ['log_crosscheck_mismatch']``), so a stale or partial folder never
+    overstates. A mismatch can also mean the EA kept a non-passer over a passer (it keeps the top
+    ``Passing=`` sets by ARF x SR, Tester.mqh:696-716); that is not attributable from the log, so it
+    fails closed too.
     """
     run_root = Path(run_root)
     if not any((run_root / name).exists() for name in ('deploy', 'export_settings.GOAT', 'log.GOAT', 'manifest.json')):
@@ -398,27 +445,35 @@ def scan_run(run_root, *, generated_at=None):
     except (OSError, UnicodeError):
         settings_text = ''
     adjust_lots = (ea_setting(settings_text, 'AdjustLots') or '0').strip() not in ('', '0')
-    stamps, members = [], {}
+    entries, members = [], {}
     deploy = run_root / 'deploy'
     for alias in sorted(p for p in deploy.iterdir() if p.is_dir()) if deploy.is_dir() else []:
         for symbol in sorted(p for p in alias.iterdir() if p.is_dir()):
             for set_path in sorted(p for p in symbol.glob('*.set') if p.is_file()):
-                if len(stamps) >= MAX_RUN_SETS:
+                if len(entries) >= MAX_RUN_SETS:
                     raise ValueError('More than %d kept sets in one run; refusing a partial scan' % MAX_RUN_SETS)
-                stamp = dict(stamp_set(set_path, thresholds), member=alias.name, symbol=symbol.name, set_path=str(set_path))
-                stamps.append(stamp)
+                stamp = stamp_set(set_path, thresholds)
+                entry = dict(set_path=str(set_path), set_name=stamp['set_name'], set_sha256=stamp['set_sha256'],
+                             member=alias.name, symbol=symbol.name, qualification=stamp)
+                entries.append(entry)
                 members.setdefault((alias.name, symbol.name), []).append(stamp)
-    passes = log_passes(run_root / 'log.GOAT', adjust_lots)
+    stamps = [entry['qualification'] for entry in entries]
     native_sets = sum(1 for s in stamps if s.get('ea_native_passed'))
     native_members = sum(1 for kept in members.values() if any(s.get('ea_native_passed') for s in kept))
     crosscheck = dict(log_path=str(run_root / 'log.GOAT'), adjust_lots=adjust_lots,
                       stamped_native_passed_sets=native_sets, stamped_members_with_native_pass=native_members)
-    if passes is None:
+    text = read_log(run_root / 'log.GOAT')
+    if text is None:
         crosscheck.update(status='unavailable', reason='log.GOAT missing or unreadable: the EA log cannot confirm these stamps')
     else:
-        crosscheck.update(log_export_cycles=len(passes), log_passed_sets=sum(passes),
-                          log_members_with_pass=sum(1 for n in passes if n > 0))
-        same = crosscheck['log_passed_sets'] == native_sets and crosscheck['log_members_with_pass'] == native_members
+        kept = [kept_passing(cycle, adjust_lots) for cycle in log_cycles(text)]
+        bases = {}
+        for _, basis in kept:
+            bases[basis] = bases.get(basis, 0) + 1
+        crosscheck.update(log_export_cycles=len(kept), log_kept_passing_sets=sum(n for n, _ in kept),
+                          log_members_with_kept_pass=sum(1 for n, _ in kept if n > 0), log_bases=bases)
+        same = (crosscheck['log_kept_passing_sets'] == native_sets
+                and crosscheck['log_members_with_kept_pass'] == native_members)
         crosscheck['status'] = 'match' if same else 'mismatch'
     if crosscheck['status'] != 'match':
         for stamp in stamps:
@@ -433,9 +488,37 @@ def scan_run(run_root, *, generated_at=None):
     return dict(schema=BACKFILL_SCHEMA, run_id=run_root.name, run_root=str(run_root), generated_at=generated_at,
                 thresholds=dict(public_thresholds(thresholds) or {}, available=bool(thresholds.get('available')),
                                 path=thresholds.get('path'), problems=thresholds.get('problems') or []),
-                log_crosscheck=crosscheck, counts=counts, stamps=stamps,
+                log_crosscheck=crosscheck, counts=counts, stamps=entries,
                 provenance=dict(method='Kept sets under deploy/<member>/<symbol>, judged by goat-export-qualification-v1 '
                                        'from their file-name metrics (SET header at the cut-off) against the run\'s own '
-                                       'export_settings.GOAT, cross-checked with the EA log.GOAT pass counts. Read only; '
-                                       'receipts and earlier records are never rewritten.',
+                                       'export_settings.GOAT, cross-checked with the passing sets the EA logged as kept '
+                                       '(SortAndTrimExports Passing=, or the single-export cycle\'s "passed thresholds" '
+                                       'count). Read only; receipts and earlier records are never rewritten.',
                                 basis=BASIS, stamp_schema=SCHEMA))
+
+
+def guard_scan(result, guard):
+    """A scan reply after the held-out guard: per-export redaction comes from ``guard`` (guard_output);
+    a run with any redacted export also loses its run counts and log cross-check, and the totals go
+    when any run lost them, since those aggregate locked results."""
+    guarded = guard(result)
+    if not isinstance(guarded, dict) or not isinstance(guarded.get('runs'), list):
+        return guarded
+    marker = None
+    for run in guarded['runs']:
+        if not isinstance(run, dict):
+            continue
+        entries = run.get('stamps')
+        locked = [e.get('qualification') for e in entries if isinstance(e, dict) and isinstance(e.get('qualification'), dict)
+                  and e['qualification'].get('locked') is True] if isinstance(entries, list) else []
+        if isinstance(entries, dict) and entries.get('locked') is True:
+            locked = [entries]
+        if locked:
+            marker = marker or locked[0]
+            run['counts'] = locked[0]
+            run['log_crosscheck'] = locked[0]
+    if marker is not None:
+        guarded['counts'] = marker
+    return guarded
+
+

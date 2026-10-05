@@ -38,12 +38,30 @@ def write_unit(folder, stem, set_text):
     return folder / (stem + '.set')
 
 
-def write_log(run, passes, adjusted=None):
-    lines = ['2026.10.02 21:17:12 23:54:56  GOAT V1.49: ✅ Export sequence complete: 4 attempts – 4 profitable, 0 losses, '
-             '0 errors, 0 duplicates, %d passed thresholds.' % n for n in passes]
-    for n in adjusted or []:
-        lines.append('2026.10.02 21:18:12 23:54:56  GOAT V1.49: ✅ Export Adjustment sequence complete: 2 attempts – 2 '
-                     'profitable, 0 losses, 0 errors, %d passed thresholds' % n)
+PREFIX = '2026.10.02 21:17:12 23:54:56  GOAT V1.49: '
+
+
+def cycle(passed, trim=None, adjusted=None, adjusted_trim=None):
+    """One member's export cycle as the EA logs it (GOAT V1.49.mq5:4600-4646, Tester.mqh:717).
+
+    ``trim`` is (total, passing, kept) or None: SortAndTrimExports logs nothing for a single stored set."""
+    lines = [PREFIX + '✅✅ Export sequence complete: 4 attempts – 4 profitable, 0 losses, 0 errors, 0 duplicates, '
+             '%d passed thresholds.' % passed]
+    if trim:
+        lines.append(PREFIX + 'SortAndTrimExports: Total=%d Passing=%d Kept=%d Trimmed=%d' % (trim + (trim[0] - trim[2],)))
+    if adjusted is not None:
+        lines.append(PREFIX + '✅ Export Adjustment sequence complete: 2 attempts – 2 profitable, 0 losses, 0 errors, '
+                     '%d passed thresholds' % adjusted)
+        if adjusted_trim:
+            lines.append(PREFIX + 'SortAndTrimExports: Total=%d Passing=%d Kept=%d Trimmed=%d'
+                         % (adjusted_trim + (adjusted_trim[0] - adjusted_trim[2],)))
+    return lines
+
+
+def write_log(run, *cycles):
+    lines = [PREFIX + 'DEINIT: Running top Score Set on back history only']
+    for item in cycles:
+        lines += item
     (run / 'log.GOAT').write_bytes('\r\n'.join(lines).encode('utf-16'))
 
 
@@ -165,29 +183,62 @@ class RunFixture(unittest.TestCase):
 
 class ScanRunTests(RunFixture):
     def fill(self):
-        self.member('R1', 'AUDUSD', ('2.92', '0.315', None), ('3.01', '0.499', None))   # 2 passed
-        self.member('R2', 'EURUSD', ('1.07', '0.084', None))                            # Passing=0 Kept=1
+        self.member('R1', 'AUDUSD', ('2.92', '0.315', None), ('3.01', '0.499', None))   # 2 passed, trimmed to 2
+        self.member('R2', 'EURUSD', ('1.07', '0.084', None))                            # one stored set, below
         self.member('R3', 'USDJPY', ('2.50', '0.300', '2.495'))                         # EA counted it; the header says 2.495
+
+    def genuine_log(self):
+        # R1 stored 3 and kept the 2 passers (Passing=2); R2 and R3 stored one set each, so the EA logged
+        # no SortAndTrimExports line (Tester.mqh:694) and the cycle's own count is the kept count.
+        write_log(self.run, cycle(2, (3, 2, 2)), cycle(0), cycle(1))
+
+    @staticmethod
+    def stamps(result):
+        return [entry['qualification'] for entry in result['stamps']]
 
     def test_log_crosscheck_matches_the_ea_counts(self):
         self.fill()
-        write_log(self.run, [2, 0, 1])
+        self.genuine_log()
         result = eq.scan_run(self.run, generated_at='2026-10-05T00:00:00Z')
-        self.assertEqual(result['log_crosscheck']['status'], 'match')
-        self.assertEqual((result['log_crosscheck']['log_passed_sets'], result['log_crosscheck']['stamped_native_passed_sets']), (3, 3))
+        crosscheck = result['log_crosscheck']
+        self.assertEqual(crosscheck['status'], 'match')
+        self.assertEqual((crosscheck['log_kept_passing_sets'], crosscheck['stamped_native_passed_sets']), (3, 3))
+        self.assertEqual(crosscheck['log_bases'], dict(sort_and_trim=1, single_export_passed_thresholds=2))
         counts = result['counts']
         self.assertEqual((counts['members'], counts['sets'], counts['passed_members'], counts['passed_sets'],
                           counts['below_threshold_members'], counts['below_threshold_sets']), (3, 4, 1, 2, 2, 2))
-        self.assertEqual(len({s['set_sha256'] for s in result['stamps']}), 4)
+        self.assertEqual(len({entry['set_sha256'] for entry in result['stamps']}), 4)
+        self.assertEqual({entry['set_sha256'] for entry in result['stamps']}, {s['set_sha256'] for s in self.stamps(result)})
         self.assertEqual(result['thresholds']['min_sr'], 2.5)
+
+    def test_passing_after_trim_decides_not_the_count_before_it(self):
+        """Claude-Mac on GOAT-EA#164: "N passed thresholds" counts passes before SortAndTrimExports. A genuine
+        run whose cycle counted 3 but kept the 2 passers (Passing=2 Kept=2) must stay passed."""
+        self.member('R1', 'AUDUSD', ('2.92', '0.315', None), ('3.01', '0.499', None))
+        write_log(self.run, cycle(3, (4, 2, 2)))
+        result = eq.scan_run(self.run)
+        self.assertEqual(result['log_crosscheck']['status'], 'match')
+        self.assertEqual([s['status'] for s in self.stamps(result)], ['passed', 'passed'])
+
+    def test_single_export_cycles_fall_back_to_their_own_count(self):
+        self.member('R1', 'AUDUSD', ('2.92', '0.315', None))
+        self.member('R2', 'EURUSD', ('1.07', '0.084', None))
+        write_log(self.run, cycle(1), cycle(0))
+        result = eq.scan_run(self.run)
+        self.assertEqual((result['log_crosscheck']['status'], result['log_crosscheck']['log_bases']),
+                         ('match', dict(single_export_passed_thresholds=2)))
+        self.assertEqual(result['counts']['passed_sets'], 1)
+        # The same single set with a log that claims no pass: mismatch, so the pass is not confirmed.
+        write_log(self.run, cycle(0), cycle(0))
+        self.assertEqual(eq.scan_run(self.run)['counts']['passed_sets'], 0)
 
     def test_a_log_that_disagrees_turns_every_pass_unknown(self):
         self.fill()
-        write_log(self.run, [2, 1, 1])
+        write_log(self.run, cycle(2, (3, 2, 2)), cycle(1), cycle(1))
         result = eq.scan_run(self.run)
         self.assertEqual(result['log_crosscheck']['status'], 'mismatch')
         self.assertEqual(result['counts']['passed_sets'], 0)
-        flipped = [s for s in result['stamps'] if s.get('status_before_crosscheck') == 'passed']
+        flipped = [s for s in self.stamps(result) if s.get('status_before_crosscheck') == 'passed']
         self.assertEqual(len(flipped), 2)
         self.assertEqual(flipped[0]['missed'], ['log_crosscheck_mismatch'])
 
@@ -196,40 +247,77 @@ class ScanRunTests(RunFixture):
         result = eq.scan_run(self.run)
         self.assertEqual((result['log_crosscheck']['status'], result['counts']['passed_sets']), ('unavailable', 0))
 
-    def test_adjust_lots_reads_the_adjustment_lines(self):
+    def test_adjust_lots_reads_the_adjusted_trim(self):
         (self.run / 'export_settings.GOAT').write_bytes(SETTINGS.replace('AdjustLots=0', 'AdjustLots=1').encode('utf-16'))
-        self.member('R1', 'AUDUSD', ('2.92', '0.315', None))
-        write_log(self.run, [2], adjusted=[1])
+        self.member('R1', 'AUDUSD', ('2.92', '0.315', None), ('3.01', '0.499', None))
+        write_log(self.run, cycle(2, (2, 2, 2), adjusted=2, adjusted_trim=(2, 2, 2)))
         self.assertEqual(eq.scan_run(self.run)['log_crosscheck']['status'], 'match')
+        # The first export pass counted 2, but only 1 adjusted re-run passed: the adjusted trim decides.
+        write_log(self.run, cycle(2, (2, 2, 2), adjusted=1, adjusted_trim=(2, 1, 1)))
+        self.assertEqual(eq.scan_run(self.run)['log_crosscheck']['status'], 'mismatch')
+
+    def install(self, *, locked):
+        from test_studio_heldout import declaration, write_registry
+        install = dict(controller_state_root=str(Path(self.temp.name) / 'state'), evidence_root=str(Path(self.temp.name) / 'evidence'))
+        if locked:
+            write_registry(install['evidence_root'], [('declare', declaration('alpha', '2025-01-05', '2028-01-03', '2027-12-31'),
+                                                       '2026-10-04T01:00:00Z')])
+        return install
+
+    def command(self, install, *, write=False, now=None):
+        import demo_agent
+        args = type('Args', (), dict(source=[self.run], write=write, installation=Path(self.temp.name) / 'installation.json'))()
+        with patch.object(demo_agent, 'load_installation', return_value=install):
+            return demo_agent._export_qualification_command(args, now=now)
 
     def test_command_appends_a_record_and_never_overwrites(self):
-        import demo_agent
         self.fill()
-        write_log(self.run, [2, 0, 1])
-        state = Path(self.temp.name) / 'state'
-        install = dict(controller_state_root=str(state))
-        args = type('Args', (), dict(source=[self.run], write=True, installation=Path(self.temp.name) / 'installation.json'))()
+        self.genuine_log()
+        install = self.install(locked=False)
         when = datetime(2026, 10, 5, 12, 0, 0, tzinfo=timezone.utc)
-        with patch.object(demo_agent, 'load_installation', return_value=install):
-            result = demo_agent._export_qualification_command(args, now=when)
-            self.assertEqual(result['totals']['passed_members'], 1)
-            written = Path(result['written'][0])
-            self.assertEqual(written, state / 'export-qualification' / 'Rabcdef012345' / '2026-10-05T120000Z.json')
-            self.assertEqual(json.loads(written.read_text(encoding='utf-8'))['schema'], eq.BACKFILL_SCHEMA)
-            with self.assertRaises(FileExistsError):
-                demo_agent._export_qualification_command(args, now=when)
+        result = self.command(install, write=True, now=when)
+        self.assertEqual(result['counts']['passed_members'], 1)
+        written = Path(result['written'][0])
+        self.assertEqual(written, Path(install['controller_state_root']) / 'export-qualification' / 'Rabcdef012345' / '2026-10-05T120000Z.json')
+        self.assertEqual(json.loads(written.read_text(encoding='utf-8'))['schema'], eq.BACKFILL_SCHEMA)
+        with self.assertRaises(FileExistsError):
+            self.command(install, write=True, now=when)
 
-    def test_read_only_command_prints_json(self):
+    def test_a_locked_run_gets_redacted_output(self):
+        """Claude-Mac on GOAT-EA#164: the reply passes the held-out guard like every demo_agent reply."""
+        self.fill()
+        self.genuine_log()
+        open_reply = self.command(self.install(locked=False))
+        self.assertEqual(open_reply['runs'][0]['stamps'][0]['qualification']['status'], 'passed')
+        reply = self.command(self.install(locked=True))
+        text = json.dumps(reply)
+        self.assertTrue(reply['heldout']['redacted'])
+        run = reply['runs'][0]
+        for entry in run['stamps']:
+            self.assertTrue(entry['qualification']['locked'], entry)
+            self.assertIn('_SR=locked', entry['set_name'])
+        self.assertTrue(run['counts']['locked'] and run['log_crosscheck']['locked'] and reply['counts']['locked'])
+        for secret in ('0.315', '2.92', '0.499', '"passed"', 'below_threshold', 'passed_gate', 'best_of_failed_search'):
+            self.assertNotIn(secret, text)
+
+    def test_read_only_command_needs_an_installation_and_prints_json(self):
         import demo_agent
         self.fill()
-        write_log(self.run, [2, 0, 1])
+        self.genuine_log()
+        missing = io.StringIO()
+        from contextlib import redirect_stderr
+        with redirect_stderr(missing):
+            code = demo_agent.main(['--installation', str(Path(self.temp.name) / 'none.json'), 'export-qualification',
+                                    '--source', str(self.run)])
+        self.assertEqual(code, 1)
+        self.assertIn('held-out guard', missing.getvalue())
         out = io.StringIO()
-        with redirect_stdout(out):
+        with redirect_stdout(out), patch.object(demo_agent, 'load_installation', return_value=self.install(locked=False)):
             code = demo_agent.main(['--installation', str(Path(self.temp.name) / 'none.json'), 'export-qualification',
                                     '--source', str(self.run)])
         self.assertEqual(code, 0)
         value = json.loads(out.getvalue())
-        self.assertEqual((value['result']['totals']['passed_sets'], value['result']['written']), (2, []))
+        self.assertEqual((value['result']['counts']['passed_sets'], value['result']['written']), (2, []))
 
 
 class ResearchStatusTests(RunFixture):

@@ -301,13 +301,32 @@ passes; header 2.500 is `unknown`. ARF has no extra header precision, so a file 
 of 0.200 against 0.2 is `unknown`.
 
 **Back-fill.** `export-qualification` stamps every kept set of each `--source` run
-folder and cross-checks the stamps against the EA's own `log.GOAT` (the "Export
-sequence complete … N passed thresholds" lines, or the "Export Adjustment" lines
-with `AdjustLots`). It checks the summed sets and the members with any pass. If the
-log disagrees or is unreadable, every `passed` in that run becomes `unknown`
-(`log_crosscheck_mismatch`). `--write` appends a new
+folder and cross-checks the stamps against the passing sets the EA's own `log.GOAT`
+says it **kept**, per export cycle:
+
+- the `SortAndTrimExports: Total= Passing= Kept=` line after that cycle's
+  "Export sequence complete" line (with `AdjustLots`, the trim after the "Export
+  Adjustment" line);
+- for a cycle with one stored set or none, which logs no trim line
+  (`Tester.mqh:694`, `GOAT V1.49.mq5:4602`), the cycle's own "N passed thresholds"
+  count (0 or 1).
+
+The "passed thresholds" count of a trimmed cycle counts passes before trimming, so
+it never decides. The check compares the summed sets and the members with any
+pass; `log_bases` says how many cycles used each rule. If the log disagrees or is
+unreadable, every `passed` in that run becomes `unknown` (`log_crosscheck_mismatch`).
+A mismatch can also mean the EA kept a non-passer over a passer (it keeps the top
+`Passing=` sets by ARF × SR); the log cannot attribute that, so it also fails
+closed.
+
+The reply passes the held-out guard like every other demo_agent reply. A locked
+export loses its `qualification` and its metric tokens; its run loses `counts` and
+`log_crosscheck`, and the reply loses its totals. Without a readable
+`--installation` nothing is printed. `--write` appends a new
 `<controller state>/export-qualification/<run>/<UTC>.json` (exclusive create).
 Receipts and earlier records are never rewritten; a correction is a newer record.
+Each entry in `runs[].stamps[]` is `{set_path, set_name, set_sha256, member, symbol,
+qualification}`.
 
 Re-derived on this PC on 2026-10-05 (read only; one g6 batch was still running):
 

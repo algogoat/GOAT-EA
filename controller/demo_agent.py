@@ -2571,13 +2571,21 @@ def _export_qualification_command(args, *, now=None):
 
     Append-only: each write is a new ``<UTC>.json`` opened exclusively under
     ``<controller_state_root>/export-qualification/<run id>/``; existing records and receipts are
-    never rewritten, so a correction is a newer record next to the older one."""
-    from studio_export_qualification import scan_run
+    never rewritten, so a correction is a newer record next to the older one.
+
+    The reply passes the held-out guard like every other demo_agent reply: a locked export loses its
+    qualification, and its run loses its counts and log cross-check (studio_export_qualification.guard_scan).
+    Without a readable installation the locks cannot be checked, so nothing is printed."""
+    from studio_export_qualification import guard_scan, scan_run
+    from studio_heldout_guard import guard_output
+    try:
+        install = load_installation(Path(args.installation).resolve(), verify_binary=False)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError('export-qualification needs a readable --installation to apply the held-out guard: ' + str(error)[:200])
     stamp_time = (now or datetime.now(timezone.utc)).strftime('%Y-%m-%dT%H:%M:%SZ')
     runs = [scan_run(source, generated_at=stamp_time) for source in args.source]
     written = []
     if args.write:
-        install = load_installation(Path(args.installation).resolve(), verify_binary=False)
         base = Path(install['controller_state_root']) / 'export-qualification'
         for run in runs:
             if not re.fullmatch(r'R[0-9A-Za-z]{4,64}', run['run_id']):
@@ -2589,11 +2597,12 @@ def _export_qualification_command(args, *, now=None):
                 json.dump(run, stream, sort_keys=True, indent=1, default=str)
                 stream.write('\n')
             written.append(str(target))
-    totals = dict(runs=len(runs))
+    counts = dict(runs=len(runs))
     for key in ('members', 'sets', 'passed_members', 'passed_sets', 'below_threshold_members', 'below_threshold_sets',
                 'unknown_members', 'unknown_sets'):
-        totals[key] = sum(run['counts'][key] for run in runs)
-    return dict(schema='goat-export-qualification-scan-v1', generated_at=stamp_time, totals=totals, runs=runs, written=written)
+        counts[key] = sum(run['counts'][key] for run in runs)
+    result = dict(schema='goat-export-qualification-scan-v1', generated_at=stamp_time, counts=counts, runs=runs, written=written)
+    return guard_scan(result, lambda value: guard_output(install, value, root=install['controller_state_root']))
 
 
 def main(argv=None):

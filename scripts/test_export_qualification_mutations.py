@@ -37,7 +37,17 @@ MUTATIONS = [
     # The EA log cross-check.
     ('a log that disagrees keeps the passes', EQ, "    if crosscheck['status'] != 'match':", "    if False:"),
     ('a missing log confirms the stamps', EQ, "crosscheck.update(status='unavailable',", "crosscheck.update(status='match',"),
-    ('AdjustLots runs read the first export pass', EQ, "    pattern = _ADJUSTED if adjust_lots else _SEQUENCE", "    pattern = _SEQUENCE"),
+    ('AdjustLots runs read the first export pass', EQ, "    if adjust_lots:\n        if cycle['adjusted'] is None:",
+     "    if False:\n        if cycle['adjusted'] is None:"),
+    # Claude-Mac on #164: the passing sets the EA KEPT (SortAndTrimExports Passing=) decide, not the count before trimming.
+    ('the count before trimming decides', EQ,
+     "    if cycle['trims']:\n        return cycle['trims'][-1]['passing'], 'sort_and_trim'\n", ""),
+    ('single-export cycles never confirm', EQ,
+     "    return cycle['passed'], 'single_export_passed_thresholds'\n", "    return 0, 'single_export_passed_thresholds'\n"),
+    # Held-out guard (Claude-Mac on #164): the reply is guarded, and a locked run loses its aggregates.
+    ('export-qualification printed unguarded', 'demo_agent.py',
+     "    return guard_scan(result, lambda value: guard_output(install, value, root=install['controller_state_root']))", "    return result"),
+    ('a locked run keeps its counts', EQ, "            run['counts'] = locked[0]\n", ""),
     ('an unknown member counted as passing', EQ,
      "    member = ('passed' if counts['passed'] else", "    member = ('passed' if counts['passed'] or counts['unknown'] else"),
     # research-status: qualifying = passed, kept-below shown apart.

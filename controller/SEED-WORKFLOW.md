@@ -149,7 +149,10 @@ foreground and ends the whole process tree), MT5 dies with it mid-member, and th
 member ends `missing_output` (seen on T2, `seedhunt-t2-4-b41`). Use the default
 `--max-seconds 60` (or any budget clearly below your tool's timeout) and loop
 `seed-resume`. Between calls MT5 keeps running the member on its own; the next call
-observes it. The same applies to `catchup-start`/`catchup-resume`.
+observes it. The same applies to `catchup-start`/`catchup-resume`. On the owner demo
+lane (`goat.exe demo`) these commands detach instead: the drive runs in the same
+Windows demand-task host as `run-batch`, outside the caller's process tree, so a tool
+timeout cannot end it (see [DEMO-AGENT-TOOLS.md](DEMO-AGENT-TOOLS.md#seed-farming-on-the-demo-lane)).
 Between calls nothing supervises the running member: its job timeout, a human
 TAKE and (on the demo tools) the disk check are only acted on during the next
 `seed-resume`. `--max-seconds` is that call's budget, not an autonomous hard stop.

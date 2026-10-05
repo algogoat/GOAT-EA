@@ -368,8 +368,8 @@ and the other reads. A `reconcile_required` seed or catch-up is settled with `se
 ```powershell
 & $py $tool --installation $install seed-validate --plan 'C:/seed-plan.json'
 & $py $tool --installation $install seed-prepare --batch-id 'seed-weekend-01' --plan 'C:/seed-plan.json'
-& $py $tool --installation $install seed-start --batch-id 'seed-weekend-01' --max-seconds 60
-& $py $tool --installation $install seed-resume --batch-id 'seed-weekend-01' --max-seconds 60
+& $py $tool --installation $install seed-start --batch-id 'seed-weekend-01' --max-seconds 3600    # detached driver
+& $py $tool --installation $install seed-resume --batch-id 'seed-weekend-01' --max-seconds 3600   # after the driver returned
 & $py $tool --installation $install seed-status --batch-id 'seed-weekend-01'
 & $py $tool --installation $install seed-cancel --batch-id 'seed-weekend-01'
 & $py $tool --installation $install seed-report --batch-id 'seed-weekend-01'
@@ -418,19 +418,42 @@ TAKE and free disk. If any appears, they request a normal close of the exact
 owned member, cancel the pending members and return `stopped_by` with the
 reason. `stop` also settles a seed run that no command is currently driving.
 
-Nothing supervises a member between commands. After `driver_budget_exhausted`,
-the member's job timeout, a human TAKE and the disk check are only acted on by
-the next `seed-resume`. `--max-seconds` is the budget for that one call, not an
-autonomous hard stop, and no background service enforces anything between calls.
+The detached driver supervises the run for its budget. After it returns with
+`driver_budget_exhausted`, nothing supervises the member: its job timeout, a human
+TAKE and the disk check are acted on only by the next `seed-resume`. `--max-seconds`
+is the budget for that one driver, not an autonomous hard stop, and no background
+service enforces anything between drivers.
 Owner STOP is a separate explicit path: `stop` works at any time. Keep calling
 `seed-resume` until the batch reports `completed` or `stopped`, or holds
 `reconcile_required` for inspection.
 
-**Keep every call's budget below your tool's timeout.** These commands run in the
-foreground of the calling process, and MT5 is started as the driver's child. A tool
-that times out and kills the process tree kills MT5 mid-member, and that member ends
-`missing_output` (T2 `seedhunt-t2-4-b41`, 2026-10-05). Use `--max-seconds 60` and
-loop `seed-resume`/`catchup-resume`; MT5 keeps running the member between calls.
+**`seed-start` and `seed-resume` detach** (also `catchup-*` and `holdup-*`).
+
+Before PR C, these commands drove inside the calling process, and MT5 ran as that
+process's child. A tool that timed out and killed its process tree killed MT5
+mid-member (T2 `seedhunt-t2-4-b41`, 2026-10-05). Now the caller only checks and
+hands over; the drive runs in a detached driver.
+
+1. **The caller checks.** `seed-start` still takes its broker check and writes its
+   start record in the caller, so a refusal (owner STOP, TAKE, wrong account, disk,
+   another driver) comes back at once. `seed-resume` checks that the batch has
+   started and has its start record.
+2. **The drive is handed over.** The drive goes to the same Windows demand-task host
+   as `run-batch` (`studio_durable_driver`), outside the caller's job and process tree,
+   for up to `--max-seconds` (1..3600).
+3. **The reply** is `driver_starting` with the worker record. The record lives in
+   `demo-agent/lane-workers/<kind>-<id>.json`, with its nonce, pid and log.
+4. **The driver re-runs every check** before it drives, exactly like the foreground
+   command. When it ends, it records `returned` (with `result_status`) or `failed`
+   (with the refusal) in that worker record.
+5. **Poll.** `seed-status` shows the run and its `driver` (record plus `alive`). Once
+   the driver has `returned` and the run is neither `completed` nor `stopped`, call
+   `seed-resume` again. Repeating a start or resume while the driver lives returns
+   `already_supervising`. Any other seed, catch-up or hold-up work refuses while one
+   detached driver owns the terminal.
+
+`--foreground` keeps the old in-process drive for at most 120 s. A longer foreground
+budget is refused, because it would die with the calling tool.
 
 A failed, timed-out or output-less member fails only itself, with a plain `error`.
 The batch continues, unless 3 attempted members in a row failed or at least half of
@@ -456,8 +479,8 @@ tools need no broker; the rest use the seed lane's checks, start record
 & $py $tool --installation $install evidence-scan --source 'C:/.../Common/Files/GOAT/Re7e282f93d41' --source 'C:/.../GOAT/Rad870a22d237'
 & $py $tool --installation $install catchup-validate --plan 'C:/catchup-plan.json'
 & $py $tool --installation $install catchup-prepare --catchup-id 'catchup-20261002' --plan 'C:/catchup-plan.json'
-& $py $tool --installation $install catchup-start --catchup-id 'catchup-20261002' --max-seconds 60
-& $py $tool --installation $install catchup-resume --catchup-id 'catchup-20261002' --max-seconds 60
+& $py $tool --installation $install catchup-start --catchup-id 'catchup-20261002' --max-seconds 3600
+& $py $tool --installation $install catchup-resume --catchup-id 'catchup-20261002' --max-seconds 3600
 & $py $tool --installation $install catchup-report --catchup-id 'catchup-20261002'
 ```
 
@@ -480,8 +503,8 @@ in v1 (goatai#1885, Claude-Mac 5989126739).
 ```powershell
 & $py $tool --installation $install holdup-validate --plan 'C:/holdup-plan.json'
 & $py $tool --installation $install holdup-prepare --holdup-id 'r3-eagle-usdjpy-2023' --plan 'C:/holdup-plan.json'
-& $py $tool --installation $install holdup-start --holdup-id 'r3-eagle-usdjpy-2023' --max-seconds 60
-& $py $tool --installation $install holdup-resume --holdup-id 'r3-eagle-usdjpy-2023' --max-seconds 60
+& $py $tool --installation $install holdup-start --holdup-id 'r3-eagle-usdjpy-2023' --max-seconds 3600
+& $py $tool --installation $install holdup-resume --holdup-id 'r3-eagle-usdjpy-2023' --max-seconds 3600
 & $py $tool --installation $install holdup-report --holdup-id 'r3-eagle-usdjpy-2023'
 ```
 

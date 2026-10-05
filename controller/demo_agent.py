@@ -1889,12 +1889,136 @@ class DemoAgent:
         value = read_json(slot)
         return value if value.get('status') != 'released' else None
 
-    def _seed_unoccupied(self, kind='seed'):
+    def _seed_unoccupied(self, kind='seed', *, exclude=None):
         if self._native_active_batches():
             raise ValueError('An ordinary native batch is active; ' + LANES[kind]['word'] + ' work waits for it to finish')
         for worker in (self.state_root / 'workers').glob('*.json'):
             if self._worker_alive(read_json(worker)):
                 raise ValueError('A live demo batch driver owns this terminal; ' + LANES[kind]['word'] + ' work waits')
+        live = self._live_lane_worker(exclude=exclude)
+        if live is not None:
+            raise ValueError('A live ' + LANES.get(live[1].get('kind'), LANES['seed'])['word'] + ' driver (' + str(live[1].get('batch_id'))
+                             + ') owns this terminal; ' + LANES[kind]['word'] + ' work waits')
+
+    # ---- detached seed, catch-up and hold-up drivers (goatai#1885 PR C) --------------------------------
+    #
+    # seed-start/seed-resume (and the catch-up and hold-up commands) used to drive in the caller's
+    # process, with MT5 as that process's child: an agent tool that timed out and killed its process
+    # tree killed MT5 mid-member (T2 seedhunt-t2-4-b41). They now hand the drive to the same Windows
+    # demand-task host as run-batch (studio_durable_driver), outside any caller's job or process tree.
+    # A start still takes its broker check and writes its start record in the caller, so refusals stay
+    # immediate; the detached worker repeats every check before it drives.
+
+    LANE_FOREGROUND_MAX_SECONDS = 120
+
+    def _lane_worker_path(self, kind, batch_id):
+        self._seed_start_path(batch_id, kind)                     # validates the ID
+        return self.state_root / 'lane-workers' / (kind + '-' + batch_id + '.json')
+
+    def _live_lane_worker(self, *, exclude=None):
+        """(path, record) of a live detached lane driver other than ``exclude``, or None. An unresolved launch refuses."""
+        folder = self.state_root / 'lane-workers'
+        for path in sorted(folder.glob('*.json')) if folder.is_dir() else []:
+            if exclude is not None and Path(path) == Path(exclude):
+                continue
+            record = read_json(path)
+            if self._worker_alive(record):
+                return path, record
+        return None
+
+    def _lane_driver(self, kind, batch_id):
+        """Read-only: the detached driver record of this lane batch and whether it is alive now."""
+        path = self._lane_worker_path(kind, batch_id)
+        if not path.is_file():
+            return None
+        record = read_json(path)
+        try:
+            alive = self._worker_alive(record)
+        except ValueError as exc:
+            alive = 'unknown: ' + str(exc)
+        return dict(record, alive=alive, worker_path=str(path))
+
+    def _lane_detach(self, kind, batch_id, max_seconds, *, initial):
+        lane = LANES[kind]
+        self._seed_budget(max_seconds, kind)
+        worker_path = self._lane_worker_path(kind, batch_id)
+        live = self._live_lane_worker()
+        if live is not None:
+            if Path(live[0]) == worker_path:
+                return dict(status='already_supervising', kind=kind, batch_id=batch_id, worker=live[1], native_running_unverified=True,
+                            next_action=kind + '-status shows the run and its driver; never start a second driver')
+            raise ValueError('A live ' + LANES.get(live[1].get('kind'), LANES['seed'])['word'] + ' driver (' + str(live[1].get('batch_id'))
+                             + ') owns this terminal; wait for it to finish or stop it first')
+        if initial:
+            # Same broker check, owner/STOP/TAKE/disk/idle proof and exclusive start record as a foreground start.
+            with self._exclusive(), self._studio(kind + '-start', idle=True, job_id=batch_id) as (controller, broker):
+                self._seed_unoccupied(kind)
+                self._lane_start_record(kind, batch_id, controller, broker)
+        else:
+            state = self.root / lane['folder'] / batch_id / 'state.json'
+            if not state.is_file():
+                raise ValueError('Unknown ' + lane['word'] + ' batch; use ' + kind + '-prepare')
+            if read_json(state).get('status') == 'prepared':
+                raise ValueError(lane['title'] + ' batch has no native effect yet; use ' + kind + '-start with a fresh broker check')
+            self._seed_start_record(batch_id, kind)
+        nonce = secrets.token_hex(16)
+        worker = dict(schema_version=1, kind=kind, batch_id=batch_id, nonce=nonce, status='reserved', initial=initial,
+                      max_seconds=max_seconds, created_at=datetime.now(timezone.utc).isoformat())
+        worker_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(worker_path, worker)
+        self._append(kind + '_driver', 'worker_reserved', batch_id=batch_id, nonce=nonce, initial=initial, max_seconds=max_seconds)
+        log_path = worker_path.with_name(kind + '-' + batch_id + '-' + nonce + '.log')
+        argv = [sys.executable, str(Path(__file__).resolve()), '--installation', str(self.installation_path), '_drive-lane',
+                '--kind', kind, '--batch-id', batch_id, '--nonce', nonce, '--max-seconds', str(max_seconds),
+                '--initial' if initial else '--resume']
+        try:
+            if os.name == 'nt':
+                from studio_durable_driver import launch
+                child = launch(argv, log_path=log_path, worker_path=worker_path)
+                worker = read_json(worker_path)
+            else:
+                with log_path.open('ab') as log:
+                    child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                             close_fds=True, start_new_session=True,
+                                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except (OSError, ValueError) as exc:
+            worker.update(status='spawn_failed', error=str(exc))
+            write_json(worker_path, worker)
+            self._append(kind + '_driver', 'spawn_failed', batch_id=batch_id, nonce=nonce, error=str(exc))
+            raise ValueError('The detached ' + lane['word'] + ' driver did not start (' + str(exc)
+                             + '); MT5 was not touched by it. Run ' + kind + '-status, then ' + kind + '-resume.') from exc
+        worker.update(status='spawned', pid=child.pid, log=str(log_path))
+        write_json(worker_path, worker)
+        self._append(kind + '_driver', 'spawned', batch_id=batch_id, nonce=nonce, pid=child.pid)
+        return dict(status='driver_starting', kind=kind, batch_id=batch_id, worker=worker, native_running_unverified=True,
+                    next_action=('The ' + lane['unit'] + ' now runs in a detached driver for up to ' + str(max_seconds)
+                                 + ' s; a tool timeout cannot stop it. Poll ' + kind + '-status (it shows the driver); when the '
+                                 'driver has returned and the run is not completed or stopped, call ' + kind + '-resume.'))
+
+    def _drive_lane(self, kind, batch_id, nonce, max_seconds, initial):
+        """The detached worker: verify its own reservation, then drive exactly like the foreground command."""
+        worker_path = self._lane_worker_path(kind, batch_id)
+        worker = read_json(worker_path)
+        if (worker.get('nonce') != nonce or worker.get('kind') != kind or worker.get('batch_id') != batch_id
+                or worker.get('initial') is not initial or worker.get('max_seconds') != max_seconds
+                or worker.get('status') not in ('reserved', 'spawned')):
+            raise ValueError('Detached lane worker identity, budget or launch state changed')
+        worker.update(status='supervising', pid=os.getpid())
+        write_json(worker_path, worker)
+        self._append(kind + '_driver', 'supervising', batch_id=batch_id, nonce=nonce)
+        try:
+            result = (self._lane_start(kind, batch_id, max_seconds, lock_wait=20, exclude_worker=worker_path) if initial
+                      else self._lane_resume(kind, batch_id, max_seconds, lock_wait=20, exclude_worker=worker_path))
+        except Exception as exc:
+            worker.update(status='failed', error=str(exc)[:2000])
+            write_json(worker_path, worker)
+            self._append(kind + '_driver', 'failed', batch_id=batch_id, nonce=nonce, error=str(exc)[:500])
+            raise
+        worker.update(status='returned', result_status=result.get('status'), stopped_by=result.get('stopped_by'),
+                      paused=bool(result.get('paused')), driver_budget_exhausted=bool(result.get('driver_budget_exhausted')))
+        write_json(worker_path, worker)
+        self._append(kind + '_driver', 'returned', batch_id=batch_id, nonce=nonce, status=result.get('status'))
+        return result
 
     def _seed_runner(self, controller, kind='seed'):
         if kind == 'catchup':
@@ -2069,37 +2193,46 @@ class DemoAgent:
             return False
         return True
 
-    def _lane_start(self, kind, batch_id, max_seconds):
+    def _lane_start_record(self, kind, batch_id, controller, broker):
+        """Under the caller's lock and broker scope: the exclusive start record (or reuse of one that never ran). Returns the runner."""
+        lane = LANES[kind]
+        path = self._seed_start_path(batch_id, kind)
+        runner = self._seed_runner(controller, kind)
+        current = runner.status(batch_id)
+        if path.exists():
+            # Only an attempt that never left 'prepared' may re-run its start, and only
+            # under this fresh broker check; anything later is the original attempt.
+            record = self._seed_start_record(batch_id, kind)
+            if current['status'] != 'prepared' or record['manifest_sha256'] != current['manifest_sha256']:
+                raise ValueError(lane['title'] + ' batch already started; use ' + kind + '-resume for the original attempt')
+            self._append(kind + '_start', 'start_record_reused', batch_id=batch_id, broker=broker)
+        else:
+            if current['status'] != 'prepared':
+                raise ValueError('Only a prepared ' + lane['word'] + ' batch can start')
+            record = dict(schema_version=1, batch_id=batch_id, manifest_sha256=current['manifest_sha256'],
+                          installation_sha256=sha(self.install), account=self._paired_account(),
+                          generation=controller.state()['generation'], broker=broker,
+                          started_at=datetime.now(timezone.utc).isoformat())
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Exclusive create: the start record is written once, before any effect.
+            with path.open('x', encoding='utf-8', newline='\n') as output:
+                json.dump(record, output, sort_keys=True, separators=(',', ':'))
+                output.write('\n'); output.flush(); os.fsync(output.fileno())
+            self._append(kind + '_start', 'start_recorded', batch_id=batch_id,
+                         manifest_sha256=record['manifest_sha256'], broker=broker)
+        return runner
+
+    def _lane_start(self, kind, batch_id, max_seconds, *, detach=False, lock_wait=0, exclude_worker=None):
+        if detach:
+            return self._lane_detach(kind, batch_id, max_seconds, initial=True)
         lane = LANES[kind]
         self._seed_budget(max_seconds, kind)
         path = self._seed_start_path(batch_id, kind)
         if path.exists() and self._seed_left_prepared(batch_id, kind):
             raise ValueError(lane['title'] + ' batch already started; use ' + kind + '-resume for the original attempt')
-        with self._exclusive(), self._studio(kind + '-start', idle=True, job_id=batch_id) as (controller, broker):
-            self._seed_unoccupied(kind)
-            runner = self._seed_runner(controller, kind)
-            current = runner.status(batch_id)
-            if path.exists():
-                # Only an attempt that never left 'prepared' may re-run its start, and only
-                # under this fresh broker check; anything later is the original attempt.
-                record = self._seed_start_record(batch_id, kind)
-                if current['status'] != 'prepared' or record['manifest_sha256'] != current['manifest_sha256']:
-                    raise ValueError(lane['title'] + ' batch already started; use ' + kind + '-resume for the original attempt')
-                self._append(kind + '_start', 'start_record_reused', batch_id=batch_id, broker=broker)
-            else:
-                if current['status'] != 'prepared':
-                    raise ValueError('Only a prepared ' + lane['word'] + ' batch can start')
-                record = dict(schema_version=1, batch_id=batch_id, manifest_sha256=current['manifest_sha256'],
-                              installation_sha256=sha(self.install), account=self._paired_account(),
-                              generation=controller.state()['generation'], broker=broker,
-                              started_at=datetime.now(timezone.utc).isoformat())
-                path.parent.mkdir(parents=True, exist_ok=True)
-                # Exclusive create: the start record is written once, before any effect.
-                with path.open('x', encoding='utf-8', newline='\n') as output:
-                    json.dump(record, output, sort_keys=True, separators=(',', ':'))
-                    output.write('\n'); output.flush(); os.fsync(output.fileno())
-                self._append(kind + '_start', 'start_recorded', batch_id=batch_id,
-                             manifest_sha256=record['manifest_sha256'], broker=broker)
+        with self._exclusive(wait_seconds=lock_wait), self._studio(kind + '-start', idle=True, job_id=batch_id) as (controller, broker):
+            self._seed_unoccupied(kind, exclude=exclude_worker)
+            runner = self._lane_start_record(kind, batch_id, controller, broker)
             return self._reopen_after_lane(kind, batch_id,
                                            self._seed_drive(runner, batch_id, max_seconds, initial=True, kind=kind))
 
@@ -2136,8 +2269,8 @@ class DemoAgent:
                     next_action='MT5 was reopened on the GOAT Studio profile and the build was re-read; '
                                 'the next batch can start.')
 
-    def seed_start(self, batch_id, max_seconds):
-        return self._lane_start('seed', batch_id, max_seconds)
+    def seed_start(self, batch_id, max_seconds, *, detach=False):
+        return self._lane_start('seed', batch_id, max_seconds, detach=detach)
 
     def _seed_resumable_stopped(self, batch_id, kind='seed'):
         """Read-only: a batch stopped by failed members with pending members left (studio_seed.SeedRunner.resumable)."""
@@ -2148,13 +2281,13 @@ class DemoAgent:
         except (OSError, ValueError):
             return False
 
-    def _lane_reactivate(self, kind, batch_id, max_seconds):
+    def _lane_reactivate(self, kind, batch_id, max_seconds, *, lock_wait=0, exclude_worker=None):
         """Resume a batch stopped by failed members: a start-grade check (fresh broker readback of this paired demo,
         idle tester, owner grant, no STOP/TAKE, disk, no other work), then the runner re-activates it and continues
         only its pending members. The original broker-verified start record must still match."""
         lane = LANES[kind]
-        with self._exclusive(), self._studio(kind + '-resume', idle=True, job_id=batch_id) as (controller, broker):
-            self._seed_unoccupied(kind)
+        with self._exclusive(wait_seconds=lock_wait), self._studio(kind + '-resume', idle=True, job_id=batch_id) as (controller, broker):
+            self._seed_unoccupied(kind, exclude=exclude_worker)
             record = self._seed_start_record(batch_id, kind)
             runner = self._seed_runner(controller, kind)
             current = runner.status(batch_id)
@@ -2167,12 +2300,14 @@ class DemoAgent:
                                            self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind,
                                                             reactivate=True))
 
-    def _lane_resume(self, kind, batch_id, max_seconds):
+    def _lane_resume(self, kind, batch_id, max_seconds, *, detach=False, lock_wait=0, exclude_worker=None):
+        if detach:
+            return self._lane_detach(kind, batch_id, max_seconds, initial=False)
         lane = LANES[kind]
         self._seed_budget(max_seconds, kind)
         if self._seed_resumable_stopped(batch_id, kind):
-            return self._lane_reactivate(kind, batch_id, max_seconds)
-        with self._exclusive(), self._seed_scope(kind + '-resume', batch_id, kind) as (controller, evidence):
+            return self._lane_reactivate(kind, batch_id, max_seconds, lock_wait=lock_wait, exclude_worker=exclude_worker)
+        with self._exclusive(wait_seconds=lock_wait), self._seed_scope(kind + '-resume', batch_id, kind) as (controller, evidence):
             runner = self._seed_runner(controller, kind)
             current = runner.status(batch_id)
             if current['status'] == 'prepared':
@@ -2194,12 +2329,13 @@ class DemoAgent:
             return self._reopen_after_lane(kind, batch_id,
                                            self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind))
 
-    def seed_resume(self, batch_id, max_seconds):
-        return self._lane_resume('seed', batch_id, max_seconds)
+    def seed_resume(self, batch_id, max_seconds, *, detach=False):
+        return self._lane_resume('seed', batch_id, max_seconds, detach=detach)
 
     def _lane_status(self, kind, batch_id):
         with self._seed_scope(kind + '-status', batch_id, kind) as (controller, evidence):
             return dict(broker=evidence['broker'], retained_start=evidence['broker'] is None,
+                        driver=self._lane_driver(kind, batch_id),
                         **{kind: self._seed_runner(controller, kind).status(batch_id)})
 
     def seed_status(self, batch_id):
@@ -2259,11 +2395,11 @@ class DemoAgent:
     def catchup_prepare(self, catchup_id, plan):
         return self._lane_prepare('catchup', catchup_id, plan)
 
-    def catchup_start(self, catchup_id, max_seconds):
-        return self._lane_start('catchup', catchup_id, max_seconds)
+    def catchup_start(self, catchup_id, max_seconds, *, detach=False):
+        return self._lane_start('catchup', catchup_id, max_seconds, detach=detach)
 
-    def catchup_resume(self, catchup_id, max_seconds):
-        return self._lane_resume('catchup', catchup_id, max_seconds)
+    def catchup_resume(self, catchup_id, max_seconds, *, detach=False):
+        return self._lane_resume('catchup', catchup_id, max_seconds, detach=detach)
 
     def catchup_status(self, catchup_id):
         return self._lane_status('catchup', catchup_id)
@@ -2286,11 +2422,11 @@ class DemoAgent:
     def holdup_prepare(self, holdup_id, plan):
         return self._lane_prepare('holdup', holdup_id, plan)
 
-    def holdup_start(self, holdup_id, max_seconds):
-        return self._lane_start('holdup', holdup_id, max_seconds)
+    def holdup_start(self, holdup_id, max_seconds, *, detach=False):
+        return self._lane_start('holdup', holdup_id, max_seconds, detach=detach)
 
-    def holdup_resume(self, holdup_id, max_seconds):
-        return self._lane_resume('holdup', holdup_id, max_seconds)
+    def holdup_resume(self, holdup_id, max_seconds, *, detach=False):
+        return self._lane_resume('holdup', holdup_id, max_seconds, detach=detach)
 
     def holdup_status(self, holdup_id):
         return self._lane_status('holdup', holdup_id)
@@ -2371,6 +2507,16 @@ class _NoTerminal:
     def close(self, identity):
         raise ValueError('Seed validation never closes the terminal')
 
+
+
+def _lane_detached(args):
+    """seed/catch-up/hold-up start and resume detach by default; --foreground keeps a short in-process drive."""
+    if not args.foreground:
+        return True
+    if args.max_seconds > DemoAgent.LANE_FOREGROUND_MAX_SECONDS:
+        raise ValueError('A foreground driver dies with the calling tool and takes MT5 with it mid-member, so --foreground '
+                         'allows at most %d s; drop --foreground to use the detached driver' % DemoAgent.LANE_FOREGROUND_MAX_SECONDS)
+    return False
 
 
 def _gate_command(args):
@@ -2472,6 +2618,14 @@ def main(argv=None):
     run.add_argument('--max-seconds', type=int, required=True)
     resume = commands.add_parser('resume-batch')
     resume.add_argument('--batch-id', required=True)
+    lane_worker = commands.add_parser('_drive-lane')
+    lane_worker.add_argument('--kind', required=True, choices=sorted(LANES))
+    lane_worker.add_argument('--batch-id', required=True)
+    lane_worker.add_argument('--nonce', required=True)
+    lane_worker.add_argument('--max-seconds', type=int, required=True)
+    lane_mode = lane_worker.add_mutually_exclusive_group(required=True)
+    lane_mode.add_argument('--initial', action='store_true')
+    lane_mode.add_argument('--resume', action='store_true')
     worker = commands.add_parser('_drive-batch')
     worker.add_argument('--batch-id', required=True)
     worker.add_argument('--nonce', required=True)
@@ -2505,6 +2659,7 @@ def main(argv=None):
         seed_drive = commands.add_parser(name)
         seed_drive.add_argument('--batch-id', required=True)
         seed_drive.add_argument('--max-seconds', type=int, default=60)
+        seed_drive.add_argument('--foreground', action='store_true', help='Drive in this process (at most 120 s); default: a detached driver')
     for name in ('seed-status', 'seed-cancel', 'seed-report', 'seed-reconcile'):
         commands.add_parser(name).add_argument('--batch-id', required=True)
     seed_promote = commands.add_parser('seed-promote', help='Freeze one seed candidate as fixed + robustness SETs')
@@ -2548,6 +2703,7 @@ def main(argv=None):
         catchup_drive = commands.add_parser(name)
         catchup_drive.add_argument('--catchup-id', required=True)
         catchup_drive.add_argument('--max-seconds', type=int, default=60)
+        catchup_drive.add_argument('--foreground', action='store_true', help='Drive in this process (at most 120 s); default: a detached driver')
     for name in ('catchup-status', 'catchup-cancel', 'catchup-report', 'catchup-reconcile'):
         commands.add_parser(name).add_argument('--catchup-id', required=True)
     commands.add_parser('holdup-validate', help='Non-executing hold-up test plan check').add_argument('--plan', type=Path, required=True)
@@ -2558,6 +2714,7 @@ def main(argv=None):
         holdup_drive = commands.add_parser(name)
         holdup_drive.add_argument('--holdup-id', required=True)
         holdup_drive.add_argument('--max-seconds', type=int, default=60)
+        holdup_drive.add_argument('--foreground', action='store_true', help='Drive in this process (at most 120 s); default: a detached driver')
     for name in ('holdup-status', 'holdup-cancel', 'holdup-report', 'holdup-reconcile'):
         commands.add_parser(name).add_argument('--holdup-id', required=True)
     args = parser.parse_args(argv)
@@ -2611,8 +2768,9 @@ def main(argv=None):
         elif args.command == 'batch-driver-status': result = agent.batch_driver_status(args.batch_id)
         elif args.command == 'seed-validate': result = agent.seed_validate(args.plan)
         elif args.command == 'seed-prepare': result = agent.seed_prepare(args.batch_id, args.plan)
-        elif args.command == 'seed-start': result = agent.seed_start(args.batch_id, args.max_seconds)
-        elif args.command == 'seed-resume': result = agent.seed_resume(args.batch_id, args.max_seconds)
+        elif args.command == 'seed-start': result = agent.seed_start(args.batch_id, args.max_seconds, detach=_lane_detached(args))
+        elif args.command == 'seed-resume': result = agent.seed_resume(args.batch_id, args.max_seconds, detach=_lane_detached(args))
+        elif args.command == '_drive-lane': result = agent._drive_lane(args.kind, args.batch_id, args.nonce, args.max_seconds, args.initial)
         elif args.command == 'seed-status': result = agent.seed_status(args.batch_id)
         elif args.command == 'seed-cancel': result = agent.seed_cancel(args.batch_id)
         elif args.command == 'seed-report': result = agent.seed_report(args.batch_id)
@@ -2623,16 +2781,16 @@ def main(argv=None):
             broker_clock=args.broker_clock, include_below_threshold=args.include_below_threshold)
         elif args.command == 'catchup-validate': result = agent.catchup_validate(args.plan)
         elif args.command == 'catchup-prepare': result = agent.catchup_prepare(args.catchup_id, args.plan)
-        elif args.command == 'catchup-start': result = agent.catchup_start(args.catchup_id, args.max_seconds)
-        elif args.command == 'catchup-resume': result = agent.catchup_resume(args.catchup_id, args.max_seconds)
+        elif args.command == 'catchup-start': result = agent.catchup_start(args.catchup_id, args.max_seconds, detach=_lane_detached(args))
+        elif args.command == 'catchup-resume': result = agent.catchup_resume(args.catchup_id, args.max_seconds, detach=_lane_detached(args))
         elif args.command == 'catchup-status': result = agent.catchup_status(args.catchup_id)
         elif args.command == 'catchup-cancel': result = agent.catchup_cancel(args.catchup_id)
         elif args.command == 'catchup-reconcile': result = agent.catchup_reconcile(args.catchup_id)
         elif args.command == 'catchup-report': result = agent.catchup_report(args.catchup_id)
         elif args.command == 'holdup-validate': result = agent.holdup_validate(args.plan)
         elif args.command == 'holdup-prepare': result = agent.holdup_prepare(args.holdup_id, args.plan)
-        elif args.command == 'holdup-start': result = agent.holdup_start(args.holdup_id, args.max_seconds)
-        elif args.command == 'holdup-resume': result = agent.holdup_resume(args.holdup_id, args.max_seconds)
+        elif args.command == 'holdup-start': result = agent.holdup_start(args.holdup_id, args.max_seconds, detach=_lane_detached(args))
+        elif args.command == 'holdup-resume': result = agent.holdup_resume(args.holdup_id, args.max_seconds, detach=_lane_detached(args))
         elif args.command == 'holdup-status': result = agent.holdup_status(args.holdup_id)
         elif args.command == 'holdup-cancel': result = agent.holdup_cancel(args.holdup_id)
         elif args.command == 'holdup-reconcile': result = agent.holdup_reconcile(args.holdup_id)

@@ -289,6 +289,24 @@ class DemoSeedAgentTests(unittest.TestCase):
         self.assertEqual(reactivated[0]['stopped_reason'], ['in_a_row'])
         self.assertIn('seed-resume', [o['operation'] for o in self.opened])
 
+    def test_a_hunt_that_stops_after_the_routing_check_is_never_reactivated_without_the_start_grade_check(self):
+        # Codex P2 on GOAT-EA#160: the unlocked routing check said "not resumable", then the hunt stopped on
+        # failures before this resume took the lock. The ordinary (not start-grade) scope must not re-activate it.
+        plan = json.loads(self.plan.read_text()); base = plan['jobs'][0]
+        plan['jobs'] = [dict(copy.deepcopy(base), tester=dict(base['tester'], Symbol='SYM%d' % i)) for i in range(5)]
+        self.plan.write_text(json.dumps(plan))
+        self.agent.seed_prepare('batch', self.plan)
+        self.failing = {0, 1, 2}; self.auto = True
+        self.assertEqual(self.agent.seed_start('batch', 60)['status'], 'stopped')
+        self.process.current = dict(MONITOR)
+        with patch.object(DemoAgent, '_seed_resumable_stopped', return_value=False):
+            result = self.agent.seed_resume('batch', 60)
+        self.assertEqual(result['status'], 'stopped')
+        self.assertIn('re-activates the pending members under a fresh start-grade broker check', result['next_action'])
+        self.assertEqual((self.process.closes, len(self.process.starts)), ([MONITOR], 3))
+        self.assertFalse([a for a in self.actions() if (a['operation'], a['phase']) == ('seed_resume', 'reactivate')])
+        self.assertNotIn('reactivations', read_json(self.root / 'seeds/batch/state.json'))
+
     def test_duplicate_start_refused_and_restart_resumes_only_the_original_attempt(self):
         self.agent.seed_prepare('batch', self.plan)
         first = self.agent.seed_start('batch', 6)                         # budget ends with member 1 running

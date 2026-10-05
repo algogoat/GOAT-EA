@@ -320,6 +320,15 @@ class MemberFailureTests(unittest.TestCase):
         self.assertNotIn('stopped_reason',retained);self.assertEqual(retained['failed_members'],3)
         self.assertEqual(self.runner.resume('batch',5)['status'],'completed');self.assertEqual(len(self.starts),5)
 
+    def test_a_caller_without_start_grade_checks_never_reactivates(self):
+        # Codex P2 on GOAT-EA#160: the demo lane's ordinary resume passes reactivate=False.
+        self.matrix(5,fail={0,1,2})
+        self.runner.start('batch',60)
+        self.process_state=dict(self.MONITOR)
+        state=self.runner.resume('batch',5,reactivate=False)
+        self.assertEqual((state['status'],len(self.closes),len(self.starts)),('stopped',1,3))
+        self.assertNotIn('reactivations',read_json(self.runner.path('batch')/'state.json'))
+
     def test_the_breaker_counts_only_members_since_the_last_activation(self):
         self.matrix(5,fail={0,1,2,3})
         self.runner.start('batch',60)

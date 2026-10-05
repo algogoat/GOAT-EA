@@ -565,9 +565,13 @@ class SeedRunner:
         self.process.close(current)
 
     def start(self,batch_id,max_seconds=60):return self._drive(batch_id,max_seconds,initial=True)
-    def resume(self,batch_id,max_seconds=60):return self._drive(batch_id,max_seconds,initial=False)
+    def resume(self,batch_id,max_seconds=60,*,reactivate=True):
+        """Continue the retained attempt. ``reactivate`` lets a batch stopped by failed members restart under the
+        first-start checks; a caller whose own scope is not start-grade (the demo lane's ordinary resume) passes
+        False, so a batch that became resumable meanwhile is returned stopped, never re-activated there."""
+        return self._drive(batch_id,max_seconds,initial=False,reactivate=reactivate)
 
-    def _drive(self,batch_id,max_seconds,initial):
+    def _drive(self,batch_id,max_seconds,initial,reactivate=False):
         if type(max_seconds) is not int or not 1<=max_seconds<=3600:raise ValueError('max_seconds must be 1..3600')
         deadline=self.clock()+max_seconds
         while self.clock()<deadline:
@@ -577,7 +581,7 @@ class SeedRunner:
                 if state['status']=='reconcile_required':
                     # A member MT5 finished while its start was unconfirmed is collected from its own output.
                     self._observe(root,manifest,state)
-                if not initial and self.resumable(state):
+                if not initial and reactivate and self.resumable(state):
                     # seed-resume of a batch stopped by failed members: the same fresh proof as a first start,
                     # then the pending members continue. Never from a status read; never re-runs a member.
                     self._verify_prepared(batch_id,manifest)

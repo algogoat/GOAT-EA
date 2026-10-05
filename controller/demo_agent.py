@@ -1953,7 +1953,9 @@ class DemoAgent:
             return 'low_disk'
         return None
 
-    def _seed_drive(self, runner, batch_id, max_seconds, *, initial, kind='seed'):
+    def _seed_drive(self, runner, batch_id, max_seconds, *, initial, kind='seed', reactivate=False):
+        """Drive in short slices. Only the start-grade re-activation path passes ``reactivate`` (first slice only):
+        an ordinary resume never re-activates a batch that stopped on failures, even if it stopped meanwhile."""
         deadline = self.clock() + max_seconds
         while True:
             reason = self._seed_stop_reason()
@@ -1966,8 +1968,11 @@ class DemoAgent:
             if remaining < 1:
                 break
             slice_seconds = int(min(self.SEED_SLICE_SECONDS, remaining))
-            result = (runner.start if initial else runner.resume)(batch_id, max_seconds=slice_seconds)
-            initial = False
+            if initial:
+                result = runner.start(batch_id, max_seconds=slice_seconds)
+            else:
+                result = runner.resume(batch_id, max_seconds=slice_seconds, reactivate=reactivate)
+            initial = reactivate = False
             self._append(kind + '_drive', 'slice', batch_id=batch_id, status=result['status'])
             if result['status'] in ('completed', 'stopped', 'reconcile_required') or result.get('paused'):
                 return result
@@ -2149,7 +2154,8 @@ class DemoAgent:
                          stopped_reason=(current.get('stopped_reason') or {}).get('rules'),
                          pending=sum(m['status'] == 'pending' for m in current['members']) if 'members' in current else None)
             return self._reopen_after_lane(kind, batch_id,
-                                           self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind))
+                                           self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind,
+                                                            reactivate=True))
 
     def _lane_resume(self, kind, batch_id, max_seconds):
         lane = LANES[kind]
@@ -2165,6 +2171,12 @@ class DemoAgent:
                 raise ValueError(lane['title'] + ' batch was cancelled before any native effect; prepare a new batch ID')
             if current['manifest_sha256'] != evidence['start']['manifest_sha256']:
                 raise ValueError(lane['title'] + ' state differs from its broker-verified start record')
+            from studio_seed import SeedRunner
+            if SeedRunner.resumable(current):
+                # Stopped on failures after the unlocked routing check: this scope is not start-grade, so it
+                # never re-activates; the next resume takes the start-grade path (Codex P2 on GOAT-EA#160).
+                return dict(current, next_action='This ' + lane['unit'] + ' stopped on failed members; run ' + kind
+                            + '-resume again: it re-activates the pending members under a fresh start-grade broker check.')
             self._append(kind + '_resume', 'continue', batch_id=batch_id, status=current['status'],
                          broker=evidence['broker'], retained_start=evidence['broker'] is None)
             # A batch that ended while MT5 stayed closed (including a member reconciled from its

@@ -2566,6 +2566,36 @@ def _gate_command(args):
     return gates.stamp_plan(args.plan, recommendation, args.output, generated_at=generated)
 
 
+def _export_qualification_command(args, *, now=None):
+    """export-qualification: stamp every kept set of each run; with --write, append one record per run.
+
+    Append-only: each write is a new ``<UTC>.json`` opened exclusively under
+    ``<controller_state_root>/export-qualification/<run id>/``; existing records and receipts are
+    never rewritten, so a correction is a newer record next to the older one."""
+    from studio_export_qualification import scan_run
+    stamp_time = (now or datetime.now(timezone.utc)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    runs = [scan_run(source, generated_at=stamp_time) for source in args.source]
+    written = []
+    if args.write:
+        install = load_installation(Path(args.installation).resolve(), verify_binary=False)
+        base = Path(install['controller_state_root']) / 'export-qualification'
+        for run in runs:
+            if not re.fullmatch(r'R[0-9A-Za-z]{4,64}', run['run_id']):
+                raise ValueError('Not a GOAT run folder name: ' + run['run_id'])
+            folder = base / run['run_id']
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / (stamp_time.replace(':', '') + '.json')
+            with target.open('x', encoding='utf-8', newline='\n') as stream:
+                json.dump(run, stream, sort_keys=True, indent=1, default=str)
+                stream.write('\n')
+            written.append(str(target))
+    totals = dict(runs=len(runs))
+    for key in ('members', 'sets', 'passed_members', 'passed_sets', 'below_threshold_members', 'below_threshold_sets',
+                'unknown_members', 'unknown_sets'):
+        totals[key] = sum(run['counts'][key] for run in runs)
+    return dict(schema='goat-export-qualification-scan-v1', generated_at=stamp_time, totals=totals, runs=runs, written=written)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--installation', type=Path, required=True)
@@ -2717,6 +2747,13 @@ def main(argv=None):
     scan.add_argument('--evidence-end', default='auto')
     scan.add_argument('--broker-clock')
     scan.add_argument('--include-below-threshold', action='store_true')
+    qualification = commands.add_parser('export-qualification',
+                                        help='Read-only: which kept exports passed their run\'s export thresholds '
+                                             '(goat-export-qualification-v1), cross-checked with the EA log')
+    qualification.add_argument('--source', type=Path, action='append', required=True, help='A GOAT run folder (R...); repeatable')
+    qualification.add_argument('--write', action='store_true',
+                               help='Also append each run\'s record under <controller state>/export-qualification/<run>/ '
+                                    '(a new file each time; nothing is overwritten)')
     commands.add_parser('catchup-validate', help='Non-executing catch-up plan preview').add_argument('--plan', type=Path, required=True)
     catchup_prep = commands.add_parser('catchup-prepare', help='Freeze one single-pass re-test per stale export; no launch')
     catchup_prep.add_argument('--catchup-id', required=True)
@@ -2740,10 +2777,11 @@ def main(argv=None):
     for name in ('holdup-status', 'holdup-cancel', 'holdup-report', 'holdup-reconcile'):
         commands.add_parser(name).add_argument('--holdup-id', required=True)
     args = parser.parse_args(argv)
-    if args.command in ('gate-recommend', 'gate-stamp'):
-        # Evidence-only commands: no terminal, session or controller state is read or written.
+    if args.command in ('gate-recommend', 'gate-stamp', 'export-qualification'):
+        # Evidence-only commands: no terminal or session is read; only export-qualification --write
+        # appends its own new record files under the controller state root.
         try:
-            result = _gate_command(args)
+            result = _gate_command(args) if args.command != 'export-qualification' else _export_qualification_command(args)
             print(json.dumps(dict(ok=True, result=result), sort_keys=True, default=str))
             return 0
         except Exception as exc:

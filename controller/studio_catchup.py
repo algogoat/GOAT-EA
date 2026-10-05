@@ -131,7 +131,10 @@ def classify(export, target, *, include_below_threshold=False, known_versions=()
                evidence_start=export.get('evidence_start'), evidence_end=end, evidence_end_source=export.get('evidence_end_source'),
                threshold_passing=export['threshold']['passing'], threshold=export['threshold'], metrics=export.get('metrics'),
                capture_status=(export.get('capture') or {}).get('status'), history_short=export.get('history_short', False))
-    if not export['threshold']['passing'] and not include_below_threshold:
+    # Re-test eligibility keeps the EA's own rounded comparison (GOAT minimum defaults for a library
+    # copy); threshold_passing and the export's qualification stamp record whether it is proven.
+    eligible = export['threshold'].get('retest_eligible', export['threshold']['passing'])
+    if not eligible and not include_below_threshold:
         problems.append('Below the batch export thresholds (profit > 0, ARF >= %g, SR >= %g)'
                         % (export['threshold']['min_arf'], export['threshold']['min_sr']))
     if not end or not export.get('evidence_start'):

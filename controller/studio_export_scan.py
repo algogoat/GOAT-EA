@@ -5,6 +5,11 @@ from pathlib import Path
 import re
 from studio_export_inputs import verify_export_inputs
 from studio_equity_csv import inspect_equity_csv
+from studio_export_qualification import file_name_tokens, public_thresholds, qualify, thresholds_from_values
+
+# goat-export-qualification-v1 status -> the file status consumers already read (append-only).
+STATUS_OF = dict(passed='native_threshold_candidate', below_threshold='below_native_thresholds',
+                 unknown='native_threshold_unknown')
 
 
 def scan_exports(directory, source_raw, schema, back_passes, forward_passes, *,
@@ -15,6 +20,7 @@ def scan_exports(directory, source_raw, schema, back_passes, forward_passes, *,
     limits = [Decimal(str(min_arf)), Decimal(str(min_sr))]
     if any(not n.is_finite() or n < 0 for n in limits):
         raise ValueError('Finite nonnegative export thresholds required')
+    thresholds = thresholds_from_values(min_sr, min_arf, 'job_configuration')
     if not root.is_dir():
         return result
     files = sorted(p for p in root.iterdir() if p.suffix.lower() in ('.set', '.csv'))
@@ -55,9 +61,15 @@ def scan_exports(directory, source_raw, schema, back_passes, forward_passes, *,
         except ValueError as exc:
             item['reason'] = str(exc)
             continue
-        passing = metrics['Prf'] > 0 and metrics['ARF'] >= limits[0] and metrics['SR'] >= limits[1]
-        item['status'] = 'native_threshold_candidate' if passing else 'below_native_thresholds'
+        # One shared judgement (goat-export-qualification-v1): at the cut-off the SET header decides,
+        # and a set that cannot be proven either way is unknown, never a candidate.
+        stamp = qualify(file_name_tokens(stem), thresholds, header=raw)
+        item['qualification'] = dict(stamp, set_sha256=hashlib.sha256(raw).hexdigest())
+        item['status'] = STATUS_OF[stamp['status']]
     result['status'] = 'export_inventory_observed'
     result['native_threshold_candidate_count'] = sum(f['status']=='native_threshold_candidate' for f in result['files'])
+    result['below_native_threshold_count'] = sum(f['status']=='below_native_thresholds' for f in result['files'])
+    result['native_threshold_unknown_count'] = sum(f['status']=='native_threshold_unknown' for f in result['files'])
+    result['thresholds'] = public_thresholds(thresholds)
     result['limits'] = 'Filename metrics mirror native selection, not independently verified performance. CSV content, replay coverage and export completion remain unverified.'
     return result

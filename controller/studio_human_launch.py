@@ -41,7 +41,8 @@ def classify(rows,current,executable,portable,console_id,explorer_path,*,retaine
 
 def human_launch(c,current,*,retained=None):
     script='[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process | Where-Object {$_.Name -in @(\'terminal64.exe\',\'explorer.exe\')} | Select-Object ProcessId,ParentProcessId,SessionId,ExecutablePath,CommandLine,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
-    rows=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',script],text=True,encoding='utf-8-sig',timeout=20,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
+    from studio_process_query import powershell_text
+    rows=json.loads(powershell_text(script,purpose='human launch inventory'))
     kernel=ctypes.WinDLL('kernel32',use_last_error=True)
     kernel.WTSGetActiveConsoleSessionId.restype=ctypes.c_uint32
     executable=Path(c.install['terminal_executable'])

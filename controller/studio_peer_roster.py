@@ -575,8 +575,8 @@ def remove(c, terminal, *, confirmed=False, suite=None):
 
 
 def _running():
-    rows = json.loads(subprocess.check_output(['powershell', '-NoProfile', '-Command', INVENTORY_COMMAND], text=True,
-                                              encoding='utf-8-sig', timeout=20, creationflags=background_creationflags()))
+    from studio_process_query import powershell_text
+    rows = json.loads(powershell_text(INVENTORY_COMMAND, purpose='GOAT peer inventory'))
     if not isinstance(rows, list):
         raise ValueError('Complete terminal inventory required')
     return rows

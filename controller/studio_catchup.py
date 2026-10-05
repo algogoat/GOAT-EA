@@ -665,6 +665,19 @@ class CatchupRunner(SeedRunner):
             return []
         return sorted(p for p in folder.glob('*.set') if p.is_file())
 
+    def _stray_output(self, root, spec):
+        """A pending member's output before its start also includes a native capture in its own namespace.
+
+        An unowned MT5 that ran a capture member leaves GOATSequencePending/<capture id>/run.csv; _before_start
+        would refuse that member later and strand the batch, so the settle fails it now (Claude-Mac, GOAT-EA#163).
+        """
+        found = super()._stray_output(root, spec)
+        if spec.get('capture'):
+            run = Path(self.c.install['common_files_root']) / 'GOATSequencePending' / spec['capture_id'] / 'run.csv'
+            if run.exists():
+                found.append(str(run))
+        return found
+
     def _verify_prepared(self, batch_id, manifest):
         """Catch-up members are single Optimization=0 passes with no axes, so saved
         tester-profile optimize flags cannot add a search axis; nothing to refuse."""

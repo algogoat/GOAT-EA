@@ -957,13 +957,18 @@ class ReadOnlyTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == 'win32', 'demo_agent imports the Windows-only msvcrt')
     def test_cli_writes_only_its_output(self):
         import demo_agent
-        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as out:
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as out, tempfile.TemporaryDirectory() as state:
+            # The held-out guard reads the installation (no registry file there: no lock binds anything).
+            install = dict(controller_state_root=str(Path(state) / 'suite'), evidence_root=str(Path(state) / 'evidence'))
+            patcher = patch.object(demo_agent, 'load_installation', return_value=install)
+            patcher.start(); self.addCleanup(patcher.stop)
             common = self.build(root)
             before = self.snapshot(root)
             output = Path(out) / 'recommendation.json'
             stdout, stderr = io.StringIO(), io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
-                code = demo_agent.main(['--installation', str(Path(out) / 'never-read.json'), 'gate-recommend',
+                code = demo_agent.main(['--installation', str(Path(out) / 'installation.json'), 'gate-recommend',
                                         '--common-root', str(common), '--target', 'forward', '--output', str(output)])
             self.assertEqual(code, 0, stderr.getvalue())
             self.assertEqual(self.snapshot(root), before)

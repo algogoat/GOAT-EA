@@ -63,7 +63,8 @@ def inspect_idle_demo(controller, *, tester='require'):
     except ImportError as exc:
         raise ValueError('Monitor repair requires the official MetaTrader5 Python adapter; no native effect performed') from exc
     binding = process_binding(controller)
-    before = inspect_processes(binding)
+    from studio_process_query import POLL_BUDGET   # a probe, not a launch gate: bounded WMI retry (Claude-Mac, #1885)
+    before = inspect_processes(binding, query_budget=POLL_BUDGET)
     session = controller.session
     try:
         # Explicit existing executable only; never broker login/password or trading APIs.
@@ -73,7 +74,7 @@ def inspect_idle_demo(controller, *, tester='require'):
         positions, orders = mt5.positions_get(), mt5.orders_get()
         if any(value is None for value in (terminal, account, positions, orders)):
             raise ValueError('Incomplete native account/terminal observation')
-        current = inspect_processes(binding)
+        current = inspect_processes(binding, query_budget=POLL_BUDGET)
         if any(not role_unchanged(binding, k, current[k], before[k]) for k in ('research', 'protected')):
             raise ValueError('Native process changed during inspection; no adoption')
         if (Path(terminal.path) != Path(controller.install['terminal_executable']).parent

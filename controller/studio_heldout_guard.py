@@ -26,7 +26,7 @@ import sqlite3
 from contextlib import closing
 
 from campaign_ledger import sha
-from studio_heldout import (HeldOutRefused, PLAN_MISMATCH, UNAVAILABLE, active_locks, canonical, enforce, iso_day, legacy_export_end,
+from studio_heldout import (HeldOutRefused, LOCKED, PLAN_MISMATCH, UNAVAILABLE, active_locks, canonical, enforce, iso_day, legacy_export_end,
                             member_span, native_export_end, overlaps, public_window, read_registry, reveal_lock, window)
 from studio_strategy_attribution import Library, set_values, stable, suggestion, validate_ref
 
@@ -472,18 +472,45 @@ def _scrub_all(node):
     return scrub(node) if isinstance(node, str) else node
 
 
+def _unverified(result, error):
+    """Every derived value redacted: the locks could not be checked, so any part may be locked."""
+    redacted = _redact(result, None, {})
+    if isinstance(redacted, dict):
+        redacted['heldout'] = dict(redacted=True, code=UNAVAILABLE, plain=marker()['plain'], error=error)
+        redacted['locked_windows'] = []
+    return redacted
+
+
+def require_no_active_lock(install, *, command, root=None, now=None):
+    """For a command whose reply aggregates every export on this PC (gate-recommend, gate-stamp).
+
+    Its numbers (survival curves, recommended gates, a stamped plan) cannot be attributed to one strategy
+    or window, so no part of it can be redacted selectively. It runs only when the registry verifies and
+    no held-out lock is active; otherwise it refuses before reading or writing anything."""
+    try:
+        context = Context(install, root, now=now)
+    except (KeyError, TypeError, ValueError, OSError) as error:
+        raise HeldOutRefused(UNAVAILABLE, '%s cannot check the held-out locks (%s), so it does not run.'
+                             % (command, str(error)[:200] or type(error).__name__))
+    _registry_or_refuse(context)
+    if context.active:
+        raise HeldOutRefused(LOCKED, '%s reads every export on this PC and cannot tell which ones fall in a held-out window, so it does '
+                             'not run while %d held-out lock(s) are active: %s' % (command, len(context.active),
+                                                                                  ' '.join(l['plain'] for l in context.active)),
+                             [public_window(l) for l in context.active])
+    return context
+
+
 def guard_output(install, result, *, root=None, now=None, context=None):
     """The reply an agent may see. Unchanged when no lock is active."""
     try:
         context = context or Context(install, root, now=now)
-    except (KeyError, TypeError, ValueError):
-        return result
+    except (KeyError, TypeError, ValueError, OSError) as error:
+        # Fail closed (Claude-Mac, goatai#1885): without a context nothing can say which parts are locked,
+        # so the reply is redacted exactly as when the registry cannot be verified. It used to pass unchanged.
+        return _unverified(result, 'the held-out guard could not start: %s' % (str(error)[:200] or type(error).__name__))
     if context.registry['state'] == 'unavailable':
-        redacted = _redact(result, None, {})
-        if isinstance(redacted, dict):
-            redacted['heldout'] = dict(redacted=True, code=UNAVAILABLE, plain=marker()['plain'], error=context.registry['error'])
-            redacted['locked_windows'] = []
-        return redacted
+        return _unverified(result, context.registry['error'])
     if not context.active:
         return result
     found = {}

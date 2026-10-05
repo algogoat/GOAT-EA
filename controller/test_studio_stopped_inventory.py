@@ -90,7 +90,9 @@ class StoppedInventoryTests(unittest.TestCase):
             with self.subTest(roots=roots),self.assertRaises(ValueError):stopped_candidates([],roots)
 
     def test_query_error_or_running_mode_cannot_claim_absence(self):
-        with patch('studio_process_check.subprocess.check_output',side_effect=subprocess.CalledProcessError(1,'powershell')):
+        # Retried through a stall (studio_process_query), then still a failure: never "absent".
+        with patch('studio_process_check.subprocess.check_output',side_effect=subprocess.CalledProcessError(1,'powershell')), \
+                patch('studio_process_query.sleep'):
             with self.assertRaises(subprocess.CalledProcessError):
                 inspect_processes(self.binding,research_running=False,absent_roots=self.roots)
         with self.assertRaisesRegex(ValueError,'stopped research terminal'):

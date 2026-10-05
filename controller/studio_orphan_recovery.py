@@ -43,8 +43,8 @@ def digest(path):
 
 def inspect_writers(c):
     command = 'ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine)'
-    rows = json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],
-                     text=True, encoding='utf-8-sig', timeout=20, creationflags=background_creationflags()))
+    from studio_process_query import powershell_text
+    rows = json.loads(powershell_text(command, purpose='writer inventory'))
     if not isinstance(rows,list): raise ValueError('Complete writer inventory required')
     by_id = {r['ProcessId']:r for r in rows}
     if os.getpid() not in by_id or len(by_id)!=len(rows): raise ValueError('Incomplete writer inventory')

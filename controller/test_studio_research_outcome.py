@@ -353,7 +353,9 @@ class NoQualifyingRowsProgressTests(unittest.TestCase):
         self.assertIn('tested, nothing qualified in 2024.01.08 to 2025.01.06', value['no_edge'][0]['summary'])
         text = headline(dict(kind='batch', status='failed', **value))
         self.assertTrue(text.startswith('Batch failed;'), text)
-        self.assertIn('2 tested with no edge in 2024.01.08 to 2025.01.06, 1 failed', text)
+        self.assertIn('2 tested, nothing qualified in 2024.01.08 to 2025.01.06 (1 with no profitable settings, '
+                      '1 none scored 60+ once the forward period was included), 1 failed', text)
+        self.assertEqual(value['no_edge_counts'], dict(no_profitable_passes=1, no_qualifying_rows=1))
 
     def test_last_member_names_the_outcome(self):
         events = self.finish_member(0, 'Completed', NOW - 2400, NOW - 1800) + self.finish_member(1, 'Error', NOW - 1800, NOW - 1200)
@@ -368,7 +370,8 @@ class NoQualifyingRowsProgressTests(unittest.TestCase):
         write_stats(self.run, [q_row(alias, symbol) for alias, symbol in zip(self.aliases[1:], self.SYMBOLS[1:])])
         value = self.progress(['native_completed', 'native_error', 'native_error', 'native_error'])
         self.assertEqual(headline(dict(kind='batch', status='failed', **value)),
-                         'Batch finished; 1 of 4 members done, 0 qualifying, 3 tested with no edge in 2024.01.08 to 2025.01.06.')
+                         'Batch finished; 1 of 4 members done, 0 qualifying, 3 tested, nothing qualified in 2024.01.08 to 2025.01.06 '
+                         '(3 none scored 60+ once the forward period was included).')
 
     def test_a_real_error_is_still_a_failure(self):
         """Negative: an Error whose row lacks the forward proof, or has no row at all, stays failed."""
@@ -458,6 +461,238 @@ class PauseAndResumeTests(pause_fixtures.PauseFixture):
             source = Path(__file__).with_name(name).read_text(encoding='utf-8')
             self.assertIn('--include-no-edge', source, name)
             self.assertIn('include_no_edge=args.include_no_edge', source, name)
+
+    def test_retrying_failures_never_reruns_export_loss_members(self):
+        """Banker r1c-b40-r2: --include-failed retries the timeouts, never the sets that lost money."""
+        self.finish_with_outcomes(['Completed', 'Error', 'Error'], [1], outcome='no_profitable_exports')
+        prepared = resume_batch(self.c, 'g6', 'g6-r1', include_failed=True)
+        self.assertEqual([m['tester']['Symbol'] for m in self.c.job('g6-r1')['configuration']['batch_members']], ['USDJPY.c'])
+        both = resume_batch(self.c, 'g6', 'g6-r2', include_failed=True, include_no_edge=True)
+        self.assertEqual((prepared['member_count'], both['member_count']), (1, 2))
+
+
+# ---------------------------------------------------------------------------
+# Every re-tested set lost money over the export window (Banker r1c-b40-r2)
+# ---------------------------------------------------------------------------
+
+ITEM = 'NZDCAD,M1 2025.10.17-2026.08.28_OHLC:'
+LOSS = [
+    'DEINIT: Optimization Ended, NZDCAD',
+    'DEINIT: ✅ XML Migration completed successfully!',
+    'Forward Date Extracted: 2026.07.17',
+    'Extracted Back Test range: 2025.10.17 - 2026.08.28',
+    'No further back <Row> Found. Rows Saved=57/163 (profitable=57, min trades=50)',
+    'No further forward <Row> Found. Discarded=106/163',
+    'SXmlData::WriteTopToXml: wrote 1 distinct row(s) (Score≥60) to GOAT V1.49 NZDCAD,M1 2025.10.17-2026.08.28_(2026.07.17)_CombinedRows_Score=72.2.xml',
+    'SXmlData::WriteUniqueRowsToXml: 1 unique rows written to GOAT V1.49 NZDCAD,M1 2025.10.17-2026.08.28_(2026.07.17)_UniqueRows_Score=72.2.xml',
+    'Finished reading & matching Back/Forward data. Found rows = 57',
+    'DEINIT: ✅ XML files Combined and Analyzed.',
+    'TESTER: Tester Settings Initialized.',
+    '⚠️ No EvidenceEnd in the export settings: exports end before 2026.10.02 (the legacy last-Friday end).',
+    'DEINIT: Running top Score Set on back history only',
+    'Attempt 1/3: Settings verified – starting tester',
+    'Export found in 19s: GOAT V1.49 NZDCAD,M1_Trds=386_Prf=503_DD=3784_PF=1.04_SR=0.22_ARF=0.015.csv',
+    'DEINIT: ✅ Top Set Export Verified, Export Profit=503 Back Profit=503, Export Trades=386 Back Trades=386',
+    '⚠️ Back Out-Of-Sample (OOS) history is enabled.',
+    'Adjusting Test Dates, StartDate=2025.10.03 EndDate=2026.10.02',
+    'Modelling set to ETWRT',
+    '▶ Running unique set # (1). With Score=72.2 Set Exports stored=0/0 Above Threshold=0',
+    'Attempt 1/3: Settings verified – starting tester',
+    'Export found in 53s: GOAT V1.49 NZDCAD,M1_Trds=515_Prf=-732_DD=5312_PF=0.96_SR=-0.24_ARF=-0.012.csv',
+    '⚠️ Export Profit=-732<0, Discarding completed Set (incomplete evidence retained)',
+    '⚠️ No more sets available to run.',
+    '✅✅✅✅✅ Export sequence complete: 1 attempts – 0 profitable, 1 losses, 0 errors, 0 duplicates, 0 passed thresholds.',
+    '❌ zero exports available after the export cycle.',
+]
+EXPORT_FOUND = 'Export found in 53s: GOAT V1.49 NZDCAD,M1_Trds=515_Prf=-732_DD=5312_PF=0.96_SR=-0.24_ARF=-0.012.csv'
+DISCARDED = '⚠️ Export Profit=-732<0, Discarding completed Set (incomplete evidence retained)'
+SEQUENCE = '✅✅✅✅✅ Export sequence complete: 1 attempts – 0 profitable, 1 losses, 0 errors, 0 duplicates, 0 passed thresholds.'
+# CADCHF (member 34): the re-test never finished; MT5 timed out. A real failure.
+TIMEOUT = [line for line in LOSS if line not in (EXPORT_FOUND, DISCARDED, SEQUENCE)][:-1] + [
+    '❌ Strategy Tester running for 500 seconds timed out waiting to become idle – aborting this set',
+    '⚠️ No more sets available to run.',
+    '✅✅✅✅✅ Export sequence complete: 1 attempts – 0 profitable, 0 losses, 1 errors, 0 duplicates, 0 passed thresholds.',
+    '❌ zero exports available after the export cycle.']
+
+
+def swap(body, old, new):
+    """The body with ``old`` replaced by ``new`` lines (None removes it)."""
+    assert old in body, old
+    k = body.index(old)
+    return body[:k] + ([] if new is None else ([new] if isinstance(new, str) else list(new))) + body[k + 1:]
+
+
+def export_row(alias, symbol, *, at, status='Error', xml='57', unique='1', top='72.2', exports='0', details='Export cycle finished'):
+    return '\t'.join([local(at), symbol, alias, status, xml, unique, top, exports, details])
+
+
+def write_log(folder, members, *, encoding='utf-16'):
+    """members: (alias, start, end, body, end status) in run order, as the EA's WriteLog writes them."""
+    def line(at, text):
+        return local(at) + ' ' + local(at)[11:] + '  GOAT V1.49: ' + text
+    rows = []
+    for alias, start, end, body, status in members:
+        rows.append(line(start, 'Queued->OnGoing: ;OnGoing_' + ITEM + alias + ';'))
+        rows += [line(start + 60, text) for text in body]
+        rows.append(line(end, 'OnGoing->' + status + ': ;' + status + '_' + ITEM + alias + ';'))
+    Path(folder, 'log.GOAT').write_bytes(('\r\n'.join(rows) + '\r\n').encode(encoding))
+
+
+class ExportLossTests(unittest.TestCase):
+    """A plain Error row is a result only when the EA log proves every re-tested set lost money."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.run = Path(self.temp.name)
+        self.members = [('A0', 'NZDCAD'), ('A1', 'CADCHF'), ('A2', 'AUDJPY')]
+        self.spans = [(NOW - 3600, NOW - 3000), (NOW - 2400, NOW - 1800), (NOW - 1200, NOW - 600)]
+
+    def read(self, bodies, *, rows=None, ends=('Error', 'Error', 'Error'), log_ends=None, shift=0, end_shift=0):
+        from studio_research_status import timeline
+        events = []
+        for (alias, _), (start, end), status in zip(self.members, self.spans, ends):
+            events += [(alias, 'OnGoing', start), (alias, status, end)]
+        write_timeline(self.run, events)
+        write_log(self.run, [(alias, start + shift, end + end_shift, body, status) for (alias, _), (start, end), body, status
+                             in zip(self.members, self.spans, bodies, log_ends or ends)])
+        write_stats(self.run, rows if rows is not None else
+                    [export_row(alias, symbol, at=end - 1) for (alias, symbol), (_, end) in zip(self.members, self.spans)])
+        return item_outcomes(self.run, self.members, timeline(self.run, [alias for alias, _ in self.members]))
+
+    def test_banker_loss_is_a_result_and_timeouts_stay_failures(self):
+        export_timeout = swap(TIMEOUT, TIMEOUT[-4], '❌ Export timeout 250 seconds – aborting this set')
+        found = self.read([LOSS, TIMEOUT, export_timeout])
+        self.assertEqual(list(found), [0])
+        outcome = found[0]
+        self.assertEqual((outcome['outcome'], outcome['sets_retested'], outcome['export_losses'], outcome['best_export_profit']),
+                         ('no_profitable_exports', 1, 1, -732.0))
+        self.assertEqual((outcome['back_rows'], outcome['unique_sets'], outcome['best_combined_score'], outcome['score_threshold']),
+                         (57, 1, 72.2, 60.0))
+        self.assertEqual(outcome['window'], dict(start='2025.10.17', end='2026.07.17', forward_end='2026.08.28'))
+        self.assertEqual(outcome['export_window'], dict(start='2025.10.03', end='2026.10.02'))
+
+    def test_summary_says_what_scored_and_what_the_re_test_lost(self):
+        text = no_edge_summary('NZDCAD', 'M1', self.read([LOSS, TIMEOUT, TIMEOUT])[0])
+        self.assertEqual(text, 'NZDCAD M1: tested, nothing held up in 2025.10.17 to 2026.07.17 — 1 set scored 60+ once the forward '
+                               'period to 2026.08.28 was included (best 72.2), but the 1 set re-tested over 2025.10.03 to 2026.10.02 '
+                               'lost money (best -732.00). A result for this window only, not a verdict on the strategy.')
+        many = swap(swap(swap(LOSS, SEQUENCE, SEQUENCE.replace('1 attempts', '2 attempts').replace('1 losses', '2 losses')),
+                         DISCARDED, [DISCARDED, DISCARDED.replace('-732', '-41')]), EXPORT_FOUND, [EXPORT_FOUND, EXPORT_FOUND])
+        outcome = self.read([many, TIMEOUT, TIMEOUT], rows=[export_row('A0', 'NZDCAD', at=NOW - 3001, unique='2')])[0]
+        self.assertEqual((outcome['sets_retested'], outcome['best_export_profit']), (2, -41.0))
+        self.assertIn('2 sets scored 60+', no_edge_summary('NZDCAD', 'M1', outcome))
+        self.assertIn('but all 2 sets re-tested', no_edge_summary('NZDCAD', 'M1', outcome))
+
+    def test_anything_but_completed_losing_re_tests_stays_a_real_failure(self):
+        combined = 'DEINIT: ✅ XML files Combined and Analyzed.'
+        verified = LOSS[15]
+        for label, body in [
+                ('an export error', swap(LOSS, SEQUENCE, SEQUENCE.replace('1 losses, 0 errors', '0 losses, 1 errors'))),
+                ('losses and errors mixed', swap(LOSS, SEQUENCE, SEQUENCE.replace('1 attempts', '2 attempts').replace('0 errors', '1 errors'))),
+                ('a profitable set', swap(LOSS, SEQUENCE, SEQUENCE.replace('0 profitable', '1 profitable'))),
+                ('a set passed thresholds', swap(LOSS, SEQUENCE, SEQUENCE.replace('0 passed', '1 passed'))),
+                ('not every attempt lost', swap(LOSS, SEQUENCE, SEQUENCE.replace('1 attempts', '2 attempts'))),
+                ('an attempt neither lost nor failed', swap(swap(LOSS, SEQUENCE, SEQUENCE.replace('1 attempts', '2 attempts')),
+                                                            EXPORT_FOUND, [EXPORT_FOUND, EXPORT_FOUND])),
+                ('counts that do not add up', swap(LOSS, SEQUENCE, SEQUENCE.replace('0 errors', '1 errors'))),
+                ('no export ran at all', swap(swap(swap(LOSS, SEQUENCE, SEQUENCE.replace('1 attempts', '0 attempts').replace('1 losses', '0 losses')),
+                                               EXPORT_FOUND, None), DISCARDED, None)),
+                ('a tester timeout line', swap(LOSS, DISCARDED, [DISCARDED, '❌ Export timeout 250 seconds – aborting this set'])),
+                ('a start failure line', swap(LOSS, DISCARDED, [DISCARDED, '❌ Failed to Configure and/or Start the Strategy Tester after 3 start attempt(s). Skipping...'])),
+                ('top set never verified', swap(LOSS, verified, None)),
+                ('top set verification failed', swap(LOSS, verified, 'DEINIT: ❌ Export verification failed, Export Profit=1 Back Profit=503, Export Trades=3 Back Trades=386')),
+                ('reports never combined', swap(LOSS, combined, None)),
+                ('the optimization ended twice', swap(LOSS, LOSS[0], [LOSS[0], LOSS[0]])),
+                ('lot adjustment ran', swap(LOSS, SEQUENCE, [SEQUENCE, '✅✅✅✅✅ Export Adjustment sequence complete: 1 attempts – 0 profitable, 1 losses, 0 errors, 0 passed thresholds'])),
+                ('no zero-exports line', swap(LOSS, LOSS[-1], None)),
+                ('two export sequences', swap(LOSS, SEQUENCE, [SEQUENCE, SEQUENCE])),
+                ('loss not logged', swap(LOSS, DISCARDED, None)),
+                ('zero-profit set', swap(LOSS, DISCARDED, DISCARDED.replace('-732', '0'))),
+                ('an export file missing', swap(LOSS, EXPORT_FOUND, None)),
+                ('window out of order', swap(LOSS, LOSS[3], 'Extracted Back Test range: 2025.10.17 - 2026.06.28')),
+                ('export window out of order', swap(LOSS, LOSS[17], 'Adjusting Test Dates, StartDate=2026.10.02 EndDate=2025.10.03')),
+                ('no score threshold', swap(LOSS, LOSS[6], None)),
+                ('another member started inside', swap(LOSS, DISCARDED, [DISCARDED, 'Queued->OnGoing: ;OnGoing_' + ITEM + 'A9;']))]:
+            with self.subTest(label):
+                self.assertEqual(self.read([body, TIMEOUT, TIMEOUT]), {}, label)
+
+    def test_row_and_timeline_must_belong_to_the_last_attempt(self):
+        for label, kwargs in [
+                ('an export was kept', dict(rows=[export_row('A0', 'NZDCAD', at=NOW - 3001, exports='1')])),
+                ('no unique set', dict(rows=[export_row('A0', 'NZDCAD', at=NOW - 3001, unique='0')])),
+                ('another error detail', dict(rows=[export_row('A0', 'NZDCAD', at=NOW - 3001, details='Failed')])),
+                ('top score below the export score', dict(rows=[export_row('A0', 'NZDCAD', at=NOW - 3001, top='48.0')])),
+                ('row from an older attempt', dict(rows=[export_row('A0', 'NZDCAD', at=NOW - 3700)])),
+                ('the member completed', dict(ends=('Completed', 'Error', 'Error'))),
+                ('the timeline says completed', dict(ends=('Completed', 'Error', 'Error'), log_ends=('Error', 'Error', 'Error'))),
+                ('the log ends another way', dict(log_ends=('Completed', 'Error', 'Error'))),
+                ('log start is another attempt', dict(shift=30)),
+                ('log end is another attempt', dict(end_shift=-30))]:
+            with self.subTest(label):
+                self.assertEqual(self.read([LOSS, TIMEOUT, TIMEOUT], **kwargs), {}, label)
+        self.assertEqual(list(self.read([LOSS, TIMEOUT, TIMEOUT])), [0], 'the control case is a result')
+        self.assertEqual(item_outcomes(self.run, self.members), {}, 'no timeline evidence, nothing relabelled')
+        (self.run / 'log.GOAT').write_bytes(b'\xff\xfe\x00')
+        self.assertEqual(item_outcomes(self.run, self.members, dict(started={0: NOW - 3600}, ended={0: NOW - 3000},
+                                                                    outcome={0: 'Error'})), {}, 'unreadable log')
+        (self.run / 'log.GOAT').unlink()
+        self.assertEqual(item_outcomes(self.run, self.members, dict(started={0: NOW - 3600}, ended={0: NOW - 3000},
+                                                                    outcome={0: 'Error'})), {}, 'missing log')
+
+    def test_a_utf8_log_reads_the_same(self):
+        self.read([LOSS, TIMEOUT, TIMEOUT])
+        write_log(self.run, [(alias, start, end, body, 'Error') for (alias, _), (start, end), body
+                             in zip(self.members, self.spans, [LOSS, TIMEOUT, TIMEOUT])], encoding='utf-8-sig')
+        from studio_research_status import timeline
+        self.assertEqual(list(item_outcomes(self.run, self.members, timeline(self.run, ['A0', 'A1', 'A2']))), [0])
+
+
+class ExportLossProgressTests(unittest.TestCase):
+    SYMBOLS, setUp, progress, finish_member = ProgressTests.SYMBOLS, ProgressTests.setUp, ProgressTests.progress, ProgressTests.finish_member
+
+    def test_banker_mix_counts_results_apart_and_keeps_the_timeout_failed(self):
+        events = []
+        for index, status in enumerate(['Completed', 'Error', 'Error', 'Error']):
+            events += self.finish_member(index, status, NOW - 2400 + index * 600, NOW - 1800 + index * 600)
+        write_timeline(self.run, events)
+        # Member 1: nothing qualified; member 2: the re-tested set lost money; member 3: MT5 timed out.
+        write_log(self.run, [(self.aliases[2], NOW - 1200, NOW - 600, LOSS, 'Error'), (self.aliases[3], NOW - 600, NOW, TIMEOUT, 'Error')])
+        write_stats(self.run, [q_row(self.aliases[1], 'USDCAD', at=NOW - 1220), export_row(self.aliases[2], 'USDCHF', at=NOW - 601),
+                               export_row(self.aliases[3], 'NZDUSD', at=NOW - 1, top='72.4', xml='111')])
+        value = self.progress(['native_completed', 'native_error', 'native_error', 'native_error'])
+        self.assertEqual((value['members_no_edge'], value['members_failed']), (2, 1))
+        self.assertEqual(value['no_edge_counts'], dict(no_qualifying_rows=1, no_profitable_exports=1))
+        self.assertEqual([(item['symbol'], item['outcome']) for item in value['no_edge']],
+                         [('USDCAD', 'no_qualifying_rows'), ('USDCHF', 'no_profitable_exports')])
+        self.assertEqual(value['no_edge_window'], None, 'the two outcomes come from different test windows')
+        self.assertEqual(value['last_member']['status'], 'error', 'the timeout stays an error')
+        text = headline(dict(kind='batch', status='failed', **value))
+        self.assertEqual(text, 'Batch failed; 1 of 4 members done, 0 qualifying, 2 tested, nothing qualified in their test window '
+                               '(1 none scored 60+ once the forward period was included, 1 lost money on the export re-test), 1 failed.')
+
+    def test_only_export_losses_read_finished_and_name_the_re_test(self):
+        write_timeline(self.run, self.finish_member(0, 'Completed', NOW - 2400, NOW - 1800) + self.finish_member(1, 'Error', NOW - 1800, NOW - 1200))
+        write_log(self.run, [(self.aliases[1], NOW - 1800, NOW - 1200, LOSS, 'Error')])
+        write_stats(self.run, [export_row(self.aliases[1], 'USDCAD', at=NOW - 1201)])
+        value = self.progress(['native_completed', 'native_error', 'native_cancelled', 'native_cancelled'])
+        self.assertEqual((value['members_no_edge'], value['members_failed'], value['last_member']['status']),
+                         (1, 0, 'no_profitable_exports'))
+        self.assertIn('lost money', value['last_member']['summary'])
+        self.assertEqual(headline(dict(kind='batch', status='failed', **value)),
+                         'Batch stopped early; 1 of 4 members done, 0 qualifying, 1 tested, nothing qualified in 2025.10.17 to '
+                         '2026.07.17 (1 lost money on the export re-test), 2 cancelled.')
+
+    def test_finish_records_export_losses_for_resume_selection(self):
+        events = self.finish_member(0, 'Completed', NOW - 2400, NOW - 1800) + self.finish_member(1, 'Error', NOW - 1800, NOW - 1200)
+        write_timeline(self.run, events)
+        write_log(self.run, [(self.aliases[1], NOW - 1800, NOW - 1200, LOSS, 'Error')])
+        write_stats(self.run, [export_row(self.aliases[1], 'USDCAD', at=NOW - 1201)])
+        members = [dict(run_alias=alias, symbol=symbol, status=status, tester=dict(Period='M1'))
+                   for alias, symbol, status in zip(self.aliases, self.SYMBOLS, ['native_completed', 'native_error', 'native_error', 'native_error'])]
+        outcomes, error = _research_outcomes(dict(native_run=str(self.run), members=members))
+        self.assertIsNone(error)
+        self.assertEqual([(o['index'], o['outcome']) for o in outcomes], [(1, 'no_profitable_exports')])
+        self.assertIn('lost money', outcomes[0]['summary'])
 
 
 if __name__ == '__main__':

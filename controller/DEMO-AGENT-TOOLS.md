@@ -157,6 +157,25 @@ and the controller counts it in `members_no_edge` exactly like `no_profitable_pa
 in <window>" with the best score. A forward report that is partial, unreadable, missing a kept
 pass, or disagrees with the back report stays a real error.
 
+The third result: sets scored 60+ with the forward period, but every set re-tested over the
+export window ran to the end and lost money, so nothing was exported. The EA writes only a
+plain `Error` row (`Export cycle finished`, `FinalExports` 0) here, the same row it writes when
+MT5 fails during the export cycle, so the controller reads the run's own EA log (`log.GOAT`)
+for that member's last attempt (matched to the timeline's start and end). Only when it shows
+the reports combined once, the top set reproduced its report, one export sequence with every
+attempt a logged loss (`N attempts – 0 profitable, N losses, 0 errors`, `Export Profit=<negative>`)
+and no other `❌` line is it outcome `no_profitable_exports` (plus `export_window`,
+`sets_retested`, `export_losses`, `best_export_profit`, `unique_sets`, `best_combined_score`,
+`score_threshold`), counted in `members_no_edge`, recorded by `finish` and skipped by
+`--include-failed` like the others. A tester or export timeout, a start or move failure, an
+export error, a kept export or an unreadable log stays a real failure.
+
+`no_edge_counts` gives `members_no_edge` per outcome. When every such member had no profitable
+settings the headline keeps `N tested with no edge in <window>`; otherwise it says
+`N tested, nothing qualified in <window> (a with no profitable settings, b none scored 60+ once
+the forward period was included, c lost money on the export re-test)`, because those members
+did have settings profitable in-sample.
+
 `batch-pause` needs no terminal lock (like `stop`): it writes one durable pause
 intent (`batch-pauses/<id>.json`) and returns `state: pausing`. A live driver
 honours it on its next tick; otherwise one bounded pause supervisor starts

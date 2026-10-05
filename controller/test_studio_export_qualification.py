@@ -41,17 +41,20 @@ def write_unit(folder, stem, set_text):
 PREFIX = '2026.10.02 21:17:12 23:54:56  GOAT V1.49: '
 
 
-def cycle(passed, trim=None, adjusted=None, adjusted_trim=None):
+def cycle(passed, trim=None, adjusted=None, adjusted_trim=None, stored=None):
     """One member's export cycle as the EA logs it (GOAT V1.49.mq5:4600-4646, Tester.mqh:717).
 
-    ``trim`` is (total, passing, kept) or None: SortAndTrimExports logs nothing for a single stored set."""
-    lines = [PREFIX + '✅✅ Export sequence complete: 4 attempts – 4 profitable, 0 losses, 0 errors, 0 duplicates, '
-             '%d passed thresholds.' % passed]
+    ``trim`` is (total, passing, kept) or None: SortAndTrimExports logs nothing for a single stored set.
+    ``stored`` (the "profitable" count) defaults to the trim's total, else one set."""
+    stored = stored if stored is not None else (trim[0] if trim else 1)
+    lines = [PREFIX + '✅✅ Export sequence complete: %d attempts – %d profitable, 0 losses, 0 errors, 0 duplicates, '
+             '%d passed thresholds.' % (stored, stored, passed)]
     if trim:
         lines.append(PREFIX + 'SortAndTrimExports: Total=%d Passing=%d Kept=%d Trimmed=%d' % (trim + (trim[0] - trim[2],)))
     if adjusted is not None:
-        lines.append(PREFIX + '✅ Export Adjustment sequence complete: 2 attempts – 2 profitable, 0 losses, 0 errors, '
-                     '%d passed thresholds' % adjusted)
+        adjusted_stored = adjusted_trim[0] if adjusted_trim else 1
+        lines.append(PREFIX + '✅ Export Adjustment sequence complete: %d attempts – %d profitable, 0 losses, 0 errors, '
+                     '%d passed thresholds' % (adjusted_stored, adjusted_stored, adjusted))
         if adjusted_trim:
             lines.append(PREFIX + 'SortAndTrimExports: Total=%d Passing=%d Kept=%d Trimmed=%d'
                          % (adjusted_trim + (adjusted_trim[0] - adjusted_trim[2],)))
@@ -232,6 +235,19 @@ class ScanRunTests(RunFixture):
         write_log(self.run, cycle(0), cycle(0))
         self.assertEqual(eq.scan_run(self.run)['counts']['passed_sets'], 0)
 
+    def test_two_stored_sets_without_a_trim_line_are_never_confirmed(self):
+        """Claude-Mac on #164: the fallback is only for a cycle that stored at most one set."""
+        self.member('R1', 'AUDUSD', ('2.92', '0.315', None), ('3.01', '0.499', None))
+        write_log(self.run, cycle(2, stored=3))   # 3 stored, 2 kept, but no SortAndTrimExports line
+        result = eq.scan_run(self.run)
+        crosscheck = result['log_crosscheck']
+        self.assertEqual((crosscheck['status'], crosscheck['log_bases']), ('mismatch', dict(trim_missing=1)))
+        self.assertIn('no SortAndTrimExports', crosscheck['reason'])
+        self.assertEqual(result['counts']['passed_sets'], 0)
+        # A zero-export cycle (nothing stored) still uses its own count.
+        write_log(self.run, cycle(2, (3, 2, 2)), cycle(0, stored=0))
+        self.assertEqual(eq.scan_run(self.run)['log_crosscheck']['status'], 'match')
+
     def test_a_log_that_disagrees_turns_every_pass_unknown(self):
         self.fill()
         write_log(self.run, cycle(2, (3, 2, 2)), cycle(1), cycle(1))
@@ -299,6 +315,28 @@ class ScanRunTests(RunFixture):
         self.assertTrue(run['counts']['locked'] and run['log_crosscheck']['locked'] and reply['counts']['locked'])
         for secret in ('0.315', '2.92', '0.499', '"passed"', 'below_threshold', 'passed_gate', 'best_of_failed_search'):
             self.assertNotIn(secret, text)
+
+    def test_a_relative_source_to_a_locked_run_is_still_redacted(self):
+        """Claude-Mac on #164: the guard knows an export only by its absolute .set path, so --source is
+        resolved before anything is stamped."""
+        import os
+        self.fill()
+        self.genuine_log()
+        install = self.install(locked=True)
+        before = os.getcwd()
+        os.chdir(self.common)
+        try:
+            import demo_agent
+            args = type('Args', (), dict(source=[Path('GOAT') / 'Rabcdef012345'], write=False, installation=Path('installation.json')))()
+            with patch.object(demo_agent, 'load_installation', return_value=install):
+                reply = demo_agent._export_qualification_command(args)
+        finally:
+            os.chdir(before)
+        entries = reply['runs'][0]['stamps']
+        self.assertTrue(entries and all(Path(entry['set_path']).is_absolute() for entry in entries))
+        self.assertTrue(all(entry['qualification']['locked'] for entry in entries))
+        self.assertTrue(reply['counts']['locked'])
+        self.assertNotIn('0.315', json.dumps(reply))
 
     def test_read_only_command_needs_an_installation_and_prints_json(self):
         import demo_agent

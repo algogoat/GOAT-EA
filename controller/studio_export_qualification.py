@@ -356,8 +356,10 @@ BACKFILL_SCHEMA = 'goat-export-qualification-run-v1'
 MAX_LOG_BYTES = 256 * 1024 * 1024
 MAX_RUN_SETS = 20000
 CROSSCHECK_MISMATCH = 'log_crosscheck_mismatch'
-_SEQUENCE = re.compile(r'Export sequence complete: \d+ attempts.*?(\d+) passed thresholds')
-_ADJUSTED = re.compile(r'Export Adjustment sequence complete: \d+ attempts.*?(\d+) passed thresholds')
+# "%d attempts – %d profitable, …, %d passed thresholds": profitable = the sets the cycle stored
+# (RunAndStoreSet stores exactly the profitable passes, GOAT V1.49.mq5:4562-4565 and :4728-4756).
+_SEQUENCE = re.compile(r'Export sequence complete: \d+ attempts\D+(\d+) profitable.*?(\d+) passed thresholds')
+_ADJUSTED = re.compile(r'Export Adjustment sequence complete: \d+ attempts\D+(\d+) profitable.*?(\d+) passed thresholds')
 _TRIM = re.compile(r'SortAndTrimExports: Total=(\d+) Passing=(\d+) Kept=(\d+)')
 
 
@@ -371,13 +373,14 @@ def log_cycles(text):
     for line in text.splitlines():
         match = _SEQUENCE.search(line)
         if match:
-            cycles.append(dict(passed=int(match.group(1)), trims=[], adjusted=None, adjusted_trims=[]))
+            cycles.append(dict(stored=int(match.group(1)), passed=int(match.group(2)), trims=[], adjusted=None,
+                               adjusted_stored=None, adjusted_trims=[]))
             continue
         if not cycles:
             continue
         match = _ADJUSTED.search(line)
         if match:
-            cycles[-1]['adjusted'] = int(match.group(1))
+            cycles[-1].update(adjusted_stored=int(match.group(1)), adjusted=int(match.group(2)))
             continue
         match = _TRIM.search(line)
         if match:
@@ -395,15 +398,23 @@ def kept_passing(cycle, adjust_lots):
     never logs it: ``SortAndTrimExports`` returns before its log line when n <= 1 (Tester.mqh:694), and
     a cycle with none never calls it (GOAT V1.49.mq5:4602). For those, the cycle's own "N passed
     thresholds" count is exact (0 or 1, the single set kept as it is). With AdjustLots the kept sets are
-    the adjusted re-runs, so their adjustment count and trim decide."""
+    the adjusted re-runs, so their adjustment count and trim decide.
+
+    The fallback is only for a cycle that stored at most one set (its "profitable" count, which is
+    exactly what RunAndStoreSet stored). A cycle that stored 2 or more but logged no trim line is
+    ``trim_missing``: its kept count is unknown (None), so the cross-check cannot match."""
     if adjust_lots:
         if cycle['adjusted'] is None:
             return 0, 'no_adjusted_exports'
         if cycle['adjusted_trims']:
             return cycle['adjusted_trims'][-1]['passing'], 'sort_and_trim'
+        if (cycle['adjusted_stored'] or 0) >= 2:
+            return None, 'trim_missing'
         return cycle['adjusted'], 'single_export_passed_thresholds'
     if cycle['trims']:
         return cycle['trims'][-1]['passing'], 'sort_and_trim'
+    if cycle['stored'] >= 2:
+        return None, 'trim_missing'
     return cycle['passed'], 'single_export_passed_thresholds'
 
 
@@ -433,7 +444,9 @@ def scan_run(run_root, *, generated_at=None):
     ``Passing=`` sets by ARF x SR, Tester.mqh:696-716); that is not attributable from the log, so it
     fails closed too.
     """
-    run_root = Path(run_root)
+    # Absolute and canonical before anything else: the held-out guard only recognises an export by its
+    # absolute .set path, so a relative --source must never reach it as written (Claude-Mac on #164).
+    run_root = Path(run_root).resolve()
     if not any((run_root / name).exists() for name in ('deploy', 'export_settings.GOAT', 'log.GOAT', 'manifest.json')):
         raise ValueError('Not a GOAT run folder (no deploy folder, export_settings.GOAT, log.GOAT or manifest.json): ' + str(run_root))
     thresholds = read_run_thresholds(run_root)
@@ -470,11 +483,17 @@ def scan_run(run_root, *, generated_at=None):
         bases = {}
         for _, basis in kept:
             bases[basis] = bases.get(basis, 0) + 1
-        crosscheck.update(log_export_cycles=len(kept), log_kept_passing_sets=sum(n for n, _ in kept),
-                          log_members_with_kept_pass=sum(1 for n, _ in kept if n > 0), log_bases=bases)
-        same = (crosscheck['log_kept_passing_sets'] == native_sets
-                and crosscheck['log_members_with_kept_pass'] == native_members)
-        crosscheck['status'] = 'match' if same else 'mismatch'
+        known = [n for n, _ in kept if n is not None]
+        crosscheck.update(log_export_cycles=len(kept), log_kept_passing_sets=sum(known),
+                          log_members_with_kept_pass=sum(1 for n in known if n > 0), log_bases=bases)
+        if len(known) != len(kept):
+            # A cycle that stored 2+ sets without a SortAndTrimExports line: its kept passes are unknown.
+            crosscheck.update(status='mismatch', reason='%d export cycle(s) stored 2 or more sets but logged no SortAndTrimExports '
+                                                        'line, so the EA log cannot confirm what they kept' % (len(kept) - len(known)))
+        else:
+            same = (crosscheck['log_kept_passing_sets'] == native_sets
+                    and crosscheck['log_members_with_kept_pass'] == native_members)
+            crosscheck['status'] = 'match' if same else 'mismatch'
     if crosscheck['status'] != 'match':
         for stamp in stamps:
             if stamp['status'] == 'passed':

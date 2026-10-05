@@ -48,6 +48,9 @@ MUTATIONS = [
     ('export-qualification printed unguarded', 'demo_agent.py',
      "    return guard_scan(result, lambda value: guard_output(install, value, root=install['controller_state_root']))", "    return result"),
     ('a locked run keeps its counts', EQ, "            run['counts'] = locked[0]\n", ""),
+    # Claude-Mac on #164 at d0db610: a relative --source must not bypass the guard; the fallback is single-set only.
+    ('a relative source reaches the guard as written', EQ, "    run_root = Path(run_root).resolve()\n", "    run_root = Path(run_root)\n"),
+    ('two stored sets without a trim line fall back', EQ, "    if cycle['stored'] >= 2:\n        return None, 'trim_missing'\n", ""),
     ('an unknown member counted as passing', EQ,
      "    member = ('passed' if counts['passed'] else", "    member = ('passed' if counts['passed'] or counts['unknown'] else"),
     # research-status: qualifying = passed, kept-below shown apart.

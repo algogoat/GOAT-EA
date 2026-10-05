@@ -309,7 +309,9 @@ says it **kept**, per export cycle:
   Adjustment" line);
 - for a cycle with one stored set or none, which logs no trim line
   (`Tester.mqh:694`, `GOAT V1.49.mq5:4602`), the cycle's own "N passed thresholds"
-  count (0 or 1).
+  count (0 or 1). "Stored" is the line's "profitable" count, exactly the sets
+  `RunAndStoreSet` kept. A cycle that stored 2 or more but logged no trim line is
+  `trim_missing`: its kept passes are unknown and the run is a mismatch.
 
 The "passed thresholds" count of a trimmed cycle counts passes before trimming, so
 it never decides. The check compares the summed sets and the members with any
@@ -319,10 +321,12 @@ A mismatch can also mean the EA kept a non-passer over a passer (it keeps the to
 `Passing=` sets by ARF × SR); the log cannot attribute that, so it also fails
 closed.
 
-The reply passes the held-out guard like every other demo_agent reply. A locked
-export loses its `qualification` and its metric tokens; its run loses `counts` and
-`log_crosscheck`, and the reply loses its totals. Without a readable
-`--installation` nothing is printed. `--write` appends a new
+The reply passes the held-out guard like every other demo_agent reply. Each
+`--source` is resolved to an absolute, canonical path first, because the guard
+recognises an export by its absolute `.set` path. A locked export loses its
+`qualification` and its metric tokens; its run loses `counts` and `log_crosscheck`,
+and the reply loses its totals. Without a readable `--installation` nothing is
+printed. `--write` appends a new
 `<controller state>/export-qualification/<run>/<UTC>.json` (exclusive create).
 Receipts and earlier records are never rewritten; a correction is a newer record.
 Each entry in `runs[].stamps[]` is `{set_path, set_name, set_sha256, member, symbol,

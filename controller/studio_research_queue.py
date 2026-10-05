@@ -181,10 +181,15 @@ def runner_row(root, kind, batch_id, *, now):
                 + (settle.get('command') or (kind + '-reconcile')) + ' ' + (settle.get('argument') or '') ).strip() + '.'
     elif status == 'completed':
         row_state = 'finished'
-    else:   # stopped: ended with a cancelled, failed, timed-out or output-less member
-        row_state = 'stopped' if cancelled else 'finished' if completed else 'failed'
+    else:   # stopped: cancelled, every attempted member failed, or the failure breaker tripped with members pending
+        pending = statuses.count('pending')
+        row_state = 'stopped' if cancelled or pending else 'finished' if completed else 'failed'
         if cancelled:
             note = 'Stopped before ' + _plural(cancelled, noun) + ' ran.'
+        elif pending:
+            reason = state.get('stopped_reason') if isinstance(state.get('stopped_reason'), dict) else {}
+            note = (reason['plain'][:600] if isinstance(reason.get('plain'), str) else
+                    'Stopped; ' + kind + '-resume continues the ' + _plural(pending, 'pending ' + noun) + '.')
     if failed:
         note = ('Every ' + noun + ' failed.') if row_state == 'failed' else ' '.join(filter(None, (note, _plural(failed, noun) + ' failed.')))
     started = [m['started_unix'] for m in members if _finite(m.get('started_unix'))]

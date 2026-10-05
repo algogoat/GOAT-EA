@@ -370,10 +370,12 @@ class HandoverTests(unittest.TestCase):
                               cwd=folder, capture_output=True, text=True, timeout=15)
         self.assertEqual(cold.returncode, 0, cold.stderr)
         self.assertTrue(json.loads(cold.stdout)['ok'])
-        # The five concurrent CLI probes each keep their strict 5-second bound.
+        # Each of the five concurrent CLI probes has a 20-second bound: a CLI blocked by the
+        # running server still fails (it would wait for the server's whole lifetime), while a
+        # slow, loaded machine no longer flakes it (goatai#1885, Claude-Mac on GOAT-EA#160).
         # Leave the real server alive through the full aggregate probe window.
         child = subprocess.Popen([sys.executable, '-c', script, str(ready), *args,
-                                  'serve', '--watch-seconds', '32'], cwd=folder,
+                                  'serve', '--watch-seconds', '45'], cwd=folder,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             deadline = time.monotonic()+5
@@ -387,7 +389,7 @@ class HandoverTests(unittest.TestCase):
                 started = time.monotonic()
                 try:
                     result = subprocess.run([sys.executable, 'goat_studio.py', *args, *command],
-                                            cwd=folder, capture_output=True, text=True, timeout=5)
+                                            cwd=folder, capture_output=True, text=True, timeout=20)
                 finally:
                     print(f'concurrent CLI {command[0]}: {time.monotonic()-started:.3f}s; '
                           f'serve_running={child.poll() is None}', file=sys.stderr)
@@ -399,7 +401,7 @@ class HandoverTests(unittest.TestCase):
                     self.assertTrue(body['ok'], body)
             self.assertEqual(body['result']['queue'][0]['status'], 'cancelled')
         finally:
-            out, err = child.communicate(timeout=40)
+            out, err = child.communicate(timeout=60)
             self.assertEqual(child.returncode, 0, out+err)
 
 

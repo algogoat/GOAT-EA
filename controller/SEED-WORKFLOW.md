@@ -141,6 +141,15 @@ returns; each process adapter operation has a bounded timeout, so this is not a
 hard real-time deadline.
 Call `seed-resume` to observe that same retained process and continue pending
 members. This is a bounded agent loop, not an installed background service.
+
+**Never give one call a budget longer than your own tool timeout.** The driver
+starts MT5 as its own child process. If something kills the driver (for example an
+agent tool that times out while `seed-start --max-seconds 3600` runs in the
+foreground and ends the whole process tree), MT5 dies with it mid-member, and the
+member ends `missing_output` (seen on T2, `seedhunt-t2-4-b41`). Use the default
+`--max-seconds 60` (or any budget clearly below your tool's timeout) and loop
+`seed-resume`. Between calls MT5 keeps running the member on its own; the next call
+observes it. The same applies to `catchup-start`/`catchup-resume`.
 Between calls nothing supervises the running member: its job timeout, a human
 TAKE and (on the demo tools) the disk check are only acted on during the next
 `seed-resume`. `--max-seconds` is that call's budget, not an autonomous hard stop.
@@ -159,10 +168,31 @@ The terminal slot is shared with normal native dispatch under the same exclusive
 file lock. Another batch cannot reserve the terminal while seed ownership is
 active. Owner/generation changes, process replacement, ambiguous output, uncertain
 startup, or invalid evidence stop further effects. No automatic failed retry is
-allowed; every attempted member has `attempts: 1` at most. On an ordinary failed,
-missing-output or timed-out member, prepare a new explicit plan containing only
-the desired unattempted jobs after investigating the cause. Preserve the old
-ledger and record the failure in the local matrix.
+allowed; every attempted member has `attempts: 1` at most.
+
+**A failed member fails only itself** (goatai#1885). A member that ends `failed`,
+`timeout` or `missing_output` keeps that status with a plain `error`, for example
+`MT5 closed after 70 s of its 3600 s budget without writing this member's SeedFarming
+XML. Nothing is inferred ...`. The batch then continues with its pending members.
+Two rules stop it early, because the fault then looks systemic: **3 attempted members
+in a row failed**, or **at least half of 4 or more attempted members failed**. The
+batch becomes `stopped` with `stopped_reason` (`rules`, `attempted`, `failed`,
+`pending`, every failed member's `reasons`, and a `plain` sentence). When every
+member has ended, the batch is `completed` if any member completed (`failed_members`
+counts the rest), or `stopped` if every attempted member failed. A `cancelled`
+member (owner STOP, `seed-cancel`, a human TAKE) still stops the whole batch.
+
+**A batch stopped by failures resumes.** Fix the cause, then call `seed-resume`
+(`catchup-resume` for a catch-up). If the batch is `stopped` with pending members,
+no `cancelled` or `reconcile_required` member and no batch-level doubt, it is
+re-activated exactly like a first start: the agent grant, an idle loaded monitor,
+the running selected terminal, the terminal slot, the one-namespace preflight and
+the held-out check, and on the demo lane a fresh start-grade broker readback. Then
+the monitor closes and the pending members continue. The re-activation is recorded
+in `state.reactivations`. Completed and failed members are never re-run, and a
+`seed-status` read never re-activates anything. The breaker counts only members
+attempted since the last activation. Preserve the ledger and record every failed
+member in the local matrix.
 
 ```powershell
 .\goat.exe studio --installation "C:\Users\You\GOAT Suite\installation.json" seed-cancel --batch-id seed-weekend-01

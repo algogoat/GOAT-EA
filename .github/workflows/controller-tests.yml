@@ -114,6 +114,8 @@ jobs:
         run: python scripts/test_peer_restart_mutations.py
       - name: GOAT peers mutation check (unknown, moved, unsigned or namespace-sharing MT5 still refuse)
         run: python scripts/test_peer_roster_mutations.py
+      - name: Seed member failure mutation check (one failure never ends the batch; breaker, cancel and resume rules hold)
+        run: python scripts/test_seed_member_failure_mutations.py
 
       - name: Run every controller fixture test
         env:

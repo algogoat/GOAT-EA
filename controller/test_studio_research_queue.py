@@ -90,6 +90,27 @@ class RunnerRowTests(unittest.TestCase):
         finished = self.row('finished')
         self.assertEqual((finished['qualifying'], finished['members_done'], finished['finished_utc']), (1, 2, '2027-01-15T07:50:00+00:00'))
 
+    def test_a_hunt_stopped_by_failures_with_pending_members_is_stopped_with_its_reason(self):
+        # goatai#1885: the breaker stops a hunt with members pending; seed-resume continues them.
+        folder = write_run(self.root, 'seed', 'breaker', 'stopped', [
+            dict(status='missing_output', started_unix=NOW - 900, finished_unix=NOW - 800, attempts=1),
+            dict(status='missing_output', started_unix=NOW - 800, finished_unix=NOW - 700, attempts=1),
+            dict(status='missing_output', started_unix=NOW - 700, finished_unix=NOW - 600, attempts=1),
+            dict(status='pending', attempts=0)])
+        state = json.loads((folder / 'state.json').read_text(encoding='utf-8'))
+        state['stopped_reason'] = dict(rules=['in_a_row'], plain='Stopped because 3 members in a row failed. Fix the cause, then '
+                                       'seed-resume continues the 1 pending member.')
+        write_json(folder / 'state.json', state)
+        row = self.row('breaker')
+        self.assertEqual((row['state'], row['members_done'], row['members_total']), ('stopped', 3, 4))
+        self.assertTrue(row['note'].startswith('Stopped because 3 members in a row failed'))
+        self.assertIn('3 candidates failed.', row['note'])
+        # Stopped by the old rule (seedhunt-t2-4-b41's shape): no stopped_reason, members still pending.
+        write_run(self.root, 'seed', 'legacy-stop', 'stopped', [
+            dict(status='missing_output', started_unix=NOW - 900, finished_unix=NOW - 800, attempts=1), dict(status='pending', attempts=0)])
+        self.assertEqual(self.row('legacy-stop')['state'], 'stopped')
+        self.assertIn('seed-resume continues the 1 pending candidate', self.row('legacy-stop')['note'])
+
     def test_a_catch_up_is_prove_and_counts_what_held_up(self):
         write_run(self.root, 'catchup', 'oos-1', 'completed', [done(30, 5, verdict='held_up'), done(20, 5, verdict='weakened')])
         row = self.row('oos-1', 'catchup')

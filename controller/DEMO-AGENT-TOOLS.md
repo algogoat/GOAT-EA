@@ -368,8 +368,8 @@ and the other reads. A `reconcile_required` seed or catch-up is settled with `se
 ```powershell
 & $py $tool --installation $install seed-validate --plan 'C:/seed-plan.json'
 & $py $tool --installation $install seed-prepare --batch-id 'seed-weekend-01' --plan 'C:/seed-plan.json'
-& $py $tool --installation $install seed-start --batch-id 'seed-weekend-01' --max-seconds 600
-& $py $tool --installation $install seed-resume --batch-id 'seed-weekend-01' --max-seconds 600
+& $py $tool --installation $install seed-start --batch-id 'seed-weekend-01' --max-seconds 60
+& $py $tool --installation $install seed-resume --batch-id 'seed-weekend-01' --max-seconds 60
 & $py $tool --installation $install seed-status --batch-id 'seed-weekend-01'
 & $py $tool --installation $install seed-cancel --batch-id 'seed-weekend-01'
 & $py $tool --installation $install seed-report --batch-id 'seed-weekend-01'
@@ -425,6 +425,21 @@ autonomous hard stop, and no background service enforces anything between calls.
 Owner STOP is a separate explicit path: `stop` works at any time. Keep calling
 `seed-resume` until the batch reports `completed` or `stopped`, or holds
 `reconcile_required` for inspection.
+
+**Keep every call's budget below your tool's timeout.** These commands run in the
+foreground of the calling process, and MT5 is started as the driver's child. A tool
+that times out and kills the process tree kills MT5 mid-member, and that member ends
+`missing_output` (T2 `seedhunt-t2-4-b41`, 2026-10-05). Use `--max-seconds 60` and
+loop `seed-resume`/`catchup-resume`; MT5 keeps running the member between calls.
+
+A failed, timed-out or output-less member fails only itself, with a plain `error`.
+The batch continues, unless 3 attempted members in a row failed or at least half of
+4 or more attempted members failed. It then stops with `stopped_reason` (see
+[SEED-WORKFLOW.md](SEED-WORKFLOW.md#run-resume-and-cancel)). After fixing the cause,
+`seed-resume` re-activates a stopped batch whose remaining members are pending. It
+uses the same fresh broker, owner, idle, STOP/TAKE, disk and free-terminal checks as
+`seed-start`, and the original start record must still match. Completed and failed
+members are never re-run. A `cancelled` member still stops the batch for good.
 STOP is never cleared by these tools, and `clear-stop` refuses until the seed
 run has reached a verified terminal state. Real native qualification of this
 lane is still pending; every seed result keeps `native_launch_qualified: false`.
@@ -441,8 +456,8 @@ tools need no broker; the rest use the seed lane's checks, start record
 & $py $tool --installation $install evidence-scan --source 'C:/.../Common/Files/GOAT/Re7e282f93d41' --source 'C:/.../GOAT/Rad870a22d237'
 & $py $tool --installation $install catchup-validate --plan 'C:/catchup-plan.json'
 & $py $tool --installation $install catchup-prepare --catchup-id 'catchup-20261002' --plan 'C:/catchup-plan.json'
-& $py $tool --installation $install catchup-start --catchup-id 'catchup-20261002' --max-seconds 600
-& $py $tool --installation $install catchup-resume --catchup-id 'catchup-20261002' --max-seconds 600
+& $py $tool --installation $install catchup-start --catchup-id 'catchup-20261002' --max-seconds 60
+& $py $tool --installation $install catchup-resume --catchup-id 'catchup-20261002' --max-seconds 60
 & $py $tool --installation $install catchup-report --catchup-id 'catchup-20261002'
 ```
 

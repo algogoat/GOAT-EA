@@ -601,10 +601,13 @@ the EA writes its usual SET/CSV/`.goatseq` unit into `Common Files\TEMP\SQ\<toke
 and the runner moves it to `<controller state>\evidence\<catch-up id>\<alias>\`
 with an `evidence-version.json` that links the original (same `values_sha256`, new
 end date). Catch-up shares the seed terminal slot (`seed-active.json`), owner STOP,
-pause and broker-verified start record rules, and stops after any failed member
-(kept until `native_launch_qualified`; after that, continue past member-only
-failures such as missing output, short history or unjudged, and still stop on
-reconcile, identity, timeout or process errors).
+pause and broker-verified start record rules, and the seed member-failure rules
+(goatai#1885, [SEED-WORKFLOW.md](SEED-WORKFLOW.md#run-resume-and-cancel)): a failed,
+timed-out or output-less member fails only itself with a plain `error`, the
+catch-up continues until 3 members in a row failed or half of 4+ attempted
+failed (`stopped_reason`), a cancelled member still stops it, and `catchup-resume`
+re-activates a catch-up stopped by failures under first-start checks. Reconcile,
+identity and process doubts still stop it as before.
 It is `native_launch_qualified: false` until a native proof run shows: the EA
 accepts a `/config` single pass with plain-valued `[TesterInputs]` and writes the
 export unit to the attempt root; MT5 exits after the pass; the moved unit's

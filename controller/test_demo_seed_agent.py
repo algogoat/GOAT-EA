@@ -119,7 +119,7 @@ class DemoSeedAgentTests(unittest.TestCase):
             cutoff=dict(min_fitness=0, min_trades=1),
             jobs=[dict(set_path=str(self.source), tester=tester, frame_target=2),
                   dict(set_path=str(self.source), tester=second, frame_target=2)])))
-        self.owner = 'agent'; self.opened = []; self.auto = False
+        self.owner = 'agent'; self.opened = []; self.auto = False; self.failing = set()
         self.now = time.time()
         self.process = SeedProcess(); self.mt5 = MetaTrader(self.exe, self.data)
         self.patches = [patch('demo_agent.tester_state', return_value='idle'),
@@ -138,7 +138,11 @@ class DemoSeedAgentTests(unittest.TestCase):
     def sleep(self, seconds):
         self.now += seconds
         if self.auto and self.process.current and self.process.current['created_utc'].startswith('member'):
-            self.finish_member(len(self.process.starts) - 1)
+            index = len(self.process.starts) - 1
+            if index in self.failing:
+                self.process.current = None                             # MT5 exits without writing the member's XML
+            else:
+                self.finish_member(index)
 
     def manifest(self):
         return read_json(self.root / 'seeds/batch/manifest.json')
@@ -254,6 +258,54 @@ class DemoSeedAgentTests(unittest.TestCase):
         logged = [a for a in self.actions() if a['operation'] == 'seed_promote']
         self.assertEqual([a['phase'] for a in logged], ['written', 'retained'])
         self.assertTrue(all(a['robustness_sha256'] == promoted['robustness_set']['sha256'] for a in logged))
+
+    def test_failed_members_stop_the_hunt_and_seed_resume_continues_it_under_a_fresh_broker_check(self):
+        # goatai#1885 (T2 seedhunt-t2-4-b41): members without output fail alone; after the breaker stops the hunt,
+        # seed-resume re-activates it with start-grade checks and runs only the pending members.
+        plan = json.loads(self.plan.read_text()); base = plan['jobs'][0]
+        plan['jobs'] = [dict(copy.deepcopy(base), tester=dict(base['tester'], Symbol='SYM%d' % i)) for i in range(5)]
+        self.plan.write_text(json.dumps(plan))
+        self.agent.seed_prepare('batch', self.plan)
+        self.failing = {0, 1, 2}; self.auto = True
+        stopped = self.agent.seed_start('batch', 60)
+        self.assertEqual((stopped['status'], stopped['stopped_reason']['rules']), ('stopped', ['in_a_row']))
+        self.assertEqual([m['status'] for m in stopped['members']], ['missing_output'] * 3 + ['pending'] * 2)
+        self.assertTrue(all(m['error'] for m in stopped['members'][:3]))
+        self.assertEqual(len(self.process.starts), 3)
+        self.process.current = dict(MONITOR)                                   # MT5 is back on the GOAT monitor
+        (self.root / 'demo-agent/STOP').write_text(json.dumps(dict(actor='demo_agent')))
+        with self.assertRaisesRegex(ValueError, 'Owner STOP'):
+            self.agent.seed_resume('batch', 60)
+        (self.root / 'demo-agent/STOP').unlink()
+        self.assertEqual(self.agent.seed_status('batch')['seed']['status'], 'stopped')   # a read never re-activates
+        self.assertEqual(self.process.closes, [MONITOR])
+        resumed = self.agent.seed_resume('batch', 60)
+        self.assertEqual(resumed['status'], 'completed')
+        self.assertEqual([m['status'] for m in resumed['members']], ['missing_output'] * 3 + ['completed'] * 2)
+        self.assertEqual((len(self.process.starts), self.process.closes), (5, [MONITOR, MONITOR]))
+        reactivated = [a for a in self.actions() if (a['operation'], a['phase']) == ('seed_resume', 'reactivate')]
+        self.assertEqual(len(reactivated), 1)
+        self.assertTrue(reactivated[0]['broker']['demo'])                     # fresh broker readback, not the retained start
+        self.assertEqual(reactivated[0]['stopped_reason'], ['in_a_row'])
+        self.assertIn('seed-resume', [o['operation'] for o in self.opened])
+
+    def test_a_hunt_that_stops_after_the_routing_check_is_never_reactivated_without_the_start_grade_check(self):
+        # Codex P2 on GOAT-EA#160: the unlocked routing check said "not resumable", then the hunt stopped on
+        # failures before this resume took the lock. The ordinary (not start-grade) scope must not re-activate it.
+        plan = json.loads(self.plan.read_text()); base = plan['jobs'][0]
+        plan['jobs'] = [dict(copy.deepcopy(base), tester=dict(base['tester'], Symbol='SYM%d' % i)) for i in range(5)]
+        self.plan.write_text(json.dumps(plan))
+        self.agent.seed_prepare('batch', self.plan)
+        self.failing = {0, 1, 2}; self.auto = True
+        self.assertEqual(self.agent.seed_start('batch', 60)['status'], 'stopped')
+        self.process.current = dict(MONITOR)
+        with patch.object(DemoAgent, '_seed_resumable_stopped', return_value=False):
+            result = self.agent.seed_resume('batch', 60)
+        self.assertEqual(result['status'], 'stopped')
+        self.assertIn('re-activates the pending members under a fresh start-grade broker check', result['next_action'])
+        self.assertEqual((self.process.closes, len(self.process.starts)), ([MONITOR], 3))
+        self.assertFalse([a for a in self.actions() if (a['operation'], a['phase']) == ('seed_resume', 'reactivate')])
+        self.assertNotIn('reactivations', read_json(self.root / 'seeds/batch/state.json'))
 
     def test_duplicate_start_refused_and_restart_resumes_only_the_original_attempt(self):
         self.agent.seed_prepare('batch', self.plan)

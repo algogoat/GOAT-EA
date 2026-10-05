@@ -26,6 +26,11 @@ from studio_terminal_isolation import controller_preflight
 TERMINAL={'completed','cancelled','timeout','failed','missing_output'}
 MAX_RETAINED_INPUT_BYTES=128*1024*1024
 MAX_PUBLIC_MEMBERS=100
+# A member that ran and ended without a usable result. It fails only itself: the batch continues
+# with its pending members until a breaker rule trips (Claude-Mac, goatai#1885 5989126739).
+FAILED_MEMBER=frozenset(('failed','timeout','missing_output'))
+BREAKER_IN_A_ROW=3          # this many attempted members in a row failed
+BREAKER_SHARE_MIN=4         # or at least half of the attempted members failed, once this many were attempted
 
 BUSY={'reserved','starting','running','reconcile_required','verifying'}
 
@@ -34,6 +39,11 @@ def digest(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 class SeedRunner:
+    # Words for plain member-failure reasons; runners that reuse this driver name their own output and commands.
+    OUTPUT_NOUN='SeedFarming XML'
+    COMMAND_PREFIX='seed'
+    MEMBER_NOUN='member'
+
     def __init__(self,controller,*,process=None,clock=time.time,sleep=time.sleep):
         self.c=controller;self.clock=clock;self.sleep=sleep
         if process is None:
@@ -357,7 +367,8 @@ class SeedRunner:
         if (state['status']=='reconcile_required' and 'reconcile_required' not in statuses and state.get('error') is None
                 and (targets or self._idle_proof(manifest,state,current) is None)):
             if 'pending' not in statuses:
-                state['status']='completed' if statuses<={'completed'} else 'stopped'
+                state['status']=self._end_status(statuses)
+                if statuses&FAILED_MEMBER:state['failed_members']=sum(m['status'] in FAILED_MEMBER for m in state['members'])
                 if current is not None:state['idle_settled']=dict(process=current,unix=self.clock())
             elif current is None:state['status']='active'          # the driver continues the pending members
             # Pending members while MT5 is open: seed-cancel settles them; nothing is closed or relaunched here.
@@ -388,13 +399,101 @@ class SeedRunner:
                 result=self._collect_member(root,manifest,spec,item,paths)
             if item['status'] in ('running','closing','cancel_requested','timeout_requested'):
                 item['status']='cancelled' if item['status']=='cancel_requested' else 'timeout' if item['status']=='timeout_requested' else 'completed' if result else 'missing_output'
+                if item['status'] in ('timeout','missing_output') and not item.get('error'):
+                    item['error']=self._failure_reason(manifest,item)
             item['finished_unix']=self.clock()
-        statuses={m['status'] for m in state['members']}
-        if 'reconcile_required' in statuses:state['status']='reconcile_required'
-        elif statuses<={'completed'}:state['status']='completed'
-        elif any(s in statuses for s in ('failed','timeout','missing_output','cancelled')):state['status']='stopped'
+        self._settle_status(state)
         self._settle_slot(root,manifest,state,current)
         return current
+
+    # ---- member failures (goatai#1885: one member's missing output must not end the batch) ----------------
+
+    def _failure_reason(self,manifest,item):
+        """One plain sentence for a member that ended without a usable result. Nothing is inferred from it."""
+        budget=(manifest.get('plan') or {}).get('job_timeout_seconds')
+        ran=None
+        if type(item.get('started_unix')) in (int,float):ran=max(0,int(round(self.clock()-item['started_unix'])))
+        if item['status']=='timeout':
+            return ('The %s ran past its %s s budget, so GOAT asked MT5 to close normally. Nothing is inferred from it.'
+                    %(self.MEMBER_NOUN,budget))
+        return ('MT5 closed%s without writing this %s\'s %s. Nothing is inferred: the %s has no result. If the driver was '
+                'interrupted (for example a tool timeout ended a foreground %s-start or %s-resume), MT5 may have closed with it.'
+                %('' if ran is None else ' after %d s%s'%(ran,'' if budget is None else ' of its %s s budget'%budget),
+                  self.MEMBER_NOUN,self.OUTPUT_NOUN,self.MEMBER_NOUN,self.COMMAND_PREFIX,self.COMMAND_PREFIX))
+
+    @staticmethod
+    def _end_status(statuses):
+        """Status of a batch whose members have all ended: completed when any member completed and none was cancelled."""
+        if statuses<={'completed'}:return 'completed'
+        return 'completed' if 'completed' in statuses and 'cancelled' not in statuses else 'stopped'
+
+    def _breaker(self,state):
+        """stopped_reason when failures look systemic, else None (Claude-Mac, #1885 5989126739).
+
+        Counts only members attempted since the batch was last (re-)activated, in launch order:
+        3 failures in a row, or failures reaching half of at least 4 attempted members.
+        Every failed member's reason is listed.
+        """
+        since=(state.get('reactivations') or [{}])[-1].get('unix')
+        ended=sorted((m for m in state['members'] if m.get('attempts') and m['status'] in FAILED_MEMBER|{'completed'}
+                      and (since is None or (m.get('started_unix') or 0)>=since)),key=lambda m:m.get('started_unix') or 0)
+        failed=[m for m in ended if m['status'] in FAILED_MEMBER]
+        in_a_row=0
+        for m in reversed(ended):
+            if m['status'] not in FAILED_MEMBER:break
+            in_a_row+=1
+        rules=[]
+        if in_a_row>=BREAKER_IN_A_ROW:rules.append('in_a_row')
+        if len(ended)>=BREAKER_SHARE_MIN and 2*len(failed)>=len(ended):rules.append('half_failed')
+        if not rules:return None
+        pending=sum(m['status']=='pending' for m in state['members'])
+        why=[]
+        if 'in_a_row' in rules:why.append('%d %ss in a row failed'%(in_a_row,self.MEMBER_NOUN))
+        if 'half_failed' in rules:why.append('%d of %d attempted %ss failed'%(len(failed),len(ended),self.MEMBER_NOUN))
+        return dict(rules=rules,attempted=len(ended),failed=len(failed),in_a_row=in_a_row,pending=pending,
+                    reasons=[dict(alias=m['alias'],status=m['status'],error=m.get('error')) for m in failed],
+                    plain=('Stopped because '+' and '.join(why)+', which looks like a systemic fault rather than bad luck: '
+                           +'; '.join(m['alias']+': '+str(m.get('error') or m['status']) for m in failed)
+                           +'. Fix the cause, then '+self.COMMAND_PREFIX+'-resume continues the %d pending %s%s; completed and '
+                           'failed %ss are never re-run.')%(pending,self.MEMBER_NOUN,'' if pending==1 else 's',self.MEMBER_NOUN))
+
+    def _settle_status(self,state):
+        """Batch status after member outcomes. A failed, timed-out or output-less member fails only itself: while
+        members are pending an active batch continues, unless the breaker trips. Cancelled (owner STOP,
+        cancel, TAKE) still stops the batch, and a stopped batch stays stopped until an explicit resume."""
+        statuses={m['status'] for m in state['members']}
+        if 'reconcile_required' in statuses:state['status']='reconcile_required';return
+        if statuses<={'completed'}:state['status']='completed';return
+        if 'cancelled' in statuses:state['status']='stopped';return
+        failed=statuses&FAILED_MEMBER
+        if not failed or statuses&self.LIVE_MEMBER:return
+        if state['status'] not in ('active','closing_monitor'):
+            # Already stopped (kept as recorded, including batches stopped before this rule), or a batch-level
+            # doubt beside a failed member: stopped, exactly as before. Only seed-resume re-activates it.
+            state['status']='stopped'
+            return
+        if 'pending' not in statuses:
+            state['status']=self._end_status(statuses)
+            state['failed_members']=sum(m['status'] in FAILED_MEMBER for m in state['members'])
+            if state['status']=='stopped':
+                failures=[m for m in state['members'] if m['status'] in FAILED_MEMBER]
+                state['stopped_reason']=dict(rules=['every_member_failed'],attempted=len(failures),failed=len(failures),in_a_row=None,
+                    pending=0,reasons=[dict(alias=m['alias'],status=m['status'],error=m.get('error')) for m in failures],
+                    plain='Every attempted %s failed, so nothing was found: '%self.MEMBER_NOUN
+                          +'; '.join(m['alias']+': '+str(m.get('error') or m['status']) for m in failures)+'.')
+            return
+        reason=self._breaker(state)
+        if reason:state['status']='stopped';state['stopped_reason']=reason
+
+    @staticmethod
+    def resumable(state):
+        """A stopped batch that seed-resume may re-activate: it started, nothing is uncertain or cancelled,
+        no member runs, and members are still pending with no attempt. Completed and failed members are never re-run."""
+        members=state.get('members') or []
+        statuses={m.get('status') for m in members}
+        return (state.get('status')=='stopped' and state.get('generation') is not None and state.get('error') is None
+                and 'pending' in statuses and not statuses&({'cancelled','reconcile_required'}|SeedRunner.LIVE_MEMBER)
+                and all(m.get('attempts')==0 for m in members if m.get('status')=='pending'))
 
     def status(self,batch_id):
         with exclusive_gate(self.gate):
@@ -431,27 +530,48 @@ class SeedRunner:
         path.replace(target)
         return True
 
-    def _activate(self,batch_id,root,manifest,state):
+    def _activate(self,batch_id,root,manifest,state,*,reactivate=False):
+        """First start of a prepared batch, or (``reactivate``) seed-resume of a stopped batch with pending members.
+
+        Both take the same fresh proof before the monitor closes: agent grant, idle loaded monitor, the running
+        selected terminal, a free terminal slot and the one-namespace preflight. A re-activation checks only the
+        pending members for stray output and records itself in ``reactivations``; nothing ended is re-run.
+        """
         owner=self._owner()
         observation,_=self.c.runtime(require_idle=True,expected_batch_ongoing=False)
         if observation.get('loaded') is not True or observation.get('owner')!='agent' or observation.get('generation')!=owner['generation']:
             raise ValueError('Fresh loaded licensed Studio dialog and matching human grant required')
         current=self.process.inspect()
-        if current is None:raise ValueError('First seed start requires chosen running demo terminal and loaded licensed Studio')
-        guard_active_seed(self.c.root)
+        if current is None:
+            raise ValueError(('Resuming a stopped %s batch' if reactivate else 'First %s start')%self.COMMAND_PREFIX
+                             +' requires chosen running demo terminal and loaded licensed Studio')
+        slot=read_json(self.slot) if reactivate and self.slot.exists() else {}
+        if not (slot.get('batch_id')==batch_id and slot.get('manifest_sha256')==state['manifest_sha256']):
+            guard_active_seed(self.c.root)      # a stopped batch may still hold its own slot; any other holder refuses
         # INV-BATCH-01: the running EA and every other live terminal keep their own batch folders.
         controller_preflight(self.c,observation)
-        for spec in manifest['members']:
-            if self._outputs(spec):raise ValueError('Seed output identity already exists before first attempt')
+        for spec,item in zip(manifest['members'],state['members']):
+            if (not reactivate or item['status']=='pending') and self._outputs(spec):
+                raise ValueError('Seed output identity already exists before first attempt')
+        if reactivate:
+            state.setdefault('reactivations',[]).append(dict(unix=self.clock(),prior_generation=state.get('generation'),
+                generation=owner['generation'],prior_stopped_reason=state.pop('stopped_reason',None),
+                prior_initial_process=state.get('initial_process'),process=current,
+                pending=sum(m['status']=='pending' for m in state['members'])))
+            state.pop('failed_members',None);state.pop('idle_settled',None)
         state['generation']=owner['generation'];state['status']='closing_monitor';state['preflight']=observation;state['initial_process']=current
         self._save(root,state)
         write_json(self.slot,dict(status='active',batch_id=batch_id,manifest_sha256=state['manifest_sha256'],generation=state['generation']))
         self.process.close(current)
 
     def start(self,batch_id,max_seconds=60):return self._drive(batch_id,max_seconds,initial=True)
-    def resume(self,batch_id,max_seconds=60):return self._drive(batch_id,max_seconds,initial=False)
+    def resume(self,batch_id,max_seconds=60,*,reactivate=True):
+        """Continue the retained attempt. ``reactivate`` lets a batch stopped by failed members restart under the
+        first-start checks; a caller whose own scope is not start-grade (the demo lane's ordinary resume) passes
+        False, so a batch that became resumable meanwhile is returned stopped, never re-activated there."""
+        return self._drive(batch_id,max_seconds,initial=False,reactivate=reactivate)
 
-    def _drive(self,batch_id,max_seconds,initial):
+    def _drive(self,batch_id,max_seconds,initial,reactivate=False):
         if type(max_seconds) is not int or not 1<=max_seconds<=3600:raise ValueError('max_seconds must be 1..3600')
         deadline=self.clock()+max_seconds
         while self.clock()<deadline:
@@ -461,6 +581,13 @@ class SeedRunner:
                 if state['status']=='reconcile_required':
                     # A member MT5 finished while its start was unconfirmed is collected from its own output.
                     self._observe(root,manifest,state)
+                if not initial and reactivate and self.resumable(state):
+                    # seed-resume of a batch stopped by failed members: the same fresh proof as a first start,
+                    # then the pending members continue. Never from a status read; never re-runs a member.
+                    self._verify_prepared(batch_id,manifest)
+                    from studio_heldout_guard import check_runner_start
+                    check_runner_start(self.c,manifest)
+                    self._activate(batch_id,root,manifest,state,reactivate=True)
                 if state['status'] in ('completed','stopped','reconcile_required'):return self._public(root,state)
                 if state['status']=='prepared':
                     if not initial:raise ValueError('Use seed-start for a prepared batch')

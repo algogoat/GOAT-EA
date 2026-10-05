@@ -382,15 +382,16 @@ class NativeCycleTests(CatchupCase):
         with self.assertRaisesRegex(ValueError, 'owns this terminal'):
             guard_active_seed(self.controller.root)
 
-    def test_missing_output_stops_the_catchup(self):
+    def test_missing_output_fails_only_that_member(self):
         self.runner.prepare('cu1', self.plan())
         self.runner.start('cu1', 1)
         self.process_state = None
         state = self.runner.status('cu1')
         self.assertEqual([m['status'] for m in state['members']], ['missing_output', 'pending'])
-        self.assertEqual(state['status'], 'stopped')
+        self.assertEqual(state['status'], 'active')      # goatai#1885: one member's missing output never ends the run
+        self.assertIn('re-test export', state['members'][0]['error'])
         self.runner.resume('cu1', 1)
-        self.assertEqual(len(self.starts), 1)  # a failed member stops the run; nothing is retried
+        self.assertEqual(len(self.starts), 2)  # the next member runs; the failed one is never retried
         # "Bring all" re-queues under a new attempt id: the failed and the never-run member are both still behind.
         again = self.runner.validate(self.plan())
         self.assertEqual([m['symbol'] for m in again['members']], ['EURUSD', 'GBPUSD'])

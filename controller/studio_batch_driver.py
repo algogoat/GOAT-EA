@@ -279,6 +279,21 @@ def _pause(controller, job_id):
     return load(controller.root, job_id, quiet=True)
 
 
+def _research_guard(controller, job_id, record, now, pause):
+    """A native batch started under the owner research-launch job (goatai#1885 PR E): when the
+    guard saw two publisher budget breaches, request the ordinary safe-point batch pause once.
+    Nothing applies without an owner research-launch policy; never raises."""
+    try:
+        from studio_research_launch import pause_wanted
+        if pause is not None or not pause_wanted(controller):
+            return False
+        from studio_batch_pause import request
+        request(controller.root, controller.job(job_id), record, now=now, requested_by='research_launch_guard')
+        return True
+    except Exception:
+        return False
+
+
 def _waiting_safe_point(pause):
     point = pause.get('safe_point') if isinstance(pause, dict) else None
     return (isinstance(point, dict) and point.get('ok') is False and pause.get('state') == 'pausing'
@@ -523,6 +538,8 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
             pausing = pause is not None and pause['state'] == 'pausing'
             if not record['cancel_issued'] or pausing:
                 record['disk_observation'] = _capacity(controller, record['min_free_bytes'])
+            if not record['cancel_issued']:
+                _research_guard(controller, job_id, record, now, pause)
             try:
                 if controller.job(job_id)['status'] not in TERMINAL:
                     controller.reconcile(job_id)

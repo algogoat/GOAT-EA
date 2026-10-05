@@ -26,7 +26,7 @@ from studio_native_request import (validate_launch_material,validate_restart_con
 from studio_open_activation import _install_controls
 from studio_process_check import RollingBaseline,inspect_processes,revalidate_processes
 from studio_research_authority import before_native_dispatch
-from studio_seed_process import WindowsSeedProcess
+from studio_seed_process import WindowsSeedProcess,research_view
 from studio_seed_slot import guard_active_seed
 from studio_report_bridge import prepare as bridge_prepare,verify as bridge_verify
 
@@ -306,7 +306,10 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
         raise ValueError('Startup bytes changed after close')
     bridge_verify(bridge)
     phase(c,job_id,generation,'research_exited','launch_issued')
-    launched=process.start(startup)
+    # The batch's first /config start is a research MT5 launch (goatai#1885 PR E): created
+    # suspended at low priority inside this terminal's job, or refused with nothing run. The EA's
+    # own per-member relaunches stay inside that job.
+    launched=research_view(process).start(startup)
     phase(c,job_id,generation,'launch_issued','process_started_unverified',process=launched)
     return dict(status='config_process_started_unverified',attempt_id=intent['attempt_id'],
                 process=launched,dispatch=published,native_running_verified=False)

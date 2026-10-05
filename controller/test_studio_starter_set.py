@@ -401,6 +401,25 @@ class EveryStrategyPathTests(unittest.TestCase):
         self.assertEqual(self.c.state()['queue'], [])
         self.assertFalse((self.c.root / 'packages' / 'risky-job').exists())
 
+    def test_single_job_prepare_refuses_an_unchosen_starter_risk(self):
+        # Claude-Mac's review 5409023738, point 2: prepare --set reads the bytes' lineage marker too.
+        single = starter_set('single', self.fixture.root / 'single.set', self.schema, self.c.policy, controller_version='t', ea_version='1.48')
+        text = Path(single['output']['path']).read_bytes().decode('utf-16')
+        self.assertIn('; GOAT Risk not chosen:', text)
+        text = (text.replace('EA_Desc=Starter Single Trade', 'EA_Desc=My variant [0123456789ab]').replace('Mode_Lots=0', 'Mode_Lots=2')
+                .replace('Max_Seq_Trades=1', 'Max_Seq_Trades=5').replace('Grid_Size=10.0', 'Grid_Size=10.0||5.0||5.0||20.0||Y'))
+        source = self.fixture.root / 'marked.set'; source.write_bytes(text.encode('utf-16'))
+        config = self.fixture.root / 'settings.json'
+        config.write_text(json.dumps(dict(tester=self.fixture.tester, export=self.fixture.exports)))
+        self.fixture.grant(self.c)
+        with self.assertRaisesRegex(ValueError, '^RISK_NOT_CHOSEN'):
+            self.c.prepare('marked-job', source, config)
+        self.assertEqual(self.c.state()['queue'], [])
+        self.assertIsNone(self.c.state()['strategy_draft'])
+        chosen = source.with_name('chosen.set')
+        chosen.write_bytes(''.join(l for l in text.splitlines(keepends=True) if not l.startswith('; GOAT Risk not chosen:')).encode('utf-16'))
+        self.assertEqual(self.c.prepare('chosen-job', chosen, config)['job_id'], 'chosen-job')   # Risk chosen: it queues
+
     def test_raw_enqueue_batch_is_refused(self):
         self.fixture.grant(self.c)
         member = dict(tester=self.fixture.tester, export=self.fixture.exports,
@@ -460,6 +479,33 @@ class DeployLoadGuardTests(unittest.TestCase):
             deploy.check_member_values(self.c, 'm.set', content.encode('utf-16'))
         with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
             deploy.check_member_values(self.c, 'm.set', 'Mode_Lots=2\r\nMax_Seq_Trades=1\r\n'.encode('utf-16'))
+
+    # ---- Claude-Mac's review 5409023738, point 1: read keys the way the dashboard's BuildTemplate does
+    def test_whitespace_case_and_duplicate_key_probes_are_refused(self):
+        import studio_demo_deploy as deploy
+        probes = {
+            ' Mode_Lots=2\r\n Max_Seq_Trades=1\r\n': 'SET_KEY_NOT_EXACT',            # leading space (the reproduced bypass)
+            '\tMode_Lots=2\r\n\tMax_Seq_Trades=1\r\n': 'SET_KEY_NOT_EXACT',          # tab
+            'Mode_Lots =2\r\nMax_Seq_Trades=8\r\n': 'SET_KEY_NOT_EXACT',             # trailing space in the key
+            'mode_lots=2\r\nMax_Seq_Trades=1\r\n': 'SET_KEY_NOT_EXACT',              # case near-miss
+            'MODE_LOTS=0\r\nMax_Seq_Trades=8\r\n': 'SET_KEY_NOT_EXACT',              # near-miss even with a safe value
+            'Mode_Lots=0\r\nMode_Lots=2\r\nMax_Seq_Trades=1\r\n': 'SET_DUPLICATE_INPUT',
+            'Mode_Lots=0\r\nMax_Seq_Trades=1\r\n Mode_Lots=2\r\n': 'SET_KEY_NOT_EXACT',   # the shadowing pair
+            'Max_Seq_Trades=8\r\nMax_Seq_Trades=1\r\nMode_Lots=2\r\n': 'SET_DUPLICATE_INPUT',
+        }
+        for content, code in probes.items():
+            with self.subTest(content=content), self.assertRaisesRegex(ValueError, '^' + code + '.*nothing was written'):
+                deploy.check_member_values(self.c, 'm.set', ('EA_Desc=Trend 0\r\n' + content).encode('utf-16'))
+        # Through the whole load: refused before anything is written.
+        with self.assertRaisesRegex(ValueError, '^SET_KEY_NOT_EXACT'):
+            deploy.load(self.c, self.plan([agent_fixture.member(0, content='EA_Desc=Trend 0\r\n Mode_Lots=2\r\n Max_Seq_Trades=1\r\n'.encode('utf-16'))]),
+                        mt5=agent_fixture.FakeMT5(self.c))
+        where = deploy.paths(self.c, 'e' * 32)
+        self.assertFalse(where['sets'].exists() or where['state'].exists() or where['journal'].exists())
+        # Trailing whitespace after a value is what the dashboard trims too; values are compared trimmed.
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
+            deploy.check_member_values(self.c, 'm.set', 'Mode_Lots=2 \r\nMax_Seq_Trades=1\t\r\n'.encode('utf-16'))
+        deploy.check_member_values(self.c, 'm.set', '; Mode_Lots=2 in a comment\r\nMode_Lots=2\r\nMax_Seq_Trades=8\r\n'.encode('utf-16'))
 
 
 class StarterCliTests(unittest.TestCase):

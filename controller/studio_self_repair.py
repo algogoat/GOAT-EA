@@ -98,6 +98,12 @@ def _guard(c):
 # controls differ, which contradicts the byte-exact proof below).
 PRE_CONSUMPTION_REFUSALS = frozenset(('START_PROTOCOL_NOT_QUALIFIED', 'RESTART_INTENT_REJECTED',
                                       'INVALID_TESTER_INI', 'ACTION_REJECTED'))
+# Queue rows that may still hold native work (the demo lane's ACTIVE_NATIVE_STATUSES).
+UNSETTLED_NATIVE = ('reserved', 'starting', 'running', 'reconcile_required', 'verifying')
+# The demo-lane settlement record of a refused restart-arm start, named <job>-<attempt16>.json
+# like retired-starts/; restore-lane reads it (demo_agent._never_started_settlement).
+REFUSED_STARTS = 'refused-starts'
+REFUSED_START_KIND = 'settled_refused_start'
 
 
 def _owned_controls(c, job, attempt, requests):
@@ -190,10 +196,12 @@ def _refused_restart_proof(c, job, state):
     return transaction, 'refused:'+arm['receipt']['status']
 
 
-def _proof(c, job):
+def _proof(c, job, *, refused_start_only=False):
     state = _guard(c)
     if 'restart_intent' in job:
         return _refused_restart_proof(c, job, state)
+    if refused_start_only:
+        raise ValueError('Only a restart-arm start the EA refused before consuming it settles here')
     attempt = job['launch_intent']['attempt_id']
     gate = c.local/'native-gate'
     cancel = sha([attempt, 'cancel'])
@@ -248,8 +256,19 @@ def _record_guard(c, record):
     return state
 
 
-def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=time, controller=None):
-    """Return a support-safe repair record plus local evidence, without networking."""
+def _other_unsettled(state, job_id):
+    """Other queue rows that may still hold native work (anything but pending or finished)."""
+    return [row['job_id'] for row in state['queue']
+            if row['job_id'] != job_id and row['status'] in UNSETTLED_NATIVE]
+
+
+def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=time, controller=None,
+            refused_start_only=False):
+    """Return a support-safe repair record plus local evidence, without networking.
+
+    ``refused_start_only`` is the demo-lane settlement (settle_refused_start): only the
+    refused restart-arm proof is accepted, and earlier settled jobs may stay in the queue.
+    """
     if str(uuid.UUID(action_id)) != action_id:
         raise ValueError('Canonical UUID action ID required for replay-safe reporting')
     if not isinstance(linked_login,str) or not re.fullmatch(r'[1-9][0-9]{0,19}',linked_login):
@@ -319,12 +338,21 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
         with exclusive_gate(c.root/'batch-driver-gate'), exclusive_gate(c.local/'native-gate'):
             state = _guard(c)
             job = c.job(job_id)
-            if len(state['queue']) != 1 or 'launch_intent' not in job:
+            if 'launch_intent' not in job:
+                raise ValueError('Exactly one retained original attempt required')
+            if refused_start_only:
+                # Earlier settled jobs (for example a prior self-repair's retired job) stay in the
+                # queue as evidence; any other row that may hold native work refuses.
+                others = _other_unsettled(state, job_id)
+                if others:
+                    raise ValueError('Another batch may hold native work (' + ', '.join(others)
+                                     + '); this must be the only unsettled batch')
+            elif len(state['queue']) != 1:
                 raise ValueError('Exactly one retained original attempt required')
             evidence = safe_path(c.root/'attempts'/job['launch_intent']['attempt_id'])
             gate = c.local/'native-gate'
             if not path.exists():
-                transaction, cancel_evidence = _proof(c, job)
+                transaction, cancel_evidence = _proof(c, job, refused_start_only=refused_start_only)
                 native = inspect_idle_demo(c); require_demo(native)
                 if process.inspect() != native['process']:
                     raise ValueError('Selected native process changed before recovery')
@@ -363,7 +391,9 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
             if record['phase'] == 'prepared':
                 if job != before or {k:state[k] for k in record['state']} != record['state']:
                     raise ValueError('Controller changed before close')
-                _proof(c, job)
+                if refused_start_only and _other_unsettled(state, job_id):
+                    raise ValueError('Another batch may hold native work; this must be the only unsettled batch')
+                _proof(c, job, refused_start_only=refused_start_only)
                 native = inspect_idle_demo(c); require_demo(native)
                 if native['process'] != record['process'] or process.inspect() != record['process']:
                     raise ValueError('Native process changed before close')
@@ -388,7 +418,7 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
                 # Normal MT5 shutdown is not zero-work proof. Recheck the
                 # complete causal evidence after exit before any restoration.
                 if read_json(evidence/'transaction.json')['phase'] == 'installed':
-                    _proof(c, job)
+                    _proof(c, job, refused_start_only=refused_start_only)
                 for identity in (record['attempt_id'], sha([record['attempt_id'],'cancel'])):
                     observed_dispatch = observe_dispatch(gate, identity)
                     if observed_dispatch.get('status') != 'not_issued' and observed_dispatch.get('consumed') is not False:
@@ -433,7 +463,8 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
                 state = _record_guard(c, record); current_job = c.job(job_id)
                 if current_job == before:
                     current_job.update(status='failed', completion=result, completion_path=str(result_path))
-                    jobs = [current_job]
+                    # Only this row changes; any earlier settled rows stay exactly as they were.
+                    jobs = [current_job if row['job_id'] == job_id else row for row in state['queue']]
                     binding = packed(dict(terminal_id=c.terminal,run_id=c.run))
                     c.store.db.execute('UPDATE studio_queues SET jobs=? WHERE binding=?',(packed(jobs),binding))
                     c.store.db.execute('UPDATE studio_state SET revision=revision+1 WHERE binding=?',(binding,))
@@ -481,6 +512,62 @@ def _repair(receipt, job_id, action_id, *, linked_login, process=None, clock=tim
     finally:
         locks.close()
         if owned_controller and c.store: c.store.close()
+
+
+def refused_start_action_id(job_id, attempt_id):
+    """One stable repair action per attempt, so every retry resumes the same journal."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, 'goat-settle-refused-start:' + job_id + ':' + attempt_id))
+
+
+def settle_refused_start(c, receipt, job_id, *, process=None, clock=time):
+    """Demo lane (goatai#1885, tester a649295d): settle a restart-arm start the EA refused
+    before consuming it, with the reviewed self-repair proof and settlement unchanged.
+
+    The proof is ``_refused_restart_proof`` (restart phase controls_installed, the EA's own
+    pre-consumption refusal of exactly this arm, no consumed start, no start/arm intent, the
+    issued arm request matching and expired, zero native work, owned controls untouched). The
+    settlement closes MT5 normally, restores the attempt's controls, archives the native
+    request/permit and records the job failed / retired_never_started with every receipt kept.
+    The caller holds the broker-verified demo scope and not the terminal lock (``_repair``
+    takes it). Returns the outcome plus the retained ``refused-starts/`` record.
+    """
+    job = c.job(job_id)
+    attempt = (job.get('launch_intent') or {}).get('attempt_id')
+    if not isinstance(attempt, str) or not re.fullmatch(r'[a-f0-9]{64}', attempt) or 'restart_intent' not in job:
+        raise ValueError('Batch ' + job_id + ' has no restart-arm start attempt to settle')
+    action_id = refused_start_action_id(job_id, attempt)
+    outcome = _repair(receipt, job_id, action_id, linked_login=c.session['account']['login'],
+                      process=process, clock=clock, controller=c, refused_start_only=True)
+    settled = c.job(job_id)
+    completion = settled.get('completion') or {}
+    if (settled['status'] != 'failed' or completion.get('classification') != 'retired_never_started'
+            or completion.get('attempt_id') != attempt or completion.get('repair_action_id') != action_id):
+        raise ValueError('Settlement did not record this attempt as never started; inspect ' + str(c.root/'self-repair'/action_id))
+    folder = safe_path(c.root/REFUSED_STARTS); folder.mkdir(exist_ok=True)
+    path = safe_path(folder/(job_id + '-' + attempt[:16] + '.json'))
+    record = dict(schema_version=1, kind=REFUSED_START_KIND, job_id=job_id, attempt_id=attempt, action_id=action_id,
+                  classification='retired_never_started', receipt_evidence=outcome.get('cancel_evidence'),
+                  executed_members=0, native_cancellation_claimed=False,
+                  result_path=settled.get('completion_path'),
+                  self_repair_journal=str(c.root/'self-repair'/action_id/'transaction.json'),
+                  settled_utc=datetime.now(timezone.utc).isoformat())
+    if path.exists():
+        retained = read_json(path)
+        if retained.get('attempt_id') != attempt or retained.get('action_id') != action_id:
+            raise ValueError('A different refused-start record already exists for this batch; inspect ' + str(path))
+        record = retained
+    else:
+        write_json(path, record)
+    return dict(outcome, record_path=str(path), record=record)
+
+
+def refused_start_native_action(root, job_id, attempt_id):
+    """Did a settlement of this attempt get past its prepared journal (MT5 may have been closed)?"""
+    journal = Path(root)/'self-repair'/refused_start_action_id(job_id, attempt_id)/'transaction.json'
+    try:
+        return journal.exists() and read_json(journal).get('phase') not in ('prepared',)
+    except (OSError, ValueError):
+        return True
 
 
 def repair(receipt, job_id, action_id, **kwargs):

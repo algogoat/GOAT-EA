@@ -204,7 +204,8 @@ $services=@(Get-CimInstance Win32_Service | Where-Object {$_.ProcessId -in @($pr
 $connections=@(Get-NetTCPConnection | Select-Object OwningProcess,@{Name='State';Expression={$_.State.ToString()}},RemoteAddress)
 @{processes=$processes;services=$services;connections=$connections} | ConvertTo-Json -Depth 6 -Compress
 '''
-    snapshot=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=20, creationflags=background_creationflags()))
+    from studio_process_query import powershell_text
+    snapshot=json.loads(powershell_text(command,purpose='tester and updater inventory'))
     return classify_testers(c,snapshot,require_idle_services=require_idle_services)
 
 

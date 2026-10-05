@@ -225,7 +225,37 @@ content checks and record `reconciled` (`prior_error`) on the member; it is neve
 re-run, and remaining pending members then continue. With no output, or while a
 batch-level doubt (an unowned process between members) is recorded, the member
 stays `reconcile_required`. The process inventory itself re-reads a row with a
-missing path for up to 10 seconds before it refuses.
+missing path for up to 10 seconds before it refuses. The whole Windows query is
+retried through a WMI stall: 4 attempts of 20 s, with 2, 5 and 10 s pauses (each varied
+by up to 25%), for a check that gates a launch or a close, and at most 25 s for a status
+read. It fails closed only if every attempt fails. A row without a path is first read from
+the process itself, bound to the row by its creation time.
+
+After a member launch, the driver waits up to 90 s for that MT5's identity; a stalled
+query or a row without its path is "not seen yet". If the wait still runs out, the member
+becomes `reconcile_required` ("Terminal startup identity not observed"). `seed-resume`
+and `seed-reconcile` in the demo lane (never `seed-status`, and never without the
+terminal lock) then adopt the running MT5 as that member's own launch only when, read
+now, it is the only uncertain member, with no batch-level doubt; the MT5 runs this
+installation's `terminal64.exe` and was created inside the member's launch window; its
+command line names the member's own `/config:` INI and no other terminal64 does; and the
+INI still has the digest the batch recorded. The member then records `reidentified` and
+is collected as usual. Otherwise it stays `reconcile_required` with `reidentify.reason`.
+
+The batch-level doubt "Unowned selected-terminal process appeared between seed members"
+means an MT5 started by someone else ran between members. Typical causes are a person
+reopening MT5, or `demo launch-terminal` during a batch; don't do either, because the
+driver owns the reopen. `seed-reconcile` or `seed-resume` settles the doubt, never a `seed-status` read, once
+two things hold, re-inspected now:
+- the selected MT5 is closed again;
+- no MT5 anywhere runs a member's INI or alias.
+
+Settling records `unowned_settled` (`prior_error`, `basis`, `stray_members`). A pending
+member that already has output of its own becomes `failed` ("Output present before its
+start") and is never collected. The batch becomes `stopped` with `stopped_reason`
+`unowned_settled`, so only the start-grade re-activation (the next `seed-resume`, with
+MT5 open on the GOAT monitor) continues the pending members. Nothing is re-run. While
+that MT5 stays open, the doubt stays, and `seed-reconcile` says to close it.
 
 When MT5 is open again (for example a person reopened it on the GOAT monitor),
 `seed-reconcile --batch-id <id>` (`catchup-reconcile --catchup-id <id>`) settles such

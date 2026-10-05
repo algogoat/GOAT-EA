@@ -5,7 +5,7 @@ terminal lock and action log. A broker-reported demo account is required before
 every operation that can change the selected terminal or its files.
 """
 import argparse
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -96,6 +96,8 @@ class DemoAgent:
         self.session = read_json(self.root / 'session.json')
         self.local = Path(self.install['terminal_data_root']) / 'MQL5/Files/GOATStudio'
         self.state_root = self.root / 'demo-agent'
+        import studio_process_query
+        studio_process_query.configure(self.state_root / 'process-query.jsonl')   # failed WMI attempts (goatai#1885)
         self.process = process or WindowsSeedProcess(self)
         self.mt5 = mt5
         self.clock = clock
@@ -1485,7 +1487,17 @@ class DemoAgent:
                          member_count=member_count, configuration_sha256=observed['configuration_sha256'])
             return dict(result, member_count=member_count)
 
-    def _worker_alive(self, record):
+    def _worker_alive(self, record, *, quick=False, retire=False):
+        """Is this detached worker alive? ``quick`` bounds the Windows queries for status reads (Claude-Mac, #1885).
+
+        A launch with no started receipt is decided from its task's own state. A task still running or queued, or
+        one that ran since its envelope, may yet start a driver: never duplicate. A task that provably never ran
+        (studio_durable_driver.never_started) is not a driver. With ``retire`` (a new start, under the terminal
+        lock) that task is first removed and confirmed gone and ``launch_never_started`` is recorded, so a late
+        start beside the retry is impossible; without it the answer is the same, with no effect.
+        """
+        from studio_process_query import POLL_BUDGET
+        budget = POLL_BUDGET if quick else None
         envelope_path = record.get('launch_envelope')
         if envelope_path:
             envelope = read_json(envelope_path)
@@ -1496,7 +1508,22 @@ class DemoAgent:
                 return False
             started = Path(envelope['started'])
             if not started.is_file():
-                raise ValueError('Persistent driver launch unresolved; inspect its existing task, never duplicate')
+                from studio_durable_driver import never_started, task_info, unregister_task
+                try:
+                    info = task_info(envelope.get('task_name'), budget=budget)
+                except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                    raise ValueError('Persistent driver launch unresolved and its task cannot be read (' + str(exc)
+                                     + '); inspect its existing task, never duplicate') from exc
+                created = datetime.fromtimestamp(Path(envelope_path).stat().st_mtime, timezone.utc)
+                if not never_started(info, created):
+                    raise ValueError('Persistent driver launch unresolved (its task is ' + str(info.get('state'))
+                                     + ', last result ' + str(info.get('last_result')) + '); wait for it, never duplicate')
+                if retire:
+                    if info['exists']:
+                        unregister_task(envelope['task_name'])
+                    self._append('detached_driver', 'launch_never_started', batch_id=record.get('batch_id'), kind=record.get('kind'),
+                                 nonce=record.get('nonce'), launch_envelope=str(envelope_path), task=info)
+                return False
             native = read_json(started)
             if native.get('nonce') != record.get('nonce'):
                 raise ValueError('Persistent driver bootstrap identity changed')
@@ -1509,9 +1536,8 @@ class DemoAgent:
                   'Get-CimInstance Win32_Process -Filter "ProcessId = ' + str(pid) +
                   '" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress')
         try:
-            raw = subprocess.check_output(['powershell', '-NoProfile', '-Command', script],
-                                          text=True, encoding='utf-8-sig', timeout=10,
-                                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).strip()
+            from studio_process_query import powershell_text
+            raw = powershell_text(script, purpose='detached driver liveness', timeout=10, budget=budget).strip()
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             raise ValueError('Cannot verify detached driver process; no duplicate launch') from exc
         row = json.loads(raw) if raw else None
@@ -1553,8 +1579,11 @@ class DemoAgent:
                 job = controller.job(batch_id)
                 if job['status'] != 'pending' or 'launch_intent' in job:
                     raise ValueError('Only the exact unstarted prepared batch can be launched')
-            if worker_path.is_file() and self._worker_alive(read_json(worker_path)):
-                return dict(status='already_supervising', worker=read_json(worker_path))
+            if worker_path.is_file():
+                prior = read_json(worker_path)
+                # Under the terminal lock: a launch that provably never ran is retired (its task removed) first.
+                if self._worker_alive(prior, retire=True):
+                    return dict(status='already_supervising', worker=prior)
             nonce = secrets.token_hex(16)
             worker = dict(schema_version=1, batch_id=batch_id, nonce=nonce,
                           status='reserved', resume=resume, max_seconds=max_seconds,
@@ -1587,12 +1616,24 @@ class DemoAgent:
                         child = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
                             stdout=log, stderr=subprocess.STDOUT, close_fds=True,
                             creationflags=flags)
-            except OSError as exc:
-                worker.update(status='spawn_failed', error=str(exc))
-                write_json(worker_path, worker)
-                raise ValueError('Detached batch driver did not start; no native dispatch') from exc
-            worker.update(status='spawned', pid=child.pid, log=str(log_path))
-            write_json(worker_path, worker)
+            except (OSError, ValueError) as exc:
+                # Re-read: the durable host may already have retained its launch envelope, which must survive
+                # so no retry can register a second task while the first may still start (Codex P1, #162).
+                current = read_json(worker_path) if worker_path.is_file() else dict(worker)
+                unresolved = bool(current.get('launch_envelope'))
+                current.update(status='launch_unconfirmed' if unresolved else 'spawn_failed', error=str(exc))
+                write_json(worker_path, current)
+                self._append('studio_run_batch', current['status'], batch_id=batch_id, nonce=nonce, error=str(exc))
+                if unresolved:
+                    raise ValueError('Detached batch driver launch unconfirmed (' + str(exc) + '). Run batch-driver-status: it '
+                                     'reports the driver once its task starts, and allows the same run-batch again only when '
+                                     'Windows shows the task never ran. Never start another by hand.') from exc
+                raise ValueError('Detached batch driver did not start (' + str(exc) + '); no native dispatch') from exc
+            current = read_json(worker_path)
+            if current.get('status') == 'reserved' and current.get('nonce') == nonce:
+                current.update(status='spawned', pid=child.pid, log=str(log_path))
+                write_json(worker_path, current)
+            worker = current
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             if journal.is_file():
@@ -1613,18 +1654,41 @@ class DemoAgent:
     def resume_batch(self, batch_id):
         return self._spawn_driver(batch_id, resume=True)
 
+    # Longer than the caller can hold the terminal lock through a launch (registration 30 s plus the
+    # 60 s started wait in studio_durable_driver), so a slow PowerShell never fails the worker silently.
+    DRIVER_LOCK_WAIT_SECONDS = 120
+
+    def _mark_worker_failed(self, worker_path, nonce, error):
+        """Record why a detached worker never drove; only its own still-unstarted reservation is touched."""
+        try:
+            record = read_json(worker_path)
+        except (OSError, ValueError):
+            return
+        if record.get('nonce') == nonce and record.get('status') in ('reserved', 'spawned'):
+            record.update(status='failed', error=str(error)[:2000])
+            write_json(worker_path, record)
+
     def _drive_batch(self, batch_id, nonce, max_seconds, pause_seconds=None):
         from studio_batch_driver import run
         worker_path = self.state_root / 'workers' / (batch_id + '.json')
-        worker = read_json(worker_path)
-        if worker.get('nonce') != nonce or worker.get('batch_id') != batch_id:
-            raise ValueError('Detached worker identity changed')
-        resume = worker['resume']
-        if (max_seconds != worker.get('max_seconds') or pause_seconds != worker.get('pause_seconds')
-                or worker.get('status') not in ('reserved', 'spawned')):
-            raise ValueError('Detached worker budget or launch state changed')
-        with self._exclusive(wait_seconds=20), self._studio('run-batch', idle=not resume,
-                owner_required=not resume, job_id=batch_id) as (controller, broker):
+        with ExitStack() as stack:
+            # The lock first, then the reservation (goatai#1885 PR D): a retried run-batch replaces the reservation
+            # under this same lock, so a late older task can never drive on a record it read before the lock.
+            try:
+                stack.enter_context(self._exclusive(wait_seconds=self.DRIVER_LOCK_WAIT_SECONDS))
+            except ValueError as exc:
+                self._mark_worker_failed(worker_path, nonce, 'The terminal lock stayed busy for '
+                                         + str(self.DRIVER_LOCK_WAIT_SECONDS) + ' s; the driver did not start: ' + str(exc))
+                raise
+            worker = read_json(worker_path)
+            if worker.get('nonce') != nonce or worker.get('batch_id') != batch_id:
+                raise ValueError('Detached worker identity changed')
+            resume = worker['resume']
+            if (max_seconds != worker.get('max_seconds') or pause_seconds != worker.get('pause_seconds')
+                    or worker.get('status') not in ('reserved', 'spawned')):
+                raise ValueError('Detached worker budget or launch state changed')
+            controller, broker = stack.enter_context(self._studio('run-batch', idle=not resume,
+                                                                  owner_required=not resume, job_id=batch_id))
             worker.update(status='supervising', pid=os.getpid())
             write_json(worker_path, worker)
             self._append('studio_run_batch', 'supervising', batch_id=batch_id,
@@ -1638,10 +1702,30 @@ class DemoAgent:
                          status=result['status'], attempt_id=result.get('attempt_id'))
             return result
 
+    def _batch_worker(self, batch_id):
+        """Read-only: the detached worker record of a batch and whether it is alive now (an unresolved launch is
+        resolved from its task's own state: a task that never ran is not alive, so the same run-batch may run again)."""
+        path = self.state_root / 'workers' / (batch_id + '.json')
+        if not path.is_file():
+            return None
+        record = read_json(path)
+        try:
+            alive = self._worker_alive(record, quick=True)
+        except ValueError as exc:
+            alive = 'unknown: ' + str(exc)
+        never_started = False
+        if alive is False and record.get('launch_envelope'):
+            try:
+                envelope = read_json(record['launch_envelope'])
+                never_started = not Path(envelope['started']).is_file() and not Path(envelope['finished']).is_file()
+            except (OSError, ValueError, KeyError):
+                never_started = False
+        return dict(record, alive=alive, launch_never_started=never_started)
+
     def batch_driver_status(self, batch_id):
         from studio_batch_driver import status
         with self._studio('batch-driver-status', idle=False, owner_required=False, job_id=batch_id) as (controller, broker):
-            return dict(broker=broker, driver=status(controller, batch_id))
+            return dict(broker=broker, driver=status(controller, batch_id), worker=self._batch_worker(batch_id))
 
     def batch_status(self, batch_id):
         from studio_batch import batch_status
@@ -2052,6 +2136,16 @@ class DemoAgent:
         from studio_seed import SeedRunner
         return SeedRunner(controller, process=self.process, clock=self.clock, sleep=self.sleep)
 
+    def _reidentifying(self, runner, kind, phase, batch_id):
+        """Only under the terminal lock (the caller holds _exclusive()): the runner may re-identify a member MT5
+        whose launch was never confirmed (studio_seed._reidentify), and each adoption is an actions row."""
+        def journal(alias, record):
+            self._append(kind + '_' + phase, 'reidentified', batch_id=batch_id, alias=alias, process=record.get('process'),
+                         prior_error=record.get('prior_error'), config_sha256=record.get('config_sha256'),
+                         basis=record.get('basis'))
+        runner.reidentify_journal = journal
+        return runner
+
     @contextmanager
     def _seed_scope(self, operation_name, batch_id, kind='seed'):
         """Policy scope for observing, cancelling or continuing a demo seed batch.
@@ -2311,7 +2405,7 @@ class DemoAgent:
         with (nullcontext() if locked else self._exclusive()), self._studio(kind + '-resume', idle=True, job_id=batch_id) as (controller, broker):
             self._seed_unoccupied(kind, exclude=exclude_worker)
             record = self._seed_start_record(batch_id, kind)
-            runner = self._seed_runner(controller, kind)
+            runner = self._reidentifying(self._seed_runner(controller, kind), kind, 'resume', batch_id)
             current = runner.status(batch_id)
             if current['manifest_sha256'] != record['manifest_sha256']:
                 raise ValueError(lane['title'] + ' state differs from its broker-verified start record')
@@ -2330,7 +2424,7 @@ class DemoAgent:
         if self._seed_resumable_stopped(batch_id, kind):
             return self._lane_reactivate(kind, batch_id, max_seconds, locked=locked, exclude_worker=exclude_worker)
         with (nullcontext() if locked else self._exclusive()), self._seed_scope(kind + '-resume', batch_id, kind) as (controller, evidence):
-            runner = self._seed_runner(controller, kind)
+            runner = self._reidentifying(self._seed_runner(controller, kind), kind, 'resume', batch_id)
             current = runner.status(batch_id)
             if current['status'] == 'prepared':
                 raise ValueError(lane['title'] + ' batch has no native effect yet; use ' + kind + '-start with a fresh broker check')
@@ -2348,8 +2442,17 @@ class DemoAgent:
                          broker=evidence['broker'], retained_start=evidence['broker'] is None)
             # A batch that ended while MT5 stayed closed (including a member reconciled from its
             # retained output) also reopens here: seed-resume is the one-step recovery.
-            return self._reopen_after_lane(kind, batch_id,
-                                           self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind))
+            since = self.clock()
+            result = self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind)
+            self._log_unowned_settled(kind, 'resume', batch_id, result, since)
+            return self._reopen_after_lane(kind, batch_id, result)
+
+    def _log_unowned_settled(self, kind, phase, batch_id, result, since):
+        """Audit row when this call (under the terminal lock) settled an unowned-process doubt (Claude-Mac, #1885)."""
+        settled = (result or {}).get('unowned_settled') if isinstance(result, dict) else None
+        if isinstance(settled, dict) and type(settled.get('unix')) in (int, float) and settled['unix'] >= since:
+            self._append(kind + '_' + phase, 'unowned_settled', batch_id=batch_id, prior_error=settled.get('prior_error'),
+                         stray_members=settled.get('stray_members'), status=result.get('status'))
 
     def seed_resume(self, batch_id, max_seconds, *, detach=False):
         return self._lane_resume('seed', batch_id, max_seconds, detach=detach)
@@ -2394,9 +2497,11 @@ class DemoAgent:
             broker = evidence['broker']
             if broker is not None and broker.get('process') != self.process.inspect():
                 raise ValueError('The selected MT5 changed during the broker check; nothing was settled')
-            result = self._seed_runner(controller, kind).reconcile(batch_id)
+            since = self.clock()
+            result = self._reidentifying(self._seed_runner(controller, kind), kind, 'reconcile', batch_id).reconcile(batch_id)
             self._append(kind + '_reconcile', 'settled' if result.get('settled') else 'unsettled', batch_id=batch_id,
                          status=result['status'], reasons=result.get('reasons'), broker=broker)
+            self._log_unowned_settled(kind, 'reconcile', batch_id, result, since)
             return result
 
     def seed_reconcile(self, batch_id):

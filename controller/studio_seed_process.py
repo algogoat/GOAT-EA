@@ -1,8 +1,12 @@
 """Normal close/start of exactly the selected Windows MT5 process. No force kill."""
+from datetime import datetime, timezone
 import json
 from pathlib import Path, PureWindowsPath
+import re
 import subprocess
 import time
+
+from studio_process_query import powershell_text
 
 
 UNKNOWN_EXECUTABLE='Unknown terminal executable; inspect ownership first'
@@ -11,20 +15,93 @@ UNKNOWN_EXECUTABLE='Unknown terminal executable; inspect ownership first'
 # re-read, never assumed: only a path still missing after this window refuses.
 UNKNOWN_SETTLE_SECONDS=10
 UNKNOWN_RETRY_SECONDS=.5
+# How long start() waits for the identity of the MT5 it just launched. WMI stalls cluster at an MT5
+# launch (T2, 2026-10-05 13:43Z): inside this window a stalled or erroring inventory, or a row still
+# without its path, is "not seen yet". A wrong PID, two processes or an exit refuse at once.
+STARTUP_IDENTITY_SECONDS=90
+STARTUP_POLL_SECONDS=.1
+STARTUP_UNSEEN='Terminal startup identity not observed'
+PROCESS_QUERY_LIMITED_INFORMATION=0x1000
+_EPOCH_1601=datetime(1601,1,1,tzinfo=timezone.utc)
+
+
+def created_ticks(created_utc):
+    """100 ns ticks since 1601 of an inventory CreatedUtc, at the microsecond WMI reports; None if unreadable."""
+    match=re.fullmatch(r'(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(?:Z|\+00:00)',str(created_utc or ''))
+    if not match:return None
+    try:base=datetime.strptime(match[1],'%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc)
+    except ValueError:return None
+    delta=base-_EPOCH_1601
+    return (delta.days*86400+delta.seconds)*10_000_000+int((match[2] or '0')[:6].ljust(6,'0'))*10
+
+
+def created_unix(created_utc):
+    """Unix seconds of an inventory CreatedUtc, or None if unreadable."""
+    ticks=created_ticks(created_utc)
+    return None if ticks is None else ticks/10_000_000-(datetime(1970,1,1,tzinfo=timezone.utc)-_EPOCH_1601).total_seconds()
+
+
+def process_image_path(pid,created_utc):
+    """The image path of one process read from the process itself (no WMI), or None when it is not provable.
+
+    ``OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`` then ``QueryFullProcessImageNameW``; the handle is bound to
+    the inventory row by its creation time (``GetProcessTimes`` on the same handle), so a reused PID is never read
+    as that row. A denied open, another process or any failed call is None: no proof, never a guess.
+    """
+    expected=created_ticks(created_utc)
+    if type(pid) is not int or pid<=0 or expected is None:return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    except (ImportError,OSError,AttributeError):
+        return None
+    kernel.OpenProcess.restype=wintypes.HANDLE
+    kernel.OpenProcess.argtypes=(wintypes.DWORD,wintypes.BOOL,wintypes.DWORD)
+    kernel.GetProcessTimes.restype=wintypes.BOOL
+    kernel.GetProcessTimes.argtypes=(wintypes.HANDLE,)+(ctypes.POINTER(wintypes.FILETIME),)*4
+    kernel.QueryFullProcessImageNameW.restype=wintypes.BOOL
+    kernel.QueryFullProcessImageNameW.argtypes=(wintypes.HANDLE,wintypes.DWORD,wintypes.LPWSTR,ctypes.POINTER(wintypes.DWORD))
+    kernel.CloseHandle.argtypes=(wintypes.HANDLE,)
+    handle=kernel.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,False,pid)
+    if not handle:return None
+    try:
+        times=[wintypes.FILETIME() for _ in range(4)]
+        if not kernel.GetProcessTimes(handle,*[ctypes.byref(item) for item in times]):return None
+        created=(times[0].dwHighDateTime<<32)|times[0].dwLowDateTime
+        if created-created%10!=expected:return None
+        size=wintypes.DWORD(32768);buffer=ctypes.create_unicode_buffer(size.value)
+        if not kernel.QueryFullProcessImageNameW(handle,0,buffer,ctypes.byref(size)):return None
+        return buffer.value or None
+    finally:
+        kernel.CloseHandle(handle)
 
 
 class WindowsSeedProcess:
     def __init__(self,controller,*,sleep=time.sleep,monotonic=time.monotonic):
         self.controller=controller;self.sleep=sleep;self.monotonic=monotonic
 
-    def _rows(self,timeout):
+    def _rows(self,timeout,budget=None):
         command='[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter "Name=\'terminal64.exe\'" | Select-Object ProcessId,ExecutablePath,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
-        return json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=timeout,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
+        return json.loads(powershell_text(command,purpose='selected terminal inventory',timeout=timeout,budget=budget))
 
-    def inspect(self,timeout=20):
-        deadline=self.monotonic()+UNKNOWN_SETTLE_SECONDS
+    def image_path(self,row):
+        """Fill a row WMI listed without ExecutablePath from the process itself (bound by its creation time), else None."""
+        return process_image_path(row.get('ProcessId'),row.get('CreatedUtc'))
+
+    def inspect(self,timeout=20,budget=None):
+        """The selected MT5 or None. ``budget`` bounds the whole inspection for a caller with its own deadline."""
+        started=self.monotonic()
+        end=None if budget is None else started+budget
+        deadline=started+UNKNOWN_SETTLE_SECONDS if end is None else min(started+UNKNOWN_SETTLE_SECONDS,end)
         while True:
-            rows=self._rows(timeout)
+            rows=self._rows(timeout,None if end is None else max(.1,end-self.monotonic()))
+            for row in rows:
+                # WMI leaves the path empty when it cannot open the process with full query rights. Read it
+                # from the process itself before refusing; an unreadable process stays unknown.
+                if not row.get('ExecutablePath'):
+                    filled=self.image_path(row)
+                    if filled:row['ExecutablePath']=filled
             if all(row.get('ExecutablePath') for row in rows):break
             # A transient missing path: re-read the whole inventory; never guess the row's owner.
             if self.monotonic()>=deadline:raise ValueError(UNKNOWN_EXECUTABLE)
@@ -42,7 +119,7 @@ class WindowsSeedProcess:
         if not isinstance(identity,dict) or type(identity.get('pid')) is not int:raise ValueError('Exact process identity required')
         command=('[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter "ProcessId='
                  +str(identity['pid'])+'" | Select-Object ProcessId,ExecutablePath,CommandLine,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})')
-        rows=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=timeout,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
+        rows=json.loads(powershell_text(command,purpose='selected terminal command line',timeout=timeout))
         if (len(rows)!=1 or rows[0].get('ProcessId')!=identity['pid'] or not rows[0].get('ExecutablePath')
                 or PureWindowsPath(rows[0]['ExecutablePath'])!=PureWindowsPath(identity.get('executable') or '')
                 or rows[0].get('CreatedUtc')!=identity.get('created_utc')):
@@ -60,7 +137,7 @@ class WindowsSeedProcess:
         folded=[str(name).casefold() for name in names if name]
         deadline=self.monotonic()+UNKNOWN_SETTLE_SECONDS
         while True:
-            rows=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=timeout,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
+            rows=json.loads(powershell_text(command,purpose='terminal64 command lines',timeout=timeout))
             if all(row.get('CommandLine') for row in rows):break
             if self.monotonic()>=deadline:raise ValueError('A terminal64 command line cannot be read; inspect ownership first')
             self.sleep(UNKNOWN_RETRY_SECONDS)
@@ -119,12 +196,22 @@ try {
         if install.get('terminal_portable',False):args.append('/portable')
         args.append('/config:'+str(Path(config).resolve()))
         child=subprocess.Popen(args,cwd=str(Path(install['terminal_executable']).parent),stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-        deadline=time.monotonic()+20
-        while time.monotonic()<deadline:
-            actual=self.inspect(timeout=max(.1,deadline-time.monotonic()))
+        deadline=self.monotonic()+STARTUP_IDENTITY_SECONDS;unseen=[]
+        while True:
+            remaining=deadline-self.monotonic()
+            if remaining<=0:break
+            try:
+                # The startup deadline also bounds each inventory and its WMI stall retry.
+                actual=self.inspect(timeout=max(.1,min(20,remaining)),budget=max(.1,remaining))
+            except (subprocess.TimeoutExpired,subprocess.CalledProcessError) as exc:
+                actual=None;unseen.append('the inventory '+('timed out' if isinstance(exc,subprocess.TimeoutExpired) else 'failed'))
+            except ValueError as exc:
+                if str(exc)!=UNKNOWN_EXECUTABLE:raise              # two processes, a missing identity: refuse at once
+                actual=None;unseen.append('a terminal64 row had no path')
             if actual:
                 if actual['pid']!=child.pid:raise ValueError('Started terminal PID differs; no further action')
                 return actual
             if child.poll() is not None:raise ValueError('Terminal exited before startup identity was observed')
-            time.sleep(.1)
-        raise ValueError('Terminal startup identity not observed; inspect before recovery')
+            self.sleep(STARTUP_POLL_SECONDS)
+        why=' ('+'; '.join(sorted(set(unseen)))+')' if unseen else ''
+        raise ValueError(STARTUP_UNSEEN+' in %d s%s; inspect before recovery'%(STARTUP_IDENTITY_SECONDS,why))

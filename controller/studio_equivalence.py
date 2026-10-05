@@ -455,10 +455,25 @@ def resolve_build(repo, *, ea_sha256=None, build_id=None, commit=None, main=DEFA
             if mismatched:
                 notes.append('%s: compile source %s differs from the identity for %s' % (item['path'], head[:12], ', '.join(mismatched[:5])))
                 continue
-            return base | dict(status='resolved', provenance='candidate_identity', identity_path=item['path'], commit=source.commit,
-                               source=source, label=source.label, build_id=identity.get('build_id') or build_id, notes=notes,
-                               compiler_sha256=item['receipt'].get('compiler_sha256'),
-                               externals_sha256=identity.get('externals_sha256') if isinstance(identity.get('externals_sha256'), dict) else None)
+            build = base | dict(status='resolved', provenance='candidate_identity', identity_path=item['path'], commit=source.commit,
+                                source=source, label=source.label, build_id=identity.get('build_id') or build_id, notes=notes,
+                                compiler_sha256=item['receipt'].get('compiler_sha256'),
+                                externals_sha256=identity.get('externals_sha256') if isinstance(identity.get('externals_sha256'), dict) else None)
+            # The build's externals manifest (candidate-builds/<build>/externals.json), bound to this binary,
+            # compile commit and compiler; one that does not verify is ignored (the certificate then fails closed).
+            # It counts only when the compile receipt binds it (externals_manifest_digest; Claude-Mac, #157 answer 7).
+            manifest = Path(item['path']).parent / EXTERNALS_FILE
+            if manifest.is_file():
+                try:
+                    record = load_externals_manifest(manifest, binary_sha256=ea_sha256, source_head=head,
+                                                     compiler_sha256=item['receipt'].get('compiler_sha256'))
+                    bound = item['receipt'].get('externals_manifest_digest')
+                    if bound != record['digest']:
+                        raise ValueError('%s is not bound by its compile receipt (externals_manifest_digest %s)' % (manifest, bound))
+                    apply_externals_manifest(build, record, manifest)
+                except (OSError, ValueError) as exc:
+                    notes.append(str(exc))
+            return build
         introduced = _commits_introducing_blob(repo, _ex5_for(main), ea_sha256)
         if introduced:
             sources = [GitSource(repo, c) for c in introduced]
@@ -518,7 +533,7 @@ def _guard_hits(lines):
 
 def _public_build(build, tree, allowlist):
     keep = ('status', 'provenance', 'ea_sha256', 'build_id', 'commit', 'commits', 'identity_path', 'label', 'reason', 'notes', 'main',
-            'compiler_sha256', 'externals_sha256')
+            'compiler_sha256', 'externals_sha256', 'externals_manifest')
     value = {k: build[k] for k in keep if build.get(k) is not None}
     if tree:
         value.update(closure_sha256=tree['closure_sha256'], input_header_sha256=tree['input_header_sha256'],
@@ -534,14 +549,22 @@ def hashed_externals(externals):
 
 
 def _include_closure(root, rel, seen):
+    """Hash a standard-library include, every file it includes and every #resource it embeds
+    (e.g. ControlsPlus\\res\\*.bmp), recursively."""
     path = root / rel
     if rel.lower() in seen or not path.is_file():
         return
     seen[rel.lower()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    if not rel.lower().endswith(TEXT_SUFFIXES):
+        return
     code = strip_comments(decode(path.read_bytes()))
     for local, system in _INCLUDE.findall(code):
         child = ('Include/' + system) if system else str(PurePosixPath(rel).parent / local)
         _include_closure(root, child.replace('\\', '/'), seen)
+    for literal in _RESOURCE.findall(code):
+        target = _unescape(literal).replace('\\', '/')
+        child = target.lstrip('/') if target.startswith('/') else str(PurePosixPath(rel).parent / target)
+        _include_closure(root, child, seen)
 
 
 def hash_externals(mql5_root, externals, *, expert_dir='Experts/GOAT-EA'):
@@ -575,7 +598,258 @@ def hash_externals(mql5_root, externals, *, expert_dir='Experts/GOAT-EA'):
     return result
 
 
-def certificate(export_build, installed_build, *, allowlist=None):
+# ---- build externals manifest (fingerprints a candidate compile) ---------------------------
+EXTERNALS_SCHEMA = 'goat-build-externals-v1'
+EXTERNALS_FILE = 'externals.json'
+# An unversioned resource the compiler never embedded (e.g. MTTester's RunMe.ex5 under an undefined
+# #ifdef RUNEX5_SILENT). Accepted only from a manifest whose compile log proves it was not read.
+NOT_CONSUMED = 'not-consumed (compile log)'
+_LOG_INCLUDE = re.compile(r'^(?P<src>.+?) : information: including (?P<path>.+)$')
+_LOG_RESOURCE = re.compile(r"^(?P<path>.+?) : information: resource '(?P<name>[^']*)' as (?P<target>.+)$")
+
+
+def _file_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def read_compile_log(path):
+    """(included files, embedded resources, compiling line, result line) from a MetaEditor log."""
+    raw = Path(path).read_bytes()
+    if not raw.startswith((b'\xff\xfe', b'\xfe\xff')) and raw[1:2] == b'\x00':
+        raw = b'\xff\xfe' + raw
+    text = re.sub(r'information: including[ \t]*\r?\n', 'information: including ', decode(raw))
+    includes, resources, compiling, result = [], [], None, None
+    for line in text.splitlines():
+        line = line.strip()
+        m = _LOG_INCLUDE.match(line)
+        if m:
+            includes.append(m.group('path').strip())
+            continue
+        m = _LOG_RESOURCE.match(line)
+        if m:
+            resources.append(m.group('path').strip())
+            continue
+        if ': information: compiling ' in line:
+            compiling = line.split(': information: compiling ', 1)[1].strip()
+        if line.startswith('Result:'):
+            result = line
+    return includes, resources, compiling, result
+
+
+def _under(path, root):
+    """``path`` relative to ``root`` (forward slashes), case-insensitively, or None."""
+    p, r = path.replace('/', '\\').rstrip('\\'), str(root).replace('/', '\\').rstrip('\\')
+    if p.lower().startswith(r.lower() + '\\'):
+        return p[len(r) + 1:].replace('\\', '/')
+    return None
+
+
+def externals_manifest(mql5_root, compile_log, stage, *, binary, identity, receipt, compiler=None, main=DEFAULT_MAIN,
+                       log_stage=None, log_mql5_root=None, repo=None):
+    """The externals a candidate compile actually used, from its MetaEditor log and its MQL5 tree.
+
+    ``consumed`` hashes every include and resource the compiler read outside the staged EA
+    source (standard library and ControlsPlus includes with nested includes, their bitmap
+    resources, the MACD indicator ...). ``externals_sha256`` holds the same per-name hashes the
+    certificate uses (``hash_externals`` over the staged source closure), so the certificate can
+    consume the manifest directly. Every check that fails is listed in ``problems``; a manifest
+    with problems is never used by a certificate."""
+    problems, notes = [], []
+    identity_record = json.loads(Path(identity).read_text(encoding='utf-8-sig'))
+    receipt_record = json.loads(Path(receipt).read_text(encoding='utf-8-sig'))
+    includes, resources, compiling, result = read_compile_log(compile_log)
+    log_root, log_stage = log_mql5_root or str(mql5_root), log_stage or str(stage)
+    consumed, stage_files, outside = {}, {}, []
+    for kind, paths in (('include', includes), ('resource', resources)):
+        for path in paths:
+            rel = _under(path, log_stage)
+            if rel is not None:
+                staged = Path(stage) / rel
+                stage_files[rel] = _file_sha256(staged) if staged.is_file() else None
+                continue
+            rel = _under(path, log_root)
+            if rel is None:
+                outside.append(path)
+                continue
+            local = Path(mql5_root) / rel
+            consumed[rel] = _file_sha256(local) if local.is_file() else None
+            if consumed[rel] is None:
+                problems.append('the compile read %s, which is no longer in the MQL5 tree' % rel)
+    if outside:
+        problems.append('the compile log names files outside the MQL5 root and the stage: %s' % outside[:5])
+    if not compiling or _under(compiling, log_stage) != main:
+        problems.append('the compile log does not compile %s from the stage (%s)' % (main, compiling))
+    if not result or not re.match(r'Result: 0 errors?,', result):
+        problems.append('the compile log has no clean result line (%s)' % result)
+    sources = identity_record.get('sources') or {}
+    if not sources:
+        problems.append('the identity lists no source hashes')
+    for rel, expected in sorted(sources.items()):
+        staged = Path(stage) / rel
+        if not staged.is_file() or _file_sha256(staged) != expected:
+            problems.append('staged %s differs from the identity' % rel)
+    for rel, sha in sorted(stage_files.items()):
+        if sha is None:
+            problems.append('the compile read staged %s, which is not in the stage folder' % rel)
+        elif rel in sources and sources[rel] != sha:
+            problems.append('staged %s read by the compile differs from the identity' % rel)
+    unlisted = sorted(rel for rel in stage_files if rel not in sources)
+    staged_resources = {}
+    if unlisted and repo:
+        # Staged files the identity does not list (the PNG resources): checked against the compile commit itself.
+        source = GitSource(repo, receipt_record.get('source_head') or 'HEAD')
+        for rel in unlisted:
+            found = source.names().get(rel.lower())
+            git_sha = hashlib.sha256(source.read(found)).hexdigest() if found else None
+            if git_sha != stage_files[rel]:
+                problems.append('staged %s differs from the compile commit' % rel)
+            staged_resources[rel] = stage_files[rel]
+    elif unlisted:
+        problems.append('the compile read staged files the identity does not list (give the repo to check them): %s' % unlisted[:5])
+    binary_sha = _file_sha256(binary)
+    if binary_sha != (identity_record.get('binary') or {}).get('sha256') or binary_sha != (receipt_record.get('output') or {}).get('sha256'):
+        problems.append('binary %s is not the identity/receipt binary' % binary_sha[:12])
+    compiler_sha = _file_sha256(compiler) if compiler else None
+    if not receipt_record.get('compiler_sha256'):
+        problems.append('the compile receipt has no compiler_sha256')
+    elif compiler_sha and compiler_sha != receipt_record['compiler_sha256']:
+        problems.append('compiler %s is not the receipt compiler' % compiler_sha[:12])
+    if not compiler_sha:
+        notes.append('compiler binary not re-hashed; compiler_sha256 is the receipt value')
+    tree = closure(DirSource(stage), main)
+    by_name = hash_externals(mql5_root, tree['externals'])
+    consumed_names = {PurePosixPath(rel).name.lower() for rel in list(consumed) + list(stage_files)}
+    for name in hashed_externals(tree['externals']):
+        if name in by_name:
+            continue
+        kind, _, target = name.partition(':')
+        if kind.endswith('-unversioned') and PurePosixPath(target.replace('\\', '/')).name.lower() not in consumed_names:
+            by_name[name] = NOT_CONSUMED
+            notes.append('%s: inside a conditional the compiler did not take; the log shows it was never read' % name)
+        else:
+            problems.append('no hash for external %s' % name)
+    # Every file the compiler read must be covered by a per-name hash (or be staged source).
+    covered = set()
+    for name in hashed_externals(tree['externals']):
+        kind, _, target = name.partition(':')
+        if kind == 'include':
+            seen = {}
+            _include_closure(Path(mql5_root), 'Include/' + target.strip('<>').replace('\\', '/'), seen)
+            covered.update(seen)
+        elif kind == 'resource':
+            covered.add(target.replace('\\', '/').lstrip('/').lower())
+    uncovered = sorted(rel for rel in consumed if rel.lower() not in covered)
+    if uncovered:
+        problems.append('files the compiler read that no per-name external hash covers: %s' % uncovered[:8])
+    started = receipt_record.get('compile_started_at')
+    if started:
+        stamp = re.match(r'(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?(Z|[+-]\d\d:\d\d)?$', started)
+        if not stamp:
+            raise ValueError('Unreadable compile_started_at: ' + started)
+        zone = stamp.group(3) if stamp.group(3) not in (None, 'Z') else '+00:00'
+        moment = datetime.fromisoformat(stamp.group(1) + (stamp.group(2) or '')[:7] + zone)
+        later = sorted(rel for rel in consumed if (Path(mql5_root) / rel).is_file()
+                       and datetime.fromtimestamp((Path(mql5_root) / rel).stat().st_mtime, timezone.utc) > moment)
+        if later:
+            problems.append('external files modified after the compile started: %s' % later[:5])
+    else:
+        notes.append('the receipt has no compile_started_at; file times not checked')
+    body = dict(schema=EXTERNALS_SCHEMA, build_id=identity_record.get('build_id'), binary_sha256=binary_sha,
+                source_head=receipt_record.get('source_head'), compiler_sha256=receipt_record.get('compiler_sha256'),
+                compiler_file_sha256=compiler_sha, compiler_version=receipt_record.get('compiler_version'),
+                compile_log_sha256=_file_sha256(compile_log), compile_result=result, main=main,
+                externals_sha256=dict(sorted(by_name.items())), consumed=dict(sorted(consumed.items())),
+                consumed_sha256=digest_of(dict(sorted(consumed.items()))), stage_files_verified=len(stage_files),
+                staged_resources_checked_against_git=staged_resources,
+                problems=problems, notes=notes)
+    return body | dict(digest=digest_of(body), created_utc=_now())
+
+
+def load_externals_manifest(path, *, binary_sha256=None, source_head=None, compiler_sha256=None):
+    """A stored manifest, verified against its digest and the build it claims (fail closed)."""
+    record = json.loads(Path(path).read_text(encoding='utf-8-sig'))
+    body = {k: v for k, v in record.items() if k not in ('digest', 'created_utc')}
+    if record.get('schema') != EXTERNALS_SCHEMA or digest_of(body) != record.get('digest'):
+        raise ValueError('Externals manifest digest does not match its contents: ' + str(path))
+    if record.get('problems'):
+        raise ValueError('Externals manifest %s records problems: %s' % (path, record['problems'][:3]))
+    for field, expected in (('binary_sha256', binary_sha256), ('source_head', source_head), ('compiler_sha256', compiler_sha256)):
+        if expected is not None and record.get(field) != expected:
+            raise ValueError('Externals manifest %s is for another build (%s)' % (path, field))
+    if not isinstance(record.get('externals_sha256'), dict) or not isinstance(record.get('consumed'), dict):
+        raise ValueError('Externals manifest %s has no externals' % path)
+    return record
+
+
+_CONDITIONAL = re.compile(r'^[ \t]*#[ \t]*(ifdef|ifndef|if|elif|else|endif)\b[ \t]*(\w*)')
+
+
+def _not_consumed_problems(source, tree, names):
+    """A resource recorded as not consumed must, in this build's source, sit only inside ``#ifdef M``
+    blocks whose macro M is never #defined anywhere in the closure (MTTester.mqh's RunMe.ex5 under
+    RUNEX5_SILENT). Defining the macro, or moving the resource out of the block, fails closed."""
+    texts = {rel: strip_comments(normalize(decode(source.read(rel)))) for rel in tree['order'] if rel.lower().endswith(TEXT_SUFFIXES)}
+    defined = set(re.findall(r'(?m)^[ \t]*#[ \t]*define[ \t]+(\w+)', '\n'.join(texts.values())))
+    problems = []
+    for name in names:
+        target = name.partition(':')[2]
+        sites = 0
+        for rel, code in texts.items():
+            stack = []
+            for number, line in enumerate(code.split('\n'), 1):
+                m = _CONDITIONAL.match(line)
+                if m:
+                    word = m.group(1)
+                    if word in ('ifdef', 'ifndef', 'if'):
+                        stack.append((word, m.group(2)))
+                    elif word in ('elif', 'else') and stack:
+                        stack[-1] = ('else', '')
+                    elif word == 'endif' and stack:
+                        stack.pop()
+                    continue
+                r = _RESOURCE.match(line)
+                if not r or _unescape(r.group(1)).replace('/', '\\') != target:
+                    continue
+                sites += 1
+                guarded = bool(stack) and all(w == 'ifdef' for w, _ in stack) and not any(g in defined for _, g in stack)
+                if not guarded:
+                    problems.append('%s is recorded as not consumed, but %s:%d can compile it (not only inside an #ifdef whose '
+                                    'macro the closure never defines)' % (name, rel, number))
+        if not sites:
+            problems.append('%s is recorded as not consumed, but no closure file names it' % name)
+    return problems
+
+
+def bind_externals_manifest(receipt, record):
+    """Record a manifest's digest in its compile receipt (adds one field; never rewrites another)."""
+    path = Path(receipt)
+    value = json.loads(path.read_text(encoding='utf-8-sig'))
+    if value.get('externals_manifest_digest') not in (None, record['digest']):
+        raise ValueError('The compile receipt already binds another externals manifest')
+    if record.get('problems'):
+        raise ValueError('A manifest with problems is never bound')
+    value['externals_manifest_digest'] = record['digest']
+    path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    return value
+
+
+def use_explicit_manifest(build, path):
+    """``--*-externals <manifest>``: bound to the build's binary, compile commit AND compiler (Codex P2 on #157)."""
+    record = load_externals_manifest(path, binary_sha256=build.get('ea_sha256'), source_head=build.get('commit'),
+                                     compiler_sha256=build.get('compiler_sha256'))
+    return apply_externals_manifest(build, record, path)
+
+
+def apply_externals_manifest(build, record, path):
+    build['externals_sha256'] = dict(record['externals_sha256'])
+    build['externals_consumed'] = dict(record['consumed'])
+    build['externals_manifest'] = dict(path=str(path), digest=record['digest'], consumed_sha256=record['consumed_sha256'])
+    if not build.get('compiler_sha256'):
+        build['compiler_sha256'] = record['compiler_sha256']
+    return build
+
+
+def certificate(export_build, installed_build, *, allowlist=None, function_allowlist=None):
     """Compare two resolved builds. Returns the certificate body with its digest."""
     allowlist = allowlist or ALLOWLIST
     trees, problems = {}, []
@@ -596,13 +870,30 @@ def certificate(export_build, installed_build, *, allowlist=None):
         if unhashed:
             problems.append('%s build: no hash for external dependencies %s (resources, indicators and standard-library '
                             'includes are part of the trading closure)' % (side, unhashed[:6]))
+        sentinels = sorted(n for n, v in hashes.items() if v == NOT_CONSUMED)
+        if sentinels and not build.get('externals_manifest'):
+            problems.append('%s build: %s marked not consumed without a compile-log externals manifest' % (side, sentinels[:3]))
+        elif sentinels:
+            problems.extend('%s build: %s' % (side, p) for p in _not_consumed_problems(build['source'], trees[side], sentinels))
         if not build.get('compiler_sha256'):
             problems.append('%s build: compiler identity unknown (compile receipt compiler_sha256)' % side)
+    import studio_function_units as units
+    function_allowlist = function_allowlist if function_allowlist is not None else units.load_function_allowlist()
+    function_level = []
     comparison = None
     if not problems:
         old, new = trees['export'], trees['installed']
         old_by, new_by = {k.lower(): k for k in old['files']}, {k.lower(): k for k in new['files']}
         differing, blocking = [], []
+        unit_files = {f.lower() for f in units.function_level_files(old['main'])} & {f.lower() for f in units.function_level_files(new['main'])}
+        graphs = {}
+
+        def graph(side, build, tree):
+            # The call graph is built lazily, once per side, over every closure text file.
+            if side not in graphs:
+                strict = units.function_level_files(tree['main'])
+                graphs[side] = units.call_graph(units.closure_texts(build['source'], tree), strict_files=strict)
+            return graphs[side]
         for key in sorted(set(old_by) | set(new_by)):
             a, b = old_by.get(key), new_by.get(key)
             if a and b and old['files'][a]['sha256'] == new['files'][b]['sha256']:
@@ -619,8 +910,25 @@ def certificate(export_build, installed_build, *, allowlist=None):
                 hits = _guard_hits(lines) if category else []
                 if hits:
                     item['guard_hits'] = hits[:20]
+                if a and b and key in unit_files and not category:
+                    # The entrypoint and Optimizer.mqh: compared unit by unit (studio_function_units).
+                    try:
+                        result = units.compare_texts(a, old_text, new_text, allowlist=function_allowlist,
+                                                     old_graph=graph('export', export_build, old), new_graph=graph('installed', installed_build, new))
+                    except units.UnitParseError as exc:
+                        problems.append('function-level comparison of %s is uncertain: %s' % (a, exc))
+                        result = None
+                    if result is not None:
+                        function_level.append(result)
+                        item['function_level'] = dict(equivalent=result['equivalent'], counts=result['counts'], layout=result['layout'],
+                                                      blocking_units=result['blocking'])
             unreviewed = [h for h in (item['export_sha256'], item['installed_sha256']) if h and entry and h not in entry['reviewed_sha256']]
-            if not category:
+            if item.get('function_level'):
+                fl = item['function_level']
+                if not fl['equivalent']:
+                    item['blocking'] = 'function-level: %d differing units block%s' % (
+                        len(fl['blocking_units']), (' and ' + '; '.join(fl['layout'])) if fl['layout'] else '')
+            elif not category:
                 item['blocking'] = 'not on the non-trading allowlist'
             elif unreviewed:
                 item['blocking'] = 'allowlisted path, but version %s is not in the reviewed receipt' % ', '.join(h[:12] for h in unreviewed)
@@ -633,10 +941,15 @@ def certificate(export_build, installed_build, *, allowlist=None):
         old_hashes, new_hashes = export_build.get('externals_sha256') or {}, installed_build.get('externals_sha256') or {}
         externals_differ = sorted(n for n in set(hashed_externals(old['externals'])) | set(hashed_externals(new['externals']))
                                   if old_hashes.get(n) != new_hashes.get(n))
-        externals_equal = old['externals'] == new['externals'] and not externals_differ
+        # When both builds carry a compile-log manifest, every external file the compiler read is compared too.
+        old_read, new_read = export_build.get('externals_consumed'), installed_build.get('externals_consumed')
+        consumed_differ = (sorted(p for p in set(old_read) | set(new_read) if old_read.get(p) != new_read.get(p))
+                           if old_read is not None and new_read is not None else None)
+        externals_equal = old['externals'] == new['externals'] and not externals_differ and not consumed_differ
         compiler_equal = export_build['compiler_sha256'] == installed_build['compiler_sha256']
         comparison = dict(differing=differing, blocking=blocking, input_header_equal=inputs_equal, externals_equal=externals_equal,
                           externals_hash_differs=externals_differ, compiler_equal=compiler_equal,
+                          externals_consumed_compared=consumed_differ is not None, externals_consumed_differs=consumed_differ or [],
                           externals_only_export=sorted(set(old['externals']) - set(new['externals'])),
                           externals_only_installed=sorted(set(new['externals']) - set(old['externals'])),
                           identical_files=len(set(old_by) & set(new_by)) - sum(1 for d in differing if d['change'] == 'changed'))
@@ -654,6 +967,9 @@ def certificate(export_build, installed_build, *, allowlist=None):
                 installed_build=_public_build(installed_build, trees.get('installed'), allowlist),
                 allowlist=dict(id=allowlist['id'], sha256=digest_of(allowlist), review_ref=allowlist.get('review_ref')),
                 normalizations=NORMALIZATIONS, guard=GUARD.pattern, problems=problems, comparison=comparison,
+                function_level=dict(schema=units.SCHEMA, rules=units.RULES, trading_roots=list(units.TRADING_ROOTS),
+                                    allowlist=units.allowlist_summary(function_allowlist),
+                                    files=[{k: v for k, v in r.items() if k != 'schema'} for r in function_level]),
                 source_equivalent=source_equivalent, source_status=status,
                 canary_rule=dict(min_sets=MIN_CANARY_SETS, compare='every buy/sell deal: server_time_msc, deal_type, deal_entry, lots, price',
                                  same='window and tester model per set; distinct sets; binaries recorded per deal file'))
@@ -759,13 +1075,17 @@ def canary_result(cert, pairs, *, min_sets=MIN_CANARY_SETS, source='pairs', inco
         seen_values.add(values)
         seen_reference.add(reference_sha)
         compared = compare_deals(deal_list(pair['reference_deals'], cut_msc=cut), deal_list(pair['candidate_deals'], cut_msc=cut))
+        if not compared['reference_deals'] and not compared['candidate_deals']:
+            # Both builds traded nothing: a licence or init failure (VerifyLicense gates OnInit) looks exactly
+            # like this, so an equal-empty set proves nothing and blocks activation (Claude-Mac, #157).
+            errors.append('empty set: 0 deals on both sides (an equal-empty canary never certifies)')
         sets.append(dict(label=label, values_sha256=values, model=pair.get('reference_model'), window=pair.get('reference_window'), cut_msc=cut,
                          reference_ea=pair.get('reference_ea'), candidate_ea=pair.get('candidate_ea'),
                          reference_deals_sha256=reference_sha, candidate_deals_sha256=candidate_sha, protocol_errors=errors, **compared))
     protocol = ['%s: %s' % (s['label'], e) for s in sets for e in s['protocol_errors']]
     clean = [s for s in sets if not s['protocol_errors']]
     drift = [s['label'] for s in clean if not s['matched']]
-    counted = [s for s in clean if s['matched'] and s['reference_deals'] > 0]
+    counted = [s for s in clean if s['matched'] and s['reference_deals'] > 0 and s['candidate_deals'] > 0]
     incomplete = list(incomplete or ())
     matched = not protocol and not drift and not incomplete and len(counted) >= min_sets
     if drift:
@@ -799,6 +1119,9 @@ def _canary_activates(canary, cert):
     if canary.get('protocol_errors') or canary.get('incomplete') or any(s.get('protocol_errors') for s in sets):
         return False, []
     if any(not s.get('matched') for s in sets):
+        return False, []
+    # Every set needs at least one deal on both sides; an empty set (or an empty canary) never activates.
+    if not sets or any(not s.get('reference_deals') or not s.get('candidate_deals') for s in sets):
         return False, []
     counted = [s for s in sets if s.get('reference_deals', 0) > 0]
     values = {s.get('values_sha256') for s in counted}
@@ -1013,6 +1336,8 @@ def _externals_arg(path, mql5_root, tree_externals):
         value = json.loads(Path(path).read_text(encoding='utf-8-sig'))
         if not isinstance(value, dict) or any(not isinstance(v, str) for v in value.values()):
             raise ValueError('An externals file maps external names to sha256 strings')
+        if NOT_CONSUMED in value.values():
+            raise ValueError('"%s" is accepted only from a compile-log externals manifest' % NOT_CONSUMED)
         return value
     if mql5_root:
         return hash_externals(mql5_root, tree_externals)
@@ -1033,8 +1358,13 @@ def operation(controller, args):
             if compiler:
                 build['compiler_sha256'] = compiler
             if build.get('status') == 'resolved':
+                path = getattr(args, prefix + '_externals', None)
+                if path and json.loads(Path(path).read_text(encoding='utf-8-sig')).get('schema') == EXTERNALS_SCHEMA:
+                    # A compile-log externals manifest, consumed directly (bound to the binary and the compile commit).
+                    use_explicit_manifest(build, path)
+                    continue
                 names = closure(build['source'], main)['externals']
-                given = _externals_arg(getattr(args, prefix + '_externals', None), getattr(args, prefix + '_mql5_root', None), names)
+                given = _externals_arg(path, getattr(args, prefix + '_mql5_root', None), names)
                 if given is not None:
                     build['externals_sha256'] = given
         cert = certificate(export, installed)

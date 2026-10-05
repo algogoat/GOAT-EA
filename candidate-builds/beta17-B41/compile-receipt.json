@@ -19,5 +19,6 @@
   "retained_reference_sha256": "05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9",
   "equivalence": "MISMATCH",
   "full_private_receipt_sha256": "23d74b91ee7f3801028983f3a61ff63e9d19e47b9852d15d57c93a8efe822f62",
-  "native_qualification": "NOT_PERFORMED"
+  "native_qualification": "NOT_PERFORMED",
+  "externals_manifest_digest": "7cf2a67acf940f0fbf0c905d36195a9a760d3dc53a7746276697d92b152876c3"
 }

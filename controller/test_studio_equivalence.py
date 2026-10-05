@@ -375,6 +375,33 @@ class CanaryTests(unittest.TestCase):
         eq.save_canary(self.controller, eq.canary_result(self.cert, self.pairs()))   # a later clean canary
         self.assertEqual(self.status(), 'refuted')
 
+    def test_an_empty_canary_never_certifies(self):
+        # Claude-Mac #157: VerifyLicense gates OnInit, so two builds that both fail init trade nothing
+        # and their equal-empty deal lists must never "match" into an active certificate.
+        empty = deals_csv(self.root / 'empty.csv', [])
+        all_empty = [dict(p, reference_deals=empty, candidate_deals=empty) for p in self.pairs()]
+        canary = eq.canary_result(self.cert, all_empty)
+        self.assertEqual((canary['matched'], canary['refutes'], canary['sets_with_trades']), (False, False, 0))
+        self.assertIn('0 deals on both sides', canary['plain'])
+        eq.save_canary(self.controller, canary)
+        self.assertEqual(self.status(), 'pending_canary')
+        # One empty set among eleven good ones still blocks: every set needs deals on both sides.
+        mixed = self.pairs(count=11)
+        mixed[5] = dict(mixed[5], reference_deals=empty, candidate_deals=empty)
+        one_empty = eq.canary_result(self.cert, mixed)
+        self.assertFalse(one_empty['matched'])
+        eq.save_canary(self.controller, one_empty)
+        self.assertEqual(self.status(), 'pending_canary')
+        # A stored record forged to claim a match is re-derived from its sets and stays inactive.
+        forged = dict(one_empty, matched=True, protocol_errors=[], sets=[dict(s, protocol_errors=[]) for s in one_empty['sets']])
+        forged = forged | dict(digest=eq.digest_of({k: v for k, v in forged.items() if k not in ('digest', 'created_utc')}))
+        eq.save_canary(self.controller, forged)
+        self.assertEqual(self.status(), 'pending_canary')
+        # A one-sided empty list is drift, not an empty set: it refutes.
+        drifted = self.pairs()
+        drifted[2] = dict(drifted[2], candidate_deals=empty)
+        self.assertTrue(eq.canary_result(self.cert, drifted)['refutes'])
+
     def test_protocol_errors_and_incomplete_members_never_activate(self):
         model = eq.canary_result(self.cert, self.pairs(model=(4, 1)))
         self.assertFalse(model['matched'])

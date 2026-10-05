@@ -22,9 +22,9 @@ certificate's own ``normalize``: encoding, line endings, build id/marker, nothin
   ``#resource ...``, ``#property NAME`` and the conditional lines themselves.
 - ``gap before <key>`` / ``gap at end``: the text between units. A tiling check proves every
   character of the file is in exactly one unit or gap, so a gap holds only comments, whitespace
-  and stray ``;``. A gap difference is reported; it blocks only when a token other than a comment
-  or whitespace changed (comments between units cannot change compiled code; inside a unit
-  nothing is stripped, exactly as the file-level hash).
+  and stray ``;``. A gap difference is reported; it passes only when both versions of the gap
+  normalise to empty (comments and whitespace only); any token in a changed gap blocks. Inside a
+  unit nothing is stripped, exactly as the file-level hash.
 A unit inside a top-level ``#if``/``#ifdef``/``#ifndef`` group carries the group in its key.
 
 Fail closed (``UnitParseError`` -> certificate ``not_comparable`` with the reason) on: unbalanced
@@ -68,7 +68,8 @@ RULES = [
     'units: functions (exact signature, overloads distinct), class/struct/enum shells and inline methods, globals, inputs, '
     'declarations, every preprocessor line, and the comment/whitespace gaps between units',
     'unit hash: sha256 of the unit text after the certificate normalization (encoding, line endings, build id/marker)',
-    'units and gaps tile the file exactly; a gap (between units) blocks only when a non-comment, non-whitespace token changed',
+    'units and gaps tile the file exactly; a changed gap (between units) passes only when both versions hold nothing but '
+    'comments and whitespace',
     'fail closed (not_comparable) on any parse uncertainty: unbalanced braces, conditionals that change unit boundaries, '
     'macros that can define functions, unclassifiable statements, #include/#define inside a body, duplicate or ambiguous signatures',
     'never allowlistable: any preprocessor unit, any input, a changed global or declaration, directive order, global order, '
@@ -828,6 +829,8 @@ def load_function_allowlist(path=None):
                 raise ValueError('Function allowlist entry %s / %s needs a category, a reason and reviewed_sha256 versions' % (file, key))
             if any(not re.fullmatch('[0-9a-f]{64}', h) for h in entry['reviewed_sha256']):
                 raise ValueError('Function allowlist entry %s / %s has a malformed hash' % (file, key))
+            if entry.get('confirmed') is True and not entry.get('confirmed_ref'):
+                raise ValueError('Function allowlist entry %s / %s is confirmed without a confirmed_ref' % (file, key))
     return record
 
 
@@ -841,6 +844,7 @@ def function_entry(allowlist, file, key):
 def allowlist_summary(allowlist):
     from studio_equivalence import digest_of
     return dict(id=allowlist.get('id'), sha256=digest_of(allowlist), confirmed=allowlist.get('confirmed') is True,
+                confirmed_entries=sum(1 for u in allowlist.get('units', {}).values() for e in u.values() if e.get('confirmed') is True),
                 review_ref=allowlist.get('review_ref'), entries=sum(len(u) for u in allowlist.get('units', {}).values()))
 
 
@@ -898,11 +902,12 @@ def compare_texts(file, old_text, new_text, *, allowlist=None, old_graph=None, n
                                                               or not item['reachability_certain'])
         if unit['kind'] == 'gap':
             # Between units there are only comments, whitespace and stray ';' (the tiling check proves it).
-            # Comments and whitespace cannot change compiled code; any other token difference blocks.
+            # A differing gap passes only when BOTH versions normalise to empty; any token in a gap is a
+            # change (Claude-Mac, #157 answer 2).
             gap_codes = {(a or {}).get('code_sha256', _EMPTY), (b or {}).get('code_sha256', _EMPTY)}
-            item['comment_or_whitespace_only'] = gap_codes == {_EMPTY} or (a is not None and b is not None and len(gap_codes) == 1)
+            item['comment_or_whitespace_only'] = gap_codes == {_EMPTY}
             if not item['comment_or_whitespace_only']:
-                item['blocking'] = 'code between units changed'
+                item['blocking'] = 'a token between units (not a comment or whitespace) is in a changed gap'
             elif line_macros:
                 item['blocking'] = 'the file uses __LINE__/__COUNTER__, so even a comment or blank line between units can change code'
         elif unit['kind'] in NEVER_ALLOWLISTED:
@@ -919,8 +924,8 @@ def compare_texts(file, old_text, new_text, *, allowlist=None, old_graph=None, n
             item['blocking'] = ('allowlisted, but the call graph %s it from %s; the entry must say trading_path_reviewed'
                                 % ('reaches' if item.get('reachability_certain') else 'cannot rule out reaching',
                                    ', '.join(item.get('reachable_from_trading') or ['a trading entry point'])))
-        elif not confirmed:
-            item['blocking'] = 'allowlisted, but the function allowlist receipt is not confirmed yet (needs Claude-Mac)'
+        elif not (confirmed or entry.get('confirmed') is True):
+            item['blocking'] = 'allowlisted, but this entry is not confirmed yet (needs Claude-Mac)'
         differing.append(item)
         if item.get('blocking'):
             blocking.append(key)
@@ -1053,6 +1058,8 @@ def main(argv=None):
     p.add_argument('--main')
     p.add_argument('--repo', type=Path, help='GOAT-EA checkout: staged files the identity does not list are checked against the compile commit')
     p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--bind-receipt', action='store_true',
+                   help='add externals_manifest_digest to the compile receipt (required for resolve_build to use the manifest)')
     args = parser.parse_args(argv)
     if args.command == 'units-diff':
         allowlist = load_function_allowlist(args.allowlist) if args.allowlist else None
@@ -1067,6 +1074,8 @@ def main(argv=None):
                                      log_stage=args.log_stage, log_mql5_root=args.log_mql5_root, repo=args.repo)
     with args.output.open('x', encoding='utf-8', newline='\n') as stream:
         stream.write(json.dumps(manifest, indent=1, sort_keys=True, ensure_ascii=False) + '\n')
+    if args.bind_receipt and not manifest['problems']:
+        eq.bind_externals_manifest(args.receipt, manifest)
     print(json.dumps(dict(output=str(args.output), problems=manifest['problems'], consumed=len(manifest['consumed']),
                           externals=manifest['externals_sha256']), indent=1))
     sys.stdout.flush()

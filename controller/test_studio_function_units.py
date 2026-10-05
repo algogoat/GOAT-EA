@@ -185,6 +185,9 @@ class CompareTests(unittest.TestCase):
     def test_an_unconfirmed_receipt_or_an_unreviewed_version_blocks(self):
         unconfirmed = compare(MAIN, HI, receipt({DRAW: ((MAIN, HI), None)}, confirmed=False))
         self.assertIn('not confirmed yet', unconfirmed['differing'][0]['blocking'])
+        # Confirmation is per entry: a confirmed entry passes inside an unconfirmed receipt.
+        entry = compare(MAIN, HI, receipt({DRAW: ((MAIN, HI), dict(confirmed=True, confirmed_ref='test'))}, confirmed=False))
+        self.assertTrue(entry['equivalent'])
         unreviewed = compare(MAIN, MAIN.replace('"Hello"', '"Howdy"'), receipt({DRAW: ((MAIN, HI), None)}))
         self.assertIn('is not in the reviewed receipt', unreviewed['differing'][0]['blocking'])
         missing = compare(MAIN, HI)
@@ -259,7 +262,12 @@ class CompareTests(unittest.TestCase):
         self.assertTrue(result['equivalent'])
         self.assertTrue(result['differing'][0]['comment_or_whitespace_only'])
         stray = compare(MAIN, MAIN.replace('// the panel\n', '// the panel\n;\n'))
-        self.assertIn('code between units changed', stray['differing'][0]['blocking'])
+        self.assertIn('a token between units', stray['differing'][0]['blocking'])
+        # Claude-Mac #157 answer 2: a changed gap passes only when BOTH versions normalise to empty, so a
+        # comment edit next to an unchanged stray ';' still blocks.
+        with_token = MAIN.replace('// the panel\n', '// the panel\n;\n')
+        same_token = compare(with_token, with_token.replace('// the panel', '// the panel, reworded'))
+        self.assertIn('a token between units', same_token['differing'][0]['blocking'])
         lined = MAIN.replace('ObjectSetString(0,"lbl",OBJPROP_TEXT,"Hello");', 'Print(__LINE__);')
         line_shift = compare(lined, lined.replace('// the panel', '// the panel\n// one more line'))
         self.assertIn('__LINE__', line_shift['differing'][0]['blocking'])
@@ -274,18 +282,24 @@ class CompareTests(unittest.TestCase):
 
     def test_function_allowlist_receipt(self):
         record = fu.load_function_allowlist()
-        self.assertIs(record['confirmed'], False)
+        self.assertIs(record['confirmed'], False)   # new entries need their own confirmation
         self.assertEqual(record['confirmation_required_from'], 'Claude-Mac')
         for file, units in record['units'].items():
             for key, entry in units.items():
                 self.assertTrue(key.startswith(('function ', 'method ')), key)
                 self.assertTrue(entry['reason'] and entry['category'], key)
-        broken = copy.deepcopy(record)
-        broken['units']['Optimizer.mqh'] = {'function X()': dict(category='panel_ui', reviewed_sha256={})}
+                self.assertIn('5987995933', entry['confirmed_ref'], key)   # Claude-Mac's APPROVE on #157
+        license = record['units'][FILE]['function VerifyLicense(long AccNum, string AccName, string AccServer, bool init = false)']
+        self.assertIs(license['trading_path_reviewed'], True)   # it gates OnInit
         path = Path(tempfile.mkdtemp()) / 'r.json'
-        path.write_text(json.dumps(broken), encoding='utf-8')
-        with self.assertRaisesRegex(ValueError, 'needs a category, a reason'):
-            fu.load_function_allowlist(path)
+        for change, message in (({'function X()': dict(category='panel_ui', reviewed_sha256={})}, 'needs a category, a reason'),
+                                ({'function X()': dict(category='panel_ui', reason='r', reviewed_sha256={'a' * 64: ['t']}, confirmed=True)},
+                                 'confirmed without a confirmed_ref')):
+            broken = copy.deepcopy(record)
+            broken['units']['Optimizer.mqh'] = change
+            path.write_text(json.dumps(broken), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, message):
+                fu.load_function_allowlist(path)
         shutil.rmtree(path.parent)
 
 
@@ -467,6 +481,41 @@ class ExternalsManifestTests(unittest.TestCase):
         bare.pop('externals_manifest')
         self.assertIn('marked not consumed without a compile-log externals manifest', ' '.join(eq.certificate(bare, new, allowlist=allow)['problems']))
 
+    def test_not_consumed_holds_only_while_the_resource_cannot_compile(self):
+        # Claude-Mac #157 answer 5: accept RunMe.ex5 as not consumed, but fail closed (not_comparable) as soon
+        # as the source could compile it: its #ifdef macro gets defined, or the resource leaves the block.
+        record = self.manifest()
+        path = self.root / 'externals.json'
+        path.write_text(json.dumps(record), encoding='utf-8')
+        allow = dict(schema='goat-non-trading-allowlist-receipt-v1', id='t', files={}, kept_in_scope={})
+        main = (self.stage / FILE).read_text(encoding='utf-8')
+
+        def cert_with(text):
+            folder = self.root / ('s%d' % len(list(self.root.glob('s*'))))
+            folder.mkdir()
+            (folder / FILE).write_text(text, encoding='utf-8')
+            build = lambda ea: eq.apply_externals_manifest(eq.resolve_build(None, source_dir=folder) | dict(ea_sha256=ea),
+                                                           copy.deepcopy(record), path)
+            return eq.certificate(build('a' * 64), build('b' * 64), allowlist=allow)
+
+        self.assertEqual(cert_with(main)['source_status'], 'pending_canary')
+        for text in ('#define SILENT\n' + main, main.replace('#ifdef SILENT\n', '').replace('#endif\n', ''),
+                     main.replace('#ifdef SILENT', '#ifndef SILENT')):
+            with self.subTest(text=text[:40]):
+                cert = cert_with(text)
+                self.assertEqual(cert['source_status'], 'not_comparable')
+                self.assertIn('recorded as not consumed', ' '.join(cert['problems']))
+
+    def test_an_explicit_manifest_is_bound_to_the_build_compiler(self):
+        # Codex P2 on #157: the --*-externals route checks the compiler like resolve_build does.
+        path = self.root / 'externals.json'
+        path.write_text(json.dumps(self.manifest()), encoding='utf-8')
+        build = dict(ea_sha256=sha(b'ex5'), commit='f' * 40, compiler_sha256='9' * 64)
+        with self.assertRaisesRegex(ValueError, 'for another build'):
+            eq.use_explicit_manifest(build, path)
+        good = eq.use_explicit_manifest(dict(build, compiler_sha256=sha(b'metaeditor')), path)
+        self.assertEqual(good['externals_manifest']['path'], str(path))
+
     @unittest.skipUnless(shutil.which('git'), 'git is required')
     def test_resolve_build_reads_externals_json_next_to_the_identity(self):
         repo = self.root / 'repo'
@@ -481,7 +530,15 @@ class ExternalsManifestTests(unittest.TestCase):
         receipt = json.loads(self.receipt.read_text(encoding='utf-8')) | dict(source_head=head)
         (folder / 'compile-receipt.json').write_text(json.dumps(receipt), encoding='utf-8')
         self.receipt.write_text(json.dumps(receipt), encoding='utf-8')
-        (folder / 'externals.json').write_text(json.dumps(self.manifest()), encoding='utf-8')
+        manifest = self.manifest()
+        (folder / 'externals.json').write_text(json.dumps(manifest), encoding='utf-8')
+        # Claude-Mac #157 answer 7: only a manifest the compile receipt binds is used.
+        unbound = eq.resolve_build(repo, ea_sha256=sha(b'ex5'))
+        self.assertNotIn('externals_manifest', unbound)
+        self.assertTrue(any('not bound by its compile receipt' in n for n in unbound['notes']))
+        eq.bind_externals_manifest(folder / 'compile-receipt.json', manifest)
+        with self.assertRaisesRegex(ValueError, 'already binds another'):
+            eq.bind_externals_manifest(folder / 'compile-receipt.json', dict(manifest, digest='0' * 64))
         resolved = eq.resolve_build(repo, ea_sha256=sha(b'ex5'))
         self.assertEqual(resolved['status'], 'resolved')
         self.assertEqual(resolved['externals_manifest']['path'], str(folder / 'externals.json'))

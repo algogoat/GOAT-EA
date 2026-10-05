@@ -461,11 +461,15 @@ def resolve_build(repo, *, ea_sha256=None, build_id=None, commit=None, main=DEFA
                                 externals_sha256=identity.get('externals_sha256') if isinstance(identity.get('externals_sha256'), dict) else None)
             # The build's externals manifest (candidate-builds/<build>/externals.json), bound to this binary,
             # compile commit and compiler; one that does not verify is ignored (the certificate then fails closed).
+            # It counts only when the compile receipt binds it (externals_manifest_digest; Claude-Mac, #157 answer 7).
             manifest = Path(item['path']).parent / EXTERNALS_FILE
             if manifest.is_file():
                 try:
                     record = load_externals_manifest(manifest, binary_sha256=ea_sha256, source_head=head,
                                                      compiler_sha256=item['receipt'].get('compiler_sha256'))
+                    bound = item['receipt'].get('externals_manifest_digest')
+                    if bound != record['digest']:
+                        raise ValueError('%s is not bound by its compile receipt (externals_manifest_digest %s)' % (manifest, bound))
                     apply_externals_manifest(build, record, manifest)
                 except (OSError, ValueError) as exc:
                     notes.append(str(exc))
@@ -777,6 +781,65 @@ def load_externals_manifest(path, *, binary_sha256=None, source_head=None, compi
     return record
 
 
+_CONDITIONAL = re.compile(r'^[ \t]*#[ \t]*(ifdef|ifndef|if|elif|else|endif)\b[ \t]*(\w*)')
+
+
+def _not_consumed_problems(source, tree, names):
+    """A resource recorded as not consumed must, in this build's source, sit only inside ``#ifdef M``
+    blocks whose macro M is never #defined anywhere in the closure (MTTester.mqh's RunMe.ex5 under
+    RUNEX5_SILENT). Defining the macro, or moving the resource out of the block, fails closed."""
+    texts = {rel: strip_comments(normalize(decode(source.read(rel)))) for rel in tree['order'] if rel.lower().endswith(TEXT_SUFFIXES)}
+    defined = set(re.findall(r'(?m)^[ \t]*#[ \t]*define[ \t]+(\w+)', '\n'.join(texts.values())))
+    problems = []
+    for name in names:
+        target = name.partition(':')[2]
+        sites = 0
+        for rel, code in texts.items():
+            stack = []
+            for number, line in enumerate(code.split('\n'), 1):
+                m = _CONDITIONAL.match(line)
+                if m:
+                    word = m.group(1)
+                    if word in ('ifdef', 'ifndef', 'if'):
+                        stack.append((word, m.group(2)))
+                    elif word in ('elif', 'else') and stack:
+                        stack[-1] = ('else', '')
+                    elif word == 'endif' and stack:
+                        stack.pop()
+                    continue
+                r = _RESOURCE.match(line)
+                if not r or _unescape(r.group(1)).replace('/', '\\') != target:
+                    continue
+                sites += 1
+                guarded = bool(stack) and all(w == 'ifdef' for w, _ in stack) and not any(g in defined for _, g in stack)
+                if not guarded:
+                    problems.append('%s is recorded as not consumed, but %s:%d can compile it (not only inside an #ifdef whose '
+                                    'macro the closure never defines)' % (name, rel, number))
+        if not sites:
+            problems.append('%s is recorded as not consumed, but no closure file names it' % name)
+    return problems
+
+
+def bind_externals_manifest(receipt, record):
+    """Record a manifest's digest in its compile receipt (adds one field; never rewrites another)."""
+    path = Path(receipt)
+    value = json.loads(path.read_text(encoding='utf-8-sig'))
+    if value.get('externals_manifest_digest') not in (None, record['digest']):
+        raise ValueError('The compile receipt already binds another externals manifest')
+    if record.get('problems'):
+        raise ValueError('A manifest with problems is never bound')
+    value['externals_manifest_digest'] = record['digest']
+    path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    return value
+
+
+def use_explicit_manifest(build, path):
+    """``--*-externals <manifest>``: bound to the build's binary, compile commit AND compiler (Codex P2 on #157)."""
+    record = load_externals_manifest(path, binary_sha256=build.get('ea_sha256'), source_head=build.get('commit'),
+                                     compiler_sha256=build.get('compiler_sha256'))
+    return apply_externals_manifest(build, record, path)
+
+
 def apply_externals_manifest(build, record, path):
     build['externals_sha256'] = dict(record['externals_sha256'])
     build['externals_consumed'] = dict(record['consumed'])
@@ -810,6 +873,8 @@ def certificate(export_build, installed_build, *, allowlist=None, function_allow
         sentinels = sorted(n for n, v in hashes.items() if v == NOT_CONSUMED)
         if sentinels and not build.get('externals_manifest'):
             problems.append('%s build: %s marked not consumed without a compile-log externals manifest' % (side, sentinels[:3]))
+        elif sentinels:
+            problems.extend('%s build: %s' % (side, p) for p in _not_consumed_problems(build['source'], trees[side], sentinels))
         if not build.get('compiler_sha256'):
             problems.append('%s build: compiler identity unknown (compile receipt compiler_sha256)' % side)
     import studio_function_units as units
@@ -1010,13 +1075,17 @@ def canary_result(cert, pairs, *, min_sets=MIN_CANARY_SETS, source='pairs', inco
         seen_values.add(values)
         seen_reference.add(reference_sha)
         compared = compare_deals(deal_list(pair['reference_deals'], cut_msc=cut), deal_list(pair['candidate_deals'], cut_msc=cut))
+        if not compared['reference_deals'] and not compared['candidate_deals']:
+            # Both builds traded nothing: a licence or init failure (VerifyLicense gates OnInit) looks exactly
+            # like this, so an equal-empty set proves nothing and blocks activation (Claude-Mac, #157).
+            errors.append('empty set: 0 deals on both sides (an equal-empty canary never certifies)')
         sets.append(dict(label=label, values_sha256=values, model=pair.get('reference_model'), window=pair.get('reference_window'), cut_msc=cut,
                          reference_ea=pair.get('reference_ea'), candidate_ea=pair.get('candidate_ea'),
                          reference_deals_sha256=reference_sha, candidate_deals_sha256=candidate_sha, protocol_errors=errors, **compared))
     protocol = ['%s: %s' % (s['label'], e) for s in sets for e in s['protocol_errors']]
     clean = [s for s in sets if not s['protocol_errors']]
     drift = [s['label'] for s in clean if not s['matched']]
-    counted = [s for s in clean if s['matched'] and s['reference_deals'] > 0]
+    counted = [s for s in clean if s['matched'] and s['reference_deals'] > 0 and s['candidate_deals'] > 0]
     incomplete = list(incomplete or ())
     matched = not protocol and not drift and not incomplete and len(counted) >= min_sets
     if drift:
@@ -1050,6 +1119,9 @@ def _canary_activates(canary, cert):
     if canary.get('protocol_errors') or canary.get('incomplete') or any(s.get('protocol_errors') for s in sets):
         return False, []
     if any(not s.get('matched') for s in sets):
+        return False, []
+    # Every set needs at least one deal on both sides; an empty set (or an empty canary) never activates.
+    if not sets or any(not s.get('reference_deals') or not s.get('candidate_deals') for s in sets):
         return False, []
     counted = [s for s in sets if s.get('reference_deals', 0) > 0]
     values = {s.get('values_sha256') for s in counted}
@@ -1289,8 +1361,7 @@ def operation(controller, args):
                 path = getattr(args, prefix + '_externals', None)
                 if path and json.loads(Path(path).read_text(encoding='utf-8-sig')).get('schema') == EXTERNALS_SCHEMA:
                     # A compile-log externals manifest, consumed directly (bound to the binary and the compile commit).
-                    record = load_externals_manifest(path, binary_sha256=build.get('ea_sha256'), source_head=build.get('commit'))
-                    apply_externals_manifest(build, record, path)
+                    use_explicit_manifest(build, path)
                     continue
                 names = closure(build['source'], main)['externals']
                 given = _externals_arg(path, getattr(args, prefix + '_mql5_root', None), names)

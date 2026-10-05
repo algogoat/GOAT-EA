@@ -116,6 +116,8 @@ jobs:
         run: python scripts/test_peer_roster_mutations.py
       - name: Seed member failure mutation check (one failure never ends the batch; breaker, cancel and resume rules hold)
         run: python scripts/test_seed_member_failure_mutations.py
+      - name: Hold-up test mutation check (hash binding, frozen inputs, report reconciliation, refusals, peeks, redaction)
+        run: python scripts/test_holdup_mutations.py
 
       - name: Run every controller fixture test
         env:

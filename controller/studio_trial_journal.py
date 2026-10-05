@@ -4,8 +4,9 @@
 hunt and catch-up this controller prepared, read only from its own retained
 journals (change 4): queue rows, ``packages/``, ``attempts/*/result.json``,
 ``retired-starts/``, native evidence histories (read through
-``studio_evidence_log.read`` so a compacted history reads the same), ``seeds/`` and
-``catchups/``. Nothing here writes, launches or touches MT5, and the output carries
+``studio_evidence_log.read`` so a compacted history reads the same), ``seeds/``,
+``catchups/`` and ``holdups/`` (kind ``single-pass``: every dispatched hold-up test is a peek on its
+window). Nothing here writes, launches or touches MT5, and the output carries
 no clock: ``compact-evidence --apply`` and retiring an unactivated start leave it
 byte-identical.
 
@@ -348,6 +349,17 @@ def _runner_entries(root, suite_id, folder, kind, library):
             source = dict(kind='seed-result', sha256=_digest(result_raw)) if result_raw else dict(kind='seed-manifest', sha256=_digest(manifest_raw))
             candidates = None
             oos_output = None
+        elif kind == 'holdup':
+            # Every dispatched hold-up test is a peek on its window (Claude-Mac, #1885 5989126739), even when the
+            # window overlaps the SET's own selection: re-running a winner until it looks good must count.
+            relation = (spec.get('relation') or {}).get('relation') or 'unknown'
+            window = spec.get('window') or {}
+            role = 'catch-up' if relation == 'after_selection' else 'back-oos'
+            windows = [w for w in (_window(role, _day(window.get('start')), _day(window.get('end')), relation=relation),) if w]
+            source = (dict(kind='holdup-result', sha256=_digest(result_raw)) if result_raw
+                      else dict(kind='holdup-manifest', sha256=_digest(manifest_raw)))
+            candidates = None
+            oos_output = None if not dispatched else ('observed' if status == 'completed' else 'possible')
         else:
             new = spec.get('new_window') or {}
             first, last = _day(new.get('first_day')), _day(new.get('last_day'))
@@ -381,7 +393,8 @@ def _runner_entries(root, suite_id, folder, kind, library):
                                         values=values)
         alias = spec.get('alias')
         entries.append(_entry(
-            suite_id, 'seed' if kind == 'seed' else ('held-out-reveal' if reveal else 'catch-up'), manifest.get('batch_id') or folder.name,
+            suite_id, 'seed' if kind == 'seed' else 'single-pass' if kind == 'holdup' else ('held-out-reveal' if reveal else 'catch-up'),
+            manifest.get('batch_id') or folder.name,
             (manifest.get('batch_id') or folder.name) + '-' + str(alias), spec.get('index'), alias, source, attribution,
             variant=variant_id(values) if isinstance(values, dict) else None, set_sha256=spec.get('source_sha256'),
             input_artifact=spec.get('set_sha256'), symbol=tester.get('Symbol'), timeframe=tester.get('Period'),
@@ -426,13 +439,13 @@ def entries_for(root, install, *, library=None):
             entries.extend(_native_entries(root, suite_id, job, library))
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             gaps.append('batch %s unreadable: %s' % (job.get('job_id'), exc))
-    for kind, name in (('seed', 'seeds'), ('catchup', 'catchups')):
+    for kind, name in (('seed', 'seeds'), ('catchup', 'catchups'), ('holdup', 'holdups')):
         base = root / name
         for folder in sorted(p for p in base.iterdir() if p.is_dir()) if base.is_dir() else []:
             found, problems = _runner_entries(root, suite_id, folder, kind, library)
             entries.extend(found)
             gaps.extend(problems)
-    order = dict(optimization=0, seed=1, **{'catch-up': 2, 'held-out-reveal': 3})
+    order = dict(optimization=0, seed=1, **{'catch-up': 2, 'held-out-reveal': 3, 'single-pass': 4})
     entries.sort(key=lambda e: (order.get(e['kind'], 9), e['batch_id'] or '', e['member_index'] if type(e['member_index']) is int else -1))
     return entries, gaps
 

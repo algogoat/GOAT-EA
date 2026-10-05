@@ -70,6 +70,60 @@ def set_values(raw):
     return values
 
 
+SET_KEY_NOT_EXACT = 'SET_KEY_NOT_EXACT'
+SET_DUPLICATE_INPUT = 'SET_DUPLICATE_INPUT'
+
+
+def dashboard_values(raw, schema):
+    """The input values exactly as the dashboard's BuildTemplate reads them (Dashboard.mqh): every line is
+    trimmed, then split on its first '='; lines without a key are skipped. Comment lines are kept as the
+    unknown keys the EA ignores. Stricter than the dashboard: a key that names a schema input only after
+    trimming or case folding, and any input given twice after that normalisation, are refused, so a near-miss
+    can never hide a value from this check and still reach the child chart."""
+    text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+    names = {name.casefold(): name for name in schema['inputs']}
+    values, seen = {}, {}
+    for line in text.splitlines():
+        trimmed = line.strip()
+        position = trimmed.find('=')
+        if not trimmed or position <= 0:
+            continue
+        key = trimmed[:position].strip()
+        exact = names.get(key.casefold())
+        if exact is None:
+            continue
+        if line[:line.find('=')] != exact:
+            raise ValueError(SET_KEY_NOT_EXACT + ': the SET line for ' + exact + ' has extra whitespace or different '
+                             'letter case (' + repr(line[:line.find('=')]) + '); the dashboard would still load it, so it is refused')
+        if exact in seen:
+            raise ValueError(SET_DUPLICATE_INPUT + ': ' + exact + ' appears more than once; which value the chart would use '
+                             'is ambiguous, so the SET is refused')
+        seen[exact] = True
+        values[exact] = trimmed[position + 1:].strip()
+    return values
+
+
+def check_member_values(controller, name, raw):
+    """Money-safety rules on the exact bytes a child chart will load, before anything is written.
+
+    The same unconditional rule and reason code as validate-set/build-set/prepare: risk-per-sequence
+    sizing with Max_Seq_Trades<=1 would size at the broker maximum once Algo Trading is on. An input a
+    SET leaves out is the EA's declared default."""
+    from studio_strategy_settings import check_risk_sizing
+    from studio_template_tools import check_risk_chosen
+    try:
+        values = dashboard_values(raw, controller.schema)
+    except UnicodeDecodeError as exc:
+        raise ValueError('Unreadable SET values: ' + name) from exc
+    except ValueError as exc:
+        raise ValueError(str(exc) + ' (' + name + '; nothing was written or launched)') from exc
+    try:
+        check_risk_sizing(values, controller.schema)
+        check_risk_chosen(raw, values, controller.schema)
+    except ValueError as exc:
+        raise ValueError(str(exc) + ' (' + name + '; nothing was written or launched)') from exc
+
+
 def validate_plan(controller, session, plan):
     if type(plan) is not dict or set(plan) != {'schema', 'deploymentId', 'portfolio', 'buildId', 'accountLogin', 'policy', 'members'}:
         raise ValueError('Invalid demo deploy plan')
@@ -118,6 +172,7 @@ def validate_plan(controller, session, plan):
             raise ValueError('Invalid SET bytes: ' + name) from exc
         if not 0 < len(raw) <= 2_000_000 or hashlib.sha256(raw).hexdigest() != member['sha256']:
             raise ValueError('SET bytes differ from the reviewed SHA-256: ' + name)
+        check_member_values(controller, name, raw)
         prepared.append(dict(index=index, name=name, symbol=symbol, strategy=member['strategy'], sha256=member['sha256'], raw=raw))
     return prepared
 

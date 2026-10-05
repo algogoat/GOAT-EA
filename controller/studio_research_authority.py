@@ -16,7 +16,12 @@ from studio_installation import read_json, load_installation
 
 CURRENT_OPERATION = ContextVar('studio_research_operation', default=None)
 DEMO_AGENT_SCOPE = ContextVar('studio_demo_agent_scope', default=None)
-READ_OPERATIONS = frozenset(('discover','resource-profile','state','onboarding-status',
+# Local create-only file writers with no store, terminal, session, queue or grant effect, classified with the
+# reads (like equivalence-certificate below): starter-set writes one blank SET generated from the installed
+# schema plus its .starter.json receipt at a caller-chosen path outside the publisher catalog, never
+# overwrites and never opens the mutable store or MT5. build-set stays a mutation (unchanged policy).
+LOCAL_FILE_OPERATIONS = frozenset(('starter-set',))
+READ_OPERATIONS = LOCAL_FILE_OPERATIONS | frozenset(('discover','resource-profile','state','onboarding-status',
                              'native-recovery-status','batch-driver-status','owner-maintenance-status',
                              'stopped-cancel-observation','research-status','research-queue',
                              'evidence-end','evidence-scan','evidence-versions','catchup-validate',
@@ -311,7 +316,22 @@ def dispatch(controller, args):
                 raise ValueError('Only the exact frozen research plan is authorized')
 
 
+def check_job_strategies(controller, job):
+    """Money-safety recheck at every native start route: a job queued before the risk-per-sequence rule
+    existed (or by any older path) is refused here, before anything reaches MT5."""
+    schema = getattr(controller, 'schema', None)
+    if schema is None:
+        return
+    from studio_strategy_settings import check_risk_sizing
+    configuration = job.get('configuration') or {}
+    for member in configuration.get('batch_members') or [configuration]:
+        values = ((member or {}).get('strategy') or {}).get('values')
+        if isinstance(values, dict):
+            check_risk_sizing(values, schema)
+
+
 def before_native_dispatch(controller, job):
+    check_job_strategies(controller, job)
     # Held-out lock (goatai#2221 §4.3): every native start route re-checks the frozen plan.
     from studio_heldout_guard import check_native_start
     check_native_start(controller, job['job_id'])

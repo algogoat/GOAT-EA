@@ -70,6 +70,25 @@ def set_values(raw):
     return values
 
 
+def check_member_values(controller, name, raw):
+    """Money-safety rules on the exact bytes a child chart will load, before anything is written.
+
+    The same unconditional rule and reason code as validate-set/build-set/prepare: risk-per-sequence
+    sizing with Max_Seq_Trades<=1 would size at the broker maximum once Algo Trading is on. An input a
+    SET leaves out is the EA's declared default."""
+    from studio_strategy_settings import check_risk_sizing, read_values
+    from studio_template_tools import check_risk_chosen
+    try:
+        values = read_values(raw)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ValueError('Unreadable SET values: ' + name) from exc
+    try:
+        check_risk_sizing(values, controller.schema)
+        check_risk_chosen(raw, values, controller.schema)
+    except ValueError as exc:
+        raise ValueError(str(exc) + ' (' + name + '; nothing was written or launched)') from exc
+
+
 def validate_plan(controller, session, plan):
     if type(plan) is not dict or set(plan) != {'schema', 'deploymentId', 'portfolio', 'buildId', 'accountLogin', 'policy', 'members'}:
         raise ValueError('Invalid demo deploy plan')
@@ -118,6 +137,7 @@ def validate_plan(controller, session, plan):
             raise ValueError('Invalid SET bytes: ' + name) from exc
         if not 0 < len(raw) <= 2_000_000 or hashlib.sha256(raw).hexdigest() != member['sha256']:
             raise ValueError('SET bytes differ from the reviewed SHA-256: ' + name)
+        check_member_values(controller, name, raw)
         prepared.append(dict(index=index, name=name, symbol=symbol, strategy=member['strategy'], sha256=member['sha256'], raw=raw))
     return prepared
 

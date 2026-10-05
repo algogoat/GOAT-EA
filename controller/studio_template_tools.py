@@ -16,14 +16,16 @@ import re
 import uuid
 
 from campaign_ledger import sha
-from studio_strategy_settings import INTEGER_LIMITS,numeric,read_values,validate_strategy
+from studio_strategy_settings import (INTEGER_LIMITS,RISK_SIZING_CODE,RISK_SIZING_MESSAGE,can_reach,check_risk_sizing,
+                                      read_values,validate_strategy)
 from studio_dependencies import audit_dependencies
 
 MAX_SET_BYTES=2_000_000
-RISK_SIZING_CODE='RISK_PER_SEQUENCE_NEEDS_TWO_TRADES'
-RISK_SIZING_MESSAGE=('Risk-per-sequence sizing needs at least 2 sequence trades; use fixed lots or raise '
-                     'Max_Seq_Trades (single-trade % risk returns in the next EA build).')
 RISK_NOT_CHOSEN_CODE='RISK_NOT_CHOSEN'
+RISK_NOT_CHOSEN_MESSAGE=('this strategy descends from a GOAT starter whose Risk (money lost per sequence) was never chosen, and it '
+                         'sizes or closes by Risk. Ask the user for the amount and set Risk explicitly with build-set.')
+# Lineage marker carried as a SET comment: written by starter-set, kept by build-set until a change sets Risk.
+RISK_NOT_CHOSEN_MARKER='; GOAT Risk not chosen:'
 STARTER_SHAPES=('single','sequence')
 STARTER_DESCRIPTIONS={'single':'Starter Single Trade','sequence':'Starter Sequence'}
 STARTER_SEQUENCE_MAX_TRADES='5'
@@ -62,46 +64,31 @@ def source_bytes(path):
         raise ValueError('GOAT template requires consistent CRLF line endings')
     return path,raw,text
 
-def _reachable(encoded,definition):
-    """(current, ladder) of one structurally valid value: ladder is (start, step, stop) only for an active Y axis.
-    A dormant `value||start||step||stop||N` tuple runs with its first field, exactly as MT5 reads it."""
-    parts=encoded.split('||')
-    current=numeric(parts[0],definition)
-    if len(parts)==5 and parts[4]=='Y':
-        return current,(numeric(parts[1],definition),numeric(parts[2],definition,step=True),numeric(parts[3],definition))
-    return current,None
+def risk_not_chosen(raw):
+    """True when the SET still carries the starter's 'Risk not chosen' lineage marker line."""
+    text=raw[2:].decode('utf-16-le') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+    return any(line.startswith(RISK_NOT_CHOSEN_MARKER) for line in text.splitlines())
 
-def can_reach(encoded,definition,target):
-    current,ladder=_reachable(encoded,definition)
-    if current==target: return True
-    if ladder is None: return False
-    start,step,stop=ladder
-    return start<=target<=stop and ((target-start)/step).denominator==1
+def uses_risk(values,schema):
+    """True when Risk can size or close: RiskperSeq is reachable, or the hard close at Risk is on."""
+    inputs=schema['inputs'];choices=(inputs.get('Mode_Lots') or {}).get('enum_choices') or {}
+    risk_lots='RiskperSeq' in choices and 'Mode_Lots' in values and can_reach(values['Mode_Lots'],inputs['Mode_Lots'],Fraction(choices['RiskperSeq']))
+    hard_close='Sequence_MLPS_Hard_Close' in values and values['Sequence_MLPS_Hard_Close'].split('||')[0] in ('true','1')
+    return bool(risk_lots or hard_close)
 
-def lowest_reachable(encoded,definition):
-    current,ladder=_reachable(encoded,definition)
-    return current if ladder is None else min(current,ladder[0])
+def is_starter(values):
+    return values.get('EA_Desc') in STARTER_DESCRIPTIONS.values()
 
-def check_risk_sizing(values,schema):
-    """Unconditional money-safety rule for every SET (catalog, fork, starter, build output, batch member).
-
-    With Mode_Lots=RiskperSeq the EA solves the first lot from the planned loss path over levels
-    1..Max_Seq_Trades-1. With Max_Seq_Trades<=1 that path is empty (planned loss 0), so the solver
-    climbs to the broker's maximum volume. Any reachable combination is refused: the current value,
-    every value of an active ladder, and the first field of a dormant N tuple."""
-    inputs=schema['inputs']
-    lots,trades=inputs.get('Mode_Lots'),inputs.get('Max_Seq_Trades')
-    choices=(lots or {}).get('enum_choices') or {}
-    if trades is None or 'RiskperSeq' not in choices or 'Mode_Lots' not in values or 'Max_Seq_Trades' not in values:
-        return
-    if (can_reach(values['Mode_Lots'],lots,Fraction(choices['RiskperSeq']))
-            and lowest_reachable(values['Max_Seq_Trades'],trades)<=1):
-        raise ValueError(RISK_SIZING_CODE+': '+RISK_SIZING_MESSAGE)
+def check_risk_chosen(raw,values,schema):
+    # The sequence starter itself sizes by its placeholder; it is a blank with no search axis, and
+    # build-set refuses every descendant that still sizes or closes by Risk without choosing it.
+    if not is_starter(values) and risk_not_chosen(raw) and uses_risk(values,schema):
+        raise ValueError(RISK_NOT_CHOSEN_CODE+': '+RISK_NOT_CHOSEN_MESSAGE)
 
 def validate_raw(raw,schema,policy,*,require_optimization=False):
     values=read_values(raw)
-    checked=validate_strategy(values,schema)
-    check_risk_sizing(values,schema)
+    checked=validate_strategy(values,schema)   # includes the unconditional risk-per-sequence rule
+    check_risk_chosen(raw,values,schema)
     audit=audit_dependencies(checked,schema,policy)
     errors=[item['message'] for item in audit['findings'] if item['severity']=='error']
     if errors: raise ValueError('Inactive optimization axis: '+'; '.join(errors))
@@ -214,15 +201,19 @@ def starter_set(shape,output,schema,policy,*,controller_version,ea_version,forbi
         raise ValueError('Output or starter receipt already exists; no overwrite is allowed')
     values,fixes,_=starter_values(shape,schema,policy)
     choices=[]
-    if shape=='sequence' and 'Risk' in values:
-        choices.append(dict(input='Risk',placeholder=values['Risk'],reason='Money one failed sequence may lose (RiskperSeq sizing and the '
-            'hard close). '+values['Risk']+' is only the schema default, not a recommendation: on a 1,000 demo it is half the account. '
-            'build-set from this starter refuses until its changes set Risk explicitly to the amount the user chose.'))
+    if 'Risk' in values:
+        choices.append(dict(input='Risk',placeholder=values['Risk'],reason=('Money one failed sequence may lose (RiskperSeq sizing and the '
+            'hard close). ' if shape=='sequence' else 'Unused while this strategy uses fixed lots without the hard close; it matters '
+            'as soon as any descendant sizes or closes by Risk. ')+values['Risk']+' is only the schema default, not a recommendation: '
+            'on a 1,000 demo it is half the account. The SET carries a "Risk not chosen" marker that build-set keeps on every '
+            'descendant until a change sets Risk; a descendant that sizes or closes by Risk while it is still unchosen is refused '
+            '(RISK_NOT_CHOSEN).'))
     lines=[STARTER_HEADER+' ('+shape+'): '+values['EA_Desc'],
            '; Generated by goat studio starter-set from the installed input schema. Every input not listed in the',
            '; .starter.json receipt is its declared default. Input declaration SHA-256: '+schema['source_sha256'],
            '; UNTESTED: no entry filter is on and nothing is searched. It has zero evidence; build your idea with build-set.']
-    lines+=['; '+c['input']+'='+c['placeholder']+' is a placeholder, not a choice: build-set requires the user\'s own '+c['input']+'.' for c in choices]
+    lines+=[RISK_NOT_CHOSEN_MARKER+' Risk='+c['placeholder']+' is a placeholder, not the user\'s choice; set Risk with build-set '
+            'before sizing or closing by Risk.' for c in choices]
     lines+=[name+'='+values[name] for name in schema['inputs']]
     raw=b'\xff\xfe'+''.join(line+'\r\n' for line in lines).encode('utf-16-le')
     if len(raw)>MAX_SET_BYTES or read_values(raw)!=values: raise ValueError('Starter generation verification failed')
@@ -236,7 +227,7 @@ def starter_set(shape,output,schema,policy,*,controller_version,ea_version,forbi
         fixes=fixes,user_choices_required=choices,entry_filters_enabled=[],active_axes={},validation=validation,
         performance_evidence='none: a new idea starts with zero evidence',execution_ready=False,
         next_step='build-set --source <this .set> --output <new .set> --spec <changes.json>: add the entry filter(s), '
-                  'at least one search axis'+(' and the user\'s own Risk' if choices else ''),
+                  'at least one search axis'+(' and the user\'s own Risk' if shape=='sequence' else ''),
         limitations=STARTER_LIMITATIONS)
     receipt_raw=_receipt_bytes(record)
     _write_new(((output,raw),))
@@ -249,11 +240,11 @@ def starter_set(shape,output,schema,policy,*,controller_version,ea_version,forbi
 
 def starter_parent(source,original,schema):
     """The starter receipt beside a source SET, verified against its exact bytes; None for any other SET.
-    An unmodified starter (its generated header and starter EA_Desc) without its receipt is refused."""
+    A starter (its starter EA_Desc, with or without the generated header, e.g. after an MT5 re-save)
+    without its receipt is refused."""
     receipt=Path(source).with_suffix(STARTER_RECEIPT_SUFFIX)
     if not receipt.is_file():
-        text=original[2:].decode('utf-16-le')
-        if text.startswith(STARTER_HEADER) and read_values(original).get('EA_Desc') in STARTER_DESCRIPTIONS.values():
+        if is_starter(read_values(original)):
             raise ValueError('This is a GOAT starter without its .starter.json receipt beside it; keep the receipt next to '
                              'the starter or create a new one with starter-set')
         return None
@@ -270,19 +261,18 @@ def starter_parent(source,original,schema):
     return dict(label='starter:'+value['shape'],shape=value['shape'],receipt_path=str(receipt.resolve()),
                 receipt_sha256=hashlib.sha256(raw).hexdigest(),starter_sha256=value['output']['sha256'])
 
-def _uses_risk(values,schema):
-    """True when Risk can size or close: RiskperSeq is reachable, or the hard close at Risk is on."""
-    inputs=schema['inputs'];choices=(inputs.get('Mode_Lots') or {}).get('enum_choices') or {}
-    risk_lots='RiskperSeq' in choices and 'Mode_Lots' in values and can_reach(values['Mode_Lots'],inputs['Mode_Lots'],Fraction(choices['RiskperSeq']))
-    hard_close='Sequence_MLPS_Hard_Close' in values and values['Sequence_MLPS_Hard_Close'].split('||')[0] in ('true','1')
-    return risk_lots or hard_close
+def build_lineage_risk_unchosen(source,original):
+    """The source's own .build.json (verified against its bytes) says Risk was never chosen on its chain."""
+    receipt=Path(source).with_suffix('.build.json')
+    if not receipt.is_file(): return False
+    try:value=json.loads(receipt.read_bytes().decode('utf-8'))
+    except (UnicodeDecodeError,ValueError): return False
+    return (isinstance(value,dict) and value.get('output',{}).get('sha256')==hashlib.sha256(original).hexdigest()
+            and value.get('risk',{}).get('never_chosen') is True)
 
-def _starter_checks(values,schema,policy,changes):
+def _starter_checks(values,schema,policy):
     """Second line of the money-safety rules plus honest notes for a variant whose parent is a blank starter."""
-    check_risk_sizing(values,schema)   # validate_raw already applied it to every SET; kept here as a second line
-    if 'Risk' in schema['inputs'] and _uses_risk(values,schema) and 'Risk' not in changes:
-        raise ValueError(RISK_NOT_CHOSEN_CODE+': this starter sizes or closes by Risk (money lost per sequence) and its '
-                         'Risk is only the schema placeholder. Ask the user for the amount and set Risk explicitly in changes.')
+    check_risk_sizing(values,schema)   # validate_strategy already applied it to every SET; kept here as a second line
     enabled=[]
     for mode,disabled in signal_modes(policy).items():
         if mode in values and not (values[mode].split('||')[0]==disabled and not values[mode].endswith('||Y')):
@@ -294,6 +284,9 @@ def _starter_checks(values,schema,policy,changes):
 def build_set(source,output,spec,schema,policy,*,controller_version,ea_version,forbidden_roots=()):
     source,original,text=source_bytes(source);output=_new_output(output,forbidden_roots)
     if output==source: raise ValueError('Source/in-place overwrite is forbidden; choose a new variant path')
+    # Validate the source before anything else (the money-safety rules answer first); template tools are
+    # not a hidden compatibility migration or a way to repair an unknown source interface.
+    validate_raw(original,schema,policy)
     starter=starter_parent(source,original,schema)
     support=output.with_suffix('.md');receipt=output.with_suffix('.build.json')
     if any(p.exists() for p in (output,support,receipt)):
@@ -311,17 +304,18 @@ def build_set(source,output,spec,schema,policy,*,controller_version,ea_version,f
     if not isinstance(rationale,dict) or set(rationale)!=set(changes):
         raise ValueError('Every changed input requires its own rationale, with no extra keys')
     values=read_values(original)
-    # Validate the source before changing it; template tools are not a hidden
-    # compatibility migration or a way to repair an unknown source interface.
-    validate_raw(original,schema,policy)
+    # Risk lineage: the starter's marker line, or the source's own verified .build.json, says Risk was
+    # never chosen on this chain. It stays on every descendant until a change sets Risk.
+    unchosen=risk_not_chosen(original) or build_lineage_risk_unchosen(source,original)
     for name,value in changes.items():
         if name=='EA_Desc' or name not in schema['inputs']:
             raise ValueError('Unknown input or reserved EA_Desc change: '+str(name))
         if not isinstance(value,str) or any(c in value for c in '\r\n\x00') or len(value)>8192:
             raise ValueError('Replacement must be one bounded SET value string: '+name)
-        # From a starter, Risk must be stated even when the user's amount equals the placeholder.
-        if value==values[name] and not (starter is not None and name=='Risk'): raise ValueError('Replacement is unchanged: '+name)
+        # While Risk is unchosen, stating it is the choice, even when the user's amount equals the placeholder.
+        if value==values[name] and not (unchosen and name=='Risk'): raise ValueError('Replacement is unchanged: '+name)
         _text(rationale[name],'rationale.'+name)
+    still_unchosen=unchosen and 'Risk' not in changes
     variant_id=uuid.uuid4().hex
     description+=' ['+variant_id[:12]+']'
     replacements=changes|{'EA_Desc':description}
@@ -329,17 +323,25 @@ def build_set(source,output,spec,schema,policy,*,controller_version,ea_version,f
     edited=[]
     for line in lines:
         key=line.split('=',1)[0]
-        if key in replacements and not line.lstrip().startswith(';'):
+        if line.startswith(RISK_NOT_CHOSEN_MARKER):
+            if still_unchosen: edited.append(line)
+        elif key in replacements and not line.lstrip().startswith(';'):
             newline='\r\n' if line.endswith('\r\n') else ''
             edited.append(key+'='+replacements[key]+newline)
         else: edited.append(line)
+    if still_unchosen and not risk_not_chosen(original):
+        # Lineage known only from .build.json (comments lost, e.g. an MT5 re-save): restore the marker.
+        edited.insert(0,RISK_NOT_CHOSEN_MARKER+' Risk='+values.get('Risk','?')+' was never chosen on this strategy\'s '
+                      'chain; set Risk with build-set before sizing or closing by Risk.\r\n')
     built=b'\xff\xfe'+''.join(edited).encode('utf-16-le')
     after=read_values(built)
     expected=values|replacements
     if after!=expected: raise ValueError('Narrow replacement verification failed')
-    validation=validate_raw(built,schema,policy,require_optimization=True)
+    validation=validate_raw(built,schema,policy,require_optimization=True)   # refuses RISK_NOT_CHOSEN via the marker
+    if still_unchosen and uses_risk(after,schema):                          # second line, independent of the marker read
+        raise ValueError(RISK_NOT_CHOSEN_CODE+': '+RISK_NOT_CHOSEN_MESSAGE)
     if starter is not None:
-        starter['entry_filters_enabled'],starter['warnings']=_starter_checks(after,schema,policy,changes)
+        starter['entry_filters_enabled'],starter['warnings']=_starter_checks(after,schema,policy)
     delta=[dict(input=name,before=values[name],after=value,rationale=rationale.get(name,'Unique new variant identity; source identity retained in provenance')) for name,value in replacements.items()]
     record=dict(schema_version=1,variant_id=variant_id,created_utc=datetime.now(timezone.utc).isoformat(),
         status='untested_variant',controller_version=controller_version,ea_version=ea_version,
@@ -348,7 +350,9 @@ def build_set(source,output,spec,schema,policy,*,controller_version,ea_version,f
         output=dict(path=str(output),sha256=validation['sha256'],ea_desc=description),
         support_path=str(support),changes=delta,validation=validation,
         authored_notes={key:spec[key] for key in ('summary','entry_logic','ladder_exits','intended_role')},
-        matrix_registration_required=True,source_measurements_inherited=False)
+        matrix_registration_required=True,source_measurements_inherited=False,
+        risk=dict(never_chosen=still_unchosen,chosen_here='Risk' in changes and unchosen,
+                  rule='A descendant that sizes or closes by Risk while it was never chosen is refused (RISK_NOT_CHOSEN)'))
     if starter is not None: record['starter']=starter
     notes='# '+description+'\n\n**Untested research variant.** Structural validation is not performance evidence.\n\n'
     notes+='## Design notes\n\nThe following rationale was supplied by the author and requires review against active EA logic.\n\n'

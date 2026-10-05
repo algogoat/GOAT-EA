@@ -18,6 +18,8 @@ from studio_template_tools import (RISK_SIZING_CODE, RISK_SIZING_MESSAGE, STARTE
                                    signal_modes, starter_set, validate_set)
 from unittest.mock import patch
 import test_demo_seed_agent as seed_agent_fixture
+import test_goat_studio as goat_fixture
+import test_studio_agent_setup as agent_fixture
 
 CONTRACTS = {version: contracts(version) for version in ('1.48', '1.49')}
 
@@ -281,13 +283,50 @@ class BuildFromStarterTests(unittest.TestCase):
         stored = json.loads(Path(sequence['receipt_path']).read_text(encoding='utf-8'))
         self.assertEqual([c['input'] for c in stored['user_choices_required']], ['Risk'])
         self.assertEqual(stored['user_choices_required'][0]['placeholder'], '500.0')
-        self.assertIn('; Risk=500.0 is a placeholder', Path(sequence['output']['path']).read_bytes().decode('utf-16'))
+        self.assertIn('; GOAT Risk not chosen: Risk=500.0 is a placeholder', Path(sequence['output']['path']).read_bytes().decode('utf-16'))
         with self.assertRaisesRegex(ValueError, 'RISK_NOT_CHOSEN'):
             self.build(sequence['output']['path'], {'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
         same = self.build(sequence['output']['path'], {'Risk': '500.0', 'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
         self.assertIn({'input': 'Risk', 'before': '500.0', 'after': '500.0', 'rationale': 'Needed by the idea: Risk'}, same['changes'])
+        self.assertEqual((same['risk']['never_chosen'], same['risk']['chosen_here']), (False, True))
+        self.assertNotIn('GOAT Risk not chosen', Path(same['output']['path']).read_bytes().decode('utf-16'))
         single = json.loads(Path(self.starter('single')['receipt_path']).read_text(encoding='utf-8'))
-        self.assertEqual(single['user_choices_required'], [])                       # fixed lots: Risk is unused
+        self.assertEqual([c['input'] for c in single['user_choices_required']], ['Risk'])   # unused until a descendant sizes by it
+
+    # ---- Claude-Mac's re-review of fb9deb3b, point 3: RISK_NOT_CHOSEN through the whole lineage
+    def test_two_hop_chain_from_a_sequence_starter_cannot_inherit_the_placeholder(self):
+        sequence = self.starter('sequence')
+        a = self.build(sequence['output']['path'], {'Mode_Lots': '0', 'Sequence_MLPS_Hard_Close': 'false',
+                                                    'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'}, output='a.set')
+        self.assertTrue(a['risk']['never_chosen'])
+        self.assertIn('; GOAT Risk not chosen:', Path(a['output']['path']).read_bytes().decode('utf-16'))
+        with self.assertRaisesRegex(ValueError, 'RISK_NOT_CHOSEN'):
+            self.build(a['output']['path'], {'Mode_Lots': '2'}, output='b.set')
+        with self.assertRaisesRegex(ValueError, 'RISK_NOT_CHOSEN'):
+            self.build(a['output']['path'], {'Sequence_MLPS_Hard_Close': 'true'}, output='b.set')
+        self.assertFalse((self.root / 'b.set').exists())
+        b = self.build(a['output']['path'], {'Mode_Lots': '2', 'Risk': '150.0'}, output='b.set')   # choosing Risk ends it
+        self.assertEqual(b['risk']['never_chosen'], False)
+        c = self.build(b['output']['path'], {'Risk': '200.0'}, output='c.set')
+        self.assertEqual((c['parent'], c['risk']['never_chosen']), ('set', False))
+
+    def test_two_hop_chain_from_a_single_starter_is_refused_too(self):
+        single = self.starter('single')
+        a = self.build(single['output']['path'], {'Max_Seq_Trades': '5||2||1||8||Y'}, output='a.set')
+        with self.assertRaisesRegex(ValueError, 'RISK_NOT_CHOSEN'):
+            self.build(a['output']['path'], {'Mode_Lots': '2'}, output='b.set')
+        # A hand edit that keeps the marker is caught by validate-set and every validate_raw path as well.
+        text = Path(a['output']['path']).read_bytes().decode('utf-16').replace('Mode_Lots=0', 'Mode_Lots=2')
+        (self.root / 'hand.set').write_bytes(text.encode('utf-16'))
+        with self.assertRaisesRegex(ValueError, 'RISK_NOT_CHOSEN'):
+            validate_set(self.root / 'hand.set', self.schema, self.policy)
+
+    def test_a_starter_resaved_without_comments_or_receipt_is_still_a_starter(self):
+        sequence = self.starter('sequence'); path = Path(sequence['output']['path'])
+        resaved = ''.join(line for line in path.read_bytes().decode('utf-16').splitlines(keepends=True) if not line.startswith(';'))
+        target = self.root / 'mt5' / 'resaved.set'; target.parent.mkdir(); target.write_bytes(resaved.encode('utf-16'))
+        with self.assertRaisesRegex(ValueError, 'without its .starter.json receipt'):
+            self.build(target, {'Risk': '100.0', 'RSI_Mode': '1', 'RSI_Period': '14||7||7||21||Y'})
 
     def test_receipt_write_failure_rolls_back_the_starter(self):
         import studio_template_tools
@@ -306,6 +345,121 @@ class BuildFromStarterTests(unittest.TestCase):
         self.assertEqual(result['starter']['entry_filters_enabled'], [])
         self.assertRegex(result['starter']['warnings'][0], 'No entry signal is enabled')
         self.assertIn('**Warning:** No entry signal', Path(result['support_path']).read_text(encoding='utf-8'))
+
+
+RISKY = dict(Mode_Lots='2', Max_Seq_Trades='1')
+
+
+class EveryStrategyPathTests(unittest.TestCase):
+    """Claude-Mac's re-review of fb9deb3b, points 1, 2 and 4: the rule lives in validate_strategy, so the
+    single-job prepare, raw enqueue_batch and EA-panel draft paths hit it, and deploy-load checks bytes."""
+    def setUp(self):
+        self.fixture = goat_fixture.PortableControllerTests(); self.fixture.setUp(); self.addCleanup(self.fixture.tearDown)
+        from goat_studio import Controller
+        c = Controller(self.fixture.path); self.fixture.controller = c
+        c.bootstrap('123456', 'Customer-Demo'); c.store.close(); c.store = None; c.open()   # real shipped 1.48 contracts
+        self.c = c
+        self.schema = c.schema
+        self.safe = starter_set('sequence', self.fixture.root / 'base.set', c.schema, c.policy, controller_version='t',
+                                ea_version='1.48')
+        self.values = read_values(Path(self.safe['output']['path']).read_bytes())
+        self.values['Grid_Size'] = '10.0||5.0||5.0||20.0||Y'
+
+    def risky(self, **extra):
+        return self.values | RISKY | extra
+
+    def envelope(self, command, payload, request_id):
+        state = self.c.state()
+        return dict(schema_version=1, request_id=request_id, terminal_id=self.c.terminal, run_id=self.c.run,
+                    expected_revision=state['revision'], generation=state['generation'], command=command, payload=payload)
+
+    def test_every_spelling_is_refused_by_validate_strategy_itself(self):
+        from studio_strategy_settings import validate_strategy
+        self.assertTrue(validate_strategy(self.values, self.schema)['axes'])
+        for name, spellings in (('Max_Seq_Trades', ('1', '0', '-3', '1.0', '01', '+1', '1e0', '-0', '4||0||1||8||Y',
+                                                     '5||1||1||8||Y', '1||2||1||5||N', '1||2||1||5||Y')),
+                                ('Mode_Lots', ('2.0', '02', '2e0', '2||0||1||2||N'))):
+            for spelling in spellings:
+                values = self.values | {'Mode_Lots': '2', 'Max_Seq_Trades': '1'} | {name: spelling}
+                with self.subTest(name=name, spelling=spelling), self.assertRaisesRegex(ValueError, '^' + RISK_SIZING_CODE):
+                    validate_strategy(values, self.schema)
+
+    def test_ea_panel_draft_is_refused(self):
+        request = self.envelope('draft.replace_strategy', dict(schema_hash=sha(self.schema), values=self.risky()), 'panel-draft-1')
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
+            self.c.store.submit(request, actor='human')
+        self.assertIsNone(self.c.state()['strategy_draft'])
+
+    def test_single_job_prepare_is_refused_before_anything_is_queued(self):
+        source = self.fixture.root / 'risky.set'
+        source.write_bytes(('\r\n'.join(k + '=' + v for k, v in self.risky().items()) + '\r\n').encode('utf-16'))
+        config = self.fixture.root / 'settings.json'
+        config.write_text(json.dumps(dict(tester=self.fixture.tester, export=self.fixture.exports)))
+        self.fixture.grant(self.c)
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
+            self.c.prepare('risky-job', source, config)
+        self.assertEqual(self.c.state()['queue'], [])
+        self.assertFalse((self.c.root / 'packages' / 'risky-job').exists())
+
+    def test_raw_enqueue_batch_is_refused(self):
+        self.fixture.grant(self.c)
+        member = dict(tester=self.fixture.tester, export=self.fixture.exports,
+                      strategy=dict(schema_hash=sha(self.schema), values=self.risky()))
+        request = self.envelope('queue.enqueue_batch', dict(job_id='raw-batch', members=[member]), 'raw-batch-1')
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
+            self.c.store.submit(request, actor='agent')
+        self.assertEqual(self.c.state()['queue'], [])
+
+    def test_a_job_queued_before_the_rule_is_refused_at_every_native_start(self):
+        from types import SimpleNamespace
+        from studio_research_authority import before_native_dispatch
+        fake = SimpleNamespace(schema=self.schema)
+        for job in (dict(job_id='old-single', configuration=dict(strategy=dict(values=self.risky()))),
+                    dict(job_id='old-batch', configuration=dict(strategy=dict(values=self.values),
+                         batch_members=[dict(strategy=dict(values=self.values)), dict(strategy=dict(values=self.risky()))]))):
+            with self.subTest(job=job['job_id']), self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
+                before_native_dispatch(fake, job)
+
+    def test_schema_that_renames_the_sizing_inputs_fails_closed(self):
+        from studio_strategy_settings import RISK_SIZING_SCHEMA_CODE, validate_strategy
+        renamed = copy.deepcopy(self.schema)
+        renamed['inputs']['Mode_Lots']['enum_choices'] = {'FixedLots': 0, 'ScaledLots': 1, 'RiskPerSequence': 2}
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_SCHEMA_CODE):
+            validate_strategy(self.values, renamed)
+        missing = copy.deepcopy(self.schema); del missing['inputs']['Max_Seq_Trades']
+        values = dict(self.values); del values['Max_Seq_Trades']
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_SCHEMA_CODE):
+            validate_strategy(values, missing)
+
+
+class DeployLoadGuardTests(unittest.TestCase):
+    """deploy-load: the path closest to money checks every member's bytes before anything is written."""
+    def setUp(self):
+        agent_fixture.AgentSetupTests.setUp(self)
+        self.c.schema = contracts('1.48')[0]                                         # the shipped interface
+
+    plan, tearDown = agent_fixture.AgentSetupTests.plan, agent_fixture.AgentSetupTests.tearDown
+
+    def test_risky_member_is_refused_before_any_file_is_written(self):
+        import studio_demo_deploy as deploy
+        for content in ('EA_Desc=Trend 0\r\nMode_Lots=2\r\nMax_Seq_Trades=1\r\n',
+                        'EA_Desc=Trend 0\r\nMode_Lots=2||0||1||2||N\r\nMax_Seq_Trades=0\r\n',
+                        'EA_Desc=Trend 0\r\nMax_Seq_Trades=1\r\nMode_Lots=2.0\r\n'):
+            with self.subTest(content=content), self.assertRaisesRegex(ValueError, '^' + RISK_SIZING_CODE + '.*nothing was written'):
+                deploy.load(self.c, self.plan([agent_fixture.member(0, content=content.encode('utf-16'))]),
+                            mt5=agent_fixture.FakeMT5(self.c))
+        where = deploy.paths(self.c, 'e' * 32)
+        self.assertFalse(where['sets'].exists() or where['state'].exists() or where['preset'].exists())
+        self.assertFalse(where['journal'].exists())
+
+    def test_partial_and_safe_members_pass_the_value_check(self):
+        import studio_demo_deploy as deploy
+        for content in ('EA_Desc=Trend 0\r\nMode_Lots=2\r\nMax_Seq_Trades=8\r\n',   # a real RiskperSeq export
+                        'EA_Desc=Trend 0\r\nMax_Seq_Trades=1\r\n',                  # missing Mode_Lots is FixedLots
+                        'EA_Desc=Trend 0\r\nMode_Lots=2\r\n'):                       # missing Max is the default 10
+            deploy.check_member_values(self.c, 'm.set', content.encode('utf-16'))
+        with self.assertRaisesRegex(ValueError, RISK_SIZING_CODE):
+            deploy.check_member_values(self.c, 'm.set', 'Mode_Lots=2\r\nMax_Seq_Trades=1\r\n'.encode('utf-16'))
 
 
 class StarterCliTests(unittest.TestCase):

@@ -316,7 +316,22 @@ def dispatch(controller, args):
                 raise ValueError('Only the exact frozen research plan is authorized')
 
 
+def check_job_strategies(controller, job):
+    """Money-safety recheck at every native start route: a job queued before the risk-per-sequence rule
+    existed (or by any older path) is refused here, before anything reaches MT5."""
+    schema = getattr(controller, 'schema', None)
+    if schema is None:
+        return
+    from studio_strategy_settings import check_risk_sizing
+    configuration = job.get('configuration') or {}
+    for member in configuration.get('batch_members') or [configuration]:
+        values = ((member or {}).get('strategy') or {}).get('values')
+        if isinstance(values, dict):
+            check_risk_sizing(values, schema)
+
+
 def before_native_dispatch(controller, job):
+    check_job_strategies(controller, job)
     # Held-out lock (goatai#2221 §4.3): every native start route re-checks the frozen plan.
     from studio_heldout_guard import check_native_start
     check_native_start(controller, job['job_id'])

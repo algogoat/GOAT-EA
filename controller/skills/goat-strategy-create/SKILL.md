@@ -39,9 +39,11 @@ sizing with fewer than 2 trades: the EA has no loss path to size from and would 
 the broker maximum, so every validate-set and build-set refuses it
 (`RISK_PER_SEQUENCE_NEEDS_TWO_TRADES`). Sequence: `RiskperSeq`, and **ask the user
 for `Risk`**, the money one failed sequence may lose, as an amount of their demo
-currency. The starter's 500 is only a placeholder (half of a 1,000 demo); build-set
-from a sequence starter refuses with `RISK_NOT_CHOSEN` until `Risk` is in the changes
-with the user's own amount, even when they choose 500.
+currency. The starter's 500 is only a placeholder (half of a 1,000 demo). Never copy
+the placeholder into the spec yourself: write the amount the user said, even if it
+is 500. Until a change sets `Risk`, every descendant of a starter carries a "Risk not
+chosen" marker, and any of them that sizes or closes by Risk is refused with
+`RISK_NOT_CHOSEN`.
 
 **5. Catalog check before building.** Read `Desktop 'strategy.matrix'` and compare
 the answers with each template's description, support notes and SET (enabled

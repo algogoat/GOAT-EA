@@ -112,5 +112,64 @@ def validate_strategy(values, schema):
             axes[name] = count
         except ValueError as exc:
             raise ValueError(name+': '+str(exc)) from exc
+    check_risk_sizing(values, schema)
     return dict(values=dict(values), axes=axes, source_sha256=schema['source_sha256'],
                 dependency_validation='pending', execution_ready=False)
+
+
+RISK_SIZING_CODE = 'RISK_PER_SEQUENCE_NEEDS_TWO_TRADES'
+RISK_SIZING_MESSAGE = ('Risk-per-sequence sizing needs at least 2 sequence trades; use fixed lots or raise '
+                       'Max_Seq_Trades (single-trade % risk returns in the next EA build).')
+RISK_SIZING_SCHEMA_CODE = 'RISK_SIZING_SCHEMA_UNRECOGNISED'
+
+
+def _reachable(encoded, definition):
+    """(current, ladder) of one value: ladder is (start, step, stop) only for an active Y axis.
+    A dormant `value||start||step||stop||N` tuple runs with its first field, exactly as MT5 reads it."""
+    parts = encoded.split('||')
+    current = numeric(parts[0], definition)
+    if len(parts) == 5 and parts[4] == 'Y':
+        return current, (numeric(parts[1], definition), numeric(parts[2], definition, step=True), numeric(parts[3], definition))
+    return current, None
+
+
+def can_reach(encoded, definition, target):
+    current, ladder = _reachable(encoded, definition)
+    if current == target:
+        return True
+    if ladder is None:
+        return False
+    start, step, stop = ladder
+    return start <= target <= stop and ((target-start)/step).denominator == 1
+
+
+def lowest_reachable(encoded, definition):
+    current, ladder = _reachable(encoded, definition)
+    return current if ladder is None else min(current, ladder[0])
+
+
+def check_risk_sizing(values, schema):
+    """Unconditional money-safety rule for every strategy the controller validates or stages.
+
+    With Mode_Lots=RiskperSeq the EA solves the first lot from the planned loss path over levels
+    1..Max_Seq_Trades-1. With Max_Seq_Trades<=1 that path is empty (planned loss 0), so the solver
+    climbs to the broker's maximum volume. Any reachable combination is refused: the current value,
+    every value of an active ladder and the first field of a dormant N tuple. A value missing from a
+    partial SET is the EA's declared default. Fails closed when a schema with Mode_Lots no longer
+    names RiskperSeq or Max_Seq_Trades, so a rename can never switch the rule off silently."""
+    inputs = schema['inputs']
+    lots, trades = inputs.get('Mode_Lots'), inputs.get('Max_Seq_Trades')
+    if lots is None:
+        return  # not a GOAT sizing interface (compact test schemas)
+    choices = lots.get('enum_choices') or {}
+    if 'RiskperSeq' not in choices or trades is None:
+        raise ValueError(RISK_SIZING_SCHEMA_CODE + ': this input schema has Mode_Lots but no RiskperSeq choice or no '
+                         'Max_Seq_Trades; the risk-per-sequence safety rule cannot be checked, so nothing is accepted')
+    def value(name, definition):
+        if name in values:
+            return values[name]
+        from studio_template_tools import schema_default
+        return schema_default(name, definition, schema.get('defines'))
+    if (can_reach(value('Mode_Lots', lots), lots, Fraction(choices['RiskperSeq']))
+            and lowest_reachable(value('Max_Seq_Trades', trades), trades) <= 1):
+        raise ValueError(RISK_SIZING_CODE + ': ' + RISK_SIZING_MESSAGE)

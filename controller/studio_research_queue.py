@@ -6,7 +6,8 @@ the desktop's Research queue and agents see everything a PC is doing from one co
 
 * Refine: native Studio batches, from the bound session's queue rows (``studio.sqlite``, read only);
 * Explore: seed hunts, from ``seeds/<id>/state.json`` and ``manifest.json``;
-* Prove: OOS catch-ups, from ``catchups/<id>/`` (the same runner format).
+* Prove: OOS catch-ups, from ``catchups/<id>/``, and hold-up tests (one frozen SET, one MT5 pass), from
+  ``holdups/<id>/`` (the same runner format).
 
 Every row names its run in ``batch_id``. Both CLIs print replies through ``guard_output``, which redacts
 each row's values derived from a held-out locked window per strategy key and window, exactly as for
@@ -23,8 +24,8 @@ import re
 from studio_research_status import ACTIVE, _bounded_json, batch_progress, seed_progress
 
 JOB_ID = re.compile(r'[A-Za-z0-9_-]{1,80}')
-STAGE = dict(batch='refine', seed='explore', catchup='prove')
-RUNNER_FOLDER = dict(seed='seeds', catchup='catchups')
+STAGE = dict(batch='refine', seed='explore', catchup='prove', holdup='prove')
+RUNNER_FOLDER = dict(seed='seeds', catchup='catchups', holdup='holdups')
 STATES = ('queued', 'running', 'pausing', 'paused', 'blocked', 'finished', 'stopped', 'failed')
 ENDED = frozenset(('finished', 'stopped', 'failed'))
 FINISHED_DEFAULT = 5        # ended jobs kept (most recent first); unfinished jobs are always listed
@@ -159,7 +160,7 @@ def runner_row(root, kind, batch_id, *, now):
     status = progress.get('status')
     if status not in RUNNER_STATUSES:
         return None, 'unknown run status ' + str(status)
-    noun = 'candidate' if kind == 'seed' else 're-test'
+    noun = dict(seed='candidate', catchup='re-test', holdup='test')[kind]
     statuses = [m['status'] for m in members]
     cancelled, failed = statuses.count('cancelled'), sum(s in FAILED for s in statuses)
     completed = statuses.count('completed')
@@ -197,7 +198,8 @@ def runner_row(root, kind, batch_id, *, now):
     finished = max(ended) if ended else (state.get('updated_unix') if _finite(state.get('updated_unix')) else None)
     testers = [s['tester'] for s in specs]
     results = (dict(qualifying=progress.get('qualifying'), qualifying_candidates=progress.get('qualifying_candidates'))
-               if kind == 'seed' else dict(held_up=progress.get('held_up')))
+               if kind == 'seed' else dict(profitable=progress.get('profitable')) if kind == 'holdup'
+               else dict(held_up=progress.get('held_up')))
     if not completed:
         results = {key: None for key in results}
     return _row(kind, batch_id, state=row_state, status=status, note=note,
@@ -257,7 +259,7 @@ def research_queue(*, root, install, session, now, jobs=None, finished=FINISHED_
                 rows.append(batch_row(root, install, job, now=now))
             except (OSError, ValueError, KeyError, TypeError) as error:
                 skipped.append(dict(batch_id=job['job_id'], kind='batch', reason='native evidence unreadable: ' + str(error)[:200]))
-    for kind in ('seed', 'catchup'):
+    for kind in ('seed', 'catchup', 'holdup'):
         for batch_id in _runner_ids(root, kind):
             row, reason = runner_row(root, kind, batch_id, now=now)
             if row is None:

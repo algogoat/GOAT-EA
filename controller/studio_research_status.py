@@ -493,7 +493,7 @@ def seed_progress(root, batch_id, *, now, kind='seed'):
 
     Catch-up results are never "qualifying": held_up members are counted as ``held_up``.
     """
-    folder = Path(root) / ('catchups' if kind == 'catchup' else 'seeds') / batch_id
+    folder = Path(root) / dict(catchup='catchups', holdup='holdups').get(kind, 'seeds') / batch_id
     state, _ = _bounded_json(folder / 'state.json', 32 * 1024 * 1024)
     if not isinstance(state, dict) or not isinstance(state.get('members'), list):
         return dict(batch_id=batch_id, kind=kind, status='unknown', evidence='seed_state_unreadable')
@@ -512,10 +512,14 @@ def seed_progress(root, batch_id, *, now, kind='seed'):
         eta = now + max(0.0, remaining * cycle - (min(age, cycle * .95) if age is not None else 0))
     candidates = sum((m.get('result') or {}).get('summary', {}).get('qualifying_count', 0) or 0 for m in done)
     qualifying_members = sum(1 for m in done if ((m.get('result') or {}).get('summary', {}).get('qualifying_count') or 0) > 0)
-    held_up = None
+    held_up = profitable = None
     if kind == 'catchup':
         # A few new weeks never qualify anything: report held_up separately, not as qualifying.
         held_up = sum(1 for m in done if (m.get('result') or {}).get('summary', {}).get('verdict') == 'held_up')
+        candidates = qualifying_members = None
+    elif kind == 'holdup':
+        # A hold-up test has no verdict and no cutoff: count the tests whose window made money.
+        profitable = sum(1 for m in done if ((m.get('result') or {}).get('summary', {}).get('net') or 0) > 0)
         candidates = qualifying_members = None
     last = max(finished, key=lambda m: m.get('finished_unix') or 0, default=None)
     paused = (folder / 'pause.json').is_file()
@@ -524,6 +528,7 @@ def seed_progress(root, batch_id, *, now, kind='seed'):
                                                          else 'pausing' if paused and status == 'active' else status),
                 members_total=len(members), members_done=len(done), members_finished=len(finished),
                 qualifying=qualifying_members, qualifying_candidates=candidates, held_up=held_up,
+                **({} if kind != 'holdup' else dict(profitable=profitable)),
                 last_member=None if last is None else dict(alias=last.get('alias'), status=last.get('status'),
                     qualifying_candidates=(last.get('result') or {}).get('summary', {}).get('qualifying_count'),
                     best_fitness=(last.get('result') or {}).get('summary', {}).get('best_fitness')),
@@ -533,8 +538,8 @@ def seed_progress(root, batch_id, *, now, kind='seed'):
                 pause_requested=paused, evidence='seed_state',
                 # A start GOAT could not confirm: nothing runs, so there is nothing to pause. One action settles it.
                 needs_settle=status == 'reconcile_required',
-                settle=(dict(command=('catchup' if kind == 'catchup' else 'seed') + '-reconcile',
-                             argument=('--catchup-id ' if kind == 'catchup' else '--batch-id ') + batch_id,
+                settle=(dict(command=(kind if kind in ('catchup', 'holdup') else 'seed') + '-reconcile',
+                             argument=dict(catchup='--catchup-id ', holdup='--holdup-id ').get(kind, '--batch-id ') + batch_id,
                              reasons=[m.get('reconcile_reason') or m.get('error') for m in members if m.get('status') == 'reconcile_required'],
                              plain='GOAT could not confirm how a member started. Settle checks that MT5 is idle and keeps the member''s own result if it passes every check.')
                         if status == 'reconcile_required' else None))
@@ -584,7 +589,7 @@ def headline(activity):
     if kind == 'idle':
         return 'No research is running on this terminal.'
     total, done = activity.get('members_total'), activity.get('members_done')
-    name = 'seed hunt' if kind == 'seed' else 'catch-up' if kind == 'catchup' else 'batch'
+    name = dict(seed='seed hunt', catchup='catch-up', holdup='hold-up test').get(kind, 'batch')
     status = activity.get('status')
     pace_value = activity.get('pace') or {}
     eta = pace_value.get('eta_wall')
@@ -595,7 +600,8 @@ def headline(activity):
     qualifying = activity.get('qualifying')
     counts = ('' if total is None else ' ' + str(done) + ' of ' + str(total) + ' members done') + (
         '' if qualifying is None else ', ' + str(qualifying) + ' qualifying') + (
-        '' if activity.get('held_up') is None else ', ' + str(activity['held_up']) + ' held up (low-sample verdicts)')
+        '' if activity.get('held_up') is None else ', ' + str(activity['held_up']) + ' held up (low-sample verdicts)') + (
+        '' if activity.get('profitable') is None else ', ' + str(activity['profitable']) + ' made money on their window')
     # No-edge members are results for their window, reported apart and never as failures.
     no_edge, failed = activity.get('members_no_edge'), activity.get('members_failed')
     if no_edge:
@@ -614,14 +620,14 @@ def headline(activity):
         return 'Pausing this ' + name + ' at the next safe point;' + counts + '.'
     if status == 'paused':
         return 'Paused;' + counts + '. Resume continues the remaining members.'
-    if kind in ('seed', 'catchup') and status == 'reconcile_required':
+    if kind in ('seed', 'catchup', 'holdup') and status == 'reconcile_required':
         return (name[0].upper() + name[1:] + ' ' + str(activity.get('batch_id')) + ' needs settling: GOAT could not confirm how a member started, '
                 'so nothing is running and there is nothing to pause. Settle it with ' + (activity.get('settle') or {}).get('command', 'seed-reconcile')
                 + ' ' + (activity.get('settle') or {}).get('argument', '') + ';' + counts + '.')
     if status in ('running', 'starting', 'reconcile_required', 'verifying', 'active'):
         current = activity.get('current_member') or {}
         member = (' on ' + current['symbol'] + ' ' + current['timeframe']) if current.get('symbol') else ''
-        return 'Running' + (' OOS catch-up' if kind == 'catchup' else '') + member + ';' + counts + left + '.'
+        return 'Running' + dict(catchup=' OOS catch-up', holdup=' hold-up test').get(kind, '') + member + ';' + counts + left + '.'
     if status == 'failed' and no_edge and failed == 0:
         # The queue calls it failed only because no-edge members keep an Error status.
         # Cancelled members mean it stopped early: never "finished" (counts name them).
@@ -655,9 +661,12 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
     activity = dict(kind='idle', status='idle')
     if seed_id and not active and isinstance(seed_id, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,80}', seed_id):
         # Seeds and catch-ups share the slot; the slot names the manifest it belongs to.
-        catchup, _ = _bounded_json(root / 'catchups' / seed_id / 'state.json', 32 * 1024 * 1024)
-        kind = ('catchup' if isinstance(catchup, dict) and catchup.get('manifest_sha256') == seed_slot.get('manifest_sha256')
-                else 'seed')
+        kind = 'seed'
+        for runner, folder in (('catchup', 'catchups'), ('holdup', 'holdups')):
+            runner_state, _ = _bounded_json(root / folder / seed_id / 'state.json', 32 * 1024 * 1024)
+            if isinstance(runner_state, dict) and runner_state.get('manifest_sha256') == seed_slot.get('manifest_sha256'):
+                kind = runner
+                break
         activity = seed_progress(root, seed_id, now=now, kind=kind)
     elif current is not None:
         journal, _ = _bounded_json(root / 'batch-drivers' / (current['job_id'] + '.json'))

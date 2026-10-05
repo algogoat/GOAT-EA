@@ -814,6 +814,34 @@ when that receipt binds it (and it matches the binary, compile commit and compil
 `--installed-externals` accept a manifest too; when both builds carry one, every file
 the compiler read is compared.
 
+### Hold-up test: one frozen SET on unseen weeks (Prove, goatai#1885)
+
+`goat.exe demo holdup-validate|prepare|start|resume|status|cancel|reconcile|report`
+(owner demo lane only in v1; see [DEMO-AGENT-TOOLS.md](DEMO-AGENT-TOOLS.md#hold-up-test-on-the-demo-lane-prove)).
+`studio_holdup.HoldupRunner` reuses the seed driver. Each test is one `/config` MT5 pass,
+with `Optimization=0`, `ForwardMode=0`, `ShutdownTerminal=1` and
+`Report=MQL5\Files\GOATStudio\HoldupReports\<alias>.htm`, of a SET bound by its
+sha256. Its `EA_Desc` carries no `@{mode=...}`, so the EA writes no export.
+
+`studio_tester_report` reads MT5's own report and checks it:
+- its inputs equal the frozen SET's values;
+- the settings match the frozen test;
+- the deal balances chain, and the totals, net, final balance and deal counts reconcile.
+
+Results keep MT5's metrics (drawdown from MT5's equity, not the EA CSV), weekly and daily
+realised P/L, the split segments, the deal list, the window's `relation` to the SET's own
+selection windows, and an `evidence` hint. That hint is `null` below 90 % history quality;
+an unknown relation maps to back-oos L2 with contamination `unknown`, which counts as
+contaminated.
+
+It is refused before any effect for:
+- search axes, `RISK_NOT_CHOSEN`, a non-standard `Mode_Operation`, a starter, AI bias on, a random delay;
+- `heldout_reveal` (v1.1 enables it after the T3 proof);
+- the unfinished week, or an active held-out lock.
+
+Every dispatched test is a `trial-journal` peek. `native_launch_qualified: false` until the
+owner-lane T3 proof: parse, inputs match, metrics equal MT5's GUI, Banker undisturbed.
+
 ### Held-out lock and trial journal (library scoring v1, phase 1)
 
 The controller half of goatai#2221 (`docs/research/library-scoring-v1-phase1.md`

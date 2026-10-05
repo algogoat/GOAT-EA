@@ -41,11 +41,13 @@ METRIC_KEYS = frozenset((
     'seed_metrics', 'seed_qualifies', 'average_fitness', 'health_percent', 'zero_trade_count', 'average_trades',
     'actual_frames', 'no_edge', 'members_no_edge', 'no_edge_window', 'counts', 'comparability', 'comparable', 'reproduced',
     'passes', 'profitable', 'traded', 'forward_rows', 'back_rows', 'paired_rows', 'actual_back_report_rows',
-    'actual_forward_report_rows', 'matching_pass_ids', 'performance_qualification', 'export_qualification'))
+    'actual_forward_report_rows', 'matching_pass_ids', 'performance_qualification', 'export_qualification',
+    # Hold-up test results (studio_holdup): MT5 report figures, weekly/daily realised P/L, split segments, deals.
+    'per_week', 'daily', 'segments', 'deals'))
 # Sentences and log lines that quote such values: replaced whole inside a locked part.
 SENTENCE_KEYS = frozenset(('plain', 'summary', 'headline', 'reasons', 'sentence', 'line', 'note', 'title'))
 METRIC_STATUSES = frozenset(('native_threshold_candidate', 'below_native_thresholds', 'held_up', 'weakened', 'too_few_trades'))
-RUN_KEYS = ('job_id', 'batch_id', 'catchup_id')
+RUN_KEYS = ('job_id', 'batch_id', 'catchup_id', 'holdup_id')
 PATH_KEYS = ('set_path', 'original_set', 'version_set_path', 'xml_path')
 
 _TOKENS = (
@@ -288,7 +290,7 @@ def _run_members(context, run_id):
                                                             values=values[index] if index < len(values) else None)
                     member['keys'] = list(attribution.get('keys') or [])
         else:
-            for folder in ('seeds', 'catchups'):
+            for folder in ('seeds', 'catchups', 'holdups'):
                 manifest = _json_file(context.root / folder / run_id / 'manifest.json')
                 if isinstance(manifest, dict):
                     members, _ = _runner_members(context, manifest)

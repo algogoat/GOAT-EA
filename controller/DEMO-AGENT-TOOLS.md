@@ -467,6 +467,76 @@ selected MT5 and relaunches it once per member like a seed run; tell the owner
 first. `batch-pause --batch-id <catchup id>` pauses between members and
 `batch-resume` continues. `research-status` shows it as an OOS catch-up.
 
+## Hold-up test on the demo lane (Prove)
+
+A hold-up test answers "does this exact SET hold on weeks it never saw?". It runs
+one frozen SET as one MT5 tester pass (no optimization, no forward window) over a
+window you choose, and reads the result from **MT5's own report**, never from EA
+output. It writes no export, promotion, library or ledger entry. It uses the seed
+lane's checks, start record (`demo-agent/holdup-starts/<id>.json`), slot, STOP,
+pause, slices and member-failure rules unchanged, and is the **owner demo lane only**
+in v1 (goatai#1885, Claude-Mac 5989126739).
+
+```powershell
+& $py $tool --installation $install holdup-validate --plan 'C:/holdup-plan.json'
+& $py $tool --installation $install holdup-prepare --holdup-id 'r3-eagle-usdjpy-2023' --plan 'C:/holdup-plan.json'
+& $py $tool --installation $install holdup-start --holdup-id 'r3-eagle-usdjpy-2023' --max-seconds 60
+& $py $tool --installation $install holdup-resume --holdup-id 'r3-eagle-usdjpy-2023' --max-seconds 60
+& $py $tool --installation $install holdup-report --holdup-id 'r3-eagle-usdjpy-2023'
+```
+
+The plan (1..50 tests):
+
+```json
+{"schema_version": 1, "job_timeout_seconds": 3600,
+ "tests": [{"set_path": "C:\\...\\GOAT V1.49 USDJPY,M1_Trds=....set", "set_sha256": "<sha256 of that file>",
+            "window": {"start": "2023-01-02", "end": "2025-01-06", "split": "2024-07-01"},
+            "tester": {"Model": 1, "ExecutionMode": 0, "Deposit": 10000, "Currency": "USD", "Leverage": "1:100"},
+            "symbol": "USDJPY", "period": "M1", "strategy_ref": {"strategy_key": "...", "...": "..."}}]}
+```
+
+- **`set_sha256` is required.** Prepare refuses a file whose bytes differ. The frozen
+  copy changes only `EA_Desc` (to the test's alias, with no `@{mode=...}`), so the
+  EA runs a plain test.
+- **The window is broker days, half-open `[start, end)`.** `end: "auto"` is the day
+  after the last closed Friday; a later end is refused. The optional `split`
+  reports the deals before and after it as two segments.
+- **Symbol and period** come from an export's file name or a seed promotion's
+  `promotion.json`. Otherwise give them in the plan; if two sources disagree, it
+  refuses. `tester` is explicit: the price model is yours to choose, and the
+  result records its `model_tag`.
+- **Refused before any effect:**
+  - a SET that still searches an input (freeze one candidate first);
+  - `RISK_NOT_CHOSEN` and the risk-per-sequence rule;
+  - `Mode_Operation` other than 9;
+  - a GOAT starter;
+  - AI bias on (`HOLDUP_AI_BIAS_ON`; only `Mode_Bias=Bias_Disabled`);
+  - a random execution delay;
+  - `heldout_reveal` (`HELDOUT_REVEAL_NOT_IN_V1`: reveals wait for the native T3 proof);
+  - any test that overlaps an active held-out lock. This is checked again before each launch.
+- **Result checks.** A test completes only when MT5's report passes every check: its
+  inputs equal the frozen SET's values one by one; Expert, symbol, period, dates,
+  deposit, currency and leverage match; every deal's balance follows from the one
+  before; the deals add up to the totals row and Total Net Profit; the last
+  balance is the deposit plus the net; and the deal counts match Total Deals and
+  Total Trades. Otherwise that test fails with the reason, and the others continue.
+  The report must be in English.
+- **What a completed test keeps:** `<alias>.result.json` (`goat-holdup-result-v1`), a
+  copy of MT5's report and `<alias>.deals.json`. The result holds:
+  - `metrics`: MT5's figures, with drawdown from MT5's equity and balance, never the EA CSV;
+  - `per_week` and `daily` realised P/L, and the `segments`;
+  - `relation`: whether the window is before, after or overlapping the SET's own
+    selection windows (export header or seed window), or unknown;
+  - `evidence`: the ledger hint for `evidence.record`. After maps to catch-up L3,
+    before to back-oos L2, overlapping to in-sample L0, and unknown to back-oos L2
+    with contamination `unknown`, which counts as contaminated. Below 90 % MT5
+    history quality, `evidence` is `null`, with `evidence_reason`.
+- **`trial-journal` counts every dispatched hold-up test as a peek** (kind `single-pass`),
+  so re-running a winner until it looks good is visible. `research-queue` shows it as
+  Prove (kind `holdup`, results `profitable`).
+- MT5 closes and relaunches once per test, like a seed run, so tell the owner first.
+  `native_launch_qualified: false` until the T3 proof.
+
 This is the first Tier A slice. Terminal discovery, compile, SET editing,
 report parsing and exports will be separate tools wrapping existing MT5/EA
 features. Native smoke evidence is required before calling this lane qualified.

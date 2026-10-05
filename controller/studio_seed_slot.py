@@ -18,8 +18,9 @@ def refuse_prepare_while_seed_owns(root):
     value=read_json(path)
     if value.get('status')=='released':return
     batch=str(value.get('batch_id') or '<id>')
-    kind='catchup' if (Path(root)/'catchups'/batch/'state.json').is_file() else 'seed'
-    flag='--catchup-id' if kind=='catchup' else '--batch-id'
-    raise ValueError(('Catch-up ' if kind=='catchup' else 'Seed hunt ')+batch+' still holds this terminal, so nothing was prepared; '
+    kind=('catchup' if (Path(root)/'catchups'/batch/'state.json').is_file() else
+          'holdup' if (Path(root)/'holdups'/batch/'state.json').is_file() else 'seed')
+    flag={'catchup':'--catchup-id','holdup':'--holdup-id'}.get(kind,'--batch-id')
+    raise ValueError({'catchup':'Catch-up ','holdup':'Hold-up test '}.get(kind,'Seed hunt ')+batch+' still holds this terminal, so nothing was prepared; '
                      'settle it first with '+kind+'-reconcile '+flag+' '+batch+' (or '+kind+'-cancel '+flag+' '+batch+
                      ' once MT5 is idle), then prepare again.')

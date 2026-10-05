@@ -41,7 +41,9 @@ COLD_START_READBACK_SECONDS = 420
 # Seed hunts and OOS catch-ups share one runner driver, one terminal slot and one
 # broker-verified start discipline; only their state folders and wording differ.
 LANES = {'seed': dict(folder='seeds', starts='seed-starts', word='seed', title='Seed', unit='seed hunt'),
-         'catchup': dict(folder='catchups', starts='catchup-starts', word='catch-up', title='Catch-up', unit='catch-up')}
+         'catchup': dict(folder='catchups', starts='catchup-starts', word='catch-up', title='Catch-up', unit='catch-up'),
+         # Hold-up test (the Prove step, goatai#1885): one frozen SET, one MT5 pass; demo lane only in v1.
+         'holdup': dict(folder='holdups', starts='holdup-starts', word='hold-up test', title='Hold-up test', unit='hold-up test')}
 ACTIVE_NATIVE_STATUSES = ('reserved', 'starting', 'running', 'reconcile_required', 'verifying')
 # What an app update (install-build and its relaunch) writes to the demo action log. Any other
 # operation there is owner demo-lane work, which restore-lane never undoes.
@@ -1898,6 +1900,9 @@ class DemoAgent:
         if kind == 'catchup':
             from studio_catchup import CatchupRunner
             return CatchupRunner(controller, process=self.process, clock=self.clock, sleep=self.sleep)
+        if kind == 'holdup':
+            from studio_holdup import HoldupRunner
+            return HoldupRunner(controller, process=self.process, clock=self.clock, sleep=self.sleep)
         from studio_seed import SeedRunner
         return SeedRunner(controller, process=self.process, clock=self.clock, sleep=self.sleep)
 
@@ -1986,13 +1991,15 @@ class DemoAgent:
         value = read_json(plan_path)
         if kind == 'catchup':
             from studio_catchup import CatchupRunner as Runner
+        elif kind == 'holdup':
+            from studio_holdup import HoldupRunner as Runner
         else:
             from studio_seed import SeedRunner as Runner
         controller = Controller(self.installation_path)   # installation and input contracts only; no store
         controller.session = self.session
         result = Runner(controller, process=_NoTerminal()).validate(value)
         self._append(kind + '_validate', 'checked', plan=str(plan_path), plan_sha256=digest(plan_path),
-                     job_count=result.get('job_count', result.get('member_count')))
+                     job_count=result.get('job_count', result.get('member_count', result.get('test_count'))))
         return result
 
     def seed_validate(self, plan):
@@ -2054,6 +2061,9 @@ class DemoAgent:
             if any(any((attempts / spec['attempt_token']).glob('*.set')) for spec in specs):
                 return False
             return True
+        if kind == 'holdup':
+            reports = Path(self.install['terminal_data_root']) / 'MQL5/Files/GOATStudio/HoldupReports'
+            return not any((reports / (spec['alias'] + '.htm')).exists() for spec in specs)
         outputs = Path(self.install['common_files_root']) / 'GOAT/SeedFarmingXML'
         if outputs.is_dir() and any(any(outputs.glob(spec['output_base'] + '_N*.xml')) for spec in specs):
             return False
@@ -2190,7 +2200,7 @@ class DemoAgent:
     def _lane_status(self, kind, batch_id):
         with self._seed_scope(kind + '-status', batch_id, kind) as (controller, evidence):
             return dict(broker=evidence['broker'], retained_start=evidence['broker'] is None,
-                        **{'seed' if kind == 'seed' else 'catchup': self._seed_runner(controller, kind).status(batch_id)})
+                        **{kind: self._seed_runner(controller, kind).status(batch_id)})
 
     def seed_status(self, batch_id):
         return self._lane_status('seed', batch_id)
@@ -2264,6 +2274,36 @@ class DemoAgent:
     def catchup_report(self, catchup_id):
         return self._lane_report('catchup', catchup_id)
 
+    # ------------------------------------------------------------------ Hold-up test (Prove)
+    #
+    # One frozen, hash-bound SET, one MT5 pass on a chosen window, read from MT5's own report
+    # (studio_holdup). Same lane as seeds and catch-ups: MT5 closes and relaunches per test under the
+    # same broker-verified start record, STOP/TAKE, pause and member-failure rules. Demo lane only (v1).
+
+    def holdup_validate(self, plan):
+        return self._lane_validate('holdup', plan)
+
+    def holdup_prepare(self, holdup_id, plan):
+        return self._lane_prepare('holdup', holdup_id, plan)
+
+    def holdup_start(self, holdup_id, max_seconds):
+        return self._lane_start('holdup', holdup_id, max_seconds)
+
+    def holdup_resume(self, holdup_id, max_seconds):
+        return self._lane_resume('holdup', holdup_id, max_seconds)
+
+    def holdup_status(self, holdup_id):
+        return self._lane_status('holdup', holdup_id)
+
+    def holdup_cancel(self, holdup_id):
+        return self._lane_cancel('holdup', holdup_id)
+
+    def holdup_report(self, holdup_id):
+        return self._lane_report('holdup', holdup_id)
+
+    def holdup_reconcile(self, holdup_id):
+        return self._lane_reconcile('holdup', holdup_id)
+
     def evidence_scan(self, sources, value='auto', *, broker_clock=None, include_below_threshold=False):
         """Read-only: every kept export under ``sources`` against one evidence end; no terminal effect."""
         from studio_catchup import evidence_scan
@@ -2289,11 +2329,12 @@ class DemoAgent:
             return result
 
     def _slot_kind(self, slot):
-        """Which runner holds the shared terminal slot: the catch-up whose manifest the slot names, else seed."""
+        """Which runner holds the shared terminal slot: the catch-up or hold-up test whose manifest the slot names, else seed."""
         batch_id = slot.get('batch_id')
-        state = self.root / LANES['catchup']['folder'] / str(batch_id) / 'state.json'
-        if isinstance(batch_id, str) and state.is_file() and read_json(state).get('manifest_sha256') == slot.get('manifest_sha256'):
-            return 'catchup'
+        for kind in ('catchup', 'holdup'):
+            state = self.root / LANES[kind]['folder'] / str(batch_id) / 'state.json'
+            if isinstance(batch_id, str) and state.is_file() and read_json(state).get('manifest_sha256') == slot.get('manifest_sha256'):
+                return kind
         return 'seed'
 
     def _stop_seed(self, seed):
@@ -2509,6 +2550,16 @@ def main(argv=None):
         catchup_drive.add_argument('--max-seconds', type=int, default=60)
     for name in ('catchup-status', 'catchup-cancel', 'catchup-report', 'catchup-reconcile'):
         commands.add_parser(name).add_argument('--catchup-id', required=True)
+    commands.add_parser('holdup-validate', help='Non-executing hold-up test plan check').add_argument('--plan', type=Path, required=True)
+    holdup_prep = commands.add_parser('holdup-prepare', help='Freeze one MT5 pass per frozen, hash-bound SET; no launch')
+    holdup_prep.add_argument('--holdup-id', required=True)
+    holdup_prep.add_argument('--plan', type=Path, required=True)
+    for name in ('holdup-start', 'holdup-resume'):
+        holdup_drive = commands.add_parser(name)
+        holdup_drive.add_argument('--holdup-id', required=True)
+        holdup_drive.add_argument('--max-seconds', type=int, default=60)
+    for name in ('holdup-status', 'holdup-cancel', 'holdup-report', 'holdup-reconcile'):
+        commands.add_parser(name).add_argument('--holdup-id', required=True)
     args = parser.parse_args(argv)
     if args.command in ('gate-recommend', 'gate-stamp'):
         # Evidence-only commands: no terminal, session or controller state is read or written.
@@ -2578,6 +2629,14 @@ def main(argv=None):
         elif args.command == 'catchup-cancel': result = agent.catchup_cancel(args.catchup_id)
         elif args.command == 'catchup-reconcile': result = agent.catchup_reconcile(args.catchup_id)
         elif args.command == 'catchup-report': result = agent.catchup_report(args.catchup_id)
+        elif args.command == 'holdup-validate': result = agent.holdup_validate(args.plan)
+        elif args.command == 'holdup-prepare': result = agent.holdup_prepare(args.holdup_id, args.plan)
+        elif args.command == 'holdup-start': result = agent.holdup_start(args.holdup_id, args.max_seconds)
+        elif args.command == 'holdup-resume': result = agent.holdup_resume(args.holdup_id, args.max_seconds)
+        elif args.command == 'holdup-status': result = agent.holdup_status(args.holdup_id)
+        elif args.command == 'holdup-cancel': result = agent.holdup_cancel(args.holdup_id)
+        elif args.command == 'holdup-reconcile': result = agent.holdup_reconcile(args.holdup_id)
+        elif args.command == 'holdup-report': result = agent.holdup_report(args.holdup_id)
         if args.command == 'stop' and result.get('status') == 'stop_unconfirmed':
             print(json.dumps(dict(ok=False, code='STOP_UNCONFIRMED', result=result),
                              sort_keys=True, default=str), file=sys.stderr)

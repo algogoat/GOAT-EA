@@ -38,6 +38,9 @@ OPERATION_CONTRACTS = {
     'bootstrap-retirement-apply':dict(required=['review-id'],effect='within authorised selected-terminal maintenance, normal-close exact reviewed idle monitor once, then retire original startup claim/slot atomically only after native process absence; retries inspect only, never resend or restart'),
     'peer-prepare':dict(required=['terminal-executable','data-root'],effect='review one existing protected peer and exact running process; never grants or manages the peer'),
     'peer-apply':dict(required=['review-id','confirm-reviewed'],authorization='Authorized caller confirms this exact review after inspection within the user-authorized setup scope; no grant or peer management authority',effect='persist protected peer outside switched session; replacement requires fresh review; unknown terminals still block'),
+    'peer-add':dict(required=['terminal'],optional=['data-root','confirm-reviewed'],authorization='Without --confirm-reviewed a preview only; pass it after the user\'s yes to the previewed data folder and namespace',effect='V1.49: register another MT5 on this PC (running or not) as a GOAT peer of this terminal: data folder from its GOAT receipt or --data-root, held to its origin.txt binding, a separate batch namespace and a Valid MetaQuotes signature; exempts it from the unmapped-terminal refusal only, never reads, closes, launches or shares files with it; prepared batches stay valid; policy.json untouched; receipt in peer-roster.jsonl; refused under owner STOP. GOAT-installed terminals are recognised without it'),
+    'peer-remove':dict(required=['terminal'],optional=['confirm-reviewed'],effect='stop exempting a GOAT peer (also excludes it from auto-recognition); preview without --confirm-reviewed; never the reviewed policy.json peer; refused under owner STOP'),
+    'peer-list':dict(required=[],effect='read-only: the reviewed peer, every GOAT peer (peer-add entries and GOAT receipts) with eligible or the reason not, excluded terminals, running MT5 processes and which of them would block'),
     'switch-plan':dict(required=[],effect='review offline session handover; optional restore-id restores a parked session; never grants or launches'),
     'switch-status':dict(required=['review-id'],effect='read retained handover progress and recovery identity'),
     'owner-maintenance-install-prepare':dict(required=['record-id'],effect='owner-internal: consume exact completed PARK into one authenticated installer input; no installation or control effect'),
@@ -303,6 +306,8 @@ class Controller:
         baseline=inspect_processes(binding)
         from studio_protected_peer import record_observed
         record_observed(self,binding,baseline.get('protected'),source='start:'+job_id)
+        from studio_peer_roster import record_seen
+        record_seen(self,baseline.get('peers'),source='start:'+job_id)
         package=self.root/'packages'/job_id
         digest=hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()
         self.submit('queue.reserve',dict(job_id=job_id,configuration_sha256=job['configuration_sha256'],package_sha256=digest),job_id+'-reserve',expected_generation=generation)
@@ -366,6 +371,9 @@ def main(argv=None):
     sub=parser.add_subparsers(dest='operation',required=True)
     p=sub.add_parser('peer-prepare');p.add_argument('--terminal-executable',type=Path,required=True);p.add_argument('--data-root',type=Path,required=True)
     p=sub.add_parser('peer-apply');p.add_argument('--review-id',required=True);p.add_argument('--confirm-reviewed',action='store_true')
+    p=sub.add_parser('peer-add');p.add_argument('--terminal',type=Path,required=True);p.add_argument('--data-root',type=Path);p.add_argument('--confirm-reviewed',action='store_true')
+    p=sub.add_parser('peer-remove');p.add_argument('--terminal',type=Path,required=True);p.add_argument('--confirm-reviewed',action='store_true')
+    sub.add_parser('peer-list')
     p=sub.add_parser('bootstrap-retirement-prepare');p.add_argument('--specification',type=Path,required=True);p.add_argument('--bootstrap-receipts',type=Path,required=True)
     p=sub.add_parser('bootstrap-retirement-apply');p.add_argument('--review-id',required=True)
     p=sub.add_parser('switch-verify-park');p.add_argument('--review-id',required=True)
@@ -540,6 +548,13 @@ def main(argv=None):
         elif args.operation in ('peer-prepare','peer-apply'):
             from studio_protected_peer import prepare,apply
             result=prepare(controller,args.terminal_executable,args.data_root) if args.operation=='peer-prepare' else apply(controller,args.review_id,args.confirm_reviewed)
+        elif args.operation in ('peer-add','peer-remove','peer-list'):
+            # GOAT peers (studio_peer_roster): no package binding, policy.json or MT5 effect.
+            # dispatch() above already refused an owner demo lane or a typed continuation.
+            import studio_peer_roster as roster
+            if args.operation=='peer-list': result=roster.listing(controller)
+            elif args.operation=='peer-add': result=roster.add(controller,args.terminal,args.data_root,confirmed=args.confirm_reviewed)
+            else: result=roster.remove(controller,args.terminal,confirmed=args.confirm_reviewed)
         elif args.operation in ('switch-plan','switch-apply','switch-status'):
             from studio_handover import review,apply,load_plan,public
             if args.operation=='switch-plan': result=review(controller,args.restore_id)
@@ -555,7 +570,7 @@ def main(argv=None):
             capabilities=dict(heldout_enforcement=dict(supported=True,schema=LOCK_SCHEMA,registry=registry['state'],
                                                        registry_path=registry['path'],registry_head=registry['head']),
                               trial_journal=dict(supported=True,schema=TRIAL_SCHEMA,count_schema=COUNT_SCHEMA))
-            result=dict(agent_skills=customer_skills(),capabilities=capabilities,controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),tester_recommendations=dict(Model=1,model_name='1 minute OHLC',policy='Default for new optimization plans; retain explicit user overrides and never rewrite frozen runs'),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5 and an explicitly reviewed exact protected peer may be running; unknown/replaced processes block','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','GOAT-OPERATING-MODEL.md','CUSTOMER-SKILLS.md','OPTIMIZATION-PLAYBOOK.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
+            result=dict(agent_skills=customer_skills(),capabilities=capabilities,controller_version=VERSION,ea_version=controller.install['ea_version'],input_schema=controller.schema,dependency_policy=controller.policy,installation=controller.install,operations=list(sub.choices),operation_contracts=OPERATION_CONTRACTS,tester_fields=sorted(FIELDS),tester_recommendations=dict(Model=1,model_name='1 minute OHLC',policy='Default for new optimization plans; retain explicit user overrides and never rewrite frozen runs'),periods=sorted(PERIODS),export_fields=['SetsToExport','MinScore','TargetDD','AdjustLots','BackOOSDate','MinARF','MinSR','IncludeBackOOS','IncludeSequenceData'],native_constraints=['Windows MT5 demo connected; DLL enabled; Algo Trading off','Only selected MT5, its reviewed protected peer and (V1.49) its GOAT peers (peer-add, GOAT-installed terminals; peer-list) may be running; unknown/replaced processes block','Ordinary optimization/export batches require custom forward and local workers','Give to Agent required; explicit batch start; EA advances members'],seed_constraints=['Dedicated SeedFarming uses ForwardMode=0 and empty ForwardDate','Explicit bounded seed-start/seed-resume driver; selected terminal closes and relaunches for frozen members','Seed and ordinary native execution share one exclusive terminal slot','Actual native seed launch qualification is pending'],documentation=['AGENT-START-HERE.md','GOAT-OPERATING-MODEL.md','CUSTOMER-SKILLS.md','OPTIMIZATION-PLAYBOOK.md','goat-beta-agent-guide.md','goat-agent-capabilities.md','INPUT-REFERENCE.md','TEMPLATE-WORKFLOW.md','SEED-WORKFLOW.md'],readiness_scope='Runtime and ownership checked at start, not by discovery',execution_ready=False)
         elif args.operation=='resource-profile':
             from studio_resources import resource_profile
             result=resource_profile(controller.install)

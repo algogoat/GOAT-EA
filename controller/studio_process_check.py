@@ -93,8 +93,11 @@ def inspect_processes(binding, *, research_running=True, absent_roots=None, sele
         rows,visibility=stopped_candidates(rows,absent_roots)
     elif selected_roots is not None:
         rows,visibility=selected_candidates(rows,selected_roots,binding['research_terminal'])
+    # GOAT peers (studio_peer_roster): other GOAT-owned terminals are exempt from the
+    # unmapped refusal only; looked up lazily, read-only, never part of the binding.
+    from studio_peer_roster import lookup_for
     result=classify_processes(rows,binding,observed_unix=time.time(),research_running=research_running,
-                              unrelated_roots=selected_roots)
+                              unrelated_roots=selected_roots,peer_lookup=lookup_for(binding))
     if visibility is not None:
         result['root_inventory']=visibility
     return result
@@ -194,12 +197,20 @@ def role_unchanged(binding,role,current,baseline):
     return current==baseline
 
 
-def classify_processes(processes,binding,*,observed_unix,research_running=True,unrelated_roots=None):
+def classify_processes(processes,binding,*,observed_unix,research_running=True,unrelated_roots=None,peer_lookup=None):
+    """Every running terminal is this one, its reviewed peer, unrelated (listed scopes) or a GOAT peer.
+
+    ``peer_lookup(image, pid)`` (studio_peer_roster.lookup_for) returns
+    ``(peer, None)`` for an eligible GOAT peer or ``(None, reason)``. A GOAT peer
+    gets no role: it is listed under ``peers`` and may start, stop or restart at
+    any time; it never relaxes the research or reviewed-peer checks. Anything
+    else refuses as unmapped, naming the process and the reason.
+    """
     if not isinstance(processes,list):raise ValueError('Complete process inventory required')
     research=PureWindowsPath(binding['research_terminal'])
     protected=PureWindowsPath(binding['protected_terminal']) if binding.get('protected_terminal') else None
     if research==protected:raise ValueError('Research and protected terminal must differ')
-    result={'research':[],'protected':[]}; unrelated=[]
+    result={'research':[],'protected':[]}; unrelated=[]; peers=[]
     roots=[PureWindowsPath(root) for root in unrelated_roots] if unrelated_roots is not None else None
     if roots is not None and (research.parent not in roots or any(not root.is_absolute() or root==PureWindowsPath(root.anchor) or '..' in root.parts for root in roots)):
         raise ValueError('Exact selected terminal roots required')
@@ -215,7 +226,12 @@ def classify_processes(processes,binding,*,observed_unix,research_running=True,u
         elif roots is not None and not any(actual.is_relative_to(root) for root in roots):
             unrelated.append(dict(pid=pid,executable=str(actual),created_utc=created))
             continue
-        else:raise ValueError('Unmapped terminal process requires ownership inspection')
+        else:
+            peer,reason=peer_lookup(actual,pid) if peer_lookup is not None else (None,None)
+            if peer is None:raise ValueError(_unmapped(actual,pid,reason))
+            peers.append(dict(pid=pid,executable=str(actual),created_utc=created,peer_id=peer['peer_id'],
+                              data_root=peer['data_root']))
+            continue
         result[role].append(dict(pid=pid,executable=str(actual),created_utc=created))
     if type(research_running) is not bool:
         raise ValueError('Explicit research process state required')
@@ -225,9 +241,20 @@ def classify_processes(processes,binding,*,observed_unix,research_running=True,u
     if (binding.get('protected_process') is not None and result['protected'] and result['protected'] != [binding['protected_process']]
             and not restart_tolerant(binding)):
         raise ValueError('Protected peer process changed; obtain a fresh explicit review')
+    ids=[peer['peer_id'] for peer in peers]
+    if len(set(ids))!=len(ids):
+        twice=next(peer for peer in peers if ids.count(peer['peer_id'])>1)
+        raise ValueError('Two processes of one GOAT peer are running ('+twice['executable']+'); ask the user to close one')
     return dict(observed_unix=observed_unix,**{key:(value[0] if value else None) for key,value in result.items()},
                 **({'unrelated':unrelated} if roots is not None else {}),
+                **({'peers':peers} if peer_lookup is not None else {}),
                 launch_permitted=False,limitation='Process identity does not establish native batch ownership')
+
+
+def _unmapped(image,pid,reason):
+    """The historical refusal, now naming the process and why it is not a peer."""
+    from studio_peer_roster import NOT_REVIEWED, UNMAPPED
+    return UNMAPPED+': '+str(image)+' (PID '+str(pid)+') '+(reason or NOT_REVIEWED)
 
 
 def revalidate_processes(binding,baseline,*,max_age=120):

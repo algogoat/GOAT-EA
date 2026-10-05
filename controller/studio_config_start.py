@@ -204,6 +204,9 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     # unknown terminal or a changed peer executable/data root refused above.
     from studio_protected_peer import record_observed
     record_observed(c,binding,precheck.get('protected'),source='config_start:'+job_id)
+    # GOAT peers it saw (a new instance, or MT5-updated bytes) are journaled the same way.
+    from studio_peer_roster import record_seen
+    record_seen(c,precheck.get('peers'),source='config_start:'+job_id)
     if customer:
         # The yes was for this exact MT5 process; then fresh broker proof before
         # anything is reserved, armed or closed.

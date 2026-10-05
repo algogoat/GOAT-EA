@@ -5,7 +5,7 @@ terminal lock and action log. A broker-reported demo account is required before
 every operation that can change the selected terminal or its files.
 """
 import argparse
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -1942,25 +1942,34 @@ class DemoAgent:
         lane = LANES[kind]
         self._seed_budget(max_seconds, kind)
         worker_path = self._lane_worker_path(kind, batch_id)
-        live = self._live_lane_worker()
-        if live is not None:
-            if Path(live[0]) == worker_path:
-                return dict(status='already_supervising', kind=kind, batch_id=batch_id, worker=live[1], native_running_unverified=True,
-                            next_action=kind + '-status shows the run and its driver; never start a second driver')
-            raise ValueError('A live ' + LANES.get(live[1].get('kind'), LANES['seed'])['word'] + ' driver (' + str(live[1].get('batch_id'))
-                             + ') owns this terminal; wait for it to finish or stop it first')
-        if initial:
-            # Same broker check, owner/STOP/TAKE/disk/idle proof and exclusive start record as a foreground start.
-            with self._exclusive(), self._studio(kind + '-start', idle=True, job_id=batch_id) as (controller, broker):
-                self._seed_unoccupied(kind)
-                self._lane_start_record(kind, batch_id, controller, broker)
-        else:
-            state = self.root / lane['folder'] / batch_id / 'state.json'
-            if not state.is_file():
-                raise ValueError('Unknown ' + lane['word'] + ' batch; use ' + kind + '-prepare')
-            if read_json(state).get('status') == 'prepared':
-                raise ValueError(lane['title'] + ' batch has no native effect yet; use ' + kind + '-start with a fresh broker check')
-            self._seed_start_record(batch_id, kind)
+        # One terminal lock covers the live check, the reservation and the launch (Codex P1 on GOAT-EA#162):
+        # overlapping calls are serialized, and the worker (which takes the same lock first) cannot begin
+        # before its reservation and the caller's final record are written.
+        with self._exclusive():
+            live = self._live_lane_worker()
+            if live is not None:
+                if Path(live[0]) == worker_path:
+                    return dict(status='already_supervising', kind=kind, batch_id=batch_id, worker=live[1], native_running_unverified=True,
+                                next_action=kind + '-status shows the run and its driver; never start a second driver')
+                raise ValueError('A live ' + LANES.get(live[1].get('kind'), LANES['seed'])['word'] + ' driver ('
+                                 + str(live[1].get('batch_id')) + ') owns this terminal; wait for it to finish or stop it first')
+            if initial:
+                # Same broker check, owner/STOP/TAKE/disk/idle proof and exclusive start record as a foreground start.
+                with self._studio(kind + '-start', idle=True, job_id=batch_id) as (controller, broker):
+                    self._seed_unoccupied(kind)
+                    self._lane_start_record(kind, batch_id, controller, broker)
+            else:
+                state = self.root / lane['folder'] / batch_id / 'state.json'
+                if not state.is_file():
+                    raise ValueError('Unknown ' + lane['word'] + ' batch; use ' + kind + '-prepare')
+                if read_json(state).get('status') == 'prepared':
+                    raise ValueError(lane['title'] + ' batch has no native effect yet; use ' + kind + '-start with a fresh broker check')
+                self._seed_start_record(batch_id, kind)
+            return self._lane_launch(kind, batch_id, max_seconds, initial, worker_path)
+
+    def _lane_launch(self, kind, batch_id, max_seconds, initial, worker_path):
+        """Under the caller's terminal lock: reserve, hand the drive to the demand-task host, and record the spawn."""
+        lane = LANES[kind]
         nonce = secrets.token_hex(16)
         worker = dict(schema_version=1, kind=kind, batch_id=batch_id, nonce=nonce, status='reserved', initial=initial,
                       max_seconds=max_seconds, created_at=datetime.now(timezone.utc).isoformat())
@@ -1982,13 +1991,24 @@ class DemoAgent:
                                              close_fds=True, start_new_session=True,
                                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         except (OSError, ValueError) as exc:
-            worker.update(status='spawn_failed', error=str(exc))
+            # Re-read: the durable host may already have retained its launch envelope (Codex P1 on GOAT-EA#162).
+            current = read_json(worker_path) if worker_path.is_file() else dict(worker)
+            unresolved = bool(current.get('launch_envelope'))
+            current.update(status='launch_unconfirmed' if unresolved else 'spawn_failed', error=str(exc))
+            write_json(worker_path, current)
+            self._append(kind + '_driver', current['status'], batch_id=batch_id, nonce=nonce, error=str(exc))
+            if unresolved:
+                raise ValueError('The detached ' + lane['word'] + ' driver launch could not be confirmed (' + str(exc) + '). Its '
+                                 'Windows task may still run: never start another driver. ' + kind + '-status shows it; '
+                                 'inspect that task before anything else.') from exc
+            again = kind + ('-start again (it reuses the start record)' if initial else '-resume again')
+            raise ValueError('The detached ' + lane['word'] + ' driver did not start (' + str(exc) + '); MT5 was not touched '
+                             'by it. Fix the cause, then run ' + again + '.') from exc
+        # Only a still-reserved record becomes 'spawned': never regress a state the worker already wrote.
+        worker = read_json(worker_path)
+        if worker.get('status') == 'reserved' and worker.get('nonce') == nonce:
+            worker.update(status='spawned', pid=child.pid, log=str(log_path))
             write_json(worker_path, worker)
-            self._append(kind + '_driver', 'spawn_failed', batch_id=batch_id, nonce=nonce, error=str(exc))
-            raise ValueError('The detached ' + lane['word'] + ' driver did not start (' + str(exc)
-                             + '); MT5 was not touched by it. Run ' + kind + '-status, then ' + kind + '-resume.') from exc
-        worker.update(status='spawned', pid=child.pid, log=str(log_path))
-        write_json(worker_path, worker)
         self._append(kind + '_driver', 'spawned', batch_id=batch_id, nonce=nonce, pid=child.pid)
         return dict(status='driver_starting', kind=kind, batch_id=batch_id, worker=worker, native_running_unverified=True,
                     next_action=('The ' + lane['unit'] + ' now runs in a detached driver for up to ' + str(max_seconds)
@@ -1998,27 +2018,29 @@ class DemoAgent:
     def _drive_lane(self, kind, batch_id, nonce, max_seconds, initial):
         """The detached worker: verify its own reservation, then drive exactly like the foreground command."""
         worker_path = self._lane_worker_path(kind, batch_id)
-        worker = read_json(worker_path)
-        if (worker.get('nonce') != nonce or worker.get('kind') != kind or worker.get('batch_id') != batch_id
-                or worker.get('initial') is not initial or worker.get('max_seconds') != max_seconds
-                or worker.get('status') not in ('reserved', 'spawned')):
-            raise ValueError('Detached lane worker identity, budget or launch state changed')
-        worker.update(status='supervising', pid=os.getpid())
-        write_json(worker_path, worker)
-        self._append(kind + '_driver', 'supervising', batch_id=batch_id, nonce=nonce)
-        try:
-            result = (self._lane_start(kind, batch_id, max_seconds, lock_wait=20, exclude_worker=worker_path) if initial
-                      else self._lane_resume(kind, batch_id, max_seconds, lock_wait=20, exclude_worker=worker_path))
-        except Exception as exc:
-            worker.update(status='failed', error=str(exc)[:2000])
+        # The terminal lock first: the caller releases it only after its final spawn record (Codex P2 on GOAT-EA#162).
+        with self._exclusive(wait_seconds=20):
+            worker = read_json(worker_path)
+            if (worker.get('nonce') != nonce or worker.get('kind') != kind or worker.get('batch_id') != batch_id
+                    or worker.get('initial') is not initial or worker.get('max_seconds') != max_seconds
+                    or worker.get('status') not in ('reserved', 'spawned')):
+                raise ValueError('Detached lane worker identity, budget or launch state changed')
+            worker.update(status='supervising', pid=os.getpid())
             write_json(worker_path, worker)
-            self._append(kind + '_driver', 'failed', batch_id=batch_id, nonce=nonce, error=str(exc)[:500])
-            raise
-        worker.update(status='returned', result_status=result.get('status'), stopped_by=result.get('stopped_by'),
-                      paused=bool(result.get('paused')), driver_budget_exhausted=bool(result.get('driver_budget_exhausted')))
-        write_json(worker_path, worker)
-        self._append(kind + '_driver', 'returned', batch_id=batch_id, nonce=nonce, status=result.get('status'))
-        return result
+            self._append(kind + '_driver', 'supervising', batch_id=batch_id, nonce=nonce)
+            try:
+                result = (self._lane_start(kind, batch_id, max_seconds, locked=True, exclude_worker=worker_path) if initial
+                          else self._lane_resume(kind, batch_id, max_seconds, locked=True, exclude_worker=worker_path))
+            except Exception as exc:
+                worker.update(status='failed', error=str(exc)[:2000])
+                write_json(worker_path, worker)
+                self._append(kind + '_driver', 'failed', batch_id=batch_id, nonce=nonce, error=str(exc)[:500])
+                raise
+            worker.update(status='returned', result_status=result.get('status'), stopped_by=result.get('stopped_by'),
+                          paused=bool(result.get('paused')), driver_budget_exhausted=bool(result.get('driver_budget_exhausted')))
+            write_json(worker_path, worker)
+            self._append(kind + '_driver', 'returned', batch_id=batch_id, nonce=nonce, status=result.get('status'))
+            return result
 
     def _seed_runner(self, controller, kind='seed'):
         if kind == 'catchup':
@@ -2222,7 +2244,7 @@ class DemoAgent:
                          manifest_sha256=record['manifest_sha256'], broker=broker)
         return runner
 
-    def _lane_start(self, kind, batch_id, max_seconds, *, detach=False, lock_wait=0, exclude_worker=None):
+    def _lane_start(self, kind, batch_id, max_seconds, *, detach=False, locked=False, exclude_worker=None):
         if detach:
             return self._lane_detach(kind, batch_id, max_seconds, initial=True)
         lane = LANES[kind]
@@ -2230,7 +2252,7 @@ class DemoAgent:
         path = self._seed_start_path(batch_id, kind)
         if path.exists() and self._seed_left_prepared(batch_id, kind):
             raise ValueError(lane['title'] + ' batch already started; use ' + kind + '-resume for the original attempt')
-        with self._exclusive(wait_seconds=lock_wait), self._studio(kind + '-start', idle=True, job_id=batch_id) as (controller, broker):
+        with (nullcontext() if locked else self._exclusive()), self._studio(kind + '-start', idle=True, job_id=batch_id) as (controller, broker):
             self._seed_unoccupied(kind, exclude=exclude_worker)
             runner = self._lane_start_record(kind, batch_id, controller, broker)
             return self._reopen_after_lane(kind, batch_id,
@@ -2281,12 +2303,12 @@ class DemoAgent:
         except (OSError, ValueError):
             return False
 
-    def _lane_reactivate(self, kind, batch_id, max_seconds, *, lock_wait=0, exclude_worker=None):
+    def _lane_reactivate(self, kind, batch_id, max_seconds, *, locked=False, exclude_worker=None):
         """Resume a batch stopped by failed members: a start-grade check (fresh broker readback of this paired demo,
         idle tester, owner grant, no STOP/TAKE, disk, no other work), then the runner re-activates it and continues
         only its pending members. The original broker-verified start record must still match."""
         lane = LANES[kind]
-        with self._exclusive(wait_seconds=lock_wait), self._studio(kind + '-resume', idle=True, job_id=batch_id) as (controller, broker):
+        with (nullcontext() if locked else self._exclusive()), self._studio(kind + '-resume', idle=True, job_id=batch_id) as (controller, broker):
             self._seed_unoccupied(kind, exclude=exclude_worker)
             record = self._seed_start_record(batch_id, kind)
             runner = self._seed_runner(controller, kind)
@@ -2300,14 +2322,14 @@ class DemoAgent:
                                            self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind,
                                                             reactivate=True))
 
-    def _lane_resume(self, kind, batch_id, max_seconds, *, detach=False, lock_wait=0, exclude_worker=None):
+    def _lane_resume(self, kind, batch_id, max_seconds, *, detach=False, locked=False, exclude_worker=None):
         if detach:
             return self._lane_detach(kind, batch_id, max_seconds, initial=False)
         lane = LANES[kind]
         self._seed_budget(max_seconds, kind)
         if self._seed_resumable_stopped(batch_id, kind):
-            return self._lane_reactivate(kind, batch_id, max_seconds, lock_wait=lock_wait, exclude_worker=exclude_worker)
-        with self._exclusive(wait_seconds=lock_wait), self._seed_scope(kind + '-resume', batch_id, kind) as (controller, evidence):
+            return self._lane_reactivate(kind, batch_id, max_seconds, locked=locked, exclude_worker=exclude_worker)
+        with (nullcontext() if locked else self._exclusive()), self._seed_scope(kind + '-resume', batch_id, kind) as (controller, evidence):
             runner = self._seed_runner(controller, kind)
             current = runner.status(batch_id)
             if current['status'] == 'prepared':

@@ -47,7 +47,7 @@ MUTATIONS = [
      "                    item['error']=self._failure_reason(manifest,item)", "                    pass"),
     ('demo lane resumes a stopped batch without the start-grade broker check', AGENT,
      "        if self._seed_resumable_stopped(batch_id, kind):\n"
-     "            return self._lane_reactivate(kind, batch_id, max_seconds, lock_wait=lock_wait, exclude_worker=exclude_worker)\n", ""),
+     "            return self._lane_reactivate(kind, batch_id, max_seconds, locked=locked, exclude_worker=exclude_worker)\n", ""),
     ('a resume without start-grade checks re-activates anyway', SEED,
      "                if not initial and reactivate and self.resumable(state):", "                if not initial and self.resumable(state):"),
     ('the ordinary demo resume ignores a batch that stopped after routing', AGENT,

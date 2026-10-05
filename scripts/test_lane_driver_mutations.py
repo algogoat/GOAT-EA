@@ -24,12 +24,18 @@ AGENT = 'demo_agent.py'
 HOST = 'studio_durable_driver.py'
 MUTATIONS = [
     ('detached start skips the caller\'s checks and start record', AGENT,
-     "            with self._exclusive(), self._studio(kind + '-start', idle=True, job_id=batch_id) as (controller, broker):\n"
-     "                self._seed_unoccupied(kind)\n                self._lane_start_record(kind, batch_id, controller, broker)",
-     "            pass"),
+     "                with self._studio(kind + '-start', idle=True, job_id=batch_id) as (controller, broker):\n"
+     "                    self._seed_unoccupied(kind)\n                    self._lane_start_record(kind, batch_id, controller, broker)",
+     "                pass"),
     ('a second detached driver allowed', AGENT,
-     "        live = self._live_lane_worker()\n        if live is not None:\n            if Path(live[0]) == worker_path:",
-     "        live = None\n        if live is not None:\n            if Path(live[0]) == worker_path:"),
+     "            live = self._live_lane_worker()\n            if live is not None:\n                if Path(live[0]) == worker_path:",
+     "            live = None\n            if live is not None:\n                if Path(live[0]) == worker_path:"),
+    ('reservation and launch outside the terminal lock', AGENT,
+     "        with self._exclusive():\n            live = self._live_lane_worker()", "        with nullcontext():\n            live = self._live_lane_worker()"),
+    ('an unconfirmed launch envelope overwritten', AGENT,
+     "            current = read_json(worker_path) if worker_path.is_file() else dict(worker)", "            current = dict(worker)"),
+    ('the caller regresses a newer worker state', AGENT,
+     "        if worker.get('status') == 'reserved' and worker.get('nonce') == nonce:", "        if True:"),
     ('other lane work ignores a live detached driver', AGENT,
      "        live = self._live_lane_worker(exclude=exclude)", "        live = None"),
     ('worker drives with a changed reservation', AGENT,

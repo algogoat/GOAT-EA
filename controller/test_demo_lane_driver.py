@@ -127,6 +127,69 @@ class LaneDriverTests(unittest.TestCase):
         self.assertIn('Owner STOP', self.worker()['error'])
         self.assertEqual(self.process.closes, [])
 
+    # ---- Codex review of GOAT-EA#162 -------------------------------------------------------------------
+    def test_the_reservation_and_launch_hold_the_terminal_lock(self):
+        # P1: the live check, the reservation and the launch are one locked operation, so overlapping calls serialize.
+        self.agent.seed_prepare('batch', self.plan)
+        seen = []
+
+        def fake(argv, *, log_path, worker_path):
+            seen.append(read_json(worker_path)['status'])
+            with self.assertRaisesRegex(ValueError, 'Another demo agent operation owns this terminal'):
+                with self.new_agent()._exclusive():
+                    pass
+            return SimpleNamespace(pid=4242)
+        with patch('studio_durable_driver.launch', side_effect=fake):
+            self.agent.seed_start('batch', 60, detach=True)
+        self.assertEqual(seen, ['reserved'])
+        with self.new_agent()._exclusive():                                                  # released afterwards
+            pass
+
+    def test_an_unconfirmed_launch_keeps_its_envelope_and_blocks_a_second_driver(self):
+        # P1: launch() already retained its envelope; the caller must not overwrite it with a stale record.
+        self.agent.seed_prepare('batch', self.plan)
+
+        def unconfirmed(argv, *, log_path, worker_path):
+            envelope = Path(str(log_path)[:-4] + '.launch.json')
+            write_json(envelope, dict(started=str(envelope.with_name('never.started.json')),
+                                      finished=str(envelope.with_name('never.finished.json'))))
+            write_json(worker_path, dict(read_json(worker_path), launch_envelope=str(envelope), launch_mechanism='windows_demand_task'))
+            raise ValueError('Persistent bootstrap unconfirmed; inspect the same launch/task, never issue another')
+        with patch('studio_durable_driver.launch', side_effect=unconfirmed):
+            with self.assertRaisesRegex(ValueError, 'could not be confirmed .* never start another driver'):
+                self.agent.seed_start('batch', 60, detach=True)
+        worker = self.worker()
+        self.assertEqual(worker['status'], 'launch_unconfirmed')
+        self.assertTrue(worker['launch_envelope'].endswith('.launch.json'))
+        calls, launch = self.launched()
+        with launch, self.assertRaisesRegex(ValueError, 'launch unresolved'):
+            self.agent.seed_start('batch', 60, detach=True)
+        self.assertEqual(calls, [])
+        self.assertIn('unknown', str(self.agent.seed_status('batch')['driver']['alive']))
+
+    def test_the_caller_never_regresses_the_workers_own_state(self):
+        # P2: only a still-reserved record becomes 'spawned'.
+        self.agent.seed_prepare('batch', self.plan)
+
+        def raced(argv, *, log_path, worker_path):
+            write_json(worker_path, dict(read_json(worker_path), status='supervising', pid=777))
+            return SimpleNamespace(pid=4242)
+        with patch('studio_durable_driver.launch', side_effect=raced):
+            result = self.agent.seed_start('batch', 60, detach=True)
+        self.assertEqual((self.worker()['status'], self.worker()['pid'], result['worker']['status']), ('supervising', 777, 'supervising'))
+
+    def test_a_failure_before_the_task_exists_points_back_to_start(self):
+        # P2: the batch is still prepared, so the retry is start (it reuses the start record), never resume.
+        self.agent.seed_prepare('batch', self.plan)
+        with patch('studio_durable_driver.launch', side_effect=ValueError('The installed windowless Python runtime is missing')):
+            with self.assertRaisesRegex(ValueError, 'run seed-start again \\(it reuses the start record\\)'):
+                self.agent.seed_start('batch', 60, detach=True)
+        self.assertEqual(self.worker()['status'], 'spawn_failed')
+        calls, launch = self.launched()
+        with launch:
+            self.assertEqual(self.agent.seed_start('batch', 60, detach=True)['status'], 'driver_starting')
+        self.assertIn(('seed_start', 'start_record_reused'), [(a['operation'], a['phase']) for a in self.actions()])
+
     def test_the_durable_host_accepts_only_the_exact_lane_reservation(self):
         path = self.root / 'demo-agent/lane-workers/seed-batch.json'
         path.parent.mkdir(parents=True)

@@ -107,7 +107,9 @@ capacity of the filesystems containing the selected terminal data, Common Files
 and controller state. Each observation is timestamped. Paths on the same volume
 share capacity: do not add their free space together. Missing inventory stays
 unavailable. CPU count is neither enabled MT5 worker count nor a speed estimate;
-`enabled_mt5_workers` is null. The Windows CIM probe uses the absolute system
+`enabled_mt5_workers` is null here. `research-status` and `research-launch` report the real
+count MT5 started for the last research launch (its Tester log, `research_launch.agents`; see
+`docs/research-launch/README.md`). The Windows CIM probe uses the absolute system
 PowerShell path and no console window, without requiring PowerShell on PATH.
 
 Discuss the user's available wall-clock window and disk headroom before preparing

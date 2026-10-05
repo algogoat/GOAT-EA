@@ -17,7 +17,7 @@ No Windows PC (Mac, phone only), or trading that must keep running while the PC 
 You are a customer's agent, so you use the **customer commands** on every terminal you set up with this page:
 
 1. **GOAT desktop:** `Desktop '<method>'` (`goat.exe desktop`), for sign-in state, linking, install, pairing, the strategy catalog and recording results.
-2. **The controller CLI:** `Studio @(...)` (`goat.exe studio --installation $receipt`), for everything in MT5: `bootstrap`, `monitor-prepare`, `monitor-launch`, `prepare-batch`, `run-batch` (`Start-Batch`), `batch-status`, `batch-driver-status`, `research-status`, `research-queue`, `batch-stop`, `batch-continue`, `batch-pause`, `batch-resume`, `retire-unactivated`, `finish`, `seed-prepare`/`seed-start`/`seed-resume`/`seed-reconcile`/`seed-cancel`/`seed-report`/`seed-promote` and `catchup-*`.
+2. **The controller CLI:** `Studio @(...)` (`goat.exe studio --installation $receipt`), for everything in MT5: `bootstrap`, `monitor-prepare`, `monitor-launch`, `prepare-batch`, `run-batch` (`Start-Batch`), `batch-status`, `batch-driver-status`, `research-status`, `research-queue`, `research-launch`, `batch-stop`, `batch-continue`, `batch-pause`, `batch-resume`, `retire-unactivated`, `finish`, `seed-prepare`/`seed-start`/`seed-resume`/`seed-reconcile`/`seed-cancel`/`seed-report`/`seed-promote` and `catchup-*`.
 
 **The lane rule:** use the controller CLI (`Studio @(...)`) for every MT5 action, unless this terminal's session says `authority_kind: demo_direct`. Step 6 binds your terminal as `native_human_control`; the `bootstrap` reply shows it, and later you can read it with `(Get-Content -Raw (Join-Path (Get-Content -Raw $receipt | ConvertFrom-Json).controller_state_root 'session.json') | ConvertFrom-Json).authority_kind`.
 
@@ -287,6 +287,18 @@ On GOAT's own demo terminals (`demo_direct`), `peer-add`/`peer-remove` refuse wi
 Reviewing a different MT5 this way replaces the previous reviewed peer, so on V1.49 use `peer-add` for every additional terminal.
 
 The reviewed peer is its `terminal64.exe` file, data folder and `origin.txt` binding, not one process. On a V1.49 terminal (each terminal keeps its own batch folder), the peer may close, restart or reopen at any time, including while this terminal runs a batch: GOAT accepts the new process by itself and appends one line (old and new PID) to `peer-instances.jsonl` in the peer policy folder. No new review, and prepared batches stay valid. Review again only when GOAT refuses: the peer's program file was updated or replaced, its data folder or `origin.txt` changed, or two copies of it run. A third MT5 is no reason to review again: if it is not a GOAT peer yet, use `peer-add` for it. On an older EA build the exact-process rule still applies: if the peer restarts, repeat the review.
+
+## Keep the PC responsive while GOAT researches
+
+GOAT starts the research MT5 (batches, seed hunts, catch-ups) at **below-normal** priority, so the user's other programs always come first. MT5 still uses all the processor time nobody else needs, so research is as fast as before on an idle PC. Trading terminals and deployed portfolios are never changed.
+
+If the PC still feels slow during research (a laptop, or the user works while it runs), offer the **Keep my PC responsive** setting. Say it like this: *"I can cap GOAT's research at half of your processor, so your PC stays quick while it works. Research takes longer while the cap is on. Want me to turn it on?"* With their yes:
+
+- Turn it on: `Studio @('research-launch','--keep-pc-responsive','on')`
+- Turn it off: `Studio @('research-launch','--keep-pc-responsive','off')`
+- See the current setting and what the last research MT5 really started with: `Studio @('research-launch')` (`plain` is one sentence for the user; `enabled_mt5_workers` is the number of tester agents MT5 really started).
+
+The setting applies from the next research start; a running batch keeps the setting it started with. If a research start ever refuses with `could not be placed in its low-priority research job`, MT5 was not started and nothing ran: tell the user, run `research-status` and report the exact text. Don't work around it.
 
 ## If stuck
 

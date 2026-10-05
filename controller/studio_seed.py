@@ -16,6 +16,7 @@ from studio_bridge import write_json
 from studio_installation import read_json
 from studio_native_gate import exclusive_gate
 from studio_optimization_inputs import explicit_optimization_inputs,verify_explicit_inputs
+from studio_research_launch import ResearchLaunchRefused
 from studio_settings import validate_tester
 from studio_strategy_settings import read_values,numeric
 from studio_template_tools import source_bytes,validate_raw
@@ -46,10 +47,11 @@ class SeedRunner:
 
     def __init__(self,controller,*,process=None,clock=time.time,sleep=time.sleep):
         self.c=controller;self.clock=clock;self.sleep=sleep
-        if process is None:
-            from studio_seed_process import WindowsSeedProcess
-            process=WindowsSeedProcess(controller)
-        self.process=process
+        from studio_seed_process import WindowsSeedProcess,research_view
+        if process is None:process=WindowsSeedProcess(controller)
+        # Every member is a research MT5 launch (goatai#1885 PR E): low priority inside this
+        # terminal's research job. The caller's own process (the demo agent's monitor) is unchanged.
+        self.process=research_view(process)
         self.base=controller.root/'seeds';self.slot=controller.root/'seed-active.json'
         self.gate=controller.local/'native-gate'
 
@@ -564,6 +566,17 @@ class SeedRunner:
         write_json(self.slot,dict(status='active',batch_id=batch_id,manifest_sha256=state['manifest_sha256'],generation=state['generation']))
         self.process.close(current)
 
+    def _research_guard(self,batch_id):
+        """Two publisher budget breaches during this member (the owner research-launch guard,
+        studio_research_launch) pause the lane between members. Never raises; test doubles skip."""
+        from studio_seed_process import ResearchLaunch
+        if not isinstance(self.process,ResearchLaunch):return False
+        from studio_research_launch import pause_wanted
+        if not pause_wanted(self.c) or self.paused(batch_id):return False
+        try:self.request_pause(batch_id,now=self.clock())
+        except ValueError:return False
+        return True
+
     def start(self,batch_id,max_seconds=60):return self._drive(batch_id,max_seconds,initial=True)
     def resume(self,batch_id,max_seconds=60,*,reactivate=True):
         """Continue the retained attempt. ``reactivate`` lets a batch stopped by failed members restart under the
@@ -603,6 +616,7 @@ class SeedRunner:
                     if current is not None and current!=state['initial_process']:raise ValueError('Monitor process changed during normal close')
                     if current is None:state['status']='active';self._save(root,state)
                 running=next((m for m in state['members'] if m['status'] in ('running','cancel_requested','timeout_requested')),None)
+                if running and running['status']=='running':self._research_guard(batch_id)
                 if running:
                     if running['status']=='running' and self.clock()-running['started_unix']>=manifest['plan']['job_timeout_seconds']:
                         running['status']='timeout_requested';self._save(root,state)
@@ -626,6 +640,11 @@ class SeedRunner:
                         try:
                             identity=self.process.start(spec['config_path'])
                             item.update(status='running',process=identity);self._save(root,state)
+                        except ResearchLaunchRefused as exc:
+                            # Nothing ran (the suspended MT5 was terminated before it ran, or never created):
+                            # the member stays pending and the batch active; the plain refusal is raised.
+                            item.update(status='pending',attempts=0,launch_refused=str(exc)[:500]);item.pop('started_unix',None)
+                            self._save(root,state);raise
                         except BaseException as exc:
                             item.update(status='reconcile_required',error=str(exc));state['status']='reconcile_required';self._save(root,state);raise
             if self.clock()<deadline:self.sleep(min(1,deadline-self.clock()))

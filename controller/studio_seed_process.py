@@ -112,13 +112,21 @@ try {
 '''
         subprocess.run(['powershell','-NoProfile','-Command',script],input=json.dumps(identity),text=True,check=True,timeout=20,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
 
-    def start(self,config):
+    def start(self,config,*,research=False):
+        """Launch the selected MT5 with ``config``. ``research`` (only through ResearchLaunch) uses the
+        research-launch policy: created suspended at low priority inside this terminal's job, or refused.
+        Every other launch (monitor restarts, recovery) is unchanged."""
         if self.inspect() is not None:raise ValueError('Selected terminal is still running')
         install=self.controller.install
         args=[install['terminal_executable']]
         if install.get('terminal_portable',False):args.append('/portable')
         args.append('/config:'+str(Path(config).resolve()))
-        child=subprocess.Popen(args,cwd=str(Path(install['terminal_executable']).parent),stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        cwd=str(Path(install['terminal_executable']).parent)
+        if research is True:
+            from studio_research_launch import launch
+            child=launch(self.controller,args,cwd=cwd,config=config)
+        else:
+            child=subprocess.Popen(args,cwd=cwd,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         deadline=time.monotonic()+20
         while time.monotonic()<deadline:
             actual=self.inspect(timeout=max(.1,deadline-time.monotonic()))
@@ -128,3 +136,21 @@ try {
             if child.poll() is not None:raise ValueError('Terminal exited before startup identity was observed')
             time.sleep(.1)
         raise ValueError('Terminal startup identity not observed; inspect before recovery')
+
+
+class ResearchLaunch:
+    """A WindowsSeedProcess whose ``start`` is a research launch (studio_research_launch).
+
+    Only the research callers wrap their process: SeedRunner (seed, catch-up and hold-up members)
+    and the first /config start of a native batch. The demo agent's monitor restarts, deploy and
+    onboarding keep the plain process, so a trading or monitor MT5 never gets the job.
+    """
+    def __init__(self,process):self._process=process
+    def start(self,config):return self._process.start(config,research=True)
+    def __getattr__(self,name):return getattr(self._process,name)
+
+
+def research_view(process):
+    """The research view of ``process``; any other object (test doubles, placeholders) is returned as is."""
+    if isinstance(process,ResearchLaunch) or not isinstance(process,WindowsSeedProcess):return process
+    return ResearchLaunch(process)

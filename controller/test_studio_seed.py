@@ -95,6 +95,21 @@ class SeedTests(unittest.TestCase):
         self.assertIsNone(self.runner.report('batch')['members'][0]['actual_frames'])
         self.runner.resume('batch',1);self.assertEqual(len(self.starts),1)
 
+    def test_refused_research_launch_keeps_the_member_pending_and_the_batch_active(self):
+        # goatai#1885 PR E: a refused research launch ran nothing, so it is neither a started member
+        # nor an uncertain start (reconcile_required); the next drive starts the same member normally.
+        from studio_research_launch import ResearchLaunchRefused
+        self.prepare();start=self.process.start
+        def refuse(config):raise ResearchLaunchRefused('MT5 was not started: refused for the test. Nothing ran.')
+        self.process.start=refuse
+        with self.assertRaisesRegex(ResearchLaunchRefused,'Nothing ran'):self.runner.start('batch',5)
+        state=read_json(self.runner.path('batch')/'state.json');member=state['members'][0]
+        self.assertEqual((state['status'],member['status'],member['attempts']),('active','pending',0))
+        self.assertNotIn('started_unix',member);self.assertIn('refused for the test',member['launch_refused'])
+        self.assertEqual(self.starts,[])
+        self.process.start=start
+        self.runner.resume('batch',1);self.assertEqual(len(self.starts),1)
+
     def test_zero_frame_native_result_is_explicit_zero(self):
         self.prepare();m=self.member();result=collect(self.output(m,[]),m,self.controller.schema,self.plan['cutoff'])
         self.assertEqual(result['summary']['actual_frames'],0)

@@ -20,7 +20,9 @@ DEMO_AGENT_SCOPE = ContextVar('studio_demo_agent_scope', default=None)
 # reads (like equivalence-certificate below): starter-set writes one blank SET generated from the installed
 # schema plus its .starter.json receipt at a caller-chosen path outside the publisher catalog, never
 # overwrites and never opens the mutable store or MT5. build-set stays a mutation (unchanged policy).
-LOCAL_FILE_OPERATIONS = frozenset(('starter-set',))
+# research-launch (goatai#1885 PR E) reads, or atomically replaces only research-launch.json under controller
+# state; the policy can only lower a future research MT5's priority, never raise it or touch a trading MT5.
+LOCAL_FILE_OPERATIONS = frozenset(('starter-set','research-launch'))
 READ_OPERATIONS = LOCAL_FILE_OPERATIONS | frozenset(('discover','resource-profile','state','onboarding-status',
                              'native-recovery-status','batch-driver-status','owner-maintenance-status',
                              'stopped-cancel-observation','research-status','research-queue',

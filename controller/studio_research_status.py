@@ -710,6 +710,7 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
             driver['fix'] = 'Pause it (batch-pause) to stop it safely and keep its results, or resume-batch to supervise it again.'
     minimum = journal.get('min_free_bytes') if isinstance(journal, dict) and type(journal.get('min_free_bytes')) is int else MIN_FREE_BYTES
     account = session.get('account') or {}
+    research_launch = _research_launch(install, root, now)
     return dict(schema_version=1, observed_utc=datetime.fromtimestamp(now, timezone.utc).isoformat(timespec='seconds'),
                 terminal=dict(executable=install.get('terminal_executable'), data_root=install.get('terminal_data_root'),
                               running=None if process == 'unknown' else process is not None,
@@ -726,7 +727,19 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
                 activity=activity, driver=driver, owner_stop=bool(owner_stop),
                 disk=disk(install, root, minimum), queue_error=jobs_error,
                 heldout_locks=_heldout(install, root, activity.get('batch_id'), now),
+                research_launch=research_launch, enabled_mt5_workers=research_launch.get('enabled_mt5_workers'),
                 read_only=True, launch_permitted=False)
+
+
+def _research_launch(install, root, now):
+    """Research-launch policy, live job limits, owner CPU guard and the real local agent count
+    (goatai#1885 PR E). Query-only; never fails the read."""
+    try:
+        from studio_research_launch import status
+        return status(install, root, now=now)
+    except Exception as error:
+        return dict(enabled_mt5_workers=None, agent_count_source=None,
+                    plain='The research launch state could not be read: ' + str(error)[:200])
 
 
 def _heldout(install, root, run_id, now):

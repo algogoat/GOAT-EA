@@ -120,6 +120,8 @@ jobs:
         run: python scripts/test_holdup_mutations.py
       - name: Detached lane driver mutation check (caller checks first, one driver, exact durable reservation, foreground cap)
         run: python scripts/test_lane_driver_mutations.py
+      - name: Research launch mutation check (no KILL_ON_JOB_CLOSE, refuse on assignment failure, trading launches excluded, Idle lock, CPU-cap staging)
+        run: python scripts/test_research_launch_mutations.py
 
       - name: Run every controller fixture test
         env:

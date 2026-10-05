@@ -1166,7 +1166,12 @@ class DemoAgent:
         if session.get('installation_sha256') != sha(self.install):
             raise ValueError('Session is not bound to the current receipt; finish or retry the update first')
         identity = {key: value for key, value in session.items() if key not in LANE_IDENTITY_EXCLUDED}
-        evidence = None
+        # Customer-lane evidence: a retained backup of this exact session on native_human_control, or a
+        # legacy backup written before sessions carried authority_kind at all (studio bootstrap sessions
+        # of the beta.14 era; goatai support edc7e808, 2026-10-05). A legacy backup counts only together
+        # with the controller store's native_human_control authority for this binding, checked below for
+        # every restore; an explicit customer-lane backup is preferred when both exist.
+        evidence, legacy = None, None
         for path in sorted((self.state_root / 'backups').glob('session-*.json')):
             try:
                 if path.is_symlink() or path.name != 'session-' + digest(path) + '.json':
@@ -1174,10 +1179,15 @@ class DemoAgent:
                 saved = read_json(path)
             except (OSError, ValueError, UnicodeError):
                 continue
-            if (isinstance(saved, dict) and saved.get('authority_kind') == 'native_human_control'
-                    and {key: value for key, value in saved.items() if key not in LANE_IDENTITY_EXCLUDED} == identity):
+            if not isinstance(saved, dict) or {key: value for key, value in saved.items() if key not in LANE_IDENTITY_EXCLUDED} != identity:
+                continue
+            if saved.get('authority_kind') == 'native_human_control':
                 evidence = path
                 break
+            if 'authority_kind' not in saved and legacy is None:
+                legacy = path
+        evidence_kind = 'customer-lane-backup' if evidence is not None else 'legacy-session-without-authority-kind'
+        evidence = evidence if evidence is not None else legacy
         if evidence is None:
             raise ValueError('No retained customer-lane backup of this exact session; restore-lane changes nothing')
         if (self.root / 'research-authority.json').exists():
@@ -1225,7 +1235,7 @@ class DemoAgent:
         if self._active_seed() is not None:
             raise ValueError('A seed or catch-up run holds this terminal; restore-lane waits for it to finish')
         return dict(status='ready_to_restore', authority_kind=lane, restores_to='native_human_control',
-                    evidence=str(evidence), session_sha256=sha(session),
+                    evidence=str(evidence), evidence_kind=evidence_kind, session_sha256=sha(session),
                     next_action='Run restore-lane --apply. It rewrites only this session\'s lane; MT5, the EA and the queue are untouched.')
 
     def restore_lane(self, apply=False):
@@ -1252,6 +1262,7 @@ class DemoAgent:
             self.session = restored
             self._append('restore_lane', 'restored', previous_authority_kind=review['authority_kind'],
                          authority_kind='native_human_control', evidence=review['evidence'],
+                         evidence_kind=review['evidence_kind'],
                          demo_direct_backup=str(backup), session_sha256=sha(restored))
             return dict(status='restored', authority_kind='native_human_control',
                         previous_authority_kind=review['authority_kind'], evidence=review['evidence'],

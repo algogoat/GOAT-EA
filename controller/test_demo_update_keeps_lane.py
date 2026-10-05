@@ -214,6 +214,51 @@ class UpdateKeepsLaneTests(unittest.TestCase):
             self.f.agent.restore_lane(apply=True)
         self.assertEqual(self.session()['authority_kind'], 'demo_direct')
 
+    def legacy_only_backups(self, mutate=None):
+        """The beta.14-era shape (goatai support edc7e808): the only customer-era backup predates
+        authority_kind; every other retained backup is demo_direct."""
+        backups = self.f.agent.state_root / 'backups'
+        for path in sorted(backups.glob('session-*.json')):
+            saved = read_json(path)
+            if saved.get('authority_kind') == 'native_human_control':
+                path.unlink()
+                legacy = {key: value for key, value in saved.items() if key != 'authority_kind'}
+                if mutate:
+                    mutate(legacy)
+                raw = json.dumps(legacy, indent=2).encode('utf-8')
+                staged = backups / 'staged.json'
+                staged.write_bytes(raw)
+                staged.rename(backups / ('session-' + digest(staged) + '.json'))
+
+    def test_restore_lane_accepts_a_legacy_backup_without_authority_kind(self):
+        self.flipped_by_old_update()
+        self.legacy_only_backups()
+        preview = self.f.agent.restore_lane()
+        self.assertEqual((preview['status'], preview['evidence_kind']),
+                         ('ready_to_restore', 'legacy-session-without-authority-kind'))
+        result = self.f.agent.restore_lane(apply=True)
+        self.assertEqual((result['status'], result['authority_kind']), ('restored', 'native_human_control'))
+        self.assertEqual(self.session()['authority_kind'], 'native_human_control')
+        closed = self.customer_close_terminal('close-after-legacy-restore')
+        self.assertEqual(closed['phase'], 'stopped')
+
+    def test_a_legacy_backup_with_any_other_difference_never_restores(self):
+        self.flipped_by_old_update()
+        self.legacy_only_backups(mutate=lambda legacy: legacy.update(run_id='another-run'))
+        with self.assertRaisesRegex(ValueError, 'No retained customer-lane backup'):
+            self.f.agent.restore_lane()
+        self.assertEqual(self.session()['authority_kind'], 'demo_direct')
+
+    def test_a_legacy_backup_never_restores_without_the_store_customer_authority(self):
+        self.flipped_by_old_update()
+        self.legacy_only_backups()
+        store = self.f.root / 'studio.sqlite'
+        store.rename(store.with_suffix('.held'))
+        StudioStore(store).close()   # no customer-lane authority for this binding
+        with self.assertRaisesRegex(ValueError, 'no customer-lane authority'):
+            self.f.agent.restore_lane(apply=True)
+        self.assertEqual(self.session()['authority_kind'], 'demo_direct')
+
     def test_restore_lane_cli_previews_by_default(self):
         import demo_agent
         self.flipped_by_old_update()

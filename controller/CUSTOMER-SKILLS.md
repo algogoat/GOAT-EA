@@ -17,6 +17,7 @@ private developer tooling. Start with one relevant skill, not the whole library.
 | Build, compare and export portfolios | [goat-portfolio-build](skills/goat-portfolio-build/SKILL.md) | Authenticated desktop agent API |
 | Diagnose, repair and submit findings | [goat-repair-report](skills/goat-repair-report/SKILL.md) | Installed recovery commands and support preview/submission |
 | Audit current account/portfolio observations | [goat-observation-audit](skills/goat-observation-audit/SKILL.md) | Authorized read-only native/API observations |
+| Choose and set up an always-on Windows VPS (trading, or the whole lab for Mac and phone users) | [goat-vps-setup](skills/goat-vps-setup/SKILL.md) | Situation interview, tier, disclosed partner link, user-only signup, golden path on the VPS, autostart, remote agent, health check |
 
 Use capabilities from the actual installation. A skill describes a workflow; it
 does not add a missing executable, grant or permission. Carry out routine recovery

@@ -469,6 +469,15 @@ hands over; the drive runs in a detached driver.
 `--foreground` keeps the old in-process drive for at most 120 s. A longer foreground
 budget is refused, because it would die with the calling tool.
 
+If a start or resume answers that the detached driver launch could not be confirmed, the
+`run-batch` rule above applies. Never start another driver by hand. `seed-status`
+shows the `driver` once its task starts, or `launch_never_started: true` once Windows
+proves the task never ran. Only then does the same `seed-start` (or `seed-resume`) run
+again: under the terminal lock it removes the old task, confirms it is gone, logs
+`detached_driver`/`launch_never_started` and reserves a fresh nonce. The detached driver
+waits up to 120 s for the terminal lock; if it stays busy, the worker record says so
+(`failed`).
+
 **Don't run `demo launch-terminal` during a seed, catch-up or hold-up batch.** The
 driver owns the MT5 close and reopen between members, and it reopens MT5 on the GOAT
 profile after the last one. An MT5 started by anyone else between members makes the

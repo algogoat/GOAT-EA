@@ -21,6 +21,7 @@ import demo_agent
 from demo_agent import DemoAgent, read_json, write_json
 import studio_process_query as query
 import test_demo_agent as demo_fixture
+import test_demo_lane_driver as lane_fixture
 import test_demo_seed_agent as seed_agent_fixture
 
 
@@ -309,6 +310,77 @@ class DemoLaneReidentifyTests(unittest.TestCase):
         self.assertEqual((result['status'], result['members'][0]['status']), ('active', 'running'))
         self.assertIn('seed-resume drives it', result['next_action'])
         self.assertIn(('seed_reconcile', 'reidentified'), [(a['operation'], a['phase']) for a in self.actions()])
+
+
+class LaneLaunchResolutionTests(unittest.TestCase):
+    """The detached seed/catch-up/hold-up driver (GOAT-EA#162) resolves an unconfirmed launch like run-batch."""
+    setUp = seed_agent_fixture.DemoSeedAgentTests.setUp
+    database, new_agent, sleep, manifest, finish_member, actions = (
+        seed_agent_fixture.DemoSeedAgentTests.database, seed_agent_fixture.DemoSeedAgentTests.new_agent,
+        seed_agent_fixture.DemoSeedAgentTests.sleep, seed_agent_fixture.DemoSeedAgentTests.manifest,
+        seed_agent_fixture.DemoSeedAgentTests.finish_member, seed_agent_fixture.DemoSeedAgentTests.actions)
+    launched, worker = lane_fixture.LaneDriverTests.launched, lane_fixture.LaneDriverTests.worker
+
+    @staticmethod
+    def task(exists=True, state='Ready', last_run=None, last_result=267011):
+        return dict(exists=exists, state=state, last_run_utc=last_run, last_result=last_result)
+
+    def unconfirmed(self, argv, *, log_path, worker_path):
+        envelope = Path(str(log_path)[:-4] + '.launch.json')
+        write_json(envelope, dict(started=str(envelope)[:-12] + '.started.json', finished=str(envelope)[:-12] + '.finished.json',
+                                  task_name='GOAT-Demo-' + 'c' * 16 + '-' + argv[argv.index('--nonce') + 1]))
+        write_json(worker_path, dict(read_json(worker_path), launch_envelope=str(envelope)))
+        raise ValueError('Persistent bootstrap unconfirmed; inspect the same launch/task, never issue another')
+
+    def test_a_lane_launch_is_retried_only_after_its_never_started_task_is_removed(self):
+        self.agent.seed_prepare('batch', self.plan)
+        with patch('studio_durable_driver.launch', side_effect=self.unconfirmed):
+            with self.assertRaisesRegex(ValueError, 'could not be confirmed .*the same seed-start runs again only once Windows '
+                                                    'shows that task never ran'):
+                self.agent.seed_start('batch', 60, detach=True)
+        old = self.worker()
+        self.assertEqual(old['status'], 'launch_unconfirmed')
+        calls, launch = self.launched()
+        with launch, patch('studio_durable_driver.task_info', return_value=self.task(state='Running')), \
+                patch('studio_durable_driver.unregister_task', side_effect=AssertionError('never while it may run')):
+            with self.assertRaisesRegex(ValueError, 'never duplicate'):
+                self.agent.seed_start('batch', 60, detach=True)
+        with launch, patch('studio_durable_driver.task_info', return_value=self.task()), \
+                patch('studio_durable_driver.unregister_task', side_effect=ValueError('could not be removed; inspect it, never duplicate')):
+            with self.assertRaisesRegex(ValueError, 'could not be removed'):
+                self.agent.seed_start('batch', 60, detach=True)
+        self.assertEqual((calls, self.worker()['nonce']), ([], old['nonce']))
+        # A status read is bounded and has no effect; it shows the launch never started.
+        with patch('studio_durable_driver.task_info', return_value=self.task()) as info, \
+                patch('studio_durable_driver.unregister_task', side_effect=AssertionError('a read has no effect')):
+            driver = self.agent.seed_status('batch')['driver']
+        self.assertEqual((driver['alive'], driver['launch_never_started']), (False, True))
+        self.assertEqual(info.call_args.kwargs['budget'], 25)
+        with launch, patch('studio_durable_driver.task_info', return_value=self.task()), \
+                patch('studio_durable_driver.unregister_task') as removed:
+            result = self.agent.seed_start('batch', 60, detach=True)
+        self.assertEqual(result['status'], 'driver_starting')
+        self.assertEqual(removed.call_args.args[0], 'GOAT-Demo-' + 'c' * 16 + '-' + old['nonce'])
+        self.assertNotEqual(self.worker()['nonce'], old['nonce'])
+        logged = [a for a in self.actions() if (a['operation'], a['phase']) == ('detached_driver', 'launch_never_started')]
+        self.assertEqual((len(logged), logged[0]['kind'], logged[0]['nonce']), (1, 'seed', old['nonce']))
+
+    def test_a_lane_worker_waits_for_the_lock_and_records_a_lock_timeout(self):
+        path = self.root / 'demo-agent/lane-workers/seed-batch.json'; path.parent.mkdir(parents=True)
+        write_json(path, dict(schema_version=1, kind='seed', batch_id='batch', nonce='n' * 32, status='spawned', initial=True, max_seconds=60))
+        waits = []
+
+        @contextmanager
+        def busy(*, wait_seconds=0):
+            waits.append(wait_seconds)
+            raise ValueError('Another demo agent operation owns this terminal')
+            yield
+        with patch.object(self.agent, '_exclusive', side_effect=busy):
+            with self.assertRaisesRegex(ValueError, 'owns this terminal'):
+                self.agent._drive_lane('seed', 'batch', 'n' * 32, 60, True)
+        self.assertEqual(waits, [120])
+        self.assertEqual(read_json(path)['status'], 'failed')
+        self.assertIn('stayed busy for 120 s; the seed driver did not start', read_json(path)['error'])
 
 
 class LaunchResolutionTests(unittest.TestCase):

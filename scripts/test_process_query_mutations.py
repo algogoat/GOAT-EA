@@ -104,6 +104,19 @@ MUTATIONS = [
      "            or re.fullmatch(r\"Command '.*' (timed out", "            or False and re.fullmatch(r\"Command '.*' (timed out"),
     ('adoption beside another uncertain member', SEED, "        if len(uncertain)!=1:return\n", "        if not uncertain:return\n"),
     ('an adoption is not journaled', SEED, "        self.reidentify_journal(spec['alias'],record)", "        pass"),
+    # The detached lane driver (GOAT-EA#162) resolves its unconfirmed launch and waits for the lock like run-batch.
+    ('a lane retry never retires a task that never ran', AGENT,
+     "            live = self._live_lane_worker(retire=True)", "            live = self._live_lane_worker()"),
+    ('a lane worker lock timeout leaves its record silent', AGENT,
+     "                self._mark_worker_failed(worker_path, nonce, 'The terminal lock stayed busy for ' + str(",
+     "                (worker_path, nonce, 'The terminal lock stayed busy for ' + str("),
+    ('a lane worker waits only 20 s for the lock', AGENT,
+     "                stack.enter_context(self._exclusive(wait_seconds=self.DRIVER_LOCK_WAIT_SECONDS))\n            except ValueError as exc:\n"
+     "                self._mark_worker_failed(worker_path, nonce, 'The terminal lock stayed busy for ' + str(",
+     "                stack.enter_context(self._exclusive(wait_seconds=20))\n            except ValueError as exc:\n"
+     "                self._mark_worker_failed(worker_path, nonce, 'The terminal lock stayed busy for ' + str("),
+    ('a lane status read retries for the full launch budget', AGENT,
+     "            alive = self._worker_alive(record, quick=True)        # a status read", "            alive = self._worker_alive(record)        # a status read"),
     ('demo seed-resume never lets the runner adopt', AGENT,
      "            runner = self._reidentifying(self._seed_runner(controller, kind), kind, 'resume', batch_id)\n            current = runner.status(batch_id)\n            if current['status'] == 'prepared':",
      "            runner = self._seed_runner(controller, kind)\n            current = runner.status(batch_id)\n            if current['status'] == 'prepared':"),

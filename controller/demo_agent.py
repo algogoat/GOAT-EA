@@ -1713,14 +1713,7 @@ class DemoAgent:
             alive = self._worker_alive(record, quick=True)
         except ValueError as exc:
             alive = 'unknown: ' + str(exc)
-        never_started = False
-        if alive is False and record.get('launch_envelope'):
-            try:
-                envelope = read_json(record['launch_envelope'])
-                never_started = not Path(envelope['started']).is_file() and not Path(envelope['finished']).is_file()
-            except (OSError, ValueError, KeyError):
-                never_started = False
-        return dict(record, alive=alive, launch_never_started=never_started)
+        return dict(record, alive=alive, launch_never_started=self._launch_never_started(record, alive))
 
     def batch_driver_status(self, batch_id):
         from studio_batch_driver import status
@@ -1999,16 +1992,31 @@ class DemoAgent:
         self._seed_start_path(batch_id, kind)                     # validates the ID
         return self.state_root / 'lane-workers' / (kind + '-' + batch_id + '.json')
 
-    def _live_lane_worker(self, *, exclude=None):
-        """(path, record) of a live detached lane driver other than ``exclude``, or None. An unresolved launch refuses."""
+    def _live_lane_worker(self, *, exclude=None, retire=False):
+        """(path, record) of a live detached lane driver other than ``exclude``, or None. An unresolved launch refuses.
+
+        ``retire`` (only under the terminal lock, right before a new reservation) first removes the task of a launch
+        that provably never ran and records ``launch_never_started``, exactly as run-batch does (goatai#1885 PR D).
+        """
         folder = self.state_root / 'lane-workers'
         for path in sorted(folder.glob('*.json')) if folder.is_dir() else []:
             if exclude is not None and Path(path) == Path(exclude):
                 continue
             record = read_json(path)
-            if self._worker_alive(record):
+            if self._worker_alive(record, retire=retire):
                 return path, record
         return None
+
+    @staticmethod
+    def _launch_never_started(record, alive):
+        """A not-alive worker whose launch envelope has neither a started nor a finished receipt (its task never ran)."""
+        if alive is not False or not record.get('launch_envelope'):
+            return False
+        try:
+            envelope = read_json(record['launch_envelope'])
+            return not Path(envelope['started']).is_file() and not Path(envelope['finished']).is_file()
+        except (OSError, ValueError, KeyError):
+            return False
 
     def _lane_driver(self, kind, batch_id):
         """Read-only: the detached driver record of this lane batch and whether it is alive now."""
@@ -2017,10 +2025,10 @@ class DemoAgent:
             return None
         record = read_json(path)
         try:
-            alive = self._worker_alive(record)
+            alive = self._worker_alive(record, quick=True)        # a status read: bounded Windows queries
         except ValueError as exc:
             alive = 'unknown: ' + str(exc)
-        return dict(record, alive=alive, worker_path=str(path))
+        return dict(record, alive=alive, launch_never_started=self._launch_never_started(record, alive), worker_path=str(path))
 
     def _lane_detach(self, kind, batch_id, max_seconds, *, initial):
         lane = LANES[kind]
@@ -2030,7 +2038,8 @@ class DemoAgent:
         # overlapping calls are serialized, and the worker (which takes the same lock first) cannot begin
         # before its reservation and the caller's final record are written.
         with self._exclusive():
-            live = self._live_lane_worker()
+            # Under this lock, a launch whose task provably never ran is retired (task removed) before the new one.
+            live = self._live_lane_worker(retire=True)
             if live is not None:
                 if Path(live[0]) == worker_path:
                     return dict(status='already_supervising', kind=kind, batch_id=batch_id, worker=live[1], native_running_unverified=True,
@@ -2083,8 +2092,9 @@ class DemoAgent:
             self._append(kind + '_driver', current['status'], batch_id=batch_id, nonce=nonce, error=str(exc))
             if unresolved:
                 raise ValueError('The detached ' + lane['word'] + ' driver launch could not be confirmed (' + str(exc) + '). Its '
-                                 'Windows task may still run: never start another driver. ' + kind + '-status shows it; '
-                                 'inspect that task before anything else.') from exc
+                                 'Windows task may still run: never start another driver by hand. ' + kind + '-status shows '
+                                 'the driver once its task starts; the same ' + kind + ('-start' if initial else '-resume')
+                                 + ' runs again only once Windows shows that task never ran.') from exc
             again = kind + ('-start again (it reuses the start record)' if initial else '-resume again')
             raise ValueError('The detached ' + lane['word'] + ' driver did not start (' + str(exc) + '); MT5 was not touched '
                              'by it. Fix the cause, then run ' + again + '.') from exc
@@ -2103,7 +2113,15 @@ class DemoAgent:
         """The detached worker: verify its own reservation, then drive exactly like the foreground command."""
         worker_path = self._lane_worker_path(kind, batch_id)
         # The terminal lock first: the caller releases it only after its final spawn record (Codex P2 on GOAT-EA#162).
-        with self._exclusive(wait_seconds=20):
+        # It may hold it through the whole launch, so wait as long as the batch worker does (goatai#1885 PR D).
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(self._exclusive(wait_seconds=self.DRIVER_LOCK_WAIT_SECONDS))
+            except ValueError as exc:
+                self._mark_worker_failed(worker_path, nonce, 'The terminal lock stayed busy for ' + str(self.DRIVER_LOCK_WAIT_SECONDS) + ' s; the '
+                                         + LANES[kind]['word'] + ' driver did not start: ' + str(exc))
+                self._append(kind + '_driver', 'failed', batch_id=batch_id, nonce=nonce, error='terminal lock busy')
+                raise
             worker = read_json(worker_path)
             if (worker.get('nonce') != nonce or worker.get('kind') != kind or worker.get('batch_id') != batch_id
                     or worker.get('initial') is not initial or worker.get('max_seconds') != max_seconds

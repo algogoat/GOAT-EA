@@ -192,7 +192,7 @@ expert and verified monitor preset, keeping the dedicated saved profile. The
 saved account must match the session and Algo Trading must remain off. This
 operation requires the selected terminal to be stopped and never enables trading.
 An explicitly reviewed protected peer may be stopped; a different process still
-requires a new review.
+requires a new review, unless it is a GOAT peer (see "GOAT peers").
 
 MT5 saves the GOAT input group headings as equals-framed label rows with an
 empty value inside the expert's input block. The saved-profile verifier accepts
@@ -1079,6 +1079,43 @@ work; obtain and inspect a fresh review before confirming it.
 This is one protected peer, not an arbitrary process ignore list. It does not
 release legacy worker claims or startup slots, reconcile native work or substitute
 for idle/setup checks on the selected terminal.
+
+### GOAT peers: more terminals, running or not (goatai#1885)
+
+`policy.json` holds one reviewed peer and is never converted, because it is bound
+into every prepared package. On an isolated (V1.49) installation, other
+GOAT-owned terminals are **GOAT peers** instead (`studio_peer_roster`). They come
+from two sources:
+
+- `peers.json`: terminals registered with `peer-add --terminal <exe> [--data-root
+  <dir>] [--confirm-reviewed]`. The peer need not run. Without
+  `--confirm-reviewed` it returns a preview of the data folder, its `origin.txt`
+  binding and the batch namespace hash.
+- GOAT installation receipts under `%LOCALAPPDATA%\GOAT Portfolio
+  Desktop\suite\*\installation.json` whose `controller_state_root` is their own
+  folder. These are recognised automatically.
+
+Terminals excluded with `peer-remove --terminal <exe> --confirm-reviewed` are
+left out. A running terminal64.exe is exempt from the "unmapped terminal"
+refusal, and from nothing else, when all of these hold:
+
+- its data folder has `MQL5` and an `origin.txt` naming its program folder (or it is portable);
+- it overlaps none of this terminal's folders;
+- it hashes to another batch namespace;
+- its `terminal64.exe` has a Valid MetaQuotes Authenticode signature;
+- every record naming it gives the same data folder.
+
+A GOAT peer:
+
+- has no role in continuity checks, so it may start, stop or restart at any time;
+- is never part of a package binding, and is never read, closed, launched or written to.
+
+The isolation preflight still refuses any terminal resolving to this batch
+folder. `peer-list` is read-only. Receipts go to the append-only
+`peer-roster.jsonl` (`peer_added`, `peer_removed`, `peer_seen`,
+`peer_binary_changed` after an MT5 update). The owner demo lane has the same
+commands in `goat.exe demo` (DEMO-AGENT-TOOLS.md), and owner STOP refuses
+`peer-add` and `peer-remove`.
 
 ### Desktop client during a parked receipt upgrade
 

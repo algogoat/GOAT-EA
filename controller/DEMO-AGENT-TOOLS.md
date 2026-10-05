@@ -199,6 +199,44 @@ peer, a changed peer executable, data root or `origin.txt` (review again with
 `peer-prepare`/`peer-apply`). Without the isolation proof (older EA builds) the
 exact-instance rule is unchanged.
 
+### GOAT peers: more than one other MT5 (goatai#1885)
+
+`policy.json` holds one reviewed peer, and reviewing another **replaces** it.
+Every other GOAT-owned MT5 on this PC is a **GOAT peer** instead: it may run,
+start, restart or close at any time without blocking this terminal. GOAT never
+reads, closes, launches or writes to it, and it never shares this terminal's
+batch folder (the isolation preflight still refuses at every start). It is
+never part of a package binding, so adding or removing one never invalidates a
+prepared batch, and it can be done while a batch runs.
+
+- **Automatic:** every terminal with a GOAT installation receipt on this PC
+  (`%LOCALAPPDATA%\GOAT Portfolio Desktop\suite\*\installation.json`) is a GOAT
+  peer. Nothing to run: opening T3 no longer blocks Banker.
+- **Explicit:** `& $goat demo --installation $receipt peer-add --terminal "<its terminal64.exe>" [--data-root "<its data folder>"]`
+  previews the data folder, its `origin.txt` binding and the batch namespace
+  hash the peer is held to. With the owner's yes, repeat it with
+  `--confirm-reviewed`. The peer need not be running. The command uses the
+  broker-verified scope (selected MT5 running, demo, Algo off) but not the
+  terminal lock, so it works beside a running driver.
+- `peer-remove --terminal "<exe>" --confirm-reviewed` stops exempting it (and
+  excludes it from auto-recognition). `peer-list` (read-only) shows the
+  reviewed peer, every GOAT peer with eligible or the reason not, and which
+  running MT5 would block.
+- **Owner STOP refuses `peer-add` and `peer-remove`.** `peer-list` still works.
+
+A running terminal64.exe counts as a GOAT peer only when all of these hold:
+
+- this lane runs V1.49 (isolated batch folders);
+- its data folder has `MQL5` and an `origin.txt` naming its program folder (or it is a portable MT5's own folder);
+- it overlaps none of this terminal's folders;
+- it hashes to a different batch namespace;
+- its `terminal64.exe` has a Valid Authenticode signature from MetaQuotes Ltd.;
+- every record naming it (`peers.json`, receipts) gives the same data folder.
+
+An MT5 live update (new bytes, same signer) is accepted, and the next start journals it as `peer_binary_changed` in `peer-roster.jsonl`. The reviewed `policy.json` peer keeps its strict executable-bytes rule.
+
+**Files:** `peers.json` and the append-only `peer-roster.jsonl`, in the same `.studio-peer-policy` folder as `policy.json`. `policy.json`, its reviews and `peer-instances.jsonl` are never rewritten.
+
 A seed hunt pauses between members: `batch-pause` writes `seeds/<id>/pause.json`,
 the running member finishes and is kept, no new member starts and pending members
 stay pending (never cancelled). `seed-resume` honours the pause; `batch-resume`

@@ -31,6 +31,10 @@ READ_OPERATIONS = LOCAL_FILE_OPERATIONS | frozenset(('discover','resource-profil
                              # Library scoring v1 (goatai#2221): the verified lock registry and the
                              # trial journal/count, read from retained journals only.
                              'heldout-status','trial-journal','trial-count',
+                             # GOAT peers (studio_peer_roster): peer-list reads the roster, receipts and the
+                             # terminal inventory only. peer-add/peer-remove stay mutations (refused here
+                             # for demo_direct and typed continuations; the owner lane has goat.exe demo).
+                             'peer-list',
                              # Trading-equivalence research tooling: reads git and exports; the only write is a
                              # create-only certificate/canary record under <controller state>\equivalence.
                              # No terminal, session, queue or grant effect.

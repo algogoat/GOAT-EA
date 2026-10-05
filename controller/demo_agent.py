@@ -658,6 +658,42 @@ class DemoAgent:
         driver = self._spawn_driver(new_id, max_seconds=max_seconds or self._resume_budget(batch_id))
         return dict(prepared, peer=peer, readback=readback, driver=driver, lineage=lineage(self.root, new_id))
 
+    def _peer_view(self):
+        """The fields studio_peer_roster reads, without opening (or EA-hashing) the controller."""
+        from types import SimpleNamespace
+        return SimpleNamespace(install=self.install, root=self.root, local=self.local)
+
+    def peer_list(self):
+        """Read-only: the reviewed peer and every GOAT peer of this terminal; allowed under owner STOP."""
+        from studio_peer_roster import listing
+        return listing(self._peer_view())
+
+    def peer_add(self, terminal, data_root=None, *, confirmed=False):
+        """Register another MT5 on this PC as a GOAT peer of this demo terminal (studio_peer_roster.add).
+
+        Broker-verified like every demo mutation (``_studio``), but without the
+        terminal lock: a batch driver holds that for its whole run, and a peer
+        change touches no terminal, queue or package state (the roster has its
+        own gate). Owner STOP refuses it (#1885 amendment B).
+        """
+        from studio_peer_roster import add, refuse_under_owner_stop
+        refuse_under_owner_stop(self._peer_view())
+        with self._studio('peer-add', idle=False, owner_required=False) as (controller, broker):
+            result = add(controller, terminal, data_root, confirmed=confirmed)
+            if result['status'] == 'peer_added':
+                self._append('peer_add', 'recorded', peer=result['peer'], broker=broker)
+            return dict(result, broker=broker)
+
+    def peer_remove(self, terminal, *, confirmed=False):
+        """Stop exempting a GOAT peer of this demo terminal; refused under owner STOP."""
+        from studio_peer_roster import refuse_under_owner_stop, remove
+        refuse_under_owner_stop(self._peer_view())
+        with self._studio('peer-remove', idle=False, owner_required=False) as (controller, broker):
+            result = remove(controller, terminal, confirmed=confirmed)
+            if result['status'] == 'peer_removed':
+                self._append('peer_remove', 'recorded', excluded=result['excluded'], broker=broker)
+            return dict(result, broker=broker)
+
     def compact_evidence(self, apply=False):
         """Move finished jobs' in-row evidence history to verified logs (studio_evidence_log)."""
         from studio_evidence_log import compact
@@ -2294,6 +2330,15 @@ def main(argv=None):
     onward.add_argument('--include-failed', action='store_true')
     onward.add_argument('--include-no-edge', action='store_true')
     commands.add_parser('clear-stop')
+    commands.add_parser('peer-list', help='Read-only: the reviewed peer and every GOAT peer of this terminal, and what would block')
+    peer_add = commands.add_parser('peer-add', help='Preview, then --confirm-reviewed: let another MT5 on this PC keep running '
+                                   '(it need not run now); refused under owner STOP')
+    peer_add.add_argument('--terminal', type=Path, required=True)
+    peer_add.add_argument('--data-root', type=Path)
+    peer_add.add_argument('--confirm-reviewed', action='store_true')
+    peer_remove = commands.add_parser('peer-remove', help='Preview, then --confirm-reviewed: stop exempting a GOAT peer')
+    peer_remove.add_argument('--terminal', type=Path, required=True)
+    peer_remove.add_argument('--confirm-reviewed', action='store_true')
     orphan = commands.add_parser('recover-orphan')
     orphan.add_argument('--review-id', help='Observe this retained recovery only; never resend')
     launch = commands.add_parser('launch-terminal', help='Reopen MT5 on the saved GOAT Studio monitor profile, '
@@ -2431,6 +2476,9 @@ def main(argv=None):
             include_no_edge=args.include_no_edge)
         elif args.command == 'retire-unactivated': result = agent.retire_unactivated(args.batch_id)
         elif args.command == 'clear-stop': result = agent.clear_stop()
+        elif args.command == 'peer-list': result = agent.peer_list()
+        elif args.command == 'peer-add': result = agent.peer_add(args.terminal, args.data_root, confirmed=args.confirm_reviewed)
+        elif args.command == 'peer-remove': result = agent.peer_remove(args.terminal, confirmed=args.confirm_reviewed)
         elif args.command == 'recover-orphan': result = agent.recover_orphan(args.review_id)
         elif args.command == 'launch-terminal': result = agent.launch_terminal(args.monitor_config)
         elif args.command == 'install-build': result = agent.install_build(args.candidate, args.sha256, args.monitor_config,

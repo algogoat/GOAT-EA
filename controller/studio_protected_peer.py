@@ -1,5 +1,9 @@
 """Reviewed protection of one existing peer; never ignore unknown terminals.
 
+This file's policy.json holds one reviewed peer and is never converted: it is
+bound into every prepared package. Further GOAT-owned terminals (peer-add and
+GOAT installation receipts) live in studio_peer_roster, outside every binding.
+
 The policy lives outside both switched directories. It records the peer's
 executable, data root and origin binding (and the process instance seen at
 review), not permission to manage it. A different peer, binary or data root
@@ -75,10 +79,14 @@ def observe(c, peer):
     if count not in (0,1): raise ValueError('Ambiguous selected terminal process')
     # A closed peer is observed as None, never as an error: every package binding
     # already lets the peer be stopped. Unknown terminals and a second process of
-    # the peer still refuse in classify_processes.
+    # the peer still refuse in classify_processes. Other GOAT-owned terminals
+    # (studio_peer_roster: peer-add and GOAT receipts) are exempt here too, so a
+    # second GOAT terminal never blocks a refresh of this reviewed peer.
+    from studio_peer_roster import lookup_for_controller
     result=classify_processes(rows,dict(research_terminal=c.install['terminal_executable'],protected_terminal=peer['executable'],
                                         protected_may_be_stopped=True),
-                             observed_unix=time.time(),research_running=bool(count))
+                             observed_unix=time.time(),research_running=bool(count),
+                             peer_lookup=lookup_for_controller(c))
     return result['protected']
 
 

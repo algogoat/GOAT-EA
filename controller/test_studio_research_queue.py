@@ -178,6 +178,25 @@ class QueueTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.queue([], finished=bad)
 
+    def test_job_ids_list_an_older_ended_batch_without_displacing_the_kept_ends(self):
+        # goatai#2272: restore-lane can name a batch that ended long before the 5 newest ends.
+        jobs = []
+        for index in range(8):
+            job = self.job('b%d' % index, 'completed')
+            job['launch_intent']['recorded_at'] = '2027-01-%02dT06:00:00Z' % (index + 1)
+            jobs.append(job)
+        newest = ['b7', 'b6', 'b5', 'b4', 'b3']
+        self.assertEqual([row['batch_id'] for row in self.queue(jobs)['rows']], newest)
+        value = self.queue(jobs, job_ids=['b0', 'b5', 'nowhere', 'b0'])
+        self.assertEqual([row['batch_id'] for row in value['rows']], newest + ['b0'])
+        self.assertEqual((value['job_ids'], value['job_ids_missing']), (['b0', 'b5', 'nowhere'], ['nowhere']))
+        self.assertEqual(value['rows'][-1]['state'], 'finished')
+        self.assertEqual([row['batch_id'] for row in self.queue(jobs, finished=0, job_ids=['b1'])['rows']], ['b1'])
+        self.assertNotIn('job_ids', self.queue(jobs))
+        for bad in (['../x'], [''], ['b%d' % i for i in range(21)], [7]):
+            with self.assertRaises(ValueError):
+                self.queue(jobs, job_ids=bad)
+
     def test_the_queue_reads_only(self):
         write_run(self.root, 'seed', 'hunt', 'active', [done(30, 10), dict(status='running', started_unix=NOW - 60)], pause_file=True)
         torn = write_run(self.root, 'seed', 'torn', 'active', [dict(status='pending')])
@@ -238,6 +257,14 @@ class DemoLaneTests(unittest.TestCase):
         value = self.agent.research_queue()
         self.assertEqual([(row['batch_id'], row['state']) for row in value['rows']], [('g6', 'running'), ('hunt', 'finished')])
         self.assertEqual(len(self.agent.research_queue(finished=0)['rows']), 1)
+
+    def test_cli_job_id_is_passed_through(self):
+        import demo_agent
+        with patch('demo_agent.DemoAgent', return_value=self.agent), patch('builtins.print') as printed:
+            self.assertEqual(demo_agent.main(['--installation', str(self.f.installation), 'research-queue', '--finished', '0',
+                                              '--job-id', 'g6', '--job-id', 'gone']), 0)
+        value = json.loads(printed.call_args.args[0])['result']
+        self.assertEqual((value['job_ids'], value['job_ids_missing']), (['g6', 'gone'], ['gone']))
 
 
 class HeldOutQueueTests(unittest.TestCase):

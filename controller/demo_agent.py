@@ -1219,7 +1219,15 @@ class DemoAgent:
                     elif operation == 'install_build' and entry.get('phase') == 'local_identity_verified':
                         updates += 1
         if not updates:
-            raise ValueError('No retained install-build record for this session; restore-lane changes nothing')
+            # A legacy session whose app update ran on a controller that predated the identity row
+            # (goatai support edc7e808): accepted only when the evidence itself is a legacy backup,
+            # the store already proved native_human_control above, every logged action is an update
+            # step (checked below), and the receipt's EA hash is the EX5 actually installed.
+            if evidence_kind != 'legacy-session-without-authority-kind':
+                raise ValueError('No retained install-build record for this session; restore-lane changes nothing')
+            if self.install.get('ea_sha256') != digest(self.binary):
+                raise ValueError('No retained install-build record and the installed EA differs from the receipt; restore-lane changes nothing')
+            evidence_kind = 'legacy-session-without-authority-kind-or-identity-row'
         if work:
             raise ValueError('This session has done owner demo-lane work (' + ', '.join(sorted(work))
                              + '); restore-lane only undoes an app update\'s lane change')

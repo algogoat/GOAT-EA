@@ -42,7 +42,7 @@ from studio_bridge import write_json
 from studio_evidence import parse_header, parse_stem, read_json_bounded
 from studio_heldout import HeldOutRefused
 from studio_seed import SeedRunner, digest
-from studio_seed_results import MAX_MANIFEST_BYTES, read_seed_json
+from studio_seed_results import MAX_MANIFEST_BYTES, MAX_RESULT_BYTES, read_seed_json
 from studio_strategy_attribution import variant_id
 from studio_strategy_settings import read_values
 from studio_template_tools import is_starter, source_bytes, validate_raw
@@ -386,15 +386,26 @@ class HoldupRunner(SeedRunner):
             return None, 'The test report cannot be read (' + str(exc) + ')'
         return path, None
 
-    def _retain(self, source, target):
-        """Create-only copy into the hold-up folder; an existing copy must be the same bytes."""
-        raw = Path(source).read_bytes()
+    @staticmethod
+    def _retain(raw, target):
+        """Create-only write into the hold-up folder; an existing file must be exactly these bytes."""
         if target.exists():
             if target.read_bytes() != raw:
                 raise ValueError('A different retained copy already exists: ' + target.name)
             return
         with target.open('xb') as stream:
             stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+
+    def _read(self, batch_id):
+        """The seed checks, plus each completed test's retained deal list (Codex P2 on GOAT-EA#161)."""
+        root, manifest, state = super()._read(batch_id)
+        for item in state['members']:
+            if item.get('result'):
+                result = read_seed_json(item['result']['path'], MAX_RESULT_BYTES)
+                deals = Path(result['deals_path'])
+                if deals.parent != root or not deals.is_file() or digest(deals) != result['deals_sha256']:
+                    raise ValueError('Retained hold-up deal list changed: ' + item['alias'])
+        return root, manifest, state
 
     def _installed_build_id(self):
         from studio_catchup import CatchupRunner
@@ -412,13 +423,15 @@ class HoldupRunner(SeedRunner):
                                      to_date=tester['ToDate'], deposit=tester['Deposit'], currency=tester['Currency'],
                                      leverage=tester['Leverage'])
         copy = root / (spec['alias'] + '.report.htm')
-        self._retain(path, copy)
+        self._retain(Path(path).read_bytes(), copy)
         if digest(copy) != report['sha256']:
             raise ValueError('The retained report copy differs from the report that was checked')
         deals_path = root / (spec['alias'] + '.deals.json')
-        if not deals_path.exists():
-            write_json(deals_path, dict(schema='goat-holdup-deals-v1', alias=spec['alias'], report_sha256=report['sha256'],
-                                        deals=tester_report.deal_rows(report)))
+        # Derived from the checked report and written create-only: an earlier interrupted collection must have
+        # left exactly these bytes, never a stale or edited deal list.
+        self._retain((json.dumps(dict(schema='goat-holdup-deals-v1', alias=spec['alias'], report_sha256=report['sha256'],
+                                      deals=tester_report.deal_rows(report)), sort_keys=True, separators=(',', ':')) + '\n').encode('utf-8'),
+                     deals_path)
         per_week, daily, segments = tester_report.deal_views(report, split=spec['window'].get('split'))
         figures = tester_report.metrics(report)
         quality = report['history_quality_pct']

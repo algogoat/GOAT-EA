@@ -235,8 +235,9 @@ def _same_input(name, frozen, reported, definition):
     except InvalidOperation:
         return False
     if kind in ('double', 'float'):
-        # MT5 prints doubles with up to 8 decimals; a difference beyond that is a different value.
-        return abs(a - b) <= Decimal('0.000000005') * max(Decimal(1), abs(a))
+        # MT5 prints doubles with up to 8 decimals: an absolute half unit of the 8th decimal is the only
+        # rounding it can add (never proportional to the value; Codex P2 on GOAT-EA#161).
+        return abs(a - b) <= Decimal('0.000000005')
     return a == b
 
 

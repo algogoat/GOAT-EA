@@ -102,6 +102,8 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(tr._same_input('X', '1', 'true', dict(type='bool')))
         self.assertFalse(tr._same_input('X', '0.12345678', '0.12345679', dict(type='double')))
         self.assertTrue(tr._same_input('X', '0.123456781', '0.12345678', dict(type='double')))    # beyond MT5's 8 printed decimals
+        self.assertFalse(tr._same_input('X', '100000000', '100000000.4', dict(type='double')))   # absolute, not relative
+        self.assertTrue(tr._same_input('X', '100000000.000000001', '100000000', dict(type='double')))
 
     def test_a_tampered_deal_or_total_breaks_the_reconciliation(self):
         text = fixture_text()

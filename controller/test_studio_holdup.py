@@ -257,6 +257,33 @@ class HoldupTests(unittest.TestCase):
         self.assertIsNone(state['members'][0]['result'])
         self.assertEqual(state['stopped_reason']['rules'], ['every_member_failed'])
 
+    def test_the_retained_deal_list_is_checked_on_every_read_and_never_replaced(self):
+        # Codex P2 on GOAT-EA#161: a stale or edited deals.json must never stand beside a checked report.
+        state = self.run_plan()
+        deals = Path(read_json(state['members'][0]['result']['path'])['deals_path'])
+        deals.write_text(deals.read_text(encoding='utf-8').replace('"-0.24"', '"-0.25"', 1), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'Retained hold-up deal list changed'):
+            self.runner.status('h1')
+        # An interrupted earlier collection left different bytes: the test fails, nothing is overwritten.
+        self.runner.prepare('h2', self.plan(self.spec_for(window=dict(start='2026-01-19', end='2026-09-11', split='2026-05-04'))))
+        self.runner.slot.write_text(json.dumps(dict(read_json(self.runner.slot), status='released')))
+        self.process_state = dict(pid=10, executable='terminal64.exe', created_utc='monitor')
+        self.auto = False
+        self.runner.start('h2', 1)
+        member = read_json(self.runner.path('h2') / 'manifest.json')['members'][0]
+        stale = self.runner.path('h2') / (member['alias'] + '.deals.json')
+        stale.write_text('{"deals":[]}', encoding='utf-8')
+        path = Path(self.c.install['terminal_data_root']) / 'MQL5/Files/GOATStudio/HoldupReports' / (member['alias'] + '.htm')
+        text = fixture_text()
+        original = [line for line in text.splitlines() if '<b>EA_Desc=' in line][0]
+        text = text.replace(original, original.split('<b>EA_Desc=')[0] + '<b>EA_Desc=' + member['alias'] + '</b></td>')
+        path.write_bytes(b'\xff\xfe' + text.replace('<b>Mode_Operation=0</b>', '<b>Mode_Operation=9</b>').encode('utf-16-le'))
+        self.process_state = None
+        state = self.runner.status('h2')
+        self.assertEqual(state['members'][0]['status'], 'failed')
+        self.assertIn('A different retained copy already exists', state['members'][0]['error'])
+        self.assertEqual(stale.read_text(encoding='utf-8'), '{"deals":[]}')
+
     def test_low_history_quality_keeps_the_result_without_evidence(self):
         self.quality = '87% real ticks'
         state = self.run_plan()

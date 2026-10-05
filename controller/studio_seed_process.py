@@ -238,6 +238,11 @@ try {
         raise ValueError(STARTUP_UNSEEN+' in %d s%s; inspect before recovery'%(STARTUP_IDENTITY_SECONDS,why))
 
 
+# The real class, bound once: research_view must not depend on the module name, which the seed and catch-up
+# CLI tests patch with a mock (isinstance(x, <Mock>) raises TypeError).
+_WINDOWS_SEED_PROCESS=WindowsSeedProcess
+
+
 class ResearchLaunch:
     """A WindowsSeedProcess whose ``start`` is a research launch (studio_research_launch).
 
@@ -252,5 +257,5 @@ class ResearchLaunch:
 
 def research_view(process):
     """The research view of ``process``; any other object (test doubles, placeholders) is returned as is."""
-    if isinstance(process,ResearchLaunch) or not isinstance(process,WindowsSeedProcess):return process
+    if isinstance(process,ResearchLaunch) or not isinstance(process,_WINDOWS_SEED_PROCESS):return process
     return ResearchLaunch(process)

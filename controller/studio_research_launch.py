@@ -567,7 +567,8 @@ def start_keeper(root, name, *, now=None, wait=KEEPER_READY_SECONDS):
     for extra in (CREATE_BREAKAWAY_FROM_JOB, 0):        # leave the controller's own job when it allows that
         try:
             pid = subprocess.Popen(keeper_command(root, name), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags | extra).pid
+                                   stderr=subprocess.DEVNULL, close_fds=True,
+                                   creationflags=flags | extra | getattr(subprocess, 'CREATE_NO_WINDOW', 0)).pid
             break
         except OSError as exc:
             error = str(exc)[:200]

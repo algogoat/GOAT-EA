@@ -3,7 +3,7 @@ import hashlib
 from pathlib import Path
 import re
 
-NAMES=('goat-optimize','goat-template-create','goat-seed-research',
+NAMES=('goat-optimize','goat-template-create','goat-strategy-create','goat-seed-research',
        'goat-portfolio-build','goat-repair-report','goat-observation-audit',
        'goat-vps-setup')
 

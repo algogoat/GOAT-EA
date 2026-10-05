@@ -72,8 +72,9 @@ OPERATION_CONTRACTS = {
     'save-batch':dict(required=['batch-id','output'],effect='save native .goatbatch without overwriting'),
     'load-batch':dict(required=['batch-id','file'],effect='validate saved .goatbatch as a new unstarted batch on this installation'),
     'resume-batch':dict(required=['source-batch-id','batch-id'],effect='prepare remaining members under a new identity after original stop/finish; failed members require include-failed; members tested with no profitable settings only with include-no-edge'),
-    'validate-set':dict(required=['set'],defaults={'require-optimization':False},effect='read-only exact schema, encoding, range and partial dependency validation; no launch'),
-    'build-set':dict(required=['source','output','spec'],effect='clone real SET with narrow typed changes, unique EA_Desc, support notes and provenance; never overwrite'),
+    'validate-set':dict(required=['set'],defaults={'require-optimization':False},effect='read-only exact schema, encoding, range and partial dependency validation; refuses any reachable Mode_Lots=RiskperSeq with Max_Seq_Trades<=1 (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES); no launch'),
+    'build-set':dict(required=['source','output','spec'],effect='clone real SET with narrow typed changes, unique EA_Desc, support notes and provenance; never overwrite. A starter-set source is recorded as parent starter:single|sequence with its starter receipt hash; the output still needs at least one active search axis'),
+    'starter-set':dict(required=['shape','output'],choices={'shape':['single','sequence']},effect='write a blank starting SET generated from the installed input schema plus a same-stem .starter.json receipt (schema hash, versions, shape, sha256, every input it sets away from its declared default): indicator signal modes, AI bias and news filters off, no search axes; single = Max_Seq_Trades 1 with CloseAtMaxLevels, sequence = 5 trades with CloseAtMaxLevels, RiskperSeq sizing and hard close at Risk, default Grid_* gaps; its Risk is a placeholder the user must choose (build-set refuses RISK_NOT_CHOSEN until changes set Risk). Local create-only file outside the publisher catalog; never overwrites, never opens the store or MT5. A starter is untested and has zero evidence: build-set adds the idea'),
     'discover':dict(required=[],effect='read installation and schema; runtime readiness not evaluated'),
     'bootstrap':dict(required=['account-login','account-server'],effect='create human-owned local binding and monitor preset; no launch'),
     'resource-profile':dict(required=[],effect='read-only current CPU, RAM and filesystem capacity; no throughput or worker estimate'),
@@ -115,7 +116,7 @@ OPERATION_CONTRACTS = {
     'pairing-code':dict(required=['build-id'],effect='return the pending public connection code from a connected inert demo: first the code the EA shares locally (LC36 and later; read-only, registers and consumes nothing), else (native_human_control only; never on a demo_direct installation, where it is a pure read) register the EA 5-minute pairing-read capability and consume its mailbox answer; no approval, credential or trading effect'),
     'close-terminal':dict(required=['attempt-id'],optional=['build-id'],effect='normal-close the selected MT5 once, only when broker-reported demo, connected, Algo Trading off, no positions/orders, tester idle and no batch/seed/native job; uses the EA inert shutdown when a dashboard hosts it, else one controller normal close; never kills or repeats'),
     'deploy-preflight':dict(required=[],effect='read-only broker demo/Algo/positions/tester readback, existing dashboard state and live deployment record for a desktop deploy review'),
-    'deploy-load':dict(required=['plan'],effect='stage reviewed hash-bound member SETs and a saved dashboard in Common Files, close the inert demo terminal, relaunch it with the Portfolio Dashboard first, attach children, apply exposure policy and audit every child against its SET; Algo Trading stays off; resumable phase journal'),
+    'deploy-load':dict(required=['plan'],effect='refuse any member SET whose values could size risk-per-sequence with Max_Seq_Trades<=1 (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES) or still carry an unchosen starter Risk (RISK_NOT_CHOSEN) before anything is written; stage reviewed hash-bound member SETs and a saved dashboard in Common Files, close the inert demo terminal, relaunch it with the Portfolio Dashboard first, attach children, apply exposure policy and audit every child against its SET; Algo Trading stays off; resumable phase journal'),
     'deploy-status':dict(required=[],effect='read the live deployment record and dashboard status; no mutation'),
     'deploy-stop':dict(required=['attempt-id'],effect='unload the deployed dashboard from an inert terminal: refuses with Algo Trading on or open positions/orders, normal-closes once, renames the saved dashboard state and deploy profile aside; never closes positions'),
     'batch-pause':dict(required=['job-id'],optional=['immediate','supervise-seconds'],limits={'supervise-seconds':[1,172800]},demo_lane='goat.exe demo batch-pause --batch-id <id> (broker-verified; starts its own bounded supervisor)',effect='durable idempotent pause request: one cancel only at a safe point (right after a member turns OnGoing, or tester idle after the member-boundary relaunch) while the bound monitor reports; an expired unconsumed cancel is answered by the EA with CANCEL_REJECTED and only that exact receipt admits exactly one successor stop (cancel-rejected-successor identity rules, both receipts kept, never blind replay); a closed, unbound or unlicensed monitor is a named blocker with its fix; the driver keeps its disk guard and finish, never records cancel_issued for a pause and adopts an outstanding unconfirmed stop; finish harvests completed members and records paused with a resume token. States: pausing, paused, pause_failed (one sentence + fix), finished. Optional supervise-seconds runs the bounded pause supervisor in this call'),
@@ -255,6 +256,8 @@ class Controller:
         if tester['Expert']!=self.install['ea_relative_path']: raise ValueError('Tester Expert must match installation')
         if tester['ForwardMode']!=4: raise ValueError('Beta native pipeline requires custom forward mode 4')
         raw=Path(set_path).read_bytes();info=inspect_set(raw);values=read_values(raw)
+        from studio_template_tools import check_risk_chosen
+        check_risk_chosen(raw,values,self.schema)   # the bytes' lineage marker; validate_strategy sees values only
         package=self.root/'packages'/job_id
         existing=next((j for j in self.state()['queue'] if j['job_id']==job_id),None)
         if existing and (package/'manifest.json').exists():
@@ -411,6 +414,7 @@ def main(argv=None):
     p=sub.add_parser('monitor-stop');p.add_argument('--attempt-id',required=True)
     p=sub.add_parser('validate-set');p.add_argument('--set',type=Path,required=True);p.add_argument('--require-optimization',action='store_true')
     p=sub.add_parser('build-set');p.add_argument('--source',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--spec',type=Path,required=True)
+    p=sub.add_parser('starter-set');p.add_argument('--shape',choices=('single','sequence'),required=True);p.add_argument('--output',type=Path,required=True)
     p=sub.add_parser('bootstrap');p.add_argument('--account-login',required=True);p.add_argument('--account-server',required=True)
     p=sub.add_parser('serve');p.add_argument('--watch-seconds',type=float,default=3600)
     p=sub.add_parser('clear-queue');p.add_argument('--apply',action='store_true');p.add_argument('--request-id');p.add_argument('--expected-revision',type=int)
@@ -567,11 +571,15 @@ def main(argv=None):
         elif args.operation=='validate-set':
             from studio_template_tools import validate_set
             result=validate_set(args.set,controller.schema,controller.policy,require_optimization=args.require_optimization)
-        elif args.operation=='build-set':
-            from studio_template_tools import build_set
-            result=build_set(args.source,args.output,read_json(args.spec),controller.schema,controller.policy,
-                controller_version=VERSION,ea_version=controller.install['ea_version'],
-                forbidden_roots=[controller.install['catalog_root']] if controller.install.get('catalog_root') else [])
+        elif args.operation in ('build-set','starter-set'):
+            from studio_template_tools import build_set,starter_set
+            catalog=[controller.install['catalog_root']] if controller.install.get('catalog_root') else []
+            if args.operation=='build-set':
+                result=build_set(args.source,args.output,read_json(args.spec),controller.schema,controller.policy,
+                    controller_version=VERSION,ea_version=controller.install['ea_version'],forbidden_roots=catalog)
+            else:
+                result=starter_set(args.shape,args.output,controller.schema,controller.policy,
+                    controller_version=VERSION,ea_version=controller.install['ea_version'],forbidden_roots=catalog)
         else:
             if not args.operation.startswith('orphan-recovery-'): controller.open()
             if args.operation in ('pairing-code','close-terminal'):

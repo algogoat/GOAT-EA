@@ -13,7 +13,9 @@ asked (T2 and Banker, 2026-10-05, goatai#1885). Every inventory call site uses `
   and no attempt or pause runs past it (Claude-Mac, #1885);
 * only this read-only query is repeated: no close, launch or other effect is ever retried here;
 * it still fails closed: after the last attempt the *same* exception is raised again (with the
-  attempt history as a note), so an unreadable inventory is never read as "no MT5";
+  attempt history as a note), so an unreadable inventory is never read as "no MT5". Every
+  ``Get-CimInstance`` runs with ``-ErrorAction Stop`` (``fail_closed``), so a CIM error is a failure,
+  never an empty list;
 * every failed attempt and the outcome are appended to the configured JSON-lines log, which is
   rotated at ``MAX_LOG_BYTES`` (one previous generation is kept).
 """
@@ -22,6 +24,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import subprocess
 import time
 
@@ -63,9 +66,28 @@ def _describe(error):
     return 'exited %s' % getattr(error, 'returncode', '?')
 
 
+# PowerShell's default error action (Continue) lets Get-CimInstance write a non-terminating error and still exit 0
+# with "[]", which a caller would read as "no process" (Codex P1 on GOAT-EA#163). Every Get-CimInstance in an
+# inventory command therefore runs with -ErrorAction Stop: a CIM failure exits non-zero, is retried, then raised.
+# Only the CIM call is escalated, never the rest of the pipeline (a null CreationDate in a calculated property stays
+# a null, as before). A Get-CimInstance that names its own -ErrorAction in the same pipeline segment is left alone.
+# The segment ends at the next | ; ) or line end (no controller filter contains one of those).
+_CIM_SEGMENT = re.compile(r'(\bGet-CimInstance\b[^|;\r\n)]*?)(\s*)(?=[|;\r\n)]|$)')
+
+
+def fail_closed(command):
+    """The command with -ErrorAction Stop on every Get-CimInstance that does not set its own error action."""
+    def stop(match):
+        if re.search(r'-ErrorAction\b', match.group(1)):
+            return match.group(0)
+        return match.group(1) + ' -ErrorAction Stop' + match.group(2)
+    return _CIM_SEGMENT.sub(stop, command)
+
+
 def powershell_text(command, *, purpose, timeout=TIMEOUT, attempts=ATTEMPTS, pauses=PAUSES, budget=None):
     """stdout of one read-only PowerShell inventory command, retried through a transient WMI stall."""
     from studio_subprocess import background_creationflags
+    command = fail_closed(command)
     history, started = [], monotonic()
     deadline = None if budget is None else started + budget
     for attempt in range(1, attempts + 1):

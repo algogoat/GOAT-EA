@@ -388,7 +388,7 @@ class MemberFailureTests(unittest.TestCase):
     def test_an_unowned_mt5_between_members_clears_once_it_is_closed_and_the_hunt_continues(self):
         # goatai#1885 PR D (T2 2026-10-05): demo launch-terminal opened MT5 between members; once it was closed again,
         # seed-resume and seed-reconcile kept answering reconcile_required and only seed-cancel escaped.
-        self.matrix(3); self.auto = False
+        self.matrix(3); self.auto = False; journal = self.locked()
         self.runner.start('batch', 1)                                              # member 1 running
         self.output(self.member(0)); self.process_state = None
         self.assertEqual(self.runner.status('batch')['status'], 'active')         # member 1 done, between members
@@ -411,6 +411,9 @@ class MemberFailureTests(unittest.TestCase):
         self.assertEqual(retained['unowned_settled']['prior_error'], studio_seed.UNOWNED_BETWEEN_MEMBERS)
         self.assertIsNone(retained.get('error'))
         self.assertTrue(SeedRunner.resumable(retained))
+        # Journaled once, under the caller's lock, before the settled state was saved (Claude-Mac on GOAT-EA#163).
+        self.assertEqual([(e, d['prior_error'], d['pending'], d['status'], saved) for e, d, saved in journal],
+                         [('unowned_settled', studio_seed.UNOWNED_BETWEEN_MEMBERS, 2, 'stopped', 'reconcile_required')])
         # Only the start-grade re-activation continues it: the running terminal first, then the monitor closes again.
         with self.assertRaisesRegex(ValueError, 'Resuming a stopped seed batch requires chosen running demo terminal'):
             self.runner.resume('batch', 5)
@@ -421,7 +424,7 @@ class MemberFailureTests(unittest.TestCase):
         self.assertEqual(len(read_json(self.runner.path('batch') / 'state.json')['reactivations']), 1)
 
     def test_a_pending_member_with_output_before_its_start_fails_when_the_doubt_settles(self):
-        self.matrix(3); self.auto = False
+        self.matrix(3); self.auto = False; journal = self.locked()
         self.runner.start('batch', 1)
         self.output(self.member(0)); self.process_state = None
         self.runner.status('batch')
@@ -434,12 +437,13 @@ class MemberFailureTests(unittest.TestCase):
         self.assertIn('Output present before its start', settled['members'][1]['error'])
         self.assertIsNone(settled['members'][1]['result'])                         # never collected
         self.assertEqual((settled['status'], settled['unowned_settled']['stray_members']), ('stopped', [self.member(1)['alias']]))
+        self.assertEqual([(d['stray_members'], d['pending']) for _, d, _ in journal], [([self.member(1)['alias']], 1)])
         self.process_state = dict(self.MONITOR); self.auto = True
         resumed = self.runner.resume('batch', 60)
         self.assertEqual(self.statuses(resumed), ['completed', 'failed', 'completed'])
 
     def test_the_unowned_doubt_never_clears_while_a_member_config_still_runs(self):
-        self.matrix(2); self.auto = False
+        self.matrix(2); self.auto = False; journal = self.locked()
         self.runner.start('batch', 1)
         self.output(self.member(0)); self.process_state = None
         self.runner.status('batch')
@@ -449,7 +453,31 @@ class MemberFailureTests(unittest.TestCase):
         self.process.config_users = lambda names: [dict(pid=88, executable='other\\terminal64.exe')]   # an MT5 elsewhere runs a member INI
         state = self.runner.resume('batch', 5)
         self.assertEqual((state['status'], state['error']), ('reconcile_required', studio_seed.UNOWNED_BETWEEN_MEMBERS))
+        self.assertEqual((len(self.starts), journal), (1, []))
+
+    def test_the_customer_lane_keeps_the_unowned_doubt_for_seed_cancel(self):
+        # Claude-Mac on GOAT-EA#163: only a caller holding the demo terminal lock (locked_journal) settles it.
+        self.matrix(3); self.auto = False
+        self.runner.start('batch', 1)
+        self.output(self.member(0)); self.process_state = None
+        self.runner.status('batch')
+        self.process_state = dict(pid=77, executable='terminal64.exe', created_utc='someone')
+        self.runner.status('batch')
+        self.process_state = None
+        for call in (lambda: self.runner.resume('batch', 5), lambda: self.runner.reconcile('batch')):
+            state = call()
+            self.assertEqual((state['status'], state['error']), ('reconcile_required', studio_seed.UNOWNED_BETWEEN_MEMBERS))
+            self.assertNotIn('unowned_settled', read_json(self.runner.path('batch') / 'state.json'))
+        self.assertNotIn('seed-resume settles this as a stop', state.get('next_action') or '')
         self.assertEqual(len(self.starts), 1)
+
+    def locked(self):
+        """The demo lane's terminal-lock journal: each event, its details and the saved batch status at that moment."""
+        journal = []
+        def record(event, details):
+            journal.append((event, details, read_json(self.runner.path('batch') / 'state.json')['status']))
+        self.runner.locked_journal = record
+        return journal
 
     def test_only_a_clean_stop_with_untouched_pending_members_is_resumable(self):
         def state(*statuses,**extra):
@@ -490,7 +518,8 @@ class LaunchReidentifyTests(unittest.TestCase):
     def setUp(self):
         self.setUp_seed()
         self.lines={};self.extra_users=[];self.journal=[];self.on_line=None
-        self.runner.reidentify_journal=lambda alias,record:self.journal.append((alias,record))
+        # The demo lane's terminal-lock journal; `saved` is member 1's saved status when the row is written.
+        self.runner.locked_journal=lambda event,details:self.journal.append((details.get('alias'),dict(details,event=event,saved=self.state()['members'][0]['status'])))
         self.process.command_line=self.command_line
         self.process.config_users=self.config_users
 
@@ -542,7 +571,7 @@ class LaunchReidentifyTests(unittest.TestCase):
         self.assertTrue(member['reidentified']['prior_error'].startswith(studio_seed_process.STARTUP_UNSEEN))
         self.assertEqual(member['reidentified']['config_sha256'],self.member()['config_sha256'])
         self.assertNotIn('error',member)
-        self.assertEqual([alias for alias,_ in self.journal],[self.member()['alias']])
+        self.assertEqual([(alias,row['event'],row['saved']) for alias,row in self.journal],[(self.member()['alias'],'reidentified','reconcile_required')])   # journal first
         self.assertEqual((len(self.starts),len(self.closes)),(2,1))                    # nothing closed or re-run
         self.assertEqual(self.runner.report('batch')['members'][0]['actual_frames'],2)
 
@@ -573,7 +602,7 @@ class LaunchReidentifyTests(unittest.TestCase):
         return member
 
     def test_without_the_terminal_lock_and_journal_nothing_is_adopted(self):
-        self.strand();self.runner.reidentify_journal=None                             # e.g. the customer lane today
+        self.strand();self.runner.locked_journal=None                                 # e.g. the customer lane today
         self.refused('needs the demo lane terminal lock')
 
     def test_a_process_without_this_members_own_ini_is_never_adopted(self):
@@ -623,6 +652,30 @@ class LaunchReidentifyTests(unittest.TestCase):
         write_json(path,state)
         self.runner.resume('batch',5)
         self.assertEqual((self.state()['members'][0]['status'],self.journal),('reconcile_required',[]))
+
+
+class StatusBudgetAndStrayTests(unittest.TestCase):
+    setUp=SeedTests.setUp;tearDown=SeedTests.tearDown;prepare=SeedTests.prepare;close=SeedTests.close;start=SeedTests.start;sleep=SeedTests.sleep
+
+    def test_a_status_read_bounds_its_inventory_to_the_poll_budget(self):
+        # Codex P2 on GOAT-EA#163: seed-status never waits out the full launch retry through a WMI stall.
+        self.prepare();budgets=[]
+        def inspect(budget=None):
+            budgets.append(budget);return copy.deepcopy(self.process_state)
+        self.process.inspect=inspect
+        self.runner.status('batch')
+        self.assertEqual(budgets,[25])
+
+    def test_a_native_capture_in_a_catch_up_namespace_is_stray_output(self):
+        # Claude-Mac on GOAT-EA#163: an unowned MT5 that ran a capture member leaves run.csv in its namespace.
+        from studio_catchup import CatchupRunner
+        runner=object.__new__(CatchupRunner);runner.c=SimpleNamespace(install=dict(common_files_root=str(self.root/'common')))
+        batch=self.root/'catchup-batch';batch.mkdir()
+        spec=dict(alias='C0001',attempt_token='tok',capture=True,capture_id='cap1')
+        self.assertEqual(runner._stray_output(batch,spec),[])
+        run=self.root/'common/GOATSequencePending/cap1/run.csv';run.parent.mkdir(parents=True);run.write_text('x')
+        self.assertEqual(runner._stray_output(batch,spec),[str(run)])
+        self.assertEqual(runner._stray_output(batch,dict(spec,capture=False)),[])
 
 
 if __name__=='__main__':unittest.main()

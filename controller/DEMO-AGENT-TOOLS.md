@@ -49,13 +49,15 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 - **An unconfirmed launch.** `run-batch` or `resume-batch` may answer "Detached batch driver launch unconfirmed": the Windows task was registered, but its driver did not report within 60 s. Never start another driver by hand.
   - Run `batch-driver-status`. Its `worker` shows the reservation, with `alive`.
   - If the task is still running or queued, the launch is unresolved and every new start refuses. Wait.
-  - Once the task reports, its driver is the one running: it is not a duplicate.
+  - Once the task reports, its driver is the one running: it is not a duplicate. A task that starts only after the 60 s wait (Python slow to start under load) still drives: its bootstrap is accepted for the same nonce, and the driver re-checks that nonce under the terminal lock.
   - If Windows proves the task never ran, `launch_never_started: true`. The proof needs: no started receipt; the task is gone, or exists and is not running or queued; it has not run since the envelope; and its last result is `SCHED_S_TASK_HAS_NOT_RUN` (267011). Then the same `run-batch` (or `resume-batch`) is allowed again.
   - That retry first removes the old task under the terminal lock and confirms it is gone. If the removal can't be confirmed, it refuses. The retry then logs `detached_driver`/`launch_never_started` with the task info, keeps the envelope, and reserves a fresh nonce, so a late bootstrap of the old envelope is refused.
   - This is the same rule as a driver journal's `start_uncertain` with no `attempt_id` (refused before anything reached MT5, so the same command runs again). Both mean "retry only what provably never ran".
 - **A stalled Windows process query.** The process inventory behind every check (`Get-CimInstance Win32_Process`) is retried through a stall.
   - A check that gates a launch or a close gets 4 attempts of 20 s, with 2, 5 and 10 s pauses. Each pause varies by up to 25% either way, so two GOAT drivers caught by the same stall don't retry in lockstep.
-  - Status reads and probes stop after 25 s in total.
+  - Status reads (`status`, `batch-driver-status`, `seed-status` and the catch-up and hold-up status commands, including their broker readback) and probes bound each inventory to 25 s.
+  - A driver loop or a close wait that hits a stall waits for the full retry (about 100 s per inventory), and a member launch can add the 90 s identity wait, so one foreground drive of `--max-seconds N` can take about N+200 s. The detached drivers aren't affected by a caller timeout; keep a `--foreground` call's tool timeout well above its budget.
+  - Every `Get-CimInstance` runs with `-ErrorAction Stop`, so a WMI error is a failed attempt (retried, then raised), never an empty process list.
   - Each failed attempt is logged in `demo-agent/process-query.jsonl` (`<controller state>\process-query.jsonl` for `goat.exe studio`). The log rotates at 1 MB.
   - Only if every attempt fails does the check fail, closed, as before.
   - Stalls cluster at an MT5 launch. After a seed, catch-up or hold-up member launch, GOAT waits up to 90 s for that MT5's identity. A stalled query, or a row without its path, means "not seen yet". A different PID, two processes or an MT5 exit refuse at once.
@@ -485,7 +487,7 @@ batch `reconcile_required` ("Unowned selected-terminal process appeared between 
 members"). Close that MT5. With MT5 closed, `seed-reconcile` or `seed-resume` re-inspects
 and settles the doubt under the terminal lock. A `seed-status` read never settles it.
 - **It settles only** when nothing anywhere runs a member.
-- **It settles as a stop.** The hunt becomes `stopped` with `stopped_reason` `unowned_settled`. The state and `actions.jsonl` record it, and the next `seed-resume` re-activates the pending members under the start-grade check: MT5 open on the GOAT monitor, a fresh broker readback, STOP/TAKE and idle.
+- **It settles as a stop, only in the demo lane.** The hunt becomes `stopped` with `stopped_reason` `unowned_settled`. The runner journals it in `actions.jsonl` (`seed_resume` or `seed_reconcile` / `unowned_settled`) before it saves the state, and the next `seed-resume` re-activates the pending members under the start-grade check: MT5 open on the GOAT monitor, a fresh broker readback, STOP/TAKE and idle.
 - **Stray output fails that member.** A pending member that already has output (the unowned MT5 may have run it) becomes `failed` ("Output present before its start") and is never collected.
 - **While the MT5 stays open**, the doubt stays, and `seed-reconcile` names this fix.
 

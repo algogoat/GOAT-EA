@@ -77,6 +77,19 @@ def process_image_path(pid,created_utc):
         kernel.CloseHandle(handle)
 
 
+def inspect_within(process,budget=None):
+    """``process.inspect()``, bounded to ``budget`` seconds when given and the process tool supports it.
+
+    Status reads pass POLL_BUDGET so a WMI stall answers within it (Codex P2 on GOAT-EA#163). Fixture process
+    tools without a ``budget`` parameter are called as before.
+    """
+    if budget is None:return process.inspect()
+    import inspect
+    try:accepts='budget' in inspect.signature(process.inspect).parameters
+    except (TypeError,ValueError):accepts=False
+    return process.inspect(budget=budget) if accepts else process.inspect()
+
+
 class WindowsSeedProcess:
     def __init__(self,controller,*,sleep=time.sleep,monotonic=time.monotonic):
         self.controller=controller;self.sleep=sleep;self.monotonic=monotonic

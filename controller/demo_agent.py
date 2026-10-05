@@ -29,7 +29,8 @@ from campaign_ledger import packed, sha
 from studio_installation import load_installation
 from studio_monitor_probe import tester_state
 from studio_native_request import ini_sections
-from studio_seed_process import WindowsSeedProcess
+from studio_process_query import POLL_BUDGET
+from studio_seed_process import WindowsSeedProcess, inspect_within
 
 
 MIN_FREE_BYTES = 5 * 1024 ** 3
@@ -189,9 +190,9 @@ class DemoAgent:
             raise ValueError('Exact paired demo account and server required')
         return expected
 
-    def _broker(self, *, idle=True):
+    def _broker(self, *, idle=True, budget=None):
         expected = self._paired_account()
-        identity = self.process.inspect()
+        identity = inspect_within(self.process, budget)       # a status read bounds its inventories (POLL_BUDGET)
         if identity is None:
             raise ValueError('Selected MT5 is not running; broker demo mode cannot be proven')
         mt5 = self.mt5
@@ -206,7 +207,7 @@ class DemoAgent:
             positions, orders = (mt5.positions_get(), mt5.orders_get()) if idle else (None, None)
             if idle and (positions is None or orders is None):
                 raise ValueError('Idle demo research requires a complete position and order readback')
-            if self.process.inspect() != identity:
+            if inspect_within(self.process, budget) != identity:
                 raise ValueError('Selected MT5 process changed during broker check')
             if (account.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO
                     or str(account.login) != expected['login']
@@ -247,14 +248,14 @@ class DemoAgent:
                                  started_wall=record.get('started_wall'),
                                  stopped=record.get('stopped')))
         feedback_path = self.local / 'ui-observation.json'
-        result = dict(terminal=self.process.inspect(), owner_stop=(self.state_root / 'STOP').exists(),
+        result = dict(terminal=inspect_within(self.process, POLL_BUDGET), owner_stop=(self.state_root / 'STOP').exists(),
                       binary_sha256=digest(self.binary) if self.binary.is_file() else None,
                       driver_journals=journals,
                       owner_feedback=(dict(observed_age_seconds=max(0, self.clock()-feedback_path.stat().st_mtime),
                                            observation=read_json(feedback_path))
                                       if feedback_path.is_file() else None))
         try:
-            result['broker'] = self._broker(idle=False)
+            result['broker'] = self._broker(idle=False, budget=POLL_BUDGET)
         except (ValueError, OSError) as exc:
             result['broker_error'] = str(exc)
         return result
@@ -1379,12 +1380,12 @@ class DemoAgent:
         return started[1] > started[0] and self._goat_relaunched(current)
 
     @contextmanager
-    def _studio(self, operation_name, *, idle, owner_required=True, job_id=None, recovery=False):
+    def _studio(self, operation_name, *, idle, owner_required=True, job_id=None, recovery=False, budget=None):
         # The local adapter is the only entry to the demo policy. The broker
         # supplies the demo bit; the saved session cannot assert it by itself.
         if owner_required:
             self._owner_clear(); self._space()
-        broker = self._broker(idle=idle)
+        broker = self._broker(idle=idle, budget=budget)
         legacy_recovery = (operation_name == 'demo-recover-orphan'
                            and self.session.get('authority_kind') in (None, 'native_human_control'))
         if self.session.get('authority_kind') != 'demo_direct' and not legacy_recovery:
@@ -1657,6 +1658,9 @@ class DemoAgent:
     # Longer than the caller can hold the terminal lock through a launch (registration 30 s plus the
     # 60 s started wait in studio_durable_driver), so a slow PowerShell never fails the worker silently.
     DRIVER_LOCK_WAIT_SECONDS = 120
+    # A worker record its detached driver may still drive: reserved, spawned by the caller, or a launch the caller
+    # could not confirm in time whose task started late with the same nonce (Claude-Mac on GOAT-EA#163).
+    UNSTARTED_WORKER = ('reserved', 'spawned', 'launch_unconfirmed')
 
     def _mark_worker_failed(self, worker_path, nonce, error):
         """Record why a detached worker never drove; only its own still-unstarted reservation is touched."""
@@ -1664,7 +1668,7 @@ class DemoAgent:
             record = read_json(worker_path)
         except (OSError, ValueError):
             return
-        if record.get('nonce') == nonce and record.get('status') in ('reserved', 'spawned'):
+        if record.get('nonce') == nonce and record.get('status') in self.UNSTARTED_WORKER:
             record.update(status='failed', error=str(error)[:2000])
             write_json(worker_path, record)
 
@@ -1685,7 +1689,7 @@ class DemoAgent:
                 raise ValueError('Detached worker identity changed')
             resume = worker['resume']
             if (max_seconds != worker.get('max_seconds') or pause_seconds != worker.get('pause_seconds')
-                    or worker.get('status') not in ('reserved', 'spawned')):
+                    or worker.get('status') not in self.UNSTARTED_WORKER):
                 raise ValueError('Detached worker budget or launch state changed')
             controller, broker = stack.enter_context(self._studio('run-batch', idle=not resume,
                                                                   owner_required=not resume, job_id=batch_id))
@@ -2125,7 +2129,7 @@ class DemoAgent:
             worker = read_json(worker_path)
             if (worker.get('nonce') != nonce or worker.get('kind') != kind or worker.get('batch_id') != batch_id
                     or worker.get('initial') is not initial or worker.get('max_seconds') != max_seconds
-                    or worker.get('status') not in ('reserved', 'spawned')):
+                    or worker.get('status') not in self.UNSTARTED_WORKER):
                 raise ValueError('Detached lane worker identity, budget or launch state changed')
             worker.update(status='supervising', pid=os.getpid())
             write_json(worker_path, worker)
@@ -2154,35 +2158,35 @@ class DemoAgent:
         from studio_seed import SeedRunner
         return SeedRunner(controller, process=self.process, clock=self.clock, sleep=self.sleep)
 
-    def _reidentifying(self, runner, kind, phase, batch_id):
-        """Only under the terminal lock (the caller holds _exclusive()): the runner may re-identify a member MT5
-        whose launch was never confirmed (studio_seed._reidentify), and each adoption is an actions row."""
-        def journal(alias, record):
-            self._append(kind + '_' + phase, 'reidentified', batch_id=batch_id, alias=alias, process=record.get('process'),
-                         prior_error=record.get('prior_error'), config_sha256=record.get('config_sha256'),
-                         basis=record.get('basis'))
-        runner.reidentify_journal = journal
+    def _locked_runner(self, runner, kind, phase, batch_id):
+        """Only under the terminal lock (the caller holds _exclusive()): the runner may settle an unowned-process
+        doubt (studio_seed._settle_unowned) or re-identify a member MT5 whose launch was never confirmed
+        (studio_seed._reidentify). The runner journals each one here, as an actions row, before its state."""
+        def journal(event, details):
+            self._append(kind + '_' + phase, event, batch_id=batch_id, **details)
+        runner.locked_journal = journal
         return runner
 
     @contextmanager
-    def _seed_scope(self, operation_name, batch_id, kind='seed'):
+    def _seed_scope(self, operation_name, batch_id, kind='seed', *, budget=None):
         """Policy scope for observing, cancelling or continuing a demo seed batch.
 
         While MT5 runs, a fresh broker readback is taken. A batch still 'prepared'
         has had no native effect, so it needs no start record for status, cancel
         or report; any batch that has left 'prepared' must have its start record.
+        A status read passes ``budget`` so its inventory answers within POLL_BUDGET through a WMI stall.
         """
         lane = LANES[kind]
         record = self._seed_start_record(batch_id, kind) if self._seed_start_path(batch_id, kind).exists() else None
         if record is None and not (self.root / lane['folder'] / batch_id / 'state.json').is_file():
             raise ValueError('Unknown ' + lane['word'] + ' batch; use ' + kind + '-prepare')
-        if self.process.inspect() is not None:
+        if inspect_within(self.process, budget) is not None:
             # Without a start record only a provably never-started batch is managed,
             # and only under this fresh broker readback; nothing offline is granted.
             if record is None and not self._seed_never_started(batch_id, kind):
                 raise ValueError(lane['title'] + ' batch has native effects but no broker-verified demo start record')
             with self._studio(operation_name, idle=False, owner_required=False,
-                              job_id=batch_id) as (controller, broker):
+                              job_id=batch_id, budget=budget) as (controller, broker):
                 yield controller, dict(broker=broker, start=record)
             return
         if record is None:
@@ -2366,7 +2370,7 @@ class DemoAgent:
             raise ValueError(lane['title'] + ' batch already started; use ' + kind + '-resume for the original attempt')
         with (nullcontext() if locked else self._exclusive()), self._studio(kind + '-start', idle=True, job_id=batch_id) as (controller, broker):
             self._seed_unoccupied(kind, exclude=exclude_worker)
-            runner = self._lane_start_record(kind, batch_id, controller, broker)
+            runner = self._locked_runner(self._lane_start_record(kind, batch_id, controller, broker), kind, 'start', batch_id)
             return self._reopen_after_lane(kind, batch_id,
                                            self._seed_drive(runner, batch_id, max_seconds, initial=True, kind=kind))
 
@@ -2423,7 +2427,7 @@ class DemoAgent:
         with (nullcontext() if locked else self._exclusive()), self._studio(kind + '-resume', idle=True, job_id=batch_id) as (controller, broker):
             self._seed_unoccupied(kind, exclude=exclude_worker)
             record = self._seed_start_record(batch_id, kind)
-            runner = self._reidentifying(self._seed_runner(controller, kind), kind, 'resume', batch_id)
+            runner = self._locked_runner(self._seed_runner(controller, kind), kind, 'resume', batch_id)
             current = runner.status(batch_id)
             if current['manifest_sha256'] != record['manifest_sha256']:
                 raise ValueError(lane['title'] + ' state differs from its broker-verified start record')
@@ -2442,7 +2446,7 @@ class DemoAgent:
         if self._seed_resumable_stopped(batch_id, kind):
             return self._lane_reactivate(kind, batch_id, max_seconds, locked=locked, exclude_worker=exclude_worker)
         with (nullcontext() if locked else self._exclusive()), self._seed_scope(kind + '-resume', batch_id, kind) as (controller, evidence):
-            runner = self._reidentifying(self._seed_runner(controller, kind), kind, 'resume', batch_id)
+            runner = self._locked_runner(self._seed_runner(controller, kind), kind, 'resume', batch_id)
             current = runner.status(batch_id)
             if current['status'] == 'prepared':
                 raise ValueError(lane['title'] + ' batch has no native effect yet; use ' + kind + '-start with a fresh broker check')
@@ -2460,23 +2464,14 @@ class DemoAgent:
                          broker=evidence['broker'], retained_start=evidence['broker'] is None)
             # A batch that ended while MT5 stayed closed (including a member reconciled from its
             # retained output) also reopens here: seed-resume is the one-step recovery.
-            since = self.clock()
             result = self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind)
-            self._log_unowned_settled(kind, 'resume', batch_id, result, since)
             return self._reopen_after_lane(kind, batch_id, result)
-
-    def _log_unowned_settled(self, kind, phase, batch_id, result, since):
-        """Audit row when this call (under the terminal lock) settled an unowned-process doubt (Claude-Mac, #1885)."""
-        settled = (result or {}).get('unowned_settled') if isinstance(result, dict) else None
-        if isinstance(settled, dict) and type(settled.get('unix')) in (int, float) and settled['unix'] >= since:
-            self._append(kind + '_' + phase, 'unowned_settled', batch_id=batch_id, prior_error=settled.get('prior_error'),
-                         stray_members=settled.get('stray_members'), status=result.get('status'))
 
     def seed_resume(self, batch_id, max_seconds, *, detach=False):
         return self._lane_resume('seed', batch_id, max_seconds, detach=detach)
 
     def _lane_status(self, kind, batch_id):
-        with self._seed_scope(kind + '-status', batch_id, kind) as (controller, evidence):
+        with self._seed_scope(kind + '-status', batch_id, kind, budget=POLL_BUDGET) as (controller, evidence):
             return dict(broker=evidence['broker'], retained_start=evidence['broker'] is None,
                         driver=self._lane_driver(kind, batch_id),
                         **{kind: self._seed_runner(controller, kind).status(batch_id)})
@@ -2515,11 +2510,9 @@ class DemoAgent:
             broker = evidence['broker']
             if broker is not None and broker.get('process') != self.process.inspect():
                 raise ValueError('The selected MT5 changed during the broker check; nothing was settled')
-            since = self.clock()
-            result = self._reidentifying(self._seed_runner(controller, kind), kind, 'reconcile', batch_id).reconcile(batch_id)
+            result = self._locked_runner(self._seed_runner(controller, kind), kind, 'reconcile', batch_id).reconcile(batch_id)
             self._append(kind + '_reconcile', 'settled' if result.get('settled') else 'unsettled', batch_id=batch_id,
                          status=result['status'], reasons=result.get('reasons'), broker=broker)
-            self._log_unowned_settled(kind, 'reconcile', batch_id, result, since)
             return result
 
     def seed_reconcile(self, batch_id):

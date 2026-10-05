@@ -69,9 +69,10 @@ class SeedRunner:
             from studio_seed_process import WindowsSeedProcess
             process=WindowsSeedProcess(controller)
         self.process=process
-        # Set only by a caller that holds its terminal lock (the demo lane's _exclusive()): re-identifying an
-        # unconfirmed member launch is then allowed, and each adoption is journaled through it (_reidentify).
-        self.reidentify_journal=None
+        # locked_journal(event, details): set only by a caller that holds its terminal lock (the demo lane's
+        # _exclusive()). Only then may seed-resume/seed-reconcile settle an unowned-process doubt (_settle_unowned)
+        # or re-identify an unconfirmed member launch (_reidentify); each is journaled through it before the state.
+        self.locked_journal=None
         self.base=controller.root/'seeds';self.slot=controller.root/'seed-active.json'
         self.gate=controller.local/'native-gate'
 
@@ -384,19 +385,23 @@ class SeedRunner:
         unowned_settled, so only the start-grade re-activation (seed-resume) continues it. A pending member that
         already has output (the unowned MT5 may have run it) fails with that reason and is never collected.
         """
-        now=self.clock();stray=[]
-        for spec,item in zip(manifest['members'],state['members']):
-            if item['status']!='pending':continue
-            paths=self._stray_output(root,spec)
-            if paths:
-                item.update(status='failed',finished_unix=now,stray_output=paths,
-                            error='Output present before its start (an MT5 this batch did not start may have run it); it is never collected')
-                stray.append(spec['alias'])
-        state['unowned_settled']=dict(prior_error=state['error'],unix=now,stray_members=stray,
+        now=self.clock()
+        stray=[(item,spec['alias'],paths) for spec,item in zip(manifest['members'],state['members'])
+               if item['status']=='pending' for paths in [self._stray_output(root,spec)] if paths]
+        pending=sum(m['status']=='pending' for m in state['members'])-len(stray)
+        after={m['status'] for m in state['members'] if not any(m is s for s,_,_ in stray)}|({'failed'} if stray else set())
+        settled=dict(prior_error=state['error'],unix=now,stray_members=[alias for _,alias,_ in stray],
             basis='The selected MT5 is closed (re-inspected now), no member is live and no MT5 runs a member INI or alias')
+        # Journal first (under the caller's terminal lock), so a settled doubt is never unrecorded.
+        self.locked_journal('unowned_settled',dict(prior_error=settled['prior_error'],stray_members=settled['stray_members'],
+                                                   pending=pending,status='stopped' if pending else self._end_status(after)))
+        for item,_,paths in stray:
+            item.update(status='failed',finished_unix=now,stray_output=paths,
+                        error='Output present before its start (an MT5 this batch did not start may have run it); it is never collected')
+        stray=settled['stray_members']
+        state['unowned_settled']=settled
         state['error']=None
         statuses={m['status'] for m in state['members']}
-        pending=sum(m['status']=='pending' for m in state['members'])
         if pending:
             state['status']='stopped'
             state['stopped_reason']=dict(rules=['unowned_settled'],pending=pending,reasons=[dict(alias=a,status='failed',error='output present before its start') for a in stray],
@@ -410,9 +415,12 @@ class SeedRunner:
         """Settle reconcile_required members whose own output passes every completion check. Returns the reasons left.
 
         ``settle_unowned`` (seed-resume and seed-reconcile only, never a status read) also settles the batch-level
-        "unowned process" doubt once that MT5 is closed and the idle proof passes (_settle_unowned).
+        "unowned process" doubt once that MT5 is closed and the idle proof passes (_settle_unowned), and only for a
+        caller that holds its terminal lock and journals it (``locked_journal``: the demo lane). The customer
+        lane keeps the earlier rule: seed-cancel settles the doubt once MT5 is idle.
         """
-        if (settle_unowned and state.get('error')==UNOWNED_BETWEEN_MEMBERS and state['status']=='reconcile_required' and current is None
+        if (settle_unowned and self.locked_journal is not None and state.get('error')==UNOWNED_BETWEEN_MEMBERS
+                and state['status']=='reconcile_required' and current is None
                 and not any(m['status']=='reconcile_required' for m in state['members'])
                 and self._idle_proof(manifest,state,current) is None):
             self._settle_unowned(root,manifest,state)
@@ -420,7 +428,7 @@ class SeedRunner:
         targets=[(spec,item) for spec,item in zip(manifest['members'],state['members'])
                  if item['status']=='reconcile_required' and item.get('attempts')==1 and not item.get('result') and 'started_unix' in item]
         if not targets:reasons=[]
-        elif state.get('error')==UNOWNED_BETWEEN_MEMBERS:
+        elif state.get('error')==UNOWNED_BETWEEN_MEMBERS and self.locked_journal is not None:
             reasons=[state['error']+'; close that MT5, then '+self.COMMAND_PREFIX+'-resume continues (or '+self.COMMAND_PREFIX
                      +'-cancel settles it once MT5 is idle)']
         elif state.get('error') is not None:
@@ -445,7 +453,7 @@ class SeedRunner:
 
     def _adoption_refusal(self,spec,item,state,current):
         """Why the selected MT5 cannot be adopted as this member's own launch, or None when every proof holds NOW."""
-        if self.reidentify_journal is None:
+        if self.locked_journal is None:
             return 'Re-identifying a launch needs the demo lane terminal lock (demo '+self.COMMAND_PREFIX+'-resume or -reconcile)'
         if state.get('error') is not None:return 'A batch-level doubt is open ('+str(state['error'])+')'
         if any(m['status'] in self.LIVE_MEMBER for m in state['members']):return 'Another member of this batch is live'
@@ -478,7 +486,7 @@ class SeedRunner:
         goatai#1885 PR D (Claude-Mac APPROVE with amendments): a WMI stall right after a member launch left the
         member reconcile_required while its own MT5 ran the tester. Only seed-resume and seed-reconcile come
         here (never a status read), and only for a caller that holds its terminal lock and journals the
-        adoption (``reidentify_journal``). Every proof is read NOW: exactly one uncertain member, whose start
+        adoption (``locked_journal``, written before the state). Every proof is read NOW: exactly one uncertain member, whose start
         was sent but never confirmed (no recorded process); no batch-level doubt; the selected MT5 is the
         installation's own terminal64.exe, created inside that member's launch window; its command line names
         this member's own /config: INI; exactly one terminal64 anywhere names that INI; and the INI is still
@@ -498,15 +506,18 @@ class SeedRunner:
         record=dict(process=current,prior_error=item.get('error'),unix=self.clock(),config_sha256=spec['config_sha256'],
                     basis=('The selected MT5 (re-inspected now) runs this '+self.MEMBER_NOUN+'\'s own unchanged /config: INI, '
                            'is the only terminal64 naming it and was created inside its launch window'))
+        # Journal first, so an adoption is never unrecorded (Claude-Mac on GOAT-EA#163).
+        self.locked_journal('reidentified',dict(record,alias=spec['alias']))
         for key in ('error','reconcile_reason','reidentify'):item.pop(key,None)
         item.update(status='running',process=current,reidentified=record)
         state['status']='active'
         self._save(root,state)
-        self.reidentify_journal(spec['alias'],record)
 
-    def _observe(self,root,manifest,state,*,settle_unowned=False):
+    def _observe(self,root,manifest,state,*,settle_unowned=False,budget=None):
         # Always the CURRENT inventory: an earlier refusal (e.g. an unknown executable) is never replayed.
-        current=self.process.inspect()
+        # A status read passes ``budget`` (POLL_BUDGET) so a WMI stall never holds it for the full launch retry.
+        from studio_seed_process import inspect_within
+        current=inspect_within(self.process,budget)
         if state['status']=='reconcile_required':
             state['last_inspection']=dict(process=current,unix=self.clock())
             if current is None:self._reconcile(root,manifest,state,current,settle_unowned=settle_unowned)   # MT5 closed (#132); open MT5: seed-reconcile
@@ -627,9 +638,10 @@ class SeedRunner:
                 and all(m.get('attempts')==0 for m in members if m.get('status')=='pending'))
 
     def status(self,batch_id):
+        from studio_process_query import POLL_BUDGET
         with exclusive_gate(self.gate):
             root,manifest,state=self._read(batch_id)
-            self._observe(root,manifest,state)
+            self._observe(root,manifest,state,budget=POLL_BUDGET)
         members=[item|dict(tester=spec['tester'],source_sha256=spec['source_sha256'],frozen_set_sha256=spec['set_sha256'],config_sha256=spec['config_sha256'],requested_frames=spec['frame_target']) for spec,item in zip(manifest['members'],state['members'])]
         return self._public(root,state|dict(members=members,native_launch_qualified=False,manifest_path=str(root/'manifest.json'),report_path=str(root/'report.json'),pause_requested=self.paused(batch_id)))
 
@@ -823,7 +835,7 @@ class SeedRunner:
                                    +self.MEMBER_NOUN+' is collected when MT5 finishes, then the pending '+self.MEMBER_NOUN+'s continue.')
         elif (state.get('stopped_reason') or {}).get('rules')==['unowned_settled'] and state['status']=='stopped':
             result['next_action']=state['stopped_reason']['plain']
-        elif state.get('error')==UNOWNED_BETWEEN_MEMBERS:
+        elif state.get('error')==UNOWNED_BETWEEN_MEMBERS and self.locked_journal is not None:
             result['next_action']=('An MT5 of this terminal ran between members that this batch did not start (a person, or demo '
                                    'launch-terminal). Close it; with MT5 closed, '+self.COMMAND_PREFIX+'-resume settles this as a '
                                    'stop, then re-activates the pending members under the start-grade check. The driver owns the '

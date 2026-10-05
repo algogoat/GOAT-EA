@@ -5,8 +5,10 @@ itself, failing closed after the last attempt, retrying only transient errors, r
 Win32_Process call site through the retry, resolving an unconfirmed launch only from a task that is
 not running, the worker taking the lock before its reservation, clearing the seed "unowned
 process" doubt only once that MT5 is closed and nothing runs a member, the jittered pauses, the
-post-launch identity wait, the process-API path fill, and adopting an unconfirmed member launch
-only when every proof holds (resume/reconcile under the terminal lock, journaled).
+post-launch identity wait, the process-API path fill, adopting an unconfirmed member launch only
+when every proof holds (resume/reconcile under the terminal lock, journaled first), a late-started
+launch still driving, the unowned settle only under the demo lock, CIM errors never read as empty,
+and bounded status reads.
 The repository is never modified. Works with an embedded Python that ignores cwd.
 """
 import shutil
@@ -29,6 +31,7 @@ QUERY = 'studio_process_query.py'
 AGENT = 'demo_agent.py'
 SEED = 'studio_seed.py'
 PROCESS = 'studio_seed_process.py'
+HOST = 'studio_durable_driver.py'
 MUTATIONS = [
     ('no retry: the first stall fails', QUERY, 'ATTEMPTS = 4', 'ATTEMPTS = 1'),
     ('the last failure swallowed (read as no MT5)', QUERY, '                raise\n', "                return '[]'\n"),
@@ -85,7 +88,7 @@ MUTATIONS = [
     ('a status read adopts a launch', SEED,
      "            elif settle_unowned:self._reidentify(root,manifest,state,current)", "            else:self._reidentify(root,manifest,state,current)"),
     ('adoption without the terminal lock and its journal', SEED,
-     "        if self.reidentify_journal is None:\n            return", "        if False:\n            return"),
+     "        if self.locked_journal is None:\n            return", "        if False:\n            return"),
     ('adoption beside a batch-level doubt', SEED,
      "        if state.get('error') is not None:return 'A batch-level doubt", "        if False:return 'A batch-level doubt"),
     ('adoption ignores the launch window', SEED,
@@ -103,7 +106,7 @@ MUTATIONS = [
     ('a member stranded before PR D is never adopted', SEED,
      "            or re.fullmatch(r\"Command '.*' (timed out", "            or False and re.fullmatch(r\"Command '.*' (timed out"),
     ('adoption beside another uncertain member', SEED, "        if len(uncertain)!=1:return\n", "        if not uncertain:return\n"),
-    ('an adoption is not journaled', SEED, "        self.reidentify_journal(spec['alias'],record)", "        pass"),
+    ('an adoption is not journaled', SEED, "        self.locked_journal('reidentified',dict(record,alias=spec['alias']))", "        pass"),
     # The detached lane driver (GOAT-EA#162) resolves its unconfirmed launch and waits for the lock like run-batch.
     ('a lane retry never retires a task that never ran', AGENT,
      "            live = self._live_lane_worker(retire=True)", "            live = self._live_lane_worker()"),
@@ -118,8 +121,29 @@ MUTATIONS = [
     ('a lane status read retries for the full launch budget', AGENT,
      "            alive = self._worker_alive(record, quick=True)        # a status read", "            alive = self._worker_alive(record)        # a status read"),
     ('demo seed-resume never lets the runner adopt', AGENT,
-     "            runner = self._reidentifying(self._seed_runner(controller, kind), kind, 'resume', batch_id)\n            current = runner.status(batch_id)\n            if current['status'] == 'prepared':",
+     "            runner = self._locked_runner(self._seed_runner(controller, kind), kind, 'resume', batch_id)\n            current = runner.status(batch_id)\n            if current['status'] == 'prepared':",
      "            runner = self._seed_runner(controller, kind)\n            current = runner.status(batch_id)\n            if current['status'] == 'prepared':"),
+    # Claude-Mac's review of GOAT-EA#163 and Codex's P1/P2.
+    ('a late bootstrap of an unconfirmed launch is refused', HOST,
+     "BOOTSTRAP_STATUSES = ('reserved', 'launch_unconfirmed')", "BOOTSTRAP_STATUSES = ('reserved',)"),
+    ('a late driver refuses its unconfirmed record', AGENT,
+     "    UNSTARTED_WORKER = ('reserved', 'spawned', 'launch_unconfirmed')", "    UNSTARTED_WORKER = ('reserved', 'spawned')"),
+    ('a second task is registered for one launch', HOST,
+     "    if worker.get('status') != 'reserved' or worker.get('launch_envelope'):", "    if False:"),
+    ('the customer lane settles the unowned doubt', SEED,
+     "        if (settle_unowned and self.locked_journal is not None and state.get('error')==UNOWNED_BETWEEN_MEMBERS",
+     "        if (settle_unowned and state.get('error')==UNOWNED_BETWEEN_MEMBERS"),
+    ('the unowned settle is not journaled', SEED, "        self.locked_journal('unowned_settled',", "        (lambda *a: None)('unowned_settled',"),
+    ('an adoption is journaled after its state', SEED,
+     "        self.locked_journal('reidentified',dict(record,alias=spec['alias']))\n        for key in ('error','reconcile_reason','reidentify'):item.pop(key,None)\n"
+     "        item.update(status='running',process=current,reidentified=record)\n        state['status']='active'\n        self._save(root,state)\n",
+     "        for key in ('error','reconcile_reason','reidentify'):item.pop(key,None)\n        item.update(status='running',process=current,reidentified=record)\n"
+     "        state['status']='active'\n        self._save(root,state)\n        self.locked_journal('reidentified',dict(record,alias=spec['alias']))\n"),
+    ('a CIM error reads as an empty inventory', QUERY, "    command = fail_closed(command)\n", ""),
+    ('a seed status read takes the full launch retry', SEED,
+     "            self._observe(root,manifest,state,budget=POLL_BUDGET)", "            self._observe(root,manifest,state)"),
+    ('a native capture of a pending catch-up member is not stray output', 'studio_catchup.py',
+     "        if spec.get('capture'):\n            run = ", "        if False:\n            run = "),
 ]
 
 

@@ -227,8 +227,9 @@ batch-level doubt (an unowned process between members) is recorded, the member
 stays `reconcile_required`. The process inventory itself re-reads a row with a
 missing path for up to 10 seconds before it refuses. The whole Windows query is
 retried through a WMI stall: 4 attempts of 20 s, with 2, 5 and 10 s pauses (each varied
-by up to 25%), for a check that gates a launch or a close, and at most 25 s for a status
-read. It fails closed only if every attempt fails. A row without a path is first read from
+by up to 25%), for a check that gates a launch or a close, and at most 25 s for each
+inventory of a status read. It fails closed only if every attempt fails, and a WMI error
+(`Get-CimInstance` runs with `-ErrorAction Stop`) is a failed attempt, never an empty list. A row without a path is first read from
 the process itself, bound to the row by its creation time.
 
 After a member launch, the driver waits up to 90 s for that MT5's identity; a stalled
@@ -245,12 +246,14 @@ is collected as usual. Otherwise it stays `reconcile_required` with `reidentify.
 The batch-level doubt "Unowned selected-terminal process appeared between seed members"
 means an MT5 started by someone else ran between members. Typical causes are a person
 reopening MT5, or `demo launch-terminal` during a batch; don't do either, because the
-driver owns the reopen. `seed-reconcile` or `seed-resume` settles the doubt, never a `seed-status` read, once
-two things hold, re-inspected now:
+driver owns the reopen. In the demo lane, `seed-reconcile` or `seed-resume` settles the
+doubt under the terminal lock, never a `seed-status` read, once two things hold, re-inspected
+now (`goat.exe studio` keeps the earlier rule: `seed-cancel` settles it once MT5 is idle):
 - the selected MT5 is closed again;
 - no MT5 anywhere runs a member's INI or alias.
 
-Settling records `unowned_settled` (`prior_error`, `basis`, `stray_members`). A pending
+Settling is journaled in `actions.jsonl` first, then records `unowned_settled` (`prior_error`,
+`basis`, `stray_members`) in the state. A pending
 member that already has output of its own becomes `failed` ("Output present before its
 start") and is never collected. The batch becomes `stopped` with `stopped_reason`
 `unowned_settled`, so only the start-grade re-activation (the next `seed-resume`, with

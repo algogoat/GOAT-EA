@@ -53,9 +53,13 @@ def task_info(name, *, budget=None):
 
 
 def never_started(info, envelope_created_utc):
-    """True only when the task provably never ran its bootstrap (Claude-Mac's rule, #1885): it is gone, or it
-    exists, is not running or queued, has not run since the envelope was retained, and still reports
-    SCHED_S_TASK_HAS_NOT_RUN. The caller also checks that no started receipt exists."""
+    """True only when the task provably never ran its bootstrap (Claude-Mac's rule, #1885): it exists, is not
+    running or queued, has not run since the envelope was retained, and still reports SCHED_S_TASK_HAS_NOT_RUN;
+    or it is gone. The caller also checks that no started receipt exists.
+
+    A gone task is a deliberate widening of "exists + 267011": a task that no longer exists can never start
+    its bootstrap, and the retry reserves a fresh nonce, so even a bootstrap already past validate() refuses
+    at the driver's nonce check under the terminal lock."""
     if not info['exists']:
         return True
     if info.get('state') in ('Running', 'Queued'):
@@ -87,6 +91,12 @@ def retain(path, value):
 
 
 LANE_KINDS = ('seed', 'catchup', 'holdup')
+# The reservation a bootstrap may still start for. A task that starts only after the caller's 60 s wait
+# finds its record 'launch_unconfirmed' with the same nonce; it is that launch, so it drives (Claude-Mac
+# on GOAT-EA#163: otherwise the task has run, never_started() is false forever, and the batch is stuck).
+# A retry only follows a provably never-run task and replaces the nonce, so a late old task still refuses,
+# and the driver re-checks its nonce under the terminal lock before any effect.
+BOOTSTRAP_STATUSES = ('reserved', 'launch_unconfirmed')
 
 
 def validate_lane(argv, log_path, worker_path):
@@ -107,7 +117,7 @@ def validate_lane(argv, log_path, worker_path):
     if worker_path != expected or Path(log_path).absolute() != expected.with_name(kind + '-' + batch_id + '-' + nonce + '.log'):
         raise ValueError('Lane driver log/worker path is not canonical')
     worker = read_json(worker_path)
-    if (worker.get('status') != 'reserved' or worker.get('nonce') != nonce or worker.get('batch_id') != batch_id
+    if (worker.get('status') not in BOOTSTRAP_STATUSES or worker.get('nonce') != nonce or worker.get('batch_id') != batch_id
             or worker.get('kind') != kind or worker.get('initial') is not (mode == '--initial')):
         raise ValueError('Current reserved lane driver identity required')
     remaining = worker.get('max_seconds')
@@ -133,7 +143,7 @@ def validate(argv, log_path, worker_path):
     if worker_path != expected or Path(log_path).absolute() != expected.with_name(batch_id + '-' + nonce + '.log'):
         raise ValueError('Driver log/worker path is not canonical')
     worker = read_json(worker_path)
-    if worker.get('status') != 'reserved' or worker.get('nonce') != nonce or worker.get('batch_id') != batch_id:
+    if worker.get('status') not in BOOTSTRAP_STATUSES or worker.get('nonce') != nonce or worker.get('batch_id') != batch_id:
         raise ValueError('Current reserved supervisor identity required')
     if worker.get('resume') is True:
         if worker.get('max_seconds') is not None:
@@ -185,6 +195,8 @@ class DriverHandle:
 
 def launch(argv, *, log_path, worker_path):
     worker, remaining = validate(argv, log_path, worker_path)
+    if worker.get('status') != 'reserved' or worker.get('launch_envelope'):
+        raise ValueError('Only a fresh reservation registers a task; never a second task for one launch')
     pythonw = Path(argv[0]).with_name('pythonw.exe')
     if not pythonw.is_file():
         raise ValueError('The installed windowless Python runtime is missing; no ephemeral launch fallback')

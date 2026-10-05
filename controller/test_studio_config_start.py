@@ -93,6 +93,72 @@ class ConfigStartTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'new pending'):self.run_start()
         self.process.start.assert_called_once()
 
+    def test_refused_research_launch_is_launch_refused_and_retries_only_the_launch(self):
+        # goatai#1885 PR E (Claude-Mac note 4): nothing ran, so the batch is not stranded at launch_issued.
+        from studio_research_launch import ResearchLaunchRefused
+        launch=self.process.start.side_effect
+        def refuse(config):
+            self.events.append('refused');raise ResearchLaunchRefused('MT5 was not started: no research job. Nothing ran.')
+        self.process.start.side_effect=refuse
+        with self.assertRaisesRegex(ResearchLaunchRefused,'Nothing ran'):self.run_start()
+        intent=self.c.job('batch')['restart_intent']
+        self.assertEqual(intent['phase'],'launch_refused');self.assertIn('no research job',intent['refusal'])
+        recovery=start.restart_recovery(self.c.job('batch'))
+        self.assertEqual(recovery['mt5'],'closed_not_reopened');self.assertIn('Nothing ran',recovery['plain'])
+        self.assertIn('run-batch --resume',recovery['next_safe_action'])
+        self.process.inspect.return_value=self.identity                   # an MT5 runs now: never launch again
+        with self.assertRaisesRegex(ValueError,'running now'):start.retry_refused_launch(self.c,'batch',process=self.process)
+        self.process.inspect.return_value=None
+        with self.assertRaisesRegex(ResearchLaunchRefused,'Nothing ran'):start.retry_refused_launch(self.c,'batch',process=self.process)
+        self.assertEqual(self.c.job('batch')['restart_intent']['phase'],'launch_refused')   # a second refusal returns there
+        self.process.start.side_effect=launch
+        result=start.retry_refused_launch(self.c,'batch',process=self.process)
+        self.assertEqual(result['status'],'config_process_started_unverified')
+        self.assertEqual([e for e in self.events if e!='sdk'],['reserve','install','arm','close','refused','refused','launch'])   # one close, one arm
+        phases=[row['phase'] for row in self.c.job('batch')['restart_intent']['history']]
+        self.assertEqual(phases[-5:],['launch_refused','launch_issued','launch_refused','launch_issued','process_started_unverified'])
+        with self.assertRaisesRegex(ValueError,'Only a config start whose research launch was refused'):
+            start.retry_refused_launch(self.c,'batch',process=self.process)
+
+    def test_driver_resume_retries_only_a_refused_launch(self):
+        from studio_batch_driver import _launch_refused
+        controller=types.SimpleNamespace(retry_config_launch=Mock(),job=lambda job_id:dict(restart_intent=dict(phase='launch_refused')))
+        self.assertTrue(_launch_refused(controller,'batch',dict(start_route='config_restart')))
+        self.assertFalse(_launch_refused(controller,'batch',dict(start_route='in_place_start')))
+        for other in ('launch_issued','launch_uncertain','process_started_unverified'):
+            controller.job=lambda job_id,other=other:dict(restart_intent=dict(phase=other))
+            self.assertFalse(_launch_refused(controller,'batch',dict(start_route='config_restart')),other)
+
+    def test_uncertain_research_launch_is_launch_uncertain_and_never_retried(self):
+        # Claude-Mac note 1 on the native first start: the refused, never-resumed MT5 was not confirmed gone.
+        from studio_research_launch import ResearchLaunchUncertain
+        def uncertain(config):
+            self.events.append('uncertain');raise ResearchLaunchUncertain('could not confirm that the suspended MT5 (PID 22) stopped')
+        self.process.start.side_effect=uncertain
+        with self.assertRaises(ResearchLaunchUncertain):self.run_start()
+        intent=self.c.job('batch')['restart_intent']
+        self.assertEqual(intent['phase'],'launch_uncertain');self.assertIn('PID 22',intent['refusal'])
+        recovery=start.restart_recovery(self.c.job('batch'))
+        self.assertEqual(recovery['mt5'],'suspended_uncertain');self.assertIn('never resumed',recovery['plain'])
+        self.assertIn('do not retry',recovery['next_safe_action'])
+        self.process.inspect.return_value=None
+        with self.assertRaisesRegex(ValueError,'Only a config start whose research launch was refused'):
+            start.retry_refused_launch(self.c,'batch',process=self.process)
+        self.assertEqual(self.events.count('uncertain'),1)
+
+    def test_unseen_startup_identity_stays_launch_issued_like_163(self):
+        # GOAT-EA#163: a launch whose identity was never seen may be running; it is observed, never retried.
+        from studio_seed_process import STARTUP_UNSEEN
+        def unseen(config):
+            self.events.append('launch');raise ValueError(STARTUP_UNSEEN+' in 90 s; inspect before recovery')
+        self.process.start.side_effect=unseen
+        with self.assertRaisesRegex(ValueError,STARTUP_UNSEEN):self.run_start()
+        self.assertEqual(self.c.job('batch')['restart_intent']['phase'],'launch_issued')
+        self.assertEqual(start.restart_recovery(self.c.job('batch'))['mt5'],'reopen_uncertain')
+        with self.assertRaisesRegex(ValueError,'Only a config start whose research launch was refused'):
+            start.retry_refused_launch(self.c,'batch',process=self.process)
+
+
     def test_a_retried_start_reserves_under_a_fresh_command_id(self):
         archive=self.c.root/'batch-driver-refusals';archive.mkdir()
         (archive/'batch.refused-1.json').write_text('{}')
@@ -227,6 +293,63 @@ class ConfigMaterialTests(unittest.TestCase):
         # A modified monitor preset is refused before launch, not trusted from its name.
         preset.write_bytes(b'Mode_Operation=0\n')
         with self.assertRaisesRegex(ValueError,'preset drift'):_validate_material(c.state(),job,**args)
+
+
+class DriverRefusedLaunchTests(unittest.TestCase):
+    """run-batch --resume retries only a refused /config research launch (goatai#1885 PR E)."""
+
+    def setUp(self):
+        import test_studio_batch_driver as fixtures
+        from studio_bridge import write_json
+        self.fixture=fixtures.BatchDriverTests();self.fixture.setUp();self.addCleanup(self.fixture.doCleanups)
+        self.c=self.fixture.c
+        self.c.session['authority_kind']='demo_direct';write_json(self.c.root/'session.json',self.c.session)
+        self.c.bridge=types.SimpleNamespace(root=self.c.local/self.c.run)
+        self.retries=[]
+
+    def refuse(self,job_id,*,expected_generation,on_attempt):
+        from studio_research_launch import ResearchLaunchRefused
+        self.c.start(job_id,expected_generation=expected_generation)
+        on_attempt(self.c.current['launch_intent'])
+        self.c.current['restart_intent']=dict(phase='launch_refused',attempt_id='a'*64)
+        raise ResearchLaunchRefused('MT5 was not started: no research job. Nothing ran.')
+
+    def test_resume_retries_the_refused_launch_once_then_observes(self):
+        self.c.start_config=self.refuse
+        first=self.fixture.drive(max_seconds=3)
+        self.assertEqual((first['status'],first['recovery']['phase']),('start_uncertain','launch_refused'))
+        def retry(job_id):
+            self.retries.append(job_id);self.c.current['restart_intent']['phase']='process_started_unverified'
+            self.c.finished=True
+        self.c.retry_config_launch=retry
+        resumed=self.fixture.drive(resume=True)
+        self.assertEqual((resumed['status'],resumed['stopped']),('completed',True))
+        self.assertEqual((self.c.starts,self.retries),(1,['batch']))           # one start, one launch retry
+        self.fixture.drive(resume=True)
+        self.assertEqual(self.retries,['batch'])                               # a stopped journal never retries
+
+    def test_a_second_refusal_keeps_the_journal_resumable(self):
+        from studio_research_launch import ResearchLaunchRefused
+        self.c.start_config=self.refuse
+        self.fixture.drive(max_seconds=3)
+        def refuse_again(job_id):
+            self.retries.append(job_id);raise ResearchLaunchRefused('still no research job. Nothing ran.')
+        self.c.retry_config_launch=refuse_again
+        again=self.fixture.drive(resume=True)
+        self.assertEqual((again['status'],again['stopped'],again['recovery']['phase']),('start_uncertain',False,'launch_refused'))
+        self.assertIn('still no research job',again['last_error'])
+
+    def test_an_unconfirmed_launch_is_never_retried(self):
+        def unconfirmed(job_id,*,expected_generation,on_attempt):
+            self.c.start(job_id,expected_generation=expected_generation)
+            on_attempt(self.c.current['launch_intent'])
+            self.c.current['restart_intent']=dict(phase='launch_issued',attempt_id='a'*64)
+            raise ValueError('Terminal startup identity not observed in 90 s; inspect before recovery')
+        self.c.start_config=unconfirmed
+        self.fixture.drive(max_seconds=3)
+        self.c.retry_config_launch=lambda job_id:self.retries.append(job_id)
+        self.fixture.drive(resume=True)
+        self.assertEqual(self.retries,[])
 
 
 if __name__=='__main__':unittest.main()

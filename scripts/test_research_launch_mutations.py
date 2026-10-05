@@ -4,7 +4,11 @@ Claude-Mac's must-haves are load-bearing: no JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 terminate the suspended MT5) on any assignment failure with no fallback launch, research launches
 only for seed members and the native first start (never trading or monitor MT5), the Idle lock,
 the per-terminal Local\\ job name, and the owner CPU-cap staging (one breach steps down, two pause).
-Each rule is removed in a temporary copy of controller/, and test_studio_research_launch must fail.
+The PR E follow-up adds: an unconfirmed stop is uncertain (never "nothing ran", never re-identified), a
+refused native first start is retried only by run-batch --resume, research MT5 breaks away from the
+caller's job when allowed (note 5) with the same suspended launch nested otherwise, and breakaway and
+staging are reported as they are.
+Each rule is removed in a temporary copy of controller/, and the research-launch, config-start or seed tests must fail.
 The repository is never modified. Works with an embedded Python that ignores cwd.
 """
 import shutil
@@ -18,23 +22,26 @@ RUNNER = ('import sys,unittest\n'
           'root=sys.argv[1]\n'
           'sys.path[:]=[p for p in sys.path if not p.rstrip("\\\\/").lower().endswith("controller")]\n'
           'sys.path.insert(0,root)\n'
-          'suite=unittest.defaultTestLoader.discover(root,pattern="test_studio_research_launch.py",top_level_dir=root)\n'
+          'suite=unittest.TestSuite()\n'
+          'for name in ("test_studio_research_launch.py","test_studio_config_start.py","test_studio_seed.py"):\n'
+          '    suite.addTests(unittest.defaultTestLoader.discover(root,pattern=name,top_level_dir=root))\n'
           'result=unittest.TextTestRunner(stream=open(sys.argv[2],"w"),verbosity=1).run(suite)\n'
           'sys.exit(0 if result.wasSuccessful() else 1)\n')
 LAUNCH = 'studio_research_launch.py'
 PROCESS = 'studio_seed_process.py'
 SEED = 'studio_seed.py'
 CONFIG = 'studio_config_start.py'
+DRIVER = 'studio_batch_driver.py'
 MUTATIONS = [
     ('KILL_ON_JOB_CLOSE is set on the research job', LAUNCH,
      "    return JOB_OBJECT_LIMIT_PRIORITY_CLASS if plan['priority_lock'] is not None else 0",
      "    return (JOB_OBJECT_LIMIT_PRIORITY_CLASS if plan['priority_lock'] is not None else 0) | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE"),
     ('an assignment failure lets MT5 run anyway (fallback launch)', LAUNCH,
-     "            api.terminate(process)\n            _history(root, 'refused'",
-     "            api.resume(thread)\n            _history(root, 'refused'"),
+     "            stopped = _stop_suspended(api, process, job)\n", "            api.resume(thread);stopped = True\n"),
     ('a refused MT5 is left suspended instead of terminated', LAUNCH,
-     "            api.terminate(process)\n            _history(root, 'refused'",
-     "            pass\n            _history(root, 'refused'"),
+     "            stopped = _stop_suspended(api, process, job)\n", "            stopped = True\n"),
+    ('an unconfirmed stop is reported as nothing ran', LAUNCH,
+     "    try:\n        return api.exit_code(process) is not None", "    try:\n        return True"),
     ('MT5 is resumed before it is in the job', LAUNCH,
      "                api.assign(job, process)\n", "                api.resume(thread);api.assign(job, process)\n"),
     ('a global job name', LAUNCH, "JOB_PREFIX = 'Local\\\\GOAT-Research-'", "JOB_PREFIX = 'Global\\\\GOAT-Research-'"),
@@ -54,7 +61,35 @@ MUTATIONS = [
     ('seed / catch-up / hold-up members are not research launches', SEED,
      "        self.process=research_view(process)", "        self.process=process"),
     ('the native batch first start is not a research launch', CONFIG,
-     "    launched=research_view(process).start(startup)", "    launched=process.start(startup)"),
+     "        return research_view(process).start(startup)", "        return process.start(startup)"),
+    ('a refused native first start is stranded at launch_issued', CONFIG,
+     "        phase(c,job_id,generation,'launch_issued','launch_refused',refusal=str(error)[:500])\n", "        pass\n"),
+    ('a refused seed member becomes an uncertain start', SEED,
+     "item.update(status='pending',attempts=0,launch_refused=str(exc)[:500])",
+     "item.update(status='reconcile_required',error=str(exc));state['status']='reconcile_required'"),
+    ('an uncertain native first start is left at launch_issued', CONFIG,
+     "        phase(c,job_id,generation,'launch_issued','launch_uncertain',refusal=str(error)[:500])\n", "        pass\n"),
+    ('run-batch --resume never retries a refused launch', DRIVER,
+     "            if _launch_refused(controller, job_id, record):", "            if False:"),
+    ('run-batch --resume retries a launch that was not refused', DRIVER,
+     ".get('phase') == 'launch_refused'", ".get('phase') in ('launch_refused', 'launch_issued', 'launch_uncertain')"),
+    ('an uncertain seed launch is treated as nothing ran', SEED,
+     "item.update(status='reconcile_required',error=str(exc),launch_uncertain=True)\n"
+     "                            state['status']='reconcile_required';self._save(root,state);raise",
+     "item.update(status='pending',attempts=0);self._save(root,state);raise"),
+    ('an uncertain seed launch can be re-identified as the member\'s run', SEED,
+     "item.get('result') or item.get('launch_uncertain')", "item.get('result')"),
+    ('research MT5 never tries to break away from the caller\'s job (note 5)', LAUNCH,
+     "flags | CREATE_BREAKAWAY_FROM_JOB)) + (True,)", "flags)) + (True,)"),
+    ('a caller job that refuses breakaway refuses the launch', LAUNCH,
+     "        if (getattr(error, 'winerror', None) or error.errno) != 5:raise\n", "        raise\n"),
+    ('the nested retry is not the same suspended launch', LAUNCH,
+     "    return tuple(api.create_suspended(command_line, cwd, flags)) + (False,)",
+     "    return tuple(api.create_suspended(command_line, cwd, flags & ~CREATE_SUSPENDED)) + (False,)"),
+    ('MT5\'s breakaway is not recorded', LAUNCH,
+     "config=str(config) if config is not None else None, broke_away=broke_away,", "config=str(config) if config is not None else None,"),
+    ('the keeper\'s breakaway is not recorded', LAUNCH, "            broke_away = extra != 0\n", "            broke_away = None\n"),
+    ('staging reports active without a holding keeper', LAUNCH, "    if not fresh:\n", "    if False:\n"),
     ('one breach does not step the cap back down', LAUNCH, "        g['stage'] = max(0, g['stage'] - 1)\n", "        pass\n"),
     ('the second breach does not pause the lane', LAUNCH,
      "        if len(g['breaches']) >= PAUSE_AFTER_BREACHES:", "        if False:"),

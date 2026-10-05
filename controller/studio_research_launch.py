@@ -15,17 +15,21 @@ SET or service changes.
 How a research MT5 starts:
 1. The job ``Local\\GOAT-Research-<install hash>`` is created and configured first (a failure
    there refuses before any process exists).
-2. MT5 is created with CREATE_SUSPENDED and its low priority class.
+2. MT5 is created with CREATE_SUSPENDED and its low priority class, breaking away from the
+   caller's own job when that job allows it (``_create_suspended``, Claude-Mac's note 5).
 3. It is assigned to the job while suspended; the tester agents are its child processes, so
    they (and the EA's own MT5 relaunch chain) join the job automatically.
-4. Only then is it resumed. Any failure in 3-4 terminates the suspended process (nothing ran)
-   and refuses with a plain error; there is never a fallback launch at Normal.
+4. Only then is it resumed. Any failure in 3-4 terminates the suspended process and refuses with
+   a plain error; there is never a fallback launch at Normal. "Nothing ran" is claimed only once
+   the terminate is confirmed; otherwise the launch is ``ResearchLaunchUncertain``.
 
 Rules from Claude-Mac's approval (#1885 5997182052):
 - JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE is never set: the controller exits all the time and MT5
   must outlive it. Every set is read back and checked.
-- The controller may itself run inside a job (desktop app, scheduled task): assignment uses
-  Windows nested jobs; a refusal (ERROR_ACCESS_DENIED or anything else) refuses the launch.
+- The controller may itself run inside a job (desktop app, scheduled task). MT5 leaves that job
+  when it allows breakaway (a Task Scheduler stop or time limit then cannot end MT5 mid-member);
+  otherwise assignment uses Windows nested jobs. ``broke_away`` in launch.json says which. An
+  assignment refusal (ERROR_ACCESS_DENIED or anything else) refuses the launch.
 - The job name is per terminal and session-local, never global or fixed.
 
 Windows removes a job's *name* when its last handle closes, although the job and its limits
@@ -101,7 +105,13 @@ AGENT_LOSS = re.compile(r'connection (?:to \S+ )?lost|authorized tester agent \S
 
 
 class ResearchLaunchRefused(ValueError):
-    """The research launch was refused; when a process had been created it was terminated suspended."""
+    """The research launch was refused and nothing ran: no process was created, or the suspended
+    process was confirmed terminated before it ran one instruction."""
+
+
+class ResearchLaunchUncertain(ValueError):
+    """The research launch was refused but the suspended process could not be confirmed gone.
+    Callers treat it as an uncertain start (reconcile), never as 'nothing ran'."""
 
 
 # ---------------------------------------------------------------- policy
@@ -361,8 +371,13 @@ class Win32Jobs:
         if self._ResumeThread(thread) == 0xFFFFFFFF:raise self._fail('ResumeThread')
 
     def terminate(self, process):
+        """TerminateProcess and wait; True only when the process is confirmed gone (it has an exit code)."""
         self._TerminateProcess(process, 1)
         self._WaitForSingleObject(process, 5000)
+        try:
+            return self.exit_code(process) is not None
+        except OSError:
+            return False
 
     def exit_code(self, process):
         code = self.w.DWORD()
@@ -478,6 +493,44 @@ def _configure_job(api, name, plan):
         raise ResearchLaunchRefused('GOAT could not set this MT5\'s research job limits ('+str(error)+'); nothing was started') from error
 
 
+def _stop_suspended(api, process, job):
+    """Terminate the refused, never-resumed process; True only when it is confirmed gone.
+    TerminateProcess first, then (when it is in our job) the job, which holds nothing else."""
+    try:
+        if api.terminate(process):return True
+    except OSError:
+        pass
+    if job:
+        try:
+            if api.in_job(process, job):api.terminate_job(job)
+        except (OSError, ValueError):
+            pass
+    try:
+        return api.exit_code(process) is not None
+    except OSError:
+        return False
+
+
+def _create_suspended(api, command_line, cwd, flags):
+    """Create the suspended research MT5 outside the caller's own job when that job allows it.
+
+    Claude-Mac's note 5 (goatai#1885): a detached lane driver runs as a demand Task Scheduler task,
+    and Task Scheduler ends a stopped task, or one past its ExecutionTimeLimit, by terminating the
+    task's job. A child created inside that job (MT5 and its tester agents, even nested under the
+    research job) would end with it mid-member. So MT5 is first created with
+    CREATE_BREAKAWAY_FROM_JOB: the research job then becomes its only job. A caller job that refuses
+    breakaway makes CreateProcess fail with ERROR_ACCESS_DENIED before any process exists, so the
+    same suspended, low-priority creation is made once more without the flag (nested, as before).
+    That is not a priority fallback: the flags are otherwise identical and the research job is
+    still assigned before MT5 runs. Returns (process, thread, pid, broke_away).
+    """
+    try:
+        return tuple(api.create_suspended(command_line, cwd, flags | CREATE_BREAKAWAY_FROM_JOB)) + (True,)
+    except OSError as error:
+        if (getattr(error, 'winerror', None) or error.errno) != 5:raise
+    return tuple(api.create_suspended(command_line, cwd, flags)) + (False,)
+
+
 def launch_plan(api, plan, args, *, cwd, name, root, config=None, now=None, keeper=None):
     """Create, assign, record, resume. Never launches at Normal and never without the planned job."""
     now = time.time() if now is None else now
@@ -487,14 +540,14 @@ def launch_plan(api, plan, args, *, cwd, name, root, config=None, now=None, keep
     process = thread = None
     try:
         try:
-            process, thread, pid = api.create_suspended(subprocess.list2cmdline([str(a) for a in args]), cwd,
-                                                        CREATE_SUSPENDED | plan['creation_priority'] | CREATE_NO_WINDOW)
+            process, thread, pid, broke_away = _create_suspended(api, subprocess.list2cmdline([str(a) for a in args]), cwd,
+                                                                 CREATE_SUSPENDED | plan['creation_priority'] | CREATE_NO_WINDOW)
         except OSError as error:
             raise ResearchLaunchRefused('MT5 could not be created ('+str(error)+'); nothing was started') from error
         record = dict(schema=SCHEMA, launch_id=uuid.uuid4().hex, launched_utc=datetime.fromtimestamp(now, timezone.utc).isoformat(timespec='seconds'),
                       launched_wall=now, pid=pid, profile=plan['profile'], creation_priority=PRIORITY_NAMES[plan['creation_priority']],
                       agent_priority=PRIORITY_NAMES.get(plan['agent_priority']), stages=plan['stages'],
-                      config=str(config) if config is not None else None,
+                      config=str(config) if config is not None else None, broke_away=broke_away,
                       job=_job_summary(name, plan, flags) if job else None)
         stage = 'assign'
         try:
@@ -510,8 +563,13 @@ def launch_plan(api, plan, args, *, cwd, name, root, config=None, now=None, keep
             api.resume(thread)
         except BaseException as error:
             # Refuse: the suspended process never ran. No second launch, never at Normal.
-            api.terminate(process)
-            _history(root, 'refused', pid=pid, stage=stage, error=str(error)[:300], job=name)
+            stopped = _stop_suspended(api, process, job)
+            _history(root, 'refused', pid=pid, stage=stage, error=str(error)[:300], job=name, confirmed_stopped=stopped,
+                     broke_away=broke_away)
+            if not stopped:
+                raise ResearchLaunchUncertain('GOAT refused this research MT5 launch (' + str(error)[:160] + ') but could not '
+                                              'confirm that the suspended MT5 (PID ' + str(pid) + ') stopped. Inspect the '
+                                              'selected MT5 before any recovery; GOAT never resumed it.') from error
             if not isinstance(error, OSError):raise
             if stage == 'assign':
                 winerror = getattr(error, 'winerror', None) or error.errno
@@ -529,7 +587,7 @@ def launch_plan(api, plan, args, *, cwd, name, root, config=None, now=None, keep
             try:_atomic_json(Path(root) / STATE_FOLDER / 'launch.json', record)
             except OSError:pass
         _history(root, 'launched', pid=pid, profile=plan['profile'], job=name, creation_priority=record['creation_priority'],
-                 cpu_rate_percent=plan['cpu_rate_percent'], keeper=record.get('keeper'))
+                 cpu_rate_percent=plan['cpu_rate_percent'], broke_away=broke_away, keeper=record.get('keeper'))
         launched = LaunchedResearch(api, process, pid, record);process = None
         return launched
     finally:
@@ -563,12 +621,15 @@ def start_keeper(root, name, *, now=None, wait=KEEPER_READY_SECONDS):
     """Start (or reuse) the job's keeper and wait for its heartbeat. Returns a summary; never raises."""
     now = time.time() if now is None else now
     flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
-    pid = None;error = None
+    pid = None;error = None;broke_away = None
     for extra in (CREATE_BREAKAWAY_FROM_JOB, 0):        # leave the controller's own job when it allows that
         try:
             pid = subprocess.Popen(keeper_command(root, name), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, close_fds=True,
                                    creationflags=flags | extra | getattr(subprocess, 'CREATE_NO_WINDOW', 0)).pid
+            # broke_away False: the caller's job (e.g. a driver's Task Scheduler job) refuses breakaway, so the
+            # keeper ends when that job is terminated. Evidence for T3-PROOF.
+            broke_away = extra != 0
             break
         except OSError as exc:
             error = str(exc)[:200]
@@ -579,9 +640,9 @@ def start_keeper(root, name, *, now=None, wait=KEEPER_READY_SECONDS):
         # A keeper that already holds this job (the previous member's) counts: its heartbeat is <= 10 s old.
         if (beat and beat.get('job') == name and beat.get('state') == 'holding'
                 and (beat.get('heartbeat_wall') or 0) >= now - KEEPER_HEARTBEAT_SECONDS - 2):
-            return dict(state='holding', pid=beat.get('pid'), spawned_pid=pid)
+            return dict(state='holding', pid=beat.get('pid'), spawned_pid=pid, broke_away=broke_away)
         time.sleep(.1)
-    return dict(state='unconfirmed', spawned_pid=pid)
+    return dict(state='unconfirmed', spawned_pid=pid, broke_away=broke_away)
 
 
 def keep(root, name, *, api=None, clock=time.time, sleep=time.sleep, idle_seconds=KEEPER_IDLE_SECONDS,
@@ -828,7 +889,7 @@ def status(install, root, *, now=None, api=None):
     folder = Path(root) / STATE_FOLDER
     record = _read_json(folder / 'launch.json')
     result['last_launch'] = None if not record else {k: record.get(k) for k in ('launched_utc', 'pid', 'profile', 'creation_priority',
-                                                                               'agent_priority', 'job', 'keeper')}
+                                                                               'agent_priority', 'job', 'broke_away', 'keeper')}
     live = None
     if record and record.get('job'):
         live = dict(state='unavailable', plain='The live job can be read only while its keeper (owner) or the launching '
@@ -859,12 +920,38 @@ def status(install, root, *, now=None, api=None):
                                publisher_read_errors=guard.get('publisher_read_errors', []))
     else:
         result['guard'] = None
+    result.update(_staging(plan, record, beat, result['guard'], now))
     if record:
         agents = agent_observation(install, since_wall=record.get('launched_wall'))
         if agents:
             result.update(enabled_mt5_workers=agents['enabled_mt5_workers'], agent_count_source='tester_log',
                           agents=agents)
     return result
+
+
+def _staging(plan, record, beat, guard, now):
+    """What the owner CPU-cap staging really does right now; it is per member launch and publisher-gated."""
+    if plan['profile'] != 'owner':
+        return dict(staging=None, staging_scope=None)
+    scope = 'per_member_launch'
+    first = plan['stages'][0]
+    if not plan['publishers']:
+        return dict(staging='off_no_publishers', staging_scope=scope,
+                    staging_plain='No publisher budgets are configured, so the CPU cap stays at %d%% and never pauses the lane.' % first)
+    if not record or not record.get('job'):
+        return dict(staging='no_launch', staging_scope=scope, staging_plain='No owner research launch is recorded yet.')
+    fresh = (beat and beat.get('state') == 'holding' and beat.get('job') == record['job']['name']
+             and type(beat.get('heartbeat_wall')) in (int, float) and now - beat['heartbeat_wall'] <= 3 * KEEPER_HEARTBEAT_SECONDS)
+    if not fresh:
+        return dict(staging='stalled_no_keeper', staging_scope=scope,
+                    staging_plain='The keeper is not holding this MT5\'s job, so the CPU cap stays where it is (%s%%) and '
+                                  'publisher breaches are not counted.' % ((guard or {}).get('cpu_rate_percent', first)))
+    if guard and guard.get('paused'):
+        return dict(staging='paused', staging_scope=scope,
+                    staging_plain='Two publisher budget breaches during this member paused the lane; the member finishes at %d%%.' % first)
+    return dict(staging='active', staging_scope=scope,
+                staging_plain='The CPU cap widens only after every watched publisher keeps its budget; breaches count per member '
+                              'launch (one steps the cap down, two in the same member pause the lane) and reset at the next member.')
 
 
 def _plain(plan):

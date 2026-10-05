@@ -111,6 +111,17 @@ class SeedTests(unittest.TestCase):
         self.process.start=start
         self.runner.resume('batch',1);self.assertEqual(len(self.starts),1)
 
+    def test_unconfirmed_stop_of_a_refused_launch_is_an_uncertain_start(self):
+        # Claude-Mac note 1: the suspended MT5 could not be confirmed gone, so this is never "nothing ran".
+        from studio_research_launch import ResearchLaunchUncertain
+        self.prepare()
+        def uncertain(config):raise ResearchLaunchUncertain('could not confirm that the suspended MT5 stopped')
+        self.process.start=uncertain
+        with self.assertRaises(ResearchLaunchUncertain):self.runner.start('batch',5)
+        state=read_json(self.runner.path('batch')/'state.json')
+        self.assertEqual((state['status'],state['members'][0]['status']),('reconcile_required','reconcile_required'))
+        self.assertIs(state['members'][0]['launch_uncertain'],True);self.assertNotIn('launch_refused',state['members'][0])
+
     def test_zero_frame_native_result_is_explicit_zero(self):
         self.prepare();m=self.member();result=collect(self.output(m,[]),m,self.controller.schema,self.plan['cutoff'])
         self.assertEqual(result['summary']['actual_frames'],0)
@@ -606,6 +617,26 @@ class LaunchReidentifyTests(unittest.TestCase):
         self.strand(error=subprocess.TimeoutExpired(['powershell','-NoProfile','-Command','Get-CimInstance Win32_Process'],20))
         self.auto=True
         self.assertEqual(self.runner.resume('batch',60)['status'],'completed')
+
+    def test_an_uncertain_refused_launch_is_never_re_identified(self):
+        # goatai#1885 PR E + #163: a refused research launch whose suspended MT5 was not confirmed gone has an MT5
+        # with this member's own INI inside the launch window, but GOAT never resumed it: it is never adopted as the
+        # member's run (it would never run the tester), even if its text looked like an unseen identity.
+        from studio_research_launch import ResearchLaunchUncertain
+        for label,text in (('the real refusal','GOAT refused this research MT5 launch (test) but could not confirm that the '
+                                                 'suspended MT5 (PID 29608) stopped. Inspect the selected MT5 before any recovery'),
+                           ('text like an unseen identity',studio_seed_process.STARTUP_UNSEEN+' in 90 s')):
+            with self.subTest(label):
+                self.tearDown();self.setUp()
+                state=self.strand(error=ResearchLaunchUncertain(text))
+                member=state['members'][0]
+                self.assertIs(member['launch_uncertain'],True);self.assertEqual(member['attempts'],1)
+                self.auto=True
+                resumed=self.runner.resume('batch',5)
+                self.assertEqual((resumed['status'],self.state()['members'][0]['status']),('reconcile_required','reconcile_required'))
+                self.assertNotIn('reidentified',self.state()['members'][0]);self.assertEqual(self.journal,[])
+                self.assertEqual((len(self.starts),len(self.closes)),(1,1))           # never launched or closed again
+        self.assertFalse(studio_seed.launch_unconfirmed('GOAT refused this research MT5 launch (x) but could not confirm'))
 
     def refused(self,pattern):
         state=self.runner.resume('batch',5)

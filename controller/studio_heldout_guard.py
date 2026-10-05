@@ -43,10 +43,15 @@ METRIC_KEYS = frozenset((
     'passes', 'profitable', 'traded', 'forward_rows', 'back_rows', 'paired_rows', 'actual_back_report_rows',
     'actual_forward_report_rows', 'matching_pass_ids', 'performance_qualification', 'export_qualification',
     # Hold-up test results (studio_holdup): MT5 report figures, weekly/daily realised P/L, split segments, deals.
-    'per_week', 'daily', 'segments', 'deals'))
+    'per_week', 'daily', 'segments', 'deals',
+    # Export qualification (studio_export_qualification): pass/fail per set and per member, the metric values
+    # each check read and which thresholds a set missed are all derived from the tested window.
+    'passing_sets', 'below_threshold_members', 'below_threshold_sets', 'unknown_members', 'unknown_sets',
+    'checks', 'missed', 'ea_native_passed', 'log_crosscheck', 'stamps', 'unproven_members'))
 # Sentences and log lines that quote such values: replaced whole inside a locked part.
 SENTENCE_KEYS = frozenset(('plain', 'summary', 'headline', 'reasons', 'sentence', 'line', 'note', 'title'))
-METRIC_STATUSES = frozenset(('native_threshold_candidate', 'below_native_thresholds', 'held_up', 'weakened', 'too_few_trades'))
+METRIC_STATUSES = frozenset(('native_threshold_candidate', 'below_native_thresholds', 'native_threshold_unknown',
+                             'held_up', 'weakened', 'too_few_trades'))
 RUN_KEYS = ('job_id', 'batch_id', 'catchup_id', 'holdup_id')
 PATH_KEYS = ('set_path', 'original_set', 'version_set_path', 'xml_path')
 

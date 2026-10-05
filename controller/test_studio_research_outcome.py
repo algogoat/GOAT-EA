@@ -180,7 +180,9 @@ class ProgressTests(unittest.TestCase):
         events.append((self.aliases[3], 'OnGoing', NOW - 300))
         write_timeline(self.run, events)
         write_stats(self.run, [stats_row(self.aliases[1], 'USDCAD', at=NOW - 1220), stats_row(self.aliases[2], 'USDCHF', at=NOW - 620)])
-        folder = self.run / 'deploy' / self.aliases[0] / 'EURUSD'; folder.mkdir(parents=True); (folder / 'a.set').write_text('x')
+        folder = self.run / 'deploy' / self.aliases[0] / 'EURUSD'; folder.mkdir(parents=True)
+        (self.run / 'export_settings.GOAT').write_text('[Export]\nMinARF=0.2\nMinSR=2.5\n', encoding='utf-8')
+        (folder / 'GOAT V1.49 EURUSD,M1_Trds=406_Prf=278_DD=91_PF=1.57_SR=2.92_ARF=0.315.set').write_text('x')
         value = self.progress(['native_completed', 'native_error', 'native_error', 'native_ongoing'])
         self.assertEqual((value['members_done'], value['qualifying'], value['members_no_edge'], value['members_failed']), (1, 1, 2, 0))
         self.assertEqual(value['no_edge_window'], dict(start='2024.01.08', end='2025.01.06'))
@@ -192,7 +194,7 @@ class ProgressTests(unittest.TestCase):
         # Pace counts all three tested members, so the ETA is not inflated by "errors".
         self.assertEqual(value['pace']['minutes_per_member'], 10.0)
         activity = dict(kind='batch', status='running', **value, _now=NOW)
-        self.assertEqual(headline(activity), 'Running on NZDUSD M1; 1 of 4 members done, 1 qualifying, '
+        self.assertEqual(headline(activity), 'Running on NZDUSD M1; 1 of 4 members done, 1 qualifying (SR ≥ 2.5, ARF ≥ 0.2), '
                                              '2 tested with no edge in 2024.01.08 to 2025.01.06, about 5 min left.')
 
     def test_a_real_error_stays_a_failure(self):

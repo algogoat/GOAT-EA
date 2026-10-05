@@ -121,6 +121,8 @@ jobs:
         run: python scripts/test_holdup_mutations.py
       - name: Detached lane driver mutation check (caller checks first, one driver, exact durable reservation, foreground cap)
         run: python scripts/test_lane_driver_mutations.py
+      - name: Export qualification mutation check (qualifying = passed the run's thresholds; cut-off, log cross-check, redaction)
+        run: python scripts/test_export_qualification_mutations.py
       - name: Process query mutation check (WMI stall retry, unconfirmed launch, seed unowned doubt)
         run: python scripts/test_process_query_mutations.py
 

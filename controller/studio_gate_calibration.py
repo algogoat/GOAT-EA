@@ -63,6 +63,8 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
+from studio_export_qualification import qualify, thresholds_from_values, tokens_from_numbers
+
 SCHEMA = 'goat-gate-calibration-v2'
 STAMP_SCHEMA = 'goat-gate-stamp-v2'
 VERDICT_SCHEMA = 'goat-catchup-verdict-v2'
@@ -442,16 +444,19 @@ def _goatseq_dirs(run):
                         yield area, member.name, symbol.name, item
 
 
-def is_filler(file_metrics, settings):
+def is_filler(file_metrics, settings, header=None):
     """True when the EA exported the set below its own run's MinSR/MinARF (to fill SetsToExport).
 
-    A label only: fillers stay in the evidence until a within-run held_up comparison
-    shows they do worse."""
+    The shared goat-export-qualification-v1 judgement: False when it passed, None when it cannot be
+    proven either way (no MinSR/MinARF in the run's settings, or a value at the cut-off that the SET
+    header cannot settle). A label only: fillers stay in the evidence until a within-run held_up
+    comparison shows they do worse."""
     if file_metrics is None:
         return None
-    min_sr = float(settings.get('MinSR', DEFAULT_EXPORT['MinSR']))
-    min_arf = float(settings.get('MinARF', DEFAULT_EXPORT['MinARF']))
-    return not (file_metrics['sr'] >= min_sr and file_metrics['arf'] >= min_arf)
+    settings = settings or {}
+    thresholds = thresholds_from_values(settings.get('MinSR'), settings.get('MinARF'), 'run_manifest_export_settings')
+    status = qualify(tokens_from_numbers(file_metrics), thresholds, header=header)['status']
+    return None if status == 'unknown' else status == 'below_threshold'
 
 
 def load_run(run_dir):
@@ -506,15 +511,16 @@ def load_run(run_dir):
                                                   ('Score', 'SR(Back)', 'PF(Back)', 'RF(Back)', 'Trades(Back)', 'Profit(Back)')}
             is_months = weekdays(*windows['in_sample']) / 21.7
             tester = job['tester']
+            set_raw = _read(sibling_set, MAX_SMALL)
             records.append(dict(
                 run=run_dir.name, area=area, member=alias, member_key=run_dir.name + '/' + alias, symbol=symbol,
-                path=label, set_sha256=hashlib.sha256(_read(sibling_set, MAX_SMALL)).hexdigest(), identity=identity,
+                path=label, set_sha256=hashlib.sha256(set_raw).hexdigest(), identity=identity,
                 symbol_class=symbol_class(symbol), family=family, timeframe=timeframe,
                 design='IS%.0fm/F%.0fw/B%.0fw' % (is_months, weekdays(*windows['forward']) / 5,
                                                  weekdays(*windows['back_oos']) / 5 if 'back_oos' in windows else 0),
                 period='%s|%s|%s|%s' % (back_oos or '-', tester['FromDate'], tester['ForwardDate'], tester['ToDate']),
                 windows=metrics, file_name=file_metrics, optimizer=optimizer,
-                filler=is_filler(file_metrics, settings),
+                filler=is_filler(file_metrics, settings, header=set_raw),
                 capture='complete' if complete else 'partial',
                 observed_end=datetime.fromtimestamp(observed_end / 1000, tz=timezone.utc).date().isoformat()))
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:

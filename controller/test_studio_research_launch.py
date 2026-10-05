@@ -348,7 +348,8 @@ class RoutingTests(Workspace):
         controller = _Controller(root=self.root, install=self.install)
         process = WindowsSeedProcess(controller)
         state = iter([None, dict(pid=4242, executable=self.install['terminal_executable'], created_utc='x')])
-        process.inspect = lambda timeout=20: next(state)
+        # PR D (#163): the startup identity loop passes budget= to every inventory.
+        process.inspect = lambda timeout=20, budget=None: next(state)
         return process
 
     def test_research_start_uses_the_research_launch(self):
@@ -358,6 +359,28 @@ class RoutingTests(Workspace):
             identity = process.start(Path(self.tmp.name) / 'member.ini', research=True)
         self.assertEqual(identity['pid'], 4242)
         research.assert_called_once();popen.assert_not_called()
+
+    def test_research_start_keeps_the_90_s_identity_loop(self):
+        # PR D (#163) + PR E: a research launch waits the same STARTUP_IDENTITY_SECONDS (90 s) for its
+        # identity, with each inventory bounded by the remaining budget; seen at 60 s it is adopted.
+        from studio_seed_process import STARTUP_IDENTITY_SECONDS, WindowsSeedProcess
+        self.assertEqual(STARTUP_IDENTITY_SECONDS, 90)
+        clock = [0.0]
+        process = WindowsSeedProcess(_Controller(root=self.root, install=self.install),
+                                     sleep=lambda s: clock.__setitem__(0, clock[0] + 10), monotonic=lambda: clock[0])
+        budgets = []
+        identity = dict(pid=4242, executable=self.install['terminal_executable'], created_utc='x')
+
+        def inspect(timeout=20, budget=None):
+            if budget is None:return None                              # the "still running?" check before launch
+            budgets.append(budget)
+            return identity if clock[0] >= 60 else None
+        process.inspect = inspect
+        child = SimpleNamespace(pid=4242, poll=lambda: None)
+        with patch('studio_research_launch.launch', return_value=child) as research:
+            self.assertEqual(process.start(Path(self.tmp.name) / 'member.ini', research=True), identity)
+        research.assert_called_once()
+        self.assertEqual(budgets[0], 90);self.assertEqual(budgets[-1], 30)
 
     def test_plain_start_is_unchanged_popen_and_never_the_research_launch(self):
         process = self.process()

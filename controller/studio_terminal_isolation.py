@@ -382,8 +382,8 @@ def live_terminals():
     """Read-only Windows inventory of running MT5 terminals."""
     command = ('ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process -Filter "Name=\'terminal64.exe\'" '
                '| Select-Object ProcessId,ExecutablePath,CommandLine)')
-    output = subprocess.check_output(['powershell', '-NoProfile', '-Command', command], text=True,
-                                     encoding='utf-8-sig', timeout=20, creationflags=background_creationflags())
+    from studio_process_query import powershell_text
+    output = powershell_text(command, purpose='live terminal inventory')
     rows = json.loads(output) if output.strip() else []
     if not isinstance(rows, list):
         raise ValueError('Complete terminal process inventory required')

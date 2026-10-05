@@ -158,7 +158,8 @@ def writer_check(c, databases):
     from studio_handover import stopped
     from studio_bootstrap_retirement import require_no_testers
     command="ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Where-Object {$_.Name -match '^(terminal64|terminal|metaeditor64|metaeditor)\\.exe$'} | Select-Object ProcessId,Name)"
-    rows=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=20, creationflags=background_creationflags()))
+    from studio_process_query import powershell_text
+    rows=json.loads(powershell_text(command,purpose='MT5 and MetaEditor inventory'))
     if not isinstance(rows,list) or rows:raise ValueError('Stop every MT5 terminal and MetaEditor before historical pointer maintenance')
     stopped(c,databases)
     proof=require_no_testers(c,require_idle_services=True)

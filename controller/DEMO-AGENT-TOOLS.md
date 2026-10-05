@@ -46,6 +46,22 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 - After GOAT's own MT5 relaunch (a batch's /config start, the EA's member-boundary restart, a seed or catch-up member, or `launch-terminal`) `verified-build.json` still names the previous process. The next `prepare-batch`/`start`/`continue` re-reads the build on the new process by itself when the proof is for the same EA bytes, the new process runs the same terminal executable (the broker proves the data root and paired demo), it started later, and its command line has a `/config:` INI inside the controller state or Common Files folders. A person's reopen (no such `/config`) is never refreshed silently: run `launch-terminal`. `preflight` reports `readback_refresh_on_start`.
 - After the last seed or catch-up member MT5 stays closed; `seed-start`/`seed-resume` (and the catch-up commands) then reopen it on the saved GOAT Studio profile and read the build back (`monitor_reopen`), unless owner STOP, a pause or a person stopped the run. If that reopen cannot be confirmed the batch result is unchanged and `next_action` says to run `launch-terminal`.
 - `run-batch` (`--max-seconds` required, 1..172800) starts a detached Windows worker and returns when its journal exists; that is not proof that native work runs. Repeating it returns the original worker and never resets the deadline. `resume-batch` attaches a new worker to the retained attempt and original deadline and never starts a pending job.
+- **An unconfirmed launch.** `run-batch` or `resume-batch` may answer "Detached batch driver launch unconfirmed": the Windows task was registered, but its driver did not report within 60 s. Never start another driver by hand.
+  - Run `batch-driver-status`. Its `worker` shows the reservation, with `alive`.
+  - If the task is still running or queued, the launch is unresolved and every new start refuses. Wait.
+  - Once the task reports, its driver is the one running: it is not a duplicate. A task that starts only after the 60 s wait (Python slow to start under load) still drives: its bootstrap is accepted for the same nonce, and the driver re-checks that nonce under the terminal lock.
+  - If Windows proves the task never ran, `launch_never_started: true`. The proof needs: no started receipt; the task is gone, or exists and is not running or queued; it has not run since the envelope; and its last result is `SCHED_S_TASK_HAS_NOT_RUN` (267011). Then the same `run-batch` (or `resume-batch`) is allowed again.
+  - That retry first removes the old task under the terminal lock and confirms it is gone. If the removal can't be confirmed, it refuses. The retry then logs `detached_driver`/`launch_never_started` with the task info, keeps the envelope, and reserves a fresh nonce, so a late bootstrap of the old envelope is refused.
+  - This is the same rule as a driver journal's `start_uncertain` with no `attempt_id` (refused before anything reached MT5, so the same command runs again). Both mean "retry only what provably never ran".
+- **A stalled Windows process query.** The process inventory behind every check (`Get-CimInstance Win32_Process`) is retried through a stall.
+  - A check that gates a launch or a close gets 4 attempts of 20 s, with 2, 5 and 10 s pauses. Each pause varies by up to 25% either way, so two GOAT drivers caught by the same stall don't retry in lockstep.
+  - Status reads (`status`, `batch-driver-status`, `seed-status` and the catch-up and hold-up status commands, including their broker readback) and probes bound each inventory to 25 s.
+  - A driver loop or a close wait that hits a stall waits for the full retry (about 100 s per inventory), and a member launch can add the 90 s identity wait, so one foreground drive of `--max-seconds N` can take about N+200 s. The detached drivers aren't affected by a caller timeout; keep a `--foreground` call's tool timeout well above its budget.
+  - Every `Get-CimInstance` runs with `-ErrorAction Stop`, so a WMI error is a failed attempt (retried, then raised), never an empty process list.
+  - Each failed attempt is logged in `demo-agent/process-query.jsonl` (`<controller state>\process-query.jsonl` for `goat.exe studio`). The log rotates at 1 MB.
+  - Only if every attempt fails does the check fail, closed, as before.
+  - Stalls cluster at an MT5 launch. After a seed, catch-up or hold-up member launch, GOAT waits up to 90 s for that MT5's identity. A stalled query, or a row without its path, means "not seen yet". A different PID, two processes or an MT5 exit refuse at once.
+  - A row WMI lists without its path is read from the process itself (bound to the row by its creation time) before GOAT refuses "Unknown terminal executable". A process it can't open still refuses.
 - `stop` writes the owner STOP marker and waits for the exact cancellation readback; it returns `cancelled`, another verified terminal result or `stop_unconfirmed`. The live driver watches for STOP every 0.5 s between its passes and, once a cancel of its attempt is out, re-reads every second, so a running batch settles in seconds (the EA answers a cancel in about 1.5 s); the readback itself is unchanged. `clear-stop` removes only a STOP written by this tool, after a verified idle demo and a terminal batch state.
 - Treat `start_uncertain` or `stop_unconfirmed` as "inspect the native state", never as completion. A `stop_unconfirmed` batch is settled with `batch-pause`, which adopts its outstanding stop.
 
@@ -249,8 +265,20 @@ The export gates (`MinScore 60`, `MinSR 2.5`, `MinARF 0.2`, `SetsToExport 2`,
 trades) were fixed by hand. `gate-recommend` replaces "fixed" with "chosen per run
 from what our past exports actually did". It is read only: it opens the export
 folders under Common Files for reading and writes nothing except `--output`. It
-needs no terminal, lock, session or broker; `--installation` is accepted as for
-every command and not read.
+needs no terminal, lock, session or broker.
+
+`--installation` is read, for the held-out guard only. `gate-recommend` and
+`gate-stamp` aggregate every export on this PC, and their numbers cannot be
+attributed to one strategy or window. So both refuse before reading evidence or
+writing a file when:
+
+- the installation is unreadable, or the registry cannot be verified
+  (`HELDOUT_REGISTRY_UNAVAILABLE`);
+- any held-out lock is active (`HELDOUT_LOCKED_WINDOW`, with `locked_windows`).
+
+Their replies also pass `guard_output`. `guard_output` itself fails closed: when its
+context cannot be built, it redacts every derived value instead of returning the
+reply unchanged.
 
 ```powershell
 & $py $tool --installation $install gate-recommend --target forward --min-survival 0.8
@@ -454,6 +482,41 @@ hands over; the drive runs in a detached driver.
 
 `--foreground` keeps the old in-process drive for at most 120 s. A longer foreground
 budget is refused, because it would die with the calling tool.
+
+If a start or resume answers that the detached driver launch could not be confirmed, the
+`run-batch` rule above applies. Never start another driver by hand. `seed-status`
+shows the `driver` once its task starts, or `launch_never_started: true` once Windows
+proves the task never ran. Only then does the same `seed-start` (or `seed-resume`) run
+again: under the terminal lock it removes the old task, confirms it is gone, logs
+`detached_driver`/`launch_never_started` and reserves a fresh nonce. The detached driver
+waits up to 120 s for the terminal lock; if it stays busy, the worker record says so
+(`failed`).
+
+**Don't run `demo launch-terminal` during a seed, catch-up or hold-up batch.** The
+driver owns the MT5 close and reopen between members, and it reopens MT5 on the GOAT
+profile after the last one. An MT5 started by anyone else between members makes the
+batch `reconcile_required` ("Unowned selected-terminal process appeared between seed
+members"). Close that MT5. With MT5 closed, `seed-reconcile` or `seed-resume` re-inspects
+and settles the doubt under the terminal lock. A `seed-status` read never settles it.
+- **It settles only** when nothing anywhere runs a member.
+- **It settles as a stop, only in the demo lane.** The hunt becomes `stopped` with `stopped_reason` `unowned_settled`. The runner journals it in `actions.jsonl` (`seed_resume` or `seed_reconcile` / `unowned_settled`) before it saves the state, and the next `seed-resume` re-activates the pending members under the start-grade check: MT5 open on the GOAT monitor, a fresh broker readback, STOP/TAKE and idle.
+- **Stray output fails that member.** A pending member that already has output (the unowned MT5 may have run it) becomes `failed` ("Output present before its start") and is never collected.
+- **While the MT5 stays open**, the doubt stays, and `seed-reconcile` names this fix.
+
+**A member whose launch was never confirmed.** If the identity wait runs out after a
+member launch, the member becomes `reconcile_required` ("Terminal startup identity not
+observed") while its MT5 may well be running the tester. Don't close that MT5. The next
+`seed-resume` or `seed-reconcile` (never `seed-status`) adopts it as that member's own
+launch, under the terminal lock, only when all of this is read true now:
+- exactly one member is uncertain, its start was sent but never confirmed, and there is no batch-level doubt;
+- the selected MT5 runs this installation's `terminal64.exe` and was created inside that member's launch window (from 2 s before its start record);
+- its command line names that member's own `/config:` INI, and it is the only terminal64 anywhere that does;
+- the INI is still the bytes the batch wrote.
+
+Adoption records `reidentified` on the member and a `seed_resume` (or `seed_reconcile`)
+`reidentified` row in `actions.jsonl`; nothing is closed, launched or re-run. The driver
+then collects the member when MT5 finishes and continues the pending members. Otherwise
+the member stays `reconcile_required`, and its `reidentify.reason` says which proof failed.
 
 A failed, timed-out or output-less member fails only itself, with a plain `error`.
 The batch continues, unless 3 attempted members in a row failed or at least half of

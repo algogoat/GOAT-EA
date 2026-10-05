@@ -13,8 +13,9 @@ concurrency:
 jobs:
   controller:
     runs-on: windows-2022
-    # Runs took 21-25 min before the GOAT peers mutation check (16 more focused runs, ~4 min).
-    timeout-minutes: 40
+    # Runs took 21-25 min before the GOAT peers mutation check (16 more focused runs, ~4 min); with the
+    # seed, hold-up and lane mutation checks a full run takes 29-40 min, and a slow runner hit 40 (goatai#1885).
+    timeout-minutes: 60
     env:
       PYTHONUTF8: "1"
       PYTHONNOUSERSITE: "1"
@@ -122,6 +123,8 @@ jobs:
         run: python scripts/test_lane_driver_mutations.py
       - name: Research launch mutation check (no KILL_ON_JOB_CLOSE, refuse on assignment failure, trading launches excluded, Idle lock, CPU-cap staging)
         run: python scripts/test_research_launch_mutations.py
+      - name: Process query mutation check (WMI stall retry, unconfirmed launch, seed unowned doubt)
+        run: python scripts/test_process_query_mutations.py
 
       - name: Run every controller fixture test
         env:

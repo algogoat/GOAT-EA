@@ -145,6 +145,7 @@ class SeedProcessInventoryTests(unittest.TestCase):
         self.clock = [0.0]
         controller = types.SimpleNamespace(install=dict(terminal_executable=self.exe))
         self.process = WindowsSeedProcess(controller, sleep=self.sleep, monotonic=lambda: self.clock[0])
+        self.process.image_path = lambda row: None          # the process-API fill (PR D) is tested on its own
         self.row = dict(ProcessId=23164, ExecutablePath=self.exe, CreatedUtc='2026-10-03T13:23:56.1234560Z')
 
     def sleep(self, seconds):
@@ -153,7 +154,7 @@ class SeedProcessInventoryTests(unittest.TestCase):
     def test_transient_missing_path_is_reread(self):
         banker = dict(ProcessId=9001, ExecutablePath=None, CreatedUtc='2026-10-03T13:22:30.0000000Z')
         reads = iter([[self.row, banker], [self.row, banker], [self.row, dict(banker, ExecutablePath=r'C:\Banker\terminal64.exe')]])
-        with patch.object(WindowsSeedProcess, '_rows', side_effect=lambda timeout: next(reads)):
+        with patch.object(WindowsSeedProcess, '_rows', side_effect=lambda timeout, budget=None: next(reads)):
             found = self.process.inspect()
         self.assertEqual(found, dict(pid=23164, executable=self.exe, created_utc=self.row['CreatedUtc']))
         self.assertEqual(self.clock[0], 2 * studio_seed_process.UNKNOWN_RETRY_SECONDS)

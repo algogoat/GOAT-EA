@@ -19,7 +19,8 @@ from studio_native_gate import exclusive_gate
 
 def processes():
     script='[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process | Where-Object {$_.Name -in @(\'python.exe\',\'goat.exe\')} | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
-    return json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',script],text=True,encoding='utf-8-sig',timeout=20,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))
+    from studio_process_query import powershell_text
+    return json.loads(powershell_text(script,purpose='driver process inventory'))
 
 
 def arguments(command):

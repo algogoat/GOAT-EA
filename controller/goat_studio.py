@@ -478,6 +478,8 @@ def main(argv=None):
             result=rebind(args.installation)
             print(json.dumps(dict(ok=True,result=result),ensure_ascii=False,allow_nan=False));return 0
         controller=Controller(args.installation)
+        import studio_process_query
+        studio_process_query.configure(Path(controller.root)/'process-query.jsonl')   # failed WMI attempts (goatai#1885)
         from studio_build_upgrade import guard_pending
         guard_pending(controller.root)
         if args.operation!='owner-maintenance-bootstrap': dispatch(controller,args)

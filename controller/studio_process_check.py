@@ -70,7 +70,7 @@ def _demo_selected_roots(binding):
 
 
 def inspect_processes(binding, *, research_running=True, absent_roots=None, selected_stopped=False,
-                      observation_roots=None):
+                      observation_roots=None, query_budget=None):
     # Fixed command, no caller strings interpolated into shell syntax.
     command='ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter "Name=\'terminal64.exe\'" | Select-Object ProcessId,ExecutablePath,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
     selected_roots=_demo_selected_roots(binding)
@@ -85,8 +85,8 @@ def inspect_processes(binding, *, research_running=True, absent_roots=None, sele
         if absent_roots is not None and research_running is not False:
             raise ValueError('Root absence scan requires a stopped research terminal')
         command='$ErrorActionPreference="Stop"; ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process | Select-Object ProcessId,Name,ExecutablePath,@{Name="CreatedUtc";Expression={if ($_.CreationDate) {$_.CreationDate.ToUniversalTime().ToString("o")}}})'
-    output=subprocess.check_output(['powershell','-NoProfile','-Command',command],
-        text=True,encoding='utf-8-sig',timeout=20,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    from studio_process_query import powershell_text
+    output=powershell_text(command,purpose='terminal process check',budget=query_budget)
     rows=json.loads(output)
     visibility=None
     if absent_roots is not None:

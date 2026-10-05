@@ -31,7 +31,39 @@ def retain(path, value):
         stream.flush(); os.fsync(stream.fileno())
 
 
+LANE_KINDS = ('seed', 'catchup', 'holdup')
+
+
+def validate_lane(argv, log_path, worker_path):
+    """The detached seed/catch-up/hold-up driver (goatai#1885): demo_agent.py _drive-lane with its exact reservation."""
+    if len(argv) != 14 or argv[2] != '--installation' or argv[4:6] != ['_drive-lane', '--kind']:
+        raise ValueError('Only the bound demo lane driver can use the durable host')
+    if Path(argv[1]).resolve() != Path(__file__).with_name('demo_agent.py').resolve():
+        raise ValueError('Only the installed controller driver is accepted')
+    kind, batch_id, nonce, budget, mode = argv[6], argv[8], argv[10], argv[12], argv[13]
+    if (argv[7] != '--batch-id' or argv[9] != '--nonce' or argv[11] != '--max-seconds' or kind not in LANE_KINDS
+            or mode not in ('--initial', '--resume') or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id)
+            or not re.fullmatch(r'[a-f0-9]{32}', nonce)):
+        raise ValueError('Exact lane, batch, nonce and mode identities required')
+    install = load_installation(safe_path(Path(argv[3]).absolute()))
+    root = safe_path(Path(install['controller_state_root']))
+    worker_path = safe_path(Path(worker_path).absolute())
+    expected = root / 'demo-agent/lane-workers' / (kind + '-' + batch_id + '.json')
+    if worker_path != expected or Path(log_path).absolute() != expected.with_name(kind + '-' + batch_id + '-' + nonce + '.log'):
+        raise ValueError('Lane driver log/worker path is not canonical')
+    worker = read_json(worker_path)
+    if (worker.get('status') != 'reserved' or worker.get('nonce') != nonce or worker.get('batch_id') != batch_id
+            or worker.get('kind') != kind or worker.get('initial') is not (mode == '--initial')):
+        raise ValueError('Current reserved lane driver identity required')
+    remaining = worker.get('max_seconds')
+    if type(remaining) is not int or not 1 <= remaining <= 3600 or str(remaining) != budget:
+        raise ValueError('Lane driver budget changed or out of 1..3600 seconds')
+    return worker, remaining
+
+
 def validate(argv, log_path, worker_path):
+    if len(argv) == 14 and argv[4:5] == ['_drive-lane']:
+        return validate_lane(argv, log_path, worker_path)
     if len(argv) not in (9, 11) or argv[2] != '--installation' or argv[4:6] != ['_drive-batch', '--batch-id']:
         raise ValueError('Only the bound demo driver can use the durable host')
     if Path(argv[1]).resolve() != Path(__file__).with_name('demo_agent.py').resolve():

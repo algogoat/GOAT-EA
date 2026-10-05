@@ -118,6 +118,8 @@ jobs:
         run: python scripts/test_seed_member_failure_mutations.py
       - name: Hold-up test mutation check (hash binding, frozen inputs, report reconciliation, refusals, peeks, redaction)
         run: python scripts/test_holdup_mutations.py
+      - name: Detached lane driver mutation check (caller checks first, one driver, exact durable reservation, foreground cap)
+        run: python scripts/test_lane_driver_mutations.py
 
       - name: Run every controller fixture test
         env:

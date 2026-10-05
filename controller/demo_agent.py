@@ -49,6 +49,12 @@ ACTIVE_NATIVE_STATUSES = ('reserved', 'starting', 'running', 'reconcile_required
 # What an app update (install-build and its relaunch) writes to the demo action log. Any other
 # operation there is owner demo-lane work, which restore-lane never undoes.
 UPDATE_OPERATIONS = frozenset(('install_build', 'launch_terminal', 'readback_refresh', 'recover_orphan', 'restore_lane'))
+# Owner demo-lane work restore-lane still accepts (goatai#1885, tester a649295d): the steps of one
+# batch whose start provably never ran, proven per batch by its settlement record (retired-starts/
+# from retire-unactivated, or refused-starts/ from settle-refused-start) for the exact attempt.
+# Any other operation, a seed, a deploy or a batch that activated still refuses.
+NEVER_STARTED_BATCH_OPERATIONS = frozenset(('studio_prepare_batch', 'studio_run_batch', 'detached_driver',
+                                            'retire_unactivated', 'settle_refused_start'))
 LANE_IDENTITY_EXCLUDED = ('authority_kind', 'installation_sha256')
 # Credential recovery (goatai#1885, T2 2026-10-04): the broker servers on which an app update may
 # replace the EA without fresh EA feedback. Exact names only; a demo-looking name is not enough.
@@ -592,6 +598,41 @@ class DemoAgent:
             self._append('retire_unactivated', 'retired', batch_id=batch_id, attempt_id=result.get('attempt_id'),
                          result_path=result.get('result_path'), reused=result.get('reused'))
             return result
+
+    def settle_refused_start(self, batch_id):
+        """Settle a restart-arm start the EA refused before consuming it (goatai#1885, tester a649295d).
+
+        The shape: the config start reached restart phase ``controls_installed``, the EA answered
+        the arm with a pre-consumption refusal such as START_PROTOCOL_NOT_QUALIFIED, the driver
+        shows ``start_uncertain`` and the queue ``reconcile_required``. retire-unactivated refuses
+        it (controls were installed). This reuses the reviewed self-repair proof and settlement
+        (studio_self_repair.settle_refused_start): MT5 is closed normally, the attempt's controls
+        are restored, the native request/permit are archived and the batch is recorded failed /
+        retired_never_started. Nothing runs or trades; owner STOP and human control refuse it.
+        Reopen MT5 afterwards with launch-terminal.
+        """
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid prepared batch ID')
+        from studio_self_repair import settle_refused_start, refused_start_native_action
+        # No terminal lock here: the settlement takes it itself (studio_self_repair._repair).
+        with self._studio('settle-refused-start', idle=True, owner_required=False,
+                          job_id=batch_id) as (controller, broker):
+            attempt = (controller.job(batch_id).get('launch_intent') or {}).get('attempt_id')
+            self._append('settle_refused_start', 'intent', batch_id=batch_id, attempt_id=attempt, broker=broker)
+            try:
+                result = settle_refused_start(controller, self.installation_path, batch_id, process=self.process)
+            except Exception as exc:
+                native = isinstance(attempt, str) and refused_start_native_action(self.root, batch_id, attempt)
+                self._append('settle_refused_start', 'failed' if native else 'refused', batch_id=batch_id,
+                             attempt_id=attempt, native_action=bool(native), error=str(exc)[:500])
+                raise
+            self._append('settle_refused_start', 'settled', batch_id=batch_id, attempt_id=attempt,
+                         record_path=result['record_path'], action_id=result['record']['action_id'])
+            return dict(status='settled_never_started', batch_id=batch_id, attempt_id=attempt,
+                        receipt_evidence=result.get('cancel_evidence'), record_path=result['record_path'],
+                        repair=result.get('repair'), mt5_closed=True, native_cancellation_claimed=False,
+                        next_action='Nothing ran or traded. MT5 was closed normally: reopen it with launch-terminal. '
+                                    'Prepare a new batch for the same members; never restart this attempt.')
 
     def _unactivated(self, batch_id):
         from studio_retire_unactivated import unactivated_hint
@@ -1197,6 +1238,10 @@ class DemoAgent:
         controller store still holding the customer lane's native_human_control authority for this
         binding, no typed research continuation, an action log that shows only update and relaunch
         steps (never owner demo-lane work), and no owner STOP, batch, driver or seed in flight.
+
+        One exception (goatai#1885, tester a649295d): the logged steps of a batch whose start
+        provably never ran (NEVER_STARTED_BATCH_OPERATIONS), when that batch's settlement record
+        for its exact attempt proves it (_never_started_settlement).
         """
         session = read_json(self.root / 'session.json')
         lane = session.get('authority_kind')
@@ -1243,7 +1288,7 @@ class DemoAgent:
         if (row is None or row[0] != 'native_human_control'
                 or json.loads(row[1]) != dict(kind='native_human_control', binding=json.loads(binding))):
             raise ValueError('The controller store holds no customer-lane authority for this session; restore-lane changes nothing')
-        updates, work = 0, set()
+        updates, work, batches, settling = 0, set(), set(), {}
         log = self.state_root / 'actions.jsonl'
         if log.is_file():
             with log.open(encoding='utf-8') as rows:
@@ -1255,10 +1300,32 @@ class DemoAgent:
                     except ValueError as exc:
                         raise ValueError('Demo action log unreadable; restore-lane changes nothing') from exc
                     operation = entry.get('operation') if isinstance(entry, dict) else None
-                    if operation not in UPDATE_OPERATIONS:
+                    if operation in UPDATE_OPERATIONS:
+                        if operation == 'install_build' and entry.get('phase') == 'local_identity_verified':
+                            updates += 1
+                        continue
+                    batch = entry.get('batch_id')
+                    if (operation not in NEVER_STARTED_BATCH_OPERATIONS or not isinstance(batch, str)
+                            or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch)):
                         work.add(str(operation))
-                    elif operation == 'install_build' and entry.get('phase') == 'local_identity_verified':
-                        updates += 1
+                    elif operation == 'retire_unactivated':
+                        # Its intent precedes the proof, and a refused proof changes nothing (it never
+                        # sends anything to MT5); only a logged retirement is work to prove.
+                        if entry.get('phase') != 'intent':
+                            batches.add(batch)
+                    elif operation == 'settle_refused_start':
+                        # Open until it settles; a refusal before any native action changes nothing.
+                        phase = entry.get('phase')
+                        if phase == 'refused' and entry.get('native_action') is False:
+                            settling[batch] = False
+                        elif phase == 'intent':
+                            settling[batch] = True
+                        else:
+                            settling[batch] = False
+                            batches.add(batch)
+                    else:
+                        batches.add(batch)
+        batches.update(batch for batch, open_ in settling.items() if open_)
         if not updates:
             # A legacy session whose app update ran on a controller that predated the identity row
             # (goatai support edc7e808): accepted only when the evidence itself is a legacy backup,
@@ -1272,10 +1339,11 @@ class DemoAgent:
         if work:
             raise ValueError('This session has done owner demo-lane work (' + ', '.join(sorted(work))
                              + '); restore-lane only undoes an app update\'s lane change')
+        jobs = json.loads(queue[0]) if queue else []
+        settled = {batch: self._never_started_settlement(batch, jobs) for batch in sorted(batches)}
         if (self.state_root / 'STOP').exists():
             raise ValueError('Owner STOP is set; restore-lane changes nothing')
-        active = [job['job_id'] for job in (json.loads(queue[0]) if queue else [])
-                  if job['status'] in ACTIVE_NATIVE_STATUSES]
+        active = [job['job_id'] for job in jobs if job['status'] in ACTIVE_NATIVE_STATUSES]
         if active:
             raise ValueError('Batch ' + ', '.join(active) + ' is active; restore-lane waits for it to finish')
         for worker in (self.state_root / 'workers').glob('*.json'):
@@ -1285,7 +1353,58 @@ class DemoAgent:
             raise ValueError('A seed or catch-up run holds this terminal; restore-lane waits for it to finish')
         return dict(status='ready_to_restore', authority_kind=lane, restores_to='native_human_control',
                     evidence=str(evidence), evidence_kind=evidence_kind, session_sha256=sha(session),
+                    never_started_batches=settled,
                     next_action='Run restore-lane --apply. It rewrites only this session\'s lane; MT5, the EA and the queue are untouched.')
+
+    def _never_started_settlement(self, batch_id, jobs):
+        """Read-only, for restore-lane: prove this batch's only start never ran, from its settlement record.
+
+        Accepted: retire-unactivated's ``retired-starts/<job>-<attempt16>.json`` (job cancelled,
+        retired_never_activated) or settle-refused-start's ``refused-starts/<job>-<attempt16>.json``
+        (job failed, retired_never_started, its self-repair journal complete), each for the job's
+        exact attempt. Anything else (a batch that activated, never started or is still open) refuses.
+        """
+        refusal = ('Batch ' + batch_id + ' is not proven never-started (no retired-unactivated or settled refused-start '
+                   'record for its attempt); restore-lane only undoes an app update\'s lane change')
+        job = next((item for item in jobs if isinstance(item, dict) and item.get('job_id') == batch_id), None)
+        intent = (job or {}).get('launch_intent')
+        attempt = intent.get('attempt_id') if isinstance(intent, dict) else None
+        if not isinstance(attempt, str) or not re.fullmatch(r'[a-f0-9]{64}', attempt):
+            raise ValueError(refusal)
+        completion = job.get('completion') if isinstance(job.get('completion'), dict) else {}
+        name = batch_id + '-' + attempt[:16] + '.json'
+
+        def record(folder):
+            path = self.root / folder / name
+            try:
+                return None if path.is_symlink() or not path.is_file() else read_json(path)
+            except (OSError, ValueError, UnicodeError):
+                return None
+
+        retired = record('retired-starts')
+        if (job.get('status') == 'cancelled' and completion.get('kind') == 'retired_never_activated'
+                and completion.get('attempt_id') == attempt and completion.get('executed_members') == 0
+                and isinstance(retired, dict) and retired.get('kind') == 'retired_never_activated'
+                and retired.get('job_id') == batch_id and retired.get('attempt_id') == attempt
+                and retired.get('executed_members') == 0):
+            return 'retired_unactivated'
+        refused = record('refused-starts')
+        from studio_self_repair import REFUSED_START_KIND, refused_start_action_id
+        action = refused_start_action_id(batch_id, attempt)
+        if (job.get('status') == 'failed' and completion.get('classification') == 'retired_never_started'
+                and completion.get('attempt_id') == attempt and completion.get('executed_members') == 0
+                and completion.get('repair_action_id') == action
+                and isinstance(refused, dict) and refused.get('kind') == REFUSED_START_KIND
+                and refused.get('job_id') == batch_id and refused.get('attempt_id') == attempt
+                and refused.get('action_id') == action):
+            try:
+                journal = read_json(self.root / 'self-repair' / action / 'transaction.json')
+            except (OSError, ValueError, UnicodeError):
+                journal = None
+            if (isinstance(journal, dict) and journal.get('phase') == 'complete'
+                    and journal.get('job_id') == batch_id and journal.get('attempt_id') == attempt):
+                return 'settled_refused_start'
+        raise ValueError(refusal)
 
     def restore_lane(self, apply=False):
         """Preview, then with ``apply`` return a customer session an app update moved into the owner
@@ -2753,6 +2872,11 @@ def main(argv=None):
     retire = commands.add_parser('retire-unactivated',
                                  help='Settle a start refused before MT5 was touched to cancelled; allowed under owner STOP')
     retire.add_argument('--batch-id', required=True)
+    settle = commands.add_parser('settle-refused-start',
+                                 help='Settle a restart-arm start the EA refused before consuming it (receipt such as '
+                                      'START_PROTOCOL_NOT_QUALIFIED): closes MT5 normally, restores the controls, '
+                                      'records it never started; refused under owner STOP')
+    settle.add_argument('--batch-id', required=True)
     stop = commands.add_parser('stop', help='Stop: settle the active batch (or --batch-id for one unstarted batch) to a verified terminal state')
     stop.add_argument('--monitor-config', type=Path, help='Exact monitor-only INI for cancellation recovery after MT5 exits; STOP remains set')
     stop.add_argument('--batch-id', help='Cancel this pending or reserved-not-started batch without setting owner STOP')
@@ -2950,6 +3074,7 @@ def main(argv=None):
             max_seconds=args.max_seconds, clear_stop=args.clear_stop, include_failed=args.include_failed,
             include_no_edge=args.include_no_edge)
         elif args.command == 'retire-unactivated': result = agent.retire_unactivated(args.batch_id)
+        elif args.command == 'settle-refused-start': result = agent.settle_refused_start(args.batch_id)
         elif args.command == 'clear-stop': result = agent.clear_stop()
         elif args.command == 'peer-list': result = agent.peer_list()
         elif args.command == 'peer-add': result = agent.peer_add(args.terminal, args.data_root, confirmed=args.confirm_reviewed)

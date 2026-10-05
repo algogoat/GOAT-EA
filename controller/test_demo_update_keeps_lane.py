@@ -174,7 +174,11 @@ class UpdateKeepsLaneTests(unittest.TestCase):
     def test_restore_lane_never_touches_an_owner_lane_that_did_demo_work(self):
         self.flipped_by_old_update()
         self.f.agent._append('studio_run_batch', 'driver_started', batch_id='owner-batch')
-        with self.assertRaisesRegex(ValueError, 'owner demo-lane work \\(studio_run_batch\\)'):
+        # A batch step is accepted only for a batch proven never started (test_demo_settle_refused_start).
+        with self.assertRaisesRegex(ValueError, 'Batch owner-batch is not proven never-started'):
+            self.f.agent.restore_lane(apply=True)
+        self.f.agent._append('seed_promote', 'promoted', batch_id='owner-seed')
+        with self.assertRaisesRegex(ValueError, 'owner demo-lane work \\(seed_promote\\)'):
             self.f.agent.restore_lane(apply=True)
         self.assertEqual(self.session()['authority_kind'], 'demo_direct')
 

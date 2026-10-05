@@ -136,7 +136,12 @@ def batch_row(root, install, job, *, now, with_progress=True):
                 finished=finished if state in ENDED and isinstance(finished, str) else None,
                 eta=(progress.get('pace') or {}).get('eta_utc'),
                 results=dict(qualifying=progress.get('qualifying'), members_no_edge=progress.get('members_no_edge'),
-                             members_failed=failed, evidence=progress.get('evidence')))
+                             members_failed=failed, evidence=progress.get('evidence'),
+                             # goat-export-qualification-v1: kept-below-threshold and cut-off members apart.
+                             passing_sets=progress.get('passing_sets'),
+                             below_threshold_members=progress.get('below_threshold_members'),
+                             unknown_members=progress.get('unknown_members'),
+                             thresholds=progress.get('thresholds'), qualifying_basis=progress.get('qualifying_basis')))
 
 
 # ---------------------------------------------------------------------------

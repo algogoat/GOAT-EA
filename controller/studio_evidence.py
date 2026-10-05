@@ -22,6 +22,8 @@ from pathlib import Path
 import re
 
 from strategy_registry import inspect_set
+from studio_export_qualification import (file_name_tokens, qualify, thresholds_from_settings_text, thresholds_from_values,
+                                         unavailable_thresholds)
 from studio_settings import PERIODS
 
 MAX_SET_BYTES = 4 * 1024 * 1024
@@ -219,7 +221,9 @@ class RunContext:
             return None
         key = str(root)
         if key not in self._runs:
-            settings = read_ini(root / 'export_settings.GOAT')
+            settings_path = root / 'export_settings.GOAT'
+            settings_raw = _read(settings_path, 64 * 1024)
+            settings = read_ini(settings_path)
             jobs, ea_sha256 = {}, None
             manifest_path = root / 'manifest.json'
             if manifest_path.is_file():
@@ -228,7 +232,9 @@ class RunContext:
                 for job in manifest.get('jobs') or []:
                     if isinstance(job, dict) and isinstance(job.get('run_alias'), str) and isinstance(job.get('tester'), dict):
                         jobs[job['run_alias']] = job['tester']
-            self._runs[key] = dict(root=key, run_id=root.name, export_settings=settings, testers=jobs, ea_sha256=ea_sha256)
+            self._runs[key] = dict(root=key, run_id=root.name, export_settings=settings, testers=jobs, ea_sha256=ea_sha256,
+                                   export_settings_path=str(settings_path),
+                                   export_settings_text=settings_raw.decode('utf-16' if settings_raw.startswith(b'\xff\xfe') else 'utf-8-sig'))
         return self._runs[key]
 
 
@@ -302,7 +308,22 @@ def read_export(set_path, *, runs=None):
     member = paths['set'].parent.parent.name if run else None
     limits = thresholds(run)
     metrics = named['metrics'] if named else None
-    passing = bool(metrics and metrics['profit'] > 0 and metrics['arf'] >= limits['min_arf'] and metrics['sr'] >= limits['min_sr'])
+    # One shared judgement (goat-export-qualification-v1). Only the run's own export_settings.GOAT
+    # can make a set pass: without the run (a library copy) the margins below still read against
+    # GOAT's minimum defaults for a scored qualification, but the stamp is unknown, never passed.
+    tokens = file_name_tokens(paths['stem'])
+    qualification = qualify(tokens,
+                            thresholds_from_settings_text(run['export_settings_text'], path=run['export_settings_path'])
+                            if run and run.get('export_settings_text') is not None else
+                            unavailable_thresholds('No run export_settings.GOAT next to this export (a library copy)'),
+                            header=text)
+    passing = qualification['status'] == 'passed'
+    # Catch-up eligibility is a re-test policy, not qualification, and stays as it was: the EA's own
+    # rounded comparison (ea_native_passed), against GOAT's minimum defaults for a library copy.
+    native = qualification['ea_native_passed']
+    if 'thresholds_unavailable' in qualification['missed']:
+        native = qualify(tokens, thresholds_from_values(limits['min_sr'], limits['min_arf'], limits['basis']))['ea_native_passed']
+    retest_eligible = bool(native)
     # Margins say how far inside or outside each bar the export sits, so a later scored
     # qualification can weigh a near miss instead of treating the bars as rigid.
     if metrics:
@@ -318,7 +339,9 @@ def read_export(set_path, *, runs=None):
                 history_short=bool(capture and capture['complete'] and requested_end and end and end < requested_end),
                 run=run and dict(root=run['root'], run_id=run['run_id'], back_oos_date=run['export_settings'].get('BackOOSDate'),
                                  include_back_oos=run['export_settings'].get('IncludeBackOOS'), ea_sha256=run.get('ea_sha256')),
-                tester=tester, threshold=dict(limits, passing=passing), problems=problems)
+                tester=tester, threshold=dict(limits, passing=passing, status=qualification['status'], missed=qualification['missed'],
+                                              retest_eligible=retest_eligible),
+                qualification=dict(qualification, set_sha256=info['sha256']), problems=problems)
 
 
 def collect_sets(sources, limit=MAX_SETS):

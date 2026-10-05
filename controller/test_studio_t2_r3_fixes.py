@@ -398,7 +398,7 @@ class ReadOnlyOnDemoLaneTests(unittest.TestCase):
             for name in ('validate-set', 'benchmark-report'):
                 with operation(name):
                     self.assertIsNone(authority(db, self.binding, dict(owner='agent', generation=1)))
-            for name in ('build-set', 'prepare-batch', 'run-batch'):
+            for name in ('prepare-batch', 'run-batch'):     # build-set is a local file write since goatai#1885 (test_studio_starter_set)
                 with operation(name), self.assertRaisesRegex(ValueError, 'Demo mutation requires the broker-verified agent tool'):
                     authority(db, self.binding, dict(owner='agent', generation=1))
 

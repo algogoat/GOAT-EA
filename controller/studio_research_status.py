@@ -19,6 +19,8 @@ import statistics
 import time
 
 from campaign_ledger import packed
+from studio_export_qualification import (SCHEMA as QUALIFICATION_SCHEMA, public_thresholds, read_run_thresholds, stamp_set,
+                                         summarize, threshold_words)
 
 HEARTBEAT_FRESH_SECONDS = 20
 RELAUNCH_GRACE_SECONDS = 240
@@ -411,7 +413,9 @@ def batch_progress(root, install, job, *, now, journal=None):
     package = Path(root) / 'packages' / job['job_id']
     members = job['configuration'].get('batch_members') or [job['configuration']]
     result = dict(members_total=len(members), members_done=0, members_finished=0, qualifying=None,
-                  exported_sets=None, members_no_edge=None, members_failed=None, members_cancelled=None, no_edge_window=None,
+                  exported_sets=None, passing_sets=None, below_threshold_members=None, below_threshold_sets=None,
+                  unknown_members=None, unknown_sets=None, thresholds=None, qualifying_basis=None,
+                  members_no_edge=None, members_failed=None, members_cancelled=None, no_edge_window=None,
                   no_edge=None, last_member=None, current_member=None, pace=None, evidence='unavailable')
     manifest, _ = _bounded_json(package / 'manifest.json', 64 * 1024 * 1024)
     if not isinstance(manifest, dict) or 'launch_intent' not in job:
@@ -429,20 +433,50 @@ def batch_progress(root, install, job, *, now, journal=None):
     aliases = [item['run_alias'] for item in manifest['jobs']]
     common_run = Path(install['common_files_root']) / manifest['native_run_relative'].replace('\\', '/')
     timing = timeline(common_run, aliases)
-    qualifying = exported = 0
-    for i in [i for i, s in enumerate(statuses) if s == 'native_completed']:
+    # "Qualifying" = passed this run's own export thresholds (goat-export-qualification-v1). The EA
+    # also keeps its best set when nothing passed (SortAndTrimExports: Passing=0 Kept=1); those are
+    # counted apart as kept below threshold, and a set at the cut-off is unknown, never qualifying.
+    thresholds_cache = []
+
+    def run_thresholds():
+        if not thresholds_cache:
+            thresholds_cache.append(read_run_thresholds(common_run))
+        return thresholds_cache[0]
+
+    def member_sets(i):
         folder = common_run / 'deploy' / aliases[i] / manifest['jobs'][i]['tester']['Symbol']
         try:
-            count = sum(1 for p in folder.glob('*.set')) if folder.is_dir() else 0
+            paths = sorted(p for p in folder.glob('*.set') if p.is_file()) if folder.is_dir() else []
         except OSError:
-            count = 0
-        exported += count
-        qualifying += count > 0
+            paths = []
+        stamps = []
+        for path in paths:
+            try:
+                stamps.append(stamp_set(path, run_thresholds(), with_sha256=False))
+            except (OSError, ValueError, UnicodeError):
+                stamps.append(dict(status='unknown', missed=['metrics_unavailable']))
+        return summarize(stamps)
+
+    counted = dict(qualifying=0, passing_sets=0, exported_sets=0, below_threshold_members=0, below_threshold_sets=0,
+                   unknown_members=0, unknown_sets=0)
+    per_member = {}
+    for i in [i for i, s in enumerate(statuses) if s == 'native_completed']:
+        summary = per_member[i] = member_sets(i)
+        counted['exported_sets'] += summary['kept']
+        counted['passing_sets'] += summary['passed']
+        counted['below_threshold_sets'] += summary['below_threshold']
+        counted['unknown_sets'] += summary['unknown']
+        counted['qualifying'] += summary['member'] == 'passed'
+        counted['below_threshold_members'] += summary['member'] == 'below_threshold'
+        counted['unknown_members'] += summary['member'] == 'unknown'
     # Tested with no profitable settings in their window: results, never failures.
     no_edge = no_edge_members(common_run, [(item['run_alias'], item['tester']['Symbol']) for item in manifest['jobs']],
                               statuses, timing)
+    result.update(**counted, qualifying_basis=QUALIFICATION_SCHEMA,
+                  thresholds=public_thresholds(run_thresholds()) if per_member else None,
+                  thresholds_problems=(run_thresholds()['problems'] or None) if per_member else None)
     result.update(members_done=native['completed_count'], members_finished=native['finished_count'],
-                  qualifying=qualifying, exported_sets=exported, status_counts=native['status_counts'],
+                  status_counts=native['status_counts'],
                   members_no_edge=len(no_edge), members_failed=statuses.count('native_error') - len(no_edge),
                   members_cancelled=statuses.count('native_cancelled'),
                   no_edge_window=shared_window(no_edge.values()) if no_edge else None,
@@ -459,18 +493,15 @@ def batch_progress(root, install, job, *, now, journal=None):
         last = max((i for i in finished if statuses[i] != 'native_cancelled'), key=order, default=None)
         if last is not None:
             tester = manifest['jobs'][last]['tester']
-            folder = common_run / 'deploy' / aliases[last] / tester['Symbol']
-            try:
-                sets = sum(1 for p in folder.glob('*.set')) if folder.is_dir() else 0
-            except OSError:
-                sets = 0
+            kept = per_member.get(last) or (member_sets(last) if statuses[last] == 'native_completed' else summarize([]))
             minutes = None
             if timing and last in timing['started'] and last in timing['ended']:
                 minutes = round((timing['ended'][last] - timing['started'][last]) / 60, 1)
             result['last_member'] = dict(index=last, number=last + 1, symbol=tester['Symbol'], timeframe=tester['Period'],
                                          status=(no_edge[last]['outcome'] if last in no_edge else statuses[last].removeprefix('native_')),
-                                         exported_sets=sets,
-                                         qualifies=statuses[last] == 'native_completed' and sets > 0,
+                                         exported_sets=kept['kept'], passing_sets=kept['passed'],
+                                         below_threshold_sets=kept['below_threshold'], unknown_sets=kept['unknown'],
+                                         qualifies=statuses[last] == 'native_completed' and kept['passed'] > 0,
                                          minutes=minutes,
                                          finished_utc=(datetime.fromtimestamp(timing['ended'][last], timezone.utc).isoformat(timespec='seconds')
                                                        if timing and last in timing['ended'] else None))
@@ -598,8 +629,20 @@ def headline(activity):
         minutes = max(0, int((eta - activity.get('_now', eta)) // 60))
         left = ', about ' + (str(minutes // 60) + ' h ' if minutes >= 60 else '') + str(minutes % 60) + ' min left'
     qualifying = activity.get('qualifying')
-    counts = ('' if total is None else ' ' + str(done) + ' of ' + str(total) + ' members done') + (
-        '' if qualifying is None else ', ' + str(qualifying) + ' qualifying') + (
+    # goat-export-qualification-v1: qualifying = passed the run's thresholds, stated; best-effort
+    # sets kept below them and sets at the cut-off are named apart, never added to it.
+    stamped = activity.get('qualifying_basis') is not None and activity.get('kind') == 'batch'
+    limits = activity.get('thresholds') if stamped else None
+    qualified_words = '' if qualifying is None else ', ' + str(qualifying) + ' qualifying' + (
+        ' (' + threshold_words(limits) + ')' if limits else '')
+    if stamped:
+        below, unknown = activity.get('below_threshold_members') or 0, activity.get('unknown_members') or 0
+        if below:
+            qualified_words += ', ' + str(below) + ' more kept below threshold'
+        if unknown:
+            qualified_words += (', ' + str(unknown) + (' kept but not judged (no export thresholds found)' if not limits
+                                                       else ' at the cut-off, not counted'))
+    counts = ('' if total is None else ' ' + str(done) + ' of ' + str(total) + ' members done') + qualified_words + (
         '' if activity.get('held_up') is None else ', ' + str(activity['held_up']) + ' held up (low-sample verdicts)') + (
         '' if activity.get('profitable') is None else ', ' + str(activity['profitable']) + ' made money on their window')
     # No-edge members are results for their window, reported apart and never as failures.

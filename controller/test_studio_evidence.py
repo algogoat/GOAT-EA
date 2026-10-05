@@ -49,7 +49,10 @@ class ReadExportTests(FixtureCase):
         self.assertTrue(export['capture']['set_binding_matches'])
         self.assertEqual(export['capture']['initial_equity'], 100000)
         self.assertEqual(export['threshold'], dict(min_arf=0.2, min_sr=2.5, basis='run_export_settings', passing=True, profit_positive=True,
-                                                   arf_margin=0.115, sr_margin=0.42, source='export_file_name_metrics'))
+                                                   arf_margin=0.115, sr_margin=0.42, source='export_file_name_metrics',
+                                                   status='passed', missed=[], retest_eligible=True))
+        self.assertEqual((export['qualification']['schema'], export['qualification']['status'], export['qualification']['set_sha256']),
+                         ('goat-export-qualification-v1', 'passed', export['set_sha256']))
         self.assertEqual(export['tester']['ForwardDate'], '2026.07.17')
         self.assertEqual(export['tester']['ExecutionMode'], 0)
         self.assertEqual(export['run']['run_id'], 'g6')
@@ -69,6 +72,8 @@ class ReadExportTests(FixtureCase):
         export = ev.read_export(self.path(G6_XAUUSD))
         self.assertFalse(export['threshold']['passing'])
         self.assertEqual((export['threshold']['arf_margin'], export['threshold']['sr_margin']), (-0.168, -2.01))
+        self.assertEqual((export['qualification']['status'], export['qualification']['missed'],
+                          export['qualification']['selection']), ('below_threshold', ['SR', 'ARF'], 'best_of_failed_search'))
         self.assertEqual(export['evidence_end'], '2026-10-01')
 
     def test_earlier_run_ends_last_thursday(self):
@@ -88,8 +93,12 @@ class ReadExportTests(FixtureCase):
         export = ev.read_export(copy / (stem + '.set'))
         self.assertIsNone(export['run'])
         self.assertIsNone(export['tester'])
+        # Margins still read against GOAT's minimum defaults (for a scored qualification), but without
+        # the run's own export_settings.GOAT nothing may pass (goat-export-qualification-v1).
         self.assertEqual(export['threshold']['basis'], 'goat_minimum_defaults')
-        self.assertTrue(export['threshold']['passing'])
+        self.assertFalse(export['threshold']['passing'])
+        self.assertEqual((export['qualification']['status'], export['qualification']['missed']), ('unknown', ['thresholds_unavailable']))
+        self.assertTrue(export['threshold']['retest_eligible'])   # catch-up eligibility is unchanged
         self.assertEqual(export['evidence_end'], '2026-09-30')
 
     def test_capture_bound_to_another_set_is_not_evidence(self):

@@ -137,9 +137,9 @@ class StarterSetTests(unittest.TestCase):
             self.starter(name='again.set')
 
     def test_classified_as_local_file_operation_not_a_native_one(self):
-        self.assertIn('starter-set', LOCAL_FILE_OPERATIONS)
-        self.assertIn('starter-set', READ_OPERATIONS)
-        self.assertNotIn('build-set', READ_OPERATIONS)          # build-set keeps its mutation policy
+        # starter-set/build-set write create-only local files; research-launch (PR E) only replaces research-launch.json
+        self.assertEqual(LOCAL_FILE_OPERATIONS, {'starter-set', 'build-set', 'research-launch'})
+        self.assertTrue(LOCAL_FILE_OPERATIONS <= READ_OPERATIONS)
         self.assertTrue(LOCAL_FILE_OPERATIONS <= OPERATIONS)
 
 
@@ -509,10 +509,13 @@ class DeployLoadGuardTests(unittest.TestCase):
 
 
 class StarterCliTests(unittest.TestCase):
-    """The installed CLI on a demo_direct installation: starter-set runs there like validate-set; build-set stays a mutation."""
+    """The installed CLI on a demo_direct installation: starter-set and build-set run there like validate-set (local
+    create-only files); every mutation of the store, queue, terminal or roster still refuses."""
     def setUp(self):
         seed_agent_fixture.DemoSeedAgentTests.setUp(self)
         self.patches[-1].stop()                                                     # the real Controller for the CLI
+        with self.database() as db:     # a classified store, as on a real install: dispatch() asks authority() per operation
+            db.execute('CREATE TABLE studio_authorities (binding TEXT PRIMARY KEY, kind TEXT, provenance TEXT)')
 
     database, new_agent, sleep = (seed_agent_fixture.DemoSeedAgentTests.database, seed_agent_fixture.DemoSeedAgentTests.new_agent,
                                   seed_agent_fixture.DemoSeedAgentTests.sleep)
@@ -539,16 +542,64 @@ class StarterCliTests(unittest.TestCase):
         code, refused = self.cli('validate-set', '--set', str(risky))
         self.assertEqual((code, refused['error']), (2, RISK_SIZING_CODE + ': ' + RISK_SIZING_MESSAGE))
 
-    def test_discover_advertises_the_contract_and_build_set_still_refuses_on_demo_lane(self):
+    def test_discover_advertises_the_contract_and_set_building_is_allowed_on_demo_lane(self):
         from goat_studio import OPERATION_CONTRACTS
         contract = OPERATION_CONTRACTS['starter-set']
         self.assertEqual((contract['required'], contract['choices']['shape']), (['shape', 'output'], ['single', 'sequence']))
         self.assertIn('never opens the store or MT5', contract['effect'])
         with self.database() as db:
-            with operation('starter-set'):
-                self.assertIsNone(authority(db, self.binding, dict(owner='agent', generation=1)))
-            with operation('build-set'), self.assertRaisesRegex(ValueError, 'Demo mutation requires the broker-verified agent tool'):
-                authority(db, self.binding, dict(owner='agent', generation=1))
+            for name in ('starter-set', 'build-set'):
+                with operation(name):
+                    self.assertIsNone(authority(db, self.binding, dict(owner='agent', generation=1)))
+            for name in ('prepare-batch', 'run-batch', 'start', 'save-batch', 'seed-prepare', 'seed-promote', 'catchup-prepare',
+                         'deploy-load', 'close-terminal', 'peer-add', 'peer-remove', 'monitor-launch'):
+                with operation(name), self.assertRaisesRegex(ValueError, 'Demo mutation requires the broker-verified agent tool'):
+                    authority(db, self.binding, dict(owner='agent', generation=1))
+
+    def snapshot(self, *roots):
+        """Every file under the controller state, terminal data and common roots, with its bytes' hash."""
+        return {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+                for root in roots for path in sorted(Path(root).rglob('*')) if path.is_file()}
+
+    def test_build_set_runs_on_the_demo_lane_and_writes_only_its_three_files(self):
+        """goatai#1885: a demo-only tester's agent could not build a SET at all (build-set refused on demo_direct)."""
+        folder = Path(self.temp.name) / 'my strategies'
+        starter = folder / 'Starter.set'
+        code, reply = self.cli('starter-set', '--shape', 'single', '--output', str(starter))
+        self.assertEqual(code, 0, reply)
+        changes = json.loads(json.dumps(spec({'RSI_Mode': '1', 'RSI_TF_': '15', 'RSI_Period': '14||7||7||21||Y'})))
+        changes_path = Path(self.temp.name) / 'changes.json'
+        changes_path.write_text(json.dumps(changes), encoding='utf-8')
+        roots = (self.root, self.data, self.common)
+        before, folder_before = self.snapshot(*roots), self.snapshot(folder)
+        variant = folder / 'My RSI.set'
+        code, reply = self.cli('build-set', '--source', str(starter), '--output', str(variant), '--spec', str(changes_path))
+        self.assertEqual(code, 0, reply)
+        result = reply['result']
+        self.assertEqual((result['parent'], result['validation']['active_axes']), ('starter:single', {'RSI_Period': 3}))
+        # No store, session, queue, terminal or mailbox effect: the controller, terminal and common roots are byte-identical.
+        self.assertEqual(self.snapshot(*roots), before)
+        # Exactly the new SET, its support notes and its provenance receipt; the source and its receipt are unchanged.
+        after = self.snapshot(folder)
+        self.assertEqual({k: v for k, v in after.items() if k in folder_before}, folder_before)
+        self.assertEqual(sorted(Path(k).name for k in set(after) - set(folder_before)), ['My RSI.build.json', 'My RSI.md', 'My RSI.set'])
+        self.assertEqual(after[str(variant)], result['output']['sha256'])
+        code, report = self.cli('validate-set', '--set', str(variant), '--require-optimization')
+        self.assertEqual((code, report['result']['kind']), (0, 'optimization_template'), report)
+        # Create-only, like starter-set: a second build to the same path refuses and changes nothing.
+        code, again = self.cli('build-set', '--source', str(starter), '--output', str(variant), '--spec', str(changes_path))
+        self.assertEqual(code, 2); self.assertIn('already exists', again['error'])
+        self.assertEqual(self.snapshot(folder), after)
+
+    def test_a_real_mutation_is_still_refused_through_the_cli_on_the_demo_lane(self):
+        plan = Path(self.temp.name) / 'plan.json'
+        plan.write_text('{}', encoding='utf-8')
+        before = self.snapshot(self.root, self.data, self.common)
+        for argv in (('prepare-batch', '--batch-id', 'demo-batch', '--plan', str(plan)),
+                     ('peer-add', '--terminal', str(self.exe))):
+            code, refused = self.cli(*argv)
+            self.assertEqual((code, refused['error']), (2, 'Demo mutation requires the broker-verified agent tool'), argv)
+        self.assertEqual(self.snapshot(self.root, self.data, self.common), before)
 
 
 class StrategyCreateSkillTests(unittest.TestCase):

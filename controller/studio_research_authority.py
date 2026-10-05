@@ -17,12 +17,16 @@ from studio_installation import read_json, load_installation
 CURRENT_OPERATION = ContextVar('studio_research_operation', default=None)
 DEMO_AGENT_SCOPE = ContextVar('studio_demo_agent_scope', default=None)
 # Local create-only file writers with no store, terminal, session, queue or grant effect, classified with the
-# reads (like equivalence-certificate below): starter-set writes one blank SET generated from the installed
-# schema plus its .starter.json receipt at a caller-chosen path outside the publisher catalog, never
-# overwrites and never opens the mutable store or MT5. build-set stays a mutation (unchanged policy).
-# research-launch (goatai#1885 PR E) reads, or atomically replaces only research-launch.json under controller
-# state; the policy can only lower a future research MT5's priority, never raise it or touch a trading MT5.
-LOCAL_FILE_OPERATIONS = frozenset(('starter-set','research-launch'))
+# reads (like equivalence-certificate below), so a demo-only (demo_direct) agent can build its own SETs.
+# starter-set and build-set run in goat_studio before controller.open(), i.e. they never open studio.sqlite,
+# MT5 or the mailbox:
+# - starter-set writes one blank SET generated from the installed schema plus its .starter.json receipt.
+# - build-set reads a source SET (and its .starter.json/.build.json beside it) and writes the new SET plus
+#   its .md support notes and .build.json provenance (studio_template_tools.build_set, _write_new 'xb').
+#   Each writes at a caller-chosen path outside the publisher catalog and never overwrites (goatai#1885).
+# - research-launch (goatai#1885 PR E) reads, or atomically replaces only research-launch.json under controller
+#   state; the policy can only lower a future research MT5's priority, never raise it or touch a trading MT5.
+LOCAL_FILE_OPERATIONS = frozenset(('starter-set', 'build-set', 'research-launch'))
 READ_OPERATIONS = LOCAL_FILE_OPERATIONS | frozenset(('discover','resource-profile','state','onboarding-status',
                              'native-recovery-status','batch-driver-status','owner-maintenance-status',
                              'stopped-cancel-observation','research-status','research-queue',

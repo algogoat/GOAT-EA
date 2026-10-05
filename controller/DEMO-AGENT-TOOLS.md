@@ -72,7 +72,7 @@ an agent loop. It never takes the terminal lock, opens the mutable store,
 launches, closes or signals MT5. It returns the terminal (process, build), the
 paired account, the EA build, the current batch or seed hunt (`status`,
 `members_done`/`members_total`, `qualifying` = completed members with at least
-one exported SET that passed the batch's export gates, `last_member`,
+one kept SET that passed the run's own export thresholds, `last_member`,
 `current_member`, `pace.minutes_per_member`, `pace.eta_utc`, `lineage`,
 `pause`, a one-sentence `headline`), driver health (`unsupervised` when a running
 batch has no live driver), disk headroom against the driver's reserve, owner
@@ -83,6 +83,20 @@ its last heartbeat; when another terminal's sign-in was approved after it, the
 message is "This terminal's GOAT sign-in was replaced by another terminal —
 re-pair it."), `monitor_build_not_admitted`, `monitor_webrequest_permission_required`,
 `monitor_unbound`, `human_took_control` and `monitor_silent`.
+
+A batch's export counts follow `goat-export-qualification-v1` (`qualifying_basis`;
+see "Export qualification" below):
+
+- `qualifying` and `passing_sets`: members and sets that passed;
+- `below_threshold_members` and `below_threshold_sets`: the EA keeps its best set
+  even when nothing passed (`SortAndTrimExports: Passing=0 Kept=1`); a best-effort
+  result, shown apart and never counted as qualifying;
+- `unknown_members` and `unknown_sets`: at the cut-off, or no thresholds found;
+- `exported_sets`: every kept set; `thresholds`: the `min_sr`/`min_arf` judged against.
+
+The headline reads "98 qualifying (SR ≥ 2.5, ARF ≥ 0.2), 205 more kept below
+threshold". Before `qualifying_basis`, `qualifying` counted every completed member
+with any kept SET, which overstated g6 as 303 members when 98 had passed.
 
 `research-queue` lists every job beside that one activity, one row each, so the
 desktop's Research queue and an agent see everything the terminal has run, runs
@@ -106,8 +120,10 @@ needs `seed-reconcile` or a start refused before MT5 was touched), `finished`,
 - `started_utc` and `finished_utc`;
 - `eta_utc`, only while `running` and only from members that already finished;
 - the results: `qualifying` (seed: candidates with qualifying passes; batch:
-  members with exported SETs), `qualifying_candidates`, `held_up` (catch-ups),
-  `members_no_edge` and `members_failed`.
+  members whose kept SETs passed the run's export thresholds), `qualifying_candidates`,
+  `held_up` (catch-ups), `members_no_edge` and `members_failed`; a batch row also has
+  `passing_sets`, `below_threshold_members`, `unknown_members`, `thresholds` and
+  `qualifying_basis`.
 
 Unfinished jobs are always listed. Only the `--finished` most recent ended jobs
 are kept (default 5, 0..50). A run whose files cannot be read whole, or whose
@@ -258,6 +274,138 @@ the running member finishes and is kept, no new member starts and pending member
 stay pending (never cancelled). `seed-resume` honours the pause; `batch-resume`
 releases it (the marker is retained as `pause-released-<ms>.json`) and continues.
 
+## Export qualification: what passed, and what was only kept
+
+```powershell
+& $goat demo --installation $receipt export-qualification --source "$common\GOAT\R5da875ff24f5"          # read-only
+& $goat demo --installation $receipt export-qualification --source "$common\GOAT\R5da875ff24f5" --write  # + append a record
+```
+
+The EA keeps its best set even when nothing passed its export thresholds
+(`SortAndTrimExports: Passing=0 Kept=1`, `Tester.mqh:715-716`). Every surface that
+counts exports uses one judgement, `studio_export_qualification.qualify`, and each
+kept set gets one stamp (`goat-export-qualification-v1`):
+
+- `status`: `passed`, `below_threshold` or `unknown`. An unknown set never counts as passed.
+- `thresholds`: `min_sr`/`min_arf` and their `source`. They come from the run's
+  `export_settings.GOAT` (the file the EA read), or the job's frozen `export` block
+  for `finish`. With no thresholds the set is `unknown` (`thresholds_unavailable`):
+  the EA would have compared against 0.0.
+- `checks[]`: per metric (`Profit`, `SR`, `ARF`): `value`, its `source` (`file_name`
+  or `set_header`), `decimals`, `op`, `threshold`, `passed` (true, false or null),
+  `margin` and `at_cutoff`.
+- `missed`: the metrics it failed, or `at_cutoff`, `thresholds_unavailable`,
+  `metrics_unavailable`, `header_disagrees` or `log_crosscheck_mismatch`.
+- `ea_native_passed`: the EA's own decision, reproduced exactly.
+- `selection`: `passed_gate`, `best_of_failed_search` or `unknown`.
+- `set_sha256`: what the desktop matches.
+
+**Cut-off fidelity.** The EA compares the **rounded file-name values**, not the full
+double. It prints `_SR=` with 2 decimals and `_ARF=` with 3 (`GOAT V1.49.mq5:4244-4245`),
+reads them back with `FetchMetric` (`Tester.mqh:787-817`, into `expArr[n].sr/.arf` at
+`GOAT V1.49.mq5:4751-4752`), and tests `arf>=MinARF && sr>=MinSR` (`:4566`). So
+`ea_native_passed` matches the log's "N passed thresholds". `status` is stricter:
+
+1. A value within half a unit of its printed precision of the threshold (file name:
+   SR 0.005, ARF 0.0005) could lie on either side. The SET header's
+   `; PF=… SR=x.xxx ARF=x.xxx` line (`:4056`, 3 decimals) decides it.
+2. If the header is also within its half unit (0.0005), or it disagrees with the
+   file name, the set is `unknown`, never `passed`.
+
+For example, file SR 2.50 with header SR 2.495 is `below_threshold`; header 2.505
+passes; header 2.500 is `unknown`. ARF has no extra header precision, so a file ARF
+of 0.200 against 0.2 is `unknown`.
+
+**Back-fill.** `export-qualification` stamps every kept set of each `--source` run
+folder and cross-checks the stamps against the passing sets the EA's own `log.GOAT`
+says it **kept**, per export cycle:
+
+- the `SortAndTrimExports: Total= Passing= Kept=` line after that cycle's
+  "Export sequence complete" line (with `AdjustLots`, the trim after the "Export
+  Adjustment" line);
+- for a cycle with one stored set or none, which logs no trim line
+  (`Tester.mqh:694`, `GOAT V1.49.mq5:4602`), the cycle's own "N passed thresholds"
+  count (0 or 1). "Stored" is the line's "profitable" count, exactly the sets
+  `RunAndStoreSet` kept. A cycle that stored 2 or more but logged no trim line is
+  `trim_missing`: its kept passes are unknown and the run is a mismatch.
+
+The "passed thresholds" count of a trimmed cycle counts passes before trimming, so
+it never decides. The check compares the summed sets and the members with any
+pass; `log_bases` says how many cycles used each rule. If the log disagrees or is
+unreadable, every `passed` in that run becomes `unknown` (`log_crosscheck_mismatch`).
+A mismatch can also mean the EA kept a non-passer over a passer (it keeps the top
+`Passing=` sets by ARF × SR); the log cannot attribute that, so it also fails
+closed.
+
+The reply passes the held-out guard like every other demo_agent reply. Each
+`--source` is resolved to an absolute, canonical path first, because the guard
+recognises an export by its absolute `.set` path. A locked export loses its
+`qualification` and its metric tokens; its run loses `counts` and `log_crosscheck`,
+and the reply loses its totals. Without a readable `--installation` nothing is
+printed. `--write` appends a new
+`<controller state>/export-qualification/<run>/<UTC>.json` (exclusive create).
+Receipts and earlier records are never rewritten; a correction is a newer record.
+Each entry in `runs[].stamps[]` is `{set_path, set_name, set_sha256, member, symbol,
+qualification}`.
+
+Re-derived on this PC on 2026-10-05 (read only; one g6 batch was still running):
+
+| Run | Kept: sets / members | Passed: sets / members | Below threshold: sets |
+|---|---|---|---|
+| g6 (9 batches) | 339 / 306 | 132 / 99 | 207 |
+| bd28-persistent | 57 / 56 | 8 / 7 | 49 |
+
+The old count reported every kept member as qualifying (306 and 56). Every log
+cross-check matched. No kept set sat at the cut-off.
+
+### Below-threshold sets: what a portfolio needs before it counts as proven (preregistered)
+
+Below-threshold sets stay visible and sift-eligible, labelled with what they missed
+("SR 2.91 passes · ARF 0.12 < 0.2 misses"). They are the best of a **failed**
+search, so they cannot ride on the evidence that chose them.
+
+Saving a portfolio and deploying it to a demo are allowed. Their receipts list the
+member as `unproven_members: [{set_sha256, missed, selection: 'best_of_failed_search'}]`.
+Two conditions, (a) and (b), are a **hard** requirement only on a real-money deploy
+path and on any promotion of a portfolio to "proven". Neither path exists in the app
+today; the rule is written now so it cannot be tuned to a result later.
+
+**(a) Unseen weeks.** The window starts after the SET's selection, i.e. after its
+FOOS end or export date. One window rule covers all three sources:
+
+- at least **20 weekdays** (4 weeks): a month, so one good week cannot carry it;
+- at least **30 trades**: the library's `minWindowTrades`, below which a window is
+  "too few to judge". g6 kept sets trade a median 8.6 a week (p25 4.8), so this
+  usually takes 4–6 weeks;
+- **net > 0** and **PF ≥ 1.3**. The g6 below-threshold sets reached a median PF of
+  only 1.25 (p25 1.11) on the very data that selected them; passers reached 2.00
+  (p25 1.79). Unseen weeks must beat the failed group's own in-sample median.
+  Catch-up's `failed_pf` 0.8 is a failure floor, not a pass bar.
+
+The window can come from any of three sources:
+
+1. **Catch-up:** a comparable `goat-catchup-verdict-v2` `held_up`, run with
+   `verdict_rules: {min_trades: 30}`. Its new weeks must meet the window rule, from
+   `signals.weekdays`, `signals.trades`, `signals.pf` and net.
+2. **holdup-test v1** (GOAT-EA#161): `relation: after_selection` (role catch-up L3,
+   clean), `evidence` not null (MT5 history quality ≥ 90%), `Model` 4 (real ticks, as
+   the EA's own export pass), and the export's deposit, currency and leverage. MT5's
+   own report must meet the window rule.
+3. **Demo forward:** only the member's own deals, opened after both its deploy and
+   its export date, on a broker-verified demo account, meeting the window rule.
+
+**(b) Diversification benefit, measured out of sample.** On the **same** unseen
+window as (a), never on the selection windows, the equal-weight portfolio's
+profit ÷ max drawdown with the member must be at least **1.10×** the ratio without it.
+If the ratio without it is ≤ 0, the ratio with it must be above 0.
+
+- It is the builder's own ranking metric.
+- 10%: one member in a 3–8 member equal-weight basket carries 11–25% of the
+  weight, so a smaller change on a 4-week window is re-weighting noise.
+- A correlation ceiling was rejected. Daily-P&L ρ over 20 weekdays has a standard
+  error near 0.22, too wide to separate 0.3 from 0.7, and a low-ρ member that loses
+  money still hurts.
+
 ## Gate calibration: qualification gates from our own evidence
 
 The export gates (`MinScore 60`, `MinSR 2.5`, `MinARF 0.2`, `SetsToExport 2`,
@@ -391,7 +539,13 @@ tools instead. They drive the same `SeedRunner` and the same frozen plan format
 as [SEED-WORKFLOW.md](SEED-WORKFLOW.md); nothing about seed evidence changes.
 Read-only studio commands still run there with the raw CLI: `validate-set`,
 `benchmark-report`, `research-status`, `onboarding-status`, `state`, `discover`
-and the other reads. A `reconcile_required` seed or catch-up is settled with `seed-reconcile --batch-id <id>` (`catchup-reconcile`) under the broker check; see [SEED-WORKFLOW.md](SEED-WORKFLOW.md).
+and the other reads. So do the SET builders `starter-set` and `build-set`
+(goatai#1885): they read the source SET and write only new, create-only files at
+the `--output` path outside the catalog (the SET, its `.md` notes and its
+`.build.json` or `.starter.json` receipt), before the controller opens
+`studio.sqlite`, so they have no store, queue, terminal or mailbox effect. A
+demo-only agent builds its SETs with `goat.exe studio build-set`; there is no
+`demo build-set` twin. A `reconcile_required` seed or catch-up is settled with `seed-reconcile --batch-id <id>` (`catchup-reconcile`) under the broker check; see [SEED-WORKFLOW.md](SEED-WORKFLOW.md).
 
 ```powershell
 & $py $tool --installation $install seed-validate --plan 'C:/seed-plan.json'

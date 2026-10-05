@@ -142,12 +142,41 @@ def evidence_end_policy(value, testers, *, now=None):
                           'evidence-scan shows each export\'s end and catchup-prepare re-tests the stale ones to the target.'))
 
 
-def read_plan(controller, plan_path):
+def oos_windows_evidence(record, evidence):
+    """A formula batch's export must stop at the optimization end, so FOOS never reaches the EA's
+    export ranking. Only builds with EvidenceEnd (goat-evidence-end-v1) can; older builds refuse."""
+    from studio_oos_windows import assert_foos_held_out
+    if not isinstance(evidence, dict) or 'ea_setting' not in evidence:
+        basis = ((evidence or {}).get('ea_capability') or {}).get('basis') if isinstance(evidence, dict) else None
+        raise ValueError('The OOS window formula holds FOOS (%s to %s) out of the export by ending exports at the '
+                         'optimization end (EvidenceEnd=%s). This EA build has not reported EvidenceEnd support (%s), so its '
+                         'exports would run into FOOS and rank on it. Use an FU35+ EA (monitor reports goat-evidence-end-v1) '
+                         'or give explicit dates without oos_windows.'
+                         % (record['foos']['first_day'], record['foos']['last_day'], record['tester']['ToDate'],
+                            basis or 'capability unknown'))
+    assert_foos_held_out(record, evidence)
+    # The export end is a Saturday by design (no FX trading); replace the generic "not a Friday" warning.
+    evidence['warnings'] = [warning for warning in evidence.get('warnings') or [] if 'is not a Friday' not in warning]
+    evidence['oos_windows_note'] = ('Exports stop at the optimization end %s (EvidenceEnd %s, the Saturday after it) so the '
+                                    'EA ranks sets without FOOS. %s' % (record['optimization_end'], record['tester']['ToDate'],
+                                                                         record['foos_replay']['plain']))
+    evidence['catch_up'] = record['foos_replay']['plain']
+    return evidence
+
+
+def read_plan(controller, plan_path, *, now=None):
     plan_path = Path(plan_path)
     spec, source_plan = _json(plan_path,with_raw=True)
-    if (not isinstance(spec, dict) or set(spec) - {'evidence_end'} != {'schema_version', 'export', 'members'}
+    if (not isinstance(spec, dict) or set(spec) - {'evidence_end', 'oos_windows'} != {'schema_version', 'export', 'members'}
             or spec['schema_version'] != 1):
-        raise ValueError('Batch plan requires schema_version:1, export and members (optional: evidence_end)')
+        raise ValueError('Batch plan requires schema_version:1, export and members (optional: evidence_end, oos_windows)')
+    # OOS window formula (goat-oos-windows-v1): with oos_windows every date comes from O and the
+    # export Friday and is written into the members, export and evidence_end explicitly. A plan
+    # without it keeps exactly its own explicit dates.
+    from studio_oos_windows import apply_to_batch_spec
+    spec, oos_record = apply_to_batch_spec(spec, now=now)
+    if oos_record is not None:
+        spec['oos_windows'] = oos_record
     if not isinstance(spec['members'], list) or not 1 <= len(spec['members']) <= 10000:
         raise ValueError('Specify 1..10000 explicit file/asset members')
     raw_members, retained = [], []
@@ -177,13 +206,16 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
         raise ValueError('Batch ID must be 1..80 letters, digits, underscore or hyphen')
     from studio_seed_slot import refuse_prepare_while_seed_owns
     refuse_prepare_while_seed_owns(controller.root)   # a start would refuse later with start_uncertain
-    config, raw_members, retained, source_hash, spec = read_plan(controller, plan_path)
+    config, raw_members, retained, source_hash, spec = read_plan(controller, plan_path, now=now)
     evidence = (evidence_end_policy(spec['evidence_end'], [m['tester'] for m in config['batch_members']], now=now)
                 if 'evidence_end' in spec else None)
     from studio_research_authority import authority
     # FU35+ EAs receive the one resolved date as EvidenceEnd; older builds keep the recorded legacy end.
     from studio_evidence_end_export import for_controller
     evidence = for_controller(controller, evidence)
+    oos_record = spec.get('oos_windows')
+    if oos_record is not None:
+        oos_windows_evidence(oos_record, evidence)
     # Held-out lock (goatai#2221 §4.3): refuse a member overlapping an active lock of its
     # strategy before anything is staged; its strategy_ref is bound into the frozen plan.
     from studio_heldout_guard import check_batch_plan
@@ -246,6 +278,9 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
             forward_start=checked[0]['tester']['ForwardDate'], export_settings=exports), jobs=planned)
     if evidence is not None:
         plan['native_batch']['evidence_end'] = evidence
+    if oos_record is not None:
+        # Hash-bound with the plan; prepare_native_campaign and activation re-derive and verify it.
+        plan['native_batch']['oos_windows'] = oos_record
     if any(ref is not None for ref in strategy_refs):
         # Per member, in member order; hash-bound by manifest.campaign_id = sha(plan).
         plan['strategy_refs'] = strategy_refs
@@ -354,13 +389,23 @@ def batch_status(controller, batch_id):
         # The EA journal says why the native queue ended in Error (read-only quote).
         no_edge = [item.get('index') for item in (job.get('completion') or {}).get('research_outcomes') or [] if isinstance(item, dict)]
         extra['native_error_evidence'] = for_job(controller, job, observed, no_edge)
-    evidence = None
+    evidence = oos = None
     plan_path = controller.root / 'packages' / batch_id / 'studio-plan.json'
     if plan_path.is_file():
         try:
-            evidence = (_json(plan_path).get('native_batch') or {}).get('evidence_end')
+            native = _json(plan_path).get('native_batch') or {}
+            evidence, oos = native.get('evidence_end'), native.get('oos_windows')
         except (OSError, ValueError):
-            evidence = None
+            evidence = oos = None
+    if isinstance(oos, dict):
+        # Formula batches only (goat-oos-windows-v1): every window and the FOOS replay to run after the batch.
+        extra['oos_windows'] = dict(o_weeks=oos.get('o_weeks'), export_friday=oos.get('export_friday'),
+                                    optimization_end=oos.get('optimization_end'),
+                                    windows={key: dict(first_day=(oos.get(key) or {}).get('first_day'),
+                                                       last_day=(oos.get(key) or {}).get('last_day'),
+                                                       weeks=(oos.get(key) or {}).get('weeks'))
+                                             for key in ('boos', 'sample', 'fwd', 'foos')},
+                                    foos_replay=oos.get('foos_replay'))
     return dict(batch_id=batch_id, status=job['status'], member_count=len(members), evidence_end=evidence, **extra,
         native=job.get('native_observation'), result_path=job.get('completion_path'),
         members=[dict(index=index, symbol=member['tester']['Symbol'], timeframe=member['tester']['Period'],
@@ -528,6 +573,10 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
     if isinstance(recorded, dict) and isinstance(recorded.get('target'), str):
         # The successor keeps the original batch's resolved date: "auto" must not move to a later Friday.
         remaining['evidence_end'] = recorded['target']
+    oos_record = (source_plan.get('native_batch') or {}).get('oos_windows')
+    if isinstance(oos_record, dict):
+        # Same O and the same resolved export Friday: the successor's windows are the original's, day for day.
+        remaining['oos_windows'] = dict(optimization_weeks=oos_record['o_weeks'], export_friday=oos_record['export_friday'])
     write_json(plan_path, remaining)
     result = prepare_batch(controller, batch_id, plan_path, now=now)
     write_json(inputs / 'provenance.json', dict(source_batch_id=source_batch_id, new_batch_id=batch_id,

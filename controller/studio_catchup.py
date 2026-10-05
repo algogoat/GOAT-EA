@@ -746,6 +746,7 @@ class CatchupRunner(SeedRunner):
                            reproduction=dict(reproduced=None), comparability=None, rules=manifest.get('verdict_rules'),
                            evidence_model=model_tag(tester['Model'], tester['Period'], source=pins.get('model_source')),
                            equivalence=pins.get('equivalence'))
+        verdict['oos_rule'] = self._oos_rule(original, retest, spec, verdict)
         created = datetime.now(timezone.utc).isoformat(timespec='seconds')
         version = dict(schema=VERSION_SCHEMA, values_sha256=retest['values_sha256'], symbol=retest['symbol'], period=retest['period'],
                        evidence_start=retest['evidence_start'], evidence_end=retest['evidence_end'], evidence_end_source=retest['evidence_end_source'],
@@ -761,7 +762,8 @@ class CatchupRunner(SeedRunner):
                        comparability=verdict.get('comparability'), evidence_model=verdict.get('evidence_model'),
                        equivalence=pins.get('equivalence'),
                        qualification=qualification_inputs(spec, manifest, verdict),
-                       history_short=retest['history_short'], ea_desc_metadata=spec['optimization_window']['source'])
+                       history_short=retest['history_short'], ea_desc_metadata=spec['optimization_window']['source'],
+                       oos_rule=verdict['oos_rule'])
         version_path = Path(spec['evidence_dir']) / 'evidence-version.json'
         with version_path.open('x', encoding='utf-8', newline='\n') as stream:
             json.dump(version, stream, sort_keys=True, separators=(',', ':'))
@@ -773,10 +775,30 @@ class CatchupRunner(SeedRunner):
                        history_short=retest['history_short'], comparable=(verdict.get('comparability') or {}).get('comparable'),
                        model=(verdict.get('evidence_model') or {}).get('model'), model_rung=(verdict.get('evidence_model') or {}).get('model_rung'),
                        equivalence_certificate=(pins.get('equivalence') or {}).get('certificate_digest'),
-                       equivalence_mode=(pins.get('equivalence') or {}).get('mode'))
+                       equivalence_mode=(pins.get('equivalence') or {}).get('mode'),
+                       oos_rule=verdict['oos_rule']['status'])
         return dict(status='verified_catchup_retest', path=retest['set_path'], sha256=retest['set_sha256'], schema_version=1,
                     member_id=spec['member_id'], summary=summary, verdict=verdict, version_path=str(version_path),
                     native_launch_qualification=False)
+
+    @staticmethod
+    def _oos_rule(original, retest, spec, verdict):
+        """BOOS/FOOS verdict under the OOS window formula (goat-oos-window-rule-v1), next to the catch-up verdict.
+
+        Formula batches only (their exports stop at the optimization end, so the new weeks are the FOOS hold-out);
+        other exports read not_applicable. A re-test that is not the same test as the original is never judged.
+        """
+        from studio_oos_windows import EVALUATION, judge_retest
+        if verdict.get('verdict') in ('not_comparable', 'unjudged'):
+            reason = 'the re-test was not judged as the same test as the original (%s)' % verdict.get('verdict')
+            return dict(schema=EVALUATION, status='unknown', reasons=[reason], used_for_ranking=False,
+                        plain='Cannot be judged yet under the OOS window rule: ' + reason + '.')
+        try:
+            return judge_retest(original, retest, tester=spec['original'].get('tester'))
+        except (OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
+            reason = 'could not apply the OOS window rule: ' + str(exc)[:240]
+            return dict(schema=EVALUATION, status='unknown', reasons=[reason], used_for_ranking=False,
+                        plain='Cannot be judged yet: ' + reason + '.')
 
     def _move(self, set_path, destination):
         """Move the EA's SET/CSV/.goatseq unit out of TEMP into the evidence folder. Never overwrites."""
@@ -816,7 +838,8 @@ class CatchupRunner(SeedRunner):
                              new_end=manifest['evidence_end']['iso'], summary=result['summary'] if result else None,
                              version_path=result['version_path'] if result else None, error=item.get('error'),
                              export_thresholds=spec['original'].get('threshold'),
-                             signals=(result.get('verdict') or {}).get('signals') if result else None))
+                             signals=(result.get('verdict') or {}).get('signals') if result else None,
+                             oos_rule=(result.get('verdict') or {}).get('oos_rule') if result else None))
         value = dict(schema_version=1, batch_id=batch_id, mode=MODE, status=state['status'], evidence_end=manifest['evidence_end'],
                      counts=counts, members=rows, verdict_rules=manifest.get('verdict_rules') or validate_rules(),
                      thresholds_applied_to_eligibility=not manifest.get('include_below_threshold', False),

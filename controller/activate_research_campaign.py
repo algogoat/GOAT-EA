@@ -15,6 +15,8 @@ def verify_export_policy(stage, plan, manifest):
     if 'export_settings' in manifest and validate_export(manifest['export_settings']) != expected:
         raise ValueError('Manifest export policy differs from plan')
     evidence_end=evidence_end_setting(native)
+    from studio_oos_windows import verify_native
+    verify_native(native, plan.get('jobs'))  # formula plans only: dates re-derived, FOOS outside the export
     if manifest.get('export_evidence_end')!=evidence_end:
         raise ValueError('Manifest EvidenceEnd differs from plan')
     text=(Path(stage)/'export_settings.GOAT').read_bytes().decode('utf-16')

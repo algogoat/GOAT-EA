@@ -739,6 +739,39 @@ selected MT5 and relaunches it once per member like a seed run; tell the owner
 first. `batch-pause --batch-id <catchup id>` pauses between members and
 `batch-resume` continues. `research-status` shows it as an OOS catch-up.
 
+## OOS window formula on the demo lane (BOOS, SAMPLE, FWD, FOOS from O)
+
+Banker batches, demo Algo research and seed hunts derive every date from O and the
+export Friday (`goat-oos-windows-v1`; full rule, rounding and worked example:
+[docs/operations/OOS-WINDOW-FORMULA.md](../docs/operations/OOS-WINDOW-FORMULA.md)).
+O = SAMPLE + FWD in whole weeks (a month = 13/3 weeks). BOOS = 1/2 O before SAMPLE,
+SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
+`auto`, the latest closed Friday). BOOS, FWD and FOOS round up; SAMPLE takes the rest.
+
+- Plan: add `"oos_windows":{"optimization_months":12}` (or `optimization_weeks`,
+  optional `export_friday`) to a batch or seed plan and leave the dates out; dates
+  you do give must equal the formula. O = 12 months at export Friday 2026-10-02 gives
+  `BackOOSDate=2025.01.04`, `FromDate=2025.07.05`, `ForwardDate=2026.02.28`,
+  `ToDate=2026.07.04`, `EvidenceEnd=2026.07.04`; FOOS is 2026-07-04 to 2026-10-02.
+  Seed jobs read SAMPLE only (`ToDate` = `ForwardDate`, `ForwardMode=0`).
+- FOOS is held out with existing EA inputs: the batch export stops at the optimization
+  end (`EvidenceEnd` = `ToDate`), so the EA's export pass test and trim never read
+  FOOS. It needs an FU35+ EA (`goat-evidence-end-v1`); older builds refuse the formula.
+- After the batch, run the FOOS replay: a catch-up whose `evidence_end` is the export
+  Friday (`batch-status` → `oos_windows.foos_replay`). `catchup-report` rows carry
+  `oos_rule`: `pass`, `fail`, `not_eligible_yet`, `unknown` or `not_applicable`.
+- The rule per OOS window: at least 30 trades (fewer = `not_eligible_yet`; never
+  shorten a window or change O to reach it), then PF ≥ 1.0 and DD ≤ 1.5 × SAMPLE DD.
+  `unknown` (usually PF without a complete deal capture) is never a pass. It sits next
+  to the export qualification stamp and the catch-up verdict; neither changed.
+- Demo after export continues FOOS but does not scale with O: at least 4 weeks AND at
+  least 30 trades, decision due by 6 weeks; under 30 trades at 6 weeks is "too slow to
+  judge here" (never promote on thin data); M1 and other high-frequency sets are judged
+  mainly on execution parity (live vs backtest, same weeks, real spread, slippage and
+  commission); PF ≥ 1.0 at the portfolio level. Not automated yet.
+- On #1885 and to Vince: give the windows with dates, call FOOS "held out" (never a
+  ranking reason), and say "not eligible yet: N of 30 FOOS trades" rather than failed.
+
 ## Hold-up test on the demo lane (Prove)
 
 A hold-up test answers "does this exact SET hold on weeks it never saw?". It runs

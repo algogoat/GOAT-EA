@@ -158,7 +158,11 @@ see "Export qualification" below):
   in its SET header. Research only: an attempt, never a pass, never in `qualifying`,
   `exported_sets` or any other count, never a sift, composition or publish candidate.
   Its stamp is `unknown` with `missed: ['below_score']`; the member's `no_edge`
-  outcome carries the pick and slot facts under `below_score`.
+  outcome carries the pick and slot facts under `below_score`. A member that
+  tested several pairs reports `below_score_reason=multiple_pairs` (nothing exported,
+  never NO_FWD_ELIGIBLE_PASS); an unreadable tester deposit reports
+  `tester_deposit_unknown`. Catch-up re-tests one only with `include_research_only`
+  (`evidence-scan --include-research-only`), and the re-test stays `below_score`.
 
 The headline reads "98 qualifying (SR ≥ 2.5, ARF ≥ 0.2), 205 more kept below
 threshold". Before `qualifying_basis`, `qualifying` counted every completed member

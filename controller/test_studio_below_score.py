@@ -27,6 +27,7 @@ self_root = tempfile.gettempdir()
 
 TAG = '; EXPORT: below_score research only, nothing scored at or above the export score\r\n'
 FIXTURES = Path(__file__).parent / 'fixtures' / 'oosc'
+G6_XAUUSD_REL = 'g6/deploy/R04049bbe9cc1b1fe6c3f/XAUUSD/GOAT V1.49 XAUUSD,M1_Trds=587_Prf=984_DD=3362_PF=1.05_SR=0.49_ARF=0.032.set'
 G6_AUDUSD = ('R02291b683f2bc5a39857', 'AUDUSD', 'GOAT V1.49 AUDUSD,M1_Trds=406_Prf=278_DD=91_PF=1.57_SR=2.92_ARF=0.315')
 BELOW = (';below_score=exported;below_score_pass=17;below_score_fwd_profit_dd=1.8421;below_score_fwd_profit=212.40;'
          'below_score_fwd_trades=44;below_score_combined_score=48.1;below_score_rank=fwd_profit_dd;below_score_min_fwd_trades=30')
@@ -157,14 +158,44 @@ class EvidenceTests(unittest.TestCase):
         standard = [e for e in exports if e['export_tier'] == 'standard']
         self.assertTrue(standard and not any(e['research_only'] for e in standard))
 
-    def test_catch_up_needs_the_explicit_research_opt_in(self):
+    def test_catch_up_needs_the_separate_research_opt_in(self):
         export = ev.read_export(self.set_path)
         row = classify(export, '2026-10-01')
         self.assertEqual((row['status'], row['export_tier']), ('ineligible', 'below_score'))
-        self.assertTrue(any('Research-only below_score export' in reason for reason in row['reasons']))
-        opted = classify(export, '2026-10-01', include_below_threshold=True)
+        self.assertTrue(any('include_research_only' in reason for reason in row['reasons']))
+        # include_below_threshold never admits a research-only unit (Claude-Mac 6025359910 item 3).
+        mixed = classify(export, '2026-10-01', include_below_threshold=True)
+        self.assertEqual(mixed['status'], 'ineligible')
+        opted = classify(export, '2026-10-01', include_research_only=True)
         self.assertNotEqual(opted['status'], 'ineligible')
         self.assertFalse(opted['threshold_passing'])
+        # ... and a research opt-in never admits an ordinary below-threshold set either.
+        standard = ev.read_export(self.root / G6_XAUUSD_REL)
+        self.assertEqual(classify(standard, '2026-10-01', include_research_only=True)['status'], 'ineligible')
+        self.assertNotEqual(classify(standard, '2026-10-01', include_below_threshold=True)['status'], 'ineligible')
+
+    def test_an_unknown_tier_is_never_re_tested(self):
+        export = dict(ev.read_export(self.set_path), export_tier='unrecognised:second_slot')
+        row = classify(export, '2026-10-01', include_research_only=True)
+        self.assertEqual(row['status'], 'ineligible')
+        self.assertTrue(any('Unknown export tier' in reason for reason in row['reasons']))
+
+    def test_the_re_test_keeps_its_tier(self):
+        from studio_catchup import _export_desc
+        window = dict(source='run_manifest', FromDate='2025.10.17', ToDate='2026.08.28', ForwardDate='2026.07.17')
+        self.assertEqual(_export_desc('R1', window, 'below_score'),
+                         'R1@{mode=EXPORT,dt_BOOS_end=2025.10.17,dt_FOOS_start=2026.08.29,dt_FWD_start=2026.07.17,dt_FWD_end=2026.08.28,tier=below_score}')
+        self.assertEqual(_export_desc('R1', window), 'R1@{mode=EXPORT,dt_BOOS_end=2025.10.17,dt_FOOS_start=2026.08.29,dt_FWD_start=2026.07.17,dt_FWD_end=2026.08.28}')
+        self.assertEqual(_export_desc('R1', dict(source='unknown'), 'below_score'), 'R1@{mode=EXPORT,tier=below_score}')
+        import inspect
+        import studio_catchup
+        member = inspect.getsource(studio_catchup.CatchupRunner._member)
+        self.assertIn("EA_Desc=_export_desc(alias, window, tier)", member)
+        self.assertIn("export_tier=tier, research_only=bool(export.get('research_only'))", member)
+        collect = inspect.getsource(studio_catchup)
+        self.assertIn("export_tier=spec.get('export_tier', 'standard'), research_only=bool(spec.get('research_only')),", collect)
+        self.assertIn("retest_export_tier=retest.get('export_tier', 'standard'),", collect)
+        self.assertIn("include_research_only=plan.get('include_research_only', False), native_launch_qualified=False)", collect)
 
 
 class ItemStatsTests(unittest.TestCase):
@@ -205,6 +236,18 @@ class ItemStatsTests(unittest.TestCase):
                         BELOW + ';slot2=kept', BELOW.replace(';below_score_pass', ';below_score_kept=3;below_score_pass')):
             self.assertEqual(_no_edge_outcome(QDETAILS + details, 'no_qualifying_rows')['below_score']['result'], 'unreadable', details)
 
+    def test_a_reason_rides_with_its_result(self):
+        multi = _no_edge_outcome(QDETAILS + ';below_score=none;below_score_reason=multiple_pairs;below_score_pairs=2;below_score_rank=fwd_profit_dd',
+                                 'no_qualifying_rows')['below_score']
+        self.assertEqual((multi['result'], multi['reason']), ('none', 'multiple_pairs'))
+        deposit = _no_edge_outcome(QDETAILS + ';below_score=failed;below_score_reason=tester_deposit_unknown;below_score_rank=fwd_profit_dd',
+                                   'no_qualifying_rows')['below_score']
+        self.assertEqual((deposit['result'], deposit['reason']), ('failed', 'tester_deposit_unknown'))
+        for details in (';below_score=exported;below_score_reason=multiple_pairs', ';below_score=none;below_score_reason=guess',
+                        ';below_score=failed;below_score_reason=guess'):
+            self.assertEqual(_no_edge_outcome(QDETAILS + BELOW.replace(';below_score=exported', '') + details, 'no_qualifying_rows')
+                             ['below_score']['result'], 'unreadable', details)
+
     def test_an_unreadable_report_is_never_a_kept_export(self):
         for label, details in (('unknown result', BELOW.replace('=exported', '=kept')),
                                ('exported without its figures', ';below_score=exported'),
@@ -239,6 +282,9 @@ class NoFwdEligibleTests(unittest.TestCase):
         text = no_edge_summary('USDCAD', 'M1', found)
         self.assertIn('2 of 158 settings scored 60+ but none was profitable in the forward period', text)
         self.assertIn('kept for research only (below score)', text)
+        # Claude-Mac 6025359910 nit a: the user sentence reads an em dash, never the UTF-8-as-cp1252 mojibake.
+        self.assertRegex(text, r'^USDCAD M1: tested, nothing FWD-eligible in \d{4}\.\d\d\.\d\d to \d{4}\.\d\d\.\d\d — 2 of 158 settings')
+        self.assertNotIn('â', text)
         line = headline(dict(kind='batch', status='finished', members_total=1, members_done=0, members_no_edge=1, no_edge=[found],
                              no_edge_counts={'no_fwd_eligible_rows': 1}, no_edge_window=dict(start='2024.01.08', end='2025.01.06')))
         self.assertIn('1 none FWD-eligible at the export score', line)
@@ -266,21 +312,30 @@ class NoFwdEligibleTests(unittest.TestCase):
         counts = _no_edge_outcome(QDETAILS + NONE.replace('fwd_unprofitable=4', 'fwd_unprofitable=x'), 'no_qualifying_rows')
         self.assertEqual(counts['below_score']['result'], 'unreadable')
 
+    def test_several_pairs_are_named_not_counted(self):
+        multi = FDETAILS + ';below_score=none;below_score_reason=multiple_pairs;below_score_pairs=2;below_score_rank=fwd_profit_dd'
+        found = _no_edge_outcome(multi, 'no_fwd_eligible_rows')
+        self.assertEqual(found['below_score'], dict(result='none', rank='fwd_profit_dd', reason='multiple_pairs'))
+        self.assertNotIn('no_fwd_eligible_pass', found['below_score'], 'never NO_FWD_ELIGIBLE_PASS from one pair of several')
+
 
 class DiskEstimateTests(unittest.TestCase):
     """The disk a batch's exports may write, shown with prepare-batch (Claude-Mac 6023896492)."""
 
     def test_measured_units_and_the_below_score_line(self):
-        from studio_export_disk import GIB, MIB, export_disk_estimate
+        from studio_export_disk import MIB, export_disk_estimate
         value = export_disk_estimate(100, dict(SetsToExport=2, IncludeSequenceData=True))
         self.assertEqual((value['normal_exports']['units_max'], value['unit_median_bytes'], value['unit_p90_bytes']), (200, 97 * MIB, 163 * MIB))
-        self.assertEqual(round(value['below_score']['low_bytes'] / GIB, 1), 0.4)
-        self.assertEqual(round(value['below_score']['high_bytes'] / GIB, 1), 1.0)
-        self.assertIn('about 0.4-1.0 GB per 100 members', value['plain'])
-        self.assertIn('up to 200 kept exports (100 members x 2) at about 97 MB each', value['plain'])
+        self.assertEqual(round(value['below_score']['low_bytes'] / 1e9, 1), 0.4)
+        self.assertEqual(round(value['below_score']['high_bytes'] / 1e9, 1), 1.1)
+        self.assertIn('about 0.4-1.1 GB per 100 members', value['plain'])
+        self.assertIn('up to 200 kept exports (100 members x 2) at about 102 MB each', value['plain'])
+        # Slot 2 counted in the high estimate (nit b): two units per below_score member at the p90 size.
+        self.assertEqual(value['below_score']['high_p90_bytes'], int(2 * 11.0 * 163 * MIB))
+        self.assertIn('up to 3.8 GB if each also keeps a second, different pass', value['plain'])
         self.assertEqual(value['total_high_bytes'], value['normal_exports']['high_bytes'] + value['below_score']['high_p90_bytes'])
         self.assertEqual((value['normal_exports']['typical_bytes'], value['normal_exports']['high_bytes']), (200 * 97 * MIB, 200 * 163 * MIB))
-        self.assertIn('about 18.9 GB typical and up to 31.8 GB', value['plain'])
+        self.assertIn('about 20.3 GB typical and up to 34.2 GB', value['plain'])
         small = export_disk_estimate(10, dict(SetsToExport=1, IncludeSequenceData='0'))
         self.assertEqual((small['sets_to_export'], small['sequence_data'], small['unit_median_bytes']), (2, False, MIB))
         self.assertIn('under 1 MB', small['plain'])
@@ -292,7 +347,14 @@ class DiskEstimateTests(unittest.TestCase):
         self.assertIn('not enough to keep 5 GB free', tight['plain'])
         roomy = export_disk_estimate(100, dict(SetsToExport=2), free_bytes=200 * GIB)
         self.assertTrue(roomy['fits'])
-        self.assertIn('200.0 GB free on the Common Files disk.', roomy['plain'])
+        self.assertIn('214.7 GB free on the Common Files disk.', roomy['plain'])
+        # Unreadable free space is never a disk that fits (nit c).
+        unread = export_disk_estimate(100, dict(SetsToExport=2))
+        self.assertEqual((unread['fits'], unread['free_bytes']), (False, None))
+        self.assertIn('free space could not be read: check it before starting', unread['plain'])
+        from studio_export_disk import estimate_for_root
+        self.assertIs(estimate_for_root(1, {}, None)['fits'], False)
+        self.assertIs(estimate_for_root(1, {}, r'Z:\no\such\disk\here')['fits'], False)
 
     def test_prepare_batch_returns_it(self):
         import inspect
@@ -304,7 +366,32 @@ class DiskEstimateTests(unittest.TestCase):
         self.assertEqual((estimate['members'], estimate['sets_to_export']), (1, 3))
         self.assertIn('free_bytes', estimate)
         broken = studio_batch._disk_estimate(type('C', (), {'binding': lambda self: {}['missing']})(), [])
-        self.assertEqual((broken['members'], 'free_bytes' in broken), (0, False))
+        self.assertEqual((broken['members'], broken['free_bytes'], broken['fits']), (0, None, False))
+
+
+class MixedDeployTests(unittest.TestCase):
+    """Switch ON (nit d): a slot 1 below the thresholds can sit in deploy beside a passing slot 2, which
+    SortAndTrimExports never produced. Removing slot 1 by its full-span metrics would let FOOS pick again, so it
+    stays; every deploy reader handles the member: one set passed, one is below threshold, the EA log matches."""
+
+    def test_scan_run_and_status_read_a_mixed_member(self):
+        from test_studio_export_qualification import cycle, write_log
+        with tempfile.TemporaryDirectory() as temp:
+            run = Path(temp) / 'common' / 'GOAT' / 'Rabcdef012345'
+            run.mkdir(parents=True)
+            (run / 'export_settings.GOAT').write_bytes(SETTINGS.encode('utf-16'))
+            folder = run / 'deploy' / 'R1' / 'AUDUSD'
+            write_unit(folder, name('AUDUSD', '1.07', '0.084'), header('1.070', '0.084'))   # slot 1, below threshold
+            write_unit(folder, name('AUDUSD', '2.92', '0.315'), header('2.920', '0.315'))   # slot 2, passing
+            # The switched EA's own lines: 2 attempts, 2 stored, 1 passed; GoatSlotTrimLog's Passing=1 Kept=2.
+            write_log(run, cycle(1, (2, 1, 2)))
+            result = eq.scan_run(run)
+            self.assertEqual(result['log_crosscheck']['status'], 'match')
+            counts = result['counts']
+            self.assertEqual((counts['passed_sets'], counts['below_threshold_sets'], counts['passed_members'],
+                              counts['below_threshold_members']), (1, 1, 1, 0))
+            stamps = {entry['set_name'].split('_SR=')[1][:4]: entry['qualification']['status'] for entry in result['stamps']}
+            self.assertEqual(stamps, {'1.07': 'below_threshold', '2.92': 'passed'}, 'each set keeps its own stamp')
 
 class BatchProgressTests(unittest.TestCase):
     SYMBOLS = ('AUDUSD', 'EURUSD', 'USDJPY')

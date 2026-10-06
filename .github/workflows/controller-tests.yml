@@ -24,7 +24,7 @@ concurrency:
 #           test_connection_code, test_activation_code_file, test_broker_facts_payload,
 #           test_bias_reader_parity, test_agent_connection_layout, test_studio_steady_panel,
 #           test_dashboard_overview, test_ea_followups, test_studio_derived_report,
-#           test_terminal_isolation, test_below_score_export
+#           test_terminal_isolation, test_below_score_export, test_slot2_foos_invariance
 #
 # controller-mutations (1/3)  ~16-24 min observed
 #   python test_research_outcome_controller_mutations.py   (12-17 min)
@@ -135,6 +135,8 @@ jobs:
         run: node scripts/test_terminal_isolation.cjs
       - name: Export rule by FWD profit/DD and research-only below_score exports (goatai#1885, BS42)
         run: node scripts/test_below_score_export.cjs
+      - name: Slot 2 ignores the post-FWD (FOOS) part of its re-test (Claude-Mac 6025359910 item 2)
+        run: node scripts/test_slot2_foos_invariance.cjs
 
       - name: Run every controller fixture test
         env:

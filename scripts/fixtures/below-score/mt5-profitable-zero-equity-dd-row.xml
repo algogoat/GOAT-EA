@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+xmlns:o="urn:schemas-microsoft-com:office:office"
+xmlns:x="urn:schemas-microsoft-com:office:excel"
+xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+xmlns:html="http://www.w3.org/TR/REC-html40">
+<DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">
+<Title>GOAT V1.39 XAGUSD,M1 2025.05.01-2026.04.20 SP_TrendTR_XAGUSD</Title>
+<Author>GOAT SeedFarming</Author>
+<Created>2026.05.06 04:22:50</Created>
+<Server>Darwinex-Demo</Server>
+<Mode>SeedFarming</Mode>
+<Target>256</Target>
+<Strategy>SP_TrendTR_XAGUSD</Strategy>
+</DocumentProperties>
+<Styles>
+<Style ss:ID="ce2"><NumberFormat ss:Format="0.00"/></Style>
+<Style ss:ID="ce13"><NumberFormat ss:Format="0.000000"/></Style>
+</Styles>
+<Worksheet ss:Name="Tester Optimizator Results">
+<Table>
+<Row>
+<Cell><Data ss:Type="String">Pass</Data></Cell>
+<Cell><Data ss:Type="String">Result</Data></Cell>
+<Cell><Data ss:Type="String">Profit</Data></Cell>
+<Cell><Data ss:Type="String">Expected Payoff</Data></Cell>
+<Cell><Data ss:Type="String">Profit Factor</Data></Cell>
+<Cell><Data ss:Type="String">Recovery Factor</Data></Cell>
+<Cell><Data ss:Type="String">Sharpe Ratio</Data></Cell>
+<Cell><Data ss:Type="String">Custom</Data></Cell>
+<Cell><Data ss:Type="String">Equity DD %</Data></Cell>
+<Cell><Data ss:Type="String">Trades</Data></Cell>
+<Cell><Data ss:Type="String">Allow_Opposite_Seq</Data></Cell>
+<Cell><Data ss:Type="String">Grid_Size</Data></Cell>
+<Cell><Data ss:Type="String">Grid_Exponent</Data></Cell>
+<Cell><Data ss:Type="String">Grid_Factor</Data></Cell>
+<Cell><Data ss:Type="String">Lock_Profit_Size</Data></Cell>
+<Cell><Data ss:Type="String">Lock_Profit_Flexibility</Data></Cell>
+<Cell><Data ss:Type="String">TP_Pips</Data></Cell>
+<Cell><Data ss:Type="String">TSL_Size</Data></Cell>
+<Cell><Data ss:Type="String">Delay_Lots_Add</Data></Cell>
+<Cell><Data ss:Type="String">Max_Seq_Trades</Data></Cell>
+<Cell><Data ss:Type="String">ATR_Period</Data></Cell>
+<Cell><Data ss:Type="String">ATR_Method</Data></Cell>
+<Cell><Data ss:Type="String">Lots_Max_Cum</Data></Cell>
+<Cell><Data ss:Type="String">Lots_Exponent</Data></Cell>
+<Cell><Data ss:Type="String">Lots_Factor</Data></Cell>
+<Cell><Data ss:Type="String">Peak_Lots_Pos_PC</Data></Cell>
+<Cell><Data ss:Type="String">EMA_TF_</Data></Cell>
+<Cell><Data ss:Type="String">EMA_Method</Data></Cell>
+<Cell><Data ss:Type="String">EMA_Count</Data></Cell>
+<Cell><Data ss:Type="String">EMA_Period</Data></Cell>
+<Cell><Data ss:Type="String">EMA_Exponent</Data></Cell>
+<Cell><Data ss:Type="String">EMA_MustCheck</Data></Cell>
+<Cell><Data ss:Type="String">ADX_TF_</Data></Cell>
+<Cell><Data ss:Type="String">ADX_Period</Data></Cell>
+<Cell><Data ss:Type="String">ADX_Level</Data></Cell>
+<Cell><Data ss:Type="String">BB_Deviation</Data></Cell>
+<Cell><Data ss:Type="String">BB_MustCheck</Data></Cell>
+<Cell><Data ss:Type="String">Bias_Exit_Max_Exposure_Adds</Data></Cell>
+<Cell><Data ss:Type="String">Bias_threshold</Data></Cell>
+</Row>
+<Row>
+<Cell><Data ss:Type="Number">47841642242159</Data></Cell>
+<Cell><Data ss:Type="Number">-0.00700000</Data></Cell>
+<Cell><Data ss:Type="Number">0.63</Data></Cell>
+<Cell><Data ss:Type="Number">0.69000000</Data></Cell>
+<Cell><Data ss:Type="Number">11.50000000</Data></Cell>
+<Cell><Data ss:Type="Number">0.62376238</Data></Cell>
+<Cell><Data ss:Type="Number">0.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">-0.00700000</Data></Cell>
+<Cell><Data ss:Type="Number">0.0000</Data></Cell>
+<Cell><Data ss:Type="Number">1</Data></Cell>
+<Cell><Data ss:Type="Number">1.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">-4.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">1.20000000</Data></Cell>
+<Cell><Data ss:Type="Number">0.80000000</Data></Cell>
+<Cell><Data ss:Type="Number">-2.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">0.40000000</Data></Cell>
+<Cell><Data ss:Type="Number">0.60000000</Data></Cell>
+<Cell><Data ss:Type="Number">-1.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">0.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">10.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">400.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">2.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">25.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">1.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">0.90000000</Data></Cell>
+<Cell><Data ss:Type="Number">45.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">15.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">1.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">4.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">13.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">2.50000000</Data></Cell>
+<Cell><Data ss:Type="Number">1.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">15.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">7.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">24.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">1.90000000</Data></Cell>
+<Cell><Data ss:Type="Number">0.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">2.00000000</Data></Cell>
+<Cell><Data ss:Type="Number">50.00000000</Data></Cell>
+</Row>
+</Table>
+</Worksheet>
+</Workbook>

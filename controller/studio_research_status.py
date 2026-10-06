@@ -307,12 +307,13 @@ def _no_fwd_eligible_outcome(values, outcome):
             or o['min_trades'] <= 0 or not all(_DATE.fullmatch(span[key]) for key in ('start', 'end', 'forward_end'))
             or not span['start'] < span['end'] < span['forward_end']
             or below is None or below['result'] not in ('exported', 'lost', 'none', 'failed')
-            or (below['result'] == 'none' and 'no_fwd_eligible_pass' not in below)):
+            or (below['result'] == 'none' and 'no_fwd_eligible_pass' not in below and below.get('reason') != 'multiple_pairs')):
         return None
     return dict(o, **x, below_score=below)
 
 
 BELOW_SCORE_RESULTS = ('exported', 'lost', 'none', 'failed')
+BELOW_SCORE_REASONS = ('multiple_pairs', 'tester_deposit_unknown')
 
 
 def _below_score_facts(values):
@@ -354,6 +355,12 @@ def _below_score_facts(values):
                 'rows', 'fwd_eligible', 'not_in_forward', 'sample_unprofitable_or_thin', 'fwd_unprofitable',
                 'fwd_trades_under_floor', 'fwd_dd_unmeasured')}
         except (KeyError, ValueError):
+            facts['result'] = 'unreadable'
+    reason = values.get('below_score_reason')
+    if reason is not None:
+        # Several report pairs (one pair's passes cannot speak for the member), or an unreadable tester deposit.
+        facts['reason'] = reason if reason in BELOW_SCORE_REASONS else 'unreadable'
+        if facts['reason'] == 'unreadable' or (reason == 'multiple_pairs') != (result == 'none'):
             facts['result'] = 'unreadable'
     if values.get('slot2') is not None:
         facts['slot2'] = dict(result=values['slot2'] if values['slot2'] in ('kept', 'skipped', 'none') else 'unreadable',
@@ -414,7 +421,7 @@ def no_edge_summary(symbol, timeframe, outcome):
                 + '). A result for this window only, not a verdict on the strategy.')
     if outcome['outcome'] == NO_FWD_ELIGIBLE_ROWS:
         below = outcome.get('below_score') or {}
-        return (symbol + ' ' + timeframe + ': tested, nothing FWD-eligible in ' + window['start'] + ' to ' + window['end'] + ' â€” '
+        return (symbol + ' ' + timeframe + ': tested, nothing FWD-eligible in ' + window['start'] + ' to ' + window['end'] + ' — '
                 + str(outcome['score_qualifying_rows']) + ' of ' + str(outcome['passes']) + ' settings scored '
                 + format(outcome['score_threshold'], 'g') + '+ but none was profitable in the forward period to ' + window['forward_end']
                 + ' with enough trades; ' + ('its best profitable pass was kept for research only (below score)'

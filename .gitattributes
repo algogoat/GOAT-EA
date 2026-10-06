@@ -3,3 +3,4 @@
 
 controller/fixtures/oosc/** -text
 controller/fixtures/heldout/** -text
+scripts/fixtures/below-score/** -text

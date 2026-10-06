@@ -556,7 +556,8 @@ MT5 `ToDate` is exclusive, so evidence ending on day D tests with `ToDate` D+1.
   Friday when resumed), and `batch-status` shows it. The EA
   still ends its exports natively; catch-up brings them to the target.
 - `evidence-scan --source <run, deploy or member folder, or .set> [...]
-  [--evidence-end auto|date] [--include-below-threshold]` reads every kept export
+  [--evidence-end auto|date] [--include-below-threshold] [--include-research-only]`
+  reads every kept export
   (SET header windows, equity CSV, `.goatseq` manifest; never `account.csv`) and
   classifies it against the target: `behind` (needs catch-up), `current`, `ahead`
   (already ends later; clip it to the shared end, no re-test), `caught_up` (a
@@ -568,7 +569,7 @@ MT5 `ToDate` is exclusive, so evidence ending on day D tests with `ToDate` D+1.
   stays `behind` with `previous_attempt`, so a re-queue may try it again.
 - `catchup-validate --plan` previews and `catchup-prepare --catchup-id --plan`
   freezes a plan `{schema_version:1, evidence_end, sets:[absolute .set paths],
-  job_timeout_seconds[, broker_clock, assume:{ExecutionMode}, include_below_threshold,
+  job_timeout_seconds[, broker_clock, assume:{ExecutionMode}, include_below_threshold, include_research_only,
   equivalence_certificates:[digest], canary_certificate:digest]}`.
   Each behind export becomes one member: its exact kept SET (frozen values, no
   optimization) from the export's original start to the evidence end, with the
@@ -683,7 +684,10 @@ These rules and the export thresholds are not rigid. A plan may override the
 verdict numbers within bounds (`verdict_rules: {min_trades, failed_pf, held_pace,
 min_pace_trades, moderate_trades, moderate_days}`) and queue members below the run's
 export thresholds (`include_below_threshold: true`, which the desktop builder uses
-for members the person chose). Every verdict stamps the exact `rules` it used, its
+for members the person chose). Research-only below_score exports (EA build B42) need
+the separate `include_research_only: true`; the re-test keeps `tier=below_score` in
+its EA_Desc and `evidence-version.json` records `export_tier`, `research_only` and
+`retest_export_tier`. Every verdict stamps the exact `rules` it used, its
 `comparability` checks and its raw `signals` (`goat-catchup-signals-v2`: trades vs
 forward pace, profit pace ratio, PF, drawdown from the peak and from the window
 open vs prior drawdown, reproduction, capture). Each evidence version adds a

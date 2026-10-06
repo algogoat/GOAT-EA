@@ -69,7 +69,7 @@ public:
    string outcome;     // set by ReportAnalyzerCombiner; "" unless every pair was tested without edge
    string pairOutcome; // the research outcome of the last pair read, "" when it was not one
 #ifdef GOAT_BELOW_SCORE_EXPORT_V149
-   int belowScoreRow;  // Rows[] index of the below_score slot 1 (GoatXmlFwdRank first), -1 when none
+   int belowScorePairs; // report pairs in the last combine: a below_score export needs exactly one
 #endif
 //+------------------------------------------------------------------+
    bool ProcessBackXml(const string &filename)
@@ -1048,19 +1048,21 @@ string GoatXmlNoQualifierOutcome(const bool back_read,const bool title_matches,c
 #ifdef GOAT_BELOW_SCORE_EXPORT_V149
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // FWD profit/DD export rule (goatai#1885: Ops 6021950497 (c), 6021976286 and 6022010662; Claude-Mac
-// 6021965811, 6022008420 and 6022264062). Used by the below_score export (nothing reached the export
-// score) and, behind GOAT_EXPORT_RANK_FWD_PROFIT_DD (off by default), by normal exports.
+// 6021965811, 6022008420, 6022264062 and 6025359910). Used by the below_score export (nothing reached the
+// export score) and, behind GOAT_EXPORT_RANK_FWD_PROFIT_DD (off by default), by normal exports.
 // Eligible: found in the forward report, SAMPLE (back) profit > 0 with GOAT_XML_MIN_BACK_TRADES+
 // trades, FWD profit > 0 with GOAT_XML_BELOW_SCORE_MIN_FWD_TRADES+ trades, a positive FWD recovery
 // factor and a combined score of at least minScore (pass a negative minScore for no score floor).
-// Ranked on the FWD window alone by profit/DD: the forward Recovery Factor MT5 reports (FWD profit
-// over FWD maximal drawdown). Ties go to the higher FWD profit, then the lower pass number. Never
-// ranked by the combined (match) score, and never by BOOS or FOOS: those windows are not in the
-// optimization reports and stay gates.
+// Ranked on the FWD window alone by FWD profit / max(FWD drawdown, GOAT_EXPORT_FWD_DD_FLOOR x tester
+// deposit). The FWD drawdown in money is FWD profit / the forward Recovery Factor MT5 reports (RF =
+// profit / maximal drawdown), so a tiny drawdown can never inflate the rank. Ties go to the higher FWD
+// profit, then the lower pass number. Never ranked by the combined (match) score, and never by BOOS or
+// FOOS: those windows are not in the optimization reports and stay gates. An unknown deposit ranks nothing.
 #define GOAT_EXPORT_SLOT2_MAX_CORRELATION 0.5
 #define GOAT_EXPORT_SLOT2_MIN_SR 2.5
 #define GOAT_EXPORT_SLOT2_MIN_ARF 0.2
 #define GOAT_EXPORT_CORRELATION_MIN_DAYS 20
+#define GOAT_EXPORT_FWD_DD_FLOOR 0.0025
 // A pass's parameter character (slot 2): the template's own key inputs, i.e. those of its optimized
 // inputs (the report's input columns) that set the entry regime (direction and signal modes) or the
 // exit regime (stop, target, trailing and lock). A mode or switch differs on any change; a size
@@ -1106,22 +1108,30 @@ string GoatXmlFwdIneligibleCounts(const SRowDefinition &rows[],const double minS
           +";fwd_trades_under_floor="+(string)fwdThin+";fwd_dd_unmeasured="+(string)fwdDd
           +(minScore>=0 ? ";below_min_score="+(string)belowScore+";at_min_score="+(string)scoreOk : "");
   }
-bool GoatXmlFwdBetter(const SRowDefinition &rows[],const int a,const int b)
+// The rank key of an eligible pass: FWD profit / max(FWD drawdown in money, the deposit floor).
+double GoatXmlFwdKey(const SRowDefinition &rows[],const int i,const double deposit)
   {
-   if(rows[a].forward_RF!=rows[b].forward_RF) return rows[a].forward_RF>rows[b].forward_RF;
+   double drawdown=rows[i].forward_profit/rows[i].forward_RF;
+   return rows[i].forward_profit/MathMax(drawdown,GOAT_EXPORT_FWD_DD_FLOOR*deposit);
+  }
+bool GoatXmlFwdBetter(const SRowDefinition &rows[],const int a,const int b,const double deposit)
+  {
+   double ka=GoatXmlFwdKey(rows,a,deposit),kb=GoatXmlFwdKey(rows,b,deposit);
+   if(ka!=kb) return ka>kb;
    if(rows[a].forward_profit!=rows[b].forward_profit) return rows[a].forward_profit>rows[b].forward_profit;
    return rows[a].pass<rows[b].pass;
   }
-// Eligible Rows[] indices, best first. Returns how many.
-int GoatXmlFwdRank(const SRowDefinition &rows[],const double minScore,int &ranked[])
+// Eligible Rows[] indices, best first. Returns how many (none when the tester deposit is unknown).
+int GoatXmlFwdRank(const SRowDefinition &rows[],const double minScore,const double deposit,int &ranked[])
   {
    ArrayResize(ranked,0);
+   if(!(deposit>0)) return 0;
    for(int i=0;i<ArraySize(rows);i++)
      {
       if(!GoatXmlFwdEligible(rows,i,minScore)) continue;
       int n=ArraySize(ranked); ArrayResize(ranked,n+1);
       int at=n;
-      while(at>0 && GoatXmlFwdBetter(rows,i,ranked[at-1])) {ranked[at]=ranked[at-1]; at--;}
+      while(at>0 && GoatXmlFwdBetter(rows,i,ranked[at-1],deposit)) {ranked[at]=ranked[at-1]; at--;}
       ranked[at]=i;
      }
    return ArraySize(ranked);
@@ -1151,8 +1161,9 @@ string GoatXmlCharacterDifference(const string &names[],const string inputsA,con
      }
    return "";
   }
-// Daily closes of a GOAT equity CSV ("<DATE>\t<BALANCE>\t<EQUITY>..." rows in broker server time,
-// oldest first) on days in [from,to): the last equity of each day. -1 when rows go back in time.
+// Daily BALANCE closes of a GOAT equity CSV ("<DATE>\t<BALANCE>\t<EQUITY>..." rows in broker server
+// time, oldest first) on days in [from,to): the last balance logged each day. Only days the EA logged a
+// row appear (the EQUITY cell is a throttled minute low, never used here). -1 when rows go back in time.
 int GoatEquityDailyCloses(const string csv,const datetime from,const datetime to,datetime &days[],double &closes[])
   {
    ArrayResize(days,0); ArrayResize(closes,0);
@@ -1167,45 +1178,85 @@ int GoatEquityDailyCloses(const string csv,const datetime from,const datetime to
       if(StringLen(stamp)<10 || StringGetCharacter(stamp,4)!='.' || StringGetCharacter(stamp,7)!='.') continue;
       datetime day=StringToTime(StringSubstr(stamp,0,10));
       if(day<=0 || day<from || day>=to) continue;
-      double equity=StringToDouble(cells[2]);
+      double balance=StringToDouble(cells[1]);
       int n=ArraySize(days);
       if(n>0 && day<days[n-1]) return -1;
-      if(n>0 && day==days[n-1]) {closes[n-1]=equity; continue;}
+      if(n>0 && day==days[n-1]) {closes[n-1]=balance; continue;}
       ArrayResize(days,n+1); ArrayResize(closes,n+1);
-      days[n]=day; closes[n]=equity;
+      days[n]=day; closes[n]=balance;
      }
    return ArraySize(days);
   }
-// Pearson correlation of two equity curves' daily changes over [from,to), on the union of their days
-// (a day missing from one curve carries its last close; changes start once both curves have a close).
-// EMPTY_VALUE when the curves cannot be read, give fewer than GOAT_EXPORT_CORRELATION_MIN_DAYS
-// changes, or one is flat: then the two are never proven different.
+// Pearson correlation of two curves' daily balance changes over [from,to), on the days BOTH curves
+// logged only (a change runs from one common day to the next; nothing is carried or filled in).
+// EMPTY_VALUE when the curves cannot be read, share fewer than GOAT_EXPORT_CORRELATION_MIN_DAYS logged
+// days, or one is flat: then the two are never shown different. n gets the number of common days.
 double GoatDailyReturnCorrelation(const string csvA,const string csvB,const datetime from,const datetime to,int &n)
   {
    n=0;
    datetime da[],db[]; double ca[],cb[];
    int na=GoatEquityDailyCloses(csvA,from,to,da,ca), nb=GoatEquityDailyCloses(csvB,from,to,db,cb);
    if(na<2 || nb<2) return EMPTY_VALUE;
-   int i=0,j=0;
-   bool seenA=false,seenB=false;
+   int i=0,j=0,changes=0;
    double lastA=0,lastB=0,sx=0,sy=0,sxx=0,syy=0,sxy=0;
-   while(i<na || j<nb)
+   while(i<na && j<nb)
      {
-      datetime day=((j>=nb || (i<na && da[i]<=db[j])) ? da[i] : db[j]);
-      bool hasA=(i<na && da[i]==day), hasB=(j<nb && db[j]==day);
-      double a=(hasA ? ca[i] : lastA), b=(hasB ? cb[j] : lastB);
-      if(seenA && seenB)
+      if(da[i]<db[j]) {i++; continue;}
+      if(db[j]<da[i]) {j++; continue;}
+      if(n>0)
         {
-         double x=a-lastA, y=b-lastB;
-         n++; sx+=x; sy+=y; sxx+=x*x; syy+=y*y; sxy+=x*y;
+         double x=ca[i]-lastA, y=cb[j]-lastB;
+         changes++; sx+=x; sy+=y; sxx+=x*x; syy+=y*y; sxy+=x*y;
         }
-      if(hasA) {lastA=a; seenA=true; i++;}
-      if(hasB) {lastB=b; seenB=true; j++;}
+      lastA=ca[i]; lastB=cb[j]; n++; i++; j++;
      }
-   if(n<GOAT_EXPORT_CORRELATION_MIN_DAYS) return EMPTY_VALUE;
-   double vx=sxx-sx*sx/n, vy=syy-sy*sy/n;
+   if(n<GOAT_EXPORT_CORRELATION_MIN_DAYS || changes<2) return EMPTY_VALUE;
+   double vx=sxx-sx*sx/changes, vy=syy-sy*sy/changes;
    if(!(vx>0) || !(vy>0)) return EMPTY_VALUE;
-   return (sxy-sx*sy/n)/MathSqrt(vx*vy);
+   return (sxy-sx*sy/changes)/MathSqrt(vx*vy);
+  }
+// Slot 2's quality over [from,to) = [BOOS end, FOOS start) from its own equity CSV's daily balance closes,
+// the series the correlation uses, so its BOOS and FOOS never decide it. The controller's window rules
+// (studio_gate_calibration.window_metrics): net from the last close before the window; drawdown from the
+// peak of the closes; Sharpe of weekday changes (a day without a row repeats the last close) x sqrt(252),
+// within +/-25, from 5+ weekdays; ARF = (net / drawdown, 25 without a drawdown, within +/-25) / (weekdays /
+// 21.7). out[] = {net, drawdown, sharpe, arf, weekdays, logged days}. False when the window has no row,
+// fewer than 5 weekdays or a flat curve (no Sharpe): never measured, never of quality.
+bool GoatEquityWindowMetrics(const string csv,const datetime from,const datetime to,double &out[])
+  {
+   ArrayResize(out,6); ArrayInitialize(out,0.0);
+   datetime days[]; double closes[];
+   int count=GoatEquityDailyCloses(csv,0,to,days,closes);
+   if(count<1) return false;
+   int k=0;
+   double opening=closes[0];
+   while(k<count && days[k]<from) {opening=closes[k]; k++;}
+   if(k>=count) return false;
+   double previous=opening,peak=opening,drawdown=0,sum=0,sumSq=0;
+   int weekdays=0,logged=count-k;
+   for(datetime day=from;day<to;day+=86400)
+     {
+      double value=previous;
+      if(k<count && days[k]==day) {value=closes[k]; k++;}
+      long dow=((long)day/86400+4)%7;
+      if(dow!=0 && dow!=6)
+        {
+         double change=value-previous;
+         weekdays++; sum+=change; sumSq+=change*change;
+        }
+      previous=value;
+      peak=MathMax(peak,value);
+      drawdown=MathMax(drawdown,peak-value);
+     }
+   if(weekdays<5) return false;
+   double mean=sum/weekdays, variance=(sumSq-weekdays*mean*mean)/(weekdays-1);
+   if(!(variance>0)) return false;
+   double net=previous-opening;
+   double sharpe=MathMax(MathMin(mean/MathSqrt(variance)*MathSqrt(252.0),25.0),-25.0);
+   double recovery=(drawdown>0 ? net/drawdown : (net>0 ? 25.0 : 0.0));
+   recovery=MathMax(MathMin(recovery,25.0),-25.0);
+   out[0]=net; out[1]=drawdown; out[2]=sharpe; out[3]=recovery/(weekdays/21.7); out[4]=weekdays; out[5]=logged;
+   return true;
   }
 #endif
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1218,7 +1269,7 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
    int pairs=0,noEdgePairs=0,noQualifierPairs=0;
 #endif
 #ifdef GOAT_BELOW_SCORE_EXPORT_V149
-   xmlData.belowScoreRow=-1;
+   xmlData.belowScorePairs=0;
 #endif
    // Loop over moved files to find matching pairs.
    for(int i=0; i<ArraySize(Files); i++)
@@ -1336,13 +1387,9 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
       ret=false;
      }
 #ifdef GOAT_BELOW_SCORE_EXPORT_V149
-   // One pair only: xmlData keeps the last pair's merged passes, so a member with several pairs
-   // never exports below_score (its passes could not be told apart from another pair's).
-   if(xmlData.outcome==GOAT_XML_NO_QUALIFYING_ROWS && pairs==1)
-     {
-      int ranked[];
-      if(GoatXmlFwdRank(xmlData.Rows,-1.0,ranked)>0) xmlData.belowScoreRow=ranked[0];
-     }
+   // xmlData keeps the last pair's merged passes only: a below_score export needs exactly one pair, else it says
+   // below_score_reason=multiple_pairs (never NO_FWD_ELIGIBLE_PASS from another pair's passes).
+   xmlData.belowScorePairs=pairs;
 #endif
    if(xmlData.outcome!="")
      {

@@ -24,7 +24,7 @@ BASIS = ('Measured 2026-10-06 on Claude-PC: 406 kept units (sequence capture med
 
 
 def _gb(value):
-    return round(value / GIB, 1)
+    return round(value / 1e9, 1)   # decimal GB in the sentence people read; byte fields stay exact
 
 
 def export_disk_estimate(member_count, export_settings, free_bytes=None):
@@ -43,18 +43,27 @@ def export_disk_estimate(member_count, export_settings, free_bytes=None):
     median, p90 = (UNIT_MEDIAN_BYTES, UNIT_P90_BYTES) if sequence else (UNIT_NO_SEQUENCE_BYTES, UNIT_NO_SEQUENCE_BYTES)
     normal = dict(units_max=members * sets, typical_bytes=members * sets * median, high_bytes=members * sets * p90)
     low_units, high_units = members * BELOW_SCORE_RATE[0], members * BELOW_SCORE_RATE[1]
-    below = dict(units_low=round(low_units, 1), units_high=round(high_units, 1), low_bytes=int(low_units * median),
-                 high_bytes=int(high_units * median), high_p90_bytes=int(high_units * p90))
+    # Slot 2 (Claude-Mac 6025359910): a below_score member may keep a second, genuinely different unit, so the
+    # high estimate counts two units per below_score member at the p90 size.
+    below = dict(units_low=round(low_units, 1), units_high=round(high_units, 1), slot2_units_high=round(high_units, 1),
+                 low_bytes=int(low_units * median), high_bytes=int(high_units * median),
+                 high_p90_bytes=int(2 * high_units * p90))
     total_high = normal['high_bytes'] + below['high_p90_bytes']
     result = dict(schema='goat-export-disk-estimate-v1', members=members, sets_to_export=sets, sequence_data=sequence,
                   unit_median_bytes=median, unit_p90_bytes=p90, normal_exports=normal, below_score=below,
                   total_high_bytes=total_high, min_free_bytes=MIN_FREE_BYTES, basis=BASIS)
     words = ('Disk: up to %d kept export%s (%d members x %d) at about %s each, so about %.1f GB typical and up to %.1f GB'
              % (normal['units_max'], '' if normal['units_max'] == 1 else 's', members, sets,
-                ('%d MB' % round(median / MIB)) if sequence else 'under 1 MB', _gb(normal['typical_bytes']), _gb(normal['high_bytes'])))
-    words += ('; plus about %.1f-%.1f GB for research-only below_score exports (about %.1f-%.1f GB per 100 members, EA build B42 and later)'
-              % (_gb(below['low_bytes']), _gb(below['high_bytes']), _gb(100 * BELOW_SCORE_RATE[0] * median), _gb(100 * BELOW_SCORE_RATE[1] * median)))
-    if free_bytes is not None:
+                ('%d MB' % round(median / 1e6)) if sequence else 'under 1 MB', _gb(normal['typical_bytes']), _gb(normal['high_bytes'])))
+    words += ('; plus about %.1f-%.1f GB for research-only below_score exports (about %.1f-%.1f GB per 100 members, EA build B42 and later), '
+              'up to %.1f GB if each also keeps a second, different pass'
+              % (_gb(below['low_bytes']), _gb(below['high_bytes']), _gb(100 * BELOW_SCORE_RATE[0] * median), _gb(100 * BELOW_SCORE_RATE[1] * median),
+                 _gb(below['high_p90_bytes'])))
+    if free_bytes is None:
+        # Never silent (Claude-Mac 6025359910): an unreadable disk is not a disk that fits.
+        result.update(free_bytes=None, fits=False)
+        words += '. The Common Files disk\'s free space could not be read: check it before starting'
+    else:
         result['free_bytes'] = int(free_bytes)
         result['fits'] = int(free_bytes) - total_high >= MIN_FREE_BYTES
         words += ('. %.1f GB free on the Common Files disk%s' % (_gb(free_bytes), '' if result['fits']

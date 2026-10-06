@@ -4600,7 +4600,10 @@ bool StartExporter(bool reportMode)
      int fwdRanked[];
      string slotDetails="";
      g_goatFwdFallthrough=false; g_goatFwdFallthroughDetails="";
-     if(GoatXmlFwdRank(xmlData.Rows,MinScore,fwdRanked)>0)
+     // The rank's drawdown floor is a share of the run's own tester deposit; unknown, nothing is ranked.
+     double deposit=StringToDouble(GoatOptReadIniValue(strT.str_testerSettings,"Deposit"));
+     if(!(deposit>0)) {errors++; LogOrPrint(reportMode,"❌ The tester deposit could not be read: no export by FWD profit/DD.",Key,EA_Name,Server);}
+     else if(GoatXmlFwdRank(xmlData.Rows,MinScore,deposit,fwdRanked)>0)
         profits=GoatExportSlots(fwdRanked,"",false,MinSR,MinARF,g_allExports,slotDetails,passes,losses,errors,reportMode);
      else
      {
@@ -4608,8 +4611,6 @@ bool StartExporter(bool reportMode)
       // profit/DD pass among all eligible ones; with none, it logs NO_FWD_ELIGIBLE_PASS. Never silent.
       LogOrPrint(reportMode,"No pass at or above MinScore "+DoubleToString(MinScore,1)+" is FWD-eligible ("+GoatXmlFwdIneligibleCounts(xmlData.Rows,MinScore)
                             +"): falling through to the below_score export.",Key,EA_Name,Server);
-      int anyRanked[];
-      xmlData.belowScoreRow=(GoatXmlFwdRank(xmlData.Rows,-1.0,anyRanked)>0 ? anyRanked[0] : -1);
       string belowScore="";
       StartBelowScoreExporter(reportMode,belowScore);
       int scoreRows=0;
@@ -4762,10 +4763,11 @@ bool StartExporter(bool reportMode)
 // (GoatXmlFwdRank: FWD profit/DD). Slot 1 is ranked[0], one tester run: no other pass ever takes its
 // place, so a re-test result (its BOOS or FOOS) never picks the export. Slot 2 is the best remaining
 // pass of a different parameter character (GoatXmlCharacterDifference), else the next best, chosen
-// from the reports before any run; one tester run, kept only when its export clears the quality bar
-// (SR and ARF at or above the run's MinSR/MinARF, never below 2.5/0.2) and it is genuinely different:
-// that character, or a daily-return correlation with slot 1 over SAMPLE of at most 0.5. Otherwise its
-// unit is deleted. The correlation and the reason are logged and returned in details either way.
+// from the reports before any run; one tester run (kept whatever its full span made), kept only when its
+// own equity CSV over SAMPLE ([BOOS end, FOOS start)) clears the quality bar (net > 0, SR and ARF at or
+// above the run's MinSR/MinARF, never below 2.5/0.2) and it is genuinely different: that character, or a
+// daily balance-change correlation with slot 1 over SAMPLE of at most 0.5 on 20+ commonly logged days.
+// BOOS and FOOS never decide slot 2. Otherwise its unit is deleted. The correlation and the reason are logged and returned in details either way.
 // metaTail ends the EA_Desc export metadata (",tier=below_score" for research exports). Fills kept[]
 // from RowsUnique 0 and 1 and returns how many units are kept.
 int GoatExportSlots(const int &ranked[],const string metaTail,const bool keepLosingSlot1,const double minSR,const double minARF,
@@ -4813,25 +4815,34 @@ int GoatExportSlots(const int &ranked[],const string metaTail,const bool keepLos
    details+=";slot2_pass="+(string)xmlData.Rows[second].pass+";slot2_fwd_profit_dd="+DoubleToString(xmlData.Rows[second].forward_RF,4)
             +";slot2_character="+(character!="" ? character : "same");
    LogOrPrint(reportMode,"▶ Export slot 2 candidate: pass "+(string)xmlData.Rows[second].pass+" ("+(character!="" ? "different character: "+character : "same character")+")",Key,EA_Name,Server);
-   int stored2=RunAndStoreSet(1,mode,reportMode,kept,false,3);
+   // Slot 2 is kept whatever its full re-test made (keepLosing, as below_score slot 1): BOOS, FWD and FOOS
+   // are in that re-test, so its profit, SR and ARF never decide slot 2 (Claude-Mac 6025359910). It is
+   // judged on its own equity CSV over [BOOS end, FOOS start) only, the series the correlation uses.
+   int stored2=RunAndStoreSet(1,mode,reportMode,kept,false,3,true);
    runs++; if(stored2==0) lost++; if(stored2<0) failed++;
    if(stored2!=1 || ArraySize(kept)!=2)
      {
-      string why=(stored2==0 ? "re-test lost money" : "tester error");
-      details+=";slot2=skipped;slot2_correlation=na;slot2_reason="+why;
-      LogOrPrint(reportMode,"Export slot 2 skipped: "+why+" (correlation not measured).",Key,EA_Name,Server);
+      details+=";slot2=skipped;slot2_correlation=na;slot2_reason=tester error";
+      LogOrPrint(reportMode,"Export slot 2 skipped: tester error (correlation not measured).",Key,EA_Name,Server);
       return ArraySize(kept);
      }
+   const datetime sampleFrom=xmlData.startD, sampleTo=xmlData.endD+24*60*60;
+   string csv2=GoatExportReadTextCommon(kept[1].csvFile,1);
    int days=0;
-   double corr=GoatDailyReturnCorrelation(GoatExportReadTextCommon(kept[0].csvFile,0),GoatExportReadTextCommon(kept[1].csvFile,1),
-                                          xmlData.startD,xmlData.endD+24*60*60,days);
+   double corr=GoatDailyReturnCorrelation(GoatExportReadTextCommon(kept[0].csvFile,0),csv2,sampleFrom,sampleTo,days);
    string corrText=(corr==EMPTY_VALUE ? "na" : DoubleToString(corr,3));
+   double sample[];
+   bool measured=GoatEquityWindowMetrics(csv2,sampleFrom,sampleTo,sample);
    double barSR=MathMax(minSR,GOAT_EXPORT_SLOT2_MIN_SR), barARF=MathMax(minARF,GOAT_EXPORT_SLOT2_MIN_ARF);
-   bool quality=(kept[1].sr>=barSR && kept[1].arf>=barARF);
+   bool quality=(measured && sample[0]>0 && sample[2]>=barSR && sample[3]>=barARF);
    bool different=(character!="" || (corr!=EMPTY_VALUE && corr<=GOAT_EXPORT_SLOT2_MAX_CORRELATION));
+   if(measured)
+      details+=";slot2_sample_net="+DoubleToString(sample[0],0)+";slot2_sample_sr="+DoubleToString(sample[2],2)+";slot2_sample_arf="+DoubleToString(sample[3],3);
+   details+=";slot2_retest_profit="+DoubleToString(kept[1].prf,0);
    string reason;
-   if(!quality) reason="below the quality bar (SR "+DoubleToString(kept[1].sr,2)+" ARF "+DoubleToString(kept[1].arf,3)
-                       +" under "+DoubleToString(barSR,2)+"/"+DoubleToString(barARF,3)+")";
+   if(!measured) reason="SAMPLE metrics not measurable from its equity CSV";
+   else if(!quality) reason="below the quality bar over SAMPLE (net "+DoubleToString(sample[0],0)+" SR "+DoubleToString(sample[2],2)+" ARF "+DoubleToString(sample[3],3)
+                            +"; needs net > 0, SR "+DoubleToString(barSR,2)+", ARF "+DoubleToString(barARF,3)+")";
    else if(!different) reason=(corr==EMPTY_VALUE ? "same character and SAMPLE correlation unknown ("+(string)days+" days)"
                                                  : "same character and SAMPLE correlation "+corrText+" above "+DoubleToString(GOAT_EXPORT_SLOT2_MAX_CORRELATION,1));
    else reason=(character!="" ? "different character: "+character : "SAMPLE correlation "+corrText+" at or below "+DoubleToString(GOAT_EXPORT_SLOT2_MAX_CORRELATION,1));
@@ -4861,8 +4872,8 @@ void GoatSlotTrimLog(ExportRecord &arr[],const double minARF,const double minSR)
 #endif
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 // BS42 (goatai#1885, Claude-Mac 6021965811, 6022008420 and 6022264062). A member whose kept passes all
-// scored below the export score exports its best passes by FWD profit/DD (xmlData.belowScoreRow is slot
-// 1), with their sequences, for research only, under the export slot rule above, at the normal export
+// scored below the export score exports its best passes by FWD profit/DD (ranked after InitializeTester,
+// with the tester deposit's drawdown floor), with their sequences, for research only, under the export slot rule above, at the normal export
 // point (RunAndStoreSet) over the normal export window. Slot 1 is kept even when its re-test lost money:
 // a research record is never chosen by its BOOS/FOOS result. The units never join g_allExports, the
 // deploy folder or any threshold count: they move to <run>\below_score\<alias>\<symbol>\ and their SET
@@ -4870,10 +4881,19 @@ void GoatSlotTrimLog(ExportRecord &arr[],const double minARF,const double minSR)
 // ";below_score=..." and slot facts for item_stats.tsv.
 int StartBelowScoreExporter(const bool reportMode,string &details)
   {
-   const int pick=xmlData.belowScoreRow;
-   const string rule=";below_score_rank=fwd_profit_dd;below_score_min_fwd_trades="+(string)GOAT_XML_BELOW_SCORE_MIN_FWD_TRADES;
+   const string rule=";below_score_rank=fwd_profit_dd;below_score_dd_floor="+DoubleToString(GOAT_EXPORT_FWD_DD_FLOOR,4)
+                     +";below_score_min_fwd_trades="+(string)GOAT_XML_BELOW_SCORE_MIN_FWD_TRADES;
    details=";below_score=none"+rule;
-   if(pick<0 || pick>=ArraySize(xmlData.Rows))
+   if(xmlData.belowScorePairs!=1)
+   {
+    // xmlData holds the last pair's passes only: never a pick, and never NO_FWD_ELIGIBLE_PASS, from them.
+    details=";below_score=none;below_score_reason=multiple_pairs;below_score_pairs="+(string)xmlData.belowScorePairs+rule;
+    LogOrPrint(reportMode,"No below_score export: "+(string)xmlData.belowScorePairs+" report pairs, so one pair's passes cannot speak for the member.",Key,EA_Name,Server);
+    return 0;
+   }
+   int eligible=0;
+   for(int k=0;k<ArraySize(xmlData.Rows);k++) if(GoatXmlFwdEligible(xmlData.Rows,k,-1.0)) eligible++;
+   if(eligible==0)
    {
     // Never silent (Claude-Mac 6023896492): profitable passes with none FWD-eligible say why, with counts.
     string counts=GoatXmlFwdIneligibleCounts(xmlData.Rows,-1.0);
@@ -4881,16 +4901,25 @@ int StartBelowScoreExporter(const bool reportMode,string &details)
     LogOrPrint(reportMode,"NO_FWD_ELIGIBLE_PASS "+counts+": no pass is FWD and SAMPLE profitable with enough trades; no below_score export.",Key,EA_Name,Server);
     return 0;
    }
-   string facts=";below_score_pass="+(string)xmlData.Rows[pick].pass+";below_score_fwd_profit_dd="+DoubleToString(xmlData.Rows[pick].forward_RF,4)
-                +";below_score_fwd_profit="+DoubleToString(xmlData.Rows[pick].forward_profit,2)+";below_score_fwd_trades="+(string)xmlData.Rows[pick].forward_trades
-                +";below_score_combined_score="+DoubleToString(xmlData.Rows[pick].Score,1)+rule;
-   details=";below_score=failed"+facts;
-   int ranked[];
-   if(GoatXmlFwdRank(xmlData.Rows,-1.0,ranked)<1 || ranked[0]!=pick) {LogOrPrint(reportMode,"❌ The below_score ranking changed after the combine; nothing exported.",Key,EA_Name,Server); return -1;}
+   details=";below_score=failed"+rule;
    string runPath=GoatOptCurrentRunPath(EA_Name,Server);
    if(runPath=="") {LogOrPrint(reportMode,"❌ A below_score export needs the batch run folder; nothing exported.",Key,EA_Name,Server); return -1;}
    if(!reportMode && GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return -1;
    if(!InitializeTester(Key,EA_Name,Server,reportMode)) {LogOrPrint(reportMode,"DEINIT: ❌ Failed to Initialize Tester for the below_score export.",Key,EA_Name,Server); return -1;}
+   // The rank's drawdown floor is a share of the run's own tester deposit; unknown, nothing is ranked.
+   double deposit=StringToDouble(GoatOptReadIniValue(strT.str_testerSettings,"Deposit"));
+   int ranked[];
+   if(GoatXmlFwdRank(xmlData.Rows,-1.0,deposit,ranked)<1)
+   {
+    details=";below_score=failed;below_score_reason=tester_deposit_unknown"+rule;
+    LogOrPrint(reportMode,"❌ The tester deposit could not be read: no below_score export.",Key,EA_Name,Server);
+    return -1;
+   }
+   const int pick=ranked[0];
+   string facts=";below_score_pass="+(string)xmlData.Rows[pick].pass+";below_score_fwd_profit_dd="+DoubleToString(GoatXmlFwdKey(xmlData.Rows,pick,deposit),4)
+                +";below_score_fwd_profit="+DoubleToString(xmlData.Rows[pick].forward_profit,2)+";below_score_fwd_trades="+(string)xmlData.Rows[pick].forward_trades
+                +";below_score_combined_score="+DoubleToString(xmlData.Rows[pick].Score,1)+rule;
+   details=";below_score=failed"+facts;
    string BackOOSDate = FetchExportSetting("BackOOSDate",Key,EA_Name,Server);
    bool   InclBackOOS = StringToInteger(FetchExportSetting("IncludeBackOOS",Key,EA_Name,Server))!=0;
    double MinARF      = StringToDouble(FetchExportSetting("MinARF",Key,EA_Name,Server));

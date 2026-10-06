@@ -64,7 +64,7 @@ from studio_template_tools import validate_raw
 MODE = 'OOSCatchup'
 VERSION_SCHEMA = 'goat-evidence-version-v1'
 PLAN_KEYS = {'schema_version', 'evidence_end', 'sets', 'job_timeout_seconds'}
-PLAN_OPTIONAL = {'broker_clock', 'assume', 'include_below_threshold', 'verdict_rules',
+PLAN_OPTIONAL = {'broker_clock', 'assume', 'include_below_threshold', 'include_research_only', 'verdict_rules',
                  # Library scoring v1 (goatai#2221): one strategy_ref (or null) per set, and the
                  # held-out lock this plan reveals (only its frozen candidate, while revealing).
                  'strategy_refs', 'heldout_reveal',
@@ -196,7 +196,7 @@ def _version_key(record):
     return (record.get('values_sha256'), record.get('symbol'), record.get('period'), record.get('evidence_start'))
 
 
-def classify(export, target, *, include_below_threshold=False, known_versions=()):
+def classify(export, target, *, include_below_threshold=False, include_research_only=False, known_versions=()):
     """Where one export stands against the target evidence end."""
     problems = list(export.get('problems') or [])
     end = export.get('evidence_end')
@@ -209,10 +209,15 @@ def classify(export, target, *, include_below_threshold=False, known_versions=()
     # Re-test eligibility keeps the EA's own rounded comparison (GOAT minimum defaults for a library
     # copy); threshold_passing and the export's qualification stamp record whether it is proven.
     eligible = export['threshold'].get('retest_eligible', export['threshold']['passing'])
-    if export.get('research_only') and not include_below_threshold:
-        # GOAT-EA BS42: an attempt, not a pass. Its own FOOS record grows only on an explicit research opt-in.
-        problems.append('Research-only below_score export (nothing reached the export score); include it explicitly '
-                        'with include_below_threshold to extend its own out-of-sample record')
+    tier = export.get('export_tier', 'standard')
+    if export.get('research_only'):
+        # GOAT-EA BS42: an attempt, not a pass. Its own FOOS record grows only on the separate research opt-in
+        # (include_research_only); include_below_threshold never admits one. The re-test keeps its tier.
+        if tier != 'below_score':
+            problems.append('Unknown export tier ' + str(tier) + ': research only, and the EA cannot re-test it with its tier')
+        elif not include_research_only:
+            problems.append('Research-only below_score export (nothing reached the export score); include it explicitly '
+                            'with include_research_only to extend its own out-of-sample record')
     elif not eligible and not include_below_threshold:
         problems.append('Below the batch export thresholds (profit > 0, ARF >= %g, SR >= %g)'
                         % (export['threshold']['min_arf'], export['threshold']['min_sr']))
@@ -280,14 +285,17 @@ def resolve_target(value='auto', *, broker_clock=None, now=None):
     return evidence_end.resolve(value, now, clock=broker_clock or evidence_end.DEFAULT_CLOCK, allow_day=True)
 
 
-def evidence_scan(sources, *, value='auto', broker_clock=None, now=None, controller_root=None, include_below_threshold=False):
+def evidence_scan(sources, *, value='auto', broker_clock=None, now=None, controller_root=None, include_below_threshold=False,
+                  include_research_only=False):
     """Read-only inventory: every kept export under ``sources`` against one target end."""
     target = resolve_target(value, broker_clock=broker_clock, now=now)
     exports, unreadable = scan(sources)
     known = versions(controller_root) if controller_root else ()
-    rows = [classify(e, target['iso'], include_below_threshold=include_below_threshold, known_versions=known) for e in exports]
+    rows = [classify(e, target['iso'], include_below_threshold=include_below_threshold, include_research_only=include_research_only,
+                     known_versions=known) for e in exports]
     return dict(schema_version=1, target=target, summary=summarize(rows, target['iso'], resolved=target), exports=rows, unreadable=unreadable,
                 rules=dict(evidence_end=target['rule'], thresholds_applied_to_eligibility=not include_below_threshold,
+                           research_only_included=include_research_only,
                            thresholds='each export carries its own threshold, basis and margins'),
                 writes=False, native_launch_qualified=False,
                 next_action='catchup-prepare with the behind SETs re-tests them to %s; nothing runs until catchup-start' % target['iso'])
@@ -366,7 +374,8 @@ def read_operation(controller, args, *, now=None):
                              if local else None)
     if args.operation == 'evidence-scan':
         return evidence_scan([str(p) for p in args.source], value=args.evidence_end, broker_clock=clock, now=now,
-                             controller_root=controller.root, include_below_threshold=args.include_below_threshold)
+                             controller_root=controller.root, include_below_threshold=args.include_below_threshold,
+                             include_research_only=getattr(args, 'include_research_only', False))
     if args.operation == 'evidence-versions':
         rows = versions(controller.root)
         if args.values_sha256:
@@ -418,13 +427,17 @@ def _validate_single_pass(tester):
     validate_tester(view | dict(Optimization=2, OptimizationCriterion=6, ForwardDate=''))
 
 
-def _export_desc(alias, window):
-    """EA_Desc metadata the EA's StartExporter passes, so the re-test SET header has the same windows."""
+def _export_desc(alias, window, tier='standard'):
+    """EA_Desc metadata the EA's StartExporter passes, so the re-test SET header has the same windows.
+
+    A research-only export (GOAT-EA BS42) keeps ``tier=below_score``: the EA writes its ``; EXPORT: below_score``
+    header line again, so the re-test is research only too."""
+    tail = ',tier=below_score' if tier == 'below_score' else ''
     if window['source'] == 'unknown':
-        return alias + '@{mode=EXPORT}'
+        return alias + '@{mode=EXPORT' + tail + '}'
     foos = _mt5(_date(window['ToDate']) + timedelta(days=1))
     return (alias + '@{mode=EXPORT,dt_BOOS_end=' + window['FromDate'] + ',dt_FOOS_start=' + foos
-            + ',dt_FWD_start=' + window['ForwardDate'] + ',dt_FWD_end=' + window['ToDate'] + '}')
+            + ',dt_FWD_start=' + window['ForwardDate'] + ',dt_FWD_end=' + window['ToDate'] + tail + '}')
 
 
 class CatchupRunner(SeedRunner):
@@ -471,6 +484,8 @@ class CatchupRunner(SeedRunner):
             raise ValueError('assume may only give a fixed ExecutionMode delay 0..600000 (random delay -1 cannot reproduce)')
         if type(plan.get('include_below_threshold', False)) is not bool:
             raise ValueError('include_below_threshold must be true or false')
+        if type(plan.get('include_research_only', False)) is not bool:
+            raise ValueError('include_research_only must be true or false')
         validate_rules(plan.get('verdict_rules'))
         from studio_strategy_attribution import parse_ref_list
         self._strategy_refs = dict(zip((str(Path(p)).lower() for p in sets),
@@ -497,7 +512,8 @@ class CatchupRunner(SeedRunner):
             except (OSError, ValueError, UnicodeError) as exc:
                 rows.append(dict(set_path=path, status='ineligible', reasons=['Unreadable export: ' + str(exc)]))
                 continue
-            row = classify(export, target['iso'], include_below_threshold=plan.get('include_below_threshold', False), known_versions=known)
+            row = classify(export, target['iso'], include_below_threshold=plan.get('include_below_threshold', False),
+                           include_research_only=plan.get('include_research_only', False), known_versions=known)
             if row['status'] == 'behind':
                 reasons, bridge = self._member_problems(export, account, certificates=certificates)
                 facts, window, assumed, missing = _tester_conditions(export, assume)
@@ -652,7 +668,8 @@ class CatchupRunner(SeedRunner):
         if bridge and bridge['mode'] == 'canary' and source_inputs is None:
             raise ValueError('A canary member needs the export capture\'s source-inputs.set: ' + export['set_path'])
         values = read_values(frozen)
-        inputs = dict(values, EA_Desc=_export_desc(alias, window), Sequence_Export_Enabled='true' if source_inputs is not None else 'false',
+        tier = export.get('export_tier', 'standard')
+        inputs = dict(values, EA_Desc=_export_desc(alias, window, tier), Sequence_Export_Enabled='true' if source_inputs is not None else 'false',
                       Sequence_Export_Id=capture_id, Sequence_Export_Start=tester['FromDate'], Sequence_Export_End=tester['ToDate'],
                       Sequence_Export_Model='4')
         sections = {'Common': {'Login': account['login'], 'Server': account['server']}, 'Experts': {'Enabled': 0, 'AllowLiveTrading': 0},
@@ -678,6 +695,7 @@ class CatchupRunner(SeedRunner):
                       set_path=str(set_path), set_sha256=hashlib.sha256(frozen).hexdigest(),
                       config_path=str(config_path), config_sha256=hashlib.sha256(config).hexdigest(),
                       evidence_dir=str(evidence_dir), assumed=assumed, optimization_window=window,
+                      export_tier=tier, research_only=bool(export.get('research_only')),
                       original=dict(set_path=export['set_path'], set_sha256=export['set_sha256'], values_sha256=export['values_sha256'],
                                     member=export.get('member'), run_id=(export.get('run') or {}).get('run_id'),
                                     evidence_start=export['evidence_start'], evidence_end=export['evidence_end'],
@@ -790,7 +808,8 @@ class CatchupRunner(SeedRunner):
         manifest = dict(schema_version=1, batch_id=batch_id, installation_sha256=sha(self.c.install), schema_sha256=sha(self.c.schema),
                         plan_sha256=sha(plan), plan=plan, created_unix=self.clock(), members=members, mode=MODE,
                         evidence_end=target, exports=rows, verdict_rules=validate_rules(plan.get('verdict_rules')),
-                        include_below_threshold=plan.get('include_below_threshold', False), native_launch_qualified=False)
+                        include_below_threshold=plan.get('include_below_threshold', False),
+                        include_research_only=plan.get('include_research_only', False), native_launch_qualified=False)
         if self.heldout_reveal is not None:
             manifest['heldout_reveal'] = self.heldout_reveal
         if len(json.dumps(manifest).encode('utf-8')) > MAX_MANIFEST_BYTES:
@@ -917,6 +936,9 @@ class CatchupRunner(SeedRunner):
         version = dict(schema=VERSION_SCHEMA, values_sha256=retest['values_sha256'], symbol=retest['symbol'], period=retest['period'],
                        evidence_start=retest['evidence_start'], evidence_end=retest['evidence_end'], evidence_end_source=retest['evidence_end_source'],
                        target_end=manifest['evidence_end']['iso'], catchup_id=manifest['batch_id'], alias=spec['alias'],
+                       # GOAT-EA BS42: the tier the original carried and the tier the re-test SET reads back as.
+                       export_tier=spec.get('export_tier', 'standard'), research_only=bool(spec.get('research_only')),
+                       retest_export_tier=retest.get('export_tier', 'standard'),
                        created_utc=created, catch_up=catch_up_stamp(dict(spec, pins=pins), manifest, verdict, created,
                                                                     (original.get('windows') or {}).get('FOOS')),
                        original=dict(spec['original'], csv_path=original['csv_path']),

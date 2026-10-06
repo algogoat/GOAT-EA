@@ -774,6 +774,12 @@ SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
   judge here" (never promote on thin data); M1 and other high-frequency sets are judged
   mainly on execution parity (live vs backtest, same weeks, real spread, slippage and
   commission); PF ≥ 1.0 at the portfolio level. Not automated yet.
+- Exact pre-FOOS metrics: each kept set in `finish` → `reports` → `exports.files[]`
+  carries `window_metrics` with `preFoos` (export start to the optimization end),
+  `selectionWindow` (SAMPLE + FWD) and `fullExport`, each `{from, to, days, profit,`r
+  `pf, pfNote, trades, tradeSource, maxDd, ddPct, arf, sharpe, recoveryFactor, equityNet}`,
+  computed by the controller from the equity CSV and capture deals with the same PF/DD
+  definitions (`sharpe` is daily-equity based, not the header SR).
 - On #1885 and to Vince: give the windows with dates, call FOOS "held out" (never a
   ranking reason), and say "not eligible yet: N of 30 FOOS trades" rather than failed.
 

@@ -168,6 +168,54 @@ Where it is reported (additive; nothing already reported changed):
   thresholds, `oos_rule` says whether a formula set passed its BOOS and FOOS.
 - `batch-status` of a formula batch: `oos_windows` with every window and the FOOS replay to run.
 
+## Exact pre-FOOS metrics at export (`goat-export-window-metrics-v1`)
+
+Claude-Mac's ruling (goatai#1885 comment 6006565005): the desktop estimated pre-FOOS ARF and
+Sharpe by scaling the EA's full-period header values. The EA writes its header and file-name
+metrics over the whole export test and is not changed here, so the **controller** computes exact
+values from what each export unit already holds: the equity CSV and, when the export carries a
+complete sequence capture, its `deals.csv` (`controller/studio_window_metrics.py`).
+
+Where: the report pipeline. `finish` → `reports` → each member's `exports.files[]` item (the
+per-set records the agent imports into the matrix) carries `window_metrics`:
+
+```json
+"window_metrics": {
+  "schema": "goat-export-window-metrics-v1",
+  "basis": "controller_replay_of_export_csv_and_capture",
+  "preFoos":         {"from": "...", "to": "...", "days": 0, "profit": 0, "pf": 0, "pfNote": null, "trades": 0,
+                      "tradeSource": "capture_deals", "maxDd": 0, "ddPct": 0, "arf": 0, "sharpe": 0,
+                      "recoveryFactor": 0, "equityNet": 0},
+  "selectionWindow": {"...": "same fields"},
+  "fullExport":      {"...": "same fields"},
+  "optimizationEnd": "YYYY-MM-DD", "foosStart": "YYYY-MM-DD", "tradeSource": "capture_deals | set_header_or_none"
+}
+```
+
+- `preFoos`: everything the export holds before FOOS, from the export start (BOOS start when the
+  export includes BOOS, else SAMPLE start) through the optimization end (MT5 `ToDate` − 1 day).
+- `selectionWindow`: SAMPLE + FWD only, `FromDate` through the optimization end (house portfolios
+  rank on this span).
+- `fullExport`: the whole export with the same definitions, so the desktop compares like with like.
+- `from`/`to` are inclusive broker days; `days` counts Mon–Fri days.
+- `trades`, `profit`, `pf`, `pfNote`: the OOS evaluator's definitions (positions opened in the
+  window; net of profit + swap + commission + fee; deal-level PF, `pfNote: "no losing deals"` when
+  nothing lost). Without a complete capture, `trades` and `profit` are the sums of the EA's SET
+  header window lines (`tradeSource: "set_header"`) when they cover the window exactly, and `pf` is
+  null; otherwise all three are null.
+- `maxDd`, `ddPct`: the evaluator's equity drawdown (peak starting at the window's opening
+  equity); `ddPct` is the deepest fall as a percent of the running peak at that moment.
+- `recoveryFactor` = `profit` / `maxDd`; `equityNet` = closing − opening equity.
+- `arf`: the EA's header ARF (monthly ARF from `OnTester`) replayed on the one-minute samples:
+  Return / (EA MeanDD of the five deepest drawdown episodes / opening equity) / (days / 21.7). The
+  EA measures on ticks and counts days with ticks, so it can differ slightly from a header ARF over
+  the same span.
+- `sharpe`: daily equity returns (Mon–Fri closes, carried forward), mean / sample standard
+  deviation × √252. It is **not** MT5's `STAT_SHARPE_RATIO` (the header SR); compare it only with
+  `fullExport.sharpe`.
+- A unit whose CSV cannot be read gets `window_metrics: {status: "unavailable", reason}`; the
+  export's status and qualification never change because of it. For a held-out-locked export the
+  whole `window_metrics` (and `oos_rule`) is redacted like every other tested value.
 ## Plans
 
 Batch plan (`prepare-batch`): add `"oos_windows": {"optimization_months": 12}` (or

@@ -2,7 +2,7 @@
 
 Each guard (the pass bar, the 30-trade floor, the rounding, FOOS held out of the export,
 re-derivation at activation, unchanged explicit plans) is weakened in a temporary copy of
-controller/ and controller/test_studio_oos_windows.py must fail. The repository is never
+controller/ and controller/test_studio_oos_windows.py or test_studio_window_metrics.py must fail. The repository is never
 modified. Works with an embedded Python that ignores cwd (sys.path is set here).
 GOAT_MUTATION_TMP may name the scratch folder (default: the system temp folder).
 """
@@ -18,7 +18,7 @@ RUNNER = ('import sys,unittest\n'
           'root=sys.argv[1]\n'
           'sys.path[:]=[p for p in sys.path if not p.rstrip("\\\\/").lower().endswith("controller")]\n'
           'sys.path.insert(0,root)\n'
-          'suite=unittest.defaultTestLoader.discover(root,pattern="test_studio_oos_windows.py",top_level_dir=root)\n'
+          'suite=unittest.defaultTestLoader.discover(root,pattern="test_studio_*window*.py",top_level_dir=root)\n'
           'result=unittest.TextTestRunner(stream=open(sys.argv[2],"w",encoding="utf-8"),verbosity=1).run(suite)\n'
           'sys.exit(0 if result.wasSuccessful() else 1)\n')
 RULE = 'studio_oos_windows.py'
@@ -68,8 +68,16 @@ MUTATIONS = [
     ('successor loses the windows', 'studio_batch.py',
      "        remaining['oos_windows'] = dict(optimization_weeks=oos_record['o_weeks'], export_friday=oos_record['export_friday'])\n",
      '        pass\n'),
+    # Exact pre-FOOS metrics at export (studio_window_metrics).
+    ('pre-FOOS window runs into FOOS', 'studio_window_metrics.py', 'return export_start, start, to_date - timedelta(days=1)',
+     'return export_start, start, to_date + timedelta(days=27)'),
+    ('selection window includes BOOS', 'studio_window_metrics.py', 'selectionWindow=window(rows, sample_start,', 'selectionWindow=window(rows, export_start,'),
+    ('EA MeanDD weights changed', 'studio_window_metrics.py', 'return (dds[0] * 6 + dds[1] * 5) / 11', 'return (dds[0] * 6 + dds[1] * 5) / 10'),
+    ('DD peak ignores the opening equity', 'studio_window_metrics.py', 'peak, dd, dd_pct, episode, episodes = opening,',
+     'peak, dd, dd_pct, episode, episodes = inside[0][1],'),
+    ('report scan drops the metrics', 'studio_export_scan.py', '        if windows is not None:\n', '        if False:\n'),
+    ('locked metrics not redacted', 'studio_heldout_guard.py', "'oos_rule', 'window_metrics', 'preFoos', 'selectionWindow', 'fullExport'))", "'fullExport'))"),
 ]
-
 
 def main():
     caught = 0

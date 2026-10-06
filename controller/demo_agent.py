@@ -2606,8 +2606,11 @@ class DemoAgent:
         return dict(runner.status(batch_id), driver_budget_exhausted=True,
                     next_action=kind + '-resume continues the retained original attempt; no retry')
 
-    def _lane_validate(self, kind, plan):
-        """Non-executing plan and SET validation: no file, process, broker or terminal effect."""
+    def _lane_validate(self, kind, plan, batch_id=None):
+        """Non-executing plan and SET validation: no file, process, broker or terminal effect.
+
+        A catch-up is sized for ``batch_id`` (its real ID) when given, else for the longest legal ID.
+        """
         from goat_studio import Controller
         plan_path = Path(plan).resolve()
         value = read_json(plan_path)
@@ -2619,7 +2622,8 @@ class DemoAgent:
             from studio_seed import SeedRunner as Runner
         controller = Controller(self.installation_path)   # installation and input contracts only; no store
         controller.session = self.session
-        result = Runner(controller, process=_NoTerminal()).validate(value)
+        runner = Runner(controller, process=_NoTerminal())
+        result = runner.validate(value, batch_id) if kind == 'catchup' else runner.validate(value)
         self._append(kind + '_validate', 'checked', plan=str(plan_path), plan_sha256=digest(plan_path),
                      job_count=result.get('job_count', result.get('member_count', result.get('test_count'))))
         return result
@@ -2887,8 +2891,8 @@ class DemoAgent:
     # new evidence end (studio_catchup). Same lane as seeds: MT5 closes and
     # relaunches per member, under the same broker-verified start record rules.
 
-    def catchup_validate(self, plan):
-        return self._lane_validate('catchup', plan)
+    def catchup_validate(self, plan, catchup_id=None):
+        return self._lane_validate('catchup', plan, catchup_id)
 
     def catchup_prepare(self, catchup_id, plan):
         return self._lane_prepare('catchup', catchup_id, plan)
@@ -3269,7 +3273,9 @@ def main(argv=None):
     qualification.add_argument('--write', action='store_true',
                                help='Also append each run\'s record under <controller state>/export-qualification/<run>/ '
                                     '(a new file each time; nothing is overwritten)')
-    commands.add_parser('catchup-validate', help='Non-executing catch-up plan preview').add_argument('--plan', type=Path, required=True)
+    catchup_check = commands.add_parser('catchup-validate', help='Non-executing catch-up plan preview')
+    catchup_check.add_argument('--plan', type=Path, required=True)
+    catchup_check.add_argument('--catchup-id', help='Size the preview for this catch-up ID (default: the longest legal ID)')
     catchup_prep = commands.add_parser('catchup-prepare', help='Freeze one single-pass re-test per stale export; no launch')
     catchup_prep.add_argument('--catchup-id', required=True)
     catchup_prep.add_argument('--plan', type=Path, required=True)
@@ -3359,7 +3365,7 @@ def main(argv=None):
         elif args.command == 'evidence-end': result = agent.evidence_end(args.value, broker_clock=args.broker_clock)
         elif args.command == 'evidence-scan': result = agent.evidence_scan([str(p) for p in args.source], args.evidence_end,
             broker_clock=args.broker_clock, include_below_threshold=args.include_below_threshold)
-        elif args.command == 'catchup-validate': result = agent.catchup_validate(args.plan)
+        elif args.command == 'catchup-validate': result = agent.catchup_validate(args.plan, args.catchup_id)
         elif args.command == 'catchup-prepare': result = agent.catchup_prepare(args.catchup_id, args.plan)
         elif args.command == 'catchup-start': result = agent.catchup_start(args.catchup_id, args.max_seconds, detach=_lane_detached(args))
         elif args.command == 'catchup-resume': result = agent.catchup_resume(args.catchup_id, args.max_seconds, detach=_lane_detached(args))

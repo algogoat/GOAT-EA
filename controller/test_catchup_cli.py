@@ -86,6 +86,14 @@ class CatchupCliTests(unittest.TestCase):
         self.assertFalse((Path(self.fixture.receipt['controller_state_root']) / 'catchups').exists())
         reasons = ' '.join(' '.join(row.get('reasons', [])) for row in preview['exports'])
         self.assertIn('Below the batch export thresholds', reasons)
+        # Sized for the real ID (goatai#1885 6008582393): a 23-character ID validates, and paths says how long each gets.
+        code, sized = self.cli('catchup-validate', '--plan', str(plan), '--catchup-id', 'catchup-20261005-banker')
+        self.assertEqual(code, 0, sized)
+        paths = sized['result']['paths']
+        self.assertEqual((paths['catchup_id'], paths['catchup_id_length']), ('catchup-20261005-banker', 23))
+        self.assertEqual(paths['evidence_worst_case'], paths['state_root_length'] + 168)
+        self.assertFalse((Path(self.fixture.receipt['controller_state_root']) / 'catchups').exists())
+        self.assertFalse((Path(self.fixture.receipt['controller_state_root']) / 'evidence').exists())
         runner = Mock()
         runner.prepare.return_value = {'synthetic_route_only': True}
         runner.start.return_value = {'synthetic_route_only': True}

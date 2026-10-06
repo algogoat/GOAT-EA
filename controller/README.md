@@ -527,7 +527,11 @@ never sets the driver journal's `cancel_issued`, keeps the driver's disk guard
 and finish running, and records `paused` with a resume token. A journal left at
 `stop_unconfirmed` is adopted. `batch-resume --job-id <id>` prepares the
 remaining members as `<id>-rN` with lineage (the demo lane also starts it).
-`research-status` is the read-only lane view; `research-queue` is the read-only
+`research-status` is the read-only lane view. It reports the latest batch: a parent's
+pause shows only until a newer batch starts, and a batch the queue marks `failed`
+reads `finished_with_errors` (every member ended; `members_failed` real MT5 errors),
+`finished` (only no-edge results) or `failed` (members never ran, or cancelled);
+`queue_status` keeps the queue's word. `research-queue` is the read-only
 list of every batch (Refine), seed hunt (Explore) and catch-up (Prove), one row
 each, with results redacted by the held-out guard per key and window. Rules and states:
 [AGENT-START-HERE.md](AGENT-START-HERE.md) and [DEMO-AGENT-TOOLS.md](DEMO-AGENT-TOOLS.md).
@@ -600,9 +604,17 @@ inputs (`EA_Desc=<alias>@{mode=EXPORT,dt_BOOS_end,dt_FOOS_start,dt_FWD_start,dt_
 and `Sequence_Export_*`, exactly as `RunAndStoreSet` passes them). The runner
 stages the capture's `GOATSequencePending\<id>\source-inputs.set` before launch;
 the EA writes its usual SET/CSV/`.goatseq` unit into `Common Files\TEMP\SQ\<token>`
-and the runner moves it to `<controller state>\evidence\<catch-up id>\<alias>\`
+and the runner moves it to `<controller state>\evidence\c.<10 hex of SHA-256(catch-up id)>\<member number>\`
 with an `evidence-version.json` that links the original (same `values_sha256`, new
-end date). Catch-up shares the seed terminal slot (`seed-active.json`), owner STOP,
+end date); the folder's `catchup.json` records the readable catch-up ID and each
+member's alias. The path is bounded whatever the ID: the longest file below a member
+folder is len(state root) + 168 characters. Past the Windows 260-character limit the
+controller opens `catchups\<id>` and `evidence\` through the `\\?\` extended-length
+form; MT5's own paths (tester INI, report, `Common Files`) stay plain and a member
+whose MT5 path would pass the limit is refused with that path. Catch-ups prepared
+before this layout keep `evidence\<catch-up id>\<alias>\` and are read as they are.
+`catchup-validate --catchup-id <id>` sizes the preview for that ID (`paths` reports
+each worst case). Catch-up shares the seed terminal slot (`seed-active.json`), owner STOP,
 pause and broker-verified start record rules, and the seed member-failure rules
 (goatai#1885, [SEED-WORKFLOW.md](SEED-WORKFLOW.md#run-resume-and-cancel)): a failed,
 timed-out or output-less member fails only itself with a plain `error`, the

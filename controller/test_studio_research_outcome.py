@@ -21,8 +21,8 @@ from studio_bridge import write_json
 import studio_batch_pause as pause
 from studio_batch import resume_batch
 from studio_finish import _research_outcomes
-from studio_research_status import (ITEM_STATS_HEADER, batch_progress, headline, item_outcomes, no_edge_members,
-                                    no_edge_summary, pace)
+from studio_research_status import (ITEM_STATS_HEADER, batch_progress, end_state, headline, item_outcomes, no_edge_members,
+                                    no_edge_summary, pace, research_status)
 import test_studio_batch_pause as pause_fixtures
 
 NOW = 1_800_000_000
@@ -235,6 +235,77 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(pace(None, ['native_completed', 'native_error', 'native_pending'], now=NOW, fallback_started=NOW - 3600)['minutes_per_member'], 60.0)
         self.assertEqual(pace(None, ['native_completed', 'native_error', 'native_pending'], now=NOW, fallback_started=NOW - 3600,
                               tested={1})['minutes_per_member'], 30.0)
+
+    # goatai#1885: a finished batch whose members ended native_error read "failed", then the
+    # status fell back to its older parent's pause and the watcher reported "paused".
+    def test_end_state_tells_finished_with_errors_from_failed(self):
+        write_stats(self.run, [stats_row(self.aliases[1], 'USDCAD')])
+        finished = self.progress(['native_completed', 'native_error', 'native_error', 'native_error'])
+        self.assertEqual((finished['members_failed'], finished['members_no_edge'], finished['members_native_error']), (2, 1, 3))
+        self.assertEqual(end_state('failed', finished), 'finished_with_errors')
+        self.assertEqual(headline(dict(kind='batch', status='finished_with_errors', **finished)),
+                         'Batch finished with errors; 1 of 4 members done, 0 qualifying, 1 tested with no edge in '
+                         '2024.01.08 to 2025.01.06, 2 failed.')
+        self.assertEqual(end_state('completed', finished), 'finished_with_errors')
+        # Members never reached an end, or some were cancelled: the batch really failed / stopped early.
+        for statuses in (['native_completed', 'native_error', 'native_pending', 'native_pending'],
+                         ['native_completed', 'native_error', 'native_cancelled', 'native_cancelled']):
+            with self.subTest(statuses=statuses):
+                self.assertEqual(end_state('failed', self.progress(statuses)), 'failed')
+        # Native evidence unreadable: never relabelled.
+        self.assertEqual(end_state('failed', dict(finished, evidence='native_unreadable')), 'failed')
+        # Only no-edge errors: finished, with no failures.
+        write_stats(self.run, [stats_row(alias, symbol) for alias, symbol in zip(self.aliases[1:], self.SYMBOLS[1:])])
+        no_edge = self.progress(['native_completed', 'native_error', 'native_error', 'native_error'])
+        self.assertEqual(end_state('failed', no_edge), 'finished')
+        self.assertEqual(headline(dict(kind='batch', status='finished', **no_edge)),
+                         'Batch finished; 1 of 4 members done, 0 qualifying, 3 tested with no edge in 2024.01.08 to 2025.01.06.')
+        clean = self.progress(['native_completed'] * 4)
+        self.assertEqual(end_state('completed', clean), 'completed')
+
+    def status(self, jobs, statuses):
+        install = dict(common_files_root=str(self.common), terminal_data_root=str(self.root.parent / 'data'),
+                       terminal_executable='terminal64.exe', ea_version='1.49', ea_sha256='e' * 64)
+        session = dict(run_id='r', terminal_id='t', account=dict(login='1', server='Demo'))
+        native = dict(status='native_error', members=[dict(status=s) for s in statuses],
+                      completed_count=statuses.count('native_completed'),
+                      finished_count=sum(s in ('native_completed', 'native_error', 'native_cancelled') for s in statuses),
+                      status_counts={s: statuses.count(s) for s in set(statuses)})
+        with patch('studio_native_observe.observe', return_value=native):
+            return research_status(root=self.root, install=install, session=session, local=self.root / 'local', now=NOW,
+                                   process=None, jobs=jobs)['activity']
+
+    def paused_parent(self, successor='g6'):
+        record = dict(schema_version=pause.SCHEMA_VERSION, job_id='g5', pause_id='p1', state='paused', phase='paused',
+                      successor_batch_id=successor, members_completed=2, members_remaining=4)
+        (self.root / pause.FOLDER).mkdir(exist_ok=True)
+        write_json(self.root / pause.FOLDER / 'g5.json', record)
+        return dict(job_id='g5', status='cancelled', launch_intent={}, configuration=dict(batch_members=[{}] * 6))
+
+    def test_newer_finished_batch_is_never_reported_as_its_parents_pause(self):
+        write_stats(self.run, [stats_row(self.aliases[1], 'USDCAD')])
+        statuses = ['native_completed', 'native_error', 'native_error', 'native_error']
+        activity = self.status([self.paused_parent(), dict(self.job, status='failed')], statuses)
+        self.assertEqual((activity['batch_id'], activity['status'], activity['queue_status']), ('g6', 'finished_with_errors', 'failed'))
+        self.assertIsNone(activity['pause'])
+        self.assertTrue(activity['headline'].startswith('Batch finished with errors; 1 of 4 members done'), activity['headline'])
+        self.assertNotIn('aused', activity['headline'])
+        # A batch that stopped with members left still reads failed, and still not paused.
+        activity = self.status([self.paused_parent(), dict(self.job, status='failed')],
+                               ['native_completed', 'native_error', 'native_pending', 'native_pending'])
+        self.assertEqual((activity['batch_id'], activity['status']), ('g6', 'failed'))
+        self.assertEqual(activity['headline'], 'Batch failed; 1 of 4 members done, 0 qualifying, 1 tested with no edge in '
+                                               '2024.01.08 to 2025.01.06, 2 never ran.')
+
+    def test_pause_still_shows_while_it_is_the_latest_work(self):
+        # Successor prepared but never started: the parent's pause is the current state.
+        pending = dict(job_id='g6', status='pending', configuration=dict(batch_members=[{}] * 4))
+        activity = self.status([self.paused_parent(), pending], ['native_pending'] * 4)
+        self.assertEqual((activity['batch_id'], activity['status']), ('g5', 'paused'))
+        self.assertIn('Resume continues', activity['headline'])
+        # Alone, the paused batch is current too.
+        activity = self.status([self.paused_parent(successor=None)], ['native_pending'] * 4)
+        self.assertEqual((activity['batch_id'], activity['status']), ('g5', 'paused'))
 
 
 class FinishTests(unittest.TestCase):

@@ -560,7 +560,8 @@ def batch_progress(root, install, job, *, now, journal=None):
     result = dict(members_total=len(members), members_done=0, members_finished=0, qualifying=None,
                   exported_sets=None, passing_sets=None, below_threshold_members=None, below_threshold_sets=None,
                   unknown_members=None, unknown_sets=None, thresholds=None, qualifying_basis=None,
-                  members_no_edge=None, no_edge_counts=None, members_failed=None, members_cancelled=None, no_edge_window=None,
+                  members_no_edge=None, no_edge_counts=None, members_failed=None, members_native_error=None,
+                  members_cancelled=None, no_edge_window=None,
                   no_edge=None, last_member=None, current_member=None, pace=None, evidence='unavailable')
     manifest, _ = _bounded_json(package / 'manifest.json', 64 * 1024 * 1024)
     if not isinstance(manifest, dict) or 'launch_intent' not in job:
@@ -624,6 +625,7 @@ def batch_progress(root, install, job, *, now, journal=None):
     result.update(members_done=native['completed_count'], members_finished=native['finished_count'],
                   status_counts=native['status_counts'],
                   members_no_edge=len(no_edge), members_failed=statuses.count('native_error') - len(no_edge),
+                  members_native_error=statuses.count('native_error'),
                   no_edge_counts={kind: n for kind in OUTCOME_ORDER
                                   if (n := sum(o['outcome'] == kind for o in no_edge.values()))},
                   members_cancelled=statuses.count('native_cancelled'),
@@ -739,6 +741,29 @@ def disk(install, root, minimum):
                 lowest_free_bytes=min((v['free_bytes'] for v in volumes if v['free_bytes'] is not None), default=None))
 
 
+def _superseded(job, jobs):
+    """True when a batch queued after ``job`` has started or ended: ``job``'s pause is then history."""
+    later = jobs[jobs.index(job) + 1:]
+    return any('launch_intent' in other or other.get('status') in ACTIVE | TERMINAL for other in later)
+
+
+def end_state(status, progress):
+    """The honest end of a batch the queue marks ``completed`` or ``failed``, from its native members.
+
+    The queue says ``failed`` whenever a member ended with MT5's Error status. When every member reached
+    an end and none was cancelled, the batch ran to completion: ``finished_with_errors`` names the members
+    that really failed (``members_failed``), and a batch whose only errors were no-edge results is
+    ``finished``. ``failed`` stays for a batch that stopped with members left, was cancelled part-way, or
+    whose native evidence cannot be read.
+    """
+    total, ended = progress.get('members_total'), progress.get('members_finished')
+    if progress.get('evidence') != 'native_queue' or not total or ended != total or progress.get('members_cancelled'):
+        return status
+    if progress.get('members_failed'):
+        return 'finished_with_errors'
+    return 'finished' if status == 'failed' else status
+
+
 def lineage(root, batch_id, limit=50):
     """Paused batch -> successor chain for results and scoreboard continuity."""
     chain = [batch_id]
@@ -830,6 +855,16 @@ def headline(activity):
         current = activity.get('current_member') or {}
         member = (' on ' + current['symbol'] + ' ' + current['timeframe']) if current.get('symbol') else ''
         return 'Running' + dict(catchup=' OOS catch-up', holdup=' hold-up test').get(kind, '') + member + ';' + counts + left + '.'
+    if status == 'finished_with_errors':
+        # Every member ran to an end; "N failed" in the counts are the members MT5 ended with Error.
+        return name[0].upper() + name[1:] + ' finished with errors;' + counts + '.'
+    if status == 'finished':
+        return name[0].upper() + name[1:] + ' finished;' + counts + '.'
+    ended = activity.get('members_finished')
+    unreached = (total - ended) if status == 'failed' and type(total) is int and type(ended) is int and ended < total else 0
+    if unreached:
+        # The queue failed with members it never reached: never "finished", whatever the others did.
+        return name[0].upper() + name[1:] + ' failed;' + counts + ', ' + str(unreached) + ' never ran.'
     if status == 'failed' and no_edge and failed == 0:
         # The queue calls it failed only because no-edge members keep an Error status.
         # Cancelled members mean it stopped early: never "finished" (counts name them).
@@ -855,7 +890,11 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
         if value is not None:
             pauses[job['job_id']] = value
     active = [job for job in jobs if job.get('status') in ACTIVE]
-    pausing = [job for job in jobs if pauses.get(job['job_id'], {}).get('state') in ('pausing', 'paused')]
+    # A pause shows only while it is the latest work: a parent paused before a newer batch started (its
+    # successor, or any later batch) is history, never the current state (goatai#1885: a finished batch
+    # fell back to its old parent's pause and the watcher reported "paused").
+    pausing = [job for job in jobs if pauses.get(job['job_id'], {}).get('state') in ('pausing', 'paused')
+               and not _superseded(job, jobs)]
     current = active[-1] if active else (pausing[-1] if pausing else (jobs[-1] if jobs else None))
     seed_slot, _ = _bounded_json(root / 'seed-active.json', 64 * 1024)
     seed_id = seed_slot.get('batch_id') if isinstance(seed_slot, dict) and seed_slot.get('status') == 'active' else None
@@ -884,6 +923,8 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
             status = pause['state']
         elif status in ('reserved', 'starting', 'reconcile_required', 'verifying'):
             status = 'running' if status in ('reconcile_required', 'verifying') else status
+        elif status in ('completed', 'failed'):
+            status = end_state(status, progress)
         activity = dict(kind='batch', batch_id=current['job_id'], status=status, queue_status=current['status'],
                         lineage=lineage(root, current['job_id']), pause=None if pause is None else public_pause(pause),
                         **progress)

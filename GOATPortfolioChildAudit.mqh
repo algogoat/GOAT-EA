@@ -177,6 +177,17 @@ bool GoatChildAuditMaps(const string source,const int mode,const int threshold,c
       {if(values[i]!=omitted_values[n]) return false;found=true;}
       if(!found && !GoatChildAuditAdd(names,values,omitted_names[n],omitted_values[n])) return false;
    }
+   // Also omitted by WriteSet, but declared only by some builds (Sequence_Export_* from V1.48,
+   // GOAT_FitnessRunNonce in V1.49). When the child carries one the SET does not, it must hold its default.
+   string declared_names[6]={"Sequence_Export_Enabled","Sequence_Export_Id","Sequence_Export_Start","Sequence_Export_End","Sequence_Export_Model","GOAT_FitnessRunNonce"};
+   string declared_values[6]={"false","","0","0","4","0"};
+   for(int n=0;n<6;n++)
+   {
+      bool found=false;
+      for(int i=0;i<ArraySize(names);i++) if(names[i]==declared_names[n]) found=true;
+      for(int j=0;j<ArraySize(actual_names) && !found;j++) if(actual_names[j]==declared_names[n])
+      {if(!GoatChildAuditAdd(names,values,declared_names[n],declared_values[n])) return false;found=true;}
+   }
    if(ArraySize(names)!=ArraySize(actual_names)) return false;
    for(int i=0;i<ArraySize(names);i++)
    {

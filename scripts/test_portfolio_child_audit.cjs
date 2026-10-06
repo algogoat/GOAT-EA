@@ -36,6 +36,16 @@ for(const bad of [head+inputs.replace('Risk=500\n','')+tail,head+inputs.replace(
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,bad,expert),false);passed++;
 }
 assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+'===========GROUP============ =\n'+inputs+tail,expert),true);passed++;
+// B41.1: a V1.49 child template carries six inputs WriteSet omits. Accepted only at their defaults.
+const declared='Sequence_Export_Enabled=false\nSequence_Export_Id=\nSequence_Export_Start=0\nSequence_Export_End=0\nSequence_Export_Model=4\nGOAT_FitnessRunNonce=0\n';
+assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared+tail,expert),true);passed++;
+assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared.replace('Sequence_Export_Model=4\n','')+tail,expert),true);passed++;
+assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=4\n',0,50,2,head+inputs+declared+tail,expert),true);passed++;
+for(const [from,to] of [['Enabled=false','Enabled=true'],['Id=\n','Id=x\n'],['Start=0','Start=1750896000'],['End=0','End=1'],['Model=4','Model=1'],['Nonce=0','Nonce=7']]){
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared.replace(from,to)+tail,expert),false,from);passed++;
+}
+assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared+'Unknown=1\n'+tail,expert),false);passed++;
+assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,head+inputs+declared+tail,expert),false);passed++;
 assert.match(source,/CryptEncode\(CRYPT_HASH_SHA256,bytes,key,digest\)/);
 assert.match(source,/ChartSaveTemplate\(cid,"\\\\Files\\\\"\+filename\)/);
 assert.match(source,/FileDelete\(filename\)/);assert.doesNotMatch(source,/\b(?:ChartApplyTemplate|Print|Alert|DeleteFileW)\s*\(/);

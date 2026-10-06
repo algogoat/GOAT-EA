@@ -126,6 +126,28 @@
     {"name": "equity sampled at different minutes falls through", "deal_level": "different_minutes", "retest": {"final_balance": 101500},
      "expected": {"verdict": "requalify", "failed": ["final_balance"], "cause": "history_or_behaviour", "decidedBy": "aggregate", "dealStatus": "money_off_rollover"}},
     {"name": "identity mismatch outranks a swap-only drift", "deal_level": "swap_only", "identity_failed": ["currency: USD / EUR"],
-     "expected": {"verdict": "not_comparable", "failed": []}}
+     "expected": {"verdict": "not_comparable", "failed": []}},
+
+    {"name": "swap-only review just under (balance +100 = 5.0% of net 2000)", "deal_level": "swap_only", "retest": {"final_balance": 102100},
+     "expected": {"verdict": "comparable_rebased", "failed": [], "cause": "swap_or_spec", "decidedBy": "deal_level", "reviewFlag": false}},
+    {"name": "swap-only review just over (balance +100.01)", "deal_level": "swap_only", "retest": {"final_balance": 102100.01},
+     "expected": {"verdict": "comparable_rebased", "failed": [], "cause": "swap_or_spec", "decidedBy": "deal_level", "reviewFlag": true}},
+    {"name": "swap-only review just under low (balance -100)", "deal_level": "swap_only", "retest": {"final_balance": 101900},
+     "expected": {"verdict": "comparable_rebased", "failed": [], "cause": "swap_or_spec", "decidedBy": "deal_level", "reviewFlag": false}},
+    {"name": "swap-only review just over low (balance -100.01)", "deal_level": "swap_only", "retest": {"final_balance": 101899.99},
+     "expected": {"verdict": "comparable_rebased", "failed": [], "cause": "swap_or_spec", "decidedBy": "deal_level", "reviewFlag": true}},
+    {"name": "swap-only review on a losing net (net -15000: 5% = 750)", "deal_level": "swap_only", "original": {"final_balance": 85000},
+     "retest": {"final_balance": 85750}, "expected": {"verdict": "comparable_rebased", "failed": [], "cause": "swap_or_spec", "decidedBy": "deal_level", "reviewFlag": false}},
+    {"name": "swap-only drift that cannot be sized is flagged", "deal_level": "swap_only", "deposit": null,
+     "expected": {"verdict": "comparable_rebased", "failed": [], "cause": "swap_or_spec", "decidedBy": "deal_level", "reviewFlag": true}},
+
+    {"name": "cross-build aggregate-only drift requalifies even inside the bar", "cross_build": true, "deal_level": "money_off_rollover",
+     "expected": {"verdict": "requalify", "failed": ["cross_build"], "cause": "history_or_behaviour", "decidedBy": "aggregate", "reviewFlag": false}},
+    {"name": "cross-build aggregate-only drift outside the bar names both", "cross_build": true, "retest": {"max_dd": 1300},
+     "expected": {"verdict": "requalify", "failed": ["cross_build", "max_dd"], "cause": "history_or_behaviour", "decidedBy": "aggregate"}},
+    {"name": "cross-build swap-only drift re-bases", "cross_build": true, "deal_level": "swap_only",
+     "expected": {"verdict": "comparable_rebased", "failed": [], "cause": "swap_or_spec", "decidedBy": "deal_level", "reviewFlag": false}},
+    {"name": "cross-build exact reproduction stays comparable", "cross_build": true, "reproduced": true,
+     "expected": {"verdict": "comparable", "failed": []}}
   ]
 }

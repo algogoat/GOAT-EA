@@ -320,6 +320,17 @@ to the balance when it closes. Different deals, money that moves on any other ro
 sampled at different minutes fall through to step 2 (`dealCheck.status`: `deals_differ`,
 `money_off_rollover` or `not_measured`).
 
+**Review flag** (Claude-Mac APPROVE, goatai#1885 6010080246): a swap-only drift stays
+`comparable_rebased`, but when |final balance delta| > 5% of |original net profit| it carries
+`tickHistoryDrift.reviewFlag: true` and a `reviewReason`. A large swap change can change a
+carry-heavy set's economics. A drift that cannot be sized (balance or deposit unknown) is flagged too.
+Exactly 5% is not flagged.
+
+**Across builds** (a re-test on another build under an ACTIVE trading-equivalence certificate),
+only an exact reproduction or a swap-only drift qualifies. The aggregate path gives `requalify` with
+failed `cross_build` (plus any failed criteria), even inside the bar, so build drift and history drift
+never stack. `rebase.crossBuild` records it.
+
 **Step 2, aggregate** (`tickHistoryDrift.cause: "history_or_behaviour"`). Drift criteria, compared in **aggregate** (never row by row) over the **original span**: from the
 original's first equity row up to, not including, its last minute (the forced close, as in the exact
 reproduction check). All must hold for `comparable_rebased`:
@@ -352,7 +363,9 @@ import stamp (next to `evidenceEnd`):
 - `comparison`: one of the four values above;
 - `historyBasis {originalExportedAt, retestAt}`: the two SET files' modification times (UTC), plus
   each run's end; null for `comparable` and `not_comparable`;
-- `tickHistoryDrift {dealCountDelta, pfDelta, balanceDelta, ddDelta, maxEquityGap, cause}`: re-test
+- `historyBasis.originalExportedAtBasis: "set_mtime"` says where `originalExportedAt` comes from (the
+  capture has no export timestamp yet);
+- `tickHistoryDrift {dealCountDelta, pfDelta, balanceDelta, ddDelta, maxEquityGap, cause, reviewFlag, reviewReason}`: re-test
   minus original over the original span; `maxEquityGap` is the largest |equity difference| over the
   minutes both runs sampled; `cause` is `swap_or_spec` (step 1) or `history_or_behaviour` (step 2).
   Null for `comparable` and `not_comparable`. `rebase.decidedBy` and `rebase.dealCheck` say which

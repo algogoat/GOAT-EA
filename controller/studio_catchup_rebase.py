@@ -15,7 +15,12 @@ shifted on thousands of rows). The likely cause is that the broker's tick histor
   whose equity difference changes only on rollover rows (the first row after server midnight, where
   swap is charged; ``money_check``) are ``comparable_rebased`` with ``tickHistoryDrift.cause:
   'swap_or_spec'``, whatever the size: current swaps are what live trading pays, so every window is
-  re-based on the re-test. Money that moves anywhere else, or different deals, fall through.
+  re-based on the re-test. Money that moves anywhere else, or different deals, fall through. A swap-only
+  drift whose |final balance delta| exceeds 5% of |original net profit| stays re-based but carries
+  ``tickHistoryDrift.reviewFlag: true`` with ``reviewReason`` (Claude-Mac, goatai#1885 6010080246).
+* Across builds (a re-test on another build under an ACTIVE trading-equivalence certificate) only an
+  exact reproduction or a swap-only drift qualifies: the aggregate path is ``requalify`` (failed
+  ``cross_build``), so build drift and history drift never stack.
 * Otherwise (``cause: 'history_or_behaviour'``) the re-test is compared with the original over the ORIGINAL span, in aggregate, never
   row by row (``CRITERIA``). When every criterion holds the verdict is ``comparable_rebased``: the
   re-test becomes the evidence for every window (BOOS, SAMPLE, FWD, FOOS), each recomputed on the
@@ -65,6 +70,8 @@ DD_REL = Decimal('0.10')                # |max DD delta| <= 10% of the original 
 PF_SIDE = Decimal('1')                  # SAMPLE PF on the same side of 1.0 (>= 1.0 is one side)
 MONEY_TOLERANCE = Decimal('0.005')      # an equity-difference step below this is no change (the reproduction tolerance)
 SWAP_OR_SPEC, HISTORY_OR_BEHAVIOUR = 'swap_or_spec', 'history_or_behaviour'   # tickHistoryDrift.cause
+SWAP_REVIEW_OF_NET = Decimal('0.05')    # swap-only drift: reviewFlag when |balance delta| > 5% of |original net profit|
+CROSS_BUILD = 'cross_build'             # the failed "criterion" of an aggregate-only drift across builds
 CRITERIA = ('deal_count', 'pf', 'final_balance', 'sample_pf_side', 'max_dd')
 FIXTURE = 'fixtures/catchup-rebase-cases.json'
 BAR = dict(deal_count='|delta| <= 5% of the original deal count', pf='|delta| <= 0.05',
@@ -206,31 +213,59 @@ def deal_level(original_deals, retest_deals, original_rows, retest_rows):
                 money=money, reason='identical deals; ' + money['reason'])
 
 
-def decide(identity_failed, reproduced, original=None, retest=None, *, deposit=None, max_equity_gap=None, deal_check=None):
+def swap_review(original, retest, *, deposit):
+    """(reviewFlag, reviewReason) for a swap-only drift: flagged when |balance delta| > 5% of |original net profit|.
+
+    Claude-Mac, goatai#1885 6010080246: swap-only drift still re-bases, but a large one can change a carry-heavy
+    set's economics, so it is flagged for review. An unmeasurable delta or net is flagged too (never waved through).
+    """
+    o, r, base = _dec(original.get('final_balance')), _dec(retest.get('final_balance')), _dec(deposit)
+    if o is None or r is None or base is None:
+        return True, 'swap drift could not be sized (final balance or deposit unknown)'
+    delta, limit = abs(r - o), SWAP_REVIEW_OF_NET * abs(o - base)
+    if delta > limit:
+        return True, ('swap drift moved the final balance by %.2f, more than 5%% of the original net profit (%.2f): '
+                      'review the set\'s carry before relying on it' % (r - o, limit))
+    return False, 'swap drift %.2f is within 5%% of the original net profit (%.2f)' % (r - o, limit)
+
+
+def decide(identity_failed, reproduced, original=None, retest=None, *, deposit=None, max_equity_gap=None, deal_check=None,
+           cross_build=False):
     """The comparison verdict (``VERDICTS``) with its criteria, reasons and drift (pure).
 
     ``deal_check`` (``deal_level``) runs first: identical deals whose money differs only at rollovers is a swap
-    or symbol-spec change, ``comparable_rebased`` whatever its size. Otherwise the aggregate criteria decide.
+    or symbol-spec change, ``comparable_rebased`` whatever its size (``reviewFlag`` past 5% of net profit).
+    Otherwise the aggregate criteria decide, except across builds (``cross_build``: a re-test on another build
+    under a trading-equivalence certificate): there only an exact reproduction or a swap-only drift qualifies, so
+    build drift and history drift never stack; the aggregate path is ``requalify`` whatever its numbers.
     """
     if identity_failed:
         return dict(schema=SCHEMA, verdict=NOT_COMPARABLE, decidedBy='identity', criteria=None, failed=[],
-                    reasons=list(identity_failed), dealCheck=None, tickHistoryDrift=None)
+                    reasons=list(identity_failed), dealCheck=None, tickHistoryDrift=None, crossBuild=cross_build)
     if reproduced:
         return dict(schema=SCHEMA, verdict=COMPARABLE, decidedBy='exact_reproduction', criteria=None, failed=[],
-                    reasons=['reproduced the original exactly'], dealCheck=None, tickHistoryDrift=None)
+                    reasons=['reproduced the original exactly'], dealCheck=None, tickHistoryDrift=None, crossBuild=cross_build)
     if deal_check and deal_check.get('swap_only'):
+        flag, why = swap_review(original or {}, retest or {}, deposit=deposit)
         return dict(schema=SCHEMA, verdict=REBASED, decidedBy='deal_level', criteria=None, failed=[],
                     reasons=['the same deals (time, type, entry, lots, price); only money and equity differ, and only at '
                              'rollover rows: the broker changed its swap rates or symbol spec, which MT5 applies to all history'],
-                    dealCheck=deal_check,
-                    tickHistoryDrift=dict(drift(original or {}, retest or {}, max_equity_gap=max_equity_gap), cause=SWAP_OR_SPEC))
+                    dealCheck=deal_check, crossBuild=cross_build,
+                    tickHistoryDrift=dict(drift(original or {}, retest or {}, max_equity_gap=max_equity_gap), cause=SWAP_OR_SPEC,
+                                          reviewFlag=flag, reviewReason=why))
     rows = criteria(original or {}, retest or {}, deposit=deposit)
     failed = [row['criterion'] for row in rows if not row['ok']]
     reasons = ['%s: %s' % (row['criterion'], row['detail']) for row in rows if not row['ok']] if failed else \
         ['did not reproduce exactly, but every tick-history drift criterion holds over the original span']
+    if cross_build:
+        reasons = ['%s: a re-test on another build under a trading-equivalence certificate qualifies only by exact '
+                   'reproduction or a swap-only drift; the aggregate tolerance never applies across builds'
+                   % CROSS_BUILD] + (reasons if failed else [])
+        failed = [CROSS_BUILD] + failed
     return dict(schema=SCHEMA, verdict=REQUALIFY if failed else REBASED, decidedBy='aggregate', criteria=rows, failed=failed,
-                reasons=reasons, dealCheck=deal_check,
-                tickHistoryDrift=dict(drift(original or {}, retest or {}, max_equity_gap=max_equity_gap), cause=HISTORY_OR_BEHAVIOUR))
+                reasons=reasons, dealCheck=deal_check, crossBuild=cross_build,
+                tickHistoryDrift=dict(drift(original or {}, retest or {}, max_equity_gap=max_equity_gap), cause=HISTORY_OR_BEHAVIOUR,
+                                      reviewFlag=False, reviewReason=None))
 
 
 def _case_deal_check(raw):
@@ -256,7 +291,7 @@ def judge_case(case, defaults=None, deal_inputs=None):
     if isinstance(raw, str):
         raw = (deal_inputs or {})[raw]
     return decide(pick('identity_failed', []), pick('reproduced', False), original, retest, deposit=pick('deposit'),
-                  deal_check=_case_deal_check(raw))
+                  deal_check=_case_deal_check(raw), cross_build=pick('cross_build', False))
 
 
 # ---------------------------------------------------------------------------
@@ -353,14 +388,16 @@ def _exported_at(path):
 
 def history_basis(original, retest):
     """``historyBasis``: when each run was written (SET file modification time, UTC)."""
-    return dict(originalExportedAt=_exported_at(original.get('set_path')), retestAt=_exported_at(retest.get('set_path')),
-                source='set_file_mtime_utc', originalEnd=original.get('evidence_end'), retestEnd=retest.get('evidence_end'))
+    # originalExportedAtBasis says what the time is (Claude-Mac, #1885 6010080246): the capture has no export timestamp yet.
+    return dict(originalExportedAt=_exported_at(original.get('set_path')), originalExportedAtBasis='set_mtime',
+                retestAt=_exported_at(retest.get('set_path')), source='set_file_mtime_utc', originalEnd=original.get('evidence_end'), retestEnd=retest.get('evidence_end'))
 
 
-def judge(original, retest, *, identity_failed, reproduced, old_rows, new_rows, old_deals, new_deals, tester, deposit):
+def judge(original, retest, *, identity_failed, reproduced, old_rows, new_rows, old_deals, new_deals, tester, deposit,
+          cross_build=False):
     """``decide`` on two read runs, plus the ``historyBasis`` stamp (None unless the re-test is the basis)."""
     if identity_failed or reproduced:
-        return dict(decide(identity_failed, reproduced), historyBasis=None, measured=None)
+        return dict(decide(identity_failed, reproduced, cross_build=cross_build), historyBasis=None, measured=None)
     cut = old_rows[-1][0]
     sample = sample_days(original, tester)
     if sample and sample[1] >= cut.date():
@@ -375,7 +412,8 @@ def judge(original, retest, *, identity_failed, reproduced, old_rows, new_rows, 
     else:
         deal_check = dict(status='not_measured', swap_only=False, deals=None, money=None,
                           reason='needs a complete capture (deals.csv) on both runs')
-    result = decide([], False, a, b, deposit=deposit, max_equity_gap=equity_gap(old_rows, new_rows, cut), deal_check=deal_check)
+    result = decide([], False, a, b, deposit=deposit, max_equity_gap=equity_gap(old_rows, new_rows, cut), deal_check=deal_check,
+                    cross_build=cross_build)
     public = lambda m: {k: (float(v) if isinstance(v, Decimal) else v) for k, v in m.items() if k != 'sample'} | dict(
         sample=None if m['sample'] is None else {k: (float(v) if isinstance(v, Decimal) else v) for k, v in m['sample'].items()})
     return dict(result, historyBasis=history_basis(original, retest), deposit=_num(_dec(deposit)),

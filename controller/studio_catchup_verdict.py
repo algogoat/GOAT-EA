@@ -487,9 +487,11 @@ def evaluate(original, retest, *, new_end, tester=None, rules=None, pins=None):
     if deposit is None:
         deposit = old_capture.get('initial_equity') if old_capture.get('initial_equity') is not None else \
             ((pins or {}).get('original_tester') or {}).get('Deposit')
+    # Another build under an ACTIVE trading-equivalence certificate: only exact or swap-only may qualify (no stacking).
+    cross_build = bool(((pins or {}).get('equivalence') or {}).get('mode') == 'active')
     rebase = rebase_rule.judge(original, retest, identity_failed=identity_failed, reproduced=bool(repro.get('reproduced')),
                                old_rows=old_rows, new_rows=new_rows, old_deals=old_deals, new_deals=new_deals, tester=tester,
-                               deposit=deposit)
+                               deposit=deposit, cross_build=cross_build)
     comparison = rebase['verdict']
     comparable.update(comparable=comparison in (rebase_rule.COMPARABLE, rebase_rule.REBASED), verdict=comparison,
                       identity=not identity_failed)

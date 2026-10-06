@@ -14,7 +14,7 @@ from studio_evidence import read_export
 from studio_installation import read_json
 from studio_window_metrics import window as metrics_window
 from test_studio_catchup import AFTER_CLOSE, CatchupCase
-from test_studio_catchup_verdict import ORIGINAL_END, Scenario
+from test_studio_catchup_verdict import ORIGINAL_END, TESTER, Scenario
 from test_studio_oos_windows import RetestFixture
 
 FIXTURE = json.loads((Path(__file__).resolve().parent / rb.FIXTURE).read_text(encoding='utf-8'))
@@ -34,6 +34,11 @@ class FixtureTests(unittest.TestCase):
                 if 'cause' in case['expected']:
                     self.assertEqual(result['tickHistoryDrift']['cause'], case['expected']['cause'])
                     self.assertEqual(result['decidedBy'], case['expected']['decidedBy'])
+                if 'reviewFlag' in case['expected']:
+                    self.assertIs(result['tickHistoryDrift']['reviewFlag'], case['expected']['reviewFlag'])
+                    if case['expected']['reviewFlag']:
+                        self.assertTrue(result['tickHistoryDrift']['reviewReason'])
+                self.assertEqual(result['crossBuild'], case.get('cross_build', False))
                 if 'dealStatus' in case['expected']:
                     self.assertEqual(result['dealCheck']['status'], case['expected']['dealStatus'])
                 self.assertIn(result['verdict'], rb.VERDICTS)
@@ -42,7 +47,8 @@ class FixtureTests(unittest.TestCase):
                     self.assertEqual([reason.split(':')[0] for reason in result['reasons']], case['expected']['failed'])
                 if result['verdict'] in (rb.REBASED, rb.REQUALIFY):
                     self.assertEqual(set(result['tickHistoryDrift']),
-                                     {'dealCountDelta', 'pfDelta', 'balanceDelta', 'ddDelta', 'maxEquityGap', 'cause'})
+                                     {'dealCountDelta', 'pfDelta', 'balanceDelta', 'ddDelta', 'maxEquityGap', 'cause',
+                                      'reviewFlag', 'reviewReason'})
                     if result['decidedBy'] == 'deal_level':
                         self.assertIsNone(result['criteria'])    # swap-only: the aggregates do not decide
                     else:
@@ -194,6 +200,46 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(result['comparison'], 'requalify')
         self.assertEqual(result['rebasedWindows']['basis'], 'retest')
         self.assertIsNone(result['rebasedWindows']['FOOS']['trades'], 'no capture: trades unknown, never spliced from the header')
+
+
+class CrossBuildTests(unittest.TestCase):
+    """Another build under an ACTIVE equivalence certificate: only exact or swap-only qualifies (#1885 6010080246)."""
+    PINS = dict(original_ea_sha256='a' * 64, installed_ea_sha256='b' * 64, model=4, server='Test-Demo',
+                equivalence=dict(mode='active', export_build=dict(ea_sha256='a' * 64), installed_build=dict(ea_sha256='b' * 64),
+                                 valid_at_collect=True, status_at_collect='active', certificate_digest='c' * 64, canary_digest='d' * 64))
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def evaluate(self, scenario, pins=PINS):
+        return cv.evaluate(read_export(scenario.original), read_export(scenario.retest), new_end=scenario.new_last,
+                           tester=TESTER, pins=pins)
+
+    def test_aggregate_only_drift_across_builds_requalifies(self):
+        scenario = Scenario(self.root, alter_history=True, alter_row=43)
+        same_build = scenario.evaluate()
+        self.assertEqual(same_build['comparison'], 'comparable_rebased', 'inside the aggregate bar on one build')
+        result = self.evaluate(scenario)
+        self.assertTrue(result['comparability']['identity'], 'the certificate makes the builds the same identity')
+        self.assertEqual((result['comparison'], result['verdict'], result['rebase']['failed']), ('requalify', 'requalify', ['cross_build']))
+        self.assertTrue(result['rebase']['crossBuild'])
+        self.assertTrue(result['reasons'][0].startswith('cross_build:'))
+
+    def test_swap_only_drift_across_builds_rebases(self):
+        result = self.evaluate(Scenario(self.root, alter_history=-300))
+        self.assertEqual((result['comparison'], result['verdict'], result['rebase']['decidedBy']), ('comparable_rebased', 'held_up', 'deal_level'))
+        self.assertEqual(result['tickHistoryDrift']['cause'], 'swap_or_spec')
+
+    def test_exact_reproduction_across_builds_stays_comparable(self):
+        self.assertEqual(self.evaluate(Scenario(self.root))['comparison'], 'comparable')
+
+    def test_history_basis_names_its_source(self):
+        basis = Scenario(self.root, alter_history=True, alter_row=43).evaluate()['historyBasis']
+        self.assertEqual(basis['originalExportedAtBasis'], 'set_mtime')
 
 
 class StampTests(unittest.TestCase):

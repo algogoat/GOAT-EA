@@ -8,6 +8,8 @@
 // (the controller's OOS window floor, studio_oos_windows.MIN_TRADES).
 #define GOAT_XML_BELOW_SCORE "below_score"
 #define GOAT_XML_BELOW_SCORE_MIN_FWD_TRADES 30
+// Switch-on fall-through outcome (GOAT_EXPORT_RANK_FWD_PROFIT_DD): passes reached the score, none was FWD-eligible.
+#define GOAT_XML_NO_FWD_ELIGIBLE_ROWS "no_fwd_eligible_rows"
 //+------------------------------------------------------------------+
 //| Data structure for a single row (Back/Forward test record)      |
 //+------------------------------------------------------------------+
@@ -1066,13 +1068,43 @@ string GoatXmlNoQualifierOutcome(const bool back_read,const bool title_matches,c
 // twice the other. Inputs the template does not optimize are equal in every pass.
 #define GOAT_CHARACTER_MODES ",Mode_Trade,Reverse_Seq,Allow_Opposite_Seq,RSI_Mode,EMA_Mode,ADX_Mode,BB_Mode,MACD_Mode,MACD_Mode_Trend,RSI2_Mode,Mode_Bias,Mode_Bias_Trades,Mode_Bias_Exit,Mode_News,Mode_RRR,Mode_Trail,"
 #define GOAT_CHARACTER_SIZES ",SL_Pips,TP_Pips,RRR,TSL_Size,Lock_Profit_Size,"
+// Why a pass is not FWD-eligible: 0 eligible, 1 not in the forward report, 2 SAMPLE unprofitable or
+// under GOAT_XML_MIN_BACK_TRADES trades, 3 FWD unprofitable, 4 FWD under the trade floor, 5 FWD
+// profit/DD not measurable, 6 below the score floor (minScore >= 0 only). The first reason wins.
+int GoatXmlFwdIneligibility(const SRowDefinition &rows[],const int i,const double minScore)
+  {
+   if(!rows[i].forward_seen) return 1;
+   if(!(rows[i].back_profit>0) || rows[i].back_trades<GOAT_XML_MIN_BACK_TRADES) return 2;
+   if(!(rows[i].forward_profit>0)) return 3;
+   if(rows[i].forward_trades<GOAT_XML_BELOW_SCORE_MIN_FWD_TRADES) return 4;
+   if(!(rows[i].forward_RF>0)) return 5;
+   if(minScore>=0 && rows[i].Score<minScore) return 6;
+   return 0;
+  }
 bool GoatXmlFwdEligible(const SRowDefinition &rows[],const int i,const double minScore)
   {
-   if(!rows[i].forward_seen) return false;
-   if(!(rows[i].back_profit>0) || rows[i].back_trades<GOAT_XML_MIN_BACK_TRADES) return false;
-   if(!(rows[i].forward_profit>0) || rows[i].forward_trades<GOAT_XML_BELOW_SCORE_MIN_FWD_TRADES) return false;
-   if(!(rows[i].forward_RF>0)) return false;
-   return minScore<0 || rows[i].Score>=minScore;
+   return GoatXmlFwdIneligibility(rows,i,minScore)==0;
+  }
+// NO_FWD_ELIGIBLE_PASS facts: every kept pass counted under the first reason it is not FWD-eligible.
+string GoatXmlFwdIneligibleCounts(const SRowDefinition &rows[],const double minScore)
+  {
+   int eligible=0,notForward=0,sample=0,fwdLoss=0,fwdThin=0,fwdDd=0,belowScore=0,scoreOk=0;
+   for(int i=0;i<ArraySize(rows);i++)
+     {
+      int why=GoatXmlFwdIneligibility(rows,i,minScore);
+      if(why==0) eligible++;
+      else if(why==1) notForward++;
+      else if(why==2) sample++;
+      else if(why==3) fwdLoss++;
+      else if(why==4) fwdThin++;
+      else if(why==5) fwdDd++;
+      else belowScore++;
+      if(minScore>=0 && rows[i].Score>=minScore) scoreOk++;
+     }
+   return "rows="+(string)ArraySize(rows)+";fwd_eligible="+(string)eligible+";not_in_forward="+(string)notForward
+          +";sample_unprofitable_or_thin="+(string)sample+";fwd_unprofitable="+(string)fwdLoss
+          +";fwd_trades_under_floor="+(string)fwdThin+";fwd_dd_unmeasured="+(string)fwdDd
+          +(minScore>=0 ? ";below_min_score="+(string)belowScore+";at_min_score="+(string)scoreOk : "");
   }
 bool GoatXmlFwdBetter(const SRowDefinition &rows[],const int a,const int b)
   {

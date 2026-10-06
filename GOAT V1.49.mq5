@@ -28,10 +28,12 @@
 // (slot 1, and slot 2 only when genuinely different and of quality) for research only, tagged
 // below_score (goatai#1885).
 #define GOAT_BELOW_SCORE_EXPORT_V149
-// Export ranking switch (goatai#1885, Claude-Mac 6022264062). Defined: NORMAL exports (at or above
-// MinScore) are chosen by FWD profit/DD under the export slot rule. Not defined (the default): normal
-// exports keep the match-score choice exactly as before. Define it only after Ops' offline FOOS re-score
-// passes the pre-written rule; it needs GOAT_BELOW_SCORE_EXPORT_V149. Never an EA input.
+// Export ranking switch (goatai#1885, Claude-Mac 6022264062 and 6023896492). Defined: NORMAL exports (at or
+// above MinScore) are chosen by FWD profit/DD under the export slot rule, and a member whose score-qualifying
+// passes are not FWD-eligible falls through to the below_score export. Not defined (the default): normal
+// exports keep the match-score choice exactly as before. Never an EA input; needs GOAT_BELOW_SCORE_EXPORT_V149.
+// RESOLVE BY 2026-10-13, NOT A DORMANT FLAG: Saturday's offline FOOS re-score decides it. Either it becomes
+// the default with the match-score export path removed, or this switch and its #ifdef code are deleted.
 //#define GOAT_EXPORT_RANK_FWD_PROFIT_DD
 #include "GOAT_SequencePackage.mqh"
 #include "GOATEvidenceEnd.mqh"
@@ -40,6 +42,10 @@ input long GOAT_FitnessRunNonce=0;         // Internal: per-run tester fitness k
 long g_goat_fitness_nonce=0;
 #ifdef GOAT_BELOW_SCORE_EXPORT_V149
 bool g_goatBelowScoreExport=false;         // this export run carries EA_Desc tier=below_score
+#endif
+#ifdef GOAT_EXPORT_RANK_FWD_PROFIT_DD
+bool   g_goatFwdFallthrough=false;         // StartExporter fell through to below_score (no FWD-eligible pass at MinScore)
+string g_goatFwdFallthroughDetails="";     // its item_stats Details
 #endif
 #define   GOAT_BUILD_MARKER "B41"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -4400,6 +4406,16 @@ void OnTesterDeinit()
        error=!StartExporter(false);
        if(GlobalVariableGet(GOAT_BATCH_CANCELLED_GV)!=0.0) return;
        double topScore=(ArraySize(xmlData.Rows)>0 ? xmlData.Rows[0].Score : 0.0);
+#ifdef GOAT_EXPORT_RANK_FWD_PROFIT_DD
+       // Score-qualifying passes, none FWD-eligible: a research result with its own status, never silent.
+       if(g_goatFwdFallthrough)
+       {
+        GoatOptAppendItemStats(EA_Name,Server,Symbol(),Strat,"NoFwdEligibleRows",ArraySize(xmlData.Rows),0,topScore,0,g_goatFwdFallthroughDetails);
+        WriteLog("DEINIT: Passes scored at or above the export score but none was FWD-eligible (FWD and SAMPLE profitable with enough trades)"
+                 +(StringFind(g_goatFwdFallthroughDetails,";below_score=exported")>=0 ? "; the best FWD profit/DD pass was kept for research only (below_score)." : "; nothing exported (NO_FWD_ELIGIBLE_PASS)."),true,Key,EA_Name,Server);
+       }
+       else
+#endif
        GoatOptAppendItemStats(EA_Name,Server,Symbol(),Strat,(error ? "Error" : "Completed"),
                               ArraySize(xmlData.Rows),ArraySize(xmlData.RowsUnique),topScore,ArraySize(g_allExports),
                               "Export cycle finished");
@@ -4583,9 +4599,29 @@ bool StartExporter(bool reportMode)
     {
      int fwdRanked[];
      string slotDetails="";
+     g_goatFwdFallthrough=false; g_goatFwdFallthroughDetails="";
      if(GoatXmlFwdRank(xmlData.Rows,MinScore,fwdRanked)>0)
         profits=GoatExportSlots(fwdRanked,"",false,MinSR,MinARF,g_allExports,slotDetails,passes,losses,errors,reportMode);
-     else LogOrPrint(reportMode,"No pass at or above MinScore "+DoubleToString(MinScore,1)+" is FWD-eligible: no export by FWD profit/DD.",Key,EA_Name,Server);
+     else
+     {
+      // Gap closed (Claude-Mac 6023896492): the member falls through to the below_score export, the best FWD
+      // profit/DD pass among all eligible ones; with none, it logs NO_FWD_ELIGIBLE_PASS. Never silent.
+      LogOrPrint(reportMode,"No pass at or above MinScore "+DoubleToString(MinScore,1)+" is FWD-eligible ("+GoatXmlFwdIneligibleCounts(xmlData.Rows,MinScore)
+                            +"): falling through to the below_score export.",Key,EA_Name,Server);
+      int anyRanked[];
+      xmlData.belowScoreRow=(GoatXmlFwdRank(xmlData.Rows,-1.0,anyRanked)>0 ? anyRanked[0] : -1);
+      string belowScore="";
+      StartBelowScoreExporter(reportMode,belowScore);
+      int scoreRows=0;
+      for(int k=0;k<ArraySize(xmlData.Rows);k++) if(xmlData.Rows[k].Score>=MinScore) scoreRows++;
+      string outcomeWas=xmlData.outcome;
+      xmlData.outcome=GOAT_XML_NO_FWD_ELIGIBLE_ROWS;
+      g_goatFwdFallthroughDetails=xmlData.OutcomeDetails()+";back_rows="+(string)ArraySize(xmlData.Rows)+";forward_matched="+(string)xmlData.forwardMatched
+                                  +";best_combined_score="+DoubleToString(xmlData.bestCombinedScore,1)+";score_threshold="+DoubleToString(MinScore,1)
+                                  +";score_qualifying_rows="+(string)scoreRows+belowScore;
+      xmlData.outcome=outcomeWas;
+      g_goatFwdFallthrough=true;
+     }
      for(int k=0;k<ArraySize(g_allExports);k++) if(g_allExports[k].arf>=MinARF && g_allExports[k].sr>=MinSR) fitterCount++;
      LogOrPrint(reportMode,"Export slots by FWD profit/DD"+slotDetails,Key,EA_Name,Server);
     }
@@ -4837,7 +4873,14 @@ int StartBelowScoreExporter(const bool reportMode,string &details)
    const int pick=xmlData.belowScoreRow;
    const string rule=";below_score_rank=fwd_profit_dd;below_score_min_fwd_trades="+(string)GOAT_XML_BELOW_SCORE_MIN_FWD_TRADES;
    details=";below_score=none"+rule;
-   if(pick<0 || pick>=ArraySize(xmlData.Rows)) {LogOrPrint(reportMode,"No pass is eligible for a below_score export (FWD and SAMPLE profitable with enough trades).",Key,EA_Name,Server); return 0;}
+   if(pick<0 || pick>=ArraySize(xmlData.Rows))
+   {
+    // Never silent (Claude-Mac 6023896492): profitable passes with none FWD-eligible say why, with counts.
+    string counts=GoatXmlFwdIneligibleCounts(xmlData.Rows,-1.0);
+    details=";below_score=none;no_fwd_eligible_pass=1;"+counts+rule;
+    LogOrPrint(reportMode,"NO_FWD_ELIGIBLE_PASS "+counts+": no pass is FWD and SAMPLE profitable with enough trades; no below_score export.",Key,EA_Name,Server);
+    return 0;
+   }
    string facts=";below_score_pass="+(string)xmlData.Rows[pick].pass+";below_score_fwd_profit_dd="+DoubleToString(xmlData.Rows[pick].forward_RF,4)
                 +";below_score_fwd_profit="+DoubleToString(xmlData.Rows[pick].forward_profit,2)+";below_score_fwd_trades="+(string)xmlData.Rows[pick].forward_trades
                 +";below_score_combined_score="+DoubleToString(xmlData.Rows[pick].Score,1)+rule;

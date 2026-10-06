@@ -20,9 +20,10 @@ from unittest.mock import patch
 import studio_evidence as ev
 import studio_export_qualification as eq
 from studio_catchup import classify
-from studio_research_status import _no_edge_outcome, batch_progress, headline, item_outcomes
+from studio_research_status import _no_edge_outcome, batch_progress, headline, item_outcomes, no_edge_summary
 from test_studio_export_qualification import NOW, SETTINGS, header, name, write_unit
-from test_studio_research_outcome import QDETAILS, TIMING, q_row, write_stats
+from test_studio_research_outcome import QDETAILS, TIMING, local, q_row, write_stats
+self_root = tempfile.gettempdir()
 
 TAG = '; EXPORT: below_score research only, nothing scored at or above the export score\r\n'
 FIXTURES = Path(__file__).parent / 'fixtures' / 'oosc'
@@ -212,6 +213,98 @@ class ItemStatsTests(unittest.TestCase):
             self.assertEqual(outcome['outcome'], 'no_qualifying_rows', label)
             self.assertEqual(outcome['below_score']['result'], 'unreadable', label)
 
+
+FDETAILS = ('outcome=no_fwd_eligible_rows;passes=158;profitable=7;traded=158;malformed=0;complete=1;forward_rows=158;'
+            'best_profit=660.00;best_score=0.5600;min_trades=50;window_start=2024.01.08;window_end=2025.01.06;forward_end=2025.03.15;'
+            'back_rows=7;forward_matched=7;best_combined_score=72.0;score_threshold=60.0;score_qualifying_rows=2')
+NONE = (';below_score=none;no_fwd_eligible_pass=1;rows=7;fwd_eligible=0;not_in_forward=0;sample_unprofitable_or_thin=1;'
+        'fwd_unprofitable=4;fwd_trades_under_floor=2;fwd_dd_unmeasured=0;below_score_rank=fwd_profit_dd;below_score_min_fwd_trades=30')
+
+
+class NoFwdEligibleTests(unittest.TestCase):
+    """Switch on (GOAT_EXPORT_RANK_FWD_PROFIT_DD): 60+ passes, none FWD-eligible. Never silent, never qualifying."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.run = Path(self.temp.name)
+
+    def row(self, details):
+        return q_row('A0', 'USDCAD', details=details).replace('\tNoQualifyingRows\t', '\tNoFwdEligibleRows\t')
+
+    def test_fall_through_to_below_score_is_a_research_result(self):
+        write_stats(self.run, [self.row(FDETAILS + BELOW)])
+        found = item_outcomes(self.run, [('A0', 'USDCAD')], TIMING)[0]
+        self.assertEqual((found['outcome'], found['score_qualifying_rows'], found['below_score']['result']),
+                         ('no_fwd_eligible_rows', 2, 'exported'))
+        text = no_edge_summary('USDCAD', 'M1', found)
+        self.assertIn('2 of 158 settings scored 60+ but none was profitable in the forward period', text)
+        self.assertIn('kept for research only (below score)', text)
+        line = headline(dict(kind='batch', status='finished', members_total=1, members_done=0, members_no_edge=1, no_edge=[found],
+                             no_edge_counts={'no_fwd_eligible_rows': 1}, no_edge_window=dict(start='2024.01.08', end='2025.01.06')))
+        self.assertIn('1 none FWD-eligible at the export score', line)
+
+    def test_nothing_eligible_carries_the_counts(self):
+        found = _no_edge_outcome(FDETAILS + NONE, 'no_fwd_eligible_rows')
+        self.assertEqual(found['below_score']['result'], 'none')
+        self.assertEqual(found['below_score']['no_fwd_eligible_pass'],
+                         dict(rows=7, fwd_eligible=0, not_in_forward=0, sample_unprofitable_or_thin=1, fwd_unprofitable=4,
+                              fwd_trades_under_floor=2, fwd_dd_unmeasured=0))
+        self.assertIn('nothing was exported (no FWD-eligible pass)', no_edge_summary('USDCAD', 'M1', found))
+        # Switch off: the below_score path's own NO_FWD_ELIGIBLE_PASS facts ride on the NoQualifyingRows row.
+        off = _no_edge_outcome(QDETAILS + NONE, 'no_qualifying_rows')
+        self.assertEqual(off['below_score']['no_fwd_eligible_pass']['fwd_unprofitable'], 4)
+
+    def test_a_row_without_its_proof_stays_an_error(self):
+        for label, details in (('no below_score report', FDETAILS),
+                               ('none without its counts', FDETAILS + ';below_score=none;below_score_rank=fwd_profit_dd'),
+                               ('best score under the threshold', FDETAILS.replace('best_combined_score=72.0', 'best_combined_score=48.0') + BELOW),
+                               ('no score-qualifying pass', FDETAILS.replace('score_qualifying_rows=2', 'score_qualifying_rows=0') + BELOW),
+                               ('a forward merge that lost a pass', FDETAILS.replace('forward_matched=7', 'forward_matched=6') + BELOW),
+                               ('a partial report', FDETAILS.replace('complete=1', 'complete=0') + BELOW)):
+            self.assertIsNone(_no_edge_outcome(details, 'no_fwd_eligible_rows'), label)
+        self.assertIsNone(_no_edge_outcome(FDETAILS + BELOW, 'no_qualifying_rows'), 'the status decides the outcome')
+        counts = _no_edge_outcome(QDETAILS + NONE.replace('fwd_unprofitable=4', 'fwd_unprofitable=x'), 'no_qualifying_rows')
+        self.assertEqual(counts['below_score']['result'], 'unreadable')
+
+
+class DiskEstimateTests(unittest.TestCase):
+    """The disk a batch's exports may write, shown with prepare-batch (Claude-Mac 6023896492)."""
+
+    def test_measured_units_and_the_below_score_line(self):
+        from studio_export_disk import GIB, MIB, export_disk_estimate
+        value = export_disk_estimate(100, dict(SetsToExport=2, IncludeSequenceData=True))
+        self.assertEqual((value['normal_exports']['units_max'], value['unit_median_bytes'], value['unit_p90_bytes']), (200, 97 * MIB, 163 * MIB))
+        self.assertEqual(round(value['below_score']['low_bytes'] / GIB, 1), 0.4)
+        self.assertEqual(round(value['below_score']['high_bytes'] / GIB, 1), 1.0)
+        self.assertIn('about 0.4-1.0 GB per 100 members', value['plain'])
+        self.assertIn('up to 200 kept exports (100 members x 2) at about 97 MB each', value['plain'])
+        self.assertEqual(value['total_high_bytes'], value['normal_exports']['high_bytes'] + value['below_score']['high_p90_bytes'])
+        self.assertEqual((value['normal_exports']['typical_bytes'], value['normal_exports']['high_bytes']), (200 * 97 * MIB, 200 * 163 * MIB))
+        self.assertIn('about 18.9 GB typical and up to 31.8 GB', value['plain'])
+        small = export_disk_estimate(10, dict(SetsToExport=1, IncludeSequenceData='0'))
+        self.assertEqual((small['sets_to_export'], small['sequence_data'], small['unit_median_bytes']), (2, False, MIB))
+        self.assertIn('under 1 MB', small['plain'])
+
+    def test_free_space_is_compared_with_the_high_estimate(self):
+        from studio_export_disk import GIB, export_disk_estimate
+        tight = export_disk_estimate(100, dict(SetsToExport=2), free_bytes=20 * GIB)
+        self.assertFalse(tight['fits'])
+        self.assertIn('not enough to keep 5 GB free', tight['plain'])
+        roomy = export_disk_estimate(100, dict(SetsToExport=2), free_bytes=200 * GIB)
+        self.assertTrue(roomy['fits'])
+        self.assertIn('200.0 GB free on the Common Files disk.', roomy['plain'])
+
+    def test_prepare_batch_returns_it(self):
+        import inspect
+        import studio_batch
+        source = inspect.getsource(studio_batch.prepare_batch)
+        self.assertEqual(source.count('disk_estimate=_disk_estimate(controller, checked)'), 2, 'new and reused preparations')
+        estimate = studio_batch._disk_estimate(type('C', (), {'binding': lambda self: dict(common_files_root=self_root)})(),
+                                               [dict(export=dict(SetsToExport=3))])
+        self.assertEqual((estimate['members'], estimate['sets_to_export']), (1, 3))
+        self.assertIn('free_bytes', estimate)
+        broken = studio_batch._disk_estimate(type('C', (), {'binding': lambda self: {}['missing']})(), [])
+        self.assertEqual((broken['members'], 'free_bytes' in broken), (0, False))
 
 class BatchProgressTests(unittest.TestCase):
     SYMBOLS = ('AUDUSD', 'EURUSD', 'USDJPY')

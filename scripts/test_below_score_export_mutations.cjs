@@ -10,13 +10,27 @@ const X='XmlProcessor.mqh',M='GOAT V1.49.mq5';
 // [label, file, from, to]
 const mutations=[
   // Eligibility: FWD and SAMPLE profitable, trade floors, a measurable FWD profit/DD.
-  ['a pass missing from the forward report ranks',X,R`if(!rows[i].forward_seen) return false;`,''],
-  ['SAMPLE profit not required',X,R`if(!(rows[i].back_profit>0) || rows[i].back_trades<GOAT_XML_MIN_BACK_TRADES) return false;`,R`if(rows[i].back_trades<GOAT_XML_MIN_BACK_TRADES) return false;`],
-  ['SAMPLE trade floor dropped',X,R`if(!(rows[i].back_profit>0) || rows[i].back_trades<GOAT_XML_MIN_BACK_TRADES) return false;`,R`if(!(rows[i].back_profit>0)) return false;`],
-  ['FWD profit not required',X,R`if(!(rows[i].forward_profit>0) || rows[i].forward_trades`,R`if(rows[i].forward_trades`],
-  ['FWD trade floor dropped',X,R`|| rows[i].forward_trades<GOAT_XML_BELOW_SCORE_MIN_FWD_TRADES) return false;`,R`) return false;`],
-  ['FWD profit/DD need not be positive',X,R`if(!(rows[i].forward_RF>0)) return false;`,''],
-  ['the score floor ignored (normal exports)',X,R`return minScore<0 || rows[i].Score>=minScore;`,R`return true;`],
+  ['a pass missing from the forward report ranks',X,R`if(!rows[i].forward_seen) return 1;`,''],
+  ['SAMPLE profit not required',X,R`if(!(rows[i].back_profit>0) || rows[i].back_trades<GOAT_XML_MIN_BACK_TRADES) return 2;`,R`if(rows[i].back_trades<GOAT_XML_MIN_BACK_TRADES) return 2;`],
+  ['SAMPLE trade floor dropped',X,R`if(!(rows[i].back_profit>0) || rows[i].back_trades<GOAT_XML_MIN_BACK_TRADES) return 2;`,R`if(!(rows[i].back_profit>0)) return 2;`],
+  ['FWD profit not required',X,R`if(!(rows[i].forward_profit>0)) return 3;`,''],
+  ['FWD trade floor dropped',X,R`if(rows[i].forward_trades<GOAT_XML_BELOW_SCORE_MIN_FWD_TRADES) return 4;`,''],
+  ['FWD profit/DD need not be positive',X,R`if(!(rows[i].forward_RF>0)) return 5;`,''],
+  ['the score floor ignored (normal exports)',X,R`if(minScore>=0 && rows[i].Score<minScore) return 6;`,''],
+  ['eligibility read inverted',X,R`return GoatXmlFwdIneligibility(rows,i,minScore)==0;`,R`return GoatXmlFwdIneligibility(rows,i,minScore)!=1;`],
+  // NO_FWD_ELIGIBLE_PASS counts (Claude-Mac 6023896492): every pass under its first reason.
+  ['counts merge two reasons',X,R`      else if(why==3) fwdLoss++;`,R`      else if(why==3) fwdThin++;`],
+  ['counts drop the at-score count',X,R`if(minScore>=0 && rows[i].Score>=minScore) scoreOk++;`,''],
+  ['switch off: NO_FWD_ELIGIBLE_PASS not logged',M,R`LogOrPrint(reportMode,"NO_FWD_ELIGIBLE_PASS "+counts`,R`Print("NO_FWD_ELIGIBLE_PASS "+counts`],
+  ['switch off: no counts in the row',M,R`details=";below_score=none;no_fwd_eligible_pass=1;"+counts+rule;`,R`details=";below_score=none"+rule;`],
+  // Switch ON: the gap closed. Never export nothing silently.
+  ['switch on: no fall-through',M,R`      StartBelowScoreExporter(reportMode,belowScore);`,''],
+  ['switch on: fall-through keeps the score floor',M,R`xmlData.belowScoreRow=(GoatXmlFwdRank(xmlData.Rows,-1.0,anyRanked)>0`,R`xmlData.belowScoreRow=(GoatXmlFwdRank(xmlData.Rows,MinScore,anyRanked)>0`],
+  ['switch on: fall-through not flagged',M,R`      g_goatFwdFallthrough=true;`,''],
+  ['switch on: outcome left changed',M,R`      xmlData.outcome=outcomeWas;`,''],
+  ['switch on: fall-through row written as Error',M,R`Strat,"NoFwdEligibleRows",`,R`Strat,"Error",`],
+  ['switch on: no score-qualifying count',M,R`+";score_qualifying_rows="+(string)scoreRows+belowScore;`,R`+belowScore;`],
+  ['switch resolve-by date dropped',M,R`// RESOLVE BY 2026-10-13, NOT A DORMANT FLAG`,R`// Resolve later`],
   // Ranking: FWD profit/DD, never the match score, SAMPLE, BOOS or FOOS.
   ['ranked by the match score',X,R`if(rows[a].forward_RF!=rows[b].forward_RF) return rows[a].forward_RF>rows[b].forward_RF;`,R`if(rows[a].Score!=rows[b].Score) return rows[a].Score>rows[b].Score;`],
   ['ranked by SAMPLE profit/DD',X,R`if(rows[a].forward_RF!=rows[b].forward_RF) return rows[a].forward_RF>rows[b].forward_RF;`,R`if(rows[a].back_RF!=rows[b].back_RF) return rows[a].back_RF>rows[b].back_RF;`],

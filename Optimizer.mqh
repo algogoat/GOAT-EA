@@ -1465,7 +1465,7 @@ void BuildOptimizationBatchPromptSummary(const string queueFile,const string log
       for(int i=1;i<statCount;i++)
         {
          string fields[];
-         if(StringSplit(statLines[i],'\t',fields)<9 || (fields[3]!="NoProfitablePasses" && fields[3]!="NoQualifyingRows")) continue;
+         if(StringSplit(statLines[i],'\t',fields)<9 || (fields[3]!="NoProfitablePasses" && fields[3]!="NoQualifyingRows" && fields[3]!="NoFwdEligibleRows")) continue;
          if(StringFind(errorAliases,"\n"+fields[2]+"\n")<0) continue;
          string itemKey=fields[1]+"\t"+fields[2]+"\n";
          if(StringFind(seen,"\n"+itemKey)>=0) continue;

@@ -241,7 +241,8 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
         if existing['configuration_sha256'] != sha(config):
             raise ValueError('Batch ID already belongs to different members/settings; use a new revision ID')
         _, _, manifest = _verify_package(controller, existing)
-        return dict(batch_id=batch_id, package=str(package), manifest=manifest, reused=True, native_started='launch_intent' in existing)
+        return dict(batch_id=batch_id, package=str(package), manifest=manifest, reused=True, native_started='launch_intent' in existing,
+                    disk_estimate=_disk_estimate(controller, checked))
     if scope is not None and snapshot['queue']:
         from studio_research_retry import predecessor
         # Read-only preflight before staging; store rechecks under its gate/CAS.
@@ -317,7 +318,17 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
     controller.bridge.pump()
 
     return dict(batch_id=batch_id, member_count=len(planned), package=str(package), manifest=manifest, evidence_end=evidence,
-        native_started=False, next_action=_start_next_action(controller, batch_id))
+        native_started=False, disk_estimate=_disk_estimate(controller, checked), next_action=_start_next_action(controller, batch_id))
+
+
+def _disk_estimate(controller, members):
+    """What the batch's kept exports may write to the Common Files disk (studio_export_disk); tell the person."""
+    from studio_export_disk import estimate_for_root
+    try:
+        root = (controller.binding() or {}).get('common_files_root')
+    except (AttributeError, KeyError, TypeError, ValueError, OSError):
+        root = None
+    return estimate_for_root(len(members), (members[0].get('export') if members else None), root)
 
 
 def _start_next_action(controller, batch_id):

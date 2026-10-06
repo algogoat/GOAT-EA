@@ -77,7 +77,7 @@ function extract(text,pattern,name,macros){
 }
 const macros={};
 const X=stripComments(preprocess(xmlSource,macros));
-const BELOW_SCORE_FUNCTIONS=['GoatXmlFwdEligible','GoatXmlFwdBetter','GoatXmlFwdRank','GoatXmlCharacterDifference','GoatEquityDailyCloses','GoatDailyReturnCorrelation'];
+const BELOW_SCORE_FUNCTIONS=['GoatXmlFwdIneligibility','GoatXmlFwdIneligibleCounts','GoatXmlFwdEligible','GoatXmlFwdBetter','GoatXmlFwdRank','GoatXmlCharacterDifference','GoatEquityDailyCloses','GoatDailyReturnCorrelation'];
 const method=name=>extract(X,new RegExp('^\\s*(?:bool|string|int|void|double)\\s+'+name+'\\s*\\(','m'),name,macros);
 assert.equal(macros.GOAT_XML_MIN_BACK_TRADES,'50','the kept-pass trade filter and the reported minimum share one constant');
 assert.match(X,/back_trades<GOAT_XML_MIN_BACK_TRADES|back_trades<50/);

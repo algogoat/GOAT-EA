@@ -18,6 +18,7 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 & $goat demo --installation $receipt settle-refused-start --batch-id '<id>'   # a restart-arm start the EA refused before consuming it; closes MT5 normally
 & $goat demo --installation $receipt launch-terminal  # optional: --monitor-config '<monitor-only .ini>'; default: the saved GOAT Studio profile
 & $goat demo --installation $receipt prepare-batch --batch-id '<new id>' --plan '<plan.json>'
+# The reply's disk_estimate (goat-export-disk-estimate-v1) says what the kept exports may write: show its `plain` line.
 & $goat demo --installation $receipt run-batch --batch-id '<id>' --max-seconds 172800
 & $goat demo --installation $receipt resume-batch --batch-id '<id>'
 & $goat demo --installation $receipt batch-status --batch-id '<id>'

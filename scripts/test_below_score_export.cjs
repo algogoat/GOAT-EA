@@ -52,7 +52,7 @@ const rank=(rows,min=-1)=>{c.__rows=rows;const out=[];c.__out=out;vm.runInContex
     check(()=>assert.deepEqual(rank(rows2),before,'SAMPLE or the match score changed the order (trial '+t+')'));
   }
   // Statically: the ranking reads only these fields of a pass.
-  const src=['GoatXmlFwdEligible','GoatXmlFwdBetter','GoatXmlFwdRank'].map(n=>H.method(n)).join('\n');
+  const src=['GoatXmlFwdIneligibility','GoatXmlFwdEligible','GoatXmlFwdBetter','GoatXmlFwdRank'].map(n=>H.method(n)).join('\n');
   const fields=new Set([...src.matchAll(/\]\.(\w+)/g)].map(m=>m[1]));
   check(()=>assert.deepEqual([...fields].sort(),['Score','back_profit','back_trades','forward_RF','forward_profit','forward_seen','forward_trades','pass'].sort()));
   check(()=>assert.ok(!/foos|boos|FOOS|BOOS|forward_SR|back_RF|back_SR/.test(src)));
@@ -211,7 +211,7 @@ const sha=t=>crypto.createHash('sha256').update(t).digest('hex');
   check(()=>assert.ok(switched.includes('GoatSlotTrimLog(g_allExports,MinARF,MinSR)')));
   check(()=>assert.ok(!P.slice(at,end).includes('tier=')));
 }
-function tester({plan=[],csv={},move=true,runPath='GOAT\\Rabcdef012345',evidence='2025.10.03',cancelAfter=null,settings={}}={}){
+function tester({plan=[],csv={},move=true,runPath='GOAT\\Rabcdef012345',evidence='2025.10.03',cancelAfter=null,settings={},switchOn=false}={}){
   const {fn}=mainFunctions(FLAGS);
   // MQL passes details, the correlation's day count and the out-strings by reference: in the VM they
   // become context globals (__slotDetails, __bsDetails, n), read back right after each call.
@@ -229,14 +229,17 @@ function tester({plan=[],csv={},move=true,runPath='GOAT\\Rabcdef012345',evidence
     StringToInteger:s=>parseInt(s,10)||0,
     strT:{Strat:'R0123456789abcdef0123',Model:'4',fromDate:'',toDate:''},GOAT_BATCH_CANCELLED_GV:'cancel',__cancel:false,
     GlobalVariableGet:()=>ctx.__cancel?1:0,InitializeTester:()=>true,TimeTradeServer:()=>777000,TimeCurrent:()=>1,GetLastFridayDate:()=>'2025.10.03',
-    FetchExportSetting:k=>({BackOOSDate:'2023.10.02',IncludeBackOOS:'1',MinARF:'0.2',MinSR:'2.5',EvidenceEnd:'auto',...settings})[k]??'',
-    __boundary:[],GoatEvidenceEndToDate:(setting,now,windowEnd)=>{ctx.__boundary.push([setting,now,windowEnd]);return evidence;},GoatOptCurrentRunPath:()=>runPath,ShowPrompt:()=>{},LogOrPrint:(m,t)=>logs.push(t),
+    FetchExportSetting:k=>({BackOOSDate:'2023.10.02',IncludeBackOOS:'1',MinARF:'0.2',MinSR:'2.5',EvidenceEnd:'auto',SetsToExport:'2',MinScore:'60',TargetDD:'100',AdjustLots:'0',...settings})[k]??'',
+    MTTESTER:{IsReady:()=>true},Sleep:()=>{},ChartSetInteger:()=>{},CHART_BRING_TO_TOP:0,Print:()=>{},GOAT_BUILD_ID:'B42',g_allExports:[],
+    StringFormat:(f,...a)=>{let k=0;return f.replace(/%[ds]/g,()=>String(a[k++]));},WriteLog:t=>logs.push(t),
+    __boundary:[],GoatEvidenceEndToDate:(setting,now,windowEnd)=>{ctx.__boundary.push([setting,now,windowEnd]);return evidence;},GoatOptCurrentRunPath:()=>runPath,GoatOptDeployPath:()=>runPath+'\\deploy',ShowPrompt:()=>{},LogOrPrint:(m,t)=>logs.push(t),
     GoatEvidenceEndCheckExports:(arr)=>evidenceChecks.push(arr.length),FileNameOnly:p=>p.split('\\').pop(),
     GoatExportReadTextCommon:p=>csv[p]??'',
     DeleteExports:files=>{deleted.push(...files);return true;},
     MoveKeptExports:(arr,dst)=>{moves.push([dst,Array.from(arr,r=>r.setFile)]);return move;},
     RunAndStoreSet:(rowInd,mode,reportMode,arr,init,attempts,keepLosing=false)=>{
-      const unit=ctx.xmlData.RowsUnique[rowInd],step=plan[runs.length]??{};
+      if(init){runs.push({rowInd,pass:null,mode,keepLosing,init:true});return 1;}
+      const unit=ctx.xmlData.RowsUnique[rowInd],step=plan[runs.filter(r=>!r.init).length]??{};
       runs.push({rowInd,pass:unit.pass,mode,keepLosing,init});
       if(cancelAfter===runs.length)ctx.__cancel=true;
       if(step.error)return -1;
@@ -248,6 +251,17 @@ function tester({plan=[],csv={},move=true,runPath='GOAT\\Rabcdef012345',evidence
   // The correlation keeps its day count in the context global n (by reference in MQL).
   vm.runInContext(H.method('GoatDailyReturnCorrelation').replace(/function GoatDailyReturnCorrelation\(([^)]*)\)/,'function GoatDailyReturnCorrelation(csvA,csvB,from,to)'),ctx);
   vm.runInContext(slots,ctx);vm.runInContext(start,ctx);
+  if(switchOn){
+    // The switched StartExporter (GOAT_EXPORT_RANK_FWD_PROFIT_DD defined) and its trim log, by-reference strings rewired.
+    const on=mainFunctions(new Set([...FLAGS,'GOAT_EXPORT_RANK_FWD_PROFIT_DD']));
+    const exporter=on.fn(/^bool\s+StartExporter\s*\(/m,'StartExporter').replace(/MTTESTER::/g,'MTTESTER.').replace(/const ExportRecord\s+/g,'const ')
+      .replace('StartBelowScoreExporter(reportMode,belowScore);','StartBelowScoreExporter(reportMode); belowScore=__bsDetails;')
+      .replace('profits=GoatExportSlots(fwdRanked,"",false,MinSR,MinARF,g_allExports,slotDetails,passes,losses,errors,reportMode);',
+               '{profits=GoatExportSlots(fwdRanked,"",false,MinSR,MinARF,g_allExports,slotDetails,passes,losses,errors,reportMode); slotDetails=__slotDetails;}');
+    check(()=>assert.ok(exporter.includes('belowScore=__bsDetails;')&&exporter.includes('slotDetails=__slotDetails;'),'switched exporter rewired'));
+    vm.runInContext(exporter,ctx);
+    vm.runInContext(on.fn(/^void\s+GoatSlotTrimLog\s*\(/m,'GoatSlotTrimLog'),ctx);
+  }
   return ctx;
 }
 function loaded(ctx,rows){
@@ -338,7 +352,14 @@ const sample=(changes)=>equityCsv(changes,{start:'2024.01.08'});
   const none=loaded(tester(),[]);
   check(()=>assert.equal(vm.runInContext('StartBelowScoreExporter(false,"")',none),0));
   check(()=>assert.equal(none.runs.length,0));
-  check(()=>assert.equal(none.__bsDetails,';below_score=none;below_score_rank=fwd_profit_dd;below_score_min_fwd_trades=30'));
+  check(()=>assert.equal(none.__bsDetails,';below_score=none;no_fwd_eligible_pass=1;rows=0;fwd_eligible=0;not_in_forward=0;sample_unprofitable_or_thin=0;fwd_unprofitable=0;fwd_trades_under_floor=0;fwd_dd_unmeasured=0;below_score_rank=fwd_profit_dd;below_score_min_fwd_trades=30'));
+  check(()=>assert.ok(none.logs.some(l=>/^NO_FWD_ELIGIBLE_PASS rows=0;/.test(l)),'switch off: NO_FWD_ELIGIBLE_PASS is logged with counts'));
+  // Profitable passes, none FWD-eligible: never silent, each counted under its first reason.
+  const thin=loaded(tester(),[row({pass:1,forward_trades:29}),row({pass:2,forward_profit:-5}),row({pass:3,forward_seen:false}),row({pass:4,back_trades:49}),row({pass:5,forward_RF:0})]);
+  check(()=>assert.equal(vm.runInContext('StartBelowScoreExporter(false)',thin),0));
+  check(()=>assert.equal(thin.runs.length,0));
+  check(()=>assert.match(thin.__bsDetails,/^;below_score=none;no_fwd_eligible_pass=1;rows=5;fwd_eligible=0;not_in_forward=1;sample_unprofitable_or_thin=1;fwd_unprofitable=1;fwd_trades_under_floor=1;fwd_dd_unmeasured=1;/));
+  check(()=>assert.ok(thin.logs.some(l=>l.startsWith('NO_FWD_ELIGIBLE_PASS rows=5;fwd_eligible=0;not_in_forward=1;'))));
   const noRun=loaded(tester({runPath:''}),[pass(5,2.0)]);
   check(()=>assert.equal(vm.runInContext('StartBelowScoreExporter(false,"")',noRun),-1));
   check(()=>assert.equal(noRun.runs.length,0));
@@ -409,4 +430,60 @@ const sample=(changes)=>equityCsv(changes,{start:'2024.01.08'});
   check(()=>assert.equal(P.split('keepLosing').length-P.split('keepLosingSlot1').length,2,'otherwise only RunAndStoreSet declares and reads it'));
   check(()=>assert.ok(P.includes('GoatExportSlots(ranked,",tier="+GOAT_XML_BELOW_SCORE,true,')));
 }
-console.log(JSON.stringify({passed,productionFunctions:true,nativeExecution:false}));
+{
+  // Switch ON (GOAT_EXPORT_RANK_FWD_PROFIT_DD), Claude-Mac 6023896492: a member never exports nothing silently.
+  const exporterRun=(rows,opts={})=>{const t=loaded(tester({...opts,switchOn:true}),rows);t.outcome='';t.passesSeen=158;t.profitableSeen=7;
+    t.tradedSeen=158;t.malformedSeen=0;t.reportClosed=true;t.forwardRows=158;t.bestProfit=660;t.bestResult=0.56;t.forwardMatched=rows.length;
+    t.bestCombinedScore=Math.max(0,...rows.map(r=>r.Score));t.g_allExports=[];
+    const ok=vm.runInContext('StartExporter(false)',t);return {t,ok};};
+  // (a) Score-qualifying passes exist but none is FWD-eligible: fall through to below_score, the best FWD profit/DD pass.
+  {
+    const {t,ok}=exporterRun([row({pass:5,Score:72,forward_trades:20,forward_RF:9}),row({pass:6,Score:41,forward_RF:1.4}),row({pass:7,Score:30,forward_RF:2.2})]);
+    check(()=>assert.equal(ok,false,'nothing qualifying is exported'));
+    check(()=>assert.deepEqual(t.runs.filter(r=>!r.init).map(r=>[r.pass,r.keepLosing]),[[7,true],[6,false]],'below_score slot 1 = best FWD profit/DD among eligible passes, whatever its score'));
+    check(()=>assert.ok(t.runs.filter(r=>!r.init).every(r=>r.mode.includes(',tier=below_score}'))));
+    check(()=>assert.equal(t.g_goatFwdFallthrough,true));
+    const d=t.g_goatFwdFallthroughDetails;
+    check(()=>assert.match(d,/^outcome=no_fwd_eligible_rows;passes=158;/));
+    check(()=>assert.match(d,/;back_rows=3;forward_matched=3;best_combined_score=72\.0;score_threshold=60\.0;score_qualifying_rows=1;below_score=exported;/));
+    check(()=>assert.equal(t.outcome,'','the combine outcome is restored'));
+    check(()=>assert.ok(t.logs.some(l=>/^No pass at or above MinScore 60\.0 is FWD-eligible \(rows=3;fwd_eligible=0;.*fwd_trades_under_floor=1;.*below_min_score=2;at_min_score=1\): falling through to the below_score export\.$/.test(l))));
+    check(()=>assert.deepEqual(t.moves.map(m=>m[0]),['GOAT\\Rabcdef012345\\below_score'],'research only, never deploy'));
+  }
+  // (b) Nothing FWD-eligible at all: NO_FWD_ELIGIBLE_PASS with counts, no tester run beyond the top-set check.
+  {
+    const {t,ok}=exporterRun([row({pass:5,Score:72,forward_trades:20}),row({pass:6,Score:41,forward_profit:-3})]);
+    check(()=>assert.equal(ok,false));
+    check(()=>assert.equal(t.runs.filter(r=>!r.init).length,0));
+    check(()=>assert.ok(t.logs.some(l=>l.startsWith('NO_FWD_ELIGIBLE_PASS rows=2;fwd_eligible=0;not_in_forward=0;sample_unprofitable_or_thin=0;fwd_unprofitable=1;fwd_trades_under_floor=1;'))));
+    check(()=>assert.match(t.g_goatFwdFallthroughDetails,/;score_qualifying_rows=1;below_score=none;no_fwd_eligible_pass=1;rows=2;/));
+  }
+  // (c) A FWD-eligible pass at or above MinScore: the normal slot rule, no tier, no fall-through.
+  {
+    const {t,ok}=exporterRun([row({pass:5,Score:72,forward_RF:1.1}),row({pass:6,Score:41,forward_RF:9})]);
+    check(()=>assert.equal(ok,true));
+    check(()=>assert.deepEqual(t.runs.filter(r=>!r.init).map(r=>[r.pass,r.keepLosing]),[[5,false]],'only the 60+ pass; a better FWD pass under the score never takes it'));
+    check(()=>assert.ok(!t.runs.some(r=>r.mode.includes('tier='))));
+    check(()=>assert.equal(t.g_goatFwdFallthrough,false));
+    check(()=>assert.deepEqual(t.moves,[['GOAT\\Rabcdef012345\\deploy',['exports\\5.set']]],'a normal export goes to deploy'));
+    check(()=>assert.ok(t.logs.some(l=>/^SortAndTrimExports: Total=1 Passing=1 Kept=1 Trimmed=0$/.test(l)),'the EA-log cross-check line'));
+  }
+  // The OnTesterDeinit row with the switch on: NoFwdEligibleRows with the fall-through details, never "Completed".
+  {
+    const on=mainFunctions(new Set([...FLAGS,'GOAT_EXPORT_RANK_FWD_PROFIT_DD'])).P;
+    const at=on.indexOf('double topScore=(ArraySize(xmlData.Rows)>0 ? xmlData.Rows[0].Score : 0.0);');
+    const body=H.convert(on.slice(at,on.indexOf('Print("Deleting Empty Folders...");',at)),{});
+    for(const [fall,details,status,want] of [[true,'outcome=no_fwd_eligible_rows;below_score=exported;below_score_kept=1','NoFwdEligibleRows',/kept for research only \(below_score\)\.$/],
+                                             [true,'outcome=no_fwd_eligible_rows;below_score=none;no_fwd_eligible_pass=1','NoFwdEligibleRows',/nothing exported \(NO_FWD_ELIGIBLE_PASS\)\.$/],
+                                             [false,'','Error',null]]){
+      const out={stats:[],logs:[]};
+      vm.runInNewContext(body,{xmlData:{Rows:[{Score:72}],RowsUnique:[]},error:true,g_goatFwdFallthrough:fall,g_goatFwdFallthroughDetails:details,EA_Name:'E',Server:'S',Key:'K',Strat:'R1',
+        ArraySize:a=>a.length,Symbol:()=>'USDCAD',StringFind:(s,x)=>String(s).indexOf(x),g_allExports:[],
+        GoatOptAppendItemStats:(...a)=>out.stats.push(a),WriteLog:x=>out.logs.push(x)});
+      check(()=>assert.deepEqual(out.stats[0].slice(4),fall?[status,1,0,72,0,details]:[status,1,0,72,0,'Export cycle finished']));
+      if(want)check(()=>assert.match(out.logs[0],want));
+    }
+  }
+  // The switch carries its resolve-by date, and stays off.
+  check(()=>assert.match(mainRaw,/RESOLVE BY 2026-10-13, NOT A DORMANT FLAG/));
+}console.log(JSON.stringify({passed,productionFunctions:true,nativeExecution:false}));

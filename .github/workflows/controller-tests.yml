@@ -34,15 +34,17 @@ concurrency:
 #          test_terminal_isolation_mutations.cjs
 #   python test_terminal_isolation_controller_mutations.py
 #
-# controller-mutations (2/3)  ~16-22 min observed
+# controller-mutations (2/3)  ~16-22 min observed before the OOS window check; ~24-30 min expected with it
 #   python test_process_query_mutations.py                 (14-18 min)
-#   python test_holdup_mutations.py, test_lane_driver_mutations.py, test_research_launch_mutations.py,
-#          test_export_qualification_mutations.py, test_driver_backoff_mutations.py
+#   python test_oos_windows_controller_mutations.py        (61 mutations; 5.4 min locally at Idle, ~8-11 min expected)
+#   python test_holdup_mutations.py, test_lane_driver_mutations.py, test_research_launch_mutations.py
+#   (GOAT-EA#174 moved test_export_qualification_mutations.py and test_driver_backoff_mutations.py to 3/3 to balance)
 #
 # controller-mutations (3/3)  ~13-24 min observed
 #   python test_restore_lane_never_started_mutations.py    (4-14 min)
 #   python test_peer_restart_mutations.py, test_peer_roster_mutations.py,
-#          test_seed_member_failure_mutations.py
+#          test_seed_member_failure_mutations.py, test_export_qualification_mutations.py,
+#          test_driver_backoff_mutations.py
 #
 # A new mutation check goes in the shard with the most headroom; keep each shard well under its
 # timeout. Setup steps are identical in both jobs.
@@ -233,12 +235,9 @@ jobs:
       - name: Research launch mutation check (no KILL_ON_JOB_CLOSE, refuse on assignment failure, trading launches excluded, Idle lock, CPU-cap staging)
         if: matrix.shard == 2
         run: python scripts/test_research_launch_mutations.py
-      - name: Export qualification mutation check (qualifying = passed the run's thresholds; cut-off, log cross-check, redaction)
+      - name: OOS window formula mutation check (date math, BOOS/FOOS pass bar and floor, FOOS held out, pre-FOOS metrics, catch-up closed day vs Friday exports, evidence-end stamps)
         if: matrix.shard == 2
-        run: python scripts/test_export_qualification_mutations.py
-      - name: Driver observe backoff mutation check (bounded backoff, pass-cost floor, progress reset, stall report, thread-only priority)
-        if: matrix.shard == 2
-        run: python scripts/test_driver_backoff_mutations.py
+        run: python scripts/test_oos_windows_controller_mutations.py
 
       # ---- Shard 3/3 ----
       - name: Restore-lane never-started allowance mutation check (exact-attempt settlement records, other demo work refuses, settle-refused-start stays the reviewed proof)
@@ -253,3 +252,9 @@ jobs:
       - name: Seed member failure mutation check (one failure never ends the batch; breaker, cancel and resume rules hold)
         if: matrix.shard == 3
         run: python scripts/test_seed_member_failure_mutations.py
+      - name: Export qualification mutation check (qualifying = passed the run's thresholds; cut-off, log cross-check, redaction)
+        if: matrix.shard == 3
+        run: python scripts/test_export_qualification_mutations.py
+      - name: Driver observe backoff mutation check (bounded backoff, pass-cost floor, progress reset, stall report, thread-only priority)
+        if: matrix.shard == 3
+        run: python scripts/test_driver_backoff_mutations.py

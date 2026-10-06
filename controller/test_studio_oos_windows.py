@@ -486,6 +486,21 @@ class CatchupHookTests(RetestFixture, unittest.TestCase):
     def spec(self, tester):
         return dict(original=dict(tester=tester))
 
+    def test_every_oos_rule_stamps_boos_as_partly_selected_by_the_ea_trim(self):
+        from studio_catchup import CatchupRunner
+        original, retest = self.build()
+        explicit = dict(FromDate='2026.02.01', ToDate='2026.09.01', ForwardDate='2026.07.01')
+        broken = dict(retest, csv_path=str(self.root / 'missing.csv'))
+        results = [CatchupRunner._oos_rule(original, retest, self.spec(self.record['tester']), dict(verdict='held_up')),
+                   CatchupRunner._oos_rule(original, retest, self.spec(self.record['tester']), dict(verdict='not_comparable')),
+                   CatchupRunner._oos_rule(original, retest, self.spec(explicit), dict(verdict='held_up')),
+                   CatchupRunner._oos_rule(original, broken, self.spec(self.record['tester']), dict(verdict='held_up')),
+                   w.judge(window(), window(), in_sample_dd=100.0), w.judge_case(dict(boos=None, foos=None))]
+        self.assertEqual({r['status'] for r in results}, {'pass', 'no_data', 'not_applicable'})
+        for result in results:
+            self.assertEqual(result['boosContaminatedBy'], 'ea_trim', result['status'])
+        self.assertEqual(w.BOOS_CONTAMINATED_BY, 'ea_trim')
+
     def test_formula_export_is_judged(self):
         from studio_catchup import CatchupRunner
         original, retest = self.build()

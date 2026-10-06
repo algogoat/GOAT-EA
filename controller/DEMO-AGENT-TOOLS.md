@@ -765,7 +765,9 @@ SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
 - The rule per OOS window: at least 30 trades (fewer = `not_eligible_yet`; never
   shorten a window or change O to reach it), then PF ≥ 1.0 and DD ≤ 1.5 × SAMPLE DD.
   PF ≥ 1.0 is net of all costs ≥ 0; DD is an equity drawdown. `no_data` and\r
-  `not_measured` are never a pass. This evaluator is the source of truth; the\r
+  `not_measured` are never a pass. Every `oos_rule` has `boosContaminatedBy: "ea_trim"`:
+  the EA's export trim partly selects on BOOS, so show "BOOS: partial" and lead with FOOS.
+  This evaluator is the source of truth; the\r
   desktop sift matches it through `controller/fixtures/oos-holdout-gate-cases.json`.\r
   It sits next
   to the export qualification stamp and the catch-up verdict; neither changed.

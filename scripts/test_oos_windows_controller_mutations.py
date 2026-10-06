@@ -77,7 +77,14 @@ MUTATIONS = [
      'peak, dd, dd_pct, episode, episodes = inside[0][1],'),
     ('report scan drops the metrics', 'studio_export_scan.py', '        if windows is not None:\n', '        if False:\n'),
     ('locked metrics not redacted', 'studio_heldout_guard.py', "'oos_rule', 'window_metrics', 'preFoos', 'selectionWindow', 'fullExport'))", "'fullExport'))"),
+    # Honest BOOS stamp (Claude-Mac, #1885 6007861974): the current EA's export trim partly selects on BOOS.
+    ('BOOS stamp dropped from judge', RULE, 'used_for_ranking=False, boosContaminatedBy=boos_contaminated_by,', 'used_for_ranking=False,'),
+    ('BOOS stamp says clean', RULE, "BOOS_CONTAMINATED_BY = 'ea_trim'", 'BOOS_CONTAMINATED_BY = None'),
+    ('BOOS stamp dropped from the catch-up hook', 'studio_catchup.py',
+     "status='no_data', reasons=[reason], used_for_ranking=False,\n                        boosContaminatedBy=BOOS_CONTAMINATED_BY,\n                        plain='No hold-out data under",
+     "status='no_data', reasons=[reason], used_for_ranking=False,\n                        plain='No hold-out data under"),
 ]
+
 
 def main():
     caught = 0

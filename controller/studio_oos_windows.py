@@ -76,6 +76,15 @@ WEEKS_RANGE = (4, 520)
 FRIDAY, SATURDAY = 4, 5
 # The gate result names the desktop sift shares (goatai#2274, Claude-Mac #1885 6005864453).
 STATUSES = ('pass', 'fail', 'not_eligible_yet', 'no_data', 'not_measured')
+# BOOS is honest only in part (Claude-Mac, #1885 6007861974): the current EA measures its export SR/ARF and
+# SortAndTrimExports over BOOS..optimization end, so BOOS partly selects which passes are kept. Accepted for v1;
+# every oos_rule says so, and the desktop and house manifest show it as "BOOS: partial". The planned EA fix
+# (export SR/ARF/trim on SAMPLE+FWD only) is Claude-Mac's to admit; until then house portfolios rest mainly on FOOS.
+BOOS_CONTAMINATED_BY = 'ea_trim'
+# BOOS is honest only in part (Claude-Mac, #1885 6007861974): the current EA measures its export SR/ARF and
+# SortAndTrimExports over BOOS..optimization end, so BOOS partly selects which passes are kept. Accepted for v1;
+# every oos_rule says so, and the desktop and house manifest show it as "BOOS: partial". The planned EA fix
+# (export SR/ARF/trim on SAMPLE+FWD only) is Claude-Mac's to admit; until then house portfolios rest mainly on FOOS. = 'ea_trim'
 FRACTIONS = dict(boos='1/2', sample='2/3', fwd='1/3', foos='1/4')
 FIXTURE = 'fixtures/oos-holdout-gate-cases.json'
 # The measurement definitions the desktop must match exactly (this controller is the source of truth).
@@ -484,7 +493,7 @@ def judge_window(name, window, in_sample_dd):
 SET_ORDER = ('fail', 'not_eligible_yet', 'not_measured', 'no_data', 'pass')
 
 
-def judge(boos, foos, *, in_sample_dd):
+def judge(boos, foos, *, in_sample_dd, boos_contaminated_by=BOOS_CONTAMINATED_BY):
     """A set's OOS verdict from its BOOS and FOOS gates (``SET_ORDER``: the first status either window has).
 
     pass only when both windows pass. A set with fewer than 30 FOOS trades is not eligible yet.
@@ -499,7 +508,8 @@ def judge(boos, foos, *, in_sample_dd):
              'not_measured': 'Not measured', 'no_data': 'No hold-out data'}
     return dict(schema=EVALUATION, status=status, reasons=reasons, windows=parts, in_sample_dd=in_sample_dd,
                 bar=dict(min_trades=MIN_TRADES, min_pf=MIN_PF, max_dd_ratio=float(MAX_DD_RATIO), in_sample='SAMPLE'),
-                used_for_ranking=False, plain=words[status] + ' (OOS window rule): ' + '; '.join(reasons) + '.')
+                used_for_ranking=False, boosContaminatedBy=boos_contaminated_by,
+                plain=words[status] + ' (OOS window rule): ' + '; '.join(reasons) + '.')
 
 
 def judge_case(case):
@@ -516,6 +526,7 @@ def judge_case(case):
 
 def not_applicable(reason):
     return dict(schema=EVALUATION, status='not_applicable', reasons=[reason], used_for_ranking=False,
+                boosContaminatedBy=BOOS_CONTAMINATED_BY,
                 plain='The OOS window rule does not apply: ' + reason + '.')
 
 

@@ -91,10 +91,23 @@ difference, including an export end that reaches FOOS. The record also carries a
 export Friday) in the shape the desktop's held-out lock registry uses; the controller never
 writes that registry.
 
-Known limit: a symbol that trades on Saturday (crypto) has one FOOS day, the first Saturday, inside
-the export, because the EA cannot end an export before the optimization window end. FX, metals
-and index CFDs do not trade then.
+### Known limits of v1 (accepted by Claude-Mac, goatai#1885 comment 6007861974)
 
+**BOOS is only partly out of sample (`boosContaminatedBy: "ea_trim"`).** The batch export includes
+BOOS (`IncludeBackOOS=1`), and the current EA measures each export's SR and ARF, applies the
+MinSR/MinARF pass test and runs `SortAndTrimExports` over the whole export test, BOOS start through
+the optimization end. So BOOS partly selects which passes the EA keeps: a real leak, accepted for
+v1. Every `oos_rule` the controller writes carries `boosContaminatedBy: "ea_trim"` (also on
+`not_applicable` and `no_data` results), so the desktop and the house manifest can show
+**"BOOS: partial"**. A BOOS pass is weaker evidence than a FOOS pass: **v1 house portfolios rest
+mainly on FOOS**, which never reaches any ranking. The planned fix (the next EA bundle measures
+export SR/ARF and the trim on SAMPLE + FWD only) is Claude-Mac's to admit; when it ships, exports
+from that EA will carry no stamp (`boosContaminatedBy: null`).
+
+**Saturday-trading symbols (crypto): one FOOS day sits inside the export.** The EA refuses an
+EvidenceEnd before the optimization window end, so the export ends on the first FOOS day, a
+Saturday. FX, metals and index CFDs do not trade then; for a symbol that does, that is one day of
+FOOS's 4 or more weeks (13 weeks at O = 12 months), judged in FOOS as usual. Accepted.
 ## The pass rule (`judge`, `goat-oos-window-rule-v1`): the source of truth
 
 Claude-Mac ruled (goatai#1885 comment 6005864453) that this controller evaluator is the source of
@@ -261,4 +274,4 @@ This is documented (`studio_oos_windows.DEMO_RULE`); nothing in the controller a
   judged". Never suggest shortening a window or picking a different O to get past the floor.
 - `no_data` and `not_measured` are not passes: say which measurement is missing (usually the deal capture,
   or a drawdown that was not measured).
-- A pass is a pass of two checks on unseen data, not proof of an edge; demo comes next.
+- Say "BOOS: partial" whenever you report a BOOS result: the current EA's export trim partly selected on\n  BOOS (`boosContaminatedBy: "ea_trim"`). Lead with FOOS; v1 house portfolios rest mainly on it.\n- A pass is a pass of two checks on held-out data (FOOS fully, BOOS partly), not proof of an edge; demo comes next.

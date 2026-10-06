@@ -10,6 +10,44 @@
     "original": {"deal_count": 1000, "pf": 1.5, "final_balance": 102000, "max_dd": 1000, "sample": {"pl": 500}},
     "retest": {"deal_count": 1000, "pf": 1.5, "final_balance": 102000, "max_dd": 1000, "sample": {"pl": 500}}
   },
+  "deal_level_notes": "The deal-level step runs first (goatai#1885 6009311876). Deals compare on (server_time_msc, deal_type, deal_entry, lots, price), as the trading-equivalence canary does. Equity rows are [minute, balance, equity]; a rollover row is the first row of a new server day. Identical deals whose equity difference steps only on rollover rows: comparable_rebased, cause swap_or_spec, whatever the aggregates say. Anything else falls through to the aggregate rule with cause history_or_behaviour.",
+  "deal_level_inputs": {
+    "swap_only": {
+      "deals": {"original": [[1767603600000, "0", "0", "0.05", "1.1"], [1767625200000, "1", "1", "0.05", "1.1012"]],
+                "retest":   [[1767603600000, "0", "0", "0.05", "1.1"], [1767625200000, "1", "1", "0.05", "1.1012"]]},
+      "equity": {"original": [["2026-01-05 10:00", 10000, 10000], ["2026-01-05 15:00", 10000, 10010], ["2026-01-06 00:01", 10000, 10012],
+                              ["2026-01-06 10:00", 10020, 10020], ["2026-01-07 00:01", 10020, 10021]],
+                 "retest":   [["2026-01-05 10:00", 10000, 10000], ["2026-01-05 15:00", 10000, 10010], ["2026-01-06 00:01", 10000, 10010.5],
+                              ["2026-01-06 10:00", 10018.5, 10018.5], ["2026-01-07 00:01", 10018.5, 10018.0]]}
+    },
+    "deal_mismatch": {
+      "deals": {"original": [[1767603600000, "0", "0", "0.05", "1.1"], [1767625200000, "1", "1", "0.05", "1.1012"]],
+                "retest":   [[1767603600000, "0", "0", "0.05", "1.1"], [1767625260000, "1", "1", "0.05", "1.1013"]]},
+      "equity": {"original": [["2026-01-05 10:00", 10000, 10000], ["2026-01-06 00:01", 10000, 10012]],
+                 "retest":   [["2026-01-05 10:00", 10000, 10000], ["2026-01-06 00:01", 10000, 10010.5]]}
+    },
+    "money_off_rollover": {
+      "deals": {"original": [[1767603600000, "0", "0", "0.05", "1.1"], [1767625200000, "1", "1", "0.05", "1.1012"]],
+                "retest":   [[1767603600000, "0", "0", "0.05", "1.1"], [1767625200000, "1", "1", "0.05", "1.1012"]]},
+      "equity": {"original": [["2026-01-05 10:00", 10000, 10000], ["2026-01-05 15:00", 10000, 10010], ["2026-01-06 00:01", 10000, 10012]],
+                 "retest":   [["2026-01-05 10:00", 10000, 10000], ["2026-01-05 15:00", 10000, 10009], ["2026-01-06 00:01", 10000, 10011]]}
+    },
+    "money_off_rollover_by_a_cent": {
+      "deals": {"original": [[1767603600000, "0", "0", "0.05", "1.1"]], "retest": [[1767603600000, "0", "0", "0.05", "1.1"]]},
+      "equity": {"original": [["2026-01-05 10:00", 10000, 10000], ["2026-01-05 15:00", 10000, 10010]],
+                 "retest":   [["2026-01-05 10:00", 10000, 10000], ["2026-01-05 15:00", 10000, 10010.01]]}
+    },
+    "money_within_tolerance_off_rollover": {
+      "deals": {"original": [[1767603600000, "0", "0", "0.05", "1.1"]], "retest": [[1767603600000, "0", "0", "0.05", "1.1"]]},
+      "equity": {"original": [["2026-01-05 10:00", 10000, 10000], ["2026-01-05 15:00", 10000, 10010]],
+                 "retest":   [["2026-01-05 10:00", 10000, 10000], ["2026-01-05 15:00", 10000, 10010.005]]}
+    },
+    "different_minutes": {
+      "deals": {"original": [[1767603600000, "0", "0", "0.05", "1.1"]], "retest": [[1767603600000, "0", "0", "0.05", "1.1"]]},
+      "equity": {"original": [["2026-01-05 10:00", 10000, 10000], ["2026-01-06 00:01", 10000, 10010]],
+                 "retest":   [["2026-01-05 10:00", 10000, 10000], ["2026-01-06 00:02", 10000, 10008]]}
+    }
+  },
   "cases": [
     {"name": "exact reproduction is the fast path", "reproduced": true,
      "expected": {"verdict": "comparable", "failed": []}},
@@ -69,6 +107,25 @@
      "expected": {"verdict": "requalify", "failed": ["deal_count", "pf", "final_balance", "sample_pf_side", "max_dd"]}},
     {"name": "first native catch-up: small drift re-bases", "original": {"deal_count": 4210, "pf": 1.21, "final_balance": 104312.55, "max_dd": 2140.1},
      "retest": {"deal_count": 4206, "pf": 1.2, "final_balance": 104290.55, "max_dd": 2151.4},
-     "expected": {"verdict": "comparable_rebased", "failed": []}}
+     "expected": {"verdict": "comparable_rebased", "failed": []}},
+
+    {"name": "swap-only drift re-bases even past the aggregate bar", "deal_level": "swap_only", "retest": {"final_balance": 101500},
+     "expected": {"verdict": "comparable_rebased", "failed": [], "cause": "swap_or_spec", "decidedBy": "deal_level"}},
+    {"name": "deal mismatch falls through to the aggregate rule, which passes", "deal_level": "deal_mismatch",
+     "expected": {"verdict": "comparable_rebased", "failed": [], "cause": "history_or_behaviour", "decidedBy": "aggregate", "dealStatus": "deals_differ"}},
+    {"name": "deal mismatch falls through to the aggregate rule, which fails", "deal_level": "deal_mismatch", "retest": {"final_balance": 101500},
+     "expected": {"verdict": "requalify", "failed": ["final_balance"], "cause": "history_or_behaviour", "decidedBy": "aggregate", "dealStatus": "deals_differ"}},
+    {"name": "money drift at a non-rollover row falls through and fails the aggregate", "deal_level": "money_off_rollover", "retest": {"final_balance": 101500},
+     "expected": {"verdict": "requalify", "failed": ["final_balance"], "cause": "history_or_behaviour", "decidedBy": "aggregate", "dealStatus": "money_off_rollover"}},
+    {"name": "money drift at a non-rollover row falls through and passes the aggregate", "deal_level": "money_off_rollover",
+     "expected": {"verdict": "comparable_rebased", "failed": [], "cause": "history_or_behaviour", "decidedBy": "aggregate", "dealStatus": "money_off_rollover"}},
+    {"name": "a one-cent move off a rollover is not swap", "deal_level": "money_off_rollover_by_a_cent", "retest": {"final_balance": 101500},
+     "expected": {"verdict": "requalify", "failed": ["final_balance"], "cause": "history_or_behaviour", "decidedBy": "aggregate", "dealStatus": "money_off_rollover"}},
+    {"name": "a move within the reproduction tolerance off a rollover is no move", "deal_level": "money_within_tolerance_off_rollover", "retest": {"final_balance": 101500},
+     "expected": {"verdict": "comparable_rebased", "failed": [], "cause": "swap_or_spec", "decidedBy": "deal_level", "dealStatus": "swap_only"}},
+    {"name": "equity sampled at different minutes falls through", "deal_level": "different_minutes", "retest": {"final_balance": 101500},
+     "expected": {"verdict": "requalify", "failed": ["final_balance"], "cause": "history_or_behaviour", "decidedBy": "aggregate", "dealStatus": "money_off_rollover"}},
+    {"name": "identity mismatch outranks a swap-only drift", "deal_level": "swap_only", "identity_failed": ["currency: USD / EUR"],
+     "expected": {"verdict": "not_comparable", "failed": []}}
   ]
 }

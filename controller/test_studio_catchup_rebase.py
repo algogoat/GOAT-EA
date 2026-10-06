@@ -28,17 +28,26 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
         for case in FIXTURE['cases']:
             with self.subTest(case=case['name']):
-                result = rb.judge_case(case, FIXTURE['defaults'])
+                result = rb.judge_case(case, FIXTURE['defaults'], FIXTURE['deal_level_inputs'])
                 self.assertEqual(result['verdict'], case['expected']['verdict'])
                 self.assertEqual(result['failed'], case['expected']['failed'])
+                if 'cause' in case['expected']:
+                    self.assertEqual(result['tickHistoryDrift']['cause'], case['expected']['cause'])
+                    self.assertEqual(result['decidedBy'], case['expected']['decidedBy'])
+                if 'dealStatus' in case['expected']:
+                    self.assertEqual(result['dealCheck']['status'], case['expected']['dealStatus'])
                 self.assertIn(result['verdict'], rb.VERDICTS)
                 if result['verdict'] == rb.REQUALIFY:
                     # The reason names every failed criterion, in the fixed order.
                     self.assertEqual([reason.split(':')[0] for reason in result['reasons']], case['expected']['failed'])
                 if result['verdict'] in (rb.REBASED, rb.REQUALIFY):
-                    self.assertEqual([row['criterion'] for row in result['criteria']], list(rb.CRITERIA))
                     self.assertEqual(set(result['tickHistoryDrift']),
-                                     {'dealCountDelta', 'pfDelta', 'balanceDelta', 'ddDelta', 'maxEquityGap'})
+                                     {'dealCountDelta', 'pfDelta', 'balanceDelta', 'ddDelta', 'maxEquityGap', 'cause'})
+                    if result['decidedBy'] == 'deal_level':
+                        self.assertIsNone(result['criteria'])    # swap-only: the aggregates do not decide
+                    else:
+                        self.assertEqual(result['tickHistoryDrift']['cause'], rb.HISTORY_OR_BEHAVIOUR)
+                        self.assertEqual([row['criterion'] for row in result['criteria']], list(rb.CRITERIA))
                 else:
                     self.assertIsNone(result['criteria'])
                     self.assertIsNone(result['tickHistoryDrift'])
@@ -90,15 +99,40 @@ class EvaluateTests(unittest.TestCase):
         self.assertIsNone(result['historyBasis'])
         self.assertIsNone(result['rebasedWindows'])
 
+    def test_swap_only_drift_is_rebased_at_the_deal_level_whatever_its_size(self):
+        # Same deals; the equity difference steps only on rows that open a server day (where swap is charged):
+        # a 300 step would fail the aggregate DD bar, but it is the broker's current swap, so it re-bases.
+        result = Scenario(self.root, alter_history=-300).evaluate()
+        self.assertEqual((result['comparison'], result['verdict']), ('comparable_rebased', 'held_up'))
+        self.assertEqual((result['rebase']['decidedBy'], result['rebase']['dealCheck']['status']), ('deal_level', 'swap_only'))
+        self.assertTrue(result['rebase']['dealCheck']['deals']['matched'])
+        self.assertEqual(result['tickHistoryDrift']['cause'], 'swap_or_spec')
+        self.assertEqual(result['tickHistoryDrift']['maxEquityGap'], 300.0)
+        self.assertEqual(result['rebasedWindows']['basis'], 'retest')
+
+    def test_a_changed_deal_falls_through_to_the_aggregate_rule(self):
+        scenario = Scenario(self.root, alter_history=-300)
+        deals = Path(str(scenario.retest)[:-4] + '.goatseq') / 'deals.csv'
+        lines = deals.read_text(encoding='utf-8').splitlines()
+        stamp = lines[44].split(',')[1]
+        lines[44] = lines[44].replace(',' + stamp + ',', ',%d,' % (int(stamp) + 60000), 1)   # the close one minute later
+        deals.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+        result = scenario.evaluate()
+        self.assertEqual((result['rebase']['decidedBy'], result['rebase']['dealCheck']['status']), ('aggregate', 'deals_differ'))
+        self.assertEqual((result['comparison'], result['rebase']['failed']), ('requalify', ['max_dd']))
+        self.assertEqual(result['tickHistoryDrift']['cause'], 'history_or_behaviour')
+
     def test_small_drift_is_comparable_rebased_and_still_judges_the_new_weeks(self):
-        result = Scenario(self.root, alter_history=True).evaluate()
+        # +3 on a mid-day row (15:00): not a swap step, so the aggregate rule decides, and it holds.
+        result = Scenario(self.root, alter_history=True, alter_row=43).evaluate()
         self.assertFalse(result['reproduction']['reproduced'])
         self.assertEqual((result['comparison'], result['verdict']), ('comparable_rebased', 'held_up'))
         self.assertTrue(result['comparability']['comparable'])
         self.assertTrue(result['comparability']['identity'])
         drift = result['tickHistoryDrift']
         self.assertEqual((drift['dealCountDelta'], drift['pfDelta'], drift['balanceDelta'], drift['ddDelta'], drift['maxEquityGap']),
-                         (0, 0.0, 0.0, 0.0, 3.0))
+                         (0, 0.0, 0.0, -3.0, 3.0))
+        self.assertEqual((drift['cause'], result['rebase']['dealCheck']['status']), ('history_or_behaviour', 'money_off_rollover'))
         basis = result['historyBasis']
         self.assertTrue(basis['originalExportedAt'] and basis['retestAt'])
         self.assertEqual((basis['originalEnd'], basis['retestEnd']), (ORIGINAL_END.isoformat(), '2026-10-09'))
@@ -106,15 +140,15 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(result['rebase']['span']['cut'], '%s 23:59' % ORIGINAL_END.isoformat())
 
     def test_large_drift_requalifies_and_names_the_criterion(self):
-        # One re-test row 300 lower: a 290 fall from the row before vs the original 120 (limit 12).
-        result = Scenario(self.root, alter_history=-300).evaluate()
+        # The 15:00 dip row 300 lower in the re-test (not a rollover row): DD 420 vs the original 120 (limit 12).
+        result = Scenario(self.root, alter_history=-300, alter_row=43).evaluate()
         self.assertEqual((result['comparison'], result['verdict'], result['confidence']), ('requalify', 'requalify', 'none'))
         self.assertFalse(result['comparability']['comparable'])
         self.assertEqual(result['rebase']['failed'], ['max_dd'])
         self.assertTrue(result['reasons'][0].startswith('max_dd: max drawdown 120'))
         self.assertIn('new candidate', result['plain'])
         self.assertIn('max_dd', result['plain'])
-        self.assertEqual(result['tickHistoryDrift']['ddDelta'], 170.0)
+        self.assertEqual(result['tickHistoryDrift']['ddDelta'], 300.0)
         self.assertEqual(result['rebasedWindows']['basis'], 'retest')
 
     def test_identity_mismatch_stays_not_comparable_even_without_reproduction(self):
@@ -209,9 +243,10 @@ class StampTests(unittest.TestCase):
 class CollectTests(CatchupCase):
     """A full catch-up cycle whose re-test drifted: the stamps reach the verdict, the summary and evidence-version.json."""
 
-    def drifted(self, shift):
-        rows = [list(row) for row in self.history]
-        rows[50][2] += Decimal(str(shift))
+    def drifted(self, shift, row=43):
+        # Row 43 is the 15:00 dip row of 2026-03-04 (mid-day: not a swap step); row 50 opens its server day.
+        rows = [list(r) for r in self.history]
+        rows[row][2] += Decimal(str(shift))
         self.histories['EURUSD'] = [tuple(row) for row in rows]
 
     def cycle(self):
@@ -229,6 +264,7 @@ class CollectTests(CatchupCase):
             self.assertEqual(record['comparison'], 'comparable_rebased')
             self.assertEqual(record['tickHistoryDrift']['maxEquityGap'], 3.0)
             self.assertEqual(record['tickHistoryDrift']['dealCountDelta'], 0)
+            self.assertEqual(record['tickHistoryDrift']['cause'], 'history_or_behaviour')
             self.assertEqual(set(record['historyBasis']) >= {'originalExportedAt', 'retestAt'}, True)
         self.assertEqual((version['verdict']['verdict'], summary['comparable'], summary['reproduced']), ('held_up', True, False))
         stamp = version['catch_up']
@@ -248,10 +284,19 @@ class CollectTests(CatchupCase):
         self.assertEqual((summary['verdict'], summary['comparison'], summary['comparable']), ('requalify', 'requalify', False))
         self.assertEqual(version['rebase']['failed'], ['max_dd'])
         self.assertEqual((version['catch_up']['candidate'], version['catch_up']['carriesStatus']), ('new', False))
-        self.assertEqual(version['tickHistoryDrift']['ddDelta'], 170.0)
+        self.assertEqual(version['tickHistoryDrift']['ddDelta'], 300.0)
         scan = sc.evidence_scan([self.behind], now=AFTER_CLOSE, controller_root=self.controller.root)
         row = scan['exports'][0]
         self.assertEqual((row['status'], row['previous_attempt']['verdict']), ('behind', 'requalify'))
+
+    def test_swap_only_cycle_rebases_with_its_cause(self):
+        self.drifted(-300, row=50)
+        version, summary = self.cycle()
+        for record in (version, summary, version['catch_up']):
+            self.assertEqual(record['comparison'], 'comparable_rebased')
+            self.assertEqual(record['tickHistoryDrift']['cause'], 'swap_or_spec')
+        self.assertEqual(version['rebase']['decidedBy'], 'deal_level')
+        self.assertEqual(version['catch_up']['windowsBasis'], 'retest')
 
     def test_exact_reproduction_stamps_comparable(self):
         version, summary = self.cycle()

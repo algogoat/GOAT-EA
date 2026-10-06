@@ -92,7 +92,7 @@ class Scenario:
     """An original export ending Thu 2026-09-24 and its re-test to Fri 2026-10-09 (11 new weekdays)."""
 
     def __init__(self, root, *, new_per_day=10, new_trades=2, new_result=6.0, dips_new=(), new_last=date(2026, 10, 9),
-                 retest_capture=True, retest_complete=True, change_inputs=False, alter_history=False, retest=None, tail_drop=None):
+                 retest_capture=True, retest_complete=True, change_inputs=False, alter_history=False, retest=None, tail_drop=None, alter_row=50):
         history = daily(date(2026, 1, 5), ORIGINAL_END, 10000, 10, dips=[(date(2026, 3, 4), 120)])
         if tail_drop:   # the original ends in a drawdown already under way: its last three rows sit tail_drop below the peak
             low = history[-4][2] - Decimal(str(tail_drop))
@@ -104,8 +104,8 @@ class Scenario:
                                   windows=foos + [('FOOS', date(2026, 8, 29), ORIGINAL_END, 38, 190)])
         new_rows = daily(ORIGINAL_END + timedelta(days=1), new_last, history[-1][2], new_per_day, dips=dips_new)
         retest_history = [list(r) for r in history]
-        if alter_history:   # True: +3 on one equity row; a number: that shift instead
-            retest_history[50][2] += Decimal('3' if alter_history is True else str(alter_history))
+        if alter_history:   # True: +3 on one equity row; a number: that shift instead (row 50: a day's first row; 43: 15:00)
+            retest_history[alter_row][2] += Decimal('3' if alter_history is True else str(alter_history))
         new_trades_list = trading(ORIGINAL_END + timedelta(days=1), new_last, new_trades, new_result)
         new_count = sum(entry == '0' for _, entry, _, _ in new_trades_list)
         values = dict(VALUES, Grid_Size='-3.0') if change_inputs else None

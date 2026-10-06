@@ -8,7 +8,15 @@ shifted on thousands of rows). The likely cause is that the broker's tick histor
 * ``comparable``: the exact reproduction (``studio_catchup_verdict.reproduction``) is the fast path.
 * ``not_comparable``: any identity check failed (inputs, EA build, EA name, model, symbol, server,
   deposit, leverage, currency). Identity stays strict, exactly as before.
-* Otherwise the re-test is compared with the original over the ORIGINAL span, in aggregate, never
+* Deal-level step (Ops, goatai#1885 6009311876: the 25 were swap-rate changes; MT5's tester applies a
+  symbol's CURRENT swap rates to all history and Darwinex updates them). When both runs have a complete
+  capture, their deals before the cut are compared exactly as the trading-equivalence canary does
+  (time, type, entry, lots, price: ``studio_equivalence.deal_list``/``compare_deals``). Identical deals
+  whose equity difference changes only on rollover rows (the first row after server midnight, where
+  swap is charged; ``money_check``) are ``comparable_rebased`` with ``tickHistoryDrift.cause:
+  'swap_or_spec'``, whatever the size: current swaps are what live trading pays, so every window is
+  re-based on the re-test. Money that moves anywhere else, or different deals, fall through.
+* Otherwise (``cause: 'history_or_behaviour'``) the re-test is compared with the original over the ORIGINAL span, in aggregate, never
   row by row (``CRITERIA``). When every criterion holds the verdict is ``comparable_rebased``: the
   re-test becomes the evidence for every window (BOOS, SAMPLE, FWD, FOOS), each recomputed on the
   re-test alone (``rebased_windows``), never the old export spliced with new weeks.
@@ -32,8 +40,10 @@ Deal-based criteria need a complete sequence capture (``deals.csv``) on BOTH run
 are not measured, which fails them: such a re-test requalifies, it is never re-based on guesses.
 
 Stamps: ``historyBasis {originalExportedAt, retestAt}`` (the SET files' modification times, UTC) and
-``tickHistoryDrift {dealCountDelta, pfDelta, balanceDelta, ddDelta, maxEquityGap}`` (re-test minus
-original; maxEquityGap is the largest |equity difference| over the minutes both runs sampled).
+``tickHistoryDrift {dealCountDelta, pfDelta, balanceDelta, ddDelta, maxEquityGap, cause}`` (re-test minus
+original; maxEquityGap is the largest |equity difference| over the minutes both runs sampled; cause is
+``swap_or_spec`` from the deal-level step, else ``history_or_behaviour``). ``decidedBy`` and ``dealCheck``
+say which step decided and what the deal comparison found.
 
 The bar is shared through ``fixtures/catchup-rebase-cases.json`` (``judge_case``).
 """
@@ -53,6 +63,8 @@ BALANCE_OF_DEPOSIT = Decimal('0.001')   # |final balance delta| <= max(0.1% of d
 BALANCE_OF_NET = Decimal('0.02')        #                            2% of |original net profit|)
 DD_REL = Decimal('0.10')                # |max DD delta| <= 10% of the original max DD
 PF_SIDE = Decimal('1')                  # SAMPLE PF on the same side of 1.0 (>= 1.0 is one side)
+MONEY_TOLERANCE = Decimal('0.005')      # an equity-difference step below this is no change (the reproduction tolerance)
+SWAP_OR_SPEC, HISTORY_OR_BEHAVIOUR = 'swap_or_spec', 'history_or_behaviour'   # tickHistoryDrift.cause
 CRITERIA = ('deal_count', 'pf', 'final_balance', 'sample_pf_side', 'max_dd')
 FIXTURE = 'fixtures/catchup-rebase-cases.json'
 BAR = dict(deal_count='|delta| <= 5% of the original deal count', pf='|delta| <= 0.05',
@@ -154,28 +166,97 @@ def drift(original, retest, *, max_equity_gap=None):
                 ddDelta=delta('max_dd'), maxEquityGap=max_equity_gap)
 
 
-def decide(identity_failed, reproduced, original=None, retest=None, *, deposit=None, max_equity_gap=None):
-    """The comparison verdict (``VERDICTS``) with its criteria, reasons and drift (pure)."""
+def money_check(original_rows, retest_rows):
+    """Is the money difference a swap accrual? The equity difference may change only on a rollover row.
+
+    Rows are ``(minute, balance, equity)`` of each run before the cut, sampled at the same minutes. A
+    rollover row is the first row of a new server day (the first row after server midnight), where MT5
+    charges swap. Balance is not tested on its own: a held position's swap moves from floating equity to
+    the balance when it closes, so the balance difference also steps at a close while equity does not.
+    """
+    if [row[0] for row in original_rows] != [row[0] for row in retest_rows]:
+        return dict(swap_only=False, rollover_changes=None, first_off_rollover=None,
+                    reason='the two runs sampled equity at different minutes')
+    previous, day, changes = Decimal(0), None, 0
+    for (stamp, _, old), (_, _, new) in zip(original_rows, retest_rows):
+        difference = new - old
+        if abs(difference - previous) > MONEY_TOLERANCE:
+            if day is None or stamp.date() == day:
+                return dict(swap_only=False, rollover_changes=changes, first_off_rollover=stamp.strftime('%Y-%m-%d %H:%M'),
+                            reason='the equity difference changed at %s, which is not the first row after a server-midnight '
+                                   'rollover, so it is not a swap accrual' % stamp.strftime('%Y-%m-%d %H:%M'))
+            changes += 1
+        previous, day = difference, stamp.date()
+    return dict(swap_only=True, rollover_changes=changes, first_off_rollover=None, final_equity_difference=float(previous),
+                reason='the equity difference changed only on rollover rows (%d)' % changes)
+
+
+def deal_level(original_deals, retest_deals, original_rows, retest_rows):
+    """Deal-level step: identical deals (time, type, entry, lots, price) with money drift only at rollovers? (pure).
+
+    Deals compare exactly as the trading-equivalence canary does (``studio_equivalence.compare_deals``).
+    """
+    from studio_equivalence import compare_deals
+    deals = compare_deals(original_deals, retest_deals)
+    if not deals['matched']:
+        return dict(status='deals_differ', swap_only=False, deals=deals, money=None,
+                    reason='the deal lists differ (time, type, entry, lots or price), first at %s' % deals['first_difference'])
+    money = money_check(original_rows, retest_rows)
+    return dict(status='swap_only' if money['swap_only'] else 'money_off_rollover', swap_only=money['swap_only'], deals=deals,
+                money=money, reason='identical deals; ' + money['reason'])
+
+
+def decide(identity_failed, reproduced, original=None, retest=None, *, deposit=None, max_equity_gap=None, deal_check=None):
+    """The comparison verdict (``VERDICTS``) with its criteria, reasons and drift (pure).
+
+    ``deal_check`` (``deal_level``) runs first: identical deals whose money differs only at rollovers is a swap
+    or symbol-spec change, ``comparable_rebased`` whatever its size. Otherwise the aggregate criteria decide.
+    """
     if identity_failed:
-        return dict(schema=SCHEMA, verdict=NOT_COMPARABLE, criteria=None, failed=[], reasons=list(identity_failed), tickHistoryDrift=None)
+        return dict(schema=SCHEMA, verdict=NOT_COMPARABLE, decidedBy='identity', criteria=None, failed=[],
+                    reasons=list(identity_failed), dealCheck=None, tickHistoryDrift=None)
     if reproduced:
-        return dict(schema=SCHEMA, verdict=COMPARABLE, criteria=None, failed=[], reasons=['reproduced the original exactly'],
-                    tickHistoryDrift=None)
+        return dict(schema=SCHEMA, verdict=COMPARABLE, decidedBy='exact_reproduction', criteria=None, failed=[],
+                    reasons=['reproduced the original exactly'], dealCheck=None, tickHistoryDrift=None)
+    if deal_check and deal_check.get('swap_only'):
+        return dict(schema=SCHEMA, verdict=REBASED, decidedBy='deal_level', criteria=None, failed=[],
+                    reasons=['the same deals (time, type, entry, lots, price); only money and equity differ, and only at '
+                             'rollover rows: the broker changed its swap rates or symbol spec, which MT5 applies to all history'],
+                    dealCheck=deal_check,
+                    tickHistoryDrift=dict(drift(original or {}, retest or {}, max_equity_gap=max_equity_gap), cause=SWAP_OR_SPEC))
     rows = criteria(original or {}, retest or {}, deposit=deposit)
     failed = [row['criterion'] for row in rows if not row['ok']]
     reasons = ['%s: %s' % (row['criterion'], row['detail']) for row in rows if not row['ok']] if failed else \
         ['did not reproduce exactly, but every tick-history drift criterion holds over the original span']
-    return dict(schema=SCHEMA, verdict=REQUALIFY if failed else REBASED, criteria=rows, failed=failed, reasons=reasons,
-                tickHistoryDrift=drift(original or {}, retest or {}, max_equity_gap=max_equity_gap))
+    return dict(schema=SCHEMA, verdict=REQUALIFY if failed else REBASED, decidedBy='aggregate', criteria=rows, failed=failed,
+                reasons=reasons, dealCheck=deal_check,
+                tickHistoryDrift=dict(drift(original or {}, retest or {}, max_equity_gap=max_equity_gap), cause=HISTORY_OR_BEHAVIOUR))
 
 
-def judge_case(case, defaults=None):
-    """Run one fixture case (``fixtures/catchup-rebase-cases.json``): ``defaults`` with the case's own fields on top."""
+def _case_deal_check(raw):
+    """A fixture case's ``deal_level`` input: deal rows [msc, type, entry, lots, price], equity rows [minute, balance, equity]."""
+    if not raw:
+        return None
+    deals = lambda rows: [(int(r[0]), str(r[1]), str(r[2]), Decimal(str(r[3])), Decimal(str(r[4]))) for r in rows]
+    equity = lambda rows: [(datetime.strptime(r[0], '%Y-%m-%d %H:%M'), Decimal(str(r[1])), Decimal(str(r[2]))) for r in rows]
+    return deal_level(deals(raw['deals']['original']), deals(raw['deals']['retest']),
+                      equity(raw['equity']['original']), equity(raw['equity']['retest']))
+
+
+def judge_case(case, defaults=None, deal_inputs=None):
+    """Run one fixture case (``fixtures/catchup-rebase-cases.json``): ``defaults`` with the case's own fields on top.
+
+    A case's ``deal_level`` is a deal/equity input, or the name of one in the fixture's ``deal_level_inputs``.
+    """
     base = defaults or {}
     pick = lambda key, fallback=None: case[key] if key in case else base.get(key, fallback)
     original = dict(base.get('original') or {}, **(case.get('original') or {}))
     retest = dict(base.get('retest') or {}, **(case.get('retest') or {}))
-    return decide(pick('identity_failed', []), pick('reproduced', False), original, retest, deposit=pick('deposit'))
+    raw = case.get('deal_level')
+    if isinstance(raw, str):
+        raw = (deal_inputs or {})[raw]
+    return decide(pick('identity_failed', []), pick('reproduced', False), original, retest, deposit=pick('deposit'),
+                  deal_check=_case_deal_check(raw))
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +367,15 @@ def judge(original, retest, *, identity_failed, reproduced, old_rows, new_rows, 
         sample = None   # SAMPLE must end inside the original span
     a = measure(old_rows, old_deals, cut=cut, sample=sample)
     b = measure(new_rows, new_deals, cut=cut, sample=sample)
-    result = decide([], False, a, b, deposit=deposit, max_equity_gap=equity_gap(old_rows, new_rows, cut))
+    if old_deals and new_deals:
+        # Deal-level step first (goatai#1885 6009311876): the canary's deal comparison, before the forced close.
+        from studio_equivalence import deal_list
+        deal_check = deal_level(deal_list(old_deals, cut_msc=_msc(cut)), deal_list(new_deals, cut_msc=_msc(cut)),
+                                [row for row in old_rows if row[0] < cut], [row for row in new_rows if row[0] < cut])
+    else:
+        deal_check = dict(status='not_measured', swap_only=False, deals=None, money=None,
+                          reason='needs a complete capture (deals.csv) on both runs')
+    result = decide([], False, a, b, deposit=deposit, max_equity_gap=equity_gap(old_rows, new_rows, cut), deal_check=deal_check)
     public = lambda m: {k: (float(v) if isinstance(v, Decimal) else v) for k, v in m.items() if k != 'sample'} | dict(
         sample=None if m['sample'] is None else {k: (float(v) if isinstance(v, Decimal) else v) for k, v in m['sample'].items()})
     return dict(result, historyBasis=history_basis(original, retest), deposit=_num(_dec(deposit)),

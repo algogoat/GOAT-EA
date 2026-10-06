@@ -228,9 +228,9 @@ function tester({plan=[],csv={},move=true,runPath='GOAT\\Rabcdef012345',evidence
   const ctx=Object.assign(H.makeContext({}),{runs,moves,deleted,logs,Key:'GOAT',EA_Name:'GOAT V1.49',Server:'Darwinex-Demo',OP_Standard:9,
     StringToInteger:s=>parseInt(s,10)||0,
     strT:{Strat:'R0123456789abcdef0123',Model:'4',fromDate:'',toDate:''},GOAT_BATCH_CANCELLED_GV:'cancel',__cancel:false,
-    GlobalVariableGet:()=>ctx.__cancel?1:0,InitializeTester:()=>true,TimeTradeServer:()=>0,GetLastFridayDate:()=>'2025.10.03',
+    GlobalVariableGet:()=>ctx.__cancel?1:0,InitializeTester:()=>true,TimeTradeServer:()=>777000,TimeCurrent:()=>1,GetLastFridayDate:()=>'2025.10.03',
     FetchExportSetting:k=>({BackOOSDate:'2023.10.02',IncludeBackOOS:'1',MinARF:'0.2',MinSR:'2.5',EvidenceEnd:'auto',...settings})[k]??'',
-    GoatEvidenceEndToDate:()=>evidence,GoatOptCurrentRunPath:()=>runPath,ShowPrompt:()=>{},LogOrPrint:(m,t)=>logs.push(t),
+    __boundary:[],GoatEvidenceEndToDate:(setting,now,windowEnd)=>{ctx.__boundary.push([setting,now,windowEnd]);return evidence;},GoatOptCurrentRunPath:()=>runPath,ShowPrompt:()=>{},LogOrPrint:(m,t)=>logs.push(t),
     GoatEvidenceEndCheckExports:(arr)=>evidenceChecks.push(arr.length),FileNameOnly:p=>p.split('\\').pop(),
     GoatExportReadTextCommon:p=>csv[p]??'',
     DeleteExports:files=>{deleted.push(...files);return true;},
@@ -270,6 +270,14 @@ const sample=(changes)=>equityCsv(changes,{start:'2024.01.08'});
   check(()=>assert.match(t.__bsDetails,/;slot1=kept;slot1_retest_profit=-80;slot2=none;slot2_reason=no other eligible pass$/));
   check(()=>assert.equal(t.strT.fromDate,'2023.10.02'));
   check(()=>assert.equal(t.strT.toDate,'2025.10.03'));
+  check(()=>assert.deepEqual(t.__boundary.map(a=>Array.from(a)),[['auto',777000,D('2025.03.15')]],'EvidenceEnd on the broker server clock and the window end, as StartExporter'));
+  const legacy=loaded(tester({settings:{EvidenceEnd:''}}),[pass(5,2.0)]);
+  vm.runInContext('StartBelowScoreExporter(false)',legacy);
+  check(()=>assert.equal(legacy.__boundary.length,0));
+  check(()=>assert.equal(legacy.strT.toDate,'2025.10.03','no setting: the legacy last-Friday end'));
+  const staged=loaded(tester({evidence:'2025.09.27'}),[pass(5,2.0)]);
+  vm.runInContext('StartBelowScoreExporter(false)',staged);
+  check(()=>assert.equal(staged.strT.toDate,'2025.09.27','the staged EvidenceEnd wins'));
 }
 {
   // Slot 2, same character: kept at SAMPLE correlation <= 0.5, skipped above it; logged either way.

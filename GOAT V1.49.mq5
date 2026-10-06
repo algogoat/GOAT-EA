@@ -4853,15 +4853,16 @@ int StartBelowScoreExporter(const bool reportMode,string &details)
    double MinARF      = StringToDouble(FetchExportSetting("MinARF",Key,EA_Name,Server));
    double MinSR       = StringToDouble(FetchExportSetting("MinSR",Key,EA_Name,Server));
 #ifdef GOAT_EVIDENCE_END_V149
-   // The same export boundary as StartExporter: a refused EvidenceEnd exports nothing.
-   string evidenceSetting=FetchExportSetting("EvidenceEnd",Key,EA_Name,Server);
-   string evidenceToDate="",evidenceEnd="",evidenceError="";
-   if(evidenceSetting!="")
+   // The same export boundary as StartExporter (broker server clock): a refused EvidenceEnd exports nothing.
+   string boundarySetting=FetchExportSetting("EvidenceEnd",Key,EA_Name,Server);
+   string boundaryToDate="",evidenceEnd="",boundaryError="";
+   if(boundarySetting!="")
    {
-    evidenceToDate=GoatEvidenceEndToDate(evidenceSetting,TimeTradeServer(),xmlData.endD,evidenceEnd,evidenceError);
-    if(evidenceToDate=="") {LogOrPrint(reportMode,"❌ "+evidenceError+". No below_score export was run.",Key,EA_Name,Server); return -1;}
+    const datetime windowEnd=xmlData.endD;
+    boundaryToDate=GoatEvidenceEndToDate(boundarySetting,TimeTradeServer(),windowEnd,evidenceEnd,boundaryError);
+    if(boundaryToDate=="") {LogOrPrint(reportMode,"❌ "+boundaryError+". No below_score export was run.",Key,EA_Name,Server); return -1;}
    }
-   strT.toDate=(evidenceToDate!="" ? evidenceToDate : GetLastFridayDate());
+   strT.toDate=(boundaryToDate!="" ? boundaryToDate : GetLastFridayDate());
 #else
    strT.toDate=GetLastFridayDate();
 #endif

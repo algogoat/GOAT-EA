@@ -8,8 +8,12 @@ judges only the newly added days (studio_catchup_verdict).
 
 Never overwrites the original export. The re-test is a new evidence version with
 the same values identity (``values_sha256``) and a later end date, stored under
-``<controller state>\\evidence\\<catch-up id>\\<member alias>\\`` with its own
-``evidence-version.json`` that links back to the original.
+``<controller state>\\evidence\\c.<10 hex of SHA-256(catch-up id)>\\<member number>\\`` with its own
+``evidence-version.json`` that links back to the original. The folder's ``catchup.json`` records the
+readable catch-up ID and each member's alias. The path is bounded whatever the ID: the longest file
+below a member folder is len(state root) + 168 characters; past the Windows limit the controller uses
+the \\\\?\\ extended-length form (MT5 never opens these folders). Catch-ups prepared before this layout
+keep ``evidence\\<catch-up id>\\<alias>\\`` and are read as they are.
 
 How it runs natively (no EA change): the native Studio queue only runs
 optimizations, so catch-up reuses the SeedRunner process driver. Each member is
@@ -83,6 +87,75 @@ MAX_MEMBERS = 2000
 MAX_PUBLIC = 100
 OUTPUT_PATH_ROOM = 140  # longest EA export file name below a member folder, plus margin
 OP_STANDARD = '9'
+# Windows paths (goatai#1885 6008582393). MT5 and the EA are not long-path aware, so every path they read or
+# write stays under MAX_PATH as a plain path. Controller-only folders (catchups\<id>, evidence\<folder>) use the
+# \\?\ extended-length form for IO when their worst case would pass it, so a long Windows user name never blocks
+# a catch-up.
+MAX_PATH = 259           # longest plain Windows path (MAX_PATH 260 includes the terminating NUL)
+MAX_ID = 80              # CatchupRunner.path: 1..80 letters/digits/underscore/hyphen
+CATCHUP_FILE_ROOM = 72   # longest file name in catchups\<id>: <alias>.result.json plus write_json's .<32 hex>.tmp
+MEMBER_FOLDER_DIGITS = 5
+EVIDENCE_FOLDER_SCHEMA = 'goat-catchup-evidence-folder-v1'
+EVIDENCE_FOLDER_RECORD = 'catchup.json'
+WINDOWS = os.name == 'nt'
+
+
+def evidence_key(catchup_id):
+    """Short, stable evidence folder name for one catch-up ID: ``c.`` + 10 hex of SHA-256(id), 12 characters.
+
+    A catch-up ID never contains ``.``, so a hashed folder can never be a legacy ``evidence\\<catch-up id>``
+    folder. The readable ID is recorded in ``catchup.json`` inside it (and in every evidence-version.json).
+    """
+    return 'c.' + hashlib.sha256(catchup_id.encode('utf-8')).hexdigest()[:10]
+
+
+def member_folder(index):
+    """Evidence folder of member ``index`` (0-based): its 1-based number, 5 digits (the alias suffix)."""
+    return str(index + 1).zfill(MEMBER_FOLDER_DIGITS)
+
+
+def io_path(path, room=0, *, windows=None):
+    """``path`` for IO: the \\\\?\\ extended-length form on Windows when ``path`` plus ``room`` passes MAX_PATH."""
+    path = Path(os.path.abspath(path))
+    if (WINDOWS if windows is None else windows) and len(str(path)) + room > MAX_PATH:
+        from studio_handover import filesystem_path
+        return filesystem_path(path)
+    return path
+
+
+def plain(path):
+    """The display form of a path that may carry the \\\\?\\ prefix."""
+    text = str(path)
+    if text.startswith('\\\\?\\UNC\\'):
+        return '\\\\' + text[8:]
+    return text[4:] if text.startswith('\\\\?\\') else text
+
+
+def evidence_worst_case(controller_root):
+    """Longest path under a catch-up member's evidence folder, plain: independent of the catch-up ID.
+
+    ``<state root>\\evidence\\c.<10 hex>\\<5 digits>\\`` + OUTPUT_PATH_ROOM = len(state root) + 168.
+    """
+    return len(os.path.abspath(Path(controller_root) / 'evidence')) + 1 + 12 + 1 + MEMBER_FOLDER_DIGITS + OUTPUT_PATH_ROOM
+
+
+def catchups_worst_case(controller_root, catchup_id=None):
+    """Longest controller file path in ``catchups\\<id>``: len(state root) + 10 + len(id) + 1 + CATCHUP_FILE_ROOM."""
+    return len(os.path.abspath(Path(controller_root) / 'catchups')) + 1 + (len(catchup_id) if catchup_id else MAX_ID) + 1 + CATCHUP_FILE_ROOM
+
+
+def evidence_folder(controller_root, catchup_id):
+    """The evidence folder of one catch-up for reading: the hashed folder, or a legacy ``evidence\\<id>`` one, else None."""
+    base = Path(controller_root) / 'evidence'
+    hashed = io_path(base / evidence_key(catchup_id), 1 + MEMBER_FOLDER_DIGITS + OUTPUT_PATH_ROOM)
+    try:
+        record = read_json_bounded(hashed / EVIDENCE_FOLDER_RECORD)
+        if isinstance(record, dict) and record.get('catchup_id') == catchup_id:
+            return hashed
+    except (OSError, ValueError):
+        pass
+    legacy = base / catchup_id
+    return legacy if legacy.is_dir() else None
 SAFE_SYMBOL = re.compile(r'[A-Za-z0-9_.# -]{1,64}')
 STATUSES = ('behind', 'current', 'ahead', 'caught_up', 'ineligible')
 UNJUDGED = ('not_comparable', 'unjudged')   # retained, but they do not put the export on the shared timeline
@@ -103,7 +176,8 @@ def _mt5(day):
 
 def versions(controller_root, limit=20000):
     """Catch-up evidence versions retained under the controller state, newest end first."""
-    base = Path(controller_root) / 'evidence'
+    # Both layouts: evidence\c.<hash>\<member>\ and the legacy evidence\<catch-up id>\<alias>\ (room for the longest ID).
+    base = io_path(Path(controller_root) / 'evidence', 1 + MAX_ID + 1 + 23 + 1 + len('evidence-version.json'))
     found = []
     if base.is_dir():
         for path in sorted(base.glob('*/*/evidence-version.json')):
@@ -296,7 +370,7 @@ def read_operation(controller, args, *, now=None):
         from studio_batch import _json
         from studio_installation import read_json
         controller.session = read_json(Path(controller.root) / 'session.json')
-        return CatchupRunner(controller, process=_NoProcess(), now=now).validate(_json(args.plan))
+        return CatchupRunner(controller, process=_NoProcess(), now=now).validate(_json(args.plan), getattr(args, 'catchup_id', None))
     raise ValueError('Not a read-only evidence operation: ' + args.operation)
 
 
@@ -354,7 +428,8 @@ class CatchupRunner(SeedRunner):
 
     def __init__(self, controller, *, process=None, clock=time.time, sleep=time.sleep, now=None):
         super().__init__(controller, process=process, clock=clock, sleep=sleep)
-        self.base = controller.root / 'catchups'
+        # Controller-only folders: extended-length IO when the longest ID's files would pass MAX_PATH.
+        self.base = io_path(controller.root / 'catchups', 1 + MAX_ID + 1 + CATCHUP_FILE_ROOM)
         self.evidence = controller.root / 'evidence'
         self.now = now
         self.heldout_reveal, self._strategy_refs = None, {}
@@ -583,9 +658,8 @@ class CatchupRunner(SeedRunner):
         config = ini.encode('utf-16')
         set_path = root / (alias + '.set')
         config_path = Path(self.c.install['terminal_data_root']) / 'config/GOATStudio/Catchups' / (alias + '.ini')
-        evidence_dir = self.evidence / root.name / alias
-        if len(str(evidence_dir)) + OUTPUT_PATH_ROOM > 259:
-            raise ValueError('Controller state path is too long for catch-up evidence folders (Windows 260-character limit)')
+        # Bounded whatever the catch-up ID: evidence\c.<10 hex>\<5 digits>\ (extended-length IO past MAX_PATH).
+        evidence_dir = io_path(self.evidence / evidence_key(root.name) / member_folder(index), OUTPUT_PATH_ROOM)
         files = [(set_path, frozen), (config_path, config)]
         member = dict(member_id=sha([export['values_sha256'], export['symbol'], export['period'], tester['FromDate'], tester['ToDate'],
                                      deposit, facts['Currency'], facts['Leverage'], facts['ExecutionMode']]),
@@ -616,10 +690,61 @@ class CatchupRunner(SeedRunner):
             member.update(source_inputs_path=str(staged), source_inputs_sha256=hashlib.sha256(source_inputs).hexdigest())
         return member, files
 
-    def validate(self, plan):
-        """Non-executing preview of a catch-up plan: no file, process or terminal effect."""
-        members, _, rows, target = self._build(self.base / 'validation-only', plan)
-        return self._preview(members, rows, target, plan, writes=False)
+    def validate(self, plan, catchup_id=None):
+        """Non-executing preview of a catch-up plan: no file, process or terminal effect.
+
+        Sized exactly as ``prepare`` would be: with ``catchup_id`` its own folders, else the longest legal ID.
+        """
+        root = self.path(catchup_id) if catchup_id is not None else self.base / 'validation-only'
+        members, _, rows, target = self._build(root, plan)
+        self._check_mt5_paths(members)
+        return self._preview(members, rows, target, plan, writes=False) | dict(paths=self.path_report(catchup_id, members))
+
+    def path_report(self, catchup_id=None, members=()):
+        """How long this catch-up's paths get, and which use the \\\\?\\ extended-length form (agent-readable)."""
+        root = self.c.root
+        evidence = self.evidence / evidence_key(catchup_id or 'validation-only')
+        report = dict(max_path=MAX_PATH, state_root_length=len(os.path.abspath(root)),
+                      catchup_id=catchup_id, catchup_id_length=len(catchup_id) if catchup_id else None,
+                      evidence_folder=plain(io_path(evidence)) if catchup_id else None,
+                      evidence_worst_case=evidence_worst_case(root),
+                      evidence_formula='len(state root) + 168 = %d + 168; the catch-up ID does not change it' % len(os.path.abspath(root)),
+                      evidence_extended_length=evidence_worst_case(root) > MAX_PATH and WINDOWS,
+                      catchups_worst_case=catchups_worst_case(root, catchup_id),
+                      catchups_formula='len(state root) + 83 + len(catch-up ID, %s)' % ('%d' % len(catchup_id) if catchup_id else 'longest 80'),
+                      catchups_extended_length=str(self.base).startswith('\\\\?\\'))
+        if members:
+            exact = [len(path) for m in members for path, _ in self._mt5_paths(m)]
+            unit = max(self._ea_unit_worst_case(m) for m in members)
+            report.update(mt5_longest_exact=max(exact), mt5_export_unit_worst_case=unit)
+            if unit > MAX_PATH:
+                report['warnings'] = ['The EA writes each re-test unit under Common Files\\TEMP\\SQ; with a long export file name it '
+                                      'could reach %d characters, past the Windows limit MT5 can write. If a member fails to export, '
+                                      'shorten the Windows user (Common Files) path.' % unit]
+        return report
+
+    def _mt5_paths(self, member):
+        """The exact paths MT5 or the EA opens for one member, plain (neither is long-path aware), with what each is."""
+        data, common = Path(self.c.install['terminal_data_root']), Path(self.c.install['common_files_root'])
+        paths = [(os.path.abspath(member['config_path']), 'tester INI (/config)'),
+                 (os.path.abspath(data / (member['tester']['Report'] + '.htm')), 'tester report')]
+        if member.get('capture'):
+            paths.append((os.path.abspath(common / 'GOATSequencePending' / member['capture_id'] / 'source-inputs.set'), 'capture inputs'))
+        return paths
+
+    def _ea_unit_worst_case(self, member):
+        """Longest path of the EA's SET/CSV/.goatseq unit in Common Files\\TEMP\\SQ\\<token> (EA file names, with margin)."""
+        return len(os.path.abspath(self._attempt_dir(member))) + 1 + OUTPUT_PATH_ROOM
+
+    def _check_mt5_paths(self, members):
+        """MT5 cannot be given \\\\?\\ paths: refuse a member whose exact MT5 paths pass MAX_PATH, before any write."""
+        if not WINDOWS:
+            return
+        for member in members:
+            for path, what in self._mt5_paths(member):
+                if len(path) > MAX_PATH:
+                    raise ValueError('The MT5 %s path would be %d characters, past the Windows %d-character limit MT5 can open: %s'
+                                     % (what, len(path), MAX_PATH + 1, path))
 
     @staticmethod
     def _preview(members, rows, target, plan, *, writes):
@@ -642,6 +767,17 @@ class CatchupRunner(SeedRunner):
         members, payloads, rows, target = self._build(root, plan)
         if not members:
             raise ValueError('Nothing to catch up to %s. %s' % (target['iso'], summarize(rows, target['iso'], resolved=target)['plain']))
+        self._check_mt5_paths(members)
+        folder = io_path(self.evidence / evidence_key(batch_id), 1 + MEMBER_FOLDER_DIGITS + OUTPUT_PATH_ROOM)
+        record_path = folder / EVIDENCE_FOLDER_RECORD
+        if folder.exists():
+            try:
+                owner = read_json_bounded(record_path).get('catchup_id')
+            except (OSError, ValueError, AttributeError):
+                owner = None
+            if owner != batch_id:
+                raise ValueError('Catch-up evidence folder %s already belongs to %s; choose another catch-up ID'
+                                 % (plain(folder), owner or 'an unrecorded catch-up'))
         manifest = dict(schema_version=1, batch_id=batch_id, installation_sha256=sha(self.c.install), schema_sha256=sha(self.c.schema),
                         plan_sha256=sha(plan), plan=plan, created_unix=self.clock(), members=members, mode=MODE,
                         evidence_end=target, exports=rows, verdict_rules=validate_rules(plan.get('verdict_rules')),
@@ -657,10 +793,19 @@ class CatchupRunner(SeedRunner):
             with path.open('xb') as stream:
                 stream.write(raw)
         write_json(root / 'manifest.json', manifest)
+        if not folder.exists():
+            # The readable catch-up ID and each member folder's alias, next to the short hashed folder names.
+            folder.mkdir(parents=True)
+            write_json(record_path, dict(schema=EVIDENCE_FOLDER_SCHEMA, catchup_id=batch_id, manifest_sha256=digest(root / 'manifest.json'),
+                                         evidence_end=target['iso'], created_unix=self.clock(),
+                                         members={member_folder(m['index']): dict(alias=m['alias'], symbol=m['tester']['Symbol'],
+                                                                                  period=m['tester']['Period'], source_path=m['source_path'])
+                                                  for m in members}))
         state = dict(schema_version=1, batch_id=batch_id, manifest_sha256=digest(root / 'manifest.json'), status='prepared', generation=None,
                      members=[dict(member_id=m['member_id'], alias=m['alias'], status='pending', attempts=0, result=None) for m in members])
         self._save(root, state)
-        return self.status(batch_id) | dict(preview=self._preview(members, rows, target, plan, writes=True))
+        return self.status(batch_id) | dict(preview=self._preview(members, rows, target, plan, writes=True),
+                                            paths=self.path_report(batch_id, members))
 
     # ---- native hooks ------------------------------------------------------------------
     def _attempt_dir(self, member):

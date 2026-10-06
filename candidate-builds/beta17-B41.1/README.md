@@ -36,7 +36,21 @@ the SET carries, or an extra unknown name. B41's audit fails the first case, whi
 
 **Build**
 
-- Compile pending.
+- `GOAT_BUILD_ID` is `V1.49-BETA17-41.1`, marker `B41.1`, on top of B41 (`278ec109`, GOAT-EA#147, compiled in #150).
+- Compiled once from `4f3f2f99` (this branch's candidate commit) with MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`,
+  the same compiler as B39, B40 and B41): 0 errors, 0 warnings. The compiler was a copy outside every
+  terminal folder, run `/portable` at Idle priority. The stage was a scratch copy outside every terminal folder. Its 307 standard includes and the
+  `MACD - GOAT 2.ex5` resource are copied from the B41 compile root and hash-equal to it. `externals.json` records
+  the same per-name hashes as B41's, and the same `consumed_sha256` (`ced68559…`).
+- `GOAT V1.49.ex5`: sha256 `b3650d96f7d12b22a76d9905989f62fa95967cee204a89d83d0d1a4f7f9abb38`, 2,429,020 bytes.
+- Entrypoint `GOAT V1.49.mq5`: sha256 `dee033a8…7e8fa56b`, pinned in `controller/contracts/v149/dependencies.json`.
+- Pin check at `4f3f2f99`: all 41 sources in `identity.json` match the tree and the staged copy; only
+  `GOAT V1.49.mq5` and `GOATPortfolioChildAudit.mqh` differ from B41. The input header is still `1408e1ee…`.
+- No drift: under `studio_equivalence`'s normalization (CRLF to LF, and the `GOAT_BUILD_ID`/`GOAT_BUILD_MARKER`
+  defines), the entrypoint is byte-identical to B41's (`261f0c9e…`). `studio_function_units units-diff
+  278ec109 → 4f3f2f99` reports `GOAT V1.49.mq5: identical`, `Optimizer.mqh: identical`. The only normalized
+  closure change is `GOATPortfolioChildAudit.mqh` (`5d275540…` → `180986e4…`).
+- MetaEditor output is not byte-reproducible across stages, so admit only this binary.
 
 **Not done.** Native qualification has not been performed, and nothing was installed. The root
 `GOAT V1.49.ex5` is unchanged.

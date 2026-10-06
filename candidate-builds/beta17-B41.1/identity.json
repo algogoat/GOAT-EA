@@ -58,8 +58,12 @@
     "Tester.mqh": "2d109fa8be126804ed80e0b92bf5198d54acb35e5075d13b9cd443dd1d02418e",
     "XmlProcessor.mqh": "fd218b06ece97721bd7335f69ac7739bcb5d1fcf34c8a92593c538fb22b902d0"
   },
-  "binary": null,
-  "compile": "pending",
+  "binary": {
+    "name": "GOAT V1.49.ex5",
+    "sha256": "b3650d96f7d12b22a76d9905989f62fa95967cee204a89d83d0d1a4f7f9abb38",
+    "bytes": 2429020
+  },
+  "compile": "compile-receipt.json",
   "native_qualified": false,
   "customer_delivery": false,
   "retained_root_binary_sha256": "05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9",

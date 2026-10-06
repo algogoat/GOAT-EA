@@ -236,6 +236,39 @@ def launch(argv, *, log_path, worker_path):
     raise ValueError('Persistent bootstrap unconfirmed; inspect the same launch/task, never issue another')
 
 
+THREAD_PRIORITY_BELOW_NORMAL = -1
+
+
+def lower_driver_priority(kernel32=None):
+    """The detached driver yields the CPU to the publishers and MT5 (goatai#1885, Banker 2026-10-05).
+
+    The demand task runs the driver at BelowNormal, the same class as the publisher tasks,
+    so a busy driver competed with them as an equal. Only this driver thread drops one step
+    (BelowNormal class, below-normal thread: base priority 5 instead of 6). The process
+    class is left alone on purpose: Windows gives an Idle or BelowNormal class to the
+    processes this driver starts (its PowerShell process queries, an MT5 start without an
+    explicit class), and Idle PowerShell queries starve behind Idle tester agents into the
+    known 20 s process-query stall. MT5's own priority is set where MT5 starts and is never
+    changed here. Best effort: returns what was applied, or None.
+    """
+    if kernel32 is None:
+        if os.name != 'nt':
+            return None
+        try:
+            import ctypes
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel32.GetCurrentThread.restype = ctypes.c_void_p
+            kernel32.SetThreadPriority.argtypes = (ctypes.c_void_p, ctypes.c_int)
+        except (OSError, AttributeError, ImportError):
+            return None
+    try:
+        if kernel32.SetThreadPriority(kernel32.GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL):
+            return 'thread_below_normal'
+    except (OSError, AttributeError, TypeError, ValueError):
+        pass
+    return None
+
+
 def bootstrap(envelope):
     data = read_json(safe_path(Path(envelope).absolute()))
     if data.get('schema_version') != 1 or set(data) != {'schema_version','argv','log_path','worker_path','started','finished','task_name'}:
@@ -253,6 +286,7 @@ def bootstrap(envelope):
         with safe_path(Path(data['log_path'])).open('a', encoding='utf-8') as log:
             sys.stdout = sys.stderr = log
             try:
+                print('driver CPU priority: ' + str(lower_driver_priority() or 'unchanged'), flush=True)
                 from demo_agent import main
                 code = main(data['argv'][2:])
             finally:

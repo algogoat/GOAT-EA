@@ -129,6 +129,8 @@ jobs:
         run: python scripts/test_process_query_mutations.py
       - name: Restore-lane never-started allowance mutation check (exact-attempt settlement records, other demo work refuses, settle-refused-start stays the reviewed proof)
         run: python scripts/test_restore_lane_never_started_mutations.py
+      - name: Driver observe backoff mutation check (bounded backoff, pass-cost floor, progress reset, stall report, thread-only priority)
+        run: python scripts/test_driver_backoff_mutations.py
 
       - name: Run every controller fixture test
         env:

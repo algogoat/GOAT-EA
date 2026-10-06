@@ -377,11 +377,12 @@ class StopLatencyTests(unittest.TestCase):
         passes = []
         self.c.reconcile = lambda job_id: passes.append(self.c.clock.mono) or {'status': 'running'}
         def tick():
-            if self.c.clock.mono >= 95:
+            if self.c.clock.mono >= 215:
                 self.c.finished = True
         self.c.clock.on_sleep = tick
         self.run_driver()
-        self.assertEqual(passes[:4], [0.0, 30.0, 60.0, 90.0])               # no extra passes without a stop
+        # No extra passes without a stop; an unchanged batch backs off 30, 60, 120 s (goatai#1885 driver backoff).
+        self.assertEqual(passes[:4], [0.0, 30.0, 90.0, 210.0])
 
 
 class ReadOnlyOnDemoLaneTests(unittest.TestCase):

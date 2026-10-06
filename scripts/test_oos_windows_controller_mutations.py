@@ -96,8 +96,26 @@ MUTATIONS = [
     ('catch-up end ignored when judging FOOS', RULE, '        tested_through = min(tested_through, _day(evidence_end))\n', '        pass\n'),
     ('oos_rule not stamped with the evidence end', 'studio_catchup.py', "        result.setdefault('evidenceEnd', evidence_end)\n", ''),
     ('catch-up record not stamped', 'studio_catchup.py',
-     "                       oos_rule=verdict['oos_rule'], evidenceEnd=verdict['evidenceEnd'], evidenceEndMode=verdict['evidenceEndMode'])",
-     "                       oos_rule=verdict['oos_rule'])"),
+     "                       oos_rule=verdict['oos_rule'], evidenceEnd=verdict['evidenceEnd'], evidenceEndMode=verdict['evidenceEndMode'],",
+     "                       oos_rule=verdict['oos_rule'],"),
+    # evidenceEndMode (Claude-Mac, #1885 6008569394): legacy explicit non-Friday export ends stay visible downstream.
+    ('legacy explicit end not stamped', 'studio_evidence_end.py', "        return 'explicit_day' if catch_up else 'legacy_explicit'\n", '        pass\n'),
+    ('catch-up closed weekday stamped legacy', 'studio_evidence_end.py', "return 'explicit_day' if catch_up else 'legacy_explicit'",
+     "return 'legacy_explicit'"),
+    ('batch policy drops the mode', 'studio_batch.py', 'evidenceEndMode=evidence_end_mode(target),', ''),
+    ('legacy explicit end refused', 'studio_batch.py', "    target = resolve(value, now, not_before=[(window_end, 'the optimization window end (ToDate)')])\n",
+     "    target = resolve(value, now, not_before=[(window_end, 'the optimization window end (ToDate)')])\n    if target['mode'] == 'explicit' and target['weekday'] != 'Fri': raise ValueError('not a Friday')\n"),
+    # evidenceEndEffective (Claude-Mac, #1885 6008626040): MT5 ToDate is exclusive.
+    ('effective end ignores the exclusive ToDate', 'studio_evidence_end.py', "    return (parse_date(tester_to_date) - timedelta(days=1)).isoformat()",
+     "    return parse_date(tester_to_date).isoformat()"),
+    ('legacy Thursday cut not stamped', 'studio_evidence_end_export.py', "        result['evidenceEndMode'] = 'legacy_thursday_cut'\n", "        pass\n"),
+    ('legacy export assumed to cover the Friday', 'studio_evidence_end_export.py',
+     "        effective = parse_date(policy['native_end_if_exported_now'])", "        effective = nominal"),
+    ('formula batch accepts a short effective end', 'studio_batch.py',
+     "    if evidence.get('evidenceEndEffective') != evidence.get('evidenceEnd') or", "    if False and evidence.get('evidenceEndEffective') != evidence.get('evidenceEnd') or"),
+    ('catch-up ToDate misses the closed day', 'studio_catchup.py', "_date(target['tester_to_date'])", "_date(target['date'])"),
+    ('oos_rule not stamped with the effective end', 'studio_catchup.py',
+     "        verdict['oos_rule']['evidenceEndEffective'] = verdict['evidenceEndEffective']\n", ""),
 ]
 
 

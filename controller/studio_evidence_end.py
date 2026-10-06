@@ -230,6 +230,29 @@ def resolve(value=None, now_utc=None, *, clock=DEFAULT_CLOCK, holidays=(), not_b
                 warnings=warnings, **extra)
 
 
+def effective_end(tester_to_date):
+    """``evidenceEndEffective``: the last day an MT5 test actually covers, its exclusive ToDate minus one day (ISO).
+
+    The nominal evidence end is what was asked for; this is what the test covered (Claude-Mac, goatai#1885
+    6008626040). A legacy batch export passes the EA's "last Friday" as ToDate, so it really ends on Thursday.
+    """
+    return (parse_date(tester_to_date) - timedelta(days=1)).isoformat()
+
+
+def evidence_end_mode(target, *, catch_up=False):
+    """The ``evidenceEndMode`` stamp for a resolved end (``resolve``'s result).
+
+    ``auto``, ``auto_day`` and an explicit Friday keep their mode. An explicit NON-Friday is
+    ``legacy_explicit`` for an export (kept with its warning for old plans and saved batches,
+    never refused; Claude-Mac, goatai#1885 6008569394) and ``explicit_day`` for a catch-up, where
+    a closed weekday is the sanctioned latest-closed-day rule (one decision's date, re-used).
+    """
+    mode = (target or {}).get('mode')
+    if mode == 'explicit' and parse_date(target['iso']).weekday() != FRIDAY:
+        return 'explicit_day' if catch_up else 'legacy_explicit'
+    return mode
+
+
 def legacy_end(now_utc=None, *, clock=DEFAULT_CLOCK):
     """Inclusive end an EA without EvidenceEnd produces now: ToDate = its last Friday (today if Friday)."""
     today = server_now(now_utc, clock).date()

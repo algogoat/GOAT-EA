@@ -584,6 +584,9 @@ class BatchFormulaTests(unittest.TestCase):
         self.assertEqual(manifest['export_evidence_end'], '2026.07.04')
         self.assertEqual(native['evidence_end']['target'], '2026-07-04')
         self.assertEqual(native['evidence_end']['warnings'], [])
+        self.assertEqual(native['evidence_end']['evidenceEndMode'], 'oos_windows')
+        # The stamp proves the Saturday ToDate covers the nominal end exactly.
+        self.assertEqual((native['evidence_end']['evidenceEnd'], native['evidence_end']['evidenceEndEffective']), ('2026-07-04', '2026-07-04'))
         self.assertIn('FOOS 2026-07-04 to 2026-10-02 is held out', native['evidence_end']['catch_up'])
         verify_export_policy(Path(result['package']), plan, manifest)
         status = batch_status(self.controller, 'formula-batch')
@@ -619,6 +622,11 @@ class BatchFormulaTests(unittest.TestCase):
         self.assertEqual((plan['native_batch']['back_oos_date'], plan['native_batch']['forward_start']), ('2026.01.01', '2026.07.01'))
         self.assertEqual((plan['jobs'][0]['conditions']['from_date'], plan['jobs'][0]['conditions']['to_date']), ('2026.02.01', '2026.09.01'))
         self.assertNotIn('EvidenceEnd', export)       # unchanged legacy end on a build without the capability
+        # Legacy build: the EA's last Friday is an exclusive ToDate, so the exports cover through Thursday.
+        policy = plan['native_batch']['evidence_end']
+        self.assertEqual((policy['evidenceEnd'], policy['evidenceEndEffective'], policy['evidenceEndMode']),
+                         ('2026-10-02', '2026-10-01', 'legacy_thursday_cut'))
+        self.assertTrue(any('through Thursday 2026-10-01' in warning for warning in policy['warnings']))
 
     def test_conflicting_explicit_dates_refuse(self):
         self.observe()
@@ -738,6 +746,62 @@ class ClosedDayTests(unittest.TestCase):
                                   now=WEDNESDAY)
 
 
+class EvidenceEndModeTests(unittest.TestCase):
+    """evidenceEndMode (Claude-Mac, #1885 6008569394): a legacy explicit non-Friday export end is kept, never
+    refused, and stamped legacy_explicit; a catch-up's explicit closed weekday is explicit_day."""
+
+    def test_export_policy_modes(self):
+        from studio_batch import evidence_end_policy
+        tester = dict(ToDate='2026.07.04')
+        legacy = evidence_end_policy('2026-10-06', [tester], now=WEDNESDAY)          # a Tuesday: kept, warned, stamped
+        self.assertEqual((legacy['target'], legacy['mode'], legacy['evidenceEndMode']), ('2026-10-06', 'explicit', 'legacy_explicit'))
+        self.assertTrue(any('not a Friday' in warning for warning in legacy['warnings']))
+        friday = evidence_end_policy('2026-09-25', [tester], now=WEDNESDAY)
+        self.assertEqual(friday['evidenceEndMode'], 'explicit')
+        self.assertEqual(evidence_end_policy('auto', [tester], now=WEDNESDAY)['evidenceEndMode'], 'auto')
+
+    def test_mode_helper(self):
+        from studio_catchup import resolve_target
+        cases = (('auto', False, 'auto'), ('auto_day', True, 'auto_day'), ('2026-10-02', False, 'explicit'),
+                 ('2026-10-02', True, 'explicit'), ('2026-10-06', False, 'legacy_explicit'), ('2026-10-06', True, 'explicit_day'))
+        for value, catch_up, expected in cases:
+            with self.subTest(value=value, catch_up=catch_up):
+                self.assertEqual(ee.evidence_end_mode(resolve_target(value, now=WEDNESDAY), catch_up=catch_up), expected)
+
+    def test_formula_batch_is_not_legacy(self):
+        record = w.compute(52, '2026-10-02')
+        policy = dict(requested='2026-07-04', mode='explicit', evidenceEndMode='legacy_explicit', target='2026-07-04',
+                      evidenceEnd='2026-07-04', evidenceEndEffective='2026-07-04',
+                      warnings=['Sat Jul 4 is not a Friday; evidence ending mid-week compares poorly with weekly files.'],
+                      native_export_end='evidence_end_setting', ea_setting=dict(key='EvidenceEnd', value='2026.07.04'))
+        from studio_batch import oos_windows_evidence
+        stamped = oos_windows_evidence(record, policy)
+        self.assertEqual((stamped['evidenceEndMode'], stamped['warnings']), ('oos_windows', []))
+        with self.assertRaisesRegex(ValueError, 'must cover exactly its nominal export end'):
+            oos_windows_evidence(record, dict(policy, evidenceEndEffective='2026-07-03'))
+
+
+class EffectiveEndTests(unittest.TestCase):
+    """evidenceEndEffective (Claude-Mac, #1885 6008626040): the last day a test covers = exclusive ToDate - 1."""
+
+    def test_effective_end(self):
+        self.assertEqual(ee.effective_end('2026.10.03'), '2026-10-02')
+        self.assertEqual(ee.effective_end('2026.07.04'), '2026-07-03')
+
+    def test_batch_policy_stamps(self):
+        from studio_evidence_end_export import stamp_effective
+        base = dict(requested='auto', mode='auto', evidenceEndMode='auto', target='2026-10-02', warnings=[],
+                    native_export_end='ea_last_friday_exclusive', native_end_if_exported_now='2026-10-01')
+        legacy = stamp_effective(base)
+        self.assertEqual((legacy['evidenceEnd'], legacy['evidenceEndEffective'], legacy['evidenceEndMode']),
+                         ('2026-10-02', '2026-10-01', 'legacy_thursday_cut'))
+        self.assertEqual(len(legacy['warnings']), 1)
+        capable = stamp_effective(dict(base, native_export_end='evidence_end_setting', ea_setting=dict(key='EvidenceEnd', value='2026.10.02')))
+        self.assertEqual((capable['evidenceEndEffective'], capable['evidenceEndMode'], capable['warnings']), ('2026-10-02', 'auto', []))
+        older = stamp_effective(dict(base, target='2026-09-25'))      # legacy end later than an older nominal Friday: no cut
+        self.assertEqual((older['evidenceEndEffective'], older['evidenceEndMode']), ('2026-10-01', 'auto'))
+        self.assertIsNone(stamp_effective(None))
+
 class ClosedDayRetestTests(RetestFixture, unittest.TestCase):
     """Catch-up days after the export Friday, through a mid-week closed day, count toward the FOOS floor."""
 
@@ -800,6 +864,12 @@ class ClosedDayCatchupCycleTests(unittest.TestCase):
         self.assertEqual(report['evidence_end']['iso'], '2026-10-06')
         self.assertEqual(report['members'][0]['evidenceEnd'], '2026-10-06')
         self.assertEqual(report['members'][0]['summary']['evidenceEnd'], '2026-10-06')
+        self.assertEqual(report['members'][0]['summary']['evidenceEndMode'], 'auto_day')
+        self.assertEqual((version['evidenceEndMode'], version['catch_up']['evidenceEndMode']), ('auto_day', 'auto_day'))
+        # ToDate = evidence end + 1 (exclusive), so the closed day is fully covered: effective == nominal.
+        self.assertEqual((version['evidenceEndEffective'], version['catch_up']['evidenceEndEffective'], version['oos_rule']['evidenceEndEffective'],
+                          report['members'][0]['evidenceEndEffective'], report['members'][0]['summary']['evidenceEndEffective']),
+                         ('2026-10-06',) * 5)
         # A day later the same catch-up still reads its recorded date; auto_day itself has moved on.
         import studio_catchup as sc
         later = sc.CatchupRunner(c.controller, process=c.process, clock=lambda: c.now, sleep=c.sleep,

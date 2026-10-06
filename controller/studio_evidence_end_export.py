@@ -46,6 +46,33 @@ def for_controller(controller, policy):
     return native_policy(policy, capability)
 
 
+def stamp_effective(policy):
+    """Add ``evidenceEnd`` (nominal) and ``evidenceEndEffective`` (last day covered) to a batch policy.
+
+    With EvidenceEnd the EA exports to EvidenceEnd + 1 (exclusive), so the effective end is the
+    staged day itself. Without it the EA passes its own last Friday as the exclusive ToDate, so the
+    exports end the day before; when that is the Thursday before a nominal Friday the policy is
+    stamped ``evidenceEndMode: legacy_thursday_cut`` and warns (Claude-Mac, goatai#1885 6008626040).
+    """
+    if policy is None:
+        return None
+    from datetime import timedelta
+    from studio_evidence_end import FRIDAY, effective_end
+    nominal = parse_date(policy['target'])
+    if isinstance(policy.get('ea_setting'), dict):
+        effective = parse_date(effective_end(mt5(parse_date(policy['ea_setting']['value']) + timedelta(days=1))))
+    else:
+        effective = parse_date(policy['native_end_if_exported_now'])
+    result = policy | dict(evidenceEnd=nominal.isoformat(), evidenceEndEffective=effective.isoformat())
+    if 'ea_setting' not in policy and nominal.weekday() == FRIDAY and effective == nominal - timedelta(days=1):
+        result['evidenceEndMode'] = 'legacy_thursday_cut'
+        result['warnings'] = list(policy.get('warnings') or []) + [
+            'This EA build ends exports at its own last Friday, which MT5 excludes: the exports cover through Thursday %s, '
+            'one day short of the nominal Friday %s. OOS catch-up brings them to the Friday.'
+            % (effective.isoformat(), nominal.isoformat())]
+    return result
+
+
 def setting(native_batch):
     """The EvidenceEnd value staged for this native batch, or None for older builds."""
     evidence = (native_batch or {}).get('evidence_end')

@@ -129,12 +129,14 @@ def evidence_end_policy(value, testers, *, now=None):
     exports' actual end is recorded by the EA; OOS catch-up brings them to this
     target. Never later than a closed broker day, never before the window end.
     """
-    from studio_evidence_end import legacy_end, resolve
+    from studio_evidence_end import evidence_end_mode, legacy_end, resolve
     if not isinstance(value, str):
         raise ValueError('evidence_end must be "auto" or a closed broker date such as 2026-09-25')
     window_end = max(datetime.strptime(t['ToDate'], '%Y.%m.%d').date() for t in testers)
     target = resolve(value, now, not_before=[(window_end, 'the optimization window end (ToDate)')])
-    return dict(requested=target['requested'], mode=target['mode'], target=target['iso'], target_label=target['label'],
+    # A legacy explicit non-Friday end keeps its warning (never refused) and is stamped legacy_explicit.
+    return dict(requested=target['requested'], mode=target['mode'], evidenceEndMode=evidence_end_mode(target),
+                target=target['iso'], target_label=target['label'],
                 tester_to_date=target['tester_to_date'], rule=target['rule'], warnings=target['warnings'],
                 resolved_utc=datetime.now(timezone.utc).isoformat(timespec='seconds') if now is None else now.isoformat(timespec='seconds'),
                 native_export_end='ea_last_friday_exclusive', native_end_if_exported_now=legacy_end(now)['iso'],
@@ -155,8 +157,13 @@ def oos_windows_evidence(record, evidence):
                          % (record['foos']['first_day'], record['foos']['last_day'], record['tester']['ToDate'],
                             basis or 'capability unknown'))
     assert_foos_held_out(record, evidence)
+    if evidence.get('evidenceEndEffective') != evidence.get('evidenceEnd') or evidence.get('evidenceEnd') != record['export_evidence_end']:
+        raise ValueError('A formula batch must cover exactly its nominal export end %s; the exports would cover through %s '
+                         '(MT5 ToDate is exclusive). Nothing was staged.'
+                         % (record['export_evidence_end'], evidence.get('evidenceEndEffective')))
     # The export end is a Saturday by design (no FX trading); replace the generic "not a Friday" warning.
     evidence['warnings'] = [warning for warning in evidence.get('warnings') or [] if 'is not a Friday' not in warning]
+    evidence['evidenceEndMode'] = 'oos_windows'     # the optimization end, by design; not a legacy explicit end
     evidence['oos_windows_note'] = ('Exports stop at the optimization end %s (EvidenceEnd %s, the Saturday after it) so the '
                                     'EA ranks sets without FOOS. %s' % (record['optimization_end'], record['tester']['ToDate'],
                                                                          record['foos_replay']['plain']))
@@ -211,8 +218,10 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
                 if 'evidence_end' in spec else None)
     from studio_research_authority import authority
     # FU35+ EAs receive the one resolved date as EvidenceEnd; older builds keep the recorded legacy end.
-    from studio_evidence_end_export import for_controller
+    from studio_evidence_end_export import for_controller, stamp_effective
     evidence = for_controller(controller, evidence)
+    # Nominal evidenceEnd and the last day the exports actually cover (MT5 ToDate is exclusive).
+    evidence = stamp_effective(evidence)
     oos_record = spec.get('oos_windows')
     if oos_record is not None:
         oos_windows_evidence(oos_record, evidence)

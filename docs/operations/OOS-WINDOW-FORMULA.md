@@ -211,6 +211,36 @@ Friday-anchored and the weekly date math above does not move.
   refuse it, and `oos_windows.export_friday` still refuses any non-Friday. Batch plans with an
   explicit, non-Friday `evidence_end` keep working with their existing warning, for backward
   compatibility. A formula batch's own export end is a Saturday by design.
+### Evidence-end stamps: nominal, effective and mode
+
+MT5's tester `ToDate` is **exclusive**. Every place that stamps `evidenceEnd` (the nominal end that
+was asked for) also stamps **`evidenceEndEffective`**: the last day the test really covers, which
+is the exclusive `ToDate` minus one day (Claude-Mac, goatai#1885 6008626040). Both appear on:
+
+- the batch evidence-end policy (`native_batch.evidence_end`, `batch-status`);
+- every catch-up verdict, result summary, `evidence-version.json` and `catch_up` stamp;
+- every `oos_rule` and each `catchup-report` row.
+
+`evidenceEndMode` says how the end was chosen (Claude-Mac, 6008569394 and 6008626040):
+
+| Mode | Meaning |
+|---|---|
+| `auto` | latest closed Friday |
+| `auto_day` | latest closed trading day (catch-up only) |
+| `explicit` | an explicit Friday |
+| `explicit_day` | a catch-up's explicit closed weekday, e.g. the recorded date of one decision |
+| `legacy_explicit` | an older export plan's explicit non-Friday end: kept with its warning, never refused |
+| `legacy_thursday_cut` | an EA build without EvidenceEnd: the exports end at its own last Friday, which MT5 excludes, so they cover through the Thursday before the nominal Friday (warned; OOS catch-up brings them to the Friday) |
+| `oos_windows` | a formula batch: the export ends at the optimization end by design |
+
+Rules:
+
+- **Formula batches** are refused unless `evidenceEndEffective` equals the nominal end. Their
+  EvidenceEnd is the Saturday `ToDate` (for example 2026-07-04), the EA exports to the next day
+  (exclusive), and the stamp proves the two are equal.
+- **Catch-up** passes `ToDate` = evidence end + 1 day, so the closed day is fully covered and
+  `evidenceEndEffective` equals `evidenceEnd`. Prepare refuses a member whose `ToDate` would not
+  cover it.
 ## Exact pre-FOOS metrics at export (`goat-export-window-metrics-v1`)
 
 Claude-Mac's ruling (goatai#1885 comment 6006565005): the desktop estimated pre-FOOS ARF and

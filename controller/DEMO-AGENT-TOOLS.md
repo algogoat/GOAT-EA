@@ -739,6 +739,13 @@ selected MT5 and relaunches it once per member like a seed run; tell the owner
 first. `batch-pause --batch-id <catchup id>` pauses between members and
 `batch-resume` continues. `research-status` shows it as an OOS catch-up.
 
+Live decisions (gate check, basket FOOS test on add or swap, manual re-optimize,
+hard-stop replacement) use `"evidence_end":"auto_day"`: the latest closed trading day,
+resolved once at prepare, recorded in the manifest and stamped as `evidenceEnd` on every
+result and `oos_rule`. Every other run of the same decision passes that explicit date.
+Catch-up only: batch exports and `oos_windows` stay Friday-anchored and refuse `auto_day`.
+Catch-up days after the export Friday count toward the FOOS 30-trade floor.
+
 ## OOS window formula on the demo lane (BOOS, SAMPLE, FWD, FOOS from O)
 
 Banker batches, demo Algo research and seed hunts derive every date from O and the

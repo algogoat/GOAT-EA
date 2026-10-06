@@ -682,6 +682,132 @@ class SeedFormulaTests(unittest.TestCase):
         self.assertNotIn('requested_plan', manifest)
 
 
+WEDNESDAY = datetime(2026, 10, 7, 15, tzinfo=timezone.utc)      # broker Wed 18:00: the latest closed day is Tue Oct 6
+
+
+class ClosedDayTests(unittest.TestCase):
+    """Evidence for live decisions runs to the latest CLOSED DAY (goatai#1885 6008215775): catch-up only."""
+
+    def test_auto_day_resolver(self):
+        cases = {WEDNESDAY: '2026-10-06',
+                 datetime(2026, 10, 7, 21, 1, tzinfo=timezone.utc): '2026-10-07',      # server Thu 00:01: Wed has closed
+                 datetime(2026, 10, 7, 20, 59, tzinfo=timezone.utc): '2026-10-06',     # server Wed 23:59: not yet
+                 SATURDAY: '2026-10-02', datetime(2026, 10, 4, 12, tzinfo=timezone.utc): '2026-10-02',   # Sat, Sun
+                 datetime(2026, 10, 5, 10, tzinfo=timezone.utc): '2026-10-02',         # Monday: Friday
+                 datetime(2026, 10, 2, 15, tzinfo=timezone.utc): '2026-10-01'}         # Friday before the close: Thursday
+        for now, expected in cases.items():
+            with self.subTest(now=now):
+                result = ee.auto_day(now)
+                self.assertEqual((result['iso'], result['rule']), (expected, 'goat-closed-day-v1'))
+                self.assertLess(d(result['iso']).weekday(), 5)
+        self.assertEqual(ee.auto_day(WEDNESDAY, holidays=['2026-10-06'])['iso'], '2026-10-05')
+        self.assertEqual(ee.auto_day(datetime(2026, 10, 5, 10, tzinfo=timezone.utc), holidays=['2026-10-02'])['iso'], '2026-10-01')
+        self.assertEqual(ee.auto_day(WEDNESDAY)['tester_to_date'], '2026.10.07')
+        self.assertEqual(ee.auto_day(WEDNESDAY)['next_date'], '2026.10.07')
+
+    def test_catch_up_accepts_the_last_closed_weekday(self):
+        from studio_catchup import resolve_target
+        for value in ('auto_day', 'AUTO_DAY', 'auto-day'):
+            result = resolve_target(value, now=WEDNESDAY)
+            self.assertEqual((result['mode'], result['requested'], result['iso'], result['rule'], result['warnings']),
+                             ('auto_day', 'auto_day', '2026-10-06', 'goat-closed-day-v1', []))
+        explicit = resolve_target('2026-10-06', now=WEDNESDAY)
+        self.assertEqual((explicit['mode'], explicit['iso']), ('explicit', '2026-10-06'))   # the same date, explicit: like-for-like
+        self.assertEqual(resolve_target('auto', now=WEDNESDAY)['iso'], '2026-10-02')          # auto is still the closed Friday
+
+    def test_catch_up_refuses_a_future_or_unclosed_day(self):
+        from studio_catchup import resolve_target
+        for value in ('2026-10-07', '2026-10-08', '2026-12-31'):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'not a closed broker day'):
+                resolve_target(value, now=WEDNESDAY)
+
+    def test_exports_refuse_auto_day_and_non_fridays(self):
+        from studio_batch import evidence_end_policy
+        tester = dict(ToDate='2026.07.04')
+        with self.assertRaisesRegex(ValueError, 'OOS catch-up only'):
+            evidence_end_policy('auto_day', [tester], now=WEDNESDAY)
+        with self.assertRaisesRegex(ValueError, 'OOS catch-up only'):
+            ee.resolve('auto_day', WEDNESDAY)
+        with self.assertRaisesRegex(ValueError, 'OOS catch-up only'):
+            w.windows(12, 'auto_day', now=WEDNESDAY)
+        with self.assertRaisesRegex(ValueError, 'must be a Friday'):
+            w.windows(12, '2026-10-06', now=WEDNESDAY)
+        self.assertEqual(evidence_end_policy('auto', [tester], now=WEDNESDAY)['target'], '2026-10-02')
+        with self.assertRaises(ValueError):
+            w.apply_to_batch_spec(PlanTests.spec(PlanTests(), oos_windows=dict(optimization_months=12, export_friday='auto_day')),
+                                  now=WEDNESDAY)
+
+
+class ClosedDayRetestTests(RetestFixture, unittest.TestCase):
+    """Catch-up days after the export Friday, through a mid-week closed day, count toward the FOOS floor."""
+
+    def test_foos_floor_counts_catch_up_days_through_a_wednesday(self):
+        original, retest = self.build(trades=dict(foos=20, catchup=12), end='2026-10-07')
+        self.assertEqual(w.judge_retest(original, dict(retest, evidence_end='2026-10-02'), tester=self.record['tester'])['status'],
+                         'not_eligible_yet')                                    # 20 by the export Friday
+        result = w.judge_retest(original, retest, tester=self.record['tester'], evidence_end='2026-10-07')
+        foos = result['windows']['foos']
+        self.assertEqual((result['status'], foos['last_day'], foos['trades'], result['evidenceEnd']),
+                         ('pass', '2026-10-07', 32, '2026-10-07'))
+
+    def test_one_decision_is_judged_through_its_own_end_date(self):
+        # A re-test that ran further is judged only through the decision's evidence end (like-for-like).
+        original, retest = self.build(trades=dict(foos=20, catchup=24), end='2026-10-14')
+        result = w.judge_retest(original, retest, tester=self.record['tester'], evidence_end='2026-10-07')
+        self.assertEqual((result['windows']['foos']['last_day'], result['evidenceEnd']), ('2026-10-07', '2026-10-07'))
+        self.assertLess(result['windows']['foos']['trades'], 44)
+
+    def test_every_hook_result_stamps_evidence_end(self):
+        from studio_catchup import CatchupRunner
+        original, retest = self.build(end='2026-10-07')
+        explicit = dict(FromDate='2026.02.01', ToDate='2026.09.01', ForwardDate='2026.07.01')
+        for tester, verdict in ((self.record['tester'], 'held_up'), (self.record['tester'], 'not_comparable'), (explicit, 'held_up')):
+            result = CatchupRunner._oos_rule(original, retest, dict(original=dict(tester=tester)), dict(verdict=verdict),
+                                             evidence_end='2026-10-07')
+            self.assertEqual(result['evidenceEnd'], '2026-10-07', result['status'])
+
+
+class ClosedDayCatchupCycleTests(unittest.TestCase):
+    """A whole catch-up with evidence_end auto_day on a Wednesday: resolved, recorded and stamped on every result."""
+
+    def setUp(self):
+        import test_studio_catchup as cases
+        import studio_catchup as sc
+        self.case = cases.NativeCycleTests('test_full_cycle_moves_the_retest_and_judges_the_new_weeks')
+        self.case.setUp()
+        self.addCleanup(self.case.tearDown)
+        c = self.case
+        c.runner = sc.CatchupRunner(c.controller, process=c.process, clock=lambda: c.now, sleep=c.sleep, now=WEDNESDAY)
+
+    def test_auto_day_cycle(self):
+        from studio_installation import read_json
+        c = self.case
+        prepared = c.runner.prepare('cu1', dict(c.plan(sets=[c.behind]), evidence_end='auto_day'))
+        self.assertEqual((prepared['preview']['target']['iso'], prepared['preview']['target']['mode']), ('2026-10-06', 'auto_day'))
+        c.auto = True
+        self.assertEqual(c.runner.start('cu1', 30)['status'], 'completed')
+        manifest = read_json(c.runner.path('cu1') / 'manifest.json')
+        self.assertEqual((manifest['evidence_end']['iso'], manifest['evidence_end']['mode'], manifest['plan']['evidence_end']),
+                         ('2026-10-06', 'auto_day', 'auto_day'))
+        member = manifest['members'][0]
+        self.assertEqual(member['tester']['ToDate'], '2026.10.07')        # MT5 ToDate is exclusive: through Tue Oct 6
+        version = read_json(Path(member['evidence_dir']) / 'evidence-version.json')
+        self.assertEqual((version['evidenceEnd'], version['evidenceEndMode'], version['target_end']), ('2026-10-06', 'auto_day', '2026-10-06'))
+        self.assertEqual((version['catch_up']['evidenceEnd'], version['catch_up']['evidenceEndMode']), ('2026-10-06', 'auto_day'))
+        self.assertEqual(version['oos_rule']['evidenceEnd'], '2026-10-06')
+        self.assertEqual(version['qualification']['evidence_end']['rule'], 'goat-closed-day-v1')
+        report = c.runner.report('cu1')
+        self.assertEqual(report['evidence_end']['iso'], '2026-10-06')
+        self.assertEqual(report['members'][0]['evidenceEnd'], '2026-10-06')
+        self.assertEqual(report['members'][0]['summary']['evidenceEnd'], '2026-10-06')
+        # A day later the same catch-up still reads its recorded date; auto_day itself has moved on.
+        import studio_catchup as sc
+        later = sc.CatchupRunner(c.controller, process=c.process, clock=lambda: c.now, sleep=c.sleep,
+                                 now=WEDNESDAY + timedelta(days=1))
+        self.assertEqual(later.report('cu1')['evidence_end']['iso'], '2026-10-06')
+        self.assertEqual(sc.resolve_target('auto_day', now=WEDNESDAY + timedelta(days=1))['iso'], '2026-10-07')
+
+
 class DemoRuleTests(unittest.TestCase):
     def test_demo_rule_is_calendar_time_and_trades(self):
         rule = w.DEMO_RULE

@@ -83,6 +83,21 @@ MUTATIONS = [
     ('BOOS stamp dropped from the catch-up hook', 'studio_catchup.py',
      "status='no_data', reasons=[reason], used_for_ranking=False,\n                        boosContaminatedBy=BOOS_CONTAMINATED_BY,\n                        plain='No hold-out data under",
      "status='no_data', reasons=[reason], used_for_ranking=False,\n                        plain='No hold-out data under"),
+    # Latest closed day for catch-up only (goatai#1885 6008215775): the catch-up / export split.
+    ('exports accept auto_day by default', 'studio_evidence_end.py', 'not_before=(), allow_day=False):', 'not_before=(), allow_day=True):'),
+    ('auto_day refusal dropped', 'studio_evidence_end.py', '    if day_value and not allow_day:\n', '    if False:\n'),
+    ('catch-up refuses auto_day', 'studio_catchup.py', 'clock=broker_clock or evidence_end.DEFAULT_CLOCK, allow_day=True)',
+     'clock=broker_clock or evidence_end.DEFAULT_CLOCK)'),
+    ('auto_day resolves to the closed Friday', 'studio_evidence_end.py', "chosen, mode, requested, rule = parse_date(latest['date']),",
+     "chosen, mode, requested, rule = parse_date(automatic['date']),"),
+    ('auto_day includes the unclosed day', 'studio_evidence_end.py', '    day = today - timedelta(days=1)\n', '    day = today\n'),
+    ('auto_day lands on a weekend', 'studio_evidence_end.py', '    return day.weekday() < 5 and day not in closed_days',
+     '    return day not in closed_days'),
+    ('catch-up end ignored when judging FOOS', RULE, '        tested_through = min(tested_through, _day(evidence_end))\n', '        pass\n'),
+    ('oos_rule not stamped with the evidence end', 'studio_catchup.py', "        result.setdefault('evidenceEnd', evidence_end)\n", ''),
+    ('catch-up record not stamped', 'studio_catchup.py',
+     "                       oos_rule=verdict['oos_rule'], evidenceEnd=verdict['evidenceEnd'], evidenceEndMode=verdict['evidenceEndMode'])",
+     "                       oos_rule=verdict['oos_rule'])"),
 ]
 
 

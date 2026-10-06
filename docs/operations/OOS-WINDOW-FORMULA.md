@@ -181,6 +181,36 @@ Where it is reported (additive; nothing already reported changed):
   thresholds, `oos_rule` says whether a formula set passed its BOOS and FOOS.
 - `batch-status` of a formula batch: `oos_windows` with every window and the FOOS replay to run.
 
+## Evidence for live decisions: the latest closed day (catch-up only)
+
+Vince's rule (goatai#1885 comment 6008215775): evidence for a live decision runs to the latest
+**closed day**, not the last Friday. The optimization windows and exports are unchanged: they stay
+Friday-anchored and the weekly date math above does not move.
+
+- **Catch-up only** may end on any closed trading day. `evidence_end: "auto_day"` resolves like
+  `auto`, but to the latest closed trading day (rule `goat-closed-day-v1`). That is the newest
+  Mon–Fri broker day, not a full market holiday, whose server date has rolled over (D-1 close). On
+  Wednesday at 18:00 broker time it is Tuesday; on Saturday, Sunday and Monday it is Friday. An
+  explicit closed weekday works too. Today and future days are refused.
+  `evidence-end --value auto_day` shows it.
+- Use it for decisions that need the newest evidence: a candidate's gate check, the basket FOOS
+  test when adding or swapping a member, a manual re-optimize, a hard-stop replacement.
+- **One decision, one date.** `auto_day` is resolved once, at `catchup-prepare`, and recorded in
+  the catch-up manifest (`evidence_end: {mode: "auto_day", iso: ...}`). Every other run in the same
+  decision passes that **explicit date**, never `auto_day` again, because `auto_day` moves every
+  day. A re-prepared catch-up keeps its recorded date.
+- **Stamped everywhere** for the version changelog:
+  - `evidenceEnd` and `evidenceEndMode` on every catch-up result (the verdict, the result
+    summary and `evidence-version.json`) and on the desktop `catch_up` import stamp;
+  - `evidenceEnd` on every `oos_rule` and on each `catchup-report` row;
+  - `qualification.evidence_end.rule` reads `goat-closed-day-v1` for an `auto_day` end.
+- **FOOS floor:** catch-up days after the export Friday, through a mid-week closed day, count
+  toward FOOS's 30 trades; FOOS is judged through the catch-up's `evidenceEnd` (or the earlier
+  re-test end), never further.
+- **Exports refuse `auto_day`.** `prepare-batch` `evidence_end` and `oos_windows.export_friday`
+  refuse it, and `oos_windows.export_friday` still refuses any non-Friday. Batch plans with an
+  explicit, non-Friday `evidence_end` keep working with their existing warning, for backward
+  compatibility. A formula batch's own export end is a Saturday by design.
 ## Exact pre-FOOS metrics at export (`goat-export-window-metrics-v1`)
 
 Claude-Mac's ruling (goatai#1885 comment 6006565005): the desktop estimated pre-FOOS ARF and

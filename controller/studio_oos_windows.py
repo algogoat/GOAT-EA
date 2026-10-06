@@ -530,7 +530,7 @@ def not_applicable(reason):
                 plain='The OOS window rule does not apply: ' + reason + '.')
 
 
-def judge_retest(original, retest, *, tester):
+def judge_retest(original, retest, *, tester, evidence_end=None):
     """Score one OOS catch-up re-test (the FOOS held-out replay) with the window rule.
 
     ``original``/``retest``: studio_evidence.read_export records; ``tester``: the original
@@ -541,7 +541,9 @@ def judge_retest(original, retest, *, tester):
     definitions (``DEFINITIONS``): trades and PF from its complete deal capture, DD from its
     equity CSV. FOOS is judged from its first day through the re-test's last day: catch-up weeks
     after the export Friday count toward FOOS (they follow the optimization end and are never
-    ranked), but FOOS is never judged before its full 1/4 O has been tested.
+    ranked), but FOOS is never judged before its full 1/4 O has been tested. `evidence_end` is the catch-up's
+    resolved end (it may be any closed trading day, `auto_day`); the re-test is judged through the earlier of it
+    and the re-test's own end, and the result stamps it as `evidenceEnd`.
     """
     from pathlib import Path
     from studio_catchup_verdict import deal_window, equity_rows, equity_window
@@ -564,6 +566,8 @@ def judge_retest(original, retest, *, tester):
     if deals and not Path(deals).is_file():
         deals = None
     tested_through = _day(retest['evidence_end'])
+    if evidence_end is not None:
+        tested_through = min(tested_through, _day(evidence_end))
 
     def measure(key, extend=False):
         part = record[key]
@@ -587,5 +591,6 @@ def judge_retest(original, retest, *, tester):
     result.update(o_weeks=record['o_weeks'], export_friday=record['export_friday'], trade_source='capture_deals' if deals else 'unavailable',
                   windows_dates={key: dict(first_day=record[key]['first_day'], last_day=record[key]['last_day'])
                                  for key in ('boos', 'sample', 'fwd', 'foos')},
-                  foos_judged_through=result['windows']['foos'].get('last_day'), definitions=DEFINITIONS)
+                  foos_judged_through=result['windows']['foos'].get('last_day'), definitions=DEFINITIONS,
+                  evidenceEnd=tested_through.isoformat())
     return result

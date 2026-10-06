@@ -22,7 +22,8 @@ from pathlib import Path
 import re
 
 from strategy_registry import inspect_set
-from studio_export_qualification import (file_name_tokens, qualify, thresholds_from_settings_text, thresholds_from_values,
+from studio_export_qualification import (BELOW_SCORE_FOLDER, STANDARD_TIER, export_tier, file_name_tokens, qualify,
+                                         research_only_stamp, thresholds_from_settings_text, thresholds_from_values,
                                          unavailable_thresholds)
 from studio_settings import PERIODS
 
@@ -201,9 +202,10 @@ def read_capture(goatseq, set_sha256):
 
 
 def find_run_root(set_path):
-    """``R<run>`` folder above ``deploy\\<alias>\\<symbol>\\<file>.set``, when present."""
+    """``R<run>`` folder above ``deploy\\<alias>\\<symbol>\\<file>.set`` (or the research-only
+    ``below_score\\<alias>\\<symbol>\\<file>.set``), when present."""
     parents = Path(set_path).resolve().parents
-    if len(parents) > 3 and parents[2].name.lower() == 'deploy':
+    if len(parents) > 3 and parents[2].name.lower() in ('deploy', BELOW_SCORE_FOLDER):
         root = parents[3]
         if (root / 'export_settings.GOAT').is_file():
             return root
@@ -317,20 +319,25 @@ def read_export(set_path, *, runs=None):
                             if run and run.get('export_settings_text') is not None else
                             unavailable_thresholds('No run export_settings.GOAT next to this export (a library copy)'),
                             header=text)
+    # A research-only unit (below_score, GOAT-EA BS42) is an attempt, never a pass: unknown, not passing and
+    # not re-test eligible by default (catch-up's include_below_threshold opt-in still reaches it).
+    tier = export_tier(text, paths['set'])
+    research_only = tier != STANDARD_TIER
+    qualification = research_only_stamp(qualification, tier)
     passing = qualification['status'] == 'passed'
     # Catch-up eligibility is a re-test policy, not qualification, and stays as it was: the EA's own
     # rounded comparison (ea_native_passed), against GOAT's minimum defaults for a library copy.
     native = qualification['ea_native_passed']
     if 'thresholds_unavailable' in qualification['missed']:
         native = qualify(tokens, thresholds_from_values(limits['min_sr'], limits['min_arf'], limits['basis']))['ea_native_passed']
-    retest_eligible = bool(native)
+    retest_eligible = bool(native)   # False for a research-only unit: its stamp says ea_native_passed=False
     # Margins say how far inside or outside each bar the export sits, so a later scored
     # qualification can weigh a near miss instead of treating the bars as rigid.
     if metrics:
         limits = dict(limits, profit_positive=metrics['profit'] > 0, arf_margin=round(metrics['arf'] - limits['min_arf'], 6),
                       sr_margin=round(metrics['sr'] - limits['min_sr'], 6), source='export_file_name_metrics')
     return dict(schema='goat-export-evidence-v1', set_path=str(paths['set']), set_sha256=info['sha256'],
-                values_sha256=info['canonical_sha256'], alias=alias, member=member,
+                values_sha256=info['canonical_sha256'], alias=alias, member=member, export_tier=tier, research_only=research_only,
                 ea_name=named and named['ea_name'], symbol=named and named['symbol'], period=named and named['period'],
                 metrics=metrics, windows=windows, csv_path=str(paths['csv']) if paths['csv'].is_file() else None,
                 csv_last_date=csv_end, capture=capture,
@@ -358,8 +365,10 @@ def collect_sets(sources, limit=MAX_SETS):
         elif path.is_dir():
             deploy = path / 'deploy'
             base = deploy if deploy.is_dir() and (path / 'export_settings.GOAT').is_file() else path
-            candidates = sorted(p for p in base.rglob('*.set')
-                                if not any(part.lower().endswith('.goatseq') for part in p.relative_to(base).parts[:-1]))
+            # A run folder's research-only units (below_score) are read too, and carry their tier.
+            bases = [base] + ([path / BELOW_SCORE_FOLDER] if base == deploy and (path / BELOW_SCORE_FOLDER).is_dir() else [])
+            candidates = sorted(p for root in bases for p in root.rglob('*.set')
+                                if not any(part.lower().endswith('.goatseq') for part in p.relative_to(root).parts[:-1]))
         else:
             raise ValueError('Evidence source not found: ' + str(path))
         for candidate in candidates:

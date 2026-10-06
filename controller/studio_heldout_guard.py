@@ -50,6 +50,8 @@ METRIC_KEYS = frozenset((
     # each check read and which thresholds a set missed are all derived from the tested window.
     'passing_sets', 'below_threshold_members', 'below_threshold_sets', 'unknown_members', 'unknown_sets',
     'checks', 'missed', 'ea_native_passed', 'log_crosscheck', 'stamps', 'unproven_members',
+    # Research-only below_score exports (GOAT-EA BS42): their counts, stamps and the FWD figures that picked them.
+    'below_score_sets', 'below_score_members', 'research_only', 'below_score', 'status_before_tier',
     # OOS window rule (studio_oos_windows) and exact pre-FOOS metrics (studio_window_metrics).
     'oos_rule', 'window_metrics', 'preFoos', 'selectionWindow', 'fullExport'))
 # Sentences and log lines that quote such values: replaced whole inside a locked part.

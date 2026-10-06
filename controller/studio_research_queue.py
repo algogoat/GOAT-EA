@@ -142,6 +142,8 @@ def batch_row(root, install, job, *, now, with_progress=True):
                              passing_sets=progress.get('passing_sets'),
                              below_threshold_members=progress.get('below_threshold_members'),
                              unknown_members=progress.get('unknown_members'),
+                             # GOAT-EA BS42: research-only below_score exports, their own count, never qualifying.
+                             below_score_sets=progress.get('below_score_sets'),
                              thresholds=progress.get('thresholds'), qualifying_basis=progress.get('qualifying_basis')))
 
 

@@ -4,6 +4,12 @@
 #define GOAT_XML_MIN_COMBINED_SCORE 60.0
 // Kept passes were scored with their forward period and none reached the export score.
 #define GOAT_XML_NO_QUALIFYING_ROWS "no_qualifying_rows"
+// below_score export (goatai#1885): the export tier and its folder name, and the FWD trade floor
+// (the controller's OOS window floor, studio_oos_windows.MIN_TRADES).
+#define GOAT_XML_BELOW_SCORE "below_score"
+#define GOAT_XML_BELOW_SCORE_MIN_FWD_TRADES 30
+// Switch-on fall-through outcome (GOAT_EXPORT_RANK_FWD_PROFIT_DD): passes reached the score, none was FWD-eligible.
+#define GOAT_XML_NO_FWD_ELIGIBLE_ROWS "no_fwd_eligible_rows"
 //+------------------------------------------------------------------+
 //| Data structure for a single row (Back/Forward test record)      |
 //+------------------------------------------------------------------+
@@ -62,6 +68,9 @@ public:
    double bestCombinedScore;
    string outcome;     // set by ReportAnalyzerCombiner; "" unless every pair was tested without edge
    string pairOutcome; // the research outcome of the last pair read, "" when it was not one
+#ifdef GOAT_BELOW_SCORE_EXPORT_V149
+   int belowScorePairs; // report pairs in the last combine: a below_score export needs exactly one
+#endif
 //+------------------------------------------------------------------+
    bool ProcessBackXml(const string &filename)
    {
@@ -1036,6 +1045,270 @@ string GoatXmlNoQualifierOutcome(const bool back_read,const bool title_matches,c
    if(min_score<=0 || best_score<0 || !(best_score<min_score)) return "";
    return GOAT_XML_NO_QUALIFYING_ROWS;
   }
+#ifdef GOAT_BELOW_SCORE_EXPORT_V149
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// FWD profit/DD export rule (goatai#1885: Ops 6021950497 (c), 6021976286 and 6022010662; Claude-Mac
+// 6021965811, 6022008420, 6022264062 and 6025359910). Used by the below_score export (nothing reached the
+// export score) and, behind GOAT_EXPORT_RANK_FWD_PROFIT_DD (off by default), by normal exports.
+// Eligible: found in the forward report, SAMPLE (back) profit > 0 with GOAT_XML_MIN_BACK_TRADES+
+// trades, FWD profit > 0 with GOAT_XML_BELOW_SCORE_MIN_FWD_TRADES+ trades, a positive FWD recovery
+// factor and a combined score of at least minScore (pass a negative minScore for no score floor).
+// Ranked on the FWD window alone by FWD profit / max(FWD drawdown, GOAT_EXPORT_FWD_DD_FLOOR x tester
+// deposit). The FWD drawdown in money is FWD profit / the forward Recovery Factor MT5 reports (RF =
+// profit / maximal drawdown), so a tiny drawdown can never inflate the rank. Ties go to the higher FWD
+// profit, then the lower pass number. Never ranked by the combined (match) score, and never by BOOS or
+// FOOS: those windows are not in the optimization reports and stay gates. An unknown deposit ranks nothing.
+#define GOAT_EXPORT_SLOT2_MAX_CORRELATION 0.5
+#define GOAT_EXPORT_SLOT2_MIN_SR 2.5
+#define GOAT_EXPORT_SLOT2_MIN_ARF 0.2
+#define GOAT_EXPORT_CORRELATION_MIN_DAYS 20
+#define GOAT_EXPORT_FWD_DD_FLOOR 0.0025
+// A pass's parameter character (slot 2): the template's own key inputs, i.e. those of its optimized
+// inputs (the report's input columns) that set the entry regime (direction and signal modes) or the
+// exit regime (stop, target, trailing and lock). A mode or switch differs on any change; a size
+// differs when one is off (0) and the other on, the signs differ (pips vs ATR), or one is at least
+// twice the other. Inputs the template does not optimize are equal in every pass.
+#define GOAT_CHARACTER_MODES ",Mode_Trade,Reverse_Seq,Allow_Opposite_Seq,RSI_Mode,EMA_Mode,ADX_Mode,BB_Mode,MACD_Mode,MACD_Mode_Trend,RSI2_Mode,Mode_Bias,Mode_Bias_Trades,Mode_Bias_Exit,Mode_News,Mode_RRR,Mode_Trail,"
+#define GOAT_CHARACTER_SIZES ",SL_Pips,TP_Pips,RRR,TSL_Size,Lock_Profit_Size,"
+// Why a pass is not FWD-eligible: 0 eligible, 1 not in the forward report, 2 SAMPLE unprofitable or
+// under GOAT_XML_MIN_BACK_TRADES trades, 3 FWD unprofitable, 4 FWD under the trade floor, 5 FWD
+// profit/DD not measurable, 6 below the score floor (minScore >= 0 only). The first reason wins.
+int GoatXmlFwdIneligibility(const SRowDefinition &rows[],const int i,const double minScore)
+  {
+   if(!rows[i].forward_seen) return 1;
+   if(!(rows[i].back_profit>0) || rows[i].back_trades<GOAT_XML_MIN_BACK_TRADES) return 2;
+   if(!(rows[i].forward_profit>0)) return 3;
+   if(rows[i].forward_trades<GOAT_XML_BELOW_SCORE_MIN_FWD_TRADES) return 4;
+   if(!(rows[i].forward_RF>0)) return 5;
+   if(minScore>=0 && rows[i].Score<minScore) return 6;
+   return 0;
+  }
+bool GoatXmlFwdEligible(const SRowDefinition &rows[],const int i,const double minScore)
+  {
+   return GoatXmlFwdIneligibility(rows,i,minScore)==0;
+  }
+// NO_FWD_ELIGIBLE_PASS facts: every kept pass counted under the first reason it is not FWD-eligible.
+string GoatXmlFwdIneligibleCounts(const SRowDefinition &rows[],const double minScore)
+  {
+   int eligible=0,notForward=0,sample=0,fwdLoss=0,fwdThin=0,fwdDd=0,belowScore=0,scoreOk=0;
+   for(int i=0;i<ArraySize(rows);i++)
+     {
+      int why=GoatXmlFwdIneligibility(rows,i,minScore);
+      if(why==0) eligible++;
+      else if(why==1) notForward++;
+      else if(why==2) sample++;
+      else if(why==3) fwdLoss++;
+      else if(why==4) fwdThin++;
+      else if(why==5) fwdDd++;
+      else belowScore++;
+      if(minScore>=0 && rows[i].Score>=minScore) scoreOk++;
+     }
+   return "rows="+(string)ArraySize(rows)+";fwd_eligible="+(string)eligible+";not_in_forward="+(string)notForward
+          +";sample_unprofitable_or_thin="+(string)sample+";fwd_unprofitable="+(string)fwdLoss
+          +";fwd_trades_under_floor="+(string)fwdThin+";fwd_dd_unmeasured="+(string)fwdDd
+          +(minScore>=0 ? ";below_min_score="+(string)belowScore+";at_min_score="+(string)scoreOk : "");
+  }
+// The rank key of an eligible pass: FWD profit / max(FWD drawdown in money, the deposit floor).
+double GoatXmlFwdKey(const SRowDefinition &rows[],const int i,const double deposit)
+  {
+   double drawdown=rows[i].forward_profit/rows[i].forward_RF;
+   return rows[i].forward_profit/MathMax(drawdown,GOAT_EXPORT_FWD_DD_FLOOR*deposit);
+  }
+bool GoatXmlFwdBetter(const SRowDefinition &rows[],const int a,const int b,const double deposit)
+  {
+   double ka=GoatXmlFwdKey(rows,a,deposit),kb=GoatXmlFwdKey(rows,b,deposit);
+   if(ka!=kb) return ka>kb;
+   if(rows[a].forward_profit!=rows[b].forward_profit) return rows[a].forward_profit>rows[b].forward_profit;
+   return rows[a].pass<rows[b].pass;
+  }
+// Eligible Rows[] indices, best first. Returns how many (none when the tester deposit is unknown).
+int GoatXmlFwdRank(const SRowDefinition &rows[],const double minScore,const double deposit,int &ranked[])
+  {
+   ArrayResize(ranked,0);
+   if(!(deposit>0)) return 0;
+   for(int i=0;i<ArraySize(rows);i++)
+     {
+      if(!GoatXmlFwdEligible(rows,i,minScore)) continue;
+      int n=ArraySize(ranked); ArrayResize(ranked,n+1);
+      int at=n;
+      while(at>0 && GoatXmlFwdBetter(rows,i,ranked[at-1],deposit)) {ranked[at]=ranked[at-1]; at--;}
+      ranked[at]=i;
+     }
+   return ArraySize(ranked);
+  }
+// "" when two passes (comma-joined report inputs, in the order of names[]) share a character,
+// else the first key input that differs, as "name a->b".
+string GoatXmlCharacterDifference(const string &names[],const string inputsA,const string inputsB)
+  {
+   string a[],b[];
+   StringSplit(inputsA,',',a); StringSplit(inputsB,',',b);
+   int count=MathMin(ArraySize(names),MathMin(ArraySize(a),ArraySize(b)));
+   for(int k=0;k<count;k++)
+     {
+      string key=","+names[k]+",";
+      string va=a[k],vb=b[k];
+      StringTrimLeft(va); StringTrimRight(va); StringTrimLeft(vb); StringTrimRight(vb);
+      if(StringFind(GOAT_CHARACTER_MODES,key)>=0)
+        {
+         if(va!=vb) return names[k]+" "+va+"->"+vb;
+         continue;
+        }
+      if(StringFind(GOAT_CHARACTER_SIZES,key)<0) continue;
+      double x=StringToDouble(va),y=StringToDouble(vb);
+      bool distinct=((x==0)!=(y==0)) || (x*y<0);
+      if(!distinct && x!=0 && y!=0) distinct=(MathMax(MathAbs(x),MathAbs(y))>=2.0*MathMin(MathAbs(x),MathAbs(y)));
+      if(distinct) return names[k]+" "+va+"->"+vb;
+     }
+   return "";
+  }
+// Daily BALANCE closes of a GOAT equity CSV ("<DATE>\t<BALANCE>\t<EQUITY>..." rows in broker server
+// time, oldest first) on days in [from,to): the last balance logged each day. Only days the EA logged a
+// row appear (the EQUITY cell is a throttled minute low, never used here). -1 when rows go back in time.
+int GoatEquityDailyCloses(const string csv,const datetime from,const datetime to,datetime &days[],double &closes[])
+  {
+   ArrayResize(days,0); ArrayResize(closes,0);
+   string lines[];
+   int total=StringSplit(csv,'\n',lines);
+   for(int i=0;i<total;i++)
+     {
+      string cells[];
+      if(StringSplit(lines[i],'\t',cells)<3) continue;
+      string stamp=cells[0];
+      StringTrimLeft(stamp); StringTrimRight(stamp);
+      if(StringLen(stamp)<10 || StringGetCharacter(stamp,4)!='.' || StringGetCharacter(stamp,7)!='.') continue;
+      datetime day=StringToTime(StringSubstr(stamp,0,10));
+      if(day<=0 || day<from || day>=to) continue;
+      double balance=StringToDouble(cells[1]);
+      int n=ArraySize(days);
+      if(n>0 && day<days[n-1]) return -1;
+      if(n>0 && day==days[n-1]) {closes[n-1]=balance; continue;}
+      ArrayResize(days,n+1); ArrayResize(closes,n+1);
+      days[n]=day; closes[n]=balance;
+     }
+   return ArraySize(days);
+  }
+// Pearson correlation of two curves' daily balance changes over [from,to), on the days BOTH curves
+// logged only (a change runs from one common day to the next; nothing is carried or filled in).
+// EMPTY_VALUE when the curves cannot be read, share fewer than GOAT_EXPORT_CORRELATION_MIN_DAYS logged
+// days, or one is flat: then the two are never shown different. n gets the number of common days.
+double GoatDailyReturnCorrelation(const string csvA,const string csvB,const datetime from,const datetime to,int &n)
+  {
+   n=0;
+   datetime da[],db[]; double ca[],cb[];
+   int na=GoatEquityDailyCloses(csvA,from,to,da,ca), nb=GoatEquityDailyCloses(csvB,from,to,db,cb);
+   if(na<2 || nb<2) return EMPTY_VALUE;
+   int i=0,j=0,changes=0;
+   double lastA=0,lastB=0,sx=0,sy=0,sxx=0,syy=0,sxy=0;
+   while(i<na && j<nb)
+     {
+      if(da[i]<db[j]) {i++; continue;}
+      if(db[j]<da[i]) {j++; continue;}
+      if(n>0)
+        {
+         double x=ca[i]-lastA, y=cb[j]-lastB;
+         changes++; sx+=x; sy+=y; sxx+=x*x; syy+=y*y; sxy+=x*y;
+        }
+      lastA=ca[i]; lastB=cb[j]; n++; i++; j++;
+     }
+   if(n<GOAT_EXPORT_CORRELATION_MIN_DAYS || changes<2) return EMPTY_VALUE;
+   double vx=sxx-sx*sx/changes, vy=syy-sy*sy/changes;
+   if(!(vx>0) || !(vy>0)) return EMPTY_VALUE;
+   return (sxy-sx*sy/changes)/MathSqrt(vx*vy);
+  }
+// Slot 2's quality over [from,to) = [BOOS end, FOOS start) from its own equity CSV, measured exactly as the
+// controller measures a window (studio_gate_calibration.window_metrics; Claude-Mac 6026738987), so the EA and
+// the controller agree on what clears the bar (scripts/test_below_score_export.cjs checks parity on real CSVs):
+//  - every "<DATE> <TIME>\t<BALANCE>\t<EQUITY>\t<DEPOSIT LOAD>" row's EQUITY value, intraday rows included;
+//  - opening = the last row before the window, else the initial deposit (the first day's P&L counts);
+//  - net = the window's last value - opening; drawdown = the largest fall from the running peak (opening
+//    included) over every row in the window;
+//  - Sharpe of the weekday changes of each day's last value (a day without a row repeats the previous value),
+//    over the deposit, sample variance, x sqrt(252), within +/-25, from 5+ weekdays;
+//  - recovery = net / drawdown (25 without a drawdown when net > 0), within +/-25; ARF = recovery / (weekdays / 21.7).
+// Only the window's rows are read, so BOOS and FOOS never decide it. BALANCE stays the correlation's series only.
+// out[] = {net, drawdown, sharpe, arf, weekdays, logged days}. False (never measured, never of quality) when the
+// deposit is unknown, a row goes back in time, the window has no row, or there is no Sharpe or no recovery.
+bool GoatEquityWindowMetrics(const string csv,const datetime from,const datetime to,const double initial,double &out[])
+  {
+   ArrayResize(out,6); ArrayInitialize(out,0.0);
+   if(!(initial>0)) return false;
+   string lines[];
+   int total=StringSplit(csv,'\n',lines);
+   datetime last=0;
+   datetime days[]; double closes[];
+   double opening=initial;
+   for(int i=0;i<total;i++)
+     {
+      string cells[];
+      if(StringSplit(lines[i],'\t',cells)!=4) continue;
+      string stamp=cells[0];
+      StringTrimLeft(stamp); StringTrimRight(stamp);
+      if(StringLen(stamp)!=16 || StringGetCharacter(stamp,4)!='.' || StringGetCharacter(stamp,7)!='.' || StringGetCharacter(stamp,13)!=':') continue;
+      datetime day=StringToTime(StringSubstr(stamp,0,10));
+      if(day<=0) continue;
+      datetime at=day+(datetime)(StringToInteger(StringSubstr(stamp,11,2))*3600+StringToInteger(StringSubstr(stamp,14,2))*60);
+      if(at<last) return false;
+      last=at;
+      if(at>=from) break;
+      opening=StringToDouble(cells[2]);
+     }
+   double level=opening, peak=opening, drawdown=0;
+   last=0;
+   for(int i=0;i<total;i++)
+     {
+      string cells[];
+      if(StringSplit(lines[i],'\t',cells)!=4) continue;
+      string stamp=cells[0];
+      StringTrimLeft(stamp); StringTrimRight(stamp);
+      if(StringLen(stamp)!=16 || StringGetCharacter(stamp,4)!='.' || StringGetCharacter(stamp,7)!='.' || StringGetCharacter(stamp,13)!=':') continue;
+      datetime day=StringToTime(StringSubstr(stamp,0,10));
+      if(day<=0) continue;
+      datetime at=day+(datetime)(StringToInteger(StringSubstr(stamp,11,2))*3600+StringToInteger(StringSubstr(stamp,14,2))*60);
+      if(at<last) return false;
+      last=at;
+      if(at<from) continue;
+      if(at>=to) break;
+      double value=StringToDouble(cells[2]);
+      level=value; peak=MathMax(peak,value); drawdown=MathMax(drawdown,peak-value);
+      int n=ArraySize(days);
+      if(n>0 && days[n-1]==day) {closes[n-1]=value; continue;}
+      ArrayResize(days,n+1); ArrayResize(closes,n+1);
+      days[n]=day; closes[n]=value;
+     }
+   int count=ArraySize(days);
+   if(count<1) return false;
+   double returns[];
+   double previous=opening;
+   int k=0, weekdays=0;
+   for(datetime day=from;day<to;day+=86400)
+     {
+      double value=previous;
+      if(k<count && days[k]==day) {value=closes[k]; k++;}
+      long dow=((long)day/86400+4)%7;
+      if(dow!=0 && dow!=6)
+        {
+         ArrayResize(returns,weekdays+1);
+         returns[weekdays]=(value-previous)/initial;
+         weekdays++;
+        }
+      previous=value;
+     }
+   if(weekdays<5) return false;
+   double mean=0, variance=0;
+   for(int r=0;r<weekdays;r++) mean+=returns[r];
+   mean/=weekdays;
+   for(int r=0;r<weekdays;r++) variance+=(returns[r]-mean)*(returns[r]-mean);
+   variance/=(weekdays-1);
+   if(!(variance>0)) return false;
+   double net=level-opening;
+   if(!(drawdown>0) && !(net>0)) return false;
+   double sharpe=MathMax(MathMin(mean/MathSqrt(variance)*MathSqrt(252.0),25.0),-25.0);
+   double recovery=(drawdown>0 ? net/drawdown : 25.0);
+   recovery=MathMax(MathMin(recovery,25.0),-25.0);
+   out[0]=net; out[1]=drawdown; out[2]=sharpe; out[3]=recovery/(weekdays/21.7); out[4]=weekdays; out[5]=count;
+   return true;
+  }
+#endif
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string EA_Name_,string Server_)
   {
@@ -1044,6 +1317,9 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
 #ifdef GOAT_RESEARCH_OUTCOME_V149
    xmlData.outcome="";
    int pairs=0,noEdgePairs=0,noQualifierPairs=0;
+#endif
+#ifdef GOAT_BELOW_SCORE_EXPORT_V149
+   xmlData.belowScorePairs=0;
 #endif
    // Loop over moved files to find matching pairs.
    for(int i=0; i<ArraySize(Files); i++)
@@ -1160,6 +1436,11 @@ bool ReportAnalyzerCombiner(string &Files[],bool reportMode,string Key_,string E
       if(ret && noQualifierPairs==pairs) xmlData.outcome=GOAT_XML_NO_QUALIFYING_ROWS;
       ret=false;
      }
+#ifdef GOAT_BELOW_SCORE_EXPORT_V149
+   // xmlData keeps the last pair's merged passes only: a below_score export needs exactly one pair, else it says
+   // below_score_reason=multiple_pairs (never NO_FWD_ELIGIBLE_PASS from another pair's passes).
+   xmlData.belowScorePairs=pairs;
+#endif
    if(xmlData.outcome!="")
      {
       if(reportMode) Alert(xmlData.OutcomeSentence());

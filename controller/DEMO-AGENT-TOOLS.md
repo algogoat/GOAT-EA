@@ -18,6 +18,7 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 & $goat demo --installation $receipt settle-refused-start --batch-id '<id>'   # a restart-arm start the EA refused before consuming it; closes MT5 normally
 & $goat demo --installation $receipt launch-terminal  # optional: --monitor-config '<monitor-only .ini>'; default: the saved GOAT Studio profile
 & $goat demo --installation $receipt prepare-batch --batch-id '<new id>' --plan '<plan.json>'
+# The reply's disk_estimate (goat-export-disk-estimate-v1) says what the kept exports may write: show its `plain` line.
 & $goat demo --installation $receipt run-batch --batch-id '<id>' --max-seconds 172800
 & $goat demo --installation $receipt resume-batch --batch-id '<id>'
 & $goat demo --installation $receipt batch-status --batch-id '<id>'
@@ -149,7 +150,22 @@ see "Export qualification" below):
   even when nothing passed (`SortAndTrimExports: Passing=0 Kept=1`); a best-effort
   result, shown apart and never counted as qualifying;
 - `unknown_members` and `unknown_sets`: at the cut-off, or no thresholds found;
-- `exported_sets`: every kept set; `thresholds`: the `min_sr`/`min_arf` judged against.
+- `exported_sets`: every kept set; `thresholds`: the `min_sr`/`min_arf` judged against;
+- `below_score_sets` and `below_score_members` (EA build B42, BS42): when nothing a
+  member tested reached the export score, the EA exports its best pass by FWD
+  profit/DD (and a second only when it is genuinely different and clears SR 2.5 /
+  ARF 0.2) into `<run>\below_score\<alias>\<symbol>\`, with `; EXPORT: below_score`
+  in its SET header. Research only: an attempt, never a pass, never in `qualifying`,
+  `exported_sets` or any other count, never a sift, composition or publish candidate.
+  Its stamp is `unknown` with `missed: ['below_score']`; the member's `no_edge`
+  outcome carries the pick and slot facts under `below_score`. A member that
+  tested several pairs reports `below_score_reason=multiple_pairs` (nothing exported,
+  never NO_FWD_ELIGIBLE_PASS); an unreadable tester deposit reports
+  `tester_deposit_unknown`. Catch-up re-tests one only with `include_research_only`
+  (`evidence-scan --include-research-only`), and the re-test stays `below_score`: a
+  re-test that reads back another tier is refused at collect. `finish` gives each
+  no-edge member's `research_outcomes` entry `below_score_sets` (the research-only
+  sets it kept); record it as `metrics.belowScoreSets` (AGENT-START-HERE step 20).
 
 The headline reads "98 qualifying (SR ≥ 2.5, ARF ≥ 0.2), 205 more kept below
 threshold". Before `qualifying_basis`, `qualifying` counted every completed member

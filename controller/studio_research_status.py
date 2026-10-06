@@ -19,7 +19,7 @@ import statistics
 import time
 
 from campaign_ledger import packed
-from studio_export_qualification import (SCHEMA as QUALIFICATION_SCHEMA, public_thresholds, read_run_thresholds, stamp_set,
+from studio_export_qualification import (SCHEMA as QUALIFICATION_SCHEMA, below_score_units, public_thresholds, read_run_thresholds, stamp_set,
                                          summarize, threshold_words)
 
 HEARTBEAT_FRESH_SECONDS = 20
@@ -227,9 +227,14 @@ NO_QUALIFYING_ROWS = 'no_qualifying_rows'
 # Sets scored high enough with the forward period, but every one re-tested over the export
 # window lost money, so the EA exported nothing and wrote a plain Error row (goatai#1885).
 NO_PROFITABLE_EXPORTS = 'no_profitable_exports'
-OUTCOME_ORDER = (NO_PROFITABLE_PASSES, NO_QUALIFYING_ROWS, NO_PROFITABLE_EXPORTS)
+# EA build B42 with GOAT_EXPORT_RANK_FWD_PROFIT_DD on (Claude-Mac 6023896492): passes reached the export score but
+# none was FWD-eligible, so the member fell through to the research-only below_score export (or logged
+# NO_FWD_ELIGIBLE_PASS). A research result, never a failure and never qualifying.
+NO_FWD_ELIGIBLE_ROWS = 'no_fwd_eligible_rows'
+OUTCOME_ORDER = (NO_PROFITABLE_PASSES, NO_QUALIFYING_ROWS, NO_FWD_ELIGIBLE_ROWS, NO_PROFITABLE_EXPORTS)
 # item_stats.tsv Status -> the one outcome a row with that status may carry.
-RESEARCH_OUTCOME_STATUSES = {'NoProfitablePasses': NO_PROFITABLE_PASSES, 'NoQualifyingRows': NO_QUALIFYING_ROWS}
+RESEARCH_OUTCOME_STATUSES = {'NoProfitablePasses': NO_PROFITABLE_PASSES, 'NoQualifyingRows': NO_QUALIFYING_ROWS,
+                             'NoFwdEligibleRows': NO_FWD_ELIGIBLE_ROWS}
 MAX_NO_EDGE_LISTED = 200
 MAX_LOG_BYTES = 64 * 1024 * 1024
 _DATE = re.compile(r'\d{4}\.\d{2}\.\d{2}')
@@ -272,7 +277,96 @@ def _no_qualifier_outcome(values, outcome):
             or o['min_trades'] <= 0 or not all(_DATE.fullmatch(span[key]) for key in ('start', 'end', 'forward_end'))
             or not span['start'] < span['end'] < span['forward_end']):
         return None
-    return dict(o, **x)
+    below = _below_score_facts(values)
+    return dict(o, **x, **({'below_score': below} if below else {}))
+
+
+def _no_fwd_eligible_outcome(values, outcome):
+    """``outcome`` extended with the facts of a NoFwdEligibleRows row, or None (that member stays a real error).
+
+    The same whole-report proof as no_qualifying_rows, at least one pass at or above the export score
+    (``score_qualifying_rows``, the best combined score at or above ``score_threshold``) and a below_score
+    report: exported, or none with its NO_FWD_ELIGIBLE_PASS counts. Never silent, never qualifying.
+    """
+    try:
+        extra = dict(back_rows=int(values['back_rows']), forward_matched=int(values['forward_matched']),
+                     best_combined_score=float(values['best_combined_score']), score_threshold=float(values['score_threshold']),
+                     score_qualifying_rows=int(values['score_qualifying_rows']))
+    except (KeyError, ValueError):
+        return None
+    o, x = outcome, extra
+    span, passes, kept = o['window'], o['passes'], x['back_rows']
+    below = _below_score_facts(values)
+    # Written apart from _no_qualifier_outcome's checks (same rules), so each mutation anchor stays unique.
+    proof = (passes > 0 and 1 <= kept and kept <= o['profitable'] and o['profitable'] <= passes
+             and kept <= o['traded'] and o['traded'] <= passes and o['complete'] == '1' and o['malformed'] == 0
+             and 1 <= o['forward_rows'] and o['forward_rows'] <= passes and kept == x['forward_matched']
+             and (0 < x['score_threshold'] < float('inf')))
+    if (not proof or not 1 <= x['score_qualifying_rows'] <= kept
+            or not x['score_threshold'] <= x['best_combined_score'] < float('inf')
+            or o['min_trades'] <= 0 or not all(_DATE.fullmatch(span[key]) for key in ('start', 'end', 'forward_end'))
+            or not span['start'] < span['end'] < span['forward_end']
+            or below is None or below['result'] not in ('exported', 'lost', 'none', 'failed')
+            or (below['result'] == 'none' and 'no_fwd_eligible_pass' not in below and below.get('reason') != 'multiple_pairs')):
+        return None
+    return dict(o, **x, below_score=below)
+
+
+BELOW_SCORE_RESULTS = ('exported', 'lost', 'none', 'failed')
+BELOW_SCORE_REASONS = ('multiple_pairs', 'tester_deposit_unknown')
+
+
+def _below_score_facts(values):
+    """The research-only below_score export a NoQualifyingRows row reports (GOAT-EA BS42), or None.
+
+    Older builds write no ``below_score`` key. A value outside the known results, or an exported pick
+    without its pass and FWD figures, is reported as ``unreadable``: never as a kept export.
+    """
+    result = values.get('below_score')
+    if result is None:
+        return None
+    facts = dict(result=result if result in BELOW_SCORE_RESULTS else 'unreadable', rank=values.get('below_score_rank'))
+    if result in ('exported', 'lost', 'failed') and 'below_score_pass' in values:
+        try:
+            facts.update(pass_number=int(values['below_score_pass']),
+                         fwd_profit_dd=float(values['below_score_fwd_profit_dd']),
+                         fwd_profit=float(values['below_score_fwd_profit']), fwd_trades=int(values['below_score_fwd_trades']),
+                         combined_score=float(values['below_score_combined_score']),
+                         min_fwd_trades=int(values['below_score_min_fwd_trades']))
+        except (KeyError, ValueError):
+            facts['result'] = 'unreadable'
+    elif result == 'exported':
+        facts['result'] = 'unreadable'
+    # The export slot rule (goatai#1885 6022264062): how many units were kept and why slot 2 was or was not.
+    if facts['result'] == 'exported':
+        try:
+            kept = int(values.get('below_score_kept', '1'))
+        except ValueError:
+            kept = None
+        slot2 = values.get('slot2')
+        if kept not in (1, 2) or (kept == 2) != (slot2 == 'kept'):
+            facts['result'] = 'unreadable'
+        else:
+            facts['kept'] = kept
+    if result == 'none' and values.get('no_fwd_eligible_pass') == '1':
+        # NO_FWD_ELIGIBLE_PASS: why no kept pass was FWD-eligible, each counted under its first reason.
+        try:
+            facts['no_fwd_eligible_pass'] = {key: int(values[key]) for key in (
+                'rows', 'fwd_eligible', 'not_in_forward', 'sample_unprofitable_or_thin', 'fwd_unprofitable',
+                'fwd_trades_under_floor', 'fwd_dd_unmeasured')}
+        except (KeyError, ValueError):
+            facts['result'] = 'unreadable'
+    reason = values.get('below_score_reason')
+    if reason is not None:
+        # Several report pairs (one pair's passes cannot speak for the member), or an unreadable tester deposit.
+        facts['reason'] = reason if reason in BELOW_SCORE_REASONS else 'unreadable'
+        if facts['reason'] == 'unreadable' or (reason == 'multiple_pairs') != (result == 'none'):
+            facts['result'] = 'unreadable'
+    if values.get('slot2') is not None:
+        facts['slot2'] = dict(result=values['slot2'] if values['slot2'] in ('kept', 'skipped', 'none') else 'unreadable',
+                              reason=values.get('slot2_reason'), correlation=values.get('slot2_correlation'),
+                              character=values.get('slot2_character'))
+    return facts
 
 
 def _no_edge_outcome(details, expected=NO_PROFITABLE_PASSES):
@@ -300,6 +394,8 @@ def _no_edge_outcome(details, expected=NO_PROFITABLE_PASSES):
         return None
     if expected == NO_QUALIFYING_ROWS:
         return _no_qualifier_outcome(values, outcome)
+    if expected == NO_FWD_ELIGIBLE_ROWS:
+        return _no_fwd_eligible_outcome(values, outcome)
     window, passes = outcome['window'], outcome['passes']
     if (outcome['outcome'] != NO_PROFITABLE_PASSES or passes <= 0 or not 0 <= outcome['profitable'] <= passes
             or not 1 <= outcome['traded'] <= passes or outcome['malformed'] != 0 or outcome['complete'] != '1'
@@ -309,6 +405,16 @@ def _no_edge_outcome(details, expected=NO_PROFITABLE_PASSES):
             or not window['start'] < window['end'] < window['forward_end']):
         return None
     return outcome
+
+
+def below_score_sets(outcome):
+    """How many research-only below_score sets a no-edge member kept (GOAT-EA BS42): the EA's own count when it
+    exported them, else 0 (none, lost, failed or unreadable). The finish reply carries it per member and the agent
+    records it as ``metrics.belowScoreSets`` (AGENT-START-HERE step 20), so the desktop fit map counts that member
+    as an attempt, never an export or a pass (Claude-Mac 6026738987)."""
+    below = (outcome or {}).get('below_score') or {}
+    kept = below.get('kept')
+    return kept if below.get('result') == 'exported' and kept in (1, 2) else 0
 
 
 def no_edge_summary(symbol, timeframe, outcome):
@@ -323,6 +429,14 @@ def no_edge_summary(symbol, timeframe, outcome):
                 + ('the 1 set' if retested == 1 else 'all ' + str(retested) + ' sets') + ' re-tested over '
                 + export['start'] + ' to ' + export['end'] + ' lost money (best ' + format(outcome['best_export_profit'], ',.2f')
                 + '). A result for this window only, not a verdict on the strategy.')
+    if outcome['outcome'] == NO_FWD_ELIGIBLE_ROWS:
+        below = outcome.get('below_score') or {}
+        return (symbol + ' ' + timeframe + ': tested, nothing FWD-eligible in ' + window['start'] + ' to ' + window['end'] + ' — '
+                + str(outcome['score_qualifying_rows']) + ' of ' + str(outcome['passes']) + ' settings scored '
+                + format(outcome['score_threshold'], 'g') + '+ but none was profitable in the forward period to ' + window['forward_end']
+                + ' with enough trades; ' + ('its best profitable pass was kept for research only (below score)'
+                                             if below.get('result') == 'exported' else 'nothing was exported (no FWD-eligible pass)')
+                + '. ' + 'A result for this window only, not a verdict on the strategy.')
     if outcome['outcome'] == NO_QUALIFYING_ROWS:
         kept = outcome['back_rows']
         return (symbol + ' ' + timeframe + ': tested, nothing qualified in ' + window['start'] + ' to ' + window['end'] + ' — '
@@ -561,7 +675,7 @@ def batch_progress(root, install, job, *, now, journal=None):
                   exported_sets=None, passing_sets=None, below_threshold_members=None, below_threshold_sets=None,
                   unknown_members=None, unknown_sets=None, thresholds=None, qualifying_basis=None,
                   members_no_edge=None, no_edge_counts=None, members_failed=None, members_native_error=None,
-                  members_cancelled=None, no_edge_window=None,
+                  members_cancelled=None, no_edge_window=None, below_score_sets=None, below_score_members=None,
                   no_edge=None, last_member=None, current_member=None, pace=None, evidence='unavailable')
     manifest, _ = _bounded_json(package / 'manifest.json', 64 * 1024 * 1024)
     if not isinstance(manifest, dict) or 'launch_intent' not in job:
@@ -619,6 +733,11 @@ def batch_progress(root, install, job, *, now, journal=None):
     # high enough with the forward period, or every re-tested set lost money): results, never failures.
     no_edge = no_edge_members(common_run, [(item['run_alias'], item['tester']['Symbol']) for item in manifest['jobs']],
                               statuses, timing)
+    # Research-only below_score exports (GOAT-EA BS42, <run>\below_score): their own count, never qualifying,
+    # never an exported, passing or kept-below-threshold set (an attempt, not a pass).
+    research = [len(below_score_units(common_run, aliases[i], manifest['jobs'][i]['tester']['Symbol']))
+                for i in range(len(aliases))]
+    counted.update(below_score_sets=sum(research), below_score_members=sum(1 for n in research if n))
     result.update(**counted, qualifying_basis=QUALIFICATION_SCHEMA,
                   thresholds=public_thresholds(run_thresholds()) if per_member else None,
                   thresholds_problems=(run_thresholds()['problems'] or None) if per_member else None)
@@ -832,9 +951,14 @@ def headline(activity):
             reached = ('scored ' + format(next(iter(scores)), 'g') + '+') if len(scores) == 1 and None not in scores else 'reached the export score'
             words = {NO_PROFITABLE_PASSES: 'with no profitable settings',
                      NO_QUALIFYING_ROWS: 'none ' + reached + ' once the forward period was included',
+                     NO_FWD_ELIGIBLE_ROWS: 'none FWD-eligible at the export score',
                      NO_PROFITABLE_EXPORTS: 'lost money on the export re-test'}
             counts += (', ' + str(no_edge) + ' tested, nothing qualified in ' + where + ' ('
                        + ', '.join(str(kinds[kind]) + ' ' + words[kind] for kind in OUTCOME_ORDER if kind in kinds) + ')')
+    research = activity.get('below_score_sets') if activity.get('kind') == 'batch' else None
+    if research:
+        # GOAT-EA BS42: named apart, never added to qualifying or the kept sets.
+        counts += ', ' + str(research) + (' best profitable set' if research == 1 else ' best profitable sets') + ' kept below score for research only'
     if failed:
         counts += ', ' + str(failed) + ' failed'
     cancelled = activity.get('members_cancelled')

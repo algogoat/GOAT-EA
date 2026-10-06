@@ -11,13 +11,14 @@ from studio_bridge import write_json
 
 def _research_outcomes(native):
     """([outcome per no-edge member], error or None). Read-only; never blocks a finish."""
-    from studio_research_status import no_edge_members,no_edge_summary,timeline
+    from studio_research_status import below_score_sets,no_edge_members,no_edge_summary,timeline
     try:
         members=native['members'];run=native['native_run']
         found=no_edge_members(run,[(m['run_alias'],m['symbol']) for m in members],[m['status'] for m in members],
                               timeline(run,[m['run_alias'] for m in members]))
         return [dict(index=i,run_alias=members[i]['run_alias'],symbol=members[i]['symbol'],timeframe=members[i]['tester']['Period'],
-                     **found[i],summary=no_edge_summary(members[i]['symbol'],members[i]['tester']['Period'],found[i]))
+                     **found[i],summary=no_edge_summary(members[i]['symbol'],members[i]['tester']['Period'],found[i]),
+                     below_score_sets=below_score_sets(found[i]))   # recorded as metrics.belowScoreSets (step 20)
                 for i in sorted(found)],None
     except (OSError,ValueError,KeyError,TypeError) as error:
         return [],str(error)[:240]

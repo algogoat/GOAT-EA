@@ -2942,11 +2942,11 @@ class DemoAgent:
     def holdup_reconcile(self, holdup_id):
         return self._lane_reconcile('holdup', holdup_id)
 
-    def evidence_scan(self, sources, value='auto', *, broker_clock=None, include_below_threshold=False):
+    def evidence_scan(self, sources, value='auto', *, broker_clock=None, include_below_threshold=False, include_research_only=False):
         """Read-only: every kept export under ``sources`` against one evidence end; no terminal effect."""
         from studio_catchup import evidence_scan
         return evidence_scan(sources, value=value, broker_clock=broker_clock, controller_root=self.root,
-                             include_below_threshold=include_below_threshold)
+                             include_below_threshold=include_below_threshold, include_research_only=include_research_only)
 
     def evidence_end(self, value='auto', *, broker_clock=None):
         """Read-only: resolve AUTO / an explicit evidence end, and what this EA build's batch exports end at."""
@@ -3098,7 +3098,7 @@ def _export_qualification_command(args, *, now=None):
             written.append(str(target))
     counts = dict(runs=len(runs))
     for key in ('members', 'sets', 'passed_members', 'passed_sets', 'below_threshold_members', 'below_threshold_sets',
-                'unknown_members', 'unknown_sets'):
+                'unknown_members', 'unknown_sets', 'below_score_members', 'below_score_sets'):
         counts[key] = sum(run['counts'][key] for run in runs)
     result = dict(schema='goat-export-qualification-scan-v1', generated_at=stamp_time, counts=counts, runs=runs, written=written)
     return guard_scan(result, lambda value: guard_output(install, value, root=install['controller_state_root']))
@@ -3266,6 +3266,7 @@ def main(argv=None):
     scan.add_argument('--evidence-end', default='auto')
     scan.add_argument('--broker-clock')
     scan.add_argument('--include-below-threshold', action='store_true')
+    scan.add_argument('--include-research-only', action='store_true')
     qualification = commands.add_parser('export-qualification',
                                         help='Read-only: which kept exports passed their run\'s export thresholds '
                                              '(goat-export-qualification-v1), cross-checked with the EA log')
@@ -3364,7 +3365,8 @@ def main(argv=None):
         elif args.command == 'seed-promote': result = agent.seed_promote(args.batch_id, args.candidate, args.name, args.neighborhood, args.member)
         elif args.command == 'evidence-end': result = agent.evidence_end(args.value, broker_clock=args.broker_clock)
         elif args.command == 'evidence-scan': result = agent.evidence_scan([str(p) for p in args.source], args.evidence_end,
-            broker_clock=args.broker_clock, include_below_threshold=args.include_below_threshold)
+            broker_clock=args.broker_clock, include_below_threshold=args.include_below_threshold,
+            include_research_only=args.include_research_only)
         elif args.command == 'catchup-validate': result = agent.catchup_validate(args.plan, args.catchup_id)
         elif args.command == 'catchup-prepare': result = agent.catchup_prepare(args.catchup_id, args.plan)
         elif args.command == 'catchup-start': result = agent.catchup_start(args.catchup_id, args.max_seconds, detach=_lane_detached(args))

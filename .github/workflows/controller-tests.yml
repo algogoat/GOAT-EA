@@ -24,15 +24,15 @@ concurrency:
 #           test_connection_code, test_activation_code_file, test_broker_facts_payload,
 #           test_bias_reader_parity, test_agent_connection_layout, test_studio_steady_panel,
 #           test_dashboard_overview, test_ea_followups, test_studio_derived_report,
-#           test_terminal_isolation
+#           test_terminal_isolation, test_below_score_export, test_slot2_foos_invariance
 #
 # controller-mutations (1/3)  ~16-24 min observed
 #   python test_research_outcome_controller_mutations.py   (12-17 min)
 #   python test_evidence_end_export_controller_mutations.py
 #   node   test_bias_reader_parity_mutations.cjs, test_research_outcome_mutations.cjs,
 #          test_studio_steady_panel_mutations.cjs, test_ea_followups_mutations.cjs,
-#          test_terminal_isolation_mutations.cjs
-#   python test_terminal_isolation_controller_mutations.py
+#          test_terminal_isolation_mutations.cjs, test_below_score_export_mutations.cjs (48, ~1-2 min)
+#   python test_terminal_isolation_controller_mutations.py, test_below_score_controller_mutations.py (21, ~1 min)
 #
 # controller-mutations (2/3)  ~16-22 min observed before the OOS window check; ~24-30 min expected with it
 #   python test_process_query_mutations.py                 (14-18 min)
@@ -133,6 +133,10 @@ jobs:
         run: node scripts/test_studio_derived_report.cjs
       - name: Terminal isolation (per-terminal batch state, per-login credential)
         run: node scripts/test_terminal_isolation.cjs
+      - name: Export rule by FWD profit/DD and research-only below_score exports (goatai#1885, BS42)
+        run: node scripts/test_below_score_export.cjs
+      - name: Slot 2 ignores the post-FWD (FOOS) part of its re-test (Claude-Mac 6025359910 item 2)
+        run: node scripts/test_slot2_foos_invariance.cjs
 
       - name: Run every controller fixture test
         env:
@@ -221,6 +225,12 @@ jobs:
       - name: Terminal isolation controller mutation check (every guard is load-bearing)
         if: matrix.shard == 1
         run: python scripts/test_terminal_isolation_controller_mutations.py
+      - name: below_score export mutation check (FWD profit/DD rank, slot-2 gates, research-only export, switch off)
+        if: matrix.shard == 1
+        run: node scripts/test_below_score_export_mutations.cjs
+      - name: below_score controller mutation check (never a pass, own count, fail-closed tier)
+        if: matrix.shard == 1
+        run: python scripts/test_below_score_controller_mutations.py
 
       # ---- Shard 2/3 ----
       - name: Process query mutation check (WMI stall retry, unconfirmed launch, seed unowned doubt)

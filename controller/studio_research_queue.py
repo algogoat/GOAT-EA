@@ -30,6 +30,7 @@ STATES = ('queued', 'running', 'pausing', 'paused', 'blocked', 'finished', 'stop
 ENDED = frozenset(('finished', 'stopped', 'failed'))
 FINISHED_DEFAULT = 5        # ended jobs kept (most recent first); unfinished jobs are always listed
 FINISHED_MAX = 50
+JOB_IDS_MAX = 20            # --job-id: queue batches listed however long ago they ended
 MAX_RUN_FOLDERS = 2000      # runner folders listed per kind
 MAX_RUNS_READ = 25          # most recently written runner folders read per kind
 MAX_RUNNER_JSON = 32 * 1024 * 1024
@@ -239,13 +240,20 @@ def _when(row):
     return row.get('finished_utc') or row.get('started_utc') or ''
 
 
-def research_queue(*, root, install, session, now, jobs=None, finished=FINISHED_DEFAULT):
+def research_queue(*, root, install, session, now, jobs=None, finished=FINISHED_DEFAULT, job_ids=None):
     """Every job of one installation, one row each: unfinished ones always, then the ``finished`` most
-    recent ended ones. Running and pausing first, then blocked, paused and queued, then the ends."""
+    recent ended ones. Running and pausing first, then blocked, paused and queued, then the ends.
+
+    ``job_ids``: queue batches to list however long ago they ended (after the kept ends, in the
+    order asked), for example the batch a restore-lane refusal names (goatai#2272). An ID that is
+    not a queue batch is reported in ``job_ids_missing``."""
     from studio_research_status import queue_jobs
     import sqlite3
     if type(finished) is not int or not 0 <= finished <= FINISHED_MAX:
         raise ValueError('--finished keeps 0..%d ended jobs' % FINISHED_MAX)
+    wanted = list(dict.fromkeys(job_ids or ()))
+    if len(wanted) > JOB_IDS_MAX or not all(isinstance(item, str) and JOB_ID.fullmatch(item) for item in wanted):
+        raise ValueError('--job-id takes up to %d valid batch IDs' % JOB_IDS_MAX)
     root = Path(root)
     queue_error = None
     if jobs is None:
@@ -259,7 +267,7 @@ def research_queue(*, root, install, session, now, jobs=None, finished=FINISHED_
     light = [batch_row(root, install, job, now=now, with_progress=False) for job in valid]
     ended_ids = [row['batch_id'] for row in light[::-1] if row['state'] in ENDED][:finished]   # newest last in the queue
     for job, row in zip(valid, light):
-        if row['state'] not in ENDED or row['batch_id'] in ended_ids:
+        if row['state'] not in ENDED or row['batch_id'] in ended_ids or row['batch_id'] in wanted:
             try:
                 rows.append(batch_row(root, install, job, now=now))
             except (OSError, ValueError, KeyError, TypeError) as error:
@@ -271,8 +279,18 @@ def research_queue(*, root, install, session, now, jobs=None, finished=FINISHED_
                 skipped.append(dict(batch_id=batch_id, kind=kind, reason=reason))
             else:
                 rows.append(row)
+    # A batch listed only because it was asked for never displaces one of the kept ends.
+    asked_only = {row['batch_id'] for row in light if row['state'] in ENDED and row['batch_id'] not in ended_ids}
     unfinished = [row for row in rows if row['state'] not in ENDED]
-    ends = sorted((row for row in rows if row['state'] in ENDED), key=_when, reverse=True)[:finished]
-    ordered = sorted(unfinished, key=lambda row: (_RANK[row['state']], row['kind'] != 'batch', row['batch_id'])) + ends
-    return dict(schema_version=1, observed_utc=_iso(now), rows=ordered, finished_kept=finished,
-                skipped=skipped, queue_error=queue_error, read_only=True, launch_permitted=False)
+    ends = sorted((row for row in rows if row['state'] in ENDED
+                   and not (row['kind'] == 'batch' and row['batch_id'] in asked_only)), key=_when, reverse=True)[:finished]
+    kept = {(row['kind'], row['batch_id']) for row in unfinished + ends}
+    asked = {row['batch_id']: row for row in rows if row['kind'] == 'batch' and row['batch_id'] in wanted}
+    extra = [asked[item] for item in wanted if item in asked and ('batch', item) not in kept]
+    ordered = sorted(unfinished, key=lambda row: (_RANK[row['state']], row['kind'] != 'batch', row['batch_id'])) + ends + extra
+    result = dict(schema_version=1, observed_utc=_iso(now), rows=ordered, finished_kept=finished,
+                  skipped=skipped, queue_error=queue_error, read_only=True, launch_permitted=False)
+    if wanted:
+        unreadable = {item['batch_id'] for item in skipped if item.get('kind') == 'batch'}
+        result.update(job_ids=wanted, job_ids_missing=[item for item in wanted if item not in asked and item not in unreadable])
+    return result

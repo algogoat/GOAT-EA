@@ -4,6 +4,9 @@ restore-lane accepts logged owner demo-lane work only when every batch it touche
 started for its exact attempt: retire-unactivated's retired-starts/ record or settle-refused-start's
 refused-starts/ record (with its completed self-repair journal). settle-refused-start reuses the
 self-repair proof and settlement, relaxed only to let earlier settled rows stay in the queue.
+goatai#2272: restore-lane says who moved the session (moved_by) and applies an owner enrollment
+only with --owner-confirmed; an interrupted settle finishes with MT5 closed under its journaled
+account proof (GOAT-EA#170 MED) and says how far MT5 was touched (native_action).
 Each guard is removed in a temporary copy of controller/, and the tests must fail.
 The repository is never modified. Works with an embedded Python that ignores cwd.
 """
@@ -19,7 +22,7 @@ RUNNER = ('import sys,unittest\n'
           'sys.path[:]=[p for p in sys.path if not p.rstrip("\\\\/").lower().endswith("controller")]\n'
           'sys.path.insert(0,root)\n'
           'suite=unittest.TestSuite()\n'
-          'for name in ("test_demo_settle_refused_start.py",):\n'
+          'for name in ("test_demo_settle_refused_start.py", "test_demo_update_keeps_lane.py"):\n'
           '    suite.addTests(unittest.defaultTestLoader.discover(root,pattern=name,top_level_dir=root))\n'
           'result=unittest.TextTestRunner(stream=open(sys.argv[2],"w"),verbosity=1).run(suite)\n'
           'sys.exit(0 if result.wasSuccessful() else 1)\n')
@@ -27,8 +30,8 @@ AGENT = 'demo_agent.py'
 REPAIR = 'studio_self_repair.py'
 MUTATIONS = [
     ('batch steps accepted without a settlement proof', AGENT,
-     "        settled = {batch: self._never_started_settlement(batch, jobs) for batch in sorted(batches)}",
-     "        settled = {}"),
+     "                settled[batch] = self._never_started_settlement(batch, jobs)",
+     "                settled[batch] = None"),
     ('any other demo operation accepted', AGENT,
      "                    if (operation not in NEVER_STARTED_BATCH_OPERATIONS or not isinstance(batch, str)",
      "                    if (not isinstance(batch, str)"),
@@ -70,6 +73,39 @@ MUTATIONS = [
     ('a non pre-consumption receipt accepted', REPAIR,
      "            or arm['receipt']['status'] not in PRE_CONSUMPTION_REFUSALS):",
      "            ):"),
+    # goatai#2272 gap 1: moved_by and the owner-confirmed apply.
+    ('an owner enrollment reported as an app update', AGENT,
+     "                    moved_by = 'owner_enrollment'",
+     "                    moved_by = 'app_update'"),
+    ('an old update\'s flip not reported as an app update', AGENT,
+     "            elif moved_by is None:\n                moved_by = 'app_update'",
+     "            elif False:\n                moved_by = 'app_update'"),
+    ('a restored session keeps the old stint\'s cause', AGENT,
+     "        if operation == 'restore_lane' and phase == 'restored':\n            moved_by, evidence = None, None",
+     "        if False:\n            moved_by, evidence = None, None"),
+    ('an owner enrollment applied without --owner-confirmed', AGENT,
+     "            if review['moved_by'] == 'owner_enrollment' and not owner_confirmed:",
+     "            if False:"),
+    # goatai#2272 gap 3: the stable code beside the sentence.
+    ('the refusal code left out of the CLI error', AGENT,
+     "            error.update({key: value for key, value in exc.fields.items() if key not in error}, refusal_code=exc.code)",
+     "            pass"),
+    # GOAT-EA#170 MED and goatai#2272 gap 2: an interrupted settle, and how far MT5 was touched.
+    ('an interrupted settle needs a live broker again', AGENT,
+     "                    return self._settle_refused_start(batch_id, journal=journal)",
+     "                    return self._settle_refused_start(batch_id)"),
+    ('a journaled account proof accepted for another login', AGENT,
+     "        if (proof.get('login') != expected['login'] or proof.get('server') != expected['server']",
+     "        if (proof.get('server') != expected['server']"),
+    ('a journaled account proof accepted for another process', AGENT,
+     "                or proof.get('process') != journal.get('process')):",
+     "                ):"),
+    ('a journaled account proof accepted when not demo', AGENT,
+     "                or proof.get('demo') is not True or not isinstance(proof.get('process'), dict)",
+     "                or not isinstance(proof.get('process'), dict)"),
+    ('native_action always says none', AGENT,
+     "        return SETTLE_NATIVE_ACTIONS.get(journal.get('phase') if isinstance(journal, dict) else '', 'unknown')",
+     "        return 'none'"),
 ]
 
 

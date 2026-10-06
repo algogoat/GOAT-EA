@@ -189,7 +189,7 @@ def _summary(path, record):
     return {key: record.get(key) for key in ('status', 'max_seconds', 'started_wall', 'deadline_wall',
             'attempt_id', 'start_issued', 'cancel_issued', 'stopped', 'last_error', 'result_path',
             'min_free_bytes', 'cancel_reason', 'disk_observation', 'pause_id', 'pause_failure',
-            'pause_supervision', 'start_route', 'mt5_restart_consent', 'recovery')} | dict(
+            'pause_supervision', 'start_route', 'mt5_restart_consent', 'recovery', 'observe', 'stall')} | dict(
         journal_path=str(path), job_id=record['binding']['job_id'],
         disk_guard_available=(record.get('schema_version') == 2 and type(record.get('min_free_bytes')) is int
                               and record['min_free_bytes'] > 0),
@@ -216,6 +216,68 @@ SAFE_POINT_WAITS = frozenset(('waiting_safe_point', 'cancel_rejected_waiting_saf
 # CANCEL_POLL_SECONDS. Verification is unchanged: the same reconcile + finish readback.
 STOP_WATCH_SECONDS = .5
 CANCEL_POLL_SECONDS = 1
+
+# Observation backoff (goatai#1885, Banker 2026-10-05). A pass reconciles and tries finish
+# over the whole native batch. On Banker's large store one pass cost about 70 s of CPU, and
+# the loop repeated it every poll_seconds whether or not anything had changed, so for 4.5 h
+# a stalled batch that changed nothing kept the driver at about one full core and starved
+# the publishers. While passes see no change the wait now doubles from poll_seconds up to
+# QUIET_BACKOFF_CAP_SECONDS, and is never shorter than QUIET_PASS_COST_FACTOR times the last
+# pass (up to QUIET_WAIT_MAX_SECONDS), so a quiet driver uses at most about a third of one
+# core however slow its pass. Any change resets the wait to poll_seconds. Stop latency is
+# unchanged: _wait still watches STOP, TAKE CONTROL and a published cancel every
+# STOP_WATCH_SECONDS, and now also wakes when a pause request appears or changes.
+QUIET_BACKOFF_CAP_SECONDS = 120
+QUIET_PASS_COST_FACTOR = 2
+QUIET_WAIT_MAX_SECONDS = 300
+
+
+def _progress_key(observed, record):
+    """What a pass saw, without timestamps. Any change in it, or a changed observation, is progress."""
+    view = observed if isinstance(observed, dict) else {}
+    return (view.get('status'), view.get('revision'), record.get('last_error'))
+
+
+def _quiet_wait(previous, poll_seconds, pass_seconds):
+    """The next wait after a pass that saw no change: bounded exponential backoff, never a spin."""
+    backoff = min(max(previous * 2, poll_seconds), max(poll_seconds, QUIET_BACKOFF_CAP_SECONDS))
+    return min(max(backoff, QUIET_PASS_COST_FACTOR * pass_seconds), max(poll_seconds, QUIET_WAIT_MAX_SECONDS))
+
+
+def _stall_monitor(controller, now, monitor_fn):
+    """Monitor classification for the stall check: no process query (research-status's view)."""
+    if monitor_fn is not None:
+        return monitor_fn(controller, now)
+    from studio_research_status import monitor_state
+    return monitor_state(controller.install, controller.session, controller.local, now=now, process='unknown')
+
+
+def _observe(controller, job_id, record, quiet, observed, *, now, poll_seconds, pass_seconds, monitor_fn=None):
+    """Record what this pass saw and return the wait before the next one.
+
+    A pass whose reconcile reply and error are unchanged backs off; one that changed
+    resets to poll_seconds. A batch that ran nothing for studio_batch_stall.STALL_SECONDS
+    with an idle tester and an unfinished queue is recorded as ``stalled`` with the
+    supported recovery, instead of reading as observing.
+    """
+    key = _progress_key(observed, record)
+    changed = isinstance(observed, dict) and observed.get('changed') is True
+    if changed or quiet.get('since_wall') is None or key != quiet.get('key'):
+        quiet.update(key=key, since_wall=now, wait=poll_seconds, passes=0)
+    else:
+        quiet.update(wait=_quiet_wait(quiet['wait'], poll_seconds, pass_seconds), passes=quiet['passes'] + 1)
+    from studio_batch_stall import driver_stall
+    stall = driver_stall(observed, record, quiet_since=quiet['since_wall'], now=now, session=controller.session,
+                         job_id=job_id, monitor_fn=lambda: _stall_monitor(controller, now, monitor_fn))
+    record['observe'] = dict(quiet_since_wall=quiet['since_wall'], quiet_passes=quiet['passes'],
+                             last_pass_seconds=round(pass_seconds, 1), next_wait_seconds=round(quiet['wait'], 1))
+    if stall is not None:
+        record.update(status='stalled', stall=stall)
+    else:
+        record.pop('stall', None)
+        if record.get('status') == 'stalled':
+            record['status'] = 'observing'
+    return quiet['wait']
 
 
 def _stop_signals(controller, record, now=None):
@@ -248,12 +310,22 @@ def _cancel_outstanding(controller, record, now=None):
             and type(request.get('expires_utc')) in (int, float) and request['expires_utc'] + 30 > now)
 
 
+def _pause_mark(controller, record):
+    """The pause request file's identity (size, mtime), or None; a stat only, never a read."""
+    try:
+        stat = (Path(controller.root)/'batch-pauses'/(record['binding']['job_id']+'.json')).stat()
+        return stat.st_size, stat.st_mtime_ns
+    except (OSError, KeyError, TypeError):
+        return None
+
+
 def _wait(controller, record, clock, seconds):
     """Sleep up to ``seconds`` between passes, returning early when a stop appears.
 
     With a cancel of this attempt outstanding the pass repeats every CANCEL_POLL_SECONDS.
     Otherwise the wait ends as soon as owner STOP, a human TAKE CONTROL or a published
-    cancel newly appears; a signal already present when the wait began never spins it.
+    cancel newly appears, or a pause request appears or changes; a signal already present
+    when the wait began never spins it.
     """
     if seconds <= 0:
         return
@@ -264,6 +336,7 @@ def _wait(controller, record, clock, seconds):
     if record.get('cancel_issued') or before[2]:
         clock.sleep(min(seconds, CANCEL_POLL_SECONDS))
         return
+    pause_before = _pause_mark(controller, record)
     end = clock.monotonic()+seconds
     while True:
         remaining = end-clock.monotonic()
@@ -271,6 +344,8 @@ def _wait(controller, record, clock, seconds):
             return
         clock.sleep(min(STOP_WATCH_SECONDS, remaining))
         if any(seen and not then for seen, then in zip(_stop_signals(controller, record, clock.time()), before)):
+            return
+        if _pause_mark(controller, record) != pause_before:
             return
 
 
@@ -525,8 +600,11 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
         cancel_mono_deadline = None
         if record['cancel_issued']:
             cancel_mono_deadline = monotonic_start+min(record['cancel_grace_seconds'], max(0, record['cancel_deadline_wall']-wall_start))
+        quiet = {}
         while True:
             now, mono = clock.time(), clock.monotonic()
+            pass_started = mono
+            observed = None
             rollback = rollback or now < record['last_wall'] or now-wall_start+.05 < mono-monotonic_start
             try:
                 _owned_attempt(controller, record)
@@ -542,7 +620,7 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 _research_guard(controller, job_id, record, now, pause)
             try:
                 if controller.job(job_id)['status'] not in TERMINAL:
-                    controller.reconcile(job_id)
+                    observed = controller.reconcile(job_id)
                 _owned_attempt(controller, record)
                 result = finish_fn(controller, job_id, expected_generation=record['binding']['generation'])
                 if result.get('status') not in TERMINAL or result.get('result', {}).get('attempt_id') != record['attempt_id']:
@@ -560,6 +638,7 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
             except Exception as error:
                 record['last_error'] = str(error)
             now, mono = clock.time(), clock.monotonic()
+            pass_seconds = max(0.0, mono-pass_started)
             rollback = rollback or now < record['last_wall'] or now-wall_start+.05 < mono-monotonic_start
             disk_reason = record.get('disk_observation', {}).get('reason')
             owner_stop = None
@@ -579,6 +658,7 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 # Only low disk and a clock rollback justify publishing immediately.
                 escalation = disk_reason or ('clock_rollback' if rollback else None)
                 record.update(status='pausing', pause_id=pause['pause_id'])
+                record.pop('stall', None)   # the pause is now the recovery
                 try:
                     monitor = (monitor_fn or observe_monitor)(controller, now)
                     pause = step(controller, job_id, now=now, monitor=monitor, escalation=escalation,
@@ -633,9 +713,16 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     record['status'] = 'stop_unconfirmed'
                     _save(path, record, clock)
                     return _summary(path, record)
+            if record['cancel_issued']:
+                # An outstanding cancel is read back every CANCEL_POLL_SECONDS; never backed off.
+                wait = poll_seconds
+                record.pop('stall', None)
+            else:
+                wait = _observe(controller, job_id, record, quiet, observed, now=now, poll_seconds=poll_seconds,
+                                pass_seconds=pass_seconds, monitor_fn=monitor_fn)
             _save(path, record, clock)
             remaining = (cancel_mono_deadline if record['cancel_issued'] else monotonic_deadline)-mono
-            _wait(controller, record, clock, min(poll_seconds, max(.01, remaining)))
+            _wait(controller, record, clock, min(wait, max(.01, remaining)))
 
 
 def status(controller, job_id):

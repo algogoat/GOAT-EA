@@ -19,6 +19,7 @@ Neither command enables trading, types credentials or changes MT5 permissions.
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -58,8 +59,50 @@ def demo_terminal_lock(controller):
             lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
-def broker_proof(controller, session, *, mt5=None, require_flat=True):
-    """Fresh MT5 SDK readback of the selected terminal. Never a trading call."""
+# MT5 SDK ENUM_ACCOUNT_TRADE_MODE values, used when the adapter does not export a constant.
+TRADE_MODES = (('ACCOUNT_TRADE_MODE_DEMO', 0, 'demo'), ('ACCOUNT_TRADE_MODE_CONTEST', 1, 'contest'),
+               ('ACCOUNT_TRADE_MODE_REAL', 2, 'real'))
+ACCOUNT_TEXT_MAX = 128
+
+
+def trade_mode_name(mt5, value):
+    """'demo', 'contest' or 'real' for an account_info().trade_mode; 'unknown' otherwise."""
+    for constant, default, name in TRADE_MODES:
+        if value == getattr(mt5, constant, default):
+            return name
+    return 'unknown'
+
+
+def account_details(mt5, account):
+    """Display-only account facts from the same account_info() readback (deploy-preflight).
+
+    Read-only and additive: currency, balance, equity, leverage, company and trade mode. A
+    value the SDK does not report, or reports as a non-finite or wrongly typed value, is None,
+    so the JSON stays parseable and a missing field never fails the readback. No decision in
+    the controller depends on these values.
+    """
+    def number(name, kind):
+        value = getattr(account, name, None)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return None
+        return kind(value)
+
+    def text(name):
+        value = getattr(account, name, None)
+        if not isinstance(value, str):
+            return None
+        value = ''.join(c for c in value if c.isprintable())[:ACCOUNT_TEXT_MAX]
+        return value or None
+
+    return dict(currency=text('currency'), balance=number('balance', float), equity=number('equity', float),
+                leverage=number('leverage', int), company=text('company'),
+                trade_mode=trade_mode_name(mt5, getattr(account, 'trade_mode', None)))
+
+
+def broker_proof(controller, session, *, mt5=None, require_flat=True, details=False):
+    """Fresh MT5 SDK readback of the selected terminal. Never a trading call.
+
+    ``details=True`` adds the display-only ``account_details`` keys (deploy-preflight)."""
     if mt5 is None:
         try:
             import MetaTrader5 as mt5
@@ -79,6 +122,8 @@ def broker_proof(controller, session, *, mt5=None, require_flat=True):
                      demo=account.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO,
                      connected=bool(terminal.connected), algo_trading=bool(terminal.trade_allowed),
                      positions=len(positions), orders=len(orders), build=terminal.build)
+        if details:
+            proof.update(account_details(mt5, account))
     finally:
         mt5.shutdown()
     if proof['login'] != session['account']['login'] or proof['server'] != session['account']['server']:

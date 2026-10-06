@@ -41,8 +41,9 @@ class FakeProcess:
 class FakeMT5:
     ACCOUNT_TRADE_MODE_DEMO = 0
 
-    def __init__(self, controller, *, trade_mode=0, algo=False, positions=0, orders=0, login='123456', connected=True):
+    def __init__(self, controller, *, trade_mode=0, algo=False, positions=0, orders=0, login='123456', connected=True, account=None):
         self.c, self.trade_mode, self.algo, self.positions, self.orders, self.login, self.connected = controller, trade_mode, algo, positions, orders, login, connected
+        self.account = dict(account or {})
 
     def initialize(self, path, timeout=0): return True
     def shutdown(self): pass
@@ -50,7 +51,7 @@ class FakeMT5:
         return SimpleNamespace(path=str(Path(self.c.install['terminal_executable']).parent), data_path=self.c.install['terminal_data_root'],
                                connected=self.connected, trade_allowed=self.algo, build=5200)
     def account_info(self):
-        return SimpleNamespace(login=int(self.login), server='Customer-Demo', trade_mode=self.trade_mode)
+        return SimpleNamespace(login=int(self.login), server='Customer-Demo', trade_mode=self.trade_mode, **self.account)
     def positions_get(self): return [object()] * self.positions
     def orders_get(self): return [object()] * self.orders
 
@@ -850,6 +851,42 @@ class AgentSetupTests(unittest.TestCase):
         self.assertFalse(list(Path(self.c.install['common_files_root']).rglob('*.tsv')))
         result = deploy.preflight(self.c, mt5=FakeMT5(self.c, trade_mode=2))
         self.assertIn('real-money', result['broker_error'])
+
+    def test_preflight_reports_the_account_details_additively(self):
+        account = dict(currency='USD', balance=10000.0, equity=9876.5, leverage=500, company='Customer Markets Ltd')
+        with patch('studio_monitor_probe.tester_state', return_value='idle'):
+            result = deploy.preflight(self.c, mt5=FakeMT5(self.c, account=account))
+        broker = result['broker']
+        self.assertEqual(result['schema_version'], 2)
+        self.assertEqual({k: broker[k] for k in ('currency', 'balance', 'equity', 'leverage', 'company', 'trade_mode')},
+                         dict(account, trade_mode='demo'))
+        self.assertIsInstance(broker['balance'], float); self.assertIsInstance(broker['leverage'], int)
+        # Every version 1 key is still there with its old meaning.
+        self.assertEqual({k: broker[k] for k in ('login', 'server', 'demo', 'connected', 'algo_trading', 'positions', 'orders', 'build')},
+                         dict(login='123456', server='Customer-Demo', demo=True, connected=True, algo_trading=False,
+                              positions=0, orders=0, build=5200))
+        json.dumps(result, allow_nan=False)
+
+    def test_preflight_account_details_tolerate_a_partial_or_odd_readback(self):
+        odd = dict(balance=float('nan'), equity=float('inf'), leverage=True, currency=7, company='\x00\r\n')
+        with patch('studio_monitor_probe.tester_state', return_value='idle'):
+            broker = deploy.preflight(self.c, mt5=FakeMT5(self.c, account=odd))['broker']
+        self.assertEqual({k: broker[k] for k in ('currency', 'balance', 'equity', 'leverage', 'company')},
+                         dict(currency=None, balance=None, equity=None, leverage=None, company=None))
+        with patch('studio_monitor_probe.tester_state', return_value='idle'):
+            broker = deploy.preflight(self.c, mt5=FakeMT5(self.c))['broker']
+        self.assertEqual((broker['currency'], broker['balance'], broker['trade_mode']), (None, None, 'demo'))
+        self.assertEqual(agent_setup.account_details(FakeMT5(self.c), SimpleNamespace(company='A' * 300))['company'], 'A' * 128)
+
+    def test_trade_mode_names_follow_the_sdk_enum(self):
+        class SDK:
+            ACCOUNT_TRADE_MODE_DEMO, ACCOUNT_TRADE_MODE_CONTEST, ACCOUNT_TRADE_MODE_REAL = 10, 11, 12
+        self.assertEqual([agent_setup.trade_mode_name(SDK, v) for v in (10, 11, 12, 0, None)], ['demo', 'contest', 'real', 'unknown', 'unknown'])
+        self.assertEqual([agent_setup.trade_mode_name(object(), v) for v in (0, 1, 2, 3)], ['demo', 'contest', 'real', 'unknown'])
+
+    def test_only_preflight_carries_the_account_details(self):
+        proof = agent_setup.broker_proof(self.c, self.c.session, mt5=FakeMT5(self.c, account=dict(balance=5.0, currency='EUR')))
+        self.assertFalse({'currency', 'balance', 'equity', 'leverage', 'company', 'trade_mode'} & set(proof))
 
 
 if __name__ == '__main__':

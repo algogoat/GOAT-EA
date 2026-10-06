@@ -928,8 +928,13 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
         activity = dict(kind='batch', batch_id=current['job_id'], status=status, queue_status=current['status'],
                         lineage=lineage(root, current['job_id']), pause=None if pause is None else public_pause(pause),
                         **progress)
+        # A batch whose MT5 has run nothing for a while is not "running" (goatai#1885, Banker 2026-10-05).
+        from studio_batch_stall import research_stall
+        stall = research_stall(activity, monitor, journal, now=now, session=session)
+        if stall is not None:
+            activity.update(status='stalled', stall=stall)
     activity['_now'] = now
-    activity['headline'] = headline(activity)
+    activity['headline'] = activity['stall']['plain'] if activity.get('status') == 'stalled' else headline(activity)
     activity.pop('_now', None)
     driver = None
     if journal is not None or activity.get('kind') == 'batch':
@@ -945,7 +950,9 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
                       stopped=journal.get('stopped') if isinstance(journal, dict) else None,
                       cancel_issued=journal.get('cancel_issued') if isinstance(journal, dict) else None,
                       deadline_utc=(datetime.fromtimestamp(journal['deadline_wall'], timezone.utc).isoformat(timespec='seconds')
-                                    if isinstance(journal, dict) and type(journal.get('deadline_wall')) in (int, float) else None))
+                                    if isinstance(journal, dict) and type(journal.get('deadline_wall')) in (int, float) else None),
+                      stall=journal.get('stall') if isinstance(journal, dict) else None,
+                      observe=journal.get('observe') if isinstance(journal, dict) else None)
         unsupervised = (activity.get('queue_status') in ACTIVE and alive is False)
         driver['health'] = ('unsupervised' if unsupervised else 'supervising' if alive else 'idle' if alive is False else 'unknown')
         if unsupervised:

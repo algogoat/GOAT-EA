@@ -10,12 +10,50 @@ concurrency:
   group: controller-tests-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Job layout (goatai#1885). One job used to run everything and hit the 60-minute job limit: the
+# mutation checks alone took ~56 min, so the full unittest step was cut off and runs ended
+# `cancelled`, even on the base branch. Every check below runs exactly as before; only the job that
+# holds it changed. A multi-line step only fails on its last exit code, so the two former
+# two-command steps (Steady Studio panel, Terminal isolation mutations) are now one command per step.
+#
+# controller (check name "controller", unchanged)
+#   setup + native import check, every non-mutation node fixture, and
+#   python -m unittest discover -s controller -p "test_*.py"
+#     node: test_studio_setting_compare, test_studio_control_feedback, test_studio_agent_export_display,
+#           test_batch_cancel_origin, test_optimization_axis_isolation, test_research_outcome,
+#           test_connection_code, test_activation_code_file, test_broker_facts_payload,
+#           test_bias_reader_parity, test_agent_connection_layout, test_studio_steady_panel,
+#           test_dashboard_overview, test_ea_followups, test_studio_derived_report,
+#           test_terminal_isolation
+#
+# controller-mutations (1/3)  ~16-24 min observed
+#   python test_research_outcome_controller_mutations.py   (12-17 min)
+#   python test_evidence_end_export_controller_mutations.py
+#   node   test_bias_reader_parity_mutations.cjs, test_research_outcome_mutations.cjs,
+#          test_studio_steady_panel_mutations.cjs, test_ea_followups_mutations.cjs,
+#          test_terminal_isolation_mutations.cjs
+#   python test_terminal_isolation_controller_mutations.py
+#
+# controller-mutations (2/3)  ~16-22 min observed before the OOS window check; ~24-30 min expected with it
+#   python test_process_query_mutations.py                 (14-18 min)
+#   python test_oos_windows_controller_mutations.py        (61 mutations; 5.4 min locally at Idle, ~8-11 min expected)
+#   python test_holdup_mutations.py, test_lane_driver_mutations.py, test_research_launch_mutations.py
+#   (GOAT-EA#174 moved test_export_qualification_mutations.py and test_driver_backoff_mutations.py to 3/3 to balance)
+#
+# controller-mutations (3/3)  ~13-24 min observed
+#   python test_restore_lane_never_started_mutations.py    (4-14 min)
+#   python test_peer_restart_mutations.py, test_peer_roster_mutations.py,
+#          test_seed_member_failure_mutations.py, test_export_qualification_mutations.py,
+#          test_driver_backoff_mutations.py
+#
+# A new mutation check goes in the shard with the most headroom; keep each shard well under its
+# timeout. Setup steps are identical in both jobs.
+
 jobs:
   controller:
     runs-on: windows-2022
-    # Runs took 21-25 min before the GOAT peers mutation check (16 more focused runs, ~4 min); with the
-    # seed, hold-up and lane mutation checks a full run takes 29-40 min, and a slow runner hit 40 (goatai#1885).
-    timeout-minutes: 60
+    # Setup, fast fixtures and the full unittest suite: ~8-10 min (unittest alone 7 min on a slow runner).
+    timeout-minutes: 30
     env:
       PYTHONUTF8: "1"
       PYTHONNOUSERSITE: "1"
@@ -82,56 +120,141 @@ jobs:
         run: node scripts/test_broker_facts_payload.cjs
       - name: Recorded AI bias reaches the bias logic as live does, at every Bias_threshold (goatai#1885)
         run: node scripts/test_bias_reader_parity.cjs
-      - name: Recorded bias gate mutation check (every guard is load-bearing)
-        run: node scripts/test_bias_reader_parity_mutations.cjs
-      - name: Research outcome mutation check (every EA guard is load-bearing)
-        run: node scripts/test_research_outcome_mutations.cjs
-      - name: Research outcome controller mutation check
-        run: python scripts/test_research_outcome_controller_mutations.py
       - name: Agent connection compact and full layout
         run: node scripts/test_agent_connection_layout.cjs
-      - name: Steady Studio panel (one paint per refresh) and its mutation check
-        run: |
-          node scripts/test_studio_steady_panel.cjs
-          node scripts/test_studio_steady_panel_mutations.cjs
+      - name: Steady Studio panel (one paint per refresh)
+        run: node scripts/test_studio_steady_panel.cjs
       - name: Dashboard overview presentation
         run: node scripts/test_dashboard_overview.cjs
       - name: FU35 cancel stop confirmation and EvidenceEnd export boundary
         run: node scripts/test_ea_followups.cjs
-      - name: FU35 mutation check (every EA guard is load-bearing)
-        run: node scripts/test_ea_followups_mutations.cjs
-      - name: EvidenceEnd controller staging mutation check
-        run: python scripts/test_evidence_end_export_controller_mutations.py
 
       - name: Verify Studio derived Report handoff safety
         run: node scripts/test_studio_derived_report.cjs
       - name: Terminal isolation (per-terminal batch state, per-login credential)
         run: node scripts/test_terminal_isolation.cjs
-      - name: Terminal isolation mutation check (every guard is load-bearing)
-        run: |
-          node scripts/test_terminal_isolation_mutations.cjs
-          python scripts/test_terminal_isolation_controller_mutations.py
-      - name: Protected peer restart mutation check (every refusal is load-bearing)
-        run: python scripts/test_peer_restart_mutations.py
-      - name: GOAT peers mutation check (unknown, moved, unsigned or namespace-sharing MT5 still refuse)
-        run: python scripts/test_peer_roster_mutations.py
-      - name: Seed member failure mutation check (one failure never ends the batch; breaker, cancel and resume rules hold)
-        run: python scripts/test_seed_member_failure_mutations.py
-      - name: Hold-up test mutation check (hash binding, frozen inputs, report reconciliation, refusals, peeks, redaction)
-        run: python scripts/test_holdup_mutations.py
-      - name: Detached lane driver mutation check (caller checks first, one driver, exact durable reservation, foreground cap)
-        run: python scripts/test_lane_driver_mutations.py
-      - name: Research launch mutation check (no KILL_ON_JOB_CLOSE, refuse on assignment failure, trading launches excluded, Idle lock, CPU-cap staging)
-        run: python scripts/test_research_launch_mutations.py
-      - name: Export qualification mutation check (qualifying = passed the run's thresholds; cut-off, log cross-check, redaction)
-        run: python scripts/test_export_qualification_mutations.py
-      - name: Process query mutation check (WMI stall retry, unconfirmed launch, seed unowned doubt)
-        run: python scripts/test_process_query_mutations.py
-      - name: Restore-lane never-started allowance mutation check (exact-attempt settlement records, other demo work refuses, settle-refused-start stays the reviewed proof)
-        run: python scripts/test_restore_lane_never_started_mutations.py
 
       - name: Run every controller fixture test
         env:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
         run: python -m unittest discover -s controller -p "test_*.py" -v
+
+  controller-mutations:
+    name: controller-mutations (${{ matrix.shard }}/3)
+    runs-on: windows-2022
+    # Each shard ran 13-24 min on the slowest observed runners; 45 leaves ~2x headroom.
+    timeout-minutes: 45
+    strategy:
+      # One failing shard must not cancel the others: a cancelled check is a false signal.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      PYTHONUTF8: "1"
+      PYTHONNOUSERSITE: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      FIRESTORE_EMULATOR_HOST: 127.0.0.1:1
+    steps:
+      - name: Check out proposed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Windows x64 Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+          architecture: x64
+
+      - name: Install only the publisher's hash-pinned native wheels
+        run: |
+          python -m pip install --no-index --no-deps --only-binary=:all: --require-hashes -r controller/ci-requirements.txt
+
+      - name: Verify native imports without connecting to MT5
+        shell: python
+        env:
+          # Hosted Windows TEMP defaults to a short-name alias; require canonical fixtures.
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          import sys
+          import tempfile
+          from pathlib import Path
+          import numpy
+          import MetaTrader5
+          assert sys.platform == "win32" and sys.version_info[:2] == (3, 13)
+          fixture_temp = Path(tempfile.gettempdir())
+          assert fixture_temp.is_absolute() and fixture_temp.resolve() == fixture_temp
+          print("Canonical fixture temp", fixture_temp)
+          assert numpy.__version__ == "2.2.6"
+          assert MetaTrader5.__version__ == "5.0.6180"
+          assert numpy.dot(numpy.array([2, 3]), numpy.array([4, 5])).item() == 23
+          print(sys.version)
+          print("Verified NumPy", numpy.__version__, "and MetaTrader5", MetaTrader5.__version__)
+
+      # One command per step: a multi-line pwsh step only fails on its last exit code.
+
+      # ---- Shard 1/3 ----
+      - name: Recorded bias gate mutation check (every guard is load-bearing)
+        if: matrix.shard == 1
+        run: node scripts/test_bias_reader_parity_mutations.cjs
+      - name: Research outcome mutation check (every EA guard is load-bearing)
+        if: matrix.shard == 1
+        run: node scripts/test_research_outcome_mutations.cjs
+      - name: Research outcome controller mutation check
+        if: matrix.shard == 1
+        run: python scripts/test_research_outcome_controller_mutations.py
+      - name: Steady Studio panel mutation check
+        if: matrix.shard == 1
+        run: node scripts/test_studio_steady_panel_mutations.cjs
+      - name: FU35 mutation check (every EA guard is load-bearing)
+        if: matrix.shard == 1
+        run: node scripts/test_ea_followups_mutations.cjs
+      - name: EvidenceEnd controller staging mutation check
+        if: matrix.shard == 1
+        run: python scripts/test_evidence_end_export_controller_mutations.py
+      - name: Terminal isolation mutation check (every guard is load-bearing)
+        if: matrix.shard == 1
+        run: node scripts/test_terminal_isolation_mutations.cjs
+      - name: Terminal isolation controller mutation check (every guard is load-bearing)
+        if: matrix.shard == 1
+        run: python scripts/test_terminal_isolation_controller_mutations.py
+
+      # ---- Shard 2/3 ----
+      - name: Process query mutation check (WMI stall retry, unconfirmed launch, seed unowned doubt)
+        if: matrix.shard == 2
+        run: python scripts/test_process_query_mutations.py
+      - name: Hold-up test mutation check (hash binding, frozen inputs, report reconciliation, refusals, peeks, redaction)
+        if: matrix.shard == 2
+        run: python scripts/test_holdup_mutations.py
+      - name: Detached lane driver mutation check (caller checks first, one driver, exact durable reservation, foreground cap)
+        if: matrix.shard == 2
+        run: python scripts/test_lane_driver_mutations.py
+      - name: Research launch mutation check (no KILL_ON_JOB_CLOSE, refuse on assignment failure, trading launches excluded, Idle lock, CPU-cap staging)
+        if: matrix.shard == 2
+        run: python scripts/test_research_launch_mutations.py
+      - name: OOS window formula mutation check (date math, BOOS/FOOS pass bar and floor, FOOS held out, pre-FOOS metrics, catch-up closed day vs Friday exports, evidence-end stamps)
+        if: matrix.shard == 2
+        run: python scripts/test_oos_windows_controller_mutations.py
+
+      # ---- Shard 3/3 ----
+      - name: Restore-lane never-started allowance mutation check (exact-attempt settlement records, other demo work refuses, settle-refused-start stays the reviewed proof)
+        if: matrix.shard == 3
+        run: python scripts/test_restore_lane_never_started_mutations.py
+      - name: Protected peer restart mutation check (every refusal is load-bearing)
+        if: matrix.shard == 3
+        run: python scripts/test_peer_restart_mutations.py
+      - name: GOAT peers mutation check (unknown, moved, unsigned or namespace-sharing MT5 still refuse)
+        if: matrix.shard == 3
+        run: python scripts/test_peer_roster_mutations.py
+      - name: Seed member failure mutation check (one failure never ends the batch; breaker, cancel and resume rules hold)
+        if: matrix.shard == 3
+        run: python scripts/test_seed_member_failure_mutations.py
+      - name: Export qualification mutation check (qualifying = passed the run's thresholds; cut-off, log cross-check, redaction)
+        if: matrix.shard == 3
+        run: python scripts/test_export_qualification_mutations.py
+      - name: Driver observe backoff mutation check (bounded backoff, pass-cost floor, progress reset, stall report, thread-only priority)
+        if: matrix.shard == 3
+        run: python scripts/test_driver_backoff_mutations.py

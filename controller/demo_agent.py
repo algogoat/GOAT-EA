@@ -73,6 +73,31 @@ class FeedbackUnavailable(ValueError):
     reason = 'ea_feedback_unavailable'
 
 
+class Refusal(ValueError):
+    """A refusal with a stable machine code next to its sentence (goatai#2272 self-heal).
+
+    Still a ValueError everywhere, so the CLI's top-level ``code`` stays ``REFUSED`` (the desktop
+    keys on it); the CLI adds ``refusal_code`` and any ``fields`` beside the unchanged ``error``.
+    """
+    def __init__(self, message, code, **fields):
+        super().__init__(message)
+        self.code, self.fields = code, fields
+
+
+# restore-lane's refusal codes (DEMO-AGENT-TOOLS.md "restore-lane refusal codes"). Append only.
+RESTORE_REFUSAL_CODES = frozenset((
+    'RESTORE_INVALID_ARGUMENT', 'RESTORE_NOT_DEMO_DIRECT', 'RESTORE_NOT_BOUND_TO_RECEIPT', 'RESTORE_NO_BACKUP',
+    'RESTORE_RESEARCH_BOUND', 'RESTORE_STORE_UNREADABLE', 'RESTORE_NO_CUSTOMER_AUTHORITY',
+    'RESTORE_ACTION_LOG_UNREADABLE', 'RESTORE_NO_INSTALL_RECORD', 'RESTORE_EA_DIFFERS_FROM_RECEIPT',
+    'RESTORE_OWNER_DEMO_WORK', 'RESTORE_BATCH_NOT_PROVEN_NEVER_STARTED', 'RESTORE_OWNER_STOP',
+    'RESTORE_ACTIVE_BATCH', 'RESTORE_LIVE_DRIVER', 'RESTORE_SEED_RUNNING', 'RESTORE_OWNER_ENROLLED'))
+# settle-refused-start: how far a settlement of this attempt got, from its self-repair journal's phase
+# (studio_self_repair._repair). It names the last journaled step; the next step may have partly run.
+SETTLE_NATIVE_ACTIONS = {None: 'none', 'prepared': 'none', 'close_issued': 'mt5_close_issued',
+                         'stopped': 'mt5_closed', 'controls_restored': 'controls_restored',
+                         'settled': 'queue_settled', 'complete': 'complete'}
+
+
 def digest(path):
     with Path(path).open('rb') as source:
         return hashlib.file_digest(source, 'sha256').hexdigest()
@@ -91,6 +116,58 @@ def write_json(path, value):
         output.write('\n')
         output.flush(); os.fsync(output.fileno())
     os.replace(temporary, path)
+
+
+def _lane_moved_by(rows):
+    """Who moved this demo_direct session out of the customer lane: 'app_update', 'owner_enrollment' or 'unknown'.
+
+    Read from the demo action log's lane rows in order (``install_build`` and ``restore_lane``), with
+    the evidence row. What each controller wrote (verified against the shipped bundles):
+
+    - beta.15 to beta.18 (GOAT-EA before #143): every install-build forced ``demo_direct`` and logged
+      ``install_build/local_identity_verified`` with only ``ea_sha256``, ``installation_sha256`` and
+      ``session_sha256``: no ``previous_authority_kind``. There was no owner enrollment then, so such
+      a row moving the lane is an app update's flip. The desktop app's update also logs
+      ``install_build/bundle_identity_verified`` (bundle_version) since 2026-09-29; it is reported,
+      not required.
+    - beta.19 on (#143): the row carries ``authority_kind`` and ``previous_authority_kind``, and only
+      ``install-build --enter-demo-lane`` can make it move a session into ``demo_direct``, so a row
+      from another lane (or none) to ``demo_direct`` is an owner enrollment. From this version the
+      row also says ``enter_demo_lane: true``.
+    - ``restore_lane/restored`` and a row that leaves the session off ``demo_direct`` end the stint.
+
+    The first move into the current ``demo_direct`` stint decides, except that an explicit
+    ``enter_demo_lane`` row always makes it the owner's. No row moving the lane (an empty
+    or older log, a legacy session whose update predates the identity row) is 'unknown'.
+    """
+    moved_by, evidence = None, None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        operation, phase = row.get('operation'), row.get('phase')
+        if operation == 'restore_lane' and phase == 'restored':
+            moved_by, evidence = None, None
+        elif operation == 'install_build' and phase == 'local_identity_verified':
+            if 'previous_authority_kind' in row or row.get('enter_demo_lane') is True:
+                if row.get('authority_kind') != 'demo_direct':
+                    moved_by, evidence = None, None
+                # An explicit enrollment is the owner's choice even on a session an old update had
+                # already moved; without the marker only a move into demo_direct is an enrollment.
+                elif row.get('enter_demo_lane') is True or (moved_by is None
+                                                            and row.get('previous_authority_kind') != 'demo_direct'):
+                    moved_by = 'owner_enrollment'
+                    evidence = dict(at=row.get('at'), row='install_build/local_identity_verified',
+                                    previous_authority_kind=row.get('previous_authority_kind'),
+                                    enter_demo_lane=row.get('enter_demo_lane') is True, controller='beta.19+')
+            elif moved_by is None:
+                moved_by = 'app_update'
+                evidence = dict(at=row.get('at'), row='install_build/local_identity_verified',
+                                previous_authority_kind=None, controller='before beta.19 (every install forced demo_direct)',
+                                bundle_version=None)
+        elif (operation == 'install_build' and phase == 'bundle_identity_verified' and moved_by == 'app_update'
+                and evidence.get('bundle_version') is None and isinstance(row.get('bundle_version'), str)):
+            evidence['bundle_version'] = row['bundle_version']
+    return (moved_by or 'unknown'), evidence
 
 
 class DemoAgent:
@@ -610,27 +687,150 @@ class DemoAgent:
         are restored, the native request/permit are archived and the batch is recorded failed /
         retired_never_started. Nothing runs or trades; owner STOP and human control refuse it.
         Reopen MT5 afterwards with launch-terminal.
+
+        Every refusal or error carries ``native_action`` (SETTLE_NATIVE_ACTIONS, from this attempt's
+        journal): ``none`` means MT5 was never touched by a settlement of this attempt.
+
+        An interrupted settlement (Claude-Mac, GOAT-EA#170): once its journal shows MT5 was closed
+        (``close_issued`` or later) and MT5 is not running, a re-run finishes it from the journal
+        with MT5 closed, under the demo account proof the settlement journaled before the close
+        (``account_proof``), instead of a fresh broker readback that a closed MT5 cannot give. The
+        journal's proof must name this session's paired login and server, demo, and the very
+        process the settlement closed; otherwise it refuses and changes nothing.
         """
+        attempt = None
+        try:
+            if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+                raise ValueError('Invalid prepared batch ID')
+            attempt = self._queued_attempt(batch_id)
+            journal = self._settle_journal(batch_id, attempt)
+            phase = journal.get('phase') if isinstance(journal, dict) else None
+            if phase in SETTLE_NATIVE_ACTIONS and SETTLE_NATIVE_ACTIONS[phase] != 'none':
+                running = self.process.inspect()
+                if running is None:
+                    return self._settle_refused_start(batch_id, journal=journal)
+                # A complete settlement replays its retained outcome on a reopened MT5 (the normal path).
+                if phase != 'complete' and running != journal.get('process'):
+                    raise ValueError('A settlement of this attempt already closed MT5 (' + phase + ') and another MT5 '
+                                     'runs now: close it normally, then run settle-refused-start again to finish '
+                                     'the settlement from its journal')
+            return self._settle_refused_start(batch_id)
+        except Exception as exc:
+            try:
+                exc.native_action = self._settle_native_action(batch_id, attempt)
+            except Exception:
+                exc.native_action = 'unknown'
+            raise
+
+    def _queued_attempt(self, batch_id):
+        """Read-only: the queued job's launch attempt, or None (the settlement re-reads it under its scope)."""
+        try:
+            job = next((item for item in self._jobs_readonly() if item.get('job_id') == batch_id), None)
+        except (OSError, sqlite3.Error, ValueError, AttributeError):
+            return None
+        attempt = ((job or {}).get('launch_intent') or {}).get('attempt_id')
+        return attempt if isinstance(attempt, str) and re.fullmatch(r'[a-f0-9]{64}', attempt) else None
+
+    def _settle_journal(self, batch_id, attempt):
+        """Read-only: this batch's settle-refused-start journal (self-repair/<fixed action>/transaction.json).
+
+        None when there is none. Without a known attempt, the one journal whose folder is the fixed
+        action of its own recorded job and attempt. Raises when a journal exists but is unreadable."""
+        from studio_self_repair import refused_start_action_id
+        folder = self.root / 'self-repair'
+        if isinstance(attempt, str):
+            path = folder / refused_start_action_id(batch_id, attempt) / 'transaction.json'
+            return read_json(path) if path.exists() else None
+        found = None
+        for path in sorted(folder.glob('*/transaction.json')) if folder.is_dir() else ():
+            journal = read_json(path)
+            if (isinstance(journal, dict) and journal.get('job_id') == batch_id
+                    and isinstance(journal.get('attempt_id'), str)
+                    and path.parent.name == refused_start_action_id(batch_id, journal['attempt_id'])):
+                found = journal
+        return found
+
+    def _settle_native_action(self, batch_id, attempt):
+        """How far a settlement of this batch's attempt got (SETTLE_NATIVE_ACTIONS); 'unknown' when unreadable."""
         if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
-            raise ValueError('Invalid prepared batch ID')
+            return 'none'
+        try:
+            journal = self._settle_journal(batch_id, attempt)
+        except (OSError, ValueError, UnicodeError):
+            return 'unknown'
+        if journal is None:
+            return 'none'
+        return SETTLE_NATIVE_ACTIONS.get(journal.get('phase') if isinstance(journal, dict) else '', 'unknown')
+
+    @contextmanager
+    def _journaled_settle_scope(self, batch_id, journal):
+        """The demo scope for finishing an interrupted settlement with MT5 closed (GOAT-EA#170 MED).
+
+        The settlement proved the broker-reported demo account on the live process before it closed
+        MT5 and journaled that proof (``account_proof``). That proof stands in for the fresh broker
+        readback only when it names this session's exact paired demo login and server and the very
+        process the settlement closed, for this job's exact attempt and this receipt. Everything else
+        the settlement re-checks itself (owner STOP, human TAKE CONTROL, ownership, revision, the
+        retained evidence and controls); MT5 must stay closed throughout."""
+        from studio_self_repair import refused_start_action_id
+        expected = self._paired_account()
+        proof = journal.get('account_proof')
+        attempt = journal.get('attempt_id')
+        if not isinstance(proof, dict):
+            raise ValueError('The settlement journal holds no demo account proof; MT5 is closed and nothing was changed. '
+                             'Inspect ' + str(self.root / 'self-repair'))
+        if (proof.get('login') != expected['login'] or proof.get('server') != expected['server']
+                or proof.get('demo') is not True or not isinstance(proof.get('process'), dict)
+                or proof.get('process') != journal.get('process')):
+            raise ValueError('The settlement journal\'s account proof does not match this paired demo account and '
+                             'the MT5 it closed; nothing was changed. Inspect ' + str(self.root / 'self-repair'))
+        if (journal.get('job_id') != batch_id or not isinstance(attempt, str)
+                or not re.fullmatch(r'[a-f0-9]{64}', attempt) or journal.get('action_id') != refused_start_action_id(batch_id, attempt)
+                or journal.get('installation_sha256') != sha(self.install)):
+            raise ValueError('The settlement journal belongs to different work; nothing was changed')
+        if self.session.get('authority_kind') != 'demo_direct':
+            raise ValueError('Install and verify the selected V1.49 build before demo Studio control')
+        if digest(self.binary) != self.install['ea_sha256']:
+            raise ValueError('Installed demo EA hash changed')
+        if self.process.inspect() is not None:
+            raise ValueError('MT5 started again; the settlement finishes from its journal only while MT5 stays closed')
+        from goat_studio import Controller
+        from studio_research_authority import demo_agent_scope, operation
+        with operation('settle-refused-start'), demo_agent_scope(
+                root=self.root, installation_sha256=sha(self.install),
+                account=dict(login=proof['login'], server=proof['server']), job_id=batch_id):
+            controller = Controller(self.installation_path).open()
+            try:
+                yield controller, proof
+            finally:
+                controller.store.close()
+
+    def _settle_refused_start(self, batch_id, *, journal=None):
         from studio_self_repair import settle_refused_start, refused_start_native_action
         # No terminal lock here: the settlement takes it itself (studio_self_repair._repair).
-        with self._studio('settle-refused-start', idle=True, owner_required=False,
-                          job_id=batch_id) as (controller, broker):
+        scope = (self._journaled_settle_scope(batch_id, journal) if journal is not None else
+                 self._studio('settle-refused-start', idle=True, owner_required=False, job_id=batch_id))
+        with scope as (controller, broker):
             attempt = (controller.job(batch_id).get('launch_intent') or {}).get('attempt_id')
-            self._append('settle_refused_start', 'intent', batch_id=batch_id, attempt_id=attempt, broker=broker)
+            if journal is not None and attempt != journal.get('attempt_id'):
+                raise ValueError('The settlement journal belongs to a different attempt; nothing was changed')
+            resumed = dict(account_proof_source='journal', journal_phase=journal.get('phase')) if journal is not None else {}
+            self._append('settle_refused_start', 'intent', batch_id=batch_id, attempt_id=attempt,
+                         broker=None if journal is not None else broker, **resumed)
             try:
                 result = settle_refused_start(controller, self.installation_path, batch_id, process=self.process)
             except Exception as exc:
                 native = isinstance(attempt, str) and refused_start_native_action(self.root, batch_id, attempt)
                 self._append('settle_refused_start', 'failed' if native else 'refused', batch_id=batch_id,
-                             attempt_id=attempt, native_action=bool(native), error=str(exc)[:500])
+                             attempt_id=attempt, native_action=bool(native),
+                             native_step=self._settle_native_action(batch_id, attempt), error=str(exc)[:500])
                 raise
             self._append('settle_refused_start', 'settled', batch_id=batch_id, attempt_id=attempt,
-                         record_path=result['record_path'], action_id=result['record']['action_id'])
+                         record_path=result['record_path'], action_id=result['record']['action_id'], **resumed)
             return dict(status='settled_never_started', batch_id=batch_id, attempt_id=attempt,
                         receipt_evidence=result.get('cancel_evidence'), record_path=result['record_path'],
                         repair=result.get('repair'), mt5_closed=True, native_cancellation_claimed=False,
+                        native_action='complete', resumed_from_journal=journal is not None,
                         next_action='Nothing ran or traded. MT5 was closed normally: reopen it with launch-terminal. '
                                     'Prepare a new batch for the same members; never restart this attempt.')
 
@@ -1224,9 +1424,12 @@ class DemoAgent:
             session['installation_sha256'] = sha(checked)
             write_json(self.root / 'session.json', session)
         self.install, self.session = checked, session
+        # previous_authority_kind is what tells an owner enrollment from an old app update's flip
+        # (_lane_moved_by); enter_demo_lane names the enrollment outright from this version on.
         self._append('install_build', 'local_identity_verified', ea_sha256=expected_sha256,
                      installation_sha256=sha(checked), session_sha256=sha(session),
-                     authority_kind=session.get('authority_kind'), previous_authority_kind=lane)
+                     authority_kind=session.get('authority_kind'), previous_authority_kind=lane,
+                     **(dict(enter_demo_lane=True) if enter_demo_lane else {}))
 
     def _lane_restore_review(self):
         """Read-only: prove this demo_direct session is a customer session an app update moved.
@@ -1248,9 +1451,10 @@ class DemoAgent:
         if lane == 'native_human_control':
             return dict(status='already_customer_lane', authority_kind=lane)
         if lane != 'demo_direct':
-            raise ValueError('restore-lane returns only a demo_direct session to the customer lane')
+            raise Refusal('restore-lane returns only a demo_direct session to the customer lane', 'RESTORE_NOT_DEMO_DIRECT')
         if session.get('installation_sha256') != sha(self.install):
-            raise ValueError('Session is not bound to the current receipt; finish or retry the update first')
+            raise Refusal('Session is not bound to the current receipt; finish or retry the update first',
+                          'RESTORE_NOT_BOUND_TO_RECEIPT')
         identity = {key: value for key, value in session.items() if key not in LANE_IDENTITY_EXCLUDED}
         # Customer-lane evidence: a retained backup of this exact session on native_human_control, or a
         # legacy backup written before sessions carried authority_kind at all (studio bootstrap sessions
@@ -1275,20 +1479,22 @@ class DemoAgent:
         evidence_kind = 'customer-lane-backup' if evidence is not None else 'legacy-session-without-authority-kind'
         evidence = evidence if evidence is not None else legacy
         if evidence is None:
-            raise ValueError('No retained customer-lane backup of this exact session; restore-lane changes nothing')
+            raise Refusal('No retained customer-lane backup of this exact session; restore-lane changes nothing',
+                          'RESTORE_NO_BACKUP')
         if (self.root / 'research-authority.json').exists():
-            raise ValueError('A typed research continuation is bound here; restore-lane changes nothing')
+            raise Refusal('A typed research continuation is bound here; restore-lane changes nothing', 'RESTORE_RESEARCH_BOUND')
         binding = packed(dict(terminal_id=session['terminal_id'], run_id=session['run_id']))
         try:
             with closing(sqlite3.connect((self.root / 'studio.sqlite').as_uri() + '?mode=ro', uri=True)) as db:
                 row = db.execute('SELECT kind,provenance FROM studio_authorities WHERE binding=?', (binding,)).fetchone()
                 queue = db.execute('SELECT jobs FROM studio_queues WHERE binding=?', (binding,)).fetchone()
         except sqlite3.Error as exc:
-            raise ValueError('Controller store unreadable; restore-lane changes nothing') from exc
+            raise Refusal('Controller store unreadable; restore-lane changes nothing', 'RESTORE_STORE_UNREADABLE') from exc
         if (row is None or row[0] != 'native_human_control'
                 or json.loads(row[1]) != dict(kind='native_human_control', binding=json.loads(binding))):
-            raise ValueError('The controller store holds no customer-lane authority for this session; restore-lane changes nothing')
-        updates, work, batches, settling = 0, set(), set(), {}
+            raise Refusal('The controller store holds no customer-lane authority for this session; restore-lane changes nothing',
+                          'RESTORE_NO_CUSTOMER_AUTHORITY')
+        updates, work, batches, settling, lane_rows = 0, set(), set(), {}, []
         log = self.state_root / 'actions.jsonl'
         if log.is_file():
             with log.open(encoding='utf-8') as rows:
@@ -1298,11 +1504,14 @@ class DemoAgent:
                     try:
                         entry = json.loads(line)
                     except ValueError as exc:
-                        raise ValueError('Demo action log unreadable; restore-lane changes nothing') from exc
+                        raise Refusal('Demo action log unreadable; restore-lane changes nothing',
+                                      'RESTORE_ACTION_LOG_UNREADABLE') from exc
                     operation = entry.get('operation') if isinstance(entry, dict) else None
                     if operation in UPDATE_OPERATIONS:
                         if operation == 'install_build' and entry.get('phase') == 'local_identity_verified':
                             updates += 1
+                        if operation in ('install_build', 'restore_lane'):
+                            lane_rows.append(entry)
                         continue
                     batch = entry.get('batch_id')
                     if (operation not in NEVER_STARTED_BATCH_OPERATIONS or not isinstance(batch, str)
@@ -1326,35 +1535,54 @@ class DemoAgent:
                     else:
                         batches.add(batch)
         batches.update(batch for batch, open_ in settling.items() if open_)
+        # Who moved the session: every refusal from here on says so too, so a caller can stand down
+        # on an owner's terminal before settling anything (goatai#2272 self-heal).
+        moved_by, moved_by_evidence = _lane_moved_by(lane_rows)
+        known = dict(moved_by=moved_by)
         if not updates:
             # A legacy session whose app update ran on a controller that predated the identity row
             # (goatai support edc7e808): accepted only when the evidence itself is a legacy backup,
             # the store already proved native_human_control above, every logged action is an update
             # step (checked below), and the receipt's EA hash is the EX5 actually installed.
             if evidence_kind != 'legacy-session-without-authority-kind':
-                raise ValueError('No retained install-build record for this session; restore-lane changes nothing')
+                raise Refusal('No retained install-build record for this session; restore-lane changes nothing',
+                              'RESTORE_NO_INSTALL_RECORD', **known)
             if self.install.get('ea_sha256') != digest(self.binary):
-                raise ValueError('No retained install-build record and the installed EA differs from the receipt; restore-lane changes nothing')
+                raise Refusal('No retained install-build record and the installed EA differs from the receipt; '
+                              'restore-lane changes nothing', 'RESTORE_EA_DIFFERS_FROM_RECEIPT', **known)
             evidence_kind = 'legacy-session-without-authority-kind-or-identity-row'
         if work:
-            raise ValueError('This session has done owner demo-lane work (' + ', '.join(sorted(work))
-                             + '); restore-lane only undoes an app update\'s lane change')
+            raise Refusal('This session has done owner demo-lane work (' + ', '.join(sorted(work))
+                          + '); restore-lane only undoes an app update\'s lane change', 'RESTORE_OWNER_DEMO_WORK',
+                          operations=sorted(work), **known)
         jobs = json.loads(queue[0]) if queue else []
-        settled = {batch: self._never_started_settlement(batch, jobs) for batch in sorted(batches)}
+        settled = {}
+        for batch in sorted(batches):
+            try:
+                settled[batch] = self._never_started_settlement(batch, jobs)
+            except ValueError as exc:
+                raise Refusal(str(exc), 'RESTORE_BATCH_NOT_PROVEN_NEVER_STARTED', batch_id=batch, **known) from None
         if (self.state_root / 'STOP').exists():
-            raise ValueError('Owner STOP is set; restore-lane changes nothing')
+            raise Refusal('Owner STOP is set; restore-lane changes nothing', 'RESTORE_OWNER_STOP', **known)
         active = [job['job_id'] for job in jobs if job['status'] in ACTIVE_NATIVE_STATUSES]
         if active:
-            raise ValueError('Batch ' + ', '.join(active) + ' is active; restore-lane waits for it to finish')
+            raise Refusal('Batch ' + ', '.join(active) + ' is active; restore-lane waits for it to finish',
+                          'RESTORE_ACTIVE_BATCH', batch_ids=active, **known)
         for worker in (self.state_root / 'workers').glob('*.json'):
             if self._worker_alive(read_json(worker)):
-                raise ValueError('A live demo batch driver owns this terminal; restore-lane waits')
+                raise Refusal('A live demo batch driver owns this terminal; restore-lane waits', 'RESTORE_LIVE_DRIVER', **known)
         if self._active_seed() is not None:
-            raise ValueError('A seed or catch-up run holds this terminal; restore-lane waits for it to finish')
+            raise Refusal('A seed or catch-up run holds this terminal; restore-lane waits for it to finish',
+                          'RESTORE_SEED_RUNNING', **known)
+        next_action = 'Run restore-lane --apply. It rewrites only this session\'s lane; MT5, the EA and the queue are untouched.'
+        if moved_by == 'owner_enrollment':
+            next_action = ('The owner enrolled this terminal in the demo lane (install-build --enter-demo-lane). Leave it '
+                           'there unless the owner asks: only restore-lane --apply --owner-confirmed returns it to the '
+                           'customer lane. It rewrites only this session\'s lane; MT5, the EA and the queue are untouched.')
         return dict(status='ready_to_restore', authority_kind=lane, restores_to='native_human_control',
                     evidence=str(evidence), evidence_kind=evidence_kind, session_sha256=sha(session),
-                    never_started_batches=settled,
-                    next_action='Run restore-lane --apply. It rewrites only this session\'s lane; MT5, the EA and the queue are untouched.')
+                    never_started_batches=settled, moved_by=moved_by, moved_by_evidence=moved_by_evidence,
+                    owner_confirmation_required=moved_by == 'owner_enrollment', next_action=next_action)
 
     def _never_started_settlement(self, batch_id, jobs):
         """Read-only, for restore-lane: prove this batch's only start never ran, from its settlement record.
@@ -1406,12 +1634,18 @@ class DemoAgent:
                 return 'settled_refused_start'
         raise ValueError(refusal)
 
-    def restore_lane(self, apply=False):
+    def restore_lane(self, apply=False, owner_confirmed=False):
         """Preview, then with ``apply`` return a customer session an app update moved into the owner
         demo lane (demo_direct) to native_human_control. Local session file only: never touches MT5,
-        the EA, the receipt or the controller store. The previous session bytes are kept in backups."""
+        the EA, the receipt or the controller store. The previous session bytes are kept in backups.
+
+        The preview reports ``moved_by`` (_lane_moved_by). A session the owner enrolled
+        (``owner_enrollment``) is applied only with ``owner_confirmed`` (``--owner-confirmed``: a
+        person or agent asking deliberately); self-heal applies only ``app_update``."""
         if type(apply) is not bool:
-            raise ValueError('restore-lane --apply must be boolean')
+            raise Refusal('restore-lane --apply must be boolean', 'RESTORE_INVALID_ARGUMENT')
+        if type(owner_confirmed) is not bool:
+            raise Refusal('restore-lane --owner-confirmed must be boolean', 'RESTORE_INVALID_ARGUMENT')
         review = self._lane_restore_review()
         if not apply or review['status'] == 'already_customer_lane':
             return review
@@ -1419,6 +1653,10 @@ class DemoAgent:
             review = self._lane_restore_review()
             if review['status'] == 'already_customer_lane':
                 return review
+            if review['moved_by'] == 'owner_enrollment' and not owner_confirmed:
+                raise Refusal('The owner enrolled this terminal in the demo lane (install-build --enter-demo-lane); '
+                              'restore-lane --apply changes nothing without --owner-confirmed',
+                              'RESTORE_OWNER_ENROLLED', moved_by=review['moved_by'])
             current = self.root / 'session.json'
             backup = self.state_root / 'backups' / ('session-' + digest(current) + '.json')
             if not backup.exists():
@@ -1430,10 +1668,12 @@ class DemoAgent:
             self.session = restored
             self._append('restore_lane', 'restored', previous_authority_kind=review['authority_kind'],
                          authority_kind='native_human_control', evidence=review['evidence'],
-                         evidence_kind=review['evidence_kind'],
+                         evidence_kind=review['evidence_kind'], moved_by=review['moved_by'],
+                         owner_confirmed=owner_confirmed,
                          demo_direct_backup=str(backup), session_sha256=sha(restored))
             return dict(status='restored', authority_kind='native_human_control',
                         previous_authority_kind=review['authority_kind'], evidence=review['evidence'],
+                        moved_by=review['moved_by'], owner_confirmed=owner_confirmed,
                         demo_direct_backup=str(backup), session_sha256=sha(restored),
                         next_action='Customer-lane tools (goat.exe studio, suite.closeTerminal) work again. Nothing in MT5 changed.')
 
@@ -1878,15 +2118,16 @@ class DemoAgent:
                                now=self.clock(), process=self._process_or_unknown(), jobs=jobs,
                                worker_alive=self._worker_alive, owner_stop=(self.state_root / 'STOP').exists())
 
-    def research_queue(self, finished=None):
-        """Read-only: every batch, seed hunt and catch-up of this installation, one row each (goatai#2240)."""
+    def research_queue(self, finished=None, job_ids=None):
+        """Read-only: every batch, seed hunt and catch-up of this installation, one row each (goatai#2240).
+        ``job_ids`` also lists those queue batches however long ago they ended."""
         from studio_research_queue import FINISHED_DEFAULT, research_queue
         try:
             jobs = self._jobs_readonly()
         except (OSError, sqlite3.Error, ValueError):
             jobs = None   # research_queue reports the queue error itself
         return research_queue(root=self.root, install=self.install, session=self.session, now=self.clock(), jobs=jobs,
-                              finished=FINISHED_DEFAULT if finished is None else finished)
+                              finished=FINISHED_DEFAULT if finished is None else finished, job_ids=job_ids)
 
     def _lane_kind(self, batch_id):
         """'seed' or 'catchup' when this ID names a runner batch (not a native queue job), else None."""
@@ -2934,6 +3175,9 @@ def main(argv=None):
     restore = commands.add_parser('restore-lane', help='Preview, then --apply: return a customer session an app update '
                                   'moved into the owner demo lane back to native_human_control; nothing native runs')
     restore.add_argument('--apply', action='store_true')
+    restore.add_argument('--owner-confirmed', action='store_true',
+                         help='With --apply: also return a session the owner enrolled (install-build --enter-demo-lane; '
+                              'preview moved_by owner_enrollment). Only when a person or agent asks deliberately')
     prepared = commands.add_parser('prepare-batch')
     prepared.add_argument('--batch-id', required=True)
     prepared.add_argument('--plan', type=Path, required=True)
@@ -2958,6 +3202,9 @@ def main(argv=None):
     commands.add_parser('research-status', help='Read-only lane status: activity, pace/ETA, pause, driver, disk, monitor')
     queue = commands.add_parser('research-queue', help='Read-only queue: every batch, seed hunt and catch-up, one row each')
     queue.add_argument('--finished', type=int, help='Ended jobs to keep, most recent first (0..50, default 5)')
+    queue.add_argument('--job-id', action='append', dest='job_ids',
+                       help='Also list this queue batch however long ago it ended (repeatable, up to 20); '
+                            'for example the batch a restore-lane refusal names')
     pause = commands.add_parser('batch-pause', help='Pause a running batch or seed hunt at its next safe point')
     pause.add_argument('--batch-id', required=True)
     pause.add_argument('--immediate', action='store_true', help='Skip the member-start wait; the monitor must still be reporting')
@@ -3092,13 +3339,13 @@ def main(argv=None):
             require_running=args.require_running,linked_login=args.linked_login,
             bundle_version=args.bundle_version,agent_guide_path=args.agent_guide_path,
             enter_demo_lane=args.enter_demo_lane,credential_recovery=args.credential_recovery)
-        elif args.command == 'restore-lane': result = agent.restore_lane(args.apply)
+        elif args.command == 'restore-lane': result = agent.restore_lane(args.apply, owner_confirmed=args.owner_confirmed)
         elif args.command == 'prepare-batch': result = agent.prepare_batch(args.batch_id, args.plan)
         elif args.command == 'run-batch': result = agent.run_batch(args.batch_id, args.max_seconds)
         elif args.command == 'resume-batch': result = agent.resume_batch(args.batch_id)
         elif args.command == '_drive-batch': result = agent._drive_batch(args.batch_id, args.nonce, args.max_seconds, args.pause_seconds)
         elif args.command == 'research-status': result = agent.research_status()
-        elif args.command == 'research-queue': result = agent.research_queue(args.finished)
+        elif args.command == 'research-queue': result = agent.research_queue(args.finished, job_ids=args.job_ids)
         elif args.command == 'batch-pause': result = agent.batch_pause(args.batch_id, immediate=args.immediate)
         elif args.command == 'batch-resume': result = agent.batch_resume(args.batch_id, new_batch_id=args.new_batch_id,
             resume_token=args.resume_token, max_seconds=args.max_seconds, clear_stop=args.clear_stop,
@@ -3149,6 +3396,11 @@ def main(argv=None):
         if isinstance(exc, FeedbackUnavailable):
             # The one refusal the desktop may answer with credential recovery; `code` stays REFUSED.
             error.update(reason=FeedbackUnavailable.reason)
+        if isinstance(exc, Refusal):
+            # The stable machine code sits beside the unchanged sentence; `code` stays REFUSED.
+            error.update({key: value for key, value in exc.fields.items() if key not in error}, refusal_code=exc.code)
+        if isinstance(getattr(exc, 'native_action', None), str):
+            error.update(native_action=exc.native_action)   # settle-refused-start: how far MT5 was touched
         from studio_heldout import HeldOutRefused
         if isinstance(exc, HeldOutRefused):
             error.update(code=exc.code, plain=exc.plain, locked_windows=exc.locked_windows)

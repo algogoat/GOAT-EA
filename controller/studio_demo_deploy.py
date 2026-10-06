@@ -45,6 +45,9 @@ READY_INSTRUCTION = 'Turn on Algo Trading in MT5 to start trading (demo)'
 DASHBOARD_WAIT_SECONDS = 180  # licence check and dashboard init after the relaunch
 ACK_WAIT_SECONDS = 90
 AUDIT_WAIT_SECONDS = 90
+# 2: additive only. broker also carries currency, balance, equity, leverage, company and
+# trade_mode (studio_agent_setup.account_details); every version 1 key is unchanged.
+PREFLIGHT_SCHEMA_VERSION = 2
 
 
 def set_identity(file_name):
@@ -265,7 +268,7 @@ def preflight(controller, *, mt5=None, process=None):
     from studio_seed_process import WindowsSeedProcess
     session, _ = session_state(controller)
     process = process or WindowsSeedProcess(controller)
-    result = dict(schema_version=1, account=dict(session['account']), demo_only_binding=session.get('demo_only') is True,
+    result = dict(schema_version=PREFLIGHT_SCHEMA_VERSION, account=dict(session['account']), demo_only_binding=session.get('demo_only') is True,
                   protected_account=session['account']['login'] in PROTECTED_ACCOUNTS,
                   ea_version=controller.install['ea_version'], ea_sha256=controller.install['ea_sha256'],
                   existing_dashboard=paths(controller, '0' * 32)['state'].exists(), deployment=current_deployment(controller),
@@ -281,7 +284,7 @@ def preflight(controller, *, mt5=None, process=None):
         result['broker_error'] = 'The selected MT5 is not running; open it on the demo account.'
         return result
     try:
-        proof = broker_proof(controller, session, mt5=mt5, require_flat=False)
+        proof = broker_proof(controller, session, mt5=mt5, require_flat=False, details=True)
         result['broker'] = proof
         try:
             result['tester_state'] = tester_state(running['pid'], proof['build'])

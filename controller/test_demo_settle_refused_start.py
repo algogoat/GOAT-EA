@@ -217,6 +217,137 @@ class JanRefusedStartTests(repair_fixtures.SelfRepairFixture):
             self.agent.settle_refused_start('original')
         self.process.close.assert_not_called()
 
+    # ------------------------------------------------------------------ native_action (goatai#2272 gap 2)
+
+    def settle_cli(self, batch_id='original'):
+        import demo_agent
+        with patch('demo_agent.DemoAgent', return_value=self.agent), patch('builtins.print') as printed:
+            code = demo_agent.main(['--installation', str(self.receipt), 'settle-refused-start', '--batch-id', batch_id])
+        return code, json.loads(printed.call_args.args[0])
+
+    def journal_path(self):
+        return self.c.root / 'self-repair' / refused_start_action_id('original', self.attempt) / 'transaction.json'
+
+    def interrupt(self, where):
+        """A settlement that stops after closing MT5 ('close': the CLI died once the close was issued)
+        or after restoring the controls ('controls': the result write failed)."""
+        if where == 'close':
+            def close(identity):
+                self.current = None
+                raise RuntimeError('settle-refused-start killed after the close')
+            self.process.close.side_effect = close
+            code, error = self.settle_cli()
+            self.assertEqual((code, error['code'], error['native_action']), (1, 'INTERNAL_ERROR', 'mt5_close_issued'))
+            self.assertEqual(read_json(self.journal_path())['phase'], 'close_issued')
+        else:
+            import studio_self_repair
+            original = studio_self_repair.write_json
+
+            def write(path, value):
+                if Path(path).name == 'result.json':
+                    raise OSError('the result write failed')
+                return original(path, value)
+            with patch('studio_self_repair.write_json', side_effect=write):
+                code, error = self.settle_cli()
+            self.assertEqual((code, error['code'], error['native_action']), (1, 'IO_ERROR', 'controls_restored'))
+        self.process.close.assert_called_once_with(self.native['process'])
+        self.process.close.side_effect = lambda identity: self.fail('a finished close is never repeated')
+        self.assertIsNone(self.process.inspect())
+        self.assertEqual(self.job('original'), self.before)                 # nothing recorded yet
+        last = self.log()[-1]
+        self.assertEqual((last['phase'], last['native_action']), ('failed', True))
+
+    def test_native_action_says_none_for_a_refusal_before_mt5_was_touched(self):
+        (self.gate / ('consumed-' + self.attempt + '.json')).write_bytes((self.gate / 'request.json').read_bytes())
+        code, error = self.settle_cli()
+        self.assertEqual((code, error['code'], error['native_action']), (1, 'REFUSED', 'none'))
+        self.assertIn('consum', error['error'])
+        self.process.close.assert_not_called()
+        last = self.log()[-1]
+        self.assertEqual((last['phase'], last['native_action'], last['native_step']), ('refused', False, 'none'))
+        code, error = self.settle_cli('../escape')
+        self.assertEqual((code, error['error'], error['native_action']), (1, 'Invalid prepared batch ID', 'none'))
+        with patch.object(self.agent, '_broker', side_effect=ValueError('Selected MT5 is not running; broker demo mode cannot be proven')):
+            code, error = self.settle_cli()
+        self.assertEqual((code, error['native_action']), (1, 'none'))
+
+    def test_native_action_names_the_last_journaled_step(self):
+        from demo_agent import SETTLE_NATIVE_ACTIONS
+        self.assertEqual(self.agent._settle_native_action('original', self.attempt), 'none')
+        self.settle()
+        path = self.journal_path()
+        complete = read_json(path)
+        for phase, expected in (('prepared', 'none'), ('close_issued', 'mt5_close_issued'), ('stopped', 'mt5_closed'),
+                                ('controls_restored', 'controls_restored'), ('settled', 'queue_settled'),
+                                ('complete', 'complete'), ('mystery', 'unknown')):
+            write_json(path, complete | dict(phase=phase))
+            self.assertEqual(self.agent._settle_native_action('original', self.attempt), expected)
+            self.assertEqual(self.agent._settle_native_action('original', None), expected, 'found without the queue too')
+        self.assertEqual(set(SETTLE_NATIVE_ACTIONS.values()) | {'unknown'},
+                         {'none', 'mt5_close_issued', 'mt5_closed', 'controls_restored', 'queue_settled', 'complete', 'unknown'})
+        path.write_text('{torn', encoding='utf-8')
+        self.assertEqual(self.agent._settle_native_action('original', self.attempt), 'unknown')
+
+    # ------------------------------------------------------------------ interrupted settle (GOAT-EA#170 MED)
+
+    def finish_interrupted(self):
+        # MT5 is closed, so no broker readback is possible; the journal's proof stands in for it.
+        with patch.object(self.agent, '_broker', side_effect=ValueError('Selected MT5 is not running; broker demo mode cannot be proven')):
+            result = self.agent.settle_refused_start('original')
+        self.assertEqual((result['status'], result['resumed_from_journal'], result['native_action']),
+                         ('settled_never_started', True, 'complete'))
+        self.process.close.assert_called_once(); self.process.start.assert_not_called()
+        job = self.job('original')
+        self.assertEqual((job['status'], job['completion']['classification']), ('failed', 'retired_never_started'))
+        self.assertFalse((self.base / 'agent-native-control-owner.json').exists())
+        self.assertTrue(Path(result['record_path']).is_file())
+        self.assertEqual(read_json(self.journal_path())['phase'], 'complete')
+        rows = [row for row in self.log() if row['operation'] == 'settle_refused_start']
+        self.assertEqual([row['phase'] for row in rows], ['intent', 'failed', 'intent', 'settled'])
+        self.assertEqual((rows[2]['account_proof_source'], rows[2]['broker']), ('journal', None))
+        self.assertEqual(self.agent.restore_lane()['never_started_batches'], {'original': 'settled_refused_start'})
+
+    def test_a_settle_interrupted_after_the_close_finishes_with_mt5_closed(self):
+        self.interrupt('close')
+        self.finish_interrupted()
+
+    def test_a_settle_interrupted_after_restoring_the_controls_finishes_with_mt5_closed(self):
+        self.interrupt('controls')
+        self.finish_interrupted()
+
+    def test_an_interrupted_settle_refuses_without_a_matching_journaled_account_proof(self):
+        self.interrupt('close')
+        path = self.journal_path()
+        journal = read_json(path)
+        proof = journal['account_proof']
+        for label, changed in (('missing', {k: v for k, v in journal.items() if k != 'account_proof'}),
+                               ('not a record', journal | dict(account_proof='123456')),
+                               ('login', journal | dict(account_proof=proof | dict(login='999999'))),
+                               ('server', journal | dict(account_proof=proof | dict(server='Other-Demo'))),
+                               ('not demo', journal | dict(account_proof=proof | dict(demo=False))),
+                               ('process', journal | dict(account_proof=proof | dict(process=dict(pid=45, created_utc='fixed'))))):
+            with self.subTest(label):
+                write_json(path, changed)
+                with patch.object(self.agent, '_broker', side_effect=AssertionError('no broker with MT5 closed')), \
+                        self.assertRaisesRegex(ValueError, 'account proof') as refused:
+                    self.agent.settle_refused_start('original')
+                self.assertEqual(refused.exception.native_action, 'mt5_close_issued')
+                self.assertEqual(self.job('original'), self.before)
+                self.assertTrue((self.base / 'agent-native-control-owner.json').exists())
+                self.assertEqual(read_json(path)['phase'], 'close_issued')
+        write_json(path, journal)
+        self.assertEqual(self.agent.settle_refused_start('original')['status'], 'settled_never_started')
+
+    def test_an_interrupted_settle_waits_for_a_reopened_mt5_to_close(self):
+        self.interrupt('close')
+        self.current = dict(pid=99, created_utc='someone reopened it')
+        with self.assertRaisesRegex(ValueError, 'another MT5 runs now') as refused:
+            self.agent.settle_refused_start('original')
+        self.assertEqual(refused.exception.native_action, 'mt5_close_issued')
+        self.assertEqual(self.job('original'), self.before)
+        self.current = None
+        self.assertEqual(self.agent.settle_refused_start('original')['status'], 'settled_never_started')
+
     # ------------------------------------------------------------------ restore-lane allowance
 
     def test_a_batch_that_activated_still_refuses(self):

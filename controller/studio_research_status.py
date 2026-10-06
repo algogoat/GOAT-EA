@@ -297,10 +297,13 @@ def _no_fwd_eligible_outcome(values, outcome):
     o, x = outcome, extra
     span, passes, kept = o['window'], o['passes'], x['back_rows']
     below = _below_score_facts(values)
-    if (passes <= 0 or not 1 <= kept <= o['profitable'] <= passes or not kept <= o['traded'] <= passes
-            or o['malformed'] != 0 or o['complete'] != '1' or not 1 <= o['forward_rows'] <= passes
-            or x['forward_matched'] != kept or not 1 <= x['score_qualifying_rows'] <= kept
-            or not 0 < x['score_threshold'] < float('inf') or not x['score_threshold'] <= x['best_combined_score'] < float('inf')
+    # Written apart from _no_qualifier_outcome's checks (same rules), so each mutation anchor stays unique.
+    proof = (passes > 0 and 1 <= kept and kept <= o['profitable'] and o['profitable'] <= passes
+             and kept <= o['traded'] and o['traded'] <= passes and o['complete'] == '1' and o['malformed'] == 0
+             and 1 <= o['forward_rows'] and o['forward_rows'] <= passes and kept == x['forward_matched']
+             and (0 < x['score_threshold'] < float('inf')))
+    if (not proof or not 1 <= x['score_qualifying_rows'] <= kept
+            or not x['score_threshold'] <= x['best_combined_score'] < float('inf')
             or o['min_trades'] <= 0 or not all(_DATE.fullmatch(span[key]) for key in ('start', 'end', 'forward_end'))
             or not span['start'] < span['end'] < span['forward_end']
             or below is None or below['result'] not in ('exported', 'lost', 'none', 'failed')
@@ -416,7 +419,7 @@ def no_edge_summary(symbol, timeframe, outcome):
                 + format(outcome['score_threshold'], 'g') + '+ but none was profitable in the forward period to ' + window['forward_end']
                 + ' with enough trades; ' + ('its best profitable pass was kept for research only (below score)'
                                              if below.get('result') == 'exported' else 'nothing was exported (no FWD-eligible pass)')
-                + '. A result for this window only, not a verdict on the strategy.')
+                + '. ' + 'A result for this window only, not a verdict on the strategy.')
     if outcome['outcome'] == NO_QUALIFYING_ROWS:
         kept = outcome['back_rows']
         return (symbol + ' ' + timeframe + ': tested, nothing qualified in ' + window['start'] + ' to ' + window['end'] + ' — '

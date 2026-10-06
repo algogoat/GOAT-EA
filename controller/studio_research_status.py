@@ -145,11 +145,10 @@ def monitor_state(install, session, local, *, now, process='unknown'):
         if reason in ACTIVATION_HELP:
             message, fix = ACTIVATION_HELP[reason]
             return block('unlicensed', 'monitor_' + reason, message, fix)
-        replaced = any(item['reason'] == 'approved' and item['observed_utc'] is not None
-                       and (modified is None or item['observed_utc'] >= modified - 5) for item in others)
-        if replaced:
-            return block('unlicensed', 'monitor_unlicensed',
-                         "This terminal's GOAT sign-in was replaced by another terminal — re-pair it.", REPAIR_FIX)
+        # Another terminal's approval is never the cause: V1.49 isolation builds keep one
+        # credential slot per login, terminal and build (INV-CRED-01/02), so pairing one
+        # terminal cannot replace this one's. The usual cause is GOAT refusing the stored
+        # credential (e.g. the admission of the build that minted it changed).
         return block('unlicensed', 'monitor_unlicensed',
                      "This terminal's GOAT EA is waiting for its sign-in to be approved — re-pair it.", REPAIR_FIX)
     if age is None:

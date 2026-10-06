@@ -312,6 +312,25 @@ bool GOATDeviceActivationParseStart(const string response,string &activation_id,
           && GOATIsSafeApiBearerToken(credential_candidate));
   }
 
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+// INV-CRED-02: this build's own credential slot name (GOATCredentialSlotSuffix). Only
+// [A-Za-z0-9-] are kept, so the file name still matches every credential filter
+// (api-bearer(-[A-Za-z0-9_-]+)?.token); anything else becomes '_'.
+string GOATCredentialBuildToken(void)
+  {
+   string build=GOAT_BUILD_ID,token="";
+   int length=StringLen(build);
+   if(length<1 || length>64) return "";
+   for(int i=0;i<length;i++)
+     {
+      ushort c=StringGetCharacter(build,i);
+      bool keep=((c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || c=='-');
+      token+=(keep ? ShortToString(c) : "_");
+     }
+   return token;
+  }
+#endif
+
 bool GOATDeviceActivationWriteCredential(void)
   {
    if(StringLen(g_GOATDeviceActivationCandidate)!=72
@@ -323,12 +342,14 @@ bool GOATDeviceActivationWriteCredential(void)
    if(!GOATLoginDigitsValid(g_GOATDeviceActivationAccountId)
       || GOATAccountLoginDigits()!=g_GOATDeviceActivationAccountId) return false;
    string credential=GOATApiBearerFileFor(g_GOATDeviceActivationAccountId);
+   // No slot (unknown terminal hash or build): store nothing rather than a shared name.
+   if(credential=="GOAT\\Credentials\\no-account.token") return false;
 #else
    string credential=GOAT_API_BEARER_FILE;
 #endif
 
    // Pre-isolation builds share one user-scoped FILE_COMMON credential; isolation
-   // builds keep one per MT5 login (INV-CRED-01). The server
+   // builds keep one per MT5 login, terminal and build (INV-CRED-01/02). The server
    // rechecks MT5-account membership and entitlement on every feed request.
    string directory="GOAT\\Credentials";
    string temporary=credential+".pending";

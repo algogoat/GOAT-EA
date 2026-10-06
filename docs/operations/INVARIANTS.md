@@ -97,18 +97,46 @@ V1.49 isolation builds store the GOAT user credential at
   the user just approved.
 - `GOATDeviceActivationWriteCredential` computes the path once from the approved account, so a
   login that reads 0 mid-write can never redirect it.
-- Copy-only migration (`GOATCredentialMigrateLegacyOnce`): the shared
-  `api-bearer-v149.token` is copied to this login's file only when an `approved` activation status
-  for this login, from a V1.49 build, is no older than the shared file and no such status exists for
-  another login. Only `approved` is proof: `activation_reload_pending`, `ACTIVATION_RELOAD_REQUIRED`
-  and `activation_oninit_observed` also follow a credential merely found on disk (older builds write
-  them too), so they never count. Because the reload statuses usually replace `approved` within
-  seconds, most terminals pair once after the upgrade. The shared file is never deleted or changed,
-  the copy is create-only, and the shared file is never opened unless it is proven to be this login's.
+- The slot also carries the terminal and the build (INV-CRED-02 below).
 - The activation request cooldown (`activation-admission.bin`) stays shared on purpose: it holds
   no account data and is the per-host request budget.
 
-**Tests.** `scripts/test_terminal_isolation.cjs` (two terminals licensed at once, A pairs while
-B stays licensed and the reverse, account mismatch refused, a login reading 0 mid-write, migration
-proof cases including every non-`approved` status);
-`controller/test_studio_terminal_isolation.py` `CredentialPathTests`.
+## INV-CRED-02: one credential slot per login, terminal and EA build
+
+**Statement.** From B42, V1.49 isolation builds store the credential at
+`Common\Files\GOAT\Credentials\api-bearer-v149-<login>-<terminal hash>-<build>.token`. A
+build never reads a credential that another build minted, and two terminals never share a
+slot, even on the same login.
+
+**Why.** GOAT's server pins each credential to the admission of the build that minted it
+(`resolveCredential` re-admits `credential.buildId`, not the build that is calling). The
+per-login file of INV-CRED-01 was shared by every V1.49 build, so a build swap kept the old
+build's credential. Banker 10-06: its credential was minted by EX33 on 10-03, it ran B40 from
+10-05, and the 07:20Z registry publish that renewed EX33 (goatai#2291) changed EX33's admission
+digest. From 07:30Z every licence check from B40 answered "no", although B40's own admission was
+untouched. T2 runs B41 on a B38 credential and has the same exposure.
+
+**Enforcement.**
+- `GOATCredentialSlotSuffix` = `GoatOptTerminalHash` (INV-BATCH-01) + `GOATCredentialBuildToken`
+  (`GOAT_BUILD_ID` with only `[A-Za-z0-9-]` kept, anything else `_`, 1-64 characters). An
+  unknown hash (`00000000`) or build gives no slot: the path is the unwritable placeholder and
+  `GOATDeviceActivationWriteCredential` stores nothing.
+- Every slot name still matches the credential filters (`api-bearer(-[A-Za-z0-9_-]+)?.token`)
+  used by the controller, the VPS scripts and the evidence collectors.
+- Migration adopts nothing (`GOATCredentialMigrateLegacyOnce`). The shared `api-bearer-v149.token`
+  and the per-login `api-bearer-v149-<login>.token` were minted by earlier builds, so they are never
+  opened, copied, changed or deleted, and terminals still on those builds keep working. The new
+  build prints one notice per chart (never a token) and pairs once; demo terminals can use the
+  zero-click agent pairing that the desktop update flow already expects
+  (`UPDATED_PAIRING_NEEDED`).
+- The controller mirror is `credential_relative_path(legacy, login, data_root, build_id)`.
+- The monitor blocker never says that another terminal replaced this one's sign-in: under these
+  slots, pairing another terminal cannot.
+
+**Tests.** `scripts/test_terminal_isolation.cjs`: two terminals licensed at once; Banker pairs while
+T2 stays licensed and the reverse; one login on two terminals; the EX33 to B42 swap never opens the
+EX33 slot, and a rollback keeps it; no slot without a hash or build; filter-safe names; account
+mismatch; a login reading 0 mid-write; legacy files never adopted or opened.
+`scripts/test_terminal_isolation_mutations.cjs` (every slot guard);
+`controller/test_studio_terminal_isolation.py` `CredentialPathTests`;
+`controller/test_studio_research_status.py` (another terminal's approval is never blamed).

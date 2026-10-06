@@ -1,4 +1,4 @@
-// Terminal isolation (INV-BATCH-01, INV-CRED-01): runs the production V1.49 MQL path,
+// Terminal isolation (INV-BATCH-01, INV-CRED-01/02): runs the production V1.49 MQL path,
 // credential, migration, claim and tester-fitness code in a JS VM over a simulated
 // Common Files store shared by several terminals, including interleaved (concurrent)
 // moves. MQL-free: no MetaEditor, MT5 or network is used.
@@ -71,22 +71,22 @@ function convert(body){
   body=body.replace(/while\(FileFindNext\(search,name\)\);/g,'while(FileFindNext(search)&&((name=__found),true));');
   return body;
 }
-const macros=t=>t.replace(/\bGOAT_API_BEARER_FILE\b/g,'GOATApiBearerFile()').replace(/\bGOAT_API_BEARER_LEGACY_FILE\b/g,'"GOAT\\\\Credentials\\\\api-bearer-v149.token"')
+const macros=t=>t.replace(/\bGOAT_API_BEARER_FILE\b/g,'GOATApiBearerFile()').replace(/\bGOAT_BUILD_ID\b/g,'__build').replace(/\bGOAT_API_BEARER_LEGACY_FILE\b/g,'"GOAT\\\\Credentials\\\\api-bearer-v149.token"')
   .replace(/\bGOAT_OPT_ISOLATION_RECEIPT\b/g,'"terminal-isolation.ini"').replace(/\bGOAT_OPT_ISOLATION_CLAIM\b/g,'"terminal-isolation-claim.ini"')
   .replace(/\bGOAT_VERSION_LABEL\b/g,'"1.49"').replace(/\bKey\b/g,'"GOAT"').replace(/\bEA_Name\b/g,'"GOAT V1.49"').replace(/\bServer\b/g,'"Darwinex-Demo"')
   .replace(/\bGOAT_BATCH_CANCELLED_GV\b/g,'"GOAT_BatchCancelled"');
 const isolation=new Set(['GOAT_TERMINAL_ISOLATION_V149','GOAT_MONITOR_ONBOARDING_V149','GOAT_ORPHAN_RECOVERY_V149','GOAT_SEQUENCE_EXPORT_V148']);
 const D=stripComments(preprocess(defs,isolation)),A=stripComments(preprocess(activation,isolation));
 const M=stripComments(preprocess(main,isolation)),C=stripComments(preprocess(compare,isolation));
-const names=['GOATIsSafeApiBearerToken','GOATLoginDigitsValid','GOATAccountLoginDigits','GOATApiBearerFileFor','GOATApiBearerFile','GOATCredentialStatusApproved',
-  'GOATCredentialMigrateLegacyOnce','GOATBuildAuthenticatedRequestHeaders','GoatOptLegacyBasePath','GoatOptTerminalHash','GoatOptLoginToken',
+const names=['GOATIsSafeApiBearerToken','GOATLoginDigitsValid','GOATAccountLoginDigits','GOATCredentialSlotSuffix','GOATApiBearerFileFor',
+  'GOATApiBearerLegacyLoginFile','GOATApiBearerFile','GOATCredentialMigrateLegacyOnce','GOATBuildAuthenticatedRequestHeaders','GoatOptLegacyBasePath','GoatOptTerminalHash','GoatOptLoginToken',
   'GoatOptBasePath','GoatOptFolderOf','GoatOptEnsureCommonFolderTree','GoatOptWriteTextFile','GoatOptReadTextFile','GoatOptReadIniValue',
   'GoatOptIsolationFlagsHeld','GoatOptIsolationReceipt','GoatOptIsolationClaim','GoatOptIsolationHolderValid','GoatOptMigrateLegacyBatchStateLocked','GoatOptMigrateLegacyBatchState',
   'GoatOptForeignNamespaceFolder','GoatOptTesterFitnessFile'];
 const fitnessStart=M.indexOf('if((Mode_Opti==Opti_PF_MRFp||Mode_Opti==Opti_PF_MRF_SRp) && MQLInfoInteger(MQL_OPTIMIZATION)');
 assert.ok(fitnessStart>0,'agent fitness block');
 const [,fitnessEnd]=block(M,fitnessStart);
-const program=macros(names.map(n=>extract(D,n)).join('\n')+'\n'+extract(A,'GOATDeviceActivationWriteCredential')+'\n'+extract(C,'GoatStudioRunNonceValue')
+const program=macros(names.map(n=>extract(D,n)).join('\n')+'\n'+extract(A,'GOATCredentialBuildToken')+'\n'+extract(A,'GOATDeviceActivationWriteCredential')+'\n'+extract(C,'GoatStudioRunNonceValue')
   +'\n'+extract(M,'OnTesterInit')+'\nfunction AgentFitness(){'+convert(M.slice(fitnessStart,fitnessEnd))+'}');
 assert.match(main,/#define GOAT_TERMINAL_ISOLATION_V149 1\r?\n#define GOAT_API_BEARER_LEGACY_FILE "GOAT\\\\Credentials\\\\api-bearer-v149\.token"\r?\n#define GOAT_API_BEARER_FILE GOATApiBearerFile\(\)\r?\n#include "GOAT_Inputs_Definitions\.mqh"/);
 
@@ -94,7 +94,7 @@ assert.match(main,/#define GOAT_TERMINAL_ISOLATION_V149 1\r?\n#define GOAT_API_B
 const F={FILE_READ:1,FILE_WRITE:2,FILE_BIN:4,FILE_TXT:16,FILE_ANSI:32,FILE_UNICODE:64,FILE_SHARE_READ:128,FILE_SHARE_WRITE:256,FILE_REWRITE:512,FILE_COMMON:4096};
 const GATE='goatstudio\\native-gate\\launch.lock';
 function host(){return {files:new Map(),dirs:new Set(),clock:1000,ticks:0,opened:[],hook:null};}
-function terminal(h,login,dataPath,{globals=new Map(),name=''}={}){
+function terminal(h,login,dataPath,{globals=new Map(),name='',build='V1.49-BETA17-42'}={}){
   const t={login,dataPath,logs:[],globals,name,gateHeld:false,gvTemp:0,parameters:{},mutations:0};let handles=new Map(),next=1,lastError=0;
   const key=(p,common)=>(common?'C|':'L|'+dataPath+'|')+p.toLowerCase();
   const mutate=op=>{t.mutations++;if(h.hook)h.hook(t,op);};
@@ -105,7 +105,7 @@ function terminal(h,login,dataPath,{globals=new Map(),name=''}={}){
     AccountInfoInteger:()=>t.login,TerminalInfoString:()=>t.dataPath,
     MQLInfoInteger:k=>k===3?c.tester:k===4?c.optimization:k===5?c.forward:0,IntegerToString:n=>String(n),
     StringLen:s=>s.length,StringSubstr:(s,a,n)=>n===undefined?s.slice(a):s.substr(a,n),StringFind:(s,x,from=0)=>s.indexOf(x,from),
-    StringGetCharacter:(s,i)=>s.charCodeAt(i),__replace:(s,a,b)=>s.split(a).join(b),
+    StringGetCharacter:(s,i)=>s.charCodeAt(i),__replace:(s,a,b)=>s.split(a).join(b),ShortToString:n=>String.fromCharCode(n),__build:build,
     StringToShortArray:(s,arr,start,count)=>{arr.length=0;const n=Math.min(count,s.length-start);for(let i=0;i<n;i++)arr.push(s.charCodeAt(start+i));return n;},
     ShortArrayToString:(arr,start,count)=>String.fromCharCode(...arr.slice(start,start+count)),
     StringToCharArray:(s,arr)=>{arr.length=0;for(const b of Buffer.from(s,'utf8'))arr.push(b);arr.push(0);return arr.length;},
@@ -221,58 +221,108 @@ let passed=0;const ok=(cond,msg)=>{assert.ok(cond,msg);passed++;};
   for(const v of ['','-1','x','5||5||1||5||Y','5||5||1||N','1.5'])ok(!init.c.GoatStudioRunNonceValue(v),'nonce readback refused: '+v);
 }
 
-// ---- INV-CRED-01: two licensed terminals on one PC.
+// ---- INV-CRED-01/02: two licensed terminals on one PC, each in its own credential slot
+// (login + terminal hash + EA build). Regression for #1885 6012274042: pairing either
+// terminal never displaces the other, whatever their logins or builds.
+const SLOT=(login,hash,build='V1_49-BETA17-42')=>'GOAT\\Credentials\\api-bearer-v149-'+login+'-'+hash+'-'+build+'.token';
+const BANKER_SLOT=SLOT(3000082754,'c2408708'),T2_SLOT=SLOT(3000107825,'30d46804');
+const OLD_LOGIN_FILE='GOAT\\Credentials\\api-bearer-v149-3000082754.token';
+const pair=(t,account,ch)=>{t.c.g_GOATDeviceActivationCandidate=token(ch);t.c.g_GOATDeviceActivationAccountId=String(account);return t.c.GOATDeviceActivationWriteCredential();};
+const readHeaders=t=>vm.runInContext('(function(){let h="";return GOATBuildAuthenticatedRequestHeaders(h);})()',t.c);
+const credentialFiles=h=>[...h.files.keys()].filter(k=>k.startsWith('C|goat\\credentials\\'));
 {
   const h=host(),A=terminal(h,3000082754,BANKER),B=terminal(h,3000107825,T2);
-  ok(A.c.GOATApiBearerFile()==='GOAT\\Credentials\\api-bearer-v149-3000082754.token','per-login credential path');
+  ok(A.c.GOATApiBearerFile()===BANKER_SLOT,'Banker slot: login, terminal hash and build');
+  ok(B.c.GOATApiBearerFile()===T2_SLOT,'T2 slot: login, terminal hash and build');
   ok(terminal(h,0,BANKER).c.GOATApiBearerFile()==='GOAT\\Credentials\\no-account.token','no account: never the shared file');
-  put(h,'GOAT\\Credentials\\api-bearer-v149-3000107825.token',token('b'),h.clock); // B stays licensed
-  const pair=(t,account,ch)=>{t.c.g_GOATDeviceActivationCandidate=token(ch);t.c.g_GOATDeviceActivationAccountId=String(account);return t.c.GOATDeviceActivationWriteCredential();};
-  const readHeaders=t=>vm.runInContext('(function(){let h="";return GOATBuildAuthenticatedRequestHeaders(h);})()',t.c);
-  h.clock++;ok(pair(A,3000082754,'a'),'A pairs');
-  ok(get(h,'GOAT\\Credentials\\api-bearer-v149-3000082754.token')===token('a'),'A credential stored in its own file');
-  ok(get(h,'GOAT\\Credentials\\api-bearer-v149-3000107825.token')===token('b'),'B credential untouched by A pairing');
-  ok(get(h,LEGACY)===undefined,'shared legacy file never written');
-  h.clock++;ok(pair(B,3000107825,'c'),'B re-pairs');
-  ok(get(h,'GOAT\\Credentials\\api-bearer-v149-3000082754.token')===token('a'),'A credential untouched by B pairing');
-  ok(get(h,'GOAT\\Credentials\\api-bearer-v149-3000107825.token')===token('c'),'B credential replaced only in B file');
+  put(h,T2_SLOT,token('b'),h.clock); // T2 stays licensed
+  h.clock++;ok(pair(A,3000082754,'a'),'Banker pairs');
+  ok(get(h,BANKER_SLOT)===token('a'),'Banker credential stored in its own slot');
+  ok(get(h,T2_SLOT)===token('b'),'T2 credential untouched by Banker pairing');
+  ok(get(h,LEGACY)===undefined&&get(h,OLD_LOGIN_FILE)===undefined,'neither legacy file is written');
+  h.clock++;ok(pair(B,3000107825,'c'),'T2 re-pairs (refresh)');
+  ok(get(h,BANKER_SLOT)===token('a'),'Banker credential untouched by T2 pairing');
+  ok(get(h,T2_SLOT)===token('c'),'T2 credential replaced only in its own slot');
   ok(readHeaders(A)&&readHeaders(B),'both terminals licensed at once');
-  const opened=h.opened.length;readHeaders(A);
-  ok(h.opened.slice(opened).every(k=>!k.includes('3000107825')),'A never opens B credential');
+  let opened=h.opened.length;readHeaders(A);
+  ok(h.opened.slice(opened).every(k=>!k.includes('3000107825')&&!k.includes('30d46804')),'Banker never opens T2 credential');
+  opened=h.opened.length;readHeaders(B);
+  ok(h.opened.slice(opened).every(k=>!k.includes('3000082754')&&!k.includes('c2408708')),'T2 never opens Banker credential');
+  ok(credentialFiles(h).length===2,'exactly one credential file per terminal');
   h.clock++;ok(!pair(A,3000107825,'d'),'account mismatch refused');
-  ok(get(h,'GOAT\\Credentials\\api-bearer-v149-3000107825.token')===token('c'),'mismatch wrote nothing');
+  ok(get(h,T2_SLOT)===token('c'),'mismatch wrote nothing');
   // The login reads 0 in the middle of the write: the path was fixed from the approved account.
   const late=terminal(h,3000082754,BANKER);late.openHook=p=>{if(p.endsWith('.pending'))late.login=0;};
   pair(late,3000082754,'e');
-  ok(get(h,'GOAT\\Credentials\\api-bearer-v149-3000082754.token')===token('e')&&get(h,'GOAT\\Credentials\\no-account.token')===undefined
+  ok(get(h,BANKER_SLOT)===token('e')&&get(h,'GOAT\\Credentials\\no-account.token')===undefined
      &&get(h,'GOAT\\Credentials\\no-account.token.pending')===undefined,'mid-write zero login never writes no-account.token');
 }
-
-// ---- Credential migration: copy only, only when this login provably wrote the shared file.
+// The same login on two terminals (a copied portable install, or one demo opened twice).
 {
-  const status=(h,name,account,reason,mtime,build='V1.49-NDX-SYMBOL-MAP-31')=>put(h,'GOAT\\activation-status-'+name+'.json',
+  const h=host(),A=terminal(h,3000082754,BANKER),copy=terminal(h,3000082754,T2);
+  const copySlot=SLOT(3000082754,'30d46804');
+  ok(copy.c.GOATApiBearerFile()===copySlot&&copySlot!==BANKER_SLOT,'same login, second terminal: its own slot');
+  ok(pair(A,3000082754,'a')&&pair(copy,3000082754,'b'),'both pair');
+  ok(get(h,BANKER_SLOT)===token('a')&&get(h,copySlot)===token('b'),'neither displaces the other');
+  h.clock++;ok(pair(A,3000082754,'c')&&get(h,copySlot)===token('b'),'re-pairing the first leaves the second');
+}
+// Banker 10-06: a credential minted by one build (EX33) kept serving another (B40) until the
+// server renewed EX33's admission. A build only ever reads the slot it minted itself.
+{
+  const h=host();
+  const ex33=terminal(h,3000082754,BANKER,{build:'V1.49-EA-EXPERIENCE-33'}),b42=terminal(h,3000082754,BANKER);
+  const EX33_SLOT=SLOT(3000082754,'c2408708','V1_49-EA-EXPERIENCE-33');
+  ok(ex33.c.GOATApiBearerFile()===EX33_SLOT,'EX33 slot');
+  ok(pair(ex33,3000082754,'x')&&readHeaders(ex33),'EX33 pairs and is licensed');
+  const swapped=h.opened.length;
+  ok(!readHeaders(b42),'after a swap to B42 the EX33 credential is not used: B42 pairs once');
+  ok(h.opened.slice(swapped).every(k=>!k.includes('experience-33')),'B42 never opens the EX33 slot');
+  ok(pair(b42,3000082754,'y')&&readHeaders(b42),'B42 pairs into its own slot');
+  ok(get(h,EX33_SLOT)===token('x')&&get(h,BANKER_SLOT)===token('y'),'the EX33 slot is unchanged; a rollback to EX33 keeps its own');
+  ok(readHeaders(ex33),'EX33 still licensed from its own slot');
+}
+// No slot without a terminal hash, a build or a valid build token; build tokens stay filter-safe.
+{
+  const h=host(),t=terminal(h,3000082754,BANKER);
+  t.c.g_goat_opt_terminal_hash='00000000';
+  ok(t.c.GOATApiBearerFile()==='GOAT\\Credentials\\no-account.token','unknown terminal hash: no slot');
+  ok(!pair(t,3000082754,'a')&&credentialFiles(h).length===0,'unknown terminal hash: pairing stores nothing');
+  ok(terminal(h,3000082754,BANKER,{build:''}).c.GOATApiBearerFile()==='GOAT\\Credentials\\no-account.token','no build: no slot');
+  ok(terminal(h,3000082754,BANKER,{build:'V'.repeat(65)}).c.GOATApiBearerFile()==='GOAT\\Credentials\\no-account.token','overlong build: no slot');
+  const odd=terminal(h,3000082754,BANKER,{build:'V1.49 x/..\\y'}).c.GOATApiBearerFile();
+  ok(odd==='GOAT\\Credentials\\api-bearer-v149-3000082754-c2408708-V1_49_x____y.token','odd build characters become _');
+  for(const name of [BANKER_SLOT,T2_SLOT,odd].map(p=>p.slice(p.lastIndexOf('\\')+1)))
+    ok(/^api-bearer(?:-[A-Za-z0-9_-]+)?\.token$/.test(name),'slot name matches every credential filter: '+name);
+}
+
+// ---- Legacy migration: adopt nothing. The shared and per-login files were minted by older
+// builds, so they are never opened, copied, changed or deleted; this build pairs once.
+{
+  const status=(h,name,account,reason,mtime,build='V1.49-BETA17-42')=>put(h,'GOAT\\activation-status-'+name+'.json',
     '{"accountId":"'+account+'","buildId":"'+build+'","reason":"'+reason+'","httpStatus":200,"nativeError":0,"retrySeconds":0,"observedAtUtc":1}',mtime);
-  const own='GOAT\\Credentials\\api-bearer-v149-3000082754.token';
-  const scenario=(setup)=>{const h=host();setup(h);const t=terminal(h,3000082754,BANKER);t.c.GOATCredentialMigrateLegacyOnce();return {h,t};};
-  let r=scenario(h=>{put(h,LEGACY,token('a'),10);status(h,'Terminal 1 - Banker','3000082754','approved',10);});
-  ok(get(r.h,own)===token('a')&&get(r.h,LEGACY)===token('a'),'proven own legacy credential copied; legacy kept');
-  ok(r.t.logs.some(l=>/copied the shared V1\.49 credential/.test(l))&&!r.t.logs.join().includes('goat_ea_'),'copy logged without the token');
-  r=scenario(h=>{put(h,LEGACY,token('b'),20);status(h,'Terminal 1 - Banker','3000082754','approved',10);status(h,'Terminal 2 - GOAT','3000107825','activation_oninit_observed',21);});
-  ok(get(r.h,own)===undefined&&get(r.h,LEGACY)===token('b'),'Banker case: another login overwrote the shared file; left untouched');
-  ok(!r.h.opened.includes('C|'+LEGACY.toLowerCase()),'another login token is never opened');
-  r=scenario(h=>{put(h,LEGACY,token('a'),20);status(h,'Terminal 1 - Banker','3000082754','approved',10);});
-  ok(get(r.h,own)===undefined&&!r.h.opened.includes('C|'+LEGACY.toLowerCase()),'own approval older than the shared file is not proof');
-  r=scenario(h=>{put(h,LEGACY,token('a'),10);status(h,'Terminal 1 - Banker','3000082754','approved',10);status(h,'Terminal 2 - GOAT','3000107825','approved',12);});
-  ok(get(r.h,own)===undefined,'ambiguous later approvals: no copy');
-  for(const reason of ['awaiting_approval','activation_reload_pending','ACTIVATION_RELOAD_REQUIRED','activation_oninit_observed']){
-    r=scenario(h=>{put(h,LEGACY,token('a'),10);status(h,'Terminal 1 - Banker','3000082754',reason,11);});
-    ok(get(r.h,own)===undefined,reason+' is not proof of authorship');
+  const scenario=(setup)=>{const h=host();setup(h);const before=new Map(h.files);const t=terminal(h,3000082754,BANKER);
+    t.c.GOATCredentialMigrateLegacyOnce();t.c.GOATCredentialMigrateLegacyOnce();return {h,t,before};};
+  const untouched=r=>[...r.before].every(([k,v])=>r.h.files.get(k)===v)&&r.h.files.size===r.before.size;
+  const legacyOpened=r=>r.h.opened.some(k=>k===('C|'+LEGACY).toLowerCase()||k===('C|'+OLD_LOGIN_FILE).toLowerCase());
+  const notice=r=>r.t.logs.filter(l=>/keeps its own sign-in for this MT5 terminal and account/.test(l)).length;
+  const cases=[
+    ['shared file, own approved status (old copy-proof)',h=>{put(h,LEGACY,token('a'),10);status(h,'Terminal 1 - Banker','3000082754','approved',11);}],
+    ['per-login file (the Banker EX33 credential)',h=>{put(h,OLD_LOGIN_FILE,token('a'),10);status(h,'Terminal 1 - Banker','3000082754','approved',11,'V1.49-EA-EXPERIENCE-33');}],
+    ['both legacy files',h=>{put(h,LEGACY,token('a'),10);put(h,OLD_LOGIN_FILE,token('b'),10);}],
+  ];
+  for(const [label,setup] of cases){
+    const r=scenario(setup);
+    ok(get(r.h,BANKER_SLOT)===undefined&&untouched(r),label+': nothing adopted, nothing changed');
+    ok(!legacyOpened(r),label+': legacy credential never opened');
+    ok(notice(r)===1&&!r.t.logs.join().includes('goat_ea_'),label+': one notice, without a token');
+    ok(!readHeaders(r.t),label+': this build is unlicensed until it pairs');
   }
-  r=scenario(h=>{put(h,LEGACY,token('a'),10);status(h,'Terminal 1 - Banker','3000082754','approved',11,'V1.48-PAIR-1');});
-  ok(get(r.h,own)===undefined,'other version family is not proof');
-  r=scenario(h=>{put(h,LEGACY,token('a'),10);status(h,'Terminal 1 - Banker','3000082754','approved',10);put(h,own,token('z'),5);});
-  ok(get(r.h,own)===token('z'),'existing per-login credential is never replaced');
-  ok(!r.h.opened.includes('C|'+LEGACY.toLowerCase()),'an account with its own credential never opens the shared file');
+  let r=scenario(h=>{put(h,OLD_LOGIN_FILE,token('a'),10);put(h,BANKER_SLOT,token('z'),5);});
+  ok(get(r.h,BANKER_SLOT)===token('z')&&untouched(r)&&notice(r)===0,'an existing slot is used as is, no notice');
+  r=scenario(()=>{});
+  ok(notice(r)===0&&r.h.files.size===0,'fresh install: no notice, nothing written');
+  const tester=terminal(host(),3000082754,BANKER);tester.c.tester=1;tester.c.GOATCredentialMigrateLegacyOnce();
+  ok(tester.logs.length===0,'tester agents never check');
 }
 
 // ---- INV-BATCH-01 migration: the production EA mover over a shared pre-isolation folder.
@@ -397,4 +447,4 @@ const wrapper=t=>t.c.GoatOptMigrateLegacyBatchState('GOAT V1.49','Darwinex-Demo'
     ok(claim!==''&&holder.length===SHARED.length,'the claim holder, and only it, received everything'+tag);
   }
 }
-console.log(JSON.stringify({passed,terminalIsolation:true,perLoginCredential:true,concurrentMoves:true,nativeExecution:false}));
+console.log(JSON.stringify({passed,terminalIsolation:true,perLoginCredential:true,credentialSlots:true,concurrentMoves:true,nativeExecution:false}));

@@ -936,8 +936,9 @@ bool GOATIsSafeApiBearerToken(const string token)
   }
 
 #ifdef GOAT_TERMINAL_ISOLATION_V149
-// INV-CRED-01: the GOAT user credential is stored per MT5 account login, so
-// pairing one terminal never replaces another account's credential. The login
+// INV-CRED-01: the GOAT user credential is stored per MT5 account login (and, by
+// INV-CRED-02 below, per terminal and build), so pairing one terminal never
+// replaces another account's credential. The login
 // comes only from this terminal's AccountInfoInteger(ACCOUNT_LOGIN) and must be
 // digits; without an account there is no credential path at all.
 bool GOATLoginDigitsValid(const string text)
@@ -959,9 +960,34 @@ string GOATAccountLoginDigits(void)
    return (GOATLoginDigitsValid(text) ? text : "");
   }
 
+// INV-CRED-02: one credential slot per MT5 login, per terminal data folder and per EA
+// build: api-bearer-v149-<login>-<terminal hash>-<build>.token. GOAT's server pins every
+// credential to the admission of the build that minted it, so a credential kept across a
+// build swap stops working whenever that OLD build's admission changes, while the terminal
+// runs a different build (Banker 10-06: an EX33 credential on B40, cut off by the EX33
+// renewal). A new build therefore never reads an older build's credential; it pairs once.
+// The terminal hash is GoatOptTerminalHash (INV-BATCH-01), so two terminals on one login
+// never share a slot either. An unknown hash or build yields no slot at all.
+string GOATCredentialSlotSuffix(void)
+  {
+   string terminal=GoatOptTerminalHash();
+   string build=GOATCredentialBuildToken();
+   if(StringLen(terminal)!=8 || terminal=="00000000" || build=="") return "";
+   return terminal+"-"+build;
+  }
+
 string GOATApiBearerFileFor(const string login)
   {
-   // The legacy shared file ends in ".token"; the per-login file sits beside it.
+   // The legacy shared file ends in ".token"; every slot sits beside it.
+   string stem=StringSubstr(GOAT_API_BEARER_LEGACY_FILE,0,StringLen(GOAT_API_BEARER_LEGACY_FILE)-6);
+   string slot=GOATCredentialSlotSuffix();
+   if(!GOATLoginDigitsValid(login) || slot=="") return "GOAT\\Credentials\\no-account.token";
+   return stem+"-"+login+"-"+slot+".token";
+  }
+
+// The pre-slot per-login file (api-bearer-v149-<login>.token), read only by older builds.
+string GOATApiBearerLegacyLoginFile(const string login)
+  {
    string stem=StringSubstr(GOAT_API_BEARER_LEGACY_FILE,0,StringLen(GOAT_API_BEARER_LEGACY_FILE)-6);
    return stem+"-"+login+".token";
   }
@@ -975,80 +1001,22 @@ string GOATApiBearerFile(void)
    return GOATApiBearerFileFor(login);
   }
 
-bool GOATCredentialStatusApproved(const string record)
-  {
-   // Only "approved" is written solely after this terminal stored the credential.
-   // The reload statuses also follow a credential merely found on disk (possibly
-   // another login's), so they are not proof of authorship.
-   return(StringFind(record,"\"reason\":\"approved\"")>0);
-  }
-
 bool g_GOATCredentialMigrationChecked=false;
-// One-time copy of the legacy shared credential, only when this login provably
-// wrote it: an "approved" activation status for this login, from the same EA
-// version, written no earlier than the shared file, and no such status for any
-// other login. Later reload statuses usually replace "approved" within seconds,
-// so most terminals pair once. The shared file is never deleted or changed, and
-// another login's token is never opened.
+// Migration from the shared (api-bearer-v149.token) and per-login
+// (api-bearer-v149-<login>.token) files is deliberately "adopt nothing": both were
+// written by an earlier build (this build only ever writes its own slot), and adopting
+// one is exactly the cross-build reuse INV-CRED-02 removes. Both stay byte-for-byte
+// unchanged and are never opened, so terminals still on an older build keep working.
+// This build pairs once; the notice below says why, once per chart, without a token.
 void GOATCredentialMigrateLegacyOnce(void)
   {
    if(g_GOATCredentialMigrationChecked || MQLInfoInteger(MQL_TESTER)) return;
    string login=GOATAccountLoginDigits();
    if(login=="") return;
    g_GOATCredentialMigrationChecked=true;
-   string target=GOATApiBearerFileFor(login),legacy=GOAT_API_BEARER_LEGACY_FILE;
-   if(FileIsExist(target,FILE_COMMON) || !FileIsExist(legacy,FILE_COMMON)) return;
-   datetime written=(datetime)FileGetInteger(legacy,FILE_MODIFY_DATE,true);
-   if(written<=0) return;
-   string family="\"buildId\":\"V"+GOAT_VERSION_LABEL+"-";
-   string own_prefix="{\"accountId\":\""+login+"\",";
-   bool ours=false,foreign=false;
-   string name;
-   long search=FileFindFirst(Key+"\\activation-status-*.json",name,FILE_COMMON);
-   if(search==INVALID_HANDLE) return;
-   do
-     {
-      string path=Key+"\\"+name;
-      if((datetime)FileGetInteger(path,FILE_MODIFY_DATE,true)<written) continue;
-      int status=FileOpen(path,FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
-      if(status==INVALID_HANDLE) continue;
-      string record=FileReadString(status);
-      FileClose(status);
-      if(StringFind(record,family)<0 || !GOATCredentialStatusApproved(record)) continue;
-      if(StringFind(record,own_prefix)==0) ours=true;
-      else foreign=true;
-     }
-   while(FileFindNext(search,name));
-   FileFindClose(search);
-   if(!ours || foreign)
-     {
-      Print("GOAT sign-in: the shared V"+GOAT_VERSION_LABEL+" credential is not provably this MT5 account's, so it was left untouched; this account signs in once for its own credential.");
-      return;
-     }
-   int handle=FileOpen(legacy,FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ);
-   if(handle==INVALID_HANDLE) return;
-   ulong size=FileSize(handle);
-   string token=(size>=64 && size<=1024 ? FileReadString(handle) : "");
-   bool extra=false;
-   while(!FileIsEnding(handle)) if(StringLen(FileReadString(handle))>0) extra=true;
-   FileClose(handle);
-   if(extra || !GOATIsSafeApiBearerToken(token)) {token="";return;}
-   string temporary=target+".pending";
-   FileDelete(temporary,FILE_COMMON);
-   int out=FileOpen(temporary,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(out==INVALID_HANDLE) {token="";return;}
-   uint count=FileWriteString(out,token);
-   FileFlush(out);
-   FileClose(out);
-   bool complete=((int)count==StringLen(token));
-   token="";
-   // Create-only: an existing per-login credential is never replaced.
-   if(!complete || !FileMove(temporary,FILE_COMMON,target,FILE_COMMON))
-     {
-      FileDelete(temporary,FILE_COMMON);
-      return;
-     }
-   Print("GOAT sign-in: copied the shared V"+GOAT_VERSION_LABEL+" credential to this MT5 account's own file; the shared file is unchanged.");
+   if(FileIsExist(GOATApiBearerFileFor(login),FILE_COMMON)) return;
+   if(FileIsExist(GOATApiBearerLegacyLoginFile(login),FILE_COMMON) || FileIsExist(GOAT_API_BEARER_LEGACY_FILE,FILE_COMMON))
+      Print("GOAT sign-in: this EA build keeps its own sign-in for this MT5 terminal and account. The earlier build's sign-in file was left unchanged; approve this build's connection code once.");
   }
 #endif
 

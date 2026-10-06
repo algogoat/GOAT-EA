@@ -6,9 +6,10 @@ server never share an active run pointer, config, launch guard, queue, export
 settings or log. The EA mirror is ``GoatOptBasePath`` in
 GOAT_Inputs_Definitions.mqh (``GOAT_TERMINAL_ISOLATION_V149``).
 
-INV-CRED-01: the GOAT user credential is stored per MT5 login
-(``api-bearer-v149-<login>.token``). The login comes only from the terminal or
-the verified session receipt and is validated as digits.
+INV-CRED-01/02: the GOAT user credential is stored per MT5 login, terminal and
+EA build (``api-bearer-v149-<login>-<terminal hash>-<build>.token``). The login
+comes only from the terminal or the verified session receipt and is validated as
+digits.
 
 Native batch starts call ``preflight`` under the native gate. It refuses, in one
 plain sentence, when the running EA resolves a different folder, when another
@@ -145,20 +146,32 @@ def foreign_namespace(folder_name, own_hash):
             and match[1].lower() != str(own_hash).lower())
 
 
-def credential_relative_path(legacy_relative, login):
-    """Per-login credential file beside the receipt's legacy credential path.
+def credential_build_token(build_id):
+    """The EA's GOATCredentialBuildToken: [A-Za-z0-9-] kept, anything else '_'."""
+    if not isinstance(build_id, str) or not 1 <= len(build_id) <= 64:
+        raise ValueError('EA build id must be 1-64 characters')
+    return ''.join(c if (c.isascii() and c.isalnum()) or c == '-' else '_' for c in build_id)
+
+
+def credential_relative_path(legacy_relative, login, data_root, build_id):
+    """This terminal's credential slot beside the receipt's legacy credential path.
 
     Receipts keep ``credential_relative_path`` (the pre-isolation shared file);
-    isolation builds read and write ``<stem>-<login>.token`` next to it.
+    isolation builds read and write ``<stem>-<login>-<terminal hash>-<build>.token``
+    next to it (INV-CRED-02, mirrors GOATApiBearerFileFor): one slot per MT5 login,
+    terminal data folder and EA build, because GOAT's server pins a credential to the
+    admission of the build that minted it.
     """
     login = valid_login(login)
+    build = credential_build_token(build_id)
     path = PureWindowsPath(legacy_relative)
     if (path.drive or path.root or '..' in path.parts or len(path.parts) != 3
             or tuple(p.lower() for p in path.parts[:2]) != ('goat', 'credentials')
             or not re.fullmatch(r'api-bearer(?:-[A-Za-z0-9_-]+)?\.token', path.name)):
         raise ValueError('Credential path must be GOAT/Credentials/api-bearer*.token')
     separator = '/' if '/' in str(legacy_relative) else '\\'
-    return separator.join((path.parts[0], path.parts[1], path.stem + '-' + login + '.token'))
+    name = path.stem + '-' + login + '-' + terminal_hash(data_root) + '-' + build + '.token'
+    return separator.join((path.parts[0], path.parts[1], name))
 
 
 # --------------------------------------------------------------------- receipts

@@ -136,9 +136,10 @@ batch has no live driver), disk headroom against the driver's reserve, owner
 STOP, and the monitor: `ticking`, `relaunching` (an ordinary member-boundary
 restart), or a `blocker` with `code`, `message` and `fix`. Codes include
 `terminal_closed`, `monitor_unlicensed` (the EA's sign-in status is newer than
-its last heartbeat; when another terminal's sign-in was approved after it, the
-message is "This terminal's GOAT sign-in was replaced by another terminal —
-re-pair it."), `monitor_build_not_admitted`, `monitor_webrequest_permission_required`,
+its last heartbeat; the message is "This terminal's GOAT EA is waiting for its
+sign-in to be approved — re-pair it." Another terminal's pairing never causes it:
+each login, terminal and EA build has its own credential slot, INV-CRED-02),
+`monitor_build_not_admitted`, `monitor_webrequest_permission_required`,
 `monitor_unbound`, `human_took_control` and `monitor_silent`.
 
 A batch's export counts follow `goat-export-qualification-v1` (`qualifying_basis`;

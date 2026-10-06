@@ -3098,7 +3098,7 @@ def _export_qualification_command(args, *, now=None):
             written.append(str(target))
     counts = dict(runs=len(runs))
     for key in ('members', 'sets', 'passed_members', 'passed_sets', 'below_threshold_members', 'below_threshold_sets',
-                'unknown_members', 'unknown_sets'):
+                'unknown_members', 'unknown_sets', 'below_score_members', 'below_score_sets'):
         counts[key] = sum(run['counts'][key] for run in runs)
     result = dict(schema='goat-export-qualification-scan-v1', generated_at=stamp_time, counts=counts, runs=runs, written=written)
     return guard_scan(result, lambda value: guard_output(install, value, root=install['controller_state_root']))

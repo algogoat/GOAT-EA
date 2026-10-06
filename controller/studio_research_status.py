@@ -19,7 +19,7 @@ import statistics
 import time
 
 from campaign_ledger import packed
-from studio_export_qualification import (SCHEMA as QUALIFICATION_SCHEMA, public_thresholds, read_run_thresholds, stamp_set,
+from studio_export_qualification import (SCHEMA as QUALIFICATION_SCHEMA, below_score_units, public_thresholds, read_run_thresholds, stamp_set,
                                          summarize, threshold_words)
 
 HEARTBEAT_FRESH_SECONDS = 20
@@ -272,7 +272,50 @@ def _no_qualifier_outcome(values, outcome):
             or o['min_trades'] <= 0 or not all(_DATE.fullmatch(span[key]) for key in ('start', 'end', 'forward_end'))
             or not span['start'] < span['end'] < span['forward_end']):
         return None
-    return dict(o, **x)
+    below = _below_score_facts(values)
+    return dict(o, **x, **({'below_score': below} if below else {}))
+
+
+BELOW_SCORE_RESULTS = ('exported', 'lost', 'none', 'failed')
+
+
+def _below_score_facts(values):
+    """The research-only below_score export a NoQualifyingRows row reports (GOAT-EA BS42), or None.
+
+    Older builds write no ``below_score`` key. A value outside the known results, or an exported pick
+    without its pass and FWD figures, is reported as ``unreadable``: never as a kept export.
+    """
+    result = values.get('below_score')
+    if result is None:
+        return None
+    facts = dict(result=result if result in BELOW_SCORE_RESULTS else 'unreadable', rank=values.get('below_score_rank'))
+    if result in ('exported', 'lost', 'failed') and 'below_score_pass' in values:
+        try:
+            facts.update(pass_number=int(values['below_score_pass']),
+                         fwd_profit_dd=float(values['below_score_fwd_profit_dd']),
+                         fwd_profit=float(values['below_score_fwd_profit']), fwd_trades=int(values['below_score_fwd_trades']),
+                         combined_score=float(values['below_score_combined_score']),
+                         min_fwd_trades=int(values['below_score_min_fwd_trades']))
+        except (KeyError, ValueError):
+            facts['result'] = 'unreadable'
+    elif result == 'exported':
+        facts['result'] = 'unreadable'
+    # The export slot rule (goatai#1885 6022264062): how many units were kept and why slot 2 was or was not.
+    if facts['result'] == 'exported':
+        try:
+            kept = int(values.get('below_score_kept', '1'))
+        except ValueError:
+            kept = None
+        slot2 = values.get('slot2')
+        if kept not in (1, 2) or (kept == 2) != (slot2 == 'kept'):
+            facts['result'] = 'unreadable'
+        else:
+            facts['kept'] = kept
+    if values.get('slot2') is not None:
+        facts['slot2'] = dict(result=values['slot2'] if values['slot2'] in ('kept', 'skipped', 'none') else 'unreadable',
+                              reason=values.get('slot2_reason'), correlation=values.get('slot2_correlation'),
+                              character=values.get('slot2_character'))
+    return facts
 
 
 def _no_edge_outcome(details, expected=NO_PROFITABLE_PASSES):
@@ -561,7 +604,7 @@ def batch_progress(root, install, job, *, now, journal=None):
                   exported_sets=None, passing_sets=None, below_threshold_members=None, below_threshold_sets=None,
                   unknown_members=None, unknown_sets=None, thresholds=None, qualifying_basis=None,
                   members_no_edge=None, no_edge_counts=None, members_failed=None, members_native_error=None,
-                  members_cancelled=None, no_edge_window=None,
+                  members_cancelled=None, no_edge_window=None, below_score_sets=None, below_score_members=None,
                   no_edge=None, last_member=None, current_member=None, pace=None, evidence='unavailable')
     manifest, _ = _bounded_json(package / 'manifest.json', 64 * 1024 * 1024)
     if not isinstance(manifest, dict) or 'launch_intent' not in job:
@@ -619,6 +662,11 @@ def batch_progress(root, install, job, *, now, journal=None):
     # high enough with the forward period, or every re-tested set lost money): results, never failures.
     no_edge = no_edge_members(common_run, [(item['run_alias'], item['tester']['Symbol']) for item in manifest['jobs']],
                               statuses, timing)
+    # Research-only below_score exports (GOAT-EA BS42, <run>\below_score): their own count, never qualifying,
+    # never an exported, passing or kept-below-threshold set (an attempt, not a pass).
+    research = [len(below_score_units(common_run, aliases[i], manifest['jobs'][i]['tester']['Symbol']))
+                for i in range(len(aliases))]
+    counted.update(below_score_sets=sum(research), below_score_members=sum(1 for n in research if n))
     result.update(**counted, qualifying_basis=QUALIFICATION_SCHEMA,
                   thresholds=public_thresholds(run_thresholds()) if per_member else None,
                   thresholds_problems=(run_thresholds()['problems'] or None) if per_member else None)
@@ -835,6 +883,10 @@ def headline(activity):
                      NO_PROFITABLE_EXPORTS: 'lost money on the export re-test'}
             counts += (', ' + str(no_edge) + ' tested, nothing qualified in ' + where + ' ('
                        + ', '.join(str(kinds[kind]) + ' ' + words[kind] for kind in OUTCOME_ORDER if kind in kinds) + ')')
+    research = activity.get('below_score_sets') if activity.get('kind') == 'batch' else None
+    if research:
+        # GOAT-EA BS42: named apart, never added to qualifying or the kept sets.
+        counts += ', ' + str(research) + (' best profitable set' if research == 1 else ' best profitable sets') + ' kept below score for research only'
     if failed:
         counts += ', ' + str(failed) + ' failed'
     cancelled = activity.get('members_cancelled')

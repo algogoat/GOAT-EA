@@ -204,11 +204,16 @@ def classify(export, target, *, include_below_threshold=False, known_versions=()
                symbol=export.get('symbol'), period=export.get('period'), values_sha256=export['values_sha256'],
                evidence_start=export.get('evidence_start'), evidence_end=end, evidence_end_source=export.get('evidence_end_source'),
                threshold_passing=export['threshold']['passing'], threshold=export['threshold'], metrics=export.get('metrics'),
-               capture_status=(export.get('capture') or {}).get('status'), history_short=export.get('history_short', False))
+               capture_status=(export.get('capture') or {}).get('status'), history_short=export.get('history_short', False),
+               export_tier=export.get('export_tier', 'standard'))
     # Re-test eligibility keeps the EA's own rounded comparison (GOAT minimum defaults for a library
     # copy); threshold_passing and the export's qualification stamp record whether it is proven.
     eligible = export['threshold'].get('retest_eligible', export['threshold']['passing'])
-    if not eligible and not include_below_threshold:
+    if export.get('research_only') and not include_below_threshold:
+        # GOAT-EA BS42: an attempt, not a pass. Its own FOOS record grows only on an explicit research opt-in.
+        problems.append('Research-only below_score export (nothing reached the export score); include it explicitly '
+                        'with include_below_threshold to extend its own out-of-sample record')
+    elif not eligible and not include_below_threshold:
         problems.append('Below the batch export thresholds (profit > 0, ARF >= %g, SR >= %g)'
                         % (export['threshold']['min_arf'], export['threshold']['min_sr']))
     if not end or not export.get('evidence_start'):

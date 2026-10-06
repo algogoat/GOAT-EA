@@ -5,7 +5,8 @@ from pathlib import Path
 import re
 from studio_export_inputs import verify_export_inputs
 from studio_equity_csv import inspect_equity_csv
-from studio_export_qualification import file_name_tokens, public_thresholds, qualify, thresholds_from_values
+from studio_export_qualification import (export_tier, file_name_tokens, public_thresholds, qualify, research_only_stamp,
+                                         thresholds_from_values)
 
 # goat-export-qualification-v1 status -> the file status consumers already read (append-only).
 STATUS_OF = dict(passed='native_threshold_candidate', below_threshold='below_native_thresholds',
@@ -64,6 +65,9 @@ def scan_exports(directory, source_raw, schema, back_passes, forward_passes, *,
         # One shared judgement (goat-export-qualification-v1): at the cut-off the SET header decides,
         # and a set that cannot be proven either way is unknown, never a candidate.
         stamp = qualify(file_name_tokens(stem), thresholds, header=raw)
+        # GOAT-EA BS42: a research-only below_score unit is never a candidate, wherever it sits.
+        stamp = research_only_stamp(stamp, export_tier(raw.decode('utf-16', errors='replace') if raw.startswith(b'\xff\xfe')
+                                                       else raw.decode('utf-8-sig', errors='replace'), set_path))
         item['qualification'] = dict(stamp, set_sha256=hashlib.sha256(raw).hexdigest())
         item['status'] = STATUS_OF[stamp['status']]
         if windows is not None:

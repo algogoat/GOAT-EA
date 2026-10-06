@@ -49,6 +49,64 @@ _HEADER = re.compile(r'^;\s*PF=-?\d+(?:\.\d+)?\s+RF=-?\d+(?:\.\d+)?\s+SR=(?P<SR>
 _RETURN = re.compile(r'^;\s*Return=(?P<Prf>-?\d+(?:\.\d+)?)\s')
 _LEADING_NUMBER = re.compile(r'\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+))')
 
+# Export tier (GOAT-EA BS42, goatai#1885: Claude-Mac 6021965811 and 6022008420). When nothing a member
+# tested reached the export score, the EA exports its one best profitable pass (ranked on FWD profit/DD)
+# for research only: into ``<run>\below_score\<alias>\<symbol>\`` with ``; EXPORT: below_score ...`` in
+# its SET header. Such a unit is an attempt, never a pass: it never counts as qualifying, never enters a
+# sift, a composition or a publish, and only its own FOOS or live record can take it further.
+# Fail closed: either signal (the header line or the folder) makes a unit research only, and so does
+# any other ``; EXPORT:`` value (an unknown tier).
+STANDARD_TIER = 'standard'
+BELOW_SCORE = 'below_score'
+BELOW_SCORE_FOLDER = 'below_score'
+TIER_HEADER_LINES = 60
+TIER_HEADER_BYTES = 64 * 1024
+_TIER = re.compile(r'^;\s*EXPORT:\s*(\S*)')
+
+
+def export_tier(text=None, set_path=None):
+    """``standard``, ``below_score`` or ``unrecognised:<value>`` for one export unit (fail closed)."""
+    if text is not None:
+        for index, line in enumerate(text.splitlines()):
+            if index >= TIER_HEADER_LINES:
+                break
+            match = _TIER.match(line.lstrip('﻿'))
+            if match:
+                return BELOW_SCORE if match.group(1) == BELOW_SCORE else 'unrecognised:' + match.group(1)[:40]
+    if set_path is not None:
+        parents = Path(set_path).parents   # <run>\below_score\<alias>\<symbol>\<unit>.set
+        if len(parents) > 2 and parents[2].name.lower() == BELOW_SCORE_FOLDER:
+            return BELOW_SCORE
+    return STANDARD_TIER
+
+
+def research_only_stamp(stamp, tier):
+    """The stamp a unit of ``tier`` may carry: a research-only unit is never ``passed``.
+
+    Its status becomes ``unknown`` (the existing "never a candidate" value every consumer already
+    accepts) with ``missed: ['below_score']``; what the thresholds alone said is kept in
+    ``status_before_tier`` and the tier in ``export_tier``."""
+    if tier == STANDARD_TIER:
+        return stamp
+    return dict(stamp, status='unknown', selection=SELECTION['unknown'], missed=[BELOW_SCORE], export_tier=tier,
+                status_before_tier=stamp.get('status'), ea_native_passed=False,
+                reason='Research-only export (%s): nothing this member tested reached the export score, so this is '
+                       'an attempt, not a pass; never a portfolio candidate' % tier)
+
+
+def below_score_units(run_root, alias=None, symbol=None):
+    """The research-only ``.set`` files under ``<run>\\below_score`` (one member when alias and symbol are given)."""
+    base = Path(run_root) / BELOW_SCORE_FOLDER
+    if alias is not None:
+        base = base / alias / symbol
+    try:
+        if not base.is_dir():
+            return []
+        pattern = '*.set' if alias is not None else '*/*/*.set'
+        return sorted(p for p in base.glob(pattern) if p.is_file())
+    except OSError:
+        return []
+
 
 class Token:
     """A metric exactly as printed: its value and how many decimals it was printed with."""
@@ -305,6 +363,14 @@ def stamp_set(set_path, thresholds, *, with_sha256=True):
         return raw_cache[0]
 
     stamp = dict(qualify(file_name_tokens(stem), thresholds, header=raw), set_name=path.name)
+    # A research-only unit (below_score) is never passed. Only a pass can be wrong here, so the header
+    # is read for the tier when the stamp passed or the file was read anyway.
+    if stamp['status'] == 'passed' or with_sha256 or raw_cache:
+        head = raw()[:TIER_HEADER_BYTES]
+        text = head.decode('utf-16', errors='replace') if head.startswith(b'\xff\xfe') else head.decode('utf-8-sig', errors='replace')
+        stamp = research_only_stamp(stamp, export_tier(text, path))
+    elif export_tier(None, path) != STANDARD_TIER:
+        stamp = research_only_stamp(stamp, export_tier(None, path))
     if with_sha256:
         stamp['set_sha256'] = hashlib.sha256(raw()).hexdigest()
     return stamp
@@ -504,10 +570,19 @@ def scan_run(run_root, *, generated_at=None):
     for status in ('passed', 'below_threshold', 'unknown'):
         counts[status + '_sets'] = sum(1 for s in stamps if s['status'] == status)
         counts[status + '_members'] = sum(1 for kept in members.values() if summarize(kept)['member'] == status)
+    # Research-only units (<run>\below_score, BS42): their own count and list, outside every kept-set count,
+    # the log cross-check and the member classes. Each stamp is unknown (an attempt, not a pass).
+    research = []
+    for set_path in below_score_units(run_root):
+        stamp = stamp_set(set_path, thresholds)
+        research.append(dict(set_path=str(set_path), set_name=stamp['set_name'], set_sha256=stamp['set_sha256'],
+                             member=set_path.parent.parent.name, symbol=set_path.parent.name, qualification=stamp))
+    counts['below_score_sets'] = len(research)
+    counts['below_score_members'] = len({(entry['member'], entry['symbol']) for entry in research})
     return dict(schema=BACKFILL_SCHEMA, run_id=run_root.name, run_root=str(run_root), generated_at=generated_at,
                 thresholds=dict(public_thresholds(thresholds) or {}, available=bool(thresholds.get('available')),
                                 path=thresholds.get('path'), problems=thresholds.get('problems') or []),
-                log_crosscheck=crosscheck, counts=counts, stamps=entries,
+                log_crosscheck=crosscheck, counts=counts, stamps=entries, research_only=research,
                 provenance=dict(method='Kept sets under deploy/<member>/<symbol>, judged by goat-export-qualification-v1 '
                                        'from their file-name metrics (SET header at the cut-off) against the run\'s own '
                                        'export_settings.GOAT, cross-checked with the passing sets the EA logged as kept '

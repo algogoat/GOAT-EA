@@ -63,7 +63,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from studio_export_qualification import qualify, thresholds_from_values, tokens_from_numbers
+from studio_export_qualification import STANDARD_TIER, export_tier, qualify, thresholds_from_values, tokens_from_numbers
 
 SCHEMA = 'goat-gate-calibration-v2'
 STAMP_SCHEMA = 'goat-gate-stamp-v2'
@@ -512,6 +512,11 @@ def load_run(run_dir):
             is_months = weekdays(*windows['in_sample']) / 21.7
             tester = job['tester']
             set_raw = _read(sibling_set, MAX_SMALL)
+            # GOAT-EA BS42: a research-only below_score unit is never calibration evidence while calibration
+            # only tightens (goatai#1885 (d) waits for their own out-of-sample record). Fail closed if one is here.
+            tier = export_tier(_decode(set_raw), sibling_set)
+            if tier != STANDARD_TIER:
+                raise ValueError('research-only %s export: not calibration evidence' % tier)
             records.append(dict(
                 run=run_dir.name, area=area, member=alias, member_key=run_dir.name + '/' + alias, symbol=symbol,
                 path=label, set_sha256=hashlib.sha256(set_raw).hexdigest(), identity=identity,

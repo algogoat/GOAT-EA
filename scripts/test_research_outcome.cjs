@@ -7,7 +7,9 @@ const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),asse
 const root=process.env.GOAT_EA_ROOT||path.join(__dirname,'..');
 const read=n=>fs.readFileSync(path.join(root,n),'utf8').replace(/^﻿/,'').replace(/\r\n/g,'\n');
 const xmlSource=read('XmlProcessor.mqh'),mainSource=read('GOAT V1.49.mq5'),optimizerSource=read('Optimizer.mqh');
-const DEFINED=new Set(['GOAT_RESEARCH_OUTCOME_V149','GOAT_MONITOR_ONBOARDING_V149','GOAT_CONTROL_FEEDBACK_V149']);
+// GOAT_OUTCOME_EXTRA_DEFINES (comma separated) adds flags, e.g. for test_below_score_export.cjs.
+const DEFINED=new Set(['GOAT_RESEARCH_OUTCOME_V149','GOAT_MONITOR_ONBOARDING_V149','GOAT_CONTROL_FEEDBACK_V149',
+  ...(process.env.GOAT_OUTCOME_EXTRA_DEFINES||'').split(',').filter(Boolean)]);
 
 // ---- MQL -> JS for the exact production functions under test.
 function preprocess(text,macros){
@@ -75,6 +77,7 @@ function extract(text,pattern,name,macros){
 }
 const macros={};
 const X=stripComments(preprocess(xmlSource,macros));
+const BELOW_SCORE_FUNCTIONS=['GoatXmlFwdEligible','GoatXmlFwdBetter','GoatXmlFwdRank','GoatXmlCharacterDifference','GoatEquityDailyCloses','GoatDailyReturnCorrelation'];
 const method=name=>extract(X,new RegExp('^\\s*(?:bool|string|int|void|double)\\s+'+name+'\\s*\\(','m'),name,macros);
 assert.equal(macros.GOAT_XML_MIN_BACK_TRADES,'50','the kept-pass trade filter and the reported minimum share one constant');
 assert.match(X,/back_trades<GOAT_XML_MIN_BACK_TRADES|back_trades<50/);
@@ -92,8 +95,9 @@ function makeContext(files,{realForward=false}={}){
     reportMode:false,_K:'',_N:'',_S:'',Title:'',symbol_:'',TF_:'',startD:0,endD:0,forwardD:0,
     metadataWithWorkbookStart:'',DocumentProperties:'',WorksheetLine:'',InputsNames:'',
     passesSeen:0,profitableSeen:0,bestProfit:0,bestResult:0,outcome:'',tradedSeen:0,malformedSeen:0,forwardRows:0,reportClosed:false,
-    forwardMatched:0,forwardMismatches:0,forwardMalformed:0,bestCombinedScore:0,pairOutcome:'',
+    forwardMatched:0,forwardMismatches:0,forwardMalformed:0,bestCombinedScore:0,pairOutcome:'',belowScoreRow:-1,
     MathLog:Math.log,MathAbs:Math.abs,MathMin:Math.min,MathMax:Math.max,double:x=>x,
+    MathSqrt:Math.sqrt,EMPTY_VALUE:Number.MAX_VALUE,StringToTime:s=>/^\d{4}\.\d{2}\.\d{2}$/.test(String(s))?epoch(String(s)):0,
     FILE_READ:1,FILE_COMMON:2,FILE_ANSI:4,CP_UTF8:65001,INVALID_HANDLE:-1,TIME_DATE:1,__FUNCTION__:'SXmlData::ProcessBackXml',
     FileOpen:name=>{if(!(name in files))return -1;handles.push({lines:files[name],at:0});return handles.length-1;},
     FileIsEnding:h=>handles[h].at>=handles[h].lines.length,
@@ -127,6 +131,8 @@ function makeContext(files,{realForward=false}={}){
   if(realForward)vm.runInContext(method('ProcessForwardXml'),c);
   vm.runInContext(extract(X,/^string\s+GoatXmlResearchOutcome\s*\(/m,'GoatXmlResearchOutcome',macros),c);
   vm.runInContext(extract(X,/^string\s+GoatXmlNoQualifierOutcome\s*\(/m,'GoatXmlNoQualifierOutcome',macros),c);
+  // The FWD profit/DD export rule (GOAT_BELOW_SCORE_EXPORT_V149) the combiner calls when that flag is on.
+  if(DEFINED.has('GOAT_BELOW_SCORE_EXPORT_V149'))for(const name of BELOW_SCORE_FUNCTIONS)vm.runInContext(method(name),c);
   const combiner=extract(X,/^bool\s+ReportAnalyzerCombiner\s*\(/m,'ReportAnalyzerCombiner',macros)
     .replace('xmlData.ExtractForwardDate(fileMain,ForwardDate)','((ForwardDate=__forwardDate(fileMain))!=0)');
   assert.ok(combiner.includes('__forwardDate('),'forward date extraction still precedes the back report');
@@ -134,7 +140,7 @@ function makeContext(files,{realForward=false}={}){
   return c;
 }
 // replay_research_outcome.cjs reuses the production functions over real report copies.
-if(process.env.GOAT_OUTCOME_HARNESS_ONLY){module.exports={makeContext};return;}
+if(process.env.GOAT_OUTCOME_HARNESS_ONLY){module.exports={makeContext,extract,convert,block,preprocess,stripComments,method,X,macros,DEFINED,epoch,date};return;}
 const HEAD=['Pass','Result','Profit','Expected Payoff','Profit Factor','Recovery Factor','Sharpe Ratio','Custom','Equity DD %','Trades'];
 const cell=(type,v)=>'<Cell><Data ss:Type="'+type+'">'+v+'</Data></Cell>';
 // A score cell: r.types[key] overrides its type, r.raw[key] its text (e.g. '1.#INF' typed Number).

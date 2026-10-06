@@ -149,7 +149,15 @@ see "Export qualification" below):
   even when nothing passed (`SortAndTrimExports: Passing=0 Kept=1`); a best-effort
   result, shown apart and never counted as qualifying;
 - `unknown_members` and `unknown_sets`: at the cut-off, or no thresholds found;
-- `exported_sets`: every kept set; `thresholds`: the `min_sr`/`min_arf` judged against.
+- `exported_sets`: every kept set; `thresholds`: the `min_sr`/`min_arf` judged against;
+- `below_score_sets` and `below_score_members` (EA build B42, BS42): when nothing a
+  member tested reached the export score, the EA exports its best pass by FWD
+  profit/DD (and a second only when it is genuinely different and clears SR 2.5 /
+  ARF 0.2) into `<run>\below_score\<alias>\<symbol>\`, with `; EXPORT: below_score`
+  in its SET header. Research only: an attempt, never a pass, never in `qualifying`,
+  `exported_sets` or any other count, never a sift, composition or publish candidate.
+  Its stamp is `unknown` with `missed: ['below_score']`; the member's `no_edge`
+  outcome carries the pick and slot facts under `below_score`.
 
 The headline reads "98 qualifying (SR ≥ 2.5, ARF ≥ 0.2), 205 more kept below
 threshold". Before `qualifying_basis`, `qualifying` counted every completed member

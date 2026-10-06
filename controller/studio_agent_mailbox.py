@@ -173,21 +173,64 @@ def verify_pairing_temporaries(root, request_id, ident):
             raise ValueError('A receipt temporary awaits native expiry cleanup')
 
 
+REGISTRATION_IDENTITY = ('account', 'server', 'buildId', 'directory')
+EXPIRY_GRACE_SECONDS = 5  # The same skew allowance a retained request gets before it counts as expired.
+
+
+def _expired(value, now):
+    return type(value.get('expiresAtUtc')) is int and value['expiresAtUtc'] + EXPIRY_GRACE_SECONDS < now
+
+
+def _supersede_expired(root, path, digest, now):
+    """Archive an expired registration for another identity (for example an older build).
+
+    The EA rejects an expired registration, so it can no longer authorize anything; it is
+    renamed, never deleted, to ``<sha256>.expired.registration.json`` beside the expired
+    requests. Its own retained request is retired first under its own identity, exactly as
+    that build's next request would have (a still-live one refuses). Runs under the producer
+    lock and re-reads the registration, so a concurrent rewrite is never archived blind.
+    """
+    old, current = read_bounded(path)
+    if current != digest or not _expired(old, now):
+        raise ValueError('The retained GOAT setup registration changed while it was inspected; inspect before replacing it')
+    if any(key not in old for key in REGISTRATION_IDENTITY):
+        raise ValueError('A malformed GOAT setup registration is retained for this terminal; inspect before replacing it')
+    archived = root / (digest + '.expired.registration.json')
+    if archived.exists():
+        raise ValueError('Setup registration archive already exists; inspect retained state')
+    _retire_retained(root, {key: old[key] for key in REGISTRATION_IDENTITY}, now=now)
+    sharing_retry(lambda: path.rename(archived))
+    return dict(sha256=digest, buildId=old.get('buildId'), account=old.get('account'), server=old.get('server'),
+                expiresAtUtc=old['expiresAtUtc'], archivedAs=archived.name)
+
+
 def setup_register(controller, ident, *, allow_pairing=False):
+    """Register this build's setup capability. Returns ``(record, superseded)``.
+
+    ``superseded`` is None, or the sha256 and archive name of an expired registration for
+    another identity (an older build, typically) that this one replaced. A live registration
+    for another identity still refuses: only expiry makes it replaceable.
+    """
     root = setup_root(controller)
     root.mkdir(parents=True, exist_ok=True)
+    now = int(time.time())
     seconds = PAIRING_REGISTRATION_SECONDS if allow_pairing else STATUS_REGISTRATION_SECONDS
     record = dict(schema=1, account=ident['account'], server=ident['server'], directory=ident['directory'],
-                  buildId=ident['buildId'], expiresAtUtc=int(time.time()) + seconds)
+                  buildId=ident['buildId'], expiresAtUtc=now + seconds)
     if allow_pairing:
         record.update(schema=2, allowPairingRead=True)
     path = root / 'registration.json'
     if path.exists():
-        old, _ = read_bounded(path)
-        if any(old.get(key) != record[key] for key in ('account', 'server', 'buildId', 'directory')):
-            raise ValueError('A different GOAT setup registration is retained for this terminal; inspect before replacing it')
+        old, digest = read_bounded(path)
+        if any(old.get(key) != record[key] for key in REGISTRATION_IDENTITY):
+            if not _expired(old, now):
+                raise ValueError('A different GOAT setup registration is retained for this terminal; inspect before replacing it')
+            with producer_lock(root):
+                superseded = _supersede_expired(root, path, digest, now)
+                atomic(path, record)
+            return record, superseded
     atomic(path, record)
-    return record
+    return record, None
 
 
 def _retire_retained(root, ident, *, now):

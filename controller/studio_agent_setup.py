@@ -273,7 +273,7 @@ def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
                     activationReason=reason, accountFacts=account_facts(controller, proof), receiptId=None)
     if session.get('authority_kind') == 'demo_direct':
         return _demo_lane_without_shared_code(reason)
-    setup_register(controller, ident, allow_pairing=True)
+    setup_register(controller, ident, allow_pairing=True)  # An expired older-build registration is archived, never deleted.
     result = (request or setup_request)(controller, ident, 'pairing', timeout=timeout)
     outcome = result['result']
     if outcome == 'pairing_available':
@@ -369,16 +369,22 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
             native = inspect(controller)
             if native.get('process') != running:
                 raise ValueError('The terminal changed while it was inspected; nothing was closed')
+            # Register the shutdown capability before journaling: a refused registration (for
+            # example a live one from another build) leaves no close_intent behind (goatai#1885).
+            ident = superseded = None
+            if build_id:
+                ident = identity(controller, session, build_id)
+                _, superseded = setup_register(controller, ident)
             record = dict(schema_version=1, attempt_id=attempt_id, phase='close_intent', process=running,
                           native=native, created_utc=datetime.now(timezone.utc).isoformat(), trading_changed=False,
                           positions_closed=False)
             if settled is not None:
                 record['settled_native_request'] = settled
+            if superseded is not None:
+                record['superseded_registration'] = superseded
             write_json(path, record)
         method = None
-        if build_id:
-            ident = identity(controller, session, build_id)
-            setup_register(controller, ident)
+        if ident is not None:
             receipt = request(controller, ident, 'shutdown', timeout=10)
             if receipt['result'] == 'receipt_timeout':
                 # Withdraw the unanswered shutdown so no EA can act on it during or after our

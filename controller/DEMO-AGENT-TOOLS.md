@@ -783,7 +783,7 @@ tools need no broker; the rest use the seed lane's checks, start record
 The plan is `{"schema_version":1,"evidence_end":"auto","sets":[<absolute .set
 paths of the behind exports>],"job_timeout_seconds":1800}`. A catch-up closes the
 selected MT5 and relaunches it once per member like a seed run; tell the owner
-first. `batch-pause --batch-id <catchup id>` pauses between members and
+first, then start it (that sentence replaces waiting for a yes). `batch-pause --batch-id <catchup id>` pauses between members and
 `batch-resume` continues. `research-status` shows it as an OOS catch-up.
 
 Live decisions (gate check, basket FOOS test on add or swap, manual re-optimize,
@@ -910,7 +910,8 @@ The plan (1..50 tests):
 - **`trial-journal` counts every dispatched hold-up test as a peek** (kind `single-pass`),
   so re-running a winner until it looks good is visible. `research-queue` shows it as
   Prove (kind `holdup`, results `profitable`).
-- MT5 closes and relaunches once per test, like a seed run, so tell the owner first.
+- MT5 closes and relaunches once per test, like a seed run, so tell the owner first,
+  then start it (that sentence replaces waiting for a yes).
   `native_launch_qualified: false` until the T3 proof.
 
 This is the first Tier A slice. Terminal discovery, compile, SET editing,

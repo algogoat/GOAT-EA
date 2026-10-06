@@ -154,7 +154,7 @@ class EvaluationTests(unittest.TestCase):
                 windows[name] = window(trades=29)
                 result = w.judge(windows['boos'], windows['foos'], in_sample_dd=100.0)
                 self.assertEqual(result['status'], 'not_eligible_yet')
-                self.assertIn('under the 30-trade floor', result['plain'])
+                self.assertIn('29 of 30', result['plain'])
                 windows[name] = window(trades=30)
                 self.assertEqual(w.judge(windows['boos'], windows['foos'], in_sample_dd=100.0)['status'], 'pass')
 
@@ -162,7 +162,7 @@ class EvaluationTests(unittest.TestCase):
         result = w.judge(window(), window(trades=0, pf=0.1, dd=10000.0), in_sample_dd=100.0)
         self.assertEqual(result['status'], 'not_eligible_yet')
         self.assertEqual(result['windows']['foos']['status'], 'not_eligible_yet')
-        self.assertNotIn('dd_limit', result['windows']['foos'])
+        self.assertIsNone(result['windows']['foos']['dd_limit'])
 
     def test_pf_bar(self):
         self.assertEqual(w.judge(window(pf=1.0), window(pf=1.0), in_sample_dd=100.0)['status'], 'pass')
@@ -171,7 +171,7 @@ class EvaluationTests(unittest.TestCase):
             windows[name] = window(pf=0.999)
             result = w.judge(windows['boos'], windows['foos'], in_sample_dd=100.0)
             self.assertEqual(result['status'], 'fail', name)
-            self.assertIn('profit factor 1.00 is below 1.0', result['plain'])
+            self.assertIn('profit factor below 1.0 (1.00)', result['plain'])
         self.assertEqual(w.judge(window(pf=None, pf_note='no losing deals'), window(), in_sample_dd=100.0)['status'], 'pass')
 
     def test_drawdown_bar_is_one_and_a_half_times_in_sample(self):
@@ -182,32 +182,87 @@ class EvaluationTests(unittest.TestCase):
             windows[name] = window(dd=150.01)
             result = w.judge(windows['boos'], windows['foos'], in_sample_dd=100.0)
             self.assertEqual(result['status'], 'fail', name)
-            self.assertIn('above 1.5x the in-sample drawdown', result['plain'])
-        self.assertEqual(w.judge(window(dd=0.01), window(), in_sample_dd=0.0)['status'], 'fail')
+            self.assertIn('1.5x the in-sample 100.00', result['plain'])
+        self.assertEqual(w.judge(window(dd=0.01), window(), in_sample_dd=0.0)['status'], 'not_measured')   # no limit
 
     def test_a_failure_with_the_floor_met_outranks_a_thin_window(self):
         result = w.judge(window(pf=0.5), window(trades=3), in_sample_dd=100.0)
         self.assertEqual(result['status'], 'fail')
         self.assertEqual(result['windows']['foos']['status'], 'not_eligible_yet')
 
-    def test_foos_not_tested_or_not_complete_is_not_eligible_yet(self):
-        self.assertEqual(w.judge(window(), None, in_sample_dd=100.0)['status'], 'not_eligible_yet')
+    def test_foos_not_tested_is_no_data_and_not_complete_is_not_eligible_yet(self):
+        self.assertEqual(w.judge(window(), None, in_sample_dd=100.0)['status'], 'no_data')
+        self.assertEqual(w.judge(window(), dict(present=False), in_sample_dd=100.0)['status'], 'no_data')
         partial = window(complete=False, tested_through='2026-09-18', last_day='2026-10-02')
         result = w.judge(window(), partial, in_sample_dd=100.0)
         self.assertEqual(result['status'], 'not_eligible_yet')
         self.assertIn('not complete yet', result['plain'])
 
-    def test_missing_measurements_are_unknown_never_pass(self):
-        for foos, in_sample in ((window(pf=None), 100.0), (window(trades=None), 100.0), (window(dd=None), 100.0), (window(), None)):
+    def test_missing_measurements_are_never_a_pass(self):
+        for foos, in_sample, status in ((window(pf=None), 100.0, 'not_measured'), (window(trades=None), 100.0, 'no_data'),
+                                        (window(dd=None), 100.0, 'not_measured'), (window(), None, 'not_measured'),
+                                        (window(pf=None, pl=-1.0, dd=None), 100.0, 'fail')):
             with self.subTest(foos=foos, in_sample=in_sample):
-                self.assertEqual(w.judge(window(), foos, in_sample_dd=in_sample)['status'], 'unknown')
-        self.assertEqual(w.judge(None, window(), in_sample_dd=100.0)['status'], 'unknown')
+                self.assertEqual(w.judge(window(), foos, in_sample_dd=in_sample)['status'], status)
+        self.assertEqual(w.judge(None, window(), in_sample_dd=100.0)['status'], 'no_data')
+        self.assertEqual(w.STATUSES, ('pass', 'fail', 'not_eligible_yet', 'no_data', 'not_measured'))
+
+    def test_pf_test_is_net_result_at_least_zero(self):
+        self.assertEqual(w.judge(window(pf=None, pl=0.0), window(pf=None, pl=0.0), in_sample_dd=100.0)['status'], 'pass')
+        self.assertEqual(w.judge(window(pf=None, pl=-0.01), window(), in_sample_dd=100.0)['status'], 'fail')
 
     def test_judge_never_shortens_a_window(self):
         foos = window(trades=12, first_day='2026-07-04', last_day='2026-10-02')
         result = w.judge(window(), foos, in_sample_dd=100.0)
         self.assertEqual((result['windows']['foos']['first_day'], result['windows']['foos']['last_day']), ('2026-07-04', '2026-10-02'))
         self.assertEqual(foos, window(trades=12, first_day='2026-07-04', last_day='2026-10-02'))
+
+
+class SharedFixtureTests(unittest.TestCase):
+    """controller/fixtures/oos-holdout-gate-cases.json: the cases the desktop sift (goatai#2274) must match exactly."""
+
+    @classmethod
+    def setUpClass(cls):
+        path = Path(__file__).resolve().parent / w.FIXTURE
+        cls.fixture = json.loads(path.read_text(encoding='utf-8'))
+
+    def test_rules_match_the_module_constants(self):
+        rules = self.fixture['rules']
+        self.assertEqual(self.fixture['schema'], 'goat-oos-holdout-gate-cases-v1')
+        self.assertEqual(rules['fractions_of_o'], w.FRACTIONS)
+        self.assertEqual(w.split(12), dict(boos=6, sample=8, fwd=4, foos=3))        # 1/2, 2/3, 1/3, 1/4 of 12 weeks
+        self.assertEqual((rules['min_trades'], rules['min_pf'], rules['max_dd_multiple_of_in_sample']),
+                         (w.MIN_TRADES, w.MIN_PF, float(w.MAX_DD_RATIO)))
+        self.assertEqual(tuple(rules['statuses']), w.STATUSES)
+        self.assertEqual(tuple(rules['set_order']), w.SET_ORDER)
+        self.assertEqual(set(rules['statuses']), set(rules['set_order']))
+
+    def test_every_window_case(self):
+        statuses = set()
+        for case in self.fixture['window_cases']:
+            with self.subTest(case=case['id']):
+                self.assertEqual(w.judge_case(case)['status'], case['expected'])
+                statuses.add(case['expected'])
+        self.assertEqual(statuses, set(w.STATUSES), 'the fixture covers every result')
+
+    def test_every_set_case(self):
+        for case in self.fixture['set_cases']:
+            with self.subTest(case=case['id']):
+                self.assertEqual(w.judge_case(case)['status'], case['expected'])
+
+    def test_every_date_case(self):
+        for case in self.fixture['date_cases']:
+            with self.subTest(case=case):
+                r = w.compute(w.optimization_weeks(months=case['optimization_months']), case['export_friday'])
+                expected = case['expected']
+                self.assertEqual((r['export']['BackOOSDate'], r['tester']['FromDate'], r['tester']['ForwardDate'],
+                                  r['tester']['ToDate'], r['optimization_end'], [r['foos']['first_day'], r['foos']['last_day']]),
+                                 (expected['BackOOSDate'], expected['FromDate'], expected['ForwardDate'], expected['ToDate'],
+                                  expected['optimization_end'], expected['foos']))
+
+    def test_case_ids_are_unique(self):
+        ids = [case['id'] for case in self.fixture['window_cases'] + self.fixture['set_cases']]
+        self.assertEqual(len(ids), len(set(ids)))
 
 
 class PlanTests(unittest.TestCase):
@@ -316,18 +371,21 @@ class RetestFixture:
     def tearDown(self):
         self.temp.cleanup()
 
-    def weekdays(self, key):
-        first, last = d(self.record[key]['first_day']), d(self.record[key]['last_day'])
+    def weekdays(self, key, end=None):
+        if key == 'catchup':      # weeks after the export Friday, up to the re-test end
+            first, last = d(self.record['foos']['last_day']) + timedelta(days=1), end
+        else:
+            first, last = d(self.record[key]['first_day']), d(self.record[key]['last_day'])
         return [first + timedelta(days=i) for i in range((last - first).days + 1) if (first + timedelta(days=i)).weekday() < 5]
 
     def build(self, *, trades=None, dips=None, end=None, capture=True, losers=None):
-        trades = dict(dict(boos=30, sample=30, fwd=10, foos=30), **(trades or {}))
-        dips = dict(dict(boos=100.0, sample=100.0, fwd=0.0, foos=100.0), **(dips or {}))
-        losers = dict(dict(boos=10, sample=10, fwd=2, foos=10), **(losers or {}))
+        trades = dict(dict(boos=30, sample=30, fwd=10, foos=30, catchup=0), **(trades or {}))
+        dips = dict(dict(boos=100.0, sample=100.0, fwd=0.0, foos=100.0, catchup=0.0), **(dips or {}))
+        losers = dict(dict(boos=10, sample=10, fwd=2, foos=10, catchup=0), **(losers or {}))
         end = d(end or self.record['foos']['last_day'])
         rows, deals, equity, position = [], [], 10000.0, 0
-        for key in ('boos', 'sample', 'fwd', 'foos'):
-            days = [day for day in self.weekdays(key) if day <= end]
+        for key in ('boos', 'sample', 'fwd', 'foos', 'catchup'):
+            days = [day for day in self.weekdays(key, end) if day <= end]
             dip_day = days[len(days) // 2] if days else None
             for index, day in enumerate(days):
                 equity += 10.0
@@ -389,14 +447,27 @@ class RetestTests(RetestFixture, unittest.TestCase):
         self.assertEqual(result['status'], 'not_eligible_yet')
         self.assertIn('not complete yet', result['plain'])
 
-    def test_a_later_replay_judges_exactly_foos(self):
-        original, retest = self.build()
-        retest['evidence_end'] = '2026-10-16'
-        result = w.judge_retest(original, retest, tester=self.record['tester'])
-        self.assertEqual((result['windows']['foos']['first_day'], result['windows']['foos']['last_day']), ('2026-09-05', '2026-10-02'))
+    def test_catch_up_weeks_count_toward_foos(self):
+        # 20 FOOS trades by the export Friday: not eligible yet. Two catch-up weeks add 12: judged, and passes.
+        self.assertEqual(self.judge(trades=dict(foos=20))['status'], 'not_eligible_yet')
+        result = self.judge(trades=dict(foos=20, catchup=12), end='2026-10-16')
+        self.assertEqual(result['status'], 'pass', result['plain'])
+        foos = result['windows']['foos']
+        self.assertEqual((foos['first_day'], foos['last_day'], foos['trades']), ('2026-09-05', '2026-10-16', 32))
+        self.assertEqual(result['foos_judged_through'], '2026-10-16')
+        self.assertEqual(result['windows_dates']['foos'], dict(first_day='2026-09-05', last_day='2026-10-02'))
+        # Losses in the catch-up weeks count as well.
+        self.assertEqual(self.judge(trades=dict(catchup=40), losers=dict(catchup=40), end='2026-10-16')['status'], 'fail')
 
     def test_without_a_complete_capture_the_rule_cannot_pass(self):
-        self.assertEqual(self.judge(capture=False)['status'], 'unknown')
+        self.assertEqual(self.judge(capture=False)['status'], 'no_data')
+
+    def test_measurement_definitions_are_stated(self):
+        result = self.judge()
+        self.assertEqual(result['definitions'], w.DEFINITIONS)
+        self.assertIn('not balance', w.DEFINITIONS['dd'])
+        self.assertIn('commission', w.DEFINITIONS['pl'])
+        self.assertAlmostEqual(result['windows']['foos']['pl'], 20 * 10.0 - 10 * 5.0)
 
     def test_not_applicable_to_explicit_dates_or_an_export_that_saw_foos(self):
         original, retest = self.build()
@@ -426,7 +497,7 @@ class CatchupHookTests(RetestFixture, unittest.TestCase):
         original, retest = self.build()
         for verdict in ('not_comparable', 'unjudged'):
             result = CatchupRunner._oos_rule(original, retest, self.spec(self.record['tester']), dict(verdict=verdict))
-            self.assertEqual(result['status'], 'unknown', verdict)
+            self.assertEqual(result['status'], 'no_data', verdict)
 
     def test_explicit_exports_read_not_applicable_and_errors_read_unknown(self):
         from studio_catchup import CatchupRunner
@@ -436,7 +507,7 @@ class CatchupHookTests(RetestFixture, unittest.TestCase):
                          'not_applicable')
         broken = dict(retest, csv_path=str(self.root / 'missing.csv'))
         self.assertEqual(CatchupRunner._oos_rule(original, broken, self.spec(self.record['tester']), dict(verdict='held_up'))['status'],
-                         'unknown')
+                         'no_data')
 
 
 class BatchFormulaTests(unittest.TestCase):

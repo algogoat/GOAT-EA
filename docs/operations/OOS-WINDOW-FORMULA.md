@@ -95,26 +95,70 @@ Known limit: a symbol that trades on Saturday (crypto) has one FOOS day, the fir
 the export, because the EA cannot end an export before the optimization window end. FX, metals
 and index CFDs do not trade then.
 
-## The pass rule (`judge`, `goat-oos-window-rule-v1`)
+## The pass rule (`judge`, `goat-oos-window-rule-v1`): the source of truth
+
+Claude-Mac ruled (goatai#1885 comment 6005864453) that this controller evaluator is the source of
+truth. The desktop sift (goatai#2274) uses the same constants, result names and definitions, and
+the shared fixture `controller/fixtures/oos-holdout-gate-cases.json` pins both to identical
+results (see "Shared fixture" below).
 
 For each OOS window (BOOS and FOOS):
 
-1. **At least 30 trades** (positions opened in the window). Fewer is `not_eligible_yet`; a window
-   is **never shortened** to reach the floor, and a window under the floor is never judged on
-   PF or DD.
-2. With the floor met it passes on **PF ≥ 1.0 AND DD ≤ 1.5 × in-sample DD**. In-sample DD is
-   SAMPLE's drawdown from its own opening equity; an OOS window's DD is measured from the running
-   peak including everything before it (a drawdown already under way counts). The DD bar is
-   computed exactly (2·DD ≤ 3·in-sample), with no float rounding at the bar.
+1. **At least 30 trades.** Fewer is `not_eligible_yet`: too few to judge either way, never a
+   failure. A window is **never shortened** to reach the floor, and a window under the floor is
+   never judged on PF or DD.
+2. With the floor met it passes on **PF ≥ 1.0 AND DD ≤ 1.5 × in-sample (SAMPLE) DD**, the DD bar
+   computed exactly (2·DD ≤ 3·SAMPLE DD, no float rounding at the bar).
 
-A set's status, in order: `fail` (a window with the floor met misses the bar); `not_eligible_yet`
-(a window under 30 trades, or FOOS not tested or not complete yet — a set with fewer than 30
-FOOS trades is not eligible yet); `unknown` (a measurement is missing, for example PF without a
-complete deal capture; never a pass); `pass` (both windows pass). `not_applicable` means the
-dates were not formula dates, or the export already contained FOOS days. FWD and SAMPLE never
-change the verdict except through the in-sample drawdown, and every result says
-`used_for_ranking: false`.
+Window results, in this order:
 
+| Result | When |
+|---|---|
+| `no_data` | No such window, the window has not been tested, or there is no trade count for it. |
+| `not_eligible_yet` | Fewer than 30 trades, or FOOS not tested through the export Friday yet. |
+| `fail` | 30+ trades and a measured PF below 1.0 (net below 0) or a measured DD above 1.5 × SAMPLE DD. |
+| `not_measured` | 30+ trades, nothing measured failed, but PF, the window DD or the SAMPLE DD (> 0) is missing. |
+| `pass` | 30+ trades, PF ≥ 1.0 and DD ≤ 1.5 × SAMPLE DD, all measured. |
+
+A set takes the first of `fail`, `not_eligible_yet`, `not_measured`, `no_data`, `pass` that either
+window has, so it passes only when both pass, and a set with fewer than 30 FOOS trades is not
+eligible yet. `not_applicable` (outside the five) means the dates were not formula dates or the
+export already contained FOOS days. FWD and SAMPLE never change the verdict except through the
+in-sample drawdown, and every result says `used_for_ranking: false`.
+
+### Definitions (the desktop must match these exactly)
+
+- **Days**: broker server calendar days; a window is `[first_day 00:00, last_day + 1 day 00:00)`.
+- **Trades**: positions opened in the window (entry deals inside it), the count the EA writes as
+  `Trades=` in its BOOS/SAMPLE/FWD/FOOS header lines.
+- **PL**: the net result of those positions: profit + swap + commission + fee over their deals
+  inside the window. All costs are included; a position still open at the window end counts only
+  its deals so far.
+- **PF**: those deal results summed where positive, over the absolute sum where not positive
+  (deal level). PF ≥ 1.0 is exactly PL ≥ 0, which is what the gate tests; no negative deal result
+  (no losing trades) passes.
+- **DD**: an **equity** drawdown (not balance) in account money: the deepest fall of the sampled
+  equity (the one-minute equity rows of the export or re-test CSV, floating P/L included) below
+  its running peak, the peak starting at the window's opening equity (the last sample before the
+  window, else its first sample). The same definition for SAMPLE, BOOS and FOOS. A SAMPLE DD of 0
+  or unknown leaves no limit: `not_measured`.
+- **FOOS with catch-up weeks**: FOOS runs from the Saturday after the optimization end through the
+  export Friday. A catch-up re-test that runs later extends FOOS to the re-test's end: those weeks
+  follow the optimization end and are never ranked, so they **count toward the 30-trade floor**
+  (and PF and DD are measured over the same extended window). FOOS is never judged before its full
+  1/4 O has been tested.
+
+In the controller, trades, PL and PF come from the re-test's complete deal capture (Model 4
+sequence capture); without it the window is `no_data`. DD comes from the re-test's equity CSV.
+
+### Shared fixture
+
+`controller/fixtures/oos-holdout-gate-cases.json` (schema `goat-oos-holdout-gate-cases-v1`)
+holds the rules, the definitions, 25 window cases, 8 set cases and 5 date cases.
+`controller/test_studio_oos_windows.py` runs every case and checks the file's rules against the
+module constants. The same bytes live at goatai `docs/fixtures/oos-holdout-gate-cases.json`, where
+the desktop gate test runs every case. Change it in GOAT-EA first, then copy the identical file to
+goatai in a paired PR; never edit one copy alone.
 Where it is reported (additive; nothing already reported changed):
 
 - `catchup-report` rows and each catch-up result: `oos_rule` with the per-window numbers and
@@ -165,7 +209,8 @@ This is documented (`studio_oos_windows.DEMO_RULE`); nothing in the controller a
   (4 Jul to 2 Oct 2026) are pass/fail checks only."
 - FOOS is held out: never describe it as part of the ranking, never pick or sort sets by FOOS
   results, and never show FOOS numbers as a reason a set was chosen.
-- `not_eligible_yet` is not a failure: "it has 22 trades in FOOS; it needs 30 before it can be
+- `not_eligible_yet` is not a failure: "it has 22 trades in FOOS; it needs 30 (catch-up weeks count) before it can be
   judged". Never suggest shortening a window or picking a different O to get past the floor.
-- `unknown` is not a pass: say which measurement is missing (usually the deal capture for PF).
+- `no_data` and `not_measured` are not passes: say which measurement is missing (usually the deal capture,
+  or a drawdown that was not measured).
 - A pass is a pass of two checks on unseen data, not proof of an edge; demo comes next.

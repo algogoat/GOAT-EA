@@ -23,22 +23,27 @@ RUNNER = ('import sys,unittest\n'
           'sys.exit(0 if result.wasSuccessful() else 1)\n')
 RULE = 'studio_oos_windows.py'
 MUTATIONS = [
-    # The pass bar.
-    ('PF bar is strict', RULE, '    if not pf >= MIN_PF:\n', '    if not pf > MIN_PF:\n'),
-    ('PF bar dropped', RULE, '    if not pf >= MIN_PF:\n', '    if False:\n'),
-    ('DD bar is strict', RULE, '<= Fraction(in_sample_dd) * MAX_DD_RATIO.numerator:', '< Fraction(in_sample_dd) * MAX_DD_RATIO.numerator:'),
+    # The pass bar (shared with the desktop through fixtures/oos-holdout-gate-cases.json).
+    ('PF bar is strict', RULE, "return pf >= MIN_PF, '%.2f' % pf", "return pf > MIN_PF, '%.2f' % pf"),
+    ('net bar is strict', RULE, "return pl >= 0, ('net %+.2f' % pl)", "return pl > 0, ('net %+.2f' % pl)"),
+    ('PF bar dropped', RULE, '    if pf_ok is False:\n', '    if False:\n'),
+    ('DD bar is strict', RULE, '<= Fraction(base) * MAX_DD_RATIO.numerator:', '< Fraction(base) * MAX_DD_RATIO.numerator:'),
     ('DD ratio is 2x', RULE, 'MAX_DD_RATIO = Fraction(3, 2)', 'MAX_DD_RATIO = Fraction(2, 1)'),
-    ('DD bar dropped', RULE, '    if not Fraction(dd) * MAX_DD_RATIO.denominator', '    if False and Fraction(dd) * MAX_DD_RATIO.denominator'),
-    # The floor.
+    ('DD bar dropped', RULE, '        if not Fraction(dd) * MAX_DD_RATIO.denominator', '        if False and Fraction(dd) * MAX_DD_RATIO.denominator'),
+    ('zero in-sample DD gives a limit', RULE, "dd, base = _number(window.get('dd')), _positive(in_sample_dd)",
+     "dd, base = _number(window.get('dd')), _number(in_sample_dd)"),
+    # The floor and the result names.
     ('floor is 29', RULE, 'MIN_TRADES = 30 ', 'MIN_TRADES = 29 '),
     ('floor dropped', RULE, '    if trades < MIN_TRADES:\n', '    if False:\n'),
-    ('fail does not outrank a thin window', RULE, "('fail', 'not_eligible_yet', 'unknown', 'pass')",
-     "('not_eligible_yet', 'fail', 'unknown', 'pass')"),
+    ('fail does not outrank a thin window', RULE, "SET_ORDER = ('fail', 'not_eligible_yet', 'not_measured', 'no_data', 'pass')",
+     "SET_ORDER = ('not_eligible_yet', 'fail', 'not_measured', 'no_data', 'pass')"),
+    ('no_data outranks not_measured', RULE, "SET_ORDER = ('fail', 'not_eligible_yet', 'not_measured', 'no_data', 'pass')",
+     "SET_ORDER = ('fail', 'not_eligible_yet', 'no_data', 'not_measured', 'pass')"),
     ('unfinished FOOS judged', RULE, "    if window.get('complete') is False:\n", '    if False:\n'),
-    ('missing PF passes', RULE, "        missing.append('%s profit factor unknown", "        (lambda *a: None)('%s profit factor unknown"),
-    ('untested FOOS passes', RULE, "        result.update(status='not_eligible_yet' if name == 'FOOS' else 'unknown',",
-     "        result.update(status='pass' if name == 'FOOS' else 'unknown',"),
-    # The date math.
+    ('missing PF passes', RULE, "missing.append('%s profit factor not measured", "(lambda *a: None)('%s profit factor not measured"),
+    ('untested window passes', RULE, "window.get('present') is False:\n        result['reasons']",
+     "window.get('present') is False:\n        result['status'] = 'pass'; result['reasons']"),
+    ('catch-up weeks ignored', RULE, '            last = tested_through        # catch-up weeks count toward FOOS\n', '            pass\n'),    # The date math.
     ('BOOS rounded down', RULE, "boos=_ceil(Fraction(o_weeks, 2))", "boos=o_weeks // 2"),
     ('FWD rounded down', RULE, "fwd = _ceil(Fraction(o_weeks, 3))", "fwd = o_weeks // 3"),
     ('FOOS rounded down', RULE, "foos=_ceil(Fraction(o_weeks, 4))", "foos=o_weeks // 4"),

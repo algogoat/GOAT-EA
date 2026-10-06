@@ -759,10 +759,15 @@ SAMPLE = 2/3 O, FWD = 1/3 O, FOOS = 1/4 O ending at the export Friday (default
   FOOS. It needs an FU35+ EA (`goat-evidence-end-v1`); older builds refuse the formula.
 - After the batch, run the FOOS replay: a catch-up whose `evidence_end` is the export
   Friday (`batch-status` → `oos_windows.foos_replay`). `catchup-report` rows carry
-  `oos_rule`: `pass`, `fail`, `not_eligible_yet`, `unknown` or `not_applicable`.
+  `oos_rule`: `pass`, `fail`, `not_eligible_yet`, `no_data` or `not_measured`\r
+  (`not_applicable` for non-formula exports). Catch-up weeks after the export\r
+  Friday count toward FOOS.
 - The rule per OOS window: at least 30 trades (fewer = `not_eligible_yet`; never
   shorten a window or change O to reach it), then PF ≥ 1.0 and DD ≤ 1.5 × SAMPLE DD.
-  `unknown` (usually PF without a complete deal capture) is never a pass. It sits next
+  PF ≥ 1.0 is net of all costs ≥ 0; DD is an equity drawdown. `no_data` and\r
+  `not_measured` are never a pass. This evaluator is the source of truth; the\r
+  desktop sift matches it through `controller/fixtures/oos-holdout-gate-cases.json`.\r
+  It sits next
   to the export qualification stamp and the catch-up verdict; neither changed.
 - Demo after export continues FOOS but does not scale with O: at least 4 weeks AND at
   least 30 trades, decision due by 6 weeks; under 30 trades at 6 weeks is "too slow to

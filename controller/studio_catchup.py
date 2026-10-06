@@ -791,14 +791,14 @@ class CatchupRunner(SeedRunner):
         from studio_oos_windows import EVALUATION, judge_retest
         if verdict.get('verdict') in ('not_comparable', 'unjudged'):
             reason = 'the re-test was not judged as the same test as the original (%s)' % verdict.get('verdict')
-            return dict(schema=EVALUATION, status='unknown', reasons=[reason], used_for_ranking=False,
-                        plain='Cannot be judged yet under the OOS window rule: ' + reason + '.')
+            return dict(schema=EVALUATION, status='no_data', reasons=[reason], used_for_ranking=False,
+                        plain='No hold-out data under the OOS window rule: ' + reason + '.')
         try:
             return judge_retest(original, retest, tester=spec['original'].get('tester'))
         except (OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
             reason = 'could not apply the OOS window rule: ' + str(exc)[:240]
-            return dict(schema=EVALUATION, status='unknown', reasons=[reason], used_for_ranking=False,
-                        plain='Cannot be judged yet: ' + reason + '.')
+            return dict(schema=EVALUATION, status='no_data', reasons=[reason], used_for_ranking=False,
+                        plain='No hold-out data: ' + reason + '.')
 
     def _move(self, set_path, destination):
         """Move the EA's SET/CSV/.goatseq unit out of TEMP into the evidence folder. Never overwrites."""

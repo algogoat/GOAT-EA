@@ -39,15 +39,20 @@ EA accepts): its exports stop at the optimization end and contain no FOOS day. F
 judged by the controller-side held-out replay that already exists, OOS catch-up
 (``catchup-prepare`` with ``evidence_end`` = the export Friday): one non-optimized pass of
 the frozen exported values, judged only on the days after the export's end. ``judge_retest``
-scores that replay with this rule. Only EA builds that report ``goat-evidence-end-v1``
-(FU35+) can stop exports there, so prepare refuses the formula on older builds.
+scores that replay with this rule; catch-up weeks after the export Friday count toward FOOS.
+Only EA builds that report ``goat-evidence-end-v1`` (FU35+) can stop exports there, so
+prepare refuses the formula on older builds.
 
-Pass bar (``judge`` / ``judge_window``)
----------------------------------------
-Each OOS window needs at least 30 trades (positions opened in the window). Fewer is
+Pass bar (``judge`` / ``judge_window``): the source of truth
+-------------------------------------------------------------
+Claude-Mac ruled (goatai#1885 comment 6005864453) that this evaluator is the source of truth;
+the desktop sift (goatai#2274) uses the same constants, result names and ``DEFINITIONS``, and
+the shared fixture ``controller/fixtures/oos-holdout-gate-cases.json`` pins both to identical
+results. Each OOS window needs at least 30 trades (positions opened in the window). Fewer is
 ``not_eligible_yet``; a window is never shortened to reach the floor. With the floor met a
-window passes on PF >= 1.0 AND DD <= 1.5 x in-sample DD (SAMPLE). A measurement that is
-missing (PF without a complete deal capture, for example) is ``unknown``, never a pass.
+window passes on PF >= 1.0 AND DD <= 1.5 x in-sample DD (SAMPLE). Results:
+``pass | fail | not_eligible_yet | no_data | not_measured``; a missing measurement is
+``no_data`` or ``not_measured``, never a pass.
 
 Demo (live test after export) continues FOOS but does not scale with O: see ``DEMO_RULE``.
 This module only documents it; nothing here automates demo.
@@ -69,7 +74,28 @@ MAX_DD_RATIO = Fraction(3, 2)           # DD <= 1.5 x in-sample DD
 MONTHS_RANGE = (1, 120)
 WEEKS_RANGE = (4, 520)
 FRIDAY, SATURDAY = 4, 5
-STATUSES = ('pass', 'fail', 'not_eligible_yet', 'unknown')
+# The gate result names the desktop sift shares (goatai#2274, Claude-Mac #1885 6005864453).
+STATUSES = ('pass', 'fail', 'not_eligible_yet', 'no_data', 'not_measured')
+FRACTIONS = dict(boos='1/2', sample='2/3', fwd='1/3', foos='1/4')
+FIXTURE = 'fixtures/oos-holdout-gate-cases.json'
+# The measurement definitions the desktop must match exactly (this controller is the source of truth).
+DEFINITIONS = dict(
+    days='Broker server calendar days; a window is [first_day 00:00, last_day + 1 day 00:00).',
+    trades='Positions opened in the window: entry deals (deal_entry 0) whose time is inside the window; the same count '
+           'the EA writes as Trades= in its BOOS/SAMPLE/FWD/FOOS header lines.',
+    pl='Net result of the positions opened in the window: the sum of profit + swap + commission + fee over their deals '
+       'inside the window (all costs included; a position still open at the window end counts only its deals so far).',
+    pf='Those deal results summed where positive, divided by the absolute sum where not positive (deal level). '
+       'PF >= 1.0 is exactly pl >= 0, which is what the gate tests; no negative deal result = no losing trades = pass.',
+    dd='Equity drawdown in account money: the deepest fall of the sampled equity (one-minute equity rows of the export '
+       'or re-test CSV, floating P/L included, not balance) below its running peak, where the peak starts at the '
+       'window\'s opening equity (the last sample before the window, else its first sample). The same definition for '
+       'SAMPLE (in-sample), BOOS and FOOS.',
+    dd_bar='DD <= 1.5 x SAMPLE DD, compared exactly (2 x DD <= 3 x SAMPLE DD). A SAMPLE DD of 0 or unknown leaves no '
+           'limit: not_measured.',
+    foos='FOOS runs from the Saturday after the optimization end through the export Friday; a catch-up re-test that '
+         'runs later extends it to the re-test end (catch-up weeks count toward the 30-trade floor). FOOS is never '
+         'judged before its full 1/4 O has been tested.')
 
 DEMO_RULE = dict(
     rule='goat-demo-continuation-v2',
@@ -368,85 +394,124 @@ def assert_foos_held_out(record, evidence_policy):
 # Evaluation: BOOS and FOOS, 30-trade floor, PF and DD bar
 # ---------------------------------------------------------------------------
 
-def _pf_value(window):
+def _pf_test(window):
+    """(passes PF >= 1.0, printable PF) or (None, None) when PF cannot be measured.
+
+    PF = gross profit / gross loss of the positions opened in the window, each position's result
+    being profit + swap + commission + fee of its deals (costs included). PF >= 1.0 is the same
+    test as the net of those results >= 0, so a window with ``pl`` (that net) but no PF is still
+    judged; no losing position (PF infinite) passes.
+    """
     pf = window.get('pf')
     if pf is None and window.get('pf_note') == 'no losing deals':
-        return math.inf
-    return pf
+        return True, 'no losing trades'
+    if isinstance(pf, (int, float)) and not isinstance(pf, bool):
+        return pf >= MIN_PF, '%.2f' % pf
+    pl = window.get('pl')
+    if isinstance(pl, (int, float)) and not isinstance(pl, bool):
+        return pl >= 0, ('net %+.2f' % pl)
+    return None, None
+
+
+def _positive(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else None
+
+
+def _number(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else None
 
 
 def judge_window(name, window, in_sample_dd):
-    """One OOS window: ``pass``, ``fail``, ``not_eligible_yet`` or ``unknown`` with plain reasons.
+    """One OOS window's gate: ``pass | fail | not_eligible_yet | no_data | not_measured`` with reasons.
 
     ``window``: ``trades`` (positions opened in the window), ``pf`` (or ``pf_note`` 'no losing
-    deals'), ``dd`` (money), optional ``complete`` (False while the window has not fully
-    elapsed or been tested) and ``first_day``/``last_day``. Under the floor is never judged on PF
-    or DD and never passes; the window is never shortened to reach the floor.
+    deals', or ``pl``, the net of those positions), ``dd`` (equity drawdown in money), optional
+    ``complete`` (False while the window has not fully elapsed or been tested) and
+    ``first_day``/``last_day``. In order:
+
+    * no_data: no such window, or no trade count for it.
+    * not_eligible_yet: not complete yet, or fewer than 30 trades. Never judged on PF or DD,
+      never shortened to reach the floor.
+    * fail: a measured PF below 1.0 (net below 0), or a measured DD above 1.5x the in-sample DD.
+    * not_measured: PF, the window DD or the in-sample DD (> 0) could not be measured, and
+      nothing that was measured failed.
+    * pass: PF >= 1.0 and DD <= 1.5x in-sample, both measured.
     """
-    result = dict(window=name, status='unknown', reasons=[], min_trades=MIN_TRADES, min_pf=MIN_PF,
-                  max_dd_ratio=float(MAX_DD_RATIO), in_sample_dd=in_sample_dd)
-    if not isinstance(window, dict):
-        result.update(status='not_eligible_yet' if name == 'FOOS' else 'unknown',
-                      reasons=['%s has not been tested yet' % name])
+    result = dict(window=name, status='no_data', reasons=[], min_trades=MIN_TRADES, min_pf=MIN_PF,
+                  max_dd_ratio=float(MAX_DD_RATIO), in_sample_dd=in_sample_dd, dd_limit=None)
+    if not isinstance(window, dict) or window.get('present') is False:
+        result['reasons'] = ['No %s result: the window has not been tested' % name]
         return result
-    result.update({key: window.get(key) for key in ('first_day', 'last_day', 'trades', 'pf', 'pf_note', 'dd')})
+    result.update({key: window.get(key) for key in ('first_day', 'last_day', 'trades', 'pf', 'pf_note', 'pl', 'dd')})
     if window.get('complete') is False:
         result.update(status='not_eligible_yet', reasons=['%s is not complete yet (tested through %s of %s)'
                                                           % (name, window.get('tested_through'), window.get('last_day'))])
         return result
     trades = window.get('trades')
-    if type(trades) is not int:
-        result['reasons'].append('%s trade count unknown (needs a complete deal capture)' % name)
+    if type(trades) is not int or trades < 0:
+        result['reasons'] = ['No %s trade count (needs a complete deal capture)' % name]
         return result
     if trades < MIN_TRADES:
         result.update(status='not_eligible_yet',
-                      reasons=['%s has %d trades, under the %d-trade floor; the window is never shortened to reach it'
-                               % (name, trades, MIN_TRADES)])
+                      reasons=['%d of %d %s trades: too few to judge, so it has not passed or failed yet; the window is '
+                               'never shortened to reach the floor' % (trades, MIN_TRADES, name)])
         return result
-    pf, dd = _pf_value(window), window.get('dd')
-    missing = []
-    if pf is None:
-        missing.append('%s profit factor unknown (needs a complete deal capture)' % name)
-    if dd is None or in_sample_dd is None:
-        missing.append('%s drawdown or the in-sample drawdown is unknown' % name)
-    if missing:
-        result['reasons'] = missing
-        return result
-    failed = []
-    if not pf >= MIN_PF:
-        failed.append('%s profit factor %.2f is below %.1f' % (name, pf, MIN_PF))
-    limit = float(MAX_DD_RATIO) * in_sample_dd
-    result['dd_limit'] = limit
-    # Exact: dd <= 1.5 x in-sample  <=>  2 dd <= 3 in-sample (no float rounding at the bar).
-    if not Fraction(dd) * MAX_DD_RATIO.denominator <= Fraction(in_sample_dd) * MAX_DD_RATIO.numerator:
-        failed.append('%s drawdown %.2f is above 1.5x the in-sample drawdown (%.2f, limit %.2f)'
-                      % (name, dd, in_sample_dd, limit))
+    pf_ok, pf_text = _pf_test(window)
+    dd, base = _number(window.get('dd')), _positive(in_sample_dd)
+    failed, missing = [], []
+    if pf_ok is False:
+        failed.append('%s profit factor below 1.0 (%s) over %d trades' % (name, pf_text, trades))
+    elif pf_ok is None:
+        missing.append('%s profit factor not measured (needs a complete deal capture)' % name)
+    if base is not None:
+        result['dd_limit'] = float(MAX_DD_RATIO) * base
+    if dd is not None and base is not None:
+        # Exact: dd <= 1.5 x in-sample  <=>  2 dd <= 3 in-sample (no float rounding at the bar).
+        if not Fraction(dd) * MAX_DD_RATIO.denominator <= Fraction(base) * MAX_DD_RATIO.numerator:
+            failed.append('%s drawdown %.2f is above %.2f, 1.5x the in-sample %.2f' % (name, dd, result['dd_limit'], base))
+    else:
+        missing.append('%s drawdown not measured' % name if dd is None else 'no in-sample (SAMPLE) drawdown to compare with')
     if failed:
         result.update(status='fail', reasons=failed)
+    elif missing:
+        result.update(status='not_measured', reasons=missing)
     else:
-        result.update(status='pass', reasons=['%s: %d trades, PF %s, DD %.2f within 1.5x in-sample %.2f'
-                                              % (name, trades, 'no losing trades' if pf == math.inf else '%.2f' % pf,
-                                                 dd, in_sample_dd)])
+        result.update(status='pass', reasons=['%s passed: %d trades, PF %s, drawdown %.2f within %.2f (1.5x in-sample)'
+                                              % (name, trades, pf_text, dd, result['dd_limit'])])
     return result
 
 
-def judge(boos, foos, *, in_sample_dd):
-    """A set's OOS verdict from its BOOS and FOOS windows: ``pass | fail | not_eligible_yet | unknown``.
+SET_ORDER = ('fail', 'not_eligible_yet', 'not_measured', 'no_data', 'pass')
 
-    fail: a window with the floor met misses PF >= 1.0 or DD <= 1.5x in-sample. Otherwise
-    not_eligible_yet: a window is under 30 trades (a set with fewer than 30 FOOS trades is not
-    eligible yet) or not tested/complete yet. Otherwise unknown: a measurement is missing.
-    pass only when both windows pass. FWD and SAMPLE never change this verdict except
-    through the in-sample drawdown, and FOOS is never a ranking input.
+
+def judge(boos, foos, *, in_sample_dd):
+    """A set's OOS verdict from its BOOS and FOOS gates (``SET_ORDER``: the first status either window has).
+
+    pass only when both windows pass. A set with fewer than 30 FOOS trades is not eligible yet.
+    FWD and SAMPLE never change this verdict except through the in-sample drawdown, and FOOS is
+    never a ranking input.
     """
     parts = dict(boos=judge_window('BOOS', boos, in_sample_dd), foos=judge_window('FOOS', foos, in_sample_dd))
     states = [parts['boos']['status'], parts['foos']['status']]
-    status = next(s for s in ('fail', 'not_eligible_yet', 'unknown', 'pass') if s in states)
+    status = next(s for s in SET_ORDER if s in states)
     reasons = [reason for part in parts.values() if part['status'] == status for reason in part['reasons']]
-    words = {'pass': 'Passes', 'fail': 'Fails', 'not_eligible_yet': 'Not eligible yet', 'unknown': 'Cannot be judged yet'}
+    words = {'pass': 'Passes', 'fail': 'Fails', 'not_eligible_yet': 'Not eligible yet',
+             'not_measured': 'Not measured', 'no_data': 'No hold-out data'}
     return dict(schema=EVALUATION, status=status, reasons=reasons, windows=parts, in_sample_dd=in_sample_dd,
                 bar=dict(min_trades=MIN_TRADES, min_pf=MIN_PF, max_dd_ratio=float(MAX_DD_RATIO), in_sample='SAMPLE'),
-                used_for_ranking=False, plain=words[status] + ' the OOS window rule: ' + '; '.join(reasons) + '.')
+                used_for_ranking=False, plain=words[status] + ' (OOS window rule): ' + '; '.join(reasons) + '.')
+
+
+def judge_case(case):
+    """Run one shared fixture case (``fixtures/oos-holdout-gate-cases.json``) through the evaluator."""
+    def window(raw):
+        if raw is None:
+            return None
+        return dict(present=raw.get('present', True), trades=raw.get('trades'), pf=raw.get('pf'), pf_note=raw.get('pf_note'),
+                    pl=raw.get('pl'), dd=raw.get('max_drawdown'), complete=raw.get('complete'))
+    if 'window' in case:
+        return judge_window(case['window'].upper(), window(case['input']), case.get('in_sample_max_drawdown'))
+    return judge(window(case.get('boos')), window(case.get('foos')), in_sample_dd=case.get('in_sample_max_drawdown'))
 
 
 def not_applicable(reason):
@@ -460,9 +525,12 @@ def judge_retest(original, retest, *, tester):
     ``original``/``retest``: studio_evidence.read_export records; ``tester``: the original
     optimization window (FromDate/ForwardDate/ToDate). Applies only when those dates are
     formula dates and the original export stopped at the optimization end (FOOS unseen).
-    Trades and PF come from the re-test's complete deal capture; DD from its equity CSV:
-    in-sample = SAMPLE from its own opening equity, OOS windows from the running peak
-    including everything before them (a drawdown already under way counts).
+
+    Measured on the re-test (one non-optimized pass from the BOOS start), with the shared
+    definitions (``DEFINITIONS``): trades and PF from its complete deal capture, DD from its
+    equity CSV. FOOS is judged from its first day through the re-test's last day: catch-up weeks
+    after the export Friday count toward FOOS (they follow the optimization end and are never
+    ranked), but FOOS is never judged before its full 1/4 O has been tested.
     """
     from pathlib import Path
     from studio_catchup_verdict import deal_window, equity_rows, equity_window
@@ -486,22 +554,27 @@ def judge_retest(original, retest, *, tester):
         deals = None
     tested_through = _day(retest['evidence_end'])
 
-    def measure(key, carry):
+    def measure(key, extend=False):
         part = record[key]
         first, last = _day(part['first_day']), _day(part['last_day'])
-        window = equity_window(rows, first, last, carry_peak=carry)
-        out = dict(first_day=part['first_day'], last_day=part['last_day'], dd=window['dd'], net=window['net'],
-                   complete=tested_through >= last, tested_through=tested_through.isoformat())
+        complete = tested_through >= last
+        if extend and complete:
+            last = tested_through        # catch-up weeks count toward FOOS
+        window = equity_window(rows, first, last, carry_peak=False)
+        out = dict(first_day=first.isoformat(), last_day=last.isoformat(), formula_last_day=part['last_day'], dd=window['dd'],
+                   equity_net=window['net'], complete=complete, tested_through=tested_through.isoformat())
         if deals:
             counted = deal_window(deals, first, last)
-            out.update(trades=counted['entries'], pf=counted['pf'], pf_note=counted['pf_note'])
+            out.update(trades=counted['entries'], pf=counted['pf'], pf_note=counted['pf_note'],
+                       pl=round(counted['gross_win'] - counted['gross_loss'], 8))
         else:
-            out.update(trades=None, pf=None, pf_note='needs a complete capture')
+            out.update(trades=None, pf=None, pf_note='needs a complete capture', pl=None)
         return out
 
-    sample = measure('sample', False)
-    result = judge(measure('boos', True), measure('foos', True), in_sample_dd=sample['dd'] if sample['complete'] else None)
+    sample = measure('sample')
+    result = judge(measure('boos'), measure('foos', extend=True), in_sample_dd=sample['dd'] if sample['complete'] else None)
     result.update(o_weeks=record['o_weeks'], export_friday=record['export_friday'], trade_source='capture_deals' if deals else 'unavailable',
                   windows_dates={key: dict(first_day=record[key]['first_day'], last_day=record[key]['last_day'])
-                                 for key in ('boos', 'sample', 'fwd', 'foos')})
+                                 for key in ('boos', 'sample', 'fwd', 'foos')},
+                  foos_judged_through=result['windows']['foos'].get('last_day'), definitions=DEFINITIONS)
     return result

@@ -189,7 +189,7 @@ The finish reply holds `result.result.member_outcomes`, the frozen `configuratio
 . "<work>\goat.ps1"; $id = 'pilot-1'; $fin = (Studio @('finish','--job-id',$id)).result; $res = $fin.result
 $cfg = (Studio @('batch-status','--batch-id',$id)).result.members
 $lin = (Get-Content -Raw "$work\lineage-$id.json" | ConvertFrom-Json)   # PowerShell 5: never wrap this in @(...): that makes the whole list one element
-$noEdge = @{}; foreach ($o in @($res.research_outcomes)) { if ($o) { $noEdge[[int]$o.index] = $o.summary } }   # tested, no edge in its window
+$noEdge = @{}; $bsSets = @{}; foreach ($o in @($res.research_outcomes)) { if ($o) { $noEdge[[int]$o.index] = $o.summary; $bsSets[[int]$o.index] = [int]$o.below_score_sets } }   # tested, no edge in its window; research-only below_score sets kept (B42)
 $state = (Studio @('state')).result; $path = $fin.result_path; if (-not $path) { $path = ($state.queue | Where-Object job_id -eq $id).completion_path }
 $sha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
 foreach ($m in $res.member_outcomes) { $i = $m.index; $t = $res.configuration.batch_members[$i].tester; $L = $lin[$i]
@@ -204,11 +204,11 @@ foreach ($m in $res.member_outcomes) { $i = $m.index; $t = $res.configuration.ba
     conditions=@{eaVersion=$res.ea_version; controllerVersion=$res.controller_version; broker='unavailable'; server=$res.account_server; symbol=$t.Symbol
       timeframe=$t.Period; from=$t.FromDate; to=$t.ToDate; forward=$t.ForwardDate; testerModel=[string]$t.Model; deposit=[double]$t.Deposit
       currency=$t.Currency; sizing='unavailable'; costs='unavailable'; effectiveSettingsSha256=$cfg[$i].configuration_sha256}
-    metrics=@{nativeThresholdCandidates=$n; belowThresholdSets=$below; thresholdUnknownSets=$unknown}; qualityGates=@{}; artifacts=@(@{name='native-result.json'; sha256=$sha})
+    metrics=@{nativeThresholdCandidates=$n; belowThresholdSets=$below; thresholdUnknownSets=$unknown; belowScoreSets=[int]$bsSets[[int]$i]}; qualityGates=@{}; artifacts=@(@{name='native-result.json'; sha256=$sha})
     summary='<one or two sentences: what ran, what qualified, limits>'}} -RequestId "rec-$att" }
 ```
 
-Replace `unavailable` with real facts when known. For a member tested with no edge, use its `research_outcomes` sentence (`$noEdge[[int]$i]`) as the summary. `& $goat demo --installation $receipt export-qualification --source <run folder>` (read-only) lists every kept SET of a run with its stamp, cross-checked against the EA log; the desktop asks for the same stamps itself when exports are imported from a run folder and matches them by SET SHA-256. `--write` also appends a provenance record under the controller state; use it once per finished run. Then `Studio @('benchmark-report','--batch-id','pilot-1')` gives the measured timing; use it to size the next batch and tell the user the size you chose. A `failed` or `interrupted` result is a technical outcome, not evidence that the strategy is bad. To build a portfolio, import the export folders with `library.prepareImport` / `library.finalizeImport` as described in the installed `goat-beta-agent-guide.md` (sections 7 and 8).
+Replace `unavailable` with real facts when known. For a member tested with no edge, use its `research_outcomes` sentence (`$noEdge[[int]$i]`) as the summary. `belowScoreSets` is that member's `research_outcomes` `below_score_sets` (research-only below_score sets kept, EA build B42; 0 otherwise): the desktop fit map then counts the member as an attempt, never an export or a pass, even if it reads completed. `& $goat demo --installation $receipt export-qualification --source <run folder>` (read-only) lists every kept SET of a run with its stamp, cross-checked against the EA log; the desktop asks for the same stamps itself when exports are imported from a run folder and matches them by SET SHA-256. `--write` also appends a provenance record under the controller state; use it once per finished run. Then `Studio @('benchmark-report','--batch-id','pilot-1')` gives the measured timing; use it to size the next batch and tell the user the size you chose. A `failed` or `interrupted` result is a technical outcome, not evidence that the strategy is bad. To build a portfolio, import the export folders with `library.prepareImport` / `library.finalizeImport` as described in the installed `goat-beta-agent-guide.md` (sections 7 and 8).
 
 ## Build a new strategy from scratch
 

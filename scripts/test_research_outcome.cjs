@@ -106,7 +106,7 @@ function makeContext(files,{realForward=false}={}){
     StringFind:(s,t,from=0)=>String(s).indexOf(t,from),StringLen:s=>String(s).length,
     StringSubstr:(s,a,n)=>n===undefined?String(s).slice(a):String(s).substr(a,n),
     StringGetCharacter:(s,k)=>String(s).charCodeAt(k),
-    StringCompare:(a,b)=>a===b?0:(a<b?-1:1),StringToDouble:s=>parseFloat(s)||0,
+    StringCompare:(a,b)=>a===b?0:(a<b?-1:1),StringToDouble:s=>parseFloat(s)||0,StringToInteger:s=>parseInt(s,10)||0,
     StringSplit:(s,sep,out)=>{out.length=0;out.push(...String(s).split(typeof sep==='number'?String.fromCharCode(sep):sep));return out.length;},
     ArraySize:a=>a.length,ArrayResize:(a,n)=>{while(a.length<n)a.push(a.make?a.make():'');a.length=n;return n;},ArrayInitialize:(a,v)=>{a.fill(v);return a.length;},
     DoubleToString:(x,n)=>Number(x).toFixed(n),TimeToString:t=>date(t),

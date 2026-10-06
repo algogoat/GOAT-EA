@@ -1,0 +1,79 @@
+{
+  "schema": "goat-window-metrics-parity-v1",
+  "initial": 100000.0,
+  "reference": "controller/studio_gate_calibration.py window_metrics(deal_rows=[], equity(csv), first, end, initial)",
+  "cases": [
+    {
+      "csv": "real-AUDUSD-Trds184.csv",
+      "window": "sample",
+      "first": "2026-03-02",
+      "end": "2026-08-15",
+      "net": 711.55,
+      "dd": 319.01,
+      "sr": 1.7705,
+      "arf": 0.4033,
+      "weekdays": 120,
+      "recovery": 2.2305
+    },
+    {
+      "csv": "real-AUDUSD-Trds184.csv",
+      "window": "from_before_first_row",
+      "first": "2026-01-26",
+      "end": "2026-03-02",
+      "net": 68.02,
+      "dd": 25.85,
+      "sr": 6.6916,
+      "arf": 2.284,
+      "weekdays": 25,
+      "recovery": 2.6313
+    },
+    {
+      "csv": "real-AUDUSD-Trds184.csv",
+      "window": "april",
+      "first": "2026-04-01",
+      "end": "2026-05-01",
+      "net": -118.26,
+      "dd": 253.41,
+      "sr": -2.2533,
+      "arf": -0.4603,
+      "weekdays": 22,
+      "recovery": -0.4667
+    },
+    {
+      "csv": "real-AUDUSD-Trds287.csv",
+      "window": "sample",
+      "first": "2026-03-02",
+      "end": "2026-08-15",
+      "net": 2140.05,
+      "dd": 324.68,
+      "sr": 4.0295,
+      "arf": 1.1919,
+      "weekdays": 120,
+      "recovery": 6.5913
+    },
+    {
+      "csv": "real-AUDUSD-Trds287.csv",
+      "window": "from_before_first_row",
+      "first": "2026-01-26",
+      "end": "2026-03-02",
+      "net": 141.83,
+      "dd": 40.04,
+      "sr": 7.5272,
+      "arf": 3.0746,
+      "weekdays": 25,
+      "recovery": 3.5422
+    },
+    {
+      "csv": "real-AUDUSD-Trds287.csv",
+      "window": "april",
+      "first": "2026-04-01",
+      "end": "2026-05-01",
+      "net": 176.35,
+      "dd": 319.83,
+      "sr": 1.8898,
+      "arf": 0.5439,
+      "weekdays": 22,
+      "recovery": 0.5514
+    }
+  ]
+}

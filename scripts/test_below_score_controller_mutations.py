@@ -64,6 +64,19 @@ MUTATIONS = [
      "                        include_research_only=plan.get('include_research_only', False), native_launch_qualified=False)",
      "                        native_launch_qualified=False)"),
     # Item 4 and its reasons.
+    # Claude-Mac 6026738987 item 2: the re-test must read back its original's tier.
+    ('a re-test that reads back another tier is collected', CATCHUP,
+     "        if (got_tier, got_research) != (want_tier, want_research):\n", "        if False:\n"),
+    ('the read-back trusts a research-only original', CATCHUP,
+     "        want_tier, want_research = spec.get('export_tier', 'standard'), bool(spec.get('research_only'))\n",
+     "        want_tier, want_research = 'standard', False\n"),
+    # Claude-Mac 6026738987 item 3: the finish reply carries each member's research-only set count for the matrix.
+    ('finish omits the below_score sets', 'studio_finish.py', "below_score_sets=below_score_sets(found[i]))", "below_score_sets=0)"),
+    ('a lost or unreadable pick counts its sets', STATUS,
+     "    return kept if below.get('result') == 'exported' and kept in (1, 2) else 0\n", "    return kept or 0\n"),
+    ('an impossible count is recorded', STATUS,
+     "    return kept if below.get('result') == 'exported' and kept in (1, 2) else 0\n",
+     "    return kept if below.get('result') == 'exported' and kept else 0\n"),
     ('an unknown reason accepted', STATUS, "        facts['reason'] = reason if reason in BELOW_SCORE_REASONS else 'unreadable'", "        facts['reason'] = reason"),
     # Nit a: the user sentence's em dash, back to its UTF-8-as-cp1252 mojibake.
     ('the no-FWD-eligible sentence mojibake', STATUS, " ' — '\n                + str(outcome['score_qualifying_rows'])",

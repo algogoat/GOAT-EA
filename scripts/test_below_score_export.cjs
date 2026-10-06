@@ -94,16 +94,16 @@ const key=(r,dep)=>{c.__rows=[r];return vm.runInContext('GoatXmlFwdKey(__rows,0,
 
 // ---- SAMPLE series: daily BALANCE closes, only days both curves logged (item 5).
 const D=s=>H.epoch(s),DAY=86400;
-function equityCsv(changes,{start='2025.01.06',skip=[],equity=(b)=>b-3}={}){
+function equityCsv(changes,{start='2025.01.06',skip=[],equity=(b)=>b-3,base=100000}={}){
   const lines=['﻿<DATE>\t<BALANCE>\t<EQUITY>\t<DEPOSIT LOAD>'];
-  let bal=100000,t=D(start);
+  let bal=base,t=D(start);
   changes.forEach((x,k)=>{const day=H.date(t+k*DAY);bal+=x;if(skip.includes(k))return;   // a day without a row still trades
     lines.push(day+' 10:00\t'+bal.toFixed(2)+'\t'+equity(bal,k).toFixed(2)+'\t0.0',day+' 15:00\t'+bal.toFixed(2)+'\t'+equity(bal,k).toFixed(2)+'\t0.0');});
   return lines.join('\n');
 }
 vm.runInContext(H.method('GoatDailyReturnCorrelation').replace(/function GoatDailyReturnCorrelation\(([^)]*)\)/,'function GoatDailyReturnCorrelation(csvA,csvB,from,to)'),c);
 const corr=(a,b,from=D('2025.01.01'),to=D('2026.01.01'))=>{c.n=0;c.__a=a;c.__b=b;const v=vm.runInContext('GoatDailyReturnCorrelation(__a,__b,'+from+','+to+')',c);return [v,c.n];};
-const metrics=(csv,from,to)=>{c.__x=csv;c.__o=[];const ok=vm.runInContext('GoatEquityWindowMetrics(__x,'+from+','+to+',__o)',c);return ok?Array.from(c.__o):null;};
+const metrics=(csv,from,to,initial=100000)=>{c.__x=csv;c.__o=[];const ok=vm.runInContext('GoatEquityWindowMetrics(__x,'+from+','+to+','+initial+',__o)',c);return ok?Array.from(c.__o):null;};
 const wave=(n,f)=>Array.from({length:n},(_,k)=>f(k));
 const A=wave(60,k=>Math.sin(k*0.7)*50+((k*37)%11)-5);
 const B=wave(60,k=>Math.cos(k*1.9)*40+((k*53)%7)-3);
@@ -139,11 +139,29 @@ const B=wave(60,k=>Math.cos(k*1.9)*40+((k*53)%7)-3);
   const [rho,common]=corr(a,b,from,to);
   check(()=>assert.equal(common,49,'49 days both units logged inside SAMPLE (the EA logs a row only on some days)'));
   check(()=>assert.ok(rho>0.85&&rho<0.87,'neighbours of one template: 0.862, not shown different: '+rho));
+  // Parity with the controller (Claude-Mac 6026738987): GoatEquityWindowMetrics = studio_gate_calibration.window_metrics
+  // on the same CSV, window and deposit. window-metrics-parity.json holds window_metrics' own numbers (pinned on the
+  // Python side by controller/test_studio_below_score.py WindowMetricsParityTests); within float tolerance here.
+  const parity=JSON.parse(fs.readFileSync(path.join(FIXTURES,'window-metrics-parity.json'),'utf8'));
+  check(()=>assert.equal(parity.cases.length,6));
+  for(const k of parity.cases){
+    const m=metrics(real(k.csv),D(k.first.replace(/-/g,'.')),D(k.end.replace(/-/g,'.')),parity.initial),label=k.csv+' '+k.window;
+    check(()=>assert.ok(m,label+': measured'));
+    if(!m)continue;
+    check(()=>assert.ok(Math.abs(m[0]-k.net)<=0.006,label+' net '+m[0]+' vs '+k.net));
+    check(()=>assert.ok(Math.abs(m[1]-k.dd)<=0.006,label+' drawdown '+m[1]+' vs '+k.dd));
+    check(()=>assert.ok(Math.abs(m[2]-k.sr)<=0.00006,label+' SR '+m[2]+' vs '+k.sr));
+    check(()=>assert.ok(Math.abs(m[3]-k.arf)<=0.00006,label+' ARF '+m[3]+' vs '+k.arf));
+    check(()=>assert.equal(m[4],k.weekdays,label+' weekdays'));
+  }
   const ma=metrics(a,from,to),mb=metrics(b,from,to);
-  check(()=>assert.equal(Math.round(ma[0]),712,'SAMPLE net from balance closes = the SET header SAMPLE PL=712'));
+  check(()=>assert.equal(Math.round(ma[0]),712,'SAMPLE net = the SET header SAMPLE PL=712'));
   check(()=>assert.equal(Math.round(mb[0]),2140,'and PL=2140 for the other unit'));
   check(()=>assert.deepEqual([ma[4],mb[4]],[120,120],'120 weekdays, the header Days=120'));
-  check(()=>assert.ok(ma[2]>2.5&&ma[3]>0.2&&mb[2]>2.5&&mb[3]>0.2,'both clear the bar over SAMPLE: '+JSON.stringify([ma,mb])));
+  // Mac's example: on EQUITY with intraday rows Trds184 has DD 319 and SR 1.77 over SAMPLE (BALANCE closes read 233
+  // and 2.62), so it fails the 2.5 bar; Trds287 (DD 325, SR 4.03, ARF 1.19) clears it.
+  check(()=>assert.ok(Math.round(ma[1])===319&&ma[2]<2.5,'Trds184 under the bar on equity: '+JSON.stringify(ma)));
+  check(()=>assert.ok(mb[2]>2.5&&mb[3]>0.2,'Trds287 clears it: '+JSON.stringify(mb)));
 }
 // The window metrics on a hand-made curve.
 {
@@ -154,8 +172,24 @@ const B=wave(60,k=>Math.cos(k*1.9)*40+((k*53)%7)-3);
   check(()=>assert.equal(m[4],14,'weekdays in [Tue 9, Sat 27)'));
   check(()=>assert.ok(Math.abs(m[3]-Math.min(m[0]/m[1],25)/(14/21.7))<1e-9,'ARF = (net / drawdown) per 21.7 weekdays'));
   check(()=>assert.equal(metrics(equityCsv(steps,{start:'2024.01.08'}),D('2024.02.01'),D('2024.03.01')),null,'no row inside the window'));
-  check(()=>assert.equal(metrics(equityCsv(wave(20,()=>10),{start:'2024.01.08'}),D('2024.01.09'),D('2024.01.27')),null,'a flat change series has no Sharpe'));
+  check(()=>assert.equal(metrics(equityCsv(wave(20,()=>0),{start:'2024.01.08'}),D('2024.01.09'),D('2024.01.27')),null,'a flat curve has no Sharpe'));
+  // Exactly equal weekday returns (32 on a 1,024 deposit: exact in binary) have no variance, so no Sharpe, though net > 0.
+  check(()=>assert.equal(metrics(equityCsv(wave(20,()=>32),{start:'2024.01.08',base:1024}),D('2024.01.09'),D('2024.01.27'),1024),null,'constant returns have no Sharpe'));
   check(()=>assert.equal(metrics(equityCsv(steps,{start:'2024.01.08'}),D('2024.01.09'),D('2024.01.13')),null,'under 5 weekdays'));
+  // No row before the window: it opens at the initial deposit, so the first day's P&L counts (equity = balance - 3).
+  const first=metrics(equityCsv(steps,{start:'2024.01.08'}),D('2024.01.08'),D('2024.01.27'),100000);
+  check(()=>assert.ok(Math.abs(first[0]-(steps.slice(0,19).reduce((s,v)=>s+v,0)-3))<1e-6,'opens at the deposit: '+first[0]));
+  check(()=>assert.equal(metrics(equityCsv(steps,{start:'2024.01.08'}),D('2024.01.08'),D('2024.01.27'),0),null,'an unknown deposit is never measured'));
+  // EQUITY, intraday: a 10:00 dip the day's close does not show is in the drawdown; BALANCE is never read.
+  const lines=equityCsv(steps,{start:'2024.01.08'}).split('\n'),cells=lines[11].split('\t');   // 2024.01.13 10:00
+  cells[2]=(+cells[2]-500).toFixed(2);lines[11]=cells.join('\t');
+  const dipped=metrics(lines.join('\n'),D('2024.01.09'),D('2024.01.27'));
+  // The day closes 50 up, so the 500 dip from its 10:00 level is a 470 fall from the running peak.
+  check(()=>assert.ok(Math.abs(dipped[1]-470)<1e-6&&m[1]===20&&dipped[0]===m[0],'an intraday equity dip is drawdown, the net is unchanged: '+dipped));
+  const noBalance=equityCsv(steps,{start:'2024.01.08'}).split('\n').map((l,i)=>{if(!i)return l;const p=l.split('\t');p[1]='1';return p.join('\t');}).join('\n');
+  check(()=>assert.deepEqual(metrics(noBalance,D('2024.01.09'),D('2024.01.27')),m,'the BALANCE cell is never read'));
+  const backwards=equityCsv(steps,{start:'2024.01.08'}).split('\n');backwards.splice(13,0,'2024.01.09 09:00\t1\t1\t0');
+  check(()=>assert.equal(metrics(backwards.join('\n'),D('2024.01.09'),D('2024.01.27')),null,'rows back in time: unreadable'));
 }
 
 // ---- The combiner records how many report pairs it read; the pick comes after InitializeTester.
@@ -245,7 +279,7 @@ function tester({plan=[],csv={},move=true,runPath='GOAT\\Rabcdef012345',evidence
   // MQL passes details, the correlation's day count and the out-strings by reference: in the VM they
   // become context globals (__slotDetails, __bsDetails, n), read back right after each call.
   const slots=fn(/^int\s+GoatExportSlots\s*\(/m,'GoatExportSlots')
-    .replace(/function GoatExportSlots\(([^)]*)\)/,'function GoatExportSlots(ranked,metaTail,keepLosingSlot1,minSR,minARF,kept,__d,runs,lost,failed,reportMode)')
+    .replace(/function GoatExportSlots\(([^)]*)\)/,'function GoatExportSlots(ranked,metaTail,keepLosingSlot1,minSR,minARF,deposit,kept,__d,runs,lost,failed,reportMode)')
     .replace(/\bdetails\b/g,'__slotDetails').replace(/,days\);/,',days); days=n;');
   const start=fn(/^int\s+StartBelowScoreExporter\s*\(/m,'StartBelowScoreExporter')
     .replace(/function StartBelowScoreExporter\(([^)]*)\)/,'function StartBelowScoreExporter(reportMode)')
@@ -283,8 +317,8 @@ function tester({plan=[],csv={},move=true,runPath='GOAT\\Rabcdef012345',evidence
     const on=mainFunctions(new Set([...FLAGS,'GOAT_EXPORT_RANK_FWD_PROFIT_DD']));
     const exporter=on.fn(/^bool\s+StartExporter\s*\(/m,'StartExporter').replace(/MTTESTER::/g,'MTTESTER.').replace(/const ExportRecord\s+/g,'const ')
       .replace('StartBelowScoreExporter(reportMode,belowScore);','StartBelowScoreExporter(reportMode); belowScore=__bsDetails;')
-      .replace('profits=GoatExportSlots(fwdRanked,"",false,MinSR,MinARF,g_allExports,slotDetails,passes,losses,errors,reportMode);',
-               '{profits=GoatExportSlots(fwdRanked,"",false,MinSR,MinARF,g_allExports,slotDetails,passes,losses,errors,reportMode); slotDetails=__slotDetails;}');
+      .replace('profits=GoatExportSlots(fwdRanked,"",false,MinSR,MinARF,deposit,g_allExports,slotDetails,passes,losses,errors,reportMode);',
+               '{profits=GoatExportSlots(fwdRanked,"",false,MinSR,MinARF,deposit,g_allExports,slotDetails,passes,losses,errors,reportMode); slotDetails=__slotDetails;}');
     check(()=>assert.ok(exporter.includes('belowScore=__bsDetails;')&&exporter.includes('slotDetails=__slotDetails;'),'switched exporter rewired'));
     vm.runInContext(exporter,ctx);
     vm.runInContext(on.fn(/^void\s+GoatSlotTrimLog\s*\(/m,'GoatSlotTrimLog'),ctx);
@@ -297,7 +331,7 @@ function loaded(ctx,rows,{end='2025.03.15'}={}){
   return ctx;
 }
 const pass=(n,frf,{sl=0,grid=2,score=40}={})=>row({pass:n,forward_RF:frf,Inputs:sl+','+grid,Score:score});
-const sample=(changes)=>equityCsv(changes,{start:'2024.01.08'});
+const sample=(changes)=>equityCsv(changes,{start:'2024.01.08',base:DEP});   // a re-test's curve starts at the tester deposit
 const Ad=A.map(x=>x+30), Bd=B.map(x=>x+30);   // with a positive drift: both clear the SAMPLE quality bar
 {
   // Slot 1 only; kept even when its re-test lost money (keepLosing).
@@ -358,7 +392,7 @@ const Ad=A.map(x=>x+30), Bd=B.map(x=>x+30);   // with a positive drift: both cle
 {
   // The quality bar over SAMPLE (net > 0, SR >= max(MinSR, 2.5), ARF >= max(MinARF, 0.2)) gates slot 2.
   const end='2024.03.07';   // a 60-day window: the curve covers it
-  const sr=curve=>metrics(sample(curve),D('2024.01.08'),D(end)+DAY);
+  const sr=curve=>metrics(sample(curve),D('2024.01.08'),D(end)+DAY,DEP);
   let mid=null;
   for(let drift=0;drift<=40&&!mid;drift+=0.25){const curve=B.map(x=>x+drift),m=sr(curve);if(m&&m[0]>0&&m[2]>1.2&&m[2]<2.3&&m[3]>=0.25)mid=curve;}
   check(()=>assert.ok(mid,'a curve with SR between 1.2 and 2.3 and ARF >= 0.25 exists'));

@@ -162,7 +162,10 @@ see "Export qualification" below):
   tested several pairs reports `below_score_reason=multiple_pairs` (nothing exported,
   never NO_FWD_ELIGIBLE_PASS); an unreadable tester deposit reports
   `tester_deposit_unknown`. Catch-up re-tests one only with `include_research_only`
-  (`evidence-scan --include-research-only`), and the re-test stays `below_score`.
+  (`evidence-scan --include-research-only`), and the re-test stays `below_score`: a
+  re-test that reads back another tier is refused at collect. `finish` gives each
+  no-edge member's `research_outcomes` entry `below_score_sets` (the research-only
+  sets it kept); record it as `metrics.belowScoreSets` (AGENT-START-HERE step 20).
 
 The headline reads "98 qualifying (SR ≥ 2.5, ARF ≥ 0.2), 205 more kept below
 threshold". Before `qualifying_basis`, `qualifying` counted every completed member

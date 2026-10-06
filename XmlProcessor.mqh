@@ -1215,25 +1215,71 @@ double GoatDailyReturnCorrelation(const string csvA,const string csvB,const date
    if(!(vx>0) || !(vy>0)) return EMPTY_VALUE;
    return (sxy-sx*sy/changes)/MathSqrt(vx*vy);
   }
-// Slot 2's quality over [from,to) = [BOOS end, FOOS start) from its own equity CSV's daily balance closes,
-// the series the correlation uses, so its BOOS and FOOS never decide it. The controller's window rules
-// (studio_gate_calibration.window_metrics): net from the last close before the window; drawdown from the
-// peak of the closes; Sharpe of weekday changes (a day without a row repeats the last close) x sqrt(252),
-// within +/-25, from 5+ weekdays; ARF = (net / drawdown, 25 without a drawdown, within +/-25) / (weekdays /
-// 21.7). out[] = {net, drawdown, sharpe, arf, weekdays, logged days}. False when the window has no row,
-// fewer than 5 weekdays or a flat curve (no Sharpe): never measured, never of quality.
-bool GoatEquityWindowMetrics(const string csv,const datetime from,const datetime to,double &out[])
+// Slot 2's quality over [from,to) = [BOOS end, FOOS start) from its own equity CSV, measured exactly as the
+// controller measures a window (studio_gate_calibration.window_metrics; Claude-Mac 6026738987), so the EA and
+// the controller agree on what clears the bar (scripts/test_below_score_export.cjs checks parity on real CSVs):
+//  - every "<DATE> <TIME>\t<BALANCE>\t<EQUITY>\t<DEPOSIT LOAD>" row's EQUITY value, intraday rows included;
+//  - opening = the last row before the window, else the initial deposit (the first day's P&L counts);
+//  - net = the window's last value - opening; drawdown = the largest fall from the running peak (opening
+//    included) over every row in the window;
+//  - Sharpe of the weekday changes of each day's last value (a day without a row repeats the previous value),
+//    over the deposit, sample variance, x sqrt(252), within +/-25, from 5+ weekdays;
+//  - recovery = net / drawdown (25 without a drawdown when net > 0), within +/-25; ARF = recovery / (weekdays / 21.7).
+// Only the window's rows are read, so BOOS and FOOS never decide it. BALANCE stays the correlation's series only.
+// out[] = {net, drawdown, sharpe, arf, weekdays, logged days}. False (never measured, never of quality) when the
+// deposit is unknown, a row goes back in time, the window has no row, or there is no Sharpe or no recovery.
+bool GoatEquityWindowMetrics(const string csv,const datetime from,const datetime to,const double initial,double &out[])
   {
    ArrayResize(out,6); ArrayInitialize(out,0.0);
+   if(!(initial>0)) return false;
+   string lines[];
+   int total=StringSplit(csv,'\n',lines);
+   datetime last=0;
    datetime days[]; double closes[];
-   int count=GoatEquityDailyCloses(csv,0,to,days,closes);
+   double opening=initial;
+   for(int i=0;i<total;i++)
+     {
+      string cells[];
+      if(StringSplit(lines[i],'\t',cells)!=4) continue;
+      string stamp=cells[0];
+      StringTrimLeft(stamp); StringTrimRight(stamp);
+      if(StringLen(stamp)!=16 || StringGetCharacter(stamp,4)!='.' || StringGetCharacter(stamp,7)!='.' || StringGetCharacter(stamp,13)!=':') continue;
+      datetime day=StringToTime(StringSubstr(stamp,0,10));
+      if(day<=0) continue;
+      datetime at=day+(datetime)(StringToInteger(StringSubstr(stamp,11,2))*3600+StringToInteger(StringSubstr(stamp,14,2))*60);
+      if(at<last) return false;
+      last=at;
+      if(at>=from) break;
+      opening=StringToDouble(cells[2]);
+     }
+   double level=opening, peak=opening, drawdown=0;
+   last=0;
+   for(int i=0;i<total;i++)
+     {
+      string cells[];
+      if(StringSplit(lines[i],'\t',cells)!=4) continue;
+      string stamp=cells[0];
+      StringTrimLeft(stamp); StringTrimRight(stamp);
+      if(StringLen(stamp)!=16 || StringGetCharacter(stamp,4)!='.' || StringGetCharacter(stamp,7)!='.' || StringGetCharacter(stamp,13)!=':') continue;
+      datetime day=StringToTime(StringSubstr(stamp,0,10));
+      if(day<=0) continue;
+      datetime at=day+(datetime)(StringToInteger(StringSubstr(stamp,11,2))*3600+StringToInteger(StringSubstr(stamp,14,2))*60);
+      if(at<last) return false;
+      last=at;
+      if(at<from) continue;
+      if(at>=to) break;
+      double value=StringToDouble(cells[2]);
+      level=value; peak=MathMax(peak,value); drawdown=MathMax(drawdown,peak-value);
+      int n=ArraySize(days);
+      if(n>0 && days[n-1]==day) {closes[n-1]=value; continue;}
+      ArrayResize(days,n+1); ArrayResize(closes,n+1);
+      days[n]=day; closes[n]=value;
+     }
+   int count=ArraySize(days);
    if(count<1) return false;
-   int k=0;
-   double opening=closes[0];
-   while(k<count && days[k]<from) {opening=closes[k]; k++;}
-   if(k>=count) return false;
-   double previous=opening,peak=opening,drawdown=0,sum=0,sumSq=0;
-   int weekdays=0,logged=count-k;
+   double returns[];
+   double previous=opening;
+   int k=0, weekdays=0;
    for(datetime day=from;day<to;day+=86400)
      {
       double value=previous;
@@ -1241,21 +1287,25 @@ bool GoatEquityWindowMetrics(const string csv,const datetime from,const datetime
       long dow=((long)day/86400+4)%7;
       if(dow!=0 && dow!=6)
         {
-         double change=value-previous;
-         weekdays++; sum+=change; sumSq+=change*change;
+         ArrayResize(returns,weekdays+1);
+         returns[weekdays]=(value-previous)/initial;
+         weekdays++;
         }
       previous=value;
-      peak=MathMax(peak,value);
-      drawdown=MathMax(drawdown,peak-value);
      }
    if(weekdays<5) return false;
-   double mean=sum/weekdays, variance=(sumSq-weekdays*mean*mean)/(weekdays-1);
+   double mean=0, variance=0;
+   for(int r=0;r<weekdays;r++) mean+=returns[r];
+   mean/=weekdays;
+   for(int r=0;r<weekdays;r++) variance+=(returns[r]-mean)*(returns[r]-mean);
+   variance/=(weekdays-1);
    if(!(variance>0)) return false;
-   double net=previous-opening;
+   double net=level-opening;
+   if(!(drawdown>0) && !(net>0)) return false;
    double sharpe=MathMax(MathMin(mean/MathSqrt(variance)*MathSqrt(252.0),25.0),-25.0);
-   double recovery=(drawdown>0 ? net/drawdown : (net>0 ? 25.0 : 0.0));
+   double recovery=(drawdown>0 ? net/drawdown : 25.0);
    recovery=MathMax(MathMin(recovery,25.0),-25.0);
-   out[0]=net; out[1]=drawdown; out[2]=sharpe; out[3]=recovery/(weekdays/21.7); out[4]=weekdays; out[5]=logged;
+   out[0]=net; out[1]=drawdown; out[2]=sharpe; out[3]=recovery/(weekdays/21.7); out[4]=weekdays; out[5]=count;
    return true;
   }
 #endif

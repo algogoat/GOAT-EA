@@ -887,6 +887,14 @@ class CatchupRunner(SeedRunner):
         if len(self._outputs(spec)) != 1:
             raise ValueError('Expected exactly one exported SET from a single catch-up pass')
         retest = read_export(path)
+        # GOAT-EA BS42 (Claude-Mac 6026738987): the re-test must read back the tier its original carried. A research-only
+        # original whose re-test reads back standard would turn an attempt into a pass candidate; a standard original that
+        # reads back research only is not the same test either. Refused before anything is moved or judged.
+        want_tier, want_research = spec.get('export_tier', 'standard'), bool(spec.get('research_only'))
+        got_tier, got_research = retest.get('export_tier', 'standard'), bool(retest.get('research_only'))
+        if (got_tier, got_research) != (want_tier, want_research):
+            raise ValueError('Re-test export tier %s%s differs from the original\'s %s%s: refused, nothing collected'
+                             % (got_tier, ' (research only)' if got_research else '', want_tier, ' (research only)' if want_research else ''))
         tester = spec['tester']
         if (retest['symbol'], retest['period']) != (tester['Symbol'], tester['Period']) or retest['alias'] != spec['alias']:
             raise ValueError('Re-test export identity differs from the frozen member')

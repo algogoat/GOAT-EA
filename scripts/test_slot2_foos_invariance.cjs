@@ -28,16 +28,24 @@ function preprocessWith(text,flags){
   return out.join('\n');
 }
 const P=H.stripComments(preprocessWith(mainRaw,FLAGS));
+// The call is built from the function's own parameter names, so the same test runs on the pre-fix tree (no
+// deposit parameter) and on the fix (Claude-Mac 6026738987: the deposit opens the window as in window_metrics).
+let params=[];
 const slots=H.extract(P,/^int\s+GoatExportSlots\s*\(/m,'GoatExportSlots',H.macros).replace(/ExportRecord\s+(\w+)\[\];/g,'let $1=[];')
-  .replace(/function GoatExportSlots\(([^)]*)\)/,'function GoatExportSlots(ranked,metaTail,keepLosingSlot1,minSR,minARF,kept,__d,runs,lost,failed,reportMode)')
+  .replace(/function GoatExportSlots\(([^)]*)\)/,(all,list)=>{params=list.split(',').map(p=>p.trim()).map(p=>p==='details'?'__d':p);return 'function GoatExportSlots('+params.join(',')+')';})
   .replace(/\bdetails\b/g,'__slotDetails').replace(/,days\);/,',days); days=n;');
 assert.ok(slots.includes('days=n;'),'by-reference rewiring applied');
+const DEPOSIT=100000;   // the re-tests' curves below start at the tester deposit
+const ARGS={ranked:'__ranked',metaTail:'",tier=below_score"',keepLosingSlot1:'true',minSR:'2.5',minARF:'0.2',deposit:String(DEPOSIT),
+  kept:'__kept',__d:'""',runs:'0',lost:'0',failed:'0',reportMode:'false'};
+assert.ok(params.length>0&&params.every(p=>p in ARGS),'every GoatExportSlots parameter is known: '+params);
+const CALL='GoatExportSlots('+params.map(p=>ARGS[p]).join(',')+')';
 
 const D=s=>H.epoch(s),DAY=86400;
 const START='2024.01.08',FOOS_START='2024.04.01';   // SAMPLE = [2024.01.08, 2024.04.01): 84 days
 const days=120;                                       // the re-test runs on into FOOS until 2024.05.06
 function csv(changes){
-  const lines=['﻿<DATE>\t<BALANCE>\t<EQUITY>\t<DEPOSIT LOAD>'];let bal=100000;
+  const lines=['﻿<DATE>\t<BALANCE>\t<EQUITY>\t<DEPOSIT LOAD>'];let bal=DEPOSIT;
   changes.forEach((x,k)=>{bal+=x;const day=H.date(D(START)+k*DAY);lines.push(day+' 10:00\t'+bal.toFixed(2)+'\t'+(bal-3).toFixed(2)+'\t0.0',day+' 15:00\t'+bal.toFixed(2)+'\t'+bal.toFixed(2)+'\t0.0');});
   return lines.join('\n');
 }
@@ -73,7 +81,7 @@ function decide(name){
     forward_profit:100,forward_PF:1.3,forward_RF:rf,forward_SR:1,forward_DD_pc:4,forward_trades:40,Inputs:'0,2',Score:40,forward_seen:true});
   Object.assign(ctx,{Rows:[row(5,2),row(6,1.5)],RowsUnique:[],m_inputVarNames:['SL_Pips','Grid_Size'],startD:D(START),forwardD:D('2024.03.04'),
     endD:D(FOOS_START)-DAY,__ranked:[0,1],__kept:[]});
-  const count=vm.runInContext('GoatExportSlots(__ranked,",tier=below_score",true,2.5,0.2,__kept,"",0,0,0,false)',ctx);
+  const count=vm.runInContext(CALL,ctx);
   const d=ctx.__slotDetails,pick=k=>(d.match(new RegExp(';'+k+'=([^;]*)'))||[])[1];
   return {kept:count,slot2:pick('slot2'),reason:pick('slot2_reason')};
 }

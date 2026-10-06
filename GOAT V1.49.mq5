@@ -4604,7 +4604,7 @@ bool StartExporter(bool reportMode)
      double deposit=StringToDouble(GoatOptReadIniValue(strT.str_testerSettings,"Deposit"));
      if(!(deposit>0)) {errors++; LogOrPrint(reportMode,"❌ The tester deposit could not be read: no export by FWD profit/DD.",Key,EA_Name,Server);}
      else if(GoatXmlFwdRank(xmlData.Rows,MinScore,deposit,fwdRanked)>0)
-        profits=GoatExportSlots(fwdRanked,"",false,MinSR,MinARF,g_allExports,slotDetails,passes,losses,errors,reportMode);
+        profits=GoatExportSlots(fwdRanked,"",false,MinSR,MinARF,deposit,g_allExports,slotDetails,passes,losses,errors,reportMode);
      else
      {
       // Gap closed (Claude-Mac 6023896492): the member falls through to the below_score export, the best FWD
@@ -4770,7 +4770,7 @@ bool StartExporter(bool reportMode)
 // BOOS and FOOS never decide slot 2. Otherwise its unit is deleted. The correlation and the reason are logged and returned in details either way.
 // metaTail ends the EA_Desc export metadata (",tier=below_score" for research exports). Fills kept[]
 // from RowsUnique 0 and 1 and returns how many units are kept.
-int GoatExportSlots(const int &ranked[],const string metaTail,const bool keepLosingSlot1,const double minSR,const double minARF,
+int GoatExportSlots(const int &ranked[],const string metaTail,const bool keepLosingSlot1,const double minSR,const double minARF,const double deposit,
                     ExportRecord &kept[],string &details,int &runs,int &lost,int &failed,const bool reportMode)
   {
    details=""; runs=0; lost=0; failed=0;
@@ -4817,7 +4817,8 @@ int GoatExportSlots(const int &ranked[],const string metaTail,const bool keepLos
    LogOrPrint(reportMode,"▶ Export slot 2 candidate: pass "+(string)xmlData.Rows[second].pass+" ("+(character!="" ? "different character: "+character : "same character")+")",Key,EA_Name,Server);
    // Slot 2 is kept whatever its full re-test made (keepLosing, as below_score slot 1): BOOS, FWD and FOOS
    // are in that re-test, so its profit, SR and ARF never decide slot 2 (Claude-Mac 6025359910). It is
-   // judged on its own equity CSV over [BOOS end, FOOS start) only, the series the correlation uses.
+   // judged on its own equity CSV over [BOOS end, FOOS start) only, measured exactly as the controller's
+   // window_metrics measures it (EQUITY rows from the tester deposit; Claude-Mac 6026738987).
    int stored2=RunAndStoreSet(1,mode,reportMode,kept,false,3,true);
    runs++; if(stored2==0) lost++; if(stored2<0) failed++;
    if(stored2!=1 || ArraySize(kept)!=2)
@@ -4832,7 +4833,7 @@ int GoatExportSlots(const int &ranked[],const string metaTail,const bool keepLos
    double corr=GoatDailyReturnCorrelation(GoatExportReadTextCommon(kept[0].csvFile,0),csv2,sampleFrom,sampleTo,days);
    string corrText=(corr==EMPTY_VALUE ? "na" : DoubleToString(corr,3));
    double sample[];
-   bool measured=GoatEquityWindowMetrics(csv2,sampleFrom,sampleTo,sample);
+   bool measured=GoatEquityWindowMetrics(csv2,sampleFrom,sampleTo,deposit,sample);
    double barSR=MathMax(minSR,GOAT_EXPORT_SLOT2_MIN_SR), barARF=MathMax(minARF,GOAT_EXPORT_SLOT2_MIN_ARF);
    bool quality=(measured && sample[0]>0 && sample[2]>=barSR && sample[3]>=barARF);
    bool different=(character!="" || (corr!=EMPTY_VALUE && corr<=GOAT_EXPORT_SLOT2_MAX_CORRELATION));
@@ -4945,7 +4946,7 @@ int StartBelowScoreExporter(const bool reportMode,string &details)
    ExportRecord kept[];
    string slots="";
    int runs=0,lost=0,failed=0;
-   int keptCount=GoatExportSlots(ranked,",tier="+GOAT_XML_BELOW_SCORE,true,MinSR,MinARF,kept,slots,runs,lost,failed,reportMode);
+   int keptCount=GoatExportSlots(ranked,",tier="+GOAT_XML_BELOW_SCORE,true,MinSR,MinARF,deposit,kept,slots,runs,lost,failed,reportMode);
    if(keptCount<1 || ArraySize(kept)!=keptCount) {details=";below_score=failed"+facts+slots; return -1;}
    if(!MoveKeptExports(kept,runPath+"\\"+GOAT_XML_BELOW_SCORE))
    {

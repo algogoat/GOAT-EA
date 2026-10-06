@@ -22,6 +22,10 @@
       "bytes": 5353,
       "sha256": "35ac8f6b1cd061bb26db03ef70bbec3182deae316ad0536afdb8609a1e179187",
       "scan": "Across 6,410 real report XMLs on this PC, no profitable row had Recovery Factor <= 0 or >= 100; this SeedFarming frame row is the only profitable row with Equity DD % = 0."
+    },
+    "window-metrics-parity.json": {
+      "what": "The controller's studio_gate_calibration.window_metrics (deal_rows=[], equity rows of the CSV, a window, initial 100000) on both real CSVs over three windows: SAMPLE, a window that starts before the first row (opens at the initial deposit) and April 2026. Claude-Mac 6026738987: GoatEquityWindowMetrics must reproduce these numbers.",
+      "generated_by": "window_metrics itself; controller/test_studio_below_score.py WindowMetricsParityTests checks window_metrics still reproduces it exactly, scripts/test_below_score_export.cjs checks the EA function against it within float tolerance."
     }
   }
 }

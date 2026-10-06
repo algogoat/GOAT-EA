@@ -197,6 +197,29 @@ class EvidenceTests(unittest.TestCase):
         self.assertIn("retest_export_tier=retest.get('export_tier', 'standard'),", collect)
         self.assertIn("include_research_only=plan.get('include_research_only', False), native_launch_qualified=False)", collect)
 
+    def test_collect_refuses_a_re_test_that_reads_back_another_tier(self):
+        # Claude-Mac 6026738987: a research-only original whose re-test reads back standard is refused by _collect,
+        # before anything is moved or judged; so is the reverse. A matching tier passes the check.
+        from studio_catchup import CatchupRunner
+        runner = object.__new__(CatchupRunner)
+        runner._outputs = lambda spec: ['one unit']
+        standard_path = self.root / G6_XAUUSD_REL
+        self.assertEqual(ev.read_export(standard_path)['export_tier'], 'standard')
+        research = dict(export_tier='below_score', research_only=True)
+        with self.assertRaisesRegex(ValueError, r"^Re-test export tier standard differs from the original's below_score \(research only\): refused"):
+            runner._collect(standard_path, research, {})
+        self.assertTrue(standard_path.is_file(), 'nothing moved')
+        with self.assertRaisesRegex(ValueError, r"^Re-test export tier below_score \(research only\) differs from the original's standard: refused"):
+            runner._collect(self.set_path, dict(export_tier='standard', research_only=False), {})
+        with self.assertRaisesRegex(ValueError, r'^Re-test export tier below_score \(research only\) differs'):
+            runner._collect(self.set_path, {}, {})   # a spec from before BS42 is standard
+        self.assertTrue(self.set_path.is_file(), 'nothing moved')
+        # The same tier gets past the check (the next check needs the frozen tester, absent here).
+        with self.assertRaises(KeyError):
+            runner._collect(self.set_path, research, {})
+        with self.assertRaises(KeyError):
+            runner._collect(standard_path, {}, {})
+
 
 class ItemStatsTests(unittest.TestCase):
     def setUp(self):
@@ -392,6 +415,56 @@ class MixedDeployTests(unittest.TestCase):
                               counts['below_threshold_members']), (1, 1, 1, 0))
             stamps = {entry['set_name'].split('_SR=')[1][:4]: entry['qualification']['status'] for entry in result['stamps']}
             self.assertEqual(stamps, {'1.07': 'below_threshold', '2.92': 'passed'}, 'each set keeps its own stamp')
+
+class FinishRecordTests(unittest.TestCase):
+    """Claude-Mac 6026738987 item 3: the finish reply says how many research-only sets each no-edge member kept, and
+    AGENT-START-HERE step 20 records it as metrics.belowScoreSets, the field the desktop fit map reads."""
+
+    def test_finish_reports_the_below_score_sets_each_member_kept(self):
+        import studio_finish
+        import studio_research_status as rs
+        one = _no_edge_outcome(QDETAILS + BELOW, 'no_qualifying_rows')
+        self.assertEqual(one['below_score']['kept'], 1)
+        found = {0: one, 1: dict(one, below_score=dict(one['below_score'], kept=2)),
+                 2: _no_edge_outcome(QDETAILS + ';below_score=none;below_score_rank=fwd_profit_dd;below_score_min_fwd_trades=30', 'no_qualifying_rows'),
+                 3: _no_edge_outcome(QDETAILS + BELOW.replace('=exported', '=lost'), 'no_qualifying_rows'),
+                 4: _no_edge_outcome(QDETAILS, 'no_qualifying_rows')}   # a pre-B42 row
+        native = dict(native_run='run', members=[dict(run_alias='A%d' % i, symbol='USDCAD', status='native_error', tester=dict(Period='M1'))
+                                                 for i in range(6)])
+        with patch.object(rs, 'no_edge_members', lambda *args: found), patch.object(rs, 'timeline', lambda *args: None):
+            outcomes, error = studio_finish._research_outcomes(native)
+        self.assertIsNone(error)
+        self.assertEqual([(o['index'], o['below_score_sets']) for o in outcomes], [(0, 1), (1, 2), (2, 0), (3, 0), (4, 0)])
+        self.assertEqual(rs.below_score_sets(dict(one, below_score=dict(one['below_score'], result='unreadable'))), 0)
+        self.assertEqual(rs.below_score_sets(dict(one, below_score=dict(one['below_score'], kept=3))), 0, 'an impossible count is none')
+        self.assertEqual(rs.below_score_sets(None), 0)
+        # The recipe records it, 0 when the member has no research outcome (or the controller predates B42).
+        guide = (Path(__file__).parent / 'AGENT-START-HERE.md').read_text(encoding='utf-8')
+        self.assertIn('$bsSets[[int]$o.index] = [int]$o.below_score_sets', guide)
+        self.assertIn('belowScoreSets=[int]$bsSets[[int]$i]}', guide)
+
+
+class WindowMetricsParityTests(unittest.TestCase):
+    """Claude-Mac 6026738987: the EA judges slot 2 with GoatEquityWindowMetrics, which must measure a window exactly
+    as window_metrics does. Both sides are pinned to one fixture of real export CSVs: this test pins the controller,
+    scripts/test_below_score_export.cjs pins the EA function to the same numbers."""
+
+    def test_window_metrics_reproduces_the_parity_fixture(self):
+        import json
+        from datetime import date
+        import studio_gate_calibration as gc
+        folder = Path(__file__).resolve().parent.parent / 'scripts' / 'fixtures' / 'below-score'
+        fixture = json.loads((folder / 'window-metrics-parity.json').read_text(encoding='utf-8'))
+        self.assertEqual(len(fixture['cases']), 6)
+        for case in fixture['cases']:
+            rows = gc.equity(gc._decode((folder / case['csv']).read_bytes()))
+            got = gc.window_metrics([], rows, date.fromisoformat(case['first']), date.fromisoformat(case['end']), fixture['initial'])
+            self.assertEqual({k: got[k] for k in ('net', 'dd', 'sr', 'arf', 'weekdays', 'recovery')},
+                             {k: case[k] for k in ('net', 'dd', 'sr', 'arf', 'weekdays', 'recovery')}, case['csv'] + ' ' + case['window'])
+        sample = {case['csv']: case for case in fixture['cases'] if case['window'] == 'sample'}
+        # Mac's example: on EQUITY Trds184's SAMPLE has DD 319 and SR 1.77, under the 2.5 bar (on BALANCE it read 233 / 2.62).
+        self.assertEqual((sample['real-AUDUSD-Trds184.csv']['dd'], sample['real-AUDUSD-Trds184.csv']['sr']), (319.01, 1.7705))
+
 
 class BatchProgressTests(unittest.TestCase):
     SYMBOLS = ('AUDUSD', 'EURUSD', 'USDJPY')

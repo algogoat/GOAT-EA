@@ -407,6 +407,16 @@ def _no_edge_outcome(details, expected=NO_PROFITABLE_PASSES):
     return outcome
 
 
+def below_score_sets(outcome):
+    """How many research-only below_score sets a no-edge member kept (GOAT-EA BS42): the EA's own count when it
+    exported them, else 0 (none, lost, failed or unreadable). The finish reply carries it per member and the agent
+    records it as ``metrics.belowScoreSets`` (AGENT-START-HERE step 20), so the desktop fit map counts that member
+    as an attempt, never an export or a pass (Claude-Mac 6026738987)."""
+    below = (outcome or {}).get('below_score') or {}
+    kept = below.get('kept')
+    return kept if below.get('result') == 'exported' and kept in (1, 2) else 0
+
+
 def no_edge_summary(symbol, timeframe, outcome):
     """One honest sentence: what was tested, in which window, and that it is not a verdict."""
     window = outcome['window']

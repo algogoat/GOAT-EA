@@ -42,7 +42,19 @@ const mutations=[
   ['days outside SAMPLE count',X,R`if(day<=0 || day<from || day>=to) continue;`,R`if(day<=0) continue;`],
   ['rows back in time accepted',X,R`if(n>0 && day<days[n-1]) return -1;`,''],
   // SAMPLE quality of slot 2 (item 1): its own CSV over [BOOS end, FOOS start).
-  ['window metrics start at the CSV start',X,R`while(k<count && days[k]<from) {opening=closes[k]; k++;}`,R`while(false) {opening=closes[k]; k++;}`],
+  // Measured exactly as the controller's window_metrics (Claude-Mac 6026738987): EQUITY rows, intraday, from the deposit.
+  ['window metrics read BALANCE in the window',X,R`      double value=StringToDouble(cells[2]);`,R`      double value=StringToDouble(cells[1]);`],
+  ['window metrics open on BALANCE',X,R`      opening=StringToDouble(cells[2]);`,R`      opening=StringToDouble(cells[1]);`],
+  ['window metrics open on the first row inside (the first day dropped)',X,R`      if(at>=from) break;`,R`      if(at>=from) {if(opening==initial) opening=StringToDouble(cells[2]); break;}`],
+  ['window metrics ignore rows before the window',X,R`      if(at>=from) break;`,R`      break;`],
+  ['window metrics drawdown from day closes only',X,R`      level=value; peak=MathMax(peak,value); drawdown=MathMax(drawdown,peak-value);`,R`      level=value; peak=MathMax(peak,value);`],
+  ['window metrics returns over the level, not the deposit',X,R`returns[weekdays]=(value-previous)/initial;`,R`returns[weekdays]=(value-previous)/previous;`],
+  ['window metrics population variance',X,R`   variance/=(weekdays-1);`,R`   variance/=weekdays;`],
+  ['window metrics rows back in time accepted',X,R`      if(at<last) return false;
+      last=at;
+      if(at<from) continue;`,R`      last=at;
+      if(at<from) continue;`],
+  ['slot 2 measured without the tester deposit',M,R`GoatEquityWindowMetrics(csv2,sampleFrom,sampleTo,deposit,sample);`,R`GoatEquityWindowMetrics(csv2,sampleFrom,sampleTo,100000,sample);`],
   ['weekends in the Sharpe',X,R`if(dow!=0 && dow!=6)`,R`if(true)`],
   ['no Sharpe on a flat series accepted',X,R`   if(!(variance>0)) return false;`,R`   if(!(variance>0)) variance=1;`],
   ['ARF not per month',X,R`out[3]=recovery/(weekdays/21.7);`,R`out[3]=recovery;`],

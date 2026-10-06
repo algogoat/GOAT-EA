@@ -5,6 +5,10 @@ controller/CLI for operations; use a screenshot only to inspect the finished UI
 when requested. A missing controller operation is an implementation gap, not a
 reason to quietly substitute repeated mouse clicks.
 
+Research dates follow the [OOS window formula](OOS-WINDOW-FORMULA.md): every
+BOOS, SAMPLE, FWD and FOOS date comes from O and the export Friday, and FOOS is
+held out of ranking.
+
 The agreed [agent recovery tool contract](AGENT-RECOVERY-TOOLS.md) defines the
 next implementation target: goal-level setup, MT5 WebRequest/DLL configuration,
 automatic recovery and customer-readable repair reports. Proposed tools there

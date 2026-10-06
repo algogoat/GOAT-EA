@@ -204,14 +204,25 @@ class SeedRunner:
         check_seed_jobs(self.c,plan,members)
         return members,payloads
 
+    @staticmethod
+    def _oos_windows(plan):
+        """OOS window formula (goat-oos-windows-v1): a plan with oos_windows gets SAMPLE-only dates
+        (FromDate..ForwardDate, ForwardMode 0) from O and the export Friday; others are unchanged."""
+        from studio_oos_windows import apply_to_seed_plan
+        return apply_to_seed_plan(plan)
+
     def validate(self,plan):
         """Non-executing check of a seed plan and every SET it names: no file, process or terminal effect."""
-        members,_=self._freeze(self.base/'validation-only',plan)
+        filled,oos=self._oos_windows(plan)
+        members,_=self._freeze(self.base/'validation-only',filled)
         # Same aggregate bound prepare enforces, so a validated plan cannot fail it later.
         manifest=dict(schema_version=1,batch_id='validation-only',installation_sha256=sha(self.c.install),schema_sha256=sha(self.c.schema),plan_sha256=sha(plan),
             plan=plan,created_unix=self.clock(),members=members,mode='SeedFarming',native_launch_qualified=False)
+        if oos is not None:manifest['oos_windows']=oos
         if len(json.dumps(manifest).encode('utf-8'))>MAX_MANIFEST_BYTES:raise ValueError('Seed manifest exceeds 128 MiB; split the matrix')
         return dict(schema_version=1,valid=True,writes=False,native_launch_qualified=False,plan_sha256=sha(plan),job_count=len(members),
+            **({} if oos is None else dict(oos_windows=dict(o_weeks=oos['o_weeks'],export_friday=oos['export_friday'],
+                                                            sample=oos['sample'],seed_tester=oos['seed_tester']))),
             jobs=[dict(index=m['index'],symbol=m['tester']['Symbol'],period=m['tester']['Period'],from_date=m['tester']['FromDate'],to_date=m['tester']['ToDate'],
                        frame_target=m['frame_target'],axes=m['axes'],source_path=m['source_path'],source_sha256=m['source_sha256']) for m in members[:MAX_PUBLIC_MEMBERS]],
             jobs_omitted=max(0,len(members)-MAX_PUBLIC_MEMBERS))
@@ -223,9 +234,13 @@ class SeedRunner:
             if old['plan_sha256']!=sha(plan):raise ValueError('Seed batch ID already belongs to a different plan')
             self._verify_prepared(batch_id,old)
             return self.status(batch_id)
-        members,payloads=self._freeze(root,plan)
+        filled,oos=self._oos_windows(plan)
+        members,payloads=self._freeze(root,filled)
         manifest=dict(schema_version=1,batch_id=batch_id,installation_sha256=sha(self.c.install),schema_sha256=sha(self.c.schema),plan_sha256=sha(plan),
-            plan=plan,created_unix=self.clock(),members=members,mode='SeedFarming',native_launch_qualified=False)
+            plan=filled,created_unix=self.clock(),members=members,mode='SeedFarming',native_launch_qualified=False)
+        if oos is not None:
+            # The plan as given (with its oos_windows request) stays hash-bound; the filled plan carries every date.
+            manifest.update(requested_plan=plan,oos_windows=oos)
         if len(json.dumps(manifest).encode('utf-8'))>MAX_MANIFEST_BYTES:raise ValueError('Seed manifest exceeds 128 MiB; split the matrix')
         # No SET/config write before every job and aggregate bound passes validation.
         root.mkdir(parents=True,exist_ok=False)

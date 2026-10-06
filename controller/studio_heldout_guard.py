@@ -49,7 +49,9 @@ METRIC_KEYS = frozenset((
     # Export qualification (studio_export_qualification): pass/fail per set and per member, the metric values
     # each check read and which thresholds a set missed are all derived from the tested window.
     'passing_sets', 'below_threshold_members', 'below_threshold_sets', 'unknown_members', 'unknown_sets',
-    'checks', 'missed', 'ea_native_passed', 'log_crosscheck', 'stamps', 'unproven_members'))
+    'checks', 'missed', 'ea_native_passed', 'log_crosscheck', 'stamps', 'unproven_members',
+    # OOS window rule (studio_oos_windows) and exact pre-FOOS metrics (studio_window_metrics).
+    'oos_rule', 'window_metrics', 'preFoos', 'selectionWindow', 'fullExport'))
 # Sentences and log lines that quote such values: replaced whole inside a locked part.
 SENTENCE_KEYS = frozenset(('plain', 'summary', 'headline', 'reasons', 'sentence', 'line', 'note', 'title'))
 METRIC_STATUSES = frozenset(('native_threshold_candidate', 'below_native_thresholds', 'native_threshold_unknown',

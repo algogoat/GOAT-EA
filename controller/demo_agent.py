@@ -2948,7 +2948,8 @@ class DemoAgent:
         """Read-only: resolve AUTO / an explicit evidence end, and what this EA build's batch exports end at."""
         from studio_evidence_end import DEFAULT_CLOCK, ea_capability, legacy_end, resolve
         clock = broker_clock or DEFAULT_CLOCK
-        return dict(resolve(value, clock=clock), batch_exports_now=legacy_end(clock=clock),
+        # Read-only: also resolves auto_day, the catch-up-only latest closed trading day.
+        return dict(resolve(value, clock=clock, allow_day=True), batch_exports_now=legacy_end(clock=clock),
                     ea_evidence_end_setting=ea_capability(self.install, self.local / 'ui-observation.json'))
 
     def seed_promote(self, batch_id, candidate, name, neighborhood=1, member=None):

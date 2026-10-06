@@ -47,6 +47,10 @@ def prepare(plan_path, registry_path, output):
         if export_settings['BackOOSDate'] != native['back_oos_date']:
             raise ValueError('Export BOOS date differs from native window')
         evidence_end_setting(native)  # Refuse a staged EvidenceEnd that differs from the resolved one.
+        # A formula plan (goat-oos-windows-v1): every date must still be exactly its O and export Friday,
+        # and the export must stop at the optimization end so FOOS is never ranked. Explicit plans skip this.
+        from studio_oos_windows import verify_native
+        verify_native(native, plan['jobs'])
     # The packer is never allowed to write into either terminal or Common Files.
     out = output.resolve()
     roots = [Path(binding['research_data_root']).resolve(),

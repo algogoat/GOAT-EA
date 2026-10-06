@@ -16,6 +16,11 @@ ToDate = the EA's own "last Friday" (GetLastFridayDate, today when today is
 Friday), so its evidence ends on a Thursday. OOS catch-up (studio_catchup) sets
 ToDate itself, so it reaches any closed day with the current EA.
 
+AUTO_DAY (``auto_day``, rule goat-closed-day-v1) is the latest closed trading day: evidence for
+live decisions runs to the latest closed day (goatai#1885 comment 6008215775). Only OOS
+catch-up accepts it (``resolve(..., allow_day=True)``); exports and optimization windows stay
+Friday-anchored and refuse it.
+
 Nothing here reads or changes MT5 or controller state, except ``ea_capability``
 and ``history_check``, which only read bounded local files.
 """
@@ -25,6 +30,11 @@ from pathlib import Path, PureWindowsPath
 import re
 
 RULE = 'goat-closed-week-v1'
+# Evidence for live decisions runs to the latest CLOSED DAY (Vince via Claude-Mac, goatai#1885 comment
+# 6008215775): OOS catch-up only may end on the last closed trading day (``auto_day``). Exports and the
+# optimization windows stay Friday-anchored, so ``resolve`` refuses ``auto_day`` unless ``allow_day``.
+DAY_RULE = 'goat-closed-day-v1'
+AUTO_DAY = 'auto_day'
 CAPABILITY = 'goat-evidence-end-v1'
 DEFAULT_CLOCK = 'ny-close'
 FRIDAY = 4
@@ -146,19 +156,59 @@ def auto(now_utc=None, *, clock=DEFAULT_CLOCK, holidays=()):
                 hint='auto: ' + WEEKDAYS[friday.weekday()] + ' ' + mt5(friday))
 
 
-def resolve(value=None, now_utc=None, *, clock=DEFAULT_CLOCK, holidays=(), not_before=()):
-    """Resolve ``auto`` or validate one explicit evidence end.
+def _trading_day(day, closed_days):
+    return day.weekday() < 5 and day not in closed_days
+
+
+def auto_day(now_utc=None, *, clock=DEFAULT_CLOCK, holidays=()):
+    """AUTO_DAY: the latest closed trading day (D-1 close), for OOS catch-up only.
+
+    Resolved like AUTO but to the last closed day instead of the last closed Friday: the
+    newest Mon-Fri broker day, not a full market holiday, whose server date has rolled over.
+    On a Saturday, Sunday or Monday that is the Friday (or the day before a holiday).
+    """
+    now_utc = _utc(now_utc)
+    closed_days = _holidays(holidays)
+    wall = server_now(now_utc, clock)
+    today = wall.date()
+    day = today - timedelta(days=1)
+    while not _trading_day(day, closed_days):
+        day -= timedelta(days=1)
+    upcoming = today if _trading_day(today, closed_days) else today + timedelta(days=1)
+    while not _trading_day(upcoming, closed_days):
+        upcoming += timedelta(days=1)
+    switch = server_to_utc(datetime.combine(upcoming + timedelta(days=1), time(0)), clock)
+    return dict(date=mt5(day), iso=day.isoformat(), weekday=WEEKDAYS[day.weekday()], rule=DAY_RULE,
+                broker_clock=parse_clock(clock)['name'], server_now=wall.strftime('%Y-%m-%d %H:%M'),
+                tester_to_date=mt5(day + timedelta(days=1)), next_date=mt5(upcoming),
+                next_switch_utc=switch.isoformat(timespec='minutes').replace('+00:00', 'Z'),
+                hint='auto_day: ' + WEEKDAYS[day.weekday()] + ' ' + mt5(day))
+
+
+def resolve(value=None, now_utc=None, *, clock=DEFAULT_CLOCK, holidays=(), not_before=(), allow_day=False):
+    """Resolve ``auto`` (or, with ``allow_day``, ``auto_day``) or validate one explicit evidence end.
 
     ``not_before`` is a sequence of (date, plain reason) pairs the end may not precede,
     for example each member's optimization end. Explicit overrides must already be
-    closed broker days: never today and never in the future.
+    closed broker days: never today and never in the future. ``auto_day`` (the latest
+    closed trading day) is accepted only with ``allow_day`` (OOS catch-up); exports refuse it.
     """
     now_utc = _utc(now_utc)
     automatic = auto(now_utc, clock=clock, holidays=holidays)
     requested = 'auto' if value in (None, '', 'auto', 'AUTO', 'Auto') else value
     warnings = []
+    rule = RULE
+    day_value = isinstance(requested, str) and requested.strip().lower().replace('-', '_') == AUTO_DAY
+    if day_value and not allow_day:
+        raise ValueError('auto_day (the latest closed trading day) is for OOS catch-up only. Exports and optimization '
+                         'windows end on a closed Friday: use auto (%s) or an explicit Friday.' % automatic['hint'])
+    extra = {}
     if requested == 'auto':
         chosen, mode = parse_date(automatic['date']), 'auto'
+    elif day_value:
+        latest = auto_day(now_utc, clock=clock, holidays=holidays)
+        chosen, mode, requested, rule = parse_date(latest['date']), AUTO_DAY, AUTO_DAY, DAY_RULE
+        extra['auto_day'] = latest
     else:
         chosen, mode = parse_date(requested), 'explicit'
         today = server_now(now_utc, clock).date()
@@ -176,8 +226,31 @@ def resolve(value=None, now_utc=None, *, clock=DEFAULT_CLOCK, holidays=(), not_b
             raise ValueError('Evidence end %s is before %s (%s); nothing new would be tested.'
                              % (chosen.isoformat(), reason, limit.isoformat()))
     return dict(requested=requested, mode=mode, date=mt5(chosen), iso=chosen.isoformat(), weekday=WEEKDAYS[chosen.weekday()],
-                label=label(chosen), tester_to_date=mt5(chosen + timedelta(days=1)), rule=RULE, auto=automatic,
-                warnings=warnings)
+                label=label(chosen), tester_to_date=mt5(chosen + timedelta(days=1)), rule=rule, auto=automatic,
+                warnings=warnings, **extra)
+
+
+def effective_end(tester_to_date):
+    """``evidenceEndEffective``: the last day an MT5 test actually covers, its exclusive ToDate minus one day (ISO).
+
+    The nominal evidence end is what was asked for; this is what the test covered (Claude-Mac, goatai#1885
+    6008626040). A legacy batch export passes the EA's "last Friday" as ToDate, so it really ends on Thursday.
+    """
+    return (parse_date(tester_to_date) - timedelta(days=1)).isoformat()
+
+
+def evidence_end_mode(target, *, catch_up=False):
+    """The ``evidenceEndMode`` stamp for a resolved end (``resolve``'s result).
+
+    ``auto``, ``auto_day`` and an explicit Friday keep their mode. An explicit NON-Friday is
+    ``legacy_explicit`` for an export (kept with its warning for old plans and saved batches,
+    never refused; Claude-Mac, goatai#1885 6008569394) and ``explicit_day`` for a catch-up, where
+    a closed weekday is the sanctioned latest-closed-day rule (one decision's date, re-used).
+    """
+    mode = (target or {}).get('mode')
+    if mode == 'explicit' and parse_date(target['iso']).weekday() != FRIDAY:
+        return 'explicit_day' if catch_up else 'legacy_explicit'
+    return mode
 
 
 def legacy_end(now_utc=None, *, clock=DEFAULT_CLOCK):

@@ -13,7 +13,7 @@ STATUS_OF = dict(passed='native_threshold_candidate', below_threshold='below_nat
 
 
 def scan_exports(directory, source_raw, schema, back_passes, forward_passes, *,
-                 alias, symbol, period, expert_name, min_arf, min_sr):
+                 alias, symbol, period, expert_name, min_arf, min_sr, windows=None):
     root = Path(directory).resolve()
     result = dict(status='exports_not_observed', files=[], qualified_count=None,
                   release_permitted=False, performance_verified=False)
@@ -66,6 +66,14 @@ def scan_exports(directory, source_raw, schema, back_passes, forward_passes, *,
         stamp = qualify(file_name_tokens(stem), thresholds, header=raw)
         item['qualification'] = dict(stamp, set_sha256=hashlib.sha256(raw).hexdigest())
         item['status'] = STATUS_OF[stamp['status']]
+        if windows is not None:
+            # goat-export-window-metrics-v1: exact metrics before FOOS (preFoos, selectionWindow), computed from
+            # this unit's equity CSV and capture deals. Best effort: never changes the status above.
+            from studio_window_metrics import export_window_metrics
+            try:
+                item['window_metrics'] = export_window_metrics(set_path, csv_raw=csv_raw, **windows)
+            except (OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
+                item['window_metrics'] = dict(status='unavailable', reason=str(exc)[:240])
     result['status'] = 'export_inventory_observed'
     result['native_threshold_candidate_count'] = sum(f['status']=='native_threshold_candidate' for f in result['files'])
     result['below_native_threshold_count'] = sum(f['status']=='below_native_thresholds' for f in result['files'])

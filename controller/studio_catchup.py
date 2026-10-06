@@ -259,7 +259,8 @@ def catch_up_stamp(spec, manifest, verdict, created_utc, original_foos=None):
     # importer must not restore the original FOOS and append new weeks: it takes ``windows`` (all on the re-test).
     rebased = verdict.get('comparison') in ('comparable_rebased', 'requalify')
     return dict(schema=CATCH_UP_SCHEMA, evidence_end=manifest['evidence_end']['iso'], added_at=created_utc,
-                evidenceEnd=manifest['evidence_end']['iso'], evidenceEndMode=manifest['evidence_end']['mode'],
+                evidenceEnd=manifest['evidence_end']['iso'], evidenceEndMode=evidence_end.evidence_end_mode(manifest['evidence_end'], catch_up=True),
+                evidenceEndEffective=evidence_end.effective_end(spec['tester']['ToDate']),
                 comparison=verdict.get('comparison'), historyBasis=verdict.get('historyBasis'),
                 tickHistoryDrift=verdict.get('tickHistoryDrift'), windowsBasis='retest' if rebased else 'original',
                 windows=verdict.get('rebasedWindows') if rebased else None,
@@ -567,6 +568,9 @@ class CatchupRunner(SeedRunner):
                       Currency=facts['Currency'], Leverage=facts['Leverage'], UseLocal=1, UseRemote=0, UseCloud=0, Visual=0,
                       ShutdownTerminal=1, ReplaceReport=0, Report='MQL5\\Files\\GOATStudio\\CatchupReports\\' + alias)
         _validate_single_pass(tester)
+        # The closed day must be fully covered: MT5 ToDate is exclusive, so ToDate = evidence end + 1 day.
+        if evidence_end.effective_end(tester['ToDate']) != target['iso']:
+            raise ValueError('Catch-up ToDate %s would not cover the evidence end %s' % (tester['ToDate'], target['iso']))
         raw = Path(export['set_path']).read_bytes()
         if hashlib.sha256(raw).hexdigest() != export['set_sha256']:
             raise ValueError('Export SET changed while planning: ' + export['set_path'])
@@ -770,8 +774,11 @@ class CatchupRunner(SeedRunner):
                            evidence_model=model_tag(tester['Model'], tester['Period'], source=pins.get('model_source')),
                            equivalence=pins.get('equivalence'))
         # Evidence for live decisions runs to the latest closed day: every result stamps the catch-up's resolved end.
-        verdict['evidenceEnd'], verdict['evidenceEndMode'] = manifest['evidence_end']['iso'], manifest['evidence_end']['mode']
+        verdict['evidenceEnd'] = manifest['evidence_end']['iso']
+        verdict['evidenceEndMode'] = evidence_end.evidence_end_mode(manifest['evidence_end'], catch_up=True)
+        verdict['evidenceEndEffective'] = evidence_end.effective_end(tester['ToDate'])     # the last day the re-test covers
         verdict['oos_rule'] = self._oos_rule(original, retest, spec, verdict, evidence_end=manifest['evidence_end']['iso'])
+        verdict['oos_rule']['evidenceEndEffective'] = verdict['evidenceEndEffective']
         created = datetime.now(timezone.utc).isoformat(timespec='seconds')
         version = dict(schema=VERSION_SCHEMA, values_sha256=retest['values_sha256'], symbol=retest['symbol'], period=retest['period'],
                        evidence_start=retest['evidence_start'], evidence_end=retest['evidence_end'], evidence_end_source=retest['evidence_end_source'],
@@ -789,6 +796,7 @@ class CatchupRunner(SeedRunner):
                        qualification=qualification_inputs(spec, manifest, verdict),
                        history_short=retest['history_short'], ea_desc_metadata=spec['optimization_window']['source'],
                        oos_rule=verdict['oos_rule'], evidenceEnd=verdict['evidenceEnd'], evidenceEndMode=verdict['evidenceEndMode'],
+                       evidenceEndEffective=verdict['evidenceEndEffective'],
                        comparison=verdict.get('comparison'), historyBasis=verdict.get('historyBasis'),
                        tickHistoryDrift=verdict.get('tickHistoryDrift'), rebase=verdict.get('rebase'),
                        rebasedWindows=verdict.get('rebasedWindows'))
@@ -805,8 +813,9 @@ class CatchupRunner(SeedRunner):
                        equivalence_certificate=(pins.get('equivalence') or {}).get('certificate_digest'),
                        equivalence_mode=(pins.get('equivalence') or {}).get('mode'),
                        oos_rule=verdict['oos_rule']['status'], evidenceEnd=verdict['evidenceEnd'],
-                       evidenceEndMode=verdict['evidenceEndMode'], comparison=verdict.get('comparison'),
-                       historyBasis=verdict.get('historyBasis'), tickHistoryDrift=verdict.get('tickHistoryDrift'))
+                       evidenceEndMode=verdict['evidenceEndMode'], evidenceEndEffective=verdict['evidenceEndEffective'],
+                       comparison=verdict.get('comparison'), historyBasis=verdict.get('historyBasis'),
+                       tickHistoryDrift=verdict.get('tickHistoryDrift'))
         return dict(status='verified_catchup_retest', path=retest['set_path'], sha256=retest['set_sha256'], schema_version=1,
                     member_id=spec['member_id'], summary=summary, verdict=verdict, version_path=str(version_path),
                     native_launch_qualification=False)
@@ -881,7 +890,8 @@ class CatchupRunner(SeedRunner):
                              export_thresholds=spec['original'].get('threshold'),
                              signals=(result.get('verdict') or {}).get('signals') if result else None,
                              oos_rule=(result.get('verdict') or {}).get('oos_rule') if result else None,
-                             evidenceEnd=manifest['evidence_end']['iso']))
+                             evidenceEnd=manifest['evidence_end']['iso'],
+                             evidenceEndEffective=evidence_end.effective_end(spec['tester']['ToDate'])))
         value = dict(schema_version=1, batch_id=batch_id, mode=MODE, status=state['status'], evidence_end=manifest['evidence_end'],
                      counts=counts, members=rows, verdict_rules=manifest.get('verdict_rules') or validate_rules(),
                      thresholds_applied_to_eligibility=not manifest.get('include_below_threshold', False),

@@ -197,7 +197,8 @@ class EvaluateTests(unittest.TestCase):
 
 
 class StampTests(unittest.TestCase):
-    SPEC = dict(original=dict(evidence_end='2026-09-24', set_sha256='a' * 64, values_sha256='b' * 64), new_window=dict(first_day='2026-09-25'))
+    SPEC = dict(original=dict(evidence_end='2026-09-24', set_sha256='a' * 64, values_sha256='b' * 64), new_window=dict(first_day='2026-09-25'),
+                tester=dict(ToDate='2026.10.10'))
     MANIFEST = dict(evidence_end=dict(iso='2026-10-09', mode='explicit'), verdict_rules=cv.validate_rules())
     FOOS = dict(start='2026-08-29', end='2026-09-24', days=19, trades=38, pl=190.0)
 

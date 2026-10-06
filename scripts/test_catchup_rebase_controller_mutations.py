@@ -1,7 +1,7 @@
 """Mutation check for the catch-up tick-history drift rule (goat-catchup-rebase-v1, goatai#1885 6008946539).
 
 Each threshold, its direction, every verdict branch and every stamp (comparable_rebased, requalify,
-not_comparable, historyBasis, tickHistoryDrift, the re-based windows with no splice) is weakened in a
+not_comparable, the deal-level swap step, historyBasis, tickHistoryDrift, the re-based windows with no splice) is weakened in a
 temporary copy of controller/, and controller/test_studio_catchup_rebase.py or
 test_studio_catchup_verdict.py must fail. The repository is never modified. Works with an embedded Python
 that ignores cwd (sys.path is set here). GOAT_MUTATION_TMP may name the scratch folder.
@@ -49,6 +49,18 @@ MUTATIONS = [
     ('DD bar is 11%', RULE, "DD_REL = Decimal('0.10')", "DD_REL = Decimal('0.11')"),
     ('DD bar is strict', RULE, "_row('max_dd', abs(r - o) <= limit", "_row('max_dd', abs(r - o) < limit"),
     ('DD bar is one-sided', RULE, "_row('max_dd', abs(r - o) <= limit", "_row('max_dd', (r - o) <= limit"),
+    # Deal-level swap step (goatai#1885 6009311876): before the aggregate rule.
+    ('swap step skipped', RULE, "    if deal_check and deal_check.get('swap_only'):", '    if False:'),
+    ('judge skips the deal step', RULE, '    if old_deals and new_deals:\n        # Deal-level step first', '    if False:\n        # Deal-level step first'),
+    ('different deals pass as swap', RULE, "    if not deals['matched']:", '    if False:'),
+    ('money at any row counts as swap', RULE, '            if day is None or stamp.date() == day:', '            if False:'),
+    ('equity at different minutes compared', RULE, '    if [row[0] for row in original_rows] != [row[0] for row in retest_rows]:', '    if False:'),
+    ('money tolerance is two cents', RULE, "MONEY_TOLERANCE = Decimal('0.005')", "MONEY_TOLERANCE = Decimal('0.02')"),
+    ('money tolerance is strict', RULE, 'if abs(difference - previous) > MONEY_TOLERANCE:', 'if abs(difference - previous) >= MONEY_TOLERANCE:'),
+    ('deal list runs past the cut', RULE, 'deal_list(old_deals, cut_msc=_msc(cut)), deal_list(new_deals, cut_msc=_msc(cut))',
+     'deal_list(old_deals), deal_list(new_deals)'),
+    ('swap cause mislabelled', RULE, 'max_equity_gap=max_equity_gap), cause=SWAP_OR_SPEC))', 'max_equity_gap=max_equity_gap), cause=HISTORY_OR_BEHAVIOUR))'),
+    ('aggregate cause mislabelled', RULE, 'max_equity_gap=max_equity_gap), cause=HISTORY_OR_BEHAVIOUR))', 'max_equity_gap=max_equity_gap), cause=SWAP_OR_SPEC))'),
     # Branches and their order.
     ('exact reproduction is not the fast path', RULE, '    if reproduced:\n        return dict(schema=SCHEMA, verdict=COMPARABLE',
      '    if False:\n        return dict(schema=SCHEMA, verdict=COMPARABLE'),
@@ -84,8 +96,8 @@ MUTATIONS = [
      "                       comparison=verdict.get('comparison'), historyBasis=verdict.get('historyBasis'),\n                       tickHistoryDrift=verdict.get('tickHistoryDrift'), rebase=verdict.get('rebase'),\n",
      "                       rebase=verdict.get('rebase'),\n"),
     ('summary drops the stamps', CATCHUP,
-     "                       evidenceEndMode=verdict['evidenceEndMode'], comparison=verdict.get('comparison'),\n                       historyBasis=verdict.get('historyBasis'), tickHistoryDrift=verdict.get('tickHistoryDrift'))",
-     "                       evidenceEndMode=verdict['evidenceEndMode'])"),
+     "\n                       comparison=verdict.get('comparison'), historyBasis=verdict.get('historyBasis'),\n                       tickHistoryDrift=verdict.get('tickHistoryDrift'))",
+     ")"),
     # The OOS formula gates on the re-based evidence.
     ('requalify skips the gates', CATCHUP, "        if verdict.get('verdict') in ('not_comparable', 'unjudged'):",
      "        if verdict.get('verdict') in ('not_comparable', 'unjudged', 'requalify'):"),

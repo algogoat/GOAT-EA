@@ -632,7 +632,12 @@ window measured inside the same re-test gives the pace.
   none`) and its sentence says why.
 - Tick-history drift (`studio_catchup_rebase.py`, `goat-catchup-rebase-v1`,
   goatai#1885): identity (every check above except `reproduced`) stays strict.
-  A re-test that passes identity but misses the exact reproduction is compared
+  A re-test that passes identity but misses the exact reproduction first gets a
+  deal-level step: identical deals (time, type, entry, lots, price, as the
+  equivalence canary compares them) whose equity difference steps only on
+  rollover rows is a swap or symbol-spec change (MT5 applies current swaps to all
+  history): `comparable_rebased`, `tickHistoryDrift.cause: swap_or_spec`.
+  Otherwise (`cause: history_or_behaviour`) it is compared
   with the original over the original span in aggregate (deals ±5%, PF ±0.05,
   final balance within max(0.1% of deposit, 2% of net), SAMPLE PF on the same
   side of 1.0, max DD ±10%; deal criteria need complete captures on both runs).

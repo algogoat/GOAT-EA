@@ -211,6 +211,36 @@ Friday-anchored and the weekly date math above does not move.
   refuse it, and `oos_windows.export_friday` still refuses any non-Friday. Batch plans with an
   explicit, non-Friday `evidence_end` keep working with their existing warning, for backward
   compatibility. A formula batch's own export end is a Saturday by design.
+### Evidence-end stamps: nominal, effective and mode
+
+MT5's tester `ToDate` is **exclusive**. Every place that stamps `evidenceEnd` (the nominal end that
+was asked for) also stamps **`evidenceEndEffective`**: the last day the test really covers, which
+is the exclusive `ToDate` minus one day (Claude-Mac, goatai#1885 6008626040). Both appear on:
+
+- the batch evidence-end policy (`native_batch.evidence_end`, `batch-status`);
+- every catch-up verdict, result summary, `evidence-version.json` and `catch_up` stamp;
+- every `oos_rule` and each `catchup-report` row.
+
+`evidenceEndMode` says how the end was chosen (Claude-Mac, 6008569394 and 6008626040):
+
+| Mode | Meaning |
+|---|---|
+| `auto` | latest closed Friday |
+| `auto_day` | latest closed trading day (catch-up only) |
+| `explicit` | an explicit Friday |
+| `explicit_day` | a catch-up's explicit closed weekday, e.g. the recorded date of one decision |
+| `legacy_explicit` | an older export plan's explicit non-Friday end: kept with its warning, never refused |
+| `legacy_thursday_cut` | an EA build without EvidenceEnd: the exports end at its own last Friday, which MT5 excludes, so they cover through the Thursday before the nominal Friday (warned; OOS catch-up brings them to the Friday) |
+| `oos_windows` | a formula batch: the export ends at the optimization end by design |
+
+Rules:
+
+- **Formula batches** are refused unless `evidenceEndEffective` equals the nominal end. Their
+  EvidenceEnd is the Saturday `ToDate` (for example 2026-07-04), the EA exports to the next day
+  (exclusive), and the stamp proves the two are equal.
+- **Catch-up** passes `ToDate` = evidence end + 1 day, so the closed day is fully covered and
+  `evidenceEndEffective` equals `evidenceEnd`. Prepare refuses a member whose `ToDate` would not
+  cover it.
 ## Exact pre-FOOS metrics at export (`goat-export-window-metrics-v1`)
 
 Claude-Mac's ruling (goatai#1885 comment 6006565005): the desktop estimated pre-FOOS ARF and
@@ -260,22 +290,37 @@ per-set records the agent imports into the matrix) carries `window_metrics`:
   export's status and qualification never change because of it. For a held-out-locked export the
   whole `window_metrics` (and `oos_rule`) is redacted like every other tested value.
 
-## When the broker's tick history changed: re-based catch-up evidence (`goat-catchup-rebase-v1`)
+## When the broker's swaps or tick history changed: re-based catch-up evidence (`goat-catchup-rebase-v1`)
 
 Decided on goatai#1885 (6008922429, 6008944190, 6008946539). The first native catch-up re-tested
 28 exports with the same build (B40), inputs, model, server, deposit, leverage and currency. Three
 reproduced exactly; 25 missed the exact `reproduced` check by small amounts (final balance −$22 to
-+$2, EURUSD trade timestamps shifted on thousands of rows). The likely cause is that the broker's
-tick history changed. `controller/studio_catchup_rebase.py` decides each re-test's `comparison`:
++$2 at first report). Ops then found the cause (goatai#1885 6009311876): **swap-rate changes**. MT5's
+tester applies the symbol's CURRENT swap rates to all history, and Darwinex updates them. In every
+case the first divergence was the first equity row after the server-midnight rollover; the deals
+were identical, and only floating equity and swap accruals differed (−$22 to +$5 over a year).
+`controller/studio_catchup_rebase.py` decides each re-test's `comparison`:
 
 | `comparison` | When | What happens |
 |---|---|---|
 | `comparable` | Identity holds and the re-test reproduced the original exactly | Fast path, unchanged: new weeks judged, the original FOOS restored on import |
-| `comparable_rebased` | Identity holds, no exact reproduction, every drift criterion below holds | New weeks judged; the re-test becomes the evidence for **every** window |
-| `requalify` | Identity holds, any drift criterion failed or could not be measured | A **new candidate**: full gates on the re-test, no carried status; the reasons name every failed criterion |
+| `comparable_rebased` | Identity holds, no exact reproduction, and either the deal-level swap step or every aggregate criterion below holds | New weeks judged; the re-test becomes the evidence for **every** window |
+| `requalify` | Identity holds, not swap-only, and any aggregate criterion failed or could not be measured | A **new candidate**: full gates on the re-test, no carried status; the reasons name every failed criterion |
 | `not_comparable` | Any identity check failed (build, inputs, EA name, model, symbol, server, deposit, leverage, currency) | Unchanged: nothing is judged |
 
-Drift criteria, compared in **aggregate** (never row by row) over the **original span**: from the
+**Step 1, deal level** (runs first; needs a complete capture on both runs). The deals before the
+cut are compared exactly as the trading-equivalence canary compares them
+(`studio_equivalence.deal_list` / `compare_deals`: time, type, entry, lots, price). If they are
+identical and the equity difference between the runs steps **only on rollover rows** (the first
+equity row of a new server day, where MT5 charges swap; a step of at most 0.005 is no step), the
+re-test is `comparable_rebased` with `tickHistoryDrift.cause: "swap_or_spec"`, whatever the size of
+the money difference. Current swaps are what live trading pays, so every window is still re-based
+on the re-test. Balance is not tested on its own: a held position's swap moves from floating equity
+to the balance when it closes. Different deals, money that moves on any other row, or equity
+sampled at different minutes fall through to step 2 (`dealCheck.status`: `deals_differ`,
+`money_off_rollover` or `not_measured`).
+
+**Step 2, aggregate** (`tickHistoryDrift.cause: "history_or_behaviour"`). Drift criteria, compared in **aggregate** (never row by row) over the **original span**: from the
 original's first equity row up to, not including, its last minute (the forced close, as in the exact
 reproduction check). All must hold for `comparable_rebased`:
 
@@ -307,16 +352,22 @@ import stamp (next to `evidenceEnd`):
 - `comparison`: one of the four values above;
 - `historyBasis {originalExportedAt, retestAt}`: the two SET files' modification times (UTC), plus
   each run's end; null for `comparable` and `not_comparable`;
-- `tickHistoryDrift {dealCountDelta, pfDelta, balanceDelta, ddDelta, maxEquityGap}`: re-test minus
-  original over the original span; `maxEquityGap` is the largest |equity difference| over the minutes
-  both runs sampled. Null for `comparable` and `not_comparable`.
+- `tickHistoryDrift {dealCountDelta, pfDelta, balanceDelta, ddDelta, maxEquityGap, cause}`: re-test
+  minus original over the original span; `maxEquityGap` is the largest |equity difference| over the
+  minutes both runs sampled; `cause` is `swap_or_spec` (step 1) or `history_or_behaviour` (step 2).
+  Null for `comparable` and `not_comparable`. `rebase.decidedBy` and `rebase.dealCheck` say which
+  step decided and what the deal comparison found.
+
+Follow-up (B42 EA item): the EA should stamp the symbol's swap and commission spec in the export
+capture, so a later re-test can name a swap change directly instead of inferring it from rollover rows.
 
 The import stamp also says `carriesStatus` (false for `requalify`) and `candidate: "new"` for
 `requalify`. A `requalify` version never catches the original export up (`evidence-scan` keeps it
 `behind` with `previous_attempt.verdict: requalify`); its re-test SET is the new candidate. The
 evidence-version also keeps `rebase` (each criterion's values, delta, limit and detail).
 `controller/fixtures/catchup-rebase-cases.json` pins the bar: exact reproduction, a just-pass and a
-just-fail for every criterion (both directions), identity mismatches and a multi-criteria fail;
+just-fail for every criterion (both directions), identity mismatches, a multi-criteria fail, and the
+deal-level step (swap-only drift, a deal mismatch, money drift off a rollover row);
 `scripts/test_catchup_rebase_controller_mutations.py` weakens every threshold and branch.
 
 ## Plans

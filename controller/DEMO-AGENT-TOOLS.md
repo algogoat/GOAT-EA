@@ -792,6 +792,10 @@ resolved once at prepare, recorded in the manifest and stamped as `evidenceEnd` 
 result and `oos_rule`. Every other run of the same decision passes that explicit date.
 Catch-up only: batch exports and `oos_windows` stay Friday-anchored and refuse `auto_day`.
 Catch-up days after the export Friday count toward the FOOS 30-trade floor.
+Every stamp pairs the nominal `evidenceEnd` with `evidenceEndEffective` (the last day the test
+covered: MT5 ToDate is exclusive) and `evidenceEndMode` (`auto`, `auto_day`, `explicit`,
+`explicit_day`, `legacy_explicit`, `legacy_thursday_cut`, `oos_windows`). `legacy_thursday_cut`
+means an older EA build's exports cover only through Thursday: catch them up to the Friday.
 
 ## OOS window formula on the demo lane (BOOS, SAMPLE, FWD, FOOS from O)
 

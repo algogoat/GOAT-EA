@@ -259,6 +259,66 @@ per-set records the agent imports into the matrix) carries `window_metrics`:
 - A unit whose CSV cannot be read gets `window_metrics: {status: "unavailable", reason}`; the
   export's status and qualification never change because of it. For a held-out-locked export the
   whole `window_metrics` (and `oos_rule`) is redacted like every other tested value.
+
+## When the broker's tick history changed: re-based catch-up evidence (`goat-catchup-rebase-v1`)
+
+Decided on goatai#1885 (6008922429, 6008944190, 6008946539). The first native catch-up re-tested
+28 exports with the same build (B40), inputs, model, server, deposit, leverage and currency. Three
+reproduced exactly; 25 missed the exact `reproduced` check by small amounts (final balance −$22 to
++$2, EURUSD trade timestamps shifted on thousands of rows). The likely cause is that the broker's
+tick history changed. `controller/studio_catchup_rebase.py` decides each re-test's `comparison`:
+
+| `comparison` | When | What happens |
+|---|---|---|
+| `comparable` | Identity holds and the re-test reproduced the original exactly | Fast path, unchanged: new weeks judged, the original FOOS restored on import |
+| `comparable_rebased` | Identity holds, no exact reproduction, every drift criterion below holds | New weeks judged; the re-test becomes the evidence for **every** window |
+| `requalify` | Identity holds, any drift criterion failed or could not be measured | A **new candidate**: full gates on the re-test, no carried status; the reasons name every failed criterion |
+| `not_comparable` | Any identity check failed (build, inputs, EA name, model, symbol, server, deposit, leverage, currency) | Unchanged: nothing is judged |
+
+Drift criteria, compared in **aggregate** (never row by row) over the **original span**: from the
+original's first equity row up to, not including, its last minute (the forced close, as in the exact
+reproduction check). All must hold for `comparable_rebased`:
+
+| Criterion | Bar (re-test minus original) |
+|---|---|
+| `deal_count` (positions opened, the EA's `Trades=`) | \|Δ\| ≤ 5% of the original count |
+| `pf` (deal results, all costs, positions opened in the span) | \|Δ\| ≤ 0.05 |
+| `final_balance` (last balance before the cut, in both runs) | \|Δ\| ≤ max(0.1% of deposit, 2% of \|original net profit\|) |
+| `sample_pf_side` (SAMPLE = [FromDate, ForwardDate − 1]) | PF on the same side of 1.0 in both (PF ≥ 1.0 is one side; it is exactly SAMPLE net ≥ 0) |
+| `max_dd` (sampled equity below its running peak) | \|Δ\| ≤ 10% of the original max DD |
+
+Bars are compared exactly (decimal arithmetic): a value on the bar passes. `deal_count`, `pf` and
+`sample_pf_side` need a complete sequence capture (`deals.csv`) on **both** runs; without one they
+are not measured, which fails them, so such a re-test requalifies and is never re-based on guesses.
+
+With `comparable_rebased` (and for a `requalify` candidate), the re-test is the evidence for BOOS,
+SAMPLE, FWD and FOOS, each recomputed on the re-test alone (`rebasedWindows`,
+`goat-catchup-rebased-windows-v1`, the `studio_window_metrics` fields): SAMPLE [FromDate,
+ForwardDate − 1], FWD [ForwardDate, ToDate − 1], BOOS [BackOOSDate, FromDate − 1], FOOS [ToDate,
+the judged end]. There is **no splice** of the old export with new weeks: the import stamp's
+`original_foos` is null, `windowsBasis` is `retest` and `windows` carries the re-based windows. The
+OOS window gates above (`oos_rule`) already measure every window on the re-test, so they run on the
+re-based evidence and judge FOOS on it; the `oos_rule` of a re-based or requalified result says
+`evidenceBasis: "retest"` (and `candidate: "new"` for `requalify`).
+
+Stamps, on the verdict, the result summary, `evidence-version.json` and the desktop `catch_up`
+import stamp (next to `evidenceEnd`):
+
+- `comparison`: one of the four values above;
+- `historyBasis {originalExportedAt, retestAt}`: the two SET files' modification times (UTC), plus
+  each run's end; null for `comparable` and `not_comparable`;
+- `tickHistoryDrift {dealCountDelta, pfDelta, balanceDelta, ddDelta, maxEquityGap}`: re-test minus
+  original over the original span; `maxEquityGap` is the largest |equity difference| over the minutes
+  both runs sampled. Null for `comparable` and `not_comparable`.
+
+The import stamp also says `carriesStatus` (false for `requalify`) and `candidate: "new"` for
+`requalify`. A `requalify` version never catches the original export up (`evidence-scan` keeps it
+`behind` with `previous_attempt.verdict: requalify`); its re-test SET is the new candidate. The
+evidence-version also keeps `rebase` (each criterion's values, delta, limit and detail).
+`controller/fixtures/catchup-rebase-cases.json` pins the bar: exact reproduction, a just-pass and a
+just-fail for every criterion (both directions), identity mismatches and a multi-criteria fail;
+`scripts/test_catchup_rebase_controller_mutations.py` weakens every threshold and branch.
+
 ## Plans
 
 Batch plan (`prepare-batch`): add `"oos_windows": {"optimization_months": 12}` (or

@@ -630,6 +630,19 @@ window measured inside the same re-test gives the pace.
   specification is not captured by this EA build, so a change shows up as a
   reproduction failure. A `not_comparable` re-test judges nothing (`confidence:
   none`) and its sentence says why.
+- Tick-history drift (`studio_catchup_rebase.py`, `goat-catchup-rebase-v1`,
+  goatai#1885): identity (every check above except `reproduced`) stays strict.
+  A re-test that passes identity but misses the exact reproduction is compared
+  with the original over the original span in aggregate (deals ±5%, PF ±0.05,
+  final balance within max(0.1% of deposit, 2% of net), SAMPLE PF on the same
+  side of 1.0, max DD ±10%; deal criteria need complete captures on both runs).
+  Within the bar it is `comparison: comparable_rebased` (`comparability.comparable`
+  true) and judged by the rules below, with every window recomputed on the
+  re-test (`rebasedWindows`, no splice). Past the bar the verdict is `requalify`
+  (`confidence: none`): a new candidate with full gates and no carried status,
+  the reasons naming each failed criterion. Every result stamps `comparison`,
+  `historyBasis` and `tickHistoryDrift`; see
+  [OOS-WINDOW-FORMULA.md](../docs/operations/OOS-WINDOW-FORMULA.md).
 - `failed`: a new worst drawdown, measured from the running peak including all
   equity before the new weeks (a drawdown already under way counts;
   `dd_from_open` is kept as a signal), or at least 5 trades with a loss and PF
@@ -661,6 +674,11 @@ a portfolio chosen before `added_at` saw none of those weeks ("unseen when
 chosen"), while one built after importing them saw them ("seen when chosen"). For
 an out-of-sample check, build first, then catch up. A `not_comparable` or
 `unjudged` version is imported with its verdict only: it adds no new-weeks window.
+A `comparable_rebased` or `requalify` version stamps `windowsBasis: retest`, the
+re-based `windows` and a null `original_foos`: the import takes every window from
+the re-test and never restores the old FOOS next to the new weeks. `requalify`
+also stamps `candidate: new` and `carriesStatus: false`, and never catches the
+original export up.
 
 Follow-up (answer to review question b): an EA `EvidenceEnd` export setting, as
 its own EA PR after the native single-pass proof, so batch exports can end on the

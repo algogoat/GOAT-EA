@@ -104,8 +104,8 @@ class Scenario:
                                   windows=foos + [('FOOS', date(2026, 8, 29), ORIGINAL_END, 38, 190)])
         new_rows = daily(ORIGINAL_END + timedelta(days=1), new_last, history[-1][2], new_per_day, dips=dips_new)
         retest_history = [list(r) for r in history]
-        if alter_history:
-            retest_history[50][2] += Decimal('3')
+        if alter_history:   # True: +3 on one equity row; a number: that shift instead
+            retest_history[50][2] += Decimal('3' if alter_history is True else str(alter_history))
         new_trades_list = trading(ORIGINAL_END + timedelta(days=1), new_last, new_trades, new_result)
         new_count = sum(entry == '0' for _, entry, _, _ in new_trades_list)
         values = dict(VALUES, Grid_Size='-3.0') if change_inputs else None
@@ -311,8 +311,10 @@ class EvaluateTests(unittest.TestCase):
         result = Scenario(self.root, retest_complete=False, alter_history=True).evaluate()
         self.assertFalse(result['reproduction']['reproduced'])
         self.assertIsNone(result['new_weeks']['trades'])
-        self.assertEqual((result['verdict'], result['confidence']), ('not_comparable', 'none'))
-        self.assertIn('not the same test as the original', result['plain'])
+        # Same identity, no exact reproduction and no capture to measure the drift: a new candidate (goatai#1885).
+        self.assertEqual((result['verdict'], result['confidence'], result['comparison']), ('requalify', 'none', 'requalify'))
+        self.assertEqual(result['rebase']['failed'], ['deal_count', 'pf', 'sample_pf_side'])
+        self.assertIn('new candidate', result['plain'])
 
     def test_changed_inputs_are_not_comparable(self):
         result = Scenario(self.root, change_inputs=True).evaluate()

@@ -14,7 +14,15 @@ server, deposit, currency and leverage, and reproduced the original's equity and
 deals before the new weeks. The execution delay is pinned in the tester INI and
 checked through that reproduction. Symbol specification (contract size, digits) is
 not captured by this EA build; a change would alter the pre-window trades and fail
-the reproduction check. Any failed check makes the verdict ``not_comparable``.
+the reproduction check. Any failed identity check makes the verdict ``not_comparable``.
+
+Tick-history drift (``studio_catchup_rebase``, goatai#1885 6008946539): when every identity check
+passes but the exact reproduction does not (the broker's tick history changed), the re-test is
+compared with the original over the original span in aggregate. Within the bar it is
+``comparable_rebased`` (``comparison``): the new weeks are judged as below and every window is
+recomputed on the re-test (``rebasedWindows``, never spliced). Outside it the verdict is
+``requalify``: a new candidate with full gates and no carried status, whose reasons name the failed
+criteria. Every verdict carries ``comparison``, ``historyBasis`` and ``tickHistoryDrift``.
 
 Definitions (broker server time, half-open windows [start 00:00, end+1 00:00)):
 - net: equity change over the window from the export equity CSV (includes the
@@ -36,7 +44,8 @@ Every verdict carries ``evidence_model`` (``model_tag``): model, timeframe, mode
 The library scorer applies its fidelity table to these; this tool caps nothing.
 
 Verdict rules, in order:
-1. not_comparable: any comparability check failed.
+1. not_comparable: any identity check failed; requalify: identity held, but the re-test neither
+   reproduced the original nor stayed within the tick-history drift bar.
 2. failed: the new weeks went below the worst drawdown already shown (dd >
    prior_dd), or, with at least min_trades trades, lost money with pf < failed_pf
    (no pf: lost more than one forward-pace window of profit).
@@ -59,6 +68,7 @@ from pathlib import Path
 import re
 
 from strategy_registry import inspect_set
+import studio_catchup_rebase as rebase_rule
 from studio_evidence import server_msc, weekdays
 
 RULES = 'goat-catchup-verdict-v2'
@@ -416,10 +426,14 @@ def signals(new, prior_dd, pace, repro, same_inputs, capture):
                 capture_complete=bool((capture or {}).get('complete')), trade_source=new.get('trade_source'))
 
 
-def _plain(verdict, new, pace, reasons, confidence, comparable):
+def _plain(verdict, new, pace, reasons, confidence, comparable, comparison=None):
     span = '%s to %s (%d trading days)' % (new['first_day'], new['last_day'], new['weekdays'])
     text = {'held_up': 'Held up', 'weakened': 'Weakened', 'failed': 'Failed', 'too_few_trades': 'Too few trades to judge',
-            'not_comparable': 'Not comparable'}[verdict]
+            'not_comparable': 'Not comparable', 'requalify': 'Requalify'}[verdict]
+    if verdict == 'requalify':
+        return ('%s: the re-test over %s ran the same test, but the broker\'s tick history moved its results beyond the '
+                'rebase bar over the original span (%s). It is a new candidate: judge it with the full gates on the re-test, '
+                'and carry nothing over from the original.' % (text, span, '; '.join(reasons)))
     if not comparable:
         return '%s: the re-test over %s is not the same test as the original (%s), so its new weeks are not judged.' % (
             text, span, '; '.join(reasons))
@@ -433,6 +447,9 @@ def _plain(verdict, new, pace, reasons, confidence, comparable):
         sentence += ' (about %g expected at the forward pace)' % new['expected_trades_at_forward_pace']
     sentence += '. %s confidence: %s trades over %d trading days.' % (
         confidence.capitalize(), '?' if new['trades'] is None else new['trades'], new['weekdays'])
+    if comparison == 'comparable_rebased':
+        sentence += (' Re-based: the broker\'s tick history changed slightly since the export, within the rebase bar, '
+                     'so every window is now measured on this re-test.')
     return sentence
 
 
@@ -462,6 +479,20 @@ def evaluate(original, retest, *, new_end, tester=None, rules=None, pins=None):
         old_deals = None
     repro = reproduction(old_rows, new_rows, original_deals=old_deals, retest_deals=new_deals)
     comparable = comparability(original, retest, pins=pins, repro=repro, same_inputs=same_inputs)
+    # Tick-history drift (studio_catchup_rebase): identity stays strict; a re-test that missed the exact
+    # reproduction is compared over the original span in aggregate: comparable_rebased or requalify.
+    identity_failed = ['%s: %s' % (item['check'], item['detail']) for item in comparable['checks']
+                       if not item['ok'] and item['check'] != 'reproduced']
+    deposit = (pins or {}).get('deposit')
+    if deposit is None:
+        deposit = old_capture.get('initial_equity') if old_capture.get('initial_equity') is not None else \
+            ((pins or {}).get('original_tester') or {}).get('Deposit')
+    rebase = rebase_rule.judge(original, retest, identity_failed=identity_failed, reproduced=bool(repro.get('reproduced')),
+                               old_rows=old_rows, new_rows=new_rows, old_deals=old_deals, new_deals=new_deals, tester=tester,
+                               deposit=deposit)
+    comparison = rebase['verdict']
+    comparable.update(comparable=comparison in (rebase_rule.COMPARABLE, rebase_rule.REBASED), verdict=comparison,
+                      identity=not identity_failed)
     opening = new_capture.get('initial_equity')
     window = equity_window(new_rows, first_new, new_end, opening=opening, carry_peak=True)
     covered = bool(new_capture.get('complete')) and new_capture.get('observed_end_msc', 0) >= server_msc(new_end) and new_deals
@@ -492,19 +523,27 @@ def evaluate(original, retest, *, new_end, tester=None, rules=None, pins=None):
                     trades_per_day=None if fwd_trades is None else fwd_trades / days)
         if window['weekdays'] and pace['trades_per_day'] is not None:
             window['expected_trades_at_forward_pace'] = round(pace['trades_per_day'] * window['weekdays'], 1)
-    if not comparable['comparable']:
+    if comparison == rebase_rule.NOT_COMPARABLE:
         verdict = 'not_comparable'
         reasons = ['%s: %s' % (item['check'], item['detail']) for item in comparable['checks'] if not item['ok']]
         confidence = 'none'
+    elif comparison == rebase_rule.REQUALIFY:
+        # A new candidate: full gates, no carried status; the reasons name every failed criterion.
+        verdict, reasons, confidence = 'requalify', list(rebase['reasons']), 'none'
     else:
         verdict, reasons = decide(window, prior, pace, rules)
         confidence = 'low'
         if window['trades'] is not None and window['trades'] >= rules['moderate_trades'] and window['weekdays'] >= rules['moderate_days']:
             confidence = 'moderate'  # never higher: a few weeks is a small sample
+    windows = None
+    if comparison in (rebase_rule.REBASED, rebase_rule.REQUALIFY):
+        # The re-test is the evidence for every window, each recomputed on it alone: never the old export plus new weeks.
+        windows = rebase_rule.rebased_windows(original, retest, new_rows, new_deals, tester=tester, tested_through=new_end)
     return dict(schema=RULES, verdict=verdict, confidence=confidence, reasons=reasons,
-                plain=_plain(verdict, window, pace, reasons, confidence, comparable['comparable']),
+                plain=_plain(verdict, window, pace, reasons, confidence, comparable['comparable'], comparison=comparison),
                 new_weeks=window, prior_dd=prior, forward_pace=pace, inputs_match=same_inputs, reproduction=repro,
-                comparability=comparable,
+                comparability=comparable, comparison=comparison, rebase={k: v for k, v in rebase.items() if k != 'historyBasis'},
+                historyBasis=rebase.get('historyBasis'), tickHistoryDrift=rebase.get('tickHistoryDrift'), rebasedWindows=windows,
                 original=dict(set_path=original['set_path'], set_sha256=original['set_sha256'], evidence_end=original['evidence_end'],
                               values_sha256=original['values_sha256']),
                 retest=dict(set_path=retest['set_path'], set_sha256=retest['set_sha256'], evidence_end=retest['evidence_end'],

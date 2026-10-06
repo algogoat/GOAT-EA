@@ -1,0 +1,74 @@
+{
+  "schema": "goat-catchup-rebase-cases-v1",
+  "rule": "goat-catchup-rebase-v1",
+  "source": "goatai#1885 6008922429, 6008944190, 6008946539; studio_catchup_rebase.judge_case runs every case",
+  "notes": "Each case starts from defaults (deposit 100000; original and re-test both: 1000 deals, PF 1.50, final balance 102000 = net 2000, max DD 1000, SAMPLE pl 500) and applies its own original/retest fields. Balance limit = max(0.1% x 100000, 2% x |net|) = 100 unless the case changes the original's net.",
+  "defaults": {
+    "deposit": 100000,
+    "reproduced": false,
+    "identity_failed": [],
+    "original": {"deal_count": 1000, "pf": 1.5, "final_balance": 102000, "max_dd": 1000, "sample": {"pl": 500}},
+    "retest": {"deal_count": 1000, "pf": 1.5, "final_balance": 102000, "max_dd": 1000, "sample": {"pl": 500}}
+  },
+  "cases": [
+    {"name": "exact reproduction is the fast path", "reproduced": true,
+     "expected": {"verdict": "comparable", "failed": []}},
+    {"name": "exact reproduction wins even with drifted aggregates", "reproduced": true, "retest": {"deal_count": 2000, "max_dd": 5000},
+     "expected": {"verdict": "comparable", "failed": []}},
+    {"name": "no drift but not reproduced", "expected": {"verdict": "comparable_rebased", "failed": []}},
+
+    {"name": "deal count just pass (+5.0%)", "retest": {"deal_count": 1050}, "expected": {"verdict": "comparable_rebased", "failed": []}},
+    {"name": "deal count just fail (+5.1%)", "retest": {"deal_count": 1051}, "expected": {"verdict": "requalify", "failed": ["deal_count"]}},
+    {"name": "deal count just pass low (-5.0%)", "retest": {"deal_count": 950}, "expected": {"verdict": "comparable_rebased", "failed": []}},
+    {"name": "deal count just fail low (-5.1%)", "retest": {"deal_count": 949}, "expected": {"verdict": "requalify", "failed": ["deal_count"]}},
+
+    {"name": "PF just pass (+0.05)", "retest": {"pf": 1.55}, "expected": {"verdict": "comparable_rebased", "failed": []}},
+    {"name": "PF just fail (+0.0501)", "retest": {"pf": 1.5501}, "expected": {"verdict": "requalify", "failed": ["pf"]}},
+    {"name": "PF just fail low (-0.0501)", "retest": {"pf": 1.4499}, "expected": {"verdict": "requalify", "failed": ["pf"]}},
+    {"name": "PF not measured fails", "retest": {"pf": null, "pf_note": "needs a complete capture"},
+     "expected": {"verdict": "requalify", "failed": ["pf"]}},
+    {"name": "no losing deals in either run is no PF drift", "original": {"pf": null, "pf_note": "no losing deals"},
+     "retest": {"pf": null, "pf_note": "no losing deals"}, "expected": {"verdict": "comparable_rebased", "failed": []}},
+
+    {"name": "final balance just pass (+100 = 0.1% of deposit)", "retest": {"final_balance": 102100},
+     "expected": {"verdict": "comparable_rebased", "failed": []}},
+    {"name": "final balance just fail (+100.01)", "retest": {"final_balance": 102100.01},
+     "expected": {"verdict": "requalify", "failed": ["final_balance"]}},
+    {"name": "final balance just fail low (-100.01)", "retest": {"final_balance": 101899.99},
+     "expected": {"verdict": "requalify", "failed": ["final_balance"]}},
+    {"name": "final balance just pass on 2% of net (net 15000: limit 300)", "original": {"final_balance": 115000}, "retest": {"final_balance": 115300},
+     "expected": {"verdict": "comparable_rebased", "failed": []}},
+    {"name": "final balance just fail on 2% of net (+300.01)", "original": {"final_balance": 115000}, "retest": {"final_balance": 115300.01},
+     "expected": {"verdict": "requalify", "failed": ["final_balance"]}},
+    {"name": "final balance on 2% of a losing net (net -15000: limit 300)", "original": {"final_balance": 85000}, "retest": {"final_balance": 84700},
+     "expected": {"verdict": "comparable_rebased", "failed": []}},
+
+    {"name": "SAMPLE PF just pass (exactly 1.0 and above: same side)", "original": {"sample": {"pl": 0}}, "retest": {"sample": {"pl": 0.01}},
+     "expected": {"verdict": "comparable_rebased", "failed": []}},
+    {"name": "SAMPLE PF just fail (exactly 1.0 vs just below)", "original": {"sample": {"pl": 0}}, "retest": {"sample": {"pl": -0.01}},
+     "expected": {"verdict": "requalify", "failed": ["sample_pf_side"]}},
+    {"name": "SAMPLE PF just fail on measured PF", "original": {"sample": {"pf": 1.0}}, "retest": {"sample": {"pf": 0.9999}},
+     "expected": {"verdict": "requalify", "failed": ["sample_pf_side"]}},
+    {"name": "SAMPLE PF both below 1.0 is the same side", "original": {"sample": {"pf": 0.8}}, "retest": {"sample": {"pf": 0.95}},
+     "expected": {"verdict": "comparable_rebased", "failed": []}},
+    {"name": "SAMPLE not measured fails", "retest": {"sample": null},
+     "expected": {"verdict": "requalify", "failed": ["sample_pf_side"]}},
+
+    {"name": "max DD just pass (+10%)", "retest": {"max_dd": 1100}, "expected": {"verdict": "comparable_rebased", "failed": []}},
+    {"name": "max DD just fail (+10.001%)", "retest": {"max_dd": 1100.01}, "expected": {"verdict": "requalify", "failed": ["max_dd"]}},
+    {"name": "max DD just fail low (-10.001%)", "retest": {"max_dd": 899.99}, "expected": {"verdict": "requalify", "failed": ["max_dd"]}},
+    {"name": "max DD zero in both", "original": {"max_dd": 0}, "retest": {"max_dd": 0}, "expected": {"verdict": "comparable_rebased", "failed": []}},
+
+    {"name": "identity mismatch stays not_comparable", "identity_failed": ["server: Darwinex-Demo / Other-Demo"],
+     "expected": {"verdict": "not_comparable", "failed": []}},
+    {"name": "identity mismatch outranks an exact reproduction", "reproduced": true, "identity_failed": ["ea_build: B40 / B41"],
+     "expected": {"verdict": "not_comparable", "failed": []}},
+
+    {"name": "multi-criteria fail names every failed criterion",
+     "retest": {"deal_count": 1100, "pf": 1.4, "final_balance": 101500, "sample": {"pl": -5}, "max_dd": 1300},
+     "expected": {"verdict": "requalify", "failed": ["deal_count", "pf", "final_balance", "sample_pf_side", "max_dd"]}},
+    {"name": "first native catch-up: small drift re-bases", "original": {"deal_count": 4210, "pf": 1.21, "final_balance": 104312.55, "max_dd": 2140.1},
+     "retest": {"deal_count": 4206, "pf": 1.2, "final_balance": 104290.55, "max_dd": 2151.4},
+     "expected": {"verdict": "comparable_rebased", "failed": []}}
+  ]
+}

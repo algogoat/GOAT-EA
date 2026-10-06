@@ -97,7 +97,18 @@ V1.49 isolation builds store the GOAT user credential at
   the user just approved.
 - `GOATDeviceActivationWriteCredential` computes the path once from the approved account, so a
   login that reads 0 mid-write can never redirect it.
-- The slot also carries the terminal and the build (INV-CRED-02 below).
+- From B42 the slot also carries the terminal and the build (INV-CRED-02 below).
+- Pre-slot builds (B38-B41) use a copy-only migration, `GOATCredentialMigrateLegacyOnce`; slot
+  builds retire it in `OnInit`. The shared `api-bearer-v149.token` is copied to this login's file
+  only when all of these hold:
+  - an `approved` activation status exists for this login, from a V1.49 build;
+  - that status is no older than the shared file;
+  - no such status exists for another login.
+
+  Only `approved` is proof. `activation_reload_pending`, `ACTIVATION_RELOAD_REQUIRED` and
+  `activation_oninit_observed` also follow a credential merely found on disk, so they never count.
+  The shared file is never deleted or changed, the copy is create-only, and the shared file is
+  never opened unless it is proven to be this login's.
 - The activation request cooldown (`activation-admission.bin`) stays shared on purpose: it holds
   no account data and is the per-host request budget.
 
@@ -117,18 +128,26 @@ digest. From 07:30Z every licence check from B40 answered "no", although B40's o
 untouched. T2 runs B41 on a B38 credential and has the same exposure.
 
 **Enforcement.**
-- `GOATCredentialSlotSuffix` = `GoatOptTerminalHash` (INV-BATCH-01) + `GOATCredentialBuildToken`
-  (`GOAT_BUILD_ID` with only `[A-Za-z0-9-]` kept, anything else `_`, 1-64 characters). An
-  unknown hash (`00000000`) or build gives no slot: the path is the unwritable placeholder and
+- `GOAT V1.49.mq5` defines `GOAT_CREDENTIAL_SLOTS_V149` and points `GOAT_API_BEARER_FILE` at
+  `GOATCredentialSlotFile()` (`GOATEADeviceActivation.mqh`). The pinned input header
+  `GOAT_Inputs_Definitions.mqh` (INV-CRED-01 code, `header_sha256`) is unchanged, so batch packages
+  stay valid.
+- The slot suffix is `GOATCredentialSlotSuffix`: `GoatOptTerminalHash` (INV-BATCH-01) plus
+  `GOATCredentialBuildToken`, which is `GOAT_BUILD_ID` with only `[A-Za-z0-9-]` kept (anything
+  else becomes `_`) and must be 1-64 characters. If the hash is unknown (`00000000`) or there is
+  no build, there is no slot: the path is the unwritable placeholder and
   `GOATDeviceActivationWriteCredential` stores nothing.
 - Every slot name still matches the credential filters (`api-bearer(-[A-Za-z0-9_-]+)?.token`)
   used by the controller, the VPS scripts and the evidence collectors.
-- Migration adopts nothing (`GOATCredentialMigrateLegacyOnce`). The shared `api-bearer-v149.token`
-  and the per-login `api-bearer-v149-<login>.token` were minted by earlier builds, so they are never
-  opened, copied, changed or deleted, and terminals still on those builds keep working. The new
-  build prints one notice per chart (never a token) and pairs once; demo terminals can use the
-  zero-click agent pairing that the desktop update flow already expects
-  (`UPDATED_PAIRING_NEEDED`).
+- Migration adopts nothing. `GOATCredentialSlotsOnInit` runs first in `OnInit`, before the timer,
+  the reload ticket or any credential read, and retires the header's INV-CRED-01 copy-migration
+  for this build. The shared `api-bearer-v149.token` and the per-login
+  `api-bearer-v149-<login>.token` were minted by earlier builds, so:
+  - they are never opened, copied, changed or deleted;
+  - terminals still on those builds keep working;
+  - the new build prints one notice per chart (never a token) and pairs once. Demo terminals can
+    use the zero-click agent pairing that the desktop update flow already expects
+    (`UPDATED_PAIRING_NEEDED`).
 - The controller mirror is `credential_relative_path(legacy, login, data_root, build_id)`.
 - The monitor blocker never says that another terminal replaced this one's sign-in: under these
   slots, pairing another terminal cannot.
@@ -136,7 +155,8 @@ untouched. T2 runs B41 on a B38 credential and has the same exposure.
 **Tests.** `scripts/test_terminal_isolation.cjs`: two terminals licensed at once; Banker pairs while
 T2 stays licensed and the reverse; one login on two terminals; the EX33 to B42 swap never opens the
 EX33 slot, and a rollback keeps it; no slot without a hash or build; filter-safe names; account
-mismatch; a login reading 0 mid-write; legacy files never adopted or opened.
+mismatch; a login reading 0 mid-write; legacy files never adopted or opened; the pre-slot header
+copy-migration cases still hold for B38-B41.
 `scripts/test_terminal_isolation_mutations.cjs` (every slot guard);
 `controller/test_studio_terminal_isolation.py` `CredentialPathTests`;
 `controller/test_studio_research_status.py` (another terminal's approval is never blamed).

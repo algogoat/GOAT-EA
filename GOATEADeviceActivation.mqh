@@ -312,9 +312,19 @@ bool GOATDeviceActivationParseStart(const string response,string &activation_id,
           && GOATIsSafeApiBearerToken(credential_candidate));
   }
 
-#ifdef GOAT_TERMINAL_ISOLATION_V149
-// INV-CRED-02: this build's own credential slot name (GOATCredentialSlotSuffix). Only
-// [A-Za-z0-9-] are kept, so the file name still matches every credential filter
+#ifdef GOAT_CREDENTIAL_SLOTS_V149
+// INV-CRED-02: one credential slot per MT5 login, per terminal data folder and per EA
+// build: api-bearer-v149-<login>-<terminal hash>-<build>.token. GOAT's server pins every
+// credential to the admission of the build that minted it, so a credential kept across a
+// build swap stops working whenever that OLD build's admission changes, while the terminal
+// runs a different build (Banker 10-06: an EX33 credential on B40, cut off by the EX33
+// renewal). A build therefore never reads another build's credential; it pairs once.
+// The terminal hash is GoatOptTerminalHash (INV-BATCH-01), so two terminals on one login
+// never share a slot either. An unknown hash or build yields no slot at all.
+// GOAT V1.49.mq5 points GOAT_API_BEARER_FILE here. The pinned input header
+// (GOAT_Inputs_Definitions.mqh, INV-CRED-01) is unchanged, so batch packages stay valid.
+
+// Only [A-Za-z0-9-] are kept, so the file name still matches every credential filter
 // (api-bearer(-[A-Za-z0-9_-]+)?.token); anything else becomes '_'.
 string GOATCredentialBuildToken(void)
   {
@@ -329,6 +339,47 @@ string GOATCredentialBuildToken(void)
      }
    return token;
   }
+
+string GOATCredentialSlotSuffix(void)
+  {
+   string terminal=GoatOptTerminalHash();
+   string build=GOATCredentialBuildToken();
+   if(StringLen(terminal)!=8 || terminal=="00000000" || build=="") return "";
+   return terminal+"-"+build;
+  }
+
+string GOATCredentialSlotFileFor(const string login)
+  {
+   // The legacy shared file ends in ".token"; every slot sits beside it.
+   string stem=StringSubstr(GOAT_API_BEARER_LEGACY_FILE,0,StringLen(GOAT_API_BEARER_LEGACY_FILE)-6);
+   string slot=GOATCredentialSlotSuffix();
+   if(!GOATLoginDigitsValid(login) || slot=="") return "GOAT\\Credentials\\no-account.token";
+   return stem+"-"+login+"-"+slot+".token";
+  }
+
+string GOATCredentialSlotFile(void)
+  {
+   // Never the shared or per-login legacy file; no account means the unwritable placeholder.
+   string login=GOATAccountLoginDigits();
+   if(login=="") return "GOAT\\Credentials\\no-account.token";
+   return GOATCredentialSlotFileFor(login);
+  }
+
+// Migration adopts nothing. The shared (api-bearer-v149.token) and per-login
+// (api-bearer-v149-<login>.token) files were minted by earlier builds (this build only
+// writes its own slot), and adopting one is exactly the cross-build reuse INV-CRED-02
+// removes. Called first in OnInit: it retires the INV-CRED-01 copy-migration for this
+// build, so both legacy files stay byte-for-byte unchanged and are never opened, and
+// terminals still on an older build keep working. One notice per chart, never a token.
+void GOATCredentialSlotsOnInit(void)
+  {
+   g_GOATCredentialMigrationChecked=true;
+   if(MQLInfoInteger(MQL_TESTER)) return;
+   string login=GOATAccountLoginDigits();
+   if(login=="" || FileIsExist(GOATCredentialSlotFileFor(login),FILE_COMMON)) return;
+   if(FileIsExist(GOATApiBearerFileFor(login),FILE_COMMON) || FileIsExist(GOAT_API_BEARER_LEGACY_FILE,FILE_COMMON))
+      Print("GOAT sign-in: this EA build keeps its own sign-in for this MT5 terminal and account. The earlier build's sign-in file was left unchanged; approve this build's connection code once.");
+  }
 #endif
 
 bool GOATDeviceActivationWriteCredential(void)
@@ -341,9 +392,13 @@ bool GOATDeviceActivationWriteCredential(void)
    // is never re-read mid-write, and the terminal must still be on that account.
    if(!GOATLoginDigitsValid(g_GOATDeviceActivationAccountId)
       || GOATAccountLoginDigits()!=g_GOATDeviceActivationAccountId) return false;
-   string credential=GOATApiBearerFileFor(g_GOATDeviceActivationAccountId);
+#ifdef GOAT_CREDENTIAL_SLOTS_V149
+   string credential=GOATCredentialSlotFileFor(g_GOATDeviceActivationAccountId);
    // No slot (unknown terminal hash or build): store nothing rather than a shared name.
    if(credential=="GOAT\\Credentials\\no-account.token") return false;
+#else
+   string credential=GOATApiBearerFileFor(g_GOATDeviceActivationAccountId);
+#endif
 #else
    string credential=GOAT_API_BEARER_FILE;
 #endif

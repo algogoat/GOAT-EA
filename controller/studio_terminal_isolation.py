@@ -158,7 +158,7 @@ def credential_relative_path(legacy_relative, login, data_root, build_id):
 
     Receipts keep ``credential_relative_path`` (the pre-isolation shared file);
     isolation builds read and write ``<stem>-<login>-<terminal hash>-<build>.token``
-    next to it (INV-CRED-02, mirrors GOATApiBearerFileFor): one slot per MT5 login,
+    next to it (INV-CRED-02, mirrors GOATCredentialSlotFileFor): one slot per MT5 login,
     terminal data folder and EA build, because GOAT's server pins a credential to the
     admission of the build that minted it.
     """

@@ -1130,7 +1130,7 @@ string CGOATDashboard::ChildTradeSummary(const int idx)
    long magic=g_sets[idx].magic;
    if(magic<=0 && !GoatFindMagicByCid(g_sets[idx].sym,g_sets[idx].cid,magic)) magic=0;
    if(magic<=0) return "magic=unknown";
-   int positions=0,orders=0;
+   int positions=0,order_count=0;
    string tickets="";
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
@@ -1142,9 +1142,9 @@ string CGOATDashboard::ChildTradeSummary(const int idx)
    {
       ulong ticket=OrderGetTicket(i);
       if(ticket==0 || OrderGetInteger(ORDER_MAGIC)!=magic) continue;
-      orders++; tickets+=(tickets=="" ? "" : ",")+"o"+IntegerToString((long)ticket);
+      order_count++; tickets+=(tickets=="" ? "" : ",")+"o"+IntegerToString((long)ticket);
    }
-   return StringFormat("magic=%I64d positions=%d orders=%d tickets=%s",magic,positions,orders,tickets);
+   return StringFormat("magic=%I64d positions=%d orders=%d tickets=%s",magic,positions,order_count,tickets);
 }
 
 // On load, a chart is closed only when it is provably our child: the GOAT EA runs on it,

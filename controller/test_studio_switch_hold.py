@@ -261,6 +261,28 @@ class RunnerHoldTests(unittest.TestCase):
         self.assertEqual(member['switch_hold']['reason'], 'bound')
         self.assertLessEqual(member['switch_hold']['waited_ms'], hold.MAX_HOLD_SECONDS * 1000)
 
+    @unittest.skipUnless(__import__('os').name == 'nt', 'Windows gate semantics')
+    def test_a_busy_gate_during_a_hold_is_skipped_and_the_member_still_starts_in_the_slot(self):
+        # #195 and #194 together: a status reader holding launch.lock past the 1 s wait skips a pass
+        # (never fails the driver), and the hold still releases in the quiet slot.
+        import threading, time
+        from studio_native_gate import exclusive_gate
+        self.arm(CLOCK, T0 + 5)
+        holding, release = threading.Event(), threading.Event()
+        def hold():
+            with exclusive_gate(self.runner.gate):
+                holding.set(); release.wait(10)
+        thread = threading.Thread(target=hold, daemon=True); thread.start(); holding.wait(5)
+        timer = threading.Timer(1.5, release.set); timer.start()
+        try:
+            self.runner.start('batch', 40)
+        finally:
+            release.set(); thread.join(5); timer.join()
+        member = self.state()['members'][0]
+        self.assertEqual(len(self.starts), 1)
+        self.assertTrue(T0 + 35 <= member['started_unix'] < T0 + 36)
+        self.assertEqual(member['switch_hold']['reason'], 'clock_slot')
+
     def test_unreadable_publisher_state_starts_now(self):
         self.arm(dict(CLOCK, state_path=str(Path(self.tmp.name) / 'missing.jsonl')), T0 + 5)
         self.runner.start('batch', 5)

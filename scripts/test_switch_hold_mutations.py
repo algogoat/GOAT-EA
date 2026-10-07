@@ -84,7 +84,7 @@ def main():
             log = Path(work) / 'log.txt'
             try:
                 result = subprocess.run([sys.executable, '-B', '-c', RUNNER, str(copy), str(log)] + TESTS,
-                                        timeout=150, capture_output=True, text=True,
+                                        timeout=90, capture_output=True, text=True,
                                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                 report = log.read_text(encoding='utf-8') if log.exists() else ''
                 # Caught means the switch-hold tests ran and failed, not that the copy broke.

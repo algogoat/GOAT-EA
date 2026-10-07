@@ -192,7 +192,17 @@ class DecideTests(unittest.TestCase):
 
 class RunnerHoldTests(unittest.TestCase):
     """The seed/catch-up/hold-up member loop (studio_seed._drive) on the seed fixture's fake MT5 and clock."""
-    setUp = seed_fixture.SeedTests.setUp
+    MAX_PASSES = 500    # a hold that never advances the clock fails fast instead of spinning forever
+
+    def setUp(self):
+        seed_fixture.SeedTests.setUp(self)
+        self.passes = 0
+        def pump():
+            self.passes += 1
+            if self.passes > self.MAX_PASSES:
+                raise AssertionError('driver spun without advancing the clock')
+        self.controller.bridge.pump = pump
+
     tearDown = seed_fixture.SeedTests.tearDown
     close = seed_fixture.SeedTests.close
     start = seed_fixture.SeedTests.start

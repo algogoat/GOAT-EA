@@ -40,6 +40,7 @@ concurrency:
 #   python test_process_query_mutations.py                 (14-18 min)
 #   python test_oos_windows_controller_mutations.py        (61 mutations; 5.4 min locally at Idle, ~8-11 min expected)
 #   python test_holdup_mutations.py, test_lane_driver_mutations.py, test_research_launch_mutations.py
+#   python test_switch_hold_mutations.py                   (28 mutations; ~6 min locally at Idle, no hangs)
 #   (GOAT-EA#174 moved test_export_qualification_mutations.py and test_driver_backoff_mutations.py to 3/3 to balance)
 #
 # controller-mutations (3/3)  ~13-24 min observed
@@ -47,8 +48,7 @@ concurrency:
 #   python test_peer_restart_mutations.py, test_peer_roster_mutations.py,
 #          test_seed_member_failure_mutations.py, test_export_qualification_mutations.py,
 #          test_driver_backoff_mutations.py, test_setup_registration_mutations.py (19 mutations; ~2 min locally at Idle),
-#          test_profile_staged_deploy_mutations.py (36 mutations, named tests only; ~2 min locally at Idle),
-#          test_switch_hold_mutations.py (28 mutations)
+#          test_profile_staged_deploy_mutations.py (36 mutations, named tests only; ~2 min locally at Idle)
 #
 # A new mutation check goes in the shard with the most headroom; keep each shard well under its
 # timeout. Setup steps are identical in both jobs.
@@ -248,6 +248,9 @@ jobs:
       - name: OOS window formula mutation check (date math, BOOS/FOOS pass bar and floor, FOOS held out, pre-FOOS metrics, catch-up closed day vs Friday exports, evidence-end stamps)
         if: matrix.shard == 2
         run: python scripts/test_oos_windows_controller_mutations.py
+      - name: Member switch hold mutation check (off by default, 90 s bound, quiet slot, fail open, stop/cancel/pause end a hold at once)
+        if: matrix.shard == 2
+        run: python scripts/test_switch_hold_mutations.py
 
       # ---- Shard 3/3 ----
       - name: Restore-lane never-started allowance mutation check (exact-attempt settlement records, other demo work refuses, settle-refused-start stays the reviewed proof)
@@ -274,6 +277,3 @@ jobs:
       - name: Profile-staged deploy mutation check (Enabled=0 always, AllowLiveTrading never written, BuildTemplate-exact writer, child_not_started then auto-unwind, exact profile rollback)
         if: matrix.shard == 3
         run: python scripts/test_profile_staged_deploy_mutations.py
-      - name: Member switch hold mutation check (off by default, 90 s bound, quiet slot, fail open, stop/cancel/pause end a hold at once)
-        if: matrix.shard == 3
-        run: python scripts/test_switch_hold_mutations.py

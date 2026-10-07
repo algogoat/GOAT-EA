@@ -51,17 +51,26 @@ Later timer ticks wait for the child's registration, for at most
 retries for up to 60 s inside `OnInit`, before the child writes its handshake. The
 template is deleted only once the attach settles, either linked or timed out.
 
-On a timeout, the dashboard:
+When the attach settles, inertness is checked again. If Algo Trading was switched on, or
+a position or order opened, a child that registered is not kept: the attach answers
+`rejected_not_inert` and is unwound exactly like a timeout.
 
-- closes the child chart, which unloads a child that is still starting;
-- keeps the chart ID as the partial-deployment lock;
-- drops any magic adopted early;
-- ignores later status events from that chart, so the failed row never becomes a live
+On a timeout, or when the terminal is no longer inert, the dashboard unwinds the attach
+the same way:
+
+- it closes the child chart, but only while that chart still shows the row's symbol, and
+  the close unloads a child that is still starting;
+- it keeps the chart ID as the partial-deployment lock;
+- it saves the row with the failed marker (`GOAT_ATTACH_FAILED_MAGIC`, magic `-2`) in
+  place of any magic adopted early;
+- it ignores status events from that chart, so the failed row never becomes a live
   member.
 
-When the attach settles, inertness is checked again. If Algo Trading was switched on, or
-a position or order opened, the answer is `rejected_not_inert`, even when the child
-linked. The attach state lives only in the running dashboard EA.
+The marker is in the saved dashboard state, so it survives a restart. When the dashboard
+loads, it closes a marked row's chart again, in case MT5 restored the chart with its
+child. The diagnostics log `child_chart_closed`, `child_chart_close_failed` or
+`child_chart_not_found`. The in-flight attach itself (which row, which template, when it
+started) lives only in the running dashboard EA.
 
 If the dashboard EA stops in that window (MT5 closed or crashed, the EA reloaded, or
 the chart closed), three things are left behind. This is accepted by design (goatai#1885
@@ -77,10 +86,10 @@ the chart closed), three things are left behind. This is accepted by design (goa
    so after a restart the row has a chart ID but no linked child. `deploy_next` then
    answers `rejected_partial_deployment` before it opens a chart or queues a template.
    The chart itself may be bare. Or, if MT5 drained the queue before stopping, it may
-   carry a child that started but was never linked. The failed-chart list is in memory
-   only, so a new dashboard session can adopt such a child from its status events. It
-   still cannot become a deployment: the `started` receipt blocks every command until
-   `deploy-stop`.
+   carry a child that started but was never linked. An attach that was in flight, and
+   not yet failed, has no saved marker, so a new dashboard session can adopt such a child
+   from its status events. It still cannot become a deployment: the `started` receipt
+   blocks every command until `deploy-stop`.
 3. **A leftover template** in `MQL5\Profiles\Templates`. When the saved dashboard loads
    again, `SweepStaleChildTemplates` deletes the template of every row that has a chart
    ID but no linked child, and logs `phase=stale_template_removed` in the deployment
@@ -91,29 +100,28 @@ the chart closed), three things are left behind. This is accepted by design (goa
    attach stops before any chart is opened. So a later session never queues stale
    bytes. `scripts/test_dashboard_async_attach.cjs` cases 8 to 10 pin this down.
 
-**Recovery.** Every step is controller-driven and keeps Algo Trading off. Nothing is
-deleted.
+**Recovery.** After a dashboard restart in the middle of an attach, run `deploy-stop`
+before anything else.
 
-1. Run `deploy-status`. Note the deployment ID, its phase, and the rows with
-   `linkedFresh` false. Save the `started` receipt and the request it answers, as
-   evidence. Then look at the newest `MQL5\Files\GOAT\Diagnostics\deployment_<dashboard
-   chart id>.log`: its last `handshake_begin` without a matching `handshake_linked` or
-   `child_attach_failed` is the interrupted attach.
-2. Check that the terminal is inert (Algo Trading off, no positions or orders). Then
-   run `deploy-stop` with a new attempt ID. It closes MT5 normally once and renames
-   aside the saved dashboard state, the deploy chart profile, `request.json` and
-   `registration.json`. This also means a bare or unlinked child chart is not reopened
-   on the next launch, because its profile is archived.
-3. The leftover template needs no manual step. The sweep removes it the next time that
-   saved dashboard loads, and a redeploy overwrites it before queueing (see point 3
-   above). If the saved dashboard is never reloaded, a file can remain. It is harmless,
-   and it may be renamed to `....tpl.stopped-<UTC stamp>` for tidiness.
+Every step is controller-driven and keeps Algo Trading off. Nothing is deleted.
+
+1. Run `deploy-stop` with a new attempt ID, before any other dashboard or deploy
+   command. It closes MT5 normally once, and renames aside the saved dashboard state, the
+   deploy chart profile, `request.json` and `registration.json`. A bare or unlinked
+   child chart is therefore not reopened on the next launch, because its profile is
+   archived. `deploy-stop` refuses if Algo Trading is on or there are open positions or
+   orders. In that case stop here; the human decides what happens next.
+2. Keep the evidence. Nothing in this step changes state. Save the `started` receipt and
+   the request it answers (renamed aside, not deleted). In the newest
+   `MQL5\Files\GOAT\Diagnostics\deployment_<dashboard chart id>.log`, the last
+   `handshake_begin` without a matching `handshake_linked` or `child_attach_failed` is
+   the interrupted attach.
+3. The leftover template needs no manual step. A redeploy overwrites it before queueing,
+   and the sweep removes it whenever that saved dashboard loads (see point 3 above). If
+   the saved dashboard is never reloaded, a file can remain. It is harmless, and it may
+   be renamed to `....tpl.stopped-<UTC stamp>` for tidiness.
 4. Redeploy with `deploy-load` and a plan that has a new `deploymentId`. Each member is
    staged, copied and queued again from its hash-checked SET.
-
-If `deploy-status` shows the terminal still running with Algo Trading on, or with open
-positions or orders, stop here. `deploy-stop` refuses in that state, and the human
-decides what happens next.
 
 **Controller wait.** beta.23's `deploy-load` waits 60 s for each `deploy_next` receipt,
 but an attach can take up to 75 s. If it times out with `receipt_timeout`, run

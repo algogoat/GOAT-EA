@@ -19,16 +19,39 @@ const mutations=[
   ['busy owner lock drops the final receipt','GOATPortfolioSetupControl.mqh',[[R`   if(owner==INVALID_HANDLE) return true;`,R`   if(owner==INVALID_HANDLE) {GoatPortfolioAttachPending=false; return false;}`]]],
   ['failed receipt write is not retried','GOATPortfolioSetupControl.mqh',[[R`   if(!written) return true;`,'']]],
   // Timeout unwind (Mac 6028209095)
-  ['timeout leaves the child chart open','Dashboard.mqh',[[R`         bool chart_closed=ChartClose(failed_cid);`,R`         bool chart_closed=true;`]]],
-  ['late child status adopts a failed row','Dashboard.mqh',[[R`            if(!magic_match && IsAgentAttachFailedChart(g_sets[idx].cid)) break;`,'']]],
-  ['failed chart not remembered','Dashboard.mqh',[[R`         m_agent_attach_failed_cids[failed]=failed_cid;`,R`         m_agent_attach_failed_cids[failed]=0;`]]],
-  ['early status magic kept on a failed row','Dashboard.mqh',[[R`      g_sets[idx].magic=0;`+'\n','']]],
+  ['timeout leaves the child chart open','Dashboard.mqh',[[R`   bool chart_closed=ChartClose(cid);`,R`   bool chart_closed=true;`]]],
+  ['failed marker not set','Dashboard.mqh',[[R`   g_sets[idx].magic=GOAT_ATTACH_FAILED_MAGIC;
+   MarkStateDirty();`,R`   MarkStateDirty();`]]],
+  ['failed marker cleared instead','Dashboard.mqh',[[R`   g_sets[idx].magic=GOAT_ATTACH_FAILED_MAGIC;
+   MarkStateDirty();`,R`   g_sets[idx].magic=0;
+   MarkStateDirty();`]]],
+  ['failed marker not saved','Dashboard.mqh',[[R`   if(!SaveDashboardConfig())
+      Print("Dashboard failed-attach state save failed; the row stays locked in memory.");`,'']]],
+  ['close ignores the symbol check','Dashboard.mqh',[[R`   if(ChartSymbol(cid)!=g_sets[idx].sym)`,R`   if(false)`]]],
+  ['restored failed chart not closed on load','Dashboard.mqh',[[R`      if(g_sets[idx].magic==GOAT_ATTACH_FAILED_MAGIC)
+         CloseFailedChildChart(idx);`,'']]],
+  ['failed-row guard reads only in-memory state','Dashboard.mqh',[[R`      if(g_sets[i].cid==cid && g_sets[i].magic==GOAT_ATTACH_FAILED_MAGIC) return true;`,'']]],
+  // Not inert at settle (Mac 6028472101 blocker 1)
+  ['settle does not re-check inertness','Dashboard.mqh',[[R`   if(linked && inert)`,R`   if(linked)`]]],
+  ['settle ignores open positions','Dashboard.mqh',[[R`              && PositionsTotal()==0 && OrdersTotal()==0;`,R`              && OrdersTotal()==0;`]]],
+  ['not-inert receipt string only (B41.1 at 0db8aea)','Dashboard.mqh',[[R`   if(linked && inert)`,R`   if(linked)`],[R`   return (linked && !inert ? -2 : -1);`,R`   return -1;`]]],
+  ['not-inert path skips the close','Dashboard.mqh',[[R`         ResetFailedChildRow(idx,tplName);
+      }
+      else
+         FailChildAttachTimeout(idx,tplName);
+      AgentUnwindFailedAttach(idx);`,R`         ResetFailedChildRow(idx,tplName);
+         g_sets[idx].magic=GOAT_ATTACH_FAILED_MAGIC;
+      }
+      else
+      {
+         FailChildAttachTimeout(idx,tplName);
+         AgentUnwindFailedAttach(idx);
+      }`]]],
+  ['not-inert answered as a plain failure','GOATPortfolioSetupControl.mqh',[[R`(state==-2 ? "rejected_not_inert" : "child_attach_failed")`,R`"child_attach_failed"`]]],  ['late child status adopts a failed row','Dashboard.mqh',[[R`            if(!magic_match && IsAgentAttachFailedChart(g_sets[idx].cid)) break;`,'']]],
   ['timeout keeps the copied template','Dashboard.mqh',[[R`   MarkStateDirty();
    DeleteCopiedTemplate(tplName);
 }`,R`   MarkStateDirty();
 }`]]],
-  ['settle does not re-check inertness','GOATPortfolioSetupControl.mqh',[[R`(inert ? "child_attached" : "rejected_not_inert")`,R`"child_attached"`]]],
-  ['settle ignores open positions','GOATPortfolioSetupControl.mqh',[[R`                 && PositionsTotal()==0 && OrdersTotal()==0;`,R`                 && OrdersTotal()==0;`]]],
   // Stale templates (Mac 6028113003, 6028209095)
   ['copy refuses to overwrite a stale template','Dashboard.mqh',[[R`if(!CopyFileW(srcXL, dstXL, 0))`,R`if(!CopyFileW(srcXL, dstXL, 1))`]]],
   ['failed copy still queues the template','Dashboard.mqh',[[R`if(!CopyFileW(srcXL, dstXL, 0)) { Print("CopyFileW error ", GetLastError()); return false; }`,R`if(!CopyFileW(srcXL, dstXL, 0)) { Print("CopyFileW error ", GetLastError()); }`]]],

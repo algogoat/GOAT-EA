@@ -17,23 +17,30 @@ and returns. `AgentPollDeployRow` runs the same `NewSingleInstance` handshake on
 handshake only after `OnInit`, and the license check in `OnInit` retries for up to 60 s
 (`GOATLicenseInitRetry.mqh`). On success the dashboard links the child and only then deletes the template.
 
-On a timeout (Claude-Mac's review, 6028209095):
+**Inertness is re-checked when the attach settles** (Claude-Mac, 6028472101). If Algo Trading was switched on, or
+a position or order opened, during the attach, a child that registered is not kept. The attach answers
+`rejected_not_inert` and is unwound exactly like a timeout.
+
+**One unwind for every failed agent attach** (`AgentUnwindFailedAttach`; 6028209095, 6028472101):
 
 - The row goes back to Pending and the template is deleted, as before.
-- **The child chart is closed**, which unloads a child that is still starting. Its chart ID stays as the
-  partial-deployment lock.
-- Any magic that a status event adopted early is dropped. A late `GOAT_EVENT_CHILD_STATUS` for that chart is
-  ignored, so a failed row can never become a live member while the receipt says `child_attach_failed`.
-- The failed step is named in the deployment diagnostics (`phase=child_attach_failed control=handshake_timeout`,
-  `template_enqueue`, `chart_open`, …), followed by `child_chart_closed` or `child_chart_close_failed`.
+- **The child chart is closed**, which unloads a child that is still starting. The close happens only while
+  `ChartSymbol(cid)` still names the row's symbol. The chart ID stays as the partial-deployment lock.
+- The row is **saved** with the failed marker `GOAT_ATTACH_FAILED_MAGIC` (`-2`; rows that were never deployed hold
+  `-1`). The marker replaces any magic a status event adopted early.
+- `GOAT_EVENT_CHILD_STATUS` from a marked chart is ignored, so a failed row can never become a live member while
+  the receipt says `child_attach_failed` or `rejected_not_inert`.
+- Because the marker is saved, it survives a restart. When the dashboard loads, it closes a marked row's chart
+  again, in case MT5 restored the chart with its child. The state file keeps its nine columns.
+- The failed step is named in the deployment diagnostics (`phase=child_attach_failed
+  control=handshake_timeout|not_inert|template_enqueue|chart_open|…`). Then comes `child_chart_closed`,
+  `child_chart_close_failed` or `child_chart_not_found`.
 
 `GoatPortfolioSetupPoll` keeps the request's `started` receipt until the attach settles, and reads no other
-request meanwhile. **It re-checks inertness when the attach settles.** If Algo Trading was switched on, or a
-position or order opened, during the attach, a linked child answers `rejected_not_inert`. The receipt schema and
-its result values are unchanged.
+request meanwhile. The receipt schema and its result values are unchanged.
 
 **Startup sweep.** When a saved dashboard loads, a copied template left for a row that has a chart ID but no
-linked child (an interrupted attach) is deleted. The row itself stays as the lock.
+linked child (an interrupted or failed attach) is deleted. The row itself stays as the lock.
 
 The human Activate / Deploy All path keeps its 20 s in-handler wait, and on a timeout it leaves the chart open for
 inspection.
@@ -78,7 +85,7 @@ the frozen strategy, and the audit still refuses it.
 six at their defaults passes; any one at a non-default value fails, as does a SET/template disagreement on one
 the SET carries, or an extra unknown name. B41's audit fails the first case, which reproduces the bug.
 
-`scripts/test_dashboard_async_attach.cjs` (17 cases) runs the production attach code against a modelled MT5. In
+`scripts/test_dashboard_async_attach.cjs` (18 cases) runs the production attach code against a modelled MT5. In
 the model, chart queues drain after the handler returns, and a child's `OnInit` can be delayed.
 
 - B41's in-handler wait reproduces T3.
@@ -86,13 +93,14 @@ the model, chart queues drain after the handler returns, and a child's `OnInit` 
 - Children that register at 25 s and at 70 s are linked. A child due after the budget is unloaded when its
   chart closes.
 - An unclosable chart's late status is ignored, and the row never links.
-- Inertness is re-checked at settle.
+- After a restart, a restored marked chart is closed on load. If it can't be closed, its child still never adopts the row, and a chart ID now showing another symbol is left alone.
+- When inertness fails at settle (Algo on, or a position open), the chart is closed, no child runs, the row is not linked, and the marker is saved.
 - Stale templates are overwritten before queueing, a failed copy queues nothing, and the startup sweep removes a
   partial row's template.
 - The timeout, enqueue-failure, busy-lock and failed-write paths all unwind.
 
 `scripts/test_dashboard_async_attach_mutations.cjs` removes or weakens each guard and requires the harness to
-fail: 21 of 21 mutants are killed. `scripts/test_b41_1_no_drift.cjs` checks the source against B41 (`278ec109`), normalised: only
+fail: 28 of 28 mutants are killed. They include the not-inert path skipping the close, the 0db8aea receipt-only behaviour, an unsaved marker, a missing symbol check and no close on load. `scripts/test_b41_1_no_drift.cjs` checks the source against B41 (`278ec109`), normalised: only
 `Dashboard.mqh`, `GOATPortfolioSetupControl.mqh` and `GOATPortfolioChildAudit.mqh` differ, and `StartExporter`,
 `OnTick`, `OnTradeTransaction` and `OnTimer` are identical.
 
@@ -101,7 +109,8 @@ fail: 21 of 21 mutants are killed. `scripts/test_b41_1_no_drift.cjs` checks the 
 - `GOAT_BUILD_ID` is `V1.49-BETA17-41.1`, marker `B41.1`, on top of B41 (`278ec109`, GOAT-EA#147, compiled in #150).
 - **Compile pending for this source.** It carries CA41, AA41 and the fixes from Claude-Mac's review (6028209095).
   No binary in this folder belongs to it.
-- Superseded, do not install either:
+- Superseded, do not install any of them:
+  - `6d1963c4…` (from `278ef0af`, not inert answered by receipt only, no persisted marker). It was compiled but never committed, and was set aside outside the repository.
   - `d496884a…` (from `c8355f66`, AA41 with the 20 s budget and no chart close). It stays in history at
     `5510bbb5`.
   - The CA41-only `b3650d96…` (from `4f3f2f99`). It stays in history at `f00cc8ad`.

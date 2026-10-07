@@ -38,6 +38,8 @@ function js(text) {
 }
 const method=name=>bodyOf(dashboard,'CGOATDashboard::'+name);
 const BUDGET=Number((dashboard.match(/#define GOAT_AGENT_ATTACH_BUDGET_MS (\d+)/)||[])[1]);
+const FAILED=Number((dashboard.match(/#define GOAT_ATTACH_FAILED_MAGIC (-\d+)/)||[])[1]);
+assert.ok(FAILED<-1,'the failed marker is distinct from the never-deployed -1');
 const LICENSE_DEADLINE=Number((license.match(/ulong deadline=GetTickCount64\(\)\+(\d+);/)||[])[1]);
 assert.ok(LICENSE_DEADLINE>0,'license startup deadline found');
 const prepareCall='bool started=PrepareChildLaunch(idx,tf,tplName);';
@@ -57,6 +59,9 @@ const production=[
  'function AgentBeginDeployRow(idx){'+js(beginBody).replace(js(prepareCall),'const p=PrepareChildLaunch(idx);let started=p.ok;tf=p.tf;tplName=p.tplName;')+'}',
  'function AgentPollDeployRow(){'+js(method('AgentPollDeployRow(void)'))+'}',
  'function IsAgentAttachFailedChart(cid){'+js(method('IsAgentAttachFailedChart(const long cid)'))+'}',
+ 'function CloseFailedChildChart(idx){'+js(method('CloseFailedChildChart(const int idx)'))+'}',
+ 'function AgentUnwindFailedAttach(idx){'+js(method('AgentUnwindFailedAttach(const int idx)'))+'}',
+ 'function ResetFailedChildRow(idx,tplName){'+js(method('ResetFailedChildRow(const int idx,const string tplName)'))+'}',
  'function SweepStaleChildTemplates(){'+js(method('SweepStaleChildTemplates(void)'))+'}',
  'function BeginChildAttach(idx,tf,tplName){'+js(method('BeginChildAttach(const int idx,ENUM_TIMEFRAMES tf,const string tplName)'))+'}',
  'function ApplyTemplate(idx,tf,tplName){'+js(method('ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string tplName)'))+'}',
@@ -82,18 +87,20 @@ const tplOf=i=>`GOAT V1.49 SYM${i},M1_B35-${i}.tpl`;
 // templates: the terminal's MQL5\Profiles\Templates folder (name -> bytes), which outlives a dashboard session.
 // childDelay: ms from the template applying to the end of the child's OnInit (license startup).
 // registers=false: the child runs and reports status but never writes its pending registration.
+// restored: charts MT5 brings back with the profile after a restart ({cid,sym,child:true|false}).
 function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueOk=true,templates=new Map(),rows=null,
-                copyOk=()=>true,closeOk=true}={}) {
+                copyOk=()=>true,closeOk=true,restored=[]}={}) {
  const mt5={clock:1000,nextCid:66948585504739,charts:new Map(),queue:[],inits:[],templates,commonFiles:new Map(),gv:new Map(),
             cidField:new Map(),children:[],applied:[],algo:false,positions:0};
  const sets=rows||[...Array(members)].map((_,i)=>({name:`GOAT V1.49 SYM${i},M1_B35-${i}.set`,path:`${SETS}\\set${i}`,sym:'SYM'+(i%17),cid:0,magic:0,status:'Pending'}));
- const log={phases:[],audits:[],receipts:new Map(),saves:0,ownerBusy:false,writeOk:true};
+ const log={phases:[],audits:[],receipts:new Map(),saves:0,saved:null,ownerBusy:false,writeOk:true};
  let nextMagic=7000;
  const startChild=(chart)=>{ // end of OnInit: the child records its chart and its pending registration
   const magic=nextMagic++;
   mt5.cidField.set(chart.cid,magic);if(registers) mt5.gv.set(`${magic}/${chart.sym}/Magic`,magic);
   mt5.children.push({cid:chart.cid,sym:chart.sym,magic});
  };
+ for(const r of restored){mt5.charts.set(r.cid,{cid:r.cid,sym:r.sym,expert:!!r.child,closed:false});if(r.child) startChild(mt5.charts.get(r.cid));}
  const processQueue=()=>{ // MT5 drains chart command queues once the handler has returned
   for(const cmd of mt5.queue.splice(0)) {
    const chart=mt5.charts.get(cmd.cid);
@@ -109,7 +116,7 @@ function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueO
   g_sets:sets,edt_Status:[...Array(sets.length+2)].map(control),btn_Action:[...Array(sets.length+2)].map(control),
   EA_Path:'Experts\\GOAT-EA\\GOAT V1.49.ex5',EA_Name_:'GOAT V1.49',ChartId:1,PERIOD_M1:1,
   m_agent_setup_quiet:false,m_agent_attach_pending:false,m_agent_attach_idx:-1,m_agent_attach_tpl:'',m_agent_attach_start:0,m_child_attach_step:'',
-  m_agent_attach_failed_cids:[],GOAT_AGENT_ATTACH_BUDGET_MS:BUDGET,GOAT_EVENT_CHILD_STATUS:'child-status',
+  GOAT_AGENT_ATTACH_BUDGET_MS:BUDGET,GOAT_ATTACH_FAILED_MAGIC:FAILED,GOAT_EVENT_CHILD_STATUS:'child-status',
   GoatPortfolioAttachPending:false,GoatPortfolioAttachId:'',GoatPortfolioAttachHash:'',GoatPortfolioAttachResult:'',
   ACCOUNT_TRADE_MODE:1,ACCOUNT_TRADE_MODE_DEMO:0,TERMINAL_CONNECTED:2,TERMINAL_TRADE_ALLOWED:3,CHART_BRING_TO_TOP:4,
   MB_OK:0,MB_ICONWARNING:0,FILE_READ:1,FILE_WRITE:2,FILE_BIN:4,FILE_COMMON:8,INVALID_HANDLE:-1,GOAT_GV_FIELD_MAGIC:'Magic',
@@ -134,7 +141,8 @@ function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueO
    if((failIfExists&&mt5.templates.has(name))||!copyOk(name)) return 0;
    mt5.templates.set(name,mt5.commonFiles.get(rel));return 1;},
   DeleteFileW:dst=>dst.startsWith(TEMPLATES)&&mt5.templates.delete(dst.slice(TEMPLATES.length))?1:0,
-  SaveDashboardConfig:()=>{log.saves++;return true;},
+  // The saved dashboard state: a copy of every row, which is what a restart reloads.
+  SaveDashboardConfig:()=>{log.saves++;log.saved=sets.map(s=>({...s}));return true;},
   AppendAILaunchAudit:(idx,stage)=>log.audits.push([idx,stage]),
   GoatDeploymentPhase:(phase,target=0,controlName='')=>log.phases.push({phase,target,control:controlName}),
   GetTickCount:()=>mt5.clock,Sleep:ms=>{mt5.clock+=ms;},
@@ -318,7 +326,8 @@ for(const [delay,label] of [[25000,'25 s, after the old 20 s budget'],[70000,'70
  const cid=w.sets[0].cid;assert.equal(w.mt5.charts.get(cid).closed,true);
  for(let t=0;t<15;t++) w.tick();
  assert.equal(w.mt5.children.length,0,'no child runs on the closed chart');
- assert.equal(w.sets[0].magic,0);assert.ok(!w.linked(0));assert.equal(w.sets[0].cid,cid,'the lock stays');
+ assert.equal(w.sets[0].magic,FAILED);assert.ok(!w.linked(0));assert.equal(w.sets[0].cid,cid,'the lock stays');
+ assert.equal(w.log.saved[0].magic,FAILED,'the failed marker is saved');
  assert.equal(w.deployNext('after').result,'rejected_partial_deployment');passed++;
 }
 { // 14. Same, but the chart cannot be closed: the late child starts and reports status; the dashboard
@@ -329,29 +338,66 @@ for(const [delay,label] of [[25000,'25 s, after the old 20 s budget'],[70000,'70
  assert.ok(w.ctx.IsAgentAttachFailedChart(cid));
  for(let t=0;t<15;t++) w.tick();
  assert.equal(w.mt5.children.length,1,'the late child is running on the unclosed chart');
- assert.equal(w.sets[0].magic,0,'its status event does not adopt it');assert.equal(w.sets[0].status,'Pending');
+ assert.equal(w.sets[0].magic,FAILED,'its status event does not adopt it');assert.equal(w.sets[0].status,'Pending');
  assert.ok(!w.linked(0),'a failed row never becomes a live member');
  assert.equal(w.deployNext('after').result,'rejected_partial_deployment');passed++;
 }
 { // 15. A child that reports status during the attach but never completes the handshake: its early
-  //     magic is dropped at the timeout, so the saved row cannot reload as Linked.
+  //     magic is replaced by the failed marker at the timeout, so the saved row cannot reload as Linked.
  const w=world({members:1,registers:false,closeOk:false});
  w.setRequest('h');w.tick();w.tick();w.tick();
  assert.ok(w.sets[0].magic>0,'the status event adopted the magic early, before any handshake');
  const r=w.deployNext('h');assert.equal(r.result,'child_attach_failed');
- assert.equal(w.sets[0].magic,0);assert.ok(w.sets[0].cid>0);
+ assert.equal(w.sets[0].magic,FAILED);assert.ok(w.sets[0].cid>0);
  for(let t=0;t<5;t++) w.tick();
- assert.equal(w.sets[0].magic,0);assert.ok(!w.linked(0));passed++;
+ assert.equal(w.sets[0].magic,FAILED);assert.ok(!w.linked(0));assert.equal(w.log.saved[0].magic,FAILED);passed++;
 }
-{ // 16. Inertness is re-checked when the attach settles: Algo Trading switched on, or a position opened,
-  //     during the attach answers rejected_not_inert, not child_attached.
+{ // 16. Inertness is re-checked when the attach settles (Mac 6028472101). Algo Trading switched on, or a
+  //     position opened, during the attach: the child registers, but it is unwound exactly like a timeout.
+  //     The receipt says rejected_not_inert, the chart is closed, no child runs, and the row stays locked.
  for(const change of [m=>{m.algo=true;},m=>{m.positions=1;}]) {
   const w=world({members:2,childDelay:5000});
-  w.setRequest('i');w.tick();change(w.mt5);
+  w.setRequest('i');w.tick();const cid=w.sets[0].cid;change(w.mt5);
   const r=w.deployNext('i');assert.equal(r.result,'rejected_not_inert');
-  assert.equal(w.ctx.GoatPortfolioAttachPending,false);
+  assert.equal(w.ctx.GoatPortfolioAttachPending,false);assert.equal(w.ctx.m_agent_attach_pending,false);
+  assert.equal(w.mt5.charts.get(cid).closed,true,'the child chart is closed');
+  assert.equal(w.mt5.children.length,0,'no child is running');
+  for(let t=0;t<5;t++) w.tick();
+  assert.equal(w.mt5.children.length,0);assert.ok(!w.linked(0),'the row is not linked');
+  assert.equal(w.sets[0].magic,FAILED);assert.equal(w.sets[0].cid,cid,'the lock stays');assert.equal(w.sets[0].status,'Pending');
+  assert.equal(w.log.saved[0].magic,FAILED);assert.equal(w.mt5.templates.size,0);
+  assert.deepEqual(w.log.audits.map(a=>a[1]),['PREPARED','APPLY_FAILED']);
+  assert.deepEqual(w.log.phases.slice(-3).map(p=>[p.phase,p.control]),[['attach_not_inert',''],['child_chart_closed',''],['child_attach_failed','not_inert']]);
  }
  const w=world({members:2,childDelay:5000});
  assert.equal(w.deployNext('ok').result,'child_attached');passed++;
+}
+{ // 17. Restart after a failed attach whose chart could not be closed (Mac 6028472101 item 3): MT5
+  //     restores the chart with its child. The saved marker survives, so on load the chart is closed
+  //     again and the child's status never adopts the row.
+ const a=world({members:2,childDelay:BUDGET+5000,closeOk:false});
+ assert.equal(a.deployNext('x').result,'child_attach_failed');
+ for(let t=0;t<10;t++) a.tick();
+ const cid=a.sets[0].cid;assert.equal(a.mt5.children.length,1,'the child runs on the unclosable chart');
+ const rows=a.log.saved.map(s=>({...s}));assert.equal(rows[0].magic,FAILED);
+ // The terminal restarts: the profile restores that chart with its child; the saved rows reload.
+ const b=world({members:2,rows,restored:[{cid,sym:rows[0].sym,child:true}]});
+ assert.equal(b.mt5.children.length,1);
+ b.ctx.SweepStaleChildTemplates(); // LoadDashboardConfig calls it once the saved rows are read
+ assert.equal(b.mt5.charts.get(cid).closed,true,'the restored failed chart is closed on load');
+ assert.equal(b.mt5.children.length,0,'its child is unloaded');
+ for(let t=0;t<5;t++) b.tick();
+ assert.equal(b.sets[0].magic,FAILED);assert.ok(!b.linked(0));
+ // If the restored chart cannot be closed either, its child still never adopts the row.
+ const c=world({members:2,rows:a.log.saved.map(s=>({...s})),restored:[{cid,sym:rows[0].sym,child:true}],closeOk:false});
+ c.ctx.SweepStaleChildTemplates();
+ assert.equal(c.log.phases.at(-1).phase,'child_chart_close_failed');
+ for(let t=0;t<5;t++) c.tick();
+ assert.equal(c.mt5.children.length,1);assert.equal(c.sets[0].magic,FAILED,'a restored child never adopts a failed row');
+ assert.ok(!c.linked(0));assert.equal(c.deployNext('y').result,'rejected_partial_deployment');
+ // A chart ID that now names another symbol's chart is never closed.
+ const d=world({members:2,rows:a.log.saved.map(s=>({...s})),restored:[{cid,sym:'OTHER',child:false}]});
+ d.ctx.SweepStaleChildTemplates();
+ assert.equal(d.mt5.charts.get(cid).closed,false);assert.equal(d.log.phases.at(-1).phase,'child_chart_not_found');passed++;
 }
 console.log(JSON.stringify({passed,productionExtracted:true,nativeTemplateTimingVerified:false}));

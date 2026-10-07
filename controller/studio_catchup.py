@@ -192,6 +192,11 @@ def versions(controller_root, limit=20000):
     return sorted(found, key=lambda r: (r.get('evidence_end') or '', r.get('created_utc') or ''), reverse=True)
 
 
+# A requalify re-test is a new candidate (studio_catchup_rebase): the original carries no status from it, so it
+# never catches the original export up either. Its own evidence is the re-test (version_set_path).
+UNCARRIED = UNJUDGED + ('requalify',)
+
+
 def _version_key(record):
     return (record.get('values_sha256'), record.get('symbol'), record.get('period'), record.get('evidence_start'))
 
@@ -218,7 +223,7 @@ def classify(export, target, *, include_below_threshold=False, known_versions=()
     target_day, end_day = date.fromisoformat(target), date.fromisoformat(end)
     mine = [v for v in known_versions if _version_key(v) == _version_key(row) and (v.get('evidence_end') or '') >= target]
     # A not_comparable or unjudged re-test judged nothing, so it never carries the export forward; a re-queue may try again.
-    match = [v for v in mine if (v.get('verdict') or {}).get('verdict') not in UNJUDGED]
+    match = [v for v in mine if (v.get('verdict') or {}).get('verdict') not in UNCARRIED]
     refused = [v for v in mine if v not in match]
     if refused:
         row['previous_attempt'] = dict(verdict=(refused[0].get('verdict') or {}).get('verdict'), version_path=refused[0]['version_path'],
@@ -318,13 +323,24 @@ def catch_up_stamp(spec, manifest, verdict, created_utc, original_foos=None):
     that already held them saw them when choosing, so they are not an unseen test of it.
     ``original_foos`` is the original export's FOOS header window: the re-test's own FOOS
     runs through the new weeks, so the importer restores this one and keeps the new weeks
-    only in ``catchUp``.
+    only in ``catchUp``. A ``comparable_rebased`` or ``requalify`` re-test is different: the re-test is
+    the evidence for every window (``windows``, ``windowsBasis: retest``) and ``original_foos`` is null,
+    so nothing of the old export is spliced with the new weeks. ``historyBasis`` and
+    ``tickHistoryDrift`` say which history the evidence rests on and how far the re-test drifted.
     """
     window = verdict.get('new_weeks') or {}
+    # comparable_rebased / requalify (studio_catchup_rebase): the re-test is the evidence for every window, so the
+    # importer must not restore the original FOOS and append new weeks: it takes ``windows`` (all on the re-test).
+    rebased = verdict.get('comparison') in ('comparable_rebased', 'requalify')
     return dict(schema=CATCH_UP_SCHEMA, evidence_end=manifest['evidence_end']['iso'], added_at=created_utc,
                 evidenceEnd=manifest['evidence_end']['iso'], evidenceEndMode=evidence_end.evidence_end_mode(manifest['evidence_end'], catch_up=True),
                 evidenceEndEffective=evidence_end.effective_end(spec['tester']['ToDate']),
-                original_end=spec['original']['evidence_end'], original_foos=original_foos,
+                comparison=verdict.get('comparison'), historyBasis=verdict.get('historyBasis'),
+                tickHistoryDrift=verdict.get('tickHistoryDrift'), windowsBasis='retest' if rebased else 'original',
+                windows=verdict.get('rebasedWindows') if rebased else None,
+                candidate='new' if verdict.get('comparison') == 'requalify' else None,
+                carriesStatus=verdict.get('comparison') in ('comparable', 'comparable_rebased'),
+                original_end=spec['original']['evidence_end'], original_foos=None if rebased else original_foos,
                 first_day=spec['new_window']['first_day'], last_day=window.get('last_day') or manifest['evidence_end']['iso'],
                 verdict=verdict.get('verdict'), confidence=verdict.get('confidence'),
                 comparable=(verdict.get('comparability') or {}).get('comparable'),
@@ -925,7 +941,10 @@ class CatchupRunner(SeedRunner):
                        qualification=qualification_inputs(spec, manifest, verdict),
                        history_short=retest['history_short'], ea_desc_metadata=spec['optimization_window']['source'],
                        oos_rule=verdict['oos_rule'], evidenceEnd=verdict['evidenceEnd'], evidenceEndMode=verdict['evidenceEndMode'],
-                       evidenceEndEffective=verdict['evidenceEndEffective'])
+                       evidenceEndEffective=verdict['evidenceEndEffective'],
+                       comparison=verdict.get('comparison'), historyBasis=verdict.get('historyBasis'),
+                       tickHistoryDrift=verdict.get('tickHistoryDrift'), rebase=verdict.get('rebase'),
+                       rebasedWindows=verdict.get('rebasedWindows'))
         version_path = Path(spec['evidence_dir']) / 'evidence-version.json'
         with version_path.open('x', encoding='utf-8', newline='\n') as stream:
             json.dump(version, stream, sort_keys=True, separators=(',', ':'))
@@ -939,7 +958,11 @@ class CatchupRunner(SeedRunner):
                        equivalence_certificate=(pins.get('equivalence') or {}).get('certificate_digest'),
                        equivalence_mode=(pins.get('equivalence') or {}).get('mode'),
                        oos_rule=verdict['oos_rule']['status'], evidenceEnd=verdict['evidenceEnd'],
-                       evidenceEndMode=verdict['evidenceEndMode'], evidenceEndEffective=verdict['evidenceEndEffective'])
+                       evidenceEndMode=verdict['evidenceEndMode'], evidenceEndEffective=verdict['evidenceEndEffective'],
+                       comparison=verdict.get('comparison'), historyBasis=verdict.get('historyBasis'),
+                       tickHistoryDrift=verdict.get('tickHistoryDrift'),
+                       firstFailingRule=verdict.get('firstFailingRule'), firstFailingCause=verdict.get('firstFailingCause'),
+                       firstDifference=verdict.get('firstDifference'))
         return dict(status='verified_catchup_retest', path=retest['set_path'], sha256=retest['set_sha256'], schema_version=1,
                     member_id=spec['member_id'], summary=summary, verdict=verdict, version_path=str(version_path),
                     native_launch_qualification=False)
@@ -968,6 +991,11 @@ class CatchupRunner(SeedRunner):
                             boosContaminatedBy=BOOS_CONTAMINATED_BY,
                             plain='No hold-out data: ' + reason + '.')
         result.setdefault('evidenceEnd', evidence_end)
+        # comparable_rebased: the gates ran on the re-based evidence (judge_retest measures every window on the
+        # re-test). requalify: the same gates judge the re-test as a new candidate, with no status carried.
+        comparison = verdict.get('comparison')
+        if comparison in ('comparable_rebased', 'requalify'):
+            result.update(evidenceBasis='retest', comparison=comparison, candidate='new' if comparison == 'requalify' else None)
         return result
     def _move(self, set_path, destination):
         """Move the EA's SET/CSV/.goatseq unit out of TEMP into the evidence folder. Never overwrites."""

@@ -49,8 +49,12 @@ def window_line(kind, first, last, trades, pl):
 
 def make_unit(folder, *, rows, deals=(), alias='R0001', symbol='EURUSD', period='M1', values=None, start=date(2026, 1, 5),
               requested_to=None, observed_end=None, capture=True, complete=True, windows=(), run_id='export-1', initial=10000,
-              server='Test-Demo', name_metrics='Trds=100_Prf=500_DD=50_PF=1.5_SR=3_ARF=0.5', build_id='TEST', model=4):
-    """Write one export unit (SET + equity CSV + optional .goatseq) the way the EA lays it out."""
+              server='Test-Demo', name_metrics='Trds=100_Prf=500_DD=50_PF=1.5_SR=3_ARF=0.5', build_id='TEST', model=4, marks=()):
+    """Write one export unit (SET + equity CSV + optional .goatseq) the way the EA lays it out.
+
+    The capture also gets orders.csv (an order per deal), marks.csv (``marks``: (msc, sequence, realized swap,
+    floating swap)) and account.csv (a row at each equity row's moment), under one ordinal counter.
+    """
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     stem = 'GOAT V1.49 %s,%s_%s' % (symbol, period, name_metrics)
@@ -81,6 +85,22 @@ def make_unit(folder, *, rows, deals=(), alias='R0001', symbol='EURUSD', period=
         body = [header] + ['%d,%d,1,%d,%d,%d,1,1,%s,0.05,1.1,%s,%s,0.0,0.0,1,known' % (i, stamp, i, i, (i + 1) // 2, entry, profit, fee)
                            for i, (stamp, entry, profit, fee) in enumerate(deals, 1)]
         (package / 'deals.csv').write_text('\n'.join(body) + '\n', encoding='utf-8')
+        header = 'ordinal,server_time_msc,sequence_id,direction,order_id,deal_id,retcode,sent,requested_lots,result_lots,result_price'
+        body = [header] + ['%d,%d,1,1,%d,%d,10009,true,0.05,0.05,1.1' % (i, stamp, i, i) for i, (stamp, *_) in enumerate(deals, 1)]
+        (package / 'orders.csv').write_text('\n'.join(body) + '\n', encoding='utf-8')
+        # One ordinal counter: each moment's marks just before its account row.
+        events = sorted([(m[0], 0, n) for n, m in enumerate(marks)] + [(msc(r[0]), 1, n) for n, r in enumerate(rows)])
+        number = {(kind, n): i for i, (_, kind, n) in enumerate(events, 1)}
+        header = ('ordinal,server_time_msc,quote_server_time_msc,sequence_id,direction,logical_active,ended,lots,realized_profit,'
+                  'commission,fee,realized_swap,floating_profit,floating_swap,equity_pnl,reason')
+        body = [header] + ['%d,%d,%d,%s,1,true,false,0.05,0,0,0,%s,0,%s,0,event' % (number[(0, n)], m[0], m[0], m[1], m[2], m[3])
+                           for n, m in enumerate(marks)]
+        (package / 'marks.csv').write_text('\n'.join(body) + '\n', encoding='utf-8')
+        header = ('ordinal,server_time_msc,quote_server_time_msc,reason,balance,equity,margin,positions,orders,ledger_realized,'
+                  'ledger_floating,balance_residual,equity_residual')
+        body = [header] + ['%d,%d,%d,minute,%s,%s,0,0,0,0,0,0,0' % (number[(1, n)], msc(r[0]), msc(r[0]), r[1], r[2])
+                           for n, r in enumerate(rows)]
+        (package / 'account.csv').write_text('\n'.join(body) + '\n', encoding='utf-8')
     return folder / (stem + '.set')
 
 
@@ -92,7 +112,8 @@ class Scenario:
     """An original export ending Thu 2026-09-24 and its re-test to Fri 2026-10-09 (11 new weekdays)."""
 
     def __init__(self, root, *, new_per_day=10, new_trades=2, new_result=6.0, dips_new=(), new_last=date(2026, 10, 9),
-                 retest_capture=True, retest_complete=True, change_inputs=False, alter_history=False, retest=None, tail_drop=None):
+                 retest_capture=True, retest_complete=True, change_inputs=False, alter_history=False, retest=None, tail_drop=None, alter_row=50,
+                 swap_from=None):
         history = daily(date(2026, 1, 5), ORIGINAL_END, 10000, 10, dips=[(date(2026, 3, 4), 120)])
         if tail_drop:   # the original ends in a drawdown already under way: its last three rows sit tail_drop below the peak
             low = history[-4][2] - Decimal(str(tail_drop))
@@ -104,12 +125,19 @@ class Scenario:
                                   windows=foos + [('FOOS', date(2026, 8, 29), ORIGINAL_END, 38, 190)])
         new_rows = daily(ORIGINAL_END + timedelta(days=1), new_last, history[-1][2], new_per_day, dips=dips_new)
         retest_history = [list(r) for r in history]
-        if alter_history:
-            retest_history[50][2] += Decimal('3')
+        if alter_history:   # True: +3 on one equity row; a number: that shift instead (row 50: a day's first row; 43: 15:00)
+            retest_history[alter_row][2] += Decimal('3' if alter_history is True else str(alter_history))
         new_trades_list = trading(ORIGINAL_END + timedelta(days=1), new_last, new_trades, new_result)
         new_count = sum(entry == '0' for _, entry, _, _ in new_trades_list)
         values = dict(VALUES, Grid_Size='-3.0') if change_inputs else None
-        self.retest = make_unit(Path(root) / 'retest', rows=[tuple(r) for r in retest_history] + new_rows, alias='C0001',
+        retest_rows = [tuple(r) for r in retest_history] + new_rows
+        marks = ()
+        if swap_from:   # (row, amount): from that row on a held position carries that much more floating swap
+            row, amount = swap_from
+            retest_rows = retest_rows[:row] + [(s, b, e + Decimal(str(amount))) for s, b, e in retest_rows[row:]]
+            marks = [(msc(retest_rows[row][0]) - 30000, '2', '0', str(amount))]
+        retest = dict(retest or {}, marks=marks) if marks else retest
+        self.retest = make_unit(Path(root) / 'retest', rows=retest_rows, alias='C0001',
                                 deals=history_deals + new_trades_list, capture=retest_capture, complete=retest_complete, values=values, **(retest or {}),
                                 windows=foos + [('FOOS', date(2026, 8, 29), new_last, 38 + new_count, 190)])
         self.new_last = new_last
@@ -311,8 +339,11 @@ class EvaluateTests(unittest.TestCase):
         result = Scenario(self.root, retest_complete=False, alter_history=True).evaluate()
         self.assertFalse(result['reproduction']['reproduced'])
         self.assertIsNone(result['new_weeks']['trades'])
-        self.assertEqual((result['verdict'], result['confidence']), ('not_comparable', 'none'))
-        self.assertIn('not the same test as the original', result['plain'])
+        # Same identity, no exact reproduction and no capture to measure the drift: a new candidate (goatai#1885).
+        self.assertEqual((result['verdict'], result['confidence'], result['comparison']), ('requalify', 'none', 'requalify'))
+        self.assertEqual(result['rebase']['failed'], ['capture', 'orders', 'deals', 'swap', 'balance', 'equity'])
+        self.assertEqual(result['firstFailingRule'], 'capture')
+        self.assertIn('new candidate', result['plain'])
 
     def test_changed_inputs_are_not_comparable(self):
         result = Scenario(self.root, change_inputs=True).evaluate()

@@ -50,6 +50,8 @@ METRIC_KEYS = frozenset((
     # each check read and which thresholds a set missed are all derived from the tested window.
     'passing_sets', 'below_threshold_members', 'below_threshold_sets', 'unknown_members', 'unknown_sets',
     'checks', 'missed', 'ea_native_passed', 'log_crosscheck', 'stamps', 'unproven_members',
+    # Swap drift, re-based windows and the first differing row of a catch-up re-test (studio_catchup_rebase).
+    'rebase', 'tickHistoryDrift', 'rebasedWindows', 'firstDifference',
     # OOS window rule (studio_oos_windows) and exact pre-FOOS metrics (studio_window_metrics).
     'oos_rule', 'window_metrics', 'preFoos', 'selectionWindow', 'fullExport'))
 # Sentences and log lines that quote such values: replaced whole inside a locked part.

@@ -642,6 +642,29 @@ window measured inside the same re-test gives the pace.
   specification is not captured by this EA build, so a change shows up as a
   reproduction failure. A `not_comparable` re-test judges nothing (`confidence:
   none`) and its sentence says why.
+- Swap-only drift (`studio_catchup_rebase.py`, `goat-catchup-rebase-v2`,
+  goatai#1885 6029484888): identity (every check above except `reproduced`)
+  stays strict. The MT5 tester is deterministic except swap (it applies the
+  symbol's current swap rates to all history), so a re-test that passes identity
+  but misses the exact reproduction is `comparison: comparable_rebased` only
+  when, over the original span, every rule holds, in order: `capture` (orders,
+  deals, marks and account CSVs on both runs), `orders` (identical, every column
+  but the capture ordinal), `deals` (identical on time, type, entry, lots,
+  price and profit; magic and swap ignored), `swap` (|Δ total swap| ≤ max(0.025%
+  of the tester deposit, 2% of the original's |net P/L|), $25 on 100k), `balance` and `equity` (on every capture account row,
+  the difference equals the realized / cumulative swap difference within $0.01;
+  equity as of the row's last tick) and `max_dd` (within 10%). Then it is judged
+  by the rules below, with every window recomputed on the re-test
+  (`rebasedWindows`, no splice) and `reviewFlag: true` when |balance delta| > 5%
+  of |net profit|. Anything else is `requalify` (`confidence: none`): a new
+  candidate with full gates and no carried status, the reasons naming each
+  failed rule; `firstFailingRule`, `firstFailingCause` (`deals:fill_timing`:
+  identical orders, a close filled at another tick; `capture:incomplete`: the
+  capture stopped early) and `firstDifference` (its first differing row) are on
+  the verdict, the summary and the evidence-version. There is no
+  aggregate pass path, and the rule is the same across builds. Every result
+  stamps `comparison`, `historyBasis` and `tickHistoryDrift`; see
+  [OOS-WINDOW-FORMULA.md](../docs/operations/OOS-WINDOW-FORMULA.md).
 - `failed`: a new worst drawdown, measured from the running peak including all
   equity before the new weeks (a drawdown already under way counts;
   `dd_from_open` is kept as a signal), or at least 5 trades with a loss and PF
@@ -673,6 +696,11 @@ a portfolio chosen before `added_at` saw none of those weeks ("unseen when
 chosen"), while one built after importing them saw them ("seen when chosen"). For
 an out-of-sample check, build first, then catch up. A `not_comparable` or
 `unjudged` version is imported with its verdict only: it adds no new-weeks window.
+A `comparable_rebased` or `requalify` version stamps `windowsBasis: retest`, the
+re-based `windows` and a null `original_foos`: the import takes every window from
+the re-test and never restores the old FOOS next to the new weeks. `requalify`
+also stamps `candidate: new` and `carriesStatus: false`, and never catches the
+original export up.
 
 Follow-up (answer to review question b): an EA `EvidenceEnd` export setting, as
 its own EA PR after the native single-pass proof, so batch exports can end on the

@@ -289,6 +289,109 @@ per-set records the agent imports into the matrix) carries `window_metrics`:
 - A unit whose CSV cannot be read gets `window_metrics: {status: "unavailable", reason}`; the
   export's status and qualification never change because of it. For a held-out-locked export the
   whole `window_metrics` (and `oos_rule`) is redacted like every other tested value.
+
+## When the broker's swaps changed: re-based catch-up evidence (`goat-catchup-rebase-v2`)
+
+Decided on goatai#1885. The first native catch-up (B40, `cu1002b40`) re-tested 28 exports with the
+same build, inputs, model, server, deposit, leverage and currency. Three reproduced exactly; 25 missed
+the exact `reproduced` check by small amounts. Ops found the cause (6009311876): **swap-rate
+changes**. MT5's tester applies the symbol's CURRENT swap rates to all history, and Darwinex updates
+them. Ops then showed that the tester is deterministic except swap (6029461500): re-test vs re-test,
+orders.csv is byte-identical and the deals are identical in every column except magic (run-local) and
+swap. Claude-Mac's ruling (6029484888) replaced the v1 rule (a deal-level swap step, else aggregate drift
+bars) with an exact-behaviour, swap-only rule; his follow-up (6030527041) set the swap bound and the failure
+causes below. `controller/studio_catchup_rebase.py` decides each
+re-test's `comparison`:
+
+| `comparison` | When | What happens |
+|---|---|---|
+| `comparable` | Identity holds and the re-test reproduced the original exactly | Fast path, unchanged: new weeks judged, the original FOOS restored on import |
+| `comparable_rebased` | Identity holds, no exact reproduction, and every rule below holds | New weeks judged; the re-test becomes the evidence for **every** window |
+| `requalify` | Identity holds and any rule failed or could not be measured (fail-safe) | A **new candidate**: full gates on the re-test, no carried status; the reasons name every failed rule |
+| `not_comparable` | Any identity check failed (build, inputs, EA name, model, symbol, server, deposit, leverage, currency) | Unchanged: nothing is judged |
+
+**The rules**, over the original span (from the original's start up to, not including, its last minute:
+the forced close, as in the exact reproduction check), in order. Every rule is evaluated; the first that
+fails is `firstFailingRule`, `firstFailingCause` says why, and `firstDifference` is its first differing row.
+Causes are the rule name, or `deals:fill_timing` (the orders are identical and only closing deals filled at
+another tick: their time and/or price, and so profit, differ) or `capture:incomplete` (the capture stopped
+early, for example at the EA's 2,000,000-row cap). Both stay `requalify`.
+
+| Rule | Must hold (re-test vs original) |
+|---|---|
+| `capture` | orders.csv, deals.csv, marks.csv and account.csv of a complete sequence capture on both runs |
+| `orders` | every order identical, in every column except the capture's `ordinal` (a row counter shared by all capture files) |
+| `deals` | every deal identical on time, type, entry, lots, price **and profit**; magic (run-local) is ignored, swap is judged below |
+| `swap` | \|Δ total swap\| ≤ max(0.025% of the tester **deposit**, 2% of the **original's** \|net P/L\| over the span), i.e. $25 on 100k; the deposit is the one the identity check compares (unknown: not measured); total swap = realized swap + floating swap of positions still open (marks.csv) |
+| `balance` | on every capture account row, Δ balance = Δ realized swap, within $0.01 |
+| `equity` | on every capture account row, Δ equity = Δ cumulative swap (realized + floating), within $0.01 |
+| `max_dd` | \|Δ max DD\| ≤ 10% of the original's max DD (the export equity CSV, as the export measures it) |
+
+Bars are compared exactly (decimal arithmetic): a value on the bar passes. Anything else is a behaviour
+difference: there is **no aggregate pass path**. If broker history revisions move a deal, the set is
+re-judged as a new candidate. Commission or fee differences move the balance without swap, so the balance
+rule catches them.
+
+Which rows the money rules read. The export equity CSV samples a row only when price or equity moved
+enough, so a swap change can add or drop a row after a rollover (13 of the 25 B40 re-tests did), and its
+equity column is a minute low, not a point value. The capture's account.csv records balance and equity at
+fixed moments instead: every minute and every trading event, identical in both runs when the behaviour is
+identical. The EA writes each moment's marks (per sequence: realized swap, floating swap) just before
+its account row, under one ordinal counter, so the swap at a row is exact: every mark with a smaller
+ordinal. One tester detail: at the rollover the tester charges swap on the open positions but
+recalculates account equity only on the next tick, so until a tick arrives (the market is often closed
+just after midnight) the account's equity still shows the swap before the charge. The equity rule therefore
+takes the swap difference as of the row's last tick (`quote_server_time_msc`). Account rows that do not
+line up (a different event or minute) fail both money rules.
+
+**Review flag** (Claude-Mac APPROVE, goatai#1885 6010080246): a re-based re-test whose |final balance
+delta| > 5% of |original net profit| carries `tickHistoryDrift.reviewFlag: true` and a `reviewReason`. A
+swap change can change a carry-heavy set's economics. A drift that cannot be sized (balance or deposit
+unknown) is flagged too. Exactly 5% is not flagged.
+
+**Across builds** (a re-test on another build under an ACTIVE trading-equivalence certificate) the rule
+is the same. With no aggregate path, build drift and history drift cannot stack. `rebase.crossBuild`
+records it.
+
+With `comparable_rebased` (and for a `requalify` candidate), the re-test is the evidence for BOOS,
+SAMPLE, FWD and FOOS, each recomputed on the re-test alone (`rebasedWindows`,
+`goat-catchup-rebased-windows-v1`, the `studio_window_metrics` fields): SAMPLE [FromDate,
+ForwardDate − 1], FWD [ForwardDate, ToDate − 1], BOOS [BackOOSDate, FromDate − 1], FOOS [ToDate,
+the judged end]. There is **no splice** of the old export with new weeks: the import stamp's
+`original_foos` is null, `windowsBasis` is `retest` and `windows` carries the re-based windows. The
+OOS window gates above (`oos_rule`) already measure every window on the re-test, so they run on the
+re-based evidence and judge FOOS on it; the `oos_rule` of a re-based or requalified result says
+`evidenceBasis: "retest"` (and `candidate: "new"` for `requalify`).
+
+Stamps, on the verdict, the result summary, `evidence-version.json` and the desktop `catch_up`
+import stamp (next to `evidenceEnd`):
+
+- `comparison`: one of the four values above;
+- `historyBasis {originalExportedAt, retestAt}`: the two SET files' modification times (UTC), plus
+  each run's end; null for `comparable` and `not_comparable`;
+- `historyBasis.originalExportedAtBasis: "set_mtime"` says where `originalExportedAt` comes from (the
+  capture has no export timestamp yet);
+- `tickHistoryDrift {dealCountDelta, pfDelta, balanceDelta, ddDelta, maxEquityGap, swapDelta, swapBound,
+  originalSwap, retestSwap, cause, reviewFlag, reviewReason}`: re-test minus original over the original
+  span; `maxEquityGap` is the largest |equity difference| over the minutes both runs sampled; `cause` is
+  `swap_or_spec` for a re-based re-test, else `history_or_behaviour`. Null for `comparable` and
+  `not_comparable`;
+- `firstFailingRule`, `firstFailingCause` and `firstDifference` (verdict and summary; `rebase` on the evidence-version also
+  keeps every rule's result, detail and values).
+
+Follow-up (B42 EA item): the EA should stamp the symbol's swap and commission spec in the export
+capture, so a later re-test can name a swap change directly.
+
+The import stamp also says `carriesStatus` (false for `requalify`) and `candidate: "new"` for
+`requalify`. A `requalify` version never catches the original export up (`evidence-scan` keeps it
+`behind` with `previous_attempt.verdict: requalify`); its re-test SET is the new candidate.
+`controller/fixtures/catchup-rebase-cases.json` pins the bar: exact reproduction, every rule failing first,
+a just-pass and a just-fail for every boundary (the swap bound's deposit term in both directions and its
+P/L term, $0.01 balance and equity, 10% max DD in both directions), the last-tick equity, the
+`deals:fill_timing` and `capture:incomplete` causes, identity mismatches, a multi-rule fail and the review
+flag; `scripts/test_catchup_rebase_controller_mutations.py` weakens every rule, boundary and
+branch.
+
 ## Plans
 
 Batch plan (`prepare-batch`): add `"oos_windows": {"optimization_months": 12}` (or

@@ -208,9 +208,21 @@ class WriterRuleTests(unittest.TestCase):
 
     def test_lines_both_writers_could_read_differently_are_refused(self):
         for text, label in (('A=1\rB=2', 'lone CR'), ('A=1\r', 'lone CR at the end'), ('A=1\r\r\nB=2', 'CR before CRLF'), ('A=<b>', 'angle bracket'), ('A=1\x00', 'NUL'), ('A=\x07', 'control'),
-                            ('A=1\u00a0', 'non-ASCII whitespace at the end'), ('; only comments\r\n', 'no inputs'), ('', 'empty')):
+                            ('A=1\u00a0', 'non-ASCII whitespace at the end'),
+                            ('EA_Desc=x\u2028Risk=9999', 'U+2028 line separator'), ('EA_Desc=x\u2029Risk=9999', 'U+2029 paragraph separator'),
+                            ('EA_Desc=x\u0085Risk=9999', 'U+0085 next line'), ('EA_Desc=x\x0bRisk=9999', 'vertical tab'),
+                            ('EA_Desc=x\x0cRisk=9999', 'form feed'), ('EA_Desc=x\x1cRisk=9999', 'file separator'),
+                            ('EA_Desc=x\x9fRisk=9999', 'C1 control'), ('EA_Desc=x\x7fRisk=9999', 'DEL'),
+                            ('; note\u2028Risk=9999\r\nA=1', 'separator inside a dropped line'), ('; only comments\r\n', 'no inputs'), ('', 'empty')):
             with self.subTest(label=label), self.assertRaisesRegex(ValueError, 'SET_LINE_UNSUPPORTED|SET_NO_INPUTS'):
                 self.child('', raw=u16(text))
+
+    def test_g2_every_shared_refusal_case_is_refused(self):
+        cases = json.loads(fixture('g2/refused.json'))['cases']
+        self.assertGreaterEqual(len(cases), 15)
+        for case in cases:
+            with self.subTest(label=case['label']), self.assertRaisesRegex(ValueError, 'SET_LINE_UNSUPPORTED|SET_NO_INPUTS'):
+                profile.child_chart(dict(name='GOAT V1.49 EURUSD,M1_x.set', symbol='EURUSD', raw=u16(case['text'])), EA, AI_OFF, DEPLOYMENT)
 
     def test_the_ai_policy_matches_the_mql_self_test_vectors(self):
         source = ['Mode_Bias=1', 'Bias_threshold=60', 'Bias_Protocol=1', 'Mode_Bias_Trades=0', 'Mode_Bias_Exit=1', 'Mode_News=3',

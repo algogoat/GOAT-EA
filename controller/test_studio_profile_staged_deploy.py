@@ -325,6 +325,21 @@ class ProfileStagedDeployTests(DeployFixture):
         self.assertEqual((result['status'], result['previous_profile_intact'], result['profile_restored']), ('stopped', False, False))
         self.assertIn('changed or is missing', result['rollback']['reason'])
         self.assertEqual((self.data / 'config/common.ini').read_bytes(), selected, 'never edited without an intact previous profile')
+        # MT5 still names the archived deploy profile, so the person is told the one step, in plain words.
+        instruction = ("MT5 would still open GOAT's set-aside deploy profile next time, because your previous chart profile " + PREVIOUS
+                       + ' changed while GOAT was deployed. In MT5, choose File > Profiles and select ' + PREVIOUS + '.')
+        self.assertEqual(result['rollback']['select_profile_instruction'], instruction)
+        self.assertTrue(result['next_action'].startswith(instruction))
+
+    def test_the_auto_unwind_tells_the_person_to_pick_a_profile_when_it_could_not_restore_one(self):
+        self.write_common()
+        folder, _ = self.write_previous_profile()
+        self.start_ea(pairing='none', unstarted={0})
+        def launched(argv):
+            self.mt5_selects_deploy_profile(argv)
+            (folder / 'order.wnd').write_bytes(b'changed during the deploy')
+        with self.relaunch(on_launch=launched), self.assertRaisesRegex(ValueError, 'In MT5, choose File > Profiles and select ' + PREVIOUS):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None, clock=fast_clock())
 
     def test_stop_leaves_common_ini_alone_when_mt5_names_another_profile(self):
         self.write_common()
@@ -339,6 +354,8 @@ class ProfileStagedDeployTests(DeployFixture):
         self.assertEqual((result['previous_profile_intact'], result['profile_restored']), (True, False))
         self.assertIn('names profile Default', result['rollback']['reason'])
         self.assertEqual(ini.read_bytes(), chosen)
+        self.assertNotIn('select_profile_instruction', result['rollback'], 'MT5 is not on the deploy profile: nothing to tell')
+        self.assertEqual(result['next_action'], 'Run monitor-launch with a new attempt ID to return this terminal to research.')
 
     def test_profile_last_edits_are_exact_single_line_changes_in_any_encoding(self):
         for encode in (lambda t: b'\xff\xfe' + t.encode('utf-16-le'), lambda t: t.encode('utf-8'), lambda t: b'\xef\xbb\xbf' + t.encode('utf-8')):

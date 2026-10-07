@@ -387,7 +387,32 @@ def capture_previous_profile(controller, where):
     return record
 
 
+SELECT_PROFILE_INSTRUCTION = ("MT5 would still open GOAT's set-aside deploy profile next time{why}. In MT5, choose File > Profiles "
+                              "and select {profile}.")
+
+
+def _select_profile_instruction(controller, where, result):
+    """Plain words for the person when common.ini was left naming the archived deploy profile (goatai#1885 6035859714)."""
+    try:
+        current = profile_last(read_common_ini(controller))
+    except (OSError, ValueError, UnicodeError):
+        return result
+    if current != where['profile'].name:
+        return result
+    previous = result.get('previous_profile')
+    why = (', because your previous chart profile ' + previous + ' changed while GOAT was deployed' if result.get('previous_profile_intact') is False
+           else '')
+    return result | dict(select_profile_instruction=SELECT_PROFILE_INSTRUCTION.format(
+        why=why, profile=previous if previous and result.get('previous_profile_intact') is not None else 'the profile you want to use'))
+
+
 def restore_previous_profile(controller, journal, where, stamp, *, running):
+    """restore_profile, plus a plain-English File > Profiles step whenever MT5 is left on the archived deploy profile."""
+    result = restore_profile(controller, journal, where, stamp, running=running)
+    return result if result['profile_restored'] or running else _select_profile_instruction(controller, where, result)
+
+
+def restore_profile(controller, journal, where, stamp, *, running):
     """Select the recorded previous profile again with an exact single-line common.ini edit, only when its folder
     is byte-identical to the manifest taken before the deploy and MT5 still names this deployment's profile."""
     previous = journal.get('previous_profile') or {}
@@ -669,7 +694,8 @@ def _unwind_summary(journal):
         profile = 'restored the previous chart profile ' + str(rollback.get('previous_profile'))
     else:
         profile = 'left the chart profile selection unchanged (' + str(rollback.get('reason', 'no previous profile')) + ')'
-    return 'GOAT closed MT5 with Algo Trading off, set this deployment aside and ' + profile + '; nothing traded.'
+    summary = 'GOAT closed MT5 with Algo Trading off, set this deployment aside and ' + profile + '; nothing traded.'
+    return summary + (' ' + rollback['select_profile_instruction'] if rollback.get('select_profile_instruction') else '')
 
 
 def load(controller, plan_path, *, mt5=None, process=None, request=None, close=None, sleep=time.sleep, clock=time.monotonic):
@@ -910,5 +936,7 @@ def stop(controller, attempt_id, *, mt5=None, process=None, close=None):
     journal = read_json(where['journal'])
     process = process or WindowsSeedProcess(controller)
     journal = _unwind(controller, session, journal, where, attempt_id, mt5=mt5, process=process, close=close, reason='deploy_stop')
+    select = (journal.get('rollback') or {}).get('select_profile_instruction')
     return public(journal) | dict(status='stopped', terminal='stopped', trading_changed=False, positions_closed=False,
-                                  next_action='Run monitor-launch with a new attempt ID to return this terminal to research.')
+                                  next_action=(select + ' ' if select else '')
+                                  + 'Run monitor-launch with a new attempt ID to return this terminal to research.')

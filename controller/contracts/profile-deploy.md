@@ -130,8 +130,12 @@ No chart period is ever implicit.
 4. **Keep** the trimmed line when it has `=` after position 0 (`StringFind(ln,"=")>0`). The kept line is written as
    is (`var + "=" + val` is the trimmed line itself). Comment lines that contain `=` **are kept**, exactly as
    BuildTemplate keeps them; MT5 drops unknown names when it saves.
-5. **Refuse** a kept line that still starts or ends with other Unicode whitespace, or that contains
-   `<`, `>`, NUL or a control character other than tab. A SET with no kept line is refused (`SET_NO_INPUTS`).
+5. **Refuse** any line, kept or not, that holds a character of Unicode category `Cc` (C0, DEL and C1, including
+   `U+0085`), `Zl` (`U+2028`) or `Zp` (`U+2029`) other than tab (goatai#1885 6035859714).
+   - Such a SET is refused rather than trusted to fail closed. For example, `EA_Desc=x<U+2028>Risk=9999` is refused.
+   - Also refused: a kept line that still starts or ends with other Unicode whitespace, or that contains `<` or `>`.
+   - A SET with no kept line is refused (`SET_NO_INPUTS`).
+   - Every case in `profile-fixtures/g2/refused.json` must be refused by both writers.
 6. **AI policy.** `GoatApplyAILaunchPolicy(inputs, aiMode, aiThreshold, aiProtocol)` applies verbatim.
    - With `aiMode` 2, every line whose name (the text before its first `=`, untrimmed) is `Mode_Bias`,
      `Bias_threshold`, `Bias_Protocol` or `Mode_Bias_Trades` gets the policy value in place.
@@ -286,6 +290,11 @@ error says so and asks for `deploy-stop`. A later `deploy-load` of the same plan
 - The before and after bytes are kept next to the journal (`<id>.common-before-<stamp>.ini` and
   `<id>.common-after-<stamp>.ini`), and the file is replaced atomically.
 - Otherwise `common.ini` is left untouched, and `rollback.reason` says why.
+- If `common.ini` then still names the archived deploy profile, the person gets one plain step (goatai#1885 6035859714).
+  - It appears in `rollback.select_profile_instruction`, at the start of the stop result's `next_action`, and in the
+    auto-unwind message.
+  - It reads: "MT5 would still open GOAT's set-aside deploy profile next time, because your previous chart profile <name>
+    changed while GOAT was deployed. In MT5, choose File > Profiles and select <name>."
 - The stop result adds `rollback`, `previous_profile_intact` and `profile_restored`. All of them are additive.
 
 ## 7. Preflight and readiness (D2)

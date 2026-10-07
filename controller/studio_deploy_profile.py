@@ -17,6 +17,7 @@ ini sets with [Experts] Enabled=0 (D1); expertmode is the literal 5 BuildTemplat
 """
 import hashlib
 import re
+import unicodedata
 from pathlib import Path, PureWindowsPath
 
 from studio_refusal import Refusal
@@ -98,6 +99,11 @@ def set_input_lines(raw):
     for piece in pieces:
         if '\r' in piece:
             _refuse_line('a carriage return that does not end a line', piece)
+        # Fail closed on anything another reader could treat as a line break or control (goatai#1885 6035859714):
+        # every line, kept or not, may hold no character of category Cc (C0, DEL, C1 incl. U+0085), Zl (U+2028)
+        # or Zp (U+2029) other than a tab.
+        if any(c != '\t' and unicodedata.category(c) in ('Cc', 'Zl', 'Zp') for c in piece):
+            _refuse_line('a control character or a Unicode line or paragraph separator', piece)
         line = piece.strip(TRIM)
         if not line or line.find('=') <= 0:
             continue

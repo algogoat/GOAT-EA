@@ -30,6 +30,7 @@ from studio_agent_mailbox import identity, portfolio_register, portfolio_request
 from studio_agent_setup import PROTECTED_ACCOUNTS, broker_proof, close_terminal, demo_terminal_lock, require_unprotected
 from studio_bridge import write_json
 from studio_installation import read_json
+from studio_launch_telemetry import SCHEMA as TELEMETRY_SCHEMA, launch_record, utc_now
 from studio_native_gate import exclusive_gate
 from studio_onboarding import saved_launch_policy, session_state, require_idle_control
 
@@ -352,6 +353,28 @@ def _verify_ready(audit, registration):
         raise ValueError('Dashboard readback failed: ' + '; '.join(problems[:5]))
 
 
+def _closed_terminal(running, attempt, closed):
+    """Journal facts about the MT5 deploy-load just closed (telemetry only, goatai#1885)."""
+    observation = closed.get('exit_observation') if isinstance(closed.get('exit_observation'), dict) else {}
+    running = running if isinstance(running, dict) else {}
+    return dict(present_at_stage=True, pid=running.get('pid'), created_utc=running.get('created_utc'),
+                close_attempt_id=attempt, close_phase=closed.get('phase'), close_method=closed.get('method'),
+                close_requested_utc=observation.get('close_requested_utc'), inventories=observation.get('inventories'),
+                last_seen_present_utc=observation.get('last_seen_present_utc'),
+                exit_after_utc=observation.get('exit_after_utc'),
+                observed_gone_utc=observation.get('observed_gone_utc') or closed.get('stopped_utc'))
+
+
+def _launch_telemetry(arguments, options, previous, pre_launch_check, launch_started, popen_returned, pid):
+    """The launch evidence for the journal. Never raises: MT5 is already started, so the 'launched' phase
+    must be written whatever a probe does."""
+    try:
+        return launch_record(arguments=arguments, options=options, previous=previous, pre_launch_check=pre_launch_check,
+                             launch_started_utc=launch_started, popen_returned_utc=popen_returned, pid=pid)
+    except Exception as exc:
+        return dict(schema=TELEMETRY_SCHEMA, error=type(exc).__name__ + ': ' + str(exc)[:200])
+
+
 def load(controller, plan_path, *, mt5=None, process=None, request=None, close=None, sleep=time.sleep):
     from studio_seed_process import WindowsSeedProcess
     session, _ = session_state(controller)
@@ -413,17 +436,24 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
 
     if record['phase'] == 'staged':
         running = process.inspect()
+        # Telemetry only (goatai#1885): which MT5 was closed and when it was seen gone.
+        previous = dict(present_at_stage=running is not None, observed_gone_utc=None if running else utc_now(), exit_after_utc=None)
         if running is not None:
             # Demo proof and inert state come first; closing never touches positions.
             broker_proof(controller, session, mt5=mt5)
-            closed = (close or close_terminal)(controller, 'deploy-' + deployment_id[:24], build_id=plan['buildId'])
+            attempt = 'deploy-' + deployment_id[:24]
+            closed = (close or close_terminal)(controller, attempt, build_id=plan['buildId'])
             if closed.get('phase') not in ('stopped', 'already_stopped'):
                 raise ValueError('MT5 did not confirm a normal close; run deploy-load again after it exits (no second close is sent)')
-        phase('closed')
+            previous = _closed_terminal(running, attempt, closed)
+        phase('closed', previous_terminal=previous)
 
     if record['phase'] == 'closed':
         with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
-            if process.inspect() is not None:
+            check_started = utc_now()
+            present = process.inspect()
+            pre_launch_check = dict(started_utc=check_started, finished_utc=utc_now(), present=present is not None)
+            if present is not None:
                 raise ValueError('The selected MT5 reopened before the dashboard launch; nothing was launched')
             portable = saved_launch_policy(controller, session)
             # Byte-exact: the SETs, resume file, chart, preset and namespace claim the EA will read.
@@ -438,10 +468,16 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             arguments = [controller.install['terminal_executable'], '/config:' + str(where['config'])]
             if portable:
                 arguments.append('/portable')
+            launch_started = utc_now()
             child = subprocess.Popen(arguments, cwd=str(Path(arguments[0]).parent), stdin=subprocess.DEVNULL,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                      creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-            phase('launched', pid=child.pid)
+            popen_returned = utc_now()
+            # The same keyword arguments as the call above, for the journal only (the test pins them equal).
+            options = dict(cwd=str(Path(arguments[0]).parent), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            phase('launched', pid=child.pid, launch_telemetry=_launch_telemetry(
+                arguments, options, record.get('previous_terminal'), pre_launch_check, launch_started, popen_returned, child.pid))
     elif record['phase'] == 'launch_intent':
         raise ValueError('A dashboard launch intent is retained without confirmation; inspect MT5 before retrying (never launched twice)')
 

@@ -13,6 +13,10 @@ from goat_demo_pair_builds import BUILDS
 from goat_demo_pair_guard import checked_witness, lifecycle_lock, assert_new_pair_paths
 import goat_demo_pair_readiness as paired
 PINS = {}
+# Final-receipt waits; every other action waits 60 s. A B41.1 child attach settles within
+# 75 s (above the child's 60 s licence startup), so deploy_next gets the 90 s maximum the
+# setup API accepts; its request lives 120 s.
+RECEIPT_WAIT_SECONDS = {'audit': 90, 'deploy_next': 90}
 
 
 class Stop(Exception):
@@ -215,7 +219,7 @@ class NativeAPI:
     def request(self, action):
         _, digest = self.module.read_bounded(self.root/'registration.json')
         require(digest == self.digest, 'registration_changed')
-        return self.module.request(self.manifest, action, timeout=(90 if action=='audit' else 60))
+        return self.module.request(self.manifest, action, timeout=RECEIPT_WAIT_SECONDS.get(action, 60))
 
     def verify_ready(self, value, registration):
         return self.module.verify_ready(value, registration)

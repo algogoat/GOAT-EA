@@ -127,5 +127,16 @@ class PortfolioTests(unittest.TestCase):
         with patch('sys.argv', ['tool', 'deploy_next', '--manifest', str(self.manifest)]), patch.object(p, 'request', return_value={'result':'child_attach_failed'}), patch('builtins.print'):
             self.assertEqual(p.main(), 1)
 
+    def test_cli_deploy_next_waits_90s_and_other_actions_keep_the_default(self):
+        # B41.1 settles a child attach within 75 s; a 60 s wait timed out a good attach.
+        for operation, expected in (('deploy_next', dict(timeout=90)), ('status', {}), ('audit', {}), ('apply_policy', {})):
+            with self.subTest(operation=operation), patch('sys.argv', ['tool', operation, '--manifest', str(self.manifest)]), \
+                    patch.object(p, 'request', return_value={'result': 'observed'}) as sent, patch('builtins.print'):
+                p.main()
+                sent.assert_called_once_with(str(self.manifest), operation, **expected)
+        self.assertEqual(p.DEPLOY_NEXT_WAIT_SECONDS, 90)
+        with self.assertRaisesRegex(ValueError, 'invalid command'):
+            p.request(self.manifest, 'deploy_next', p.DEPLOY_NEXT_WAIT_SECONDS + 1)
+
 
 if __name__ == '__main__': unittest.main()

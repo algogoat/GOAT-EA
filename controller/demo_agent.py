@@ -73,15 +73,9 @@ class FeedbackUnavailable(ValueError):
     reason = 'ea_feedback_unavailable'
 
 
-class Refusal(ValueError):
-    """A refusal with a stable machine code next to its sentence (goatai#2272 self-heal).
-
-    Still a ValueError everywhere, so the CLI's top-level ``code`` stays ``REFUSED`` (the desktop
-    keys on it); the CLI adds ``refusal_code`` and any ``fields`` beside the unchanged ``error``.
-    """
-    def __init__(self, message, code, **fields):
-        super().__init__(message)
-        self.code, self.fields = code, fields
+# Refusal (a stable machine code and structured fields next to the sentence) now lives in
+# studio_refusal so the goat_studio CLI shares it; demo_agent.Refusal stays the same class.
+from studio_refusal import Refusal  # noqa: E402,F401  (re-exported)
 
 
 # restore-lane's refusal codes (DEMO-AGENT-TOOLS.md "restore-lane refusal codes"). Append only.
@@ -1409,6 +1403,7 @@ class DemoAgent:
                 with saved.open('xb') as output, path.open('rb') as source:
                     shutil.copyfileobj(source, output)
                     output.flush(); os.fsync(output.fileno())
+        previous_install = self.install
         installed = read_json(self.installation_path)
         if installed['ea_sha256'] != expected_sha256 or any(installed.get(k)!=v for k,v in (metadata or {}).items()):
             installed['ea_sha256'] = expected_sha256
@@ -1430,6 +1425,24 @@ class DemoAgent:
                      installation_sha256=sha(checked), session_sha256=sha(session),
                      authority_kind=session.get('authority_kind'), previous_authority_kind=lane,
                      **(dict(enter_demo_lane=True) if enter_demo_lane else {}))
+        self._rebind_monitor_profile(previous_install)
+
+    def _rebind_monitor_profile(self, previous_install):
+        """Carry the prepared monitor profile to the receipt the session was just rebound to.
+
+        Without it monitor-launch refused after every desktop update ("Monitor profile receipt
+        belongs to another installation/session", goatai#1885 2026-10-06). The EA is already
+        verified here, so a failed rebind is logged rather than raised; monitor-launch retries
+        the same rebind from the retained receipt backups and still refuses anything else.
+        """
+        from studio_onboarding import rebind_monitor_profile, retained_installations
+        try:
+            result = rebind_monitor_profile(self, self.session, [previous_install, *retained_installations(self)])
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self._append('install_build', 'monitor_profile_rebind_failed', error=str(exc)[:300])
+            return
+        if result['status'] == 'rebound':
+            self._append('install_build', 'monitor_profile_rebound', **result)
 
     def _lane_restore_review(self):
         """Read-only: prove this demo_direct session is a customer session an app update moved.

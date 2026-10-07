@@ -74,6 +74,7 @@ class FakeEA(threading.Thread):
         self.code = 'ABCD-EF23'
         self.on_shutdown = lambda: None
         self.audit_registration = None  # Audit a different registration than the request names.
+        self.hold_deploy_next = False  # B41.1: the attach is still settling, no final receipt yet.
 
     def stop(self):
         self.stop_event.set(); self.join(5)
@@ -143,6 +144,8 @@ class FakeEA(threading.Thread):
         envelope = json.loads(request.read_text())
         receipt = root / (envelope['id'] + '.json')
         if receipt.exists() or envelope['registrationSha256'] != hashlib.sha256(raw).hexdigest():
+            return
+        if envelope['action'] == 'deploy_next' and self.hold_deploy_next:
             return
         if not self.rows:
             self.rows = [dict(cid=0, magic=0, ack=0) for _ in reg['members']]
@@ -459,11 +462,48 @@ class AgentSetupTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             mailbox.sharing_retry(shared, attempts=3, sleep=lambda seconds: None)
         self.assertEqual(calls.count('shared'), 3, 'the retry is bounded')
+        def missing():
+            calls.append('missing'); raise FileNotFoundError(2, 'missing', 'request.json')
+        with self.assertRaises(FileNotFoundError):
+            mailbox.sharing_retry(missing, sleep=lambda seconds: None)
+        self.assertEqual(calls.count('missing'), 1, 'only a transient Windows denial is retried')
+        def other():
+            calls.append('other'); raise PermissionError(13, 'The network name cannot be found', 'request.json', 67)
+        with self.assertRaises(PermissionError):
+            mailbox.sharing_retry(other, sleep=lambda seconds: None)
+        self.assertEqual(calls.count('other'), 1, 'only a transient Windows denial is retried')
+
+    def test_atomic_retries_a_transient_access_denied_replace(self):
+        # CI 2026-10-06 (twice): os.replace in atomic() raised [WinError 5] Access is denied while
+        # the target was briefly held. Two denials then success: the write lands, no .pending is left.
+        root = Path(self.data) / 'denied-replace'; root.mkdir()
+        target = root / 'request.json'
+        target.write_text('{"old":1}', encoding='utf-8')
+        real_replace, denials = os.replace, []
+        def denied_twice(source, destination):
+            if len(denials) < 2:
+                denials.append(str(destination))
+                raise PermissionError(13, 'Access is denied', str(destination), 5)
+            return real_replace(source, destination)
+        with patch.object(mailbox.os, 'replace', denied_twice), patch.object(mailbox.time, 'sleep', lambda seconds: None):
+            mailbox.atomic(target, dict(new=2))
+        self.assertEqual(len(denials), 2)
+        self.assertEqual(json.loads(target.read_text(encoding='utf-8')), dict(new=2))
+        self.assertEqual(list(root.glob('*.pending')), [])
+
+    def test_persistent_access_denied_stays_loud_after_the_bounded_retry(self):
+        calls, sleeps = [], []
         def denied():
             calls.append('denied'); raise PermissionError(13, 'Access is denied', 'request.json', 5)
+        with self.assertRaises(PermissionError) as raised:
+            mailbox.sharing_retry(denied, sleep=sleeps.append)
+        self.assertEqual(raised.exception.winerror, 5)
+        self.assertEqual(len(calls), mailbox.SHARING_RETRY_ATTEMPTS, 'the retry is bounded')
+        self.assertEqual(sleeps, [0.025] * (mailbox.SHARING_RETRY_ATTEMPTS - 1), 'same backoff as a sharing violation')
+        calls.clear()
         with self.assertRaises(PermissionError):
-            mailbox.sharing_retry(denied, sleep=lambda seconds: None)
-        self.assertEqual(calls.count('denied'), 1, 'only a sharing violation is retried')
+            mailbox.sharing_retry(denied, attempts=3, sleep=lambda seconds: None)
+        self.assertEqual(len(calls), 3)
 
     # ---------------------------------------------------------- close-terminal
 
@@ -707,6 +747,63 @@ class AgentSetupTests(unittest.TestCase):
                 record = json.loads(Path(self.c.root, 'demo-deployments', 'e' * 32 + '.json').read_text())
                 self.assertNotEqual(record['phase'], 'ready')
                 self.ea.stop(); self.ea = None
+
+    def attach_settling_at(self, ea, settle_seconds, calls):
+        """deploy-load's mailbox request, with each deploy_next on a simulated clock: the fake EA
+        writes the final receipt only once settle_seconds have passed (never when None)."""
+        def request(controller, ident, action, timeout=60):
+            if action != 'deploy_next':
+                return mailbox.portfolio_request(controller, ident, action, timeout=timeout)
+            now = [0.0]
+            ea.hold_deploy_next = True
+            def sleep(seconds):
+                now[0] += seconds
+                if settle_seconds is not None and now[0] >= settle_seconds and ea.hold_deploy_next:
+                    root = mailbox.portfolio_root(controller)
+                    receipt = root / (json.loads((root / 'request.json').read_text())['id'] + '.json')
+                    ea.hold_deploy_next = False
+                    end = time.monotonic() + 10
+                    while not receipt.exists() and time.monotonic() < end:
+                        time.sleep(0.02)
+            issued = int(time.time())
+            result = mailbox.portfolio_request(controller, ident, action, timeout=timeout, clock=lambda: now[0], sleep=sleep)
+            calls.append(dict(timeout=timeout, elapsed=now[0], issued=issued, receipt=result))
+            return result
+        return request
+
+    def test_the_deploy_next_wait_covers_the_async_attach_budget_within_the_request_limits(self):
+        # B41.1 (GOAT-EA#186) settles a child attach within 75 s, above the child's 60 s licence
+        # startup. The wait is deliberately 90 s: the most portfolio_request accepts.
+        self.assertGreater(deploy.DEPLOY_NEXT_WAIT_SECONDS, deploy.CHILD_ATTACH_BUDGET_SECONDS)
+        self.assertEqual(deploy.DEPLOY_NEXT_WAIT_SECONDS, 90)
+        with self.assertRaisesRegex(ValueError, 'Invalid dashboard command'):
+            mailbox.portfolio_request(self.c, self.ident, 'deploy_next', timeout=deploy.DEPLOY_NEXT_WAIT_SECONDS + 1)
+
+    def test_a_child_attach_settling_after_60s_still_loads_the_portfolio(self):
+        # Every final deploy_next receipt lands at 70 s: a 60 s wait reported receipt_timeout here.
+        ea = self.start_ea(pairing='none'); calls = []
+        with self.relaunch():
+            result = deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=self.attach_settling_at(ea, 70, calls), sleep=lambda s: None)
+        self.assertEqual(result['phase'], 'ready')
+        self.assertEqual([call['receipt']['result'] for call in calls], ['child_attached', 'child_attached', 'all_attached'])
+        self.assertEqual({call['timeout'] for call in calls}, {90})
+        self.assertEqual({call['elapsed'] for call in calls}, {70.0})
+
+    def test_a_child_attach_that_never_settles_times_out_at_90s_with_the_same_refusal(self):
+        ea = self.start_ea(pairing='none'); calls = []
+        with self.relaunch(), self.assertRaisesRegex(
+                ValueError, r'^A child chart could not be attached \(receipt_timeout\); run deploy-status, then deploy-stop to unwind$'):
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=self.attach_settling_at(ea, None, calls), sleep=lambda s: None)
+        self.assertEqual(len(calls), 1, 'no second attach is sent after a timeout')
+        call = calls[0]
+        self.assertEqual(call['timeout'], 90)
+        self.assertTrue(90 <= call['elapsed'] < 90.5, call['elapsed'])
+        self.assertEqual(call['receipt'], dict(result='receipt_timeout', id=call['receipt']['id'], requestRetained=True))
+        self.assertEqual(json.loads(deploy.paths(self.c, 'e' * 32)['journal'].read_text())['phase'], 'dashboard_ready')
+        # The unanswered request is retained, and outlives the wait: it expires at wait + 5 = 95 s.
+        pending = json.loads((mailbox.portfolio_root(self.c) / 'request.json').read_text())
+        self.assertEqual((pending['id'], pending['action']), (call['receipt']['id'], 'deploy_next'))
+        self.assertIn(pending['expiresAtUtc'] - call['issued'], (95, 96))
 
     def test_stop_refuses_algo_on_or_open_positions_and_never_closes_them(self):
         self.start_ea(pairing='none')

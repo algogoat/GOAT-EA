@@ -30,6 +30,7 @@ from studio_bridge import write_json
 from studio_installation import read_json
 from studio_native_gate import exclusive_gate, settled_native_request
 from studio_onboarding import session_state, require_idle_control
+from studio_refusal import Refusal
 
 # Experiment 02 runs live research on these demo logins. Agent setup and deploy never touch them.
 PROTECTED_ACCOUNTS = frozenset(('3000109427', '3000109421'))
@@ -231,6 +232,12 @@ def _no_code_action(reason):
     return 'This EA has no pending connection code: it is already paired or has not asked for one.'
 
 
+# pairing-code refusal codes after the mailbox registration (CLI ``refusal_code``). Append only.
+PAIRING_NOT_INERT = 'PAIRING_NOT_INERT'
+PAIRING_EA_REFUSED = 'PAIRING_EA_REFUSED'
+PAIRING_MAILBOX_REFUSED = 'PAIRING_MAILBOX_REFUSED'  # only raised when a registration was superseded
+
+
 DEMO_LANE_NOT_SHARED = ('MT5 has not shared its connection code with GOAT yet; GOAT reads it again in a moment. '
                         'If MT5 shows a code under Connect the EA, enter that code instead.')
 DEMO_LANE_NO_SHARED_CODE = ('On this demo terminal GOAT reads only the code the EA shares (LC36 and later), and this EA '
@@ -273,26 +280,40 @@ def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
                     activationReason=reason, accountFacts=account_facts(controller, proof), receiptId=None)
     if session.get('authority_kind') == 'demo_direct':
         return _demo_lane_without_shared_code(reason)
-    setup_register(controller, ident, allow_pairing=True)
-    result = (request or setup_request)(controller, ident, 'pairing', timeout=timeout)
+    # An expired registration from another build is archived, never deleted (#184); every
+    # answer below reports it as supersededRegistration, as close_terminal journals it, and so
+    # does every refusal after it, as a structured Refusal field (never only in the sentence).
+    _, superseded = setup_register(controller, ident, allow_pairing=True)
+    extra = {} if superseded is None else dict(supersededRegistration=superseded)
+
+    def answer(value):
+        value.update(extra)
+        return value
+
+    try:
+        result = (request or setup_request)(controller, ident, 'pairing', timeout=timeout)
+    except (OSError, ValueError) as exc:
+        if superseded is None:
+            raise
+        raise Refusal(str(exc), PAIRING_MAILBOX_REFUSED, **extra) from exc
     outcome = result['result']
     if outcome == 'pairing_available':
-        return dict(status='pairing_available', source='setup_mailbox', userCode=result['userCode'], activationId=result['activationId'],
-                    pairingExpiresAtMs=result['pairingExpiresAtMs'], responseExpiresAtUtc=result['responseExpiresAtUtc'],
-                    observedAtUtc=result['observedAtUtc'], accountLogin=login, accountLast4=login[-4:],
-                    server=proof['server'], buildId=ident['buildId'], demo=proof['demo'] is True, tradingAllowed=False,
-                    activationReason=reason, accountFacts=account_facts(controller, proof), receiptId=result['id'])
+        return answer(dict(status='pairing_available', source='setup_mailbox', userCode=result['userCode'], activationId=result['activationId'],
+                           pairingExpiresAtMs=result['pairingExpiresAtMs'], responseExpiresAtUtc=result['responseExpiresAtUtc'],
+                           observedAtUtc=result['observedAtUtc'], accountLogin=login, accountLast4=login[-4:],
+                           server=proof['server'], buildId=ident['buildId'], demo=proof['demo'] is True, tradingAllowed=False,
+                           activationReason=reason, accountFacts=account_facts(controller, proof), receiptId=result['id']))
     if outcome == 'pairing_unavailable':
-        return dict(status='no_pending_pairing', userCodeReturned=False, activationReason=reason,
-                    next_action=_no_code_action(reason))
+        return answer(dict(status='no_pending_pairing', userCodeReturned=False, activationReason=reason,
+                           next_action=_no_code_action(reason)))
     if outcome == 'rejected_not_inert':
-        raise ValueError('MT5 is not inert: turn Algo Trading off and close demo positions before pairing')
+        raise Refusal('MT5 is not inert: turn Algo Trading off and close demo positions before pairing', PAIRING_NOT_INERT, **extra)
     if outcome == 'receipt_timeout':
         waiting = reason == 'awaiting_approval'
-        return dict(status='no_native_answer', userCodeReturned=False, requestId=result['id'], activationReason=reason,
-                    next_action=('The EA is waiting for approval and shows a connection code, but this build does not share it with GOAT. '
-                                 + ENTER_CODE if waiting else NO_SHARED_CODE))
-    raise ValueError('The EA refused the pairing request (' + outcome + ')')
+        return answer(dict(status='no_native_answer', userCodeReturned=False, requestId=result['id'], activationReason=reason,
+                           next_action=('The EA is waiting for approval and shows a connection code, but this build does not share it with GOAT. '
+                                        + ENTER_CODE if waiting else NO_SHARED_CODE)))
+    raise Refusal('The EA refused the pairing request (' + outcome + ')', PAIRING_EA_REFUSED, **extra)
 
 
 def _journal(controller, folder, attempt_id):
@@ -369,16 +390,22 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
             native = inspect(controller)
             if native.get('process') != running:
                 raise ValueError('The terminal changed while it was inspected; nothing was closed')
+            # Register the shutdown capability before journaling: a refused registration (for
+            # example a live one from another build) leaves no close_intent behind (goatai#1885).
+            ident = superseded = None
+            if build_id:
+                ident = identity(controller, session, build_id)
+                _, superseded = setup_register(controller, ident)
             record = dict(schema_version=1, attempt_id=attempt_id, phase='close_intent', process=running,
                           native=native, created_utc=datetime.now(timezone.utc).isoformat(), trading_changed=False,
                           positions_closed=False)
             if settled is not None:
                 record['settled_native_request'] = settled
+            if superseded is not None:
+                record['superseded_registration'] = superseded
             write_json(path, record)
         method = None
-        if build_id:
-            ident = identity(controller, session, build_id)
-            setup_register(controller, ident)
+        if ident is not None:
             receipt = request(controller, ident, 'shutdown', timeout=10)
             if receipt['result'] == 'receipt_timeout':
                 # Withdraw the unanswered shutdown so no EA can act on it during or after our

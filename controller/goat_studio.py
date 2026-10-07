@@ -769,6 +769,9 @@ def main(argv=None):
         elif controller is not None:
             from studio_heldout_guard import guard_error
             error['error']=guard_error(controller.install,error['error'],root=controller.root)
+        # A structured Refusal (demo_agent's shape): refusal_code and its fields beside the unchanged sentence.
+        from studio_refusal import refusal_fields
+        error.update(refusal_fields(exc,error))
         print(json.dumps(error));return 2
     finally:
         if controller and controller.store: controller.store.close()

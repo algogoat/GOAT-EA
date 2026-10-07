@@ -44,7 +44,7 @@ concurrency:
 #   python test_restore_lane_never_started_mutations.py    (4-14 min)
 #   python test_peer_restart_mutations.py, test_peer_roster_mutations.py,
 #          test_seed_member_failure_mutations.py, test_export_qualification_mutations.py,
-#          test_driver_backoff_mutations.py, test_setup_registration_mutations.py (13 mutations; ~2 min locally at Idle)
+#          test_driver_backoff_mutations.py, test_setup_registration_mutations.py (19 mutations; ~2 min locally at Idle)
 #
 # A new mutation check goes in the shard with the most headroom; keep each shard well under its
 # timeout. Setup steps are identical in both jobs.

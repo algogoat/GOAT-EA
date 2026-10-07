@@ -73,15 +73,9 @@ class FeedbackUnavailable(ValueError):
     reason = 'ea_feedback_unavailable'
 
 
-class Refusal(ValueError):
-    """A refusal with a stable machine code next to its sentence (goatai#2272 self-heal).
-
-    Still a ValueError everywhere, so the CLI's top-level ``code`` stays ``REFUSED`` (the desktop
-    keys on it); the CLI adds ``refusal_code`` and any ``fields`` beside the unchanged ``error``.
-    """
-    def __init__(self, message, code, **fields):
-        super().__init__(message)
-        self.code, self.fields = code, fields
+# Refusal (a stable machine code and structured fields next to the sentence) now lives in
+# studio_refusal so the goat_studio CLI shares it; demo_agent.Refusal stays the same class.
+from studio_refusal import Refusal  # noqa: E402,F401  (re-exported)
 
 
 # restore-lane's refusal codes (DEMO-AGENT-TOOLS.md "restore-lane refusal codes"). Append only.

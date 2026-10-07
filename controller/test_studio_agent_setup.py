@@ -790,7 +790,9 @@ class AgentSetupTests(DeployFixture):
         # beta.25 (profile-staged): children are started by MT5 from the profile; the EA no longer attaches them.
         self.assertNotIn('deploy_next', mailbox.PORTFOLIO_ACTIONS)
         self.assertIn('link_children', mailbox.PORTFOLIO_ACTIONS)
-        self.assertTrue({'children_linked', 'children_pending', 'all_attached', 'child_attached'} <= mailbox.PORTFOLIO_RESULTS)
+        # Append-only: the B43 EA answers a retained deploy_next with rejected_deploy_next_retired and changes nothing.
+        self.assertTrue({'children_linked', 'children_pending', 'rejected_deploy_next_retired', 'all_attached', 'child_attached'}
+                        <= mailbox.PORTFOLIO_RESULTS)
         with self.assertRaisesRegex(ValueError, 'Invalid dashboard command'):
             mailbox.portfolio_request(self.c, self.ident, 'deploy_next', timeout=20)
         retained = dict(schema=1, id='a' * 32, action='deploy_next', registrationSha256='b' * 64, expiresAtUtc=1)

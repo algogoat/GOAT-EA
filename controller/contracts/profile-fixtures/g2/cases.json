@@ -76,6 +76,21 @@
       "chart": "g2/utf8-bom-m5.chr",
       "chartSha256": "be87701a9bb69b3e542556a76d925ac0bb2a0ad5385d24073a0a0aacea4afcbc",
       "note": "UTF-8 with BOM; M5 = period (0,5)"
+    },
+    {
+      "case": "m15-whole-token",
+      "set": "g2/m15-whole-token.set",
+      "fileName": "GOAT V1.49 EURJPY,M15_G2-m15.set",
+      "symbol": "EURJPY",
+      "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+      "policy": {
+        "aiMode": 0,
+        "aiThreshold": 50,
+        "aiProtocol": 2
+      },
+      "chart": "g2/m15-whole-token.chr",
+      "chartSha256": "a91d7b3cdba1a9b3494d70ee876e685bdd8482e820f6eb35fddd6a64a10665da",
+      "note": "M15 is read as the whole token (0,15); beta.24 read two characters and opened M1"
     }
   ],
   "dashboard": {

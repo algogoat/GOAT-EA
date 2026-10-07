@@ -89,20 +89,25 @@ against the real BuildTemplate output for the B35-01 Kestrel SET.
 
 ### 2.1 Period. **Decided here**
 
-The dashboard's `TF()` reads only the **two characters after the first comma** of the SET name
-(`Dashboard.mqh:347-349`). Because of that, `,M15` would open an M1 chart and `,M30` an implicit `PERIOD_CURRENT` one.
-A member is accepted only when that two-character read and the whole token agree, and the token is one of these:
+The period is the **whole token** after the first comma of the SET name, up to the first character that is not
+`A-Z` or `0-9`. For example, `GOAT V1.49 EURUSD,M15_x.set` gives `M15`. Both sides read it the same way: the
+controller's writer and the EA's adoption (`GoatAdoptSetPeriod`, B43).
+
+beta.24's `TF()` read only two characters (`Dashboard.mqh@78f3b30:347-349`), so it opened M15 SETs on M1 charts.
+That reader is deleted together with the template path. The accepted tokens are:
 
 | Token | `period_type` | `period_size` | Evidence (MT5's own saves) |
 |---|---|---|---|
 | M1 | 0 | 1 | B35 `chart02.chr` |
 | M5 | 0 | 5 | `ENUM_TIMEFRAMES` minutes |
+| M15 | 0 | 15 | `ENUM_TIMEFRAMES` minutes |
+| M30 | 0 | 30 | terminal-isolation `British Pound\chart04.chr` |
 | H1 | 1 | 1 | T3 monitor-profile backup charts |
 | H4 | 1 | 4 | terminal-isolation `British Pound\chart03.chr` |
 | D1 | 1 | **24** | terminal-isolation `British Pound\chart01.chr`. A day is 24 hours (`PERIOD_D1 = 0x4018`). **The proposal's "2 for D1" is wrong**: unit 2 is weeks. |
 
-M15, M30 and every other token are refused with `SET_PERIOD_UNSUPPORTED`. Adoption (section 4) compares the
-chart period with the row's `TF(StringSubstr(name, c+1, 2))`, which equals this table for every accepted token.
+Every other token (W1, MN1, M10, a lowercase token, or no comma) is refused with `SET_PERIOD_UNSUPPORTED`
+before anything is written. No chart period is ever implicit.
 
 ### 2.2 Input lines (the BuildTemplate rules, plus the refusals both writers share)
 
@@ -138,7 +143,8 @@ This is the AgentPortfolio mailbox, unchanged: the same envelope, registration, 
 - **Request.** `action = "link_children"`, which the controller adds to its action list.
   - `deploy_next` is no longer sent.
   - A retained beta.24 `deploy_next` request or receipt is still recognised, so it can be settled and archived.
-- **Results.** The controller adds (append-only) `children_linked` and `children_pending`.
+- **Results.** The controller adds (append-only) `children_linked`, `children_pending` and
+  `rejected_deploy_next_retired`. The B43 EA gives that last answer to a retained `deploy_next` and changes nothing.
 
 **EA behaviour.** **Decided here:** `link_children` is a mutation-class action, like `apply_policy`:
 
@@ -173,8 +179,9 @@ This is the AgentPortfolio mailbox, unchanged: the same envelope, registration, 
 
 ## 4. Adoption (EA side, for reference)
 
-`AdoptStartedChildren()` runs inside `link_children` (and may run on the dashboard timer) only when the terminal is
-inert and while any row has `cid<=0 && magic<=0`. For each chart from `ChartFirst`/`ChartNext`:
+Adoption runs inside `link_children` (and may run on the dashboard timer) only when the terminal is inert and
+while any row is unlinked. A row whose TSV `cid` is already set is tried on that chart first; a freshly staged
+row (`cid=0`) is matched against every chart from `ChartFirst`/`ChartNext`:
 
 1. Skip the dashboard's own chart and charts already claimed by a row.
 2. Require `ChartSymbol`/`ChartPeriod` equal to the row's, and `CHART_EXPERT_NAME` equal to the EA name.

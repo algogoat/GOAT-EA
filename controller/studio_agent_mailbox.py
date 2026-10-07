@@ -342,7 +342,7 @@ PORTFOLIO_RESULTS = {'observed', 'started', 'rejected_portfolio_mismatch', 'reje
                      'configured', 'configure_failed', 'rejected_ai_policy_mismatch',
                      'rejected_partial_deployment', 'all_attached', 'child_attached',
                      'child_attach_failed', 'policy_dispatched', 'policy_not_dispatched',
-                     'children_linked', 'children_pending'}
+                     'children_linked', 'children_pending', 'rejected_deploy_next_retired'}
 REGISTRATION_SECONDS = 14400
 ROW_FIELDS = {'index', 'symbol', 'chartId', 'magic', 'linkedFresh', 'settingsMatch', 'exposureMode', 'ackId', 'ackStatus',
               'AI_MODE', 'AI_PROTOCOL', 'AI_THRESHOLD', 'AI_SCOPE', 'AI_VERIFIED', 'AI_AVAILABLE', 'AI_AT', 'EA_TRADE_ALLOWED'}

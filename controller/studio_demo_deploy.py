@@ -343,6 +343,7 @@ def patch_profile_last(raw, current, new):
     if bom + text.encode(encoding) != raw or '\x00' in text:
         raise ValueError('MT5 common.ini does not round-trip exactly; it was not edited')
     lines = _ini_lines(text)
+    profile_last(raw)  # refuses more than one ProfileLast
     values = _ini_values(raw, 'Charts', 'ProfileLast')
     if len(values) != 1 or values[0][1] != current or not PROFILE_NAME.fullmatch(new):
         raise ValueError('MT5 common.ini does not name ' + current + ' as its profile; it was not edited')
@@ -513,7 +514,9 @@ def _poll_until(controller, ident, action, accept, *, seconds, step_timeout=20, 
             return last
         if last['result'] not in ('receipt_timeout', 'observed', 'child_attached'):
             return last
-        sleep(1)
+        # An unanswered request stays live until wait + 5 s and is archivable 5 s later; asking again sooner would
+        # be refused ("still live"). A slow dashboard start-up (every chart of the profile loads at once) is normal.
+        sleep(LINK_RETRY_AFTER_TIMEOUT_SECONDS if last['result'] == 'receipt_timeout' else 1)
     return last
 
 

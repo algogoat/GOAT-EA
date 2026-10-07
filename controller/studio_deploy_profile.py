@@ -11,8 +11,8 @@ Nothing here touches the disk or MT5. The bytes are pinned by the shared golden 
 in controller/contracts/profile-fixtures (the beta.26 MQL writer must reproduce them), and
 the interface with the EA is controller/contracts/profile-deploy.md.
 
-Trading stays off by construction: no file written here ever carries Enabled= or
-AllowLiveTrading=. The only "off" switch is the terminal's Algo Trading, which the startup
+Trading stays off by construction: no file written here ever carries an Enabled or an
+AllowLiveTrading key. The only "off" switch is the terminal's Algo Trading, which the startup
 ini sets with [Experts] Enabled=0 (D1); expertmode is the literal 5 BuildTemplate used.
 """
 import hashlib
@@ -31,7 +31,7 @@ DASHBOARD_INPUTS = ('Mode_Operation=8', 'Dashboard_Resume_Saved=true', 'Mode_Bia
 # MT5 stores a chart period as (unit, count): 0 = minutes, 1 = hours (ENUM_TIMEFRAMES bits 14-15).
 # MT5's own saves on this PC show M1 (0,1), M30 (0,30), H1 (1,1), H4 (1,4) and a daily chart as (1,24):
 # D1 is 24 hours, not unit 2 (2 is weeks).
-PERIODS = {'M1': (0, 1), 'M5': (0, 5), 'H1': (1, 1), 'H4': (1, 4), 'D1': (1, 24)}
+PERIODS = {'M1': (0, 1), 'M5': (0, 5), 'M15': (0, 15), 'M30': (0, 30), 'H1': (1, 1), 'H4': (1, 4), 'D1': (1, 24)}
 AI_POLICY_NAMES = ('Mode_Bias', 'Bias_threshold', 'Bias_Protocol', 'Mode_Bias_Trades')
 # StringTrimLeft/StringTrimRight remove spaces, tabs and line feeds.
 TRIM = ' \t\r\n'
@@ -45,19 +45,16 @@ DUPLICATE_MEMBER_SETTINGS = 'DUPLICATE_MEMBER_SETTINGS'
 
 
 def period_token(file_name):
-    """The chart period of a member, as the dashboard reads it from the SET name.
-
-    The dashboard's TF() reads exactly the two characters after the first comma
-    (Dashboard.mqh:347-349), so ',M15' would open an M1 chart and ',M30' an implicit one.
-    A token is accepted only when that two-character read and the whole token agree."""
+    """The chart period of a member: the whole token after the first comma of the SET name, up to the first
+    character that is not A-Z or 0-9 ('GOAT V1.49 EURUSD,M15_x.set' -> 'M15'). The dashboard's adoption reads
+    the same token (GoatAdoptSetPeriod, B43). beta.24's TF() read only two characters, so it opened M15 SETs on
+    M1 charts; that reader is gone with the template path. No chart period is ever implicit."""
     comma = file_name.find(',')
-    whole = re.match(r'[A-Z][0-9]+', file_name[comma + 1:]) if comma >= 0 else None
-    two = file_name[comma + 1:comma + 3] if comma >= 0 else ''
-    if whole is None or whole.group() != two or two not in PERIODS:
-        raise ValueError(PERIOD_REFUSED + ': ' + file_name + ' names the chart period ' + (whole.group() if whole else 'nowhere')
-                         + '; a deploy supports ' + ', '.join(PERIODS) + ' (the dashboard reads two characters, so M15 and M30 '
-                         'would open the wrong chart)')
-    return two
+    token = re.match(r'[A-Z0-9]*', file_name[comma + 1:]).group() if comma >= 0 else ''
+    if token not in PERIODS:
+        raise ValueError(PERIOD_REFUSED + ': ' + file_name + ' names the chart period ' + (repr(token) if token else 'nowhere')
+                         + '; a deploy supports ' + ', '.join(PERIODS))
+    return token
 
 
 def decode_set(raw):

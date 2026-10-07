@@ -324,15 +324,36 @@ def _journal(controller, folder, attempt_id):
     return root / (attempt_id + '.json')
 
 
-def _wait_exit(process, identity_value, seconds, *, clock=time.monotonic, sleep=time.sleep):
+def _utc_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _wait_exit(process, identity_value, seconds, *, clock=time.monotonic, sleep=time.sleep, observed=None):
+    """Poll until the terminal is gone. ``observed`` (telemetry only, goatai#1885) receives when it was last
+    listed (the start of that inventory) and when an inventory first no longer listed it (that inventory's end)."""
     deadline = clock() + seconds
+    started, last_present = _utc_now(), None
     current = process.inspect()
+    polls = 1
     while current is not None and clock() < deadline:
         if current != identity_value:
             raise ValueError('The terminal was replaced during close; nothing else was done')
+        last_present = started
         sleep(0.25)
+        started = _utc_now()
         current = process.inspect()
+        polls += 1
+    if observed is not None:
+        observed.update(inventories=polls, last_seen_present_utc=last_present,
+                        observed_gone_utc=_utc_now() if current is None else None)
     return current is None
+
+
+def _exit_observation(observed, close_requested_utc):
+    """The close journal's evidence of when the previous MT5 exited: after exit_after_utc, before observed_gone_utc."""
+    return dict(close_requested_utc=close_requested_utc, inventories=observed.get('inventories'),
+                last_seen_present_utc=observed.get('last_seen_present_utc'), observed_gone_utc=observed.get('observed_gone_utc'),
+                exit_after_utc=observed.get('last_seen_present_utc') or close_requested_utc, poll_interval_seconds=0.25)
 
 
 def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspect=None, request=None, retire=None, wait_seconds=30):
@@ -370,9 +391,11 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
             if record.get('phase') in ('stopped', 'already_stopped'):
                 return record
             if record.get('phase') == 'close_issued':
-                stopped = _wait_exit(process, record['process'], wait_seconds)
+                observed = {}
+                stopped = _wait_exit(process, record['process'], wait_seconds, observed=observed)
                 if stopped:
-                    record.update(phase='stopped', status='stopped', stopped_utc=datetime.now(timezone.utc).isoformat())
+                    record.update(phase='stopped', status='stopped', stopped_utc=datetime.now(timezone.utc).isoformat(),
+                                  exit_observation=_exit_observation(observed, record.get('close_requested_utc')))
                     write_json(path, record)
                     return record
                 return record | dict(status='close_outcome_unresolved', close_will_not_be_repeated=True)
@@ -384,7 +407,8 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
             settled = refuse_pending_native()
             running = process.inspect()
             if running is None:
-                record = dict(schema_version=1, attempt_id=attempt_id, phase='already_stopped', status='already_stopped')
+                record = dict(schema_version=1, attempt_id=attempt_id, phase='already_stopped', status='already_stopped',
+                              exit_observation=dict(observed_gone_utc=_utc_now(), exit_after_utc=None))
                 write_json(path, record)
                 return record
             native = inspect(controller)
@@ -405,7 +429,9 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
                 record['superseded_registration'] = superseded
             write_json(path, record)
         method = None
+        close_requested_utc = None  # telemetry: the exit cannot precede the first close request
         if ident is not None:
+            close_requested_utc = _utc_now()
             receipt = request(controller, ident, 'shutdown', timeout=10)
             if receipt['result'] == 'receipt_timeout':
                 # Withdraw the unanswered shutdown so no EA can act on it during or after our
@@ -439,13 +465,18 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
                 if again.get('process') != running:
                     raise ValueError('The terminal changed before close; nothing was closed')
                 method = 'controller_normal_close'
-                record['phase'] = 'close_issued'; record['method'] = method; write_json(path, record)
+                close_requested_utc = close_requested_utc or _utc_now()
+                record['phase'] = 'close_issued'; record['method'] = method; record['close_requested_utc'] = close_requested_utc
+                write_json(path, record)
                 process.close(running)
         else:
-            record['phase'] = 'close_issued'; record['method'] = method; write_json(path, record)
-        stopped = _wait_exit(process, running, wait_seconds)
+            record['phase'] = 'close_issued'; record['method'] = method; record['close_requested_utc'] = close_requested_utc
+            write_json(path, record)
+        observed = {}
+        stopped = _wait_exit(process, running, wait_seconds, observed=observed)
         if not stopped:
             return record | dict(status='close_outcome_unresolved', close_will_not_be_repeated=True)
-        record.update(phase='stopped', status='stopped', stopped_utc=datetime.now(timezone.utc).isoformat())
+        record.update(phase='stopped', status='stopped', stopped_utc=datetime.now(timezone.utc).isoformat(),
+                      exit_observation=_exit_observation(observed, close_requested_utc))
         write_json(path, record)
         return record

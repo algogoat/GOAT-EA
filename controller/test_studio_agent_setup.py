@@ -4,10 +4,12 @@ A fake EA thread answers the real Common Files mailboxes with the exact receipt 
 GOATSetupControl.mqh and GOATPortfolioSetupControl.mqh. No MT5 terminal is touched.
 """
 import base64
+from datetime import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
@@ -902,6 +904,100 @@ class AgentSetupTests(unittest.TestCase):
         with self.relaunch(), self.assertRaisesRegex(ValueError, 'Portfolio receipt request mismatch'):
             deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
         self.assertNotEqual(json.loads(deploy.paths(self.c, 'e' * 32)['journal'].read_text())['phase'], 'ready')
+
+    # ------------------------------------------------- relaunch telemetry (goatai#1885)
+
+    def assert_utc(self, value):
+        self.assertIsInstance(value, str)
+        self.assertIsNotNone(datetime.fromisoformat(value).tzinfo, value)
+
+    def test_deploy_journal_records_the_relaunch_gap_and_exact_popen_call(self):
+        self.start_ea(pairing='none')
+        with self.relaunch() as launch:
+            self.assertEqual(deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)['phase'], 'ready')
+        journal = json.loads(deploy.paths(self.c, 'e' * 32)['journal'].read_text())
+        telemetry = journal['launch_telemetry']
+        self.assertEqual((telemetry['schema'], telemetry['pid'], journal['pid']), (1, 77, 77))
+        for key in ('launch_started_utc', 'popen_returned_utc'):
+            self.assert_utc(telemetry[key])
+        self.assertGreaterEqual(telemetry['popen_ms'], 0)
+        # The previous terminal: which process, how it was closed, and the window its exit falls in.
+        previous = telemetry['previous_terminal']
+        self.assertEqual(previous, journal['previous_terminal'], 'recorded at the closed phase, carried into the launch')
+        self.assertEqual((previous['present_at_stage'], previous['pid'], previous['created_utc']), (True, 55, '2026-10-02T00:00:00+00:00'))
+        self.assertEqual((previous['close_attempt_id'], previous['close_phase'], previous['close_method']),
+                         ('deploy-' + 'e' * 24, 'stopped', 'ea_inert_shutdown'))
+        for key in ('close_requested_utc', 'exit_after_utc', 'observed_gone_utc'):
+            self.assert_utc(previous[key])
+        self.assertGreaterEqual(previous['inventories'], 1)
+        self.assertLessEqual(datetime.fromisoformat(previous['exit_after_utc']), datetime.fromisoformat(previous['observed_gone_utc']))
+        close = json.loads(Path(self.c.root, 'terminal-closes', 'deploy-' + 'e' * 24 + '.json').read_text())
+        self.assertEqual(close['exit_observation']['observed_gone_utc'], previous['observed_gone_utc'], 'the close journal holds the same evidence')
+        # Was the previous MT5 still listed when the launch was issued (it must not be), and the gaps in ms.
+        self.assertIs(telemetry['previous_present_at_launch'], False)
+        check = telemetry['pre_launch_check']
+        self.assertIs(check['present'], False); self.assert_utc(check['started_utc']); self.assert_utc(check['finished_utc'])
+        gaps = telemetry['gap_ms']
+        self.assertEqual(set(gaps), {'exit_to_launch_at_least', 'exit_to_launch_at_most', 'pre_launch_check_to_launch'})
+        for value in gaps.values():
+            self.assertIsInstance(value, int); self.assertGreaterEqual(value, 0)
+        self.assertLessEqual(gaps['exit_to_launch_at_least'], gaps['exit_to_launch_at_most'])
+        # The Popen call exactly as issued.
+        popen = telemetry['popen']
+        (argv,), options = launch.call_args
+        self.assertEqual(set(options), {'cwd', 'stdin', 'stdout', 'stderr', 'creationflags'}, 'every keyword the launch passes is described')
+        self.assertTrue(all(options[name] is subprocess.DEVNULL for name in ('stdin', 'stdout', 'stderr')))
+        self.assertEqual(popen['argv'], argv)
+        self.assertEqual(popen['executable'], self.c.install['terminal_executable'])
+        self.assertEqual(popen['command_line'], subprocess.list2cmdline(argv))
+        self.assertEqual(popen['cwd'], options['cwd']); self.assertEqual(popen['cwd'], str(Path(self.c.install['terminal_executable']).parent))
+        self.assertEqual((popen['creationflags'], popen['creationflags_names']), (options['creationflags'], ['CREATE_NO_WINDOW']))
+        self.assertEqual((popen['stdin'], popen['stdout'], popen['stderr']), ('DEVNULL', 'DEVNULL', 'DEVNULL'))
+        self.assertEqual((popen['startupinfo'], popen['startupinfo_flags']), ('default (none passed)', ['STARTF_USESTDHANDLES']))
+        self.assertTrue(popen['show_window'].startswith('not set'))
+        self.assertEqual(popen['close_fds'], 'default (True)'); self.assertNotIn('close_fds', options, 'Popen keeps its default')
+        self.assertTrue(popen['inherited_handles'].startswith('only the redirected std handles'))
+        self.assertTrue(popen['env'].startswith('inherited')); self.assertNotIn('env', options)
+        self.assertEqual(popen['env_child_vs_controller'], dict(added=[], removed=[]))
+        logon = popen['env_controller_vs_logon']
+        if 'error' not in logon:
+            controller_names = {name.casefold() for name in os.environ}
+            self.assertTrue(all(name.casefold() in controller_names for name in logon['added']))
+            self.assertTrue(all(name.casefold() not in controller_names for name in logon['removed']))
+        # Names only: no environment value reaches the env or controller sections.
+        text = json.dumps([popen['env_child_vs_controller'], logon, telemetry['controller']])
+        for name, value in os.environ.items():
+            if len(value) >= 12:
+                self.assertNotIn(json.dumps(value)[1:-1], text, name)
+        self.assertEqual(telemetry['controller']['pid'], os.getpid())
+
+    def test_close_journal_bounds_the_exit_between_the_last_listing_and_the_first_absence(self):
+        class Lingering(FakeProcess):
+            """Still listed for two inventories after the normal close."""
+            def close(self, identity):
+                self.closed.append(identity); self.left = 2
+            def inspect(self, timeout=20):
+                if getattr(self, 'left', None) is not None:
+                    if self.left == 0:
+                        return None
+                    self.left -= 1
+                return self.identity
+        result = agent_setup.close_terminal(self.c, 'linger-1', process=Lingering())
+        observation = result['exit_observation']
+        self.assertEqual((result['phase'], observation['inventories'], observation['poll_interval_seconds']), ('stopped', 3, 0.25))
+        self.assertEqual(observation['exit_after_utc'], observation['last_seen_present_utc'])
+        self.assertEqual(result['close_requested_utc'], observation['close_requested_utc'])
+        seen = [datetime.fromisoformat(observation[k]) for k in ('close_requested_utc', 'last_seen_present_utc', 'observed_gone_utc')]
+        self.assertEqual(seen, sorted(seen))
+        self.assertEqual(json.loads(Path(self.c.root, 'terminal-closes', 'linger-1.json').read_text())['exit_observation'], observation)
+
+    def test_a_failing_telemetry_probe_never_blocks_the_launch_or_its_journal(self):
+        self.start_ea(pairing='none')
+        with self.relaunch() as launch, patch.object(deploy, 'launch_record', side_effect=RuntimeError('probe broke')):
+            self.assertEqual(deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)['phase'], 'ready')
+        launch.assert_called_once()
+        journal = json.loads(deploy.paths(self.c, 'e' * 32)['journal'].read_text())
+        self.assertEqual((journal['pid'], journal['launch_telemetry']), (77, dict(schema=1, error='RuntimeError: probe broke')))
 
     def test_a_crash_after_staging_resumes_the_same_plan(self):
         real, crashed = deploy.write_json, []

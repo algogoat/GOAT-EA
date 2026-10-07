@@ -1,3 +1,7 @@
+**Superseded by B41.2 (`../beta17-B41.2`). Native proof FAILED on T3** (goatai#1885 6030127717, deploy `b5dd2889`):
+the queued child template was never applied (no child `Initialization Start` in 76 s), and the attach timed out and unwound.
+Do not install this binary. It is retained as a candidate record, like B41 and earlier.
+
 B41.1 is B41 plus two deploy-path fixes, both on goatai#1885. It is a hotfix: there is no trade-logic,
 input, default or SET-writer change. See **Build**.
 

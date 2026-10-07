@@ -117,6 +117,10 @@ public:
    int         m_agent_attach_idx;
    string      m_agent_attach_tpl;
    uint        m_agent_attach_start;
+   // B41.2: a queued template on a newly opened chart was not applied natively (T3, 2026-10-07)
+   // until that chart got an update, so the pending child chart is refreshed every 2 s.
+   ENUM_TIMEFRAMES m_agent_attach_tf;
+   uint        m_agent_attach_refresh;
    string      m_child_attach_step;
    // Rows whose agent attach failed (timeout or no longer inert) carry
    // GOAT_ATTACH_FAILED_MAGIC: closed, kept as the partial-deployment lock, saved, and
@@ -1023,6 +1027,8 @@ CGOATDashboard::CGOATDashboard()
    m_agent_attach_idx=-1;
    m_agent_attach_tpl="";
    m_agent_attach_start=0;
+   m_agent_attach_tf=PERIOD_M1;
+   m_agent_attach_refresh=0;
    m_child_attach_step="";
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
    m_ai_launch_mode=GOAT_AI_LAUNCH_AS_OPTIMIZED;
@@ -1262,6 +1268,8 @@ bool CGOATDashboard::AgentBeginDeployRow(const int idx)
    m_agent_attach_idx=idx;
    m_agent_attach_tpl=tplName;
    m_agent_attach_start=GetTickCount();
+   m_agent_attach_tf=tf;
+   m_agent_attach_refresh=m_agent_attach_start;
    return true;
 }
 
@@ -1279,7 +1287,18 @@ int CGOATDashboard::AgentPollDeployRow(void)
    // has finished OnInit cannot trade while it waits to register.
    bool inert=TerminalInfoInteger(TERMINAL_CONNECTED) && !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)
               && PositionsTotal()==0 && OrdersTotal()==0;
-   if(!linked && inert && GetTickCount()-m_agent_attach_start<=GOAT_AGENT_ATTACH_BUDGET_MS) return 0;
+   if(!linked && inert && GetTickCount()-m_agent_attach_start<=GOAT_AGENT_ATTACH_BUDGET_MS)
+   {
+      // The pre-ebb9958 refresh, now between timer ticks instead of inside a blocked handler:
+      // MT5 applied the queued template only once the new chart was updated (T3, B41.1).
+      if(GetTickCount()-m_agent_attach_refresh>=2000)
+      {
+         ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);
+         ChartRedraw(g_sets[idx].cid);
+         m_agent_attach_refresh=GetTickCount();
+      }
+      return 0;
+   }
    m_agent_attach_pending=false;
    m_agent_attach_idx=-1;
    m_agent_attach_tpl="";

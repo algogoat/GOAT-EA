@@ -46,7 +46,11 @@ state machine and independent watchdog would be a separate, larger change.
 From B41.1 the agent's `deploy_next` attaches a child asynchronously (goatai#1885
 6027754245). The timer handler opens the chart, saves the child chart ID, copies the
 template to `MQL5\Profiles\Templates\<member SET name>.tpl` and queues it, then returns.
-Later timer ticks wait for the child's registration, for at most
+Later timer ticks wait for the child's registration. From B41.2, while the row's handshake
+is pending, every 2 s the tick also calls `ChartSetSymbolPeriod(cid, row symbol, row
+timeframe)` and `ChartRedraw(cid)`. On T3 (B41.1, goatai#1885 6030127717), a template
+queued on a newly opened chart was not applied in 76 s without such an update, although
+the symbol was ticking. The registration wait lasts at most
 `GOAT_AGENT_ATTACH_BUDGET_MS` (75 s). That is above the child's license startup, which
 retries for up to 60 s inside `OnInit`, before the child writes its handshake. The
 template is deleted only once the attach settles, either linked or timed out.

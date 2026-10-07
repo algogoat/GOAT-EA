@@ -1,11 +1,12 @@
-"""Keep the forward B41.1 candidate, and the retained B41, B40, B39, B38, EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
+"""Keep the forward B41.2 candidate, and the retained B41.1, B41, B40, B39, B38, EX33, SM32, SM31 and SP30 ones, distinct from release artifacts."""
 import hashlib
 import json
 from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-CANDIDATE = ROOT / 'candidate-builds/beta17-B41.1'
+CANDIDATE = ROOT / 'candidate-builds/beta17-B41.2'
+RETAINED_B41_1 = ROOT / 'candidate-builds/beta17-B41.1'
 RETAINED_B41 = ROOT / 'candidate-builds/beta17-B41'
 RETAINED_B40 = ROOT / 'candidate-builds/beta17-B40'
 RETAINED_B39 = ROOT / 'candidate-builds/beta17-B39'
@@ -24,8 +25,14 @@ class StartProtocolCandidateTests(unittest.TestCase):
         self.assertIn('#define   GOAT_VERSION_LABEL "1.49"', text)
         self.assertIn('#define   GOAT_BUILD_ID "' + identity['build_id'] + '"', text)
         self.assertIn('#define   GOAT_BUILD_MARKER "' + identity['build_marker'] + '"', text)
-        self.assertEqual((identity['build_id'], identity['build_marker']), ('V1.49-BETA17-41.1', 'B41.1'))
-        self.assertEqual(identity['supersedes_candidate'], 'beta17-B41')
+        self.assertEqual((identity['build_id'], identity['build_marker']), ('V1.49-BETA17-41.2', 'B41.2'))
+        self.assertEqual(identity['supersedes_candidate'], 'beta17-B41.1')
+        # B41.2 is B41.1 plus the 2 s refresh of the pending child chart (goatai#1885 6030127717): only the
+        # entrypoint (build ID and marker) and Dashboard.mqh differ from B41.1.
+        b41_1 = json.loads((RETAINED_B41_1 / 'identity.json').read_text(encoding='utf-8'))
+        self.assertEqual(sorted(name for name in identity['sources'] if identity['sources'][name] != b41_1['sources'].get(name)),
+                         ['Dashboard.mqh', 'GOAT V1.49.mq5'])
+        self.assertIn('ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);', (ROOT / 'Dashboard.mqh').read_text(encoding='utf-8-sig'))
         # B41.1 is B41 plus six names on the deploy audit's exemption list (goatai#1885): the inputs
         # WriteSet omits but a V1.49 child template carries, accepted only at their defaults. B41 is B40 plus the recorded-bias live gate (tester == live at every Bias_threshold,
         # goatai#1885). B40 is B39 plus the no-qualifying-rows research outcome (Banker g6-r1b). B39 is
@@ -111,7 +118,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
 
     def test_retained_candidates_keep_their_own_exact_binaries(self):
         forward = json.loads((CANDIDATE / 'identity.json').read_text(encoding='utf-8'))
-        for folder, marker, supersedes in ((RETAINED_B41, 'B41', 'beta17-B40'), (RETAINED_B40, 'B40', 'beta17-B39'), (RETAINED_B39, 'B39', 'beta17-B38'), (RETAINED_B38, 'B38', 'ea-experience-EX33'),
+        for folder, marker, supersedes in ((RETAINED_B41_1, 'B41.1', 'beta17-B41'), (RETAINED_B41, 'B41', 'beta17-B40'), (RETAINED_B40, 'B40', 'beta17-B39'), (RETAINED_B39, 'B39', 'beta17-B38'), (RETAINED_B38, 'B38', 'ea-experience-EX33'),
                                            (RETAINED_EX33, 'EX33', 'terminal-isolation-SM32'), (RETAINED_SM32, 'SM32', 'ndx-symbol-map-SM31'),
                                            (RETAINED_SM31, 'SM31', 'start-protocol-SP30'), (RETAINED, 'SP30', None)):
             identity = json.loads((folder / 'identity.json').read_text(encoding='utf-8'))

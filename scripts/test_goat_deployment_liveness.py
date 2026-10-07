@@ -97,7 +97,12 @@ class DeploymentLivenessTests(unittest.TestCase):
         self.assertIn('BeginChildAttach(idx,tf,tplName)', self.agent_begin)
         for blocking in ('while(', 'Sleep(', 'NewSingleInstance(', 'ApplyTemplate(idx', 'DoActivate('):
             self.assertNotIn(blocking, self.agent_begin)
-        passive_handshake(self.agent_poll)
+        # B41.2: the pending child chart is refreshed every 2 s (T3 6030127717): ChartSetSymbolPeriod and
+        # ChartRedraw on that row's chart only, inside the cadence block; never a re-apply or a new chart.
+        refresh = region(self.agent_poll, 'if(GetTickCount()-m_agent_attach_refresh>=2000)', 'return 0;')
+        self.assertIn('ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);', refresh)
+        self.assertIn('ChartRedraw(g_sets[idx].cid);', refresh)
+        passive_handshake(self.agent_poll.replace(refresh, ''))
         for blocking in ('while(', 'Sleep('):
             self.assertNotIn(blocking, self.agent_poll)
         self.assertIn('GetTickCount()-m_agent_attach_start<=GOAT_AGENT_ATTACH_BUDGET_MS', self.agent_poll)

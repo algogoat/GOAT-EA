@@ -36,12 +36,14 @@ function js(text) {
   .replace(/g_sets\[idx\]\.cid\/1000000000/g,'Math.trunc(g_sets[idx].cid/1000000000)')
   .replace(/(?<![\w.\]])cid\/1000000000/g,'Math.trunc(cid/1000000000)');
 }
-const method=name=>bodyOf(dashboard,'CGOATDashboard::'+name);
 const BUDGET=Number((dashboard.match(/#define GOAT_AGENT_ATTACH_BUDGET_MS (\d+)/)||[])[1]);
 const FAILED=Number((dashboard.match(/#define GOAT_ATTACH_FAILED_MAGIC (-\d+)/)||[])[1]);
 assert.ok(FAILED<-1,'the failed marker is distinct from the never-deployed -1');
 const LICENSE_DEADLINE=Number((license.match(/ulong deadline=GetTickCount64\(\)\+(\d+);/)||[])[1]);
 assert.ok(LICENSE_DEADLINE>0,'license startup deadline found');
+// The production attach code of one source pair (Dashboard.mqh, GOATPortfolioSetupControl.mqh), as JS.
+function compile(dashboard,setup){
+const method=name=>bodyOf(dashboard,'CGOATDashboard::'+name);
 const prepareCall='bool started=PrepareChildLaunch(idx,tf,tplName);';
 const beginBody=method('AgentBeginDeployRow(const int idx)');assert.ok(beginBody.includes(prepareCall));
 const deployBlock=bodyOf(setup,'else if(action=="deploy_next")');
@@ -54,7 +56,7 @@ assert.ok(pollBody.indexOf(holdLine)<pollBody.indexOf('registration.json'),'the 
 const loadBody=method('LoadDashboardConfig(void)');
 assert.ok(loadBody.includes('SweepStaleChildTemplates();')&&loadBody.indexOf('SweepStaleChildTemplates();')>loadBody.lastIndexOf('FileClose(h);'),
  'LoadDashboardConfig sweeps stale templates once its rows are loaded');
-const production=[
+return [
  'function PrepareChildLaunch(idx){let tf,tplName;const ok=(()=>{'+js(bodyOf(dashboard,'bool PrepareChildLaunch(const int idx,ENUM_TIMEFRAMES &tf,string &tplName)'))+'})();return {ok,tf,tplName};}',
  'function AgentBeginDeployRow(idx){'+js(beginBody).replace(js(prepareCall),'const p=PrepareChildLaunch(idx);let started=p.ok;tf=p.tf;tplName=p.tplName;')+'}',
  'function AgentPollDeployRow(){'+js(method('AgentPollDeployRow(void)'))+'}',
@@ -81,6 +83,8 @@ const production=[
  'function settleOrHold(root){'+js(holdLine).replace(/return;/,'return true;')+'\nreturn false;}',
  'function deployNext(count,id,hash,owner){let result="started";'+js(deployBlock).replace(js(deferReturn),'FileClose(owner);return "pending";')+'\nreturn result;}',
 ].join('\n');
+}
+const production=compile(dashboard,setup);
 
 const control=()=>({t:'',Text(v){if(v===undefined)return this.t;this.t=v;},Color(){}});
 const COMMON='C:\\Common',DATA='C:\\T3',SETS=COMMON+'\\Files\\GOAT\\Deployments\\d1';
@@ -90,10 +94,11 @@ const tplOf=i=>`GOAT V1.49 SYM${i},M1_B35-${i}.tpl`;
 // childDelay: ms from the template applying to the end of the child's OnInit (license startup).
 // registers=false: the child runs and reports status but never writes its pending registration.
 // restored: charts MT5 brings back with the profile after a restart ({cid,sym,child:true|false}).
+// source: the compiled attach code to run (default: this tree; case 21 runs B41.1's).
 function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueOk=true,templates=new Map(),rows=null,
-                copyOk=()=>true,closeOk=true,restored=[]}={}) {
+                copyOk=()=>true,closeOk=true,restored=[],source=production}={}) {
  const mt5={clock:1000,nextCid:66948585504739,charts:new Map(),queue:[],inits:[],templates,commonFiles:new Map(),gv:new Map(),
-            cidField:new Map(),children:[],applied:[],algo:false,positions:[],orders:[]};
+            cidField:new Map(),children:[],applied:[],algo:false,positions:[],orders:[],nudges:[]};
  const sets=rows||[...Array(members)].map((_,i)=>({name:`GOAT V1.49 SYM${i},M1_B35-${i}.set`,path:`${SETS}\\set${i}`,sym:'SYM'+(i%17),cid:0,magic:0,status:'Pending'}));
  const log={phases:[],audits:[],receipts:new Map(),saves:0,saved:null,ownerBusy:false,writeOk:true};
  let nextMagic=7000;
@@ -111,10 +116,15 @@ function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueO
   const c=mt5.children.at(-1);
   if(r.handshake!==false){mt5.gv.set(`${c.magic}/${c.sym}/SETUP_CID_HI`,Math.trunc(c.cid/1e9));mt5.gv.set(`${c.magic}/${c.sym}/SETUP_CID_LO`,c.cid%1e9);}
  }
- const processQueue=()=>{ // MT5 drains chart command queues once the handler has returned
+ // MT5 drains a chart's command queue only after the requesting handler has returned AND the chart
+ // gets an update event (ChartSetSymbolPeriod or ChartRedraw on that chart). T3 (B41.1, 2026-10-07):
+ // a template queued on a newly opened EURUSD chart stayed unapplied for 76 s while EURUSD ticked,
+ // so ticks are deliberately not modelled as an update.
+ const processQueue=()=>{
   for(const cmd of mt5.queue.splice(0)) {
    const chart=mt5.charts.get(cmd.cid);
    if(chart.closed) continue;
+   if(!chart.updated) {mt5.queue.push(cmd);continue;}
    if(!mt5.templates.has(cmd.tpl)) {chart.missingTemplate=true;continue;}
    chart.appliedTemplate=mt5.templates.get(cmd.tpl);chart.expert=true;chart.expertName='GOAT V1.49';
    mt5.applied.push({cid:cmd.cid,tpl:cmd.tpl,bytes:chart.appliedTemplate});
@@ -159,15 +169,17 @@ function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueO
   // The saved dashboard state: a copy of every row, which is what a restart reloads.
   SaveDashboardConfig:()=>{log.saves++;log.saved=sets.map(s=>({...s}));return true;},
   AppendAILaunchAudit:(idx,stage)=>log.audits.push([idx,stage]),
-  GoatDeploymentPhase:(phase,target=0,controlName='')=>log.phases.push({phase,target,control:controlName}),
+  GoatDeploymentPhase:(phase,target=0,controlName='')=>log.phases.push({phase,target,control:controlName,at:mt5.clock}),
   GetTickCount:()=>mt5.clock,Sleep:ms=>{mt5.clock+=ms;},
-  ChartOpen:(sym)=>{const cid=mt5.nextCid++;mt5.charts.set(cid,{cid,sym,expert:false,closed:false});return cid;},
-  ChartApplyTemplate:(cid,tpl)=>{if(!enqueueOk)return false;mt5.queue.push({cid,tpl});return true;},
+  ChartOpen:(sym,tf)=>{const cid=mt5.nextCid++;mt5.charts.set(cid,{cid,sym,tf,expert:false,closed:false,updated:false});return cid;},
+  ChartApplyTemplate:(cid,tpl)=>{if(!enqueueOk)return false;mt5.queue.push({cid,tpl});mt5.charts.get(cid).updated=false;return true;},
+  ChartSetSymbolPeriod:(cid,sym,tf)=>{const c=mt5.charts.get(cid);mt5.nudges.push({cid,sym,tf,at:mt5.clock});
+   if(!c||c.closed) return false;c.sym=sym;c.tf=tf;c.updated=true;return true;},
   ChartClose:cid=>{ // closing a chart unloads its EA, including one still in OnInit
    const chart=mt5.charts.get(cid);if(!chart||!closeOk) return false;
    chart.closed=true;mt5.children=mt5.children.filter(c=>c.cid!==cid);return true;},
   ChartSymbol:cid=>{const chart=mt5.charts.get(cid);return chart&&!chart.closed?chart.sym:'';},
-  ChartRedraw:()=>{},ChartSetInteger:()=>true,
+  ChartRedraw:(cid=0)=>{const c=mt5.charts.get(cid);if(c&&!c.closed) c.updated=true;},ChartSetInteger:()=>true,
   GoatChildGVName:(m,s,f)=>`${m}/${s}/${f}`,
   find:(sym,cid,assign)=>{if(!mt5.cidField.has(cid))return false;assign(mt5.cidField.get(cid));return true;},
   gvGet:(key,assign)=>{if(!mt5.gv.has(key))return false;assign(mt5.gv.get(key));return true;},
@@ -177,7 +189,7 @@ function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueO
   GoatSetupWrite:(file,body)=>{if(!log.writeOk)return false;log.receipts.set(file,body);return true;},
   GoatPortfolioSnapshot:(id,action,hash,result)=>({id,action,hash,result}),
  };
- vm.createContext(ctx);vm.runInContext(production,ctx);
+ vm.createContext(ctx);vm.runInContext(source,ctx);
  vm.runInContext('var DashboardDialog={g_sets,AgentBeginDeployRow,AgentPollDeployRow};',ctx);
  const linked=i=>vm.runInContext('GoatPortfolioRowLinked('+i+')',ctx);
  const root='GOAT\\AgentPortfolio\\T3\\';let request=null;const setRequest=id=>{request=id;};
@@ -215,22 +227,38 @@ let passed=0;
  const tpl=tplOf(0);w.mt5.templates.set(tpl,'<chart>');
  const t0=w.mt5.clock;assert.equal(w.ctx.ApplyTemplate(0,1,tpl),false);
  assert.ok(w.mt5.clock-t0>20000);assert.ok(!w.mt5.templates.has(tpl));
- // the handler has returned; the queued template now finds nothing to apply
+ // The handler has returned, but nothing updated the chart, so the template is still queued (T3).
  w.tick();const chart=[...w.mt5.charts.values()][0];
- assert.equal(chart.expert,false);assert.equal(chart.missingTemplate,true);
+ assert.equal(chart.expert,false);assert.equal(chart.missingTemplate,undefined);
+ // A later update finds the file already deleted by the handler: the chart stays bare.
+ w.ctx.ChartRedraw(chart.cid);w.tick();assert.equal(chart.expert,false);assert.equal(chart.missingTemplate,true);
  assert.deepEqual(w.log.phases.map(p=>p.phase).slice(-2),['handshake_begin','handshake_timeout']);passed++;
 }
 { // 2. Async: all 35 Balanced35 members attach one deploy_next at a time, then all_attached.
  const w=world({members:35});
  for(let i=0;i<35;i++) {
-  const r=w.deployNext('req'+i);assert.equal(r.result,'child_attached',`member ${i}`);assert.ok(r.ticks<=3,`member ${i} took ${r.ticks}s`);
+  const r=w.deployNext('req'+i);assert.equal(r.result,'child_attached',`member ${i}`);assert.ok(r.ticks<=5,`member ${i} took ${r.ticks}s`);
   assert.ok(['Linked','Running'].includes(w.sets[i].status));assert.ok(w.sets[i].cid>0&&w.sets[i].magic>0);assert.ok(w.linked(i));
   assert.equal(w.ctx.m_agent_attach_pending,false);assert.equal(w.ctx.GoatPortfolioAttachPending,false);
  }
  assert.equal(new Set(w.sets.map(s=>s.magic)).size,35);assert.equal(new Set(w.sets.map(s=>s.cid)).size,35);
  assert.equal(w.mt5.templates.size,0,'every copied template is removed after linking');
  assert.equal(w.log.audits.filter(a=>a[1]==='LINKED').length,35);assert.equal(w.log.audits.filter(a=>a[1]==='APPLY_FAILED').length,0);
- assert.equal(w.deployNext('req-final').result,'all_attached');passed++;
+ assert.equal(w.deployNext('req-final').result,'all_attached');
+ // Every nudge hit a row whose handshake was still pending, with the row's own symbol and timeframe:
+ // none after its row linked, none on another row's chart.
+ assert.ok(w.mt5.nudges.length>=35);
+ for(const n of w.mt5.nudges){
+  const row=w.sets.find(s=>s.cid===n.cid);assert.ok(row,'nudged chart belongs to a row');
+  assert.equal(n.sym,row.sym);assert.equal(n.tf,1);
+  const begun=w.log.phases.find(p=>p.phase==='handshake_begin'&&p.target===n.cid).at;
+  const linked=w.log.phases.find(p=>p.phase==='handshake_linked'&&p.target===n.cid).at;
+  assert.ok(n.at>begun&&n.at<linked,`nudge at ${n.at} outside ${row.sym}'s pending window ${begun}..${linked}`);
+ }
+ // The nudge stops once the row links, and each chart keeps its symbol and timeframe.
+ const count=w.mt5.nudges.length;for(let t=0;t<10;t++) w.tick();assert.equal(w.mt5.nudges.length,count);
+ for(const s of w.sets){const c=w.mt5.charts.get(s.cid);assert.equal(c.sym,s.sym);assert.equal(c.tf,1);}
+ passed++;
 }
 { // 3. The template is still on disk when MT5 drains the queue (it is deleted only after linking).
  const w=world({members:2});
@@ -248,7 +276,7 @@ let passed=0;
  assert.equal(w.ctx.m_agent_attach_pending,false);assert.equal(w.ctx.GoatPortfolioAttachPending,false);
  assert.deepEqual(w.log.audits.map(a=>a[1]),['PREPARED','APPLY_FAILED']);
  assert.deepEqual(w.log.phases.slice(-3).map(p=>p.phase),['handshake_timeout','child_chart_closed','child_attach_failed']);
- assert.deepEqual(w.log.phases.at(-1),{phase:'child_attach_failed',target:w.sets[0].cid,control:'handshake_timeout'});
+ const last=w.log.phases.at(-1);assert.deepEqual([last.phase,last.target,last.control],['child_attach_failed',w.sets[0].cid,'handshake_timeout']);
  assert.equal(w.deployNext('t2').result,'rejected_partial_deployment');passed++;
 }
 { // 5. An enqueue failure answers in the same tick, names the step and leaves nothing pending.
@@ -262,7 +290,7 @@ let passed=0;
  const receipt=id=>w.log.receipts.get(w.root+id+'.json');
  w.setRequest('y');w.tick();
  assert.equal(receipt('y').result,'started');assert.equal(w.ctx.GoatPortfolioAttachPending,true);
- w.log.ownerBusy=true;w.tick();w.tick();
+ w.log.ownerBusy=true;for(let t=0;t<6&&w.ctx.GoatPortfolioAttachResult==='';t++) w.tick();
  assert.equal(receipt('y').result,'started');assert.equal(w.ctx.GoatPortfolioAttachResult,'child_attached');
  assert.equal(w.ctx.m_agent_attach_pending,false,'the dashboard side settled; only the receipt write is retried');
  w.setRequest('z');w.tick();assert.equal(receipt('z'),undefined);
@@ -273,7 +301,9 @@ let passed=0;
 }
 { // 7. A failed receipt write is retried the same way.
  const w=world({members:1});
- w.setRequest('q');w.tick();w.log.writeOk=false;w.tick();w.tick();
+ w.setRequest('q');w.tick();w.log.writeOk=false;
+ for(let t=0;t<6&&w.ctx.GoatPortfolioAttachResult==='';t++) w.tick();
+ assert.equal(w.ctx.GoatPortfolioAttachResult,'child_attached','settled while the write fails');w.tick();
  assert.equal(w.log.receipts.get(w.root+'q.json').result,'started');
  w.log.writeOk=true;w.tick();assert.equal(w.log.receipts.get(w.root+'q.json').result,'child_attached');passed++;
 }
@@ -360,7 +390,7 @@ for(const [delay,label] of [[25000,'25 s, after the old 20 s budget'],[70000,'70
 { // 15. A child that reports status during the attach but never completes the handshake: its early
   //     magic is replaced by the failed marker at the timeout, so the saved row cannot reload as Linked.
  const w=world({members:1,registers:false,closeOk:false});
- w.setRequest('h');w.tick();w.tick();w.tick();
+ w.setRequest('h');for(let t=0;t<4;t++) w.tick();
  assert.ok(w.sets[0].magic>0,'the status event adopted the magic early, before any handshake');
  const r=w.deployNext('h');assert.equal(r.result,'child_attach_failed');
  assert.equal(w.sets[0].magic,FAILED);assert.ok(w.sets[0].cid>0);
@@ -434,7 +464,7 @@ for(const [delay,label] of [[25000,'25 s, after the old 20 s budget'],[70000,'70
 { // 19. rejected_not_inert names the child's own positions and orders (by its magic) in the deployment
   //     diagnostics, because the receipt's schema is fixed; unrelated trades are not listed.
  const w=world({members:2});
- w.setRequest('t');w.tick(); // the template applies; the child finishes OnInit (magic 7000)
+ w.setRequest('t');w.tick();w.tick();w.tick(); // the 2 s nudge applies the template; the child finishes OnInit (magic 7000)
  w.mt5.algo=true;
  w.mt5.positions.push({ticket:9001,magic:7000},{ticket:9002,magic:4242});
  w.mt5.orders.push({ticket:9101,magic:7000});
@@ -468,4 +498,22 @@ for(const [delay,label] of [[25000,'25 s, after the old 20 s budget'],[70000,'70
  const ours=world({members:2,rows:rows(),restored:[{cid,sym,child:true}]});
  ours.ctx.SweepStaleChildTemplates();
  assert.equal(ours.mt5.charts.get(cid).closed,true);assert.equal(ours.log.phases.at(-1).phase,'child_chart_closed');passed++;
+}{ // 21. B41.1 (compiled from 0cfdfacf) under this model reproduces T3 (#1885 6030127717): its attach never
+  //     updates the new chart, so the queued template is never applied and the attach times out at 75 s.
+  //     B41.2 (this tree) attaches all 35 under the same model (case 2).
+ const {execFileSync}=require('node:child_process');
+ const show=f=>{try{return execFileSync('git',['show','0cfdfacf:'+f],{cwd:path.join(__dirname,'..'),maxBuffer:64<<20,stdio:['ignore','pipe','ignore']})
+  .toString('utf8').replace(/^\uFEFF/,'').replace(/\r\n/g,'\n');}catch(e){return null;}};
+ const d=show('Dashboard.mqh'),s=show('GOATPortfolioSetupControl.mqh');
+ if(d===null||s===null){assert.ok(!process.env.CI,'B41.1 source 0cfdfacf is required in CI (fetch-depth: 0)');console.log('case 21 skipped: 0cfdfacf not in this clone');}
+ else {
+  assert.ok(!d.includes('ChartSetSymbolPeriod('),'B41.1 has no refresh in its attach');
+  const w=world({members:2,source:compile(d,s)});
+  const r=w.deployNext('t3');assert.equal(r.result,'child_attach_failed');
+  assert.ok(r.ticks>=BUDGET/1000&&r.ticks<=BUDGET/1000+2,`B41.1 timed out after ${r.ticks} ticks`);
+  const cid=w.sets[0].cid;assert.equal(w.mt5.applied.length,0,'the template was never applied');
+  assert.equal(w.mt5.nudges.length,0);assert.equal(w.mt5.children.length,0);assert.equal(w.mt5.charts.get(cid).closed,true);
+  assert.deepEqual(w.log.phases.filter(p=>p.target===cid).map(p=>p.phase).slice(-3),['handshake_timeout','child_chart_closed','child_attach_failed']);
+  passed++;
+ }
 }console.log(JSON.stringify({passed,productionExtracted:true,nativeTemplateTimingVerified:false}));

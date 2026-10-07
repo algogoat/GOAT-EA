@@ -47,7 +47,7 @@ const mutations=[
          FailChildAttachTimeout(idx,tplName);
          AgentUnwindFailedAttach(idx);
       }`]]],
-  ['inert checked only at link or timeout','Dashboard.mqh',[[R`   if(!linked && inert && GetTickCount()-m_agent_attach_start<=GOAT_AGENT_ATTACH_BUDGET_MS) return 0;`,R`   if(!linked && GetTickCount()-m_agent_attach_start<=GOAT_AGENT_ATTACH_BUDGET_MS) return 0;`]]],
+  ['inert checked only at link or timeout','Dashboard.mqh',[[R`   if(!linked && inert && GetTickCount()-m_agent_attach_start<=GOAT_AGENT_ATTACH_BUDGET_MS)`,R`   if(!linked && GetTickCount()-m_agent_attach_start<=GOAT_AGENT_ATTACH_BUDGET_MS)`]]],
   ['child trades not reported','Dashboard.mqh',[[R`         GoatDeploymentPhase("not_inert_child_trades",g_sets[idx].cid,ChildTradeSummary(idx));`,'']]],
   ['trade summary skips orders','Dashboard.mqh',[[R`      if(ticket==0 || OrderGetInteger(ORDER_MAGIC)!=magic) continue;`,R`      continue;`]]],
   ['trade summary lists other magics','Dashboard.mqh',[[R`      if(ticket==0 || PositionGetInteger(POSITION_MAGIC)!=magic) continue;`,R`      if(ticket==0) continue;`]]],
@@ -55,6 +55,18 @@ const mutations=[
   ['ours check ignores the EA on the chart','Dashboard.mqh',[[R`   if(ChartGetString(cid,CHART_EXPERT_NAME)!=EA_Name_) return false;`,'']]],
   ['ours check ignores the handshake','Dashboard.mqh',[[R`          && (long)hi==cid/1000000000 && (long)lo==cid%1000000000);`,R`          || true);`]]],
   ['live unwind demands the on-load proof','Dashboard.mqh',[[R`   CloseFailedChildChart(idx,false);`,R`   CloseFailedChildChart(idx,true);`]]],
+  // B41.2: refresh the pending child chart (T3 6030127717; Mac 6030140212)
+  ['nudge dropped (B41.1 behaviour)','Dashboard.mqh',[[R`         ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);
+         ChartRedraw(g_sets[idx].cid);
+`,'']]],
+  ['nudge also hits non-pending rows','Dashboard.mqh',[[R`         ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);
+         ChartRedraw(g_sets[idx].cid);
+`,R`         for(int r=0;r<ArraySize(g_sets);r++) if(g_sets[r].cid>0) {ChartSetSymbolPeriod(g_sets[r].cid,g_sets[r].sym,m_agent_attach_tf); ChartRedraw(g_sets[r].cid);}
+`]]],
+  ['nudge changes the timeframe','Dashboard.mqh',[[R`ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);`,R`ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,PERIOD_H1);`]]],
+  ['nudge timeframe not remembered','Dashboard.mqh',[[R`   m_agent_attach_tf=tf;
+`,'']]],
+  ['nudge every tick, no 2 s cadence','Dashboard.mqh',[[R`      if(GetTickCount()-m_agent_attach_refresh>=2000)`,R`      if(true)`]]],
   ['not-inert answered as a plain failure','GOATPortfolioSetupControl.mqh',[[R`(state==-2 ? "rejected_not_inert" : "child_attach_failed")`,R`"child_attach_failed"`]]],  ['late child status adopts a failed row','Dashboard.mqh',[[R`            if(!magic_match && IsAgentAttachFailedChart(g_sets[idx].cid)) break;`,'']]],
   ['timeout keeps the copied template','Dashboard.mqh',[[R`   MarkStateDirty();
    DeleteCopiedTemplate(tplName);

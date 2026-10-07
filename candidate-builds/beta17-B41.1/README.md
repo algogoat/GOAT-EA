@@ -114,26 +114,38 @@ fail: 36 of 36 mutants are killed. They include the not-inert path skipping the 
 **Build**
 
 - `GOAT_BUILD_ID` is `V1.49-BETA17-41.1`, marker `B41.1`, on top of B41 (`278ec109`, GOAT-EA#147, compiled in #150).
-- **Compile pending for this source.** It carries CA41, AA41 and the fixes from Claude-Mac's review (6028209095).
-  No binary in this folder belongs to it.
+- Compiled once from `0cfdfacf` (CA41, AA41 and the fixes from Claude-Mac's reviews 6028209095, 6028472101 and
+  6028711169) with MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`, the same compiler as B39, B40 and B41): 0 errors,
+  0 warnings. The compiler was a copy outside every terminal folder, run `/portable` at Idle priority.
+  MetaEditor's process exit code was 1 with a clean `Result:` line, as in the B40 and B41 compiles; the `Result:`
+  line and the output are the success criteria. The stage was a scratch copy outside every terminal folder. Its
+  307 standard includes and the `MACD - GOAT 2.ex5` resource are copied from the B41 compile root and hash-equal
+  to it. `externals.json` records the same per-name hashes as B41's, and the same `consumed_sha256` (`ced68559…`).
+- `GOAT V1.49.ex5`: sha256 `cb03c0b6e818331f53ad2c9ad7559ded0ab61d6636c1f02a36f4449ba4ae7b09`, 2,438,734 bytes.
+  It ships only together with GOAT-EA#188 (beta.23.1's 90 s controller wait; see **Controller wait**).
+- Pin check at `0cfdfacf`: the 41 `.mq5`/`.mqh` files in the entrypoint's include closure are exactly the 41
+  sources in `identity.json`, and each matches the tree and the staged copy.
 - Superseded, do not install any of them:
+  - A compile of `dab89304` stopped on MetaEditor warning 62 (a local `orders` hid the global trade counter,
+    renamed in `0cfdfacf`). Its output was never a candidate.
   - The uncommitted `09d69e98` build (no per-tick inert check, no ours-check), which the compile agent moved out of the worktree.
   - `6d1963c4…` (from `278ef0af`, not inert answered by receipt only, no persisted marker). It was compiled but never committed, and was set aside outside the repository.
   - `d496884a…` (from `c8355f66`, AA41 with the 20 s budget and no chart close). It stays in history at
     `5510bbb5`.
   - The CA41-only `b3650d96…` (from `4f3f2f99`). It stays in history at `f00cc8ad`.
+  - A compile of `0db8aea3` stopped on MetaEditor warning 62 (a local `closed`, renamed in `278ef0af`).
 - Entrypoint `GOAT V1.49.mq5`: sha256 `dee033a8…7e8fa56b`, pinned in `controller/contracts/v149/dependencies.json`.
 - Only `GOAT V1.49.mq5`, `GOATPortfolioChildAudit.mqh`, `Dashboard.mqh` and `GOATPortfolioSetupControl.mqh`
   differ from B41. The input header is still `1408e1ee…`.
 - No drift: `scripts/test_b41_1_no_drift.cjs` (see **Tests**).
-- MetaEditor output is not byte-reproducible across stages, so admit only the binary compiled from this source.
+- MetaEditor output is not byte-reproducible across stages, so admit only this binary.
 
 **Not done.** Native qualification has not been performed, and nothing was installed. The root
 `GOAT V1.49.ex5` is unchanged.
 
 **Still owed:**
 
-1. Claude-Mac's review of this source, then the compile.
+1. Claude-Mac's review of this source and binary.
 2. Claude-Mac's pin check, no-drift check and internal admission of `V1.49-BETA17-41.1`.
 3. A native deploy-load on a non-Exp demo. It must attach the child charts, the first one included, and read
    `settingsMatch` true for one V1.49-writer SET and one Balanced35 SET.

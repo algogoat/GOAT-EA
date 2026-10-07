@@ -4,6 +4,45 @@
 string GoatPortfolioExpectedHashes[];
 // The registration's deploymentId (32 lowercase hex), or "" for a registration that binds none.
 string GoatPortfolioDeployment="";
+
+// ---- Live-before-adoption gate (beta.25, goatai#1885 6035859714) ----
+// A profile-staged child carries "deploy=<deploymentId>" in Studio_MonitorRunPath, and MT5 starts it with
+// expertmode=5, so it could trade the moment someone turns Algo Trading on, before the dashboard has adopted
+// it and applied its exposure policy. Such a child opens nothing new (no sequence start, real or virtual, and
+// no virtual-to-real promotion: every path through DashboardEntryAllowed) until the dashboard has written its
+// <Key>_ID_<magic>_<symbol>_PDEPLOY marker for that deployment. The dashboard writes the marker only after it
+// has seen the child acknowledge the exposure policy apply_policy dispatched. Adds to an existing sequence,
+// closes, trailing and stops never pass through this gate. A child without the "deploy=" prefix (every
+// normal SET, tester runs, the Exp terminals) returns true at the first line, exactly as before.
+#define GOAT_GV_FIELD_POLICY_DEPLOYMENT "PDEPLOY"
+
+// The marker value: the deployment id's first 13 hex digits (52 bits, exact in a GlobalVariable double).
+long GoatDeployMarker(const string marker_id)
+{
+   if(StringLen(marker_id)<13) return -1;
+   long marker_value=0;
+   for(int marker_i=0;marker_i<13;marker_i++)
+   {
+      ushort marker_c=StringGetCharacter(marker_id,marker_i);
+      int marker_digit=-1;
+      if(marker_c>='0' && marker_c<='9') marker_digit=marker_c-'0';
+      else if(marker_c>='a' && marker_c<='f') marker_digit=marker_c-'a'+10;
+      if(marker_digit<0) return -1;
+      marker_value=marker_value*16+marker_digit;
+   }
+   return marker_value;
+}
+
+// Child side, called first by DashboardEntryAllowed with the chart's own Studio_MonitorRunPath.
+bool GoatStagedChildMayOpen(const string staged_run_path,const long staged_magic,const string staged_symbol)
+{
+   if(StringFind(staged_run_path,"deploy=")!=0) return true;
+   string staged_id=StringSubstr(staged_run_path,7);
+   double staged_marker=0;
+   return GOATIsLowerHex(staged_id,32) && staged_magic>0
+      && GlobalVariableGet(GoatChildGVName(staged_magic,staged_symbol,GOAT_GV_FIELD_POLICY_DEPLOYMENT),staged_marker)
+      && (long)staged_marker==GoatDeployMarker(staged_id);
+}
 bool GoatPortfolioRead(const string path,string &body)
 {
    body="";
@@ -223,6 +262,32 @@ int GoatPortfolioAdoptChildren(const string &adopt_hashes[],const string adopt_d
    return adopt_count;
 }
 
+// Dashboard side, every poll with a registration that binds a deployment: mark each linked child whose
+// acknowledgement of the dispatched exposure policy the dashboard has read. Runs before the request, so the
+// audit that follows the controller's acknowledgement poll always sees the markers.
+void GoatPortfolioMarkPolicyApplied(const string marker_deployment,const long marker_exposure)
+{
+   if(!GOATIsLowerHex(marker_deployment,32) || DashboardDialog.m_portfolio_command_id<=0
+      || DashboardDialog.m_portfolio_command_type!=GOAT_DASH_CMD_EXPOSURE_POLICY) return;
+   long marker_value=GoatDeployMarker(marker_deployment);
+   for(int marker_row=0;marker_row<ArraySize(DashboardDialog.g_sets);marker_row++)
+   {
+      long marker_magic=DashboardDialog.g_sets[marker_row].magic;
+      if(marker_magic<=0) continue;
+      string marker_name=GoatChildGVName(marker_magic,DashboardDialog.g_sets[marker_row].sym,GOAT_GV_FIELD_POLICY_DEPLOYMENT);
+      double marker_have=0;
+      if(GlobalVariableGet(marker_name,marker_have) && (long)marker_have==marker_value) continue;
+      if(!GoatPortfolioRowLinked(marker_row)) continue;
+      DashboardDialog.ReadChildSnapshotIntoRow(marker_row);
+      if(DashboardDialog.g_sets[marker_row].last_ack_id!=DashboardDialog.m_portfolio_command_id
+         || DashboardDialog.g_sets[marker_row].last_ack_status!=GOAT_DASH_ACK_APPLIED
+         || DashboardDialog.g_sets[marker_row].exposure_policy_mode!=marker_exposure) continue;
+      GlobalVariableSet(marker_name,(double)marker_value);
+      GlobalVariablesFlush();
+      GoatAdoptNote("child_policy_marked",DashboardDialog.g_sets[marker_row].cid,DashboardDialog.g_sets[marker_row].sym);
+   }
+}
+
 string GoatPortfolioSnapshot(const string id,const string action,const string hash,const string result)
 {
    string rows="[";
@@ -296,6 +361,7 @@ void GoatPortfolioSetupPoll(void)
       || !GOATJsonGetInteger(registration,reg,0,"aiProtocol",protocol) || protocol!=2
       || !GOATJsonGetInteger(registration,reg,0,"exposureMode",exposure) || (exposure!=0 && exposure!=1)) return;
    if(reg_bound) GoatPortfolioDeployment=reg_deployment;
+   GoatPortfolioMarkPolicyApplied(GoatPortfolioDeployment,exposure);
    int owner=FileOpen(root+"owner.lock",FILE_READ|FILE_WRITE|FILE_BIN|FILE_COMMON);
    if(owner==INVALID_HANDLE) return;
    if(!GoatSetupRead(root+"request.json",request)){FileClose(owner);return;}

@@ -1,8 +1,11 @@
 // B43 no-drift guard (beta.25 profile-staged deploy, goatai#1885 6033450916). Against B41 (278ec109,
 // the admitted baseline whose source hashes are committed in candidate-builds/beta17-B41/identity.json):
 // - only Dashboard.mqh, GOATPortfolioSetupControl.mqh and GOATPortfolioChildAudit.mqh differ;
-// - the entrypoint differs only in its GOAT_BUILD_ID and GOAT_BUILD_MARKER lines, so StartExporter, OnTick,
-//   OnTradeTransaction and OnTimer (trade parts included) are byte-identical;
+// - the entrypoint differs in its GOAT_BUILD_ID and GOAT_BUILD_MARKER lines and in exactly ONE trade-path line: the
+//   staged-child gate added as the first line of DashboardEntryAllowed (goatai#1885 6035859714). With those three
+//   lines restored the entrypoint is B41's exact bytes, so StartExporter, OnTick, OnTradeTransaction, OnTimer,
+//   GoatTickBody, SignalEntryTrigger and every other unit are byte-identical. The gate returns true at its first
+//   line for any child without a "deploy=" nonce (test_profile_staged_adoption.cjs proves the answers equal B41's);
 // - the input header and every trade-path include are byte-identical, so no input, default or SET changes.
 // Needs no git history: B41's hashes are in the repo. With history, the trade-path units are also compared
 // against `git show 278ec109` directly.
@@ -24,10 +27,14 @@ for(const f of ['GOAT_Inputs_Definitions.mqh','Optimizer.mqh','Tester.mqh','XmlP
 checks++;
 // The entrypoint, with its two identity lines put back to B41's, is B41's exact bytes.
 const main=read('GOAT V1.49.mq5').toString('utf8');
+const GATE='   if(!GoatStagedChildMayOpen(g_GoatStudioMonitorRunPath,MAGIC1,Symbol())) return false; // beta.25: a profile-staged child opens nothing before its dashboard policy (GOATPortfolioSetupControl.mqh)\r\n';
+assert.equal(main.split(GATE).length-1,1,'the gate line occurs exactly once');
+assert.ok(main.includes('bool DashboardEntryAllowed(const int op)\r\n  {\r\n'+GATE+'   if(!DashboardTradeAllowed(op)) return false;'),'the gate is the first line of DashboardEntryAllowed');
+assert.equal((main.match(/GoatStagedChildMayOpen|g_GoatStudioMonitorRunPath,MAGIC1/g)||[]).length,2,'no other reference to the gate in the entrypoint');
 assert.equal((main.match(/#define   GOAT_BUILD_ID "V1\.49-BETA17-43"\r\n/g)||[]).length,1);
 assert.equal((main.match(/#define   GOAT_BUILD_MARKER "B43"\r\n/g)||[]).length,1);
-const restored=main.replace('#define   GOAT_BUILD_ID "V1.49-BETA17-43"','#define   GOAT_BUILD_ID "V1.49-BETA17-41"').replace('#define   GOAT_BUILD_MARKER "B43"','#define   GOAT_BUILD_MARKER "B41"');
-assert.equal(sha(Buffer.from(restored,'utf8')),b41.sources['GOAT V1.49.mq5'],'the entrypoint differs from B41 only in its build ID and marker');checks++;
+const restored=main.replace(GATE,'').replace('#define   GOAT_BUILD_ID "V1.49-BETA17-43"','#define   GOAT_BUILD_ID "V1.49-BETA17-41"').replace('#define   GOAT_BUILD_MARKER "B43"','#define   GOAT_BUILD_MARKER "B41"');
+assert.equal(sha(Buffer.from(restored,'utf8')),b41.sources['GOAT V1.49.mq5'],'the entrypoint differs from B41 only in its build ID, marker and the one gate line');checks++;
 assert.equal(b43.build_id,'V1.49-BETA17-43');assert.equal(b43.build_marker,'B43');assert.equal(b43.supersedes_candidate,'beta17-B41');checks++;
 // The input contract and the dependency header pin are unchanged; the main pin follows the entrypoint.
 const deps=JSON.parse(read('controller/contracts/v149/dependencies.json').toString('utf8').replace(/^﻿/,''));
@@ -43,7 +50,9 @@ try{
  const old=execFileSync('git',['show',B41+':GOAT V1.49.mq5'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8');
  history=true;
  const norm=t=>t.replace(/^﻿/,'').replace(/\r\n/g,'\n');
- for(const sig of ['bool StartExporter(bool reportMode)','void OnTick()','void OnTradeTransaction(','void OnTimer(void)'])
+ for(const sig of ['bool StartExporter(bool reportMode)','void OnTick()','void GoatTickBody()','void OnTradeTransaction(','void OnTimer(void)','void SignalEntryTrigger()','bool DashboardTradeAllowed(const int op)'])
   {assert.equal(body(norm(main),sig),body(norm(old),sig),sig);checks++;}
+ // DashboardEntryAllowed: B41's body plus the gate line, nothing else.
+ assert.equal(body(norm(main),'bool DashboardEntryAllowed(const int op)').replace(norm(GATE),''),body(norm(old),'bool DashboardEntryAllowed(const int op)'));checks++;
 }catch(e){if(e instanceof assert.AssertionError)throw e;}
-console.log(JSON.stringify({passed:checks,differing,entrypointOnlyBuildLines:true,unitHistoryCompare:history,base:B41.slice(0,8)}));
+console.log(JSON.stringify({passed:checks,differing,entrypointDelta:"build ID, marker, staged-child gate line",unitHistoryCompare:history,base:B41.slice(0,8)}));

@@ -274,6 +274,7 @@ bool DashboardExposureConflict(const int op)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool DashboardEntryAllowed(const int op)
   {
+   if(!GoatStagedChildMayOpen(g_GoatStudioMonitorRunPath,MAGIC1,Symbol())) return false; // beta.25: a profile-staged child opens nothing before its dashboard policy (GOATPortfolioSetupControl.mqh)
    if(!DashboardTradeAllowed(op)) return false;
    if(DashboardExposureConflict(op)) return false;
    return true;

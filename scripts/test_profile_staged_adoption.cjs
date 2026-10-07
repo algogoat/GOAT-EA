@@ -212,6 +212,127 @@ function run(src=readSources()){
   assert.equal(t.pass(),1,'the current deployment adopts');
   const U=DEPLOY.toUpperCase();assert.equal(t.ctx.GoatChildSnapshotMatchesSet(r[0].set,tpl(r[0].set,'deploy='+U),U),false,'the audit refuses an invalid id even when the chart carries it');ok();}
 
+ // ---- the registration binds the deploymentId (the production parse block of GoatPortfolioSetupPoll) ----
+ {const parse=region(src.setup,'   SGOATJsonToken reg[];','   int owner=FileOpen(');
+  const fields={schema:1,account:7,server:'S',directory:'D',buildId:'V1.49-BETA17-43',expiresAtUtc:2000,aiMode:2,aiThreshold:50,aiProtocol:2,exposureMode:1,members:[]};
+  function bind(value){
+   let tokens=null;
+   const c={registration:JSON.stringify(value),GoatPortfolioDeployment:'stale',GOAT_BUILD_ID:'V1.49-BETA17-43',ACCOUNT_LOGIN:1,ACCOUNT_SERVER:2,
+    AccountInfoInteger:()=>7,AccountInfoString:()=>'S',TimeGMT:()=>1000,GoatSetupDirectoryMatches:d=>d==='D',GoatPortfolioMarkPolicyApplied:(d,e)=>{c.marked=d+'/'+e;},
+    GOATIsLowerHex:(v,n)=>typeof v==='string'&&v.length===n&&/^[0-9a-f]+$/.test(v),
+    GOATJsonParse:b=>{tokens=JSON.parse(b);return true;},
+    GOATJsonExactFields:(b,reg,i,keys)=>JSON.stringify(Object.keys(tokens).sort())===JSON.stringify([...keys].sort()),
+    GOATJsonGetString:(b,reg,i,k,set)=>{if(typeof tokens[k]!=='string')return false;set(tokens[k]);return true;},
+    GOATJsonGetInteger:(b,reg,i,k,set)=>{if(!Number.isInteger(tokens[k]))return false;set(tokens[k]);return true;}};
+   const code=js(parse).replace(/SGOATJsonToken reg(?:=\[\]|\[\]);/,'let reg=[];')
+    .replace(/let (\w+)\[\]=\{([^}]*)\};/g,'let $1=[$2];')
+    .replace(/GOATJsonGet(String|Integer)\(registration,reg,0,("\w+"),(\w+)\)/g,'GOATJsonGet$1(registration,reg,0,$2,v=>$3=v)');
+   const out=vm.runInNewContext('(function(){'+code+'\nreturn "bound:"+GoatPortfolioDeployment;})()',c);
+   if(out!==undefined) assert.equal(c.marked,c.GoatPortfolioDeployment+'/1','the poll marks with the bound deployment and the registered exposure');
+   return out===undefined?'rejected':out;
+  }
+  assert.equal(bind(fields),'bound:','a registration without deploymentId is accepted and binds none');
+  assert.equal(bind({...fields,deploymentId:DEPLOY}),'bound:'+DEPLOY);
+  for(const bad of [DEPLOY.toUpperCase(),DEPLOY.slice(1),'',7]) assert.equal(bind({...fields,deploymentId:bad}),'rejected','deploymentId '+bad);
+  assert.equal(bind({...fields,deploymentId:DEPLOY,extra:1}),'rejected');assert.equal(bind({...fields,buildId:'x',deploymentId:DEPLOY}),'rejected');ok();}
+
+ // ---- live-before-adoption gate (goatai#1885 6035859714): a staged child opens nothing before its policy marker ----
+ {const gateText=region(src.setup,'// ---- Live-before-adoption gate','bool GoatPortfolioRead(');
+  const gdefs={};for(const m of gateText.matchAll(/^#define\s+(\w+)\s+(.+)$/gm)) gdefs[m[1]]=/^"/.test(m[2])?JSON.parse(m[2]):Number(m[2]);
+  const gateCode=js(gateText.replace(/^(?:bool|long) (Goat\w+)\(([^)]*)\)\n\{/gm,(_,name,args)=>'function '+name+'('+args.split(',').map(a=>a.trim().replace(/^.*?(\w+)$/,'$1')).join(',')+')\n{'))
+   .replace(/GlobalVariableGet\((GoatChildGVName\([^)]*\)|\w+),(\w+)\)/g,'GlobalVariableGet($1,v=>$2=v)');
+  const entry=bodyOf(src.main,'bool DashboardEntryAllowed(const int op)');
+  const B41_ENTRY='\n   if(!DashboardTradeAllowed(op)) return false;\n   if(DashboardExposureConflict(op)) return false;\n   return true;\n  ';
+  assert.equal(entry.replace(/\n   if\(!GoatStagedChildMayOpen\(g_GoatStudioMonitorRunPath,MAGIC1,Symbol\(\)\)\) return false;[^\n]*/,''),B41_ENTRY,'the gate is the only line added to DashboardEntryAllowed');
+  const signal=bodyOf(src.main,'void SignalEntryTrigger()');
+  const promote=region(src.main,'     if(Virtual && Level_Count==Delay_Trade','     // Locking levels');
+  const manage=region(src.main,'    if(Seq_Buy.Active)\n    {\n     if(buyMlpsExit)','//--------\n    if(Seq_Sell.Active)');
+  const NONCE='deploy='+DEPLOY;
+  function world({runPath='',marker,magic=4242,trade=true,conflict=false}={}){
+   const gv=new Map(),opened=[],gateCalls=[];
+   if(marker!==undefined) gv.set('K_ID_'+magic+'_EURUSD_PDEPLOY',marker);
+   const seq=name=>({Active:false,Traded:false,Level_Last:1.1,Level_Count:0,Size_Grid:0.001,Level_Retrace:0,BiasRescueActive:false,
+    Add_Level:lvl=>{opened.push(name);return true;},HandlePartialRetrace:()=>{},HandlePeakSmartRetrace:()=>{}});
+   const c={...gdefs,StringFind:(s,q)=>s.indexOf(q),StringSubstr:(s,a,n)=>n===undefined?s.slice(a):s.slice(a,a+n),StringLen:s=>s.length,
+    StringGetCharacter:(s,i)=>s.charCodeAt(i),GOATIsLowerHex:(v,n)=>typeof v==='string'&&v.length===n&&/^[0-9a-f]+$/.test(v),
+    ArraySize:a=>a.length,GoatChildGVName:(m,s,f)=>'K_ID_'+m+'_'+s+'_'+f,GlobalVariableGet:(k,set)=>{gateCalls.push(k);if(!gv.has(k))return false;set(gv.get(k));return true;},
+    g_GoatStudioMonitorRunPath:runPath,MAGIC1:magic,Symbol:()=> 'EURUSD',DashboardTradeAllowed:()=>trade,DashboardExposureConflict:()=>conflict,
+    OP_BUY:0,OP_SELL:1,OP_BUYSELL:2,RSI_Mode:0,RSI_Disabled:0,RSI_Sig:-1,EMA_Mode:0,Trade_Disabled:0,EMA_Sig:-1,ADX_Mode:0,ADX_Sig:-1,BB_Mode:0,BB_Disabled:0,BB_Sig:-1,
+    MACD_Mode:0,MACD_Sig:-1,RSI2_Mode:0,RSI2_Sig:-1,Sequence_New_News:true,Sequence_New_Bias_B:true,Sequence_New_Bias_S:true,Reverse_Seq:false,
+    Mode_Trade:0,Long_and_Short:0,Long:1,Short:2,Delay_Trade:0,Allow_Opposite_Seq:true,MathAbs:Math.abs,ask:1.2,bid:1.19,
+    Sequence_Skipped_News:0,Sequence_Skipped_Bias_B:0,Sequence_Skipped_Bias_S:0,
+    Seq_Buy:seq('buy'),Seq_Sell:seq('sell'),Seq_Buy_Virtual:seq('vbuy'),Seq_Sell_Virtual:seq('vsell')};
+   vm.createContext(c);vm.runInContext(gateCode,c);
+   vm.runInContext('function DashboardEntryAllowed(op){'+js(entry)+'}',c);
+   const signalFn=vm.runInContext('(function(){'+js(signal).replace(/\bstatic /g,'')+'})',c);
+   return {c,gv,opened,gateCalls,signal:()=>signalFn()};
+  }
+  // A staged child with Algo on and no marker: the entry signal fires on both sides and nothing opens.
+  {const w=world({runPath:NONCE});w.signal();w.signal();assert.deepEqual(w.opened,[],'a staged child with no policy marker opens 0 orders');
+   assert.ok(w.gateCalls.length>0);ok();}
+  {const w=world({runPath:NONCE,marker:999});w.signal();assert.deepEqual(w.opened,[],'a marker for another deployment opens nothing');ok();}
+  for(const bad of ['deploy=0123','deploy='+DEPLOY.slice(0,20),'deploy='+DEPLOY+'0','deploy='+DEPLOY.slice(0,13)+DEPLOY.slice(13).toUpperCase()]){
+   // The marker matches the id's first 13 digits, so only the full-nonce check keeps these closed.
+   const w=world({runPath:bad});w.gv.set('K_ID_4242_EURUSD_PDEPLOY',parseInt(DEPLOY.slice(0,13),16));w.signal();assert.deepEqual(w.opened,[],'a malformed nonce stays closed: '+bad);ok();
+  }
+  {const w=world({runPath:NONCE,magic:0});w.gv.set('K_ID_0_EURUSD_PDEPLOY',w.c.GoatDeployMarker(DEPLOY));w.signal();assert.deepEqual(w.opened,[],'no magic yet, nothing opens');ok();}
+  // The marker appears: the same child opens normally.
+  {const w=world({runPath:NONCE});w.signal();assert.deepEqual(w.opened,[]);
+   w.gv.set('K_ID_4242_EURUSD_PDEPLOY',w.c.GoatDeployMarker(DEPLOY));w.signal();assert.deepEqual(w.opened,['buy','sell'],'opens normally once the marker is present');
+   assert.equal(w.c.GoatDeployMarker(DEPLOY),parseInt(DEPLOY.slice(0,13),16));assert.ok(Number.isSafeInteger(w.c.GoatDeployMarker('fffffffffffffffffffffffffffffff0')));ok();}
+  // Virtual starts and the virtual-to-real promotion are entries too.
+  {const w=world({runPath:NONCE});w.c.Delay_Trade=2;w.signal();assert.deepEqual(w.opened,[],'no virtual start either');
+   w.gv.set('K_ID_4242_EURUSD_PDEPLOY',w.c.GoatDeployMarker(DEPLOY));w.signal();assert.deepEqual(w.opened,['vbuy','vsell']);ok();}
+  for(const marked of [false,true]){
+   const w=world({runPath:NONCE});if(marked) w.gv.set('K_ID_4242_EURUSD_PDEPLOY',w.c.GoatDeployMarker(DEPLOY));
+   const run=vm.runInContext('(function(Virtual,Level_Count,Delay_Trade,dir,MustCheck_Buy,MustCheck_Sell,End_Sequence){'+js(promote)+'\nreturn "no-promotion";})',w.c);
+   assert.equal(run(true,2,2,0,true,true,()=>{}),false);assert.deepEqual(w.opened,marked?['buy']:[],'virtual-to-real promotion '+(marked?'after':'before')+' the marker');ok();
+  }
+  // Children without a deploy= nonce: DashboardEntryAllowed answers exactly as B41's, and never reads a GlobalVariable.
+  {const b41=new vm.Script('(function(op){'+js(B41_ENTRY)+'})');
+   for(const runPath of ['','GOAT\\Runs\\x','deploy','Deploy='+DEPLOY,' deploy='+DEPLOY,'xdeploy='+DEPLOY])
+    for(const trade of [true,false]) for(const conflict of [true,false]) for(const op of [0,1]){
+     const w=world({runPath,trade,conflict});const old=b41.runInContext(w.c);
+     assert.equal(w.c.DashboardEntryAllowed(op),old(op),JSON.stringify([runPath,trade,conflict,op]));assert.deepEqual(w.gateCalls,[],'no GV read for '+runPath);
+    }
+   const w=world({runPath:''});w.signal();assert.deepEqual(w.opened,['buy','sell'],'a normal child opens exactly as before');ok();}
+  // Management of an existing sequence never passes through the gate: adds proceed for a staged child with no marker.
+  {const w=world({runPath:NONCE});const s=w.c.Seq_Buy;s.Active=true;s.Traded=true;
+   Object.assign(w.c,{buyMlpsExit:false,LastBuyTradeSignal:false,Mode_Lots_Prog:0,Lots_Prog_CumPartial:1,Lots_Prog_PeakSmart:2,Partial_Profit_Factor:0,Peak_Smart_Release_PC:0,
+    GetSize:()=>0.001,GRID_VALID:1,Sequence_Pause_News:false,Sequence_Pause_Bias_B:false,DashboardPortfolioPaused:false,Trades_Skipped_News:0,Trades_Skipped_Bias_B:0,ask:1.09});
+   vm.runInContext('(function(){'+js(manage)+'})()',w.c);
+   assert.deepEqual(w.opened,['buy'],'an existing sequence keeps adding levels');assert.deepEqual(w.gateCalls,[],'management never consults the gate');ok();}
+  // The gate reaches entry paths only: DashboardEntryAllowed's callers are the entry trigger and the promotion.
+  {const callers=src.main.split('\n').filter(l=>/DashboardEntryAllowed\(/.test(l)&&!/^bool DashboardEntryAllowed/.test(l)).map(l=>l.trim().slice(0,40));
+   assert.equal(callers.length,6);assert.equal((src.main.match(/GoatStagedChildMayOpen\(/g)||[]).length,1,'one gate call in the entrypoint');
+   for(const unit of ['void OnTradeTransaction(','bool StartExporter(bool reportMode)']) assert.ok(!bodyOf(src.main,unit).includes('GoatStagedChildMayOpen'),unit);
+   ok();}
+  // Dashboard side: the marker is written only after the child's ack of the dispatched exposure policy.
+  {const markText=bodyOf(src.setup,'void GoatPortfolioMarkPolicyApplied(const string marker_deployment,const long marker_exposure)');
+   function dash({ackId=77,ackStatus=1,mode=1,linked=true,cmdType=4,cmdId=77,deployment=DEPLOY}={}){
+    const gv=new Map(),notes=[];
+    const rows=[{magic:4242,cid:501,sym:'EURUSD',last_ack_id:0,last_ack_status:0,exposure_policy_mode:0},{magic:0,cid:0,sym:'USDJPY',last_ack_id:0,last_ack_status:0,exposure_policy_mode:0}];
+    const w=world();
+    const c={...w.c,GlobalVariableGet:(k,set)=>{if(!gv.has(k))return false;set(gv.get(k));return true;},GlobalVariableSet:(k,v)=>gv.set(k,v),GlobalVariablesFlush:()=>{},
+     GOAT_DASH_CMD_EXPOSURE_POLICY:4,GOAT_DASH_ACK_APPLIED:1,GoatPortfolioRowLinked:i=>linked&&i===0,GoatAdoptNote:(p,t,d)=>notes.push(p),
+     DashboardDialog:{g_sets:rows,m_portfolio_command_id:cmdId,m_portfolio_command_type:cmdType,
+      ReadChildSnapshotIntoRow:i=>{if(i===0)Object.assign(rows[0],{last_ack_id:ackId,last_ack_status:ackStatus,exposure_policy_mode:mode});return true;}}};
+    vm.createContext(c);vm.runInContext(gateCode,c);
+    const mark=vm.runInContext('(function(marker_deployment,marker_exposure){'+js(markText).replace(/GlobalVariableGet\((\w+),(\w+)\)/g,'GlobalVariableGet($1,v=>$2=v)')+'})',c);
+    mark(deployment,1);return {gv,notes,c};
+   }
+   const d=dash();assert.deepEqual([...d.gv.entries()],[['K_ID_4242_EURUSD_PDEPLOY',parseInt(DEPLOY.slice(0,13),16)]],'marked after the ack');assert.deepEqual(d.notes,['child_policy_marked']);
+   for(const [label,o] of [['no ack yet',{ackId:76}],['ack failed',{ackStatus:2}],['other exposure mode',{mode:0}],['not linked',{linked:false}],
+                           ['another command',{cmdType:3}],['no command',{cmdId:0}],['unbound registration',{deployment:''}],['invalid id',{deployment:DEPLOY.toUpperCase()}]])
+    {assert.equal(dash(o).gv.size,0,label);}
+   // End to end: the dashboard's marker opens the gate of exactly that child.
+   const w=world({runPath:NONCE});w.gv.set('K_ID_4242_EURUSD_PDEPLOY',d.gv.get('K_ID_4242_EURUSD_PDEPLOY'));w.signal();assert.deepEqual(w.opened,['buy','sell']);ok();}
+  // The poll marks before it handles the request, and only with a bound deployment.
+  {const poll=bodyOf(src.setup,'void GoatPortfolioSetupPoll(void)');
+   const a=poll.indexOf('if(reg_bound) GoatPortfolioDeployment=reg_deployment;'),b=poll.indexOf('GoatPortfolioMarkPolicyApplied(GoatPortfolioDeployment,exposure);'),c2=poll.indexOf('int owner=FileOpen(');
+   assert.ok(a>0&&b>a&&c2>b,'marker written after the registration binds the deployment and before the request');ok();}
+ }
+
  // ---- the nonce carrier is inert on a child: every reader of Studio_MonitorRunPath is pinned here ----
  {const uses=[];
   const sources=Object.keys(JSON.parse(fs.readFileSync(path.join(ROOT,'candidate-builds/beta17-B43/identity.json'),'utf8')).sources).filter(f=>f!==FILES.audit).sort();
@@ -220,6 +341,7 @@ function run(src=readSources()){
    text.split('\n').forEach(l=>{if(/\b(?:g_GoatStudioMonitorRunPath|Studio_MonitorRunPath)\b/.test(l)&&!/^\s*\/\//.test(l))uses.push(f+': '+l.trim());});
   }
   assert.deepEqual(uses,[
+   'GOAT V1.49.mq5: if(!GoatStagedChildMayOpen(g_GoatStudioMonitorRunPath,MAGIC1,Symbol())) return false; // beta.25: a profile-staged child opens nothing before its dashboard policy (GOATPortfolioSetupControl.mqh)',
    'GOAT V1.49.mq5: sinput string Studio_MonitorRunPath=""; // Read-only run folder; blank follows active batch',
    'GOAT V1.49.mq5: g_GoatStudioMonitorRunPath=Studio_MonitorRunPath;',
    'GOAT V1.49.mq5: if(Studio_ReadOnlyMonitor && Studio_MonitorRunPath!="" &&',
@@ -230,35 +352,12 @@ function run(src=readSources()){
    'Optimizer.mqh: if(g_GoatStudioReadOnlyMonitor && g_GoatStudioMonitorRunPath!="")',
    'Optimizer.mqh: Path_RunFolder=g_GoatStudioMonitorRunPath;',
    'Optimizer.mqh: string runPath=(g_GoatStudioMonitorRunPath=="" ? GoatOptReadIniValue(pointer,"RunPath") : g_GoatStudioMonitorRunPath);'],
-   'a new reader of the nonce carrier must be reviewed: it is only read behind Studio_ReadOnlyMonitor, which children hold false');
+   'a new reader of the nonce carrier must be reviewed: it is read behind Studio_ReadOnlyMonitor (false on children) or by the staged-child gate, which acts only on the deploy= prefix');
   const opt=fs.readFileSync(path.join(ROOT,'Optimizer.mqh'),'utf8').replace(/\r\n/g,'\n');
   assert.ok(region(opt,'   if(g_GoatStudioReadOnlyMonitor)\n   {\n      // Follow the active pointer','m_listQueue.ItemsClear();').includes('string runPath=(g_GoatStudioMonitorRunPath'));
   // The trade path never sees it, and EA_Desc (the order-comment source) is not the carrier.
   for(const unit of ['void OnTick()','void OnTradeTransaction(','bool StartExporter(bool reportMode)']) assert.ok(!bodyOf(src.main,unit).includes('MonitorRunPath'),unit);
   assert.match(src.main,/Desc = Strat\+/);assert.ok(!/deploy=/.test(src.audit.replace(/\/\/.*$/gm,'').replace(/"deploy="\+deploy_tag/,'')),'the nonce form is built in one place');ok();}
-
- // ---- the registration binds the deploymentId (the production parse block of GoatPortfolioSetupPoll) ----
- {const parse=region(src.setup,'   SGOATJsonToken reg[];','   int owner=FileOpen(');
-  const fields={schema:1,account:7,server:'S',directory:'D',buildId:'V1.49-BETA17-43',expiresAtUtc:2000,aiMode:2,aiThreshold:50,aiProtocol:2,exposureMode:1,members:[]};
-  function bind(value){
-   let tokens=null;
-   const c={registration:JSON.stringify(value),GoatPortfolioDeployment:'stale',GOAT_BUILD_ID:'V1.49-BETA17-43',ACCOUNT_LOGIN:1,ACCOUNT_SERVER:2,
-    AccountInfoInteger:()=>7,AccountInfoString:()=>'S',TimeGMT:()=>1000,GoatSetupDirectoryMatches:d=>d==='D',
-    GOATIsLowerHex:(v,n)=>typeof v==='string'&&v.length===n&&/^[0-9a-f]+$/.test(v),
-    GOATJsonParse:b=>{tokens=JSON.parse(b);return true;},
-    GOATJsonExactFields:(b,reg,i,keys)=>JSON.stringify(Object.keys(tokens).sort())===JSON.stringify([...keys].sort()),
-    GOATJsonGetString:(b,reg,i,k,set)=>{if(typeof tokens[k]!=='string')return false;set(tokens[k]);return true;},
-    GOATJsonGetInteger:(b,reg,i,k,set)=>{if(!Number.isInteger(tokens[k]))return false;set(tokens[k]);return true;}};
-   const code=js(parse).replace(/SGOATJsonToken reg(?:=\[\]|\[\]);/,'let reg=[];')
-    .replace(/let (\w+)\[\]=\{([^}]*)\};/g,'let $1=[$2];')
-    .replace(/GOATJsonGet(String|Integer)\(registration,reg,0,("\w+"),(\w+)\)/g,'GOATJsonGet$1(registration,reg,0,$2,v=>$3=v)');
-   const out=vm.runInNewContext('(function(){'+code+'\nreturn "bound:"+GoatPortfolioDeployment;})()',c);
-   return out===undefined?'rejected':out;
-  }
-  assert.equal(bind(fields),'bound:','a registration without deploymentId is accepted and binds none');
-  assert.equal(bind({...fields,deploymentId:DEPLOY}),'bound:'+DEPLOY);
-  for(const bad of [DEPLOY.toUpperCase(),DEPLOY.slice(1),'',7]) assert.equal(bind({...fields,deploymentId:bad}),'rejected','deploymentId '+bad);
-  assert.equal(bind({...fields,deploymentId:DEPLOY,extra:1}),'rejected');assert.equal(bind({...fields,buildId:'x',deploymentId:DEPLOY}),'rejected');ok();}
 
  // ---- AdoptChild directly ----
  {const r=[row(1),row(2,'USDJPY')];r[1].cid=501;r[1].magic=0;const t=terminal(src,{rows:r,charts:[]});
@@ -372,7 +471,9 @@ function run(src=readSources()){
  const added=new Set();
  for(const text of [region(src.setup,'// ---- Profile-staged deploy','string GoatPortfolioSnapshot('),bodyOf(src.dashboard,'bool CGOATDashboard::AdoptChild(const int adopt_idx,const long adopt_chart,const long adopt_magic)')])
   for(const m of text.matchAll(/\b(adopt_\w+)\b/g)) added.add(m[1]);
- for(const n of ['snapshot_read','set_path','row_linked','reg_bound_fields','reg_deployment','reg_parsed','reg_bound','audit_pinned','deploy_tag']) added.add(n);
+ for(const n of ['snapshot_read','set_path','row_linked','reg_bound_fields','reg_deployment','reg_parsed','reg_bound','audit_pinned','deploy_tag',
+  'staged_run_path','staged_magic','staged_symbol','staged_id','staged_marker','marker_id','marker_value','marker_i','marker_c','marker_digit',
+  'marker_deployment','marker_exposure','marker_row','marker_magic','marker_name','marker_have']) added.add(n);
  const others=closure.filter(f=>!['Dashboard.mqh',FILES.setup,FILES.audit].includes(f)).map(f=>fs.readFileSync(path.join(ROOT,f),'utf8')).join('\n');
  for(const n of added){
   assert.ok(!new RegExp('\\b'+n+'\\b').test(others),n+' appears outside the new code');

@@ -1,5 +1,6 @@
 ﻿// Bounded demo portfolio setup. Registration binds every source byte and policy.
-// No trade-enable, order, close-position or credential commands.
+// No trade-enable, order, close-position or credential commands. No chart is opened,
+// closed or given a template: children reach charts only through a profile MT5 loads.
 string GoatPortfolioExpectedHashes[];
 bool GoatPortfolioRead(const string path,string &body)
 {
@@ -47,6 +48,172 @@ bool GoatPortfolioRowLinked(const int row)
    return(hb>0 && TimeGMT()>=(datetime)hb && TimeGMT()-(datetime)hb<=15);
 }
 
+// ---- Profile-staged deploy (beta.25, goatai#1885 6033450916) ----
+// MT5 loads every child chart from the staged deploy profile at start-up. The dashboard only
+// adopts the children it finds. A child is adopted when its symbol and period equal the row's,
+// it runs this EA, its CID record names a magic no other row holds, and its saved-template
+// snapshot reproduces the row's frozen SET (the settingsMatch rule). The TSV cid is tried first
+// (a profile that restores a saved chart keeps its id); otherwise every chart is fingerprinted
+// once and adopted only on a one-to-one match. Adoption runs only on an inert demo terminal and
+// never opens, closes or applies anything to a chart. A row still without a child once the
+// start-up window has passed is child_not_started (chartId 0, magic 0 in every receipt).
+#define GOAT_CHILD_START_WAIT_SECONDS 240
+datetime GoatAdoptWindowStart=0;
+string   GoatAdoptNoted[];
+
+// The chart period a member needs, from the token after the comma in its SET name
+// ("GOAT V1.49 EURUSD,M15_..."). Anything else is PERIOD_CURRENT, which no chart reports.
+ENUM_TIMEFRAMES GoatAdoptSetPeriod(const string adopt_name)
+{
+   int adopt_comma=StringFind(adopt_name,",");
+   if(adopt_comma<0) return PERIOD_CURRENT;
+   string adopt_token="";
+   for(int adopt_i=adopt_comma+1;adopt_i<StringLen(adopt_name);adopt_i++)
+   {
+      ushort adopt_c=StringGetCharacter(adopt_name,adopt_i);
+      if(!((adopt_c>='A' && adopt_c<='Z') || (adopt_c>='0' && adopt_c<='9'))) break;
+      adopt_token+=ShortToString(adopt_c);
+   }
+   if(adopt_token=="M1")  return PERIOD_M1;
+   if(adopt_token=="M5")  return PERIOD_M5;
+   if(adopt_token=="M15") return PERIOD_M15;
+   if(adopt_token=="M30") return PERIOD_M30;
+   if(adopt_token=="H1")  return PERIOD_H1;
+   if(adopt_token=="H4")  return PERIOD_H4;
+   if(adopt_token=="D1")  return PERIOD_D1;
+   return PERIOD_CURRENT;
+}
+
+bool GoatAdoptInert(void)
+{
+   return(Mode_Operation==Operation_Dash && !MQLInfoInteger(MQL_TESTER)
+          && AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO
+          && TerminalInfoInteger(TERMINAL_CONNECTED) && !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)
+          && PositionsTotal()==0 && OrdersTotal()==0);
+}
+
+// Deployment diagnostics, once per distinct event (no SET paths, account IDs or credentials).
+void GoatAdoptNote(const string adopt_phase,const long adopt_target,const string adopt_detail)
+{
+   string adopt_key=adopt_phase+"|"+IntegerToString(adopt_target)+"|"+adopt_detail;
+   int adopt_n=ArraySize(GoatAdoptNoted);
+   for(int adopt_i=0;adopt_i<adopt_n;adopt_i++) if(GoatAdoptNoted[adopt_i]==adopt_key) return;
+   if(adopt_n>=512) return;
+   ArrayResize(GoatAdoptNoted,adopt_n+1); GoatAdoptNoted[adopt_n]=adopt_key;
+   GoatDeploymentPhase(adopt_phase,adopt_target,adopt_detail);
+}
+
+// The cheap identity checks, before any template snapshot: the row's symbol and period, this EA,
+// and a CID record naming a magic that no other row holds on a chart no other row claims.
+bool GoatAdoptChartFits(const int adopt_row,const long adopt_chart,long &adopt_magic)
+{
+   adopt_magic=0;
+   int adopt_rows=ArraySize(DashboardDialog.g_sets);
+   if(adopt_row<0 || adopt_row>=adopt_rows || adopt_chart<=0 || adopt_chart==ChartID()) return false;
+   string adopt_sym=DashboardDialog.g_sets[adopt_row].sym;
+   ENUM_TIMEFRAMES adopt_period=GoatAdoptSetPeriod(DashboardDialog.g_sets[adopt_row].name);
+   if(adopt_period==PERIOD_CURRENT || ChartSymbol(adopt_chart)!=adopt_sym || ChartPeriod(adopt_chart)!=adopt_period
+      || ChartGetString(adopt_chart,CHART_EXPERT_NAME)!=DashboardDialog.EA_Name_) return false;
+   long adopt_found=0;
+   if(!GoatFindMagicByCid(adopt_sym,adopt_chart,adopt_found) || adopt_found<=0) return false;
+   for(int adopt_other=0;adopt_other<adopt_rows;adopt_other++)
+      if(adopt_other!=adopt_row && (DashboardDialog.g_sets[adopt_other].cid==adopt_chart
+         || DashboardDialog.g_sets[adopt_other].magic==adopt_found)) return false;
+   adopt_magic=adopt_found;
+   return true;
+}
+
+// One adoption pass over the rows that have no child yet. Returns the number of rows linked.
+int GoatPortfolioAdoptChildren(const string &adopt_hashes[])
+{
+   int adopt_rows=ArraySize(DashboardDialog.g_sets),adopt_count=0;
+   if(!GoatAdoptInert() || adopt_rows<1 || ArraySize(adopt_hashes)!=adopt_rows) return 0;
+   if(GoatAdoptWindowStart==0) GoatAdoptWindowStart=TimeGMT();
+   // Each pending row's frozen SET, read once per pass and only at its registered sha256.
+   string adopt_sources[];
+   ArrayResize(adopt_sources,adopt_rows);
+   for(int adopt_row=0;adopt_row<adopt_rows;adopt_row++)
+   {
+      string adopt_text="";
+      adopt_sources[adopt_row]="";
+      if(DashboardDialog.g_sets[adopt_row].magic<=0
+         && GoatChildSetSource(DashboardDialog.g_sets[adopt_row].path,adopt_hashes[adopt_row],adopt_text))
+         adopt_sources[adopt_row]=adopt_text;
+   }
+   // 1) cid first: the TSV cid is the chart id whenever a profile restores a saved chart.
+   for(int adopt_row=0;adopt_row<adopt_rows;adopt_row++)
+   {
+      long adopt_hint=DashboardDialog.g_sets[adopt_row].cid,adopt_magic=0;
+      string adopt_snapshot="";
+      if(DashboardDialog.g_sets[adopt_row].magic>0 || adopt_hint<=0 || adopt_sources[adopt_row]=="") continue;
+      if(GoatAdoptChartFits(adopt_row,adopt_hint,adopt_magic)
+         && GoatChildChartSnapshot(adopt_hint,adopt_snapshot)
+         && GoatChildSnapshotMatchesSet(adopt_sources[adopt_row],adopt_snapshot)
+         && DashboardDialog.AdoptChild(adopt_row,adopt_hint,adopt_magic)) adopt_count++;
+   }
+   // 2) Fallback: walk every chart. A chart is fingerprinted once, then compared with each row it fits.
+   long adopt_pair_chart[],adopt_pair_magic[];
+   int  adopt_pair_row[];
+   int  adopt_walked=0;
+   for(long adopt_chart=ChartFirst();adopt_chart>=0 && adopt_walked<1000;adopt_chart=ChartNext(adopt_chart))
+   {
+      adopt_walked++;
+      string adopt_shot="";
+      bool adopt_taken=false,adopt_matched=false;
+      for(int adopt_row=0;adopt_row<adopt_rows;adopt_row++)
+      {
+         long adopt_found=0;
+         if(DashboardDialog.g_sets[adopt_row].magic>0 || adopt_sources[adopt_row]==""
+            || !GoatAdoptChartFits(adopt_row,adopt_chart,adopt_found)) continue;
+         if(!adopt_taken)
+         {
+            adopt_taken=true;
+            if(!GoatChildChartSnapshot(adopt_chart,adopt_shot)) adopt_shot="";
+         }
+         if(adopt_shot=="" || !GoatChildSnapshotMatchesSet(adopt_sources[adopt_row],adopt_shot)) continue;
+         int adopt_n=ArraySize(adopt_pair_chart);
+         ArrayResize(adopt_pair_chart,adopt_n+1); ArrayResize(adopt_pair_magic,adopt_n+1); ArrayResize(adopt_pair_row,adopt_n+1);
+         adopt_pair_chart[adopt_n]=adopt_chart; adopt_pair_magic[adopt_n]=adopt_found; adopt_pair_row[adopt_n]=adopt_row;
+         adopt_matched=true;
+      }
+      // A chart running this EA that no row claims and no pending row matches (other inputs, symbol or
+      // period, or a look-alike of a linked member) is never adopted, only recorded.
+      if(!adopt_matched && adopt_chart!=ChartID() && ChartGetString(adopt_chart,CHART_EXPERT_NAME)==DashboardDialog.EA_Name_)
+      {
+         bool adopt_claimed=false;
+         for(int adopt_r=0;adopt_r<adopt_rows;adopt_r++)
+            if(DashboardDialog.g_sets[adopt_r].cid==adopt_chart && DashboardDialog.g_sets[adopt_r].magic>0) adopt_claimed=true;
+         if(!adopt_claimed) GoatAdoptNote("child_unmatched",adopt_chart,ChartSymbol(adopt_chart));
+      }
+   }
+   // 3) Only a one-to-one match links. A row with two children, or a chart fitting two rows, stays pending.
+   int adopt_pairs=ArraySize(adopt_pair_chart);
+   for(int adopt_p=0;adopt_p<adopt_pairs;adopt_p++)
+   {
+      int adopt_same_row=0,adopt_same_chart=0;
+      for(int adopt_q=0;adopt_q<adopt_pairs;adopt_q++)
+      {
+         if(adopt_pair_row[adopt_q]==adopt_pair_row[adopt_p]) adopt_same_row++;
+         if(adopt_pair_chart[adopt_q]==adopt_pair_chart[adopt_p]) adopt_same_chart++;
+      }
+      int adopt_target=adopt_pair_row[adopt_p];
+      if(adopt_same_row==1 && adopt_same_chart==1)
+      {
+         if(DashboardDialog.AdoptChild(adopt_target,adopt_pair_chart[adopt_p],adopt_pair_magic[adopt_p])) adopt_count++;
+      }
+      else GoatAdoptNote("child_identity_ambiguous",adopt_pair_chart[adopt_p],DashboardDialog.g_sets[adopt_target].sym+" row="+IntegerToString(adopt_target));
+   }
+   // 4) The dashboard names what is still missing. Past the start-up window it is child_not_started.
+   bool adopt_late=(TimeGMT()-GoatAdoptWindowStart>GOAT_CHILD_START_WAIT_SECONDS);
+   for(int adopt_row=0;adopt_row<adopt_rows;adopt_row++)
+   {
+      if(DashboardDialog.g_sets[adopt_row].magic>0) continue;
+      DashboardDialog.g_sets[adopt_row].status=(adopt_late ? "Not started" : "Pending");
+      if(adopt_late) GoatAdoptNote("child_not_started",0,DashboardDialog.g_sets[adopt_row].sym+" row="+IntegerToString(adopt_row));
+   }
+   return adopt_count;
+}
+
 string GoatPortfolioSnapshot(const string id,const string action,const string hash,const string result)
 {
    string rows="[";
@@ -58,8 +225,8 @@ string GoatPortfolioSnapshot(const string id,const string action,const string ha
       string sym=DashboardDialog.g_sets[i].sym;
       if(linked) DashboardDialog.ReadChildSnapshotIntoRow(i);
       rows+="{\"index\":"+IntegerToString(i)+",\"symbol\":"+GoatSetupQuote(sym)
-         +",\"chartId\":"+IntegerToString(DashboardDialog.g_sets[i].cid)
-         +",\"magic\":"+IntegerToString(magic)+",\"linkedFresh\":"+(linked ? "true" : "false")
+         +",\"chartId\":"+IntegerToString(magic>0 ? DashboardDialog.g_sets[i].cid : (long)0)
+         +",\"magic\":"+IntegerToString(magic>0 ? magic : (long)0)+",\"linkedFresh\":"+(linked ? "true" : "false")
          +",\"exposureMode\":"+IntegerToString(DashboardDialog.g_sets[i].exposure_policy_mode)
          +",\"ackId\":"+IntegerToString(DashboardDialog.g_sets[i].last_ack_id)
          +",\"ackStatus\":"+IntegerToString(DashboardDialog.g_sets[i].last_ack_status)
@@ -122,7 +289,8 @@ void GoatPortfolioSetupPoll(void)
       || !GOATJsonGetInteger(request,req,0,"schema",schema) || schema!=1
       || !GOATJsonGetString(request,req,0,"id",id) || !GOATIsLowerHex(id,32)
       || !GOATJsonGetString(request,req,0,"action",action)
-      || (action!="status" && action!="audit" && action!="configure" && action!="deploy_next" && action!="apply_policy")
+      || (action!="status" && action!="audit" && action!="configure" && action!="link_children"
+          && action!="deploy_next" && action!="apply_policy")
       || !GOATJsonGetString(request,req,0,"registrationSha256",expected) || expected!=hash
       || !GOATJsonGetInteger(request,req,0,"expiresAtUtc",request_expires)
       || request_expires<(long)TimeGMT() || request_expires>(long)TimeGMT()+120){FileClose(owner);return;}
@@ -148,25 +316,23 @@ void GoatPortfolioSetupPoll(void)
    matched=matched && count>0 && count==ArraySize(DashboardDialog.g_sets);
    string result=(matched ? "observed" : "rejected_portfolio_mismatch");
    bool inert=TerminalInfoInteger(TERMINAL_CONNECTED) && !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) && PositionsTotal()==0 && OrdersTotal()==0;
-   if(matched && action!="status" && !inert) result="rejected_not_inert";
-   if(matched && action!="status" && action!="audit" && inert)
+   // deploy_next attached children with a dashboard-issued template, which MT5 accepts and never
+   // performs (goatai#1885). It is retired: the request gets this refusal and changes nothing.
+   if(matched && action=="deploy_next") result="rejected_deploy_next_retired";
+   else if(matched && action!="status" && !inert) result="rejected_not_inert";
+   // link_children is mutation-class like apply_policy (controller/contracts/profile-deploy.md section 3).
+   if(matched && inert && (action=="configure" || action=="link_children" || action=="apply_policy"))
    {
       // Retained intent prevents another issuance after interruption or timeout.
       if(!GoatSetupWrite(receipt,GoatPortfolioSnapshot(id,action,hash,"started"))){FileClose(owner);return;}
       if(action=="configure") result=(DashboardDialog.AgentConfigureAI((int)ai,(int)threshold,(int)protocol) ? "configured" : "configure_failed");
       else if(DashboardDialog.m_ai_launch_mode!=ai || DashboardDialog.m_ai_launch_threshold!=threshold || DashboardDialog.m_ai_launch_protocol!=protocol) result="rejected_ai_policy_mismatch";
-      else if(action=="deploy_next")
+      else if(action=="link_children")
       {
-         int next=-1; bool partial=false;
-         for(int i=0;i<count;i++)
-         {
-            if(DashboardDialog.g_sets[i].cid>0 || DashboardDialog.g_sets[i].magic>0)
-            {if(!GoatPortfolioRowLinked(i)) partial=true;}
-            else if(next<0) next=i;
-         }
-         if(partial) result="rejected_partial_deployment";
-         else if(next<0) result="all_attached";
-         else result=(DashboardDialog.AgentDeployRow(next) ? "child_attached" : "child_attach_failed");
+         // One adoption pass, then the normal snapshot. Never children_linked while any row is unlinked.
+         GoatPortfolioAdoptChildren(GoatPortfolioExpectedHashes);
+         bool all=true;for(int i=0;i<count;i++) if(!GoatPortfolioRowLinked(i)) all=false;
+         result=(all ? "children_linked" : "children_pending");
       }
       else if(action=="apply_policy")
       {

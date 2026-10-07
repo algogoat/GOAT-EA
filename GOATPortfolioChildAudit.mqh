@@ -177,6 +177,17 @@ bool GoatChildAuditMaps(const string source,const int mode,const int threshold,c
       {if(values[i]!=omitted_values[n]) return false;found=true;}
       if(!found && !GoatChildAuditAdd(names,values,omitted_names[n],omitted_values[n])) return false;
    }
+   // Also omitted by WriteSet, but declared only by some builds (Sequence_Export_* from V1.48,
+   // GOAT_FitnessRunNonce in V1.49). When the child carries one the SET does not, it must hold its default.
+   string declared_names[6]={"Sequence_Export_Enabled","Sequence_Export_Id","Sequence_Export_Start","Sequence_Export_End","Sequence_Export_Model","GOAT_FitnessRunNonce"};
+   string declared_values[6]={"false","","0","0","4","0"};
+   for(int n=0;n<6;n++)
+   {
+      bool found=false;
+      for(int i=0;i<ArraySize(names);i++) if(names[i]==declared_names[n]) found=true;
+      for(int j=0;j<ArraySize(actual_names) && !found;j++) if(actual_names[j]==declared_names[n])
+      {if(!GoatChildAuditAdd(names,values,declared_names[n],declared_values[n])) return false;found=true;}
+   }
    if(ArraySize(names)!=ArraySize(actual_names)) return false;
    for(int i=0;i<ArraySize(names);i++)
    {
@@ -222,6 +233,43 @@ bool GoatChildAuditRead(const string path,const bool common,const string expecte
    return body!="";
 }
 
+// One saved-template snapshot of a chart, read and then removed. Generated digits only: no
+// caller-controlled filename, traversal, DLL delete, profile-template copy, recursive removal
+// or cleanup of pre-existing files. Success requires confirmed removal of the snapshot.
+bool GoatChildChartSnapshot(const long cid,string &snapshot)
+{
+   snapshot="";
+   if(cid<=0) return false;
+   static ulong serial=0; serial++;
+   string filename="GOAT\\ChildAudit\\audit-"+IntegerToString(ChartID())+"-"+IntegerToString(cid)+"-"+IntegerToString((long)GetMicrosecondCount())+"-"+IntegerToString((long)serial)+".tpl";
+   FolderCreate("GOAT"); FolderCreate("GOAT\\ChildAudit");
+   if(FileIsExist(filename)) return false;
+   bool saved=ChartSaveTemplate(cid,"\\Files\\"+filename);
+   bool snapshot_read=saved && GoatChildAuditRead(filename,false,"",snapshot);
+   // Even a failed save may leave a partial file. Only this freshly owned name is eligible for removal.
+   bool removed=(!FileIsExist(filename) ? !saved : FileDelete(filename));
+   if(!snapshot_read || !removed || FileIsExist(filename)) snapshot="";
+   return snapshot!="";
+}
+
+// The frozen SET text of a member, read only when its bytes hash to the registered sha256.
+bool GoatChildSetSource(const string set_path,const string expected_sha256,string &source)
+{
+   source="";
+   string relative=GoatDashboardCommonSetPath(set_path);
+   return relative!="" && GoatChildAuditRead(relative,true,expected_sha256,source);
+}
+
+// The settingsMatch rule for one snapshot: its expert is this program, and its complete input
+// map reproduces the frozen SET under the dashboard's AI launch policy.
+bool GoatChildSnapshotMatchesSet(const string source,const string snapshot)
+{
+   string expected_path=MQLInfoString(MQL_PROGRAM_PATH);
+   return source!="" && snapshot!="" && GoatChildAuditExpertPath(expected_path)!=""
+      && GoatChildAuditMaps(source,DashboardDialog.m_ai_launch_mode,DashboardDialog.m_ai_launch_threshold,
+                            DashboardDialog.m_ai_launch_protocol,snapshot,expected_path);
+}
+
 bool GoatPortfolioChildSettingsMatch(const int row,const string expected_sha256)
 {
    if(Mode_Operation!=Operation_Dash || MQLInfoInteger(MQL_TESTER)
@@ -231,26 +279,11 @@ bool GoatPortfolioChildSettingsMatch(const int row,const string expected_sha256)
    long cid=DashboardDialog.g_sets[row].cid;
    string symbol=DashboardDialog.g_sets[row].sym;
    if(cid<=0 || cid==ChartID() || ChartSymbol(cid)!=symbol || DashboardDialog.g_sets[row].magic<=0) return false;
-   string relative=GoatDashboardCommonSetPath(DashboardDialog.g_sets[row].path),source="";
-   if(relative=="" || !GoatChildAuditRead(relative,true,expected_sha256,source)) return false;
-   string expected_path=MQLInfoString(MQL_PROGRAM_PATH);
-   if(GoatChildAuditExpertPath(expected_path)=="") return false;
-   // Generated digits only. No caller-controlled filename, traversal, DLL delete,
-   // profile-template copy, recursive removal or cleanup of pre-existing files.
-   static ulong serial=0; serial++;
-   string filename="GOAT\\ChildAudit\\audit-"+IntegerToString(ChartID())+"-"+IntegerToString(cid)+"-"+IntegerToString((long)GetMicrosecondCount())+"-"+IntegerToString((long)serial)+".tpl";
-   FolderCreate("GOAT"); FolderCreate("GOAT\\ChildAudit");
-   if(FileIsExist(filename)) return false;
-   bool saved=ChartSaveTemplate(cid,"\\Files\\"+filename);
-   string snapshot="";
-   bool matched=saved && GoatChildAuditRead(filename,false,"",snapshot)
-      && GoatChildAuditMaps(source,DashboardDialog.m_ai_launch_mode,DashboardDialog.m_ai_launch_threshold,
-                           DashboardDialog.m_ai_launch_protocol,snapshot,expected_path);
-   // Even a failed save may leave a partial file. Only this freshly owned name
-   // is eligible for removal; success requires confirmed removal of the snapshot.
-   bool removed=(!FileIsExist(filename) ? !saved : FileDelete(filename));
-   return matched && removed && !FileIsExist(filename)
-      && DashboardDialog.g_sets[row].cid==cid && ChartSymbol(cid)==symbol;
+   string source="",snapshot="";
+   if(!GoatChildSetSource(DashboardDialog.g_sets[row].path,expected_sha256,source)
+      || GoatChildAuditExpertPath(MQLInfoString(MQL_PROGRAM_PATH))=="") return false;
+   bool matched=GoatChildChartSnapshot(cid,snapshot) && GoatChildSnapshotMatchesSet(source,snapshot);
+   return matched && DashboardDialog.g_sets[row].cid==cid && ChartSymbol(cid)==symbol;
 }
 
 // Pure fixtures only; never called by runtime initialization/polling. The parent

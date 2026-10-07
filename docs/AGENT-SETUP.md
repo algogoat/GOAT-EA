@@ -91,20 +91,6 @@ not a completed VPS pairing test. The published R9 currently installed on VPS do
 not contain this command. A legitimate reviewed release/admission is still required
 before this candidate can initiate its own pairing request.
 
-## Persistent bootstrap
-
-`scripts/mql5/GOATSetupBootstrap.mq5` is a one-shot demo setup script. It requires
-the expected account, no positions/orders and trading disabled. It retains phase
-receipts before creating a normal chart and applying the prepared dashboard
-template. The disposable startup chart must not count as an existing persistent
-dashboard. A retained receipt blocks blind repeats. The script requests orderly
-native shutdown; the caller verifies exit and restoration using a normal launch.
-
-The pilot proved a saved dashboard survives `/portable` restart without `/config`.
-Do not repeat the bootstrap on each launch. Default common.ini `[StartUp]` edits
-alone were not sufficient; retain the native-created profile. Custom startup
-configuration is for the one-shot script only, not ongoing user operation.
-
 ## Remaining product work
 
 ### Internal R2 portfolio setup candidate
@@ -112,17 +98,21 @@ configuration is for the one-shot script only, not ongoing user operation.
 `scripts/goat_portfolio_setup.py` adds a separate opt-in registration under
 `GOAT/AgentPortfolio/<terminal>/`. It binds the installed EX5, full terminal/account
 identity, exact ordered Common Files SET hashes and AI/exposure policy. Commands
-are `configure`, `deploy_next`, `apply_policy`, `status` and `audit`. Registration
+are `configure`, `link_children`, `apply_policy`, `status` and `audit` (from
+V1.49-BETA17-43, `deploy_next` gets the refusal `rejected_deploy_next_retired`). Registration
 and request issuance share an exclusive producer lock; retained native mutation
 intent prevents blind reissuance after interruption. Rejections exit nonzero.
 
 The controller operates portfolio rows already loaded into the dashboard. It
 does not import arbitrary folders, enable trading, send orders or close positions.
 Mutations require a connected demo with trading OFF and no orders/positions.
-`deploy_next` attaches one pending row through the existing UI handler; any partial
-child identity stops further deployment. Child binding checks symbol and full
-chart identity, not just the first pending registration. Common Files paths are
-normalized before native sandbox file access.
+The dashboard never opens a child chart or applies a template. MT5 loads every child
+from the staged deploy profile at start-up, and `link_children` runs one adoption pass:
+a chart is adopted only when its symbol, period and EA match the row, its CID record
+names a free magic, and its saved inputs reproduce the frozen SET (the `settingsMatch`
+rule), one chart to one row. An unadopted row reports chart ID 0 and magic 0. Common
+Files paths are normalized before native sandbox file access. See
+[the open question on dashboard template applies](operations/DEPLOYMENT-STARTUP-LIVENESS.md#open-question-the-dashboards-own-template-applies-do-not-re-add).
 
 `audit` saves each existing child chart's template to a unique local temporary,
 compares the actual expert and complete effective input map against the frozen

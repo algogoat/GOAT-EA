@@ -1,83 +1,92 @@
-"""Tick-history drift: when a catch-up re-test may stand in for its original (goat-catchup-rebase-v1).
+"""Catch-up re-test vs its original export: when the re-test may stand in for it (goat-catchup-rebase-v2).
 
-Decided on goatai#1885 (6008922429, 6008944190, 6008946539). The first native catch-up re-tested 28
-exports on the same build, inputs, model, server, deposit, leverage and currency: 3 reproduced exactly,
-25 missed the exact ``reproduced`` check by small amounts (final balance -22 to +2, EURUSD trade times
-shifted on thousands of rows). The likely cause is that the broker's tick history changed. So:
+History (goatai#1885). v1 (6008922429, 6008944190, 6008946539, 6009311876, 6010080246) re-based a re-test
+that missed the exact reproduction on a deal-level swap step, else on aggregate drift bars (deal count, PF,
+balance, SAMPLE side, max DD). Ops then showed that the MT5 tester is deterministic except swap
+(6029461500): re-test vs re-test, orders.csv is byte-identical and the deals are identical in every column
+except magic (run-local) and swap. Swap drifts because the tester applies the symbol's CURRENT swap rates to
+all history. Claude-Mac's ruling (6029484888) replaces v1:
 
-* ``comparable``: the exact reproduction (``studio_catchup_verdict.reproduction``) is the fast path.
-* ``not_comparable``: any identity check failed (inputs, EA build, EA name, model, symbol, server,
-  deposit, leverage, currency). Identity stays strict, exactly as before.
-* Deal-level step (Ops, goatai#1885 6009311876: the 25 were swap-rate changes; MT5's tester applies a
-  symbol's CURRENT swap rates to all history and Darwinex updates them). When both runs have a complete
-  capture, their deals before the cut are compared exactly as the trading-equivalence canary does
-  (time, type, entry, lots, price: ``studio_equivalence.deal_list``/``compare_deals``). Identical deals
-  whose equity difference changes only on rollover rows (the first row after server midnight, where
-  swap is charged; ``money_check``) are ``comparable_rebased`` with ``tickHistoryDrift.cause:
-  'swap_or_spec'``, whatever the size: current swaps are what live trading pays, so every window is
-  re-based on the re-test. Money that moves anywhere else, or different deals, fall through. A swap-only
-  drift whose |final balance delta| exceeds 5% of |original net profit| stays re-based but carries
-  ``tickHistoryDrift.reviewFlag: true`` with ``reviewReason`` (Claude-Mac, goatai#1885 6010080246).
-* Across builds (a re-test on another build under an ACTIVE trading-equivalence certificate) only an
-  exact reproduction or a swap-only drift qualifies: the aggregate path is ``requalify`` (failed
-  ``cross_build``), so build drift and history drift never stack.
-* Otherwise (``cause: 'history_or_behaviour'``) the re-test is compared with the original over the ORIGINAL span, in aggregate, never
-  row by row (``CRITERIA``). When every criterion holds the verdict is ``comparable_rebased``: the
-  re-test becomes the evidence for every window (BOOS, SAMPLE, FWD, FOOS), each recomputed on the
-  re-test alone (``rebased_windows``), never the old export spliced with new weeks.
-* ``requalify``: any criterion failed or could not be measured. The re-test is a NEW candidate: full
-  gates, no carried status, and the reasons name every failed criterion.
+* ``not_comparable``: any identity check failed (inputs, EA build, EA name, model, symbol, server, deposit,
+  leverage, currency). Unchanged.
+* ``comparable``: the exact reproduction (``studio_catchup_verdict.reproduction``). Unchanged.
+* ``comparable_rebased``: every rule in ``RULES`` holds over the original span. The behaviour is identical
+  and only swap moved the money, within the bar: current swaps are what live trading pays, so every window
+  is re-based on the re-test (``rebased_windows``), never the old export spliced with new weeks.
+* ``requalify``: anything else (fail-safe). The re-test is a NEW candidate: full gates, no carried status.
+  There is no aggregate pass path any more: if broker history revisions move a deal, the set is judged anew.
 
-The original span is [original start 00:00, cut) where cut is the original's last equity minute: the
-original force-closed its positions there, so that minute is excluded from both runs, as in
-``reproduction``. Measured on each run:
+Rules, in order. Every rule is evaluated; ``failed`` names each failing one, and ``firstFailingRule`` and
+``firstDifference`` (that rule's first differing row) are logged on the verdict and the receipt.
 
-* deal_count: positions opened in the span (entry deals), the EA's ``Trades=`` count.
-* pf: positive / |non-positive| deal results (profit + swap + commission + fee) of the positions
-  opened in the span, deals before the cut (``studio_oos_windows.DEFINITIONS``).
-* final_balance: the balance of the last equity row before the cut. Both runs are compared at the
-  same moment, before the original's forced close, so like is compared with like.
-* sample_pf: PF of the SAMPLE window [FromDate, ForwardDate - 1]; its side of 1.0 is PF >= 1.0,
-  which is exactly the window's net (pl) >= 0.
-* max_dd: deepest fall of the sampled equity below its running peak, from the span's first row.
+1. ``capture``: orders.csv, deals.csv, marks.csv and account.csv of a complete sequence capture, both runs.
+2. ``orders``: every order before the cut identical in every column except the capture's ``ordinal``
+   (a row counter shared by all capture files, not behaviour).
+3. ``deals``: every deal before the cut identical on time, type, entry, lots, price and profit. Magic is
+   run-local and swap is judged below, so neither is compared; commission and fee move the balance, so the
+   balance rule catches them.
+4. ``swap``: |delta total swap| <= max($5, 2% of the original's |total swap|). Total swap at the cut is the
+   realized swap plus the floating swap of the positions still open (marks.csv).
+5. ``balance``: on every account row, the balance difference equals the realized-swap difference within $0.01.
+6. ``equity``: on every account row, the equity difference equals the cumulative swap difference (realized
+   plus floating) within $0.01.
+7. ``max_dd``: |delta max DD| <= 10% of the original's max DD (the export equity CSV, as the export measures it).
 
-Deal-based criteria need a complete sequence capture (``deals.csv``) on BOTH runs. Without one they
-are not measured, which fails them: such a re-test requalifies, it is never re-based on guesses.
+Which rows. The export equity CSV samples a row only when price or equity moved enough, so a swap change can
+add or drop a row after a rollover (13 of the 25 B40 re-tests did) and its equity is a minute low, not a
+point value. The capture's account.csv records balance and equity at fixed moments instead: every minute and
+every trading event, identical in both runs when the behaviour is identical. The EA writes each moment's
+marks (per sequence: realized swap, floating swap) just before its account row, under one ordinal counter,
+so the swap "at that row" is exact: every mark with a smaller ordinal. Account rows that do not line up (a
+different event or minute) fail both money rules.
+
+The original span is [original start, cut) where cut is the original's last equity minute: the original
+force-closed its positions there, so that minute is excluded from both runs, as in ``reproduction``.
 
 Stamps: ``historyBasis {originalExportedAt, retestAt}`` (the SET files' modification times, UTC) and
-``tickHistoryDrift {dealCountDelta, pfDelta, balanceDelta, ddDelta, maxEquityGap, cause}`` (re-test minus
-original; maxEquityGap is the largest |equity difference| over the minutes both runs sampled; cause is
-``swap_or_spec`` from the deal-level step, else ``history_or_behaviour``). ``decidedBy`` and ``dealCheck``
-say which step decided and what the deal comparison found.
+``tickHistoryDrift {dealCountDelta, pfDelta, balanceDelta, ddDelta, maxEquityGap, swapDelta, swapBound,
+originalSwap, retestSwap, cause, reviewFlag, reviewReason}`` (re-test minus original; ``cause`` is
+``swap_or_spec`` for a re-based re-test, else ``history_or_behaviour``). A re-based re-test whose |final
+balance delta| exceeds 5% of |original net profit| carries ``reviewFlag: true`` (Claude-Mac, 6010080246).
+Across builds (an ACTIVE trading-equivalence certificate) the rule is the same: with no aggregate path, build
+drift and history drift cannot stack; ``crossBuild`` records it.
 
 The bar is shared through ``fixtures/catchup-rebase-cases.json`` (``judge_case``).
 """
+from bisect import bisect_right
 import csv
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from itertools import zip_longest
 from pathlib import Path
 
-SCHEMA = 'goat-catchup-rebase-v1'
+SCHEMA = 'goat-catchup-rebase-v2'
 WINDOWS_SCHEMA = 'goat-catchup-rebased-windows-v1'
 COMPARABLE, REBASED, REQUALIFY, NOT_COMPARABLE = 'comparable', 'comparable_rebased', 'requalify', 'not_comparable'
 VERDICTS = (COMPARABLE, REBASED, REQUALIFY, NOT_COMPARABLE)
 # The bar (Decimal: an exact boundary is inside it, never lost to float rounding).
-DEAL_COUNT_REL = Decimal('0.05')        # |deal count delta| <= 5% of the original count
-PF_ABS = Decimal('0.05')                # |PF delta| <= 0.05
-BALANCE_OF_DEPOSIT = Decimal('0.001')   # |final balance delta| <= max(0.1% of deposit,
-BALANCE_OF_NET = Decimal('0.02')        #                            2% of |original net profit|)
+SWAP_FLOOR = Decimal('5')               # |delta total swap| <= max($5,
+SWAP_OF_TOTAL = Decimal('0.02')         #                           2% of the original |total swap|)
+MONEY_TOLERANCE = Decimal('0.01')       # balance / equity difference vs the swap difference (rounding)
 DD_REL = Decimal('0.10')                # |max DD delta| <= 10% of the original max DD
-PF_SIDE = Decimal('1')                  # SAMPLE PF on the same side of 1.0 (>= 1.0 is one side)
-MONEY_TOLERANCE = Decimal('0.005')      # an equity-difference step below this is no change (the reproduction tolerance)
+SWAP_REVIEW_OF_NET = Decimal('0.05')    # re-based: reviewFlag when |balance delta| > 5% of |original net profit|
 SWAP_OR_SPEC, HISTORY_OR_BEHAVIOUR = 'swap_or_spec', 'history_or_behaviour'   # tickHistoryDrift.cause
-SWAP_REVIEW_OF_NET = Decimal('0.05')    # swap-only drift: reviewFlag when |balance delta| > 5% of |original net profit|
-CROSS_BUILD = 'cross_build'             # the failed "criterion" of an aggregate-only drift across builds
-CRITERIA = ('deal_count', 'pf', 'final_balance', 'sample_pf_side', 'max_dd')
+RULES = ('capture', 'orders', 'deals', 'swap', 'balance', 'equity', 'max_dd')
+BAR = dict(capture='orders.csv, deals.csv, marks.csv and account.csv of a complete capture on both runs',
+           orders='every order before the cut identical (every column except the capture ordinal)',
+           deals='every deal before the cut identical on time, type, entry, lots, price and profit (magic and swap ignored)',
+           swap='|delta total swap| <= max($5, 2% of the original |total swap|)',
+           balance='on every account row, balance difference = realized swap difference within $0.01',
+           equity='on every account row, equity difference = cumulative swap difference within $0.01',
+           max_dd='|delta max DD| <= 10% of the original max DD')
+CAPTURE_FILES = ('orders', 'deals', 'marks', 'account')
+ORDER_IGNORED = frozenset(('ordinal',))
+DEAL_FIELDS = ('server_time_msc', 'deal_type', 'deal_entry', 'lots', 'price', 'profit')
+NUMERIC = frozenset(('lots', 'price', 'profit', 'commission', 'fee', 'swap', 'requested_lots', 'result_lots', 'result_price'))
+MAX_ORDERS_CSV = 64 * 1024 * 1024
+MAX_MARKS_CSV = 512 * 1024 * 1024
+MAX_ACCOUNT_CSV = 512 * 1024 * 1024
 FIXTURE = 'fixtures/catchup-rebase-cases.json'
-BAR = dict(deal_count='|delta| <= 5% of the original deal count', pf='|delta| <= 0.05',
-           final_balance='|delta| <= max(0.1% of deposit, 2% of |original net profit|)',
-           sample_pf_side='SAMPLE PF on the same side of 1.0 in both (PF >= 1.0 is one side)',
-           max_dd='|delta| <= 10% of the original max drawdown')
 NO_LOSS = 'no losing deals'
 
 
@@ -99,66 +108,227 @@ def _num(value):
     return None if value is None else float(value)
 
 
-def _side(window):
-    """True when the window's PF is >= 1.0, False below, None when unknown."""
-    if not isinstance(window, dict):
-        return None
-    pf = _dec(window.get('pf'))
-    if pf is not None:
-        return pf >= PF_SIDE
-    if window.get('pf_note') == NO_LOSS:
-        return True
-    pl = _dec(window.get('pl'))
-    return None if pl is None else pl >= 0
+def _msc(moment):
+    return int(moment.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
 
-def _row(name, ok, original, retest, delta, limit, detail):
-    return dict(criterion=name, ok=bool(ok), original=original, retest=retest, delta=delta, limit=limit, bar=BAR[name], detail=detail)
+def _when(stamp):
+    """A server-time msc as text (broker server time, as the capture records it)."""
+    moment = datetime.fromtimestamp(stamp / 1000, timezone.utc)
+    return moment.strftime('%Y-%m-%d %H:%M:%S.') + '%03d' % (stamp % 1000)
 
 
-def criteria(original, retest, *, deposit):
-    """Each criterion over the original span, from two aggregate measurements (pure).
+def _text(value):
+    return str(value) if isinstance(value, Decimal) else value
 
-    ``original``/``retest``: ``deal_count``, ``pf`` (or ``pf_note`` 'no losing deals'), ``final_balance``,
-    ``max_dd`` and ``sample`` (``pf``/``pf_note``/``pl`` of the SAMPLE window). A missing value fails its
-    criterion as not measured.
+
+def _norm(field, value):
+    """A capture cell as compared: times as integers, money and volumes as exact decimals, the rest as text."""
+    if field == 'server_time_msc':
+        return int(value)
+    if field in NUMERIC:
+        return Decimal(value)
+    return value
+
+
+def _rule(name, ok, detail, *, first=None, **values):
+    return dict(rule=name, ok=bool(ok), bar=BAR[name], detail=detail, firstDifference=first, **values)
+
+
+# ---------------------------------------------------------------------------
+# The rules (pure)
+# ---------------------------------------------------------------------------
+
+def compare_rows(original, retest, fields):
+    """Identical row lists on ``fields``? Else the first differing row, both sides and the fields that differ."""
+    a = [tuple(row.get(f) for f in fields) for row in original]
+    b = [tuple(row.get(f) for f in fields) for row in retest]
+    if a == b:
+        return dict(matched=True, rows=len(a), first_difference=None)
+    index = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+    show = lambda rows: None if index >= len(rows) else {f: _text(v) for f, v in zip(fields, rows[index])}
+    differ = [f for n, f in enumerate(fields) if index < len(a) and index < len(b) and a[index][n] != b[index][n]]
+    return dict(matched=False, rows=[len(a), len(b)], first_difference=dict(
+        index=index, original=show(a), retest=show(b), fields=differ or ['row count %d vs %d' % (len(a), len(b))]))
+
+
+def swap_totals(marks):
+    """(realized swap, cumulative swap) after every mark (ordinal, msc, sequence, realized swap, floating swap) (pure)."""
+    realized, floating = {}, {}
+    for _, _, sequence, done, open_swap in marks:
+        realized[sequence], floating[sequence] = done, open_swap
+    total = sum(realized.values(), Decimal(0))
+    return total, total + sum(floating.values(), Decimal(0))
+
+
+def account_states(account, marks):
+    """Each account row with the run's swap at that moment (pure; both in capture order).
+
+    ``account``: (ordinal, msc, reason, balance, equity, quote msc); ``marks``: (ordinal, msc, sequence, realized
+    swap, floating swap), each sequence's latest values. The swap at a row is every mark with a smaller ordinal.
+    Yields (msc, reason, balance, equity, realized swap, cumulative swap, quote msc).
     """
-    rows = []
-    o, r = original.get('deal_count'), retest.get('deal_count')
-    if type(o) is int and type(r) is int and o >= 0 and r >= 0:
-        limit = DEAL_COUNT_REL * o
-        rows.append(_row('deal_count', abs(r - o) <= limit, o, r, r - o, _num(limit), '%d vs %d deals (%+d, limit %s)' % (o, r, r - o, _num(limit))))
+    marks = iter(marks)
+    pending = next(marks, None)
+    realized, floating, done, open_swap = {}, {}, Decimal(0), Decimal(0)
+    for ordinal, stamp, reason, balance, equity, quote in account:
+        while pending is not None and pending[0] < ordinal:
+            _, _, sequence, value, still_open = pending
+            done += value - realized.get(sequence, 0)
+            open_swap += still_open - floating.get(sequence, 0)
+            realized[sequence], floating[sequence] = value, still_open
+            pending = next(marks, None)
+        yield stamp, reason, balance, equity, done, done + open_swap, quote
+
+
+class _Steps:
+    """A run's cumulative swap as a step function of time, from the account rows seen so far."""
+
+    def __init__(self):
+        self.times, self.values = [], []
+
+    def add(self, stamp, value):
+        if not self.values or self.values[-1] != value:
+            self.times.append(stamp)
+            self.values.append(value)
+
+    def at(self, stamp):
+        index = bisect_right(self.times, stamp) - 1
+        return self.values[index] if index >= 0 else Decimal(0)
+
+
+def money_rows(original_states, retest_states):
+    """The ``balance`` and ``equity`` rules over two runs' ``account_states`` (pure).
+
+    Rows must line up (same moment and reason). On each, the balance difference must equal the realized-swap
+    difference, and the equity difference the cumulative-swap difference as of the row's last price tick,
+    within ``MONEY_TOLERANCE``. The tester charges swap on the open positions at the rollover but recalculates
+    account equity only on the next tick, so until a tick arrives (the market is often closed just after
+    midnight) the account's equity still carries the swap before the charge: the capture's quote time
+    (``quote_server_time_msc``) says which.
+    """
+    out = {name: dict(ok=True, first=None, max_residual=Decimal(0)) for name in ('balance', 'equity')}
+    rows, steps = 0, (_Steps(), _Steps())
+    for index, (a, b) in enumerate(zip_longest(original_states, retest_states)):
+        if a is None or b is None or a[:2] != b[:2]:
+            show = lambda row: None if row is None else dict(time=_when(row[0]), reason=row[1])
+            first = dict(row=index, original=show(a), retest=show(b),
+                         reason='the two runs recorded the account at different moments (another event or minute row)')
+            for item in out.values():
+                if item['first'] is None:
+                    item.update(ok=False, first=first)
+            break
+        rows += 1
+        steps[0].add(a[0], a[5])
+        steps[1].add(b[0], b[5])
+        quote = a[6] if a[6] and a[6] == b[6] else a[0]   # no or differing quote: the row's own moment
+        equity_swap = steps[1].at(quote) - steps[0].at(quote)
+        for name, difference, swap in (('balance', b[2] - a[2], b[4] - a[4]), ('equity', b[3] - a[3], equity_swap)):
+            item, residual = out[name], abs(difference - swap)
+            item['max_residual'] = max(item['max_residual'], residual)
+            if residual > MONEY_TOLERANCE and item['first'] is None:
+                item['ok'] = False
+                item['first'] = dict(row=index, time=_when(a[0]), reason=a[1], original=dict(balance=_num(a[2]), equity=_num(a[3])),
+                                     retest=dict(balance=_num(b[2]), equity=_num(b[3])), difference=_num(difference),
+                                     swapDifference=_num(swap), residual=_num(residual),
+                                     quoteTime=_when(quote) if name == 'equity' else None)
+    return dict(out, rows=rows)
+
+
+def equity_figures(rows):
+    """Final balance and max drawdown (deepest fall of the sampled equity below its running peak) of rows."""
+    if not rows:
+        return dict(final_balance=None, max_dd=None)
+    peak, dd = rows[0][2], Decimal(0)
+    for _, _, equity in rows:
+        peak = max(peak, equity)
+        dd = max(dd, peak - equity)
+    return dict(final_balance=rows[-1][1], max_dd=dd)
+
+
+def behaviour_check(original, retest, cut_msc):
+    """Every rule in ``RULES`` on two runs before the cut (pure).
+
+    A run is ``dict(orders=(fields, rows) | None, deals=[row] | None, marks=[(ordinal, msc, sequence, realized
+    swap, floating swap)] | None, account=iterable of (ordinal, msc, reason, balance, equity, quote msc) | None,
+    rows=[(minute, balance, equity)] (the export equity CSV), missing=[reason])``.
+    """
+    rules = []
+    missing = ['original %s' % m for m in original.get('missing') or ()] + ['re-test %s' % m for m in retest.get('missing') or ()]
+    rules.append(_rule('capture', not missing, 'complete captures on both runs' if not missing else
+                       'not measured: %s' % '; '.join(missing), first=None if not missing else dict(missing=missing)))
+    both = lambda key: original.get(key) is not None and retest.get(key) is not None
+    # orders
+    if both('orders'):
+        (old_fields, old_orders), (new_fields, new_orders) = original['orders'], retest['orders']
+        cut = lambda rows: [row for row in rows if row['server_time_msc'] < cut_msc]
+        if old_fields != new_fields:
+            rules.append(_rule('orders', False, 'orders.csv columns differ', first=dict(original=list(old_fields), retest=list(new_fields))))
+        else:
+            orders = compare_rows(cut(old_orders), cut(new_orders), old_fields)
+            rules.append(_rule('orders', orders['matched'], 'identical orders (%s)' % orders['rows'] if orders['matched'] else
+                               'order %d differs (%s)' % (orders['first_difference']['index'], ', '.join(orders['first_difference']['fields'])),
+                               first=orders['first_difference'], rows=orders['rows']))
     else:
-        rows.append(_row('deal_count', False, o, r, None, None, 'not measured (needs a complete capture on both runs)'))
-    o, r = _dec(original.get('pf')), _dec(retest.get('pf'))
-    if o is not None and r is not None:
-        rows.append(_row('pf', abs(r - o) <= PF_ABS, _num(o), _num(r), _num(r - o), _num(PF_ABS), 'PF %s vs %s' % (o, r)))
-    elif o is None and r is None and original.get('pf_note') == NO_LOSS and retest.get('pf_note') == NO_LOSS:
-        rows.append(_row('pf', True, None, None, 0.0, _num(PF_ABS), 'no losing deals in either run'))
+        rules.append(_rule('orders', False, 'not measured (orders.csv missing)'))
+    # deals
+    if both('deals'):
+        deals = compare_rows([d for d in original['deals'] if d['server_time_msc'] < cut_msc],
+                             [d for d in retest['deals'] if d['server_time_msc'] < cut_msc], DEAL_FIELDS)
+        rules.append(_rule('deals', deals['matched'], 'identical deals (%s)' % deals['rows'] if deals['matched'] else
+                           'deal %d differs (%s)' % (deals['first_difference']['index'], ', '.join(deals['first_difference']['fields'])),
+                           first=deals['first_difference'], rows=deals['rows']))
     else:
-        rows.append(_row('pf', False, _num(o), _num(r), None, _num(PF_ABS), 'not measured (%s / %s)' % (
-            original.get('pf_note') or o, retest.get('pf_note') or r)))
-    o, r, base = _dec(original.get('final_balance')), _dec(retest.get('final_balance')), _dec(deposit)
-    if o is not None and r is not None and base is not None and base > 0:
-        limit = max(BALANCE_OF_DEPOSIT * base, BALANCE_OF_NET * abs(o - base))
-        rows.append(_row('final_balance', abs(r - o) <= limit, _num(o), _num(r), _num(r - o), _num(limit),
-                         'final balance %s vs %s (%+.2f, limit %.2f)' % (o, r, r - o, limit)))
+        rules.append(_rule('deals', False, 'not measured (deals.csv missing)'))
+    # swap
+    swap = dict(original=None, retest=None, delta=None, bound=None, originalRealized=None, retestRealized=None)
+    marks = {}
+    if both('marks'):
+        for side, run in (('original', original), ('retest', retest)):
+            marks[side] = sorted((m for m in run['marks'] if m[1] < cut_msc), key=lambda m: m[0])
+            swap[side + 'Realized'], swap[side] = swap_totals(marks[side])
+        delta, bound = swap['retest'] - swap['original'], max(SWAP_FLOOR, SWAP_OF_TOTAL * abs(swap['original']))
+        swap.update(delta=delta, bound=bound)
+        ok = abs(delta) <= bound
+        rules.append(_rule('swap', ok, 'total swap %.2f vs %.2f (%+.2f, limit %.2f)' % (swap['original'], swap['retest'], delta, bound),
+                           first=None if ok else dict(original=_num(swap['original']), retest=_num(swap['retest']), delta=_num(delta), bound=_num(bound)),
+                           original=_num(swap['original']), retest=_num(swap['retest']), delta=_num(delta), limit=_num(bound)))
     else:
-        rows.append(_row('final_balance', False, _num(o), _num(r), None, None, 'not measured (balance or deposit unknown)'))
-    o, r = _side(original.get('sample')), _side(retest.get('sample'))
-    if o is not None and r is not None:
-        word = lambda side: 'PF >= 1.0' if side else 'PF < 1.0'
-        rows.append(_row('sample_pf_side', o == r, word(o), word(r), None, None, 'SAMPLE %s vs %s' % (word(o), word(r))))
+        rules.append(_rule('swap', False, 'not measured (marks.csv missing)'))
+    # balance and equity, on the capture's account rows
+    if marks and both('account'):
+        states = [account_states((row for row in run['account'] if row[1] < cut_msc), marks[side])
+                  for side, run in (('original', original), ('retest', retest))]
+        try:
+            money = money_rows(*states)
+        except (OSError, ValueError, KeyError, IndexError, ArithmeticError, csv.Error) as exc:   # a malformed streamed row
+            unreadable = dict(ok=False, first=dict(reason='account.csv unreadable (%s)' % exc), max_residual=None)
+            money = dict(balance=unreadable, equity=unreadable, rows=None)
+        for name, what in (('balance', 'realized swap'), ('equity', 'cumulative swap')):
+            item = money[name]
+            if item['ok']:
+                rules.append(_rule(name, True, '%s difference = %s difference on every account row (%d rows, largest residual %.4f)' % (
+                    name, what, money['rows'], item['max_residual']), rows=money['rows'], max_residual=_num(item['max_residual'])))
+            else:
+                first = item['first']
+                detail = first.get('reason') if 'difference' not in first else '%s difference %+.2f at %s, %s difference %+.2f (residual %.4f)' % (
+                    name, first['difference'], first['time'], what, first['swapDifference'], first['residual'])
+                rules.append(_rule(name, False, detail, first=first, rows=money['rows'], max_residual=_num(item['max_residual'])))
     else:
-        rows.append(_row('sample_pf_side', False, None, None, None, None, 'not measured (SAMPLE window or its deals unknown)'))
-    o, r = _dec(original.get('max_dd')), _dec(retest.get('max_dd'))
-    if o is not None and r is not None and o >= 0 and r >= 0:
-        limit = DD_REL * o
-        rows.append(_row('max_dd', abs(r - o) <= limit, _num(o), _num(r), _num(r - o), _num(limit),
-                         'max drawdown %s vs %s (%+.2f, limit %.2f)' % (o, r, r - o, limit)))
+        for name in ('balance', 'equity'):
+            rules.append(_rule(name, False, 'not measured (%s missing)' % ('account.csv' if marks else 'marks.csv')))
+    # max_dd, on the export equity CSV
+    a = equity_figures([row for row in original['rows'] if _msc(row[0]) < cut_msc])['max_dd']
+    b = equity_figures([row for row in retest['rows'] if _msc(row[0]) < cut_msc])['max_dd']
+    if a is not None and b is not None:
+        limit = DD_REL * a
+        ok = abs(b - a) <= limit
+        rules.append(_rule('max_dd', ok, 'max drawdown %s vs %s (%+.2f, limit %.2f)' % (a, b, b - a, limit),
+                           first=None if ok else dict(original=_num(a), retest=_num(b), delta=_num(b - a), limit=_num(limit)),
+                           original=_num(a), retest=_num(b), delta=_num(b - a), limit=_num(limit)))
     else:
-        rows.append(_row('max_dd', False, _num(o), _num(r), None, None, 'not measured'))
-    return rows
+        rules.append(_rule('max_dd', False, 'not measured (no equity rows before the cut)'))
+    return dict(rules=rules, swap={k: _num(v) for k, v in swap.items()})
 
 
 def drift(original, retest, *, max_equity_gap=None):
@@ -173,51 +343,11 @@ def drift(original, retest, *, max_equity_gap=None):
                 ddDelta=delta('max_dd'), maxEquityGap=max_equity_gap)
 
 
-def money_check(original_rows, retest_rows):
-    """Is the money difference a swap accrual? The equity difference may change only on a rollover row.
-
-    Rows are ``(minute, balance, equity)`` of each run before the cut, sampled at the same minutes. A
-    rollover row is the first row of a new server day (the first row after server midnight), where MT5
-    charges swap. Balance is not tested on its own: a held position's swap moves from floating equity to
-    the balance when it closes, so the balance difference also steps at a close while equity does not.
-    """
-    if [row[0] for row in original_rows] != [row[0] for row in retest_rows]:
-        return dict(swap_only=False, rollover_changes=None, first_off_rollover=None,
-                    reason='the two runs sampled equity at different minutes')
-    previous, day, changes = Decimal(0), None, 0
-    for (stamp, _, old), (_, _, new) in zip(original_rows, retest_rows):
-        difference = new - old
-        if abs(difference - previous) > MONEY_TOLERANCE:
-            if day is None or stamp.date() == day:
-                return dict(swap_only=False, rollover_changes=changes, first_off_rollover=stamp.strftime('%Y-%m-%d %H:%M'),
-                            reason='the equity difference changed at %s, which is not the first row after a server-midnight '
-                                   'rollover, so it is not a swap accrual' % stamp.strftime('%Y-%m-%d %H:%M'))
-            changes += 1
-        previous, day = difference, stamp.date()
-    return dict(swap_only=True, rollover_changes=changes, first_off_rollover=None, final_equity_difference=float(previous),
-                reason='the equity difference changed only on rollover rows (%d)' % changes)
-
-
-def deal_level(original_deals, retest_deals, original_rows, retest_rows):
-    """Deal-level step: identical deals (time, type, entry, lots, price) with money drift only at rollovers? (pure).
-
-    Deals compare exactly as the trading-equivalence canary does (``studio_equivalence.compare_deals``).
-    """
-    from studio_equivalence import compare_deals
-    deals = compare_deals(original_deals, retest_deals)
-    if not deals['matched']:
-        return dict(status='deals_differ', swap_only=False, deals=deals, money=None,
-                    reason='the deal lists differ (time, type, entry, lots or price), first at %s' % deals['first_difference'])
-    money = money_check(original_rows, retest_rows)
-    return dict(status='swap_only' if money['swap_only'] else 'money_off_rollover', swap_only=money['swap_only'], deals=deals,
-                money=money, reason='identical deals; ' + money['reason'])
-
-
 def swap_review(original, retest, *, deposit):
-    """(reviewFlag, reviewReason) for a swap-only drift: flagged when |balance delta| > 5% of |original net profit|.
+    """(reviewFlag, reviewReason) for a re-based re-test: flagged when |balance delta| > 5% of |original net profit|.
 
-    Claude-Mac, goatai#1885 6010080246: swap-only drift still re-bases, but a large one can change a carry-heavy
-    set's economics, so it is flagged for review. An unmeasurable delta or net is flagged too (never waved through).
+    Claude-Mac, goatai#1885 6010080246: a swap change can change a carry-heavy set's economics, so a large one
+    is flagged for review. An unmeasurable delta or net is flagged too (never waved through).
     """
     o, r, base = _dec(original.get('final_balance')), _dec(retest.get('final_balance')), _dec(deposit)
     if o is None or r is None or base is None:
@@ -229,77 +359,197 @@ def swap_review(original, retest, *, deposit):
     return False, 'swap drift %.2f is within 5%% of the original net profit (%.2f)' % (r - o, limit)
 
 
-def decide(identity_failed, reproduced, original=None, retest=None, *, deposit=None, max_equity_gap=None, deal_check=None,
+def decide(identity_failed, reproduced, check=None, *, original=None, retest=None, deposit=None, max_equity_gap=None,
            cross_build=False):
-    """The comparison verdict (``VERDICTS``) with its criteria, reasons and drift (pure).
+    """The comparison verdict (``VERDICTS``) with its rules, first failing rule, reasons and drift (pure).
 
-    ``deal_check`` (``deal_level``) runs first: identical deals whose money differs only at rollovers is a swap
-    or symbol-spec change, ``comparable_rebased`` whatever its size (``reviewFlag`` past 5% of net profit).
-    Otherwise the aggregate criteria decide, except across builds (``cross_build``: a re-test on another build
-    under a trading-equivalence certificate): there only an exact reproduction or a swap-only drift qualifies, so
-    build drift and history drift never stack; the aggregate path is ``requalify`` whatever its numbers.
+    ``check`` is ``behaviour_check``'s result; without one nothing is measured, which requalifies (fail-safe).
     """
+    blank = dict(schema=SCHEMA, rules=None, failed=[], firstFailingRule=None, firstDifference=None, tickHistoryDrift=None,
+                 crossBuild=cross_build, swap=None)
     if identity_failed:
-        return dict(schema=SCHEMA, verdict=NOT_COMPARABLE, decidedBy='identity', criteria=None, failed=[],
-                    reasons=list(identity_failed), dealCheck=None, tickHistoryDrift=None, crossBuild=cross_build)
+        return dict(blank, verdict=NOT_COMPARABLE, decidedBy='identity', reasons=list(identity_failed))
     if reproduced:
-        return dict(schema=SCHEMA, verdict=COMPARABLE, decidedBy='exact_reproduction', criteria=None, failed=[],
-                    reasons=['reproduced the original exactly'], dealCheck=None, tickHistoryDrift=None, crossBuild=cross_build)
-    if deal_check and deal_check.get('swap_only'):
-        flag, why = swap_review(original or {}, retest or {}, deposit=deposit)
-        return dict(schema=SCHEMA, verdict=REBASED, decidedBy='deal_level', criteria=None, failed=[],
-                    reasons=['the same deals (time, type, entry, lots, price); only money and equity differ, and only at '
-                             'rollover rows: the broker changed its swap rates or symbol spec, which MT5 applies to all history'],
-                    dealCheck=deal_check, crossBuild=cross_build,
-                    tickHistoryDrift=dict(drift(original or {}, retest or {}, max_equity_gap=max_equity_gap), cause=SWAP_OR_SPEC,
-                                          reviewFlag=flag, reviewReason=why))
-    rows = criteria(original or {}, retest or {}, deposit=deposit)
-    failed = [row['criterion'] for row in rows if not row['ok']]
-    reasons = ['%s: %s' % (row['criterion'], row['detail']) for row in rows if not row['ok']] if failed else \
-        ['did not reproduce exactly, but every tick-history drift criterion holds over the original span']
-    if cross_build:
-        reasons = ['%s: a re-test on another build under a trading-equivalence certificate qualifies only by exact '
-                   'reproduction or a swap-only drift; the aggregate tolerance never applies across builds'
-                   % CROSS_BUILD] + (reasons if failed else [])
-        failed = [CROSS_BUILD] + failed
-    return dict(schema=SCHEMA, verdict=REQUALIFY if failed else REBASED, decidedBy='aggregate', criteria=rows, failed=failed,
-                reasons=reasons, dealCheck=deal_check, crossBuild=cross_build,
-                tickHistoryDrift=dict(drift(original or {}, retest or {}, max_equity_gap=max_equity_gap), cause=HISTORY_OR_BEHAVIOUR,
-                                      reviewFlag=False, reviewReason=None))
+        return dict(blank, verdict=COMPARABLE, decidedBy='exact_reproduction', reasons=['reproduced the original exactly'])
+    check = check or dict(rules=[_rule('capture', False, 'not measured: needs complete captures on both runs',
+                                       first=dict(missing=['no behaviour check']))], swap={})
+    rules, swap = check['rules'], check.get('swap') or {}
+    failed = [row['rule'] for row in rules if not row['ok']]
+    first = next((row for row in rules if not row['ok']), None)
+    stamp = dict(drift(original or {}, retest or {}, max_equity_gap=max_equity_gap), swapDelta=swap.get('delta'),
+                 swapBound=swap.get('bound'), originalSwap=swap.get('original'), retestSwap=swap.get('retest'))
+    common = dict(schema=SCHEMA, decidedBy='behaviour_rules', rules=rules, failed=failed, crossBuild=cross_build, swap=swap)
+    if failed:
+        return dict(common, verdict=REQUALIFY, firstFailingRule=first['rule'], firstDifference=first['firstDifference'],
+                    reasons=['%s: %s' % (row['rule'], row['detail']) for row in rules if not row['ok']],
+                    tickHistoryDrift=dict(stamp, cause=HISTORY_OR_BEHAVIOUR, reviewFlag=False, reviewReason=None))
+    flag, why = swap_review(original or {}, retest or {}, deposit=deposit)
+    return dict(common, verdict=REBASED, firstFailingRule=None, firstDifference=None,
+                reasons=['the same orders and deals (time, type, entry, lots, price, profit); only swap differs, by %+.2f '
+                         '(limit %.2f), and balance and equity moved only by it: the broker changed its swap rates, which '
+                         'MT5 applies to all history' % (swap.get('delta') or 0.0, swap.get('bound') or 0.0)],
+                tickHistoryDrift=dict(stamp, cause=SWAP_OR_SPEC, reviewFlag=flag, reviewReason=why))
 
 
-def _case_deal_check(raw):
-    """A fixture case's ``deal_level`` input: deal rows [msc, type, entry, lots, price], equity rows [minute, balance, equity]."""
-    if not raw:
-        return None
-    deals = lambda rows: [(int(r[0]), str(r[1]), str(r[2]), Decimal(str(r[3])), Decimal(str(r[4]))) for r in rows]
-    equity = lambda rows: [(datetime.strptime(r[0], '%Y-%m-%d %H:%M'), Decimal(str(r[1])), Decimal(str(r[2]))) for r in rows]
-    return deal_level(deals(raw['deals']['original']), deals(raw['deals']['retest']),
-                      equity(raw['equity']['original']), equity(raw['equity']['retest']))
+# ---------------------------------------------------------------------------
+# The shared fixture (fixtures/catchup-rebase-cases.json)
+# ---------------------------------------------------------------------------
+
+def fixture_run(spec):
+    """One run of the fixture's carry scenario (see the fixture's ``notes``), with the case's edits applied."""
+    s1, s2 = (Decimal(str(v)) for v in spec.get('swap', (0, 0)))
+    dip, b0 = Decimal(str(spec.get('dip', 160))), Decimal(100000)
+    at = lambda day, hour, minute=0, second=0: datetime(2026, 1, 5 + day, hour, minute, second)
+    opened, closed = _msc(at(0, 10)), _msc(at(2, 10))
+    end = b0 + 500 + s1 + s2
+    # The export equity CSV rows; the capture's account rows are taken at the same moments (index for index).
+    rows = [[at(0, 10), b0, b0], [at(0, 15), b0, b0 + 200], [at(1, 0, 1), b0, b0 + 200 + s1], [at(1, 12), b0, b0 + dip + s1],
+            [at(2, 0, 1), b0, b0 + 200 + s1 + s2], [at(2, 8), b0, b0 + dip + s1 + s2], [at(2, 10), end, end], [at(2, 12), end, end],
+            [at(2, 15), end, end]]
+    fields = ('server_time_msc', 'sequence_id', 'direction', 'order_id', 'deal_id', 'retcode', 'sent', 'requested_lots',
+              'result_lots', 'result_price')
+    orders = [dict(zip(fields, (opened, '1', '0', '2', '2', '10009', 'true', Decimal(1), Decimal(1), Decimal('1.1')))),
+              dict(zip(fields, (closed, '1', '0', '3', '3', '10009', 'true', Decimal(1), Decimal(1), Decimal('1.105'))))]
+    magic = str(spec.get('magic', '21058'))
+    deals = [dict(server_time_msc=opened, deal_type='0', deal_entry='0', lots=Decimal(1), price=Decimal('1.1'), profit=Decimal(0),
+                  swap=Decimal(0), commission=Decimal(0), fee=Decimal(0), deal_magic=magic),
+             dict(server_time_msc=closed, deal_type='1', deal_entry='1', lots=Decimal(1), price=Decimal('1.105'), profit=Decimal(500),
+                  swap=s1 + s2, commission=Decimal(0), fee=Decimal(0), deal_magic=magic)]
+    marks = [[opened, '1', Decimal(0), Decimal(0)], [_msc(at(1, 0, 0, 1)), '1', Decimal(0), s1],
+             [_msc(at(2, 0, 0, 1)), '1', Decimal(0), s1 + s2], [closed, '1', s1 + s2, Decimal(0)]]
+    account = [[_msc(row[0]), 'event' if n in (0, 6) else 'minute', row[1], row[2], _msc(row[0])] for n, row in enumerate(rows)]
+    for kind, target in (('orders_edit', orders), ('deals_edit', deals)):
+        for index, field, value in spec.get(kind) or ():
+            target[index][field] = _norm(field, str(value))
+    for index, field, value in spec.get('marks_edit') or ():   # field: 2 realized swap, 3 floating swap
+        marks[index][field] = Decimal(str(value))
+    for index, amount in spec.get('balance_shift') or ():     # money moved from that row on (balance and equity)
+        for row in rows[index:]:
+            row[1] += Decimal(str(amount))
+            row[2] += Decimal(str(amount))
+        for row in account[index:]:
+            row[2] += Decimal(str(amount))
+            row[3] += Decimal(str(amount))
+    for index, amount in spec.get('balance_only_shift') or ():   # balance alone moved at that account row
+        account[index][2] += Decimal(str(amount))
+    for index, amount in spec.get('equity_shift') or ():      # equity moved at that row only
+        rows[index][2] += Decimal(str(amount))
+        account[index][3] += Decimal(str(amount))
+    for index, minute in spec.get('csv_minute_shift') or ():  # the export CSV sampled another minute
+        rows[index][0] = datetime.strptime(minute, '%Y-%m-%d %H:%M')
+    for index, minute in spec.get('account_minute_shift') or ():   # the account row at another moment
+        account[index][0] = _msc(datetime.strptime(minute, '%Y-%m-%d %H:%M'))
+    swap_at = lambda stamp: next((m[2] + m[3] for m in reversed(marks) if m[0] <= stamp), Decimal(0))   # one sequence
+    for index, minute in spec.get('stale') or ():   # no tick since that minute: account equity before any later charge
+        quote = _msc(datetime.strptime(minute, '%Y-%m-%d %H:%M'))
+        account[index][3] -= swap_at(account[index][0]) - swap_at(quote)
+        account[index][4] = quote
+    # One ordinal counter, as the EA writes it: each moment's marks just before its account row.
+    events = sorted([(m[0], 0, n) for n, m in enumerate(marks)] + [(a[0], 1, n) for n, a in enumerate(account)])
+    ordinal = int(spec.get('ordinal_offset', 0))
+    marked, accounted = {}, {}
+    for number, (_, kind, n) in enumerate(events, ordinal + 1):
+        (marked if kind == 0 else accounted)[n] = number
+    run = dict(orders=(fields, orders), deals=deals, rows=[tuple(row) for row in rows], missing=[],
+               marks=[(marked[n], *m) for n, m in enumerate(marks)],
+               account=[(accounted[n], *a) for n, a in enumerate(account)])
+    for name in spec.get('missing') or ():
+        run[name] = None
+        run['missing'].append(name + '.csv missing')
+    return run
 
 
-def judge_case(case, defaults=None, deal_inputs=None):
-    """Run one fixture case (``fixtures/catchup-rebase-cases.json``): ``defaults`` with the case's own fields on top.
-
-    A case's ``deal_level`` is a deal/equity input, or the name of one in the fixture's ``deal_level_inputs``.
-    """
+def judge_case(case, defaults=None):
+    """Run one fixture case: ``defaults`` with the case's own fields on top, each run built by ``fixture_run``."""
     base = defaults or {}
     pick = lambda key, fallback=None: case[key] if key in case else base.get(key, fallback)
-    original = dict(base.get('original') or {}, **(case.get('original') or {}))
-    retest = dict(base.get('retest') or {}, **(case.get('retest') or {}))
-    raw = case.get('deal_level')
-    if isinstance(raw, str):
-        raw = (deal_inputs or {})[raw]
-    return decide(pick('identity_failed', []), pick('reproduced', False), original, retest, deposit=pick('deposit'),
-                  deal_check=_case_deal_check(raw), cross_build=pick('cross_build', False))
+    spec = lambda side: dict(base.get(side) or {}, **(case.get(side) or {}))
+    old, new = fixture_run(spec('original')), fixture_run(spec('retest'))
+    cut = old['rows'][-1][0]
+    check = behaviour_check(old, new, _msc(cut))
+    figures = lambda run: equity_figures([row for row in run['rows'] if row[0] < cut])
+    return decide(pick('identity_failed', []), pick('reproduced', False), check, original=figures(old), retest=figures(new),
+                  deposit=pick('deposit'), cross_build=pick('cross_build', False))
 
 
 # ---------------------------------------------------------------------------
-# Measuring two runs (bounded files, read only)
+# Reading two runs (bounded files, read only)
 # ---------------------------------------------------------------------------
 
-def _msc(moment):
-    return int(moment.replace(tzinfo=timezone.utc).timestamp() * 1000)
+def _bounded(path, limit):
+    path = Path(path)
+    if path.stat().st_size > limit:
+        raise ValueError('%s exceeds its byte bound' % path.name)
+    return path
+
+
+def read_orders(path, cut_msc):
+    """(fields, rows) of orders.csv before the cut, every column except ``ORDER_IGNORED``."""
+    with _bounded(path, MAX_ORDERS_CSV).open(encoding='utf-8-sig', newline='') as stream:
+        reader = csv.DictReader(stream)
+        fields = tuple(f for f in reader.fieldnames or () if f not in ORDER_IGNORED)
+        rows = [{f: _norm(f, row[f]) for f in fields} for row in reader if int(row['server_time_msc']) < cut_msc]
+    return fields, rows
+
+
+def read_deals(path, cut_msc):
+    """Deals before the cut: the compared fields plus swap, commission, fee and magic."""
+    from studio_catchup_verdict import MAX_DEALS_CSV
+    keep = DEAL_FIELDS + ('swap', 'commission', 'fee')
+    with _bounded(path, MAX_DEALS_CSV).open(encoding='utf-8-sig', newline='') as stream:
+        return [dict({f: _norm(f, row[f]) for f in keep}, deal_magic=row.get('deal_magic'))
+                for row in csv.DictReader(stream) if int(row['server_time_msc']) < cut_msc]
+
+
+def read_marks(path, cut_msc):
+    """(ordinal, msc, sequence, realized swap, floating swap) of marks.csv before the cut, where a sequence's swap changed."""
+    out, last = [], {}
+    with _bounded(path, MAX_MARKS_CSV).open(encoding='utf-8-sig', newline='') as stream:
+        reader = csv.reader(stream)
+        header = next(reader)
+        o, t, s, rs, fs = (header.index(name) for name in ('ordinal', 'server_time_msc', 'sequence_id', 'realized_swap', 'floating_swap'))
+        for row in reader:
+            pair = (row[rs], row[fs])
+            if last.get(row[s]) == pair or int(row[t]) >= cut_msc:
+                continue
+            last[row[s]] = pair
+            out.append((int(row[o]), int(row[t]), row[s], Decimal(pair[0]), Decimal(pair[1])))
+    return out
+
+
+def read_account(path):
+    """(ordinal, msc, reason, balance, equity, quote msc) of account.csv, streamed (the file is a row per minute)."""
+    with _bounded(path, MAX_ACCOUNT_CSV).open(encoding='utf-8-sig', newline='') as stream:
+        reader = csv.reader(stream)
+        header = next(reader)
+        o, t, r, b, e, q = (header.index(name) for name in ('ordinal', 'server_time_msc', 'reason', 'balance', 'equity', 'quote_server_time_msc'))
+        for row in reader:
+            yield int(row[o]), int(row[t]), row[r], Decimal(row[b]), Decimal(row[e]), int(row[q])
+
+
+def read_run(deals_csv, rows, cut_msc):
+    """One run for ``behaviour_check``: its capture files next to ``deals_csv`` (None: no complete capture).
+
+    account.csv is streamed when the rules read it (``read_account``); the others are read here.
+    """
+    run = dict(orders=None, deals=None, marks=None, account=None, rows=rows, missing=[])
+    if not deals_csv:
+        run['missing'].append('no complete sequence capture')
+        return run
+    folder = Path(deals_csv).parent
+    readers = dict(orders=read_orders, deals=read_deals, marks=read_marks)
+    for name in CAPTURE_FILES:
+        path = folder / (name + '.csv')
+        if not path.is_file():
+            run['missing'].append(name + '.csv missing')
+            continue
+        try:
+            run[name] = readers[name](path, cut_msc) if name in readers else read_account(_bounded(path, MAX_ACCOUNT_CSV))
+            if name == 'account':
+                next(iter(read_account(path)), None)   # the header and first row read now, so a bad file is a missing capture
+        except (OSError, ValueError, KeyError, IndexError, ArithmeticError, csv.Error) as exc:
+            run['missing'].append('%s.csv unreadable (%s)' % (name, exc))
+    return run
 
 
 def deal_totals(deals_csv, lo_msc, hi_msc):
@@ -327,17 +577,13 @@ def deal_totals(deals_csv, lo_msc, hi_msc):
 
 
 def measure(rows, deals, *, cut, sample):
-    """One run's aggregate figures over [its first row, cut); ``sample`` = (first day, last day) or None."""
+    """One run's aggregate figures over [its first row, cut) for the drift stamp; ``sample`` = (first day, last day) or None."""
     from studio_catchup_verdict import deal_window
     inside = [row for row in rows if row[0] < cut]
     out = dict(deal_count=None, pf=None, pf_note='needs a complete capture', final_balance=None, max_dd=None, sample=None,
                rows=len(inside))
     if inside:
-        peak, dd = inside[0][2], Decimal(0)
-        for _, _, equity in inside:
-            peak = max(peak, equity)
-            dd = max(dd, peak - equity)
-        out.update(final_balance=inside[-1][1], max_dd=dd)
+        out.update(equity_figures(inside))
     if deals and inside:
         out.update(deal_totals(deals, _msc(datetime.combine(inside[0][0].date(), datetime.min.time())), _msc(cut)))
         if sample:
@@ -404,15 +650,8 @@ def judge(original, retest, *, identity_failed, reproduced, old_rows, new_rows, 
         sample = None   # SAMPLE must end inside the original span
     a = measure(old_rows, old_deals, cut=cut, sample=sample)
     b = measure(new_rows, new_deals, cut=cut, sample=sample)
-    if old_deals and new_deals:
-        # Deal-level step first (goatai#1885 6009311876): the canary's deal comparison, before the forced close.
-        from studio_equivalence import deal_list
-        deal_check = deal_level(deal_list(old_deals, cut_msc=_msc(cut)), deal_list(new_deals, cut_msc=_msc(cut)),
-                                [row for row in old_rows if row[0] < cut], [row for row in new_rows if row[0] < cut])
-    else:
-        deal_check = dict(status='not_measured', swap_only=False, deals=None, money=None,
-                          reason='needs a complete capture (deals.csv) on both runs')
-    result = decide([], False, a, b, deposit=deposit, max_equity_gap=equity_gap(old_rows, new_rows, cut), deal_check=deal_check,
+    check = behaviour_check(read_run(old_deals, old_rows, _msc(cut)), read_run(new_deals, new_rows, _msc(cut)), _msc(cut))
+    result = decide([], False, check, original=a, retest=b, deposit=deposit, max_equity_gap=equity_gap(old_rows, new_rows, cut),
                     cross_build=cross_build)
     public = lambda m: {k: (float(v) if isinstance(v, Decimal) else v) for k, v in m.items() if k != 'sample'} | dict(
         sample=None if m['sample'] is None else {k: (float(v) if isinstance(v, Decimal) else v) for k, v in m['sample'].items()})

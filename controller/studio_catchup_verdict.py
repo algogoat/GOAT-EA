@@ -16,13 +16,15 @@ checked through that reproduction. Symbol specification (contract size, digits) 
 not captured by this EA build; a change would alter the pre-window trades and fail
 the reproduction check. Any failed identity check makes the verdict ``not_comparable``.
 
-Tick-history drift (``studio_catchup_rebase``, goatai#1885 6008946539): when every identity check
-passes but the exact reproduction does not (the broker's tick history changed), the re-test is
-compared with the original over the original span in aggregate. Within the bar it is
-``comparable_rebased`` (``comparison``): the new weeks are judged as below and every window is
-recomputed on the re-test (``rebasedWindows``, never spliced). Outside it the verdict is
-``requalify``: a new candidate with full gates and no carried status, whose reasons name the failed
-criteria. Every verdict carries ``comparison``, ``historyBasis`` and ``tickHistoryDrift``.
+Swap-only drift (``studio_catchup_rebase``, ``goat-catchup-rebase-v2``, goatai#1885 6029484888): when
+every identity check passes but the exact reproduction does not, the re-test is ``comparable_rebased``
+(``comparison``) only when, over the original span, its orders and deals are identical (magic and swap
+aside), its total swap moved within max($5, 2% of the original's), its balance and equity moved only by
+the swap difference (within $0.01) and its max DD within 10%: the new weeks are judged as below and every
+window is recomputed on the re-test (``rebasedWindows``, never spliced). Anything else is ``requalify``:
+a new candidate with full gates and no carried status, whose reasons name the failed rules;
+``firstFailingRule`` and ``firstDifference`` say where it first differed. Every verdict carries
+``comparison``, ``historyBasis`` and ``tickHistoryDrift``.
 
 Definitions (broker server time, half-open windows [start 00:00, end+1 00:00)):
 - net: equity change over the window from the export equity CSV (includes the
@@ -45,7 +47,7 @@ The library scorer applies its fidelity table to these; this tool caps nothing.
 
 Verdict rules, in order:
 1. not_comparable: any identity check failed; requalify: identity held, but the re-test neither
-   reproduced the original nor stayed within the tick-history drift bar.
+   reproduced the original nor differed from it only by swap within the bar.
 2. failed: the new weeks went below the worst drawdown already shown (dd >
    prior_dd), or, with at least min_trades trades, lost money with pf < failed_pf
    (no pf: lost more than one forward-pace window of profit).
@@ -431,9 +433,9 @@ def _plain(verdict, new, pace, reasons, confidence, comparable, comparison=None)
     text = {'held_up': 'Held up', 'weakened': 'Weakened', 'failed': 'Failed', 'too_few_trades': 'Too few trades to judge',
             'not_comparable': 'Not comparable', 'requalify': 'Requalify'}[verdict]
     if verdict == 'requalify':
-        return ('%s: the re-test over %s ran the same test, but the broker\'s tick history moved its results beyond the '
-                'rebase bar over the original span (%s). It is a new candidate: judge it with the full gates on the re-test, '
-                'and carry nothing over from the original.' % (text, span, '; '.join(reasons)))
+        return ('%s: the re-test over %s ran the same test, but over the original span it did not trade exactly like the '
+                'original with only swap moving the money within the bar (%s). It is a new candidate: judge it with the full '
+                'gates on the re-test, and carry nothing over from the original.' % (text, span, '; '.join(reasons)))
     if not comparable:
         return '%s: the re-test over %s is not the same test as the original (%s), so its new weeks are not judged.' % (
             text, span, '; '.join(reasons))
@@ -448,8 +450,8 @@ def _plain(verdict, new, pace, reasons, confidence, comparable, comparison=None)
     sentence += '. %s confidence: %s trades over %d trading days.' % (
         confidence.capitalize(), '?' if new['trades'] is None else new['trades'], new['weekdays'])
     if comparison == 'comparable_rebased':
-        sentence += (' Re-based: the broker\'s tick history changed slightly since the export, within the rebase bar, '
-                     'so every window is now measured on this re-test.')
+        sentence += (' Re-based: the same trades as the export; only the broker\'s current swap rates changed the money, '
+                     'within the bar, so every window is now measured on this re-test.')
     return sentence
 
 
@@ -479,15 +481,16 @@ def evaluate(original, retest, *, new_end, tester=None, rules=None, pins=None):
         old_deals = None
     repro = reproduction(old_rows, new_rows, original_deals=old_deals, retest_deals=new_deals)
     comparable = comparability(original, retest, pins=pins, repro=repro, same_inputs=same_inputs)
-    # Tick-history drift (studio_catchup_rebase): identity stays strict; a re-test that missed the exact
-    # reproduction is compared over the original span in aggregate: comparable_rebased or requalify.
+    # Swap-only drift (studio_catchup_rebase, goat-catchup-rebase-v2): identity stays strict; a re-test that missed
+    # the exact reproduction is comparable_rebased only when it traded identically and only swap moved the money
+    # within the bar; anything else is requalify.
     identity_failed = ['%s: %s' % (item['check'], item['detail']) for item in comparable['checks']
                        if not item['ok'] and item['check'] != 'reproduced']
     deposit = (pins or {}).get('deposit')
     if deposit is None:
         deposit = old_capture.get('initial_equity') if old_capture.get('initial_equity') is not None else \
             ((pins or {}).get('original_tester') or {}).get('Deposit')
-    # Another build under an ACTIVE trading-equivalence certificate: only exact or swap-only may qualify (no stacking).
+    # Another build under an ACTIVE trading-equivalence certificate: recorded; the same rule applies (no aggregate path to stack).
     cross_build = bool(((pins or {}).get('equivalence') or {}).get('mode') == 'active')
     rebase = rebase_rule.judge(original, retest, identity_failed=identity_failed, reproduced=bool(repro.get('reproduced')),
                                old_rows=old_rows, new_rows=new_rows, old_deals=old_deals, new_deals=new_deals, tester=tester,
@@ -530,7 +533,7 @@ def evaluate(original, retest, *, new_end, tester=None, rules=None, pins=None):
         reasons = ['%s: %s' % (item['check'], item['detail']) for item in comparable['checks'] if not item['ok']]
         confidence = 'none'
     elif comparison == rebase_rule.REQUALIFY:
-        # A new candidate: full gates, no carried status; the reasons name every failed criterion.
+        # A new candidate: full gates, no carried status; the reasons name every failed rule, the first one first.
         verdict, reasons, confidence = 'requalify', list(rebase['reasons']), 'none'
     else:
         verdict, reasons = decide(window, prior, pace, rules)
@@ -546,6 +549,7 @@ def evaluate(original, retest, *, new_end, tester=None, rules=None, pins=None):
                 new_weeks=window, prior_dd=prior, forward_pace=pace, inputs_match=same_inputs, reproduction=repro,
                 comparability=comparable, comparison=comparison, rebase={k: v for k, v in rebase.items() if k != 'historyBasis'},
                 historyBasis=rebase.get('historyBasis'), tickHistoryDrift=rebase.get('tickHistoryDrift'), rebasedWindows=windows,
+                firstFailingRule=rebase.get('firstFailingRule'), firstDifference=rebase.get('firstDifference'),
                 original=dict(set_path=original['set_path'], set_sha256=original['set_sha256'], evidence_end=original['evidence_end'],
                               values_sha256=original['values_sha256']),
                 retest=dict(set_path=retest['set_path'], set_sha256=retest['set_sha256'], evidence_end=retest['evidence_end'],

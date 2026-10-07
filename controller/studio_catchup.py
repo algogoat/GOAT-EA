@@ -960,7 +960,8 @@ class CatchupRunner(SeedRunner):
                        oos_rule=verdict['oos_rule']['status'], evidenceEnd=verdict['evidenceEnd'],
                        evidenceEndMode=verdict['evidenceEndMode'], evidenceEndEffective=verdict['evidenceEndEffective'],
                        comparison=verdict.get('comparison'), historyBasis=verdict.get('historyBasis'),
-                       tickHistoryDrift=verdict.get('tickHistoryDrift'))
+                       tickHistoryDrift=verdict.get('tickHistoryDrift'),
+                       firstFailingRule=verdict.get('firstFailingRule'), firstDifference=verdict.get('firstDifference'))
         return dict(status='verified_catchup_retest', path=retest['set_path'], sha256=retest['set_sha256'], schema_version=1,
                     member_id=spec['member_id'], summary=summary, verdict=verdict, version_path=str(version_path),
                     native_launch_qualification=False)

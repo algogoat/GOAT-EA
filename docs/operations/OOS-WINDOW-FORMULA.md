@@ -290,62 +290,64 @@ per-set records the agent imports into the matrix) carries `window_metrics`:
   export's status and qualification never change because of it. For a held-out-locked export the
   whole `window_metrics` (and `oos_rule`) is redacted like every other tested value.
 
-## When the broker's swaps or tick history changed: re-based catch-up evidence (`goat-catchup-rebase-v1`)
+## When the broker's swaps changed: re-based catch-up evidence (`goat-catchup-rebase-v2`)
 
-Decided on goatai#1885 (6008922429, 6008944190, 6008946539). The first native catch-up re-tested
-28 exports with the same build (B40), inputs, model, server, deposit, leverage and currency. Three
-reproduced exactly; 25 missed the exact `reproduced` check by small amounts (final balance −$22 to
-+$2 at first report). Ops then found the cause (goatai#1885 6009311876): **swap-rate changes**. MT5's
-tester applies the symbol's CURRENT swap rates to all history, and Darwinex updates them. In every
-case the first divergence was the first equity row after the server-midnight rollover; the deals
-were identical, and only floating equity and swap accruals differed (−$22 to +$5 over a year).
-`controller/studio_catchup_rebase.py` decides each re-test's `comparison`:
+Decided on goatai#1885. The first native catch-up (B40, `cu1002b40`) re-tested 28 exports with the
+same build, inputs, model, server, deposit, leverage and currency. Three reproduced exactly; 25 missed
+the exact `reproduced` check by small amounts. Ops found the cause (6009311876): **swap-rate
+changes**. MT5's tester applies the symbol's CURRENT swap rates to all history, and Darwinex updates
+them. Ops then showed that the tester is deterministic except swap (6029461500): re-test vs re-test,
+orders.csv is byte-identical and the deals are identical in every column except magic (run-local) and
+swap. Claude-Mac's ruling (6029484888) replaced the v1 rule (a deal-level swap step, else aggregate drift
+bars) with an exact-behaviour, swap-only rule. `controller/studio_catchup_rebase.py` decides each
+re-test's `comparison`:
 
 | `comparison` | When | What happens |
 |---|---|---|
 | `comparable` | Identity holds and the re-test reproduced the original exactly | Fast path, unchanged: new weeks judged, the original FOOS restored on import |
-| `comparable_rebased` | Identity holds, no exact reproduction, and either the deal-level swap step or every aggregate criterion below holds | New weeks judged; the re-test becomes the evidence for **every** window |
-| `requalify` | Identity holds, not swap-only, and any aggregate criterion failed or could not be measured | A **new candidate**: full gates on the re-test, no carried status; the reasons name every failed criterion |
+| `comparable_rebased` | Identity holds, no exact reproduction, and every rule below holds | New weeks judged; the re-test becomes the evidence for **every** window |
+| `requalify` | Identity holds and any rule failed or could not be measured (fail-safe) | A **new candidate**: full gates on the re-test, no carried status; the reasons name every failed rule |
 | `not_comparable` | Any identity check failed (build, inputs, EA name, model, symbol, server, deposit, leverage, currency) | Unchanged: nothing is judged |
 
-**Step 1, deal level** (runs first; needs a complete capture on both runs). The deals before the
-cut are compared exactly as the trading-equivalence canary compares them
-(`studio_equivalence.deal_list` / `compare_deals`: time, type, entry, lots, price). If they are
-identical and the equity difference between the runs steps **only on rollover rows** (the first
-equity row of a new server day, where MT5 charges swap; a step of at most 0.005 is no step), the
-re-test is `comparable_rebased` with `tickHistoryDrift.cause: "swap_or_spec"`, whatever the size of
-the money difference. Current swaps are what live trading pays, so every window is still re-based
-on the re-test. Balance is not tested on its own: a held position's swap moves from floating equity
-to the balance when it closes. Different deals, money that moves on any other row, or equity
-sampled at different minutes fall through to step 2 (`dealCheck.status`: `deals_differ`,
-`money_off_rollover` or `not_measured`).
+**The rules**, over the original span (from the original's start up to, not including, its last minute:
+the forced close, as in the exact reproduction check), in order. Every rule is evaluated; the first that
+fails is `firstFailingRule`, and `firstDifference` is its first differing row.
 
-**Review flag** (Claude-Mac APPROVE, goatai#1885 6010080246): a swap-only drift stays
-`comparable_rebased`, but when |final balance delta| > 5% of |original net profit| it carries
-`tickHistoryDrift.reviewFlag: true` and a `reviewReason`. A large swap change can change a
-carry-heavy set's economics. A drift that cannot be sized (balance or deposit unknown) is flagged too.
-Exactly 5% is not flagged.
-
-**Across builds** (a re-test on another build under an ACTIVE trading-equivalence certificate),
-only an exact reproduction or a swap-only drift qualifies. The aggregate path gives `requalify` with
-failed `cross_build` (plus any failed criteria), even inside the bar, so build drift and history drift
-never stack. `rebase.crossBuild` records it.
-
-**Step 2, aggregate** (`tickHistoryDrift.cause: "history_or_behaviour"`). Drift criteria, compared in **aggregate** (never row by row) over the **original span**: from the
-original's first equity row up to, not including, its last minute (the forced close, as in the exact
-reproduction check). All must hold for `comparable_rebased`:
-
-| Criterion | Bar (re-test minus original) |
+| Rule | Must hold (re-test vs original) |
 |---|---|
-| `deal_count` (positions opened, the EA's `Trades=`) | \|Δ\| ≤ 5% of the original count |
-| `pf` (deal results, all costs, positions opened in the span) | \|Δ\| ≤ 0.05 |
-| `final_balance` (last balance before the cut, in both runs) | \|Δ\| ≤ max(0.1% of deposit, 2% of \|original net profit\|) |
-| `sample_pf_side` (SAMPLE = [FromDate, ForwardDate − 1]) | PF on the same side of 1.0 in both (PF ≥ 1.0 is one side; it is exactly SAMPLE net ≥ 0) |
-| `max_dd` (sampled equity below its running peak) | \|Δ\| ≤ 10% of the original max DD |
+| `capture` | orders.csv, deals.csv, marks.csv and account.csv of a complete sequence capture on both runs |
+| `orders` | every order identical, in every column except the capture's `ordinal` (a row counter shared by all capture files) |
+| `deals` | every deal identical on time, type, entry, lots, price **and profit**; magic (run-local) is ignored, swap is judged below |
+| `swap` | \|Δ total swap\| ≤ max($5, 2% of the **original's** \|total swap\|); total swap = realized swap + floating swap of positions still open (marks.csv) |
+| `balance` | on every capture account row, Δ balance = Δ realized swap, within $0.01 |
+| `equity` | on every capture account row, Δ equity = Δ cumulative swap (realized + floating), within $0.01 |
+| `max_dd` | \|Δ max DD\| ≤ 10% of the original's max DD (the export equity CSV, as the export measures it) |
 
-Bars are compared exactly (decimal arithmetic): a value on the bar passes. `deal_count`, `pf` and
-`sample_pf_side` need a complete sequence capture (`deals.csv`) on **both** runs; without one they
-are not measured, which fails them, so such a re-test requalifies and is never re-based on guesses.
+Bars are compared exactly (decimal arithmetic): a value on the bar passes. Anything else is a behaviour
+difference: there is **no aggregate pass path**. If broker history revisions move a deal, the set is
+re-judged as a new candidate. Commission or fee differences move the balance without swap, so the balance
+rule catches them.
+
+Which rows the money rules read. The export equity CSV samples a row only when price or equity moved
+enough, so a swap change can add or drop a row after a rollover (13 of the 25 B40 re-tests did), and its
+equity column is a minute low, not a point value. The capture's account.csv records balance and equity at
+fixed moments instead: every minute and every trading event, identical in both runs when the behaviour is
+identical. The EA writes each moment's marks (per sequence: realized swap, floating swap) just before
+its account row, under one ordinal counter, so the swap at a row is exact: every mark with a smaller
+ordinal. One tester detail: at the rollover the tester charges swap on the open positions but
+recalculates account equity only on the next tick, so until a tick arrives (the market is often closed
+just after midnight) the account's equity still shows the swap before the charge. The equity rule therefore
+takes the swap difference as of the row's last tick (`quote_server_time_msc`). Account rows that do not
+line up (a different event or minute) fail both money rules.
+
+**Review flag** (Claude-Mac APPROVE, goatai#1885 6010080246): a re-based re-test whose |final balance
+delta| > 5% of |original net profit| carries `tickHistoryDrift.reviewFlag: true` and a `reviewReason`. A
+swap change can change a carry-heavy set's economics. A drift that cannot be sized (balance or deposit
+unknown) is flagged too. Exactly 5% is not flagged.
+
+**Across builds** (a re-test on another build under an ACTIVE trading-equivalence certificate) the rule
+is the same. With no aggregate path, build drift and history drift cannot stack. `rebase.crossBuild`
+records it.
 
 With `comparable_rebased` (and for a `requalify` candidate), the re-test is the evidence for BOOS,
 SAMPLE, FWD and FOOS, each recomputed on the re-test alone (`rebasedWindows`,
@@ -365,23 +367,25 @@ import stamp (next to `evidenceEnd`):
   each run's end; null for `comparable` and `not_comparable`;
 - `historyBasis.originalExportedAtBasis: "set_mtime"` says where `originalExportedAt` comes from (the
   capture has no export timestamp yet);
-- `tickHistoryDrift {dealCountDelta, pfDelta, balanceDelta, ddDelta, maxEquityGap, cause, reviewFlag, reviewReason}`: re-test
-  minus original over the original span; `maxEquityGap` is the largest |equity difference| over the
-  minutes both runs sampled; `cause` is `swap_or_spec` (step 1) or `history_or_behaviour` (step 2).
-  Null for `comparable` and `not_comparable`. `rebase.decidedBy` and `rebase.dealCheck` say which
-  step decided and what the deal comparison found.
+- `tickHistoryDrift {dealCountDelta, pfDelta, balanceDelta, ddDelta, maxEquityGap, swapDelta, swapBound,
+  originalSwap, retestSwap, cause, reviewFlag, reviewReason}`: re-test minus original over the original
+  span; `maxEquityGap` is the largest |equity difference| over the minutes both runs sampled; `cause` is
+  `swap_or_spec` for a re-based re-test, else `history_or_behaviour`. Null for `comparable` and
+  `not_comparable`;
+- `firstFailingRule` and `firstDifference` (verdict and summary; `rebase` on the evidence-version also
+  keeps every rule's result, detail and values).
 
 Follow-up (B42 EA item): the EA should stamp the symbol's swap and commission spec in the export
-capture, so a later re-test can name a swap change directly instead of inferring it from rollover rows.
+capture, so a later re-test can name a swap change directly.
 
 The import stamp also says `carriesStatus` (false for `requalify`) and `candidate: "new"` for
 `requalify`. A `requalify` version never catches the original export up (`evidence-scan` keeps it
-`behind` with `previous_attempt.verdict: requalify`); its re-test SET is the new candidate. The
-evidence-version also keeps `rebase` (each criterion's values, delta, limit and detail).
-`controller/fixtures/catchup-rebase-cases.json` pins the bar: exact reproduction, a just-pass and a
-just-fail for every criterion (both directions), identity mismatches, a multi-criteria fail, and the
-deal-level step (swap-only drift, a deal mismatch, money drift off a rollover row);
-`scripts/test_catchup_rebase_controller_mutations.py` weakens every threshold and branch.
+`behind` with `previous_attempt.verdict: requalify`); its re-test SET is the new candidate.
+`controller/fixtures/catchup-rebase-cases.json` pins the bar: exact reproduction, every rule failing first,
+a just-pass and a just-fail for every boundary ($5 and 2% swap in both directions, $0.01 balance and
+equity, 10% max DD in both directions), the last-tick equity, identity mismatches, a multi-rule fail and
+the review flag; `scripts/test_catchup_rebase_controller_mutations.py` weakens every rule, boundary and
+branch.
 
 ## Plans
 

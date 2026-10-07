@@ -642,26 +642,26 @@ window measured inside the same re-test gives the pace.
   specification is not captured by this EA build, so a change shows up as a
   reproduction failure. A `not_comparable` re-test judges nothing (`confidence:
   none`) and its sentence says why.
-- Tick-history drift (`studio_catchup_rebase.py`, `goat-catchup-rebase-v1`,
-  goatai#1885): identity (every check above except `reproduced`) stays strict.
-  A re-test that passes identity but misses the exact reproduction first gets a
-  deal-level step: identical deals (time, type, entry, lots, price, as the
-  equivalence canary compares them) whose equity difference steps only on
-  rollover rows is a swap or symbol-spec change (MT5 applies current swaps to all
-  history): `comparable_rebased`, `tickHistoryDrift.cause: swap_or_spec`, with
-  `reviewFlag: true` when |balance delta| > 5% of |net profit|. Across builds
-  (an equivalence certificate) only exact or swap-only qualifies; the
-  aggregate path is `requalify` (`cross_build`).
-  Otherwise (`cause: history_or_behaviour`) it is compared
-  with the original over the original span in aggregate (deals ±5%, PF ±0.05,
-  final balance within max(0.1% of deposit, 2% of net), SAMPLE PF on the same
-  side of 1.0, max DD ±10%; deal criteria need complete captures on both runs).
-  Within the bar it is `comparison: comparable_rebased` (`comparability.comparable`
-  true) and judged by the rules below, with every window recomputed on the
-  re-test (`rebasedWindows`, no splice). Past the bar the verdict is `requalify`
-  (`confidence: none`): a new candidate with full gates and no carried status,
-  the reasons naming each failed criterion. Every result stamps `comparison`,
-  `historyBasis` and `tickHistoryDrift`; see
+- Swap-only drift (`studio_catchup_rebase.py`, `goat-catchup-rebase-v2`,
+  goatai#1885 6029484888): identity (every check above except `reproduced`)
+  stays strict. The MT5 tester is deterministic except swap (it applies the
+  symbol's current swap rates to all history), so a re-test that passes identity
+  but misses the exact reproduction is `comparison: comparable_rebased` only
+  when, over the original span, every rule holds, in order: `capture` (orders,
+  deals, marks and account CSVs on both runs), `orders` (identical, every column
+  but the capture ordinal), `deals` (identical on time, type, entry, lots,
+  price and profit; magic and swap ignored), `swap` (|Δ total swap| ≤ max($5, 2%
+  of the original's)), `balance` and `equity` (on every capture account row,
+  the difference equals the realized / cumulative swap difference within $0.01;
+  equity as of the row's last tick) and `max_dd` (within 10%). Then it is judged
+  by the rules below, with every window recomputed on the re-test
+  (`rebasedWindows`, no splice) and `reviewFlag: true` when |balance delta| > 5%
+  of |net profit|. Anything else is `requalify` (`confidence: none`): a new
+  candidate with full gates and no carried status, the reasons naming each
+  failed rule; `firstFailingRule` and `firstDifference` (its first differing
+  row) are on the verdict, the summary and the evidence-version. There is no
+  aggregate pass path, and the rule is the same across builds. Every result
+  stamps `comparison`, `historyBasis` and `tickHistoryDrift`; see
   [OOS-WINDOW-FORMULA.md](../docs/operations/OOS-WINDOW-FORMULA.md).
 - `failed`: a new worst drawdown, measured from the running peak including all
   equity before the new weeks (a drawdown already under way counts;

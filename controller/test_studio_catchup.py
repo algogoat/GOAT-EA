@@ -129,7 +129,8 @@ class CatchupCase(unittest.TestCase):
         (folder / 'attempt-issued.json').parent.mkdir(parents=True, exist_ok=True)
         (folder / 'attempt-issued.json').write_text('{}', encoding='utf-8')
         return make_unit(folder, rows=rows, deals=deals, alias=member['alias'], symbol=tester['Symbol'], run_id=member['capture_id'],
-                         start=datetime.strptime(tester['FromDate'], '%Y.%m.%d').date(), requested_to=to_date, windows=windows)
+                         start=datetime.strptime(tester['FromDate'], '%Y.%m.%d').date(), requested_to=to_date, windows=windows,
+                         marks=getattr(self, 'retest_marks', ()))
 
 
 class ScanTests(CatchupCase):

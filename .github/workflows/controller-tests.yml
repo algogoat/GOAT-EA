@@ -29,7 +29,7 @@ concurrency:
 # controller-mutations (1/3)  ~16-24 min observed
 #   python test_research_outcome_controller_mutations.py   (12-17 min)
 #   python test_evidence_end_export_controller_mutations.py
-#   python test_catchup_rebase_controller_mutations.py     (67 mutations; 10.3 min locally at Idle; shard 1 had headroom)
+#   python test_catchup_rebase_controller_mutations.py     (72 mutations, rebase v2; 12.9 min locally at Idle next to a full suite run)
 #   node   test_bias_reader_parity_mutations.cjs, test_research_outcome_mutations.cjs,
 #          test_studio_steady_panel_mutations.cjs, test_ea_followups_mutations.cjs,
 #          test_terminal_isolation_mutations.cjs
@@ -222,7 +222,7 @@ jobs:
       - name: Terminal isolation controller mutation check (every guard is load-bearing)
         if: matrix.shard == 1
         run: python scripts/test_terminal_isolation_controller_mutations.py
-      - name: Catch-up tick-history drift mutation check (rebase bar per criterion, comparable_rebased / requalify / not_comparable, no-splice windows, stamps)
+      - name: Catch-up swap-only drift mutation check (every rebase v2 rule and boundary, first failing rule, comparable_rebased / requalify / not_comparable, no-splice windows, stamps)
         if: matrix.shard == 1
         run: python scripts/test_catchup_rebase_controller_mutations.py
 

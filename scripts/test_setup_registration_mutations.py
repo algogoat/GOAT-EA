@@ -42,6 +42,11 @@ MUTATIONS = [
      "    _retire_retained(root, {key: old[key] for key in REGISTRATION_IDENTITY}, now=now)\n", ""),
     ('the superseded sha is not recorded in the close journal', SETUP,
      "                record['superseded_registration'] = superseded", "                pass"),
+    ('pairing-code drops the supersession from its answer', SETUP,
+     "            value['supersededRegistration'] = superseded", "            pass"),
+    ('pairing-code reports a supersession that did not happen', SETUP,
+     "        if superseded is not None:\n            value['supersededRegistration']",
+     "        if True:\n            value['supersededRegistration']"),
     ('the close is journaled before the registration check (phantom close_intent)', SETUP,
      "            ident = superseded = None\n",
      "            write_json(path, dict(schema_version=1, attempt_id=attempt_id, phase='close_intent', process=running))\n"

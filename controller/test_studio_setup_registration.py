@@ -113,6 +113,37 @@ class SetupRegistrationTests(unittest.TestCase):
         result = agent_setup.close_terminal(self.c, 'close-b', build_id=BUILD)
         self.assertEqual((result['phase'], result['superseded_registration']['sha256']), ('stopped', digest))
 
+    def test_pairing_code_on_build_b_reports_the_superseded_registration(self):
+        request_id = self.pair_on_old_build()
+        registration = (self.root() / 'registration.json').read_bytes()
+        digest = hashlib.sha256(registration).hexdigest()
+        old = json.loads(registration)
+        expected = dict(sha256=digest, buildId=OLD_BUILD, account=old['account'], server=old['server'],
+                        expiresAtUtc=old['expiresAtUtc'], archivedAs=digest + '.expired.registration.json')
+        self.start_ea()
+        result = agent_setup.pairing_code(self.c, BUILD, mt5=setup_tests.FakeMT5(self.c))
+        self.assertEqual((result['status'], result['source'], result['buildId']), ('pairing_available', 'setup_mailbox', BUILD))
+        self.assertEqual(result['supersededRegistration'], expected)
+        self.assertEqual((self.root() / expected['archivedAs']).read_bytes(), registration)
+        self.assertTrue((self.root() / (request_id + '.expired.request.json')).exists())
+        # The next read on build B supersedes nothing, so the key is absent, as before #184.
+        self.assertNotIn('supersededRegistration', agent_setup.pairing_code(self.c, BUILD, mt5=setup_tests.FakeMT5(self.c)))
+
+    def test_pairing_code_reports_the_supersession_when_no_ea_answers(self):
+        self.pair_on_old_build()
+        digest = hashlib.sha256((self.root() / 'registration.json').read_bytes()).hexdigest()
+        result = agent_setup.pairing_code(self.c, BUILD, timeout=1, mt5=setup_tests.FakeMT5(self.c))
+        self.assertEqual(result['status'], 'no_native_answer')
+        self.assertEqual((result['supersededRegistration']['sha256'], result['supersededRegistration']['buildId']), (digest, OLD_BUILD))
+
+    def test_pairing_code_refuses_a_live_build_a_registration(self):
+        mailbox.setup_register(self.c, self.old_ident(), allow_pairing=True)
+        before = self.snapshot()
+        self.start_ea()
+        with self.assertRaisesRegex(ValueError, REFUSED):
+            agent_setup.pairing_code(self.c, BUILD, mt5=setup_tests.FakeMT5(self.c))
+        self.assertEqual(self.snapshot(), before)
+
     def test_the_same_build_reregisters_without_superseding(self):
         record, superseded = mailbox.setup_register(self.c, self.ident)
         self.assertIsNone(superseded)

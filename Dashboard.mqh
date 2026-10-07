@@ -1211,8 +1211,8 @@ int CGOATDashboard::AgentPollDeployRow(void)
          ArrayResize(m_agent_attach_failed_cids,failed+1);
          m_agent_attach_failed_cids[failed]=failed_cid;
          ResetLastError();
-         bool closed=ChartClose(failed_cid);
-         GoatDeploymentPhase(closed ? "child_chart_closed" : "child_chart_close_failed",failed_cid,"",(closed ? 0 : GetLastError()));
+         bool chart_closed=ChartClose(failed_cid);
+         GoatDeploymentPhase(chart_closed ? "child_chart_closed" : "child_chart_close_failed",failed_cid,"",(chart_closed ? 0 : GetLastError()));
       }
    }
    AppendAILaunchAudit(idx,(ok ? "LINKED" : "APPLY_FAILED"));

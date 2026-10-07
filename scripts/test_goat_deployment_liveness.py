@@ -84,7 +84,7 @@ class DeploymentLivenessTests(unittest.TestCase):
             self.assertNotIn('g_sets[idx].cid=', timeout)
         # The human timeout leaves its chart for inspection; the agent closes it but keeps the ID as the lock.
         self.assertNotIn('ChartClose(', self.timeout)
-        self.assertIn('bool closed=ChartClose(failed_cid);', self.agent_poll)
+        self.assertIn('bool chart_closed=ChartClose(failed_cid);', self.agent_poll)
         self.assertIn('DeleteCopiedTemplate(tplName);', self.timeout)
         self.assertEqual(1, self.apply.count('ChartApplyTemplate('))
 

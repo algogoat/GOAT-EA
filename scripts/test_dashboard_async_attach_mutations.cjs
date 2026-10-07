@@ -19,7 +19,7 @@ const mutations=[
   ['busy owner lock drops the final receipt','GOATPortfolioSetupControl.mqh',[[R`   if(owner==INVALID_HANDLE) return true;`,R`   if(owner==INVALID_HANDLE) {GoatPortfolioAttachPending=false; return false;}`]]],
   ['failed receipt write is not retried','GOATPortfolioSetupControl.mqh',[[R`   if(!written) return true;`,'']]],
   // Timeout unwind (Mac 6028209095)
-  ['timeout leaves the child chart open','Dashboard.mqh',[[R`         bool closed=ChartClose(failed_cid);`,R`         bool closed=true;`]]],
+  ['timeout leaves the child chart open','Dashboard.mqh',[[R`         bool chart_closed=ChartClose(failed_cid);`,R`         bool chart_closed=true;`]]],
   ['late child status adopts a failed row','Dashboard.mqh',[[R`            if(!magic_match && IsAgentAttachFailedChart(g_sets[idx].cid)) break;`,'']]],
   ['failed chart not remembered','Dashboard.mqh',[[R`         m_agent_attach_failed_cids[failed]=failed_cid;`,R`         m_agent_attach_failed_cids[failed]=0;`]]],
   ['early status magic kept on a failed row','Dashboard.mqh',[[R`      g_sets[idx].magic=0;`+'\n','']]],

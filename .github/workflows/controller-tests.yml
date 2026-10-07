@@ -34,6 +34,7 @@ concurrency:
 #          test_studio_steady_panel_mutations.cjs, test_ea_followups_mutations.cjs,
 #          test_terminal_isolation_mutations.cjs
 #   python test_terminal_isolation_controller_mutations.py
+#   python test_lane_final_write_mutations.py              (14 mutations; ~3 min locally at Idle)
 #
 # controller-mutations (2/3)  ~16-22 min observed before the OOS window check; ~24-30 min expected with it
 #   python test_process_query_mutations.py                 (14-18 min)
@@ -226,6 +227,9 @@ jobs:
       - name: Catch-up swap-only drift mutation check (every rebase v2 rule and boundary, first failing rule, comparable_rebased / requalify / not_comparable, no-splice windows, stamps)
         if: matrix.shard == 1
         run: python scripts/test_catchup_rebase_controller_mutations.py
+      - name: Lane driver sharing-error mutation check (bounded gate wait, busy pass skipped, record reads/writes retried, loud after the bound)
+        if: matrix.shard == 1
+        run: python scripts/test_lane_final_write_mutations.py
 
       # ---- Shard 2/3 ----
       - name: Process query mutation check (WMI stall retry, unconfirmed launch, seed unowned doubt)

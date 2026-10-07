@@ -106,16 +106,19 @@ def write_json(path, value):
             handle.write('\n')
             handle.flush()
             os.fsync(handle.fileno())
-        # MT5 readers briefly open without FILE_SHARE_DELETE on Windows.
-        # Retry only publication of these same durable bytes, never a command.
-        for attempt in range(6):
+        # MT5 readers and concurrent status reads briefly open without FILE_SHARE_DELETE on Windows.
+        # Retry only publication of these same durable bytes, never a command, with the shared
+        # sharing-retry bound (40 x 25 ms, WinError 5/32/33); a persistent denial still raises.
+        from studio_agent_mailbox import SHARING_RETRY_ATTEMPTS, transient_sharing_error
+        for attempt in range(SHARING_RETRY_ATTEMPTS):
             try:
                 os.replace(temporary,path)
                 break
-            except PermissionError:
-                if attempt == 5:
+            except OSError as error:
+                transient = isinstance(error, PermissionError) or transient_sharing_error(error)
+                if not transient or attempt == SHARING_RETRY_ATTEMPTS-1:
                     raise
-                time.sleep(0.05)
+                time.sleep(0.025)
     finally:
         if temporary.exists():
             temporary.unlink()

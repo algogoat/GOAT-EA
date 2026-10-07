@@ -202,18 +202,22 @@ class RecoveryGuidanceTests(unittest.TestCase):
     def test_each_phase_has_plain_mt5_state_and_safe_action(self):
         expected = {None: 'not_touched', 'prepared': 'not_touched', 'controls_installed': 'open_may_be_armed',
                     'close_issued': 'closing_or_closed', 'research_exited': 'closed_not_reopened',
-                    'launch_issued': 'reopen_uncertain', 'process_started_unverified': 'reopened_unverified'}
+                    'launch_issued': 'reopen_uncertain', 'process_started_unverified': 'reopened_unverified',
+                    # goatai#1885 PR E follow-up: a refused research launch (nothing ran) and an unconfirmed stop.
+                    'launch_refused': 'closed_not_reopened', 'launch_uncertain': 'suspended_uncertain'}
         for reached, mt5 in expected.items():
             with self.subTest(reached=reached):
                 job = dict(restart_intent=dict(phase=reached)) if reached else dict()
                 guidance = restart_recovery(job)
                 self.assertEqual(guidance['mt5'], mt5)
                 self.assertTrue(guidance['plain'] and guidance['next_safe_action'])
-                if mt5 in ('closing_or_closed', 'closed_not_reopened', 'reopen_uncertain'):
+                if mt5 in ('closing_or_closed', 'closed_not_reopened', 'reopen_uncertain', 'suspended_uncertain'):
                     self.assertIn('open MT5 normally', guidance['next_safe_action'])
                     self.assertIn('support report', guidance['next_safe_action'])
                 if mt5 == 'open_may_be_armed':
                     self.assertIn('do not close or restart it', guidance['next_safe_action'])
+                if reached == 'launch_uncertain':
+                    self.assertIn('do not retry', guidance['next_safe_action'])
 
     def test_unreadable_job_is_unknown_never_not_touched(self):
         self.assertEqual(restart_recovery(None)['mt5'], 'unknown')
@@ -227,7 +231,8 @@ class RecoveryGuidanceTests(unittest.TestCase):
                 self.assertIn(message, source)
                 self.assertIn(message, guide)
         for phrase in ('MT5 was not closed', 'MT5 closed for the start', '`recovery`',
-                       'MT5 restart consent expired or invalid', 'Raw start is not available on this lane'):
+                       'MT5 restart consent expired or invalid', 'Raw start is not available on this lane',
+                       '`launch_refused`', '`suspended_uncertain`'):
             self.assertIn(phrase, guide)
         self.assertNotIn("orphan-recovery-apply','--review-id'", guide)
 

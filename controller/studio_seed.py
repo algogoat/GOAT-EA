@@ -17,7 +17,7 @@ from studio_bridge import write_json
 from studio_installation import read_json
 from studio_native_gate import GateBusy,exclusive_gate
 from studio_optimization_inputs import explicit_optimization_inputs,verify_explicit_inputs
-from studio_research_launch import ResearchLaunchRefused
+from studio_research_launch import ResearchLaunchRefused,ResearchLaunchUncertain
 from studio_settings import validate_tester
 from studio_strategy_settings import read_values,numeric
 from studio_template_tools import source_bytes,validate_raw
@@ -514,7 +514,7 @@ class SeedRunner:
         uncertain=[(spec,item) for spec,item in zip(manifest['members'],state['members']) if item['status']=='reconcile_required']
         if len(uncertain)!=1:return
         spec,item=uncertain[0]
-        if (item.get('attempts')!=1 or item.get('process') is not None or item.get('result')
+        if (item.get('attempts')!=1 or item.get('process') is not None or item.get('result') or item.get('launch_uncertain')
                 or type(item.get('started_unix')) not in (int,float) or not launch_unconfirmed(item.get('error'))):
             return
         reason=self._adoption_refusal(spec,item,state,current)
@@ -824,6 +824,12 @@ class SeedRunner:
                             # the member stays pending and the batch active; the plain refusal is raised.
                             item.update(status='pending',attempts=0,launch_refused=str(exc)[:500]);item.pop('started_unix',None)
                             self._save(root,state);raise
+                        except ResearchLaunchUncertain as exc:
+                            # Refused, but the never-resumed MT5 was not confirmed gone: an uncertain start that a
+                            # human inspects. Never "nothing ran", and never re-identified as this member's launch
+                            # (_reidentify adopts only an unseen identity, never a refused, suspended process).
+                            item.update(status='reconcile_required',error=str(exc),launch_uncertain=True)
+                            state['status']='reconcile_required';self._save(root,state);raise
                         except BaseException as exc:
                             item.update(status='reconcile_required',error=str(exc));state['status']='reconcile_required';self._save(root,state);raise
             if self.clock()<deadline:self.sleep(min(1,deadline-self.clock()))

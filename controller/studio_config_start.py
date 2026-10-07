@@ -26,6 +26,7 @@ from studio_native_request import (validate_launch_material,validate_restart_con
 from studio_open_activation import _install_controls
 from studio_process_check import RollingBaseline,inspect_processes,revalidate_processes
 from studio_research_authority import before_native_dispatch
+from studio_research_launch import ResearchLaunchRefused,ResearchLaunchUncertain
 from studio_seed_process import WindowsSeedProcess,research_view
 from studio_seed_slot import guard_active_seed
 from studio_report_bridge import prepare as bridge_prepare,verify as bridge_verify
@@ -133,6 +134,22 @@ def restart_recovery(job):
         return dict(phase=reached,mt5='closing_or_closed',
                     plain='GOAT asked MT5 to close normally for the start. MT5 may still be closing (for example it shows a question) or may be closed. GOAT did not reopen it.',
                     next_safe_action='If MT5 is still open, leave it and do not answer for the user. If it is closed, ask the user to open MT5 normally from its usual shortcut; it opens on the GOAT Studio chart with the same account. '+never+report)
+    if reached=='launch_refused':
+        return dict(phase=reached,mt5='closed_not_reopened',
+                    plain='MT5 was closed for the start, then GOAT refused to start it again because it could not place it in its '
+                          'low-priority research job. Nothing ran.',
+                    next_safe_action='Fix the reason in the error, then run run-batch --resume for this batch: GOAT retries only '
+                                     'the launch (same startup file, never another close or arm). On the customer lane the '
+                                     'retry also needs the user\'s restart consent to still be valid (10 minutes); once it '
+                                     'expired, ask the user to open MT5 normally from its usual shortcut instead. Do not open '
+                                     'MT5 yourself meanwhile and do not click Start in the MT5 Strategy Tester. '+report)
+    if reached=='launch_uncertain':
+        return dict(phase=reached,mt5='suspended_uncertain',
+                    plain='MT5 was closed for the start. GOAT then refused to run the new MT5, but could not confirm that the '
+                          'paused, never-started MT5 process it had created is gone. GOAT never resumed it.',
+                    next_safe_action='Do not open MT5 and do not retry. Check in Task Manager whether a terminal64 process of '
+                                     'this MT5 is still listed (it shows no window); a human ends it. Then ask the user to '
+                                     'open MT5 normally from its usual shortcut. '+never+report)
     if reached in ('research_exited','launch_issued'):
         return dict(phase=reached,mt5='closed_not_reopened' if reached=='research_exited' else 'reopen_uncertain',
                     plain='MT5 was closed for the start and GOAT did not confirm reopening it.',
@@ -306,10 +323,55 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
         raise ValueError('Startup bytes changed after close')
     bridge_verify(bridge)
     phase(c,job_id,generation,'research_exited','launch_issued')
-    # The batch's first /config start is a research MT5 launch (goatai#1885 PR E): created
-    # suspended at low priority inside this terminal's job, or refused with nothing run. The EA's
-    # own per-member relaunches stay inside that job.
-    launched=research_view(process).start(startup)
+    launched=_research_launch(c,job_id,generation,process,startup)
     phase(c,job_id,generation,'launch_issued','process_started_unverified',process=launched)
     return dict(status='config_process_started_unverified',attempt_id=intent['attempt_id'],
                 process=launched,dispatch=published,native_running_verified=False)
+
+
+def _research_launch(c,job_id,generation,process,startup):
+    """The batch's first /config start is a research MT5 launch (goatai#1885 PR E): created suspended
+    at low priority inside this terminal's job, or refused with nothing run. The EA's own per-member
+    relaunches stay inside that job.
+
+    - ResearchLaunchRefused (nothing ran) is retained as phase launch_refused, which
+      retry_refused_launch can retry.
+    - ResearchLaunchUncertain (refused, but the never-resumed MT5 was not confirmed gone) is
+      retained as phase launch_uncertain: never retried, a human inspects the selected MT5.
+    - Any other failure, such as #163's unseen startup identity (launch_unconfirmed), stays
+      launch_issued: MT5 may run, so it is observed, never launched again."""
+    try:
+        return research_view(process).start(startup)
+    except ResearchLaunchRefused as error:
+        phase(c,job_id,generation,'launch_issued','launch_refused',refusal=str(error)[:500])
+        raise
+    except ResearchLaunchUncertain as error:
+        phase(c,job_id,generation,'launch_issued','launch_uncertain',refusal=str(error)[:500])
+        raise
+
+
+def retry_refused_launch(c,job_id,*,process=None):
+    """Retry only the launch of a config start whose research launch was refused (nothing ran).
+
+    Never re-arms, re-closes or re-reserves: the same retained startup file, its receipt hash and
+    report bridge are re-proved, the selected MT5 must still be closed, and the customer lane still
+    needs its unexpired restart consent. A second refusal returns to launch_refused.
+    """
+    state=c.state();job=c.job(job_id);generation=state['generation']
+    intent=job.get('restart_intent') or {}
+    if intent.get('phase')!='launch_refused':
+        raise ValueError('Only a config start whose research launch was refused can retry its launch')
+    checkpoint(c,job_id,generation)
+    require_restart_consent(c,job_id)
+    process=process or WindowsSeedProcess(c)
+    if process.inspect() is not None:
+        raise ValueError('The selected MT5 is running now: observe it with batch-status; GOAT never launches it again')
+    startup=Path(intent['startup_path'])
+    if hashlib.sha256(startup.read_bytes()).hexdigest()!=intent['startup_sha256']:
+        raise ValueError('Startup bytes changed after the refused launch; no retry')
+    bridge_verify(intent['report_bridge'])
+    phase(c,job_id,generation,'launch_refused','launch_issued',retry_after_refusal=True)
+    launched=_research_launch(c,job_id,generation,process,startup)
+    phase(c,job_id,generation,'launch_issued','process_started_unverified',process=launched)
+    return dict(status='config_process_started_unverified',attempt_id=intent['attempt_id'],process=launched,
+                native_running_verified=False)

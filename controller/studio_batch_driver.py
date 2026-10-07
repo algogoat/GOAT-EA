@@ -354,6 +354,16 @@ def _pause(controller, job_id):
     return load(controller.root, job_id, quiet=True)
 
 
+def _launch_refused(controller, job_id, record):
+    """True for a config-restart batch whose research launch was refused (phase launch_refused)."""
+    if record.get('start_route') != 'config_restart' or not hasattr(controller, 'retry_config_launch'):
+        return False
+    try:
+        return (controller.job(job_id).get('restart_intent') or {}).get('phase') == 'launch_refused'
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def _research_guard(controller, job_id, record, now, pause):
     """A native batch started under the owner research-launch job (goatai#1885 PR E): when the
     guard saw two publisher budget breaches, request the ordinary safe-point batch pause once.
@@ -410,6 +420,9 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
     Controller must already be open. CLI callers can hold their normal shared
     session lock too. No resume path starts a pending job, retries a start or
     acquires agent ownership. All journals remain available for reviewed recovery.
+    One exception (goatai#1885 PR E): a /config start whose research launch was
+    refused with nothing run (restart phase ``launch_refused``) is resumed by
+    retrying only that launch, under the consent the journal already retains.
 
     While a batch pause is pausing (studio_batch_pause), the driver hands every
     stop to the pause: it never sets cancel_issued, keeps its disk guard and
@@ -490,6 +503,18 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 record['last_error'] = 'No exact retained attempt; observe/reconcile manually. No start or cancel was issued.'
                 _save(path, record, clock)
                 return _summary(path, record)
+            if _launch_refused(controller, job_id, record):
+                # goatai#1885 PR E: the first /config start's research launch was refused and nothing ran.
+                # Resume retries only that launch (same startup file; never another close, arm or reserve).
+                try:
+                    controller.retry_config_launch(job_id)
+                except Exception as error:
+                    from studio_config_start import restart_recovery
+                    record.update(status='start_uncertain', last_error=str(error), recovery=restart_recovery(controller.job(job_id)))
+                    _save(path, record, clock)
+                    return _summary(path, record)
+                record.update(status='observing', last_error=None);record.pop('recovery', None)
+                _save(path, record, clock)
         else:
             # Held-out lock (goatai#2221 §4.3): a lock declared after prepare refuses this start,
             # before any consent, journal, archive, reservation or native effect.

@@ -287,6 +287,11 @@ class Controller:
         from studio_config_start import start
         return start(self,job_id,expected_generation=expected_generation,on_attempt=on_attempt)
 
+    def retry_config_launch(self,job_id):
+        """Retry only the refused research launch of a config start (goatai#1885 PR E; nothing ran)."""
+        from studio_config_start import retry_refused_launch
+        return retry_refused_launch(self,job_id)
+
     def start(self,job_id,*,expected_generation=None):
         from studio_seed_slot import guard_active_seed
         guard_active_seed(self.root)

@@ -36,10 +36,12 @@ class FakeApi:
     """Records every Win32 call; behaves like a job that keeps exactly what was set."""
 
     def __init__(self, *, assign_error=None, resume_error=None, create_error=None, job_error=None, existed=False,
-                 active=0, keep_flags=None, in_job=True):
+                 active=0, keep_flags=None, in_job=True, terminate_fails=False, breakaway_denied=False):
         self.calls = [];self.flags = 0;self.priority = 0;self.rate = None
         self.assign_error, self.resume_error, self.create_error, self.job_error = assign_error, resume_error, create_error, job_error
         self.existed, self.active, self.keep_flags, self.member = existed, active, keep_flags, in_job
+        self.terminate_fails = terminate_fails
+        self.breakaway_denied = breakaway_denied     # the caller's job (e.g. Task Scheduler's) refuses breakaway
         self.processes = {}
 
     def names(self):return [call[0] for call in self.calls]
@@ -70,6 +72,8 @@ class FakeApi:
     def create_suspended(self, command_line, cwd, flags):
         self.calls.append(('create_suspended', command_line, cwd, flags))
         if self.create_error:raise self.create_error
+        if self.breakaway_denied and flags & r.CREATE_BREAKAWAY_FROM_JOB:
+            raise OSError(None, 'CreateProcessW failed', None, 5)     # ERROR_ACCESS_DENIED: no process was created
         return 'PROCESS', 'THREAD', 4242
 
     def assign(self, job, process):
@@ -82,7 +86,10 @@ class FakeApi:
         self.calls.append(('resume', thread))
         if self.resume_error:raise self.resume_error
 
-    def terminate(self, process):self.calls.append(('terminate', process))
+    def terminate(self, process):
+        self.calls.append(('terminate', process));return not self.terminate_fails
+
+    def terminate_job(self, job):self.calls.append(('terminate_job', job))
 
     def exit_code(self, process):return None
 
@@ -234,7 +241,7 @@ class LaunchTests(Workspace):
         self.assertEqual(api.calls[1], ('set_limits', JOB_OBJECT_LIMIT_PRIORITY_CLASS, IDLE_PRIORITY_CLASS))
         self.assertEqual(api.calls[2], ('set_cpu_rate', 17))
         create = api.calls[3]
-        self.assertEqual(create[3], CREATE_SUSPENDED | IDLE_PRIORITY_CLASS | CREATE_NO_WINDOW)
+        self.assertEqual(create[3], CREATE_SUSPENDED | IDLE_PRIORITY_CLASS | CREATE_NO_WINDOW | r.CREATE_BREAKAWAY_FROM_JOB)
         self.assertEqual(create[1], subprocess.list2cmdline(['C:\\MT5 x\\terminal64.exe', '/config:C:\\a b\\member.ini']))
         self.assertLess(names.index('assign'), names.index('resume'))
         self.assertEqual(launched.pid, 4242);self.assertIsNone(launched.poll())
@@ -242,12 +249,13 @@ class LaunchTests(Workspace):
         record = json.loads((self.root / 'research-launch' / 'launch.json').read_text(encoding='utf-8'))
         self.assertEqual((record['profile'], record['creation_priority'], record['job']['name'], record['job']['priority_lock'],
                           record['job']['cpu_rate_percent'], record['keeper']), ('owner', 'idle', self.name, 'idle', 17, dict(state='test')))
+        self.assertIs(record['broke_away'], True)
         self.assertIn(('close', 'JOB'), api.calls)       # the launcher's own job handle is closed; MT5 keeps the job
 
     def test_customer_default_is_below_normal_without_a_job(self):
         api = FakeApi();self.launch(api)
         self.assertEqual([n for n in api.names() if n != 'close'], ['create_suspended', 'resume'])
-        self.assertEqual(api.calls[0][3], CREATE_SUSPENDED | BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW)
+        self.assertEqual(api.calls[0][3], CREATE_SUSPENDED | BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW | r.CREATE_BREAKAWAY_FROM_JOB)
         self.assertEqual(self.keepers, [])
         self.assertIsNone(json.loads((self.root / 'research-launch' / 'launch.json').read_text(encoding='utf-8'))['job'])
 
@@ -261,7 +269,7 @@ class LaunchTests(Workspace):
         api = FakeApi();self.launch(api, SPLIT)
         self.assertIn(('set_limits', 0, None), api.calls)
         self.assertEqual(next(c for c in api.calls if c[0] == 'create_suspended')[3],
-                         CREATE_SUSPENDED | BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW)
+                         CREATE_SUSPENDED | BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW | r.CREATE_BREAKAWAY_FROM_JOB)
 
     def test_guard_starts_only_with_publishers_to_watch(self):
         self.launch(FakeApi(), OWNER)
@@ -275,6 +283,52 @@ class LaunchTests(Workspace):
         api = FakeApi(existed=True, active=0);self.launch(api, OWNER)
         self.assertIn(('set_limits', JOB_OBJECT_LIMIT_PRIORITY_CLASS, IDLE_PRIORITY_CLASS), api.calls)
         self.assertIn('resume', api.names())
+
+
+# ---------------------------------------------------------------- breakaway (Claude-Mac note 5)
+
+class BreakawayTests(Workspace):
+    """MT5 leaves the caller's job (a Task Scheduler driver's) when allowed, so a task stop or its
+    ExecutionTimeLimit cannot end it mid-member; a refusing job keeps today's nesting, recorded."""
+
+    BASE = CREATE_SUSPENDED | IDLE_PRIORITY_CLASS | CREATE_NO_WINDOW
+
+    def creates(self, api):
+        return [call[3] for call in api.calls if call[0] == 'create_suspended']
+
+    def test_research_mt5_is_created_breaking_away_from_the_callers_job(self):
+        for policy in (None, RESPONSIVE, OWNER, SPLIT):
+            api = FakeApi();self.launch(api, policy)
+            flags = self.creates(api)
+            self.assertEqual(len(flags), 1, policy);self.assertTrue(flags[0] & r.CREATE_BREAKAWAY_FROM_JOB, policy)
+            record = json.loads((self.root / 'research-launch' / 'launch.json').read_text(encoding='utf-8'))
+            self.assertIs(record['broke_away'], True)
+
+    def test_a_job_that_refuses_breakaway_gets_the_same_suspended_launch_nested(self):
+        api = FakeApi(breakaway_denied=True)
+        launched = self.launch(api, OWNER)
+        self.assertEqual(self.creates(api), [self.BASE | r.CREATE_BREAKAWAY_FROM_JOB, self.BASE])   # identical but the flag
+        names = [n for n in api.names() if n != 'close']
+        self.assertEqual(names, ['create_job', 'set_limits', 'set_cpu_rate', 'create_suspended', 'create_suspended', 'assign', 'resume'])
+        self.assertEqual(launched.pid, 4242)
+        record = json.loads((self.root / 'research-launch' / 'launch.json').read_text(encoding='utf-8'))
+        self.assertIs(record['broke_away'], False)
+        self.assertIn('"broke_away":false', (self.root / 'research-launch' / 'history.jsonl').read_text(encoding='utf-8'))
+        status = r.status(self.install, self.root, api=FakeApi())
+        self.assertIs(status['last_launch']['broke_away'], False)
+
+    def test_only_access_denied_retries_nested_and_any_other_creation_error_refuses(self):
+        api = FakeApi(create_error=OSError(None, 'CreateProcessW failed', None, 2))
+        with self.assertRaisesRegex(ResearchLaunchRefused, 'could not be created'):
+            self.launch(api, OWNER)
+        self.assertEqual(len(self.creates(api)), 1)
+
+    def test_a_refused_assignment_after_a_nested_creation_still_terminates(self):
+        api = FakeApi(breakaway_denied=True, assign_error=denied(5))
+        with self.assertRaisesRegex(ResearchLaunchRefused, 'Nothing ran'):
+            self.launch(api, OWNER)
+        self.assertIn(('terminate', 'PROCESS'), api.calls);self.assertNotIn('resume', api.names())
+        self.assertEqual(len(self.creates(api)), 2)                         # one refused breakaway, one process
 
 
 # ---------------------------------------------------------------- refusal (Mac must-have 2)
@@ -321,6 +375,17 @@ class RefusalTests(Workspace):
         api = FakeApi(existed=True, active=3)
         self.refused(api, pattern='Another process already runs')
         self.assertNotIn('create_suspended', api.names())
+
+    def test_an_unconfirmed_stop_is_never_reported_as_nothing_ran(self):
+        # Claude-Mac note 1: TerminateProcess and its wait are checked; the job is the fallback; a process
+        # still alive is an uncertain start (the seed member then needs reconcile), never "nothing ran".
+        api = FakeApi(assign_error=denied(5), terminate_fails=True)
+        with self.assertRaises(r.ResearchLaunchUncertain) as caught:
+            self.launch(api, OWNER)
+        self.assertNotIsInstance(caught.exception, ResearchLaunchRefused)
+        self.assertIn('could not confirm', str(caught.exception))
+        self.assertIn(('terminate_job', 'JOB'), api.calls);self.assertNotIn('resume', api.names())
+        self.assertIn('"confirmed_stopped":false', (self.root / 'research-launch' / 'history.jsonl').read_text(encoding='utf-8'))
 
     def test_customer_refusal_never_falls_back_either(self):
         api = FakeApi(resume_error=OSError(None, 'ResumeThread failed', None, 6))
@@ -434,8 +499,9 @@ class TradingTerminalExclusionTests(unittest.TestCase):
         users = sorted(p.name for p in HERE.glob('*.py') if not p.name.startswith('test_')
                        and 'research_view(' in p.read_text(encoding='utf-8'))
         self.assertEqual(users, ['studio_config_start.py', 'studio_seed.py', 'studio_seed_process.py'])
-        self.assertIn('launched=research_view(process).start(startup)',
-                      (HERE / 'studio_config_start.py').read_text(encoding='utf-8'))
+        config = (HERE / 'studio_config_start.py').read_text(encoding='utf-8')
+        self.assertIn('        return research_view(process).start(startup)', config)
+        self.assertEqual(config.count('launched=_research_launch(c,job_id,generation,process,startup)'), 2)   # start and its retry
         starts = re.findall(r'\w+\.start\([^)]*\bresearch=True', ''.join(
             p.read_text(encoding='utf-8') for p in HERE.glob('*.py') if not p.name.startswith('test_')))
         self.assertEqual(starts, ['_process.start(config,research=True'])
@@ -653,6 +719,38 @@ class StatusTests(Workspace):
         self.assertEqual((seen['guard']['stage'], seen['guard']['cpu_rate_percent'], seen['guard']['paused']), (0, 17, False))
         self.assertEqual((seen['keeper']['state'], seen['last_launch']['job']['kill_on_job_close']), ('holding', False))
 
+    def test_staging_reports_what_it_really_does(self):
+        # Claude-Mac note 2: per member launch, gated on publishers and a holding keeper; never more.
+        self.policy(OWNER)
+        seen = r.status(self.install, self.root, api=FakeApi())
+        self.assertEqual((seen['staging'], seen['staging_scope']), ('off_no_publishers', 'per_member_launch'))
+        self.assertIn('never pauses the lane', seen['staging_plain'])
+        publishers = [dict(label='Exp 01', cycle_log='C:\\x.jsonl', max_seconds=90)]
+        self.launch(FakeApi(), dict(OWNER, publishers=publishers), now=time.time())
+        self.assertEqual(r.status(self.install, self.root, api=FakeApi())['staging'], 'stalled_no_keeper')
+        r._atomic_json(self.root / 'research-launch' / 'keeper.json', dict(state='holding', pid=7, job=self.name, heartbeat_wall=time.time()))
+        seen = r.status(self.install, self.root, api=FakeApi())
+        self.assertEqual(seen['staging'], 'active');self.assertIn('reset at the next member', seen['staging_plain'])
+        path = self.root / 'research-launch' / 'guard.json'
+        guard = json.loads(path.read_text(encoding='utf-8'));guard['paused'] = True;path.write_text(json.dumps(guard), encoding='utf-8')
+        self.assertEqual(r.status(self.install, self.root, api=FakeApi())['staging'], 'paused')
+        self.assertIsNone(r.status(self.install, Path(tempfile.mkdtemp()), api=FakeApi())['staging'])   # customer
+
+    def test_keeper_records_whether_it_could_break_away_from_the_callers_job(self):
+        # Evidence for Claude-Mac note 5: False means the caller's job (a Task Scheduler driver's) refuses breakaway.
+        spawned = []
+
+        def popen(args, **kwargs):
+            spawned.append(kwargs['creationflags'])
+            if kwargs['creationflags'] & r.CREATE_BREAKAWAY_FROM_JOB:raise PermissionError(5, 'Access is denied')
+            r._atomic_json(self.root / 'research-launch' / 'keeper.json', dict(state='holding', pid=99, job=self.name,
+                                                                                heartbeat_wall=time.time()))
+            return SimpleNamespace(pid=99)
+        with patch('studio_research_launch.subprocess.Popen', side_effect=popen):
+            seen = r.start_keeper(self.root, self.name, now=time.time(), wait=1)
+        self.assertEqual((seen['state'], seen['broke_away']), ('holding', False))
+        self.assertTrue(spawned[0] & r.CREATE_BREAKAWAY_FROM_JOB);self.assertFalse(spawned[1] & r.CREATE_BREAKAWAY_FROM_JOB)
+
     def test_status_without_any_launch_is_the_plain_customer_default(self):
         seen = r.status(self.install, self.root, api=FakeApi())
         self.assertEqual((seen['profile'], seen['creation_priority'], seen['enabled_mt5_workers'], seen['job'], seen['last_launch']),
@@ -695,6 +793,18 @@ def _kill(pid):
     handle = ctypes.windll.kernel32.OpenProcess(0x1, False, pid)     # PROCESS_TERMINATE
     if handle:
         ctypes.windll.kernel32.TerminateProcess(handle, 1);ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def _alive(pid):
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(0x1000, False, pid)                # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259   # STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 @unittest.skipUnless(os.name == 'nt', 'Windows job objects')
@@ -792,7 +902,8 @@ class RealWindowsTests(Workspace):
                 'try:\n'
                 '    child=r.launch_plan(api,plan,[sys.executable,"-c","import time;time.sleep(20)"],cwd=%r,name=%r,root=%r,keeper=keep)\n'
                 '    time.sleep(.5);info=api.process_info(child.pid)\n'
-                '    out=dict(ok=True,priority=info[1],limits=list(api.query_limits(held[0])),members=len(api.process_ids(held[0])))\n'
+                '    out=dict(ok=True,priority=info[1],limits=list(api.query_limits(held[0])),members=len(api.process_ids(held[0])),\n'
+                '             broke_away=child.record["broke_away"])\n'
                 '    api.terminate_job(held[0])\n'
                 'except Exception as error:\n'
                 '    out=dict(ok=False,error=str(error))\n'
@@ -808,6 +919,58 @@ class RealWindowsTests(Workspace):
         value = json.loads(result.read_text())
         self.assertTrue(value.get('ok'), value)
         self.assertEqual((value['priority'], value['limits']), (IDLE_PRIORITY_CLASS, [JOB_OBJECT_LIMIT_PRIORITY_CLASS, IDLE_PRIORITY_CLASS]))
+        self.assertIs(value['broke_away'], False)                           # the outer job refuses breakaway: nested
+
+    def test_terminating_the_drivers_task_job_spares_research_mt5_that_broke_away(self):
+        # Claude-Mac note 5, mechanism only (the T3 -TaskStopCheck proves it with Task Scheduler and MT5):
+        # Task Scheduler ends a stopped task, or one past its ExecutionTimeLimit, by terminating the task's
+        # job. Here a driver (a Python child) runs inside such an outer job, starts a research launch, and the
+        # outer job is then terminated. MT5 (a sleeping Python child) survives exactly when it broke away.
+        for breakaway_ok in (True, False):
+            with self.subTest(breakaway_ok=breakaway_ok):
+                value, survived = self.task_job_stop(breakaway_ok)
+                self.assertEqual(survived, value['broke_away'], value)
+                if not breakaway_ok:
+                    self.assertIs(value['broke_away'], False)               # nested, as before: ends with the task
+                elif not value['broke_away']:
+                    self.skipTest('this test process runs inside a job that refuses breakaway, so the driver cannot break away')
+
+    def task_job_stop(self, breakaway_ok):
+        outer, _ = self.api.create_job(r.JOB_PREFIX + ('e' if breakaway_ok else 'd') * 32);self.held.append(outer)
+        self.api.set_limits(outer, r.JOB_OBJECT_LIMIT_BREAKAWAY_OK if breakaway_ok else 0, None)
+        result = Path(self.tmp.name) / ('task-%s.json' % breakaway_ok)
+        code = ('import json,sys,time\n'
+                'sys.path.insert(0,%r)\n'
+                'import studio_research_launch as r\n'
+                'api=r.Win32Jobs()\n'
+                'plan=r.effective(r.validate_policy(dict(schema=r.SCHEMA,profile="owner")))\n'
+                'try:\n'
+                '    child=r.launch_plan(api,plan,[sys.executable,"-c","import time;time.sleep(60)"],cwd=%r,name=%r,root=%r,\n'
+                '                        keeper=lambda root,name,now=None:dict(state="test"))\n'
+                '    out=dict(ok=True,pid=child.pid,broke_away=child.record["broke_away"])\n'
+                'except Exception as error:\n'
+                '    out=dict(ok=False,error=str(error))\n'
+                'open(%r,"w").write(json.dumps(out))\n'
+                'time.sleep(60)\n') % (str(HERE), self.cwd, self.name, str(self.root), str(result))
+        process, thread, _ = self.api.create_suspended(subprocess.list2cmdline(self.child(code)), self.cwd,
+                                                       CREATE_SUSPENDED | CREATE_NO_WINDOW)
+        value = {}
+        try:
+            self.api.assign(outer, process);self.api.resume(thread)
+            deadline = time.monotonic() + 20
+            while not result.exists() and time.monotonic() < deadline:time.sleep(.1)
+            value = json.loads(result.read_text())
+            self.assertTrue(value.get('ok'), value)
+            self.api.terminate_job(outer)                                   # what a task stop or time limit does
+            deadline = time.monotonic() + 10
+            while self.api.exit_code(process) is None and time.monotonic() < deadline:time.sleep(.1)
+            self.assertIsNotNone(self.api.exit_code(process), 'the driver must end with its task job')
+            time.sleep(.5)
+            return value, _alive(value['pid'])
+        finally:
+            if value.get('pid'):_kill(value['pid'])                         # the research child never outlives the test
+            self.api.terminate_job(outer)
+            self.api.close(thread);self.api.close(process)
 
     def test_customer_default_is_below_normal_and_creates_no_job(self):
         launched = r.launch_plan(self.api, plan_of(None), self.child('import time;time.sleep(20)'), cwd=self.cwd,

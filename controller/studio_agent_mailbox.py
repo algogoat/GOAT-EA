@@ -34,6 +34,11 @@ def unique_object(pairs):
 
 
 SHARING_RETRY_ATTEMPTS = 40  # About one second in total: an EA read of a small mailbox file is far shorter.
+# 32 sharing violation, 33 lock violation, 5 access denied. Windows also answers a replace or
+# rename with 5 while the target is still open without FILE_SHARE_DELETE or is pending delete
+# (an antivirus or indexer scan, or a reader closing it): CI hit this twice in atomic().
+# A persistent 5 still raises after the same bounded wait.
+TRANSIENT_WINERRORS = (5, 32, 33)
 
 
 def sharing_retry(operation, *, attempts=SHARING_RETRY_ATTEMPTS, sleep=time.sleep):
@@ -43,7 +48,7 @@ def sharing_retry(operation, *, attempts=SHARING_RETRY_ATTEMPTS, sleep=time.slee
         try:
             return operation()
         except OSError as error:
-            if getattr(error, 'winerror', None) not in (32, 33) or attempt == attempts - 1:
+            if getattr(error, 'winerror', None) not in TRANSIENT_WINERRORS or attempt == attempts - 1:
                 raise
             sleep(0.025)
 

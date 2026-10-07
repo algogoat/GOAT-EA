@@ -459,11 +459,48 @@ class AgentSetupTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             mailbox.sharing_retry(shared, attempts=3, sleep=lambda seconds: None)
         self.assertEqual(calls.count('shared'), 3, 'the retry is bounded')
+        def missing():
+            calls.append('missing'); raise FileNotFoundError(2, 'missing', 'request.json')
+        with self.assertRaises(FileNotFoundError):
+            mailbox.sharing_retry(missing, sleep=lambda seconds: None)
+        self.assertEqual(calls.count('missing'), 1, 'only a transient Windows denial is retried')
+        def other():
+            calls.append('other'); raise PermissionError(13, 'The network name cannot be found', 'request.json', 67)
+        with self.assertRaises(PermissionError):
+            mailbox.sharing_retry(other, sleep=lambda seconds: None)
+        self.assertEqual(calls.count('other'), 1, 'only a transient Windows denial is retried')
+
+    def test_atomic_retries_a_transient_access_denied_replace(self):
+        # CI 2026-10-06 (twice): os.replace in atomic() raised [WinError 5] Access is denied while
+        # the target was briefly held. Two denials then success: the write lands, no .pending is left.
+        root = Path(self.data) / 'denied-replace'; root.mkdir()
+        target = root / 'request.json'
+        target.write_text('{"old":1}', encoding='utf-8')
+        real_replace, denials = os.replace, []
+        def denied_twice(source, destination):
+            if len(denials) < 2:
+                denials.append(str(destination))
+                raise PermissionError(13, 'Access is denied', str(destination), 5)
+            return real_replace(source, destination)
+        with patch.object(mailbox.os, 'replace', denied_twice), patch.object(mailbox.time, 'sleep', lambda seconds: None):
+            mailbox.atomic(target, dict(new=2))
+        self.assertEqual(len(denials), 2)
+        self.assertEqual(json.loads(target.read_text(encoding='utf-8')), dict(new=2))
+        self.assertEqual(list(root.glob('*.pending')), [])
+
+    def test_persistent_access_denied_stays_loud_after_the_bounded_retry(self):
+        calls, sleeps = [], []
         def denied():
             calls.append('denied'); raise PermissionError(13, 'Access is denied', 'request.json', 5)
+        with self.assertRaises(PermissionError) as raised:
+            mailbox.sharing_retry(denied, sleep=sleeps.append)
+        self.assertEqual(raised.exception.winerror, 5)
+        self.assertEqual(len(calls), mailbox.SHARING_RETRY_ATTEMPTS, 'the retry is bounded')
+        self.assertEqual(sleeps, [0.025] * (mailbox.SHARING_RETRY_ATTEMPTS - 1), 'same backoff as a sharing violation')
+        calls.clear()
         with self.assertRaises(PermissionError):
-            mailbox.sharing_retry(denied, sleep=lambda seconds: None)
-        self.assertEqual(calls.count('denied'), 1, 'only a sharing violation is retried')
+            mailbox.sharing_retry(denied, attempts=3, sleep=lambda seconds: None)
+        self.assertEqual(len(calls), 3)
 
     # ---------------------------------------------------------- close-terminal
 

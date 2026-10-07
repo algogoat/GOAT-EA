@@ -17,6 +17,7 @@ from unittest.mock import patch
 import studio_agent_mailbox as mailbox
 import studio_agent_setup as agent_setup
 import studio_demo_deploy as deploy
+from studio_refusal import Refusal
 import test_studio_agent_setup as setup_tests
 
 BUILD = setup_tests.BUILD          # build B, the one being deployed
@@ -135,6 +136,66 @@ class SetupRegistrationTests(unittest.TestCase):
         result = agent_setup.pairing_code(self.c, BUILD, timeout=1, mt5=setup_tests.FakeMT5(self.c))
         self.assertEqual(result['status'], 'no_native_answer')
         self.assertEqual((result['supersededRegistration']['sha256'], result['supersededRegistration']['buildId']), (digest, OLD_BUILD))
+
+    def superseded_expected(self):
+        registration = (self.root() / 'registration.json').read_bytes()
+        digest, old = hashlib.sha256(registration).hexdigest(), json.loads(registration)
+        return dict(sha256=digest, buildId=OLD_BUILD, account=old['account'], server=old['server'],
+                    expiresAtUtc=old['expiresAtUtc'], archivedAs=digest + '.expired.registration.json')
+
+    def test_a_pairing_refusal_after_superseding_carries_it_as_a_structured_field(self):
+        self.pair_on_old_build()
+        expected = self.superseded_expected()
+        self.start_ea(algo=True)   # The EA refuses: Algo Trading is on.
+        with self.assertRaises(Refusal) as caught:
+            agent_setup.pairing_code(self.c, BUILD, mt5=setup_tests.FakeMT5(self.c))
+        self.assertEqual((caught.exception.code, caught.exception.fields), (agent_setup.PAIRING_NOT_INERT, dict(supersededRegistration=expected)))
+        self.assertEqual(str(caught.exception), 'MT5 is not inert: turn Algo Trading off and close demo positions before pairing',
+                         'the sentence is unchanged; the archive is data, not text')
+        self.assertTrue((self.root() / expected['archivedAs']).exists())
+
+    def test_an_ea_or_mailbox_refusal_after_superseding_carries_it_too(self):
+        self.pair_on_old_build()
+        expected = self.superseded_expected()
+        refused = lambda controller, ident, action, timeout: dict(id='b' * 32, result='rejected_envelope')
+        with self.assertRaisesRegex(Refusal, r'refused the pairing request \(rejected_envelope\)') as caught:
+            agent_setup.pairing_code(self.c, BUILD, mt5=setup_tests.FakeMT5(self.c), request=refused)
+        self.assertEqual((caught.exception.code, caught.exception.fields), (agent_setup.PAIRING_EA_REFUSED, dict(supersededRegistration=expected)))
+        # A later failure on build B supersedes nothing new: a plain refusal without the field.
+        with self.assertRaises(Refusal) as caught:
+            agent_setup.pairing_code(self.c, BUILD, mt5=setup_tests.FakeMT5(self.c), request=refused)
+        self.assertEqual(caught.exception.fields, {})
+
+    def test_a_mailbox_error_is_wrapped_only_when_a_registration_was_superseded(self):
+        def stale(controller, ident, action, timeout):
+            raise ValueError('Stale pairing payload')
+        self.pair_on_old_build()
+        expected = self.superseded_expected()
+        with self.assertRaisesRegex(Refusal, '^Stale pairing payload$') as caught:
+            agent_setup.pairing_code(self.c, BUILD, mt5=setup_tests.FakeMT5(self.c), request=stale)
+        self.assertEqual((caught.exception.code, caught.exception.fields), (agent_setup.PAIRING_MAILBOX_REFUSED, dict(supersededRegistration=expected)))
+        with self.assertRaisesRegex(ValueError, '^Stale pairing payload$') as caught:
+            agent_setup.pairing_code(self.c, BUILD, mt5=setup_tests.FakeMT5(self.c), request=stale)
+        self.assertNotIsInstance(caught.exception, Refusal, 'without a supersession the error is unchanged')
+
+    def test_the_cli_emits_the_supersession_beside_the_unchanged_refusal_sentence(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from goat_studio import main
+        self.pair_on_old_build()
+        expected = self.superseded_expected()
+        self.start_ea(algo=True)
+        real = agent_setup.pairing_code
+        self.c.store.close(); self.c.store = None
+        output = StringIO()
+        with patch.object(agent_setup, 'pairing_code', lambda controller, build_id: real(controller, build_id, mt5=setup_tests.FakeMT5(controller))), \
+             redirect_stdout(output):
+            code = main(['--installation', str(self.fixture.path), 'pairing-code', '--build-id', BUILD])
+        reply = json.loads(output.getvalue())
+        self.assertEqual((code, reply['ok'], reply['refusal_code'], reply['supersededRegistration']),
+                         (2, False, agent_setup.PAIRING_NOT_INERT, expected))
+        self.assertTrue(reply['error'].startswith('MT5 is not inert'))
+        self.assertNotIn(expected['sha256'], reply['error'])
 
     def test_pairing_code_refuses_a_live_build_a_registration(self):
         mailbox.setup_register(self.c, self.old_ident(), allow_pairing=True)

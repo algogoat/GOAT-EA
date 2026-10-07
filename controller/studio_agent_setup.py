@@ -30,6 +30,7 @@ from studio_bridge import write_json
 from studio_installation import read_json
 from studio_native_gate import exclusive_gate, settled_native_request
 from studio_onboarding import session_state, require_idle_control
+from studio_refusal import Refusal
 
 # Experiment 02 runs live research on these demo logins. Agent setup and deploy never touch them.
 PROTECTED_ACCOUNTS = frozenset(('3000109427', '3000109421'))
@@ -231,6 +232,12 @@ def _no_code_action(reason):
     return 'This EA has no pending connection code: it is already paired or has not asked for one.'
 
 
+# pairing-code refusal codes after the mailbox registration (CLI ``refusal_code``). Append only.
+PAIRING_NOT_INERT = 'PAIRING_NOT_INERT'
+PAIRING_EA_REFUSED = 'PAIRING_EA_REFUSED'
+PAIRING_MAILBOX_REFUSED = 'PAIRING_MAILBOX_REFUSED'  # only raised when a registration was superseded
+
+
 DEMO_LANE_NOT_SHARED = ('MT5 has not shared its connection code with GOAT yet; GOAT reads it again in a moment. '
                         'If MT5 shows a code under Connect the EA, enter that code instead.')
 DEMO_LANE_NO_SHARED_CODE = ('On this demo terminal GOAT reads only the code the EA shares (LC36 and later), and this EA '
@@ -274,15 +281,21 @@ def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
     if session.get('authority_kind') == 'demo_direct':
         return _demo_lane_without_shared_code(reason)
     # An expired registration from another build is archived, never deleted (#184); every
-    # answer below reports it as supersededRegistration, as close_terminal journals it.
+    # answer below reports it as supersededRegistration, as close_terminal journals it, and so
+    # does every refusal after it, as a structured Refusal field (never only in the sentence).
     _, superseded = setup_register(controller, ident, allow_pairing=True)
+    extra = {} if superseded is None else dict(supersededRegistration=superseded)
 
     def answer(value):
-        if superseded is not None:
-            value['supersededRegistration'] = superseded
+        value.update(extra)
         return value
 
-    result = (request or setup_request)(controller, ident, 'pairing', timeout=timeout)
+    try:
+        result = (request or setup_request)(controller, ident, 'pairing', timeout=timeout)
+    except (OSError, ValueError) as exc:
+        if superseded is None:
+            raise
+        raise Refusal(str(exc), PAIRING_MAILBOX_REFUSED, **extra) from exc
     outcome = result['result']
     if outcome == 'pairing_available':
         return answer(dict(status='pairing_available', source='setup_mailbox', userCode=result['userCode'], activationId=result['activationId'],
@@ -294,13 +307,13 @@ def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
         return answer(dict(status='no_pending_pairing', userCodeReturned=False, activationReason=reason,
                            next_action=_no_code_action(reason)))
     if outcome == 'rejected_not_inert':
-        raise ValueError('MT5 is not inert: turn Algo Trading off and close demo positions before pairing')
+        raise Refusal('MT5 is not inert: turn Algo Trading off and close demo positions before pairing', PAIRING_NOT_INERT, **extra)
     if outcome == 'receipt_timeout':
         waiting = reason == 'awaiting_approval'
         return answer(dict(status='no_native_answer', userCodeReturned=False, requestId=result['id'], activationReason=reason,
                            next_action=('The EA is waiting for approval and shows a connection code, but this build does not share it with GOAT. '
                                         + ENTER_CODE if waiting else NO_SHARED_CODE)))
-    raise ValueError('The EA refused the pairing request (' + outcome + ')')
+    raise Refusal('The EA refused the pairing request (' + outcome + ')', PAIRING_EA_REFUSED, **extra)
 
 
 def _journal(controller, folder, attempt_id):

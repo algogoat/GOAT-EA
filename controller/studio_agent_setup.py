@@ -273,25 +273,33 @@ def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
                     activationReason=reason, accountFacts=account_facts(controller, proof), receiptId=None)
     if session.get('authority_kind') == 'demo_direct':
         return _demo_lane_without_shared_code(reason)
-    setup_register(controller, ident, allow_pairing=True)  # An expired older-build registration is archived, never deleted.
+    # An expired registration from another build is archived, never deleted (#184); every
+    # answer below reports it as supersededRegistration, as close_terminal journals it.
+    _, superseded = setup_register(controller, ident, allow_pairing=True)
+
+    def answer(value):
+        if superseded is not None:
+            value['supersededRegistration'] = superseded
+        return value
+
     result = (request or setup_request)(controller, ident, 'pairing', timeout=timeout)
     outcome = result['result']
     if outcome == 'pairing_available':
-        return dict(status='pairing_available', source='setup_mailbox', userCode=result['userCode'], activationId=result['activationId'],
-                    pairingExpiresAtMs=result['pairingExpiresAtMs'], responseExpiresAtUtc=result['responseExpiresAtUtc'],
-                    observedAtUtc=result['observedAtUtc'], accountLogin=login, accountLast4=login[-4:],
-                    server=proof['server'], buildId=ident['buildId'], demo=proof['demo'] is True, tradingAllowed=False,
-                    activationReason=reason, accountFacts=account_facts(controller, proof), receiptId=result['id'])
+        return answer(dict(status='pairing_available', source='setup_mailbox', userCode=result['userCode'], activationId=result['activationId'],
+                           pairingExpiresAtMs=result['pairingExpiresAtMs'], responseExpiresAtUtc=result['responseExpiresAtUtc'],
+                           observedAtUtc=result['observedAtUtc'], accountLogin=login, accountLast4=login[-4:],
+                           server=proof['server'], buildId=ident['buildId'], demo=proof['demo'] is True, tradingAllowed=False,
+                           activationReason=reason, accountFacts=account_facts(controller, proof), receiptId=result['id']))
     if outcome == 'pairing_unavailable':
-        return dict(status='no_pending_pairing', userCodeReturned=False, activationReason=reason,
-                    next_action=_no_code_action(reason))
+        return answer(dict(status='no_pending_pairing', userCodeReturned=False, activationReason=reason,
+                           next_action=_no_code_action(reason)))
     if outcome == 'rejected_not_inert':
         raise ValueError('MT5 is not inert: turn Algo Trading off and close demo positions before pairing')
     if outcome == 'receipt_timeout':
         waiting = reason == 'awaiting_approval'
-        return dict(status='no_native_answer', userCodeReturned=False, requestId=result['id'], activationReason=reason,
-                    next_action=('The EA is waiting for approval and shows a connection code, but this build does not share it with GOAT. '
-                                 + ENTER_CODE if waiting else NO_SHARED_CODE))
+        return answer(dict(status='no_native_answer', userCodeReturned=False, requestId=result['id'], activationReason=reason,
+                           next_action=('The EA is waiting for approval and shows a connection code, but this build does not share it with GOAT. '
+                                        + ENTER_CODE if waiting else NO_SHARED_CODE)))
     raise ValueError('The EA refused the pairing request (' + outcome + ')')
 
 

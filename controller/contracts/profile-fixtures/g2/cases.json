@@ -1,0 +1,119 @@
+{
+  "schema": 1,
+  "writer": "studio_deploy_profile profile-staged-v1",
+  "children": [
+    {
+      "case": "comments-crlf",
+      "set": "g2/comments-crlf.set",
+      "fileName": "GOAT V1.49 EURUSD,M1_G2-comments.set",
+      "symbol": "EURUSD",
+      "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+      "policy": {
+        "aiMode": 0,
+        "aiThreshold": 50,
+        "aiProtocol": 2
+      },
+      "chart": "g2/comments-crlf.chr",
+      "chartSha256": "8e868d3bbd7be3a7c2e64a5ec46f5ccd06cb74823cf9a12d987c6da2f0fcdb7e",
+      "note": "UTF-16 BOM, CRLF; comment lines holding \"=\" are kept, lines without a key are skipped, trailing spaces trimmed"
+    },
+    {
+      "case": "mixed-endings-padded",
+      "set": "g2/mixed-endings-padded.set",
+      "fileName": "GOAT V1.49 GBPUSD,M1_G2-padded.set",
+      "symbol": "GBPUSD",
+      "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+      "policy": {
+        "aiMode": 0,
+        "aiThreshold": 50,
+        "aiProtocol": 2
+      },
+      "chart": "g2/mixed-endings-padded.chr",
+      "chartSha256": "fabd33eb9be65512f7e9835e817897fef90b0a0b7c3dbdd944924c45fa91e94a",
+      "note": "UTF-8 without BOM, LF and CRLF mixed, leading/trailing spaces and tabs trimmed, no final line end"
+    },
+    {
+      "case": "ai-entry-filter-h4",
+      "set": "g2/ai-entry-filter-h4.set",
+      "fileName": "GOAT V1.49 XAUUSD,H4_G2-ai.set",
+      "symbol": "XAUUSD",
+      "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+      "policy": {
+        "aiMode": 2,
+        "aiThreshold": 65,
+        "aiProtocol": 2
+      },
+      "chart": "g2/ai-entry-filter-h4.chr",
+      "chartSha256": "f88af951dc473d5538aec7cc81f7a3cdbdd57924e0118cad247d2cafaa64e388",
+      "note": "aiMode 2: Mode_Bias and Bias_threshold replaced in place, Bias_Protocol and Mode_Bias_Trades appended in that order; H4 = period (1,4)"
+    },
+    {
+      "case": "ai-all-missing-d1",
+      "set": "g2/ai-all-missing-d1.set",
+      "fileName": "GOAT V1.49 WS30,D1_G2-daily.set",
+      "symbol": "WS30",
+      "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+      "policy": {
+        "aiMode": 2,
+        "aiThreshold": 50,
+        "aiProtocol": 2
+      },
+      "chart": "g2/ai-all-missing-d1.chr",
+      "chartSha256": "e4777c4978bae54386a58af538ab71118500986d907ce51471662c000970d596",
+      "note": "aiMode 2 with no AI input in the SET: all four appended; D1 = period (1,24), MT5 stores a day as 24 hours"
+    },
+    {
+      "case": "utf8-bom-m5",
+      "set": "g2/utf8-bom-m5.set",
+      "fileName": "GOAT V1.49 USDJPY,M5_G2-m5.set",
+      "symbol": "USDJPY",
+      "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+      "policy": {
+        "aiMode": 0,
+        "aiThreshold": 50,
+        "aiProtocol": 2
+      },
+      "chart": "g2/utf8-bom-m5.chr",
+      "chartSha256": "be87701a9bb69b3e542556a76d925ac0bb2a0ad5385d24073a0a0aacea4afcbc",
+      "note": "UTF-8 with BOM; M5 = period (0,5)"
+    }
+  ],
+  "dashboard": {
+    "chart": "g2/dashboard-eurusd.chr",
+    "symbol": "EURUSD",
+    "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+    "chartSha256": "d981d1e271b98980ecc92bb19d4a4b976983f6e60fb507dae2f4418cdc644cf5"
+  },
+  "profile": {
+    "profileName": "GOAT-Deploy-0123456789abcdef",
+    "deploymentId": "0123456789abcdef0123456789abcdef",
+    "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+    "policy": {
+      "aiMode": 2,
+      "aiThreshold": 65,
+      "aiProtocol": 2
+    },
+    "members": [
+      {
+        "set": "g2/comments-crlf.set",
+        "fileName": "GOAT V1.49 EURUSD,M1_G2-comments.set",
+        "symbol": "EURUSD",
+        "strategy": "G2 comments-crlf",
+        "path": "C:\\Users\\Customer\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Deployments\\0123456789abcdef0123456789abcdef\\GOAT V1.49 EURUSD,M1_G2-comments.set"
+      },
+      {
+        "set": "g2/ai-entry-filter-h4.set",
+        "fileName": "GOAT V1.49 XAUUSD,H4_G2-ai.set",
+        "symbol": "XAUUSD",
+        "strategy": "G2 ai-entry-filter-h4",
+        "path": "C:\\Users\\Customer\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Deployments\\0123456789abcdef0123456789abcdef\\GOAT V1.49 XAUUSD,H4_G2-ai.set"
+      }
+    ],
+    "files": {
+      "chart01.chr": "d981d1e271b98980ecc92bb19d4a4b976983f6e60fb507dae2f4418cdc644cf5",
+      "chart02.chr": "c45f5b7f490510728ce75caba45a50413c4b924e30d021ec1662903a0e555d4e",
+      "chart03.chr": "f88af951dc473d5538aec7cc81f7a3cdbdd57924e0118cad247d2cafaa64e388",
+      "dashboard_state.tsv": "a4e166885ca89da2ad2b9d8641e2ec25bdbe8545ac264a234bc8465f0af64d94"
+    }
+  }
+}

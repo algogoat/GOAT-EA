@@ -19,6 +19,7 @@ from unittest.mock import patch
 import studio_agent_mailbox as mailbox
 import studio_agent_setup as agent_setup
 import studio_demo_deploy as deploy
+import studio_deploy_profile as deploy_profile
 from studio_native_gate import exclusive_gate
 import test_goat_studio as fixtures
 
@@ -62,21 +63,22 @@ class FakeEA(threading.Thread):
     """Answers the two mailboxes the way the EA does, including its demo/inert gates."""
 
     def __init__(self, controller, *, demo=True, algo=False, positions=0, pairing='available', setup_host=True,
-                 settings_match=True, child_trade=1, attach_failures=0, batch=False):
+                 settings_match=True, child_trade=1, unstarted=(), pending_polls=0, batch=False):
         super().__init__(daemon=True)
         self.c, self.demo, self.algo, self.positions = controller, demo, algo, positions
         self.pairing, self.setup_host, self.settings_match, self.child_trade = pairing, setup_host, settings_match, child_trade
-        self.attach_failures = attach_failures
+        # Profile-staged deploy: rows whose child never starts, and link_children polls answered before adoption.
+        self.unstarted, self.pending_polls = set(unstarted), pending_polls
         self.batch = batch  # A Studio monitor mid-batch refuses shutdown (GoatSetupResearchIdle).
         self.stop_event = threading.Event()
         self.rows = []
         self.command = 0
         self.shutdowns = 0
         self.gate_refusals = 0
+        self.link_requests = 0
         self.code = 'ABCD-EF23'
         self.on_shutdown = lambda: None
         self.audit_registration = None  # Audit a different registration than the request names.
-        self.hold_deploy_next = False  # B41.1: the attach is still settling, no final receipt yet.
 
     def stop(self):
         self.stop_event.set(); self.join(5)
@@ -147,22 +149,22 @@ class FakeEA(threading.Thread):
         receipt = root / (envelope['id'] + '.json')
         if receipt.exists() or envelope['registrationSha256'] != hashlib.sha256(raw).hexdigest():
             return
-        if envelope['action'] == 'deploy_next' and self.hold_deploy_next:
-            return
+        if envelope['action'] not in ('status', 'audit', 'configure', 'apply_policy', 'link_children'):
+            return  # Like the EA's action whitelist: an unknown action gets no receipt.
         if not self.rows:
             self.rows = [dict(cid=0, magic=0, ack=0) for _ in reg['members']]
         inert = not self.algo and self.positions == 0
         action, result = envelope['action'], 'observed'
         if action != 'status' and not inert:
             result = 'rejected_not_inert'
-        elif action == 'deploy_next':
-            pending = [i for i, row in enumerate(self.rows) if row['cid'] == 0]
-            if not pending:
-                result = 'all_attached'
-            elif self.attach_failures:
-                self.attach_failures -= 1; result = 'child_attach_failed'
-            else:
-                self.rows[pending[0]].update(cid=1000 + pending[0], magic=5000 + pending[0]); result = 'child_attached'
+        elif action == 'link_children':
+            # One adoption pass over the charts MT5 started from the staged profile.
+            self.link_requests += 1
+            if self.link_requests > self.pending_polls:
+                for index, row in enumerate(self.rows):
+                    if row['cid'] == 0 and index not in self.unstarted and self.started_child(index, reg):
+                        row.update(cid=1000 + index, magic=5000 + index)
+            result = 'children_linked' if all(row['cid'] > 0 for row in self.rows) else 'children_pending'
         elif action == 'apply_policy':
             self.command += 1
             for row in self.rows:
@@ -181,14 +183,34 @@ class FakeEA(threading.Thread):
                     commandPending=False, brokerTime=int(time.time()), rows=rows)
         mailbox.atomic(receipt, body)
 
+    def started_child(self, index, reg):
+        """Whether MT5 would have started row index's child from the staged profile: chart file index + 2 of the
+        live GOAT-Deploy profile has the row's symbol, our EA with expertmode 5 and the frozen SET's inputs."""
+        charts = Path(self.c.install['terminal_data_root']) / 'MQL5' / 'Profiles' / 'Charts'
+        profiles = [p for p in charts.glob('GOAT-Deploy-*') if p.is_dir() and '.stopped-' not in p.name]
+        if len(profiles) != 1:
+            return False
+        chart = profiles[0] / deploy_profile.chart_file_name(index + 2)
+        if not chart.is_file():
+            return False
+        parsed = deploy_profile.parse_chart(chart.read_bytes())
+        member = reg['members'][index]
+        expected = deploy_profile.effective_input_lines(Path(member['path']).read_bytes(),
+                                                        dict(aiMode=reg['aiMode'], aiThreshold=reg['aiThreshold'], aiProtocol=reg['aiProtocol']))
+        return (parsed['chart'].get('symbol') == member['symbol'] and parsed['expert'].get('expertmode') == '5'
+                and parsed['expert'].get('path') == 'Experts\\' + self.c.install['ea_relative_path'] and parsed['inputs'] == expected)
+
 
 def member(index, symbol='EURUSD', content=None, name=None):
     raw = content if content is not None else ('EA_Desc=Trend ' + str(index) + '\r\nLots=0.1\r\n').encode('utf-16')
-    return dict(index=index, fileName=name or f'GOAT V1.48 {symbol},M15_Trds{index}.set', symbol=symbol, strategy='Trend ' + str(index),
+    return dict(index=index, fileName=name or f'GOAT V1.48 {symbol},M1_Trds{index}.set', symbol=symbol, strategy='Trend ' + str(index),
                 sha256=hashlib.sha256(raw).hexdigest(), contentBase64=base64.b64encode(raw).decode())
 
 
-class AgentSetupTests(unittest.TestCase):
+class DeployFixture(unittest.TestCase):
+    """The shared fixture (no tests): a bound portable controller, a fake MT5 process and helpers.
+    test_studio_profile_staged_deploy.py reuses it."""
+
     def setUp(self):
         self.fixture = fixtures.PortableControllerTests(); self.fixture.setUp(); self.addCleanup(self.fixture.tearDown)
         self.c = self.fixture.bound()
@@ -215,6 +237,31 @@ class AgentSetupTests(unittest.TestCase):
         self.ea.start()
         return self.ea
 
+    def plan(self, members=None, **changes):
+        value = dict(schema='goat-demo-deploy-v1', deploymentId='e' * 32, portfolio=dict(id='cloud-1', name='Pilot portfolio'),
+                     buildId=BUILD, accountLogin='123456', policy=dict(aiMode=0, aiThreshold=50, aiProtocol=2, exposureMode=0),
+                     members=members if members is not None else [member(0), member(1, 'GBPUSD')])
+        value.update(changes)
+        path = Path(self.c.root) / 'plan.json'; path.write_text(json.dumps(value))
+        return path
+
+    def relaunch(self, on_launch=None):
+        def launched(*args, **kwargs):
+            self.process.identity = dict(pid=77, executable='terminal64.exe', created_utc='2026-10-02T01:00:00+00:00')
+            if on_launch:
+                on_launch(args[0])
+            return SimpleNamespace(pid=77)
+        return patch('studio_demo_deploy.subprocess.Popen', side_effect=launched)
+
+    def staged_then(self, mutate):
+        """Run deploy-load with a close step that changes something after staging."""
+        def close(controller, attempt_id, build_id=None):
+            mutate(); self.process.identity = None
+            return dict(phase='stopped')
+        return close
+
+
+class AgentSetupTests(DeployFixture):
     # ---------------------------------------------------------------- pairing
 
     def test_pairing_code_reads_and_consumes_the_native_challenge(self):
@@ -678,18 +725,6 @@ class AgentSetupTests(unittest.TestCase):
 
     # ------------------------------------------------------------------ deploy
 
-    def plan(self, members=None, **changes):
-        value = dict(schema='goat-demo-deploy-v1', deploymentId='e' * 32, portfolio=dict(id='cloud-1', name='Pilot portfolio'),
-                     buildId=BUILD, accountLogin='123456', policy=dict(aiMode=0, aiThreshold=50, aiProtocol=2, exposureMode=0),
-                     members=members if members is not None else [member(0), member(1, 'GBPUSD')])
-        value.update(changes)
-        path = Path(self.c.root) / 'plan.json'; path.write_text(json.dumps(value))
-        return path
-
-    def relaunch(self):
-        return patch('studio_demo_deploy.subprocess.Popen', side_effect=lambda *a, **k: (setattr(self.process, 'identity', dict(
-            pid=77, executable='terminal64.exe', created_utc='2026-10-02T01:00:00+00:00')), SimpleNamespace(pid=77))[1])
-
     def test_deploy_loads_the_reviewed_portfolio_and_reads_back_exact_hashes_with_algo_off(self):
         ea = self.start_ea(pairing='none')
         with self.relaunch() as launch:
@@ -703,7 +738,8 @@ class AgentSetupTests(unittest.TestCase):
         config = launch.call_args.args[0][1]
         self.assertTrue(config.startswith('/config:'))
         text = Path(config.removeprefix('/config:')).read_bytes().decode('utf-16')
-        self.assertIn('[Experts]\r\nEnabled=0', text); self.assertIn('ExpertParameters=GOAT Dashboard Agent.set', text)
+        self.assertIn('[Experts]\r\nEnabled=0', text); self.assertNotIn('[StartUp]', text, 'the dashboard comes from chart01 of the profile')
+        self.assertEqual(sorted(p.name for p in deploy.paths(self.c, 'e' * 32)['profile'].iterdir()), ['chart01.chr', 'chart02.chr', 'chart03.chr'])
         state = deploy.paths(self.c, 'e' * 32)['state'].read_bytes().decode('utf-16').splitlines()
         self.assertEqual(state[0], '#GOAT_AI_LAUNCH_V147_2\t0\t50\t2')
         self.assertTrue(state[1].endswith('\t0\t0') and '\tEURUSD\t' in state[1])
@@ -712,8 +748,8 @@ class AgentSetupTests(unittest.TestCase):
 
     def test_deploy_refuses_hash_mismatch_version_mismatch_and_wrong_or_protected_account(self):
         bad = member(0); bad['sha256'] = 'f' * 64
-        cases = [([bad], {}, 'reviewed SHA-256'), ([member(0, name='GOAT V1.47 EURUSD,M15_Trds0.set')], {}, 'exported by GOAT V1.47'),
-                 ([member(0, symbol='EURUSD', name='GOAT V1.48 GBPUSD,M15_Trds0.set')], {}, 'symbol does not match'),
+        cases = [([bad], {}, 'reviewed SHA-256'), ([member(0, name='GOAT V1.47 EURUSD,M1_Trds0.set')], {}, 'exported by GOAT V1.47'),
+                 ([member(0, symbol='EURUSD', name='GOAT V1.48 GBPUSD,M1_Trds0.set')], {}, 'symbol does not match'),
                  (None, dict(accountLogin='999999'), 'differs from this installation')]
         for members, changes, message in cases:
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
@@ -750,62 +786,17 @@ class AgentSetupTests(unittest.TestCase):
                 self.assertNotEqual(record['phase'], 'ready')
                 self.ea.stop(); self.ea = None
 
-    def attach_settling_at(self, ea, settle_seconds, calls):
-        """deploy-load's mailbox request, with each deploy_next on a simulated clock: the fake EA
-        writes the final receipt only once settle_seconds have passed (never when None)."""
-        def request(controller, ident, action, timeout=60):
-            if action != 'deploy_next':
-                return mailbox.portfolio_request(controller, ident, action, timeout=timeout)
-            now = [0.0]
-            ea.hold_deploy_next = True
-            def sleep(seconds):
-                now[0] += seconds
-                if settle_seconds is not None and now[0] >= settle_seconds and ea.hold_deploy_next:
-                    root = mailbox.portfolio_root(controller)
-                    receipt = root / (json.loads((root / 'request.json').read_text())['id'] + '.json')
-                    ea.hold_deploy_next = False
-                    end = time.monotonic() + 10
-                    while not receipt.exists() and time.monotonic() < end:
-                        time.sleep(0.02)
-            issued = int(time.time())
-            result = mailbox.portfolio_request(controller, ident, action, timeout=timeout, clock=lambda: now[0], sleep=sleep)
-            calls.append(dict(timeout=timeout, elapsed=now[0], issued=issued, receipt=result))
-            return result
-        return request
-
-    def test_the_deploy_next_wait_covers_the_async_attach_budget_within_the_request_limits(self):
-        # B41.1 (GOAT-EA#186) settles a child attach within 75 s, above the child's 60 s licence
-        # startup. The wait is deliberately 90 s: the most portfolio_request accepts.
-        self.assertGreater(deploy.DEPLOY_NEXT_WAIT_SECONDS, deploy.CHILD_ATTACH_BUDGET_SECONDS)
-        self.assertEqual(deploy.DEPLOY_NEXT_WAIT_SECONDS, 90)
+    def test_the_mailbox_no_longer_sends_deploy_next_but_settles_a_retained_one(self):
+        # beta.25 (profile-staged): children are started by MT5 from the profile; the EA no longer attaches them.
+        self.assertNotIn('deploy_next', mailbox.PORTFOLIO_ACTIONS)
+        self.assertIn('link_children', mailbox.PORTFOLIO_ACTIONS)
+        self.assertTrue({'children_linked', 'children_pending', 'all_attached', 'child_attached'} <= mailbox.PORTFOLIO_RESULTS)
         with self.assertRaisesRegex(ValueError, 'Invalid dashboard command'):
-            mailbox.portfolio_request(self.c, self.ident, 'deploy_next', timeout=deploy.DEPLOY_NEXT_WAIT_SECONDS + 1)
-
-    def test_a_child_attach_settling_after_60s_still_loads_the_portfolio(self):
-        # Every final deploy_next receipt lands at 70 s: a 60 s wait reported receipt_timeout here.
-        ea = self.start_ea(pairing='none'); calls = []
-        with self.relaunch():
-            result = deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=self.attach_settling_at(ea, 70, calls), sleep=lambda s: None)
-        self.assertEqual(result['phase'], 'ready')
-        self.assertEqual([call['receipt']['result'] for call in calls], ['child_attached', 'child_attached', 'all_attached'])
-        self.assertEqual({call['timeout'] for call in calls}, {90})
-        self.assertEqual({call['elapsed'] for call in calls}, {70.0})
-
-    def test_a_child_attach_that_never_settles_times_out_at_90s_with_the_same_refusal(self):
-        ea = self.start_ea(pairing='none'); calls = []
-        with self.relaunch(), self.assertRaisesRegex(
-                ValueError, r'^A child chart could not be attached \(receipt_timeout\); run deploy-status, then deploy-stop to unwind$'):
-            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=self.attach_settling_at(ea, None, calls), sleep=lambda s: None)
-        self.assertEqual(len(calls), 1, 'no second attach is sent after a timeout')
-        call = calls[0]
-        self.assertEqual(call['timeout'], 90)
-        self.assertTrue(90 <= call['elapsed'] < 90.5, call['elapsed'])
-        self.assertEqual(call['receipt'], dict(result='receipt_timeout', id=call['receipt']['id'], requestRetained=True))
-        self.assertEqual(json.loads(deploy.paths(self.c, 'e' * 32)['journal'].read_text())['phase'], 'dashboard_ready')
-        # The unanswered request is retained, and outlives the wait: it expires at wait + 5 = 95 s.
-        pending = json.loads((mailbox.portfolio_root(self.c) / 'request.json').read_text())
-        self.assertEqual((pending['id'], pending['action']), (call['receipt']['id'], 'deploy_next'))
-        self.assertIn(pending['expiresAtUtc'] - call['issued'], (95, 96))
+            mailbox.portfolio_request(self.c, self.ident, 'deploy_next', timeout=20)
+        retained = dict(schema=1, id='a' * 32, action='deploy_next', registrationSha256='b' * 64, expiresAtUtc=1)
+        mailbox.validate_portfolio_request(retained)  # a beta.24 request left behind can still be archived
+        with self.assertRaisesRegex(ValueError, 'identity'):
+            mailbox.validate_portfolio_request(retained | dict(action='attach_everything'))
 
     def test_stop_refuses_algo_on_or_open_positions_and_never_closes_them(self):
         self.start_ea(pairing='none')
@@ -834,20 +825,13 @@ class AgentSetupTests(unittest.TestCase):
         with self.relaunch(), self.assertRaisesRegex(ValueError, 'Another demo deployment is live'):
             deploy.load(self.c, self.plan(deploymentId='2' * 32), mt5=FakeMT5(self.c))
 
-    def staged_then(self, mutate):
-        """Run deploy-load with a close step that changes something after staging."""
-        def close(controller, attempt_id, build_id=None):
-            mutate(); self.process.identity = None
-            return dict(phase='stopped')
-        return close
-
     def test_a_set_or_resume_file_changed_after_staging_is_never_launched(self):
         where = deploy.paths(self.c, 'e' * 32)
-        set_path = where['sets'] / 'GOAT V1.48 EURUSD,M15_Trds0.set'
+        set_path = where['sets'] / 'GOAT V1.48 EURUSD,M1_Trds0.set'
         for label, mutate in (('SET', lambda: set_path.write_bytes(set_path.read_bytes() + b'X\x00')),
                               ('resume file', lambda: where['state'].write_bytes(where['state'].read_bytes().replace('EURUSD'.encode('utf-16-le'), 'USDJPY'.encode('utf-16-le'))))):
             with self.subTest(label=label):
-                for path in [*Path(self.c.root).glob('demo-deployments/*'), *where['sets'].glob('*'), where['state'], where['profile'] / 'chart01.chr', where['namespace']]:
+                for path in [*Path(self.c.root).glob('demo-deployments/*'), *where['sets'].glob('*'), *where['profile'].glob('*'), where['state'], where['namespace']]:
                     if path.exists(): path.unlink()
                 self.process.identity = FakeProcess().identity
                 with self.relaunch() as launch, self.assertRaisesRegex(ValueError, 'changed after the review'):
@@ -1050,7 +1034,7 @@ class AgentSetupTests(unittest.TestCase):
         with patch('studio_monitor_probe.tester_state', return_value='idle'):
             result = deploy.preflight(self.c, mt5=FakeMT5(self.c, account=account))
         broker = result['broker']
-        self.assertEqual(result['schema_version'], 2)
+        self.assertEqual(result['schema_version'], 3, '3 only adds allow_live_trading_default and readiness_blockers (D2)')
         self.assertEqual({k: broker[k] for k in ('currency', 'balance', 'equity', 'leverage', 'company', 'trade_mode')},
                          dict(account, trade_mode='demo'))
         self.assertIsInstance(broker['balance'], float); self.assertIsInstance(broker['leverage'], int)

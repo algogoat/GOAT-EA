@@ -332,11 +332,17 @@ def setup_retire(controller, ident, request_id, *, grace=1.5, sleep=time.sleep):
 
 # -------------------------------------------------------------- portfolio mailbox
 
-PORTFOLIO_ACTIONS = ('status', 'audit', 'configure', 'deploy_next', 'apply_policy')
+# Actions the controller sends. beta.25 (profile-staged deploy, controller/contracts/profile-deploy.md) appends
+# link_children; deploy_next left the list because the EA no longer attaches charts. A deploy_next request
+# retained from beta.24 is still recognised (RETAINED_PORTFOLIO_ACTIONS) so it can be settled and archived.
+PORTFOLIO_ACTIONS = ('status', 'audit', 'configure', 'apply_policy', 'link_children')
+RETAINED_PORTFOLIO_ACTIONS = PORTFOLIO_ACTIONS + ('deploy_next',)
+# Append-only: the beta.24 deploy_next results stay valid for retained receipts.
 PORTFOLIO_RESULTS = {'observed', 'started', 'rejected_portfolio_mismatch', 'rejected_not_inert',
                      'configured', 'configure_failed', 'rejected_ai_policy_mismatch',
                      'rejected_partial_deployment', 'all_attached', 'child_attached',
-                     'child_attach_failed', 'policy_dispatched', 'policy_not_dispatched'}
+                     'child_attach_failed', 'policy_dispatched', 'policy_not_dispatched',
+                     'children_linked', 'children_pending'}
 REGISTRATION_SECONDS = 14400
 ROW_FIELDS = {'index', 'symbol', 'chartId', 'magic', 'linkedFresh', 'settingsMatch', 'exposureMode', 'ackId', 'ackStatus',
               'AI_MODE', 'AI_PROTOCOL', 'AI_THRESHOLD', 'AI_SCOPE', 'AI_VERIFIED', 'AI_AVAILABLE', 'AI_AT', 'EA_TRADE_ALLOWED'}
@@ -385,7 +391,7 @@ def validate_portfolio_registration(value, ident, common_files, *, check_files=T
 def validate_portfolio_request(value):
     if set(value) != {'schema', 'id', 'action', 'registrationSha256', 'expiresAtUtc'} or value.get('schema') != 1:
         raise ValueError('Invalid retained portfolio request')
-    if not isinstance(value['id'], str) or not re.fullmatch('[a-f0-9]{32}', value['id']) or value['action'] not in PORTFOLIO_ACTIONS:
+    if not isinstance(value['id'], str) or not re.fullmatch('[a-f0-9]{32}', value['id']) or value['action'] not in RETAINED_PORTFOLIO_ACTIONS:
         raise ValueError('Invalid retained portfolio request identity')
     if not isinstance(value['registrationSha256'], str) or not re.fullmatch('[a-f0-9]{64}', value['registrationSha256']) or type(value['expiresAtUtc']) is not int:
         raise ValueError('Invalid retained portfolio request binding')

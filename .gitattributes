@@ -3,3 +3,5 @@
 
 controller/fixtures/oosc/** -text
 controller/fixtures/heldout/** -text
+# Golden profile fixtures are byte-exact (UTF-16, CRLF/LF mixes): never normalise them.
+controller/contracts/profile-fixtures/** -text

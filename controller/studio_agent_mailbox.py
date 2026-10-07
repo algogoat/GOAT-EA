@@ -10,6 +10,7 @@ terminal directory, broker account, server and compiled build ID. A receipt is e
 of what the EA observed, never proof that a requested shutdown has completed.
 """
 from contextlib import contextmanager
+import errno
 import hashlib
 import json
 import os
@@ -41,6 +42,15 @@ SHARING_RETRY_ATTEMPTS = 40  # About one second in total: an EA read of a small 
 TRANSIENT_WINERRORS = (5, 32, 33)
 
 
+def transient_sharing_error(error):
+    code = getattr(error, 'winerror', None)
+    if code is not None:
+        return code in TRANSIENT_WINERRORS
+    # Python's open() reports a Windows sharing violation through the C runtime: errno EACCES and no
+    # winerror (goatai#1885: a non-sharing holder made every open() read fail on the first try).
+    return os.name == 'nt' and getattr(error, 'errno', None) == errno.EACCES
+
+
 def sharing_retry(operation, *, attempts=SHARING_RETRY_ATTEMPTS, sleep=time.sleep):
     # A native atomic move, an EA reading the same file, or a terminal exit can briefly
     # deny a Windows share. Retry only that condition, never by issuing another native request.
@@ -48,7 +58,7 @@ def sharing_retry(operation, *, attempts=SHARING_RETRY_ATTEMPTS, sleep=time.slee
         try:
             return operation()
         except OSError as error:
-            if getattr(error, 'winerror', None) not in TRANSIENT_WINERRORS or attempt == attempts - 1:
+            if not transient_sharing_error(error) or attempt == attempts - 1:
                 raise
             sleep(0.025)
 

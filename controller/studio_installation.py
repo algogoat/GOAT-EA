@@ -13,7 +13,9 @@ def read_json(path):
             if key in result: raise ValueError('Duplicate JSON key: '+key)
             result[key] = value
         return result
-    raw = Path(path).read_bytes()
+    # A concurrent writer's replace can briefly deny the share (WinError 5/32/33): bounded retry, loud after.
+    from studio_agent_mailbox import sharing_retry
+    raw = sharing_retry(Path(path).read_bytes)
     if len(raw) > 2_000_000: raise ValueError('JSON exceeds 2 MB')
     return json.loads(raw.decode('utf-8-sig'), object_pairs_hook=unique)
 

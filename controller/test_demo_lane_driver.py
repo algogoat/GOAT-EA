@@ -8,7 +8,10 @@ the Windows task launch is replaced by a fake that still passes the durable host
 from contextlib import redirect_stderr
 import io
 import json
+import os
 from pathlib import Path
+import re
+import secrets
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -16,12 +19,84 @@ from unittest.mock import patch
 import demo_agent
 from demo_agent import DemoAgent, read_json, write_json
 import studio_durable_driver
+import test_demo_catchup_agent as catchup_fixture
+import test_demo_holdup_agent as holdup_fixture
 import test_demo_seed_agent as seed_fixture
 from test_demo_seed_agent import MONITOR
 
 
+class DurableReceipts:
+    """The durable host's files beside a lane record, as Windows leaves them, and Windows' view of their processes.
 
-class LaneDriverTests(unittest.TestCase):
+    studio_durable_driver.launch retains <kind>-<id>-<nonce>.launch.json, then the bootstrap retains
+    <kind>-<id>-<nonce>.started.json with ITS OWN pid and nonce and runs demo_agent.main in that same process, so the
+    started receipt names the running driver itself (goatai#1885, Claude-PC Ops comment 6029461500).
+    """
+
+    def detached(self):
+        """studio_durable_driver.launch as Windows runs it: the validated envelope, then the bootstrap's started receipt.
+        The driver is this test process (it calls _drive_lane in-process), so the receipt carries os.getpid()."""
+        def fake(argv, *, log_path, worker_path):
+            worker, _ = studio_durable_driver.validate(argv, log_path, worker_path)
+            self.receipts(Path(worker_path), Path(log_path), worker['nonce'], pid=os.getpid(), argv=argv)
+            return SimpleNamespace(pid=os.getpid())
+        return patch('studio_durable_driver.launch', side_effect=fake)
+
+    @staticmethod
+    def receipts(worker_path, log_path, nonce, *, pid, finished=False, argv=()):
+        prefix = Path(log_path).with_suffix('')
+        envelope, started, done = (Path(str(prefix) + '.' + name + '.json') for name in ('launch', 'started', 'finished'))
+        write_json(envelope, dict(schema_version=1, argv=list(argv), log_path=str(log_path), worker_path=str(worker_path),
+                                  started=str(started), finished=str(done), task_name='GOAT-Demo-' + 'd' * 16 + '-' + nonce))
+        write_json(worker_path, dict(read_json(worker_path), launch_envelope=str(envelope), launch_mechanism='windows_demand_task'))
+        write_json(started, dict(pid=pid, nonce=nonce, at='2026-10-06T00:00:00+00:00', native_running_verified=False))
+        if finished:
+            write_json(done, dict(exit_code=0, nonce=nonce))
+        return envelope
+
+    def lane_record(self, kind, batch_id, *, pid, status='supervising', finished=False):
+        """A detached lane driver record with its launch envelope and started (optionally finished) receipt."""
+        nonce = secrets.token_hex(16)
+        path = self.root / 'demo-agent/lane-workers' / (kind + '-' + batch_id + '.json')
+        write_json(path, dict(schema_version=1, kind=kind, batch_id=batch_id, nonce=nonce, status=status, initial=True,
+                              max_seconds=600, pid=pid))
+        self.receipts(path, path.with_name(kind + '-' + batch_id + '-' + nonce + '.log'), nonce, pid=pid, finished=finished)
+        return read_json(path)
+
+    @staticmethod
+    def bootstrap_command(record):
+        """The command line Windows shows for a running bootstrap: its envelope path carries the driver's nonce."""
+        return 'C:\\GOAT\\python\\pythonw.exe studio_durable_driver.py --envelope "' + record['launch_envelope'] + '"'
+
+    @staticmethod
+    def processes(table):
+        """Windows' process view for _worker_alive ({pid: command line}); any other PowerShell query is a test error."""
+        def query(script, **kwargs):
+            match = re.search(r'ProcessId = (\d+)"', script)
+            if 'Win32_Process' not in script or match is None:
+                raise AssertionError('unexpected PowerShell query: ' + script[:120])
+            pid = int(match.group(1))
+            return json.dumps(dict(ProcessId=pid, CommandLine=table[pid])) if pid in table else ''
+        return patch('studio_process_query.powershell_text', side_effect=query)
+
+    def drive_detached(self, kind, batch_id, start, max_seconds):
+        """Start detached with the real receipts on disk, then run the demand task's drive with its own receipt live."""
+        with self.detached():
+            self.assertEqual(start(batch_id, max_seconds, detach=True)['status'], 'driver_starting')
+        folder = self.root / 'demo-agent/lane-workers'
+        worker = read_json(folder / (kind + '-' + batch_id + '.json'))
+        stem = kind + '-' + batch_id + '-' + worker['nonce']
+        self.assertEqual(sorted(p.name for p in folder.glob('*.json')),
+                         sorted([kind + '-' + batch_id + '.json', stem + '.launch.json', stem + '.started.json']))
+        self.auto = True
+        with self.processes({os.getpid(): self.bootstrap_command(worker)}):
+            driven = self.agent._drive_lane(kind, batch_id, worker['nonce'], max_seconds, True)
+        self.assertEqual(driven['status'], 'completed')
+        self.assertEqual(read_json(folder / (kind + '-' + batch_id + '.json'))['status'], 'returned')
+        return driven
+
+
+class LaneDriverTests(DurableReceipts, unittest.TestCase):
     # Borrowed fixture methods (through the module, so its own tests are not collected again here).
     setUp = seed_fixture.DemoSeedAgentTests.setUp
     database = seed_fixture.DemoSeedAgentTests.database
@@ -213,6 +288,45 @@ class LaneDriverTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'reserved lane driver'):
             studio_durable_driver.validate(argv, log, path)
 
+    # ---- goatai#1885: a detached driver refused itself on its own started receipt -------------------------
+    def test_a_detached_seed_driver_with_its_own_started_receipt_drives(self):
+        # beta.23: lane-workers/*.json included <nonce>.started.json, whose pid and nonce are the running driver's own,
+        # so every detached driver refused itself with "A live seed driver (None) owns this terminal".
+        self.agent.seed_prepare('batch', self.plan)
+        self.drive_detached('seed', 'batch', self.agent.seed_start, 600)
+        self.assertEqual((self.process.closes, len(self.process.starts)), ([MONITOR], 2))
+
+    def test_receipts_are_never_driver_records(self):
+        # A catch-up driver that has finished while its bootstrap is still exiting: the record is done (finished
+        # receipt), but its started receipt still names a live process carrying its nonce. Only records count.
+        old = self.lane_record('catchup', 'old', pid=5150, finished=True)
+        workers = self.root / 'demo-agent/workers'
+        write_json(workers / 'g6.json', dict(batch_id='g6', nonce='e' * 32, status='returned'))
+        for name in ('launch', 'started', 'finished'):
+            write_json(workers / ('g6-' + 'e' * 32 + '.' + name + '.json'), dict(pid=5150, nonce='e' * 32))
+        self.assertEqual([p.name for p in self.agent._worker_records()], ['g6.json'])
+        self.assertEqual([p.name for p in self.agent._worker_records(lane=True)], ['catchup-old.json'])
+        with self.processes({5150: self.bootstrap_command(old)}):
+            self.assertIsNone(self.agent._live_lane_worker())
+            self.assertEqual(self.agent.seed_prepare('batch', self.plan)['status'], 'prepared')
+
+    def test_only_another_live_lane_driver_refuses(self):
+        mine = self.lane_record('holdup', 'h1', pid=os.getpid())          # this process's own detached driver
+        self.lane_record('seed', 'stale', pid=6006)                         # its process is gone
+        table = {os.getpid(): self.bootstrap_command(mine)}
+        with self.processes(table):
+            self.assertIsNone(self.agent._live_lane_worker())                   # no exclude needed to recognise itself
+            self.assertEqual(self.agent.seed_prepare('batch', self.plan)['status'], 'prepared')
+        other = self.lane_record('catchup', 'cu2', pid=7007)                # a truly live driver on this terminal
+        table[7007] = self.bootstrap_command(other)
+        with self.processes(table):
+            path, record = self.agent._live_lane_worker()
+            self.assertEqual((Path(path).name, record['batch_id']), ('catchup-cu2.json', 'cu2'))
+            with self.assertRaisesRegex(ValueError, 'A live catch-up driver \\(cu2\\) owns this terminal'):
+                self.agent._seed_unoccupied('holdup', exclude=self.root / 'demo-agent/lane-workers/holdup-h1.json')
+            with self.assertRaisesRegex(ValueError, 'A live catch-up driver \\(cu2\\) owns this terminal'):
+                self.agent.seed_start('batch', 60, detach=True)
+
     def test_the_cli_detaches_by_default_and_caps_a_foreground_drive(self):
         stderr = io.StringIO()
         with redirect_stderr(stderr):
@@ -223,6 +337,33 @@ class LaneDriverTests(unittest.TestCase):
         args = SimpleNamespace(foreground=False, max_seconds=3600)
         self.assertTrue(demo_agent._lane_detached(args))
         self.assertFalse(demo_agent._lane_detached(SimpleNamespace(foreground=True, max_seconds=60)))
+
+
+class DetachedCatchupTests(DurableReceipts, unittest.TestCase):
+    """The Saturday catch-up path: a detached catch-up driver drives with its own started receipt live."""
+    setUp = catchup_fixture.DemoCatchupAgentTests.setUp
+    write_exports = catchup_fixture.DemoCatchupAgentTests.write_exports
+    sleep = catchup_fixture.DemoCatchupAgentTests.sleep
+    manifest = catchup_fixture.DemoCatchupAgentTests.manifest
+    finish_member = catchup_fixture.DemoCatchupAgentTests.finish_member
+
+    def test_a_detached_catchup_driver_never_refuses_itself(self):
+        self.assertEqual(self.agent.catchup_prepare('cu1', self.plan)['status'], 'prepared')
+        self.drive_detached('catchup', 'cu1', self.agent.catchup_start, 60)
+        self.assertEqual(len(self.process.starts), 2)
+
+
+class DetachedHoldupTests(DurableReceipts, unittest.TestCase):
+    """The Prove step: a detached hold-up driver drives with its own started receipt live."""
+    setUp = holdup_fixture.DemoHoldupAgentTests.setUp
+    write_plan = holdup_fixture.DemoHoldupAgentTests.write_plan
+    sleep = holdup_fixture.DemoHoldupAgentTests.sleep
+    mt5_writes_report = holdup_fixture.DemoHoldupAgentTests.mt5_writes_report
+
+    def test_a_detached_holdup_driver_never_refuses_itself(self):
+        self.assertEqual(self.agent.holdup_prepare('h1', self.plan)['status'], 'prepared')
+        self.drive_detached('holdup', 'h1', self.agent.holdup_start, 60)
+        self.assertEqual(len(self.process.starts), 1)
 
 
 if __name__ == '__main__':

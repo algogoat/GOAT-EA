@@ -45,6 +45,12 @@ LANES = {'seed': dict(folder='seeds', starts='seed-starts', word='seed', title='
          'catchup': dict(folder='catchups', starts='catchup-starts', word='catch-up', title='Catch-up', unit='catch-up'),
          # Hold-up test (the Prove step, goatai#1885): one frozen SET, one MT5 pass; demo lane only in v1.
          'holdup': dict(folder='holdups', starts='holdup-starts', word='hold-up test', title='Hold-up test', unit='hold-up test')}
+# Detached driver RECORDS: demo-agent/workers/<batch>.json and demo-agent/lane-workers/<kind>-<batch>.json. The durable
+# host keeps its receipts beside them (<record stem>-<nonce>.launch|started|finished.json). A receipt is never a record:
+# the started receipt holds the running driver's own pid and nonce, so read as a record it made every detached lane
+# driver refuse itself ("A live seed driver (None) owns this terminal", goatai#1885).
+BATCH_WORKER_RECORD = re.compile(r'[A-Za-z0-9_-]{1,80}\.json')
+LANE_WORKER_RECORD = re.compile(r'(?:' + '|'.join(LANES) + r')-[A-Za-z0-9_-]{1,80}\.json')
 ACTIVE_NATIVE_STATUSES = ('reserved', 'starting', 'running', 'reconcile_required', 'verifying')
 # What an app update (install-build and its relaunch) writes to the demo action log. Any other
 # operation there is owner demo-lane work, which restore-lane never undoes.
@@ -1581,7 +1587,7 @@ class DemoAgent:
         if active:
             raise Refusal('Batch ' + ', '.join(active) + ' is active; restore-lane waits for it to finish',
                           'RESTORE_ACTIVE_BATCH', batch_ids=active, **known)
-        for worker in (self.state_root / 'workers').glob('*.json'):
+        for worker in self._worker_records():
             if self._worker_alive(read_json(worker)):
                 raise Refusal('A live demo batch driver owns this terminal; restore-lane waits', 'RESTORE_LIVE_DRIVER', **known)
         if self._active_seed() is not None:
@@ -1800,7 +1806,7 @@ class DemoAgent:
         if type(wait_seconds) not in (int, float) or not 0 <= wait_seconds <= 60:
             raise ValueError('Recovery observation wait must be between 0 and 60 seconds')
         with self._exclusive(), self._studio('demo-recover-orphan', idle=True, recovery=True) as (controller, broker):
-            for worker in (self.root / 'demo-agent/workers').glob('*.json'):
+            for worker in self._worker_records():
                 if self._worker_alive(read_json(worker)):
                     raise ValueError('A live demo driver/worker must finish before orphan recovery')
             pending = self.root / 'orphan-recovery-pending.json'
@@ -1859,6 +1865,14 @@ class DemoAgent:
             self._append('studio_prepare_batch', 'verified', batch_id=batch_id,
                          member_count=member_count, configuration_sha256=observed['configuration_sha256'])
             return dict(result, member_count=member_count)
+
+    def _worker_records(self, lane=False):
+        """Detached driver record paths (workers/ or lane-workers/), sorted; never the durable host's receipts.
+
+        Built from ``root`` (state_root is root/demo-agent): orphan recovery runs on agents built without state_root."""
+        folder, pattern = ((self.root / 'demo-agent/lane-workers', LANE_WORKER_RECORD) if lane
+                           else (self.root / 'demo-agent/workers', BATCH_WORKER_RECORD))
+        return sorted(path for path in folder.glob('*.json') if pattern.fullmatch(path.name)) if folder.is_dir() else []
 
     def _worker_alive(self, record, *, quick=False, retire=False):
         """Is this detached worker alive? ``quick`` bounds the Windows queries for status reads (Claude-Mac, #1885).
@@ -2346,7 +2360,7 @@ class DemoAgent:
     def _seed_unoccupied(self, kind='seed', *, exclude=None):
         if self._native_active_batches():
             raise ValueError('An ordinary native batch is active; ' + LANES[kind]['word'] + ' work waits for it to finish')
-        for worker in (self.state_root / 'workers').glob('*.json'):
+        for worker in self._worker_records():
             if self._worker_alive(read_json(worker)):
                 raise ValueError('A live demo batch driver owns this terminal; ' + LANES[kind]['word'] + ' work waits')
         live = self._live_lane_worker(exclude=exclude)
@@ -2374,12 +2388,19 @@ class DemoAgent:
 
         ``retire`` (only under the terminal lock, right before a new reservation) first removes the task of a launch
         that provably never ran and records ``launch_never_started``, exactly as run-batch does (goatai#1885 PR D).
+
+        Only ``<kind>-<id>.json`` records are read, never the durable host's receipts beside them, and a record that
+        carries this very process's pid (the detached driver's own) never refuses it, whatever ``exclude`` says.
         """
-        folder = self.state_root / 'lane-workers'
-        for path in sorted(folder.glob('*.json')) if folder.is_dir() else []:
+        for path in self._worker_records(lane=True):
             if exclude is not None and Path(path) == Path(exclude):
                 continue
             record = read_json(path)
+            # _drive_lane writes its own pid into its record under the terminal lock before any check, so the driver
+            # never refuses itself. Any other record with this pid is stale (a reused pid: this process's command line
+            # carries another nonce, so _worker_alive would say dead anyway); skipping it never hides a live driver.
+            if record.get('pid') == os.getpid():
+                continue
             if self._worker_alive(record, retire=retire):
                 return path, record
         return None

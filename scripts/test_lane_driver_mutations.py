@@ -3,7 +3,8 @@
 Each guard that keeps a detached lane drive safe is removed in a temporary copy of controller/, and
 controller/test_demo_lane_driver.py must fail: the caller's own checks and start record before the
 detach, one live driver per terminal, the worker's reservation identity, the durable host's exact
-lane validation, the recorded worker refusal and the foreground budget cap.
+lane validation, the recorded worker refusal and the foreground budget cap, and that only driver
+records (never the durable host's receipts, never the driver's own record) can refuse a driver.
 The repository is never modified. Works with an embedded Python that ignores cwd.
 """
 import shutil
@@ -33,8 +34,13 @@ MUTATIONS = [
     ('reservation and launch outside the terminal lock', AGENT,
      "        with self._exclusive():\n            # Under this lock, a launch whose task provably never ran",
      "        with nullcontext():\n            # Under this lock, a launch whose task provably never ran"),
+    # Anchored on the lane launch's own comment: the bare line is also a substring of run-batch's deeper-indented
+    # copy, which comes first in the file, so the mutation used to land there and miss the lane path locally.
     ('an unconfirmed launch envelope overwritten', AGENT,
-     "            current = read_json(worker_path) if worker_path.is_file() else dict(worker)", "            current = dict(worker)"),
+     "            # Re-read: the durable host may already have retained its launch envelope (Codex P1 on GOAT-EA#162).\n"
+     "            current = read_json(worker_path) if worker_path.is_file() else dict(worker)",
+     "            # Re-read: the durable host may already have retained its launch envelope (Codex P1 on GOAT-EA#162).\n"
+     "            current = dict(worker)"),
     ('the caller regresses a newer worker state', AGENT,
      "        if worker.get('status') == 'reserved' and worker.get('nonce') == nonce:", "        if True:"),
     ('other lane work ignores a live detached driver', AGENT,
@@ -54,6 +60,20 @@ MUTATIONS = [
      "        pass\n    kind, batch_id, nonce, budget, mode"),
     ('durable host accepts a non-canonical lane worker path', HOST,
      "        raise ValueError('Lane driver log/worker path is not canonical')", "        pass"),
+    # goatai#1885 (beta.23): the driver's own <nonce>.started.json was read as a live lane record, so every
+    # detached seed, catch-up and hold-up driver refused itself ("A live seed driver (None) owns this terminal").
+    ('driver scans read the durable host receipts as records', AGENT,
+     "        return sorted(path for path in folder.glob('*.json') if pattern.fullmatch(path.name)) if folder.is_dir() else []",
+     "        return sorted(folder.glob('*.json')) if folder.is_dir() else []"),
+    ('the lane record name admits receipts', AGENT,
+     "LANE_WORKER_RECORD = re.compile(r'(?:' + '|'.join(LANES) + r')-[A-Za-z0-9_-]{1,80}\\.json')",
+     "LANE_WORKER_RECORD = re.compile(r'(?:' + '|'.join(LANES) + r')-[A-Za-z0-9_.-]{1,80}\\.json')"),
+    ('the batch record name admits receipts', AGENT,
+     "BATCH_WORKER_RECORD = re.compile(r'[A-Za-z0-9_-]{1,80}\\.json')",
+     "BATCH_WORKER_RECORD = re.compile(r'[A-Za-z0-9_.-]{1,80}\\.json')"),
+    ('a detached driver refuses its own record', AGENT,
+     "            if record.get('pid') == os.getpid():\n                continue",
+     "            if False:\n                continue"),
 ]
 
 

@@ -227,6 +227,22 @@ controller always writes.
 - Every `children_*` receipt must show `tradingAllowed=false`, `positions=0`, `orders=0` and `connected=true`.
   Otherwise linking stops at once.
 - After the link, `apply_policy`, the ack poll, `audit` (`settingsMatch`) and the readiness checks are unchanged.
+- **The staged child's policy marker** (EA side, B43 `e38791d`, goatai#1885 6035859714).
+  - A staged child, meaning one whose `Studio_MonitorRunPath` starts with `deploy=`, opens nothing new until the
+    dashboard writes its per-child GlobalVariable `<Key>_ID_<magic>_<symbol>_PDEPLOY`.
+  - The marker's value is the deployment ID's first 13 hex digits (`GoatDeployMarker`).
+  - The block is the first line of `DashboardEntryAllowed` (`GoatStagedChildMayOpen`). It covers real and virtual
+    sequence starts and virtual-to-real promotion. Adds to an existing sequence, closes, trailing and stops never
+    pass through it.
+  - So turning Algo Trading on before adoption and `apply_policy` cannot open a trade without the dashboard's
+    exposure, risk and AI policy.
+  - The dashboard writes the marker (`GoatPortfolioMarkPolicyApplied`, on every poll while a deployment is bound,
+    before it answers the request). It does so only for a linked child that has acknowledged the exposure policy
+    `apply_policy` dispatched: the same command ID, an applied ack and the registered exposure mode.
+  - A child without the `deploy=` prefix behaves exactly as before and reads no marker.
+  - **Controller:** nothing new. It dispatches `apply_policy` and waits for every row's ack as before
+    (`ackId == commandId`, `ackStatus == 1`), then audits. There is no new field, action or result, and the
+    controller never writes the marker.
 - **Approved for beta.25:** the 2 s `link_children` poll that the controller drives, with no adoption on the
   dashboard timer (goatai#1885 6034765935).
 - **A linked row whose chart disappears fails safe** (6034810079).

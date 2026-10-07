@@ -20,6 +20,7 @@ import studio_agent_mailbox as mailbox
 import studio_agent_setup as agent_setup
 import studio_demo_deploy as deploy
 import studio_deploy_profile as deploy_profile
+from studio_refusal import Refusal
 from studio_native_gate import exclusive_gate
 import test_goat_studio as fixtures
 
@@ -79,6 +80,7 @@ class FakeEA(threading.Thread):
         self.code = 'ABCD-EF23'
         self.on_shutdown = lambda: None
         self.audit_registration = None  # Audit a different registration than the request names.
+        self.force_result = None  # Answer every portfolio request with this result (a stale or newer EA).
 
     def stop(self):
         self.stop_event.set(); self.join(5)
@@ -175,6 +177,7 @@ class FakeEA(threading.Thread):
                      exposureMode=reg['exposureMode'], ackId=self.rows[i]['ack'], ackStatus=1 if self.rows[i]['ack'] else 0,
                      AI_MODE=1, AI_PROTOCOL=2, AI_THRESHOLD=reg['aiThreshold'], AI_SCOPE=0, AI_VERIFIED=0, AI_AVAILABLE=0, AI_AT=None,
                      EA_TRADE_ALLOWED=self.child_trade if self.rows[i]['cid'] > 0 else None) for i, m in enumerate(reg['members'])]
+        result = self.force_result or result
         audited = self.audit_registration if action == 'audit' and self.audit_registration else envelope['registrationSha256']
         body = dict(schema=1, id=envelope['id'], action=action, registrationSha256=audited, result=result,
                     account=reg['account'], server=reg['server'], directory=reg['directory'], buildId=reg['buildId'],
@@ -195,8 +198,10 @@ class FakeEA(threading.Thread):
             return False
         parsed = deploy_profile.parse_chart(chart.read_bytes())
         member = reg['members'][index]
-        expected = deploy_profile.effective_input_lines(Path(member['path']).read_bytes(),
-                                                        dict(aiMode=reg['aiMode'], aiThreshold=reg['aiThreshold'], aiProtocol=reg['aiProtocol']))
+        # The deployment nonce must name the deployment folder of the row's SET path (adoption requires it).
+        expected = deploy_profile.child_input_lines(Path(member['path']).read_bytes(),
+                                                    dict(aiMode=reg['aiMode'], aiThreshold=reg['aiThreshold'], aiProtocol=reg['aiProtocol']),
+                                                    Path(member['path']).parent.name)
         return (parsed['chart'].get('symbol') == member['symbol'] and parsed['expert'].get('expertmode') == '5'
                 and parsed['expert'].get('path') == 'Experts\\' + self.c.install['ea_relative_path'] and parsed['inputs'] == expected)
 
@@ -793,12 +798,28 @@ class AgentSetupTests(DeployFixture):
         # Append-only: the B43 EA answers a retained deploy_next with rejected_deploy_next_retired and changes nothing.
         self.assertTrue({'children_linked', 'children_pending', 'rejected_deploy_next_retired', 'all_attached', 'child_attached'}
                         <= mailbox.PORTFOLIO_RESULTS)
-        with self.assertRaisesRegex(ValueError, 'Invalid dashboard command'):
+        # A stale caller gets a typed refusal in plain English, never an unknown-result error.
+        with self.assertRaises(Refusal) as caught:
             mailbox.portfolio_request(self.c, self.ident, 'deploy_next', timeout=20)
+        self.assertEqual(caught.exception.code, 'DEPLOY_NEXT_RETIRED')
+        self.assertTrue(str(caught.exception).startswith("This EA build deploys through the app's Next step; the old one-by-one deploy was retired."))
+        with self.assertRaisesRegex(ValueError, 'Invalid dashboard command'):
+            mailbox.portfolio_request(self.c, self.ident, 'attach_everything', timeout=20)
         retained = dict(schema=1, id='a' * 32, action='deploy_next', registrationSha256='b' * 64, expiresAtUtc=1)
         mailbox.validate_portfolio_request(retained)  # a beta.24 request left behind can still be archived
         with self.assertRaisesRegex(ValueError, 'identity'):
             mailbox.validate_portfolio_request(retained | dict(action='attach_everything'))
+
+    def test_an_ea_answer_of_rejected_deploy_next_retired_is_a_typed_refusal(self):
+        ea = self.start_ea(pairing='none')
+        with self.relaunch():
+            self.assertEqual(deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)['phase'], 'ready')
+        ea.force_result = 'rejected_deploy_next_retired'
+        with self.assertRaises(Refusal) as caught:
+            mailbox.portfolio_request(self.c, self.ident, 'status', timeout=20)
+        self.assertEqual(caught.exception.code, 'DEPLOY_NEXT_RETIRED')
+        ea.force_result = None
+        self.assertEqual(mailbox.portfolio_request(self.c, self.ident, 'status', timeout=20)['result'], 'observed', 'the receipt is settled')
 
     def test_stop_refuses_algo_on_or_open_positions_and_never_closes_them(self):
         self.start_ea(pairing='none')

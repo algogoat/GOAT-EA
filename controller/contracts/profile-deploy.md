@@ -1,7 +1,10 @@
 # Profile-staged deploy: controller ↔ EA contract (beta.25)
 
-Status: **v1, beta.25** (goatai#1885 6033450916: Claude-Mac approved the design in
-`PROPOSAL.md` with rulings D1-D6). The controller half lives on `claude-pc/profile-staged-controller`.
+Status: **v1, beta.25**.
+
+- goatai#1885 6033450916: Claude-Mac approved the design in `PROPOSAL.md` with rulings D1-D6.
+- 6034765935 and 6034810079: Mac's review of the EA half (GOAT-EA#192) added the follow-ups that this
+  version includes: the deployment nonce, the typed refusals, and the fail-safe for a chart that disappears. The controller half lives on `claude-pc/profile-staged-controller`.
 The EA half (`claude-pc/profile-staged-ea`) builds against this file, and the beta.26 MQL profile
 writer must reproduce the golden fixtures in `profile-fixtures/` byte for byte.
 
@@ -100,14 +103,23 @@ That reader is deleted together with the template path. The accepted tokens are:
 |---|---|---|---|
 | M1 | 0 | 1 | B35 `chart02.chr` |
 | M5 | 0 | 5 | `ENUM_TIMEFRAMES` minutes |
-| M15 | 0 | 15 | `ENUM_TIMEFRAMES` minutes |
-| M30 | 0 | 30 | terminal-isolation `British Pound\chart04.chr` |
 | H1 | 1 | 1 | T3 monitor-profile backup charts |
 | H4 | 1 | 4 | terminal-isolation `British Pound\chart03.chr` |
 | D1 | 1 | **24** | terminal-isolation `British Pound\chart01.chr`. A day is 24 hours (`PERIOD_D1 = 0x4018`). **The proposal's "2 for D1" is wrong**: unit 2 is weeks. |
 
-Every other token (W1, MN1, M10, a lowercase token, or no comma) is refused with `SET_PERIOD_UNSUPPORTED`
-before anything is written. No chart period is ever implicit.
+**M15 and M30 are refused in beta.25** (goatai#1885 6034765935).
+
+- Both sides read them whole, never as M1. The encodings are known: M15 is (0,15), and M30 is (0,30), as in
+  terminal-isolation `British Pound\chart04.chr`.
+- Supporting them is on the B42 list.
+
+Every token outside the table (M15, M30, W1, MN1, M10, a lowercase token, or no comma) is refused before anything
+is written. The refusal is a typed refusal (`refusal_code` `SET_PERIOD_UNSUPPORTED`, with fields `fileName` and
+`timeframe`) whose message reads:
+
+> This portfolio has a timeframe the app can't deploy yet (M15): <SET name>. The app deploys M1, M5, H1, H4 and D1.
+
+No chart period is ever implicit.
 
 ### 2.2 Input lines (the BuildTemplate rules, plus the refusals both writers share)
 
@@ -124,17 +136,41 @@ before anything is written. No chart period is ever implicit.
    - With `aiMode` 2, every line whose name (the text before its first `=`, untrimmed) is `Mode_Bias`,
      `Bias_threshold`, `Bias_Protocol` or `Mode_Bias_Trades` gets the policy value in place.
    - Missing names are then appended in that order.
-   - With `aiMode` 0 the lines are unchanged.
+   - With `aiMode` 0 the lines are unchanged. The nonce (step 7) comes after this step.
+7. **Deployment nonce** (goatai#1885 6034810079). Every staged child's single `EA_Desc` line gets
+   `@{deploy=<deploymentId>}` appended. `<deploymentId>` is the 32-hex deploy ID.
+   - For example, `EA_Desc=R99475c1ec8ee7bd0b661@{deploy=0123…cdef}`.
+   - It is applied **after** the AI policy, and nothing else changes.
+   - Trading is unchanged: the EA keeps only the text before `@` as the strategy (`ExtractFunctionKeysFromInputString`)
+     and ignores the unknown `deploy` key.
+   - A SET without exactly one `EA_Desc` line, or whose `EA_Desc` already holds `@`, `{` or `}`, is refused
+     (`SET_EA_DESC_UNSUPPORTED`). Frozen exports write a plain `EA_Desc`.
+   - The dashboard chart01 carries no nonce.
+   - **EA side:** adoption requires the chart's `EA_Desc` to end in exactly
+     `@{deploy=<the deployment folder of the row's SET path>}`. That folder is
+     `Common\Files\GOAT\Deployments\<deploymentId>\`, already in the registration and the TSV, so no schema
+     changes.
+   - `settingsMatch` exempts exactly that suffix on `EA_Desc` and nothing else.
+   - So a chart GOAT did not stage for this deployment can never be adopted, even with the same SET.
 
 The dashboard chart01 uses the same frame on `M1` with the symbol of member 0. Its inputs, in this order, are
 `Mode_Operation=8`, `Dashboard_Resume_Saved=true`, `Mode_Bias=1`, `Bias_Protocol=2`, `Bias_threshold=50` and `EA_Desc=GOAT Dashboard`.
 
 ### 2.3 Duplicate members
 
-The controller refuses (`DUPLICATE_MEMBER_SETTINGS`) two members that have the same symbol, the same period and
-audit-equal effective inputs. Audit-equal means equal under `GoatChildAuditInputs` and `GoatChildAuditValue`:
-decimal canonicalisation, the `Download_StartDate` midnight rule, and exact text for the five named inputs.
+Two members with the same symbol, the same period and audit-equal effective inputs are refused before anything is
+staged. Byte-identical SETs are the common case. The comparison runs before the nonce is added.
+
+- Audit-equal means equal under `GoatChildAuditInputs` and `GoatChildAuditValue`: decimal canonicalisation,
+  the `Download_StartDate` midnight rule, and exact text for the five named inputs.
+- The refusal is typed: `refusal_code` `DUPLICATE_MEMBER_SETTINGS`, with field `members`, and this message:
+
+> Two members have identical settings on the same symbol and timeframe; remove one (<a> and <b>).
+
 So no started chart can match two rows.
+
+The same check belongs in the house-portfolio publish CLI (`house_portfolio.cjs`), so a duplicate never reaches a
+deploy.
 
 ## 3. Mailbox: `link_children`
 
@@ -144,7 +180,12 @@ This is the AgentPortfolio mailbox, unchanged: the same envelope, registration, 
   - `deploy_next` is no longer sent.
   - A retained beta.24 `deploy_next` request or receipt is still recognised, so it can be settled and archived.
 - **Results.** The controller adds (append-only) `children_linked`, `children_pending` and
-  `rejected_deploy_next_retired`. The B43 EA gives that last answer to a retained `deploy_next` and changes nothing.
+  `rejected_deploy_next_retired`.
+  - The B43 EA gives that last answer to a `deploy_next` and changes nothing.
+  - The controller turns it into a typed refusal (`refusal_code` `DEPLOY_NEXT_RETIRED`), and so does any caller
+    that still asks for `deploy_next`. The message reads: "This EA build deploys through the app's Next step; the old
+    one-by-one deploy was retired. Use deploy-load (Next in the app) instead."
+  - A stale caller therefore never sees an unknown-result error.
 
 **EA behaviour.** **Decided here:** `link_children` is a mutation-class action, like `apply_policy`:
 
@@ -175,6 +216,15 @@ This is the AgentPortfolio mailbox, unchanged: the same envelope, registration, 
 - Every `children_*` receipt must show `tradingAllowed=false`, `positions=0`, `orders=0` and `connected=true`.
   Otherwise linking stops at once.
 - After the link, `apply_policy`, the ack poll, `audit` (`settingsMatch`) and the readiness checks are unchanged.
+- **Approved for beta.25:** the 2 s `link_children` poll that the controller drives, with no adoption on the
+  dashboard timer (goatai#1885 6034765935).
+- **A linked row whose chart disappears fails safe** (6034810079).
+  - `GoatPortfolioRowLinked` turns false, the row reads `linkedFresh=false`, and every later `link_children`
+    answer is `children_pending` until `deploy-stop`.
+  - During deploy-load that row ends `child_not_linked` (or `child_not_started` once its identity is cleared),
+    and the deploy unwinds itself (section 5).
+  - After ready, `deploy-status` shows `linkedFresh=false` and `trading=false` for it.
+  - Nothing re-attaches a chart. The person runs `deploy-stop` and deploys again.
 - The journal phase name `attached` is kept, so a beta.24 journal still resumes.
 
 ## 4. Adoption (EA side, for reference)
@@ -186,7 +236,9 @@ row (`cid=0`) is matched against every chart from `ChartFirst`/`ChartNext`:
 1. Skip the dashboard's own chart and charts already claimed by a row.
 2. Require `ChartSymbol`/`ChartPeriod` equal to the row's, and `CHART_EXPERT_NAME` equal to the EA name.
 3. Require a magic from `GoatFindMagicByCid` that is greater than 0 and unused by other rows.
-4. Require `GoatChildAuditMaps(frozen SET, AI policy, ChartSaveTemplate snapshot, expert path)` to be true.
+4. Require the chart's `EA_Desc` to end in this deployment's nonce (section 2.2, step 7).
+5. Require `GoatChildAuditMaps(frozen SET, AI policy, ChartSaveTemplate snapshot, expert path)` to be true, with only
+   that nonce suffix exempted.
 
 A row is adopted only when **exactly one** chart matches. The EA then sets `cid`/`magic`, deletes the pending
 `Magic` GV, sets status Linked and runs `SaveDashboardConfig`. Zero or several matches leave the row alone, with
@@ -245,6 +297,6 @@ error says so and asks for `deploy-stop`. A later `deploy-load` of the same plan
 | Fixture | Use |
 |---|---|
 | `kestrel-b35-01.set` + `g1-buildtemplate-kestrel.tpl` | **G1.** The writer's `<expert>`…`</expert>` (aiMode 0, `GOAT-EA\GOAT V1.49.ex5`) equals the real BuildTemplate output, line for line. |
-| `g2/*.set` → `g2/*.chr`, `g2/dashboard-eurusd.chr`, `g2/profile/*` | **G2.** Frozen writer bytes covering: `;` lines, CRLF/LF mixes, padding, UTF-8 with and without a BOM, aiMode 0 and 2, and the M1, M5, H4 and D1 periods. `g2/profile` holds the full profile for a two-member plan, including `dashboard_state.tsv`. The MQL writer must produce the same bytes. |
-| `g3-b35-chart02-mt5-saved.chr` + `g3-b35-dashboard-rows.tsv` | **G3.** MT5's own save of a child built from `kestrel-b35-01.set`. The frame matches (except the version and folder) and the inputs are audit-equal. The TSV row's `cid` equals the chart's `id=`. |
+| `g2/*.set` → `g2/*.chr`, `g2/dashboard-eurusd.chr`, `g2/profile/*` | **G2.** Frozen writer bytes covering: `;` lines, CRLF/LF mixes, padding, UTF-8 with and without a BOM, aiMode 0 and 2, the M1, M5, H4 and D1 periods, and the deployment nonce. Each case's `deploymentId` is in `cases.json`. `g2/profile` holds the full profile for a two-member plan, including `dashboard_state.tsv`; its nonce equals the deployment folder of the rows' SET paths. The MQL writer must produce the same bytes. |
+| `g3-b35-chart02-mt5-saved.chr` + `g3-b35-dashboard-rows.tsv` | **G3.** MT5's own save of a child built from `kestrel-b35-01.set`. The frame matches (except the version and folder) and the inputs are audit-equal once the nonce suffix is removed. The TSV row's `cid` equals the chart's `id=`. |
 | `g3-t3-saved-native-e1.tpl` | **G3.** T3's save of the G1 template, with `expertmode=4`: the D2 evidence. The inputs are audit-equal; the extra names are WriteSet-omitted or CA41-declared defaults. |

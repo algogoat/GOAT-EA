@@ -43,6 +43,7 @@ from studio_installation import read_json
 from studio_launch_telemetry import SCHEMA as TELEMETRY_SCHEMA, launch_record, utc_now
 from studio_native_gate import exclusive_gate
 from studio_onboarding import saved_launch_policy, session_state, require_idle_control
+from studio_refusal import Refusal
 
 PLAN_SCHEMA = 'goat-demo-deploy-v1'
 DEPLOYMENT_ID = re.compile(r'[a-f0-9]{32}')
@@ -201,10 +202,13 @@ def validate_plan(controller, session, plan):
             raise ValueError('SET bytes differ from the reviewed SHA-256: ' + name)
         check_member_values(controller, name, raw)
         try:
-            # The exact chart the profile will hold: period, line and character rules (studio_deploy_profile).
-            deploy_profile.child_chart(dict(name=name, symbol=symbol, raw=raw), controller.install['ea_relative_path'], policy)
+            # The exact chart the profile will hold: period, line, character and nonce rules (studio_deploy_profile).
+            deploy_profile.child_chart(dict(name=name, symbol=symbol, raw=raw), controller.install['ea_relative_path'], policy,
+                                       plan['deploymentId'])
         except UnicodeDecodeError as exc:
             raise ValueError('Unreadable SET values: ' + name) from exc
+        except Refusal as exc:
+            raise Refusal(str(exc) + ' Nothing was written or launched.', exc.code, **exc.fields) from exc
         except ValueError as exc:
             raise ValueError(str(exc) + ' (' + name + '; nothing was written or launched)') from exc
         prepared.append(dict(index=index, name=name, symbol=symbol, strategy=member['strategy'], sha256=member['sha256'], raw=raw))
@@ -245,7 +249,7 @@ def staged_bytes(controller, plan, members):
     policy = plan['policy']
     expected = {Path(m['path']): m['raw'] for m in members}
     charts = deploy_profile.profile_files(controller.install['ea_relative_path'], policy,
-                                          [dict(name=m['name'], symbol=m['symbol'], raw=m['raw']) for m in members])
+                                          [dict(name=m['name'], symbol=m['symbol'], raw=m['raw']) for m in members], plan['deploymentId'])
     for name, raw in charts.items():
         expected[where['profile'] / name] = raw
     # Unchanged from beta.24: every row starts cid=0 magic=0; the dashboard writes each row's identity when it

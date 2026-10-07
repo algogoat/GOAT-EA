@@ -16,6 +16,7 @@ from unittest.mock import patch
 import studio_agent_mailbox as mailbox
 import studio_demo_deploy as deploy
 import studio_deploy_profile as deploy_profile
+from studio_refusal import Refusal
 from test_studio_agent_setup import BUILD, DeployFixture, FakeMT5, FakeProcess, member
 
 PREVIOUS = 'GOAT-Studio-' + 'c' * 32
@@ -62,7 +63,8 @@ class ProfileStagedDeployTests(DeployFixture):
         plan = json.loads(self.plan().read_text())
         files = {p.name: p.read_bytes() for p in where['profile'].iterdir()}
         members = [dict(name=m['fileName'], symbol=m['symbol'], raw=(where['sets'] / m['fileName']).read_bytes()) for m in plan['members']]
-        self.assertEqual(files, deploy_profile.profile_files(self.c.install['ea_relative_path'], plan['policy'], members))
+        self.assertEqual(files, deploy_profile.profile_files(self.c.install['ea_relative_path'], plan['policy'], members, 'e' * 32))
+        self.assertIn('EA_Desc=Trend 0@{deploy=' + 'e' * 32 + '}', deploy_profile.decode_chart(files['chart02.chr']))
         dashboard = deploy_profile.parse_chart(files['chart01.chr'])
         self.assertEqual(deploy_profile.audit_inputs(dashboard['inputs'])['Mode_Operation'], '8')
         self.assertEqual(dashboard['expert'], dict(name='GOAT V1.48', path='Experts\\GOAT-EA\\GOAT V1.48.ex5', expertmode='5'))
@@ -246,13 +248,19 @@ class ProfileStagedDeployTests(DeployFixture):
     def test_unsupported_periods_lines_and_duplicate_members_are_refused_before_anything_is_written(self):
         twin = member(1, content=('EA_Desc=Trend 0\r\nLots=0.1\r\n').encode('utf-16'))  # member 0's inputs on the same symbol and period
         bad_line = ('EA_Desc=x\rLots=0.1\r\n').encode('utf-16')
-        cases = (([member(0, name='GOAT V1.48 EURUSD,W1_Trds0.set')], 'SET_PERIOD_UNSUPPORTED'),
-                 ([member(0, name='GOAT V1.48 EURUSD,M10_Trds0.set')], 'SET_PERIOD_UNSUPPORTED'),
-                 ([member(0, content=bad_line)], 'SET_LINE_UNSUPPORTED'),
-                 ([member(0), twin], 'DUPLICATE_MEMBER_SETTINGS'))
-        for members, code in cases:
-            with self.subTest(code=code), self.assertRaisesRegex(ValueError, code):
+        timeframe = "^This portfolio has a timeframe the app can't deploy yet"
+        cases = (([member(0, name='GOAT V1.48 EURUSD,M15_Trds0.set')], 'SET_PERIOD_UNSUPPORTED', timeframe + r' \(M15\)'),
+                 ([member(0, name='GOAT V1.48 EURUSD,M30_Trds0.set')], 'SET_PERIOD_UNSUPPORTED', timeframe + r' \(M30\)'),
+                 ([member(0, name='GOAT V1.48 EURUSD,W1_Trds0.set')], 'SET_PERIOD_UNSUPPORTED', timeframe),
+                 ([member(0, content=('Lots=0.1\r\n').encode('utf-16'))], 'SET_EA_DESC_UNSUPPORTED', 'exactly one EA_Desc'),
+                 ([member(0), twin], 'DUPLICATE_MEMBER_SETTINGS',
+                  r'^Two members have identical settings on the same symbol and timeframe; remove one'))
+        for members, code, message in cases:
+            with self.subTest(code=code, message=message), self.assertRaisesRegex(Refusal, message) as caught:
                 deploy.load(self.c, self.plan(members), mt5=FakeMT5(self.c))
+            self.assertEqual(caught.exception.code, code)
+        with self.assertRaisesRegex(ValueError, 'SET_LINE_UNSUPPORTED'):
+            deploy.load(self.c, self.plan([member(0, content=bad_line)]), mt5=FakeMT5(self.c))
         self.assertFalse(deploy.paths(self.c, 'e' * 32)['profile'].exists())
         self.assertFalse(deploy.paths(self.c, 'e' * 32)['journal'].exists())
 

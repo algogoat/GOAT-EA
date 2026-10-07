@@ -19,6 +19,8 @@ import hashlib
 import re
 from pathlib import Path, PureWindowsPath
 
+from studio_refusal import Refusal
+
 PROFILE_PREFIX = 'GOAT-Deploy-'
 PROFILE_FORMAT = 'profile-staged-v1'
 # D1 (goatai#1885 6033450916): the literal BuildTemplate emitted. The value-1 bit is the per-program
@@ -31,7 +33,17 @@ DASHBOARD_INPUTS = ('Mode_Operation=8', 'Dashboard_Resume_Saved=true', 'Mode_Bia
 # MT5 stores a chart period as (unit, count): 0 = minutes, 1 = hours (ENUM_TIMEFRAMES bits 14-15).
 # MT5's own saves on this PC show M1 (0,1), M30 (0,30), H1 (1,1), H4 (1,4) and a daily chart as (1,24):
 # D1 is 24 hours, not unit 2 (2 is weeks).
-PERIODS = {'M1': (0, 1), 'M5': (0, 5), 'M15': (0, 15), 'M30': (0, 30), 'H1': (1, 1), 'H4': (1, 4), 'D1': (1, 24)}
+MT5_PERIODS = {'M1': (0, 1), 'M5': (0, 5), 'M15': (0, 15), 'M30': (0, 30), 'H1': (1, 1), 'H4': (1, 4), 'D1': (1, 24)}
+# The timeframes beta.25 deploys (goatai#1885 6034765935): M15 and M30 are refused in plain English until the
+# B42 list adds them (the EA already reads the whole token; Balanced35 is all M1).
+PERIODS = {token: MT5_PERIODS[token] for token in ('M1', 'M5', 'H1', 'H4', 'D1')}
+# Deployment nonce (goatai#1885 6034810079): every staged child's EA_Desc carries @{deploy=<deploymentId>}. The EA
+# keeps only the text before '@' as the strategy (ExtractFunctionKeysFromInputString), so trading is unchanged;
+# adoption requires the nonce to equal the deployment folder of the row's SET path, so only a child GOAT
+# staged for this deployment can ever be adopted.
+DEPLOY_NONCE_INPUT = 'EA_Desc'
+DEPLOY_NONCE_KEY = 'deploy'
+DEPLOYMENT_ID = re.compile(r'[a-f0-9]{32}')
 AI_POLICY_NAMES = ('Mode_Bias', 'Bias_threshold', 'Bias_Protocol', 'Mode_Bias_Trades')
 # StringTrimLeft/StringTrimRight remove spaces, tabs and line feeds.
 TRIM = ' \t\r\n'
@@ -41,7 +53,10 @@ MAX_INPUT_LINES = 4096
 PERIOD_REFUSED = 'SET_PERIOD_UNSUPPORTED'
 SET_LINE_REFUSED = 'SET_LINE_UNSUPPORTED'
 SET_EMPTY = 'SET_NO_INPUTS'
+SET_EA_DESC_REFUSED = 'SET_EA_DESC_UNSUPPORTED'
 DUPLICATE_MEMBER_SETTINGS = 'DUPLICATE_MEMBER_SETTINGS'
+TIMEFRAME_MESSAGE = "This portfolio has a timeframe the app can't deploy yet ({token}): {name}. The app deploys M1, M5, H1, H4 and D1."
+DUPLICATE_MESSAGE = 'Two members have identical settings on the same symbol and timeframe; remove one ({first} and {second}).'
 
 
 def period_token(file_name):
@@ -52,8 +67,8 @@ def period_token(file_name):
     comma = file_name.find(',')
     token = re.match(r'[A-Z0-9]*', file_name[comma + 1:]).group() if comma >= 0 else ''
     if token not in PERIODS:
-        raise ValueError(PERIOD_REFUSED + ': ' + file_name + ' names the chart period ' + (repr(token) if token else 'nowhere')
-                         + '; a deploy supports ' + ', '.join(PERIODS))
+        raise Refusal(TIMEFRAME_MESSAGE.format(token=token or 'none', name=file_name), PERIOD_REFUSED, fileName=file_name,
+                      timeframe=token or None)
     return token
 
 
@@ -131,6 +146,30 @@ def effective_input_lines(raw, policy):
     return apply_ai_policy(set_input_lines(raw), policy['aiMode'], policy['aiThreshold'], policy['aiProtocol'])
 
 
+def deploy_nonce(deployment_id):
+    if not isinstance(deployment_id, str) or not DEPLOYMENT_ID.fullmatch(deployment_id):
+        raise ValueError('Invalid deployment ID for the deploy nonce')
+    return '@{' + DEPLOY_NONCE_KEY + '=' + deployment_id + '}'
+
+
+def with_deploy_nonce(lines, deployment_id):
+    """The staged child's inputs: the one EA_Desc line gets @{deploy=<deploymentId>} appended (nothing else changes).
+    A SET without exactly one EA_Desc line, or whose EA_Desc already holds '@' keys, is refused."""
+    nonce = deploy_nonce(deployment_id)
+    found = [index for index, line in enumerate(lines) if line.find('=') > 0 and line[:line.find('=')] == DEPLOY_NONCE_INPUT]
+    if len(found) != 1:
+        raise Refusal('Each member needs exactly one EA_Desc line so GOAT can mark the chart it starts (found '
+                      + str(len(found)) + ').', SET_EA_DESC_REFUSED)
+    line = lines[found[0]]
+    if '@' in line or '{' in line or '}' in line:
+        raise Refusal("This member's EA_Desc already carries '@' keys (" + line[:80] + '); export it again without them.', SET_EA_DESC_REFUSED)
+    return lines[:found[0]] + [line + nonce] + lines[found[0] + 1:]
+
+
+def child_input_lines(raw, policy, deployment_id):
+    return with_deploy_nonce(effective_input_lines(raw, policy), deployment_id)
+
+
 def expert_identity(ea_relative_path):
     """(name, path) as MT5 stores them: the file stem, and the path relative to MQL5."""
     relative = PureWindowsPath(ea_relative_path)
@@ -178,19 +217,19 @@ def dashboard_chart(symbol, ea_relative_path):
     return encode_chart(chart_text_lines(symbol, 'M1', ea_relative_path, list(DASHBOARD_INPUTS)))
 
 
-def child_chart(member, ea_relative_path, policy):
+def child_chart(member, ea_relative_path, policy, deployment_id):
     """member: dict(name=<SET file name>, symbol=..., raw=<SET bytes>)."""
     return encode_chart(chart_text_lines(member['symbol'], period_token(member['name']), ea_relative_path,
-                                         effective_input_lines(member['raw'], policy)))
+                                         child_input_lines(member['raw'], policy, deployment_id)))
 
 
-def profile_files(ea_relative_path, policy, members):
+def profile_files(ea_relative_path, policy, members, deployment_id):
     """Every chart file of the deploy profile: the dashboard first, then one child per member in plan order."""
     if not 1 <= len(members) <= 100:
         raise ValueError('A deploy profile holds 1 to 100 members')
     files = {chart_file_name(DASHBOARD_SLOT): dashboard_chart(members[0]['symbol'], ea_relative_path)}
     for slot, member in enumerate(members, start=DASHBOARD_SLOT + 1):
-        files[chart_file_name(slot)] = child_chart(member, ea_relative_path, policy)
+        files[chart_file_name(slot)] = child_chart(member, ea_relative_path, policy, deployment_id)
     return files
 
 
@@ -261,8 +300,9 @@ def refuse_duplicates(members, policy):
     for member in members:
         key = member_identity(member['symbol'], period_token(member['name']), effective_input_lines(member['raw'], policy))
         if key in seen:
-            raise ValueError(DUPLICATE_MEMBER_SETTINGS + ': ' + seen[key] + ' and ' + member['name'] + ' would start identical '
-                             'charts (same symbol, period and inputs), so the dashboard could not tell them apart')
+            # Byte-identical (or audit-equal) SETs on one symbol and timeframe would start charts adoption cannot tell apart.
+            raise Refusal(DUPLICATE_MESSAGE.format(first=seen[key], second=member['name']), DUPLICATE_MEMBER_SETTINGS,
+                          members=[seen[key], member['name']])
         seen[key] = member['name']
 
 

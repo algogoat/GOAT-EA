@@ -12,11 +12,14 @@ from pathlib import Path
 
 import studio_demo_deploy as deploy
 import studio_deploy_profile as profile
+from studio_refusal import Refusal
 
 FIXTURES = Path(__file__).resolve().parent / 'contracts' / 'profile-fixtures'
 EA = 'GOAT-EA\\GOAT V1.49.ex5'
 AI_OFF = dict(aiMode=0, aiThreshold=50, aiProtocol=2)
 AI_ON = dict(aiMode=2, aiThreshold=50, aiProtocol=2)
+DEPLOYMENT = '0123456789abcdef0123456789abcdef'
+NONCE = '@{deploy=' + DEPLOYMENT + '}'
 # Declared by V1.49 but omitted by WriteSet (the audit's omitted list) or added by CA41 (declared defaults).
 V149_DECLARED_EXTRAS = {'Dashboard_Resume_Saved', 'Studio_MonitorRunPath', 'Studio_ReadOnlyMonitor', 'GOAT_FitnessRunNonce',
                         'Sequence_Export_Enabled', 'Sequence_Export_End', 'Sequence_Export_Id', 'Sequence_Export_Model',
@@ -56,10 +59,12 @@ class WriterGoldenTests(unittest.TestCase):
         start, end = template.index('<expert>'), template.index('</expert>')
         written = profile.expert_block(EA, profile.effective_input_lines(fixture('kestrel-b35-01.set'), AI_OFF))
         self.assertEqual(written, template[start:end + 1])
-        # ...and it is exactly the <expert> block of the chart file the writer stages for that member.
+        # ...and the staged chart holds exactly that block, with the deployment nonce on its one EA_Desc line.
         chart = chart_lines(profile.child_chart(dict(name='GOAT V1.49 EURUSD,M1_B35-01_Kestrel-Trend-Breakout.set', symbol='EURUSD',
-                                                     raw=fixture('kestrel-b35-01.set')), EA, AI_OFF))
-        self.assertEqual(chart[chart.index('<expert>'):chart.index('</expert>') + 1], written)
+                                                     raw=fixture('kestrel-b35-01.set')), EA, AI_OFF, DEPLOYMENT))
+        self.assertEqual(chart[chart.index('<expert>'):chart.index('</expert>') + 1],
+                         [line + NONCE if line.startswith('EA_Desc=') else line for line in written])
+        self.assertIn('EA_Desc=R99475c1ec8ee7bd0b661' + NONCE, chart)
         self.assertTrue(any(line.startswith('; PF=') for line in written), 'BuildTemplate keeps ; lines that hold =')
 
     def test_g2_every_case_is_byte_for_byte_the_frozen_golden(self):
@@ -68,7 +73,7 @@ class WriterGoldenTests(unittest.TestCase):
         for case in cases['children']:
             with self.subTest(case=case['case']):
                 written = profile.child_chart(dict(name=case['fileName'], symbol=case['symbol'], raw=fixture(case['set'])),
-                                              case['eaRelativePath'], case['policy'])
+                                              case['eaRelativePath'], case['policy'], case['deploymentId'])
                 self.assertEqual(written, fixture(case['chart']))
                 self.assertEqual(hashlib.sha256(written).hexdigest(), case['chartSha256'])
         dashboard = cases['dashboard']
@@ -77,7 +82,7 @@ class WriterGoldenTests(unittest.TestCase):
     def test_g2_the_whole_profile_and_its_state_file_are_the_frozen_golden(self):
         spec = json.loads(fixture('g2/cases.json'))['profile']
         members = [dict(name=m['fileName'], symbol=m['symbol'], raw=fixture(m['set'])) for m in spec['members']]
-        files = profile.profile_files(spec['eaRelativePath'], spec['policy'], members)
+        files = profile.profile_files(spec['eaRelativePath'], spec['policy'], members, spec['deploymentId'])
         self.assertEqual(sorted(files), ['chart01.chr', 'chart02.chr', 'chart03.chr'])
         for name, raw in files.items():
             self.assertEqual(raw, fixture('g2/profile/' + name), name)
@@ -93,12 +98,16 @@ class WriterGoldenTests(unittest.TestCase):
     def test_g3_mt5s_saved_b35_child_has_the_writers_frame_and_audit_equal_inputs(self):
         saved = profile.parse_chart(fixture('g3-b35-chart02-mt5-saved.chr'))
         ours = profile.parse_chart(profile.child_chart(dict(name='GOAT V1.48 EURUSD,M1_B35-01.set', symbol='EURUSD',
-                                                            raw=fixture('kestrel-b35-01.set')), 'GOAT Experiment\\GOAT V1.48.ex5', AI_OFF))
+                                                            raw=fixture('kestrel-b35-01.set')), 'GOAT Experiment\\GOAT V1.48.ex5', AI_OFF,
+                                                       DEPLOYMENT))
         self.assertEqual(saved['expert'], ours['expert'], 'name, path and expertmode=5 exactly as MT5 saved them')
         self.assertEqual({k: saved['chart'][k] for k in ('symbol', 'period_type', 'period_size')},
                          {k: ours['chart'][k] for k in ('symbol', 'period_type', 'period_size')})
         self.assertNotIn('id', ours['chart'], 'the writer leaves id= to MT5')
         expected, actual = profile.audit_inputs(ours['inputs']), profile.audit_inputs(saved['inputs'])
+        # The staged child differs only by the deployment nonce, which adoption requires and settingsMatch exempts.
+        self.assertEqual(expected['EA_Desc'], actual['EA_Desc'] + NONCE)
+        expected['EA_Desc'] = expected['EA_Desc'].removesuffix(NONCE)
         for name, value in OMITTED_DEFAULTS.items():
             expected.setdefault(name, value)
         self.assertEqual(set(expected), set(actual))
@@ -107,12 +116,14 @@ class WriterGoldenTests(unittest.TestCase):
     def test_g3_t3s_save_of_the_g1_template_shows_expertmode_4_and_audit_equal_inputs(self):
         saved = profile.parse_chart(fixture('g3-t3-saved-native-e1.tpl'))
         ours = profile.parse_chart(profile.child_chart(dict(name='GOAT V1.49 EURUSD,M1_B35-01.set', symbol='EURUSD',
-                                                            raw=fixture('kestrel-b35-01.set')), EA, AI_OFF))
+                                                            raw=fixture('kestrel-b35-01.set')), EA, AI_OFF, DEPLOYMENT))
         # D2 evidence: applied as 5, saved as 4 on a terminal without AllowLiveTrading. The writer still emits 5 (D1).
         self.assertEqual((saved['expert']['expertmode'], ours['expert']['expertmode']), ('4', '5'))
         self.assertEqual({k: v for k, v in saved['expert'].items() if k != 'expertmode'},
                          {k: v for k, v in ours['expert'].items() if k != 'expertmode'})
         expected, actual = profile.audit_inputs(ours['inputs']), profile.audit_inputs(saved['inputs'])
+        self.assertEqual(expected['EA_Desc'], actual['EA_Desc'] + NONCE)
+        expected['EA_Desc'] = expected['EA_Desc'].removesuffix(NONCE)
         self.assertEqual(set(actual) - set(expected), V149_DECLARED_EXTRAS)
         self.assertEqual([name for name in expected if not profile.audit_equal(name, expected[name], actual[name])], [])
 
@@ -133,14 +144,14 @@ class WriterGoldenTests(unittest.TestCase):
 
 class WriterRuleTests(unittest.TestCase):
     def child(self, text, name='GOAT V1.49 EURUSD,M1_x.set', policy=AI_OFF, raw=None):
-        return chart_lines(profile.child_chart(dict(name=name, symbol=name.split(' ')[2].split(',')[0], raw=raw if raw is not None else u16(text)),
-                                               EA, policy))
+        raw = raw if raw is not None else u16('EA_Desc=t\r\n' + text)
+        return chart_lines(profile.child_chart(dict(name=name, symbol=name.split(' ')[2].split(',')[0], raw=raw), EA, policy, DEPLOYMENT))
 
     def inputs(self, lines):
-        return lines[lines.index('<inputs>') + 1:lines.index('</inputs>')]
+        return [line for line in lines[lines.index('<inputs>') + 1:lines.index('</inputs>')] if line != 'EA_Desc=t' + NONCE]
 
     def test_encoding_is_utf16le_with_bom_and_crlf_and_every_chart_has_expertmode_5(self):
-        raw = profile.child_chart(dict(name='GOAT V1.49 EURUSD,M1_x.set', symbol='EURUSD', raw=u16('A=1\r\n')), EA, AI_OFF)
+        raw = profile.child_chart(dict(name='GOAT V1.49 EURUSD,M1_x.set', symbol='EURUSD', raw=u16('EA_Desc=a\r\nA=1\r\n')), EA, AI_OFF, DEPLOYMENT)
         self.assertTrue(raw.startswith(b'\xff\xfe<\x00c\x00'))
         text = profile.decode_chart(raw)
         self.assertTrue(text.endswith('</chart>\r\n')); self.assertNotIn('\n', text.replace('\r\n', ''))
@@ -150,7 +161,8 @@ class WriterRuleTests(unittest.TestCase):
 
     def test_no_written_chart_ever_carries_an_algo_switch_or_an_id(self):
         files = profile.profile_files(EA, AI_ON, [dict(name='GOAT V1.49 EURUSD,M1_a.set', symbol='EURUSD', raw=fixture('kestrel-b35-01.set')),
-                                                  dict(name='GOAT V1.49 WS30,D1_b.set', symbol='WS30', raw=u16('Mode_Operation=9\r\nX=1\r\n'))])
+                                                  dict(name='GOAT V1.49 WS30,D1_b.set', symbol='WS30', raw=u16('Mode_Operation=9\r\nEA_Desc=b\r\nX=1\r\n'))],
+                                      DEPLOYMENT)
         for name, raw in files.items():
             text = profile.decode_chart(raw)
             for forbidden in ('Enabled=', 'AllowLiveTrading', 'AllowDllImport', '\nid=', '[StartUp]'):
@@ -159,7 +171,7 @@ class WriterRuleTests(unittest.TestCase):
     def test_the_dashboard_is_chart01_with_the_six_preset_values_and_children_follow_in_plan_order(self):
         members = [dict(name='GOAT V1.49 GBPUSD,M1_a.set', symbol='GBPUSD', raw=u16('EA_Desc=a\r\n')),
                    dict(name='GOAT V1.49 USDJPY,H1_b.set', symbol='USDJPY', raw=u16('EA_Desc=b\r\n'))]
-        files = profile.profile_files(EA, AI_OFF, members)
+        files = profile.profile_files(EA, AI_OFF, members, DEPLOYMENT)
         self.assertEqual(list(files), ['chart01.chr', 'chart02.chr', 'chart03.chr'])
         dashboard = chart_lines(files['chart01.chr'])
         self.assertEqual(self.inputs(dashboard), ['Mode_Operation=8', 'Dashboard_Resume_Saved=true', 'Mode_Bias=1', 'Bias_Protocol=2',
@@ -169,31 +181,37 @@ class WriterRuleTests(unittest.TestCase):
         self.assertEqual(profile.chart_file_name(101), 'chart101.chr')
 
     def test_periods_follow_mt5s_own_encoding_and_the_whole_token(self):
-        for token, unit, count in (('M1', 0, 1), ('M5', 0, 5), ('M15', 0, 15), ('M30', 0, 30), ('H1', 1, 1), ('H4', 1, 4), ('D1', 1, 24)):
+        for token, unit, count in (('M1', 0, 1), ('M5', 0, 5), ('H1', 1, 1), ('H4', 1, 4), ('D1', 1, 24)):
             with self.subTest(token=token):
                 self.assertEqual(self.child('A=1', name='GOAT V1.49 EURUSD,' + token + '_x.set')[2:4],
                                  ['period_type=' + str(unit), 'period_size=' + str(count)])
         # The whole token, as the dashboard's adoption reads it (beta.24's TF() read two characters: M15 opened M1).
-        self.assertEqual(profile.period_token('GOAT V1.49 EURUSD,M15_x.set'), 'M15')
         self.assertEqual(profile.period_token('GOAT V1.49 EURUSD,H4.set'), 'H4')
+        # M15 and M30 are read whole (never as M1) and refused in plain English until the B42 list adds them.
+        for token in ('M15', 'M30'):
+            with self.subTest(token=token), self.assertRaises(Refusal) as caught:
+                profile.period_token('GOAT V1.49 EURUSD,' + token + '_x.set')
+            self.assertEqual((caught.exception.code, caught.exception.fields['timeframe']), (profile.PERIOD_REFUSED, token))
+            self.assertTrue(str(caught.exception).startswith("This portfolio has a timeframe the app can't deploy yet (" + token + ')'))
+        self.assertEqual(profile.MT5_PERIODS['M15'], (0, 15))
         for name in ('GOAT V1.49 EURUSD,W1_x.set', 'GOAT V1.49 EURUSD,MN1_x.set', 'GOAT V1.49 EURUSD_x.set', 'GOAT V1.49 EURUSD,m1_x.set',
                      'GOAT V1.49 EURUSD,M10_x.set', 'GOAT V1.49 EURUSD,M1X_x.set', 'GOAT V1.49 EURUSD,_M1.set'):
-            with self.subTest(name=name), self.assertRaisesRegex(ValueError, profile.PERIOD_REFUSED):
+            with self.subTest(name=name), self.assertRaisesRegex(Refusal, "^This portfolio has a timeframe the app can't deploy yet"):
                 profile.period_token(name)
 
     def test_buildtemplate_line_rules_keep_comments_with_equals_and_trim_each_line(self):
         lines = self.inputs(self.child('; header without equals\r\n; PF=2.4\r\n=no key\r\n   Risk=500.0  \r\n\tA = b\t\r\n\r\nGrid=1'))
         self.assertEqual(lines, ['; PF=2.4', 'Risk=500.0', 'A = b', 'Grid=1'])
-        crlf, lf = u16('A=1\r\nB=2\r\n'), u16('A=1\nB=2\n')
+        crlf, lf = u16('EA_Desc=t\r\nA=1\r\nB=2\r\n'), u16('EA_Desc=t\nA=1\nB=2\n')
         self.assertEqual(self.child('', raw=crlf), self.child('', raw=lf))
-        self.assertEqual(self.child('', raw=crlf), self.child('', raw='A=1\r\nB=2'.encode('utf-8')))
-        self.assertEqual(self.child('', raw=crlf), self.child('', raw=b'\xef\xbb\xbfA=1\nB=2'))
+        self.assertEqual(self.child('', raw=crlf), self.child('', raw='EA_Desc=t\r\nA=1\r\nB=2'.encode('utf-8')))
+        self.assertEqual(self.child('', raw=crlf), self.child('', raw=b'\xef\xbb\xbfEA_Desc=t\nA=1\nB=2'))
 
     def test_lines_both_writers_could_read_differently_are_refused(self):
         for text, label in (('A=1\rB=2', 'lone CR'), ('A=1\r', 'lone CR at the end'), ('A=1\r\r\nB=2', 'CR before CRLF'), ('A=<b>', 'angle bracket'), ('A=1\x00', 'NUL'), ('A=\x07', 'control'),
                             ('A=1\u00a0', 'non-ASCII whitespace at the end'), ('; only comments\r\n', 'no inputs'), ('', 'empty')):
             with self.subTest(label=label), self.assertRaisesRegex(ValueError, 'SET_LINE_UNSUPPORTED|SET_NO_INPUTS'):
-                self.child(text)
+                self.child('', raw=u16(text))
 
     def test_the_ai_policy_matches_the_mql_self_test_vectors(self):
         source = ['Mode_Bias=1', 'Bias_threshold=60', 'Bias_Protocol=1', 'Mode_Bias_Trades=0', 'Mode_Bias_Exit=1', 'Mode_News=3',
@@ -214,6 +232,23 @@ class WriterRuleTests(unittest.TestCase):
         lines = self.inputs(self.child('Mode_Bias=1\r\nRisk=1', policy=dict(aiMode=2, aiThreshold=70, aiProtocol=2)))
         self.assertEqual(lines, ['Mode_Bias=2', 'Risk=1', 'Bias_threshold=70', 'Bias_Protocol=2', 'Mode_Bias_Trades=0'])
 
+    def test_every_child_carries_the_deployment_nonce_on_its_one_ea_desc_line(self):
+        lines = self.inputs(self.child('Risk=1'))
+        chart = self.child('Risk=1')
+        self.assertIn('EA_Desc=t' + NONCE, chart)
+        self.assertEqual(lines, ['Risk=1'], 'nothing else changes')
+        self.assertEqual(profile.audit_inputs(['EA_Desc=t' + NONCE])['EA_Desc'].split('@')[0], 't', 'the EA keeps the text before @ as the strategy')
+        for raw, label in ((u16('Risk=1\r\n'), 'no EA_Desc'), (u16('EA_Desc=a\r\nEA_Desc=b\r\n'), 'two EA_Desc'),
+                           (u16('EA_Desc=a@{mode=EXPORT}\r\n'), 'EA_Desc already keyed')):
+            with self.subTest(label=label), self.assertRaises(Refusal) as caught:
+                self.child('', raw=raw)
+            self.assertEqual(caught.exception.code, profile.SET_EA_DESC_REFUSED)
+        for bad in ('E' * 32, 'e' * 31, None):
+            with self.subTest(deployment=bad), self.assertRaises(ValueError):
+                profile.deploy_nonce(bad)
+        # A comment that mentions EA_Desc is not the input.
+        self.assertIn('; EA_Desc=old', self.child('; EA_Desc=old\r\nRisk=1'))
+
     def test_unsafe_symbols_and_ea_paths_are_refused(self):
         for symbol in ('EUR USD', 'EUR<', '', 'x' * 65):
             with self.subTest(symbol=symbol), self.assertRaises(ValueError):
@@ -226,8 +261,13 @@ class WriterRuleTests(unittest.TestCase):
         a = dict(name='GOAT V1.49 EURUSD,M1_a.set', symbol='EURUSD', raw=u16('EA_Desc=same\r\nRisk=500.0\r\nDownload_StartDate=2025.01.01\r\n'))
         b = dict(name='GOAT V1.49 EURUSD,M1_b.set', symbol='EURUSD', raw=u16('; another export\r\nEA_Desc=same\r\nRisk=500.00\r\n'
                                                                             'Download_StartDate=2025.01.01 00:00:00\r\n'))
-        with self.assertRaisesRegex(ValueError, profile.DUPLICATE_MEMBER_SETTINGS):
+        with self.assertRaises(Refusal) as caught:
             profile.refuse_duplicates([a, b], AI_OFF)
+        self.assertEqual(caught.exception.code, profile.DUPLICATE_MEMBER_SETTINGS)
+        self.assertEqual(str(caught.exception), 'Two members have identical settings on the same symbol and timeframe; remove one '
+                                                '(GOAT V1.49 EURUSD,M1_a.set and GOAT V1.49 EURUSD,M1_b.set).')
+        with self.assertRaisesRegex(Refusal, '^Two members have identical settings'):
+            profile.refuse_duplicates([a, dict(a, name='GOAT V1.49 EURUSD,M1_copy.set')], AI_OFF)  # byte-identical SETs
         for changed in (dict(b, symbol='GBPUSD', name='GOAT V1.49 GBPUSD,M1_b.set'), dict(b, name='GOAT V1.49 EURUSD,M5_b.set'),
                         dict(b, raw=u16('EA_Desc=other\r\nRisk=500.0\r\nDownload_StartDate=2025.01.01\r\n'))):
             profile.refuse_duplicates([a, changed], AI_OFF)

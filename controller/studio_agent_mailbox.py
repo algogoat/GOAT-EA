@@ -343,6 +343,11 @@ PORTFOLIO_RESULTS = {'observed', 'started', 'rejected_portfolio_mismatch', 'reje
                      'rejected_partial_deployment', 'all_attached', 'child_attached',
                      'child_attach_failed', 'policy_dispatched', 'policy_not_dispatched',
                      'children_linked', 'children_pending', 'rejected_deploy_next_retired'}
+# A typed refusal for a stale caller (goatai#1885 6034765935): the B43 EA answers deploy_next with
+# rejected_deploy_next_retired and changes nothing; this controller never sends it.
+DEPLOY_NEXT_RETIRED = 'DEPLOY_NEXT_RETIRED'
+DEPLOY_NEXT_RETIRED_MESSAGE = ("This EA build deploys through the app's Next step; the old one-by-one deploy was retired. "
+                               'Use deploy-load (Next in the app) instead.')
 REGISTRATION_SECONDS = 14400
 ROW_FIELDS = {'index', 'symbol', 'chartId', 'magic', 'linkedFresh', 'settingsMatch', 'exposureMode', 'ackId', 'ackStatus',
               'AI_MODE', 'AI_PROTOCOL', 'AI_THRESHOLD', 'AI_SCOPE', 'AI_VERIFIED', 'AI_AVAILABLE', 'AI_AT', 'EA_TRADE_ALLOWED'}
@@ -460,7 +465,14 @@ def portfolio_register(controller, ident, value):
     return digest
 
 
+def retired_deploy_next():
+    from studio_refusal import Refusal
+    return Refusal(DEPLOY_NEXT_RETIRED_MESSAGE, DEPLOY_NEXT_RETIRED)
+
+
 def portfolio_request(controller, ident, action, *, timeout=60, clock=time.monotonic, sleep=time.sleep):
+    if action not in PORTFOLIO_ACTIONS and action in RETAINED_PORTFOLIO_ACTIONS:
+        raise retired_deploy_next()
     if action not in PORTFOLIO_ACTIONS or not 1 <= timeout <= 90:
         raise ValueError('Invalid dashboard command')
     root = portfolio_root(controller)
@@ -493,6 +505,8 @@ def portfolio_request(controller, ident, action, *, timeout=60, clock=time.monot
             if receipt.exists():
                 value, _ = read_bounded(receipt, 131072)
                 result = portfolio_receipt(value, envelope, ident, registration['members'])
+                if result['result'] == 'rejected_deploy_next_retired':
+                    raise retired_deploy_next()
                 if result['result'] != 'started':
                     if not 0 <= time.time() - result['observedAtUtc'] <= timeout + 5:
                         raise ValueError('Stale or future dashboard receipt')

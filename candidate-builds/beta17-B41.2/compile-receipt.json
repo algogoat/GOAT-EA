@@ -1,0 +1,24 @@
+{
+  "schema": "goat-sanitized-candidate-compile-v1",
+  "compile_started_at": "2026-10-07T03:41:54.1661141Z",
+  "compiler_version": "5.0.0.6230",
+  "compiler_sha256": "cf2750bde55d98a1f3b4e56bcdd4f59300d0cff5caa6760985f7ef2c2cc12229",
+  "source_head": "d3324e9f307ecb0f5da7e61a1cb0692996874b42",
+  "source_sha256": "fef1675002d4433c4cc142acfb7b258f45978c21924db0b14f385a13083d7335",
+  "staged_source_sha256": "fef1675002d4433c4cc142acfb7b258f45978c21924db0b14f385a13083d7335",
+  "outcome": "COMPILE_OK",
+  "result_line": "Result: 0 errors, 0 warnings, 34708 ms elapsed, cpu='X64 Regular'",
+  "metaeditor_process_exit_code": 1,
+  "artifact_wait_timed_out": false,
+  "stage_cleaned": true,
+  "runtime_output_overwritten": false,
+  "output": {
+    "sha256": "19ce944ab43ce5e779a6ecf498c8577bdc4f724f63028e054ff05741184472ee",
+    "bytes": 2439044
+  },
+  "retained_reference_sha256": "05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9",
+  "equivalence": "MISMATCH",
+  "full_private_receipt_sha256": "be9f9c441bc6538ffe2b54e361a4020ad9c10809698ac08f385e15e7274fd5a9",
+  "native_qualification": "NOT_PERFORMED",
+  "externals_manifest_digest": "032d4e087af809964b501c8fc1c68fe3a77c9b6b696884a5499f4c13fb29c948"
+}

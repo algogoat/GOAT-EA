@@ -46,13 +46,31 @@ default, the input header (`1408e1ee…`), `WriteSet`, `StartExporter`, the bias
   `OnTradeTransaction`, `OnTimer` and `GoatTimerBody` are identical. Against B41.1 only `Dashboard.mqh` and the
   build-ID lines differ.
 
-**Build.** Compile pending. Entrypoint `GOAT V1.49.mq5` is pinned in `controller/contracts/v149/dependencies.json`.
-The retained B41.1 candidate (`../beta17-B41.1`) keeps its own binary, which failed native qualification. Do not
-install it.
+**Build**
+
+- `GOAT_BUILD_ID` is `V1.49-BETA17-41.2`, marker `B41.2`.
+- Compiled once from `d3324e9f` with MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`, the same compiler as B39, B40,
+  B41 and B41.1): 0 errors, 0 warnings. The compiler was a copy outside every terminal folder, run `/portable` at
+  Idle priority. MetaEditor's process exit code was 1 with a clean `Result:` line, as in the B40 and B41 compiles;
+  the `Result:` line and the output are the success criteria. The stage was a scratch copy outside every terminal
+  folder. Its 307 standard includes and the `MACD - GOAT 2.ex5` resource are copied from the B41 compile root and
+  hash-equal to it. `externals.json` records the same per-name hashes as B41's, and the same `consumed_sha256`
+  (`ced68559…`).
+- `GOAT V1.49.ex5`: sha256 `19ce944ab43ce5e779a6ecf498c8577bdc4f724f63028e054ff05741184472ee`, 2,439,044 bytes.
+- Entrypoint `GOAT V1.49.mq5`: sha256 `fef16750…3d7335`, pinned in `controller/contracts/v149/dependencies.json`.
+- Pin check at `d3324e9f`: the 41 `.mq5`/`.mqh` files in the entrypoint's include closure are exactly the 41
+  sources in `identity.json`, and each matches the tree and the staged copy. The input header is still `1408e1ee…`.
+- MetaEditor output is not byte-reproducible across stages, so admit only this binary. A compile of the earlier
+  `6d8e092b` (`1bb7dcff…`) was withdrawn on review (6030329907) and never committed.
+- The retained B41.1 candidate (`../beta17-B41.1`) keeps its own binary, which failed native qualification. Do not
+  install it.
+
+**Not done.** Native qualification has not been performed, and nothing was installed. The root `GOAT V1.49.ex5` is
+unchanged.
 
 **Controller.** B41.2 ships together with GOAT-EA#188 (beta.23.1), whose `deploy_next` wait is 90 s, above the
 75 s attach budget.
 
-**Still owed:** Claude-Mac's review, then the compile, the pin check and the admission of `V1.49-BETA17-41.2`, then
+**Still owed:** Claude-Mac's review of this source and binary, the pin check and the admission of `V1.49-BETA17-41.2`, then
 the native deploy-load on T3. That run must attach every child, starting with the first, and read
 `settingsMatch` true.

@@ -62,6 +62,27 @@ function adoptionScript(setup){
  assert.equal((fits.match(/adopt_magic\(/g)||[]).length,2,'GoatAdoptChartFits writes its output twice');
  return {code:code.slice(0,start)+fits+code.slice(end),defines};
 }
+// The audit's pure input/template parser and GoatChildSnapshotMatchesSet, converted the way
+// test_portfolio_child_audit.cjs converts them, so adoption runs the real settingsMatch rule
+// (including the deployment nonce), not a stand-in.
+function auditScript(audit){
+ const matches=region(audit,'bool GoatChildSnapshotMatchesSet(','bool GoatPortfolioChildSettingsMatch(');
+ const text=audit.slice(0,audit.indexOf('bool GoatChildAuditRead('))+'\n'+matches;
+ return text.replace(/^#.*$/gm,'').replace(/\b(?:bool|string|int) (Goat\w+)\(/g,'function $1(')
+  .replace(/\bconst (?:string|int) /g,'').replace(/\bstring &(\w+)\[\]/g,'$1')
+  .replace(/\bstring (\w+)\[\d+\]=\{([^}]+)\}/g,'let $1=[$2]')
+  .replace(/\b(?:string|int|bool|ushort) /g,'let ').replace(/\b(\w+)\[\](?=[,;])/g,'$1=[]')
+  .replace(/'([^'\\]|\\[nr])'/g,(_,c)=>String(c==='\\n'?10:c==='\\r'?13:c.charCodeAt(0)))
+  .replace(/StringTrimLeft\((\w+)\)/g,'$1=$1.trimStart()').replace(/StringTrimRight\((\w+)\)/g,'$1=$1.trimEnd()')
+  .replace(/StringToLower\((\w+)\)/g,'$1=$1.toLowerCase()')
+  .replace(/StringReplace\((\w+),([^;]+)\)/g,'$1=$1.replaceAll($2)')
+  .replace(/function ([^(]+)\(([^)]*)\)/g,(_,name,args)=>'function '+name+'('+args.replace(/\blet /g,'').replace(/^void$/,'')+')');
+}
+const DEPLOY='0123456789abcdef0123456789abcdef',OTHER_DEPLOY='fedcba9876543210fedcba9876543210';
+// MT5's save of a child chart: the expert path, the frozen inputs, then the WriteSet-omitted sinputs,
+// where Studio_MonitorRunPath carries the deployment nonce the controller staged.
+const tpl=(set,runPath='deploy='+DEPLOY)=>'<chart>\nsymbol=X\n<expert>\nname=GOAT V1.49\npath=Experts\\GOAT-EA\\GOAT V1.49.ex5\nexpertmode=5\n<inputs>\n'+set
+ +'Studio_ReadOnlyMonitor=false\nStudio_MonitorRunPath='+runPath+'\nDashboard_Resume_Saved=false\n</inputs>\n</expert>\n<window>\nheight=100\n</window>\n</chart>\n';
 const PERIOD={PERIOD_CURRENT:0,PERIOD_M1:1,PERIOD_M5:5,PERIOD_M15:15,PERIOD_M30:30,PERIOD_H1:16385,PERIOD_H4:16388,PERIOD_D1:16408};
 
 // A modelled terminal: the dashboard chart (id 1) and child charts loaded from a profile.
@@ -71,6 +92,9 @@ function terminal(src,{rows,charts,algo=false,positions=0,saveOk=true,clock=1000
  const g_sets=rows.map(r=>({cid:0,magic:0,status:'Pending',...r}));
  const ctx={...PERIOD,ArraySize:a=>a.length,ArrayResize:(a,n)=>{a.length=n;return n;},StringFind:(s,t)=>s.indexOf(t),StringLen:s=>s.length,
   StringGetCharacter:(s,i)=>s.charCodeAt(i),ShortToString:c=>String.fromCharCode(c),IntegerToString:String,
+  StringSubstr:(s,a,n)=>n===undefined?s.slice(a):s.slice(a,a+n),StringSplit:(s,c,out)=>{out.splice(0,out.length,...s.split(String.fromCharCode(c)));return out.length;},
+  TERMINAL_DATA_PATH:3,TerminalInfoString:()=>'C:\\T',MQL_PROGRAM_PATH:4,MQLInfoString:()=>'C:\\T\\MQL5\\Experts\\GOAT-EA\\GOAT V1.49.ex5',
+  GOATIsLowerHex:(v,n)=>typeof v==='string'&&v.length===n&&/^[0-9a-f]+$/.test(v),GoatApplyAILaunchPolicy:(body,mode)=>{assert.equal(mode,0);return body;},
   Mode_Operation:8,Operation_Dash:8,MQL_TESTER:1,MQLInfoInteger:()=>0,ACCOUNT_TRADE_MODE:1,ACCOUNT_TRADE_MODE_DEMO:0,AccountInfoInteger:()=>0,
   TERMINAL_CONNECTED:1,TERMINAL_TRADE_ALLOWED:2,TerminalInfoInteger:k=>k===1?1:(algo?1:0),PositionsTotal:()=>positions,OrdersTotal:()=>0,
   TimeGMT:()=>ctx.now,now:clock,ChartID:()=>1,
@@ -80,23 +104,23 @@ function terminal(src,{rows,charts,algo=false,positions=0,saveOk=true,clock=1000
   GoatFindMagicByCid:(sym,id,set)=>{const c=all.find(x=>x.id===id&&(x.recordSym??x.sym)===sym);if(!c||!c.magic)return false;set(c.magic);return true;},
   GoatChildSetSource:(p,hash,set)=>{sourcesRead.push([p,hash]);const r=g_sets.find(x=>x.path===p);if(!r||hash!=='sha-'+r.path)return false;set(r.set);return true;},
   GoatChildChartSnapshot:(id,set)=>{snapshots.push(id);const c=all.find(x=>x.id===id);if(!c||!c.snapshot)return false;set(c.snapshot);return true;},
-  GoatChildSnapshotMatchesSet:(source,snapshot)=>source!==''&&source===snapshot,
   GoatDeploymentPhase:(phase,target,detail)=>notes.push([phase,target,detail??'']),
   // AdoptChild's environment (the production method runs below with these as members).
   g_sets,edt_Status:[],btn_Action:[],SaveDashboardConfig:()=>{saves.push(g_sets.map(r=>[r.cid,r.magic]));return saveOk;},
   GlobalVariableDel:k=>deleted.push(k),GlobalVariablesFlush:()=>{},GoatChildGVName:(m,s,f)=>`${m}_${s}_${f}`,GOAT_GV_FIELD_MAGIC:'Magic',
   StatusColor:()=>0,AppendAILaunchAudit:(i,stage)=>audits.push([i,stage]),UpdateAILaunchControls:()=>{}};
- ctx.DashboardDialog={g_sets,EA_Name_:'GOAT V1.49',m_ai_launch_mode:2,m_ai_launch_threshold:50,m_ai_launch_protocol:2};
+ ctx.DashboardDialog={g_sets,EA_Name_:'GOAT V1.49',m_ai_launch_mode:0,m_ai_launch_threshold:50,m_ai_launch_protocol:2};
  vm.createContext(ctx);
+ vm.runInContext(auditScript(src.audit),ctx);
  const {code,defines}=adoptionScript(src.setup);Object.assign(ctx,defines);
  vm.runInContext(code,ctx);
  const adopt=bodyOf(src.dashboard,'bool CGOATDashboard::AdoptChild(const int adopt_idx,const long adopt_chart,const long adopt_magic)');
  ctx.DashboardDialog.AdoptChild=vm.runInContext('(function(adopt_idx,adopt_chart,adopt_magic){'+js(adopt)+'})',ctx);
  const hashes=g_sets.map(r=>'sha-'+r.path);
- return {ctx,g_sets,notes,saves,snapshots,deleted,audits,sourcesRead,pass:(h=hashes)=>ctx.GoatPortfolioAdoptChildren(h)};
+ return {ctx,g_sets,notes,saves,snapshots,deleted,audits,sourcesRead,pass:(h=hashes,d=DEPLOY)=>ctx.GoatPortfolioAdoptChildren(h,d)};
 }
 const row=(i,sym='EURUSD',tf='M1',set='Risk=500\nMode_Bias=2\n')=>({path:`C:\\Common\\Files\\GOAT\\set${i}.set`,name:`GOAT V1.49 ${sym},${tf}_B${i}.set`,sym,set});
-const child=(id,r,over={})=>({id,sym:r.sym,period:PERIOD['PERIOD_'+(r.name.match(/,([A-Z0-9]+)_/)[1])],expert:'GOAT V1.49',magic:9000+id,snapshot:r.set,...over});
+const child=(id,r,over={})=>({id,sym:r.sym,period:PERIOD['PERIOD_'+(r.name.match(/,([A-Z0-9]+)_/)[1])],expert:'GOAT V1.49',magic:9000+id,snapshot:tpl(r.set),...over});
 
 function run(src=readSources()){
  let passed=0;const ok=()=>passed++;
@@ -119,10 +143,10 @@ function run(src=readSources()){
   t.ctx.now+=1;t.pass();assert.equal(t.g_sets[1].status,'Not started');
   assert.ok(t.notes.some(n=>n[0]==='child_not_started'&&n[2]==='USDJPY row=1'),'child_not_started is named per row');
   assert.ok(!t.notes.some(n=>n[0]==='child_not_started'&&n[2].includes('row=0')));ok();}
- {const r=[row(1)];const t=terminal(src,{rows:r,charts:[child(501,r[0],{snapshot:'Risk=900\nMode_Bias=2\n'})]});
+ {const r=[row(1)];const t=terminal(src,{rows:r,charts:[child(501,r[0],{snapshot:tpl('Risk=900\nMode_Bias=2\n')})]});
   assert.equal(t.pass(),0);assert.deepEqual([t.g_sets[0].cid,t.g_sets[0].magic],[0,0],'settingsMatch mismatch is never adopted');
   assert.ok(t.notes.some(n=>n[0]==='child_unmatched'&&n[1]===501&&n[2]==='EURUSD'));ok();}
- {const r=[row(1)];r[0].cid=501;const t=terminal(src,{rows:r,charts:[child(501,r[0],{snapshot:'Risk=900\n'})]});
+ {const r=[row(1)];r[0].cid=501;const t=terminal(src,{rows:r,charts:[child(501,r[0],{snapshot:tpl('Risk=900\n')})]});
   assert.equal(t.pass(),0,'a hinted chart must also match settings');assert.equal(t.g_sets[0].magic,0);ok();}
  for(const [label,over] of [['period mismatch',{period:5}],['another EA',{expert:'GOAT V1.48'}],['no CID record',{magic:0}],['other symbol',{sym:'GBPUSD',recordSym:'EURUSD'}]]){
   // recordSym: a chart switched to another symbol keeps its old CID record (the GV name holds the symbol).
@@ -132,7 +156,7 @@ function run(src=readSources()){
  {const r=[row(1,'EURUSD','M15')];const t=terminal(src,{rows:r,charts:[child(501,r[0])]});
   assert.equal(t.g_sets.length,1);assert.equal(t.pass(),1,'M15 is read as M15, not its first two characters');ok();}
  for(const tf of ['M2','W1','MN1','M1X']){
-  const r=[row(1,'EURUSD',tf)];const t=terminal(src,{rows:r,charts:[{id:501,sym:'EURUSD',period:1,expert:'GOAT V1.49',magic:9501,snapshot:r[0].set}]});
+  const r=[row(1,'EURUSD',tf)];const t=terminal(src,{rows:r,charts:[{id:501,sym:'EURUSD',period:1,expert:'GOAT V1.49',magic:9501,snapshot:tpl(r[0].set)}]});
   assert.equal(t.pass(),0,'unknown period token '+tf);ok();
  }
  {const r=[row(1),row(2,'USDJPY')];r[1].magic=9501;r[1].cid=600;
@@ -165,6 +189,77 @@ function run(src=readSources()){
   assert.equal(t.pass(),1);assert.ok(t.notes.some(n=>n[0]==='child_unmatched'&&n[1]===503),'a look-alike of a linked member is recorded');
   assert.ok(!t.notes.some(n=>n[1]===502));ok();}
 
+ // ---- the deployment nonce: adoption proves this deployment started the child ----
+ for(const [label,runPath] of [['no nonce',''],['a nonce from another deployment','deploy='+OTHER_DEPLOY],['a bare id',DEPLOY],['an upper-case id','deploy='+DEPLOY.toUpperCase()]]){
+  // A hand-added chart with the same SET (symbol, period, EA, its own CID record) that we did not stage.
+  const r=[row(1)];const t=terminal(src,{rows:r,charts:[child(501,r[0],{snapshot:tpl(r[0].set,runPath)})]});
+  assert.equal(t.pass(),0,label);assert.deepEqual([t.g_sets[0].cid,t.g_sets[0].magic],[0,0],label);
+  assert.ok(t.notes.some(n=>n[0]==='child_unmatched'&&n[1]===501),label+': recorded as unmatched');
+  t.ctx.now+=241;t.pass();assert.equal(t.g_sets[0].status,'Not started',label+': the staged child is missing');
+  assert.ok(t.notes.some(n=>n[0]==='child_not_started'&&n[2]==='EURUSD row=0'),label);ok();
+ }
+ {const r=[row(1)];r[0].cid=501;const t=terminal(src,{rows:r,charts:[child(501,r[0],{snapshot:tpl(r[0].set,'deploy='+OTHER_DEPLOY)})]});
+  assert.equal(t.pass(),0,'a hinted chart needs the nonce too');ok();}
+ {const r=[row(1)];const t=terminal(src,{rows:r,charts:[child(501,r[0],{snapshot:tpl(r[0].set,'')}),child(502,r[0])]});
+  assert.equal(t.pass(),1,'the staged child links beside a hand-added copy');assert.deepEqual([t.g_sets[0].cid,t.g_sets[0].magic],[502,9502]);
+  assert.ok(t.notes.some(n=>n[0]==='child_unmatched'&&n[1]===501));ok();}
+ {const r=[row(1)];const t=terminal(src,{rows:r,charts:[child(501,r[0])]});
+  assert.equal(t.pass(undefined,OTHER_DEPLOY),0,"children staged by another deployment are not this one's");
+  const before=t.snapshots.length;
+  assert.equal(t.pass(undefined,''),0,'a registration without a deploymentId adopts nothing');assert.equal(t.snapshots.length,before,'unbound: no snapshot taken');
+  assert.ok(t.notes.some(n=>n[0]==='child_deploy_unbound'));
+  for(const bad of [DEPLOY.toUpperCase(),DEPLOY.slice(1),'deploy='+DEPLOY]) assert.equal(t.pass(undefined,bad),0,'invalid id '+bad);
+  assert.equal(t.pass(),1,'the current deployment adopts');
+  const U=DEPLOY.toUpperCase();assert.equal(t.ctx.GoatChildSnapshotMatchesSet(r[0].set,tpl(r[0].set,'deploy='+U),U),false,'the audit refuses an invalid id even when the chart carries it');ok();}
+
+ // ---- the nonce carrier is inert on a child: every reader of Studio_MonitorRunPath is pinned here ----
+ {const uses=[];
+  const sources=Object.keys(JSON.parse(fs.readFileSync(path.join(ROOT,'candidate-builds/beta17-B43/identity.json'),'utf8')).sources).filter(f=>f!==FILES.audit).sort();
+  for(const f of sources){
+   const text=f==='GOAT V1.49.mq5'?src.main:fs.readFileSync(path.join(ROOT,f),'utf8').replace(/\r\n/g,'\n');
+   text.split('\n').forEach(l=>{if(/\b(?:g_GoatStudioMonitorRunPath|Studio_MonitorRunPath)\b/.test(l)&&!/^\s*\/\//.test(l))uses.push(f+': '+l.trim());});
+  }
+  assert.deepEqual(uses,[
+   'GOAT V1.49.mq5: sinput string Studio_MonitorRunPath=""; // Read-only run folder; blank follows active batch',
+   'GOAT V1.49.mq5: g_GoatStudioMonitorRunPath=Studio_MonitorRunPath;',
+   'GOAT V1.49.mq5: if(Studio_ReadOnlyMonitor && Studio_MonitorRunPath!="" &&',
+   'GOAT V1.49.mq5: (StringFind(Studio_MonitorRunPath,"GOAT\\\\")!=0 || StringFind(Studio_MonitorRunPath,"..")>=0 || StringFind(Studio_MonitorRunPath,":")>=0)) return INIT_PARAMETERS_INCORRECT;',
+   'GOATStudioSettingCompare.mqh: if(identity=="[TesterInputs]|Sequence_Export_Id" || identity=="[TesterInputs]|Studio_MonitorRunPath") return value=="";',
+   'GOATStudioSettingTypes.mqh: if(key=="Studio_MonitorRunPath") return "string";',
+   'Optimizer.mqh: string g_GoatStudioMonitorRunPath="";',
+   'Optimizer.mqh: if(g_GoatStudioReadOnlyMonitor && g_GoatStudioMonitorRunPath!="")',
+   'Optimizer.mqh: Path_RunFolder=g_GoatStudioMonitorRunPath;',
+   'Optimizer.mqh: string runPath=(g_GoatStudioMonitorRunPath=="" ? GoatOptReadIniValue(pointer,"RunPath") : g_GoatStudioMonitorRunPath);'],
+   'a new reader of the nonce carrier must be reviewed: it is only read behind Studio_ReadOnlyMonitor, which children hold false');
+  const opt=fs.readFileSync(path.join(ROOT,'Optimizer.mqh'),'utf8').replace(/\r\n/g,'\n');
+  assert.ok(region(opt,'   if(g_GoatStudioReadOnlyMonitor)\n   {\n      // Follow the active pointer','m_listQueue.ItemsClear();').includes('string runPath=(g_GoatStudioMonitorRunPath'));
+  // The trade path never sees it, and EA_Desc (the order-comment source) is not the carrier.
+  for(const unit of ['void OnTick()','void OnTradeTransaction(','bool StartExporter(bool reportMode)']) assert.ok(!bodyOf(src.main,unit).includes('MonitorRunPath'),unit);
+  assert.match(src.main,/Desc = Strat\+/);assert.ok(!/deploy=/.test(src.audit.replace(/\/\/.*$/gm,'').replace(/"deploy="\+deploy_tag/,'')),'the nonce form is built in one place');ok();}
+
+ // ---- the registration binds the deploymentId (the production parse block of GoatPortfolioSetupPoll) ----
+ {const parse=region(src.setup,'   SGOATJsonToken reg[];','   int owner=FileOpen(');
+  const fields={schema:1,account:7,server:'S',directory:'D',buildId:'V1.49-BETA17-43',expiresAtUtc:2000,aiMode:2,aiThreshold:50,aiProtocol:2,exposureMode:1,members:[]};
+  function bind(value){
+   let tokens=null;
+   const c={registration:JSON.stringify(value),GoatPortfolioDeployment:'stale',GOAT_BUILD_ID:'V1.49-BETA17-43',ACCOUNT_LOGIN:1,ACCOUNT_SERVER:2,
+    AccountInfoInteger:()=>7,AccountInfoString:()=>'S',TimeGMT:()=>1000,GoatSetupDirectoryMatches:d=>d==='D',
+    GOATIsLowerHex:(v,n)=>typeof v==='string'&&v.length===n&&/^[0-9a-f]+$/.test(v),
+    GOATJsonParse:b=>{tokens=JSON.parse(b);return true;},
+    GOATJsonExactFields:(b,reg,i,keys)=>JSON.stringify(Object.keys(tokens).sort())===JSON.stringify([...keys].sort()),
+    GOATJsonGetString:(b,reg,i,k,set)=>{if(typeof tokens[k]!=='string')return false;set(tokens[k]);return true;},
+    GOATJsonGetInteger:(b,reg,i,k,set)=>{if(!Number.isInteger(tokens[k]))return false;set(tokens[k]);return true;}};
+   const code=js(parse).replace(/SGOATJsonToken reg(?:=\[\]|\[\]);/,'let reg=[];')
+    .replace(/let (\w+)\[\]=\{([^}]*)\};/g,'let $1=[$2];')
+    .replace(/GOATJsonGet(String|Integer)\(registration,reg,0,("\w+"),(\w+)\)/g,'GOATJsonGet$1(registration,reg,0,$2,v=>$3=v)');
+   const out=vm.runInNewContext('(function(){'+code+'\nreturn "bound:"+GoatPortfolioDeployment;})()',c);
+   return out===undefined?'rejected':out;
+  }
+  assert.equal(bind(fields),'bound:','a registration without deploymentId is accepted and binds none');
+  assert.equal(bind({...fields,deploymentId:DEPLOY}),'bound:'+DEPLOY);
+  for(const bad of [DEPLOY.toUpperCase(),DEPLOY.slice(1),'',7]) assert.equal(bind({...fields,deploymentId:bad}),'rejected','deploymentId '+bad);
+  assert.equal(bind({...fields,deploymentId:DEPLOY,extra:1}),'rejected');assert.equal(bind({...fields,buildId:'x',deploymentId:DEPLOY}),'rejected');ok();}
+
  // ---- AdoptChild directly ----
  {const r=[row(1),row(2,'USDJPY')];r[1].cid=501;r[1].magic=0;const t=terminal(src,{rows:r,charts:[]});
   assert.equal(t.ctx.DashboardDialog.AdoptChild(0,501,9501),false,'chart claimed by another row');
@@ -180,7 +275,7 @@ function run(src=readSources()){
   const c={action,matched,count:linked.length,receipt:'r.json',id:'x',hash:'h',ai,threshold:50,protocol:2,exposure:1,result:matched?'observed':'rejected_portfolio_mismatch',
    TERMINAL_CONNECTED:1,TERMINAL_TRADE_ALLOWED:2,TerminalInfoInteger:k=>k===1?1:(inert?0:1),PositionsTotal:()=>0,OrdersTotal:()=>0,
    GoatSetupWrite:(f,b)=>{writes.push(b);return true;},GoatPortfolioSnapshot:(i,a,h,res)=>res,FileClose:()=>{},owner:1,
-   GoatPortfolioExpectedHashes:['sha'],GoatPortfolioAdoptChildren:h=>{calls.push('adopt');return 0;},GoatPortfolioRowLinked:i=>linked[i],
+   GoatPortfolioExpectedHashes:['sha'],GoatPortfolioDeployment:DEPLOY,GoatPortfolioAdoptChildren:(h,d)=>{calls.push('adopt:'+d);return 0;},GoatPortfolioRowLinked:i=>linked[i],
    DashboardDialog:{m_ai_launch_mode:2,m_ai_launch_threshold:50,m_ai_launch_protocol:2,
     AgentConfigureAI:()=>{calls.push('configure');return true;},AgentExposurePolicy:()=>{calls.push('policy');return true;}}};
   const result=vm.runInNewContext('(function(){'+js(dispatch)+'\nreturn result;})()',c);
@@ -190,7 +285,7 @@ function run(src=readSources()){
   const d=poll('deploy_next',{inert});assert.equal(d.result,'rejected_deploy_next_retired');assert.deepEqual(d.writes,[]);assert.deepEqual(d.calls,[],'deploy_next changes nothing');ok();
  }
  assert.equal(poll('deploy_next',{matched:false}).result,'rejected_portfolio_mismatch');ok();
- {const d=poll('link_children');assert.equal(d.result,'children_linked');assert.deepEqual(d.calls,['adopt']);assert.deepEqual(d.writes,['started'],'mutation-class: the intent receipt comes first (contract section 3)');ok();}
+ {const d=poll('link_children');assert.equal(d.result,'children_linked');assert.deepEqual(d.calls,['adopt:'+DEPLOY],"adoption gets the registration's deploymentId");assert.deepEqual(d.writes,['started'],'mutation-class: the intent receipt comes first (contract section 3)');ok();}
  {const d=poll('link_children',{linked:[true,false]});assert.equal(d.result,'children_pending');assert.deepEqual(d.writes,['started']);ok();}
  {const d=poll('link_children',{linked:[false,false,false]});assert.equal(d.result,'children_pending','never children_linked while any row is unlinked');ok();}
  {const d=poll('link_children',{inert:false});assert.equal(d.result,'rejected_not_inert');assert.deepEqual(d.calls,[],'no adoption unless inert');assert.deepEqual(d.writes,[]);ok();}
@@ -205,11 +300,13 @@ function run(src=readSources()){
   const rows=[{cid:501,magic:0,sym:'EURUSD'},{cid:502,magic:9502,sym:'USDJPY'},{cid:-1,magic:-1,sym:'XAUUSD'}];
   const c={IntegerToString:String,ArraySize:a=>a.length,GoatSetupQuote:s=>JSON.stringify(s),GoatPortfolioRowLinked:i=>i===1,
    DashboardDialog:{g_sets:rows.map(r=>({...r,exposure_policy_mode:0,last_ack_id:0,last_ack_status:0})),ReadChildSnapshotIntoRow:()=>{},m_ai_launch_mode:2,m_ai_launch_threshold:50,m_ai_launch_protocol:2,m_portfolio_command_id:0,m_portfolio_command_pending:false},
-   GoatPortfolioExpectedHashes:[],GoatPortfolioChildSettingsMatch:()=>true,GlobalVariableGet:()=>false,GoatChildGVName:()=>'',
+   GoatPortfolioExpectedHashes:['a','b','c'],GoatPortfolioDeployment:DEPLOY,GoatPortfolioChildSettingsMatch:(i,h,d)=>{assert.equal(d,DEPLOY,'the audit requires the nonce');return i===1;},GlobalVariableGet:()=>false,GoatChildGVName:()=>'',
    AccountInfoInteger:()=>1,AccountInfoString:()=>'s',TerminalInfoString:()=>'d',TerminalInfoInteger:()=>0,TimeGMT:()=>1,TimeCurrent:()=>1,
    PositionsTotal:()=>0,OrdersTotal:()=>0,GOAT_BUILD_ID:'b',ACCOUNT_LOGIN:1,ACCOUNT_SERVER:2,TERMINAL_DATA_PATH:3,TERMINAL_CONNECTED:4,TERMINAL_TRADE_ALLOWED:5};
   const receipt=JSON.parse(vm.runInNewContext('(function(id,action,hash,result){'+js(snap).replace(/let fields=\[\]=\{([^}]+)\};/,'let fields=[$1];').replace(/let fields\[\]=\{([^}]+)\};/,'let fields=[$1];')+'})',c)('i','link_children','h','children_pending'));
   assert.deepEqual(receipt.rows.map(r=>[r.chartId,r.magic,r.linkedFresh]),[[0,0,false],[502,9502,true],[0,0,false]]);
+  const audited=JSON.parse(vm.runInNewContext('(function(id,action,hash,result){'+js(snap).replace(/let fields\[\]=\{([^}]+)\};/,'let fields=[$1];')+'})',c)('i','audit','h','observed'));
+  assert.deepEqual(audited.rows.map(r=>r.settingsMatch),[false,true,false],'settingsMatch through the nonce-aware audit');
   assert.deepEqual(Object.keys(receipt.rows[0]),['index','symbol','chartId','magic','linkedFresh','exposureMode','ackId','ackStatus','settingsMatch',
    'AI_MODE','AI_PROTOCOL','AI_THRESHOLD','AI_SCOPE','AI_VERIFIED','AI_AVAILABLE','AI_AT','EA_TRADE_ALLOWED'],'row fields unchanged (controller ROW_FIELDS)');
   assert.deepEqual(Object.keys(receipt),['schema','id','action','registrationSha256','result','account','server','directory','buildId','observedAtUtc','brokerTime',
@@ -275,7 +372,7 @@ function run(src=readSources()){
  const added=new Set();
  for(const text of [region(src.setup,'// ---- Profile-staged deploy','string GoatPortfolioSnapshot('),bodyOf(src.dashboard,'bool CGOATDashboard::AdoptChild(const int adopt_idx,const long adopt_chart,const long adopt_magic)')])
   for(const m of text.matchAll(/\b(adopt_\w+)\b/g)) added.add(m[1]);
- for(const n of ['snapshot_read','set_path','row_linked']) added.add(n);
+ for(const n of ['snapshot_read','set_path','row_linked','reg_bound_fields','reg_deployment','reg_parsed','reg_bound','audit_pinned','deploy_tag']) added.add(n);
  const others=closure.filter(f=>!['Dashboard.mqh',FILES.setup,FILES.audit].includes(f)).map(f=>fs.readFileSync(path.join(ROOT,f),'utf8')).join('\n');
  for(const n of added){
   assert.ok(!new RegExp('\\b'+n+'\\b').test(others),n+' appears outside the new code');

@@ -110,7 +110,9 @@ The dashboard never opens a child chart or applies a template. MT5 loads every c
 from the staged deploy profile at start-up, and `link_children` runs one adoption pass:
 a chart is adopted only when its symbol, period and EA match the row, its CID record
 names a free magic, and its saved inputs reproduce the frozen SET (the `settingsMatch`
-rule), one chart to one row. An unadopted row reports chart ID 0 and magic 0. Common
+rule), one chart to one row. The registration's `deploymentId` must also appear in the
+child as `Studio_MonitorRunPath=deploy=<deploymentId>`, so only children this deployment
+staged can link. An unadopted row reports chart ID 0 and magic 0. Common
 Files paths are normalized before native sandbox file access. See
 [the open question on dashboard template applies](operations/DEPLOYMENT-STARTUP-LIVENESS.md#open-question-the-dashboards-own-template-applies-do-not-re-add).
 

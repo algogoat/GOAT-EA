@@ -160,9 +160,14 @@ bool GoatChildAuditValue(const string name,const string expected,const string ac
    return left!="" && right!="" && left==right;
 }
 
-bool GoatChildAuditMaps(const string source,const int mode,const int threshold,const int protocol,const string template_body,const string expected_path)
+// deploy_tag: a profile-staged child carries the deployment nonce "deploy=<deploymentId>" in
+// Studio_MonitorRunPath (controller/contracts/profile-deploy.md, deployment nonce). With a tag, that one
+// input must hold exactly "deploy="+tag; without one it keeps its inert default "". Everything else
+// is compared as before.
+bool GoatChildAuditMaps(const string source,const int mode,const int threshold,const int protocol,const string template_body,const string expected_path,const string deploy_tag="")
 {
    if(mode<0 || mode>2 || threshold<1 || threshold>100 || (protocol!=1 && protocol!=2)) return false;
+   if(deploy_tag!="" && !GOATIsLowerHex(deploy_tag,32)) return false;
    string names[],values[],actual_names[],actual_values[];
    string effective=GoatApplyAILaunchPolicy(source,mode,threshold,protocol);
    if(!GoatChildAuditInputs(effective,names,values) || !GoatChildAuditTemplate(template_body,expected_path,actual_names,actual_values)) return false;
@@ -173,9 +178,11 @@ bool GoatChildAuditMaps(const string source,const int mode,const int threshold,c
    for(int n=0;n<3;n++)
    {
       bool found=false;
+      string audit_pinned=omitted_values[n];
+      if(deploy_tag!="" && omitted_names[n]=="Studio_MonitorRunPath") audit_pinned="deploy="+deploy_tag;
       for(int i=0;i<ArraySize(names);i++) if(names[i]==omitted_names[n])
-      {if(values[i]!=omitted_values[n]) return false;found=true;}
-      if(!found && !GoatChildAuditAdd(names,values,omitted_names[n],omitted_values[n])) return false;
+      {if(values[i]!=omitted_values[n]) return false;values[i]=audit_pinned;found=true;}
+      if(!found && !GoatChildAuditAdd(names,values,omitted_names[n],audit_pinned)) return false;
    }
    // Also omitted by WriteSet, but declared only by some builds (Sequence_Export_* from V1.48,
    // GOAT_FitnessRunNonce in V1.49). When the child carries one the SET does not, it must hold its default.
@@ -261,16 +268,17 @@ bool GoatChildSetSource(const string set_path,const string expected_sha256,strin
 }
 
 // The settingsMatch rule for one snapshot: its expert is this program, and its complete input
-// map reproduces the frozen SET under the dashboard's AI launch policy.
-bool GoatChildSnapshotMatchesSet(const string source,const string snapshot)
+// map reproduces the frozen SET under the dashboard's AI launch policy, plus the deployment nonce
+// when the registration binds one.
+bool GoatChildSnapshotMatchesSet(const string source,const string snapshot,const string deploy_tag)
 {
    string expected_path=MQLInfoString(MQL_PROGRAM_PATH);
    return source!="" && snapshot!="" && GoatChildAuditExpertPath(expected_path)!=""
       && GoatChildAuditMaps(source,DashboardDialog.m_ai_launch_mode,DashboardDialog.m_ai_launch_threshold,
-                            DashboardDialog.m_ai_launch_protocol,snapshot,expected_path);
+                            DashboardDialog.m_ai_launch_protocol,snapshot,expected_path,deploy_tag);
 }
 
-bool GoatPortfolioChildSettingsMatch(const int row,const string expected_sha256)
+bool GoatPortfolioChildSettingsMatch(const int row,const string expected_sha256,const string deploy_tag)
 {
    if(Mode_Operation!=Operation_Dash || MQLInfoInteger(MQL_TESTER)
       || AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO
@@ -282,7 +290,7 @@ bool GoatPortfolioChildSettingsMatch(const int row,const string expected_sha256)
    string source="",snapshot="";
    if(!GoatChildSetSource(DashboardDialog.g_sets[row].path,expected_sha256,source)
       || GoatChildAuditExpertPath(MQLInfoString(MQL_PROGRAM_PATH))=="") return false;
-   bool matched=GoatChildChartSnapshot(cid,snapshot) && GoatChildSnapshotMatchesSet(source,snapshot);
+   bool matched=GoatChildChartSnapshot(cid,snapshot) && GoatChildSnapshotMatchesSet(source,snapshot,deploy_tag);
    return matched && DashboardDialog.g_sets[row].cid==cid && ChartSymbol(cid)==symbol;
 }
 

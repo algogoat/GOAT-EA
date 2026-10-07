@@ -2,6 +2,8 @@
 // No trade-enable, order, close-position or credential commands. No chart is opened,
 // closed or given a template: children reach charts only through a profile MT5 loads.
 string GoatPortfolioExpectedHashes[];
+// The registration's deploymentId (32 lowercase hex), or "" for a registration that binds none.
+string GoatPortfolioDeployment="";
 bool GoatPortfolioRead(const string path,string &body)
 {
    body="";
@@ -124,10 +126,17 @@ bool GoatAdoptChartFits(const int adopt_row,const long adopt_chart,long &adopt_m
 }
 
 // One adoption pass over the rows that have no child yet. Returns the number of rows linked.
-int GoatPortfolioAdoptChildren(const string &adopt_hashes[])
+// adopt_deployment is the registration's deploymentId: only a child whose Studio_MonitorRunPath holds
+// "deploy=<that id>" was started by this deployment, so a hand-added chart with the same SET never links.
+int GoatPortfolioAdoptChildren(const string &adopt_hashes[],const string adopt_deployment)
 {
    int adopt_rows=ArraySize(DashboardDialog.g_sets),adopt_count=0;
    if(!GoatAdoptInert() || adopt_rows<1 || ArraySize(adopt_hashes)!=adopt_rows) return 0;
+   if(!GOATIsLowerHex(adopt_deployment,32))
+   {
+      GoatAdoptNote("child_deploy_unbound",0,"registration has no deploymentId");
+      return 0;
+   }
    if(GoatAdoptWindowStart==0) GoatAdoptWindowStart=TimeGMT();
    // Each pending row's frozen SET, read once per pass and only at its registered sha256.
    string adopt_sources[];
@@ -148,7 +157,7 @@ int GoatPortfolioAdoptChildren(const string &adopt_hashes[])
       if(DashboardDialog.g_sets[adopt_row].magic>0 || adopt_hint<=0 || adopt_sources[adopt_row]=="") continue;
       if(GoatAdoptChartFits(adopt_row,adopt_hint,adopt_magic)
          && GoatChildChartSnapshot(adopt_hint,adopt_snapshot)
-         && GoatChildSnapshotMatchesSet(adopt_sources[adopt_row],adopt_snapshot)
+         && GoatChildSnapshotMatchesSet(adopt_sources[adopt_row],adopt_snapshot,adopt_deployment)
          && DashboardDialog.AdoptChild(adopt_row,adopt_hint,adopt_magic)) adopt_count++;
    }
    // 2) Fallback: walk every chart. A chart is fingerprinted once, then compared with each row it fits.
@@ -170,7 +179,7 @@ int GoatPortfolioAdoptChildren(const string &adopt_hashes[])
             adopt_taken=true;
             if(!GoatChildChartSnapshot(adopt_chart,adopt_shot)) adopt_shot="";
          }
-         if(adopt_shot=="" || !GoatChildSnapshotMatchesSet(adopt_sources[adopt_row],adopt_shot)) continue;
+         if(adopt_shot=="" || !GoatChildSnapshotMatchesSet(adopt_sources[adopt_row],adopt_shot,adopt_deployment)) continue;
          int adopt_n=ArraySize(adopt_pair_chart);
          ArrayResize(adopt_pair_chart,adopt_n+1); ArrayResize(adopt_pair_magic,adopt_n+1); ArrayResize(adopt_pair_row,adopt_n+1);
          adopt_pair_chart[adopt_n]=adopt_chart; adopt_pair_magic[adopt_n]=adopt_found; adopt_pair_row[adopt_n]=adopt_row;
@@ -230,7 +239,7 @@ string GoatPortfolioSnapshot(const string id,const string action,const string ha
          +",\"exposureMode\":"+IntegerToString(DashboardDialog.g_sets[i].exposure_policy_mode)
          +",\"ackId\":"+IntegerToString(DashboardDialog.g_sets[i].last_ack_id)
          +",\"ackStatus\":"+IntegerToString(DashboardDialog.g_sets[i].last_ack_status)
-         +",\"settingsMatch\":"+(action=="audit" && result=="observed" && linked && i<ArraySize(GoatPortfolioExpectedHashes) && GoatPortfolioChildSettingsMatch(i,GoatPortfolioExpectedHashes[i]) ? "true" : "false");
+         +",\"settingsMatch\":"+(action=="audit" && result=="observed" && linked && i<ArraySize(GoatPortfolioExpectedHashes) && GoatPortfolioChildSettingsMatch(i,GoatPortfolioExpectedHashes[i],GoatPortfolioDeployment) ? "true" : "false");
       string fields[]={"AI_MODE","AI_PROTOCOL","AI_THRESHOLD","AI_SCOPE","AI_VERIFIED","AI_AVAILABLE","AI_AT","EA_TRADE_ALLOWED"};
       for(int f=0;f<ArraySize(fields);f++)
       {
@@ -268,7 +277,14 @@ void GoatPortfolioSetupPoll(void)
    SGOATJsonToken reg[]; long schema=0,account=0,expires=0,ai=0,threshold=0,protocol=0,exposure=0;
    string server="",directory="",build="";
    string reg_fields[]={"schema","account","server","directory","buildId","expiresAtUtc","aiMode","aiThreshold","aiProtocol","exposureMode","members"};
-   if(!GOATJsonParse(registration,reg,4096,131072) || !GOATJsonExactFields(registration,reg,0,reg_fields)
+   // A profile-staged deploy also binds its deploymentId (contract section 3); older registrations bind none.
+   string reg_bound_fields[]={"schema","account","server","directory","buildId","expiresAtUtc","aiMode","aiThreshold","aiProtocol","exposureMode","members","deploymentId"};
+   string reg_deployment="";
+   GoatPortfolioDeployment="";
+   bool reg_parsed=GOATJsonParse(registration,reg,4096,131072);
+   bool reg_bound=reg_parsed && GOATJsonExactFields(registration,reg,0,reg_bound_fields)
+      && GOATJsonGetString(registration,reg,0,"deploymentId",reg_deployment) && GOATIsLowerHex(reg_deployment,32);
+   if(!reg_parsed || (!reg_bound && !GOATJsonExactFields(registration,reg,0,reg_fields))
       || !GOATJsonGetInteger(registration,reg,0,"schema",schema) || schema!=1
       || !GOATJsonGetInteger(registration,reg,0,"account",account) || account!=AccountInfoInteger(ACCOUNT_LOGIN)
       || !GOATJsonGetString(registration,reg,0,"server",server) || server!=AccountInfoString(ACCOUNT_SERVER)
@@ -279,6 +295,7 @@ void GoatPortfolioSetupPoll(void)
       || !GOATJsonGetInteger(registration,reg,0,"aiThreshold",threshold) || threshold<1 || threshold>100
       || !GOATJsonGetInteger(registration,reg,0,"aiProtocol",protocol) || protocol!=2
       || !GOATJsonGetInteger(registration,reg,0,"exposureMode",exposure) || (exposure!=0 && exposure!=1)) return;
+   if(reg_bound) GoatPortfolioDeployment=reg_deployment;
    int owner=FileOpen(root+"owner.lock",FILE_READ|FILE_WRITE|FILE_BIN|FILE_COMMON);
    if(owner==INVALID_HANDLE) return;
    if(!GoatSetupRead(root+"request.json",request)){FileClose(owner);return;}
@@ -320,7 +337,8 @@ void GoatPortfolioSetupPoll(void)
    // performs (goatai#1885). It is retired: the request gets this refusal and changes nothing.
    if(matched && action=="deploy_next") result="rejected_deploy_next_retired";
    else if(matched && action!="status" && !inert) result="rejected_not_inert";
-   // link_children is mutation-class like apply_policy (controller/contracts/profile-deploy.md section 3).
+   // link_children is mutation-class like apply_policy: controller/contracts/profile-deploy.md section 3
+   // (the contract lands with the controller half, algogoat/GOAT-EA#193).
    if(matched && inert && (action=="configure" || action=="link_children" || action=="apply_policy"))
    {
       // Retained intent prevents another issuance after interruption or timeout.
@@ -330,7 +348,7 @@ void GoatPortfolioSetupPoll(void)
       else if(action=="link_children")
       {
          // One adoption pass, then the normal snapshot. Never children_linked while any row is unlinked.
-         GoatPortfolioAdoptChildren(GoatPortfolioExpectedHashes);
+         GoatPortfolioAdoptChildren(GoatPortfolioExpectedHashes,GoatPortfolioDeployment);
          bool all=true;for(int i=0;i<count;i++) if(!GoatPortfolioRowLinked(i)) all=false;
          result=(all ? "children_linked" : "children_pending");
       }

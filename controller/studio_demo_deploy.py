@@ -45,6 +45,12 @@ READY_INSTRUCTION = 'Turn on Algo Trading in MT5 to start trading (demo)'
 DASHBOARD_WAIT_SECONDS = 180  # licence check and dashboard init after the relaunch
 ACK_WAIT_SECONDS = 90
 AUDIT_WAIT_SECONDS = 90
+# B41.1 (GOAT-EA#186) settles each child attach asynchronously within 75 s, above the
+# child's 60 s licence startup; only then is the final deploy_next receipt written.
+CHILD_ATTACH_BUDGET_SECONDS = 75
+# 90 is the most portfolio_request accepts, and its request expires at the wait + 5 s
+# (95 s), so the attach budget fits inside both the wait and the request's life.
+DEPLOY_NEXT_WAIT_SECONDS = 90
 # 2: additive only. broker also carries currency, balance, equity, leverage, company and
 # trade_mode (studio_agent_setup.account_details); every version 1 key is unchanged.
 PREFLIGHT_SCHEMA_VERSION = 2
@@ -453,7 +459,7 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
 
     if record['phase'] == 'dashboard_ready':
         for _ in range(len(members) + 2):
-            attached = request(controller, ident, 'deploy_next', timeout=60)
+            attached = request(controller, ident, 'deploy_next', timeout=DEPLOY_NEXT_WAIT_SECONDS)
             if attached['result'] == 'all_attached':
                 break
             if attached['result'] != 'child_attached':

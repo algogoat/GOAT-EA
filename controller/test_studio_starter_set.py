@@ -468,7 +468,8 @@ class DeployLoadGuardTests(unittest.TestCase):
                 deploy.load(self.c, self.plan([agent_fixture.member(0, content=content.encode('utf-16'))]),
                             mt5=agent_fixture.FakeMT5(self.c))
         where = deploy.paths(self.c, 'e' * 32)
-        self.assertFalse(where['sets'].exists() or where['state'].exists() or where['preset'].exists())
+        # beta.25 stages a deploy profile instead of the startup preset; neither exists after a refusal.
+        self.assertFalse(where['sets'].exists() or where['state'].exists() or where['profile'].exists())
         self.assertFalse(where['journal'].exists())
 
     def test_partial_and_safe_members_pass_the_value_check(self):

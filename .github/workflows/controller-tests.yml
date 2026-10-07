@@ -45,7 +45,8 @@ concurrency:
 #   python test_restore_lane_never_started_mutations.py    (4-14 min)
 #   python test_peer_restart_mutations.py, test_peer_roster_mutations.py,
 #          test_seed_member_failure_mutations.py, test_export_qualification_mutations.py,
-#          test_driver_backoff_mutations.py, test_setup_registration_mutations.py (19 mutations; ~2 min locally at Idle)
+#          test_driver_backoff_mutations.py, test_setup_registration_mutations.py (19 mutations; ~2 min locally at Idle),
+#          test_profile_staged_deploy_mutations.py (36 mutations, named tests only; ~2 min locally at Idle)
 #
 # A new mutation check goes in the shard with the most headroom; keep each shard well under its
 # timeout. Setup steps are identical in both jobs.
@@ -265,3 +266,6 @@ jobs:
       - name: Setup registration mutation check (an expired other-build registration is archived with its sha, a live one refuses, no phantom close journal)
         if: matrix.shard == 3
         run: python scripts/test_setup_registration_mutations.py
+      - name: Profile-staged deploy mutation check (Enabled=0 always, AllowLiveTrading never written, BuildTemplate-exact writer, child_not_started then auto-unwind, exact profile rollback)
+        if: matrix.shard == 3
+        run: python scripts/test_profile_staged_deploy_mutations.py

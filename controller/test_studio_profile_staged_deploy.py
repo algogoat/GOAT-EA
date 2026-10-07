@@ -10,6 +10,7 @@ auto-unwind), the rollback of the previous chart profile, beta.24 journal and sc
 import itertools
 import json
 import re
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -380,14 +381,49 @@ class ProfileStagedDeployTests(DeployFixture):
                 raw = self.write_common(allow_live=allow_live)
                 with patch('studio_monitor_probe.tester_state', return_value='idle'):
                     result = deploy.preflight(self.c, mt5=FakeMT5(self.c))
-                self.assertEqual((result['schema_version'], result['allow_live_trading_default']), (3, expected))
-                self.assertEqual(result['readiness_blockers'], [] if expected else
-                                 [dict(code='allow_live_trading_off', message=deploy.ALLOW_LIVE_TRADING_INSTRUCTION)])
+                self.assertEqual((result['schema_version'], result['allow_live_trading_default']), (4, expected))
+                # beta.26 (goatai#1885 6040697290): informational only. The key stays for beta.24/25 desktops.
+                self.assertEqual(result['readiness_blockers'], [])
+                self.assertEqual(result['notes'], [] if expected else
+                                 [dict(code='allow_live_trading_off', message=deploy.ALLOW_LIVE_TRADING_NOTE)])
                 self.assertEqual((self.data / 'config/common.ini').read_bytes(), raw, 'read-only')
         (self.data / 'config/common.ini').unlink()
         with patch('studio_monitor_probe.tester_state', return_value='idle'):
             result = deploy.preflight(self.c, mt5=FakeMT5(self.c))
-        self.assertEqual((result['allow_live_trading_default'], result['readiness_blockers']), (None, []))
+        self.assertEqual((result['allow_live_trading_default'], result['readiness_blockers'], result['notes']), (None, [], []))
+
+    def test_preflight_keeps_every_schema_3_key_for_beta24_and_beta25_desktops(self):
+        self.write_common(allow_live='0')
+        with patch('studio_monitor_probe.tester_state', return_value='idle'):
+            result = deploy.preflight(self.c, mt5=FakeMT5(self.c))
+        for key in ('schema_version', 'account', 'demo_only_binding', 'protected_account', 'ea_version', 'ea_sha256', 'existing_dashboard',
+                    'deployment', 'namespace_conflict', 'trading_changed', 'allow_live_trading_default', 'readiness_blockers',
+                    'active_work', 'terminal'):
+            self.assertIn(key, result)
+        self.assertIsInstance(result['readiness_blockers'], list)
+        self.assertNotIn('AllowLiveTrading', json.dumps(result['notes']), 'the note names the MT5 option the person sees, not the ini key')
+
+    def test_ready_never_carries_the_allow_live_trading_hint_unless_a_child_cannot_trade(self):
+        now = int(time.time())
+        registration = dict(aiMode=0, aiThreshold=0, aiProtocol=0, exposureMode=1,
+                            members=[dict(path='GOATStudio\\deploy\\Kestrel EURUSD,M1.set'), dict(path='GOATStudio\\deploy\\Kestrel GBPUSD,M1.set')])
+
+        def audit(**row_changes):
+            rows = [dict(index=i, linkedFresh=True, chartId=10 + i, magic=20 + i, settingsMatch=True, EA_TRADE_ALLOWED=1,
+                         exposureMode=1, ackId='c' * 32, ackStatus=1) for i in range(2)]
+            rows[1].update(row_changes)
+            return dict(action='audit', result='observed', observedAtUtc=now, connected=True, tradingAllowed=False, positions=0,
+                        orders=0, commandPending=False, aiMode=0, aiThreshold=0, aiProtocol=0, commandId='c' * 32, rows=rows)
+
+        for allow_live in (False, None, True):
+            with self.subTest(allow_live=allow_live):
+                deploy._verify_ready(audit(), registration, allow_live_trading=allow_live)  # every child tradable: ready
+                with self.assertRaises(ValueError) as caught:
+                    deploy._verify_ready(audit(settingsMatch=False), registration, allow_live_trading=allow_live)
+                self.assertNotIn(deploy.ALLOW_LIVE_TRADING_INSTRUCTION, str(caught.exception), 'not untradable: no hint')
+                with self.assertRaises(ValueError) as caught:
+                    deploy._verify_ready(audit(EA_TRADE_ALLOWED=0), registration, allow_live_trading=allow_live)
+                self.assertEqual(deploy.ALLOW_LIVE_TRADING_INSTRUCTION in str(caught.exception), allow_live is not True)
 
     def test_readiness_names_the_allow_live_trading_step_when_a_child_cannot_trade(self):
         for allow_live, hinted in ((None, True), ('1', False)):

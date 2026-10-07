@@ -41,6 +41,14 @@ MUTATIONS = [
     ('readiness drops the plain-English AllowLiveTrading step', DEPLOY,
      "        hint = ' ' + ALLOW_LIVE_TRADING_INSTRUCTION if untradable and allow_live_trading is not True else ''", "        hint = ''",
      [F + 'test_readiness_names_the_allow_live_trading_step_when_a_child_cannot_trade']),
+    # D2 informational (beta.26, goatai#1885 6040697290): the off default never blocks, and the hint needs an untradable child.
+    ('preflight blocks on the AllowLiveTrading default again', DEPLOY, "    result['readiness_blockers'] = []",
+     "    result['readiness_blockers'] = [dict(code=ALLOW_LIVE_TRADING_BLOCKER, message=ALLOW_LIVE_TRADING_INSTRUCTION)] if allow_live is False else []",
+     [F + 'test_preflight_reports_allow_live_trading_and_never_writes_it']),
+    ('readiness hints AllowLiveTrading without an untradable child', DEPLOY,
+     "        hint = ' ' + ALLOW_LIVE_TRADING_INSTRUCTION if untradable and allow_live_trading is not True else ''",
+     "        hint = ' ' + ALLOW_LIVE_TRADING_INSTRUCTION if allow_live_trading is not True else ''",
+     [F + 'test_ready_never_carries_the_allow_live_trading_hint_unless_a_child_cannot_trade']),
     # The writer: BuildTemplate + GoatApplyAILaunchPolicy, byte for byte.
     ('the writer drops the AI policy', PROFILE,
      "    return apply_ai_policy(set_input_lines(raw), policy['aiMode'], policy['aiThreshold'], policy['aiProtocol'])",

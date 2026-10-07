@@ -465,8 +465,41 @@ class AgentSetupTests(DeployFixture):
             result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
         self.assertEqual((result['status'], result['next_action']), ('no_native_answer', agent_setup.NO_SHARED_CODE))
         self.assertNotIn('userCode', result)
-        self.assertEqual(agent_setup.NO_SHARED_CODE, 'This EA build does not share its connection code with GOAT (SM31 and earlier). '
-                         'Enter the 8-character code MT5 shows in its GOAT window under Connect the EA.')
+        # beta.26: no answer never blames the build (B43 shares its code; goatai#1885 6040697290).
+        self.assertEqual(agent_setup.NO_SHARED_CODE, 'MT5 did not share a connection code with GOAT. If MT5 shows one in its GOAT '
+                         'window under Connect the EA, enter that 8-character code.')
+
+    def test_an_unanswered_read_on_a_connected_terminal_says_it_is_connected(self):
+        # T3 on B43 (goatai#1885): the terminal holds a credential, so the EA shows no code and wrote no shared
+        # file; the mailbox read went unanswered. The EA's own status says why: never "SM31 and earlier".
+        timeout = patch.object(agent_setup, 'setup_request', return_value=dict(id='b' * 32, result='receipt_timeout'))
+        for reason in ('approved', 'activation_reload_pending', 'activation_oninit_observed', 'ACTIVATION_RELOAD_REQUIRED'):
+            with self.subTest(reason=reason), timeout:
+                self.activation_status(reason)
+                result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+                self.assertEqual((result['status'], result['activationReason'], result['requestId']), ('no_pending_pairing', reason, 'b' * 32))
+                self.assertIn('already connected', result['next_action'])
+                self.assertNotIn('SM31', result['next_action']); self.assertNotIn('userCode', result)
+        self.assertIn('timeframe', agent_setup._no_code_action('ACTIVATION_RELOAD_REQUIRED'))
+        for reason, words in (('build_not_admitted', 'approved GOAT build'), ('webrequest_permission_required', 'WebRequest')):
+            with self.subTest(reason=reason), timeout:
+                self.activation_status(reason)
+                result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+                self.assertEqual(result['status'], 'no_pending_pairing'); self.assertIn(words, result['next_action'])
+        with timeout:
+            self.activation_status('awaiting_approval')
+            result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+        self.assertEqual((result['status'], result['next_action']), ('no_native_answer', agent_setup.WAITING_NOT_READ))
+        self.assertNotIn('does not share', result['next_action'])
+
+    def test_demo_direct_on_a_connected_terminal_says_it_is_connected(self):
+        with self.demo_lane(), patch.object(agent_setup, 'setup_register', side_effect=AssertionError('no registration')):
+            for reason in ('activation_reload_pending', 'activation_oninit_observed', 'ACTIVATION_RELOAD_REQUIRED'):
+                with self.subTest(reason=reason):
+                    self.activation_status(reason)
+                    result = agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
+                    self.assertEqual(result['status'], 'no_pending_pairing'); self.assertIn('already connected', result['next_action'])
+        self.assertNotIn('does not share', agent_setup.DEMO_LANE_NO_SHARED_CODE)
 
     def test_setup_receipt_rejects_foreign_or_stale_payloads(self):
         good = dict(schema=1, id='c' * 32, result='pairing_available', account=123456, server='Customer-Demo', directory=self.ident['directory'],
@@ -1059,7 +1092,7 @@ class AgentSetupTests(DeployFixture):
         with patch('studio_monitor_probe.tester_state', return_value='idle'):
             result = deploy.preflight(self.c, mt5=FakeMT5(self.c, account=account))
         broker = result['broker']
-        self.assertEqual(result['schema_version'], 3, '3 only adds allow_live_trading_default and readiness_blockers (D2)')
+        self.assertEqual(result['schema_version'], 4, '3 only adds allow_live_trading_default and readiness_blockers (D2); 4 only adds notes')
         self.assertEqual({k: broker[k] for k in ('currency', 'balance', 'equity', 'leverage', 'company', 'trade_mode')},
                          dict(account, trade_mode='demo'))
         self.assertIsInstance(broker['balance'], float); self.assertIsInstance(broker['leverage'], int)

@@ -121,6 +121,11 @@ public:
    // until that chart got an update, so the pending child chart is refreshed every 2 s.
    ENUM_TIMEFRAMES m_agent_attach_tf;
    uint        m_agent_attach_refresh;
+   // Refreshes stop once an expert is on the chart: a refresh of a chart that already runs the
+   // child could re-run its OnInit (license check) and never let it register (Mac 6030329907).
+   int         m_agent_attach_nudges;
+   bool        m_agent_attach_nudge_done;
+   ENUM_TIMEFRAMES m_child_attach_period;   // ChartPeriod of the child chart, read right after ChartOpen
    string      m_child_attach_step;
    // Rows whose agent attach failed (timeout or no longer inert) carry
    // GOAT_ATTACH_FAILED_MAGIC: closed, kept as the partial-deployment lock, saved, and
@@ -1029,6 +1034,9 @@ CGOATDashboard::CGOATDashboard()
    m_agent_attach_start=0;
    m_agent_attach_tf=PERIOD_M1;
    m_agent_attach_refresh=0;
+   m_agent_attach_nudges=0;
+   m_agent_attach_nudge_done=false;
+   m_child_attach_period=PERIOD_CURRENT;
    m_child_attach_step="";
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
    m_ai_launch_mode=GOAT_AI_LAUNCH_AS_OPTIMIZED;
@@ -1268,8 +1276,13 @@ bool CGOATDashboard::AgentBeginDeployRow(const int idx)
    m_agent_attach_idx=idx;
    m_agent_attach_tpl=tplName;
    m_agent_attach_start=GetTickCount();
-   m_agent_attach_tf=tf;
+   // Refresh with the chart's own period as read after ChartOpen, never PERIOD_CURRENT (which
+   // would mean the dashboard's period). Without a concrete period there is no refresh at all.
+   m_agent_attach_tf=(m_child_attach_period!=PERIOD_CURRENT ? m_child_attach_period : tf);
    m_agent_attach_refresh=m_agent_attach_start;
+   m_agent_attach_nudges=0;
+   m_agent_attach_nudge_done=(m_agent_attach_tf==PERIOD_CURRENT);
+   if(m_agent_attach_nudge_done) GoatDeploymentPhase("attach_nudge_disabled",g_sets[idx].cid,"period=current");
    return true;
 }
 
@@ -1291,10 +1304,25 @@ int CGOATDashboard::AgentPollDeployRow(void)
    {
       // The pre-ebb9958 refresh, now between timer ticks instead of inside a blocked handler:
       // MT5 applied the queued template only once the new chart was updated (T3, B41.1).
-      if(GetTickCount()-m_agent_attach_refresh>=2000)
+      // Only until an expert is on the chart: from then on OnInit and OnTimer must run undisturbed.
+      if(!m_agent_attach_nudge_done && GetTickCount()-m_agent_attach_refresh>=2000)
       {
-         ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);
-         ChartRedraw(g_sets[idx].cid);
+         // ChartGetString is synchronous (it waits for the chart's queued commands), so it is asked
+         // only after a first refresh; before that, the new chart cannot carry an expert.
+         string child_expert="";
+         if(m_agent_attach_nudges>0) child_expert=ChartGetString(g_sets[idx].cid,CHART_EXPERT_NAME);
+         if(child_expert!="")
+         {
+            m_agent_attach_nudge_done=true;
+            GoatDeploymentPhase("attach_nudge_stopped",g_sets[idx].cid,"expert=\""+child_expert+"\"");
+         }
+         else
+         {
+            ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);
+            ChartRedraw(g_sets[idx].cid);
+            m_agent_attach_nudges++;
+            GoatDeploymentPhase("attach_nudge",g_sets[idx].cid,StringFormat("n=%d expert=\"%s\"",m_agent_attach_nudges,child_expert));
+         }
          m_agent_attach_refresh=GetTickCount();
       }
       return 0;
@@ -3386,6 +3414,7 @@ bool CGOATDashboard::BeginChildAttach(const int idx,ENUM_TIMEFRAMES tf,const str
       return false;
    }
    g_sets[idx].cid=cid;
+   m_child_attach_period=(ENUM_TIMEFRAMES)ChartPeriod(cid);
    PrintFormat("  Chart opened  cid=%I64d", cid);
 
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147

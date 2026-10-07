@@ -99,7 +99,10 @@ class DeploymentLivenessTests(unittest.TestCase):
             self.assertNotIn(blocking, self.agent_begin)
         # B41.2: the pending child chart is refreshed every 2 s (T3 6030127717): ChartSetSymbolPeriod and
         # ChartRedraw on that row's chart only, inside the cadence block; never a re-apply or a new chart.
-        refresh = region(self.agent_poll, 'if(GetTickCount()-m_agent_attach_refresh>=2000)', 'return 0;')
+        refresh = region(self.agent_poll, 'if(!m_agent_attach_nudge_done && GetTickCount()-m_agent_attach_refresh>=2000)', 'return 0;')
+        # Refresh only until an expert is on the chart (Mac 6030329907).
+        self.assertIn('if(child_expert!="")', refresh)
+        self.assertIn('m_agent_attach_nudge_done=true;', refresh)
         self.assertIn('ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);', refresh)
         self.assertIn('ChartRedraw(g_sets[idx].cid);', refresh)
         passive_handshake(self.agent_poll.replace(refresh, ''))

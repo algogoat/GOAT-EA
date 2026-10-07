@@ -47,8 +47,14 @@ From B41.1 the agent's `deploy_next` attaches a child asynchronously (goatai#188
 6027754245). The timer handler opens the chart, saves the child chart ID, copies the
 template to `MQL5\Profiles\Templates\<member SET name>.tpl` and queues it, then returns.
 Later timer ticks wait for the child's registration. From B41.2, while the row's handshake
-is pending, every 2 s the tick also calls `ChartSetSymbolPeriod(cid, row symbol, row
-timeframe)` and `ChartRedraw(cid)`. On T3 (B41.1, goatai#1885 6030127717), a template
+is pending and no expert is on its chart yet, every 2 s the tick also calls
+`ChartSetSymbolPeriod(cid, row symbol, chart period)` and `ChartRedraw(cid)`. The period is
+`ChartPeriod` as read right after `ChartOpen`. The refresh stops once
+`ChartGetString(cid, CHART_EXPERT_NAME)` is non-empty, so a loaded child's `OnInit` (and its
+license check) is never re-run. Each refresh is logged as `phase=attach_nudge
+control=n=<count> expert=""`, and the stop as `attach_nudge_stopped control=expert="<name>"`.
+If an attach still times out, these lines show whether it stalled before the expert
+appeared (template never applied) or after it (child never registered). On T3 (B41.1, goatai#1885 6030127717), a template
 queued on a newly opened chart was not applied in 76 s without such an update, although
 the symbol was ticking. The registration wait lasts at most
 `GOAT_AGENT_ATTACH_BUDGET_MS` (75 s). That is above the child's license startup, which

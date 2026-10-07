@@ -19,7 +19,7 @@ removed it as "refresh interference", and no attach has succeeded since.
 
 | Where | What it does |
 |---|---|
-| `Dashboard.mqh` | `AgentPollDeployRow`, on the poll tick, **only while that row's handshake is pending**: every 2 s, `ChartSetSymbolPeriod(cid, row symbol, row timeframe)` then `ChartRedraw(cid)`. This is the pre-`ebb9958` form, now between timer ticks instead of inside a blocked handler. The row's timeframe is kept from `AgentBeginDeployRow` (`m_agent_attach_tf`). The nudge stops when the row links or the attach unwinds. The symbol and timeframe passed are the row's own, so the chart is refreshed, not changed. **No template re-apply.** The 75 s budget, the per-tick inert check, the unwind, the failed marker, the on-load proof and the receipt are unchanged. |
+| `Dashboard.mqh` | `AgentPollDeployRow`, on the poll tick, **only while that row's handshake is pending and no expert is on its chart yet**: every 2 s, `ChartSetSymbolPeriod(cid, row symbol, chart period)` then `ChartRedraw(cid)`. This is the pre-`ebb9958` form, now between timer ticks instead of inside a blocked handler. **It stops once `ChartGetString(cid, CHART_EXPERT_NAME)` is non-empty**, so a loaded child is never refreshed. A refresh could re-run its `OnInit` license check, and the handshake is written only from `OnTimer` (Mac 6030329907). `ChartGetString` is synchronous (it waits for the chart's queued commands), so it is asked only after the first refresh; before that, the new chart cannot carry an expert. **The period is `ChartPeriod(cid)`, read right after `ChartOpen`**, never `PERIOD_CURRENT`. Without a concrete period there is no refresh (`attach_nudge_disabled`). **Each refresh is logged** as `phase=attach_nudge control=n=<count> expert=""`, and **the stop** as `attach_nudge_stopped control=expert="<name>"`. **No template re-apply.** The 75 s budget, the per-tick inert check, the unwind, the failed marker, the on-load proof and the receipt are unchanged. |
 | `GOAT V1.49.mq5` | Build ID `V1.49-BETA17-41.2`, marker `B41.2`, one `#define` each. `GOAT_VERSION_LABEL` stays `1.49`. |
 
 **Not changed.** The human Activate / Deploy All path keeps its B41.1 form: an in-handler wait with no refresh. It
@@ -28,16 +28,19 @@ default, the input header (`1408e1ee…`), `WriteSet`, `StartExporter`, the bias
 
 **Tests**
 
-- `scripts/test_dashboard_async_attach.cjs` (22 cases). In the model, a queued template applies only after the
+- `scripts/test_dashboard_async_attach.cjs` (24 cases). In the model, a queued template applies only after the
   handler returns **and** the chart gets an update (`ChartSetSymbolPeriod` or `ChartRedraw` on that chart). Ticks
   are deliberately not an update, as T3 showed.
   - Case 21 runs **B41.1's source (`0cfdfacf`)**: it reproduces T3. The template is never applied, the attach times
     out at 75 s, the chart closes and no child runs.
   - Case 2 runs B41.2: **all 35 members attach**. Every nudge hits a row while its handshake is pending, with that
     row's symbol and timeframe. Nudges stop once the row links, and every chart keeps its symbol and timeframe.
-- `scripts/test_dashboard_async_attach_mutations.cjs`: 41 of 41 mutants killed. They include the nudge dropped
-  (the B41.1 behaviour), the nudge hitting non-pending rows (linked or failed), a changed timeframe, a timeframe
-  not remembered, and nudging with no 2 s cadence.
+  - Case 22, the worst case (a refresh of a chart running the EA re-runs `OnInit`, with a 5 s license startup): all 35 attach with **zero re-inits and zero synchronous chart queries against an unprocessed queue**. Each member gets exactly one `attach_nudge n=1 expert=""` and one `attach_nudge_stopped expert="GOAT V1.49"`, before `handshake_linked`.
+  - Case 23: a requested timeframe that resolves to `PERIOD_CURRENT` still refreshes with the chart's stored period (M1).
+- `scripts/test_dashboard_async_attach_mutations.cjs`: 47 of 47 mutants killed. They include the nudge dropped
+  (the B41.1 behaviour), the nudge hitting non-pending rows (linked or failed), a changed timeframe, no 2 s cadence,
+  **nudging after the expert appears**, the gate never closing, the expert queried before the first refresh, the
+  requested timeframe used instead of the stored period, the period not read after `ChartOpen`, and either log line removed.
 - `scripts/test_b41_1_no_drift.cjs` (against B41, `278ec109`, normalised): only `Dashboard.mqh`,
   `GOATPortfolioSetupControl.mqh` and `GOATPortfolioChildAudit.mqh` differ. `StartExporter`, `OnTick`,
   `OnTradeTransaction`, `OnTimer` and `GoatTimerBody` are identical. Against B41.1 only `Dashboard.mqh` and the

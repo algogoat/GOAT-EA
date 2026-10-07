@@ -29,7 +29,7 @@ function js(text) {
  return enabled(text)
   .replace(/\bstring (\w+)\[\];/g,'let $1=[];')
   .replace(/\b(?:const )?(?:string|int|long|bool|uint|ulong|double|ENUM_TIMEFRAMES) (?=[A-Za-z_]\w*\s*[=;,])/g,'let ')
-  .replace(/\((?:long|datetime)\)/g,'').replace(/__FUNCTION__/g,'"fn"')
+  .replace(/\((?:long|datetime|ENUM_TIMEFRAMES)\)/g,'').replace(/__FUNCTION__/g,'"fn"')
   .replace(/StringReplace\(tplName,"\.set","\.tpl"\)/g,'tplName=tplName.split(".set").join(".tpl")')
   .replace(/GoatFindMagicByCid\(([^,]+),([^,]+),(\w+)\)/g,'find($1,$2,v=>$3=v)')
   .replace(/GlobalVariableGet\((GoatChildGVName\([^\n]+?\)|pending),(\w+)\)/g,'gvGet($1,v=>$2=v)')
@@ -96,9 +96,9 @@ const tplOf=i=>`GOAT V1.49 SYM${i},M1_B35-${i}.tpl`;
 // restored: charts MT5 brings back with the profile after a restart ({cid,sym,child:true|false}).
 // source: the compiled attach code to run (default: this tree; case 21 runs B41.1's).
 function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueOk=true,templates=new Map(),rows=null,
-                copyOk=()=>true,closeOk=true,restored=[],source=production}={}) {
+                copyOk=()=>true,closeOk=true,restored=[],source=production,requestedTf=1,reinitOnRefresh=true}={}) {
  const mt5={clock:1000,nextCid:66948585504739,charts:new Map(),queue:[],inits:[],templates,commonFiles:new Map(),gv:new Map(),
-            cidField:new Map(),children:[],applied:[],algo:false,positions:[],orders:[],nudges:[]};
+            cidField:new Map(),children:[],applied:[],algo:false,positions:[],orders:[],nudges:[],reinits:0,blockingQueries:0};
  const sets=rows||[...Array(members)].map((_,i)=>({name:`GOAT V1.49 SYM${i},M1_B35-${i}.set`,path:`${SETS}\\set${i}`,sym:'SYM'+(i%17),cid:0,magic:0,status:'Pending'}));
  const log={phases:[],audits:[],receipts:new Map(),saves:0,saved:null,ownerBusy:false,writeOk:true};
  let nextMagic=7000;
@@ -146,11 +146,15 @@ function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueO
   PositionGetTicket:i=>{mt5.selPos=mt5.positions[i];return mt5.selPos?mt5.selPos.ticket:0;},PositionGetInteger:k=>mt5.selPos[k],
   OrderGetTicket:i=>{mt5.selOrd=mt5.orders[i];return mt5.selOrd?mt5.selOrd.ticket:0;},OrderGetInteger:k=>mt5.selOrd[k],
   IntegerToString:n=>String(n),
-  ChartGetString:(cid,k)=>{const c=mt5.charts.get(cid);return c&&!c.closed&&c.expert?c.expertName:'';},
+  // ChartGetString is synchronous: asked while the chart still holds an unprocessed queued command, it would
+  // wait on a queue MT5 is not draining (counted; the attach must never do this).
+  ChartGetString:(cid,k)=>{const c=mt5.charts.get(cid);if(c&&!c.updated&&mt5.queue.some(q=>q.cid===cid)) mt5.blockingQueries++;
+   return c&&!c.closed&&c.expert?c.expertName:'';},
   ArraySize:a=>a.length,ArrayResize:(a,n)=>{a.length=n;return n;},
   StringFind:(s,f)=>s.indexOf(f),StringSubstr:(s,a,n)=>n===undefined?s.slice(a):s.slice(a,a+n),
   StringSplit:(s,sep,out)=>{out.length=0;out.push(...s.split(sep));return out.length;},
-  EndsWith:(s,x)=>s.endsWith(x),TF:()=>1,StringFormat:(f,...a)=>f.replace(/%(I64d|d|s)/g,()=>String(a.shift())),
+  EndsWith:(s,x)=>s.endsWith(x),TF:()=>requestedTf,PERIOD_CURRENT:0,
+  m_agent_attach_nudges:0,m_agent_attach_nudge_done:false,m_child_attach_period:0,m_agent_attach_tf:1,m_agent_attach_refresh:0,StringFormat:(f,...a)=>f.replace(/%(I64d|d|s)/g,()=>String(a.shift())),
   Print:()=>{},PrintFormat:()=>{},Alert:()=>{},MessageBox:()=>{throw new Error('agent path must not prompt');},
   ResetLastError:()=>{},GetLastError:()=>0,MarkStateDirty:()=>{},StatusColor:()=>0,UpdateAILaunchControls:()=>{},
   DisplayStatusForRow:i=>sets[i].status,TimeCurrent:()=>Math.floor(mt5.clock/1000),TimeGMT:()=>Math.floor(mt5.clock/1000),
@@ -171,10 +175,21 @@ function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueO
   AppendAILaunchAudit:(idx,stage)=>log.audits.push([idx,stage]),
   GoatDeploymentPhase:(phase,target=0,controlName='')=>log.phases.push({phase,target,control:controlName,at:mt5.clock}),
   GetTickCount:()=>mt5.clock,Sleep:ms=>{mt5.clock+=ms;},
-  ChartOpen:(sym,tf)=>{const cid=mt5.nextCid++;mt5.charts.set(cid,{cid,sym,tf,expert:false,closed:false,updated:false});return cid;},
+  // PERIOD_CURRENT (0) opens the chart on the dashboard's own period (M1 here).
+  ChartOpen:(sym,tf)=>{const cid=mt5.nextCid++;mt5.charts.set(cid,{cid,sym,tf:tf||1,expert:false,closed:false,updated:false});return cid;},
+  ChartPeriod:cid=>{const c=mt5.charts.get(cid);return c&&!c.closed?c.tf:0;},
   ChartApplyTemplate:(cid,tpl)=>{if(!enqueueOk)return false;mt5.queue.push({cid,tpl});mt5.charts.get(cid).updated=false;return true;},
-  ChartSetSymbolPeriod:(cid,sym,tf)=>{const c=mt5.charts.get(cid);mt5.nudges.push({cid,sym,tf,at:mt5.clock});
-   if(!c||c.closed) return false;c.sym=sym;c.tf=tf;c.updated=true;return true;},
+  // Worst case (Mac 6030329907): refreshing a chart that already runs the EA re-runs the child's OnInit
+  // (license startup again); the child's registration is lost until the new OnInit finishes.
+  ChartSetSymbolPeriod:(cid,sym,tf)=>{const c=mt5.charts.get(cid);mt5.nudges.push({cid,sym,tf,at:mt5.clock,expert:!!(c&&c.expert)});
+   if(!c||c.closed) return false;
+   if(c.expert&&reinitOnRefresh&&childStarts){
+    mt5.reinits++;
+    for(const ch of mt5.children.filter(x=>x.cid===cid)){mt5.cidField.delete(cid);for(const k of [...mt5.gv.keys()]) if(k.startsWith(ch.magic+'/')) mt5.gv.delete(k);}
+    mt5.children=mt5.children.filter(x=>x.cid!==cid);mt5.inits=mt5.inits.filter(i=>i.chart!==c);
+    mt5.inits.push({chart:c,at:mt5.clock+Math.max(childDelay,1000)});
+   }
+   c.sym=sym;c.tf=tf||1;c.updated=true;return true;},
   ChartClose:cid=>{ // closing a chart unloads its EA, including one still in OnInit
    const chart=mt5.charts.get(cid);if(!chart||!closeOk) return false;
    chart.closed=true;mt5.children=mt5.children.filter(c=>c.cid!==cid);return true;},
@@ -247,7 +262,7 @@ let passed=0;
  assert.equal(w.deployNext('req-final').result,'all_attached');
  // Every nudge hit a row whose handshake was still pending, with the row's own symbol and timeframe:
  // none after its row linked, none on another row's chart.
- assert.ok(w.mt5.nudges.length>=35);
+ assert.ok(w.mt5.nudges.length>=35);assert.equal(w.mt5.blockingQueries,0);assert.equal(w.mt5.reinits,0);
  for(const n of w.mt5.nudges){
   const row=w.sets.find(s=>s.cid===n.cid);assert.ok(row,'nudged chart belongs to a row');
   assert.equal(n.sym,row.sym);assert.equal(n.tf,1);
@@ -516,4 +531,26 @@ for(const [delay,label] of [[25000,'25 s, after the old 20 s budget'],[70000,'70
   assert.deepEqual(w.log.phases.filter(p=>p.target===cid).map(p=>p.phase).slice(-3),['handshake_timeout','child_chart_closed','child_attach_failed']);
   passed++;
  }
+}{ // 22. Worst case (Mac 6030329907): a refresh of a chart that already runs the EA re-runs the child's OnInit.
+  //     With a 5 s license startup, B41.2 still attaches all 35, because it refreshes only while no expert
+  //     is on the chart: one refresh per member, then attach_nudge_stopped once the expert appears.
+ const w=world({members:35,childDelay:5000});
+ for(let i=0;i<35;i++){const r=w.deployNext('w'+i);assert.equal(r.result,'child_attached',`member ${i}`);assert.ok(w.linked(i));}
+ assert.equal(w.mt5.reinits,0,'no loaded child is ever refreshed');
+ assert.ok(w.mt5.nudges.every(n=>!n.expert));assert.equal(w.mt5.blockingQueries,0,'no synchronous chart query before the first refresh');
+ for(const s of w.sets){
+  const mine=w.log.phases.filter(p=>p.target===s.cid);
+  assert.deepEqual(mine.filter(p=>p.phase==='attach_nudge').map(p=>p.control),['n=1 expert=""']);
+  assert.deepEqual(mine.filter(p=>p.phase==='attach_nudge_stopped').map(p=>p.control),['expert="GOAT V1.49"']);
+  assert.ok(mine.findIndex(p=>p.phase==='attach_nudge_stopped')<mine.findIndex(p=>p.phase==='handshake_linked'));
+ }
+ assert.equal(w.deployNext('w-final').result,'all_attached');passed++;
+}
+{ // 23. The refresh uses the chart's own period read after ChartOpen, never PERIOD_CURRENT: even when the
+  //     requested timeframe resolves to PERIOD_CURRENT, the chart opens on M1 and is refreshed on M1.
+ const w=world({members:2,requestedTf:0});
+ assert.equal(w.deployNext('p').result,'child_attached');
+ assert.ok(w.mt5.nudges.length>0);
+ for(const n of w.mt5.nudges) assert.equal(n.tf,1,'refreshed with the stored chart period, not PERIOD_CURRENT');
+ assert.equal(w.mt5.charts.get(w.sets[0].cid).tf,1);passed++;
 }console.log(JSON.stringify({passed,productionExtracted:true,nativeTemplateTimingVerified:false}));

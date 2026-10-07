@@ -97,15 +97,18 @@ class DeploymentLivenessTests(unittest.TestCase):
         self.assertIn('BeginChildAttach(idx,tf,tplName)', self.agent_begin)
         for blocking in ('while(', 'Sleep(', 'NewSingleInstance(', 'ApplyTemplate(idx', 'DoActivate('):
             self.assertNotIn(blocking, self.agent_begin)
-        # B41.2: the pending child chart is refreshed every 2 s (T3 6030127717): ChartSetSymbolPeriod and
-        # ChartRedraw on that row's chart only, inside the cadence block; never a re-apply or a new chart.
+        # B41.2/B41.3: the pending child chart is refreshed every 2 s (T3 6030127717) on that row's chart only,
+        # inside the cadence block, until our EA is on it. A NULL CHART_EXPERT_NAME must not stop it (B41.3).
         refresh = region(self.agent_poll, 'if(!m_agent_attach_nudge_done && GetTickCount()-m_agent_attach_refresh>=2000)', 'return 0;')
-        # Refresh only until an expert is on the chart (Mac 6030329907).
-        self.assertIn('if(child_expert!="")', refresh)
-        self.assertIn('m_agent_attach_nudge_done=true;', refresh)
-        self.assertIn('ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);', refresh)
-        self.assertIn('ChartRedraw(g_sets[idx].cid);', refresh)
-        passive_handshake(self.agent_poll.replace(refresh, ''))
+        self.assertIn('ChartSetSymbolPeriod(child_cid,g_sets[idx].sym,m_agent_attach_tf);', refresh)
+        self.assertIn('ChartRedraw(child_cid);', refresh)
+        self.assertIn('bool expert_ours=(StringLen(child_expert)>0 && child_expert==EA_Name_);', self.agent_poll)
+        self.assertNotIn('child_expert!=""', self.agent_poll)
+        # The one-off re-apply probe is diagnostic, behind its own define (T3 only, Mac 6031532401).
+        reapply = region(self.agent_poll, '#ifdef GOAT_ATTACH_REAPPLY_PROBE', '#endif')
+        self.assertEqual(1, reapply.count('ChartApplyTemplate('))
+        self.assertIn('m_agent_attach_reapplied=true;', reapply)
+        passive_handshake(self.agent_poll.replace(refresh, '').replace(reapply, ''))
         for blocking in ('while(', 'Sleep('):
             self.assertNotIn(blocking, self.agent_poll)
         self.assertIn('GetTickCount()-m_agent_attach_start<=GOAT_AGENT_ATTACH_BUDGET_MS', self.agent_poll)

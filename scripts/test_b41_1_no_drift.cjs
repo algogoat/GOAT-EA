@@ -15,7 +15,7 @@ catch(e){
  console.log(JSON.stringify({skipped:'278ec109 not in this clone'}));process.exit(process.env.CI ? 1 : 0);
 }
 const now=f=>fs.readFileSync(path.join(ROOT,f),'utf8');
-const identity=JSON.parse(now('candidate-builds/beta17-B41.2/identity.json'));
+const identity=JSON.parse(now('candidate-builds/beta17-B41.3/identity.json'));
 const b41=JSON.parse(old('candidate-builds/beta17-B41/identity.json'));
 assert.deepEqual(Object.keys(identity.sources).sort(),Object.keys(b41.sources).sort(),'same closure as B41');
 const differing=Object.keys(identity.sources).filter(f=>norm(now(f))!==norm(old(f))).sort();

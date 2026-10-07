@@ -20,6 +20,7 @@
    //int GetCurrentProcessId();
    int CopyFileW(string src, string dst, int fail_if_exists);
    int DeleteFileW(string path);
+   uint GetFileAttributesW(string path);
 #import
 #endif 
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -32,6 +33,10 @@
 // The chart ID stays as the partial-deployment lock; the marker survives a restart, so a
 // restored child on that chart is never adopted and its chart is closed again on load.
 #define GOAT_ATTACH_FAILED_MAGIC -2
+// B41.3 (diagnostic build for T3 only, goatai#1885): if the child's expert is not on its chart 5 s
+// after the template was queued, re-issue ChartApplyTemplate once with the explicit
+// \Profiles\Templates\ path and log the result as attach_reapply_probe. Remove for release.
+#define GOAT_ATTACH_REAPPLY_PROBE 1
 class CGOATDashboard;
 
 string GoatDashboardCommonSetPath(const string path)
@@ -126,6 +131,9 @@ public:
    int         m_agent_attach_nudges;
    bool        m_agent_attach_nudge_done;
    ENUM_TIMEFRAMES m_child_attach_period;   // ChartPeriod of the child chart, read right after ChartOpen
+   bool        m_agent_attach_reapplied;    // B41.3 attach_reapply_probe issued for this attach
+   bool        ChildChartExists(const long chart_id);
+   bool        CopiedTemplateExists(const string tplName);
    string      m_child_attach_step;
    // Rows whose agent attach failed (timeout or no longer inert) carry
    // GOAT_ATTACH_FAILED_MAGIC: closed, kept as the partial-deployment lock, saved, and
@@ -1037,6 +1045,7 @@ CGOATDashboard::CGOATDashboard()
    m_agent_attach_nudges=0;
    m_agent_attach_nudge_done=false;
    m_child_attach_period=PERIOD_CURRENT;
+   m_agent_attach_reapplied=false;
    m_child_attach_step="";
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
    m_ai_launch_mode=GOAT_AI_LAUNCH_AS_OPTIMIZED;
@@ -1129,6 +1138,25 @@ CGOATDashboard::~CGOATDashboard()
 {
    // Typically Destroy is called in OnDeinit
 }
+// The chart list as MT5 holds it (ChartFirst/ChartNext), not a property read of the chart itself.
+bool CGOATDashboard::ChildChartExists(const long chart_id)
+{
+   long chart=ChartFirst();
+   for(int guard=0;chart>=0 && guard<500;guard++)
+   {
+      if(chart==chart_id) return true;
+      chart=ChartNext(chart);
+   }
+   return false;
+}
+
+// The copied template in MQL5\Profiles\Templates, through the same WinAPI path as the copy.
+bool CGOATDashboard::CopiedTemplateExists(const string tplName)
+{
+   string dstPath=TerminalInfoString(TERMINAL_DATA_PATH)+"\\MQL5\\Profiles\\Templates\\"+tplName;
+   return(GetFileAttributesW("\\\\?\\"+dstPath)!=0xFFFFFFFF);
+}
+
 bool CGOATDashboard::IsAgentAttachFailedChart(const long cid)
 {
    if(cid<=0) return false;
@@ -1282,6 +1310,7 @@ bool CGOATDashboard::AgentBeginDeployRow(const int idx)
    m_agent_attach_refresh=m_agent_attach_start;
    m_agent_attach_nudges=0;
    m_agent_attach_nudge_done=(m_agent_attach_tf==PERIOD_CURRENT);
+   m_agent_attach_reapplied=false;
    if(m_agent_attach_nudge_done) GoatDeploymentPhase("attach_nudge_disabled",g_sets[idx].cid,"period=current");
    return true;
 }
@@ -1302,27 +1331,45 @@ int CGOATDashboard::AgentPollDeployRow(void)
               && PositionsTotal()==0 && OrdersTotal()==0;
    if(!linked && inert && GetTickCount()-m_agent_attach_start<=GOAT_AGENT_ATTACH_BUDGET_MS)
    {
+      long child_cid=g_sets[idx].cid;
+      uint attach_ms=GetTickCount()-m_agent_attach_start;
+      // B41.3 per-tick probe (diagnostic): what the dashboard sees of the child chart while waiting.
+      // CHART_EXPERT_NAME is a NULL string (StringLen 0, error 0) on a chart with no expert, and
+      // NULL!="" is true in MQL5, which stopped B41.2's refresh falsely: only our EA's name counts.
+      bool child_exists=ChildChartExists(child_cid);
+      ResetLastError();
+      ulong expert_us=GetMicrosecondCount();
+      string child_expert=ChartGetString(child_cid,CHART_EXPERT_NAME);
+      expert_us=GetMicrosecondCount()-expert_us;
+      int expert_error=GetLastError();
+      bool expert_ours=(StringLen(child_expert)>0 && child_expert==EA_Name_);
+      GoatDeploymentPhase("attach_probe",child_cid,
+         StringFormat("t=%u exists=%d sym=%s per=%d en_len=%d en_null=%d en_err=%d en_ms=%I64u tpl=%d nudges=%d",
+                      attach_ms,(child_exists ? 1 : 0),ChartSymbol(child_cid),(int)ChartPeriod(child_cid),StringLen(child_expert),
+                      (child_expert==NULL ? 1 : 0),expert_error,expert_us/1000,(CopiedTemplateExists(tplName) ? 1 : 0),m_agent_attach_nudges));
       // The pre-ebb9958 refresh, now between timer ticks instead of inside a blocked handler:
       // MT5 applied the queued template only once the new chart was updated (T3, B41.1).
-      // Only until an expert is on the chart: from then on OnInit and OnTimer must run undisturbed.
+      // Only until our expert is on the chart: from then on OnInit and OnTimer must run undisturbed.
+      if(expert_ours && !m_agent_attach_nudge_done)
+      {
+         m_agent_attach_nudge_done=true;
+         GoatDeploymentPhase("attach_nudge_stopped",child_cid,"expert=\""+child_expert+"\"");
+      }
+#ifdef GOAT_ATTACH_REAPPLY_PROBE
+      if(!expert_ours && !m_agent_attach_reapplied && attach_ms>=5000)
+      {
+         m_agent_attach_reapplied=true;
+         ResetLastError();
+         bool reapplied=ChartApplyTemplate(child_cid,"\\Profiles\\Templates\\"+tplName);
+         GoatDeploymentPhase("attach_reapply_probe",child_cid,StringFormat("ok=%d err=%d",(reapplied ? 1 : 0),GetLastError()));
+      }
+#endif
       if(!m_agent_attach_nudge_done && GetTickCount()-m_agent_attach_refresh>=2000)
       {
-         // ChartGetString is synchronous (it waits for the chart's queued commands), so it is asked
-         // only after a first refresh; before that, the new chart cannot carry an expert.
-         string child_expert="";
-         if(m_agent_attach_nudges>0) child_expert=ChartGetString(g_sets[idx].cid,CHART_EXPERT_NAME);
-         if(child_expert!="")
-         {
-            m_agent_attach_nudge_done=true;
-            GoatDeploymentPhase("attach_nudge_stopped",g_sets[idx].cid,"expert=\""+child_expert+"\"");
-         }
-         else
-         {
-            ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);
-            ChartRedraw(g_sets[idx].cid);
-            m_agent_attach_nudges++;
-            GoatDeploymentPhase("attach_nudge",g_sets[idx].cid,StringFormat("n=%d expert=\"%s\"",m_agent_attach_nudges,child_expert));
-         }
+         ChartSetSymbolPeriod(child_cid,g_sets[idx].sym,m_agent_attach_tf);
+         ChartRedraw(child_cid);
+         m_agent_attach_nudges++;
+         GoatDeploymentPhase("attach_nudge",child_cid,StringFormat("n=%d expert=\"%s\"",m_agent_attach_nudges,child_expert));
          m_agent_attach_refresh=GetTickCount();
       }
       return 0;
@@ -3436,6 +3483,7 @@ bool CGOATDashboard::BeginChildAttach(const int idx,ENUM_TIMEFRAMES tf,const str
    bool template_queued=ChartApplyTemplate(cid, tplName);
    int template_error=GetLastError();
    GoatDeploymentPhase(template_queued ? "template_enqueued" : "template_enqueue_failed",cid,"",template_error);
+   GoatDeploymentPhase("template_apply_result",cid,StringFormat("ok=%d err=%d",(template_queued ? 1 : 0),template_error),template_error);
    if(!template_queued)
    {
       if(!m_agent_setup_quiet) Alert(StringFormat("  ChartApplyTemplate FAILED  err=%d", template_error));

@@ -19,7 +19,7 @@ function bodyOf(src,signature) {
 function enabled(text) {
  const stack=[];let active=true;
  return text.split('\n').filter(line=>{
-  if(/^\s*#ifdef/.test(line)){stack.push(active);active=active&&line.includes('GOAT_DASH_AI_LAUNCH_POLICY_V147');return false;}
+  if(/^\s*#ifdef/.test(line)){stack.push(active);active=active&&/GOAT_DASH_AI_LAUNCH_POLICY_V147|GOAT_ATTACH_REAPPLY_PROBE/.test(line);return false;}
   if(/^\s*#else/.test(line)){active=stack.at(-1)&&!active;return false;}
   if(/^\s*#endif/.test(line)){active=stack.pop();return false;}
   return active;
@@ -29,7 +29,7 @@ function js(text) {
  return enabled(text)
   .replace(/\bstring (\w+)\[\];/g,'let $1=[];')
   .replace(/\b(?:const )?(?:string|int|long|bool|uint|ulong|double|ENUM_TIMEFRAMES) (?=[A-Za-z_]\w*\s*[=;,])/g,'let ')
-  .replace(/\((?:long|datetime|ENUM_TIMEFRAMES)\)/g,'').replace(/__FUNCTION__/g,'"fn"')
+  .replace(/\((?:long|int|datetime|ENUM_TIMEFRAMES)\)/g,'').replace(/__FUNCTION__/g,'"fn"')
   .replace(/StringReplace\(tplName,"\.set","\.tpl"\)/g,'tplName=tplName.split(".set").join(".tpl")')
   .replace(/GoatFindMagicByCid\(([^,]+),([^,]+),(\w+)\)/g,'find($1,$2,v=>$3=v)')
   .replace(/GlobalVariableGet\((GoatChildGVName\([^\n]+?\)|pending),(\w+)\)/g,'gvGet($1,v=>$2=v)')
@@ -61,6 +61,9 @@ return [
  'function AgentBeginDeployRow(idx){'+js(beginBody).replace(js(prepareCall),'const p=PrepareChildLaunch(idx);let started=p.ok;tf=p.tf;tplName=p.tplName;')+'}',
  'function AgentPollDeployRow(){'+js(method('AgentPollDeployRow(void)'))+'}',
  'function IsAgentAttachFailedChart(cid){'+js(method('IsAgentAttachFailedChart(const long cid)'))+'}',
+ // B41.3 probe helpers (absent in older sources such as B41.1, which case 21 compiles).
+ dashboard.includes('CGOATDashboard::ChildChartExists(') ? 'function ChildChartExists(chart_id){'+js(method('ChildChartExists(const long chart_id)'))+'}' : '',
+ dashboard.includes('CGOATDashboard::CopiedTemplateExists(') ? 'function CopiedTemplateExists(tplName){'+js(method('CopiedTemplateExists(const string tplName)'))+'}' : '',
  'function CloseFailedChildChart(idx,on_load){'+js(method('CloseFailedChildChart(const int idx,const bool on_load)'))+'}',
  'function FailedChildChartIsOurs(idx){'+js(method('FailedChildChartIsOurs(const int idx)'))+'}',
  'function ChildTradeSummary(idx){'+js(method('ChildTradeSummary(const int idx)'))+'}',
@@ -96,9 +99,10 @@ const tplOf=i=>`GOAT V1.49 SYM${i},M1_B35-${i}.tpl`;
 // restored: charts MT5 brings back with the profile after a restart ({cid,sym,child:true|false}).
 // source: the compiled attach code to run (default: this tree; case 21 runs B41.1's).
 function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueOk=true,templates=new Map(),rows=null,
-                copyOk=()=>true,closeOk=true,restored=[],source=production,requestedTf=1,reinitOnRefresh=true}={}) {
+                copyOk=()=>true,closeOk=true,restored=[],source=production,requestedTf=1,reinitOnRefresh=true,
+                defaultExpert=null,loseFirstApply=false}={}) {
  const mt5={clock:1000,nextCid:66948585504739,charts:new Map(),queue:[],inits:[],templates,commonFiles:new Map(),gv:new Map(),
-            cidField:new Map(),children:[],applied:[],algo:false,positions:[],orders:[],nudges:[],reinits:0,blockingQueries:0};
+            cidField:new Map(),children:[],applied:[],algo:false,positions:[],orders:[],nudges:[],reinits:0};
  const sets=rows||[...Array(members)].map((_,i)=>({name:`GOAT V1.49 SYM${i},M1_B35-${i}.set`,path:`${SETS}\\set${i}`,sym:'SYM'+(i%17),cid:0,magic:0,status:'Pending'}));
  const log={phases:[],audits:[],receipts:new Map(),saves:0,saved:null,ownerBusy:false,writeOk:true};
  let nextMagic=7000;
@@ -125,7 +129,10 @@ function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueO
    const chart=mt5.charts.get(cmd.cid);
    if(chart.closed) continue;
    if(!chart.updated) {mt5.queue.push(cmd);continue;}
-   if(!mt5.templates.has(cmd.tpl)) {chart.missingTemplate=true;continue;}
+   if(loseFirstApply&&!chart.lostOne){chart.lostOne=true;continue;} // a queued apply MT5 silently drops
+   const name=cmd.tpl.replace(/^\\Profiles\\Templates\\/,'');
+   if(!mt5.templates.has(name)) {chart.missingTemplate=true;continue;}
+   cmd.tpl=name;
    chart.appliedTemplate=mt5.templates.get(cmd.tpl);chart.expert=true;chart.expertName='GOAT V1.49';
    mt5.applied.push({cid:cmd.cid,tpl:cmd.tpl,bytes:chart.appliedTemplate});
    if(!childStarts) continue;
@@ -146,21 +153,22 @@ function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueO
   PositionGetTicket:i=>{mt5.selPos=mt5.positions[i];return mt5.selPos?mt5.selPos.ticket:0;},PositionGetInteger:k=>mt5.selPos[k],
   OrderGetTicket:i=>{mt5.selOrd=mt5.orders[i];return mt5.selOrd?mt5.selOrd.ticket:0;},OrderGetInteger:k=>mt5.selOrd[k],
   IntegerToString:n=>String(n),
-  // ChartGetString is synchronous: asked while the chart still holds an unprocessed queued command, it would
-  // wait on a queue MT5 is not draining (counted; the attach must never do this).
-  ChartGetString:(cid,k)=>{const c=mt5.charts.get(cid);if(c&&!c.updated&&mt5.queue.some(q=>q.cid===cid)) mt5.blockingQueries++;
-   return c&&!c.closed&&c.expert?c.expertName:'';},
+  // ChartGetString(CHART_EXPERT_NAME) is read every poll tick by B41.3's probe. Natively it returned promptly
+  // on a chart whose template was still queued (attach-mechanism experiment), so it is not modelled as blocking.
+  ChartGetString:(cid,k)=>{const c=mt5.charts.get(cid);
+   // A chart with no expert answers a NULL string (StringLen 0, error 0), as measured natively (B41.2 on T3).
+   return c&&!c.closed&&c.expert?c.expertName:null;},
   ArraySize:a=>a.length,ArrayResize:(a,n)=>{a.length=n;return n;},
   StringFind:(s,f)=>s.indexOf(f),StringSubstr:(s,a,n)=>n===undefined?s.slice(a):s.slice(a,a+n),
   StringSplit:(s,sep,out)=>{out.length=0;out.push(...s.split(sep));return out.length;},
   EndsWith:(s,x)=>s.endsWith(x),TF:()=>requestedTf,PERIOD_CURRENT:0,
-  m_agent_attach_nudges:0,m_agent_attach_nudge_done:false,m_child_attach_period:0,m_agent_attach_tf:1,m_agent_attach_refresh:0,StringFormat:(f,...a)=>f.replace(/%(I64d|d|s)/g,()=>String(a.shift())),
+  m_agent_attach_nudges:0,m_agent_attach_nudge_done:false,m_child_attach_period:0,m_agent_attach_tf:1,m_agent_attach_refresh:0,StringFormat:(f,...a)=>f.replace(/%(I64d|I64u|d|u|s)/g,()=>{const v=a.shift();return v==null?'':String(v);}),
   Print:()=>{},PrintFormat:()=>{},Alert:()=>{},MessageBox:()=>{throw new Error('agent path must not prompt');},
   ResetLastError:()=>{},GetLastError:()=>0,MarkStateDirty:()=>{},StatusColor:()=>0,UpdateAILaunchControls:()=>{},
   DisplayStatusForRow:i=>sets[i].status,TimeCurrent:()=>Math.floor(mt5.clock/1000),TimeGMT:()=>Math.floor(mt5.clock/1000),
   PrepareAILaunchPolicy:()=>true,BuildTemplate:(ea,eaPath,setFile)=>'<chart>fresh '+setFile,
   SetFolder:SETS,FILE_TXT:16,FILE_ANSI:32,TERMINAL_COMMONDATA_PATH:10,TERMINAL_DATA_PATH:11,
-  TerminalInfoString:k=>k===10?COMMON:DATA,StringLen:s=>s.length,
+  TerminalInfoString:k=>k===10?COMMON:DATA,StringLen:s=>s==null?0:s.length,
   FileWriteString:(h,text)=>{mt5.commonFiles.set(h,text);return text.length;},
   FileDelete:rel=>mt5.commonFiles.delete(rel),
   CopyFileW:(src,dst,failIfExists)=>{ // src/dst carry the \\?\ prefix; 0 = overwrite an existing file
@@ -176,14 +184,19 @@ function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueO
   GoatDeploymentPhase:(phase,target=0,controlName='')=>log.phases.push({phase,target,control:controlName,at:mt5.clock}),
   GetTickCount:()=>mt5.clock,Sleep:ms=>{mt5.clock+=ms;},
   // PERIOD_CURRENT (0) opens the chart on the dashboard's own period (M1 here).
-  ChartOpen:(sym,tf)=>{const cid=mt5.nextCid++;mt5.charts.set(cid,{cid,sym,tf:tf||1,expert:false,closed:false,updated:false});return cid;},
+  // defaultExpert: an EA that MT5's default.tpl puts on every new chart, until our template replaces it.
+  ChartOpen:(sym,tf)=>{const cid=mt5.nextCid++;mt5.charts.set(cid,{cid,sym,tf:tf||1,expert:!!defaultExpert,expertName:defaultExpert||'',closed:false,updated:false});return cid;},
+  ChartFirst:()=>{const ids=[...mt5.charts.values()].filter(c=>!c.closed).map(c=>c.cid);return ids.length?ids[0]:-1;},
+  ChartNext:id=>{const ids=[...mt5.charts.values()].filter(c=>!c.closed).map(c=>c.cid);const i=ids.indexOf(id);return i>=0&&i+1<ids.length?ids[i+1]:-1;},
+  GetFileAttributesW:p=>p.startsWith(TEMPLATES)&&mt5.templates.has(p.slice(TEMPLATES.length))?0x20:0xFFFFFFFF,
+  GetMicrosecondCount:()=>mt5.clock*1000,NULL:null,
   ChartPeriod:cid=>{const c=mt5.charts.get(cid);return c&&!c.closed?c.tf:0;},
   ChartApplyTemplate:(cid,tpl)=>{if(!enqueueOk)return false;mt5.queue.push({cid,tpl});mt5.charts.get(cid).updated=false;return true;},
   // Worst case (Mac 6030329907): refreshing a chart that already runs the EA re-runs the child's OnInit
   // (license startup again); the child's registration is lost until the new OnInit finishes.
   ChartSetSymbolPeriod:(cid,sym,tf)=>{const c=mt5.charts.get(cid);mt5.nudges.push({cid,sym,tf,at:mt5.clock,expert:!!(c&&c.expert)});
    if(!c||c.closed) return false;
-   if(c.expert&&reinitOnRefresh&&childStarts){
+   if(c.expert&&c.expertName==='GOAT V1.49'&&reinitOnRefresh&&childStarts){
     mt5.reinits++;
     for(const ch of mt5.children.filter(x=>x.cid===cid)){mt5.cidField.delete(cid);for(const k of [...mt5.gv.keys()]) if(k.startsWith(ch.magic+'/')) mt5.gv.delete(k);}
     mt5.children=mt5.children.filter(x=>x.cid!==cid);mt5.inits=mt5.inits.filter(i=>i.chart!==c);
@@ -262,7 +275,7 @@ let passed=0;
  assert.equal(w.deployNext('req-final').result,'all_attached');
  // Every nudge hit a row whose handshake was still pending, with the row's own symbol and timeframe:
  // none after its row linked, none on another row's chart.
- assert.ok(w.mt5.nudges.length>=35);assert.equal(w.mt5.blockingQueries,0);assert.equal(w.mt5.reinits,0);
+ assert.ok(w.mt5.nudges.length>=35);assert.equal(w.mt5.reinits,0);
  for(const n of w.mt5.nudges){
   const row=w.sets.find(s=>s.cid===n.cid);assert.ok(row,'nudged chart belongs to a row');
   assert.equal(n.sym,row.sym);assert.equal(n.tf,1);
@@ -537,7 +550,7 @@ for(const [delay,label] of [[25000,'25 s, after the old 20 s budget'],[70000,'70
  const w=world({members:35,childDelay:5000});
  for(let i=0;i<35;i++){const r=w.deployNext('w'+i);assert.equal(r.result,'child_attached',`member ${i}`);assert.ok(w.linked(i));}
  assert.equal(w.mt5.reinits,0,'no loaded child is ever refreshed');
- assert.ok(w.mt5.nudges.every(n=>!n.expert));assert.equal(w.mt5.blockingQueries,0,'no synchronous chart query before the first refresh');
+ assert.ok(w.mt5.nudges.every(n=>!n.expert));
  for(const s of w.sets){
   const mine=w.log.phases.filter(p=>p.target===s.cid);
   assert.deepEqual(mine.filter(p=>p.phase==='attach_nudge').map(p=>p.control),['n=1 expert=""']);
@@ -553,4 +566,69 @@ for(const [delay,label] of [[25000,'25 s, after the old 20 s budget'],[70000,'70
  assert.ok(w.mt5.nudges.length>0);
  for(const n of w.mt5.nudges) assert.equal(n.tf,1,'refreshed with the stored chart period, not PERIOD_CURRENT');
  assert.equal(w.mt5.charts.get(w.sets[0].cid).tf,1);passed++;
+}// B41.3 (goatai#1885): CHART_EXPERT_NAME is a NULL string on a chart with no expert, and NULL!="" is true,
+// which stopped B41.2's refresh after one nudge. Per-tick probes and a one-off re-apply probe are diagnostic.
+const PROBE=/^t=(\d+) exists=([01]) sym=(\S*) per=(\d+) en_len=(\d+) en_null=([01]) en_err=(-?\d+) en_ms=(\d+) tpl=([01]) nudges=(\d+)$/;
+{ // 24. A NULL expert never stops the refresh. MT5 silently drops the first queued apply: the refresh keeps
+  //     going, the 5 s re-apply probe queues the template again, the next refresh applies it, and the child
+  //     attaches. No attach_nudge_stopped is ever logged with an empty expert.
+ const w=world({members:2,loseFirstApply:true,childDelay:3000}); // a 3 s license startup, so the probe sees the expert before it registers
+ const r=w.deployNext('n');assert.equal(r.result,'child_attached');
+ const cid=w.sets[0].cid,mine=w.log.phases.filter(p=>p.target===cid);
+ const stops=mine.filter(p=>p.phase==='attach_nudge_stopped');
+ assert.deepEqual(stops.map(p=>p.control),['expert="GOAT V1.49"']);
+ assert.ok(mine.filter(p=>p.phase==='attach_nudge').length>=3,'refreshes continue while the expert is NULL');
+ const re=mine.filter(p=>p.phase==='attach_reapply_probe');
+ assert.equal(re.length,1);assert.equal(re[0].control,'ok=1 err=0');
+ const at=mine.find(p=>p.phase==='attach_probe'&&Number(p.control.match(PROBE)[1])>=5000);
+ assert.ok(at&&mine.indexOf(re[0])>mine.indexOf(at)-1,'the re-apply probe runs once 5 s have passed');
+ // Before our expert appeared, every probe saw a NULL expert name.
+ const before=mine.filter(p=>p.phase==='attach_probe'&&p.at<stops[0].at).map(p=>p.control.match(PROBE));
+ assert.ok(before.length>=5);for(const m of before){assert.equal(m[5],'0');assert.equal(m[6],'1');}
+ passed++;
+}
+{ // 25. Only our EA's name stops the refresh: an EA that MT5's default template puts on every new chart
+  //     ('Moving Average') is not ours, so the refresh goes on until GOAT V1.49 is on the chart.
+ const w=world({members:2,defaultExpert:'Moving Average',childDelay:3000});
+ const r=w.deployNext('d');assert.equal(r.result,'child_attached');
+ const mine=w.log.phases.filter(p=>p.target===w.sets[0].cid);
+ assert.deepEqual(mine.filter(p=>p.phase==='attach_nudge_stopped').map(p=>p.control),['expert="GOAT V1.49"']);
+ assert.ok(mine.some(p=>p.phase==='attach_nudge'&&p.control==='n=1 expert="Moving Average"'));passed++;
+}
+{ // 26. Probe lines: one attach_probe per poll tick while the handshake is pending, in the agreed format,
+  //     plus template_apply_result right after ChartApplyTemplate. No re-apply probe when the expert loads early.
+ const w=world({members:2,childDelay:5000});
+ const r=w.deployNext('f');assert.equal(r.result,'child_attached');
+ const cid=w.sets[0].cid,mine=w.log.phases.filter(p=>p.target===cid);
+ const enq=mine.findIndex(p=>p.phase==='template_enqueued');
+ assert.deepEqual([mine[enq+1].phase,mine[enq+1].control],['template_apply_result','ok=1 err=0']);
+ const probes=mine.filter(p=>p.phase==='attach_probe');
+ const linkedAt=mine.find(p=>p.phase==='handshake_linked').at,begunAt=mine.find(p=>p.phase==='handshake_begin').at;
+ // Polls run on every tick after the begin; the tick that links settles without a probe.
+ assert.equal(probes.length,Math.round((linkedAt-begunAt)/1000)-1,'one probe per pending tick');
+ let last=-1,sawExpert=false;
+ for(const p of probes){
+  const m=p.control.match(PROBE);assert.ok(m,'probe format: '+p.control);
+  assert.ok(Number(m[1])>last);last=Number(m[1]);
+  assert.deepEqual([m[2],m[3],m[4],m[9]],['1',w.sets[0].sym,'1','1'],'chart found, symbol, period and template present');
+  if(m[5]==='10'){sawExpert=true;assert.equal(m[6],'0');}else{assert.equal(m[5],'0');assert.equal(m[6],'1');}
+  assert.equal(m[7],'0');
+ }
+ assert.ok(sawExpert,'the probe sees the expert before the handshake');
+ assert.equal(mine.filter(p=>p.phase==='attach_reapply_probe').length,0);
+ // Once linked, the template is gone and the probe stops.
+ const count=probes.length;for(let t=0;t<5;t++) w.tick();
+ assert.equal(w.log.phases.filter(p=>p.target===cid&&p.phase==='attach_probe').length,count);passed++;
+}{ // 27. The probe reports what is really there: a template removed from Profiles\Templates reads tpl=0, and a
+  //     child chart the person closed reads exists=0 (with no symbol), while the attach is still pending.
+ const w=world({members:2,childStarts:false});
+ // The dashboard's own chart is open too, first in MT5's chart list.
+ w.mt5.charts.set(1,{cid:1,sym:'EURUSD',tf:1,expert:true,expertName:'GOAT V1.49',closed:false,updated:true});
+ w.setRequest('g');w.tick();w.tick();
+ const cid=w.sets[0].cid,probes=()=>w.log.phases.filter(p=>p.target===cid&&p.phase==='attach_probe').map(p=>p.control.match(PROBE));
+ assert.deepEqual([probes().at(-1)[2],probes().at(-1)[9]],['1','1']);
+ w.mt5.templates.delete(tplOf(0));w.tick();
+ assert.deepEqual([probes().at(-1)[2],probes().at(-1)[9]],['1','0'],'template gone');
+ w.mt5.charts.get(cid).closed=true;w.tick();
+ assert.deepEqual([probes().at(-1)[2],probes().at(-1)[3]],['0',''],'chart gone');passed++;
 }console.log(JSON.stringify({passed,productionExtracted:true,nativeTemplateTimingVerified:false}));

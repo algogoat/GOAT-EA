@@ -55,25 +55,36 @@ const mutations=[
   ['ours check ignores the EA on the chart','Dashboard.mqh',[[R`   if(ChartGetString(cid,CHART_EXPERT_NAME)!=EA_Name_) return false;`,'']]],
   ['ours check ignores the handshake','Dashboard.mqh',[[R`          && (long)hi==cid/1000000000 && (long)lo==cid%1000000000);`,R`          || true);`]]],
   ['live unwind demands the on-load proof','Dashboard.mqh',[[R`   CloseFailedChildChart(idx,false);`,R`   CloseFailedChildChart(idx,true);`]]],
-  // B41.2: refresh the pending child chart (T3 6030127717; Mac 6030140212, 6030329907)
-  ['nudge dropped (B41.1 behaviour)','Dashboard.mqh',[[R`            ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);
-            ChartRedraw(g_sets[idx].cid);
+  // B41.2/B41.3: refresh the pending child chart (T3 6030127717; Mac 6030140212, 6030329907, 6031532401)
+  ['nudge dropped (B41.1 behaviour)','Dashboard.mqh',[[R`         ChartSetSymbolPeriod(child_cid,g_sets[idx].sym,m_agent_attach_tf);
+         ChartRedraw(child_cid);
 `,'']]],
-  ['nudge also hits non-pending rows','Dashboard.mqh',[[R`            ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);
-            ChartRedraw(g_sets[idx].cid);
-`,R`            for(int r=0;r<ArraySize(g_sets);r++) if(g_sets[r].cid>0) {ChartSetSymbolPeriod(g_sets[r].cid,g_sets[r].sym,m_agent_attach_tf); ChartRedraw(g_sets[r].cid);}
+  ['nudge also hits non-pending rows','Dashboard.mqh',[[R`         ChartSetSymbolPeriod(child_cid,g_sets[idx].sym,m_agent_attach_tf);
+         ChartRedraw(child_cid);
+`,R`         for(int r=0;r<ArraySize(g_sets);r++) if(g_sets[r].cid>0) {ChartSetSymbolPeriod(g_sets[r].cid,g_sets[r].sym,m_agent_attach_tf); ChartRedraw(g_sets[r].cid);}
 `]]],
-  ['nudge changes the timeframe','Dashboard.mqh',[[R`ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,m_agent_attach_tf);`,R`ChartSetSymbolPeriod(g_sets[idx].cid,g_sets[idx].sym,PERIOD_H1);`]]],
+  ['nudge changes the timeframe','Dashboard.mqh',[[R`ChartSetSymbolPeriod(child_cid,g_sets[idx].sym,m_agent_attach_tf);`,R`ChartSetSymbolPeriod(child_cid,g_sets[idx].sym,PERIOD_H1);`]]],
   ['nudge every tick, no 2 s cadence','Dashboard.mqh',[[R`      if(!m_agent_attach_nudge_done && GetTickCount()-m_agent_attach_refresh>=2000)`,R`      if(!m_agent_attach_nudge_done)`]]],
-  ['nudge keeps going after the expert appears','Dashboard.mqh',[[R`         if(child_expert!="")`,R`         if(false)`]]],
-  ['nudge gate never closes','Dashboard.mqh',[[R`            m_agent_attach_nudge_done=true;
-            GoatDeploymentPhase("attach_nudge_stopped"`,R`            GoatDeploymentPhase("attach_nudge_stopped"`]]],
-  ['expert queried before the first refresh','Dashboard.mqh',[[R`         if(m_agent_attach_nudges>0) child_expert=`,R`         child_expert=`]]],
+  ['nudge keeps going after the expert appears','Dashboard.mqh',[[R`         m_agent_attach_nudge_done=true;
+         GoatDeploymentPhase("attach_nudge_stopped"`,R`         GoatDeploymentPhase("attach_nudge_stopped"`]]],
+  ['NULL expert stops the refresh (B41.2 bug: x!="")','Dashboard.mqh',[[R`      bool expert_ours=(StringLen(child_expert)>0 && child_expert==EA_Name_);`,R`      bool expert_ours=(child_expert!="");`]]],
+  ['any expert stops the refresh, not only ours','Dashboard.mqh',[[R`      bool expert_ours=(StringLen(child_expert)>0 && child_expert==EA_Name_);`,R`      bool expert_ours=(StringLen(child_expert)>0);`]]],
   ['nudge with the requested timeframe','Dashboard.mqh',[[R`   m_agent_attach_tf=(m_child_attach_period!=PERIOD_CURRENT ? m_child_attach_period : tf);`,R`   m_agent_attach_tf=tf;`]]],
   ['chart period not read after ChartOpen','Dashboard.mqh',[[R`   m_child_attach_period=(ENUM_TIMEFRAMES)ChartPeriod(cid);
 `,'']]],
-  ['nudges not logged','Dashboard.mqh',[[R`            GoatDeploymentPhase("attach_nudge",g_sets[idx].cid,StringFormat("n=%d expert=\"%s\"",m_agent_attach_nudges,child_expert));`,'']]],
-  ['nudge stop not logged','Dashboard.mqh',[[R`            GoatDeploymentPhase("attach_nudge_stopped",g_sets[idx].cid,"expert=\""+child_expert+"\"");`,'']]],
+  ['nudges not logged','Dashboard.mqh',[[R`         GoatDeploymentPhase("attach_nudge",child_cid,StringFormat("n=%d expert=\"%s\"",m_agent_attach_nudges,child_expert));`,'']]],
+  ['nudge stop not logged','Dashboard.mqh',[[R`         GoatDeploymentPhase("attach_nudge_stopped",child_cid,"expert=\""+child_expert+"\"");`,'']]],
+  // B41.3 probes
+  ['per-tick probe dropped','Dashboard.mqh',[[R`      GoatDeploymentPhase("attach_probe",child_cid,`,R`      if(false) GoatDeploymentPhase("attach_probe",child_cid,`]]],
+  ['probe reports the template as always present','Dashboard.mqh',[[R`(CopiedTemplateExists(tplName) ? 1 : 0)`,R`1`]]],
+  ['probe reports NULL wrongly','Dashboard.mqh',[[R`(child_expert==NULL ? 1 : 0)`,R`0`]]],
+  ['chart-list probe always true','Dashboard.mqh',[[R`      if(chart==chart_id) return true;`,R`      return true;`]]],
+  ['template_apply_result not logged','Dashboard.mqh',[[R`   GoatDeploymentPhase("template_apply_result",cid,StringFormat("ok=%d err=%d",(template_queued ? 1 : 0),template_error),template_error);
+`,'']]],
+  ['re-apply probe dropped','Dashboard.mqh',[[R`         bool reapplied=ChartApplyTemplate(child_cid,"\\Profiles\\Templates\\"+tplName);`,R`         bool reapplied=true;`]]],
+  ['re-apply probe repeats every tick','Dashboard.mqh',[[R`         m_agent_attach_reapplied=true;
+         ResetLastError();`,R`         ResetLastError();`]]],
+  ['re-apply probe while our expert is loaded','Dashboard.mqh',[[R`      if(!expert_ours && !m_agent_attach_reapplied && attach_ms>=5000)`,R`      if(!m_agent_attach_reapplied && attach_ms>=5000)`]]],
   ['not-inert answered as a plain failure','GOATPortfolioSetupControl.mqh',[[R`(state==-2 ? "rejected_not_inert" : "child_attach_failed")`,R`"child_attach_failed"`]]],  ['late child status adopts a failed row','Dashboard.mqh',[[R`            if(!magic_match && IsAgentAttachFailedChart(g_sets[idx].cid)) break;`,'']]],
   ['timeout keeps the copied template','Dashboard.mqh',[[R`   MarkStateDirty();
    DeleteCopiedTemplate(tplName);

@@ -1,3 +1,7 @@
+**Superseded by B41.3 (`../beta17-B41.3`). Native proof FAILED on T3** (goatai#1885): there was one refresh, then a false
+`attach_nudge_stopped expert=""` (`CHART_EXPERT_NAME` is a NULL string, and `NULL != ""` is true), and the child EA never loaded.
+Do not install this binary. It is retained as a candidate record.
+
 B41.2 is B41.1 (AA41 + CA41, see `../beta17-B41.1/README.md`) plus a refresh of the pending child chart. It is a
 hotfix: there is no trade-logic, input, default or SET-writer change.
 

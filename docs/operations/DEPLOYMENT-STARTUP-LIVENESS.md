@@ -54,7 +54,18 @@ is pending and no expert is on its chart yet, every 2 s the tick also calls
 license check) is never re-run. Each refresh is logged as `phase=attach_nudge
 control=n=<count> expert=""`, and the stop as `attach_nudge_stopped control=expert="<name>"`.
 If an attach still times out, these lines show whether it stalled before the expert
-appeared (template never applied) or after it (child never registered). On T3 (B41.1, goatai#1885 6030127717), a template
+appeared (template never applied) or after it (child never registered).
+
+From B41.3, the stop counts only the dashboard's own EA name. `CHART_EXPERT_NAME` is a NULL
+string on a chart with no expert, and `NULL != ""` is true, which stopped B41.2's refresh falsely.
+Every poll tick while pending also logs `phase=attach_probe control=t=<ms> exists=<0/1>
+sym=<symbol> per=<period> en_len=<n> en_null=<0/1> en_err=<n> en_ms=<n> tpl=<0/1> nudges=<n>`:
+whether the chart is still in MT5's list, what its expert-name read returned and how long it
+took, and whether the copied template is still in `Profiles\Templates`. Right after
+`ChartApplyTemplate`, `template_apply_result control=ok=<0/1> err=<n>` is logged. The T3
+diagnostic build B41.3 also re-issues `ChartApplyTemplate` once, with the explicit
+`\Profiles\Templates\` path, if our expert is not on the chart after 5 s, and logs it as
+`attach_reapply_probe`. That probe is removed before beta.25 unless T3 shows it is the fix. On T3 (B41.1, goatai#1885 6030127717), a template
 queued on a newly opened chart was not applied in 76 s without such an update, although
 the symbol was ticking. The registration wait lasts at most
 `GOAT_AGENT_ATTACH_BUDGET_MS` (75 s). That is above the child's license startup, which

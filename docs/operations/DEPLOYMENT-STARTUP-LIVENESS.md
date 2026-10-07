@@ -51,9 +51,16 @@ Later timer ticks wait for the child's registration, for at most
 retries for up to 60 s inside `OnInit`, before the child writes its handshake. The
 template is deleted only once the attach settles, either linked or timed out.
 
-When the attach settles, inertness is checked again. If Algo Trading was switched on, or
-a position or order opened, a child that registered is not kept: the attach answers
-`rejected_not_inert` and is unwound exactly like a timeout.
+Inertness is checked again on every tick of the attach, not only when the request
+arrives. Once Algo Trading is on, or a position or order is open, the attach is unwound
+at the next tick, exactly like a timeout, and answers `rejected_not_inert`. Closing the
+chart unloads a child that has not registered yet, so it cannot trade while the attach
+is waiting. The receipt's schema is fixed, so the child's own positions and orders (by
+its magic) are listed in the deployment diagnostics instead, as
+`phase=not_inert_child_trades control=magic=<n> positions=<n> orders=<n>
+tickets=p<ticket>,o<ticket>`. The magic reads `unknown` when the child had not written
+its chart-ID record yet. Close or keep those trades in MT5 before running `deploy-stop`,
+which refuses while anything is open.
 
 On a timeout, or when the terminal is no longer inert, the dashboard unwinds the attach
 the same way:
@@ -68,8 +75,11 @@ the same way:
 
 The marker is in the saved dashboard state, so it survives a restart. When the dashboard
 loads, it closes a marked row's chart again, in case MT5 restored the chart with its
-child. The diagnostics log `child_chart_closed`, `child_chart_close_failed` or
-`child_chart_not_found`. The in-flight attach itself (which row, which template, when it
+child. It does this only when the chart is provably our child: the GOAT EA runs on it,
+and its chart-ID record and `SETUP_CID` handshake match the row. Otherwise it logs
+`child_chart_not_ours` and leaves the chart alone, and the marker still keeps the row
+from ever being adopted. The diagnostics log `child_chart_closed`,
+`child_chart_close_failed`, `child_chart_not_found` or `child_chart_not_ours`. The in-flight attach itself (which row, which template, when it
 started) lives only in the running dashboard EA.
 
 If the dashboard EA stops in that window (MT5 closed or crashed, the EA reloaded, or
@@ -123,11 +133,12 @@ Every step is controller-driven and keeps Algo Trading off. Nothing is deleted.
 4. Redeploy with `deploy-load` and a plan that has a new `deploymentId`. Each member is
    staged, copied and queued again from its hash-checked SET.
 
-**Controller wait.** beta.23's `deploy-load` waits 60 s for each `deploy_next` receipt,
-but an attach can take up to 75 s. If it times out with `receipt_timeout`, run
-`deploy-load` again. If the final receipt has landed by then, deploy-load continues. If
-the receipt still reads `started`, follow the recovery above. A controller that waits
-90 s (the maximum its request validation allows) removes this case.
+**Controller wait.** beta.23's controller waits 60 s for each `deploy_next` receipt.
+From beta.23.1 (GOAT-EA#188) it waits 90 s, above the EA's 75 s attach budget, and the
+request expires at 95 s. B41.1 ships only together with #188. On a beta.23 controller, an
+attach that takes longer than 60 s ends deploy-load with `receipt_timeout`. Run
+`deploy-load` again: it continues if the final receipt has landed. If the receipt still
+reads `started`, follow the recovery above.
 
 Source regression checks: `python -B scripts/test_goat_deployment_liveness.py`,
 `node scripts/test_dashboard_async_attach.cjs` and its mutation check

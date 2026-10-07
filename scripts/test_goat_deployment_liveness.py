@@ -87,7 +87,7 @@ class DeploymentLivenessTests(unittest.TestCase):
         # Every failed agent attach (timeout or not inert) goes through one unwind that closes the chart.
         self.assertEqual(1, self.agent_poll.count('AgentUnwindFailedAttach(idx);'))
         unwind = region(self.dashboard, 'void CGOATDashboard::AgentUnwindFailedAttach(', 'void CGOATDashboard::SweepStaleChildTemplates(')
-        self.assertIn('CloseFailedChildChart(idx);', unwind)
+        self.assertIn('CloseFailedChildChart(idx,false);', unwind)
         self.assertIn('bool chart_closed=ChartClose(cid);', region(self.dashboard, 'void CGOATDashboard::CloseFailedChildChart(', 'void CGOATDashboard::AgentUnwindFailedAttach('))
         self.assertIn('DeleteCopiedTemplate(tplName);', self.timeout)
         self.assertEqual(1, self.apply.count('ChartApplyTemplate('))

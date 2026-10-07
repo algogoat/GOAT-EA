@@ -17,9 +17,10 @@ and returns. `AgentPollDeployRow` runs the same `NewSingleInstance` handshake on
 handshake only after `OnInit`, and the license check in `OnInit` retries for up to 60 s
 (`GOATLicenseInitRetry.mqh`). On success the dashboard links the child and only then deletes the template.
 
-**Inertness is re-checked when the attach settles** (Claude-Mac, 6028472101). If Algo Trading was switched on, or
-a position or order opened, during the attach, a child that registered is not kept. The attach answers
-`rejected_not_inert` and is unwound exactly like a timeout.
+**Inertness is re-checked on every tick of the attach** (Claude-Mac, 6028472101, 6028711169). Once Algo Trading is
+on, or a position or order is open, the attach is unwound at the next tick, exactly like a timeout, and answers
+`rejected_not_inert`. The receipt schema is fixed, so the child's own positions and orders (by its magic) go to the
+deployment diagnostics as `not_inert_child_trades` (see **Controller follow-up**).
 
 **One unwind for every failed agent attach** (`AgentUnwindFailedAttach`; 6028209095, 6028472101):
 
@@ -31,7 +32,9 @@ a position or order opened, during the attach, a child that registered is not ke
 - `GOAT_EVENT_CHILD_STATUS` from a marked chart is ignored, so a failed row can never become a live member while
   the receipt says `child_attach_failed` or `rejected_not_inert`.
 - Because the marker is saved, it survives a restart. When the dashboard loads, it closes a marked row's chart
-  again, in case MT5 restored the chart with its child. The state file keeps its nine columns.
+  again, in case MT5 restored the chart with its child, but only if that chart is provably our child: the GOAT EA
+  is on it (`CHART_EXPERT_NAME`), and its chart-ID record and `SETUP_CID` handshake match the row. Otherwise it logs
+  `child_chart_not_ours`. The state file keeps its nine columns.
 - The failed step is named in the deployment diagnostics (`phase=child_attach_failed
   control=handshake_timeout|not_inert|template_enqueue|chart_open|…`). Then comes `child_chart_closed`,
   `child_chart_close_failed` or `child_chart_not_found`.
@@ -45,11 +48,15 @@ linked child (an interrupted or failed attach) is deleted. The row itself stays 
 The human Activate / Deploy All path keeps its 20 s in-handler wait, and on a timeout it leaves the chart open for
 inspection.
 
-**Controller wait (beta.23).** `studio_demo_deploy.py` waits 60 s for the `deploy_next` receipt. An attach that
-settles between 60 and 75 s therefore reaches the controller as `receipt_timeout`, and deploy-load stops. Until the
-controller waits 90 s (a separate controller change), re-run deploy-load. If the final receipt has landed by
-then, deploy-load continues; if it is still `started`, the controller refuses with "unresolved dashboard
-mutation". Recovery is in `docs/operations/DEPLOYMENT-STARTUP-LIVENESS.md`.
+**Controller follow-up (receipt detail).** beta.23's controller accepts an exact receipt field set
+(`portfolio_receipt`), so a `rejected_not_inert` receipt cannot name the child's trades. The receipt's account-wide
+`positions` and `orders` counts are already there. A later controller and EA pair can add per-row `childPositions`
+and `childOrders`. Until then, the tickets are in `MQL5\Files\GOAT\Diagnostics\deployment_<dashboard chart id>.log`.
+
+**Controller wait.** beta.23's controller waits 60 s for each `deploy_next` receipt. From beta.23.1 (GOAT-EA#188) it
+waits 90 s, above the EA's 75 s attach budget, and the request expires at 95 s. **B41.1 ships only together with #188.**
+On a beta.23 controller, an attach that takes longer than 60 s ends deploy-load with `receipt_timeout`. Re-running
+deploy-load continues if the final receipt has landed. Recovery is in `docs/operations/DEPLOYMENT-STARTUP-LIVENESS.md`.
 
 **Why.** On a deploy-load, `GoatPortfolioChildSettingsMatch` saves the child chart's template, and
 `GoatChildAuditMaps` requires the frozen SET's input names to equal the template's, apart from three
@@ -85,7 +92,7 @@ the frozen strategy, and the audit still refuses it.
 six at their defaults passes; any one at a non-default value fails, as does a SET/template disagreement on one
 the SET carries, or an extra unknown name. B41's audit fails the first case, which reproduces the bug.
 
-`scripts/test_dashboard_async_attach.cjs` (18 cases) runs the production attach code against a modelled MT5. In
+`scripts/test_dashboard_async_attach.cjs` (21 cases) runs the production attach code against a modelled MT5. In
 the model, chart queues drain after the handler returns, and a child's `OnInit` can be delayed.
 
 - B41's in-handler wait reproduces T3.
@@ -100,7 +107,7 @@ the model, chart queues drain after the handler returns, and a child's `OnInit` 
 - The timeout, enqueue-failure, busy-lock and failed-write paths all unwind.
 
 `scripts/test_dashboard_async_attach_mutations.cjs` removes or weakens each guard and requires the harness to
-fail: 28 of 28 mutants are killed. They include the not-inert path skipping the close, the 0db8aea receipt-only behaviour, an unsaved marker, a missing symbol check and no close on load. `scripts/test_b41_1_no_drift.cjs` checks the source against B41 (`278ec109`), normalised: only
+fail: 36 of 36 mutants are killed. They include the not-inert path skipping the close, the 0db8aea receipt-only behaviour, an unsaved marker, a missing symbol check and no close on load. `scripts/test_b41_1_no_drift.cjs` checks the source against B41 (`278ec109`), normalised: only
 `Dashboard.mqh`, `GOATPortfolioSetupControl.mqh` and `GOATPortfolioChildAudit.mqh` differ, and `StartExporter`,
 `OnTick`, `OnTradeTransaction` and `OnTimer` are identical.
 
@@ -110,6 +117,7 @@ fail: 28 of 28 mutants are killed. They include the not-inert path skipping the 
 - **Compile pending for this source.** It carries CA41, AA41 and the fixes from Claude-Mac's review (6028209095).
   No binary in this folder belongs to it.
 - Superseded, do not install any of them:
+  - The uncommitted `09d69e98` build (no per-tick inert check, no ours-check), which the compile agent moved out of the worktree.
   - `6d1963c4…` (from `278ef0af`, not inert answered by receipt only, no persisted marker). It was compiled but never committed, and was set aside outside the repository.
   - `d496884a…` (from `c8355f66`, AA41 with the 20 s budget and no chart close). It stays in history at
     `5510bbb5`.

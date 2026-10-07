@@ -28,7 +28,7 @@ function enabled(text) {
 function js(text) {
  return enabled(text)
   .replace(/\bstring (\w+)\[\];/g,'let $1=[];')
-  .replace(/\b(?:const )?(?:string|int|long|bool|uint|double|ENUM_TIMEFRAMES) (?=[A-Za-z_]\w*\s*[=;,])/g,'let ')
+  .replace(/\b(?:const )?(?:string|int|long|bool|uint|ulong|double|ENUM_TIMEFRAMES) (?=[A-Za-z_]\w*\s*[=;,])/g,'let ')
   .replace(/\((?:long|datetime)\)/g,'').replace(/__FUNCTION__/g,'"fn"')
   .replace(/StringReplace\(tplName,"\.set","\.tpl"\)/g,'tplName=tplName.split(".set").join(".tpl")')
   .replace(/GoatFindMagicByCid\(([^,]+),([^,]+),(\w+)\)/g,'find($1,$2,v=>$3=v)')
@@ -59,7 +59,9 @@ const production=[
  'function AgentBeginDeployRow(idx){'+js(beginBody).replace(js(prepareCall),'const p=PrepareChildLaunch(idx);let started=p.ok;tf=p.tf;tplName=p.tplName;')+'}',
  'function AgentPollDeployRow(){'+js(method('AgentPollDeployRow(void)'))+'}',
  'function IsAgentAttachFailedChart(cid){'+js(method('IsAgentAttachFailedChart(const long cid)'))+'}',
- 'function CloseFailedChildChart(idx){'+js(method('CloseFailedChildChart(const int idx)'))+'}',
+ 'function CloseFailedChildChart(idx,on_load){'+js(method('CloseFailedChildChart(const int idx,const bool on_load)'))+'}',
+ 'function FailedChildChartIsOurs(idx){'+js(method('FailedChildChartIsOurs(const int idx)'))+'}',
+ 'function ChildTradeSummary(idx){'+js(method('ChildTradeSummary(const int idx)'))+'}',
  'function AgentUnwindFailedAttach(idx){'+js(method('AgentUnwindFailedAttach(const int idx)'))+'}',
  'function ResetFailedChildRow(idx,tplName){'+js(method('ResetFailedChildRow(const int idx,const string tplName)'))+'}',
  'function SweepStaleChildTemplates(){'+js(method('SweepStaleChildTemplates(void)'))+'}',
@@ -91,7 +93,7 @@ const tplOf=i=>`GOAT V1.49 SYM${i},M1_B35-${i}.tpl`;
 function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueOk=true,templates=new Map(),rows=null,
                 copyOk=()=>true,closeOk=true,restored=[]}={}) {
  const mt5={clock:1000,nextCid:66948585504739,charts:new Map(),queue:[],inits:[],templates,commonFiles:new Map(),gv:new Map(),
-            cidField:new Map(),children:[],applied:[],algo:false,positions:0};
+            cidField:new Map(),children:[],applied:[],algo:false,positions:[],orders:[]};
  const sets=rows||[...Array(members)].map((_,i)=>({name:`GOAT V1.49 SYM${i},M1_B35-${i}.set`,path:`${SETS}\\set${i}`,sym:'SYM'+(i%17),cid:0,magic:0,status:'Pending'}));
  const log={phases:[],audits:[],receipts:new Map(),saves:0,saved:null,ownerBusy:false,writeOk:true};
  let nextMagic=7000;
@@ -100,13 +102,21 @@ function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueO
   mt5.cidField.set(chart.cid,magic);if(registers) mt5.gv.set(`${magic}/${chart.sym}/Magic`,magic);
   mt5.children.push({cid:chart.cid,sym:chart.sym,magic});
  };
- for(const r of restored){mt5.charts.set(r.cid,{cid:r.cid,sym:r.sym,expert:!!r.child,closed:false});if(r.child) startChild(mt5.charts.get(r.cid));}
+ // A restored child chart runs the GOAT EA unless expertName says otherwise; its earlier handshake
+ // (SETUP_CID_HI/LO, terminal globals) survives the restart unless handshake is false.
+ for(const r of restored){
+  mt5.charts.set(r.cid,{cid:r.cid,sym:r.sym,expert:!!r.child,expertName:r.child?(r.expertName||'GOAT V1.49'):'',closed:false});
+  if(!r.child) continue;
+  startChild(mt5.charts.get(r.cid));
+  const c=mt5.children.at(-1);
+  if(r.handshake!==false){mt5.gv.set(`${c.magic}/${c.sym}/SETUP_CID_HI`,Math.trunc(c.cid/1e9));mt5.gv.set(`${c.magic}/${c.sym}/SETUP_CID_LO`,c.cid%1e9);}
+ }
  const processQueue=()=>{ // MT5 drains chart command queues once the handler has returned
   for(const cmd of mt5.queue.splice(0)) {
    const chart=mt5.charts.get(cmd.cid);
    if(chart.closed) continue;
    if(!mt5.templates.has(cmd.tpl)) {chart.missingTemplate=true;continue;}
-   chart.appliedTemplate=mt5.templates.get(cmd.tpl);chart.expert=true;
+   chart.appliedTemplate=mt5.templates.get(cmd.tpl);chart.expert=true;chart.expertName='GOAT V1.49';
    mt5.applied.push({cid:cmd.cid,tpl:cmd.tpl,bytes:chart.appliedTemplate});
    if(!childStarts) continue;
    if(childDelay===0) startChild(chart);else mt5.inits.push({chart,at:mt5.clock+childDelay});
@@ -121,11 +131,16 @@ function world({members=35,childStarts=true,childDelay=0,registers=true,enqueueO
   ACCOUNT_TRADE_MODE:1,ACCOUNT_TRADE_MODE_DEMO:0,TERMINAL_CONNECTED:2,TERMINAL_TRADE_ALLOWED:3,CHART_BRING_TO_TOP:4,
   MB_OK:0,MB_ICONWARNING:0,FILE_READ:1,FILE_WRITE:2,FILE_BIN:4,FILE_COMMON:8,INVALID_HANDLE:-1,GOAT_GV_FIELD_MAGIC:'Magic',
   AccountInfoInteger:()=>0,TerminalInfoInteger:k=>k===2?1:(k===3?(mt5.algo?1:0):0),
-  PositionsTotal:()=>mt5.positions,OrdersTotal:()=>0,
+  POSITION_MAGIC:'magic',ORDER_MAGIC:'magic',CHART_EXPERT_NAME:'expert',
+  PositionsTotal:()=>mt5.positions.length,OrdersTotal:()=>mt5.orders.length,
+  PositionGetTicket:i=>{mt5.selPos=mt5.positions[i];return mt5.selPos?mt5.selPos.ticket:0;},PositionGetInteger:k=>mt5.selPos[k],
+  OrderGetTicket:i=>{mt5.selOrd=mt5.orders[i];return mt5.selOrd?mt5.selOrd.ticket:0;},OrderGetInteger:k=>mt5.selOrd[k],
+  IntegerToString:n=>String(n),
+  ChartGetString:(cid,k)=>{const c=mt5.charts.get(cid);return c&&!c.closed&&c.expert?c.expertName:'';},
   ArraySize:a=>a.length,ArrayResize:(a,n)=>{a.length=n;return n;},
   StringFind:(s,f)=>s.indexOf(f),StringSubstr:(s,a,n)=>n===undefined?s.slice(a):s.slice(a,a+n),
   StringSplit:(s,sep,out)=>{out.length=0;out.push(...s.split(sep));return out.length;},
-  EndsWith:(s,x)=>s.endsWith(x),TF:()=>1,StringFormat:(f,...a)=>a.join(' '),
+  EndsWith:(s,x)=>s.endsWith(x),TF:()=>1,StringFormat:(f,...a)=>f.replace(/%(I64d|d|s)/g,()=>String(a.shift())),
   Print:()=>{},PrintFormat:()=>{},Alert:()=>{},MessageBox:()=>{throw new Error('agent path must not prompt');},
   ResetLastError:()=>{},GetLastError:()=>0,MarkStateDirty:()=>{},StatusColor:()=>0,UpdateAILaunchControls:()=>{},
   DisplayStatusForRow:i=>sets[i].status,TimeCurrent:()=>Math.floor(mt5.clock/1000),TimeGMT:()=>Math.floor(mt5.clock/1000),
@@ -355,7 +370,7 @@ for(const [delay,label] of [[25000,'25 s, after the old 20 s budget'],[70000,'70
 { // 16. Inertness is re-checked when the attach settles (Mac 6028472101). Algo Trading switched on, or a
   //     position opened, during the attach: the child registers, but it is unwound exactly like a timeout.
   //     The receipt says rejected_not_inert, the chart is closed, no child runs, and the row stays locked.
- for(const change of [m=>{m.algo=true;},m=>{m.positions=1;}]) {
+ for(const change of [m=>{m.algo=true;},m=>{m.positions.push({ticket:501,magic:999});}]) {
   const w=world({members:2,childDelay:5000});
   w.setRequest('i');w.tick();const cid=w.sets[0].cid;change(w.mt5);
   const r=w.deployNext('i');assert.equal(r.result,'rejected_not_inert');
@@ -367,7 +382,8 @@ for(const [delay,label] of [[25000,'25 s, after the old 20 s budget'],[70000,'70
   assert.equal(w.sets[0].magic,FAILED);assert.equal(w.sets[0].cid,cid,'the lock stays');assert.equal(w.sets[0].status,'Pending');
   assert.equal(w.log.saved[0].magic,FAILED);assert.equal(w.mt5.templates.size,0);
   assert.deepEqual(w.log.audits.map(a=>a[1]),['PREPARED','APPLY_FAILED']);
-  assert.deepEqual(w.log.phases.slice(-3).map(p=>[p.phase,p.control]),[['attach_not_inert',''],['child_chart_closed',''],['child_attach_failed','not_inert']]);
+  assert.deepEqual(w.log.phases.slice(-4).map(p=>p.phase),['attach_not_inert','not_inert_child_trades','child_chart_closed','child_attach_failed']);
+  assert.equal(w.log.phases.at(-1).control,'not_inert');
  }
  const w=world({members:2,childDelay:5000});
  assert.equal(w.deployNext('ok').result,'child_attached');passed++;
@@ -400,4 +416,56 @@ for(const [delay,label] of [[25000,'25 s, after the old 20 s budget'],[70000,'70
  d.ctx.SweepStaleChildTemplates();
  assert.equal(d.mt5.charts.get(cid).closed,false);assert.equal(d.log.phases.at(-1).phase,'child_chart_not_found');passed++;
 }
-console.log(JSON.stringify({passed,productionExtracted:true,nativeTemplateTimingVerified:false}));
+{ // 18. Inertness is checked on every tick, not only at link or timeout (Mac 6028711169): Algo Trading
+  //     comes on at t=5 s while the child would register at t=40 s; the attach is unwound at the next
+  //     tick, the chart is closed, and the child never finishes OnInit, so it never trades.
+ const w=world({members:2,childDelay:40000});
+ w.setRequest('a');w.tick();const begun=w.mt5.clock,cid=w.sets[0].cid;
+ while(w.mt5.clock-begun<5000) w.tick();
+ w.mt5.algo=true;const on=w.mt5.clock;
+ const r=w.deployNext('a');assert.equal(r.result,'rejected_not_inert');
+ const settled=w.log.phases.findIndex(p=>p.phase==='attach_not_inert');assert.ok(settled>=0);
+ assert.ok(r.ticks<=1,`unwound ${r.ticks} tick(s) after Algo came on`);assert.ok(w.mt5.clock-on<=1000);
+ assert.equal(w.mt5.charts.get(cid).closed,true);
+ for(let t=0;t<45;t++) w.tick();
+ assert.equal(w.mt5.children.length,0,'the child never finishes OnInit on the closed chart');
+ assert.ok(!w.linked(0));assert.equal(w.sets[0].magic,FAILED);assert.equal(w.log.saved[0].magic,FAILED);passed++;
+}
+{ // 19. rejected_not_inert names the child's own positions and orders (by its magic) in the deployment
+  //     diagnostics, because the receipt's schema is fixed; unrelated trades are not listed.
+ const w=world({members:2});
+ w.setRequest('t');w.tick(); // the template applies; the child finishes OnInit (magic 7000)
+ w.mt5.algo=true;
+ w.mt5.positions.push({ticket:9001,magic:7000},{ticket:9002,magic:4242});
+ w.mt5.orders.push({ticket:9101,magic:7000});
+ const r=w.deployNext('t');assert.equal(r.result,'rejected_not_inert');
+ const trades=w.log.phases.find(p=>p.phase==='not_inert_child_trades');
+ assert.equal(trades.control,'magic=7000 positions=1 orders=1 tickets=p9001,o9101');
+ assert.equal(w.mt5.charts.get(w.sets[0].cid).closed,true);assert.equal(w.mt5.children.length,0);
+ // Before the child has any chart-ID record, its magic is reported as unknown.
+ const u=world({members:2,childDelay:30000});
+ u.setRequest('u');u.tick();u.mt5.algo=true;
+ assert.equal(u.deployNext('u').result,'rejected_not_inert');
+ assert.equal(u.log.phases.find(p=>p.phase==='not_inert_child_trades').control,'magic=unknown');passed++;
+}
+{ // 20. On load, a marked row's chart is closed only if it is provably our child (Mac 6028711169): the
+  //     GOAT EA runs on it and its chart-ID record and SETUP_CID handshake match the row.
+ const a=world({members:2,childDelay:BUDGET+5000,closeOk:false});
+ assert.equal(a.deployNext('x').result,'child_attach_failed');
+ const cid=a.sets[0].cid,sym=a.sets[0].sym,rows=()=>a.log.saved.map(s=>({...s}));
+ for(const [label,restore] of [['another EA on the chart',{expertName:'Some Other EA'}],
+                               ['no matching handshake',{handshake:false}]]) {
+  const b=world({members:2,rows:rows(),restored:[{cid,sym,child:true,...restore}]});
+  b.ctx.SweepStaleChildTemplates();
+  assert.equal(b.mt5.charts.get(cid).closed,false,label);
+  assert.equal(b.log.phases.at(-1).phase,'child_chart_not_ours',label);
+  for(let t=0;t<3;t++) b.tick();
+  assert.equal(b.sets[0].magic,FAILED,label+': the row is still never adopted');assert.ok(!b.linked(0));
+ }
+ const bare=world({members:2,rows:rows(),restored:[{cid,sym,child:false}]});
+ bare.ctx.SweepStaleChildTemplates();
+ assert.equal(bare.mt5.charts.get(cid).closed,false);assert.equal(bare.log.phases.at(-1).phase,'child_chart_not_ours');
+ const ours=world({members:2,rows:rows(),restored:[{cid,sym,child:true}]});
+ ours.ctx.SweepStaleChildTemplates();
+ assert.equal(ours.mt5.charts.get(cid).closed,true);assert.equal(ours.log.phases.at(-1).phase,'child_chart_closed');passed++;
+}console.log(JSON.stringify({passed,productionExtracted:true,nativeTemplateTimingVerified:false}));

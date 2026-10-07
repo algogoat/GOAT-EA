@@ -106,8 +106,9 @@ bool GoatPortfolioAttachContinue(const string root)
    {
       int state=DashboardDialog.AgentPollDeployRow();
       if(state==0) return true;
-      // -2: the child registered after the terminal stopped being inert; the dashboard has
-      // already unwound it exactly like a timeout (chart closed, row locked and marked).
+      // -2: the terminal stopped being inert during the attach (checked on every tick); the
+      // dashboard has already unwound it exactly like a timeout (chart closed, row locked and
+      // marked) and logged the child's own positions and orders in the deployment diagnostics.
       GoatPortfolioAttachResult=(state>0 ? "child_attached" : (state==-2 ? "rejected_not_inert" : "child_attach_failed"));
    }
    int owner=FileOpen(root+"owner.lock",FILE_READ|FILE_WRITE|FILE_BIN|FILE_COMMON);

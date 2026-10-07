@@ -123,7 +123,9 @@ public:
    // never linked by a late or restored child's status event.
    bool        IsAgentAttachFailedChart(const long cid);
    void        AgentUnwindFailedAttach(const int idx);
-   void        CloseFailedChildChart(const int idx);
+   void        CloseFailedChildChart(const int idx,const bool on_load);
+   bool        FailedChildChartIsOurs(const int idx);
+   string      ChildTradeSummary(const int idx);
    void        SweepStaleChildTemplates(void);
    bool        AgentConfigureAI(const int mode,const int threshold,const int protocol);
    bool        AgentBeginDeployRow(const int idx);
@@ -1121,15 +1123,58 @@ bool CGOATDashboard::IsAgentAttachFailedChart(const long cid)
    return false;
 }
 
+// The child's magic (registered, or from its chart-ID record) and every open position and
+// pending order carrying it, for the person who must close them. Read-only.
+string CGOATDashboard::ChildTradeSummary(const int idx)
+{
+   long magic=g_sets[idx].magic;
+   if(magic<=0 && !GoatFindMagicByCid(g_sets[idx].sym,g_sets[idx].cid,magic)) magic=0;
+   if(magic<=0) return "magic=unknown";
+   int positions=0,orders=0;
+   string tickets="";
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0 || PositionGetInteger(POSITION_MAGIC)!=magic) continue;
+      positions++; tickets+=(tickets=="" ? "" : ",")+"p"+IntegerToString((long)ticket);
+   }
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   {
+      ulong ticket=OrderGetTicket(i);
+      if(ticket==0 || OrderGetInteger(ORDER_MAGIC)!=magic) continue;
+      orders++; tickets+=(tickets=="" ? "" : ",")+"o"+IntegerToString((long)ticket);
+   }
+   return StringFormat("magic=%I64d positions=%d orders=%d tickets=%s",magic,positions,orders,tickets);
+}
+
+// On load, a chart is closed only when it is provably our child: the GOAT EA runs on it,
+// its chart-ID record names this chart, and its handshake (SETUP_CID) matches the row.
+bool CGOATDashboard::FailedChildChartIsOurs(const int idx)
+{
+   long cid=g_sets[idx].cid,magic=0;
+   if(ChartGetString(cid,CHART_EXPERT_NAME)!=EA_Name_) return false;
+   if(!GoatFindMagicByCid(g_sets[idx].sym,cid,magic) || magic<=0) return false;
+   double hi=0,lo=0;
+   return(GlobalVariableGet(GoatChildGVName(magic,g_sets[idx].sym,"SETUP_CID_HI"),hi)
+          && GlobalVariableGet(GoatChildGVName(magic,g_sets[idx].sym,"SETUP_CID_LO"),lo)
+          && (long)hi==cid/1000000000 && (long)lo==cid%1000000000);
+}
+
 // Closes a failed row's child chart, unloading its child, but only while that chart still
 // shows the row's symbol: a chart ID that no longer names this row's chart is left alone.
-void CGOATDashboard::CloseFailedChildChart(const int idx)
+// On load the chart must also be provably our child (FailedChildChartIsOurs).
+void CGOATDashboard::CloseFailedChildChart(const int idx,const bool on_load)
 {
    long cid=g_sets[idx].cid;
    if(cid<=0) return;
    if(ChartSymbol(cid)!=g_sets[idx].sym)
    {
       GoatDeploymentPhase("child_chart_not_found",cid);
+      return;
+   }
+   if(on_load && !FailedChildChartIsOurs(idx))
+   {
+      GoatDeploymentPhase("child_chart_not_ours",cid);
       return;
    }
    ResetLastError();
@@ -1146,13 +1191,14 @@ void CGOATDashboard::AgentUnwindFailedAttach(const int idx)
    MarkStateDirty();
    if(!SaveDashboardConfig())
       Print("Dashboard failed-attach state save failed; the row stays locked in memory.");
-   CloseFailedChildChart(idx);
+   CloseFailedChildChart(idx,false);
 }
 
 // Startup only (after a saved dashboard loads): no attach can be in flight, so a copied
 // template left for a row with a chart ID but no linked child is stale. It is deleted;
 // the row itself stays as the partial-deployment lock. A row saved with the failed
-// marker has its chart closed again, in case MT5 restored it with a child.
+// marker has its chart closed again, in case MT5 restored it with a child, but only when
+// that chart is provably our child (FailedChildChartIsOurs).
 void CGOATDashboard::SweepStaleChildTemplates(void)
 {
    for(int idx=0;idx<ArraySize(g_sets);idx++)
@@ -1163,7 +1209,7 @@ void CGOATDashboard::SweepStaleChildTemplates(void)
       if(DeleteCopiedTemplate(tplName))
          GoatDeploymentPhase("stale_template_removed",g_sets[idx].cid);
       if(g_sets[idx].magic==GOAT_ATTACH_FAILED_MAGIC)
-         CloseFailedChildChart(idx);
+         CloseFailedChildChart(idx,true);
    }
 }
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
@@ -1228,24 +1274,27 @@ int CGOATDashboard::AgentPollDeployRow(void)
    int idx=m_agent_attach_idx;
    string tplName=m_agent_attach_tpl;
    bool linked=NewSingleInstance(idx);
-   if(!linked && GetTickCount()-m_agent_attach_start<=GOAT_AGENT_ATTACH_BUDGET_MS) return 0;
+   // Inertness is re-checked on every tick, not only at link or timeout: once Algo Trading
+   // is on, or a position or order is open, the attach is unwound at once, so a child that
+   // has finished OnInit cannot trade while it waits to register.
+   bool inert=TerminalInfoInteger(TERMINAL_CONNECTED) && !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)
+              && PositionsTotal()==0 && OrdersTotal()==0;
+   if(!linked && inert && GetTickCount()-m_agent_attach_start<=GOAT_AGENT_ATTACH_BUDGET_MS) return 0;
    m_agent_attach_pending=false;
    m_agent_attach_idx=-1;
    m_agent_attach_tpl="";
    m_agent_setup_quiet=true;
-   // Re-check inertness at settle, not only when the request arrived: a child that links
-   // after Algo Trading came on, or a position or order opened, is unwound, never kept.
-   bool inert=TerminalInfoInteger(TERMINAL_CONNECTED) && !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)
-              && PositionsTotal()==0 && OrdersTotal()==0;
    bool ok=false;
    if(linked && inert)
       ok=CompleteChildAttach(idx,tplName);
    else
    {
-      if(linked)
+      if(!inert)
       {
          m_child_attach_step="not_inert";
          GoatDeploymentPhase("attach_not_inert",g_sets[idx].cid);
+         // The receipt's schema is fixed, so the child's own trades go to the diagnostics.
+         GoatDeploymentPhase("not_inert_child_trades",g_sets[idx].cid,ChildTradeSummary(idx));
          ResetFailedChildRow(idx,tplName);
       }
       else
@@ -1261,7 +1310,7 @@ int CGOATDashboard::AgentPollDeployRow(void)
       if(SaveDashboardConfig()) return 1;
    }
    GoatDeploymentPhase("child_attach_failed",g_sets[idx].cid,m_child_attach_step);
-   return (linked && !inert ? -2 : -1);
+   return (!inert ? -2 : -1);
 }
 
 bool CGOATDashboard::AgentExposurePolicy(const int mode)

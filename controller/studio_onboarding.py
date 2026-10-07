@@ -239,6 +239,8 @@ def monitor_prepare(controller, symbol):
             output.write(json.dumps(dict(operation='monitor_prepare',process_inventory=processes),sort_keys=True)+'\n')
             output.flush();os.fsync(output.fileno())
         if target.exists():
+            # A profile prepared before an EA update of this installation is the same profile.
+            rebind_monitor_profile(controller, session, retained_installations(controller))
             if read_json(target)!=receipt:
                 raise ValueError('A different monitor profile is already prepared; preserve existing setup')
             verify_monitor_profile(controller, receipt)
@@ -252,6 +254,79 @@ def monitor_prepare(controller, symbol):
         write_json(target, receipt)
     return receipt | dict(status='prepared', reused=False,
         next_action='With the selected terminal stopped and saved Algo Trading off, run monitor-launch --attempt-id <new-id>')
+
+
+# The receipt fields an EA update of the same installation rewrites: demo_agent install-build
+# (ea_sha256, bundle_version, agent_guide_path, demo_installed_at) and the desktop's stopped-terminal
+# update (installed_at). Every other field (terminal, data folder, EA path, versions, state root) still
+# names the installation the monitor profile was prepared for.
+UPDATE_OWNED_INSTALLATION_FIELDS = frozenset(('ea_sha256','bundle_version','agent_guide_path','demo_installed_at','installed_at'))
+MONITOR_RECEIPT_FIELDS = frozenset(('schema_version','installation_sha256','run_id','profile_name','profile_path','symbol',
+                                    'chart_sha256','trading_enabled','permissions_granted'))
+
+
+def same_installation(previous, current):
+    """True when ``previous`` differs from ``current`` only in what an EA update rewrites."""
+    if not isinstance(previous,dict) or not isinstance(current,dict):
+        return False
+    keep=lambda value:{k:v for k,v in value.items() if k not in UPDATE_OWNED_INSTALLATION_FIELDS}
+    return keep(previous)==keep(current)
+
+
+def retained_installations(controller):
+    """The installation receipts install-build backed up before each EA update (demo-agent/backups).
+
+    A backup counts only when its name is the SHA-256 of its exact bytes, as install-build writes it.
+    """
+    from studio_installation import load_installation
+    found=[]
+    folder=controller.root/'demo-agent'/'backups'
+    if not folder.is_dir():
+        return found
+    for path in sorted(folder.glob('installation-*.json')):
+        try:
+            if path.is_symlink() or path.name!='installation-'+hashlib.sha256(path.read_bytes()).hexdigest()+'.json':
+                continue
+            found.append(load_installation(path,verify_binary=False))
+        except (OSError,ValueError,KeyError,TypeError,UnicodeError):
+            continue
+    return found
+
+
+def rebind_monitor_profile(controller, session, previous_installations):
+    """Carry the prepared monitor profile across an EA update of this same installation and session.
+
+    install-build rebinds session.json to the updated receipt (new EA hash and bundle identity), but
+    monitor-profile.json kept the previous installation hash, so monitor-launch then refused with
+    "belongs to another installation/session" (goatai#1885, 2026-10-06). The receipt is rebound only
+    when the session is already bound to the current receipt, the receipt names this session's run
+    and profile, and the installation it names (a supplied previous receipt) differs from the current
+    one only in UPDATE_OWNED_INSTALLATION_FIELDS. Only installation_sha256 changes; the saved chart is
+    untouched and verify_monitor_profile still checks it in full before any launch. Anything else is
+    left as it is, so verify_monitor_profile keeps refusing it.
+    """
+    target=controller.root/'monitor-profile.json'
+    if not target.is_file():
+        return dict(status='no_profile')
+    raw=target.read_bytes()
+    receipt=read_json(target)
+    current=sha(controller.install)
+    if not isinstance(receipt,dict) or set(receipt)!=MONITOR_RECEIPT_FIELDS or receipt.get('schema_version')!=1:
+        return dict(status='not_prepared_receipt')
+    if receipt['installation_sha256']==current:
+        return dict(status='current')
+    name,profile=monitor_paths(controller,session)
+    previous=next((p for p in previous_installations if sha(p)==receipt['installation_sha256']),None)
+    if (session.get('installation_sha256')!=current or previous is None or not same_installation(previous,controller.install)
+            or receipt['run_id']!=session['run_id'] or receipt['profile_name']!=name or receipt['profile_path']!=str(profile)):
+        return dict(status='unrelated')
+    backup=controller.root/'demo-agent'/'backups'/('monitor-profile-'+hashlib.sha256(raw).hexdigest()+'.json')
+    backup.parent.mkdir(parents=True,exist_ok=True)
+    if not backup.exists():
+        with backup.open('xb') as output:
+            output.write(raw); output.flush(); os.fsync(output.fileno())
+    write_json(target,receipt|dict(installation_sha256=current))
+    return dict(status='rebound',previous_installation_sha256=receipt['installation_sha256'],installation_sha256=current,backup=str(backup))
 
 
 def verify_monitor_profile(controller, receipt, *, observed_human_reopen=False, preserved_permissions_sha256=None):
@@ -378,6 +453,8 @@ def monitor_launch(controller, attempt_id):
             if read_json(previous).get('status') == 'launch_intent':
                 raise ValueError('Unresolved monitor launch intent; inspect process and retained attempt, never launch again blindly')
         require_idle_control(controller, session)
+        # Heals a profile left on the previous receipt by an EA update from an earlier controller.
+        rebound = rebind_monitor_profile(controller, session, retained_installations(controller))
         receipt = read_json(controller.root/'monitor-profile.json')
         verify_monitor_profile(controller, receipt)
         portable = saved_launch_policy(controller, session)
@@ -413,5 +490,5 @@ def monitor_launch(controller, attempt_id):
                                    creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         intent.update(status='process_started_unverified', pid=process.pid)
         write_json(target, intent)
-    return intent | dict(reused=False,
+    return intent | dict(reused=False, **(dict(monitor_profile_rebound=rebound) if rebound['status']=='rebound' else {}),
         next_action='Approve DLL/WebRequest permissions and legitimate GOAT pairing in MT5; run serve, human Give to Agent, then onboarding-status. Process start is not runtime readiness.')

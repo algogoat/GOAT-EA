@@ -1,5 +1,6 @@
 """Onboarding effects are fixture-only: no installed terminal is touched/launched."""
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from campaign_ledger import sha
 from goat_studio import Controller
 from studio_onboarding import onboarding_status, monitor_prepare, monitor_launch, verify_saved_monitor
 import test_goat_studio as fixtures
@@ -275,6 +277,74 @@ class OnboardingTests(unittest.TestCase):
         for text in unsafe:
             chart.write_text(text,encoding='utf-16')
             with self.assertRaises(ValueError):monitor_launch(self.c,'unsafe-saved')
+        self.start.assert_not_called()
+
+    # ---- monitor profile after an EA update (desktop suite.applyUpdate -> demo_agent install-build)
+
+    def update_ea(self, content=b'updated test fixture', bundle_version='0.5.0-beta.23'):
+        """What the desktop's demo update does to the local identity: demo_agent install-build's adoption."""
+        from demo_agent import DemoAgent
+        ea=self.data/'MQL5/Experts/GOAT-EA/GOAT V1.48.ex5';ea.write_bytes(content)
+        agent=DemoAgent(self.fixture.path,process=SimpleNamespace(inspect=lambda:None),mt5=SimpleNamespace())
+        agent._adopt_installed_binary(hashlib.sha256(content).hexdigest(),metadata=dict(
+            bundle_version=bundle_version,agent_guide_path=str(Path(__file__).with_name('AGENT-START-HERE.md').resolve())))
+        return agent
+
+    def reopened(self):
+        c=Controller(self.fixture.path).open()
+        self.addCleanup(c.store.close)
+        return c
+
+    def test_monitor_launch_succeeds_after_an_ea_update_of_the_same_installation(self):
+        prepared=monitor_prepare(self.c,'EURUSD')
+        chart=(Path(prepared['profile_path'])/'chart01.chr').read_bytes()
+        agent=self.update_ea()
+        c=self.reopened()
+        receipt=json.loads((c.root/'monitor-profile.json').read_text())
+        self.assertEqual(receipt['installation_sha256'],sha(c.install),'install-build carries the profile to the new receipt')
+        self.assertEqual({k:v for k,v in receipt.items() if k!='installation_sha256'},
+                         {k:v for k,v in prepared.items() if k not in ('installation_sha256','status','reused','next_action')})
+        rows=[json.loads(line) for line in (agent.state_root/'actions.jsonl').read_text().splitlines()]
+        self.assertEqual([r['phase'] for r in rows if r['operation']=='install_build'][-1],'monitor_profile_rebound')
+        launch=monitor_launch(c,'after-update')
+        self.assertEqual(launch['status'],'process_started_unverified')
+        self.assertNotIn('monitor_profile_rebound',launch,'already rebound by the update')
+        self.start.assert_called_once()
+        self.assertEqual((Path(prepared['profile_path'])/'chart01.chr').read_bytes(),chart,'the saved chart is never rewritten')
+        self.assertTrue(monitor_prepare(c,'EURUSD')['reused'])
+
+    def test_monitor_launch_heals_a_profile_an_earlier_update_left_on_the_old_receipt(self):
+        monitor_prepare(self.c,'EURUSD')
+        stale=(self.c.root/'monitor-profile.json').read_bytes()
+        self.update_ea()
+        self.update_ea(b'second update',bundle_version='0.5.0-beta.24')
+        # What controllers before this fix left behind: the receipt of two updates ago.
+        (self.c.root/'monitor-profile.json').write_bytes(stale)
+        c=self.reopened()
+        launch=monitor_launch(c,'healed')
+        self.assertEqual(launch['status'],'process_started_unverified')
+        self.assertEqual(launch['monitor_profile_rebound']['status'],'rebound')
+        self.assertEqual(json.loads((c.root/'monitor-profile.json').read_text())['installation_sha256'],sha(c.install))
+        self.assertEqual(Path(launch['monitor_profile_rebound']['backup']).read_bytes(),stale)
+        self.start.assert_called_once()
+
+    def test_profile_of_another_installation_or_session_is_never_rebound(self):
+        monitor_prepare(self.c,'EURUSD')
+        self.update_ea()
+        c=self.reopened()
+        target=c.root/'monitor-profile.json';current=json.loads(target.read_text())
+        # Another installation: its retained receipt differs in more than the update-owned fields.
+        from studio_installation import load_installation
+        other=dict(self.fixture.receipt,ea_relative_path='GOAT-EA\\Another EA.ex5')
+        raw=json.dumps(other).encode();backup=c.root/'demo-agent/backups'/('installation-'+hashlib.sha256(raw).hexdigest()+'.json')
+        backup.write_bytes(raw)
+        for receipt in (dict(current,installation_sha256=sha(load_installation(backup,verify_binary=False))),
+                        dict(current,installation_sha256='f'*64),
+                        dict(current,installation_sha256=sha(self.c.install),run_id='session-'+'0'*32)):
+            with self.subTest(receipt=receipt):
+                target.write_text(json.dumps(receipt))
+                with self.assertRaisesRegex(ValueError,'belongs to another installation/session'):monitor_launch(c,'refused')
+                self.assertEqual(json.loads(target.read_text()),receipt,'left as it was')
         self.start.assert_not_called()
 
     def test_active_seed_blocks_setup(self):

@@ -60,14 +60,28 @@ deploy-path, binding, overview and liveness tests.
 
 **Build**
 
-- Compile pending. `54aac277` and `b3e7cedb` were each compiled with 0 errors and 0 warnings. The deployment nonce and
-  the live-before-adoption gate change the sources since then (including the entrypoint, `8b980f0c…`), so neither
-  binary is carried here.
+- `GOAT_BUILD_ID` is `V1.49-BETA17-43`, marker `B43`.
+- Compiled once from `e38791d6` with MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`, the same compiler as B39 to B41.3):
+  0 errors, 0 warnings. The compiler was a copy outside every terminal folder, run `/portable` at Idle priority.
+  MetaEditor's process exit code was 1 with a clean `Result:` line, as in the B40 and B41 compiles; the `Result:`
+  line and the output are the success criteria. The stage was a scratch copy outside every terminal folder. Its 307
+  standard includes and the `MACD - GOAT 2.ex5` resource are copied from the B41 compile root and hash-equal to it.
+- `GOAT V1.49.ex5`: sha256 `e630ee34cb04c26513f16860a927074ec745f3c62869d984260230a89fd4dc24`, 2,426,134 bytes.
+- Entrypoint `GOAT V1.49.mq5`: sha256 `8b980f0c…8bed2ca1`, pinned in `controller/contracts/v149/dependencies.json`.
+- Pin check at `e38791d6`: the 41 `.mq5`/`.mqh` files in the entrypoint's include closure are exactly the 41
+  sources in `identity.json`, and each matches the tree and the staged copy. The input header is still `1408e1ee…`.
+- `externals.json`: no problems, and the same per-name hashes and `consumed_sha256` (`ced68559…`) as B41's. Removing
+  `Dashboard.mqh`'s kernel32 copy/delete import block does not change the hashed externals: DLL imports are compared
+  by name, and `kernel32.dll` is still imported by `MTTester.mqh` and `Tester.mqh`, so the by-name import set
+  (`kernel32`, `shell32`, `user32`) equals B41's.
+- MetaEditor output is not byte-reproducible across stages, so admit only this binary.
+- `54aac277` and `b3e7cedb` were each compiled with 0 errors and 0 warnings. The deployment nonce and the
+  live-before-adoption gate changed the sources since then (including the entrypoint), so neither binary is carried
+  here.
 
-**Not done.** Not compiled, not installed, no native qualification. The root `GOAT V1.49.ex5` is unchanged.
+**Not done.** Not installed, no native qualification. The root `GOAT V1.49.ex5` is unchanged.
 
 **Still owed:**
-- the compile (0 errors, 0 warnings) by Release;
-- Claude-Mac's pin and no-drift check, and a new admission row for `V1.49-BETA17-43`;
+- Claude-Mac's review of this binary, pin and no-drift check, and a new admission row for `V1.49-BETA17-43`;
 - the T3 proof P0 to P7 with the matching controller (`claude-pc/profile-staged-controller`, algogoat/GOAT-EA#193). That
   controller must stage `Studio_MonitorRunPath=deploy=<deploymentId>` in each child and register `deploymentId`.

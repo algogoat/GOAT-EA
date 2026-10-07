@@ -711,7 +711,10 @@ hands over; the drive runs in a detached driver.
    the driver has `returned` and the run is neither `completed` nor `stopped`, call
    `seed-resume` again. Repeating a start or resume while the driver lives returns
    `already_supervising`. Any other seed, catch-up or hold-up work refuses while one
-   detached driver owns the terminal.
+   detached driver owns the terminal. Only the `<kind>-<id>.json` records count: the
+   durable host's `<kind>-<id>-<nonce>.launch|started|finished.json` receipts beside
+   them are never read as drivers, and a driver never refuses its own record (beta.23
+   read its own started receipt and refused itself, goatai#1885).
 
 `--foreground` keeps the old in-process drive for at most 120 s. A longer foreground
 budget is refused, because it would die with the calling tool.

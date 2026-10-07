@@ -18,10 +18,10 @@
       "coordination": "algogoat/goatai#1885"
     }
   },
-  "change": "B41 plus six names on the deploy audit's exemption list (goatai#1885, Claude-Mac's spec 6008656907). GoatChildAuditMaps compares the frozen SET's input names with the child chart template's. WriteSet omits Sequence_Export_Enabled/Id/Start/End/Model (GOAT_SequencePackage.mqh) and GOAT_FitnessRunNonce (the entrypoint), but MT5 writes declared inputs into the chart template, so a B41 child template can carry six names no SET carries, and the audit then refuses the deploy-load (child inputs differ from the frozen SET). When the child template carries one of these six and the SET does not, the audit now requires that input to hold its declared default (false, empty, 0, 0, 4, 0) and accepts it. A SET that carries one still compares it value for value, and any other unknown name still fails. No trade logic, input, default, SET writer or deploy-load byte changes; the build ID and marker are the only other source change. AA41 (goatai#1885 6027754245): the agent deploy_next attach is asynchronous. On B41 the dashboard queued the child template with ChartApplyTemplate and then waited up to 20 s for the child handshake inside the same timer handler; no child started (T3, deploy 56a46a8a), the template was deleted inside that handler, and the chart was left without an expert. AgentBeginDeployRow now opens the chart, persists the identity, queues the template and returns; AgentPollDeployRow polls the same NewSingleInstance handshake on later timer ticks with the same 20 s budget, then links (and only then deletes the template) or fails with the step named in the deployment diagnostics (control=handshake_timeout, template_enqueue, ...). GoatPortfolioSetupPoll keeps the request's started receipt until the attach settles and reads no other request meanwhile; the receipt schema and result values are unchanged. The human Activate/Deploy All path keeps its in-handler wait. Deploy path only: no trade, risk, sizing, order, input, SET writer, StartExporter or wire change.",
+  "change": "B41 plus six names on the deploy audit's exemption list (goatai#1885, Claude-Mac's spec 6008656907). GoatChildAuditMaps compares the frozen SET's input names with the child chart template's. WriteSet omits Sequence_Export_Enabled/Id/Start/End/Model (GOAT_SequencePackage.mqh) and GOAT_FitnessRunNonce (the entrypoint), but MT5 writes declared inputs into the chart template, so a B41 child template can carry six names no SET carries, and the audit then refuses the deploy-load (child inputs differ from the frozen SET). When the child template carries one of these six and the SET does not, the audit now requires that input to hold its declared default (false, empty, 0, 0, 4, 0) and accepts it. A SET that carries one still compares it value for value, and any other unknown name still fails. No trade logic, input, default, SET writer or deploy-load byte changes; the build ID and marker are the only other source change. AA41 (goatai#1885 6027754245): the agent deploy_next attach is asynchronous. On B41 the dashboard queued the child template with ChartApplyTemplate and then waited up to 20 s for the child handshake inside the same timer handler; no child started (T3, deploy 56a46a8a), the template was deleted inside that handler, and the chart was left without an expert. AgentBeginDeployRow now opens the chart, persists the identity, queues the template and returns; AgentPollDeployRow polls the same NewSingleInstance handshake on later timer ticks within GOAT_AGENT_ATTACH_BUDGET_MS (75 s, above the child's 60 s license startup in GOATLicenseInitRetry.mqh), then links (and only then deletes the template) or fails with the step named in the deployment diagnostics (control=handshake_timeout, template_enqueue, ...). On an agent timeout the child chart is closed (unloading a still-starting child), its chart ID stays as the partial-deployment lock, its early status magic is dropped, and a late GOAT_EVENT_CHILD_STATUS for that chart is ignored, so a failed row never becomes a live member (goatai#1885 6028209095). GoatPortfolioSetupPoll keeps the request's started receipt until the attach settles, reads no other request meanwhile, and re-checks inertness when it settles: a linked child on a terminal that is no longer inert answers rejected_not_inert. The receipt schema and result values are unchanged. When a saved dashboard loads, a copied template left for a row with a chart ID but no linked child is deleted (SweepStaleChildTemplates). The human Activate/Deploy All path keeps its in-handler wait. Deploy path only: no trade, risk, sizing, order, input, SET writer, StartExporter or wire change.",
   "supersedes_candidate": "beta17-B41",
   "sources": {
-    "Dashboard.mqh": "c71b9f908a6adc1787cad47047aa54cf7c5e617c1e1618aa5e7dcb90108a7c7f",
+    "Dashboard.mqh": "23c4ecb44fc0d452a05af22fc3bbd8f95343aa9b68205fcdeb7eae401a28c0c6",
     "GOAT V1.49.mq5": "dee033a8dd957140cd26dd633e203c49a745e7cd00c44152863f73057e8fa56b",
     "GOATAIWireV2.mqh": "591db2e51552d8d62bc260c58bfc1289a806540d8d5ea1b68055def94369d065",
     "GOATBatchCancelOrigin.mqh": "03a24684cf7c0e4e6dac7ef2ccce661a228a2bae10ff2f56ad72d722fd74f0f1",
@@ -31,7 +31,7 @@
     "GOATLicenseInitRetry.mqh": "e8ebe975238350d7838791eccb0e1cd844a13dd0f73c9d5765e13425fc192379",
     "GOATOptimizationInputs.mqh": "5896ee257a4562fb0a6a9857324047e21cec368bf65dbc64692f9bc92b4f773c",
     "GOATPortfolioChildAudit.mqh": "9d4fc18c96f5bf510f71607d07df07d5c0363a93b02d7d3c6f33ee0d312ca6c2",
-    "GOATPortfolioSetupControl.mqh": "5f79bbc1645f5ace8637b5e959064e09c0c8adea6995f89764b08f42b6d2bbae",
+    "GOATPortfolioSetupControl.mqh": "b49e4d734420e51b830f2e0afa78035659bae2531e1a0034db17cad7b0b1ea25",
     "GOATSetupControl.mqh": "adc0c645450b69ef56df05a8fa0e53a3803e9671405b4acbc656c6add0ff76c5",
     "GOATStudioBridge.mqh": "3d3b314d74d9f9e6031be0be2f2964dbda5234ebda3222b05bd6a0f8a3d196c6",
     "GOATStudioCompletion.mqh": "94395d1c2729378df724aaa03a652e2cbafc3888d1b5353fa32b5df314fd5f47",
@@ -63,12 +63,8 @@
     "Tester.mqh": "2d109fa8be126804ed80e0b92bf5198d54acb35e5075d13b9cd443dd1d02418e",
     "XmlProcessor.mqh": "fd218b06ece97721bd7335f69ac7739bcb5d1fcf34c8a92593c538fb22b902d0"
   },
-  "binary": {
-    "name": "GOAT V1.49.ex5",
-    "sha256": "d496884ada935d4cf3aba844807a3fe6f501ca640c111b4a2ac39973f8ec4e77",
-    "bytes": 2433636
-  },
-  "compile": "compile-receipt.json",
+  "binary": null,
+  "compile": "pending",
   "native_qualified": false,
   "customer_delivery": false,
   "retained_root_binary_sha256": "05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9",

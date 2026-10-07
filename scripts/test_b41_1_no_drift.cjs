@@ -10,7 +10,10 @@ const norm=t=>t.replace(/^﻿/,'').replace(/\r\n/g,'\n')
  .replace(/^#define\s+GOAT_BUILD_ID\s+"[^"]*"$/m,'#define GOAT_BUILD_ID ""').replace(/^#define\s+GOAT_BUILD_MARKER\s+"[^"]*"$/m,'#define GOAT_BUILD_MARKER ""');
 let old;
 try{old=f=>execFileSync('git',['show',B41+':'+f],{cwd:ROOT,maxBuffer:64<<20}).toString('utf8');old('GOAT V1.49.mq5');}
-catch(e){console.log(JSON.stringify({skipped:'278ec109 not in this clone'}));process.exit(0);}
+catch(e){
+ // CI checks out full history (fetch-depth: 0); a missing base there is a failure, not a skip.
+ console.log(JSON.stringify({skipped:'278ec109 not in this clone'}));process.exit(process.env.CI ? 1 : 0);
+}
 const now=f=>fs.readFileSync(path.join(ROOT,f),'utf8');
 const identity=JSON.parse(now('candidate-builds/beta17-B41.1/identity.json'));
 const b41=JSON.parse(old('candidate-builds/beta17-B41/identity.json'));

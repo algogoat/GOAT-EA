@@ -46,9 +46,22 @@ state machine and independent watchdog would be a separate, larger change.
 From B41.1 the agent's `deploy_next` attaches a child asynchronously (goatai#1885
 6027754245). The timer handler opens the chart, saves the child chart ID, copies the
 template to `MQL5\Profiles\Templates\<member SET name>.tpl` and queues it, then returns.
-Later timer ticks wait for the child's registration, for 20 seconds at most. The
-template is deleted only once the attach settles, either linked or timed out. The
-attach state lives only in the running dashboard EA.
+Later timer ticks wait for the child's registration, for at most
+`GOAT_AGENT_ATTACH_BUDGET_MS` (75 s). That is above the child's license startup, which
+retries for up to 60 s inside `OnInit`, before the child writes its handshake. The
+template is deleted only once the attach settles, either linked or timed out.
+
+On a timeout, the dashboard:
+
+- closes the child chart, which unloads a child that is still starting;
+- keeps the chart ID as the partial-deployment lock;
+- drops any magic adopted early;
+- ignores later status events from that chart, so the failed row never becomes a live
+  member.
+
+When the attach settles, inertness is checked again. If Algo Trading was switched on, or
+a position or order opened, the answer is `rejected_not_inert`, even when the child
+linked. The attach state lives only in the running dashboard EA.
 
 If the dashboard EA stops in that window (MT5 closed or crashed, the EA reloaded, or
 the chart closed), three things are left behind. This is accepted by design (goatai#1885
@@ -63,14 +76,20 @@ the chart closed), three things are left behind. This is accepted by design (goa
 2. **A partial row.** The child chart ID was saved before the template was queued,
    so after a restart the row has a chart ID but no linked child. `deploy_next` then
    answers `rejected_partial_deployment` before it opens a chart or queues a template.
-   The chart itself may be bare, or, if MT5 drained the queue before stopping, it may
-   carry a child that started but was never linked.
-3. **A leftover template** in `MQL5\Profiles\Templates`. GOAT never queues it
-   again on its own, and it is not MT5's `default.tpl`, because GOAT names templates
-   after member SETs. A later attach of the same member rewrites the file, by
-   overwriting copy, before it queues the template. If that copy fails, the attach
-   stops before any chart is opened. So a later session never queues stale bytes.
-   `scripts/test_dashboard_async_attach.cjs` cases 8 to 10 pin this down.
+   The chart itself may be bare. Or, if MT5 drained the queue before stopping, it may
+   carry a child that started but was never linked. The failed-chart list is in memory
+   only, so a new dashboard session can adopt such a child from its status events. It
+   still cannot become a deployment: the `started` receipt blocks every command until
+   `deploy-stop`.
+3. **A leftover template** in `MQL5\Profiles\Templates`. When the saved dashboard loads
+   again, `SweepStaleChildTemplates` deletes the template of every row that has a chart
+   ID but no linked child, and logs `phase=stale_template_removed` in the deployment
+   diagnostics. Anything the sweep cannot reach is still never applied: GOAT never
+   queues a leftover on its own, and the file is not MT5's `default.tpl`, because GOAT
+   names templates after member SETs. A later attach of the same member rewrites the
+   file, by overwriting copy, before it queues the template. If that copy fails, the
+   attach stops before any chart is opened. So a later session never queues stale
+   bytes. `scripts/test_dashboard_async_attach.cjs` cases 8 to 10 pin this down.
 
 **Recovery.** Every step is controller-driven and keeps Algo Trading off. Nothing is
 deleted.
@@ -85,9 +104,10 @@ deleted.
    aside the saved dashboard state, the deploy chart profile, `request.json` and
    `registration.json`. This also means a bare or unlinked child chart is not reopened
    on the next launch, because its profile is archived.
-3. Optional: archive the leftover template. Rename
-   `MQL5\Profiles\Templates\<member SET name>.tpl` to `....tpl.stopped-<UTC stamp>`.
-   This is not required for safety (see point 3 above).
+3. The leftover template needs no manual step. The sweep removes it the next time that
+   saved dashboard loads, and a redeploy overwrites it before queueing (see point 3
+   above). If the saved dashboard is never reloaded, a file can remain. It is harmless,
+   and it may be renamed to `....tpl.stopped-<UTC stamp>` for tidiness.
 4. Redeploy with `deploy-load` and a plan that has a new `deploymentId`. Each member is
    staged, copied and queued again from its hash-checked SET.
 
@@ -95,8 +115,15 @@ If `deploy-status` shows the terminal still running with Algo Trading on, or wit
 positions or orders, stop here. `deploy-stop` refuses in that state, and the human
 decides what happens next.
 
-Source regression checks: `python -B scripts/test_goat_deployment_liveness.py` and
-`node scripts/test_dashboard_async_attach.cjs`.
+**Controller wait.** beta.23's `deploy-load` waits 60 s for each `deploy_next` receipt,
+but an attach can take up to 75 s. If it times out with `receipt_timeout`, run
+`deploy-load` again. If the final receipt has landed by then, deploy-load continues. If
+the receipt still reads `started`, follow the recovery above. A controller that waits
+90 s (the maximum its request validation allows) removes this case.
+
+Source regression checks: `python -B scripts/test_goat_deployment_liveness.py`,
+`node scripts/test_dashboard_async_attach.cjs` and its mutation check
+`node scripts/test_dashboard_async_attach_mutations.cjs`.
 These guard the removed interference, human navigation, identity and diagnostic
 boundaries; they are not native execution tests. Before operational acceptance,
 compile the reviewed source, qualify native attachment without enabling trades,

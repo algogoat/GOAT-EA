@@ -25,6 +25,9 @@
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #include "GOAT_DashboardOverview.mqh"
 #include "GOATDeploymentDiagnostics.mqh"
+// Agent attach budget. A child writes its handshake only after OnInit, whose license
+// check retries for up to 60 s (GOATLicenseInitRetry.mqh), so 75 s stays above it.
+#define GOAT_AGENT_ATTACH_BUDGET_MS 75000
 class CGOATDashboard;
 
 string GoatDashboardCommonSetPath(const string path)
@@ -111,6 +114,11 @@ public:
    string      m_agent_attach_tpl;
    uint        m_agent_attach_start;
    string      m_child_attach_step;
+   // Charts whose agent attach timed out: closed, kept as the partial-deployment lock,
+   // and never linked by a late child status event.
+   long        m_agent_attach_failed_cids[];
+   bool        IsAgentAttachFailedChart(const long cid);
+   void        SweepStaleChildTemplates(void);
    bool        AgentConfigureAI(const int mode,const int threshold,const int protocol);
    bool        AgentBeginDeployRow(const int idx);
    int         AgentPollDeployRow(void);
@@ -1098,6 +1106,28 @@ CGOATDashboard::~CGOATDashboard()
 {
    // Typically Destroy is called in OnDeinit
 }
+bool CGOATDashboard::IsAgentAttachFailedChart(const long cid)
+{
+   if(cid<=0) return false;
+   for(int i=0;i<ArraySize(m_agent_attach_failed_cids);i++)
+      if(m_agent_attach_failed_cids[i]==cid) return true;
+   return false;
+}
+
+// Startup only (after a saved dashboard loads): no attach can be in flight, so a copied
+// template left for a row with a chart ID but no linked child is stale. It is deleted;
+// the row itself stays as the partial-deployment lock.
+void CGOATDashboard::SweepStaleChildTemplates(void)
+{
+   for(int idx=0;idx<ArraySize(g_sets);idx++)
+   {
+      if(g_sets[idx].cid<=0 || g_sets[idx].magic>0) continue;
+      string tplName=g_sets[idx].name;
+      StringReplace(tplName,".set",".tpl");
+      if(DeleteCopiedTemplate(tplName))
+         GoatDeploymentPhase("stale_template_removed",g_sets[idx].cid);
+   }
+}
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashboard::AgentConfigureAI(const int mode,const int threshold,const int protocol)
@@ -1151,15 +1181,15 @@ bool CGOATDashboard::AgentBeginDeployRow(const int idx)
    return true;
 }
 
-// Timer-driven completion of AgentBeginDeployRow, with the same 20-second registration
-// budget as the human path. 0 = still waiting, 1 = linked and saved, -1 = failed.
+// Timer-driven completion of AgentBeginDeployRow within GOAT_AGENT_ATTACH_BUDGET_MS
+// (above the child's license startup). 0 = still waiting, 1 = linked and saved, -1 = failed.
 int CGOATDashboard::AgentPollDeployRow(void)
 {
    if(!m_agent_attach_pending) return -1;
    int idx=m_agent_attach_idx;
    string tplName=m_agent_attach_tpl;
    bool linked=NewSingleInstance(idx);
-   if(!linked && GetTickCount()-m_agent_attach_start<=20000) return 0;
+   if(!linked && GetTickCount()-m_agent_attach_start<=GOAT_AGENT_ATTACH_BUDGET_MS) return 0;
    m_agent_attach_pending=false;
    m_agent_attach_idx=-1;
    m_agent_attach_tpl="";
@@ -1168,7 +1198,23 @@ int CGOATDashboard::AgentPollDeployRow(void)
    if(linked)
       ok=CompleteChildAttach(idx,tplName);
    else
+   {
       FailChildAttachTimeout(idx,tplName);
+      // The receipt will say child_attach_failed, so this chart must never become a live
+      // member: refuse its late status, close it (unloading a still-starting child) and
+      // keep its chart ID as the partial-deployment lock.
+      long failed_cid=g_sets[idx].cid;
+      g_sets[idx].magic=0;
+      if(failed_cid>0)
+      {
+         int failed=ArraySize(m_agent_attach_failed_cids);
+         ArrayResize(m_agent_attach_failed_cids,failed+1);
+         m_agent_attach_failed_cids[failed]=failed_cid;
+         ResetLastError();
+         bool closed=ChartClose(failed_cid);
+         GoatDeploymentPhase(closed ? "child_chart_closed" : "child_chart_close_failed",failed_cid,"",(closed ? 0 : GetLastError()));
+      }
+   }
    AppendAILaunchAudit(idx,(ok ? "LINKED" : "APPLY_FAILED"));
    UpdateAILaunchControls();
    m_agent_setup_quiet=false;
@@ -1359,6 +1405,8 @@ bool CGOATDashboard::HandleChartEvent(const int id,const long &lparam,const doub
             bool magic_match=(g_sets[idx].magic>0 && g_sets[idx].magic==lparam && g_sets[idx].sym==symbol);
             bool cid_match=(g_sets[idx].cid>0 && g_sets[idx].cid==chart_id && g_sets[idx].sym==symbol);
             if(!magic_match && !cid_match) continue;
+            // A child that reports after its agent attach failed must not become a member.
+            if(!magic_match && IsAgentAttachFailedChart(g_sets[idx].cid)) break;
 
             g_sets[idx].status=status;
             if(g_sets[idx].magic<=0) g_sets[idx].magic=lparam;
@@ -4490,6 +4538,7 @@ int CGOATDashboard::LoadDashboardConfig(void)
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
    RefreshAILaunchLabels();
 #endif
+   SweepStaleChildTemplates();
    m_state_dirty=false;
    m_last_state_save=0;
    return ArraySize(g_sets);

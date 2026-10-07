@@ -82,7 +82,9 @@ class DeploymentLivenessTests(unittest.TestCase):
         self.assertIn('FailChildAttachTimeout(idx,tplName);', region(self.apply, 'if(GetTickCount()-wait_start>20000)', 'Sleep(50);'))
         for timeout in (self.timeout, self.agent_poll):
             self.assertNotIn('g_sets[idx].cid=', timeout)
-            self.assertNotIn('ChartClose(', timeout)
+        # The human timeout leaves its chart for inspection; the agent closes it but keeps the ID as the lock.
+        self.assertNotIn('ChartClose(', self.timeout)
+        self.assertIn('bool closed=ChartClose(failed_cid);', self.agent_poll)
         self.assertIn('DeleteCopiedTemplate(tplName);', self.timeout)
         self.assertEqual(1, self.apply.count('ChartApplyTemplate('))
 
@@ -94,7 +96,8 @@ class DeploymentLivenessTests(unittest.TestCase):
         passive_handshake(self.agent_poll)
         for blocking in ('while(', 'Sleep('):
             self.assertNotIn(blocking, self.agent_poll)
-        self.assertIn('GetTickCount()-m_agent_attach_start<=20000', self.agent_poll)
+        self.assertIn('GetTickCount()-m_agent_attach_start<=GOAT_AGENT_ATTACH_BUDGET_MS', self.agent_poll)
+        self.assertIn('#define GOAT_AGENT_ATTACH_BUDGET_MS 75000', self.dashboard)
         self.assertIn('CompleteChildAttach(idx,tplName)', self.agent_poll)
         self.assertIn('FailChildAttachTimeout(idx,tplName)', self.agent_poll)
         deploy = region(self.setup, 'else if(action=="deploy_next")', 'else if(action=="apply_policy")')

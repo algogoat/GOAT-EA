@@ -25,6 +25,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          # Full history: the B41.1 no-drift check compares against B41's source commit.
+          fetch-depth: 0
 
       - name: Set up Windows x64 Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -100,6 +102,19 @@ jobs:
         run: node scripts/test_ea_followups_mutations.cjs
       - name: EvidenceEnd controller staging mutation check
         run: python scripts/test_evidence_end_export_controller_mutations.py
+
+      - name: Dashboard deploy paths (template build, copy and launch guards)
+        run: node scripts/test_dashboard_deploy_paths.cjs
+      - name: Portfolio child audit (settingsMatch, CA41 exemptions)
+        run: node scripts/test_portfolio_child_audit.cjs
+      - name: Portfolio child binding and freshness
+        run: node scripts/test_portfolio_child_binding.cjs
+      - name: Asynchronous agent child attach (AA41, goatai#1885)
+        run: node scripts/test_dashboard_async_attach.cjs
+      - name: Asynchronous agent child attach mutation check (every guard is load-bearing)
+        run: node scripts/test_dashboard_async_attach_mutations.cjs
+      - name: B41.1 no-drift against B41's source (deploy path only)
+        run: node scripts/test_b41_1_no_drift.cjs
 
       - name: Verify Studio derived Report handoff safety
         run: node scripts/test_studio_derived_report.cjs

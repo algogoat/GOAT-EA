@@ -106,7 +106,10 @@ bool GoatPortfolioAttachContinue(const string root)
    {
       int state=DashboardDialog.AgentPollDeployRow();
       if(state==0) return true;
-      GoatPortfolioAttachResult=(state>0 ? "child_attached" : "child_attach_failed");
+      // Re-check inertness when the attach settles, not only when the request arrived.
+      bool inert=TerminalInfoInteger(TERMINAL_CONNECTED) && !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)
+                 && PositionsTotal()==0 && OrdersTotal()==0;
+      GoatPortfolioAttachResult=(state<0 ? "child_attach_failed" : (inert ? "child_attached" : "rejected_not_inert"));
    }
    int owner=FileOpen(root+"owner.lock",FILE_READ|FILE_WRITE|FILE_BIN|FILE_COMMON);
    if(owner==INVALID_HANDLE) return true;

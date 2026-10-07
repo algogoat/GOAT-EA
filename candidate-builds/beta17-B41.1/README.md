@@ -12,14 +12,37 @@ at 23:50:24.197, inside that same handler. The terminal saved the child chart at
 expert. The controller reported `child_attach_failed`.
 
 **AA41: what changes.** `AgentBeginDeployRow` opens the chart, persists the child identity, queues the template
-and returns. `AgentPollDeployRow` runs the same `NewSingleInstance` handshake on later timer ticks, with the
-same 20 s budget. On success it links the child and only then deletes the template. On failure it unwinds as
-before: the row goes back to Pending, the template is deleted, and the chart identity stays as the
-partial-deployment lock. The failed step is named in the deployment diagnostics
-(`phase=child_attach_failed control=handshake_timeout`, `template_enqueue`, `chart_open`, …).
+and returns. `AgentPollDeployRow` runs the same `NewSingleInstance` handshake on later timer ticks, within
+`GOAT_AGENT_ATTACH_BUDGET_MS` (75 s). The budget has to stay above a child's license startup: the child writes its
+handshake only after `OnInit`, and the license check in `OnInit` retries for up to 60 s
+(`GOATLicenseInitRetry.mqh`). On success the dashboard links the child and only then deletes the template.
+
+On a timeout (Claude-Mac's review, 6028209095):
+
+- The row goes back to Pending and the template is deleted, as before.
+- **The child chart is closed**, which unloads a child that is still starting. Its chart ID stays as the
+  partial-deployment lock.
+- Any magic that a status event adopted early is dropped. A late `GOAT_EVENT_CHILD_STATUS` for that chart is
+  ignored, so a failed row can never become a live member while the receipt says `child_attach_failed`.
+- The failed step is named in the deployment diagnostics (`phase=child_attach_failed control=handshake_timeout`,
+  `template_enqueue`, `chart_open`, …), followed by `child_chart_closed` or `child_chart_close_failed`.
+
 `GoatPortfolioSetupPoll` keeps the request's `started` receipt until the attach settles, and reads no other
-request meanwhile. The receipt schema and its result values are unchanged, so beta.23's controller reads
-B41.1 as it read B41. The human Activate / Deploy All path keeps its in-handler wait.
+request meanwhile. **It re-checks inertness when the attach settles.** If Algo Trading was switched on, or a
+position or order opened, during the attach, a linked child answers `rejected_not_inert`. The receipt schema and
+its result values are unchanged.
+
+**Startup sweep.** When a saved dashboard loads, a copied template left for a row that has a chart ID but no
+linked child (an interrupted attach) is deleted. The row itself stays as the lock.
+
+The human Activate / Deploy All path keeps its 20 s in-handler wait, and on a timeout it leaves the chart open for
+inspection.
+
+**Controller wait (beta.23).** `studio_demo_deploy.py` waits 60 s for the `deploy_next` receipt. An attach that
+settles between 60 and 75 s therefore reaches the controller as `receipt_timeout`, and deploy-load stops. Until the
+controller waits 90 s (a separate controller change), re-run deploy-load. If the final receipt has landed by
+then, deploy-load continues; if it is still `started`, the controller refuses with "unresolved dashboard
+mutation". Recovery is in `docs/operations/DEPLOYMENT-STARTUP-LIVENESS.md`.
 
 **Why.** On a deploy-load, `GoatPortfolioChildSettingsMatch` saves the child chart's template, and
 `GoatChildAuditMaps` requires the frozen SET's input names to equal the template's, apart from three
@@ -38,8 +61,8 @@ audit refuses every B41 deploy-load with "child inputs differ from the frozen SE
 | Where | What it does |
 |---|---|
 | `GOATPortfolioChildAudit.mqh` | `GoatChildAuditMaps`: after the three existing exemptions, a second list of six names with their declared defaults (`false`, empty, `0`, `0`, `4`, `0`). If the child template carries one of them and the SET does not, the audit adds it at its default. The existing value check then requires the template to hold exactly that default. A SET that carries one still compares it value for value. A name in neither is skipped, so a V1.47 child, which declares none of them, audits exactly as before (V1.48 declares the five `Sequence_Export_*` and would get the same relief if rebuilt; its committed binary is untouched). Any other unknown name still fails. |
-| `Dashboard.mqh` (AA41) | `AgentDeployRow` becomes `AgentBeginDeployRow` plus `AgentPollDeployRow`. `ApplyTemplate` is split into `BeginChildAttach`, `FailChildAttachTimeout` and `CompleteChildAttach`, with the same statements. `DoActivate`'s prelude becomes `PrepareChildLaunch`, shared by both paths, and it refuses while an agent attach is in flight. |
-| `GOATPortfolioSetupControl.mqh` (AA41) | `deploy_next` starts the attach and returns. `GoatPortfolioAttachContinue` settles it on later ticks and writes the final receipt. A busy owner lock or a failed write is retried on the next tick. |
+| `Dashboard.mqh` (AA41) | `AgentDeployRow` becomes `AgentBeginDeployRow` plus `AgentPollDeployRow`, with the 75 s `GOAT_AGENT_ATTACH_BUDGET_MS`. On an agent timeout, `AgentPollDeployRow` closes the chart, drops early magic and records the chart in `m_agent_attach_failed_cids`, and the child-status handler ignores those charts. `ApplyTemplate` is split into `BeginChildAttach`, `FailChildAttachTimeout` and `CompleteChildAttach`, with the same statements. `DoActivate`'s prelude becomes `PrepareChildLaunch`, shared by both paths, and it refuses while an agent attach is in flight. `LoadDashboardConfig` calls `SweepStaleChildTemplates`. |
+| `GOATPortfolioSetupControl.mqh` (AA41) | `deploy_next` starts the attach and returns. `GoatPortfolioAttachContinue` settles it on later ticks, re-checks inertness and writes the final receipt. A busy owner lock or a failed write is retried on the next tick. |
 | `GOAT V1.49.mq5` | Build ID `V1.49-BETA17-41.1`, marker `B41.1`. `GOAT_VERSION_LABEL` stays `1.49`, so `GOAT V1.49 …` SET filenames and the input header stay valid. |
 
 **Not changed.** Trade, risk, signal and bias logic, every input and default, the input header
@@ -54,38 +77,46 @@ the frozen strategy, and the audit still refuses it.
 **Tests.** `scripts/test_portfolio_child_audit.cjs` runs the production parser: a V1.49 template carrying the
 six at their defaults passes; any one at a non-default value fails, as does a SET/template disagreement on one
 the SET carries, or an extra unknown name. B41's audit fails the first case, which reproduces the bug.
-`scripts/test_dashboard_async_attach.cjs` runs the production attach code against a modelled MT5 that drains chart
-queues after the handler returns. B41's in-handler wait reproduces T3, and the async path attaches all 35
-members. The timeout, enqueue-failure, busy-lock and failed-write paths all unwind, and 8 of 8 mutants are
-killed. `scripts/test_b41_1_no_drift.cjs` checks the source against B41 (`278ec109`), normalised: only
+
+`scripts/test_dashboard_async_attach.cjs` (17 cases) runs the production attach code against a modelled MT5. In
+the model, chart queues drain after the handler returns, and a child's `OnInit` can be delayed.
+
+- B41's in-handler wait reproduces T3.
+- The async path attaches all 35 members.
+- Children that register at 25 s and at 70 s are linked. A child due after the budget is unloaded when its
+  chart closes.
+- An unclosable chart's late status is ignored, and the row never links.
+- Inertness is re-checked at settle.
+- Stale templates are overwritten before queueing, a failed copy queues nothing, and the startup sweep removes a
+  partial row's template.
+- The timeout, enqueue-failure, busy-lock and failed-write paths all unwind.
+
+`scripts/test_dashboard_async_attach_mutations.cjs` removes or weakens each guard and requires the harness to
+fail: 21 of 21 mutants are killed. `scripts/test_b41_1_no_drift.cjs` checks the source against B41 (`278ec109`), normalised: only
 `Dashboard.mqh`, `GOATPortfolioSetupControl.mqh` and `GOATPortfolioChildAudit.mqh` differ, and `StartExporter`,
 `OnTick`, `OnTradeTransaction` and `OnTimer` are identical.
 
 **Build**
 
 - `GOAT_BUILD_ID` is `V1.49-BETA17-41.1`, marker `B41.1`, on top of B41 (`278ec109`, GOAT-EA#147, compiled in #150).
-- Compiled once from `c8355f66` (CA41 + AA41, this branch's candidate commit) with MetaEditor 5.0.0.6230
-  (sha256 `cf2750bd…`, the same compiler as B39, B40 and B41): 0 errors, 0 warnings. The compiler was a copy
-  outside every terminal folder, run `/portable` at Idle priority. The stage was a scratch copy outside every
-  terminal folder. Its 307 standard includes and the `MACD - GOAT 2.ex5` resource are copied from the B41 compile
-  root and hash-equal to it. `externals.json` records the same per-name hashes as B41's, and the same
-  `consumed_sha256` (`ced68559…`).
-- `GOAT V1.49.ex5`: sha256 `d496884ada935d4cf3aba844807a3fe6f501ca640c111b4a2ac39973f8ec4e77`, 2,433,636 bytes.
+- **Compile pending for this source.** It carries CA41, AA41 and the fixes from Claude-Mac's review (6028209095).
+  No binary in this folder belongs to it.
+- Superseded, do not install either:
+  - `d496884a…` (from `c8355f66`, AA41 with the 20 s budget and no chart close). It stays in history at
+    `5510bbb5`.
+  - The CA41-only `b3650d96…` (from `4f3f2f99`). It stays in history at `f00cc8ad`.
 - Entrypoint `GOAT V1.49.mq5`: sha256 `dee033a8…7e8fa56b`, pinned in `controller/contracts/v149/dependencies.json`.
-- Pin check at `c8355f66`: all 41 sources in `identity.json` match the tree and the staged copy; only
-  `GOAT V1.49.mq5`, `GOATPortfolioChildAudit.mqh`, `Dashboard.mqh` and `GOATPortfolioSetupControl.mqh` differ
-  from B41. The input header is still `1408e1ee…`.
+- Only `GOAT V1.49.mq5`, `GOATPortfolioChildAudit.mqh`, `Dashboard.mqh` and `GOATPortfolioSetupControl.mqh`
+  differ from B41. The input header is still `1408e1ee…`.
 - No drift: `scripts/test_b41_1_no_drift.cjs` (see **Tests**).
-- Superseded: the earlier CA41-only binary (`b3650d96…`, from `4f3f2f99`) does not contain AA41. It was removed
-  from this folder with its receipt and `externals.json`, and stays in history at `f00cc8ad`. Do not install it.
-- MetaEditor output is not byte-reproducible across stages, so admit only this binary.
+- MetaEditor output is not byte-reproducible across stages, so admit only the binary compiled from this source.
 
 **Not done.** Native qualification has not been performed, and nothing was installed. The root
 `GOAT V1.49.ex5` is unchanged.
 
 **Still owed:**
 
-1. Claude-Mac's review of this source and binary.
+1. Claude-Mac's review of this source, then the compile.
 2. Claude-Mac's pin check, no-drift check and internal admission of `V1.49-BETA17-41.1`.
 3. A native deploy-load on a non-Exp demo. It must attach the child charts, the first one included, and read
    `settingsMatch` true for one V1.49-writer SET and one Balanced35 SET.

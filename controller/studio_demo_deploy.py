@@ -446,7 +446,8 @@ def write_exact(path, raw):
 
 
 def registration_for(ident, plan, members):
-    return dict(schema=1, account=ident['account'], server=ident['server'], directory=ident['directory'], buildId=ident['buildId'],
+    # deploymentId binds adoption and settingsMatch to the nonce in each staged child (B43; contract section 3).
+    return dict(schema=1, deploymentId=plan['deploymentId'], account=ident['account'], server=ident['server'], directory=ident['directory'], buildId=ident['buildId'],
                 expiresAtUtc=int(time.time()) + 14400, aiMode=plan['policy']['aiMode'], aiThreshold=plan['policy']['aiThreshold'],
                 aiProtocol=plan['policy']['aiProtocol'], exposureMode=plan['policy']['exposureMode'],
                 members=[dict(index=m['index'], path=m['path'], symbol=m['symbol'], sha256=m['sha256']) for m in members])

@@ -356,8 +356,12 @@ ROW_FIELDS = {'index', 'symbol', 'chartId', 'magic', 'linkedFresh', 'settingsMat
 def validate_portfolio_registration(value, ident, common_files, *, check_files=True):
     fields = {'schema', 'account', 'server', 'directory', 'buildId', 'expiresAtUtc',
               'aiMode', 'aiThreshold', 'aiProtocol', 'exposureMode', 'members'}
-    if set(value) != fields or type(value['schema']) is not int or value['schema'] != 1:
+    # A profile-staged deploy (beta.25) also binds its deploymentId, the nonce each staged child carries;
+    # a registration without it (beta.24) still validates, and the B43 EA then adopts nothing.
+    if set(value) not in (fields, fields | {'deploymentId'}) or type(value['schema']) is not int or value['schema'] != 1:
         raise ValueError('Invalid portfolio registration schema')
+    if 'deploymentId' in value and (not isinstance(value['deploymentId'], str) or not re.fullmatch('[a-f0-9]{32}', value['deploymentId'])):
+        raise ValueError('Invalid portfolio registration deployment')
     for key in ('account', 'server', 'directory', 'buildId'):
         if value[key] != ident[key]:
             raise ValueError('Portfolio registration identity mismatch')

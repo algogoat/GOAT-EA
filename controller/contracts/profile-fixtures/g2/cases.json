@@ -15,7 +15,7 @@
         "aiProtocol": 2
       },
       "chart": "g2/comments-crlf.chr",
-      "chartSha256": "bb3f40eb7ff03b54c4f2956877d10e2b866144a841a4dc903f0d909cc0c990dc",
+      "chartSha256": "d2334f732b7d4aad6fec750aa979f8f2c5f856a56f2234a8bee36c8014732e58",
       "note": "UTF-16 BOM, CRLF; comment lines holding \"=\" are kept, lines without a key are skipped, trailing spaces trimmed"
     },
     {
@@ -31,7 +31,7 @@
         "aiProtocol": 2
       },
       "chart": "g2/mixed-endings-padded.chr",
-      "chartSha256": "57af2769edc4028945266230920905808492420d36b275f56b8588b8644855ef",
+      "chartSha256": "963cec3bce03052a7535ee998ad2c5692d420677444fa6551ac3d9481d45ba80",
       "note": "UTF-8 without BOM, LF and CRLF mixed, leading/trailing spaces and tabs trimmed, no final line end"
     },
     {
@@ -47,7 +47,7 @@
         "aiProtocol": 2
       },
       "chart": "g2/ai-entry-filter-h4.chr",
-      "chartSha256": "ec4467730034e9f5e436400b13b5d53f214593b5aa7a74df9f7f8e5db51e86cc",
+      "chartSha256": "7adb508e27a5e64cc8eb4428774f5b4fe3b12730a8ee198205d06675238f5f43",
       "note": "aiMode 2: Mode_Bias and Bias_threshold replaced in place, Bias_Protocol and Mode_Bias_Trades appended in that order; H4 = period (1,4)"
     },
     {
@@ -63,7 +63,7 @@
         "aiProtocol": 2
       },
       "chart": "g2/ai-all-missing-d1.chr",
-      "chartSha256": "f837f469a1e384ed279b367d19be862790c2d8626e8564e1d506163f436e93bc",
+      "chartSha256": "fb0dbc71cc66eec3bf7aa331d8deb29616157f1b1eb1d2746089e583fd83a02d",
       "note": "aiMode 2 with no AI input in the SET: all four appended; D1 = period (1,24), MT5 stores a day as 24 hours"
     },
     {
@@ -79,7 +79,7 @@
         "aiProtocol": 2
       },
       "chart": "g2/utf8-bom-m5.chr",
-      "chartSha256": "7be64447aca8ffcc6c66cd02716d733ebe76be2bdf1343c07cacc2f0a52d857f",
+      "chartSha256": "6c3ce6dc5ee17b3eb3a8ef38031efa0b99934c781b0cfcc7beec81c809c559e4",
       "note": "UTF-8 with BOM; M5 = period (0,5)"
     }
   ],
@@ -116,8 +116,8 @@
     ],
     "files": {
       "chart01.chr": "d981d1e271b98980ecc92bb19d4a4b976983f6e60fb507dae2f4418cdc644cf5",
-      "chart02.chr": "8649c4d5bc5ae7e3175d901968fe26a996bfd06738d31f4b5028eb1cfb6cf87e",
-      "chart03.chr": "43f01bcc89ba0ed1420cf95c0fe2a61dfbb9d88f84315a64d5791ba972a1f91e",
+      "chart02.chr": "2ca86a00986f01fd63991db81384c9116543985e0efdac94857811f8093e6733",
+      "chart03.chr": "98a971560653a38a06d5f933179b528a7912ff7707cc29dd09c9bda5c9983a6c",
       "dashboard_state.tsv": "a4e166885ca89da2ad2b9d8641e2ec25bdbe8545ac264a234bc8465f0af64d94"
     }
   }

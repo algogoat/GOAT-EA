@@ -198,10 +198,12 @@ class FakeEA(threading.Thread):
             return False
         parsed = deploy_profile.parse_chart(chart.read_bytes())
         member = reg['members'][index]
-        # The deployment nonce must name the deployment folder of the row's SET path (adoption requires it).
+        # B43 adopts only a child whose nonce equals the registration's deploymentId; a registration without one binds none.
+        if not reg.get('deploymentId'):
+            return False
         expected = deploy_profile.child_input_lines(Path(member['path']).read_bytes(),
                                                     dict(aiMode=reg['aiMode'], aiThreshold=reg['aiThreshold'], aiProtocol=reg['aiProtocol']),
-                                                    Path(member['path']).parent.name)
+                                                    reg['deploymentId'])
         return (parsed['chart'].get('symbol') == member['symbol'] and parsed['expert'].get('expertmode') == '5'
                 and parsed['expert'].get('path') == 'Experts\\' + self.c.install['ea_relative_path'] and parsed['inputs'] == expected)
 

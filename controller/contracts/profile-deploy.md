@@ -137,21 +137,20 @@ No chart period is ever implicit.
      `Bias_threshold`, `Bias_Protocol` or `Mode_Bias_Trades` gets the policy value in place.
    - Missing names are then appended in that order.
    - With `aiMode` 0 the lines are unchanged. The nonce (step 7) comes after this step.
-7. **Deployment nonce** (goatai#1885 6034810079). Every staged child's single `EA_Desc` line gets
-   `@{deploy=<deploymentId>}` appended. `<deploymentId>` is the 32-hex deploy ID.
-   - For example, `EA_Desc=R99475c1ec8ee7bd0b661@{deploy=0123…cdef}`.
-   - It is applied **after** the AI policy, and nothing else changes.
-   - Trading is unchanged: the EA keeps only the text before `@` as the strategy (`ExtractFunctionKeysFromInputString`)
-     and ignores the unknown `deploy` key.
-   - A SET without exactly one `EA_Desc` line, or whose `EA_Desc` already holds `@`, `{` or `}`, is refused
-     (`SET_EA_DESC_UNSUPPORTED`). Frozen exports write a plain `EA_Desc`.
+7. **Deployment nonce** (goatai#1885 6034810079). The carrier was chosen by the EA half (B43 `b3e7ced`).
+   Every staged child holds the line `Studio_MonitorRunPath=deploy=<deploymentId>`, where `<deploymentId>` is the
+   32-hex deploy ID.
+   - It is applied **after** the AI policy. A SET line naming `Studio_MonitorRunPath` with its `""` default is
+     replaced in place; otherwise the line is appended as the last input. Nothing else changes.
+   - A SET that sets `Studio_MonitorRunPath` to anything else, or names it twice, is refused
+     (`SET_RUN_PATH_UNSUPPORTED`).
+   - The input was chosen because it is WriteSet-omitted and read only behind `Studio_ReadOnlyMonitor`, which every
+     child holds `false`, so trading is unchanged.
+   - `EA_Desc` is never touched: it becomes each sequence's order comment, and the fill lookup matches positions by it.
    - The dashboard chart01 carries no nonce.
-   - **EA side:** adoption requires the chart's `EA_Desc` to end in exactly
-     `@{deploy=<the deployment folder of the row's SET path>}`. That folder is
-     `Common\Files\GOAT\Deployments\<deploymentId>\`, already in the registration and the TSV, so no schema
-     changes.
-   - `settingsMatch` exempts exactly that suffix on `EA_Desc` and nothing else.
-   - So a chart GOAT did not stage for this deployment can never be adopted, even with the same SET.
+   - **EA side:** adoption requires that input to equal exactly `deploy=<registration deploymentId>`, and
+     `settingsMatch` pins it (section 3). So a chart GOAT did not stage for this deployment can never be adopted,
+     even with the same SET.
 
 The dashboard chart01 uses the same frame on `M1` with the symbol of member 0. Its inputs, in this order, are
 `Mode_Operation=8`, `Dashboard_Resume_Saved=true`, `Mode_Bias=1`, `Bias_Protocol=2`, `Bias_threshold=50` and `EA_Desc=GOAT Dashboard`.
@@ -202,6 +201,14 @@ This is the AgentPortfolio mailbox, unchanged: the same envelope, registration, 
 - Rows keep today's exact fields. An unlinked row reads `chartId 0, magic 0, linkedFresh false`.
 - The EA must never answer `children_linked` while any row is unlinked.
 
+**Registration.** The registration gains one optional field, `deploymentId` (32 lowercase hex), which the
+controller always writes.
+
+- The B43 EA binds adoption and `settingsMatch` to it.
+- An 11-field (beta.24) registration still validates on both sides, but the B43 EA then adopts nothing
+  (`child_deploy_unbound`).
+- Any other shape is refused.
+
 **Controller behaviour.**
 
 | Step | Value |
@@ -236,9 +243,9 @@ row (`cid=0`) is matched against every chart from `ChartFirst`/`ChartNext`:
 1. Skip the dashboard's own chart and charts already claimed by a row.
 2. Require `ChartSymbol`/`ChartPeriod` equal to the row's, and `CHART_EXPERT_NAME` equal to the EA name.
 3. Require a magic from `GoatFindMagicByCid` that is greater than 0 and unused by other rows.
-4. Require the chart's `EA_Desc` to end in this deployment's nonce (section 2.2, step 7).
-5. Require `GoatChildAuditMaps(frozen SET, AI policy, ChartSaveTemplate snapshot, expert path)` to be true, with only
-   that nonce suffix exempted.
+4. Require the chart's `Studio_MonitorRunPath` to be `deploy=<registration deploymentId>` (section 2.2, step 7).
+5. Require `GoatChildAuditMaps(frozen SET, AI policy, ChartSaveTemplate snapshot, expert path, deploy tag)` to be
+   true. That input is pinned to the nonce, and everything else is compared exactly.
 
 A row is adopted only when **exactly one** chart matches. The EA then sets `cid`/`magic`, deletes the pending
 `Magic` GV, sets status Linked and runs `SaveDashboardConfig`. Zero or several matches leave the row alone, with
@@ -298,5 +305,5 @@ error says so and asks for `deploy-stop`. A later `deploy-load` of the same plan
 |---|---|
 | `kestrel-b35-01.set` + `g1-buildtemplate-kestrel.tpl` | **G1.** The writer's `<expert>`…`</expert>` (aiMode 0, `GOAT-EA\GOAT V1.49.ex5`) equals the real BuildTemplate output, line for line. |
 | `g2/*.set` → `g2/*.chr`, `g2/dashboard-eurusd.chr`, `g2/profile/*` | **G2.** Frozen writer bytes covering: `;` lines, CRLF/LF mixes, padding, UTF-8 with and without a BOM, aiMode 0 and 2, the M1, M5, H4 and D1 periods, and the deployment nonce. Each case's `deploymentId` is in `cases.json`. `g2/profile` holds the full profile for a two-member plan, including `dashboard_state.tsv`; its nonce equals the deployment folder of the rows' SET paths. The MQL writer must produce the same bytes. |
-| `g3-b35-chart02-mt5-saved.chr` + `g3-b35-dashboard-rows.tsv` | **G3.** MT5's own save of a child built from `kestrel-b35-01.set`. The frame matches (except the version and folder) and the inputs are audit-equal once the nonce suffix is removed. The TSV row's `cid` equals the chart's `id=`. |
+| `g3-b35-chart02-mt5-saved.chr` + `g3-b35-dashboard-rows.tsv` | **G3.** MT5's own save of a child built from `kestrel-b35-01.set`. The frame matches (except the version and folder) and the inputs are audit-equal apart from the nonce in `Studio_MonitorRunPath`. The TSV row's `cid` equals the chart's `id=`. |
 | `g3-t3-saved-native-e1.tpl` | **G3.** T3's save of the G1 template, with `expertmode=4`: the D2 evidence. The inputs are audit-equal; the extra names are WriteSet-omitted or CA41-declared defaults. |

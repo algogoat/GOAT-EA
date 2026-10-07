@@ -64,7 +64,9 @@ class ProfileStagedDeployTests(DeployFixture):
         files = {p.name: p.read_bytes() for p in where['profile'].iterdir()}
         members = [dict(name=m['fileName'], symbol=m['symbol'], raw=(where['sets'] / m['fileName']).read_bytes()) for m in plan['members']]
         self.assertEqual(files, deploy_profile.profile_files(self.c.install['ea_relative_path'], plan['policy'], members, 'e' * 32))
-        self.assertIn('EA_Desc=Trend 0@{deploy=' + 'e' * 32 + '}', deploy_profile.decode_chart(files['chart02.chr']))
+        self.assertIn('\r\nStudio_MonitorRunPath=deploy=' + 'e' * 32 + '\r\n</inputs>', deploy_profile.decode_chart(files['chart02.chr']))
+        registration = json.loads((mailbox.portfolio_root(self.c) / 'registration.json').read_text())
+        self.assertEqual(registration['deploymentId'], 'e' * 32, 'the registration binds the nonce the EA requires')
         dashboard = deploy_profile.parse_chart(files['chart01.chr'])
         self.assertEqual(deploy_profile.audit_inputs(dashboard['inputs'])['Mode_Operation'], '8')
         self.assertEqual(dashboard['expert'], dict(name='GOAT V1.48', path='Experts\\GOAT-EA\\GOAT V1.48.ex5', expertmode='5'))
@@ -75,6 +77,21 @@ class ProfileStagedDeployTests(DeployFixture):
         self.assertEqual((journal['profile_format'], journal['attempt'], journal['link_result']), ('profile-staged-v1', 1, 'children_linked'))
         self.assertEqual(journal['linked_rows'], [dict(index=0, chartId=1000, magic=5000), dict(index=1, chartId=1001, magic=5001)])
         self.assertGreaterEqual(ea.link_requests, 1)
+
+    def test_the_registration_binds_the_deployment_and_beta24_registrations_still_validate(self):
+        self.start_ea(pairing='none')
+        with self.relaunch():
+            deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)
+        registration = json.loads((mailbox.portfolio_root(self.c) / 'registration.json').read_text())
+        self.assertEqual(registration['deploymentId'], 'e' * 32)
+        common = self.c.install['common_files_root']
+        mailbox.validate_portfolio_registration(registration, self.ident, common)
+        mailbox.validate_portfolio_registration({k: v for k, v in registration.items() if k != 'deploymentId'}, self.ident, common)
+        for bad in ('E' * 32, 'e' * 31, 7, None):
+            with self.subTest(deploymentId=bad), self.assertRaisesRegex(ValueError, 'deployment'):
+                mailbox.validate_portfolio_registration(registration | dict(deploymentId=bad), self.ident, common)
+        with self.assertRaisesRegex(ValueError, 'schema'):
+            mailbox.validate_portfolio_registration(registration | dict(extra=1), self.ident, common)
 
     def test_pending_children_are_asked_again_until_every_row_is_linked(self):
         ea = self.start_ea(pairing='none', pending_polls=3)
@@ -252,7 +269,8 @@ class ProfileStagedDeployTests(DeployFixture):
         cases = (([member(0, name='GOAT V1.48 EURUSD,M15_Trds0.set')], 'SET_PERIOD_UNSUPPORTED', timeframe + r' \(M15\)'),
                  ([member(0, name='GOAT V1.48 EURUSD,M30_Trds0.set')], 'SET_PERIOD_UNSUPPORTED', timeframe + r' \(M30\)'),
                  ([member(0, name='GOAT V1.48 EURUSD,W1_Trds0.set')], 'SET_PERIOD_UNSUPPORTED', timeframe),
-                 ([member(0, content=('Lots=0.1\r\n').encode('utf-16'))], 'SET_EA_DESC_UNSUPPORTED', 'exactly one EA_Desc'),
+                 ([member(0, content=('EA_Desc=x\r\nStudio_MonitorRunPath=C:\\x\r\n').encode('utf-16'))], 'SET_RUN_PATH_UNSUPPORTED',
+                  'only a Studio monitor uses'),
                  ([member(0), twin], 'DUPLICATE_MEMBER_SETTINGS',
                   r'^Two members have identical settings on the same symbol and timeframe; remove one'))
         for members, code, message in cases:

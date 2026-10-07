@@ -19,7 +19,7 @@ EA = 'GOAT-EA\\GOAT V1.49.ex5'
 AI_OFF = dict(aiMode=0, aiThreshold=50, aiProtocol=2)
 AI_ON = dict(aiMode=2, aiThreshold=50, aiProtocol=2)
 DEPLOYMENT = '0123456789abcdef0123456789abcdef'
-NONCE = '@{deploy=' + DEPLOYMENT + '}'
+NONCE = 'Studio_MonitorRunPath=deploy=' + DEPLOYMENT
 # Declared by V1.49 but omitted by WriteSet (the audit's omitted list) or added by CA41 (declared defaults).
 V149_DECLARED_EXTRAS = {'Dashboard_Resume_Saved', 'Studio_MonitorRunPath', 'Studio_ReadOnlyMonitor', 'GOAT_FitnessRunNonce',
                         'Sequence_Export_Enabled', 'Sequence_Export_End', 'Sequence_Export_Id', 'Sequence_Export_Model',
@@ -59,12 +59,11 @@ class WriterGoldenTests(unittest.TestCase):
         start, end = template.index('<expert>'), template.index('</expert>')
         written = profile.expert_block(EA, profile.effective_input_lines(fixture('kestrel-b35-01.set'), AI_OFF))
         self.assertEqual(written, template[start:end + 1])
-        # ...and the staged chart holds exactly that block, with the deployment nonce on its one EA_Desc line.
+        # ...and the staged chart holds exactly that block plus the deployment nonce as its last input.
         chart = chart_lines(profile.child_chart(dict(name='GOAT V1.49 EURUSD,M1_B35-01_Kestrel-Trend-Breakout.set', symbol='EURUSD',
                                                      raw=fixture('kestrel-b35-01.set')), EA, AI_OFF, DEPLOYMENT))
-        self.assertEqual(chart[chart.index('<expert>'):chart.index('</expert>') + 1],
-                         [line + NONCE if line.startswith('EA_Desc=') else line for line in written])
-        self.assertIn('EA_Desc=R99475c1ec8ee7bd0b661' + NONCE, chart)
+        self.assertEqual(chart[chart.index('<expert>'):chart.index('</expert>') + 1], written[:-2] + [NONCE] + written[-2:])
+        self.assertIn('EA_Desc=R99475c1ec8ee7bd0b661', chart, 'EA_Desc (the order comment) is never touched')
         self.assertTrue(any(line.startswith('; PF=') for line in written), 'BuildTemplate keeps ; lines that hold =')
 
     def test_g2_every_case_is_byte_for_byte_the_frozen_golden(self):
@@ -105,9 +104,9 @@ class WriterGoldenTests(unittest.TestCase):
                          {k: ours['chart'][k] for k in ('symbol', 'period_type', 'period_size')})
         self.assertNotIn('id', ours['chart'], 'the writer leaves id= to MT5')
         expected, actual = profile.audit_inputs(ours['inputs']), profile.audit_inputs(saved['inputs'])
-        # The staged child differs only by the deployment nonce, which adoption requires and settingsMatch exempts.
-        self.assertEqual(expected['EA_Desc'], actual['EA_Desc'] + NONCE)
-        expected['EA_Desc'] = expected['EA_Desc'].removesuffix(NONCE)
+        # The staged child differs only by the deployment nonce, which adoption requires and settingsMatch pins.
+        self.assertEqual((expected['Studio_MonitorRunPath'], actual['Studio_MonitorRunPath']), ('deploy=' + DEPLOYMENT, ''))
+        expected['Studio_MonitorRunPath'] = ''
         for name, value in OMITTED_DEFAULTS.items():
             expected.setdefault(name, value)
         self.assertEqual(set(expected), set(actual))
@@ -122,9 +121,9 @@ class WriterGoldenTests(unittest.TestCase):
         self.assertEqual({k: v for k, v in saved['expert'].items() if k != 'expertmode'},
                          {k: v for k, v in ours['expert'].items() if k != 'expertmode'})
         expected, actual = profile.audit_inputs(ours['inputs']), profile.audit_inputs(saved['inputs'])
-        self.assertEqual(expected['EA_Desc'], actual['EA_Desc'] + NONCE)
-        expected['EA_Desc'] = expected['EA_Desc'].removesuffix(NONCE)
-        self.assertEqual(set(actual) - set(expected), V149_DECLARED_EXTRAS)
+        self.assertEqual((expected['Studio_MonitorRunPath'], actual['Studio_MonitorRunPath']), ('deploy=' + DEPLOYMENT, ''))
+        expected['Studio_MonitorRunPath'] = ''
+        self.assertEqual(set(actual) - set(expected), V149_DECLARED_EXTRAS - {'Studio_MonitorRunPath'})
         self.assertEqual([name for name in expected if not profile.audit_equal(name, expected[name], actual[name])], [])
 
     def test_g3_each_saved_rows_cid_is_its_chart_files_id(self):
@@ -148,7 +147,7 @@ class WriterRuleTests(unittest.TestCase):
         return chart_lines(profile.child_chart(dict(name=name, symbol=name.split(' ')[2].split(',')[0], raw=raw), EA, policy, DEPLOYMENT))
 
     def inputs(self, lines):
-        return [line for line in lines[lines.index('<inputs>') + 1:lines.index('</inputs>')] if line != 'EA_Desc=t' + NONCE]
+        return [line for line in lines[lines.index('<inputs>') + 1:lines.index('</inputs>')] if line not in ('EA_Desc=t', NONCE)]
 
     def test_encoding_is_utf16le_with_bom_and_crlf_and_every_chart_has_expertmode_5(self):
         raw = profile.child_chart(dict(name='GOAT V1.49 EURUSD,M1_x.set', symbol='EURUSD', raw=u16('EA_Desc=a\r\nA=1\r\n')), EA, AI_OFF, DEPLOYMENT)
@@ -232,22 +231,24 @@ class WriterRuleTests(unittest.TestCase):
         lines = self.inputs(self.child('Mode_Bias=1\r\nRisk=1', policy=dict(aiMode=2, aiThreshold=70, aiProtocol=2)))
         self.assertEqual(lines, ['Mode_Bias=2', 'Risk=1', 'Bias_threshold=70', 'Bias_Protocol=2', 'Mode_Bias_Trades=0'])
 
-    def test_every_child_carries_the_deployment_nonce_on_its_one_ea_desc_line(self):
-        lines = self.inputs(self.child('Risk=1'))
+    def test_every_child_carries_the_deployment_nonce_and_nothing_else_changes(self):
         chart = self.child('Risk=1')
-        self.assertIn('EA_Desc=t' + NONCE, chart)
-        self.assertEqual(lines, ['Risk=1'], 'nothing else changes')
-        self.assertEqual(profile.audit_inputs(['EA_Desc=t' + NONCE])['EA_Desc'].split('@')[0], 't', 'the EA keeps the text before @ as the strategy')
-        for raw, label in ((u16('Risk=1\r\n'), 'no EA_Desc'), (u16('EA_Desc=a\r\nEA_Desc=b\r\n'), 'two EA_Desc'),
-                           (u16('EA_Desc=a@{mode=EXPORT}\r\n'), 'EA_Desc already keyed')):
+        inputs = chart[chart.index('<inputs>') + 1:chart.index('</inputs>')]
+        self.assertEqual(inputs, ['EA_Desc=t', 'Risk=1', NONCE], 'appended last; EA_Desc (the order comment) untouched')
+        # A SET carrying the input with its "" default is replaced in place; any other value is refused.
+        inplace = self.child('', raw=u16('EA_Desc=t\r\nStudio_MonitorRunPath=\r\nRisk=1\r\n'))
+        self.assertEqual(inplace[inplace.index('<inputs>') + 1:inplace.index('</inputs>')], ['EA_Desc=t', NONCE, 'Risk=1'])
+        for raw, label in ((u16('EA_Desc=t\r\nStudio_MonitorRunPath=C:\\run\r\n'), 'a monitor run path'),
+                           (u16('Studio_MonitorRunPath=\r\nStudio_MonitorRunPath=\r\n'), 'twice')):
             with self.subTest(label=label), self.assertRaises(Refusal) as caught:
                 self.child('', raw=raw)
-            self.assertEqual(caught.exception.code, profile.SET_EA_DESC_REFUSED)
+            self.assertEqual(caught.exception.code, profile.SET_NONCE_INPUT_REFUSED)
         for bad in ('E' * 32, 'e' * 31, None):
             with self.subTest(deployment=bad), self.assertRaises(ValueError):
                 profile.deploy_nonce(bad)
-        # A comment that mentions EA_Desc is not the input.
-        self.assertIn('; EA_Desc=old', self.child('; EA_Desc=old\r\nRisk=1'))
+        # A comment that mentions the input is not the input; the dashboard chart carries no nonce.
+        self.assertIn('; Studio_MonitorRunPath=x', self.child('; Studio_MonitorRunPath=x\r\nRisk=1'))
+        self.assertNotIn('deploy=', profile.decode_chart(profile.dashboard_chart('EURUSD', EA)))
 
     def test_unsafe_symbols_and_ea_paths_are_refused(self):
         for symbol in ('EUR USD', 'EUR<', '', 'x' * 65):

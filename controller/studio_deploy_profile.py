@@ -37,12 +37,13 @@ MT5_PERIODS = {'M1': (0, 1), 'M5': (0, 5), 'M15': (0, 15), 'M30': (0, 30), 'H1':
 # The timeframes beta.25 deploys (goatai#1885 6034765935): M15 and M30 are refused in plain English until the
 # B42 list adds them (the EA already reads the whole token; Balanced35 is all M1).
 PERIODS = {token: MT5_PERIODS[token] for token in ('M1', 'M5', 'H1', 'H4', 'D1')}
-# Deployment nonce (goatai#1885 6034810079): every staged child's EA_Desc carries @{deploy=<deploymentId>}. The EA
-# keeps only the text before '@' as the strategy (ExtractFunctionKeysFromInputString), so trading is unchanged;
-# adoption requires the nonce to equal the deployment folder of the row's SET path, so only a child GOAT
-# staged for this deployment can ever be adopted.
-DEPLOY_NONCE_INPUT = 'EA_Desc'
-DEPLOY_NONCE_KEY = 'deploy'
+# Deployment nonce (goatai#1885 6034810079, carrier chosen by the EA half, B43 b3e7ced): every staged child holds
+# Studio_MonitorRunPath=deploy=<deploymentId>. That sinput is WriteSet-omitted and read only behind
+# Studio_ReadOnlyMonitor, which every child holds false, so trading is unchanged (EA_Desc is not used: it becomes
+# each sequence's order comment). Adoption requires it to equal the registration's deploymentId and settingsMatch
+# pins it, so a hand-added chart with the same SET is never adopted.
+DEPLOY_NONCE_INPUT = 'Studio_MonitorRunPath'
+DEPLOY_NONCE_PREFIX = 'deploy='
 DEPLOYMENT_ID = re.compile(r'[a-f0-9]{32}')
 AI_POLICY_NAMES = ('Mode_Bias', 'Bias_threshold', 'Bias_Protocol', 'Mode_Bias_Trades')
 # StringTrimLeft/StringTrimRight remove spaces, tabs and line feeds.
@@ -53,7 +54,7 @@ MAX_INPUT_LINES = 4096
 PERIOD_REFUSED = 'SET_PERIOD_UNSUPPORTED'
 SET_LINE_REFUSED = 'SET_LINE_UNSUPPORTED'
 SET_EMPTY = 'SET_NO_INPUTS'
-SET_EA_DESC_REFUSED = 'SET_EA_DESC_UNSUPPORTED'
+SET_NONCE_INPUT_REFUSED = 'SET_RUN_PATH_UNSUPPORTED'
 DUPLICATE_MEMBER_SETTINGS = 'DUPLICATE_MEMBER_SETTINGS'
 TIMEFRAME_MESSAGE = "This portfolio has a timeframe the app can't deploy yet ({token}): {name}. The app deploys M1, M5, H1, H4 and D1."
 DUPLICATE_MESSAGE = 'Two members have identical settings on the same symbol and timeframe; remove one ({first} and {second}).'
@@ -147,23 +148,23 @@ def effective_input_lines(raw, policy):
 
 
 def deploy_nonce(deployment_id):
+    """The nonce line every staged child carries: Studio_MonitorRunPath=deploy=<deploymentId>."""
     if not isinstance(deployment_id, str) or not DEPLOYMENT_ID.fullmatch(deployment_id):
         raise ValueError('Invalid deployment ID for the deploy nonce')
-    return '@{' + DEPLOY_NONCE_KEY + '=' + deployment_id + '}'
+    return DEPLOY_NONCE_INPUT + '=' + DEPLOY_NONCE_PREFIX + deployment_id
 
 
 def with_deploy_nonce(lines, deployment_id):
-    """The staged child's inputs: the one EA_Desc line gets @{deploy=<deploymentId>} appended (nothing else changes).
-    A SET without exactly one EA_Desc line, or whose EA_Desc already holds '@' keys, is refused."""
+    """The staged child's inputs plus the nonce: a SET line naming Studio_MonitorRunPath (allowed only with its ""
+    default) is replaced in place, otherwise the nonce line is appended last. Nothing else changes."""
     nonce = deploy_nonce(deployment_id)
     found = [index for index, line in enumerate(lines) if line.find('=') > 0 and line[:line.find('=')] == DEPLOY_NONCE_INPUT]
-    if len(found) != 1:
-        raise Refusal('Each member needs exactly one EA_Desc line so GOAT can mark the chart it starts (found '
-                      + str(len(found)) + ').', SET_EA_DESC_REFUSED)
-    line = lines[found[0]]
-    if '@' in line or '{' in line or '}' in line:
-        raise Refusal("This member's EA_Desc already carries '@' keys (" + line[:80] + '); export it again without them.', SET_EA_DESC_REFUSED)
-    return lines[:found[0]] + [line + nonce] + lines[found[0] + 1:]
+    if len(found) > 1 or any(lines[index] != DEPLOY_NONCE_INPUT + '=' for index in found):
+        raise Refusal('This member sets Studio_MonitorRunPath, which only a Studio monitor uses; export it again without it.',
+                      SET_NONCE_INPUT_REFUSED)
+    if found:
+        return lines[:found[0]] + [nonce] + lines[found[0] + 1:]
+    return list(lines) + [nonce]
 
 
 def child_input_lines(raw, policy, deployment_id):

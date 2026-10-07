@@ -38,12 +38,14 @@ class StartProtocolCandidateTests(unittest.TestCase):
             self.assertIn('#define ' + flag + '\n', text)
         for header in ('GOATEvidenceEnd.mqh', 'GOATTesterStopConfirm.mqh', 'GOATEADeviceActivation.mqh'):
             self.assertIn(header, identity['sources'])
-        self.assertEqual(sorted(identity['consolidates']), ['CA41'])
+        self.assertEqual(sorted(identity['consolidates']), ['AA41', 'CA41'])
         b41 = json.loads((RETAINED_B41 / 'identity.json').read_text(encoding='utf-8'))
         self.assertEqual(sorted(b41['consolidates']), ['BR41'])
-        # Only the entrypoint (build ID and marker) and the child audit differ from B41.
+        # Only the entrypoint (build ID and marker), the child audit (CA41) and the deploy path's
+        # asynchronous agent attach (AA41: Dashboard.mqh and GOATPortfolioSetupControl.mqh) differ from B41.
         self.assertEqual(sorted(name for name in identity['sources'] if identity['sources'][name] != b41['sources'].get(name)),
-                         ['GOAT V1.49.mq5', 'GOATPortfolioChildAudit.mqh'])
+                         ['Dashboard.mqh', 'GOAT V1.49.mq5', 'GOATPortfolioChildAudit.mqh', 'GOATPortfolioSetupControl.mqh'])
+        self.assertIn('bool CGOATDashboard::AgentBeginDeployRow(const int idx)', (ROOT / 'Dashboard.mqh').read_text(encoding='utf-8-sig'))
         self.assertIn('"Sequence_Export_Enabled","Sequence_Export_Id","Sequence_Export_Start","Sequence_Export_End","Sequence_Export_Model","GOAT_FitnessRunNonce"',
                       (ROOT / 'GOATPortfolioChildAudit.mqh').read_text(encoding='utf-8-sig'))
         self.assertIn('#define GOAT_RECORDED_BIAS_LIVE_GATE_V149\n', text)

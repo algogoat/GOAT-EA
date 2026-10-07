@@ -91,11 +91,40 @@ string GoatPortfolioSnapshot(const string id,const string action,const string ha
       +",\"rows\":"+rows+"}";
 }
 
+// One deploy_next in flight. Its "started" receipt is already written; the final
+// receipt is written here once the dashboard's timer-driven handshake settles.
+bool   GoatPortfolioAttachPending=false;
+string GoatPortfolioAttachId="";
+string GoatPortfolioAttachHash="";
+string GoatPortfolioAttachResult="";
+
+// Returns true while a deploy_next is unresolved, so no other request is read.
+bool GoatPortfolioAttachContinue(const string root)
+{
+   if(!GoatPortfolioAttachPending) return false;
+   if(GoatPortfolioAttachResult=="")
+   {
+      int state=DashboardDialog.AgentPollDeployRow();
+      if(state==0) return true;
+      GoatPortfolioAttachResult=(state>0 ? "child_attached" : "child_attach_failed");
+   }
+   int owner=FileOpen(root+"owner.lock",FILE_READ|FILE_WRITE|FILE_BIN|FILE_COMMON);
+   if(owner==INVALID_HANDLE) return true;
+   bool written=GoatSetupWrite(root+GoatPortfolioAttachId+".json",
+      GoatPortfolioSnapshot(GoatPortfolioAttachId,"deploy_next",GoatPortfolioAttachHash,GoatPortfolioAttachResult));
+   FileClose(owner);
+   if(!written) return true;
+   GoatPortfolioAttachPending=false;
+   GoatPortfolioAttachId=""; GoatPortfolioAttachHash=""; GoatPortfolioAttachResult="";
+   return false;
+}
+
 void GoatPortfolioSetupPoll(void)
 {
    if(Mode_Operation!=Operation_Dash || MQLInfoInteger(MQL_TESTER) || GOATDeviceActivationOnly()
       || AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO) return;
    string root="GOAT\\AgentPortfolio\\"+GoatTerminalToken()+"\\";
+   if(GoatPortfolioAttachContinue(root) || GoatPortfolioAttachPending) return;
    string registration="",request="",hash="";
    if(!GoatPortfolioRead(root+"registration.json",registration) || !GOATSha256Utf8(registration,hash)) return;
    SGOATJsonToken reg[]; long schema=0,account=0,expires=0,ai=0,threshold=0,protocol=0,exposure=0;
@@ -166,7 +195,18 @@ void GoatPortfolioSetupPoll(void)
          }
          if(partial) result="rejected_partial_deployment";
          else if(next<0) result="all_attached";
-         else result=(DashboardDialog.AgentDeployRow(next) ? "child_attached" : "child_attach_failed");
+         else if(DashboardDialog.AgentBeginDeployRow(next))
+         {
+            // The template applies only after this handler returns; the "started"
+            // receipt stays until GoatPortfolioAttachContinue settles the handshake.
+            GoatPortfolioAttachPending=true;
+            GoatPortfolioAttachId=id;
+            GoatPortfolioAttachHash=hash;
+            GoatPortfolioAttachResult="";
+            FileClose(owner);
+            return;
+         }
+         else result="child_attach_failed";
       }
       else if(action=="apply_policy")
       {

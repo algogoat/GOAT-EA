@@ -104,8 +104,16 @@ class CGOATDashboard : public CAppDialog
 public:
    CWndClient  c_Wnd_Table,c_Wnd_Export;
    bool        m_agent_setup_quiet;
+   // Agent attach is asynchronous: ChartApplyTemplate only queues the template, so the
+   // handshake is polled on later timer ticks instead of inside the requesting handler.
+   bool        m_agent_attach_pending;
+   int         m_agent_attach_idx;
+   string      m_agent_attach_tpl;
+   uint        m_agent_attach_start;
+   string      m_child_attach_step;
    bool        AgentConfigureAI(const int mode,const int threshold,const int protocol);
-   bool        AgentDeployRow(const int idx);
+   bool        AgentBeginDeployRow(const int idx);
+   int         AgentPollDeployRow(void);
    bool        AgentExposurePolicy(const int mode);
    CLabel      m_lblHeading,m_lblExport;
    
@@ -246,6 +254,9 @@ public:
    bool           SaveTemplateAndCopy(const string tplName,const string tplText);
    bool           DeleteCopiedTemplate(const string tplName);
    bool           ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string tplName);
+   bool           BeginChildAttach(const int idx,ENUM_TIMEFRAMES tf,const string tplName);
+   bool           CompleteChildAttach(const int idx,const string tplName);
+   void           FailChildAttachTimeout(const int idx,const string tplName);
    bool           NewSingleInstance(const int idx);
    void           GetOpenStats(const string sym,long magic,int &open_trades,double &open_lots,double &open_pl,double &open_pl_day,double &open_pl_week,string &comment);
    void           CalcHistoryStatsFast(int idx,int  &new_trd,double &pl_d,double &pl_w,double &pl_all);
@@ -324,40 +335,55 @@ public:
     return ArraySize(g_sets);
    }
 //––––– activate row : open chart ▸ attach EA ▸ mark ✔ –––––––––––––––
-   void DoActivate(int idx)
+   // Shared by the human (synchronous) and agent (asynchronous) launch paths.
+   bool PrepareChildLaunch(const int idx,ENUM_TIMEFRAMES &tf,string &tplName)
    {
-    if(idx<0 || idx>=ArraySize(g_sets)) return;
+    if(idx<0 || idx>=ArraySize(g_sets)) return false;
+    if(m_agent_attach_pending)
+    {
+       Print("Dashboard child launch blocked: an agent child attachment is still in progress.");
+       return false;
+    }
     if(StringFind(EA_Path,"Experts\\")!=0 || !EndsWith(EA_Path,"\\"+EA_Name_+".ex5"))
     {
        Print("Dashboard child launch blocked: invalid current expert path.");
-       return;
+       return false;
     }
-    if(ArraySize(btn_Action)>idx+2 && btn_Action[idx+2].Text()=="Navigate") return;
+    if(ArraySize(btn_Action)>idx+2 && btn_Action[idx+2].Text()=="Navigate") return false;
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
     if(g_sets[idx].cid>0 || g_sets[idx].magic>0)
     {
        if(!m_agent_setup_quiet) MessageBox("This row already has a child identity, but is not linked.\n\nNo duplicate EA will be launched. Inspect the existing child chart before creating a new portfolio.",
                   "Existing Child Requires Inspection",MB_OK|MB_ICONWARNING);
-       return;
+       return false;
     }
-    if(!PrepareAILaunchPolicy(true)) return;
+    if(!PrepareAILaunchPolicy(true)) return false;
 #endif
     //GlobalVariableSet("Dashboard_ChartID",(double)ChartID());
     // --- timeframe token from filename (",M1" etc.)
     int c = StringFind(g_sets[idx].name,",");
     string tfTok = (c>0 ? StringSubstr(g_sets[idx].name,c+1,2) : "M1");
-    ENUM_TIMEFRAMES tf = TF(tfTok);
+    tf = TF(tfTok);
     // --- build & save template
-    string tplName   = g_sets[idx].name;                 // e.g. "GOAT EURUSD,M1.set"
+    tplName   = g_sets[idx].name;                        // e.g. "GOAT EURUSD,M1.set"
     StringReplace(tplName,".set",".tpl");                // -> "GOAT EURUSD,M1.tpl"
     string tplText = BuildTemplate(EA_Name_,EA_Path,g_sets[idx].path);
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
-    if(tplText=="") return;
+    if(tplText=="") return false;
 #endif
-    if(!SaveTemplateAndCopy(tplName,tplText)) return;
-    // --- open chart & apply template
+    if(!SaveTemplateAndCopy(tplName,tplText)) return false;
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
     AppendAILaunchAudit(idx,"PREPARED");
+#endif
+    return true;
+   }
+   void DoActivate(int idx)
+   {
+    ENUM_TIMEFRAMES tf=PERIOD_M1;
+    string tplName="";
+    if(!PrepareChildLaunch(idx,tf,tplName)) return;
+    // --- open chart & apply template
+#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
     bool applied=ApplyTemplate(idx,tf,tplName);
     AppendAILaunchAudit(idx,(applied ? "LINKED" : "APPLY_FAILED"));
     UpdateAILaunchControls();
@@ -976,6 +1002,11 @@ EVENT_MAP_END(CAppDialog)
 CGOATDashboard::CGOATDashboard()
 {
    m_agent_setup_quiet=false;
+   m_agent_attach_pending=false;
+   m_agent_attach_idx=-1;
+   m_agent_attach_tpl="";
+   m_agent_attach_start=0;
+   m_child_attach_step="";
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
    m_ai_launch_mode=GOAT_AI_LAUNCH_AS_OPTIMIZED;
    m_ai_launch_threshold=60;
@@ -1080,15 +1111,74 @@ bool CGOATDashboard::AgentConfigureAI(const int mode,const int threshold,const i
    return SaveDashboardConfig();
 }
 
-bool CGOATDashboard::AgentDeployRow(const int idx)
+// Starts one agent attach and returns without waiting. ChartApplyTemplate only queues
+// the template; on B41 (T3, 2026-10-06) no child started during a 20-second wait inside
+// this handler, so the handshake is polled by AgentPollDeployRow on later timer ticks,
+// with the template kept on disk until it settles. False means nothing is pending.
+bool CGOATDashboard::AgentBeginDeployRow(const int idx)
 {
+   m_child_attach_step="preflight";
+   if(m_agent_attach_pending) return false;
    if(AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO || !TerminalInfoInteger(TERMINAL_CONNECTED)
       || TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || PositionsTotal()!=0 || OrdersTotal()!=0
       || idx<0 || idx>=ArraySize(g_sets) || g_sets[idx].cid>0 || g_sets[idx].magic>0) return false;
    m_agent_setup_quiet=true;
-   DoActivate(idx);
+   ENUM_TIMEFRAMES tf=PERIOD_M1;
+   string tplName="";
+   m_child_attach_step="prepare";
+   bool started=PrepareChildLaunch(idx,tf,tplName);
+   if(started)
+   {
+      started=BeginChildAttach(idx,tf,tplName);
+      if(!started)
+      {
+         AppendAILaunchAudit(idx,"APPLY_FAILED");
+         UpdateAILaunchControls();
+      }
+   }
    m_agent_setup_quiet=false;
-   return(g_sets[idx].cid>0 && g_sets[idx].magic>0 && SaveDashboardConfig());
+   if(!started)
+   {
+      long failed_cid=0;
+      if(idx>=0 && idx<ArraySize(g_sets)) failed_cid=g_sets[idx].cid;
+      GoatDeploymentPhase("child_attach_failed",failed_cid,m_child_attach_step);
+      return false;
+   }
+   m_agent_attach_pending=true;
+   m_agent_attach_idx=idx;
+   m_agent_attach_tpl=tplName;
+   m_agent_attach_start=GetTickCount();
+   return true;
+}
+
+// Timer-driven completion of AgentBeginDeployRow, with the same 20-second registration
+// budget as the human path. 0 = still waiting, 1 = linked and saved, -1 = failed.
+int CGOATDashboard::AgentPollDeployRow(void)
+{
+   if(!m_agent_attach_pending) return -1;
+   int idx=m_agent_attach_idx;
+   string tplName=m_agent_attach_tpl;
+   bool linked=NewSingleInstance(idx);
+   if(!linked && GetTickCount()-m_agent_attach_start<=20000) return 0;
+   m_agent_attach_pending=false;
+   m_agent_attach_idx=-1;
+   m_agent_attach_tpl="";
+   m_agent_setup_quiet=true;
+   bool ok=false;
+   if(linked)
+      ok=CompleteChildAttach(idx,tplName);
+   else
+      FailChildAttachTimeout(idx,tplName);
+   AppendAILaunchAudit(idx,(ok ? "LINKED" : "APPLY_FAILED"));
+   UpdateAILaunchControls();
+   m_agent_setup_quiet=false;
+   if(ok && g_sets[idx].cid>0 && g_sets[idx].magic>0)
+   {
+      m_child_attach_step="linked_state_save";
+      if(SaveDashboardConfig()) return 1;
+   }
+   GoatDeploymentPhase("child_attach_failed",g_sets[idx].cid,m_child_attach_step);
+   return -1;
 }
 
 bool CGOATDashboard::AgentExposurePolicy(const int mode)
@@ -3123,11 +3213,14 @@ bool CGOATDashboard::DeleteCopiedTemplate(const string tplName)
    return true;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
-bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string tplName)
+// Opens the child chart and queues its template. ChartApplyTemplate only adds the
+// template to the chart's message queue; nothing here waits for the child.
+bool CGOATDashboard::BeginChildAttach(const int idx,ENUM_TIMEFRAMES tf,const string tplName)
 {
    string symbol = g_sets[idx].sym;
    PrintFormat("→ ApplyTemplate  sym=%s  tf=%d  tpl=%s", symbol, tf, tplName);
 
+   m_child_attach_step="chart_open";
    GoatDeploymentPhase("chart_open_begin");
    ResetLastError();
    long cid = ChartOpen(symbol, tf);
@@ -3145,6 +3238,7 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
    // Persist the child identity and policy before an EA can run. A partial
    // deployment must remain resumable and locked across a terminal restart.
+   m_child_attach_step="prelaunch_state_save";
    if(!SaveDashboardConfig())
    {
       Print("Dashboard state could not be saved; child EA launch blocked.");
@@ -3154,6 +3248,7 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    }
 #endif
 
+   m_child_attach_step="template_enqueue";
    GoatDeploymentPhase("template_enqueue_begin",cid);
    ResetLastError();
    bool template_queued=ChartApplyTemplate(cid, tplName);
@@ -3171,30 +3266,51 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
    edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
    MarkStateDirty();
 
-   // This limits registration polling only; it cannot interrupt a blocked native call.
+   m_child_attach_step="handshake";
    GoatDeploymentPhase("handshake_begin",cid);
+   return true;
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+// Human path: unchanged in-handler wait. The agent path uses AgentBeginDeployRow and
+// AgentPollDeployRow instead, so the template can apply between timer ticks.
+bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string tplName)
+{
+   if(!BeginChildAttach(idx,tf,tplName)) return false;
+   // This limits registration polling only; it cannot interrupt a blocked native call.
    uint wait_start=GetTickCount();
    while(!NewSingleInstance(idx))
    {
       if(GetTickCount()-wait_start>20000)
       {
-         GoatDeploymentPhase("handshake_timeout",cid);
-         string msg="Unable to link the deployed child EA to the expected chart.\n\n"
-                   +"Set: "+g_sets[idx].name+"\n"
-                   +"Symbol: "+g_sets[idx].sym+"\n"
-                   +"Expected chart ID: "+StringFormat("%I64d",g_sets[idx].cid)+"\n"
-                   +"No pending child registration was detected within 20 seconds.";
-         if(!m_agent_setup_quiet) MessageBox(msg,"Child Bind Failed",MB_OK|MB_ICONWARNING);
-         g_sets[idx].status="Pending";
-         edt_Status[idx+2].Text(g_sets[idx].status);
-         edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
-         MarkStateDirty();
-         DeleteCopiedTemplate(tplName);
+         FailChildAttachTimeout(idx,tplName);
          return false;
       }
       Sleep(50);
    }
-   
+   return CompleteChildAttach(idx,tplName);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+void CGOATDashboard::FailChildAttachTimeout(const int idx,const string tplName)
+{
+   long cid=g_sets[idx].cid;
+   m_child_attach_step="handshake_timeout";
+   GoatDeploymentPhase("handshake_timeout",cid);
+   string msg="Unable to link the deployed child EA to the expected chart.\n\n"
+             +"Set: "+g_sets[idx].name+"\n"
+             +"Symbol: "+g_sets[idx].sym+"\n"
+             +"Expected chart ID: "+StringFormat("%I64d",g_sets[idx].cid)+"\n"
+             +"No pending child registration was detected within 20 seconds.";
+   if(!m_agent_setup_quiet) MessageBox(msg,"Child Bind Failed",MB_OK|MB_ICONWARNING);
+   g_sets[idx].status="Pending";
+   edt_Status[idx+2].Text(g_sets[idx].status);
+   edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
+   MarkStateDirty();
+   DeleteCopiedTemplate(tplName);
+}
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool CGOATDashboard::CompleteChildAttach(const int idx,const string tplName)
+{
+   long cid=g_sets[idx].cid;
    GoatDeploymentPhase("handshake_linked",cid);
    // Agent setup needs the registration, not cross-chart focus/redraw operations.
    if(!m_agent_setup_quiet)
@@ -3203,6 +3319,7 @@ bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string
       if(!ChartSetInteger(ChartId,CHART_BRING_TO_TOP,0,true))
       {
          Print(__FUNCTION__+", Error Code = ",GetLastError());
+         m_child_attach_step="focus";
          DeleteCopiedTemplate(tplName);
          return(false);
       }

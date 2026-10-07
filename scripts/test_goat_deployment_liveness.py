@@ -22,10 +22,15 @@ class DeploymentLivenessTests(unittest.TestCase):
         cls.dashboard = (ROOT / 'Dashboard.mqh').read_text(encoding='utf-8-sig')
         cls.main = (ROOT / 'GOAT V1.48.mq5').read_text(encoding='utf-8-sig')
         cls.diagnostics = (ROOT / 'GOATDeploymentDiagnostics.mqh').read_text(encoding='utf-8-sig')
-        cls.apply = region(cls.dashboard, 'bool CGOATDashboard::ApplyTemplate(', 'bool CGOATDashboard::NewSingleInstance(')
+        # BeginChildAttach, ApplyTemplate (human wait), FailChildAttachTimeout, CompleteChildAttach.
+        cls.apply = region(cls.dashboard, 'bool CGOATDashboard::BeginChildAttach(', 'bool CGOATDashboard::NewSingleInstance(')
+        cls.timeout = region(cls.dashboard, 'void CGOATDashboard::FailChildAttachTimeout(', 'bool CGOATDashboard::CompleteChildAttach(')
+        cls.agent_begin = region(cls.dashboard, 'bool CGOATDashboard::AgentBeginDeployRow(', 'int CGOATDashboard::AgentPollDeployRow(')
+        cls.agent_poll = region(cls.dashboard, 'int CGOATDashboard::AgentPollDeployRow(', 'bool CGOATDashboard::AgentExposurePolicy(')
+        cls.setup = (ROOT / 'GOATPortfolioSetupControl.mqh').read_text(encoding='utf-8-sig')
 
     def test_polling_does_not_refresh_or_reissue_child_chart(self):
-        body = region(self.apply, 'while(!NewSingleInstance(idx))', 'GoatDeploymentPhase("handshake_linked"')
+        body = region(self.apply, 'while(!NewSingleInstance(idx))', 'return CompleteChildAttach(idx,tplName);')
         passive_handshake(body)
         self.assertIn('GetTickCount()-wait_start>20000', body)
         self.assertIn('Sleep(50);', body)
@@ -74,10 +79,30 @@ class DeploymentLivenessTests(unittest.TestCase):
         for required in ('SETUP_CID_HI', 'SETUP_CID_LO', 'GOAT_GV_FIELD_MAGIC', 'other!=idx', 'GlobalVariableDel(pending)'):
             self.assertIn(required, handshake)
         self.assertLess(self.apply.index('SaveDashboardConfig()'), self.apply.index('ChartApplyTemplate('))
-        timeout = region(self.apply, 'if(GetTickCount()-wait_start>20000)', 'Sleep(50);')
-        self.assertNotIn('g_sets[idx].cid=', timeout)
-        self.assertNotIn('ChartClose(', timeout)
+        self.assertIn('FailChildAttachTimeout(idx,tplName);', region(self.apply, 'if(GetTickCount()-wait_start>20000)', 'Sleep(50);'))
+        for timeout in (self.timeout, self.agent_poll):
+            self.assertNotIn('g_sets[idx].cid=', timeout)
+            self.assertNotIn('ChartClose(', timeout)
+        self.assertIn('DeleteCopiedTemplate(tplName);', self.timeout)
         self.assertEqual(1, self.apply.count('ChartApplyTemplate('))
+
+    def test_agent_attach_returns_before_the_handshake(self):
+        # ChartApplyTemplate only queues; the agent handler must return before the child can start.
+        self.assertIn('BeginChildAttach(idx,tf,tplName)', self.agent_begin)
+        for blocking in ('while(', 'Sleep(', 'NewSingleInstance(', 'ApplyTemplate(idx', 'DoActivate('):
+            self.assertNotIn(blocking, self.agent_begin)
+        passive_handshake(self.agent_poll)
+        for blocking in ('while(', 'Sleep('):
+            self.assertNotIn(blocking, self.agent_poll)
+        self.assertIn('GetTickCount()-m_agent_attach_start<=20000', self.agent_poll)
+        self.assertIn('CompleteChildAttach(idx,tplName)', self.agent_poll)
+        self.assertIn('FailChildAttachTimeout(idx,tplName)', self.agent_poll)
+        deploy = region(self.setup, 'else if(action=="deploy_next")', 'else if(action=="apply_policy")')
+        self.assertIn('DashboardDialog.AgentBeginDeployRow(next)', deploy)
+        for blocking in ('AgentDeployRow(', 'DoActivate(', 'ApplyTemplate(', 'Sleep('):
+            self.assertNotIn(blocking, deploy)
+        poll = region(self.setup, 'void GoatPortfolioSetupPoll(void)', 'string registration=')
+        self.assertIn('GoatPortfolioAttachContinue(root)', poll)
 
     def test_encoding_and_current_build_identity_preserved(self):
         for name in ('GOAT V1.48.mq5', 'Dashboard.mqh', 'GOATDeploymentDiagnostics.mqh'):

@@ -27,8 +27,11 @@ const folderBody=folder.slice(0,folder.lastIndexOf('}'));
 const common=between('string GoatDashboardCommonSetPath(const string path)\n{','\n}\n');
 const build=between('string CGOATDashboard::BuildTemplate(const string eaName,const string eaPath,const string setFile)\n{','\n}\n');
 const save=between('bool CGOATDashboard::SaveTemplateAndCopy(const string tplName,const string tplText)\n{','\n}\n');
+const prepare=between('   bool PrepareChildLaunch(const int idx,ENUM_TIMEFRAMES &tf,string &tplName)\n   {','   void DoActivate(int idx)');
+const prepareBody=prepare.slice(0,prepare.lastIndexOf('}'));
 const activate=between('   void DoActivate(int idx)\n   {','   void CalcDayWeekStart');
 const activateBody=activate.slice(0,activate.lastIndexOf('}'));
+const prepareCall='if(!PrepareChildLaunch(idx,tf,tplName)) return;';assert.ok(activateBody.includes(prepareCall));
 const pickerFolder=source.match(/SetFolder=FolderOf\(picked\[0\]\);/);assert.ok(pickerFolder);
 assert.ok(!between('   int LoadSetFiles()', '//––––– activate row').includes('EA_Path='));
 const savedFolder=source.match(/SetFolder=FolderOf\(g_sets\[0\]\.path\);/);assert.ok(savedFolder);
@@ -36,13 +39,13 @@ const commonRoot='C:\\Users\\Fixture\\Common',terminal='C:\\Demo 01';
 const folderPath=commonRoot+'\\Files\\GOAT Portfolios\\Frozen 33';
 const filename='GOAT V1.47 EURUSD,M1.set',setPath=folderPath+'\\'+filename;
 const exactExpert='Experts\\GOAT Experiment\\GOAT V1.47.ex5';
-function harness({program='C:\\Demo 01\\MQL5\\'+exactExpert,cid=0,magic=0,quiet=true,copyOkay=true}={}) {
+function harness({program='C:\\Demo 01\\MQL5\\'+exactExpert,cid=0,magic=0,quiet=true,copyOkay=true,pending=false}={}) {
  const calls=[],writes=[],copies=[],writePaths=[];let cursor=0;const input=['EA_Desc=Fixture','Mode_Bias=1'];
  const ctx={EA_Path:'',SetFolder:'',Key_:'',EA_Name_:'',Server_:'',Version:0,Font_Size:0,ChartId:0,
   _Key_:'GOAT',_EA_Name_:'GOAT V1.47',_Server_:'Demo',_Version_:'1.47',_Font_Size_:8,Id:1,
   MQL_PROGRAM_PATH:1,TERMINAL_COMMONDATA_PATH:2,TERMINAL_DATA_PATH:3,
   FILE_READ:1,FILE_WRITE:2,FILE_TXT:4,FILE_ANSI:8,FILE_COMMON:16,INVALID_HANDLE:-1,
-  MB_OK:0,MB_ICONWARNING:0,m_agent_setup_quiet:quiet,m_ai_launch_mode:0,m_ai_launch_threshold:50,m_ai_launch_protocol:2,
+  MB_OK:0,MB_ICONWARNING:0,PERIOD_M1:1,m_agent_attach_pending:pending,m_agent_setup_quiet:quiet,m_ai_launch_mode:0,m_ai_launch_threshold:50,m_ai_launch_protocol:2,
   g_sets:[{path:setPath,name:filename,sym:'EURUSD',cid,magic}],btn_Action:[],picked:[setPath],
   MQLInfoString:()=>program,TerminalInfoString:kind=>kind===2?commonRoot:terminal,
   StringFind:(s,find)=>s.indexOf(find),StringSubstr:(s,start,length)=>length===undefined?s.slice(start):s.slice(start,start+length),
@@ -61,7 +64,8 @@ function harness({program='C:\\Demo 01\\MQL5\\'+exactExpert,cid=0,magic=0,quiet=
   'function GoatDashboardCommonSetPath(path){'+js(common)+'}\n'+
   'function BuildTemplate(eaName,eaPath,setFile){'+js(build)+'}\n'+
   'function SaveTemplateAndCopy(tplName,tplText){'+js(save)+'}\n'+
-  'function Activate(idx){'+js(activateBody).replace(/StringReplace\(tplName,"\.set","\.tpl"\)/,'tplName=tplName.split(".set").join(".tpl")')+'}',ctx);
+  'function PrepareChildLaunch(idx){let tf,tplName;const ok=(()=>{'+js(prepareBody).replace(/StringReplace\(tplName,"\.set","\.tpl"\)/,'tplName=tplName.split(".set").join(".tpl")')+'})();return {ok,tf,tplName};}\n'+
+  'function Activate(idx){'+js(activateBody).replace(prepareCall,'{const p=PrepareChildLaunch(idx);if(!p.ok) return;tf=p.tf;tplName=p.tplName;}')+'}',ctx);
  return {ctx,calls,writes,copies,writePaths,initialize(flow='saved') {
   vm.runInContext(js(flagsBody),ctx);
   vm.runInContext(flow==='saved'?savedFolder[0]:pickerFolder[0],ctx);
@@ -89,6 +93,11 @@ for(const identity of [{cid:123,magic:0},{cid:0,magic:456},{cid:123,magic:456}])
 for(const badFolder of ['C:\\Outside\\Portfolio',folderPath+'\\..\\Escape','']) {
  const h=harness();h.initialize();h.ctx.SetFolder=badFolder;h.activate();
  assert.ok(!h.calls.includes('writeOpen'));assert.ok(!h.calls.includes('chart'));assert.equal(h.copies.length,0);passed++;
+}
+{
+ // An agent attach in flight blocks any other launch, human or agent, before any file write.
+ const h=harness({pending:true});h.initialize();h.activate();
+ assert.deepEqual(h.calls,['print']);assert.equal(h.writes.length,0);assert.equal(h.copies.length,0);passed++;
 }
 const failed=harness({copyOkay:false});failed.initialize();failed.activate();
 assert.equal(failed.copies.length,1);assert.ok(!failed.calls.includes('chart'));passed++;

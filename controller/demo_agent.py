@@ -2626,6 +2626,11 @@ class DemoAgent:
     def _seed_drive(self, runner, batch_id, max_seconds, *, initial, kind='seed', reactivate=False):
         """Drive in short slices. Only the start-grade re-activation path passes ``reactivate`` (first slice only):
         an ordinary resume never re-activates a batch that stopped on failures, even if it stopped meanwhile."""
+        # Member switch hold (goatai#1885): off unless GOAT_SWITCH_HOLD or <state>/switch-hold.json enables it on a
+        # PC that runs the public publishers. A stop ends a hold at once, so STOP latency is unchanged.
+        from studio_switch_hold import CONFIG_NAME, load_config
+        runner.switch_hold = load_config(os.environ, self.state_root / CONFIG_NAME)
+        runner.stop_requested = self._seed_stop_reason
         deadline = self.clock() + max_seconds
         while True:
             reason = self._seed_stop_reason()

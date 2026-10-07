@@ -76,6 +76,10 @@ class SeedRunner:
         # _exclusive()). Only then may seed-resume/seed-reconcile settle an unowned-process doubt (_settle_unowned)
         # or re-identify an unconfirmed member launch (_reidentify); each is journaled through it before the state.
         self.locked_journal=None
+        # Member switch hold (studio_switch_hold, goatai#1885): None (the default, every tester) never holds.
+        # The demo lane sets its loaded configuration and its stop check, which ends a hold at once.
+        self.switch_hold=None
+        self.stop_requested=None
         self.base=controller.root/'seeds';self.slot=controller.root/'seed-active.json'
         self.gate=controller.local/'native-gate'
 
@@ -749,6 +753,51 @@ class SeedRunner:
         except GateBusy as busy:
             return dict(batch_id=batch_id,status='status_busy',gate_busy=str(busy),**extra)
 
+    HOLD_POLL_SECONDS=.25
+
+    def _switch_hold(self,root,state,item):
+        """None to start this member now, else the wall time its switch hold ends (studio_switch_hold).
+
+        Off (None) never holds. The hold is retained in the state so it stays bounded across the
+        demo lane's short drive slices; each hold and release is journaled with its reason and the
+        released one (waited_ms, reason, source) is kept on the member.
+        """
+        if self.switch_hold is None:return None
+        from studio_switch_hold import decide
+        result=decide(self.switch_hold,state.get('switch_hold'),member_id=item['member_id'],now=self.clock())
+        event=result['journal']
+        if event is not None and self.locked_journal is not None:
+            try:self.locked_journal(event[0],event[1])
+            except Exception:pass   # throughput-only telemetry never blocks a start
+        if result['start']:
+            state.pop('switch_hold',None)
+            if event is not None:item['switch_hold']=event[1]
+            return None
+        if result['hold']!=state.get('switch_hold'):
+            state['switch_hold']=result['hold'];self._save(root,state)
+        return result['hold']['deadline_unix']
+
+    def _hold_wait(self,batch_id,seconds):
+        """Wait out part of a switch hold. A stop ('stop'), a pause request ('pause') or any state change such as
+        a cancel ('state_changed') ends it at once; the caller's next pass applies them before any start."""
+        state_file=self.path(batch_id)/'state.json'
+        def mark():
+            try:stat=state_file.stat()
+            except OSError:return None
+            return stat.st_mtime_ns,stat.st_size
+        before=mark();end=self.clock()+seconds
+        while True:
+            if self.stop_requested is not None:
+                try:
+                    if self.stop_requested():return 'stop'
+                except Exception:
+                    return 'stop'   # an unreadable stop check never extends a hold
+            if self.paused(batch_id):return 'pause'
+            if mark()!=before:return 'state_changed'
+            remaining=end-self.clock()
+            if remaining<=0:return None
+            self.sleep(min(self.HOLD_POLL_SECONDS,remaining))
+
     def start(self,batch_id,max_seconds=60):return self._drive(batch_id,max_seconds,initial=True)
     def resume(self,batch_id,max_seconds=60,*,reactivate=True):
         """Continue the retained attempt. ``reactivate`` lets a batch stopped by failed members restart under the
@@ -761,6 +810,7 @@ class SeedRunner:
         deadline=self.clock()+max_seconds
         while self.clock()<deadline:
             self.c.bridge.pump()
+            holding=None
             held=ExitStack()
             try:held.enter_context(self._gate())
             except GateBusy:
@@ -814,18 +864,25 @@ class SeedRunner:
                         # Each member is its own MT5 launch: re-check the lock before it (nothing is sent on refusal).
                         from studio_heldout_guard import check_runner_start
                         check_runner_start(self.c,manifest,spec)
-                        self._before_start(spec)
-                        item.update(status='starting',attempts=1,started_unix=self.clock());self._save(root,state)
-                        try:
-                            identity=self.process.start(spec['config_path'])
-                            item.update(status='running',process=identity);self._save(root,state)
-                        except ResearchLaunchRefused as exc:
-                            # Nothing ran (the suspended MT5 was terminated before it ran, or never created):
-                            # the member stays pending and the batch active; the plain refusal is raised.
-                            item.update(status='pending',attempts=0,launch_refused=str(exc)[:500]);item.pop('started_unix',None)
-                            self._save(root,state);raise
-                        except BaseException as exc:
-                            item.update(status='reconcile_required',error=str(exc));state['status']='reconcile_required';self._save(root,state);raise
+                        holding=self._switch_hold(root,state,item)
+                        if holding is None:
+                            self._before_start(spec)
+                            item.update(status='starting',attempts=1,started_unix=self.clock());self._save(root,state)
+                            try:
+                                identity=self.process.start(spec['config_path'])
+                                item.update(status='running',process=identity);self._save(root,state)
+                            except ResearchLaunchRefused as exc:
+                                # Nothing ran (the suspended MT5 was terminated before it ran, or never created):
+                                # the member stays pending and the batch active; the plain refusal is raised.
+                                item.update(status='pending',attempts=0,launch_refused=str(exc)[:500]);item.pop('started_unix',None)
+                                self._save(root,state);raise
+                            except BaseException as exc:
+                                item.update(status='reconcile_required',error=str(exc));state['status']='reconcile_required';self._save(root,state);raise
+            if holding is not None:
+                # Outside the gate, so status, cancel and pause are never blocked; each pass re-checks everything.
+                if self._hold_wait(batch_id,max(0,min(1,deadline-self.clock(),holding-self.clock())))=='stop':
+                    return self._status_or_busy(batch_id,switch_hold_interrupted='stop')
+                continue
             if self.clock()<deadline:self.sleep(min(1,deadline-self.clock()))
         return self._status_or_busy(batch_id,driver_budget_exhausted=True,next_action='seed-resume continues the retained attempt; no retry')
 

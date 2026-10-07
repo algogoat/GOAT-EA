@@ -41,7 +41,62 @@ own chart after processing controller work; removing attachment refreshes does
 not establish general controller responsiveness. An event-driven attachment
 state machine and independent watchdog would be a separate, larger change.
 
-Source regression checks: `python -B scripts/test_goat_deployment_liveness.py`.
+## Dashboard restart during an agent attach (B41.1)
+
+From B41.1 the agent's `deploy_next` attaches a child asynchronously (goatai#1885
+6027754245). The timer handler opens the chart, saves the child chart ID, copies the
+template to `MQL5\Profiles\Templates\<member SET name>.tpl` and queues it, then returns.
+Later timer ticks wait for the child's registration, for 20 seconds at most. The
+template is deleted only once the attach settles, either linked or timed out. The
+attach state lives only in the running dashboard EA.
+
+If the dashboard EA stops in that window (MT5 closed or crashed, the EA reloaded, or
+the chart closed), three things are left behind. This is accepted by design (goatai#1885
+6028113003).
+
+1. **A `started` receipt.** `GOAT\AgentPortfolio\<terminal>\<request id>.json` still
+   reads `started`, because only the stopped session could have answered it. The EA
+   never re-runs a request that already has a receipt. The controller refuses every
+   further dashboard command with `An unresolved dashboard mutation is retained;
+   inspect deploy-status before continuing`. `deploy-load` stops there and does not
+   resume on its own.
+2. **A partial row.** The child chart ID was saved before the template was queued,
+   so after a restart the row has a chart ID but no linked child. `deploy_next` then
+   answers `rejected_partial_deployment` before it opens a chart or queues a template.
+   The chart itself may be bare, or, if MT5 drained the queue before stopping, it may
+   carry a child that started but was never linked.
+3. **A leftover template** in `MQL5\Profiles\Templates`. GOAT never queues it
+   again on its own, and it is not MT5's `default.tpl`, because GOAT names templates
+   after member SETs. A later attach of the same member rewrites the file, by
+   overwriting copy, before it queues the template. If that copy fails, the attach
+   stops before any chart is opened. So a later session never queues stale bytes.
+   `scripts/test_dashboard_async_attach.cjs` cases 8 to 10 pin this down.
+
+**Recovery.** Every step is controller-driven and keeps Algo Trading off. Nothing is
+deleted.
+
+1. Run `deploy-status`. Note the deployment ID, its phase, and the rows with
+   `linkedFresh` false. Save the `started` receipt and the request it answers, as
+   evidence. Then look at the newest `MQL5\Files\GOAT\Diagnostics\deployment_<dashboard
+   chart id>.log`: its last `handshake_begin` without a matching `handshake_linked` or
+   `child_attach_failed` is the interrupted attach.
+2. Check that the terminal is inert (Algo Trading off, no positions or orders). Then
+   run `deploy-stop` with a new attempt ID. It closes MT5 normally once and renames
+   aside the saved dashboard state, the deploy chart profile, `request.json` and
+   `registration.json`. This also means a bare or unlinked child chart is not reopened
+   on the next launch, because its profile is archived.
+3. Optional: archive the leftover template. Rename
+   `MQL5\Profiles\Templates\<member SET name>.tpl` to `....tpl.stopped-<UTC stamp>`.
+   This is not required for safety (see point 3 above).
+4. Redeploy with `deploy-load` and a plan that has a new `deploymentId`. Each member is
+   staged, copied and queued again from its hash-checked SET.
+
+If `deploy-status` shows the terminal still running with Algo Trading on, or with open
+positions or orders, stop here. `deploy-stop` refuses in that state, and the human
+decides what happens next.
+
+Source regression checks: `python -B scripts/test_goat_deployment_liveness.py` and
+`node scripts/test_dashboard_async_attach.cjs`.
 These guard the removed interference, human navigation, identity and diagnostic
 boundaries; they are not native execution tests. Before operational acceptance,
 compile the reviewed source, qualify native attachment without enabling trades,

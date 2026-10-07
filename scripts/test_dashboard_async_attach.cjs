@@ -49,15 +49,22 @@ const production=[
  'function FailChildAttachTimeout(idx,tplName){'+js(method('FailChildAttachTimeout(const int idx,const string tplName)'))+'}',
  'function CompleteChildAttach(idx,tplName){'+js(method('CompleteChildAttach(const int idx,const string tplName)'))+'}',
  'function NewSingleInstance(idx){'+js(method('NewSingleInstance(const int idx)'))+'}',
+ // Production template file I/O: write next to the SET, copy over Profiles\Templates, delete after.
+ 'function GoatDashboardCommonSetPath(path){'+js(bodyOf(dashboard,'string GoatDashboardCommonSetPath(const string path)'))+'}',
+ 'function SaveTemplateAndCopy(tplName,tplText){'+js(method('SaveTemplateAndCopy(const string tplName,const string tplText)'))+'}',
+ 'function DeleteCopiedTemplate(tplName){'+js(method('DeleteCopiedTemplate(const string tplName)'))+'}',
  'function GoatPortfolioAttachContinue(root){'+js(bodyOf(setup,'bool GoatPortfolioAttachContinue(const string root)'))+'}',
  'function settleOrHold(root){'+js(holdLine).replace(/return;/,'return true;')+'\nreturn false;}',
  'function deployNext(count,id,hash,owner){let result="started";'+js(deployBlock).replace(js(deferReturn),'FileClose(owner);return "pending";')+'\nreturn result;}',
 ].join('\n');
 
 const control=()=>({t:'',Text(v){if(v===undefined)return this.t;this.t=v;},Color(){}});
-function world({members=35,applies='afterHandler',childStarts=true,enqueueOk=true}={}) {
- const mt5={clock:1000,nextCid:66948585504739,charts:new Map(),queue:[],templates:new Set(),gv:new Map(),cidField:new Map(),children:[]};
- const sets=[...Array(members)].map((_,i)=>({name:`GOAT V1.49 SYM${i},M1_B35-${i}.set`,path:`C:\\set${i}`,sym:'SYM'+(i%17),cid:0,magic:0,status:'Pending'}));
+const COMMON='C:\\Common',DATA='C:\\T3',SETS=COMMON+'\\Files\\GOAT\\Deployments\\d1';
+const TEMPLATES='\\\\?\\'+DATA+'\\MQL5\\Profiles\\Templates\\';
+// templates: the terminal's MQL5\Profiles\Templates folder (name -> bytes), which outlives a dashboard session.
+function world({members=35,applies='afterHandler',childStarts=true,enqueueOk=true,templates=new Map(),rows=null,copyOk=()=>true}={}) {
+ const mt5={clock:1000,nextCid:66948585504739,charts:new Map(),queue:[],templates,commonFiles:new Map(),gv:new Map(),cidField:new Map(),children:[],applied:[]};
+ const sets=rows||[...Array(members)].map((_,i)=>({name:`GOAT V1.49 SYM${i},M1_B35-${i}.set`,path:`${SETS}\\set${i}`,sym:'SYM'+(i%17),cid:0,magic:0,status:'Pending'}));
  const log={phases:[],audits:[],receipts:new Map(),saves:0,ownerBusy:false,writeOk:true};
  const startChild=(chart)=>{
   const magic=7000+mt5.children.length;
@@ -69,6 +76,7 @@ function world({members=35,applies='afterHandler',childStarts=true,enqueueOk=tru
   for(const cmd of mt5.queue.splice(0)) {
    const chart=mt5.charts.get(cmd.cid);
    if(!mt5.templates.has(cmd.tpl)) {chart.missingTemplate=true;continue;}
+   chart.appliedTemplate=mt5.templates.get(cmd.tpl);mt5.applied.push({cid:cmd.cid,tpl:cmd.tpl,bytes:chart.appliedTemplate});
    if(childStarts) startChild(chart);
   }
  };
@@ -84,9 +92,18 @@ function world({members=35,applies='afterHandler',childStarts=true,enqueueOk=tru
   EndsWith:(s,x)=>s.endsWith(x),TF:()=>1,StringFormat:(f,...a)=>a.join(' '),
   Print:()=>{},PrintFormat:()=>{},Alert:()=>{},MessageBox:()=>{throw new Error('agent path must not prompt');},
   ResetLastError:()=>{},GetLastError:()=>0,MarkStateDirty:()=>{},StatusColor:()=>0,UpdateAILaunchControls:()=>{},
-  PrepareAILaunchPolicy:()=>true,BuildTemplate:()=>'<chart>',
-  SaveTemplateAndCopy:name=>{mt5.templates.add(name);return true;},
-  DeleteCopiedTemplate:name=>mt5.templates.delete(name),
+  PrepareAILaunchPolicy:()=>true,BuildTemplate:(ea,eaPath,setFile)=>'<chart>fresh '+setFile,
+  SetFolder:SETS,FILE_TXT:16,FILE_ANSI:32,TERMINAL_COMMONDATA_PATH:10,TERMINAL_DATA_PATH:11,
+  TerminalInfoString:k=>k===10?COMMON:DATA,StringLen:s=>s.length,
+  FileWriteString:(h,text)=>{mt5.commonFiles.set(h,text);return text.length;},
+  FileDelete:rel=>mt5.commonFiles.delete(rel),
+  CopyFileW:(src,dst,failIfExists)=>{ // src/dst carry the \\?\ prefix; 0 = overwrite an existing file
+   const rel=src.slice(('\\\\?\\'+COMMON+'\\Files\\').length);
+   if(!dst.startsWith(TEMPLATES)||!mt5.commonFiles.has(rel)) return 0;
+   const name=dst.slice(TEMPLATES.length);
+   if((failIfExists&&mt5.templates.has(name))||!copyOk(name)) return 0;
+   mt5.templates.set(name,mt5.commonFiles.get(rel));return 1;},
+  DeleteFileW:dst=>dst.startsWith(TEMPLATES)&&mt5.templates.delete(dst.slice(TEMPLATES.length))?1:0,
   SaveDashboardConfig:()=>{log.saves++;return true;},
   AppendAILaunchAudit:(idx,stage)=>log.audits.push([idx,stage]),
   GoatDeploymentPhase:(phase,target=0,controlName='')=>log.phases.push({phase,target,control:controlName}),
@@ -98,7 +115,8 @@ function world({members=35,applies='afterHandler',childStarts=true,enqueueOk=tru
   find:(sym,cid,assign)=>{if(!mt5.cidField.has(cid))return false;assign(mt5.cidField.get(cid));return true;},
   gvGet:(key,assign)=>{if(!mt5.gv.has(key))return false;assign(mt5.gv.get(key));return true;},
   GlobalVariableDel:key=>mt5.gv.delete(key),GlobalVariablesFlush:()=>{},
-  FileOpen:()=>log.ownerBusy?-1:5,FileClose:()=>{},
+  // The owner lock answers busy/free; a template write returns its own relative path as the handle.
+  FileOpen:(p,mode)=>p.endsWith('owner.lock')?(log.ownerBusy?-1:5):(mode&2?p:-1),FileClose:()=>{},
   GoatSetupWrite:(file,body)=>{if(!log.writeOk)return false;log.receipts.set(file,body);return true;},
   GoatPortfolioSnapshot:(id,action,hash,result)=>({id,action,hash,result}),
   GoatPortfolioRowLinked:i=>sets[i].cid>0&&sets[i].magic>0&&mt5.children.some(c=>c.cid===sets[i].cid&&c.timerSeen),
@@ -130,7 +148,7 @@ function world({members=35,applies='afterHandler',childStarts=true,enqueueOk=tru
 let passed=0;
 { // 1. The B41 shape (wait inside the handler) reproduces T3: no child, template gone, chart left bare.
  const w=world({members:1});w.ctx.m_agent_setup_quiet=true;
- const tpl='GOAT V1.49 SYM0,M1_B35-0.tpl';w.mt5.templates.add(tpl);
+ const tpl='GOAT V1.49 SYM0,M1_B35-0.tpl';w.mt5.templates.set(tpl,'<chart>');
  const t0=w.mt5.clock;assert.equal(w.ctx.ApplyTemplate(0,1,tpl),false);
  assert.ok(w.mt5.clock-t0>20000);assert.ok(!w.mt5.templates.has(tpl));
  // the handler has returned; the queued template now finds nothing to apply
@@ -190,4 +208,48 @@ let passed=0;
  w.setRequest('q');w.tick();w.log.writeOk=false;w.tick();w.tick();
  assert.equal(w.log.receipts.get(w.root+'q.json').result,'started');
  w.log.writeOk=true;w.tick();assert.equal(w.log.receipts.get(w.root+'q.json').result,'child_attached');passed++;
-}console.log(JSON.stringify({passed,productionExtracted:true,nativeTemplateTimingVerified:false}));
+}
+// A dashboard restart mid-attach (goatai#1885 6028113003) can leave a copied template in
+// MQL5\Profiles\Templates. The next session must never apply those stale bytes.
+const staleName='GOAT V1.49 SYM0,M1_B35-0.tpl',orphanName='GOAT V1.49 OLD,M1_B34-9.tpl';
+{ // 8. A same-named stale template is overwritten before the template is queued; an orphan is never applied.
+ const templates=new Map([[staleName,'<chart>STALE inputs from the previous session'],[orphanName,'<chart>STALE orphan']]);
+ const w=world({members:2,templates});
+ const r=w.deployNext('s');assert.equal(r.result,'child_attached');
+ assert.equal(w.mt5.applied.length,1);
+ assert.equal(w.mt5.applied[0].tpl,staleName);assert.equal(w.mt5.applied[0].bytes,'<chart>fresh '+SETS+'\\set0');
+ assert.ok(!w.mt5.templates.has(staleName),'deleted after linking');
+ assert.equal(w.deployNext('s2').result,'child_attached');
+ assert.ok(w.mt5.applied.every(a=>a.tpl!==orphanName&&!a.bytes.includes('STALE')));
+ assert.equal(w.mt5.templates.get(orphanName),'<chart>STALE orphan','an unrelated leftover is left alone, never queued');passed++;
+}
+{ // 9. If the copy over a stale template fails, nothing is opened or queued, and the row stays retryable.
+ const templates=new Map([[staleName,'<chart>STALE']]);let copies=0;
+ const w=world({members:1,templates,copyOk:()=>++copies>1});
+ const r=w.deployNext('f');assert.equal(r.result,'child_attach_failed');assert.equal(r.ticks,1);
+ assert.equal(w.mt5.charts.size,0);assert.equal(w.mt5.applied.length,0);assert.equal(w.sets[0].cid,0);
+ assert.equal(w.log.phases.at(-1).control,'prepare');assert.equal(w.ctx.m_agent_attach_pending,false);
+ assert.equal(w.mt5.templates.get(staleName),'<chart>STALE','the stale bytes are left as they were, unqueued');
+ // The next deploy_next retries the same row: the copy succeeds and only fresh bytes are applied.
+ const again=w.deployNext('f2');assert.equal(again.result,'child_attached');
+ assert.equal(w.mt5.applied.length,1);assert.equal(w.mt5.applied[0].bytes,'<chart>fresh '+SETS+'\\set0');passed++;
+}
+{ // 10. Restart mid-attach: the old request stays "started" and is not re-run, the row is a partial
+  //     deployment, and a new request is refused before any chart is opened or template queued.
+ const templates=new Map();
+ const a=world({members:2,templates,childStarts:false});
+ a.setRequest('r');a.tick();
+ assert.equal(a.log.receipts.get(a.root+'r.json').result,'started');assert.equal(a.ctx.m_agent_attach_pending,true);
+ assert.ok(templates.has(staleName),'the copied template is on disk when the dashboard stops');
+ // The dashboard EA re-initialises: in-memory attach state is gone; the saved rows and the receipt remain.
+ const rows=a.sets.map(s=>({...s,magic:0}));assert.ok(rows[0].cid>0);
+ const b=world({members:2,templates,rows});
+ b.log.receipts.set(b.root+'r.json',{id:'r',result:'started'});
+ b.setRequest('r');b.tick();b.tick();
+ assert.equal(b.log.receipts.get(b.root+'r.json').result,'started','a request with a receipt is never re-executed');
+ assert.equal(b.mt5.charts.size,0);
+ assert.equal(b.deployNext('n').result,'rejected_partial_deployment');
+ assert.equal(b.mt5.charts.size,0);assert.equal(b.mt5.applied.length,0,'the leftover template is never queued by the new session');
+ assert.equal(templates.get(staleName),'<chart>fresh '+SETS+'\\set0');passed++;
+}
+console.log(JSON.stringify({passed,productionExtracted:true,nativeTemplateTimingVerified:false}));

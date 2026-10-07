@@ -650,16 +650,18 @@ window measured inside the same re-test gives the pace.
   when, over the original span, every rule holds, in order: `capture` (orders,
   deals, marks and account CSVs on both runs), `orders` (identical, every column
   but the capture ordinal), `deals` (identical on time, type, entry, lots,
-  price and profit; magic and swap ignored), `swap` (|Δ total swap| ≤ max($5, 2%
-  of the original's)), `balance` and `equity` (on every capture account row,
+  price and profit; magic and swap ignored), `swap` (|Δ total swap| ≤ max(0.025%
+  of the tester deposit, 2% of the original's |net P/L|), $25 on 100k), `balance` and `equity` (on every capture account row,
   the difference equals the realized / cumulative swap difference within $0.01;
   equity as of the row's last tick) and `max_dd` (within 10%). Then it is judged
   by the rules below, with every window recomputed on the re-test
   (`rebasedWindows`, no splice) and `reviewFlag: true` when |balance delta| > 5%
   of |net profit|. Anything else is `requalify` (`confidence: none`): a new
   candidate with full gates and no carried status, the reasons naming each
-  failed rule; `firstFailingRule` and `firstDifference` (its first differing
-  row) are on the verdict, the summary and the evidence-version. There is no
+  failed rule; `firstFailingRule`, `firstFailingCause` (`deals:fill_timing`:
+  identical orders, a close filled at another tick; `capture:incomplete`: the
+  capture stopped early) and `firstDifference` (its first differing row) are on
+  the verdict, the summary and the evidence-version. There is no
   aggregate pass path, and the rule is the same across builds. Every result
   stamps `comparison`, `historyBasis` and `tickHistoryDrift`; see
   [OOS-WINDOW-FORMULA.md](../docs/operations/OOS-WINDOW-FORMULA.md).

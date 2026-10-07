@@ -44,6 +44,10 @@ class FixtureTests(unittest.TestCase):
                     # The first failing rule and its first differing row are logged; the reasons name every failed rule in order.
                     self.assertEqual(result['firstFailingRule'], expected['failed'][0])
                     self.assertEqual(result['firstFailingRule'], expected.get('firstFailingRule', expected['failed'][0]))
+                    self.assertEqual(result['firstFailingCause'], expected.get('firstFailingCause', result['firstFailingCause']))
+                    self.assertTrue(result['firstFailingCause'].split(':')[0] == result['firstFailingRule'])
+                    causes = {row['rule']: row['cause'] for row in result['rules'] if not row['ok']}
+                    self.assertLessEqual(expected.get('causes', {}).items(), causes.items())
                     self.assertIsNotNone(result['firstDifference'])
                     if 'firstDifferenceTime' in expected:
                         self.assertEqual(result['firstDifference']['time'], expected['firstDifferenceTime'])
@@ -68,7 +72,8 @@ class FixtureTests(unittest.TestCase):
     def test_fixture_covers_every_rule_and_boundary(self):
         firsts = {c['expected'].get('firstFailingRule') for c in FIXTURE['cases']}
         self.assertLessEqual(set(rb.RULES), firsts)
-        for label in ('$5 floor (', '$5 floor high', '2% of the original total', 'balance just', 'equity just', 'max DD just', 'max DD just pass low'):
+        for label in ('on the deposit term (', 'on the deposit term high', 'on the P/L term', 'balance just', 'equity just', 'max DD just',
+                      'max DD just pass low'):
             with self.subTest(boundary=label):
                 matching = [c for c in FIXTURE['cases'] if label in c['name']]
                 self.assertTrue(any('just pass' in c['name'] for c in matching) or label == 'max DD just pass low', label)
@@ -98,14 +103,32 @@ class FixtureTests(unittest.TestCase):
         old['rows'] = new['rows'] = []
         rules = {row['rule']: row['ok'] for row in rb.behaviour_check(old, new, cut)['rules']}
         self.assertFalse(rules['max_dd'])
-        self.assertTrue(rules['equity'] and rules['swap'])
+        self.assertTrue(rules['equity'])
+        self.assertFalse(rules['swap'], 'no net P/L to size the swap bound')
 
     def test_drift_is_retest_minus_original(self):
         result = rb.judge_case(dict(retest=dict(swap=[-12.5, -12.5])), FIXTURE['defaults'])
         drift = result['tickHistoryDrift']
-        self.assertEqual((drift['swapDelta'], drift['swapBound'], drift['originalSwap'], drift['retestSwap']), (-5.0, 5.0, -20.0, -25.0))
+        self.assertEqual((drift['swapDelta'], drift['swapBound'], drift['originalSwap'], drift['retestSwap']), (-5.0, 25.0, -20.0, -25.0))
         self.assertEqual((drift['balanceDelta'], drift['ddDelta']), (-5.0, 5.0))
-        self.assertEqual(result['swap']['delta'], -5.0)
+        self.assertEqual((result['swap']['delta'], result['swap']['deposit'], result['swap']['originalNet']), (-5.0, 100000.0, 480.0))
+
+    def test_fill_timing_and_incomplete_causes(self):
+        close = dict(server_time_msc=10, deal_type='1', deal_entry='1', lots=D(1), price=D('1.1'), profit=D(5))
+        moved = dict(close, server_time_msc=11, price=D('1.0999'), profit=D('4.9'))
+        self.assertEqual(rb.deal_cause(True, [close], [moved]), 'deals:fill_timing')
+        self.assertEqual(rb.deal_cause(False, [close], [moved]), 'deals', 'orders differ')
+        self.assertEqual(rb.deal_cause(True, [close], [dict(moved, deal_entry='0')]), 'deals', 'an entry, not a close')
+        self.assertEqual(rb.deal_cause(True, [dict(close, deal_entry='0')], [dict(moved, deal_entry='0')]), 'deals', 'an entry, not a close')
+        self.assertEqual(rb.deal_cause(True, [close], [dict(close, profit=D(6))]), 'deals', 'profit alone')
+        self.assertEqual(rb.deal_cause(True, [close], [dict(moved, lots=D(2))]), 'deals', 'other lots')
+        self.assertEqual(rb.deal_cause(True, [close], [moved, moved]), 'deals', 'another deal count')
+        self.assertEqual(rb.deal_cause(True, [close, dict(close, deal_entry='3')], [moved, dict(moved, deal_entry='3')]), 'deals:fill_timing')
+        self.assertEqual(rb.read_run(None, [], 0)['missing'], [rb.INCOMPLETE])
+
+    def test_an_unsized_swap_drift_is_flagged(self):
+        self.assertEqual(rb.swap_review({}, {}, deposit=100000)[0], True)
+        self.assertEqual(rb.swap_review(dict(final_balance=100480), dict(final_balance=100475), deposit=None)[0], True)
 
 
 class MoneyRowTests(unittest.TestCase):
@@ -213,7 +236,7 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(run['missing'][0], 'marks.csv missing')
         self.assertTrue(run['missing'][1].startswith('account.csv unreadable'))
         self.assertIsNone(run['marks'])
-        self.assertEqual(rb.read_run(None, [], 5000)['missing'], ['no complete sequence capture'])
+        self.assertEqual(rb.read_run(None, [], 5000)['missing'], [rb.INCOMPLETE])
 
     def test_a_bounded_reader_refuses_an_oversized_file(self):
         self.capture()
@@ -251,7 +274,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual((result['rebase']['decidedBy'], result['rebase']['failed'], result['firstFailingRule']), ('behaviour_rules', [], None))
         self.assertTrue(all(row['ok'] for row in result['rebase']['rules']))
         drift = result['tickHistoryDrift']
-        self.assertEqual((drift['cause'], drift['swapDelta'], drift['swapBound'], drift['maxEquityGap']), ('swap_or_spec', -3.0, 5.0, 3.0))
+        self.assertEqual((drift['cause'], drift['swapDelta'], drift['swapBound'], drift['maxEquityGap']), ('swap_or_spec', -3.0, 37.8, 3.0))   # max(0.025% of 10000, 2% of net 1890)
         self.assertEqual(result['rebasedWindows']['basis'], 'retest')
         self.assertIn('Re-based', result['plain'])
         basis = result['historyBasis']
@@ -264,7 +287,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual((result['comparison'], result['verdict'], result['confidence']), ('requalify', 'requalify', 'none'))
         self.assertFalse(result['comparability']['comparable'])
         self.assertEqual((result['rebase']['failed'], result['firstFailingRule']), (['swap', 'max_dd'], 'swap'))
-        self.assertEqual((result['firstDifference']['delta'], result['firstDifference']['bound']), (-300.0, 5.0))
+        self.assertEqual((result['firstDifference']['delta'], result['firstDifference']['bound']), (-300.0, 37.8))
         self.assertTrue(result['reasons'][0].startswith('swap: total swap 0.00 vs -300.00'))
         self.assertIn('new candidate', result['plain'])
         self.assertEqual(result['rebasedWindows']['basis'], 'retest')
@@ -287,6 +310,7 @@ class EvaluateTests(unittest.TestCase):
         result = scenario.evaluate()
         self.assertEqual((result['comparison'], result['rebase']['failed'], result['firstFailingRule']), ('requalify', ['deals'], 'deals'))
         self.assertEqual((result['firstDifference']['index'], result['firstDifference']['fields']), (43, ['server_time_msc']))
+        self.assertEqual(result['firstFailingCause'], 'deals:fill_timing', 'identical orders, a close filled a minute later')
 
     def test_identity_mismatch_stays_not_comparable_even_without_reproduction(self):
         result = Scenario(self.root, alter_history=True, retest=dict(server='Other-Demo')).evaluate()
@@ -328,7 +352,7 @@ class EvaluateTests(unittest.TestCase):
 
     def test_requalify_also_carries_the_retest_windows(self):
         result = Scenario(self.root, retest_complete=False, alter_history=True).evaluate()
-        self.assertEqual((result['comparison'], result['firstFailingRule']), ('requalify', 'capture'))
+        self.assertEqual((result['comparison'], result['firstFailingRule'], result['firstFailingCause']), ('requalify', 'capture', 'capture:incomplete'))
         self.assertEqual(result['rebasedWindows']['basis'], 'retest')
         self.assertIsNone(result['rebasedWindows']['FOOS']['trades'], 'no capture: trades unknown, never spliced from the header')
 
@@ -476,10 +500,11 @@ class CollectTests(CatchupCase):
         self.assertEqual((row['status'], row['previous_attempt']['verdict']), ('behind', 'requalify'))
 
     def test_swap_past_the_bar_requalifies_on_swap(self):
-        self.swapped(-30)
+        self.swapped(-60)
         version, summary = self.cycle()
         self.assertEqual((summary['comparison'], summary['firstFailingRule'], version['rebase']['failed']), ('requalify', 'swap', ['swap']))
-        self.assertEqual((summary['firstDifference']['delta'], summary['firstDifference']['bound']), (-30.0, 5.0))
+        self.assertEqual((summary['firstDifference']['delta'], summary['firstDifference']['bound']), (-60.0, 37.8))
+        self.assertEqual(summary['firstFailingCause'], 'swap')
 
     def test_exact_reproduction_stamps_comparable(self):
         version, summary = self.cycle()

@@ -299,7 +299,8 @@ changes**. MT5's tester applies the symbol's CURRENT swap rates to all history, 
 them. Ops then showed that the tester is deterministic except swap (6029461500): re-test vs re-test,
 orders.csv is byte-identical and the deals are identical in every column except magic (run-local) and
 swap. Claude-Mac's ruling (6029484888) replaced the v1 rule (a deal-level swap step, else aggregate drift
-bars) with an exact-behaviour, swap-only rule. `controller/studio_catchup_rebase.py` decides each
+bars) with an exact-behaviour, swap-only rule; his follow-up (6030527041) set the swap bound and the failure
+causes below. `controller/studio_catchup_rebase.py` decides each
 re-test's `comparison`:
 
 | `comparison` | When | What happens |
@@ -311,14 +312,17 @@ re-test's `comparison`:
 
 **The rules**, over the original span (from the original's start up to, not including, its last minute:
 the forced close, as in the exact reproduction check), in order. Every rule is evaluated; the first that
-fails is `firstFailingRule`, and `firstDifference` is its first differing row.
+fails is `firstFailingRule`, `firstFailingCause` says why, and `firstDifference` is its first differing row.
+Causes are the rule name, or `deals:fill_timing` (the orders are identical and only closing deals filled at
+another tick: their time and/or price, and so profit, differ) or `capture:incomplete` (the capture stopped
+early, for example at the EA's 2,000,000-row cap). Both stay `requalify`.
 
 | Rule | Must hold (re-test vs original) |
 |---|---|
 | `capture` | orders.csv, deals.csv, marks.csv and account.csv of a complete sequence capture on both runs |
 | `orders` | every order identical, in every column except the capture's `ordinal` (a row counter shared by all capture files) |
 | `deals` | every deal identical on time, type, entry, lots, price **and profit**; magic (run-local) is ignored, swap is judged below |
-| `swap` | \|Δ total swap\| ≤ max($5, 2% of the **original's** \|total swap\|); total swap = realized swap + floating swap of positions still open (marks.csv) |
+| `swap` | \|Δ total swap\| ≤ max(0.025% of the tester **deposit**, 2% of the **original's** \|net P/L\| over the span), i.e. $25 on 100k; the deposit is the one the identity check compares (unknown: not measured); total swap = realized swap + floating swap of positions still open (marks.csv) |
 | `balance` | on every capture account row, Δ balance = Δ realized swap, within $0.01 |
 | `equity` | on every capture account row, Δ equity = Δ cumulative swap (realized + floating), within $0.01 |
 | `max_dd` | \|Δ max DD\| ≤ 10% of the original's max DD (the export equity CSV, as the export measures it) |
@@ -372,7 +376,7 @@ import stamp (next to `evidenceEnd`):
   span; `maxEquityGap` is the largest |equity difference| over the minutes both runs sampled; `cause` is
   `swap_or_spec` for a re-based re-test, else `history_or_behaviour`. Null for `comparable` and
   `not_comparable`;
-- `firstFailingRule` and `firstDifference` (verdict and summary; `rebase` on the evidence-version also
+- `firstFailingRule`, `firstFailingCause` and `firstDifference` (verdict and summary; `rebase` on the evidence-version also
   keeps every rule's result, detail and values).
 
 Follow-up (B42 EA item): the EA should stamp the symbol's swap and commission spec in the export
@@ -382,9 +386,10 @@ The import stamp also says `carriesStatus` (false for `requalify`) and `candidat
 `requalify`. A `requalify` version never catches the original export up (`evidence-scan` keeps it
 `behind` with `previous_attempt.verdict: requalify`); its re-test SET is the new candidate.
 `controller/fixtures/catchup-rebase-cases.json` pins the bar: exact reproduction, every rule failing first,
-a just-pass and a just-fail for every boundary ($5 and 2% swap in both directions, $0.01 balance and
-equity, 10% max DD in both directions), the last-tick equity, identity mismatches, a multi-rule fail and
-the review flag; `scripts/test_catchup_rebase_controller_mutations.py` weakens every rule, boundary and
+a just-pass and a just-fail for every boundary (the swap bound's deposit term in both directions and its
+P/L term, $0.01 balance and equity, 10% max DD in both directions), the last-tick equity, the
+`deals:fill_timing` and `capture:incomplete` causes, identity mismatches, a multi-rule fail and the review
+flag; `scripts/test_catchup_rebase_controller_mutations.py` weakens every rule, boundary and
 branch.
 
 ## Plans

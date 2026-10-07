@@ -1,6 +1,6 @@
-"""Mutation check for the catch-up swap-only drift rule (goat-catchup-rebase-v2, goatai#1885 6029484888).
+"""Mutation check for the catch-up swap-only drift rule (goat-catchup-rebase-v2, goatai#1885 6029484888, 6030527041).
 
-Each rule, each boundary ($5 / 2% swap, $0.01 money, 10% max DD) and its direction, the first failing rule,
+Each rule, each boundary (0.025%-of-deposit / 2%-of-net swap, $0.01 money, 10% max DD) and its direction, each failure cause, the first failing rule,
 every verdict branch and every stamp (comparable_rebased, requalify, not_comparable, historyBasis,
 tickHistoryDrift, firstFailingRule / firstDifference, the re-based windows with no splice) is weakened in a
 temporary copy of controller/, and controller/test_studio_catchup_rebase.py or test_studio_catchup_verdict.py
@@ -26,14 +26,26 @@ RULE = 'studio_catchup_rebase.py'
 VERDICT = 'studio_catchup_verdict.py'
 CATCHUP = 'studio_catchup.py'
 MUTATIONS = [
-    # The swap rule: max($5, 2% of the ORIGINAL's |total swap|), both directions, inclusive.
-    ('swap floor is $6', RULE, "SWAP_FLOOR = Decimal('5')", "SWAP_FLOOR = Decimal('6')"),
-    ('swap share is 3%', RULE, "SWAP_OF_TOTAL = Decimal('0.02')", "SWAP_OF_TOTAL = Decimal('0.03')"),
-    ('swap bound takes the smaller', RULE, 'max(SWAP_FLOOR, SWAP_OF_TOTAL', 'min(SWAP_FLOOR, SWAP_OF_TOTAL'),
-    ("swap bound on the re-test's total", RULE, "SWAP_OF_TOTAL * abs(swap['original'])", "SWAP_OF_TOTAL * abs(swap['retest'])"),
+    # The swap rule (6030527041): max(0.025% of the tester DEPOSIT, 2% of the ORIGINAL's |net P/L|), both directions, inclusive.
+    ('swap deposit share is 0.03%', RULE, "SWAP_OF_DEPOSIT = Decimal('0.00025')", "SWAP_OF_DEPOSIT = Decimal('0.0003')"),
+    ('swap deposit share is 0.02%', RULE, "SWAP_OF_DEPOSIT = Decimal('0.00025')", "SWAP_OF_DEPOSIT = Decimal('0.0002')"),
+    ('swap P/L share is 3%', RULE, "SWAP_OF_NET = Decimal('0.02')", "SWAP_OF_NET = Decimal('0.03')"),
+    ('swap bound takes the smaller', RULE, "bound = max(SWAP_OF_DEPOSIT * swap['deposit'],", "bound = min(SWAP_OF_DEPOSIT * swap['deposit'],"),
+    ('swap bound drops the P/L term', RULE, "SWAP_OF_NET * abs(swap['originalNet']))", "0)"),
+    ("swap bound on the original's total swap, not its net", RULE, "SWAP_OF_NET * abs(swap['originalNet']))", "SWAP_OF_NET * abs(swap['original']))"),
+    ("swap bound on the re-test's net", RULE, "SWAP_OF_NET * abs(swap['originalNet']))", "SWAP_OF_NET * abs(swap['originalNet'] + swap['delta']))"),
     ('swap bound is strict', RULE, '        ok = abs(delta) <= bound', '        ok = abs(delta) < bound'),
     ('swap bound is one-sided', RULE, '        ok = abs(delta) <= bound', '        ok = delta <= bound'),
-    ('unmeasured swap passes', RULE, "rules.append(_rule('swap', False, 'not measured", "rules.append(_rule('swap', True, 'not measured"),
+    ('unmeasured swap passes', RULE, "        rules.append(_rule('swap', False, 'not measured (%s)' % why,", "        rules.append(_rule('swap', True, 'not measured (%s)' % why,"),
+    ('judge drops the deposit', RULE, '_msc(cut),\n                            deposit=deposit)', '_msc(cut))'),
+    # Failure causes (6030527041): deals:fill_timing, capture:incomplete.
+    ('fill timing ignores the orders', RULE, "    if not orders_matched or len(original) != len(retest):", "    if len(original) != len(retest):"),
+    ('fill timing for entries too', RULE, "timing = lambda a, b: (a['deal_entry'] in CLOSING_ENTRIES and", "timing = lambda a, b: (True and"),
+    ('fill timing for any field', RULE, "changed(a, b) <= FILL_TIMING_FIELDS", "True"),
+    ('fill timing for profit alone', RULE, "and bool(changed(a, b) & {'server_time_msc', 'price'}))", ")"),
+    ('fill timing never logged', RULE, "cause = None if deals['matched'] else deal_cause(orders_matched, old_deals, new_deals)", "cause = None"),
+    ('incomplete capture not named', RULE, "cause='capture:incomplete' if incomplete else 'capture'", "cause='capture'"),
+    ('first failing cause dropped', RULE, "firstFailingCause=first['cause'],", "firstFailingCause=None,"),
     ('total swap ignores floating swap', RULE, 'return total, total + sum(floating.values(), Decimal(0))', 'return total, total'),
     # The money rules: a cent, inclusive; balance on realized swap, equity on cumulative swap as of the last tick.
     ('money tolerance is two cents', RULE, "MONEY_TOLERANCE = Decimal('0.01')", "MONEY_TOLERANCE = Decimal('0.02')"),
@@ -95,7 +107,8 @@ MUTATIONS = [
     ('requalify judged as a continuation', VERDICT, '    elif comparison == rebase_rule.REQUALIFY:\n', '    elif False:\n'),
     ('re-based is not comparable', VERDICT, 'comparable=comparison in (rebase_rule.COMPARABLE, rebase_rule.REBASED)',
      'comparable=comparison == rebase_rule.COMPARABLE'),
-    ('verdict drops the first failing rule', VERDICT, "firstFailingRule=rebase.get('firstFailingRule'), firstDifference=rebase.get('firstDifference'),", ''),
+    ('verdict drops the first failing rule', VERDICT,
+     "firstFailingRule=rebase.get('firstFailingRule'), firstFailingCause=rebase.get('firstFailingCause'),\n                firstDifference=rebase.get('firstDifference'),", ''),
     # Measurement for the drift stamp: the original span, entries only, the equity gap.
     ('forced final minute counted', RULE, '    inside = [row for row in rows if row[0] < cut]', '    inside = [row for row in rows if row[0] <= cut]'),
     ('closes counted as deals', RULE, "deal_count=sum(row['deal_entry'] == '0' for row in inside)", 'deal_count=len(inside)'),
@@ -123,7 +136,7 @@ MUTATIONS = [
      "                       tickHistoryDrift=verdict.get('tickHistoryDrift'),\n                       firstFailingRule=",
      '                       firstFailingRule='),
     ('summary drops the first failing rule', CATCHUP,
-     ",\n                       firstFailingRule=verdict.get('firstFailingRule'), firstDifference=verdict.get('firstDifference'))", ')'),
+     ",\n                       firstFailingRule=verdict.get('firstFailingRule'), firstFailingCause=verdict.get('firstFailingCause'),\n                       firstDifference=verdict.get('firstDifference'))", ')'),
     # The OOS formula gates on the re-based evidence.
     ('requalify skips the gates', CATCHUP, "        if verdict.get('verdict') in ('not_comparable', 'unjudged'):",
      "        if verdict.get('verdict') in ('not_comparable', 'unjudged', 'requalify'):"),

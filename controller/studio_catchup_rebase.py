@@ -5,7 +5,8 @@ that missed the exact reproduction on a deal-level swap step, else on aggregate 
 balance, SAMPLE side, max DD). Ops then showed that the MT5 tester is deterministic except swap
 (6029461500): re-test vs re-test, orders.csv is byte-identical and the deals are identical in every column
 except magic (run-local) and swap. Swap drifts because the tester applies the symbol's CURRENT swap rates to
-all history. Claude-Mac's ruling (6029484888) replaces v1:
+all history. Claude-Mac's ruling (6029484888) replaces v1; the swap bound and the failure causes are from his
+follow-up ruling (6030527041):
 
 * ``not_comparable``: any identity check failed (inputs, EA build, EA name, model, symbol, server, deposit,
   leverage, currency). Unchanged.
@@ -16,8 +17,10 @@ all history. Claude-Mac's ruling (6029484888) replaces v1:
 * ``requalify``: anything else (fail-safe). The re-test is a NEW candidate: full gates, no carried status.
   There is no aggregate pass path any more: if broker history revisions move a deal, the set is judged anew.
 
-Rules, in order. Every rule is evaluated; ``failed`` names each failing one, and ``firstFailingRule`` and
-``firstDifference`` (that rule's first differing row) are logged on the verdict and the receipt.
+Rules, in order. Every rule is evaluated; ``failed`` names each failing one, and ``firstFailingRule``,
+``firstFailingCause`` and ``firstDifference`` (that rule's first differing row) are logged on the verdict and the
+receipt. Causes: the rule name, or ``capture:incomplete`` (the capture stopped early, e.g. at the EA's row cap)
+and ``deals:fill_timing`` (identical orders; only closing deals filled at another tick: time, price, profit).
 
 1. ``capture``: orders.csv, deals.csv, marks.csv and account.csv of a complete sequence capture, both runs.
 2. ``orders``: every order before the cut identical in every column except the capture's ``ordinal``
@@ -25,7 +28,8 @@ Rules, in order. Every rule is evaluated; ``failed`` names each failing one, and
 3. ``deals``: every deal before the cut identical on time, type, entry, lots, price and profit. Magic is
    run-local and swap is judged below, so neither is compared; commission and fee move the balance, so the
    balance rule catches them.
-4. ``swap``: |delta total swap| <= max($5, 2% of the original's |total swap|). Total swap at the cut is the
+4. ``swap``: |delta total swap| <= max(0.025% of the tester deposit, 2% of the original's |net P/L| over the
+   span), $25 on 100k. The deposit is the one the identity check compares. Total swap at the cut is the
    realized swap plus the floating swap of the positions still open (marks.csv).
 5. ``balance``: on every account row, the balance difference equals the realized-swap difference within $0.01.
 6. ``equity``: on every account row, the equity difference equals the cumulative swap difference (realized
@@ -65,8 +69,11 @@ WINDOWS_SCHEMA = 'goat-catchup-rebased-windows-v1'
 COMPARABLE, REBASED, REQUALIFY, NOT_COMPARABLE = 'comparable', 'comparable_rebased', 'requalify', 'not_comparable'
 VERDICTS = (COMPARABLE, REBASED, REQUALIFY, NOT_COMPARABLE)
 # The bar (Decimal: an exact boundary is inside it, never lost to float rounding).
-SWAP_FLOOR = Decimal('5')               # |delta total swap| <= max($5,
-SWAP_OF_TOTAL = Decimal('0.02')         #                           2% of the original |total swap|)
+SWAP_OF_DEPOSIT = Decimal('0.00025')   # |delta total swap| <= max(0.025% of the tester deposit ($25 on 100k),
+SWAP_OF_NET = Decimal('0.02')           #                           2% of the original's |net P/L| over the span)
+FILL_TIMING_FIELDS = frozenset(('server_time_msc', 'price', 'profit'))   # deals:fill_timing: a close filled at another tick
+CLOSING_ENTRIES = frozenset(('1', '3'))  # DEAL_ENTRY_OUT, DEAL_ENTRY_OUT_BY
+INCOMPLETE = 'sequence capture incomplete'   # capture:incomplete (e.g. the EA's row cap was reached)
 MONEY_TOLERANCE = Decimal('0.01')       # balance / equity difference vs the swap difference (rounding)
 DD_REL = Decimal('0.10')                # |max DD delta| <= 10% of the original max DD
 SWAP_REVIEW_OF_NET = Decimal('0.05')    # re-based: reviewFlag when |balance delta| > 5% of |original net profit|
@@ -75,7 +82,7 @@ RULES = ('capture', 'orders', 'deals', 'swap', 'balance', 'equity', 'max_dd')
 BAR = dict(capture='orders.csv, deals.csv, marks.csv and account.csv of a complete capture on both runs',
            orders='every order before the cut identical (every column except the capture ordinal)',
            deals='every deal before the cut identical on time, type, entry, lots, price and profit (magic and swap ignored)',
-           swap='|delta total swap| <= max($5, 2% of the original |total swap|)',
+           swap='|delta total swap| <= max(0.025% of the tester deposit, 2% of the original |net P/L|)',
            balance='on every account row, balance difference = realized swap difference within $0.01',
            equity='on every account row, equity difference = cumulative swap difference within $0.01',
            max_dd='|delta max DD| <= 10% of the original max DD')
@@ -131,8 +138,22 @@ def _norm(field, value):
     return value
 
 
-def _rule(name, ok, detail, *, first=None, **values):
-    return dict(rule=name, ok=bool(ok), bar=BAR[name], detail=detail, firstDifference=first, **values)
+def _rule(name, ok, detail, *, first=None, cause=None, **values):
+    """One rule's result; a failing rule carries a ``cause`` (the rule name, or ``rule:kind`` when it is known)."""
+    return dict(rule=name, ok=bool(ok), bar=BAR[name], detail=detail, firstDifference=first,
+                cause=None if ok else (cause or name), **values)
+
+
+def deal_cause(orders_matched, original, retest):
+    """``deals:fill_timing`` when the orders are identical and every differing deal is a close that filled at another
+    tick (only its time, price and profit differ); else ``deals`` (pure). Stays a behaviour difference either way."""
+    if not orders_matched or len(original) != len(retest):
+        return 'deals'
+    differing = [(a, b) for a, b in zip(original, retest) if any(a.get(f) != b.get(f) for f in DEAL_FIELDS)]
+    changed = lambda a, b: {f for f in DEAL_FIELDS if a.get(f) != b.get(f)}
+    timing = lambda a, b: (a['deal_entry'] in CLOSING_ENTRIES and changed(a, b) <= FILL_TIMING_FIELDS
+                           and bool(changed(a, b) & {'server_time_msc', 'price'}))
+    return 'deals:fill_timing' if differing and all(timing(a, b) for a, b in differing) else 'deals'
 
 
 # ---------------------------------------------------------------------------
@@ -246,18 +267,22 @@ def equity_figures(rows):
     return dict(final_balance=rows[-1][1], max_dd=dd)
 
 
-def behaviour_check(original, retest, cut_msc):
+def behaviour_check(original, retest, cut_msc, *, deposit=None):
     """Every rule in ``RULES`` on two runs before the cut (pure).
 
     A run is ``dict(orders=(fields, rows) | None, deals=[row] | None, marks=[(ordinal, msc, sequence, realized
     swap, floating swap)] | None, account=iterable of (ordinal, msc, reason, balance, equity, quote msc) | None,
-    rows=[(minute, balance, equity)] (the export equity CSV), missing=[reason])``.
+    rows=[(minute, balance, equity)] (the export equity CSV), missing=[reason])``. ``deposit`` is the tester
+    deposit the identity check compared; the swap bound needs it (unknown: the swap rule is not measured).
     """
     rules = []
     missing = ['original %s' % m for m in original.get('missing') or ()] + ['re-test %s' % m for m in retest.get('missing') or ()]
+    incomplete = any(m.endswith(INCOMPLETE) for m in missing)
     rules.append(_rule('capture', not missing, 'complete captures on both runs' if not missing else
-                       'not measured: %s' % '; '.join(missing), first=None if not missing else dict(missing=missing)))
+                       'not measured: %s' % '; '.join(missing), first=None if not missing else dict(missing=missing),
+                       cause='capture:incomplete' if incomplete else 'capture'))
     both = lambda key: original.get(key) is not None and retest.get(key) is not None
+    orders_matched = False
     # orders
     if both('orders'):
         (old_fields, old_orders), (new_fields, new_orders) = original['orders'], retest['orders']
@@ -266,6 +291,7 @@ def behaviour_check(original, retest, cut_msc):
             rules.append(_rule('orders', False, 'orders.csv columns differ', first=dict(original=list(old_fields), retest=list(new_fields))))
         else:
             orders = compare_rows(cut(old_orders), cut(new_orders), old_fields)
+            orders_matched = orders['matched']
             rules.append(_rule('orders', orders['matched'], 'identical orders (%s)' % orders['rows'] if orders['matched'] else
                                'order %d differs (%s)' % (orders['first_difference']['index'], ', '.join(orders['first_difference']['fields'])),
                                first=orders['first_difference'], rows=orders['rows']))
@@ -273,28 +299,42 @@ def behaviour_check(original, retest, cut_msc):
         rules.append(_rule('orders', False, 'not measured (orders.csv missing)'))
     # deals
     if both('deals'):
-        deals = compare_rows([d for d in original['deals'] if d['server_time_msc'] < cut_msc],
-                             [d for d in retest['deals'] if d['server_time_msc'] < cut_msc], DEAL_FIELDS)
+        old_deals = [d for d in original['deals'] if d['server_time_msc'] < cut_msc]
+        new_deals = [d for d in retest['deals'] if d['server_time_msc'] < cut_msc]
+        deals = compare_rows(old_deals, new_deals, DEAL_FIELDS)
+        cause = None if deals['matched'] else deal_cause(orders_matched, old_deals, new_deals)
         rules.append(_rule('deals', deals['matched'], 'identical deals (%s)' % deals['rows'] if deals['matched'] else
-                           'deal %d differs (%s)' % (deals['first_difference']['index'], ', '.join(deals['first_difference']['fields'])),
-                           first=deals['first_difference'], rows=deals['rows']))
+                           'deal %d differs (%s)%s' % (deals['first_difference']['index'], ', '.join(deals['first_difference']['fields']),
+                                                       ': identical orders, a close filled at another tick' if cause == 'deals:fill_timing' else ''),
+                           first=deals['first_difference'], rows=deals['rows'], cause=cause))
     else:
         rules.append(_rule('deals', False, 'not measured (deals.csv missing)'))
     # swap
-    swap = dict(original=None, retest=None, delta=None, bound=None, originalRealized=None, retestRealized=None)
+    swap = dict(original=None, retest=None, delta=None, bound=None, originalRealized=None, retestRealized=None,
+                deposit=_dec(deposit), originalNet=None)
     marks = {}
+    old_rows = [row for row in original['rows'] if _msc(row[0]) < cut_msc]
+    final_balance = equity_figures(old_rows)['final_balance']
+    if swap['deposit'] is not None and swap['deposit'] > 0 and final_balance is not None:
+        swap['originalNet'] = final_balance - swap['deposit']   # the original's net P/L over the span
     if both('marks'):
         for side, run in (('original', original), ('retest', retest)):
             marks[side] = sorted((m for m in run['marks'] if m[1] < cut_msc), key=lambda m: m[0])
             swap[side + 'Realized'], swap[side] = swap_totals(marks[side])
-        delta, bound = swap['retest'] - swap['original'], max(SWAP_FLOOR, SWAP_OF_TOTAL * abs(swap['original']))
-        swap.update(delta=delta, bound=bound)
+        swap['delta'] = swap['retest'] - swap['original']
+    if swap['delta'] is not None and swap['originalNet'] is not None:
+        delta = swap['delta']
+        bound = max(SWAP_OF_DEPOSIT * swap['deposit'], SWAP_OF_NET * abs(swap['originalNet']))
+        swap['bound'] = bound
         ok = abs(delta) <= bound
-        rules.append(_rule('swap', ok, 'total swap %.2f vs %.2f (%+.2f, limit %.2f)' % (swap['original'], swap['retest'], delta, bound),
-                           first=None if ok else dict(original=_num(swap['original']), retest=_num(swap['retest']), delta=_num(delta), bound=_num(bound)),
-                           original=_num(swap['original']), retest=_num(swap['retest']), delta=_num(delta), limit=_num(bound)))
+        rules.append(_rule('swap', ok, 'total swap %.2f vs %.2f (%+.2f, limit %.2f = max(0.025%% of deposit %s, 2%% of net %+.2f))' % (
+            swap['original'], swap['retest'], delta, bound, swap['deposit'], swap['originalNet']),
+            first=None if ok else dict(original=_num(swap['original']), retest=_num(swap['retest']), delta=_num(delta), bound=_num(bound)),
+            original=_num(swap['original']), retest=_num(swap['retest']), delta=_num(delta), limit=_num(bound)))
     else:
-        rules.append(_rule('swap', False, 'not measured (marks.csv missing)'))
+        why = 'marks.csv missing' if swap['delta'] is None else 'deposit or the original net P/L unknown'
+        rules.append(_rule('swap', False, 'not measured (%s)' % why, first=dict(reason='not measured: ' + why,
+                                                                               deposit=_num(swap['deposit']), delta=_num(swap['delta']))))
     # balance and equity, on the capture's account rows
     if marks and both('account'):
         states = [account_states((row for row in run['account'] if row[1] < cut_msc), marks[side])
@@ -365,7 +405,7 @@ def decide(identity_failed, reproduced, check=None, *, original=None, retest=Non
 
     ``check`` is ``behaviour_check``'s result; without one nothing is measured, which requalifies (fail-safe).
     """
-    blank = dict(schema=SCHEMA, rules=None, failed=[], firstFailingRule=None, firstDifference=None, tickHistoryDrift=None,
+    blank = dict(schema=SCHEMA, rules=None, failed=[], firstFailingRule=None, firstFailingCause=None, firstDifference=None, tickHistoryDrift=None,
                  crossBuild=cross_build, swap=None)
     if identity_failed:
         return dict(blank, verdict=NOT_COMPARABLE, decidedBy='identity', reasons=list(identity_failed))
@@ -380,11 +420,12 @@ def decide(identity_failed, reproduced, check=None, *, original=None, retest=Non
                  swapBound=swap.get('bound'), originalSwap=swap.get('original'), retestSwap=swap.get('retest'))
     common = dict(schema=SCHEMA, decidedBy='behaviour_rules', rules=rules, failed=failed, crossBuild=cross_build, swap=swap)
     if failed:
-        return dict(common, verdict=REQUALIFY, firstFailingRule=first['rule'], firstDifference=first['firstDifference'],
+        return dict(common, verdict=REQUALIFY, firstFailingRule=first['rule'], firstFailingCause=first['cause'],
+                    firstDifference=first['firstDifference'],
                     reasons=['%s: %s' % (row['rule'], row['detail']) for row in rules if not row['ok']],
                     tickHistoryDrift=dict(stamp, cause=HISTORY_OR_BEHAVIOUR, reviewFlag=False, reviewReason=None))
     flag, why = swap_review(original or {}, retest or {}, deposit=deposit)
-    return dict(common, verdict=REBASED, firstFailingRule=None, firstDifference=None,
+    return dict(common, verdict=REBASED, firstFailingRule=None, firstFailingCause=None, firstDifference=None,
                 reasons=['the same orders and deals (time, type, entry, lots, price, profit); only swap differs, by %+.2f '
                          '(limit %.2f), and balance and equity moved only by it: the broker changed its swap rates, which '
                          'MT5 applies to all history' % (swap.get('delta') or 0.0, swap.get('bound') or 0.0)],
@@ -453,6 +494,8 @@ def fixture_run(spec):
     run = dict(orders=(fields, orders), deals=deals, rows=[tuple(row) for row in rows], missing=[],
                marks=[(marked[n], *m) for n, m in enumerate(marks)],
                account=[(accounted[n], *a) for n, a in enumerate(account)])
+    if spec.get('incomplete'):   # the capture stopped early (e.g. the EA's row cap): nothing to compare
+        run.update(orders=None, deals=None, marks=None, account=None, missing=[INCOMPLETE])
     for name in spec.get('missing') or ():
         run[name] = None
         run['missing'].append(name + '.csv missing')
@@ -466,7 +509,7 @@ def judge_case(case, defaults=None):
     spec = lambda side: dict(base.get(side) or {}, **(case.get(side) or {}))
     old, new = fixture_run(spec('original')), fixture_run(spec('retest'))
     cut = old['rows'][-1][0]
-    check = behaviour_check(old, new, _msc(cut))
+    check = behaviour_check(old, new, _msc(cut), deposit=pick('deposit'))
     figures = lambda run: equity_figures([row for row in run['rows'] if row[0] < cut])
     return decide(pick('identity_failed', []), pick('reproduced', False), check, original=figures(old), retest=figures(new),
                   deposit=pick('deposit'), cross_build=pick('cross_build', False))
@@ -534,7 +577,7 @@ def read_run(deals_csv, rows, cut_msc):
     """
     run = dict(orders=None, deals=None, marks=None, account=None, rows=rows, missing=[])
     if not deals_csv:
-        run['missing'].append('no complete sequence capture')
+        run['missing'].append(INCOMPLETE)
         return run
     folder = Path(deals_csv).parent
     readers = dict(orders=read_orders, deals=read_deals, marks=read_marks)
@@ -650,7 +693,8 @@ def judge(original, retest, *, identity_failed, reproduced, old_rows, new_rows, 
         sample = None   # SAMPLE must end inside the original span
     a = measure(old_rows, old_deals, cut=cut, sample=sample)
     b = measure(new_rows, new_deals, cut=cut, sample=sample)
-    check = behaviour_check(read_run(old_deals, old_rows, _msc(cut)), read_run(new_deals, new_rows, _msc(cut)), _msc(cut))
+    check = behaviour_check(read_run(old_deals, old_rows, _msc(cut)), read_run(new_deals, new_rows, _msc(cut)), _msc(cut),
+                            deposit=deposit)
     result = decide([], False, check, original=a, retest=b, deposit=deposit, max_equity_gap=equity_gap(old_rows, new_rows, cut),
                     cross_build=cross_build)
     public = lambda m: {k: (float(v) if isinstance(v, Decimal) else v) for k, v in m.items() if k != 'sample'} | dict(

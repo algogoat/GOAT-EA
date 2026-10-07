@@ -318,6 +318,10 @@ error says so and asks for `deploy-stop`. A later `deploy-load` of the same plan
 - `deploy-preflight` moves to schema 3. The change is additive: `allow_live_trading_default` is `true` only when
   `common.ini` `[Experts] AllowLiveTrading=1`, `false` otherwise, and `null` when the file is unreadable.
   `readiness_blockers` is `[{code: "allow_live_trading_off", message}]` when that value is false.
+- Schema 4 (beta.26, goatai#1885 6040697290) makes that fact informational. Profile-loaded charts carry their own
+  permission (`expertmode=5`), and the saved default applies only to Expert Advisors attached by hand, so it never
+  blocks a deploy. `notes` is `[{code: "allow_live_trading_off", message}]` when the value is false, and
+  `readiness_blockers` stays as a key (empty for this fact) so beta.24/25 desktops read the same shape.
 - The preflight never writes the option.
 - If the audit then shows a child with `EA_TRADE_ALLOWED != 1`, readiness fails with that same plain-English
   instruction appended whenever `allow_live_trading_default` is not true.

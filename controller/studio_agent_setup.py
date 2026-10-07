@@ -219,11 +219,23 @@ def shared_code(controller, login, server, build_id, *, now=None):
 
 
 ENTER_CODE = 'Enter the 8-character code MT5 shows in its GOAT window under Connect the EA.'
-NO_SHARED_CODE = 'This EA build does not share its connection code with GOAT (SM31 and earlier). ' + ENTER_CODE
+# beta.26 (goatai#1885): no answer never proves the build cannot share its code. A B43 terminal that already
+# holds a credential shows no code at all, and a mailbox read for another build ID goes unanswered.
+NO_SHARED_CODE = ('MT5 did not share a connection code with GOAT. If MT5 shows one in its GOAT window under '
+                  'Connect the EA, enter that 8-character code.')
+WAITING_NOT_READ = 'The EA is waiting for approval and shows a connection code, but GOAT could not read it from MT5. ' + ENTER_CODE
+# Activation reasons the EA writes once this terminal holds an approved credential: approved, then the chart
+# reload that starts GOAT (GOATEADeviceActivation.mqh). Such an EA shows no connection code.
+CONNECTED_REASONS = frozenset(('approved', 'activation_reload_pending', 'activation_oninit_observed', 'ACTIVATION_RELOAD_REQUIRED'))
+# Reasons that already explain why MT5 shows no code (see _no_code_action).
+EXPLAINED_REASONS = CONNECTED_REASONS | {'build_not_admitted', 'webrequest_permission_required'}
 
 
 def _no_code_action(reason):
-    if reason == 'approved':
+    if reason == 'ACTIVATION_RELOAD_REQUIRED':
+        return ('This terminal is already connected to GOAT; there is nothing to approve. '
+                "Change the GOAT chart's timeframe once to finish starting GOAT.")
+    if reason in CONNECTED_REASONS:
         return 'This terminal is already connected to GOAT; there is nothing to approve.'
     if reason == 'build_not_admitted':
         return 'GOAT refused this EA build at sign-in, so it shows no code. Install the approved GOAT build, then reopen MT5.'
@@ -240,15 +252,16 @@ PAIRING_MAILBOX_REFUSED = 'PAIRING_MAILBOX_REFUSED'  # only raised when a regist
 
 DEMO_LANE_NOT_SHARED = ('MT5 has not shared its connection code with GOAT yet; GOAT reads it again in a moment. '
                         'If MT5 shows a code under Connect the EA, enter that code instead.')
-DEMO_LANE_NO_SHARED_CODE = ('On this demo terminal GOAT reads only the code the EA shares (LC36 and later), and this EA '
-                            'build does not share it. ' + ENTER_CODE)
+DEMO_LANE_NO_SHARED_CODE = ('On this demo terminal GOAT reads only the code the EA shares (LC36 and later), and MT5 '
+                            'has not shared one. If MT5 shows a code in its GOAT window under Connect the EA, enter that '
+                            '8-character code.')
 
 
 def _demo_lane_without_shared_code(reason):
     """demo_direct: the raw CLI reads the shared file only, never the setup mailbox (a registration is a write)."""
     if reason == 'awaiting_approval':
         return dict(status='no_pending_pairing', userCodeReturned=False, activationReason=reason, next_action=DEMO_LANE_NOT_SHARED)
-    if reason in ('approved', 'build_not_admitted', 'webrequest_permission_required'):
+    if reason in EXPLAINED_REASONS:
         return dict(status='no_pending_pairing', userCodeReturned=False, activationReason=reason, next_action=_no_code_action(reason))
     return dict(status='no_native_answer', userCodeReturned=False, activationReason=reason, next_action=DEMO_LANE_NO_SHARED_CODE)
 
@@ -309,10 +322,13 @@ def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
     if outcome == 'rejected_not_inert':
         raise Refusal('MT5 is not inert: turn Algo Trading off and close demo positions before pairing', PAIRING_NOT_INERT, **extra)
     if outcome == 'receipt_timeout':
-        waiting = reason == 'awaiting_approval'
+        # The EA already said why it shows no code (an approved credential, a refused build): the unanswered
+        # mailbox changes nothing, so the answer is the same as the EA's own pairing_unavailable.
+        if reason in EXPLAINED_REASONS:
+            return answer(dict(status='no_pending_pairing', userCodeReturned=False, requestId=result['id'], activationReason=reason,
+                               next_action=_no_code_action(reason)))
         return answer(dict(status='no_native_answer', userCodeReturned=False, requestId=result['id'], activationReason=reason,
-                           next_action=('The EA is waiting for approval and shows a connection code, but this build does not share it with GOAT. '
-                                        + ENTER_CODE if waiting else NO_SHARED_CODE)))
+                           next_action=WAITING_NOT_READ if reason == 'awaiting_approval' else NO_SHARED_CODE))
     raise Refusal('The EA refused the pairing request (' + outcome + ')', PAIRING_EA_REFUSED, **extra)
 
 

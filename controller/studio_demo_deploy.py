@@ -14,8 +14,8 @@ Hard boundaries, each refused in code:
 - Algo Trading stays off: the startup configuration always writes [Experts] Enabled=0
   and nothing GOAT writes ever turns it on (D1); every receipt after start-up, the audit
   and the broker readback must show it off; turning it on stays the human's one gesture;
-- GOAT never writes MT5's AllowLiveTrading; preflight reports it and readiness names
-  the human step (D2);
+- GOAT never writes MT5's AllowLiveTrading; preflight reports it as an informational
+  note, and readiness names the human step only when a child cannot trade (D2);
 - a member that is not linked by the start-up deadline is a named child_not_started, and
   deploy-load then unwinds itself (inert-only close, profile archived, previous profile
   restored), so a half-loaded MT5 is never left running (D3);
@@ -65,8 +65,16 @@ LINK_RETRY_AFTER_TIMEOUT_SECONDS = 11
 CHILD_NOT_STARTED = 'child_not_started'
 CHILD_NOT_LINKED = 'child_not_linked'
 # 3: additive only. allow_live_trading_default and readiness_blockers (D2); every version 2 key is unchanged.
-PREFLIGHT_SCHEMA_VERSION = 3
+# 4: additive only. notes: informational facts that never block a deploy. allow_live_trading_off moved there from
+#    readiness_blockers (beta.26, goatai#1885 6040697290): profile-loaded charts carry their own permission
+#    (expertmode=5), and the saved default only applies to Expert Advisors attached by hand. readiness_blockers
+#    stays as a key (a list of blockers, empty today) so beta.24/25 desktops read the same shape.
+PREFLIGHT_SCHEMA_VERSION = 4
 ALLOW_LIVE_TRADING_BLOCKER = 'allow_live_trading_off'
+ALLOW_LIVE_TRADING_NOTE = (
+    "MT5's saved 'Allow Algo Trading' default is off. This does not block a GOAT deploy: GOAT's charts load with "
+    "their own permission to trade. It only affects Expert Advisors you attach by hand. GOAT never changes this "
+    "MT5 security setting.")
 # D2: GOAT never changes this MT5 security option. Confirmed against native T3 behaviour in proof step P0.
 ALLOW_LIVE_TRADING_INSTRUCTION = (
     "This MT5 starts Expert Advisors without permission to trade (its saved 'Allow Algo Trading' default is off), "
@@ -493,11 +501,12 @@ def preflight(controller, *, mt5=None, process=None):
                   ea_version=controller.install['ea_version'], ea_sha256=controller.install['ea_sha256'],
                   existing_dashboard=paths(controller, '0' * 32)['state'].exists(), deployment=current_deployment(controller),
                   namespace_conflict=namespace_conflict(controller), trading_changed=False)
-    # D2: reported, never written. Not a refusal here: readiness fails with the same instruction if a child
-    # then reports it may not trade.
+    # D2: reported, never written, and informational only (schema 4). Readiness names the human step only if a
+    # child then reports it may not trade (_verify_ready).
     allow_live = allow_live_trading_default(controller)
     result['allow_live_trading_default'] = allow_live
-    result['readiness_blockers'] = [dict(code=ALLOW_LIVE_TRADING_BLOCKER, message=ALLOW_LIVE_TRADING_INSTRUCTION)] if allow_live is False else []
+    result['readiness_blockers'] = []
+    result['notes'] = [dict(code=ALLOW_LIVE_TRADING_BLOCKER, message=ALLOW_LIVE_TRADING_NOTE)] if allow_live is False else []
     try:
         require_idle_control(controller, session)
         result['active_work'] = None

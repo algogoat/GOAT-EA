@@ -143,5 +143,5 @@ check(() => assert.match(main, /if\(g_GoatStudioReadOnlyMonitor\)\r?\n   \{GOATD
 check(() => { const status = src.slice(src.indexOf('void GOATDeviceActivationStatus'), src.indexOf('int GOATDeviceActivationRetrySeconds'));
   for (const secret of ['UserCode', 'user_code', 'Candidate']) assert.equal(status.includes(secret), false, secret); });
 check(() => { for (const line of src.split('\n').filter(text => /\bPrint(Format)?\(/.test(text))) assert.equal(/UserCode|user_code/.test(line), false, line); });
-check(() => assert.match(main, /#define   GOAT_BUILD_ID "V1\.49-BETA17-41"/));
+check(() => assert.match(main, /#define   GOAT_BUILD_ID "V1\.49-BETA17-43"/));
 console.log(`test_activation_code_file: ${checks}/${checks} passed`);

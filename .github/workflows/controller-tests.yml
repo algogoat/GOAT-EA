@@ -24,7 +24,9 @@ concurrency:
 #           test_connection_code, test_activation_code_file, test_broker_facts_payload,
 #           test_bias_reader_parity, test_agent_connection_layout, test_studio_steady_panel,
 #           test_dashboard_overview, test_ea_followups, test_studio_derived_report,
-#           test_terminal_isolation
+#           test_terminal_isolation, test_profile_staged_adoption, test_b43_no_drift,
+#           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths
+#     python: test_goat_deployment_liveness
 #
 # controller-mutations (1/3)  ~16-24 min observed
 #   python test_research_outcome_controller_mutations.py   (12-17 min)
@@ -49,6 +51,7 @@ concurrency:
 #          test_seed_member_failure_mutations.py, test_export_qualification_mutations.py,
 #          test_driver_backoff_mutations.py, test_setup_registration_mutations.py (19 mutations; ~2 min locally at Idle),
 #          test_profile_staged_deploy_mutations.py (36 mutations, named tests only; ~2 min locally at Idle)
+#   node   test_profile_staged_adoption_mutations.cjs (72 mutations; seconds)
 #
 # A new mutation check goes in the shard with the most headroom; keep each shard well under its
 # timeout. Setup steps are identical in both jobs.
@@ -130,6 +133,18 @@ jobs:
         run: node scripts/test_studio_steady_panel.cjs
       - name: Dashboard overview presentation
         run: node scripts/test_dashboard_overview.cjs
+      - name: Profile-staged deploy adoption, link_children, retired deploy_next and disabled dashboard deploy (beta.25, goatai#1885)
+        run: node scripts/test_profile_staged_adoption.cjs
+      - name: B43 no drift from B41 (entrypoint build lines only; trade path and input header byte-identical)
+        run: node scripts/test_b43_no_drift.cjs
+      - name: Deploy settingsMatch audit, CA41 exemptions
+        run: node scripts/test_portfolio_child_audit.cjs
+      - name: Child adoption binding and link freshness
+        run: node scripts/test_portfolio_child_binding.cjs
+      - name: Dashboard paths and retired template deploy path
+        run: node scripts/test_dashboard_deploy_paths.cjs
+      - name: Child adoption liveness source guards
+        run: python scripts/test_goat_deployment_liveness.py
       - name: FU35 cancel stop confirmation and EvidenceEnd export boundary
         run: node scripts/test_ea_followups.cjs
 
@@ -274,6 +289,9 @@ jobs:
       - name: Setup registration mutation check (an expired other-build registration is archived with its sha, a live one refuses, no phantom close journal)
         if: matrix.shard == 3
         run: python scripts/test_setup_registration_mutations.py
+      - name: Profile-staged adoption mutation check (every adoption guard, the deploy_next refusal, the disabled buttons and the retired template path)
+        if: matrix.shard == 3
+        run: node scripts/test_profile_staged_adoption_mutations.cjs
       - name: Profile-staged deploy mutation check (Enabled=0 always, AllowLiveTrading never written, BuildTemplate-exact writer, child_not_started then auto-unwind, exact profile rollback)
         if: matrix.shard == 3
         run: python scripts/test_profile_staged_deploy_mutations.py

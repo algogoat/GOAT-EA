@@ -17,6 +17,7 @@ const api={StringLen:s=>s.length,StringSubstr:(s,a,n)=>n===undefined?s.slice(a):
  StringFind:(s,q)=>s.indexOf(q),StringGetCharacter:(s,i)=>s.charCodeAt(i),ArraySize:a=>a.length,
  ArrayResize:(a,n)=>{a.length=n;return n;},StringSplit:(s,c,out)=>{out.splice(0,out.length,...s.split(String.fromCharCode(c)));return out.length;},
  TerminalInfoString:()=> 'C:\\Fixture',TERMINAL_DATA_PATH:1,
+ GOATIsLowerHex:(v,n)=>typeof v==='string'&&v.length===n&&/^[0-9a-f]+$/.test(v),
  GoatApplyAILaunchPolicy:(body,mode,threshold,protocol)=>{
   if(mode===0)return body;
   const changes={Mode_Bias:mode===1?'0':'2',Bias_threshold:String(threshold),Bias_Protocol:String(protocol),Mode_Bias_Trades:'0'};
@@ -36,7 +37,43 @@ for(const bad of [head+inputs.replace('Risk=500\n','')+tail,head+inputs.replace(
  assert.equal(api.GoatChildAuditMaps(original,0,50,2,bad,expert),false);passed++;
 }
 assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+'===========GROUP============ =\n'+inputs+tail,expert),true);passed++;
+// CA41 (ported from 4f3f2f9): a V1.49 child template carries six inputs WriteSet omits. Accepted only at their defaults.
+const declared='Sequence_Export_Enabled=false\nSequence_Export_Id=\nSequence_Export_Start=0\nSequence_Export_End=0\nSequence_Export_Model=4\nGOAT_FitnessRunNonce=0\n';
+assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared+tail,expert),true);passed++;
+assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared.replace('Sequence_Export_Model=4\n','')+tail,expert),true);passed++;
+assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=4\n',0,50,2,head+inputs+declared+tail,expert),true);passed++;
+for(const [from,to] of [['Enabled=false','Enabled=true'],['Id=\n','Id=x\n'],['Start=0','Start=1750896000'],['End=0','End=1'],['Model=4','Model=1'],['Nonce=0','Nonce=7']]){
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared.replace(from,to)+tail,expert),false,from);passed++;
+}
+assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+declared+'Unknown=1\n'+tail,expert),false);passed++;
+assert.equal(api.GoatChildAuditMaps(original+'Sequence_Export_Model=1\n',0,50,2,head+inputs+declared+tail,expert),false);passed++;
+// Deployment nonce (beta.25, goatai#1885 6034810079): a profile-staged child carries
+// Studio_MonitorRunPath=deploy=<deploymentId>. With the registration's id, exactly that value passes;
+// everything else in the map is still compared exactly. Without an id, the input keeps its "" default.
+{
+ const D='0123456789abcdef0123456789abcdef',E='fedcba9876543210fedcba9876543210';
+ const tagged=tag=>inputs.replace('Studio_MonitorRunPath=\n','Studio_MonitorRunPath='+tag+'\n');
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+tagged('deploy='+D)+tail,expert,D),true,'current nonce');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+tagged('deploy='+D)+declared+tail,expert,D),true,'nonce with CA41 defaults');passed++;
+ for(const [label,value] of [['missing',''],['other deployment','deploy='+E],['padded','deploy='+D+' '],['longer','deploy='+D+'0'],
+                             ['upper key','DEPLOY='+D],['bare id',D],['prefixed','x deploy='+D],['upper id','deploy='+D.toUpperCase()]]){
+  assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+tagged(value)+tail,expert,D),false,label);passed++;
+ }
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+tagged('deploy='+D)+tail,expert),false,'no registered id: a tagged child is refused');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+inputs+tail,expert,''),true,'no registered id: the default still passes');passed++;
+ for(const bad of [D.toUpperCase(),D.slice(1),'deploy='+D,''+D+'0']){
+  assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+tagged('deploy='+bad)+tail,expert,bad),false,'invalid id '+bad);passed++;
+ }
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+tagged('deploy='+D).replace('Risk=500','Risk=501')+tail,expert,D),false,'everything else exact');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Studio_MonitorRunPath=\n',0,50,2,head+tagged('deploy='+D)+tail,expert,D),true,'a SET carrying the default');passed++;
+ assert.equal(api.GoatChildAuditMaps(original+'Studio_MonitorRunPath=deploy='+D+'\n',0,50,2,head+tagged('deploy='+D)+tail,expert,D),false,'a SET never carries the nonce');passed++;
+ assert.equal(api.GoatChildAuditMaps(original,0,50,2,head+tagged('deploy='+D).replace('Dashboard_Resume_Saved=false','Dashboard_Resume_Saved=true')+tail,expert,D),false,'other pinned inputs unchanged');passed++;
+}
 assert.match(source,/CryptEncode\(CRYPT_HASH_SHA256,bytes,key,digest\)/);
+// beta.25: one snapshot routine serves the audit (by row) and adoption (by chart id).
+assert.equal((source.match(/ChartSaveTemplate\(/g)||[]).length,1);
+assert.match(source,/bool GoatChildChartSnapshot\(const long cid,string &snapshot\)/);
+assert.match(source,/bool matched=GoatChildChartSnapshot\(cid,snapshot\) && GoatChildSnapshotMatchesSet\(source,snapshot,deploy_tag\);/);
 assert.match(source,/ChartSaveTemplate\(cid,"\\\\Files\\\\"\+filename\)/);
 assert.match(source,/FileDelete\(filename\)/);assert.doesNotMatch(source,/\b(?:ChartApplyTemplate|Print|Alert|DeleteFileW)\s*\(/);
 console.log(JSON.stringify({passed,pureSelftestPassed:true,nativeTemplateAndIoVerified:false}));

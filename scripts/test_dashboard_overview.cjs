@@ -58,21 +58,25 @@ for(let cycle=1;cycle<=7;cycle++){
 assert.equal(seen.size,35);cases++;
 const overview=ui.slice(ui.indexOf('if(m_table_view==GOAT_DASH_VIEW_OVERVIEW)\n'),ui.indexOf('else if(m_table_view==GOAT_DASH_VIEW_DIAGNOSTICS)\n'));
 assert.ok(!overview.includes('LayoutTableEdit(edt_Status'));assert.ok(overview.includes('LayoutTableEdit(edt_Positions'));cases++;
-// Activation must not rely on display strings or retry partial attachment.
-for(const [rows,want] of [[[{cid:0,magic:0}],1],[[{cid:100,magic:10}],0],[[{cid:100,magic:0},{cid:0,magic:0}],0],[[{cid:0,magic:10}],0]]){
- let activated=0;const c={...base,g_sets:rows,HandleTableViewClick:()=>false,HandleHeaderClick:()=>false,HandleHeaderStateButtonClick:()=>false,
- btn_Action:[{}, {Name:()=> 'all'}],MessageBox:()=>{},MB_OK:0,MB_ICONINFORMATION:0,DeployAll:()=>activated++};
- fn(ui,'CGOATDashboard::HandleObjectClick','control_name',c)('all');assert.equal(activated,want);cases++;
+// beta.25 (goatai#1885 6033450916): Deploy All is disabled. Any row without a child gets the plain message;
+// a fully linked portfolio does nothing. Nothing is deployed from the dashboard.
+const RETIRED='Use Next in the app to deploy; dashboard deploy returns in the next update';
+for(const [rows,want] of [[[{cid:0,magic:0}],1],[[{cid:100,magic:10}],0],[[{cid:100,magic:0},{cid:0,magic:0}],1],[[{cid:0,magic:10}],1]]){
+ let shown=0;const c={...base,g_sets:rows,HandleTableViewClick:()=>false,HandleHeaderClick:()=>false,HandleHeaderStateButtonClick:()=>false,
+ btn_Action:[{}, {Name:()=> 'all'}],MessageBox:text=>{assert.equal(text,RETIRED);shown++;},MB_OK:0,MB_ICONINFORMATION:0,GOAT_DASH_DEPLOY_RETIRED_MESSAGE:RETIRED,
+ AllRowsDeployed:()=>rows.length>0&&rows.every(r=>r.cid>0&&r.magic>0)};
+ fn(ui,'CGOATDashboard::HandleObjectClick','control_name',c)('all');assert.equal(shown,want);cases++;
 }
 for(const [rows,wantAction,wantAI] of [
- [[{cid:0,magic:0,bias_label:'OFF'}],'Activate all','OFF'],
+ [[{cid:0,magic:0,bias_label:'OFF'}],'Deploy in app','OFF'],
  [[{cid:1,magic:2,bias_label:'ON / DEMO / 50%'},{cid:3,magic:4,bias_label:'ON / DEMO / 50%'}],'All active','ON / DEMO / 50%'],
- [[{cid:1,magic:0,bias_label:'OFF'}],'Activate all','OFF'],
+ [[{cid:1,magic:0,bias_label:'OFF'}],'Deploy in app','OFF'],
  [[{cid:1,magic:2,bias_label:'OFF'},{cid:3,magic:4,bias_label:'ON / DEMO / 50%'}],'All active','Mixed']]){
- const out={};const control=k=>({Text:v=>out[k]=v,Color:()=>{}});const rows2=rows.map(r=>({...r,strat:'Example',risk_lots_label:'500 $',open_trades:0,open_lots:0,Trades_total:0,open_pl:0,PL_daily:0,PL_weekly:0,PL_total:0}));
+ const out={};const control=k=>({Text:v=>out[k]=v,Color:()=>{},Name:()=>k});const rows2=rows.map(r=>({...r,strat:'Example',risk_lots_label:'500 $',open_trades:0,open_lots:0,Trades_total:0,open_pl:0,PL_daily:0,PL_weekly:0,PL_total:0}));
  const names=['edt_Symbol','edt_Strategy','btn_Action','edt_Comment','edt_News','edt_AIBias','edt_RiskLots','edt_Status','edt_HistDD','edt_Trades','edt_Positions','edt_Lots','edt_PL_Open','edt_PL_D1','edt_PL_W1','edt_PL_All'];
- const c={...base,g_sets:rows2,TimeCurrent:()=>100,DisplayStatusForRow:()=> 'Not deployed',m_portfolio_command_pending:false,m_portfolio_run_state:0,GOAT_PORTFOLIO_RUN_PAUSED:1,clrRed:1,clrWhite:2,StatusColor:()=>1,Portfolio_Target_DD:'2000',StringToDouble:Number,FormatIntegerText:String,UpdatePortfolioInfoHeader:()=>{},m_ai_launch_mode:0,GOAT_AI_LAUNCH_AS_OPTIMIZED:0,...Object.fromEntries(names.map(n=>[n,[{},control(n)]]))};
+ const tips={};const c={...base,g_sets:rows2,TimeCurrent:()=>100,DisplayStatusForRow:()=> 'Not deployed',m_portfolio_command_pending:false,m_portfolio_run_state:0,GOAT_PORTFOLIO_RUN_PAUSED:1,clrRed:1,clrWhite:2,StatusColor:()=>1,Portfolio_Target_DD:'2000',StringToDouble:Number,FormatIntegerText:String,UpdatePortfolioInfoHeader:()=>{},m_ai_launch_mode:0,GOAT_AI_LAUNCH_AS_OPTIMIZED:0,
+  ObjectSetString:(chart,name,prop,text)=>{tips[name]=text;},OBJPROP_TOOLTIP:1,GOAT_DASH_DEPLOY_RETIRED_MESSAGE:RETIRED,...Object.fromEntries(names.map(n=>[n,[{},control(n)]]))};
  vm.runInNewContext('(function(){'+js(body(ui,'CGOATDashboard::UpdatePortfolioRow')).replace(/\bdouble /g,'let ')+'})()',c);
- assert.equal(out.btn_Action,wantAction);assert.equal(out.edt_AIBias,wantAI);cases++;
+ assert.equal(out.btn_Action,wantAction);assert.equal(out.edt_AIBias,wantAI);assert.equal(tips.btn_Action,wantAction==='All active'?'Every member is linked':RETIRED);cases++;
 }
 console.log(JSON.stringify({passed:cases,productionBlocks:true,nativeTrading:false}));

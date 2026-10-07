@@ -35,6 +35,9 @@ python scripts/goat_portfolio_setup.py audit --manifest <terminal.json>
 python scripts/goat_portfolio_setup.py status --manifest <terminal.json>
 ```
 
+From `V1.49-BETA17-43` the dashboard refuses `deploy_next` (`rejected_deploy_next_retired`):
+children come from the staged deploy profile and `link_children` adopts them (see
+`DEPLOYMENT-STARTUP-LIVENESS.md`). The note below applies to older builds only.
 `deploy_next` is one attachment, not an invitation to issue a blind loop. Inspect
 its retained request and native receipt before advancing. An unresolved `started`
 or timeout requires reconciliation. Count unique chart/magic identities and exact

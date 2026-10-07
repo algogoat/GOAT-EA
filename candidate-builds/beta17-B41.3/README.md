@@ -52,8 +52,25 @@ the re-apply is the fix, it becomes a designed, tested, bounded single retry ins
   `GOATPortfolioChildAudit.mqh` differ. The trade path is identical. Against B41.2 only `Dashboard.mqh` and the
   build-ID lines differ.
 
-**Build.** Compile pending. The entrypoint is pinned in `controller/contracts/v149/dependencies.json`. B41.3 adds one
-kernel32 import, `GetFileAttributesW`, read-only, in `Dashboard.mqh`'s existing import block. The retained B41.2
-candidate (`../beta17-B41.2`) keeps its binary, which failed natively. Do not install it.
+**Build**
+
+- `GOAT_BUILD_ID` is `V1.49-BETA17-41.3`, marker `B41.3`. `GOAT_ATTACH_REAPPLY_PROBE` is ON (T3 diagnostic).
+- Compiled once from `84a07aa2` with MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`, the same compiler as B39 through
+  B41.2): 0 errors, 0 warnings. The compiler was a copy outside every terminal folder, run `/portable` at Idle
+  priority. MetaEditor's process exit code was 1 with a clean `Result:` line, as in the B40 and B41 compiles; the
+  `Result:` line and the output are the success criteria. The stage was a scratch copy outside every terminal
+  folder. Its 307 standard includes and the `MACD - GOAT 2.ex5` resource are copied from the B41 compile root and
+  hash-equal to it. `externals.json` records the same per-name hashes as B41's, and the same `consumed_sha256`
+  (`ced68559…`). The new `GetFileAttributesW` import is a `kernel32.dll` system import, compared by name, so it adds
+  no hashed external.
+- `GOAT V1.49.ex5`: sha256 `83967693e0e3ef9bd18c810faaac66672f4cf3228be83d370495e82797060c2d`, 2,441,904 bytes.
+- Entrypoint `GOAT V1.49.mq5`: sha256 `cb434c9b…1facd7e`, pinned in `controller/contracts/v149/dependencies.json`.
+- Pin check at `84a07aa2`: the 41 `.mq5`/`.mqh` files in the entrypoint's include closure are exactly the 41
+  sources in `identity.json`, and each matches the tree and the staged copy. The input header is still `1408e1ee…`.
+- MetaEditor output is not byte-reproducible across stages, so admit only this binary.
+- The retained B41.2 candidate (`../beta17-B41.2`) keeps its binary, which failed natively. Do not install it.
+
+**Not done.** Native qualification has not been performed, and nothing was installed. The root `GOAT V1.49.ex5` is
+unchanged.
 
 **Controller.** B41.3 ships together with GOAT-EA#188 (beta.23.1, 90 s `deploy_next` wait).

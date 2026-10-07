@@ -36,6 +36,7 @@ concurrency:
 #          test_studio_steady_panel_mutations.cjs, test_ea_followups_mutations.cjs,
 #          test_terminal_isolation_mutations.cjs
 #   python test_terminal_isolation_controller_mutations.py
+#   python test_lane_final_write_mutations.py              (14 mutations; ~3 min locally at Idle)
 #
 # controller-mutations (2/3)  ~16-22 min observed before the OOS window check; ~24-30 min expected with it
 #   python test_process_query_mutations.py                 (14-18 min)
@@ -47,8 +48,9 @@ concurrency:
 #   python test_restore_lane_never_started_mutations.py    (4-14 min)
 #   python test_peer_restart_mutations.py, test_peer_roster_mutations.py,
 #          test_seed_member_failure_mutations.py, test_export_qualification_mutations.py,
-#          test_driver_backoff_mutations.py, test_setup_registration_mutations.py (19 mutations; ~2 min locally at Idle)
-#   node   test_profile_staged_adoption_mutations.cjs (47 mutations; seconds)
+#          test_driver_backoff_mutations.py, test_setup_registration_mutations.py (19 mutations; ~2 min locally at Idle),
+#          test_profile_staged_deploy_mutations.py (36 mutations, named tests only; ~2 min locally at Idle)
+#   node   test_profile_staged_adoption_mutations.cjs (72 mutations; seconds)
 #
 # A new mutation check goes in the shard with the most headroom; keep each shard well under its
 # timeout. Setup steps are identical in both jobs.
@@ -240,6 +242,9 @@ jobs:
       - name: Catch-up swap-only drift mutation check (every rebase v2 rule and boundary, first failing rule, comparable_rebased / requalify / not_comparable, no-splice windows, stamps)
         if: matrix.shard == 1
         run: python scripts/test_catchup_rebase_controller_mutations.py
+      - name: Lane driver sharing-error mutation check (bounded gate wait, busy pass skipped, record reads/writes retried, loud after the bound)
+        if: matrix.shard == 1
+        run: python scripts/test_lane_final_write_mutations.py
 
       # ---- Shard 2/3 ----
       - name: Process query mutation check (WMI stall retry, unconfirmed launch, seed unowned doubt)
@@ -283,3 +288,6 @@ jobs:
       - name: Profile-staged adoption mutation check (every adoption guard, the deploy_next refusal, the disabled buttons and the retired template path)
         if: matrix.shard == 3
         run: node scripts/test_profile_staged_adoption_mutations.cjs
+      - name: Profile-staged deploy mutation check (Enabled=0 always, AllowLiveTrading never written, BuildTemplate-exact writer, child_not_started then auto-unwind, exact profile rollback)
+        if: matrix.shard == 3
+        run: python scripts/test_profile_staged_deploy_mutations.py

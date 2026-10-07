@@ -1,15 +1,24 @@
 """Load a reviewed portfolio into the selected demo terminal's Portfolio Dashboard.
 
-Uses only the EA's own features: the dashboard resumes a saved Common Files state
-(Dashboard_Resume_Saved=true on the first chart) and the hash-bound AgentPortfolio
-mailbox attaches each child chart, dispatches the exposure policy and audits every
-child's effective inputs against the frozen SET bytes.
+Profile-staged (beta.25, goatai#1885 6033450916): deploy-load writes every chart into one
+MT5 profile, GOAT-Deploy-<id16> (studio_deploy_profile): the dashboard on chart01.chr
+(Dashboard_Resume_Saved=true) and one child per member with its frozen SET inputs. MT5
+loads them all at start-up; the hash-bound AgentPortfolio mailbox then asks the dashboard
+to adopt each child it finds (link_children, controller/contracts/profile-deploy.md),
+dispatches the exposure policy and audits every child's effective inputs against the
+frozen SET bytes. Nothing is attached or applied at runtime.
 
 Hard boundaries, each refused in code:
 - broker-reported demo only (MT5 SDK ACCOUNT_TRADE_MODE_DEMO, and the EA itself
   answers only on demo); the Experiment 02 accounts are refused;
-- Algo Trading stays off; the EA attaches children only while it is off with no
-  positions or orders, and readiness requires it still off;
+- Algo Trading stays off: the startup configuration always writes [Experts] Enabled=0
+  and nothing GOAT writes ever turns it on (D1); every receipt after start-up, the audit
+  and the broker readback must show it off; turning it on stays the human's one gesture;
+- GOAT never writes MT5's AllowLiveTrading; preflight reports it and readiness names
+  the human step (D2);
+- a member that is not linked by the start-up deadline is a named child_not_started, and
+  deploy-load then unwinds itself (inert-only close, profile archived, previous profile
+  restored), so a half-loaded MT5 is never left running (D3);
 - member SET bytes must match the reviewed SHA-256 at stage, registration and audit;
 - stop never closes positions: it unloads only an inert terminal.
 
@@ -29,32 +38,41 @@ import time
 from studio_agent_mailbox import identity, portfolio_register, portfolio_request, portfolio_root, read_bounded, sharing_retry
 from studio_agent_setup import PROTECTED_ACCOUNTS, broker_proof, close_terminal, demo_terminal_lock, require_unprotected
 from studio_bridge import write_json
+import studio_deploy_profile as deploy_profile
 from studio_installation import read_json
 from studio_launch_telemetry import SCHEMA as TELEMETRY_SCHEMA, launch_record, utc_now
 from studio_native_gate import exclusive_gate
 from studio_onboarding import saved_launch_policy, session_state, require_idle_control
+from studio_refusal import Refusal
 
 PLAN_SCHEMA = 'goat-demo-deploy-v1'
 DEPLOYMENT_ID = re.compile(r'[a-f0-9]{32}')
 SYMBOL = re.compile(r'[A-Za-z0-9_.#-]{1,64}')
 FILE_NAME = re.compile(r'[^\\/:*?"<>|\t\r\n\x00]{1,180}\.set')
-PRESET_NAME = 'GOAT Dashboard Agent.set'
-# The dashboard chart itself never trades; children take their inputs from each SET.
-PRESET = 'Mode_Operation=8\r\nDashboard_Resume_Saved=true\r\nMode_Bias=1\r\nBias_Protocol=2\r\nBias_threshold=50\r\nEA_Desc=GOAT Dashboard\r\n'.encode('utf-16')
+PROFILE_NAME = re.compile(r'[^\\/:*?"<>|\t\r\n\x00]{1,128}')
 STATE_HEADER = '#GOAT_AI_LAUNCH_V147_2'
 READY_INSTRUCTION = 'Turn on Algo Trading in MT5 to start trading (demo)'
 DASHBOARD_WAIT_SECONDS = 180  # licence check and dashboard init after the relaunch
 ACK_WAIT_SECONDS = 90
 AUDIT_WAIT_SECONDS = 90
-# B41.1 (GOAT-EA#186) settles each child attach asynchronously within 75 s, above the
-# child's 60 s licence startup; only then is the final deploy_next receipt written.
-CHILD_ATTACH_BUDGET_SECONDS = 75
-# 90 is the most portfolio_request accepts, and its request expires at the wait + 5 s
-# (95 s), so the attach budget fits inside both the wait and the request's life.
-DEPLOY_NEXT_WAIT_SECONDS = 90
-# 2: additive only. broker also carries currency, balance, equity, leverage, company and
-# trade_mode (studio_agent_setup.account_details); every version 1 key is unchanged.
-PREFLIGHT_SCHEMA_VERSION = 2
+# MT5 starts every chart of the profile at once: a 60 s child licence retry plus the start-up of
+# N charts (T3 proof). link_children is asked every LINK_POLL_SECONDS until then.
+CHILD_START_WAIT_SECONDS = 240
+LINK_REQUEST_SECONDS = 20
+LINK_POLL_SECONDS = 2
+# An unanswered request stays live until its expiry (wait + 5 s) and is archived 5 s after that.
+LINK_RETRY_AFTER_TIMEOUT_SECONDS = 11
+CHILD_NOT_STARTED = 'child_not_started'
+CHILD_NOT_LINKED = 'child_not_linked'
+# 3: additive only. allow_live_trading_default and readiness_blockers (D2); every version 2 key is unchanged.
+PREFLIGHT_SCHEMA_VERSION = 3
+ALLOW_LIVE_TRADING_BLOCKER = 'allow_live_trading_off'
+# D2: GOAT never changes this MT5 security option. Confirmed against native T3 behaviour in proof step P0.
+ALLOW_LIVE_TRADING_INSTRUCTION = (
+    "This MT5 starts Expert Advisors without permission to trade (its saved 'Allow Algo Trading' default is off), "
+    "so the GOAT charts would stay idle even after you turn Algo Trading on. GOAT does not change MT5 security "
+    "settings for you. In MT5, attach any Expert Advisor once with 'Allow Algo Trading' ticked on its Common tab so "
+    "MT5 keeps that default, close MT5 normally, then run deploy-stop and deploy again.")
 
 
 def set_identity(file_name):
@@ -183,7 +201,19 @@ def validate_plan(controller, session, plan):
         if not 0 < len(raw) <= 2_000_000 or hashlib.sha256(raw).hexdigest() != member['sha256']:
             raise ValueError('SET bytes differ from the reviewed SHA-256: ' + name)
         check_member_values(controller, name, raw)
+        try:
+            # The exact chart the profile will hold: period, line, character and nonce rules (studio_deploy_profile).
+            deploy_profile.child_chart(dict(name=name, symbol=symbol, raw=raw), controller.install['ea_relative_path'], policy,
+                                       plan['deploymentId'])
+        except UnicodeDecodeError as exc:
+            raise ValueError('Unreadable SET values: ' + name) from exc
+        except Refusal as exc:
+            raise Refusal(str(exc) + ' Nothing was written or launched.', exc.code, **exc.fields) from exc
+        except ValueError as exc:
+            raise ValueError(str(exc) + ' (' + name + '; nothing was written or launched)') from exc
         prepared.append(dict(index=index, name=name, symbol=symbol, strategy=member['strategy'], sha256=member['sha256'], raw=raw))
+    # Adoption must never be ambiguous: two members that would start identical charts are refused.
+    deploy_profile.refuse_duplicates(prepared, policy)
     return prepared
 
 
@@ -193,8 +223,9 @@ def paths(controller, deployment_id):
     return dict(
         sets=common / 'GOAT' / 'Deployments' / deployment_id,
         state=common / 'GOAT' / ('dashboard_state_' + data.name + '.tsv'),
-        profile=data / 'MQL5' / 'Profiles' / 'Charts' / ('GOAT-Deploy-' + deployment_id[:16]),
-        preset=data / 'MQL5' / 'Presets' / PRESET_NAME,
+        profile=data / 'MQL5' / 'Profiles' / 'Charts' / deploy_profile.profile_name(deployment_id),
+        profiles=data / 'MQL5' / 'Profiles' / 'Charts',
+        common_ini=data / 'config' / 'common.ini',
         journal=Path(controller.root) / 'demo-deployments' / (deployment_id + '.json'),
         config=Path(controller.root) / 'demo-deployments' / (deployment_id + '.ini'),
         # The EA keys its saved dashboard and mailboxes by the data folder NAME only; this
@@ -213,21 +244,32 @@ def namespace_conflict(controller):
 
 
 def staged_bytes(controller, plan, members):
-    """Every file the relaunched dashboard will read, as the reviewed plan defines it."""
+    """Every file the relaunched MT5 and dashboard will read, as the reviewed plan defines it."""
     where = paths(controller, plan['deploymentId'])
     policy = plan['policy']
     expected = {Path(m['path']): m['raw'] for m in members}
-    expected[where['preset']] = PRESET
-    expected[where['profile'] / 'chart01.chr'] = chart_bytes(members[0]['symbol'])
+    charts = deploy_profile.profile_files(controller.install['ea_relative_path'], policy,
+                                          [dict(name=m['name'], symbol=m['symbol'], raw=m['raw']) for m in members], plan['deploymentId'])
+    for name, raw in charts.items():
+        expected[where['profile'] / name] = raw
+    # Unchanged from beta.24: every row starts cid=0 magic=0; the dashboard writes each row's identity when it
+    # adopts the child (controller/contracts/profile-deploy.md). Row i is the child in chart file i + 2.
     expected[where['state']] = state_bytes(dict(policy='\t'.join(str(policy[k]) for k in ('aiMode', 'aiThreshold', 'aiProtocol')), members=members))
     expected[where['namespace']] = namespace_claim(controller)
     return expected
 
 
 def verify_staged(controller, plan, members):
-    for path, raw in staged_bytes(controller, plan, members).items():
+    staged = staged_bytes(controller, plan, members)
+    for path, raw in staged.items():
         if not path.is_file() or path.is_symlink() or path.read_bytes() != raw:
             raise ValueError('A staged dashboard file changed after the review (' + path.name + '); nothing was launched. Stop this deployment and deploy again.')
+    # MT5 loads every chart file in the profile folder, so it must hold exactly the staged charts.
+    profile = paths(controller, plan['deploymentId'])['profile']
+    expected = {path.name for path in staged if path.parent == profile}
+    extra = sorted(entry.name for entry in profile.iterdir() if entry.name not in expected)
+    if profile.is_symlink() or extra:
+        raise ValueError('The deploy profile holds files GOAT did not stage (' + ', '.join(extra[:3]) + '); nothing was launched. Stop this deployment and deploy again.')
 
 
 def state_bytes(rows):
@@ -237,12 +279,182 @@ def state_bytes(rows):
     return ('\r\n'.join(lines) + '\r\n').encode('utf-16')
 
 
-def chart_bytes(symbol):
-    # A plain first chart: [StartUp] attaches the dashboard EA to it with the preset.
-    text = ('<chart>\nsymbol=' + symbol + '\nperiod_type=0\nperiod_size=1\nscale=8\nmode=1\ngrid=0\n'
-            'scroll=1\none_click=0\nwindows_total=1\n<window>\nheight=100.000000\nobjects=0\n'
-            '<indicator>\nname=Main\npath=\napply=1\nshow_data=1\n</indicator>\n</window>\n</chart>\n')
-    return text.replace('\n', '\r\n').encode('utf-16')
+def startup_config(profile_name):
+    """The /config file of the deploy launch. Enabled=0 keeps Algo Trading off (D1) and Account=1 turns it off
+    again if MT5 is later signed in to another account. No [StartUp]: the dashboard comes from chart01 of the
+    profile, and a startup expert would target an ambiguous chart. AllowLiveTrading is never written (D2)."""
+    return ('[Charts]\r\nProfileLast=' + profile_name + '\r\n[Experts]\r\nEnabled=0\r\nAccount=1\r\n').encode('utf-16')
+
+
+# ------------------------------------------------------- saved MT5 settings (common.ini)
+
+def _decode_ini(raw):
+    if raw.startswith(b'\xff\xfe'):
+        return raw[2:].decode('utf-16-le'), 'utf-16-le', b'\xff\xfe'
+    if raw.startswith(b'\xef\xbb\xbf'):
+        return raw[3:].decode('utf-8'), 'utf-8', b'\xef\xbb\xbf'
+    return raw.decode('utf-8'), 'utf-8', b''
+
+
+def _ini_lines(text):
+    """Lines with their own line ends, so joining them gives the text back exactly."""
+    return re.findall(r'[^\r\n]*(?:\r\n|\n|\r)|[^\r\n]+$', text)
+
+
+def _ini_values(raw, section, key):
+    """(line index, value) of every `key=` line in [section]; MT5 matches both case-insensitively."""
+    text, _, _ = _decode_ini(raw)
+    found, current = [], None
+    for index, line in enumerate(_ini_lines(text)):
+        body = line.rstrip('\r\n')
+        heading = re.fullmatch(r'\s*\[([^\]]*)\]\s*', body)
+        if heading:
+            current = heading.group(1).strip().casefold()
+        elif current == section.casefold():
+            match = re.fullmatch(r'\s*([^=]*?)\s*=\s*(.*?)\s*', body)
+            if match and match.group(1).casefold() == key.casefold():
+                found.append((index, match.group(2)))
+    return found
+
+
+def read_common_ini(controller):
+    raw = paths(controller, '0' * 32)['common_ini'].read_bytes()
+    if len(raw) > 4_000_000:
+        raise ValueError('MT5 common.ini is larger than GOAT reads')
+    return raw
+
+
+def allow_live_trading_default(controller):
+    """D2, read-only: True when MT5's saved [Experts] AllowLiveTrading is 1, False when it is anything else or
+    absent (MT5 then saves GOAT charts with the Allow Algo Trading bit off), None when common.ini is unreadable."""
+    try:
+        values = _ini_values(read_common_ini(controller), 'Experts', 'AllowLiveTrading')
+    except (OSError, ValueError, UnicodeError):
+        return None
+    return len(values) == 1 and values[0][1] == '1'
+
+
+def profile_last(raw):
+    values = _ini_values(raw, 'Charts', 'ProfileLast')
+    if len(values) > 1:
+        raise ValueError('MT5 common.ini names more than one ProfileLast')
+    return values[0][1] if values else None
+
+
+def patch_profile_last(raw, current, new):
+    """common.ini with only the [Charts] ProfileLast value changed from current to new; every other byte kept."""
+    text, encoding, bom = _decode_ini(raw)
+    if bom + text.encode(encoding) != raw or '\x00' in text:
+        raise ValueError('MT5 common.ini does not round-trip exactly; it was not edited')
+    lines = _ini_lines(text)
+    profile_last(raw)  # refuses more than one ProfileLast
+    values = _ini_values(raw, 'Charts', 'ProfileLast')
+    if len(values) != 1 or values[0][1] != current or not PROFILE_NAME.fullmatch(new):
+        raise ValueError('MT5 common.ini does not name ' + current + ' as its profile; it was not edited')
+    index = values[0][0]
+    body = lines[index].rstrip('\r\n')
+    match = re.fullmatch(r'(\s*[^=]*?\s*=\s*)(.*?)(\s*)', body)
+    lines[index] = match.group(1) + new + match.group(3) + lines[index][len(body):]
+    patched = bom + ''.join(lines).encode(encoding)
+    if profile_last(patched) != new:
+        raise ValueError('The ProfileLast edit did not read back; common.ini was not edited')
+    return patched
+
+
+def capture_previous_profile(controller, where):
+    """The profile MT5 would open next (common.ini [Charts] ProfileLast) and a SHA-256 manifest of its folder,
+    taken after MT5 exits, since MT5 rewrites the active profile on close. GOAT never writes that folder."""
+    record = dict(name=None, captured_utc=utc_now())
+    try:
+        name = profile_last(read_common_ini(controller))
+    except (OSError, ValueError, UnicodeError) as exc:
+        return record | dict(reason='common.ini unreadable: ' + str(exc)[:160])
+    if name is None:
+        return record | dict(reason='common.ini names no profile')
+    record['name'] = name
+    if not PROFILE_NAME.fullmatch(name) or name in ('.', '..') or name.strip() != name:
+        return record | dict(reason='not a profile folder name')
+    if name == where['profile'].name:
+        return record | dict(same_as_deploy=True, reason='MT5 already names this deployment\'s profile')
+    folder = where['profiles'] / name
+    try:
+        manifest = deploy_profile.tree_manifest(folder)
+    except (OSError, ValueError) as exc:
+        return record | dict(path=str(folder), reason='profile folder unreadable: ' + str(exc)[:160])
+    record.update(path=str(folder), exists=manifest is not None, manifest=manifest)
+    if manifest is not None:
+        record['manifest_sha256'] = hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return record
+
+
+SELECT_PROFILE_INSTRUCTION = ("MT5 would still open GOAT's set-aside deploy profile next time{why}. In MT5, choose File > Profiles "
+                              "and select {profile}.")
+
+
+def _select_profile_instruction(controller, where, result):
+    """Plain words for the person when common.ini was left naming the archived deploy profile (goatai#1885 6035859714)."""
+    try:
+        current = profile_last(read_common_ini(controller))
+    except (OSError, ValueError, UnicodeError):
+        return result
+    if current != where['profile'].name:
+        return result
+    previous = result.get('previous_profile')
+    why = (', because your previous chart profile ' + previous + ' changed while GOAT was deployed' if result.get('previous_profile_intact') is False
+           else '')
+    return result | dict(select_profile_instruction=SELECT_PROFILE_INSTRUCTION.format(
+        why=why, profile=previous if previous and result.get('previous_profile_intact') is not None else 'the profile you want to use'))
+
+
+def restore_previous_profile(controller, journal, where, stamp, *, running):
+    """restore_profile, plus a plain-English File > Profiles step whenever MT5 is left on the archived deploy profile."""
+    result = restore_profile(controller, journal, where, stamp, running=running)
+    return result if result['profile_restored'] or running else _select_profile_instruction(controller, where, result)
+
+
+def restore_profile(controller, journal, where, stamp, *, running):
+    """Select the recorded previous profile again with an exact single-line common.ini edit, only when its folder
+    is byte-identical to the manifest taken before the deploy and MT5 still names this deployment's profile."""
+    previous = journal.get('previous_profile') or {}
+    result = dict(previous_profile=previous.get('name'), previous_profile_intact=None, profile_restored=False)
+    if not previous.get('name') or previous.get('same_as_deploy') or 'manifest' not in previous:
+        return result | dict(reason=previous.get('reason') or 'no previous profile was recorded')
+    try:
+        now = deploy_profile.tree_manifest(previous['path'])
+    except (OSError, ValueError):
+        now = None
+    intact = previous['manifest'] is not None and now == previous['manifest']
+    result['previous_profile_intact'] = intact
+    if not intact:
+        return result | dict(reason='the previous profile folder changed or is missing since the deploy; common.ini was not edited')
+    if running:
+        return result | dict(reason='MT5 is running, so common.ini was not edited')
+    ini = where['common_ini']
+    try:
+        raw = read_common_ini(controller)
+        current = profile_last(raw)
+    except (OSError, ValueError, UnicodeError) as exc:
+        return result | dict(reason='common.ini unreadable: ' + str(exc)[:160])
+    if current == previous['name']:
+        return result | dict(profile_restored=True, reason='already selected')
+    if current != where['profile'].name:
+        return result | dict(reason='MT5 now names profile ' + str(current) + ', not this deployment\'s; common.ini was not edited')
+    try:
+        patched = patch_profile_last(raw, current, previous['name'])
+    except (ValueError, UnicodeError) as exc:
+        return result | dict(reason=str(exc)[:200])
+    base = where['journal'].with_suffix('')
+    before = base.with_name(base.name + '.common-before-' + stamp + '.ini')
+    after = base.with_name(base.name + '.common-after-' + stamp + '.ini')
+    write_exact(before, raw)
+    write_exact(after, patched)
+    temporary = ini.with_name(ini.name + '.goat-' + stamp)
+    with temporary.open('xb') as handle:
+        handle.write(patched); handle.flush(); os.fsync(handle.fileno())
+    sharing_retry(lambda: os.replace(temporary, ini))
+    return result | dict(profile_restored=True, common_ini_before_sha256=hashlib.sha256(raw).hexdigest(),
+                         common_ini_after_sha256=hashlib.sha256(patched).hexdigest(),
+                         common_ini_before=str(before), common_ini_after=str(after))
 
 
 def write_exact(path, raw):
@@ -259,7 +471,8 @@ def write_exact(path, raw):
 
 
 def registration_for(ident, plan, members):
-    return dict(schema=1, account=ident['account'], server=ident['server'], directory=ident['directory'], buildId=ident['buildId'],
+    # deploymentId binds adoption and settingsMatch to the nonce in each staged child (B43; contract section 3).
+    return dict(schema=1, deploymentId=plan['deploymentId'], account=ident['account'], server=ident['server'], directory=ident['directory'], buildId=ident['buildId'],
                 expiresAtUtc=int(time.time()) + 14400, aiMode=plan['policy']['aiMode'], aiThreshold=plan['policy']['aiThreshold'],
                 aiProtocol=plan['policy']['aiProtocol'], exposureMode=plan['policy']['exposureMode'],
                 members=[dict(index=m['index'], path=m['path'], symbol=m['symbol'], sha256=m['sha256']) for m in members])
@@ -280,6 +493,11 @@ def preflight(controller, *, mt5=None, process=None):
                   ea_version=controller.install['ea_version'], ea_sha256=controller.install['ea_sha256'],
                   existing_dashboard=paths(controller, '0' * 32)['state'].exists(), deployment=current_deployment(controller),
                   namespace_conflict=namespace_conflict(controller), trading_changed=False)
+    # D2: reported, never written. Not a refusal here: readiness fails with the same instruction if a child
+    # then reports it may not trade.
+    allow_live = allow_live_trading_default(controller)
+    result['allow_live_trading_default'] = allow_live
+    result['readiness_blockers'] = [dict(code=ALLOW_LIVE_TRADING_BLOCKER, message=ALLOW_LIVE_TRADING_INSTRUCTION)] if allow_live is False else []
     try:
         require_idle_control(controller, session)
         result['active_work'] = None
@@ -326,18 +544,20 @@ def _poll_until(controller, ident, action, accept, *, seconds, step_timeout=20, 
             return last
         if last['result'] not in ('receipt_timeout', 'observed', 'child_attached'):
             return last
-        sleep(1)
+        # An unanswered request stays live until wait + 5 s and is archivable 5 s later; asking again sooner would
+        # be refused ("still live"). A slow dashboard start-up (every chart of the profile loads at once) is normal.
+        sleep(LINK_RETRY_AFTER_TIMEOUT_SECONDS if last['result'] == 'receipt_timeout' else 1)
     return last
 
 
-def _verify_ready(audit, registration):
+def _verify_ready(audit, registration, *, allow_live_trading=None):
     if audit.get('action') != 'audit' or audit.get('result') != 'observed' or not 0 <= time.time() - audit['observedAtUtc'] <= 60:
         raise ValueError('A fresh dashboard settings audit is required')
     if not audit['connected'] or audit['tradingAllowed'] or audit['positions'] or audit['orders'] or audit['commandPending']:
         raise ValueError('The dashboard is not inert: Algo Trading must be off with no positions or orders')
     if any(audit[k] != registration[k] for k in ('aiMode', 'aiThreshold', 'aiProtocol')):
         raise ValueError('The dashboard AI policy differs from the reviewed policy')
-    charts, magics, problems = set(), set(), []
+    charts, magics, problems, untradable = set(), set(), [], False
     for row in audit['rows']:
         name = registration['members'][row['index']]['path'].rsplit('\\', 1)[-1]
         if not row['linkedFresh'] or row['chartId'] <= 0 or row['magic'] <= 0 or row['chartId'] in charts or row['magic'] in magics:
@@ -346,11 +566,14 @@ def _verify_ready(audit, registration):
             problems.append(name + ': child inputs differ from the frozen SET')
         elif row['EA_TRADE_ALLOWED'] != 1:
             problems.append(name + ': child chart is not allowed to trade, so Algo Trading would not start it')
+            untradable = True
         elif row['exposureMode'] != registration['exposureMode'] or row['ackId'] != audit['commandId'] or row['ackStatus'] != 1:
             problems.append(name + ': exposure policy not acknowledged')
         charts.add(row['chartId']); magics.add(row['magic'])
     if problems:
-        raise ValueError('Dashboard readback failed: ' + '; '.join(problems[:5]))
+        # D2: the plain-English human step when MT5's saved Allow Algo Trading default is not on.
+        hint = ' ' + ALLOW_LIVE_TRADING_INSTRUCTION if untradable and allow_live_trading is not True else ''
+        raise ValueError('Dashboard readback failed: ' + '; '.join(problems[:5]) + hint)
 
 
 def _closed_terminal(running, attempt, closed):
@@ -375,7 +598,107 @@ def _launch_telemetry(arguments, options, previous, pre_launch_check, launch_sta
         return dict(schema=TELEMETRY_SCHEMA, error=type(exc).__name__ + ': ' + str(exc)[:200])
 
 
-def load(controller, plan_path, *, mt5=None, process=None, request=None, close=None, sleep=time.sleep):
+def _row_linked(row):
+    return bool(row['linkedFresh']) and row['chartId'] > 0 and row['magic'] > 0
+
+
+def rows_linked(rows):
+    """Every row adopted with a fresh heartbeat, and no chart or magic claimed twice."""
+    charts, magics = [r['chartId'] for r in rows], [r['magic'] for r in rows]
+    return bool(rows) and all(_row_linked(r) for r in rows) and len(set(charts)) == len(charts) and len(set(magics)) == len(magics)
+
+
+def rows_failed(members, rows):
+    """The per-row outcome at the start-up deadline: child_not_started when no chart with our EA and this member's
+    frozen settings was adopted, child_not_linked when one was adopted but is not a fresh, unique link."""
+    failed, charts, magics = [], set(), set()
+    for member in members:
+        row = rows[member['index']] if rows and member['index'] < len(rows) else None
+        if row is not None and _row_linked(row) and row['chartId'] not in charts and row['magic'] not in magics:
+            charts.add(row['chartId']); magics.add(row['magic'])
+            continue
+        started = row is not None and row['chartId'] > 0 and row['magic'] > 0
+        failed.append(dict(index=member['index'], fileName=member['name'], symbol=member['symbol'],
+                           reason=CHILD_NOT_LINKED if started else CHILD_NOT_STARTED))
+    return failed
+
+
+def _link_children(controller, ident, *, request, sleep, clock):
+    """Ask the dashboard to adopt the children MT5 started from the profile, until all are linked or the
+    start-up window ends. Every receipt must still show Algo Trading off with no positions or orders."""
+    deadline = clock() + CHILD_START_WAIT_SECONDS
+    last, rows = None, None
+    while clock() < deadline:
+        try:
+            receipt = request(controller, ident, 'link_children', timeout=max(1, min(LINK_REQUEST_SECONDS, int(deadline - clock()))))
+        except ValueError as exc:
+            return dict(outcome='refused', result=str(exc)[:200], rows=rows)
+        last = receipt['result']
+        if last in ('children_linked', 'children_pending'):
+            rows = receipt['rows']
+            if receipt['tradingAllowed'] or receipt['positions'] or receipt['orders'] or not receipt['connected']:
+                return dict(outcome='not_inert', result=last, rows=rows)
+            if last == 'children_linked' and rows_linked(rows):
+                return dict(outcome='linked', result=last, rows=rows, receipt=receipt)
+            sleep(LINK_POLL_SECONDS)
+        elif last == 'receipt_timeout':
+            sleep(LINK_RETRY_AFTER_TIMEOUT_SECONDS)
+        else:
+            # rejected_not_inert, rejected_portfolio_mismatch, rejected_ai_policy_mismatch or anything unexpected.
+            return dict(outcome='not_inert' if last == 'rejected_not_inert' else 'refused', result=last, rows=rows)
+    return dict(outcome='timeout', result=last or 'receipt_timeout', rows=rows)
+
+
+def _named_rows(failed):
+    shown = '; '.join(f"{row['fileName']} ({row['symbol']}): {row['reason']}" for row in failed[:5])
+    return shown + (f'; and {len(failed) - 5} more' if len(failed) > 5 else '')
+
+
+def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, close, reason):
+    """Unload the deployment from an inert terminal: close MT5 normally, rename the dashboard state, the deploy
+    profile and the mailbox files aside, then select the previous profile again. Never closes positions."""
+    launched = journal.get('phase') not in ('validated', 'staged', 'closed')
+    if launched and process.inspect() is not None:
+        proof = broker_proof(controller, session, mt5=mt5, require_flat=False)
+        if proof['algo_trading']:
+            raise ValueError('Turn Algo Trading off in MT5 first; GOAT never turns it off or closes trades for you')
+        if proof['positions'] or proof['orders']:
+            raise ValueError('The demo account still has open positions or orders. Close or keep them yourself in MT5; GOAT never closes them automatically')
+        closed = (close or close_terminal)(controller, attempt_id, build_id=journal['build_id'])
+        if closed.get('phase') not in ('stopped', 'already_stopped'):
+            raise ValueError('MT5 did not confirm a normal close; inspect it before deploy-stop again (no second close is sent)')
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    archived = []
+    with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
+        running = process.inspect() is not None
+        if launched and running:
+            raise ValueError('MT5 reopened during stop; nothing was unloaded')
+        # Rename aside, never delete: a later launch has no saved dashboard or deploy profile to resume, and
+        # every byte remains for inspection. Only this deployment's own profile is moved, never the previous one.
+        mailbox_root = portfolio_root(controller)
+        for source in (where['state'], where['profile'], mailbox_root / 'request.json', mailbox_root / 'registration.json'):
+            if source.exists():
+                target = source.with_name(source.name + '.stopped-' + stamp)
+                sharing_retry(lambda: source.rename(target)); archived.append(str(target))
+        rollback = restore_previous_profile(controller, journal, where, stamp, running=running)
+    journal.update(phase='stopped', stopped_utc=datetime.now(timezone.utc).isoformat(), archived=archived, stop_reason=reason,
+                   rollback=rollback, previous_profile_intact=rollback['previous_profile_intact'],
+                   profile_restored=rollback['profile_restored'])
+    write_json(where['journal'], journal)
+    return journal
+
+
+def _unwind_summary(journal):
+    rollback = journal.get('rollback') or {}
+    if rollback.get('profile_restored'):
+        profile = 'restored the previous chart profile ' + str(rollback.get('previous_profile'))
+    else:
+        profile = 'left the chart profile selection unchanged (' + str(rollback.get('reason', 'no previous profile')) + ')'
+    summary = 'GOAT closed MT5 with Algo Trading off, set this deployment aside and ' + profile + '; nothing traded.'
+    return summary + (' ' + rollback['select_profile_instruction'] if rollback.get('select_profile_instruction') else '')
+
+
+def load(controller, plan_path, *, mt5=None, process=None, request=None, close=None, sleep=time.sleep, clock=time.monotonic):
     from studio_seed_process import WindowsSeedProcess
     session, _ = session_state(controller)
     plan = read_json(plan_path)
@@ -399,16 +722,46 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         return public(record)
     if record and record.get('phase') == 'refused_before_stage':
         record = None  # Nothing was staged; the same reviewed plan starts again.
+    attempt = 1
+    if record and record.get('phase') == 'stopped':
+        # A stopped or auto-unwound attempt of this plan: keep its journal and deploy again from the start.
+        attempt = int(record.get('attempt', 1)) + 1
+        kept = where['journal'].with_name(deployment_id + '.attempt-' + str(attempt - 1) + '.json')
+        if kept.exists():
+            raise ValueError('An earlier attempt journal of this deployment is already kept; inspect demo-deployments')
+        sharing_retry(lambda: where['journal'].rename(kept))
+        record = None
     if record is None:
         record = dict(schema_version=1, deployment_id=deployment_id, plan_sha256=plan_sha256, phase='validated',
                       portfolio=plan['portfolio'], account=dict(session['account']), build_id=plan['buildId'],
                       members=[dict(index=m['index'], fileName=m['name'], symbol=m['symbol'], sha256=m['sha256']) for m in members],
-                      created_utc=datetime.now(timezone.utc).isoformat(), trading_changed=False, positions_closed=False)
+                      created_utc=datetime.now(timezone.utc).isoformat(), trading_changed=False, positions_closed=False,
+                      profile_format=deploy_profile.PROFILE_FORMAT, attempt=attempt)
         write_json(where['journal'], record)
+    if record.get('profile_format') != deploy_profile.PROFILE_FORMAT and record['phase'] in ('validated', 'staged', 'closed', 'launch_intent'):
+        raise ValueError('This deployment was staged by an earlier GOAT (template deploy) and never launched; run deploy-stop, then deploy again')
+    attempt = int(record.get('attempt', 1))
+    suffix = '' if attempt == 1 else '-a' + str(attempt)
+    config_path = where['config'] if attempt == 1 else where['config'].with_name(deployment_id + '.attempt-' + str(attempt) + '.ini')
 
     def phase(name, **extra):
         record.update(phase=name, **extra); record['updated_utc'] = datetime.now(timezone.utc).isoformat()
         write_json(where['journal'], record)
+
+    def fail_and_unwind(code, message, failed=()):
+        """D3: never leave a half-loaded MT5 running. The unwind is the inert-only deploy-stop path."""
+        record.update(failure=dict(code=code, message=message[:400], utc=utc_now()), rows_failed=list(failed))
+        write_json(where['journal'], record)
+        try:
+            _unwind(controller, session, record, where, 'unwind-' + deployment_id[:24] + '-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'),
+                    mt5=mt5, process=process, close=close, reason=code)
+        except (OSError, ValueError) as exc:
+            record['auto_unwind'] = dict(status='failed', error=str(exc)[:300], utc=utc_now())
+            write_json(where['journal'], record)
+            raise ValueError(message + ' GOAT could not unload it: ' + str(exc) + ' Then run deploy-stop.') from exc
+        record['auto_unwind'] = dict(status='unwound', utc=utc_now())
+        write_json(where['journal'], record)
+        raise ValueError(message + ' ' + _unwind_summary(record) + ' Run deploy-load again to retry.')
 
     if record['phase'] == 'validated':
         try:
@@ -441,12 +794,13 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         if running is not None:
             # Demo proof and inert state come first; closing never touches positions.
             broker_proof(controller, session, mt5=mt5)
-            attempt = 'deploy-' + deployment_id[:24]
-            closed = (close or close_terminal)(controller, attempt, build_id=plan['buildId'])
+            attempt_id = 'deploy-' + deployment_id[:24] + suffix
+            closed = (close or close_terminal)(controller, attempt_id, build_id=plan['buildId'])
             if closed.get('phase') not in ('stopped', 'already_stopped'):
                 raise ValueError('MT5 did not confirm a normal close; run deploy-load again after it exits (no second close is sent)')
-            previous = _closed_terminal(running, attempt, closed)
-        phase('closed', previous_terminal=previous)
+            previous = _closed_terminal(running, attempt_id, closed)
+        # Taken after MT5 exits: MT5 rewrites the active profile and common.ini on close.
+        phase('closed', previous_terminal=previous, previous_profile=capture_previous_profile(controller, where))
 
     if record['phase'] == 'closed':
         with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
@@ -456,16 +810,12 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             if present is not None:
                 raise ValueError('The selected MT5 reopened before the dashboard launch; nothing was launched')
             portable = saved_launch_policy(controller, session)
-            # Byte-exact: the SETs, resume file, chart, preset and namespace claim the EA will read.
+            # Byte-exact: the SETs, resume file, every chart of the profile and the namespace claim.
             verify_staged(controller, plan, members)
-            # Enabled=0 keeps Algo Trading off; Account=1 turns it off again if MT5 is later
-            # signed in to another account (MT5 "disable on account change").
-            config = ('[Charts]\r\nProfileLast=' + where['profile'].name + '\r\n[Experts]\r\nEnabled=0\r\nAccount=1\r\n'
-                      '[StartUp]\r\nExpert=' + controller.install['ea_relative_path'] + '\r\nExpertParameters=' + PRESET_NAME +
-                      '\r\nPeriod=M1\r\n').encode('utf-16')
-            write_exact(where['config'], config)
-            phase('launch_intent', startup_sha256=hashlib.sha256(config).hexdigest())
-            arguments = [controller.install['terminal_executable'], '/config:' + str(where['config'])]
+            config = startup_config(where['profile'].name)
+            write_exact(config_path, config)
+            phase('launch_intent', startup_sha256=hashlib.sha256(config).hexdigest(), startup_config=str(config_path))
+            arguments = [controller.install['terminal_executable'], '/config:' + str(config_path)]
             if portable:
                 arguments.append('/portable')
             launch_started = utc_now()
@@ -483,26 +833,41 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
 
     if record['phase'] in ('launched', 'registered'):
         registration = registration_for(ident, plan, members)
-        digest = portfolio_register(controller, ident, registration)
+        try:
+            digest = portfolio_register(controller, ident, registration)
+        except ValueError as exc:
+            fail_and_unwind('registration_refused', 'The dashboard portfolio could not be registered (' + str(exc) + ').')
         phase('registered', registration_sha256=digest)
-        status = _poll_until(controller, ident, 'status', lambda r: r['result'] == 'observed', seconds=DASHBOARD_WAIT_SECONDS, request=request, sleep=sleep)
+        try:
+            status = _poll_until(controller, ident, 'status', lambda r: r['result'] == 'observed', seconds=DASHBOARD_WAIT_SECONDS,
+                                 request=request, sleep=sleep, clock=clock)
+        except ValueError as exc:
+            status = dict(result=str(exc)[:160])
         if status is None or status['result'] != 'observed':
             outcome = status['result'] if status else 'receipt_timeout'
-            raise ValueError('The Portfolio Dashboard did not answer (' + outcome + '). Check that MT5 opened on the demo account with GOAT paired, then run deploy-load again.')
-        if status['tradingAllowed']:
-            raise ValueError('Algo Trading is already on; turn it off before GOAT loads the portfolio')
+            fail_and_unwind('dashboard_not_ready', 'The Portfolio Dashboard did not answer (' + outcome + '). Check that MT5 opened on the demo account with GOAT paired.')
+        if status['tradingAllowed'] or status['positions'] or status['orders']:
+            fail_and_unwind('not_inert_after_start', 'Algo Trading is already on (or the account has positions or orders) after MT5 started; '
+                            'GOAT does not load a portfolio then.')
         phase('dashboard_ready')
 
     if record['phase'] == 'dashboard_ready':
-        for _ in range(len(members) + 2):
-            attached = request(controller, ident, 'deploy_next', timeout=DEPLOY_NEXT_WAIT_SECONDS)
-            if attached['result'] == 'all_attached':
-                break
-            if attached['result'] != 'child_attached':
-                raise ValueError('A child chart could not be attached (' + attached['result'] + '); run deploy-status, then deploy-stop to unwind')
-        else:
-            raise ValueError('The dashboard did not report every child attached')
-        phase('attached')
+        # A beta.24 journal launched by the template deploy resumes here too; its profile holds no children,
+        # so every row ends child_not_started and the deploy unwinds cleanly.
+        linked = _link_children(controller, ident, request=request, sleep=sleep, clock=clock)
+        if linked['outcome'] != 'linked':
+            failed = rows_failed(members, linked['rows'])
+            if linked['outcome'] == 'not_inert':
+                message = ('MT5 stopped being inert (Algo Trading on, a position or order open, or disconnected) before every '
+                           'member was linked, so GOAT stopped linking (' + linked['result'] + ').')
+            else:
+                waited = 'within ' + str(CHILD_START_WAIT_SECONDS) + ' s' if linked['outcome'] == 'timeout' else '(' + linked['result'] + ')'
+                message = (str(len(failed)) + ' of ' + str(len(members)) + ' members did not start as linked GOAT charts ' + waited
+                           + ': ' + _named_rows(failed) + '.')
+            fail_and_unwind(CHILD_NOT_STARTED if any(row['reason'] == CHILD_NOT_STARTED for row in failed) else CHILD_NOT_LINKED,
+                            message, failed)
+        phase('attached', link_result=linked['result'], linked_rows=[dict(index=r['index'], chartId=r['chartId'], magic=r['magic'])
+                                                                     for r in linked['rows']])
 
     if record['phase'] == 'attached':
         dispatched = request(controller, ident, 'apply_policy', timeout=60)
@@ -512,7 +877,7 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         def acknowledged(r):
             return (r['result'] == 'observed' and not r['commandPending']
                     and all(row['ackId'] == command and row['ackStatus'] == 1 for row in r['rows']))
-        acked = _poll_until(controller, ident, 'status', acknowledged, seconds=ACK_WAIT_SECONDS, request=request, sleep=sleep)
+        acked = _poll_until(controller, ident, 'status', acknowledged, seconds=ACK_WAIT_SECONDS, request=request, sleep=sleep, clock=clock)
         if acked is None or not acknowledged(acked):
             raise ValueError('Child charts did not acknowledge the exposure policy in time; run deploy-load again')
         phase('policy_applied', command_id=command)
@@ -520,12 +885,12 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
     if record['phase'] == 'policy_applied':
         registration, _ = read_bounded(portfolio_root(controller) / 'registration.json', 131072)
         audit = _poll_until(controller, ident, 'audit', lambda r: r['result'] == 'observed' and all(row['settingsMatch'] for row in r['rows']),
-                            seconds=AUDIT_WAIT_SECONDS, request=request, sleep=sleep)
+                            seconds=AUDIT_WAIT_SECONDS, request=request, sleep=sleep, clock=clock)
         if audit is None or audit['result'] != 'observed':
             raise ValueError('The dashboard settings audit did not complete (' + (audit['result'] if audit else 'receipt_timeout') + ')')
         if audit['registrationSha256'] != record.get('registration_sha256'):
             raise ValueError('The dashboard audited a different registration than this deployment registered; readiness is not claimed')
-        _verify_ready(audit, registration)
+        _verify_ready(audit, registration, allow_live_trading=allow_live_trading_default(controller))
         proof = broker_proof(controller, session, mt5=mt5)
         if proof['algo_trading']:
             raise ValueError('Algo Trading turned on during the deploy; readiness is not claimed')
@@ -561,7 +926,7 @@ def status(controller, *, mt5=None, process=None, request=None):
 
 
 def stop(controller, attempt_id, *, mt5=None, process=None, close=None):
-    """Unload the dashboard portfolio from an inert terminal. Never closes positions."""
+    """Unload the dashboard portfolio from an inert terminal and select the previous profile again. Never closes positions."""
     from studio_seed_process import WindowsSeedProcess
     session, _ = session_state(controller)
     record = current_deployment(controller)
@@ -570,29 +935,8 @@ def stop(controller, attempt_id, *, mt5=None, process=None, close=None):
     where = paths(controller, record['deployment_id'])
     journal = read_json(where['journal'])
     process = process or WindowsSeedProcess(controller)
-    launched = journal.get('phase') not in ('validated', 'staged', 'closed')
-    if launched and process.inspect() is not None:
-        proof = broker_proof(controller, session, mt5=mt5, require_flat=False)
-        if proof['algo_trading']:
-            raise ValueError('Turn Algo Trading off in MT5 first; GOAT never turns it off or closes trades for you')
-        if proof['positions'] or proof['orders']:
-            raise ValueError('The demo account still has open positions or orders. Close or keep them yourself in MT5; GOAT never closes them automatically')
-        closed = (close or close_terminal)(controller, attempt_id, build_id=journal['build_id'])
-        if closed.get('phase') not in ('stopped', 'already_stopped'):
-            raise ValueError('MT5 did not confirm a normal close; inspect it before deploy-stop again (no second close is sent)')
-    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-    archived = []
-    with exclusive_gate(controller.local / 'native-gate'), demo_terminal_lock(controller):
-        if launched and process.inspect() is not None:
-            raise ValueError('MT5 reopened during stop; nothing was unloaded')
-        # Rename aside, never delete: a later launch has no saved dashboard or
-        # deploy profile to resume, and every byte remains for inspection.
-        mailbox_root = portfolio_root(controller)
-        for source in (where['state'], where['profile'], mailbox_root / 'request.json', mailbox_root / 'registration.json'):
-            if source.exists():
-                target = source.with_name(source.name + '.stopped-' + stamp)
-                sharing_retry(lambda: source.rename(target)); archived.append(str(target))
-    journal.update(phase='stopped', stopped_utc=datetime.now(timezone.utc).isoformat(), archived=archived)
-    write_json(where['journal'], journal)
+    journal = _unwind(controller, session, journal, where, attempt_id, mt5=mt5, process=process, close=close, reason='deploy_stop')
+    select = (journal.get('rollback') or {}).get('select_profile_instruction')
     return public(journal) | dict(status='stopped', terminal='stopped', trading_changed=False, positions_closed=False,
-                                  next_action='Run monitor-launch with a new attempt ID to return this terminal to research.')
+                                  next_action=(select + ' ' if select else '')
+                                  + 'Run monitor-launch with a new attempt ID to return this terminal to research.')

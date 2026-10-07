@@ -104,10 +104,15 @@ def digest(path):
 
 
 def read_json(path):
-    return json.loads(Path(path).read_text(encoding='utf-8-sig'))
+    # A concurrent writer's replace or reader can briefly deny the share (WinError 5/32/33): bounded retry, loud after.
+    from studio_agent_mailbox import sharing_retry
+    return json.loads(sharing_retry(lambda: Path(path).read_text(encoding='utf-8-sig')))
 
 
 def write_json(path, value):
+    """Durable record write. Publishing the same bytes is retried on a transient sharing error, so a driver's
+    final bookkeeping (lane/batch worker records) never fails because a status read held the file (goatai#1885)."""
+    from studio_agent_mailbox import sharing_retry
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + '.tmp-' + secrets.token_hex(8))
@@ -115,7 +120,11 @@ def write_json(path, value):
         json.dump(value, output, sort_keys=True, separators=(',', ':'))
         output.write('\n')
         output.flush(); os.fsync(output.fileno())
-    os.replace(temporary, path)
+    try:
+        sharing_retry(lambda: os.replace(temporary, path))
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _lane_moved_by(rows):
@@ -2637,8 +2646,8 @@ class DemoAgent:
             self._append(kind + '_drive', 'slice', batch_id=batch_id, status=result['status'])
             if result['status'] in ('completed', 'stopped', 'reconcile_required') or result.get('paused'):
                 return result
-        return dict(runner.status(batch_id), driver_budget_exhausted=True,
-                    next_action=kind + '-resume continues the retained original attempt; no retry')
+        return runner._status_or_busy(batch_id, driver_budget_exhausted=True,
+                                      next_action=kind + '-resume continues the retained original attempt; no retry')
 
     def _lane_validate(self, kind, plan, batch_id=None):
         """Non-executing plan and SET validation: no file, process, broker or terminal effect.

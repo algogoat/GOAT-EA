@@ -8,13 +8,14 @@ import math
 import json
 from pathlib import Path
 import re
+from contextlib import ExitStack
 import time
 import uuid
 
 from campaign_ledger import sha
 from studio_bridge import write_json
 from studio_installation import read_json
-from studio_native_gate import exclusive_gate
+from studio_native_gate import GateBusy,exclusive_gate
 from studio_optimization_inputs import explicit_optimization_inputs,verify_explicit_inputs
 from studio_research_launch import ResearchLaunchRefused
 from studio_settings import validate_tester
@@ -656,7 +657,7 @@ class SeedRunner:
 
     def status(self,batch_id):
         from studio_process_query import POLL_BUDGET
-        with exclusive_gate(self.gate):
+        with self._gate():
             root,manifest,state=self._read(batch_id)
             self._observe(root,manifest,state,budget=POLL_BUDGET)
         members=[item|dict(tester=spec['tester'],source_sha256=spec['source_sha256'],frozen_set_sha256=spec['set_sha256'],config_sha256=spec['config_sha256'],requested_frames=spec['frame_target']) for spec,item in zip(manifest['members'],state['members'])]
@@ -735,6 +736,19 @@ class SeedRunner:
         except ValueError:return False
         return True
 
+    # The runner's gate waits as long as a sharing retry (40 x 25 ms) for another GOAT operation, e.g. a concurrent
+    # seed-status pass, to release it (goatai#1885: a seed driver and two status calls collided on WinError 32).
+    GATE_WAIT_SECONDS=1
+
+    def _gate(self):return exclusive_gate(self.gate,wait_seconds=self.GATE_WAIT_SECONDS)
+
+    def _status_or_busy(self,batch_id,**extra):
+        """The driver's closing status read. A gate still busy after the wait is reported, never raised, so a driver
+        that did its job is not recorded as failed because a status reader held the gate at that moment."""
+        try:return self.status(batch_id)|extra
+        except GateBusy as busy:
+            return dict(batch_id=batch_id,status='status_busy',gate_busy=str(busy),**extra)
+
     def start(self,batch_id,max_seconds=60):return self._drive(batch_id,max_seconds,initial=True)
     def resume(self,batch_id,max_seconds=60,*,reactivate=True):
         """Continue the retained attempt. ``reactivate`` lets a batch stopped by failed members restart under the
@@ -747,7 +761,14 @@ class SeedRunner:
         deadline=self.clock()+max_seconds
         while self.clock()<deadline:
             self.c.bridge.pump()
-            with exclusive_gate(self.gate):
+            held=ExitStack()
+            try:held.enter_context(self._gate())
+            except GateBusy:
+                # Another GOAT operation still holds the gate after the bounded wait: skip this pass, never fail the
+                # driver on it. Nothing was read or changed; the next pass re-checks everything.
+                if self.clock()<deadline:self.sleep(min(1,deadline-self.clock()))
+                continue
+            with held:
                 root,manifest,state=self._read(batch_id)
                 if state['status']=='reconcile_required':
                     # A member MT5 finished while its start was unconfirmed is collected from its own output.
@@ -806,11 +827,11 @@ class SeedRunner:
                         except BaseException as exc:
                             item.update(status='reconcile_required',error=str(exc));state['status']='reconcile_required';self._save(root,state);raise
             if self.clock()<deadline:self.sleep(min(1,deadline-self.clock()))
-        return self.status(batch_id)|dict(driver_budget_exhausted=True,next_action='seed-resume continues the retained attempt; no retry')
+        return self._status_or_busy(batch_id,driver_budget_exhausted=True,next_action='seed-resume continues the retained attempt; no retry')
 
     def cancel(self,batch_id):
         self.c.bridge.pump()
-        with exclusive_gate(self.gate):
+        with self._gate():
             root,manifest,state=self._read(batch_id)
             if state['status'] in ('completed','stopped'):return self._public(root,state)
             self._owner(state['generation'])
@@ -853,7 +874,7 @@ class SeedRunner:
         launch, never re-runs a member and never writes a result it did not collect.
         """
         self.c.bridge.pump()
-        with exclusive_gate(self.gate):
+        with self._gate():
             root,manifest,state=self._read(batch_id)
             if state['status']=='prepared':raise ValueError('Seed batch '+batch_id+' never started; nothing to reconcile')
             self._owner(state['generation'])

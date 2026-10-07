@@ -9,23 +9,36 @@ import hashlib
 import re
 import os
 from pathlib import Path
+import time
+
+
+class GateBusy(PermissionError):   # what ctypes.WinError(32) raised before, so existing handlers still match
+    """The gate stayed held by another operation (a sharing or lock violation) for the whole bounded wait."""
+
+
+# Sharing violation, lock violation, and access denied while a holder's handle closes.
+GATE_BUSY_WINERRORS = (5, 32, 33)
+GATE_RETRY_SECONDS = .025
 
 
 @contextmanager
-def exclusive_gate(root):
-    with file_gate(root, shared=False):
+def exclusive_gate(root, *, wait_seconds=0):
+    with file_gate(root, shared=False, wait_seconds=wait_seconds):
         yield
 
 
 @contextmanager
-def shared_gate(root):
+def shared_gate(root, *, wait_seconds=0):
     """Concurrent controller holds; excluded by an exclusive handover hold."""
-    with file_gate(root, shared=True):
+    with file_gate(root, shared=True, wait_seconds=wait_seconds):
         yield
 
 
 @contextmanager
-def file_gate(root, *, shared):
+def file_gate(root, *, shared, wait_seconds=0):
+    """Hold the gate. ``wait_seconds`` (default 0: refuse at once, as before) retries only a busy gate,
+    every GATE_RETRY_SECONDS, then raises GateBusy naming the lock (goatai#1885: a seed driver and two
+    concurrent seed-status calls collided here and the driver was recorded failed on WinError 32)."""
     path=Path(root)/'launch.lock'
     if os.name=='nt':
         import ctypes
@@ -39,18 +52,43 @@ def file_gate(root, *, shared):
         close.argtypes=[wintypes.HANDLE];close.restype=wintypes.BOOL
         # Both access and share checks are symmetric: readers coexist, but an
         # exclusive handle cannot open until every shared handle is released.
-        handle=create(str(path),0xC0000000,3 if shared else 0,None,4,0x80,None)
-        if handle==ctypes.c_void_p(-1).value:
-            raise ctypes.WinError(ctypes.get_last_error())
+        def acquire():
+            handle=create(str(path),0xC0000000,3 if shared else 0,None,4,0x80,None)
+            if handle==ctypes.c_void_p(-1).value:
+                code=ctypes.get_last_error()
+                if code in GATE_BUSY_WINERRORS:
+                    raise GateBusy(None,ctypes.FormatError(code).strip()+' (GOAT gate held by another operation)',str(path),code)
+                raise ctypes.WinError(code)
+            return handle
+        handle=_with_wait(acquire,wait_seconds,path)
         try:yield
         finally:close(handle)
     else:
         import fcntl
         with path.open('a+b') as handle:
             mode=fcntl.LOCK_SH if shared else fcntl.LOCK_EX
-            fcntl.flock(handle.fileno(),mode|fcntl.LOCK_NB)
+            def acquire():
+                try:fcntl.flock(handle.fileno(),mode|fcntl.LOCK_NB)
+                except BlockingIOError as error:
+                    raise GateBusy(error.errno,'GOAT gate held by another operation',str(path)) from error
+            _with_wait(acquire,wait_seconds,path)
             try:yield
             finally:fcntl.flock(handle.fileno(),fcntl.LOCK_UN)
+
+
+def _with_wait(acquire, wait_seconds, path, *, clock=time.monotonic, sleep=time.sleep):
+    if type(wait_seconds) not in (int, float) or not 0 <= wait_seconds <= 600:
+        raise ValueError('Gate wait must be 0..600 seconds')
+    deadline=clock()+wait_seconds
+    while True:
+        try:
+            return acquire()
+        except GateBusy as error:
+            if clock()>=deadline:
+                if wait_seconds:
+                    error.strerror=(error.strerror or '')+'; still held after '+str(wait_seconds)+' s'
+                raise
+            sleep(GATE_RETRY_SECONDS)
 
 
 def configure_gate(store, root):

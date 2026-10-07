@@ -10,6 +10,7 @@ terminal directory, broker account, server and compiled build ID. A receipt is e
 of what the EA observed, never proof that a requested shutdown has completed.
 """
 from contextlib import contextmanager
+import errno
 import hashlib
 import json
 import os
@@ -41,6 +42,15 @@ SHARING_RETRY_ATTEMPTS = 40  # About one second in total: an EA read of a small 
 TRANSIENT_WINERRORS = (5, 32, 33)
 
 
+def transient_sharing_error(error):
+    code = getattr(error, 'winerror', None)
+    if code is not None:
+        return code in TRANSIENT_WINERRORS
+    # Python's open() reports a Windows sharing violation through the C runtime: errno EACCES and no
+    # winerror (goatai#1885: a non-sharing holder made every open() read fail on the first try).
+    return os.name == 'nt' and getattr(error, 'errno', None) == errno.EACCES
+
+
 def sharing_retry(operation, *, attempts=SHARING_RETRY_ATTEMPTS, sleep=time.sleep):
     # A native atomic move, an EA reading the same file, or a terminal exit can briefly
     # deny a Windows share. Retry only that condition, never by issuing another native request.
@@ -48,7 +58,7 @@ def sharing_retry(operation, *, attempts=SHARING_RETRY_ATTEMPTS, sleep=time.slee
         try:
             return operation()
         except OSError as error:
-            if getattr(error, 'winerror', None) not in TRANSIENT_WINERRORS or attempt == attempts - 1:
+            if not transient_sharing_error(error) or attempt == attempts - 1:
                 raise
             sleep(0.025)
 
@@ -332,11 +342,22 @@ def setup_retire(controller, ident, request_id, *, grace=1.5, sleep=time.sleep):
 
 # -------------------------------------------------------------- portfolio mailbox
 
-PORTFOLIO_ACTIONS = ('status', 'audit', 'configure', 'deploy_next', 'apply_policy')
+# Actions the controller sends. beta.25 (profile-staged deploy, controller/contracts/profile-deploy.md) appends
+# link_children; deploy_next left the list because the EA no longer attaches charts. A deploy_next request
+# retained from beta.24 is still recognised (RETAINED_PORTFOLIO_ACTIONS) so it can be settled and archived.
+PORTFOLIO_ACTIONS = ('status', 'audit', 'configure', 'apply_policy', 'link_children')
+RETAINED_PORTFOLIO_ACTIONS = PORTFOLIO_ACTIONS + ('deploy_next',)
+# Append-only: the beta.24 deploy_next results stay valid for retained receipts.
 PORTFOLIO_RESULTS = {'observed', 'started', 'rejected_portfolio_mismatch', 'rejected_not_inert',
                      'configured', 'configure_failed', 'rejected_ai_policy_mismatch',
                      'rejected_partial_deployment', 'all_attached', 'child_attached',
-                     'child_attach_failed', 'policy_dispatched', 'policy_not_dispatched'}
+                     'child_attach_failed', 'policy_dispatched', 'policy_not_dispatched',
+                     'children_linked', 'children_pending', 'rejected_deploy_next_retired'}
+# A typed refusal for a stale caller (goatai#1885 6034765935): the B43 EA answers deploy_next with
+# rejected_deploy_next_retired and changes nothing; this controller never sends it.
+DEPLOY_NEXT_RETIRED = 'DEPLOY_NEXT_RETIRED'
+DEPLOY_NEXT_RETIRED_MESSAGE = ("This EA build deploys through the app's Next step; the old one-by-one deploy was retired. "
+                               'Use deploy-load (Next in the app) instead.')
 REGISTRATION_SECONDS = 14400
 ROW_FIELDS = {'index', 'symbol', 'chartId', 'magic', 'linkedFresh', 'settingsMatch', 'exposureMode', 'ackId', 'ackStatus',
               'AI_MODE', 'AI_PROTOCOL', 'AI_THRESHOLD', 'AI_SCOPE', 'AI_VERIFIED', 'AI_AVAILABLE', 'AI_AT', 'EA_TRADE_ALLOWED'}
@@ -345,8 +366,12 @@ ROW_FIELDS = {'index', 'symbol', 'chartId', 'magic', 'linkedFresh', 'settingsMat
 def validate_portfolio_registration(value, ident, common_files, *, check_files=True):
     fields = {'schema', 'account', 'server', 'directory', 'buildId', 'expiresAtUtc',
               'aiMode', 'aiThreshold', 'aiProtocol', 'exposureMode', 'members'}
-    if set(value) != fields or type(value['schema']) is not int or value['schema'] != 1:
+    # A profile-staged deploy (beta.25) also binds its deploymentId, the nonce each staged child carries;
+    # a registration without it (beta.24) still validates, and the B43 EA then adopts nothing.
+    if set(value) not in (fields, fields | {'deploymentId'}) or type(value['schema']) is not int or value['schema'] != 1:
         raise ValueError('Invalid portfolio registration schema')
+    if 'deploymentId' in value and (not isinstance(value['deploymentId'], str) or not re.fullmatch('[a-f0-9]{32}', value['deploymentId'])):
+        raise ValueError('Invalid portfolio registration deployment')
     for key in ('account', 'server', 'directory', 'buildId'):
         if value[key] != ident[key]:
             raise ValueError('Portfolio registration identity mismatch')
@@ -385,7 +410,7 @@ def validate_portfolio_registration(value, ident, common_files, *, check_files=T
 def validate_portfolio_request(value):
     if set(value) != {'schema', 'id', 'action', 'registrationSha256', 'expiresAtUtc'} or value.get('schema') != 1:
         raise ValueError('Invalid retained portfolio request')
-    if not isinstance(value['id'], str) or not re.fullmatch('[a-f0-9]{32}', value['id']) or value['action'] not in PORTFOLIO_ACTIONS:
+    if not isinstance(value['id'], str) or not re.fullmatch('[a-f0-9]{32}', value['id']) or value['action'] not in RETAINED_PORTFOLIO_ACTIONS:
         raise ValueError('Invalid retained portfolio request identity')
     if not isinstance(value['registrationSha256'], str) or not re.fullmatch('[a-f0-9]{64}', value['registrationSha256']) or type(value['expiresAtUtc']) is not int:
         raise ValueError('Invalid retained portfolio request binding')
@@ -454,7 +479,14 @@ def portfolio_register(controller, ident, value):
     return digest
 
 
+def retired_deploy_next():
+    from studio_refusal import Refusal
+    return Refusal(DEPLOY_NEXT_RETIRED_MESSAGE, DEPLOY_NEXT_RETIRED)
+
+
 def portfolio_request(controller, ident, action, *, timeout=60, clock=time.monotonic, sleep=time.sleep):
+    if action not in PORTFOLIO_ACTIONS and action in RETAINED_PORTFOLIO_ACTIONS:
+        raise retired_deploy_next()
     if action not in PORTFOLIO_ACTIONS or not 1 <= timeout <= 90:
         raise ValueError('Invalid dashboard command')
     root = portfolio_root(controller)
@@ -487,6 +519,8 @@ def portfolio_request(controller, ident, action, *, timeout=60, clock=time.monot
             if receipt.exists():
                 value, _ = read_bounded(receipt, 131072)
                 result = portfolio_receipt(value, envelope, ident, registration['members'])
+                if result['result'] == 'rejected_deploy_next_retired':
+                    raise retired_deploy_next()
                 if result['result'] != 'started':
                     if not 0 <= time.time() - result['observedAtUtc'] <= timeout + 5:
                         raise ValueError('Stale or future dashboard receipt')

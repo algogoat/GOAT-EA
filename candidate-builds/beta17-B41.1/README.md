@@ -64,22 +64,20 @@ killed. `scripts/test_b41_1_no_drift.cjs` checks the source against B41 (`278ec1
 **Build**
 
 - `GOAT_BUILD_ID` is `V1.49-BETA17-41.1`, marker `B41.1`, on top of B41 (`278ec109`, GOAT-EA#147, compiled in #150).
-- **Compile pending for this source (CA41 + AA41).** Nothing below is a binary of it. The earlier CA41-only
-  binary (`b3650d96…`, from `4f3f2f99`) is superseded and has been removed from this folder, together with its
-  receipt and `externals.json`. They stay in history at `f00cc8ad`. Do not install it.
-- History, CA41 only: compiled once from `4f3f2f99` with MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`,
-  the same compiler as B39, B40 and B41): 0 errors, 0 warnings. The compiler was a copy outside every
-  terminal folder, run `/portable` at Idle priority. The stage was a scratch copy outside every terminal folder. Its 307 standard includes and the
-  `MACD - GOAT 2.ex5` resource are copied from the B41 compile root and hash-equal to it. `externals.json` records
-  the same per-name hashes as B41's, and the same `consumed_sha256` (`ced68559…`).
-- `GOAT V1.49.ex5`: sha256 `b3650d96f7d12b22a76d9905989f62fa95967cee204a89d83d0d1a4f7f9abb38`, 2,429,020 bytes.
+- Compiled once from `c8355f66` (CA41 + AA41, this branch's candidate commit) with MetaEditor 5.0.0.6230
+  (sha256 `cf2750bd…`, the same compiler as B39, B40 and B41): 0 errors, 0 warnings. The compiler was a copy
+  outside every terminal folder, run `/portable` at Idle priority. The stage was a scratch copy outside every
+  terminal folder. Its 307 standard includes and the `MACD - GOAT 2.ex5` resource are copied from the B41 compile
+  root and hash-equal to it. `externals.json` records the same per-name hashes as B41's, and the same
+  `consumed_sha256` (`ced68559…`).
+- `GOAT V1.49.ex5`: sha256 `d496884ada935d4cf3aba844807a3fe6f501ca640c111b4a2ac39973f8ec4e77`, 2,433,636 bytes.
 - Entrypoint `GOAT V1.49.mq5`: sha256 `dee033a8…7e8fa56b`, pinned in `controller/contracts/v149/dependencies.json`.
-- Pin check at `4f3f2f99`: all 41 sources in `identity.json` match the tree and the staged copy; only
-  `GOAT V1.49.mq5` and `GOATPortfolioChildAudit.mqh` differ from B41. The input header is still `1408e1ee…`.
-- No drift: under `studio_equivalence`'s normalization (CRLF to LF, and the `GOAT_BUILD_ID`/`GOAT_BUILD_MARKER`
-  defines), the entrypoint is byte-identical to B41's (`261f0c9e…`). `studio_function_units units-diff
-  278ec109 → 4f3f2f99` reports `GOAT V1.49.mq5: identical`, `Optimizer.mqh: identical`. The only normalized
-  closure change is `GOATPortfolioChildAudit.mqh` (`5d275540…` → `180986e4…`).
+- Pin check at `c8355f66`: all 41 sources in `identity.json` match the tree and the staged copy; only
+  `GOAT V1.49.mq5`, `GOATPortfolioChildAudit.mqh`, `Dashboard.mqh` and `GOATPortfolioSetupControl.mqh` differ
+  from B41. The input header is still `1408e1ee…`.
+- No drift: `scripts/test_b41_1_no_drift.cjs` (see **Tests**).
+- Superseded: the earlier CA41-only binary (`b3650d96…`, from `4f3f2f99`) does not contain AA41. It was removed
+  from this folder with its receipt and `externals.json`, and stays in history at `f00cc8ad`. Do not install it.
 - MetaEditor output is not byte-reproducible across stages, so admit only this binary.
 
 **Not done.** Native qualification has not been performed, and nothing was installed. The root
@@ -87,7 +85,7 @@ killed. `scripts/test_b41_1_no_drift.cjs` checks the source against B41 (`278ec1
 
 **Still owed:**
 
-1. Claude-Mac's review and the compile of this source.
+1. Claude-Mac's review of this source and binary.
 2. Claude-Mac's pin check, no-drift check and internal admission of `V1.49-BETA17-41.1`.
 3. A native deploy-load on a non-Exp demo. It must attach the child charts, the first one included, and read
    `settingsMatch` true for one V1.49-writer SET and one Balanced35 SET.

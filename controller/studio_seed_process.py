@@ -6,6 +6,7 @@ import re
 import subprocess
 import time
 
+import studio_process_query
 from studio_process_query import TIMEOUT, powershell_text, process_rows
 
 
@@ -102,18 +103,31 @@ class WindowsSeedProcess:
 
     def process_alive(self,identity,budget=None):
         """Read-only: is exactly this process (PID and creation time) still running? True or False, or raises when
-        Windows cannot answer (the caller reports unknown). Used for a seed driver's own recorded identity."""
-        if not isinstance(identity,dict) or type(identity.get('pid')) is not int or created_ticks(identity.get('created_utc')) is None:
-            raise ValueError('The recorded process identity has no PID and creation time to check')
+        Windows cannot answer (the caller reports unknown). Used for a seed driver's own recorded identity.
+
+        Native first (OpenProcess + GetProcessTimes, exact and instant, no WMI: Claude-Mac on GOAT-EA#197); the CIM
+        inventory, bounded by ``budget``, only when the native read cannot prove it (for example access denied)."""
+        if not isinstance(identity,dict) or type(identity.get('pid')) is not int:
+            raise ValueError('The recorded process identity has no PID to check')
         pid=identity['pid']
+        native=studio_process_query.native_alive(pid,identity.get('created_utc'))
+        if native is not None:return native
         command=('[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter "ProcessId='
                  +str(pid)+'" | Select-Object ProcessId,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})')
         rows=[row for row in process_rows(command,purpose='seed driver liveness',fields=('ProcessId','CreatedUtc'),pid=pid,
                                           timeout=min(TIMEOUT,budget or TIMEOUT),budget=budget) if row.get('ProcessId')==pid]
-        if not rows:return False
+        if not rows:return False                # no such PID: whatever was recorded, it is not running
+        if created_ticks(identity.get('created_utc')) is None:
+            raise ValueError('Process %d is running but this record has no creation time to prove it is the same process'%pid)
         if any(created_ticks(row.get('CreatedUtc')) is None for row in rows):
             raise ValueError('Process %d is running but its creation time cannot be read'%pid)
         return any(created_ticks(row['CreatedUtc'])==created_ticks(identity['created_utc']) for row in rows)
+
+    def process_gone(self,identity):
+        """True only when Windows itself proves this process is not running (native read, no WMI, no wait).
+        Used under the runner gate to close driver-record entries of calls that were killed."""
+        return (isinstance(identity,dict) and type(identity.get('pid')) is int
+                and studio_process_query.native_alive(identity['pid'],identity.get('created_utc')) is False)
 
     def image_path(self,row):
         """Fill a row WMI listed without ExecutablePath from the process itself (bound by its creation time), else None."""

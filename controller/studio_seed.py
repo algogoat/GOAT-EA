@@ -679,8 +679,9 @@ class SeedRunner:
         members=[item|dict(tester=spec['tester'],source_sha256=spec['source_sha256'],frozen_set_sha256=spec['set_sha256'],config_sha256=spec['config_sha256'],requested_frames=spec['frame_target']) for spec,item in zip(manifest['members'],state['members'])]
         result=self._public(root,state|dict(members=members,native_launch_qualified=False,manifest_path=str(root/'manifest.json'),report_path=str(root/'report.json'),pause_requested=self.paused(batch_id)))
         # Added fields only (support 64f1c5ae): is a start/resume call driving this run, and the exact next step.
-        # Read after the gate is released; the liveness check never writes and never holds the gate.
-        detail=self.driver_state(batch_id,budget=POLL_BUDGET)
+        # Read after the gate is released; the liveness check never writes and never holds the gate, and all of it
+        # shares one short deadline (studio_seed_driver.CHECK_SECONDS).
+        detail=self.driver_state(batch_id)
         return result|dict(driver=detail['state'],driver_detail=detail,next_step=self._next_step(batch_id,state,detail))
 
     # ---- driver liveness and the next step (support 64f1c5ae) ------------------------------------------
@@ -689,8 +690,9 @@ class SeedRunner:
     # advances between calls. A status read says whether such a call is in progress now (studio_seed_driver),
     # and names the one exact command that moves the run on. Unknown is said as unknown.
 
-    def driver_state(self,batch_id,*,budget=None):
-        """Read-only: dict(state='running'|'none'|'unknown', basis, call, last_call) for this run's driver."""
+    def driver_state(self,batch_id,*,budget=None,deadline=None):
+        """Read-only: dict(state='running'|'none'|'unknown', basis, call, last_call) for this run's driver.
+        ``deadline`` (a time.monotonic() time) is shared by several runs' checks, e.g. one research-queue call."""
         from studio_seed_driver import UNKNOWN,liveness
         root=self.path(batch_id)
         if self.driver_probe is not None:
@@ -705,20 +707,22 @@ class SeedRunner:
             return dict(state=UNKNOWN,call=None,last_call=None,
                         basis='This run was started on the owner demo lane, whose detached driver this command does not read; '
                               'goat.exe demo --installation <receipt> '+self.COMMAND_PREFIX+'-status '+self.ID_FLAG+' '+batch_id+' shows it.')
-        return liveness(root,alive=getattr(self.process,'process_alive',None),budget=budget,command_prefix=self.COMMAND_PREFIX)
+        return liveness(root,alive=getattr(self.process,'process_alive',None),budget=budget,deadline=deadline,
+                        command_prefix=self.COMMAND_PREFIX)
 
-    def driver_summary(self,batch_id,*,budget=None):
+    def driver_summary(self,batch_id,*,budget=None,deadline=None):
         """Read-only, for research-status and research-queue: driver liveness plus next_step, from the retained state.
         No gate and no MT5 inventory; only a recorded driver's own process is checked."""
-        detail=self.driver_state(batch_id,budget=budget)
+        detail=self.driver_state(batch_id,budget=budget,deadline=deadline)
         try:state=read_seed_json(self.path(batch_id)/'state.json')
         except (OSError,ValueError,KeyError) as exc:
             return detail|dict(next_step=None,state_error=str(exc)[:200])
         return detail|dict(next_step=self._next_step(batch_id,state,detail))
 
     def _demo_started(self,batch_id):
-        """A run started on the owner demo lane (its broker-verified start record), seen from the studio lane."""
-        if self.cli_lane!='studio':return False
+        """A run started on the owner demo lane (its broker-verified start record), seen from the studio lane
+        (a runner that keeps its own per-call record; the demo lane's runners do not)."""
+        if not self.driver_record:return False
         try:return (Path(self.c.root)/'demo-agent'/(self.COMMAND_PREFIX+'-starts')/(batch_id+'.json')).is_file()
         except (OSError,TypeError):return False
 
@@ -955,7 +959,7 @@ class SeedRunner:
                     from studio_seed_driver import begin
                     call['root']=root
                     call['token']=begin(root,command=self.COMMAND_PREFIX+('-start' if initial else '-resume'),max_seconds=max_seconds,
-                                        now=self.clock(),identity=self.identity())
+                                        now=self.clock(),identity=self.identity(),gone=getattr(self.process,'process_gone',None))
                 if state['status']=='reconcile_required':
                     # A member MT5 finished while its start was unconfirmed is collected from its own output.
                     self._observe(root,manifest,state,settle_unowned=True)

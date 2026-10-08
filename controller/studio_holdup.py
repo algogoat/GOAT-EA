@@ -118,6 +118,9 @@ class HoldupRunner(SeedRunner):
         super().__init__(controller, process=process, clock=clock, sleep=sleep)
         self.base = controller.root / 'holdups'
         self.now = now
+        # Hold-up tests run on the owner demo lane only (v1): next_step names goat.exe demo, never a studio
+        # holdup-* command, which does not exist (Claude-Mac nit on GOAT-EA#197).
+        self.cli_lane, self.next_step_budget = 'demo', 3600
 
     def path(self, batch_id):
         if not isinstance(batch_id, str) or not re.fullmatch('[A-Za-z0-9_-]{1,80}', batch_id):

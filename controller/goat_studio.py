@@ -782,13 +782,15 @@ def main(argv=None):
 
 def _lane_driver(controller):
     """research-status/research-queue: driver liveness and next step of a seed, catch-up or hold-up run (support 64f1c5ae).
-    Read-only; no store, gate or MT5 inventory, only a recorded driver's own process is checked."""
-    from studio_process_query import POLL_BUDGET
+    Read-only; no store, gate or MT5 inventory, only a recorded driver's own process is checked. Every run of one
+    research-queue call shares ONE deadline (studio_seed_driver.CHECK_SECONDS), so many runs never add up."""
+    from studio_seed_driver import CHECK_SECONDS
+    deadline=time.monotonic()+CHECK_SECONDS
     def probe(kind,batch_id):
         if kind=='catchup':from studio_catchup import CatchupRunner as Runner
         elif kind=='holdup':from studio_holdup import HoldupRunner as Runner
         else:from studio_seed import SeedRunner as Runner
-        return Runner(controller).driver_summary(batch_id,budget=POLL_BUDGET)
+        return Runner(controller).driver_summary(batch_id,deadline=deadline)
     return probe
 
 

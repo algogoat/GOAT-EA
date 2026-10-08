@@ -170,10 +170,15 @@ member or starts the next one. So:
 - `driver`: `running`, `none` or `unknown`. `running` means a `seed-start` or
   `seed-resume` call is in progress right now. Each call records its process ID
   and the process creation time in `seeds/<id>/driver.json`, and `seed-status`
-  checks that exactly that process is still alive. `none` means no call is in
-  progress: every recorded call returned, or its process is gone (for example a
-  tool timeout ended it). `unknown` means Windows could not answer the check;
-  GOAT never reads that as running or as stopped.
+  checks that exactly that process is still alive. It asks Windows directly
+  first (exact to the microsecond, no WMI) and uses WMI only when Windows won't
+  say. `none` means no call is in progress: every recorded call returned, or its
+  process is gone (for example a tool timeout ended it). `unknown` means Windows
+  could not answer the check; GOAT never reads that as running or as stopped.
+- The whole check takes at most 8 seconds, however many calls are recorded; a
+  call it could not reach in time reads `unknown`. `research-queue` shares the
+  same 8 seconds across all its runs. Each new call closes (`gone`) earlier
+  entries whose process Windows proves has ended, so killed calls don't pile up.
 - `driver_detail`: the plain `basis` for that answer, the call in progress
   (`call`) and the last recorded call (`last_call`: command, pid, start, end,
   `result_status` and any `error`).

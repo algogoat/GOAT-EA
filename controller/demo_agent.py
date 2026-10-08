@@ -1883,7 +1883,7 @@ class DemoAgent:
                            else (self.root / 'demo-agent/workers', BATCH_WORKER_RECORD))
         return sorted(path for path in folder.glob('*.json') if pattern.fullmatch(path.name)) if folder.is_dir() else []
 
-    def _worker_alive(self, record, *, quick=False, retire=False):
+    def _worker_alive(self, record, *, quick=False, retire=False, budget=None):
         """Is this detached worker alive? ``quick`` bounds the Windows queries for status reads (Claude-Mac, #1885).
 
         A launch with no started receipt is decided from its task's own state. A task still running or queued, or
@@ -1893,7 +1893,8 @@ class DemoAgent:
         start beside the retry is impossible; without it the answer is the same, with no effect.
         """
         from studio_process_query import POLL_BUDGET
-        budget = POLL_BUDGET if quick else None
+        if budget is None:              # an explicit budget: a status read sharing one deadline (support 64f1c5ae)
+            budget = POLL_BUDGET if quick else None
         envelope_path = record.get('launch_envelope')
         if envelope_path:
             envelope = read_json(envelope_path)
@@ -2153,16 +2154,39 @@ class DemoAgent:
         return research_status(root=self.root, install=self.install, session=self.session, local=self.local,
                                now=self.clock(), process=self._process_or_unknown(), jobs=jobs,
                                worker_alive=self._worker_alive, owner_stop=(self.state_root / 'STOP').exists(),
-                               lane_driver=self._lane_driver_summary)
+                               lane_driver=self._lane_driver_probe())
 
-    def _lane_driver_summary(self, kind, batch_id):
-        """Read-only (research-status, research-queue): this lane run's detached driver as running/none/unknown, plus
-        next_step (support 64f1c5ae). No store, lock or broker; only the lane worker's own process is checked."""
+    def _lane_driver_probe(self):
+        """research-status/research-queue: one probe whose runs all share ONE deadline (studio_seed_driver.CHECK_SECONDS).
+
+        Each probe reads this lane run's detached driver as running/none/unknown, plus next_step (support 64f1c5ae). No
+        store, lock or broker; only the lane worker's own process is checked, with what is left of the deadline, and
+        a run reached after it reads unknown."""
         from types import SimpleNamespace
-        runner = self._seed_runner(SimpleNamespace(root=self.root, local=self.local, install=self.install), kind)
-        driver = self._lane_driver(kind, batch_id)
-        runner.driver_probe = lambda _batch_id: self._lane_liveness(driver)
-        return runner.driver_summary(batch_id)
+        from studio_seed_driver import CHECK_SECONDS
+        deadline = time.monotonic() + CHECK_SECONDS
+
+        def probe(kind, batch_id):
+            runner = self._seed_runner(SimpleNamespace(root=self.root, local=self.local, install=self.install), kind)
+            driver = self._lane_driver_bounded(kind, batch_id, deadline - time.monotonic())
+            runner.driver_probe = lambda _batch_id: self._lane_liveness(driver)
+            return runner.driver_summary(batch_id)
+        return probe
+
+    def _lane_driver_bounded(self, kind, batch_id, budget):
+        """_lane_driver with the process check bounded by ``budget`` seconds; none left reads unknown, never an answer."""
+        path = self._lane_worker_path(kind, batch_id)
+        if not path.is_file():
+            return None
+        record = read_json(path)
+        if budget <= 0:
+            alive = 'unknown: the status check ran out of its time before this driver could be checked'
+        else:
+            try:
+                alive = self._worker_alive(record, quick=True, budget=budget)
+            except ValueError as exc:
+                alive = 'unknown: ' + str(exc)
+        return dict(record, alive=alive, launch_never_started=self._launch_never_started(record, alive), worker_path=str(path))
 
     def research_queue(self, finished=None, job_ids=None):
         """Read-only: every batch, seed hunt and catch-up of this installation, one row each (goatai#2240).
@@ -2174,7 +2198,7 @@ class DemoAgent:
             jobs = None   # research_queue reports the queue error itself
         return research_queue(root=self.root, install=self.install, session=self.session, now=self.clock(), jobs=jobs,
                               finished=FINISHED_DEFAULT if finished is None else finished, job_ids=job_ids,
-                              lane_driver=self._lane_driver_summary)
+                              lane_driver=self._lane_driver_probe())
 
     def _lane_kind(self, batch_id):
         """'seed' or 'catchup' when this ID names a runner batch (not a native queue job), else None."""

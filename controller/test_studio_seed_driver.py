@@ -67,7 +67,7 @@ class SeedStatusDriverTests(_Fixture, unittest.TestCase):
         self.assertEqual((during['status'], during['driver']), ('active', 'running'))
         self.assertEqual((during['driver_detail']['call']['pid'], during['driver_detail']['call']['command']), (ALIVE_PID, 'seed-start'))
         self.assertIn('is driving this run now; do not start a second one', during['next_step'])
-        self.assertEqual(checked[0][1], 25)                                   # a status read: bounded query
+        self.assertTrue(0 < checked[0][1] <= studio_seed_driver.CHECK_SECONDS)   # one short shared deadline
         driving[0] = False                                                    # the call returned
         after = self.runner.status('batch')
         self.assertEqual(after['driver'], 'none')
@@ -282,6 +282,8 @@ class NativeFallbackTests(unittest.TestCase):
         controller = types.SimpleNamespace(install=dict(terminal_executable='C:\\MT5\\terminal64.exe'))
         process = WindowsSeedProcess(controller)
         native = [dict(ProcessId=7, ParentProcessId=1, Name='terminal64.exe', ExecutablePath='C:\\MT5\\terminal64.exe', CreatedUtc=LIVE)]
+        unproven = patch.object(query, 'native_alive', return_value=None)       # e.g. access denied: CIM decides
+        unproven.start(); self.addCleanup(unproven.stop)
         with patch('subprocess.check_output', side_effect=subprocess.TimeoutExpired('powershell', 20)), \
                 patch.object(query, 'native_rows', return_value=native):
             self.assertEqual(process.inspect(), dict(pid=7, executable='C:\\MT5\\terminal64.exe', created_utc=LIVE))
@@ -386,6 +388,243 @@ class StartupStallEndToEndTests(_Fixture, unittest.TestCase):
         self.assertIn('seed-resume --batch-id batch --max-seconds 60', status['next_step'])
         self.assertEqual(self.runner.resume('batch', 30)['status'], 'completed')
         self.assertEqual(len(self.launches), 1)
+
+
+class BoundedStatusTests(_Fixture, unittest.TestCase):
+    """Claude-Mac on GOAT-EA#197: 19 stale entries x 25 s of CIM each outlasted the agent's tool timeout."""
+
+    def open_calls(self, folder, pids, created=LIVE):
+        for pid in pids:
+            studio_seed_driver.begin(folder, command='seed-resume', max_seconds=60, now=0, identity=dict(pid=pid, created_utc=created))
+
+    def test_every_entry_shares_one_deadline_and_late_entries_read_unknown(self):
+        folder = self.root / 'run'; folder.mkdir()
+        self.open_calls(folder, range(101, 120))                              # 19 entries, the reproduced worst case
+        clock, budgets = [100.0], []
+
+        def stalled(identity, budget):                                       # every check uses up its whole budget
+            budgets.append(budget); clock[0] += budget
+            raise subprocess.TimeoutExpired('powershell', budget)
+        result = studio_seed_driver.liveness(folder, alive=stalled, own_pid=-1, monotonic=lambda: clock[0])
+        self.assertEqual(result['state'], 'unknown')
+        self.assertLessEqual(clock[0] - 100.0, studio_seed_driver.CHECK_SECONDS)   # the whole check, not per entry
+        self.assertEqual(budgets, [studio_seed_driver.CHECK_SECONDS])
+
+        clock[0], budgets[:] = 100.0, []
+
+        def slow_gone(identity, budget):
+            budgets.append(budget); clock[0] += 6
+            return False
+        result = studio_seed_driver.liveness(folder, alive=slow_gone, own_pid=-1, monotonic=lambda: clock[0])
+        self.assertEqual((result['state'], budgets), ('unknown', [8, 2]))     # never "none" for an unchecked entry
+        self.assertIn('ran out of its time', result['basis'])
+
+    def test_a_new_call_closes_entries_whose_process_is_provably_gone(self):
+        self.prepare(); self.runner.start('batch', 1)
+        folder = self.runner.path('batch')
+        self.open_calls(folder, (5001, 5002))
+        self.open_calls(folder, (5003,), created=None)                        # no creation time, PID gone: still provable
+        self.process.process_gone = lambda identity: identity['pid'] in (5001, 5003)
+        self.runner.resume('batch', 1)
+        calls = {c['pid']: c for c in read_json(folder / studio_seed_driver.RECORD)['calls'] if c['pid'] in (5001, 5002, 5003)}
+        self.assertEqual({pid: c['status'] for pid, c in calls.items()}, {5001: 'gone', 5002: 'driving', 5003: 'gone'})
+        self.assertIn('ended without recording its return', calls[5001]['error'])
+        self.process.process_gone = lambda identity: (_ for _ in ()).throw(OSError('no answer'))
+        self.runner.resume('batch', 1)                                        # an unanswered check closes nothing
+        self.assertEqual([c['status'] for c in read_json(folder / studio_seed_driver.RECORD)['calls'] if c['pid'] == 5002], ['driving'])
+
+    def test_seed_status_is_bounded_with_a_stalled_process_check(self):
+        self.prepare(); self.runner.start('batch', 1)
+        self.open_calls(self.runner.path('batch'), range(201, 220))
+        budgets = []
+        self.process.process_alive = lambda identity, budget: budgets.append(budget) or (_ for _ in ()).throw(
+            subprocess.TimeoutExpired('powershell', budget))
+        with patch.object(studio_seed_driver, 'time', types.SimpleNamespace(monotonic=self.ticking())):
+            self.assertEqual(self.runner.status('batch')['driver'], 'unknown')
+        self.assertLessEqual(sum(budgets), studio_seed_driver.CHECK_SECONDS)
+
+    @staticmethod
+    def ticking():
+        clock = [0.0]
+
+        def now():
+            clock[0] += 3                                                     # each check costs 3 s of the shared time
+            return clock[0]
+        return now
+
+    def test_research_queue_runs_share_one_deadline(self):
+        import time
+        import goat_studio
+        import studio_seed
+        seen = []
+        with patch.object(studio_seed.SeedRunner, 'driver_summary', autospec=True,
+                          side_effect=lambda runner, batch_id, **kw: seen.append(kw.get('deadline')) or dict(state='none')):
+            probe = goat_studio._lane_driver(self.controller)
+            probe('seed', 'a'); probe('seed', 'b')
+        self.assertEqual(len(set(seen)), 1)
+        self.assertLessEqual(seen[0] - time.monotonic(), studio_seed_driver.CHECK_SECONDS)
+
+    def test_the_demo_lane_probe_bounds_its_worker_check(self):
+        from demo_agent import DemoAgent
+        path = self.root / 'seed-b.json'; path.write_text(json.dumps(dict(kind='seed', batch_id='b', nonce='n' * 32, pid=9)), encoding='utf-8')
+        checks = []
+        agent = types.SimpleNamespace(_lane_worker_path=lambda kind, batch_id: path, _launch_never_started=DemoAgent._launch_never_started,
+                                      _worker_alive=lambda record, **kw: checks.append(kw) or True)
+        late = DemoAgent._lane_driver_bounded(agent, 'seed', 'b', 0)
+        self.assertTrue(str(late['alive']).startswith('unknown: the status check ran out of its time'))
+        self.assertEqual((checks, DemoAgent._lane_liveness(late)['state']), ([], 'unknown'))
+        self.assertIs(DemoAgent._lane_driver_bounded(agent, 'seed', 'b', 3.5)['alive'], True)
+        self.assertEqual(checks, [dict(quick=True, budget=3.5)])
+
+
+class NativeFirstTests(unittest.TestCase):
+    """The recorded driver is checked natively first (exact, instant, no WMI); CIM only when Windows will not say."""
+
+    def process(self):
+        from studio_seed_process import WindowsSeedProcess
+        return WindowsSeedProcess(types.SimpleNamespace(install=dict(terminal_executable='C:\\MT5\\terminal64.exe')))
+
+    def test_a_native_answer_never_asks_cim(self):
+        for answer in (True, False):
+            with self.subTest(answer), patch.object(query, 'native_alive', return_value=answer) as native, \
+                    patch('subprocess.check_output', side_effect=AssertionError('no CIM when Windows answered natively')):
+                self.assertIs(self.process().process_alive(dict(pid=7, created_utc=LIVE), 2), answer)
+            self.assertEqual(native.call_args.args, (7, LIVE))
+
+    def test_an_entry_without_a_creation_time_is_gone_when_its_pid_is(self):
+        with patch.object(query, 'native_alive', return_value=None), patch('subprocess.check_output', return_value='[]'):
+            self.assertFalse(self.process().process_alive(dict(pid=7, created_utc=None), 2))
+        with patch.object(query, 'native_alive', return_value=None), \
+                patch('subprocess.check_output', return_value=json.dumps([dict(ProcessId=7, CreatedUtc=LIVE)])):
+            with self.assertRaisesRegex(ValueError, 'no creation time to prove'):
+                self.process().process_alive(dict(pid=7, created_utc=None), 2)
+
+    def test_process_gone_is_native_proof_only(self):
+        for answer, gone in ((False, True), (True, False), (None, False)):
+            with self.subTest(answer), patch.object(query, 'native_alive', return_value=answer):
+                self.assertIs(self.process().process_gone(dict(pid=7, created_utc=LIVE)), gone)
+
+
+class FakeKernel:
+    """kernel32 for native_rows/native_alive: a process table, no Windows needed. Each entry is
+    (pid, parent, name, mode, created_ticks, exited_ticks, path); mode is ok, denied or gone."""
+
+    def __init__(self, table, *, snapshot=True, walk_error=18):
+        import ctypes
+        self.table, self.error, self.closed, self.index = {row[0]: row for row in table}, 0, [], 0
+        order = list(table)
+        fake = self
+
+        def fill(ref):
+            if fake.index >= len(order):
+                fake.error = walk_error
+                return False
+            pid, parent, name = order[fake.index][:3]
+            ref._obj.th32ProcessID, ref._obj.th32ParentProcessID, ref._obj.szExeFile = pid, parent, name
+            return True
+
+        def first(handle, ref):
+            fake.index = 0
+            return fill(ref)
+
+        def following(handle, ref):
+            fake.index += 1
+            return fill(ref)
+
+        def snap(flags, pid):
+            if snapshot:
+                return 77
+            fake.error = 5
+            return ctypes.c_void_p(-1).value
+
+        def open_process(access, inherit, pid):
+            row = fake.table.get(pid)
+            if row is None or row[3] == 'gone':
+                fake.error = 87
+                return None
+            if row[3] == 'denied':
+                fake.error = 5
+                return None
+            return 1000 + pid
+
+        def times(handle, created, exited, kernel_time, user_time):
+            row = fake.table[handle - 1000]
+            for ref, ticks in ((created, row[4]), (exited, row[5])):
+                ref._obj.dwLowDateTime, ref._obj.dwHighDateTime = ticks & 0xFFFFFFFF, ticks >> 32
+            return True
+
+        def image(handle, flags, buffer, size):
+            buffer.value = fake.table[handle - 1000][6]
+            return True
+
+        self.CreateToolhelp32Snapshot, self.Process32FirstW, self.Process32NextW = snap, first, following
+        self.OpenProcess, self.GetProcessTimes, self.QueryFullProcessImageNameW = open_process, times, image
+        self.CloseHandle = lambda handle: fake.closed.append(handle) or True
+
+    def patch(self):
+        import ctypes
+        from ctypes import wintypes
+        return patch.object(query, '_kernel', return_value=(ctypes, wintypes, self, lambda: self.error,
+                                                            lambda code: OSError(code, 'Windows error %d' % code)))
+
+
+class FakeKernelTests(unittest.TestCase):
+    """Claude-Mac on GOAT-EA#197: the native_rows branches (denied row kept, gone and exited left out) under test."""
+    US = query._microseconds(LIVE)
+    TICKS = US * 10 + 4                                                       # Windows keeps 100 ns; CIM prints microseconds
+
+    def table(self):
+        return [(10, 1, 'terminal64.exe', 'ok', self.TICKS, 0, 'C:\\MT5\\terminal64.exe'),
+                (11, 1, 'terminal64.exe', 'denied', 0, 0, None),
+                (12, 1, 'terminal64.exe', 'gone', 0, 0, None),
+                (13, 1, 'terminal64.exe', 'ok', self.TICKS, self.TICKS + 50, 'C:\\MT5\\terminal64.exe'),
+                (14, 1, 'explorer.exe', 'ok', self.TICKS, 0, 'C:\\Windows\\explorer.exe')]
+
+    def test_native_rows_keep_a_denied_row_and_leave_out_gone_exited_and_other_names(self):
+        kernel = FakeKernel(self.table())
+        with kernel.patch():
+            rows = query.native_rows(names=('TERMINAL64.EXE',))
+        self.assertEqual(rows, [dict(ProcessId=10, ParentProcessId=1, Name='terminal64.exe', ExecutablePath='C:\\MT5\\terminal64.exe', CreatedUtc=LIVE),
+                                dict(ProcessId=11, ParentProcessId=1, Name='terminal64.exe', ExecutablePath=None, CreatedUtc=None)])
+        self.assertEqual(sorted(kernel.closed), [77, 1010, 1013])                    # snapshot and every opened handle
+        with kernel.patch():
+            self.assertEqual([r['ProcessId'] for r in query.native_rows(pid=14)], [14])
+
+    def test_a_failed_snapshot_or_walk_raises_never_an_empty_list(self):
+        with FakeKernel(self.table(), snapshot=False).patch():
+            with self.assertRaises(OSError):
+                query.native_rows(names=('terminal64.exe',))
+        broken = FakeKernel(self.table(), walk_error=31)
+        with broken.patch():
+            with self.assertRaises(OSError):
+                query.native_rows(names=('terminal64.exe',))
+        self.assertIn(77, broken.closed)
+
+    def test_native_alive_proves_running_and_gone_and_says_none_otherwise(self):
+        with FakeKernel(self.table()).patch():
+            self.assertIs(query.native_alive(10, LIVE), True)                         # same PID and microsecond
+            self.assertIs(query.native_alive(10, '2026-10-08T06:00:00.0000000Z'), False)   # PID reused
+            self.assertIs(query.native_alive(12, LIVE), False)                        # no such PID
+            self.assertIs(query.native_alive(12, None), False)                        # gone even without a creation time
+            self.assertIs(query.native_alive(13, LIVE), False)                        # exited
+            self.assertIsNone(query.native_alive(11, LIVE))                           # denied: not provable natively
+            self.assertIsNone(query.native_alive(10, None))                           # live PID, nothing to prove it by
+        with patch.object(query, '_kernel', side_effect=OSError('not Windows')):
+            self.assertIsNone(query.native_alive(10, LIVE))
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows CIM and process API')
+    def test_cim_and_native_print_the_same_creation_time_for_one_process(self):
+        # Claude-Mac on GOAT-EA#197: a rounding or time-zone difference would make a live driver read "none".
+        query.configure(None)
+        command = ('[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ConvertTo-Json -InputObject @(Get-CimInstance '
+                   'Win32_Process -Filter "ProcessId=%d" | Select-Object ProcessId,@{Name="CreatedUtc";Expression={$_.CreationDate.'
+                   'ToUniversalTime().ToString("o")}})' % os.getpid())
+        cim = json.loads(query.powershell_text(command, purpose='creation time parity test', budget=90))
+        own = query.own_identity()['created_utc']
+        self.assertEqual([row['CreatedUtc'] for row in cim], [own])
+        self.assertEqual(query.native_rows(pid=os.getpid())[0]['CreatedUtc'], own)
+        self.assertIs(query.native_alive(os.getpid(), cim[0]['CreatedUtc']), True)
+        self.assertIs(query.native_alive(os.getpid(), '2000-01-01T00:00:00.0000000Z'), False)
 
 
 if __name__ == '__main__':

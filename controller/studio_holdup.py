@@ -112,6 +112,7 @@ class HoldupRunner(SeedRunner):
     OUTPUT_NOUN = 'Strategy Tester report'
     COMMAND_PREFIX = 'holdup'
     MEMBER_NOUN = 'test'
+    ID_FLAG = '--holdup-id'
 
     def __init__(self, controller, *, process=None, clock=time.time, sleep=time.sleep, now=None):
         super().__init__(controller, process=process, clock=clock, sleep=sleep)

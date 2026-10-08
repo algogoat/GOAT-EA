@@ -9,6 +9,19 @@ Seed Farming is a dedicated EA mode for bounded template/asset searches. It emit
 It does not run the normal Studio forward/export pipeline, produce a portfolio,
 or arm `BatchOnGoing`. Normal optimization batches use `prepare-batch` instead.
 
+**Seed Farming searches for NEW candidates.** It is not a re-test of proven files:
+
+- **The 48 catalog templates and the library's variant SETs are already-validated
+  research.** They don't need re-testing before use, and a seed hunt is not how
+  they are checked.
+- **`catchup-validate` is for exported research files** (the GOAT export pattern:
+  a SET with its equity CSVs from a batch export). Its refusal on a catalog SET is
+  expected. It doesn't mean that SET needs a retest.
+- **Equity for a library variant comes from the library evidence**, not from
+  catch-up.
+
+Seed a template only when you want new settings or new assets for it.
+
 The controller and XML parser have automated synthetic qualification. A real
 customer MT5 launch/stop/next-member cycle has **not yet been qualified** for this
 beta; every result reports `native_launch_qualified: false`. The first real run
@@ -133,6 +146,49 @@ owner STOP, human TAKE and disk checks around this same workflow.
 
 ## Run, resume and cancel
 
+**There is no background driver. You are the loop.** A seed run advances only
+while a `seed-start` or `seed-resume` call is running. Each call drives for at most
+its `--max-seconds` and then returns; between calls nothing collects a finished
+member or starts the next one. So:
+
+```powershell
+# Repeat until result.status is completed or stopped (or reconcile_required: see below).
+.\goat.exe studio --installation "C:\Users\You\GOAT Suite\installation.json" seed-resume --batch-id seed-weekend-01 --max-seconds 60
+```
+
+- Call `seed-resume` again every time it returns, until the status is `completed`
+  or `stopped`.
+- Call it again after **any non-zero exit** too. A transient error (for example a
+  Windows process query that timed out) ends that one call, not the run; the next
+  call re-checks everything and continues.
+- Stop looping only on `completed`, `stopped` (read `stopped_reason`; resume it
+  once the cause is fixed) or `reconcile_required` (settle it with
+  `seed-reconcile --batch-id <id>`).
+
+**`seed-status` says whether a driver is running** (support 64f1c5ae). It adds:
+
+- `driver`: `running`, `none` or `unknown`. `running` means a `seed-start` or
+  `seed-resume` call is in progress right now. Each call records its process ID
+  and the process creation time in `seeds/<id>/driver.json`, and `seed-status`
+  checks that exactly that process is still alive. `none` means no call is in
+  progress: every recorded call returned, or its process is gone (for example a
+  tool timeout ended it). `unknown` means Windows could not answer the check;
+  GOAT never reads that as running or as stopped.
+- `driver_detail`: the plain `basis` for that answer, the call in progress
+  (`call`) and the last recorded call (`last_call`: command, pid, start, end,
+  `result_status` and any `error`).
+- `next_step`: one sentence with the exact command, for example `Not advancing: 3
+  members pending and no driver running ... Resume with: goat.exe studio
+  --installation "<receipt>" seed-resume --batch-id seed-weekend-01 --max-seconds
+  60`. For `reconcile_required` it names `seed-reconcile`, for `completed` it names
+  `seed-report`, and while a call is running it says not to start a second one.
+
+`seed-status` itself never drives, writes the driver record or re-activates
+anything. `research-status` (for the active run) and `research-queue` (each run
+that can still move on) show the same `driver` block, with its `next_step`; an
+active run with no driver reads `health: unsupervised`. On the owner demo lane the
+driver is the detached lane worker, and the same fields come from its record.
+
 `--max-seconds` defaults to 60 and accepts 1..3600. It bounds that invocation of
 the driver, not the lifetime of an already started tester. Budget exhaustion
 returns `driver_budget_exhausted: true`; the native tester may still be running.
@@ -228,9 +284,18 @@ stays `reconcile_required`. The process inventory itself re-reads a row with a
 missing path for up to 10 seconds before it refuses. The whole Windows query is
 retried through a WMI stall: 4 attempts of 20 s, with 2, 5 and 10 s pauses (each varied
 by up to 25%), for a check that gates a launch or a close, and at most 25 s for each
-inventory of a status read. It fails closed only if every attempt fails, and a WMI error
+inventory of a status read. A WMI error
 (`Get-CimInstance` runs with `-ErrorAction Stop`) is a failed attempt, never an empty list. A row without a path is first read from
 the process itself, bound to the row by its creation time.
+
+When every WMI attempt fails, the MT5 inventory (process ID, path and creation time)
+is read once from Windows itself, with no WMI, and the fallback is written to the
+same `process-query.jsonl` log. A process whose path Windows won't show is listed
+with no path, which counts as unknown, never as absent. If that read fails too, the
+inventory fails closed with the original WMI error. Checks that need a command line
+(which MT5 runs a member INI) have no such fallback. If the inventory fails before a
+member's launch, nothing was started: the member stays `pending` with
+`launch_refused`, the run stays `active`, and the next `seed-resume` starts it.
 
 After a member launch, the driver waits up to 90 s for that MT5's identity; a stalled
 query or a row without its path is "not seen yet". If the wait still runs out, the member
@@ -378,8 +443,10 @@ sequence evidence, and must not be uploaded as a portfolio strategy pool.
 `studio_seed.SeedRunner(controller)` exposes `validate(plan_dict)` (no writes),
 `prepare(batch_id, plan_dict)`,
 `start(batch_id, max_seconds=60)`, `status(batch_id)`, `cancel(batch_id)`,
-`resume(batch_id, max_seconds=60)` and `report(batch_id)`. The controller must
-already be open. Process/clock/sleep injection supports deterministic tests;
+`resume(batch_id, max_seconds=60)` and `report(batch_id)`. `status` adds `driver`,
+`driver_detail` and `next_step`; `driver_summary(batch_id)` is the same answer
+without the gate or an MT5 inventory, for `research-status` and `research-queue`
+(`studio_seed_driver`). The controller must already be open. Process/clock/sleep injection supports deterministic tests;
 production uses the selected Windows process adapter. The shared
 `studio_seed_slot.guard_active_seed(controller_state_root)` must run inside the
 normal native reservation transaction's existing `exclusive_gate` to prevent

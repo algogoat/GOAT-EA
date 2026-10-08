@@ -64,6 +64,7 @@ class SeedRunner:
     OUTPUT_NOUN='SeedFarming XML'
     COMMAND_PREFIX='seed'
     MEMBER_NOUN='member'
+    ID_FLAG='--batch-id'
 
     def __init__(self,controller,*,process=None,clock=time.time,sleep=time.sleep):
         self.c=controller;self.clock=clock;self.sleep=sleep
@@ -80,6 +81,17 @@ class SeedRunner:
         # The demo lane sets its loaded configuration and its stop check, which ends a hold at once.
         self.switch_hold=None
         self.stop_requested=None
+        # Driver liveness (studio_seed_driver, support 64f1c5ae). The foreground lane records each start/resume
+        # call in the run folder; a lane with its own driver record (the demo lane's detached driver) turns that
+        # off and sets ``driver_probe(batch_id)`` instead. ``cli_lane``, ``receipt`` and ``next_step_budget``
+        # spell the exact command in ``next_step``.
+        self.driver_record=True
+        self.driver_probe=None
+        from studio_process_query import own_identity
+        self.identity=own_identity
+        self.cli_lane='studio'
+        self.receipt=None
+        self.next_step_budget=60
         self.base=controller.root/'seeds';self.slot=controller.root/'seed-active.json'
         self.gate=controller.local/'native-gate'
 
@@ -665,7 +677,106 @@ class SeedRunner:
             root,manifest,state=self._read(batch_id)
             self._observe(root,manifest,state,budget=POLL_BUDGET)
         members=[item|dict(tester=spec['tester'],source_sha256=spec['source_sha256'],frozen_set_sha256=spec['set_sha256'],config_sha256=spec['config_sha256'],requested_frames=spec['frame_target']) for spec,item in zip(manifest['members'],state['members'])]
-        return self._public(root,state|dict(members=members,native_launch_qualified=False,manifest_path=str(root/'manifest.json'),report_path=str(root/'report.json'),pause_requested=self.paused(batch_id)))
+        result=self._public(root,state|dict(members=members,native_launch_qualified=False,manifest_path=str(root/'manifest.json'),report_path=str(root/'report.json'),pause_requested=self.paused(batch_id)))
+        # Added fields only (support 64f1c5ae): is a start/resume call driving this run, and the exact next step.
+        # Read after the gate is released; the liveness check never writes and never holds the gate.
+        detail=self.driver_state(batch_id,budget=POLL_BUDGET)
+        return result|dict(driver=detail['state'],driver_detail=detail,next_step=self._next_step(batch_id,state,detail))
+
+    # ---- driver liveness and the next step (support 64f1c5ae) ------------------------------------------
+    #
+    # This lane has no background driver: each start/resume call drives for at most --max-seconds and nothing
+    # advances between calls. A status read says whether such a call is in progress now (studio_seed_driver),
+    # and names the one exact command that moves the run on. Unknown is said as unknown.
+
+    def driver_state(self,batch_id,*,budget=None):
+        """Read-only: dict(state='running'|'none'|'unknown', basis, call, last_call) for this run's driver."""
+        from studio_seed_driver import UNKNOWN,liveness
+        root=self.path(batch_id)
+        if self.driver_probe is not None:
+            try:return self.driver_probe(batch_id)
+            except Exception as exc:
+                return dict(state=UNKNOWN,basis='GOAT cannot tell whether a driver runs this '+self.COMMAND_PREFIX+' run ('+str(exc)[:200]+'). Nothing is inferred.',
+                            call=None,last_call=None)
+        if not self.driver_record:
+            return dict(state=UNKNOWN,basis='This lane keeps its driver record elsewhere; its own status command shows it.',call=None,last_call=None)
+        if self._demo_started(batch_id):
+            # Started on the owner demo lane: its detached driver records itself in demo-agent/lane-workers, not here.
+            return dict(state=UNKNOWN,call=None,last_call=None,
+                        basis='This run was started on the owner demo lane, whose detached driver this command does not read; '
+                              'goat.exe demo --installation <receipt> '+self.COMMAND_PREFIX+'-status '+self.ID_FLAG+' '+batch_id+' shows it.')
+        return liveness(root,alive=getattr(self.process,'process_alive',None),budget=budget,command_prefix=self.COMMAND_PREFIX)
+
+    def driver_summary(self,batch_id,*,budget=None):
+        """Read-only, for research-status and research-queue: driver liveness plus next_step, from the retained state.
+        No gate and no MT5 inventory; only a recorded driver's own process is checked."""
+        detail=self.driver_state(batch_id,budget=budget)
+        try:state=read_seed_json(self.path(batch_id)/'state.json')
+        except (OSError,ValueError,KeyError) as exc:
+            return detail|dict(next_step=None,state_error=str(exc)[:200])
+        return detail|dict(next_step=self._next_step(batch_id,state,detail))
+
+    def _demo_started(self,batch_id):
+        """A run started on the owner demo lane (its broker-verified start record), seen from the studio lane."""
+        if self.cli_lane!='studio':return False
+        try:return (Path(self.c.root)/'demo-agent'/(self.COMMAND_PREFIX+'-starts')/(batch_id+'.json')).is_file()
+        except (OSError,TypeError):return False
+
+    def _command(self,operation,batch_id,*,budget=False):
+        """The exact CLI line of one operation on this run (the installation receipt when known). A run started on
+        the demo lane is continued there (goat.exe demo, detached, so its longer budget)."""
+        receipt=self.receipt or getattr(self.c,'receipt',None)
+        where='"'+str(receipt)+'"' if receipt else '<installation receipt>'
+        lane,seconds=('demo',3600) if self._demo_started(batch_id) else (self.cli_lane,self.next_step_budget)
+        return ('goat.exe '+lane+' --installation '+where+' '+self.COMMAND_PREFIX+'-'+operation+' '+self.ID_FLAG+' '+batch_id
+                +(' --max-seconds '+str(seconds) if budget else ''))
+
+    def _next_step(self,batch_id,state,detail):
+        """One plain sentence: what moves this run on now, with the exact supported command."""
+        members=state.get('members') or []
+        status=state.get('status')
+        pending=sum(m.get('status')=='pending' for m in members)
+        live=next((m for m in members if m.get('status') in self.LIVE_MEMBER),None)
+        noun=self.MEMBER_NOUN;prefix=self.COMMAND_PREFIX
+        def count(n):return '%d %s%s'%(n,noun,'' if n==1 else 's')
+        resume=self._command('resume',batch_id,budget=True)
+        loop=(' Call it again and again until the status is completed or stopped, and call it again after any non-zero exit: '
+              'each call drives for at most --max-seconds and nothing advances between calls.')
+        driving=detail.get('state')=='running'
+        busy=''
+        if driving:
+            call=detail.get('call') or {}
+            busy=('A '+str(call.get('command') or prefix+'-resume')+' call (pid '+str(call.get('pid'))+') is driving this run now; '
+                  'do not start a second one. ')
+        if status=='prepared':
+            return ('Not started yet. Start with: '+self._command('start',batch_id,budget=True)+'. Then resume with: '+resume+'.'+loop)
+        if status=='reconcile_required':
+            return (busy+('GOAT could not confirm how a %s started, so this run does not advance. Settle it with: '%noun)
+                    +self._command('reconcile',batch_id)+'. It keeps a '+noun+'\'s own verified output and never re-runs one.')
+        if status=='completed':
+            return 'Completed; nothing is pending and no driver is needed. Read the results with: '+self._command('report',batch_id)+'.'
+        if status=='stopped':
+            if not pending:
+                return 'Stopped; no '+noun+' is pending, so there is nothing to resume. Read the results with: '+self._command('report',batch_id)+'.'
+            if self.resumable(state):
+                return ((busy+'When it returns, resume with: ' if driving else 'Stopped with '+count(pending)+' pending and no driver running. Resume with: ')
+                        +resume+' (it re-activates the pending '+noun+'s under the start-grade checks; completed and failed '+noun+'s never re-run).'+loop)
+            reason=(state.get('stopped_reason') or {}).get('plain')
+            return ('Stopped with '+count(pending)+' pending. '+(reason+' ' if isinstance(reason,str) else '')
+                    +'When that names '+prefix+'-resume, resume with: '+resume+'.')
+        # active or closing_monitor
+        if self.paused(batch_id) and not driving:
+            return ('Paused between '+noun+'s at your request; '+count(pending)+' pending. batch-resume releases the pause and continues '
+                    'the pending '+noun+'s.')
+        if driving:
+            return busy+'When it returns, call '+resume+' again if the status is not completed or stopped.'+loop
+        running=(' '+str(live.get('alias'))+' is still running in MT5, but nothing collects it or starts the next '+noun+' until a call drives.'
+                 if live else '')
+        if detail.get('state')=='unknown':
+            return ('Driver unknown: '+str(detail.get('basis'))+' '+count(pending)+' pending.'+running+' If no '+prefix+'-start or '+prefix
+                    +'-resume call of yours is still running, resume with: '+resume+'. Otherwise check '+self._command('status',batch_id)+' again.')
+        return ('Not advancing: '+count(pending)+' pending and no driver running (no '+prefix+'-start or '+prefix+'-resume call is in progress).'
+                +running+' Resume with: '+resume+'.'+loop)
 
     # A seed pause is a between-members stop: the running member finishes and is
     # kept, pending members stay pending (never cancelled), so resume continues
@@ -807,6 +918,26 @@ class SeedRunner:
 
     def _drive(self,batch_id,max_seconds,initial,reactivate=False):
         if type(max_seconds) is not int or not 1<=max_seconds<=3600:raise ValueError('max_seconds must be 1..3600')
+        # This call records itself in the run folder (studio_seed_driver) at its first gate pass and its return
+        # here, so seed-status can say whether a call is driving the run now (support 64f1c5ae).
+        call={}
+        try:result=self._drive_passes(batch_id,max_seconds,initial,reactivate,call)
+        except BaseException as exc:
+            self._driver_end(call,'failed',error=str(exc) or type(exc).__name__)
+            raise
+        self._driver_end(call,'returned',result_status=result.get('status') if isinstance(result,dict) else None)
+        return result
+
+    def _driver_end(self,call,outcome,**details):
+        """Record this call's return. Never raises: a record that stays open is read from its PID (gone = none)."""
+        if not call.get('token'):return
+        from studio_seed_driver import end
+        try:
+            with self._gate():end(call['root'],call['token'],now=self.clock(),outcome=outcome,**details)
+        except Exception:
+            pass
+
+    def _drive_passes(self,batch_id,max_seconds,initial,reactivate,call):
         deadline=self.clock()+max_seconds
         while self.clock()<deadline:
             self.c.bridge.pump()
@@ -820,6 +951,11 @@ class SeedRunner:
                 continue
             with held:
                 root,manifest,state=self._read(batch_id)
+                if self.driver_record and 'token' not in call:
+                    from studio_seed_driver import begin
+                    call['root']=root
+                    call['token']=begin(root,command=self.COMMAND_PREFIX+('-start' if initial else '-resume'),max_seconds=max_seconds,
+                                        now=self.clock(),identity=self.identity())
                 if state['status']=='reconcile_required':
                     # A member MT5 finished while its start was unconfirmed is collected from its own output.
                     self._observe(root,manifest,state,settle_unowned=True)

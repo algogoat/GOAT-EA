@@ -16,6 +16,10 @@ research-status (results, plain notes); progress counts, dates and state stay re
 Nothing here opens the mutable store, takes the terminal lock, launches, closes or signals MT5, and
 nothing is written. Missing or unreadable evidence never becomes a guess: a run whose state or manifest
 cannot be read whole, or disagree, is listed in ``skipped`` with its reason instead of as a row.
+
+With ``lane_driver`` (both CLIs pass it), a runner row that can still move on also carries ``driver``: whether a
+start/resume call drives it now and the exact ``next_step`` (support 64f1c5ae). That check reads the run's
+driver record and, only for a call recorded as in progress, that call's own process; it changes nothing.
 """
 from datetime import datetime, timezone
 from pathlib import Path
@@ -149,7 +153,7 @@ def batch_row(root, install, job, *, now, with_progress=True):
 # Explore and Prove: seed hunts and catch-ups
 # ---------------------------------------------------------------------------
 
-def runner_row(root, kind, batch_id, *, now):
+def runner_row(root, kind, batch_id, *, now, lane_driver=None):
     """One Explore or Prove row, or (None, reason) when the run cannot be read whole."""
     folder = Path(root) / RUNNER_FOLDER[kind] / batch_id
     state, _ = _bounded_json(folder / 'state.json', MAX_RUNNER_JSON)
@@ -208,12 +212,22 @@ def runner_row(root, kind, batch_id, *, now):
                else dict(held_up=progress.get('held_up')))
     if not completed:
         results = {key: None for key in results}
-    return _row(kind, batch_id, state=row_state, status=status, note=note,
-                symbols=_distinct(t.get('Symbol') for t in testers), timeframes=_distinct(t.get('Period') for t in testers),
-                total=len(members), done=sum(s in RAN for s in statuses),
-                started=_iso(min(started)) if started else None,
-                finished=_iso(finished) if row_state in ENDED and finished is not None else None,
-                eta=(progress.get('pace') or {}).get('eta_utc'), results=results), None
+    row = _row(kind, batch_id, state=row_state, status=status, note=note,
+               symbols=_distinct(t.get('Symbol') for t in testers), timeframes=_distinct(t.get('Period') for t in testers),
+               total=len(members), done=sum(s in RAN for s in statuses),
+               started=_iso(min(started)) if started else None,
+               finished=_iso(finished) if row_state in ENDED and finished is not None else None,
+               eta=(progress.get('pace') or {}).get('eta_utc'), results=results)
+    if lane_driver is not None:
+        # Support 64f1c5ae: a run that can still move on says whether a start/resume call drives it now.
+        movable = status in ('closing_monitor', 'active', 'pausing', 'paused', 'reconcile_required') or (
+            status == 'stopped' and 'pending' in statuses)
+        if movable:
+            from studio_research_status import lane_driver_block
+            row['driver'] = lane_driver_block(lane_driver, kind, batch_id, status)
+        else:
+            row['driver'] = None
+    return row, None
 
 
 def _runner_ids(root, kind):
@@ -240,7 +254,7 @@ def _when(row):
     return row.get('finished_utc') or row.get('started_utc') or ''
 
 
-def research_queue(*, root, install, session, now, jobs=None, finished=FINISHED_DEFAULT, job_ids=None):
+def research_queue(*, root, install, session, now, jobs=None, finished=FINISHED_DEFAULT, job_ids=None, lane_driver=None):
     """Every job of one installation, one row each: unfinished ones always, then the ``finished`` most
     recent ended ones. Running and pausing first, then blocked, paused and queued, then the ends.
 
@@ -274,7 +288,7 @@ def research_queue(*, root, install, session, now, jobs=None, finished=FINISHED_
                 skipped.append(dict(batch_id=job['job_id'], kind='batch', reason='native evidence unreadable: ' + str(error)[:200]))
     for kind in ('seed', 'catchup', 'holdup'):
         for batch_id in _runner_ids(root, kind):
-            row, reason = runner_row(root, kind, batch_id, now=now)
+            row, reason = runner_row(root, kind, batch_id, now=now, lane_driver=lane_driver)
             if row is None:
                 skipped.append(dict(batch_id=batch_id, kind=kind, reason=reason))
             else:

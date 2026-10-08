@@ -123,7 +123,8 @@ class RetryTests(unittest.TestCase):
         with patch('subprocess.check_output', side_effect=[stall, json.dumps([row])]):
             found = WindowsSeedProcess(controller).inspect()
         self.assertEqual(found, dict(pid=7, executable='C:\\MT5\\terminal64.exe', created_utc='2026-10-05T12:13:00Z'))
-        with patch('subprocess.check_output', side_effect=stall):
+        # Every CIM attempt failed and the native read (support 64f1c5ae) failed too: still never "MT5 closed".
+        with patch('subprocess.check_output', side_effect=stall), patch.object(query, 'native_rows', side_effect=OSError('no snapshot')):
             with self.assertRaises(subprocess.TimeoutExpired):
                 WindowsSeedProcess(controller).inspect()            # never read as "MT5 closed"
 

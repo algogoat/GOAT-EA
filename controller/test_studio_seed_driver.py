@@ -368,8 +368,8 @@ class StartupStallEndToEndTests(_Fixture, unittest.TestCase):
         from studio_research_launch import ResearchLaunchRefused
         self.prepare()
         # CIM answers the activation (monitor inspect) and the first observe, then stalls from the member's
-        # pre-launch inventory on; the native read fails too.
-        self.stall_from, self.native_fails = 3, True
+        # pre-launch inventory on (the third inventory of the start); the native read fails too.
+        self.cim_calls, self.stall_from, self.native_fails = 0, 3, True
         with self.assertRaisesRegex(ResearchLaunchRefused, 'could not list the running MT5 processes before the launch'):
             self.runner.start('batch', 30)
         self.assertEqual(self.launches, [])                                   # nothing was started

@@ -14,9 +14,14 @@ What comes out is a structurally different record, never a catch-up verdict (Cla
   catch-up report, the equivalence canary, the OOS-rule judge and gate calibration check ``kind`` and refuse
   or ignore these records (``refuse``), so none of them can take one as a verdict on the original export;
 * a drift report against the exact original over the original's own span (trades, PF, max DD, return) with
-  the verdict ``reproduced`` or ``drifted`` (``TOLERANCES``);
+  the verdict ``reproduced`` or ``drifted`` (``TOLERANCES``); the baseline is pinned whole (SET, equity CSV,
+  deals.csv) by the plan and re-checked before the run and at collection;
 * the re-test's own windows (BOOS/SAMPLE/FWD/FOOS, every one measured on the re-test alone) and the new
-  weeks, so the unseen weeks can be judged on the new-build result as a new candidate.
+  weeks as numbers only: the unseen weeks are never judged in this tool (``UNSEEN_WEEKS``, #2350 6070262354);
+  the external prereg analysis judges them.
+
+Catch-up versions carry the build of the export they re-tested (studio_catchup ``_version_key``), so a later
+ordinary catch-up of a migrated re-test (made by the new build) never carries the older-build original.
 
 A SET exported without a .goatseq (the V1.47 exports) gets one from the re-test: the original SET bytes are
 staged unchanged as the capture's ``source-inputs.set``, and the SET itself is never written.
@@ -34,14 +39,24 @@ DRIFT_SCHEMA = 'goat-build-migration-drift-v1'
 RECORD_FILE = 'build-migration-retest.json'
 RESULT_STATUS = 'verified_build_migration_retest'
 REPRODUCED, DRIFTED = 'reproduced', 'drifted'
+# Claude-Mac, #2350 6070262354: the weeks after the original export are measured here, never judged.
+UNSEEN_WEEKS = ('measured only: no pass/fail for the weeks after the original export in this tool; they are judged by the '
+                'external prereg analysis (goatai#2350 6070262354)')
 # Claude-Mac, goatai#2350 6069528877: a re-test "reproduced" its original when, over the original span,
 # |delta PF| <= 0.15 (absolute), |delta trades| <= 10% and |delta max DD| <= 20% (both relative to the
 # original); anything else, an unmeasurable metric included, is "drifted". Boundaries are inclusive.
 TOLERANCES = dict(pf_abs=Decimal('0.15'), trades_rel=Decimal('0.10'), max_dd_rel=Decimal('0.20'), source='goatai#2350 6069528877')
-PLAN_KEYS = {'target_build', 'originals'}
-PLAN_OPTIONAL = {'target_ea_sha256', 'note'}
-ORIGINAL_KEYS = {'original_path', 'original_sha256', 'source_build'}
-ORIGINAL_OPTIONAL = {'source_ea_sha256'}
+PLAN_KEYS = {'target_build', 'target_ea_sha256', 'originals'}
+PLAN_OPTIONAL = {'note'}
+# The drift baseline is pinned whole (Claude-Mac, #2350 6070262354): the SET, its equity CSV and, when the export
+# has one, its capture's deals.csv.
+ORIGINAL_KEYS = {'original_path', 'original_sha256', 'original_csv_sha256', 'source_build'}
+ORIGINAL_OPTIONAL = {'source_ea_sha256', 'original_deals_sha256'}
+# Free space an output root needs per member before a plan is accepted: a measured unit is ~124 MB
+# (SET, CSV and .goatseq; cu1002b40: 28 units = 3.5 GB), plus one GiB of margin per plan.
+UNIT_BYTES = 128 * 1024 * 1024
+FREE_MARGIN_BYTES = 1024 * 1024 * 1024
+LOCAL_DRIVE_TYPES = (2, 3, 6)   # GetDriveTypeW: removable, fixed, RAM disk (0 unknown, 1 no root, 4 remote, 5 CD-ROM refused)
 BUILD = re.compile(r'[A-Za-z0-9][A-Za-z0-9._@:+-]{0,95}')
 SHA = re.compile(r'[0-9a-f]{64}')
 
@@ -89,26 +104,27 @@ def validate_plan(value, sets):
     Refuses a SET with no recorded original, naming it.
     """
     if not isinstance(value, dict) or not PLAN_KEYS <= set(value) or set(value) - PLAN_KEYS - PLAN_OPTIONAL:
-        raise ValueError('build_migration requires target_build and originals (optional: target_ea_sha256, note)')
+        raise ValueError('build_migration requires target_build, target_ea_sha256 and originals (optional: note)')
     target = value['target_build']
     if not isinstance(target, str) or not BUILD.fullmatch(target):
         raise ValueError('build_migration.target_build must be an EA build ID such as V1.49-BETA17-43')
-    target_sha = value.get('target_ea_sha256')
-    if target_sha is not None and (not isinstance(target_sha, str) or not SHA.fullmatch(target_sha)):
-        raise ValueError('build_migration.target_ea_sha256 must be 64 lowercase hex')
+    target_sha = value['target_ea_sha256']
+    if not isinstance(target_sha, str) or not SHA.fullmatch(target_sha):
+        raise ValueError('build_migration.target_ea_sha256 must be the target EA binary\'s SHA-256 (64 lowercase hex)')
     entries = value['originals']
     if not isinstance(entries, list):
         raise ValueError('build_migration.originals must list one recorded original per SET')
     by_path = {}
     for entry in entries:
         if not isinstance(entry, dict) or not ORIGINAL_KEYS <= set(entry) or set(entry) - ORIGINAL_KEYS - ORIGINAL_OPTIONAL:
-            raise ValueError('Each build_migration original needs original_path, original_sha256 and source_build '
-                             '(optional: source_ea_sha256): %r' % (entry,))
+            raise ValueError('Each build_migration original needs original_path, original_sha256, original_csv_sha256 and '
+                             'source_build (optional: original_deals_sha256, source_ea_sha256): %r' % (entry,))
         path = entry['original_path']
         if not isinstance(path, str) or not Path(path).is_absolute():
             raise ValueError('build_migration original_path must be an absolute exported .set path: %r' % (path,))
-        if not isinstance(entry['original_sha256'], str) or not SHA.fullmatch(entry['original_sha256']):
-            raise ValueError('build_migration original_sha256 must be 64 lowercase hex for SET %s' % path)
+        for name in ('original_sha256', 'original_csv_sha256', 'original_deals_sha256'):
+            if (name in entry or name != 'original_deals_sha256') and (not isinstance(entry[name], str) or not SHA.fullmatch(entry[name])):
+                raise ValueError('build_migration %s must be 64 lowercase hex for SET %s' % (name, path))
         if not isinstance(entry['source_build'], str) or not BUILD.fullmatch(entry['source_build']):
             raise ValueError('build_migration source_build must name the EA build that made SET %s' % path)
         source_sha = entry.get('source_ea_sha256')
@@ -128,8 +144,26 @@ def validate_plan(value, sets):
     return dict(target_build=target, target_ea_sha256=target_sha, originals=by_path)
 
 
+def baseline_paths(set_path):
+    """The equity CSV and capture deals.csv next to an exported SET (studio_evidence unit layout)."""
+    from studio_evidence import unit_paths
+    unit = unit_paths(set_path)
+    return unit['csv'], unit['goatseq'] / 'deals.csv'
+
+
+def _sha_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda: stream.read(1 << 20), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def check_original(entry, set_path):
-    """The recorded original must be this SET, unchanged. Raises naming the SET."""
+    """The recorded original must be this SET with its equity CSV and deals list, all unchanged. Raises naming the SET.
+
+    Returns the pinned baseline: ``{set, csv, deals}`` SHA-256s (deals None when the export has no deals.csv).
+    """
     try:
         raw = Path(entry['original_path']).read_bytes()
     except OSError as exc:
@@ -138,11 +172,31 @@ def check_original(entry, set_path):
     if actual != entry['original_sha256']:
         raise ValueError('build_migration: SET %s no longer matches its recorded original (sha256 %s, recorded %s)'
                          % (set_path, actual[:12], entry['original_sha256'][:12]))
-    return raw
+    csv_path, deals_path = baseline_paths(entry['original_path'])
+    try:
+        csv_sha = _sha_file(csv_path)
+    except OSError as exc:
+        raise ValueError('build_migration: the equity CSV of SET %s cannot be read (%s)' % (set_path, exc)) from None
+    if csv_sha != entry['original_csv_sha256']:
+        raise ValueError('build_migration: the equity CSV of SET %s no longer matches its recorded original (sha256 %s, recorded %s)'
+                         % (set_path, csv_sha[:12], entry['original_csv_sha256'][:12]))
+    deals_sha = _sha_file(deals_path) if deals_path.is_file() else None
+    if deals_sha != entry.get('original_deals_sha256'):
+        if deals_sha is None:
+            raise ValueError('build_migration: SET %s has no capture deals.csv, but the plan pins one' % set_path)
+        if entry.get('original_deals_sha256') is None:
+            raise ValueError('build_migration: SET %s has a capture deals.csv; pin it as original_deals_sha256' % set_path)
+        raise ValueError('build_migration: the deals.csv of SET %s no longer matches its recorded original (sha256 %s, recorded %s)'
+                         % (set_path, deals_sha[:12], entry['original_deals_sha256'][:12]))
+    return dict(set=actual, csv=csv_sha, deals=deals_sha)
 
 
 def output_root(value, *, windows=None):
-    """A catch-up ``output_root``: an absolute local folder path. UNC and device paths are refused."""
+    """A catch-up ``output_root``: an absolute local folder path, after resolving links and junctions.
+
+    UNC, device, network-drive, unknown-drive and CD-ROM paths are refused, also when a symlink or
+    junction on the way points there.
+    """
     windows = (os.name == 'nt') if windows is None else windows
     if not isinstance(value, str) or not value or len(value) > 200 or any(c in value for c in '\r\n\x00'):
         raise ValueError('output_root must be an absolute local folder path of at most 200 characters')
@@ -154,20 +208,42 @@ def output_root(value, *, windows=None):
             raise ValueError('output_root must be an absolute path on a local drive letter (for example G:\\GOAT-Evidence): ' + value)
         if '..' in pure.parts:
             raise ValueError('output_root must not contain ..: ' + value)
-        kind = _drive_type(pure.drive + '\\')
-        if kind == 4:
-            raise ValueError('output_root %s is on a network drive; give a local drive' % value)
-        if kind == 1:
-            raise ValueError('output_root %s is on a drive that does not exist' % value)
-        return Path(pure)
+        resolved = os.path.realpath(str(pure)) if os.name == 'nt' else str(pure)
+        if resolved.startswith('\\\\?\\') and not resolved.startswith('\\\\?\\UNC\\'):
+            resolved = resolved[4:]
+        rpure = PureWindowsPath(resolved)
+        if resolved.startswith(('\\\\', '//')) or not re.fullmatch(r'[A-Za-z]:', rpure.drive):
+            raise ValueError('output_root %s resolves to %s, which is not a local drive path' % (value, resolved))
+        kind = _drive_type(rpure.drive + '\\')
+        if kind not in LOCAL_DRIVE_TYPES and kind is not None:
+            what = {0: 'a drive of unknown type', 1: 'a drive that does not exist', 4: 'a network drive', 5: 'a CD-ROM drive'}.get(kind, 'drive type %s' % kind)
+            raise ValueError('output_root %s is on %s; give a local drive' % (value, what))
+        return Path(rpure)
     pure = PurePosixPath(value)
     if not pure.is_absolute() or '..' in pure.parts:
         raise ValueError('output_root must be an absolute local folder path: ' + value)
     return Path(value)
 
 
+def free_space_check(root, members):
+    """Refuse an output root without room for ``members`` re-test units (UNIT_BYTES each) plus FREE_MARGIN_BYTES."""
+    import shutil
+    probe = Path(root)
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    try:
+        free = shutil.disk_usage(probe).free
+    except OSError as exc:
+        raise ValueError('output_root %s: free space cannot be read (%s)' % (root, exc)) from None
+    needed = members * UNIT_BYTES + FREE_MARGIN_BYTES
+    if free < needed:
+        raise ValueError('output_root %s has %.1f GB free; %d re-test units need about %.1f GB (%d MB each plus 1 GB margin)'
+                         % (root, free / 1e9, members, needed / 1e9, UNIT_BYTES // (1024 * 1024)))
+    return dict(free_bytes=free, needed_bytes=needed)
+
+
 def _drive_type(root):
-    """GetDriveTypeW: 1 no root dir, 4 remote; None where it cannot be asked."""
+    """GetDriveTypeW: 0 unknown, 1 no root dir, 2 removable, 3 fixed, 4 remote, 5 CD-ROM, 6 RAM disk; None where it cannot be asked."""
     try:
         import ctypes
         return ctypes.windll.kernel32.GetDriveTypeW(root)
@@ -245,12 +321,18 @@ def _side(unit, first, last, *, deposit, name_fallback):
                max_dd_pct=measured['ddPct'], net=measured['equityNet'], profit=measured['profit'],
                return_pct=None if not deposit or measured['equityNet'] is None else round(measured['equityNet'] / float(deposit) * 100, 6),
                trade_source=measured['tradeSource'] or 'unavailable', dd_source='equity_csv')
+    out['pf_source'] = out['trade_source'] if out['pf'] is not None or out['pf_note'] == 'no losing deals' else None
     metrics = unit.get('metrics') or {}
+    # Deals first, then the SET header's exact window counts; only then the export file name, whose PF is rounded
+    # to two decimals (a V1.47 export without a capture): marked baseline filename_rounded.
     if name_fallback and out['trades'] is None and metrics.get('trades') is not None:
-        out.update(trades=metrics['trades'], trade_source='export_file_name')
+        out.update(trades=metrics['trades'], trade_source='filename_rounded')
     if name_fallback and out['pf'] is None and out['pf_note'] != 'no losing deals' and metrics.get('pf') is not None:
-        out.update(pf=metrics['pf'], pf_note=None, pf_source='export_file_name')
-    out.setdefault('pf_source', out['trade_source'] if out['pf'] is not None else None)
+        out.update(pf=metrics['pf'], pf_note=None, pf_source='filename_rounded')
+    sources = {out['trade_source'], out['pf_source']}
+    out['baseline'] = ('filename_rounded' if 'filename_rounded' in sources else
+                       'capture_deals' if sources == {'capture_deals'} else
+                       'set_header' if 'set_header' in sources else 'incomplete')
     return out
 
 
@@ -274,7 +356,7 @@ def drift(original, retest, *, deposit=None):
              else 'Drifted on the target build: ' + '; '.join(judged['reasons']) + '.')
     return dict(schema=DRIFT_SCHEMA, kind=KIND, verdict=judged['verdict'], reasons=judged['reasons'], checks=judged['checks'],
                 delta=judged['delta'], span=dict(first_day=first.isoformat(), last_day=last.isoformat()), original=a, retest=b,
-                tolerances=public_tolerances(), plain=plain)
+                baseline=a['baseline'], tolerances=public_tolerances(), plain=plain)
 
 
 def public_tolerances():

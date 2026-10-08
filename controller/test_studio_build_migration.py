@@ -33,11 +33,20 @@ class MigrationCase(CatchupCase):
         self.activation(TARGET)
 
     def originals(self, sets, **change):
-        return [dict(original_path=str(p), original_sha256=sha(p), source_build=SOURCE if p != self.v147 else 'V1.47') | change for p in sets]
+        entries = []
+        for p in sets:
+            csv_path, deals_path = bm.baseline_paths(p)
+            entry = dict(original_path=str(p), original_sha256=sha(p), original_csv_sha256=sha(csv_path),
+                         source_build=SOURCE if p != self.v147 else 'V1.47')
+            if deals_path.is_file():
+                entry['original_deals_sha256'] = sha(deals_path)
+            entries.append(entry | change)
+        return entries
 
     def mplan(self, sets=None, *, originals=None, **extra):
         sets = sets or [self.behind]
-        block = dict(target_build=TARGET, originals=self.originals(sets) if originals is None else originals)
+        block = dict(target_build=TARGET, target_ea_sha256=self.controller.install['ea_sha256'],
+                     originals=self.originals(sets) if originals is None else originals)
         return self.plan(sets=sets, include_below_threshold=True, build_migration=block, **extra)
 
     def native_retest(self, member, *, new_per_day=10):
@@ -86,6 +95,9 @@ class GuardTests(MigrationCase):
         plan['build_migration']['target_ea_sha256'] = '0' * 64
         with self.assertRaisesRegex(ValueError, 'pins target EA'):
             self.runner.validate(plan)
+        del plan['build_migration']['target_ea_sha256']   # required (Mac review 6070262354)
+        with self.assertRaisesRegex(ValueError, 'requires target_build, target_ea_sha256 and originals'):
+            self.runner.validate(plan)
         self.assertFalse(self.runner.base.exists())
 
     def test_b_a_prepared_member_never_starts_after_the_build_changes(self):
@@ -104,12 +116,42 @@ class GuardTests(MigrationCase):
         missing = self.root / 'gone.set'
         with self.assertRaisesRegex(ValueError, 'cannot be read'):
             self.runner.validate(self.mplan(sets=[missing], originals=[dict(original_path=str(missing), original_sha256='0' * 64,
-                                                                             source_build=SOURCE)]))
+                                                                             original_csv_sha256='0' * 64, source_build=SOURCE)]))
         for broken in ([dict(original_path=str(self.behind), source_build=SOURCE)],
                        [dict(original_path=str(self.behind), original_sha256=sha(self.behind), source_build='')],
                        self.originals([self.behind]) + self.originals([self.v147])):
             with self.subTest(broken=broken), self.assertRaises(ValueError):
                 self.runner.validate(self.mplan(originals=broken))
+
+    def test_c_the_drift_baseline_is_pinned_csv_and_deals(self):
+        """Mac review 6070262354: an edited original CSV must never flip reproduced/drifted silently."""
+        import re
+        name = re.escape(str(self.behind))
+        csv_path, deals_path = bm.baseline_paths(self.behind)
+        with self.assertRaisesRegex(ValueError, 'the equity CSV of SET %s no longer matches' % name):
+            self.runner.validate(self.mplan(originals=self.originals([self.behind], original_csv_sha256='0' * 64)))
+        with self.assertRaisesRegex(ValueError, 'the deals.csv of SET %s no longer matches' % name):
+            self.runner.validate(self.mplan(originals=self.originals([self.behind], original_deals_sha256='0' * 64)))
+        unpinned = self.originals([self.behind])
+        del unpinned[0]['original_deals_sha256']
+        with self.assertRaisesRegex(ValueError, 'SET %s has a capture deals.csv; pin it' % name):
+            self.runner.validate(self.mplan(originals=unpinned))
+        with self.assertRaisesRegex(ValueError, 'has no capture deals.csv, but the plan pins one'):
+            self.runner.validate(self.mplan(sets=[self.v147], originals=self.originals([self.v147], original_deals_sha256='0' * 64)))
+        # Prepared, then the CSV is edited before collection: the member fails and nothing is moved.
+        self.runner.prepare('bm1', self.mplan())
+        csv_path.write_bytes(csv_path.read_bytes() + '\r\n'.encode('utf-16-le'))
+        self.catchup_id = 'bm1'
+        self.auto = True
+        state = self.runner.start('bm1', 60)
+        self.assertEqual(state['members'][0]['status'], 'failed')
+        self.assertIn('the equity CSV of SET %s no longer matches' % self.behind, state['members'][0]['error'])
+        member = read_json(self.runner.path('bm1') / 'manifest.json')['members'][0]
+        self.assertFalse(Path(member['evidence_dir']).exists())
+
+    def test_no_heldout_reveal_with_a_migration(self):
+        with self.assertRaisesRegex(ValueError, 'never reveals a held-out lock'):
+            self.runner.validate(self.mplan(heldout_reveal=dict(lock_id='alpha')))
 
     def test_the_recorded_source_build_must_match_the_export(self):
         with self.assertRaisesRegex(ValueError, 'made by EA build V1.49-BETA17-40 \\(its capture\\), but the plan names source_build B28'):
@@ -148,12 +190,22 @@ class RecordTests(MigrationCase):
         self.assertEqual((record['drift']['delta']['trades'], record['drift']['delta']['pf'], record['drift']['delta']['max_dd']), (0.0, 0.0, 0.0))
         self.assertEqual((record['windows']['basis'], record['windows']['FOOS']['to']), ('retest', '2026-10-02'))
         self.assertEqual((record['new_weeks']['from'], record['new_weeks']['to'], record['new_weeks']['trades']), ('2026-09-25', '2026-10-02', 12))
-        self.assertEqual((record['oos_rule']['kind'], record['oos_rule']['candidate'], record['oos_rule']['used_for_ranking']),
-                         ('build_migration_retest', 'new', False))
+        # The unseen weeks are measured, never judged in-tool (Mac review 6070262354).
+        self.assertNotIn('oos_rule', record)
+        self.assertFalse(record['new_weeks_judged'])
+        self.assertIn('measured only', record['judgement'])
+        self.assertEqual((record['original']['csv_sha256'], record['original']['deals_sha256']),
+                         (sha(bm.baseline_paths(self.behind)[0]), sha(bm.baseline_paths(self.behind)[1])))
+        self.assertEqual(record['drift']['baseline'], 'capture_deals')
         self.assertEqual({p: p.read_bytes() for p in self.run.rglob('*') if p.is_file()}, before)
         result = read_json(self.runner.path('bm1') / (member['alias'] + '.result.json'))
         self.assertEqual((result['status'], result['kind'], result['summary']['drift']), ('verified_build_migration_retest', 'build_migration_retest', 'reproduced'))
         self.assertNotIn('verdict', result['summary'])
+        self.assertNotIn('oos_rule', result['summary'])
+        self.assertFalse(result['summary']['new_weeks_judged'])
+        self.assertEqual(result['summary']['new_weeks']['trades'], 12)
+        for verdictish in ('pass', 'fail', 'held_up', 'weakened', 'failed', 'status'):
+            self.assertNotIn(verdictish, result['summary']['new_weeks'])
         # catchup-report handles the kind explicitly: drift counts, no verdict counts.
         report = self.runner.report('bm1')
         self.assertEqual((report['kind'], report['provenance'], report['drift_counts'], report['counts']),
@@ -227,12 +279,65 @@ class RecordTests(MigrationCase):
         self.assertEqual(self.v147.read_bytes(), original)
         self.assertEqual(sha(self.v147), plan['build_migration']['originals'][0]['original_sha256'])
         self.assertEqual(record['source_inputs_sha256'], record['original']['sha256'])
-        self.assertEqual(record['drift']['original']['trade_source'], 'export_file_name')
+        # No capture on the V1.47 original: PF (and here trades) come from the rounded file name, and say so.
+        self.assertEqual((record['drift']['original']['pf_source'], record['drift']['baseline']), ('filename_rounded', 'filename_rounded'))
+        self.assertIsNone(record['original']['deals_sha256'])
 
     def test_a_v147_source_binary_mismatch_refuses(self):
         plan = self.mplan(sets=[self.v147], originals=self.originals([self.v147], source_ea_sha256='1' * 64))
         with self.assertRaisesRegex(ValueError, 'made by EA binary ffffffffffff \\(its run manifest\\)'):
             self.runner.validate(plan)
+
+
+class ChainedCatchupTests(MigrationCase):
+    """Mac review 6070262354 BLOCKER: a normal B43 catch-up of a migrated re-test must never carry the B40 original."""
+
+    def test_blocker_an_original_never_inherits_a_new_build_verdict(self):
+        from studio_evidence import read_export
+        _, manifest = self.run_all('bm1', self.mplan())
+        migrated = next(Path(manifest['members'][0]['evidence_dir']).glob('*.set'))
+        # A week later, an ordinary catch-up of the migrated re-test SET on B43 (the same build that made it).
+        week_later = datetime(2026, 10, 10, 8, tzinfo=AFTER_CLOSE.tzinfo)
+        self.runner = sc.CatchupRunner(self.controller, process=self.process, clock=lambda: self.now, sleep=self.sleep, now=week_later)
+        self.starts.clear()
+        self.process_state = dict(pid=10, executable='terminal64.exe', created_utc='monitor')
+        state, manifest2 = self.run_all('cu2', self.plan(sets=[migrated], include_below_threshold=True, assume=dict(ExecutionMode=0)))
+        self.assertEqual(state['status'], 'completed')
+        found = sc.versions(self.controller.root)
+        self.assertEqual(len(found), 1)
+        version = found[0]
+        self.assertNotIn(version['verdict']['verdict'], sc.UNCARRIED)   # a carried verdict, so the test means something
+        self.assertEqual((version['kind'], version['original']['build']), ('oos_catchup', TARGET))
+        original = read_export(self.behind)
+        # The pre-fix key (values, symbol, period, start) is shared: this is exactly the inheritance Mac reproduced.
+        self.assertEqual((version['values_sha256'], version['symbol'], version['period'], version['evidence_start']),
+                         (original['values_sha256'], original['symbol'], original['period'], original['evidence_start']))
+        row = sc.classify(original, '2026-10-09', include_below_threshold=True, known_versions=found)
+        self.assertEqual(row['status'], 'behind')
+        self.assertNotIn('verdict', row)
+        self.assertEqual(row['build'], SOURCE)
+        # The migrated SET itself (made by B43) is caught up by its own B43 version.
+        self.assertEqual(sc.classify(read_export(migrated), '2026-10-09', include_below_threshold=True, known_versions=found)['status'],
+                         'caught_up')
+        scan = sc.evidence_scan([self.behind], value='2026-10-09', now=week_later, controller_root=self.controller.root,
+                                include_below_threshold=True)
+        self.assertEqual(scan['exports'][0]['status'], 'behind')
+
+    def test_versions_without_a_build_carry_only_their_exact_set(self):
+        from studio_evidence import read_export
+        original = read_export(self.behind)
+        legacy = dict(schema=sc.VERSION_SCHEMA, values_sha256=original['values_sha256'], symbol='EURUSD', period='M1',
+                      evidence_start=original['evidence_start'], evidence_end='2026-10-02', version_path='x',
+                      verdict=dict(verdict='held_up'), original=dict(set_sha256='0' * 64))
+        self.assertEqual(sc.classify(original, '2026-10-02', known_versions=[legacy])['status'], 'behind')
+        exact = dict(legacy, original=dict(set_sha256=original['set_sha256']))
+        self.assertEqual(sc.classify(original, '2026-10-02', known_versions=[exact])['status'], 'caught_up')
+        other_build = dict(legacy, original=dict(set_sha256=original['set_sha256'], build=TARGET))
+        self.assertEqual(sc.classify(original, '2026-10-02', known_versions=[other_build])['status'], 'behind')
+        same_build = dict(legacy, original=dict(build=SOURCE))
+        self.assertEqual(sc.classify(original, '2026-10-02', known_versions=[same_build])['status'], 'caught_up')
+        for kinded in (dict(same_build, kind='build_migration_retest'), dict(same_build, kind='something_else')):
+            self.assertEqual(sc.classify(original, '2026-10-02', known_versions=[kinded])['status'], 'behind')
 
 
 class OutputRootTests(MigrationCase):
@@ -281,6 +386,67 @@ class OutputRootTests(MigrationCase):
         afile.write_text('x', encoding='utf-8')
         with self.assertRaisesRegex(ValueError, 'is a file'):
             self.runner.validate(self.mplan(output_root=str(afile)))
+
+    def test_f_links_unknown_drives_and_free_space(self):
+        from unittest.mock import patch
+        out = str(self.root / 'linked')
+        with patch('studio_build_migration.os.path.realpath', return_value='\\\\nas\\share\\evidence'):
+            with self.assertRaisesRegex(ValueError, 'resolves to .*not a local drive path'):
+                bm.output_root(out, windows=True)
+        for kind, word in ((0, 'unknown type'), (4, 'network drive'), (5, 'CD-ROM'), (1, 'does not exist')):
+            with patch('studio_build_migration._drive_type', return_value=kind), self.assertRaisesRegex(ValueError, word):
+                bm.output_root(out, windows=True)
+        with patch('shutil.disk_usage', return_value=SimpleUsage(free=bm.FREE_MARGIN_BYTES)):
+            with self.assertRaisesRegex(ValueError, 're-test units need about'):
+                self.runner.validate(self.mplan(output_root=out))
+        self.assertEqual(self.runner.validate(self.mplan(output_root=out))['member_count'], 1)
+
+    def test_f_default_root_named_explicitly_is_not_recorded_twice(self):
+        self.run_all('bm1', self.mplan(output_root=str(self.controller.root / 'evidence')))
+        self.assertFalse((self.controller.root / sc.EVIDENCE_ROOTS).exists())
+        self.assertEqual(sc.evidence_roots(self.controller.root), [self.controller.root / 'evidence'])
+
+    def test_f_versions_fail_closed_when_a_recorded_root_is_gone(self):
+        self.retest_build = 'TEST'
+        self.behind = self.export('Rbehind02', 'EURUSD', self.history)
+        self.write_run_manifest(aliases=('Rbehind02',))
+        out = self.root / 'evidence-out'
+        self.run_all('cu1', self.plan(sets=[self.behind], output_root=str(out)))
+        self.assertEqual(sc.evidence_scan([self.behind], now=AFTER_CLOSE, controller_root=self.controller.root)['exports'][0]['status'],
+                         'caught_up')
+        out.rename(self.root / 'unplugged')   # G: unplugged
+        with self.assertRaisesRegex(ValueError, 'is unavailable; reconnect it'):
+            sc.evidence_scan([self.behind], now=AFTER_CLOSE, controller_root=self.controller.root)
+        with self.assertRaisesRegex(ValueError, 'is unavailable'):
+            self.runner.validate(self.plan(sets=[self.behind]))
+        (self.controller.root / sc.EVIDENCE_ROOTS).write_text('{not json', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'cannot be read'):
+            sc.versions(self.controller.root)
+
+    def test_f_cross_drive_copy_is_verified_and_removes_the_temp_unit(self):
+        from unittest.mock import patch
+        out = self.root / 'evidence-out'
+        temp = str(Path(self.controller.install['common_files_root']) / 'TEMP' / 'SQ')
+        real = sc.os.rename
+
+        def cross_device(source, target):
+            if str(source).startswith(temp):
+                raise OSError(18, 'Not the same device')
+            return real(source, target)
+        with patch.object(sc.os, 'rename', cross_device):
+            state, manifest = self.run_all('bm1', self.mplan(output_root=str(out)))
+        self.assertEqual(state['status'], 'completed')
+        member = manifest['members'][0]
+        evidence = Path(member['evidence_dir'])
+        self.assertEqual(len(list(evidence.glob('*.goatseq'))), 1)
+        self.assertTrue((evidence / bm.RECORD_FILE).is_file())
+        attempt = Path(temp) / member['attempt_token']
+        self.assertEqual(sorted(p.name for p in attempt.iterdir()), ['attempt-issued.json'])
+
+
+class SimpleUsage:
+    def __init__(self, free):
+        self.total, self.used, self.free = free * 2, free, free
 
 
 class DriftTests(unittest.TestCase):

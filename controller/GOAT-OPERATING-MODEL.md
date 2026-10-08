@@ -58,7 +58,7 @@ Rules for honest results: a technical failure is not a bad strategy; seed result
 
 - Start with a pilot: one template on one symbol. Use its `benchmark-report` timing, not CPU specs, to estimate bigger batches.
 - Agree a time budget, disk budget and stop rule before every larger batch. The bounded driver (`Start-Batch`) cancels by itself when the budget runs out; cancel earlier when the user asks or a disk falls below 5 GiB. A cancel request is not proof of stop, so keep polling until the native queue reports finished, then `finish`.
-- Use 1-minute OHLC (`Model=1`) on timeframe M1 (`Period='M1'`, the timeframe the GOAT EA is built and traded on) unless the user chooses otherwise. Keep the export settings the user approved.
+- Use 1-minute OHLC (`Model=1`) on timeframe M1 (`Period='M1'`, the timeframe the GOAT EA is built and traded on) unless the user chooses otherwise. Keep the export settings the user approved. A slower strategy comes from the indicator timeframe inputs (`*_TF_`, including `ATR_TF_`), not from a higher chart period. See "Timeframe" in `OPTIMIZATION-PLAYBOOK.md`.
 - Bigger pools of distinct, validated strategies give Portfolio Builder more choice. More near-duplicates do not.
 
 ## Reporting to the user

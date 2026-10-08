@@ -23,7 +23,7 @@ RUNNER = ('import sys,unittest\n'
           'sys.path[:]=[p for p in sys.path if not p.rstrip("\\\\/").lower().endswith("controller")]\n'
           'sys.path.insert(0,root)\n'
           'suite=unittest.TestSuite()\n'
-          'for name in ("test_studio_process_query.py","test_studio_seed.py"):\n'
+          'for name in ("test_studio_process_query.py","test_studio_seed.py","test_studio_seed_driver.py"):\n'
           '    suite.addTests(unittest.defaultTestLoader.discover(root,pattern=name,top_level_dir=root))\n'
           'result=unittest.TextTestRunner(stream=open(sys.argv[2],"w"),verbosity=1).run(suite)\n'
           'sys.exit(0 if result.wasSuccessful() else 1)\n')
@@ -38,8 +38,16 @@ MUTATIONS = [
     ('every error retried, not only a stall', QUERY,
      'RETRIED = (subprocess.TimeoutExpired, subprocess.CalledProcessError)', 'RETRIED = (Exception,)'),
     ('a call site bypasses the retry', 'studio_seed_process.py',
-     "        return json.loads(powershell_text(command,purpose='selected terminal inventory',timeout=timeout,budget=budget))",
+     "        return process_rows(command,purpose='selected terminal inventory',fields=('ProcessId','ExecutablePath','CreatedUtc'),\n"
+     "                            names=('terminal64.exe',),timeout=timeout,budget=budget)",
      "        return json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=timeout,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))"),
+    # Support 64f1c5ae: the native fallback after every CIM attempt, and driver liveness (test_studio_seed_driver.py).
+    ('a CommandLine query falls back to the native read', QUERY, "        if not set(fields) <= NATIVE_FIELDS:\n            raise\n", ""),
+    ('a failed native read returns no rows', QUERY, "            raise error\n", "            return []\n"),
+    ('an unanswered driver check reads as stopped', 'studio_seed_driver.py',
+     "            unknown.append(str(exc)[:200] or type(exc).__name__)\n            continue", "            gone.append(call)\n            continue"),
+    ('a failed pre-launch inventory leaves the member reconcile_required', PROCESS,
+     "            if research is not True:raise\n", "            raise\n"),
     ('a running task treated as never started', 'studio_durable_driver.py',
      "    if info.get('state') in ('Running', 'Queued'):\n        return False", "    if False:\n        return False"),
     ('a task that ran is treated as never started', 'studio_durable_driver.py',

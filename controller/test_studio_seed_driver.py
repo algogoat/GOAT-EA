@@ -250,10 +250,13 @@ class NativeFallbackTests(unittest.TestCase):
         self.assertEqual([l.get('outcome') for l in self.lines()][-2:], ['gave_up', 'native_fallback'])
 
     def test_a_query_that_needs_the_command_line_never_falls_back(self):
+        # The native read would answer (with no command line), yet it is never used: the CIM error is raised.
+        rows = [dict(ProcessId=7, ParentProcessId=1, Name='terminal64.exe', ExecutablePath='C:\\MT5\\terminal64.exe', CreatedUtc=LIVE)]
         with patch('subprocess.check_output', side_effect=subprocess.TimeoutExpired('powershell', 20)), \
-                patch.object(query, 'native_rows', side_effect=AssertionError('never for CommandLine')):
+                patch.object(query, 'native_rows', return_value=rows) as native:
             with self.assertRaises(subprocess.TimeoutExpired):
                 query.process_rows('x', purpose='p', fields=('ProcessId', 'CommandLine'))
+        native.assert_not_called()
 
     def test_a_failed_native_read_raises_the_original_cim_error_never_an_empty_list(self):
         with patch('subprocess.check_output', side_effect=subprocess.CalledProcessError(1, 'powershell')), \

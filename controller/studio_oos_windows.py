@@ -546,7 +546,11 @@ def judge_retest(original, retest, *, tester, evidence_end=None):
     and the re-test's own end, and the result stamps it as `evidenceEnd`.
     """
     from pathlib import Path
+    from studio_build_migration import refuse
     from studio_catchup_verdict import deal_window, equity_rows, equity_window
+    # Export records only: a build-migration record (or a verdict) handed in here is refused by type.
+    refuse(original, 'The OOS-rule judge')
+    refuse(retest, 'The OOS-rule judge')
     # BOOS start: the run's own BackOOSDate, else the export's evidence start (capture request or header).
     back = (original.get('run') or {}).get('back_oos_date') or original.get('evidence_start')
     try:

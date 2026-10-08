@@ -566,6 +566,9 @@ def load_verdicts(path):
         rejected[reason] = rejected.get(reason, 0) + 1
 
     def consider(node):
+        from studio_build_migration import is_record
+        if is_record(node):
+            return reject('build-migration re-test record (kind build_migration_retest), never a verdict')
         if node.get('schema') != VERDICT_SCHEMA:
             return reject('schema is not ' + VERDICT_SCHEMA)
         verdict = node.get('verdict')

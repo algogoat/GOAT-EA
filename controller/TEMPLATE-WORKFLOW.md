@@ -4,6 +4,21 @@ Use this user's installed catalog and local results. A new template is a new
 research candidate, even when it descends from a previously successful file.
 Do not transfer the parent's performance claims to changed inputs or ranges.
 
+## Catalog templates and library variants need no retest
+
+- **The 48 catalog templates and the library's variant SETs are already-validated
+  research.** They don't need re-testing before use. Use them as they are.
+- **`catchup-validate` is for exported research files**: the GOAT export pattern, a
+  SET with its equity CSVs from a batch export. Its refusal on a catalog SET is
+  expected. It doesn't mean the SET needs a retest.
+- **SeedFarming is a search for NEW candidates**, not a re-test of proven files.
+  Seed a template only to look for new settings or assets
+  ([SEED-WORKFLOW.md](SEED-WORKFLOW.md)).
+- **Equity for a library variant comes from the library evidence**, not from
+  catch-up.
+
+What this page covers is new work: a changed file is a new, untested candidate.
+
 ## Validate an existing SET
 
 ```powershell

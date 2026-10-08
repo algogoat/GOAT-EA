@@ -137,6 +137,7 @@ OPERATION_CONTRACTS = {
 class Controller:
     def __init__(self, receipt):
         self.install = load_installation(receipt)
+        self.receipt = Path(receipt).absolute()      # spelled in next_step commands (support 64f1c5ae)
         self.root = Path(self.install['controller_state_root'])
         self.local = Path(self.install['terminal_data_root'])/'MQL5/Files/GOATStudio'
         self.schema,self.policy = contracts(self.install['ea_version'])
@@ -498,7 +499,7 @@ def main(argv=None):
             except (OSError,ValueError,subprocess.SubprocessError):process='unknown'
             result=research_status(root=controller.root,install=controller.install,session=read_json(controller.root/'session.json'),
                                    local=controller.local,now=time.time(),process=process,
-                                   owner_stop=(controller.root/'demo-agent/STOP').exists())
+                                   owner_stop=(controller.root/'demo-agent/STOP').exists(),lane_driver=_lane_driver(controller))
             return _emit(controller,result)
         if args.operation=='research-launch':
             from studio_research_launch import set_keep_pc_responsive,status as launch_status,write_policy
@@ -512,7 +513,8 @@ def main(argv=None):
         if args.operation=='research-queue':
             from studio_research_queue import FINISHED_DEFAULT,research_queue
             result=research_queue(root=controller.root,install=controller.install,session=read_json(controller.root/'session.json'),
-                                  now=time.time(),finished=FINISHED_DEFAULT if args.finished is None else args.finished)
+                                  now=time.time(),finished=FINISHED_DEFAULT if args.finished is None else args.finished,
+                                  lane_driver=_lane_driver(controller))
             return _emit(controller,result)
         if args.operation in ('heldout-status','trial-journal','trial-count'):
             # Library scoring v1 (goatai#2221): read-only, never opens the mutable store.
@@ -776,6 +778,20 @@ def main(argv=None):
     finally:
         if controller and controller.store: controller.store.close()
         locks.close()
+
+
+def _lane_driver(controller):
+    """research-status/research-queue: driver liveness and next step of a seed, catch-up or hold-up run (support 64f1c5ae).
+    Read-only; no store, gate or MT5 inventory, only a recorded driver's own process is checked. Every run of one
+    research-queue call shares ONE deadline (studio_seed_driver.CHECK_SECONDS), so many runs never add up."""
+    from studio_seed_driver import CHECK_SECONDS
+    deadline=time.monotonic()+CHECK_SECONDS
+    def probe(kind,batch_id):
+        if kind=='catchup':from studio_catchup import CatchupRunner as Runner
+        elif kind=='holdup':from studio_holdup import HoldupRunner as Runner
+        else:from studio_seed import SeedRunner as Runner
+        return Runner(controller).driver_summary(batch_id,deadline=deadline)
+    return probe
 
 
 def _emit(controller,result):

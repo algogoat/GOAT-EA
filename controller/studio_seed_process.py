@@ -6,7 +6,8 @@ import re
 import subprocess
 import time
 
-from studio_process_query import powershell_text
+import studio_process_query
+from studio_process_query import TIMEOUT, powershell_text, process_rows
 
 
 UNKNOWN_EXECUTABLE='Unknown terminal executable; inspect ownership first'
@@ -95,8 +96,38 @@ class WindowsSeedProcess:
         self.controller=controller;self.sleep=sleep;self.monotonic=monotonic
 
     def _rows(self,timeout,budget=None):
+        # Only native fields: after every CIM attempt fails, Windows itself answers (studio_process_query.process_rows).
         command='[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter "Name=\'terminal64.exe\'" | Select-Object ProcessId,ExecutablePath,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})'
-        return json.loads(powershell_text(command,purpose='selected terminal inventory',timeout=timeout,budget=budget))
+        return process_rows(command,purpose='selected terminal inventory',fields=('ProcessId','ExecutablePath','CreatedUtc'),
+                            names=('terminal64.exe',),timeout=timeout,budget=budget)
+
+    def process_alive(self,identity,budget=None):
+        """Read-only: is exactly this process (PID and creation time) still running? True or False, or raises when
+        Windows cannot answer (the caller reports unknown). Used for a seed driver's own recorded identity.
+
+        Native first (OpenProcess + GetProcessTimes, exact and instant, no WMI: Claude-Mac on GOAT-EA#197); the CIM
+        inventory, bounded by ``budget``, only when the native read cannot prove it (for example access denied)."""
+        if not isinstance(identity,dict) or type(identity.get('pid')) is not int:
+            raise ValueError('The recorded process identity has no PID to check')
+        pid=identity['pid']
+        native=studio_process_query.native_alive(pid,identity.get('created_utc'))
+        if native is not None:return native
+        command=('[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter "ProcessId='
+                 +str(pid)+'" | Select-Object ProcessId,@{Name="CreatedUtc";Expression={$_.CreationDate.ToUniversalTime().ToString("o")}})')
+        rows=[row for row in process_rows(command,purpose='seed driver liveness',fields=('ProcessId','CreatedUtc'),pid=pid,
+                                          timeout=min(TIMEOUT,budget or TIMEOUT),budget=budget) if row.get('ProcessId')==pid]
+        if not rows:return False                # no such PID: whatever was recorded, it is not running
+        if created_ticks(identity.get('created_utc')) is None:
+            raise ValueError('Process %d is running but this record has no creation time to prove it is the same process'%pid)
+        if any(created_ticks(row.get('CreatedUtc')) is None for row in rows):
+            raise ValueError('Process %d is running but its creation time cannot be read'%pid)
+        return any(created_ticks(row['CreatedUtc'])==created_ticks(identity['created_utc']) for row in rows)
+
+    def process_gone(self,identity):
+        """True only when Windows itself proves this process is not running (native read, no WMI, no wait).
+        Used under the runner gate to close driver-record entries of calls that were killed."""
+        return (isinstance(identity,dict) and type(identity.get('pid')) is int
+                and studio_process_query.native_alive(identity['pid'],identity.get('created_utc')) is False)
 
     def image_path(self,row):
         """Fill a row WMI listed without ExecutablePath from the process itself (bound by its creation time), else None."""
@@ -206,7 +237,15 @@ try {
         """Launch the selected MT5 with ``config``. ``research`` (only through ResearchLaunch) uses the
         research-launch policy: created suspended at low priority inside this terminal's job, or refused.
         Every other launch (monitor restarts, recovery) is unchanged."""
-        if self.inspect() is not None:raise ValueError('Selected terminal is still running')
+        try:before=self.inspect()
+        except (subprocess.TimeoutExpired,subprocess.CalledProcessError) as exc:
+            if research is not True:raise
+            # Both the CIM retries and the native read failed BEFORE the launch: nothing was started, so the
+            # member is not an uncertain start (support 64f1c5ae). It stays pending and the batch resumable.
+            from studio_research_launch import ResearchLaunchRefused
+            raise ResearchLaunchRefused('MT5 was not started: Windows could not list the running MT5 processes before the launch ('
+                                        +type(exc).__name__+'). Nothing ran; the member stays pending. Run the same resume again.') from exc
+        if before is not None:raise ValueError('Selected terminal is still running')
         install=self.controller.install
         args=[install['terminal_executable']]
         if install.get('terminal_portable',False):args.append('/portable')

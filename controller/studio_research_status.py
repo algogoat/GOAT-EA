@@ -872,9 +872,31 @@ def headline(activity):
     return name[0].upper() + name[1:] + ' ' + str(status) + ';' + counts + '.'
 
 
+def lane_driver_block(lane_driver, kind, batch_id, status=None):
+    """``driver`` of a seed hunt, catch-up or hold-up test (support 64f1c5ae): is a start/resume call driving it now,
+    from ``lane_driver(kind, batch_id)`` (the runner's driver_summary). Never raises; a failed check reads unknown."""
+    try:
+        summary = lane_driver(kind, batch_id)
+    except Exception as error:
+        summary = dict(state='unknown', basis='The driver check failed (' + str(error)[:200] + '). Nothing is inferred.', next_step=None)
+    state = summary.get('state') if summary.get('state') in ('running', 'none', 'unknown') else 'unknown'
+    block = dict(kind=kind, state=state, alive=True if state == 'running' else False if state == 'none' else None,
+                 basis=summary.get('basis'), call=summary.get('call'), last_call=summary.get('last_call'),
+                 next_step=summary.get('next_step'))
+    unsupervised = state == 'none' and status in ('active', 'closing_monitor')
+    block['health'] = 'unsupervised' if unsupervised else 'supervising' if state == 'running' else 'idle' if state == 'none' else 'unknown'
+    if unsupervised:
+        block['message'] = 'No ' + kind + '-start or ' + kind + '-resume call is driving this run, so it does not advance.'
+        block['fix'] = summary.get('next_step')
+    return block
+
+
 def research_status(*, root, install, session, local, now, process='unknown', worker_alive=None, owner_stop=False,
-                    jobs=None):
-    """One read-only call: terminal, account, build, activity, pause, driver, disk, monitor."""
+                    jobs=None, lane_driver=None):
+    """One read-only call: terminal, account, build, activity, pause, driver, disk, monitor.
+
+    ``lane_driver(kind, batch_id)`` (optional) reports whether a seed/catch-up/hold-up run is being driven now;
+    without it a runner activity keeps ``driver: null`` as before."""
     from studio_batch_pause import load as load_pause, public as public_pause
     root = Path(root)
     monitor = monitor_state(install, session, local, now=now, process=process)
@@ -958,6 +980,8 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
         if unsupervised:
             driver['message'] = 'No GOAT driver is supervising this running batch (no disk guard or finish).'
             driver['fix'] = 'Pause it (batch-pause) to stop it safely and keep its results, or resume-batch to supervise it again.'
+    elif lane_driver is not None and activity.get('kind') in ('seed', 'catchup', 'holdup') and activity.get('batch_id'):
+        driver = lane_driver_block(lane_driver, activity['kind'], activity['batch_id'], activity.get('status'))
     minimum = journal.get('min_free_bytes') if isinstance(journal, dict) and type(journal.get('min_free_bytes')) is int else MIN_FREE_BYTES
     account = session.get('account') or {}
     research_launch = _research_launch(install, root, now)

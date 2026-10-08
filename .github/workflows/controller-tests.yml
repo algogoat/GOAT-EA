@@ -37,15 +37,17 @@ concurrency:
 #          test_terminal_isolation_mutations.cjs
 #   python test_terminal_isolation_controller_mutations.py
 #   python test_lane_final_write_mutations.py              (14 mutations; ~3 min locally at Idle)
+#   python test_switch_hold_mutations.py                   (28 mutations; ~6 min locally at Idle, ~7.5 min in CI)
 #
-# controller-mutations (2/3)  ~16-22 min observed before the OOS window check; ~24-30 min expected with it
-#   python test_process_query_mutations.py                 (14-18 min)
-#   python test_oos_windows_controller_mutations.py        (61 mutations; 5.4 min locally at Idle, ~8-11 min expected)
-#   python test_holdup_mutations.py, test_lane_driver_mutations.py, test_research_launch_mutations.py
-#   python test_switch_hold_mutations.py                   (28 mutations; ~6 min locally at Idle, no hangs)
+# controller-mutations (2/3)  31-43 min observed by 2026-10-08; 45.2 min (timeout) with support 64f1c5ae's mutations,
+#   so test_switch_hold_mutations.py moved to 1/3 and test_holdup_mutations.py to 3/3 (GOAT-EA#197)
+#   python test_process_query_mutations.py                 (58 mutations, ~25 min in CI)
+#   python test_oos_windows_controller_mutations.py        (61 mutations; 5.4 min locally at Idle, ~10 min in CI)
+#   python test_lane_driver_mutations.py, test_research_launch_mutations.py
 #   (GOAT-EA#174 moved test_export_qualification_mutations.py and test_driver_backoff_mutations.py to 3/3 to balance)
 #
-# controller-mutations (3/3)  ~13-24 min observed
+# controller-mutations (3/3)  ~13-24 min observed (33-37 min by 2026-10-08)
+#   python test_holdup_mutations.py                        (19 mutations; ~2.5 min in CI)
 #   python test_restore_lane_never_started_mutations.py    (4-14 min)
 #   python test_peer_restart_mutations.py, test_peer_roster_mutations.py,
 #          test_seed_member_failure_mutations.py, test_export_qualification_mutations.py,
@@ -246,14 +248,14 @@ jobs:
       - name: Lane driver sharing-error mutation check (bounded gate wait, busy pass skipped, record reads/writes retried, loud after the bound)
         if: matrix.shard == 1
         run: python scripts/test_lane_final_write_mutations.py
+      - name: Member switch hold mutation check (off by default, 90 s bound, quiet slot, fail open, stop/cancel/pause end a hold at once)
+        if: matrix.shard == 1
+        run: python scripts/test_switch_hold_mutations.py
 
       # ---- Shard 2/3 ----
       - name: Process query mutation check (WMI stall retry, unconfirmed launch, seed unowned doubt)
         if: matrix.shard == 2
         run: python scripts/test_process_query_mutations.py
-      - name: Hold-up test mutation check (hash binding, frozen inputs, report reconciliation, refusals, peeks, redaction)
-        if: matrix.shard == 2
-        run: python scripts/test_holdup_mutations.py
       - name: Detached lane driver mutation check (caller checks first, one driver, exact durable reservation, foreground cap)
         if: matrix.shard == 2
         run: python scripts/test_lane_driver_mutations.py
@@ -263,14 +265,14 @@ jobs:
       - name: OOS window formula mutation check (date math, BOOS/FOOS pass bar and floor, FOOS held out, pre-FOOS metrics, catch-up closed day vs Friday exports, evidence-end stamps)
         if: matrix.shard == 2
         run: python scripts/test_oos_windows_controller_mutations.py
-      - name: Member switch hold mutation check (off by default, 90 s bound, quiet slot, fail open, stop/cancel/pause end a hold at once)
-        if: matrix.shard == 2
-        run: python scripts/test_switch_hold_mutations.py
 
       # ---- Shard 3/3 ----
       - name: Restore-lane never-started allowance mutation check (exact-attempt settlement records, other demo work refuses, settle-refused-start stays the reviewed proof)
         if: matrix.shard == 3
         run: python scripts/test_restore_lane_never_started_mutations.py
+      - name: Hold-up test mutation check (hash binding, frozen inputs, report reconciliation, refusals, peeks, redaction)
+        if: matrix.shard == 3
+        run: python scripts/test_holdup_mutations.py
       - name: Protected peer restart mutation check (every refusal is load-bearing)
         if: matrix.shard == 3
         run: python scripts/test_peer_restart_mutations.py

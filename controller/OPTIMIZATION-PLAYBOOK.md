@@ -42,6 +42,44 @@ Do not alter costs, leverage, dates, ranges or export policy merely to improve s
    results and retained report rows are different quantities. No universal
    "1280 passes in seconds" estimate applies.
 
+## Timeframe: trade on M1, slow down with the indicator timeframes
+
+**The GOAT EA is built and traded on M1. Keep the tester `Period='M1'`** for
+every batch, seed screen and new strategy, and deploy on M1 charts.
+
+The chart period does **not** set how slow a strategy is. Every indicator has
+its own timeframe input (`RSI_TF_`, `RSI2_TF_`, `EMA_TF_`, `ADX_TF_`, `BB_TF_`,
+`MACD_TF_`, `ATR_TF_`; valid values M1, M5, M15, H1, H4). Grid, lock and stop
+sizes (`Grid_Size`, `Lock_Profit_Size`, `SL_Pips`, `TSL_Size`) are ATR multiples
+when negative and fixed pips when positive. The chart period only sets how often
+signals are checked.
+So running the tester on M15 or H1 gives almost the same signals, not a slower
+strategy. Don't do it to "try a higher timeframe".
+
+**To make a strategy slower** (fewer, bigger trades, e.g. on quiet pairs where
+spread and commission eat small moves), keep `Period='M1'` and change these together:
+1. Raise the indicator `*_TF_` inputs one or two steps (M5→M15→H1→H4),
+   **including `ATR_TF_`**, so ATR-based (negative) sizes follow the slower
+   volatility. Fixed-pip (positive) sizes don't scale, so review them.
+2. Lower the trade-count fitness floors in proportion: `Trades_min_inp` and
+   `Seq_min_inp`, about ×0.3 for one step and ×0.15 for two. These are fixed
+   (not optimized) fitness targets, and without the change slower sets are
+   penalised for trading less.
+3. Raise `Minutes_Max` (the average-holding-time penalty) by about ×4 per step.
+4. Save it as a new variant of the template (a fork). Don't edit the installed
+   template, and label it, e.g. "slow ×1".
+
+**Check the trade count before trusting a slower variant.** Every out-of-sample
+window needs **at least 30 trades** (see "OOS windows" in `AGENT-START-HERE.md`).
+A slower strategy may make too few trades in a one-month window and then reads
+"too few to judge", however good it looks. The fix is a longer optimization
+period O (the windows scale with it) and enough price history. Check how far
+the broker's M1 history goes back first. Never shorten a window to reach 30 trades.
+
+A different **trading** timeframe (chart period other than M1) is an
+experiment, not a setting. Run it only when the user explicitly asks, label every
+result with it, and never mix it with M1 results in one comparison or portfolio.
+
 ## Prepare and run through the controller
 
 Discover the exact selected terminal, data directory, paired account, installed

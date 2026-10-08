@@ -23,7 +23,7 @@ RUNNER = ('import sys,unittest\n'
           'sys.path[:]=[p for p in sys.path if not p.rstrip("\\\\/").lower().endswith("controller")]\n'
           'sys.path.insert(0,root)\n'
           'suite=unittest.TestSuite()\n'
-          'for name in ("test_studio_process_query.py","test_studio_seed.py","test_studio_seed_driver.py"):\n'
+          'for name in sys.argv[3].split(","):\n'
           '    suite.addTests(unittest.defaultTestLoader.discover(root,pattern=name,top_level_dir=root))\n'
           'result=unittest.TextTestRunner(stream=open(sys.argv[2],"w"),verbosity=1).run(suite)\n'
           'sys.exit(0 if result.wasSuccessful() else 1)\n')
@@ -32,6 +32,9 @@ AGENT = 'demo_agent.py'
 SEED = 'studio_seed.py'
 PROCESS = 'studio_seed_process.py'
 HOST = 'studio_durable_driver.py'
+TESTS = 'test_studio_process_query.py,test_studio_seed.py'
+# The support 64f1c5ae mutations also run test_studio_seed_driver.py; only those, to keep this shard's time in bounds.
+DRIVER_TESTS = TESTS + ',test_studio_seed_driver.py'
 MUTATIONS = [
     ('no retry: the first stall fails', QUERY, 'ATTEMPTS = 4', 'ATTEMPTS = 1'),
     ('the last failure swallowed (read as no MT5)', QUERY, '                raise\n', "                return '[]'\n"),
@@ -42,12 +45,14 @@ MUTATIONS = [
      "                            names=('terminal64.exe',),timeout=timeout,budget=budget)",
      "        return json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',command],text=True,encoding='utf-8-sig',timeout=timeout,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)))"),
     # Support 64f1c5ae: the native fallback after every CIM attempt, and driver liveness (test_studio_seed_driver.py).
-    ('a CommandLine query falls back to the native read', QUERY, "        if not set(fields) <= NATIVE_FIELDS:\n            raise\n", ""),
-    ('a failed native read returns no rows', QUERY, "            raise error\n", "            return []\n"),
+    ('a CommandLine query falls back to the native read', QUERY, "        if not set(fields) <= NATIVE_FIELDS:\n            raise\n", "",
+     DRIVER_TESTS),
+    ('a failed native read returns no rows', QUERY, "            raise error\n", "            return []\n", DRIVER_TESTS),
     ('an unanswered driver check reads as stopped', 'studio_seed_driver.py',
-     "            unknown.append(str(exc)[:200] or type(exc).__name__)\n            continue", "            gone.append(call)\n            continue"),
+     "            unknown.append(str(exc)[:200] or type(exc).__name__)\n            continue", "            gone.append(call)\n            continue",
+     DRIVER_TESTS),
     ('a failed pre-launch inventory leaves the member reconcile_required', PROCESS,
-     "            if research is not True:raise\n", "            raise\n"),
+     "            if research is not True:raise\n", "            raise\n", DRIVER_TESTS),
     ('a running task treated as never started', 'studio_durable_driver.py',
      "    if info.get('state') in ('Running', 'Queued'):\n        return False", "    if False:\n        return False"),
     ('a task that ran is treated as never started', 'studio_durable_driver.py',
@@ -159,7 +164,8 @@ MUTATIONS = [
 
 def main():
     caught = 0
-    for label, name, old, new in MUTATIONS:
+    for label, name, old, new, *tests in MUTATIONS:
+        tests = tests[0] if tests else TESTS
         # A test child can still hold a file for a moment on Windows: never fail the check on cleanup.
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as work:
             copy = Path(work) / 'controller'
@@ -170,7 +176,7 @@ def main():
                 raise SystemExit('mutation anchor missing: ' + label)
             module.write_text(text.replace(old, new, 1), encoding='utf-8')
             log = Path(work) / 'log.txt'
-            result = subprocess.run([sys.executable, '-B', '-c', RUNNER, str(copy), str(log)], timeout=900,
+            result = subprocess.run([sys.executable, '-B', '-c', RUNNER, str(copy), str(log), tests], timeout=900,
                                     capture_output=True, text=True,
                                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             report = log.read_text(encoding='utf-8') if log.exists() else ''

@@ -323,6 +323,20 @@ class ChainedCatchupTests(MigrationCase):
                                 include_below_threshold=True)
         self.assertEqual(scan['exports'][0]['status'], 'behind')
 
+    def test_unknown_builds_are_never_the_same_build(self):
+        """Mac re-review 6070608935: None == None must not carry; an unknown build on either side -> exact-SET rule."""
+        base = dict(values_sha256='v' * 64, symbol='EURUSD', period='M1', evidence_start='2025.10.17')
+        version = dict(base, schema=sc.VERSION_SCHEMA, kind='oos_catchup', original=dict(build=None, set_sha256='a' * 64))
+        same_set = dict(base, build=None, set_sha256='a' * 64)
+        other_set = dict(base, build=None, set_sha256='b' * 64)   # a second unknown-build export, same values and window
+        self.assertTrue(sc._carries(version, same_set))
+        self.assertFalse(sc._carries(version, other_set))
+        known_version = dict(version, original=dict(build=SOURCE, set_sha256='a' * 64))
+        self.assertTrue(sc._carries(known_version, same_set))
+        self.assertFalse(sc._carries(known_version, other_set))
+        self.assertFalse(sc._carries(version, dict(other_set, build=SOURCE)))
+        self.assertFalse(sc._carries(dict(version, original=dict(build=None)), same_set))   # no SET hash: nothing to match
+
     def test_versions_without_a_build_carry_only_their_exact_set(self):
         from studio_evidence import read_export
         original = read_export(self.behind)

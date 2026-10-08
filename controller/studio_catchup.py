@@ -303,6 +303,9 @@ def _carries(version, row):
         return False
     if isinstance(key[5], tuple):
         return key[5][1] is not None and key[5][1] == row.get('set_sha256')
+    if key[5] is None or row.get('build') is None:   # unknown build on either side: None == None is not the same build
+        sha = (version.get('original') or {}).get('set_sha256')   # (goatai#2350 6070608935) -> the exact-SET rule
+        return sha is not None and sha == row.get('set_sha256')
     return key[5] == row.get('build')
 
 

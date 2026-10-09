@@ -421,8 +421,11 @@ class HoldupRunner(SeedRunner):
         return root, manifest, state
 
     def _installed_build_id(self):
+        """The one installed-build resolver (studio_installed_build via CatchupRunner): the build of the installed
+        binary, or None when it cannot be stated (an unpinned binary, or a fresh activation status that disagrees).
+        A hold-up result records it as identity; it never decides comparability, so it never fails a collection."""
         from studio_catchup import CatchupRunner
-        return CatchupRunner._installed_build_id(self)
+        return CatchupRunner._installed_build_id(self, strict=False)
 
     def _collect(self, path, spec, manifest):
         """Parse and check MT5's report, keep its copy and the deal list, and build the hold-up result."""

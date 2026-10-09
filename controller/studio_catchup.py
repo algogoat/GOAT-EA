@@ -34,7 +34,8 @@ verdict carries ``evidence_model`` (studio_catchup_verdict.model_tag): the model
 timeframe, the model rung and the trade-list summary, for the library scorer.
 
 Build rule: the re-test runs on the installed EA. It is comparable when that is the
-export's own build (same binary, or the same reported build id), or when the plan names
+export's own build (same binary, or the same build id; the installed build comes from its binary through
+the pinned build table, studio_installed_build), or when the plan names
 an ACTIVE trading-equivalence certificate (studio_equivalence) for exactly this export
 build and this installed build. A canary plan (``canary_certificate``) runs a pending
 certificate's export build on purpose: its verdicts stay ``not_comparable``; its deal
@@ -66,6 +67,7 @@ from studio_catchup_verdict import CAVEAT, model_tag, validate_rules
 import studio_build_migration as migration
 import studio_equivalence as equivalence
 import studio_evidence_end as evidence_end
+import studio_installed_build as installed_build
 from studio_seed import SeedRunner, digest
 from studio_seed_results import MAX_MANIFEST_BYTES, read_seed_json
 from studio_strategy_settings import read_values
@@ -695,27 +697,24 @@ class CatchupRunner(SeedRunner):
         self.heldout_reveal = check_catchup(self.c, plan, members, target, now=self.now)
         return members, payloads, rows, target
 
-    def _installed_build_id(self):
-        """The build ID the installed EA last reported (its activation status in Common Files), or None. Read-only."""
-        path = (Path(self.c.install['common_files_root']) / 'GOAT'
-                / ('activation-status-' + Path(self.c.install['terminal_data_root']).name + '.json'))
-        try:
-            if not path.is_file() or path.stat().st_size > 256 * 1024:
-                return None
-            build = json.loads(path.read_text(encoding='utf-8-sig')).get('buildId')
-        except (OSError, ValueError, AttributeError):
-            return None
-        return build if isinstance(build, str) and 0 < len(build) <= 96 else None
+    def _installed_build_id(self, *, strict=True):
+        """The installed EA's build ID from its binary (studio_installed_build, goatai#2350 6089229465). Read-only.
+
+        ``strict``: raise InstalledBuildError (a ValueError: INSTALLED_BUILD_UNKNOWN or INSTALLED_BUILD_STATUS_CONFLICT);
+        otherwise None. Hold-up tests reuse this method unbound (studio_holdup), so it needs only ``self.c.install``.
+        """
+        return installed_build.build_id(self.c.install, strict=strict)
 
     def _check_migration_target(self):
         """build_migration runs only when the installed EA is exactly the plan's target build. Read-only."""
-        target, installed = self.migration['target_build'], self._installed_build_id()
-        if installed is None:
-            raise ValueError('build_migration targets %s, but the installed EA build cannot be read (no EA activation status); '
-                             'open MT5 with the GOAT chart on the target build first' % target)
-        if installed != target:
-            raise ValueError('build_migration targets %s, but the installed EA reports %s; a build migration runs only on its '
-                             'target build' % (target, installed))
+        target = self.migration['target_build']
+        try:
+            installed = installed_build.resolve(self.c.install)
+        except installed_build.InstalledBuildError as error:
+            raise ValueError('build_migration targets %s, but %s' % (target, error)) from None
+        if installed['build_id'] != target:
+            raise ValueError('build_migration targets %s, but the installed EA is %s (%s); a build migration runs only on its '
+                             'target build' % (target, installed['build_id'], installed['basis']))
         if self.migration['target_ea_sha256'] != self.c.install['ea_sha256']:
             raise ValueError('build_migration pins target EA %s, but the installed EA binary is %s'
                              % (self.migration['target_ea_sha256'][:12], self.c.install['ea_sha256'][:12]))
@@ -777,9 +776,12 @@ class CatchupRunner(SeedRunner):
             else:
                 bridge = self._bridge('canary', canary)
         elif run_ea and run_ea != installed_sha or not run_ea and build_id:
-            same = False
+            same, unknown = False, None
             if not run_ea:
-                installed = self._installed_build_id()
+                try:
+                    installed = self._installed_build_id()
+                except installed_build.InstalledBuildError as error:
+                    installed, unknown = None, error
                 same = installed == build_id
             cert = None if same else next((c for mode, c in certificates if mode == 'active' and covering(c)), None)
             if same:
@@ -797,10 +799,10 @@ class CatchupRunner(SeedRunner):
                                 ' (no active trading-equivalence certificate covers it)')
             elif installed is None:
                 problems.append('The EA build that made this export (%s) is known only from its capture, and the installed EA build '
-                                'cannot be read yet (no EA activation status), so a re-test could not be compared; open MT5 with '
-                                'the GOAT chart once, or import the export with its run folder' % build_id)
+                                'is not known (%s), so a re-test could not be compared; install a pinned GOAT build, or import '
+                                'the export with its run folder' % (build_id, unknown))
             else:
-                problems.append('Export was made by EA build %s; the installed EA reports %s, so a re-test would not be comparable'
+                problems.append('Export was made by EA build %s; the installed EA binary is %s, so a re-test would not be comparable'
                                 % (build_id, installed))
         elif not run_ea:
             problems.append('The EA build that made this export is unknown (no run manifest or capture), so a re-test could not be compared')
@@ -886,7 +888,7 @@ class CatchupRunner(SeedRunner):
                                     build=build_identity(export)),
                       pins=dict(installed_ea_sha256=self.c.install['ea_sha256'], original_ea_sha256=(export.get('run') or {}).get('ea_sha256'),
                                 original_build_id=(capture or {}).get('build_id'), original_server=(capture or {}).get('server'),
-                                installed_build_id=self._installed_build_id(),
+                                installed_build_id=self._installed_build_id(strict=False),
                                 server=account['server'], model=model, original_model=model, model_source=model_source,
                                 timeframe=export['period'], deposit=deposit, currency=facts['Currency'], leverage=facts['Leverage'],
                                 execution_mode=facts['ExecutionMode'], assumed=assumed, original_tester=export.get('tester') or {},
@@ -1090,10 +1092,14 @@ class CatchupRunner(SeedRunner):
         A build-migration member starts only while the installed EA is still its target build.
         """
         if spec.get('build_migration'):
-            target, installed = spec['build_migration']['target_build'], self._installed_build_id()
+            target = spec['build_migration']['target_build']
+            try:
+                installed = self._installed_build_id()
+            except installed_build.InstalledBuildError as error:
+                raise ValueError('Build-migration member %s targets %s, but %s; nothing was started' % (spec['alias'], target, error)) from None
             if installed != target or self.c.install['ea_sha256'] != spec['build_migration']['target_ea_sha256']:
-                raise ValueError('Build-migration member %s targets %s, but the installed EA now reports %s; nothing was started'
-                                 % (spec['alias'], target, installed))
+                raise ValueError('Build-migration member %s targets %s, but the installed EA binary (sha256 %s) is now %s; nothing was started'
+                                 % (spec['alias'], target, self.c.install['ea_sha256'][:12], installed))
         if not spec['capture']:
             return
         raw = Path(spec['source_inputs_path']).read_bytes()

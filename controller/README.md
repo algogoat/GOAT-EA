@@ -580,11 +580,15 @@ MT5 `ToDate` is exclusive, so evidence ending on day D tests with `ToDate` D+1.
   capture build id), is ineligible: its re-test could not be compared, unless the
   plan names an ACTIVE trading-equivalence certificate for exactly that export
   build and the installed build (see "Trading-equivalence certificate" below). When the
-  build is known only from the capture (a library copy), it must equal the build
-  the installed EA last reported (`Common Files\GOAT\activation-status-<data
-  folder>.json`, read-only); if that status is missing, the export is ineligible
-  until MT5 has run the GOAT chart once, so no run is spent on a re-test that
-  could only come back `not_comparable`. The member's
+  build is known only from the capture (a library copy), it must equal the installed
+  EA's build, read from its binary (`studio_installed_build`: the receipt's `ea_sha256`
+  mapped through the controller's pinned build table, copied from
+  `candidate-builds/*/identity.json`). The EA's `Common Files\GOAT\activation-status-<data
+  folder>.json` `buildId` is only a cross-check: ignored as stale when observed before
+  the EX5's install time, refused (`INSTALLED_BUILD_STATUS_CONFLICT`) when observed at or
+  after it with another build. An unpinned binary (`INSTALLED_BUILD_UNKNOWN`) makes the
+  export ineligible, so no run is spent on a re-test that could only come back
+  `not_comparable`. The member's
   tester settings pass the shared tester validator, and the member freezes `pins`
   (installed and original EA hashes, capture build id, server, model, deposit,
   currency, leverage, delay) for the verdict's comparability check.

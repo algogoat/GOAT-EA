@@ -85,10 +85,10 @@ class GuardTests(MigrationCase):
 
     def test_b_installed_build_other_than_the_target_refuses(self):
         self.activation(SOURCE)
-        with self.assertRaisesRegex(ValueError, 'targets V1.49-BETA17-43, but the installed EA reports V1.49-BETA17-40'):
+        with self.assertRaisesRegex(ValueError, 'targets V1.49-BETA17-43, but the installed EA is V1.49-BETA17-40 \\(from its binary'):
             self.runner.validate(self.mplan())
         self.activation(None)
-        with self.assertRaisesRegex(ValueError, 'installed EA build cannot be read'):
+        with self.assertRaisesRegex(ValueError, 'targets V1.49-BETA17-43, but INSTALLED_BUILD_UNKNOWN: the installed EA binary'):
             self.runner.validate(self.mplan())
         self.activation(TARGET)
         plan = self.mplan()
@@ -103,7 +103,7 @@ class GuardTests(MigrationCase):
     def test_b_a_prepared_member_never_starts_after_the_build_changes(self):
         self.runner.prepare('bm1', self.mplan())
         self.activation(SOURCE)
-        with self.assertRaisesRegex(ValueError, 'installed EA now reports V1.49-BETA17-40; nothing was started'):
+        with self.assertRaisesRegex(ValueError, 'installed EA binary \\(sha256 [0-9a-f]{12}\\) is now V1.49-BETA17-40; nothing was started'):
             self.runner.start('bm1', 1)
         self.assertFalse(self.starts)
 

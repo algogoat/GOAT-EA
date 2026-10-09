@@ -74,6 +74,13 @@ def finish(controller,job_id,*,expected_generation=None):
     # scoreboard they are results for their window, not failures (studio_research_status).
     result['research_outcomes']=research_outcomes
     if research_error is not None:result['research_outcomes_error']=research_error
+    # Every member that ran, in the exact shape a closed batch records (studio_batch_close.member_identities), so a
+    # research-side trial reader sees finished and closed batches alike (goatai#2350). Additive; never blocks a finish.
+    try:
+        from studio_batch_close import member_identities
+        result['members_done']=member_identities(controller.root,job,native['members'],research_outcomes)[0]
+    except (OSError,ValueError,KeyError,TypeError) as error:
+        result['members_done_error']=str(error)[:240]
     if successor_stop is not None:result['cancellation_dispatch']=successor_stop
     if native['status']=='native_error':
         from studio_native_diagnostics import for_job

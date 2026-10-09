@@ -29,6 +29,7 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 & $goat demo --installation $receipt research-queue  # read-only queue: every batch, seed hunt and catch-up; optional: --finished 0..50, --job-id '<id>' (repeatable)
 & $goat demo --installation $receipt batch-pause --batch-id '<id>'    # optional: --immediate
 & $goat demo --installation $receipt batch-resume --batch-id '<id>'   # optional: --new-batch-id, --resume-token, --max-seconds, --clear-stop, --include-failed
+& $goat demo --installation $receipt batch-pause-close --batch-id '<id>' --confirm   # close a paused batch for good; --mode finish|exclude, --reason (exclude)
 & $goat demo --installation $receipt compact-evidence   # preview; --apply moves finished in-row evidence history to verified logs
 & $goat demo --installation $receipt compact-receipts   # preview; --apply archives legacy full-queue receipts and keeps their queue digest
 ```
@@ -286,6 +287,47 @@ No `--new-batch-id` is needed; an explicit new ID is also accepted. The released
 successor and its files are kept. A successor that actually ran (even if it was
 cancelled later) is not released: `continue --batch-id <successor>` continues its
 own remaining members.
+
+### Close a paused batch for good (`batch-pause-close`, goatai#2350)
+
+```powershell
+& $goat demo --installation $receipt batch-pause-close --batch-id '<id>' --confirm                    # --mode finish (default)
+& $goat demo --installation $receipt batch-pause-close --batch-id '<id>' --mode exclude --reason '<why>' --confirm
+```
+
+A paused batch decided "closed as partial" is closed instead of resumed
+(`studio_batch_close.py`). Nothing is deleted and MT5 is not touched. The pause
+record becomes `state: closed` with `closed_mode`, `closed_at`, `closed_by`,
+`members_done` (each member that ran: `{index, member_id, configuration_sha256,
+set_sha256, symbol, timeframe, outcome, start_known}`, a member cancelled after it
+started included) with `members_done_count`, and `members_unrun` (each member
+without an end result, `started` true/false/null) with `members_unrun_count`.
+A finished batch's `attempts/<attempt>/result.json` (and its queue `completion`)
+carries the same `members_done` list, so a trial reader sees finished and closed
+batches alike. The controller writes no trial ledger: the deflation N lives in the
+research prereg files, which read `members_done` from either record.
+
+- `finish` (default): exports, receipts and qualified sets go into the book and
+  pack as normal; the unrun members wait for a later planned run.
+- `exclude`: needs `--reason`. It also writes `batch-exclusions/<id>.json` (the
+  batch's native run folder and every export SET path + sha256). `evidence-scan`
+  and `catchup-prepare` then report those exports `ineligible` with `excluded: true`
+  and `excluded_reason`. Exclude is refused (`CLOSE_EXCLUDE_AFTER_FOOS_READ` /
+  `CLOSE_EXCLUDE_AFTER_SELECTION`) once an export of the batch is the source of a
+  catch-up or hold-up test or sits in a frozen held-out lock candidate, and
+  (`CLOSE_EXCLUDE_UNVERIFIABLE`) when that cannot be checked.
+- Refused unless the pause record is exactly `paused` and bound to its result, the
+  driver journal stopped, no planned successor ran, `--confirm` is given and the
+  terminal is idle (no running batch, seed slot, unreleased fixed task, live driver
+  or other demo operation): `CLOSE_NOT_PAUSED`, `CLOSE_RESULT_CHANGED`,
+  `CLOSE_DRIVER_NOT_STOPPED`, `CLOSE_SUCCESSOR_PLANNED`, `CLOSE_CONFIRM_REQUIRED`,
+  `CLOSE_TERMINAL_BUSY` (plus `CLOSE_NO_PAUSE`, `CLOSE_UNKNOWN_BATCH`,
+  `CLOSE_NOT_DEMO`, `CLOSE_NOT_NATIVE_BATCH`, `CLOSE_REASON_REQUIRED`). Allowed
+  under owner STOP.
+- Closing again with the same mode returns `changed: false`; another mode refuses
+  `CLOSE_MODE_CONFLICT`. Afterwards `batch-resume`, `continue` and every resume path
+  refuse `BATCH_CLOSED`. `research-status` and `research-queue` read `closed` as
+  terminal history (never held or paused).
 
 ### Protected peer restarts
 

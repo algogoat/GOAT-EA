@@ -28,35 +28,46 @@ concurrency:
 #           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths
 #     python: test_goat_deployment_liveness
 #
-# controller-mutations (1/3)  ~16-24 min observed
-#   python test_research_outcome_controller_mutations.py   (12-17 min)
-#   python test_evidence_end_export_controller_mutations.py
-#   python test_catchup_rebase_controller_mutations.py     (83 mutations, rebase v2; 14.9 min locally at Idle)
+# controller-mutations: 4 shards (was 3). With 3, shard 1/3 hit the 45-min cap on GOAT-EA#201 and #203
+# (run 37956413084: 45.25 min, cancelled) while 2/3 and 3/3 took 41-43 min. The split below is by
+# MEASURED step time: per-step durations from the GitHub Actions jobs API, every attempt of the 17
+# controller-tests runs from b7dedd2 (2026-10-08 10:14Z) to 2026-10-09 16:50Z, 12-19 samples per step.
+# Per-shard sums of each step's median / slowest observed time (setup adds ~0.5 min):
+#   shard  median  slowest   (3-shard layout before: 1/3 36.4 / 49.7, 2/3 31.8 / 41.6, 3/3 32.1 / 43.7)
+#   1/4    23.7    34.0
+#   2/4    25.3    32.5
+#   3/4    23.8    33.8
+#   4/4    27.6    34.7
+# controller/test_ci_mutation_shards.py checks every mutation step runs in exactly one shard.
+#
+# controller-mutations (1/4)
+#   python test_research_outcome_controller_mutations.py   (median 11.8, slowest 19.8 min)
+#   python test_switch_hold_mutations.py                   (5.8 / 6.6 min)
+#   python test_evidence_end_export_controller_mutations.py, test_terminal_isolation_controller_mutations.py
 #   node   test_bias_reader_parity_mutations.cjs, test_research_outcome_mutations.cjs,
 #          test_studio_steady_panel_mutations.cjs, test_ea_followups_mutations.cjs,
 #          test_terminal_isolation_mutations.cjs
-#   python test_terminal_isolation_controller_mutations.py
-#   python test_lane_final_write_mutations.py              (14 mutations; ~3 min locally at Idle)
-#   python test_switch_hold_mutations.py                   (28 mutations; ~6 min locally at Idle, ~7.5 min in CI)
 #
-# controller-mutations (2/3)  31-43 min observed by 2026-10-08; 45.2 min (timeout) with support 64f1c5ae's mutations,
-#   so test_switch_hold_mutations.py moved to 1/3 and test_holdup_mutations.py to 3/3 (GOAT-EA#197)
-#   python test_process_query_mutations.py                 (58 mutations, ~25 min in CI)
-#   python test_oos_windows_controller_mutations.py        (61 mutations; 5.4 min locally at Idle, ~10 min in CI)
+# controller-mutations (2/4)
+#   python test_process_query_mutations.py                 (58 mutations; 23.2 / 30.1 min)
 #   python test_lane_driver_mutations.py, test_research_launch_mutations.py
-#   (GOAT-EA#174 moved test_export_qualification_mutations.py and test_driver_backoff_mutations.py to 3/3 to balance)
 #
-# controller-mutations (3/3)  ~13-24 min observed (33-37 min by 2026-10-08)
-#   python test_holdup_mutations.py                        (19 mutations; ~2.5 min in CI)
-#   python test_restore_lane_never_started_mutations.py    (4-14 min)
-#   python test_peer_restart_mutations.py, test_peer_roster_mutations.py,
+# controller-mutations (3/4)
+#   python test_restore_lane_never_started_mutations.py    (12.2 / 17.3 min)
+#   python test_holdup_mutations.py, test_peer_restart_mutations.py, test_peer_roster_mutations.py,
 #          test_seed_member_failure_mutations.py, test_export_qualification_mutations.py,
-#          test_driver_backoff_mutations.py, test_setup_registration_mutations.py (19 mutations; ~2 min locally at Idle),
-#          test_profile_staged_deploy_mutations.py (38 mutations, named tests only; ~2 min locally at Idle)
-#   node   test_profile_staged_adoption_mutations.cjs (72 mutations; seconds)
+#          test_driver_backoff_mutations.py
 #
-# A new mutation check goes in the shard with the most headroom; keep each shard well under its
-# timeout. Setup steps are identical in both jobs.
+# controller-mutations (4/4)
+#   python test_catchup_rebase_controller_mutations.py     (83 mutations, rebase v2; 10.1 / 13.0 min)
+#   python test_oos_windows_controller_mutations.py        (61 mutations; 6.5 / 9.1 min)
+#   python test_setup_registration_mutations.py            (6.9 / 8.0 min)
+#   python test_lane_final_write_mutations.py, test_profile_staged_deploy_mutations.py
+#   node   test_profile_staged_adoption_mutations.cjs
+#
+# A new mutation check goes in the shard with the most headroom (and in the expected set of
+# controller/test_ci_mutation_shards.py); keep each shard well under its timeout. Setup steps are
+# identical in both jobs.
 
 jobs:
   controller:
@@ -162,15 +173,15 @@ jobs:
         run: python -m unittest discover -s controller -p "test_*.py" -v
 
   controller-mutations:
-    name: controller-mutations (${{ matrix.shard }}/3)
+    name: controller-mutations (${{ matrix.shard }}/4)
     runs-on: windows-2022
-    # Each shard ran 13-24 min on the slowest observed runners; 45 leaves ~2x headroom.
+    # Slowest observed per-step sums are 32.5-34.7 min per shard (see the table above).
     timeout-minutes: 45
     strategy:
       # One failing shard must not cancel the others: a cancelled check is a false signal.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     env:
       PYTHONUTF8: "1"
       PYTHONNOUSERSITE: "1"
@@ -217,7 +228,7 @@ jobs:
 
       # One command per step: a multi-line pwsh step only fails on its last exit code.
 
-      # ---- Shard 1/3 ----
+      # ---- Shard 1/4 ----
       - name: Recorded bias gate mutation check (every guard is load-bearing)
         if: matrix.shard == 1
         run: node scripts/test_bias_reader_parity_mutations.cjs
@@ -242,17 +253,11 @@ jobs:
       - name: Terminal isolation controller mutation check (every guard is load-bearing)
         if: matrix.shard == 1
         run: python scripts/test_terminal_isolation_controller_mutations.py
-      - name: Catch-up swap-only drift mutation check (every rebase v2 rule and boundary, first failing rule, comparable_rebased / requalify / not_comparable, no-splice windows, stamps)
-        if: matrix.shard == 1
-        run: python scripts/test_catchup_rebase_controller_mutations.py
-      - name: Lane driver sharing-error mutation check (bounded gate wait, busy pass skipped, record reads/writes retried, loud after the bound)
-        if: matrix.shard == 1
-        run: python scripts/test_lane_final_write_mutations.py
       - name: Member switch hold mutation check (off by default, 90 s bound, quiet slot, fail open, stop/cancel/pause end a hold at once)
         if: matrix.shard == 1
         run: python scripts/test_switch_hold_mutations.py
 
-      # ---- Shard 2/3 ----
+      # ---- Shard 2/4 ----
       - name: Process query mutation check (WMI stall retry, unconfirmed launch, seed unowned doubt)
         if: matrix.shard == 2
         run: python scripts/test_process_query_mutations.py
@@ -262,11 +267,8 @@ jobs:
       - name: Research launch mutation check (no KILL_ON_JOB_CLOSE, refuse on assignment failure, trading launches excluded, Idle lock, CPU-cap staging)
         if: matrix.shard == 2
         run: python scripts/test_research_launch_mutations.py
-      - name: OOS window formula mutation check (date math, BOOS/FOOS pass bar and floor, FOOS held out, pre-FOOS metrics, catch-up closed day vs Friday exports, evidence-end stamps)
-        if: matrix.shard == 2
-        run: python scripts/test_oos_windows_controller_mutations.py
 
-      # ---- Shard 3/3 ----
+      # ---- Shard 3/4 ----
       - name: Restore-lane never-started allowance mutation check (exact-attempt settlement records, other demo work refuses, settle-refused-start stays the reviewed proof)
         if: matrix.shard == 3
         run: python scripts/test_restore_lane_never_started_mutations.py
@@ -288,12 +290,23 @@ jobs:
       - name: Driver observe backoff mutation check (bounded backoff, pass-cost floor, progress reset, stall report, thread-only priority)
         if: matrix.shard == 3
         run: python scripts/test_driver_backoff_mutations.py
+
+      # ---- Shard 4/4 ----
+      - name: Catch-up swap-only drift mutation check (every rebase v2 rule and boundary, first failing rule, comparable_rebased / requalify / not_comparable, no-splice windows, stamps)
+        if: matrix.shard == 4
+        run: python scripts/test_catchup_rebase_controller_mutations.py
+      - name: Lane driver sharing-error mutation check (bounded gate wait, busy pass skipped, record reads/writes retried, loud after the bound)
+        if: matrix.shard == 4
+        run: python scripts/test_lane_final_write_mutations.py
+      - name: OOS window formula mutation check (date math, BOOS/FOOS pass bar and floor, FOOS held out, pre-FOOS metrics, catch-up closed day vs Friday exports, evidence-end stamps)
+        if: matrix.shard == 4
+        run: python scripts/test_oos_windows_controller_mutations.py
       - name: Setup registration mutation check (an expired other-build registration is archived with its sha, a live one refuses, no phantom close journal)
-        if: matrix.shard == 3
+        if: matrix.shard == 4
         run: python scripts/test_setup_registration_mutations.py
       - name: Profile-staged adoption mutation check (every adoption guard, the deploy_next refusal, the disabled buttons and the retired template path)
-        if: matrix.shard == 3
+        if: matrix.shard == 4
         run: node scripts/test_profile_staged_adoption_mutations.cjs
       - name: Profile-staged deploy mutation check (Enabled=0 always, AllowLiveTrading never written, BuildTemplate-exact writer, child_not_started then auto-unwind, exact profile rollback)
-        if: matrix.shard == 3
+        if: matrix.shard == 4
         run: python scripts/test_profile_staged_deploy_mutations.py

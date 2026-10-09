@@ -128,7 +128,7 @@ def resolve_successor(root, queue, job_id, new_batch_id=None):
     return _id(successor_id(job_id, set(queue) | set(lineage)), 'successor batch ID')
 
 
-def continue_batch(c, job_id, *, new_batch_id=None, include_failed=False, include_no_edge=False):
+def continue_batch(c, job_id, *, new_batch_id=None, include_failed=False, include_no_edge=False, accept_news_change=False):
     """Prepare the remaining work of a finished batch as a new pending batch (no launch)."""
     from studio_batch import resume_batch
     from studio_batch_pause import load as load_pause
@@ -150,7 +150,12 @@ def continue_batch(c, job_id, *, new_batch_id=None, include_failed=False, includ
     if new_id in queue:
         job = queue[new_id]
         if _reusable(job):
-            return dict(state='prepared', source_batch_id=job_id, batch_id=new_id, reused=True,
+            news = None
+            if accept_news_change:
+                # A prepared successor accepts a news-file change for its start (studio_news_guard).
+                from studio_news_guard import accept_successor
+                news = accept_successor(c.root, c.install, job, now=time.time())
+            return dict(state='prepared', source_batch_id=job_id, batch_id=new_id, reused=True, news_file=news,
                         next_action='start --batch-id ' + new_id)
         from studio_batch_pause import unactivated_proof
         if job['status'] in TERMINAL and 'launch_intent' in job and unactivated_proof(job) is None:
@@ -173,13 +178,14 @@ def continue_batch(c, job_id, *, new_batch_id=None, include_failed=False, includ
             write_json(lineage, dict(schema_version=1, batch_id=new_id, predecessor_batch_id=job_id,
                                      kind='continue', binding_changed_keys=changed))
     prepared = resume_batch(c, job_id, new_id, include_failed=include_failed, include_no_edge=include_no_edge,
-                            allow_peer_refresh=True, allow_binding_change=bool(changed))
+                            allow_peer_refresh=True, allow_binding_change=bool(changed),
+                            accept_news_change=accept_news_change)
     if paused:
         from studio_batch_pause import mark_resumed
         import time
         mark_resumed(c.root, job_id, new_id, now=time.time(), selected=prepared.get('member_count'))
     result = dict(state='prepared', source_batch_id=job_id, batch_id=new_id, members=prepared.get('member_count'),
-                  binding_changed_keys=changed, reprepared_for_current_build=bool(changed),
+                  binding_changed_keys=changed, reprepared_for_current_build=bool(changed), news_file=prepared.get('news_file'),
                   next_action='start --batch-id ' + new_id)
     if released:
         result['released_successor'] = dict(batch_id=released['successor_batch_id'], proof=released['proof']['kind'],

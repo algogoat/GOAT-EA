@@ -135,7 +135,7 @@ def batch_row(root, install, job, *, now, with_progress=True):
     started = _iso(started) if _finite(started) else intent.get('recorded_at') if isinstance(intent.get('recorded_at'), str) else None
     completion = job.get('completion') if isinstance(job.get('completion'), dict) else {}
     finished = (completion.get('native') or {}).get('observed_at') if isinstance(completion.get('native'), dict) else None
-    return _row('batch', batch_id, state=state, status=job.get('status') if isinstance(job.get('status'), str) else 'unknown', note=note,
+    row = _row('batch', batch_id, state=state, status=job.get('status') if isinstance(job.get('status'), str) else 'unknown', note=note,
                 symbols=_distinct(t.get('Symbol') for t in testers), timeframes=_distinct(t.get('Period') for t in testers),
                 total=progress.get('members_total', len(members)), done=done, started=started,
                 finished=finished if state in ENDED and isinstance(finished, str) else None,
@@ -147,6 +147,13 @@ def batch_row(root, install, job, *, now, with_progress=True):
                              below_threshold_members=progress.get('below_threshold_members'),
                              unknown_members=progress.get('unknown_members'),
                              thresholds=progress.get('thresholds'), qualifying_basis=progress.get('qualifying_basis')))
+    # The news file this batch ran on and whether its news lineage changed (studio_news_guard): results from
+    # different news files are never merged. Present only for batches started under the guard.
+    from studio_news_guard import batch_label
+    news = batch_label(root, batch_id)
+    if news is not None:
+        row['news_file'] = news
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +225,10 @@ def runner_row(root, kind, batch_id, *, now, lane_driver=None):
                started=_iso(min(started)) if started else None,
                finished=_iso(finished) if row_state in ENDED and finished is not None else None,
                eta=(progress.get('pace') or {}).get('eta_utc'), results=results)
+    from studio_news_guard import runner_label
+    news = runner_label(state)
+    if news is not None:
+        row['news_file'] = news          # studio_news_guard: the run's news file and any accepted change
     if lane_driver is not None:
         # Support 64f1c5ae: a run that can still move on says whether a start/resume call drives it now.
         movable = status in ('closing_monitor', 'active', 'pausing', 'paused', 'reconcile_required') or (

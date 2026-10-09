@@ -1,0 +1,139 @@
+name: Controller mutations full run
+run-name: controller-mutations full ${{ github.event_name == 'push' && github.sha || inputs.ref || 'codex/v148-research-planning' }}
+
+# The FULL controller mutation suite on codex/v148-research-planning, recorded per commit (Claude-Mac,
+# goatai#2350 6089452823 + 6089458580). Pull requests run only the steps they affect; this run is
+# the per-sha proof Release's candidate build checks before it accepts a controller commit.
+#
+# Triggers: every push to codex/v148-research-planning (each merge), plus a daily schedule and manual
+# dispatch. GitHub fires `schedule` and `workflow_dispatch` only from the repository's default branch
+# (main), so until this file is also there the push trigger is the one that runs.
+# One run at a time: a newer push replaces a still-pending one, a running one always finishes.
+#
+# The record per commit:
+#   * the run itself: run-name and head sha are the tested commit on push runs;
+#   * artifact controller-mutations-full-<sha> holding controller-mutations-full.json,
+#     {"sha", "result", "startedAt", ...}, uploaded whatever the result (90-day retention).
+# The run fails unless all four shards passed. Query by sha:
+#   gh run list -R algogoat/GOAT-EA --workflow controller-mutations-full.yml --commit <sha> --status success
+#   gh api "repos/algogoat/GOAT-EA/actions/artifacts?name=controller-mutations-full-<sha>"
+
+on:
+  push:
+    branches: [codex/v148-research-planning]
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or sha to run the full suite on
+        type: string
+        default: codex/v148-research-planning
+
+permissions:
+  contents: read
+
+concurrency:
+  group: controller-mutations-full
+  cancel-in-progress: false
+
+jobs:
+  target:
+    name: target commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      started_at: ${{ steps.start.outputs.started_at }}
+    steps:
+      - name: Record the start time
+        id: start
+        run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      - name: Check out the commit to test
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'push' && github.sha || inputs.ref || 'codex/v148-research-planning' }}
+      - name: Resolve its sha
+        id: resolve
+        run: |
+          sha="$(git rev-parse HEAD)"
+          echo "Full mutation run on $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  shard-1:
+    name: full shard (1/4)
+    needs: target
+    uses: ./.github/workflows/controller-mutation-shard.yml
+    with:
+      shard: 1
+      steps: all
+      ref: ${{ needs.target.outputs.sha }}
+
+  shard-2:
+    name: full shard (2/4)
+    needs: target
+    uses: ./.github/workflows/controller-mutation-shard.yml
+    with:
+      shard: 2
+      steps: all
+      ref: ${{ needs.target.outputs.sha }}
+
+  shard-3:
+    name: full shard (3/4)
+    needs: target
+    uses: ./.github/workflows/controller-mutation-shard.yml
+    with:
+      shard: 3
+      steps: all
+      ref: ${{ needs.target.outputs.sha }}
+
+  shard-4:
+    name: full shard (4/4)
+    needs: target
+    uses: ./.github/workflows/controller-mutation-shard.yml
+    with:
+      shard: 4
+      steps: all
+      ref: ${{ needs.target.outputs.sha }}
+
+  record:
+    name: controller-mutations full result
+    needs: [target, shard-1, shard-2, shard-3, shard-4]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the record script
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci_mutation_select.py
+          sparse-checkout-cone-mode: false
+      - name: Write the result record
+        id: record
+        env:
+          SHA: ${{ needs.target.outputs.sha }}
+          STARTED_AT: ${{ needs.target.outputs.started_at }}
+          TARGET: ${{ needs.target.result }}
+          SHARD_1: ${{ needs.shard-1.result }}
+          SHARD_2: ${{ needs.shard-2.result }}
+          SHARD_3: ${{ needs.shard-3.result }}
+          SHARD_4: ${{ needs.shard-4.result }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          EVENT: ${{ github.event_name }}
+        run: >-
+          python3 scripts/ci_mutation_select.py record --out controller-mutations-full.json
+          --sha "$SHA" --started-at "$STARTED_AT" --target "$TARGET"
+          --shard "1:$SHARD_1" --shard "2:$SHARD_2" --shard "3:$SHARD_3" --shard "4:$SHARD_4"
+          --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" --event "$EVENT"
+      - name: Upload the record (named by sha)
+        if: always() && needs.target.outputs.sha != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: controller-mutations-full-${{ needs.target.outputs.sha }}
+          path: controller-mutations-full.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90

@@ -4,7 +4,9 @@ Source of truth: the receipt's ``ea_sha256`` (the installed EX5's SHA-256, verif
 receipt is loaded and before every start) mapped through ``PINNED_BUILDS``, the controller's own table of pinned
 builds. The table is copied from ``candidate-builds/<build>/identity.json`` (``binary.sha256`` -> ``build_id``);
 test_studio_installed_build asserts it equals those identities and that each retained EX5 hashes to its entry.
-A binary that is not in the table is ``INSTALLED_BUILD_UNKNOWN``: it is refused, never guessed.
+A binary that is not in the table is ``INSTALLED_BUILD_UNKNOWN``: it is refused, never guessed. The six EAs shipped
+before build B38 (``PRE_B38_EXCLUDED``; evidence in shipped_ea_builds.json) refuse with the same code and a plain
+sentence (``UPDATE_EA``), also on catch-up and hold-up paths that need no build (``refuse_pre_b38``).
 
 The EA's ``Common Files\\GOAT\\activation-status-<data folder>.json`` ``buildId`` is a cross-check only. The EA
 writes that file on activation problems, so after a clean update it keeps the previous build (Banker,
@@ -22,6 +24,8 @@ Read-only: nothing here writes, launches or opens MT5.
 from datetime import datetime, timezone
 import json
 from pathlib import Path, PureWindowsPath
+
+from studio_refusal import Refusal
 
 UNKNOWN = 'INSTALLED_BUILD_UNKNOWN'
 CONFLICT = 'INSTALLED_BUILD_STATUS_CONFLICT'
@@ -43,12 +47,41 @@ PINNED_BUILDS = {
 }
 
 
-class InstalledBuildError(ValueError):
-    """The installed build cannot be stated: ``code`` is UNKNOWN or CONFLICT; ``detail`` is the diagnostic dict."""
+# Shipped before build B38 (Claude-Mac, goatai#2350 6089668580): never pinned, always refused with a plain
+# "update the EA" sentence. The evidence for each (bundle records, admission rows) is in shipped_ea_builds.json.
+PRE_B38_EXCLUDED = {
+    'fab7b7fd3613cd94f6a8488e44851a25926a44bea45399713923079e636f951d': 'V1.48 EA in beta.2; no admission row names its build',
+    '38912791a76988a62a95d05dcee41c3132c9ec35e859ac9894732c38f463c373': 'V1.48-SEQUENCE-EXPORT-1, beta.2 to beta.7',
+    '62a882c362880fe2682a9d427125f9a551727eabe1463f00a6523c60cd429f61': 'V1.49-MONITOR-ONBOARDING-5, beta.7 to beta.10',
+    'c59a3b318526304a12aea233f27365b85bc49626c0bec62721e0864adb5186ed': 'V1.49-ORPHAN-DIRECTORY-9, beta.11 build artifacts',
+    '09ff4cb051a60105aebd43a3bf5857da8b1d4d304307800a47fc2fc8f731d2a9': 'V1.49 beta.11 candidate; no admission row names its build',
+    'a1c09bd858897b8a3c99ea46e8dfb05db0a89c5ad22c1d8baa717afce429a838': 'V1.49-EXPORT-BACK-BOUNDARY-28, beta.11 to beta.15',
+}
+UPDATE_EA = 'This terminal runs an EA from before build B38. Update the EA in GOAT, then try again.'
 
-    def __init__(self, code, message, detail):
-        super().__init__(code + ': ' + message)
-        self.code, self.detail = code, detail
+
+class InstalledBuildError(Refusal):
+    """The installed build cannot be stated: ``code`` is UNKNOWN or CONFLICT; ``detail`` is the diagnostic dict.
+
+    A Refusal, so both CLIs print ``refusal_code`` beside the sentence. ``plain``: the sentence is for a person
+    (a pre-B38 EA: UPDATE_EA) and callers pass it on unchanged.
+    """
+
+    def __init__(self, code, message, detail, *, plain=False):
+        super().__init__(message if plain else code + ': ' + message, code, installed_build=detail)
+        self.detail, self.plain = detail, plain
+
+
+def refuse_pre_b38(install):
+    """Strict catch-up and hold-up paths: refuse a pre-B38 EA with the plain update sentence. Read-only."""
+    sha = install.get('ea_sha256')
+    if isinstance(sha, str) and sha in PRE_B38_EXCLUDED:
+        raise InstalledBuildError(UNKNOWN, UPDATE_EA, _excluded_detail(install, sha), plain=True)
+
+
+def _excluded_detail(install, sha):
+    return dict(build_id=None, source=SOURCE, ea_sha256=sha, registry='studio_installed_build.PRE_B38_EXCLUDED',
+                excluded='pre_b38', excluded_reason=PRE_B38_EXCLUDED[sha])
 
 
 def _utc(epoch):
@@ -122,6 +155,7 @@ def resolve(install):
     detail = dict(build_id=build, source=SOURCE, ea_sha256=sha, registry='studio_installed_build.PINNED_BUILDS',
                   install_time_utc=_utc(installed_epoch), install_time_source=installed_source, status=status)
     short = (sha or '?')[:12]
+    refuse_pre_b38(install)
     if build is None:
         raise InstalledBuildError(UNKNOWN, 'the installed EA binary (sha256 %s) is not a pinned GOAT build, so its build is not known; '
                                   'install a pinned build (activation status: %s)' % (short, _status_words(status)), dict(detail))

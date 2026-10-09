@@ -68,6 +68,7 @@ import studio_build_migration as migration
 import studio_equivalence as equivalence
 import studio_evidence_end as evidence_end
 import studio_installed_build as installed_build
+from studio_refusal import Refusal
 from studio_seed import SeedRunner, digest
 from studio_seed_results import MAX_MANIFEST_BYTES, read_seed_json
 from studio_strategy_settings import read_values
@@ -640,6 +641,7 @@ class CatchupRunner(SeedRunner):
     def _build(self, root, plan):
         """Validate the plan and build every member in memory. Writes nothing."""
         assume = self._plan(plan)
+        installed_build.refuse_pre_b38(self.c.install)   # a pre-B38 EA: update it first (goatai#2350 6089668580)
         target = resolve_target(plan['evidence_end'], broker_clock=plan.get('broker_clock'), now=self.now)
         install, account = self.c.install, self.c.session['account']
         expert = install['ea_relative_path']
@@ -711,7 +713,9 @@ class CatchupRunner(SeedRunner):
         try:
             installed = installed_build.resolve(self.c.install)
         except installed_build.InstalledBuildError as error:
-            raise ValueError('build_migration targets %s, but %s' % (target, error)) from None
+            if error.plain:
+                raise
+            raise Refusal('build_migration targets %s, but %s' % (target, error), error.code, installed_build=error.detail) from None
         if installed['build_id'] != target:
             raise ValueError('build_migration targets %s, but the installed EA is %s (%s); a build migration runs only on its '
                              'target build' % (target, installed['build_id'], installed['basis']))
@@ -797,6 +801,8 @@ class CatchupRunner(SeedRunner):
             elif run_ea:
                 problems.append('Export was made by another EA binary than the installed one, so a re-test would not be comparable'
                                 ' (no active trading-equivalence certificate covers it)')
+            elif unknown is not None and unknown.plain:
+                problems.append(str(unknown))
             elif installed is None:
                 problems.append('The EA build that made this export (%s) is known only from its capture, and the installed EA build '
                                 'is not known (%s), so a re-test could not be compared; install a pinned GOAT build, or import '
@@ -1091,12 +1097,14 @@ class CatchupRunner(SeedRunner):
 
         A build-migration member starts only while the installed EA is still its target build.
         """
+        installed_build.refuse_pre_b38(self.c.install)   # a pre-B38 EA never starts a member (goatai#2350 6089668580)
         if spec.get('build_migration'):
             target = spec['build_migration']['target_build']
             try:
                 installed = self._installed_build_id()
             except installed_build.InstalledBuildError as error:
-                raise ValueError('Build-migration member %s targets %s, but %s; nothing was started' % (spec['alias'], target, error)) from None
+                raise Refusal('Build-migration member %s targets %s, but %s; nothing was started' % (spec['alias'], target, error),
+                              error.code, installed_build=error.detail) from None
             if installed != target or self.c.install['ea_sha256'] != spec['build_migration']['target_ea_sha256']:
                 raise ValueError('Build-migration member %s targets %s, but the installed EA binary (sha256 %s) is now %s; nothing was started'
                                  % (spec['alias'], target, self.c.install['ea_sha256'][:12], installed))

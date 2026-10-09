@@ -9,7 +9,8 @@ decision kept a ``paused`` record forever. ``close`` turns that record into term
 * ``exclude``: the same record, plus a free-text reason and an exclusion marker
   ``batch-exclusions/<job>.json`` naming the batch's native run folder and every export SET
   (path and sha256). ``evidence-scan`` and ``catchup-prepare`` read the marker and report those
-  exports ``ineligible`` with ``excluded`` set (``excluded_reason``). Nothing is deleted. Exclusion is
+  exports ``ineligible`` with ``excluded`` set (``excluded_reason``); ``holdup-prepare`` refuses such a SET
+  (``HOLDUP_SOURCE_EXCLUDED``). Nothing is deleted. Exclusion is
   refused once any export of the batch entered a FOOS read or a selection decision this
   controller can see (``foos_reads``), and when that cannot be checked.
 
@@ -211,6 +212,16 @@ def exclusions(root):
             raise ValueError('Batch exclusion marker ' + str(path) + ' is not a ' + EXCLUSION_SCHEMA + ' record')
         found[path.stem] = value
     return found
+
+
+def excluded_source(markers, set_path, set_sha256):
+    """The exclusion marker a SET belongs to (its exact sha256, or a path inside the excluded run folder), or None."""
+    for marker in (markers or {}).values():
+        if any(isinstance(item, dict) and item.get('set_sha256') == set_sha256 for item in marker['exports']):
+            return marker
+        if isinstance(marker.get('run_root'), str) and _within(set_path, marker['run_root']):
+            return marker
+    return None
 
 
 def apply_exclusions(rows, markers):

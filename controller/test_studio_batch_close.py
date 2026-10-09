@@ -20,6 +20,7 @@ import studio_batch_pause as pause
 from studio_refusal import Refusal
 import test_demo_agent as demo_fixtures
 import test_studio_catchup as catchup_fixtures
+import test_studio_holdup as holdup_fixtures
 
 JOB = 'g20-rest1'
 ATTEMPT = 'a' * 64
@@ -381,6 +382,37 @@ class EvidenceScanExclusionTests(catchup_fixtures.CatchupCase):
         (self.controller.root / close_module.EXCLUSIONS / 'g20-rest1.json').write_text('{}')
         with self.assertRaisesRegex(ValueError, 'goat-batch-exclusion-v1'):
             catchup_fixtures.sc.evidence_scan([self.run], now=catchup_fixtures.AFTER_CLOSE, controller_root=self.controller.root)
+
+
+class HoldupExclusionTests(unittest.TestCase):
+    """Hold-up prepare honours batch-exclusions/<id>.json like evidence-scan and catchup-prepare (Mac, #203)."""
+
+    def setUp(self):
+        # The hold-up fixture as an instance (not a base class), so its own tests are not collected twice.
+        f = holdup_fixtures.HoldupTests(); f.setUp(); self.addCleanup(f.doCleanups); self.addCleanup(f.tearDown)
+        self.f, self.c, self.root, self.runner, self.source, self.plan = f, f.c, f.root, f.runner, f.source, f.plan
+
+    def marker(self, **fields):
+        write_json(self.c.root / close_module.EXCLUSIONS / 'g20-rest1.json',
+                   dict(dict(schema=close_module.EXCLUSION_SCHEMA, batch_id='g20-rest1', reason='feed gap', run_id='Rnone',
+                             run_root=str(self.root / 'elsewhere'), closed_at='2026-10-09T20:30:00Z', exports=[]), **fields))
+
+    def test_hold_up_prepare_sourced_from_an_excluded_export_refuses(self):
+        self.assertEqual(self.runner.validate(self.plan())['valid'], True)
+        digest = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        self.marker(exports=[dict(set_path='C:\\copy.set', set_sha256=digest)])          # by the exact SET sha256
+        for call in (self.runner.validate, lambda plan: self.runner.prepare('h1', plan)):
+            with self.assertRaises(Refusal) as caught:
+                call(self.plan())
+            self.assertEqual((caught.exception.code, caught.exception.fields['batch_id']), ('HOLDUP_SOURCE_EXCLUDED', 'g20-rest1'))
+            self.assertIn('feed gap', str(caught.exception))
+        self.assertFalse(self.runner.path('h1').exists())
+        self.marker(run_root=str(self.source.parent))                                     # by a path inside the run folder
+        with self.assertRaises(Refusal):
+            self.runner.prepare('h1', self.plan())
+        self.assertFalse(self.runner.path('h1').exists())
+        self.marker()                                                                     # another batch's exclusion
+        self.assertEqual(self.runner.prepare('h1', self.plan())['status'], 'prepared')
 
 
 if __name__ == '__main__':

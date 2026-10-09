@@ -312,7 +312,7 @@ research prereg files, which read `members_done` from either record.
 - `exclude`: needs `--reason`. It also writes `batch-exclusions/<id>.json` (the
   batch's native run folder and every export SET path + sha256). `evidence-scan`
   and `catchup-prepare` then report those exports `ineligible` with `excluded: true`
-  and `excluded_reason`. Exclude is refused (`CLOSE_EXCLUDE_AFTER_FOOS_READ` /
+  and `excluded_reason`; `holdup-prepare` refuses such a SET (`HOLDUP_SOURCE_EXCLUDED`). Exclude is refused (`CLOSE_EXCLUDE_AFTER_FOOS_READ` /
   `CLOSE_EXCLUDE_AFTER_SELECTION`) once an export of the batch is the source of a
   catch-up or hold-up test or sits in a frozen held-out lock candidate, and
   (`CLOSE_EXCLUDE_UNVERIFIABLE`) when that cannot be checked.

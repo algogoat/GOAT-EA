@@ -453,5 +453,111 @@ class CliTests(Fixture):
         self.assertTrue({'news-history-sync'} <= LOCAL_FILE_OPERATIONS <= READ_OPERATIONS <= OPERATIONS)
 
 
+DEMO_REFUSAL = 'Demo mutation requires the broker-verified agent tool'
+MIXED_REFUSAL = 'modules of another controller'
+# One child process per entrypoint. argv: script, checkout, older controller, then the CLI arguments.
+LAUNCHERS = dict(
+    # The checkout's own interpreter path rules (a standard Python puts the script folder first; the bundled
+    # GOAT Python's python313._pth puts its installed controller on sys.path and never the script folder).
+    cli=None,
+    # The bundled GOAT Python with an older installed controller: found first, the checkout only last, and
+    # runpy.run_path never adds the script folder. This is the plain Banker command of 2026-10-09.
+    embedded=('import runpy, sys\nscript, checkout, older = sys.argv[1:4]\n'
+              'sys.path[:] = [older] + [p for p in sys.path if p not in ("", checkout)] + [checkout]\n'
+              'sys.argv = [script] + sys.argv[4:]\nrunpy.run_path(script, run_name="__main__")\n'),
+    # The wrapper that succeeded on Banker: the checkout inserted first, then runpy.
+    runpy=('import runpy, sys\nscript, checkout, older = sys.argv[1:4]\nsys.path.insert(0, checkout)\n'
+           'sys.argv = [script] + sys.argv[4:]\nrunpy.run_path(script, run_name="__main__")\n'),
+    # Import: a caller that imports goat_studio and calls main().
+    imported=('import sys\nscript, checkout, older = sys.argv[1:4]\nsys.path.insert(0, checkout)\n'
+              'import goat_studio\nsys.exit(goat_studio.main(sys.argv[4:]))\n'),
+    # A caller that imported an older controller's modules first, then this goat_studio: one process, two revisions.
+    mixed=('import sys\nscript, checkout, older = sys.argv[1:4]\nsys.path.insert(0, older)\n'
+           'import studio_research_authority\nsys.path.insert(0, checkout)\n'
+           'import goat_studio\nsys.exit(goat_studio.main(sys.argv[4:]))\n'))
+
+
+class EntrypointTests(Fixture):
+    """Banker 2026-10-09 (Claude-Mac P1, goatai#2350 6073065632): the checkout's goat_studio.py run with the bundled GOAT
+    Python refused news-history-sync with "Demo mutation requires the broker-verified agent tool"; the same arguments
+    through a wrapper that put the checkout first on sys.path succeeded.
+
+    Root cause: that Python's python313._pth sets safe_path and lists ../controller, so the script's own folder was
+    never on sys.path. The checkout's goat_studio.py dispatched news-history-sync, but studio_research_authority (and
+    every other module) came from the INSTALLED controller, whose LOCAL_FILE_OPERATIONS predates news-history-sync, so
+    its default-deny demo_direct branch refused it. authority() itself never depended on the entrypoint; the process
+    ran two controller revisions. goat_studio.py now puts its own folder first and refuses to run with another
+    folder's controller modules, so every entrypoint resolves the same classification and authority.
+
+    Every entrypoint runs in a fresh process on a demo_direct installation: news-history-sync (a local file operation)
+    is allowed and a real mutation still refuses, on all of them."""
+    HERE = Path(__file__).resolve().parent
+
+    def older_controller(self):
+        """An installed controller folder whose studio_research_authority predates news-history-sync."""
+        folder = Path(self.temp.name) / 'installed controller'
+        if not folder.is_dir():
+            folder.mkdir()
+            source = (self.HERE / 'studio_research_authority.py').read_text(encoding='utf-8')
+            older = source.replace(", 'news-history-sync'))", '))', 1)
+            self.assertNotEqual(older, source)
+            (folder / 'studio_research_authority.py').write_text(older, encoding='utf-8')
+        return folder
+
+    def run_entry(self, entry, *argv):
+        import subprocess, sys
+        script = str(self.HERE / 'goat_studio.py')
+        cli = ['--installation', str(self.installation), *argv]
+        launcher = LAUNCHERS[entry]
+        command = ([sys.executable, script, *cli] if launcher is None else
+                   [sys.executable, '-c', launcher, script, str(self.HERE), str(self.older_controller()), *cli])
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=180, cwd=self.temp.name,
+                                   env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+        lines = completed.stdout.strip().splitlines()
+        self.assertTrue(lines, (entry, completed.stderr[-2000:]))
+        return completed.returncode, json.loads(lines[-1])
+
+    def test_news_history_sync_is_allowed_on_demo_direct_on_every_entrypoint(self):
+        # --min-impact 101 refuses inside news-history-sync itself, before any process inventory, credential or request:
+        # reaching it proves the authority allowed the operation.
+        for entry in ('cli', 'embedded', 'runpy', 'imported'):
+            with self.subTest(entry=entry):
+                code, reply = self.run_entry(entry, 'news-history-sync', '--min-impact', '101')
+                self.assertEqual((code, reply.get('refusal_code')), (2, 'NEWS_HISTORY_PARAMS_INVALID'), reply)
+        self.assertEqual(self.target.read_bytes(), self.old)
+
+    def test_a_real_mutation_still_refuses_on_every_entrypoint(self):
+        plan = Path(self.temp.name) / 'plan.json'
+        plan.write_text('{}', encoding='utf-8')
+        for entry in ('cli', 'embedded', 'runpy', 'imported'):
+            for argv in (('prepare-batch', '--batch-id', 'demo-batch', '--plan', str(plan)),
+                         ('peer-add', '--terminal', str(self.exe), '--confirm-reviewed')):
+                with self.subTest(entry=entry, operation=argv[0]):
+                    code, reply = self.run_entry(entry, *argv)
+                    self.assertEqual((code, reply['error']), (2, DEMO_REFUSAL), reply)
+        self.assertNotIn('demo-batch', (self.root / 'studio.sqlite').read_bytes().decode('latin-1'))
+
+    def test_a_process_holding_another_controller_revision_runs_nothing(self):
+        plan = Path(self.temp.name) / 'plan.json'
+        plan.write_text('{}', encoding='utf-8')
+        for argv in (('news-history-sync', '--min-impact', '101'), ('prepare-batch', '--batch-id', 'demo-batch', '--plan', str(plan))):
+            with self.subTest(operation=argv[0]):
+                code, reply = self.run_entry('mixed', *argv)
+                self.assertEqual(code, 2, reply)
+                self.assertIn(MIXED_REFUSAL, reply['error'])
+                self.assertNotIn('refusal_code', reply)
+
+    def test_the_operation_is_classified_as_a_local_file_operation(self):
+        from studio_research_authority import LOCAL_FILE_OPERATIONS, READ_OPERATIONS, authority, operation
+        self.assertIn('news-history-sync', LOCAL_FILE_OPERATIONS)
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(self.root / 'studio.sqlite')) as db:
+            with operation('news-history-sync'):
+                self.assertIsNone(authority(db, self.binding, dict(owner='agent', generation=1)))
+            for name in ('prepare-batch', 'run-batch', 'peer-add', 'seed-start', 'catchup-prepare'):
+                with operation(name), self.assertRaisesRegex(ValueError, DEMO_REFUSAL):
+                    authority(db, self.binding, dict(owner='agent', generation=1))
+
 if __name__ == '__main__':
     unittest.main()

@@ -2327,6 +2327,76 @@ class DemoAgent:
                              reason=result.get('reason'))
             return result
 
+    def _archive_plan(self, batch_id, archive_root, keep, *, busy):
+        """The evidence-archive preview of one native batch or catch-up (studio_evidence_archive.plan)."""
+        import studio_evidence_archive as archive
+        kind = self._lane_kind(batch_id)
+        if kind in ('seed', 'holdup'):
+            raise Refusal(batch_id + ' is a ' + LANES[kind]['unit'] + '; evidence-archive moves the evidence of native '
+                          'batches and catch-ups only.', 'ARCHIVE_UNSUPPORTED_KIND', batch_id=batch_id, kind=kind)
+        try:
+            bindings = archive.queue_bindings(self.root)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise Refusal('The Studio queue cannot be read (' + str(exc)[:200] + '); nothing was moved.',
+                          'ARCHIVE_TERMINAL_BUSY', batch_id=batch_id) from None
+        active = [job['job_id'] for _, jobs in bindings for job in jobs if job.get('status') in ACTIVE_NATIVE_STATUSES]
+        busy = busy or ('batch ' + ', '.join(active) + ' is active' if active else None)
+        if kind == 'catchup':
+            return archive.plan(self.root, self.install, batch_id, archive_root, kind='catchup', bindings=bindings,
+                                keep=keep, now=self.clock(), busy=busy)
+        current = packed(dict(terminal_id=self.session['terminal_id'], run_id=self.session['run_id']))
+        job = next((item for binding, jobs in sorted(bindings, key=lambda row: row[0] != current) for item in jobs
+                    if item.get('job_id') == batch_id), None)
+        if job is None:
+            raise Refusal('Unknown batch ' + batch_id + '; research-queue lists this installation\'s batches.',
+                          'ARCHIVE_UNKNOWN_BATCH', batch_id=batch_id)
+        return archive.plan(self.root, self.install, batch_id, archive_root, kind='native', job=job, bindings=bindings,
+                            keep=keep, now=self.clock(), busy=busy)
+
+    def evidence_archive(self, batch_id, archive_root, *, apply=False, confirm=False, keep_list=None):
+        """Move a finished or closed batch's evidence off the controller volume (studio_evidence_archive, goatai#2350).
+
+        Preview unless ``apply``; ``apply`` needs ``confirm``. Demo lane only, like batch-pause-close. Under the terminal
+        lock the preview is rebuilt and must have no blocker: the batch finished or closed, the terminal idle (no running
+        batch, seed slot, unreleased fixed task or live driver), no citation by a held-out lock or FOOS/selection read,
+        not on ``keep_list``, an archive root on another volume that is writable and has room. Each file is copied,
+        sha256-verified, listed in a manifest and pointed to before its source is removed. No MT5 effect; allowed under
+        owner STOP. A re-run verifies and completes an interrupted archive without copying anything twice.
+        """
+        import studio_evidence_archive as archive
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid batch ID')
+        if apply and confirm is not True:
+            raise Refusal('evidence-archive --apply moves batch ' + batch_id + '\'s evidence off this volume; pass --confirm.',
+                          'ARCHIVE_CONFIRM_REQUIRED', batch_id=batch_id)
+        try:
+            self._paired_account()
+        except ValueError as exc:
+            raise Refusal('evidence-archive runs only on a paired demo installation: ' + str(exc), 'ARCHIVE_NOT_DEMO',
+                          batch_id=batch_id) from None
+        keep = archive.read_keep_list(keep_list) if keep_list is not None else None
+        if not apply:
+            return archive.public(self._archive_plan(batch_id, archive_root, keep, busy=self._close_busy()))
+        stack = ExitStack()
+        try:
+            stack.enter_context(self._exclusive())
+        except ValueError as exc:
+            raise Refusal('This terminal is busy (' + str(exc) + '); nothing was moved.', 'ARCHIVE_TERMINAL_BUSY',
+                          batch_id=batch_id) from None
+        with stack:
+            preview = self._archive_plan(batch_id, archive_root, keep, busy=self._close_busy())
+            if preview['blockers']:
+                first = preview['blockers'][0]
+                fields = {key: value for key, value in first.items() if key not in ('code', 'plain', 'batch_id')}
+                raise Refusal(first['plain'] + ' Nothing was moved.', first['code'], batch_id=batch_id,
+                              blockers=preview['blockers'], **fields)
+            result = archive.apply(self.root, self.install, preview, archive_root, now=self.clock())
+            phase = 'archived' if not preview['archived'] else 'completed' if result['removed'] else 'verified'
+            self._append('evidence_archive', phase, batch_id=batch_id,
+                         kind=preview['kind'], archive_dir=preview['archive_dir'], files=result['file_count'],
+                         bytes=result['bytes'], removed=result['removed'], manifest_sha256=result['manifest_sha256'])
+            return archive.public(dict(preview, result=result), applied=True)
+
     def _seed_pause(self, batch_id, kind='seed'):
         word = LANES[kind]['word']
         with self._seed_scope(kind + '-status', batch_id, kind) as (controller, evidence):
@@ -3426,6 +3496,18 @@ def main(argv=None):
     closer.add_argument('--mode', choices=('finish', 'exclude'), default='finish')
     closer.add_argument('--reason', help='Required for --mode exclude: why these results stay out of the book')
     closer.add_argument('--confirm', action='store_true', help='Required: closing is final for this batch')
+    archiver = commands.add_parser('evidence-archive',
+                                   help='Preview, then --apply --confirm: move a finished or closed batch\'s (or catch-up\'s) '
+                                        'evidence to an archive root on another volume, sha256-verified, with a manifest and '
+                                        'a pointer every reader follows; never deletes evidence')
+    archiver.add_argument('--batch-id', required=True)
+    archiver.add_argument('--archive-root', type=Path, required=True,
+                          help='An existing folder on another volume; files go to <root>/<installation>/<batch id>/')
+    archiver.add_argument('--apply', action='store_true', help='Move the previewed files (needs --confirm)')
+    archiver.add_argument('--confirm', action='store_true', help='Required with --apply')
+    archiver.add_argument('--keep-list', type=Path,
+                          help='JSON array of batch IDs or run folders that must stay (prereg/book citations the '
+                               'controller cannot see); a listed batch refuses ARCHIVE_KEEP_LISTED')
     resumed = commands.add_parser('batch-resume', help='Continue a paused batch as a successor batch')
     resumed.add_argument('--batch-id', required=True)
     resumed.add_argument('--new-batch-id')
@@ -3574,6 +3656,8 @@ def main(argv=None):
         elif args.command == 'batch-pause': result = agent.batch_pause(args.batch_id, immediate=args.immediate)
         elif args.command == 'batch-pause-close': result = agent.batch_pause_close(args.batch_id, mode=args.mode,
             reason=args.reason, confirm=args.confirm)
+        elif args.command == 'evidence-archive': result = agent.evidence_archive(args.batch_id, args.archive_root,
+            apply=args.apply, confirm=args.confirm, keep_list=args.keep_list)
         elif args.command == 'batch-resume': result = agent.batch_resume(args.batch_id, new_batch_id=args.new_batch_id,
             resume_token=args.resume_token, max_seconds=args.max_seconds, clear_stop=args.clear_stop,
             include_failed=args.include_failed, include_no_edge=args.include_no_edge,

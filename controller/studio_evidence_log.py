@@ -69,6 +69,8 @@ def _committed_bytes(path, previous):
 def append(store, job_id, attempt_id, evidence, *, previous=None):
     """Append one observation idempotently; returns the reference the job row keeps."""
     from studio_handover import safe_path
+    from studio_evidence_archive import refuse_archived
+    refuse_archived(_root(store), job_id)        # an archived batch's log lives elsewhere: never split it
     path = safe_path(log_path(_root(store), job_id, attempt_id))
     path.parent.mkdir(exist_ok=True)
     previous = previous or {}

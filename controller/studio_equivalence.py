@@ -1260,7 +1260,15 @@ def catchup_pairs(controller_root, catchup_id, digest):
             incomplete.append(dict(alias=spec['alias'], reason='not completed (%s)' % item.get('status')))
             continue
         result = migration.refuse(read_seed_json(item['result']['path']), 'equivalence-canary-ingest')
-        version = migration.refuse(json.loads(Path(result['version_path']).read_text(encoding='utf-8')), 'equivalence-canary-ingest')
+        # evidence-archive: a moved catch-up is read through its pointer (EVIDENCE_ARCHIVE_UNREACHABLE when it cannot be).
+        from studio_catchup import plain, relocated
+        from studio_evidence_archive import archived_location
+        from studio_handover import filesystem_path
+        moved = archived_location(controller_root, plain(result['version_path']))
+        source = Path(result['version_path']) if moved is None else filesystem_path(moved)
+        version = migration.refuse(json.loads(source.read_text(encoding='utf-8')), 'equivalence-canary-ingest')
+        if moved is not None:
+            version = relocated(controller_root, version)
         original = read_export(spec['original']['set_path'])
         if original['set_sha256'] != spec['original']['set_sha256']:
             raise ValueError('Original export changed since the canary was prepared: ' + spec['original']['set_path'])

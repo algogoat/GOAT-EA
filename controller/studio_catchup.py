@@ -157,8 +157,8 @@ def evidence_worst_case(controller_root, evidence_root=None):
     return len(os.path.abspath(base)) + 1 + 12 + 1 + MEMBER_FOLDER_DIGITS + OUTPUT_PATH_ROOM
 
 
-def evidence_roots(controller_root):
-    """Every evidence folder base: ``<controller state>\\evidence``, then each recorded ``output_root``."""
+def recorded_roots(controller_root):
+    """``<controller state>\\evidence``, then each ``output_root`` recorded in ``evidence-roots.json``."""
     bases = [Path(controller_root) / 'evidence']
     path = Path(controller_root) / EVIDENCE_ROOTS
     if not path.exists():
@@ -178,6 +178,20 @@ def evidence_roots(controller_root):
     return bases
 
 
+def evidence_roots(controller_root):
+    """Every evidence folder base: ``<controller state>\\evidence``, then each recorded ``output_root``, then the
+    evidence of each catch-up moved by evidence-archive (studio_evidence_archive: followed through its pointer,
+    refused with EVIDENCE_ARCHIVE_UNREACHABLE while its archive cannot be read)."""
+    from studio_evidence_archive import archived_evidence_roots
+    bases = recorded_roots(controller_root)
+    seen = {migration.key(str(base)) for base in bases}
+    for root in archived_evidence_roots(controller_root):
+        if migration.key(str(root)) not in seen:
+            seen.add(migration.key(str(root)))
+            bases.append(root)
+    return bases
+
+
 def is_default_root(controller_root, root):
     return migration.key(os.path.abspath(root)) == migration.key(os.path.abspath(Path(controller_root) / 'evidence'))
 
@@ -186,7 +200,7 @@ def record_evidence_root(controller_root, root):
     """Add one ``output_root`` to ``evidence-roots.json`` (atomic replace), so ``versions`` reads it."""
     if is_default_root(controller_root, root):
         return   # the controller-state root is always read; never recorded twice
-    roots = [str(p) for p in evidence_roots(controller_root)[1:]]
+    roots = [str(p) for p in recorded_roots(controller_root)[1:]]   # never the evidence-archive roots (pointers hold those)
     if migration.key(root) in {migration.key(p) for p in roots}:
         return
     if len(roots) >= MAX_EVIDENCE_ROOTS:
@@ -202,6 +216,7 @@ def catchups_worst_case(controller_root, catchup_id=None):
 def evidence_folder(controller_root, catchup_id):
     """The evidence folder of one catch-up for reading: the hashed folder (under the controller state or a recorded
     output root), or a legacy ``evidence\\<id>`` one, else None."""
+    from studio_evidence_archive import archived_evidence_roots
     base = Path(controller_root) / 'evidence'
     for root in evidence_roots(controller_root):
         hashed = io_path(root / evidence_key(catchup_id), 1 + MEMBER_FOLDER_DIGITS + OUTPUT_PATH_ROOM)
@@ -211,8 +226,40 @@ def evidence_folder(controller_root, catchup_id):
                 return hashed
         except (OSError, ValueError):
             pass
-    legacy = base / catchup_id
-    return legacy if legacy.is_dir() else None
+    for root in [base] + archived_evidence_roots(controller_root):   # a legacy folder moved by evidence-archive too
+        legacy = root / catchup_id
+        if legacy.is_dir():
+            return legacy
+    return None
+
+
+# Path fields of an evidence-version record that point into its own evidence folder (or another archived one).
+VERSION_PATH_FIELDS = (('retest', 'set_path'), ('retest', 'csv_path'), ('original', 'set_path'), ('original', 'csv_path'))
+
+
+def relocated(controller_root, record):
+    """An evidence-version record read from an evidence-archive root, its stored paths followed through the pointer.
+
+    The record's bytes stay exactly as written; only the returned copy names where each file lives now.
+    """
+    from studio_evidence_archive import archived_location
+    value = dict(record)
+    for section, field in VERSION_PATH_FIELDS + (('retest', 'capture'),):
+        part = value.get(section)
+        if not isinstance(part, dict):
+            continue
+        part = dict(part)
+        if field == 'capture':
+            if isinstance(part.get('capture'), dict) and isinstance(part['capture'].get('path'), str):
+                moved = archived_location(controller_root, part['capture']['path'])
+                if moved is not None:
+                    part['capture'] = dict(part['capture'], path=str(moved))
+        elif isinstance(part.get(field), str):
+            moved = archived_location(controller_root, part[field])
+            if moved is not None:
+                part[field] = str(moved)
+        value[section] = part
+    return value
 SAFE_SYMBOL = re.compile(r'[A-Za-z0-9_.# -]{1,64}')
 STATUSES = ('behind', 'current', 'ahead', 'caught_up', 'ineligible')
 UNJUDGED = ('not_comparable', 'unjudged')   # retained, but they do not put the export on the shared timeline
@@ -237,8 +284,11 @@ def versions(controller_root, limit=20000):
     Build-migration records (``kind: build_migration_retest``) are never evidence versions: skipped by type.
     Fails closed when a recorded output root is unavailable (an unplugged drive): its exports would read as behind.
     """
+    from studio_evidence_archive import archived_evidence_roots
     found = []
+    archived = {migration.key(str(root)) for root in archived_evidence_roots(controller_root)}
     for index, root in enumerate(evidence_roots(controller_root)):
+        moved = migration.key(str(root)) in archived      # evidence-archive: its records' paths follow the pointer
         # Both layouts: evidence\c.<hash>\<member>\ and the legacy evidence\<catch-up id>\<alias>\ (room for the longest ID).
         base = io_path(root, 1 + MAX_ID + 1 + 23 + 1 + len('evidence-version.json'))
         if not base.is_dir():
@@ -252,7 +302,7 @@ def versions(controller_root, limit=20000):
             except (OSError, ValueError):
                 continue
             if isinstance(record, dict) and record.get('schema') == VERSION_SCHEMA and not migration.is_record(record):
-                found.append(record | dict(version_path=str(path)))
+                found.append((relocated(controller_root, record) if moved else record) | dict(version_path=str(path)))
             if len(found) >= limit:
                 break
         if len(found) >= limit:
@@ -1383,6 +1433,14 @@ class CatchupRunner(SeedRunner):
         return destination / set_path.name
 
     # ---- reports -----------------------------------------------------------------------
+    def _version_path(self, result):
+        """Where a member's evidence version lives now: its recorded path, or the evidence-archive location."""
+        if not result or not result.get('version_path'):
+            return None
+        from studio_evidence_archive import archived_location
+        moved = archived_location(self.c.root, plain(result['version_path']))
+        return result['version_path'] if moved is None else str(moved)
+
     def report(self, batch_id):
         self.status(batch_id)
         root, manifest, state = self._read(batch_id)
@@ -1399,7 +1457,7 @@ class CatchupRunner(SeedRunner):
             rows.append(dict(alias=spec['alias'], status=item['status'], symbol=spec['tester']['Symbol'], period=spec['tester']['Period'],
                              original_set=spec['original']['set_path'], original_end=spec['original']['evidence_end'],
                              new_end=manifest['evidence_end']['iso'], summary=result['summary'] if result else None,
-                             version_path=result['version_path'] if result else None, error=item.get('error'),
+                             version_path=self._version_path(result), error=item.get('error'),
                              export_thresholds=spec['original'].get('threshold'),
                              signals=(result.get('verdict') or {}).get('signals') if result else None,
                              oos_rule=(result.get('verdict') or {}).get('oos_rule') if result else None,

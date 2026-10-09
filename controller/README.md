@@ -1001,7 +1001,8 @@ own journals.
 - **Trial journal.** `trial-journal [--since] [--strategy]` emits one entry per member
   of every native batch, seed and catch-up (spec §5 fields plus `kind`, `attempt_key`,
   `strategy_keys`, `exposure`, `oos_output`, `counts_as_peek`, `gaps`) and a digest;
-  `compact-evidence --apply` and retirements leave it byte-identical. Attribution:
+  `compact-evidence --apply`, `evidence-archive --apply` (read through its pointer; refused with
+  `EVIDENCE_ARCHIVE_UNREACHABLE` while the archive is unreadable) and retirements leave it byte-identical. Attribution:
   declared `strategy_ref`, else an exact selection/fork/catalog SET sha256, else a v0
   record of the member (attempt key, configuration hash, or the attempt result
   join), else a unique template fingerprint (non-axis values + axis names + revision;

@@ -7,8 +7,10 @@ journals (change 4): queue rows, ``packages/``, ``attempts/*/result.json``,
 ``studio_evidence_log.read`` so a compacted history reads the same), ``seeds/``,
 ``catchups/`` and ``holdups/`` (kind ``single-pass``: every dispatched hold-up test is a peek on its
 window). Nothing here writes, launches or touches MT5, and the output carries
-no clock: ``compact-evidence --apply`` and retiring an unactivated start leave it
-byte-identical.
+no clock: ``compact-evidence --apply``, ``evidence-archive --apply`` (a moved history is read
+through its pointer, studio_evidence_archive) and retiring an unactivated start leave it
+byte-identical. While an archived history cannot be read the journal refuses
+(``EVIDENCE_ARCHIVE_UNREACHABLE``) instead of dropping that batch's trials to a gap.
 
 Counting (``trial-count``; Claude-Mac answers 4-7):
 
@@ -124,6 +126,7 @@ def queue_rows(root):
 def _history(root, job):
     """Indices of members ever observed started, or None when the history is unavailable."""
     from studio_evidence_log import read
+    from studio_evidence_archive import ArchiveUnreachable, resolve
     observations = list(job.get('native_evidence_history') or [])
     available = bool(observations)
     for key in ('native_evidence_archive', 'native_evidence_log'):
@@ -133,8 +136,12 @@ def _history(root, job):
             if not path.is_absolute():
                 path = Path(root) / path
             try:
-                observations.extend(read(path))
+                # evidence-archive: a moved log is read through its pointer; an unreachable archive refuses
+                # (ArchiveUnreachable) instead of reading as "history unavailable".
+                observations.extend(read(resolve(root, path)))
                 available = True
+            except ArchiveUnreachable:
+                raise
             except (OSError, ValueError):
                 return None
     for archive in job.get('native_evidence_history_archives') or []:
@@ -434,9 +441,12 @@ def entries_for(root, install, *, library=None):
     gaps, entries = [], []
     jobs, problems = queue_rows(root)
     gaps.extend(problems)
+    from studio_evidence_archive import ArchiveUnreachable
     for job in jobs:
         try:
             entries.extend(_native_entries(root, suite_id, job, library))
+        except ArchiveUnreachable:
+            raise       # an archived batch's trials are never dropped to a gap: the journal refuses until it is readable
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             gaps.append('batch %s unreadable: %s' % (job.get('job_id'), exc))
     for kind, name in (('seed', 'seeds'), ('catchup', 'catchups'), ('holdup', 'holdups')):

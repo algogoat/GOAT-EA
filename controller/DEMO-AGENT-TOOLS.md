@@ -32,6 +32,7 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 & $goat demo --installation $receipt batch-pause-close --batch-id '<id>' --confirm   # close a paused batch for good; --mode finish|exclude, --reason (exclude)
 & $goat demo --installation $receipt compact-evidence   # preview; --apply moves finished in-row evidence history to verified logs
 & $goat demo --installation $receipt compact-receipts   # preview; --apply archives legacy full-queue receipts and keeps their queue digest
+& $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\<folder>'   # preview; --apply --confirm moves a finished batch's evidence off C:; optional --keep-list '<file>'
 ```
 
 - `compact-evidence` and `compact-receipts` are local store maintenance with no native effect. Each previews by default and, with `--apply`, refuses while any batch is starting or running (checked before any archive and again inside each transaction). Archives are temp-written, fsynced, sha256-verified and atomically renamed, and are never deleted. Run `compact-evidence --apply` first, then `compact-receipts --apply`. Neither shrinks `studio.sqlite` on disk: that needs a separate reviewed `VACUUM`. Both change the store's content hash, so prepare a handover or owner-maintenance record after compacting, not before.
@@ -328,6 +329,60 @@ research prereg files, which read `members_done` from either record.
   `CLOSE_MODE_CONFLICT`. Afterwards `batch-resume`, `continue` and every resume path
   refuse `BATCH_CLOSED`. `research-status` and `research-queue` read `closed` as
   terminal history (never held or paused).
+
+### Move a finished batch's evidence off C: (`evidence-archive`, goatai#2350)
+
+```powershell
+& $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\GOAT-Evidence-Archive'                      # preview
+& $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\GOAT-Evidence-Archive' --apply --confirm    # move
+```
+
+Moves, never deletes, the evidence of one finished or closed native batch, or one
+finished catch-up, from the controller state to
+`<archive root>\<installation>\<batch id>\` (`studio_evidence_archive.py`). No MT5 effect.
+
+- What moves (each file needs a proof; the preview lists it in `files` with `proof`):
+  the batch's `native-evidence\<id>-<attempt16>.jsonl` and `.history.jsonl` that its
+  queue rows name (plus the `.uncommitted` tail), a log of that name whose first line
+  names the batch (an earlier attempt), and its
+  `native-evidence\receipt-archive\<id>-batch|-reserve|-cancel|-release-reservation[-rN].<binding12>.receipt.json`
+  files whose session holds the batch and whose stored receipt row has that command
+  and the digest form. For a catch-up: its `evidence\c.<10 hex>\` folder (its
+  `catchup.json` names it) or legacy `evidence\<catch-up id>\`. Anything else that
+  names the batch stays where it is and is listed in `not_attributable` with the reason.
+- How: each file is copied (temporary file, fsync, rename) and its copy is
+  sha256-verified against the source; `manifest.json` lists every file (relative path,
+  bytes, sha256, source path, proof), the batch, the time and the controller revision;
+  then `native-evidence\archived\<id>.json` (the pointer: archive folder and manifest
+  sha256) is written, and only then is each source removed, after its bytes still hash
+  to the manifest. A re-run copies nothing twice: it reuses identical copies, or with a
+  pointer verifies the archive and completes removals an interruption left.
+- Readers follow the pointer: `trial-journal`/`trial-count` (byte-identical before and
+  after), `finish` and `batch-pause-close` (member starts), `evidence-scan`,
+  `evidence-versions`, `catchup-prepare`, `catchup-report` and
+  `equivalence-canary-ingest` (catch-up evidence versions and their SET/CSV paths).
+  While the archive cannot be read (drive unplugged, manifest changed) they refuse
+  `EVIDENCE_ARCHIVE_UNREACHABLE`; nothing is read in its place. Reconcile never appends
+  to an archived batch (`EVIDENCE_ARCHIVED`).
+- The preview (no `--apply`) writes nothing (the writability check creates and removes
+  one probe file in the archive root) and lists every `blocker`; `--apply` refuses with
+  the first: `ARCHIVE_CONFIRM_REQUIRED`, `ARCHIVE_NOT_FINISHED` (`batch_state` running,
+  pending, paused, pausing or unsettled), `ARCHIVE_COMPACT_FIRST` (run
+  `compact-evidence --apply` first), `ARCHIVE_TERMINAL_BUSY` (running batch in any
+  session, seed slot, fixed task, live driver or another demo operation),
+  `ARCHIVE_CITED_FOOS_READ` / `ARCHIVE_CITED_SELECTION` (a catch-up, hold-up test or
+  held-out lock cites it) / `ARCHIVE_CITATIONS_UNVERIFIABLE`, `ARCHIVE_KEEP_LISTED` /
+  `ARCHIVE_KEEP_LIST_INVALID`, `ARCHIVE_ROOT_SAME_VOLUME`, `ARCHIVE_ROOT_UNAVAILABLE`,
+  `ARCHIVE_ROOT_INVALID`, `ARCHIVE_ROOT_NOT_WRITABLE`, `ARCHIVE_ROOT_LOW_SPACE` (the
+  preview size plus 1 GiB or 5 %), `ARCHIVE_ALREADY_ARCHIVED` (another archive root),
+  `ARCHIVE_NOTHING_TO_MOVE`, `ARCHIVE_UNKNOWN_BATCH`, `ARCHIVE_UNSUPPORTED_KIND` (seed
+  hunts, hold-up tests), `ARCHIVE_NOT_DEMO`. During the move: `ARCHIVE_VERIFY_FAILED`,
+  `ARCHIVE_SOURCE_CHANGED`, `ARCHIVE_TARGET_CONFLICT`, `ARCHIVE_MANIFEST_CONFLICT`
+  (the source is kept in every case). Allowed under owner STOP.
+- Prereg and book citations live outside the controller (goatai prereg files, the book
+  on G:), so it cannot see them: pass `--keep-list <file>` (a JSON array of batch IDs
+  or run folders, or `{"keep": [...]}`) to keep those batches in place. The Exp 02
+  refusal belongs to the desktop gate, as with `batch-pause-close`.
 
 ### Protected peer restarts
 

@@ -134,6 +134,9 @@ def continue_batch(c, job_id, *, new_batch_id=None, include_failed=False, includ
     from studio_batch_pause import load as load_pause
     from studio_retire_unactivated import retire, unactivated_hint
     source = c.job(_id(job_id))
+    # A closed batch (batch-pause-close) never continues: refused before any lineage or release is written.
+    from studio_batch_close import refuse_closed
+    refuse_closed(c.root, job_id)
     if source['status'] not in TERMINAL and unactivated_hint(c.root, source):
         retire(c, job_id, reason='continue')
         source = c.job(job_id)

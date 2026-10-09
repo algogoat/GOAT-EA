@@ -71,6 +71,9 @@ PLAIN = {
     'paused': 'Paused. Finished members are saved; Resume continues the remaining members.',
     'finished': 'Every member finished before the pause took effect; there is nothing left to resume.',
     'resumed': 'Resumed: the remaining members continue in a successor batch.',
+    # batch-pause-close (studio_batch_close): terminal history, like finished. Nothing was deleted.
+    'closed': ('Closed: finished members and their exports are kept; the batch never resumes, and its unrun members '
+               'are listed for a later planned run.'),
 }
 RECEIPT_FAILURES = {
     'CANCEL_CONTROL_REVOKED': ('MT5 refused the pause because control of this batch changed in MT5.',
@@ -140,7 +143,9 @@ def plain(record):
 def public(record):
     keys = ('job_id', 'pause_id', 'state', 'phase', 'mode', 'escalation', 'requested_utc', 'requested_by', 'updated_utc',
             'paused_utc', 'blocker', 'failure', 'resume_token', 'members_completed', 'members_remaining',
-            'members_failed', 'members_no_edge', 'result_path', 'successor_batch_id', 'safe_point', 'adopted_stop')
+            'members_failed', 'members_no_edge', 'result_path', 'successor_batch_id', 'safe_point', 'adopted_stop',
+            # batch-pause-close (studio_batch_close); absent (None) on every other record.
+            'closed_mode', 'closed_at', 'members_done_count', 'members_unrun_count')
     value = {key: record.get(key) for key in keys}
     value['cancels'] = [{key: item.get(key) for key in ('request_id', 'kind', 'published_utc', 'expires_utc', 'receipt',
                                                        'adopted')} for item in record.get('cancels', [])]
@@ -550,6 +555,9 @@ def refusal(record):
         return PauseRefused(plain(record))
     if record['state'] == 'finished':
         return PauseRefused('Every member of batch ' + job_id + ' finished; there is nothing left to resume.')
+    if record['state'] == 'closed':
+        return PauseRefused('Batch ' + job_id + ' was closed (' + str(record.get('closed_mode')) + ') and never resumes; '
+                            'prepare its unrun members (members_unrun in its pause record) as a new planned batch.')
     return PauseRefused('Batch ' + job_id + ' is ' + str(record['state']) + '.')
 
 

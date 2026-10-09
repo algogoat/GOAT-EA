@@ -89,6 +89,12 @@ def _batch_state(job, pause, progress, unactivated):
         return 'paused', 'Paused; batch-resume continues the remaining members as a successor batch.'
     if pause_state == 'pause_failed':
         return 'blocked', ((pause.get('failure') or {}).get('message') or 'The pause failed.')
+    if pause_state == 'closed':
+        # batch-pause-close: terminal history (studio_batch_close); its unrun members wait for a planned run.
+        unrun = pause.get('members_unrun_count')
+        return 'stopped', ('Closed' + (' and excluded from the book' if pause.get('closed_mode') == 'exclude' else '') + '; '
+                           + ('' if not unrun else _plural(unrun, 'unrun member') + ' listed for a later planned run; ')
+                           + 'it never resumes.')
     if pause_state == 'resumed':
         successor = pause.get('successor_batch_id')
         return 'stopped', ('Continued as ' + successor + '.') if isinstance(successor, str) else 'Continued in a successor batch.'

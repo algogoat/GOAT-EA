@@ -524,6 +524,9 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
     `include_failed` retries real failures; members tested with no profitable
     settings are results, so only `include_no_edge` deliberately re-runs them.
     """
+    # A batch closed with batch-pause-close never resumes, by any path (studio_batch_close).
+    from studio_batch_close import refuse_closed
+    refuse_closed(controller.root, source_batch_id)
     previous = controller.job(source_batch_id)
     if previous['status'] not in ('completed', 'cancelled', 'failed'):
         raise ValueError('Stop/reconcile/finish the original batch before preparing its remaining work')

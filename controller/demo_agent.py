@@ -887,6 +887,8 @@ class DemoAgent:
         job = next((item for item in self._jobs_readonly() if item['job_id'] == batch_id), None)
         if job is None:
             raise ValueError('Unknown batch ' + batch_id + '; research-status lists the batches of this terminal.')
+        from studio_batch_close import refuse_closed
+        refuse_closed(self.root, batch_id)          # a closed batch never continues, before any terminal effect
         if unactivated_hint(self.root, job):
             self.retire_unactivated(batch_id)
         monitor = monitor_state(self.install, self.session, self.local, now=self.clock(), process=self._process_or_unknown())
@@ -2254,6 +2256,77 @@ class DemoAgent:
         supervisor = self._ensure_pause_supervisor(batch_id)
         return dict(public(load(self.root, batch_id)), supervisor=supervisor)
 
+    def _close_busy(self):
+        """Why this terminal is not idle for batch-pause-close, or None. Called under the terminal lock."""
+        from studio_research_status import queue_jobs
+        try:
+            active = self._native_active_batches()
+            starting = [job['job_id'] for job in queue_jobs(self.root, self.session)
+                        if job.get('status') == 'pending' and 'launch_intent' in job]
+        except (OSError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
+            return 'the Studio queue cannot be read (' + str(exc)[:200] + ')'
+        if active or starting:
+            return 'batch ' + ', '.join(active + starting) + ' is running'
+        seed = self._active_seed()
+        if seed is not None:
+            return 'the seed slot is held by ' + str(seed.get('batch_id'))
+        with closing(sqlite3.connect((self.root / 'studio.sqlite').as_uri() + '?mode=ro', uri=True)) as db:
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'studio_fixed_tasks' in tables and db.execute('SELECT 1 FROM studio_fixed_tasks WHERE released=0').fetchone():
+                return 'a fixed task still owns this controller'
+        for worker in self._worker_records():
+            if self._worker_alive(read_json(worker)):
+                return 'a live GOAT batch driver (' + worker.stem + ') owns this terminal'
+        live = self._live_lane_worker()
+        if live is not None:
+            return 'a live ' + str(live[1].get('kind')) + ' driver (' + str(live[1].get('batch_id')) + ') owns this terminal'
+        return None
+
+    def batch_pause_close(self, batch_id, *, mode='finish', reason=None, confirm=False):
+        """Close a paused native batch for good (studio_batch_close); deletes nothing, idempotent per mode.
+
+        Demo lane only, like batch-pause: the exact paired demo session is required. The terminal must be idle
+        (no running batch, seed slot, unreleased fixed task or live driver), checked under the terminal lock that
+        is held across the write. No MT5 effect: nothing is launched, stopped or sent. Allowed under owner STOP.
+        """
+        from studio_batch_close import close
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid batch ID')
+        if confirm is not True:
+            raise Refusal('batch-pause-close changes batch ' + batch_id + ' for good; pass --confirm.',
+                          'CLOSE_CONFIRM_REQUIRED', batch_id=batch_id)
+        try:
+            self._paired_account()
+        except ValueError as exc:
+            raise Refusal('batch-pause-close runs only on a paired demo installation: ' + str(exc), 'CLOSE_NOT_DEMO',
+                          batch_id=batch_id) from None
+        if self._lane_kind(batch_id):
+            raise Refusal(batch_id + ' is a seed hunt, catch-up or hold-up test; batch-pause-close closes paused native '
+                          'batches only.', 'CLOSE_NOT_NATIVE_BATCH', batch_id=batch_id)
+        stack = ExitStack()
+        try:
+            stack.enter_context(self._exclusive())
+        except ValueError as exc:
+            raise Refusal('This terminal is busy (' + str(exc) + '); nothing was closed.', 'CLOSE_TERMINAL_BUSY',
+                          batch_id=batch_id) from None
+        with stack:
+            jobs = {item['job_id']: item for item in self._jobs_readonly()}
+            job = jobs.get(batch_id)
+            if job is None:
+                raise Refusal('Unknown batch ' + batch_id + '; research-status lists this terminal\'s batches.',
+                              'CLOSE_UNKNOWN_BATCH', batch_id=batch_id)
+            busy = self._close_busy()
+            if busy:
+                raise Refusal('This terminal is not idle: ' + busy + '. Nothing was closed; close it once the terminal is idle.',
+                              'CLOSE_TERMINAL_BUSY', batch_id=batch_id)
+            result = close(self.root, self.install, job, mode=mode, reason=reason, confirm=True, closed_by='demo_agent',
+                           now=self.clock(), queue=jobs)
+            if result['changed']:
+                self._append('batch_pause_close', 'closed', batch_id=batch_id, mode=mode, pause_id=result.get('pause_id'),
+                             members_done=result.get('members_done_count'), members_unrun=result.get('members_unrun_count'),
+                             reason=result.get('reason'))
+            return result
+
     def _seed_pause(self, batch_id, kind='seed'):
         word = LANES[kind]['word']
         with self._seed_scope(kind + '-status', batch_id, kind) as (controller, evidence):
@@ -2297,6 +2370,8 @@ class DemoAgent:
         record = load(self.root, batch_id)
         if record is None:
             raise PauseRefused('No pause is recorded for batch ' + batch_id + '; pause it first.')
+        from studio_batch_close import refuse_closed
+        refuse_closed(self.root, batch_id)          # closed (batch-pause-close): never resumes, nothing is released
         # A reserved successor that never ran (retired unactivated / never started, or
         # cancelled before its start) releases the lineage, recorded append-only.
         from studio_batch_pause import release_unactivated
@@ -3344,6 +3419,13 @@ def main(argv=None):
     pause = commands.add_parser('batch-pause', help='Pause a running batch or seed hunt at its next safe point')
     pause.add_argument('--batch-id', required=True)
     pause.add_argument('--immediate', action='store_true', help='Skip the member-start wait; the monitor must still be reporting')
+    closer = commands.add_parser('batch-pause-close',
+                                 help='Close a paused batch for good (finish: keep everything for book and pack; exclude: keep '
+                                      'every file but exclude its exports from the book); deletes nothing, never resumes')
+    closer.add_argument('--batch-id', required=True)
+    closer.add_argument('--mode', choices=('finish', 'exclude'), default='finish')
+    closer.add_argument('--reason', help='Required for --mode exclude: why these results stay out of the book')
+    closer.add_argument('--confirm', action='store_true', help='Required: closing is final for this batch')
     resumed = commands.add_parser('batch-resume', help='Continue a paused batch as a successor batch')
     resumed.add_argument('--batch-id', required=True)
     resumed.add_argument('--new-batch-id')
@@ -3490,6 +3572,8 @@ def main(argv=None):
         elif args.command == 'research-status': result = agent.research_status()
         elif args.command == 'research-queue': result = agent.research_queue(args.finished, job_ids=args.job_ids)
         elif args.command == 'batch-pause': result = agent.batch_pause(args.batch_id, immediate=args.immediate)
+        elif args.command == 'batch-pause-close': result = agent.batch_pause_close(args.batch_id, mode=args.mode,
+            reason=args.reason, confirm=args.confirm)
         elif args.command == 'batch-resume': result = agent.batch_resume(args.batch_id, new_batch_id=args.new_batch_id,
             resume_token=args.resume_token, max_seconds=args.max_seconds, clear_stop=args.clear_stop,
             include_failed=args.include_failed, include_no_edge=args.include_no_edge,

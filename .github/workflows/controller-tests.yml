@@ -28,35 +28,26 @@ concurrency:
 #           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths
 #     python: test_goat_deployment_liveness
 #
-# controller-mutations (1/3)  ~16-24 min observed
-#   python test_research_outcome_controller_mutations.py   (12-17 min)
-#   python test_evidence_end_export_controller_mutations.py
-#   python test_catchup_rebase_controller_mutations.py     (83 mutations, rebase v2; 14.9 min locally at Idle)
-#   node   test_bias_reader_parity_mutations.cjs, test_research_outcome_mutations.cjs,
-#          test_studio_steady_panel_mutations.cjs, test_ea_followups_mutations.cjs,
-#          test_terminal_isolation_mutations.cjs
-#   python test_terminal_isolation_controller_mutations.py
-#   python test_lane_final_write_mutations.py              (14 mutations; ~3 min locally at Idle)
-#   python test_switch_hold_mutations.py                   (28 mutations; ~6 min locally at Idle, ~7.5 min in CI)
+# Controller mutations (GOAT-EA#204; Claude-Mac, goatai#2350 6089452823 + 6089458580). With 3 shards,
+# shard 1/3 hit the 45-min cap on GOAT-EA#201 and #203 (run 37956413084: 45.25 min, cancelled), so the
+# suite now runs as 4 shards split by measured step time. The step table and the timing data live
+# in controller-mutation-shard.yml (one reusable workflow, also used by the full run).
 #
-# controller-mutations (2/3)  31-43 min observed by 2026-10-08; 45.2 min (timeout) with support 64f1c5ae's mutations,
-#   so test_switch_hold_mutations.py moved to 1/3 and test_holdup_mutations.py to 3/3 (GOAT-EA#197)
-#   python test_process_query_mutations.py                 (58 mutations, ~25 min in CI)
-#   python test_oos_windows_controller_mutations.py        (61 mutations; 5.4 min locally at Idle, ~10 min in CI)
-#   python test_lane_driver_mutations.py, test_research_launch_mutations.py
-#   (GOAT-EA#174 moved test_export_qualification_mutations.py and test_driver_backoff_mutations.py to 3/3 to balance)
+#   mutation selection        scripts/ci_mutation_select.py diffs the PR against its merge base and
+#                             picks the steps whose files it changes plus their dependents. Core
+#                             files (CI wiring, the selector, requirements, shared controller
+#                             modules), deletions and any file it cannot map run the FULL suite.
+#   mutation shard (N/4)      the 4 shards; a shard with no selected step is skipped, and a step the
+#                             PR does not affect is skipped (each shard's log lists RUN / SKIP).
+#   controller-mutations (1/3)  aggregates shards 1/4 and 2/4   } the three check names branch
+#   controller-mutations (2/3)  aggregates shard 3/4            } protection requires, unchanged.
+#   controller-mutations (3/3)  aggregates shard 4/4            } Each fails unless the selection
+#                             succeeded and every shard it aggregates either succeeded or was
+#                             deliberately skipped by the selection.
 #
-# controller-mutations (3/3)  ~13-24 min observed (33-37 min by 2026-10-08)
-#   python test_holdup_mutations.py                        (19 mutations; ~2.5 min in CI)
-#   python test_restore_lane_never_started_mutations.py    (4-14 min)
-#   python test_peer_restart_mutations.py, test_peer_roster_mutations.py,
-#          test_seed_member_failure_mutations.py, test_export_qualification_mutations.py,
-#          test_driver_backoff_mutations.py, test_setup_registration_mutations.py (19 mutations; ~2 min locally at Idle),
-#          test_profile_staged_deploy_mutations.py (38 mutations, named tests only; ~2 min locally at Idle)
-#   node   test_profile_staged_adoption_mutations.cjs (72 mutations; seconds)
-#
-# A new mutation check goes in the shard with the most headroom; keep each shard well under its
-# timeout. Setup steps are identical in both jobs.
+# The full suite runs on every push to codex/v148-research-planning (controller-mutations-full.yml),
+# which records its result per commit; Release's candidate build refuses a sha without a green one.
+# controller/test_ci_mutation_shards.py checks the shards, the aggregation and the selection rules.
 
 jobs:
   controller:
@@ -161,139 +152,135 @@ jobs:
           TMP: ${{ runner.temp }}
         run: python -m unittest discover -s controller -p "test_*.py" -v
 
-  controller-mutations:
-    name: controller-mutations (${{ matrix.shard }}/3)
-    runs-on: windows-2022
-    # Each shard ran 13-24 min on the slowest observed runners; 45 leaves ~2x headroom.
-    timeout-minutes: 45
-    strategy:
-      # One failing shard must not cancel the others: a cancelled check is a false signal.
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
-    env:
-      PYTHONUTF8: "1"
-      PYTHONNOUSERSITE: "1"
-      PYTHONDONTWRITEBYTECODE: "1"
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      FIRESTORE_EMULATOR_HOST: 127.0.0.1:1
+  mutation-selection:
+    name: mutation selection
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      mode: ${{ steps.select.outputs.mode }}
+      run_1: ${{ steps.select.outputs.run_1 }}
+      steps_1: ${{ steps.select.outputs.steps_1 }}
+      run_2: ${{ steps.select.outputs.run_2 }}
+      steps_2: ${{ steps.select.outputs.steps_2 }}
+      run_3: ${{ steps.select.outputs.run_3 }}
+      steps_3: ${{ steps.select.outputs.steps_3 }}
+      run_4: ${{ steps.select.outputs.run_4 }}
+      steps_4: ${{ steps.select.outputs.steps_4 }}
     steps:
-      - name: Check out proposed source
+      - name: Check out proposed source with history
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          # Full commit history for the merge base, without every historical blob (~260 MB packed).
+          fetch-depth: 0
+          filter: blob:none
 
-      - name: Set up Windows x64 Python
+      - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
-          architecture: x64
 
-      - name: Install only the publisher's hash-pinned native wheels
-        run: |
-          python -m pip install --no-index --no-deps --only-binary=:all: --require-hashes -r controller/ci-requirements.txt
-
-      - name: Verify native imports without connecting to MT5
-        shell: python
+      - name: Select the mutation steps this pull request needs
+        id: select
         env:
-          # Hosted Windows TEMP defaults to a short-name alias; require canonical fixtures.
-          TEMP: ${{ runner.temp }}
-          TMP: ${{ runner.temp }}
-        run: |
-          import sys
-          import tempfile
-          from pathlib import Path
-          import numpy
-          import MetaTrader5
-          assert sys.platform == "win32" and sys.version_info[:2] == (3, 13)
-          fixture_temp = Path(tempfile.gettempdir())
-          assert fixture_temp.is_absolute() and fixture_temp.resolve() == fixture_temp
-          print("Canonical fixture temp", fixture_temp)
-          assert numpy.__version__ == "2.2.6"
-          assert MetaTrader5.__version__ == "5.0.6180"
-          assert numpy.dot(numpy.array([2, 3]), numpy.array([4, 5])).item() == 23
-          print(sys.version)
-          print("Verified NumPy", numpy.__version__, "and MetaTrader5", MetaTrader5.__version__)
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python scripts/ci_mutation_select.py select --event "$EVENT" --base "$BASE_SHA" --head "$HEAD_SHA" --github-output "$GITHUB_OUTPUT"
 
-      # One command per step: a multi-line pwsh step only fails on its last exit code.
+  mutation-shard-1:
+    name: mutation shard (1/4)
+    needs: mutation-selection
+    if: needs.mutation-selection.outputs.run_1 == 'true'
+    uses: ./.github/workflows/controller-mutation-shard.yml
+    with:
+      shard: 1
+      steps: ${{ needs.mutation-selection.outputs.steps_1 }}
 
-      # ---- Shard 1/3 ----
-      - name: Recorded bias gate mutation check (every guard is load-bearing)
-        if: matrix.shard == 1
-        run: node scripts/test_bias_reader_parity_mutations.cjs
-      - name: Research outcome mutation check (every EA guard is load-bearing)
-        if: matrix.shard == 1
-        run: node scripts/test_research_outcome_mutations.cjs
-      - name: Research outcome controller mutation check
-        if: matrix.shard == 1
-        run: python scripts/test_research_outcome_controller_mutations.py
-      - name: Steady Studio panel mutation check
-        if: matrix.shard == 1
-        run: node scripts/test_studio_steady_panel_mutations.cjs
-      - name: FU35 mutation check (every EA guard is load-bearing)
-        if: matrix.shard == 1
-        run: node scripts/test_ea_followups_mutations.cjs
-      - name: EvidenceEnd controller staging mutation check
-        if: matrix.shard == 1
-        run: python scripts/test_evidence_end_export_controller_mutations.py
-      - name: Terminal isolation mutation check (every guard is load-bearing)
-        if: matrix.shard == 1
-        run: node scripts/test_terminal_isolation_mutations.cjs
-      - name: Terminal isolation controller mutation check (every guard is load-bearing)
-        if: matrix.shard == 1
-        run: python scripts/test_terminal_isolation_controller_mutations.py
-      - name: Catch-up swap-only drift mutation check (every rebase v2 rule and boundary, first failing rule, comparable_rebased / requalify / not_comparable, no-splice windows, stamps)
-        if: matrix.shard == 1
-        run: python scripts/test_catchup_rebase_controller_mutations.py
-      - name: Lane driver sharing-error mutation check (bounded gate wait, busy pass skipped, record reads/writes retried, loud after the bound)
-        if: matrix.shard == 1
-        run: python scripts/test_lane_final_write_mutations.py
-      - name: Member switch hold mutation check (off by default, 90 s bound, quiet slot, fail open, stop/cancel/pause end a hold at once)
-        if: matrix.shard == 1
-        run: python scripts/test_switch_hold_mutations.py
+  mutation-shard-2:
+    name: mutation shard (2/4)
+    needs: mutation-selection
+    if: needs.mutation-selection.outputs.run_2 == 'true'
+    uses: ./.github/workflows/controller-mutation-shard.yml
+    with:
+      shard: 2
+      steps: ${{ needs.mutation-selection.outputs.steps_2 }}
 
-      # ---- Shard 2/3 ----
-      - name: Process query mutation check (WMI stall retry, unconfirmed launch, seed unowned doubt)
-        if: matrix.shard == 2
-        run: python scripts/test_process_query_mutations.py
-      - name: Detached lane driver mutation check (caller checks first, one driver, exact durable reservation, foreground cap)
-        if: matrix.shard == 2
-        run: python scripts/test_lane_driver_mutations.py
-      - name: Research launch mutation check (no KILL_ON_JOB_CLOSE, refuse on assignment failure, trading launches excluded, Idle lock, CPU-cap staging)
-        if: matrix.shard == 2
-        run: python scripts/test_research_launch_mutations.py
-      - name: OOS window formula mutation check (date math, BOOS/FOOS pass bar and floor, FOOS held out, pre-FOOS metrics, catch-up closed day vs Friday exports, evidence-end stamps)
-        if: matrix.shard == 2
-        run: python scripts/test_oos_windows_controller_mutations.py
+  mutation-shard-3:
+    name: mutation shard (3/4)
+    needs: mutation-selection
+    if: needs.mutation-selection.outputs.run_3 == 'true'
+    uses: ./.github/workflows/controller-mutation-shard.yml
+    with:
+      shard: 3
+      steps: ${{ needs.mutation-selection.outputs.steps_3 }}
 
-      # ---- Shard 3/3 ----
-      - name: Restore-lane never-started allowance mutation check (exact-attempt settlement records, other demo work refuses, settle-refused-start stays the reviewed proof)
-        if: matrix.shard == 3
-        run: python scripts/test_restore_lane_never_started_mutations.py
-      - name: Hold-up test mutation check (hash binding, frozen inputs, report reconciliation, refusals, peeks, redaction)
-        if: matrix.shard == 3
-        run: python scripts/test_holdup_mutations.py
-      - name: Protected peer restart mutation check (every refusal is load-bearing)
-        if: matrix.shard == 3
-        run: python scripts/test_peer_restart_mutations.py
-      - name: GOAT peers mutation check (unknown, moved, unsigned or namespace-sharing MT5 still refuse)
-        if: matrix.shard == 3
-        run: python scripts/test_peer_roster_mutations.py
-      - name: Seed member failure mutation check (one failure never ends the batch; breaker, cancel and resume rules hold)
-        if: matrix.shard == 3
-        run: python scripts/test_seed_member_failure_mutations.py
-      - name: Export qualification mutation check (qualifying = passed the run's thresholds; cut-off, log cross-check, redaction)
-        if: matrix.shard == 3
-        run: python scripts/test_export_qualification_mutations.py
-      - name: Driver observe backoff mutation check (bounded backoff, pass-cost floor, progress reset, stall report, thread-only priority)
-        if: matrix.shard == 3
-        run: python scripts/test_driver_backoff_mutations.py
-      - name: Setup registration mutation check (an expired other-build registration is archived with its sha, a live one refuses, no phantom close journal)
-        if: matrix.shard == 3
-        run: python scripts/test_setup_registration_mutations.py
-      - name: Profile-staged adoption mutation check (every adoption guard, the deploy_next refusal, the disabled buttons and the retired template path)
-        if: matrix.shard == 3
-        run: node scripts/test_profile_staged_adoption_mutations.cjs
-      - name: Profile-staged deploy mutation check (Enabled=0 always, AllowLiveTrading never written, BuildTemplate-exact writer, child_not_started then auto-unwind, exact profile rollback)
-        if: matrix.shard == 3
-        run: python scripts/test_profile_staged_deploy_mutations.py
+  mutation-shard-4:
+    name: mutation shard (4/4)
+    needs: mutation-selection
+    if: needs.mutation-selection.outputs.run_4 == 'true'
+    uses: ./.github/workflows/controller-mutation-shard.yml
+    with:
+      shard: 4
+      steps: ${{ needs.mutation-selection.outputs.steps_4 }}
+
+  # The three checks branch protection requires, names unchanged (Claude-Mac, goatai#2350 6089452823).
+  # Each fails unless the selection succeeded and each of its shards succeeded, or was skipped because
+  # the selection chose to skip it (run_N == 'false'); scripts/ci_mutation_select.py verdict decides.
+  controller-mutations-1:
+    name: controller-mutations (1/3)
+    needs: [mutation-selection, mutation-shard-1, mutation-shard-2]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the verdict script
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci_mutation_select.py
+          sparse-checkout-cone-mode: false
+      - name: Shards 1/4 and 2/4 succeeded or were deliberately skipped
+        env:
+          SELECTION: ${{ needs.mutation-selection.result }}
+          SHARD_1: 1:${{ needs.mutation-selection.outputs.run_1 }}:${{ needs.mutation-shard-1.result }}
+          SHARD_2: 2:${{ needs.mutation-selection.outputs.run_2 }}:${{ needs.mutation-shard-2.result }}
+        run: python3 scripts/ci_mutation_select.py verdict --selection "$SELECTION" --shard "$SHARD_1" --shard "$SHARD_2"
+
+  controller-mutations-2:
+    name: controller-mutations (2/3)
+    needs: [mutation-selection, mutation-shard-3]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the verdict script
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci_mutation_select.py
+          sparse-checkout-cone-mode: false
+      - name: Shard 3/4 succeeded or was deliberately skipped
+        env:
+          SELECTION: ${{ needs.mutation-selection.result }}
+          SHARD_3: 3:${{ needs.mutation-selection.outputs.run_3 }}:${{ needs.mutation-shard-3.result }}
+        run: python3 scripts/ci_mutation_select.py verdict --selection "$SELECTION" --shard "$SHARD_3"
+
+  controller-mutations-3:
+    name: controller-mutations (3/3)
+    needs: [mutation-selection, mutation-shard-4]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the verdict script
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci_mutation_select.py
+          sparse-checkout-cone-mode: false
+      - name: Shard 4/4 succeeded or was deliberately skipped
+        env:
+          SELECTION: ${{ needs.mutation-selection.result }}
+          SHARD_4: 4:${{ needs.mutation-selection.outputs.run_4 }}:${{ needs.mutation-shard-4.result }}
+        run: python3 scripts/ci_mutation_select.py verdict --selection "$SELECTION" --shard "$SHARD_4"

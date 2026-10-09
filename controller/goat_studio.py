@@ -16,6 +16,31 @@ import subprocess
 import time
 import uuid
 
+# The embedded GOAT Python (python313._pth: safe path, ../controller listed) never puts this script's own folder
+# on sys.path, so a checkout's goat_studio.py run with it imported the INSTALLED controller's modules: a new
+# operation was dispatched by this file and refused by the installed studio_research_authority ("Demo mutation
+# requires the broker-verified agent tool", news-history-sync on Banker 2026-10-09). Same rule as demo_agent.py:
+# this file's own modules first, so one run never mixes two controller revisions.
+_HERE = str(Path(__file__).resolve().parent)
+if not sys.path or sys.path[0] != _HERE:
+    sys.path.insert(0, _HERE)
+_OWN_MODULES = ('studio_', 'campaign_ledger', 'strategy_registry', 'native_control_transaction', 'demo_agent')
+
+
+def foreign_controller_modules():
+    """Controller modules this process loaded from another folder (a caller that imported them first, or a path
+    order that bypassed the insert above). main() refuses then, so the operation classification, the authority and
+    the command always come from one controller revision, whatever the entrypoint (CLI, runpy or import)."""
+    here = Path(_HERE)
+    foreign = []
+    for name, module in list(sys.modules.items()):
+        if not isinstance(name, str) or not name.startswith(_OWN_MODULES):
+            continue
+        path = getattr(module, '__file__', None)
+        if isinstance(path, str) and Path(path).resolve().parent != here:
+            foreign.append((name, str(Path(path).resolve().parent)))
+    return sorted(foreign)
+
 from campaign_ledger import packed,sha
 from studio_installation import VERSION,load_installation,read_json,contracts
 from studio_bridge import StudioBridge,write_json,pump_for,display_state
@@ -475,6 +500,10 @@ def main(argv=None):
     p=sub.add_parser('deploy-stop');p.add_argument('--attempt-id',required=True)
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
+        foreign=foreign_controller_modules()
+        if foreign:
+            raise ValueError('This controller ('+_HERE+') was started with modules of another controller ('+foreign[0][1]+', '
+                             +foreign[0][0]+'). Nothing was run: run goat_studio.py from one controller folder.')
         from studio_research_authority import operation,dispatch
         locks.enter_context(operation(args.operation))
         if args.operation=='self-repair':

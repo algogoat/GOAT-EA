@@ -2356,10 +2356,11 @@ class DemoAgent:
     def evidence_archive(self, batch_id, archive_root, *, apply=False, confirm=False, keep_list=None):
         """Move a finished or closed batch's evidence off the controller volume (studio_evidence_archive, goatai#2350).
 
-        Preview unless ``apply``; ``apply`` needs ``confirm``. Demo lane only, like batch-pause-close. Under the terminal
-        lock the preview is rebuilt and must have no blocker: the batch finished or closed, the terminal idle (no running
-        batch, seed slot, unreleased fixed task or live driver), no citation by a held-out lock or FOOS/selection read,
-        not on ``keep_list``, an archive root on another volume that is writable and has room. Each file is copied,
+        Preview unless ``apply``; ``apply`` needs ``confirm`` and ``keep_list`` (may be ``[]``). Demo lane only, like
+        batch-pause-close. Under the terminal lock the preview is rebuilt and must have no blocker: the batch finished or
+        closed, the terminal idle (no running batch, seed slot, unreleased fixed task or live driver), no ACTIVE held-out
+        lock on its SETs and no unfinished run reading it as its source (finished FOOS reads are only listed in
+        ``cited_by``), not on ``keep_list``, an archive root on another volume that is writable and has room. Each file is copied,
         sha256-verified, listed in a manifest and pointed to before its source is removed. No MT5 effect; allowed under
         owner STOP. A re-run verifies and completes an interrupted archive without copying anything twice.
         """
@@ -2374,6 +2375,9 @@ class DemoAgent:
         except ValueError as exc:
             raise Refusal('evidence-archive runs only on a paired demo installation: ' + str(exc), 'ARCHIVE_NOT_DEMO',
                           batch_id=batch_id) from None
+        if apply and keep_list is None:
+            blocker = archive.keep_list_required(batch_id)
+            raise Refusal(blocker['plain'] + ' Nothing was moved.', blocker['code'], batch_id=batch_id)
         keep = archive.read_keep_list(keep_list) if keep_list is not None else None
         if not apply:
             return archive.public(self._archive_plan(batch_id, archive_root, keep, busy=self._close_busy()))
@@ -3506,8 +3510,8 @@ def main(argv=None):
     archiver.add_argument('--apply', action='store_true', help='Move the previewed files (needs --confirm)')
     archiver.add_argument('--confirm', action='store_true', help='Required with --apply')
     archiver.add_argument('--keep-list', type=Path,
-                          help='JSON array of batch IDs or run folders that must stay (prereg/book citations the '
-                               'controller cannot see); a listed batch refuses ARCHIVE_KEEP_LISTED')
+                          help='Required with --apply (may be []): JSON array of batch IDs or run folders that must stay '
+                               '(prereg/book citations the controller cannot see); a listed batch refuses ARCHIVE_KEEP_LISTED')
     resumed = commands.add_parser('batch-resume', help='Continue a paused batch as a successor batch')
     resumed.add_argument('--batch-id', required=True)
     resumed.add_argument('--new-batch-id')

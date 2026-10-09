@@ -51,11 +51,14 @@ catchup-report; equivalence-canary-ingest). With a pointer the archive is the tr
 never a silent fallback. studio_evidence_log.append refuses to write to an archived batch.
 
 Refusals (stable codes, nothing written): the batch is not finished or closed, a seed slot or any batch is
-active, the batch is cited by a held-out lock or a FOOS/selection read this controller can see, it is on the
-caller's ``--keep-list``, the archive root is on the controller's volume, missing, not writable or short of space
-(the preview size plus a margin), or ``--confirm`` is missing. Prereg and book citations live outside the
-controller (goatai prereg files, the book on G:): the keep-list is the caller's way to name them. The Exp 02
-refusal belongs to the desktop gate, as with batch-pause-close.
+active, an ACTIVE held-out lock (locked, revealable, revealing) holds its SETs, a run that is not finished (seed
+hunt, catch-up, hold-up test) reads it as its source, it is on the caller's ``--keep-list`` (required for
+``--apply``; it may be ``[]``), the archive root is on the controller's volume, missing, not writable or short of
+space (the preview size plus a margin), or ``--confirm`` is missing. A finished FOOS read or a revealed lock does
+not block (Claude-Mac on GOAT-EA#205): the pointer keeps the evidence readable, and the preview lists it under
+``cited_by``. A manifest or lock registry that cannot be read refuses (``ARCHIVE_CITATIONS_UNVERIFIABLE``).
+Prereg and book citations live outside the controller (goatai prereg files, the book on G:): the keep-list is the
+caller's way to name them. The Exp 02 refusal belongs to the desktop gate, as with batch-pause-close.
 """
 from datetime import datetime, timezone
 import hashlib
@@ -93,8 +96,9 @@ RUNNER_ACTIVE_MEMBERS = ('pending', 'starting', 'running', 'cancel_requested', '
 # Refusal codes (append only). EVIDENCE_ARCHIVE_UNREACHABLE and EVIDENCE_ARCHIVED are the readers' and writers'.
 CODES = frozenset((
     'ARCHIVE_CONFIRM_REQUIRED', 'ARCHIVE_NOT_DEMO', 'ARCHIVE_UNKNOWN_BATCH', 'ARCHIVE_UNSUPPORTED_KIND',
-    'ARCHIVE_NOT_FINISHED', 'ARCHIVE_COMPACT_FIRST', 'ARCHIVE_TERMINAL_BUSY', 'ARCHIVE_CITED_FOOS_READ',
-    'ARCHIVE_CITED_SELECTION', 'ARCHIVE_CITATIONS_UNVERIFIABLE', 'ARCHIVE_KEEP_LISTED', 'ARCHIVE_KEEP_LIST_INVALID',
+    'ARCHIVE_NOT_FINISHED', 'ARCHIVE_COMPACT_FIRST', 'ARCHIVE_TERMINAL_BUSY', 'ARCHIVE_HELDOUT_LOCK_ACTIVE',
+    'ARCHIVE_IN_FLIGHT_READER', 'ARCHIVE_CITATIONS_UNVERIFIABLE', 'ARCHIVE_KEEP_LIST_REQUIRED', 'ARCHIVE_KEEP_LISTED',
+    'ARCHIVE_KEEP_LIST_INVALID',
     'ARCHIVE_ROOT_INVALID', 'ARCHIVE_ROOT_UNAVAILABLE', 'ARCHIVE_ROOT_SAME_VOLUME', 'ARCHIVE_ROOT_NOT_WRITABLE',
     'ARCHIVE_ROOT_LOW_SPACE', 'ARCHIVE_ALREADY_ARCHIVED', 'ARCHIVE_TARGET_CONFLICT', 'ARCHIVE_MANIFEST_CONFLICT',
     'ARCHIVE_VERIFY_FAILED', 'ARCHIVE_SOURCE_CHANGED', 'ARCHIVE_NOTHING_TO_MOVE',
@@ -492,105 +496,160 @@ def native_state_blocker(root, job):
                     'batch with batch-pause-close first).' % (job_id, state), batch_id=job_id, batch_state=state)
 
 
-def catchup_state_blocker(root, catchup_id):
-    folder = Path(root) / 'catchups' / catchup_id
+def runner_state(root, folder, run_id):
+    """None when a seed hunt, catch-up or hold-up test run is finished, else running, pending, paused, pausing or
+    unsettled (SeedRunner states: a stopped run with members left is resumable, so it reads paused)."""
+    base = Path(root) / folder / run_id
     try:
-        state = _bounded_json(folder / 'state.json')
+        state = _bounded_json(base / 'state.json')
     except (OSError, ValueError):
         state = None
     if not isinstance(state, dict):
-        status = 'unsettled'
-    else:
-        members = [m.get('status') for m in state.get('members') or [] if isinstance(m, dict)]
-        status = state.get('status')
-        if (folder / 'pause.json').is_file():
-            status = 'pausing' if status in ('active', 'closing_monitor') else 'paused'
-        elif status == 'prepared':
-            status = 'pending'
-        elif status in ('active', 'closing_monitor'):
-            status = 'running'
-        elif status == 'reconcile_required' or any(m == 'reconcile_required' for m in members):
-            status = 'unsettled'
-        elif status in ('completed', 'stopped') and any(m in RUNNER_ACTIVE_MEMBERS for m in members):
-            status = 'paused'                                  # stopped with members left: catchup-resume continues it
-        elif status in ('completed', 'stopped'):
-            return None
-        else:
-            status = 'unsettled'
+        return 'unsettled'
+    members = [m.get('status') for m in state.get('members') or [] if isinstance(m, dict)]
+    status = state.get('status')
+    if (base / 'pause.json').is_file():
+        return 'pausing' if status in ('active', 'closing_monitor') else 'paused'
+    if status == 'prepared':
+        return 'pending'
+    if status in ('active', 'closing_monitor'):
+        return 'running'
+    if status == 'reconcile_required' or any(m == 'reconcile_required' for m in members):
+        return 'unsettled'
+    if status in ('completed', 'stopped'):
+        return 'paused' if any(m in RUNNER_ACTIVE_MEMBERS for m in members) else None
+    return 'unsettled'
+
+
+def catchup_state_blocker(root, catchup_id):
+    status = runner_state(root, 'catchups', catchup_id)
+    if status is None:
+        return None
     return _blocker('ARCHIVE_NOT_FINISHED', 'Catch-up %s is %s; only a finished catch-up is archived.' % (catchup_id, status),
                     batch_id=catchup_id, batch_state=status)
 
 
-def _citation_blocker(job_id, hits):
-    selection = [hit for hit in hits if hit.get('kind') == 'selection']
-    code = 'ARCHIVE_CITED_SELECTION' if selection else 'ARCHIVE_CITED_FOOS_READ'
-    return _blocker(code, '%d citation(s) of batch %s by a %s this controller can see; its evidence stays where it is.'
-                    % (len(hits), job_id, 'held-out lock or selection' if selection else 'FOOS read (catch-up or hold-up test)'),
-                    batch_id=job_id, citations=hits[:50])
+READERS = (('seeds', 'seed hunt'), ('catchups', 'catch-up'), ('holdups', 'hold-up test'))
+
+
+def _inside(path, folders):
+    if not isinstance(path, str):
+        return False
+    target = os.path.normcase(os.path.abspath(_plain(path)))
+    return any(target.startswith(folder + os.sep) for folder in folders)
+
+
+def scan_citations(root, install, batch_id, *, shas, lock_shas, folders, reveal=None, skip=None, now):
+    """Every citation this controller can see of a batch's SETs (``shas``) or folders (``folders``), each marked:
+
+    * a seed hunt, catch-up or hold-up test whose manifest member sources one of them (``source_path`` /
+      ``original.set_path`` inside a folder, or ``source_sha256`` / ``original.set_sha256`` in ``shas``), with
+      ``in_flight`` true while that run is not finished (runner_state);
+    * a held-out lock whose frozen candidate holds one of ``lock_shas``, or the lock this catch-up reveals
+      (``reveal``), with ``active`` (studio_heldout: locked, revealable or revealing).
+
+    Raises ValueError when a manifest or the lock registry cannot be read: nothing can be proven then.
+    """
+    from studio_heldout import ACTIVE as LOCK_ACTIVE, read_registry
+    bases = [os.path.normcase(os.path.abspath(_plain(folder))) for folder in folders]
+    hits = []
+    for runner, kind in READERS:
+        base = Path(root) / runner
+        for path in sorted(base.glob('*/manifest.json')) if base.is_dir() else []:
+            run_id = path.parent.name
+            if (runner, run_id) == skip:
+                continue
+            try:
+                value = _bounded_json(path)
+            except (OSError, ValueError, UnicodeError) as error:
+                raise ValueError('the %s manifest %s is unreadable (%s)' % (kind, path, str(error)[:200])) from None
+            state = None
+            for member in (value.get('members') if isinstance(value, dict) else None) or []:
+                if not isinstance(member, dict):
+                    continue
+                original = member.get('original') if isinstance(member.get('original'), dict) else {}
+                source = member.get('source_path') or original.get('set_path')
+                digest = member.get('source_sha256') or original.get('set_sha256')
+                if digest in shas or _inside(source, bases):
+                    if state is None:
+                        state = runner_state(root, runner, run_id) or 'finished'
+                    hits.append(dict(kind='source' if runner == 'seeds' else 'foos_read', via=kind, run_id=run_id,
+                                     set_path=source, set_sha256=digest, reader_state=state, in_flight=state != 'finished',
+                                     plain='cited by %s %s (%s)' % (kind, run_id, state)))
+    registry = read_registry(install, now=now)
+    if registry['state'] == 'unavailable':
+        raise ValueError('the held-out lock registry cannot be verified (' + str(registry['error']) + ')')
+    for lock in registry['locks']:
+        active = lock.get('active') if isinstance(lock.get('active'), bool) else lock.get('status') in LOCK_ACTIVE
+        cells = [cell.get('set_sha256') for cell in lock.get('candidate') or [] if cell.get('set_sha256') in lock_shas]
+        if cells or (reveal is not None and lock.get('lock_id') == reveal):
+            hits.append(dict(kind='selection', via='held-out lock freeze' if cells else 'held-out reveal',
+                             lock_id=lock.get('lock_id'), strategy_key=lock.get('strategy_key'), set_sha256=(cells or [None])[0],
+                             lock_status=lock.get('status'), active=bool(active),
+                             plain='cited by held-out lock %s (%s)' % (str(lock.get('lock_id'))[:12], lock.get('status'))))
+    return hits
+
+
+def citation_blockers(batch_id, hits):
+    """Citations block only while they matter now: an ACTIVE held-out lock, or a run still reading the batch."""
+    blockers = []
+    locks = [hit for hit in hits if hit['kind'] == 'selection' and hit['active']]
+    if locks:
+        blockers.append(_blocker('ARCHIVE_HELDOUT_LOCK_ACTIVE', 'Held-out lock %s (%s) holds batch %s\'s SETs and is still '
+                                 'active; archive it after the lock is revealed.' % (locks[0]['lock_id'], locks[0]['lock_status'],
+                                                                                    batch_id),
+                                 batch_id=batch_id, locks=[{k: h[k] for k in ('lock_id', 'lock_status', 'set_sha256')} for h in locks]))
+    readers = [hit for hit in hits if hit.get('in_flight')]
+    if readers:
+        blockers.append(_blocker('ARCHIVE_IN_FLIGHT_READER', '%s %s is %s and reads batch %s as its source; archive it after '
+                                 'that run finishes.' % (readers[0]['via'], readers[0]['run_id'], readers[0]['reader_state'],
+                                                         batch_id),
+                                 batch_id=batch_id, reader=readers[0]['run_id'], reader_kind=readers[0]['via'],
+                                 reader_state=readers[0]['reader_state'],
+                                 readers=[{k: h[k] for k in ('via', 'run_id', 'reader_state', 'set_path')} for h in readers[:50]]))
+    return blockers
+
+
+def _unverifiable(batch_id, error):
+    return _blocker('ARCHIVE_CITATIONS_UNVERIFIABLE', 'It cannot be proven which runs or held-out locks cite batch %s (%s); '
+                    'nothing is moved.' % (batch_id, str(error)[:300]), batch_id=batch_id)
 
 
 def native_citations(root, install, job_id, *, now):
-    """A blocker when an export of the batch was read on FOOS or selected (studio_batch_close.foos_reads)."""
-    from studio_batch_close import batch_exports, foos_reads, run_root
+    """(blockers, citations, run folder) of a native batch: its export SETs and its run folder."""
+    from studio_batch_close import batch_exports, run_root
     try:
         run = run_root(root, install, job_id)
-        hits = foos_reads(root, install, run, batch_exports(run), now=now)
+        shas = {item['set_sha256'] for item in batch_exports(run)}
+        hits = scan_citations(root, install, job_id, shas=shas, lock_shas=shas, folders=[run], now=now)
     except (OSError, ValueError, KeyError, TypeError, UnicodeError) as error:
-        return _blocker('ARCHIVE_CITATIONS_UNVERIFIABLE', 'It cannot be proven that no export of batch %s entered a FOOS '
-                        'read or a selection (%s); nothing is moved.' % (job_id, str(error)[:300]), batch_id=job_id), None
-    return (_citation_blocker(job_id, hits) if hits else None), run
+        return [_unverifiable(job_id, error)], [], None
+    return citation_blockers(job_id, hits), hits, run
 
 
 def catchup_citations(root, install, catchup_id, folders, *, now):
-    """A blocker when the catch-up's re-tests are cited: a held-out lock freezes one of its SETs or it reveals a lock
-    (selection), or a later catch-up or hold-up test re-tests one of its re-test SETs (FOOS read)."""
-    from studio_heldout import read_registry
+    """(blockers, citations) of a catch-up: its re-test SETs and evidence folders (read by later runs), and the
+    original and re-test SETs a held-out lock may freeze, or the lock it reveals."""
     try:
         manifest = _bounded_json(Path(root) / 'catchups' / catchup_id / 'manifest.json')
-        shas, retests = set(), set()
+        originals, retests = set(), set()
         for spec in manifest.get('members') or []:
             original = (spec or {}).get('original') or {}
             if isinstance(original.get('set_sha256'), str):
-                shas.add(original['set_sha256'])
+                originals.add(original['set_sha256'])
         for folder in folders:
             for path in sorted(_io(Path(root) / folder).glob('*/evidence-version.json')):
                 record = _bounded_json(path, 16 * 1024 * 1024)
                 sha = ((record or {}).get('retest') or {}).get('set_sha256') if isinstance(record, dict) else None
                 if isinstance(sha, str):
                     retests.add(sha)
-        hits = []
-        if manifest.get('heldout_reveal'):
-            hits.append(dict(kind='selection', via='held-out reveal', catchup_id=catchup_id))
-        registry = read_registry(install, now=now)
-        if registry['state'] == 'unavailable':
-            raise ValueError('the held-out lock registry cannot be verified (' + str(registry['error']) + ')')
-        for lock in registry['locks']:
-            for cell in lock.get('candidate') or []:
-                if cell.get('set_sha256') in shas | retests:
-                    hits.append(dict(kind='selection', via='held-out lock freeze', lock_id=lock.get('lock_id'),
-                                     set_sha256=cell['set_sha256']))
-        bases = [os.path.normcase(os.path.abspath(Path(root) / folder)) for folder in folders]
-        for runner, kind in (('catchups', 'catch-up'), ('holdups', 'hold-up test')):
-            base = Path(root) / runner
-            for path in sorted(base.glob('*/manifest.json')) if base.is_dir() else []:
-                if runner == 'catchups' and path.parent.name == catchup_id:
-                    continue
-                value = _bounded_json(path)
-                for member in (value.get('members') if isinstance(value, dict) else None) or []:
-                    if not isinstance(member, dict):
-                        continue
-                    source = member.get('source_path') or (member.get('original') or {}).get('set_path')
-                    digest = member.get('source_sha256') or (member.get('original') or {}).get('set_sha256')
-                    inside = isinstance(source, str) and any(
-                        os.path.normcase(os.path.abspath(_plain(source))).startswith(b + os.sep) for b in bases)
-                    if digest in retests or inside:
-                        hits.append(dict(kind='foos_read', via=kind, run_id=path.parent.name, set_path=source,
-                                         set_sha256=digest))
+        reveal = (manifest.get('heldout_reveal') or {}).get('lock_id') if isinstance(manifest.get('heldout_reveal'), dict) else None
+        hits = scan_citations(root, install, catchup_id, shas=retests, lock_shas=retests | originals,
+                              folders=[Path(root) / folder for folder in folders], reveal=reveal,
+                              skip=('catchups', catchup_id), now=now)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError) as error:
-        return _blocker('ARCHIVE_CITATIONS_UNVERIFIABLE', 'It cannot be proven that catch-up %s is not cited by a held-out '
-                        'lock or a later re-test (%s); nothing is moved.' % (catchup_id, str(error)[:300]),
-                        batch_id=catchup_id)
-    return _citation_blocker(catchup_id, hits) if hits else None
+        return [_unverifiable(catchup_id, error)], []
+    return citation_blockers(catchup_id, hits), hits
 
 
 def read_keep_list(path):
@@ -696,7 +755,7 @@ def plan(root, install, batch_id, archive_root, *, kind, job=None, bindings=(), 
     if busy:
         blockers.append(_blocker('ARCHIVE_TERMINAL_BUSY', 'This terminal is not idle: ' + busy + '. Archive once it is idle.',
                                  batch_id=batch_id))
-    run, folders = None, []
+    run, folders, citations = None, [], []
     if kind == 'native':
         owned, unknown = native_files(root, batch_id, bindings)
         state = native_state_blocker(root, job)
@@ -706,18 +765,18 @@ def plan(root, install, batch_id, archive_root, *, kind, job=None, bindings=(), 
             blockers.append(_blocker('ARCHIVE_COMPACT_FIRST', 'Batch %s still keeps native evidence history in its queue row; '
                                      'run compact-evidence --apply first so it is archived too.' % batch_id, batch_id=batch_id))
         if pointer is None and owned:
-            citation, run = native_citations(root, install, batch_id, now=now)
-            if citation:
-                blockers.append(citation)
+            # A finished FOOS read or a revealed lock is informational (the pointer keeps the evidence readable);
+            # an ACTIVE held-out lock or a run still reading the batch blocks (Claude-Mac, #205).
+            found, citations, run = native_citations(root, install, batch_id, now=now)
+            blockers.extend(found)
     else:
         owned, unknown, folders = catchup_files(root, batch_id)
         state = catchup_state_blocker(root, batch_id)
         if state:
             blockers.append(state)
         if pointer is None and owned:
-            citation = catchup_citations(root, install, batch_id, folders, now=now)
-            if citation:
-                blockers.append(citation)
+            found, citations = catchup_citations(root, install, batch_id, folders, now=now)
+            blockers.extend(found)
     if pointer is None:
         keep_hit = keep_blocker(keep, batch_id, run)
         if keep_hit:
@@ -738,19 +797,27 @@ def plan(root, install, batch_id, archive_root, *, kind, job=None, bindings=(), 
                    if target is None or not _io(target / item['relative_path']).is_file()]
         found, free = root_blockers(root, archive_root, sum(missing))
         blockers.extend(found)
+    if keep is None:
+        blockers.append(keep_list_required(batch_id))
     files = sorted(owned, key=lambda item: item['relative_path'])
     return dict(batch_id=batch_id, kind=kind, installation=installation_id(root), archive_dir=str(target) if target else None,
                 archived=pointer is not None, pointer=str(pointer_path(root, batch_id)) if pointer is not None else None,
                 files=files, file_count=len(files), bytes=size, size=_human(size), folders=folders,
                 not_attributable=sorted(unknown, key=lambda item: item['relative_path'] or ''),
                 required_free_bytes=required_bytes(size), archive_free_bytes=free,
+                citations=citations, cited_by=[hit['plain'] for hit in citations], keep_list_checked=keep is not None,
                 blockers=blockers, ready=not blockers, run_root=str(run) if run else None)
+
+
+def keep_list_required(batch_id):
+    return _blocker('ARCHIVE_KEEP_LIST_REQUIRED', '--apply needs --keep-list <file>: the JSON list (it may be empty, []) of '
+                    'batches the prereg files and the book cite, which the controller cannot see.', batch_id=batch_id)
 
 
 def public(value, applied=False):
     """The preview/result for a reply: at most MAX_PUBLIC_FILES file rows (counts and bytes stay whole)."""
     result = dict(value, applied=applied)
-    for key in ('files', 'not_attributable'):
+    for key in ('files', 'not_attributable', 'citations', 'cited_by'):
         rows = result.get(key) or []
         result[key] = rows[:MAX_PUBLIC_FILES]
         result[key + '_omitted'] = max(0, len(rows) - MAX_PUBLIC_FILES)

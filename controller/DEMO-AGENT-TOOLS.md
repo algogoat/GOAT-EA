@@ -32,7 +32,7 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 & $goat demo --installation $receipt batch-pause-close --batch-id '<id>' --confirm   # close a paused batch for good; --mode finish|exclude, --reason (exclude)
 & $goat demo --installation $receipt compact-evidence   # preview; --apply moves finished in-row evidence history to verified logs
 & $goat demo --installation $receipt compact-receipts   # preview; --apply archives legacy full-queue receipts and keeps their queue digest
-& $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\<folder>'   # preview; --apply --confirm moves a finished batch's evidence off C:; optional --keep-list '<file>'
+& $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\<folder>'   # preview; --apply --confirm --keep-list '<file>' moves a finished batch's evidence off C:
 ```
 
 - `compact-evidence` and `compact-receipts` are local store maintenance with no native effect. Each previews by default and, with `--apply`, refuses while any batch is starting or running (checked before any archive and again inside each transaction). Archives are temp-written, fsynced, sha256-verified and atomically renamed, and are never deleted. Run `compact-evidence --apply` first, then `compact-receipts --apply`. Neither shrinks `studio.sqlite` on disk: that needs a separate reviewed `VACUUM`. Both change the store's content hash, so prepare a handover or owner-maintenance record after compacting, not before.
@@ -334,7 +334,7 @@ research prereg files, which read `members_done` from either record.
 
 ```powershell
 & $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\GOAT-Evidence-Archive'                      # preview
-& $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\GOAT-Evidence-Archive' --apply --confirm    # move
+& $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\GOAT-Evidence-Archive' --keep-list '<keep.json>' --apply --confirm    # move
 ```
 
 Moves, never deletes, the evidence of one finished or closed native batch, or one
@@ -364,14 +364,26 @@ finished catch-up, from the controller state to
   While the archive cannot be read (drive unplugged, manifest changed) they refuse
   `EVIDENCE_ARCHIVE_UNREACHABLE`; nothing is read in its place. Reconcile never appends
   to an archived batch (`EVIDENCE_ARCHIVED`).
+- Citations: the preview lists every run and held-out lock that cites the batch in
+  `citations` and `cited_by` ("cited by catch-up cu-x (finished)"). A finished FOOS
+  read (catch-up, hold-up test, seed hunt) or a revealed/breached lock does not block:
+  the pointer keeps the evidence readable. Only these do: an ACTIVE held-out lock
+  (locked, revealable or revealing) whose frozen candidate holds one of the batch's
+  SETs, or that a catch-up reveals (`ARCHIVE_HELDOUT_LOCK_ACTIVE`), and a seed hunt,
+  catch-up or hold-up test that is not finished (pending, running, paused, pausing,
+  unsettled) and sources one of its SETs or a file in its run or evidence folder
+  (`ARCHIVE_IN_FLIGHT_READER`, naming the reading run in `reader`). Both come from the
+  controller's own run manifests, states and lock registry, never from a hand list; an
+  unreadable manifest or registry refuses `ARCHIVE_CITATIONS_UNVERIFIABLE`.
 - The preview (no `--apply`) writes nothing (the writability check creates and removes
   one probe file in the archive root) and lists every `blocker`; `--apply` refuses with
-  the first: `ARCHIVE_CONFIRM_REQUIRED`, `ARCHIVE_NOT_FINISHED` (`batch_state` running,
+  the first: `ARCHIVE_CONFIRM_REQUIRED`, `ARCHIVE_KEEP_LIST_REQUIRED` (`--apply` needs
+  `--keep-list`; `[]` is fine), `ARCHIVE_NOT_FINISHED` (`batch_state` running,
   pending, paused, pausing or unsettled), `ARCHIVE_COMPACT_FIRST` (run
   `compact-evidence --apply` first), `ARCHIVE_TERMINAL_BUSY` (running batch in any
   session, seed slot, fixed task, live driver or another demo operation),
-  `ARCHIVE_CITED_FOOS_READ` / `ARCHIVE_CITED_SELECTION` (a catch-up, hold-up test or
-  held-out lock cites it) / `ARCHIVE_CITATIONS_UNVERIFIABLE`, `ARCHIVE_KEEP_LISTED` /
+  `ARCHIVE_HELDOUT_LOCK_ACTIVE`, `ARCHIVE_IN_FLIGHT_READER`,
+  `ARCHIVE_CITATIONS_UNVERIFIABLE`, `ARCHIVE_KEEP_LISTED` /
   `ARCHIVE_KEEP_LIST_INVALID`, `ARCHIVE_ROOT_SAME_VOLUME`, `ARCHIVE_ROOT_UNAVAILABLE`,
   `ARCHIVE_ROOT_INVALID`, `ARCHIVE_ROOT_NOT_WRITABLE`, `ARCHIVE_ROOT_LOW_SPACE` (the
   preview size plus 1 GiB or 5 %), `ARCHIVE_ALREADY_ARCHIVED` (another archive root),
@@ -380,8 +392,9 @@ finished catch-up, from the controller state to
   `ARCHIVE_SOURCE_CHANGED`, `ARCHIVE_TARGET_CONFLICT`, `ARCHIVE_MANIFEST_CONFLICT`
   (the source is kept in every case). Allowed under owner STOP.
 - Prereg and book citations live outside the controller (goatai prereg files, the book
-  on G:), so it cannot see them: pass `--keep-list <file>` (a JSON array of batch IDs
-  or run folders, or `{"keep": [...]}`) to keep those batches in place. The Exp 02
+  on G:), so it cannot see them: `--apply` requires `--keep-list <file>` (a JSON array
+  of batch IDs or run folders, or `{"keep": [...]}`; it may be empty) and keeps every
+  listed batch in place. The Exp 02
   refusal belongs to the desktop gate, as with `batch-pause-close`.
 
 ### Protected peer restarts

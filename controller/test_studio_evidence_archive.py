@@ -104,10 +104,27 @@ class ArchiveFixture(G20Fixture):
         found.update({str(p): p.read_bytes() for p in self.archive_root.rglob('*') if p.is_file()})
         return found
 
+    def keep_file(self, value=()):
+        path = self.f.base / 'keep.json'
+        path.write_text(json.dumps(list(value) if not isinstance(value, dict) else value))
+        return path
+
     def run_archive(self, batch_id=JOB, **kw):
         kw.setdefault('confirm', True)
         kw.setdefault('apply', True)
+        if 'keep_list' not in kw:
+            kw['keep_list'] = self.keep_file()          # --apply needs a keep-list; an empty one is the usual case
         return self.agent.evidence_archive(batch_id, kw.pop('archive_root', self.archive_root), **kw)
+
+    def preview(self, batch_id=JOB, **kw):
+        kw.setdefault('keep_list', self.keep_file())
+        return self.agent.evidence_archive(batch_id, kw.pop('archive_root', self.archive_root), **kw)
+
+    def write_runner(self, folder, run_id, status, members):
+        write_json(self.root / folder / run_id / 'manifest.json', dict(batch_id=run_id, members=members))
+        write_json(self.root / folder / run_id / 'state.json', dict(schema_version=1, batch_id=run_id, status=status,
+                                                                    members=[dict(status='completed' if status == 'completed'
+                                                                                  else 'pending')] * len(members)))
 
     def refused_archive(self, code, batch_id=JOB, **kw):
         before = self.files()
@@ -131,10 +148,11 @@ class ArchiveFixture(G20Fixture):
 class PreviewTests(ArchiveFixture):
     def test_preview_lists_exactly_the_proven_files_and_writes_nothing(self):
         before = self.files()
-        preview = self.agent.evidence_archive(JOB, self.archive_root)
+        preview = self.preview()
         self.assertEqual(self.files(), before)
         self.assertFalse(preview['applied'])
         self.assertTrue(preview['ready'], preview['blockers'])
+        self.assertEqual((preview['citations'], preview['cited_by'], preview['keep_list_checked']), ([], [], True))
         self.assertEqual([f['relative_path'] for f in preview['files']], self.owned())
         proofs = {Path(f['relative_path']).name: f['proof'] for f in preview['files']}
         self.assertEqual(proofs[self.log.name], 'queue_row:native_evidence_log')
@@ -157,9 +175,16 @@ class PreviewTests(ArchiveFixture):
 
     def test_preview_reports_blockers_instead_of_refusing(self):
         write_json(self.root / 'seed-active.json', dict(status='active', batch_id='seedhunt-1'))
-        preview = self.agent.evidence_archive(JOB, self.archive_root)
+        preview = self.preview()
         self.assertFalse(preview['ready'])
         self.assertEqual([b['code'] for b in preview['blockers']], ['ARCHIVE_TERMINAL_BUSY'])
+
+    def test_preview_works_without_a_keep_list_and_names_it_as_required(self):
+        before = self.files()
+        preview = self.agent.evidence_archive(JOB, self.archive_root)
+        self.assertEqual(self.files(), before)
+        self.assertEqual((preview['file_count'], preview['keep_list_checked']), (7, False))
+        self.assertEqual([b['code'] for b in preview['blockers']], ['ARCHIVE_KEEP_LIST_REQUIRED'])
 
 
 class ApplyTests(ArchiveFixture):
@@ -371,30 +396,72 @@ class RefusalTests(ArchiveFixture):
             db.commit()
         self.assertIn('old', str(self.refused_archive('ARCHIVE_TERMINAL_BUSY')))
 
-    def test_foos_read_selection_and_unverifiable_citations_refuse(self):
-        write_json(self.root / 'catchups' / 'cu-g20' / 'manifest.json',
-                   dict(members=[dict(source_path=str(self.export), source_sha256=self.export_sha)]))
-        error = self.refused_archive('ARCHIVE_CITED_FOOS_READ')
-        self.assertEqual(error.fields['citations'][0]['run_id'], 'cu-g20')
-        (self.root / 'catchups' / 'cu-g20' / 'manifest.json').unlink()
-        locks = [dict(lock_id='l' * 64, strategy_key='banker', candidate=[dict(symbol='EURUSD', timeframe='M1', set_sha256=self.export_sha)])]
-        with patch('studio_heldout.read_registry', return_value=dict(state='ok', locks=locks)):
-            self.refused_archive('ARCHIVE_CITED_SELECTION')
+    def lock(self, status, active):
+        return [dict(lock_id='l' * 64, strategy_key='banker', status=status, active=active,
+                     candidate=[dict(symbol='EURUSD', timeframe='M1', set_sha256=self.export_sha)])]
+
+    def test_a_batch_cited_by_a_finished_foos_read_moves_and_stays_readable_through_the_pointer(self):
+        self.write_runner('catchups', 'cu-g20', 'completed', [dict(original=dict(set_path=str(self.export),
+                                                                                  set_sha256=self.export_sha))])
+        self.write_runner('holdups', 'h-g20', 'completed', [dict(source_path='C:\\library\\copy.set', source_sha256=self.export_sha)])
+        preview = self.preview()
+        self.assertTrue(preview['ready'], preview['blockers'])
+        self.assertEqual(preview['cited_by'], ['cited by catch-up cu-g20 (finished)', 'cited by hold-up test h-g20 (finished)'])
+        self.assertEqual({(c['run_id'], c['in_flight']) for c in preview['citations']}, {('cu-g20', False), ('h-g20', False)})
+        result = self.run_archive()
+        self.assertEqual(result['result']['removed'], 7)
+        self.assertEqual(len(result['citations']), 2)
+        self.assertFalse(self.log.exists())
+        self.assertEqual(journal._history(self.root, self.job), {0, 1})     # read through the pointer
+
+    def test_a_revealed_lock_is_listed_and_an_active_lock_refuses(self):
+        for status in ('locked', 'revealable', 'revealing'):
+            with patch('studio_heldout.read_registry', return_value=dict(state='ok', locks=self.lock(status, True))):
+                error = self.refused_archive('ARCHIVE_HELDOUT_LOCK_ACTIVE')
+            self.assertEqual(error.fields['locks'][0]['lock_status'], status)
+        with patch('studio_heldout.read_registry', return_value=dict(state='ok', locks=self.lock('revealed', False))):
+            preview = self.preview()
+            self.assertTrue(preview['ready'], preview['blockers'])
+            self.assertEqual(preview['cited_by'], ['cited by held-out lock llllllllllll (revealed)'])
+            self.assertTrue(self.run_archive()['applied'])
+
+    def test_an_in_flight_reader_refuses_and_names_the_reading_run(self):
+        member = dict(original=dict(set_path=str(self.export), set_sha256='z' * 64))      # by a path inside the run folder
+        for status, state in (('prepared', 'pending'), ('active', 'running')):
+            self.write_runner('catchups', 'cu-next', status, [member])
+            error = self.refused_archive('ARCHIVE_IN_FLIGHT_READER')
+            self.assertEqual((error.fields['reader'], error.fields['reader_kind'], error.fields['reader_state']),
+                             ('cu-next', 'catch-up', state))
+            self.assertIn('cu-next', str(error))
+        write_json(self.root / 'catchups' / 'cu-next' / 'pause.json', dict(batch_id='cu-next'))
+        self.write_runner('catchups', 'cu-next', 'stopped', [member])
+        self.assertEqual(self.refused_archive('ARCHIVE_IN_FLIGHT_READER').fields['reader_state'], 'paused')
+        shutil.rmtree(self.root / 'catchups' / 'cu-next')
+        self.write_runner('seeds', 'seed-next', 'active', [dict(source_path=str(self.export), source_sha256=self.export_sha)])
+        self.assertEqual(self.refused_archive('ARCHIVE_IN_FLIGHT_READER').fields['reader_kind'], 'seed hunt')
+        self.write_runner('seeds', 'seed-next', 'completed', [dict(source_path=str(self.export), source_sha256=self.export_sha)])
+        self.assertTrue(self.run_archive()['applied'])
+
+    def test_unreadable_citations_still_fail_closed(self):
         with patch('studio_heldout.read_registry', return_value=dict(state='unavailable', error='broken chain', locks=[])):
             self.refused_archive('ARCHIVE_CITATIONS_UNVERIFIABLE')
+        (self.root / 'catchups' / 'bad').mkdir(parents=True)
+        (self.root / 'catchups' / 'bad' / 'manifest.json').write_text('{not json')
+        self.assertIn('unreadable', str(self.refused_archive('ARCHIVE_CITATIONS_UNVERIFIABLE')))
+
+    def test_apply_without_a_keep_list_refuses(self):
+        self.assertIn('may be empty', str(self.refused_archive('ARCHIVE_KEEP_LIST_REQUIRED', keep_list=None)))
 
     def test_keep_list_refuses_by_batch_or_run_folder_and_a_bad_list_refuses(self):
-        keep = self.f.base / 'keep.json'
-        keep.write_text(json.dumps([JOB]))
+        keep = self.keep_file([JOB])
         self.assertEqual(self.refused_archive('ARCHIVE_KEEP_LISTED', keep_list=keep).fields['keep_entry'], JOB)
-        keep.write_text(json.dumps(dict(keep=[RUN])))
+        keep = self.keep_file(dict(keep=[RUN]))
         self.refused_archive('ARCHIVE_KEEP_LISTED', keep_list=keep)
         keep.write_text('{not json')
         self.refused_archive('ARCHIVE_KEEP_LIST_INVALID', keep_list=keep)
         keep.write_text(json.dumps([1, 2]))
         self.refused_archive('ARCHIVE_KEEP_LIST_INVALID', keep_list=keep)
-        keep.write_text(json.dumps(['another-batch']))
-        self.assertTrue(self.run_archive(keep_list=keep)['applied'])
+        self.assertTrue(self.run_archive(keep_list=self.keep_file(['another-batch']))['applied'])
 
     def test_archive_root_same_volume_missing_not_writable_or_short_of_space_refuse(self):
         self.volumes.stop()
@@ -438,7 +505,11 @@ class CliTests(ArchiveFixture):
         self.assertEqual((code, preview['ok'], preview['result']['applied'], preview['result']['file_count']), (0, True, False, 7))
         code, refused = self.cli('evidence-archive', '--batch-id', JOB, '--archive-root', str(self.archive_root), '--apply')
         self.assertEqual((code, refused['refusal_code']), (1, 'ARCHIVE_CONFIRM_REQUIRED'))
-        code, applied = self.cli('evidence-archive', '--batch-id', JOB, '--archive-root', str(self.archive_root), '--apply', '--confirm')
+        code, refused = self.cli('evidence-archive', '--batch-id', JOB, '--archive-root', str(self.archive_root), '--apply', '--confirm')
+        self.assertEqual((code, refused['refusal_code']), (1, 'ARCHIVE_KEEP_LIST_REQUIRED'))
+        self.assertTrue((self.root / 'native-evidence' / self.log.name).is_file())
+        code, applied = self.cli('evidence-archive', '--batch-id', JOB, '--archive-root', str(self.archive_root), '--apply', '--confirm',
+                                 '--keep-list', str(self.keep_file()))
         self.assertEqual((code, applied['result']['applied'], applied['result']['result']['removed']), (0, True, 7))
 
     def test_contract_is_registered(self):
@@ -448,9 +519,13 @@ class CliTests(ArchiveFixture):
         self.assertIn('keep-list', contract['optional'])
         self.assertIn('never delete', contract['effect'])
         self.assertIn('goat.exe demo evidence-archive', contract['demo_lane'])
+        self.assertEqual(contract['apply_required'], ['confirm', 'keep-list'])
         self.assertTrue(set(archive.CODES) >= {'ARCHIVE_CONFIRM_REQUIRED', 'ARCHIVE_NOT_FINISHED', 'ARCHIVE_TERMINAL_BUSY',
-                                               'ARCHIVE_CITED_FOOS_READ', 'ARCHIVE_CITED_SELECTION', 'ARCHIVE_KEEP_LISTED',
-                                               'ARCHIVE_ROOT_SAME_VOLUME', 'ARCHIVE_ROOT_NOT_WRITABLE', 'ARCHIVE_ROOT_LOW_SPACE'})
+                                               'ARCHIVE_HELDOUT_LOCK_ACTIVE', 'ARCHIVE_IN_FLIGHT_READER',
+                                               'ARCHIVE_CITATIONS_UNVERIFIABLE', 'ARCHIVE_KEEP_LIST_REQUIRED',
+                                               'ARCHIVE_KEEP_LISTED', 'ARCHIVE_ROOT_SAME_VOLUME',
+                                               'ARCHIVE_ROOT_NOT_WRITABLE', 'ARCHIVE_ROOT_LOW_SPACE'})
+        self.assertFalse({'ARCHIVE_CITED_FOOS_READ', 'ARCHIVE_CITED_SELECTION'} & archive.CODES)
 
 
 class CatchupArchiveTests(ArchiveFixture):
@@ -484,7 +559,7 @@ class CatchupArchiveTests(ArchiveFixture):
     def test_catchup_evidence_moves_and_versions_follow_the_pointer(self):
         before = sc.versions(self.root)
         self.assertEqual(len(before), 1)
-        preview = self.agent.evidence_archive(CATCHUP, self.archive_root)
+        preview = self.preview(CATCHUP)
         self.assertTrue(preview['ready'], preview['blockers'])
         self.assertEqual(preview['kind'], 'catchup')
         self.assertEqual(preview['file_count'], 5)
@@ -514,7 +589,7 @@ class CatchupArchiveTests(ArchiveFixture):
         self.assertEqual(sc.evidence_folder(self.root, CATCHUP), self.folder(CATCHUP) / 'evidence' / CATCHUP)
         self.assertEqual(len(sc.versions(self.root)), 1)
 
-    def test_an_unfinished_or_cited_catchup_refuses(self):
+    def test_an_unfinished_catchup_an_in_flight_reader_or_an_active_lock_refuses(self):
         state = self.root / 'catchups' / CATCHUP / 'state.json'
         value = json.loads(state.read_text())
         write_json(state, dict(value, status='active'))
@@ -522,13 +597,26 @@ class CatchupArchiveTests(ArchiveFixture):
         write_json(state, dict(value, status='stopped', members=[dict(value['members'][0], status='pending')]))
         self.assertEqual(self.refused_archive('ARCHIVE_NOT_FINISHED', CATCHUP).fields['batch_state'], 'paused')
         write_json(state, value)
-        write_json(self.root / 'holdups' / 'h1' / 'manifest.json', dict(members=[dict(source_path=str(self.retest),
-                                                                                       source_sha256='x' * 64)]))
-        self.refused_archive('ARCHIVE_CITED_FOOS_READ', CATCHUP)
-        (self.root / 'holdups' / 'h1' / 'manifest.json').unlink()
-        locks = [dict(lock_id='l' * 64, candidate=[dict(set_sha256=hashlib.sha256(self.retest.read_bytes()).hexdigest())])]
+        # A hold-up test that re-tests this catch-up's re-test SET: in flight while it runs, a listed citation after.
+        reader = [dict(source_path=str(self.retest), source_sha256='x' * 64)]
+        self.write_runner('holdups', 'h1', 'active', reader)
+        error = self.refused_archive('ARCHIVE_IN_FLIGHT_READER', CATCHUP)
+        self.assertEqual((error.fields['reader'], error.fields['reader_kind']), ('h1', 'hold-up test'))
+        self.write_runner('holdups', 'h1', 'completed', reader)
+        self.assertEqual(self.preview(CATCHUP)['cited_by'], ['cited by hold-up test h1 (finished)'])
+        retest_sha = hashlib.sha256(self.retest.read_bytes()).hexdigest()
+        locks = [dict(lock_id='l' * 64, status='revealing', active=True, candidate=[dict(set_sha256=retest_sha)])]
         with patch('studio_heldout.read_registry', return_value=dict(state='ok', locks=locks)):
-            self.refused_archive('ARCHIVE_CITED_SELECTION', CATCHUP)
+            self.refused_archive('ARCHIVE_HELDOUT_LOCK_ACTIVE', CATCHUP)
+        # The lock this catch-up revealed blocks while it is still revealing, not once it is revealed.
+        write_json(self.root / 'catchups' / CATCHUP / 'manifest.json',
+                   dict(json.loads((self.root / 'catchups' / CATCHUP / 'manifest.json').read_text()), heldout_reveal=dict(lock_id='r' * 64)))
+        reveal = [dict(lock_id='r' * 64, status='revealing', active=True, candidate=[])]
+        with patch('studio_heldout.read_registry', return_value=dict(state='ok', locks=reveal)):
+            self.refused_archive('ARCHIVE_HELDOUT_LOCK_ACTIVE', CATCHUP)
+        with patch('studio_heldout.read_registry', return_value=dict(state='ok', locks=[dict(reveal[0], status='revealed', active=False)])):
+            self.assertTrue(self.run_archive(CATCHUP)['applied'])
+        self.assertEqual(len(sc.versions(self.root)), 1)
 
     def test_the_catchup_report_names_the_archived_version(self):
         from types import SimpleNamespace

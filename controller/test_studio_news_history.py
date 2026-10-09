@@ -455,26 +455,45 @@ class CliTests(Fixture):
 
 DEMO_REFUSAL = 'Demo mutation requires the broker-verified agent tool'
 MIXED_REFUSAL = 'modules of another controller'
-# One child process per entrypoint. argv: script, checkout, older controller, then the CLI arguments.
+# Every launcher starts from an explicit sys.path: the interpreter's own library only (sys.base_prefix / sys.prefix),
+# so no python313._pth entry, PYTHONPATH, user site or working folder can reach an installed GOAT controller. It then
+# adds only the fixture folders the entrypoint needs and, at exit, writes every loaded module file to the audit file.
+# argv: script, checkout controller, fixture "installed" controller, audit file, then the CLI arguments.
+PRELUDE = (
+    'import atexit, json, os, sys\n'
+    'script, checkout, installed, audit = sys.argv[1:5]\nargs = sys.argv[5:]\n'
+    'def inside(path, root):\n'
+    '    path, root = os.path.normcase(os.path.realpath(path)), os.path.normcase(os.path.realpath(root))\n'
+    '    try:\n        return os.path.commonpath([path, root]) == root\n'
+    '    except ValueError:\n        return False\n'
+    'roots = sorted({sys.base_prefix, sys.prefix})\n'
+    'sys.path[:] = [p for p in sys.path if p and any(inside(p, r) for r in roots)]\n'
+    'def report():\n'
+    '    files = sorted({f for f in (getattr(m, "__file__", None) for m in list(sys.modules.values())) if isinstance(f, str)})\n'
+    '    with open(audit, "w", encoding="utf-8") as stream:\n'
+    '        json.dump(dict(roots=roots, files=files), stream)\n'
+    'atexit.register(report)\n')
+RUN_SCRIPT = 'import runpy\nsys.argv = [script] + args\nrunpy.run_path(script, run_name="__main__")\n'
+CALL_MAIN = 'sys.path.insert(0, checkout)\nimport goat_studio\nsys.exit(goat_studio.main(args))\n'
 LAUNCHERS = dict(
-    # The checkout's own interpreter path rules (a standard Python puts the script folder first; the bundled
-    # GOAT Python's python313._pth puts its installed controller on sys.path and never the script folder).
-    cli=None,
-    # The bundled GOAT Python with an older installed controller: found first, the checkout only last, and
-    # runpy.run_path never adds the script folder. This is the plain Banker command of 2026-10-09.
-    embedded=('import runpy, sys\nscript, checkout, older = sys.argv[1:4]\n'
-              'sys.path[:] = [older] + [p for p in sys.path if p not in ("", checkout)] + [checkout]\n'
-              'sys.argv = [script] + sys.argv[4:]\nrunpy.run_path(script, run_name="__main__")\n'),
+    # How an interpreter with safe_path runs a script: the script folder is never on sys.path, nothing installed.
+    safe_path=PRELUDE + RUN_SCRIPT,
+    # The bundled GOAT Python on Banker 2026-10-09: python313._pth lists the installed controller (here an older one)
+    # and never the script folder. runpy.run_path never adds the script folder either.
+    embedded=PRELUDE + 'sys.path.append(installed)\n' + RUN_SCRIPT,
     # The wrapper that succeeded on Banker: the checkout inserted first, then runpy.
-    runpy=('import runpy, sys\nscript, checkout, older = sys.argv[1:4]\nsys.path.insert(0, checkout)\n'
-           'sys.argv = [script] + sys.argv[4:]\nrunpy.run_path(script, run_name="__main__")\n'),
-    # Import: a caller that imports goat_studio and calls main().
-    imported=('import sys\nscript, checkout, older = sys.argv[1:4]\nsys.path.insert(0, checkout)\n'
-              'import goat_studio\nsys.exit(goat_studio.main(sys.argv[4:]))\n'),
-    # A caller that imported an older controller's modules first, then this goat_studio: one process, two revisions.
-    mixed=('import sys\nscript, checkout, older = sys.argv[1:4]\nsys.path.insert(0, older)\n'
-           'import studio_research_authority\nsys.path.insert(0, checkout)\n'
-           'import goat_studio\nsys.exit(goat_studio.main(sys.argv[4:]))\n'))
+    runpy=PRELUDE + 'sys.path.append(installed)\nsys.path.insert(0, checkout)\n' + RUN_SCRIPT,
+    # A caller that imports goat_studio and calls main().
+    imported=PRELUDE + 'sys.path.append(installed)\n' + CALL_MAIN,
+    # A caller that imported the older controller's authority first, then this goat_studio: two revisions in one process.
+    mixed=PRELUDE + 'sys.path.append(installed)\nimport studio_research_authority\n' + CALL_MAIN)
+ENTRYPOINTS = ('plain', 'safe_path', 'embedded', 'runpy', 'imported')
+
+
+def embedded_interpreter():
+    """The bundled GOAT Python: a ._pth file beside it fixes sys.path, so a plain run cannot be isolated from its install."""
+    import sys
+    return any(Path(sys.executable).parent.glob('*._pth'))
 
 
 class EntrypointTests(Fixture):
@@ -489,38 +508,73 @@ class EntrypointTests(Fixture):
     ran two controller revisions. goat_studio.py now puts its own folder first and refuses to run with another
     folder's controller modules, so every entrypoint resolves the same classification and authority.
 
-    Every entrypoint runs in a fresh process on a demo_direct installation: news-history-sync (a local file operation)
-    is allowed and a real mutation still refuses, on all of them."""
+    Hermetic: the "installed" controller is a complete copy of this controller in the test's temp folder, with an
+    older studio_research_authority. Every entrypoint runs in a fresh, isolated process (-I) whose sys.path holds only
+    the interpreter's own library plus these folders, and every module it loaded is audited: none comes from anywhere
+    else, and only the mixed process loads anything from the "installed" copy."""
     HERE = Path(__file__).resolve().parent
 
-    def older_controller(self):
-        """An installed controller folder whose studio_research_authority predates news-history-sync."""
+    def installed_controller(self):
+        """A complete installed controller (every module and contract) whose authority predates news-history-sync."""
+        import shutil
         folder = Path(self.temp.name) / 'installed controller'
         if not folder.is_dir():
-            folder.mkdir()
-            source = (self.HERE / 'studio_research_authority.py').read_text(encoding='utf-8')
+            shutil.copytree(self.HERE, folder, ignore=shutil.ignore_patterns(
+                '__pycache__', 'test_*.py', 'fixtures', 'skills', 'tests', '*.md'))
+            path = folder / 'studio_research_authority.py'
+            source = path.read_text(encoding='utf-8')
             older = source.replace(", 'news-history-sync'))", '))', 1)
             self.assertNotEqual(older, source)
-            (folder / 'studio_research_authority.py').write_text(older, encoding='utf-8')
+            path.write_text(older, encoding='utf-8')
         return folder
 
     def run_entry(self, entry, *argv):
         import subprocess, sys
         script = str(self.HERE / 'goat_studio.py')
         cli = ['--installation', str(self.installation), *argv]
-        launcher = LAUNCHERS[entry]
-        command = ([sys.executable, script, *cli] if launcher is None else
-                   [sys.executable, '-c', launcher, script, str(self.HERE), str(self.older_controller()), *cli])
+        audit = Path(self.temp.name) / ('audit-' + entry + '.json')
+        if audit.exists():
+            audit.unlink()
+        installed = self.installed_controller()
+        if entry == 'plain':
+            # -I: no script folder (safe path), no PYTHONPATH, no user site; only on an interpreter without a ._pth.
+            command = [sys.executable, '-I', script, *cli]
+        else:
+            command = [sys.executable, '-I', '-c', LAUNCHERS[entry], script, str(self.HERE), str(installed), str(audit), *cli]
+        env = {key: value for key, value in os.environ.items() if not key.upper().startswith('PYTHON')}
         completed = subprocess.run(command, capture_output=True, text=True, timeout=180, cwd=self.temp.name,
-                                   env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+                                   env=dict(env, PYTHONDONTWRITEBYTECODE='1'))
         lines = completed.stdout.strip().splitlines()
         self.assertTrue(lines, (entry, completed.stderr[-2000:]))
+        if entry != 'plain':
+            self.assert_hermetic(entry, json.loads(audit.read_text(encoding='utf-8')), installed)
         return completed.returncode, json.loads(lines[-1])
 
+    def assert_hermetic(self, entry, audit, installed):
+        """Every loaded module is the interpreter's own library, this checkout or the fixture's installed copy."""
+        def inside(path, root):
+            path, root = os.path.normcase(os.path.realpath(path)), os.path.normcase(os.path.realpath(root))
+            try:
+                return os.path.commonpath([path, root]) == root
+            except ValueError:
+                return False
+        allowed = audit['roots'] + [str(self.HERE), str(installed)]
+        stray = [f for f in audit['files'] if not any(inside(f, root) for root in allowed)]
+        self.assertEqual(stray, [], entry)
+        from_installed = sorted(Path(f).name for f in audit['files'] if inside(f, installed))
+        if entry == 'mixed':
+            # The other revision really was loaded (the authority and its own imports), and goat_studio refused it.
+            self.assertIn('studio_research_authority.py', from_installed)
+            self.assertNotIn('goat_studio.py', from_installed)
+        else:
+            self.assertEqual(from_installed, [], entry)        # one revision: the checkout's
+
+    def entrypoints(self):
+        return [entry for entry in ENTRYPOINTS if entry != 'plain' or not embedded_interpreter()]
     def test_news_history_sync_is_allowed_on_demo_direct_on_every_entrypoint(self):
         # --min-impact 101 refuses inside news-history-sync itself, before any process inventory, credential or request:
         # reaching it proves the authority allowed the operation.
-        for entry in ('cli', 'embedded', 'runpy', 'imported'):
+        for entry in self.entrypoints():
             with self.subTest(entry=entry):
                 code, reply = self.run_entry(entry, 'news-history-sync', '--min-impact', '101')
                 self.assertEqual((code, reply.get('refusal_code')), (2, 'NEWS_HISTORY_PARAMS_INVALID'), reply)
@@ -529,7 +583,7 @@ class EntrypointTests(Fixture):
     def test_a_real_mutation_still_refuses_on_every_entrypoint(self):
         plan = Path(self.temp.name) / 'plan.json'
         plan.write_text('{}', encoding='utf-8')
-        for entry in ('cli', 'embedded', 'runpy', 'imported'):
+        for entry in self.entrypoints():
             for argv in (('prepare-batch', '--batch-id', 'demo-batch', '--plan', str(plan)),
                          ('peer-add', '--terminal', str(self.exe), '--confirm-reviewed')):
                 with self.subTest(entry=entry, operation=argv[0]):

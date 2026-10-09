@@ -999,6 +999,9 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
                               build=monitor.get('terminal_build')),
                 account=dict(login=account.get('login'), server=account.get('server'), demo_only=session.get('demo_only') is True),
                 ea=dict(version=install.get('ea_version'), sha256=install.get('ea_sha256'), build=monitor.get('ea_build'),
+                        # The installed binary's build (studio_installed_build, goatai#2350 6089229465): the same
+                        # resolver catch-up and hold-up use; ``build`` above is what the running monitor last reported.
+                        installed_build=_installed_build(install),
                         controller_version=install.get('controller_version'), bundle_version=install.get('bundle_version')),
                 monitor=dict({key: monitor.get(key) for key in ('state', 'ticking', 'transient', 'heartbeat_age_seconds', 'bound', 'loaded',
                                                                 'owner', 'tester_state', 'batch_ongoing', 'activation')},
@@ -1021,6 +1024,12 @@ def _research_launch(install, root, now):
     except Exception as error:
         return dict(enabled_mt5_workers=None, agent_count_source=None,
                     plain='The research launch state could not be read: ' + str(error)[:200])
+
+
+def _installed_build(install):
+    """studio_installed_build.public: never fails the read (a refusal is build_id None with its code)."""
+    import studio_installed_build
+    return studio_installed_build.public(install)
 
 
 def _heldout(install, root, run_id, now):

@@ -862,8 +862,16 @@ such SETs on purpose, on the installed newer build, as new evidence. It uses the
                 "source_build":"V1.49-BETA17-40"}]}}
 ```
 
-- **Guard.** Accepted only while the installed EA reports `target_build` (its activation
-  status) and its binary is `target_ea_sha256` (required). Every SET needs exactly one
+- **Guard.** Accepted only while the installed EA is `target_build` and its binary is
+  `target_ea_sha256` (required). The installed build comes from the binary: the receipt's
+  `ea_sha256` mapped through the controller's pinned build table (`studio_installed_build`,
+  copied from `candidate-builds/*/identity.json`; e630ee34... = V1.49-BETA17-43). A binary not in
+  the table refuses with `INSTALLED_BUILD_UNKNOWN`. The EA's activation status `buildId` is only a
+  cross-check: a status observed before the EX5's install time (the latest of the EX5 file time
+  and the receipt's `installed_at`/`demo_installed_at`) is stale and ignored, and one observed at
+  or after it that names another build refuses with `INSTALLED_BUILD_STATUS_CONFLICT`, naming
+  both (goatai#2350 6089229465). Hold-up tests and `research-status` (`ea.installed_build`) use
+  the same resolver. Every SET needs exactly one
   `originals` entry (`source_build`, `original_path` = the SET path, and the SHA-256 of the SET,
   its equity CSV and, when present, its capture's `deals.csv`; optional `source_ea_sha256`).
   A SET with none, or whose SET, CSV or deals no longer match, refuses the whole plan and the

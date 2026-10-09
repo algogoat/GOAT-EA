@@ -84,12 +84,21 @@ class CatchupCase(unittest.TestCase):
         (self.run / 'manifest.json').write_text(json.dumps(dict(ea_sha256=ea_sha256 or hashlib.sha256(b'ex5').hexdigest(), jobs=jobs)), encoding='utf-8')
 
     def activation(self, build_id):
-        """The installed EA's activation status (Common Files\\GOAT), as the EA writes it; None removes it."""
+        """The installed EA is ``build_id``: its binary is pinned as that build (studio_installed_build.PINNED_BUILDS,
+        patched for this test) and its activation status in Common Files\\GOAT, written after the install, agrees.
+        None: the binary is not a pinned build and there is no status."""
+        import studio_installed_build
+        if not hasattr(self, '_pinned'):
+            self._pinned = patch.dict(studio_installed_build.PINNED_BUILDS)
+            self._pinned.start()
+            self.addCleanup(self._pinned.stop)
+        studio_installed_build.PINNED_BUILDS.pop(self.controller.install['ea_sha256'], None)
         path = Path(self.controller.install['common_files_root']) / 'GOAT' / 'activation-status-terminal.json'
         path.parent.mkdir(parents=True, exist_ok=True)
         if build_id is None:
             path.unlink(missing_ok=True)
         else:
+            studio_installed_build.PINNED_BUILDS[self.controller.install['ea_sha256']] = build_id
             path.write_text(json.dumps(dict(buildId=build_id, accountId='123')), encoding='utf-8')
 
     def plan(self, sets=None, **extra):
@@ -270,10 +279,10 @@ class PrepareTests(CatchupCase):
                                   ('FOOS', date(2026, 8, 29), date(2026, 9, 24), 38, 190)])
         plan = self.plan(sets=[unit], assume=dict(ExecutionMode=0))
         self.activation(None)
-        self.assertIn('installed EA build cannot be read yet', ' '.join(self.runner.validate(plan)['exports'][0]['reasons']))
+        self.assertIn('installed EA build is not known (INSTALLED_BUILD_UNKNOWN', ' '.join(self.runner.validate(plan)['exports'][0]['reasons']))
         self.activation('V1.49-NEW-2')
         reasons = ' '.join(self.runner.validate(plan)['exports'][0]['reasons'])
-        self.assertIn('EA build V1.49-OLD-1; the installed EA reports V1.49-NEW-2', reasons)
+        self.assertIn('EA build V1.49-OLD-1; the installed EA binary is V1.49-NEW-2', reasons)
         self.activation('V1.49-OLD-1')
         self.assertEqual(self.runner.validate(plan)['member_count'], 1)
 

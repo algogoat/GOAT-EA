@@ -838,7 +838,7 @@ def headline(activity):
     if failed:
         counts += ', ' + str(failed) + ' failed'
     cancelled = activity.get('members_cancelled')
-    if cancelled and status not in ('pausing', 'paused'):   # a pause cancels the rest by design
+    if cancelled and status not in ('pausing', 'paused', 'closed'):   # a pause cancels the rest by design
         counts += ', ' + str(cancelled) + ' cancelled'
     if status == 'start_failed_unactivated':
         return ('Start failed before MT5 was touched; nothing ran. Settle it with retire-unactivated --batch-id '
@@ -847,6 +847,12 @@ def headline(activity):
         return 'Pausing this ' + name + ' at the next safe point;' + counts + '.'
     if status == 'paused':
         return 'Paused;' + counts + '. Resume continues the remaining members.'
+    if status == 'closed':
+        pause = activity.get('pause') or {}
+        unrun = pause.get('members_unrun_count')
+        return (name[0].upper() + name[1:] + ' closed' + (' and excluded from the book' if pause.get('closed_mode') == 'exclude'
+                                                         else '') + ';' + counts
+                + ('' if not unrun else ', ' + str(unrun) + ' unrun (listed for a later planned run)') + '. It never resumes.')
     if kind in ('seed', 'catchup', 'holdup') and status == 'reconcile_required':
         return (name[0].upper() + name[1:] + ' ' + str(activity.get('batch_id')) + ' needs settling: GOAT could not confirm how a member started, '
                 'so nothing is running and there is nothing to pause. Settle it with ' + (activity.get('settle') or {}).get('command', 'seed-reconcile')
@@ -941,7 +947,8 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
             # Intent recorded, but no attempt folder, controls or native queue: MT5 was
             # never touched. It is not running and needs retire-unactivated.
             status = 'start_failed_unactivated'
-        elif pause is not None and pause.get('state') in ('pausing', 'paused', 'pause_failed', 'resumed', 'finished'):
+        elif pause is not None and pause.get('state') in ('pausing', 'paused', 'pause_failed', 'resumed', 'finished', 'closed'):
+            # 'closed' (batch-pause-close) is terminal history like 'finished': never held, never paused.
             status = pause['state']
         elif status in ('reserved', 'starting', 'reconcile_required', 'verifying'):
             status = 'running' if status in ('reconcile_required', 'verifying') else status

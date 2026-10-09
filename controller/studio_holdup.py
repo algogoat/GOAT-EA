@@ -228,6 +228,10 @@ class HoldupRunner(SeedRunner):
         latest_end = date.fromisoformat(auto(self.now)['iso']) + timedelta(days=1)
         nonce = uuid.uuid4().hex[:16]
         members, payloads, identities = [], [], set()
+        # An export of a batch closed with exclude (studio_batch_close) is never re-tested, as in catch-up.
+        from studio_batch_close import excluded_source, exclusions
+        from studio_refusal import Refusal
+        markers = exclusions(self.c.root)
         for index, test in enumerate(tests):
             label = 'Test %d' % (index + 1)
             if not isinstance(test, dict) or not TEST_KEYS <= set(test) or set(test) - TEST_KEYS - TEST_OPTIONAL:
@@ -242,6 +246,11 @@ class HoldupRunner(SeedRunner):
             if actual != test['set_sha256']:
                 raise ValueError(label + ': ' + str(source) + ' is not the frozen SET: its sha256 is ' + actual + ', the plan binds '
                                  + test['set_sha256'] + '. Nothing was prepared.')
+            excluded = excluded_source(markers, source, actual)
+            if excluded is not None:
+                raise Refusal(label + ': ' + str(source) + ' is an export of batch ' + excluded['batch_id'] + ', closed with exclude ('
+                              + str(excluded['reason']) + '); an excluded export is never re-tested. Nothing was prepared.',
+                              'HOLDUP_SOURCE_EXCLUDED', batch_id=excluded['batch_id'], set_sha256=actual)
             valid = validate_raw(raw, self.c.schema, self.c.policy)       # RISK_NOT_CHOSEN, risk per sequence, schema
             if valid['active_axes']:
                 raise ValueError(label + ': a hold-up test runs one frozen SET, but this SET still searches ' + ', '.join(

@@ -397,6 +397,11 @@ def evidence_scan(sources, *, value='auto', broker_clock=None, now=None, control
     exports, unreadable = scan(sources)
     known = versions(controller_root) if controller_root else ()
     rows = [classify(e, target['iso'], include_below_threshold=include_below_threshold, known_versions=known) for e in exports]
+    if controller_root:
+        # Exports of a batch closed with batch-pause-close --mode exclude read ineligible with ``excluded`` set
+        # (studio_batch_close); an unreadable exclusion marker refuses the scan rather than let them through.
+        from studio_batch_close import apply_exclusions, exclusions
+        rows = apply_exclusions(rows, exclusions(controller_root))
     return dict(schema_version=1, target=target, summary=summarize(rows, target['iso'], resolved=target), exports=rows, unreadable=unreadable,
                 rules=dict(evidence_end=target['rule'], thresholds_applied_to_eligibility=not include_below_threshold,
                            thresholds='each export carries its own threshold, basis and margins'),
@@ -648,6 +653,9 @@ class CatchupRunner(SeedRunner):
                 entry['baseline'] = migration.check_original(entry, path)
         # A build migration re-tests on purpose: earlier catch-up versions of the old build never skip a member.
         known = () if self.migration else versions(self.c.root)
+        # An export of a batch closed with exclude (studio_batch_close) is never re-tested.
+        from studio_batch_close import apply_exclusions, exclusions
+        markers = exclusions(self.c.root)
         for path in plan['sets']:
             entry = self.migration['originals'][migration.key(path)] if self.migration else None
             try:
@@ -658,6 +666,7 @@ class CatchupRunner(SeedRunner):
             if entry is not None and export['set_sha256'] != entry['original_sha256']:
                 raise ValueError('build_migration: SET %s changed while planning; nothing was planned' % path)
             row = classify(export, target['iso'], include_below_threshold=plan.get('include_below_threshold', False), known_versions=known)
+            row = apply_exclusions([row], markers)[0]
             if row['status'] == 'behind':
                 reasons, bridge = self._member_problems(export, account, certificates=certificates, migration_entry=entry)
                 facts, window, assumed, missing = _tester_conditions(export, assume)

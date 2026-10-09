@@ -310,3 +310,17 @@ jobs:
       - name: Profile-staged deploy mutation check (Enabled=0 always, AllowLiveTrading never written, BuildTemplate-exact writer, child_not_started then auto-unwind, exact profile rollback)
         if: matrix.shard == 4
         run: python scripts/test_profile_staged_deploy_mutations.py
+
+  # The one check branch protection requires (Claude-Mac, goatai#2350 6085497176): it passes only when
+  # every shard above succeeded, so a future re-shard never touches branch protection again.
+  controller-mutations-all:
+    name: controller-mutations
+    needs: controller-mutations
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every mutation shard succeeded
+        run: |
+          echo "controller-mutations shards: ${{ needs.controller-mutations.result }}"
+          test "${{ needs.controller-mutations.result }}" = "success"

@@ -197,6 +197,22 @@ class CiMutationShardTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             shard_selection(out_of_range)
 
+    def test_one_aggregate_check_gates_every_shard(self):
+        # Branch protection requires only "controller-mutations" (goatai#2350 6085497176), so a re-shard
+        # never edits it again. The aggregate must wait for every shard, run even when one fails, and
+        # pass only when the matrix as a whole succeeded.
+        match = re.search(r'\n  controller-mutations-all:\n((?:    .*\n|\s*\n)+)', self.text + '\n')
+        self.assertIsNotNone(match, 'the aggregate job exists')
+        job = match.group(1)
+        self.assertRegex(job, r'\n?    name: controller-mutations\n')
+        self.assertRegex(job, r'    needs: controller-mutations\n')
+        self.assertRegex(job, r'    if: always\(\)\n')
+        self.assertIn('test "${{ needs.controller-mutations.result }}" = "success"', job)
+        self.assertNotIn('matrix', job)
+        shard_names = re.findall(r'\n    name: (controller-mutations[^\n]*)\n', self.text)
+        self.assertEqual(shard_names, ['controller-mutations (${{ matrix.shard }}/4)', 'controller-mutations'],
+                         'the shard jobs and the one aggregate check have distinct names')
+
 
 if __name__ == '__main__':
     unittest.main()

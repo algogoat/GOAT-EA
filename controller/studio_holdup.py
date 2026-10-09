@@ -221,6 +221,8 @@ class HoldupRunner(SeedRunner):
 
     def _freeze(self, root, plan):
         tests = self._plan(plan)
+        from studio_installed_build import refuse_pre_b38
+        refuse_pre_b38(self.c.install)   # a pre-B38 EA: update it first (goatai#2350 6089668580)
         from studio_catchup import _validate_single_pass
         from studio_evidence_end import auto
         from studio_strategy_attribution import validate_ref
@@ -419,6 +421,13 @@ class HoldupRunner(SeedRunner):
                 if deals.parent != root or not deals.is_file() or digest(deals) != result['deals_sha256']:
                     raise ValueError('Retained hold-up deal list changed: ' + item['alias'])
         return root, manifest, state
+
+    def _before_start(self, spec):
+        """A pre-B38 EA never starts a hold-up member (goatai#2350 6089668580): its evidence could not be attributed to a
+        build (studio_installed_build.refuse_pre_b38). Otherwise the seed checks."""
+        from studio_installed_build import refuse_pre_b38
+        refuse_pre_b38(self.c.install)
+        return super()._before_start(spec)
 
     def _installed_build_id(self):
         """The one installed-build resolver (studio_installed_build via CatchupRunner): the build of the installed

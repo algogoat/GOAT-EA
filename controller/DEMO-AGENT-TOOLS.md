@@ -866,7 +866,14 @@ such SETs on purpose, on the installed newer build, as new evidence. It uses the
   `target_ea_sha256` (required). The installed build comes from the binary: the receipt's
   `ea_sha256` mapped through the controller's pinned build table (`studio_installed_build`,
   copied from `candidate-builds/*/identity.json`; e630ee34... = V1.49-BETA17-43). A binary not in
-  the table refuses with `INSTALLED_BUILD_UNKNOWN`. The EA's activation status `buildId` is only a
+  the table refuses with `INSTALLED_BUILD_UNKNOWN`. The six EAs shipped before build B38
+  (`PRE_B38_EXCLUDED`; every shipped EA and its evidence is in `controller/shipped_ea_builds.json`)
+  refuse every catch-up and hold-up validate, prepare and member start with the same
+  `refusal_code` and the sentence "This terminal runs an EA from before build B38. Update the EA
+  in GOAT, then try again." (goatai#2350 6089668580). Not because those flows need B38 (V1.48
+  already wrote `.goatseq`): evidence from a binary with no recoverable build identity cannot be
+  attributed to a build, so it could never feed the fit map or the registry; updating the EA is one
+  action, and the refusal comes before anything is written. The EA's activation status `buildId` is only a
   cross-check: a status observed before the EX5's install time (the latest of the EX5 file time
   and the receipt's `installed_at`/`demo_installed_at`) is stale and ignored, and one observed at
   or after it that names another build refuses with `INSTALLED_BUILD_STATUS_CONFLICT`, naming

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 from types import SimpleNamespace
@@ -175,6 +176,120 @@ class ResolverTests(unittest.TestCase):
         self.assertIsNone(HoldupRunner._installed_build_id(holder))
         self.assertEqual(research_status(root=state, install=holder.c.install, session=dict(run_id='r', terminal_id='t', account=dict(login='1', server='Demo')),
                                          local=local, now=B43_INSTALLED + 600, process=None, jobs=[])['ea']['installed_build']['code'], ib.UNKNOWN)
+
+
+SHIPPED = json.loads((ROOT / 'controller' / 'shipped_ea_builds.json').read_text(encoding='utf-8'))['builds']
+EXCLUDED = [b['eaSha256'] for b in SHIPPED if b['status'] == 'pre_b38_excluded']
+
+
+class ShippedBuildsTests(unittest.TestCase):
+    """Every EA a shipped bundle carried resolves or refuses on purpose (Claude-Mac, goatai#2350 6089668580)."""
+
+    def test_pinned_table_covers_every_shipped_build_from_b38(self):
+        shas = [b['eaSha256'] for b in SHIPPED]
+        self.assertEqual(len(shas), len(set(shas)))
+        for build in SHIPPED:
+            with self.subTest(sha=build['eaSha256'][:12]):
+                self.assertRegex(build['eaSha256'], '^[0-9a-f]{64}$')
+                self.assertIn(build['status'], ('pinned', 'pre_b38_excluded'))
+                if build['status'] == 'pinned':
+                    self.assertEqual(ib.PINNED_BUILDS.get(build['eaSha256']), build['buildId'])
+                    self.assertTrue(build['buildIdSource'])
+                    self.assertNotIn(build['eaSha256'], ib.PRE_B38_EXCLUDED)
+                else:
+                    self.assertTrue(build['reason'])
+                    self.assertNotIn(build['eaSha256'], ib.PINNED_BUILDS)
+                    if build['buildId'] is None:
+                        self.assertIsNone(build['buildIdSource'])
+                    else:
+                        self.assertTrue(build['buildIdSource'])
+                beta17 = re.fullmatch(r'V1\.49-BETA17-(\d+)', build['buildId'] or '')
+                if beta17 and int(beta17[1]) >= 38:
+                    self.assertEqual(build['status'], 'pinned')
+        # Exactly the six Mac named, each with a one-line reason.
+        self.assertEqual(set(EXCLUDED), set(ib.PRE_B38_EXCLUDED))
+        self.assertEqual(len(ib.PRE_B38_EXCLUDED), 6)
+        for sha, reason in ib.PRE_B38_EXCLUDED.items():
+            self.assertTrue(reason and '\n' not in reason, sha)
+
+    def install(self, sha):
+        base = Path(self.tmp.name)
+        return dict(terminal_data_root=str(base / 'T'), common_files_root=str(base / 'common'), ea_relative_path='GOAT-EA\\GOAT V1.49.ex5',
+                    ea_sha256=sha)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+
+    def test_each_excluded_sha_refuses_with_the_update_sentence_and_its_code(self):
+        from studio_refusal import refusal_fields
+        for sha in EXCLUDED:
+            with self.subTest(sha=sha[:12]):
+                install = self.install(sha)
+                with self.assertRaises(ib.InstalledBuildError) as caught:
+                    ib.resolve(install)
+                self.assertEqual(str(caught.exception), ib.UPDATE_EA)
+                self.assertEqual(str(caught.exception), 'This terminal runs an EA from before build B38. Update the EA in GOAT, then try again.')
+                self.assertEqual((caught.exception.code, caught.exception.plain), (ib.UNKNOWN, True))
+                fields = refusal_fields(caught.exception, dict(error=str(caught.exception)))
+                self.assertEqual((fields['refusal_code'], fields['installed_build']['excluded']), (ib.UNKNOWN, 'pre_b38'))
+                with self.assertRaises(ib.InstalledBuildError):
+                    ib.refuse_pre_b38(install)
+                self.assertIsNone(ib.build_id(install, strict=False))
+                read = ib.public(install)
+                self.assertEqual((read['build_id'], read['code'], read['message']), (None, ib.UNKNOWN, ib.UPDATE_EA))
+        # A truly unknown binary keeps the INSTALLED_BUILD_UNKNOWN sentence, and refuse_pre_b38 lets it pass.
+        unknown = self.install('1' * 64)
+        ib.refuse_pre_b38(unknown)
+        with self.assertRaises(ib.InstalledBuildError) as caught:
+            ib.resolve(unknown)
+        self.assertFalse(caught.exception.plain)
+        self.assertTrue(str(caught.exception).startswith('INSTALLED_BUILD_UNKNOWN: the installed EA binary (sha256 111111111111)'))
+
+    def test_research_status_still_reads_on_an_excluded_ea(self):
+        from studio_research_status import research_status
+        install = self.install(EXCLUDED[0])
+        local = Path(self.tmp.name) / 'T/MQL5/Files/GOATStudio'; local.mkdir(parents=True)
+        state = Path(self.tmp.name) / 'state'; state.mkdir()
+        value = research_status(root=state, install=install, session=dict(run_id='r', terminal_id='t', account=dict(login='1', server='Demo')),
+                                local=local, now=B43_INSTALLED, process=None, jobs=[])
+        self.assertEqual((value['ea']['installed_build']['build_id'], value['ea']['installed_build']['code'],
+                          value['ea']['installed_build']['message']), (None, ib.UNKNOWN, ib.UPDATE_EA))
+
+    def test_holdup_strict_paths_refuse_an_excluded_ea(self):
+        import test_studio_holdup as th
+        case = th.HoldupTests('test_prepare_freezes_exact_bytes_and_one_single_pass_config')
+        case.setUp()
+        try:
+            plan = case.plan()
+            spec = dict(capture=False, alias='H1')
+            for sha in EXCLUDED:
+                with self.subTest(sha=sha[:12]):
+                    case.c.install['ea_sha256'] = sha
+                    for call in (lambda: case.runner.validate(plan), lambda: case.runner.prepare('hx', plan),
+                                 lambda: case.runner._before_start(spec)):
+                        with self.assertRaisesRegex(ValueError, '^' + re.escape(ib.UPDATE_EA) + '$'):
+                            call()
+                    self.assertFalse(case.runner.path('hx').exists())
+                    self.assertIsNone(case.runner._installed_build_id())   # identity only: None, never a failed collection
+        finally:
+            case.doCleanups()
+
+
+class CatchupPreB38Tests(MigrationCase):
+    """Catch-up strict paths on a pre-B38 EA: validate, prepare, member start and build_migration all say update the EA."""
+
+    def test_catchup_refuses_an_excluded_ea_with_the_update_sentence(self):
+        for sha in EXCLUDED:
+            with self.subTest(sha=sha[:12]):
+                self.controller.install['ea_sha256'] = sha
+                for call in (lambda: self.runner.validate(self.plan(sets=[self.ahead])), lambda: self.runner.prepare('cx', self.plan()),
+                             lambda: self.runner.validate(self.mplan()), lambda: self.runner._before_start(dict(capture=False, alias='C1')),
+                             lambda: self.runner._check_migration_target()):
+                    with self.assertRaises(ib.InstalledBuildError) as caught:
+                        call()
+                    self.assertEqual((str(caught.exception), caught.exception.code), (ib.UPDATE_EA, ib.UNKNOWN))
+                self.assertFalse(self.runner.path('cx').exists())
+                self.assertIsNone(self.runner._installed_build_id(strict=False))
 
 
 class BankerMigrationTests(MigrationCase):

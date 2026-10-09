@@ -802,9 +802,31 @@ class SeedRunner:
             write_json(path,dict(schema_version=1,batch_id=batch_id,manifest_sha256=state['manifest_sha256'],requested_unix=now))
         return self._public(root,state|dict(pause_requested=True))
 
+    NEWS_NOUN={'seed':'Seed hunt ','catchup':'Catch-up ','holdup':'Hold-up test '}
+
+    def _news_what(self,batch_id):
+        return self.NEWS_NOUN.get(self.COMMAND_PREFIX,'Run ')+batch_id
+
+    def accept_news_change(self,batch_id):
+        """--accept-news-change (studio_news_guard): record a changed or unrecorded news file as a new news lineage.
+
+        Persisted in state.json before any resume effect, so a detached driver continues on the accepted file;
+        a later change refuses again. A news-off run, or the same file, records nothing."""
+        from studio_news_guard import runner_accept
+        with self._gate():
+            root,manifest,state=self._read(batch_id)
+            pending=next((m['alias'] for m in state['members'] if m['status']=='pending'),None)
+            change=runner_accept(self.c.install,state,manifest,now=self.clock(),first_alias=pending)
+            if change is not None:self._save(root,state)
+        return change
+
     def release_pause(self,batch_id,*,now):
         path=self.pause_path(batch_id)
         if not path.exists():return False
+        # News-file guard: a news-on run continues only on the file it recorded (or an accepted change).
+        from studio_news_guard import runner_check
+        _,manifest,state=self._read(batch_id)
+        runner_check(self.c.install,state,manifest,what=self._news_what(batch_id),legacy_refuses=True)
         # Retain the pause evidence beside the seed state; never delete it.
         target=path.with_name('pause-released-'+str(int(now*1000))+'.json')
         path.replace(target)
@@ -817,6 +839,10 @@ class SeedRunner:
         selected terminal, a free terminal slot and the one-namespace preflight. A re-activation checks only the
         pending members for stray output and records itself in ``reactivations``; nothing ended is re-run.
         """
+        from studio_news_guard import runner_check,runner_record_start
+        if reactivate:
+            # News-file guard: a stopped news-on run resumes only on its recorded file (or an accepted change).
+            runner_check(self.c.install,state,manifest,what=self._news_what(batch_id),legacy_refuses=True)
         owner=self._owner()
         observation,_=self.c.runtime(require_idle=True,expected_batch_ongoing=False)
         if observation.get('loaded') is not True or observation.get('owner')!='agent' or observation.get('generation')!=owner['generation']:
@@ -840,6 +866,7 @@ class SeedRunner:
                 pending=sum(m['status']=='pending' for m in state['members'])))
             state.pop('failed_members',None);state.pop('idle_settled',None)
         state['generation']=owner['generation'];state['status']='closing_monitor';state['preflight']=observation;state['initial_process']=current
+        if not reactivate:runner_record_start(self.c.install,state,manifest,now=self.clock())   # the news file this run starts on
         self._save(root,state)
         write_json(self.slot,dict(status='active',batch_id=batch_id,manifest_sha256=state['manifest_sha256'],generation=state['generation']))
         self.process.close(current)
@@ -1004,9 +1031,13 @@ class SeedRunner:
                         # Each member is its own MT5 launch: re-check the lock before it (nothing is sent on refusal).
                         from studio_heldout_guard import check_runner_start
                         check_runner_start(self.c,manifest,spec)
+                        # News-file guard: a recorded news-on run never launches a member on another news file.
+                        from studio_news_guard import runner_check,runner_tag
+                        runner_check(self.c.install,state,manifest,what=self._news_what(batch_id),legacy_refuses=False)
                         holding=self._switch_hold(root,state,item)
                         if holding is None:
                             self._before_start(spec)
+                            runner_tag(self.c.install,state,item)
                             item.update(status='starting',attempts=1,started_unix=self.clock());self._save(root,state)
                             try:
                                 identity=self.process.start(spec['config_path'])

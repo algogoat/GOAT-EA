@@ -518,7 +518,7 @@ def load_batch(controller, batch_id, source):
 
 
 def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False, include_no_edge=False,
-                 allow_peer_refresh=False, allow_binding_change=False, now=None):
+                 allow_peer_refresh=False, allow_binding_change=False, now=None, accept_news_change=False):
     """Create a new native queue containing explicitly selected unfinished work.
 
     `include_failed` retries real failures; members tested with no profitable
@@ -554,7 +554,7 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
                if isinstance(item, dict) and type(item.get('index')) is int}
     # A successor keeps each member's declared strategy (held-out lock and trial attribution).
     refs = source_plan.get('strategy_refs') if isinstance(source_plan.get('strategy_refs'), list) else []
-    selected, retries = [], []
+    selected, retries, selected_values = [], [], []
     for index, (native, config, evidence) in enumerate(zip(manifest['jobs'], configurations, observed)):
         if evidence.get('run_alias') != native['run_alias']:
             raise ValueError('Remaining-work identity mismatch')
@@ -565,6 +565,7 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
         if status not in ('pending', 'queued', 'cancelled', 'error'):
             raise ValueError('Native member remains unresolved; do not infer stopped from process absence')
         # Never-run members first, then the opted-in failure retries.
+        selected_values.append(((config.get('strategy') or {}).get('values')) or {})
         (retries if status == 'error' else selected).append(
             dict(set_path=str(package / (native['run_alias'] + '.set')),
                  # Across a build change the successor targets this installation's EA; its
@@ -574,6 +575,13 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
                  **({'strategy_ref': refs[index]} if index < len(refs) and isinstance(refs[index], dict) else {})))
     selected += retries
     if not selected: raise ValueError('No unfinished members selected')
+    # News-file guard (studio_news_guard): a news-on successor continues only on its predecessor's news file,
+    # or as a new labelled news lineage with accept_news_change. Checked before anything is written.
+    from studio_news_guard import prepare_successor, save_record
+    import time as _time
+    news_record = prepare_successor(controller, previous, batch_id, selected_values,
+                                    ran='launch_intent' in previous and not never_activated, accept=accept_news_change,
+                                    now=_time.time())   # wall clock; `now` here is the evidence-end clock
     inputs = controller.root / 'batch-imports' / uuid.uuid4().hex; inputs.mkdir(parents=True)
     plan_path = inputs / 'remaining.json'
     remaining = dict(schema_version=1, export=previous['configuration']['export'], members=selected)
@@ -588,6 +596,7 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False,
         remaining['oos_windows'] = dict(optimization_weeks=oos_record['o_weeks'], export_friday=oos_record['export_friday'])
     write_json(plan_path, remaining)
     result = prepare_batch(controller, batch_id, plan_path, now=now)
+    result['news_file'] = save_record(controller, news_record)
     write_json(inputs / 'provenance.json', dict(source_batch_id=source_batch_id, new_batch_id=batch_id,
         include_failed=include_failed, include_no_edge=include_no_edge, selected_count=len(selected),
         never_run_count=len(selected) - len(retries), retry_count=len(retries),

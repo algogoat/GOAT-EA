@@ -62,12 +62,18 @@ def ticking(now=NOW, **extra):
 
 class PauseFixture(unittest.TestCase):
     MEMBERS = ('EURUSD.c', 'GBPUSD.c', 'USDJPY.c')
+    TEMPLATE = 'EA_Desc=Customer Template\r\nLots=0.1||0.1||0.1||0.3||Y\r\n'   # subclasses may add inputs (news guard)
+    EXTRA_INPUTS = {}                                                          # ... declared here for the schema
 
     def setUp(self):
         self.f = fixtures.PortableControllerTests(); self.f.setUp(); self.addCleanup(self.f.tearDown)
-        self.c = self.f.bound(); self.f.grant(self.c)
+        self.c = self.f.bound()
+        if self.EXTRA_INPUTS:
+            from campaign_ledger import sha as _sha
+            self.c.schema['inputs'].update(self.EXTRA_INPUTS); self.c.store.input_schema_hash = _sha(self.c.schema)
+        self.f.grant(self.c)
         source = self.f.root / 'Template.set'
-        source.write_bytes('EA_Desc=Customer Template\r\nLots=0.1||0.1||0.1||0.3||Y\r\n'.encode('utf-16'))
+        source.write_bytes(self.TEMPLATE.encode('utf-16'))
         spec = dict(schema_version=1, export=self.f.exports,
                     members=[dict(set_path=str(source), tester=self.f.tester | {'Symbol': symbol}) for symbol in self.MEMBERS])
         plan = self.f.root / 'plan.json'; plan.write_text(json.dumps(spec), encoding='utf-8')

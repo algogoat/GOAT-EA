@@ -866,7 +866,7 @@ class DemoAgent:
         return self.run_batch(batch_id, max_seconds or 172800)
 
     def continue_batch(self, batch_id, *, new_batch_id=None, max_seconds=None, clear_stop=False,
-                       include_failed=False, include_no_edge=False):
+                       include_failed=False, include_no_edge=False, accept_news_change=False):
         """Continue a stopped, paused or finished batch: prepare the remaining work, then start it.
 
         A start refused before activation is retired first. Across an EA build change
@@ -883,7 +883,7 @@ class DemoAgent:
             raise ValueError('max_seconds must be 1..172800')
         kind = self._lane_kind(batch_id)
         if kind:
-            return self._seed_unpause(batch_id, kind)
+            return self._seed_unpause(batch_id, kind, accept_news_change=accept_news_change)
         job = next((item for item in self._jobs_readonly() if item['job_id'] == batch_id), None)
         if job is None:
             raise ValueError('Unknown batch ' + batch_id + '; research-status lists the batches of this terminal.')
@@ -906,7 +906,7 @@ class DemoAgent:
         with self._exclusive(), self._studio('prepare-batch', idle=True, job_id=new_id) as (controller, broker):
             peer = refresh_process(controller)
             prepared = continue_batch(controller, batch_id, new_batch_id=new_id, include_failed=include_failed,
-                                      include_no_edge=include_no_edge)
+                                      include_no_edge=include_no_edge, accept_news_change=accept_news_change)
             self._append('continue_batch', 'prepared', batch_id=batch_id, successor_batch_id=new_id,
                          members=prepared.get('members'), binding_changed_keys=prepared.get('binding_changed_keys'),
                          broker=broker)
@@ -2280,7 +2280,7 @@ class DemoAgent:
         return 'refreshed'
 
     def batch_resume(self, batch_id, *, new_batch_id=None, resume_token=None, max_seconds=None,
-                     clear_stop=False, include_failed=False, include_no_edge=False):
+                     clear_stop=False, include_failed=False, include_no_edge=False, accept_news_change=False):
         """Continue a paused batch: remaining work under a new ID, started under the bounded driver."""
         from studio_batch import resume_batch
         from studio_batch_pause import (PauseRefused, load, mark_resumed, plan_resume, refusal, successor_id,
@@ -2293,7 +2293,7 @@ class DemoAgent:
             raise ValueError('max_seconds must be 1..172800')
         kind = self._lane_kind(batch_id)
         if kind:
-            return self._seed_unpause(batch_id, kind)
+            return self._seed_unpause(batch_id, kind, accept_news_change=accept_news_change)
         record = load(self.root, batch_id)
         if record is None:
             raise PauseRefused('No pause is recorded for batch ' + batch_id + '; pause it first.')
@@ -2311,6 +2311,11 @@ class DemoAgent:
             job = next((item for item in self._jobs_readonly() if item['job_id'] == new_id), None)
             journal = self.root / 'batch-drivers' / (new_id + '.json')
             driver = None
+            if accept_news_change and job is not None and job['status'] == 'pending' and 'launch_intent' not in job:
+                # The prepared successor accepts the news-file change for its start (studio_news_guard).
+                from studio_news_guard import accept_successor
+                news = accept_successor(self.root, self.install, job, now=self.clock())
+                self._append('batch_resume', 'news_change_accepted', batch_id=batch_id, successor_batch_id=new_id, news_file=news)
             if job is not None and job['status'] == 'pending' and not journal.is_file():
                 driver = self._spawn_driver(new_id, max_seconds=max_seconds or self._resume_budget(batch_id))
             return dict(state='resumed', source_batch_id=batch_id, batch_id=new_id, reused=True, driver=driver,
@@ -2339,7 +2344,8 @@ class DemoAgent:
             from studio_fast_lane import binding_changed
             prepared = resume_batch(controller, batch_id, new_id, include_failed=include_failed,
                                     include_no_edge=include_no_edge, allow_peer_refresh=True,
-                                    allow_binding_change=bool(binding_changed(controller, batch_id)))
+                                    allow_binding_change=bool(binding_changed(controller, batch_id)),
+                                    accept_news_change=accept_news_change)
             job = controller.job(new_id)
             if job['status'] != 'pending' or 'launch_intent' in job:
                 raise ValueError('Successor batch is not an unstarted prepared batch')
@@ -2348,6 +2354,7 @@ class DemoAgent:
                          members=prepared.get('member_count'), configuration_sha256=job['configuration_sha256'])
         driver = self._spawn_driver(new_id, max_seconds=max_seconds or self._resume_budget(batch_id))
         return dict(state='resumed', source_batch_id=batch_id, batch_id=new_id, members=prepared.get('member_count'),
+                    news_file=prepared.get('news_file'),
                     peer=peer, readback=readback, driver=driver, lineage=lineage(self.root, new_id))
 
     def _resume_budget(self, batch_id):
@@ -2355,9 +2362,14 @@ class DemoAgent:
         value = read_json(journal).get('max_seconds') if journal.is_file() else None
         return value if type(value) is int and 1 <= value <= 172800 else 172800
 
-    def _seed_unpause(self, batch_id, kind='seed'):
+    def _seed_unpause(self, batch_id, kind='seed', *, accept_news_change=False):
         with self._exclusive(), self._seed_scope(kind + '-resume', batch_id, kind) as (controller, evidence):
-            released = self._seed_runner(controller, kind).release_pause(batch_id, now=self.clock())
+            runner = self._seed_runner(controller, kind)
+            if accept_news_change:
+                # Recorded before the pause is released, so every later driver continues on the accepted file.
+                change = runner.accept_news_change(batch_id)
+                self._append(kind + '_resume', 'news_change_accepted', batch_id=batch_id, change=change)
+            released = runner.release_pause(batch_id, now=self.clock())
         self._append(kind + '_pause', 'released', batch_id=batch_id, released=released)
         result = self._lane_resume(kind, batch_id, 60)
         return dict(kind=kind, source_batch_id=batch_id, batch_id=batch_id, state='resumed', released=released, seed=result,
@@ -2909,7 +2921,17 @@ class DemoAgent:
                                            self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind,
                                                             reactivate=True))
 
-    def _lane_resume(self, kind, batch_id, max_seconds, *, detach=False, locked=False, exclude_worker=None):
+    def _lane_accept_news(self, kind, batch_id, *, locked=False):
+        """--accept-news-change: record the news-file change in the run's state before any resume or detach."""
+        with (nullcontext() if locked else self._exclusive()), self._seed_scope(kind + '-resume', batch_id, kind) as (controller, evidence):
+            change = self._seed_runner(controller, kind).accept_news_change(batch_id)
+        self._append(kind + '_resume', 'news_change_accepted', batch_id=batch_id, change=change)
+        return change
+
+    def _lane_resume(self, kind, batch_id, max_seconds, *, detach=False, locked=False, exclude_worker=None,
+                     accept_news_change=False):
+        if accept_news_change:
+            self._lane_accept_news(kind, batch_id, locked=locked)
         if detach:
             return self._lane_detach(kind, batch_id, max_seconds, initial=False)
         lane = LANES[kind]
@@ -2938,8 +2960,8 @@ class DemoAgent:
             result = self._seed_drive(runner, batch_id, max_seconds, initial=False, kind=kind)
             return self._reopen_after_lane(kind, batch_id, result)
 
-    def seed_resume(self, batch_id, max_seconds, *, detach=False):
-        return self._lane_resume('seed', batch_id, max_seconds, detach=detach)
+    def seed_resume(self, batch_id, max_seconds, *, detach=False, accept_news_change=False):
+        return self._lane_resume('seed', batch_id, max_seconds, detach=detach, accept_news_change=accept_news_change)
 
     def _lane_status(self, kind, batch_id):
         with self._seed_scope(kind + '-status', batch_id, kind, budget=POLL_BUDGET) as (controller, evidence):
@@ -3009,8 +3031,8 @@ class DemoAgent:
     def catchup_start(self, catchup_id, max_seconds, *, detach=False):
         return self._lane_start('catchup', catchup_id, max_seconds, detach=detach)
 
-    def catchup_resume(self, catchup_id, max_seconds, *, detach=False):
-        return self._lane_resume('catchup', catchup_id, max_seconds, detach=detach)
+    def catchup_resume(self, catchup_id, max_seconds, *, detach=False, accept_news_change=False):
+        return self._lane_resume('catchup', catchup_id, max_seconds, detach=detach, accept_news_change=accept_news_change)
 
     def catchup_status(self, catchup_id):
         return self._lane_status('catchup', catchup_id)
@@ -3036,8 +3058,8 @@ class DemoAgent:
     def holdup_start(self, holdup_id, max_seconds, *, detach=False):
         return self._lane_start('holdup', holdup_id, max_seconds, detach=detach)
 
-    def holdup_resume(self, holdup_id, max_seconds, *, detach=False):
-        return self._lane_resume('holdup', holdup_id, max_seconds, detach=detach)
+    def holdup_resume(self, holdup_id, max_seconds, *, detach=False, accept_news_change=False):
+        return self._lane_resume('holdup', holdup_id, max_seconds, detach=detach, accept_news_change=accept_news_change)
 
     def holdup_status(self, holdup_id):
         return self._lane_status('holdup', holdup_id)
@@ -3213,6 +3235,10 @@ def _export_qualification_command(args, *, now=None):
     return guard_scan(result, lambda value: guard_output(install, value, root=install['controller_state_root']))
 
 
+ACCEPT_NEWS_HELP = ('Continue a news-on run (a SET with Mode_News 2-5) whose GOAT_News.csv changed since it started, or was '
+                    'never recorded, as a new news lineage that is labelled and kept apart (studio_news_guard)')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--installation', type=Path, required=True)
@@ -3250,6 +3276,7 @@ def main(argv=None):
     onward.add_argument('--clear-stop', action='store_true')
     onward.add_argument('--include-failed', action='store_true')
     onward.add_argument('--include-no-edge', action='store_true')
+    onward.add_argument('--accept-news-change', action='store_true', help=ACCEPT_NEWS_HELP)
     commands.add_parser('clear-stop')
     commands.add_parser('peer-list', help='Read-only: the reviewed peer and every GOAT peer of this terminal, and what would block')
     peer_add = commands.add_parser('peer-add', help='Preview, then --confirm-reviewed: let another MT5 on this PC keep running '
@@ -3326,6 +3353,7 @@ def main(argv=None):
     resumed.add_argument('--include-failed', action='store_true')
     resumed.add_argument('--include-no-edge', action='store_true',
                          help='Also re-run members tested with no profitable settings (results, not failures)')
+    resumed.add_argument('--accept-news-change', action='store_true', help=ACCEPT_NEWS_HELP)
     batch = commands.add_parser('batch-status')
     batch.add_argument('--batch-id', required=True)
     driver = commands.add_parser('batch-driver-status')
@@ -3340,6 +3368,8 @@ def main(argv=None):
         seed_drive.add_argument('--batch-id', required=True)
         seed_drive.add_argument('--max-seconds', type=int, default=60)
         seed_drive.add_argument('--foreground', action='store_true', help='Drive in this process (at most 120 s); default: a detached driver')
+        if name.endswith('-resume'):
+            seed_drive.add_argument('--accept-news-change', action='store_true', help=ACCEPT_NEWS_HELP)
     for name in ('seed-status', 'seed-cancel', 'seed-report', 'seed-reconcile'):
         commands.add_parser(name).add_argument('--batch-id', required=True)
     seed_promote = commands.add_parser('seed-promote', help='Freeze one seed candidate as fixed + robustness SETs')
@@ -3393,6 +3423,8 @@ def main(argv=None):
         catchup_drive.add_argument('--catchup-id', required=True)
         catchup_drive.add_argument('--max-seconds', type=int, default=60)
         catchup_drive.add_argument('--foreground', action='store_true', help='Drive in this process (at most 120 s); default: a detached driver')
+        if name.endswith('-resume'):
+            catchup_drive.add_argument('--accept-news-change', action='store_true', help=ACCEPT_NEWS_HELP)
     for name in ('catchup-status', 'catchup-cancel', 'catchup-report', 'catchup-reconcile'):
         commands.add_parser(name).add_argument('--catchup-id', required=True)
     commands.add_parser('holdup-validate', help='Non-executing hold-up test plan check').add_argument('--plan', type=Path, required=True)
@@ -3404,6 +3436,8 @@ def main(argv=None):
         holdup_drive.add_argument('--holdup-id', required=True)
         holdup_drive.add_argument('--max-seconds', type=int, default=60)
         holdup_drive.add_argument('--foreground', action='store_true', help='Drive in this process (at most 120 s); default: a detached driver')
+        if name.endswith('-resume'):
+            holdup_drive.add_argument('--accept-news-change', action='store_true', help=ACCEPT_NEWS_HELP)
     for name in ('holdup-status', 'holdup-cancel', 'holdup-report', 'holdup-reconcile'):
         commands.add_parser(name).add_argument('--holdup-id', required=True)
     args = parser.parse_args(argv)
@@ -3435,7 +3469,7 @@ def main(argv=None):
         elif args.command == 'compact-receipts': result = agent.compact_receipts(args.apply)
         elif args.command == 'continue': result = agent.continue_batch(args.batch_id, new_batch_id=args.new_batch_id,
             max_seconds=args.max_seconds, clear_stop=args.clear_stop, include_failed=args.include_failed,
-            include_no_edge=args.include_no_edge)
+            include_no_edge=args.include_no_edge, accept_news_change=args.accept_news_change)
         elif args.command == 'retire-unactivated': result = agent.retire_unactivated(args.batch_id)
         elif args.command == 'settle-refused-start': result = agent.settle_refused_start(args.batch_id)
         elif args.command == 'clear-stop': result = agent.clear_stop()
@@ -3458,13 +3492,15 @@ def main(argv=None):
         elif args.command == 'batch-pause': result = agent.batch_pause(args.batch_id, immediate=args.immediate)
         elif args.command == 'batch-resume': result = agent.batch_resume(args.batch_id, new_batch_id=args.new_batch_id,
             resume_token=args.resume_token, max_seconds=args.max_seconds, clear_stop=args.clear_stop,
-            include_failed=args.include_failed, include_no_edge=args.include_no_edge)
+            include_failed=args.include_failed, include_no_edge=args.include_no_edge,
+            accept_news_change=args.accept_news_change)
         elif args.command == 'batch-status': result = agent.batch_status(args.batch_id)
         elif args.command == 'batch-driver-status': result = agent.batch_driver_status(args.batch_id)
         elif args.command == 'seed-validate': result = agent.seed_validate(args.plan)
         elif args.command == 'seed-prepare': result = agent.seed_prepare(args.batch_id, args.plan)
         elif args.command == 'seed-start': result = agent.seed_start(args.batch_id, args.max_seconds, detach=_lane_detached(args))
-        elif args.command == 'seed-resume': result = agent.seed_resume(args.batch_id, args.max_seconds, detach=_lane_detached(args))
+        elif args.command == 'seed-resume': result = agent.seed_resume(args.batch_id, args.max_seconds, detach=_lane_detached(args),
+                                                                 accept_news_change=args.accept_news_change)
         elif args.command == '_drive-lane': result = agent._drive_lane(args.kind, args.batch_id, args.nonce, args.max_seconds, args.initial)
         elif args.command == 'seed-status': result = agent.seed_status(args.batch_id)
         elif args.command == 'seed-cancel': result = agent.seed_cancel(args.batch_id)
@@ -3477,7 +3513,8 @@ def main(argv=None):
         elif args.command == 'catchup-validate': result = agent.catchup_validate(args.plan, args.catchup_id)
         elif args.command == 'catchup-prepare': result = agent.catchup_prepare(args.catchup_id, args.plan)
         elif args.command == 'catchup-start': result = agent.catchup_start(args.catchup_id, args.max_seconds, detach=_lane_detached(args))
-        elif args.command == 'catchup-resume': result = agent.catchup_resume(args.catchup_id, args.max_seconds, detach=_lane_detached(args))
+        elif args.command == 'catchup-resume': result = agent.catchup_resume(args.catchup_id, args.max_seconds, detach=_lane_detached(args),
+                                                                       accept_news_change=args.accept_news_change)
         elif args.command == 'catchup-status': result = agent.catchup_status(args.catchup_id)
         elif args.command == 'catchup-cancel': result = agent.catchup_cancel(args.catchup_id)
         elif args.command == 'catchup-reconcile': result = agent.catchup_reconcile(args.catchup_id)
@@ -3485,7 +3522,8 @@ def main(argv=None):
         elif args.command == 'holdup-validate': result = agent.holdup_validate(args.plan)
         elif args.command == 'holdup-prepare': result = agent.holdup_prepare(args.holdup_id, args.plan)
         elif args.command == 'holdup-start': result = agent.holdup_start(args.holdup_id, args.max_seconds, detach=_lane_detached(args))
-        elif args.command == 'holdup-resume': result = agent.holdup_resume(args.holdup_id, args.max_seconds, detach=_lane_detached(args))
+        elif args.command == 'holdup-resume': result = agent.holdup_resume(args.holdup_id, args.max_seconds, detach=_lane_detached(args),
+                                                                     accept_news_change=args.accept_news_change)
         elif args.command == 'holdup-status': result = agent.holdup_status(args.holdup_id)
         elif args.command == 'holdup-cancel': result = agent.holdup_cancel(args.holdup_id)
         elif args.command == 'holdup-reconcile': result = agent.holdup_reconcile(args.holdup_id)

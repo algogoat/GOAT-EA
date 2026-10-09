@@ -916,6 +916,35 @@ Strategy Tester"). `studio_news_history.py` holds the whole flow:
   before the 2026-10-08 history cleanup and rescoring (goatai#2363, #2364) are not comparable with
   later ones.
 
+#### News file on resume (`studio_news_guard.py`, `--accept-news-change`)
+
+`news-history-sync` can replace the file while a run is paused or stopped. A run whose SETs trade on
+news must not continue on a different file, because its results would then mix two news histories.
+
+- **News-on** means a SET's `Mode_News` (`ENUM_ACTION_NEWS`) can be 2 or more: 2 Avoid, 3 Pause,
+  4 Close or 5 Only. For an optimised input (`value||start||step||stop||Y`), any value of the range
+  counts. 0 Display and 1 Disabled (the default, also when `Mode_News` is missing) are news-off.
+  A value that is not a whole number counts as news-on. A run is news-on when any of its SETs is.
+  News-off runs are never blocked.
+- **Each start records the sha256 of the file's bytes on disk.**
+  - A native batch records it at every native start route, in `<controller state>\news-file\batch-<id>.json`.
+  - A seed hunt, catch-up or hold-up test records it at its first start, as `news_file` in its `state.json`.
+    Every member also records the `news_sha256` and `news_lineage` it ran with.
+- **Each resume compares.** The resume points are:
+  - a successor batch (`resume_batch`: `batch-continue`, `batch-resume`, `resume-batch`, demo `continue`
+    and `batch-resume`) and the successor's start;
+  - the release of a paused seed, catch-up or hold-up test;
+  - the re-activation of a stopped one.
+
+  A news-on run refuses `NEWS_FILE_CHANGED` when the file differs from its record. It refuses
+  `NEWS_FILE_UNRECORDED` when it started before this guard and has no record. A run with a record
+  also re-checks before each member launch.
+- **`--accept-news-change`** continues as a new news lineage.
+  - A successor's record gets `lineage: news_changed`, `predecessor_sha256` and `accepted.to_sha256`.
+  - A runner adds an entry to `news_file.changes`.
+  - `research-queue` rows carry `news_file`, so results from different files are never merged.
+  - Accepting a change already prepared on a successor: run `continue`/`batch-resume` again with the flag.
+
 ### Held-out lock and trial journal (library scoring v1, phase 1)
 
 The controller half of goatai#2221 (`docs/research/library-scoring-v1-phase1.md`

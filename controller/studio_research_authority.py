@@ -385,6 +385,10 @@ def before_native_dispatch(controller, job):
                 or native.get('account_matches') is not True or native.get('connected') is not True
                 or native.get('positions')!=0 or native.get('orders')!=0 or native.get('tester_state')!='idle'):
             raise ValueError('Research dispatch requires the same idle demo with Algo OFF and no trades')
+    # News-file guard (studio_news_guard): record the news file this batch starts on, and refuse a news-on
+    # successor whose news file changed since its predecessor ran (unless that change was accepted).
+    from studio_news_guard import check_native_start as news_file_start
+    news_file_start(controller, job, now=time.time())
 
 
 def recovery_authorization(c, operation_name, review_id):

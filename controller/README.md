@@ -884,6 +884,38 @@ It is refused before any effect for:
 Every dispatched test is a `trial-journal` peek. `native_launch_qualified: false` until the
 owner-lane T3 proof: parse, inputs match, metrics equal MT5's GUI, Banker undisturbed.
 
+### News history for the Strategy Tester (`news-history-sync`, goatai#2350)
+
+```text
+news-history-sync [--min-impact 85] [--from 2023-01-01] [--to <UTC date or ISO time>]
+```
+
+Backtests with `Mode_News` on read `Common\Files\GOAT\GOAT_News.csv`. This command replaces it with
+the server's `/api/ea/news-history` export (goatai `docs/EA_WIRE_CONTRACT.md`, "News history for the
+Strategy Tester"). `studio_news_history.py` holds the whole flow:
+
+- **Auth** is the calendar feed's EA authentication: `Authorization: Bearer <credential>` and
+  `id=<MT5 login>`, as `GOATBuildAuthenticatedRequestHeaders` sends to `/api/ea/calendar`. The
+  credential is the file the installed EA stored for the bound account (the receipt's
+  `credential_relative_path`, per login on V1.49), validated as the EA validates it. It goes only
+  in that header, over HTTPS, and a redirect is refused rather than followed. It is never printed,
+  logged, written or put in a URL, and every error sentence is scrubbed of it.
+- **Refused, with no force flag,** while a tester may read the file: any installation sharing this
+  Common Files with a running or pausing batch, seed hunt, catch-up or hold-up test, a held terminal
+  slot, or a run that cannot be read; or any `metatester64.exe` that is not a Windows-service agent.
+  Service agents (`MetaTester-N`, children of `services.exe`) use their own sandbox and are only
+  counted. A terminal's local agents refuse even when idle, so retry after they exit or that MT5
+  closes. The check runs before the download and again right before the rename.
+- **The write** is UTF-16LE with a BOM. The bytes must hash to `mt5FileSha256` before anything is
+  written and again after the temporary file in the same folder is read back. The temporary file is
+  then renamed over the target. The previous file stays as `GOAT_News.csv.bak` (or
+  `GOAT_News.csv.<UTC stamp>.bak`) and is never deleted. An identical file is left alone.
+- **The reply** is one JSON line with `rows`, `firstRelease`, `lastRelease`, `sha256` (the file
+  bytes), `minImpact`, `tierComplete`, `path` and `backupPath`. A receipt with the same fields and the
+  request goes to `<controller state>\news-history\`. Record `sha256` with every sweep: files from
+  before the 2026-10-08 history cleanup and rescoring (goatai#2363, #2364) are not comparable with
+  later ones.
+
 ### Held-out lock and trial journal (library scoring v1, phase 1)
 
 The controller half of goatai#2221 (`docs/research/library-scoring-v1-phase1.md`

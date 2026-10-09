@@ -138,7 +138,7 @@ class StarterSetTests(unittest.TestCase):
 
     def test_classified_as_local_file_operation_not_a_native_one(self):
         # starter-set/build-set write create-only local files; research-launch (PR E) only replaces research-launch.json
-        self.assertEqual(LOCAL_FILE_OPERATIONS, {'starter-set', 'build-set', 'research-launch'})
+        self.assertEqual(LOCAL_FILE_OPERATIONS, {'starter-set', 'build-set', 'research-launch', 'news-history-sync'})
         self.assertTrue(LOCAL_FILE_OPERATIONS <= READ_OPERATIONS)
         self.assertTrue(LOCAL_FILE_OPERATIONS <= OPERATIONS)
 

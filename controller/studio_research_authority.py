@@ -26,7 +26,10 @@ DEMO_AGENT_SCOPE = ContextVar('studio_demo_agent_scope', default=None)
 #   Each writes at a caller-chosen path outside the publisher catalog and never overwrites (goatai#1885).
 # - research-launch (goatai#1885 PR E) reads, or atomically replaces only research-launch.json under controller
 #   state; the policy can only lower a future research MT5's priority, never raise it or touch a trading MT5.
-LOCAL_FILE_OPERATIONS = frozenset(('starter-set', 'build-set', 'research-launch'))
+# - news-history-sync (goatai#2350) replaces only Common\Files\GOAT\GOAT_News.csv (verified, atomic, previous file
+#   kept as .bak) and writes a receipt under <controller state>\news-history; it refuses while any tester may read
+#   the file. It reads the queue read-only and never opens the store, the session lock or MT5.
+LOCAL_FILE_OPERATIONS = frozenset(('starter-set', 'build-set', 'research-launch', 'news-history-sync'))
 READ_OPERATIONS = LOCAL_FILE_OPERATIONS | frozenset(('discover','resource-profile','state','onboarding-status',
                              'native-recovery-status','batch-driver-status','owner-maintenance-status',
                              'stopped-cancel-observation','research-status','research-queue',

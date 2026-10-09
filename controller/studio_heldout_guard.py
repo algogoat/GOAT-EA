@@ -53,7 +53,9 @@ METRIC_KEYS = frozenset((
     # Swap drift, re-based windows and the first differing row of a catch-up re-test (studio_catchup_rebase).
     'rebase', 'tickHistoryDrift', 'rebasedWindows', 'firstDifference',
     # OOS window rule (studio_oos_windows) and exact pre-FOOS metrics (studio_window_metrics).
-    'oos_rule', 'window_metrics', 'preFoos', 'selectionWindow', 'fullExport'))
+    'oos_rule', 'window_metrics', 'preFoos', 'selectionWindow', 'fullExport',
+    # Build-migration re-tests (studio_build_migration): drift against the original and its counts.
+    'drift', 'drift_delta', 'drift_reasons', 'drift_counts'))
 # Sentences and log lines that quote such values: replaced whole inside a locked part.
 SENTENCE_KEYS = frozenset(('plain', 'summary', 'headline', 'reasons', 'sentence', 'line', 'note', 'title'))
 METRIC_STATUSES = frozenset(('native_threshold_candidate', 'below_native_thresholds', 'native_threshold_unknown',

@@ -802,6 +802,63 @@ covered: MT5 ToDate is exclusive) and `evidenceEndMode` (`auto`, `auto_day`, `ex
 `explicit_day`, `legacy_explicit`, `legacy_thursday_cut`, `oos_windows`). `legacy_thursday_cut`
 means an older EA build's exports cover only through Thursday: catch them up to the Friday.
 
+### Build migration: re-test an older build's SETs on the installed build (goatai#2350)
+
+A normal catch-up refuses an export made by another EA build. A build migration re-tests
+such SETs on purpose, on the installed newer build, as new evidence. It uses the same
+`catchup-*` commands; the plan adds `build_migration`:
+
+```json
+{"schema_version":1,"evidence_end":"2026-10-09","job_timeout_seconds":900,"include_below_threshold":true,
+ "output_root":"G:\\GOAT-Evidence\\b43",
+ "sets":["C:\\...\\GOAT V1.49 AUDCAD,M1_Trds=324_....set"],
+ "build_migration":{"target_build":"V1.49-BETA17-43",
+  "target_ea_sha256":"e630ee34...",
+  "originals":[{"original_path":"C:\\...\\GOAT V1.49 AUDCAD,M1_Trds=324_....set",
+                "original_sha256":"<sha256 of that SET file>","original_csv_sha256":"<sha256 of its .csv>",
+                "original_deals_sha256":"<sha256 of its .goatseq\\deals.csv, when it has one>",
+                "source_build":"V1.49-BETA17-40"}]}}
+```
+
+- **Guard.** Accepted only while the installed EA reports `target_build` (its activation
+  status) and its binary is `target_ea_sha256` (required). Every SET needs exactly one
+  `originals` entry (`source_build`, `original_path` = the SET path, and the SHA-256 of the SET,
+  its equity CSV and, when present, its capture's `deals.csv`; optional `source_ea_sha256`).
+  A SET with none, or whose SET, CSV or deals no longer match, refuses the whole plan and the
+  error names the SET; the same check runs again when each member is collected. A capture or
+  run manifest that contradicts `source_build` refuses too. Each member checks the build again
+  before it starts and when it is collected. No equivalence or canary certificate and no
+  `heldout_reveal` go with it. Server, model, symbol, standard mode and input checks are unchanged.
+- **Record.** Each member writes `build-migration-retest.json` (never `evidence-version.json`):
+  `kind: build_migration_retest`, `provenance: build-migration-retest:B43`, the source and
+  target builds, the pinned baseline hashes, the drift against the exact original over the
+  original's span (trades, PF, max DD, return; `reproduced` when |ΔPF| ≤ 0.15, |Δtrades| ≤ 10%
+  and |ΔDD| ≤ 20%, else `drifted`; `baseline: filename_rounded` when the original's PF or
+  trades could only come from its file name), and the re-test's own BOOS/SAMPLE/FWD/FOOS
+  windows and new weeks as numbers. The weeks after the original are **measured only, never
+  judged here** (`new_weeks_judged: false`); the external prereg analysis judges them. It has
+  no verdict, no OOS-rule result and no `catch_up` stamp. `evidence-versions`, the caught-up
+  status, the canary ingest, the OOS-rule judge, gate calibration and the desktop catch-up
+  stamp check `kind` and ignore or refuse these records; `catchup-report` shows them as their
+  own kind with `drift_counts`.
+- **Versions carry their build.** Every catch-up `evidence-version.json` now records
+  `kind: oos_catchup` and the build of the export it re-tested (`original.build`). An export
+  is caught up only by a version of its own build, so an ordinary catch-up of a migrated
+  re-test never carries the older-build original. Versions written before this field match
+  only the exact SET they re-tested.
+- **No .goatseq yet (V1.47 SETs).** The re-test writes one: the original SET's bytes are staged
+  unchanged as the capture's `source-inputs.set`. The SET file is never written; the record
+  confirms its SHA-256 and that the re-test ran the same values.
+- **Output root.** `output_root` (any catch-up plan) is an absolute folder on a local drive
+  letter, checked after resolving links and junctions; UNC, device, network, unknown-type and
+  CD-ROM drives are refused, and so is a root without room for every member (128 MB each plus
+  1 GB). Evidence goes to `<output_root>\c.<hash>\<member>\` instead of
+  `<controller state>\evidence\…`, moved in atomically (assembled in `<member>~`, then renamed;
+  across drives every copied file is hash-checked and the TEMP unit removed afterwards). The
+  root is recorded in `evidence-roots.json` so `evidence-versions` still finds normal catch-up
+  evidence there; if a recorded root is unavailable (an unplugged drive), every catch-up read
+  refuses instead of showing those exports as behind. Without it nothing changes.
+
 ## OOS window formula on the demo lane (BOOS, SAMPLE, FWD, FOOS from O)
 
 Banker batches, demo Algo research and seed hunts derive every date from O and the

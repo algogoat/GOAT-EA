@@ -39,6 +39,15 @@ an ACTIVE trading-equivalence certificate (studio_equivalence) for exactly this 
 build and this installed build. A canary plan (``canary_certificate``) runs a pending
 certificate's export build on purpose: its verdicts stay ``not_comparable``; its deal
 lists are what ``equivalence-canary-ingest`` compares.
+
+Build migration (``build_migration``, goatai#2350, studio_build_migration): re-tests SETs of an older build
+on the installed build on purpose, only when the installed build is the plan's ``target_build`` and every SET
+names its source build and exact original. Its members write a ``build_migration_retest`` record, never an
+evidence version or a verdict; every reader here checks the kind. Normal catch-ups keep refusing cross-build.
+
+Output root (``output_root``): an absolute local folder for the evidence folders instead of
+``<controller state>\\evidence``. Same layout and the same create-only, atomic moves; the root is recorded
+in ``evidence-roots.json`` so ``versions`` still finds the catch-up evidence written there.
 """
 from datetime import date, datetime, timedelta, timezone
 import hashlib
@@ -54,6 +63,7 @@ from campaign_ledger import sha
 from studio_bridge import write_json
 from studio_evidence import RunContext, read_export, read_json_bounded, scan, server_date, server_msc, weekdays
 from studio_catchup_verdict import CAVEAT, model_tag, validate_rules
+import studio_build_migration as migration
 import studio_equivalence as equivalence
 import studio_evidence_end as evidence_end
 from studio_seed import SeedRunner, digest
@@ -69,7 +79,13 @@ PLAN_OPTIONAL = {'broker_clock', 'assume', 'include_below_threshold', 'verdict_r
                  # held-out lock this plan reveals (only its frozen candidate, while revealing).
                  'strategy_refs', 'heldout_reveal',
                  # Same-model rule and trading-equivalence certificates (#1885, GOAT-EA#141).
-                 'equivalence_certificates', 'canary_certificate'}
+                 'equivalence_certificates', 'canary_certificate',
+                 # goatai#2350: re-test an older build's SETs on the installed target build (studio_build_migration),
+                 # and an absolute local folder for the evidence instead of <controller state>\evidence.
+                 'build_migration', 'output_root'}
+EVIDENCE_ROOTS = 'evidence-roots.json'
+EVIDENCE_ROOTS_SCHEMA = 'goat-catchup-evidence-roots-v1'
+MAX_EVIDENCE_ROOTS = 50
 MAX_CERTIFICATES = 20
 RETEST_MODELS = (0, 1, 2, 4)   # every tick, 1 minute OHLC, open prices, real ticks (3 = math calculations, no prices)
 EXPORT_PASS_MODEL = 4          # the EA forces real ticks on its export pass (GOAT V1.35+: strT.Model="4")
@@ -131,12 +147,51 @@ def plain(path):
     return text[4:] if text.startswith('\\\\?\\') else text
 
 
-def evidence_worst_case(controller_root):
+def evidence_worst_case(controller_root, evidence_root=None):
     """Longest path under a catch-up member's evidence folder, plain: independent of the catch-up ID.
 
-    ``<state root>\\evidence\\c.<10 hex>\\<5 digits>\\`` + OUTPUT_PATH_ROOM = len(state root) + 168.
+    ``<state root>\\evidence\\c.<10 hex>\\<5 digits>\\`` + OUTPUT_PATH_ROOM = len(state root) + 168
+    (with an ``output_root``: len(output root) + 159).
     """
-    return len(os.path.abspath(Path(controller_root) / 'evidence')) + 1 + 12 + 1 + MEMBER_FOLDER_DIGITS + OUTPUT_PATH_ROOM
+    base = evidence_root if evidence_root is not None else Path(controller_root) / 'evidence'
+    return len(os.path.abspath(base)) + 1 + 12 + 1 + MEMBER_FOLDER_DIGITS + OUTPUT_PATH_ROOM
+
+
+def evidence_roots(controller_root):
+    """Every evidence folder base: ``<controller state>\\evidence``, then each recorded ``output_root``."""
+    bases = [Path(controller_root) / 'evidence']
+    path = Path(controller_root) / EVIDENCE_ROOTS
+    if not path.exists():
+        return bases
+    try:
+        record = read_json_bounded(path)
+    except (OSError, ValueError) as exc:
+        # Fail closed: without the recorded roots, exports caught up there would read as behind again.
+        raise ValueError('%s cannot be read (%s); catch-up evidence locations are unknown, so nothing is classified' % (path, exc)) from None
+    if not isinstance(record, dict) or record.get('schema') != EVIDENCE_ROOTS_SCHEMA or not isinstance(record.get('roots'), list):
+        raise ValueError('%s is not a %s record; catch-up evidence locations are unknown' % (path, EVIDENCE_ROOTS_SCHEMA))
+    seen = {migration.key(bases[0])}
+    for root in record['roots'][:MAX_EVIDENCE_ROOTS]:
+        if isinstance(root, str) and Path(root).is_absolute() and not root.startswith(('\\\\', '//')) and migration.key(root) not in seen:
+            seen.add(migration.key(root))
+            bases.append(Path(root))
+    return bases
+
+
+def is_default_root(controller_root, root):
+    return migration.key(os.path.abspath(root)) == migration.key(os.path.abspath(Path(controller_root) / 'evidence'))
+
+
+def record_evidence_root(controller_root, root):
+    """Add one ``output_root`` to ``evidence-roots.json`` (atomic replace), so ``versions`` reads it."""
+    if is_default_root(controller_root, root):
+        return   # the controller-state root is always read; never recorded twice
+    roots = [str(p) for p in evidence_roots(controller_root)[1:]]
+    if migration.key(root) in {migration.key(p) for p in roots}:
+        return
+    if len(roots) >= MAX_EVIDENCE_ROOTS:
+        raise ValueError('At most %d catch-up output roots can be recorded; reuse one' % MAX_EVIDENCE_ROOTS)
+    write_json(Path(controller_root) / EVIDENCE_ROOTS, dict(schema=EVIDENCE_ROOTS_SCHEMA, roots=roots + [str(root)]))
 
 
 def catchups_worst_case(controller_root, catchup_id=None):
@@ -145,15 +200,17 @@ def catchups_worst_case(controller_root, catchup_id=None):
 
 
 def evidence_folder(controller_root, catchup_id):
-    """The evidence folder of one catch-up for reading: the hashed folder, or a legacy ``evidence\\<id>`` one, else None."""
+    """The evidence folder of one catch-up for reading: the hashed folder (under the controller state or a recorded
+    output root), or a legacy ``evidence\\<id>`` one, else None."""
     base = Path(controller_root) / 'evidence'
-    hashed = io_path(base / evidence_key(catchup_id), 1 + MEMBER_FOLDER_DIGITS + OUTPUT_PATH_ROOM)
-    try:
-        record = read_json_bounded(hashed / EVIDENCE_FOLDER_RECORD)
-        if isinstance(record, dict) and record.get('catchup_id') == catchup_id:
-            return hashed
-    except (OSError, ValueError):
-        pass
+    for root in evidence_roots(controller_root):
+        hashed = io_path(root / evidence_key(catchup_id), 1 + MEMBER_FOLDER_DIGITS + OUTPUT_PATH_ROOM)
+        try:
+            record = read_json_bounded(hashed / EVIDENCE_FOLDER_RECORD)
+            if isinstance(record, dict) and record.get('catchup_id') == catchup_id:
+                return hashed
+        except (OSError, ValueError):
+            pass
     legacy = base / catchup_id
     return legacy if legacy.is_dir() else None
 SAFE_SYMBOL = re.compile(r'[A-Za-z0-9_.# -]{1,64}')
@@ -175,20 +232,31 @@ def _mt5(day):
 
 
 def versions(controller_root, limit=20000):
-    """Catch-up evidence versions retained under the controller state, newest end first."""
-    # Both layouts: evidence\c.<hash>\<member>\ and the legacy evidence\<catch-up id>\<alias>\ (room for the longest ID).
-    base = io_path(Path(controller_root) / 'evidence', 1 + MAX_ID + 1 + 23 + 1 + len('evidence-version.json'))
+    """Catch-up evidence versions retained under the controller state (and recorded output roots), newest end first.
+
+    Build-migration records (``kind: build_migration_retest``) are never evidence versions: skipped by type.
+    Fails closed when a recorded output root is unavailable (an unplugged drive): its exports would read as behind.
+    """
     found = []
-    if base.is_dir():
+    for index, root in enumerate(evidence_roots(controller_root)):
+        # Both layouts: evidence\c.<hash>\<member>\ and the legacy evidence\<catch-up id>\<alias>\ (room for the longest ID).
+        base = io_path(root, 1 + MAX_ID + 1 + 23 + 1 + len('evidence-version.json'))
+        if not base.is_dir():
+            if index:
+                raise ValueError('Catch-up output root %s (recorded in %s) is unavailable; reconnect it before reading catch-up '
+                                 'evidence, or exports caught up there would read as behind' % (root, EVIDENCE_ROOTS))
+            continue
         for path in sorted(base.glob('*/*/evidence-version.json')):
             try:
                 record = read_json_bounded(path)
             except (OSError, ValueError):
                 continue
-            if isinstance(record, dict) and record.get('schema') == VERSION_SCHEMA:
+            if isinstance(record, dict) and record.get('schema') == VERSION_SCHEMA and not migration.is_record(record):
                 found.append(record | dict(version_path=str(path)))
             if len(found) >= limit:
                 break
+        if len(found) >= limit:
+            break
     return sorted(found, key=lambda r: (r.get('evidence_end') or '', r.get('created_utc') or ''), reverse=True)
 
 
@@ -197,8 +265,48 @@ def versions(controller_root, limit=20000):
 UNCARRIED = UNJUDGED + ('requalify',)
 
 
-def _version_key(record):
-    return (record.get('values_sha256'), record.get('symbol'), record.get('period'), record.get('evidence_start'))
+VERSION_KIND = 'oos_catchup'
+
+
+def build_identity(export):
+    """The EA build that made an export: its capture's build ID, else ``ex5:<run manifest EA sha256>``, else None."""
+    build_id = (export.get('capture') or {}).get('build_id')
+    if build_id:
+        return build_id
+    ea = (export.get('run') or {}).get('ea_sha256')
+    return 'ex5:' + ea if ea else None
+
+
+def _version_key(record, *, version=True):
+    """What a catch-up version must share with an export to carry it: values, symbol, period, start, the build that
+    made the export it re-tested, and the record kind (goatai#2350 6070262354).
+
+    A version names its original's build (``original.build``), so a catch-up of a build-migration re-test (made by
+    the new build) never carries the older-build original it came from. Versions written before this field
+    (none can descend from a build migration) carry only the exact SET they re-tested (``original.set_sha256``).
+    """
+    base = (record.get('values_sha256'), record.get('symbol'), record.get('period'), record.get('evidence_start'))
+    if not version:   # an export row (classify)
+        return base + (VERSION_KIND, record.get('build'))
+    if migration.is_record(record) or record.get('kind', VERSION_KIND) != VERSION_KIND:
+        return None
+    original = record.get('original') or {}
+    if 'build' in original:
+        return base + (VERSION_KIND, original['build'])
+    return base + (VERSION_KIND, ('legacy_exact_set', original.get('set_sha256')))
+
+
+def _carries(version, row):
+    """True when ``version`` is a catch-up of exactly this export (same key, same build or the very same SET)."""
+    key = _version_key(version)
+    if key is None or key[:5] != _version_key(row, version=False)[:5]:
+        return False
+    if isinstance(key[5], tuple):
+        return key[5][1] is not None and key[5][1] == row.get('set_sha256')
+    if key[5] is None or row.get('build') is None:   # unknown build on either side: None == None is not the same build
+        sha = (version.get('original') or {}).get('set_sha256')   # (goatai#2350 6070608935) -> the exact-SET rule
+        return sha is not None and sha == row.get('set_sha256')
+    return key[5] == row.get('build')
 
 
 def classify(export, target, *, include_below_threshold=False, known_versions=()):
@@ -209,7 +317,8 @@ def classify(export, target, *, include_below_threshold=False, known_versions=()
                symbol=export.get('symbol'), period=export.get('period'), values_sha256=export['values_sha256'],
                evidence_start=export.get('evidence_start'), evidence_end=end, evidence_end_source=export.get('evidence_end_source'),
                threshold_passing=export['threshold']['passing'], threshold=export['threshold'], metrics=export.get('metrics'),
-               capture_status=(export.get('capture') or {}).get('status'), history_short=export.get('history_short', False))
+               capture_status=(export.get('capture') or {}).get('status'), history_short=export.get('history_short', False),
+               build=build_identity(export), set_sha256=export.get('set_sha256'))
     # Re-test eligibility keeps the EA's own rounded comparison (GOAT minimum defaults for a library
     # copy); threshold_passing and the export's qualification stamp record whether it is proven.
     eligible = export['threshold'].get('retest_eligible', export['threshold']['passing'])
@@ -221,7 +330,9 @@ def classify(export, target, *, include_below_threshold=False, known_versions=()
     if problems:
         return row | dict(status='ineligible', reasons=problems)
     target_day, end_day = date.fromisoformat(target), date.fromisoformat(end)
-    mine = [v for v in known_versions if _version_key(v) == _version_key(row) and (v.get('evidence_end') or '') >= target]
+    # Only a catch-up version of this export's own build carries it (_version_key); a build-migration record is a
+    # new-build re-test, never a catch-up of this export, and has no version key at all.
+    mine = [v for v in known_versions if _carries(v, row) and (v.get('evidence_end') or '') >= target]
     # A not_comparable or unjudged re-test judged nothing, so it never carries the export forward; a re-queue may try again.
     match = [v for v in mine if (v.get('verdict') or {}).get('verdict') not in UNCARRIED]
     refused = [v for v in mine if v not in match]
@@ -328,6 +439,9 @@ def catch_up_stamp(spec, manifest, verdict, created_utc, original_foos=None):
     so nothing of the old export is spliced with the new weeks. ``historyBasis`` and
     ``tickHistoryDrift`` say which history the evidence rests on and how far the re-test drifted.
     """
+    # The desktop import mapping reads only catch-up verdicts: a build-migration record never becomes a catchUp stamp.
+    migration.refuse(verdict, 'The desktop catch-up import stamp')
+    migration.refuse(spec.get('build_migration') or {}, 'The desktop catch-up import stamp')
     window = verdict.get('new_weeks') or {}
     # comparable_rebased / requalify (studio_catchup_rebase): the re-test is the evidence for every window, so the
     # importer must not restore the original FOOS and append new weeks: it takes ``windows`` (all on the re-test).
@@ -353,6 +467,16 @@ def catch_up_stamp(spec, manifest, verdict, created_utc, original_foos=None):
                 equivalence_certificate=((spec.get('pins') or {}).get('equivalence') or {}).get('certificate_digest'),
                 equivalence_canary=((spec.get('pins') or {}).get('equivalence') or {}).get('canary_digest'),
                 equivalence_status_at_collect=((spec.get('pins') or {}).get('equivalence') or {}).get('status_at_collect'))
+
+def _same_tree(source, target):
+    """A copied file or folder holds exactly the source's files with the same SHA-256 each."""
+    source, target = Path(source), Path(target)
+    if source.is_file():
+        return target.is_file() and digest(source) == digest(target)
+    mine = sorted(p.relative_to(source) for p in source.rglob('*') if p.is_file())
+    theirs = sorted(p.relative_to(target) for p in target.rglob('*') if p.is_file())
+    return mine == theirs and all(digest(source / p) == digest(target / p) for p in mine)
+
 
 class _NoProcess:
     """Process stand-in for previews: any terminal effect is a defect."""
@@ -451,6 +575,7 @@ class CatchupRunner(SeedRunner):
         self.evidence = controller.root / 'evidence'
         self.now = now
         self.heldout_reveal, self._strategy_refs = None, {}
+        self.migration = None
 
     def path(self, batch_id):
         if not isinstance(batch_id, str) or not re.fullmatch('[A-Za-z0-9_-]{1,80}', batch_id):
@@ -462,7 +587,7 @@ class CatchupRunner(SeedRunner):
         if not isinstance(plan, dict) or not PLAN_KEYS <= set(plan) or set(plan) - PLAN_KEYS - PLAN_OPTIONAL or plan['schema_version'] != 1:
             raise ValueError('Catch-up plan requires schema_version:1, evidence_end, sets and job_timeout_seconds '
                              '(optional: broker_clock, assume, include_below_threshold, verdict_rules, strategy_refs, heldout_reveal, '
-                             'equivalence_certificates, canary_certificate)')
+                             'equivalence_certificates, canary_certificate, build_migration, output_root)')
         certificates = plan.get('equivalence_certificates', [])
         if not isinstance(certificates, list) or len(certificates) > MAX_CERTIFICATES or len(set(map(str, certificates))) != len(certificates) \
                 or any(not isinstance(d, str) or not re.fullmatch('[0-9a-f]{64}', d) for d in certificates):
@@ -487,6 +612,18 @@ class CatchupRunner(SeedRunner):
         from studio_strategy_attribution import parse_ref_list
         self._strategy_refs = dict(zip((str(Path(p)).lower() for p in sets),
                                        parse_ref_list(plan.get('strategy_refs'), len(sets), 'Catch-up set')))
+        self.evidence = migration.output_root(plan['output_root']) if 'output_root' in plan else self.c.root / 'evidence'
+        if self.evidence.exists() and not self.evidence.is_dir():
+            raise ValueError('output_root is a file, not a folder: %s' % self.evidence)
+        self.migration = None
+        if 'build_migration' in plan:
+            if certificates or canary is not None:
+                raise ValueError('A build_migration plan names no equivalence or canary certificate: its re-tests are new '
+                                 'evidence on the target build, never comparable catch-ups')
+            if 'heldout_reveal' in plan:
+                raise ValueError('A build_migration plan never reveals a held-out lock: a lock is revealed by a catch-up of its '
+                                 'frozen candidate on its own build')
+            self.migration = migration.validate_plan(plan['build_migration'], sets)
         return assume
 
     def _freeze(self, root, plan):
@@ -501,17 +638,28 @@ class CatchupRunner(SeedRunner):
         expert = install['ea_relative_path']
         runs, rows, members, payloads = RunContext(), [], [], []
         nonce = uuid.uuid4().hex[:16]
-        known = versions(self.c.root)
         certificates = self._certificates(plan)
+        if self.migration:
+            self._check_migration_target()
+            # Every SET's recorded original first (SET, equity CSV, deals.csv): a missing or changed one refuses the
+            # whole plan, naming the SET.
+            for path in plan['sets']:
+                entry = self.migration['originals'][migration.key(path)]
+                entry['baseline'] = migration.check_original(entry, path)
+        # A build migration re-tests on purpose: earlier catch-up versions of the old build never skip a member.
+        known = () if self.migration else versions(self.c.root)
         for path in plan['sets']:
+            entry = self.migration['originals'][migration.key(path)] if self.migration else None
             try:
                 export = read_export(path, runs=runs)
             except (OSError, ValueError, UnicodeError) as exc:
                 rows.append(dict(set_path=path, status='ineligible', reasons=['Unreadable export: ' + str(exc)]))
                 continue
+            if entry is not None and export['set_sha256'] != entry['original_sha256']:
+                raise ValueError('build_migration: SET %s changed while planning; nothing was planned' % path)
             row = classify(export, target['iso'], include_below_threshold=plan.get('include_below_threshold', False), known_versions=known)
             if row['status'] == 'behind':
-                reasons, bridge = self._member_problems(export, account, certificates=certificates)
+                reasons, bridge = self._member_problems(export, account, certificates=certificates, migration_entry=entry)
                 facts, window, assumed, missing = _tester_conditions(export, assume)
                 if missing:
                     reasons.append('Unknown original tester settings: ' + ', '.join(missing)
@@ -520,7 +668,7 @@ class CatchupRunner(SeedRunner):
                     row = row | dict(status='ineligible', reasons=reasons)
                 else:
                     member, files = self._member(root, export, target, facts, window, assumed, account, expert, nonce, len(members),
-                                                 bridge=bridge)
+                                                 bridge=bridge, migration_entry=entry)
                     ref = self._strategy_refs.get(str(Path(path)).lower())
                     if ref is not None:
                         member['strategy_ref'] = ref
@@ -530,6 +678,8 @@ class CatchupRunner(SeedRunner):
             rows.append(row)
         if len({m['member_id'] for m in members}) != len(members):
             raise ValueError('Duplicate export values/window in catch-up plan')
+        if 'output_root' in plan and members and not is_default_root(self.c.root, self.evidence):
+            migration.free_space_check(self.evidence, len(members))
         # Held-out lock (goatai#2221 §4.3): catch-up re-tests run to the evidence end, so they are
         # the likeliest to read a locked window. A reveal plan must be its lock's frozen candidate.
         from studio_heldout_guard import check_catchup
@@ -548,6 +698,19 @@ class CatchupRunner(SeedRunner):
             return None
         return build if isinstance(build, str) and 0 < len(build) <= 96 else None
 
+    def _check_migration_target(self):
+        """build_migration runs only when the installed EA is exactly the plan's target build. Read-only."""
+        target, installed = self.migration['target_build'], self._installed_build_id()
+        if installed is None:
+            raise ValueError('build_migration targets %s, but the installed EA build cannot be read (no EA activation status); '
+                             'open MT5 with the GOAT chart on the target build first' % target)
+        if installed != target:
+            raise ValueError('build_migration targets %s, but the installed EA reports %s; a build migration runs only on its '
+                             'target build' % (target, installed))
+        if self.migration['target_ea_sha256'] != self.c.install['ea_sha256']:
+            raise ValueError('build_migration pins target EA %s, but the installed EA binary is %s'
+                             % (self.migration['target_ea_sha256'][:12], self.c.install['ea_sha256'][:12]))
+
     def _certificates(self, plan):
         """Trading-equivalence certificate states the plan names, as (mode, state). Missing or altered ones refuse the plan."""
         named = [('active', digest) for digest in plan.get('equivalence_certificates', [])]
@@ -560,8 +723,12 @@ class CatchupRunner(SeedRunner):
         return dict(mode=mode, certificate_digest=cert['digest'], canary_digest=cert.get('canary_digest'), status=cert['status'],
                     export_build=cert['export_build'], installed_build=cert['installed_build'])
 
-    def _member_problems(self, export, account, *, certificates=()):
-        """Reasons this export cannot be re-tested here, and the equivalence bridge it needs (None: the same build)."""
+    def _member_problems(self, export, account, *, certificates=(), migration_entry=None):
+        """Reasons this export cannot be re-tested here, and the equivalence bridge it needs (None: the same build).
+
+        ``migration_entry`` (build_migration): the build check is replaced by the plan's recorded source build; every
+        other check (server, model, symbol, standard mode, installed inputs) stays.
+        """
         problems, bridge = [], None
         capture = export.get('capture') or {}
         if not export.get('symbol') or not SAFE_SYMBOL.fullmatch(export['symbol']):
@@ -581,7 +748,15 @@ class CatchupRunner(SeedRunner):
         canary = next((cert for mode, cert in certificates if mode == 'canary'), None)
         covering = lambda cert: equivalence.covers(cert, export_ea_sha256=run_ea, export_build_id=None if run_ea else build_id,
                                                    installed_ea_sha256=installed_sha)
-        if canary is not None:
+        if migration_entry is not None:
+            # Cross-build on purpose: the plan's recorded source build must agree with what the export itself says.
+            if build_id and build_id != migration_entry['source_build']:
+                raise ValueError('build_migration: SET %s was made by EA build %s (its capture), but the plan names source_build %s'
+                                 % (export['set_path'], build_id, migration_entry['source_build']))
+            if run_ea and migration_entry.get('source_ea_sha256') and run_ea != migration_entry['source_ea_sha256']:
+                raise ValueError('build_migration: SET %s was made by EA binary %s (its run manifest), but the plan names %s'
+                                 % (export['set_path'], run_ea[:12], migration_entry['source_ea_sha256'][:12]))
+        elif canary is not None:
             if not covering(canary):
                 problems.append('Canary plan for certificate %s: this export was not made by its export build, or this terminal does '
                                 'not run its installed build' % canary['digest'][:12])
@@ -629,7 +804,7 @@ class CatchupRunner(SeedRunner):
             problems.append('SET does not match the installed EA inputs: ' + str(exc))
         return problems, bridge
 
-    def _member(self, root, export, target, facts, window, assumed, account, expert, nonce, index, *, bridge=None):
+    def _member(self, root, export, target, facts, window, assumed, account, expert, nonce, index, *, bridge=None, migration_entry=None):
         alias = 'C' + nonce + '_' + str(index + 1).zfill(5)
         capture_id = 'catchup-' + nonce + '-' + str(index + 1).zfill(5)
         start, to_date = date.fromisoformat(export['evidence_start']), _date(target['tester_to_date'])
@@ -656,11 +831,15 @@ class CatchupRunner(SeedRunner):
             raise ValueError('Exported SET needs exactly one EA_Desc line: ' + export['set_path'])
         frozen = b'\xff\xfe' + frozen_text.encode('utf-16-le')
         capture = export.get('capture')
-        source_inputs = None
+        source_inputs, source_inputs_origin = None, None
         if capture and model == 4:   # the EA's sequence capture only runs on real ticks
             candidate = Path(capture['path']).parent / 'source-inputs.set'
             if candidate.is_file() and candidate.stat().st_size <= 1024 * 1024:
-                source_inputs = candidate.read_bytes()
+                source_inputs, source_inputs_origin = candidate.read_bytes(), 'capture'
+        if migration_entry is not None and source_inputs is None and model == 4:
+            # No .goatseq on the export (the V1.47 SETs): the re-test writes one. The EA needs a source input snapshot
+            # to capture; it is the original SET's own bytes, staged as they are. The SET itself is never written.
+            source_inputs, source_inputs_origin = raw, 'original_set'
         if bridge and bridge['mode'] == 'canary' and source_inputs is None:
             raise ValueError('A canary member needs the export capture\'s source-inputs.set: ' + export['set_path'])
         values = read_values(frozen)
@@ -694,7 +873,8 @@ class CatchupRunner(SeedRunner):
                                     member=export.get('member'), run_id=(export.get('run') or {}).get('run_id'),
                                     evidence_start=export['evidence_start'], evidence_end=export['evidence_end'],
                                     evidence_end_source=export['evidence_end_source'], metrics=export.get('metrics'),
-                                    tester=export.get('tester'), threshold=export['threshold'], ea_name=export.get('ea_name')),
+                                    tester=export.get('tester'), threshold=export['threshold'], ea_name=export.get('ea_name'),
+                                    build=build_identity(export)),
                       pins=dict(installed_ea_sha256=self.c.install['ea_sha256'], original_ea_sha256=(export.get('run') or {}).get('ea_sha256'),
                                 original_build_id=(capture or {}).get('build_id'), original_server=(capture or {}).get('server'),
                                 installed_build_id=self._installed_build_id(),
@@ -708,7 +888,18 @@ class CatchupRunner(SeedRunner):
         if source_inputs is not None:
             staged = root / (alias + '.source-inputs.set')
             files.append((staged, source_inputs))
-            member.update(source_inputs_path=str(staged), source_inputs_sha256=hashlib.sha256(source_inputs).hexdigest())
+            member.update(source_inputs_path=str(staged), source_inputs_sha256=hashlib.sha256(source_inputs).hexdigest(),
+                          source_inputs_origin=source_inputs_origin)
+        if migration_entry is not None:
+            target_build = self.migration['target_build']
+            member['build_migration'] = dict(kind=migration.KIND, provenance=migration.provenance(target_build),
+                                             source_build=migration_entry['source_build'],
+                                             source_ea_sha256=migration_entry.get('source_ea_sha256') or (export.get('run') or {}).get('ea_sha256'),
+                                             target_build=target_build, target_ea_sha256=self.c.install['ea_sha256'],
+                                             original_path=migration_entry['original_path'], original_sha256=migration_entry['original_sha256'],
+                                             original_csv_sha256=migration_entry['original_csv_sha256'],
+                                             original_deals_sha256=migration_entry.get('original_deals_sha256'),
+                                             goatseq_from=source_inputs_origin)
         return member, files
 
     def validate(self, plan, catchup_id=None):
@@ -725,12 +916,16 @@ class CatchupRunner(SeedRunner):
         """How long this catch-up's paths get, and which use the \\\\?\\ extended-length form (agent-readable)."""
         root = self.c.root
         evidence = self.evidence / evidence_key(catchup_id or 'validation-only')
+        custom = self.evidence != root / 'evidence'
+        worst = evidence_worst_case(root, self.evidence)
         report = dict(max_path=MAX_PATH, state_root_length=len(os.path.abspath(root)),
                       catchup_id=catchup_id, catchup_id_length=len(catchup_id) if catchup_id else None,
+                      evidence_root=plain(os.path.abspath(self.evidence)), evidence_root_source='output_root' if custom else 'controller_state',
                       evidence_folder=plain(io_path(evidence)) if catchup_id else None,
-                      evidence_worst_case=evidence_worst_case(root),
-                      evidence_formula='len(state root) + 168 = %d + 168; the catch-up ID does not change it' % len(os.path.abspath(root)),
-                      evidence_extended_length=evidence_worst_case(root) > MAX_PATH and WINDOWS,
+                      evidence_worst_case=worst,
+                      evidence_formula=('len(output root) + 159 = %d + 159' % len(os.path.abspath(self.evidence)) if custom else
+                                        'len(state root) + 168 = %d + 168' % len(os.path.abspath(root))) + '; the catch-up ID does not change it',
+                      evidence_extended_length=worst > MAX_PATH and WINDOWS,
                       catchups_worst_case=catchups_worst_case(root, catchup_id),
                       catchups_formula='len(state root) + 83 + len(catch-up ID, %s)' % ('%d' % len(catchup_id) if catchup_id else 'longest 80'),
                       catchups_extended_length=str(self.base).startswith('\\\\?\\'))
@@ -767,16 +962,32 @@ class CatchupRunner(SeedRunner):
                     raise ValueError('The MT5 %s path would be %d characters, past the Windows %d-character limit MT5 can open: %s'
                                      % (what, len(path), MAX_PATH + 1, path))
 
-    @staticmethod
-    def _preview(members, rows, target, plan, *, writes):
-        return dict(schema_version=1, valid=True, writes=writes, native_launch_qualified=False, mode=MODE,
-                    target=target, plan_sha256=sha(plan), member_count=len(members), summary=summarize(rows, target['iso'], resolved=target),
-                    exports=rows[:MAX_PUBLIC], exports_omitted=max(0, len(rows) - MAX_PUBLIC),
-                    members=[dict(alias=m['alias'], symbol=m['tester']['Symbol'], period=m['tester']['Period'], from_date=m['tester']['FromDate'],
-                                  to_date=m['tester']['ToDate'], original_end=m['original']['evidence_end'], new_weekdays=m['new_window']['weekdays'],
-                                  assumed=m['assumed'], capture=m['capture'], model=m['tester']['Model'],
-                                  equivalence=(m['pins'].get('equivalence') or {}).get('mode'),
-                                  certificate=(m['pins'].get('equivalence') or {}).get('certificate_digest')) for m in members[:MAX_PUBLIC]])
+    def _migration_public(self):
+        """The plan's build migration as the manifest and previews record it (None for a normal catch-up)."""
+        if not self.migration:
+            return None
+        target = self.migration['target_build']
+        return dict(kind=migration.KIND, provenance=migration.provenance(target), target_build=target,
+                    target_ea_sha256=self.c.install['ea_sha256'], record=migration.RECORD_FILE, tolerances=migration.public_tolerances(),
+                    plain='Re-tests on %s as new evidence records (%s); never a catch-up verdict on the original exports.'
+                          % (target, migration.provenance(target)))
+
+    def _preview(self, members, rows, target, plan, *, writes):
+        value = dict(schema_version=1, valid=True, writes=writes, native_launch_qualified=False, mode=MODE,
+                     target=target, plan_sha256=sha(plan), member_count=len(members), summary=summarize(rows, target['iso'], resolved=target),
+                     exports=rows[:MAX_PUBLIC], exports_omitted=max(0, len(rows) - MAX_PUBLIC),
+                     members=[dict(alias=m['alias'], symbol=m['tester']['Symbol'], period=m['tester']['Period'], from_date=m['tester']['FromDate'],
+                                   to_date=m['tester']['ToDate'], original_end=m['original']['evidence_end'], new_weekdays=m['new_window']['weekdays'],
+                                   assumed=m['assumed'], capture=m['capture'], model=m['tester']['Model'],
+                                   equivalence=(m['pins'].get('equivalence') or {}).get('mode'),
+                                   certificate=(m['pins'].get('equivalence') or {}).get('certificate_digest'))
+                              | (dict(source_build=m['build_migration']['source_build'], goatseq_from=m['build_migration']['goatseq_from'])
+                                 if m.get('build_migration') else {}) for m in members[:MAX_PUBLIC]])
+        if self.migration:
+            value['build_migration'] = self._migration_public()
+        if 'output_root' in plan:
+            value['output_root'] = plain(os.path.abspath(self.evidence))
+        return value
 
     def prepare(self, batch_id, plan):
         root = self.path(batch_id)
@@ -805,8 +1016,17 @@ class CatchupRunner(SeedRunner):
                         include_below_threshold=plan.get('include_below_threshold', False), native_launch_qualified=False)
         if self.heldout_reveal is not None:
             manifest['heldout_reveal'] = self.heldout_reveal
+        if self.migration:
+            manifest['build_migration'] = self._migration_public()
+        custom_root = 'output_root' in plan
+        if custom_root:
+            manifest['output_root'] = plain(os.path.abspath(self.evidence))
         if len(json.dumps(manifest).encode('utf-8')) > MAX_MANIFEST_BYTES:
             raise ValueError('Catch-up manifest exceeds 128 MiB; split the plan')
+        if custom_root:
+            # Recorded before any member runs, so versions() finds catch-up evidence written there.
+            self.evidence.mkdir(parents=True, exist_ok=True)
+            record_evidence_root(self.c.root, os.path.abspath(self.evidence))
         root.mkdir(parents=True, exist_ok=False)
         (Path(self.c.install['terminal_data_root']) / 'MQL5/Files/GOATStudio/CatchupReports').mkdir(parents=True, exist_ok=True)
         for path, raw in payloads:
@@ -856,7 +1076,15 @@ class CatchupRunner(SeedRunner):
         tester-profile optimize flags cannot add a search axis; nothing to refuse."""
 
     def _before_start(self, spec):
-        """Stage the EA's capture input snapshot (GoatTraceInit refuses without it). Create-only."""
+        """Stage the EA's capture input snapshot (GoatTraceInit refuses without it). Create-only.
+
+        A build-migration member starts only while the installed EA is still its target build.
+        """
+        if spec.get('build_migration'):
+            target, installed = spec['build_migration']['target_build'], self._installed_build_id()
+            if installed != target or self.c.install['ea_sha256'] != spec['build_migration']['target_ea_sha256']:
+                raise ValueError('Build-migration member %s targets %s, but the installed EA now reports %s; nothing was started'
+                                 % (spec['alias'], target, installed))
         if not spec['capture']:
             return
         raw = Path(spec['source_inputs_path']).read_bytes()
@@ -877,6 +1105,8 @@ class CatchupRunner(SeedRunner):
     def _collect(self, path, spec, manifest):
         """Verify the EA's re-test unit, move it into the evidence store and judge the new weeks."""
         from studio_catchup_verdict import evaluate
+        if spec.get('build_migration'):
+            return self._collect_migration(path, spec, manifest)
         if len(self._outputs(spec)) != 1:
             raise ValueError('Expected exactly one exported SET from a single catch-up pass')
         retest = read_export(path)
@@ -926,7 +1156,7 @@ class CatchupRunner(SeedRunner):
         verdict['oos_rule'] = self._oos_rule(original, retest, spec, verdict, evidence_end=manifest['evidence_end']['iso'])
         verdict['oos_rule']['evidenceEndEffective'] = verdict['evidenceEndEffective']
         created = datetime.now(timezone.utc).isoformat(timespec='seconds')
-        version = dict(schema=VERSION_SCHEMA, values_sha256=retest['values_sha256'], symbol=retest['symbol'], period=retest['period'],
+        version = dict(schema=VERSION_SCHEMA, kind=VERSION_KIND, values_sha256=retest['values_sha256'], symbol=retest['symbol'], period=retest['period'],
                        evidence_start=retest['evidence_start'], evidence_end=retest['evidence_end'], evidence_end_source=retest['evidence_end_source'],
                        target_end=manifest['evidence_end']['iso'], catchup_id=manifest['batch_id'], alias=spec['alias'],
                        created_utc=created, catch_up=catch_up_stamp(dict(spec, pins=pins), manifest, verdict, created,
@@ -968,6 +1198,105 @@ class CatchupRunner(SeedRunner):
                     member_id=spec['member_id'], summary=summary, verdict=verdict, version_path=str(version_path),
                     native_launch_qualification=False)
 
+    def _collect_migration(self, path, spec, manifest):
+        """A build-migration member: verify the unit, move it, and write a ``build_migration_retest`` record.
+
+        No verdict, no catch-up stamp: the drift against the exact original (judged only over the original's own span),
+        and the re-test's own windows and new weeks as measured numbers. The unseen weeks are never judged here
+        (Claude-Mac, #2350 6070262354): that is the external prereg analysis.
+        """
+        from studio_catchup_rebase import rebased_windows
+        from studio_catchup_verdict import equity_rows
+        from studio_window_metrics import equity_samples, window as metric_window
+        bm = spec['build_migration']
+        if len(self._outputs(spec)) != 1:
+            raise ValueError('Expected exactly one exported SET from a single build-migration pass')
+        retest = read_export(path)
+        tester = spec['tester']
+        if (retest['symbol'], retest['period']) != (tester['Symbol'], tester['Period']) or retest['alias'] != spec['alias']:
+            raise ValueError('Re-test export identity differs from the frozen member')
+        capture = retest.get('capture')
+        if spec['capture']:
+            if not capture or capture['run_id'] != spec['capture_id']:
+                raise ValueError('Re-test capture is missing or belongs to another attempt')
+            if (capture['requested_start_msc'], capture['requested_end_msc']) != (server_msc(_date(tester['FromDate'])), server_msc(_date(tester['ToDate']))):
+                raise ValueError('Re-test capture window differs from the frozen member')
+        ran_on = (capture or {}).get('build_id') or self._installed_build_id()
+        if ran_on != bm['target_build']:
+            raise ValueError('Re-test ran on EA build %s, not the build-migration target %s; nothing was moved' % (ran_on, bm['target_build']))
+        if retest['values_sha256'] != spec['original']['values_sha256']:
+            raise ValueError('Re-test inputs differ from the original SET; nothing was moved')
+        # The drift baseline is pinned whole: the SET, its equity CSV and its deals.csv must be the ones the plan recorded.
+        baseline = migration.check_original(dict(original_path=bm['original_path'], original_sha256=bm['original_sha256'],
+                                                 original_csv_sha256=bm['original_csv_sha256'],
+                                                 original_deals_sha256=bm.get('original_deals_sha256')), bm['original_path'])
+        original = read_export(bm['original_path'])
+        moved = self._move(path, Path(spec['evidence_dir']))
+        retest = read_export(moved)
+        if not retest['evidence_end']:
+            raise ValueError('Re-test export has no evidence end')
+        target_end = manifest['evidence_end']['iso']
+        new_end = date.fromisoformat(min(retest['evidence_end'], target_end))
+        pins = spec.get('pins') or {}
+        drift = migration.drift(original, retest, deposit=pins.get('deposit'))
+        tested = retest.get('capture') or {}
+        deals = str(Path(tested['path']).parent / 'deals.csv') if tested.get('complete') and tested.get('path') else None
+        if deals and not Path(deals).is_file():
+            deals = None
+        first_new = date.fromisoformat(original['evidence_end']) + timedelta(days=1)
+        windows, new_weeks, window_error = None, None, None
+        try:
+            windows = rebased_windows(original, retest, equity_rows(retest['csv_path']), deals,
+                                      tester=spec['original'].get('tester'), tested_through=new_end)
+            if new_end >= first_new:
+                new_weeks = dict(metric_window(equity_samples(Path(retest['csv_path']).read_bytes()), first_new, new_end, deals=deals),
+                                 name='new_weeks', basis='retest')
+        except (OSError, ValueError, KeyError, TypeError, ArithmeticError) as exc:
+            window_error = 'Could not measure the re-test windows: ' + str(exc)[:240]
+        created = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        evidence_model = model_tag(tester['Model'], tester['Period'], source=pins.get('model_source'))
+        record = dict(schema=migration.RECORD_SCHEMA, kind=migration.KIND, provenance=bm['provenance'],
+                      catchup_id=manifest['batch_id'], alias=spec['alias'], created_utc=created,
+                      source_build=bm['source_build'], source_ea_sha256=bm.get('source_ea_sha256'),
+                      target_build=bm['target_build'], target_ea_sha256=bm['target_ea_sha256'], ran_on_build=ran_on,
+                      symbol=retest['symbol'], period=retest['period'], values_sha256=retest['values_sha256'],
+                      original=dict(path=bm['original_path'], sha256=bm['original_sha256'], csv_sha256=baseline['csv'],
+                                    deals_sha256=baseline['deals'], values_sha256=original['values_sha256'],
+                                    evidence_start=original['evidence_start'], evidence_end=original['evidence_end'],
+                                    csv_path=original['csv_path'], metrics=original.get('metrics'), windows=original.get('windows'),
+                                    capture_status=(original.get('capture') or {}).get('status'), threshold=spec['original'].get('threshold')),
+                      retest=dict(set_path=retest['set_path'], set_sha256=retest['set_sha256'], values_sha256=retest['values_sha256'],
+                                  csv_path=retest['csv_path'], evidence_start=retest['evidence_start'], evidence_end=retest['evidence_end'],
+                                  metrics=retest.get('metrics'), goatseq=bool(tested), goatseq_from=bm.get('goatseq_from'),
+                                  capture=tested and dict(path=tested['path'], status=tested['status'], complete=tested['complete'],
+                                                          manifest_sha256=tested['manifest_sha256'], build_id=tested.get('build_id'))),
+                      inputs_unchanged=True, original_set_unchanged=True, source_inputs_sha256=spec.get('source_inputs_sha256'),
+                      drift=drift, windows=windows, new_weeks=new_weeks, window_error=window_error,
+                      new_weeks_judged=False, judgement=migration.UNSEEN_WEEKS,
+                      evidenceEnd=target_end, evidenceEndMode=evidence_end.evidence_end_mode(manifest['evidence_end'], catch_up=True),
+                      evidenceEndEffective=evidence_end.effective_end(tester['ToDate']), new_first_day=first_new.isoformat(),
+                      tester=tester, assumed=spec['assumed'], evidence_model=evidence_model, history_short=retest['history_short'],
+                      ea_desc_metadata=spec['optimization_window']['source'],
+                      plain='A new evidence record on %s (%s), never a catch-up verdict on the original export. %s'
+                            % (bm['target_build'], bm['provenance'], drift['plain']))
+        record_path = Path(spec['evidence_dir']) / migration.RECORD_FILE
+        temporary = record_path.with_name(record_path.name + '.' + uuid.uuid4().hex[:8] + '.tmp')
+        with temporary.open('x', encoding='utf-8', newline='\n') as stream:
+            json.dump(record, stream, sort_keys=True, separators=(',', ':'), allow_nan=False)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.rename(temporary, record_path)   # create-only and atomic: rename never replaces an existing record on Windows
+        summary = dict(kind=migration.KIND, provenance=bm['provenance'], source_build=bm['source_build'], target_build=bm['target_build'],
+                       drift=drift['verdict'], drift_delta=drift['delta'], drift_reasons=drift['reasons'], goatseq=bool(tested),
+                       goatseq_from=bm.get('goatseq_from'), new_first_day=first_new.isoformat(), new_last_day=new_end.isoformat(),
+                       new_weeks=None if not new_weeks else {k: new_weeks.get(k) for k in ('trades', 'profit', 'pf', 'maxDd', 'equityNet', 'days')},
+                       new_weeks_judged=False, evidenceEnd=target_end, evidenceEndEffective=record['evidenceEndEffective'],
+                       history_short=retest['history_short'], model=evidence_model.get('model'), plain=record['plain'])
+        return dict(status=migration.RESULT_STATUS, kind=migration.KIND, provenance=bm['provenance'], path=retest['set_path'],
+                    sha256=retest['set_sha256'], schema_version=1, member_id=spec['member_id'], summary=summary,
+                    record_path=str(record_path), native_launch_qualification=False)
+
     @staticmethod
     def _oos_rule(original, retest, spec, verdict, evidence_end=None):
         """BOOS/FOOS verdict under the OOS window formula (goat-oos-window-rule-v1), next to the catch-up verdict.
@@ -978,6 +1307,9 @@ class CatchupRunner(SeedRunner):
         re-test end it was judged through.
         """
         from studio_oos_windows import BOOS_CONTAMINATED_BY, EVALUATION, judge_retest
+        # OOS-rule judging of a catch-up reads verdicts only: a build-migration member is never judged as one.
+        migration.refuse(verdict, 'The OOS-rule catch-up judge')
+        migration.refuse(spec.get('build_migration') or {}, 'The OOS-rule catch-up judge')
         if verdict.get('verdict') in ('not_comparable', 'unjudged'):
             reason = 'the re-test was not judged as the same test as the original (%s)' % verdict.get('verdict')
             result = dict(schema=EVALUATION, status='no_data', reasons=[reason], used_for_ranking=False,
@@ -999,18 +1331,30 @@ class CatchupRunner(SeedRunner):
             result.update(evidenceBasis='retest', comparison=comparison, candidate='new' if comparison == 'requalify' else None)
         return result
     def _move(self, set_path, destination):
-        """Move the EA's SET/CSV/.goatseq unit out of TEMP into the evidence folder. Never overwrites."""
+        """Move the EA's SET/CSV/.goatseq unit out of TEMP into the evidence folder. Never overwrites.
+
+        The unit is assembled in ``<member folder>~`` (one character longer, inside OUTPUT_PATH_ROOM's margin) next to
+        the destination and renamed into place in one step, so an output root on another drive (a copy, not a
+        rename) never leaves a half-written member folder. A copied part is verified (every file's SHA-256) and its
+        source in Common Files\\TEMP\\SQ is removed only after the member folder is in place.
+        """
         stem = set_path.name[:-4]
-        parts = [(set_path, destination / set_path.name), (set_path.with_name(stem + '.csv'), destination / (stem + '.csv'))]
+        staging = destination.with_name(destination.name + '~')
+        parts = [(set_path, set_path.name), (set_path.with_name(stem + '.csv'), stem + '.csv')]
         package = set_path.with_name(stem + '.goatseq')
         if package.is_dir():
-            parts.append((package, destination / package.name))
+            parts.append((package, package.name))
         if destination.exists():
             raise ValueError('Catch-up evidence folder already exists; inspect it, nothing was moved')
-        destination.mkdir(parents=True)
-        for source, target in parts:
+        if staging.exists():
+            raise ValueError('Catch-up evidence staging folder %s already exists; inspect it, nothing was moved' % plain(staging))
+        for source, _ in parts:
             if not source.exists():
                 raise ValueError('Re-test unit incomplete: ' + source.name)
+        staging.mkdir(parents=True)
+        copied = []
+        for source, name in parts:
+            target = staging / name
             try:
                 os.rename(source, target)
             except OSError:
@@ -1018,17 +1362,29 @@ class CatchupRunner(SeedRunner):
                     shutil.copytree(source, target)
                 else:
                     shutil.copy2(source, target)
-                if source.is_file() and digest(source) != digest(target):
+                if not _same_tree(source, target):
                     raise ValueError('Copied re-test file differs: ' + source.name)
+                copied.append(source)
+        os.rename(staging, destination)
+        for source in copied:   # cross-drive copies: the TEMP unit goes only once the verified copy is in place
+            try:
+                shutil.rmtree(source) if source.is_dir() else source.unlink()
+            except OSError:
+                pass   # a leftover TEMP file is harmless; the evidence is complete and verified
         return destination / set_path.name
 
     # ---- reports -----------------------------------------------------------------------
     def report(self, batch_id):
         self.status(batch_id)
         root, manifest, state = self._read(batch_id)
+        if manifest.get('build_migration'):
+            return self._migration_report(root, manifest, state)
         rows, counts = [], {}
         for spec, item in zip(manifest['members'], state['members']):
             result = read_seed_json(item['result']['path']) if item.get('result') else None
+            if result is not None:
+                migration.refuse(result, 'catchup-report')   # a catch-up report counts verdicts only
+                migration.refuse(spec.get('build_migration') or {}, 'catchup-report')
             verdict = result['summary']['verdict'] if result else None
             counts[verdict or item['status']] = counts.get(verdict or item['status'], 0) + 1
             rows.append(dict(alias=spec['alias'], status=item['status'], symbol=spec['tester']['Symbol'], period=spec['tester']['Period'],
@@ -1045,8 +1401,40 @@ class CatchupRunner(SeedRunner):
                      thresholds_applied_to_eligibility=not manifest.get('include_below_threshold', False),
                      qualification_schema=QUALIFICATION_SCHEMA, scored=False, native_launch_qualified=False,
                      scope='New-weeks-only verdicts on unseen data; a few weeks is a small sample.')
+        return self._write_report(root, value, rows)
+
+    @staticmethod
+    def _write_report(root, value, rows):
         write_json(root / 'report.json', value)
         if len(rows) > MAX_PUBLIC:
             return {k: v for k, v in value.items() if k != 'members'} | dict(member_count=len(rows), members_omitted=True,
                                                                              report_path=str(root / 'report.json'))
         return value | dict(report_path=str(root / 'report.json'))
+
+    def _migration_report(self, root, manifest, state):
+        """catchup-report for a build migration: its own kind, drift counts, no verdicts (handled explicitly by type)."""
+        rows, counts, drift = [], {}, {}
+        for spec, item in zip(manifest['members'], state['members']):
+            result = read_seed_json(item['result']['path']) if item.get('result') else None
+            if result is not None and (result.get('kind') != migration.KIND or result.get('status') != migration.RESULT_STATUS):
+                raise ValueError('Build-migration catch-up %s holds a result that is not a %s record: %s'
+                                 % (manifest['batch_id'], migration.KIND, item['result']['path']))
+            counts[item['status']] = counts.get(item['status'], 0) + 1
+            if result:
+                drift[result['summary']['drift']] = drift.get(result['summary']['drift'], 0) + 1
+            bm = spec.get('build_migration') or {}
+            rows.append(dict(alias=spec['alias'], status=item['status'], symbol=spec['tester']['Symbol'], period=spec['tester']['Period'],
+                             kind=migration.KIND, provenance=bm.get('provenance'), source_build=bm.get('source_build'),
+                             target_build=bm.get('target_build'), original_set=bm.get('original_path'), original_sha256=bm.get('original_sha256'),
+                             original_end=spec['original']['evidence_end'], new_end=manifest['evidence_end']['iso'],
+                             summary=result['summary'] if result else None, record_path=result['record_path'] if result else None,
+                             error=item.get('error'), evidenceEnd=manifest['evidence_end']['iso'],
+                             evidenceEndEffective=evidence_end.effective_end(spec['tester']['ToDate'])))
+        public = manifest['build_migration']
+        value = dict(schema_version=1, batch_id=manifest['batch_id'], mode=MODE, kind=migration.KIND, provenance=public['provenance'],
+                     target_build=public['target_build'], status=state['status'], evidence_end=manifest['evidence_end'],
+                     counts=counts, drift_counts=drift, tolerances=public.get('tolerances') or migration.public_tolerances(),
+                     output_root=manifest.get('output_root'), members=rows, native_launch_qualified=False,
+                     scope='Build-migration re-tests: new evidence on the target build with drift against each original. '
+                           'Not catch-up verdicts; nothing here carries a status to the original exports.')
+        return self._write_report(root, value, rows)

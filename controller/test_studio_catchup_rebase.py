@@ -426,10 +426,11 @@ class StampTests(unittest.TestCase):
 
     def test_a_requalify_version_never_catches_the_original_up(self):
         self.assertIn('requalify', UNCARRIED)
-        export = dict(set_path='x.set', values_sha256='v', symbol='EURUSD', period='M1', evidence_start='2026-01-05',
+        # A version carries an export only of its own build, or (written before original.build) its exact SET (#2350).
+        export = dict(set_path='x.set', set_sha256='s', values_sha256='v', symbol='EURUSD', period='M1', evidence_start='2026-01-05',
                       evidence_end='2026-09-24', threshold=dict(passing=True, min_arf=0.2, min_sr=2.5), problems=[])
         version = dict(values_sha256='v', symbol='EURUSD', period='M1', evidence_start='2026-01-05', evidence_end='2026-10-09',
-                       version_path='p', verdict=dict(verdict='requalify', reasons=['max_dd: ...']))
+                       version_path='p', verdict=dict(verdict='requalify', reasons=['max_dd: ...']), original=dict(set_sha256='s'))
         row = classify(export, '2026-10-09', known_versions=[version])
         self.assertEqual(row['status'], 'behind')
         self.assertEqual(row['previous_attempt']['verdict'], 'requalify')

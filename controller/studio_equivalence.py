@@ -1242,11 +1242,15 @@ def catchup_pairs(controller_root, catchup_id, digest):
     from studio_seed_results import read_seed_json
     if not isinstance(catchup_id, str) or not re.fullmatch('[A-Za-z0-9_-]{1,80}', catchup_id):
         raise ValueError('Catch-up ID must use 1..80 letters/digits/underscore/hyphen')
+    import studio_build_migration as migration
     root = Path(controller_root) / 'catchups' / catchup_id
     manifest = read_seed_json(root / 'manifest.json')
+    # A build-migration catch-up re-tests another build on purpose: never canary evidence for a certificate.
+    migration.refuse(manifest.get('build_migration') or {}, 'equivalence-canary-ingest')
     run_state = read_seed_json(root / 'state.json')
     pairs, skipped, incomplete = [], [], []
     for spec, item in zip(manifest['members'], run_state['members']):
+        migration.refuse(spec.get('build_migration') or {}, 'equivalence-canary-ingest')
         pins = spec.get('pins') or {}
         bridge = pins.get('equivalence') or {}
         if bridge.get('mode') != 'canary' or bridge.get('certificate_digest') != digest:
@@ -1255,8 +1259,8 @@ def catchup_pairs(controller_root, catchup_id, digest):
         if item.get('status') != 'completed' or not item.get('result'):
             incomplete.append(dict(alias=spec['alias'], reason='not completed (%s)' % item.get('status')))
             continue
-        result = read_seed_json(item['result']['path'])
-        version = json.loads(Path(result['version_path']).read_text(encoding='utf-8'))
+        result = migration.refuse(read_seed_json(item['result']['path']), 'equivalence-canary-ingest')
+        version = migration.refuse(json.loads(Path(result['version_path']).read_text(encoding='utf-8')), 'equivalence-canary-ingest')
         original = read_export(spec['original']['set_path'])
         if original['set_sha256'] != spec['original']['set_sha256']:
             raise ValueError('Original export changed since the canary was prepared: ' + spec['original']['set_path'])

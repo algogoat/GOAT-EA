@@ -76,7 +76,8 @@ MUTATIONS = [
     ('DD peak ignores the opening equity', 'studio_window_metrics.py', 'peak, dd, dd_pct, episode, episodes = opening,',
      'peak, dd, dd_pct, episode, episodes = inside[0][1],'),
     ('report scan drops the metrics', 'studio_export_scan.py', '        if windows is not None:\n', '        if False:\n'),
-    ('locked metrics not redacted', 'studio_heldout_guard.py', "'oos_rule', 'window_metrics', 'preFoos', 'selectionWindow', 'fullExport'))", "'fullExport'))"),
+    # The tuple continues with the build-migration drift keys (GOAT-EA#199), so the anchor ends at the line break.
+    ('locked metrics not redacted', 'studio_heldout_guard.py', "'oos_rule', 'window_metrics', 'preFoos', 'selectionWindow', 'fullExport',\n", "'fullExport',\n"),
     # Honest BOOS stamp (Claude-Mac, #1885 6007861974): the current EA's export trim partly selects on BOOS.
     ('BOOS stamp dropped from judge', RULE, 'used_for_ranking=False, boosContaminatedBy=boos_contaminated_by,', 'used_for_ranking=False,'),
     ('BOOS stamp says clean', RULE, "BOOS_CONTAMINATED_BY = 'ea_trim'", 'BOOS_CONTAMINATED_BY = None'),

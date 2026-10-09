@@ -6,7 +6,10 @@ builds. The table is copied from ``candidate-builds/<build>/identity.json`` (``b
 test_studio_installed_build asserts it equals those identities and that each retained EX5 hashes to its entry.
 A binary that is not in the table is ``INSTALLED_BUILD_UNKNOWN``: it is refused, never guessed. The six EAs shipped
 before build B38 (``PRE_B38_EXCLUDED``; evidence in shipped_ea_builds.json) refuse with the same code and a plain
-sentence (``UPDATE_EA``), also on catch-up and hold-up paths that need no build (``refuse_pre_b38``).
+sentence (``UPDATE_EA``), also on catch-up and hold-up paths that need no build (``refuse_pre_b38``). Not because
+those flows need B38 (V1.48-SEQUENCE-EXPORT-1 already wrote .goatseq), but because evidence from a binary with no
+recoverable build identity cannot be attributed to a build, so it can never feed the fit map or the registry.
+Updating the EA is one action; refusing before anything is written is the honest outcome (Claude-Mac, #2350).
 
 The EA's ``Common Files\\GOAT\\activation-status-<data folder>.json`` ``buildId`` is a cross-check only. The EA
 writes that file on activation problems, so after a clean update it keeps the previous build (Banker,
@@ -73,7 +76,11 @@ class InstalledBuildError(Refusal):
 
 
 def refuse_pre_b38(install):
-    """Strict catch-up and hold-up paths: refuse a pre-B38 EA with the plain update sentence. Read-only."""
+    """Strict catch-up and hold-up paths: refuse a pre-B38 EA with the plain update sentence. Read-only.
+
+    Evidence from a binary with no recoverable build identity cannot be attributed to a build, so it could never feed
+    the fit map or the registry; the user updates the EA in one action, and nothing is written before the refusal.
+    """
     sha = install.get('ea_sha256')
     if isinstance(sha, str) and sha in PRE_B38_EXCLUDED:
         raise InstalledBuildError(UNKNOWN, UPDATE_EA, _excluded_detail(install, sha), plain=True)

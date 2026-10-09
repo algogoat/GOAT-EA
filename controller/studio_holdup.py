@@ -423,7 +423,8 @@ class HoldupRunner(SeedRunner):
         return root, manifest, state
 
     def _before_start(self, spec):
-        """A pre-B38 EA never starts a hold-up member (goatai#2350 6089668580); otherwise the seed checks."""
+        """A pre-B38 EA never starts a hold-up member (goatai#2350 6089668580): its evidence could not be attributed to a
+        build (studio_installed_build.refuse_pre_b38). Otherwise the seed checks."""
         from studio_installed_build import refuse_pre_b38
         refuse_pre_b38(self.c.install)
         return super()._before_start(spec)

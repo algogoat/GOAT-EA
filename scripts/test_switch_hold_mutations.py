@@ -3,7 +3,8 @@
 Each guard of studio_switch_hold and its member-loop wiring is removed in a temporary copy of
 controller/ and the switch-hold tests must fail (or hang, which the timeout bounds): off by
 default, the 90 s bound, the quiet slot, the publisher state, fail-open, and a stop, cancel or
-pause ending a hold at once. The repository is never modified. Works with an embedded Python
+pause ending a hold at once, and the wide slots (both publishers' cycles ENDed, odd :20 / even :40
+to :55, Exp 01's log only beside Exp 02's). The repository is never modified. Works with an embedded Python
 that ignores cwd (sys.path is set here).
 """
 import shutil
@@ -38,14 +39,26 @@ MUTATIONS = [
     ('unreadable state holds instead of failing open', HOLD,
      "            return _release(hold, now, 'fail_open: publisher state unreadable (' + type(error).__name__ + ')', 'publisher_state')",
      "            return dict(start=False, hold=hold, journal=None)"),
-    ('any odd/even minute is quiet', HOLD, '    return int(minute) % 2 == 1 and QUIET_SLOT_OPEN <= second < QUIET_SLOT_CLOSE',
-     '    return QUIET_SLOT_OPEN <= second < QUIET_SLOT_CLOSE'),
-    ('slot opens at the cycle start', HOLD, '    return int(minute) % 2 == 1 and QUIET_SLOT_OPEN <= second < QUIET_SLOT_CLOSE',
-     '    return int(minute) % 2 == 1 and second < QUIET_SLOT_CLOSE'),
-    ('slot never closes', HOLD, '    return int(minute) % 2 == 1 and QUIET_SLOT_OPEN <= second < QUIET_SLOT_CLOSE',
-     '    return int(minute) % 2 == 1 and QUIET_SLOT_OPEN <= second'),
-    ('running Exp 02 cycle ignored', HOLD, '    if not ended:', '    if False:'),
-    ('idle publisher still waited for', HOLD, '    if now - started > PUBLISHER_IDLE_SECONDS:', '    if False:'),
+    ('any odd/even minute is quiet', HOLD, '    if int(minute) % 2 == 1:', '    if True:'),
+    ('slot opens at the cycle start', HOLD, '        return (WIDE_ODD_OPEN if wide else QUIET_SLOT_OPEN) <= second < QUIET_SLOT_CLOSE',
+     '        return second < QUIET_SLOT_CLOSE'),
+    ('slot never closes', HOLD, '        return (WIDE_ODD_OPEN if wide else QUIET_SLOT_OPEN) <= second < QUIET_SLOT_CLOSE',
+     '        return (WIDE_ODD_OPEN if wide else QUIET_SLOT_OPEN) <= second'),
+    # Wide slots (goatai#2350 6094434583, Claude-Mac 6094451003): both logs, odd :20 / even :40 to :55, both cycles ENDed.
+    ('wide odd slot keeps the narrow :35 open', HOLD, '        return (WIDE_ODD_OPEN if wide else QUIET_SLOT_OPEN) <= second < QUIET_SLOT_CLOSE',
+     '        return QUIET_SLOT_OPEN <= second < QUIET_SLOT_CLOSE'),
+    ('narrow slot widened without the Exp 01 log', HOLD, '        return (WIDE_ODD_OPEN if wide else QUIET_SLOT_OPEN) <= second < QUIET_SLOT_CLOSE',
+     '        return WIDE_ODD_OPEN <= second < QUIET_SLOT_CLOSE'),
+    ('even slot opens at the cycle start', HOLD, '    return wide and WIDE_EVEN_OPEN <= second < QUIET_SLOT_CLOSE', '    return wide and second < QUIET_SLOT_CLOSE'),
+    ('even slot never closes', HOLD, '    return wide and WIDE_EVEN_OPEN <= second < QUIET_SLOT_CLOSE', '    return wide and WIDE_EVEN_OPEN <= second'),
+    ('even slot open without the Exp 01 log', HOLD, '    return wide and WIDE_EVEN_OPEN <= second < QUIET_SLOT_CLOSE', '    return WIDE_EVEN_OPEN <= second < QUIET_SLOT_CLOSE'),
+    ('Exp 01 log ignored', HOLD, "    if config.get('exp01_state_path'):", '    if False:'),
+    ('running publisher cycle ignored', HOLD, '        if not ended:', '        if False:'),
+    ('idle publisher still waited for', HOLD,
+     "        if now - newest['startedAt'] / 1000 <= PUBLISHER_IDLE_SECONDS:   # an idle publisher is not waited for",
+     '        if True:'),
+    ('Exp 01 log without Exp 02 state accepted (environment)', HOLD, '            if exp01 and not state:', '            if False:'),
+    ('Exp 01 log without Exp 02 state accepted (lane config)', HOLD, '        if exp01 is not None and state is None:', '        if False:'),
     ('publisher state ignored', HOLD, "    if not config.get('state_path'):", '    if True:'),
     ('log head read instead of its tail', HOLD, '        start = max(0, size - tail_bytes)', '        start = 0'),
     ('waited time not reported', HOLD, "    details = dict(phase='released', waited_ms=int(round(waited * 1000)), reason=reason, source=source)",

@@ -282,8 +282,35 @@ class DemoAgent:
             raise ValueError('Exact paired demo account and server required')
         return expected
 
-    def _broker(self, *, idle=True, budget=None):
+    @contextmanager
+    def _read_lease(self):
+        """The terminal lock, taken without waiting, for one read-only broker readback (goatai#2350 6095691170).
+
+        ``mt5.initialize(path)`` STARTS the terminal when it is not running (the MetaTrader5 package has no attach-only
+        mode), and a seed, catch-up or hold-up driver closes MT5 after every member and relaunches it for the next: a
+        status read that saw MT5 up and attached in that gap launched a plain MT5 beside the driver's own launch. Every
+        driver (batch or lane) holds this lock for its whole run, and the OS drops it when its process dies, so it is the
+        live lease: a read holds it from its process check through initialize and the re-check, and nothing that
+        closes or launches MT5 can run meanwhile. Busy (a driver or another operation owns the terminal):
+        BROKER_READ_DEFERRED, and the read answers from retained state instead."""
+        stack = ExitStack()
+        try:
+            stack.enter_context(self._exclusive())
+        except ValueError:
+            raise Refusal('A driver or another operation holds this terminal now (a seed, catch-up or hold-up driver closes '
+                          'and relaunches MT5 between members), so this read does not attach to MT5.',
+                          'BROKER_READ_DEFERRED', broker_reason='terminal_busy') from None
+        with stack:
+            yield
+
+    def _broker(self, *, idle=True, budget=None, read=False):
+        """The live broker readback. ``read``: a read-only caller (status, preflight, *-status), which reads only under
+        the terminal lease (else BROKER_READ_DEFERRED) and never leaves a terminal it started (BROKER_READ_LAUNCHED)."""
         expected = self._paired_account()
+        with (self._read_lease() if read else nullcontext()):
+            return self._broker_readback(expected, idle=idle, budget=budget, read=read)
+
+    def _broker_readback(self, expected, *, idle, budget, read):
         identity = inspect_within(self.process, budget)       # a status read bounds its inventories (POLL_BUDGET)
         if identity is None:
             raise ValueError('Selected MT5 is not running; broker demo mode cannot be proven')
@@ -299,7 +326,15 @@ class DemoAgent:
             positions, orders = (mt5.positions_get(), mt5.orders_get()) if idle else (None, None)
             if idle and (positions is None or orders is None):
                 raise ValueError('Idle demo research requires a complete position and order readback')
-            if inspect_within(self.process, budget) != identity:
+            now = inspect_within(self.process, budget)
+            if now != identity:
+                if read and now is not None:
+                    # MT5 closed between the check and initialize, which then started a new one. Report it, never close
+                    # it: closing a terminal is a driver's or the owner's decision.
+                    self._append('broker_read', 'launched_terminal', process=now, replaced=identity)
+                    raise Refusal('This read found MT5 closing and the MetaTrader5 package started it again (pid '
+                                  + str(now.get('pid')) + '); nothing was closed.', 'BROKER_READ_LAUNCHED',
+                                  process=now, replaced=identity)
                 raise ValueError('Selected MT5 process changed during broker check')
             if (account.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO
                     or str(account.login) != expected['login']
@@ -347,7 +382,11 @@ class DemoAgent:
                                            observation=read_json(feedback_path))
                                       if feedback_path.is_file() else None))
         try:
-            result['broker'] = self._broker(idle=False, budget=POLL_BUDGET)
+            result['broker'] = self._broker(idle=False, budget=POLL_BUDGET, read=True)
+        except Refusal as exc:
+            if exc.code != 'BROKER_READ_DEFERRED':
+                raise
+            result.update(broker=None, broker_reason='terminal_busy', broker_error=str(exc))
         except (ValueError, OSError) as exc:
             result['broker_error'] = str(exc)
         return result
@@ -355,7 +394,7 @@ class DemoAgent:
     def preflight(self):
         owner = self._owner_clear()
         space = self._space()
-        broker = self._broker()
+        broker = self._broker(read=True)
         physical = digest(self.binary)
         verified_path = self.state_root / 'verified-build.json'
         verified = read_json(verified_path) if verified_path.is_file() else {}
@@ -1769,12 +1808,12 @@ class DemoAgent:
         return started[1] > started[0] and self._goat_relaunched(current)
 
     @contextmanager
-    def _studio(self, operation_name, *, idle, owner_required=True, job_id=None, recovery=False, budget=None):
+    def _studio(self, operation_name, *, idle, owner_required=True, job_id=None, recovery=False, budget=None, read=False):
         # The local adapter is the only entry to the demo policy. The broker
         # supplies the demo bit; the saved session cannot assert it by itself.
         if owner_required:
             self._owner_clear(); self._space()
-        broker = self._broker(idle=idle, budget=budget)
+        broker = self._broker(idle=idle, budget=budget, read=read)
         legacy_recovery = (operation_name == 'demo-recover-orphan'
                            and self.session.get('authority_kind') in (None, 'native_human_control'))
         if self.session.get('authority_kind') != 'demo_direct' and not legacy_recovery:
@@ -2091,7 +2130,11 @@ class DemoAgent:
                 raise ValueError('Detached worker budget or launch state changed')
             controller, broker = stack.enter_context(self._studio('run-batch', idle=not resume,
                                                                   owner_required=not resume, job_id=batch_id))
-            worker.update(status='supervising', pid=os.getpid())
+            # The account this driver's broker readback proved: batch-status reads under it while the driver holds the
+            # terminal (a read never attaches to MT5 then, goatai#2350 6095691170).
+            account = dict(login=broker.get('login'), server=broker.get('server'))
+            worker.update(status='supervising', pid=os.getpid(),
+                          **({'broker_account': account} if all(isinstance(v, str) and v for v in account.values()) else {}))
             write_json(worker_path, worker)
             self._append('studio_run_batch', 'supervising', batch_id=batch_id,
                          resume=resume, broker=broker, nonce=nonce, pause_seconds=pause_seconds)
@@ -2117,16 +2160,41 @@ class DemoAgent:
             alive = 'unknown: ' + str(exc)
         return dict(record, alive=alive, launch_never_started=self._launch_never_started(record, alive))
 
+    @contextmanager
+    def _batch_read_scope(self, operation_name, batch_id):
+        """A batch read: the live broker under the terminal lease, or, while a driver holds the terminal, the account the
+        live supervising batch driver's own readback proved (``broker: null`` plus ``broker_reason``). Without that
+        retained readback the read refuses BROKER_READ_DEFERRED; it never attaches to MT5 then."""
+        with ExitStack() as stack:
+            account = reason = None
+            try:
+                controller, broker = stack.enter_context(self._studio(
+                    operation_name, idle=False, owner_required=False, job_id=batch_id, read=True))
+            except Refusal as exc:
+                if exc.code != 'BROKER_READ_DEFERRED':
+                    raise
+                worker = self._batch_worker(batch_id)
+                account = (worker or {}).get('broker_account')
+                if not (worker and worker.get('alive') is True and worker.get('status') == 'supervising'
+                        and isinstance(account, dict) and set(account) == {'login', 'server'}):
+                    raise Refusal(str(exc) + ' No retained readback of this batch\'s own driver covers it; research-status '
+                                  'reports the run without the broker meanwhile.', exc.code, **exc.fields) from None
+                reason = exc.fields.get('broker_reason', 'terminal_busy')
+            if reason is not None:
+                controller, broker = stack.enter_context(self._retained_scope(operation_name, batch_id, account)), None
+            yield controller, broker, reason
+
     def batch_driver_status(self, batch_id):
         from studio_batch_driver import status
-        with self._studio('batch-driver-status', idle=False, owner_required=False, job_id=batch_id) as (controller, broker):
-            return dict(broker=broker, driver=status(controller, batch_id), worker=self._batch_worker(batch_id))
+        with self._batch_read_scope('batch-driver-status', batch_id) as (controller, broker, reason):
+            return dict(broker=broker, **({'broker_reason': reason} if reason else {}),
+                        driver=status(controller, batch_id), worker=self._batch_worker(batch_id))
 
     def batch_status(self, batch_id):
         from studio_batch import batch_status
-        with self._studio('batch-status', idle=False, owner_required=False, job_id=batch_id) as (controller, broker):
+        with self._batch_read_scope('batch-status', batch_id) as (controller, broker, reason):
             result = batch_status(controller, batch_id)
-            return dict(broker=broker, studio=result)
+            return dict(broker=broker, **({'broker_reason': reason} if reason else {}), studio=result)
 
     # ------------------------------------------------------------ research operations
     #
@@ -2882,33 +2950,49 @@ class DemoAgent:
         return runner
 
     @contextmanager
-    def _seed_scope(self, operation_name, batch_id, kind='seed', *, budget=None):
+    def _seed_scope(self, operation_name, batch_id, kind='seed', *, budget=None, read=False):
         """Policy scope for observing, cancelling or continuing a demo seed batch.
 
         While MT5 runs, a fresh broker readback is taken. A batch still 'prepared'
         has had no native effect, so it needs no start record for status, cancel
         or report; any batch that has left 'prepared' must have its start record.
-        A status read passes ``budget`` so its inventory answers within POLL_BUDGET through a WMI stall.
+        A status read passes ``budget`` so its inventory answers within POLL_BUDGET through a WMI stall, and ``read``:
+        it takes the readback only under the terminal lease, and while a driver holds the terminal it answers from the
+        retained start readback, exactly as between members (goatai#2350 6095691170).
         """
         lane = LANES[kind]
         record = self._seed_start_record(batch_id, kind) if self._seed_start_path(batch_id, kind).exists() else None
         if record is None and not (self.root / lane['folder'] / batch_id / 'state.json').is_file():
             raise ValueError('Unknown ' + lane['word'] + ' batch; use ' + kind + '-prepare')
+        deferred = None
         if inspect_within(self.process, budget) is not None:
             # Without a start record only a provably never-started batch is managed,
             # and only under this fresh broker readback; nothing offline is granted.
             if record is None and not self._seed_never_started(batch_id, kind):
                 raise ValueError(lane['title'] + ' batch has native effects but no broker-verified demo start record')
-            with self._studio(operation_name, idle=False, owner_required=False,
-                              job_id=batch_id, budget=budget) as (controller, broker):
-                yield controller, dict(broker=broker, start=record)
-            return
+            with ExitStack() as stack:
+                try:
+                    controller, broker = stack.enter_context(self._studio(
+                        operation_name, idle=False, owner_required=False, job_id=batch_id, budget=budget, read=read))
+                except Refusal as exc:
+                    if not (read and exc.code == 'BROKER_READ_DEFERRED' and record is not None):
+                        raise
+                    deferred = exc.fields.get('broker_reason', 'terminal_busy')
+                else:
+                    yield controller, dict(broker=broker, start=record)
+                    return
         if record is None:
             raise ValueError('No broker-verified demo ' + lane['word'] + ' start exists for this batch; '
                              'open the selected MT5 for a fresh demo check, or use ' + kind + '-start')
-        # MT5 is closed between seed members, so no live broker can answer now.
-        # Nothing is inferred from the session: the retained start readback must
-        # match this installation, registered EA and exact paired demo account.
+        # MT5 is closed between seed members (or a driver holds it), so no live broker can answer now.
+        with self._retained_scope(operation_name, batch_id, record['account']) as controller:
+            yield controller, dict(broker=None, start=record, **({'broker_reason': deferred} if deferred else {}))
+
+    @contextmanager
+    def _retained_scope(self, operation_name, batch_id, account):
+        """The controller under a RETAINED broker readback's account (a lane's start record, or the readback a batch driver
+        took when it started), for a moment no live broker can answer. Nothing is inferred from the session: the
+        account came from a broker readback, and this installation, its demo lane and the registered EA must still match."""
         if self.session.get('authority_kind') != 'demo_direct':
             raise ValueError('Install and verify the selected V1.49 build before demo Studio control')
         if digest(self.binary) != self.install['ea_sha256']:
@@ -2917,10 +3001,10 @@ class DemoAgent:
         from studio_research_authority import demo_agent_scope, operation
         with operation(operation_name), demo_agent_scope(
                 root=self.root, installation_sha256=sha(self.install),
-                account=dict(record['account']), job_id=batch_id):
+                account=dict(account), job_id=batch_id):
             controller = Controller(self.installation_path).open()
             try:
-                yield controller, dict(broker=None, start=record)
+                yield controller
             finally:
                 controller.store.close()
 
@@ -3204,11 +3288,12 @@ class DemoAgent:
         return self._lane_resume('seed', batch_id, max_seconds, detach=detach, accept_news_change=accept_news_change)
 
     def _lane_status(self, kind, batch_id):
-        with self._seed_scope(kind + '-status', batch_id, kind, budget=POLL_BUDGET) as (controller, evidence):
+        with self._seed_scope(kind + '-status', batch_id, kind, budget=POLL_BUDGET, read=True) as (controller, evidence):
             driver = self._lane_driver(kind, batch_id)
             runner = self._seed_runner(controller, kind)
             runner.driver_probe = lambda _batch_id: self._lane_liveness(driver)     # read once, shown twice
             return dict(broker=evidence['broker'], retained_start=evidence['broker'] is None,
+                        **({'broker_reason': evidence['broker_reason']} if evidence.get('broker_reason') else {}),
                         driver=driver, **{kind: runner.status(batch_id)})
 
     def seed_status(self, batch_id):

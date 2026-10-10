@@ -1,3 +1,4 @@
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -13,8 +14,9 @@ class MonitorProbeTests(unittest.TestCase):
         self.assertEqual(tester_caption_state('unrecognized'), 'unknown')
 
     def fixture(self):
+        temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)     # the controller state (terminal lease)
         c=SimpleNamespace(install=dict(terminal_executable='C:/selected/terminal64.exe',terminal_data_root='C:/data'),
-                          session=dict(account=dict(login='123',server='Demo')))
+                          session=dict(account=dict(login='123',server='Demo')), root=temp.name)
         terminal=SimpleNamespace(path='C:/selected',data_path='C:/data',connected=True,trade_allowed=False,build=6230)
         account=SimpleNamespace(login=123,server='Demo',trade_mode=0)
         sdk=SimpleNamespace(initialize=Mock(return_value=True),shutdown=Mock(),terminal_info=Mock(return_value=terminal),
@@ -34,6 +36,18 @@ class MonitorProbeTests(unittest.TestCase):
         self.assertTrue(result['account_matches']);self.assertEqual(result['tester_state'],'idle')
         s.initialize.assert_called_once_with(c.install['terminal_executable'],timeout=5000)
         s.shutdown.assert_called_once()
+
+    def test_never_attaches_while_another_process_holds_the_terminal_and_joins_its_own_lease(self):
+        # goatai#2350 6098964146: initialize(path) starts MT5 when it is not running; a driver holds the lease.
+        from studio_terminal_lease import foreign_holder, terminal_lease
+        c,t,a,s,p=self.fixture()
+        with foreign_holder(c.root), self.assertRaises(ValueError) as caught:
+            self.run_probe(c,s,[p,p])
+        self.assertEqual(caught.exception.code,'BROKER_READ_DEFERRED')
+        s.initialize.assert_not_called()
+        with terminal_lease(c.root, purpose='driver'):                    # this process's own lease: the probe joins
+            self.assertTrue(self.run_probe(c,s,[p,p])['account_matches'])
+        s.initialize.assert_called_once()
 
     def test_bad_or_unknown_native_state_cannot_authorize_close(self):
         for kind in ('wrong-path','wrong-data','wrong-account','wrong-server','live','trading','disconnected','positions','orders','missing','busy','unknown','replacement'):

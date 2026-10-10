@@ -375,7 +375,8 @@ class DemoSeedAgentTests(unittest.TestCase):
         self.agent.seed_prepare('batch', self.plan)
         self.agent.seed_start('batch', 6)                                   # member 1 running, start record retained
         calls = self.counted_initialize()
-        with self.new_agent()._exclusive():                                 # the driver's lease: held for its whole run
+        from studio_terminal_lease import foreign_holder
+        with foreign_holder(self.root):                                     # the driver's lease, in another process
             status = self.agent.seed_status('batch')
         self.assertEqual((status['broker'], status['retained_start'], status['broker_reason']), (None, True, 'terminal_busy'))
         self.assertEqual(calls, [], 'no attach (so no launch) while a driver owns MT5')

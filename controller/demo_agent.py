@@ -208,22 +208,17 @@ class DemoAgent:
 
     @contextmanager
     def _exclusive(self, *, wait_seconds=0):
-        self.state_root.mkdir(parents=True, exist_ok=True)
-        with (self.state_root / 'terminal.lock').open('a+b') as lock:
-            lock.seek(0); lock.write(b'0'); lock.flush(); lock.seek(0)
-            deadline = time.monotonic() + wait_seconds
-            while True:
-                try:
-                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError as exc:
-                    if time.monotonic() >= deadline:
-                        raise ValueError('Another demo agent operation owns this terminal') from exc
-                    time.sleep(.1)
-            try:
-                yield
-            finally:
-                lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        """The installation's terminal lease (studio_terminal_lease). A nested _exclusive in the same thread refuses, as
+        it always has; the readers and backstops inside it join."""
+        from studio_terminal_lease import TerminalBusy, terminal_lease
+        stack = ExitStack()
+        try:
+            stack.enter_context(terminal_lease(self.root, purpose='demo agent operation', wait_seconds=wait_seconds,
+                                               nested='refuse'))
+        except TerminalBusy as exc:
+            raise ValueError('Another demo agent operation owns this terminal') from exc
+        with stack:
+            yield
 
     def _owner_clear(self, *, require_fresh=True, settling_stop=False):
         if (self.state_root / 'STOP').exists() and not settling_stop:
@@ -282,32 +277,19 @@ class DemoAgent:
             raise ValueError('Exact paired demo account and server required')
         return expected
 
-    @contextmanager
-    def _read_lease(self):
-        """The terminal lock, taken without waiting, for one read-only broker readback (goatai#2350 6095691170).
-
-        ``mt5.initialize(path)`` STARTS the terminal when it is not running (the MetaTrader5 package has no attach-only
-        mode), and a seed, catch-up or hold-up driver closes MT5 after every member and relaunches it for the next: a
-        status read that saw MT5 up and attached in that gap launched a plain MT5 beside the driver's own launch. Every
-        driver (batch or lane) holds this lock for its whole run, and the OS drops it when its process dies, so it is the
-        live lease: a read holds it from its process check through initialize and the re-check, and nothing that
-        closes or launches MT5 can run meanwhile. Busy (a driver or another operation owns the terminal):
-        BROKER_READ_DEFERRED, and the read answers from retained state instead."""
-        stack = ExitStack()
-        try:
-            stack.enter_context(self._exclusive())
-        except ValueError:
-            raise Refusal('A driver or another operation holds this terminal now (a seed, catch-up or hold-up driver closes '
-                          'and relaunches MT5 between members), so this read does not attach to MT5.',
-                          'BROKER_READ_DEFERRED', broker_reason='terminal_busy') from None
-        with stack:
-            yield
-
     def _broker(self, *, idle=True, budget=None, read=False):
-        """The live broker readback. ``read``: a read-only caller (status, preflight, *-status), which reads only under
-        the terminal lease (else BROKER_READ_DEFERRED) and never leaves a terminal it started (BROKER_READ_LAUNCHED)."""
+        """The live broker readback, always under the installation's terminal lease (studio_terminal_lease, goatai#2350
+        6095691170 / 6098964146): ``mt5.initialize(path)`` STARTS the terminal when it is not running, and a seed,
+        catch-up or hold-up driver closes MT5 after every member and relaunches it for the next. Every driver holds the
+        lease for its whole run; a caller that holds it already (inside ``_exclusive``) joins, any other takes it
+        without waiting, and busy is BROKER_READ_DEFERRED (a read answers from retained state instead). ``read``: a
+        read-only caller (status, preflight, *-status), which never leaves a terminal it started (BROKER_READ_LAUNCHED)."""
+        from studio_terminal_lease import terminal_lease
         expected = self._paired_account()
-        with (self._read_lease() if read else nullcontext()):
+        with terminal_lease(self.root, purpose='broker readback', busy_code='BROKER_READ_DEFERRED',
+                            busy_message='A driver or another operation holds this terminal now (a seed, catch-up or '
+                                         'hold-up driver closes and relaunches MT5 between members), so this read does '
+                                         'not attach to MT5.', broker_reason='terminal_busy'):
             return self._broker_readback(expected, idle=idle, budget=budget, read=read)
 
     def _broker_readback(self, expected, *, idle, budget, read):

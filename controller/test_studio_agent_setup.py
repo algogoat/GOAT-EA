@@ -419,23 +419,26 @@ class AgentSetupTests(DeployFixture):
         self.assertEqual(result['accountFacts']['source'], 'mt5_broker_readback')
         self.assertFalse(mailbox.setup_root(self.c).exists(), 'nothing was written on the demo lane')
 
-    def test_demo_direct_pairing_never_attaches_while_a_driver_holds_the_terminal(self):
-        # goatai#2350 6095691170 / GOAT-EA#212: mt5.initialize(path) starts MT5 when it is not running, and a demo-lane
-        # driver closes and relaunches MT5 between members while holding the terminal lock for its whole run.
+    def test_pairing_never_attaches_while_a_driver_holds_the_terminal_on_either_lane(self):
+        # goatai#2350 6095691170 / 6098964146: mt5.initialize(path) starts MT5 when it is not running, and a driver of
+        # either lane closes and relaunches MT5 between members while holding the terminal lease for its whole run.
+        from studio_terminal_lease import foreign_holder
         self.shared_code_file()
-        mt5 = FakeMT5(self.c); calls = []
-        mt5.initialize = lambda path, timeout=0: calls.append(path) or True
-        with self.demo_lane():
-            with agent_setup.demo_terminal_lock(self.c), self.assertRaises(ValueError) as caught:   # the driver's lease
-                agent_setup.pairing_code(self.c, BUILD, mt5=mt5)
-            self.assertEqual(caught.exception.code, 'PAIRING_TERMINAL_BUSY')
-            self.assertEqual(calls, [], 'no attach while a driver holds the terminal')
-            self.assertEqual(agent_setup.pairing_code(self.c, BUILD, mt5=mt5)['status'], 'pairing_available')   # free again
-        self.assertEqual(len(calls), 1)
-        # Other lanes are unchanged: their drivers do not use this lock.
-        session = dict(self.c.session, authority_kind='native_human_control')
-        with patch('studio_agent_setup.session_state', return_value=(session, {})), agent_setup.demo_terminal_lock(self.c):
-            self.assertEqual(agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))['source'], 'activation_code_file')
+        for lane in ('demo_direct', 'native_human_control'):
+            with self.subTest(lane=lane):
+                mt5 = FakeMT5(self.c); calls = []
+                mt5.initialize = lambda path, timeout=0: calls.append(path) or True
+                session = dict(self.c.session, authority_kind=lane)
+                with patch('studio_agent_setup.session_state', return_value=(session, {})):
+                    with foreign_holder(self.c.root), self.assertRaises(ValueError) as caught:   # a driver in another process
+                        agent_setup.pairing_code(self.c, BUILD, mt5=mt5)
+                    self.assertEqual(caught.exception.code, 'PAIRING_TERMINAL_BUSY')
+                    self.assertEqual(calls, [], 'no attach while a driver holds the terminal')
+                    self.assertEqual(agent_setup.pairing_code(self.c, BUILD, mt5=mt5)['source'], 'activation_code_file')
+                self.assertEqual(len(calls), 1)
+        # A caller that already holds the lease (close-terminal, deploy) joins it: no self-refusal.
+        with self.demo_lane(), agent_setup.demo_terminal_lock(self.c):
+            self.assertEqual(agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))['status'], 'pairing_available')
 
     def test_demo_direct_keeps_every_pairing_guardrail(self):
         self.shared_code_file()

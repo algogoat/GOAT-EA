@@ -1151,8 +1151,13 @@ class CatchupRunner(SeedRunner):
     def _attempt_dir(self, member):
         return Path(self.c.install['common_files_root']) / 'TEMP' / 'SQ' / member['attempt_token']
 
+    def _output_dir(self, member):
+        # The re-test unit is written to the attempt folder, so seed reconcile's own-output check looks here too
+        # (b43mig-1r member 39, 2026-10-10: collection after a PID change refused "outside its output folder").
+        return self._attempt_dir(member)
+
     def _outputs(self, member):
-        folder = self._attempt_dir(member)
+        folder = self._output_dir(member)
         if not folder.is_dir():
             return []
         return sorted(p for p in folder.glob('*.set') if p.is_file())

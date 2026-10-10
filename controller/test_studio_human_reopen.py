@@ -107,6 +107,23 @@ class HumanReopenTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'process changed'):reverify(self.c,'original')
         self.process.start.assert_not_called()
 
+    def test_restart_status_defers_before_the_native_gate_while_a_driver_holds_the_terminal(self):
+        # goatai#2350 6098964146: research-monitor-restart-status is a read. The lease (L1) is taken without waiting
+        # before the native gate (L4): busy refuses BROKER_READ_DEFERRED with no gate wait, no probe, nothing written.
+        from studio_rejected_monitor import reverify
+        from studio_terminal_lease import foreign_holder
+        self.prepared();self.probe.side_effect=[self.native,ValueError('temporary SDK unavailable')]
+        with self.assertRaisesRegex(ValueError,'temporary SDK'):adopt(self.c,'original',human_reopened=True,process=self.process)
+        self.probe.reset_mock();self.probe.side_effect=lambda c:self.native
+        before=self.path.read_bytes()
+        with patch('studio_rejected_monitor.exclusive_gate',side_effect=AssertionError('the native gate is not taken while busy')):
+            with foreign_holder(self.c.root),self.assertRaises(ValueError) as caught:   # a driver in another process
+                reverify(self.c,'original')
+        self.assertEqual((caught.exception.code,caught.exception.fields['broker_reason']),('BROKER_READ_DEFERRED','terminal_busy'))
+        self.probe.assert_not_called();self.assertEqual(self.path.read_bytes(),before)
+        self.assertEqual(reverify(self.c,'original')['phase'],'reverified')
+        self.process.start.assert_not_called()
+
     def test_fresh_but_previous_process_feedback_refuses_adoption(self):
         self.prepared()
         self.runtime.side_effect=lambda **kw:(self.c.state(),dict(modified=time.time()-10))

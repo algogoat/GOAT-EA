@@ -44,6 +44,7 @@ from studio_launch_telemetry import SCHEMA as TELEMETRY_SCHEMA, launch_record, u
 from studio_native_gate import exclusive_gate
 from studio_onboarding import saved_launch_policy, session_state, require_idle_control
 from studio_refusal import Refusal
+from studio_terminal_lease import TerminalBusy
 
 PLAN_SCHEMA = 'goat-demo-deploy-v1'
 DEPLOYMENT_ID = re.compile(r'[a-f0-9]{32}')
@@ -70,6 +71,7 @@ CHILD_NOT_LINKED = 'child_not_linked'
 #    (expertmode=5), and the saved default only applies to Expert Advisors attached by hand. readiness_blockers
 #    stays as a key (a list of blockers, empty today) so beta.24/25 desktops read the same shape.
 PREFLIGHT_SCHEMA_VERSION = 4
+PREFLIGHT_TERMINAL_BUSY = 'GOAT is running work on this terminal now, so it did not read the broker; check again when it finishes.'
 ALLOW_LIVE_TRADING_BLOCKER = 'allow_live_trading_off'
 ALLOW_LIVE_TRADING_NOTE = (
     "MT5's saved 'Allow Algo Trading' default is off. This does not block a GOAT deploy: GOAT's charts load with "
@@ -524,6 +526,11 @@ def preflight(controller, *, mt5=None, process=None):
             result['tester_state'] = tester_state(running['pid'], proof['build'])
         except (OSError, ValueError, AttributeError):
             result['tester_state'] = 'unknown'
+    except TerminalBusy as exc:
+        if exc.code != 'BROKER_READ_DEFERRED':
+            raise
+        # A driver holds the terminal (goatai#2350 6098964146): answer without attaching, and leave the tester unread.
+        result.update(broker=None, broker_reason='terminal_busy', broker_error=PREFLIGHT_TERMINAL_BUSY)
     except ValueError as exc:
         result['broker_error'] = str(exc)
     return result

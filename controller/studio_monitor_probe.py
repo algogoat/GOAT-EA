@@ -64,12 +64,11 @@ def inspect_idle_demo(controller, *, tester='require'):
         raise ValueError('Monitor repair requires the official MetaTrader5 Python adapter; no native effect performed') from exc
     binding = process_binding(controller)
     from studio_process_query import POLL_BUDGET   # a probe, not a launch gate: bounded WMI retry (Claude-Mac, #1885)
-    from studio_terminal_lease import terminal_lease
+    from studio_terminal_lease import BUSY_READ, terminal_lease
     # initialize(path) starts MT5 when it is not running: the inventory, initialize and the re-check run under the
     # installation's terminal lease, joined when this thread already holds it (goatai#2350 6098964146).
     with terminal_lease(controller.root, purpose='inspect-idle-demo', busy_code='BROKER_READ_DEFERRED',
-                        busy_message='A driver or another operation holds this terminal now, so GOAT does not attach '
-                                     'to MT5 to inspect it; nothing was changed.', broker_reason='terminal_busy'):
+                        busy_message=BUSY_READ, broker_reason='terminal_busy'):
         before = inspect_processes(binding, query_budget=POLL_BUDGET)
         session = controller.session
         try:

@@ -284,12 +284,10 @@ class DemoAgent:
         lease for its whole run; a caller that holds it already (inside ``_exclusive``) joins, any other takes it
         without waiting, and busy is BROKER_READ_DEFERRED (a read answers from retained state instead). ``read``: a
         read-only caller (status, preflight, *-status), which never leaves a terminal it started (BROKER_READ_LAUNCHED)."""
-        from studio_terminal_lease import terminal_lease
+        from studio_terminal_lease import BUSY_READ, terminal_lease
         expected = self._paired_account()
         with terminal_lease(self.root, purpose='broker readback', busy_code='BROKER_READ_DEFERRED',
-                            busy_message='A driver or another operation holds this terminal now (a seed, catch-up or '
-                                         'hold-up driver closes and relaunches MT5 between members), so this read does '
-                                         'not attach to MT5.', broker_reason='terminal_busy'):
+                            busy_message=BUSY_READ, broker_reason='terminal_busy'):
             return self._broker_readback(expected, idle=idle, budget=budget, read=read)
 
     def _broker_readback(self, expected, *, idle, budget, read):

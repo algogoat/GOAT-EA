@@ -1108,6 +1108,31 @@ class AgentSetupTests(DeployFixture):
         result = deploy.preflight(self.c, mt5=FakeMT5(self.c, trade_mode=2))
         self.assertIn('real-money', result['broker_error'])
 
+    def test_preflight_answers_terminal_busy_without_attaching(self):
+        # goatai#2350 6098964146: deploy-preflight is a read; while a driver holds the terminal it never reaches
+        # initialize(path) (which starts MT5) and never reads the tester, and says why in the existing broker_error.
+        from studio_terminal_lease import foreign_holder
+        mt5 = FakeMT5(self.c); calls = []
+        mt5.initialize = lambda path, timeout=0: calls.append(path) or True
+        with patch('studio_monitor_probe.tester_state', side_effect=AssertionError('the tester is not read while busy')):
+            with foreign_holder(self.c.root):                                   # a driver in another process
+                result = deploy.preflight(self.c, mt5=mt5)
+        self.assertEqual(calls, [], 'no attach while a driver holds the terminal')
+        self.assertEqual((result['terminal'], result['broker'], result['broker_reason']), ('running', None, 'terminal_busy'))
+        self.assertEqual(result['broker_error'], deploy.PREFLIGHT_TERMINAL_BUSY)
+        self.assertNotIn('tester_state', result)
+        self.assertEqual(result['schema_version'], 4, 'additive: the busy answer uses the existing no-broker shape')
+        json.dumps(result, allow_nan=False)
+        with patch('studio_monitor_probe.tester_state', return_value='idle'):
+            result = deploy.preflight(self.c, mt5=mt5)
+        self.assertEqual((len(calls), result['tester_state'], 'broker_reason' in result), (1, 'idle', False))
+        # Any other busy code is an ordinary broker error, never a crash (Mac 6101409258).
+        from studio_terminal_lease import TerminalBusy
+        with patch('studio_demo_deploy.broker_proof', side_effect=TerminalBusy('Another GOAT operation owns this terminal now.', 'TERMINAL_LEASE_BUSY')):
+            result = deploy.preflight(self.c, mt5=mt5)
+        self.assertEqual((result['broker_error'], 'broker' in result, 'broker_reason' in result),
+                         ('Another GOAT operation owns this terminal now.', False, False))
+
     def test_preflight_reports_the_account_details_additively(self):
         account = dict(currency='USD', balance=10000.0, equity=9876.5, leverage=500, company='Customer Markets Ltd')
         with patch('studio_monitor_probe.tester_state', return_value='idle'):

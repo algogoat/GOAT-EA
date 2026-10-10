@@ -105,12 +105,11 @@ def broker_proof(controller, session, *, mt5=None, require_flat=True, details=Fa
             import MetaTrader5 as mt5
         except ImportError as exc:
             raise ValueError('The MetaTrader5 adapter is unavailable; no native effect performed') from exc
-    from studio_terminal_lease import terminal_lease
+    from studio_terminal_lease import BUSY_READ, terminal_lease
     # initialize(path) starts MT5 when it is not running: it runs under the installation's terminal lease, joined when
     # this thread already holds it (pairing-code, close-terminal, deploy), never beside a driver (goatai#2350 6098964146).
     with terminal_lease(controller.root, purpose='broker-proof', busy_code='BROKER_READ_DEFERRED',
-                        busy_message='A driver or another operation holds this terminal now, so GOAT does not attach '
-                                     'to MT5 to read the broker; nothing was changed.', broker_reason='terminal_busy'):
+                        busy_message=BUSY_READ, broker_reason='terminal_busy'):
         if not mt5.initialize(controller.install['terminal_executable'], timeout=5000):
             raise ValueError('The selected MT5 terminal could not be read; start it and sign in to the demo account')
         try:
@@ -280,9 +279,8 @@ def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
         try:
             lease.enter_context(demo_terminal_lock(controller))
         except ValueError:
-            raise Refusal('A driver or another operation holds this terminal now (a seed, catch-up or hold-up driver '
-                          'closes and relaunches MT5 between members), so pairing-code does not attach to MT5; ask again '
-                          'once it has finished.', 'PAIRING_TERMINAL_BUSY') from None
+            raise Refusal('GOAT is running research on this terminal right now; the connection code shows once it '
+                          'finishes. Nothing was changed.', 'PAIRING_TERMINAL_BUSY') from None
         if WindowsSeedProcess(controller).inspect() is None:
             return dict(status='terminal_stopped', userCodeReturned=False,
                         next_action='Open the selected MT5 so GOAT can show and read its connection code.')

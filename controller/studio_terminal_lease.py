@@ -28,6 +28,8 @@ import time
 
 from studio_refusal import Refusal
 
+# What a person reads when a read meets a busy terminal (Claude-Mac 6101409258: no "driver", no "attach to MT5").
+BUSY_READ = 'GOAT is running research on this terminal right now; check again when it finishes. Nothing was changed.'
 LEASE_FOLDER = 'demo-agent'
 LEASE_NAME = 'terminal.lock'
 MAX_WAIT_SECONDS = 600

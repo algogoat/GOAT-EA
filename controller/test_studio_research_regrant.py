@@ -109,6 +109,28 @@ class ResearchRegrantTests(unittest.TestCase):
         self.assertEqual(self.state()['owner'],'human')
         self.assertEqual(self.c.store.db.execute('SELECT COUNT(*) FROM studio_research_epochs').fetchone()[0],0)
 
+    def test_regrant_status_defers_without_attaching_while_a_driver_holds_the_terminal(self):
+        # goatai#2350 6098964146: research-regrant-status is a read. Its broker check is the real inspect_idle_demo, which
+        # never reaches initialize(path) (that STARTS MT5) while a driver of either lane holds the terminal lease.
+        import sys
+        from types import SimpleNamespace
+        import studio_monitor_probe
+        from studio_research_regrant import native
+        from studio_terminal_lease import foreign_holder
+        self.take();calls=[]
+        sdk=SimpleNamespace(initialize=lambda *a,**k:calls.append(a) or False,shutdown=lambda:None)
+        with patch.dict(sys.modules,{'MetaTrader5':sdk}),\
+                patch('studio_research_regrant.inspect_idle_demo',studio_monitor_probe.inspect_idle_demo),\
+                patch('studio_monitor_probe.process_binding',return_value={}),\
+                patch('studio_monitor_probe.inspect_processes',return_value={}):
+            with foreign_holder(self.c.root),self.assertRaises(ValueError) as caught:   # a driver in another process
+                native(self.c,self.state())
+            self.assertEqual((caught.exception.code,caught.exception.fields['broker_reason']),('BROKER_READ_DEFERRED','terminal_busy'))
+            self.assertEqual(calls,[],'no attach while a driver holds the terminal')
+            with self.assertRaisesRegex(ValueError,'Unable to read'):native(self.c,self.state())   # free: it attaches
+        self.assertEqual(len(calls),1)
+        self.assertEqual(self.state()['owner'],'human')
+
     def test_stale_native_revision_refuses_before_grant(self):
         self.take();original=self.feedback
         def stale(path):

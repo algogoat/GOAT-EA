@@ -795,6 +795,21 @@ class SeedRunner:
 
     def paused(self,batch_id):return self.pause_path(batch_id).is_file()
 
+    def cancel_request_path(self,batch_id):return self.path(batch_id)/'cancel-request.json'
+
+    def request_cancel(self,batch_id,*,now):
+        """Cancel while a driver holds the terminal lease (goatai#2350, Claude-Mac 6099078698 R2): never a refusal for
+        the user. The request is recorded; the driver honours it at its next safe point (after the current test, between
+        members, exactly where it honours a pause) by cancelling the remaining members."""
+        root,manifest,state=self._read(batch_id)
+        if state['status'] in ('completed','stopped'):return self._public(root,state)
+        path=self.cancel_request_path(batch_id)
+        if not path.exists():
+            write_json(path,dict(schema_version=1,batch_id=batch_id,manifest_sha256=state['manifest_sha256'],requested_unix=now))
+        return self._public(root,state)|dict(cancel_requested=True,
+            plain='Cancel requested: the run stops after the current test.',
+            next_action=self.COMMAND_PREFIX+'-status shows it stop; nothing else is needed')
+
     def request_pause(self,batch_id,*,now):
         root,manifest,state=self._read(batch_id)
         if state['status']=='reconcile_required':
@@ -957,7 +972,12 @@ class SeedRunner:
         # This call records itself in the run folder (studio_seed_driver) at its first gate pass and its return
         # here, so seed-status can say whether a call is driving the run now (support 64f1c5ae).
         call={}
-        try:result=self._drive_passes(batch_id,max_seconds,initial,reactivate,call)
+        from studio_terminal_lease import terminal_lease
+        # The installation's terminal lease for the whole drive: every member closes and relaunches MT5, so no reader may
+        # attach meanwhile (goatai#2350 6098964146). goat_studio and the demo agent already hold it: joined here.
+        try:
+            with terminal_lease(self.c.root,purpose=self.COMMAND_PREFIX+'-drive '+batch_id):
+                result=self._drive_passes(batch_id,max_seconds,initial,reactivate,call)
         except BaseException as exc:
             self._driver_end(call,'failed',error=str(exc) or type(exc).__name__)
             raise
@@ -977,7 +997,7 @@ class SeedRunner:
         deadline=self.clock()+max_seconds
         while self.clock()<deadline:
             self.c.bridge.pump()
-            holding=None
+            holding=None;cancel_now=False
             held=ExitStack()
             try:held.enter_context(self._gate())
             except GateBusy:
@@ -1022,6 +1042,8 @@ class SeedRunner:
                     if running['status']=='running' and self.clock()-running['started_unix']>=manifest['plan']['job_timeout_seconds']:
                         running['status']='timeout_requested';self._save(root,state)
                         self.process.close(running['process'])
+                elif current is None and state['status']=='active' and self.cancel_request_path(batch_id).is_file():
+                    cancel_now=True                  # a cancel request: honoured below, after the gate is released
                 elif current is None and state['status']=='active' and self.paused(batch_id):
                     return self._public(root,state)|dict(paused=True,pause_requested=True,
                         next_action='Paused between members; batch-resume releases the pause and continues the pending members')
@@ -1054,6 +1076,13 @@ class SeedRunner:
                                 self._save(root,state);raise
                             except BaseException as exc:
                                 item.update(status='reconcile_required',error=str(exc));state['status']='reconcile_required';self._save(root,state);raise
+            if cancel_now:
+                # Between members (the current test finished): the remaining members are cancelled by the same cancel the
+                # command runs, and the request is kept beside the batch as the record of who stopped it.
+                result=self.cancel(batch_id)
+                path=self.cancel_request_path(batch_id)
+                if path.is_file():path.replace(path.with_name('cancel-request.honoured.json'))
+                return result|dict(cancel_request_honoured=True)
             if holding is not None:
                 # Outside the gate, so status, cancel and pause are never blocked; each pass re-checks everything.
                 if self._hold_wait(batch_id,max(0,min(1,deadline-self.clock(),holding-self.clock())))=='stop':

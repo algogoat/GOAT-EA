@@ -367,7 +367,7 @@ class BatchDriverTests(unittest.TestCase):
         result=self.drive(max_seconds=86400)
         self.assertEqual(result['status'],'start_uncertain')
         self.assertEqual(result['attempt_id'],'a'*64)
-        stop=self.c.root/'demo-agent/STOP';stop.parent.mkdir();stop.write_text('{}')
+        stop=self.c.root/'demo-agent/STOP';stop.parent.mkdir(exist_ok=True);stop.write_text('{}')   # the terminal lease lives here too
         resumed=self.drive(resume=True)
         self.assertTrue(resumed['stopped'])
         self.assertEqual((self.c.starts,self.c.cancels),(1,1))

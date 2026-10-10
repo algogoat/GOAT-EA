@@ -402,6 +402,15 @@ class Controller:
         return publish_cancel(self,job,expected_generation=expected_generation)
 
 
+# Operations that close or relaunch MT5 (or drive members that do): main() holds the installation's terminal lease
+# for the whole command, before session_lock (studio_terminal_lease; goatai#2350 6098964146). Readers never wait for it.
+TERMINAL_LEASE_OPERATIONS=frozenset((
+    'run-batch','seed-start','seed-resume','catchup-start','catchup-resume','close-terminal','deploy-load','deploy-stop',
+    'monitor-launch','monitor-repair','monitor-stop','research-monitor-restart-resume','research-monitor-restart-status',
+    'research-monitor-repair-derived-report','research-monitor-repair-revoked-report','research-retire-never-started',
+    'research-monitor-reopen-prepare','research-monitor-adopt-reopen','cancel-rejected-successor'))
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--installation',type=Path,required=True)
@@ -592,6 +601,27 @@ def main(argv=None):
             from studio_equivalence import operation as equivalence_operation
             result=equivalence_operation(controller,args)
             return _emit(controller,result)
+        if args.operation in ('seed-cancel','catchup-cancel'):
+            # goatai#2350 (Claude-Mac 6099078698 R2): Cancel is never "refused, try later". While a driver holds the
+            # terminal lease, the cancel is recorded and that driver stops the run after the current test.
+            from studio_terminal_lease import TerminalBusy,terminal_lease
+            try:locks.enter_context(terminal_lease(controller.root,purpose=args.operation))
+            except TerminalBusy:
+                if args.operation=='seed-cancel':
+                    from studio_seed import SeedRunner
+                    result=SeedRunner(controller).request_cancel(args.batch_id,now=time.time())
+                else:
+                    from studio_catchup import CatchupRunner
+                    result=CatchupRunner(controller).request_cancel(args.catchup_id,now=time.time())
+                return _emit(controller,result)
+        elif args.operation in TERMINAL_LEASE_OPERATIONS or (args.operation=='batch-pause' and args.supervise_seconds is not None):
+            # The installation's terminal lease (L1), before session_lock (L2): these close or relaunch MT5, so no reader
+            # may attach meanwhile, and two of them never overlap (goatai#2350 6098964146). Waits up to 15 s.
+            from studio_terminal_lease import terminal_lease
+            locks.enter_context(terminal_lease(controller.root,purpose=args.operation,wait_seconds=15,
+                busy_message='Another GOAT operation is running MT5 on this terminal now (a batch, seed hunt or catch-up, '
+                             'or a close or launch), so '+args.operation+' did not start; nothing was changed. Try again '
+                             'when it has finished.'))
         if args.operation not in ('peer-prepare','peer-apply','switch-plan','switch-apply','switch-status','switch-verify-park','switch-replace-receipt','discover','resource-profile') and not args.operation.startswith(('orphan-recovery-','bootstrap-retirement-','owner-maintenance-')):
             from studio_handover import session_lock,guard
             locks.enter_context(session_lock(controller));guard(controller)

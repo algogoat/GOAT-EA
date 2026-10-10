@@ -153,6 +153,24 @@ class ScanTests(CatchupCase):
         self.assertFalse(result['summary']['consistent'])
         self.assertFalse(result['writes'])
 
+    def test_summary_names_the_ineligible_reasons_in_its_plain_sentence(self):
+        # goatai#2350 6101219141: the app's catch-up queue shows only `plain`; "(see reasons)" left nothing to see.
+        unknown = 'The EA build that made this export is unknown (no run manifest or capture).'
+        rows = ([dict(status='ineligible', reasons=[unknown, 'Unknown tester settings.'])] * 147
+                + [dict(status='ineligible', reasons=['Unreadable export: x' * 60]), dict(status='ineligible'),
+                   dict(status='ineligible', reasons=['Fifth reason']), dict(status='behind', evidence_end='2026-10-01')])
+        summary = sc.summarize(rows, '2026-10-09')
+        self.assertIn('150 are ineligible: The EA build that made this export is unknown (no run manifest or capture) (147); '
+                      'Unknown tester settings (147); ', summary['plain'])
+        self.assertTrue(summary['plain'].endswith('; and 2 other reasons.'), summary['plain'])
+        self.assertNotIn('see reasons', summary['plain'])
+        self.assertEqual(summary['ineligible_reasons'][:2], [dict(reason=unknown, count=147), dict(reason='Unknown tester settings.', count=147)])
+        self.assertEqual(sum(r['count'] for r in summary['ineligible_reasons']), 147 * 2 + 3)
+        self.assertIn(dict(reason='No reason recorded', count=1), summary['ineligible_reasons'])
+        one = sc.summarize([dict(status='ineligible', reasons=['Unreadable export: ' + 'y' * 300])], '2026-10-09')
+        self.assertRegex(one['plain'], r' 1 is ineligible: Unreadable export: y+\.\.\. \(1\)\.$')
+        self.assertEqual(sc.summarize([dict(status='behind', evidence_end='2026-10-01')], '2026-10-09')['ineligible_reasons'], [])
+
     def test_after_close_everything_is_behind(self):
         result = sc.evidence_scan([self.run], now=AFTER_CLOSE)
         rows = {row['symbol']: row for row in result['exports']}

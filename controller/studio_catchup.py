@@ -461,9 +461,23 @@ def summarize(rows, target, *, resolved=None):
     if counts['ahead'] and auto:
         plain += (' The exports that end later already include days of the unfinished week; after this week closes (%s, %s UTC) '
                   'auto moves to %s and everything can be brought there.' % (auto['next_date'], auto['next_switch_utc'], auto['next_date']))
+    reasons = {}
+    for row in rows:
+        if row['status'] == 'ineligible':
+            for reason in row.get('reasons') or ['No reason recorded']:
+                reasons[reason] = reasons.get(reason, 0) + 1
+    ranked = sorted(reasons.items(), key=lambda item: (-item[1], item[0]))
     if counts['ineligible']:
-        plain += ' %s ineligible (see reasons).' % ('1 is' if counts['ineligible'] == 1 else '%d are' % counts['ineligible'])
-    return dict(counts=counts, evidence_ends=dict(sorted(ends.items())), consistent=consistent, plain=plain)
+        # Name the reasons in the sentence itself: a caller that shows only `plain` (the app's catch-up queue) must not
+        # leave the person with "see reasons" and nothing to see (goatai#2350 6101219141).
+        def short(reason):
+            text = reason.rstrip('. ')
+            return text if len(text) <= 160 else text[:157] + '...'
+        named = '; '.join('%s (%d)' % (short(reason), count) for reason, count in ranked[:3])
+        more = '; and %s' % _n(len(ranked) - 3, 'other reason') if len(ranked) > 3 else ''
+        plain += ' %s ineligible: %s%s.' % ('1 is' if counts['ineligible'] == 1 else '%d are' % counts['ineligible'], named, more)
+    return dict(counts=counts, evidence_ends=dict(sorted(ends.items())), consistent=consistent, plain=plain,
+                ineligible_reasons=[dict(reason=reason, count=count) for reason, count in ranked])
 
 
 def resolve_target(value='auto', *, broker_clock=None, now=None):

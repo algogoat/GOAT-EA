@@ -422,16 +422,23 @@ class NativeCycleTests(CatchupCase):
         report = self.runner.report('cu1')
         row = report['members'][0]
         self.assertEqual(row['evidenceEndShort'], short)
-        self.assertIn('is not caught up to 2026-10-02', row['summary']['plain'])
+        self.assertIn('no data for 1 weekday before the target 2026-10-02 (it ends on 2026-10-01): that history is not on '
+                      'this terminal yet, or it was a market holiday', row['summary']['plain'])
+        self.assertIsNone(version['evidenceEndUnproven'])
         self.assertEqual((report['evidence_end_short']['count'], report['evidence_end_short']['last_data_days'],
                           report['evidence_end_short']['aliases']), (1, {'2026-10-01': 1}, [row['alias']]))
         self.assertIn('1 of 1 member stopped before 2026-10-02', report['evidence_end_short']['plain'])
         rows = {r['set_path']: r for r in sc.evidence_scan([self.run], now=AFTER_CLOSE, controller_root=self.controller.root)['exports']}
         self.assertEqual(rows[str(self.behind)]['status'], 'behind', 'a short re-test never carries the export to the target')
         # A weekend between the last data day and the target is not short; a full re-test carries no flag.
-        self.assertIsNone(sc.evidence_end_short(dict(evidence_end='2026-10-02'), '2026-10-04'))
-        self.assertIsNone(sc.evidence_end_short(dict(evidence_end='2026-10-02'), '2026-10-02'))
-        self.assertEqual(sc.evidence_end_short(dict(evidence_end='2026-09-30'), '2026-10-02')['missing_weekdays'], 2)
+        self.assertEqual(sc.evidence_end_short(dict(evidence_end='2026-10-02', evidence_end_source='capture'), '2026-10-04'), (None, None))
+        self.assertEqual(sc.evidence_end_short(dict(evidence_end='2026-10-02', evidence_end_source='capture'), '2026-10-02'), (None, None))
+        short, unproven = sc.evidence_end_short(dict(evidence_end='2026-09-30', evidence_end_source='set_header'), '2026-10-02')
+        self.assertEqual((short['missing_weekdays'], short['source'], unproven), (2, 'set_header', None))
+        # Mac 6101409258: the equity CSV only has rows when equity changes, so a CSV end is never flagged short.
+        short, unproven = sc.evidence_end_short(dict(evidence_end='2026-09-30', evidence_end_source='equity_csv'), '2026-10-02')
+        self.assertIsNone(short)
+        self.assertIn('The end is not provable from this export', unproven)
 
     def test_catchup_holds_the_shared_terminal_slot(self):
         self.runner.prepare('cu1', self.plan(sets=[self.behind]))

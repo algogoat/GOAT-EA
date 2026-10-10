@@ -482,26 +482,33 @@ def summarize(rows, target, *, resolved=None):
 
 
 EVIDENCE_END_SHORT = 'EVIDENCE_END_SHORT'
+# Sources that prove where the data ends: the capture's per-minute account marks, or the EA's FOOS header window. The
+# equity CSV only has a row when equity or balance changes, so a member flat in its last days ends early there.
+PROVABLE_END_SOURCES = ('capture', 'set_header')
 
 
 def evidence_end_short(retest, target):
-    """None, or the flag for a re-test whose data stops before the catch-up's target end (goatai#2350 6101228603).
+    """(short, unproven) for a re-test against the catch-up's target end (goatai#2350 6101228603, 6101409258).
 
-    Every result stamps ``evidenceEnd`` = the target. When the terminal's history stops earlier, that stamp alone read as
-    caught up (Banker 10-10: before ~06:50Z Friday's data had not arrived, so every run ended 10-08 23:59). The scan
-    already keeps such an export behind (its version ends before the target); this says so on the result itself. Only
-    missing weekdays count, so a weekend between the last data day and the target is never short."""
+    Every result stamps ``evidenceEnd`` = the target. When the data stops earlier, that stamp alone read as caught up
+    (Banker 10-10: before ~06:50Z Friday's history had not arrived, so every run ended 10-08 23:59). The scan already
+    keeps such an export behind (its version ends before the target); ``short`` says so on the result itself. Only
+    missing weekdays count, so a weekend is never short. An end read from the equity CSV alone proves nothing: it gives
+    ``unproven`` (a plain sentence), never a short flag."""
     last = retest.get('evidence_end')
     if not last or last >= target:
-        return None
+        return None, None
     missing = weekdays(date.fromisoformat(last) + timedelta(days=1), date.fromisoformat(target))
     if not missing:
-        return None
-    return dict(code=EVIDENCE_END_SHORT, target=target, last_data_day=last, source=retest.get('evidence_end_source'),
-                missing_weekdays=missing,
-                plain='The re-test data ends on %s, before the target %s (%s missing): the terminal\'s history stops there, '
-                      'so this export is not caught up to %s. Queue it again once that history is on the terminal.'
-                      % (last, target, _n(missing, 'weekday'), target))
+        return None, None
+    source = retest.get('evidence_end_source')
+    if source not in PROVABLE_END_SOURCES:
+        return None, ('The end is not provable from this export: with no capture or FOOS header, its last equity row (%s) '
+                      'only shows the last change, not the last day tested.' % last)
+    return dict(code=EVIDENCE_END_SHORT, target=target, last_data_day=last, source=source, missing_weekdays=missing,
+                plain='The re-test has no data for %s before the target %s (it ends on %s): that history is not on this '
+                      'terminal yet, or it was a market holiday. Until then this export is not caught up to %s.'
+                      % (_n(missing, 'weekday'), target, last, target)), None
 
 
 def resolve_target(value='auto', *, broker_clock=None, now=None):
@@ -1301,7 +1308,8 @@ class CatchupRunner(SeedRunner):
         verdict['evidenceEnd'] = manifest['evidence_end']['iso']
         verdict['evidenceEndMode'] = evidence_end.evidence_end_mode(manifest['evidence_end'], catch_up=True)
         verdict['evidenceEndEffective'] = evidence_end.effective_end(tester['ToDate'])     # the last day the re-test covers
-        verdict['evidenceEndShort'] = short = evidence_end_short(retest, manifest['evidence_end']['iso'])
+        short, unproven = evidence_end_short(retest, manifest['evidence_end']['iso'])
+        verdict['evidenceEndShort'], verdict['evidenceEndUnproven'] = short, unproven
         verdict['oos_rule'] = self._oos_rule(original, retest, spec, verdict, evidence_end=manifest['evidence_end']['iso'])
         verdict['oos_rule']['evidenceEndEffective'] = verdict['evidenceEndEffective']
         created = datetime.now(timezone.utc).isoformat(timespec='seconds')
@@ -1321,7 +1329,7 @@ class CatchupRunner(SeedRunner):
                        qualification=qualification_inputs(spec, manifest, verdict),
                        history_short=retest['history_short'], ea_desc_metadata=spec['optimization_window']['source'],
                        oos_rule=verdict['oos_rule'], evidenceEnd=verdict['evidenceEnd'], evidenceEndMode=verdict['evidenceEndMode'],
-                       evidenceEndEffective=verdict['evidenceEndEffective'], evidenceEndShort=short,
+                       evidenceEndEffective=verdict['evidenceEndEffective'], evidenceEndShort=short, evidenceEndUnproven=unproven,
                        comparison=verdict.get('comparison'), historyBasis=verdict.get('historyBasis'),
                        tickHistoryDrift=verdict.get('tickHistoryDrift'), rebase=verdict.get('rebase'),
                        rebasedWindows=verdict.get('rebasedWindows'))
@@ -1334,6 +1342,7 @@ class CatchupRunner(SeedRunner):
                        new_last_day=window['last_day'], weekdays=window['weekdays'], trades=window['trades'], net=window['net'],
                        dd=window['dd'], pf=window.get('pf'), reproduced=verdict['reproduction']['reproduced'],
                        plain=verdict['plain'] + (' ' + short['plain'] if short else ''), evidenceEndShort=short,
+                       evidenceEndUnproven=unproven,
                        history_short=retest['history_short'], comparable=(verdict.get('comparability') or {}).get('comparable'),
                        model=(verdict.get('evidence_model') or {}).get('model'), model_rung=(verdict.get('evidence_model') or {}).get('model_rung'),
                        equivalence_certificate=(pins.get('equivalence') or {}).get('certificate_digest'),
@@ -1405,7 +1414,7 @@ class CatchupRunner(SeedRunner):
             window_error = 'Could not measure the re-test windows: ' + str(exc)[:240]
         created = datetime.now(timezone.utc).isoformat(timespec='seconds')
         evidence_model = model_tag(tester['Model'], tester['Period'], source=pins.get('model_source'))
-        short = evidence_end_short(retest, target_end)
+        short, unproven = evidence_end_short(retest, target_end)
         record = dict(schema=migration.RECORD_SCHEMA, kind=migration.KIND, provenance=bm['provenance'],
                       catchup_id=manifest['batch_id'], alias=spec['alias'], created_utc=created,
                       source_build=bm['source_build'], source_ea_sha256=bm.get('source_ea_sha256'),
@@ -1426,7 +1435,7 @@ class CatchupRunner(SeedRunner):
                       new_weeks_judged=False, judgement=migration.UNSEEN_WEEKS,
                       evidenceEnd=target_end, evidenceEndMode=evidence_end.evidence_end_mode(manifest['evidence_end'], catch_up=True),
                       evidenceEndEffective=evidence_end.effective_end(tester['ToDate']), evidenceEndShort=short,
-                      new_first_day=first_new.isoformat(),
+                      evidenceEndUnproven=unproven, new_first_day=first_new.isoformat(),
                       tester=tester, assumed=spec['assumed'], evidence_model=evidence_model, history_short=retest['history_short'],
                       ea_desc_metadata=spec['optimization_window']['source'],
                       plain='A new evidence record on %s (%s), never a catch-up verdict on the original export. %s%s'
@@ -1444,7 +1453,7 @@ class CatchupRunner(SeedRunner):
                        goatseq_from=bm.get('goatseq_from'), new_first_day=first_new.isoformat(), new_last_day=new_end.isoformat(),
                        new_weeks=None if not new_weeks else {k: new_weeks.get(k) for k in ('trades', 'profit', 'pf', 'maxDd', 'equityNet', 'days')},
                        new_weeks_judged=False, evidenceEnd=target_end, evidenceEndEffective=record['evidenceEndEffective'],
-                       evidenceEndShort=short, history_short=retest['history_short'], model=evidence_model.get('model'), plain=record['plain'])
+                       evidenceEndShort=short, evidenceEndUnproven=unproven, history_short=retest['history_short'], model=evidence_model.get('model'), plain=record['plain'])
         return dict(status=migration.RESULT_STATUS, kind=migration.KIND, provenance=bm['provenance'], path=retest['set_path'],
                     sha256=retest['set_sha256'], schema_version=1, member_id=spec['member_id'], summary=summary,
                     record_path=str(record_path), native_launch_qualification=False)

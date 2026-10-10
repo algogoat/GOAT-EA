@@ -127,8 +127,8 @@ class DemoAgentTests(unittest.TestCase):
         # the terminal lease every driver holds for its whole run.
         calls = []
         self.mt5.initialize = lambda *args, **kwargs: calls.append(args) or True
-        driver = DemoAgent(self.installation, process=self.process, mt5=self.mt5)
-        with driver._exclusive(), patch('demo_agent.tester_state', return_value='idle'):
+        from studio_terminal_lease import foreign_holder
+        with foreign_holder(self.root), patch('demo_agent.tester_state', return_value='idle'):   # a driver in another process
             status = self.agent.status()
             self.assertEqual((status['broker'], status['broker_reason']), (None, 'terminal_busy'))
             with self.assertRaises(ValueError) as caught:

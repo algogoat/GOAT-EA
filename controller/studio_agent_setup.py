@@ -44,20 +44,16 @@ def require_unprotected(login):
 
 @contextmanager
 def demo_terminal_lock(controller):
-    """Share the demo agent's terminal lock so batches and closes never race."""
-    import msvcrt
-    root = Path(controller.root) / 'demo-agent'
-    root.mkdir(parents=True, exist_ok=True)
-    with (root / 'terminal.lock').open('a+b') as lock:
-        lock.seek(0); lock.write(b'0'); lock.flush(); lock.seek(0)
-        try:
-            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError as exc:
-            raise ValueError('Another demo operation owns this terminal; wait for it to finish') from exc
-        try:
-            yield
-        finally:
-            lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+    """Share the demo agent's terminal lock so batches and closes never race (studio_terminal_lease; joined when this
+    thread already holds it)."""
+    from studio_terminal_lease import TerminalBusy, terminal_lease
+    stack = ExitStack()
+    try:
+        stack.enter_context(terminal_lease(controller.root, purpose='demo operation'))
+    except TerminalBusy as exc:
+        raise ValueError('Another demo operation owns this terminal; wait for it to finish') from exc
+    with stack:
+        yield
 
 
 # MT5 SDK ENUM_ACCOUNT_TRADE_MODE values, used when the adapter does not export a constant.
@@ -109,24 +105,30 @@ def broker_proof(controller, session, *, mt5=None, require_flat=True, details=Fa
             import MetaTrader5 as mt5
         except ImportError as exc:
             raise ValueError('The MetaTrader5 adapter is unavailable; no native effect performed') from exc
-    if not mt5.initialize(controller.install['terminal_executable'], timeout=5000):
-        raise ValueError('The selected MT5 terminal could not be read; start it and sign in to the demo account')
-    try:
-        terminal, account = mt5.terminal_info(), mt5.account_info()
-        positions, orders = mt5.positions_get(), mt5.orders_get()
-        if terminal is None or account is None or positions is None or orders is None:
-            raise ValueError('Incomplete native account and terminal readback')
-        if (Path(terminal.path) != Path(controller.install['terminal_executable']).parent
-                or Path(terminal.data_path) != Path(controller.install['terminal_data_root'])):
-            raise ValueError('The running MT5 is not the selected installation')
-        proof = dict(login=str(account.login), server=account.server,
-                     demo=account.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO,
-                     connected=bool(terminal.connected), algo_trading=bool(terminal.trade_allowed),
-                     positions=len(positions), orders=len(orders), build=terminal.build)
-        if details:
-            proof.update(account_details(mt5, account))
-    finally:
-        mt5.shutdown()
+    from studio_terminal_lease import terminal_lease
+    # initialize(path) starts MT5 when it is not running: it runs under the installation's terminal lease, joined when
+    # this thread already holds it (pairing-code, close-terminal, deploy), never beside a driver (goatai#2350 6098964146).
+    with terminal_lease(controller.root, purpose='broker-proof', busy_code='BROKER_READ_DEFERRED',
+                        busy_message='A driver or another operation holds this terminal now, so GOAT does not attach '
+                                     'to MT5 to read the broker; nothing was changed.', broker_reason='terminal_busy'):
+        if not mt5.initialize(controller.install['terminal_executable'], timeout=5000):
+            raise ValueError('The selected MT5 terminal could not be read; start it and sign in to the demo account')
+        try:
+            terminal, account = mt5.terminal_info(), mt5.account_info()
+            positions, orders = mt5.positions_get(), mt5.orders_get()
+            if terminal is None or account is None or positions is None or orders is None:
+                raise ValueError('Incomplete native account and terminal readback')
+            if (Path(terminal.path) != Path(controller.install['terminal_executable']).parent
+                    or Path(terminal.data_path) != Path(controller.install['terminal_data_root'])):
+                raise ValueError('The running MT5 is not the selected installation')
+            proof = dict(login=str(account.login), server=account.server,
+                         demo=account.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO,
+                         connected=bool(terminal.connected), algo_trading=bool(terminal.trade_allowed),
+                         positions=len(positions), orders=len(orders), build=terminal.build)
+            if details:
+                proof.update(account_details(mt5, account))
+        finally:
+            mt5.shutdown()
     if proof['login'] != session['account']['login'] or proof['server'] != session['account']['server']:
         raise ValueError('MT5 is signed in to a different account than this installation is bound to')
     if not proof['demo']:
@@ -272,16 +274,15 @@ def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
     require_unprotected(login)
     from studio_seed_process import WindowsSeedProcess
     with ExitStack() as lease:
-        if session.get('authority_kind') == 'demo_direct':
-            # broker_proof's mt5.initialize(path) STARTS MT5 when it is not running, and a demo-lane driver closes and
-            # relaunches MT5 between members while holding this terminal lock for its whole run (goatai#2350
-            # 6095691170, GOAT-EA#212). Taken without waiting, from the process check through the readback.
-            try:
-                lease.enter_context(demo_terminal_lock(controller))
-            except ValueError:
-                raise Refusal('A driver or another demo operation holds this terminal now (a seed, catch-up or hold-up '
-                              'driver closes and relaunches MT5 between members), so pairing-code does not attach to MT5; '
-                              'ask again once it has finished.', 'PAIRING_TERMINAL_BUSY') from None
+        # broker_proof's mt5.initialize(path) STARTS MT5 when it is not running, and a driver of either lane closes and
+        # relaunches MT5 between members while holding this installation's terminal lease for its whole run (goatai#2350
+        # 6095691170 / 6098964146). Taken without waiting, from the process check through the readback.
+        try:
+            lease.enter_context(demo_terminal_lock(controller))
+        except ValueError:
+            raise Refusal('A driver or another operation holds this terminal now (a seed, catch-up or hold-up driver '
+                          'closes and relaunches MT5 between members), so pairing-code does not attach to MT5; ask again '
+                          'once it has finished.', 'PAIRING_TERMINAL_BUSY') from None
         if WindowsSeedProcess(controller).inspect() is None:
             return dict(status='terminal_stopped', userCodeReturned=False,
                         next_action='Open the selected MT5 so GOAT can show and read its connection code.')

@@ -64,39 +64,45 @@ def inspect_idle_demo(controller, *, tester='require'):
         raise ValueError('Monitor repair requires the official MetaTrader5 Python adapter; no native effect performed') from exc
     binding = process_binding(controller)
     from studio_process_query import POLL_BUDGET   # a probe, not a launch gate: bounded WMI retry (Claude-Mac, #1885)
-    before = inspect_processes(binding, query_budget=POLL_BUDGET)
-    session = controller.session
-    try:
-        # Explicit existing executable only; never broker login/password or trading APIs.
-        if not mt5.initialize(controller.install['terminal_executable'], timeout=5000):
-            raise ValueError('Unable to read the selected MT5 terminal')
-        terminal, account = mt5.terminal_info(), mt5.account_info()
-        positions, orders = mt5.positions_get(), mt5.orders_get()
-        if any(value is None for value in (terminal, account, positions, orders)):
-            raise ValueError('Incomplete native account/terminal observation')
-        current = inspect_processes(binding, query_budget=POLL_BUDGET)
-        if any(not role_unchanged(binding, k, current[k], before[k]) for k in ('research', 'protected')):
-            raise ValueError('Native process changed during inspection; no adoption')
-        if (Path(terminal.path) != Path(controller.install['terminal_executable']).parent
-                or Path(terminal.data_path) != Path(controller.install['terminal_data_root'])
-                or str(account.login) != session['account']['login'] or account.server != session['account']['server']):
-            raise ValueError('Native terminal/account differs from the installation')
-        if account.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO or not terminal.connected or terminal.trade_allowed or positions or orders:
-            raise ValueError('Repair requires a connected demo, Algo Trading off and no positions/orders')
-        if tester == 'require':
-            state = tester_state(current['research']['pid'], terminal.build)
-            if state != 'idle':
-                raise ValueError('Repair requires positively observed idle native tester')
-        else:
-            try:
+    from studio_terminal_lease import terminal_lease
+    # initialize(path) starts MT5 when it is not running: the inventory, initialize and the re-check run under the
+    # installation's terminal lease, joined when this thread already holds it (goatai#2350 6098964146).
+    with terminal_lease(controller.root, purpose='inspect-idle-demo', busy_code='BROKER_READ_DEFERRED',
+                        busy_message='A driver or another operation holds this terminal now, so GOAT does not attach '
+                                     'to MT5 to inspect it; nothing was changed.', broker_reason='terminal_busy'):
+        before = inspect_processes(binding, query_budget=POLL_BUDGET)
+        session = controller.session
+        try:
+            # Explicit existing executable only; never broker login/password or trading APIs.
+            if not mt5.initialize(controller.install['terminal_executable'], timeout=5000):
+                raise ValueError('Unable to read the selected MT5 terminal')
+            terminal, account = mt5.terminal_info(), mt5.account_info()
+            positions, orders = mt5.positions_get(), mt5.orders_get()
+            if any(value is None for value in (terminal, account, positions, orders)):
+                raise ValueError('Incomplete native account/terminal observation')
+            current = inspect_processes(binding, query_budget=POLL_BUDGET)
+            if any(not role_unchanged(binding, k, current[k], before[k]) for k in ('research', 'protected')):
+                raise ValueError('Native process changed during inspection; no adoption')
+            if (Path(terminal.path) != Path(controller.install['terminal_executable']).parent
+                    or Path(terminal.data_path) != Path(controller.install['terminal_data_root'])
+                    or str(account.login) != session['account']['login'] or account.server != session['account']['server']):
+                raise ValueError('Native terminal/account differs from the installation')
+            if account.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO or not terminal.connected or terminal.trade_allowed or positions or orders:
+                raise ValueError('Repair requires a connected demo, Algo Trading off and no positions/orders')
+            if tester == 'require':
                 state = tester_state(current['research']['pid'], terminal.build)
-            except (ValueError, OSError):
-                state = 'unknown'
-            if state == 'running':
-                raise ValueError('The MT5 Strategy Tester is running; no close performed')
-        return dict(process=current['research'], protected=current['protected'], account_matches=True,
-                    demo=True, connected=True, algo_trading=False, positions=0, orders=0,
-                    tester_state=state, tester_source='window_caption' if state != 'unknown' else 'ea_runtime',
-                    build=terminal.build, sdk_version=mt5.__version__)
-    finally:
-        mt5.shutdown()
+                if state != 'idle':
+                    raise ValueError('Repair requires positively observed idle native tester')
+            else:
+                try:
+                    state = tester_state(current['research']['pid'], terminal.build)
+                except (ValueError, OSError):
+                    state = 'unknown'
+                if state == 'running':
+                    raise ValueError('The MT5 Strategy Tester is running; no close performed')
+            return dict(process=current['research'], protected=current['protected'], account_matches=True,
+                        demo=True, connected=True, algo_trading=False, positions=0, orders=0,
+                        tester_state=state, tester_source='window_caption' if state != 'unknown' else 'ea_runtime',
+                        build=terminal.build, sdk_version=mt5.__version__)
+        finally:
+            mt5.shutdown()

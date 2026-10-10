@@ -196,9 +196,9 @@ def prepare(plan, host, witness_path, apply=False, progress=None):
          and type(account['leverage']) is int and 1<=account['leverage']<=10000, 'account_policy')
     need(account['server'].endswith('-Demo'), 'demo_server_required')
     policy=plan['policy']
-    need(type(policy) is dict and set(policy)=={'Mode_Lots','Risk','memberCount'} and type(policy['Mode_Lots']) is int
+    need(type(policy) is dict and set(policy)=={'Mode_Lots','Risk','Mode_Bias','memberCount'} and type(policy['Mode_Lots']) is int
          and type(policy['Risk']) in (int,float) and math.isfinite(policy['Risk']) and policy['Risk']>0
-         and type(policy['memberCount']) is int and policy['memberCount']>=1, 'policy_schema')
+         and type(policy['Mode_Bias']) is int and type(policy['memberCount']) is int and policy['memberCount']>=1, 'policy_schema')
     # Verify vendor signature from the source binary before copying it.
     quoted=str(Path(plan['sources']['terminal']['path'])).replace("'", "''")
     signature=host.powershell("$s=Get-AuthenticodeSignature -LiteralPath '"+quoted+"'; "
@@ -228,6 +228,9 @@ def prepare(plan, host, witness_path, apply=False, progress=None):
         need(type(ai['mode']) is int and ai['mode'] in (0,2), 'ai_launch_mode')
         need(type(ai['threshold']) is int and 1<=ai['threshold']<=100, 'ai_launch_threshold')
         need(type(ai['protocol']) is int and ai['protocol'] in (1,2), 'ai_launch_protocol')
+        # An As Optimized (mode 0) arm runs each SET's own AI inputs, so the frozen bytes must pin them:
+        # 1 = Bias_Disabled makes that arm truly AI-OFF (GOAT_Inputs_Definitions.mqh ENUM_ACTION_BIAS).
+        need(ai['mode']!=0 or policy['Mode_Bias']==1, 'ai_off_requires_bias_disabled')
         directory=Path(arm['directory'])
         need(directory.parent.is_dir(), 'terminal_parent_missing')
         need(not directory.exists() and not host.processes(arm), 'new_directory_required')
@@ -257,6 +260,7 @@ def prepare(plan, host, witness_path, apply=False, progress=None):
         need(values.get('Mode_Operation')=='9', 'mode_operation_mismatch')
         need(values.get('Mode_Lots')==str(policy['Mode_Lots']), 'mode_lots_mismatch')
         need(number(values.get('Risk'))==policy['Risk'], 'risk_mismatch')
+        need(values.get('Mode_Bias')==str(policy['Mode_Bias']), 'mode_bias_mismatch')
         members.append(dict(index=index,name=name,symbol=symbol,strategyName=label,data=data,sha256=sha(data)))
     progress.pop('memberIndex',None)
     progress['stage']='assemble_arms'

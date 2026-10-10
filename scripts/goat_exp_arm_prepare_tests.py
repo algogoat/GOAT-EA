@@ -58,7 +58,7 @@ class Base(unittest.TestCase):
             ea=dict(buildId='V1.49-BETA17-43',expertRelativePath='MQL5/Experts/GOAT Experiment/GOAT V1.49.ex5',
                     sha256=sources['ea']['sha256'],credentialRelativePath='GOAT/Credentials/api-bearer-exp03-fixture.token'),
             account=dict(server='Darwinex-Demo',currency='USD',leverage=100),
-            policy=dict(Mode_Lots=2,Risk=500.0,memberCount=3),members=[],
+            policy=dict(Mode_Lots=2,Risk=500.0,Mode_Bias=1,memberCount=3),members=[],
             arms=[dict(terminal=9,login=3000200001,directory=str(root/'VPS'/'09 - Exp 03 - AI OFF'),label='Exp 03 - AI OFF',
                        aiLaunch=dict(mode=0,threshold=50,protocol=2)),
                   dict(terminal=10,login=3000200002,directory=str(root/'VPS'/'10 - Exp 03 - AI ON'),label='Exp 03 - AI ON',
@@ -243,6 +243,14 @@ class RefusalTests(Base):
         self.refused('risk_mismatch',plan=self.changed(lambda p:p['policy'].update(Risk=250)))
         self.set_member(2,SET_TEXT.format(i=2).replace('Risk=500.0','Risk=500.0||100||10||1000||N'))
         self.refused('risk_mismatch')
+
+    def test_mode_bias_pinned_by_policy(self):
+        # A SET whose own AI is on would make the As Optimized arm filter entries on AI.
+        self.set_member(1,SET_TEXT.format(i=1).replace('Mode_Bias=1','Mode_Bias=2'))
+        self.refused('mode_bias_mismatch')
+
+    def test_ai_off_arm_requires_bias_disabled_policy(self):
+        self.refused('ai_off_requires_bias_disabled',plan=self.changed(lambda p:p['policy'].update(Mode_Bias=2)))
 
     def test_mode_operation_not_nine(self):
         self.set_member(2,SET_TEXT.format(i=2).replace('Mode_Operation=9','Mode_Operation=8'))

@@ -139,7 +139,7 @@ class CatchupCase(unittest.TestCase):
         (folder / 'attempt-issued.json').write_text('{}', encoding='utf-8')
         return make_unit(folder, rows=rows, deals=deals, alias=member['alias'], symbol=tester['Symbol'], run_id=member['capture_id'],
                          start=datetime.strptime(tester['FromDate'], '%Y.%m.%d').date(), requested_to=to_date, windows=windows,
-                         marks=getattr(self, 'retest_marks', ()))
+                         marks=getattr(self, 'retest_marks', ()), observed_end=getattr(self, 'retest_observed_end', None))
 
 
 class ScanTests(CatchupCase):
@@ -152,6 +152,24 @@ class ScanTests(CatchupCase):
         self.assertIn('after this week closes (2026.10.02', result['summary']['plain'])
         self.assertFalse(result['summary']['consistent'])
         self.assertFalse(result['writes'])
+
+    def test_summary_names_the_ineligible_reasons_in_its_plain_sentence(self):
+        # goatai#2350 6101219141: the app's catch-up queue shows only `plain`; "(see reasons)" left nothing to see.
+        unknown = 'The EA build that made this export is unknown (no run manifest or capture).'
+        rows = ([dict(status='ineligible', reasons=[unknown, 'Unknown tester settings.'])] * 147
+                + [dict(status='ineligible', reasons=['Unreadable export: x' * 60]), dict(status='ineligible'),
+                   dict(status='ineligible', reasons=['Fifth reason']), dict(status='behind', evidence_end='2026-10-01')])
+        summary = sc.summarize(rows, '2026-10-09')
+        self.assertIn('150 are ineligible: The EA build that made this export is unknown (no run manifest or capture) (147); '
+                      'Unknown tester settings (147); ', summary['plain'])
+        self.assertTrue(summary['plain'].endswith('; and 2 other reasons.'), summary['plain'])
+        self.assertNotIn('see reasons', summary['plain'])
+        self.assertEqual(summary['ineligible_reasons'][:2], [dict(reason=unknown, count=147), dict(reason='Unknown tester settings.', count=147)])
+        self.assertEqual(sum(r['count'] for r in summary['ineligible_reasons']), 147 * 2 + 3)
+        self.assertIn(dict(reason='No reason recorded', count=1), summary['ineligible_reasons'])
+        one = sc.summarize([dict(status='ineligible', reasons=['Unreadable export: ' + 'y' * 300])], '2026-10-09')
+        self.assertRegex(one['plain'], r' 1 is ineligible: Unreadable export: y+\.\.\. \(1\)\.$')
+        self.assertEqual(sc.summarize([dict(status='behind', evidence_end='2026-10-01')], '2026-10-09')['ineligible_reasons'], [])
 
     def test_after_close_everything_is_behind(self):
         result = sc.evidence_scan([self.run], now=AFTER_CLOSE)
@@ -385,6 +403,42 @@ class NativeCycleTests(CatchupCase):
         # Repeating start never relaunches finished work.
         self.runner.resume('cu1', 5)
         self.assertEqual(len(self.starts), 2)
+
+    def test_data_that_stops_before_the_target_is_flagged_evidence_end_short(self):
+        # goatai#2350 6101219141 / 6101228603: Banker's Friday history had not arrived, so every re-test stopped Thu 23:59
+        # while the result stamped evidenceEnd = Friday. The result, version and report now say EVIDENCE_END_SHORT, and the
+        # scan still does not count the export as caught up.
+        from test_studio_catchup_verdict import msc
+        self.retest_observed_end = msc(datetime(2026, 10, 1, 23, 59))          # Thu: Fri 10-02 history missing
+        self.runner.prepare('cu1', self.plan(sets=[self.behind]))
+        self.auto = True
+        self.assertEqual(self.runner.start('cu1', 30)['status'], 'completed')
+        member = read_json(self.runner.path('cu1') / 'manifest.json')['members'][0]
+        version = read_json(Path(member['evidence_dir']) / 'evidence-version.json')
+        short = version['evidenceEndShort']
+        self.assertEqual((version['evidenceEnd'], version['evidence_end']), ('2026-10-02', '2026-10-01'))
+        self.assertEqual((short['code'], short['target'], short['last_data_day'], short['missing_weekdays'], short['source']),
+                         ('EVIDENCE_END_SHORT', '2026-10-02', '2026-10-01', 1, 'capture'))
+        report = self.runner.report('cu1')
+        row = report['members'][0]
+        self.assertEqual(row['evidenceEndShort'], short)
+        self.assertIn('no data for 1 weekday before the target 2026-10-02 (it ends on 2026-10-01): that history is not on '
+                      'this terminal yet, or it was a market holiday', row['summary']['plain'])
+        self.assertIsNone(version['evidenceEndUnproven'])
+        self.assertEqual((report['evidence_end_short']['count'], report['evidence_end_short']['last_data_days'],
+                          report['evidence_end_short']['aliases']), (1, {'2026-10-01': 1}, [row['alias']]))
+        self.assertIn('1 of 1 member stopped before 2026-10-02', report['evidence_end_short']['plain'])
+        rows = {r['set_path']: r for r in sc.evidence_scan([self.run], now=AFTER_CLOSE, controller_root=self.controller.root)['exports']}
+        self.assertEqual(rows[str(self.behind)]['status'], 'behind', 'a short re-test never carries the export to the target')
+        # A weekend between the last data day and the target is not short; a full re-test carries no flag.
+        self.assertEqual(sc.evidence_end_short(dict(evidence_end='2026-10-02', evidence_end_source='capture'), '2026-10-04'), (None, None))
+        self.assertEqual(sc.evidence_end_short(dict(evidence_end='2026-10-02', evidence_end_source='capture'), '2026-10-02'), (None, None))
+        short, unproven = sc.evidence_end_short(dict(evidence_end='2026-09-30', evidence_end_source='set_header'), '2026-10-02')
+        self.assertEqual((short['missing_weekdays'], short['source'], unproven), (2, 'set_header', None))
+        # Mac 6101409258: the equity CSV only has rows when equity changes, so a CSV end is never flagged short.
+        short, unproven = sc.evidence_end_short(dict(evidence_end='2026-09-30', evidence_end_source='equity_csv'), '2026-10-02')
+        self.assertIsNone(short)
+        self.assertIn('The end is not provable from this export', unproven)
 
     def test_catchup_holds_the_shared_terminal_slot(self):
         self.runner.prepare('cu1', self.plan(sets=[self.behind]))

@@ -1,0 +1,44 @@
+name: Experiment arm installer tests
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: exp-arm-tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# scripts/goat_exp_arm_prepare.py (the fresh inert Exp 03 arm installer, GOAT-EA#216) lives outside
+# controller/, so controller-tests.yml never runs its suite. The suite needs no terminal, network or
+# credential: the host is a fake, and the EA sources are the retained candidate-builds binaries checked
+# against controller/studio_installed_build.py.
+
+jobs:
+  exp-arm-prepare:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: "1"
+      PYTHONNOUSERSITE: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - name: Check out proposed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Windows x64 Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+          architecture: x64
+
+      - name: Experiment arm installer (dry run, apply and every refusal)
+        env:
+          # Hosted Windows TEMP defaults to a short-name alias; require canonical fixtures.
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: python -m unittest discover -s scripts -t scripts -p goat_exp_arm_prepare_tests.py -v

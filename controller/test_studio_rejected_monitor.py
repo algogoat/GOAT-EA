@@ -6,7 +6,7 @@ import shutil
 from types import SimpleNamespace
 import time
 import unittest
-from unittest.mock import Mock,patch
+from unittest.mock import DEFAULT,Mock,patch
 
 from campaign_ledger import sha
 from studio_bridge import write_json
@@ -50,6 +50,19 @@ class RejectedMonitorTests(unittest.TestCase):
         self.issue(self.attempt,dict(request_id=self.attempt,action='start',terminal_id=self.c.terminal,run_id=self.c.run,job_id='original',generation=state['generation'],configuration_sha256=job['configuration_sha256'],expires_utc=1),'REQUEST_REJECTED')
         self.native=dict(process=dict(pid=44,created_utc='fixed'),demo=True,connected=True,algo_trading=False,positions=0,orders=0,account_matches=True,tester_state='idle')
         self.probe=patch('studio_rejected_monitor.inspect_idle_demo',return_value=self.native).start()
+        # R1: the pre-suspend proof is the EA's runtime sample plus the process inventory; never an SDK attach.
+        self.runtime=patch.object(self.c,'runtime',return_value=(dict(runtime=dict(account_demo=True)),{})).start()
+        self.resumed=Mock(return_value=dict(status='resumed',new_pids=dict(launcher=501,python=502)))
+
+    def present_first(self,process,later=DEFAULT):
+        """The monitor runs at the pre-suspend proof; every later inspection answers ``later`` (default: return_value)."""
+        calls=[]
+        def inspect():
+            calls.append(1)
+            if len(calls)==1:return self.native['process']
+            if isinstance(later,BaseException):raise later
+            return later
+        process.inspect.side_effect=inspect
 
     def issue(self,identity,request,status):
         raw=(json.dumps(request,ensure_ascii=False,allow_nan=False)+'\n').encode()
@@ -71,13 +84,44 @@ class RejectedMonitorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Tester work'):proof(self.c,'original')
 
     def test_live_account_and_unstopped_publisher_refuse_before_close(self):
-        process=Mock();suspend=Mock(return_value=dict(supervisor_exited=False,native_stop_claimed=False))
-        self.probe.return_value=dict(self.native,demo=False)
-        with self.assertRaisesRegex(ValueError,'SDK-confirmed'):restart(self.c,'original',process=process,suspend_fn=suspend)
-        suspend.assert_not_called();process.close.assert_not_called()
-        self.probe.return_value=self.native
-        with self.assertRaisesRegex(ValueError,'publisher'):restart(self.c,'original',process=process,suspend_fn=suspend)
-        process.close.assert_not_called()
+        # R1: the pre-suspend proof (runtime sample) refuses a non-demo terminal before anything is suspended.
+        process=Mock();self.present_first(process);suspend=Mock(return_value=dict(supervisor_exited=False,native_stop_claimed=False))
+        self.runtime.side_effect=ValueError('Runtime policy mismatch: account_demo')
+        with self.assertRaisesRegex(ValueError,'account_demo'):restart(self.c,'original',process=process,suspend_fn=suspend,resume_fn=self.resumed)
+        suspend.assert_not_called();process.close.assert_not_called();self.probe.assert_not_called()
+        self.runtime.side_effect=None;self.present_first(process)
+        with self.assertRaisesRegex(ValueError,'publisher'):restart(self.c,'original',process=process,suspend_fn=suspend,resume_fn=self.resumed)
+        process.close.assert_not_called();self.resumed.assert_not_called()   # not verifiably stopped: never resumed blindly
+
+    def test_failed_readback_after_suspend_resumes_the_publisher_then_refuses(self):
+        # goatai#2350 6099078698 / 6101325773 (R1): the full SDK readback runs only after the suspension, under the terminal
+        # lease. When it fails (here: not a demo) nothing is closed, the suspended publisher is resumed, and it refuses.
+        from studio_terminal_lease import held
+        process,suspend,config,draft=self.launch_fixture();order=[]
+        suspend.side_effect=lambda c,job,folder:order.append('suspend') or dict(supervisor_exited=True,native_stop_claimed=False)
+        def readback(c):
+            order.append(('readback',held(self.c.root)))
+            return dict(self.native,demo=False)
+        self.probe.side_effect=readback
+        self.resumed.side_effect=lambda c,job_id,folder:order.append(('resume',held(self.c.root))) or dict(new_pids=dict(launcher=501,python=502))
+        with patch('studio_onboarding.verify_monitor_profile'),self.assertRaises(ValueError) as caught:
+            restart(self.c,'original',process=process,suspend_fn=suspend,resume_fn=self.resumed)
+        self.assertEqual(order,['suspend',('readback',True),('resume',False)],'no attach before suspending; resume after the lease is released')
+        self.assertEqual((caught.exception.code,caught.exception.fields['publisher_resumed']),('MONITOR_RESTART_REFUSED',dict(launcher=501,python=502)))
+        self.assertIn('SDK-confirmed same idle demo',str(caught.exception));self.assertIn('running again',str(caught.exception))
+        self.resumed.assert_called_once()
+        process.close.assert_not_called();process.start.assert_not_called()
+        self.assertFalse(list((self.c.root/'rejected-monitor-restarts').rglob('restart.json')),'nothing recorded as issued')
+
+    def test_a_failed_resume_is_the_answer_never_a_retry(self):
+        from studio_refusal import Refusal
+        process,suspend,config,draft=self.launch_fixture()
+        self.probe.return_value=dict(self.native,algo_trading=True)
+        self.resumed.side_effect=Refusal('could not restart that run; press Continue','PUBLISHER_RESUME_FAILED',job_id='original')
+        with patch('studio_onboarding.verify_monitor_profile'),self.assertRaises(ValueError) as caught:
+            restart(self.c,'original',process=process,suspend_fn=suspend,resume_fn=self.resumed)
+        self.assertEqual(caught.exception.code,'PUBLISHER_RESUME_FAILED')
+        self.resumed.assert_called_once();process.close.assert_not_called()
 
     def test_pending_real_human_takeover_is_processed_outside_gate_and_blocks_close(self):
         state=self.c.state()
@@ -85,9 +129,10 @@ class RejectedMonitorTests(unittest.TestCase):
                      expected_revision=state['revision'],generation=state['generation'],command='control.takeover',payload={})
         write_json(self.c.bridge.root/'human/inbox/human-takeover-during-recovery.json',request)
         (self.c.root/'batch-driver-gate').mkdir(exist_ok=True)
-        process=Mock();suspend=Mock(return_value=dict(supervisor_exited=True,native_stop_claimed=False))
-        with self.assertRaisesRegex(ValueError,'revoked'):
-            restart(self.c,'original',process=process,suspend_fn=suspend)
+        process=Mock();self.present_first(process);suspend=Mock(return_value=dict(supervisor_exited=True,native_stop_claimed=False))
+        with self.assertRaisesRegex(ValueError,'revoked') as caught:
+            restart(self.c,'original',process=process,suspend_fn=suspend,resume_fn=self.resumed)
+        self.assertEqual(caught.exception.code,'MONITOR_RESTART_REFUSED');self.resumed.assert_called_once()   # R1
         with operation('state'):self.assertEqual(self.c.state()['owner'],'human')
         process.close.assert_not_called();process.start.assert_not_called()
         self.assertFalse(list((self.c.bridge.root/'human/processing').glob('*.json')))
@@ -104,7 +149,7 @@ class RejectedMonitorTests(unittest.TestCase):
         write_json(folder/'original.json',dict(pid=44,status='process_started_unverified',installation_sha256=sha(self.c.install),run_id=self.c.run,startup_config=str(config),startup_sha256=hashlib.sha256(config.read_bytes()).hexdigest()))
         draft=self.c.bridge.root/'human/ui-draft.json';draft.write_bytes(b'{"retained":"real draft fixture"}')
         driver_gate=self.c.root/'batch-driver-gate';driver_gate.mkdir(exist_ok=True)
-        process=Mock();process.inspect.return_value=None;process.start.return_value=self.native['process']
+        process=Mock();process.inspect.return_value=None;process.start.return_value=self.native['process'];self.present_first(process)
         suspend=Mock(return_value=dict(supervisor_exited=True,native_stop_claimed=False))
         return process,suspend,config,draft
 
@@ -125,9 +170,10 @@ class RejectedMonitorTests(unittest.TestCase):
         def suspension(c,job,folder):
             write_json(folder/'publisher-stopped.json',evidence)
             return evidence
-        process.inspect.side_effect=ValueError('Unknown terminal executable; exiting process fixture')
+        self.present_first(process,ValueError('Unknown terminal executable; exiting process fixture'))
         with patch('studio_onboarding.verify_monitor_profile'),patch('studio_onboarding.saved_launch_policy'),self.assertRaisesRegex(ValueError,'Unknown terminal'):
-            restart(self.c,'original',process=process,suspend_fn=suspension)
+            restart(self.c,'original',process=process,suspend_fn=suspension,resume_fn=self.resumed)
+        self.resumed.assert_not_called()                                      # a failure after the close never resumes
         process.inspect.side_effect=None;process.inspect.return_value=None
         process.close.assert_called_once();process.start.assert_not_called()
         return process,config,draft

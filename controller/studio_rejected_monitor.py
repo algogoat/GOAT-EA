@@ -15,6 +15,7 @@ from studio_native_gate import exclusive_gate
 from studio_dispatch_observe import observe_dispatch
 from studio_native_observe import observe
 from studio_monitor_probe import inspect_idle_demo
+from studio_refusal import Refusal
 from studio_seed_process import WindowsSeedProcess
 
 OWNER_LOGIN='3000082754'
@@ -206,58 +207,86 @@ def resume(controller,job_id,*,process=None,clock=time):
         return _launch_stopped(controller,record,path,process,clock)
 
 
-def restart(controller,job_id,*,process=None,suspend_fn=None,clock=time):
-    from studio_driver_suspend import suspend
-    from studio_onboarding import verify_monitor_profile,saved_launch_policy
+def restart(controller,job_id,*,process=None,suspend_fn=None,resume_fn=None,clock=time):
+    from studio_driver_suspend import suspend,resume
+    from studio_onboarding import verify_monitor_profile
     from studio_seed_slot import guard_active_seed
-    process=process or WindowsSeedProcess(controller);suspend_fn=suspend_fn or suspend
+    from studio_terminal_lease import terminal_lease
+    process=process or WindowsSeedProcess(controller);suspend_fn=suspend_fn or suspend;resume_fn=resume_fn or resume
     scope,job=proof(controller,job_id)
     attempt=job['launch_intent']['attempt_id']
     folder=safe_path(controller.root/'rejected-monitor-restarts'/attempt)
     folder.mkdir(parents=True,exist_ok=True)
     record_path=folder/'restart.json'
     if record_path.exists():raise ValueError('One monitor restart already recorded; inspect, never repeat')
-    native=inspect_idle_demo(controller);require_demo(native)
+    # R1 (goatai#2350 6099078698): the live publisher holds the terminal lease, so the proof before suspending it never
+    # attaches to MT5: the EA's fresh runtime sample (bound demo, connected, Algo off, tester idle) and the process inventory.
+    pre_suspend_proof(controller,process)
     stopped=suspend_fn(controller,job,folder)
     if stopped.get('supervisor_exited') is not True or stopped.get('native_stop_claimed') is not False:
         raise ValueError('Old publisher has not verifiably stopped')
-    # Inbox processing can enter store mutation_gate. Never pump under the
-    # non-reentrant native gate; recheck authority after pending human actions.
-    controller.bridge.pump()
-    with exclusive_gate(controller.root/'batch-driver-gate'),exclusive_gate(controller.local/'native-gate'):
-        if record_path.exists():raise ValueError('One monitor restart already recorded; inspect, never repeat')
-        scope,job=proof(controller,job_id);guard_active_seed(controller.root)
-        native=inspect_idle_demo(controller);require_demo(native)
-        preset=safe_path(Path(controller.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set')
-        expected='Mode_Operation=11\r\nStudio_ReadOnlyMonitor=true\r\nStudio_MonitorRunPath=\r\nEA_Desc=Studio Monitor\r\n'.encode('utf-16')
-        if preset.read_bytes()!=expected:raise ValueError('Saved monitor preset changed')
-        profile=read_json(controller.root/'monitor-profile.json')
-        verify_monitor_profile(controller,profile)
-        launches=[read_json(p) for p in (controller.root/'monitor-launches').glob('*.json')]
-        matching=[r for r in launches if r.get('pid')==native['process']['pid'] and r.get('status')=='process_started_unverified'
-                  and r.get('installation_sha256')==sha(controller.install) and r.get('run_id')==controller.run]
-        if len(matching)!=1:raise ValueError('Exact current monitor launch receipt required')
-        launch=matching[0];config=safe_path(Path(launch['startup_config']))
-        expected_config=('[Charts]\r\nProfileLast='+profile['profile_name']+'\r\n[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n'
-                         '[StartUp]\r\nExpert='+controller.install['ea_relative_path']+'\r\nExpertParameters='+preset.name+'\r\nPeriod=M1\r\n').encode('utf-16')
-        if config.read_bytes()!=expected_config or hashlib.sha256(expected_config).hexdigest()!=launch['startup_sha256']:
-            raise ValueError('Saved monitor-only startup config changed')
-        protected=[controller.root/'session.json',controller.root/'research-authority.json',controller.bridge.root/'human/ui-draft.json']
-        hashes={str(p):hashlib.sha256(safe_path(p).read_bytes()).hexdigest() for p in protected}
-        record=dict(schema_version=1,attempt_id=attempt,job_id=job_id,authority_sha256=sha(scope),
-                    phase='close_issued',native=native,protected_sha256=hashes,launch=launch,
-                    suspension_sha256=sha(stopped),created_utc=clock.time(),native_started=False,grant_created=False)
-        from studio_driver_suspend import require_no_publishers
-        require_no_publishers(controller)
-        write_json(record_path,record)
-        process.close(native['process'])
-        deadline=clock.monotonic()+20
-        while True:
-            current=process.inspect()
-            if current is None:break
-            if current!=native['process']:raise ValueError('Monitor identity changed after close; no adoption')
-            if clock.monotonic()>=deadline:raise ValueError('Monitor close unconfirmed; never force kill or repeat')
-            clock.sleep(.2)
-        record['phase']='stopped';write_json(record_path,record)
-        _launch_stopped(controller,record,record_path,process,clock)
-    return record
+    issued=False
+    try:
+        # Inbox processing can enter store mutation_gate. Never pump under the
+        # non-reentrant native gate; recheck authority after pending human actions.
+        controller.bridge.pump()
+        # L1 first, waiting up to 10 s for the stopped publisher's lease to drop, then L3/L4. The full broker readback
+        # runs under it, so nothing can attach to or launch MT5 between that readback and the close.
+        with terminal_lease(controller.root,purpose='research-monitor-restart '+job_id,wait_seconds=10),\
+                exclusive_gate(controller.root/'batch-driver-gate'),exclusive_gate(controller.local/'native-gate'):
+            if record_path.exists():raise ValueError('One monitor restart already recorded; inspect, never repeat')
+            scope,job=proof(controller,job_id);guard_active_seed(controller.root)
+            native=inspect_idle_demo(controller);require_demo(native)
+            preset=safe_path(Path(controller.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set')
+            expected='Mode_Operation=11\r\nStudio_ReadOnlyMonitor=true\r\nStudio_MonitorRunPath=\r\nEA_Desc=Studio Monitor\r\n'.encode('utf-16')
+            if preset.read_bytes()!=expected:raise ValueError('Saved monitor preset changed')
+            profile=read_json(controller.root/'monitor-profile.json')
+            verify_monitor_profile(controller,profile)
+            launches=[read_json(p) for p in (controller.root/'monitor-launches').glob('*.json')]
+            matching=[r for r in launches if r.get('pid')==native['process']['pid'] and r.get('status')=='process_started_unverified'
+                      and r.get('installation_sha256')==sha(controller.install) and r.get('run_id')==controller.run]
+            if len(matching)!=1:raise ValueError('Exact current monitor launch receipt required')
+            launch=matching[0];config=safe_path(Path(launch['startup_config']))
+            expected_config=('[Charts]\r\nProfileLast='+profile['profile_name']+'\r\n[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n'
+                             '[StartUp]\r\nExpert='+controller.install['ea_relative_path']+'\r\nExpertParameters='+preset.name+'\r\nPeriod=M1\r\n').encode('utf-16')
+            if config.read_bytes()!=expected_config or hashlib.sha256(expected_config).hexdigest()!=launch['startup_sha256']:
+                raise ValueError('Saved monitor-only startup config changed')
+            protected=[controller.root/'session.json',controller.root/'research-authority.json',controller.bridge.root/'human/ui-draft.json']
+            hashes={str(p):hashlib.sha256(safe_path(p).read_bytes()).hexdigest() for p in protected}
+            record=dict(schema_version=1,attempt_id=attempt,job_id=job_id,authority_sha256=sha(scope),
+                        phase='close_issued',native=native,protected_sha256=hashes,launch=launch,
+                        suspension_sha256=sha(stopped),created_utc=clock.time(),native_started=False,grant_created=False)
+            from studio_driver_suspend import require_no_publishers
+            require_no_publishers(controller)
+            issued=True                                   # from here the restart owns the outcome: never resume, never repeat
+            write_json(record_path,record)
+            process.close(native['process'])
+            deadline=clock.monotonic()+20
+            while True:
+                current=process.inspect()
+                if current is None:break
+                if current!=native['process']:raise ValueError('Monitor identity changed after close; no adoption')
+                if clock.monotonic()>=deadline:raise ValueError('Monitor close unconfirmed; never force kill or repeat')
+                clock.sleep(.2)
+            record['phase']='stopped';write_json(record_path,record)
+            _launch_stopped(controller,record,record_path,process,clock)
+        return record
+    except Exception as exc:
+        if issued:
+            raise
+        # Nothing was closed while the publisher was suspended: resume it, then refuse (R1). A failed resume raises its
+        # own PUBLISHER_RESUME_FAILED naming the one step (the app's Continue); never a retry loop.
+        reason=str(exc)[:300]
+        resumed=resume_fn(controller,job_id,folder)
+        raise Refusal('The monitor restart was refused before anything was closed (%s). The research run it paused is '
+                      'running again.' % reason,'MONITOR_RESTART_REFUSED',job_id=job_id,
+                      cause_code=getattr(exc,'code',None),publisher_resumed=resumed['new_pids']) from exc
+
+
+def pre_suspend_proof(controller,process):
+    """No-attach proof before suspending: fresh bound runtime feedback (demo, connected, Algo off, tester idle, no batch
+    ongoing) and a present monitor process. The full SDK readback runs after the suspension, under the terminal lease."""
+    observation,_=controller.runtime(require_idle=True,expected_batch_ongoing=False)
+    current=process.inspect()
+    if current is None:raise ValueError('No running monitor to restart; nothing was suspended')
+    return dict(runtime=observation.get('runtime'),process=current)

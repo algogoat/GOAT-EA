@@ -146,6 +146,28 @@ class WindowMetricsTests(unittest.TestCase):
         unit2 = Unit(Path(tempfile.mkdtemp(dir=self.root)), equity=series('2026-04-18', '2026-10-02'), header=header[1:2])
         self.assertIsNone(wm.export_window_metrics(unit2.set_path, **TESTER)['selectionWindow']['trades'])
 
+    def test_header_sum_never_counts_fwd_twice_when_sample_covers_it(self):
+        # goatai#2350 6099037325 / 6099055333: the EA's SAMPLE line spans in-sample + forward (FWD is counted in both), as
+        # in the B43 canary b43mig-0b (AUDCAD, V1.47): 25 + 160 + 40 + 24 = 249 summed, 209 / 396 true.
+        header = ['; BOOS: 2026.02.02-2026.03.02 Days=20 Trades=25 PL=42',
+                  '; SAMPLE: 2026.03.02-2026.08.15 Days=120 Trades=160 PL=286',
+                  '; FWD: 2026.06.20-2026.08.14 Days=39 Trades=40 PL=62',
+                  '; FOOS: 2026.08.15-2026.09.17 Days=24 Trades=24 PL=68']
+        tester = dict(from_date='2026.03.02', to_date='2026.08.15', back_oos_date='2026.02.02', include_back_oos=True)
+        unit = self.unit(equity=series('2026-02-02', '2026-09-17'), header=header)
+        result = wm.export_window_metrics(unit.set_path, **tester)
+        self.assertEqual((result['fullExport']['trades'], result['fullExport']['profit']), (209, 396.0), 'the canary: FWD added once')
+        self.assertEqual((result['preFoos']['trades'], result['preFoos']['profit']), (185, 328.0))
+        self.assertEqual((result['selectionWindow']['trades'], result['selectionWindow']['profit']), (160, 286.0), 'SAMPLE already holds FWD')
+        parsed = {'BOOS': dict(start='2026-02-02', end='2026-03-02', trades=25, pl=42.0),
+                  'SAMPLE': dict(start='2026-03-02', end='2026-08-15', trades=160, pl=286.0),
+                  'FWD': dict(start='2026-06-20', end='2026-08-14', trades=40, pl=62.0)}
+        self.assertEqual(wm._header_sum(parsed, ('FWD',), d('2026-06-20'), d('2026-08-14')), dict(trades=40, profit=62.0),
+                         'a FWD-only window stays FWD')
+        overlapping = dict(parsed, BOOS=dict(start='2026-02-02', end='2026-03-10', trades=25, pl=42.0))
+        self.assertIsNone(wm._header_sum(overlapping, ('BOOS', 'SAMPLE'), d('2026-02-02'), d('2026-08-15')),
+                          'any other overlap is refused, never summed')
+
     def test_without_boos_pre_foos_starts_at_sample(self):
         unit = self.unit(equity=series('2026-06-06', '2026-10-02'))
         result = wm.export_window_metrics(unit.set_path, **dict(TESTER, include_back_oos=False))

@@ -163,14 +163,27 @@ def equity_metrics(rows, first, last):
 
 
 def _header_sum(windows, names, first, last):
-    """Trades and PL summed from the EA's SET header window lines when they cover [first, last] exactly."""
-    parts = [windows.get(name) for name in names]
-    if not all(parts):
+    """Trades and PL summed from the EA's SET header window lines when they cover [first, last] exactly.
+
+    The EA's SAMPLE line spans in-sample AND forward: it counts every entry in trd_IS and, with a separate ``if``, the
+    forward ones again in trd_FWD (GOAT V1.49.mq5 OnTradeTransaction). So when SAMPLE covers FWD, FWD is never added a
+    second time: summing both counted the forward window twice (V1.47 re-tests read 249 trades where the export made
+    209, goatai#2350 6099037325). Windows that only touch at a boundary (BOOS end = SAMPLE start, SAMPLE end = FOOS start)
+    are summed; any other overlap is refused, never summed (Claude-Mac 6099055333)."""
+    parts = {name: windows.get(name) for name in names}
+    if not all(parts.values()):
         return None
-    spans = sorted((date.fromisoformat(p['start']), date.fromisoformat(p['end'])) for p in parts)
-    if spans[0][0] != first or spans[-1][1] != last or any(b[0] > a[1] + timedelta(days=1) for a, b in zip(spans, spans[1:])):
+    spans = {name: (date.fromisoformat(p['start']), date.fromisoformat(p['end'])) for name, p in parts.items()}
+    ordered = sorted(spans.values())
+    if ordered[0][0] != first or ordered[-1][1] != last or any(b[0] > a[1] + timedelta(days=1) for a, b in zip(ordered, ordered[1:])):
         return None
-    return dict(trades=sum(p['trades'] for p in parts), profit=round(sum(p['pl'] for p in parts), 8))
+    counted = list(names)
+    if 'FWD' in spans and 'SAMPLE' in spans and spans['SAMPLE'][0] <= spans['FWD'][0] and spans['FWD'][1] <= spans['SAMPLE'][1]:
+        counted.remove('FWD')
+    kept = sorted(spans[name] for name in counted)
+    if any(b[0] < a[1] for a, b in zip(kept, kept[1:])):
+        return None
+    return dict(trades=sum(parts[name]['trades'] for name in counted), profit=round(sum(parts[name]['pl'] for name in counted), 8))
 
 
 def window(rows, first, last, *, deals=None, header=None, header_names=()):

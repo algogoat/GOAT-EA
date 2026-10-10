@@ -50,6 +50,7 @@ Output root (``output_root``): an absolute local folder for the evidence folders
 ``<controller state>\\evidence``. Same layout and the same create-only, atomic moves; the root is recorded
 in ``evidence-roots.json`` so ``versions`` still finds the catch-up evidence written there.
 """
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
@@ -478,6 +479,29 @@ def summarize(rows, target, *, resolved=None):
         plain += ' %s ineligible: %s%s.' % ('1 is' if counts['ineligible'] == 1 else '%d are' % counts['ineligible'], named, more)
     return dict(counts=counts, evidence_ends=dict(sorted(ends.items())), consistent=consistent, plain=plain,
                 ineligible_reasons=[dict(reason=reason, count=count) for reason, count in ranked])
+
+
+EVIDENCE_END_SHORT = 'EVIDENCE_END_SHORT'
+
+
+def evidence_end_short(retest, target):
+    """None, or the flag for a re-test whose data stops before the catch-up's target end (goatai#2350 6101228603).
+
+    Every result stamps ``evidenceEnd`` = the target. When the terminal's history stops earlier, that stamp alone read as
+    caught up (Banker 10-10: before ~06:50Z Friday's data had not arrived, so every run ended 10-08 23:59). The scan
+    already keeps such an export behind (its version ends before the target); this says so on the result itself. Only
+    missing weekdays count, so a weekend between the last data day and the target is never short."""
+    last = retest.get('evidence_end')
+    if not last or last >= target:
+        return None
+    missing = weekdays(date.fromisoformat(last) + timedelta(days=1), date.fromisoformat(target))
+    if not missing:
+        return None
+    return dict(code=EVIDENCE_END_SHORT, target=target, last_data_day=last, source=retest.get('evidence_end_source'),
+                missing_weekdays=missing,
+                plain='The re-test data ends on %s, before the target %s (%s missing): the terminal\'s history stops there, '
+                      'so this export is not caught up to %s. Queue it again once that history is on the terminal.'
+                      % (last, target, _n(missing, 'weekday'), target))
 
 
 def resolve_target(value='auto', *, broker_clock=None, now=None):
@@ -1277,6 +1301,7 @@ class CatchupRunner(SeedRunner):
         verdict['evidenceEnd'] = manifest['evidence_end']['iso']
         verdict['evidenceEndMode'] = evidence_end.evidence_end_mode(manifest['evidence_end'], catch_up=True)
         verdict['evidenceEndEffective'] = evidence_end.effective_end(tester['ToDate'])     # the last day the re-test covers
+        verdict['evidenceEndShort'] = short = evidence_end_short(retest, manifest['evidence_end']['iso'])
         verdict['oos_rule'] = self._oos_rule(original, retest, spec, verdict, evidence_end=manifest['evidence_end']['iso'])
         verdict['oos_rule']['evidenceEndEffective'] = verdict['evidenceEndEffective']
         created = datetime.now(timezone.utc).isoformat(timespec='seconds')
@@ -1296,7 +1321,7 @@ class CatchupRunner(SeedRunner):
                        qualification=qualification_inputs(spec, manifest, verdict),
                        history_short=retest['history_short'], ea_desc_metadata=spec['optimization_window']['source'],
                        oos_rule=verdict['oos_rule'], evidenceEnd=verdict['evidenceEnd'], evidenceEndMode=verdict['evidenceEndMode'],
-                       evidenceEndEffective=verdict['evidenceEndEffective'],
+                       evidenceEndEffective=verdict['evidenceEndEffective'], evidenceEndShort=short,
                        comparison=verdict.get('comparison'), historyBasis=verdict.get('historyBasis'),
                        tickHistoryDrift=verdict.get('tickHistoryDrift'), rebase=verdict.get('rebase'),
                        rebasedWindows=verdict.get('rebasedWindows'))
@@ -1307,7 +1332,8 @@ class CatchupRunner(SeedRunner):
         window = verdict['new_weeks']
         summary = dict(verdict=verdict['verdict'], confidence=verdict['confidence'], new_first_day=window['first_day'],
                        new_last_day=window['last_day'], weekdays=window['weekdays'], trades=window['trades'], net=window['net'],
-                       dd=window['dd'], pf=window.get('pf'), reproduced=verdict['reproduction']['reproduced'], plain=verdict['plain'],
+                       dd=window['dd'], pf=window.get('pf'), reproduced=verdict['reproduction']['reproduced'],
+                       plain=verdict['plain'] + (' ' + short['plain'] if short else ''), evidenceEndShort=short,
                        history_short=retest['history_short'], comparable=(verdict.get('comparability') or {}).get('comparable'),
                        model=(verdict.get('evidence_model') or {}).get('model'), model_rung=(verdict.get('evidence_model') or {}).get('model_rung'),
                        equivalence_certificate=(pins.get('equivalence') or {}).get('certificate_digest'),
@@ -1379,6 +1405,7 @@ class CatchupRunner(SeedRunner):
             window_error = 'Could not measure the re-test windows: ' + str(exc)[:240]
         created = datetime.now(timezone.utc).isoformat(timespec='seconds')
         evidence_model = model_tag(tester['Model'], tester['Period'], source=pins.get('model_source'))
+        short = evidence_end_short(retest, target_end)
         record = dict(schema=migration.RECORD_SCHEMA, kind=migration.KIND, provenance=bm['provenance'],
                       catchup_id=manifest['batch_id'], alias=spec['alias'], created_utc=created,
                       source_build=bm['source_build'], source_ea_sha256=bm.get('source_ea_sha256'),
@@ -1398,11 +1425,12 @@ class CatchupRunner(SeedRunner):
                       drift=drift, windows=windows, new_weeks=new_weeks, window_error=window_error,
                       new_weeks_judged=False, judgement=migration.UNSEEN_WEEKS,
                       evidenceEnd=target_end, evidenceEndMode=evidence_end.evidence_end_mode(manifest['evidence_end'], catch_up=True),
-                      evidenceEndEffective=evidence_end.effective_end(tester['ToDate']), new_first_day=first_new.isoformat(),
+                      evidenceEndEffective=evidence_end.effective_end(tester['ToDate']), evidenceEndShort=short,
+                      new_first_day=first_new.isoformat(),
                       tester=tester, assumed=spec['assumed'], evidence_model=evidence_model, history_short=retest['history_short'],
                       ea_desc_metadata=spec['optimization_window']['source'],
-                      plain='A new evidence record on %s (%s), never a catch-up verdict on the original export. %s'
-                            % (bm['target_build'], bm['provenance'], drift['plain']))
+                      plain='A new evidence record on %s (%s), never a catch-up verdict on the original export. %s%s'
+                            % (bm['target_build'], bm['provenance'], drift['plain'], ' ' + short['plain'] if short else ''))
         record_path = Path(spec['evidence_dir']) / migration.RECORD_FILE
         temporary = record_path.with_name(record_path.name + '.' + uuid.uuid4().hex[:8] + '.tmp')
         with temporary.open('x', encoding='utf-8', newline='\n') as stream:
@@ -1416,7 +1444,7 @@ class CatchupRunner(SeedRunner):
                        goatseq_from=bm.get('goatseq_from'), new_first_day=first_new.isoformat(), new_last_day=new_end.isoformat(),
                        new_weeks=None if not new_weeks else {k: new_weeks.get(k) for k in ('trades', 'profit', 'pf', 'maxDd', 'equityNet', 'days')},
                        new_weeks_judged=False, evidenceEnd=target_end, evidenceEndEffective=record['evidenceEndEffective'],
-                       history_short=retest['history_short'], model=evidence_model.get('model'), plain=record['plain'])
+                       evidenceEndShort=short, history_short=retest['history_short'], model=evidence_model.get('model'), plain=record['plain'])
         return dict(status=migration.RESULT_STATUS, kind=migration.KIND, provenance=bm['provenance'], path=retest['set_path'],
                     sha256=retest['set_sha256'], schema_version=1, member_id=spec['member_id'], summary=summary,
                     record_path=str(record_path), native_launch_qualification=False)
@@ -1528,13 +1556,25 @@ class CatchupRunner(SeedRunner):
                              signals=(result.get('verdict') or {}).get('signals') if result else None,
                              oos_rule=(result.get('verdict') or {}).get('oos_rule') if result else None,
                              evidenceEnd=manifest['evidence_end']['iso'],
-                             evidenceEndEffective=evidence_end.effective_end(spec['tester']['ToDate'])))
+                             evidenceEndEffective=evidence_end.effective_end(spec['tester']['ToDate']),
+                             evidenceEndShort=(result['summary'].get('evidenceEndShort') if result else None)))
         value = dict(schema_version=1, batch_id=batch_id, mode=MODE, status=state['status'], evidence_end=manifest['evidence_end'],
-                     counts=counts, members=rows, verdict_rules=manifest.get('verdict_rules') or validate_rules(),
+                     counts=counts, evidence_end_short=self._short_members(rows, manifest), members=rows, verdict_rules=manifest.get('verdict_rules') or validate_rules(),
                      thresholds_applied_to_eligibility=not manifest.get('include_below_threshold', False),
                      qualification_schema=QUALIFICATION_SCHEMA, scored=False, native_launch_qualified=False,
                      scope='New-weeks-only verdicts on unseen data; a few weeks is a small sample.')
         return self._write_report(root, value, rows)
+
+    @staticmethod
+    def _short_members(rows, manifest):
+        """Members whose re-test data stopped before the target end (EVIDENCE_END_SHORT), named at the top of the report."""
+        short = [row for row in rows if row.get('evidenceEndShort')]
+        target = manifest['evidence_end']['iso']
+        return dict(count=len(short), code=EVIDENCE_END_SHORT, target=target,
+                    last_data_days=dict(sorted(Counter(row['evidenceEndShort']['last_data_day'] for row in short).items())),
+                    aliases=[row['alias'] for row in short][:MAX_PUBLIC],
+                    plain=None if not short else '%s of %s stopped before %s because the terminal\'s history ended earlier; '
+                          'they are not caught up to it.' % (len(short), _n(len(rows), 'member'), target))
 
     @staticmethod
     def _write_report(root, value, rows):
@@ -1562,11 +1602,12 @@ class CatchupRunner(SeedRunner):
                              original_end=spec['original']['evidence_end'], new_end=manifest['evidence_end']['iso'],
                              summary=result['summary'] if result else None, record_path=self._version_path(result, 'record_path'),
                              error=item.get('error'), evidenceEnd=manifest['evidence_end']['iso'],
-                             evidenceEndEffective=evidence_end.effective_end(spec['tester']['ToDate'])))
+                             evidenceEndEffective=evidence_end.effective_end(spec['tester']['ToDate']),
+                             evidenceEndShort=(result['summary'].get('evidenceEndShort') if result else None)))
         public = manifest['build_migration']
         value = dict(schema_version=1, batch_id=manifest['batch_id'], mode=MODE, kind=migration.KIND, provenance=public['provenance'],
                      target_build=public['target_build'], status=state['status'], evidence_end=manifest['evidence_end'],
-                     counts=counts, drift_counts=drift, tolerances=public.get('tolerances') or migration.public_tolerances(),
+                     counts=counts, evidence_end_short=self._short_members(rows, manifest), drift_counts=drift, tolerances=public.get('tolerances') or migration.public_tolerances(),
                      output_root=manifest.get('output_root'), members=rows, native_launch_qualified=False,
                      scope='Build-migration re-tests: new evidence on the target build with drift against each original. '
                            'Not catch-up verdicts; nothing here carries a status to the original exports.')

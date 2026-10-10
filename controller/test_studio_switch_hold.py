@@ -119,6 +119,84 @@ class SlotTests(unittest.TestCase):
                 hold.read_cycles(path)
 
 
+class WideSlotTests(unittest.TestCase):
+    """goatai#2350 6094434583 / Claude-Mac 6094451003: with Exp 01's log too, slots from :20 of an odd minute and :40 of an
+    even one until :55, each only once BOTH publishers' newest cycles have their END row."""
+    WIDE = dict(CLOCK, state_path='exp02', exp01_state_path='exp01')
+
+    @staticmethod
+    def logs(exp01, exp02):
+        return lambda path: {'exp01': exp01, 'exp02': exp02}[path]
+
+    def test_config_needs_exp02_state_for_exp01_state(self):
+        config = hold.load_config({hold.ENV_MODE: 'exp02', hold.ENV_STATE: 'p.jsonl', hold.ENV_STATE_EXP01: 'o.jsonl'}, None)
+        self.assertEqual((config['state_path'], config['exp01_state_path']), ('p.jsonl', 'o.jsonl'))
+        self.assertIsNone(hold.load_config({hold.ENV_MODE: 'exp02', hold.ENV_STATE_EXP01: 'o.jsonl'}, None))
+        self.assertIsNone(hold.load_config({hold.ENV_MODE: 'exp02'}, None)['exp01_state_path'])
+        with tempfile.TemporaryDirectory() as work:
+            file = Path(work) / hold.CONFIG_NAME
+            file.write_text(json.dumps(dict(mode='exp02', state_path='p', exp01_state_path='o')), encoding='utf-8')
+            self.assertEqual(hold.load_config({}, file)['exp01_state_path'], 'o')
+            for bad in (dict(mode='exp02', exp01_state_path='o'), dict(mode='exp02', state_path='p', exp01_state_path=''),
+                        dict(mode='exp02', state_path='p', exp01_state_path=3)):
+                file.write_text(json.dumps(bad), encoding='utf-8')
+                self.assertIsNone(hold.load_config({}, file), bad)
+
+    def test_wide_slot_boundaries_once_both_cycles_ended(self):
+        # Odd minute T0: Exp 01's cycle from the previous even minute and Exp 02's from :01 have both ended.
+        odd = self.logs(cycle(T0 - 59, T0 - 24), cycle(T0 + 1, T0 + 14))
+        for offset, expected in ((19.9, False), (20, True), (35, True), (54.9, True), (55, False)):
+            self.assertEqual(hold.quiet(T0 + offset, self.WIDE, odd)[0], expected, offset)
+        self.assertEqual(hold.quiet(T0 + 20, self.WIDE, odd), (True, 'exp01_exp02_cycles_ended', 'publisher_state'))
+        # Even minute: Exp 01's cycle from :01 ended at :37, Exp 02's from the odd minute long done.
+        even = self.logs(cycle(EVEN + 1, EVEN + 37), cycle(T0 + 1, T0 + 14))
+        for offset, expected in ((10, False), (39.9, False), (40, True), (54.9, True), (55, False)):
+            self.assertEqual(hold.quiet(EVEN + offset, self.WIDE, even)[0], expected, offset)
+
+    def test_an_exp01_cycle_overrunning_into_the_odd_minute_blocks_the_odd_slot(self):
+        running = self.logs(cycle(T0 - 59), cycle(T0 + 1, T0 + 14))                 # Exp 01 started :01 of the even minute
+        self.assertEqual(hold.quiet(T0 + 25, self.WIDE, running), (False, 'exp01_cycle_running', 'publisher_state'))
+        ended = self.logs(cycle(T0 - 59, T0 + 48), cycle(T0 + 1, T0 + 14))
+        self.assertEqual(hold.quiet(T0 + 48, self.WIDE, ended)[0], True)
+        self.assertEqual(hold.quiet(T0 + 54.9, self.WIDE, ended)[0], True)
+        self.assertEqual(hold.quiet(T0 + 55, self.WIDE, ended)[0], False)
+
+    def test_an_exp02_cycle_still_running_blocks_the_even_slot(self):
+        late = self.logs(cycle(EVEN + 1, EVEN + 37), cycle(T0 + 1))
+        self.assertEqual(hold.quiet(EVEN + 45, self.WIDE, late), (False, 'exp02_cycle_running', 'publisher_state'))
+
+    def test_an_idle_publisher_is_skipped_and_both_idle_never_hold(self):
+        idle01 = self.logs(cycle(T0 - 900, T0 - 880), cycle(T0 + 1, T0 + 14))
+        self.assertEqual(hold.quiet(T0 + 21, self.WIDE, idle01), (True, 'exp01_exp02_cycles_ended', 'publisher_state'))
+        both = self.logs(cycle(T0 - 900, T0 - 880), cycle(T0 - 700, T0 - 690))
+        self.assertEqual(hold.quiet(T0 + 5, self.WIDE, both), (True, 'publisher_idle', 'publisher_state'))
+
+    def test_without_exp01_state_the_narrow_odd_slot_is_unchanged(self):
+        narrow = dict(CLOCK, state_path='exp02')
+        exp02 = lambda path: cycle(T0 + 1, T0 + 14)
+        self.assertEqual(hold.quiet(T0 + 20, narrow, exp02)[0], False)
+        self.assertEqual(hold.quiet(T0 + 35, narrow, exp02), (True, 'exp02_cycle_ended', 'publisher_state'))
+        self.assertEqual(hold.quiet(EVEN + 45, narrow, lambda path: cycle(T0 + 1, T0 + 14))[0], False)
+
+    def test_unreadable_exp01_state_fails_open_and_the_bound_holds(self):
+        def broken(path):
+            if path == 'exp01':
+                raise OSError('locked')
+            return cycle(T0 + 1)
+        result = hold.decide(self.WIDE, None, member_id='m1', now=T0 + 5, read=broken)
+        self.assertTrue(result['start'])
+        self.assertTrue(result['journal'][1]['reason'].startswith('fail_open: publisher state unreadable'))
+        running = self.logs(cycle(T0 + 1), cycle(T0 + 1))
+        started, rows = run_until_start(self.WIDE, T0 + 56, read=running)
+        self.assertEqual((started - (T0 + 56), rows[-1][1]['reason']), (90, 'bound'))
+
+    def test_a_member_ready_at_five_seconds_starts_at_twenty(self):
+        odd = self.logs(cycle(T0 - 59, T0 - 24), cycle(T0 + 1, T0 + 14))
+        started, rows = run_until_start(self.WIDE, T0 + 5, read=odd)
+        self.assertEqual(started, T0 + 20)
+        self.assertEqual(rows[-1][1]['reason'], 'exp01_exp02_cycles_ended')
+
+
 class DecideTests(unittest.TestCase):
     def test_off_starts_now_without_a_journal(self):
         self.assertEqual(hold.decide(None, None, member_id='m1', now=T0 + 5), dict(start=True, hold=None, journal=None))

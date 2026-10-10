@@ -7,8 +7,10 @@ journals (change 4): queue rows, ``packages/``, ``attempts/*/result.json``,
 ``studio_evidence_log.read`` so a compacted history reads the same), ``seeds/``,
 ``catchups/`` and ``holdups/`` (kind ``single-pass``: every dispatched hold-up test is a peek on its
 window). Nothing here writes, launches or touches MT5, and the output carries
-no clock: ``compact-evidence --apply`` and retiring an unactivated start leave it
-byte-identical.
+no clock: ``compact-evidence --apply``, ``evidence-archive --apply`` (a moved history is read
+through its pointer, studio_evidence_archive) and retiring an unactivated start leave it
+byte-identical. While an archived history cannot be read the journal refuses
+(``EVIDENCE_ARCHIVE_UNREACHABLE``) instead of dropping that batch's trials to a gap.
 
 Counting (``trial-count``; Claude-Mac answers 4-7):
 
@@ -124,6 +126,7 @@ def queue_rows(root):
 def _history(root, job):
     """Indices of members ever observed started, or None when the history is unavailable."""
     from studio_evidence_log import read
+    from studio_evidence_archive import locate, read_failure
     observations = list(job.get('native_evidence_history') or [])
     available = bool(observations)
     for key in ('native_evidence_archive', 'native_evidence_log'):
@@ -132,10 +135,17 @@ def _history(root, job):
             path = Path(reference['path'])
             if not path.is_absolute():
                 path = Path(root) / path
+            # evidence-archive: a moved log is read through its pointer, verified against its manifest (size on every
+            # read, sha256 once per process). An unreadable pointer or archive refuses (ArchiveUnreachable), and once
+            # the pointer redirects, ANY read error refuses too: never "history unavailable", which would silently
+            # change the journal (cancelled members read as dispatched).
+            target, moved = locate(root, path)
             try:
-                observations.extend(read(path))
+                observations.extend(read(target))
                 available = True
-            except (OSError, ValueError):
+            except (OSError, ValueError) as error:
+                if moved:
+                    raise read_failure(target, error) from None
                 return None
     for archive in job.get('native_evidence_history_archives') or []:
         # History a triage tool moved outside the controller root, each slice bound by its
@@ -434,9 +444,12 @@ def entries_for(root, install, *, library=None):
     gaps, entries = [], []
     jobs, problems = queue_rows(root)
     gaps.extend(problems)
+    from studio_evidence_archive import ArchiveUnreachable
     for job in jobs:
         try:
             entries.extend(_native_entries(root, suite_id, job, library))
+        except ArchiveUnreachable:
+            raise       # an archived batch's trials are never dropped to a gap: the journal refuses until it is readable
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             gaps.append('batch %s unreadable: %s' % (job.get('job_id'), exc))
     for kind, name in (('seed', 'seeds'), ('catchup', 'catchups'), ('holdup', 'holdups')):

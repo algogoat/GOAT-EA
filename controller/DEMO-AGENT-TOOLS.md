@@ -134,7 +134,10 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
     - `status` reports `broker: null` and `broker_reason`;
     - `preflight` refuses `BROKER_READ_DEFERRED`, because readiness can't be proven while a driver runs.
   - A batch read with no retained readback of its own driver also refuses `BROKER_READ_DEFERRED`. Use `research-status` meanwhile: it never touches MT5.
-  - `goat.exe studio … pairing-code` on a demo-lane installation takes the same lock, without waiting, for its broker readback. While a driver holds the terminal it refuses `PAIRING_TERMINAL_BUSY`; ask again once the run has ended.
+  - `goat.exe studio … pairing-code` takes the same lock, without waiting, for its broker readback, on every lane. While a driver holds the terminal it refuses `PAIRING_TERMINAL_BUSY`; ask again once the run has ended.
+  - `goat.exe studio … deploy-preflight` (the desktop's deploy review) answers `broker: null`, `broker_reason: "terminal_busy"` and a plain `broker_error`, and leaves `tester_state` unread. The desktop shows that sentence as its "could not read the account" refusal.
+  - `research-monitor-restart-status` and `research-regrant-status` refuse `BROKER_READ_DEFERRED`. restart-status takes the lock before the native gate, so it never waits on the gate while research runs.
+  - Every one of these says the same plain sentence: "GOAT is running research on this terminal right now; check again when it finishes. Nothing was changed."
   - **`BROKER_READ_LAUNCHED`:** if MT5 still changes under a read (an owner closing it by hand), the read refuses with this code and logs `broker_read` / `launched_terminal` to `demo-agent\actions.jsonl` with both processes. It never closes the new terminal.
 
 ## Research operations: status, pause and resume

@@ -1126,6 +1126,12 @@ class AgentSetupTests(DeployFixture):
         with patch('studio_monitor_probe.tester_state', return_value='idle'):
             result = deploy.preflight(self.c, mt5=mt5)
         self.assertEqual((len(calls), result['tester_state'], 'broker_reason' in result), (1, 'idle', False))
+        # Any other busy code is an ordinary broker error, never a crash (Mac 6101409258).
+        from studio_terminal_lease import TerminalBusy
+        with patch('studio_demo_deploy.broker_proof', side_effect=TerminalBusy('Another GOAT operation owns this terminal now.', 'TERMINAL_LEASE_BUSY')):
+            result = deploy.preflight(self.c, mt5=mt5)
+        self.assertEqual((result['broker_error'], 'broker' in result, 'broker_reason' in result),
+                         ('Another GOAT operation owns this terminal now.', False, False))
 
     def test_preflight_reports_the_account_details_additively(self):
         account = dict(currency='USD', balance=10000.0, equity=9876.5, leverage=500, company='Customer Markets Ltd')

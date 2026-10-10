@@ -71,7 +71,7 @@ CHILD_NOT_LINKED = 'child_not_linked'
 #    (expertmode=5), and the saved default only applies to Expert Advisors attached by hand. readiness_blockers
 #    stays as a key (a list of blockers, empty today) so beta.24/25 desktops read the same shape.
 PREFLIGHT_SCHEMA_VERSION = 4
-PREFLIGHT_TERMINAL_BUSY = 'GOAT is running work on this terminal now, so it did not read the broker; check again when it finishes.'
+PREFLIGHT_TERMINAL_BUSY = 'GOAT is running research on this terminal right now, so it did not read the account; check again when it finishes.'
 ALLOW_LIVE_TRADING_BLOCKER = 'allow_live_trading_off'
 ALLOW_LIVE_TRADING_NOTE = (
     "MT5's saved 'Allow Algo Trading' default is off. This does not block a GOAT deploy: GOAT's charts load with "
@@ -527,10 +527,12 @@ def preflight(controller, *, mt5=None, process=None):
         except (OSError, ValueError, AttributeError):
             result['tester_state'] = 'unknown'
     except TerminalBusy as exc:
-        if exc.code != 'BROKER_READ_DEFERRED':
-            raise
-        # A driver holds the terminal (goatai#2350 6098964146): answer without attaching, and leave the tester unread.
-        result.update(broker=None, broker_reason='terminal_busy', broker_error=PREFLIGHT_TERMINAL_BUSY)
+        # Research holds the terminal (goatai#2350 6098964146): answer without attaching, and leave the tester unread.
+        # Any other busy code is an ordinary broker error (Mac 6101409258), never a crash.
+        if exc.code == 'BROKER_READ_DEFERRED':
+            result.update(broker=None, broker_reason='terminal_busy', broker_error=PREFLIGHT_TERMINAL_BUSY)
+        else:
+            result['broker_error'] = str(exc)
     except ValueError as exc:
         result['broker_error'] = str(exc)
     return result

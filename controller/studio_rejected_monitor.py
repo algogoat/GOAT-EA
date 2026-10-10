@@ -119,14 +119,13 @@ def require_demo(native):
 
 
 def reverify(controller,job_id):
-    from studio_terminal_lease import terminal_lease
+    from studio_terminal_lease import BUSY_READ,terminal_lease
     scope,job=proof(controller,job_id)
     path=controller.root/'rejected-monitor-restarts'/job['launch_intent']['attempt_id']/'restart.json'
     # A read: the terminal lease (L1) without waiting BEFORE the native gate (L4), never after it, so a status read
     # neither waits on the gate nor attaches while a driver owns this MT5 (goatai#2350 6098964146).
     with terminal_lease(controller.root,purpose='research-monitor-restart-status',busy_code='BROKER_READ_DEFERRED',
-                        busy_message='A driver or another operation holds this terminal now, so GOAT does not attach '
-                                     'to MT5 to reverify the monitor; nothing was changed.',broker_reason='terminal_busy'),\
+                        busy_message=BUSY_READ,broker_reason='terminal_busy'),\
             exclusive_gate(controller.local/'native-gate'):
         record=read_json(path)
         if record['phase'] not in ('started_unverified','adopted_unverified','reverified') or record['authority_sha256']!=sha(scope):

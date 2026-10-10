@@ -16,7 +16,7 @@ close-terminal Normal close of the selected MT5, never a kill, and only when ine
 
 Neither command enables trading, types credentials or changes MT5 permissions.
 """
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 import json
 import math
@@ -271,13 +271,24 @@ def pairing_code(controller, build_id, *, timeout=30, mt5=None, request=None):
     login = session['account']['login']
     require_unprotected(login)
     from studio_seed_process import WindowsSeedProcess
-    if WindowsSeedProcess(controller).inspect() is None:
-        return dict(status='terminal_stopped', userCodeReturned=False,
-                    next_action='Open the selected MT5 so GOAT can show and read its connection code.')
-    ident = identity(controller, session, build_id)
-    # A fresh broker readback, not the binding, proves demo before any request; the EA
-    # itself also answers only on ACCOUNT_TRADE_MODE_DEMO.
-    proof = broker_proof(controller, session, mt5=mt5, require_flat=False)
+    with ExitStack() as lease:
+        if session.get('authority_kind') == 'demo_direct':
+            # broker_proof's mt5.initialize(path) STARTS MT5 when it is not running, and a demo-lane driver closes and
+            # relaunches MT5 between members while holding this terminal lock for its whole run (goatai#2350
+            # 6095691170, GOAT-EA#212). Taken without waiting, from the process check through the readback.
+            try:
+                lease.enter_context(demo_terminal_lock(controller))
+            except ValueError:
+                raise Refusal('A driver or another demo operation holds this terminal now (a seed, catch-up or hold-up '
+                              'driver closes and relaunches MT5 between members), so pairing-code does not attach to MT5; '
+                              'ask again once it has finished.', 'PAIRING_TERMINAL_BUSY') from None
+        if WindowsSeedProcess(controller).inspect() is None:
+            return dict(status='terminal_stopped', userCodeReturned=False,
+                        next_action='Open the selected MT5 so GOAT can show and read its connection code.')
+        ident = identity(controller, session, build_id)
+        # A fresh broker readback, not the binding, proves demo before any request; the EA
+        # itself also answers only on ACCOUNT_TRADE_MODE_DEMO.
+        proof = broker_proof(controller, session, mt5=mt5, require_flat=False)
     reason = activation_reason(controller, login)
     # Screenshot-free path first: the code the EA shares locally (LC36 and later, any chart).
     shared = shared_code(controller, login, proof['server'], ident['buildId'])

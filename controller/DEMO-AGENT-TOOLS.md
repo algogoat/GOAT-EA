@@ -134,6 +134,7 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
     - `status` reports `broker: null` and `broker_reason`;
     - `preflight` refuses `BROKER_READ_DEFERRED`, because readiness can't be proven while a driver runs.
   - A batch read with no retained readback of its own driver also refuses `BROKER_READ_DEFERRED`. Use `research-status` meanwhile: it never touches MT5.
+  - `goat.exe studio … pairing-code` on a demo-lane installation takes the same lock, without waiting, for its broker readback. While a driver holds the terminal it refuses `PAIRING_TERMINAL_BUSY`; ask again once the run has ended.
   - **`BROKER_READ_LAUNCHED`:** if MT5 still changes under a read (an owner closing it by hand), the read refuses with this code and logs `broker_read` / `launched_terminal` to `demo-agent\actions.jsonl` with both processes. It never closes the new terminal.
 
 ## Research operations: status, pause and resume

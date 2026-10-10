@@ -122,6 +122,41 @@ class DemoAgentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Algo Trading is on'):
                 self.agent._broker()
 
+    def test_reads_never_attach_to_mt5_while_a_driver_holds_the_terminal(self):
+        # goatai#2350 6095691170: mt5.initialize(path) starts MT5 when it is not running, so a read may attach only under
+        # the terminal lease every driver holds for its whole run.
+        calls = []
+        self.mt5.initialize = lambda *args, **kwargs: calls.append(args) or True
+        driver = DemoAgent(self.installation, process=self.process, mt5=self.mt5)
+        with driver._exclusive(), patch('demo_agent.tester_state', return_value='idle'):
+            status = self.agent.status()
+            self.assertEqual((status['broker'], status['broker_reason']), (None, 'terminal_busy'))
+            with self.assertRaises(ValueError) as caught:
+                self.agent.preflight()
+            self.assertEqual(caught.exception.code, 'BROKER_READ_DEFERRED')
+            with self.assertRaises(ValueError) as caught:                   # no retained readback of this batch's driver
+                self.agent.batch_status('batch-1')
+            self.assertEqual(caught.exception.code, 'BROKER_READ_DEFERRED')
+            # The batch's own live supervising driver proved this account when it took MT5: the read uses it.
+            scopes = []
+            @contextmanager
+            def retained(operation_name, batch_id, account):
+                scopes.append((operation_name, batch_id, account)); yield 'controller'
+            worker = dict(alive=True, status='supervising', broker_account=dict(login='3000082754', server='Darwinex-Demo'))
+            with patch.object(self.agent, '_batch_worker', return_value=worker), \
+                    patch.object(self.agent, '_retained_scope', side_effect=retained), \
+                    patch('studio_batch.batch_status', return_value=dict(status='running')):
+                result = self.agent.batch_status('batch-1')
+            self.assertEqual((result['broker'], result['broker_reason'], result['studio']), (None, 'terminal_busy', dict(status='running')))
+            self.assertEqual(scopes, [('batch-status', 'batch-1', worker['broker_account'])])
+            for dead in (dict(worker, alive=False), dict(worker, status='returned'), dict(worker, broker_account=None)):
+                with patch.object(self.agent, '_batch_worker', return_value=dead), self.assertRaises(ValueError):
+                    self.agent.batch_status('batch-1')
+        self.assertEqual(calls, [], 'no read attached while the driver held the terminal')
+        with patch('demo_agent.tester_state', return_value='idle'):
+            self.assertTrue(self.agent.status()['broker']['demo'])           # lease free: the live readback
+        self.assertEqual(len(calls), 1)
+
     def test_read_only_demo_can_research_while_other_terminal_holds_positions(self):
         self.mt5.account_trade_allowed = False
         self.mt5.positions = (types.SimpleNamespace(symbol='EURUSD'),)

@@ -363,6 +363,45 @@ class DemoSeedAgentTests(unittest.TestCase):
                 if reason == 'owner_stop':
                     self.assertTrue((self.root / 'demo-agent/STOP').exists())   # STOP is never cleared by the tool
 
+    def counted_initialize(self):
+        calls = []
+        original = self.mt5.initialize
+        self.mt5.initialize = lambda *args, **kwargs: calls.append(args) or original(*args, **kwargs)
+        return calls
+
+    def test_status_read_never_attaches_while_a_driver_holds_the_terminal(self):
+        # goatai#2350 6095691170: a status read that saw MT5 up attached through mt5.initialize(path) just as the driver
+        # closed the member's MT5, and the package launched a plain MT5 beside the driver's own launch.
+        self.agent.seed_prepare('batch', self.plan)
+        self.agent.seed_start('batch', 6)                                   # member 1 running, start record retained
+        calls = self.counted_initialize()
+        with self.new_agent()._exclusive():                                 # the driver's lease: held for its whole run
+            status = self.agent.seed_status('batch')
+        self.assertEqual((status['broker'], status['retained_start'], status['broker_reason']), (None, True, 'terminal_busy'))
+        self.assertEqual(calls, [], 'no attach (so no launch) while a driver owns MT5')
+        self.assertEqual(len(self.process.starts), 1)
+        self.assertEqual([o for o in self.opened if o['operation'] == 'seed-status'][-1]['scope']['account'], self.account)
+        live = self.agent.seed_status('batch')                              # lease free again: the live readback
+        self.assertEqual((live['retained_start'], len(calls)), (False, 1))
+        self.assertNotIn('broker_reason', live)
+
+    def test_a_read_that_finds_mt5_restarted_reports_both_processes_and_closes_nothing(self):
+        self.agent.seed_prepare('batch', self.plan)
+        self.agent.seed_start('batch', 6)
+        member, closes = self.process.inspect(), list(self.process.closes)   # seed-start closed the monitor
+        def initialize_launches(*args, **kwargs):                          # MT5 closed under the read; initialize(path) started it
+            self.process.current = None
+            self.process.start('plain')
+            return True
+        self.mt5.initialize = initialize_launches
+        with self.assertRaises(ValueError) as caught:
+            self.agent.seed_status('batch')
+        self.assertEqual(caught.exception.code, 'BROKER_READ_LAUNCHED')
+        launched = self.process.inspect()
+        row = [a for a in self.actions() if (a['operation'], a['phase']) == ('broker_read', 'launched_terminal')][-1]
+        self.assertEqual((row['replaced']['pid'], row['process']['pid']), (member['pid'], launched['pid']))
+        self.assertEqual(self.process.closes, closes, 'a read never closes a terminal')
+
     def take_control(self):
         inbox = self.data / 'MQL5/Files/GOATStudio/session-one/human/inbox'; inbox.mkdir(parents=True, exist_ok=True)
         (inbox / 'take.json').write_text('{}')

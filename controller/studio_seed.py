@@ -466,7 +466,7 @@ class SeedRunner:
             reasons=[state['error']+'; close that MT5, then '+self.COMMAND_PREFIX+'-resume continues (or '+self.COMMAND_PREFIX
                      +'-cancel settles it once MT5 is idle)']
         elif state.get('error') is not None:
-            reasons=[state['error']+'; seed-cancel settles it once MT5 is idle']
+            reasons=[state['error']+'; '+self.COMMAND_PREFIX+'-cancel settles it once MT5 is idle']
         else:
             idle=self._idle_proof(manifest,state,current)
             reasons=[idle] if idle else []
@@ -1082,7 +1082,7 @@ class SeedRunner:
                 self._save(root,state)
                 if self._idle_proof(manifest,state,current) is None and reasons:
                     raise ValueError('A member wrote output that could not be settled ('+reasons[0]+'); nothing was cancelled. '
-                                     'Inspect it, then run seed-reconcile again.')
+                                     'Inspect it, then run '+self.COMMAND_PREFIX+'-reconcile again.')
                 raise ValueError('Uncertain process provenance requires human inspection; no close sent')
             for item in state['members']:
                 if item['status']=='pending':item['status']='cancelled'
@@ -1124,12 +1124,13 @@ class SeedRunner:
                                    'stop, then re-activates the pending members under the start-grade check. The driver owns the '
                                    'MT5 reopen during a batch.')
         elif settled and state['status']=='reconcile_required':
-            result['next_action']=('Every uncertain member is settled; pending members remain while MT5 is open. Run seed-cancel to stop '
-                                   'them (completed results are kept), or close MT5 and run seed-resume to continue them.')
+            # The lane's own commands (catchup-/holdup-/seed-): seed-cancel never finds a catch-up or hold-up batch.
+            result['next_action']=('Every uncertain member is settled; pending members remain while MT5 is open. Run '+self.COMMAND_PREFIX+'-cancel to stop '
+                                   'them (completed results are kept), or close MT5 and run '+self.COMMAND_PREFIX+'-resume to continue them.')
         elif not settled:
             result['reasons']=reasons or [state.get('error') or 'No reconcile_required member can be settled from its own output']
             result['next_action']=('MT5 must be idle on the GOAT monitor (or closed) and the member must have written its own output. '
-                                   'With no output, seed-cancel settles the batch once MT5 is idle.')
+                                   'With no output, '+self.COMMAND_PREFIX+'-cancel settles the batch once MT5 is idle.')
             refused=[m['reidentify']['reason'] for m in state['members']
                      if m['status']=='reconcile_required' and (m.get('reidentify') or {}).get('reason')]
             if refused:result['reidentify_reason']=refused[0]      # why the open MT5 is not adopted as this launch

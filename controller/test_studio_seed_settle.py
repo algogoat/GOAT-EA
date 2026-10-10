@@ -112,6 +112,20 @@ class StrandedSeedTests(unittest.TestCase):
         self.runtime_error = 'Runtime policy mismatch: tester_state'
         self.unsettled('idle tester')
 
+    def test_the_next_action_names_the_lanes_own_cancel(self):
+        # goatai#2350 6092518750: a catch-up's reconcile said "seed-cancel settles the batch", and seed-cancel looks only in
+        # seeds/ ("Unknown seed batch"). Each lane names its own cancel and reconcile: catchup-, holdup- or seed-.
+        from studio_catchup import CatchupRunner
+        from studio_holdup import HoldupRunner
+        self.strand()
+        self.runtime_error = 'Runtime policy mismatch: tester_state'
+        self.assertIn('seed-cancel settles the batch', self.runner.reconcile('batch')['next_action'])
+        for lane in (CatchupRunner, HoldupRunner):
+            self.runner.COMMAND_PREFIX = lane.COMMAND_PREFIX
+            text = self.runner.reconcile('batch')['next_action']
+            self.assertIn(lane.COMMAND_PREFIX + '-cancel settles the batch', text)
+            self.assertNotIn('seed-cancel', text)
+
     def test_a_process_tool_without_inventory_proof_is_never_settled(self):
         self.strand()
         del self.process.config_users

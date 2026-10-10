@@ -121,6 +121,24 @@ class BatchDriverTests(unittest.TestCase):
         return run(self.c, 'batch', poll_seconds=1, cancel_grace_seconds=2,
                    clock=self.c.clock, finish_fn=self.c.finish, **kwargs)
 
+    def test_run_holds_the_terminal_lease_for_the_whole_run(self):
+        # goatai#2350 6098964146 / 6099732097: the driver closes and relaunches MT5, so it holds the installation's
+        # terminal lease on every pass, releases it on return, and starts nothing while another process holds it.
+        from studio_terminal_lease import TerminalBusy, foreign_holder, held
+        with foreign_holder(self.c.root), self.assertRaises(TerminalBusy):
+            self.drive(max_seconds=30)
+        self.assertEqual(self.c.starts, 0, 'nothing started beside another holder')
+        seen = []
+        finish = self.c.finish
+        def observed(*args, **kwargs):
+            seen.append(held(self.c.root))
+            return finish(*args, **kwargs)
+        self.c.finish = observed
+        result = run(self.c, 'batch', poll_seconds=1, cancel_grace_seconds=2, clock=self.c.clock, finish_fn=observed, max_seconds=30)
+        self.assertTrue(seen and all(seen), seen)
+        self.assertEqual(self.c.starts, 1)
+        self.assertFalse(held(self.c.root), 'released when the run returns: ' + str(result.get('status')))
+
     def test_demo_owner_stop_cancels_existing_ea_batch_once(self):
         self.c.session['authority_kind'] = 'demo_direct'
         write_json(self.c.root/'session.json', self.c.session)
@@ -367,7 +385,7 @@ class BatchDriverTests(unittest.TestCase):
         result=self.drive(max_seconds=86400)
         self.assertEqual(result['status'],'start_uncertain')
         self.assertEqual(result['attempt_id'],'a'*64)
-        stop=self.c.root/'demo-agent/STOP';stop.parent.mkdir();stop.write_text('{}')
+        stop=self.c.root/'demo-agent/STOP';stop.parent.mkdir(exist_ok=True);stop.write_text('{}')   # the terminal lease lives here too
         resumed=self.drive(resume=True)
         self.assertTrue(resumed['stopped'])
         self.assertEqual((self.c.starts,self.c.cancels),(1,1))

@@ -456,7 +456,11 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
     journals = safe_path(root/'batch-drivers')
     gate.mkdir(exist_ok=True); journals.mkdir(exist_ok=True)
     path = safe_path(journals/(job_id+'.json'))
-    with session_lock(controller), exclusive_gate(gate):
+    from studio_terminal_lease import terminal_lease
+    # The installation's terminal lease (L1) for the whole run, before session_lock (L2) and the gate (L3): this driver
+    # closes and relaunches MT5, so no reader may attach meanwhile (goatai#2350 6098964146). goat_studio's run-batch and
+    # the demo agent's _drive_batch already hold it: joined here, never re-taken.
+    with terminal_lease(controller.root, purpose='run-batch '+job_id), session_lock(controller), exclusive_gate(gate):
         if resume:
             record = read_json(path)
             if (record.get('schema_version') not in (1, 2) or type(record.get('max_seconds')) is not int

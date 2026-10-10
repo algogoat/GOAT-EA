@@ -89,6 +89,60 @@ class SeedTests(unittest.TestCase):
         self.assertNotIn('Size',candidate['value_overrides'])
         self.runner.resume('batch',1);self.assertEqual(len(self.starts),2)
 
+    def test_a_cancel_request_stops_the_run_after_the_current_test(self):
+        # goatai#2350 (Claude-Mac 6099078698 R2): while a driver holds the terminal lease, cancel is a request, honoured at
+        # the next member boundary: the running member finishes, the remaining members are cancelled, nothing new starts.
+        for symbol in ('GBPUSD','USDJPY'):
+            extra=copy.deepcopy(self.plan['jobs'][0]);extra['tester']['Symbol']=symbol;self.plan['jobs'].append(extra)
+        self.prepare();self.runner.start('batch',1);self.assertEqual(len(self.starts),1)          # member 1 running
+        requested=self.runner.request_cancel('batch',now=self.now)
+        self.assertEqual((requested['cancel_requested'],requested['plain']),(True,'Cancel requested: the run stops after the current test.'))
+        self.assertTrue(self.runner.cancel_request_path('batch').is_file())
+        self.assertEqual(len(self.closes),1,'the request itself closes nothing')
+        self.auto=True;result=self.runner.resume('batch',30)                                       # member 1 finishes here
+        self.assertTrue(result['cancel_request_honoured'])
+        self.assertEqual(len(self.starts),1,'no member started after the request')
+        state=read_json(self.runner.path('batch')/'state.json')
+        self.assertEqual([m['status'] for m in state['members']],['completed','cancelled','cancelled'],
+                         'the member in flight finished normally; only the ones after it were cancelled')
+        self.assertEqual(len(self.closes),1,'only the monitor was ever closed: the current test was never cut short')
+        self.assertFalse(self.runner.cancel_request_path('batch').exists())
+        self.assertTrue((self.runner.path('batch')/'cancel-request.honoured.json').is_file(),'kept as the record of who stopped it')
+
+    def test_a_cancel_request_never_outlives_its_run(self):
+        # goatai#2350 (Claude-Mac 6099732097 item 2): a request is bound to the activation, refused when nothing runs,
+        # cleared by any cancel or terminal state, and discarded (never honoured) once the batch was re-activated.
+        self.prepare()
+        with self.assertRaisesRegex(ValueError,'not running'):self.runner.request_cancel('batch',now=self.now)
+        self.assertFalse(self.runner.cancel_request_path('batch').exists(),'nothing is recorded for a batch that is not running')
+        self.runner.start('batch',1);self.runner.request_cancel('batch',now=self.now)
+        self.runner.cancel('batch')                                                         # an immediate cancel supersedes it
+        self.assertFalse(self.runner.cancel_request_path('batch').exists())
+        # A request from an earlier activation (a later resume re-activated the batch) is discarded at the safe point.
+        self.tearDown();self.setUp()
+        second=copy.deepcopy(self.plan['jobs'][0]);second['tester']['Symbol']='GBPUSD'
+        self.plan['jobs'].append(second);self.prepare();self.runner.start('batch',1)
+        self.runner.request_cancel('batch',now=self.now)
+        state_path=self.runner.path('batch')/'state.json';state=read_json(state_path)
+        state.setdefault('reactivations',[]).append(dict(unix=self.now));state_path.write_text(json.dumps(state))
+        self.auto=True;result=self.runner.resume('batch',30)
+        self.assertNotIn('cancel_request_honoured',result)
+        self.assertEqual(result['status'],'completed','a stale request never cancels a later activation')
+        self.assertEqual(len(self.starts),2)
+        self.assertFalse(self.runner.cancel_request_path('batch').exists(),'the stale request was discarded')
+
+    def test_the_drive_holds_the_terminal_lease_across_every_member_transition(self):
+        # goatai#2350 6098964146: every close and launch of a member happens under the installation's terminal lease.
+        from studio_terminal_lease import held
+        second=copy.deepcopy(self.plan['jobs'][0]);second['tester']['Symbol']='GBPUSD';self.plan['jobs'].append(second)
+        seen=[];close,start=self.process.close,self.process.start
+        self.process.close=lambda identity:(seen.append(('close',held(self.controller.root))),close(identity))[1]
+        self.process.start=lambda config:(seen.append(('start',held(self.controller.root))),start(config))[1]
+        self.prepare();self.auto=True;self.assertEqual(self.runner.start('batch',10)['status'],'completed')
+        self.assertEqual([kind for kind,_ in seen],['close','start','start'])
+        self.assertTrue(all(lease for _,lease in seen),seen)
+        self.assertFalse(held(self.controller.root),'released when the drive returns')
+
     def test_resume_running_does_not_restart_and_missing_output_is_null(self):
         self.prepare();state=self.runner.start('batch',1);self.assertTrue(state['driver_budget_exhausted']);self.assertEqual(len(self.starts),1)
         self.runner.resume('batch',1);self.assertEqual(len(self.starts),1)

@@ -79,6 +79,9 @@ def _observe_member(package,plan,manifest,configuration,schema,index):
             exports = scan_exports(paths['common_run']/'deploy'/native_job['run_alias']/tester['Symbol'],
                 source_raw, schema, back['passes'], forward['passes'], alias=native_job['run_alias'],
                 symbol=tester['Symbol'], period=tester['Period'], expert_name=PureWindowsPath(tester['Expert']).stem,
-                min_arf=configuration['export']['MinARF'], min_sr=configuration['export']['MinSR'])
+                min_arf=configuration['export']['MinARF'], min_sr=configuration['export']['MinSR'],
+                windows=dict(from_date=tester['FromDate'], to_date=tester['ToDate'],
+                             back_oos_date=configuration['export'].get('BackOOSDate'),
+                             include_back_oos=bool(configuration['export'].get('IncludeBackOOS'))))
     return result | dict(status='report_pair_verified', evidence=evidence, exports=exports,
                          remaining=['runtime/config acceptance', 'journal coverage', 'export qualification'])

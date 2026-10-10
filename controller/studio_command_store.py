@@ -13,6 +13,7 @@ from studio_settings import validate_tester, validate_export
 from studio_strategy_settings import validate_strategy
 from studio_dependencies import audit_dependencies
 from studio_queue import COMMANDS as QUEUE_COMMANDS, change_queue, reserve_job
+from studio_receipt_digest import receipt_state
 
 
 class Conflict(ValueError):
@@ -28,6 +29,18 @@ class StudioStore:
         self.db.row_factory = sqlite3.Row
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS studio_native_gate(id INTEGER PRIMARY KEY CHECK(id=1), root TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS studio_authorities(binding TEXT PRIMARY KEY, kind TEXT NOT NULL, provenance TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS studio_research_epochs(binding TEXT NOT NULL, generation INTEGER NOT NULL, provenance TEXT NOT NULL, PRIMARY KEY(binding,generation));
+        CREATE TRIGGER IF NOT EXISTS studio_research_epoch_immutable_insert BEFORE INSERT ON studio_research_epochs
+        WHEN EXISTS(SELECT 1 FROM studio_research_epochs WHERE binding=NEW.binding AND generation=NEW.generation AND provenance!=NEW.provenance)
+        BEGIN SELECT RAISE(ABORT,'Research epoch is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS studio_research_epoch_immutable_update BEFORE UPDATE ON studio_research_epochs BEGIN SELECT RAISE(ABORT,'Research epoch is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS studio_research_epoch_immutable_delete BEFORE DELETE ON studio_research_epochs BEGIN SELECT RAISE(ABORT,'Research epoch is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS studio_authority_immutable_insert BEFORE INSERT ON studio_authorities
+        WHEN EXISTS(SELECT 1 FROM studio_authorities WHERE binding=NEW.binding AND (kind!=NEW.kind OR provenance!=NEW.provenance))
+        BEGIN SELECT RAISE(ABORT,'Authority is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS studio_authority_immutable_update BEFORE UPDATE ON studio_authorities BEGIN SELECT RAISE(ABORT,'Authority is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS studio_authority_immutable_delete BEFORE DELETE ON studio_authorities BEGIN SELECT RAISE(ABORT,'Authority is immutable'); END;
         CREATE TABLE IF NOT EXISTS studio_state(
           binding TEXT PRIMARY KEY, revision INTEGER NOT NULL,
           generation INTEGER NOT NULL, owner TEXT NOT NULL);
@@ -43,13 +56,21 @@ class StudioStore:
         CREATE TABLE IF NOT EXISTS studio_strategy_drafts(
           binding TEXT PRIMARY KEY, settings TEXT NOT NULL);
         ''')
+        from studio_research_authority import legacy_human_grant
+        legacy_rows=self.db.execute('SELECT binding,owner,generation FROM studio_state WHERE binding NOT IN (SELECT binding FROM studio_authorities)').fetchall()
+        if legacy_rows:
+            with self.transaction():
+                for row in self.db.execute('SELECT binding,owner,generation FROM studio_state WHERE binding NOT IN (SELECT binding FROM studio_authorities)').fetchall():
+                    if legacy_human_grant(self.db,row['binding'],dict(owner=row['owner'],generation=row['generation'])):
+                        self.db.execute('INSERT INTO studio_authorities VALUES(?,?,?)',(row['binding'],'native_human_control',
+                            packed(dict(kind='native_human_control',binding=json.loads(row['binding'])))))
 
     def close(self):
         self.db.close()
 
     @contextmanager
-    def transaction(self):
-        with mutation_gate(self.db):
+    def transaction(self, *, require_clear_controls=False):
+        with mutation_gate(self.db, require_clear_controls=require_clear_controls):
             self.db.execute('BEGIN IMMEDIATE')
             try:
                 yield
@@ -65,9 +86,12 @@ class StudioStore:
         with self.transaction():
             self.db.execute('INSERT OR IGNORE INTO studio_state VALUES(?,0,0,?)',
                             (binding, 'human'))
+            if self.db.execute('SELECT owner,generation FROM studio_state WHERE binding=?',(binding,)).fetchone()[:] == ('human',0):
+                self.db.execute('INSERT OR IGNORE INTO studio_authorities VALUES(?,?,?)',
+                    (binding,'native_human_control',packed(dict(kind='native_human_control',binding=json.loads(binding)))))
         return self.snapshot(terminal_id, run_id)
 
-    def snapshot(self, terminal_id, run_id):
+    def snapshot(self, terminal_id, run_id, *, human_channel_view=False):
         binding = packed(dict(terminal_id=terminal_id, run_id=run_id))
         row = self.db.execute('SELECT s.*,d.settings,e.settings AS exports,i.settings AS strategy,q.jobs FROM studio_state s '
                               'LEFT JOIN studio_drafts d ON s.binding=d.binding '
@@ -77,6 +101,9 @@ class StudioStore:
                               'WHERE s.binding=?', (binding,)).fetchone()
         if row is None:
             raise ValueError('Unknown terminal/run binding')
+        from studio_research_authority import authority
+        if not human_channel_view:
+            authority(self.db,binding,dict(owner=row['owner'],generation=row['generation']))
         return dict(terminal_id=terminal_id, run_id=run_id, revision=row['revision'],
                     generation=row['generation'], owner=row['owner'],
                     tester_draft=None if row['settings'] is None else json.loads(row['settings']),
@@ -135,22 +162,37 @@ class StudioStore:
             raise ValueError('Unexpected control payload')
         binding = packed(dict(terminal_id=request['terminal_id'], run_id=request['run_id']))
         payload_hash = sha(dict(request=request, actor=actor))
-        with self.transaction():
+        with self.transaction(require_clear_controls=command == 'queue.clear_pending'):
             prior = self.db.execute('SELECT * FROM studio_receipts WHERE binding=? AND request_id=?',
                                     (binding, request['request_id'])).fetchone()
             if prior:
                 if prior['payload_hash'] != payload_hash:
                     raise Conflict('Request ID reused with different content or actor')
                 return json.loads(prior['receipt'])
-            state = self.snapshot(request['terminal_id'], request['run_id'])
+            state = self.snapshot(request['terminal_id'], request['run_id'],
+                                  human_channel_view=actor=='human' and command in ('control.takeover','control.grant_agent'))
+            from studio_research_authority import command as authorize_command
+            new_epoch=authorize_command(self.db,binding,state,request,actor)
             if state['revision'] != request['expected_revision']:
                 raise Conflict('Stale state revision')
             if state['generation'] != request['generation']:
                 raise Conflict('Revoked controller generation')
+            raw_queue = None  # packed queue, built once when a queue command writes it
             if command in ('draft.replace_tester', 'draft.replace_export', 'draft.replace_configuration', 'draft.replace_strategy', *QUEUE_COMMANDS):
                 if actor != state['owner']:
                     raise Conflict('Current controller required; take over explicitly')
                 if command in QUEUE_COMMANDS:
+                    if command == 'queue.clear_pending':
+                        from studio_seed_slot import guard_active_seed
+                        database_path = self.db.execute('PRAGMA database_list').fetchone()[2]
+                        if database_path:
+                            guard_active_seed(Path(database_path).parent)
+                        settled = {'pending','completed','failed','cancelled','removed','superseded'}
+                        for queued in self.db.execute('SELECT jobs FROM studio_queues'):
+                            if any(j.get('status') not in settled or
+                                   (j['status'] == 'pending' and 'launch_intent' in j)
+                                   for j in json.loads(queued['jobs'])):
+                                raise Conflict('Unresolved native attempt requires reconciliation before clearing pending work')
                     if command == 'queue.reserve':
                         from studio_seed_slot import guard_active_seed
                         database_path = self.db.execute('PRAGMA database_list').fetchone()[2]
@@ -165,7 +207,8 @@ class StudioStore:
                         jobs = reserve_job(state,request['payload'],sha([binding,request['request_id'],payload_hash]))
                     else:
                         jobs = change_queue(command,request['payload'],state,self.input_schema,self.dependency_policy)
-                    self.db.execute('INSERT OR REPLACE INTO studio_queues VALUES(?,?)',(binding,packed(jobs)))
+                    raw_queue = packed(jobs)
+                    self.db.execute('INSERT OR REPLACE INTO studio_queues VALUES(?,?)',(binding,raw_queue))
                     state['queue'] = jobs
                 elif command == 'draft.replace_strategy':
                     self.db.execute('INSERT OR REPLACE INTO studio_strategy_drafts VALUES(?,?)',
@@ -193,13 +236,23 @@ class StudioStore:
                 # An agent cannot grant itself control or impersonate human takeover.
                 if actor != 'human':
                     raise Conflict('Human control action required')
+                # A real accepted human grant can classify a legacy human binding.
+                # Never classify an existing agent or replace restricted provenance.
+                if command == 'control.grant_agent' and state['owner'] == 'human' and new_epoch is None:
+                    self.db.execute('INSERT OR IGNORE INTO studio_authorities VALUES(?,?,?)',
+                        (binding,'native_human_control',packed(dict(kind='native_human_control',binding=json.loads(binding)))))
                 owner = 'human' if command == 'control.takeover' else 'agent'
                 state.update(owner=owner, revision=state['revision']+1,
                              generation=state['generation']+1)
             self.db.execute('UPDATE studio_state SET revision=?,generation=?,owner=? WHERE binding=?',
                             (state['revision'], state['generation'], state['owner'], binding))
+            # The receipt keeps a digest of the queue, never the queue: nothing
+            # reads it back, and on Banker each full copy was 818 MB. Replays
+            # return these same stored bytes; current state holds the queue.
             receipt = dict(request_id=request['request_id'], command=command,
-                           status='applied', state=state, execution_effect=False)
+                           status='applied', state=receipt_state(state, raw_queue), execution_effect=False)
             self.db.execute('INSERT INTO studio_receipts VALUES(?,?,?,?)',
                             (binding, request['request_id'], payload_hash, packed(receipt)))
+            if new_epoch is not None:
+                self.db.execute('INSERT INTO studio_research_epochs VALUES(?,?,?)',(binding,state['generation'],packed(new_epoch)))
             return receipt

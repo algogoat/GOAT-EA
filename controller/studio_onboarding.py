@@ -19,7 +19,8 @@ from campaign_ledger import packed, sha
 from studio_installation import read_json
 from studio_bridge import write_json
 from studio_native_gate import exclusive_gate
-from studio_process_check import inspect_processes
+from studio_process_check import StoppedRootProcess, inspect_processes
+from studio_protected_peer import process_binding
 
 
 def session_state(controller):
@@ -56,13 +57,16 @@ def onboarding_status(controller):
         step('controller_binding', 'blocked', 'Run bootstrap --account-login <own demo login> --account-server <exact server>', detail=str(exc))
         result['next_action']=steps[-1]['action']
         return result
-    binding = dict(research_terminal=controller.install['terminal_executable'])
     try:
-        processes = inspect_processes(binding)
+        processes = inspect_processes(process_binding(controller),
+                    observation_roots=[str(Path(controller.install['terminal_executable']).parent),controller.install['terminal_data_root']])
         step('terminal_process', 'complete', 'Selected terminal is running; exact executable process observed')
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         processes = None
-        step('terminal_process', 'blocked', 'Inspect terminal processes. For a stopped selected terminal use monitor-prepare then monitor-launch; never stop unrelated terminals.', detail=str(exc))
+        if isinstance(exc, StoppedRootProcess):
+            step('terminal_process', 'blocked', exc.next_action(), detail=str(exc), program=exc.program, pid=exc.pid, program_path=exc.path)
+        else:
+            step('terminal_process', 'blocked', 'Inspect terminal processes. For a stopped selected terminal use monitor-prepare then monitor-launch; never stop unrelated terminals.', detail=str(exc))
     try:
         from studio_resilient_read import read_observation
         from studio_runtime_check import check_runtime
@@ -87,17 +91,103 @@ def onboarding_status(controller):
         step('agent_control', 'complete' if state['owner']=='agent' else 'human_action',
              'Human clicks Give to Agent in Studio while serve is running; then recheck status')
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        step('native_monitor', 'blocked', 'Inspect the selected MT5 monitor: sign in to your demo, complete GOAT activation, approve DLL imports and required WebRequest URL, keep Algo Trading off, run serve and recheck.', detail=str(exc))
+        reason = None
+        activation = Path(controller.install['common_files_root'])/'GOAT'/('activation-status-'+Path(controller.install['terminal_data_root']).name+'.json')
+        try:
+            report = read_json(activation)
+            age = time.time()-float(report['observedAtUtc'])
+            if (0 <= age <= 60 and report.get('accountId') == session['account']['login']
+                    and str(report.get('buildId','')).startswith('V'+controller.install['ea_version']+'-')
+                    and report.get('reason') == 'ACTIVATION_RELOAD_REQUIRED'):
+                reason = 'ACTIVATION_RELOAD_REQUIRED'
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        action = ('Activation completed, but the EA did not confirm restart. Use the controller monitor repair on an idle session, or change the chart timeframe once.' if reason else
+                  'Inspect the selected MT5 monitor: sign in to your demo, complete GOAT activation, approve DLL imports and required WebRequest URL, keep Algo Trading off, run serve and recheck.')
+        profile = None if reason else wrong_chart_profile(controller, session)
+        if profile and launched_monitor(controller, processes):
+            # MT5 runs from GOAT's own monitor-launch, which names the monitor EA as its startup expert; ProfileLast in
+            # common.ini changes only when MT5 closes, so the saved profile is not why feedback is missing yet.
+            action = ('MT5 was started by monitor-launch with the GOAT monitor EA. Finish GOAT activation in that MT5 (Activate GOAT window), '
+                      'approve DLL imports and the WebRequest URL, keep Algo Trading off, run serve and recheck.')
+            profile = None
+        if profile:
+            action = ('MT5 saved chart profile '+profile['profile_last']+' as its last profile, not the GOAT Studio monitor profile '+profile['monitor_profile']+
+                      '. Ask the user to choose File > Profiles > '+profile['monitor_profile']+' in MT5 (or, with MT5 closed, run monitor-launch --attempt-id <new id>), then recheck.')
+        step('native_monitor', 'blocked', action, detail=str(exc), **({'reason_code':reason} if reason else {}), **(profile or {}))
     if all(s['state']=='complete' for s in steps):
         result['status']='local_monitor_ready'
     result['next_action'] = next((s['action'] for s in steps if s['state']!='complete'),
         'Use desktop onboarding.status for account eligibility; native job start still performs fresh ownership/runtime checks')
     result['monitor_preset'] = str(Path(controller.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set')
     result['permissions'] = dict(automation_changes_permissions=False,
-        webrequest='User approves the exact URL shown by the EA activation panel',
+        webrequest='Add https://goatedge.ai in MT5 Tools > Options > Expert Advisors > Allow WebRequest for listed URL',
+        webrequest_urls=['https://goatedge.ai'],
         dll_imports='User approves DLL imports in MT5 and the monitor EA properties',
         broker_login='User signs in directly in MT5; never pass broker passwords through controller arguments')
     return result
+
+
+def wrong_chart_profile(controller, session):
+    """Read-only: the saved MT5 ProfileLast when it is not this session's monitor profile.
+
+    A seed or research /config launch can leave common.ini on an older profile, so
+    a plain MT5 open shows charts without the GOAT Studio monitor.
+    """
+    try:
+        name, profile = monitor_paths(controller, session)
+        if not profile.is_dir():
+            return None
+        raw = (Path(controller.install['terminal_data_root'])/'config/common.ini').read_bytes()
+        if len(raw) > 4_000_000:
+            return None
+        text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+        section = None; last = None
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith('[') and line.endswith(']'):
+                section = line[1:-1].casefold()
+            elif section == 'charts' and line.casefold().startswith('profilelast='):
+                last = line.split('=', 1)[1].strip()
+        if last and last != name:
+            return dict(profile_last=last, monitor_profile=name)
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        pass
+    return None
+
+
+def launched_monitor(controller, processes):
+    """Read-only: the running selected MT5 is the process GOAT's own monitor-launch started.
+
+    True only when the observed process ID is the one a retained monitor-launch record names and that
+    record's untouched startup configuration sets the installed GOAT EA as the startup expert.
+    """
+    try:
+        research = (processes or {}).get('research') or {}
+        pid = research.get('pid')
+        if type(pid) is not int or pid <= 0:
+            return False
+        directory = controller.root/'monitor-launches'
+        if not directory.is_dir():
+            return False
+        for record in directory.glob('*.json'):
+            launch = read_json(record)
+            if launch.get('status') != 'process_started_unverified' or launch.get('pid') != pid:
+                continue
+            # A reused process ID is not this launch: the process must have started right after the launch record.
+            started = datetime.fromisoformat(str(research['created_utc']).replace('Z','+00:00')).timestamp()
+            if not -5 <= started-datetime.fromisoformat(launch['created_at']).timestamp() <= 120:
+                continue
+            config = Path(launch['startup_config'])
+            raw = config.read_bytes()
+            if config.parent != directory or len(raw) > 64_000 or hashlib.sha256(raw).hexdigest() != launch.get('startup_sha256'):
+                continue
+            text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+            if ('\r\n[StartUp]\r\nExpert='+controller.install['ea_relative_path']+'\r\n') in text:
+                return True
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError):
+        pass
+    return False
 
 
 def monitor_paths(controller, session):
@@ -119,11 +209,9 @@ def require_idle_control(controller, session):
         raise ValueError('Monitor process inspection requires terminal64.exe')
 
 
-def monitor_prepare(controller, symbol):
+def monitor_chart(controller, symbol):
     if not re.fullmatch(r'[A-Za-z0-9_.#-]{1,64}', symbol):
         raise ValueError('Supply the exact broker symbol using letters, digits, underscore, dot, # or hyphen')
-    session, _ = session_state(controller)
-    name, profile = monitor_paths(controller, session)
     relative = PureWindowsPath(controller.install['ea_relative_path'])
     if any(c in str(relative) for c in '\r\n<>\0'):
         raise ValueError('Unsupported EA profile path')
@@ -132,15 +220,27 @@ def monitor_prepare(controller, symbol):
             '\nexpertmode=0\n<inputs>\nMode_Operation=11\nStudio_ReadOnlyMonitor=true\nStudio_MonitorRunPath=\n'
             'EA_Desc=Studio Monitor\n</inputs>\n</expert>\n<window>\nheight=100.000000\nobjects=0\n'
             '<indicator>\nname=Main\npath=\napply=1\nshow_data=1\n</indicator>\n</window>\n</chart>\n')
-    raw = text.replace('\n','\r\n').encode('utf-16')
+    return text.replace('\n','\r\n').encode('utf-16')
+
+
+def monitor_prepare(controller, symbol):
+    raw = monitor_chart(controller, symbol)
+    session, _ = session_state(controller)
+    name, profile = monitor_paths(controller, session)
     receipt = dict(schema_version=1, installation_sha256=sha(controller.install), run_id=session['run_id'],
                    profile_name=name, profile_path=str(profile), symbol=symbol,
                    chart_sha256=hashlib.sha256(raw).hexdigest(), trading_enabled=False, permissions_granted=False)
     target = controller.root/'monitor-profile.json'
     with exclusive_gate(controller.local/'native-gate'):
         require_idle_control(controller, session)
-        inspect_processes(dict(research_terminal=controller.install['terminal_executable']), research_running=False)
+        processes=inspect_processes(process_binding(controller), research_running=False, selected_stopped=True,
+                          absent_roots=[str(Path(controller.install['terminal_executable']).parent),controller.install['terminal_data_root']])
+        with (controller.root/'monitor-inventory.jsonl').open('a',encoding='utf-8') as output:
+            output.write(json.dumps(dict(operation='monitor_prepare',process_inventory=processes),sort_keys=True)+'\n')
+            output.flush();os.fsync(output.fileno())
         if target.exists():
+            # A profile prepared before an EA update of this installation is the same profile.
+            rebind_monitor_profile(controller, session, retained_installations(controller))
             if read_json(target)!=receipt:
                 raise ValueError('A different monitor profile is already prepared; preserve existing setup')
             verify_monitor_profile(controller, receipt)
@@ -156,7 +256,80 @@ def monitor_prepare(controller, symbol):
         next_action='With the selected terminal stopped and saved Algo Trading off, run monitor-launch --attempt-id <new-id>')
 
 
-def verify_monitor_profile(controller, receipt):
+# The receipt fields an EA update of the same installation rewrites: demo_agent install-build
+# (ea_sha256, bundle_version, agent_guide_path, demo_installed_at) and the desktop's stopped-terminal
+# update (installed_at). Every other field (terminal, data folder, EA path, versions, state root) still
+# names the installation the monitor profile was prepared for.
+UPDATE_OWNED_INSTALLATION_FIELDS = frozenset(('ea_sha256','bundle_version','agent_guide_path','demo_installed_at','installed_at'))
+MONITOR_RECEIPT_FIELDS = frozenset(('schema_version','installation_sha256','run_id','profile_name','profile_path','symbol',
+                                    'chart_sha256','trading_enabled','permissions_granted'))
+
+
+def same_installation(previous, current):
+    """True when ``previous`` differs from ``current`` only in what an EA update rewrites."""
+    if not isinstance(previous,dict) or not isinstance(current,dict):
+        return False
+    keep=lambda value:{k:v for k,v in value.items() if k not in UPDATE_OWNED_INSTALLATION_FIELDS}
+    return keep(previous)==keep(current)
+
+
+def retained_installations(controller):
+    """The installation receipts install-build backed up before each EA update (demo-agent/backups).
+
+    A backup counts only when its name is the SHA-256 of its exact bytes, as install-build writes it.
+    """
+    from studio_installation import load_installation
+    found=[]
+    folder=controller.root/'demo-agent'/'backups'
+    if not folder.is_dir():
+        return found
+    for path in sorted(folder.glob('installation-*.json')):
+        try:
+            if path.is_symlink() or path.name!='installation-'+hashlib.sha256(path.read_bytes()).hexdigest()+'.json':
+                continue
+            found.append(load_installation(path,verify_binary=False))
+        except (OSError,ValueError,KeyError,TypeError,UnicodeError):
+            continue
+    return found
+
+
+def rebind_monitor_profile(controller, session, previous_installations):
+    """Carry the prepared monitor profile across an EA update of this same installation and session.
+
+    install-build rebinds session.json to the updated receipt (new EA hash and bundle identity), but
+    monitor-profile.json kept the previous installation hash, so monitor-launch then refused with
+    "belongs to another installation/session" (goatai#1885, 2026-10-06). The receipt is rebound only
+    when the session is already bound to the current receipt, the receipt names this session's run
+    and profile, and the installation it names (a supplied previous receipt) differs from the current
+    one only in UPDATE_OWNED_INSTALLATION_FIELDS. Only installation_sha256 changes; the saved chart is
+    untouched and verify_monitor_profile still checks it in full before any launch. Anything else is
+    left as it is, so verify_monitor_profile keeps refusing it.
+    """
+    target=controller.root/'monitor-profile.json'
+    if not target.is_file():
+        return dict(status='no_profile')
+    raw=target.read_bytes()
+    receipt=read_json(target)
+    current=sha(controller.install)
+    if not isinstance(receipt,dict) or set(receipt)!=MONITOR_RECEIPT_FIELDS or receipt.get('schema_version')!=1:
+        return dict(status='not_prepared_receipt')
+    if receipt['installation_sha256']==current:
+        return dict(status='current')
+    name,profile=monitor_paths(controller,session)
+    previous=next((p for p in previous_installations if sha(p)==receipt['installation_sha256']),None)
+    if (session.get('installation_sha256')!=current or previous is None or not same_installation(previous,controller.install)
+            or receipt['run_id']!=session['run_id'] or receipt['profile_name']!=name or receipt['profile_path']!=str(profile)):
+        return dict(status='unrelated')
+    backup=controller.root/'demo-agent'/'backups'/('monitor-profile-'+hashlib.sha256(raw).hexdigest()+'.json')
+    backup.parent.mkdir(parents=True,exist_ok=True)
+    if not backup.exists():
+        with backup.open('xb') as output:
+            output.write(raw); output.flush(); os.fsync(output.fileno())
+    write_json(target,receipt|dict(installation_sha256=current))
+    return dict(status='rebound',previous_installation_sha256=receipt['installation_sha256'],installation_sha256=current,backup=str(backup))
+
+
+def verify_monitor_profile(controller, receipt, *, observed_human_reopen=False, preserved_permissions_sha256=None):
     session, _ = session_state(controller)
     name, profile = monitor_paths(controller, session)
     if receipt.get('installation_sha256') != sha(controller.install) or receipt.get('run_id') != session['run_id'] or receipt.get('profile_name') != name or receipt.get('profile_path') != str(profile):
@@ -170,11 +343,11 @@ def verify_monitor_profile(controller, receipt):
     raw = charts[0].read_bytes()
     if len(raw)>2_000_000:
         raise ValueError('Saved monitor chart exceeds size limit')
-    verify_saved_monitor(raw, controller.install['ea_relative_path'], receipt['symbol'], controller.install['terminal_data_root'])
+    verify_saved_monitor(raw, controller.install['ea_relative_path'], receipt['symbol'], controller.install['terminal_data_root'], observed_human_reopen=observed_human_reopen, preserved_permissions_sha256=preserved_permissions_sha256)
     return profile
 
 
-def verify_saved_monitor(raw, ea_relative_path, symbol, data_root):
+def verify_saved_monitor(raw, ea_relative_path, symbol, data_root, *, observed_human_reopen=False, preserved_permissions_sha256=None):
     # MT5 rewrites chart metadata and permission flags on a normal close.
     # Accept those changes only after rechecking the effective saved monitor.
     text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
@@ -200,10 +373,15 @@ def verify_saved_monitor(raw, ea_relative_path, symbol, data_root):
             continue
         if not stack or closed: raise ValueError('Invalid saved monitor chart content')
         scope=tuple(stack)
+        # MT5 persists GOAT's MQL input group labels as equals-framed rows
+        # followed by whitespace and an empty assignment. They are headings,
+        # not input keys; accept this exact shape only inside the input block.
+        if scope==('chart','expert','inputs') and re.fullmatch(r'={3,}[A-Z][A-Z0-9 /]{0,79}={3,}[ \t]+=',line):
+            continue
         if scope in (('chart',),('chart','expert'),('chart','expert','inputs'),('chart','window','indicator')):
             key,sep,value=line.partition('=')
             existing=fields.setdefault(scope,{})
-            if key != key.strip() or not sep or key.casefold() in {prior.casefold() for prior in existing}: raise ValueError('Ambiguous saved monitor chart fields')
+            if not key or key != key.strip() or not sep or key.casefold() in {prior.casefold() for prior in existing}: raise ValueError('Ambiguous saved monitor chart fields')
             fields[scope][key]=value
     if stack or not closed or counts.get(('chart','expert'))!=1 or counts.get(('chart','expert','inputs'))!=1:
         raise ValueError('Saved monitor must contain exactly one EA and input block')
@@ -212,7 +390,17 @@ def verify_saved_monitor(raw, ea_relative_path, symbol, data_root):
     chart=fields.get(('chart',),{});expert=fields.get(('chart','expert'),{});inputs=fields.get(('chart','expert','inputs'),{})
     relative=PureWindowsPath(ea_relative_path)
     allowed=[PureWindowsPath('Experts')/relative,PureWindowsPath(data_root)/'MQL5'/'Experts'/relative]
-    if chart.get('symbol')!=symbol or PureWindowsPath(expert.get('path','')) not in allowed or expert.get('expertmode') != '0':
+    mode=expert.get('expertmode','')
+    # This exception is observational only: the human has already reopened MT5.
+    # Its caller binds unchanged saved bytes and verifies global Algo OFF via SDK.
+    # Never infer undocumented bits, write a permission, or use this for launch.
+    # A managed recovery may preserve the exact previously inspected inert
+    # chart. Its transaction also checks saved/runtime Algo OFF and archives
+    # permission bytes before close and after launch. No bit is reinterpreted.
+    preserved=(isinstance(preserved_permissions_sha256,str)
+               and hashlib.sha256(raw).hexdigest()==preserved_permissions_sha256)
+    permission_ok=(mode=='0' or ((observed_human_reopen is True or preserved) and re.fullmatch(r'[0-9]{1,3}',mode)))
+    if chart.get('symbol')!=symbol or PureWindowsPath(expert.get('path','')) not in allowed or not permission_ok:
         raise ValueError('Saved monitor symbol, EA identity or permissions changed; human must review and reopen the saved profile in MT5')
     if inputs.get('Mode_Operation')!='11' or inputs.get('Studio_ReadOnlyMonitor')!='true' or inputs.get('Studio_MonitorRunPath','')!='':
         raise ValueError('Saved chart is no longer an inert Studio monitor')
@@ -237,9 +425,16 @@ def saved_launch_policy(controller, session):
     except configparser.Error as exc: raise ValueError('Invalid saved MT5 common.ini') from exc
     if ini.defaults() or len({s.casefold() for s in ini.sections()}) != len(ini.sections()) or any(s.casefold() in ('startup','tester','testerinputs') for s in ini.sections()):
         raise ValueError('Ambiguous or automatic-start saved MT5 configuration; inspect manually')
-    if ini.get('Experts','Enabled',fallback=None) != '0':
+    # A key MT5 has never saved (a fresh terminal) is named plainly; it is not a real Algo ON or another login.
+    enabled = ini.get('Experts','Enabled',fallback=None)
+    if enabled is None:
+        raise ValueError('MT5 has not saved the Algo Trading setting yet (fresh terminal): open Tools > Options once and press OK, or use Connect in GOAT, then close MT5 normally before monitor launch')
+    if enabled != '0':
         raise ValueError('Human must turn Algo Trading off and close the selected terminal normally before monitor launch')
-    if ini.get('Common','Login',fallback=None) != session['account']['login'] or ini.get('Common','Server',fallback=None) != session['account']['server']:
+    login, server = ini.get('Common','Login',fallback=None), ini.get('Common','Server',fallback=None)
+    if login is None or server is None:
+        raise ValueError('MT5 has not saved the broker '+('login' if login is None else 'server')+' yet (fresh terminal): sign in to your demo in the selected MT5 once and close it normally, or use Connect in GOAT')
+    if login != session['account']['login'] or server != session['account']['server']:
         raise ValueError('Saved broker login/server differs; user must sign in directly in selected MT5, turn Algo Trading off and close normally')
     return portable
 
@@ -258,21 +453,42 @@ def monitor_launch(controller, attempt_id):
             if read_json(previous).get('status') == 'launch_intent':
                 raise ValueError('Unresolved monitor launch intent; inspect process and retained attempt, never launch again blindly')
         require_idle_control(controller, session)
+        # Heals a profile left on the previous receipt by an EA update from an earlier controller.
+        rebound = rebind_monitor_profile(controller, session, retained_installations(controller))
         receipt = read_json(controller.root/'monitor-profile.json')
         verify_monitor_profile(controller, receipt)
         portable = saved_launch_policy(controller, session)
-        inspect_processes(dict(research_terminal=controller.install['terminal_executable']), research_running=False)
-        arguments = [controller.install['terminal_executable'], '/profile:'+receipt['profile_name']]
+        processes=inspect_processes(process_binding(controller), research_running=False, selected_stopped=True,
+                          absent_roots=[str(Path(controller.install['terminal_executable']).parent),controller.install['terminal_data_root']])
+        # MT5 can open a profile without applying its embedded expert inputs.
+        # Explicit native startup is required for a reproducible monitor attach.
+        preset = Path(controller.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set'
+        expected = 'Mode_Operation=11\r\nStudio_ReadOnlyMonitor=true\r\nStudio_MonitorRunPath=\r\nEA_Desc=Studio Monitor\r\n'.encode('utf-16')
+        if preset.read_bytes() != expected:
+            raise ValueError('Monitor startup preset changed; preserve it before repair')
+        config = directory/(attempt_id+'.ini')
+        # Omit StartUp.Symbol: MT5 then attaches to the saved first chart,
+        # rather than creating a disposable chart that vanishes on next start.
+        startup = ('[Charts]\r\nProfileLast='+receipt['profile_name']+'\r\n[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n'
+                   '[StartUp]\r\nExpert='+controller.install['ea_relative_path']+'\r\nExpertParameters='+preset.name+
+                   '\r\nPeriod=M1\r\n').encode('utf-16')
+        if config.exists():
+            raise ValueError('Unclaimed startup configuration exists; preserve and inspect before another launch')
+        with config.open('xb') as stream:
+            stream.write(startup); stream.flush(); os.fsync(stream.fileno())
+        arguments = [controller.install['terminal_executable'], '/config:'+str(config)]
         if portable: arguments.append('/portable')
         intent = dict(schema_version=1, attempt_id=attempt_id, status='launch_intent',
                       installation_sha256=sha(controller.install), run_id=session['run_id'],
-                      created_at=datetime.now(timezone.utc).isoformat(), execution_ready=False,
-                      native_qualification=False)
+                      created_at=datetime.now(timezone.utc).isoformat(), execution_ready=False, process_inventory=processes,
+                      native_qualification=False, startup_config=str(config),
+                      startup_sha256=hashlib.sha256(startup).hexdigest(), preset_sha256=hashlib.sha256(expected).hexdigest())
         write_json(target, intent)
         # A crash/failure here retains uncertainty; no automatic retry or close.
         process = subprocess.Popen(arguments, cwd=str(Path(arguments[0]).parent),
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         intent.update(status='process_started_unverified', pid=process.pid)
         write_json(target, intent)
-    return intent | dict(reused=False,
+    return intent | dict(reused=False, **(dict(monitor_profile_rebound=rebound) if rebound['status']=='rebound' else {}),
         next_action='Approve DLL/WebRequest permissions and legitimate GOAT pairing in MT5; run serve, human Give to Agent, then onboarding-status. Process start is not runtime readiness.')

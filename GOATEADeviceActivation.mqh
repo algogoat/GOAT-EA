@@ -28,7 +28,7 @@ int    g_GOATDeviceActivationPollSeconds=5;
 bool   g_GOATDeviceActivationReloadRequested=false;
 bool   g_GOATDeviceActivationReplaceCredential=false;
 
-// Status is operational metadata only: never tokens, pairing codes or bodies.
+// Status is operational metadata only: never tokens, connection codes or bodies.
 void GOATDeviceActivationStatus(const string reason,const int http_status,const int native_error,const int retry_seconds)
   {
    FolderCreate(Key,FILE_COMMON);
@@ -62,9 +62,133 @@ void GOATDeviceActivationFailure(const int status,const int native_error,const b
      }
    GOATDeviceActivationStatus(reason,status,native_error,delay);
    if(reason=="webrequest_permission_required") GOATDeviceActivationShowNetworkHelp();
-   else if(status==409 && starting) GOATDeviceActivationShowRetry("This EA build is not admitted. Update the approved build before retrying.");
-   else if(status==429) GOATDeviceActivationShowRetry("Activation is rate limited. Automatic retry in 15 minutes; no action needed.");
-   else GOATDeviceActivationShowRetry("Activation status "+IntegerToString(status)+(delay==0 ? ". Setup needs attention; automatic requests stopped." : ". Retrying in 60 seconds."));
+   else if(status==409 && starting) GOATDeviceActivationShowRetry("This GOAT build is not approved. Install the latest GOAT.");
+   else if(status==429) GOATDeviceActivationShowRetry("Too many sign-in attempts. GOAT retries in 15 minutes.");
+   else if(delay==0) GOATDeviceActivationShowRetry("GOAT refused this sign-in (HTTP "+IntegerToString(status)+"). Contact GOAT support.");
+   else GOATDeviceActivationShowRetry((status<0 ? "Can't reach goatedge.ai" : "GOAT service error (HTTP "+IntegerToString(status)+")")+". Retrying in 60 s.");
+  }
+
+// LC36 local pairing read: the connection code MT5 is already showing, shared with GOAT on
+// this PC so the desktop and its agent read it without a screenshot. It is the short-lived
+// public challenge only (never the credential candidate), on demo accounts only, in one file
+// per terminal data folder in this Windows user's Common Files. It is withdrawn as soon as the
+// code is cleared, expires, is approved or the chart closes, and is never printed or logged.
+bool g_GOATDeviceActivationCodeShared=false;
+string GOATDeviceActivationCodePath(void)
+  {
+   return Key+"\\activation-code-"+GoatTerminalToken()+".json";
+  }
+
+string GOATDeviceActivationCodeQuote(const string value)
+  {
+   string result="\"";
+   for(int i=0;i<StringLen(value);i++)
+     {
+      ushort c=StringGetCharacter(value,i);
+      if(c=='\"' || c=='\\') result+="\\"+ShortToString(c);
+      else if(c<32 || c>126) result+=StringFormat("\\u%04x",(int)c);
+      else result+=ShortToString(c);
+     }
+   return result+"\"";
+  }
+
+// Zero-click demo pairing (goatai agent_demo_pairing.js): this terminal's own MT5 readback of its
+// trade mode and broker server. GOAT's server lets an agent approve a pairing only for a demo trade
+// mode on a reviewed demo server, and revokes an agent-approved credential when a later license
+// check reports anything else. An unknown trade mode is reported as real, never as demo.
+// Payload only: nothing here reads or changes trading, trade events or the model route.
+string GOATBrokerFactsTradeMode(void)
+  {
+   long mode=AccountInfoInteger(ACCOUNT_TRADE_MODE);
+   if(mode==ACCOUNT_TRADE_MODE_DEMO) return "demo";
+   if(mode==ACCOUNT_TRADE_MODE_CONTEST) return "contest";
+   return "real";
+  }
+
+// `source` names the request: "ea-device-start" (the server's BROKER_FACTS_SOURCE) on
+// device/start, "" (omitted) on later calls.
+string GOATBrokerFactsJson(const string source)
+  {
+   return "{"+(source=="" ? "" : "\"source\":"+GOATDeviceActivationCodeQuote(source)+",")
+      +"\"tradeMode\":\""+GOATBrokerFactsTradeMode()
+      +"\",\"server\":"+GOATDeviceActivationCodeQuote(AccountInfoString(ACCOUNT_SERVER))+"}";
+  }
+
+// The same request MT5 shows: pending, a well-formed code, this login and server, unexpired.
+bool GOATDeviceActivationCodeShareable(void)
+  {
+   string code=g_GOATDeviceActivationUserCode;
+   if(StringLen(code)!=9 || StringGetCharacter(code,4)!='-') return false;
+   for(int i=0;i<9;i++)
+     {
+      if(i==4) continue;
+      ushort c=StringGetCharacter(code,i);
+      if(!((c>='A' && c<='Z') || (c>='2' && c<='9'))) return false;
+     }
+   long now_ms=(long)TimeGMT()*1000;
+   return(g_GOATDeviceActivationState==GOAT_DEVICE_ACTIVATION_PENDING
+      && !MQLInfoInteger(MQL_TESTER)
+      && AccountInfoInteger(ACCOUNT_TRADE_MODE)==ACCOUNT_TRADE_MODE_DEMO
+      && g_GOATDeviceActivationAccountId==IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN))
+      && g_GOATDeviceActivationServer==AccountInfoString(ACCOUNT_SERVER)
+      && GOATIsSafeId(g_GOATDeviceActivationId,32,128)
+      && g_GOATDeviceActivationExpiresAtMs>now_ms
+      && g_GOATDeviceActivationExpiresAtMs<=now_ms+900000);
+  }
+
+void GOATDeviceActivationShareCode(void)
+  {
+   if(!GOATDeviceActivationCodeShareable()) return;
+   FolderCreate(Key,FILE_COMMON);
+   string path=GOATDeviceActivationCodePath();
+   string temporary=path+"."+IntegerToString(ChartID())+"."+IntegerToString((long)GetTickCount64())+".pending";
+   int h=FileOpen(temporary,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(h==INVALID_HANDLE) return;
+   string record="{\"schema\":1,\"accountId\":\""+g_GOATDeviceActivationAccountId
+      +"\",\"server\":"+GOATDeviceActivationCodeQuote(g_GOATDeviceActivationServer)
+      +",\"buildId\":"+GOATDeviceActivationCodeQuote(g_GOATDeviceActivationBuildId)
+      +",\"activationId\":"+GOATDeviceActivationCodeQuote(g_GOATDeviceActivationId)
+      +",\"userCode\":\""+g_GOATDeviceActivationUserCode
+      +"\",\"expiresAtMs\":"+IntegerToString(g_GOATDeviceActivationExpiresAtMs)
+      +",\"observedAtUtc\":"+IntegerToString((long)TimeGMT())
+      +",\"chart\":"+IntegerToString(ChartID())+"}";
+   uint written=FileWriteString(h,record);
+   FileFlush(h);FileClose(h);
+   bool moved=((int)written==StringLen(record) && FileMove(temporary,FILE_COMMON,path,FILE_COMMON|FILE_REWRITE));
+   if(!moved) FileDelete(temporary,FILE_COMMON);
+   if(moved) g_GOATDeviceActivationCodeShared=true;
+   record="";
+  }
+
+// Only this chart's own record is withdrawn; a newer code another chart shared stays.
+void GOATDeviceActivationWithdrawCode(void)
+  {
+   if(!g_GOATDeviceActivationCodeShared) return;
+   g_GOATDeviceActivationCodeShared=false;
+   string path=GOATDeviceActivationCodePath(),body="";
+   int h=FileOpen(path,FILE_READ|FILE_BIN|FILE_COMMON);
+   if(h==INVALID_HANDLE) return;
+   ulong size=FileSize(h);
+   uchar bytes[];
+   if(size>0 && size<=4096 && ArrayResize(bytes,(int)size)==(int)size && FileReadArray(h,bytes)==(uint)size)
+      body=CharArrayToString(bytes,0,(int)size,CP_UTF8);
+   FileClose(h);
+   if(StringFind(body,",\"chart\":"+IntegerToString(ChartID())+"}")>=0) FileDelete(path,FILE_COMMON);
+   body="";
+  }
+
+// Every activation tick: a shared code that is no longer the one MT5 shows is withdrawn,
+// and a code MT5 still shows that the file does not carry (a failed first write, or a
+// record another chart of this terminal replaced and then withdrew) is shared again.
+// A newer record another chart wrote is never overwritten.
+void GOATDeviceActivationSyncCode(void)
+  {
+   if(!GOATDeviceActivationCodeShareable())
+     {
+      if(g_GOATDeviceActivationCodeShared) GOATDeviceActivationWithdrawCode();
+      return;
+     }
+   if(!g_GOATDeviceActivationCodeShared || !FileIsExist(GOATDeviceActivationCodePath(),FILE_COMMON)) GOATDeviceActivationShareCode();
   }
 
 bool GOATDeviceActivationOnly(void)
@@ -74,6 +198,7 @@ bool GOATDeviceActivationOnly(void)
 
 void GOATDeviceActivationScrub(void)
   {
+   GOATDeviceActivationWithdrawCode();
    g_GOATDeviceActivationUserCode="";
    g_GOATDeviceActivationServer="";
    g_GOATDeviceActivationId="";
@@ -127,24 +252,29 @@ bool GOATDeviceActivationPairingReadable(const long now_ms,const long account_id
 void GOATDeviceActivationShowNetworkHelp(void)
   {
    HidePrompt();
-   ShowPrompt("GOAT activation needs one MT5 permission",
-              "Tools > Options > Expert Advisors: enable WebRequest",
-              "Add the URL shown below; the EA will retry automatically.",URL_API);
+   ShowPrompt("Allow GOAT to reach goatedge.ai",
+              "Tools > Options > Expert Advisors > Allow WebRequest",
+              "Add the URL below and click OK. GOAT retries by itself.",URL_API);
   }
 
+// The connection code is the hero line. The link carries it in the URL fragment
+// (#ea-connect=), which browsers never send to a server, so it stays out of logs.
 void GOATDeviceActivationShowCode(const string user_code,const string verification_url)
   {
    HidePrompt();
-   ShowPrompt("Activate GOAT V"+GOAT_VERSION_LABEL,
-               "Sign in and confirm MT5 account "+g_GOATDeviceActivationAccountId+".",
-               "Enter pairing code: "+user_code,verification_url);
+   // An absolute local time stays true while the card is shown; a countdown would go stale.
+   datetime until=TimeLocal()+(int)((g_GOATDeviceActivationExpiresAtMs-(long)TimeGMT()*1000)/1000);
+   ShowPrompt("Connection code: "+user_code,
+               "Approve MT5 account "+g_GOATDeviceActivationAccountId+" in the GOAT portal (EA tab).",
+               "Open the link below (code filled in). Valid until "+TimeToString(until,TIME_MINUTES)+".",
+               verification_url+"#ea-connect="+user_code);
   }
 
 void GOATDeviceActivationShowRetry(const string detail)
   {
    HidePrompt();
-   ShowPrompt("GOAT activation is waiting",detail,
-              g_GOATDeviceActivationState==GOAT_DEVICE_ACTIVATION_BLOCKED ? "The EA is paused. Resolve setup before reattaching." : "The EA is safely paused and will retry automatically.",URL_API);
+   ShowPrompt("GOAT is waiting to connect",detail,
+              g_GOATDeviceActivationState==GOAT_DEVICE_ACTIVATION_BLOCKED ? "GOAT stays paused until this is fixed and re-attached." : "GOAT is safely paused and retries by itself.","");
   }
 
 bool GOATDeviceActivationParseStart(const string response,string &activation_id,
@@ -187,11 +317,21 @@ bool GOATDeviceActivationWriteCredential(void)
    if(StringLen(g_GOATDeviceActivationCandidate)!=72
       || StringFind(g_GOATDeviceActivationCandidate,"goat_ea_")!=0
       || !GOATIsSafeApiBearerToken(g_GOATDeviceActivationCandidate)) return false;
+#ifdef GOAT_TERMINAL_ISOLATION_V149
+   // One path for the whole write, from the account the user just approved. It
+   // is never re-read mid-write, and the terminal must still be on that account.
+   if(!GOATLoginDigitsValid(g_GOATDeviceActivationAccountId)
+      || GOATAccountLoginDigits()!=g_GOATDeviceActivationAccountId) return false;
+   string credential=GOATApiBearerFileFor(g_GOATDeviceActivationAccountId);
+#else
+   string credential=GOAT_API_BEARER_FILE;
+#endif
 
-   // One user-scoped FILE_COMMON credential is shared locally. The server
+   // Pre-isolation builds share one user-scoped FILE_COMMON credential; isolation
+   // builds keep one per MT5 login (INV-CRED-01). The server
    // rechecks MT5-account membership and entitlement on every feed request.
    string directory="GOAT\\Credentials";
-   string temporary=GOAT_API_BEARER_FILE+".pending";
+   string temporary=credential+".pending";
    FolderCreate(directory,FILE_COMMON);
    FileDelete(temporary,FILE_COMMON);
    int handle=FileOpen(temporary,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
@@ -204,7 +344,7 @@ bool GOATDeviceActivationWriteCredential(void)
       FileDelete(temporary,FILE_COMMON);
       return false;
      }
-   if(!FileMove(temporary,FILE_COMMON,GOAT_API_BEARER_FILE,FILE_COMMON|FILE_REWRITE))
+   if(!FileMove(temporary,FILE_COMMON,credential,FILE_COMMON|FILE_REWRITE))
      {
       FileDelete(temporary,FILE_COMMON);
       return false;
@@ -215,16 +355,145 @@ bool GOATDeviceActivationWriteCredential(void)
    return stored;
   }
 
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+// Chart-scoped durable restart ticket; no account ID, credential or grant.
+// Two actual period changes are required. Queuing is never called success.
+ulong g_GOATActivationReloadDeadline=0;
+string GOATActivationReloadPath(void)
+  {
+   return "GOATStudio\\activation-reload-"+GOAT_BUILD_ID+"-"+(string)ChartID()+".json";
+  }
+void GOATActivationReloadReset(void)
+  {
+   // MT5 preserves globals across chart-change OnDeinit/OnInit.
+   GOATDeviceActivationScrub();
+   g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_INACTIVE;
+   g_GOATActivationReloadDeadline=0;
+  }
+void GOATActivationReloadRequired(void)
+  {
+   // Preserve completed evidence even when a later attempt cannot write.
+   // Failure still stays activation-only until a real normal OnInit.
+   string completedBody,completedBuild,completedSymbol,completedPhase; SGOATJsonToken completed[];
+   bool preserveCompleted=(GoatStudioReadUtf8(GOATActivationReloadPath(),completedBody) && GOATJsonParse(completedBody,completed)
+      && GOATJsonGetString(completedBody,completed,0,"build",completedBuild) && completedBuild==GOAT_BUILD_ID
+      && GOATJsonGetString(completedBody,completed,0,"symbol",completedSymbol) && completedSymbol==Symbol()
+      && GOATJsonGetString(completedBody,completed,0,"phase",completedPhase) && completedPhase=="reinitialized");
+   g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_APPROVED;
+   g_GOATDeviceActivationReloadRequested=true;
+   g_GOATActivationReloadDeadline=0;
+   string body; SGOATJsonToken ticket[]; long original,temporary,expires;
+   if(!preserveCompleted && GoatStudioReadUtf8(GOATActivationReloadPath(),body) && GOATJsonParse(body,ticket)
+      && GOATJsonGetInteger(body,ticket,0,"original",original)
+      && GOATJsonGetInteger(body,ticket,0,"temporary",temporary)
+      && GOATJsonGetInteger(body,ticket,0,"expires",expires))
+      GOATActivationReloadWrite("manual_required",original,temporary,expires);
+   GOATDeviceActivationStatus("ACTIVATION_RELOAD_REQUIRED",0,0,0);
+   HidePrompt();
+   ShowPrompt("GOAT is connected","MT5 account "+(string)AccountInfoInteger(ACCOUNT_LOGIN)+" is approved.",
+      "Change the chart timeframe once to finish starting GOAT.","");
+  }
+bool GOATActivationReloadWrite(const string phase,const long original,const long temporary,const long expires)
+  {
+   FolderCreate("GOATStudio");
+   string body="{\"build\":"+GoatStudioQuote(GOAT_BUILD_ID)+",\"symbol\":"+GoatStudioQuote(Symbol())
+      +",\"original\":"+(string)original+",\"temporary\":"+(string)temporary
+      +",\"expires\":"+(string)expires+",\"phase\":"+GoatStudioQuote(phase)+"}";
+   return GoatStudioWriteUtf8(GOATActivationReloadPath(),body,true);
+  }
+// Called from a real OnInit, before normal EA initialization. An intermediate
+// period stays activation-only; no signals, orders, or optimization may run.
+bool GOATActivationReloadPendingOnInit(void)
+  {
+   string path=GOATActivationReloadPath();
+   if(MQLInfoInteger(MQL_TESTER) || !FileIsExist(path)) return false;
+   string body,build,symbol,phase; long original,temporary,expires; SGOATJsonToken tokens[];
+   if(!GoatStudioReadUtf8(path,body) || !GOATJsonParse(body,tokens)
+      || !GOATJsonGetString(body,tokens,0,"build",build) || build!=GOAT_BUILD_ID
+      || !GOATJsonGetString(body,tokens,0,"symbol",symbol) || symbol!=Symbol()
+      || !GOATJsonGetString(body,tokens,0,"phase",phase)
+      || !GOATJsonGetInteger(body,tokens,0,"original",original)
+      || !GOATJsonGetInteger(body,tokens,0,"temporary",temporary)
+      || !GOATJsonGetInteger(body,tokens,0,"expires",expires))
+     {GOATActivationReloadRequired(); return true;}
+   if(original==temporary || PeriodSeconds((ENUM_TIMEFRAMES)original)<=0
+      || temporary!=(original==PERIOD_M1 ? PERIOD_M5 : PERIOD_M1))
+     {GOATActivationReloadRequired(); return true;}
+   if(phase=="reinitialized") return false;
+   if(phase=="manual_required")
+     {
+      // This invocation itself proves a subsequent human/normal reload. Never
+      // issue another automatic period change for the retained failed attempt.
+      if(!GOATActivationReloadWrite("reinitialized",original,temporary,expires))
+        {GOATActivationReloadRequired(); return true;}
+      Print("GOAT activation: manual OnInit observed after bounded reload failure.");
+      return false;
+     }
+   g_GOATDeviceActivationAccountId=(string)AccountInfoInteger(ACCOUNT_LOGIN);
+   g_GOATDeviceActivationBuildId=GOAT_BUILD_ID;
+   if(expires<(long)TimeGMT() || expires>(long)TimeGMT()+30)
+     {
+      // A later genuine human chart reload can initialize using the approved
+      // credential. Do not issue another automatic chart change.
+      if(!GOATActivationReloadWrite("reinitialized",original,temporary,expires))
+        {GOATActivationReloadRequired(); return true;}
+      Print("GOAT activation: later OnInit observed; automatic restart expired.");
+      return false;
+     }
+   if(phase=="switch_requested" && Period()==temporary)
+     {
+      g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_APPROVED;
+      g_GOATDeviceActivationReloadRequested=true;
+      g_GOATActivationReloadDeadline=GetTickCount64()+(ulong)(expires-(long)TimeGMT())*1000;
+      if(!GOATActivationReloadWrite("restore_requested",original,temporary,expires)
+         || !ChartSetSymbolPeriod(ChartID(),Symbol(),(ENUM_TIMEFRAMES)original))
+         GOATActivationReloadRequired();
+      return true;
+     }
+   if(phase=="restore_requested" && Period()==original)
+     {
+      if(!GOATActivationReloadWrite("reinitialized",original,temporary,expires))
+        {GOATActivationReloadRequired(); return true;}
+      GOATDeviceActivationStatus("activation_oninit_observed",0,0,0);
+      Print("GOAT activation: original timeframe restored; real OnInit observed.");
+      return false;
+     }
+   GOATActivationReloadRequired(); return true;
+  }
+bool GOATActivationReloadOnInit(void)
+  {
+   if(GOATActivationReloadPendingOnInit()) return true;
+   // Every non-pending path must release activation-only state, including a
+   // missing ticket, an already completed ticket and a genuine manual reload.
+   GOATActivationReloadReset();
+   return false;
+  }
+#endif
+
 void GOATDeviceActivationRequestReload(void)
   {
    g_GOATDeviceActivationUserCode="";
+   GOATDeviceActivationWithdrawCode();
    if(g_GOATDeviceActivationReloadRequested) return;
    g_GOATDeviceActivationReloadRequested=true;
    HidePrompt();
+#ifndef GOAT_MONITOR_ONBOARDING_V149
    ShowPrompt("GOAT activation complete","Your GOAT user credential is installed.",
                "Restarting V"+GOAT_VERSION_LABEL+" automatically...","");
+#endif
    g_GOATDeviceActivationId="";
    g_GOATDeviceActivationCandidate="";
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   long original=(long)Period(),temporary=(Period()==PERIOD_M1 ? PERIOD_M5 : PERIOD_M1);
+   long expires=(long)TimeGMT()+20;
+   g_GOATActivationReloadDeadline=GetTickCount64()+20000;
+   GOATDeviceActivationStatus("activation_reload_pending",0,0,20);
+   ShowPrompt("GOAT is connected","MT5 account "+(string)AccountInfoInteger(ACCOUNT_LOGIN)+" is approved.",
+      "Starting GOAT on this chart...","");
+   if(!GOATActivationReloadWrite("switch_requested",original,temporary,expires)
+      || !ChartSetSymbolPeriod(ChartID(),Symbol(),(ENUM_TIMEFRAMES)temporary))
+      GOATActivationReloadRequired();
+#else
    if(!ChartSetSymbolPeriod(ChartID(),Symbol(),Period()))
      {
       // Keep the request latched: activation-only mode remains inert and this
@@ -233,6 +502,7 @@ void GOATDeviceActivationRequestReload(void)
       ShowPrompt("GOAT activation complete","Your GOAT user credential is installed.",
                   "Remove and add V"+GOAT_VERSION_LABEL+" once to finish setup.","");
      }
+#endif
   }
 
 // Exclusive handle is owned by the caller. Reserve before network IO so a
@@ -252,7 +522,7 @@ void GOATDeviceActivationAdmissionFailure(void)
    g_GOATDeviceActivationUserCode="";
    g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_BLOCKED;
    GOATDeviceActivationStatus("activation_storage_error",0,0,0);
-   GOATDeviceActivationShowRetry("Activation cooldown storage needs repair. No further requests will be sent.");
+   GOATDeviceActivationShowRetry("MT5 can't save GOAT's sign-in timer in Common Files.");
   }
 
 bool GOATDeviceActivationRequestStart(void)
@@ -264,7 +534,8 @@ bool GOATDeviceActivationRequestStart(void)
    g_GOATDeviceActivationNextAttemptTick=now_tick+30000;
 
    string json="{\"accountId\":\""+g_GOATDeviceActivationAccountId
-               +"\",\"buildId\":\""+g_GOATDeviceActivationBuildId+"\"}";
+               +"\",\"buildId\":\""+g_GOATDeviceActivationBuildId
+               +"\",\"brokerFacts\":"+GOATBrokerFactsJson("ea-device-start")+"}";
    string response="";
    // All terminals under this Windows user share one admission cooldown.
    // The exclusive file handle spans the request; never overwrite another lease.
@@ -323,7 +594,7 @@ bool GOATDeviceActivationRequestStart(void)
                                       expires_at_ms,poll_seconds,credential_candidate))
      {
       response="";
-      GOATDeviceActivationShowRetry("The activation response was invalid.");
+      GOATDeviceActivationShowRetry("GOAT sent an unexpected sign-in reply.");
       return true;
      }
    response="";
@@ -338,6 +609,7 @@ bool GOATDeviceActivationRequestStart(void)
    credential_candidate="";
    GOATDeviceActivationStatus("awaiting_approval",201,0,poll_seconds);
    GOATDeviceActivationShowCode(user_code,verification_url);
+   GOATDeviceActivationShareCode();
    user_code="";
    return true;
   }
@@ -359,6 +631,11 @@ bool GOATDeviceActivationBegin(const long account_id,const string build_id,
 void GOATDeviceActivationTimer(void)
   {
    if((long)TimeGMT()*1000>=g_GOATDeviceActivationExpiresAtMs) g_GOATDeviceActivationUserCode="";
+   GOATDeviceActivationSyncCode();
+#ifdef GOAT_MONITOR_ONBOARDING_V149
+   if(g_GOATDeviceActivationReloadRequested && g_GOATActivationReloadDeadline>0
+      && GetTickCount64()>=g_GOATActivationReloadDeadline) GOATActivationReloadRequired();
+#endif
    if(!GOATDeviceActivationOnly() || g_GOATDeviceActivationReloadRequested) return;
 
    string existing_headers="";
@@ -388,7 +665,7 @@ void GOATDeviceActivationTimer(void)
       g_GOATDeviceActivationCandidate="";
       g_GOATDeviceActivationState=GOAT_DEVICE_ACTIVATION_STARTING;
       g_GOATDeviceActivationNextAttemptTick=now_tick+1000;
-      GOATDeviceActivationShowRetry("The pairing code expired; requesting a fresh code.");
+      GOATDeviceActivationShowRetry("The connection code expired; getting a new one.");
       return;
      }
 
@@ -424,7 +701,7 @@ void GOATDeviceActivationTimer(void)
       || !GOATJsonGetString(response,tokens,0,"status",activation_status))
      {
       response="";
-      GOATDeviceActivationShowRetry("The activation response was invalid.");
+      GOATDeviceActivationShowRetry("GOAT sent an unexpected sign-in reply.");
       return;
      }
    if(activation_status=="PENDING")
@@ -438,7 +715,7 @@ void GOATDeviceActivationTimer(void)
          || poll_seconds<3 || poll_seconds>15)
         {
          response="";
-         GOATDeviceActivationShowRetry("The activation response was invalid.");
+         GOATDeviceActivationShowRetry("GOAT sent an unexpected sign-in reply.");
          return;
         }
       g_GOATDeviceActivationPollSeconds=(int)poll_seconds;
@@ -451,14 +728,14 @@ void GOATDeviceActivationTimer(void)
       if(!GOATJsonExactFields(response,tokens,0,expected))
         {
          response="";
-         GOATDeviceActivationShowRetry("The approval response was invalid.");
+         GOATDeviceActivationShowRetry("GOAT sent an unexpected sign-in reply.");
          return;
         }
       response="";
       g_GOATDeviceActivationUserCode="";
       if(!GOATDeviceActivationWriteCredential())
         {
-         GOATDeviceActivationShowRetry("MT5 could not store the GOAT user credential.");
+         GOATDeviceActivationShowRetry("MT5 could not save the GOAT sign-in file.");
          return;
         }
       GOATDeviceActivationStatus("approved",200,0,0);
@@ -467,6 +744,6 @@ void GOATDeviceActivationTimer(void)
       return;
      }
    response="";
-   GOATDeviceActivationShowRetry("The activation state was invalid.");
+   GOATDeviceActivationShowRetry("GOAT sent an unexpected sign-in reply.");
   }
 

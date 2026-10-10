@@ -5,6 +5,15 @@ controller/CLI for operations; use a screenshot only to inspect the finished UI
 when requested. A missing controller operation is an implementation gap, not a
 reason to quietly substitute repeated mouse clicks.
 
+Research dates follow the [OOS window formula](OOS-WINDOW-FORMULA.md): every
+BOOS, SAMPLE, FWD and FOOS date comes from O and the export Friday, and FOOS is
+held out of ranking.
+
+The agreed [agent recovery tool contract](AGENT-RECOVERY-TOOLS.md) defines the
+next implementation target: goal-level setup, MT5 WebRequest/DLL configuration,
+automatic recovery and customer-readable repair reports. Proposed tools there
+are not yet advertised as installed capabilities.
+
 ## Choose the task
 
 These instructions apply to the current user's installation. Discover installed
@@ -24,6 +33,7 @@ EA, controller, optimization files and matrix distribution.
 | Inspect active trading/exposure | `goat-vps-trade-audit` skill | Observed positions, deals, inputs and effective policies |
 | Create or benchmark optimization inputs | `goat-opt-file-create`, `goat-seed-farming` | File integrity, bounded tests and scoped post-run cleanup |
 | Operate Optimization Studio settings, queue and controller | [Studio controller guide](OPTIMIZATION-STUDIO-CONTROLLER.md) | Local/managed controls, exact research command schema, persistence, ownership, receipts, recovery and explicit V1.48 capability gaps |
+| Inspect current machine and completed pilot cost | Installed `goat.exe studio --installation <receipt>` with `resource-profile` and `benchmark-report --batch-id <completed-id>`; [command contract](../../controller/README.md#measure-a-pilot-before-committing-a-research-budget) | Current CPU/RAM/filesystem facts and exact completed batch/report/timeline observations; no throughput prediction, native worker count or launch |
 | Launch an optimization | `mt5-goat-optimize` and the campaign's current continuation | Exact retained queue, controller ownership, native results |
 | Operate the Electron portfolio builder | Its authenticated local agent API and repo operating docs | Saved pool/job/portfolio IDs and exports; no screen dependency |
 
@@ -36,6 +46,27 @@ Read [the native controller runbook](NATIVE-CONTROLLER-RUNBOOK.md) before issuin
 commands. Read [the V1.48 verification notes](V1.48-DASHBOARD-VERIFICATION.md) for
 the current dashboard change and its unfinished verification.
 
+## Agree a measured research budget
+
+Before a large optimization, run `resource-profile` and discuss the user's
+wall-clock window and available disk space. CPU specifications do not establish
+MT5 worker availability or optimization speed. Prepare a small representative
+pilot with `prepare-batch` (even for one member), run it through the normal
+explicit start/finish workflow, then inspect `benchmark-report --batch-id`.
+Match exact assets, timeframes, dates, models, forward settings, input axes and
+exports. Retain the batch ID and returned evidence hashes. Missing or ambiguous
+timing remains unknown; do not substitute guessed genetic pass counts or a
+universal timeframe multiplier. These inspection commands neither consume human
+control requests nor start, finish or reconcile work.
+
+Use comparable completed pilots to present a provisional scenario table with
+sample count, observed range, unmeasured groups and storage/restart uncertainty.
+Current machine facts do not prove past worker/cache/load conditions. Agree the
+next batch scope with the user before committing its budget. Larger diverse,
+independently validated pools can offer more portfolio choices; merely adding
+correlated or overfit candidates does not demonstrate improvement. Explain the
+tradeoff between research cost, useful diversity and validation quality.
+
 ## First five observations
 
 1. Read the user's current request and installed tool capabilities. For an
@@ -43,7 +74,11 @@ the current dashboard change and its unfinished verification.
    pause note. A new installation needs no research `CONTINUE.md`.
 2. Resolve the exact executable, data directory, Common Files directory, account,
    server, build ID, EX5 hash and process creation time. A terminal nickname is
-   not a sufficient identity.
+   not a sufficient identity. Terminals are independent: with V1.49 terminal
+   isolation each terminal/account has its own batch folder
+   (`GOAT\<EA>-<server>-<login>-<hash>`) and its own sign-in file, so read the
+   folder and credential of the terminal you were given, never another terminal's
+   (see [INVARIANTS.md](INVARIANTS.md), INV-BATCH-01 and INV-CRED-01).
 3. Read active requests, receipts, producer ownership and expiry. Do not create
    another request while an earlier mutation has an unresolved outcome.
 4. Check current native account, connection, trading state and position/order

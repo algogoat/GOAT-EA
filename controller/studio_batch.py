@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import re
 import tempfile
+import time
 import configparser
 import uuid
 
@@ -24,8 +25,10 @@ from studio_template_tools import source_bytes, validate_raw
 
 MAX_PLAN_BYTES = 64 * 1024 * 1024
 MAX_RETAINED_SET_BYTES = 128 * 1024 * 1024
+# Binding fields that select the report-capable /config start route (goat_studio.binding).
+CONFIG_START_BINDING_KEYS = ('research_profile', 'report_location_bridge', 'startup_monitor')
 
-def _json(path, limit=MAX_PLAN_BYTES):
+def _json(path, limit=MAX_PLAN_BYTES, *, with_raw=False):
     path = Path(path)
     if path.stat().st_size > limit: raise ValueError('Batch JSON exceeds its byte limit')
     with path.open('rb') as stream: raw = stream.read(limit + 1)
@@ -36,7 +39,8 @@ def _json(path, limit=MAX_PLAN_BYTES):
             if key in result: raise ValueError('Duplicate batch JSON key: ' + key)
             result[key] = value
         return result
-    return json.loads(raw.decode('utf-8-sig'), object_pairs_hook=unique)
+    value=json.loads(raw.decode('utf-8-sig'), object_pairs_hook=unique)
+    return (value,raw) if with_raw else value
 
 
 def _files(package):
@@ -49,7 +53,13 @@ def _files(package):
     return result
 
 
-def _verify_package(controller, job):
+def _verify_package(controller, job, *, allow_peer_refresh=False, allow_binding_change=False):
+    """Verify a frozen package against this installation.
+
+    ``allow_peer_refresh`` is only for reading a finished package's remaining
+    work: the protected peer's process instance (and so its reviewed policy hash)
+    may have changed since preparation; every other binding field must match.
+    """
     package = controller.root / 'packages' / job['job_id']
     receipt = _json(package / 'preparation.json')
     plan = _json(package / 'studio-plan.json'); manifest = _json(package / 'manifest.json')
@@ -60,7 +70,32 @@ def _verify_package(controller, job):
     if source != dict(terminal_id=controller.terminal, run_id=controller.run, job_id=job['job_id'],
                       source_revision=job['source_revision'], configuration_sha256=job['configuration_sha256']):
         raise ValueError('Prepared batch belongs to another queue revision')
-    if plan['research_binding'] != controller.binding() or manifest['campaign_id'] != sha(plan):
+    recorded, current = plan['research_binding'], controller.binding()
+    if allow_binding_change:
+        # Reading a FINISHED package's remaining work after an EA build change: the
+        # package is never launched again, so its own recorded binding stands; the
+        # successor is prepared and fully verified under the current installation.
+        if job['status'] not in ('completed', 'cancelled', 'failed'):
+            raise ValueError('Only a finished package may be read across an installation change')
+        current = recorded
+    if allow_peer_refresh:
+        if job['status'] not in ('completed', 'cancelled', 'failed'):
+            raise ValueError('A refreshed protected peer only reads a finished package')
+        from studio_protected_peer import PEER_BINDING_KEYS
+        recorded = {key: value for key, value in recorded.items() if key not in PEER_BINDING_KEYS}
+        current = {key: value for key, value in current.items() if key not in PEER_BINDING_KEYS}
+    # A restarted protected peer is the same reviewed peer (studio_protected_peer):
+    # a package prepared under the exact-instance rule still verifies when its
+    # recorded policy names this peer's unchanged executable, data root and bytes.
+    from studio_protected_peer import comparable
+    recorded, current = comparable(controller, recorded, current)
+    if ((getattr(controller, 'session', None) or {}).get('authority_kind') == 'native_human_control'
+            and not any(key in recorded for key in CONFIG_START_BINDING_KEYS)):
+        # A customer package prepared before the lane gained the report-capable
+        # route stays readable for status/finish with every other identity field
+        # exact. Config start still refuses it (no profile/bridge recorded).
+        current = {key: value for key, value in current.items() if key not in CONFIG_START_BINDING_KEYS}
+    if recorded != current or manifest['campaign_id'] != sha(plan):
         raise ValueError('Prepared batch installation or plan identity changed')
     if 'launch_intent' in job and hashlib.sha256((package / 'manifest.json').read_bytes()).hexdigest() != job['launch_intent']['package_sha256']:
         raise ValueError('Attempt package identity changed')
@@ -69,7 +104,9 @@ def _verify_package(controller, job):
     from activate_research_campaign import verify_export_policy
     members = configuration_members(job['configuration'])
     if len(members) != len(manifest['jobs']): raise ValueError('Prepared batch member count changed')
-    for member, item in zip(members, manifest['jobs']):
+    from studio_batch_seal import sealed
+    # A valid prepare-time seal plus unchanged bytes stands in for the semantic pass.
+    for member, item in ([] if sealed(package, job, controller.schema) else zip(members, manifest['jobs'])):
         alias = item['run_alias']
         if not re.fullmatch(r'R[0-9a-f]{20}', alias): raise ValueError('Invalid batch alias')
         for suffix, key in (('.set', 'staged_sha256'), ('.ini', 'ini_sha256')):
@@ -85,20 +122,75 @@ def _verify_package(controller, job):
     return package, plan, manifest
 
 
-def prepare_batch(controller, batch_id, plan_path):
-    if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
-        raise ValueError('Batch ID must be 1..80 letters, digits, underscore or hyphen')
+def evidence_end_policy(value, testers, *, now=None):
+    """Batch evidence end ("front OOS" end): AUTO or an explicit closed broker day, recorded at prepare.
+
+    The current EA ends each export at its own last Friday (exclusive), so the
+    exports' actual end is recorded by the EA; OOS catch-up brings them to this
+    target. Never later than a closed broker day, never before the window end.
+    """
+    from studio_evidence_end import evidence_end_mode, legacy_end, resolve
+    if not isinstance(value, str):
+        raise ValueError('evidence_end must be "auto" or a closed broker date such as 2026-09-25')
+    window_end = max(datetime.strptime(t['ToDate'], '%Y.%m.%d').date() for t in testers)
+    target = resolve(value, now, not_before=[(window_end, 'the optimization window end (ToDate)')])
+    # A legacy explicit non-Friday end keeps its warning (never refused) and is stamped legacy_explicit.
+    return dict(requested=target['requested'], mode=target['mode'], evidenceEndMode=evidence_end_mode(target),
+                target=target['iso'], target_label=target['label'],
+                tester_to_date=target['tester_to_date'], rule=target['rule'], warnings=target['warnings'],
+                resolved_utc=datetime.now(timezone.utc).isoformat(timespec='seconds') if now is None else now.isoformat(timespec='seconds'),
+                native_export_end='ea_last_friday_exclusive', native_end_if_exported_now=legacy_end(now)['iso'],
+                catch_up=('This EA build ends each export at its own last Friday (Thursday evidence). After the batch, '
+                          'evidence-scan shows each export\'s end and catchup-prepare re-tests the stale ones to the target.'))
+
+
+def oos_windows_evidence(record, evidence):
+    """A formula batch's export must stop at the optimization end, so FOOS never reaches the EA's
+    export ranking. Only builds with EvidenceEnd (goat-evidence-end-v1) can; older builds refuse."""
+    from studio_oos_windows import assert_foos_held_out
+    if not isinstance(evidence, dict) or 'ea_setting' not in evidence:
+        basis = ((evidence or {}).get('ea_capability') or {}).get('basis') if isinstance(evidence, dict) else None
+        raise ValueError('The OOS window formula holds FOOS (%s to %s) out of the export by ending exports at the '
+                         'optimization end (EvidenceEnd=%s). This EA build has not reported EvidenceEnd support (%s), so its '
+                         'exports would run into FOOS and rank on it. Use an FU35+ EA (monitor reports goat-evidence-end-v1) '
+                         'or give explicit dates without oos_windows.'
+                         % (record['foos']['first_day'], record['foos']['last_day'], record['tester']['ToDate'],
+                            basis or 'capability unknown'))
+    assert_foos_held_out(record, evidence)
+    if evidence.get('evidenceEndEffective') != evidence.get('evidenceEnd') or evidence.get('evidenceEnd') != record['export_evidence_end']:
+        raise ValueError('A formula batch must cover exactly its nominal export end %s; the exports would cover through %s '
+                         '(MT5 ToDate is exclusive). Nothing was staged.'
+                         % (record['export_evidence_end'], evidence.get('evidenceEndEffective')))
+    # The export end is a Saturday by design (no FX trading); replace the generic "not a Friday" warning.
+    evidence['warnings'] = [warning for warning in evidence.get('warnings') or [] if 'is not a Friday' not in warning]
+    evidence['evidenceEndMode'] = 'oos_windows'     # the optimization end, by design; not a legacy explicit end
+    evidence['oos_windows_note'] = ('Exports stop at the optimization end %s (EvidenceEnd %s, the Saturday after it) so the '
+                                    'EA ranks sets without FOOS. %s' % (record['optimization_end'], record['tester']['ToDate'],
+                                                                         record['foos_replay']['plain']))
+    evidence['catch_up'] = record['foos_replay']['plain']
+    return evidence
+
+
+def read_plan(controller, plan_path, *, now=None):
     plan_path = Path(plan_path)
-    spec = _json(plan_path)
-    if not isinstance(spec, dict) or set(spec) != {'schema_version', 'export', 'members'} or spec['schema_version'] != 1:
-        raise ValueError('Batch plan requires schema_version:1, export and members')
+    spec, source_plan = _json(plan_path,with_raw=True)
+    if (not isinstance(spec, dict) or set(spec) - {'evidence_end', 'oos_windows'} != {'schema_version', 'export', 'members'}
+            or spec['schema_version'] != 1):
+        raise ValueError('Batch plan requires schema_version:1, export and members (optional: evidence_end, oos_windows)')
+    # OOS window formula (goat-oos-windows-v1): with oos_windows every date comes from O and the
+    # export Friday and is written into the members, export and evidence_end explicitly. A plan
+    # without it keeps exactly its own explicit dates.
+    from studio_oos_windows import apply_to_batch_spec
+    spec, oos_record = apply_to_batch_spec(spec, now=now)
+    if oos_record is not None:
+        spec['oos_windows'] = oos_record
     if not isinstance(spec['members'], list) or not 1 <= len(spec['members']) <= 10000:
         raise ValueError('Specify 1..10000 explicit file/asset members')
     raw_members, retained = [], []
     retained_bytes = 0
     for member in spec['members']:
-        if not isinstance(member, dict) or set(member) != {'set_path', 'tester'}:
-            raise ValueError('Every member requires set_path and complete tester settings')
+        if not isinstance(member, dict) or set(member) - {'strategy_ref'} != {'set_path', 'tester'}:
+            raise ValueError('Every member requires set_path and complete tester settings (optional: strategy_ref)')
         if not isinstance(member['set_path'], str) or not Path(member['set_path']).is_absolute():
             raise ValueError('Batch SET paths must be absolute on this installation')
         source, raw, _ = source_bytes(member['set_path'])
@@ -113,6 +205,35 @@ def prepare_batch(controller, batch_id, plan_path):
         retained.append((source, raw, inspect_set(raw)))
     checked = validate_batch_members(raw_members, controller.schema, controller.policy)
     config = dict(checked[0], batch_members=checked)
+    return config, raw_members, retained, hashlib.sha256(source_plan).hexdigest(), spec
+
+
+def prepare_batch(controller, batch_id, plan_path, *, now=None):
+    if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+        raise ValueError('Batch ID must be 1..80 letters, digits, underscore or hyphen')
+    from studio_seed_slot import refuse_prepare_while_seed_owns
+    refuse_prepare_while_seed_owns(controller.root)   # a start would refuse later with start_uncertain
+    config, raw_members, retained, source_hash, spec = read_plan(controller, plan_path, now=now)
+    evidence = (evidence_end_policy(spec['evidence_end'], [m['tester'] for m in config['batch_members']], now=now)
+                if 'evidence_end' in spec else None)
+    from studio_research_authority import authority
+    # FU35+ EAs receive the one resolved date as EvidenceEnd; older builds keep the recorded legacy end.
+    from studio_evidence_end_export import for_controller, stamp_effective
+    evidence = for_controller(controller, evidence)
+    # Nominal evidenceEnd and the last day the exports actually cover (MT5 ToDate is exclusive).
+    evidence = stamp_effective(evidence)
+    oos_record = spec.get('oos_windows')
+    if oos_record is not None:
+        oos_windows_evidence(oos_record, evidence)
+    # Held-out lock (goatai#2221 §4.3): refuse a member overlapping an active lock of its
+    # strategy before anything is staged; its strategy_ref is bound into the frozen plan.
+    from studio_heldout_guard import check_batch_plan
+    strategy_refs = check_batch_plan(controller, spec, config, retained, evidence=evidence, now=now)
+    from campaign_ledger import packed
+    scope = authority(controller.store.db,packed(dict(terminal_id=controller.terminal,run_id=controller.run)),controller.state())
+    if scope is not None and (source_hash!=scope['plan_sha256'] or sha(raw_members)!=scope['members_sha256']):
+        raise ValueError('Batch inputs differ from the immutable research continuation')
+    checked = config['batch_members']
     snapshot = controller.state()
     existing = next((j for j in snapshot['queue'] if j['job_id'] == batch_id), None)
     package = controller.root / 'packages' / batch_id
@@ -121,6 +242,14 @@ def prepare_batch(controller, batch_id, plan_path):
             raise ValueError('Batch ID already belongs to different members/settings; use a new revision ID')
         _, _, manifest = _verify_package(controller, existing)
         return dict(batch_id=batch_id, package=str(package), manifest=manifest, reused=True, native_started='launch_intent' in existing)
+    if scope is not None and snapshot['queue']:
+        from studio_research_retry import predecessor
+        # Read-only preflight before staging; store rechecks under its gate/CAS.
+        predecessor(controller.store.db,snapshot,scope)
+        controller.runtime(require_idle=True,expected_batch_ongoing=False)
+        from studio_monitor_probe import inspect_idle_demo
+        from studio_rejected_monitor import require_demo
+        require_demo(inspect_idle_demo(controller))
     if snapshot['owner'] != 'agent': raise ValueError('Current controller required: human must Give to Agent first')
     if package.exists(): raise ValueError('Unqueued preparation artifacts exist; preserve them and choose a new batch ID')
     # Stage every native artifact before queue publication. The original snapshot
@@ -145,6 +274,8 @@ def prepare_batch(controller, batch_id, plan_path):
                     timeframe=tester['Period'], forward_mode=4, execution_mode=tester['ExecutionMode'])))
             sources.append(dict(set_path=str(source), set_sha256=info['sha256'], symbol=tester['Symbol'],
                 template_id=template, revision_id=revision))
+            if strategy_refs[len(sources) - 1] is not None:
+                sources[-1]['strategy_ref'] = strategy_refs[len(sources) - 1]
         db.commit()
     finally:
         db.close()
@@ -154,6 +285,14 @@ def prepare_batch(controller, batch_id, plan_path):
             job_id=batch_id, source_revision=job['source_revision'], configuration_sha256=job['configuration_sha256']),
         native_batch=dict(export_end_policy='native_last_friday_record_actual', back_oos_date=exports['BackOOSDate'],
             forward_start=checked[0]['tester']['ForwardDate'], export_settings=exports), jobs=planned)
+    if evidence is not None:
+        plan['native_batch']['evidence_end'] = evidence
+    if oos_record is not None:
+        # Hash-bound with the plan; prepare_native_campaign and activation re-derive and verify it.
+        plan['native_batch']['oos_windows'] = oos_record
+    if any(ref is not None for ref in strategy_refs):
+        # Per member, in member order; hash-bound by manifest.campaign_id = sha(plan).
+        plan['strategy_refs'] = strategy_refs
     plan['native_batch']['run_relative'] = native_run_relative(plan)
     package.parent.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='goat-batch-plan-') as temporary:
@@ -164,6 +303,8 @@ def prepare_batch(controller, batch_id, plan_path):
     write_json(controller.root / 'packages' / (batch_id + '.source.json'), dict(batch_id=batch_id, members=sources))
     write_json(package / 'preparation.json', dict(schema_version=1, configuration_sha256=sha(config), files=_files(package)))
     _verify_package(controller, job)
+    from studio_batch_seal import write as write_seal
+    write_seal(package, job, controller.schema)
     request = dict(schema_version=1, request_id=batch_id + '-batch', terminal_id=controller.terminal, run_id=controller.run,
         expected_revision=snapshot['revision'], generation=snapshot['generation'], command='queue.enqueue_batch', payload=dict(job_id=batch_id, members=raw_members))
     request_path = controller.root / 'requests' / (request['request_id'] + '.json')
@@ -175,8 +316,17 @@ def prepare_batch(controller, batch_id, plan_path):
         raise ValueError('Prepared package retained; queue publication was not confirmed. Inspect queue state and use a new ID after reconciling ownership/revision: ' + str(exc)) from exc
     controller.bridge.pump()
 
-    return dict(batch_id=batch_id, member_count=len(planned), package=str(package), manifest=manifest,
-        native_started=False, next_action='Review settings and use start --job-id with this batch ID; Studio runs the entire native queue')
+    return dict(batch_id=batch_id, member_count=len(planned), package=str(package), manifest=manifest, evidence_end=evidence,
+        native_started=False, next_action=_start_next_action(controller, batch_id))
+
+
+def _start_next_action(controller, batch_id):
+    if (getattr(controller, 'session', None) or {}).get('authority_kind') == 'native_human_control':
+        # Raw start is refused here: an in-place Start never makes MT5 write the batch reports.
+        return ('Review settings with the user, tell them GOAT closes and reopens their MT5 to start the batch, then after '
+                'their yes run run-batch --job-id ' + batch_id + ' --max-seconds <budget> --mt5-restart-consent; '
+                'Studio runs the entire native queue')
+    return 'Review settings and use start --job-id with this batch ID; Studio runs the entire native queue'
 
 
 def save_batch(controller, batch_id, output):
@@ -195,17 +345,83 @@ def save_batch(controller, batch_id, output):
         state='saved_unstarted_native_batch', source_batch_id=batch_id)
 
 
+GATE_BUSY_WAIT_SECONDS = 3.0
+GATE_BUSY_POLL_SECONDS = 0.1
+
+
+def gate_busy(error):
+    """The native gate (or a file it guards) is held by another process right now.
+
+    The gate is opened without any FILE_SHARE flag, so a concurrent opener gets
+    ERROR_SHARING_VIOLATION (32) or ERROR_LOCK_VIOLATION (33) at once instead of
+    waiting; POSIX flock(LOCK_NB) raises BlockingIOError.
+    """
+    return getattr(error, 'winerror', None) in (32, 33) or isinstance(error, BlockingIOError)
+
+
+def _observe_when_gate_free(controller, batch_id, *, wait=GATE_BUSY_WAIT_SECONDS,
+                            poll=GATE_BUSY_POLL_SECONDS, clock=time.monotonic, sleep=time.sleep):
+    """Reconcile is an observation; while a start/stop holds the gate, wait briefly, then defer.
+
+    A refused gate acquisition commits nothing, so retrying it is safe and never
+    repeats a command. After the wait, status answers from the retained state
+    instead of failing the read (T3 2026-10-03: WinError 32 during each start).
+    """
+    deadline = clock() + wait
+    while True:
+        try:
+            controller.reconcile(batch_id)
+            return None
+        except OSError as error:
+            if not gate_busy(error):
+                raise
+            if clock() >= deadline:
+                return dict(reason='native_gate_busy', retained_state_only=True,
+                            plain='A start or stop is using the native gate right now, so this answer is the '
+                                  'last retained state without a new observation. Poll batch-status again.')
+            sleep(poll)
+
+
 def batch_status(controller, batch_id):
     job = controller.job(batch_id)
+    deferred = None
     if 'launch_intent' in job and job['status'] not in ('completed', 'failed', 'cancelled'):
-        controller.reconcile(batch_id)
+        # Never changes a start in flight: studio_reconcile leaves a 'starting'
+        # attempt with nothing dispatched untouched (no transaction, no revision).
+        deferred = _observe_when_gate_free(controller, batch_id)
         job = controller.job(batch_id)
     members = job['configuration'].get('batch_members', [job['configuration']])
-    return dict(batch_id=batch_id, status=job['status'], member_count=len(members),
+    extra = {} if deferred is None else dict(observation_deferred=deferred)
+    observed = (job.get('native_observation') or {}).get('native') or (job.get('completion') or {}).get('native')
+    if isinstance(observed, dict) and observed.get('status') == 'native_error' and 'launch_intent' in job:
+        from studio_native_diagnostics import for_job
+        # The EA journal says why the native queue ended in Error (read-only quote).
+        no_edge = [item.get('index') for item in (job.get('completion') or {}).get('research_outcomes') or [] if isinstance(item, dict)]
+        extra['native_error_evidence'] = for_job(controller, job, observed, no_edge)
+    evidence = oos = None
+    plan_path = controller.root / 'packages' / batch_id / 'studio-plan.json'
+    if plan_path.is_file():
+        try:
+            native = _json(plan_path).get('native_batch') or {}
+            evidence, oos = native.get('evidence_end'), native.get('oos_windows')
+        except (OSError, ValueError):
+            evidence = oos = None
+    if isinstance(oos, dict):
+        # Formula batches only (goat-oos-windows-v1): every window and the FOOS replay to run after the batch.
+        extra['oos_windows'] = dict(o_weeks=oos.get('o_weeks'), export_friday=oos.get('export_friday'),
+                                    optimization_end=oos.get('optimization_end'),
+                                    windows={key: dict(first_day=(oos.get(key) or {}).get('first_day'),
+                                                       last_day=(oos.get(key) or {}).get('last_day'),
+                                                       weeks=(oos.get(key) or {}).get('weeks'))
+                                             for key in ('boos', 'sample', 'fwd', 'foos')},
+                                    foos_replay=oos.get('foos_replay'))
+    return dict(batch_id=batch_id, status=job['status'], member_count=len(members), evidence_end=evidence, **extra,
         native=job.get('native_observation'), result_path=job.get('completion_path'),
         members=[dict(index=index, symbol=member['tester']['Symbol'], timeframe=member['tester']['Period'],
             ea_desc=member['strategy']['values']['EA_Desc'], configuration_sha256=sha(member)) for index, member in enumerate(members)],
-        configuration_sha256=job['configuration_sha256'])
+        configuration_sha256=job['configuration_sha256'],
+        # Tested with no profitable settings in their window: results, not failures.
+        research_outcomes=(job.get('completion') or {}).get('research_outcomes'))
 
 
 def _section(text, name):
@@ -233,7 +449,9 @@ def load_batch(controller, batch_id, source):
     if parser.defaults() or parser.sections() != ['Export']:
         raise ValueError('Unexpected export settings in saved batch')
     export = {}
-    for key, value in parser['Export'].items():
+    from studio_evidence_end_export import saved_value
+    saved_evidence_end = saved_value(dict(parser['Export']))
+    for key, value in ((k, v) for k, v in parser['Export'].items() if k != 'EvidenceEnd'):
         if key in ('AdjustLots', 'IncludeBackOOS', 'IncludeSequenceData'):
             if value not in ('0', '1'):
                 raise ValueError('Invalid saved export boolean')
@@ -286,7 +504,11 @@ def load_batch(controller, batch_id, source):
         set_path = imported / f'{index + 1:05d}.set'; set_path.write_bytes(set_raw)
         plan_members.append(dict(set_path=str(set_path), tester=member['tester']))
     plan_path = imported / 'plan.json'
-    write_json(plan_path, dict(schema_version=1, export=export, members=plan_members))
+    imported_plan = dict(schema_version=1, export=export, members=plan_members)
+    if saved_evidence_end is not None:
+        # A saved EvidenceEnd is revalidated at prepare; it never bypasses the closed-day rule.
+        imported_plan['evidence_end'] = saved_evidence_end
+    write_json(plan_path, imported_plan)
     write_json(imported / 'provenance.json', dict(source_path=str(source), source_sha256=hashlib.sha256(raw).hexdigest(),
         imported_as_new_batch=True, prior_states_do_not_authorize_execution=True))
     result = prepare_batch(controller, batch_id, plan_path)
@@ -295,14 +517,29 @@ def load_batch(controller, batch_id, source):
     return result
 
 
-def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False):
-    """Create a new native queue containing explicitly selected unfinished work."""
+def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False, include_no_edge=False,
+                 allow_peer_refresh=False, allow_binding_change=False, now=None, accept_news_change=False):
+    """Create a new native queue containing explicitly selected unfinished work.
+
+    `include_failed` retries real failures; members tested with no profitable
+    settings are results, so only `include_no_edge` deliberately re-runs them.
+    """
+    # A batch closed with batch-pause-close never resumes, by any path (studio_batch_close).
+    from studio_batch_close import refuse_closed
+    refuse_closed(controller.root, source_batch_id)
     previous = controller.job(source_batch_id)
     if previous['status'] not in ('completed', 'cancelled', 'failed'):
         raise ValueError('Stop/reconcile/finish the original batch before preparing its remaining work')
-    package, _, manifest = _verify_package(controller, previous)
+    package, source_plan, manifest = _verify_package(controller, previous, allow_peer_refresh=allow_peer_refresh,
+                                                     allow_binding_change=allow_binding_change)
+    current_binding = controller.binding()
+    changed_keys = sorted(key for key in set(source_plan['research_binding']) | set(current_binding)
+                          if source_plan['research_binding'].get(key) != current_binding.get(key))
     from studio_native_observe import observe
-    if 'launch_intent' not in previous:
+    # A start retired before activation never reached MT5: every member is unstarted.
+    never_activated = (previous['status'] == 'cancelled'
+                       and (previous.get('completion') or {}).get('kind') == 'retired_never_activated')
+    if 'launch_intent' not in previous or never_activated:
         if previous['status'] != 'cancelled': raise ValueError('Unstarted remaining work requires an explicit cancelled batch')
         observed = [dict(run_alias=member['run_alias'], status='native_cancelled') for member in manifest['jobs']]
     else:
@@ -313,21 +550,60 @@ def resume_batch(controller, source_batch_id, batch_id, *, include_failed=False)
     from studio_batch_contract import configuration_members
     configurations = configuration_members(previous['configuration'])
     if len(configurations) != len(manifest['jobs']): raise ValueError('Remaining-work configuration count mismatch')
-    selected = []
-    for native, config, evidence in zip(manifest['jobs'], configurations, observed):
+    # Members tested with no profitable settings are results for their window, not
+    # failures: retrying failures never re-runs them (finish recorded them); only the
+    # explicit include_no_edge override does.
+    no_edge = {item['index'] for item in (previous.get('completion') or {}).get('research_outcomes') or []
+               if isinstance(item, dict) and type(item.get('index')) is int}
+    # A successor keeps each member's declared strategy (held-out lock and trial attribution).
+    refs = source_plan.get('strategy_refs') if isinstance(source_plan.get('strategy_refs'), list) else []
+    selected, retries, selected_values = [], [], []
+    for index, (native, config, evidence) in enumerate(zip(manifest['jobs'], configurations, observed)):
         if evidence.get('run_alias') != native['run_alias']:
             raise ValueError('Remaining-work identity mismatch')
         status = evidence['status'].lower().removeprefix('native_')
         if status == 'completed': continue
-        if status == 'error' and not include_failed: continue
+        if status == 'error' and index in no_edge and not include_no_edge: continue
+        if status == 'error' and index not in no_edge and not include_failed: continue
         if status not in ('pending', 'queued', 'cancelled', 'error'):
             raise ValueError('Native member remains unresolved; do not infer stopped from process absence')
-        selected.append(dict(set_path=str(package / (native['run_alias'] + '.set')), tester=config['tester']))
+        # Never-run members first, then the opted-in failure retries.
+        selected_values.append(((config.get('strategy') or {}).get('values')) or {})
+        (retries if status == 'error' else selected).append(
+            dict(set_path=str(package / (native['run_alias'] + '.set')),
+                 # Across a build change the successor targets this installation's EA; its
+                 # inputs are then validated against this build's schema by prepare_batch.
+                 tester=config['tester'] | ({'Expert': controller.install['ea_relative_path']}
+                                           if allow_binding_change else {}),
+                 **({'strategy_ref': refs[index]} if index < len(refs) and isinstance(refs[index], dict) else {})))
+    selected += retries
     if not selected: raise ValueError('No unfinished members selected')
+    # News-file guard (studio_news_guard): a news-on successor continues only on its predecessor's news file,
+    # or as a new labelled news lineage with accept_news_change. Checked before anything is written.
+    from studio_news_guard import prepare_successor, save_record
+    import time as _time
+    news_record = prepare_successor(controller, previous, batch_id, selected_values,
+                                    ran='launch_intent' in previous and not never_activated, accept=accept_news_change,
+                                    now=_time.time())   # wall clock; `now` here is the evidence-end clock
     inputs = controller.root / 'batch-imports' / uuid.uuid4().hex; inputs.mkdir(parents=True)
     plan_path = inputs / 'remaining.json'
-    write_json(plan_path, dict(schema_version=1, export=previous['configuration']['export'], members=selected))
-    result = prepare_batch(controller, batch_id, plan_path)
+    remaining = dict(schema_version=1, export=previous['configuration']['export'], members=selected)
+    recorded = ((_json(package / 'studio-plan.json').get('native_batch') or {}).get('evidence_end')
+                if (package / 'studio-plan.json').is_file() else None)
+    if isinstance(recorded, dict) and isinstance(recorded.get('target'), str):
+        # The successor keeps the original batch's resolved date: "auto" must not move to a later Friday.
+        remaining['evidence_end'] = recorded['target']
+    oos_record = (source_plan.get('native_batch') or {}).get('oos_windows')
+    if isinstance(oos_record, dict):
+        # Same O and the same resolved export Friday: the successor's windows are the original's, day for day.
+        remaining['oos_windows'] = dict(optimization_weeks=oos_record['o_weeks'], export_friday=oos_record['export_friday'])
+    write_json(plan_path, remaining)
+    result = prepare_batch(controller, batch_id, plan_path, now=now)
+    result['news_file'] = save_record(controller, news_record)
     write_json(inputs / 'provenance.json', dict(source_batch_id=source_batch_id, new_batch_id=batch_id,
-        include_failed=include_failed, selected_count=len(selected)))
+        include_failed=include_failed, include_no_edge=include_no_edge, selected_count=len(selected),
+        never_run_count=len(selected) - len(retries), retry_count=len(retries),
+        no_edge_members=len(no_edge), source_binding_sha256=sha(source_plan['research_binding']),
+        binding_sha256=sha(current_binding), binding_changed_keys=changed_keys,
+        expert=controller.install['ea_relative_path'] if allow_binding_change else None))
     return result

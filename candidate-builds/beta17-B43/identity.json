@@ -1,0 +1,76 @@
+{
+  "schema": "goat-forward-candidate-identity-v1",
+  "version": "1.49",
+  "build_id": "V1.49-BETA17-43",
+  "build_marker": "B43",
+  "source_base": "78f3b3024fe0a8b3221e75002e3b5b7fc632d80d",
+  "consolidates": [
+    "CA41",
+    "PD43"
+  ],
+  "consolidated_heads": {
+    "CA41": {
+      "pr": "algogoat/GOAT-EA (claude-pc/b41-1-audit-exempt, 4f3f2f9; ported only, #186 not merged)",
+      "coordination": "algogoat/goatai#1885"
+    },
+    "PD43": {
+      "pr": "algogoat/GOAT-EA (claude-pc/profile-staged-ea)",
+      "coordination": "algogoat/goatai#1885 (design 6033442072, approved 6033450916)"
+    }
+  },
+  "change": "B41 plus the EA half of the beta.25 profile-staged deploy (goatai#1885, approved by Claude-Mac in 6033450916). MT5 loads every child chart from the controller-staged deploy profile at start-up; the dashboard only adopts the children it finds. A new link_children portfolio action runs one adoption pass: the TSV cid is tried first, otherwise every chart is fingerprinted once, and a child is adopted only on a one-to-one match of symbol, period, this EA, a CID record naming a free magic and a saved-template snapshot that reproduces the row's frozen SET (the settingsMatch rule, refactored to take a chart id), and that carries this deployment's nonce: the registration binds deploymentId (32 lowercase hex) and the child's WriteSet-omitted sinput Studio_MonitorRunPath must hold exactly deploy=<deploymentId> (goatai#1885 6034810079), so a hand-added chart with the same SET never links. Adoption runs only on an inert demo terminal, persists the identity before it counts, and never opens, closes or applies anything to a chart. Rows without a child report chartId 0 and magic 0; past the 240 s start-up window the dashboard names them Not started (child_not_started in diagnostics). The template attach path is deleted (DoActivate, BuildTemplate, SaveTemplateAndCopy, DeleteCopiedTemplate, ApplyTemplate with ChartOpen/ChartApplyTemplate, NewSingleInstance, AgentDeployRow, DeployAll and the kernel32 copy/delete imports); deploy_next gets the refusal rejected_deploy_next_retired; Activate and Deploy All show \"Use Next in the app to deploy; dashboard deploy returns in the next update\". CA41 (ported from 4f3f2f9 only): six WriteSet-omitted inputs accepted by the audit at their declared defaults. Live-before-adoption gate (goatai#1885 6035859714): a child whose Studio_MonitorRunPath carries a deploy= nonce opens no new sequence (real or virtual start, or virtual-to-real promotion: every path through DashboardEntryAllowed) until the dashboard has written its <Key>_ID_<magic>_<symbol>_PDEPLOY marker (the deployment id's first 13 hex digits), which the dashboard writes only after it has read the child's acknowledgement of the exposure policy apply_policy dispatched; adds, closes, trailing and stops of existing sequences are not gated, and a child without the nonce answers exactly as B41. No input, default, WriteSet, trade-event policy, bias wire or model route changes: the entrypoint differs from B41 only in its build ID, marker and the one gate line at the top of DashboardEntryAllowed, and every other closure file except the dashboard, the setup control and the child audit is byte-identical to B41.",
+  "supersedes_candidate": "beta17-B41",
+  "sources": {
+    "Dashboard.mqh": "34f9fbc47d2c18c76ab52a6ebd9b0ba140f5b61151596410696b634821480f40",
+    "GOAT V1.49.mq5": "8b980f0ca76c65d39754ebe00fdf696811c55225384ff4bbff3af3dc8bed2ca1",
+    "GOATAIWireV2.mqh": "591db2e51552d8d62bc260c58bfc1289a806540d8d5ea1b68055def94369d065",
+    "GOATBatchCancelOrigin.mqh": "03a24684cf7c0e4e6dac7ef2ccce661a228a2bae10ff2f56ad72d722fd74f0f1",
+    "GOATDeploymentDiagnostics.mqh": "e6ccb9439213cc8eff31b5a0a4783bfe6c408571cf74298ef87d28c34b071c2f",
+    "GOATEADeviceActivation.mqh": "71f3956405b599911ff70dd37c981a820b859b5b312a5ea363c94d617d43a17b",
+    "GOATEvidenceEnd.mqh": "c4765e143bf005cd326b8e388639fb90f34ac9fc99a89c77334b3b561e15ec7f",
+    "GOATLicenseInitRetry.mqh": "e8ebe975238350d7838791eccb0e1cd844a13dd0f73c9d5765e13425fc192379",
+    "GOATOptimizationInputs.mqh": "5896ee257a4562fb0a6a9857324047e21cec368bf65dbc64692f9bc92b4f773c",
+    "GOATPortfolioChildAudit.mqh": "9d6be8a2eb28d537918758a926bf75ae1697fd1206ae7da6fb69d431ab9bad65",
+    "GOATPortfolioSetupControl.mqh": "f3f56f34faa32921e30b52af2a0afdfdb211b2b94ed24c13b2d8b13aba3d2a24",
+    "GOATSetupControl.mqh": "adc0c645450b69ef56df05a8fa0e53a3803e9671405b4acbc656c6add0ff76c5",
+    "GOATStudioBridge.mqh": "3d3b314d74d9f9e6031be0be2f2964dbda5234ebda3222b05bd6a0f8a3d196c6",
+    "GOATStudioCompletion.mqh": "94395d1c2729378df724aaa03a652e2cbafc3888d1b5353fa32b5df314fd5f47",
+    "GOATStudioControlFeedback.mqh": "50d8cad0d64b7730ed90b7e4b692cf74530dcb8952ff5aa3914dbb16be1934ca",
+    "GOATStudioDispatch.mqh": "a8292c3f1fb8c48288880a2389f74d4eb5134cbae6237efda8d22b7168838250",
+    "GOATStudioDraftDisplayPolicy.mqh": "5626e0d51afffc9e74116de3daf8805c3d9f057eaaefa1565f26473e9106c226",
+    "GOATStudioExportDates.mqh": "ed5fe016c3beaf75632a11a1f2142b69239a2e5055d638cb4922c5d055195358",
+    "GOATStudioNative.mqh": "1fa4458dc58f13bc9113232d35c596f95f2da360b59a50ba194b5fe6eed04c56",
+    "GOATStudioQueueList.mqh": "924592b9ad494f23b3cd0a6c8c8c33c580a874308ffc781ee4772351d3a2d4e0",
+    "GOATStudioRecovery.mqh": "8280f8d3194075183b087061d6d4d0193b4d9c3db5db7b2d99fca845032c3993",
+    "GOATStudioRecoveryFiles.mqh": "ed3192689d9e7f02ca05c8034caf82778989ab5a8481372ca8e46c64610220c8",
+    "GOATStudioSettingCompare.mqh": "26d7ba7960079aaefd6778fabf6d00ed9320c498e72e6d7742d78981d72254cb",
+    "GOATStudioSettingTypes.mqh": "d9c2b2c616b8ab0ebcd701f0adb543106fb393c5122ea94a2b8c9b4f8bb34221",
+    "GOATStudioSettingValues.mqh": "8483511a7e9a7498d268c95923342f620a8a6de6eaffa7afcd8d228c8daadabf",
+    "GOATStudioUI.mqh": "88313c21db89bb0293619191eb988503c3aa1b06dcf2cd26bfb822f666d8666a",
+    "GOATStudioWorkers.mqh": "5ef12818f142840e9f6964caa0a231fff6d1a2742ceca1ed0c6449d5a42640e2",
+    "GOATTesterStopConfirm.mqh": "796cd047c12d633bef8616ae63b356f265a87efebc50f6651d3a2a2f7afd3732",
+    "GOAT_DashboardAILaunchPolicy.mqh": "835a1e98906353fed9b6f3f668b6a4e2f5c1f1381fbd2de33dc6b70579f920c8",
+    "GOAT_DashboardOverview.mqh": "f7011e51e21ffe25a026d24cab548713c7bb9095d46d6e210efe62c56e3284ad",
+    "GOAT_DirectionGuard.mqh": "a682957659fa16f534d2dab54cdfa5d4def759cde522f4991487cb62bf10bfea",
+    "GOAT_DirectionGuardCore.mqh": "dc46e1c6f1deef1414af73126fbd58098ae32ac54cbf163565a9d2ee4d602f78",
+    "GOAT_Inputs_Definitions.mqh": "1408e1eeb5c3ea8bb2678097538a74f3dc7fea7cc8f27bc72205751ad2291722",
+    "GOAT_SequenceExport.mqh": "52b3668e655b72c88a6c674c24d9ae4183aefd4ca8db81467f66b32c7a4577b7",
+    "GOAT_SequenceHostIO.mqh": "fbde0abaa7d1f9bca3318f2707b2d278581c2887dea419fe5495146004c1d9d9",
+    "GOAT_SequencePackage.mqh": "5db878a58b7080dbdc110554bc46a64c2dad867c9f1f3d0972974b8f3ad9fc9a",
+    "MTTester.mqh": "a86dbdee543c944357ca45f28c69f4f01e247138d14a879eec5ad04f74c3b179",
+    "NewsBiasFilter.mqh": "d0aa07a7e8dbe1c64a90d8e3b43293428a0eff398e47987c28ce270eb4b50285",
+    "Optimizer.mqh": "0f21071b8418b0ef32663c5d7a3ee4b9807989000e1d435104065c6f6bd729c0",
+    "Tester.mqh": "2d109fa8be126804ed80e0b92bf5198d54acb35e5075d13b9cd443dd1d02418e",
+    "XmlProcessor.mqh": "fd218b06ece97721bd7335f69ac7739bcb5d1fcf34c8a92593c538fb22b902d0"
+  },
+  "binary": {
+    "name": "GOAT V1.49.ex5",
+    "sha256": "e630ee34cb04c26513f16860a927074ec745f3c62869d984260230a89fd4dc24",
+    "bytes": 2426134
+  },
+  "compile": "compile-receipt.json",
+  "native_qualified": false,
+  "customer_delivery": false,
+  "retained_root_binary_sha256": "05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9",
+  "dependencies": "External MT5 include/resource qualification and native execution remain unproven; compile is not admission."
+}

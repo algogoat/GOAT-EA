@@ -52,7 +52,7 @@ def _runtime_material(state, job, *, account, observation_path,
 
 
 def validate_restart_material(state, job, *, account, monitor_path, monitor_sha256, input_schema):
-    from studio_process_check import inspect_processes
+    from studio_process_check import inspect_processes, role_unchanged
     restart=job.get('restart_intent')
     if not restart or restart['phase']!='research_exited' or job['status'] not in ('starting','reconcile_required'):
         raise ValueError('Verified research exit required')
@@ -62,8 +62,9 @@ def validate_restart_material(state, job, *, account, monitor_path, monitor_sha2
         monitor_sha256=monitor_sha256,input_schema=input_schema)
     if material['startup_receipt']['sha256']!=restart['startup_sha256']:
         raise ValueError('Startup configuration changed after close')
-    current=inspect_processes(material['plan']['research_binding'],research_running=False)
-    if current['protected']!=restart['process_baseline']['protected']:
+    binding=material['plan']['research_binding']
+    current=inspect_processes(binding,research_running=False)
+    if not role_unchanged(binding,'protected',current['protected'],restart['process_baseline']['protected']):
         raise ValueError('Protected terminal changed after close')
     return material | dict(stopped_process_observation=current)
 
@@ -91,6 +92,15 @@ def _validate_material(state, job, *, account, monitor_path, monitor_sha256, inp
     if not re.fullmatch(r'GOAT\\R[0-9a-f]{12}',relative):
         raise ValueError('Invalid native path')
     materials=[];aliases=set()
+    from studio_batch_seal import sealed,verify_member
+    if sealed(package,job,input_schema):
+        # Sealed at preparation and byte-identical: only member 0 feeds the native
+        # paste and startup payload, so only it is rebuilt; every member's expert is
+        # still checked against this installation.
+        if any(member['tester']['Expert']!=binding['ea_relative_path'] for member in members):
+            raise ValueError('Frozen member expert differs from installation')
+        materials=[verify_member(package,members[0],manifest['jobs'][0],input_schema,binding['ea_version'])]
+        members=[]
     for member,item in zip(members,manifest['jobs']):
         if input_schema is None or sha(input_schema)!=member['strategy']['schema_hash']:
             raise ValueError('Trusted input schema does not match frozen member')
@@ -109,7 +119,9 @@ def _validate_material(state, job, *, account, monitor_path, monitor_sha256, inp
             raise ValueError('Staged tester differs from manifest')
         for key,value in member['tester'].items():
             if str(value)!=member_sections['Tester'].get(key):raise ValueError('Frozen tester mismatch: '+key)
-        if member_sections.get('TesterInputs')!=read_values(staged_set):raise ValueError('Inline input drift')
+        from studio_optimization_inputs import explicit_optimization_inputs
+        native_inputs=explicit_optimization_inputs(staged_set.decode('utf-16'),input_schema) if binding['ea_version']=='1.49' else staged_set.decode('utf-16')
+        if member_sections.get('TesterInputs')!=read_values(native_inputs.encode('utf-16')):raise ValueError('Inline input drift')
         member_paste=explicit_paste_inputs(member_sections['TesterInputs'],input_schema)
         materials.append(dict(sections=member_sections,paste_inputs=member_paste,alias=alias))
     sections=materials[0]['sections'];paste_inputs=materials[0]['paste_inputs']
@@ -133,7 +145,7 @@ def _validate_material(state, job, *, account, monitor_path, monitor_sha256, inp
         if startup_monitor['expert']!=relative_monitor:
             raise ValueError('Startup monitor differs from verified monitor binary')
         preset_name=startup_monitor['preset']
-        if not re.fullmatch(r'[A-Za-z0-9_-]+\.set',preset_name):
+        if not re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_ -]{0,99}\.set',preset_name):
             raise ValueError('Unsafe monitor preset name')
         preset=(data/'MQL5/Presets'/preset_name).read_bytes()
         if hashlib.sha256(preset).hexdigest()!=startup_monitor['preset_sha256']:
@@ -142,8 +154,9 @@ def _validate_material(state, job, *, account, monitor_path, monitor_sha256, inp
         if values!={'Mode_Operation':'11','Studio_ReadOnlyMonitor':'true',
                     'Studio_MonitorRunPath':'','EA_Desc':'Studio Monitor'}:
             raise ValueError('Startup preset must be the monitor-only configuration')
-        material['startup_monitor']=dict(Expert=relative_monitor,ExpertParameters=preset_name,
-            Symbol=config['tester']['Symbol'],Period=config['tester']['Period'])
+        if not binding.get('research_profile'):
+            material['startup_monitor']=dict(Expert=relative_monitor,ExpertParameters=preset_name,
+                Symbol=config['tester']['Symbol'],Period=config['tester']['Period'])
     startup_raw,startup_receipt=startup_config(material)
     return material | dict(startup_raw=startup_raw,startup_receipt=startup_receipt)
 
@@ -186,7 +199,8 @@ def _control_fields(job, material, *, account, evidence):
     native=observe(package)
     if native['status']!='native_queued':raise ValueError('Native job must be queued and unstarted')
     common=Path(binding['common_files_root']).resolve();run=common/relative.replace('\\','/')
-    base=common/'GOAT'/('GOAT V'+binding['ea_version']+'-'+server);evidence=Path(evidence).resolve()
+    from studio_terminal_isolation import binding_base,binding_relative
+    base=binding_base(binding,account);evidence=Path(evidence).resolve()
     transaction=json.loads((evidence/'transaction.json').read_text())
     marker=base/'agent-native-control-owner.json';ownership=json.loads(marker.read_text())
     if transaction['phase']!='installed' or Path(transaction['base']).resolve()!=base:
@@ -206,7 +220,7 @@ def _control_fields(job, material, *, account, evidence):
     if installed!=sections:raise ValueError('Native config differs from staged configuration')
     guard=ini_sections((base/'active_optimization_launch.ini').read_bytes()).get('ActiveOptimizationLaunch',{})
     expected=dict(LaunchId=transaction['owner'],RunPath=relative,Strategy=alias,Symbol=config['tester']['Symbol'],
-        ConfigPath='GOAT\\GOAT V'+binding['ea_version']+'-'+server+'\\active_optimization_config.ini',
+        ConfigPath=binding_relative(binding,account)+'\\active_optimization_config.ini',
         AuditConfigPath=relative+'\\inputs\\'+alias+'\\config.ini')
     if any(guard.get(k)!=v for k,v in expected.items()):raise ValueError('Native launch guard mismatch')
     # Startup INI uses 1:N, but native paste parses leverage as integer N.

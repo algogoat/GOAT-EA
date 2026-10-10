@@ -235,6 +235,9 @@ int GOATBiasHistory::GetCurentBiasScore(string asset,int &idxx)
    //--- calculate average duration (seconds) between consecutive bias points (used for staleness)
    long sum = 0;
    int  cnt = 0;
+#ifdef GOAT_RECORDED_BIAS_LIVE_GATE_V149
+   if(!is_tester) // the gated tester path below uses no spacing average
+#endif
    for(int i = 1; i < ArraySize(BiasList); i++)
      {
       long d = (long)(BiasList[i].time - BiasList[i - 1].time);
@@ -267,6 +270,12 @@ int GOATBiasHistory::GetCurentBiasScore(string asset,int &idxx)
    int      latest_score = BiasList[idx].sentiment_score;
 
    idxx=idx;
+#ifdef GOAT_RECORDED_BIAS_LIVE_GATE_V149
+   //--- tester/optimization: the export ends each point with its own -999 row at the wire's
+   //--- validUntil, so a point holds until that row, as live holds a record until it expires.
+   //--- No spacing heuristic; the live wire gate at this run's Bias_threshold (GOATAIWireV2.mqh).
+   if(is_tester) return GOATRecordedBiasLiveScore(latest_score);
+#endif
    //--- staleness check: if selected bias is too old relative to typical cadence, treat as neutral
    if(avg > 0 && (now - latest_time) > (datetime)(2 * avg)) return -999;
 
@@ -576,7 +585,7 @@ bool GOATNewsFilter::DownloadAndFillNews(datetime startdate,int news_threshold,b
    if(res == -1)
      {
       int err = GetLastError();
-      if(DownloadMode && showSummary) Alert("News downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.",err);
+      if(DownloadMode && showSummary) Alert(StringFormat("News download failed (MT5 error %d). Add the URL in Tools > Options > Expert Advisors > Allow WebRequest.",err));
       PrintFormat("News downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.",err);
       return false;
      }
@@ -807,7 +816,7 @@ bool GOATBiasHistory::DownloadAndFillBias(datetime startdate,string asset,bool D
    if(res == -1)
      {
       int err = GetLastError();
-      if(DownloadMode && showSummary) Alert("Bias downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.", err);
+      if(DownloadMode && showSummary) Alert(StringFormat("AI bias download failed (MT5 error %d). Add the URL in Tools > Options > Expert Advisors > Allow WebRequest.",err));
       PrintFormat("Bias downloader WebRequest failed. Error=%d. Add the URL in: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL.", err);
       return false;
      }
@@ -1216,7 +1225,7 @@ bool LoadOrSaveBrokerTimeFiles(int &gmt_offset_sec,int &dst_enabled,bool LoadOrS
          return true;
         }
 
-      int ret = MessageBox("Does your broker adjusts with day light savings time?","Broker DST",MB_YESNOCANCEL);
+      int ret = MessageBox("Does your broker's server time follow daylight saving time?","Broker DST",MB_YESNOCANCEL);
       if(ret == IDYES)
         {
          dst_enabled = 1;
@@ -1266,7 +1275,7 @@ bool LoadOrSaveBrokerTimeFiles(int &gmt_offset_sec,int &dst_enabled,bool LoadOrS
         }
       else
         {
-         int ret = MessageBox("Does your broker adjusts with day light savings time?","Broker DST",MB_YESNOCANCEL);
+         int ret = MessageBox("Does your broker's server time follow daylight saving time?","Broker DST",MB_YESNOCANCEL);
          if(ret == IDYES) dst = 1;
          else if(ret == IDNO) dst = 0;
          else return false; // cancel -> don't save anything

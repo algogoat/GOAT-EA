@@ -10,3 +10,17 @@ def guard_active_seed(root):
         if value.get('status')!='released':
             raise ValueError('Seed runner owns this terminal; use seed-status/cancel/resume before normal native work')
     return True
+
+def refuse_prepare_while_seed_owns(root):
+    """prepare-batch refuses at once (one plain sentence, the next command) while a seed or catch-up holds the terminal."""
+    path=Path(root)/'seed-active.json'
+    if not path.exists():return
+    value=read_json(path)
+    if value.get('status')=='released':return
+    batch=str(value.get('batch_id') or '<id>')
+    kind=('catchup' if (Path(root)/'catchups'/batch/'state.json').is_file() else
+          'holdup' if (Path(root)/'holdups'/batch/'state.json').is_file() else 'seed')
+    flag={'catchup':'--catchup-id','holdup':'--holdup-id'}.get(kind,'--batch-id')
+    raise ValueError({'catchup':'Catch-up ','holdup':'Hold-up test '}.get(kind,'Seed hunt ')+batch+' still holds this terminal, so nothing was prepared; '
+                     'settle it first with '+kind+'-reconcile '+flag+' '+batch+' (or '+kind+'-cancel '+flag+' '+batch+
+                     ' once MT5 is idle), then prepare again.')

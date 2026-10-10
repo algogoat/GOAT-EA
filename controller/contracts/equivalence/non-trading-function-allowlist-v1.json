@@ -1,0 +1,70 @@
+{
+ "confirmed": false,
+ "confirmation_required_from": "Claude-Mac",
+ "declined_after_review": {
+  "GOAT V1.49.mq5": {
+   "function OnTesterDeinit()": "runs the export pass (StartExporter): it chooses and writes the exported sets, the same reason XmlProcessor.mqh is kept in scope",
+   "function StartExporter(bool reportMode)": "export pass: tester dates, evidence end and the exported sets",
+   "[#ifdef GOAT_EVIDENCE_END_V149] function GoatEvidenceEndCheckExports(const ExportRecord &expArr[], const string evidenceEnd, const bool reportMode)": "export pass (evidence end check); kept with its caller",
+   "function OnDeinit(const int reason)": "lifecycle; the B38 change withdraws a device-activation code, kept out until activation is reviewed at unit level",
+   "function GoatTickBody()": "OnTick body: trading"
+  },
+  "Optimizer.mqh": {
+   "function CStrategyTesterDialog::SaveCurrentBatchPackage(void)": "writes the export settings (EvidenceEnd carry), which set the export window",
+   "function CStrategyTesterDialog::RehomeRunIfEditedNameChanged(void)": "writes the export settings (EvidenceEnd carry), which set the export window"
+  }
+ },
+ "id": "goat-non-trading-function-allowlist-v1",
+ "review_ref": "algogoat/GOAT-EA (claude-pc/function-level-cert)",
+ "reviewed_builds": [
+  {"build": "V1.49-EXPORT-BACK-BOUNDARY-28", "commit": "e6eaaa191917300187798efef69d39307f352171"},
+  {"build": "V1.49-EA-EXPERIENCE-33", "commit": "6159f6bd7700c2b79ee1e1323fa54a4b218c05db"},
+  {"build": "V1.49-BETA17-38", "commit": "e4e9ccfc1ceff46dfa2da6249828e488dd077f92"},
+  {"build": "V1.49-BETA17-39", "commit": "a56febe8faf7ee35231e922e2f50198cbfe3b732"},
+  {"build": "V1.49-BETA17-40", "commit": "daa60928081d4fa7cdaa89f05ec65317caa6d352"},
+  {"build": "V1.49-BETA17-41", "commit": "278ec109be4e95a6e934d4897a91cb28ed71345c"}
+ ],
+ "reviewed_by": "Claude-PC (proposed 2026-10-04, every listed version read in full); Claude-Mac confirmed the three entries on 2026-10-05 (each entry carries confirmed_ref). Receipt-level confirmed stays false: a new entry needs its own confirmation.",
+ "rule": "A unit here is non-trading only in a version whose normalized sha256 is listed under reviewed_sha256, and only once the entry carries confirmed: true with its confirmed_ref (or the whole receipt is confirmed). Preprocessor lines, inputs and changed globals are never listed. trading_path_reviewed: true says the reviewer saw that the call graph reaches the unit from a trading entry point.",
+ "schema": "goat-non-trading-function-allowlist-receipt-v1",
+ "units": {
+  "GOAT V1.49.mq5": {
+   "function VerifyLicense(long AccNum, string AccName, string AccServer, bool init = false)": {
+    "confirmed": true,
+    "confirmed_ref": "Claude-Mac APPROVE: algogoat/GOAT-EA#157 comment 5987995933; algogoat/goatai#1885 comment 5987996094",
+    "category": "activation",
+    "reason": "Licence check at attach: posts the account id (B39+: plus the brokerFacts payload) to /api/ea/check, maps the HTTP reply to LICENSE_VALID or an error code and shows a prompt. No order, position, input or setting; it only decides whether the EA starts, like GOATEADeviceActivation.mqh on the file allowlist. Reached only from OnInit, but OnInit is gated on it (LicenseKey==LICENSE_VALID), so it is treated as on every trading path: trading_path_reviewed, and every certificate relies on the non-empty canary rule (each canary set needs deals on both sides). The EBB28 version is not reviewed.",
+    "trading_path_reviewed": true,
+    "reviewed_sha256": {
+     "6f19507af48641df161013fc0589a5ef10534df98e9163725a31bbeb316a3076": ["V1.49-EA-EXPERIENCE-33", "V1.49-BETA17-38"],
+     "8f53351517cdc7a1bdc7ba40cf15dda3c4431bc79ce5ca1db0ba7f3418607267": ["V1.49-BETA17-39", "V1.49-BETA17-40", "V1.49-BETA17-41"]
+    }
+   }
+  },
+  "Optimizer.mqh": {
+   "function BuildOptimizationBatchPromptSummary(const string queueFile, const string logFile, string &line1, string &line2, string &line3)": {
+    "confirmed": true,
+    "confirmed_ref": "Claude-Mac APPROVE: algogoat/GOAT-EA#157 comment 5987995933; algogoat/goatai#1885 comment 5987996094",
+    "category": "report_display",
+    "reason": "Reads the queue file, item_stats.tsv and the batch log and formats the three end-of-batch prompt lines (runs, no-edge items, errors, timings, XML/export issue counts) into its string outputs. No order, position, input, file write or export decision. The call graph reaches it from OnTesterDeinit only through the prompt shown after a batch.",
+    "trading_path_reviewed": true,
+    "reviewed_sha256": {
+     "d3764a53be73e34dab090fd40f2cd57ef2b28a5b42bb5cf697372fa27ef938fe": ["V1.49-EXPORT-BACK-BOUNDARY-28"],
+     "c83903665197731a566d1a5428e34b95c08316f59fa5f06c3d0e2534d531e791": ["V1.49-EA-EXPERIENCE-33", "V1.49-BETA17-38", "V1.49-BETA17-39"],
+     "8c0bfb05995eb11ef811ba3d882cb93e6067aa1a7523fc1fccd4d521ebdc8185": ["V1.49-BETA17-40", "V1.49-BETA17-41"]
+    }
+   },
+   "function CStrategyTesterDialog::ApplyStudioStage(const int stage)": {
+    "confirmed": true,
+    "confirmed_ref": "Claude-Mac APPROVE: algogoat/GOAT-EA#157 comment 5987995933; algogoat/goatai#1885 comment 5987996094",
+    "category": "panel_ui",
+    "reason": "Studio panel stage layout: hides, moves, recolours, relabels, enables and disables dialog controls for stages 01-04 and the read-only monitor, then redraws. Reads no input value and writes no setting, file or order. The call graph reaches it only from OnInit, OnTimer and OnChartEvent (panel), not from a trading entry point.",
+    "trading_path_reviewed": false,
+    "reviewed_sha256": {
+     "a6c9fc66a31b9297175c210ea62e72be7eff3f7993705dd5ede1f4cd85d9a56c": ["V1.49-EXPORT-BACK-BOUNDARY-28", "V1.49-EA-EXPERIENCE-33"],
+     "4109ab925fa69dc418fa0c389ffc988c9b0a9340fc2199933003b134b0dfe66d": ["V1.49-BETA17-38", "V1.49-BETA17-39", "V1.49-BETA17-40", "V1.49-BETA17-41"]
+    }
+   }
+  }
+ }
+}

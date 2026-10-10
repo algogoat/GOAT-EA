@@ -1,0 +1,7 @@
+Grid_Size=-6
+Lock_Profit_Size=-3
+Lock_Profit_Flexibility=0.2
+EMA_Period=10
+ADX_Level=30
+BB_Period=15
+BB_Deviation=1.9

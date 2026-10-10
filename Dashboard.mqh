@@ -15,13 +15,10 @@
 #ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
 #include "GOAT_DashboardAILaunchPolicy.mqh"
 #endif
-#ifndef Kernel
-#import "kernel32.dll"
-   //int GetCurrentProcessId();
-   int CopyFileW(string src, string dst, int fail_if_exists);
-   int DeleteFileW(string path);
-#import
-#endif 
+// beta.25 (goatai#1885 6033450916): the dashboard no longer deploys children. The app's Next step
+// stages them in a profile MT5 loads at start-up, and the dashboard adopts them. Activate and Deploy All
+// show this message instead.
+#define GOAT_DASH_DEPLOY_RETIRED_MESSAGE "Use Next in the app to deploy; dashboard deploy returns in the next update"
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 #include "GOAT_DashboardOverview.mqh"
 #include "GOATDeploymentDiagnostics.mqh"
@@ -105,7 +102,7 @@ public:
    CWndClient  c_Wnd_Table,c_Wnd_Export;
    bool        m_agent_setup_quiet;
    bool        AgentConfigureAI(const int mode,const int threshold,const int protocol);
-   bool        AgentDeployRow(const int idx);
+   bool        AdoptChild(const int adopt_idx,const long adopt_chart,const long adopt_magic);
    bool        AgentExposurePolicy(const int mode);
    CLabel      m_lblHeading,m_lblExport;
    
@@ -242,11 +239,6 @@ public:
    void           maximizeWindow();
    void           minimizeWindow();
    void           OnClickSelectFile(void);
-   string         BuildTemplate(const string eaName,const string eaPath,const string setFile);
-   bool           SaveTemplateAndCopy(const string tplName,const string tplText);
-   bool           DeleteCopiedTemplate(const string tplName);
-   bool           ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string tplName);
-   bool           NewSingleInstance(const int idx);
    void           GetOpenStats(const string sym,long magic,int &open_trades,double &open_lots,double &open_pl,double &open_pl_day,double &open_pl_week,string &comment);
    void           CalcHistoryStatsFast(int idx,int  &new_trd,double &pl_d,double &pl_w,double &pl_all);
    bool           ReadChildSnapshotIntoRow(const int idx);
@@ -264,7 +256,6 @@ public:
    bool           HandleMouseWheel(const long lparam,const double dparam);
    bool           HandleHeaderClick(const string control_name);
    bool           HandleHeaderStateButtonClick(const string control_name);
-   void           DeployAll(void);
  //void           ScanAndUpdateRow(int idx,int gui_row);
 //––––– 1. Load .set files + build g_sets[] ––––––––––––––––––––––––––
    int LoadSetFiles()
@@ -297,7 +288,7 @@ public:
           string file_label=(trim_pos>0 ? StringSubstr(file,0,trim_pos) : file);
           int ret=MessageBox("EA Version not matching in set file:\n\n"+file_label+
                              "\n\nDo you want to accept this set file?"+
-                             "\nThis may affect your portfolio profitibility."+
+                             "\nThis may affect your portfolio profitability."+
                              "\n\nPress Abort to discard once\nPress Retry to accept once\nPress Ignore to accept all further mismatches",
                              "EA Version Mismatch",MB_ABORTRETRYIGNORE|MB_ICONQUESTION);
           if(ret==IDABORT) continue;
@@ -322,51 +313,6 @@ public:
     }
     Print("✓ kept ",ArraySize(g_sets)," file(s) after EA-filter.");
     return ArraySize(g_sets);
-   }
-//––––– activate row : open chart ▸ attach EA ▸ mark ✔ –––––––––––––––
-   void DoActivate(int idx)
-   {
-    if(idx<0 || idx>=ArraySize(g_sets)) return;
-    if(StringFind(EA_Path,"Experts\\")!=0 || !EndsWith(EA_Path,"\\"+EA_Name_+".ex5"))
-    {
-       Print("Dashboard child launch blocked: invalid current expert path.");
-       return;
-    }
-    if(ArraySize(btn_Action)>idx+2 && btn_Action[idx+2].Text()=="Navigate") return;
-#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
-    if(g_sets[idx].cid>0 || g_sets[idx].magic>0)
-    {
-       if(!m_agent_setup_quiet) MessageBox("This row already has a child identity, but is not linked.\n\nNo duplicate EA will be launched. Inspect the existing child chart before creating a new portfolio.",
-                  "Existing Child Requires Inspection",MB_OK|MB_ICONWARNING);
-       return;
-    }
-    if(!PrepareAILaunchPolicy(true)) return;
-#endif
-    //GlobalVariableSet("Dashboard_ChartID",(double)ChartID());
-    // --- timeframe token from filename (",M1" etc.)
-    int c = StringFind(g_sets[idx].name,",");
-    string tfTok = (c>0 ? StringSubstr(g_sets[idx].name,c+1,2) : "M1");
-    ENUM_TIMEFRAMES tf = TF(tfTok);
-    // --- build & save template
-    string tplName   = g_sets[idx].name;                 // e.g. "GOAT EURUSD,M1.set"
-    StringReplace(tplName,".set",".tpl");                // -> "GOAT EURUSD,M1.tpl"
-    string tplText = BuildTemplate(EA_Name_,EA_Path,g_sets[idx].path);
-#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
-    if(tplText=="") return;
-#endif
-    if(!SaveTemplateAndCopy(tplName,tplText)) return;
-    // --- open chart & apply template
-#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
-    AppendAILaunchAudit(idx,"PREPARED");
-    bool applied=ApplyTemplate(idx,tf,tplName);
-    AppendAILaunchAudit(idx,(applied ? "LINKED" : "APPLY_FAILED"));
-    UpdateAILaunchControls();
-    if(!applied) return;
-#else
-    if(!ApplyTemplate(idx, tf, tplName)) return;
-#endif
-    Sleep(1000);
-    //GlobalVariableDel("Dashboard_ChartID");
    }
    void CalcDayWeekStart()
    {
@@ -488,13 +434,6 @@ private:
     int c=StringFind(f,","); if(c<0) return false;
     for(int p=c-1;p>=0;--p) if(StringGetCharacter(f,p)==' ') { sym=StringSubstr(f,p+1,c-p-1); EAname=StringSubstr(f,0,p); if(EAname!="") return true; }
     return false;
-   }
-   ENUM_TIMEFRAMES TF(const string t)
-   {
-    if(t=="M1") return PERIOD_M1;  if(t=="M5") return PERIOD_M5;
-    if(t=="M15")return PERIOD_M15; if(t=="M30")return PERIOD_M30;
-    if(t=="H1") return PERIOD_H1;  if(t=="H4") return PERIOD_H4;
-    if(t=="D1") return PERIOD_D1;  return PERIOD_CURRENT;
    }
    void ResetDayStats()
    {
@@ -832,9 +771,10 @@ private:
   }
   string ExposurePolicyButtonText(void) const
   {
-   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_SYMBOL_DIRECTION)   return "Asset Filter: ON";
-   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_CURRENCY_DIRECTION) return "Exposure: Ccy";
-   return "Asset Filter: OFF";
+   // One vocabulary for this control, its confirmation and the summary: Off / Asset / Currency.
+   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_SYMBOL_DIRECTION)   return "Exposure: Asset";
+   if(m_exposure_policy_mode==GOAT_EXPOSURE_POLICY_CURRENCY_DIRECTION) return "Exposure: Currency";
+   return "Exposure: Off";
   }
    string CurrencyFilterButtonText(const string currency,const ENUM_GOAT_CURRENCY_FILTER_STATE state) const
    {
@@ -1079,17 +1019,6 @@ bool CGOATDashboard::AgentConfigureAI(const int mode,const int threshold,const i
    return SaveDashboardConfig();
 }
 
-bool CGOATDashboard::AgentDeployRow(const int idx)
-{
-   if(AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO || !TerminalInfoInteger(TERMINAL_CONNECTED)
-      || TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || PositionsTotal()!=0 || OrdersTotal()!=0
-      || idx<0 || idx>=ArraySize(g_sets) || g_sets[idx].cid>0 || g_sets[idx].magic>0) return false;
-   m_agent_setup_quiet=true;
-   DoActivate(idx);
-   m_agent_setup_quiet=false;
-   return(g_sets[idx].cid>0 && g_sets[idx].magic>0 && SaveDashboardConfig());
-}
-
 bool CGOATDashboard::AgentExposurePolicy(const int mode)
 {
    if(AccountInfoInteger(ACCOUNT_TRADE_MODE)!=ACCOUNT_TRADE_MODE_DEMO || !TerminalInfoInteger(TERMINAL_CONNECTED)
@@ -1266,11 +1195,10 @@ bool CGOATDashboard::HandleChartEvent(const int id,const long &lparam,const doub
          for(int idx=0;idx<ArraySize(g_sets);++idx)
          {
             bool magic_match=(g_sets[idx].magic>0 && g_sets[idx].magic==lparam && g_sets[idx].sym==symbol);
-            bool cid_match=(g_sets[idx].cid>0 && g_sets[idx].cid==chart_id && g_sets[idx].sym==symbol);
+            bool cid_match=(g_sets[idx].cid>0 && g_sets[idx].magic>0 && g_sets[idx].cid==chart_id && g_sets[idx].sym==symbol);
             if(!magic_match && !cid_match) continue;
 
             g_sets[idx].status=status;
-            if(g_sets[idx].magic<=0) g_sets[idx].magic=lparam;
             edt_Status[idx+2].Text(DisplayStatusForRow(idx,TimeCurrent()));
             edt_Status[idx+2].Color(StatusColor(edt_Status[idx+2].Text()));
             MarkStateDirty();
@@ -1320,21 +1248,12 @@ bool CGOATDashboard::HandleObjectClick(const string control_name)
    if(HandleHeaderStateButtonClick(control_name))
       return(true);
 
+   // Deploy All and per-row Activate are disabled in beta.25: the dashboard never opens a chart or
+   // applies a template. Navigate (bring a linked child to the front) keeps working.
    if(ArraySize(btn_Action)>1 && control_name==btn_Action[1].Name())
    {
-      bool any_pending=false;
-      for(int idx=0; idx<ArraySize(g_sets); ++idx)
-      {
-         if((g_sets[idx].cid>0)!=(g_sets[idx].magic>0))
-         {
-            MessageBox("A strategy attachment is incomplete. Inspect its chart before activating again.","Portfolio",MB_OK|MB_ICONINFORMATION);
-            return true;
-         }
-         if(g_sets[idx].cid<=0 && g_sets[idx].magic<=0) any_pending=true;
-      }
-      if(!any_pending)
-         return(true);
-      DeployAll();
+      if(!AllRowsDeployed())
+         MessageBox(GOAT_DASH_DEPLOY_RETIRED_MESSAGE,"Portfolio",MB_OK|MB_ICONINFORMATION);
       return(true);
    }
 
@@ -1346,10 +1265,8 @@ bool CGOATDashboard::HandleObjectClick(const string control_name)
       int idx=row-2;
       if(btn_Action[row].Text()=="Navigate")
          NavigateToSet(idx);
-      else if(g_sets[idx].cid<=0 && g_sets[idx].magic<=0)
-         DoActivate(idx);
       else
-         MessageBox("A strategy attachment is incomplete. Inspect its chart before activating again.","Portfolio",MB_OK|MB_ICONINFORMATION);
+         MessageBox(GOAT_DASH_DEPLOY_RETIRED_MESSAGE,"Portfolio",MB_OK|MB_ICONINFORMATION);
 
       return(true);
    }
@@ -1604,8 +1521,8 @@ bool CGOATDashboard::HandleHeaderStateButtonClick(const string control_name)
       if(m_portfolio_command_pending)
          return(true);
       int next_mode=NextExposurePolicyMode((int)m_exposure_policy_mode);
-      string next_text=(next_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION ? "Exposure: Asset" : (next_mode==GOAT_EXPOSURE_CURRENCY_DIRECTION ? "Exposure: Ccy" : "Exposure: Allow"));
-      string prompt="Set exposure policy to "+next_text+"?\n\nAsset mode: one sequence owns each symbol and direction until it finishes. Its adds and partial closes remain managed. Buy and Sell are independent; there is no cooldown.\n\nScope: this terminal and account only. Existing positions and pending orders (including manual trades) block new asset-direction admission. Existing sequences keep normal management. Turning off allows new overlap; it does not close trades.";
+      string next_text=(next_mode==GOAT_EXPOSURE_SYMBOL_DIRECTION ? "Asset" : (next_mode==GOAT_EXPOSURE_CURRENCY_DIRECTION ? "Currency" : "Off"));
+      string prompt="Set exposure to "+next_text+"?\n\nAsset mode: one sequence owns each symbol and direction until it finishes. Its adds and partial closes remain managed. Buy and Sell are independent; there is no cooldown.\n\nScope: this terminal and account only. Existing positions and pending orders (including manual trades) block new asset-direction admission. Existing sequences keep normal management. Turning off allows new overlap; it does not close trades.";
       int ret=MessageBox(prompt,"Exposure Policy",MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2);
       if(ret==IDYES)
          SendExposurePolicyCommand(next_mode);
@@ -2535,21 +2452,6 @@ bool CGOATDashboard::SendPortfolioCommand(const int command_type,const int comma
    return(true);
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
-void CGOATDashboard::DeployAll(void)
-{
-#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
-   // Validate once before the loop, avoiding a repeated prompt for every row.
-   if(!PrepareAILaunchPolicy(true)) return;
-#endif
-   for(int i=0;i<ArraySize(g_sets);i++)
-      DoActivate(i);
-
-   if(ArraySize(edt_Status)>1)
-      edt_Status[1].Text("Deployed");
-   if(AllRowsDeployed())
-      SaveDashboardConfig();
-}
-//----------------------------------------------------------------------------------------------------------------------------------------------------
 bool CGOATDashboard::NavigateToSet(const int idx)
 {
    if(idx<0 || idx>=ArraySize(g_sets)) return(false);
@@ -2732,7 +2634,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
       int tabs_total=4*tab_width+3*tab_gap;
       int tabs_x=columns_right-tabs_total;
       int heading_width=MathMax(80,tabs_x-columns_left-tab_gap);
-      CreateInfoOverlayEdit(edt_Heading,"FleetHeading","STRATEGIES  /  OVERVIEW",columns_left,view_toolbar_top,heading_width,rowTallH,C'9,24,39',C'35,77,103');
+      CreateInfoOverlayEdit(edt_Heading,"FleetHeading","STRATEGY FLEET  /  OVERVIEW",columns_left,view_toolbar_top,heading_width,rowTallH,C'9,24,39',C'35,77,103');
       CreateHeaderStateButton(btn_ViewOverview,"ViewOverview","Overview",tabs_x,view_toolbar_top,tab_width,rowTallH,C'20,63,86',C'92,210,247',C'225,238,248');
       tabs_x+=tab_width+tab_gap;
       CreateHeaderStateButton(btn_ViewIntelligence,"ViewIntelligence","Risk & Signals",tabs_x,view_toolbar_top,tab_width,rowTallH,C'11,28,44',C'35,60,82',C'135,181,216');
@@ -2922,7 +2824,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 	prefix="R1_";
 	ArrayResize(edt_Symbol,2);    x=PlaceEditLabel(edt_Symbol[1]   ,prefix+"SYM","Portfolio",x,y,Width_Symbol);
 	ArrayResize(edt_Strategy,2);  x=PlaceEditLabel(edt_Strategy[1] ,prefix+"STR","Mixed",x,y,Width_Strategy);
-	ArrayResize(btn_Action,2);    CreateButtonCtrl2(btn_Action[1]  ,prefix+"BTN",x,y,Width_Action,m_controlHeight,"ActivateAll"); x+=Width_Action+m_GapHoriz;
+	ArrayResize(btn_Action,2);    CreateButtonCtrl2(btn_Action[1]  ,prefix+"BTN",x,y,Width_Action,m_controlHeight,"Deploy in app"); x+=Width_Action+m_GapHoriz;
 	ArrayResize(edt_Status,2);    x=PlaceEditLabel(edt_Status[1]   ,prefix+"STS","Pending",x,y,Width_Status); //edt_Status[1].Color(clrYellow);
 	ArrayResize(edt_Comment,2);   x=PlaceEditLabel(edt_Comment[1]  ,prefix+"CMT","Mixed",x,y,Width_Comment);
 	ArrayResize(edt_News,2);      x=PlaceEditLabel(edt_News[1]     ,prefix+"NWS","Mixed",x,y,Width_News);
@@ -2946,7 +2848,7 @@ bool CGOATDashboard::Create(const long chart_id,const string name,const int subw
 	 prefix="R"+(string)r+"_";
 	 ArrayResize(edt_Symbol,r+1);    x=PlaceEditLabel(edt_Symbol[r]   ,prefix+"SYM",g_sets[i].sym,x,y,Width_Symbol);
 	 ArrayResize(edt_Strategy,r+1);  x=PlaceEditLabel(edt_Strategy[r] ,prefix+"STR",g_sets[i].strat,x,y,Width_Strategy);
-	 ArrayResize(btn_Action,r+1);    CreateButtonCtrl(btn_Action[r]   ,prefix+"BTN_"+IntegerToString(i),x, y,Width_Action,m_controlHeight,(g_sets[i].magic>0 && g_sets[i].cid>0 ? "Navigate" : "Activate"));
+	 ArrayResize(btn_Action,r+1);    CreateButtonCtrl(btn_Action[r]   ,prefix+"BTN_"+IntegerToString(i),x, y,Width_Action,m_controlHeight,(g_sets[i].magic>0 && g_sets[i].cid>0 ? "Navigate" : "Pending"));
 	                                                                                x+=Width_Action+m_GapHoriz; btn_Action[r].Color(C'78,221,178');
 	 ArrayResize(edt_Status,r+1);    x=PlaceEditLabel(edt_Status[r]   ,prefix+"STS",g_sets[i].status,x,y,Width_Status); edt_Status[r].Color(StatusColor(g_sets[i].status));
 	 ArrayResize(edt_Comment,r+1);   x=PlaceEditLabel(edt_Comment[r]  ,prefix+"CMT","- - -",x,y,Width_Comment);
@@ -3033,219 +2935,40 @@ void CGOATDashboard::SetCaptionClientColors(void)
    return;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
-string CGOATDashboard::BuildTemplate(const string eaName,const string eaPath,const string setFile)
+// Profile-staged deploy (beta.25, goatai#1885 6033450916): record a child MT5 loaded from the deploy
+// profile. GoatPortfolioAdoptChildren has matched its symbol, period, EA, CID record and settings. The
+// identity is persisted before it counts, and nothing is opened, closed or applied to a chart.
+bool CGOATDashboard::AdoptChild(const int adopt_idx,const long adopt_chart,const long adopt_magic)
 {
-   string tpl  = "<chart>\r\n";
-   tpl        += "<expert>\r\n";
-   tpl        +=  "name="+eaName+"\r\n";
-   tpl        +=  "path="+eaPath+"\r\n";
-   tpl        +=  "expertmode=5\r\n";
-   tpl        +=  "<inputs>\r\n";
-   string inputs="";
-   // read .set and turn every line "Var=Value" into XML
-   string relative=GoatDashboardCommonSetPath(setFile);
-   if(relative=="") return "";
-   int h = FileOpen(relative, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(h!=INVALID_HANDLE)
-   {
-      while(!FileIsEnding(h))
-      {
-         string ln = StringTrim(FileReadString(h));
-         if(StringLen(ln)==0 || StringFind(ln,"=")<=0) continue;
-         int    p  = StringFind(ln,"=");
-         string var=StringSubstr(ln,0,p);
-         string val=StringSubstr(ln,p+1);
-         inputs += var+"="+val+"\r\n";
-      }
-      FileClose(h);
-   }
-   else
-   {
-      Print("FileOpen failed ",GetLastError()," ",setFile);
-#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
-      // Never launch EA defaults when the selected export cannot be read.
-      return "";
-#endif
-   }
-#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
-   if(inputs=="")
-   {
-      Print("Selected export has no readable inputs; dashboard launch blocked: ",setFile);
-      return "";
-   }
-   inputs=GoatApplyAILaunchPolicy(inputs,m_ai_launch_mode,m_ai_launch_threshold,m_ai_launch_protocol);
-#endif
-   tpl += inputs;
-   tpl += "</inputs>\r\n</expert>\r\n</chart>\r\n";
-   return tpl;
-}
-//----------------------------------------------------------------------------------------------------------------------------------------------------
-bool CGOATDashboard::SaveTemplateAndCopy(const string tplName,const string tplText)
-{
-   string commonRoot = TerminalInfoString(TERMINAL_COMMONDATA_PATH) + "\\Files\\";
-   string relPath=GoatDashboardCommonSetPath(SetFolder+"\\"+tplName);
-   if(relPath=="") return false;
-   
-   // 1) write the template right next to the .set file
-   int h = FileOpen(relPath, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(h==INVALID_HANDLE) { Print("FileOpen failed ",GetLastError()); return false; }
-   FileWriteString(h,tplText);  FileClose(h);
-   
-   // 2) build extended-length paths for CopyFileW
-   string srcPath = commonRoot + relPath;                                        // physical source
-   string dstPath = TerminalInfoString(TERMINAL_DATA_PATH) + "\\MQL5\\Profiles\\Templates\\" + tplName;
-
-   string srcXL  = "\\\\?\\" + srcPath;   // <- add long-path prefix
-   string dstXL  = "\\\\?\\" + dstPath;
-
-   PrintFormat("Copying '%s' → \n  → '%s'", srcPath, dstPath);
-   
-   if(!CopyFileW(srcXL, dstXL, 0)) { Print("CopyFileW error ", GetLastError()); return false; }
-   FileDelete(relPath,FILE_COMMON);
-   return true;
-}
-//----------------------------------------------------------------------------------------------------------------------------------------------------
-bool CGOATDashboard::DeleteCopiedTemplate(const string tplName)
-{
-   string dstPath = TerminalInfoString(TERMINAL_DATA_PATH) + "\\MQL5\\Profiles\\Templates\\" + tplName;
-   string dstXL   = "\\\\?\\" + dstPath;
-
-   if(!DeleteFileW(dstXL))
-   {
-      int err=GetLastError();
-      if(err!=0)
-         PrintFormat("DeleteFileW failed for template '%s' err=%d",dstPath,err);
-      return false;
-   }
-
-   PrintFormat("Deleted copied template '%s'",dstPath);
-   return true;
-}
-//----------------------------------------------------------------------------------------------------------------------------------------------------
-bool CGOATDashboard::ApplyTemplate(const int idx,ENUM_TIMEFRAMES tf,const string tplName)
-{
-   string symbol = g_sets[idx].sym;
-   PrintFormat("→ ApplyTemplate  sym=%s  tf=%d  tpl=%s", symbol, tf, tplName);
-
-   GoatDeploymentPhase("chart_open_begin");
-   ResetLastError();
-   long cid = ChartOpen(symbol, tf);
-   int open_error=GetLastError();
-   GoatDeploymentPhase(cid==0 ? "chart_open_failed" : "chart_open_returned",cid,"",open_error);
-   if(cid==0)
-   {
-      if(!m_agent_setup_quiet) Alert("  ChartOpen FAILED  err=%d", open_error);
-      DeleteCopiedTemplate(tplName);
-      return false;
-   }
-   g_sets[idx].cid=cid;
-   PrintFormat("  Chart opened  cid=%I64d", cid);
-
-#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
-   // Persist the child identity and policy before an EA can run. A partial
-   // deployment must remain resumable and locked across a terminal restart.
+   if(adopt_idx<0 || adopt_idx>=ArraySize(g_sets) || adopt_chart<=0 || adopt_magic<=0
+      || adopt_chart==ChartID() || g_sets[adopt_idx].magic>0) return false;
+   for(int adopt_other=0;adopt_other<ArraySize(g_sets);adopt_other++)
+      if(adopt_other!=adopt_idx && (g_sets[adopt_other].cid==adopt_chart || g_sets[adopt_other].magic==adopt_magic)) return false;
+   long adopt_was_cid=g_sets[adopt_idx].cid,adopt_was_magic=g_sets[adopt_idx].magic;
+   g_sets[adopt_idx].cid=adopt_chart;
+   g_sets[adopt_idx].magic=adopt_magic;
    if(!SaveDashboardConfig())
    {
-      Print("Dashboard state could not be saved; child EA launch blocked.");
-      if(ChartClose(cid)) g_sets[idx].cid=-1;
-      DeleteCopiedTemplate(tplName);
+      g_sets[adopt_idx].cid=adopt_was_cid;
+      g_sets[adopt_idx].magic=adopt_was_magic;
+      GoatDeploymentPhase("child_adopt_save_failed",adopt_chart);
       return false;
    }
-#endif
-
-   GoatDeploymentPhase("template_enqueue_begin",cid);
-   ResetLastError();
-   bool template_queued=ChartApplyTemplate(cid, tplName);
-   int template_error=GetLastError();
-   GoatDeploymentPhase(template_queued ? "template_enqueued" : "template_enqueue_failed",cid,"",template_error);
-   if(!template_queued)
-   {
-      if(!m_agent_setup_quiet) Alert(StringFormat("  ChartApplyTemplate FAILED  err=%d", template_error));
-      DeleteCopiedTemplate(tplName);
-      return false;
-   }
-
-   g_sets[idx].status="Deploying";
-   edt_Status[idx+2].Text(g_sets[idx].status);
-   edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
-   MarkStateDirty();
-
-   // This limits registration polling only; it cannot interrupt a blocked native call.
-   GoatDeploymentPhase("handshake_begin",cid);
-   uint wait_start=GetTickCount();
-   while(!NewSingleInstance(idx))
-   {
-      if(GetTickCount()-wait_start>20000)
-      {
-         GoatDeploymentPhase("handshake_timeout",cid);
-         string msg="Unable to link the deployed child EA to the expected chart.\n\n"
-                   +"Set: "+g_sets[idx].name+"\n"
-                   +"Symbol: "+g_sets[idx].sym+"\n"
-                   +"Expected chart ID: "+StringFormat("%I64d",g_sets[idx].cid)+"\n"
-                   +"No pending child registration was detected within 20 seconds.";
-         if(!m_agent_setup_quiet) MessageBox(msg,"Child Bind Failed",MB_OK|MB_ICONWARNING);
-         g_sets[idx].status="Pending";
-         edt_Status[idx+2].Text(g_sets[idx].status);
-         edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
-         MarkStateDirty();
-         DeleteCopiedTemplate(tplName);
-         return false;
-      }
-      Sleep(50);
-   }
-   
-   GoatDeploymentPhase("handshake_linked",cid);
-   // Agent setup needs the registration, not cross-chart focus/redraw operations.
-   if(!m_agent_setup_quiet)
-   {
-      Sleep(500); ChartRedraw(cid); Sleep(500);
-      if(!ChartSetInteger(ChartId,CHART_BRING_TO_TOP,0,true))
-      {
-         Print(__FUNCTION__+", Error Code = ",GetLastError());
-         DeleteCopiedTemplate(tplName);
-         return(false);
-      }
-      Sleep(500); ChartRedraw(0); Sleep(500);
-   }
-   
-   if(g_sets[idx].cid!=-1 && g_sets[idx].magic!=-1)
-   {
-    g_sets[idx].status = "Linked";
-    edt_Status[idx+2].Text(g_sets[idx].status); edt_Status[idx+2].Color(StatusColor(g_sets[idx].status));
-    btn_Action[idx+2].Text("Navigate");
-    MarkStateDirty();
-#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
-    if(!SaveDashboardConfig())
-       Print("Dashboard linked-state save failed; pre-launch child identity remains persisted and policy stays locked.");
-#else
-    if(AllRowsDeployed())
-       SaveDashboardConfig();
-#endif
-   }
-   DeleteCopiedTemplate(tplName);
-   if(!m_agent_setup_quiet) {Sleep(500); ChartRedraw(); Sleep(500);}
-   GoatDeploymentPhase("deployment_complete",cid);
-   Print("  Template applied ✓");
-   return true;
-}
-//----------------------------------------------------------------------------------------------------------------------------------------------------
-bool CGOATDashboard::NewSingleInstance(const int idx)
-{
-   if(idx<0 || idx>=ArraySize(g_sets) || g_sets[idx].cid<=0) return false;
-   long magic=0;
-   if(!GoatFindMagicByCid(g_sets[idx].sym,g_sets[idx].cid,magic) || magic<=0) return false;
-   double hi=0,lo=0;
-   if(!GlobalVariableGet(GoatChildGVName(magic,g_sets[idx].sym,"SETUP_CID_HI"),hi)
-      || !GlobalVariableGet(GoatChildGVName(magic,g_sets[idx].sym,"SETUP_CID_LO"),lo)
-      || (long)hi!=g_sets[idx].cid/1000000000 || (long)lo!=g_sets[idx].cid%1000000000) return false;
-   string pending=GoatChildGVName(magic,g_sets[idx].sym,GOAT_GV_FIELD_MAGIC);
-   double value=0;
-   if(!GlobalVariableGet(pending,value) || (long)value!=magic) return false;
-   for(int other=0;other<ArraySize(g_sets);other++)
-      if(other!=idx && g_sets[other].magic==magic) return false;
-   g_sets[idx].magic=magic;
-   GlobalVariableDel(pending);
+   // The child's pending registration is consumed, as the template handshake did.
+   GlobalVariableDel(GoatChildGVName(adopt_magic,g_sets[adopt_idx].sym,GOAT_GV_FIELD_MAGIC));
    GlobalVariablesFlush();
+   g_sets[adopt_idx].status="Linked";
+   if(ArraySize(edt_Status)>adopt_idx+2)
+   {
+      edt_Status[adopt_idx+2].Text(g_sets[adopt_idx].status);
+      edt_Status[adopt_idx+2].Color(StatusColor(g_sets[adopt_idx].status));
+   }
+   if(ArraySize(btn_Action)>adopt_idx+2) btn_Action[adopt_idx+2].Text("Navigate");
+#ifdef GOAT_DASH_AI_LAUNCH_POLICY_V147
+   AppendAILaunchAudit(adopt_idx,"ADOPTED");
+   UpdateAILaunchControls();
+#endif
+   GoatDeploymentPhase("child_adopted",adopt_chart);
    return true;
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -3936,7 +3659,10 @@ void CGOATDashboard::UpdateRowMetrics(const int idx,const int gui_row)
    edt_PL_D1    [gui_row].Text(FormatIntegerText(run_day));              edt_PL_D1  [gui_row].Color(ChooseColor(run_day));
    edt_PL_W1    [gui_row].Text(FormatIntegerText(run_week));             edt_PL_W1  [gui_row].Color(ChooseColor(run_week));
    edt_PL_All   [gui_row].Text(FormatIntegerText(run_total));            edt_PL_All [gui_row].Color(ChooseColor(run_total));
-   btn_Action   [gui_row].Text((g_sets[idx].magic>0 && g_sets[idx].cid>0) ? "Navigate" : "Activate");
+   bool row_linked=(g_sets[idx].magic>0 && g_sets[idx].cid>0);
+   btn_Action   [gui_row].Text(row_linked ? "Navigate" : "Pending");
+   btn_Action   [gui_row].Color(row_linked ? C'78,221,178' : C'120,132,145');
+   ObjectSetString(0,btn_Action[gui_row].Name(),OBJPROP_TOOLTIP,(row_linked ? "Bring this child chart to the front" : GOAT_DASH_DEPLOY_RETIRED_MESSAGE));
 }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //  ───  PORTFOLIO LINE (row 1)  ────────────────────────────────────
@@ -3997,9 +3723,10 @@ void CGOATDashboard::UpdatePortfolioRow()
     string portfolio_status=(pending_rows>0 ? "Pending" : "Deployed");
     if(m_portfolio_command_pending) portfolio_status=((m_portfolio_command_type==GOAT_DASH_CMD_PORTFOLIO_CLOSE || m_portfolio_command_type==GOAT_DASH_CMD_CLOSE_SCOPE) ? "Closing" : "Syncing");
     else if(m_portfolio_run_state==GOAT_PORTFOLIO_RUN_PAUSED) portfolio_status="Paused";
-    color portfolio_status_clr=(portfolio_status=="Pending" ? clrRed : (portfolio_status=="Deployed" ? clrWhite : StatusColor(portfolio_status)));
-    string action_text=(all_deployed ? "Activated" : "ActivateAll");
-    color action_text_clr=(all_deployed ? C'87,153,122' : clrWhite);
+    // "Pending" (not yet activated) is a normal state: brass, not error red.
+    color portfolio_status_clr=(portfolio_status=="Pending" ? C'201,163,91' : (portfolio_status=="Deployed" ? clrWhite : StatusColor(portfolio_status)));
+    string action_text=(all_deployed ? "All active" : "Deploy in app");
+    color action_text_clr=(all_deployed ? C'87,153,122' : C'120,132,145');
     double portfolio_hist_dd=StringToDouble(Portfolio_Target_DD);
     color pl_open_clr=(open_sum>0.0 ? C'0,180,0' : (open_sum<0.0 ? clrRed : clrWhite));
     color pl_day_clr =(d_sum  >0.0 ? C'0,180,0' : (d_sum  <0.0 ? clrRed : clrWhite));
@@ -4009,6 +3736,7 @@ void CGOATDashboard::UpdatePortfolioRow()
     edt_Symbol   [1].Text("Portfolio"); edt_Symbol [1].Color(clrWhite);
     edt_Strategy [1].Text(strategy_text); edt_Strategy[1].Color(clrWhite);
     btn_Action   [1].Text(action_text); btn_Action[1].Color(action_text_clr);
+    ObjectSetString(0,btn_Action[1].Name(),OBJPROP_TOOLTIP,(all_deployed ? "Every member is linked" : GOAT_DASH_DEPLOY_RETIRED_MESSAGE));
     edt_Comment  [1].Text("- - -");
     edt_Comment  [1].Color(clrWhite);
     edt_News     [1].Text("Mixed");

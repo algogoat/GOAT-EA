@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "fixtures": {
+    "kestrel-b35-01.set": {
+      "sha256": "6434966312aa2494eaf6a034a375da0f154226c0af5ae4b9ac75604804a56eb9",
+      "source": "C:\\Users\\web\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Deployments\\43566a316f3a49678a75a31972ac0e1b\\GOAT V1.49 EURUSD,M1_B35-01_Kestrel-Trend-Breakout.set",
+      "note": "B35-01 Kestrel frozen SET (V1.49 export name). Byte-identical to Balanced35 pair \"07 - AI OFF/Deployment Sets/01 - Kestrel Trend Breakout - EURUSD.set\", the source of the MT5-saved chart02.chr below."
+    },
+    "g1-buildtemplate-kestrel.tpl": {
+      "sha256": "2ee0e0c628d2a5df55ee1dd0128282ab32095e4d8d7d411a7d72f618011ff802",
+      "source": "G:\\GOAT-Build-Artifacts\\claude-pc-ops\\attach-mechanism-experiment\\results\\GOATDiag-E V1.49 EURUSD,M1_B35-01_Kestrel-Trend-Breakout.tpl",
+      "note": "G1: the real BuildTemplate output for kestrel-b35-01.set (GOATDiag-EA, verbatim Dashboard.mqh BuildTemplate, no AI policy = aiMode 0), written ANSI with CRLF on T3."
+    },
+    "g3-b35-chart02-mt5-saved.chr": {
+      "sha256": "43c28da1603087942c4ebaceda1700ac42725c5797bba6322d5fa2ee8d45f460",
+      "source": "G:\\GOAT-Build-Artifacts\\balanced35-vps-launch-20260924\\second-failure-evidence\\second-07-sdk-qualified-termination\\snapshot\\profile\\chart02.chr",
+      "note": "G3: MT5-saved child chart of the Balanced35 pair profile (VPS, V1.48, expertmode=5, AllowLiveTrading=1). id=55933097152258 = row 1 cid of its dashboard.tsv."
+    },
+    "g3-t3-saved-native-e1.tpl": {
+      "sha256": "5e631d907de5394ab9f73f26f260b6a1138c211df01ff88dc6ee3ef71200695e",
+      "source": "G:\\GOAT-Build-Artifacts\\claude-pc-ops\\attach-mechanism-experiment\\results\\saved-native-E1.tpl",
+      "note": "G3: T3 ChartSaveTemplate after a script applied g1-buildtemplate-kestrel.tpl (expertmode=5); MT5 saved it back as expertmode=4 (T3 has no AllowLiveTrading, D2)."
+    },
+    "g3-b35-dashboard-rows.tsv": {
+      "sha256": "43a5a26beb467ce0a4222dfa15b5b8685ff26f9bc101e7a395ed879b53486a1f",
+      "source": "G:\\GOAT-Build-Artifacts\\balanced35-vps-launch-20260924\\second-failure-evidence\\second-07-sdk-qualified-termination\\snapshot\\dashboard.tsv",
+      "source_sha256": "92314db4a041f93ed8be5cd702d76e4e9fef5ef8b6d266f428821581d26baf65",
+      "note": "G3: the header and row 1 of the dashboard state MT5 saved with chart02.chr, a byte prefix of the source file."
+    }
+  }
+}

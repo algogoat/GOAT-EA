@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "writer": "studio_deploy_profile profile-staged-v1",
+  "children": [
+    {
+      "case": "comments-crlf",
+      "set": "g2/comments-crlf.set",
+      "fileName": "GOAT V1.49 EURUSD,M1_G2-comments.set",
+      "symbol": "EURUSD",
+      "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+      "deploymentId": "fedcba9876543210fedcba9876543210",
+      "policy": {
+        "aiMode": 0,
+        "aiThreshold": 50,
+        "aiProtocol": 2
+      },
+      "chart": "g2/comments-crlf.chr",
+      "chartSha256": "d2334f732b7d4aad6fec750aa979f8f2c5f856a56f2234a8bee36c8014732e58",
+      "note": "UTF-16 BOM, CRLF; comment lines holding \"=\" are kept, lines without a key are skipped, trailing spaces trimmed"
+    },
+    {
+      "case": "mixed-endings-padded",
+      "set": "g2/mixed-endings-padded.set",
+      "fileName": "GOAT V1.49 GBPUSD,M1_G2-padded.set",
+      "symbol": "GBPUSD",
+      "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+      "deploymentId": "fedcba9876543210fedcba9876543210",
+      "policy": {
+        "aiMode": 0,
+        "aiThreshold": 50,
+        "aiProtocol": 2
+      },
+      "chart": "g2/mixed-endings-padded.chr",
+      "chartSha256": "963cec3bce03052a7535ee998ad2c5692d420677444fa6551ac3d9481d45ba80",
+      "note": "UTF-8 without BOM, LF and CRLF mixed, leading/trailing spaces and tabs trimmed, no final line end"
+    },
+    {
+      "case": "ai-entry-filter-h4",
+      "set": "g2/ai-entry-filter-h4.set",
+      "fileName": "GOAT V1.49 XAUUSD,H4_G2-ai.set",
+      "symbol": "XAUUSD",
+      "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+      "deploymentId": "fedcba9876543210fedcba9876543210",
+      "policy": {
+        "aiMode": 2,
+        "aiThreshold": 65,
+        "aiProtocol": 2
+      },
+      "chart": "g2/ai-entry-filter-h4.chr",
+      "chartSha256": "7adb508e27a5e64cc8eb4428774f5b4fe3b12730a8ee198205d06675238f5f43",
+      "note": "aiMode 2: Mode_Bias and Bias_threshold replaced in place, Bias_Protocol and Mode_Bias_Trades appended in that order; H4 = period (1,4)"
+    },
+    {
+      "case": "ai-all-missing-d1",
+      "set": "g2/ai-all-missing-d1.set",
+      "fileName": "GOAT V1.49 WS30,D1_G2-daily.set",
+      "symbol": "WS30",
+      "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+      "deploymentId": "fedcba9876543210fedcba9876543210",
+      "policy": {
+        "aiMode": 2,
+        "aiThreshold": 50,
+        "aiProtocol": 2
+      },
+      "chart": "g2/ai-all-missing-d1.chr",
+      "chartSha256": "fb0dbc71cc66eec3bf7aa331d8deb29616157f1b1eb1d2746089e583fd83a02d",
+      "note": "aiMode 2 with no AI input in the SET: all four appended; D1 = period (1,24), MT5 stores a day as 24 hours"
+    },
+    {
+      "case": "utf8-bom-m5",
+      "set": "g2/utf8-bom-m5.set",
+      "fileName": "GOAT V1.49 USDJPY,M5_G2-m5.set",
+      "symbol": "USDJPY",
+      "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+      "deploymentId": "fedcba9876543210fedcba9876543210",
+      "policy": {
+        "aiMode": 0,
+        "aiThreshold": 50,
+        "aiProtocol": 2
+      },
+      "chart": "g2/utf8-bom-m5.chr",
+      "chartSha256": "6c3ce6dc5ee17b3eb3a8ef38031efa0b99934c781b0cfcc7beec81c809c559e4",
+      "note": "UTF-8 with BOM; M5 = period (0,5)"
+    }
+  ],
+  "dashboard": {
+    "chart": "g2/dashboard-eurusd.chr",
+    "symbol": "EURUSD",
+    "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+    "chartSha256": "d981d1e271b98980ecc92bb19d4a4b976983f6e60fb507dae2f4418cdc644cf5"
+  },
+  "profile": {
+    "profileName": "GOAT-Deploy-0123456789abcdef",
+    "deploymentId": "0123456789abcdef0123456789abcdef",
+    "eaRelativePath": "GOAT-EA\\GOAT V1.49.ex5",
+    "policy": {
+      "aiMode": 2,
+      "aiThreshold": 65,
+      "aiProtocol": 2
+    },
+    "members": [
+      {
+        "set": "g2/comments-crlf.set",
+        "fileName": "GOAT V1.49 EURUSD,M1_G2-comments.set",
+        "symbol": "EURUSD",
+        "strategy": "G2 comments-crlf",
+        "path": "C:\\Users\\Customer\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Deployments\\0123456789abcdef0123456789abcdef\\GOAT V1.49 EURUSD,M1_G2-comments.set"
+      },
+      {
+        "set": "g2/ai-entry-filter-h4.set",
+        "fileName": "GOAT V1.49 XAUUSD,H4_G2-ai.set",
+        "symbol": "XAUUSD",
+        "strategy": "G2 ai-entry-filter-h4",
+        "path": "C:\\Users\\Customer\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\GOAT\\Deployments\\0123456789abcdef0123456789abcdef\\GOAT V1.49 XAUUSD,H4_G2-ai.set"
+      }
+    ],
+    "files": {
+      "chart01.chr": "d981d1e271b98980ecc92bb19d4a4b976983f6e60fb507dae2f4418cdc644cf5",
+      "chart02.chr": "2ca86a00986f01fd63991db81384c9116543985e0efdac94857811f8093e6733",
+      "chart03.chr": "98a971560653a38a06d5f933179b528a7912ff7707cc29dd09c9bda5c9983a6c",
+      "dashboard_state.tsv": "a4e166885ca89da2ad2b9d8641e2ec25bdbe8545ac264a234bc8465f0af64d94"
+    }
+  }
+}

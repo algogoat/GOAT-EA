@@ -35,6 +35,9 @@ python scripts/goat_portfolio_setup.py audit --manifest <terminal.json>
 python scripts/goat_portfolio_setup.py status --manifest <terminal.json>
 ```
 
+From `V1.49-BETA17-43` the dashboard refuses `deploy_next` (`rejected_deploy_next_retired`):
+children come from the staged deploy profile and `link_children` adopts them (see
+`DEPLOYMENT-STARTUP-LIVENESS.md`). The note below applies to older builds only.
 `deploy_next` is one attachment, not an invitation to issue a blind loop. Inspect
 its retained request and native receipt before advancing. An unresolved `started`
 or timeout requires reconciliation. Count unique chart/magic identities and exact
@@ -60,6 +63,10 @@ Versioned controller installations can supply both `expertRelativePath` and
 `credentialRelativePath` in the setup manifest. They are normalized relative
 paths under `MQL5/Experts/` and `GOAT/Credentials/` respectively; both are required
 together. Omitting both preserves the original V1.47 installation contract.
+For V1.49 terminal-isolation builds `credentialRelativePath` names the shared
+pre-isolation file; the EA reads and writes `<stem>-<login>.token` beside it, and
+`controller/studio_terminal_isolation.py` `credential_relative_path` resolves the
+same per-login name from the verified account (INV-CRED-01).
 The setup/portfolio clients hash the selected EX5 before registration or commands.
 The read-only status tool takes matching `--expert-relative-path` and
 `--credential-relative-path` options. It must not inspect the incumbent credential

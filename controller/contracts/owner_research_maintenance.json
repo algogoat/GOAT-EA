@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "scope": "owner-demo-recovery-20260927",
+  "authorization_reference": "https://github.com/algogoat/goatai/issues/1885#issuecomment-5860941567",
+  "account": {
+    "login": "3000082754",
+    "server": "Darwinex-Demo"
+  },
+  "binding_sha256": "564ffdf22beeec532a41193201942cd59f847447d9a497759df7beeb2c0708f5",
+  "run_id": "session-04e6e8538e3d4ca295fe151e5b95cbb0",
+  "grant_request_id": "ui-59148577641692-12243487",
+  "grant_payload_hash": "8244ceb7bac009a72f3af5f8eb522969c5259d66c2189c870b3a392bad78674c",
+  "generation": 1,
+  "ea_version": "1.49",
+  "allowed_ea_sha256": [
+    "931212a291c6296e46525cd11972cabe9568bcde7f50cf91966cf23cb6c2e449",
+    "c59a3b318526304a12aea233f27365b85bc49626c0bec62721e0864adb5186ed"
+  ],
+  "operations": [
+    "orphan-recovery-apply",
+    "orphan-recovery-reconcile-rejection",
+    "owner-maintenance-prepare"
+  ],
+  "not_before_utc": 1790552700,
+  "expires_utc": 1791156900,
+  "maintenance": {
+    "target_ea_sha256": "c59a3b318526304a12aea233f27365b85bc49626c0bec62721e0864adb5186ed",
+    "plan_sha256": "70e7c2d6b60902ee3d9d6ddf4e58ec9d08b1e99fcb097fce31b82228227bf303",
+    "max_seconds": 14400
+  }
+}

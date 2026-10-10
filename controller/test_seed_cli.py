@@ -39,10 +39,12 @@ class SeedCliTests(unittest.TestCase):
     def test_discovery_exposes_every_seed_command_and_driver_limits(self):
         code,result=self.cli('discover');self.assertEqual(code,0)
         info=result['result']
-        for operation in ('seed-prepare','seed-start','seed-resume','seed-status','seed-cancel','seed-report'):
+        for operation in ('seed-prepare','seed-start','seed-resume','seed-status','seed-cancel','seed-report','seed-promote'):
             self.assertIn(operation,info['operations']);self.assertIn(operation,info['operation_contracts'])
         self.assertEqual(info['operation_contracts']['seed-start']['defaults']['max-seconds'],60)
         self.assertEqual(info['operation_contracts']['seed-resume']['limits']['max-seconds'],[1,3600])
+        self.assertEqual(info['operation_contracts']['seed-promote']['limits']['neighborhood'],[1,5])
+        self.assertIn('only the forward window is out-of-sample',info['operation_contracts']['seed-promote']['effect'])
         self.assertFalse(info['execution_ready'])
 
     def test_help_exposes_only_declared_seed_driver_flags(self):
@@ -101,6 +103,53 @@ class SeedCliTests(unittest.TestCase):
                 getattr(runner,operation).assert_called_once_with('selected',max_seconds=60)
             self.assertEqual(self.cli('seed-cancel','--batch-id','selected')[0],0)
             runner.cancel.assert_called_once_with('selected')
+
+    def no_wait(self):
+        """The CLI's 15 s lease wait, run on a fake clock so a busy lease answers at once."""
+        ticks=iter(range(0,10000,5))
+        return patch('studio_terminal_lease.time',SimpleNamespace(monotonic=lambda:next(ticks),sleep=lambda seconds:None))
+
+    def test_cancel_is_a_request_only_while_this_batch_driver_runs(self):
+        # goatai#2350 (Claude-Mac 6099078698 R2, 6099732097): a request only when this batch's own driver is alive;
+        # otherwise the cancel runs now under the lease, and a terminal still busy refuses in plain words.
+        from studio_terminal_lease import foreign_holder,held
+        root=Path(self.fixture.receipt['controller_state_root'])
+        for module,runner_name,operation,flag in (('studio_seed','SeedRunner','seed-cancel','--batch-id'),
+                                                  ('studio_catchup','CatchupRunner','catchup-cancel','--catchup-id')):
+            with self.subTest(operation=operation):
+                runner=Mock();runner.request_cancel.return_value={'cancel_requested':True}
+                runner.driver_state.return_value={'state':'running'}
+                with patch(module+'.'+runner_name,return_value=runner),foreign_holder(root):
+                    code,result=self.cli(operation,flag,'selected')
+                self.assertEqual((code,result['result']),(0,{'cancel_requested':True}))
+                runner.request_cancel.assert_called_once();runner.cancel.assert_not_called()
+                runner=Mock();runner.driver_state.return_value={'state':'none'}
+                runner.cancel.side_effect=lambda run_id:{'cancelled_under_lease':held(root)}
+                with patch(module+'.'+runner_name,return_value=runner):
+                    code,result=self.cli(operation,flag,'selected')
+                self.assertEqual((code,result['result']),(0,{'cancelled_under_lease':True}))
+                runner.request_cancel.assert_not_called()
+                runner=Mock();runner.driver_state.return_value={'state':'none'}
+                with patch(module+'.'+runner_name,return_value=runner),foreign_holder(root),self.no_wait():
+                    code,result=self.cli(operation,flag,'selected')
+                self.assertEqual(code,2);self.assertIn('try again. Nothing was cancelled.',result['error'])
+                runner.cancel.assert_not_called();runner.request_cancel.assert_not_called()
+
+    def test_main_holds_the_terminal_lease_for_drivers_and_refuses_beside_another_holder(self):
+        from studio_terminal_lease import foreign_holder,held
+        root=Path(self.fixture.receipt['controller_state_root'])
+        runner=Mock();runner.start.side_effect=lambda batch_id,max_seconds:{'lease_held':held(root)}
+        with patch('studio_seed.SeedRunner',return_value=runner):
+            self.assertEqual(self.cli('seed-start','--batch-id','selected')[1]['result'],{'lease_held':True})
+            runner.start.reset_mock()
+            with foreign_holder(root),self.no_wait():
+                code,result=self.cli('seed-start','--batch-id','selected')
+        self.assertEqual(code,2);self.assertIn('seed-start did not start',result['error'])
+        runner.start.assert_not_called()
+        self.assertIn('run-batch',goat_studio.TERMINAL_LEASE_OPERATIONS)
+        for read_only in ('research-monitor-restart-status','research-monitor-reopen-prepare','research-monitor-adopt-reopen',
+                          'cancel-rejected-successor','self-repair','batch-pause'):
+            self.assertNotIn(read_only,goat_studio.TERMINAL_LEASE_OPERATIONS)
 
     def test_undeclared_force_flag_is_rejected_by_parser(self):
         with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit) as raised:

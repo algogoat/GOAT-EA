@@ -1,0 +1,22 @@
+{
+  "schema": "goat-sanitized-candidate-compile-v1",
+  "compile_started_at": "2026-10-02T00:33:54.5121132Z",
+  "compiler_version": "5.0.0.6230",
+  "compiler_sha256": "cf2750bde55d98a1f3b4e56bcdd4f59300d0cff5caa6760985f7ef2c2cc12229",
+  "source_sha256": "3ff4530b1864fe46fb95235e2abd682e60c88d8bf9631fa92d748bee065e238c",
+  "staged_source_sha256": "3ff4530b1864fe46fb95235e2abd682e60c88d8bf9631fa92d748bee065e238c",
+  "outcome": "COMPILE_OK",
+  "result_line": "Result: 0 errors, 0 warnings, 37808 ms elapsed, cpu='X64 Regular'",
+  "metaeditor_process_exit_code": 1,
+  "artifact_wait_timed_out": false,
+  "stage_cleaned": true,
+  "runtime_output_overwritten": false,
+  "output": {
+    "sha256": "f05a63c7a72a980d0ab442ba143be4241efcd2f96819bb7432e729e0b3800a33",
+    "bytes": 2317702
+  },
+  "retained_reference_sha256": "05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9",
+  "equivalence": "MISMATCH",
+  "full_private_receipt_sha256": "f6f4830db225b6cb242379305b4303072f54ccbd2930a1a016f335b8d017e643",
+  "native_qualification": "NOT_PERFORMED"
+}

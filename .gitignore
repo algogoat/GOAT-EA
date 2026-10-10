@@ -31,3 +31,7 @@ MQL5/Profiles/
 #   These are all considered part of the EA project and
 #   should be tracked in this repository.
 
+
+# Python bytecode caches (a stray .pyc landed with #207 at df2827f1)
+__pycache__/
+*.pyc

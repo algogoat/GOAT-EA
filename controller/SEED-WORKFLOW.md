@@ -1,9 +1,26 @@
 # Portable Seed Farming workflow
 
+Start with the "Seed loop" section of [AGENT-START-HERE.md](AGENT-START-HERE.md) and the
+feedback loop in [GOAT-OPERATING-MODEL.md](GOAT-OPERATING-MODEL.md). This page is the
+detailed reference for the same `seed-*` commands.
+
 Seed Farming is a dedicated EA mode for bounded template/asset searches. It emits
 `GOAT/SeedFarmingXML` results in the selected terminal's Common Files directory.
 It does not run the normal Studio forward/export pipeline, produce a portfolio,
 or arm `BatchOnGoing`. Normal optimization batches use `prepare-batch` instead.
+
+**Seed Farming searches for NEW candidates.** It is not a re-test of proven files:
+
+- **The 48 catalog templates and the library's variant SETs are already-validated
+  research.** They don't need re-testing before use, and a seed hunt is not how
+  they are checked.
+- **`catchup-validate` is for exported research files** (the GOAT export pattern:
+  a SET with its equity CSVs from a batch export). Its refusal on a catalog SET is
+  expected. It doesn't mean that SET needs a retest.
+- **Equity for a library variant comes from the library evidence**, not from
+  catch-up.
+
+Seed a template only when you want new settings or new assets for it.
 
 The controller and XML parser have automated synthetic qualification. A real
 customer MT5 launch/stop/next-member cycle has **not yet been qualified** for this
@@ -46,8 +63,8 @@ broker symbol, dates and resource budget. These dates and cutoff are examples.
       "set_path": "C:\\Users\\You\\GOAT Research\\My strategy.set",
       "frame_target": 1000,
       "tester": {
-        "Expert": "GOAT-EA\\GOAT V1.48.ex5",
-        "Symbol": "EURUSD", "Period": "H1", "Model": 4,
+        "Expert": "GOAT-EA\\GOAT V1.49.ex5",
+        "Symbol": "EURUSD", "Period": "M1", "Model": 1,
         "ExecutionMode": 0, "Optimization": 2, "OptimizationCriterion": 6,
         "FromDate": "2026.01.01", "ToDate": "2026.03.01",
         "ForwardMode": 0, "ForwardDate": "",
@@ -80,9 +97,35 @@ research selection thresholds, not profitability guarantees.
 
 Preparation validates the entire matrix before writing frozen SETs and startup
 INIs. Original SETs remain unchanged. Frozen SETs retain UTF-16 LE BOM, CRLF,
-sections and trading inputs; only `EA_Desc` receives a unique short run alias and
+sections and trading values; `EA_Desc` receives a unique short run alias and
 `@{mode=SeedFarming,n=...,from=...,to=...}` metadata. Each source, frozen SET,
 configuration, schema, installation and retained result has a SHA-256 binding.
+
+**Every optimization flag is explicit.** MT5 remembers each input's optimize flag
+and range in the terminal's saved tester profile
+(`<data root>\MQL5\Profiles\Tester\<expert>.set`). A plain `ADX_Level=22.0` in the
+startup `[TesterInputs]` replaces only the value, so a flag left at `Y` by an earlier
+tester session (for example an earlier plan that searched `ADX_Level` 27/30/33) would
+silently add an axis. So the frozen SET and startup INI write:
+
+- each frozen axis with its exact range and `Y`, byte for byte as in the template
+  (`Grid_Size=-4.0||-5||1||-3||Y`);
+- every other optimizable input as `value||value||0||value||N` with the template's
+  own value (`ADX_Level=22.0||22.0||0||22.0||N`). MT5's own disabled form keeps a
+  remembered range (for example `true||false||0||true||N`); only the final `N`
+  matters;
+- literal strings and non-optimizable (`sinput`) inputs unchanged.
+
+Preparation refuses the plan if pinning would change any trading value or axis.
+A seed batch prepared before this fix has plain non-axis values in its manifest.
+`seed-prepare` with that same ID, `seed-start` and `seed-resume` all refuse it
+before any process effect ("prepared before explicit optimization flags; prepare a
+new batch ID"). A member already running is still observed and kept; only the next
+launch is refused.
+The XML check stays strict: an XML that still varies a non-axis input fails with
+`Seed XML axes differ from frozen template`. Native batches (V1.49) have pinned
+their startup `[TesterInputs]` the same way. Promoted fixed/robustness
+SETs inherit the pinned form; `base_values` and candidate hashes use the plain value.
 Axes must be exactly representable by the native seed XML's eight-decimal output;
 unrepresentable search precision is rejected instead of silently changing it.
 
@@ -95,7 +138,61 @@ frame target; oversized evidence is a failed result, never silent truncation or 
 An existing batch ID is reusable only with the same plan and intact frozen bytes.
 Edit a new plan/new ID for changes. This command never starts MT5.
 
+On a demo-agent (`demo_direct`) installation, use the broker-verified demo tools
+in [DEMO-AGENT-TOOLS.md](DEMO-AGENT-TOOLS.md#seed-farming-on-the-demo-lane)
+instead of `goat.exe studio seed-*`: `seed-validate` checks a plan without writing
+anything, and `seed-prepare/start/resume/status/cancel/report` add the demo,
+owner STOP, human TAKE and disk checks around this same workflow.
+
 ## Run, resume and cancel
+
+**There is no background driver. You are the loop.** A seed run advances only
+while a `seed-start` or `seed-resume` call is running. Each call drives for at most
+its `--max-seconds` and then returns; between calls nothing collects a finished
+member or starts the next one. So:
+
+```powershell
+# Repeat until result.status is completed or stopped (or reconcile_required: see below).
+.\goat.exe studio --installation "C:\Users\You\GOAT Suite\installation.json" seed-resume --batch-id seed-weekend-01 --max-seconds 60
+```
+
+- Call `seed-resume` again every time it returns, until the status is `completed`
+  or `stopped`.
+- Call it again after **any non-zero exit** too. A transient error (for example a
+  Windows process query that timed out) ends that one call, not the run; the next
+  call re-checks everything and continues.
+- Stop looping only on `completed`, `stopped` (read `stopped_reason`; resume it
+  once the cause is fixed) or `reconcile_required` (settle it with
+  `seed-reconcile --batch-id <id>`).
+
+**`seed-status` says whether a driver is running** (support 64f1c5ae). It adds:
+
+- `driver`: `running`, `none` or `unknown`. `running` means a `seed-start` or
+  `seed-resume` call is in progress right now. Each call records its process ID
+  and the process creation time in `seeds/<id>/driver.json`, and `seed-status`
+  checks that exactly that process is still alive. It asks Windows directly
+  first (exact to the microsecond, no WMI) and uses WMI only when Windows won't
+  say. `none` means no call is in progress: every recorded call returned, or its
+  process is gone (for example a tool timeout ended it). `unknown` means Windows
+  could not answer the check; GOAT never reads that as running or as stopped.
+- The whole check takes at most 8 seconds, however many calls are recorded; a
+  call it could not reach in time reads `unknown`. `research-queue` shares the
+  same 8 seconds across all its runs. Each new call closes (`gone`) earlier
+  entries whose process Windows proves has ended, so killed calls don't pile up.
+- `driver_detail`: the plain `basis` for that answer, the call in progress
+  (`call`) and the last recorded call (`last_call`: command, pid, start, end,
+  `result_status` and any `error`).
+- `next_step`: one sentence with the exact command, for example `Not advancing: 3
+  members pending and no driver running ... Resume with: goat.exe studio
+  --installation "<receipt>" seed-resume --batch-id seed-weekend-01 --max-seconds
+  60`. For `reconcile_required` it names `seed-reconcile`, for `completed` it names
+  `seed-report`, and while a call is running it says not to start a second one.
+
+`seed-status` itself never drives, writes the driver record or re-activates
+anything. `research-status` (for the active run) and `research-queue` (each run
+that can still move on) show the same `driver` block, with its `next_step`; an
+active run with no driver reads `health: unsupervised`. On the owner demo lane the
+driver is the detached lane worker, and the same fields come from its record.
 
 `--max-seconds` defaults to 60 and accepts 1..3600. It bounds that invocation of
 the driver, not the lifetime of an already started tester. Budget exhaustion
@@ -105,6 +202,24 @@ returns; each process adapter operation has a bounded timeout, so this is not a
 hard real-time deadline.
 Call `seed-resume` to observe that same retained process and continue pending
 members. This is a bounded agent loop, not an installed background service.
+
+**Never give one call a budget longer than your own tool timeout.** The driver
+starts MT5 as its own child process. If something kills the driver (for example an
+agent tool that times out while `seed-start --max-seconds 3600` runs in the
+foreground and ends the whole process tree), MT5 dies with it mid-member, and the
+member ends `missing_output` (seen on T2, `seedhunt-t2-4-b41`). Use the default
+`--max-seconds 60` (or any budget clearly below your tool's timeout) and loop
+`seed-resume`. Between calls MT5 keeps running the member on its own; the next call
+observes it. The same applies to `catchup-start`/`catchup-resume`. On the owner demo
+lane (`goat.exe demo`) these commands detach instead: the drive runs in the same
+Windows demand-task host as `run-batch`, outside the caller's process tree, so a tool
+timeout cannot end it (see [DEMO-AGENT-TOOLS.md](DEMO-AGENT-TOOLS.md#seed-farming-on-the-demo-lane)).
+Between calls nothing supervises the running member: its job timeout, a human
+TAKE and (on the demo tools) the disk check are only acted on during the next
+`seed-resume`. `--max-seconds` is that call's budget, not an autonomous hard stop.
+Keep calling `seed-resume` until the batch reaches `completed` or `stopped`, or holds
+`reconcile_required` for inspection; owner STOP is a separate explicit command
+and still works between calls.
 
 The EA stops at the frame target. Natural genetic convergence may finish below
 target; startup `ShutdownTerminal=1` also requests exit after normal completion.
@@ -117,10 +232,31 @@ The terminal slot is shared with normal native dispatch under the same exclusive
 file lock. Another batch cannot reserve the terminal while seed ownership is
 active. Owner/generation changes, process replacement, ambiguous output, uncertain
 startup, or invalid evidence stop further effects. No automatic failed retry is
-allowed; every attempted member has `attempts: 1` at most. On an ordinary failed,
-missing-output or timed-out member, prepare a new explicit plan containing only
-the desired unattempted jobs after investigating the cause. Preserve the old
-ledger and record the failure in the local matrix.
+allowed; every attempted member has `attempts: 1` at most.
+
+**A failed member fails only itself** (goatai#1885). A member that ends `failed`,
+`timeout` or `missing_output` keeps that status with a plain `error`, for example
+`MT5 closed after 70 s of its 3600 s budget without writing this member's SeedFarming
+XML. Nothing is inferred ...`. The batch then continues with its pending members.
+Two rules stop it early, because the fault then looks systemic: **3 attempted members
+in a row failed**, or **at least half of 4 or more attempted members failed**. The
+batch becomes `stopped` with `stopped_reason` (`rules`, `attempted`, `failed`,
+`pending`, every failed member's `reasons`, and a `plain` sentence). When every
+member has ended, the batch is `completed` if any member completed (`failed_members`
+counts the rest), or `stopped` if every attempted member failed. A `cancelled`
+member (owner STOP, `seed-cancel`, a human TAKE) still stops the whole batch.
+
+**A batch stopped by failures resumes.** Fix the cause, then call `seed-resume`
+(`catchup-resume` for a catch-up). If the batch is `stopped` with pending members,
+no `cancelled` or `reconcile_required` member and no batch-level doubt, it is
+re-activated exactly like a first start: the agent grant, an idle loaded monitor,
+the running selected terminal, the terminal slot, the one-namespace preflight and
+the held-out check, and on the demo lane a fresh start-grade broker readback. Then
+the monitor closes and the pending members continue. The re-activation is recorded
+in `state.reactivations`. Completed and failed members are never re-run, and a
+`seed-status` read never re-activates anything. The breaker counts only members
+attempted since the last activation. Preserve the ledger and record every failed
+member in the local matrix.
 
 ```powershell
 .\goat.exe studio --installation "C:\Users\You\GOAT Suite\installation.json" seed-cancel --batch-id seed-weekend-01
@@ -138,9 +274,104 @@ slot, alter receipts, kill an arbitrary process, or replay the configuration.
 Inspect the exact PID/path/creation time and the selected terminal with the user;
 retain logs for support. This beta intentionally has no automatic repair for an
 unattributed launch, invalid frozen evidence or revoked grant. Human takeover
-prevents further agent close/start actions. After a normal stopped/completed
+prevents further agent close/start actions.
+
+One case is repaired from evidence: a member whose start was issued but whose
+process identity was not confirmed (for example Windows briefly listed a
+terminal64 process with no executable path while another MT5 started or exited).
+MT5 still runs the frozen INI and shuts down. Once the selected terminal is
+closed and exactly one output named for that member exists, written after its
+start, `seed-status`/`seed-resume` collect it with the usual identity and
+content checks and record `reconciled` (`prior_error`) on the member; it is never
+re-run, and remaining pending members then continue. With no output, or while a
+batch-level doubt (an unowned process between members) is recorded, the member
+stays `reconcile_required`. The process inventory itself re-reads a row with a
+missing path for up to 10 seconds before it refuses. The whole Windows query is
+retried through a WMI stall: 4 attempts of 20 s, with 2, 5 and 10 s pauses (each varied
+by up to 25%), for a check that gates a launch or a close, and at most 25 s for each
+inventory of a status read. A WMI error
+(`Get-CimInstance` runs with `-ErrorAction Stop`) is a failed attempt, never an empty list. A row without a path is first read from
+the process itself, bound to the row by its creation time.
+
+When every WMI attempt fails, the MT5 inventory (process ID, path and creation time)
+is read once from Windows itself, with no WMI, and the fallback is written to the
+same `process-query.jsonl` log. A process whose path Windows won't show is listed
+with no path, which counts as unknown, never as absent. If that read fails too, the
+inventory fails closed with the original WMI error. Checks that need a command line
+(which MT5 runs a member INI) have no such fallback. If the inventory fails before a
+member's launch, nothing was started: the member stays `pending` with
+`launch_refused`, the run stays `active`, and the next `seed-resume` starts it.
+
+After a member launch, the driver waits up to 90 s for that MT5's identity; a stalled
+query or a row without its path is "not seen yet". If the wait still runs out, the member
+becomes `reconcile_required` ("Terminal startup identity not observed"). `seed-resume`
+and `seed-reconcile` in the demo lane (never `seed-status`, and never without the
+terminal lock) then adopt the running MT5 as that member's own launch only when, read
+now, it is the only uncertain member, with no batch-level doubt; the MT5 runs this
+installation's `terminal64.exe` and was created inside the member's launch window; its
+command line names the member's own `/config:` INI and no other terminal64 does; and the
+INI still has the digest the batch recorded. The member then records `reidentified` and
+is collected as usual. Otherwise it stays `reconcile_required` with `reidentify.reason`.
+
+The batch-level doubt "Unowned selected-terminal process appeared between seed members"
+means an MT5 started by someone else ran between members. Typical causes are a person
+reopening MT5, or `demo launch-terminal` during a batch; don't do either, because the
+driver owns the reopen. In the demo lane, `seed-reconcile` or `seed-resume` settles the
+doubt under the terminal lock, never a `seed-status` read, once two things hold, re-inspected
+now (`goat.exe studio` keeps the earlier rule: `seed-cancel` settles it once MT5 is idle):
+- the selected MT5 is closed again;
+- no MT5 anywhere runs a member's INI or alias.
+
+Settling is journaled in `actions.jsonl` first, then records `unowned_settled` (`prior_error`,
+`basis`, `stray_members`) in the state. A pending
+member that already has output of its own becomes `failed` ("Output present before its
+start") and is never collected. The batch becomes `stopped` with `stopped_reason`
+`unowned_settled`, so only the start-grade re-activation (the next `seed-resume`, with
+MT5 open on the GOAT monitor) continues the pending members. Nothing is re-run. While
+that MT5 stays open, the doubt stays, and `seed-reconcile` says to close it.
+
+When MT5 is open again (for example a person reopened it on the GOAT monitor),
+`seed-reconcile --batch-id <id>` (`catchup-reconcile --catchup-id <id>`) settles such
+a member. `seed-status` and `seed-report` re-inspect the process inventory every
+time (`last_inspection`) and never replay an earlier refusal. `seed-reconcile`
+settles a member only when all of these hold, taken now:
+
+- MT5 is idle for that terminal. No member is starting or running, and no
+  terminal64 process anywhere has a member's INI or alias on its command line
+  (no MT5 child of the seed). The selected MT5 is not a member process and was
+  not started for a member. The GOAT monitor reports itself loaded with the tester
+  idle and no batch ongoing. On the demo lane, the broker check must also name
+  the same process.
+- The member's own output XML exists, is the only one, sits in
+  `GOAT\SeedFarmingXML` (not a link) and was written after the member started.
+  Its hash is the same before and after collection, and the collected result is
+  stored with that hash.
+- The result passes the same checks as a normal completion.
+
+Otherwise the member stays `reconcile_required` and the reply lists `reasons`.
+Nothing is closed, launched, re-run or invented. `seed-cancel` uses the same
+proof: with MT5 idle it keeps a member's verified output, cancels members with no
+output and pending members, and releases the terminal. Without that proof it
+still refuses with "Uncertain process provenance requires human inspection".
+While a seed holds the terminal, `prepare-batch` refuses at once and names the
+settle command.
+
+After a normal stopped/completed
 batch has been observed with no selected terminal process, its slot is released.
-The user can reopen MT5 and the monitor for the next normal optimization workflow.
+MT5 stays closed after the last member. The reply then carries `monitor_profile`
+and a `next_action`: reopen the monitor with `monitor-launch --attempt-id <new id>`,
+which opens the `GOAT-Studio-...` chart profile with the monitor attached. Try it
+once. After the user approved DLL imports on the chart, it is normally refused with
+`Saved monitor symbol, EA identity or permissions changed; ...` or `Prepared profile
+changed; ...`; nothing was launched. Then ask the user to open MT5 normally and
+choose File > Profiles > the `monitor_profile` name. A plain MT5 open can load an
+older chart profile (the seed run's `/config` session does not restore it), which
+leaves runtime feedback stale. If the user already opened MT5 that way,
+`onboarding-status` names the saved profile and the one to pick in File > Profiles.
+While seeds run, MT5 shows a plain chart and its Strategy Tester, without the GOAT
+Studio panel or queue; tell the user that is expected. On the owner demo lane (`goat.exe demo`) the seed run reopens
+MT5 itself on that profile after the last member and reads the build back
+(`monitor_reopen`); `demo launch-terminal` with no arguments does the same by hand.
 
 ## Read results and update the living matrix
 
@@ -149,7 +380,10 @@ Each member exposes source path/hash, frozen SET hash, complete tester settings,
 startup config hash, requested target, status and `actual_frames`. Missing output
 has `actual_frames: null`; verified zero-frame native output has `0`. These are
 different outcomes. Preserve all requested members, including cancellations,
-failures, empty results and those never started.
+failures, empty results and those never started. A failed member also shows its
+`error` and, when MT5 wrote an XML the controller refused, `observed_xml`
+(`path`, `sha256`, `frames_from_filename`, `accepted: false`). `xml_path` and
+`actual_frames` stay reserved for accepted evidence.
 
 Verified reports contain actual rows, average/best fitness, health percentage,
 zero-trade count, average trades and qualifying count. Native health means the
@@ -183,15 +417,41 @@ conditions and config hash. Do not inherit parent variant measurements or overwr
 earlier findings. Publisher catalog updates remain separate from local evidence.
 Choose candidates within the authorized research scope, freeze their exact input
 values, and validate on independent periods with the normal export workflow.
+
+`seed-promote --batch-id <id> --candidate <candidate_sha256> --name <plain name> [--neighborhood 1..5] [--member <alias>]`
+does the freezing in one step. The candidate hash covers input values only, so when the same values appear in
+several members (another symbol or window) it refuses and names them; pass `--member` with the member's alias. It re-verifies the retained seed evidence, merges
+`base_values` with the candidate's `value_overrides`, checks that the merge reproduces
+`candidate_sha256`, and publishes, create-only, the folder `seeds/<id>/promoted/<alias>/<candidate>/` with:
+`fixed.set` (exact values, every optimized axis switched off), `robustness.set` (each
+optimized axis narrowed to the candidate value plus or minus `neighborhood` ladder
+steps, default 1, clipped to the seed ladder; boolean axes keep their ladder) and `promotion.json`
+(provenance, seed metrics and window, file hashes). Both SETs carry the new plain
+`EA_Desc`. The files are written into a hidden temporary sibling folder, read back
+(the fixed SET must reproduce `candidate_sha256` and have no active axis) and
+published with one rename, so a failed write leaves nothing behind and can be retried.
+A promotion folder without a valid `promotion.json` refuses with
+`Incomplete promotion folder at <path>`; inspect and remove it by hand, it is never
+deleted automatically. Repeating the same request returns the receipt with
+`status: retained` (a new promotion has `status: written`); a different name or
+neighborhood for the same candidate refuses. It has no native, queue or terminal effect.
+
+The robustness SET is a local stability check around the candidate; only the forward
+window is out-of-sample. Its batch re-optimizes the neighborhood, so the back window
+picks the best neighbor: that pick is in-sample. Run it in an ordinary batch on
+dates after the seed window, with a forward window, and judge it on the forward result.
 Seed XML is not ordinary back/forward XML, exported SET/CSV pairs, or exposure
 sequence evidence, and must not be uploaded as a portfolio strategy pool.
 
 ## Internal extension contract
 
-`studio_seed.SeedRunner(controller)` exposes `prepare(batch_id, plan_dict)`,
+`studio_seed.SeedRunner(controller)` exposes `validate(plan_dict)` (no writes),
+`prepare(batch_id, plan_dict)`,
 `start(batch_id, max_seconds=60)`, `status(batch_id)`, `cancel(batch_id)`,
-`resume(batch_id, max_seconds=60)` and `report(batch_id)`. The controller must
-already be open. Process/clock/sleep injection supports deterministic tests;
+`resume(batch_id, max_seconds=60)` and `report(batch_id)`. `status` adds `driver`,
+`driver_detail` and `next_step`; `driver_summary(batch_id)` is the same answer
+without the gate or an MT5 inventory, for `research-status` and `research-queue`
+(`studio_seed_driver`). The controller must already be open. Process/clock/sleep injection supports deterministic tests;
 production uses the selected Windows process adapter. The shared
 `studio_seed_slot.guard_active_seed(controller_state_root)` must run inside the
 normal native reservation transaction's existing `exclusive_gate` to prevent

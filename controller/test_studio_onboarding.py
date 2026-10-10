@@ -1,5 +1,6 @@
 """Onboarding effects are fixture-only: no installed terminal is touched/launched."""
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -7,12 +8,66 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from campaign_ledger import sha
 from goat_studio import Controller
-from studio_onboarding import onboarding_status, monitor_prepare, monitor_launch
+from studio_onboarding import onboarding_status, monitor_prepare, monitor_launch, verify_saved_monitor
 import test_goat_studio as fixtures
 
 
 class OnboardingTests(unittest.TestCase):
+    def saved_group_chart(self):
+        # Reduced from an MT5-saved V1.49 chart: retain only structural tags,
+        # monitor identity fields and the exact input group rows. No customer
+        # paths, credentials, account IDs or other input values are retained.
+        return (Path(__file__).parent/'fixtures/saved-monitor-input-groups.chr.txt').read_text(encoding='utf-8')
+
+    def test_saved_native_input_groups_with_inert_permissions(self):
+        text=self.saved_group_chart().replace('expertmode=4','expertmode=0')
+        for encoding in ('utf-8','utf-16'):
+            verify_saved_monitor(text.encode(encoding),'GOAT-EA/GOAT V1.49.ex5','EURUSD',str(self.data))
+
+    def test_saved_native_groups_do_not_authorize_observed_permissions(self):
+        with self.assertRaisesRegex(ValueError,'permissions changed'):
+            verify_saved_monitor(self.saved_group_chart().encode(),'GOAT-EA/GOAT V1.49.ex5','EURUSD',str(self.data))
+
+    def test_saved_native_groups_launch_fixture_preserves_chart_bytes(self):
+        result=monitor_prepare(self.c,'EURUSD')
+        chart=Path(result['profile_path'])/'chart01.chr'
+        raw=self.saved_group_chart().replace('expertmode=4','expertmode=0').replace('GOAT V1.49.ex5','GOAT V1.48.ex5').encode('utf-16')
+        chart.write_bytes(raw)
+        monitor_launch(self.c,'saved-groups-fixture')
+        self.start.assert_called_once()
+        self.assertEqual(chart.read_bytes(),raw)
+
+    def test_saved_groups_preserve_monitor_rejections(self):
+        text=self.saved_group_chart().replace('expertmode=4','expertmode=0')
+        invalid=[text.replace('Mode_Operation=11','Mode_Operation=11\nMode_Operation=8'),
+                 text.replace('Mode_Operation=11','Mode_Operation=11\nmode_operation=11'),
+                 text.replace('Mode_Operation=11','Mode_Operation=11\nOtherInput=1\nOtherInput=2'),
+                 text.replace('Mode_Operation=11','Mode_Operation=8'),
+                 text.replace('Studio_ReadOnlyMonitor=true','Studio_ReadOnlyMonitor=false'),
+                 text.replace('Studio_MonitorRunPath=','Studio_MonitorRunPath=GOAT/another'),
+                 text.replace('expertmode=0','expertmode=5'),
+                 text.replace('expertmode=0','expertmode=0\nexpertmode=4'),
+                 text.replace('GOAT V1.49.ex5','other.ex5'),
+                 text.replace('</expert>','</expert>\n<script>\n</script>')]
+        for unsafe in invalid:
+            with self.subTest(chart=unsafe),self.assertRaises(ValueError):
+                verify_saved_monitor(unsafe.encode(),'GOAT-EA/GOAT V1.49.ex5','EURUSD',str(self.data))
+
+    def test_group_rows_only_in_inputs_with_empty_value(self):
+        text=self.saved_group_chart().replace('expertmode=4','expertmode=0')
+        group=next(line for line in text.splitlines() if 'GENERAL SETTINGS' in line)
+        invalid=[text.replace(group,group+'Mode_Operation=8'),
+                 text.replace(group,'=Mode_Operation=8'),
+                 text.replace(group,'=anything'),
+                 text.replace(group,'=')]
+        for tag in ('<chart>','<expert>','<indicator>'):
+            invalid.append(text.replace(tag,tag+'\n'+group))
+        for unsafe in invalid:
+            with self.subTest(chart=unsafe),self.assertRaises(ValueError):
+                verify_saved_monitor(unsafe.encode(),'GOAT-EA/GOAT V1.49.ex5','EURUSD',str(self.data))
+
     def setUp(self):
         self.fixture = fixtures.PortableControllerTests()
         self.fixture.setUp()
@@ -84,6 +139,22 @@ class OnboardingTests(unittest.TestCase):
         self.inspector.return_value={'research':{'created_utc':'2099-01-01T00:00:00+00:00','pid':55}}
         self.assertIn('predates',onboarding_status(self.c)['steps'][-1]['detail'])
 
+    def test_activation_reload_failure_is_account_version_and_freshness_bound(self):
+        folder=self.common if hasattr(self,'common') else self.fixture.common
+        folder=folder/'GOAT';folder.mkdir()
+        report=folder/('activation-status-'+self.data.name+'.json')
+        def write(**changes):
+            value=dict(accountId='123456',buildId='V1.48-TEST',reason='ACTIVATION_RELOAD_REQUIRED',observedAtUtc=str(int(time.time())))
+            value.update(changes);report.write_text(json.dumps(value))
+        write()
+        result=onboarding_status(self.c)
+        self.assertEqual(result['steps'][-1]['reason_code'],'ACTIVATION_RELOAD_REQUIRED')
+        for changes in ({'accountId':'999'}, {'buildId':'V1.49-TEST'}, {'observedAtUtc':'1'}, {'observedAtUtc':str(int(time.time())+120)}):
+            write(**changes)
+            self.assertNotIn('reason_code',onboarding_status(self.c)['steps'][-1])
+        write();self.observe()
+        self.assertEqual(onboarding_status(self.c)['steps'][-1]['id'],'agent_control')
+
     def test_prepare_separate_persistent_chart_no_permissions_and_idempotent(self):
         original = self.data/'MQL5/Profiles/Charts/Default/chart01.chr'
         original.parent.mkdir(parents=True);original.write_bytes(b'untouched')
@@ -105,7 +176,15 @@ class OnboardingTests(unittest.TestCase):
         launch=monitor_launch(self.c,'first-open')
         self.assertEqual(launch['status'],'process_started_unverified')
         args=self.start.call_args.args[0]
-        self.assertEqual(args,[str(self.fixture.bin),'/profile:'+result['profile_name']])
+        self.assertEqual(args,[str(self.fixture.bin),'/config:'+launch['startup_config']])
+        startup=Path(launch['startup_config']).read_text(encoding='utf-16')
+        self.assertIn('[StartUp]',startup)
+        self.assertNotIn('Symbol=',startup)  # Preserve the prepared chart across ordinary restart.
+        self.assertIn('Expert=GOAT-EA\\GOAT V1.48.ex5',startup)
+        self.assertIn('ExpertParameters=GOAT Studio Agent.set',startup)
+        self.assertIn('AllowLiveTrading=0',startup)
+        self.assertNotIn('[Tester]',startup)
+        self.assertNotIn('Password',startup)
         self.assertEqual(self.c.state()['owner'],'human')
         self.assertEqual(before,self.common_ini.read_bytes())
         self.assertTrue(monitor_launch(self.c,'first-open')['reused'])
@@ -121,6 +200,45 @@ class OnboardingTests(unittest.TestCase):
         (self.data/'origin.txt').write_text('C:/another/terminal')
         with self.assertRaises(ValueError):monitor_launch(self.c,'wrong-origin')
         self.start.assert_not_called()
+
+    def test_launch_refusal_names_the_key_a_fresh_terminal_has_not_saved(self):
+        monitor_prepare(self.c,'EURUSD')
+        cases=(('[Common]\nLogin=123456\nServer=Customer-Demo\n[Experts]\nAllowDllImport=1\n','has not saved the Algo Trading setting yet'),
+               ('[Common]\nLogin=123456\nServer=Customer-Demo\n','has not saved the Algo Trading setting yet'),
+               ('[Common]\nServer=Customer-Demo\n[Experts]\nEnabled=0\n','has not saved the broker login yet'),
+               ('[Common]\nLogin=123456\n[Experts]\nEnabled=0\n','has not saved the broker server yet'),
+               ('[Common]\nLogin=123456\nServer=Customer-Demo\n[Experts]\nEnabled=1\n','turn Algo Trading off'),
+               ('[Common]\nLogin=998877\nServer=Customer-Demo\n[Experts]\nEnabled=0\n','Saved broker login/server differs'))
+        for text,message in cases:
+            self.common_ini.write_text(text)
+            with self.subTest(text=text),self.assertRaisesRegex(ValueError,message):monitor_launch(self.c,'fresh')
+        # A real Algo ON never reads as a fresh terminal.
+        self.common_ini.write_text(cases[4][0])
+        with self.assertRaises(ValueError) as caught:monitor_launch(self.c,'fresh')
+        self.assertNotIn('fresh terminal',str(caught.exception))
+        self.start.assert_not_called()
+
+    def test_status_does_not_blame_the_saved_profile_when_monitor_launch_started_mt5(self):
+        monitor_prepare(self.c,'EURUSD')
+        launch=monitor_launch(self.c,'first-open')
+        # MT5 rewrites ProfileLast only on close, so common.ini still names the old profile while activation is pending.
+        self.common_ini.write_text('[Common]\nLogin=123456\nServer=Customer-Demo\n[Charts]\nProfileLast=Default\n[Experts]\nEnabled=0\n')
+        now=datetime.now(timezone.utc).isoformat()
+        self.inspector.return_value={'research':{'created_utc':now,'pid':launch['pid']}}
+        step=onboarding_status(self.c)['steps'][-1]
+        self.assertEqual(step['state'],'blocked')
+        self.assertIn('started by monitor-launch with the GOAT monitor EA',step['action'])
+        self.assertNotIn('profile_last',step)
+        # Another process (a plain MT5 open, or a reused process ID long after the launch) keeps the profile hint.
+        for research in ({'created_utc':now,'pid':launch['pid']+1},{'created_utc':'2099-01-01T00:00:00+00:00','pid':launch['pid']}):
+            self.inspector.return_value={'research':research}
+            step=onboarding_status(self.c)['steps'][-1]
+            with self.subTest(research=research):
+                self.assertEqual(step.get('profile_last'),'Default'); self.assertIn('File > Profiles',step['action'])
+        # A startup configuration changed after launch proves nothing.
+        self.inspector.return_value={'research':{'created_utc':now,'pid':launch['pid']}}
+        Path(launch['startup_config']).write_bytes(b'[StartUp]\r\nExpert=other.ex5\r\n')
+        self.assertEqual(onboarding_status(self.c)['steps'][-1].get('profile_last'),'Default')
 
     def test_launch_crash_retains_intent_blocks_automatic_relaunch(self):
         monitor_prepare(self.c,'EURUSD');self.start.side_effect=OSError('fixture launch failure')
@@ -159,6 +277,74 @@ class OnboardingTests(unittest.TestCase):
         for text in unsafe:
             chart.write_text(text,encoding='utf-16')
             with self.assertRaises(ValueError):monitor_launch(self.c,'unsafe-saved')
+        self.start.assert_not_called()
+
+    # ---- monitor profile after an EA update (desktop suite.applyUpdate -> demo_agent install-build)
+
+    def update_ea(self, content=b'updated test fixture', bundle_version='0.5.0-beta.23'):
+        """What the desktop's demo update does to the local identity: demo_agent install-build's adoption."""
+        from demo_agent import DemoAgent
+        ea=self.data/'MQL5/Experts/GOAT-EA/GOAT V1.48.ex5';ea.write_bytes(content)
+        agent=DemoAgent(self.fixture.path,process=SimpleNamespace(inspect=lambda:None),mt5=SimpleNamespace())
+        agent._adopt_installed_binary(hashlib.sha256(content).hexdigest(),metadata=dict(
+            bundle_version=bundle_version,agent_guide_path=str(Path(__file__).with_name('AGENT-START-HERE.md').resolve())))
+        return agent
+
+    def reopened(self):
+        c=Controller(self.fixture.path).open()
+        self.addCleanup(c.store.close)
+        return c
+
+    def test_monitor_launch_succeeds_after_an_ea_update_of_the_same_installation(self):
+        prepared=monitor_prepare(self.c,'EURUSD')
+        chart=(Path(prepared['profile_path'])/'chart01.chr').read_bytes()
+        agent=self.update_ea()
+        c=self.reopened()
+        receipt=json.loads((c.root/'monitor-profile.json').read_text())
+        self.assertEqual(receipt['installation_sha256'],sha(c.install),'install-build carries the profile to the new receipt')
+        self.assertEqual({k:v for k,v in receipt.items() if k!='installation_sha256'},
+                         {k:v for k,v in prepared.items() if k not in ('installation_sha256','status','reused','next_action')})
+        rows=[json.loads(line) for line in (agent.state_root/'actions.jsonl').read_text().splitlines()]
+        self.assertEqual([r['phase'] for r in rows if r['operation']=='install_build'][-1],'monitor_profile_rebound')
+        launch=monitor_launch(c,'after-update')
+        self.assertEqual(launch['status'],'process_started_unverified')
+        self.assertNotIn('monitor_profile_rebound',launch,'already rebound by the update')
+        self.start.assert_called_once()
+        self.assertEqual((Path(prepared['profile_path'])/'chart01.chr').read_bytes(),chart,'the saved chart is never rewritten')
+        self.assertTrue(monitor_prepare(c,'EURUSD')['reused'])
+
+    def test_monitor_launch_heals_a_profile_an_earlier_update_left_on_the_old_receipt(self):
+        monitor_prepare(self.c,'EURUSD')
+        stale=(self.c.root/'monitor-profile.json').read_bytes()
+        self.update_ea()
+        self.update_ea(b'second update',bundle_version='0.5.0-beta.24')
+        # What controllers before this fix left behind: the receipt of two updates ago.
+        (self.c.root/'monitor-profile.json').write_bytes(stale)
+        c=self.reopened()
+        launch=monitor_launch(c,'healed')
+        self.assertEqual(launch['status'],'process_started_unverified')
+        self.assertEqual(launch['monitor_profile_rebound']['status'],'rebound')
+        self.assertEqual(json.loads((c.root/'monitor-profile.json').read_text())['installation_sha256'],sha(c.install))
+        self.assertEqual(Path(launch['monitor_profile_rebound']['backup']).read_bytes(),stale)
+        self.start.assert_called_once()
+
+    def test_profile_of_another_installation_or_session_is_never_rebound(self):
+        monitor_prepare(self.c,'EURUSD')
+        self.update_ea()
+        c=self.reopened()
+        target=c.root/'monitor-profile.json';current=json.loads(target.read_text())
+        # Another installation: its retained receipt differs in more than the update-owned fields.
+        from studio_installation import load_installation
+        other=dict(self.fixture.receipt,ea_relative_path='GOAT-EA\\Another EA.ex5')
+        raw=json.dumps(other).encode();backup=c.root/'demo-agent/backups'/('installation-'+hashlib.sha256(raw).hexdigest()+'.json')
+        backup.write_bytes(raw)
+        for receipt in (dict(current,installation_sha256=sha(load_installation(backup,verify_binary=False))),
+                        dict(current,installation_sha256='f'*64),
+                        dict(current,installation_sha256=sha(self.c.install),run_id='session-'+'0'*32)):
+            with self.subTest(receipt=receipt):
+                target.write_text(json.dumps(receipt))
+                with self.assertRaisesRegex(ValueError,'belongs to another installation/session'):monitor_launch(c,'refused')
+                self.assertEqual(json.loads(target.read_text()),receipt,'left as it was')
         self.start.assert_not_called()
 
     def test_active_seed_blocks_setup(self):

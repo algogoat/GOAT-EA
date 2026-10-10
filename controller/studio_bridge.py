@@ -8,6 +8,7 @@ boundary. No MT5 execution, native queue writes or service installation occurs.
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+import errno
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,21 @@ def display_state(state):
     adapter must retrieve and verify the immutable controller configuration.
     """
     result = dict(state)
+    # A fresh agent session has no editor drafts. Once a frozen job is queued,
+    # the existing native snapshot contract requires its complete settings.
+    # Project the validated queued configuration, never invented defaults, and
+    # leave the stored human editor drafts untouched.
+    if state.get('tester_draft') is None and state.get('export_draft') is None and state.get('queue'):
+        from campaign_ledger import sha
+        from studio_settings import validate_tester, validate_export
+        job=next((j for j in state['queue'] if j['status'] in ('reserved','starting','running','reconcile_required','verifying','pending')),state['queue'][0])
+        config=job['configuration']
+        if sha(config)!=job['configuration_sha256']:
+            raise ValueError('Queued display configuration changed')
+        tester=validate_tester(config['tester'])
+        exports=validate_export(config['export'],tester)
+        result['tester_draft']=tester
+        result['export_draft']=exports
     result['queue'] = [dict(job_id=job['job_id'], status=job['status'],
                             configuration_sha256=job['configuration_sha256'],
                             source_revision=job['source_revision'],
@@ -33,10 +49,13 @@ def display_state(state):
                                                      for key in ('Symbol','Period')}})
                        for job in state.get('queue', [])]
     result['queue_detail'] = 'display_summary_only'
+    display_member_budget=200
     for summary, job in zip(result['queue'], state.get('queue', [])):
         if 'batch_members' in job['configuration']:
             summary['batch_member_count']=len(job['configuration']['batch_members'])
-            summary['batch_members']=[dict(index=index,symbol=member['tester']['Symbol'],period=member['tester']['Period']) for index,member in enumerate(job['configuration']['batch_members'])]
+            summary['batch_members']=[dict(index=index,symbol=member['tester']['Symbol'],period=member['tester']['Period']) for index,member in enumerate(job['configuration']['batch_members'][:display_member_budget])]
+            display_member_budget-=len(summary['batch_members'])
+            summary['batch_members_truncated']=len(summary['batch_members'])<summary['batch_member_count']
         if 'native_observation' in job:
             native=job['native_observation'].get('native',{})
             summary['native_progress']={key:native[key] for key in ('member_count','status_counts','completed_count','finished_count','active_indices') if key in native}
@@ -45,6 +64,36 @@ def display_state(state):
             for field in ('attempt_id', 'startup_sha256'):
                 if field in job['restart_intent']:
                     summary['restart_'+field] = job['restart_intent'][field]
+    batches=[job for job in state.get('queue', []) if job['configuration'].get('batch_members')
+             and job['status'] not in ('removed','superseded')]
+    if batches:
+        active=next((job for job in batches if job['status'] in
+                    ('reserved','starting','running','reconcile_required','verifying')),
+                    next((job for job in batches if job['status']=='pending'),batches[-1]))
+        native=active.get('native_observation',{}).get('native',{})
+        observed={row['index']:row for row in native.get('members',[])}
+        members=[]
+        for index,member in enumerate(active['configuration']['batch_members']):
+            row=observed.get(index,{})
+            status=row.get('status', 'native_pending' if active['status']=='pending' else 'unobserved')
+            # Observed native state wins; never infer completion from parent state.
+            label=status.removeprefix('native_')
+            members.append(dict(index=index,symbol=member['tester']['Symbol'],
+                period=member['tester']['Period'],model=member['tester']['Model'],
+                strategy=member['strategy']['values'].get('EA_Desc','')[:160],status=label))
+        counts={key:sum(row['status']==key for row in members)
+                for key in ('completed','error','cancelled','ongoing','queued','pending','unobserved')}
+        finished=counts['completed']+counts['error']+counts['cancelled']
+        active_index=next((row['index'] for row in members if row['status'] in ('ongoing','queued')),0)
+        window_start=min(max(0,active_index-20),max(0,len(members)-200))
+        visible=members[window_start:window_start+200]
+        result['batch_view']=dict(job_id=active['job_id'],status=active['status'],total=len(members),
+            completed=counts['completed'],failed=counts['error'],cancelled=counts['cancelled'],
+            remaining=len(members)-finished,active=counts['ongoing']+counts['queued'],
+            pending=counts['pending'],unobserved=counts['unobserved'],members=visible,
+            window_start=window_start,window_end=window_start+len(visible),truncated=len(visible)<len(members),
+            detail_hint=('Showing active window; batch-status contains every member' if len(visible)<len(members) else 'All batch members shown'),
+            observed_at=native.get('observed_at'))
     return result
 
 
@@ -57,16 +106,19 @@ def write_json(path, value):
             handle.write('\n')
             handle.flush()
             os.fsync(handle.fileno())
-        # MT5 readers briefly open without FILE_SHARE_DELETE on Windows.
-        # Retry only publication of these same durable bytes, never a command.
-        for attempt in range(6):
+        # MT5 readers and concurrent status reads briefly open without FILE_SHARE_DELETE on Windows.
+        # Retry only publication of these same durable bytes, never a command, with the shared
+        # sharing-retry bound (40 x 25 ms, WinError 5/32/33); a persistent denial still raises.
+        from studio_agent_mailbox import SHARING_RETRY_ATTEMPTS, transient_sharing_error
+        for attempt in range(SHARING_RETRY_ATTEMPTS):
             try:
                 os.replace(temporary,path)
                 break
-            except PermissionError:
-                if attempt == 5:
+            except OSError as error:
+                transient = isinstance(error, PermissionError) or transient_sharing_error(error)
+                if not transient or attempt == SHARING_RETRY_ATTEMPTS-1:
                     raise
-                time.sleep(0.05)
+                time.sleep(0.025)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -79,12 +131,23 @@ def worker_lock(root):
         if handle.tell()==0:
             handle.write(b'0'); handle.flush()
         handle.seek(0)
-        if os.name=='nt':
-            import msvcrt
-            msvcrt.locking(handle.fileno(),msvcrt.LK_NBLCK,1)
-        else:
-            import fcntl
-            fcntl.flock(handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+        # Concurrent CLI status and the resident publisher can reach this
+        # boundary together. Wait only for acquisition, before any inbox work;
+        # never repeat an operation or weaken the exclusive worker hold.
+        deadline=time.monotonic()+1
+        while True:
+            try:
+                if os.name=='nt':
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(),msvcrt.LK_NBLCK,1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if error.errno not in (errno.EACCES,errno.EAGAIN,errno.EDEADLK) or time.monotonic()>=deadline:
+                    raise
+                time.sleep(.02)
         try:
             yield
         finally:
@@ -98,7 +161,7 @@ class StudioBridge:
         self.root=Path(root).resolve()
         self.store=store
         self.terminal_id,self.run_id=terminal_id,run_id
-        store.snapshot(terminal_id,run_id)  # Existing binding only; never self-grant.
+        store.snapshot(terminal_id,run_id,human_channel_view=True)  # Identity only; each mutation checks authority.
         self.root.mkdir(parents=True,exist_ok=True)
         self.binding=dict(protocol_version=1,terminal_id=terminal_id,run_id=run_id)
         # Also prevent two different databases from publishing into the same root.
@@ -152,16 +215,22 @@ class StudioBridge:
                                 ('terminal_id','run_id','revision','generation','owner')}
                             response=dict(ok=True,receipt=summary,receipt_detail='revision_only')
                         except ValueError as exc:
-                            current=self.store.snapshot(self.terminal_id,self.run_id)
+                            current=self.store.snapshot(self.terminal_id,self.run_id,human_channel_view=True)
                             response=dict(ok=False,error=str(exc),state={key:current[key] for key in
                                 ('terminal_id','run_id','revision','generation','owner')})
                         response.update(request_id=processing.stem,request_sha256=fingerprint)
                         # If publication fails after commit, keep processing for receipt replay.
                         write_json(folders['outbox']/processing.name,response)
-                        archive=folders['archive']/(processing.stem+'.'+(fingerprint or uuid.uuid4().hex)+'.json')
+                        # A full 64-character digest makes the archive path exceed
+                        # MAX_PATH under a normal non-portable MT5 data root. The
+                        # outbox keeps the full digest; retain 96 bits in the
+                        # filename and refuse any different-content collision.
+                        archive=folders['archive']/(processing.stem+'.'+(fingerprint[:24] if fingerprint else uuid.uuid4().hex[:24])+'.json')
+                        if archive.exists() and archive.read_bytes()!=raw:
+                            raise ValueError('Human request archive name collision; preserve both requests')
                         os.replace(processing,archive)
                         results.append(dict(actor=actor,request_id=response['request_id'],ok=response['ok']))
-            state=self.store.snapshot(self.terminal_id,self.run_id)
+            state=self.store.snapshot(self.terminal_id,self.run_id,human_channel_view=True)
             write_json(self.root/'snapshot.json',dict(protocol_version=1,
                 observed_at=datetime.now(timezone.utc).isoformat(),state=display_state(state),
                 schema_hash=self.store.input_schema_hash,execution_ready=False))

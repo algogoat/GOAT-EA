@@ -2353,22 +2353,112 @@ class DemoAgent:
         return archive.plan(self.root, self.install, batch_id, archive_root, kind='native', job=job, bindings=bindings,
                             keep=keep, now=self.clock(), busy=busy)
 
-    def evidence_archive(self, batch_id, archive_root, *, apply=False, confirm=False, keep_list=None):
-        """Move a finished or closed batch's evidence off the controller volume (studio_evidence_archive, goatai#2350).
+    @contextmanager
+    def _archived_batch(self, batch_id, command, confirm, effect):
+        """The demo-lane gate of evidence-archive --complete, evidence-restore and evidence-repoint: a valid batch ID,
+        --confirm, the paired demo session, the terminal lock and an idle terminal (as evidence-archive --apply);
+        yields the batch's evidence-archive pointer (ARCHIVE_NOT_ARCHIVED without one)."""
+        import studio_evidence_archive as archive
+        if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
+            raise ValueError('Invalid batch ID')
+        if confirm is not True:
+            raise Refusal(command + ' ' + effect + ' for batch ' + batch_id + '; pass --confirm.', 'ARCHIVE_CONFIRM_REQUIRED',
+                          batch_id=batch_id)
+        try:
+            self._paired_account()
+        except ValueError as exc:
+            raise Refusal(command + ' runs only on a paired demo installation: ' + str(exc), 'ARCHIVE_NOT_DEMO',
+                          batch_id=batch_id) from None
+        stack = ExitStack()
+        try:
+            stack.enter_context(self._exclusive())
+        except ValueError as exc:
+            raise Refusal('This terminal is busy (' + str(exc) + '); nothing was changed.', 'ARCHIVE_TERMINAL_BUSY',
+                          batch_id=batch_id) from None
+        with stack:
+            try:
+                bindings = archive.queue_bindings(self.root)
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                raise Refusal('The Studio queue cannot be read (' + str(exc)[:200] + '); nothing was changed.',
+                              'ARCHIVE_TERMINAL_BUSY', batch_id=batch_id) from None
+            active = [job['job_id'] for _, jobs in bindings for job in jobs if job.get('status') in ACTIVE_NATIVE_STATUSES]
+            busy = self._close_busy() or ('batch ' + ', '.join(active) + ' is active' if active else None)
+            if busy:
+                raise Refusal('This terminal is not idle: ' + busy + '. Nothing was changed; retry once it is idle.',
+                              'ARCHIVE_TERMINAL_BUSY', batch_id=batch_id)
+            pointer = archive.load_pointer(self.root, batch_id)
+            if pointer is None:
+                raise Refusal('Batch ' + batch_id + ' has no evidence-archive pointer (it was never archived, or was restored); '
+                              'nothing was changed.', 'ARCHIVE_NOT_ARCHIVED', batch_id=batch_id)
+            yield pointer
+
+    def evidence_archive_complete(self, batch_id, *, confirm=False):
+        """``evidence-archive --complete``: remove an archived batch's sources, a separate invocation from --apply.
+
+        Re-reads and re-hashes EVERY archived file from disk against the manifest (and validates every manifest entry)
+        before any source is removed, and removes only a source that still hashes to the manifest; a missing or corrupt
+        archive copy refuses with nothing removed (studio_evidence_archive.complete). Same demo-lane rules and terminal
+        lock as --apply. No MT5 effect; allowed under owner STOP.
+        """
+        import studio_evidence_archive as archive
+        with self._archived_batch(batch_id, 'evidence-archive --complete', confirm,
+                                  'removes the local sources after re-verifying the archive') as pointer:
+            result = archive.complete(self.root, pointer)
+            self._append('evidence_archive', 'completed' if result['removed'] else 'verified', batch_id=batch_id,
+                         kind=pointer.get('kind'), archive_dir=result['archive_dir'], files=result['file_count'],
+                         bytes=result['bytes'], removed=result['removed'], manifest_sha256=result['manifest_sha256'])
+            return dict(batch_id=batch_id, kind=pointer.get('kind'), archive_dir=result['archive_dir'], completed=True,
+                        applied=True, result=result)
+
+    def evidence_restore(self, batch_id, *, confirm=False):
+        """``evidence-restore``: copy an archived batch's verified evidence back into the controller state and retire
+        its pointer (kept under native-evidence/archived/retired/), so readers read the local copy again. Refuses
+        ARCHIVE_RESTORE_CONFLICT when a local file exists and differs. The archive copy is kept."""
+        import studio_evidence_archive as archive
+        with self._archived_batch(batch_id, 'evidence-restore', confirm, 'copies the archive back') as pointer:
+            result = archive.restore(self.root, pointer, now=self.clock())
+            self._append('evidence_archive', 'restored', batch_id=batch_id, kind=pointer.get('kind'),
+                         archive_dir=result['archive_dir'], files=result['file_count'], restored=result['restored'],
+                         retired_pointer=result['retired_pointer'], manifest_sha256=result['manifest_sha256'])
+            return dict(batch_id=batch_id, kind=pointer.get('kind'), restored=True, applied=True, result=result)
+
+    def evidence_repoint(self, batch_id, archive_dir, *, confirm=False):
+        """``evidence-repoint``: point an archived batch at a new archive folder, accepted only when its manifest.json
+        hashes to the pointer's manifest_sha256 and every file verifies; the pointer is rewritten atomically and the
+        old one kept under native-evidence/archived/retired/."""
+        import studio_evidence_archive as archive
+        with self._archived_batch(batch_id, 'evidence-repoint', confirm, 'rewrites the evidence-archive pointer') as pointer:
+            result = archive.repoint(self.root, pointer, archive_dir, now=self.clock())
+            self._append('evidence_archive', 'repointed', batch_id=batch_id, kind=pointer.get('kind'),
+                         archive_dir=result['archive_dir'], previous_archive_dir=result['previous_archive_dir'],
+                         files=result['file_count'], manifest_sha256=result['manifest_sha256'])
+            return dict(batch_id=batch_id, kind=pointer.get('kind'), repointed=True, applied=True, result=result)
+
+    def evidence_archive(self, batch_id, archive_root=None, *, apply=False, confirm=False, keep_list=None, complete=False):
+        """Archive a finished or closed batch's evidence off the controller volume (studio_evidence_archive, goatai#2350).
 
         Preview unless ``apply``; ``apply`` needs ``confirm`` and ``keep_list`` (may be ``[]``). Demo lane only, like
         batch-pause-close. Under the terminal lock the preview is rebuilt and must have no blocker: the batch finished or
         closed, the terminal idle (no running batch, seed slot, unreleased fixed task or live driver), no ACTIVE held-out
         lock on its SETs and no unfinished run reading it as its source (finished FOOS reads are only listed in
-        ``cited_by``), not on ``keep_list``, an archive root on another volume that is writable and has room. Each file is copied,
-        sha256-verified, listed in a manifest and pointed to before its source is removed. No MT5 effect; allowed under
-        owner STOP. A re-run verifies and completes an interrupted archive without copying anything twice.
+        ``cited_by``), not on ``keep_list``, an archive root on another local NTFS/ReFS volume that is writable and has
+        room, and no link in the source walk. Each file is copied, sha256-verified and listed in a manifest, and the
+        pointer is written; every source STAYS. ``complete`` (a separate invocation) removes them after re-verifying
+        the archive. No MT5 effect; allowed under owner STOP. A re-run re-verifies without copying anything twice.
         """
         import studio_evidence_archive as archive
+        if complete:
+            if apply:
+                raise Refusal('evidence-archive --complete is its own step: run --apply first, then --complete (never both '
+                              'at once); nothing was changed.', 'ARCHIVE_MODE_CONFLICT', batch_id=batch_id)
+            return self.evidence_archive_complete(batch_id, confirm=confirm)
         if not isinstance(batch_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', batch_id):
             raise ValueError('Invalid batch ID')
+        if archive_root is None or not str(archive_root):
+            raise Refusal('evidence-archive needs --archive-root <folder on another drive> (only --complete reads it from the '
+                          'pointer).', 'ARCHIVE_ROOT_INVALID', batch_id=batch_id)
         if apply and confirm is not True:
-            raise Refusal('evidence-archive --apply moves batch ' + batch_id + '\'s evidence off this volume; pass --confirm.',
+            raise Refusal('evidence-archive --apply copies batch ' + batch_id + '\'s evidence off this volume; pass --confirm.',
                           'ARCHIVE_CONFIRM_REQUIRED', batch_id=batch_id)
         try:
             self._paired_account()
@@ -2395,10 +2485,11 @@ class DemoAgent:
                 raise Refusal(first['plain'] + ' Nothing was moved.', first['code'], batch_id=batch_id,
                               blockers=preview['blockers'], **fields)
             result = archive.apply(self.root, self.install, preview, archive_root, now=self.clock())
-            phase = 'archived' if not preview['archived'] else 'completed' if result['removed'] else 'verified'
+            phase = 'archived' if not preview['archived'] else 'verified'
             self._append('evidence_archive', phase, batch_id=batch_id,
                          kind=preview['kind'], archive_dir=preview['archive_dir'], files=result['file_count'],
-                         bytes=result['bytes'], removed=result['removed'], manifest_sha256=result['manifest_sha256'])
+                         bytes=result['bytes'], removed=result['removed'], sources_kept=result['sources_kept'],
+                         manifest_sha256=result['manifest_sha256'])
             return archive.public(dict(preview, result=result), applied=True)
 
     def _seed_pause(self, batch_id, kind='seed'):
@@ -3501,17 +3592,35 @@ def main(argv=None):
     closer.add_argument('--reason', help='Required for --mode exclude: why these results stay out of the book')
     closer.add_argument('--confirm', action='store_true', help='Required: closing is final for this batch')
     archiver = commands.add_parser('evidence-archive',
-                                   help='Preview, then --apply --confirm: move a finished or closed batch\'s (or catch-up\'s) '
-                                        'evidence to an archive root on another volume, sha256-verified, with a manifest and '
-                                        'a pointer every reader follows; never deletes evidence')
+                                   help='Preview, then --apply --confirm: copy a finished or closed batch\'s (or catch-up\'s) '
+                                        'evidence to an archive root on another local NTFS/ReFS volume, sha256-verified, with '
+                                        'a manifest and a pointer every reader follows, keeping every source; then, as its own '
+                                        'step, --complete --confirm re-verifies every archived file and removes the sources')
     archiver.add_argument('--batch-id', required=True)
-    archiver.add_argument('--archive-root', type=Path, required=True,
-                          help='An existing folder on another volume; files go to <root>/<installation>/<batch id>/')
-    archiver.add_argument('--apply', action='store_true', help='Move the previewed files (needs --confirm)')
-    archiver.add_argument('--confirm', action='store_true', help='Required with --apply')
+    archiver.add_argument('--archive-root', type=Path,
+                          help='Required for the preview and --apply: an existing folder on another local NTFS/ReFS volume; '
+                               'files go to <root>/<installation>/<batch id>/ (--complete reads the pointer instead)')
+    archiver.add_argument('--apply', action='store_true',
+                          help='Copy, verify, write the manifest and the pointer; sources stay (needs --confirm, --keep-list)')
+    archiver.add_argument('--complete', action='store_true',
+                          help='Separate step after --apply: re-verify every archived file from disk, then remove only '
+                               'sources that still hash to the manifest (needs --confirm)')
+    archiver.add_argument('--confirm', action='store_true', help='Required with --apply and --complete')
     archiver.add_argument('--keep-list', type=Path,
                           help='Required with --apply (may be []): JSON array of batch IDs or run folders that must stay '
                                '(prereg/book citations the controller cannot see); a listed batch refuses ARCHIVE_KEEP_LISTED')
+    restorer = commands.add_parser('evidence-restore',
+                                   help='Copy an archived batch\'s verified evidence back into the controller state and retire '
+                                        'its pointer (kept under native-evidence/archived/retired/); needs --confirm')
+    restorer.add_argument('--batch-id', required=True)
+    restorer.add_argument('--confirm', action='store_true', help='Required')
+    repointer = commands.add_parser('evidence-repoint',
+                                    help='Point an archived batch at a new archive folder whose manifest.json hashes to the '
+                                         'pointer\'s and whose files all verify; rewrites the pointer atomically; needs --confirm')
+    repointer.add_argument('--batch-id', required=True)
+    repointer.add_argument('--archive-dir', type=Path, required=True,
+                           help='The folder holding the batch\'s manifest.json and files (<root>\\<installation>\\<batch id>)')
+    repointer.add_argument('--confirm', action='store_true', help='Required')
     resumed = commands.add_parser('batch-resume', help='Continue a paused batch as a successor batch')
     resumed.add_argument('--batch-id', required=True)
     resumed.add_argument('--new-batch-id')
@@ -3661,7 +3770,10 @@ def main(argv=None):
         elif args.command == 'batch-pause-close': result = agent.batch_pause_close(args.batch_id, mode=args.mode,
             reason=args.reason, confirm=args.confirm)
         elif args.command == 'evidence-archive': result = agent.evidence_archive(args.batch_id, args.archive_root,
-            apply=args.apply, confirm=args.confirm, keep_list=args.keep_list)
+            apply=args.apply, confirm=args.confirm, keep_list=args.keep_list, complete=args.complete)
+        elif args.command == 'evidence-restore': result = agent.evidence_restore(args.batch_id, confirm=args.confirm)
+        elif args.command == 'evidence-repoint': result = agent.evidence_repoint(args.batch_id, args.archive_dir,
+            confirm=args.confirm)
         elif args.command == 'batch-resume': result = agent.batch_resume(args.batch_id, new_batch_id=args.new_batch_id,
             resume_token=args.resume_token, max_seconds=args.max_seconds, clear_stop=args.clear_stop,
             include_failed=args.include_failed, include_no_edge=args.include_no_edge,

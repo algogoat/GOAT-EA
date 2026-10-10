@@ -126,7 +126,7 @@ def queue_rows(root):
 def _history(root, job):
     """Indices of members ever observed started, or None when the history is unavailable."""
     from studio_evidence_log import read
-    from studio_evidence_archive import ArchiveUnreachable, resolve
+    from studio_evidence_archive import locate, read_failure
     observations = list(job.get('native_evidence_history') or [])
     available = bool(observations)
     for key in ('native_evidence_archive', 'native_evidence_log'):
@@ -135,14 +135,17 @@ def _history(root, job):
             path = Path(reference['path'])
             if not path.is_absolute():
                 path = Path(root) / path
+            # evidence-archive: a moved log is read through its pointer, verified against its manifest (size on every
+            # read, sha256 once per process). An unreadable pointer or archive refuses (ArchiveUnreachable), and once
+            # the pointer redirects, ANY read error refuses too: never "history unavailable", which would silently
+            # change the journal (cancelled members read as dispatched).
+            target, moved = locate(root, path)
             try:
-                # evidence-archive: a moved log is read through its pointer; an unreachable archive refuses
-                # (ArchiveUnreachable) instead of reading as "history unavailable".
-                observations.extend(read(resolve(root, path)))
+                observations.extend(read(target))
                 available = True
-            except ArchiveUnreachable:
-                raise
-            except (OSError, ValueError):
+            except (OSError, ValueError) as error:
+                if moved:
+                    raise read_failure(target, error) from None
                 return None
     for archive in job.get('native_evidence_history_archives') or []:
         # History a triage tool moved outside the controller root, each slice bound by its

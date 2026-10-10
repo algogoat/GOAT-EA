@@ -216,9 +216,26 @@ def catchups_worst_case(controller_root, catchup_id=None):
 def evidence_folder(controller_root, catchup_id):
     """The evidence folder of one catch-up for reading: the hashed folder (under the controller state or a recorded
     output root), or a legacy ``evidence\\<id>`` one, else None."""
-    from studio_evidence_archive import archived_evidence_roots
+    from studio_evidence_archive import archived_evidence_roots, archived_location, read_failure
     base = Path(controller_root) / 'evidence'
+    # evidence-archive: a moved folder is found through its pointer (its catchup.json verified against the manifest);
+    # the local folder an --apply leaves until --complete is never read in its place, and any read error on the
+    # archived copy refuses (EVIDENCE_ARCHIVE_UNREACHABLE) instead of reading as "no evidence folder".
+    local_hashed = base / evidence_key(catchup_id)
+    moved = archived_location(controller_root, local_hashed / EVIDENCE_FOLDER_RECORD)
+    if moved is not None:
+        try:
+            record = read_json_bounded(io_path(moved, 0))
+        except (OSError, ValueError) as error:
+            raise read_failure(moved, error) from None
+        if isinstance(record, dict) and record.get('catchup_id') == catchup_id:
+            return io_path(moved.parent, 1 + MEMBER_FOLDER_DIGITS + OUTPUT_PATH_ROOM)
+    archived = {migration.key(str(root)) for root in archived_evidence_roots(controller_root)}
     for root in evidence_roots(controller_root):
+        if migration.key(str(root)) in archived:
+            continue                     # read through the pointer above, never by probing
+        if root == base and archived_location(controller_root, local_hashed, verify=None) is not None:
+            continue
         hashed = io_path(root / evidence_key(catchup_id), 1 + MEMBER_FOLDER_DIGITS + OUTPUT_PATH_ROOM)
         try:
             record = read_json_bounded(hashed / EVIDENCE_FOLDER_RECORD)
@@ -226,21 +243,25 @@ def evidence_folder(controller_root, catchup_id):
                 return hashed
         except (OSError, ValueError):
             pass
-    for root in [base] + archived_evidence_roots(controller_root):   # a legacy folder moved by evidence-archive too
-        legacy = root / catchup_id
-        if legacy.is_dir():
-            return legacy
-    return None
+    legacy = base / catchup_id
+    moved = archived_location(controller_root, legacy, verify=None)   # a legacy folder moved by evidence-archive too
+    if moved is not None:
+        if not io_path(moved, 0).is_dir():
+            raise read_failure(moved, 'the archived legacy evidence folder is missing')
+        return moved
+    return legacy if legacy.is_dir() else None
 
 
 # Path fields of an evidence-version record that point into its own evidence folder (or another archived one).
 VERSION_PATH_FIELDS = (('retest', 'set_path'), ('retest', 'csv_path'), ('original', 'set_path'), ('original', 'csv_path'))
 
 
-def relocated(controller_root, record):
+def relocated(controller_root, record, verify='size'):
     """An evidence-version record read from an evidence-archive root, its stored paths followed through the pointer.
 
-    The record's bytes stay exactly as written; only the returned copy names where each file lives now.
+    The record's bytes stay exactly as written; only the returned copy names where each file lives now. Each mapped
+    file the manifest lists is checked: its size by default (versions() maps many records; a consumer that opens the
+    files passes ``verify='full'`` for the sha256 too). ArchiveUnreachable when one does not match.
     """
     from studio_evidence_archive import archived_location
     value = dict(record)
@@ -251,11 +272,11 @@ def relocated(controller_root, record):
         part = dict(part)
         if field == 'capture':
             if isinstance(part.get('capture'), dict) and isinstance(part['capture'].get('path'), str):
-                moved = archived_location(controller_root, part['capture']['path'])
+                moved = archived_location(controller_root, part['capture']['path'], verify)
                 if moved is not None:
                     part['capture'] = dict(part['capture'], path=str(moved))
         elif isinstance(part.get(field), str):
-            moved = archived_location(controller_root, part[field])
+            moved = archived_location(controller_root, part[field], verify)
             if moved is not None:
                 part[field] = str(moved)
         value[section] = part
@@ -284,22 +305,33 @@ def versions(controller_root, limit=20000):
     Build-migration records (``kind: build_migration_retest``) are never evidence versions: skipped by type.
     Fails closed when a recorded output root is unavailable (an unplugged drive): its exports would read as behind.
     """
-    from studio_evidence_archive import archived_evidence_roots
+    from studio_evidence_archive import archived_evidence_roots, archived_location, archived_records, read_failure
     found = []
     archived = {migration.key(str(root)) for root in archived_evidence_roots(controller_root)}
     for index, root in enumerate(evidence_roots(controller_root)):
         moved = migration.key(str(root)) in archived      # evidence-archive: its records' paths follow the pointer
         # Both layouts: evidence\c.<hash>\<member>\ and the legacy evidence\<catch-up id>\<alias>\ (room for the longest ID).
         base = io_path(root, 1 + MAX_ID + 1 + 23 + 1 + len('evidence-version.json'))
-        if not base.is_dir():
+        if moved:
+            # Enumerated from the manifest, each verified (size, sha256 once per process): a missing or corrupt
+            # archived record refuses EVIDENCE_ARCHIVE_UNREACHABLE instead of reading as absent.
+            paths = archived_records(controller_root, root, 'evidence-version.json')
+        elif not base.is_dir():
             if index:
                 raise ValueError('Catch-up output root %s (recorded in %s) is unavailable; reconnect it before reading catch-up '
                                  'evidence, or exports caught up there would read as behind' % (root, EVIDENCE_ROOTS))
             continue
-        for path in sorted(base.glob('*/*/evidence-version.json')):
+        else:
+            paths = sorted(base.glob('*/*/evidence-version.json'))
+        for path in paths:
+            # The local copy an --apply leaves until --complete is never read twice: the archive is read instead.
+            if not moved and archived and archived_location(controller_root, plain(path), verify=None) is not None:
+                continue
             try:
                 record = read_json_bounded(path)
-            except (OSError, ValueError):
+            except (OSError, ValueError) as error:
+                if moved:
+                    raise read_failure(path, error) from None
                 continue
             if isinstance(record, dict) and record.get('schema') == VERSION_SCHEMA and not migration.is_record(record):
                 found.append((relocated(controller_root, record) if moved else record) | dict(version_path=str(path)))
@@ -1433,13 +1465,14 @@ class CatchupRunner(SeedRunner):
         return destination / set_path.name
 
     # ---- reports -----------------------------------------------------------------------
-    def _version_path(self, result):
-        """Where a member's evidence version lives now: its recorded path, or the evidence-archive location."""
-        if not result or not result.get('version_path'):
+    def _version_path(self, result, field='version_path'):
+        """Where a member's evidence version (or build-migration record, ``field='record_path'``) lives now: its
+        recorded path, or the evidence-archive location (verified; EVIDENCE_ARCHIVE_UNREACHABLE when it cannot be)."""
+        if not result or not result.get(field):
             return None
         from studio_evidence_archive import archived_location
-        moved = archived_location(self.c.root, plain(result['version_path']))
-        return result['version_path'] if moved is None else str(moved)
+        moved = archived_location(self.c.root, plain(result[field]))
+        return result[field] if moved is None else str(moved)
 
     def report(self, batch_id):
         self.status(batch_id)
@@ -1494,7 +1527,7 @@ class CatchupRunner(SeedRunner):
                              kind=migration.KIND, provenance=bm.get('provenance'), source_build=bm.get('source_build'),
                              target_build=bm.get('target_build'), original_set=bm.get('original_path'), original_sha256=bm.get('original_sha256'),
                              original_end=spec['original']['evidence_end'], new_end=manifest['evidence_end']['iso'],
-                             summary=result['summary'] if result else None, record_path=result['record_path'] if result else None,
+                             summary=result['summary'] if result else None, record_path=self._version_path(result, 'record_path'),
                              error=item.get('error'), evidenceEnd=manifest['evidence_end']['iso'],
                              evidenceEndEffective=evidence_end.effective_end(spec['tester']['ToDate'])))
         public = manifest['build_migration']

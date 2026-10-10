@@ -32,7 +32,7 @@ Output: success prints `{"ok":true,"result":...}` to stdout (exit 0). Errors pri
 & $goat demo --installation $receipt batch-pause-close --batch-id '<id>' --confirm   # close a paused batch for good; --mode finish|exclude, --reason (exclude)
 & $goat demo --installation $receipt compact-evidence   # preview; --apply moves finished in-row evidence history to verified logs
 & $goat demo --installation $receipt compact-receipts   # preview; --apply archives legacy full-queue receipts and keeps their queue digest
-& $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\<folder>'   # preview; --apply --confirm --keep-list '<file>' moves a finished batch's evidence off C:
+& $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\<folder>'   # preview; --apply --confirm --keep-list '<file>' copies a finished batch's evidence off C: (sources stay); then --complete --confirm removes them after re-verifying; evidence-restore / evidence-repoint
 ```
 
 - `compact-evidence` and `compact-receipts` are local store maintenance with no native effect. Each previews by default and, with `--apply`, refuses while any batch is starting or running (checked before any archive and again inside each transaction). Archives are temp-written, fsynced, sha256-verified and atomically renamed, and are never deleted. Run `compact-evidence --apply` first, then `compact-receipts --apply`. Neither shrinks `studio.sqlite` on disk: that needs a separate reviewed `VACUUM`. Both change the store's content hash, so prepare a handover or owner-maintenance record after compacting, not before.
@@ -334,12 +334,21 @@ research prereg files, which read `members_done` from either record.
 
 ```powershell
 & $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\GOAT-Evidence-Archive'                      # preview
-& $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\GOAT-Evidence-Archive' --keep-list '<keep.json>' --apply --confirm    # move
+& $goat demo --installation $receipt evidence-archive --batch-id '<id>' --archive-root 'G:\GOAT-Evidence-Archive' --keep-list '<keep.json>' --apply --confirm    # copy + pointer; sources stay
+& $goat demo --installation $receipt evidence-archive --batch-id '<id>' --complete --confirm      # separate step: re-verify the archive, then remove the sources
+& $goat demo --installation $receipt evidence-restore --batch-id '<id>' --confirm                # bring the archive back, retire the pointer
+& $goat demo --installation $receipt evidence-repoint --batch-id '<id>' --archive-dir 'H:\GOAT-Evidence-Archive\<installation>\<id>' --confirm   # a verified copy elsewhere
 ```
 
-Moves, never deletes, the evidence of one finished or closed native batch, or one
-finished catch-up, from the controller state to
-`<archive root>\<installation>\<batch id>\` (`studio_evidence_archive.py`). No MT5 effect.
+Moves the evidence of one finished or closed native batch, or one finished catch-up,
+from the controller state to `<archive root>\<installation>\<batch id>\`
+(`studio_evidence_archive.py`), in two separate invocations, so the run that makes the
+archive never deletes the only copy. No MT5 effect.
+
+- Archive root: an existing folder on another LOCAL volume formatted NTFS or ReFS. An
+  exFAT/FAT32 USB stick refuses `ARCHIVE_ROOT_FILESYSTEM` (GetVolumeInformationW), a
+  network drive or UNC path `ARCHIVE_ROOT_REMOTE` (the same GetDriveTypeW check
+  catch-up output roots use), both in the preview and in `--apply`.
 
 - What moves (each file needs a proof; the preview lists it in `files` with `proof`):
   the batch's `native-evidence\<id>-<attempt16>.jsonl` and `.history.jsonl` that its
@@ -350,20 +359,49 @@ finished catch-up, from the controller state to
   and the digest form. For a catch-up: its `evidence\c.<10 hex>\` folder (its
   `catchup.json` names it) or legacy `evidence\<catch-up id>\`. Anything else that
   names the batch stays where it is and is listed in `not_attributable` with the reason.
-- How: each file is copied (temporary file, fsync, rename) and its copy is
-  sha256-verified against the source; `manifest.json` lists every file (relative path,
-  bytes, sha256, source path, proof), the batch, the time and the controller revision;
-  then `native-evidence\archived\<id>.json` (the pointer: archive folder and manifest
-  sha256) is written, and only then is each source removed, after its bytes still hash
-  to the manifest. A re-run copies nothing twice: it reuses identical copies, or with a
-  pointer verifies the archive and completes removals an interruption left.
+  A symbolic link or junction in the source walk is never followed and refuses
+  `ARCHIVE_SOURCE_LINK`.
+- `--apply`: each file is copied (temporary file, fsync, rename, fsync again; the
+  folder too where the platform allows) and its copy is sha256-verified against the
+  source; `manifest.json` lists every file (relative path, bytes, sha256, source path,
+  proof), the batch, the time and the controller revision; then
+  `native-evidence\archived\<id>.json` (the pointer: archive folder, manifest sha256,
+  and the archive volume's GUID with the folder's path on it) is written, and `--apply`
+  STOPS. Every source stays as the safety copy; readers already follow the pointer. A
+  re-run copies nothing twice: it reuses identical copies (also after a crash between
+  the manifest and the pointer), or with a pointer re-verifies the archive.
+- `--complete --confirm` (its own invocation, never with `--apply`; no `--archive-root`:
+  the pointer names the archive) validates every manifest entry (relative, no `..`,
+  below `native-evidence\` or `evidence\`, named by the pointer; else
+  `ARCHIVE_MANIFEST_INVALID`), re-reads and re-hashes EVERY archived file from disk
+  against the manifest (a missing or corrupt copy refuses `ARCHIVE_VERIFY_FAILED`), and
+  hashes every source still present (a changed one refuses `ARCHIVE_SOURCE_CHANGED`);
+  only when all of that holds does it remove the sources, each only if it still hashes
+  to the manifest. Any refusal removes nothing. Re-runnable after an interruption.
+- `evidence-restore --confirm` re-verifies the archive, copies each file back
+  (temporary file, fsync, verified against the manifest sha256, rename), refuses
+  `ARCHIVE_RESTORE_CONFLICT` if a local file exists and differs (nothing restored),
+  then retires the pointer to `native-evidence\archived\retired\` (an audit record)
+  so readers read the local copy again. The archive copy is kept.
+- `evidence-repoint --archive-dir <dir> --confirm` accepts a moved or copied archive
+  only when its `manifest.json` hashes to the pointer's `manifest_sha256`
+  (`ARCHIVE_REPOINT_MISMATCH` otherwise) and every file verifies from disk; it rewrites
+  the pointer atomically and keeps the old one under `archived\retired\`. A drive that
+  merely comes back under another letter needs no repoint: readers find the archive by
+  the volume GUID in the pointer.
+- `--complete`, `evidence-restore` and `evidence-repoint` take the same terminal lock
+  and idle rules as `--apply` (`ARCHIVE_TERMINAL_BUSY`, `ARCHIVE_NOT_DEMO`,
+  `ARCHIVE_CONFIRM_REQUIRED`) and refuse `ARCHIVE_NOT_ARCHIVED` without a pointer.
 - Readers follow the pointer: `trial-journal`/`trial-count` (byte-identical before and
   after), `finish` and `batch-pause-close` (member starts), `evidence-scan`,
   `evidence-versions`, `catchup-prepare`, `catchup-report` and
   `equivalence-canary-ingest` (catch-up evidence versions and their SET/CSV paths).
-  While the archive cannot be read (drive unplugged, manifest changed) they refuse
-  `EVIDENCE_ARCHIVE_UNREACHABLE`; nothing is read in its place. Reconcile never appends
-  to an archived batch (`EVIDENCE_ARCHIVED`).
+  Each archived file's size is checked against the manifest on every read and its
+  sha256 on its first read in a process. While the pointer is unreadable or malformed,
+  the archive cannot be found (drive unplugged, not found by its volume GUID either),
+  the manifest changed, or an archived file is missing, corrupt or unreadable, they
+  refuse `EVIDENCE_ARCHIVE_UNREACHABLE`; nothing is read in its place, never "history
+  unavailable". Reconcile never appends to an archived batch (`EVIDENCE_ARCHIVED`).
 - Citations: the preview lists every run and held-out lock that cites the batch in
   `citations` and `cited_by` ("cited by catch-up cu-x (finished)"). A finished FOOS
   read (catch-up, hold-up test, seed hunt) or a revealed/breached lock does not block:
@@ -384,13 +422,15 @@ finished catch-up, from the controller state to
   session, seed slot, fixed task, live driver or another demo operation),
   `ARCHIVE_HELDOUT_LOCK_ACTIVE`, `ARCHIVE_IN_FLIGHT_READER`,
   `ARCHIVE_CITATIONS_UNVERIFIABLE`, `ARCHIVE_KEEP_LISTED` /
-  `ARCHIVE_KEEP_LIST_INVALID`, `ARCHIVE_ROOT_SAME_VOLUME`, `ARCHIVE_ROOT_UNAVAILABLE`,
+  `ARCHIVE_KEEP_LIST_INVALID`, `ARCHIVE_SOURCE_LINK`, `ARCHIVE_ROOT_SAME_VOLUME`,
+  `ARCHIVE_ROOT_UNAVAILABLE`, `ARCHIVE_ROOT_REMOTE`, `ARCHIVE_ROOT_FILESYSTEM`,
   `ARCHIVE_ROOT_INVALID`, `ARCHIVE_ROOT_NOT_WRITABLE`, `ARCHIVE_ROOT_LOW_SPACE` (the
   preview size plus 1 GiB or 5 %), `ARCHIVE_ALREADY_ARCHIVED` (another archive root),
   `ARCHIVE_NOTHING_TO_MOVE`, `ARCHIVE_UNKNOWN_BATCH`, `ARCHIVE_UNSUPPORTED_KIND` (seed
-  hunts, hold-up tests), `ARCHIVE_NOT_DEMO`. During the move: `ARCHIVE_VERIFY_FAILED`,
-  `ARCHIVE_SOURCE_CHANGED`, `ARCHIVE_TARGET_CONFLICT`, `ARCHIVE_MANIFEST_CONFLICT`
-  (the source is kept in every case). Allowed under owner STOP.
+  hunts, hold-up tests), `ARCHIVE_NOT_DEMO`, `ARCHIVE_MODE_CONFLICT` (`--apply` with
+  `--complete`). During the copy: `ARCHIVE_VERIFY_FAILED`, `ARCHIVE_SOURCE_CHANGED`,
+  `ARCHIVE_TARGET_CONFLICT`, `ARCHIVE_MANIFEST_CONFLICT` (the source is kept in every
+  case). Allowed under owner STOP. The preview's `next_step` names the next command.
 - Prereg and book citations live outside the controller (goatai prereg files, the book
   on G:), so it cannot see them: `--apply` requires `--keep-list <file>` (a JSON array
   of batch IDs or run folders, or `{"keep": [...]}`; it may be empty) and keeps every

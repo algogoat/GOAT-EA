@@ -404,11 +404,14 @@ class Controller:
 
 # Operations that close or relaunch MT5 (or drive members that do): main() holds the installation's terminal lease
 # for the whole command, before session_lock (studio_terminal_lease; goatai#2350 6098964146). Readers never wait for it.
+# Not here, on purpose: self-repair (it takes the same lease itself, DemoAgent._exclusive, before its first MT5 read and
+# through its close wait); batch-pause --supervise-seconds (the pause is recorded first, then the supervising run()
+# leases); read-only commands (they take the lease without waiting inside their attach and answer BROKER_READ_DEFERRED).
 TERMINAL_LEASE_OPERATIONS=frozenset((
     'run-batch','seed-start','seed-resume','catchup-start','catchup-resume','close-terminal','deploy-load','deploy-stop',
-    'monitor-launch','monitor-repair','monitor-stop','research-monitor-restart-resume','research-monitor-restart-status',
+    'monitor-launch','monitor-repair','monitor-stop','research-monitor-restart-resume',
     'research-monitor-repair-derived-report','research-monitor-repair-revoked-report','research-retire-never-started',
-    'research-monitor-reopen-prepare','research-monitor-adopt-reopen','cancel-rejected-successor'))
+    'bootstrap-retirement-apply'))
 
 
 def main(argv=None):
@@ -602,19 +605,23 @@ def main(argv=None):
             result=equivalence_operation(controller,args)
             return _emit(controller,result)
         if args.operation in ('seed-cancel','catchup-cancel'):
-            # goatai#2350 (Claude-Mac 6099078698 R2): Cancel is never "refused, try later". While a driver holds the
-            # terminal lease, the cancel is recorded and that driver stops the run after the current test.
-            from studio_terminal_lease import TerminalBusy,terminal_lease
-            try:locks.enter_context(terminal_lease(controller.root,purpose=args.operation))
-            except TerminalBusy:
-                if args.operation=='seed-cancel':
-                    from studio_seed import SeedRunner
-                    result=SeedRunner(controller).request_cancel(args.batch_id,now=time.time())
-                else:
-                    from studio_catchup import CatchupRunner
-                    result=CatchupRunner(controller).request_cancel(args.catchup_id,now=time.time())
-                return _emit(controller,result)
-        elif args.operation in TERMINAL_LEASE_OPERATIONS or (args.operation=='batch-pause' and args.supervise_seconds is not None):
+            # goatai#2350 (Claude-Mac 6099078698 R2, 6099732097): a cancel is never "refused, try later" while a run is
+            # being driven. When THIS batch's own driver is verifiably alive (its driver record and a live pid), the
+            # cancel is recorded and that driver stops the run after the current test. Otherwise the lease is taken
+            # (up to 15 s) and the cancel runs now; a terminal still busy after that is refused in plain words, and no
+            # request is ever left for nobody to honour.
+            from studio_terminal_lease import terminal_lease
+            if args.operation=='seed-cancel':
+                from studio_seed import SeedRunner
+                runner,run_id=SeedRunner(controller),args.batch_id
+            else:
+                from studio_catchup import CatchupRunner
+                runner,run_id=CatchupRunner(controller),args.catchup_id
+            if runner.driver_state(run_id).get('state')=='running':
+                return _emit(controller,runner.request_cancel(run_id,now=time.time()))
+            locks.enter_context(terminal_lease(controller.root,purpose=args.operation,wait_seconds=15,
+                busy_message='GOAT is busy with this terminal for a moment; try again. Nothing was cancelled.'))
+        elif args.operation in TERMINAL_LEASE_OPERATIONS:
             # The installation's terminal lease (L1), before session_lock (L2): these close or relaunch MT5, so no reader
             # may attach meanwhile, and two of them never overlap (goatai#2350 6098964146). Waits up to 15 s.
             from studio_terminal_lease import terminal_lease
@@ -755,8 +762,13 @@ def main(argv=None):
                                        now=time.time(),requested_by='studio_cli',immediate=args.immediate)
                 driver=None
                 if args.supervise_seconds is not None and record['state']=='pausing':
+                    # The pause is recorded above first; the supervising run() then takes the terminal lease itself. When
+                    # the batch's own driver holds it, that driver applies the pause: nothing to supervise here.
                     from studio_batch_driver import run
-                    driver=run(controller,args.job_id,resume=True,pause_seconds=args.supervise_seconds)
+                    from studio_terminal_lease import TerminalBusy
+                    try:driver=run(controller,args.job_id,resume=True,pause_seconds=args.supervise_seconds)
+                    except TerminalBusy:driver=dict(status='not_supervised',reason='terminal_busy',
+                        plain='The pause is recorded; the batch driver that is running applies it.')
                 result=dict(public_pause(load_pause(controller.root,args.job_id)),driver=driver)
             elif args.operation=='batch-resume':
                 from studio_batch import resume_batch

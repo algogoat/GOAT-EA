@@ -797,15 +797,39 @@ class SeedRunner:
 
     def cancel_request_path(self,batch_id):return self.path(batch_id)/'cancel-request.json'
 
+    @staticmethod
+    def _activation(state):
+        """What a cancel request is bound to: this activation of this batch (a stopped batch that is resumed later is a
+        new activation, so an old request can never cancel it)."""
+        return dict(manifest_sha256=state['manifest_sha256'],generation=state.get('generation'),
+                    activation=len(state.get('reactivations') or ()))
+
+    def _cancel_request_current(self,batch_id,state):
+        """True only for a request bound to the batch's current activation; any other request file is discarded."""
+        path=self.cancel_request_path(batch_id)
+        if not path.is_file():return False
+        try:request=read_json(path)
+        except (OSError,ValueError):request={}
+        if isinstance(request,dict) and request.get('binding')==self._activation(state):return True
+        self._discard_cancel_request(batch_id)
+        return False
+
+    def _discard_cancel_request(self,batch_id):
+        try:self.cancel_request_path(batch_id).unlink()
+        except FileNotFoundError:pass
+
     def request_cancel(self,batch_id,*,now):
-        """Cancel while a driver holds the terminal lease (goatai#2350, Claude-Mac 6099078698 R2): never a refusal for
-        the user. The request is recorded; the driver honours it at its next safe point (after the current test, between
-        members, exactly where it honours a pause) by cancelling the remaining members."""
+        """Cancel while this batch's own driver is running (goatai#2350, Claude-Mac 6099078698 R2 / 6099732097): never a
+        refusal for the user. The request is bound to this activation and recorded; the driver honours it at its next
+        safe point (after the current test, between members, exactly where it honours a pause) by cancelling the
+        remaining members. It is cleared on every terminal state and on re-activation, so it never outlives this run."""
         root,manifest,state=self._read(batch_id)
         if state['status'] in ('completed','stopped'):return self._public(root,state)
-        path=self.cancel_request_path(batch_id)
-        if not path.exists():
-            write_json(path,dict(schema_version=1,batch_id=batch_id,manifest_sha256=state['manifest_sha256'],requested_unix=now))
+        if state['status'] not in ('active','closing_monitor'):
+            raise ValueError(self.NEWS_NOUN.get(self.COMMAND_PREFIX,'Run ')+batch_id+' is '+str(state['status'])
+                             +', not running, so there is nothing to stop after the current test')
+        write_json(self.cancel_request_path(batch_id),dict(schema_version=2,batch_id=batch_id,requested_unix=now,
+                                                         binding=self._activation(state)))
         return self._public(root,state)|dict(cancel_requested=True,
             plain='Cancel requested: the run stops after the current test.',
             next_action=self.COMMAND_PREFIX+'-status shows it stop; nothing else is needed')
@@ -885,6 +909,7 @@ class SeedRunner:
                 prior_initial_process=state.get('initial_process'),process=current,
                 pending=sum(m['status']=='pending' for m in state['members'])))
             state.pop('failed_members',None);state.pop('idle_settled',None)
+        self._discard_cancel_request(batch_id)          # a new activation: no request made for an earlier one applies
         state['generation']=owner['generation'];state['status']='closing_monitor';state['preflight']=observation;state['initial_process']=current
         if not reactivate:runner_record_start(self.c.install,state,manifest,now=self.clock())   # the news file this run starts on
         self._save(root,state)
@@ -982,6 +1007,8 @@ class SeedRunner:
             self._driver_end(call,'failed',error=str(exc) or type(exc).__name__)
             raise
         self._driver_end(call,'returned',result_status=result.get('status') if isinstance(result,dict) else None)
+        if isinstance(result,dict) and result.get('status') in ('completed','stopped','reconcile_required'):
+            self._discard_cancel_request(batch_id)    # a terminal state: a request never outlives the run it was for
         return result
 
     def _driver_end(self,call,outcome,**details):
@@ -1042,7 +1069,7 @@ class SeedRunner:
                     if running['status']=='running' and self.clock()-running['started_unix']>=manifest['plan']['job_timeout_seconds']:
                         running['status']='timeout_requested';self._save(root,state)
                         self.process.close(running['process'])
-                elif current is None and state['status']=='active' and self.cancel_request_path(batch_id).is_file():
+                elif current is None and state['status']=='active' and self._cancel_request_current(batch_id,state):
                     cancel_now=True                  # a cancel request: honoured below, after the gate is released
                 elif current is None and state['status']=='active' and self.paused(batch_id):
                     return self._public(root,state)|dict(paused=True,pause_requested=True,
@@ -1079,10 +1106,9 @@ class SeedRunner:
             if cancel_now:
                 # Between members (the current test finished): the remaining members are cancelled by the same cancel the
                 # command runs, and the request is kept beside the batch as the record of who stopped it.
-                result=self.cancel(batch_id)
                 path=self.cancel_request_path(batch_id)
                 if path.is_file():path.replace(path.with_name('cancel-request.honoured.json'))
-                return result|dict(cancel_request_honoured=True)
+                return self.cancel(batch_id)|dict(cancel_request_honoured=True)
             if holding is not None:
                 # Outside the gate, so status, cancel and pause are never blocked; each pass re-checks everything.
                 if self._hold_wait(batch_id,max(0,min(1,deadline-self.clock(),holding-self.clock())))=='stop':
@@ -1095,6 +1121,7 @@ class SeedRunner:
         self.c.bridge.pump()
         with self._gate():
             root,manifest,state=self._read(batch_id)
+            self._discard_cancel_request(batch_id)    # this cancel supersedes any recorded request
             if state['status'] in ('completed','stopped'):return self._public(root,state)
             self._owner(state['generation'])
             if state['status']!='prepared':self._slot(batch_id,state)

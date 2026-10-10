@@ -70,6 +70,31 @@ class TerminalLeaseTests(unittest.TestCase):
             thread = threading.Thread(target=reader); thread.start(); thread.join()
         self.assertEqual(errors, ['TERMINAL_LEASE_BUSY'], 'a join is only for the holding thread')
 
+    def test_a_killed_holder_releases_the_lease_at_once(self):
+        # The OS drops the lock with the process: a driver killed mid-run never leaves the terminal leased (msvcrt on
+        # Windows, the CI job this matters for; fcntl elsewhere).
+        import os, subprocess, sys
+        marker = os.path.join(self.root, 'held.txt')
+        code = ('import sys,time,pathlib;sys.path.insert(0,sys.argv[1]);from studio_terminal_lease import terminal_lease\n'
+                'with terminal_lease(sys.argv[2],purpose="child"):\n'
+                '    pathlib.Path(sys.argv[3]).write_text("held");time.sleep(60)\n')
+        child = subprocess.Popen([sys.executable, '-c', code, os.path.dirname(os.path.abspath(__file__)), self.root, marker])
+        try:
+            deadline = time.monotonic() + 20
+            while not os.path.exists(marker):
+                self.assertIsNone(child.poll(), 'the child exited before taking the lease')
+                self.assertLess(time.monotonic(), deadline, 'the child never took the lease')
+                time.sleep(.05)
+            with self.assertRaises(TerminalBusy):
+                with terminal_lease(self.root, purpose='reader'):
+                    pass
+            child.kill(); child.wait(10)                          # TerminateProcess on Windows, SIGKILL elsewhere
+            with terminal_lease(self.root, purpose='after kill'):  # no wait: released with the process
+                self.assertTrue(held(self.root))
+        finally:
+            if child.poll() is None:
+                child.kill(); child.wait(10)
+
     def test_bad_arguments_refuse(self):
         for kwargs in (dict(nested='maybe'), dict(wait_seconds=-1), dict(wait_seconds=601), dict(wait_seconds='5')):
             with self.subTest(**{k: str(v) for k, v in kwargs.items()}), self.assertRaises(ValueError):

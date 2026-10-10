@@ -271,8 +271,13 @@ class SeedRunner:
         self._save(root,state)
         return self.status(batch_id)
 
+    def _output_dir(self,member):
+        """The one folder this runner's member writes its output into. _outputs searches only here and _own_output
+        accepts only a file directly in it, so a subclass that writes elsewhere overrides this (catch-up: TEMP/SQ/<token>)."""
+        return Path(self.c.install['common_files_root'])/'GOAT/SeedFarmingXML'
+
     def _outputs(self,member):
-        directory=Path(self.c.install['common_files_root'])/'GOAT/SeedFarmingXML'
+        directory=self._output_dir(member)
         return list(directory.glob(member['output_base']+'_N*.xml')) if directory.exists() else []
 
     @staticmethod
@@ -373,7 +378,7 @@ class SeedRunner:
 
     def _own_output(self,spec,item):
         """The member's single output, inside its output folder, not a link, written after its start. (path, reason)."""
-        directory=(Path(self.c.install['common_files_root'])/'GOAT/SeedFarmingXML')
+        directory=self._output_dir(spec)
         paths=self._outputs(spec)
         if not paths:return None,'No output from this member exists; nothing is inferred'
         if len(paths)>1:return None,'More than one output names this member; a person decides'

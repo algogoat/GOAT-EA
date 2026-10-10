@@ -456,6 +456,52 @@ class NativeCycleTests(CatchupCase):
         self.assertFalse(self.starts)
         self.assertEqual(read_json(self.runner.path('cu1') / 'state.json')['members'][0]['status'], 'pending')
 
+    def strand_after_pid_change(self):
+        """b43mig-1r member 39 (2026-10-10): the member wrote its re-test, MT5 shut down and a plain MT5 (no INI) took its place
+        before the runner looked, so the member became reconcile_required with its output sitting in TEMP/SQ/<token>."""
+        self.runner.prepare('cu1', self.plan(sets=[self.behind]))
+        self.runner.start('cu1', 1)
+        member = read_json(self.runner.path('cu1') / 'manifest.json')['members'][0]
+        retest = self.native_retest(member)
+        self.process_state = dict(pid=99, executable='terminal64.exe', created_utc='plain')
+        state = self.runner.status('cu1')
+        self.assertEqual((state['status'], state['members'][0]['status'], state['members'][0]['error']),
+                         ('reconcile_required', 'reconcile_required', 'Selected terminal PID/provenance changed'))
+        return member, retest
+
+    def test_reconcile_collects_a_retest_from_the_attempt_folder_once_mt5_is_closed(self):
+        member, retest = self.strand_after_pid_change()
+        self.process_state = None
+        settled = self.runner.reconcile('cu1')
+        row = settled['members'][0]
+        self.assertEqual((settled['status'], row['status'], row['attempts']), ('completed', 'completed', 1))
+        self.assertNotIn('reconcile_reason', row)
+        self.assertEqual(row['reconciled']['prior_error'], 'Selected terminal PID/provenance changed')
+        self.assertFalse(retest.exists())                                     # moved into the evidence store, as a normal completion
+        self.assertTrue((Path(member['evidence_dir']) / 'evidence-version.json').is_file())
+        self.assertEqual(len(self.starts), 1)                                 # never re-run
+        guard_active_seed(self.controller.root)                               # slot released
+
+    def test_reconcile_collects_it_with_the_plain_mt5_open_on_the_idle_monitor(self):
+        member, retest = self.strand_after_pid_change()
+        self.process.config_users = lambda names: False                      # no terminal64 runs a member INI
+        self.process.command_line = lambda identity: '"terminal64.exe"'     # the plain start names no member
+        settled = self.runner.reconcile('cu1')
+        row = settled['members'][0]
+        self.assertEqual((row['status'], row['reconciled']['process']), ('completed', self.process_state))
+        self.assertIn('MT5 open on the idle GOAT monitor', row['reconciled']['basis'])
+        self.assertEqual((len(self.starts), len(self.closes)), (1, 1))      # nothing closed or launched by the reconcile
+
+    def test_reconcile_still_refuses_a_retest_older_than_the_member_start(self):
+        member, retest = self.strand_after_pid_change()
+        import os
+        os.utime(retest, (1.0, 1.0))
+        self.process_state = None
+        settled = self.runner.reconcile('cu1')
+        self.assertEqual(settled['members'][0]['status'], 'reconcile_required')
+        self.assertEqual(settled['members'][0]['reconcile_reason'], 'The member output predates its start')
+        self.assertTrue(retest.exists())                                      # nothing moved
+
     def test_unjudgeable_retest_is_kept(self):
         self.runner.prepare('cu1', self.plan(sets=[self.behind]))
         self.runner.start('cu1', 1)

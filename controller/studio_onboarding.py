@@ -336,6 +336,10 @@ def rebind_monitor_profile(controller, session, previous_installations):
 MONITOR_PROFILE_REFUSAL = 'MONITOR_PROFILE_CHANGED'
 MONITOR_PRESET_NAME = 'GOAT Studio Agent'
 MONITOR_INPUTS = (('Mode_Operation','11'),('Studio_ReadOnlyMonitor','true'),('Studio_MonitorRunPath',''))
+# A check the person cannot fix in MT5 ends in GOAT's existing support route, in the same words: the controller's
+# refusals say "send a support report with ... this message" (studio_config_start.restart_recovery) and the
+# agent's support method is support.prepareReport (AGENT-START-HERE.md, "To report a product problem").
+SUPPORT_ROUTE = 'send a support report with this message (support.prepareReport).'
 
 
 def monitor_refusal(failures, *, profile_name=None, **fields):
@@ -362,16 +366,16 @@ def verify_monitor_profile(controller, receipt, *, observed_human_reopen=False, 
     ea_file = PureWindowsPath(controller.install['ea_relative_path']).name
     if receipt.get('installation_sha256') != sha(controller.install) or receipt.get('run_id') != session['run_id'] or receipt.get('profile_name') != name or receipt.get('profile_path') != str(profile):
         raise monitor_refusal([('profile_other_session',
-            'The saved monitor profile was prepared for another GOAT installation or session; '
-            'ask GOAT support to review it, because GOAT never reuses it.',{})], profile_name=name)
+            'The saved monitor profile was prepared for another GOAT installation or session, and GOAT never reuses it; '
+            +SUPPORT_ROUTE,{})], profile_name=name)
     if not profile.is_dir() and not profile.is_symlink():
         raise monitor_refusal([('profile_missing',
-            'The saved monitor profile '+name+' is no longer in MT5; '
-            'ask GOAT support to restore it, because GOAT never recreates a prepared profile on its own.',{})], profile_name=name)
+            'The saved monitor profile '+name+' is no longer in MT5, and GOAT never recreates a prepared profile on its own; '
+            +SUPPORT_ROUTE,{})], profile_name=name)
     if profile.resolve()!=profile:
         raise monitor_refusal([('profile_alias',
-            'The saved monitor profile folder '+name+' is a link to another folder; '
-            'ask GOAT support to review it, because GOAT never follows a link there.',{})], profile_name=name)
+            'The saved monitor profile folder '+name+' is a link to another folder, and GOAT never follows a link there; '
+            +SUPPORT_ROUTE,{})], profile_name=name)
     entries = list(profile.iterdir())
     charts = [p for p in entries if p.suffix.lower()=='.chr']
     unexpected = sorted(p.name for p in entries if p.resolve()!=p or not p.is_file() or (p not in charts and p.name.lower()!='order.wnd'))
@@ -396,7 +400,7 @@ def verify_monitor_profile(controller, receipt, *, observed_human_reopen=False, 
     raw = charts[0].read_bytes()
     if len(raw)>2_000_000:
         raise monitor_refusal([('chart_too_large',
-            'The saved monitor chart file is over 2 MB, far bigger than a monitor chart; ask GOAT support to review it.',
+            'The saved monitor chart file is over 2 MB, far bigger than a monitor chart; '+SUPPORT_ROUTE,
             dict(chart_bytes=len(raw)))], profile_name=name)
     verify_saved_monitor(raw, controller.install['ea_relative_path'], receipt['symbol'], controller.install['terminal_data_root'], observed_human_reopen=observed_human_reopen, preserved_permissions_sha256=preserved_permissions_sha256, profile_name=name)
     return profile
@@ -413,8 +417,12 @@ def verify_saved_monitor(raw, ea_relative_path, symbol, data_root, *, observed_h
     def unreadable(detail):
         # The chart file is damaged or not in MT5's chart format; the original check stays in ``detail``.
         return refuse([('chart_unreadable','The saved monitor chart file is damaged or not in MT5\'s chart format, so GOAT cannot check it; '
-                        'ask GOAT support to review it.',dict(detail=detail))])
-    text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+                        +SUPPORT_ROUTE,dict(detail=detail))])
+    try:
+        text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+    except UnicodeError:
+        # Invalid UTF-8 or truncated UTF-16 is a damaged chart, refused like any other unreadable one.
+        raise unreadable('Saved monitor chart is not valid UTF-8 or UTF-16 text') from None
     stack=[]; fields={}; counts={}; closed=False
     for line in text.splitlines():
         line=line.strip()
@@ -509,7 +517,14 @@ def verify_saved_monitor(raw, ea_relative_path, symbol, data_root, *, observed_h
         failures.append(('inputs','The monitor EA\'s inputs changed ('+', and '.join(changed)+'); '+load_preset,
                          dict(inputs={key:inputs.get(key) for key,_ in MONITOR_INPUTS})))
     indicator=fields.get(('chart','window','indicator'),{})
-    if sum(count for scope,count in counts.items() if scope[-1]=='indicator')!=1 or indicator.get('name')!='Main' or indicator.get('path','')!='':
+    indicators=sum(count for scope,count in counts.items() if scope[-1]=='indicator')
+    if indicators==0:
+        # No Main block: the chart lost its price window. MT5 has no way to add it back to that chart; a new
+        # chart in the same profile has one, so the step rebuilds the monitor chart there.
+        failures.append(('indicator_missing','The monitor chart has lost its main price window; '
+                         'in MT5, choose '+menu+', close that chart, open a new '+symbol+' chart and attach '+ea_file+
+                         ' with the '+MONITOR_PRESET_NAME+' preset.',dict(indicator_count=0)))
+    elif indicators!=1 or indicator.get('name')!='Main' or indicator.get('path','')!='':
         failures.append(('indicator','The monitor chart has an indicator GOAT did not add; '
                          'in MT5, remove it from the monitor chart (Charts > Indicators List).',
                          dict(indicator=indicator.get('name'))))

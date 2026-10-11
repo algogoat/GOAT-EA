@@ -21,6 +21,8 @@ import test_goat_studio as fixtures
 EA = 'GOAT V1.48.ex5'
 PRESET = 'in MT5, open the EA\'s settings on the monitor chart and load the GOAT Studio Agent preset on the Inputs tab.'
 INDICATOR = 'The monitor chart has an indicator GOAT did not add; in MT5, remove it from the monitor chart (Charts > Indicators List).'
+# GOAT's existing support route, in its existing words (studio_config_start.restart_recovery, AGENT-START-HERE.md).
+SUPPORT = 'send a support report with this message (support.prepareReport).'
 
 
 class MonitorLaunchRefusalTests(unittest.TestCase):
@@ -147,12 +149,40 @@ class MonitorLaunchRefusalTests(unittest.TestCase):
         self.assertRefusal(self.refused(), 'chart_runs_script',
             'The monitor chart runs a script; in MT5, remove the script from the monitor chart.')
 
+    def test_indicator_missing(self):
+        # The chart's only Main block removed: not "an indicator GOAT did not add", and removing nothing fixes it.
+        start = self.original.index('<indicator>'); end = self.original.index('</indicator>')+len('</indicator>')
+        self.save(self.original[:start]+self.original[end:])
+        refusal = self.refused()
+        self.assertRefusal(refusal, 'indicator_missing',
+            'The monitor chart has lost its main price window; in MT5, choose '+self.menu+
+            ', close that chart, open a new EURUSD chart and attach '+EA+' with the GOAT Studio Agent preset.')
+        self.assertEqual(refusal.fields['observed'], {'indicator_count': 0})
+
     def test_unreadable_chart_keeps_the_technical_detail(self):
         self.chart.write_bytes(b'MT5 changed saved profile')
         refusal = self.refused()
         self.assertRefusal(refusal, 'chart_unreadable',
-            'The saved monitor chart file is damaged or not in MT5\'s chart format, so GOAT cannot check it; ask GOAT support to review it.')
+            'The saved monitor chart file is damaged or not in MT5\'s chart format, so GOAT cannot check it; '+SUPPORT)
         self.assertEqual(refusal.fields['observed'], {'detail': 'Invalid saved monitor chart content'})
+
+    def test_undecodable_chart_is_a_structured_unreadable_refusal(self):
+        sentence = 'The saved monitor chart file is damaged or not in MT5\'s chart format, so GOAT cannot check it; '+SUPPORT
+        for raw in (b'<chart>\r\nsymbol=EUR\xff\xfeUSD\r\n',                    # invalid UTF-8
+                    self.chart.read_bytes()[:-1]):                              # UTF-16 cut mid-character
+            with self.subTest(raw=raw[:24]):
+                self.chart.write_bytes(raw)
+                refusal = self.refused()
+                self.assertRefusal(refusal, 'chart_unreadable', sentence)
+                self.assertEqual(refusal.fields['observed'], {'detail': 'Saved monitor chart is not valid UTF-8 or UTF-16 text'})
+        from goat_studio import main
+        self.c.store.close(); self.c.store = None; self.fixture.controller = None
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = main(['--installation', str(self.fixture.path), 'monitor-launch', '--attempt-id', 'cli-undecodable'])
+        reply = json.loads(output.getvalue().strip().splitlines()[-1])
+        self.assertEqual((code, reply['refusal_code'], reply['failed_check'], reply['error']),
+                         (2, MONITOR_PROFILE_REFUSAL, 'chart_unreadable', sentence))
 
     # ---- the saved profile folder
 
@@ -183,15 +213,16 @@ class MonitorLaunchRefusalTests(unittest.TestCase):
     def test_chart_too_large(self):
         self.chart.write_bytes(b' '*2_000_001)
         self.assertRefusal(self.refused(), 'chart_too_large',
-            'The saved monitor chart file is over 2 MB, far bigger than a monitor chart; ask GOAT support to review it.')
+            'The saved monitor chart file is over 2 MB, far bigger than a monitor chart; '+SUPPORT)
 
     def test_profile_missing(self):
         shutil.rmtree(self.folder)
         self.assertRefusal(self.refused(), 'profile_missing',
-            'The saved monitor profile '+self.name+' is no longer in MT5; '
-            'ask GOAT support to restore it, because GOAT never recreates a prepared profile on its own.')
+            'The saved monitor profile '+self.name+' is no longer in MT5, '
+            'and GOAT never recreates a prepared profile on its own; '+SUPPORT)
 
-    def test_profile_alias(self):
+    def link_profile(self):
+        """Replace the profile folder with a link to it: a junction on Windows, a symlink elsewhere."""
         moved = self.folder.with_name('moved-profile')
         self.folder.rename(moved)
         try:
@@ -199,17 +230,51 @@ class MonitorLaunchRefusalTests(unittest.TestCase):
             _winapi.CreateJunction(str(moved), str(self.folder))
         except (ImportError, OSError):
             os.symlink(moved, self.folder, target_is_directory=True)
-        self.addCleanup(lambda: os.rmdir(self.folder) if os.path.lexists(self.folder) else None)
+        def unlink():
+            # A symlink is removed with unlink (rmdir fails on it on POSIX); a Windows junction with rmdir.
+            if os.path.islink(self.folder):
+                os.unlink(self.folder)
+            elif os.path.lexists(self.folder):
+                os.rmdir(self.folder)
+        self.addCleanup(unlink)
+
+    def test_profile_alias(self):
+        self.link_profile()
         self.assertRefusal(self.refused(), 'profile_alias',
-            'The saved monitor profile folder '+self.name+' is a link to another folder; '
-            'ask GOAT support to review it, because GOAT never follows a link there.')
+            'The saved monitor profile folder '+self.name+' is a link to another folder, '
+            'and GOAT never follows a link there; '+SUPPORT)
 
     def test_profile_of_another_installation_or_session(self):
         target = self.c.root/'monitor-profile.json'
         target.write_text(json.dumps(json.loads(target.read_text()) | dict(installation_sha256='f'*64)))
         self.assertRefusal(self.refused(), 'profile_other_session',
-            'The saved monitor profile was prepared for another GOAT installation or session; '
-            'ask GOAT support to review it, because GOAT never reuses it.')
+            'The saved monitor profile was prepared for another GOAT installation or session, '
+            'and GOAT never reuses it; '+SUPPORT)
+
+    def test_every_check_without_an_mt5_step_names_the_support_route(self):
+        """Mac (GOAT-EA#221): the five checks a person cannot fix in MT5 end in GOAT's existing support route."""
+        seen = {}
+        def record(attempt):
+            refusal = self.refused(attempt)
+            seen[refusal.fields['failed_check']] = str(refusal)
+        self.chart.write_bytes(b'\xff\xfe<')                          # chart_unreadable (truncated UTF-16)
+        record('unreadable')
+        self.chart.write_bytes(b' '*2_000_001)                        # chart_too_large
+        record('too-large')
+        self.chart.write_bytes(self.original.encode('utf-16'))
+        target = self.c.root/'monitor-profile.json'; receipt = target.read_text()
+        target.write_text(json.dumps(json.loads(receipt) | dict(installation_sha256='f'*64)))
+        record('other-session')                                       # profile_other_session
+        target.write_text(receipt)
+        self.link_profile()
+        record('alias')                                               # profile_alias
+        os.unlink(self.folder) if os.path.islink(self.folder) else os.rmdir(self.folder)
+        record('missing')                                             # profile_missing
+        self.assertEqual(set(seen), {'chart_unreadable', 'chart_too_large', 'profile_other_session', 'profile_alias', 'profile_missing'})
+        for check, sentence in seen.items():
+            with self.subTest(check=check):
+                self.assertTrue(sentence.endswith('; '+SUPPORT), sentence)
+                self.assertNotIn('ask GOAT support', sentence)
 
     # ---- several failed checks, the CLI shape, and the human-reopen exception
 

@@ -329,49 +329,122 @@ def rebind_monitor_profile(controller, session, previous_installations):
     return dict(status='rebound',previous_installation_sha256=receipt['installation_sha256'],installation_sha256=current,backup=str(backup))
 
 
+# One stable machine code for every saved-monitor check below (Claude-Mac, goatai#2350 6095158688). The
+# exception stays a ValueError (the CLI's top-level REFUSED is unchanged); ``failed_check`` names the first
+# failing check and ``failed_checks`` all of them. Every sentence names what is wrong and the one step the
+# person takes. Nothing here repairs anything: chart permissions and the saved chart are human-owned.
+MONITOR_PROFILE_REFUSAL = 'MONITOR_PROFILE_CHANGED'
+MONITOR_PRESET_NAME = 'GOAT Studio Agent'
+MONITOR_INPUTS = (('Mode_Operation','11'),('Studio_ReadOnlyMonitor','true'),('Studio_MonitorRunPath',''))
+# A check the person cannot fix in MT5 ends in GOAT's existing support route, in the same words: the controller's
+# refusals say "send a support report with ... this message" (studio_config_start.restart_recovery) and the
+# agent's support method is support.prepareReport (AGENT-START-HERE.md, "To report a product problem").
+SUPPORT_ROUTE = 'send a support report with this message (support.prepareReport).'
+
+
+def monitor_refusal(failures, *, profile_name=None, **fields):
+    """A Refusal naming each failed check: ``failures`` is a list of (check, sentence, observed facts)."""
+    from studio_refusal import Refusal
+    checks=[check for check,_,_ in failures]
+    observed={}
+    for _,_,facts in failures:
+        observed.update(facts)
+    extra=dict(monitor_profile=profile_name) if profile_name else {}
+    return Refusal(' '.join(sentence for _,sentence,_ in failures), MONITOR_PROFILE_REFUSAL,
+                   failed_check=checks[0], failed_checks=checks, **(dict(observed=observed) if observed else {}), **extra, **fields)
+
+
+def _profile_menu(profile_name):
+    return 'File > Profiles > '+(profile_name or 'GOAT-Studio-...')
+
+
 def verify_monitor_profile(controller, receipt, *, observed_human_reopen=False, preserved_permissions_sha256=None):
     session, _ = session_state(controller)
     name, profile = monitor_paths(controller, session)
+    menu = _profile_menu(name)
+    symbol = receipt.get('symbol') or 'the monitor symbol'
+    ea_file = PureWindowsPath(controller.install['ea_relative_path']).name
     if receipt.get('installation_sha256') != sha(controller.install) or receipt.get('run_id') != session['run_id'] or receipt.get('profile_name') != name or receipt.get('profile_path') != str(profile):
-        raise ValueError('Monitor profile receipt belongs to another installation/session')
+        raise monitor_refusal([('profile_other_session',
+            'The saved monitor profile was prepared for another GOAT installation or session, and GOAT never reuses it; '
+            +SUPPORT_ROUTE,{})], profile_name=name)
+    if not profile.is_dir() and not profile.is_symlink():
+        raise monitor_refusal([('profile_missing',
+            'The saved monitor profile '+name+' is no longer in MT5, and GOAT never recreates a prepared profile on its own; '
+            +SUPPORT_ROUTE,{})], profile_name=name)
     if profile.resolve()!=profile:
-        raise ValueError('Prepared profile is an alias; inspect before restart')
+        raise monitor_refusal([('profile_alias',
+            'The saved monitor profile folder '+name+' is a link to another folder, and GOAT never follows a link there; '
+            +SUPPORT_ROUTE,{})], profile_name=name)
     entries = list(profile.iterdir())
     charts = [p for p in entries if p.suffix.lower()=='.chr']
-    if len(charts)!=1 or any(p.resolve()!=p or not p.is_file() or (p not in charts and p.name.lower()!='order.wnd') for p in entries):
-        raise ValueError('Prepared profile changed; exactly one monitor chart and optional MT5 order.wnd required')
+    unexpected = sorted(p.name for p in entries if p.resolve()!=p or not p.is_file() or (p not in charts and p.name.lower()!='order.wnd'))
+    failures = []
+    if not charts:
+        failures.append(('chart_missing',
+            'The saved monitor profile '+name+' has no chart left (the monitor chart was closed in MT5); '
+            'in MT5, choose '+menu+', open a '+symbol+' chart and attach '+ea_file+' with the '+MONITOR_PRESET_NAME+' preset.',
+            dict(chart_count=0)))
+    elif len(charts)>1:
+        failures.append(('extra_charts',
+            'The saved monitor profile '+name+' has '+str(len(charts))+' charts and GOAT needs exactly one; '
+            'in MT5, choose '+menu+' and close every chart except the '+symbol+' monitor chart.',
+            dict(chart_count=len(charts))))
+    if unexpected:
+        failures.append(('extra_files',
+            'The saved monitor profile folder holds items MT5 does not save there ('+', '.join(unexpected)+'); '
+            'move them out of '+str(profile)+'.',
+            dict(unexpected_items=unexpected)))
+    if failures:
+        raise monitor_refusal(failures, profile_name=name)
     raw = charts[0].read_bytes()
     if len(raw)>2_000_000:
-        raise ValueError('Saved monitor chart exceeds size limit')
-    verify_saved_monitor(raw, controller.install['ea_relative_path'], receipt['symbol'], controller.install['terminal_data_root'], observed_human_reopen=observed_human_reopen, preserved_permissions_sha256=preserved_permissions_sha256)
+        raise monitor_refusal([('chart_too_large',
+            'The saved monitor chart file is over 2 MB, far bigger than a monitor chart; '+SUPPORT_ROUTE,
+            dict(chart_bytes=len(raw)))], profile_name=name)
+    verify_saved_monitor(raw, controller.install['ea_relative_path'], receipt['symbol'], controller.install['terminal_data_root'], observed_human_reopen=observed_human_reopen, preserved_permissions_sha256=preserved_permissions_sha256, profile_name=name)
     return profile
 
 
-def verify_saved_monitor(raw, ea_relative_path, symbol, data_root, *, observed_human_reopen=False, preserved_permissions_sha256=None):
+def verify_saved_monitor(raw, ea_relative_path, symbol, data_root, *, observed_human_reopen=False, preserved_permissions_sha256=None, profile_name=None):
     # MT5 rewrites chart metadata and permission flags on a normal close.
     # Accept those changes only after rechecking the effective saved monitor.
-    text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+    menu=_profile_menu(profile_name)
+    ea_file=PureWindowsPath(ea_relative_path).name
+    load_preset=('in MT5, open the EA\'s settings on the monitor chart and load the '+MONITOR_PRESET_NAME+' preset on the Inputs tab.')
+    def refuse(failures):
+        return monitor_refusal(failures, profile_name=profile_name)
+    def unreadable(detail):
+        # The chart file is damaged or not in MT5's chart format; the original check stays in ``detail``.
+        return refuse([('chart_unreadable','The saved monitor chart file is damaged or not in MT5\'s chart format, so GOAT cannot check it; '
+                        +SUPPORT_ROUTE,dict(detail=detail))])
+    try:
+        text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+    except UnicodeError:
+        # Invalid UTF-8 or truncated UTF-16 is a damaged chart, refused like any other unreadable one.
+        raise unreadable('Saved monitor chart is not valid UTF-8 or UTF-16 text') from None
     stack=[]; fields={}; counts={}; closed=False
     for line in text.splitlines():
         line=line.strip()
         if not line: continue
         if line.startswith('<'):
             tag=re.fullmatch(r'<(/?)([A-Za-z_][A-Za-z0-9_]*)>',line)
-            if not tag: raise ValueError('Invalid saved monitor chart tag')
+            if not tag: raise unreadable('Invalid saved monitor chart tag')
             ending,name=tag.groups()
-            if name != name.lower(): raise ValueError('Ambiguous saved monitor chart tag')
-            if name=='script': raise ValueError('Saved monitor profile must not execute a script')
+            if name != name.lower(): raise unreadable('Ambiguous saved monitor chart tag')
+            if name=='script':
+                raise refuse([('chart_runs_script','The monitor chart runs a script; in MT5, remove the script from the monitor chart.',{})])
             if ending:
-                if not stack or stack[-1]!=name: raise ValueError('Invalid saved monitor chart nesting')
+                if not stack or stack[-1]!=name: raise unreadable('Invalid saved monitor chart nesting')
                 stack.pop()
                 if name=='chart': closed=True
             else:
                 if closed or (not stack and name!='chart') or (stack and name=='chart') or len(stack)>32:
-                    raise ValueError('Invalid saved monitor chart structure')
+                    raise unreadable('Invalid saved monitor chart structure')
                 stack.append(name);key=tuple(stack)
                 counts[key]=counts.get(key,0)+1
             continue
-        if not stack or closed: raise ValueError('Invalid saved monitor chart content')
+        if not stack or closed: raise unreadable('Invalid saved monitor chart content')
         scope=tuple(stack)
         # MT5 persists GOAT's MQL input group labels as equals-framed rows
         # followed by whitespace and an empty assignment. They are headings,
@@ -381,12 +454,29 @@ def verify_saved_monitor(raw, ea_relative_path, symbol, data_root, *, observed_h
         if scope in (('chart',),('chart','expert'),('chart','expert','inputs'),('chart','window','indicator')):
             key,sep,value=line.partition('=')
             existing=fields.setdefault(scope,{})
-            if not key or key != key.strip() or not sep or key.casefold() in {prior.casefold() for prior in existing}: raise ValueError('Ambiguous saved monitor chart fields')
+            if not key or key != key.strip() or not sep:
+                raise unreadable('Ambiguous saved monitor chart fields')
+            if key.casefold() in {prior.casefold() for prior in existing}:
+                if scope==('chart','expert','inputs'):
+                    raise refuse([('inputs_duplicated','The monitor EA lists the input '+key+' more than once; '+load_preset,dict(duplicate_input=key))])
+                # A repeated key from a second EA or indicator block names that block; within one block it is unreadable.
+                if scope==('chart','expert') and counts.get(scope,0)>1:
+                    raise refuse([('extra_ea','The monitor chart has more than one EA; in MT5, remove every EA except '+ea_file+' from the monitor chart.',{})])
+                if scope==('chart','window','indicator') and counts.get(scope,0)>1:
+                    raise refuse([('indicator','The monitor chart has an indicator GOAT did not add; '
+                                   'in MT5, remove it from the monitor chart (Charts > Indicators List).',{})])
+                raise unreadable('Ambiguous saved monitor chart fields')
             fields[scope][key]=value
-    if stack or not closed or counts.get(('chart','expert'))!=1 or counts.get(('chart','expert','inputs'))!=1:
-        raise ValueError('Saved monitor must contain exactly one EA and input block')
-    if sum(count for scope,count in counts.items() if scope[-1]=='expert')!=1:
-        raise ValueError('Saved monitor has unexpected expert blocks')
+    if stack or not closed:
+        raise unreadable('Invalid saved monitor chart structure')
+    experts=counts.get(('chart','expert'),0)
+    if experts==0:
+        raise refuse([('ea_missing','The GOAT EA is no longer on the monitor chart; '
+                       'in MT5, choose '+menu+' and attach '+ea_file+' to the monitor chart with the '+MONITOR_PRESET_NAME+' preset.',{})])
+    if experts!=1 or sum(count for scope,count in counts.items() if scope[-1]=='expert')!=1:
+        raise refuse([('extra_ea','The monitor chart has more than one EA; in MT5, remove every EA except '+ea_file+' from the monitor chart.',{})])
+    if counts.get(('chart','expert','inputs'))!=1:
+        raise refuse([('inputs_missing','The monitor EA\'s saved inputs are missing; '+load_preset,{})])
     chart=fields.get(('chart',),{});expert=fields.get(('chart','expert'),{});inputs=fields.get(('chart','expert','inputs'),{})
     relative=PureWindowsPath(ea_relative_path)
     allowed=[PureWindowsPath('Experts')/relative,PureWindowsPath(data_root)/'MQL5'/'Experts'/relative]
@@ -400,13 +490,46 @@ def verify_saved_monitor(raw, ea_relative_path, symbol, data_root, *, observed_h
     preserved=(isinstance(preserved_permissions_sha256,str)
                and hashlib.sha256(raw).hexdigest()==preserved_permissions_sha256)
     permission_ok=(mode=='0' or ((observed_human_reopen is True or preserved) and re.fullmatch(r'[0-9]{1,3}',mode)))
-    if chart.get('symbol')!=symbol or PureWindowsPath(expert.get('path','')) not in allowed or not permission_ok:
-        raise ValueError('Saved monitor symbol, EA identity or permissions changed; human must review and reopen the saved profile in MT5')
-    if inputs.get('Mode_Operation')!='11' or inputs.get('Studio_ReadOnlyMonitor')!='true' or inputs.get('Studio_MonitorRunPath','')!='':
-        raise ValueError('Saved chart is no longer an inert Studio monitor')
+    # Every remaining check is evaluated, so a refusal names each one that failed (in this order).
+    failures=[]
+    if chart.get('symbol')!=symbol:
+        shown=chart.get('symbol') or 'no symbol'
+        failures.append(('symbol','The monitor chart shows '+shown+' instead of '+symbol+'; '
+                         'in MT5, choose '+menu+' and switch that chart back to '+symbol+'.',
+                         dict(symbol=chart.get('symbol'),required_symbol=symbol)))
+    if PureWindowsPath(expert.get('path','')) not in allowed:
+        shown=PureWindowsPath(expert['path']).name if expert.get('path') else 'an EA with no saved path'
+        failures.append(('ea_identity','The monitor chart runs '+shown+' instead of the installed '+ea_file+'; '
+                         'in MT5, choose '+menu+' and attach '+ea_file+' to the monitor chart with the '+MONITOR_PRESET_NAME+' preset.',
+                         dict(ea_path=expert.get('path'),required_ea=str(relative))))
+    if not permission_ok:
+        # The saved value is reported as MT5 wrote it; no bit of it is interpreted.
+        failures.append(('permissions','The EA\'s chart permissions changed (Allow Algo Trading or DLL imports on the chart); '
+                         'reopen the saved monitor profile in MT5 yourself ('+menu+').',
+                         dict(expertmode=mode,required_expertmode='0')))
+    changed=[]
+    for key,required in MONITOR_INPUTS:
+        value=inputs.get(key,'' if key=='Studio_MonitorRunPath' else None)
+        if value!=required:
+            changed.append(key+(' is missing' if value is None else ' is empty' if value=='' else ' is '+value)+
+                           ' but GOAT needs '+(required if required else 'it empty'))
+    if changed:
+        failures.append(('inputs','The monitor EA\'s inputs changed ('+', and '.join(changed)+'); '+load_preset,
+                         dict(inputs={key:inputs.get(key) for key,_ in MONITOR_INPUTS})))
     indicator=fields.get(('chart','window','indicator'),{})
-    if sum(count for scope,count in counts.items() if scope[-1]=='indicator')!=1 or indicator.get('name')!='Main' or indicator.get('path','')!='':
-        raise ValueError('Saved monitor contains an unexpected indicator')
+    indicators=sum(count for scope,count in counts.items() if scope[-1]=='indicator')
+    if indicators==0:
+        # No Main block: the chart lost its price window. MT5 has no way to add it back to that chart; a new
+        # chart in the same profile has one, so the step rebuilds the monitor chart there.
+        failures.append(('indicator_missing','The monitor chart has lost its main price window; '
+                         'in MT5, choose '+menu+', close that chart, open a new '+symbol+' chart and attach '+ea_file+
+                         ' with the '+MONITOR_PRESET_NAME+' preset.',dict(indicator_count=0)))
+    elif indicators!=1 or indicator.get('name')!='Main' or indicator.get('path','')!='':
+        failures.append(('indicator','The monitor chart has an indicator GOAT did not add; '
+                         'in MT5, remove it from the monitor chart (Charts > Indicators List).',
+                         dict(indicator=indicator.get('name'))))
+    if failures:
+        raise refuse(failures)
 
 
 def saved_launch_policy(controller, session):

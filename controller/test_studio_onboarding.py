@@ -343,7 +343,8 @@ class OnboardingTests(unittest.TestCase):
                         dict(current,installation_sha256=sha(self.c.install),run_id='session-'+'0'*32)):
             with self.subTest(receipt=receipt):
                 target.write_text(json.dumps(receipt))
-                with self.assertRaisesRegex(ValueError,'belongs to another installation/session'):monitor_launch(c,'refused')
+                with self.assertRaisesRegex(ValueError,'prepared for another GOAT installation or session') as caught:monitor_launch(c,'refused')
+                self.assertEqual(caught.exception.fields['failed_check'],'profile_other_session')
                 self.assertEqual(json.loads(target.read_text()),receipt,'left as it was')
         self.start.assert_not_called()
 

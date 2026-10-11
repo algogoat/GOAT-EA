@@ -362,8 +362,8 @@ MT5 stays closed after the last member. The reply then carries `monitor_profile`
 and a `next_action`: reopen the monitor with `monitor-launch --attempt-id <new id>`,
 which opens the `GOAT-Studio-...` chart profile with the monitor attached. Try it
 once. After the user approved DLL imports on the chart, it is normally refused with
-`Saved monitor symbol, EA identity or permissions changed; ...` or `Prepared profile
-changed; ...`; nothing was launched. Then ask the user to open MT5 normally and
+`refusal_code` `MONITOR_PROFILE_CHANGED` and `failed_check` `permissions`; nothing
+was launched. Then ask the user to open MT5 normally and
 choose File > Profiles > the `monitor_profile` name. A plain MT5 open can load an
 older chart profile (the seed run's `/config` session does not restore it), which
 leaves runtime feedback stale. If the user already opened MT5 that way,

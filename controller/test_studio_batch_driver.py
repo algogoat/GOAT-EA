@@ -502,6 +502,24 @@ class BatchDriverTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'original budget'):
             run(self.c, 'batch', resume=True, max_seconds=600, poll_seconds=1, clock=self.c.clock, finish_fn=finish)
 
+    def test_continue_while_a_late_starting_resumed_publisher_runs_is_refused_busy(self):
+        # Mac 6104448959: after a resume timed out with its launcher alive, the person may press Continue
+        # (run-batch --resume) while that late publisher's driver is running. It holds the terminal lease for its whole
+        # run, so Continue refuses busy: never a second driver on the same journal, no start, no cancel, journal untouched.
+        from studio_terminal_lease import TerminalBusy, foreign_holder
+        def ctrl_c():
+            raise KeyboardInterrupt()
+        self.c.clock.on_sleep = ctrl_c
+        with self.assertRaises(KeyboardInterrupt):
+            self.drive(max_seconds=600)                                   # the suspended run, as a restart leaves it
+        self.c.clock.on_sleep = None
+        journal = self.c.root/'batch-drivers'/'batch.json'
+        before = journal.read_bytes()
+        with foreign_holder(self.c.root), self.assertRaises(TerminalBusy):   # the late publisher's driver holds the lease
+            run(self.c, 'batch', resume=True, poll_seconds=1, cancel_grace_seconds=2, clock=self.c.clock, finish_fn=self.c.finish)
+        self.assertEqual((self.c.starts, self.c.cancels), (1, 0))
+        self.assertEqual(journal.read_bytes(), before)
+
     def test_revoked_owner_never_cancels(self):
         self.c.clock.on_sleep = lambda: self.c.snapshot.update(owner='human')
         result = self.drive(max_seconds=4)

@@ -100,6 +100,20 @@ class DriverSuspendTests(unittest.TestCase):
         self.assertIn('exited before its driver started',read_json(self.folder/'publisher-resume-failed.json')['reason'])
         self.assertEqual(len(launched),1)
 
+    def test_a_launcher_still_alive_at_the_timeout_is_said_plainly_never_continue_blindly(self):
+        # Mac 6104448959: on the 20 s timeout the launcher may still start its driver; the receipt records it, and the
+        # sentence says to check the batch first instead of "press Continue".
+        from studio_driver_suspend import resume
+        self.suspended()
+        alive=[dict(ProcessId=501,ParentProcessId=1,ExecutablePath=r'C:\kit\goat.exe')]
+        with self.assertRaises(ValueError) as caught:
+            resume(self.c,'original',self.folder,launch=lambda argv:501,rows_fn=lambda:alive,clock=Clock())
+        self.assertEqual((caught.exception.code,caught.exception.fields['launcher_alive']),('PUBLISHER_RESUME_FAILED',True))
+        self.assertIn('It may still be starting: check the batch in GOAT first',str(caught.exception))
+        self.assertNotIn('It is paused, not lost',str(caught.exception))
+        failed=read_json(self.folder/'publisher-resume-failed.json')
+        self.assertEqual((failed['launcher_alive'],failed['launcher_pid']),(True,501))
+
     def test_a_resumed_publisher_is_identified_for_a_later_suspension(self):
         installation=str(self.root/'installation.json')
         python=dict(ProcessId=502,ParentProcessId=501,ExecutablePath=r'C:\kit\python\python.exe',CreatedUtc='t',

@@ -113,6 +113,23 @@ class RejectedMonitorTests(unittest.TestCase):
         process.close.assert_not_called();process.start.assert_not_called()
         self.assertFalse(list((self.c.root/'rejected-monitor-restarts').rglob('restart.json')),'nothing recorded as issued')
 
+    def test_a_full_disk_writing_the_restart_record_resumes_and_refuses_with_nothing_closed(self):
+        # Mac 6104448959: write_json is atomic, so a failed write of restart.json (full disk) leaves no record and nothing
+        # closed; the restart must not own the outcome yet: it resumes the publisher and refuses MONITOR_RESTART_REFUSED.
+        import studio_rejected_monitor
+        process,suspend,config,draft=self.launch_fixture()
+        real=studio_rejected_monitor.write_json
+        def full_disk(path,value):
+            if Path(path).name=='restart.json':raise OSError(28,'No space left on device',str(path))
+            return real(path,value)
+        with patch('studio_onboarding.verify_monitor_profile'),patch('studio_rejected_monitor.write_json',side_effect=full_disk),\
+                self.assertRaises(ValueError) as caught:
+            restart(self.c,'original',process=process,suspend_fn=suspend,resume_fn=self.resumed)
+        self.assertEqual(caught.exception.code,'MONITOR_RESTART_REFUSED');self.assertIn('No space left',str(caught.exception))
+        self.resumed.assert_called_once()
+        process.close.assert_not_called();process.start.assert_not_called()
+        self.assertFalse(list((self.c.root/'rejected-monitor-restarts').rglob('restart.json')))
+
     def test_a_failed_resume_is_the_answer_never_a_retry(self):
         from studio_refusal import Refusal
         process,suspend,config,draft=self.launch_fixture()

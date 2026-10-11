@@ -184,7 +184,10 @@ def resume(controller, job_id, folder, *, launch=None, rows_fn=None, clock=time)
                    and arguments(r.get('CommandLine') or '')[6:]==resume_arguments(job_id)]
             if child:break
             if not any(r['ProcessId']==pid for r in rows):raise ValueError('the relaunched publisher exited before its driver started')
-            if clock.monotonic()>=deadline:raise ValueError('the relaunched publisher\'s driver did not appear within 20 s')
+            if clock.monotonic()>=deadline:
+                # Its launcher is still alive and may yet start its driver: say so, never imply nothing is running.
+                base['launcher_alive']=True;base['launcher_pid']=pid
+                raise ValueError('the relaunched publisher\'s driver did not appear within 20 s')
             clock.sleep(.5)
         record=dict(base,status='resumed',new_pids=dict(launcher=pid,python=child[0]['ProcessId']),resumed_utc=clock.time())
         write_json(resumed_path,record)
@@ -192,9 +195,14 @@ def resume(controller, job_id, folder, *, launch=None, rows_fn=None, clock=time)
     except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as exc:
         reason=str(exc)[:300]
         write_json(failed_path,dict(base,status='resume_failed',reason=reason,failed_utc=clock.time()))
-        raise Refusal('GOAT stopped the research run to restart the monitor, then could not restart that run (%s). It is '
-                      'paused, not lost: press Continue on the batch in GOAT (run-batch --job-id %s --resume) to carry on '
-                      'from where it stopped.' % (reason,job_id),RESUME_FAILED,job_id=job_id,receipt=str(failed_path)) from exc
+        step=('It may still be starting: check the batch in GOAT first, and only if it is not running press Continue '
+              '(run-batch --job-id %s --resume); a second start on the same run is refused while the first one runs.'
+              if base.get('launcher_alive') else
+              'It is paused, not lost: press Continue on the batch in GOAT (run-batch --job-id %s --resume) to carry on '
+              'from where it stopped.') % job_id
+        raise Refusal('GOAT stopped the research run to restart the monitor, then could not confirm that run restarted (%s). %s'
+                      % (reason,step),RESUME_FAILED,job_id=job_id,receipt=str(failed_path),
+                      launcher_alive=bool(base.get('launcher_alive'))) from exc
 
 
 def suspend(controller, job, folder, *, clock=time):

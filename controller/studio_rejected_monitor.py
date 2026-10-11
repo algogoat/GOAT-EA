@@ -258,8 +258,10 @@ def restart(controller,job_id,*,process=None,suspend_fn=None,resume_fn=None,cloc
                         suspension_sha256=sha(stopped),created_utc=clock.time(),native_started=False,grant_created=False)
             from studio_driver_suspend import require_no_publishers
             require_no_publishers(controller)
-            issued=True                                   # from here the restart owns the outcome: never resume, never repeat
             write_json(record_path,record)
+            # Only once the record exists (write_json is atomic: a full disk leaves none) does the restart own the outcome:
+            # from the close on, never resume, never repeat (Mac 6104448959).
+            issued=True
             process.close(native['process'])
             deadline=clock.monotonic()+20
             while True:

@@ -3619,8 +3619,9 @@ int OnInit()
      // B44: a new live child's magic comes from its chart id, unique among this terminal's CID records
      // (GoatDeriveChildMagic, never 0). The tester keeps its per-run random magic (the export CSV name carries it).
      if(MAGIC1==0 && !MQLInfoInteger(MQL_TESTER)) MAGIC1 = GoatDeriveChildMagic(ChartID());
-     if(MAGIC1==0) MAGIC1 = MathRand()+9+ChartWindowsHandle(0);
-     if(MAGIC2==0) MAGIC2 = MathRand()+9+ChartWindowsHandle(0);
+     // B44 item 10: nothing is seeded from a window handle any more (ChartWindowsHandle(0) gave 0 under load, MT5 error
+     // 4102). This fallback is reached only in the tester (live always derives above); MAGIC2 was never read.
+     if(MAGIC1==0) MAGIC1 = MathRand()+9;
      if(GlobalVariableCheck(GoatPortfolioGVName("DashboardPolicyPaused")))
         DashboardPortfolioPaused=(GlobalVariableGet(GoatPortfolioGVName("DashboardPolicyPaused"))>0.5);
      string trade_mask_key=GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_POLICY_TRADE_MASK);

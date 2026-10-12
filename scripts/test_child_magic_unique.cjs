@@ -54,8 +54,8 @@ const code=
  +fn(CANDIDATE,'GoatChildMagicCandidate',['magic_chart','magic_n'],CANDIDATE)
  +fn(HELD,'GoatChildMagicHeld',['magic_value','magic_chart'],HELD)
  +fn(DERIVE,'GoatDeriveChildMagic',['magic_chart'],DERIVE);
-// OnInit's magic block, from the restore to the MAGIC2 line (the CID record write follows it unchanged).
-const BLOCK=region(main,'    long restored_magic=0;\n','     if(MAGIC2==0)');
+// OnInit's magic block, from the restore to the policy-pause read (the CID record write follows it unchanged).
+const BLOCK=region(main,'    long restored_magic=0;\n','     if(GlobalVariableCheck(GoatPortfolioGVName("DashboardPolicyPaused")))');
 
 // A modelled terminal: GlobalVariables in creation order (MT5 lists them by name; the scan order does not matter).
 const KEY=(header.match(/^#define\s+Key\s+"(\w+)"/m)||[])[1];assert.equal(KEY,'GOAT');
@@ -144,20 +144,22 @@ const nextId=()=>{seed=(seed*6364136223846793005n+1442695040888963407n)&((1n<<64
  const moved=terminal({chart:id,symbol:'USDJPY'});moved.record(4242,'EURUSD',id);
  assert.equal(moved.onInit(),moved.c.GoatDeriveChildMagic(id),'a record under another symbol is not a restore (unchanged GoatFindMagicByCid)');
  const tester=terminal({tester:true,chart:0n});
- assert.equal(tester.onInit(),27416+9,'tester: MathRand()+9+ChartWindowsHandle(0), as before');assert.deepEqual(tester.calls,['MathRand','ChartWindowsHandle']);
+ assert.equal(tester.onInit(),27416+9,'tester: MathRand()+9, its per-run random magic (B44 item 10: no window handle)');assert.deepEqual(tester.calls,['MathRand']);
  const restoredTester=terminal({tester:true,chart:id,symbol:'USDJPY'});restoredTester.record(31337,'USDJPY',id);assert.equal(restoredTester.onInit(),31337);
  ok();}
 
 // 6. Source pins: the derivation path reads no clock, window handle or random source; the block order is
-// restore, derive (live only), legacy fallback (tester only, since derive never returns 0), then MAGIC2.
+// restore, derive (live only), the tester fallback (tester only, since derive never returns 0); no window handle.
 {for(const [name,body] of [['GoatChildMagicCandidate',CANDIDATE],['GoatChildMagicHeld',HELD],['GoatDeriveChildMagic',DERIVE]])
   for(const banned of ['ChartWindowsHandle','GetTickCount','MathRand','MathSrand','TimeLocal','TimeCurrent','TimeGMT','GetMicrosecondCount','TerminalInfo'])
    assert.ok(!body.includes(banned),name+' must not read '+banned);
  const lines=BLOCK.split('\n').map(l=>l.trim()).filter(l=>l&&!l.startsWith('//'));
  assert.deepEqual(lines,['long restored_magic=0;','bool restored_magic_found=GoatFindMagicByCid(Symbol(),ChartID(),restored_magic);','if(restored_magic_found)',
-  'MAGIC1=(int)restored_magic;','if(MAGIC1==0 && !MQLInfoInteger(MQL_TESTER)) MAGIC1 = GoatDeriveChildMagic(ChartID());','if(MAGIC1==0) MAGIC1 = MathRand()+9+ChartWindowsHandle(0);']);
+  'MAGIC1=(int)restored_magic;','if(MAGIC1==0 && !MQLInfoInteger(MQL_TESTER)) MAGIC1 = GoatDeriveChildMagic(ChartID());','if(MAGIC1==0) MAGIC1 = MathRand()+9;']);
  assert.equal((main.match(/GoatDeriveChildMagic\(/g)||[]).length,2,'defined once, called once (OnInit)');
- assert.equal((main.replace(/\/\/.*$/gm,'').match(/MathRand\(\)\+9\+ChartWindowsHandle\(0\)/g)||[]).length,2,'only the tester MAGIC1 fallback and the unused MAGIC2 keep the random seed');
+ // B44 item 10: no ChartWindowsHandle read is left in the entrypoint, and the unused MAGIC2 is no longer seeded.
+ assert.equal((main.replace(/\/\/.*$/gm,'').match(/ChartWindowsHandle\s*\(|CHART_WINDOW_HANDLE/g)||[]).length,0,'no window-handle read in the entrypoint');
+ assert.ok(!/MAGIC2\s*=/.test(main.replace(/\/\/.*$/gm,'')),'MAGIC2 is never assigned');
  // MAGIC1 is an internal global, not an input: no SET changes. The input header is byte-identical to the
  // pinned controller contract (B43), so no input, default or enum changed.
  assert.match(header,/^int\s+MAGIC1=0,MAGIC2=0,LicenseKey=0;$/m);

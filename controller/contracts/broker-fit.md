@@ -47,7 +47,9 @@ BrokerFitResult = {
   riskWeighting: 'risk'|'equal',                         // additive
   margin: { required, equity, verified: true, level },   // additive: portfolio worst case (unknown margin is refused per member)
   serverOffset: { brokerMinutes, referenceMinutes, referenceSource, memberSources, assumed },   // additive
-  deployBasis: { schema: 'goat-broker-fit-deploy-v1', scale, referenceEquity, accountCurrency, rate }|null,  // additive
+  referenceIdentical: { applies, used, reason: 'REFERENCE_IDENTICAL_MARGIN'|null, conditions, liveEquity, equityTolerance },  // additive
+  deployBasis: { schema: 'goat-broker-fit-deploy-v1', scale, referenceEquity, accountCurrency, rate,
+                 referenceIdentical: { server, currency, leverage, startingBalance, reason }|null }|null,  // additive
   members: [{
     memberId, canonicalSymbol, brokerSymbol|null, period,
     status: 'fit'|'excluded',
@@ -66,7 +68,8 @@ BrokerFitResult = {
     pointConversion: { referencePoint, brokerPoint, factor, inputs }|null,                 // additive
     serverOffset: { sameServer, brokerMinutes, referenceMinutes, referenceSource, offsetNeutral, dependsOn }|null,  // additive
     costs: { swapLong, swapShort, referenceSwapLong, referenceSwapShort, commission: null, commissionSource }|null,
-    margin: { perLot, peakLots, required, basis }|null   // additive
+    margin: { perLot, peakLots, required, basis, unknownBasis? }|null,   // additive
+    marginReason: null|'REFERENCE_IDENTICAL_MARGIN'      // additive: the exemption, never silent
   }]
 }
 ```
@@ -148,6 +151,24 @@ risk can trade on this broker at any equity), `PORTFOLIO_NEEDS_LARGER_ACCOUNT` (
   - **Unknown = refused (fail closed), member level:** no margin per lot from the SDK (`margin_per_lot_unavailable`),
     no EA lot cap (`no_lot_cap`) or a RiskperSeq member without `reference.startLot` (`start_lot_unknown`) ->
     `MARGIN_UNKNOWN` ("GOAT cannot work out the most margin this set could need, so it is not offered."), at any equity.
+  - **Reference-identical margin exemption** (goatai#2350 6130033743: a follower of the reference never regresses).
+    A member whose margin is unknown passes the margin check, with the explicit reason `REFERENCE_IDENTICAL_MARGIN`
+    (`marginReason`, `margin.basis`, the unknown basis kept in `margin.unknownBasis`; never silently), only when ALL of
+    these hold:
+    - same server as `referenceAccount.server`;
+    - same account currency;
+    - same leverage as `referenceAccount.leverage`;
+    - the account's own (first-apply) equity within ±5% of `startingBalance`, judged on the live equity even when
+      `--equity` pins the plan;
+    - scale exactly 1.0;
+    - every member's deployed bytes unchanged (`setSha256Deployed == setSha256Reference`), portfolio-wide: one changed
+      member, e.g. by a point conversion, revokes the exemption for all.
+
+    Then the reference account's evidenced margin stands in. The result reports `referenceIdentical: { applies, used,
+    reason, conditions{sameServer, sameCurrency, sameLeverage, equityWithinTolerance, scaleOne, bytesUnchanged},
+    liveEquity, equityTolerance }`, `margin.exemption`, and `deployBasis.referenceIdentical` (`{ server, currency,
+    leverage, startingBalance, reason }`) for the deploy. An exempt member's minimum equity is the reference equity
+    itself. Anything else still refuses `MARGIN_UNKNOWN`.
   - A member whose own worst case exceeds equity -> `MARGIN_INSUFFICIENT`; the fit members' worst cases together
     exceeding equity -> portfolio refusal `MARGIN_INSUFFICIENT`.
 - **Currency:** account currency != reference currency -> rate from a quoted pair on the terminal (exact pair name
@@ -183,6 +204,7 @@ before (golden test: `test_scale_one_stages_byte_identical_files_golden`).
 brokerFit: {                                   // = the broker-fit result's deployBasis, plus members
   schema: 'goat-broker-fit-deploy-v1',
   scale: number, referenceEquity: '100000', accountCurrency: 'USD', rate: '1',     // exact decimal strings
+  referenceIdentical: null|{ server, currency, leverage, startingBalance, reason: 'REFERENCE_IDENTICAL_MARGIN' },
   members: [{ index, memberId, setSha256Reference, setSha256Deployed, edits,      // = each fit member's `deploy`, with
               rules: { volumeMin, volumeStep, volumeMax|null, contractRatio,      //   its index in the plan
                        referenceVolumeMin, startLot|null } }]
@@ -204,6 +226,11 @@ brokerFit: {                                   // = the broker-fit result's depl
   `FIT_STALE`: "The account changed since the check; run the fit again. Nothing was written or launched." (fields
   `stale: [{memberId, input, reviewed, live}]`, `liveEquity`, `liveCurrency`). The journal says
   `refused_before_stage`; the same plan can be run again once the fit is fresh. The exchange rate is the reviewed one.
+- **Reference-identical plans** (`brokerFit.referenceIdentical` not null) deploy the reference bytes at scale 1.0 by
+  design, so instead of the per-value comparison the re-check keeps the exemption only while every condition still
+  holds on the live account: same server, currency and leverage as `referenceIdentical`, live equity within ±5% of its
+  `startingBalance`, block `scale` 1.0, and every member's `edits` empty with `setSha256Deployed == setSha256Reference`.
+  Each failing condition is a `FIT_STALE` row `referenceIdentical.<condition>`.
 - The journal gains `broker_fit: { schema, scale, members: [{ memberId, setSha256Reference, setSha256Deployed, scale }] }`.
 - At scale 1.0 with no edits, deployed == reference, so every staged file is byte-identical to today's.
 
@@ -219,9 +246,13 @@ brokerFit: {                                   // = the broker-fit result's depl
    chart's own starting equity, so it does not follow account size by itself.
 4. **No tolerance for rounding up** (reviewer ruling 1). The FIT_STALE tolerance is one-sided for the same reason: a
    reviewed value above the live one is refused at once; only a reviewed value up to one step (cent) below is accepted.
-5. **RiskperSeq without `reference.startLot` is `MARGIN_UNKNOWN`** at every equity (rulings 1 and 2 together): its
-   start lot is unknown, so its worst-case margin is unknown, and unknown margin fails closed. Until the publisher adds
-   `startLot`, such members are never offered (Balanced35 is all RiskperSeq).
+5. **RiskperSeq without `reference.startLot` is `MARGIN_UNKNOWN`** (rulings 1 and 2 together): its start lot is
+   unknown, so its worst-case margin is unknown, and unknown margin fails closed, except under the reference-identical
+   margin exemption (ruling goatai#2350 6130033743), so a follower of the reference account never regresses. Balanced35
+   (all RiskperSeq) is therefore offered on a reference-identical account today and nowhere else until its publisher v2
+   adds `startLot`. **Balanced35 has backtest traces** (`backtestTraceSha256` in its manifest), so the publisher can
+   derive `startLot` from them (median opening lot of the first sequences). That is the publisher's work, not the
+   controller's.
 6. **Fixed money limits** (`MaxLoss*`, `MaxDaily*`, `Min/MaxLevelEquity`) are not scaled; non-zero off the reference
    equity -> `CONTRACT_MISMATCH` with its own sentence. Balanced35 has them all at 0.
 7. **New codes** the app must mirror: member `SPREAD_SAMPLE_UNAVAILABLE`, `POINT_SIZE_MISMATCH`,

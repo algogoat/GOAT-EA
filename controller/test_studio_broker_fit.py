@@ -260,8 +260,9 @@ class ScalingTests(unittest.TestCase):
                          dict(Risk=166.66, Lots_Max=20.0, Lots_Max_Cum=50.0, Lots_Input=0.05, startLot=0.99))
 
     def test_without_a_reference_start_lot_risk_per_sequence_is_margin_unknown(self):
-        # Ruling (goatai#2350 6129252646): unknown margin fails closed, at any equity.
-        for equity in (100000, 99000, 200000):
+        # Ruling (goatai#2350 6129252646): unknown margin fails closed at any equity other than the reference-identical
+        # exemption (ReferenceIdenticalTests): any scale but 1.0 refuses.
+        for equity in (99000, 200000):
             with self.subTest(equity=equity):
                 row = one(run([(member(KESTREL, ref=reference(startLot=None, startLotSource=None)), KESTREL)], equity=equity))
                 self.assertEqual((row['code'], row['margin']['basis']), (bf.MARGIN_UNKNOWN, 'start_lot_unknown'))
@@ -295,8 +296,11 @@ class MinEquityTests(unittest.TestCase):
     def test_risk_per_sequence_with_a_start_lot_is_offered_below_the_reference(self):
         result = run([(member(KESTREL), KESTREL)], equity=10000)
         self.assertEqual((result['minEquity'], result['offered']), (10000.0, True))
-        without = run([(member(KESTREL, ref=reference(startLot=None)), KESTREL)])
+        without = run([(member(KESTREL, ref=reference(startLot=None)), KESTREL)], equity=99000)
         self.assertEqual((without['offered'], without['refusal']['code'], without['minEquity']), (False, bf.PORTFOLIO_BROKER_UNFIT, None))
+        # On the reference-identical account the exemption offers it at the reference equity only.
+        at_reference = run([(member(KESTREL, ref=reference(startLot=None)), KESTREL)])
+        self.assertEqual((at_reference['offered'], at_reference['minEquity']), (True, 100000.0))
 
     def test_ninety_percent_of_risk_weight(self):
         rows = []
@@ -320,7 +324,8 @@ class CurrencyTests(unittest.TestCase):
         # Lots follow the reference-currency equity: 0.05 x 2.2 = 0.11. Risk is money in EUR, the same fraction of
         # equity: 500 x 200,000 / 100,000 = 1000.0 (not x2.2, which would over-risk by the exchange rate).
         self.assertEqual(one(result)['edits'], dict(Lots_Input='0.11', Risk='1000.0'))
-        self.assertEqual(result['deployBasis'], dict(schema=bf.DEPLOY_SCHEMA, scale=2.2, referenceEquity='100000', accountCurrency='EUR', rate='1.1'))
+        self.assertEqual(result['deployBasis'], dict(schema=bf.DEPLOY_SCHEMA, scale=2.2, referenceEquity='100000', accountCurrency='EUR',
+                                                     rate='1.1', referenceIdentical=None))
         self.assertEqual(one(run([(member(raw), raw)], account=dict(account, equity=100000.0), symbols=[symbol()]))['edits'], {})
 
     def test_a_jpy_account_uses_the_inverse_pair_at_the_ask(self):
@@ -440,11 +445,14 @@ class MarginTests(unittest.TestCase):
         self.assertEqual((result['offered'], result['refusal']['code'], result['margin']['required']), (False, bf.MARGIN_INSUFFICIENT, 120000.0))
 
     def test_unknown_margin_fails_closed(self):
-        row = one(run([(member(KESTREL), KESTREL)], margins={'EURUSD': None}))
+        row = one(run([(member(KESTREL), KESTREL)], margins={'EURUSD': None}, equity=99000))
         self.assertEqual((row['code'], row['margin']['basis'], row['message']),
                          (bf.MARGIN_UNKNOWN, 'margin_per_lot_unavailable', bf.MESSAGES[bf.MARGIN_UNKNOWN]))
         no_cap = kestrel_with(Lots_Max_Cum='0.0', Lots_Max='0.0')
-        self.assertEqual(one(run([(member(no_cap), no_cap)]))['margin']['basis'], 'no_lot_cap')
+        self.assertEqual(one(run([(member(no_cap), no_cap)], equity=99000))['margin']['basis'], 'no_lot_cap')
+        # On the reference-identical account the exemption stands in, with its reason and the unknown basis kept.
+        row = one(run([(member(KESTREL), KESTREL)], margins={'EURUSD': None}))
+        self.assertEqual((row['marginReason'], row['margin']['unknownBasis']), (bf.REFERENCE_IDENTICAL_MARGIN, 'margin_per_lot_unavailable'))
 
 
 class SetEncodingTests(unittest.TestCase):
@@ -526,6 +534,97 @@ class DeployRecordTests(unittest.TestCase):
         self.assertEqual({row['input'] for row in stale}, {'Risk'}, 'lots 0.0399 -> 0.03 is the same step; Risk moved')
         stale = bf.stale_members(block, [raw], SCHEMA, equity=100000.0, currency='USD')
         self.assertIn(dict(memberId='EURUSD.M1.kestrel', input='Lots_Input', reviewed=0.03, live=0.05), stale)
+
+
+NO_START = reference(startLot=None, startLotSource=None)
+FOUR_DIGIT = dict(digits=4, point=0.0001, trade_tick_size=0.0001, trade_tick_value=10.0)
+
+
+class ReferenceIdenticalTests(unittest.TestCase):
+    """goatai#2350 6130033743: a follower of the reference never regresses. Kestrel without reference.startLot has an
+    unknown margin; on a reference-identical account its margin check passes, with the reason recorded."""
+
+    def check(self, *, account=None, equity=None, members=None, **options):
+        return run(members or [(member(KESTREL, ref=NO_START), KESTREL)], account=account, equity=equity, **options)
+
+    def test_the_exemption_applies_with_its_reason_recorded(self):
+        result = self.check()
+        row = one(result)
+        self.assertEqual((row['status'], row['code'], row['marginReason']), ('fit', None, bf.REFERENCE_IDENTICAL_MARGIN))
+        self.assertEqual(row['margin'], dict(perLot=1000.0, peakLots=None, required=None, basis=bf.REFERENCE_IDENTICAL_MARGIN,
+                                             unknownBasis='start_lot_unknown'))
+        self.assertEqual(row['setSha256Deployed'], row['setSha256Reference'])
+        self.assertEqual(result['referenceIdentical'], dict(
+            applies=True, used=True, reason=bf.REFERENCE_IDENTICAL_MARGIN, liveEquity=100000.0, equityTolerance=0.05,
+            conditions=dict(sameServer=True, sameCurrency=True, sameLeverage=True, equityWithinTolerance=True, scaleOne=True,
+                            bytesUnchanged=True)))
+        self.assertEqual((result['margin']['exemption'], result['margin']['verified'], result['offered']), (bf.REFERENCE_IDENTICAL_MARGIN, True, True))
+        self.assertEqual(result['deployBasis']['referenceIdentical'], dict(server='Darwinex-Demo', currency='USD', leverage=200,
+                                                                          startingBalance='100000', reason=bf.REFERENCE_IDENTICAL_MARGIN))
+        # A member with a known margin is judged as usual and never carries the reason.
+        known = self.check(members=[(member(KESTREL), KESTREL)])
+        self.assertEqual((one(known)['marginReason'], one(known)['margin']['basis'], known['referenceIdentical']['used']), (None, 'ea_caps', False))
+        self.assertIsNone(known['deployBasis']['referenceIdentical'])
+
+    def test_a_leverage_mismatch_refuses(self):
+        result = self.check(account=dict(ACCOUNT, leverage=100))           # 1:100 against the 1:200 reference
+        self.assertEqual((one(result)['code'], one(result)['marginReason']), (bf.MARGIN_UNKNOWN, None))
+        self.assertEqual((result['referenceIdentical']['conditions']['sameLeverage'], result['referenceIdentical']['used']), (False, False))
+        self.assertIsNone(result['deployBasis']['referenceIdentical'])
+
+    def test_equity_outside_five_percent_refuses(self):
+        # The account's own equity is judged (the scale is pinned at 1.0 with --equity 100000).
+        for live, fits in ((106000.0, False), (94000.0, False), (105000.0, True), (95000.0, True)):
+            with self.subTest(live=live):
+                result = self.check(account=dict(ACCOUNT, equity=live), equity=100000)
+                self.assertEqual(one(result)['status'] == 'fit', fits)
+                self.assertEqual(result['referenceIdentical']['conditions']['equityWithinTolerance'], fits)
+                if not fits:
+                    self.assertEqual(one(result)['code'], bf.MARGIN_UNKNOWN)
+
+    def test_a_scale_other_than_one_refuses(self):
+        result = self.check(account=dict(ACCOUNT, equity=102000.0))         # within 5%, but scale 1.02
+        self.assertEqual((one(result)['code'], result['referenceIdentical']['conditions']['scaleOne']), (bf.MARGIN_UNKNOWN, False))
+        self.assertEqual(one(self.check(equity=100000.01))['code'], bf.MARGIN_UNKNOWN)
+
+    def test_other_server_or_currency_refuses(self):
+        other = self.check(account=dict(ACCOUNT, server='Other-Demo'))
+        self.assertEqual((one(other)['code'], other['referenceIdentical']['conditions']['sameServer']), (bf.MARGIN_UNKNOWN, False))
+
+    def test_a_changed_member_byte_refuses(self):
+        # The member itself converted (a 4-digit broker point): its bytes change, so no exemption.
+        neutral = kestrel_with(**dict(NEUTRAL, Grid_Size='10.0'))
+        row = one(self.check(members=[(member(neutral, ref=NO_START), neutral)], symbols=[symbol(**FOUR_DIGIT)], spread=0.8))
+        self.assertEqual((row['code'], row['margin']['basis']), (bf.MARGIN_UNKNOWN, 'start_lot_unknown'))
+        # Another member's point conversion revokes it for the whole portfolio.
+        converted = kestrel_with(**dict(NEUTRAL, Grid_Size='10.0', EA_Desc='B'))
+        members = [(member(KESTREL, ref=NO_START), KESTREL), (member(converted, member_id='b', canonical='GBPUSD'), converted)]
+        history = {'EURUSD': ticks(), 'GBPUSD': ticks((0.8,), point=0.0001)}
+        result = self.check(members=members, symbols=[symbol(), symbol('GBPUSD', **FOUR_DIGIT)], history=history)
+        first, second = result['members']
+        self.assertEqual((second['status'], second['edits']), ('fit', dict(Grid_Size='1.0')))
+        self.assertEqual((first['code'], first['marginReason'], first['margin']['basis']), (bf.MARGIN_UNKNOWN, None, 'start_lot_unknown'))
+        self.assertEqual((result['referenceIdentical']['conditions']['bytesUnchanged'], result['referenceIdentical']['used']), (False, False))
+
+    def exempt_block(self):
+        return plan_block(self.check())
+
+    def test_the_deploy_recheck_keeps_the_exemption_only_while_every_condition_holds(self):
+        block = self.exempt_block()
+        def stale(equity=100000.0, currency='USD', server='Darwinex-Demo', leverage=200, block=block):
+            return bf.stale_members(block, [KESTREL], SCHEMA, equity=equity, currency=currency, server=server, leverage=leverage)
+        self.assertEqual(stale(), [])
+        self.assertEqual(stale(equity=103000.0), [], 'within 5%: the reference bytes deploy at scale 1.0 by design')
+        self.assertEqual([row['input'] for row in stale(leverage=100)], ['referenceIdentical.sameLeverage'])
+        self.assertEqual([row['input'] for row in stale(equity=106000.0)], ['referenceIdentical.equityWithinTolerance'])
+        self.assertEqual([row['input'] for row in stale(server='Other-Demo')], ['referenceIdentical.sameServer'])
+        self.assertEqual(stale(currency='EUR')[0]['input'], 'account')
+        self.assertEqual([row['input'] for row in stale(block=dict(block, scale=0.5))], ['referenceIdentical.scaleOne'])
+        edited = dict(block, members=[dict(block['members'][0], edits=dict(Risk='250.0'))])
+        self.assertEqual([row['input'] for row in stale(block=edited)], ['referenceIdentical.bytesUnchanged'])
+        bf.deploy_entries(block, [object()])
+        with self.assertRaisesRegex(ValueError, 'Invalid broker-fit block'):
+            bf.deploy_entries(dict(block, referenceIdentical=dict(block['referenceIdentical'], reason='OTHER')), [object()])
 
 
 class FakeMT5:

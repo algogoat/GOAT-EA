@@ -24,17 +24,22 @@ def reference_member(index, symbol='EURUSD', risk='500.0'):
     return member(index, symbol, content=raw), raw
 
 
-def fit_block(raws, edits=None, scale=1.0):
+def fit_block(raws, edits=None, scale=1.0, identical=None):
     """The block the app assembles from the broker-fit result: deployBasis plus each fit member's deploy entry."""
     edits = edits or [{} for _ in raws]
-    return dict(schema=bf.DEPLOY_SCHEMA, scale=scale, referenceEquity='100000', accountCurrency='USD', rate='1', members=[
+    return dict(schema=bf.DEPLOY_SCHEMA, scale=scale, referenceEquity='100000', accountCurrency='USD', rate='1',
+                referenceIdentical=identical, members=[
         dict(index=i, memberId='m%d' % i, setSha256Reference=hashlib.sha256(raw).hexdigest(),
              setSha256Deployed=hashlib.sha256(bf.rewrite_set(raw, e)).hexdigest(), edits=e, rules=dict(RULES))
         for i, (raw, e) in enumerate(zip(raws, edits))])
 
 
-def live(controller, equity, currency='USD'):
-    return FakeMT5(controller, account=dict(equity=equity, currency=currency))
+def live(controller, equity, currency='USD', leverage=200):
+    return FakeMT5(controller, account=dict(equity=equity, currency=currency, leverage=leverage))
+
+
+# The fixture's demo server; a reference-identical plan names the reference account it follows.
+IDENTICAL = dict(server='Customer-Demo', currency='USD', leverage=200, startingBalance='100000', reason=bf.REFERENCE_IDENTICAL_MARGIN)
 
 
 class BrokerFitDeployTests(DeployFixture):
@@ -142,6 +147,35 @@ class BrokerFitDeployTests(DeployFixture):
         with self.assertRaises(Refusal) as caught:
             deploy.load(self.c, self.plan(members, brokerFit=fit_block(raws)), mt5=live(self.c, 99999.0), sleep=lambda s: None)
         self.assertEqual((caught.exception.code, caught.exception.fields['stale'][0]['input']), (bf.FIT_STALE, 'Risk'))
+
+    def test_a_reference_identical_plan_deploys_while_every_condition_holds(self):
+        # goatai#2350 6130033743: the reference bytes at scale 1.0 deploy on live equity within 5% of the reference.
+        members, raws = self.members()
+        block = fit_block(raws, identical=dict(IDENTICAL))
+        self.start_ea(pairing='none')
+        with self.relaunch():
+            result = deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 103000.0), sleep=lambda s: None)
+        self.assertEqual(result['phase'], 'ready')
+        where = deploy.paths(self.c, 'e' * 32)
+        self.assertEqual((where['sets'] / members[0]['fileName']).read_bytes(), raws[0], 'the reference bytes, unscaled')
+
+    def test_a_reference_identical_plan_is_stale_once_a_condition_fails(self):
+        members, raws = self.members()
+        where = deploy.paths(self.c, 'e' * 32)
+        cases = ((dict(equity=100000.0, leverage=100), 'referenceIdentical.sameLeverage'),
+                 (dict(equity=106000.0), 'referenceIdentical.equityWithinTolerance'),
+                 (dict(equity=94000.0), 'referenceIdentical.equityWithinTolerance'))
+        for account, failing in cases:
+            with self.subTest(account=account):
+                with self.assertRaises(Refusal) as caught:
+                    deploy.load(self.c, self.plan(members, brokerFit=fit_block(raws, identical=dict(IDENTICAL))),
+                                mt5=live(self.c, **account), sleep=lambda s: None)
+                self.assertEqual((caught.exception.code, [row['input'] for row in caught.exception.fields['stale']]), (bf.FIT_STALE, [failing]))
+                self.assertFalse(where['sets'].exists())
+        other = fit_block(raws, identical=dict(IDENTICAL, server='Darwinex-Demo'))
+        with self.assertRaises(Refusal) as caught:
+            deploy.load(self.c, self.plan(members, brokerFit=other, deploymentId='f' * 32), mt5=live(self.c, 100000.0), sleep=lambda s: None)
+        self.assertEqual([row['input'] for row in caught.exception.fields['stale']], ['referenceIdentical.sameServer'])
 
     def test_a_plan_without_broker_fit_keeps_todays_journal_shape(self):
         self.start_ea(pairing='none')

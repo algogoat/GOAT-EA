@@ -43,6 +43,9 @@ SERVER_OFFSET_MISMATCH = 'SERVER_OFFSET_MISMATCH'
 MARGIN_INSUFFICIENT = 'MARGIN_INSUFFICIENT'
 MARGIN_UNKNOWN = 'MARGIN_UNKNOWN'
 FIT_STALE = 'FIT_STALE'
+# Not a refusal: the explicit reason a member's unknown margin is accepted on a reference-identical account.
+REFERENCE_IDENTICAL_MARGIN = 'REFERENCE_IDENTICAL_MARGIN'
+REFERENCE_EQUITY_TOLERANCE = Decimal('0.05')
 ACCOUNT_CURRENCY_UNSUPPORTED = 'ACCOUNT_CURRENCY_UNSUPPORTED'
 NOT_DEMO_ACCOUNT = 'NOT_DEMO_ACCOUNT'
 PORTFOLIO_INVALID = 'PORTFOLIO_INVALID'
@@ -669,20 +672,52 @@ def build_result(manifest, sets, *, account, symbols, ticks, quotes, margins, sc
     converted = conversion(account.get('currency'), ref_currency, symbols)
     rate = converted[0] if converted else None
     scale = account_equity * rate / ref_equity if rate else None
+    conditions = reference_identical_conditions(ref_account, server=account.get('server'), currency=account.get('currency'),
+                                                leverage=account.get('leverage'), live_equity=account.get('equity'), scale=scale)
     clock = dict(same_server=account.get('server') == ref_account['server'],
-                 measured=measured_server_offset_minutes(quotes.values(), utc_now), utc_now=utc_now, account=ref_account)
+                 measured=measured_server_offset_minutes(quotes.values(), utc_now), utc_now=utc_now, account=ref_account,
+                 reference_identical=all(conditions.values()))
     by_name = {facts['name']: facts for facts in symbols}
     members, internals = [], []
     for member in manifest['members']:
         row, inner = _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, scale=scale, rate=rate,
                              account_equity=account_equity, clock=clock, ref_currency=ref_currency, reference_equity=ref_equity)
         members.append(row); internals.append(inner)
+    # Every member's deployed bytes must be the reference's for the exemption; one changed member revokes it for all.
+    conditions['bytesUnchanged'] = all(row['setSha256Deployed'] == row['setSha256Reference'] for row in members
+                                       if row['setSha256Deployed'] is not None)
+    if not conditions['bytesUnchanged']:
+        for index, (row, inner) in enumerate(zip(members, internals)):
+            if inner.get('exempt'):
+                basis = inner.pop('exempt')
+                row, inner = _excluded(row, MARGIN_UNKNOWN, message(MARGIN_UNKNOWN), inner)
+                row.update(marginReason=None, margin=dict(row['margin'], basis=basis))
+                row['margin'].pop('unknownBasis', None)
+                inner['min_equity'] = None
+                members[index], internals[index] = row, inner
+    used = any(inner.get('exempt') for inner in internals)
     result = _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate, converted, scale, members, internals,
                         clock)
+    result['referenceIdentical'] = dict(applies=all(conditions.values()), used=used, reason=REFERENCE_IDENTICAL_MARGIN if used else None,
+                                        conditions=conditions, liveEquity=num(dec(account.get('equity'))),
+                                        equityTolerance=num(REFERENCE_EQUITY_TOLERANCE))
     result['deployBasis'] = None if rate is None else dict(
         schema=DEPLOY_SCHEMA, scale=num(scale), referenceEquity=_text(ref_equity), accountCurrency=account.get('currency'),
-        rate=_text(rate))
+        rate=_text(rate), referenceIdentical=None if not used else dict(
+            server=ref_account['server'], currency=ref_currency, leverage=ref_account.get('leverage'),
+            startingBalance=_text(ref_equity), reason=REFERENCE_IDENTICAL_MARGIN))
     return result
+
+
+def reference_identical_conditions(ref_account, *, server, currency, leverage, live_equity, scale):
+    """The account-level conditions of the reference-identical margin exemption (goatai#2350 6130033743): the same
+    server, account currency and leverage as referenceAccount, the account's own (live, first-apply) equity within
+    REFERENCE_EQUITY_TOLERANCE of startingBalance, and a scale of exactly 1.0. bytesUnchanged is added by the caller."""
+    reference_equity, live = dec(ref_account.get('startingBalance')), dec(live_equity)
+    return dict(sameServer=server == ref_account.get('server'), sameCurrency=currency == ref_account.get('currency'),
+                sameLeverage=dec(leverage) is not None and dec(leverage) == dec(ref_account.get('leverage')),
+                equityWithinTolerance=bool(live and reference_equity and abs(live - reference_equity) <= reference_equity * REFERENCE_EQUITY_TOLERANCE),
+                scaleOne=scale is not None and scale == 1)
 
 
 def _excluded(row, code, text, inner=None):
@@ -700,7 +735,8 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
     row = dict(memberId=member['memberId'], canonicalSymbol=member['canonicalSymbol'], brokerSymbol=None,
                period=member['timeframe'], status='fit', code=None, message=None, spreadRatio=None, scaled=None,
                setSha256Reference=sha256(raw), setSha256Deployed=None, deployFileName=None, edits=None, deploy=None,
-               spread=None, pointConversion=None, serverOffset=None, costs=None, margin=None, startLotSource=None)
+               spread=None, pointConversion=None, serverOffset=None, costs=None, margin=None, marginReason=None,
+               startLotSource=None)
     inner = dict(weight=weight, min_equity=None, margin=None)
     if rate is None:
         return _excluded(row, ACCOUNT_CURRENCY_UNSUPPORTED, message(ACCOUNT_CURRENCY_UNSUPPORTED), inner)
@@ -772,28 +808,46 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
         per_lot = None
     unknown = ('margin_per_lot_unavailable' if per_lot is None else 'no_lot_cap' if peak_lots(values, defaults, Decimal(1)) is None
                else 'start_lot_unknown' if mode == MODE_LOTS['RiskperSeq'] and reference['startLot'] is None else None)
+    exempt = False
     if unknown:
         row['margin'] = dict(perLot=num(per_lot), peakLots=None, required=None, basis=unknown)
-        return _excluded(row, MARGIN_UNKNOWN, message(MARGIN_UNKNOWN), inner)
+        # Ruling goatai#2350 6130033743: a follower of the reference never regresses. On a reference-identical account
+        # (same server, currency and leverage, equity within 5%, scale exactly 1.0) a member whose bytes stay the
+        # reference's runs exactly as the evidence did, so the reference account's evidenced margin stands in. The
+        # bytes-unchanged condition is checked here for this member and for the whole portfolio in build_result.
+        if not clock['reference_identical']:
+            return _excluded(row, MARGIN_UNKNOWN, message(MARGIN_UNKNOWN), inner)
+        exempt = True
     deploy_rules = dict(volume_min=broker['volume_min'], volume_step=broker['volume_step'], volume_max=broker['volume_max'],
                         contract_ratio=contract_ratio, reference_volume_min=reference['volumeMin'], start_lot=reference['startLot'])
     def at(trial_equity):
         return rules_at(values, defaults, deploy_rules, equity=trial_equity, reference_equity=reference_equity, rate=rate)
     fixed_money = any((_number(values, defaults, name) or 0) != 0 for name in FIXED_MONEY_INPUTS)
-    inner['min_equity'] = None if fixed_money else min_equity(lambda trial: at(trial)['code'] is None)
+    if not exempt:
+        inner['min_equity'] = None if fixed_money else min_equity(lambda trial: at(trial)['code'] is None)
     outcome = at(account_equity)
     if outcome['code']:
         return _excluded(row, outcome['code'], outcome['message'], inner)
     edits = dict(outcome['edits']); edits.update(converted)
+    if exempt:
+        if edits:
+            return _excluded(row, MARGIN_UNKNOWN, message(MARGIN_UNKNOWN), inner)
+        # An exempt member is tradable only at scale 1.0, i.e. at the reference equity itself.
+        inner['min_equity'] = None if fixed_money else reference_equity
     deployed = rewrite_set(raw, edits)
     row.update(scaled={key: num(value) for key, value in outcome['scaled'].items()}, edits=edits, setSha256Deployed=sha256(deployed))
-    # Margin at the scaled caps and this account's leverage (the SDK's own calculation).
-    lots = peak_lots(values, defaults, outcome['start_lots'])
-    required = per_lot * lots
-    row['margin'] = dict(perLot=num(per_lot), peakLots=num(lots), required=num(required), basis='ea_caps')
-    inner['margin'] = required
-    if required > account_equity:
-        return _excluded(row, MARGIN_INSUFFICIENT, message(MARGIN_INSUFFICIENT), inner)
+    if exempt:
+        row['margin'] = dict(row['margin'], basis=REFERENCE_IDENTICAL_MARGIN, unknownBasis=unknown)
+        row['marginReason'] = REFERENCE_IDENTICAL_MARGIN
+        inner['exempt'] = unknown
+    else:
+        # Margin at the scaled caps and this account's leverage (the SDK's own calculation).
+        lots = peak_lots(values, defaults, outcome['start_lots'])
+        required = per_lot * lots
+        row['margin'] = dict(perLot=num(per_lot), peakLots=num(lots), required=num(required), basis='ea_caps')
+        inner['margin'] = required
+        if required > account_equity:
+            return _excluded(row, MARGIN_INSUFFICIENT, message(MARGIN_INSUFFICIENT), inner)
     # What the deploy plan's brokerFit block carries for this member (it re-checks the live equity with these rules).
     row['deploy'] = dict(memberId=member['memberId'], setSha256Reference=row['setSha256Reference'],
                          setSha256Deployed=row['setSha256Deployed'], edits=edits,
@@ -860,9 +914,11 @@ def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate
             # The manifest's own minEquity (reference currency) is a floor the publisher set; the stricter one wins.
             floor = dec(manifest.get('minEquity'))
             min_equity_value = max(needed, (floor / rate).quantize(CENT, rounding=ROUND_CEILING)) if floor is not None else needed
-    margin_known = [inner['margin'] for inner, row in zip(internals, members) if row['status'] == 'fit']
-    margin_total = sum(value for value in margin_known if value is not None)
-    margin_verified = all(value is not None for value in margin_known)
+    fit_inner = [inner for inner, row in zip(internals, members) if row['status'] == 'fit']
+    margin_total = sum(inner['margin'] for inner in fit_inner if inner['margin'] is not None)
+    # Verified: computed for every fit member, or (never silently) stood in for by the reference account's evidence.
+    margin_verified = all(inner['margin'] is not None or inner.get('exempt') for inner in fit_inner)
+    margin_exemption = REFERENCE_IDENTICAL_MARGIN if any(inner.get('exempt') for inner in fit_inner) else None
     if rate is None:
         refusal = dict(code=ACCOUNT_CURRENCY_UNSUPPORTED, message=message(ACCOUNT_CURRENCY_UNSUPPORTED))
     elif min_equity_value is None:
@@ -885,7 +941,8 @@ def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate
         minEquity=num(min_equity_value), manifestMinEquity=num(dec(manifest.get('minEquity'))),
         offered=refusal is None, refusal=refusal,
         tradableRiskShare=num(share.quantize(Decimal('0.0001'))), riskWeighting=weighting,
-        margin=dict(required=num(margin_total), equity=num(account_equity), verified=margin_verified, level='member_and_portfolio'),
+        margin=dict(required=num(margin_total), equity=num(account_equity), verified=margin_verified, level='member_and_portfolio',
+                    exemption=margin_exemption),
         # referenceSource 'server_name_assumption' says the manifest gave no serverGmtOffset and GOAT assumed the
         # reference server's clock from its name; memberSources lists what each checked member used.
         serverOffset=dict(brokerMinutes=clock['measured'], referenceMinutes=expected, referenceSource=source,
@@ -895,7 +952,8 @@ def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate
 
 # ------------------------------------------------------------------ deploy hook (studio_demo_deploy)
 
-DEPLOY_BLOCK_KEYS = frozenset(('schema', 'scale', 'referenceEquity', 'accountCurrency', 'rate', 'members'))
+DEPLOY_BLOCK_KEYS = frozenset(('schema', 'scale', 'referenceEquity', 'accountCurrency', 'rate', 'referenceIdentical', 'members'))
+REFERENCE_IDENTICAL_KEYS = frozenset(('server', 'currency', 'leverage', 'startingBalance', 'reason'))
 DEPLOY_MEMBER_KEYS = frozenset(('index', 'memberId', 'setSha256Reference', 'setSha256Deployed', 'edits', 'rules'))
 
 
@@ -919,6 +977,14 @@ def deploy_entries(block, members):
             or not isinstance(block['accountCurrency'], str) or not CURRENCY.fullmatch(block['accountCurrency'])):
         raise ValueError('Invalid broker-fit block in the demo deploy plan')
     _exact(block['referenceEquity']); _exact(block['rate'])
+    identical = block['referenceIdentical']
+    if identical is not None and (
+            type(identical) is not dict or set(identical) != REFERENCE_IDENTICAL_KEYS or identical['reason'] != REFERENCE_IDENTICAL_MARGIN
+            or not isinstance(identical['server'], str) or not isinstance(identical['currency'], str)
+            or not CURRENCY.fullmatch(identical['currency']) or type(identical['leverage']) is not int or identical['leverage'] < 1):
+        raise ValueError('Invalid broker-fit block in the demo deploy plan')
+    if identical is not None:
+        _exact(identical['startingBalance'])
     entries = block['members']
     if type(entries) is not list or len(entries) != len(members):
         raise ValueError('The broker-fit block must name every deployed member, and only them')
@@ -950,14 +1016,30 @@ def deploy_record(block):
                               setSha256Deployed=e['setSha256Deployed'], scale=block['scale']) for e in block['members']])
 
 
-def stale_members(block, references, schema, *, equity, currency):
+def stale_members(block, references, schema, *, equity, currency, server=None, leverage=None):
     """The deploy-time re-check. With the live equity (account currency), every member's Risk and Lots_Input are
     recomputed by the same rules as the review. A member is stale when the account currency changed, when a rule now
     excludes it, or when a reviewed value is ABOVE the live one at all (that would be rounding up) or more than one
-    volume step (one cent for Risk) BELOW it. Returns [dict(memberId, input, reviewed, live)]; empty = fresh."""
+    volume step (one cent for Risk) BELOW it. Returns [dict(memberId, input, reviewed, live)]; empty = fresh.
+
+    A plan reviewed under the reference-identical margin exemption (block referenceIdentical) deploys the reference
+    bytes at scale 1.0 by design, so instead it keeps the exemption only while every condition still holds on the live
+    account: same server, currency and leverage as the reference, live equity within REFERENCE_EQUITY_TOLERANCE of
+    startingBalance, scale 1.0 and every member's bytes the reference's. Any failing condition is stale."""
     live_equity = dec(equity)
     if currency != block['accountCurrency'] or live_equity is None or live_equity <= 0:
         return [dict(memberId=None, input='account', reviewed=block['accountCurrency'], live=currency)]
+    identical = block.get('referenceIdentical')
+    if identical is not None:
+        conditions = reference_identical_conditions(
+            dict(server=identical['server'], currency=identical['currency'], leverage=identical['leverage'],
+                 startingBalance=_exact(identical['startingBalance'])),
+            server=server, currency=currency, leverage=leverage, live_equity=live_equity, scale=dec(block['scale']))
+        conditions['bytesUnchanged'] = all(not e['edits'] and e['setSha256Deployed'] == e['setSha256Reference'] for e in block['members'])
+        live = dict(sameServer=server, sameCurrency=currency, sameLeverage=leverage, equityWithinTolerance=num(live_equity),
+                    scaleOne=block['scale'], bytesUnchanged=None)
+        return [dict(memberId=None, input='referenceIdentical.' + name, reviewed=True, live=live[name])
+                for name, holds in conditions.items() if not holds]
     defaults = schema_defaults(schema)
     reference_equity, rate = _exact(block['referenceEquity']), _exact(block['rate'])
     stale = []
@@ -983,7 +1065,8 @@ def check_live(plan, schema, proof):
     import base64
     block = plan['brokerFit']
     references = [base64.b64decode(member['contentBase64'], validate=True) for member in plan['members']]
-    stale = stale_members(block, references, schema, equity=proof.get('equity'), currency=proof.get('currency'))
+    stale = stale_members(block, references, schema, equity=proof.get('equity'), currency=proof.get('currency'),
+                          server=proof.get('server'), leverage=proof.get('leverage'))
     if stale:
         raise Refusal(FIT_STALE_MESSAGE + ' Nothing was written or launched.', FIT_STALE, stale=stale[:20],
                       liveEquity=proof.get('equity'), liveCurrency=proof.get('currency'))

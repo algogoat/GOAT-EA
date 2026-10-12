@@ -23,7 +23,7 @@ from studio_seed_slot import guard_active_seed
 from studio_trial_journal import journal
 import studio_tester_report as tr
 from test_studio_heldout import NOW_AT, declaration, write_registry
-from test_studio_tester_report import fixture_text, schema_for
+from test_studio_tester_report import fixture_text, schema_for, with_ea_init_enums
 
 NOW = datetime(2026, 10, 3, 18, 0, tzinfo=timezone.utc)          # AUTO evidence end: Friday 2026-10-02
 REAL_UTC = studio_evidence_end._utc
@@ -55,7 +55,7 @@ class HoldupTests(unittest.TestCase):
         schema = schema_for(self.values)
         schema['inputs']['Mode_Bias'] = dict(type='int', optimizable=True, enum_choices=dict(Bias_Disabled=1, Bias_Opens=0, Bias_Display=2))
         schema['inputs']['Mode_Lots'] = dict(type='int', optimizable=True, enum_choices=dict(Fixed=0, Balance=1, RiskperSeq=2))
-        self.c.schema = schema
+        self.c.schema = with_ea_init_enums(schema)
         self.c.policy = dict(header_sha256='a' * 64, main_sha256='b' * 64, coverage='indicator_mode_gates_only', rules=[])
         self.owner = dict(owner='agent', generation=1, queue=[])
         self.c.state = lambda: copy.deepcopy(self.owner)

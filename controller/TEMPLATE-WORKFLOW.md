@@ -99,6 +99,26 @@ sequence trades; use fixed lots or raise Max_Seq_Trades. Single-trade risk sizin
 isn't available yet. We'll say so in the release notes when it ships." With fewer than 2 trades the EA's planned loss path
 is empty, so its lot solver climbs to the broker's maximum volume.
 
+**The EA's own init refusals, for every strategy (`EA_INIT_REFUSED`).** The same
+shared validator mirrors every `OnInit` refusal of the EA that depends only on input
+values (`controller/studio_ea_init_rules.py`, `EA_INIT_RULES`, each with its
+`GOAT V1.49.mq5` line and the EA's own alert text): for example Smart Rescue
+(`Mode_Bias_Exit=BiasExit_SmartRescue`) without `Mode_Lots=RiskperSeq` and `Risk>0`,
+`Risk<10` with risk sizing, MLPS hard close or Smart Peak, Smart Peak percentages
+outside 0-100, RRR on with `RRR<=0` or an inconsistent SL/TP or SL/LP pair,
+`|Grid_Size|<0.5`, LP and TP both disabled, malformed `Active_Time_*` sessions and
+inconsistent export dates in `EA_Desc @{mode=EXPORT,...}`. It is checked over every
+value MT5 can run: the current value, every value of an active ladder and the first
+field of a dormant `N` tuple. **Any failing combination refuses**, for fixed SETs
+and optimization ranges alike, because an init-failing pass produces nothing and an
+exported or template SET must never fail init. The message names the rule, the
+first failing combination and quotes the EA's alert; fix the SET (narrow the
+range), never the rule. More than 10,000 combinations for one rule is refused as
+uncheckable; narrow the named ladders. A GOAT schema that lost an input or enum label
+a rule reads is refused (`EA_INIT_SCHEMA_UNRECOGNISED`). Refusals that depend on the
+symbol, account, files or run context (tester vs live) are listed in `NOT_PORTED`
+with the reason, and a test keeps both tables complete against the EA source.
+
 ## Build a documented variant
 
 Clone a real compatible SET (or a starter from `starter-set`); never hand-author a

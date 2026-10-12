@@ -2061,6 +2061,11 @@ class DemoAgent:
                             attempt_id=record.get('attempt_id'),
                             native_running_unverified=True)
             if child.poll() is not None:
+                # A refusal this nonce's driver recorded before any journal (nothing started) comes back exactly as the
+                # direct path returns it: the sentence, refusal_code and fields (GOAT-EA#223, goatai#2488).
+                refused = self._refused_start(worker_path, nonce)
+                if refused is not None:
+                    raise refused
                 raise ValueError('Detached driver exited before a journal was recorded; inspect ' + str(log_path))
             time.sleep(.2)
         return dict(status='driver_starting', worker=worker,
@@ -2088,6 +2093,42 @@ class DemoAgent:
         if record.get('nonce') == nonce and record.get('status') in self.UNSTARTED_WORKER:
             record.update(status='failed', error=str(error)[:2000])
             write_json(worker_path, record)
+
+    def _record_refused_start(self, worker_path, nonce, journal, exc):
+        """A detached driver refused before its journal keeps the refusal on its own worker record.
+
+        Only a Refusal (it has a refusal_code) and only while no journal exists: the driver writes its journal before
+        any dispatch, so nothing was started and MT5 was not touched. The caller's wait and batch-driver-status read
+        it back (_refused_start). Never raises: the refusal itself still reaches the log and the exit code."""
+        if not isinstance(exc, Refusal) or journal.is_file():
+            return
+        try:
+            record = read_json(worker_path)
+            if record.get('nonce') != nonce:
+                return
+            record.update(status='refused', refusal_code=exc.code, refusal_fields=dict(exc.fields), error=str(exc))
+            write_json(worker_path, record)
+            self._append('studio_run_batch', 'refused', batch_id=record.get('batch_id'), nonce=nonce, refusal_code=exc.code)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _refused_start(worker_path, nonce=None):
+        """The Refusal a detached driver recorded before any journal (_record_refused_start), or None.
+
+        With ``nonce`` only that launch's record counts, so a stale record of another launch is ignored."""
+        try:
+            record = read_json(worker_path)
+        except (OSError, ValueError):
+            return None
+        code, fields, sentence = record.get('refusal_code'), record.get('refusal_fields'), record.get('error')
+        if (record.get('status') != 'refused' or (nonce is not None and record.get('nonce') != nonce)
+                or not isinstance(code, str) or not re.fullmatch(r'[A-Z0-9_:]{1,96}', code)
+                or not isinstance(fields, dict) or not isinstance(sentence, str) or not sentence):
+            return None
+        refused = Refusal(sentence, code)
+        refused.fields = dict(fields)
+        return refused
 
     def _drive_batch(self, batch_id, nonce, max_seconds, pause_seconds=None):
         from studio_batch_driver import run
@@ -2118,9 +2159,14 @@ class DemoAgent:
             write_json(worker_path, worker)
             self._append('studio_run_batch', 'supervising', batch_id=batch_id,
                          resume=resume, broker=broker, nonce=nonce, pause_seconds=pause_seconds)
-            result = (run(controller, batch_id, resume=True, pause_seconds=pause_seconds) if resume else
-                      run(controller, batch_id, max_seconds=max_seconds,
-                          min_free_bytes=MIN_FREE_BYTES))
+            try:
+                result = (run(controller, batch_id, resume=True, pause_seconds=pause_seconds) if resume else
+                          run(controller, batch_id, max_seconds=max_seconds,
+                              min_free_bytes=MIN_FREE_BYTES))
+            except Refusal as exc:
+                # E.g. PACKAGE_PREDATES_RESEARCH_PROFILE, raised before the journal: the caller returns its code.
+                self._record_refused_start(worker_path, nonce, self.root / 'batch-drivers' / (batch_id + '.json'), exc)
+                raise
             worker.update(status='returned', result_status=result['status'])
             write_json(worker_path, worker)
             self._append('studio_run_batch', 'returned', batch_id=batch_id,
@@ -2167,8 +2213,12 @@ class DemoAgent:
     def batch_driver_status(self, batch_id):
         from studio_batch_driver import status
         with self._batch_read_scope('batch-driver-status', batch_id) as (controller, broker, reason):
+            # A start refused before its journal has no driver record: driver is null and the worker record carries
+            # status refused, refusal_code, refusal_fields and the sentence (error).
+            refused = (not (self.root / 'batch-drivers' / (batch_id + '.json')).is_file()
+                       and self._refused_start(self.state_root / 'workers' / (batch_id + '.json')) is not None)
             return dict(broker=broker, **({'broker_reason': reason} if reason else {}),
-                        driver=status(controller, batch_id), worker=self._batch_worker(batch_id))
+                        driver=None if refused else status(controller, batch_id), worker=self._batch_worker(batch_id))
 
     def batch_status(self, batch_id):
         from studio_batch import batch_status

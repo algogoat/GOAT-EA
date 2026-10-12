@@ -36,7 +36,7 @@ class StartProtocolCandidateTests(unittest.TestCase):
         # Only the entrypoint (build ID and marker), the dashboard, the setup control and the child audit differ from B41.
         self.assertEqual(sorted(name for name in identity['sources'] if identity['sources'][name] != b41['sources'].get(name)),
                          ['Dashboard.mqh', 'GOAT V1.49.mq5', 'GOATPortfolioChildAudit.mqh', 'GOATPortfolioSetupControl.mqh'])
-        self.assertIn('"Sequence_Export_Enabled","Sequence_Export_Id","Sequence_Export_Start","Sequence_Export_End","Sequence_Export_Model","GOAT_FitnessRunNonce"',
+        self.assertIn('"Sequence_Export_Enabled","Sequence_Export_Id","Sequence_Export_Start","Sequence_Export_End","Sequence_Export_Model","GOAT_FitnessRunNonce","BlindExport"',
                       (ROOT / 'GOATPortfolioChildAudit.mqh').read_text(encoding='utf-8-sig'))
         self.assertNotIn('ChartApplyTemplate', (ROOT / 'Dashboard.mqh').read_text(encoding='utf-8-sig'))
         # B41 is B40 plus the recorded-bias live gate (tester == live at every Bias_threshold,

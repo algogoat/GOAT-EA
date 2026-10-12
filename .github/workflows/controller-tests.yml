@@ -153,6 +153,8 @@ jobs:
         run: node scripts/test_child_snapshot_stream.cjs
       - name: B44 AI gate log line, Print only, trading unchanged (goatai#2350)
         run: node scripts/test_ai_gate_log.cjs
+      - name: B44 BlindExport ranks exports on fit+FWD, blind=0 unchanged (goatai#2350)
+        run: node scripts/test_blind_export.cjs
       - name: EA-MAILBOX-SHARE-01 mailbox reads are FILE_SHARE_READ (B44 item 11, goatai#2350 6127147178)
         run: |
           python scripts/test_lint_ea_mailbox_share.py

@@ -36,4 +36,26 @@ mutations, `test_portfolio_child_audit.cjs`, and `controller/test_studio_trace_m
 **Build**
 
 - `GOAT_BUILD_ID` is `V1.49-BETA17-44`, marker `B44`.
-- Compile pending.
+- Compiled once from `081ed79d` with MetaEditor 5.0.0.6230 (sha256 `cf2750bd…`, the same compiler as B39 to B43):
+  0 errors, 0 warnings (`Result: 0 errors, 0 warnings, 36765 ms elapsed`). The compiler was a copy outside every
+  terminal folder, run `/portable` at Idle priority. MetaEditor's process exit code was 1 with a clean `Result:` line,
+  as in the B40, B41 and B43 compiles; the `Result:` line and the output are the success criteria. The output's
+  timestamp (15:48:12Z) is after the compile start (15:47:35Z). The stage was a scratch copy outside every terminal
+  folder, moved off afterwards. Its 307 standard includes and the `MACD - GOAT 2.ex5` resource are copied from the B43
+  compile root and hash-equal to it, file by file (308 files, 0 mismatches). No terminal's runtime output was touched
+  (`runtime_output_overwritten: false`).
+- `GOAT V1.49.ex5`: sha256 `7a91ee972c0957dc4a0251a4d356440bb693498f00353c046c3b0b09a0bf2018`, 2,455,968 bytes.
+- Entrypoint `GOAT V1.49.mq5`: sha256 `3d5d69cc…`, pinned in `controller/contracts/v149/dependencies.json`.
+- Pin check at `081ed79d`: the 41 `.mq5`/`.mqh` files in the entrypoint's include closure are exactly the 41 sources
+  in `identity.json`, and each matches the tree and the staged copy. The input header is still `1408e1ee…`.
+- `externals.json`: no problems, the same per-name hashes and `consumed_sha256` (`ced68559…`) as B43's; bound to the
+  receipt (`externals_manifest_digest` `5b1bea5c…`).
+- The first compile (`b44-20261012T154547Z`) failed with 1 error (`EA_Name_generated`, a local of OnInit, used in the
+  new `GoatPanelCreate`); fixed in `f00dfcd`. That stage was reused for a 0/0 dry run of the fix and is withdrawn;
+  neither binary is carried here. MetaEditor output is not byte-reproducible across stages, so admit only this binary.
+- `controller/studio_installed_build.py` `PINNED_BUILDS` names this binary `V1.49-BETA17-44` (identification only).
+
+**Not done.** Not installed, no native qualification. The root `GOAT V1.49.ex5` is unchanged.
+
+**Still owed:** Claude-Mac's review of this binary, pin and no-drift check; a new admission row for
+`V1.49-BETA17-44`; the item 9 native check above.

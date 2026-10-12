@@ -1054,11 +1054,11 @@ class FakeTerminalProcess:
     """The process lister: the selected terminal64.exe identity, or None when it is not running."""
 
     def __init__(self, running=True):
-        self.running, self.inspected = running, 0
+        self.running, self.inspected, self.pid = running, 0, 77
 
     def inspect(self):
         self.inspected += 1
-        return dict(pid=77, executable='terminal64.exe', created_utc='2026-10-13T00:00:00+00:00') if self.running else None
+        return dict(pid=self.pid, executable='terminal64.exe', created_utc='2026-10-13T00:00:%02d+00:00' % (self.pid % 60)) if self.running else None
 
 
 class ReadBrokerTests(unittest.TestCase):
@@ -1136,6 +1136,35 @@ class ReadBrokerTests(unittest.TestCase):
                 bf.read_broker(self.c, self.session, manifest([member(KESTREL)]), mt5=mt5, clock=self.clock, sleep=self.sleep)
         lister.assert_called_once_with(self.c)
         self.assertEqual(mt5.calls, [])
+
+    def test_a_terminal_started_by_initialize_is_dropped_and_refused(self):
+        # Review 6131884216 item C: MT5 was running at the check (pid 77) but exited before initialize(), which then
+        # started a new terminal (pid 78). The re-scan of the exact executable sees another process: shutdown() and
+        # refuse MT5_STARTED_BY_CHECK; nothing is read from it.
+        process = self.process
+        class StartsOne(FakeMT5):
+            def initialize(self, path, timeout=0):
+                self.calls.append('initialize')
+                process.pid = 78
+                return True
+        mt5 = StartsOne(self.c, clock=self.clock)
+        with self.assertRaises(Refusal) as caught:
+            self.read(mt5)
+        self.assertEqual((caught.exception.code, str(caught.exception)),
+                         ('MT5_STARTED_BY_CHECK', 'GOAT started MT5 by accident; close it and check again.'))
+        self.assertEqual((caught.exception.fields['pidBefore'], caught.exception.fields['pidAfter']), (77, 78))
+        self.assertEqual(mt5.calls, ['initialize', 'shutdown'], 'the link is dropped, nothing is read')
+        # A failed initialize() that still started one is refused the same way; the same process attaches as before.
+        process.pid = 77
+        class FailsButStarts(StartsOne):
+            def initialize(self, path, timeout=0):
+                super().initialize(path, timeout)
+                return False
+        with self.assertRaises(Refusal) as caught:
+            self.read(FailsButStarts(self.c, clock=self.clock))
+        self.assertEqual(caught.exception.code, bf.MT5_STARTED_BY_CHECK)
+        process.pid = 77
+        self.assertEqual(self.read(FakeMT5(self.c, clock=self.clock))[0]['login'], '123456')
 
     def test_a_market_without_new_ticks_leaves_the_clock_unknown(self):
         # Review 6130418265 item 8 at the read: the last tick is an hour old and never changes. No arrival within the

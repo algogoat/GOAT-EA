@@ -53,6 +53,7 @@ MONEY_VALUE_UNREADABLE = 'MONEY_VALUE_UNREADABLE'
 EA_INIT_REFUSED = 'EA_INIT_REFUSED'
 FIT_STALE = 'FIT_STALE'
 MT5_NOT_RUNNING = 'MT5_NOT_RUNNING'
+MT5_STARTED_BY_CHECK = 'MT5_STARTED_BY_CHECK'
 # Not a refusal: the explicit reason a member's unknown margin is accepted on a reference-identical account.
 REFERENCE_IDENTICAL_MARGIN = 'REFERENCE_IDENTICAL_MARGIN'
 # One-sided (review 6130418265 item 2): startingBalance <= live equity <= startingBalance x (1 + this).
@@ -85,6 +86,7 @@ MESSAGES = {
 }
 PORTFOLIO_MARGIN_MESSAGE = "Together these sets could use more than half of this account's equity as margin."
 MT5_NOT_RUNNING_MESSAGE = 'Start MT5 and sign in to your demo account, then check again.'
+MT5_STARTED_BY_CHECK_MESSAGE = 'GOAT started MT5 by accident; close it and check again.'
 FIT_STALE_MESSAGE = 'The account changed since the check; run the fit again.'
 MISSING_REFERENCE_MESSAGE = "This set's reference broker details are missing, so GOAT cannot check it on this account."
 FIXED_MONEY_MESSAGE = "This set uses a fixed money limit ({name}) that GOAT does not scale."
@@ -1692,9 +1694,19 @@ def read_broker(controller, session, manifest, *, mt5=None, clock=None, process=
     with terminal_lease(controller.root, purpose='broker-fit', busy_code='BROKER_READ_DEFERRED', busy_message=BUSY_READ,
                         broker_reason='terminal_busy'):
         # Attach only: the exact selected terminal64.exe must already be running (accepted with review 6130418265).
-        if process.inspect() is None:
+        before = process.inspect()
+        if before is None:
             raise Refusal(MT5_NOT_RUNNING_MESSAGE, MT5_NOT_RUNNING)
-        if not mt5.initialize(controller.install['terminal_executable'], timeout=5000):
+        attached = mt5.initialize(controller.install['terminal_executable'], timeout=5000)
+        # Close the race (review 6131884216 item C): if MT5 exited between the check and initialize(), initialize()
+        # started a new one. Re-scan the exact executable: anything but the same process (pid and creation time) is a
+        # terminal GOAT started, so the link is dropped and the check refuses instead of reading it.
+        after = process.inspect()
+        if not after or after.get('pid') != before.get('pid') or after.get('created_utc') != before.get('created_utc'):
+            mt5.shutdown()
+            raise Refusal(MT5_STARTED_BY_CHECK_MESSAGE, MT5_STARTED_BY_CHECK, pidBefore=before.get('pid'),
+                          pidAfter=(after or {}).get('pid'))
+        if not attached:
             raise ValueError('The selected MT5 terminal could not be read; start it and sign in to the demo account')
         try:
             terminal, info = mt5.terminal_info(), mt5.account_info()

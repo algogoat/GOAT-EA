@@ -369,3 +369,8 @@ B2. **Margin from the EA's ladder** (every mode, FixedLots and ScaledLots too): 
    standing (`CalcNextLotsCumPartial`, mq5:1539-1563, ported without retrace closes, which only lower what follows),
    x2 for both directions. FixedLots 0.01 on a CumPartial 1.6 ladder peaks at 0.26 lots, not 0.212 (+22.6%).
    Deploy rule facts gain `referenceVolumeStep` and `referenceVolumeMax` (compared at deploy like the others).
+
+C. **The attach-only race is closed.** `read_broker` records the selected terminal's identity (pid and creation time
+   of the exact `terminal_executable`) before `initialize`, and re-scans after it (whether it succeeded or not). Any
+   other identity means `initialize` started MT5: `shutdown()`, nothing is read, refusal `MT5_STARTED_BY_CHECK` "GOAT
+   started MT5 by accident; close it and check again." (fields `pidBefore`, `pidAfter`).

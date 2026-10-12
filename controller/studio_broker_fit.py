@@ -871,7 +871,7 @@ def uses_risk(values, defaults):
             or _number(values, defaults, 'Mode_Bias_Exit') == BIAS_EXIT_SMART_RESCUE)
 
 
-def equity_rules(values, defaults, *, lot_factor, money_factor, broker, reference):
+def equity_rules(values, defaults, *, lot_factor, money_factor, broker, reference, decide=False):
     """The equity-dependent rules for one member at one equity. Returns dict(code, message, edits, scaled, start_lots).
     The same function judges the review (broker-fit) and the deploy-time re-check (stale_fit).
 
@@ -895,7 +895,7 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
         return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
     lots_input = _number(values, defaults, 'Lots_Input')
     lots_max, lots_max_cum = _number(values, defaults, 'Lots_Max'), _number(values, defaults, 'Lots_Max_Cum')
-    start = planned_loss = risk_searched = None
+    start = planned_loss = risk_searched = margin_start = band_report = None
     if mode in (MODE_LOTS['FixedLots'], MODE_LOTS['ScaledLots']):
         if lots_input is None:
             return dict(code=CONTRACT_MISMATCH, message=NOT_STATED_MESSAGE.format(name='Lots_Input'))
@@ -930,7 +930,8 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
                     return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
                 start = _lots(ea_solve_start_lots(new_risk, vmin, vstep, top, lambda lots: lots * per_lot))
             else:
-                memo = {}
+                # One member's planned loss per lot size does not depend on the equity: min_equity's trials share it.
+                memo = reference.get('memo') if reference.get('memo') is not None else {}
 
                 def planned(lots):
                     key = round(float(lots), 10)
@@ -939,26 +940,70 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
                     return memo[key]
 
                 cap = float(new_risk)
+                ceiling = cap * (1 + 1e-9)            # only absorbs double arithmetic
+                # Round 5 F1 (goatai#2350 6133583699): the real loss per lot is the model's times an unknown m in a band:
+                # live ATR re-solves an ATR grid ([0.6, 1.6]; a point grid [0.95, 1.05]), times this member's ACTUAL
+                # value-per-point ratio against the reference, times the anchor's own error (reference.startLot is
+                # itself a nearest pick: +/- half a reference step over startLot).
+                atr = (_number(values, defaults, 'Grid_Size') or Decimal(0)) < 0
+                base_low, base_high = (0.6, 1.6) if atr else (0.95, 1.05)
+                value_ratio = float(reference.get('valueRatio') or 1)
+                anchor_error = 0.5 * float(reference['volumeStep']) / float(known)
+                band_low = base_low * value_ratio * (1 - anchor_error)
+                band_high = base_high * value_ratio * (1 + anchor_error)
+                fvmin, fvstep, ftop = float(vmin), float(vstep), float(top)
 
-                def within(target):
-                    # The EA's pick for this Risk plans to lose at most the equity-linear Risk (a 1e-9 relative
-                    # allowance only absorbs the double arithmetic: at the reference the plan IS the Risk).
-                    return planned(ea_solve_start_lots(target, vmin, vstep, top, planned)) <= cap * (1 + 1e-9)
+                def pick(target, multiplier):
+                    return ea_solve_start_lots(target, vmin, vstep, top, lambda lots: multiplier * planned(lots))
 
-                if planned(vmin) > cap * (1 + 1e-9):
+                def worst(target):
+                    # The most the EA can plan at Risk `target` for any m in the band. Between the m where `target`
+                    # sits halfway between two steps' losses the EA's pick is constant and m x loss rises, so the worst
+                    # is at a band end or just below such a boundary m_k = 2 target / (l_k + l_k+1), where the plan is
+                    # m_k x l_k+1 = target + m_k x (l_k+1 - l_k) / 2: rule (a)'s half loss jump, at the m it occurs.
+                    found = max(m * planned(pick(target, m)) for m in (band_low, band_high))
+                    target = float(target)
+                    last = int(math.floor((ftop - fvmin) / fvstep + 1e-9))
+                    step_loss = lambda k: planned(ea_normalized_lots(fvmin + k * fvstep, fvmin, fvstep, ftop))
+                    pair = lambda k: step_loss(k) + step_loss(k + 1)
+                    # Losses rise with the lot size: the first pair whose boundary is inside the band (pair >= 2 target /
+                    # band_high) is found by bisection, then the scan stops once the boundary leaves the band below.
+                    low, high = 0, last
+                    while low < high:
+                        middle = (low + high) // 2
+                        if pair(middle) * band_high >= 2 * target:
+                            high = middle
+                        else:
+                            low = middle + 1
+                    for k in range(low, last):
+                        both = pair(k)
+                        if both <= 0:
+                            continue
+                        boundary = 2 * target / both
+                        if boundary < band_low:
+                            break
+                        if boundary <= band_high:
+                            found = max(found, boundary * step_loss(k + 1))
+                    return found
+
+                # (b) the minimum lot at the top of the band plans within the equity-linear Risk, or the account is too
+                # small (the 8,370 high-ATR case: VOLUME_MIN plans 1.6 x 40.59 = 64.95 against 41.85).
+                if band_high * planned(vmin) > ceiling:
                     return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
-                # Accepted rule (goatai#2350 6132804177 R2): deploy the LARGEST Risk' <= the equity-linear Risk, on its
-                # cent grid and >= the EA's 10 (mq5:3253-3260), whose planned loss at the EA's own pick is <= the
-                # equity-linear Risk. The pick moves up in steps as Risk' grows, so `within` holds below a boundary:
-                # bisection over whole cents finds it. None at 10 -> the account is too small.
+                # (a) the deployed Risk' is the largest on the cent grid (>= the EA's 10, mq5:3253-3260) whose worst plan
+                # over the band is within the equity-linear Risk: Risk' <= Risk - the half loss jump, taken where it
+                # occurs (round 4 R2 searched at m = 1 only, which left Risk' on the boundary itself).
                 risk_searched = new_risk
-                if not within(new_risk):
-                    low, high = int(EA_MIN_RISK / CENT), int(new_risk / CENT)
-                    if not within(EA_MIN_RISK):
+                if worst(new_risk) > ceiling:
+                    if worst(EA_MIN_RISK) > ceiling:
                         return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
+                    if decide:
+                        # min_equity only asks whether SOME Risk' fits (it does: Risk 10 fits); the search is skipped.
+                        return dict(code=None, message=None)
+                    low, high = int(EA_MIN_RISK / CENT), int(new_risk / CENT)
                     while high - low > 1:
                         middle = (low + high) // 2
-                        if within(Decimal(middle) * CENT):
+                        if worst(Decimal(middle) * CENT) <= ceiling:
                             low = middle
                         else:
                             high = middle
@@ -966,8 +1011,13 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
                     if 'Risk' not in values:
                         return dict(code=CONTRACT_MISMATCH, message=NOT_STATED_MESSAGE.format(name='Risk'))
                     edits['Risk'] = format_like(new_risk, first_field(values['Risk']))
-                start = _lots(ea_solve_start_lots(new_risk, vmin, vstep, top, planned))
+                start = _lots(pick(new_risk, 1.0))
+                margin_start = _lots(pick(new_risk, band_low))      # the largest start lot the band allows
                 planned_loss = _lots(round(planned(start), 2))
+                loss_band = dict(low=round(band_low, 6), high=round(band_high, 6), kind='atr' if atr else 'points',
+                                 valueRatio=round(value_ratio, 6), anchorError=round(anchor_error, 6))
+                band_report = dict(lossBand=loss_band, quantizationMargin=risk_searched - new_risk, startLotMax=margin_start,
+                                   plannedLossMax=_lots(round(worst(new_risk), 2)))
             bound = start
         else:
             bound = reference['volumeMin'] * lot_factor
@@ -981,9 +1031,14 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
     # Lots_Max and Lots_Max_Cum are reported as written: multipliers of the start lot, never scaled. startLot is the
     # EA's start lot here; plannedLoss its planned sequence loss (RiskperSeq, account currency); riskSearched the
     # equity-linear Risk the downward search started from (Risk is the deployed Risk', at most it).
+    # Round 5 F1 adds, per RiskperSeq member with a computable loss: lossBand (the loss-per-lot multiplier band and its
+    # parts), quantizationMargin (equity-linear Risk - deployed Risk), startLotMax (the EA's pick at the band's low end:
+    # the margin's) and plannedLossMax (the most it can plan anywhere in the band).
     scaled = dict(Risk=new_risk, Lots_Max=lots_max, Lots_Max_Cum=lots_max_cum, Lots_Input=written_lots, startLot=start,
                   plannedLoss=planned_loss, riskSearched=risk_searched)
-    return dict(code=None, message=None, edits=edits, scaled=scaled, start_lots=start)
+    scaled.update(band_report or dict(lossBand=None, quantizationMargin=None, startLotMax=None, plannedLossMax=None))
+    return dict(code=None, message=None, edits=edits, scaled=scaled, start_lots=start,
+                margin_start=margin_start if margin_start is not None else start)
 
 
 def peak_lots(values, defaults, start, broker):
@@ -1285,12 +1340,13 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
     deploy_rules = dict(volume_min=broker['volume_min'], volume_step=broker['volume_step'], volume_max=broker['volume_max'],
                         contract_ratio=contract_ratio, reference_volume_min=reference['volumeMin'],
                         reference_volume_step=reference['volumeStep'], reference_volume_max=reference['volumeMax'],
-                        start_lot=reference['startLot'])
-    def at(trial_equity):
-        return rules_at(values, defaults, deploy_rules, equity=trial_equity, reference_equity=reference_equity, rate=rate)
+                        start_lot=reference['startLot'], value_ratio=ratio, memo={})
+    def at(trial_equity, decide=False):
+        return rules_at(values, defaults, deploy_rules, equity=trial_equity, reference_equity=reference_equity, rate=rate,
+                        decide=decide)
     fixed_money = any(_number(values, defaults, name) != 0 for name in FIXED_MONEY_INPUTS)
     if not exempt:
-        inner['min_equity'] = None if fixed_money else min_equity(lambda trial: at(trial)['code'] is None)
+        inner['min_equity'] = None if fixed_money else min_equity(lambda trial: at(trial, decide=True)['code'] is None)
     outcome = at(account_equity)
     if outcome['code']:
         return _excluded(row, outcome['code'], outcome['message'], inner)
@@ -1301,14 +1357,14 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
         # An exempt member is tradable only at scale 1.0, i.e. at the reference equity itself.
         inner['min_equity'] = None if fixed_money else reference_equity
     deployed = rewrite_set(raw, edits)
-    row.update(scaled={key: num(value) for key, value in outcome['scaled'].items()}, edits=edits, setSha256Deployed=sha256(deployed))
+    row.update(scaled={key: value if isinstance(value, dict) else num(value) for key, value in outcome['scaled'].items()}, edits=edits, setSha256Deployed=sha256(deployed))
     if exempt:
         row['margin'] = dict(row['margin'], basis=REFERENCE_IDENTICAL_MARGIN, unknownBasis=unknown)
         row['marginReason'] = REFERENCE_IDENTICAL_MARGIN
         inner['exempt'] = unknown
     else:
         # Margin at the scaled caps and this account's leverage (the SDK's own calculation).
-        lots = peak_lots(values, defaults, outcome['start_lots'], broker)
+        lots = peak_lots(values, defaults, outcome['margin_start'], broker)
         required = per_lot * lots
         row['margin'] = dict(perLot=num(per_lot), peakLots=num(lots), required=num(required), basis='ea_caps',
                              limit=num(account_equity * MAX_MARGIN_SHARE))
@@ -1320,7 +1376,7 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
     # re-derivation from the manifest and the live broker (stale_members), never inputs.
     row['deploy'] = dict(memberId=member['memberId'], brokerSymbol=symbol, deployFileName=row['deployFileName'],
                          setSha256Reference=row['setSha256Reference'], setSha256Deployed=row['setSha256Deployed'], edits=edits,
-                         rules={RULE_KEYS[key]: _text(value) for key, value in deploy_rules.items()})
+                         rules={RULE_KEYS[key]: _text(value) for key, value in deploy_rules.items() if key in RULE_KEYS})
     return row, inner
 
 
@@ -1338,14 +1394,15 @@ RULE_KEYS = dict(volume_min='volumeMin', volume_step='volumeStep', volume_max='v
 OPTIONAL_RULES = ('volume_max', 'reference_volume_max', 'start_lot')
 
 
-def rules_at(values, defaults, rules, *, equity, reference_equity, rate):
+def rules_at(values, defaults, rules, *, equity, reference_equity, rate, decide=False):
     """equity_rules at one equity in the account currency. Lots follow the equity in the reference currency (x rate) and
     the contract size; money inputs are in the account currency, so their factor is equity / reference equity exactly."""
     return equity_rules(values, defaults, lot_factor=equity * rate / reference_equity * rules['contract_ratio'],
                         money_factor=equity / reference_equity,
                         broker=dict(volume_min=rules['volume_min'], volume_step=rules['volume_step'], volume_max=rules['volume_max']),
                         reference=dict(volumeMin=rules['reference_volume_min'], volumeStep=rules['reference_volume_step'],
-                                       volumeMax=rules['reference_volume_max'], startLot=rules['start_lot']))
+                                       volumeMax=rules['reference_volume_max'], startLot=rules['start_lot'],
+                                       valueRatio=rules.get('value_ratio'), memo=rules.get('memo')), decide=decide)
 
 
 MAX_EQUITY_CENTS = 10 ** 14

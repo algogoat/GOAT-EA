@@ -453,3 +453,23 @@ F2. **The manifest's signature is verified, not just its sha.** Same rule as goa
 F3. **The clock guard holds at deploy too.** `deploy-load --server-time-utc` (unix seconds, optional, as for broker-fit)
    is passed to the deploy re-check's `read_broker`: a PC clock more than 120 s off it leaves the broker offset unknown,
    so clock-dependent members (and every spread sample) are stale.
+
+F1. **Risk' is kept off the knife edge across a loss-per-lot band** (replaces round 4 R2's search at the model only,
+   which by construction left Risk' where the EA's nearest pick is equidistant between two lots). The real planned loss
+   per lot is the model's x an unknown m in a band: [0.6, 1.6] for an ATR grid (`Grid_Size < 0`: live ATR re-solves
+   it), [0.95, 1.05] for a point grid, x the member's ACTUAL value-per-point ratio against the reference (the contract
+   check's `broker value / reference value`), x the anchor's own error 1 +/- (half a reference volume step /
+   reference.startLot).
+   - (b) min-lot feasibility: VOLUME_MIN's planned loss at the TOP of the band must be within the equity-linear Risk,
+     else `BELOW_MIN_LOT` (Kestrel: 1.68 x 40.594 = 68.20, minimum equity 13,640; the 8,370 high-ATR probe refuses).
+   - (a) quantization margin: the deployed Risk' (cent grid, >= 10) is the largest whose worst plan over the band is
+     within the equity-linear Risk. Between the m where Risk' sits halfway between two steps' losses the EA's pick is
+     constant, so the worst is at a band end (the EA solver run at that m) or just below such a boundary
+     m_k = 2 Risk' / (l_k + l_k+1), where the plan is Risk' + m_k x (l_k+1 - l_k) / 2: the half loss jump, at the m
+     where it occurs (<= the jump at the band's top).
+   - The margin uses the EA's pick at the band's LOW end (the largest start lot). Reported per member:
+     `scaled.lossBand {low, high, kind, valueRatio, anchorError}`, `scaled.quantizationMargin` (equity-linear Risk -
+     Risk'), `scaled.startLotMax`, `scaled.plannedLossMax`, with `riskSearched` and `plannedLoss` as before.
+   - Applied at every scale, the reference's own included: Kestrel with reference.startLot on the reference account
+     deploys Risk 452.21 (its bytes change, so it never uses the reference-identical exemption); a member without
+     reference.startLot keeps the reference bytes there. Kestrel at 14,642 deploys 50.66 (worst plan 73.20 <= 73.21).

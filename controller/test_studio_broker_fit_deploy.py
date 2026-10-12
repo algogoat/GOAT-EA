@@ -92,7 +92,9 @@ class BrokerFitDeployTests(DeployFixture):
         return members, deploy.staged_bytes(self.c, plan, members)
 
     def test_scale_one_stages_byte_identical_files_golden(self):
-        members, raws, block = self.review()
+        # Members without reference.startLot on the reference-identical account: the reference bytes at scale 1.0 (a
+        # member with a start lot gets a round 5 F1 band-lowered Risk even at scale 1.0).
+        members, raws, block = self.review(**NO_START)
         self.assertEqual([entry['edits'] for entry in block['members']], [{}, {}])
         plain_members, plain = self.staged(self.plan(members))
         fit_members, fitted = self.staged(self.plan(members, brokerFit=block))
@@ -105,13 +107,14 @@ class BrokerFitDeployTests(DeployFixture):
     def test_a_scaled_plan_stages_the_controllers_scaled_set(self):
         members, raws, block = self.review(equity=50000)
         edits = [entry['edits'] for entry in block['members']]
-        self.assertEqual(edits, [dict(Risk='250.0'), dict(Risk='250.0')])
+        # 250.0 equity-linear, lowered by the round 5 F1 point-grid band (Grid_Size 10.0 in the V1.48 defaults).
+        self.assertEqual(edits, [dict(Risk='228.12'), dict(Risk='228.12')])
         prepared, staged = self.staged(self.plan(members, brokerFit=block))
         for row, raw, edit in zip(prepared, raws, edits):
             scaled = bf.rewrite_set(raw, edit)
             self.assertEqual((row['raw'], row['sha256']), (scaled, hashlib.sha256(scaled).hexdigest()))
             self.assertEqual(staged[deploy.paths(self.c, 'e' * 32)['sets'] / row['name']], scaled)
-            self.assertIn('Risk=250.0', scaled.decode('utf-16'))
+            self.assertIn('Risk=228.12', scaled.decode('utf-16'))
 
     def test_a_plan_whose_scaled_set_differs_from_the_review_is_refused(self):
         members, raws, block = self.review(equity=50000)

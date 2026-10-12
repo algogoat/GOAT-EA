@@ -345,3 +345,27 @@ These override the rules above where they differ.
 New codes the app must mirror: member `MARGIN_TOO_HIGH` (replaces `MARGIN_INSUFFICIENT`), `MONEY_VALUE_UNREADABLE`,
 `EA_INIT_REFUSED`; portfolio `MARGIN_TOO_HIGH`; command `MT5_NOT_RUNNING`; deploy block schema
 `goat-broker-fit-deploy-v2` (a v1 block is refused as invalid).
+
+## Round 3 (goatai#2350 6131884216 and re-review 6132018108, 2026-10-12)
+
+Overrides anything above where they differ.
+
+B. **The EA's own start lot and planned loss (EvalLossForStart, mq5:829-838), ported.** The lot ladder is in the SET:
+   `BuildRawLots` (mq5:840-1004, all seven modes including the Peak / PeakSmart Hermite curve), `ScaleRawLots`
+   (mq5:1006-1021), each level's `NormalizedLots` (mq5:1023: the nearest step, 0 below VOLUME_MIN) and
+   `BuildCumulativeLots` (mq5:1025-1036). The distances come from `BuildDistances` (mq5:1603-1614) with
+   `GetSize(GRID_VALID)` (mq5:6754-6767) after the init clamps (mq5:2986-2987, 3318-3319); `FindCumLoss`
+   (mq5:1616-1634) is the max prefix of `distance x standing`. The ATR (or the 10 x Point unit) and the value per
+   point per lot cancel in `loss(L) = reference Risk x G(L) / G(reference.startLot) / (contract ratio x rate)`, so no
+   market data is needed, as long as `Grid_Size`, `Grid_Min_` and an enabled `Grid_Max_` are the same kind (all ATR or
+   all points). The start lot is `SolveStartLotsByRisk` on this loss; `scaled.plannedLoss` (additive) reports its
+   planned loss. `BELOW_MIN_LOT` when VOLUME_MIN itself plans to lose more than the deployed Risk (the EA would be
+   forced over it). Kestrel: at 14,642 (Risk 73.21) the EA picks 0.02 (planned 105.66), not 0.01; the minimum equity
+   is 8,120. Not computable (mixed grid kinds) -> `MARGIN_UNKNOWN` basis `loss_unknown`; an unreadable ladder input
+   -> basis `lot_ladder_unknown` (replaces `no_lot_cap`).
+
+B2. **Margin from the EA's ladder** (every mode, FixedLots and ScaledLots too): the most lots one sequence stands in,
+   `ea_peak_standing`: the planned `LotsCum` peak, and for CumPartial also its run-time adds, which compound the ACTUAL
+   standing (`CalcNextLotsCumPartial`, mq5:1539-1563, ported without retrace closes, which only lower what follows),
+   x2 for both directions. FixedLots 0.01 on a CumPartial 1.6 ladder peaks at 0.26 lots, not 0.212 (+22.6%).
+   Deploy rule facts gain `referenceVolumeStep` and `referenceVolumeMax` (compared at deploy like the others).

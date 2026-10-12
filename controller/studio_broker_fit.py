@@ -631,6 +631,235 @@ def _lots(value):
     return dec(round(value, 10)).normalize() + 0
 
 
+# ---- the EA's lot ladder and planned sequence loss (EvalLossForStart, mq5:829-838), ported line for line in doubles
+
+LOTS_PROG = dict(Start=0, Last=1, Cum=2, Cum2=3, Peak=4, CumPartial=5, PeakSmart=6)
+
+
+def ladder_inputs(values, defaults):
+    """The SET inputs the EA's lot ladder reads, as doubles; None when one is unreadable or out of range."""
+    names = ('Mode_Lots_Prog', 'Lots_Exponent', 'Lots_Factor', 'Max_Seq_Trades', 'Lots_Max_Cum', 'Peak_Lots_Pos_PC', 'Lots_Max')
+    numbers = [_number(values, defaults, name) for name in names]
+    if None in numbers:
+        return None
+    mode, exponent, factor, trades, cap, peak_pos, lots_max = numbers
+    if mode not in LOTS_PROG.values() or trades != trades.to_integral_value() or trades < 1:
+        return None
+    return dict(mode=int(mode), exponent=float(exponent), factor=float(factor), trades=int(trades), cap=float(cap),
+                peak_pos=float(peak_pos), lots_max=float(lots_max))
+
+
+def _hermite(h):
+    h2 = h * h
+    h3 = h2 * h
+    return 2.0 * h3 - 3.0 * h2 + 1.0, h3 - 2.0 * h2 + h, -2.0 * h3 + 3.0 * h2, h3 - h2
+
+
+def ea_raw_ladder(start, inputs):
+    """BuildRawLots(start) (mq5:840-1004) then ScaleRawLots with StartLots = start (mq5:1006-1021). Returns LotsRaw."""
+    mode, exponent, factor, trades = inputs['mode'], inputs['exponent'], inputs['factor'], inputs['trades']
+    start = float(start)
+    raw, cum = [0.0] * trades, 0.0                                        # mq5:842-843
+    for lvl in range(trades):                                             # mq5:845
+        n = trades if trades > 0 else 1                                   # mq5:847
+        w2 = lvl / n                                                      # mq5:848
+        w1 = 1.0 - w2                                                     # mq5:849
+        lots = 0.0
+        if lvl == 0:                                                      # mq5:852-862
+            raw[lvl] = start
+            leff0 = w1 * exponent + w2 * exponent * factor
+            cum = start / (1.0 - 1.0 / leff0) if mode == LOTS_PROG['Cum2'] and leff0 > 1.0 + 1e-9 else start
+            continue
+        if mode == LOTS_PROG['Start']:                                    # mq5:865-866
+            lots = start * (w1 * exponent + w2 * exponent * factor)
+        elif mode == LOTS_PROG['Last']:                                   # mq5:867-869
+            if exponent * factor < 0.0:
+                lots = start * w1 * math.pow(exponent, lvl) - start * w2 * math.pow(abs(exponent * factor), lvl)
+            else:
+                lots = start * w1 * math.pow(exponent, lvl) + start * w2 * math.pow(abs(exponent * factor), lvl)
+        elif mode in (LOTS_PROG['Cum'], LOTS_PROG['CumPartial'], LOTS_PROG['Cum2']):   # mq5:870-896
+            leff = w1 * exponent + w2 * exponent * factor
+            lots = cum * (leff - 1.0)
+            cum += lots
+            if cum < 0.0:
+                cum = 0.0
+        else:                                                             # Peak, PeakSmart: mq5:897-1000
+            pivot = int(_mql_round(trades * inputs['peak_pos'] / 100.0))
+            pivot = max(pivot, 1)
+            pivot = min(pivot, n - 1)
+            c0, cpeak = start, start * inputs['cap']
+            s_up = min(max(exponent, 0.01), 5.0)
+            s_down = min(max(factor, 0.01), 5.0)
+            t = lvl / (n - 1) if n > 1 else 0.0
+            tp = pivot / (n - 1) if n > 1 else 0.5
+            span_up = tp if tp > 1e-9 else 1.0
+            span_down = (1.0 - tp) if (1.0 - tp) > 1e-9 else 1.0
+            m0 = s_up * (cpeak - c0) / span_up
+            m1 = -s_down * (cpeak - 0.0) / span_down
+            if t <= tp or n <= 2:
+                denom = tp
+                if denom < 1e-12:
+                    target = cpeak
+                else:
+                    h00, h10, h01, h11 = _hermite(min(max(t / denom, 0.0), 1.0))
+                    target = h00 * c0 + h10 * (denom * m0) + h01 * cpeak + h11 * (denom * 0.0)
+            else:
+                denom = 1.0 - tp
+                if denom < 1e-12:
+                    target = 0.0
+                else:
+                    h00, h10, h01, h11 = _hermite(min(max((t - tp) / denom, 0.0), 1.0))
+                    target = h00 * cpeak + h10 * (denom * 0.0) + h01 * 0.0 + h11 * (denom * m1)
+            if lvl == pivot:
+                target = cpeak
+            if lvl == n - 1:
+                target = 0.0
+            lots = target - cum
+            cum += lots
+            if lvl == pivot and abs(cpeak - cum) > 1e-6:
+                lots += cpeak - cum
+                cum = cpeak
+            if lvl == n - 1 and abs(0.0 - cum) > 1e-6:
+                lots += 0.0 - cum
+                cum = 0.0
+        raw[lvl] = lots                                                   # mq5:1001
+    running = peak = 0.0                                                  # ScaleRawLots, mq5:1008-1015
+    for lots in raw:
+        running += lots
+        if running < 0.0:
+            running = 0.0
+        if running > peak:
+            peak = running
+    scale = 1.0                                                           # mq5:1017-1018
+    if peak > start * inputs['cap']:
+        scale = (start * inputs['cap']) / peak
+    return [raw[0]] + [lots * scale for lots in raw[1:]]                  # mq5:1020
+
+
+def ea_standing(start, inputs, vmin, vstep, vmax):
+    """LotsCum (BuildNormalizedLots + BuildCumulativeLots, mq5:1023-1036): the floored running sum of each planned
+    level's NormalizedLots (the nearest step; 0 below VOLUME_MIN)."""
+    standing, out = 0.0, []
+    for lots in ea_raw_ladder(start, inputs):
+        standing += ea_normalized_lots(lots, vmin, vstep, vmax)
+        if standing < 0.0:
+            standing = 0.0
+        out.append(standing)
+    return out
+
+
+def ea_peak_standing(start, inputs, vmin, vstep, vmax):
+    """The most lots one sequence can stand in. The EA trades its planned LotsNorm level by level (mq5:1676-1686;
+    PeakSmart refills to the planned LotsCum, mq5:1349-1376) except CumPartial, which compounds the ACTUAL standing
+    (CalcNextLotsCumPartial, mq5:1539-1563): ported here without retrace closes (closes only lower what follows)."""
+    planned = max(ea_standing(start, inputs, vmin, vstep, vmax))
+    if inputs['mode'] != LOTS_PROG['CumPartial']:
+        return planned
+    start_lots = ea_normalized_lots(float(start), vmin, vstep, vmax)      # level 0: Lots_Calc = NormalizedLots(StartLots)
+    standing = peak = start_lots
+    n = inputs['trades']
+    for level_count in range(1, n):
+        lvl = min(level_count, n - 1)                                     # mq5:1545
+        w2 = lvl / n
+        w1 = 1.0 - w2
+        leff = w1 * inputs['exponent'] + w2 * inputs['exponent'] * inputs['factor']
+        if standing <= 0.0:                                               # mq5:1542
+            next_lots = 0.0
+        else:
+            next_lots = standing * (leff - 1.0)                           # mq5:1550
+            if next_lots > 0.0 and inputs['cap'] > 0.0:                   # mq5:1551-1556
+                remaining = float(start) * inputs['cap'] - standing
+                next_lots = 0.0 if remaining <= 0.0 else min(next_lots, remaining)
+            if next_lots > 0.0 and inputs['lots_max'] > 0.01:             # mq5:1557-1561
+                next_lots = min(next_lots, inputs['lots_max'] * float(start))
+            next_lots = ea_normalized_lots(next_lots, vmin, vstep, vmax)  # mq5:1562, 1686
+        if next_lots < 0.0 and abs(next_lots) < vmin:                     # mq5:1691: a cut below VOLUME_MIN is no trade
+            next_lots = 0.0
+        standing = max(standing + next_lots, 0.0)
+        peak = max(peak, standing)
+    return max(planned, peak)
+
+
+def grid_shape(values, defaults):
+    """The level distances of BuildDistances (mq5:1603-1614) via GetSize(GRID_VALID) (mq5:6754-6767), in one unit:
+    ATR when Grid_Size < 0, 10 x Point otherwise. The unit cancels in loss(L) / loss(startLot), so no market data is
+    needed, but only when Grid_Min_ and an enabled Grid_Max_ (after the init clamps, mq5:2986-2987, 3318-3319) are the
+    same kind as Grid_Size. Returns [d_1 .. d_{N-1}] or None (mixed kinds, unreadable)."""
+    names = ('Grid_Size', 'Grid_Min', 'Grid_Max', 'Grid_Exponent', 'Grid_Factor', 'Max_Seq_Trades')
+    numbers = [_number(values, defaults, name) for name in names]
+    if None in numbers:
+        return None
+    grid, grid_min, grid_max, exponent, factor, trades = (float(x) for x in numbers)
+    trades = int(trades)
+    if grid == 0.0 or trades < 1:
+        return None
+    if -0.5 < grid_min < 0.5:                                             # mq5:3318
+        grid_min = -0.5
+    max_enabled = not (-1.0 < grid_max < 1.0)                             # mq5:3319 (999999: disabled)
+    atr = grid < 0.0
+    if (grid_min < 0.0) != atr or (max_enabled and (grid_max < 0.0) != atr):
+        return None
+    base, low, high = abs(grid), abs(grid_min), abs(grid_max) if max_enabled else math.inf
+    sizes = []
+    for lvl in range(1, trades):
+        if exponent <= 0.0:                                               # mq5:6759
+            size = base
+        else:
+            n = trades if trades > 0 else 1
+            w2 = lvl / n
+            w1 = 1.0 - w2
+            f_eff = w1 * (1.0 / exponent) + w2 * (1.0 / (exponent * factor))   # mq5:6760
+            if -1e-12 <= f_eff <= 1e-12:
+                f_eff = -1e-12 if f_eff < 0 else 1e-12
+            size = base * math.pow(1.0 / f_eff, lvl - 1)                  # mq5:6762-6764
+            size = max(size, low)                                         # mq5:6765
+            size = min(size, high)                                        # mq5:6766
+        sizes.append(abs(size))                                           # mq5:1611
+    return sizes
+
+
+def ea_loss_shape(start, inputs, shape, vmin, vstep, vmax):
+    """FindCumLoss (mq5:1616-1634) in grid units per unit of value per lot: the max over prefixes of d_i x LotsCum[i-1]."""
+    standing = ea_standing(start, inputs, vmin, vstep, vmax)
+    loss = peak = 0.0
+    for i in range(1, inputs['trades']):
+        loss += shape[i - 1] * max(standing[i - 1], 0.0)
+        if loss > peak:
+            peak = loss
+    return peak
+
+
+class SequenceLoss:
+    """The EA's planned sequence loss (EvalLossForStart, mq5:829-838) on this broker, in the account currency:
+    loss(L) = reference Risk x G(L) / G(reference.startLot) / (contract ratio x rate), G = ea_loss_shape. Every unit
+    (ATR or point, value per point per lot) cancels in the ratio; reference.startLot is the EA's pick at the reference
+    Risk, so its planned loss is that Risk."""
+
+    def __init__(self, inputs, shape, *, reference_risk, start_lot, ref_vmin, ref_vstep, ref_vmax, conversion):
+        self.inputs, self.shape = inputs, shape
+        anchor = ea_loss_shape(float(start_lot), inputs, shape, float(ref_vmin), float(ref_vstep), float(ref_vmax))
+        if not anchor > 0.0:
+            raise ValueError('the reference start lot plans no loss')
+        self.per_unit = float(reference_risk) / anchor / float(conversion)
+
+    def __call__(self, start, vmin, vstep, vmax):
+        return self.per_unit * ea_loss_shape(start, self.inputs, self.shape, float(vmin), float(vstep), float(vmax))
+
+
+def sequence_loss(values, defaults, reference, *, risk, conversion):
+    """SequenceLoss for a member with reference.startLot, or None when the ladder, the grid shape or the anchor is
+    unknown."""
+    inputs, shape = ladder_inputs(values, defaults), grid_shape(values, defaults)
+    if inputs is None or shape is None or reference.get('startLot') is None or risk is None or risk <= 0:
+        return None
+    try:
+        return SequenceLoss(inputs, shape, reference_risk=risk, start_lot=reference['startLot'], ref_vmin=reference['volumeMin'],
+                            ref_vstep=reference['volumeStep'], ref_vmax=reference.get('volumeMax') or Decimal(10) ** 9,
+                            conversion=conversion)
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return None
+
+
 def uses_risk(values, defaults):
     """The EA requires Risk >= 10 when it sizes by Risk or closes by it (mq5:3253-3260, 3271)."""
     return (_number(values, defaults, 'Mode_Lots') == MODE_LOTS['RiskperSeq'] or _flag(values, defaults, 'Sequence_MLPS_Hard_Close')
@@ -662,7 +891,7 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
         return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
     lots_input = _number(values, defaults, 'Lots_Input')
     lots_max, lots_max_cum = _number(values, defaults, 'Lots_Max'), _number(values, defaults, 'Lots_Max_Cum')
-    start = None
+    start = planned_loss = None
     if mode in (MODE_LOTS['FixedLots'], MODE_LOTS['ScaledLots']):
         if lots_input is None:
             return dict(code=CONTRACT_MISMATCH, message=NOT_STATED_MESSAGE.format(name='Lots_Input'))
@@ -677,24 +906,30 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
             return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
         bound = start
     elif mode == MODE_LOTS['RiskperSeq']:
-        # The EA picks the start lot itself: SolveStartLotsByRisk (mq5:781-827), the volume step whose planned sequence
-        # loss is NEAREST the deployed Risk. With the reference start lot known (reference.startLot, the EA's pick at
-        # the reference Risk) the planned loss per lot on this broker is linear: reference Risk x money factor /
-        # (startLot x lot factor) in the account currency, so `ideal` = deployed Risk / that is the exact start lot and
-        # the EA's pick is its nearest step (ea_solve_start_lots). The pick sizes the margin; BELOW_MIN_LOT when the
-        # ideal is under VOLUME_MIN (the EA would be forced up to VOLUME_MIN, more than Risk asks). Without
-        # reference.startLot the reference VOLUME_MIN is its only proven lower bound.
+        # The EA picks the start lot itself: SolveStartLotsByRisk (mq5:781-827) on EvalLossForStart (mq5:829-838), the
+        # volume step whose planned sequence loss is NEAREST the deployed Risk. Both are ported (ea_solve_start_lots,
+        # SequenceLoss): the lot ladder with every level's NormalizedLots and the grid shape, anchored on
+        # reference.startLot (review 6132018108 item B; a linear model picked 0.01 where the EA picks 0.02).
+        # BELOW_MIN_LOT when even VOLUME_MIN plans to lose more than the deployed Risk (the EA would be forced up to it).
+        # Without reference.startLot the reference VOLUME_MIN is its only proven lower bound.
         known = reference.get('startLot')
         if known is not None:
-            loss_per_lot = risk * money_factor / (known * lot_factor)
-            ideal = new_risk / loss_per_lot
-            if ideal < vmin:
-                return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
-            per_lot = float(loss_per_lot)
             # An unreported VOLUME_MAX is taken as unbounded: the EA would return VOLUME_MIN (mq5:788), which would
             # understate the margin.
-            start = _lots(ea_solve_start_lots(new_risk, vmin, vstep, vmax if vmax else Decimal(10) ** 9,
-                                              lambda lots: lots * per_lot))
+            top = vmax if vmax else Decimal(10) ** 9
+            loss = sequence_loss(values, defaults, reference, risk=risk, conversion=lot_factor / money_factor)
+            if loss is None:
+                # Not computable (MARGIN_UNKNOWN 'loss_unknown' in the review; reached only under the reference-identical
+                # exemption): the linear reference model stands in for the pick, never for the margin.
+                per_lot = float(risk * money_factor / (known * lot_factor))
+                if new_risk / Decimal(repr(per_lot)) < vmin:
+                    return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
+                start = _lots(ea_solve_start_lots(new_risk, vmin, vstep, top, lambda lots: lots * per_lot))
+            else:
+                if loss(vmin, vmin, vstep, top) > float(new_risk):
+                    return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
+                start = _lots(ea_solve_start_lots(new_risk, vmin, vstep, top, lambda lots: loss(lots, vmin, vstep, top)))
+                planned_loss = _lots(round(loss(start, vmin, vstep, top), 2))
             bound = start
         else:
             bound = reference['volumeMin'] * lot_factor
@@ -705,24 +940,22 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
     if lots_max is not None and lots_max > Decimal('0.01') and lots_max * bound < vmin:
         return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
     written_lots = dec(edits['Lots_Input']) if 'Lots_Input' in edits else lots_input
-    # Lots_Max and Lots_Max_Cum are reported as written: multipliers of the start lot, never scaled.
-    scaled = dict(Risk=new_risk, Lots_Max=lots_max, Lots_Max_Cum=lots_max_cum, Lots_Input=written_lots, startLot=start)
+    # Lots_Max and Lots_Max_Cum are reported as written: multipliers of the start lot, never scaled. startLot is the
+    # EA's start lot here; plannedLoss its planned sequence loss (RiskperSeq, account currency).
+    scaled = dict(Risk=new_risk, Lots_Max=lots_max, Lots_Max_Cum=lots_max_cum, Lots_Input=written_lots, startLot=start,
+                  plannedLoss=planned_loss)
     return dict(code=None, message=None, edits=edits, scaled=scaled, start_lots=start)
 
 
-def peak_lots(values, defaults, start):
-    """Worst-case concurrent lots of one member: the EA's caps on the start lot, both directions when a buy and a sell
-    sequence may coexist. None when the start lot or every cap is unknown."""
-    if start is None:
+def peak_lots(values, defaults, start, broker):
+    """Worst-case concurrent lots of one member: the most one sequence of the EA's own ladder stands in at this start
+    lot on this broker (ea_peak_standing: every level's NormalizedLots, review 6132018108 items B and B2), both
+    directions when a buy and a sell sequence may coexist. None when the start lot or the ladder is unknown."""
+    inputs = ladder_inputs(values, defaults)
+    if start is None or inputs is None:
         return None
-    cum, per_trade = _number(values, defaults, 'Lots_Max_Cum'), _number(values, defaults, 'Lots_Max')
-    trades = _number(values, defaults, 'Max_Seq_Trades')
-    if cum is not None and cum > 0:
-        lots = start * cum
-    elif per_trade is not None and per_trade > Decimal('0.01') and trades:
-        lots = start * per_trade * trades
-    else:
-        return None
+    top = broker['volume_max'] if broker['volume_max'] else Decimal(10) ** 9
+    lots = _lots(ea_peak_standing(start, inputs, float(broker['volume_min']), float(broker['volume_step']), float(top)))
     # An unreadable Mode_Trade or Allow_Opposite_Seq is taken as the worst case (both directions).
     mode_trade = _number(values, defaults, 'Mode_Trade')
     opposite = _value(values, defaults, 'Allow_Opposite_Seq')
@@ -988,8 +1221,13 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
     per_lot = dec(margins.get(symbol))
     if per_lot is not None and per_lot <= 0:
         per_lot = None
-    unknown = ('margin_per_lot_unavailable' if per_lot is None else 'no_lot_cap' if peak_lots(values, defaults, Decimal(1)) is None
-               else 'start_lot_unknown' if mode == MODE_LOTS['RiskperSeq'] and reference['startLot'] is None else None)
+    unknown = ('margin_per_lot_unavailable' if per_lot is None else 'lot_ladder_unknown' if ladder_inputs(values, defaults) is None
+               else 'start_lot_unknown' if mode == MODE_LOTS['RiskperSeq'] and reference['startLot'] is None
+               # Review 6132018108 item B: the EA's planned loss is not computable (mixed ATR / point grid inputs).
+               else 'loss_unknown' if mode == MODE_LOTS['RiskperSeq'] and sequence_loss(values, defaults, reference,
+                                                                                     risk=_number(values, defaults, 'Risk'),
+                                                                                     conversion=1) is None
+               else None)
     exempt = False
     if unknown:
         row['margin'] = dict(perLot=num(per_lot), peakLots=None, required=None, basis=unknown)
@@ -1001,7 +1239,9 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
             return _excluded(row, MARGIN_UNKNOWN, message(MARGIN_UNKNOWN), inner)
         exempt = True
     deploy_rules = dict(volume_min=broker['volume_min'], volume_step=broker['volume_step'], volume_max=broker['volume_max'],
-                        contract_ratio=contract_ratio, reference_volume_min=reference['volumeMin'], start_lot=reference['startLot'])
+                        contract_ratio=contract_ratio, reference_volume_min=reference['volumeMin'],
+                        reference_volume_step=reference['volumeStep'], reference_volume_max=reference['volumeMax'],
+                        start_lot=reference['startLot'])
     def at(trial_equity):
         return rules_at(values, defaults, deploy_rules, equity=trial_equity, reference_equity=reference_equity, rate=rate)
     fixed_money = any(_number(values, defaults, name) != 0 for name in FIXED_MONEY_INPUTS)
@@ -1024,7 +1264,7 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
         inner['exempt'] = unknown
     else:
         # Margin at the scaled caps and this account's leverage (the SDK's own calculation).
-        lots = peak_lots(values, defaults, outcome['start_lots'])
+        lots = peak_lots(values, defaults, outcome['start_lots'], broker)
         required = per_lot * lots
         row['margin'] = dict(perLot=num(per_lot), peakLots=num(lots), required=num(required), basis='ea_caps',
                              limit=num(account_equity * MAX_MARGIN_SHARE))
@@ -1049,7 +1289,9 @@ def fixed_money_off_reference(values, defaults, equity, reference_equity):
 
 # Deploy-time rule facts, as the plan carries them (exact decimal strings).
 RULE_KEYS = dict(volume_min='volumeMin', volume_step='volumeStep', volume_max='volumeMax', contract_ratio='contractRatio',
-                 reference_volume_min='referenceVolumeMin', start_lot='startLot')
+                 reference_volume_min='referenceVolumeMin', reference_volume_step='referenceVolumeStep',
+                 reference_volume_max='referenceVolumeMax', start_lot='startLot')
+OPTIONAL_RULES = ('volume_max', 'reference_volume_max', 'start_lot')
 
 
 def rules_at(values, defaults, rules, *, equity, reference_equity, rate):
@@ -1058,7 +1300,8 @@ def rules_at(values, defaults, rules, *, equity, reference_equity, rate):
     return equity_rules(values, defaults, lot_factor=equity * rate / reference_equity * rules['contract_ratio'],
                         money_factor=equity / reference_equity,
                         broker=dict(volume_min=rules['volume_min'], volume_step=rules['volume_step'], volume_max=rules['volume_max']),
-                        reference=dict(volumeMin=rules['reference_volume_min'], startLot=rules['start_lot']))
+                        reference=dict(volumeMin=rules['reference_volume_min'], volumeStep=rules['reference_volume_step'],
+                                       volumeMax=rules['reference_volume_max'], startLot=rules['start_lot']))
 
 
 MAX_EQUITY_CENTS = 10 ** 14
@@ -1201,7 +1444,7 @@ def deploy_entries(block, members):
                 or type(entry['edits']) is not dict or type(entry['rules']) is not dict or set(entry['rules']) != set(RULE_KEYS.values())):
             raise ValueError('Invalid broker-fit member %d in the demo deploy plan' % index)
         for key, name in RULE_KEYS.items():
-            _exact(entry['rules'][name], optional=key in ('volume_max', 'start_lot'))
+            _exact(entry['rules'][name], optional=key in OPTIONAL_RULES)
         source = by_id.get(entry['memberId'])
         if source is None or entry['memberId'] in seen:
             raise ValueError('Broker-fit member %d is not a distinct member of the plan\'s manifest' % index)

@@ -246,7 +246,8 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual(row['setSha256Deployed'], row['setSha256Reference'])
         self.assertEqual(row['setSha256Reference'], hashlib.sha256(KESTREL).hexdigest())
         self.assertEqual(bf.rewrite_set(KESTREL, row['edits']), KESTREL)
-        self.assertEqual(row['scaled'], dict(Risk=500.0, Lots_Max=20.0, Lots_Max_Cum=50.0, Lots_Input=0.05, startLot=0.1))
+        # plannedLoss: the EA's planned sequence loss at its start lot (FindCumLoss, round 3 item B): the Risk itself here.
+        self.assertEqual(row['scaled'], dict(Risk=500.0, Lots_Max=20.0, Lots_Max_Cum=50.0, Lots_Input=0.05, startLot=0.1, plannedLoss=500.0))
         self.assertEqual(row['startLotSource'], TRACE)
         json.dumps(result, allow_nan=False)
 
@@ -278,17 +279,19 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual((row['status'], row['edits']['Lots_Input']), ('fit', '0.01'))
 
     def test_a_reference_start_lot_proves_risk_per_sequence_below_the_reference_equity(self):
-        # reference.startLot 0.1 follows the scaled Risk, and the EA picks the NEAREST step (SolveStartLotsByRisk):
-        # ideal 0.099 -> 0.10 at 99,000; 0.01 at 10,000; ideal 0.0099999 at 9,999.99 is under VOLUME_MIN.
+        # reference.startLot 0.1 follows the scaled Risk, and the EA picks the step whose PLANNED loss (the ported
+        # EvalLossForStart, round 3 item B) is nearest: 0.10 at 99,000; 0.01 at 10,000. VOLUME_MIN 0.01 plans to lose
+        # 40.594, so below Risk 40.60 (8,120) the EA would be forced over Risk: BELOW_MIN_LOT.
         self.assertEqual(one(run([(member(KESTREL), KESTREL)], equity=99000))['scaled']['startLot'], 0.1)
         self.assertEqual(one(run([(member(KESTREL), KESTREL)], equity=10000))['scaled']['startLot'], 0.01)
-        self.assertEqual(one(run([(member(KESTREL), KESTREL)], equity=9999.99))['code'], bf.BELOW_MIN_LOT)
+        self.assertEqual(one(run([(member(KESTREL), KESTREL)], equity=8120))['scaled']['startLot'], 0.01)
+        self.assertEqual(one(run([(member(KESTREL), KESTREL)], equity=8119.99))['code'], bf.BELOW_MIN_LOT)
         # Risk under the EA's 10 is refused even with a large start lot (EA mq5:3253).
         self.assertEqual(one(run([(member(KESTREL, ref=reference(startLot=10)), KESTREL)], equity=1999))['code'], bf.BELOW_MIN_LOT)
-        # The start lot follows the Risk actually written (rounded down to the cent): 3 x 166.66/500 = 0.99996, which
-        # the EA rounds to its nearest step, 1.0.
-        self.assertEqual(one(run([(member(KESTREL, ref=reference(startLot=3)), KESTREL)], equity=33333.33, margins={'EURUSD': 100.0}))['scaled'],
-                         dict(Risk=166.66, Lots_Max=20.0, Lots_Max_Cum=50.0, Lots_Input=0.05, startLot=1.0))
+        # The start lot follows the Risk actually written (rounded down to the cent): Risk 166.66 against a reference
+        # start lot of 3 at Risk 500; the EA's nearest planned loss is at 1.0 (166.55).
+        scaled = one(run([(member(KESTREL, ref=reference(startLot=3)), KESTREL)], equity=33333.33, margins={'EURUSD': 100.0}))['scaled']
+        self.assertEqual((scaled['Risk'], scaled['startLot']), (166.66, 1.0))
 
     def test_the_risk_per_sequence_start_lot_is_the_eas_nearest_pick(self):
         # Review 6130418265 item 6. Probe: startLot 0.10 at Risk 500, scale 0.355 (equity 35,500) -> Risk 177.50.
@@ -296,7 +299,9 @@ class ScalingTests(unittest.TestCase):
         # so the peak margin was understated by a third: 0.03 x 50 = 1.5 lots before, 0.04 x 50 = 2.0 lots now.
         row = one(run([(member(KESTREL), KESTREL)], equity=35500))
         self.assertEqual((row['status'], row['scaled']['Risk'], row['scaled']['startLot']), ('fit', 177.5, 0.04))
-        self.assertEqual((row['margin']['peakLots'], row['margin']['required']), (2.0, 2000.0))
+        # Round 3 items B/B2: the margin is the EA's own ladder at 0.04, every level rounded to the nearest step:
+        # 0.04, 0.02, 0.03, 0.06, 0.10, 0.18 -> 0.43 lots (the old cap model said 0.04 x 50 = 2.0).
+        self.assertEqual((row['scaled']['plannedLoss'], row['margin']['peakLots'], row['margin']['required']), (201.14, 0.43, 430.0))
 
     def test_the_lot_solver_matches_the_ea_traced_by_hand(self):
         # SolveStartLotsByRisk (mq5:781-827) and NormalizedLots (mq5:445-459) in IEEE doubles, as MQL5 runs them, on a
@@ -322,6 +327,106 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual((bf.ea_normalized_lots(0.04, 0.1, 0.1, 100), bf.ea_normalized_lots(7.0, 0.1, 0.1, 5.0)), (0.0, 5.0))
         # The review's own probe on a 0.01 grid: 177.5 at 5,000 per lot -> 0.04.
         self.assertEqual(bf.ea_solve_start_lots(177.5, 0.01, 0.01, 50.0, lambda lots: lots * 5000.0), 0.04)
+
+    def test_the_lot_ladder_matches_the_ea_traced_by_hand(self):
+        # Review 6132018108 item B: BuildRawLots + ScaleRawLots + per-level NormalizedLots + BuildCumulativeLots
+        # (mq5:840-1036). Kestrel: CumPartial, Lots_Exponent 1.4, Lots_Factor 1.3, 6 levels, Lots_Max_Cum 50.
+        # Leff = w1 x 1.4 + w2 x 1.82 with w2 = lvl/6: 1.47, 1.54, 1.61, 1.68, 1.75; each level adds cum x (Leff - 1):
+        # 0.1, 0.047, 0.07938, 0.1380918, 0.247840824, 0.459234468 (peak 1.07 < 0.1 x 50: no ScaleRawLots factor).
+        inputs = bf.ladder_inputs(bf.set_values(KESTREL, SCHEMA), bf.schema_defaults(SCHEMA))
+        self.assertEqual(inputs, dict(mode=5, exponent=1.4, factor=1.3, trades=6, cap=50.0, peak_pos=35.0, lots_max=20.0))
+        for got, want in zip(bf.ea_raw_ladder(0.1, inputs), (0.1, 0.047, 0.07938, 0.1380918, 0.247840824, 0.459234468)):
+            self.assertAlmostEqual(got, want, places=12)
+        # Normalized on a 0.01 step: 0.10, 0.05, 0.08, 0.14, 0.25, 0.46 -> standing 0.10 .. 1.08.
+        for got, want in zip(bf.ea_standing(0.1, inputs, 0.01, 0.01, 50.0), (0.1, 0.15, 0.23, 0.37, 0.62, 1.08)):
+            self.assertAlmostEqual(got, want, places=12)
+        # At start 0.01 level 1 (0.0047) normalizes to 0 and level 2 (0.007938) to 0.01 (+26% over its raw lot).
+        for got, want in zip(bf.ea_standing(0.01, inputs, 0.01, 0.01, 50.0), (0.01, 0.01, 0.02, 0.03, 0.05, 0.1)):
+            self.assertAlmostEqual(got, want, places=12)
+        # Last, Lots_Exponent 2, Lots_Factor 1, 4 levels: 1, 0.75x2+0.25x2 = 2, 0.5x4+0.5x4 = 4, 0.25x8+0.75x8 = 8;
+        # peak 15 > 1 x Lots_Max_Cum 3, so ScaleRawLots multiplies levels 1.. by 3/15: 1, 0.4, 0.8, 1.6.
+        last = dict(mode=1, exponent=2.0, factor=1.0, trades=4, cap=3.0, peak_pos=50.0, lots_max=0.0)
+        for got, want in zip(bf.ea_raw_ladder(1.0, last), (1.0, 0.4, 0.8, 1.6)):
+            self.assertAlmostEqual(got, want, places=12)
+        # Peak, 3 levels, exponent 1 (s_up 1), cap 2, Peak_Lots_Pos_PC 50: pivot = round(1.5) = 2. Level 1: t 0.5, tp 1,
+        # Hermite h 0.5: 0.5 x 1 + 0.125 x (1 x 1) + 0.5 x 2 = 1.625 -> lot 0.625. Level 2 is the pivot AND the last
+        # level, so its target is 0: lot -1.625. Running peak 1.625 <= 1 x 2: no ScaleRawLots factor.
+        peak = dict(mode=4, exponent=1.0, factor=1.0, trades=3, cap=2.0, peak_pos=50.0, lots_max=0.0)
+        for got, want in zip(bf.ea_raw_ladder(1.0, peak), (1.0, 0.625, -1.625)):
+            self.assertAlmostEqual(got, want, places=12)
+        # CumPartial compounds the ACTUAL standing at run time (mq5:1539-1563): from 0.02 it adds 0.0094 -> 0.01,
+        # 0.0162 -> 0.02, 0.0305 -> 0.03, 0.0544 -> 0.05, 0.0975 -> 0.10: peak 0.23 (the plan peaks at 0.22).
+        self.assertAlmostEqual(max(bf.ea_standing(0.02, inputs, 0.01, 0.01, 50.0)), 0.22, places=12)
+        self.assertAlmostEqual(bf.ea_peak_standing(0.02, inputs, 0.01, 0.01, 50.0), 0.23, places=12)
+
+    def test_the_eas_planned_loss_is_ported(self):
+        # Review 6132018108 item B. BuildDistances (mq5:1603-1614) with GetSize(GRID_VALID) (mq5:6754-6767): Kestrel's
+        # Grid_Size -3, Grid_Min -1.5 and Grid_Max -15 are all ATR, so the ATR cancels in loss(L) / loss(startLot).
+        # Grid_Exponent 1.3, Grid_Factor 1.1: f = w1/1.3 + w2/1.43, size = 3 x (1/f)^(lvl-1), clamped to [1.5, 15].
+        values, defaults = bf.set_values(KESTREL, SCHEMA), bf.schema_defaults(SCHEMA)
+        shape = bf.grid_shape(values, defaults)
+        want = [3.0 * (1.0 / ((1 - lvl / 6) / 1.3 + (lvl / 6) / 1.43)) ** (lvl - 1) for lvl in range(1, 6)]
+        for got, expected, rounded in zip(shape, want, (3.0, 4.021875, 5.56435, 7.95075, 11.74224)):
+            self.assertAlmostEqual(got, expected, places=12)
+            self.assertAlmostEqual(got, rounded, places=4)
+        # FindCumLoss at the reference start lot 0.1: 3 x 0.10 + 4.021875 x 0.15 + 5.56435 x 0.23 + 7.95075 x 0.37
+        # + 11.74224 x 0.62 = 12.40505 grid units: the reference Risk 500.
+        inputs = bf.ladder_inputs(values, defaults)
+        self.assertAlmostEqual(bf.ea_loss_shape(0.1, inputs, shape, 0.01, 0.01, 50.0), 12.405050485, places=8)
+        loss = bf.sequence_loss(values, defaults, dict(startLot=Decimal('0.1'), volumeMin=Decimal('0.01'), volumeStep=Decimal('0.01'),
+                                                       volumeMax=Decimal('50')), risk=Decimal('500'), conversion=1)
+        self.assertAlmostEqual(loss(0.1, 0.01, 0.01, 50.0), 500.0, places=9)
+        # Probe: equity 14,642 -> Risk 73.21. Start 0.01 stands 0.01, 0.01, 0.02, 0.03, 0.05: 40.594; start 0.02 stands
+        # 0.02, 0.03, 0.05, 0.08, 0.13: 105.660. |105.66 - 73.21| = 32.45 < |40.59 - 73.21| = 32.62, so the EA picks
+        # 0.02 where the linear model (500 per 0.1 lot) picked 0.01: its margin doubles and it plans to lose 105.66
+        # against the Risk 73.21 (+44%, the EA's own nearest rounding).
+        self.assertAlmostEqual(loss(0.01, 0.01, 0.01, 50.0), 40.5940, places=3)
+        self.assertAlmostEqual(loss(0.02, 0.01, 0.01, 50.0), 105.6596, places=3)
+        self.assertEqual(bf.ea_solve_start_lots(73.21, 0.01, 0.01, 50.0, lambda lots: lots * 5000.0), 0.01, 'the linear model')
+        row = one(run([(member(KESTREL), KESTREL)], equity=14642))
+        self.assertEqual((row['status'], row['scaled']['Risk'], row['scaled']['startLot'], row['scaled']['plannedLoss']),
+                         ('fit', 73.21, 0.02, 105.66))
+        self.assertEqual((row['margin']['peakLots'], row['margin']['required']), (0.23, 230.0))
+        # Mixed grid kinds (Grid_Size in points, Grid_Min / Grid_Max in ATR) leave the loss unknown: fail closed.
+        mixed = kestrel_with(Grid_Size='10.0', EA_Desc='M')
+        self.assertIsNone(bf.grid_shape(bf.set_values(mixed, SCHEMA), defaults))
+        row = one(run([(member(mixed), mixed)], equity=50000))
+        self.assertEqual((row['code'], row['margin']['basis']), (bf.MARGIN_UNKNOWN, 'loss_unknown'))
+
+    def test_an_equity_sweep_picks_what_the_ported_solver_picks(self):
+        # Review 6132018108 item B: from 10,000 to 100,000 the start lot is the ported solver's on the ported loss at
+        # every equity, and differs from the old linear pick at about 10% of them.
+        values, defaults = bf.set_values(KESTREL, SCHEMA), bf.schema_defaults(SCHEMA)
+        loss = bf.sequence_loss(values, defaults, dict(startLot=Decimal('0.1'), volumeMin=Decimal('0.01'), volumeStep=Decimal('0.01'),
+                                                       volumeMax=Decimal('50')), risk=Decimal('500'), conversion=1)
+        rules = dict(volume_min=Decimal('0.01'), volume_step=Decimal('0.01'), volume_max=Decimal('50'), contract_ratio=Decimal(1),
+                     reference_volume_min=Decimal('0.01'), reference_volume_step=Decimal('0.01'), reference_volume_max=Decimal('50'),
+                     start_lot=Decimal('0.1'))
+        fit = moved = 0
+        worst = 0.0
+        for equity in range(10000, 100001, 97):
+            outcome = bf.rules_at(values, defaults, rules, equity=Decimal(equity), reference_equity=Decimal(100000), rate=Decimal(1))
+            self.assertIsNone(outcome['code'])
+            risk = outcome['scaled']['Risk']
+            ported = bf.ea_solve_start_lots(risk, 0.01, 0.01, 50.0, lambda lots: loss(lots, 0.01, 0.01, 50.0))
+            self.assertAlmostEqual(float(outcome['scaled']['startLot']), ported, places=12, msg=str(equity))
+            fit += 1
+            linear = bf.ea_solve_start_lots(risk, 0.01, 0.01, 50.0, lambda lots: lots * 5000.0)
+            moved += abs(ported - linear) > 1e-9
+            worst = max(worst, loss(ported, 0.01, 0.01, 50.0) / float(risk))
+        self.assertEqual((fit, moved), (928, 92))                                # 9.9%
+        self.assertLess(worst, 1.45)
+
+    def test_fixed_lots_margin_follows_the_eas_ladder(self):
+        # Review 6132018108 item B2. FixedLots floors the START lot, but every later level still rounds to the nearest
+        # step. CumPartial, Lots_Exponent 1.6, Lots_Factor 1.3 at scale 0.10: the reference Lots_Input 0.10 peaks at
+        # 2.12 lots, the account's 0.01 at 0.26, not 0.212 (+22.6%). The margin uses the ported ladder's 0.26.
+        raw = kestrel_with(**dict(FIXED, Lots_Input='0.10', Lots_Exponent='1.6', Mode_Lots_Prog='5'))
+        inputs = bf.ladder_inputs(bf.set_values(raw, SCHEMA), bf.schema_defaults(SCHEMA))
+        self.assertAlmostEqual(bf.ea_peak_standing(0.10, inputs, 0.01, 0.01, 50.0), 2.12, places=12)
+        self.assertAlmostEqual(bf.ea_peak_standing(0.01, inputs, 0.01, 0.01, 50.0), 0.26, places=12)
+        row = one(run([(member(raw), raw)], equity=10000))
+        self.assertEqual((row['status'], row['edits']['Lots_Input'], row['margin']['peakLots']), ('fit', '0.01', 0.26))
 
     def test_lots_input_is_snapped_to_the_broker_step_at_factor_one(self):
         # Review 6130418265 item 1. Probe: VOLUME_STEP 0.1, VOLUME_MIN 0.1, reference Lots_Input 0.25 at scale 1.0. The
@@ -354,8 +459,8 @@ class ScalingTests(unittest.TestCase):
         row = one(run([(member(raw, timeframe='M15'), raw)], symbols=[symbol(**FOUR_DIGIT)], spread=1))
         self.assertEqual((row['code'], row['message']),
                          (bf.EA_INIT_REFUSED, "On this broker this set's Grid_Size would be 0.4, which the GOAT EA refuses to start with."))
-        self.assertEqual(one(run([(member(kestrel_with(**dict(NEUTRAL, Grid_Size='5.0')), timeframe='M15'),
-                                   kestrel_with(**dict(NEUTRAL, Grid_Size='5.0')))], symbols=[symbol(**FOUR_DIGIT)], spread=1))['status'], 'fit')
+        fine = kestrel_with(**dict(NEUTRAL, Grid_Size='5.0', Grid_Min='5.0', Grid_Max='100.0'))
+        self.assertEqual(one(run([(member(fine, timeframe='M15'), fine)], symbols=[symbol(**FOUR_DIGIT)], spread=1))['status'], 'fit')
 
     def test_without_a_reference_start_lot_risk_per_sequence_is_margin_unknown(self):
         # Ruling (goatai#2350 6129252646): unknown margin fails closed at any equity other than the reference-identical
@@ -392,8 +497,10 @@ class MinEquityTests(unittest.TestCase):
         self.assertEqual(run([(member(raw), raw)], minEquity=30000, equity=25000)['refusal']['code'], bf.PORTFOLIO_NEEDS_LARGER_ACCOUNT)
 
     def test_risk_per_sequence_with_a_start_lot_is_offered_below_the_reference(self):
+        # The ported planned loss at VOLUME_MIN is 40.594, so the minimum is Risk 40.60 = 8,120 (round 3 item B).
         result = run([(member(KESTREL), KESTREL)], equity=10000)
-        self.assertEqual((result['minEquity'], result['offered']), (10000.0, True))
+        self.assertEqual((result['minEquity'], result['offered']), (8120.0, True))
+        self.assertEqual(run([(member(KESTREL), KESTREL)], equity=8119.99)['refusal']['code'], bf.PORTFOLIO_NEEDS_LARGER_ACCOUNT)
         without = run([(member(KESTREL, ref=reference(startLot=None)), KESTREL)], equity=99000)
         self.assertEqual((without['offered'], without['refusal']['code'], without['minEquity']), (False, bf.PORTFOLIO_BROKER_UNFIT, None))
         # On the reference-identical account the exemption offers it at the reference equity only.
@@ -405,10 +512,10 @@ class MinEquityTests(unittest.TestCase):
         for index in range(10):
             raw = kestrel_with(EA_Desc='R%02d' % index)
             rows.append((member(raw, member_id='m%d' % index, canonical='GBPUSD' if index == 9 else 'EURUSD'), raw))
-        result = run(rows)
+        result = run(rows, margins={'EURUSD': 800.0})                          # 9 x 6.05 lots x 800 = 43,560 margin
         self.assertEqual((result['riskWeighting'], result['tradableRiskShare'], result['offered']), ('risk', 0.9, True))
         rows[8] = (member(rows[8][1], member_id='m8', canonical='GBPUSD'), rows[8][1])
-        result = run(rows)
+        result = run(rows, margins={'EURUSD': 800.0})
         self.assertEqual((result['tradableRiskShare'], result['offered'], result['refusal']['code'], result['minEquity']),
                          (0.8, False, bf.PORTFOLIO_BROKER_UNFIT, None))
 
@@ -477,11 +584,11 @@ class BrokerSpecTests(unittest.TestCase):
 
     def test_point_distances_convert_exactly_or_refuse(self):
         four = dict(digits=4, point=0.0001, trade_tick_size=0.0001, trade_tick_value=10.0)
-        raw = kestrel_with(**dict(NEUTRAL, Grid_Size='10.0', Lock_Profit_Size='30.0', Grid_Min='-1.5', TSL_Size='-0.5'))
+        raw = kestrel_with(**dict(NEUTRAL, Grid_Size='10.0', Lock_Profit_Size='30.0', Grid_Min='5.0', Grid_Max='100.0', TSL_Size='-0.5'))
         row = one(run([(member(raw, timeframe='M15'), raw)], symbols=[symbol(**four)], spread=1))
         self.assertEqual(row['status'], 'fit')
-        self.assertEqual(row['edits'], dict(Grid_Size='1.0', Lock_Profit_Size='3.0'))   # ATR (negative) distances unchanged
-        self.assertEqual(row['pointConversion']['inputs'], dict(Grid_Size='1.0', Lock_Profit_Size='3.0'))
+        self.assertEqual(row['edits'], dict(Grid_Size='1.0', Lock_Profit_Size='3.0', Grid_Min='0.5', Grid_Max='10.0'))   # ATR (negative) distances unchanged
+        self.assertEqual(row['pointConversion']['inputs'], dict(Grid_Size='1.0', Lock_Profit_Size='3.0', Grid_Min='0.5', Grid_Max='10.0'))
         clamped = kestrel_with(**dict(NEUTRAL, Grid_Min='4.0'))                # 0.4 would cross the EA's 0.5 minimum
         self.assertEqual(one(run([(member(clamped, timeframe='M15'), clamped)], symbols=[symbol(**four)], spread=1))['code'],
                          bf.POINT_SIZE_MISMATCH)
@@ -546,13 +653,17 @@ class ServerOffsetTests(unittest.TestCase):
 
 class MarginTests(unittest.TestCase):
     def test_member_and_portfolio_margin(self):
-        raw = kestrel_with(**dict(FIXED, Allow_Opposite_Seq='true'))
-        # 0.05 x Lots_Max_Cum 50 = 2.5 lots, both directions = 5 lots, at 1,000 per lot = 5,000.
-        self.assertEqual(one(run([(member(raw), raw)]))['margin'],
-                         dict(perLot=1000.0, peakLots=5.0, required=5000.0, basis='ea_caps', limit=50000.0))
-        self.assertEqual(one(run([(member(raw), raw)], margins={'EURUSD': 30000.0}))['code'], bf.MARGIN_TOO_HIGH)
+        # The EA's own ladder (round 3 items B/B2): FixedLots 0.05 on Kestrel's CumPartial ladder runs 0.05, 0.07, 0.11,
+        # 0.18, 0.30, 0.52 at run time; 1.77 lots, both directions 3.54.
+        six = kestrel_with(**dict(FIXED, Allow_Opposite_Seq='true'))
+        self.assertEqual(one(run([(member(six), six)]))['margin']['peakLots'], 3.54)
+        raw = kestrel_with(**dict(FIXED, Allow_Opposite_Seq='true', Max_Seq_Trades='1'))
+        # One level: 0.05 lots, both directions 0.1, at 50,000 per lot = 5,000.
+        self.assertEqual(one(run([(member(raw), raw)], margins={'EURUSD': 50000.0}))['margin'],
+                         dict(perLot=50000.0, peakLots=0.1, required=5000.0, basis='ea_caps', limit=50000.0))
+        self.assertEqual(one(run([(member(raw), raw)], margins={'EURUSD': 600000.0}))['code'], bf.MARGIN_TOO_HIGH)
         pair = [(member(raw), raw), (member(raw, member_id='b'), raw)]
-        result = run(pair, margins={'EURUSD': 6000.0})                       # 30,000 each, 60,000 together
+        result = run(pair, margins={'EURUSD': 300000.0})                     # 30,000 each, 60,000 together
         self.assertEqual({r['status'] for r in result['members']}, {'fit'})
         self.assertEqual((result['offered'], result['refusal']['code'], result['refusal']['message'], result['margin']['required'],
                           result['margin']['limit']),
@@ -561,19 +672,20 @@ class MarginTests(unittest.TestCase):
     def test_margin_may_use_at_most_half_the_equity(self):
         # Review 6130418265 item 9. Probe: a worst case equal to the equity (margin level 100%) used to fit. Now the
         # rule is peak margin <= 50% of equity (margin level >= 200%); the boundary itself fits.
-        raw = kestrel_with(**dict(FIXED, Allow_Opposite_Seq='true'))                 # 5 lots at the caps
-        at_equity = one(run([(member(raw), raw)], margins={'EURUSD': 20000.0}))   # 100,000 = equity
+        raw = kestrel_with(**dict(FIXED, Allow_Opposite_Seq='true', Max_Seq_Trades='1'))   # 0.1 lots (one level, both ways)
+        at_equity = one(run([(member(raw), raw)], margins={'EURUSD': 1000000.0}))   # 100,000 = equity
         self.assertEqual((at_equity['code'], at_equity['message'], at_equity['margin']['required']),
                          (bf.MARGIN_TOO_HIGH, "This set could use more than half of this account's equity as margin.", 100000.0))
-        self.assertEqual(one(run([(member(raw), raw)], margins={'EURUSD': 10000.0}))['status'], 'fit')    # exactly 50,000
-        self.assertEqual(one(run([(member(raw), raw)], margins={'EURUSD': 10000.01}))['code'], bf.MARGIN_TOO_HIGH)
+        self.assertEqual(one(run([(member(raw), raw)], margins={'EURUSD': 500000.0}))['status'], 'fit')    # exactly 50,000
+        self.assertEqual(one(run([(member(raw), raw)], margins={'EURUSD': 500000.1}))['code'], bf.MARGIN_TOO_HIGH)
 
     def test_unknown_margin_fails_closed(self):
         row = one(run([(member(KESTREL), KESTREL)], margins={'EURUSD': None}, equity=99000))
         self.assertEqual((row['code'], row['margin']['basis'], row['message']),
                          (bf.MARGIN_UNKNOWN, 'margin_per_lot_unavailable', bf.MESSAGES[bf.MARGIN_UNKNOWN]))
-        no_cap = kestrel_with(Lots_Max_Cum='0.0', Lots_Max='0.0')
-        self.assertEqual(one(run([(member(no_cap), no_cap)], equity=99000))['margin']['basis'], 'no_lot_cap')
+        # An unreadable ladder input leaves the EA's lots unknown (round 3: the ladder, not the caps, sizes the margin).
+        no_ladder = kestrel_with(Lots_Exponent='1,4')
+        self.assertEqual(one(run([(member(no_ladder), no_ladder)], equity=99000))['margin']['basis'], 'lot_ladder_unknown')
         # On the reference-identical account the exemption stands in, with its reason and the unknown basis kept.
         row = one(run([(member(KESTREL), KESTREL)], margins={'EURUSD': None}))
         self.assertEqual((row['marginReason'], row['margin']['unknownBasis']), (bf.REFERENCE_IDENTICAL_MARGIN, 'margin_per_lot_unavailable'))
@@ -637,7 +749,8 @@ class DeployRecordTests(unittest.TestCase):
         deployed = bf.rewrite_set(KESTREL, dict(Risk='250.0'))
         self.assertEqual(bf.deployed_bytes(KESTREL, entries[0]), deployed)
         self.assertEqual(entries[0]['rules'], dict(volumeMin='0.01', volumeStep='0.01', volumeMax='50.0', contractRatio='1',
-                                                   referenceVolumeMin='0.01', startLot='0.1'))
+                                                   referenceVolumeMin='0.01', referenceVolumeStep='0.01', referenceVolumeMax='50',
+                                                   startLot='0.1'))
         self.assertEqual((entries[0]['brokerSymbol'], entries[0]['deployFileName']), ('EURUSD', 'GOAT V1.49 EURUSD,M1_EURUSD.M1.kestrel.set'))
         sha = hashlib.sha256(deployed).hexdigest()
         self.assertEqual(bf.deploy_record(block), dict(schema=bf.DEPLOY_SCHEMA, scale=0.5, deployIdentity=bf.deploy_identity(0.5, [sha]),
@@ -844,16 +957,16 @@ class ReferenceIdenticalTests(unittest.TestCase):
 
     def test_a_changed_member_byte_refuses(self):
         # The member itself converted (a 4-digit broker point): its bytes change, so no exemption.
-        neutral = kestrel_with(**dict(NEUTRAL, Grid_Size='10.0'))
+        neutral = kestrel_with(**dict(NEUTRAL, Grid_Size='10.0', Grid_Min='5.0', Grid_Max='100.0'))
         row = one(self.check(members=[(member(neutral, ref=NO_START), neutral)], symbols=[symbol(**FOUR_DIGIT)], spread=0.8))
         self.assertEqual((row['code'], row['margin']['basis']), (bf.MARGIN_UNKNOWN, 'start_lot_unknown'))
         # Another member's point conversion revokes it for the whole portfolio.
-        converted = kestrel_with(**dict(NEUTRAL, Grid_Size='10.0', EA_Desc='B'))
+        converted = kestrel_with(**dict(NEUTRAL, Grid_Size='10.0', Grid_Min='5.0', Grid_Max='100.0', EA_Desc='B'))
         members = [(member(KESTREL, ref=NO_START), KESTREL), (member(converted, member_id='b', canonical='GBPUSD'), converted)]
         history = {'EURUSD': ticks(), 'GBPUSD': ticks((0.8,), point=0.0001)}
         result = self.check(members=members, symbols=[symbol(), symbol('GBPUSD', **FOUR_DIGIT)], history=history)
         first, second = result['members']
-        self.assertEqual((second['status'], second['edits']), ('fit', dict(Grid_Size='1.0')))
+        self.assertEqual((second['status'], second['edits']), ('fit', dict(Grid_Size='1.0', Grid_Min='0.5', Grid_Max='10.0')))
         self.assertEqual((first['code'], first['marginReason'], first['margin']['basis']), (bf.MARGIN_UNKNOWN, None, 'start_lot_unknown'))
         self.assertEqual((result['referenceIdentical']['conditions']['bytesUnchanged'], result['referenceIdentical']['used']), (False, False))
 

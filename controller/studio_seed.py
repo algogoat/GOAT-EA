@@ -123,12 +123,55 @@ class SeedRunner:
         write_json(root/'state.json',state)
 
     def _restore_hint(self,state):
-        """After the batch ends MT5 stays closed; a plain open may load an old chart profile."""
+        """After the batch ends MT5 stays closed; GOAT reopens the monitor itself (never a File > Profiles step)."""
         if state.get('status') not in ('completed','stopped') or state.get('generation') is None:return {}
         run=str(getattr(self.c,'session',{}).get('run_id',''))
         profile='GOAT-Studio-'+run.removeprefix('session-') if re.fullmatch(r'session-[a-f0-9]{32}',run) else 'GOAT-Studio-<session>'
-        return dict(monitor_profile=profile,next_action='Seed batch ended and MT5 is closed. Reopen the monitor with monitor-launch --attempt-id <new id>; it opens chart profile '+
-            profile+' with the GOAT Studio monitor. A plain MT5 open can load the previous chart profile, which leaves runtime feedback stale (in MT5: File > Profiles > '+profile+').')
+        noun={'seed':'Seed hunt','catchup':'Catch-up','holdup':'Hold-up test'}.get(self.COMMAND_PREFIX,'Batch')
+        return dict(monitor_profile=profile,next_action=noun+' ended and MT5 is closed. Reopen the monitor with monitor-launch --attempt-id <new id>; '
+            'it opens chart profile '+profile+' with the GOAT Studio monitor. Members ran on GOAT Research, GOAT\'s own batch chart '
+            'profile, and GOAT moves MT5\'s saved profile back to '+profile+' once MT5 is closed (research_profile_restore); '
+            'do not change chart profiles in MT5 yourself.')
+
+    def _research_restore(self,batch_id,result):
+        """At a terminal status with MT5 closed: ProfileLast back from GOAT Research to the monitor profile
+        (studio_research_profile.restore; MT5 stopped, no batch or seed slot active, current value exactly GOAT Research).
+        Never raises; the result is added to the reply and never changes the run."""
+        if not isinstance(result,dict) or result.get('status') not in ('completed','stopped'):return result
+        try:
+            from studio_research_profile import restore
+            restored=restore(self.c,self.COMMAND_PREFIX+'-driver:'+batch_id+':'+result['status'],inspect=self.process.inspect)
+        except Exception as error:
+            restored=dict(status='not_restored',reason='check_failed',detail=str(error)[:300])
+        return result|dict(research_profile_restore=restored)
+
+    def _research_ready(self,batch_id,root,manifest,state):
+        """MT5 just stopped after this activation's monitor close (native gate held): this start's monitor-profile
+        migration, the fix-B record, then GOAT Research reset for the first member. Returns False when GOAT Research
+        could not be prepared: the batch is then stopped with its pending members (seed-resume continues them)."""
+        from studio_research_profile import migrate_monitor_profile,prepare,research_profile_manifest
+        research=research_profile_manifest(manifest)
+        attempt=self.COMMAND_PREFIX+'-'+batch_id+'-a'+str(len(state.get('reactivations') or ()))
+        if research:
+            try:state['monitor_profile_migration']=migrate_monitor_profile(self.c,attempt,inspect=lambda:None,gate_held=True)
+            except Exception as error:state['monitor_profile_migration']=dict(status='failed',detail=str(error)[:300])
+        if 'monitor_pre_close' in state:
+            # Only this transition records; later per-member closes never touch the record.
+            state['monitor_chart_record']=self._monitor_record(batch_id,state.pop('monitor_pre_close'))
+        if not research:return True     # a batch prepared before GOAT Research that already started finishes as it is
+        pending=next((spec for spec,item in zip(manifest['members'],state['members']) if item['status']=='pending'),None)
+        try:
+            state['research_profile']=prepare(self.c,attempt,inspect=lambda:None,gate_held=True,
+                                              fallback_symbol=(pending or manifest['members'][0])['tester']['Symbol'])
+            return True
+        except Exception as error:
+            pending_count=sum(m['status']=='pending' for m in state['members'])
+            state['status']='stopped'
+            state['stopped_reason']=dict(rules=['research_profile_unprepared'],attempted=0,failed=0,in_a_row=None,pending=pending_count,reasons=[],
+                plain=('GOAT could not prepare GOAT Research, the chart profile members run on ('+str(error)[:200]+'), so no member '
+                       'started; MT5 is closed and its saved profile is still the GOAT Studio monitor. Open MT5 normally, then '
+                       +self.COMMAND_PREFIX+'-resume continues the %d pending %s%s.')%(pending_count,self.MEMBER_NOUN,'' if pending_count==1 else 's'))
+            return False
 
     def _public(self,root,state):
         state=state|{key:value for key,value in self._restore_hint(state).items() if key not in state}
@@ -200,7 +243,9 @@ class SeedRunner:
             verify_explicit_inputs(values,self.c.schema,valid['active_axes'])
             setpath=root/(alias+'.set')
             configpath=Path(self.c.install['terminal_data_root'])/'config/GOATStudio/Seeds'/(alias+'.ini')
-            sections={'Common':{'Login':account['login'],'Server':account['server']},'Experts':{'Enabled':0,'AllowLiveTrading':0},
+            # [Charts]: every member runs MT5 on GOAT Research, never the monitor profile (studio_research_profile).
+            sections={'Common':{'Login':account['login'],'Server':account['server']},'Charts':{'ProfileLast':'GOAT Research'},
+                'Experts':{'Enabled':0,'AllowLiveTrading':0},
                 'Tester':tester|{'ShutdownTerminal':1,'ReplaceReport':0,'Report':'MQL5\\Files\\GOATStudio\\SeedReports\\'+alias+'.xml'},'TesterInputs':values}
             ini=''
             for section,items in sections.items():
@@ -929,7 +974,10 @@ class SeedRunner:
         """studio_onboarding.driver_pre_close_health for the monitor MT5 this activation closes. Never raises."""
         try:
             from studio_onboarding import driver_pre_close_health
-            health=driver_pre_close_health(self.c,current,sdk_read=self.monitor_sdk_read)
+            from studio_research_profile import pending_set_aside
+            # When the migration has charts to move, the stray charts it moves aside right after this close are left out
+            # of this read; the record after the close still checks the real folder (studio_research_profile).
+            health=driver_pre_close_health(self.c,current,sdk_read=self.monitor_sdk_read,set_aside=pending_set_aside(self.c))
         except Exception as error:
             health=dict(healthy=False,reason='check_failed',detail=str(error))
         return health|dict(close_unix=self.clock())
@@ -1035,6 +1083,8 @@ class SeedRunner:
         try:
             with terminal_lease(self.c.root,purpose=self.COMMAND_PREFIX+'-drive '+batch_id):
                 result=self._drive_passes(batch_id,max_seconds,initial,reactivate,call)
+                # Any terminal status: MT5's saved profile back from GOAT Research to the monitor (MT5 closed only).
+                result=self._research_restore(batch_id,result)
         except BaseException as exc:
             self._driver_end(call,'failed',error=str(exc) or type(exc).__name__)
             raise
@@ -1084,6 +1134,11 @@ class SeedRunner:
                 if state['status'] in ('completed','stopped','reconcile_required'):return self._public(root,state)
                 if state['status']=='prepared':
                     if not initial:raise ValueError('Use seed-start for a prepared batch')
+                    from studio_research_profile import legacy_package_refusal,research_profile_manifest
+                    if not research_profile_manifest(manifest):
+                        # Prepared before members ran on GOAT Research: refused before the monitor closes with
+                        # PACKAGE_PREDATES_RESEARCH_PROFILE; the app re-prepares it automatically (goatai#2350 6120693275).
+                        raise legacy_package_refusal(batch_id,kind=self.COMMAND_PREFIX)
                     self._verify_prepared(batch_id,manifest)
                     # Held-out lock: a lock declared after prepare refuses the start (before the monitor closes).
                     from studio_heldout_guard import check_runner_start
@@ -1096,9 +1151,10 @@ class SeedRunner:
                     if current is not None and current!=state['initial_process']:raise ValueError('Monitor process changed during normal close')
                     if current is None:
                         state['status']='active'
-                        if 'monitor_pre_close' in state:
-                            # Only this transition records; later per-member closes never touch the record.
-                            state['monitor_chart_record']=self._monitor_record(batch_id,state.pop('monitor_pre_close'))
+                        # Migration, fix-B record, GOAT Research reset (studio_research_profile), in that order.
+                        if not self._research_ready(batch_id,root,manifest,state):
+                            self._settle_slot(root,manifest,state,current)
+                            return self._public(root,state)
                         self._save(root,state)
                 running=next((m for m in state['members'] if m['status'] in ('running','cancel_requested','timeout_requested')),None)
                 if running and running['status']=='running':self._research_guard(batch_id)
@@ -1155,6 +1211,10 @@ class SeedRunner:
         return self._status_or_busy(batch_id,driver_budget_exhausted=True,next_action='seed-resume continues the retained attempt; no retry')
 
     def cancel(self,batch_id):
+        # On cancel too, once MT5 is closed: ProfileLast back from GOAT Research (studio_research_profile.restore).
+        return self._research_restore(batch_id,self._cancel(batch_id))
+
+    def _cancel(self,batch_id):
         self.c.bridge.pump()
         with self._gate():
             root,manifest,state=self._read(batch_id)

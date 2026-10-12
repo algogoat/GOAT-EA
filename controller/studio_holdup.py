@@ -304,8 +304,9 @@ class HoldupRunner(SeedRunner):
             if identity in identities:
                 raise ValueError(label + ' repeats another test (same values, symbol, period, window and tester)')
             identities.add(identity)
-            sections = {'Common': {'Login': account['login'], 'Server': account['server']}, 'Experts': {'Enabled': 0, 'AllowLiveTrading': 0},
-                        'Tester': tester, 'TesterInputs': frozen_values}
+            # [Charts]: every member runs MT5 on GOAT Research, never the monitor profile (studio_research_profile).
+            sections = {'Common': {'Login': account['login'], 'Server': account['server']}, 'Charts': {'ProfileLast': 'GOAT Research'},
+                        'Experts': {'Enabled': 0, 'AllowLiveTrading': 0}, 'Tester': tester, 'TesterInputs': frozen_values}
             ini = ''
             for section, items in sections.items():
                 ini += '[' + section + ']\r\n'

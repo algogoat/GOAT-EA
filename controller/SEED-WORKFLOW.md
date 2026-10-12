@@ -368,11 +368,26 @@ login; `observed_healthy_chart` in the reply), with Algo Trading still forced of
 The seed driver's first close (of the monitor, before member 1) is such a close:
 the run state carries `monitor_chart_record`. Member closes never record. Any other saved chart is refused with
 `refusal_code` `MONITOR_PROFILE_CHANGED` and `failed_check` `permissions`; nothing
-was launched. Then ask the user to open MT5 normally and
-choose File > Profiles > the `monitor_profile` name. A plain MT5 open can load an
-older chart profile (the seed run's `/config` session does not restore it), which
-leaves runtime feedback stale. If the user already opened MT5 that way,
-`onboarding-status` names the saved profile and the one to pick in File > Profiles.
+was launched. Then ask the user to open MT5 normally.
+Members run MT5 on `GOAT Research`, GOAT's own batch chart profile (each member INI
+carries `[Charts] ProfileLast=GOAT Research`), so the charts MT5 adds for the tested
+symbols land there and never in the monitor profile. GOAT resets `GOAT Research`
+before member 1 (the previous one is moved aside under controller state, never
+deleted) and, at any terminal status or cancel with MT5 closed, edits only the saved
+`ProfileLast` line back to the `monitor_profile` name (`research_profile_restore`), so
+a plain MT5 open shows the GOAT Studio monitor. Never ask the user to choose a profile
+in File > Profiles for `GOAT Research`. At every batch start GOAT re-plans and moves
+aside (never deletes) the bare charts earlier batches left in the monitor profile
+(`monitor_profile_migration` in every start's state; `research-profile-status` shows the
+plan and the run log); anything else there makes it refuse and leave the profile untouched.
+Seed, catch-up and hold-up members never read common.ini (each member INI names
+`GOAT Research` and GOAT launches every member), so their runs leave common.ini's
+`ProfileLast` on the monitor profile. A customer batch's own MT5 relaunches do read it,
+so a config start sets it to `GOAT Research` right before its launch and restores it.
+A batch prepared before this change is refused at its first start with `refusal_code`
+`PACKAGE_PREDATES_RESEARCH_PROFILE` ("This batch was prepared by an older GOAT; it will be
+prepared again."): prepare the same plan again under a new batch ID. A running or paused
+batch finishes as it is.
 While seeds run, MT5 shows a plain chart and its Strategy Tester, without the GOAT
 Studio panel or queue; tell the user that is expected. On the owner demo lane (`goat.exe demo`) the seed run reopens
 MT5 itself on that profile after the last member and reads the build back

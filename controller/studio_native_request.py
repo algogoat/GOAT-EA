@@ -157,6 +157,10 @@ def _validate_material(state, job, *, account, monitor_path, monitor_sha256, inp
         if not binding.get('research_profile'):
             material['startup_monitor']=dict(Expert=relative_monitor,ExpertParameters=preset_name,
                 Symbol=config['tester']['Symbol'],Period=config['tester']['Period'])
+        elif binding['research_profile']=='GOAT Research':
+            # The monitor_launch shape (studio_onboarding.monitor_launch): no Symbol, so MT5 attaches the monitor EA to
+            # GOAT Research's prepared chart01 instead of creating a disposable chart (studio_research_profile.prepare).
+            material['startup_monitor']=dict(Expert=relative_monitor,ExpertParameters=preset_name,Period='M1')
     startup_raw,startup_receipt=startup_config(material)
     return material | dict(startup_raw=startup_raw,startup_receipt=startup_receipt)
 

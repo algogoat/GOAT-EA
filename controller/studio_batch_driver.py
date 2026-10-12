@@ -194,7 +194,9 @@ def _summary(path, record):
         disk_guard_available=(record.get('schema_version') == 2 and type(record.get('min_free_bytes')) is int
                               and record['min_free_bytes'] > 0),
         host_liveness_required=True, independent_hard_stop=False) | (
-        dict(monitor_chart_record=record['monitor_chart_record']) if 'monitor_chart_record' in record else {})
+        dict(monitor_chart_record=record['monitor_chart_record']) if 'monitor_chart_record' in record else {}) | {
+        key: record[key] for key in ('research_profile', 'monitor_profile_migration', 'batch_process', 'profile_last_select',
+                                     'end_state', 'refusal_code') if key in record}
 
 
 PAUSE_OVERRUN_SECONDS = 240
@@ -403,9 +405,35 @@ def _fast_watch(controller, job_id, record, path, clock, monitor_fn, pause, esca
     return pause
 
 
+def _research_package(controller, job_id):
+    """True when this batch's package runs MT5 on GOAT Research (studio_research_profile). Never raises."""
+    try:
+        plan = read_json(safe_path(controller.root/'packages'/job_id/'studio-plan.json'))
+        from studio_research_profile import RESEARCH_PROFILE
+        return (plan.get('research_binding') or {}).get('research_profile') == RESEARCH_PROFILE
+    except Exception:
+        return False
+
+
+def _end_state(controller, job_id, record, path, clock, end_state_fn):
+    """Config-start end state (Claude-Mac goatai#2350 6120004490, option (i)): once finish verified this attempt, one
+    normal close and monitor-launch back onto the monitor profile (studio_research_profile.batch_end_state), within the
+    batch's consent. Runs once per journal; any refusal leaves MT5 as it is with a plain reason. Never raises."""
+    if (record.get('start_route') != 'config_restart' or 'end_state' in record or record.get('stopped') is not True
+            or 'retired' in record or not _research_package(controller, job_id)):
+        return   # a start retired before MT5 was touched never closes anything
+    try:
+        if end_state_fn is None:
+            from studio_research_profile import batch_end_state as end_state_fn
+        record['end_state'] = end_state_fn(controller, job_id, record)
+    except Exception as error:
+        record['end_state'] = dict(status='left_as_is', reason='check_failed', detail=str(error)[:300])
+    _save(path, record, clock)
+
+
 def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
         cancel_grace_seconds=120, min_free_bytes=None, clock=time, finish_fn=finish,
-        pause_seconds=None, monitor_fn=None, restart_consent=False):
+        pause_seconds=None, monitor_fn=None, restart_consent=False, end_state_fn=None):
     """Start once, or explicitly observe a retained attempt against its old deadline.
 
     Controller must already be open. CLI callers can hold their normal shared
@@ -484,6 +512,8 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     # Interrupted between the journal's stop and the pause record.
                     from studio_batch_pause import complete
                     complete(controller, job_id, now=clock.time())
+                # A driver interrupted between its verified finish and the end state completes it once here.
+                _end_state(controller, job_id, record, path, clock, end_state_fn)
                 return _summary(path, record)
             if pause_seconds is not None and (_pause(controller, job_id) or {}).get('state') != 'pausing':
                 raise ValueError('A pause supervisor requires a pausing batch')
@@ -505,8 +535,9 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
             if customer and restart_consent is not True:
                 # Refused before any journal, archive, reservation or native effect.
                 raise ValueError('MT5 restart consent required: tell the user GOAT will close and reopen the selected '
-                                 'MT5 once to start this batch (MT5 writes the batch reports only for that start), '
-                                 'then run run-batch again with --mt5-restart-consent after their yes')
+                                 'MT5 once to start this batch (MT5 writes the batch reports only for that start), and '
+                                 'once more when it ends to bring back the GOAT Studio monitor, then run run-batch '
+                                 'again with --mt5-restart-consent after their yes')
             config_route = config_start_lane(controller.session) and hasattr(controller, 'start_config')
             if customer and config_route:
                 from studio_batch import CONFIG_START_BINDING_KEYS
@@ -516,6 +547,14 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     raise ValueError('This batch was prepared without the report-capable MT5 start, so it could '
                                      'never export. Prepare the same plan under a new batch ID (the GOAT Studio '
                                      'monitor profile from monitor-prepare is required); nothing was started')
+            if config_route:
+                # Both config-start lanes: a package prepared before GOAT Research is refused before any journal,
+                # archive, reservation or native effect with PACKAGE_PREDATES_RESEARCH_PROFILE (goatai#2350 6120693275).
+                from studio_research_profile import RESEARCH_PROFILE, legacy_package_refusal
+                plan_path = safe_path(root/'packages'/job_id/'studio-plan.json')
+                recorded = read_json(plan_path).get('research_binding', {}) if plan_path.is_file() else None
+                if recorded is not None and recorded.get('research_profile') != RESEARCH_PROFILE:
+                    raise legacy_package_refusal(job_id)
             if path.exists():
                 if not refused_before_dispatch(read_json(path), controller.job(job_id)):
                     raise ValueError('Driver journal exists; explicit resume required, never restart')
@@ -579,6 +618,12 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     if isinstance(started,dict) and isinstance(started.get('monitor_chart_record'),dict):
                         # Fix B: the restart close's post-close monitor chart record, passed through to the start receipt.
                         record['monitor_chart_record']=started['monitor_chart_record']
+                    for key in ('research_profile','monitor_profile_migration','batch_process','profile_last_select'):
+                        # batch_process: pid + creation time of the MT5 this batch launched; the end state may close
+                        # only that process or the EA's own later relaunch for this batch (goatai#2350 6120693275).
+                        # GOAT Research's reset and this start's monitor-profile migration run (studio_research_profile).
+                        if isinstance(started,dict) and isinstance(started.get(key),dict):
+                            record[key]=started[key]
                 else:
                     controller.start(job_id,expected_generation=binding['generation'])
                 intent = controller.job(job_id).get('launch_intent', {})
@@ -590,6 +635,9 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 _save(path, record, clock)
             except Exception as error:
                 record['status'] = 'start_uncertain'; record['last_error'] = str(error)
+                if getattr(error, 'code', None):
+                    # A structured refusal from the start (e.g. PROFILE_LAST_NOT_MONITOR) keeps its machine code.
+                    record['refusal_code'] = error.code
                 if config_route:
                     # Plain next step from the retained restart phase: MT5 may be closed.
                     from studio_config_start import restart_recovery
@@ -642,6 +690,7 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     record.update(status='paused' if done['state'] == 'paused' else record['status'],
                                   pause_id=done['pause_id'])
                     _save(path, record, clock)
+                _end_state(controller, job_id, record, path, clock, end_state_fn)
                 return _summary(path, record)
             except Exception as error:
                 record['last_error'] = str(error)

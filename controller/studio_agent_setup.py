@@ -379,8 +379,18 @@ def _exit_observation(observed, close_requested_utc):
                 exit_after_utc=observed.get('last_seen_present_utc') or close_requested_utc, poll_interval_seconds=0.25)
 
 
-def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspect=None, request=None, retire=None, wait_seconds=30):
-    """Inert-only normal close of the selected terminal. Retained; never repeated."""
+_ANY_PROCESS = object()
+
+
+def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspect=None, request=None, retire=None, wait_seconds=30,
+                   expected_process=_ANY_PROCESS):
+    """Inert-only normal close of the selected terminal. Retained; never repeated.
+
+    ``expected_process`` (a batch's end state, studio_research_profile.batch_end_state): the exact MT5 (pid, image,
+    creation time) this close may target, or None for "MT5 must be stopped". Checked under the gate right before
+    the close; anything else refuses with nothing closed (Claude-Mac goatai#2350 6120693275 point 4).
+    After the stop, MT5's saved ProfileLast is moved back from GOAT Research to the monitor profile when a batch left it
+    there (studio_research_profile.restore: the lazy restore at the next GOAT stop)."""
     from studio_monitor_probe import inspect_idle_demo
     from studio_seed_process import WindowsSeedProcess
     session, state = session_state(controller)
@@ -403,6 +413,14 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
         if permit.exists() or permit.is_symlink() or (requested and settled is None):
             raise ValueError('A native Studio request or permit is pending on this terminal; GOAT will not close MT5 during it')
         return settled
+
+    def refuse_other_process(running):
+        if expected_process is _ANY_PROCESS:
+            return
+        from studio_research_profile import END_STATE_SKIPPED, _same_identity
+        if (running is None) != (expected_process is None) or (running is not None and not _same_identity(running, expected_process)):
+            raise Refusal('The MT5 running now is not the one this batch launched; GOAT did not close it', END_STATE_SKIPPED,
+                          running=running, expected=expected_process)
 
     # The terminal lock is held throughout. The native gate (launch.lock, opened with no
     # sharing) is held only for the controller's own checks and its own fallback close:
@@ -430,9 +448,12 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
                 raise ValueError('Owner STOP is set on this terminal; clear it deliberately before agents act')
             settled = refuse_pending_native()
             running = process.inspect()
+            refuse_other_process(running)
             if running is None:
                 record = dict(schema_version=1, attempt_id=attempt_id, phase='already_stopped', status='already_stopped',
                               exit_observation=dict(observed_gone_utc=_utc_now(), exit_after_utc=None))
+                # MT5 already stopped: the same lazy ProfileLast restore (this gate is held).
+                record['research_profile_restore'] = _lazy_restore(controller, attempt_id, process, gate_held=True)
                 write_json(path, record)
                 return record
             native = inspect(controller)
@@ -509,5 +530,16 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
         # this close and with nothing bound changed since. Never fails the close (a resumed close records nothing).
         record['monitor_chart_record'] = record_post_close_chart(controller, health, attempt_id=attempt_id, method=method,
                                                                  stopped_utc=record['stopped_utc'], process=process)
+        record['research_profile_restore'] = _lazy_restore(controller, attempt_id, process)
         write_json(path, record)
         return record
+
+
+def _lazy_restore(controller, attempt_id, process, gate_held=False):
+    """After GOAT's own stop: ProfileLast back from GOAT Research to the monitor profile when a batch left it there
+    (studio_research_profile.restore; MT5 stopped, no batch active, value exactly GOAT Research). Never raises."""
+    try:
+        from studio_research_profile import restore
+        return restore(controller, 'close-terminal:'+attempt_id, inspect=process.inspect, gate_held=gate_held)
+    except Exception as error:
+        return dict(status='not_restored', reason='check_failed', detail=str(error)[:300])

@@ -229,12 +229,12 @@ brokerFit: {                                   // = the broker-fit result's depl
 
 The inputs at deploy are `manifest`, the reference SET bytes (the plan members' and `excludedSets`, each hash-bound to
 the manifest) and the planning `equity`. Every other value is a CLAIM the deploy compares with its own re-derivation
-(round 2, review item 7). **The manifest is bound by its sha now; its signature check comes in beta.38.** deploy-load
+(round 2, review item 7). **The manifest's publisher signature is verified (round 5 F2) and its sha is bound.** deploy-load
 refuses `MANIFEST_UNVERIFIED` ("GOAT could not verify this house portfolio against its published manifest, so nothing
 was deployed.") before anything is written unless `--manifest-sha256` is given and equals the manifest's RFC 8785 JCS
 sha256 without its top-level `signature` (round 4 R1). A forged manifest (another `startingBalance`, `contractSize`,
-`tickValue`, `startLot`) hashes differently and is refused. The caller is trusted to pass the sha it verified against
-the signed house feed; the controller's own ed25519 check is `P-beta38-controller-manifest-signature`.
+`tickValue`, `startLot`) hashes differently and is refused. Since round 5 the controller also checks the ed25519
+signature itself (see Round 5 F2), at review and at deploy.
 
 - With `brokerFit`, each plan member's `contentBase64`/`sha256` are the REFERENCE SET (as the house store serves it),
   its `fileName` is the result's `deployFileName` and its `symbol` the broker symbol. The plan lists fit members only.
@@ -434,3 +434,18 @@ R1. **The manifest sha is mandatory at deploy** (the stopgap until the signature
      `signature {alg: 'ed25519', keyId, sig}` against the pinned house key `goat-house-2026-10-v1` (SPKI-DER sha256
      `be69c584...6dad`), which needs the `cryptography` + `cffi` wheels added to goatai's `suiteRuntimeDependencies`
      (beta.38).
+
+## Round 5 (goatai#2350 6133583699, 2026-10-12)
+
+F2. **The manifest's signature is verified, not just its sha.** Same rule as goatai `desktop/main/services/house/
+   manifest.ts`: `signature: {alg: 'ed25519', keyId, sig}`, `keyId` one of the PINNED keys (a list, for rotation:
+   `goat-house-2026-10-v1`, SPKI-DER sha256 `be69c584...6dad`, the `keys` of goatai
+   `functions/serve-api/config/house_portfolio_signing_keys.json`, vendored byte-identical to
+   `controller/contracts/house-manifest/` and asserted when loaded), `sig` the base64 of a 64-byte Ed25519 signature
+   over the 32 raw bytes of manifestSha256, checked with `cryptography`'s `Ed25519PublicKey` (no hand-rolled crypto).
+   broker-fit refuses an unverified house manifest before reading MT5; deploy-load's `validate_plan` checks it and then
+   the `--manifest-sha256` (defence in depth). If `cryptography` cannot be imported, every house manifest refuses (scaling
+   ships disabled). `MANIFEST_UNVERIFIED` carries `reason`: `verifier_unavailable` (update GOAT), `manifest_invalid`,
+   `unsigned`, `signature_invalid`, `unknown_key`, `sha_missing`, `sha_mismatch` (check again). The refusal no longer
+   echoes any hash. Runtime wheels (CPython 3.13 win_amd64, `controller/ci-requirements.txt`; goatai mirrors them in
+   `suiteRuntimeDependencies.cjs`): cryptography 50.0.2 (cp311-abi3), cffi 2.1.1 (cp313), pycparser 3.0.

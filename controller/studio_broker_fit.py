@@ -1610,18 +1610,87 @@ def manifest_sha256(manifest):
     return sha256(jcs({name: value for name, value in manifest.items() if name != 'signature'}).encode('utf-8'))
 
 
-def verify_manifest(manifest, expected):
-    """Refuse MANIFEST_UNVERIFIED unless `expected` (the --manifest-sha256 the caller verified against the house feed)
-    is given and equals the manifest's own manifestSha256. Until the ed25519 signature check ships
-    (P-beta38-controller-manifest-signature) this sha is what binds a deploy to the published manifest."""
+# The house-portfolio publisher keys this controller trusts: a LIST, so a rotation ships the new keyId beside the old.
+# Byte-for-byte the `keys` of goatai functions/serve-api/config/house_portfolio_signing_keys.json, vendored as
+# controller/contracts/house-manifest/house_portfolio_signing_keys.json (its sha256 is pinned in the tests). Each key is
+# asserted when loaded: an Ed25519 SPKI key whose DER hashes to its pinned spkiDerSha256.
+HOUSE_SIGNING_KEYS = (
+    dict(keyId='goat-house-2026-10-v1', alg='ed25519',
+         spkiPem='-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAgRsMl21NUsBAz+u6qlFqa0F9fpzMa9pVwXUFq7lDNe0=\n-----END PUBLIC KEY-----\n',
+         spkiDerSha256='be69c584db212f1da378ffa1fa797d6b79bd1a05b89a3bea21c699e327c86dad'),
+)
+SIGNATURE_BASE64 = re.compile(r'[A-Za-z0-9+/]{86}==')
+# MANIFEST_UNVERIFIED `reason` (machine-readable; the app shows "update GOAT" for verifier_unavailable and "check
+# again" for the others).
+UNVERIFIED_REASONS = ('verifier_unavailable', 'manifest_invalid', 'unsigned', 'signature_invalid', 'unknown_key', 'sha_missing',
+                      'sha_mismatch')
+
+
+def _refuse_manifest(reason):
+    raise Refusal(MANIFEST_UNVERIFIED_MESSAGE, MANIFEST_UNVERIFIED, reason=reason)
+
+
+def house_key_ring():
+    """{keyId: Ed25519PublicKey} of HOUSE_SIGNING_KEYS, or None when `cryptography` cannot be imported (the controller
+    never hand-rolls crypto: house scaling then ships disabled). ValueError when a pinned key does not match its pin."""
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError:
+        return None
+    ring = {}
+    for pinned in HOUSE_SIGNING_KEYS:
+        key = serialization.load_pem_public_key(pinned['spkiPem'].encode('ascii'))
+        der = key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        if (pinned['alg'] != 'ed25519' or not isinstance(key, Ed25519PublicKey) or sha256(der) != pinned['spkiDerSha256']
+                or pinned['keyId'] in ring):
+            raise ValueError('House portfolio key pin %s does not match its pinned SPKI-DER SHA-256' % pinned['keyId'])
+        ring[pinned['keyId']] = key
+    return ring
+
+
+def verify_manifest(manifest, expected=None, *, require_sha=True):
+    """The house manifest is the one published by GOAT (goatai desktop/main/services/house/manifest.ts, the same rule):
+    `signature: {alg: 'ed25519', keyId, sig}` with keyId one of the PINNED keys and `sig` (base64, 64 bytes) a valid
+    Ed25519 signature by that key over the 32 raw bytes of manifestSha256 (round 5 F2). At deploy (`require_sha`) the
+    caller's --manifest-sha256 must also equal it (round 4 R1, defence in depth). Anything else refuses
+    MANIFEST_UNVERIFIED with a `reason` (UNVERIFIED_REASONS). Returns manifestSha256."""
+    try:
+        ring = house_key_ring()
+    except ValueError:
+        ring = None
+    if ring is None:
+        _refuse_manifest('verifier_unavailable')
+    if type(manifest) is not dict:
+        _refuse_manifest('manifest_invalid')
     try:
         actual = manifest_sha256(manifest)
     except (ValueError, RecursionError):
-        actual = None
-    given = expected.strip().lower() if isinstance(expected, str) else None
-    if actual is None or given is None or not SHA256.fullmatch(given) or given != actual:
-        raise Refusal(MANIFEST_UNVERIFIED_MESSAGE, MANIFEST_UNVERIFIED, manifestSha256=actual,
-                      expected=given if given is None or SHA256.fullmatch(given) else None)
+        _refuse_manifest('manifest_invalid')
+    signature = manifest.get('signature')
+    if signature is None:
+        _refuse_manifest('unsigned')
+    if (type(signature) is not dict or set(signature) != {'alg', 'keyId', 'sig'}
+            or not all(isinstance(signature[name], str) for name in ('alg', 'keyId', 'sig')) or signature['alg'] != 'ed25519'):
+        _refuse_manifest('signature_invalid')
+    key = ring.get(signature['keyId'])
+    if key is None:
+        _refuse_manifest('unknown_key')
+    import base64
+    from cryptography.exceptions import InvalidSignature
+    raw = base64.b64decode(signature['sig']) if SIGNATURE_BASE64.fullmatch(signature['sig']) else b''
+    if len(raw) != 64 or base64.b64encode(raw).decode('ascii') != signature['sig']:
+        _refuse_manifest('signature_invalid')
+    try:
+        key.verify(raw, bytes.fromhex(actual))
+    except InvalidSignature:
+        _refuse_manifest('signature_invalid')
+    if require_sha:
+        given = expected.strip().lower() if isinstance(expected, str) else None
+        if not given:
+            _refuse_manifest('sha_missing')
+        if given != actual:
+            _refuse_manifest('sha_mismatch')
     return actual
 
 
@@ -1957,6 +2026,8 @@ def broker_fit(controller, portfolio, *, equity=None, sets_dir=None, mt5=None, c
     if server_time_utc is not None and (not math.isfinite(server_time_utc) or server_time_utc <= 0):
         raise ValueError('--server-time-utc must be unix seconds')
     manifest, sets = load_portfolio(portfolio, sets_dir)
+    # Round 5 F2: a house manifest is checked against its pinned publisher signature before anything is read.
+    verify_manifest(manifest, require_sha=False)
     installed = controller.install.get('ea_version')
     wanted = (manifest.get('ea') or {}).get('eaVersion')
     if wanted and installed and wanted != installed:

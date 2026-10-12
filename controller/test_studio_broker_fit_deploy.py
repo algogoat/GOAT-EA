@@ -16,7 +16,7 @@ import studio_demo_deploy as deploy
 from studio_installation import contracts
 from studio_refusal import Refusal
 from test_studio_agent_setup import DeployFixture, FakeMT5, member
-from test_studio_broker_fit import manifest, plan_block, reading, reference, symbol
+from test_studio_broker_fit import manifest, plan_block, reading, reference, sign, symbol, with_test_key
 
 SERVER = 'Customer-Demo'                     # the fixture's bound demo server
 ACCOUNT = dict(login='123456', server=SERVER, currency='USD', equity=100000.0, leverage=200, demo=True)
@@ -54,6 +54,8 @@ class BrokerFitDeployTests(DeployFixture):
         super().setUp()
         # The shared fixture's compact schema has no sizing inputs; production reads the shipped V1.48 contracts.
         self.c.schema, _ = contracts('1.48')
+        # Manifests here are signed with the test publisher key, pinned in place of the house key (round 5 F2).
+        keys = with_test_key(); keys.start(); self.addCleanup(keys.stop)
 
     def members(self):
         pairs = [reference_member(0), reference_member(1, 'GBPUSD')]
@@ -62,7 +64,7 @@ class BrokerFitDeployTests(DeployFixture):
     def review(self, equity=None, account_equity=100000.0, **reference_changes):
         """The broker-fit result on this account and the plan block the app assembles from it."""
         members, raws = self.members()
-        data = house(list(zip(members, raws)), **reference_changes)
+        data = sign(house(list(zip(members, raws)), **reference_changes))
         result = bf.build_result(data, {hashlib.sha256(raw).hexdigest(): raw for raw in raws}, schema=self.c.schema, equity=equity,
                                  **reading(account=dict(ACCOUNT, equity=account_equity), symbols=SYMBOLS))
         self.assertTrue(result['offered'], result['refusal'])
@@ -234,6 +236,9 @@ class BrokerFitDeployTests(DeployFixture):
                 with self.assertRaises(Refusal) as caught:
                     self.validate(candidate, sha)
                 self.assertEqual((caught.exception.code, str(caught.exception)), (bf.MANIFEST_UNVERIFIED, bf.MANIFEST_UNVERIFIED_MESSAGE))
+                # Round 5 F2: the forged manifests fail their signature first; the sha stays as defence in depth.
+                self.assertEqual(caught.exception.fields, dict(reason={'no flag': 'sha_missing', 'a wrong sha': 'sha_mismatch',
+                                                                       'not a sha': 'sha_mismatch'}.get(label, 'signature_invalid')))
                 path = self.plan(candidate['members'], brokerFit=candidate['brokerFit'])
                 with self.assertRaises(Refusal) as caught, self.reads(50000.0):
                     deploy.load(self.c, path, mt5=live(self.c, 50000.0), manifest_sha256=sha, sleep=lambda s: None)
@@ -246,6 +251,21 @@ class BrokerFitDeployTests(DeployFixture):
         from goat_studio import OPERATION_CONTRACTS
         self.assertEqual(OPERATION_CONTRACTS['deploy-load'].get('optional'), ['manifest-sha256'])
         self.assertIn('MANIFEST_UNVERIFIED', OPERATION_CONTRACTS['deploy-load']['effect'])
+
+    def test_an_unsigned_or_unverifiable_manifest_never_deploys(self):
+        # Round 5 F2 at deploy: validate_plan checks the signature, not only the sha.
+        members, raws, block = self.review(equity=50000)
+        unsigned = dict(block, manifest={k: v for k, v in block['manifest'].items() if k != 'signature'})
+        plan = json.loads(self.plan(members, brokerFit=unsigned).read_text())
+        with self.assertRaises(Refusal) as caught:
+            self.validate(plan)
+        self.assertEqual(caught.exception.fields['reason'], 'unsigned')
+        import sys
+        good = json.loads(self.plan(members, brokerFit=block).read_text())
+        with patch.dict(sys.modules, {'cryptography': None, 'cryptography.hazmat': None, 'cryptography.hazmat.primitives': None}):
+            with self.assertRaises(Refusal) as caught:
+                self.validate(good)
+        self.assertEqual((caught.exception.code, caught.exception.fields['reason']), (bf.MANIFEST_UNVERIFIED, 'verifier_unavailable'))
 
     def test_a_plan_without_broker_fit_keeps_todays_journal_shape(self):
         self.start_ea(pairing='none')

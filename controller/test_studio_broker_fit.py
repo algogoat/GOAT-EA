@@ -14,6 +14,12 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+import base64
+import sys
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 import studio_broker_fit as bf
 from studio_installation import contracts
 from studio_refusal import Refusal
@@ -90,6 +96,25 @@ def ticks(spreads=(8,), *, point=0.00001, end=T0, count=720, step=30, offset=DAR
 
 
 ACCOUNT = dict(login='123456', server='Darwinex-Demo', currency='USD', equity=100000.0, leverage=200, demo=True)
+
+# A deterministic TEST publisher key (round 5 F2): tests sign their manifests with it and pin it in place of the house
+# key (with_test_key). The production pin is checked separately (SignatureTests).
+TEST_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+_TEST_DER = TEST_KEY.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+TEST_KEYS = (dict(keyId='goat-house-test-v1', alg='ed25519',
+                  spkiPem=TEST_KEY.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode(),
+                  spkiDerSha256=hashlib.sha256(_TEST_DER).hexdigest()),)
+
+
+def sign(data, key=TEST_KEY, key_id='goat-house-test-v1'):
+    """The manifest with a publisher signature over the 32 raw bytes of its manifestSha256."""
+    unsigned = {name: value for name, value in data.items() if name != 'signature'}
+    sha = bf.manifest_sha256(unsigned)
+    return dict(unsigned, signature=dict(alg='ed25519', keyId=key_id, sig=base64.b64encode(key.sign(bytes.fromhex(sha))).decode()))
+
+
+def with_test_key():
+    return patch.object(bf, 'HOUSE_SIGNING_KEYS', TEST_KEYS)
 
 
 def reading(*, account=None, symbols=None, spread=None, history=None, offset=DARWINEX_OFFSET, margins=None, quotes=None,
@@ -922,15 +947,85 @@ class ManifestShaTests(unittest.TestCase):
         data = manifest([member(KESTREL)])
         result = run([(member(KESTREL), KESTREL)])
         self.assertEqual(result['manifestSha256'], bf.manifest_sha256(data))
-        self.assertEqual(bf.verify_manifest(data, result['manifestSha256'].upper()), result['manifestSha256'])
+        data = sign(data)
+        with with_test_key():
+            self.assertEqual(bf.verify_manifest(data, result['manifestSha256'].upper()), result['manifestSha256'])
         signed = dict(data, signature=dict(alg='ed25519', keyId='goat-house-2026-10-v1', sig='A' * 88))
         self.assertEqual(bf.manifest_sha256(signed), result['manifestSha256'], 'the top-level signature is left out')
         forged = json.loads(json.dumps(data))
         forged['referenceAccount']['startingBalance'] = 10000
-        for candidate, sha in ((data, None), (data, '0' * 64), (forged, result['manifestSha256']), (None, result['manifestSha256'])):
-            with self.assertRaises(Refusal) as caught:
+        for candidate, sha, reason in ((data, None, 'sha_missing'), (data, '0' * 64, 'sha_mismatch'),
+                                       (forged, result['manifestSha256'], 'signature_invalid'), (None, result['manifestSha256'], 'manifest_invalid')):
+            with with_test_key(), self.assertRaises(Refusal) as caught:
                 bf.verify_manifest(candidate, sha)
-            self.assertEqual(caught.exception.code, bf.MANIFEST_UNVERIFIED)
+            self.assertEqual((caught.exception.code, caught.exception.fields['reason']), (bf.MANIFEST_UNVERIFIED, reason))
+            self.assertNotIn(result['manifestSha256'], str(caught.exception) + repr(caught.exception.fields), 'no hash echoed')
+
+
+KEYS_FILE = HERE / 'contracts' / 'house-manifest' / 'house_portfolio_signing_keys.json'
+# Vendored byte-identical from goatai functions/serve-api/config/house_portfolio_signing_keys.json.
+KEYS_FILE_SHA256 = '3ea1e7e94dc5a2295587a5d0bf0c93ab4331638f2cc11c1ffbfa2ac43f6cd5d7'
+
+
+class SignatureTests(unittest.TestCase):
+    """Round 5 F2 (goatai#2350 6133583699): the house manifest's ed25519 signature, at review and at deploy."""
+
+    def setUp(self):
+        self.data = manifest([member(KESTREL)])
+        self.signed = sign(self.data)
+
+    def reason(self, candidate, sha=None, require_sha=False):
+        with self.assertRaises(Refusal) as caught:
+            bf.verify_manifest(candidate, sha, require_sha=require_sha)
+        self.assertEqual(caught.exception.code, bf.MANIFEST_UNVERIFIED)
+        self.assertEqual(str(caught.exception), bf.MANIFEST_UNVERIFIED_MESSAGE)
+        return caught.exception.fields['reason']
+
+    def test_the_pinned_key_is_the_published_one(self):
+        raw = KEYS_FILE.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), KEYS_FILE_SHA256, 'the vendored copy is byte-identical')
+        self.assertEqual([dict(k) for k in bf.HOUSE_SIGNING_KEYS], json.loads(raw)['keys'])
+        ring = bf.house_key_ring()
+        self.assertEqual(list(ring), ['goat-house-2026-10-v1'])
+        # A pin that does not match its key is refused, never trusted.
+        broken = (dict(bf.HOUSE_SIGNING_KEYS[0], spkiDerSha256='0' * 64),)
+        with patch.object(bf, 'HOUSE_SIGNING_KEYS', broken), self.assertRaises(ValueError):
+            bf.house_key_ring()
+        with patch.object(bf, 'HOUSE_SIGNING_KEYS', broken):
+            self.assertEqual(self.reason(self.signed), 'verifier_unavailable')
+
+    def test_the_genuine_manifest_passes(self):
+        with with_test_key():
+            self.assertEqual(bf.verify_manifest(self.signed, require_sha=False), bf.manifest_sha256(self.data))
+            self.assertEqual(bf.verify_manifest(self.signed, bf.manifest_sha256(self.data)), bf.manifest_sha256(self.data))
+
+    def test_every_edit_and_every_bad_signature_refuses(self):
+        edited_set = json.loads(json.dumps(self.signed))
+        edited_set['members'][0]['setSha256'] = hashlib.sha256(KESTREL + b'\x00\x00').hexdigest()   # one SET byte
+        edited_risk = json.loads(json.dumps(self.signed))
+        edited_risk['referenceAccount']['startingBalance'] = 10000                                   # 10x every Risk
+        bad_sig = json.loads(json.dumps(self.signed))
+        bad_sig['signature']['sig'] = base64.b64encode(bytes(64)).decode()
+        other_key = sign(self.data, key=Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33))))
+        unknown = sign(self.data, key_id='goat-house-2099-01-v9')
+        malformed = dict(self.signed, signature=dict(self.signed['signature'], alg='rsa'))
+        with with_test_key():
+            for candidate, reason in ((edited_set, 'signature_invalid'), (edited_risk, 'signature_invalid'), (bad_sig, 'signature_invalid'),
+                                      (other_key, 'signature_invalid'), (malformed, 'signature_invalid'), (unknown, 'unknown_key'),
+                                      (self.data, 'unsigned'), (dict(self.data, signature=None), 'unsigned')):
+                with self.subTest(reason=reason, candidate=str(candidate.get('signature'))[:40]):
+                    self.assertEqual(self.reason(candidate), reason)
+        # The real pin does not trust the test key.
+        self.assertEqual(self.reason(self.signed), 'unknown_key')
+
+    def test_without_cryptography_every_house_manifest_refuses(self):
+        blocked = {name: None for name in ('cryptography', 'cryptography.hazmat', 'cryptography.hazmat.primitives',
+                                           'cryptography.hazmat.primitives.asymmetric', 'cryptography.hazmat.primitives.asymmetric.ed25519',
+                                           'cryptography.hazmat.primitives.serialization', 'cryptography.exceptions')}
+        with with_test_key(), patch.dict(sys.modules, blocked):
+            self.assertIsNone(bf.house_key_ring())
+            self.assertEqual(self.reason(self.signed), 'verifier_unavailable')
+            self.assertEqual(self.reason(self.signed, bf.manifest_sha256(self.data), require_sha=True), 'verifier_unavailable')
 
 
 class DeployRecheckTests(unittest.TestCase):
@@ -1228,6 +1323,7 @@ class ReadBrokerTests(unittest.TestCase):
         self.session = dict(account=dict(login='123456', server='Darwinex-Demo'))
         self.now = T0
         self.process = FakeTerminalProcess()
+        keys = with_test_key(); keys.start(); self.addCleanup(keys.stop)
 
     def clock(self):
         return self.now
@@ -1240,7 +1336,7 @@ class ReadBrokerTests(unittest.TestCase):
                               sleep=self.sleep)
 
     def write_portfolio(self):
-        data = manifest([member(KESTREL)])
+        data = sign(manifest([member(KESTREL)]))
         (self.folder / 'house.json').write_text(json.dumps(data))
         (self.folder / data['members'][0]['setSha256']).write_bytes(KESTREL)
         return self.folder / 'house.json'

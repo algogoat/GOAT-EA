@@ -38,7 +38,8 @@ import time
 from studio_agent_mailbox import (REQUEST_STILL_LIVE_MESSAGE, UNRESOLVED_MUTATION_MESSAGE, RequestStillLive, UnresolvedMutation,
                                   identity, portfolio_register, portfolio_request, portfolio_root, read_bounded, sharing_retry,
                                   validate_portfolio_registration, validate_portfolio_request)
-from studio_agent_setup import PROTECTED_ACCOUNTS, broker_proof, close_terminal, demo_terminal_lock, require_unprotected
+from studio_agent_setup import (PROTECTED_ACCOUNTS, _cut, _seconds, broker_proof, close_terminal, demo_terminal_lock,
+                                require_unprotected)
 from studio_bridge import write_json
 import studio_deploy_profile as deploy_profile
 import studio_deploy_timing as deploy_timing
@@ -726,9 +727,11 @@ def _link_children(controller, ident, *, request, sleep, clock, wait_seconds=Non
     deadline = clock() + wait_seconds
     last, rows = None, None
     race = dict(started_waits=0, locked_reads=0, live_waits=0)
+    all_started = None  # the clock() at the first receipt in which every row has a started chart (observed child start)
 
     def ended(outcome, result, **extra):
-        return dict(outcome=outcome, result=result, rows=rows, **extra, **({'race': race} if any(race.values()) else {}))
+        return dict(outcome=outcome, result=result, rows=rows, **extra, **({'race': race} if any(race.values()) else {}),
+                    **({'all_started_at': all_started} if all_started is not None else {}))
 
     while clock() < deadline:
         try:
@@ -755,6 +758,8 @@ def _link_children(controller, ident, *, request, sleep, clock, wait_seconds=Non
         last = receipt['result']
         if last in ('children_linked', 'children_pending'):
             rows = receipt['rows']
+            if all_started is None and rows and all(r['chartId'] > 0 and r['magic'] > 0 for r in rows):
+                all_started = clock()
             if receipt['tradingAllowed'] or receipt['positions'] or receipt['orders'] or not receipt['connected']:
                 return ended('not_inert', last)
             if last == 'children_linked' and rows_linked(rows):
@@ -773,7 +778,8 @@ def _named_rows(failed):
     return shown + (f'; and {len(failed) - 5} more' if len(failed) > 5 else '')
 
 
-def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, close, reason):
+def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, close, reason, clock=time.monotonic,
+            close_key='unwind_close'):
     """Unload the deployment from an inert terminal: close MT5 normally, rename the dashboard state, the deploy
     profile and the mailbox files aside, then select the previous profile again. Never closes positions."""
     launched = journal.get('phase') not in ('validated', 'staged', 'closed')
@@ -783,8 +789,11 @@ def _unwind(controller, session, journal, where, attempt_id, *, mt5, process, cl
             raise ValueError('Turn Algo Trading off in MT5 first; GOAT never turns it off or closes trades for you')
         if proof['positions'] or proof['orders']:
             raise ValueError('The demo account still has open positions or orders. Close or keep them yourself in MT5; GOAT never closes them automatically')
+        close_started = clock()
         closed = (close or close_terminal)(controller, attempt_id, build_id=journal['build_id'])
+        journal.setdefault('observed_seconds', {})[close_key] = _seconds(clock() - close_started)
         if closed.get('phase') not in ('stopped', 'already_stopped'):
+            _cut(journal, close_key); write_json(where['journal'], journal)
             raise ValueError('MT5 did not confirm a normal close; inspect it before deploy-stop again (no second close is sent)')
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     archived = []
@@ -891,6 +900,34 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
     attempt = int(record.get('attempt', 1))
     suffix = '' if attempt == 1 else '-a' + str(attempt)
     config_path = where['config'] if attempt == 1 else where['config'].with_name(deployment_id + '.attempt-' + str(attempt) + '.ini')
+    # Remote deploy v0 (goatai#2350 6130033743): every phase's OBSERVED duration, on the same monotonic clock as the
+    # waits, next to timing_profile, so a per-host profile can later be derived from real deploys. A duration that a
+    # failure ended is still recorded (up to the failure) and named in observed_cut_by_failure: a lower bound.
+    durations = record.setdefault('observed_seconds', {})
+    opened = {}
+
+    def begin(name):
+        opened[name] = clock()
+
+    def end(name, at=None):
+        durations[name] = _seconds((clock() if at is None else at) - opened.pop(name))
+
+    def cut_open():
+        for name in list(opened):
+            end(name); _cut(record, name)
+
+    def persist_durations():
+        """After a refusal that is not journaled as a phase: the durations reach the durable journal (its phase is kept)."""
+        if not durations and 'observed_cut_by_failure' not in record:
+            return
+        try:
+            durable = read_json(where['journal'])
+        except Exception:
+            return
+        durable['observed_seconds'] = durations
+        if 'observed_cut_by_failure' in record:
+            durable['observed_cut_by_failure'] = record['observed_cut_by_failure']
+        write_json(where['journal'], durable)
 
     def phase(name, **extra):
         record.update(phase=name, **extra); record['updated_utc'] = datetime.now(timezone.utc).isoformat()
@@ -899,11 +936,12 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
     def fail_and_unwind(code, message, failed=(), *, refusal_code=None, **facts):
         """D3: never leave a half-loaded MT5 running. The unwind is the inert-only deploy-stop path. ``refusal_code``
         (the remote deploy v0 codes) makes the final refusal a typed Refusal; the older codes keep their plain one."""
+        cut_open()
         record.update(failure=dict(code=code, message=message[:400], utc=utc_now(), **facts), rows_failed=list(failed))
         write_json(where['journal'], record)
         try:
             _unwind(controller, session, record, where, 'unwind-' + deployment_id[:24] + '-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'),
-                    mt5=mt5, process=process, close=closer, reason=code)
+                    mt5=mt5, process=process, close=closer, reason=code, clock=clock)
         except (OSError, ValueError) as exc:
             record['auto_unwind'] = dict(status='failed', error=str(exc)[:300], utc=utc_now())
             write_json(where['journal'], record)
@@ -929,12 +967,16 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             fail_and_unwind(code, message, refusal_code=code)
 
         expected = record.get('pid')
+        begin('launch_observe')
         deadline = clock() + profile['launchObserveSeconds']
         while True:
             running = process.inspect()
             if running is not None or clock() >= deadline:
                 break
             sleep(1)
+        end('launch_observe')
+        if running is None:
+            _cut(record, 'launch_observe')
         facts['terminal_pid'] = running.get('pid') if running else None
         if running is None:
             refuse('RESUME_TERMINAL_GONE', 'The MT5 this deployment launched is no longer running, so GOAT did not resume it.')
@@ -983,10 +1025,14 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         the launch nothing is half-loaded and the next deploy-load resumes the same plan; once MT5 may be running the
         deploy profile, it unwinds like any failure after the launch (D3). The journal written is the durable one, never
         a phase the crash interrupted before it was written."""
+        cut_open()
         try:
             durable = read_json(where['journal'])
         except Exception:
             durable = dict(record)
+        durable['observed_seconds'] = durations
+        if 'observed_cut_by_failure' in record:
+            durable['observed_cut_by_failure'] = record['observed_cut_by_failure']
         message = (type(exc).__name__ + ': ' + str(exc))[:300]
         if durable.get('phase') not in LAUNCHED_PHASES:
             durable['failure'] = dict(code='controller_crash', message=message, utc=utc_now(), phase=durable.get('phase'),
@@ -1030,9 +1076,11 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
                 # Demo proof and inert state come first; closing never touches positions.
                 broker_proof(controller, session, mt5=mt5)
                 attempt_id = 'deploy-' + deployment_id[:24] + suffix
+                begin('close')
                 closed = closer(controller, attempt_id, build_id=plan['buildId'])
                 if closed.get('phase') not in ('stopped', 'already_stopped'):
                     raise ValueError('MT5 did not confirm a normal close; run deploy-load again after it exits (no second close is sent)')
+                end('close')
                 previous = _closed_terminal(running, attempt_id, closed)
             # Taken after MT5 exits: MT5 rewrites the active profile and common.ini on close.
             phase('closed', previous_terminal=previous, previous_profile=capture_previous_profile(controller, where))
@@ -1054,9 +1102,11 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
                 if portable:
                     arguments.append('/portable')
                 launch_started = utc_now()
+                begin('launch_observe')  # a fresh launch: until MT5's process exists (Popen returned with its pid)
                 child = subprocess.Popen(arguments, cwd=str(Path(arguments[0]).parent), stdin=subprocess.DEVNULL,
                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                end('launch_observe')
                 popen_returned = utc_now()
                 # The same keyword arguments as the call above, for the journal only (the test pins them equal).
                 options = dict(cwd=str(Path(arguments[0]).parent), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -1076,6 +1126,7 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             except ValueError as exc:
                 fail_and_unwind('registration_refused', 'The dashboard portfolio could not be registered (' + str(exc) + ').')
             phase('registered', registration_sha256=digest)
+            begin('dashboard_first_answer')
             try:
                 status = _poll_until(controller, ident, 'status', lambda r: r['result'] == 'observed', seconds=profile['dashboardWaitSeconds'],
                                      request=request, sleep=sleep, clock=clock)
@@ -1084,6 +1135,7 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             if status is None or status['result'] != 'observed':
                 outcome = status['result'] if status else 'receipt_timeout'
                 fail_and_unwind('dashboard_not_ready', 'The Portfolio Dashboard did not answer (' + outcome + '). Check that MT5 opened on the demo account with GOAT paired.')
+            end('dashboard_first_answer')
             if status['tradingAllowed'] or status['positions'] or status['orders']:
                 fail_and_unwind('not_inert_after_start', 'Algo Trading is already on (or the account has positions or orders) after MT5 started; '
                                 'GOAT does not load a portfolio then.')
@@ -1092,8 +1144,11 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
         if record['phase'] == 'dashboard_ready':
             # A beta.24 journal launched by the template deploy resumes here too; its profile holds no children,
             # so every row ends child_not_started and the deploy unwinds cleanly.
+            begin('child_start'); begin('link')
             linked = _link_children(controller, ident, request=request, sleep=sleep, clock=clock, wait_seconds=profile['childStartWaitSeconds'],
                                     request_seconds=profile['linkRequestSeconds'], read=read)
+            if 'all_started_at' in linked:
+                end('child_start', at=linked['all_started_at'])
             race = {'link_race': linked['race']} if 'race' in linked else {}
             if linked['outcome'] != 'linked':
                 failed = rows_failed(members, linked['rows'])
@@ -1106,6 +1161,7 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
                                + ': ' + _named_rows(failed) + '.')
                 fail_and_unwind(CHILD_NOT_STARTED if any(row['reason'] == CHILD_NOT_STARTED for row in failed) else CHILD_NOT_LINKED,
                                 message, failed, **race)
+            end('link')
             phase('attached', link_result=linked['result'], linked_rows=[dict(index=r['index'], chartId=r['chartId'], magic=r['magic'])
                                                                          for r in linked['rows']], **race)
 
@@ -1114,20 +1170,24 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
             if dispatched['result'] != 'policy_dispatched':
                 raise ValueError('The exposure policy was not dispatched (' + dispatched['result'] + ')')
             command = dispatched['commandId']
+            begin('ack')
             def acknowledged(r):
                 return (r['result'] == 'observed' and not r['commandPending']
                         and all(row['ackId'] == command and row['ackStatus'] == 1 for row in r['rows']))
             acked = _poll_until(controller, ident, 'status', acknowledged, seconds=profile['ackWaitSeconds'], request=request, sleep=sleep, clock=clock)
             if acked is None or not acknowledged(acked):
                 raise ValueError('Child charts did not acknowledge the exposure policy in time; run deploy-load again')
+            end('ack')
             phase('policy_applied', command_id=command)
 
         if record['phase'] == 'policy_applied':
             registration, _ = read_bounded(portfolio_root(controller) / 'registration.json', 131072)
+            begin('audit')
             audit = _poll_until(controller, ident, 'audit', lambda r: r['result'] == 'observed' and all(row['settingsMatch'] for row in r['rows']),
                                 seconds=profile['auditWaitSeconds'], request=request, sleep=sleep, clock=clock)
             if audit is None or audit['result'] != 'observed':
                 raise ValueError('The dashboard settings audit did not complete (' + (audit['result'] if audit else 'receipt_timeout') + ')')
+            end('audit')
             if audit['registrationSha256'] != record.get('registration_sha256'):
                 raise ValueError('The dashboard audited a different registration than this deployment registered; readiness is not claimed')
             _verify_ready(audit, registration, allow_live_trading=allow_live_trading_default(controller))
@@ -1144,6 +1204,7 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
     try:
         run()
     except ValueError:
+        cut_open(); persist_durations()
         raise
     except Exception as exc:
         crashed(exc)
@@ -1172,7 +1233,7 @@ def status(controller, *, mt5=None, process=None, request=None):
     return result
 
 
-def stop(controller, attempt_id, *, mt5=None, process=None, close=None, timing=None, timing_source=None):
+def stop(controller, attempt_id, *, mt5=None, process=None, close=None, timing=None, timing_source=None, clock=time.monotonic):
     """Unload the dashboard portfolio from an inert terminal and select the previous profile again. Never closes positions.
     ``timing`` (--timing-profile) sets the close wait; the journal records it as stop_timing_profile."""
     from studio_seed_process import WindowsSeedProcess
@@ -1186,7 +1247,7 @@ def stop(controller, attempt_id, *, mt5=None, process=None, close=None, timing=N
     process = process or WindowsSeedProcess(controller)
     journal['stop_timing_profile'] = timing_record
     journal = _unwind(controller, session, journal, where, attempt_id, mt5=mt5, process=process, close=_closer(close, profile),
-                      reason='deploy_stop')
+                      reason='deploy_stop', clock=clock, close_key='stop_close')
     select = (journal.get('rollback') or {}).get('select_profile_instruction')
     return public(journal) | dict(status='stopped', terminal='stopped', trading_changed=False, positions_closed=False,
                                   next_action=(select + ' ' if select else '')

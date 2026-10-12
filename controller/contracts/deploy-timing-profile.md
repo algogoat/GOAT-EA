@@ -76,6 +76,35 @@ the journal of `deploy-stop` (`stop_timing_profile`) record the profile like thi
 - **A resume with a different profile.** The new profile becomes `timing_profile`, and the earlier one is kept in
   `earlier_timing_profiles`.
 
+### Observed durations (goatai#2350 6130033743)
+
+Each operation journals how long each phase actually took, next to `timing_profile`, so that a per-host profile can
+later be derived from real deploys (open question M4, option ii). The durations are in seconds, rounded to the
+millisecond, and measured on the same monotonic clock the waits use: `deploy-load`'s `clock`, and in
+`close_terminal` the clock of its exit wait.
+
+| Key in `observed_seconds` | From | To | The wait it informs |
+|---|---|---|---|
+| `close` | the close call (in `close_terminal`: the first close request) | MT5 seen gone | `closeWaitSeconds` |
+| `launch_observe` | a fresh launch: just before `Popen`; a resume: the start of the re-check | `Popen` returned with the pid; on a resume, the journaled MT5 listed | `launchObserveSeconds` |
+| `dashboard_first_answer` | the registration written | the first `observed` status | `dashboardWaitSeconds` |
+| `child_start` | the link step starts | the first link receipt in which every row has a started chart | `childStartWaitSeconds` |
+| `link` | the link step starts | every row linked fresh and unique | `childStartWaitSeconds` |
+| `ack` | the policy dispatched | every row acknowledged | `ackWaitSeconds` |
+| `audit` | the first audit request | the audit observed with every row matching | `auditWaitSeconds` |
+| `unwind_close`, `stop_close`, `close_after_resume` | the unwind's close, `deploy-stop`'s close, a resumed close's wait | MT5 seen gone | `closeWaitSeconds` |
+
+- **A failed phase.** Its duration up to the failure is still journaled, and the phase is named in
+  `observed_cut_by_failure` (a lower bound, not a measurement). This covers a refusal that unwinds, a plain refusal
+  (for example an ack timeout, which keeps the durable phase), a crash and a close that never confirmed.
+- **A resume.** The durations already journaled are kept, and the phases run again overwrite theirs. A kill journals
+  only what the last phase write carried.
+- **Where they are.** `deploy-load` and `deploy-stop`: the deployment journal. `close-terminal`: its
+  `terminal-closes/<attempt>.json`, which also carries `timing_profile` (the desktop record when no flag is given;
+  other callers of `close_terminal` record the duration only).
+- **The desktop golden diff.** A run without a profile gains exactly two journal keys over the pre-profile golden:
+  `timing_profile` and `observed_seconds`. Every call, file and other journal value is unchanged.
+
 ## 2. The link race (traps T2, T9)
 
 A cold dashboard answers a `link_children` request `started` while it is still adopting children. The next request

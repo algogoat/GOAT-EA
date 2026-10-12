@@ -11,6 +11,9 @@ scripted dashboard on real mailbox files and fake clocks. No MT5 terminal is tou
   4 h registration age it unwinds, records why, and the next deploy-load is a fresh attempt.
 - A crash that is not a ValueError journals `failure` and, after the launch, unwinds (D3).
 - refused_before_stage keeps the attempt counter.
+- Every deploy-load, deploy-stop and close-terminal journals its observed phase durations (observed_seconds) next to
+  the profile, on the waits' own monotonic clock; a duration a failure ended is kept and named in
+  observed_cut_by_failure (goatai#2350 6130033743).
 - The CLI's --timing-profile on deploy-load, deploy-stop and close-terminal.
 """
 import copy
@@ -29,10 +32,11 @@ from unittest.mock import patch
 import uuid
 
 import studio_agent_mailbox as mailbox
+import studio_agent_setup as agent_setup
 import studio_demo_deploy as deploy
 import studio_deploy_timing as timing
 from studio_refusal import Refusal
-from test_studio_agent_setup import DeployFixture, FakeMT5, FakeProcess
+from test_studio_agent_setup import BUILD, DeployFixture, FakeMT5, FakeProcess
 
 FIXTURES = Path(__file__).resolve().parent / 'contracts' / 'deploy-timing-fixtures'
 GOLDEN = json.loads((FIXTURES / 'desktop-load-golden.json').read_text(encoding='utf-8'))
@@ -110,9 +114,15 @@ def trace_load(case, *, pending_polls=2, **load_kwargs):
     return json.loads(json.dumps(trace)), result
 
 
+# What a desktop journal gains over the pre-profile golden: the profile (first v0 commit) and the observed durations.
+NEW_JOURNAL_FIELDS = ('timing_profile', 'observed_seconds')
+PHASES = {'close', 'launch_observe', 'dashboard_first_answer', 'child_start', 'link', 'ack', 'audit'}
+
+
 def without_timing_record(trace):
     trace = copy.deepcopy(trace)
-    trace['journal_keys'].remove('timing_profile')
+    for key in NEW_JOURNAL_FIELDS:
+        trace['journal_keys'].remove(key)
     return trace
 
 
@@ -141,6 +151,12 @@ class DesktopGolden(Base):
         self.assertEqual(without_timing_record(trace), GOLDEN)
         self.assertEqual(result['timing_profile'], dict(id='desktop', sha256=SHAS['desktop'], source='default',
                                                         values=timing.effective(timing.PROFILES['desktop'])))
+        # The golden diff, stated: the journal gains exactly these two keys and nothing else changes.
+        self.assertEqual(set(trace['journal_keys']) - set(GOLDEN['journal_keys']), set(NEW_JOURNAL_FIELDS))
+        self.assertEqual(set(GOLDEN['journal_keys']) - set(trace['journal_keys']), set())
+        self.assertEqual(set(result['observed_seconds']), PHASES)
+        self.assertTrue(all(isinstance(v, float) and v >= 0 for v in result['observed_seconds'].values()))
+        self.assertNotIn('observed_cut_by_failure', result)
 
     def test_the_explicit_desktop_profile_is_the_same_deploy(self):
         profile, _ = timing.load_profile('desktop')
@@ -174,7 +190,12 @@ class VpsWaits(Base):
         self.start_ea(pairing='none')
         with self.relaunch(), self.assertRaisesRegex(ValueError, r'did not answer \(receipt_timeout\)'):
             deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=silent, sleep=clock.sleep, clock=clock, timing=timing_profile)
-        self.assertEqual(self.journal()['failure']['code'], 'dashboard_not_ready')
+        journal = self.journal()
+        self.assertEqual(journal['failure']['code'], 'dashboard_not_ready')
+        # The failed phase's duration up to the failure, on the waits' clock, named as cut by the failure.
+        self.assertEqual(journal['observed_seconds']['dashboard_first_answer'], round(clock(), 3))
+        self.assertEqual(journal['observed_cut_by_failure'], ['dashboard_first_answer'])
+        self.assertEqual({'close', 'launch_observe', 'dashboard_first_answer', 'unwind_close'}, set(journal['observed_seconds']))
         return clock()
 
     def test_a_cold_vps_dashboard_gets_480_s_and_the_desktop_180_s(self):
@@ -196,7 +217,10 @@ class VpsWaits(Base):
             deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=slow, sleep=clock.sleep, clock=clock, timing=copy.deepcopy(VPS))
         self.assertEqual((timeouts[0], max(timeouts)), (85, 85), 'each request asks up to 85 s, the last one what is left')
         self.assertGreaterEqual(clock(), 480); self.assertLess(clock(), 480 + 15)
-        self.assertEqual(self.journal()['phase'], 'stopped')
+        journal = self.journal()
+        self.assertEqual(journal['phase'], 'stopped')
+        self.assertEqual(journal['observed_cut_by_failure'], ['child_start', 'link'], 'child 1 never started')
+        self.assertGreaterEqual(journal['observed_seconds']['link'], 480)
 
     def test_a_reviewed_profiles_ack_wait_is_the_one_applied(self):
         mine = dict(timing.PROFILES['desktop'], id='slow-ack', ackWaitSeconds=150)
@@ -215,6 +239,10 @@ class VpsWaits(Base):
                         timing_source='file:' + 'f' * 64)
         waited = clock() - started[0]
         self.assertGreaterEqual(waited, 150); self.assertLess(waited, 150 + 7)
+        journal = self.journal()  # a plain refusal (no unwind): the durable phase is kept, the durations reach it
+        self.assertEqual((journal['phase'], journal['observed_cut_by_failure']), ('attached', ['ack']))
+        self.assertEqual(journal['observed_seconds']['ack'], round(waited, 3))
+        self.assertEqual(set(journal['observed_seconds']), PHASES - {'audit'})
         self.assertEqual((self.journal()['timing_profile']['id'], self.journal()['timing_profile']['source']), ('slow-ack', 'file:' + 'f' * 64))
 
     def test_an_invalid_profile_is_refused_before_anything_is_written(self):
@@ -242,6 +270,8 @@ class VpsWaits(Base):
             result = deploy.stop(self.c, 'stop-vps', mt5=FakeMT5(self.c), timing=copy.deepcopy(VPS))
         self.assertEqual((result['status'], waits), ('stopped', [180]))
         self.assertEqual((result['stop_timing_profile']['id'], result['stop_timing_profile']['sha256']), ('vps-cold-36', SHAS['vps-cold-36']))
+        self.assertIn('stop_close', result['observed_seconds'])
+        self.assertTrue(PHASES <= set(result['observed_seconds']), 'the load\'s own durations are kept')
         self.assertEqual(self.journal()['timing_profile']['source'], 'default', 'the load\'s own record is kept')
 
 
@@ -557,6 +587,8 @@ class CrashJournal(Base):
         self.assertEqual((journal['phase'], journal['failure']['code'], journal['failure']['phase'], journal['failure']['exception']),
                          ('stopped', 'controller_crash', 'dashboard_ready', 'RuntimeError'))
         self.assertEqual((journal['auto_unwind']['status'], journal['stop_reason']), ('unwound', 'controller_crash'))
+        self.assertEqual(journal['observed_cut_by_failure'], ['child_start', 'link'])
+        self.assertIn('unwind_close', journal['observed_seconds'])
         self.assertEqual(ea.shutdowns, 2); self.assertIsNone(self.process.identity)
         self.assertIsNone(deploy.current_deployment(self.c))
 
@@ -629,6 +661,76 @@ class AttemptCounter(Base):
             self.assertEqual(deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=lambda s: None)['attempt'], 3)
 
 
+# ======================================================================= observed durations
+
+class ObservedDurations(Base):
+    def test_each_phase_duration_is_journaled_on_the_waits_own_clock(self):
+        clock, links = Clock(), dict(n=0)
+        steps = dict(status=7, link_children=13, apply_policy=2, audit=3)
+        def timed(controller, ident, action, timeout=60):
+            clock.t += steps[action]  # how long the dashboard takes to answer each request
+            receipt = mailbox.portfolio_request(controller, ident, action, timeout=timeout)
+            if action == 'link_children':
+                links['n'] += 1
+                if links['n'] == 3:  # every child has started, but the dashboard reports pending once more
+                    receipt = receipt | dict(result='children_pending')
+            return receipt
+        self.start_ea(pairing='none', pending_polls=2)
+        with self.relaunch():
+            result = deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=timed, sleep=clock.sleep, clock=clock,
+                                 timing=copy.deepcopy(VPS))
+        self.assertEqual(result['phase'], 'ready')
+        # close and launch take no time on this clock (the fakes are instant); every other value is exact:
+        # child start = 3 answers x 13 + 2 polls x 2; link = 4 x 13 + 3 x 2.
+        self.assertEqual(result['observed_seconds'], dict(close=0.0, launch_observe=0.0, dashboard_first_answer=7.0, child_start=43.0,
+                                                          link=58.0, ack=7.0, audit=3.0))
+        self.assertEqual(result['timing_profile']['id'], 'vps-cold-36')
+        self.assertNotIn('observed_cut_by_failure', result)
+        self.assertEqual(self.journal()['observed_seconds'], result['observed_seconds'])
+
+    def test_a_resume_records_its_own_launch_observation_and_keeps_the_earlier_durations(self):
+        self.start_ea(pairing='none')
+        self.crash_at('link_children')
+        before = self.journal()['observed_seconds']
+        self.assertEqual(set(before), {'close', 'launch_observe', 'dashboard_first_answer'}, 'a kill journals what was written')
+        self.process.identity = None
+        clock = Clock()
+        clock.on_tick = lambda: setattr(self.process, 'identity', dict(pid=77, executable='terminal64.exe',
+                                                                       created_utc='2026-10-02T01:00:00+00:00')) if clock() >= 4 else None
+        with self.relaunch():
+            result = deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), sleep=clock.sleep, clock=clock)
+        self.assertEqual(result['phase'], 'ready')
+        self.assertEqual(result['observed_seconds']['launch_observe'], 4.0, 'MT5 was listed again after 4 s')
+        self.assertEqual(result['observed_seconds']['close'], before['close'])
+        self.assertEqual(set(result['observed_seconds']), PHASES)
+
+    def test_close_terminal_journals_its_close_duration_and_profile(self):
+        self.start_ea(pairing='none')
+        record = timing.load_profile('vps-cold-36')[1]
+        result = agent_setup.close_terminal(self.c, 'close-observed', build_id=BUILD, timing_record=record)
+        journal = json.loads((Path(self.c.root) / 'terminal-closes' / 'close-observed.json').read_text())
+        self.assertEqual(result['phase'], 'stopped')
+        self.assertEqual(journal['timing_profile'], record)
+        self.assertEqual(set(journal['observed_seconds']), {'close'})
+        self.assertGreaterEqual(journal['observed_seconds']['close'], 0)
+        self.assertNotIn('observed_cut_by_failure', journal)
+        # Without a profile (every other caller), only the duration is added.
+        self.process.identity = FakeProcess().identity
+        agent_setup.close_terminal(self.c, 'close-plain', build_id=BUILD)
+        plain = json.loads((Path(self.c.root) / 'terminal-closes' / 'close-plain.json').read_text())
+        self.assertNotIn('timing_profile', plain); self.assertIn('close', plain['observed_seconds'])
+
+    def test_a_close_that_never_exits_records_the_wait_up_to_the_failure(self):
+        self.process.close = lambda identity: None  # MT5 ignores the normal close
+        ticks = iter(range(0, 10_000, 5))
+        result = agent_setup.close_terminal(self.c, 'close-stuck', wait_seconds=30, clock=lambda: next(ticks))
+        self.assertEqual(result['status'], 'close_outcome_unresolved')
+        journal = json.loads((Path(self.c.root) / 'terminal-closes' / 'close-stuck.json').read_text())
+        self.assertEqual((journal['phase'], journal['observed_cut_by_failure']), ('close_issued', ['close']))
+        self.assertGreaterEqual(journal['observed_seconds']['close'], 30)
+        self.assertLess(journal['observed_seconds']['close'], 30 + 15)
+
+
 # ======================================================================= CLI
 
 class Cli(Base):
@@ -672,15 +774,14 @@ class Cli(Base):
             self.assertEqual(self.main('deploy-stop', '--attempt-id', 'stop-1', '--timing-profile', 'vps-cold-36')[0], 0)
             code, reply = self.main('close-terminal', '--attempt-id', 'close-1', '--timing-profile', 'vps-cold-36')
             self.assertEqual(seen['load'], dict(timing=VPS, timing_source='builtin')); self.assertEqual(seen['stop'], seen['load'])
-            self.assertEqual(seen['close'], dict(build_id=None, wait_seconds=180))
-            self.assertEqual((code, reply['result']['timing_profile']['id'], reply['result']['timing_profile']['sha256']),
-                             (0, 'vps-cold-36', SHAS['vps-cold-36']))
+            self.assertEqual(seen['close'], dict(build_id=None, wait_seconds=180, timing_record=timing.load_profile('vps-cold-36')[1]))
+            self.assertEqual(code, 0)
             # Without the flag every call is exactly today's.
             self.main('deploy-load', '--plan', str(self.plan()))
             self.main('deploy-stop', '--attempt-id', 'stop-2')
             code, reply = self.main('close-terminal', '--attempt-id', 'close-2')
-        self.assertEqual((seen['load'], seen['stop'], seen['close']), ({}, {}, dict(build_id=None)))
-        self.assertNotIn('timing_profile', reply['result'])
+        self.assertEqual((seen['load'], seen['stop'], seen['close']), ({}, {}, dict(build_id=None, timing_record=timing.default_record())))
+        self.assertEqual(seen['close']['timing_record']['sha256'], SHAS['desktop'])
 
 
 if __name__ == '__main__':

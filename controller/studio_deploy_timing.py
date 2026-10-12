@@ -181,6 +181,11 @@ def record(profile, *, source):
     return dict(id=profile['id'], sha256=effective_sha256(profile), source=source, values=effective(profile))
 
 
+def default_record():
+    """The record of a call made without --timing-profile: the desktop waits, which are the controller's own defaults."""
+    return record(PROFILES[DEFAULT_ID], source='default')
+
+
 def builtin(profile_id):
     return json.loads(json.dumps(PROFILES[profile_id]))
 

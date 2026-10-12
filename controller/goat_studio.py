@@ -717,8 +717,11 @@ def main(argv=None):
             if args.operation in ('pairing-code','close-terminal'):
                 from studio_agent_setup import pairing_code,close_terminal
                 if args.operation=='pairing-code': result=pairing_code(controller,args.build_id)
-                elif timing is None: result=close_terminal(controller,args.attempt_id,build_id=args.build_id)
-                else: result=close_terminal(controller,args.attempt_id,build_id=args.build_id,wait_seconds=timing[0]['closeWaitSeconds'])|dict(timing_profile=timing[1])
+                # The close journal records the profile (no flag: desktop, close_terminal's own 30 s) and observed_seconds.close.
+                elif timing is None:
+                    from studio_deploy_timing import default_record
+                    result=close_terminal(controller,args.attempt_id,build_id=args.build_id,timing_record=default_record())
+                else: result=close_terminal(controller,args.attempt_id,build_id=args.build_id,wait_seconds=timing[0]['closeWaitSeconds'],timing_record=timing[1])
             elif args.operation.startswith('deploy-'):
                 import studio_demo_deploy as deploy
                 if args.operation=='deploy-preflight': result=deploy.preflight(controller)

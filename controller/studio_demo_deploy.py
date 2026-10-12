@@ -162,8 +162,14 @@ def check_member_values(controller, name, raw):
         raise ValueError(str(exc) + ' (' + name + '; nothing was written or launched)') from exc
 
 
+PLAN_KEYS = frozenset(('schema', 'deploymentId', 'portfolio', 'buildId', 'accountLogin', 'policy', 'members'))
+# Optional (plug-and-play broker-fit, controller/contracts/broker-fit.md): each member's contentBase64 then holds the
+# REFERENCE SET and the controller itself writes the scaled SET from the reviewed edits. A plan without it is unchanged.
+BROKER_FIT_KEY = 'brokerFit'
+
+
 def validate_plan(controller, session, plan):
-    if type(plan) is not dict or set(plan) != {'schema', 'deploymentId', 'portfolio', 'buildId', 'accountLogin', 'policy', 'members'}:
+    if type(plan) is not dict or set(plan) not in (PLAN_KEYS, PLAN_KEYS | {BROKER_FIT_KEY}):
         raise ValueError('Invalid demo deploy plan')
     if plan['schema'] != PLAN_SCHEMA or not isinstance(plan['deploymentId'], str) or not DEPLOYMENT_ID.fullmatch(plan['deploymentId']):
         raise ValueError('Invalid demo deploy identity')
@@ -184,6 +190,10 @@ def validate_plan(controller, session, plan):
     members = plan['members']
     if type(members) is not list or not 1 <= len(members) <= 100:
         raise ValueError('A demo portfolio needs 1 to 100 members')
+    fit = None
+    if BROKER_FIT_KEY in plan:
+        import studio_broker_fit as broker_fit
+        fit = broker_fit.deploy_entries(plan[BROKER_FIT_KEY], members)
     expected_ea = 'GOAT V' + controller.install['ea_version']
     names, prepared = set(), []
     for index, member in enumerate(members):
@@ -210,6 +220,14 @@ def validate_plan(controller, session, plan):
             raise ValueError('Invalid SET bytes: ' + name) from exc
         if not 0 < len(raw) <= 2_000_000 or hashlib.sha256(raw).hexdigest() != member['sha256']:
             raise ValueError('SET bytes differ from the reviewed SHA-256: ' + name)
+        digest = member['sha256']
+        if fit is not None:
+            # The scaled SET is written here and only here, from the reference bytes and the reviewed edits.
+            try:
+                raw = broker_fit.deployed_bytes(raw, fit[index])
+            except (UnicodeError, ValueError) as exc:
+                raise ValueError(str(exc) + ' (' + name + '; nothing was written or launched)') from exc
+            digest = fit[index]['setSha256Deployed']
         check_member_values(controller, name, raw)
         try:
             # The exact chart the profile will hold: period, line, character and nonce rules (studio_deploy_profile).
@@ -221,7 +239,7 @@ def validate_plan(controller, session, plan):
             raise Refusal(str(exc) + ' Nothing was written or launched.', exc.code, **exc.fields) from exc
         except ValueError as exc:
             raise ValueError(str(exc) + ' (' + name + '; nothing was written or launched)') from exc
-        prepared.append(dict(index=index, name=name, symbol=symbol, strategy=member['strategy'], sha256=member['sha256'], raw=raw))
+        prepared.append(dict(index=index, name=name, symbol=symbol, strategy=member['strategy'], sha256=digest, raw=raw))
     # Adoption must never be ambiguous: two members that would start identical charts are refused.
     deploy_profile.refuse_duplicates(prepared, policy)
     return prepared
@@ -755,6 +773,9 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
                       members=[dict(index=m['index'], fileName=m['name'], symbol=m['symbol'], sha256=m['sha256']) for m in members],
                       created_utc=datetime.now(timezone.utc).isoformat(), trading_changed=False, positions_closed=False,
                       profile_format=deploy_profile.PROFILE_FORMAT, attempt=attempt)
+        if BROKER_FIT_KEY in plan:
+            import studio_broker_fit as broker_fit
+            record['broker_fit'] = broker_fit.deploy_record(plan[BROKER_FIT_KEY])
         write_json(where['journal'], record)
     if record.get('profile_format') != deploy_profile.PROFILE_FORMAT and record['phase'] in ('validated', 'staged', 'closed', 'launch_intent'):
         raise ValueError('This deployment was staged by an earlier GOAT (template deploy) and never launched; run deploy-stop, then deploy again')

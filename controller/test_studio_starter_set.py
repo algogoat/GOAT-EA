@@ -275,7 +275,8 @@ class BuildFromStarterTests(unittest.TestCase):
                 validate_set(target, self.schema, self.policy)
             self.assertEqual(str(refused.exception), RISK_SIZING_CODE + ': ' + RISK_SIZING_MESSAGE)
         self.assertEqual(RISK_SIZING_MESSAGE, 'Risk-per-sequence sizing needs at least 2 sequence trades; use fixed lots or '
-                         'raise Max_Seq_Trades (single-trade % risk returns in the next EA build).')
+                         'raise Max_Seq_Trades. Single-trade risk sizing isn\'t available yet. We\'ll say so in the '
+                         'release notes when it ships.')
         self.assertTrue(validate_set(self.starter('single')['output']['path'], self.schema, self.policy))   # FixedLots + 1 trade
 
     def test_risk_is_never_silently_inherited_from_a_sequence_starter(self):

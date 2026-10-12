@@ -308,6 +308,8 @@ function run(src=readSources()){
     MACD_Mode:0,MACD_Sig:-1,RSI2_Mode:0,RSI2_Sig:-1,Sequence_New_News:true,Sequence_New_Bias_B:true,Sequence_New_Bias_S:true,Reverse_Seq:false,
     Mode_Trade:0,Long_and_Short:0,Long:1,Short:2,Delay_Trade:0,Allow_Opposite_Seq:true,MathAbs:Math.abs,ask:1.2,bid:1.19,
     Sequence_Skipped_News:0,Sequence_Skipped_Bias_B:0,Sequence_Skipped_Bias_S:0,
+    // B44 item 4: the AI gate log is Print-only (test_ai_gate_log.cjs); here it only has to exist.
+    GoatGateActiveMask:()=>0,GoatGateLog:()=>{},
     Seq_Buy:seq('buy'),Seq_Sell:seq('sell'),Seq_Buy_Virtual:seq('vbuy'),Seq_Sell_Virtual:seq('vsell')};
    vm.createContext(c);vm.runInContext(gateCode,c);
    vm.runInContext('function DashboardEntryAllowed(op){'+js(entry)+'}',c);

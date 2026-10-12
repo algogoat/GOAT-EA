@@ -703,14 +703,29 @@ bool GOATWireV2AuthoritativeNow(const long read_at_ms,const ulong verified_tick,
   }
 
 // B44 (2026-10-12: one failed fetch kept a child unverified for the full Bias_RegenerateMinutes). After
-// failed_fetches live fetches in a row that left no verified state, the next attempt waits 30 s, then 60 s,
-// 120 s, ... doubling, never longer than refresh_ms. failed_fetches<=0 is the normal refresh interval.
-ulong GOATWireV2RetryDelayMs(const int failed_fetches,const ulong refresh_ms)
+// failed_fetches live fetches in a row that left no verified state, the next attempt waits a base of 30 s,
+// then 60 s, 120 s, ... doubling, plus this chart's jitter of 0-99.9% of that base, never longer than
+// refresh_ms. failed_fetches<=0 is the normal refresh interval.
+ulong GOATWireV2RetryDelayMs(const int failed_fetches,const ulong refresh_ms,const int jitter_permille)
   {
    if(failed_fetches<=0) return refresh_ms;
    ulong retry_delay_ms=30000;
    for(int retry_i=1;retry_i<failed_fetches && retry_delay_ms<refresh_ms;retry_i++) retry_delay_ms*=2;
+   int retry_jitter=(jitter_permille<0 ? 0 : (jitter_permille>999 ? 999 : jitter_permille));
+   retry_delay_ms+=retry_delay_ms*retry_jitter/1000;
    return(retry_delay_ms<refresh_ms ? retry_delay_ms : refresh_ms);
+  }
+
+// The chart's retry jitter, 0..999 per mille: a fixed hash of the chart id (no clock, no random source), so
+// the charts of a terminal, or of many terminals, that fail together do not retry in lockstep.
+int GOATWireV2RetryJitterPermille(const long jitter_chart)
+  {
+   string jitter_text=IntegerToString(jitter_chart);
+   long jitter_hash=7;
+   for(int jitter_k=0;jitter_k<StringLen(jitter_text);jitter_k++)
+      jitter_hash=(jitter_hash*48271+StringGetCharacter(jitter_text,jitter_k))%2147483647;
+   for(int jitter_r=0;jitter_r<3;jitter_r++) jitter_hash=(jitter_hash*48271)%2147483647;
+   return (int)(jitter_hash%1000);
   }
 
 #ifdef GOAT_AI_SIGNAL_FILTER_V147
@@ -820,10 +835,14 @@ class CGOATAIWireV2
          || !GOATWireV2AuthoritativeNow(1000000L,500,1499,adversarial_now) || adversarial_now!=1000999L
          || !GOATWireV2AuthoritativeNow(1000000L,500,1500,adversarial_now) || adversarial_now!=1001000L
          || GOATWireV2AuthoritativeNow(1000000L,500,499,adversarial_now)) return false;
-      if(GOATWireV2RetryDelayMs(0,600000)!=600000 || GOATWireV2RetryDelayMs(1,600000)!=30000
-         || GOATWireV2RetryDelayMs(2,600000)!=60000 || GOATWireV2RetryDelayMs(3,600000)!=120000
-         || GOATWireV2RetryDelayMs(5,600000)!=480000 || GOATWireV2RetryDelayMs(6,600000)!=600000
-         || GOATWireV2RetryDelayMs(16,600000)!=600000 || GOATWireV2RetryDelayMs(3,60000)!=60000) return false;
+      if(GOATWireV2RetryDelayMs(0,600000,500)!=600000 || GOATWireV2RetryDelayMs(1,600000,0)!=30000
+         || GOATWireV2RetryDelayMs(2,600000,0)!=60000 || GOATWireV2RetryDelayMs(3,600000,0)!=120000
+         || GOATWireV2RetryDelayMs(5,600000,0)!=480000 || GOATWireV2RetryDelayMs(6,600000,0)!=600000
+         || GOATWireV2RetryDelayMs(16,600000,0)!=600000 || GOATWireV2RetryDelayMs(3,60000,0)!=60000
+         || GOATWireV2RetryDelayMs(1,600000,500)!=45000 || GOATWireV2RetryDelayMs(2,600000,999)!=119940
+         || GOATWireV2RetryDelayMs(4,600000,999)!=479760 || GOATWireV2RetryDelayMs(5,600000,250)!=600000
+         || GOATWireV2RetryDelayMs(1,600000,1000)!=59970 || GOATWireV2RetryJitterPermille(1)!=228
+         || GOATWireV2RetryJitterPermille(71300508715022)!=160 || GOATWireV2RetryJitterPermille(133098787211876843)!=887) return false;
 
       string response="{\"status\":\"success\",\"data\":{\"v\":2,"
                       +"\"wireContract\":\"ea-wire-v2-calibrated-probability-v1\",\"asset\":\"EURUSD\","
@@ -912,7 +931,8 @@ class CGOATAIWireV2
       asset=ConvertToGOATsymbol(asset);
       ulong now_tick=GetTickCount64();
       ulong refresh_ms=(ulong)MathMax(1,Bias_RegenerateMinutes)*60000;
-      ulong wait_ms=(m_state.verified ? refresh_ms : GOATWireV2RetryDelayMs(m_failed_fetches,refresh_ms));
+      ulong wait_ms=(m_state.verified || m_failed_fetches<=0 ? refresh_ms
+                     : GOATWireV2RetryDelayMs(m_failed_fetches,refresh_ms,GOATWireV2RetryJitterPermille(ChartID())));
       bool refresh=(m_last_attempt_tick==0 || now_tick<m_last_attempt_tick || now_tick-m_last_attempt_tick>=wait_ms);
       if(m_state.verified)
         {

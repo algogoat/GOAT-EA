@@ -55,6 +55,11 @@ NEWS_FILE_GUARD=('studio_news_guard: a news-on run (any SET with Mode_News 2-5; 
                  'NEWS_FILE_CHANGED / NEWS_FILE_UNRECORDED unless --accept-news-change, which continues as a new labelled news '
                  'lineage (both shas recorded, results marked); news-off runs are never blocked')
 
+# Remote deploy v0 (controller/contracts/deploy-timing-profile.md): the waits of a deploy as a reviewed parameter.
+TIMING_PROFILE_NOTE = ('--timing-profile <file|id>: goat-deploy-timing-v1 waits (close, launch observe, dashboard, child start, link '
+                       'request <=90 s, ack, audit), validated and refused with a TIMING_* code out of bounds or under 1.5x its '
+                       'measured evidence; built-in desktop (the default: the pinned constants) and vps-cold-36; the journal records '
+                       'its id and sha256')
 OPERATION_CONTRACTS = {
     'self-repair':dict(required=['job-id','action-id','linked-login'],effect='retire an exact expired rejected never-consumed demo start/cancel using original receipt and pristine native package proof; caller verifies linked-login eligibility, tool matches it against fresh native demo account. Republish genuine projection, normally close idle selected demo, archive transport and restore owned controls, then same-EA rebind. No research relaunch, grant, permissions, human-stop reset or native-cancellation claim; returns sanitized own-ticket repair payload'),
     'same-ea-rebind':dict(required=[],effect='repair only a stopped demo session after a proven same-EA desktop receipt rewrite; requires exact preserved previous receipt and settled native attempts, retains previous session bytes and database, never launches, grants or clears a permit'),
@@ -152,11 +157,11 @@ OPERATION_CONTRACTS = {
     'research-monitor-restart-resume':dict(required=['job-id'],effect='reconcile an already-issued monitor close and perform only its never-issued first relaunch; no repeated close or launch'),
     'cancel-rejected-successor':dict(required=['job-id'],effect='owner-only: publish one new stop identity after exact expired unconsumed native cancel rejection and reverified monitor restart; keeps both stop receipts'),
     'pairing-code':dict(required=['build-id'],effect='return the pending public connection code from a connected inert demo: first the code the EA shares locally (LC36 and later; read-only, registers and consumes nothing), else (native_human_control only; never on a demo_direct installation, where it is a pure read) register the EA 5-minute pairing-read capability and consume its mailbox answer; no approval, credential or trading effect'),
-    'close-terminal':dict(required=['attempt-id'],optional=['build-id'],effect='normal-close the selected MT5 once, only when broker-reported demo, connected, Algo Trading off, no positions/orders, tester idle and no batch/seed/native job; uses the EA inert shutdown when a dashboard hosts it, else one controller normal close; never kills or repeats. When it read the GOAT monitor healthy just before its close (native_monitor facts, SDK Algo off, demo, bound login), it records the post-close chart hash monitor-launch may reopen (monitor_chart_record)'),
+    'close-terminal':dict(required=['attempt-id'],optional=['build-id','timing-profile'],timing_profile=TIMING_PROFILE_NOTE,effect='normal-close the selected MT5 once, only when broker-reported demo, connected, Algo Trading off, no positions/orders, tester idle and no batch/seed/native job; uses the EA inert shutdown when a dashboard hosts it, else one controller normal close; never kills or repeats. When it read the GOAT monitor healthy just before its close (native_monitor facts, SDK Algo off, demo, bound login), it records the post-close chart hash monitor-launch may reopen (monitor_chart_record)'),
     'deploy-preflight':dict(required=[],effect='read-only broker demo/Algo/positions/tester readback (plus account currency, balance, equity, leverage, company and trade mode), existing dashboard state and live deployment record for a desktop deploy review, and the Allow Algo Trading default MT5 saved (allow_live_trading_default, plus an informational notes entry when it is off; readiness_blockers stays empty for it; never written)'),
-    'deploy-load':dict(required=['plan'],effect='refuse any member SET whose values could size risk-per-sequence with Max_Seq_Trades<=1 (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES) or still carry an unchosen starter Risk (RISK_NOT_CHOSEN) before anything is written; stage reviewed hash-bound member SETs and a saved dashboard in Common Files and one MT5 profile holding the Portfolio Dashboard plus one child chart per member, close the inert demo terminal, relaunch it on that profile with Algo Trading off (Enabled=0), let the dashboard link every child, apply exposure policy and audit every child against its SET; a member not linked within the start-up window is named child_not_started and the deploy unloads itself and restores the previous chart profile; Algo Trading stays off; resumable phase journal'),
+    'deploy-load':dict(required=['plan'],optional=['timing-profile'],timing_profile=TIMING_PROFILE_NOTE,effect='refuse any member SET whose values could size risk-per-sequence with Max_Seq_Trades<=1 (RISK_PER_SEQUENCE_NEEDS_TWO_TRADES) or still carry an unchosen starter Risk (RISK_NOT_CHOSEN) before anything is written; stage reviewed hash-bound member SETs and a saved dashboard in Common Files and one MT5 profile holding the Portfolio Dashboard plus one child chart per member, close the inert demo terminal, relaunch it on that profile with Algo Trading off (Enabled=0), let the dashboard link every child, apply exposure policy and audit every child against its SET; a member not linked within the start-up window is named child_not_started and the deploy unloads itself and restores the previous chart profile; Algo Trading stays off; resumable phase journal'),
     'deploy-status':dict(required=[],effect='read the live deployment record and dashboard status; no mutation'),
-    'deploy-stop':dict(required=['attempt-id'],effect='unload the deployed dashboard from an inert terminal: refuses with Algo Trading on or open positions/orders, normal-closes once, renames the saved dashboard state and deploy profile aside and selects the previous chart profile again when it is unchanged; never closes positions'),
+    'deploy-stop':dict(required=['attempt-id'],optional=['timing-profile'],timing_profile=TIMING_PROFILE_NOTE,effect='unload the deployed dashboard from an inert terminal: refuses with Algo Trading on or open positions/orders, normal-closes once, renames the saved dashboard state and deploy profile aside and selects the previous chart profile again when it is unchanged; never closes positions'),
     'batch-pause':dict(required=['job-id'],optional=['immediate','supervise-seconds'],limits={'supervise-seconds':[1,172800]},demo_lane='goat.exe demo batch-pause --batch-id <id> (broker-verified; starts its own bounded supervisor)',effect='durable idempotent pause request: one cancel only at a safe point (right after a member turns OnGoing, or tester idle after the member-boundary relaunch) while the bound monitor reports; an expired unconsumed cancel is answered by the EA with CANCEL_REJECTED and only that exact receipt admits exactly one successor stop (cancel-rejected-successor identity rules, both receipts kept, never blind replay); a closed, unbound or unlicensed monitor is a named blocker with its fix; the driver keeps its disk guard and finish, never records cancel_issued for a pause and adopts an outstanding unconfirmed stop; finish harvests completed members and records paused with a resume token. States: pausing, paused, pause_failed (one sentence + fix), finished. Optional supervise-seconds runs the bounded pause supervisor in this call'),
     'batch-resume':dict(required=['job-id'],optional=['new-batch-id','resume-token','include-failed','include-no-edge','accept-news-change'],news_file_guard=NEWS_FILE_GUARD,demo_lane='goat.exe demo batch-resume --batch-id <id> (also refreshes a restarted protected peer and starts the bounded driver)',effect='after paused: verify the exact paused result and resume token, build the remaining-work plan from per-member native evidence (resume-batch) tolerating only a refreshed protected-peer process, prepare the successor under a new ID (default <id>-rN) and record lineage paused batch -> successor; no start in this CLI, run-batch starts it'),
     'research-status':dict(required=[],effect='read-only lane status for one installation: terminal, account, EA build, current batch or seed hunt (status, members done/total, qualifying, last member, pace and ETA, lineage, pause), driver health, disk headroom and monitor/licence state with the plain reason and fix when unbound; never opens the mutable store, launches or signals MT5'),
@@ -513,10 +518,10 @@ def main(argv=None):
     p=sub.add_parser('research-retire-never-started');p.add_argument('--job-id',required=True)
     sub.add_parser('research-regrant-status')
     p=sub.add_parser('pairing-code');p.add_argument('--build-id',required=True)
-    p=sub.add_parser('close-terminal');p.add_argument('--attempt-id',required=True);p.add_argument('--build-id')
+    p=sub.add_parser('close-terminal');p.add_argument('--attempt-id',required=True);p.add_argument('--build-id');p.add_argument('--timing-profile')
     sub.add_parser('deploy-preflight');sub.add_parser('deploy-status')
-    p=sub.add_parser('deploy-load');p.add_argument('--plan',type=Path,required=True)
-    p=sub.add_parser('deploy-stop');p.add_argument('--attempt-id',required=True)
+    p=sub.add_parser('deploy-load');p.add_argument('--plan',type=Path,required=True);p.add_argument('--timing-profile')
+    p=sub.add_parser('deploy-stop');p.add_argument('--attempt-id',required=True);p.add_argument('--timing-profile')
     args=parser.parse_args(argv);controller=None;locks=ExitStack()
     try:
         foreign=foreign_controller_modules()
@@ -702,16 +707,24 @@ def main(argv=None):
                 result=starter_set(args.shape,args.output,controller.schema,controller.policy,
                     controller_version=VERSION,ea_version=controller.install['ea_version'],forbidden_roots=catalog)
         else:
+            # Remote deploy v0: --timing-profile <file|id> (studio_deploy_timing), validated before anything is opened.
+            timing=None
+            if getattr(args,'timing_profile',None) is not None:
+                from studio_deploy_timing import load_profile
+                timing=load_profile(args.timing_profile)
+            timed={} if timing is None else dict(timing=timing[0],timing_source=timing[1]['source'])
             if not args.operation.startswith('orphan-recovery-'): controller.open()
             if args.operation in ('pairing-code','close-terminal'):
                 from studio_agent_setup import pairing_code,close_terminal
-                result=pairing_code(controller,args.build_id) if args.operation=='pairing-code' else close_terminal(controller,args.attempt_id,build_id=args.build_id)
+                if args.operation=='pairing-code': result=pairing_code(controller,args.build_id)
+                elif timing is None: result=close_terminal(controller,args.attempt_id,build_id=args.build_id)
+                else: result=close_terminal(controller,args.attempt_id,build_id=args.build_id,wait_seconds=timing[0]['closeWaitSeconds'])|dict(timing_profile=timing[1])
             elif args.operation.startswith('deploy-'):
                 import studio_demo_deploy as deploy
                 if args.operation=='deploy-preflight': result=deploy.preflight(controller)
-                elif args.operation=='deploy-load': result=deploy.load(controller,args.plan)
+                elif args.operation=='deploy-load': result=deploy.load(controller,args.plan,**timed)
                 elif args.operation=='deploy-status': result=deploy.status(controller)
-                else: result=deploy.stop(controller,args.attempt_id)
+                else: result=deploy.stop(controller,args.attempt_id,**timed)
             elif args.operation in ('monitor-repair','monitor-stop'):
                 from studio_monitor_repair import repair
                 result=repair(controller,args.attempt_id,stop_only=args.operation=='monitor-stop')

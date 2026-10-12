@@ -1,0 +1,49 @@
+{
+ "schema": "goat-deploy-timing-v1/cases",
+ "source": "goatai tools/remote-deploy/test_deploy_timing_profile.cjs (10 checks), ported case by case; the extra cases follow the reference's rules. Both validators must give these verdicts.",
+ "builtins": {
+  "desktop": {"budgetSeconds": 720, "runnerTimeoutMs": 900000,
+              "canonical": "{\"ackWaitSeconds\":90,\"auditWaitSeconds\":90,\"childStartWaitSeconds\":240,\"closeWaitSeconds\":30,\"dashboardWaitSeconds\":180,\"launchObserveSeconds\":30,\"linkRequestSeconds\":20,\"schema\":\"goat-deploy-timing-v1\"}",
+              "sha256": "54519ff3a2bb795e3ed7534c56b2f29aed0bbeb8bb0ed8f987ba93684be2b8ea"},
+  "vps-cold-36": {"budgetSeconds": 1410, "runnerTimeoutMs": 1590000,
+                  "canonical": "{\"ackWaitSeconds\":90,\"auditWaitSeconds\":90,\"childStartWaitSeconds\":480,\"closeWaitSeconds\":180,\"dashboardWaitSeconds\":480,\"launchObserveSeconds\":30,\"linkRequestSeconds\":85,\"schema\":\"goat-deploy-timing-v1\"}",
+                  "sha256": "5a665f0fd54e1ae898fb602a7f89a19f74186a0ab9d02debb2dd1e4759aabfe3"}
+ },
+ "validate": [
+  {"check": 1, "name": "desktop validates", "base": "desktop", "expect": "ok"},
+  {"check": 1, "name": "vps-cold-36 validates", "base": "vps-cold-36", "expect": "ok"},
+  {"check": 4, "name": "link request 91 s over portfolio_request's 90 s cap", "base": "vps-cold-36", "set": {"linkRequestSeconds": 91}, "expect": "TIMING_LINK_REQUEST_OVER_CAP"},
+  {"check": 4, "name": "link request 90 s is the cap itself", "base": "vps-cold-36", "set": {"linkRequestSeconds": 90}, "expect": "ok"},
+  {"check": 5, "name": "cold start 190 s: the pinned 180 s dashboard wait", "base": "vps-cold-36", "set": {"dashboardWaitSeconds": 180}, "expect": "TIMING_BELOW_EVIDENCE"},
+  {"check": 6, "name": "close 79 s: a 60 s close wait", "base": "vps-cold-36", "set": {"closeWaitSeconds": 60}, "expect": "TIMING_BELOW_EVIDENCE"},
+  {"check": 7, "name": "cold link 88 s: a 120 s child start window", "base": "vps-cold-36", "set": {"childStartWaitSeconds": 120}, "expect": "TIMING_BELOW_EVIDENCE"},
+  {"check": 8, "name": "link request must end inside the child start window", "base": "desktop", "set": {"childStartWaitSeconds": 60, "linkRequestSeconds": 60}, "expect": "TIMING_LINK_REQUEST_TOO_LONG"},
+  {"check": 9, "name": "null profile", "profile": null, "expect": "TIMING_INVALID"},
+  {"check": 9, "name": "other schema", "base": "vps-cold-36", "set": {"schema": "other"}, "expect": "TIMING_SCHEMA"},
+  {"check": 9, "name": "unknown field", "base": "vps-cold-36", "set": {"extra": 1}, "expect": "TIMING_INVALID"},
+  {"check": 9, "name": "fractional seconds", "base": "vps-cold-36", "set": {"ackWaitSeconds": 90.5}, "expect": "TIMING_INVALID"},
+  {"check": 9, "name": "audit wait below 30 s", "base": "vps-cold-36", "set": {"auditWaitSeconds": 5}, "expect": "TIMING_OUT_OF_RANGE"},
+  {"check": 9, "name": "negative evidence", "base": "vps-cold-36", "set": {"evidence": {"closeSeconds": -1}}, "expect": "TIMING_INVALID"},
+  {"check": null, "name": "an integral float is an integer (Number.isInteger)", "base": "desktop", "set": {"closeWaitSeconds": 30.0}, "expect": "ok"},
+  {"check": null, "name": "a boolean is not a number", "base": "desktop", "set": {"ackWaitSeconds": true}, "expect": "TIMING_INVALID"},
+  {"check": null, "name": "evidence is required (null or an object)", "base": "desktop", "delete": ["evidence"], "expect": "TIMING_INVALID"},
+  {"check": null, "name": "a missing wait", "base": "desktop", "delete": ["launchObserveSeconds"], "expect": "TIMING_INVALID"},
+  {"check": null, "name": "an upper-case id", "base": "desktop", "set": {"id": "Desktop"}, "expect": "TIMING_INVALID"},
+  {"check": null, "name": "launch observe above 120 s", "base": "desktop", "set": {"launchObserveSeconds": 121}, "expect": "TIMING_OUT_OF_RANGE"},
+  {"check": null, "name": "link request 0 s", "base": "desktop", "set": {"linkRequestSeconds": 0}, "expect": "TIMING_OUT_OF_RANGE"},
+  {"check": null, "name": "evidence exactly 1.5x is covered", "base": "desktop", "set": {"evidence": {"coldStartSeconds": 120}}, "expect": "ok"},
+  {"check": null, "name": "evidence just over 1.5x is not", "base": "desktop", "set": {"evidence": {"coldStartSeconds": 120.5}}, "expect": "TIMING_BELOW_EVIDENCE"},
+  {"check": null, "name": "evidence with only unrelated keys", "base": "desktop", "set": {"evidence": {"measuredUtc": "2026-10-12", "charts": 2}}, "expect": "ok"},
+  {"check": null, "name": "null evidence measure", "base": "desktop", "set": {"evidence": {"closeSeconds": null}}, "expect": "TIMING_INVALID"},
+  {"check": null, "name": "the largest in-bounds profile still ends before the registration", "base": "desktop", "set": {"closeWaitSeconds": 600, "launchObserveSeconds": 120, "dashboardWaitSeconds": 1200, "childStartWaitSeconds": 1200, "linkRequestSeconds": 90, "ackWaitSeconds": 600, "auditWaitSeconds": 600}, "expect": "ok"}
+ ],
+ "resume": [
+  {"check": 10, "name": "a fresh registration", "base": "vps-cold-36", "ageSeconds": 600, "expect": "ok"},
+  {"check": 10, "name": "ten minutes before expiry", "base": "vps-cold-36", "ageSeconds": 13800, "expect": "RESUME_REGISTRATION_TOO_OLD"},
+  {"check": 10, "name": "an unreadable age (NaN in the reference)", "base": "vps-cold-36", "ageSeconds": "NaN", "expect": "RESUME_AGE_UNKNOWN"},
+  {"check": null, "name": "a negative age", "base": "vps-cold-36", "ageSeconds": -1, "expect": "RESUME_AGE_UNKNOWN"},
+  {"check": null, "name": "exactly the time needed is not enough (left must exceed needed)", "base": "vps-cold-36", "ageSeconds": 13680, "expect": "RESUME_REGISTRATION_TOO_OLD"},
+  {"check": null, "name": "one second more than needed", "base": "vps-cold-36", "ageSeconds": 13679, "expect": "ok"},
+  {"check": null, "name": "desktop needs 480 s of the registration", "base": "desktop", "ageSeconds": 13919, "expect": "ok"}
+ ]
+}

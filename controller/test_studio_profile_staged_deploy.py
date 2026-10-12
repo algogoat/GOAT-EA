@@ -228,11 +228,15 @@ class ProfileStagedDeployTests(DeployFixture):
 
     def test_a_beta24_journal_in_dashboard_ready_resumes_into_link_children(self):
         self.start_ea(pairing='none')
+        # A kill runs no handler, so it is a BaseException here: an in-process crash (an Exception) now journals failure
+        # and unwinds instead (remote deploy v0, test_studio_deploy_robustness.py).
+        class Killed(BaseException):
+            pass
         def crash_at_link(controller, ident, action, timeout=60):
             if action == 'link_children':
-                raise RuntimeError('controller killed')
+                raise Killed('controller killed')
             return mailbox.portfolio_request(controller, ident, action, timeout=timeout)
-        with self.relaunch(), self.assertRaisesRegex(RuntimeError, 'controller killed'):
+        with self.relaunch(), self.assertRaisesRegex(Killed, 'controller killed'):
             deploy.load(self.c, self.plan(), mt5=FakeMT5(self.c), request=crash_at_link, sleep=lambda s: None)
         journal = self.journal()
         self.assertEqual(journal['phase'], 'dashboard_ready')

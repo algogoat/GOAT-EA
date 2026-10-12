@@ -240,22 +240,127 @@ bool GoatChildAuditRead(const string path,const bool common,const string expecte
    return body!="";
 }
 
+// B44 (goatai#2350): why the last GoatChildChartSnapshot failed, for adoption's diagnostics (it was a silent
+// child_unmatched): snapshot_too_large, snapshot_nul or snapshot_unreadable; "" after a success.
+string GoatChildSnapshotRefusal="";
+#define GOAT_CHILD_SNAPSHOT_MAX_BYTES 268435456
+
+// B44: one saved template, scanned line by line with no whole-file line or byte cap (a chart's own objects and
+// indicators pushed real templates past GoatChildAuditRead's 8 MB and GoatChildAuditTemplate's 65,536 lines).
+// Every tag line is checked as GoatChildAuditTemplate checks it (identifier tags, matched nesting, one <chart>
+// root, depth below 64, nothing after it, one <expert> directly under <chart>). Only that <expert> block is kept,
+// wrapped in <chart> for GoatChildAuditTemplate, so the block alone must fit its 65,536-line / 4,000,000-character
+// limits (snapshot_too_large). UTF-16LE (MT5's own) or UTF-8 with an exact round trip; a NUL unit is snapshot_nul.
+bool GoatChildAuditExpertBlock(const uchar &bytes[],const int total,string &body,string &refusal)
+{
+   body=""; refusal="snapshot_unreadable";
+   if(total<1 || total>ArraySize(bytes)) return false;
+   bool wide=(total>=2 && bytes[0]==255 && bytes[1]==254);
+   if(wide && total%2!=0) return false;
+   int step=(wide ? 2 : 1);
+   int start=(wide ? 2 : (total>=3 && bytes[0]==239 && bytes[1]==187 && bytes[2]==191 ? 3 : 0));
+   string stack[],kept="";
+   int experts=0,kept_lines=0;
+   bool in_expert=false,chart_closed=false;
+   while(start<total)
+   {
+      int stop=start;
+      while(stop<total && !(bytes[stop]==10 && (!wide || bytes[stop+1]==0))) stop+=step;
+      int length=stop-start;
+      string line="";
+      if(wide)
+      {
+         ushort units[]; ArrayResize(units,length/2);
+         for(int i=0;i<length/2;i++)
+         {
+            units[i]=(ushort)(bytes[start+2*i]+256*bytes[start+2*i+1]);
+            if(units[i]==0) {refusal="snapshot_nul"; return false;}
+         }
+         if(length>0) line=ShortArrayToString(units,0,length/2);
+      }
+      else if(length>0)
+      {
+         for(int i=start;i<stop;i++) if(bytes[i]==0) {refusal="snapshot_nul"; return false;}
+         line=CharArrayToString(bytes,start,length,CP_UTF8);
+         uchar roundtrip[]; int n=StringToCharArray(line,roundtrip,0,WHOLE_ARRAY,CP_UTF8)-1;
+         if(n!=length) return false;
+         for(int i=0;i<n;i++) if(roundtrip[i]!=bytes[start+i]) return false;
+      }
+      start=stop+step;
+      int chars=StringLen(line);
+      if(chars>0 && StringGetCharacter(line,chars-1)=='\r') line=StringSubstr(line,0,chars-1);
+      string trimmed=GoatChildAuditTrim(line);
+      bool keep=in_expert;
+      if(trimmed!="")
+      {
+         int depth=ArraySize(stack);
+         if(StringSubstr(trimmed,0,1)=="<")
+         {
+            if(StringSubstr(trimmed,StringLen(trimmed)-1)!=">") return false;
+            bool closing=(StringSubstr(trimmed,1,1)=="/");
+            string tag=StringSubstr(trimmed,(closing ? 2 : 1),StringLen(trimmed)-(closing ? 3 : 2));
+            if(!GoatChildAuditIdentifier(tag)) return false;
+            if(closing)
+            {
+               if(depth==0 || stack[depth-1]!=tag) return false;
+               if(tag=="expert") in_expert=false;
+               if(tag=="chart") chart_closed=true;
+               ArrayResize(stack,depth-1);
+            }
+            else
+            {
+               if(chart_closed || depth>=64 || (depth==0 && tag!="chart") || (depth>0 && tag=="chart")) return false;
+               if(tag=="expert")
+               {
+                  if(depth!=1 || stack[0]!="chart" || ++experts!=1) return false;
+                  in_expert=true; keep=true;
+               }
+               ArrayResize(stack,depth+1); stack[depth]=tag;
+            }
+         }
+         else if(chart_closed || depth==0) return false;
+      }
+      if(keep)
+      {
+         if(++kept_lines>65530 || StringLen(kept)+StringLen(line)>3999000) {refusal="snapshot_too_large"; return false;}
+         kept+=line+"\n";
+      }
+   }
+   if(!chart_closed || ArraySize(stack)!=0 || experts!=1) return false;
+   body="<chart>\n"+kept+"</chart>\n"; refusal="";
+   return true;
+}
+
 // One saved-template snapshot of a chart, read and then removed. Generated digits only: no
 // caller-controlled filename, traversal, DLL delete, profile-template copy, recursive removal
 // or cleanup of pre-existing files. Success requires confirmed removal of the snapshot.
 bool GoatChildChartSnapshot(const long cid,string &snapshot)
 {
-   snapshot="";
+   snapshot=""; GoatChildSnapshotRefusal="snapshot_unreadable";
    if(cid<=0) return false;
    static ulong serial=0; serial++;
    string filename="GOAT\\ChildAudit\\audit-"+IntegerToString(ChartID())+"-"+IntegerToString(cid)+"-"+IntegerToString((long)GetMicrosecondCount())+"-"+IntegerToString((long)serial)+".tpl";
    FolderCreate("GOAT"); FolderCreate("GOAT\\ChildAudit");
    if(FileIsExist(filename)) return false;
    bool saved=ChartSaveTemplate(cid,"\\Files\\"+filename);
-   bool snapshot_read=saved && GoatChildAuditRead(filename,false,"",snapshot);
+   bool snapshot_read=false;
+   if(saved)
+   {
+      int h=FileOpen(filename,FILE_READ|FILE_BIN|FILE_SHARE_READ);
+      if(h!=INVALID_HANDLE)
+      {
+         ulong size=FileSize(h); uchar bytes[];
+         if(size>GOAT_CHILD_SNAPSHOT_MAX_BYTES) GoatChildSnapshotRefusal="snapshot_too_large";
+         else if(size>0 && FileReadArray(h,bytes,0,(uint)size)==(uint)size)
+            snapshot_read=GoatChildAuditExpertBlock(bytes,(int)size,snapshot,GoatChildSnapshotRefusal);
+         FileClose(h);
+      }
+   }
    // Even a failed save may leave a partial file. Only this freshly owned name is eligible for removal.
    bool removed=(!FileIsExist(filename) ? !saved : FileDelete(filename));
    if(!snapshot_read || !removed || FileIsExist(filename)) snapshot="";
+   if(snapshot!="") GoatChildSnapshotRefusal="";
+   else if(GoatChildSnapshotRefusal=="") GoatChildSnapshotRefusal="snapshot_unreadable";
    return snapshot!="";
 }
 

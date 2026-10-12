@@ -103,7 +103,10 @@ function terminal(src,{rows,charts,algo=false,positions=0,saveOk=true,clock=1000
   CHART_EXPERT_NAME:'expert',ChartGetString:(id,p)=>{assert.equal(p,'expert');return all.find(c=>c.id===id)?.expert??'';},
   GoatFindMagicByCid:(sym,id,set)=>{const c=all.find(x=>x.id===id&&(x.recordSym??x.sym)===sym);if(!c||!c.magic)return false;set(c.magic);return true;},
   GoatChildSetSource:(p,hash,set)=>{sourcesRead.push([p,hash]);const r=g_sets.find(x=>x.path===p);if(!r||hash!=='sha-'+r.path)return false;set(r.set);return true;},
-  GoatChildChartSnapshot:(id,set)=>{snapshots.push(id);const c=all.find(x=>x.id===id);if(!c||!c.snapshot)return false;set(c.snapshot);return true;},
+  // B44: like production, a failed snapshot leaves its reason in GoatChildSnapshotRefusal ("" after a success).
+  GoatChildChartSnapshot:(id,set)=>{snapshots.push(id);const c=all.find(x=>x.id===id);
+   if(!c||!c.snapshot){ctx.GoatChildSnapshotRefusal=c?.refusal??'snapshot_unreadable';return false;}
+   ctx.GoatChildSnapshotRefusal='';set(c.snapshot);return true;},GoatChildSnapshotRefusal:'',
   GoatDeploymentPhase:(phase,target,detail)=>notes.push([phase,target,detail??'']),
   // AdoptChild's environment (the production method runs below with these as members).
   g_sets,edt_Status:[],btn_Action:[],SaveDashboardConfig:()=>{saves.push(g_sets.map(r=>[r.cid,r.magic]));return saveOk;},
@@ -186,6 +189,29 @@ function run(src=readSources()){
   assert.deepEqual(t.notes.filter(n=>n[0]==='magic_held'),[['magic_held',71300508715022,'USDJPY row=25 magic=27425 held_by_row=7']],'the 2026-10-12 refusal is named');
   assert.ok(t.notes.some(n=>n[0]==='child_unmatched'&&n[1]===71300508715022),'and still recorded unmatched');
   const u=exp03(27426);assert.equal(u.pass(),1,'a unique magic links in one pass');assert.ok(!u.notes.some(n=>n[0]==='magic_held'));ok();}
+ // B44 item 3: a snapshot the audit cannot read is named with its reason, once, on both paths (it was a silent
+ // child_unmatched). The refusal itself is unchanged: the row stays pending, then child_not_started.
+ for(const refusal of ['snapshot_too_large','snapshot_nul','snapshot_unreadable']){
+  {const r=[row(1)];const t=terminal(src,{rows:r,charts:[child(501,r[0],{snapshot:'',refusal})]});
+   assert.equal(t.pass(),0,refusal);assert.equal(t.pass(),0);t.ctx.now+=241;t.pass();
+   assert.deepEqual(t.notes.filter(n=>n[0]===refusal),[[refusal,501,'EURUSD']],refusal+': named once on the fallback walk');
+   assert.ok(t.notes.some(n=>n[0]==='child_unmatched'&&n[1]===501),refusal+': still unmatched');
+   assert.ok(t.notes.some(n=>n[0]==='child_not_started'&&n[2]==='EURUSD row=0'),refusal+': still not started');
+   assert.deepEqual([t.g_sets[0].cid,t.g_sets[0].magic],[0,0]);ok();}
+  {const r=[row(1)];r[0].cid=501;const t=terminal(src,{rows:r,charts:[child(501,r[0],{snapshot:'',refusal})]});
+   assert.equal(t.pass(),0,refusal);
+   assert.ok(t.notes.some(n=>n[0]===refusal&&n[1]===501&&n[2]==='EURUSD row=0'),refusal+': named on the cid-first path with its row');ok();}
+ }
+ {// One row's refusal is never carried to the next row's hint (that row's chart is not even fingerprinted).
+  const r=[row(1),row(2,'USDJPY')];r[0].cid=501;r[1].cid=777;
+  const t=terminal(src,{rows:r,charts:[child(501,r[0],{snapshot:'',refusal:'snapshot_nul'})]});
+  assert.equal(t.pass(),0);assert.ok(!t.notes.some(n=>/^snapshot_/.test(n[0])&&n[1]===777),'no stale refusal for row 1');ok();}
+ {// A readable snapshot that does not match is not a snapshot refusal; a chart that does not fit is never fingerprinted.
+  const r=[row(1),row(2,'USDJPY')];r[1].magic=9501;r[1].cid=600;
+  const t=terminal(src,{rows:r,charts:[child(501,r[0],{snapshot:'',refusal:'snapshot_nul'}),child(502,r[0],{snapshot:tpl('Risk=999\n')})]});
+  assert.equal(t.pass(),0);assert.deepEqual(t.snapshots,[502]);
+  assert.ok(!t.notes.some(n=>/^snapshot_/.test(n[0])),'a held magic is never fingerprinted, a mismatched snapshot is not a refusal');
+  assert.ok(t.notes.some(n=>n[0]==='magic_held'&&n[1]===501)&&t.notes.some(n=>n[0]==='child_unmatched'&&n[1]===502));ok();}
  {const r=[row(1)];const t=terminal(src,{rows:r,charts:[child(501,r[0]),child(502,r[0])]});
   assert.equal(t.pass(),0,'two matching charts for one row');assert.equal(t.g_sets[0].magic,0);
   assert.ok(t.notes.some(n=>n[0]==='child_identity_ambiguous'));ok();}

@@ -36,12 +36,14 @@ let code=main.slice(start,end).replace(/\/\/.*$/gm,'');
 code=code.replace(/^(?:bool|double|int|long)\s+(g_GoatRank\w+|g_GoatBlindExport)(\[5\])?=([^;]+);$/gm,(_,n,arr,v)=>'var '+n+'='+(arr?'['+v.replace(/[{}]/g,'')+']':v)+';')
  .replace(/^(double|int)\s+(g_Goat\w+=[^;]+);$/gm,'var $2;')
  .replace(/^void (\w+)\(const double (\w+)\)/gm,'function $1($2)').replace(/^void (\w+)\(void\)/gm,'function $1()')
- .replace(/^string (\w+)\(void\)/gm,'function $1()')
+ .replace(/^string (\w+)\(void\)/gm,'function $1()').replace(/^double (\w+)\(void\)/gm,'function $1()')
+ .replace(/^string GoatBlindDesc\(const string rank_desc\)/m,'function GoatBlindDesc(rank_desc)')
  .replace(/^bool GoatReadRankedLine\(const string rank_text,double &rank_pl,double &rank_sr,double &rank_arf\)/m,'function GoatReadRankedLine(rank_text,out)');
 const reader=unit(code,'function GoatReadRankedLine(rank_text,out)');
 code=code.replace(reader,reader.replace(/\brank_(pl|sr|arf)\b/g,'out.$1'));
 code=code.replace(/\(long\)rank_now\/86400/g,'Math.floor(rank_now/86400)')
- .replace(/\bdouble dds\[5\];/g,'let dds=[];').replace(/\bstring (\w+)\[\];/g,'let $1=[];')
+ .replace(/\bdouble dds\[5\];/g,'let dds=[];').replace(/\bstring (\w+)\[\];/g,'let $1=[];').replace(/\bstring (\w+)\[\],/g,'let $1=[],')
+ .replace(/\(datetime\)/g,'').replace(/\bulong (?=\w+=)/g,'let ')
  .replace(/\b(?:const )?(?:string|double|int|long|bool|datetime) (?=[a-z_]\w*\s*[=;,])/g,'let ')
  .replace(/StringTrimLeft\((\w+)\)/g,'$1=$1.trimStart()').replace(/StringTrimRight\((\w+)\)/g,'$1=$1.trimEnd()')
  .replace(/'\\n'/g,'10').replace(/' '/g,'32');
@@ -52,7 +54,12 @@ function harness({blind=true,boos=0,foos=0,trdIS=7}={}){
   DoubleToString:(v,d)=>Number(v).toFixed(d),IntegerToString:String,TimeToString:d=>date(d),
   StringFind:(s,t)=>s.indexOf(t),StringSubstr:(s,a,n)=>n===undefined?s.slice(a):s.slice(a,a+n),
   StringSplit:(s,ch,out)=>{out.splice(0,out.length,...s.split(String.fromCharCode(ch)));return out.length;},
-  StringToDouble:s=>{const v=parseFloat(s);return Number.isFinite(v)?v:0;},MathIsValidNumber:Number.isFinite};
+  StringToDouble:s=>{const v=parseFloat(s);return Number.isFinite(v)?v:0;},MathIsValidNumber:Number.isFinite,
+  MQL_PROGRAM_NAME:1,MQLInfoString:()=>'GOAT V1.49',deals:[],selected:[],DEAL_TYPE:1,DEAL_TIME:2,DEAL_PROFIT:3,DEAL_SWAP:4,DEAL_COMMISSION:5,DEAL_FEE:6,
+  DEAL_TYPE_BUY:0,DEAL_TYPE_SELL:1,DEAL_TYPE_BALANCE:2,
+  HistorySelect:(a,b)=>{c.selected=c.deals.filter(d=>d.time>=a&&d.time<=b);return true;},HistoryDealsTotal:()=>c.selected.length,
+  HistoryDealGetTicket:i=>i+1,HistoryDealGetInteger:(t,k)=>k===1?c.selected[t-1].type:c.selected[t-1].time,
+  HistoryDealGetDouble:(t,k)=>({3:c.selected[t-1].profit,4:c.selected[t-1].swap??0,5:c.selected[t-1].commission??0,6:0})[k]};
  vm.createContext(c);vm.runInContext(code,c);c.g_GoatBlindExport=blind;
  return c;
 }
@@ -107,9 +114,9 @@ for(let run=0;run<6;run++){
  assert.deepEqual([parse(flat.GoatRankLine()).ARF,parse(flat.GoatRankLine()).PL],['0.000','0.00']);ok();}
 // 4) The exporter's reader: exactly one RANKED line after the blind=1 stamp, with PL, SR and ARF.
 {const c=harness();const read=t=>{const out={};const r=c.GoatReadRankedLine(t,out);return [r,out.pl,out.sr,out.arf];};
- const good='; SAMPLE: x\n; EXPORT: blind=1 ranked=fit+fwd\r\n; RANKED: fit+fwd 2025.01.01-2025.06.01 Days=100 Trades=40 PL=-12.50 SR=1.234 ARF=0.456\r\nRisk=500\n';
+ const good='; SAMPLE: x\n; EXPORT: blind=1 ranked=fit+fwd sr=daily_ann\r\n; RANKED: fit+fwd 2025.01.01-2025.06.01 Days=100 Trades=40 PL=-12.50 SR=1.234 ARF=0.456\r\nRisk=500\n';
  assert.deepEqual(read(good),[true,-12.5,1.234,0.456]);
- for(const [label,text] of [['no stamp',good.replace('; EXPORT: blind=1 ranked=fit+fwd\r\n','')],['blind=0 stamp',good.replace('blind=1 ranked=fit+fwd','blind=0 ranked=full_span')],
+ for(const [label,text] of [['no stamp',good.replace('; EXPORT: blind=1 ranked=fit+fwd sr=daily_ann\r\n','')],['the pre-condition stamp',good.replace(' sr=daily_ann','')],['blind=0 stamp',good.replace('blind=1 ranked=fit+fwd','blind=0 ranked=full_span')],
   ['no ranked line',good.replace(/; RANKED:.*\r\n/,'')],['two ranked lines',good.replace(/(; RANKED:.*\r\n)/,'$1$1')],['no SR',good.replace(' SR=1.234','')],
   ['empty ARF',good.replace('ARF=0.456','ARF=')],['empty file','']]) {assert.equal(read(text)[0],false,label);}
  ok();}
@@ -122,7 +129,8 @@ for(let run=0;run<6;run++){
  assert.match(audit,/"GOAT_FitnessRunNonce","BlindExport"\};\n   string declared_values\[7\]=\{"false","","0","0","4","0","false"\};/,'the child audit accepts it at its default only');
  assert.match(main,/fwdRangeMeta\+\(BlindExport \? ",blind=1" : ""\)\+"\}\\n"/,'blind=1 rides in the export run meta only when on');
  assert.match(main,/if\(names\[i\]=="blind" && values\[i\]=="1"\) \{g_GoatBlindExport=true;/);
- assert.match(main,/if\(g_GoatBlindExport\) WriteSet\(desc\+"\\n; EXPORT: blind=1 ranked=fit\+fwd\\n"\+GoatRankLine\(\)\);\n\s+else\s+WriteSet\(desc\+"\\n; EXPORT: blind=0 ranked=full_span"\);/);
+ assert.match(main,/if\(g_GoatBlindExport\) WriteSet\(GoatBlindDesc\(desc\)\);\n\s+else\s+WriteSet\(desc\+"\\n; EXPORT: blind=0 ranked=full_span sr=mt5_stat"\);/);
+ assert.match(main,/    if\(g_GoatBlindExport\) metrix=GoatRankMetrix\(\);[^\n]*\n    newFile \+= metrix\+".csv";/,'a blind export is named by its window metrics');
  assert.match(main,/GoatRankTick\(\); \/\/ B44 item 5/);
  const store=unit(main,'int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[],bool Init=false,const int startAttempts=20)');
  assert.ok(store.indexOf('profit=rank_pl;')<store.indexOf('if(profit>0)'),'the floor reads the fit+FWD PL');
@@ -131,7 +139,52 @@ for(let run=0;run<6;run++){
  const tester=norm(fs.readFileSync(path.join(ROOT,'Tester.mqh'),'utf8'));
  assert.match(unit(tester,'void SortAndTrimExports(const int keepTop,const double minARF,const double minSR,ExportRecord &expArr[])'),/expArr\[i\]\.arf \* expArr\[i\]\.sr/,'the trim ranks on the stored (fit+FWD when blind) ARF x SR');
  ok();}
-// 6) blind=0 no-drift: with the B44 lines taken out, StartExporter and RunAndStoreSet are c708cae4's text.
+// 7) A blind export is blind (goatai#2350 6127809765, condition 1): replace every FOOS bar and deal (a different
+//    holdout) and the blind=1 export's file name and full SET content, lots after AdjustLots included, are byte-identical.
+//    The same two runs exported with blind=0 differ (the fixture does reach the full-span lines).
+{const tester=norm(fs.readFileSync(path.join(ROOT,'Tester.mqh'),'utf8'));
+ let fetch=unit(tester,'double FetchMetric(string filename, string metric)');
+ fetch=fetch.replace(/^double FetchMetric\(string filename, string metric\)/,'function FetchMetric(filename,metric)').replace(/\/\/.*$/gm,'')
+  .replace(/\bint pos = -1, last = -1;/,'let pos=-1,last=-1;').replace(/\bstring parts\[\];/,'let parts=[];').replace(/'_'/g,'95')
+  .replace(/\b(?:int|string) (?=\w+\s*=)/g,'let ');
+ const fx={StringFind:(s,q,from=0)=>s.indexOf(q,from),StringSubstr:(s,a,n)=>n===undefined?s.slice(a):s.slice(a,a+n),StringLen:s=>s.length,
+  StringSplit:(s,ch,out)=>{out.splice(0,out.length,...s.split(String.fromCharCode(ch)));return out.length;},StringToDouble:s=>{const v=parseFloat(s);return Number.isFinite(v)?v:0;}};
+ vm.createContext(fx);vm.runInContext(fetch,fx);
+ assert.match(main,/double Lots_Adjusted = NormalizeLots\(Lots_Old \* \(TargetDD \/ MathMax\(r\.dd,1\.0\)\),strT\.symbol\);/,'AdjustLots scales on the record DD');
+ assert.match(main,/expArr\[n\]\.dd       = FetchMetric\(exports\[0\],"DD"\);/,'which is the file name DD');
+ seed=777;const shared=stream(160),day=86400;
+ const boos=shared[Math.floor(shared.length*0.25)][0]-shared[Math.floor(shared.length*0.25)][0]%day;
+ const foos=shared[shared.length-1][0]-shared[shared.length-1][0]%day+day;
+ const holdout=(s,drift)=>{seed=s;const out=[];let e=shared.at(-1)[1];for(let k=1;k<=400;k++){e+=(rnd()-drift)*150;out.push([foos+k*600,Math.round(e*100)/100]);}return out;};
+ const deals=pts=>pts.filter((_,i)=>i%37===0).map(([time],i)=>({time,type:i%5===4?2:i%2,profit:((i*7919)%400)-180,commission:-1.5}));
+ function exportOf(post,blind){
+  const pts=[...shared,...post],c=harness({boos,foos,blind,trdIS:41});c.deals=deals(pts);
+  for(const [t,e] of pts){c.now=t;c.equity=e;c.GoatRankTick();}
+  c.now=pts.at(-1)[0];
+  const net=pts.at(-1)[1]-pts[0][1],foosPL=pts.at(-1)[1]-shared.at(-1)[1];
+  // OnTester's description: full-span lines, the window lines (fixed before FOOS), the FOOS line, the news line.
+  const desc=['; '+'-'.repeat(40),'; GOAT V1.49 EURUSD,M1','; Days=210 Weeks=42.0 Months=9.7','; Trades=88 Sequences=12','; PF=1.234 RF=2.000 SR=1.500 ARF='+(net/1e5).toFixed(3),
+   '; Return='+net.toFixed(0)+' MonthlyRet=1 DD=900','; '+'-'.repeat(40),'; BOOS:   2025.01.06-'+date(boos)+' Days=30 Trades=9 PL=120',
+   '; SAMPLE: '+date(boos)+'-'+date(foos)+' Days=100 Trades=41 PL=640','; FWD:    2025.04.01-2025.05.30 Days=40 Trades=12 PL=200',
+   '; FOOS:   '+date(foos)+'-'+date(pts.at(-1)[0])+' Days=20 Trades=7 PL='+foosPL.toFixed(0),'; '+'-'.repeat(40)+'\n; NEWS: News Events=3 SkippedSequenceStarts='+post.length%7].join('\n');
+  const full='_Trds=88_Prf='+net.toFixed(0)+'_DD=900_PF=1.23_SR=1.50_ARF='+(net/1e5).toFixed(3);
+  const metrix=blind?c.GoatRankMetrix():full,name='GOAT V1.49 EURUSD,M1'+metrix+'.set';
+  const lots=Math.round(0.10*(1000/Math.max(fx.FetchMetric(name,'DD'),1.0))*100)/100;
+  const head=blind?c.GoatBlindDesc(desc):desc+'\n; EXPORT: blind=0 ranked=full_span sr=mt5_stat';
+  const content=(head+'\r\n; ===========GENERAL SETTINGS============\r\nMode_Operation=9\r\nEA_Desc=R0001\r\nLots_Input='+lots.toFixed(2)+'\r\nGrid_Size=-2.25\r\n');
+  return {name,content,lots};
+ }
+ const a=exportOf(holdout(1,0.40),true),b=exportOf(holdout(2,0.62),true);
+ assert.equal(a.name,b.name,'file name');assert.equal(a.content,b.content,'full SET content, lots included');assert.equal(a.lots,b.lots);
+ assert.match(a.content,/; EXPORT: blind=1 ranked=fit\+fwd sr=daily_ann\n; RANKED: fit\+fwd /);
+ assert.ok(!/FOOS|NEWS|Return=|PF=1\.234/.test(a.content),'no full-span, FOOS or news line in a blind SET');
+ assert.match(a.content,/; BOOS:.*\n; SAMPLE:.*\n; FWD:/,'the window lines stay');
+ const a0=exportOf(holdout(1,0.40),false),b0=exportOf(holdout(2,0.62),false);
+ assert.notEqual(a0.name,b0.name,'blind=0 names do depend on FOOS (sanity)');assert.notEqual(a0.content,b0.content);
+ // The ranking metrics in the name are the window's: Prf is the RANKED PL, SR and ARF its SR and ARF.
+ const ranked=parse(a.content.split('\n').find(l=>l.startsWith('; RANKED:')));
+ assert.equal(fx.FetchMetric(a.name,'Prf'),Math.round(Number(ranked.PL)));assert.equal(fx.FetchMetric(a.name,'Trds'),41);
+ assert.equal(fx.FetchMetric(a.name,'SR').toFixed(2),Number(ranked.SR).toFixed(2));ok();}// 6) blind=0 no-drift: with the B44 lines taken out, StartExporter and RunAndStoreSet are c708cae4's text.
 let compared=false;
 try{
  const old=norm(execFileSync('git',['show',B43_SOURCE+':GOAT V1.49.mq5'],{cwd:ROOT,maxBuffer:64<<20,stdio:['ignore','pipe','ignore']}).toString('utf8'));

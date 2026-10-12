@@ -2833,10 +2833,10 @@ input bool BlindExport=false; // Exporter: rank exports on fit+FWD only (BOOS/FO
 // OnTester ARF (top-5 drawdown episodes, monthly) on the window; SR = daily equity returns, mean / sample standard
 // deviation x sqrt(252), which is NOT MT5's STAT_SHARPE_RATIO. Measurement only: no trading decision reads it.
 bool   g_GoatBlindExport=false;
-bool   g_GoatRankOpened=false;
-double g_GoatRankOpen=0.0,g_GoatRankClose=0.0,g_GoatRankPeak=0.0,g_GoatRankEpisode=0.0,g_GoatRankMark=0.0;
+bool   g_GoatRankOpened=false,g_GoatRankFinished=false;
+double g_GoatRankOpen=0.0,g_GoatRankClose=0.0,g_GoatRankPeak=0.0,g_GoatRankEpisode=0.0,g_GoatRankMark=0.0,g_GoatRankMaxDD=0.0;
 double g_GoatRankTop[5]={0,0,0,0,0};
-double g_GoatRankSum=0.0,g_GoatRankSquares=0.0;
+double g_GoatRankSum=0.0,g_GoatRankSquares=0.0,g_GoatRankSR=0.0,g_GoatRankARF=0.0;
 int    g_GoatRankReturns=0,g_GoatRankDays=0;
 long   g_GoatRankDay=-1;
 void GoatRankEpisodeEnd(const double rank_episode)
@@ -2869,14 +2869,14 @@ void GoatRankTick(void)
      {GoatRankReturn(rank_equity); g_GoatRankMark=rank_equity; g_GoatRankDay=rank_day; g_GoatRankDays++;}
    if(rank_equity>g_GoatRankPeak) {GoatRankEpisodeEnd(g_GoatRankEpisode); g_GoatRankPeak=rank_equity; g_GoatRankEpisode=0.0;}
    g_GoatRankEpisode=MathMax(g_GoatRankEpisode,g_GoatRankPeak-rank_equity);
+   g_GoatRankMaxDD=MathMax(g_GoatRankMaxDD,g_GoatRankEpisode);
    g_GoatRankClose=rank_equity;
   }
-// The "; RANKED:" header line, once at the end of a blind export run.
-string GoatRankLine(void)
+// Closes the window once (the last episode and the last daily return) and computes SR and ARF.
+void GoatRankFinish(void)
   {
-   string rank_from=(dt_Back_OOS!=0 ? TimeToString(dt_Back_OOS,TIME_DATE) : "start");
-   string rank_to=(dt_Fwrd_OOS!=0 ? TimeToString(dt_Fwrd_OOS,TIME_DATE) : "end");
-   if(!g_GoatRankOpened || g_GoatRankOpen<=0.0) return "; RANKED: fit+fwd "+rank_from+"-"+rank_to+" Days=0 Trades=0 PL=0.00 SR=0.000 ARF=0.000";
+   if(g_GoatRankFinished || !g_GoatRankOpened || g_GoatRankOpen<=0.0) return;
+   g_GoatRankFinished=true;
    GoatRankEpisodeEnd(g_GoatRankEpisode); g_GoatRankEpisode=0.0;
    GoatRankReturn(g_GoatRankClose); g_GoatRankMark=g_GoatRankClose;
    double dds[5]; for(int i=0;i<5;i++) dds[i]=g_GoatRankTop[i];
@@ -2890,19 +2890,71 @@ string GoatRankLine(void)
    double rank_return=(g_GoatRankClose-g_GoatRankOpen)/g_GoatRankOpen;
    if(rank_return<0)  mean_dd=dds[0];
    if(mean_dd==0)     mean_dd=g_GoatRankOpen/2;
-   double rank_arf=(rank_return/(mean_dd/g_GoatRankOpen))/(MathMax(1,g_GoatRankDays)/21.7);
-   double rank_sr=0.0;
+   g_GoatRankARF=(rank_return/(mean_dd/g_GoatRankOpen))/(MathMax(1,g_GoatRankDays)/21.7);
+   g_GoatRankSR=0.0;
    if(g_GoatRankReturns>=2)
      {
       double rank_mean=g_GoatRankSum/g_GoatRankReturns;
       double rank_var=(g_GoatRankSquares-g_GoatRankReturns*rank_mean*rank_mean)/(g_GoatRankReturns-1);
-      if(rank_var>0) rank_sr=rank_mean/MathSqrt(rank_var)*MathSqrt(252.0);
+      if(rank_var>0) g_GoatRankSR=rank_mean/MathSqrt(rank_var)*MathSqrt(252.0);
      }
+  }
+// The "; RANKED:" header line, once at the end of a blind export run.
+string GoatRankLine(void)
+  {
+   string rank_from=(dt_Back_OOS!=0 ? TimeToString(dt_Back_OOS,TIME_DATE) : "start");
+   string rank_to=(dt_Fwrd_OOS!=0 ? TimeToString(dt_Fwrd_OOS,TIME_DATE) : "end");
+   if(!g_GoatRankOpened || g_GoatRankOpen<=0.0) return "; RANKED: fit+fwd "+rank_from+"-"+rank_to+" Days=0 Trades=0 PL=0.00 SR=0.000 ARF=0.000";
+   GoatRankFinish();
    return "; RANKED: fit+fwd "+rank_from+"-"+rank_to+" Days="+IntegerToString(g_GoatRankDays)+" Trades="+IntegerToString(trd_IS)
-          +" PL="+DoubleToString(g_GoatRankClose-g_GoatRankOpen,2)+" SR="+DoubleToString(rank_sr,3)+" ARF="+DoubleToString(rank_arf,3);
+          +" PL="+DoubleToString(g_GoatRankClose-g_GoatRankOpen,2)+" SR="+DoubleToString(g_GoatRankSR,3)+" ARF="+DoubleToString(g_GoatRankARF,3);
+  }
+// B44 condition 1 (goatai#2350 6127809765): a blind export is blind. Its file-name metrics are the window's, so its
+// name, the AdjustLots scaling (on the file name's DD) and its SET never depend on a FOOS bar. PF: winning over losing
+// deal results (profit + swap + commission + fee) of the deals inside the window; 0 with no losing deal.
+double GoatRankPF(void)
+  {
+   datetime rank_to=(dt_Fwrd_OOS!=0 ? dt_Fwrd_OOS-1 : TimeCurrent());
+   if(!HistorySelect(dt_Back_OOS,rank_to)) return 0.0;
+   double rank_won=0.0,rank_lost=0.0;
+   for(int i=0;i<HistoryDealsTotal();i++)
+     {
+      ulong rank_deal=HistoryDealGetTicket(i);
+      if(rank_deal==0) continue;
+      long rank_type=HistoryDealGetInteger(rank_deal,DEAL_TYPE);
+      datetime rank_time=(datetime)HistoryDealGetInteger(rank_deal,DEAL_TIME);
+      if((rank_type!=DEAL_TYPE_BUY && rank_type!=DEAL_TYPE_SELL) || rank_time<dt_Back_OOS || rank_time>rank_to) continue;
+      double rank_result=HistoryDealGetDouble(rank_deal,DEAL_PROFIT)+HistoryDealGetDouble(rank_deal,DEAL_SWAP)
+                         +HistoryDealGetDouble(rank_deal,DEAL_COMMISSION)+HistoryDealGetDouble(rank_deal,DEAL_FEE);
+      if(rank_result>0) rank_won+=rank_result; else rank_lost-=rank_result;
+     }
+   return (rank_lost>0.0 ? rank_won/rank_lost : 0.0);
+  }
+// The blind export's file-name metrics, in the format of the full-span ones.
+string GoatRankMetrix(void)
+  {
+   GoatRankFinish();
+   return "_Trds="+IntegerToString(trd_IS)+"_Prf="+DoubleToString(g_GoatRankClose-g_GoatRankOpen,0)+"_DD="+DoubleToString(g_GoatRankMaxDD,0)
+          +"_PF="+DoubleToString(GoatRankPF(),2)+"_SR="+DoubleToString(g_GoatRankSR,2)+"_ARF="+DoubleToString(g_GoatRankARF,3);
+  }
+// The blind export's SET header: of OnTester's description only the program line, the separators and the BOOS, SAMPLE
+// and FWD window lines (no full-span metric, FOOS, news or bias line), then the stamp and the RANKED line.
+string GoatBlindDesc(const string rank_desc)
+  {
+   string rank_lines[],rank_kept="";
+   int rank_count=StringSplit(rank_desc,'\n',rank_lines);
+   string rank_program="; "+MQLInfoString(MQL_PROGRAM_NAME)+" ";
+   for(int i=0;i<rank_count;i++)
+     {
+      string rank_line=rank_lines[i];
+      if(StringFind(rank_line,"; ---")==0 || StringFind(rank_line,rank_program)==0 || StringFind(rank_line,"; BOOS:")==0
+         || StringFind(rank_line,"; SAMPLE:")==0 || StringFind(rank_line,"; FWD:")==0)
+         rank_kept+=(rank_kept=="" ? "" : "\n")+rank_line;
+     }
+   return rank_kept+"\n; EXPORT: blind=1 ranked=fit+fwd sr=daily_ann\n"+GoatRankLine();
   }
 // Exporter side: PL, SR and ARF from an export's one "; RANKED: fit+fwd" line, which must follow its
-// "; EXPORT: blind=1 ranked=fit+fwd" stamp. Anything else (missing, repeated, unparsable) is false.
+// "; EXPORT: blind=1 ranked=fit+fwd sr=daily_ann" stamp. Anything else (missing, repeated, unparsable) is false.
 bool GoatReadRankedLine(const string rank_text,double &rank_pl,double &rank_sr,double &rank_arf)
   {
    rank_pl=rank_sr=rank_arf=0.0;
@@ -2912,7 +2964,7 @@ bool GoatReadRankedLine(const string rank_text,double &rank_pl,double &rank_sr,d
    for(int i=0;i<rank_count;i++)
      {
       string rank_line=rank_lines[i]; StringTrimLeft(rank_line); StringTrimRight(rank_line);
-      if(rank_line=="; EXPORT: blind=1 ranked=fit+fwd") {rank_stamped=true; continue;}
+      if(rank_line=="; EXPORT: blind=1 ranked=fit+fwd sr=daily_ann") {rank_stamped=true; continue;}
       if(StringFind(rank_line,"; RANKED: fit+fwd ")!=0) continue;
       if(!rank_stamped || ++rank_found>1) return false;
       string rank_tokens[];
@@ -4467,6 +4519,7 @@ double OnTester()
                    //+ "_RF="    + DoubleToString(RF,2)
                      + "_SR="    + DoubleToString(TesterStatistics(STAT_SHARPE_RATIO),2)
                      + "_ARF="   + DoubleToString(MARF,3);//Print(metrix);
+    if(g_GoatBlindExport) metrix=GoatRankMetrix(); // B44: a blind export is named by its fit+FWD metrics only
     newFile += metrix+".csv";//Print(newFile);
     string FileSET_Name=FileCSV_Name+metrix+".set";//Print(FileSET_Name);
     bool exportPathSafe=(!Sequence_Export_Enabled || (GoatSeqPathFits(newFile) && GoatSeqPathFits(FileSET_Name) && GoatSeqPathFits(GoatSeqStem(newFile)+".goatseq\\report-reconciliation.json.tmp")));
@@ -4483,8 +4536,9 @@ double OnTester()
     else
       {
        // B44 item 5: every export says how it was ranked (an export without this line is blind=0).
-       if(g_GoatBlindExport) WriteSet(desc+"\n; EXPORT: blind=1 ranked=fit+fwd\n"+GoatRankLine());
-       else                  WriteSet(desc+"\n; EXPORT: blind=0 ranked=full_span");
+       // sr= names the Sharpe the file's SR is: the window's daily annualized one, or MT5's STAT_SHARPE_RATIO.
+       if(g_GoatBlindExport) WriteSet(GoatBlindDesc(desc));
+       else                  WriteSet(desc+"\n; EXPORT: blind=0 ranked=full_span sr=mt5_stat");
       }
     g_sequence_export_csv=newFile;
     g_sequence_export_set=FileSET_Name;

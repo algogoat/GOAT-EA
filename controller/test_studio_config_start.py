@@ -40,7 +40,7 @@ class ConfigStartTests(unittest.TestCase):
         c.submit=submit
         self.package=root/'packages/batch';self.package.mkdir(parents=True)
         self.binding=dict(research_terminal=str(root/'install/terminal64.exe'),research_data_root=str(root/'data'),
-            report_location_bridge='installation_to_data_v1',startup_monitor={'bound':True},research_profile='GOAT-Studio-fixture')
+            report_location_bridge='installation_to_data_v1',startup_monitor={'bound':True},research_profile='GOAT Research')
         self.plan=dict(research_binding=self.binding)
         (self.package/'studio-plan.json').write_text(json.dumps(self.plan))
         (self.package/'manifest.json').write_text('{}')
@@ -78,7 +78,10 @@ class ConfigStartTests(unittest.TestCase):
             _install_controls=Mock(side_effect=install),validate_restart_controls=Mock(side_effect=lambda *args,**kwargs:dict(self.arm_fields)),
             publish_restart_arm=Mock(side_effect=arm),observe_dispatch=Mock(return_value=dict(
                 status='receipt_observed',consumed=True,receipt={'status':'RESTART_ARMED_RECONCILE'})),
-            validate_restart_material=Mock(return_value=self.material))
+            validate_restart_material=Mock(return_value=self.material),
+            # GOAT Research reset and the one-time migration run for real in test_studio_research_profile.
+            _research_profile=Mock(return_value=dict(kind='research_profile_prepared')),
+            _migrate=Mock(return_value=dict(status='already')))
         self.mocks={name:self.stack.enter_context(patch.object(start,name,value)) for name,value in replacements.items()}
 
     def run_start(self):return start.start(self.c,'batch',expected_generation=2,process=self.process)
@@ -156,6 +159,30 @@ class ConfigStartTests(unittest.TestCase):
         (self.package/'studio-plan.json').write_text(json.dumps(self.plan))
         with self.assertRaisesRegex(ValueError,'Prepare a new'):self.run_start()
         self.assertEqual(self.events,[])
+
+    def test_package_bound_to_the_monitor_profile_requires_new_identity_before_reservation(self):
+        # Packaged before batches ran on GOAT Research (goatai#2350 6120004490): its launch would open the monitor profile.
+        self.plan['research_binding']['research_profile']='GOAT-Studio-'+'a'*32
+        (self.package/'studio-plan.json').write_text(json.dumps(self.plan))
+        with self.assertRaisesRegex(ValueError,'GOAT Research chart profile'):self.run_start()
+        self.assertEqual(self.events,[])
+        self.mocks['_research_profile'].assert_not_called()
+
+    def test_goat_research_is_reset_after_the_close_and_before_the_launch(self):
+        order=[]
+        self.mocks['_migrate'].side_effect=lambda *args:order.append(('migrate',self.process.inspect()))or dict(status='clean')
+        self.mocks['_research_profile'].side_effect=lambda *args:order.append(('prepare',self.process.inspect()))or dict(kind='x')
+        self.process.start.side_effect=lambda config:order.append(('launch',None))or dict(pid=22)
+        result=self.run_start()
+        self.assertEqual(order,[('migrate',None),('prepare',None),('launch',None)],'MT5 stopped for both, both before the launch')
+        self.assertEqual((result['research_profile'],result['monitor_profile_migration']),(dict(kind='x'),dict(status='clean')))
+
+    def test_a_research_profile_that_cannot_be_prepared_never_launches(self):
+        self.mocks['_research_profile'].side_effect=ValueError('GOAT Research in MT5 is not a plain folder')
+        with self.assertRaisesRegex(ValueError,'not a plain folder'):self.run_start()
+        self.process.start.assert_not_called()
+        self.assertEqual(self.c.job('batch')['restart_intent']['phase'],'research_exited')
+        self.assertEqual(start.restart_recovery(self.c.job('batch'))['mt5'],'closed_not_reopened')
 
     def test_report_alias_makes_actual_installation_write_visible_in_data_root(self):
         target=self.c.root/'data/MQL5/Files/GOAT/R123456789abc'

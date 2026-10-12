@@ -31,9 +31,13 @@ from studio_seed_slot import guard_active_seed
 from studio_report_bridge import prepare as bridge_prepare,verify as bridge_verify
 
 CONFIG_START_LANES=('demo_direct','native_human_control')
-RESTART_CONSENT_SCOPE='close_and_reopen_selected_mt5_for_this_batch_start'
-# The user's yes covers one start of this batch on the MT5 that was running when
-# they gave it, for a short time: a restarted MT5 or a later start needs a new yes.
+# The user's yes covers one start of this batch on the MT5 that was running when they gave it, for a short time:
+# a restarted MT5 or a later start needs a new yes. Since batches run on GOAT Research (Claude-Mac goatai#2350
+# 6120004490, option (i)) it also covers returning MT5 to normal when this batch ends: at the batch driver's finish,
+# one normal close (close-terminal's checks: demo, Algo Trading off, no positions/orders, not an Open Lab login) and
+# monitor-launch back onto the GOAT Studio monitor profile (studio_research_profile.batch_end_state). The scope name
+# changed with it, so a consent recorded under the start-only wording never authorises that end close.
+RESTART_CONSENT_SCOPE='close_and_reopen_selected_mt5_for_this_batch_start_and_end'
 RESTART_CONSENT_SECONDS=600
 SDK_REFUSAL='SDK-confirmed same idle demo, Algo OFF and zero trades required'
 
@@ -129,16 +133,24 @@ def restart_recovery(job):
         return dict(phase=reached,mt5='open_may_be_armed',
                     plain='MT5 was not closed. GOAT may already have told the EA a batch is starting, so the EA can show a batch as running.',
                     next_safe_action='Leave MT5 open and do not close or restart it yourself. '+never+report)
+    # Batches run on GOAT Research (studio_research_profile): until the batch's MT5 is launched, common.ini still names
+    # the GOAT Studio monitor profile, so a plain open shows the monitor. Once launched, MT5 may reopen on GOAT
+    # Research, which also carries the GOAT monitor chart: never a File > Profiles step for the user.
+    profiles='Do not change chart profiles in MT5 (File > Profiles); GOAT moves MT5 back to the monitor itself. '
     if reached=='close_issued':
         return dict(phase=reached,mt5='closing_or_closed',
                     plain='GOAT asked MT5 to close normally for the start. MT5 may still be closing (for example it shows a question) or may be closed. GOAT did not reopen it.',
                     next_safe_action='If MT5 is still open, leave it and do not answer for the user. If it is closed, ask the user to open MT5 normally from its usual shortcut; it opens on the GOAT Studio chart with the same account. '+never+report)
-    if reached in ('research_exited','launch_issued'):
-        return dict(phase=reached,mt5='closed_not_reopened' if reached=='research_exited' else 'reopen_uncertain',
-                    plain='MT5 was closed for the start and GOAT did not confirm reopening it.',
+    if reached=='research_exited':
+        return dict(phase=reached,mt5='closed_not_reopened',
+                    plain='MT5 was closed for the start and GOAT did not reopen it.',
                     next_safe_action='If MT5 is not open, ask the user to open MT5 normally from its usual shortcut; it opens on the GOAT Studio chart with the same account. Keep Algo Trading off. '+never+report)
-    return dict(phase=reached,mt5='reopened_unverified',plain='MT5 was reopened with the batch. GOAT is checking that the batch runs.',
-                next_safe_action='Keep polling batch-status; do not start again.')
+    if reached=='launch_issued':
+        return dict(phase=reached,mt5='reopen_uncertain',
+                    plain='MT5 was closed for the start and GOAT did not confirm reopening it.',
+                    next_safe_action='If MT5 is not open, ask the user to open MT5 normally from its usual shortcut; it may open on GOAT Research, GOAT\'s batch chart profile, which also shows the GOAT monitor, with the same account. Keep Algo Trading off. '+profiles+never+report)
+    return dict(phase=reached,mt5='reopened_unverified',plain='MT5 was reopened with the batch on GOAT Research, GOAT\'s batch chart profile. GOAT is checking that the batch runs.',
+                next_safe_action='Keep polling batch-status; do not start again. '+profiles)
 
 
 def checkpoint(c,job_id,generation):
@@ -194,6 +206,11 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     if (binding.get('report_location_bridge')!='installation_to_data_v1'
             or not binding.get('startup_monitor') or not binding.get('research_profile')):
         raise ValueError('Prepare a new config-start package under a new batch ID; historical package remains unchanged')
+    from studio_research_profile import LEGACY_PACKAGE_REFUSAL,RESEARCH_PROFILE
+    if binding.get('research_profile')!=RESEARCH_PROFILE:
+        # Packaged before batches ran on GOAT Research: its launch would open the monitor profile (goatai#2350 6120004490).
+        raise ValueError('Prepare a new config-start package under a new batch ID; historical package remains unchanged. '
+                         +LEGACY_PACKAGE_REFUSAL)
     args=c.native_args()
     c.runtime(require_idle=True,expected_batch_ongoing=False)
     before_native_dispatch(c,job)
@@ -304,8 +321,13 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
         checkpoint(c,job_id,generation)
         if time.monotonic()>=deadline:raise ValueError('Normal close unconfirmed; no repeat close or launch')
         time.sleep(.25)
+    # Order keeps fix B intact (goatai#2350 6120004490): the one-time monitor-profile migration (MT5 stopped, gate held)
+    # moves aside the stray charts earlier batches left, then the record reads the monitor profile MT5 just saved, then
+    # GOAT Research is reset for this batch's launch. The monitor profile is never opened again during the batch.
+    migration=_migrate(c,intent['attempt_id'],process)
     monitor_chart_record=_monitor_record(c,health,intent['attempt_id'],process) if customer else None
     phase(c,job_id,generation,'close_issued','research_exited')
+    research_profile=_research_profile(c,intent['attempt_id'],process)
     material=validate_restart_material(c.state(),c.job(job_id),account=c.session['account'],
         monitor_path=args['monitor_path'],monitor_sha256=args['monitor_sha256'],input_schema=c.schema)
     if hashlib.sha256(startup.read_bytes()).hexdigest()!=material['startup_receipt']['sha256']:
@@ -319,14 +341,33 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     phase(c,job_id,generation,'launch_issued','process_started_unverified',process=launched)
     return dict(status='config_process_started_unverified',attempt_id=intent['attempt_id'],
                 process=launched,dispatch=published,native_running_verified=False,
+                research_profile=research_profile,monitor_profile_migration=migration,
                 **({'monitor_chart_record':monitor_chart_record} if monitor_chart_record is not None else {}))
+
+
+def _research_profile(c,attempt_id,process):
+    """Reset GOAT Research for this batch's launch (studio_research_profile.prepare). Raises before any launch."""
+    from studio_research_profile import prepare
+    return prepare(c,'config-start-'+attempt_id,inspect=process.inspect)
+
+
+def _migrate(c,attempt_id,process):
+    """The one-time monitor-profile migration with MT5 stopped (studio_research_profile). Never raises; never refuses
+    the start: a refusal leaves the monitor profile untouched and is reported in the start receipt."""
+    try:
+        from studio_research_profile import migrate_monitor_profile
+        return migrate_monitor_profile(c,'config-start-'+attempt_id,inspect=process.inspect)
+    except Exception as error:
+        return dict(status='failed',reason='check_failed',detail=str(error))
 
 
 def _monitor_health(c,identity,native):
     """The pre-close health read for this start's restart close (studio_onboarding.pre_close_health). Never raises."""
     try:
         from studio_onboarding import driver_pre_close_health
-        return driver_pre_close_health(c,identity,native=native,expected_batch_ongoing=True,revision_may_lag=True)
+        from studio_research_profile import pending_set_aside
+        return driver_pre_close_health(c,identity,native=native,expected_batch_ongoing=True,revision_may_lag=True,
+                                       set_aside=pending_set_aside(c))
     except Exception as error:   # recording is evidence only: it never changes the start
         return dict(healthy=False,reason='check_failed',detail=str(error))
 

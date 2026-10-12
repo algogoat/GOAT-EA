@@ -28,6 +28,9 @@ from studio_process_check import StoppedRootProcess, inspect_processes
 from studio_protected_peer import process_binding
 from studio_refusal import Refusal
 
+# GOAT's own batch chart profile (studio_research_profile.RESEARCH_PROFILE; that module imports this one).
+RESEARCH_PROFILE = 'GOAT Research'
+
 
 # Open Lab experiment demo logins (all Darwinex-Demo), retired arms included (Ops, goatai#2350 6118578483). The one
 # shared list: pairing-code, close-terminal, deploy, monitor-launch and monitor-repair never act on these accounts.
@@ -145,7 +148,13 @@ def onboarding_status(controller, *, mt5=None):
             action = ('MT5 was started by monitor-launch with the GOAT monitor EA. Finish GOAT activation in that MT5 (Activate GOAT window), '
                       'approve DLL imports and the WebRequest URL, keep Algo Trading off, run serve and recheck.')
             profile = None
-        if profile:
+        if profile and profile['profile_last'] == RESEARCH_PROFILE:
+            # GOAT Research is GOAT's own batch chart profile (studio_research_profile): never a File > Profiles step.
+            action = ('MT5 last closed on GOAT Research, the chart profile GOAT runs batches on, not on the GOAT Studio monitor profile '+
+                      profile['monitor_profile']+'. Do not ask the user to change profiles. If a batch, seed hunt or catch-up is running, '
+                      'let it finish: GOAT moves MT5 back to the monitor itself. If none is running and MT5 is closed, run monitor-launch '
+                      '--attempt-id <new id>, then recheck.')
+        elif profile:
             action = ('MT5 saved chart profile '+profile['profile_last']+' as its last profile, not the GOAT Studio monitor profile '+profile['monitor_profile']+
                       '. Ask the user to choose File > Profiles > '+profile['monitor_profile']+' in MT5 (or, with MT5 closed, run monitor-launch --attempt-id <new id>), then recheck.')
         step('native_monitor', 'blocked', action, detail=str(exc), **({'reason_code':reason} if reason else {}), **(profile or {}))
@@ -206,8 +215,9 @@ def native_monitor_observation(controller, session, state, process, *, expected_
 def wrong_chart_profile(controller, session):
     """Read-only: the saved MT5 ProfileLast when it is not this session's monitor profile.
 
-    A seed or research /config launch can leave common.ini on an older profile, so
-    a plain MT5 open shows charts without the GOAT Studio monitor.
+    A batch runs MT5 on GOAT Research (studio_research_profile), so while one runs, or after one stopped part-way,
+    common.ini can name GOAT Research; onboarding-status then never sends the user to File > Profiles. Any other
+    profile is one a person or an older launch selected.
     """
     try:
         name, profile = monitor_paths(controller, session)
@@ -518,10 +528,14 @@ def retire_healthy_chart(controller, raw, reason):
     return dict(status='retired', reason=reason, archived=str(target) if target else None)
 
 
-def _observed_chart(controller, receipt):
-    """The single saved monitor chart (path, bytes) after every non-permission check; observational, never for launch."""
-    folder = verify_monitor_profile(controller, receipt, observed_human_reopen=True)
-    chart = next(p for p in folder.iterdir() if p.suffix.lower() == '.chr')
+def _observed_chart(controller, receipt, set_aside=()):
+    """The single saved monitor chart (path, bytes) after every non-permission check; observational, never for launch.
+
+    ``set_aside``: chart files the one-time migration moves aside right after a start driver's first close
+    (studio_research_profile.pending_set_aside); only that pre-close read passes it. Every record and launch check
+    reads the real folder."""
+    folder = verify_monitor_profile(controller, receipt, observed_human_reopen=True, set_aside=set_aside)
+    chart = next(p for p in folder.iterdir() if p.suffix.lower() == '.chr' and p.name not in set_aside)
     return chart, chart.read_bytes()
 
 
@@ -575,7 +589,8 @@ def _same_process(a, b):
             and PureWindowsPath(str(a.get('executable') or '')) == PureWindowsPath(str(b.get('executable') or '')))
 
 
-def pre_close_health(controller, session, state, native, process, *, expected_batch_ongoing=False, revision_may_lag=False):
+def pre_close_health(controller, session, state, native, process, *, expected_batch_ongoing=False, revision_may_lag=False,
+                     set_aside=()):
     """A health read immediately before GOAT's own close of the monitor MT5. Never raises.
 
     ``native`` is a fresh SDK readback (inspect_idle_demo: selected terminal and data folder, the bound login and
@@ -584,6 +599,10 @@ def pre_close_health(controller, session, state, native, process, *, expected_ba
     binding, that readback for that same process, the onboarding native_monitor facts (native_monitor_observation)
     and a saved monitor chart that passes every non-permission check. Returns dict(healthy=True, binding,
     observed_running_sha256, ...) or dict(healthy=False, reason).
+
+    ``set_aside`` (a start driver only, before the one-time migration ran): the stray charts that migration moves
+    aside right after this close are left out of the structure check here. The record after the close still requires
+    the real folder to hold exactly one chart, so nothing is recorded unless the migration really moved them.
     """
     try:
         if session.get('demo_only') is not True:
@@ -592,7 +611,8 @@ def pre_close_health(controller, session, state, native, process, *, expected_ba
             return dict(healthy=False, reason='protected_account')
         monitor = native_monitor_observation(controller, session, state, process, expected_batch_ongoing=expected_batch_ongoing,
                                              revision_may_lag=revision_may_lag)
-        chart, raw = _observed_chart(controller, read_json(controller.root/'monitor-profile.json'))
+        set_aside = tuple(set_aside or ())
+        chart, raw = _observed_chart(controller, read_json(controller.root/'monitor-profile.json'), set_aside)
         if callable(native):
             native = native()
         if (not isinstance(native, dict) or native.get('demo') is not True or native.get('algo_trading') is not False
@@ -605,12 +625,20 @@ def pre_close_health(controller, session, state, native, process, *, expected_ba
                     observed_running_sha256=hashlib.sha256(raw).hexdigest(),
                     sdk=dict(login=str(session['account']['login']), server=session['account']['server'], demo=True,
                              algo_trading=False, connected=True, tester_state=native.get('tester_state'),
-                             source=native.get('tester_source', 'inspect_idle_demo')))
+                             source=native.get('tester_source', 'inspect_idle_demo')),
+                    **({'set_aside_by_migration': sorted(set_aside)} if set_aside else {}))
     except (OSError, ValueError, KeyError, TypeError, AttributeError, StopIteration) as exc:
-        return dict(healthy=False, reason=getattr(exc, 'code', None) or 'native_monitor', detail=str(exc))
+        return dict(healthy=False, reason=getattr(exc, 'code', None) or 'native_monitor', detail=str(exc), **_failed_checks(exc))
 
 
-def driver_pre_close_health(controller, process, *, native=None, sdk_read=None, expected_batch_ongoing=False, revision_may_lag=False):
+def _failed_checks(exc):
+    """The saved-monitor checks a MONITOR_PROFILE_CHANGED refusal names (e.g. extra_charts), for evidence."""
+    checks = (getattr(exc, 'fields', None) or {}).get('failed_checks')
+    return {'failed_checks': list(checks)} if checks else {}
+
+
+def driver_pre_close_health(controller, process, *, native=None, sdk_read=None, expected_batch_ongoing=False, revision_may_lag=False,
+                            set_aside=()):
     """pre_close_health for a start driver's FIRST close of the monitor MT5 (config start, seed, catch-up, hold-up).
 
     Reads the session and controller state itself; ``native`` is an SDK readback the driver already took right before
@@ -628,7 +656,7 @@ def driver_pre_close_health(controller, process, *, native=None, sdk_read=None, 
             from studio_monitor_probe import inspect_idle_demo
             return inspect_idle_demo(controller, tester='advisory')
     return pre_close_health(controller, session, state, native, process, expected_batch_ongoing=expected_batch_ongoing,
-                            revision_may_lag=revision_may_lag)
+                            revision_may_lag=revision_may_lag, set_aside=set_aside)
 
 
 def saved_profile_last(controller):
@@ -660,7 +688,8 @@ def record_post_close_chart(controller, health, *, attempt_id, method, stopped_u
     """
     if not isinstance(health, dict) or health.get('healthy') is not True:
         return dict(status='not_recorded', reason='no_healthy_pre_close_observation',
-                    **({'pre_close_reason': health.get('reason')} if isinstance(health, dict) else {}))
+                    **({'pre_close_reason': health.get('reason')} if isinstance(health, dict) else {}),
+                    **({'pre_close_failed_checks': health['failed_checks']} if isinstance(health, dict) and health.get('failed_checks') else {}))
     try:
         if process.inspect() is not None:
             return dict(status='not_recorded', reason='terminal_running')
@@ -689,7 +718,7 @@ def record_post_close_chart(controller, health, *, attempt_id, method, stopped_u
                     rewritten_on_close=digest != health['observed_running_sha256'],
                     **(dict(superseded=superseded) if superseded else {}))
     except (OSError, ValueError, KeyError, TypeError, AttributeError, StopIteration) as exc:
-        return dict(status='not_recorded', reason=getattr(exc, 'code', None) or 'check_failed', detail=str(exc))
+        return dict(status='not_recorded', reason=getattr(exc, 'code', None) or 'check_failed', detail=str(exc), **_failed_checks(exc))
 
 
 # One stable machine code for every saved-monitor check below (Claude-Mac, goatai#2350 6095158688). The
@@ -721,9 +750,13 @@ def _profile_menu(profile_name):
     return 'File > Profiles > '+(profile_name or 'GOAT-Studio-...')
 
 
-def verify_monitor_profile(controller, receipt, *, observed_human_reopen=False, preserved_permissions_sha256=None, healthy_chart=None):
+def verify_monitor_profile(controller, receipt, *, observed_human_reopen=False, preserved_permissions_sha256=None, healthy_chart=None,
+                           set_aside=()):
     """``healthy_chart``: a record check_healthy_chart returned as valid (monitor-launch only). Its exact chart bytes
-    are accepted through the preserved_permissions_sha256 path, and only for the chart file it is bound to."""
+    are accepted through the preserved_permissions_sha256 path, and only for the chart file it is bound to.
+    ``set_aside``: observational reads only (see _observed_chart); never passed by a launch or a record."""
+    if set_aside and not observed_human_reopen:
+        raise ValueError('Set-aside chart names are for the observational pre-close read only')
     session, _ = session_state(controller)
     name, profile = monitor_paths(controller, session)
     menu = _profile_menu(name)
@@ -741,7 +774,7 @@ def verify_monitor_profile(controller, receipt, *, observed_human_reopen=False, 
         raise monitor_refusal([('profile_alias',
             'The saved monitor profile folder '+name+' is a link to another folder, and GOAT never follows a link there; '
             +SUPPORT_ROUTE,{})], profile_name=name)
-    entries = list(profile.iterdir())
+    entries = [p for p in profile.iterdir() if not (set_aside and p.name in set_aside and p.suffix.lower()=='.chr')]
     charts = [p for p in entries if p.suffix.lower()=='.chr']
     unexpected = sorted(p.name for p in entries if p.resolve()!=p or not p.is_file() or (p not in charts and p.name.lower()!='order.wnd'))
     failures = []

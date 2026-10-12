@@ -151,8 +151,13 @@ class CustomerDriverRouteTests(unittest.TestCase):
         write_json(self.c.root/'session.json', self.c.session)
         self.c.bridge = SimpleNamespace(root=self.c.local/self.c.run)
         write_json(self.c.root/'packages/batch/studio-plan.json', dict(research_binding=dict(
-            research_profile='GOAT-Studio-'+'a'*32, report_location_bridge='installation_to_data_v1',
+            research_profile='GOAT Research', report_location_bridge='installation_to_data_v1',
             startup_monitor=dict(expert='GOAT.ex5', preset='GOAT Studio Agent.set', preset_sha256='b'*64))))
+        # The finish's end state (close + monitor-launch) runs for real in test_studio_research_profile.
+        self.end_states = []
+        end = patch('studio_research_profile.batch_end_state',
+                    side_effect=lambda c, job_id, record: self.end_states.append(job_id) or dict(status='monitor_relaunched'))
+        end.start(); self.addCleanup(end.stop)
         self.config_starts = 0
         def config_start(job_id, *, expected_generation, on_attempt):
             journal = json.loads((self.c.root/'batch-drivers/batch.json').read_text())
@@ -182,6 +187,20 @@ class CustomerDriverRouteTests(unittest.TestCase):
         self.assertEqual(self.c.starts, 1)  # counted once, inside config start only
         self.assertEqual(result['start_route'], 'config_restart')
         self.assertTrue(result['mt5_restart_consent']['granted'])
+        self.assertEqual(result['mt5_restart_consent']['scope'], 'close_and_reopen_selected_mt5_for_this_batch_start_and_end')
+        self.assertEqual((self.end_states, result['end_state']), (['batch'], dict(status='monitor_relaunched')),
+                         'the verified finish ends with one close and monitor-launch (option (i))')
+        self.assertEqual(self.drive(resume=True)['end_state'], dict(status='monitor_relaunched'))
+        self.assertEqual(self.end_states, ['batch'], 'the end state runs once per journal')
+
+    def test_customer_package_bound_to_the_monitor_profile_refuses_before_journal(self):
+        write_json(self.c.root/'packages/batch/studio-plan.json', dict(research_binding=dict(
+            research_profile='GOAT-Studio-'+'a'*32, report_location_bridge='installation_to_data_v1',
+            startup_monitor=dict(expert='GOAT.ex5', preset='GOAT Studio Agent.set', preset_sha256='b'*64))))
+        with self.assertRaisesRegex(ValueError, 'GOAT Research chart profile'):
+            self.drive(max_seconds=60, restart_consent=True)
+        self.assertFalse((self.c.root/'batch-drivers/batch.json').exists())
+        self.assertEqual((self.config_starts, self.c.starts, self.end_states), (0, 0, []))
 
     def test_customer_start_without_consent_writes_nothing_and_dispatches_nothing(self):
         with self.assertRaisesRegex(ValueError, 'MT5 restart consent required'):
@@ -255,7 +274,7 @@ class CustomerBindingTests(unittest.TestCase):
         self.stage_profile()
         binding = self.c.binding()
         self.assertEqual(binding['report_location_bridge'], 'installation_to_data_v1')
-        self.assertTrue(binding['research_profile'].startswith('GOAT-Studio-'))
+        self.assertEqual(binding['research_profile'], 'GOAT Research', 'batches never run on the monitor profile')
         preset = Path(self.c.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set'
         self.assertEqual(binding['startup_monitor']['preset_sha256'], hashlib.sha256(preset.read_bytes()).hexdigest())
         result = self.batch.prepare('config-batch')

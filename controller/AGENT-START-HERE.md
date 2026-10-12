@@ -276,6 +276,7 @@ Seed farming runs fast in-sample searches with no forward window and no exports.
    - Try the reply's `next_action` **once**: `Studio @('monitor-launch','--attempt-id','<new id>')`. It reopens MT5 with the `GOAT-Studio-...` chart profile (`monitor_profile`).
    - Once the user has approved DLL imports (step 9), MT5 has saved that permission on the chart. The launch succeeds when the saved chart is exactly the one GOAT recorded when it last closed the healthy monitor, for example as the seed run's first step (step 8). Otherwise it is refused with `refusal_code` `MONITOR_PROFILE_CHANGED` and `failed_check` `permissions`; nothing was launched. Don't retry it with another ID.
    - After that refusal, ask the user to open MT5 normally from its usual shortcut, then choose File > Profiles > the `monitor_profile` name (`GOAT-Studio-...`) if MT5 doesn't show the GOAT Studio chart, or if `onboarding-status` reports `profile_last`.
+   - Exception: `GOAT Research` is GOAT's own batch chart profile. Seed, catch-up and hold-up members run MT5 on it, and so does a customer batch. GOAT moves MT5's saved profile back to the monitor itself once MT5 is closed (`research_profile_restore`). A customer batch closes MT5 once more at its end and reopens the monitor (`end_state`). Never ask the user to choose `GOAT Research` or to leave it in File > Profiles. Follow the `next_action` of `onboarding-status` instead.
 
 Not in this beta: automatic recording of seed or batch results, automatic ordering of the next batch, a background seed driver. You do these steps, and you keep the `seed-resume` loop going. Details: [SEED-WORKFLOW.md](SEED-WORKFLOW.md).
 
@@ -337,7 +338,7 @@ Report the exact error text, the command and the IDs. Never delete state to get 
 | Error text (exact start) | Next safe action |
 |---|---|
 | `Human must Give to Agent in Studio first` / `Current controller required: human must Give to Agent first` | Make sure `serve` runs; ask the user to click GIVE TO AGENT; check `Studio @('state')` shows `owner: agent`. |
-| `Runtime feedback is stale or future-dated` | The GOAT chart is not reporting. Ask the user to open MT5 normally with the GOAT Studio chart; run `onboarding-status`. If its `native_monitor` step shows `profile_last` (for example after a seed run), ask the user to choose File > Profiles > the named `monitor_profile`. |
+| `Runtime feedback is stale or future-dated` | The GOAT chart is not reporting. Ask the user to open MT5 normally with the GOAT Studio chart; run `onboarding-status`. If its `native_monitor` step shows `profile_last` (for example after a seed run), ask the user to choose File > Profiles > the named `monitor_profile`. If `profile_last` is `GOAT Research` (GOAT's batch profile), don't: follow that step's `action`. |
 | `Runtime policy mismatch: terminal_trade_allowed` | Algo Trading is on. Ask the user to turn it off. |
 | `Runtime policy mismatch: account_demo` / `Runtime account mismatch` | Not the bound demo account. Stop and ask the user to sign in to the demo used in `bootstrap`. |
 | `Runtime policy mismatch: connected` | MT5 lost its broker connection. Ask the user to reconnect. |

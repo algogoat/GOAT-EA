@@ -212,7 +212,9 @@ class PrepareTests(CatchupCase):
         self.assertEqual(member['new_window'], dict(first_day='2026-09-25', last_day='2026-10-02', weekdays=6))
         self.assertEqual(member['optimization_window']['source'], 'run_manifest')
         ini = self.ini(member)
-        self.assertIn('[Common]\r\nLogin=123\r\nServer=Test-Demo\r\n[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n', ini)
+        # [Charts]: members run MT5 on GOAT Research, never the monitor profile (goatai#2350 6120004490).
+        self.assertIn('[Common]\r\nLogin=123\r\nServer=Test-Demo\r\n[Charts]\r\nProfileLast=GOAT Research\r\n'
+                      '[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n', ini)
         self.assertNotIn('Password', ini)
         self.assertIn('EA_Desc=%s@{mode=EXPORT,dt_BOOS_end=2026.01.19,dt_FOOS_start=2026.08.29,dt_FWD_start=2026.07.17,dt_FWD_end=2026.08.28}\r\n'
                       % member['alias'], ini)

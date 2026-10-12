@@ -990,8 +990,9 @@ class CatchupRunner(SeedRunner):
         inputs = dict(values, EA_Desc=_export_desc(alias, window), Sequence_Export_Enabled='true' if source_inputs is not None else 'false',
                       Sequence_Export_Id=capture_id, Sequence_Export_Start=tester['FromDate'], Sequence_Export_End=tester['ToDate'],
                       Sequence_Export_Model='4')
-        sections = {'Common': {'Login': account['login'], 'Server': account['server']}, 'Experts': {'Enabled': 0, 'AllowLiveTrading': 0},
-                    'Tester': tester, 'TesterInputs': inputs}
+        # [Charts]: every member runs MT5 on GOAT Research, never the monitor profile (studio_research_profile).
+        sections = {'Common': {'Login': account['login'], 'Server': account['server']}, 'Charts': {'ProfileLast': 'GOAT Research'},
+                    'Experts': {'Enabled': 0, 'AllowLiveTrading': 0}, 'Tester': tester, 'TesterInputs': inputs}
         ini = ''
         for section, items in sections.items():
             ini += '[' + section + ']\r\n'

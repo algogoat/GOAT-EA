@@ -31,6 +31,8 @@ DEMO_AGENT_SCOPE = ContextVar('studio_demo_agent_scope', default=None)
 #   the file. It reads the queue read-only and never opens the store, the session lock or MT5.
 LOCAL_FILE_OPERATIONS = frozenset(('starter-set', 'build-set', 'research-launch', 'news-history-sync'))
 READ_OPERATIONS = LOCAL_FILE_OPERATIONS | frozenset(('discover','resource-profile','state','onboarding-status',
+                             # GOAT Research / monitor-profile files, hashes and migration plan (studio_research_profile).
+                             'research-profile-status',
                              'native-recovery-status','batch-driver-status','owner-maintenance-status',
                              'stopped-cancel-observation','research-status','research-queue',
                              'evidence-end','evidence-scan','evidence-versions','catchup-validate',

@@ -107,7 +107,7 @@ switch ($Phase) {
             [ordered]@{ set_path = 'C:\Users\web\AppData\Local\GOAT Portfolio Desktop\strategy-library-1.49\selections\sel-r3-compass\compass-trend-pullback.set'
                 tester = [ordered]@{ Expert = 'GOAT-EA\GOAT V1.49.ex5'; Symbol = 'EURUSD'; Period = 'M1'; Model = 1; ExecutionMode = 0; Optimization = 2; OptimizationCriterion = 6
                     FromDate = '2026.04.01'; ToDate = '2026.10.09'; ForwardMode = 4; ForwardDate = '2026.08.01'; Deposit = 10000; Currency = 'USD'; Leverage = '1:100'; UseLocal = 1; UseRemote = 0; UseCloud = 0; Visual = 0 } }
-        ); export = [ordered]@{ SetsToExport = 1; MinScore = 60; TargetDD = 100; AdjustLots = $false; BackOOSDate = '2026.01.01'; MinARF = 0.2; MinSR = 2.5; IncludeBackOOS = $true; IncludeSequenceData = $true } }
+        ); export = [ordered]@{ SetsToExport = 2; MinScore = 60; TargetDD = 100; AdjustLots = $false; BackOOSDate = '2026.01.01'; MinARF = 0.2; MinSR = 2.5; IncludeBackOOS = $true; IncludeSequenceData = $true } }
         $planPath = "$Root\plan-$BatchId.json"
         [System.IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding $false))
         $o = Invoke-PilotStudio 'prepare-batch' @('prepare-batch', '--batch-id', $BatchId, '--plan', $planPath)

@@ -2327,6 +2327,41 @@ SEQUENCE       Seq_Buy,Seq_Sell,Seq_Buy_Virtual,Seq_Sell_Virtual;
 CPositionInfo  m_position;       // object of CPositionInfo class
 COrderInfo     m_order;          // object of COrderInfo class
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B44 item 4 (goatai#2350): the AI gate log. One Print per bias decision on a new entry signal: VETO where the
+// signal's onset is counted as skipped by the bias (Sequence_Skipped_Bias_*), ALLOW where it starts a sequence.
+// Fields come from the wire state the bias block read this evaluation, after the demo-raw rewrite (GetState).
+// Print only, live only (no tester, optimization or forward run): nothing here changes a trading decision.
+SGOATAIWireV2State g_GoatGateState;
+bool               g_GoatGateStateRead=false;
+int GoatGateActiveMask(void)
+  {
+   return (Seq_Buy.Active ? 1 : 0)|(Seq_Sell.Active ? 2 : 0)|(Seq_Buy_Virtual.Active ? 4 : 0)|(Seq_Sell_Virtual.Active ? 8 : 0);
+  }
+void GoatGateLog(const string gate_decision,const int gate_side)
+  {
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return;
+   bool gate_read=g_GoatGateStateRead;
+   string gate_reason="actionable";
+   if(Mode_Bias==Bias_Disabled || Mode_Bias==Bias_Display) gate_reason="filter_off";
+   else if(!gate_read)                                     gate_reason=(GOATUsingControlTowerBias() ? "not_read" : "legacy_score");
+   else if(!g_GoatGateState.verified)                      gate_reason="unverified";
+   else if(!g_GoatGateState.directive_available)           gate_reason="withheld";
+   else if(g_GoatGateState.direction!="BULLISH" && g_GoatGateState.direction!="BEARISH") gate_reason="neutral";
+   else if(!g_GoatGateState.actionable)                    gate_reason="below_cutoff";
+   else if(gate_decision=="VETO")                          gate_reason="bias_rule";
+   Print("GOAT AI gate v1: decision="+gate_decision+" side="+(gate_side==OP_BUY ? "BUY" : "SELL")
+         +" magic="+IntegerToString(MAGIC1)+" symbol="+Symbol()
+         +" direction="+(gate_read && g_GoatGateState.direction!="" ? g_GoatGateState.direction : "NONE")
+         +" probability="+(gate_read ? DoubleToString(g_GoatGateState.decision_probability,4) : "NONE")
+         +" cutoff="+(gate_read ? DoubleToString(g_GoatGateState.probability_cutoff,4) : "NONE")
+         +" authority="+(gate_read ? g_GoatGateState.probability_authority : "NONE")
+         +" availability="+(gate_read ? g_GoatGateState.availability : "NONE")
+         +" reason="+gate_reason
+         +" code="+(gate_read && g_GoatGateState.reason_code!="" ? g_GoatGateState.reason_code : "NONE")
+         +" wire_read_at="+(gate_read && g_GoatGateState.read_at!="" ? g_GoatGateState.read_at : "NONE")
+         +" mode="+EnumToString(Mode_Bias)+" protocol="+EnumToString(Bias_Protocol));
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 #include "GOATLicenseInitRetry.mqh"
 int VerifyLicense(long AccNum,string AccName,string AccServer,bool init=false)
   {
@@ -5323,11 +5358,13 @@ void GoatTickBody()
     SGOATAIWireV2State control_tower_state;
     bool control_tower_verified=false;
     int CurBias=-999;
+    g_GoatGateStateRead=false;
     if(control_tower_v2)
       {
        if(Mode_Bias!=Bias_Disabled)
          {
           control_tower_verified=GOATBiasWireV2.GetState(Symbol(),control_tower_state);
+          g_GoatGateState=control_tower_state; g_GoatGateStateRead=true; // B44 item 4: the gate log's fields (log only)
           if(control_tower_verified && control_tower_state.actionable)
              CurBias=control_tower_state.signed_probability_percent;
          }
@@ -6219,6 +6256,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
    {
     if(Sequence_New_News&&Sequence_New_Bias_B)
     {
+     int gate_active_b=GoatGateActiveMask();
      if(Reverse_Seq)
      {
       //virtual or real sequences not open, correct direction, no open trades in the same direction from other charts
@@ -6233,11 +6271,12 @@ void SignalEntryTrigger()//int Buys,int Sells)
       if(MathAbs(Delay_Trade)>0)                       Seq_Buy_Virtual.Add_Level(ask);
       else if(Allow_Opposite_Seq || !Seq_Sell.Traded)  Seq_Buy.Add_Level(ask);
      }
+     if((GoatGateActiveMask()&~gate_active_b)!=0) GoatGateLog("ALLOW",OP_BUY); // B44 item 4: log only
     }
     else
     {
      if(!Sequence_New_News&&!LastBuySignal)   Sequence_Skipped_News++;
-     if(!Sequence_New_Bias_B&&!LastBuySignal) Sequence_Skipped_Bias_B++;
+     if(!Sequence_New_Bias_B&&!LastBuySignal) {Sequence_Skipped_Bias_B++; GoatGateLog("VETO",OP_BUY);} // B44 item 4: log only
     }
     LastBuySignal=true; // whether skipped of not the signal was present
    }
@@ -6253,6 +6292,7 @@ void SignalEntryTrigger()//int Buys,int Sells)
    {
     if(Sequence_New_News&&Sequence_New_Bias_S)
     {
+     int gate_active_s=GoatGateActiveMask();
      if(Reverse_Seq)
      {
        if(DashboardEntryAllowed(OP_BUY) && !Seq_Buy_Virtual.Active && !Seq_Buy.Active && (Mode_Trade==Long_and_Short || Mode_Trade==Long))
@@ -6266,11 +6306,12 @@ void SignalEntryTrigger()//int Buys,int Sells)
       if(MathAbs(Delay_Trade)>0)                       Seq_Sell_Virtual.Add_Level(bid);
       else if(Allow_Opposite_Seq || !Seq_Buy.Traded)   Seq_Sell.Add_Level(bid);
      }
+     if((GoatGateActiveMask()&~gate_active_s)!=0) GoatGateLog("ALLOW",OP_SELL); // B44 item 4: log only
     }
     else
     {
      if(!Sequence_New_News&&!LastSellSignal)   Sequence_Skipped_News++;
-     if(!Sequence_New_Bias_S&&!LastSellSignal) Sequence_Skipped_Bias_S++;
+     if(!Sequence_New_Bias_S&&!LastSellSignal) {Sequence_Skipped_Bias_S++; GoatGateLog("VETO",OP_SELL);} // B44 item 4: log only
     }
     LastSellSignal=true; // whether skipped of not the signal was present
    }

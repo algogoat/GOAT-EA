@@ -25,7 +25,8 @@ concurrency:
 #           test_bias_reader_parity, test_agent_connection_layout, test_studio_steady_panel,
 #           test_dashboard_overview, test_ea_followups, test_studio_derived_report,
 #           test_terminal_isolation, test_profile_staged_adoption, test_b43_no_drift,
-#           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths
+#           test_portfolio_child_audit, test_portfolio_child_binding, test_dashboard_deploy_paths,
+#           test_profile_writer_goldens
 #     python: test_goat_deployment_liveness
 #
 # Controller mutations (GOAT-EA#204; Claude-Mac, goatai#2350 6089452823 + 6089458580). With 3 shards,
@@ -136,6 +137,8 @@ jobs:
         run: node scripts/test_portfolio_child_binding.cjs
       - name: Dashboard paths and retired template deploy path
         run: node scripts/test_dashboard_deploy_paths.cjs
+      - name: B44 MQL deploy-profile writer is byte-equal to studio_deploy_profile (G2, G4 goldens)
+        run: node scripts/test_profile_writer_goldens.cjs
       - name: Child adoption liveness source guards
         run: python scripts/test_goat_deployment_liveness.py
       - name: FU35 cancel stop confirmation and EvidenceEnd export boundary

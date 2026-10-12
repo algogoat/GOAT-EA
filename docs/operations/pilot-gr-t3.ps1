@@ -15,7 +15,7 @@ param(
     [string]$Label = 'adhoc'
 )
 $ErrorActionPreference = 'Stop'
-$Root = 'G:\GOAT-Build-Artifacts\claude-pc-ops\pilot-gr-20261012'
+$Root = 'G:\GOAT-Build-Artifacts\claude-pc-ops\pilot-gr-20261012b'
 $Suite = "$Root\goat-suite-candidate"
 $Goat = "$Suite\goat.exe"
 $Receipt = "$env:LOCALAPPDATA\GOAT Portfolio Desktop\suite\1ce0354662e44e997a61\installation.json"   # T3 Tester only
@@ -24,9 +24,9 @@ $OpenLab = @('3000109268', '3000109269', '3000109270', '3000109271', '3000109272
 $Data = 'C:\Users\web\AppData\Roaming\MetaQuotes\Terminal\0DC0AC2C6DE123294E3E59C8DC9C3541'
 $MonitorProfile = 'GOAT-Studio-5938f6836a814787a24221db64e31e6b'
 $CandidateRepo = 'C:\Users\web\Documents\GOAT Development Worktrees\GOAT-EA\research-profile'
-$CandidateCommit = 'a6e39516c57345f1006606a3d6547b7d79633c5a'
+$CandidateCommit = '98a86417dc79dde42d7edf1a6bec36209fc3f55e'
 $GoatRo = 'G:\GOAT-Build-Artifacts\claude-pc-ops\tools\goat-ro.ps1'
-$BatchId = 'pilot-gr-20261012-1'
+$BatchId = 'pilot-gr-20261012-2'
 (Get-Process -Id $PID).PriorityClass = 'BelowNormal'
 
 function Write-PilotReceipt([string]$Name, $Object) {

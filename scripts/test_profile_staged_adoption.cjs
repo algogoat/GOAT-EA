@@ -395,6 +395,8 @@ function run(src=readSources()){
    'GOAT V1.49.mq5: g_GoatStudioMonitorRunPath=Studio_MonitorRunPath;',
    'GOAT V1.49.mq5: if(Studio_ReadOnlyMonitor && Studio_MonitorRunPath!="" &&',
    'GOAT V1.49.mq5: (StringFind(Studio_MonitorRunPath,"GOAT\\\\")!=0 || StringFind(Studio_MonitorRunPath,"..")>=0 || StringFind(Studio_MonitorRunPath,":")>=0)) return INIT_PARAMETERS_INCORRECT;',
+   // B44 item 9 (reviewed): GoatDeployMode reads only the deploy= prefix, to print a notice instead of a modal Alert.
+   'GOAT V1.49.mq5: return (StringFind(Studio_MonitorRunPath,"deploy=")==0 || GlobalVariableCheck("Dashboard_ChartID"));',
    'GOATStudioSettingCompare.mqh: if(identity=="[TesterInputs]|Sequence_Export_Id" || identity=="[TesterInputs]|Studio_MonitorRunPath") return value=="";',
    'GOATStudioSettingTypes.mqh: if(key=="Studio_MonitorRunPath") return "string";',
    'Optimizer.mqh: string g_GoatStudioMonitorRunPath="";',

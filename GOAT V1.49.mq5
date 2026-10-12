@@ -14,6 +14,11 @@
 #define GOAT_API_BEARER_LEGACY_FILE "GOAT\\Credentials\\api-bearer-v149.token"
 #define GOAT_API_BEARER_FILE GOATApiBearerFile()
 #include "GOAT_Inputs_Definitions.mqh"
+// B44 item 9 (goatai#2350): no modal Alert() on a deploy-mode path. Every Alert(...) compiled after this line, in this
+// file and in every include below it, goes through GoatDeployNotice (defined, with #undef Alert, at the end of this
+// file): in deploy mode it is a Print plus a deployment journal line, anywhere else it is the same Alert as before.
+void GoatDeployNotice(const string goat_notice_text);
+#define Alert(goat_alert_text) GoatDeployNotice(goat_alert_text)
 #define   GOAT_BUILD_ID "V1.49-BETA17-43"
 #define GOAT_CANCEL_ORIGIN_V149
 #define GOAT_CONFIG_REPORT_START_V149
@@ -2927,6 +2932,33 @@ bool GoatReadRankedLine(const string rank_text,double &rank_pl,double &rank_sr,d
      }
    return rank_found==1;
   }
+// B44 item 9 (goatai#2350): a failed panel no longer removes the chart. Before B44 "Panel GUI creation Failed" returned
+// INIT_FAILED, so a deployed child removed itself (and its Alert blocked a graceful close). Now the panel is tried three
+// times (250 ms, then 500 ms between tries); after that the chart stays alive without it, logs panel_unavailable, and
+// every panel write is skipped (SetEdit, the news list, the panel's chart events). No trading decision reads the panel.
+// GOAT_PANEL_FAIL_INJECT (never defined in a release build) forces the failure for the native harness check.
+bool g_GoatPanelUnavailable=false;
+bool GoatPanelCreate(const int panel_x1,const int panel_y1,const int panel_x2,const int panel_y2)
+  {
+   for(int panel_try=1;panel_try<=3;panel_try++)
+     {
+      ResetLastError();
+#ifdef GOAT_PANEL_FAIL_INJECT
+      bool panel_made=false;
+#else
+      bool panel_made=PanelDialog.Create(ChartID(),EA_Name_generated,0,panel_x1,panel_y1,panel_x2,panel_y2);
+#endif
+      if(panel_made) return true;
+      int panel_error=GetLastError();
+      Print("GOAT panel creation failed, attempt ",panel_try,"/3, error ",panel_error);
+      GoatDeploymentPhase("panel_retry",ChartID(),IntegerToString(panel_try),panel_error);
+      PanelDialog.Destroy(REASON_INITFAILED); // removes a partial panel; not REASON_PROGRAM, so the EA stays
+      if(panel_try<3) Sleep(250*panel_try);
+     }
+   Print("GOAT panel_unavailable: this chart keeps trading without its panel");
+   GoatDeploymentPhase("panel_unavailable",ChartID());
+   return false;
+  }
 bool g_GoatStudioWorkerDiagnosticPending=false;
 ulong g_GoatStudioWorkerDiagnosticDeadline=0;
 int OnInit()
@@ -3392,8 +3424,9 @@ int OnInit()
       int x2=x1+PANEL_WIDTH,  y2=y1+PANEL_HEIGHT;
       Sleep(100);
       if(MAGIC1==0) {
-       if(!PanelDialog.Create(ChartID(),EA_Name_generated,0,x1,y1,x2,y2)) {Alert("Panel GUI creation Failed, please try again."); return(INIT_FAILED);}
-       Sleep(100); PanelDialog.Run(); Sleep(100);
+       // B44 item 9: three tries, then the chart keeps running without its panel (panel_unavailable); it is never removed for it.
+       g_GoatPanelUnavailable=!GoatPanelCreate(x1,y1,x2,y2);
+       if(!g_GoatPanelUnavailable) {Sleep(100); PanelDialog.Run(); Sleep(100);}
       }
       SetEdit(PanelDialog.m_edit_Info_1,Symbol(),clr_Text,Font_Size,GOAT_UI_INFO_BACK,GOAT_UI_SECTION_BORDER,Font_SubHeader);
       SetEdit(PanelDialog.m_edit_Info_2,Strat,GOAT_UI_MUTED_TEXT,Font_Size,GOAT_UI_INFO_BACK,GOAT_UI_SECTION_BORDER,Font_Text);
@@ -5164,7 +5197,7 @@ void OnChartEvent(const int id,         // event ID
    {
          if(Mode_Operation==Operation_Batch) TesterDialog.ChartEvent(id,lparam,dparam,sparam);
     else if(Mode_Operation==Operation_Dash)  DashboardDialog.HandleChartEvent(id,lparam,dparam,sparam);
-    else
+    else if(!g_GoatPanelUnavailable) // B44 item 9: no panel, no panel events
       {
        PanelDialog.HandleChartEvent(id,lparam,dparam,sparam);
        if(GOAT_PANEL_LOGO_READY && (id==CHARTEVENT_MOUSE_MOVE || id==CHARTEVENT_OBJECT_DRAG || id==CHARTEVENT_CHART_CHANGE))
@@ -5176,12 +5209,12 @@ void OnChartEvent(const int id,         // event ID
     if(id==CHARTEVENT_CHART_CHANGE)
     {
           if(Mode_Operation==Operation_Batch)   TesterDialog.maximizeWindow();
-     else if(Mode_Operation!=Operation_Dash)    PanelDialog.maximizeWindow();
+     else if(Mode_Operation!=Operation_Dash && !g_GoatPanelUnavailable) PanelDialog.maximizeWindow();
     }
   //if(id==CHARTEVENT_OBJECT_DRAG  && sparam==ExtDialog.Name()+"Caption") { ss=0;Comment(ss);}
     if(id==CHARTEVENT_OBJECT_CLICK)
     {
-     if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash) {for(int i=0; i<ArraySize(Obj_names); i++) if(sparam==Obj_names[i]) PanelDialog.OnClickCaption();}
+     if(Mode_Operation!=Operation_Batch && Mode_Operation!=Operation_Dash && !g_GoatPanelUnavailable) {for(int i=0; i<ArraySize(Obj_names); i++) if(sparam==Obj_names[i]) PanelDialog.OnClickCaption();}
    //Print(sparam); Print(Key+"_BackToDB_"+(string)MAGIC1);
      //if(sparam==Key+"_BackToDB_"+(string)MAGIC1 && GlobalVariableCheck("Dashboard_ChartID"))
      //{
@@ -7559,7 +7592,7 @@ bool CPanelDialog::CreateListView(CListView &listV,const string name,int x,int y
 //+------------------------------------------------------------------+
 bool SetEdit(CEdit &edit1,string text,color ctext=clrNONE,int Fsize=0,color cback=clrNONE,color cborder=clrNONE,ENUM_FONT font=0)
   {
-   if(FastSpeed_Flag)   return false;
+   if(FastSpeed_Flag || g_GoatPanelUnavailable) return false; // B44 item 9: no panel, nothing to draw
 
    edit1.Text(text);
 
@@ -7574,7 +7607,7 @@ bool SetEdit(CEdit &edit1,string text,color ctext=clrNONE,int Fsize=0,color cbac
 //+------------------------------------------------------------------+
 void NewsDisplayFunction(bool active,color clrtext)
   {
-   if(Mode_News==News_Disabled) return;
+   if(Mode_News==News_Disabled || g_GoatPanelUnavailable) return; // B44 item 9: no panel list to fill
 
    datetime now = TimeCurrent();
    int total    = ArraySize(News.TodaysNewsList);
@@ -7795,3 +7828,22 @@ string ExtractFunctionKeysFromInputString(const string inputString, string &name
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// B44 item 9 (goatai#2350): the end of the Alert redirection that starts after the input header include.
+#undef Alert
+// Deploy mode: a live chart of a deployed portfolio, where a modal Alert window would block a graceful close of the
+// terminal. That is a live child (Operation_Standard) that the controller staged (Studio_MonitorRunPath "deploy=...")
+// or that runs on a terminal with a dashboard (Dashboard_ChartID), or the dashboard itself resumed by a deploy
+// (Dashboard_Resume_Saved). Never the tester, optimization or forward runs.
+bool GoatDeployMode(void)
+  {
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION) || MQLInfoInteger(MQL_FORWARD)) return false;
+   if(Mode_Operation==Operation_Dash) return Dashboard_Resume_Saved;
+   if(Mode_Operation!=Operation_Standard) return false;
+   return (StringFind(Studio_MonitorRunPath,"deploy=")==0 || GlobalVariableCheck("Dashboard_ChartID"));
+  }
+void GoatDeployNotice(const string goat_notice_text)
+  {
+   if(!GoatDeployMode()) {Alert(goat_notice_text); return;}
+   Print("GOAT notice (deploy mode, no modal): "+goat_notice_text);
+   GoatDeploymentPhase("notice",ChartID(),StringSubstr(goat_notice_text,0,160));
+  }

@@ -30,7 +30,7 @@ function unit(text,signature){
 }
 
 // ---- the production measurement and parser, converted ----
-const start=main.indexOf('bool   g_GoatBlindExport=false;'),end=main.indexOf('bool g_GoatStudioWorkerDiagnosticPending=false;');
+const start=main.indexOf('bool   g_GoatBlindExport=false;'),end=main.indexOf('// B44 item 9 (goatai#2350): a failed panel');
 assert.ok(start>0&&end>start);
 let code=main.slice(start,end).replace(/\/\/.*$/gm,'');
 code=code.replace(/^(?:bool|double|int|long)\s+(g_GoatRank\w+|g_GoatBlindExport)(\[5\])?=([^;]+);$/gm,(_,n,arr,v)=>'var '+n+'='+(arr?'['+v.replace(/[{}]/g,'')+']':v)+';')

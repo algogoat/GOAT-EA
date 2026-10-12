@@ -41,6 +41,8 @@ CONTRACT_MISMATCH = 'CONTRACT_MISMATCH'
 POINT_SIZE_MISMATCH = 'POINT_SIZE_MISMATCH'
 SERVER_OFFSET_MISMATCH = 'SERVER_OFFSET_MISMATCH'
 MARGIN_INSUFFICIENT = 'MARGIN_INSUFFICIENT'
+MARGIN_UNKNOWN = 'MARGIN_UNKNOWN'
+FIT_STALE = 'FIT_STALE'
 ACCOUNT_CURRENCY_UNSUPPORTED = 'ACCOUNT_CURRENCY_UNSUPPORTED'
 NOT_DEMO_ACCOUNT = 'NOT_DEMO_ACCOUNT'
 PORTFOLIO_INVALID = 'PORTFOLIO_INVALID'
@@ -52,14 +54,16 @@ MESSAGES = {
     SYMBOL_UNAVAILABLE: "This broker has no tradable {symbol}.",
     SYMBOL_AMBIGUOUS: "This broker has more than one {symbol} ({candidates}), so GOAT will not guess which one to use.",
     SPREAD_TOO_WIDE: "This broker's {symbol} spread is too wide for this set.",
-    SPREAD_SAMPLE_UNAVAILABLE: "GOAT could not watch {symbol}'s spread; add it to Market Watch in MT5, then check again.",
+    SPREAD_SAMPLE_UNAVAILABLE: "GOAT found too few recent {symbol} prices to judge its spread; add it to Market Watch in MT5, then check again.",
     BELOW_MIN_LOT: "This set needs a larger account.",
     CONTRACT_MISMATCH: "This broker's {symbol} contract differs from the one this set was tested on.",
     POINT_SIZE_MISMATCH: "This broker prices {symbol} in a different point size, and GOAT cannot convert this set exactly.",
     SERVER_OFFSET_MISMATCH: "This broker's server clock differs from the one this set was tested on, and this set depends on it.",
     MARGIN_INSUFFICIENT: "This set could need more margin than this account has.",
+    MARGIN_UNKNOWN: "GOAT cannot work out the most margin this set could need, so it is not offered.",
     ACCOUNT_CURRENCY_UNSUPPORTED: "GOAT cannot convert this account's currency for this portfolio.",
 }
+FIT_STALE_MESSAGE = 'The account changed since the check; run the fit again.'
 MISSING_REFERENCE_MESSAGE = "This set's reference broker details are missing, so GOAT cannot check it on this account."
 FIXED_MONEY_MESSAGE = "This set uses a fixed money limit ({name}) that GOAT does not scale."
 NOT_STATED_MESSAGE = "This set does not state {name}, so GOAT cannot scale it."
@@ -76,11 +80,10 @@ CENT = Decimal('0.01')
 # instrument is quoted differently (cents, x10 index points); inside it, only FX drift of a cross's tick value.
 CONTRACT_VALUE_BAND = (Decimal('0.8'), Decimal('1.25'))
 
-SPREAD_WINDOW_DEFAULT = 300
-SPREAD_WINDOW_LIMITS = (300, 1800)
-SAMPLE_SECONDS = 5
-MIN_SAMPLES = 20
-SPAN_SLACK_SECONDS = 10
+# Spread = Ops' exp03_symbol_specs.py method: the median (ask-bid)/point of the real ticks of the last 6 hours
+# (copy_ticks_range, COPY_TICKS_INFO), skipping the rollover hours and the weekend, rounded to 0.1 point.
+SPREAD_HISTORY_HOURS = 6
+MIN_TICKS = 100
 FRESH_QUOTE_SECONDS = 120
 
 TRADE_MODE_FULL = 4                    # SYMBOL_TRADE_MODE_FULL
@@ -92,9 +95,11 @@ FIXED_MONEY_INPUTS = ('MaxLossLocal', 'MaxLossGlobal', 'MaxDailyLossLocal', 'Max
 TF_INPUTS = ('ATR_TF_', 'RSI_TF_', 'EMA_TF_', 'ADX_TF_', 'BB_TF_', 'MACD_TF_', 'RSI2_TF_')
 TF_H4 = 240
 EDITABLE_INPUTS = frozenset(('Risk', 'Lots_Input') + POINT_INPUTS)
-# The broker server clock the house evidence was measured on. 'ny-close': 00:00 server = 17:00 New York, i.e.
-# UTC+2, and UTC+3 while New York observes daylight saving time (Darwinex).
+# The broker server clock the house evidence was measured on, when the manifest does not say (reference.serverGmtOffset
+# or referenceAccount.serverGmtOffset). 'ny-close': 00:00 server = 17:00 New York, i.e. UTC+2, and UTC+3 while New
+# York observes daylight saving time (Darwinex).
 REFERENCE_SERVER_TIME = {'Darwinex': 'ny-close'}
+OFFSET_MODELS = ('ny-close',)
 NUMBER = re.compile(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)')
 SHA256 = re.compile(r'[0-9a-f]{64}')
 MEMBER_ID = re.compile(r'[A-Za-z0-9._-]{1,64}')
@@ -237,45 +242,51 @@ def new_york_offset_hours(utc):
 
 
 def quiet_exclusion(utc_seconds):
-    """'rollover', 'weekend' or None for one UTC instant (contract: spread sampling windows).
+    """'rollover', 'weekend' or None for one UTC instant (contract: spread history).
 
-    rollover: 16:30-17:30 New York every day, the hour around the 17:00 New York FX rollover.
-    weekend:  Friday 16:00 New York to Sunday 18:00 New York (an hour either side of the weekly close and open)."""
+    rollover: 16:00-18:00 New York every day. That is exactly the server hours 23:00-01:00 Ops' exp03_symbol_specs.py
+              skips on the NY-close reference server, written in New York time so it holds on any broker clock.
+    weekend:  Friday 16:00 New York to Sunday 18:00 New York (an hour either side of the weekly close and open; it
+              contains the NY-close server's whole Saturday and Sunday, which Ops skips)."""
     utc = datetime.fromtimestamp(utc_seconds, timezone.utc)
     ny = utc + timedelta(hours=new_york_offset_hours(utc))
     minutes, day = ny.hour * 60 + ny.minute, ny.weekday()
     if day == 5 or (day == 4 and minutes >= 16 * 60) or (day == 6 and minutes < 18 * 60):
         return 'weekend'
-    if 16 * 60 + 30 <= minutes < 17 * 60 + 30:
+    if 16 * 60 <= minutes < 18 * 60:
         return 'rollover'
     return None
 
 
-def next_quiet_window(utc_seconds, window_seconds):
-    """The first UTC instant (minute-aligned) from which a whole sampling window avoids rollover and weekend."""
-    start = int(utc_seconds // 60 * 60)
-    for step in range(0, 4 * 24 * 60):
-        begin = start + step * 60
-        if begin < utc_seconds:
-            continue
-        if all(quiet_exclusion(begin + offset) is None for offset in range(0, window_seconds + 1, 60)):
-            return begin
+def model_offset_minutes(model, utc_seconds):
+    """UTC offset (minutes) of a server clock model at an instant: a number of hours is a fixed offset, 'ny-close' is
+    UTC+2 / UTC+3 with New York's daylight saving time. None for anything else."""
+    if isinstance(model, bool):
+        return None
+    if isinstance(model, (int, float)) and math.isfinite(model) and -14 <= model <= 14 and (model * 4) == int(model * 4):
+        return int(round(model * 60))
+    if model == 'ny-close':
+        utc = datetime.fromtimestamp(utc_seconds, timezone.utc)
+        return (new_york_offset_hours(utc) + 7) * 60
     return None
 
 
-def reference_server_offset_minutes(server, utc_seconds):
-    """UTC offset (minutes) of the reference broker's server clock at an instant; None when GOAT has no model of it."""
+def reference_server_offset(member_reference, reference_account, utc_seconds):
+    """(minutes or None, source) of the reference server clock at an instant. In order: the member's
+    reference.serverGmtOffset, the manifest's referenceAccount.serverGmtOffset, then (only when neither is present) the
+    server-name assumption. A field that is present but unreadable is never replaced by the assumption."""
+    for source, holder in (('member', member_reference), ('referenceAccount', reference_account)):
+        if isinstance(holder, dict) and holder.get('serverGmtOffset') is not None:
+            return model_offset_minutes(holder['serverGmtOffset'], utc_seconds), source
+    server = (reference_account or {}).get('server')
     model = next((value for prefix, value in REFERENCE_SERVER_TIME.items() if isinstance(server, str) and server.startswith(prefix)), None)
-    if model != 'ny-close':
-        return None
-    utc = datetime.fromtimestamp(utc_seconds, timezone.utc)
-    return (new_york_offset_hours(utc) + 7) * 60
+    return model_offset_minutes(model, utc_seconds), 'server_name_assumption' if model else 'unknown'
 
 
-def measured_server_offset_minutes(samples):
-    """The broker server's UTC offset from its freshest quote: quote time (server clock) minus the sample's UTC time,
-    rounded to 15 minutes, trusted only when the quote is at most FRESH_QUOTE_SECONDS old. None otherwise."""
-    deltas = [s['quoteTime'] - s['utc'] for s in samples if isinstance(s.get('quoteTime'), (int, float)) and s['quoteTime'] > 0]
+def measured_server_offset_minutes(quote_times, utc_now):
+    """The broker server's UTC offset from its freshest quote: last tick time (server clock) minus UTC now, rounded to
+    15 minutes, trusted only when that tick is at most FRESH_QUOTE_SECONDS old. None otherwise (market closed)."""
+    deltas = [value - utc_now for value in quote_times if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0]
     if not deltas:
         return None
     best = max(deltas)
@@ -283,18 +294,23 @@ def measured_server_offset_minutes(samples):
     return int(offset // 60) if abs(best - offset) <= FRESH_QUOTE_SECONDS else None
 
 
-def median_spread(samples, *, window_seconds):
-    """(median spread in broker points, None) or (None, reason). Samples inside rollover or weekend are dropped; the rest
-    must span the window, number at least MIN_SAMPLES and show the quote moving (a symbol outside Market Watch does not)."""
-    valid = [s for s in samples if quiet_exclusion(s['utc']) is None and isinstance(s.get('spread'), int) and s['spread'] >= 0]
-    if len(valid) < MIN_SAMPLES:
-        return None, 'fewer than %d spread samples outside rollover and the weekend' % MIN_SAMPLES
-    span = max(s['utc'] for s in valid) - min(s['utc'] for s in valid)
-    if span < window_seconds - SPAN_SLACK_SECONDS:
-        return None, 'the samples span %d s, less than the %d s window' % (span, window_seconds)
-    if len({s.get('quoteTime') for s in valid}) < 2:
-        return None, 'the quote did not change while GOAT watched it'
-    return dec(statistics.median(s['spread'] for s in valid)), None
+def history_spread(ticks, *, point, offset_minutes):
+    """(median spread in broker points, tick count, None) or (None, count, reason) from the tick history of the window.
+    Tick 'time' is the server clock: it is placed in UTC with the measured offset, ticks in the rollover hours or the
+    weekend and ticks without a positive bid and ask are skipped, and at least MIN_TICKS must remain."""
+    if offset_minutes is None:
+        return None, 0, "the broker's server clock could not be read from a recent price"
+    spreads, size, shift = [], float(point), offset_minutes * 60
+    for tick in ticks if ticks is not None else ():
+        bid, ask = float(tick['bid']), float(tick['ask'])
+        if not bid > 0 or not ask > 0 or quiet_exclusion(int(tick['time']) - shift):
+            continue
+        spreads.append((ask - bid) / size)
+    if len(spreads) < MIN_TICKS:
+        return None, len(spreads), 'only %d ticks outside the rollover hours and the weekend in the last %d hours (at least %d needed)' % (
+            len(spreads), SPREAD_HISTORY_HOURS, MIN_TICKS)
+    # As Ops' exp03_symbol_specs.py, which measured the reference typicalSpreadPts: round(median, 1) in points.
+    return dec(round(statistics.median(spreads), 1)), len(spreads), None
 
 
 # ------------------------------------------------------------------ symbols
@@ -474,6 +490,7 @@ def uses_risk(values, defaults):
 
 def equity_rules(values, defaults, *, lot_factor, money_factor, broker, reference):
     """The equity-dependent rules for one member at one equity. Returns dict(code, message, edits, scaled, start_lots).
+    The same function judges the review (broker-fit) and the deploy-time re-check (stale_fit).
 
     lot_factor   = scale x (reference contract size / broker contract size): what lots multiply by.
     money_factor = account equity / reference equity (= scale / rate): what money inputs (account currency) multiply by.
@@ -509,10 +526,13 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
         bound = start
     elif mode == MODE_LOTS['RiskperSeq']:
         # The EA solves the start lot from Risk on this broker's tick value (never below VOLUME_MIN). With the
-        # reference start lot known it scales; otherwise the reference VOLUME_MIN is its proven lower bound.
-        known = reference.get('startLots')
+        # reference start lot known (reference.startLot) it follows the scaled Risk exactly: deployed Risk in the
+        # reference currency over reference Risk, times the contract ratio, rounded down. Without it the reference
+        # VOLUME_MIN is its only proven lower bound.
+        known = reference.get('startLot')
         if known is not None:
-            start = floor_step(known * lot_factor, vstep)
+            risk_ratio = new_risk / (risk * money_factor) if risk and money_factor and new_risk is not None else Decimal(1)
+            start = floor_step(known * lot_factor * risk_ratio, vstep)
             bound = start
         else:
             bound = reference['volumeMin'] * lot_factor
@@ -524,7 +544,7 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
         return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
     written_lots = dec(edits['Lots_Input']) if 'Lots_Input' in edits else lots_input
     # Lots_Max and Lots_Max_Cum are reported as written: multipliers of the start lot, never scaled.
-    scaled = dict(Risk=new_risk, Lots_Max=lots_max, Lots_Max_Cum=lots_max_cum, Lots_Input=written_lots, startLots=start)
+    scaled = dict(Risk=new_risk, Lots_Max=lots_max, Lots_Max_Cum=lots_max_cum, Lots_Input=written_lots, startLot=start)
     return dict(code=None, message=None, edits=edits, scaled=scaled, start_lots=start)
 
 
@@ -601,10 +621,12 @@ def reference_facts(reference):
         if number is None or number < 0 or (key != 'typicalSpreadPts' and number <= 0):
             return None
         facts[key] = number
-    for key in ('startLots', 'swapLong', 'swapShort', 'volumeMax'):
+    for key in ('startLot', 'swapLong', 'swapShort', 'volumeMax'):
         facts[key] = dec(reference.get(key))
-    if facts['startLots'] is not None and facts['startLots'] <= 0:
-        facts['startLots'] = None
+    if facts['startLot'] is not None and facts['startLot'] <= 0:
+        facts['startLot'] = None
+    source = reference.get('startLotSource')
+    facts['startLotSource'] = source if isinstance(source, str) and len(source) <= 200 else None
     return facts
 
 
@@ -617,17 +639,22 @@ def broker_facts(facts):
     return out
 
 
+def _text(number):
+    """An exact Decimal as a JSON string (the deploy re-check reads it back without float rounding)."""
+    return None if number is None else format(number, 'f')
+
+
 # ------------------------------------------------------------------ the result
 
-def build_result(manifest, sets, *, account, symbols, samples, margins, schema, utc_now,
-                 equity=None, window_seconds=SPREAD_WINDOW_DEFAULT):
+def build_result(manifest, sets, *, account, symbols, ticks, quotes, margins, schema, utc_now, equity=None):
     """BrokerFitResult (contract goat-broker-fit-v1) from plain data.
 
     manifest  goat-house-portfolio-v1 dict; sets {setSha256: reference SET bytes}
     account   dict(login, server, currency, equity, leverage, demo)
     symbols   [dict(name, trade_mode, digits, point, trade_contract_size, trade_tick_size, trade_tick_value, volume_min,
               volume_step, volume_max, currency_base, currency_profit, swap_long, swap_short, bid, ask)]
-    samples   {broker symbol: [dict(utc, spread, quoteTime)]} collected over the window
+    ticks     {broker symbol: ticks of the last SPREAD_HISTORY_HOURS, each with time (server clock), bid, ask}
+    quotes    {broker symbol: time of its last tick (server clock)}, for the broker's UTC offset
     margins   {broker symbol: margin per 1.0 lot in the account currency (worse of buy and sell)}
     equity    planning override in the account currency (--equity)"""
     if account.get('demo') is not True:
@@ -642,27 +669,29 @@ def build_result(manifest, sets, *, account, symbols, samples, margins, schema, 
     converted = conversion(account.get('currency'), ref_currency, symbols)
     rate = converted[0] if converted else None
     scale = account_equity * rate / ref_equity if rate else None
-    all_samples = [sample for series in samples.values() for sample in series]
-    offset_now = (account.get('server') == ref_account['server'], measured_server_offset_minutes(all_samples),
-                  reference_server_offset_minutes(ref_account['server'], utc_now))
+    clock = dict(same_server=account.get('server') == ref_account['server'],
+                 measured=measured_server_offset_minutes(quotes.values(), utc_now), utc_now=utc_now, account=ref_account)
     by_name = {facts['name']: facts for facts in symbols}
     members, internals = [], []
     for member in manifest['members']:
-        row, inner = _member(member, sets, defaults, by_name, symbols, samples, margins, schema, scale=scale, rate=rate,
-                             account_equity=account_equity, offsets=offset_now, window_seconds=window_seconds,
-                             ref_currency=ref_currency, reference_equity=ref_equity)
+        row, inner = _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, scale=scale, rate=rate,
+                             account_equity=account_equity, clock=clock, ref_currency=ref_currency, reference_equity=ref_equity)
         members.append(row); internals.append(inner)
-    return _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate, converted, scale, members, internals,
-                      offset_now)
+    result = _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate, converted, scale, members, internals,
+                        clock)
+    result['deployBasis'] = None if rate is None else dict(
+        schema=DEPLOY_SCHEMA, scale=num(scale), referenceEquity=_text(ref_equity), accountCurrency=account.get('currency'),
+        rate=_text(rate))
+    return result
 
 
 def _excluded(row, code, text, inner=None):
-    row.update(status='excluded', code=code, message=text, scaled=None, setSha256Deployed=None, edits=None)
+    row.update(status='excluded', code=code, message=text, scaled=None, setSha256Deployed=None, edits=None, deploy=None)
     return row, inner or dict(weight=Decimal(1), min_equity=None, margin=None)
 
 
-def _member(member, sets, defaults, by_name, symbols, samples, margins, schema, *, scale, rate, account_equity, offsets,
-            window_seconds, ref_currency, reference_equity):
+def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *, scale, rate, account_equity, clock,
+            ref_currency, reference_equity):
     raw = sets[member['setSha256']]
     values = set_values(raw, schema)
     mode = _number(values, defaults, 'Mode_Lots')
@@ -670,8 +699,8 @@ def _member(member, sets, defaults, by_name, symbols, samples, margins, schema, 
     weight = risk if mode == MODE_LOTS['RiskperSeq'] and risk and risk > 0 else None
     row = dict(memberId=member['memberId'], canonicalSymbol=member['canonicalSymbol'], brokerSymbol=None,
                period=member['timeframe'], status='fit', code=None, message=None, spreadRatio=None, scaled=None,
-               setSha256Reference=sha256(raw), setSha256Deployed=None, deployFileName=None, edits=None,
-               spread=None, pointConversion=None, serverOffset=None, costs=None, margin=None)
+               setSha256Reference=sha256(raw), setSha256Deployed=None, deployFileName=None, edits=None, deploy=None,
+               spread=None, pointConversion=None, serverOffset=None, costs=None, margin=None, startLotSource=None)
     inner = dict(weight=weight, min_equity=None, margin=None)
     if rate is None:
         return _excluded(row, ACCOUNT_CURRENCY_UNSUPPORTED, message(ACCOUNT_CURRENCY_UNSUPPORTED), inner)
@@ -686,6 +715,7 @@ def _member(member, sets, defaults, by_name, symbols, samples, margins, schema, 
     # A house manifest measures every member on one account: a reference tick value quoted in another currency is refused.
     if reference is None or reference['currency'] != ref_currency or any(broker[key] is None or broker[key] <= 0 for key in needed):
         return _excluded(row, CONTRACT_MISMATCH, MISSING_REFERENCE_MESSAGE, inner)
+    row['startLotSource'] = reference['startLotSource']
     # Contract: value of one price unit per contract unit, in the reference currency, must match (else the instrument is
     # quoted differently); a different contract SIZE is corrected exactly through the lot factor.
     broker_value = broker['trade_tick_value'] / broker['trade_tick_size'] / broker['trade_contract_size'] * rate
@@ -702,16 +732,17 @@ def _member(member, sets, defaults, by_name, symbols, samples, margins, schema, 
         return _excluded(row, POINT_SIZE_MISMATCH, message(POINT_SIZE_MISMATCH, symbol=symbol) + ' (' + str(exc) + ')', inner)
     row['pointConversion'] = dict(referencePoint=num(reference['point']), brokerPoint=num(broker['point']),
                                   factor=num(point_ratio), inputs=dict(converted)) if point_ratio != 1 else None
-    # Server clock.
-    same_server, measured, expected = offsets
+    # Server clock: the broker's measured GMT offset against the reference's (field, else the server-name assumption).
+    measured = clock['measured']
+    expected, source = reference_server_offset(member['reference'], clock['account'], clock['utc_now'])
     neutral, reasons = offset_neutral(values, defaults, member['timeframe'])
-    same_offset = same_server or (measured is not None and expected is not None and measured == expected)
-    row['serverOffset'] = dict(sameServer=same_server, brokerMinutes=measured, referenceMinutes=expected,
-                               offsetNeutral=neutral, dependsOn=reasons)
+    same_offset = clock['same_server'] or (measured is not None and expected is not None and measured == expected)
+    row['serverOffset'] = dict(sameServer=clock['same_server'], brokerMinutes=measured, referenceMinutes=expected,
+                               referenceSource=source, offsetNeutral=neutral, dependsOn=reasons)
     if not same_offset and not (neutral and measured is not None and expected is not None and (measured - expected) % 60 == 0):
         return _excluded(row, SERVER_OFFSET_MISMATCH, message(SERVER_OFFSET_MISMATCH), inner)
-    # Spread: the median over the window, in reference points.
-    median, reason = median_spread(samples.get(symbol, []), window_seconds=window_seconds)
+    # Spread: the median of the last hours of real ticks (Ops' method), in reference points.
+    median, count, reason = history_spread(ticks.get(symbol), point=broker['point'], offset_minutes=measured)
     if median is None:
         return _excluded(row, SPREAD_SAMPLE_UNAVAILABLE, message(SPREAD_SAMPLE_UNAVAILABLE, symbol=symbol) + ' (' + reason + ')', inner)
     normalised = median * broker['point'] / reference['point']
@@ -723,7 +754,7 @@ def _member(member, sets, defaults, by_name, symbols, samples, margins, schema, 
     else:
         fits = normalised == 0
     row['spread'] = dict(medianPoints=num(median), referencePoints=num(normalised), typicalSpreadPts=num(typical), limit=num(limit),
-                         samples=len(samples.get(symbol, [])))
+                         ticks=count, hours=SPREAD_HISTORY_HOURS)
     # Costs: shown, never refused. MT5's Python SDK does not expose commission.
     row['costs'] = dict(swapLong=num(broker['swap_long']), swapShort=num(broker['swap_short']),
                         referenceSwapLong=num(reference['swapLong']), referenceSwapShort=num(reference['swapShort']),
@@ -734,13 +765,20 @@ def _member(member, sets, defaults, by_name, symbols, samples, margins, schema, 
     for name in FIXED_MONEY_INPUTS:
         if (_number(values, defaults, name) or 0) != 0 and account_equity != reference_equity:
             return _excluded(row, CONTRACT_MISMATCH, FIXED_MONEY_MESSAGE.format(name=name), inner)
-    rules = dict(broker=dict(volume_min=broker['volume_min'], volume_step=broker['volume_step'], volume_max=broker['volume_max']),
-                 reference=dict(volumeMin=reference['volumeMin'], startLots=reference['startLots']))
+    # Margin must be knowable at every equity (fail closed): the SDK's margin per lot, an EA lot cap, and a start lot
+    # (FixedLots/ScaledLots: Lots_Input; RiskperSeq: reference.startLot).
+    per_lot = dec(margins.get(symbol))
+    if per_lot is not None and per_lot <= 0:
+        per_lot = None
+    unknown = ('margin_per_lot_unavailable' if per_lot is None else 'no_lot_cap' if peak_lots(values, defaults, Decimal(1)) is None
+               else 'start_lot_unknown' if mode == MODE_LOTS['RiskperSeq'] and reference['startLot'] is None else None)
+    if unknown:
+        row['margin'] = dict(perLot=num(per_lot), peakLots=None, required=None, basis=unknown)
+        return _excluded(row, MARGIN_UNKNOWN, message(MARGIN_UNKNOWN), inner)
+    deploy_rules = dict(volume_min=broker['volume_min'], volume_step=broker['volume_step'], volume_max=broker['volume_max'],
+                        contract_ratio=contract_ratio, reference_volume_min=reference['volumeMin'], start_lot=reference['startLot'])
     def at(trial_equity):
-        # Lots follow the equity in the reference currency (x rate) and the contract size; money inputs are in the
-        # account currency, so their factor is equity / reference equity exactly (the rate cancels).
-        return equity_rules(values, defaults, lot_factor=trial_equity * rate / reference_equity * contract_ratio,
-                            money_factor=trial_equity / reference_equity, **rules)
+        return rules_at(values, defaults, deploy_rules, equity=trial_equity, reference_equity=reference_equity, rate=rate)
     fixed_money = any((_number(values, defaults, name) or 0) != 0 for name in FIXED_MONEY_INPUTS)
     inner['min_equity'] = None if fixed_money else min_equity(lambda trial: at(trial)['code'] is None)
     outcome = at(account_equity)
@@ -750,15 +788,31 @@ def _member(member, sets, defaults, by_name, symbols, samples, margins, schema, 
     deployed = rewrite_set(raw, edits)
     row.update(scaled={key: num(value) for key, value in outcome['scaled'].items()}, edits=edits, setSha256Deployed=sha256(deployed))
     # Margin at the scaled caps and this account's leverage (the SDK's own calculation).
-    per_lot = dec(margins.get(symbol))
     lots = peak_lots(values, defaults, outcome['start_lots'])
-    required = per_lot * lots if per_lot is not None and lots is not None else None
-    row['margin'] = dict(perLot=num(per_lot), peakLots=num(lots), required=num(required),
-                         basis='ea_caps' if required is not None else ('start_lots_unknown' if lots is None else 'margin_unavailable'))
+    required = per_lot * lots
+    row['margin'] = dict(perLot=num(per_lot), peakLots=num(lots), required=num(required), basis='ea_caps')
     inner['margin'] = required
-    if required is not None and required > account_equity:
+    if required > account_equity:
         return _excluded(row, MARGIN_INSUFFICIENT, message(MARGIN_INSUFFICIENT), inner)
+    # What the deploy plan's brokerFit block carries for this member (it re-checks the live equity with these rules).
+    row['deploy'] = dict(memberId=member['memberId'], setSha256Reference=row['setSha256Reference'],
+                         setSha256Deployed=row['setSha256Deployed'], edits=edits,
+                         rules={RULE_KEYS[key]: _text(value) for key, value in deploy_rules.items()})
     return row, inner
+
+
+# Deploy-time rule facts, as the plan carries them (exact decimal strings).
+RULE_KEYS = dict(volume_min='volumeMin', volume_step='volumeStep', volume_max='volumeMax', contract_ratio='contractRatio',
+                 reference_volume_min='referenceVolumeMin', start_lot='startLot')
+
+
+def rules_at(values, defaults, rules, *, equity, reference_equity, rate):
+    """equity_rules at one equity in the account currency. Lots follow the equity in the reference currency (x rate) and
+    the contract size; money inputs are in the account currency, so their factor is equity / reference equity exactly."""
+    return equity_rules(values, defaults, lot_factor=equity * rate / reference_equity * rules['contract_ratio'],
+                        money_factor=equity / reference_equity,
+                        broker=dict(volume_min=rules['volume_min'], volume_step=rules['volume_step'], volume_max=rules['volume_max']),
+                        reference=dict(volumeMin=rules['reference_volume_min'], startLot=rules['start_lot']))
 
 
 MAX_EQUITY_CENTS = 10 ** 14
@@ -780,7 +834,7 @@ def min_equity(tradable):
     return Decimal(high) * CENT
 
 
-def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate, converted, scale, members, internals, offsets):
+def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate, converted, scale, members, internals, clock):
     if all(inner['weight'] is not None for inner in internals):
         weights = [inner['weight'] for inner in internals]
         weighting = 'risk'
@@ -819,7 +873,8 @@ def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate
         refusal = dict(code=MARGIN_INSUFFICIENT, message='Together these sets could need more margin than this account has.')
     elif share < TRADABLE_SHARE:
         refusal = dict(code=PORTFOLIO_BROKER_UNFIT, message="Less than 90% of this portfolio can trade on this account's broker.")
-    _, measured, expected = offsets
+    expected, source = reference_server_offset(None, clock['account'], clock['utc_now'])
+    sources = sorted({row['serverOffset']['referenceSource'] for row in members if row.get('serverOffset')})
     return dict(
         schema=SCHEMA,
         account=dict(login=str(account.get('login')), server=account.get('server'), currency=account.get('currency'),
@@ -831,27 +886,50 @@ def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate
         offered=refusal is None, refusal=refusal,
         tradableRiskShare=num(share.quantize(Decimal('0.0001'))), riskWeighting=weighting,
         margin=dict(required=num(margin_total), equity=num(account_equity), verified=margin_verified, level='member_and_portfolio'),
-        serverOffset=dict(brokerMinutes=measured, referenceMinutes=expected),
+        # referenceSource 'server_name_assumption' says the manifest gave no serverGmtOffset and GOAT assumed the
+        # reference server's clock from its name; memberSources lists what each checked member used.
+        serverOffset=dict(brokerMinutes=clock['measured'], referenceMinutes=expected, referenceSource=source,
+                          memberSources=sources, assumed='server_name_assumption' in (sources or [source])),
         members=members)
 
 
 # ------------------------------------------------------------------ deploy hook (studio_demo_deploy)
 
+DEPLOY_BLOCK_KEYS = frozenset(('schema', 'scale', 'referenceEquity', 'accountCurrency', 'rate', 'members'))
+DEPLOY_MEMBER_KEYS = frozenset(('index', 'memberId', 'setSha256Reference', 'setSha256Deployed', 'edits', 'rules'))
+
+
+def _exact(value, *, positive=True, optional=False):
+    """A plan number given as an exact decimal string (as broker-fit writes it) or a JSON number."""
+    if value is None and optional:
+        return None
+    number = dec(value) if isinstance(value, str) and NUMBER.fullmatch(value) else (
+        dec(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None)
+    if number is None or (positive and number <= 0):
+        raise ValueError('Invalid broker-fit number in the demo deploy plan')
+    return number
+
+
 def deploy_entries(block, members):
-    """Validate a plan's brokerFit block against its members; returns one entry per member, in order."""
-    if (type(block) is not dict or set(block) != {'schema', 'scale', 'members'} or block['schema'] != DEPLOY_SCHEMA
+    """Validate a plan's brokerFit block against its members; returns one entry per member, in order, with its rules
+    parsed (Decimals). The block is the broker-fit result's deployBasis plus each fit member's `deploy` with its index."""
+    if (type(block) is not dict or set(block) != DEPLOY_BLOCK_KEYS or block['schema'] != DEPLOY_SCHEMA
             or isinstance(block['scale'], bool) or not isinstance(block['scale'], (int, float))
-            or not math.isfinite(block['scale']) or block['scale'] <= 0):
+            or not math.isfinite(block['scale']) or block['scale'] <= 0
+            or not isinstance(block['accountCurrency'], str) or not CURRENCY.fullmatch(block['accountCurrency'])):
         raise ValueError('Invalid broker-fit block in the demo deploy plan')
+    _exact(block['referenceEquity']); _exact(block['rate'])
     entries = block['members']
     if type(entries) is not list or len(entries) != len(members):
         raise ValueError('The broker-fit block must name every deployed member, and only them')
     for index, entry in enumerate(entries):
-        if (type(entry) is not dict or set(entry) != {'index', 'memberId', 'setSha256Reference', 'setSha256Deployed', 'edits'}
+        if (type(entry) is not dict or set(entry) != DEPLOY_MEMBER_KEYS
                 or entry['index'] != index or not isinstance(entry['memberId'], str) or not MEMBER_ID.fullmatch(entry['memberId'])
                 or not SHA256.fullmatch(str(entry['setSha256Reference'])) or not SHA256.fullmatch(str(entry['setSha256Deployed']))
-                or type(entry['edits']) is not dict):
+                or type(entry['edits']) is not dict or type(entry['rules']) is not dict or set(entry['rules']) != set(RULE_KEYS.values())):
             raise ValueError('Invalid broker-fit member %d in the demo deploy plan' % index)
+        for key, name in RULE_KEYS.items():
+            _exact(entry['rules'][name], optional=key in ('volume_max', 'start_lot'))
     return entries
 
 
@@ -870,6 +948,45 @@ def deploy_record(block):
     return dict(schema=block['schema'], scale=block['scale'],
                 members=[dict(memberId=e['memberId'], setSha256Reference=e['setSha256Reference'],
                               setSha256Deployed=e['setSha256Deployed'], scale=block['scale']) for e in block['members']])
+
+
+def stale_members(block, references, schema, *, equity, currency):
+    """The deploy-time re-check. With the live equity (account currency), every member's Risk and Lots_Input are
+    recomputed by the same rules as the review. A member is stale when the account currency changed, when a rule now
+    excludes it, or when a reviewed value is ABOVE the live one at all (that would be rounding up) or more than one
+    volume step (one cent for Risk) BELOW it. Returns [dict(memberId, input, reviewed, live)]; empty = fresh."""
+    live_equity = dec(equity)
+    if currency != block['accountCurrency'] or live_equity is None or live_equity <= 0:
+        return [dict(memberId=None, input='account', reviewed=block['accountCurrency'], live=currency)]
+    defaults = schema_defaults(schema)
+    reference_equity, rate = _exact(block['referenceEquity']), _exact(block['rate'])
+    stale = []
+    for entry, raw in zip(block['members'], references):
+        rules = {key: _exact(entry['rules'][name], optional=key in ('volume_max', 'start_lot')) for key, name in RULE_KEYS.items()}
+        values = set_values(raw, schema)
+        outcome = rules_at(values, defaults, rules, equity=live_equity, reference_equity=reference_equity, rate=rate)
+        if outcome['code']:
+            stale.append(dict(memberId=entry['memberId'], input=outcome['code'], reviewed=None, live=None))
+            continue
+        for name, tolerance in (('Risk', CENT), ('Lots_Input', rules['volume_step'])):
+            live = outcome['scaled'][name]
+            reviewed = dec(entry['edits'][name]) if name in entry['edits'] else _number(values, defaults, name)
+            if live is None or reviewed is None:
+                continue
+            if reviewed > live or live - reviewed > tolerance:
+                stale.append(dict(memberId=entry['memberId'], input=name, reviewed=num(reviewed), live=num(live)))
+    return stale
+
+
+def check_live(plan, schema, proof):
+    """Refuse FIT_STALE before anything is staged when the live account no longer matches the reviewed fit."""
+    import base64
+    block = plan['brokerFit']
+    references = [base64.b64decode(member['contentBase64'], validate=True) for member in plan['members']]
+    stale = stale_members(block, references, schema, equity=proof.get('equity'), currency=proof.get('currency'))
+    if stale:
+        raise Refusal(FIT_STALE_MESSAGE + ' Nothing was written or launched.', FIT_STALE, stale=stale[:20],
+                      liveEquity=proof.get('equity'), liveCurrency=proof.get('currency'))
 
 
 # ------------------------------------------------------------------ CLI (read-only MT5 SDK readback)
@@ -920,19 +1037,14 @@ def _symbol_dict(info):
     return {key: getattr(info, key, None) for key in keys}
 
 
-def read_broker(controller, session, manifest, *, mt5=None, window_seconds=SPREAD_WINDOW_DEFAULT, clock=None, sleep=None):
-    """One read-only MT5 SDK session under the terminal lease: account, every symbol, spread samples over the window and
-    the SDK's margin per lot. Never trades, never selects a symbol into Market Watch, never opens a chart."""
+def read_broker(controller, session, manifest, *, mt5=None, clock=None):
+    """One short read-only MT5 SDK session (seconds) under the terminal lease: account, every symbol, each mapped symbol's
+    last tick and its tick history of the last SPREAD_HISTORY_HOURS (copy_ticks_range, COPY_TICKS_INFO), and the SDK's
+    margin per lot. Never trades, never selects a symbol into Market Watch, never opens a chart, never waits."""
     import time
     from pathlib import Path
     from studio_terminal_lease import BUSY_READ, terminal_lease
-    clock, sleep = clock or time.time, sleep or time.sleep
-    now = clock()
-    if any(quiet_exclusion(now + offset) for offset in range(0, window_seconds + 1, 60)):
-        start = next_quiet_window(now, window_seconds)
-        raise Refusal('GOAT measures spreads outside the rollover hour and the weekend; check again from '
-                      + (datetime.fromtimestamp(start, timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if start else 'Monday') + '.',
-                      SPREAD_SAMPLE_UNAVAILABLE, nextWindowUtc=start)
+    clock = clock or time.time
     if mt5 is None:
         try:
             import MetaTrader5 as mt5
@@ -960,17 +1072,19 @@ def read_broker(controller, session, manifest, *, mt5=None, window_seconds=SPREA
             symbols = [_symbol_dict(item) for item in (mt5.symbols_get() or ())]
             mapped = sorted({symbol for symbol, problem in (map_symbol(m['canonicalSymbol'], symbols) for m in manifest['members'])
                              if symbol})
-            samples = {symbol: [] for symbol in mapped}
-            deadline = clock() + window_seconds
-            while True:
-                stamp = clock()
+            utc_now = clock()
+            quotes = {}
+            for symbol in mapped:
+                tick = mt5.symbol_info_tick(symbol)
+                quotes[symbol] = int(tick.time) if tick is not None and getattr(tick, 'time', 0) else None
+            offset = measured_server_offset_minutes(quotes.values(), utc_now)
+            ticks = {}
+            if offset is not None:
+                # Tick times and copy_ticks_range dates are the server clock (as Ops' exp03_symbol_specs.py passes them).
+                server_now = datetime.fromtimestamp(utc_now + offset * 60, timezone.utc)
+                start = server_now - timedelta(hours=SPREAD_HISTORY_HOURS)
                 for symbol in mapped:
-                    current = mt5.symbol_info(symbol)
-                    if current is not None:
-                        samples[symbol].append(dict(utc=stamp, spread=int(current.spread), quoteTime=int(current.time)))
-                if stamp >= deadline:
-                    break
-                sleep(SAMPLE_SECONDS)
+                    ticks[symbol] = mt5.copy_ticks_range(symbol, start, server_now, getattr(mt5, 'COPY_TICKS_INFO', 1))
             fresh = {item['name']: item for item in (_symbol_dict(mt5.symbol_info(name)) for name in mapped) if item['name']}
             symbols = [fresh.get(item['name'], item) for item in symbols]
             margins = {}
@@ -983,15 +1097,12 @@ def read_broker(controller, session, manifest, *, mt5=None, window_seconds=SPREA
                 margins[symbol] = max(values) if values else None
         finally:
             mt5.shutdown()
-    return account, symbols, samples, margins, clock()
+    return account, symbols, ticks, quotes, margins, utc_now
 
 
-def broker_fit(controller, portfolio, *, equity=None, sets_dir=None, window_seconds=SPREAD_WINDOW_DEFAULT, mt5=None,
-               clock=None, sleep=None):
+def broker_fit(controller, portfolio, *, equity=None, sets_dir=None, mt5=None, clock=None):
     """`studio broker-fit`: read-only; refuses NOT_DEMO_ACCOUNT on a non-demo account."""
     from studio_onboarding import session_state
-    if type(window_seconds) is not int or not SPREAD_WINDOW_LIMITS[0] <= window_seconds <= SPREAD_WINDOW_LIMITS[1]:
-        raise ValueError('--spread-window-seconds must be between %d and %d' % SPREAD_WINDOW_LIMITS)
     if equity is not None and (not math.isfinite(equity) or equity <= 0):
         raise ValueError('--equity must be a positive number')
     manifest, sets = load_portfolio(portfolio, sets_dir)
@@ -1001,7 +1112,6 @@ def broker_fit(controller, portfolio, *, equity=None, sets_dir=None, window_seco
         raise Refusal('This portfolio is built for GOAT EA V' + str(wanted) + '; this terminal runs V' + str(installed) + '.',
                       'EA_VERSION_MISMATCH')
     session, _ = session_state(controller)
-    account, symbols, samples, margins, utc_now = read_broker(controller, session, manifest, mt5=mt5, window_seconds=window_seconds,
-                                                               clock=clock, sleep=sleep)
-    return build_result(manifest, sets, account=account, symbols=symbols, samples=samples, margins=margins,
-                        schema=controller.schema, utc_now=utc_now, equity=equity, window_seconds=window_seconds)
+    account, symbols, ticks, quotes, margins, utc_now = read_broker(controller, session, manifest, mt5=mt5, clock=clock)
+    return build_result(manifest, sets, account=account, symbols=symbols, ticks=ticks, quotes=quotes, margins=margins,
+                        schema=controller.schema, utc_now=utc_now, equity=equity)

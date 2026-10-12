@@ -113,6 +113,8 @@ def validate_strategy(values, schema):
         except ValueError as exc:
             raise ValueError(name+': '+str(exc)) from exc
     check_risk_sizing(values, schema)
+    from studio_ea_init_rules import check_ea_init   # imports numeric from here; bound at call time
+    check_ea_init(values, schema)                    # EA_INIT_REFUSED: the EA's own OnInit refusals, every reachable value
     return dict(values=dict(values), axes=axes, source_sha256=schema['source_sha256'],
                 dependency_validation='pending', execution_ready=False)
 

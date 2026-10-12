@@ -449,3 +449,7 @@ F2. **The manifest's signature is verified, not just its sha.** Same rule as goa
    `unsigned`, `signature_invalid`, `unknown_key`, `sha_missing`, `sha_mismatch` (check again). The refusal no longer
    echoes any hash. Runtime wheels (CPython 3.13 win_amd64, `controller/ci-requirements.txt`; goatai mirrors them in
    `suiteRuntimeDependencies.cjs`): cryptography 50.0.2 (cp311-abi3), cffi 2.1.1 (cp313), pycparser 3.0.
+
+F3. **The clock guard holds at deploy too.** `deploy-load --server-time-utc` (unix seconds, optional, as for broker-fit)
+   is passed to the deploy re-check's `read_broker`: a PC clock more than 120 s off it leaves the broker offset unknown,
+   so clock-dependent members (and every spread sample) are stale.

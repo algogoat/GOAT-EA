@@ -1837,15 +1837,17 @@ def stale_members(block, references, schema, *, account, symbols, ticks, quotes,
     return rows
 
 
-def check_live(controller, session, plan, *, mt5=None, process=None, clock=None, sleep=None):
+def check_live(controller, session, plan, *, mt5=None, process=None, clock=None, sleep=None, server_time_utc=None):
     """Refuse FIT_STALE before anything is staged when the live broker no longer gives the reviewed fit: one short
     attach-only read (read_broker) of the manifest's members, then stale_members."""
     import base64
     block = plan['brokerFit']
     references = [base64.b64decode(member['contentBase64'], validate=True) for member in plan['members']]
     manifest = block['manifest']
+    # The same clock guard as the review (round 5 F3): a PC clock more than 120 s off --server-time-utc leaves the
+    # broker offset unknown, so clock-dependent members are stale.
     account, symbols, ticks, quotes, margins, utc_now, arrived = read_broker(controller, session, manifest, mt5=mt5, process=process,
-                                                                             clock=clock, sleep=sleep)
+                                                                             clock=clock, sleep=sleep, server_time_utc=server_time_utc)
     stale = stale_members(block, references, controller.schema, account=account, symbols=symbols, ticks=ticks, quotes=quotes,
                           margins=margins, utc_now=utc_now, arrived=arrived)
     if stale:

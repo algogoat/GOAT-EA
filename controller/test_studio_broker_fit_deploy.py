@@ -8,6 +8,7 @@ faked here) and re-derives every value from the plan's manifest; it refuses FIT_
 """
 import hashlib
 import json
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -249,7 +250,7 @@ class BrokerFitDeployTests(DeployFixture):
         self.assertNotEqual(bf.manifest_sha256(probe_b['manifest']), self.genuine)
         # The CLI takes the flag; no default skips it.
         from goat_studio import OPERATION_CONTRACTS
-        self.assertEqual(OPERATION_CONTRACTS['deploy-load'].get('optional'), ['manifest-sha256'])
+        self.assertEqual(OPERATION_CONTRACTS['deploy-load'].get('optional'), ['manifest-sha256', 'server-time-utc'])
         self.assertIn('MANIFEST_UNVERIFIED', OPERATION_CONTRACTS['deploy-load']['effect'])
 
     def test_an_unsigned_or_unverifiable_manifest_never_deploys(self):
@@ -266,6 +267,32 @@ class BrokerFitDeployTests(DeployFixture):
             with self.assertRaises(Refusal) as caught:
                 self.validate(good)
         self.assertEqual((caught.exception.code, caught.exception.fields['reason']), (bf.MANIFEST_UNVERIFIED, 'verifier_unavailable'))
+
+    def test_the_deploy_recheck_gets_the_trusted_server_time(self):
+        # Round 5 F3: deploy-load --server-time-utc reaches read_broker, whose clock guard (more than 120 s off -> no
+        # tick proves the offset) then holds at deploy exactly as at review.
+        members, raws, block = self.review(equity=50000)
+        self.start_ea(pairing='none')
+        with self.relaunch(), self.reads(50000.0) as read:
+            result = deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 50000.0), manifest_sha256=self.genuine,
+                                 server_time_utc=1791900000.0, sleep=lambda s: None)
+        self.assertEqual((result['phase'], read.call_args.kwargs['server_time_utc']), ('ready', 1791900000.0))
+        with self.assertRaisesRegex(ValueError, 'unix seconds'):
+            deploy.load(self.c, self.plan(members, brokerFit=block), manifest_sha256=self.genuine, server_time_utc=float('nan'))
+        # Through the real read: a skewed PC clock leaves no arrived tick, so the re-derived Kestrel-shaped members lose
+        # their spread sample and the plan is stale.
+        import studio_broker_fit as real
+        from test_studio_broker_fit import FakeMT5 as BrokerMT5, FakeTerminalProcess
+        now = reading()['utc_now']
+        mt5 = BrokerMT5(self.c, symbols=SYMBOLS, clock=lambda: now)
+        mt5.account_info = lambda: SimpleNamespace(login=123456, server=SERVER, trade_mode=0, currency='USD', equity=50000.0, leverage=200)
+        session = dict(account=dict(login='123456', server=SERVER))
+        plan = json.loads(self.plan(members, brokerFit=block).read_text())
+        with self.assertRaises(Refusal) as caught:
+            real.check_live(self.c, session, plan, mt5=mt5, process=FakeTerminalProcess(), clock=lambda: now, sleep=lambda s: None,
+                            server_time_utc=now - 121)
+        self.assertEqual(caught.exception.code, bf.FIT_STALE)
+        self.assertIn(bf.SPREAD_SAMPLE_UNAVAILABLE, [row['input'] for row in caught.exception.fields['stale']])
 
     def test_a_plan_without_broker_fit_keeps_todays_journal_shape(self):
         self.start_ea(pairing='none')

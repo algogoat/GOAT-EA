@@ -29,6 +29,7 @@ import base64
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PureWindowsPath
 import re
@@ -739,10 +740,13 @@ def _unwind_summary(journal):
 
 
 def load(controller, plan_path, *, mt5=None, process=None, request=None, close=None, sleep=time.sleep, clock=time.monotonic,
-         manifest_sha256=None):
+         manifest_sha256=None, server_time_utc=None):
     from studio_seed_process import WindowsSeedProcess
     session, _ = session_state(controller)
     plan = read_json(plan_path)
+    if server_time_utc is not None and (isinstance(server_time_utc, bool) or not isinstance(server_time_utc, (int, float))
+                                        or not math.isfinite(server_time_utc) or server_time_utc <= 0):
+        raise ValueError('--server-time-utc must be unix seconds')
     members = validate_plan(controller, session, plan, manifest_sha256=manifest_sha256)
     ident = identity(controller, session, plan['buildId'])
     deployment_id = plan['deploymentId']
@@ -827,7 +831,7 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
                     # Never deploy a stale fit: every value is re-derived from the plan's manifest and the live broker
                     # (equity, rate, symbol facts, clock, margin) and compared with the plan (FIT_STALE).
                     import studio_broker_fit as broker_fit
-                    broker_fit.check_live(controller, session, plan, mt5=mt5, process=process)
+                    broker_fit.check_live(controller, session, plan, mt5=mt5, process=process, server_time_utc=server_time_utc)
                 for path, raw in staged_bytes(controller, plan, members).items():
                     write_exact(path, raw)
         except (OSError, ValueError):

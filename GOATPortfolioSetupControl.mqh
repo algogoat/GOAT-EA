@@ -159,7 +159,15 @@ bool GoatAdoptChartFits(const int adopt_row,const long adopt_chart,long &adopt_m
    if(!GoatFindMagicByCid(adopt_sym,adopt_chart,adopt_found) || adopt_found<=0) return false;
    for(int adopt_other=0;adopt_other<adopt_rows;adopt_other++)
       if(adopt_other!=adopt_row && (DashboardDialog.g_sets[adopt_other].cid==adopt_chart
-         || DashboardDialog.g_sets[adopt_other].magic==adopt_found)) return false;
+         || DashboardDialog.g_sets[adopt_other].magic==adopt_found))
+      {
+         // B44: a chart whose CID record names a magic another row's chart holds is still refused, but named
+         // once (Exp 03, 2026-10-12: it was a silent child_unmatched, then child_not_started).
+         if(DashboardDialog.g_sets[adopt_other].cid!=adopt_chart)
+            GoatAdoptNote("magic_held",adopt_chart,adopt_sym+" row="+IntegerToString(adopt_row)
+                          +" magic="+IntegerToString(adopt_found)+" held_by_row="+IntegerToString(adopt_other));
+         return false;
+      }
    adopt_magic=adopt_found;
    return true;
 }

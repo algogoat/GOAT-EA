@@ -86,7 +86,7 @@ function once(text,from,to,label){
 }
 function extract(text,name,{cls='',patch=b=>b}={}){
   // A class method's definition, not its in-class declaration.
-  const at=text.search(new RegExp('^[ \\t]*(?:bool|int|void|string|double)\\s+'+(cls?cls+'::':'')+name+'\\s*\\(','m'));
+  const at=text.search(new RegExp('^[ \\t]*(?:bool|int|void|string|double|ulong)\\s+'+(cls?cls+'::':'')+name+'\\s*\\(','m'));
   assert.ok(at>=0,'missing production function '+name);
   const [brace,end]=block(text,at);
   assert.equal(text.slice(at,brace).includes(';'),false,name+' is a definition');
@@ -102,7 +102,7 @@ assert.ok(regionStart>0&&regionEnd>regionStart,'the V1.49 OnTick bias block');
 const regionStatics=[],regionBody=convert(M.slice(regionStart,regionEnd),regionStatics);
 const code=[
   extract(W,'GOATResetWireV2State'),extract(W,'GOATUsingControlTowerBias'),extract(W,'GOATApplyWireV2DemoRawAuthority'),
-  extract(W,'GOATFinalizeWireV2Actionability'),extract(W,'GOATRecordedBiasLiveScore'),
+  extract(W,'GOATFinalizeWireV2Actionability'),extract(W,'GOATRecordedBiasLiveScore'),extract(W,'GOATWireV2RetryDelayMs'),
   // MQL struct assignment copies into the caller's reference.
   extract(W,'GetState',{patch:b=>once(b,'state=m_state;','Object.assign(state,m_state);','wire state copy')}),
   // `long avg = sum / cnt` is integer division in MQL.
@@ -155,7 +155,7 @@ function terminal({flags=[],protocol,mode,trades,threshold,csv=null}){
     Sequence_New_Bias_B:true,Sequence_New_Bias_S:true,Sequence_Pause_Bias_B:false,Sequence_Pause_Bias_S:false,StopOut_Flag_B:false,StopOut_Flag_S:false,
     Seq_Buy:{BiasRescueActive:false},Seq_Sell:{BiasRescueActive:false},
     BiasList:[],BrokerGMTOffsetSec:0,BrokerDSTEnabled:0,
-    m_state:{},m_last_attempt_tick:0,m_verified_tick:0,m_read_at_ms:0,m_valid_until_ms:0,__served:null,
+    m_state:{},m_last_attempt_tick:0,m_verified_tick:0,m_read_at_ms:0,m_valid_until_ms:0,m_failed_fetches:0,__served:null,
   };
   vm.createContext(c);script.runInContext(c);
   c.Bias={GetCurentBiasScore:(a,i)=>c.GetCurentBiasScore(a,i)};

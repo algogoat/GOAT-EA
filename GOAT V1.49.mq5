@@ -229,6 +229,48 @@ bool DashboardRegisteredPortfolioPosition(const long magic,const string symbol)
    return false;
   }
 //----------------------------------------------------------------------------------------------------------------------------------------------------
+// A new child's magic, unique by construction (B44; Exp 03, 2026-10-12: 36 charts cold-started together,
+// ChartWindowsHandle(0) returned 0 under load and two children seeded in one GetTickCount tick drew the same
+// MathRand()+9+ChartWindowsHandle(0) magic, so the dashboard refused one of them on every launch).
+// The value depends on the chart id alone: a polynomial hash of "<n>#<chart id>" modulo 2^31-1, a positive int.
+// n steps on while a <Key>_ID_<magic>_<symbol>_CID record of another chart already holds the value. A magic
+// restored from this chart's own CID record is found before this and still wins (live children keep theirs).
+int GoatChildMagicCandidate(const long magic_chart,const int magic_n)
+  {
+   string magic_text=IntegerToString(magic_n)+"#"+IntegerToString(magic_chart);
+   long magic_hash=0;
+   for(int magic_k=0;magic_k<StringLen(magic_text);magic_k++)
+      magic_hash=(magic_hash*48271+StringGetCharacter(magic_text,magic_k))%2147483647;
+   return (int)magic_hash;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+bool GoatChildMagicHeld(const int magic_value,const long magic_chart)
+  {
+   long magic_cid=GoatTruncateCidValue(magic_chart);
+   for(int magic_i=GlobalVariablesTotal()-1;magic_i>=0;--magic_i)
+   {
+      string magic_gv=GlobalVariableName(magic_i);
+      long magic_held=0;
+      string magic_symbol="",magic_field="";
+      if(!GoatParseChildGVName(magic_gv,magic_held,magic_symbol,magic_field)) continue;
+      if(magic_field!=GOAT_GV_FIELD_CID || magic_held!=magic_value)           continue;
+      if(GoatTruncateCidValue((long)GlobalVariableGet(magic_gv))!=magic_cid)  return true;
+   }
+   return false;
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
+int GoatDeriveChildMagic(const long magic_chart)
+  {
+   for(int magic_n=0;magic_n<1000;magic_n++)
+   {
+      int magic_value=GoatChildMagicCandidate(magic_chart,magic_n);
+      if(magic_value>0 && !GoatChildMagicHeld(magic_value,magic_chart)) return magic_value;
+   }
+   // Unreachable short of 1000 held candidates; still a positive, chart-derived value.
+   int magic_last=GoatChildMagicCandidate(magic_chart,1000);
+   return (magic_last>0 ? magic_last : 1);
+  }
+//----------------------------------------------------------------------------------------------------------------------------------------------------
 // Atomic asset-direction ownership at the real-order boundary.
 #include "GOAT_DirectionGuard.mqh"
 #include "GOAT_SequenceExport.mqh"
@@ -3397,6 +3439,9 @@ int OnInit()
     bool restored_magic_found=GoatFindMagicByCid(Symbol(),ChartID(),restored_magic);
     if(restored_magic_found)
        MAGIC1=(int)restored_magic;
+     // B44: a new live child's magic comes from its chart id, unique among this terminal's CID records
+     // (GoatDeriveChildMagic, never 0). The tester keeps its per-run random magic (the export CSV name carries it).
+     if(MAGIC1==0 && !MQLInfoInteger(MQL_TESTER)) MAGIC1 = GoatDeriveChildMagic(ChartID());
      if(MAGIC1==0) MAGIC1 = MathRand()+9+ChartWindowsHandle(0);
      if(MAGIC2==0) MAGIC2 = MathRand()+9+ChartWindowsHandle(0);
      if(GlobalVariableCheck(GoatPortfolioGVName("DashboardPolicyPaused")))

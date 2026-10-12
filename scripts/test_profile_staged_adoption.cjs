@@ -164,7 +164,28 @@ function run(src=readSources()){
   assert.equal(t.pass(),0,'a magic another row holds is never adopted');assert.equal(t.g_sets[0].magic,0);assert.deepEqual(t.snapshots,[]);ok();}
  {const r=[row(1),row(2,'USDJPY')];r[1].magic=9600;r[1].cid=501;
   const t=terminal(src,{rows:r,charts:[child(501,r[0])]});
-  assert.equal(t.pass(),0,'a chart another row claims is never adopted');assert.deepEqual(t.snapshots,[]);ok();}
+  assert.equal(t.pass(),0,'a chart another row claims is never adopted');assert.deepEqual(t.snapshots,[]);
+  assert.ok(!t.notes.some(n=>n[0]==='magic_held'),'a claimed chart is not a held magic');ok();}
+ // B44 (Exp 03, 2026-10-12): the refusal of a held magic is named once, with the row and the holder row.
+ {const r=[row(1),row(2,'USDJPY')];r[1].magic=9501;r[1].cid=600;
+  const t=terminal(src,{rows:r,charts:[child(501,r[0])]});
+  assert.equal(t.pass(),0);assert.equal(t.pass(),0);t.ctx.now+=241;t.pass();
+  const held=t.notes.filter(n=>n[0]==='magic_held');
+  assert.deepEqual(held,[['magic_held',501,'EURUSD row=0 magic=9501 held_by_row=1']],'magic_held once, naming the row and the holder row');
+  assert.ok(t.notes.some(n=>n[0]==='child_not_started'&&n[2]==='EURUSD row=0'),'the refusal itself is unchanged');
+  assert.deepEqual([t.g_sets[0].cid,t.g_sets[0].magic],[0,0]);assert.deepEqual(t.snapshots,[]);ok();}
+ {// The Exp 03 arm 10 replay: row 25 (USDJPY, chart 71300508715022) carries magic 27425, which row 7 (EURAUD) holds.
+  const SYMS=['AUDJPY','AUDUSD','AUDUSD','CADCHF','CADJPY','EURAUD','EURAUD','EURAUD','EURCAD','EURCAD','EURCAD','EURJPY','EURJPY','EURJPY','EURJPY',
+   'EURUSD','EURUSD','EURUSD','GBPJPY','NDX','NZDJPY','SP500','USDCAD','USDCHF','USDJPY','USDJPY'];
+  const exp03=row25Magic=>{const rows=SYMS.map((s,i)=>row(i,s,'M1','Risk=500\nMode_Bias=2\nEA_Desc=r'+i+'\n')),charts=[];
+   rows.forEach((x,i)=>{const id=i===25?71300508715022:(i===7?71300456826655:71300400000000+i);
+    if(i!==25){x.cid=id;x.magic=(i===7?27425:30000+i);}charts.push(child(id,x,{magic:i===25?row25Magic:x.magic}));});
+   return terminal(src,{rows,charts});};
+  const t=exp03(27425);
+  assert.equal(t.pass(),0);assert.deepEqual([t.g_sets[25].cid,t.g_sets[25].magic],[0,0]);
+  assert.deepEqual(t.notes.filter(n=>n[0]==='magic_held'),[['magic_held',71300508715022,'USDJPY row=25 magic=27425 held_by_row=7']],'the 2026-10-12 refusal is named');
+  assert.ok(t.notes.some(n=>n[0]==='child_unmatched'&&n[1]===71300508715022),'and still recorded unmatched');
+  const u=exp03(27426);assert.equal(u.pass(),1,'a unique magic links in one pass');assert.ok(!u.notes.some(n=>n[0]==='magic_held'));ok();}
  {const r=[row(1)];const t=terminal(src,{rows:r,charts:[child(501,r[0]),child(502,r[0])]});
   assert.equal(t.pass(),0,'two matching charts for one row');assert.equal(t.g_sets[0].magic,0);
   assert.ok(t.notes.some(n=>n[0]==='child_identity_ambiguous'));ok();}

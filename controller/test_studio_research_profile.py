@@ -93,12 +93,13 @@ class FixtureMT5:
 
     start(config) opens the chart profile the /config INI names in [Charts] ProfileLast, else the one common.ini names
     (as MT5 does); when the INI has a [Tester] section MT5 auto-tests that symbol and adds its bare chart (id=0) to the
-    open profile. Closing saves the open profile as MT5 does: it rewrites the profile's charts (their metadata), writes
-    the added chart file and names that profile as ProfileLast in common.ini."""
+    open profile. Closing saves the open profile as MT5 does: it rewrites the profile's charts (their metadata) and writes
+    the added chart file. Like the real MT5 on T3 (goatai#2350 6122261952), it never saves a /config [Charts] ProfileLast
+    to common.ini, so a [Tester]-only relaunch (the GOAT EA's member relaunch) reopens common.ini's profile."""
 
     def __init__(self, data, *, identity, profile, login='123456', server='Customer-Demo'):
         self.data, self.login, self.server = Path(data), login, server
-        self.running, self.profile, self.added = dict(identity), profile, []
+        self.running, self.profile, self.saves = dict(identity), profile, []
         self.command = 'terminal64.exe'                                   # the monitor was opened normally
         self.pid = identity['pid']
         self.opened, self.starts, self.closes = [profile], [], []
@@ -116,19 +117,19 @@ class FixtureMT5:
         self.exit()
 
     def exit(self):
-        """MT5 closing (GOAT's normal close, the EA's TerminalClose, or ShutdownTerminal=1 after a test)."""
+        """MT5 closing (GOAT's normal close, the EA's TerminalClose, or ShutdownTerminal=1 after a test). Every save
+        rewrites the open profile's charts (their metadata changes from save to save, as chart01 did on T3)."""
         folder = self.profiles()/self.profile
         for chart in sorted(folder.glob('*.chr')):
             text = chart.read_bytes().decode('utf-16')
-            chart.write_bytes(re.sub(r'(?m)^scale=\d+', 'scale=4', text).encode('utf-16'))
-        for symbol in self.added:
-            used = {p.name.lower() for p in folder.glob('*.chr')}
-            name = next('chart%02d.chr' % n for n in range(1, 100) if 'chart%02d.chr' % n not in used)
-            (folder/name).write_bytes(bare_chart(symbol))
-        self.added = []
-        (self.data/'config').mkdir(exist_ok=True)
-        (self.data/'config'/'common.ini').write_bytes(('[Common]\r\nLogin='+self.login+'\r\nServer='+self.server+'\r\n[Charts]\r\n'
-                                                      'ProfileLast='+self.profile+'\r\n[Experts]\r\nEnabled=0\r\n').encode('utf-16'))
+            chart.write_bytes(re.sub(r'(?m)^scale=\d+', 'scale=%d' % (4+len(self.saves)), text).encode('utf-16'))
+        self.saves.append((self.profile, snapshot(folder)))
+        # The T3 pilot (goatai#2350 6122261952): MT5 never saves a /config [Charts] ProfileLast to common.ini; it keeps
+        # the saved one. Only a common.ini without one gets the open profile (as after a person's own profile choice).
+        if self.saved_profile() is None:
+            (self.data/'config').mkdir(exist_ok=True)
+            (self.data/'config'/'common.ini').write_bytes(('[Common]\r\nLogin='+self.login+'\r\nServer='+self.server+'\r\n[Charts]\r\n'
+                                                          'ProfileLast='+self.profile+'\r\n[Experts]\r\nEnabled=0\r\n').encode('utf-16'))
         self.running = None
 
     def command_line(self, identity):
@@ -147,7 +148,13 @@ class FixtureMT5:
         self.profile = sections.get('Charts', {}).get('ProfileLast') or self.saved_profile()
         (self.profiles()/self.profile).mkdir(parents=True, exist_ok=True)   # MT5 creates a profile it does not have
         symbol = sections.get('Tester', {}).get('Symbol')
-        self.added = [symbol] if symbol else []
+        if symbol:
+            # The auto-test adds the tested symbol's bare chart (id=0) to the open profile, saved there at once (the T3
+            # pilot saw member 2's chart02 in the monitor profile while member 2 ran).
+            folder = self.profiles()/self.profile
+            used = {p.name.lower() for p in folder.glob('*.chr')}
+            name = next('chart%02d.chr' % n for n in range(1, 100) if 'chart%02d.chr' % n not in used)
+            (folder/name).write_bytes(bare_chart(symbol))
         self.opened.append(self.profile)
         self.starts.append((Path(config).name, self.profile, symbol))
         self.command = '"terminal64.exe" /config:"'+str(config)+'"'
@@ -221,7 +228,7 @@ class ResearchCase(unittest.TestCase):
 class MigrationTests(ResearchCase):
     def assert_untouched(self, before):
         self.assertEqual(snapshot(self.monitor), before, 'nothing in the monitor profile was moved or changed')
-        self.assertFalse((self.c.root/rp.STATE_FOLDER/rp.MIGRATION_RECORD).exists())
+        self.assertNotIn('migrated', [run.get('status') for run in rp.migration_log(self.c)['runs']])
 
     def test_t3_twelve_chart_shape_leaves_only_the_monitor_chart_when_every_symbol_is_in_batch_history(self):
         charts = self.t3_shape()
@@ -242,8 +249,9 @@ class MigrationTests(ResearchCase):
         self.assertEqual(result['batch_history']['symbols'], ['EURUSD', 'GBPJPY', 'GBPUSD'])
         manifest = json.loads((Path(result['move_aside_folder']).parent/'manifest.json').read_text())
         self.assertEqual((manifest['before_sha256'], manifest['after_sha256']), (result['before_sha256'], result['after_sha256']))
-        # One-time: recorded, never run again.
-        self.assertEqual(self.migrate()['status'], 'already')
+        # It re-plans at every start: the next run finds nothing to move and both runs are logged.
+        self.assertEqual(self.migrate()['status'], 'clean')
+        self.assertEqual([run['status'] for run in rp.migration_log(self.c)['runs']], ['migrated', 'clean'])
         # The profile now fails only on the DLL permission (no fix-B record yet), never on structure.
         with self.assertRaises(Refusal) as caught:
             monitor_launch(self.c, 'after-migration')
@@ -322,8 +330,26 @@ class MigrationTests(ResearchCase):
 
     def test_a_clean_profile_is_recorded_once(self):
         self.assertEqual(self.migrate()['status'], 'clean')
-        self.assertTrue(rp.migration_done(self.c))
-        self.assertEqual(self.migrate()['status'], 'already')
+        self.assertEqual(self.migrate()['status'], 'clean')
+        self.assertEqual(rp.last_migration(self.c)['status'], 'clean')
+
+    def test_it_re_plans_at_every_start_and_moves_a_later_stray_chart(self):
+        # The T3 pilot: after a migrated start, member 2 left a new bare chart02 (a tested symbol) and rewrote chart01.
+        self.history(['EURUSD', 'GBPUSD'])
+        self.pollute({'chart02.chr': bare_chart('GBPUSD')})
+        self.assertEqual(self.migrate()['status'], 'migrated')
+        rewritten = self.chart.read_bytes().decode('utf-16').replace('scale=8', 'scale=3').encode('utf-16')
+        self.pollute({'chart02.chr': bare_chart('EURUSD')}, monitor=rewritten)
+        again = self.migrate()
+        self.assertEqual((again['status'], [m['file'] for m in again['moved']]), ('migrated', ['chart02.chr']))
+        self.assertEqual(snapshot(self.monitor), {'chart01.chr': rewritten}, 'a rewritten chart01 stays as it is')
+        self.assertEqual([run['status'] for run in rp.migration_log(self.c)['runs']], ['migrated', 'migrated'])
+
+    def test_an_earlier_one_time_receipt_becomes_the_first_logged_run(self):
+        folder = self.c.root/rp.STATE_FOLDER; folder.mkdir(parents=True)
+        (folder/rp.MIGRATION_RECORD).write_text(json.dumps(dict(schema_version=1, status='migrated', moved=[])))
+        self.migrate()
+        self.assertEqual([run['status'] for run in rp.migration_log(self.c)['runs']], ['migrated', 'clean'])
 
 
 class PrepareTests(ResearchCase):
@@ -421,6 +447,58 @@ class RestoreTests(ResearchCase):
             result = self.restore()
             self.assertEqual((result['status'], result['reason'], result['profile_last']), ('not_restored', 'profile_last_not_research', other))
             self.assertEqual(self.common_ini.read_bytes(), raw)
+
+
+class SelectTests(ResearchCase):
+    """Fix 1 of the T3 pilot (goatai#2350 6122261952; Claude-Mac 6122285931): common.ini ProfileLast -> GOAT Research."""
+
+    def select(self, running=None):
+        return rp.select(self.c, 'test-select', inspect=lambda: running)
+
+    def lines(self, kind):
+        path = self.c.root/rp.STATE_FOLDER/(kind+'s')/(kind+'s.jsonl')
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_only_the_monitor_profile_is_switched_with_before_and_after_kept(self):
+        self.set_profile_last(self.monitor.name)
+        raw = self.common_ini.read_bytes()
+        result = self.select()
+        self.assertEqual((result['status'], result['profile_last_before'], result['profile_last_after']),
+                         ('selected', self.monitor.name, 'GOAT Research'))
+        after = self.common_ini.read_bytes()
+        self.assertEqual(after, raw.replace(('ProfileLast='+self.monitor.name).encode('utf-16').removeprefix(b'\xff\xfe'),
+                                            'ProfileLast=GOAT Research'.encode('utf-16').removeprefix(b'\xff\xfe')), 'one line changed')
+        self.assertEqual((Path(result['common_ini_before']).read_bytes(), Path(result['common_ini_after']).read_bytes()), (raw, after))
+        self.assertEqual(self.lines('select')[-1]['profile_last_after'], 'GOAT Research')
+        # restore() puts it back exactly.
+        self.assertEqual(rp.restore(self.c, 'test', inspect=lambda: None)['status'], 'restored')
+        self.assertEqual(self.common_ini.read_bytes(), raw)
+
+    def test_any_other_profile_or_a_running_mt5_refuses_and_changes_nothing(self):
+        for other in ('Default', 'GOAT-Deploy-1'):
+            with self.subTest(profile=other):
+                self.set_profile_last(other)
+                raw = self.common_ini.read_bytes()
+                with self.assertRaisesRegex(ValueError, 'not the GOAT Studio monitor profile'):
+                    self.select()
+                with self.assertRaises(Refusal) as caught:
+                    rp.select_precheck(self.c)
+                self.assertEqual((caught.exception.code, caught.exception.fields['profile_last']), (rp.PROFILE_LAST_REFUSAL, other))
+                self.assertEqual(self.common_ini.read_bytes(), raw)
+        self.set_profile_last(self.monitor.name)
+        raw = self.common_ini.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'MT5 is running'):
+            self.select(running=dict(pid=4))
+        self.assertEqual(self.common_ini.read_bytes(), raw)
+        self.assertEqual(self.lines('select'), [])
+
+    def test_goat_research_left_by_an_interrupted_start_is_restored_first_then_selected(self):
+        self.set_profile_last('GOAT Research')
+        self.assertEqual(rp.select_precheck(self.c)['profile_last'], 'GOAT Research')
+        result = self.select()
+        self.assertEqual((result['status'], result['restored_first']['status']), ('selected', 'restored'))
+        self.assertEqual([e['profile_last_after'] for e in self.lines('restore')], [self.monitor.name], 'restore journaled')
+        self.assertEqual([e['profile_last_after'] for e in self.lines('select')], ['GOAT Research'], 'then the select journaled')
 
 
 class StartupShapeTests(unittest.TestCase):
@@ -716,7 +794,7 @@ class IntegrationTests(ResearchCase):
         self.running = self.p.save(self.p.chart_bytes(scale='8'))      # the monitor runs with DLL imports approved
         self.strays = {'chart02.chr': bare_chart('EURUSD', moving_averages=2), 'chart03.chr': bare_chart('GBPJPY')}
         self.pollute(self.strays)                                        # left by earlier batches on the monitor profile
-        self.history(['EURUSD', 'GBPJPY'])
+        self.history(['EURUSD', 'GBPJPY', 'GBPUSD'])
         self.set_profile_last(self.monitor.name)
         import studio_onboarding
         self.real_health, self.real_record = studio_onboarding.driver_pre_close_health, studio_onboarding.record_post_close_chart
@@ -741,7 +819,7 @@ class IntegrationTests(ResearchCase):
         self.assertEqual(snapshot(self.monitor), monitor_after_first_close, 'the monitor profile never changed during the batch')
         self.assertEqual(sorted(snapshot(self.monitor)), ['chart01.chr'])
         self.assertEqual(digest(self.chart.read_bytes()), record_sha, 'the recorded post-close chart')
-        moved = json.loads((self.c.root/rp.STATE_FOLDER/rp.MIGRATION_RECORD).read_text())['moved']
+        moved = [m for run in rp.migration_log(self.c)['runs'] for m in run.get('moved') or []]
         self.assertEqual(sorted(m['file'] for m in moved), ['chart02.chr', 'chart03.chr'], 'only the migration moved anything')
         research = snapshot(rp.research_folder(self.c))
         self.assertGreater(len(research), 1, 'the tested symbols\' bare charts landed in GOAT Research')
@@ -751,21 +829,89 @@ class IntegrationTests(ResearchCase):
         self.assertEqual([p for p in mt5.opened[1:-1]], ['GOAT Research']*(len(mt5.opened)-2), 'every batch launch opened GOAT Research')
         self.assertEqual(mt5.opened[-1], self.monitor.name, 'the post-batch monitor-launch opened the monitor profile')
 
-    def test_config_start_batch_ends_back_on_the_monitor_with_no_human_step(self):
+    def customer(self):
         import test_studio_tester_config_start as tester
-        self.config_start_batch(tester.CustomerConfigStartTests, dict(mt5_restart_consent=dict(granted=True, scope=RESTART_CONSENT_SCOPE)))
+        return tester.CustomerConfigStartTests, dict(mt5_restart_consent=dict(granted=True, scope=RESTART_CONSENT_SCOPE))
+
+    def test_config_start_batch_ends_back_on_the_monitor_with_no_human_step(self):
+        # Three members: the /config launch, then two of the EA's own relaunches, which reopen common.ini's ProfileLast.
+        fixture, record = self.customer()
+        run = self.config_start_batch(fixture, record)
+        self.assertEqual([s[1] for s in run['mt5'].starts], ['GOAT Research']*3+[self.monitor.name],
+                         'every member ran on GOAT Research; then the end-state monitor-launch opened the monitor')
+        self.assert_after_batch(run['mt5'], run['monitor_after_first_close'], run['record_sha'])
 
     def test_demo_lane_batch_records_on_its_first_close_and_ends_back_on_the_monitor(self):
-        # Banker's lane (demo_direct): the same first-close record, migration and end state (Claude-Mac 6120693275 point 3).
+        # Banker's lane (demo_direct): the same first-close record, migration, select and end state (Claude-Mac 6120693275).
         import test_studio_config_start as direct
         self.c.session['authority_kind'] = 'demo_direct'
-        self.config_start_batch(direct.ConfigStartTests, {})
+        run = self.config_start_batch(direct.ConfigStartTests, {})
+        self.assertEqual([s[1] for s in run['mt5'].starts], ['GOAT Research']*3+[self.monitor.name])
+        self.assert_after_batch(run['mt5'], run['monitor_after_first_close'], run['record_sha'])
 
-    def config_start_batch(self, fixture, record_fields):
+    def test_negative_control_without_the_select_member_2_pollutes_the_monitor_and_the_next_start_recovers(self):
+        # The T3 pilot (goatai#2350 6122261952), reproduced: without fix 1, member 1 runs on GOAT Research from the /config
+        # override, and the EA's relaunches reopen common.ini's ProfileLast, the monitor profile, which gains their charts.
+        fixture, record = self.customer()
+        bad = self.config_start_batch(fixture, record, select=False)
+        mt5 = bad['mt5']
+        self.assertEqual([s[1] for s in mt5.starts], ['GOAT Research', self.monitor.name, self.monitor.name])
+        polluted = snapshot(self.monitor)
+        self.assertEqual(sorted(polluted), ['chart01.chr', 'chart02.chr', 'chart03.chr'], 'member 2 and 3 charts on the monitor')
+        self.assertNotEqual(digest(polluted['chart01.chr']), bad['record_sha'], 'chart01 rewritten by a member\'s close')
+        self.assertEqual((bad['end']['status'], bad['end']['reason']), ('left_as_is', 'monitor_not_launchable'))
+        self.assertIn('extra_charts', bad['end']['failed_checks'])
+        self.assertEqual(mt5.closes, [mt5.closes[0]], 'MT5 was left as it is')
+        # The next start, with the fix: its migration re-plans and moves the strays, its first close re-records the
+        # rewritten chart01 (superseding the old record), and every member stays on GOAT Research.
+        good = self.config_start_batch(fixture, record, mt5=mt5)
+        self.assertEqual(good['started']['monitor_profile_migration']['status'], 'migrated')
+        self.assertEqual(sorted(m['file'] for m in good['started']['monitor_profile_migration']['moved']), ['chart02.chr', 'chart03.chr'])
+        self.assertNotEqual(good['record_sha'], bad['record_sha'], 're-recorded at the next healthy close')
+        self.assertEqual([s[1] for s in mt5.starts[3:]], ['GOAT Research']*3+[self.monitor.name])
+        self.assertEqual(snapshot(self.monitor), good['monitor_after_first_close'])
+        self.assertEqual(good['end']['launch']['observed_healthy_chart']['chart_sha256'], good['record_sha'])
+
+    def test_mt5_exiting_on_its_own_mid_batch_is_restored_at_the_next_goat_stop(self):
+        # Claude-Mac 6122285931 point 4: a crash or cancel with no end state leaves ProfileLast on GOAT Research until the
+        # next GOAT stop: close-terminal (MT5 already stopped) restores it, and monitor-launch would too.
+        fixture, record = self.customer()
+        run = self.config_start_batch(fixture, record, end=False)
+        mt5 = run['mt5']
+        mt5.exit()                                            # MT5 exits on its own during member 3
+        self.assertEqual(mt5.saved_profile(), 'GOAT Research')
+        from studio_agent_setup import close_terminal
+        closed = close_terminal(self.c, 'after-crash', process=mt5, inspect=lambda c: self.fail('no MT5 to read'))
+        self.assertEqual((closed['phase'], closed['research_profile_restore']['status']), ('already_stopped', 'restored'))
+        self.assertEqual(mt5.saved_profile(), self.monitor.name)
+        self.popen_to(mt5)
+        launch = monitor_launch(self.c, 'after-crash')
+        self.assertEqual(launch['research_profile_restore']['status'], 'not_needed')
+        self.assertEqual(mt5.opened[-1], self.monitor.name)
+        self.assertEqual(launch['observed_healthy_chart']['chart_sha256'], run['record_sha'])
+
+    def test_monitor_launch_restores_a_profile_last_left_on_goat_research(self):
+        fixture, record = self.customer()
+        run = self.config_start_batch(fixture, record, end=False)
+        run['mt5'].exit()
+        self.popen_to(run['mt5'])
+        launch = monitor_launch(self.c, 'lazy-launch')
+        self.assertEqual(launch['research_profile_restore']['status'], 'restored')
+        self.assertEqual(run['mt5'].saved_profile(), self.monitor.name)
+
+    def config_start_batch(self, fixture, record_fields, *, select=True, mt5=None, end=True, members=('GBPUSD', 'EURUSD')):
         cfg = fixture('test_one_arm_close_config_launch_and_retained_phases')
         cfg.setUp(); self.addCleanup(cfg.doCleanups)
         active = write_batch_plan(self.c)
-        mt5 = FixtureMT5(self.data, identity=cfg.identity, profile=self.monitor.name)
+        if mt5 is None:
+            mt5 = FixtureMT5(self.data, identity=cfg.identity, profile=self.monitor.name)
+        else:
+            # The MT5 a previous batch left running is the one this start closes (its consent binds that process).
+            running = mt5.inspect()
+            cfg.identity = running; cfg.baseline['research'] = running
+            if 'mt5_restart_consent' in record_fields:
+                import test_studio_tester_config_start as tester
+                (cfg.c.root/'batch-drivers/batch.json').write_text(json.dumps(tester.consent_journal(process=running)))
         cfg.process.inspect.side_effect = mt5.inspect
         cfg.process.close.side_effect = mt5.close
         cfg.process.start.side_effect = mt5.start
@@ -773,38 +919,51 @@ class IntegrationTests(ResearchCase):
                                                      ExpertParameters='GOAT Studio Agent.set', Period='M1')))
         raw, receipt = startup_config(material)
         cfg.material.update(startup_raw=raw, startup_receipt=receipt)
+        cfg.mocks['_profile_last_precheck'].side_effect = lambda c: rp.select_precheck(self.c)
         cfg.mocks['_migrate'].side_effect = lambda c, attempt, process: rp.migrate_monitor_profile(self.c, 'config-start-'+attempt, inspect=process.inspect)
         cfg.mocks['_research_profile'].side_effect = lambda c, attempt, process: rp.prepare(self.c, 'config-start-'+attempt, inspect=process.inspect)
+        cfg.mocks['_select_research_profile'].side_effect = (
+            (lambda c, attempt, process: rp.select(self.c, 'config-start-'+attempt, inspect=process.inspect)) if select
+            else (lambda c, attempt, process: dict(status='disabled_for_the_negative_control')))
+        cfg.mocks['_rollback_profile_last'].side_effect = lambda c, attempt, process: rp.restore(self.c, 'rollback', inspect=process.inspect, own_start=True)
+        starts_before = len(mt5.starts)
         with self.routed(batch_ongoing=True):
             started = cfg.run_start()
-        self.assertEqual(self.health_kw[0][-1], 'set_aside', 'the start passes the migration\'s set-aside charts')
-        self.assertEqual(started['monitor_profile_migration']['status'], 'migrated')
+        self.assertEqual(self.health_kw[-1][-1], 'set_aside', 'the start passes the migration\'s set-aside charts')
+        self.assertIn(started['monitor_profile_migration']['status'], ('migrated', 'clean'), 'the migration result is in every start receipt')
         self.assertEqual(started['monitor_chart_record']['status'], 'recorded', started['monitor_chart_record'])
+        if select:
+            self.assertEqual(started['profile_last_select']['status'], 'selected')
+            self.assertEqual(mt5.saved_profile(), 'GOAT Research', 'common.ini names GOAT Research before the launch')
         monitor_after_first_close = snapshot(self.monitor)
         record_sha = started['monitor_chart_record']['chart_sha256']
-        self.assertEqual(mt5.starts[0][1:], ('GOAT Research', 'GBPJPY'))
+        self.assertEqual(mt5.starts[starts_before][1:], ('GOAT Research', 'GBPJPY'), 'the /config override opens member 1 there')
         self.assertEqual((started['batch_process']['pid'], started['batch_process']['created_utc'], started['batch_process']['source']),
                          (started['process']['pid'], started['process']['created_utc'], 'config_start'), 'the launch is recorded')
-        # The EA's own member relaunch: TerminalClose, then its [Tester]-only member /config (MT5 reopens its saved profile).
+        # The EA's own member relaunches: TerminalClose, then its [Tester]-only member /config. MT5 reopens common.ini's profile.
         member = Path(str(active)); member.parent.mkdir(parents=True, exist_ok=True)
-        member.write_bytes('[Tester]\r\nSymbol=GBPUSD\r\nPeriod=H1\r\n[TesterInputs]\r\nEA_Desc=R2\r\n'.encode('utf-16'))
-        mt5.exit(); mt5.start(member)
-        self.assertEqual(mt5.starts[-1][1:], ('GOAT Research', 'GBPUSD'))
+        for symbol in members:
+            member.write_bytes(('[Tester]\r\nSymbol='+symbol+'\r\nPeriod=H1\r\n[TesterInputs]\r\nEA_Desc=R\r\n').encode('utf-16'))
+            mt5.exit(); mt5.start(member)
+        run = dict(mt5=mt5, started=started, record_sha=record_sha, monitor_after_first_close=monitor_after_first_close)
+        if not end:
+            return run
         # The batch driver's finish: the end state (Mac option (i)), bound to the batch's last launch.
         self.popen_to(mt5)
         self.p.fixture.observe()
         record = dict(attempt_id=cfg.attempt, batch_process=started['batch_process'], **record_fields)
-        end = rp.batch_end_state(self.c, 'batch', record,
-                                 process=mt5, inspect=lambda c: dict(process=mt5.inspect(), account_matches=True, demo=True, connected=True,
-                                                                     algo_trading=False, positions=0, orders=0, tester_state='idle'))
-        self.assertEqual(end['status'], 'monitor_relaunched', end)
-        self.assertEqual((end['batch_process']['source'], record['batch_process']['source']), ('ea_member_relaunch', 'ea_member_relaunch'))
-        self.assertEqual(end['close']['phase'], 'stopped')
-        self.assertEqual(end['close']['monitor_chart_record']['reason'], 'foreign_profile', 'a GOAT Research close never records')
-        self.assertEqual((end['close']['research_profile_restore']['status'], end['restore']['status']), ('restored', 'not_needed'))
-        self.assertEqual(end['launch']['observed_healthy_chart']['chart_sha256'], record_sha, 'accepted through the fix-B record, no click')
-        self.assertEqual(len(mt5.closes), 2, 'the start close and the one end close')
-        self.assert_after_batch(mt5, monitor_after_first_close, record_sha)
+        run['end'] = end_state = rp.batch_end_state(self.c, 'batch', record, process=mt5, inspect=lambda c: dict(
+            process=mt5.inspect(), account_matches=True, demo=True, connected=True, algo_trading=False, positions=0, orders=0,
+            tester_state='idle'))
+        if select:
+            self.assertEqual(end_state['status'], 'monitor_relaunched', end_state)
+            self.assertEqual((end_state['batch_process']['source'], record['batch_process']['source']), ('ea_member_relaunch', 'ea_member_relaunch'))
+            self.assertEqual(end_state['close']['phase'], 'stopped')
+            self.assertEqual(end_state['close']['monitor_chart_record']['reason'], 'foreign_profile', 'a GOAT Research close never records')
+            self.assertEqual((end_state['close']['research_profile_restore']['status'], end_state['restore']['status']), ('restored', 'not_needed'))
+            self.assertEqual(mt5.saved_profile(), self.monitor.name, 'ProfileLast is back on the monitor profile')
+            self.assertEqual(end_state['launch']['observed_healthy_chart']['chart_sha256'], record_sha, 'accepted through the fix-B record, no click')
+        return run
 
     def seed_runner(self, mt5):
         import test_studio_seed as seeds
@@ -835,7 +994,9 @@ class IntegrationTests(ResearchCase):
         self.assertEqual(state['monitor_profile_migration']['status'], 'migrated')
         self.assertEqual(state['monitor_chart_record']['status'], 'recorded', state['monitor_chart_record'])
         self.assertEqual(state['research_profile']['chart_symbol'], 'EURUSD')
-        self.assertEqual(state['research_profile_restore']['status'], 'restored', state['research_profile_restore'])
+        # Members carry [Charts] in their own INI and the controller launches each one, so common.ini never left the
+        # monitor profile: the restore has nothing to do (seed, catch-up and hold-up never read common.ini).
+        self.assertEqual(state['research_profile_restore']['status'], 'not_needed', state['research_profile_restore'])
         self.assertEqual([s[1:] for s in mt5.starts], [('GOAT Research', 'EURUSD'), ('GOAT Research', 'GBPUSD')])
         self.assertEqual(mt5.saved_profile(), self.monitor.name, 'ProfileLast is back on the monitor profile')
         monitor_after = snapshot(self.monitor)
@@ -871,13 +1032,15 @@ class IntegrationTests(ResearchCase):
         runner.prepare('cu1', n.plan())
         state = runner.start('cu1', 60)
         self.assertEqual(state['status'], 'completed', state.get('stopped_reason') or state)
-        self.assertEqual(state['research_profile_restore']['status'], 'restored', state['research_profile_restore'])
+        self.assertEqual(state['research_profile_restore']['status'], 'not_needed', state['research_profile_restore'])
         self.assertEqual(state['monitor_profile_migration']['status'], 'clean')
         self.assertTrue(all(profile == 'GOAT Research' for _, profile, _ in mt5.starts), mt5.starts)
         self.assertEqual(len(mt5.starts), 2)
         self.assertEqual(mt5.saved_profile(), name)
-        monitor_after_first_close = {'chart01.chr': re.sub(r'(?m)^scale=\d+', 'scale=4', monitor_chart(c, 'EURUSD').decode('utf-16')).encode('utf-16')}
-        self.assertEqual(snapshot(monitor), monitor_after_first_close, 'only GOAT\'s first close saved the monitor profile')
+        monitor_saves = [saved for profile, saved in mt5.saves if profile == name]
+        self.assertEqual(len(monitor_saves), 2, 'the fixture\'s own setup save and GOAT\'s first close; no member ever saved it')
+        self.assertEqual(snapshot(monitor), monitor_saves[-1], 'unchanged since GOAT\'s first close')
+        self.assertEqual(sorted(snapshot(monitor)), ['chart01.chr'])
         research = snapshot(data/'MQL5/Profiles/Charts/GOAT Research')
         self.assertEqual(len(research), 1+len(mt5.starts), 'every tested symbol\'s bare chart landed in GOAT Research')
 

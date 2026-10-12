@@ -531,7 +531,7 @@ def retire_healthy_chart(controller, raw, reason):
 def _observed_chart(controller, receipt, set_aside=()):
     """The single saved monitor chart (path, bytes) after every non-permission check; observational, never for launch.
 
-    ``set_aside``: chart files the one-time migration moves aside right after a start driver's first close
+    ``set_aside``: chart files the migration moves aside right after a start driver's first close
     (studio_research_profile.pending_set_aside); only that pre-close read passes it. Every record and launch check
     reads the real folder."""
     folder = verify_monitor_profile(controller, receipt, observed_human_reopen=True, set_aside=set_aside)
@@ -600,7 +600,7 @@ def pre_close_health(controller, session, state, native, process, *, expected_ba
     and a saved monitor chart that passes every non-permission check. Returns dict(healthy=True, binding,
     observed_running_sha256, ...) or dict(healthy=False, reason).
 
-    ``set_aside`` (a start driver only, before the one-time migration ran): the stray charts that migration moves
+    ``set_aside`` (a start driver only, when the migration has charts to move): the stray charts that migration moves
     aside right after this close are left out of the structure check here. The record after the close still requires
     the real folder to hold exactly one chart, so nothing is recorded unless the migration really moved them.
     """
@@ -1011,6 +1011,10 @@ def monitor_launch(controller, attempt_id):
         portable = saved_launch_policy(controller, session)
         processes=inspect_processes(process_binding(controller), research_running=False, selected_stopped=True,
                           absent_roots=[str(Path(controller.install['terminal_executable']).parent),controller.install['terminal_data_root']])
+        # MT5 is stopped (just proved) and no batch is active (require_idle_control): the lazy restore of a ProfileLast a
+        # batch left on GOAT Research, so a later plain MT5 open also shows this monitor (studio_research_profile).
+        from studio_research_profile import restore as restore_profile_last
+        profile_last_restore = restore_profile_last(controller, 'monitor-launch:'+attempt_id, inspect=lambda: None, gate_held=True)
         # MT5 can open a profile without applying its embedded expert inputs.
         # Explicit native startup is required for a reproducible monitor attach.
         preset = Path(controller.install['terminal_data_root'])/'MQL5/Presets/GOAT Studio Agent.set'
@@ -1034,7 +1038,8 @@ def monitor_launch(controller, attempt_id):
                       created_at=datetime.now(timezone.utc).isoformat(), execution_ready=False, process_inventory=processes,
                       native_qualification=False, startup_config=str(config),
                       startup_sha256=hashlib.sha256(startup).hexdigest(), preset_sha256=hashlib.sha256(expected).hexdigest(),
-                      saved_chart_sha256=chart_sha256, observed_healthy_chart=reused_chart)
+                      saved_chart_sha256=chart_sha256, observed_healthy_chart=reused_chart,
+                      research_profile_restore=profile_last_restore)
         write_json(target, intent)
         # A crash/failure here retains uncertainty; no automatic retry or close.
         process = subprocess.Popen(arguments, cwd=str(Path(arguments[0]).parent),

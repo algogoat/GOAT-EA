@@ -11,11 +11,15 @@ profile on structure (extra_charts). A person cleaning it up by hand was undone 
 - prepare(): with MT5 stopped and the native gate held, an existing GOAT Research folder is MOVED ASIDE (never
   deleted) to ``<controller state>/research-profiles/<attempt>/`` with a manifest, and GOAT Research is recreated
   with one chart01.chr holding the monitor chart bytes (studio_onboarding.monitor_chart, expertmode=0). Every batch.
+- select() (config start only, right before its first launch): common.ini ``ProfileLast`` -> GOAT Research. MT5 never
+  saves a /config ``[Charts]`` override, and the GOAT EA's member relaunches reopen common.ini's profile (the T3 pilot,
+  goatai#2350 6122261952). Refused unless it names exactly the monitor profile; GOAT Research left by an interrupted
+  start is restored first (Claude-Mac 6122285931).
 - restore(): a single-line ``[Charts] ProfileLast`` edit in common.ini from GOAT Research back to the monitor profile
   (studio_demo_deploy.patch_profile_last/write_exact, before and after bytes kept), only with MT5 stopped, no batch
   or seed slot active and the current value exactly GOAT Research. Seed, catch-up and hold-up call it at any
   terminal status and on cancel.
-- migrate_monitor_profile(): a one-time move-aside, before the first GOAT Research batch on an installation, of the
+- migrate_monitor_profile(): at every batch start (re-planned each time, a log of runs), a move-aside of the
   stray charts earlier batches left in the monitor profile (see migration_plan for the exact rules).
 - batch_end_state(): the config-start end state (Mac option (i)): at the batch driver's finish, one normal close
   under close-terminal's checks and monitor-launch back onto the monitor profile; any refusal leaves MT5 as it is.
@@ -344,55 +348,113 @@ def batch_active(controller):
     return None
 
 
-def restore(controller, reason, *, inspect, gate_held=False):
+def _profile_last_edit(controller, raw, current, new, reason, kind):
+    """The single-line ProfileLast edit (studio_demo_deploy.patch_profile_last/write_exact): before and after bytes kept
+    create-only under research-profiles/<kind>s, a temp file replaced over common.ini, read back, and journaled."""
+    from studio_demo_deploy import patch_profile_last, write_exact
+    from studio_agent_mailbox import sharing_retry
+    ini = Path(controller.install['terminal_data_root'])/'config'/'common.ini'
+    patched = patch_profile_last(raw, current, new)
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    slug = re.sub(r'[^A-Za-z0-9_-]+', '-', str(reason))[:24].strip('-') or kind   # the full reason is in <kind>s.jsonl
+    folder = Path(controller.root)/STATE_FOLDER/(kind+'s')
+    before, after = folder/(stamp+'-'+slug+'.common-before.ini'), folder/(stamp+'-'+slug+'.common-after.ini')
+    write_exact(before, raw)
+    write_exact(after, patched)
+    temporary = ini.with_name(ini.name+'.goat-research-'+stamp)
+    with temporary.open('xb') as handle:
+        handle.write(patched); handle.flush(); os.fsync(handle.fileno())
+    sharing_retry(lambda: os.replace(temporary, ini))
+    if ini.read_bytes() != patched:
+        raise ValueError('The ProfileLast edit did not read back from common.ini')
+    entry = dict(reason=reason, utc=utc_now(), profile_last_before=current, profile_last_after=new,
+                 common_ini_before_sha256=_digest(raw), common_ini_after_sha256=_digest(patched),
+                 common_ini_before=str(before), common_ini_after=str(after))
+    with (folder/(kind+'s.jsonl')).open('a', encoding='utf-8') as journal:
+        journal.write(json.dumps(entry, sort_keys=True)+'\n'); journal.flush(); os.fsync(journal.fileno())
+    return entry
+
+
+def _saved_profile_last(controller):
+    from studio_demo_deploy import profile_last
+    from studio_onboarding import monitor_paths
+    name, _ = monitor_paths(controller, _session(controller))
+    raw = (Path(controller.install['terminal_data_root'])/'config'/'common.ini').read_bytes()
+    if len(raw) > 4_000_000:
+        raise ValueError('MT5 common.ini is larger than GOAT reads')
+    return name, raw, profile_last(raw)
+
+
+def restore(controller, reason, *, inspect, gate_held=False, own_start=False):
     """Single-line ProfileLast edit from GOAT Research back to this session's monitor profile. Never raises.
 
-    Only with MT5 stopped (``inspect()`` is None), no batch or seed slot active and common.ini naming exactly GOAT
+    Only with MT5 stopped (``inspect()`` is None), no batch or seed slot active (``own_start``: a config start rolling
+    back its own select before any launch, while its job is still 'starting') and common.ini naming exactly GOAT
     Research. The before and after common.ini bytes are kept (create-only) under research-profiles/restores."""
     try:
-        from studio_demo_deploy import patch_profile_last, profile_last, write_exact
-        from studio_agent_mailbox import sharing_retry
-        from studio_onboarding import monitor_paths
         with _gate(controller, gate_held):
             if inspect() is not None:
                 return dict(status='not_restored', reason='terminal_running')
-            active = batch_active(controller)
+            active = None if own_start else batch_active(controller)
             if active:
                 return dict(status='not_restored', reason=active)
-            name, _ = monitor_paths(controller, _session(controller))
-            ini = Path(controller.install['terminal_data_root'])/'config'/'common.ini'
-            raw = ini.read_bytes()
-            if len(raw) > 4_000_000:
-                return dict(status='not_restored', reason='common_ini_too_large')
-            current = profile_last(raw)
+            name, raw, current = _saved_profile_last(controller)
             if current == name:
                 return dict(status='not_needed', profile_last=current)
             if current != RESEARCH_PROFILE:
                 return dict(status='not_restored', reason='profile_last_not_research', profile_last=current)
-            patched = patch_profile_last(raw, RESEARCH_PROFILE, name)
-            stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-            slug = re.sub(r'[^A-Za-z0-9_-]+', '-', str(reason))[:24].strip('-') or 'restore'   # the full reason is in restores.jsonl
-            folder = Path(controller.root)/STATE_FOLDER/'restores'
-            before, after = folder/(stamp+'-'+slug+'.common-before.ini'), folder/(stamp+'-'+slug+'.common-after.ini')
-            write_exact(before, raw)
-            write_exact(after, patched)
-            temporary = ini.with_name(ini.name+'.goat-research-'+stamp)
-            with temporary.open('xb') as handle:
-                handle.write(patched); handle.flush(); os.fsync(handle.fileno())
-            sharing_retry(lambda: os.replace(temporary, ini))
-            if ini.read_bytes() != patched:
-                return dict(status='not_restored', reason='readback_differs')
-            entry = dict(reason=reason, restored_utc=utc_now(), profile_last_before=RESEARCH_PROFILE, profile_last_after=name,
-                         common_ini_before_sha256=_digest(raw), common_ini_after_sha256=_digest(patched),
-                         common_ini_before=str(before), common_ini_after=str(after))
-            with (folder/'restores.jsonl').open('a', encoding='utf-8') as journal:
-                journal.write(json.dumps(entry, sort_keys=True)+'\n'); journal.flush(); os.fsync(journal.fileno())
+            entry = _profile_last_edit(controller, raw, RESEARCH_PROFILE, name, reason, 'restore')
         return dict(status='restored', **entry)
     except Exception as error:     # restoring is a follow-up step: it never changes the outcome of the batch
         return dict(status='not_restored', reason=getattr(error, 'code', None) or 'check_failed', detail=str(error)[:300])
 
 
-# ---- one-time migration of the monitor profile
+PROFILE_LAST_REFUSAL = 'PROFILE_LAST_NOT_MONITOR'
+
+
+def select_precheck(controller):
+    """Read-only, before a config start touches anything: MT5's saved ProfileLast must be exactly this session's monitor
+    profile, or GOAT Research left by an interrupted earlier start. Raises a Refusal (nothing changed) otherwise."""
+    from studio_refusal import Refusal
+    try:
+        name, _, current = _saved_profile_last(controller)
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError) as error:
+        raise Refusal('GOAT could not read MT5\'s saved chart profile (config\\common.ini: '+str(error)[:160]+'), so it '
+                      'did not start the batch; nothing was changed. Run onboarding-status.', PROFILE_LAST_REFUSAL) from None
+    if current not in (name, RESEARCH_PROFILE):
+        raise Refusal('MT5\'s saved chart profile is '+str(current)+', not the GOAT Studio monitor profile '+name+', so GOAT did '
+                      'not start the batch; nothing was changed. Run onboarding-status and follow its next action.',
+                      PROFILE_LAST_REFUSAL, profile_last=current, monitor_profile=name)
+    return dict(profile_last=current, monitor_profile=name)
+
+
+def select(controller, reason, *, inspect, gate_held=False):
+    """Before a config start's first /config launch: common.ini ProfileLast -> GOAT Research (the T3 pilot, goatai#2350
+    6122261952). MT5 applies a /config [Charts] ProfileLast to that launch only and never saves it to common.ini, and
+    the GOAT EA relaunches MT5 between members with a [Tester]-only /config, so every later member reopened common.ini's
+    profile: the monitor profile. With MT5 stopped and the gate held, the same single-line edit restore() uses, before
+    and after bytes kept under research-profiles/selects; refused (ValueError, nothing changed) unless the current value
+    is exactly the monitor profile (Claude-Mac 6122285931). GOAT Research left by an interrupted earlier start (or a
+    skipped end state) goes through restore() first, then this edit; both are journaled. restore() puts it back at
+    every exit."""
+    with _gate(controller, gate_held):
+        if inspect() is not None:
+            raise ValueError('MT5 is running, so GOAT did not select its GOAT Research chart profile; nothing was launched')
+        restored = None
+        name, raw, current = _saved_profile_last(controller)
+        if current == RESEARCH_PROFILE:
+            restored = restore(controller, reason+':restore-first', inspect=inspect, gate_held=True, own_start=True)
+            if restored['status'] != 'restored':
+                raise ValueError('MT5\'s saved chart profile is GOAT Research and GOAT could not restore it first ('+
+                                 str(restored.get('reason'))+'); nothing was launched')
+            name, raw, current = _saved_profile_last(controller)
+        if current != name:
+            raise ValueError('MT5\'s saved chart profile is '+str(current)+', not the GOAT Studio monitor profile '+name+
+                             '; GOAT did not change it and launched nothing')
+        entry = _profile_last_edit(controller, raw, name, RESEARCH_PROFILE, reason, 'select')
+    return dict(status='selected', **entry, **({'restored_first': restored} if restored else {}))
+
+# ---- the monitor-profile migration (re-planned at every batch start)
 
 def batch_history_symbols(controller):
     """Symbols this installation's controller records show MT5 tested: started native batches (queue rows with a
@@ -440,7 +502,7 @@ def batch_history_symbols(controller):
 
 
 def migration_plan(controller):
-    """Read-only: what the one-time migration would do to this installation's monitor profile. Never raises.
+    """Read-only: what the monitor-profile migration would do now (it re-plans at every batch start). Never raises.
 
     The rules (Claude-Mac goatai#2350 6120004490): in this installation's own GOAT-Studio-* monitor profile,
     - chart01.chr is the monitor chart and is always kept; it must carry exactly one EA, the installed GOAT EA;
@@ -483,7 +545,8 @@ def migration_plan(controller):
                 plan['keep'] = dict(file=monitor.name, symbol=parsed['symbol'], sha256=_digest(raw), bytes=len(raw))
             except ValueError as error:
                 refuse('chart_unreadable', 'chart01.chr in '+name+' cannot be read ('+str(error)+').', file=monitor.name)
-        history = batch_history_symbols(controller)
+        # Batch history is read only when there is something besides chart01 to judge (every start re-plans).
+        history = batch_history_symbols(controller) if any(chart is not monitor for chart in charts) else dict(symbols=[], runs={}, unreadable=[], read=False)
         plan['batch_history'] = history
         for chart in charts:
             if chart is monitor:
@@ -512,22 +575,46 @@ def migration_plan(controller):
     return plan | dict(status='movable' if plan['move'] else 'clean')
 
 
-def migration_done(controller):
+MIGRATION_LOG_RUNS = 200
+
+
+def migration_log(controller):
+    """The migration's run log (MIGRATION_RECORD): dict(schema_version=2, runs=[...newest last]); empty when none."""
     from studio_installation import read_json
     path = Path(controller.root)/STATE_FOLDER/MIGRATION_RECORD
     try:
-        return path.is_file() and read_json(path).get('status') in ('migrated', 'clean')
+        log = read_json(path) if path.is_file() else None
     except (OSError, ValueError):
-        return False
+        log = None
+    if not isinstance(log, dict) or log.get('schema_version') != 2 or not isinstance(log.get('runs'), list):
+        # A one-time receipt written by an earlier candidate becomes the log's first run.
+        log = dict(schema_version=2, kind='monitor_profile_migration_log', runs=[log] if isinstance(log, dict) else [])
+    return log
+
+
+def _log_run(controller, entry):
+    root = Path(controller.root)/STATE_FOLDER
+    root.mkdir(parents=True, exist_ok=True)
+    log = migration_log(controller)
+    log['runs'] = (log['runs']+[entry])[-MIGRATION_LOG_RUNS:]
+    write_json(root/MIGRATION_RECORD, log)
+    with (root/MIGRATION_JOURNAL).open('a', encoding='utf-8') as journal:
+        journal.write(json.dumps(dict(attempt_id=entry.get('attempt_id'), status=entry.get('status'), utc=utc_now(),
+                                      reasons=entry.get('reasons'), moved=[m['file'] for m in entry.get('moved') or []]),
+                                 sort_keys=True)+'\n')
+
+
+def last_migration(controller):
+    """The newest logged migration run, or None."""
+    runs = migration_log(controller)['runs']
+    return runs[-1] if runs else None
 
 
 def pending_set_aside(controller):
-    """For a start driver's pre-close health read before the migration ran: the chart files the migration will move
-    aside right after that close (only when the plan is 'movable'). The record after the close still checks the real
-    folder in full. Never raises; () when nothing applies."""
+    """For a start driver's pre-close health read: the chart files the migration will move aside right after that
+    close (only when the plan is 'movable'; it re-plans at every start). The record after the close still checks the
+    real folder in full. Never raises; () when nothing applies."""
     try:
-        if migration_done(controller):
-            return ()
         plan = migration_plan(controller)
         return tuple(item['file'] for item in plan['move']) if plan['status'] == 'movable' else ()
     except Exception:
@@ -540,25 +627,23 @@ def _inventory(profile):
 
 
 def migrate_monitor_profile(controller, attempt_id, *, inspect, gate_held=False):
-    """The one-time migration (see migration_plan), only with MT5 stopped and the native gate held. Never raises.
+    """The migration (see migration_plan) at EVERY batch start, only with MT5 stopped and the native gate held. Never
+    raises. (The T3 pilot, goatai#2350 6122261952: a one-time flag left a later stray chart in place.)
 
-    Returns dict(status='already'|'clean'|'migrated'|'refused'|'failed', ...). 'migrated' moves every planned chart to
-    <controller state>/research-profiles/<attempt>/monitor-profile/ (never deleted) and writes a receipt with the
-    folder's before and after hashes; 'clean' and 'migrated' are recorded once (MIGRATION_RECORD) and never run again.
-    A refusal touches nothing and is journaled; the next batch start tries again."""
+    Returns dict(status='clean'|'migrated'|'refused'|'failed', ...). 'migrated' moves every planned chart to
+    <controller state>/research-profiles/<record>/monitor-profile/ (never deleted) with a receipt holding the folder's
+    before and after hashes. Every run is appended to MIGRATION_RECORD (a log of runs, newest last) and to
+    MIGRATION_JOURNAL; every start receipt carries it. A refusal touches nothing. chart01 is always kept as it is,
+    rewritten or not: the fix-B record re-records its bytes at the next healthy GOAT close of the monitor."""
     root = Path(controller.root)/STATE_FOLDER
     try:
-        if migration_done(controller):
-            return dict(status='already', record=str(root/MIGRATION_RECORD))
         with _gate(controller, gate_held):
             if inspect() is not None:
                 return dict(status='refused', reasons=[dict(check='terminal_running', plain='MT5 is running; the migration runs only with MT5 stopped.')])
             plan = migration_plan(controller)
             root.mkdir(parents=True, exist_ok=True)
             if plan['status'] == 'refused':
-                with (root/MIGRATION_JOURNAL).open('a', encoding='utf-8') as journal:
-                    journal.write(json.dumps(dict(attempt_id=attempt_id, status='refused', utc=utc_now(), reasons=plan['reasons']),
-                                             sort_keys=True)+'\n')
+                _log_run(controller, dict(attempt_id=attempt_id, status='refused', reasons=plan['reasons'], utc=utc_now()))
                 return plan
             profile = Path(plan['profile_path'])
             before = _inventory(profile)
@@ -582,7 +667,7 @@ def migrate_monitor_profile(controller, attempt_id, *, inspect, gate_held=False)
                            after_sha256=_digest(json.dumps(after, sort_keys=True).encode()), migrated_utc=utc_now())
             if receipt['moved']:
                 write_json(Path(receipt['move_aside_folder']).parent/'manifest.json', receipt)
-            write_json(root/MIGRATION_RECORD, receipt)
+            _log_run(controller, receipt)
         return receipt
     except Exception as error:
         return dict(status='failed', reason='check_failed', detail=str(error)[:300],
@@ -607,8 +692,8 @@ def status(controller):
         result['monitor_profile']['files'] = _inventory(plan['profile_path'])
     except (OSError, KeyError, TypeError) as error:
         result['monitor_profile']['error'] = str(error)[:160]
-    record = Path(controller.root)/STATE_FOLDER/MIGRATION_RECORD
-    result['migration'] = read_json(record) if record.is_file() else dict(status='not_run', plan=plan)
+    # The plan the next batch start would apply now, and the newest logged run (it re-plans at every start).
+    result['migration'] = dict(plan=plan, last_run=last_migration(controller), runs=len(migration_log(controller)['runs']))
     folder = research_folder(controller)
     try:
         result['goat_research'] = dict(path=str(folder), files=_tree(folder) if folder.is_dir() else None)

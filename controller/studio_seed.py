@@ -146,7 +146,7 @@ class SeedRunner:
         return result|dict(research_profile_restore=restored)
 
     def _research_ready(self,batch_id,root,manifest,state):
-        """MT5 just stopped after this activation's monitor close (native gate held): the one-time monitor-profile
+        """MT5 just stopped after this activation's monitor close (native gate held): this start's monitor-profile
         migration, the fix-B record, then GOAT Research reset for the first member. Returns False when GOAT Research
         could not be prepared: the batch is then stopped with its pending members (seed-resume continues them)."""
         from studio_research_profile import migrate_monitor_profile,prepare,research_profile_manifest
@@ -975,7 +975,7 @@ class SeedRunner:
         try:
             from studio_onboarding import driver_pre_close_health
             from studio_research_profile import pending_set_aside
-            # Before the one-time migration ran, the stray charts it moves aside right after this close are left out
+            # When the migration has charts to move, the stray charts it moves aside right after this close are left out
             # of this read; the record after the close still checks the real folder (studio_research_profile).
             health=driver_pre_close_health(self.c,current,sdk_read=self.monitor_sdk_read,set_aside=pending_set_aside(self.c))
         except Exception as error:

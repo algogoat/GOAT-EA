@@ -376,10 +376,14 @@ before member 1 (the previous one is moved aside under controller state, never
 deleted) and, at any terminal status or cancel with MT5 closed, edits only the saved
 `ProfileLast` line back to the `monitor_profile` name (`research_profile_restore`), so
 a plain MT5 open shows the GOAT Studio monitor. Never ask the user to choose a profile
-in File > Profiles for `GOAT Research`. Before the first such batch on an
-installation, GOAT moves aside once (never deletes) the bare charts earlier batches
-left in the monitor profile (`monitor_profile_migration`; `research-profile-status`
-shows the plan); anything else there makes it refuse and leave the profile untouched.
+in File > Profiles for `GOAT Research`. At every batch start GOAT re-plans and moves
+aside (never deletes) the bare charts earlier batches left in the monitor profile
+(`monitor_profile_migration` in every start's state; `research-profile-status` shows the
+plan and the run log); anything else there makes it refuse and leave the profile untouched.
+Seed, catch-up and hold-up members never read common.ini (each member INI names
+`GOAT Research` and GOAT launches every member), so their runs leave common.ini's
+`ProfileLast` on the monitor profile. A customer batch's own MT5 relaunches do read it,
+so a config start sets it to `GOAT Research` right before its launch and restores it.
 A batch prepared before this change is refused at its first start with `refusal_code`
 `PACKAGE_PREDATES_RESEARCH_PROFILE` ("This batch was prepared by an older GOAT; it will be
 prepared again."): prepare the same plan again under a new batch ID. A running or paused

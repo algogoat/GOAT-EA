@@ -209,6 +209,15 @@ class CustomerDriverRouteTests(unittest.TestCase):
                 self.assertFalse((self.c.root/'batch-drivers/batch.json').exists())
                 self.assertEqual((self.config_starts, self.c.starts, self.end_states), (0, 0, []))
 
+    def test_a_profile_last_refusal_keeps_its_machine_code_and_nothing_started(self):
+        from studio_refusal import Refusal
+        def refused(job_id, *, expected_generation, on_attempt):
+            raise Refusal("MT5's saved chart profile is Default, not the GOAT Studio monitor profile", 'PROFILE_LAST_NOT_MONITOR')
+        self.c.start_config = refused
+        result = self.drive(max_seconds=60, restart_consent=True)
+        self.assertEqual((result['status'], result['attempt_id'], result['refusal_code']), ('start_uncertain', None, 'PROFILE_LAST_NOT_MONITOR'))
+        self.assertEqual((self.c.starts, self.end_states), (0, []))
+
     def test_the_batch_launch_is_journaled_for_the_end_state_binding(self):
         launched = dict(pid=22, executable='terminal64.exe', created_utc='2026-09-29T01:00:00Z', source='config_start')
         original = self.c.start_config

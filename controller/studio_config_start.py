@@ -212,6 +212,8 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
         # Packaged before batches ran on GOAT Research: its launch would open the monitor profile (goatai#2350
         # 6120004490). PACKAGE_PREDATES_RESEARCH_PROFILE: the app re-prepares it automatically (6120693275).
         raise legacy_package_refusal(job_id)
+    # Read-only, before any reservation or close: the saved ProfileLast this start will switch to GOAT Research.
+    _profile_last_precheck(c)
     args=c.native_args()
     c.runtime(require_idle=True,expected_batch_ongoing=False)
     before_native_dispatch(c,job)
@@ -327,23 +329,34 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
         checkpoint(c,job_id,generation)
         if time.monotonic()>=deadline:raise ValueError('Normal close unconfirmed; no repeat close or launch')
         time.sleep(.25)
-    # Order keeps fix B intact (goatai#2350 6120004490): the one-time monitor-profile migration (MT5 stopped, gate held)
+    # Order keeps fix B intact (goatai#2350 6120004490): the monitor-profile migration (re-planned every start; MT5 stopped, gate held)
     # moves aside the stray charts earlier batches left, then the record reads the monitor profile MT5 just saved, then
     # GOAT Research is reset for this batch's launch. The monitor profile is never opened again during the batch.
     migration=_migrate(c,intent['attempt_id'],process)
     monitor_chart_record=_monitor_record(c,health,intent['attempt_id'],process)
     phase(c,job_id,generation,'close_issued','research_exited')
     research_profile=_research_profile(c,intent['attempt_id'],process)
-    material=validate_restart_material(c.state(),c.job(job_id),account=c.session['account'],
-        monitor_path=args['monitor_path'],monitor_sha256=args['monitor_sha256'],input_schema=c.schema)
-    if hashlib.sha256(startup.read_bytes()).hexdigest()!=material['startup_receipt']['sha256']:
-        raise ValueError('Startup bytes changed after close')
-    bridge_verify(bridge)
-    phase(c,job_id,generation,'research_exited','launch_issued')
-    # The batch's first /config start is a research MT5 launch (goatai#1885 PR E): created
-    # suspended at low priority inside this terminal's job, or refused with nothing run. The EA's
-    # own per-member relaunches stay inside that job.
-    launched=research_view(process).start(startup)
+    # The T3 pilot (goatai#2350 6122261952, Claude-Mac 6122285931): MT5 applies this /config's [Charts] ProfileLast to the
+    # first launch only, and the GOAT EA relaunches MT5 between members with a [Tester]-only /config, which reopens
+    # common.ini's ProfileLast. So GOAT saves ProfileLast=GOAT Research itself (MT5 stopped, gate held) right before
+    # the launch; restore() puts it back at the end state, the next GOAT stop, and here if the launch never happens.
+    profile_select=_select_research_profile(c,intent['attempt_id'],process)
+    try:
+        material=validate_restart_material(c.state(),c.job(job_id),account=c.session['account'],
+            monitor_path=args['monitor_path'],monitor_sha256=args['monitor_sha256'],input_schema=c.schema)
+        if hashlib.sha256(startup.read_bytes()).hexdigest()!=material['startup_receipt']['sha256']:
+            raise ValueError('Startup bytes changed after close')
+        bridge_verify(bridge)
+        phase(c,job_id,generation,'research_exited','launch_issued',profile_last_select=profile_select)
+        # The batch's first /config start is a research MT5 launch (goatai#1885 PR E): created
+        # suspended at low priority inside this terminal's job, or refused with nothing run. The EA's
+        # own per-member relaunches stay inside that job.
+        launched=research_view(process).start(startup)
+    except BaseException:
+        # No launch happened (or it was refused with nothing run): ProfileLast goes back to the monitor profile. A
+        # launch whose MT5 may be running is left to the next GOAT stop (restore only acts with MT5 stopped).
+        _rollback_profile_last(c,intent['attempt_id'],process)
+        raise
     phase(c,job_id,generation,'launch_issued','process_started_unverified',process=launched)
     # The MT5 process this batch launched (pid + creation time): the end state may only close this process, or a
     # later one the EA itself relaunched for this batch (studio_research_profile.batch_end_state).
@@ -352,6 +365,7 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     return dict(status='config_process_started_unverified',attempt_id=intent['attempt_id'],
                 process=launched,dispatch=published,native_running_verified=False,
                 research_profile=research_profile,monitor_profile_migration=migration,batch_process=batch_process,
+                profile_last_select=profile_select,
                 **({'monitor_chart_record':monitor_chart_record} if monitor_chart_record is not None else {}))
 
 
@@ -361,8 +375,30 @@ def _research_profile(c,attempt_id,process):
     return prepare(c,'config-start-'+attempt_id,inspect=process.inspect)
 
 
+def _profile_last_precheck(c):
+    """Before anything is reserved, armed or closed: MT5's saved ProfileLast must be this session's monitor profile (or
+    GOAT Research left by an interrupted start, which the select restores first). A Refusal otherwise; nothing changed."""
+    from studio_research_profile import select_precheck
+    return select_precheck(c)
+
+
+def _select_research_profile(c,attempt_id,process):
+    """common.ini ProfileLast -> GOAT Research with MT5 stopped (studio_research_profile.select). Raises before any launch."""
+    from studio_research_profile import select
+    return select(c,'config-start-'+attempt_id,inspect=process.inspect)
+
+
+def _rollback_profile_last(c,attempt_id,process):
+    """Undo this start's select when its launch never happened (studio_research_profile.restore, own start). Never raises."""
+    try:
+        from studio_research_profile import restore
+        return restore(c,'config-start-rollback-'+attempt_id,inspect=process.inspect,own_start=True)
+    except Exception as error:
+        return dict(status='not_restored',reason='check_failed',detail=str(error))
+
+
 def _migrate(c,attempt_id,process):
-    """The one-time monitor-profile migration with MT5 stopped (studio_research_profile). Never raises; never refuses
+    """The monitor-profile migration (every start) with MT5 stopped (studio_research_profile). Never raises; never refuses
     the start: a refusal leaves the monitor profile untouched and is reported in the start receipt."""
     try:
         from studio_research_profile import migrate_monitor_profile

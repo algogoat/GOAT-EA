@@ -195,7 +195,8 @@ def _summary(path, record):
                               and record['min_free_bytes'] > 0),
         host_liveness_required=True, independent_hard_stop=False) | (
         dict(monitor_chart_record=record['monitor_chart_record']) if 'monitor_chart_record' in record else {}) | {
-        key: record[key] for key in ('research_profile', 'monitor_profile_migration', 'batch_process', 'end_state') if key in record}
+        key: record[key] for key in ('research_profile', 'monitor_profile_migration', 'batch_process', 'profile_last_select',
+                                     'end_state', 'refusal_code') if key in record}
 
 
 PAUSE_OVERRUN_SECONDS = 240
@@ -617,10 +618,10 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     if isinstance(started,dict) and isinstance(started.get('monitor_chart_record'),dict):
                         # Fix B: the restart close's post-close monitor chart record, passed through to the start receipt.
                         record['monitor_chart_record']=started['monitor_chart_record']
-                    for key in ('research_profile','monitor_profile_migration','batch_process'):
+                    for key in ('research_profile','monitor_profile_migration','batch_process','profile_last_select'):
                         # batch_process: pid + creation time of the MT5 this batch launched; the end state may close
                         # only that process or the EA's own later relaunch for this batch (goatai#2350 6120693275).
-                        # GOAT Research's reset and the one-time monitor-profile migration (studio_research_profile).
+                        # GOAT Research's reset and this start's monitor-profile migration run (studio_research_profile).
                         if isinstance(started,dict) and isinstance(started.get(key),dict):
                             record[key]=started[key]
                 else:
@@ -634,6 +635,9 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                 _save(path, record, clock)
             except Exception as error:
                 record['status'] = 'start_uncertain'; record['last_error'] = str(error)
+                if getattr(error, 'code', None):
+                    # A structured refusal from the start (e.g. PROFILE_LAST_NOT_MONITOR) keeps its machine code.
+                    record['refusal_code'] = error.code
                 if config_route:
                     # Plain next step from the retained restart phase: MT5 may be closed.
                     from studio_config_start import restart_recovery

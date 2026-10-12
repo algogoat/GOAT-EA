@@ -81,7 +81,10 @@ class ConfigStartTests(unittest.TestCase):
             validate_restart_material=Mock(return_value=self.material),
             # GOAT Research reset and the one-time migration run for real in test_studio_research_profile.
             _research_profile=Mock(return_value=dict(kind='research_profile_prepared')),
-            _migrate=Mock(return_value=dict(status='already')))
+            _migrate=Mock(return_value=dict(status='clean')),
+            _profile_last_precheck=Mock(return_value={}),
+            _select_research_profile=Mock(return_value=dict(status='selected')),
+            _rollback_profile_last=Mock(return_value=dict(status='restored')))
         self.mocks={name:self.stack.enter_context(patch.object(start,name,value)) for name,value in replacements.items()}
 
     def run_start(self):return start.start(self.c,'batch',expected_generation=2,process=self.process)
@@ -181,10 +184,32 @@ class ConfigStartTests(unittest.TestCase):
         order=[]
         self.mocks['_migrate'].side_effect=lambda *args:order.append(('migrate',self.process.inspect()))or dict(status='clean')
         self.mocks['_research_profile'].side_effect=lambda *args:order.append(('prepare',self.process.inspect()))or dict(kind='x')
+        self.mocks['_select_research_profile'].side_effect=lambda *args:order.append(('select',self.process.inspect()))or dict(status='selected')
         self.process.start.side_effect=lambda config:order.append(('launch',None))or dict(pid=22)
         result=self.run_start()
-        self.assertEqual(order,[('migrate',None),('prepare',None),('launch',None)],'MT5 stopped for both, both before the launch')
-        self.assertEqual((result['research_profile'],result['monitor_profile_migration']),(dict(kind='x'),dict(status='clean')))
+        self.assertEqual(order,[('migrate',None),('prepare',None),('select',None),('launch',None)],
+                         'MT5 stopped for each, all before the launch: close -> migration -> record -> prepare -> select -> launch')
+        self.assertEqual((result['research_profile'],result['monitor_profile_migration'],result['profile_last_select']),
+                         (dict(kind='x'),dict(status='clean'),dict(status='selected')))
+        self.mocks['_rollback_profile_last'].assert_not_called()
+
+    def test_a_profile_last_that_is_not_the_monitor_refuses_before_anything_is_reserved(self):
+        from studio_refusal import Refusal
+        self.mocks['_profile_last_precheck'].side_effect=Refusal('MT5\'s saved chart profile is Default','PROFILE_LAST_NOT_MONITOR')
+        with self.assertRaises(Refusal) as caught:self.run_start()
+        self.assertEqual(caught.exception.code,'PROFILE_LAST_NOT_MONITOR')
+        self.assertEqual(self.events,[])
+        self.mocks['_select_research_profile'].assert_not_called()
+
+    def test_the_select_is_rolled_back_when_the_launch_never_happens(self):
+        for name,break_it in (('startup drift',lambda:self.mocks['validate_restart_material'].__setattr__('side_effect',
+                                  lambda *a,**k:self.material|dict(startup_receipt={'sha256':'0'*64}))),
+                              ('launch refused',lambda:self.process.start.__setattr__('side_effect',ValueError('MT5 was not started')))):
+            with self.subTest(case=name):
+                self.setUp();break_it()
+                with self.assertRaises(ValueError):self.run_start()
+                self.mocks['_select_research_profile'].assert_called_once()
+                self.mocks['_rollback_profile_last'].assert_called_once()
 
     def test_a_research_profile_that_cannot_be_prepared_never_launches(self):
         self.mocks['_research_profile'].side_effect=ValueError('GOAT Research in MT5 is not a plain folder')

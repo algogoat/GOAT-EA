@@ -284,14 +284,19 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     expected=baseline['research']
     if identity is None or identity['pid']!=expected['pid']:
         raise ValueError('Selected process changed before close')
+    health=None
     if customer:
         # Up to ~80 s passed since the first SDK read: the user may have opened a
         # trade or switched account. Re-prove right before the only close. The
         # expiry was proved before reserve; refusing on it now would only strand
         # an armed MT5, so this check binds the process only.
         require_restart_consent(c,job_id,expected,expiry=False)
-        sdk_idle_demo(c,expected)
+        native=sdk_idle_demo(c,expected)
         checkpoint(c,job_id,generation)
+        # Fix B (Claude-Mac goatai#2350 6119079150): this restart close is the GOAT monitor's first close in the
+        # start. The same health facts as close-terminal, from this SDK read and the EA's armed runtime sample
+        # (batch_ongoing; the start advanced the revision). Never refuses or alters the start.
+        health=_monitor_health(c,identity,native)
     phase(c,job_id,generation,'controls_installed','close_issued',close_identity=identity)
     process.close(identity)
     deadline=time.monotonic()+30
@@ -299,6 +304,7 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
         checkpoint(c,job_id,generation)
         if time.monotonic()>=deadline:raise ValueError('Normal close unconfirmed; no repeat close or launch')
         time.sleep(.25)
+    monitor_chart_record=_monitor_record(c,health,intent['attempt_id'],process) if customer else None
     phase(c,job_id,generation,'close_issued','research_exited')
     material=validate_restart_material(c.state(),c.job(job_id),account=c.session['account'],
         monitor_path=args['monitor_path'],monitor_sha256=args['monitor_sha256'],input_schema=c.schema)
@@ -312,4 +318,25 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     launched=research_view(process).start(startup)
     phase(c,job_id,generation,'launch_issued','process_started_unverified',process=launched)
     return dict(status='config_process_started_unverified',attempt_id=intent['attempt_id'],
-                process=launched,dispatch=published,native_running_verified=False)
+                process=launched,dispatch=published,native_running_verified=False,
+                **({'monitor_chart_record':monitor_chart_record} if monitor_chart_record is not None else {}))
+
+
+def _monitor_health(c,identity,native):
+    """The pre-close health read for this start's restart close (studio_onboarding.pre_close_health). Never raises."""
+    try:
+        from studio_onboarding import driver_pre_close_health
+        return driver_pre_close_health(c,identity,native=native,expected_batch_ongoing=True,revision_may_lag=True)
+    except Exception as error:   # recording is evidence only: it never changes the start
+        return dict(healthy=False,reason='check_failed',detail=str(error))
+
+
+def _monitor_record(c,health,attempt_id,process):
+    """After the restart close stopped MT5: record its post-close monitor chart (fix B). Never raises."""
+    try:
+        from datetime import datetime,timezone
+        from studio_onboarding import record_post_close_chart
+        return record_post_close_chart(c,health,attempt_id=attempt_id,method='config_restart_close',source='config-start',
+                                       stopped_utc=datetime.now(timezone.utc).isoformat(),process=process)
+    except Exception as error:
+        return dict(status='not_recorded',reason='check_failed',detail=str(error))

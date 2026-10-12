@@ -1,9 +1,14 @@
 """Customer monitor onboarding; no credentials, permissions or ownership grants.
 
 Saved profile staging and a single stopped-terminal launch are distinct effects.
-Status consumes existing evidence without pumping the human control inbox.
+Status consumes existing evidence without pumping the human control inbox. Its one
+write is controller-local evidence: when it observes the monitor healthy (see
+record_healthy_observation) it notes the running chart hash, which never authorises
+a launch. Only close-terminal's post-close record does (record_post_close_chart).
+MT5 files are never written by status.
 """
 import configparser
+import contextlib
 from contextlib import closing
 from datetime import datetime, timezone
 import hashlib
@@ -21,6 +26,50 @@ from studio_bridge import write_json
 from studio_native_gate import exclusive_gate
 from studio_process_check import StoppedRootProcess, inspect_processes
 from studio_protected_peer import process_binding
+from studio_refusal import Refusal
+
+
+# Open Lab experiment demo logins (all Darwinex-Demo), retired arms included (Ops, goatai#2350 6118578483). The one
+# shared list: pairing-code, close-terminal, deploy, monitor-launch and monitor-repair never act on these accounts.
+OPEN_LAB_LOGINS = frozenset((
+    '3000109268', '3000109269', '3000109270', '3000109271', '3000109272', '3000109273',   # Experiment 01
+    '3000109427', '3000109421',                                                           # Experiment 02
+    '3000110705', '3000110706',                                                           # Experiment 03
+))
+PROTECTED_ACCOUNT_REFUSAL = 'PROTECTED_ACCOUNT'
+NOT_DEMO_REFUSAL = 'NOT_DEMO_ACCOUNT'
+# monitor-launch attempt IDs; monitor-repair launches as REPAIR_LAUNCH_PREFIX + its own ID.
+LAUNCH_ATTEMPT_ID = re.compile(r'[A-Za-z0-9_-]{1,80}')
+REPAIR_LAUNCH_PREFIX = 'repair-'
+
+
+def require_unprotected(login):
+    if str(login) in OPEN_LAB_LOGINS:
+        raise Refusal('This demo account belongs to a GOAT Open Lab experiment; agents never change it',
+                      PROTECTED_ACCOUNT_REFUSAL)
+
+
+def require_demo_binding(controller, session):
+    """The demo evidence monitor-launch and monitor-repair hold without starting MT5.
+
+    A stopped terminal cannot be read through the MetaTrader5 adapter (initialize(path) would start it), so this is
+    the session's demo-only binding plus the last EA runtime report for this exact login and server, which must not
+    say the account is not a demo. monitor-repair additionally reads the broker trade mode through inspect_idle_demo
+    before its close, as close-terminal does; a launch that reuses an observed-healthy chart requires that record's
+    SDK demo proof; and every launched monitor is ready only after the runtime readback proves demo and Algo OFF.
+    """
+    if session.get('demo_only') is not True:
+        raise Refusal('This installation is not bound to a demo account; GOAT only opens MT5 for demo accounts',
+                      NOT_DEMO_REFUSAL)
+    try:
+        observation = read_json(controller.local/'ui-observation.json')
+    except (OSError, ValueError):
+        return
+    runtime = observation.get('runtime') if isinstance(observation, dict) else None
+    if (isinstance(runtime, dict) and runtime.get('account_login') == str(session['account']['login'])
+            and runtime.get('account_server') == session['account']['server'] and runtime.get('account_demo') is False):
+        raise Refusal('The GOAT EA last reported this MT5 account as not a demo account; GOAT only opens MT5 for demo accounts',
+                      NOT_DEMO_REFUSAL)
 
 
 def session_state(controller):
@@ -41,8 +90,9 @@ def session_state(controller):
     return session, dict(owner=row[0], revision=row[1], generation=row[2])
 
 
-def onboarding_status(controller):
+def onboarding_status(controller, *, mt5=None):
     steps = []
+    healthy = False
     def step(name, state, action, **evidence):
         steps.append(dict(id=name, state=state, action=action, **evidence))
     step('installation', 'complete', 'Installed EA hash matches the selected installation receipt')
@@ -68,26 +118,10 @@ def onboarding_status(controller):
         else:
             step('terminal_process', 'blocked', 'Inspect terminal processes. For a stopped selected terminal use monitor-prepare then monitor-launch; never stop unrelated terminals.', detail=str(exc))
     try:
-        from studio_resilient_read import read_observation
-        from studio_runtime_check import check_runtime
-        observation, modified = read_observation(controller.local/'ui-observation.json')
-        i = controller.install
-        check_runtime(observation, now=time.time(), modified=modified, data_path=i['terminal_data_root'],
-                      installation_path=str(Path(i['terminal_executable']).parent),
-                      program_path=str((Path(i['terminal_data_root'])/'MQL5/Experts').joinpath(*PureWindowsPath(i['ea_relative_path']).parts)),
-                      account_login=session['account']['login'], account_server=session['account']['server'], require_idle=True)
-        if observation.get('loaded') is not True:
-            raise ValueError('Monitor has not loaded controller state')
-        if processes and modified < datetime.fromisoformat(processes['research']['created_utc'].replace('Z','+00:00')).timestamp():
-            raise ValueError('Monitor feedback predates the selected process; await fresh runtime evidence')
-        if modified < (controller.local/'active.json').stat().st_mtime:
-            raise ValueError('Monitor feedback predates the selected controller activation')
-        same = all(observation.get(k) == state[k] for k in ('owner','revision','generation'))
-        if not same:
-            raise ValueError('Monitor and controller revision/generation/owner differ; run serve and recheck')
-        stamp = datetime.strptime(observation['observed_terminal_utc'], '%Y.%m.%d %H:%M:%S').replace(tzinfo=timezone.utc).timestamp()
-        result['runtime_valid_until_ms'] = int((min(modified, stamp) + 20) * 1000)
+        monitor = native_monitor_observation(controller, session, state, processes['research'] if processes else None)
+        result['runtime_valid_until_ms'] = monitor['runtime_valid_until_ms']
         step('native_monitor', 'complete', 'Fresh bound demo monitor is connected, Algo Trading off and tester idle')
+        healthy = True
         step('agent_control', 'complete' if state['owner']=='agent' else 'human_action',
              'Human clicks Give to Agent in Studio while serve is running; then recheck status')
     except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -115,6 +149,10 @@ def onboarding_status(controller):
             action = ('MT5 saved chart profile '+profile['profile_last']+' as its last profile, not the GOAT Studio monitor profile '+profile['monitor_profile']+
                       '. Ask the user to choose File > Profiles > '+profile['monitor_profile']+' in MT5 (or, with MT5 closed, run monitor-launch --attempt-id <new id>), then recheck.')
         step('native_monitor', 'blocked', action, detail=str(exc), **({'reason_code':reason} if reason else {}), **(profile or {}))
+    # Fix B (Claude-Mac, goatai#2350 6118571536 / 6118831254): a healthy observation here is EVIDENCE only (facts, the
+    # running chart hash, time). It never authorises a launch; only close-terminal's post-close record does.
+    result['monitor_healthy_observation'] = (record_healthy_observation(controller, session, processes, mt5=mt5) if healthy and processes
+                                             else dict(status='not_observed', reason='native_monitor_not_observed_healthy'))
     if all(s['state']=='complete' for s in steps):
         result['status']='local_monitor_ready'
     result['next_action'] = next((s['action'] for s in steps if s['state']!='complete'),
@@ -126,6 +164,43 @@ def onboarding_status(controller):
         dll_imports='User approves DLL imports in MT5 and the monitor EA properties',
         broker_login='User signs in directly in MT5; never pass broker passwords through controller arguments')
     return result
+
+
+def native_monitor_observation(controller, session, state, process, *, expected_batch_ongoing=False, revision_may_lag=False):
+    """The facts onboarding-status's native_monitor step requires; raises ValueError (or KeyError/TypeError/OSError) otherwise.
+
+    Fresh bound EA runtime feedback for this terminal, data folder, EA and account (connected, demo, Algo Trading off,
+    no batch, idle tester), the controller state loaded, feedback newer than ``process`` (the selected MT5's identity,
+    when known) and the activation, and the same owner/revision/generation as the controller. Read-only.
+
+    A start driver's first close passes ``expected_batch_ongoing`` (the customer config start closes MT5 after the
+    EA armed the batch) and ``revision_may_lag``: the driver itself advances the controller revision during the start,
+    so the EA's revision may trail it by those steps; owner and generation must still match exactly.
+    """
+    from studio_resilient_read import read_observation
+    from studio_runtime_check import check_runtime
+    observation, modified = read_observation(controller.local/'ui-observation.json')
+    i = controller.install
+    check_runtime(observation, now=time.time(), modified=modified, data_path=i['terminal_data_root'],
+                  installation_path=str(Path(i['terminal_executable']).parent),
+                  program_path=str((Path(i['terminal_data_root'])/'MQL5/Experts').joinpath(*PureWindowsPath(i['ea_relative_path']).parts)),
+                  account_login=session['account']['login'], account_server=session['account']['server'], require_idle=True,
+                  expected_batch_ongoing=expected_batch_ongoing)
+    if observation.get('loaded') is not True:
+        raise ValueError('Monitor has not loaded controller state')
+    if process and modified < datetime.fromisoformat(process['created_utc'].replace('Z','+00:00')).timestamp():
+        raise ValueError('Monitor feedback predates the selected process; await fresh runtime evidence')
+    if modified < (controller.local/'active.json').stat().st_mtime:
+        raise ValueError('Monitor feedback predates the selected controller activation')
+    same = all(observation.get(k) == state[k] for k in (('owner','generation') if revision_may_lag else ('owner','revision','generation')))
+    if same and revision_may_lag:
+        revision = observation.get('revision')
+        same = type(revision) is int and 0 <= revision <= state['revision']
+    if not same:
+        raise ValueError('Monitor and controller revision/generation/owner differ; run serve and recheck')
+    stamp = datetime.strptime(observation['observed_terminal_utc'], '%Y.%m.%d %H:%M:%S').replace(tzinfo=timezone.utc).timestamp()
+    return dict(observed_terminal_utc=observation['observed_terminal_utc'], feedback_modified=modified,
+                runtime_valid_until_ms=int((min(modified, stamp) + 20) * 1000))
 
 
 def wrong_chart_profile(controller, session):
@@ -329,6 +404,294 @@ def rebind_monitor_profile(controller, session, previous_installations):
     return dict(status='rebound',previous_installation_sha256=receipt['installation_sha256'],installation_sha256=current,backup=str(backup))
 
 
+# ---- Fix B (Claude-Mac, goatai#2350 6118571536, timing ruling 6118831254): the post-close monitor chart.
+#
+# After a person approves DLL imports, MT5 saves a non-zero expertmode on the monitor chart and monitor-launch refused
+# every later launch. GOAT still never decodes a permission bit. MT5 rewrites the chart when it closes, so the bytes a
+# running monitor was loaded from are not the bytes the next launch reads. The authoritative record is therefore
+# written by the controller's OWN close-terminal: immediately before its close it reads the monitor's health itself
+# (the onboarding native_monitor facts plus its SDK readback: Algo Trading OFF, demo, the bound login, the same
+# process); after MT5 has fully stopped, and only when the installation, terminal, account, session/profile and chart
+# file are unchanged, it hashes the saved chart file and records that post-close SHA-256. monitor-launch accepts
+# exactly those bytes (verify_saved_monitor's preserved_permissions_sha256 path); any other byte, including another
+# permission value, refuses as before. onboarding-status keeps only a healthy OBSERVATION (facts, running hash, time)
+# as evidence; it never authorises a launch. A record is retired (archived, never deleted) as soon as any bound fact
+# differs, so it can never become valid again.
+HEALTHY_CHART_RECORD = 'monitor-healthy-chart.json'
+HEALTHY_CHART_ARCHIVE = 'monitor-healthy-chart-retired'
+HEALTHY_CHART_KIND = 'post_close_monitor_chart'
+HEALTHY_CHART_FIELDS = frozenset(('schema_version','kind','binding','chart_sha256','chart_bytes','permissions_changed','pre_close','close'))
+HEALTHY_OBSERVATION = 'monitor-healthy-observation.json'
+HEALTHY_OBSERVATION_KIND = 'healthy_monitor_observation'
+# Who may write a post-close record: GOAT's own close-terminal, and a start driver's first close of the monitor MT5.
+RECORD_SOURCES = frozenset(('close-terminal', 'config-start', 'seed-driver', 'catchup-driver', 'holdup-driver'))
+
+
+def healthy_chart_binding(controller, session, chart_path):
+    """What a post-close record is bound to: installation, terminal, account, session/profile and chart file.
+
+    The installation is its suite folder ID plus every receipt field an EA update does not rewrite (the same rule
+    rebind_monitor_profile uses), so an EA update of this installation keeps the record and anything else retires it.
+    """
+    from studio_evidence_archive import installation_id
+    install = controller.install
+    name, _ = monitor_paths(controller, session)
+    return dict(installation_id=installation_id(controller.root),
+                installation_identity_sha256=sha({k:v for k,v in install.items() if k not in UPDATE_OWNED_INSTALLATION_FIELDS}),
+                terminal_executable=install['terminal_executable'], terminal_data_root=install['terminal_data_root'],
+                account=dict(login=str(session['account']['login']), server=session['account']['server']),
+                run_id=session['run_id'], profile_name=name, chart_path=str(chart_path))
+
+
+def healthy_chart_mismatch(controller, session, record):
+    """None when ``record`` is a well-formed post-close record whose binding still holds; else the first fact that differs."""
+    if (not isinstance(record, dict) or set(record) != HEALTHY_CHART_FIELDS or record.get('schema_version') != 1
+            or record.get('kind') != HEALTHY_CHART_KIND or not isinstance(record.get('binding'), dict)
+            or not isinstance(record.get('pre_close'), dict) or not isinstance(record.get('close'), dict)
+            or record.get('permissions_changed') is not False
+            or not isinstance(record.get('chart_sha256'), str) or not re.fullmatch(r'[0-9a-f]{64}', record['chart_sha256'])):
+        return 'record'
+    bound = record['binding']
+    if not isinstance(bound.get('chart_path'), str):
+        return 'record'
+    current = healthy_chart_binding(controller, session, bound['chart_path'])
+    if set(bound) != set(current):
+        return 'record'
+    for reason, keys in (('terminal', ('terminal_executable','terminal_data_root')), ('account', ('account',)),
+                         ('installation', ('installation_id','installation_identity_sha256')), ('session', ('run_id','profile_name'))):
+        if any(bound[key] != current[key] for key in keys):
+            return reason
+    _, profile = monitor_paths(controller, session)
+    if Path(bound['chart_path']).parent != profile or Path(bound['chart_path']).suffix.lower() != '.chr':
+        return 'chart_path'
+    pre, sdk = record['pre_close'], record['pre_close'].get('sdk')
+    if (pre.get('native_monitor') != 'complete' or not isinstance(sdk, dict) or sdk.get('demo') is not True
+            or sdk.get('algo_trading') is not False or sdk.get('login') != current['account']['login']
+            or sdk.get('server') != current['account']['server'] or record['close'].get('source') not in RECORD_SOURCES):
+        return 'record'
+    return None
+
+
+def check_healthy_chart(controller, session=None):
+    """The valid post-close record, or None after retiring one whose binding no longer holds. Caller holds the native gate.
+
+    ``session`` defaults to the raw session.json, so a changed installation retires the record even where
+    session_state would refuse first. A retired record moves to HEALTHY_CHART_ARCHIVE (never deleted).
+    """
+    path = controller.root/HEALTHY_CHART_RECORD
+    if not path.exists() and not path.is_symlink():
+        return dict(status='none', record=None)
+    raw = None
+    try:
+        if path.is_symlink():
+            raise ValueError('linked record')
+        raw = path.read_bytes()
+        record = read_json(path)
+        reason = healthy_chart_mismatch(controller, read_json(controller.root/'session.json') if session is None else session, record)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        record, reason = None, 'record'
+    if reason is None:
+        return dict(status='valid', record=record)
+    return retire_healthy_chart(controller, raw, reason) | dict(record=None)
+
+
+def retire_healthy_chart(controller, raw, reason):
+    """Move the record into HEALTHY_CHART_ARCHIVE (named by its bytes' SHA-256) and journal why. Never deletes evidence."""
+    path = controller.root/HEALTHY_CHART_RECORD
+    folder = controller.root/HEALTHY_CHART_ARCHIVE
+    folder.mkdir(exist_ok=True)
+    if path.is_symlink():
+        digest, target = None, None
+        path.unlink()   # A link is not a record GOAT wrote; removing the link leaves its target untouched.
+    elif raw is None:
+        raise ValueError('The post-close monitor chart record could not be read; preserve and inspect it')
+    else:
+        digest = hashlib.sha256(raw).hexdigest()
+        target = folder/(digest+'.json')
+        if target.exists() and target.read_bytes() == raw:
+            path.unlink()   # The same bytes are already archived.
+        else:
+            os.replace(path, target)
+    with (folder/'retired.jsonl').open('a', encoding='utf-8') as output:
+        output.write(json.dumps(dict(record_sha256=digest, reason=reason, retired_utc=datetime.now(timezone.utc).isoformat()), sort_keys=True)+'\n')
+        output.flush(); os.fsync(output.fileno())
+    return dict(status='retired', reason=reason, archived=str(target) if target else None)
+
+
+def _observed_chart(controller, receipt):
+    """The single saved monitor chart (path, bytes) after every non-permission check; observational, never for launch."""
+    folder = verify_monitor_profile(controller, receipt, observed_human_reopen=True)
+    chart = next(p for p in folder.iterdir() if p.suffix.lower() == '.chr')
+    return chart, chart.read_bytes()
+
+
+def record_healthy_observation(controller, session, processes, *, mt5=None):
+    """onboarding-status EVIDENCE only: the monitor observed healthy, with the running chart hash. Never authorises a launch.
+
+    Called right after the native_monitor step completed. Adds an SDK readback under the terminal lease (broker_proof:
+    the running selected terminal and data folder, the linked login and server, demo, connected) and requires Algo
+    Trading OFF, with the same process before and after. Writes HEALTHY_OBSERVATION (latest only) when the running
+    chart or its binding changed since the last one. Never raises; no MT5 file is written.
+    """
+    from studio_agent_setup import broker_proof
+    from studio_terminal_lease import BUSY_READ, terminal_lease
+    research = (processes or {}).get('research') or {}
+    if type(research.get('pid')) is not int:
+        return dict(status='not_observed', reason='terminal_process')
+    target = controller.root/HEALTHY_OBSERVATION
+    try:
+        with terminal_lease(controller.root, purpose='monitor-healthy-observation', busy_code='BROKER_READ_DEFERRED',
+                            busy_message=BUSY_READ, broker_reason='terminal_busy'):
+            chart, raw = _observed_chart(controller, read_json(controller.root/'monitor-profile.json'))
+            digest = hashlib.sha256(raw).hexdigest()
+            binding = healthy_chart_binding(controller, session, chart)
+            try:
+                prior = read_json(target)
+            except (OSError, ValueError):
+                prior = None
+            if (isinstance(prior, dict) and prior.get('observed_running_sha256') == digest and prior.get('binding') == binding
+                    and prior.get('process') == research):
+                return dict(status='current', observed_running_sha256=digest, authorises_launch=False)
+            proof = broker_proof(controller, session, mt5=mt5, require_flat=False)
+            if proof['algo_trading'] is not False:
+                return dict(status='not_observed', reason='algo_trading_on')
+            after = inspect_processes(process_binding(controller),
+                        observation_roots=[str(Path(controller.install['terminal_executable']).parent),controller.install['terminal_data_root']])
+            if (after or {}).get('research') != research:
+                return dict(status='not_observed', reason='process_changed')
+            write_json(target, dict(schema_version=1, kind=HEALTHY_OBSERVATION_KIND, authorises_launch=False, binding=binding,
+                                    observed_running_sha256=digest, process=research, native_monitor='complete',
+                                    observed_utc=datetime.now(timezone.utc).isoformat(),
+                                    sdk=dict(login=proof['login'], server=proof['server'], demo=proof['demo'], connected=proof['connected'],
+                                             algo_trading=proof['algo_trading'], build=proof.get('build'))))
+            return dict(status='observed', observed_running_sha256=digest, authorises_launch=False)
+    except (OSError, ValueError, KeyError, TypeError, StopIteration) as exc:
+        return dict(status='not_observed', reason=getattr(exc, 'code', None) or 'check_failed', detail=str(exc))
+
+
+def _same_process(a, b):
+    """The same selected MT5: its process ID and image (identities from different readers carry other keys)."""
+    return (isinstance(a, dict) and isinstance(b, dict) and type(a.get('pid')) is int and a.get('pid') == b.get('pid')
+            and PureWindowsPath(str(a.get('executable') or '')) == PureWindowsPath(str(b.get('executable') or '')))
+
+
+def pre_close_health(controller, session, state, native, process, *, expected_batch_ongoing=False, revision_may_lag=False):
+    """A health read immediately before GOAT's own close of the monitor MT5. Never raises.
+
+    ``native`` is a fresh SDK readback (inspect_idle_demo: selected terminal and data folder, the bound login and
+    server, demo, connected, Algo Trading off, no positions or orders), or a callable returning one, read only once
+    every cheaper fact holds; ``process`` is the MT5 about to be closed. Healthy only with a demo-only, unprotected
+    binding, that readback for that same process, the onboarding native_monitor facts (native_monitor_observation)
+    and a saved monitor chart that passes every non-permission check. Returns dict(healthy=True, binding,
+    observed_running_sha256, ...) or dict(healthy=False, reason).
+    """
+    try:
+        if session.get('demo_only') is not True:
+            return dict(healthy=False, reason='not_demo_binding')
+        if str(session['account']['login']) in OPEN_LAB_LOGINS:
+            return dict(healthy=False, reason='protected_account')
+        monitor = native_monitor_observation(controller, session, state, process, expected_batch_ongoing=expected_batch_ongoing,
+                                             revision_may_lag=revision_may_lag)
+        chart, raw = _observed_chart(controller, read_json(controller.root/'monitor-profile.json'))
+        if callable(native):
+            native = native()
+        if (not isinstance(native, dict) or native.get('demo') is not True or native.get('algo_trading') is not False
+                or native.get('account_matches') is not True or native.get('connected') is not True
+                or not _same_process(native.get('process'), process)):
+            return dict(healthy=False, reason='sdk_readback')
+        return dict(healthy=True, native_monitor='complete', observed_utc=datetime.now(timezone.utc).isoformat(),
+                    observed_terminal_utc=monitor['observed_terminal_utc'], process=process,
+                    binding=healthy_chart_binding(controller, session, chart),
+                    observed_running_sha256=hashlib.sha256(raw).hexdigest(),
+                    sdk=dict(login=str(session['account']['login']), server=session['account']['server'], demo=True,
+                             algo_trading=False, connected=True, tester_state=native.get('tester_state'),
+                             source=native.get('tester_source', 'inspect_idle_demo')))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, StopIteration) as exc:
+        return dict(healthy=False, reason=getattr(exc, 'code', None) or 'native_monitor', detail=str(exc))
+
+
+def driver_pre_close_health(controller, process, *, native=None, sdk_read=None, expected_batch_ongoing=False, revision_may_lag=False):
+    """pre_close_health for a start driver's FIRST close of the monitor MT5 (config start, seed, catch-up, hold-up).
+
+    Reads the session and controller state itself; ``native`` is an SDK readback the driver already took right before
+    its close, else ``sdk_read(controller)`` (default inspect_idle_demo, tester advisory) runs only after every cheaper
+    fact holds. Never raises and never changes the start: an unhealthy answer only means nothing is recorded.
+    """
+    try:
+        session, state = session_state(controller)
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
+        return dict(healthy=False, reason='session', detail=str(exc))
+    if native is None:
+        def native():
+            if sdk_read is not None:
+                return sdk_read(controller)
+            from studio_monitor_probe import inspect_idle_demo
+            return inspect_idle_demo(controller, tester='advisory')
+    return pre_close_health(controller, session, state, native, process, expected_batch_ongoing=expected_batch_ongoing,
+                            revision_may_lag=revision_may_lag)
+
+
+def saved_profile_last(controller):
+    """[Charts] ProfileLast from the selected terminal's common.ini (MT5 writes it as it closes), or None. Read-only."""
+    try:
+        raw = (Path(controller.install['terminal_data_root'])/'config/common.ini').read_bytes()
+        if len(raw) > 4_000_000:
+            return None
+        text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+    except (OSError, UnicodeError, KeyError, TypeError):
+        return None
+    section = None; found = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith('[') and line.endswith(']'):
+            section = line[1:-1].casefold()
+        elif section == 'charts' and line.partition('=')[0].strip().casefold() == 'profilelast':
+            found.append(line.split('=', 1)[1].strip())
+    return found[0] if len(found) == 1 else None
+
+
+def record_post_close_chart(controller, health, *, attempt_id, method, stopped_utc, process, source='close-terminal', gate_held=False):
+    """After GOAT's own close: record the POST-CLOSE chart bytes the next monitor-launch reads. Never raises.
+
+    Only with a healthy pre-close read (pre_close_health) from this same close, MT5 still stopped, positive evidence
+    that MT5 closed on the GOAT monitor profile (the ProfileLast it saved names it), and the installation, terminal,
+    account, session/profile and chart file unchanged since that read. ``gate_held``: the caller (a seed-lane driver
+    pass) already holds the native gate.
+    """
+    if not isinstance(health, dict) or health.get('healthy') is not True:
+        return dict(status='not_recorded', reason='no_healthy_pre_close_observation',
+                    **({'pre_close_reason': health.get('reason')} if isinstance(health, dict) else {}))
+    try:
+        if process.inspect() is not None:
+            return dict(status='not_recorded', reason='terminal_running')
+        with (contextlib.nullcontext() if gate_held else exclusive_gate(controller.local/'native-gate')):
+            session, _ = session_state(controller)
+            name, _ = monitor_paths(controller, session)
+            if saved_profile_last(controller) != name:
+                return dict(status='not_recorded', reason='foreign_profile', profile_last=saved_profile_last(controller))
+            chart, raw = _observed_chart(controller, read_json(controller.root/'monitor-profile.json'))
+            if healthy_chart_binding(controller, session, chart) != health['binding']:
+                return dict(status='not_recorded', reason='identity_changed')
+            existing = check_healthy_chart(controller, session)
+            digest = hashlib.sha256(raw).hexdigest()
+            record = dict(schema_version=1, kind=HEALTHY_CHART_KIND, binding=health['binding'], chart_sha256=digest,
+                          chart_bytes=len(raw), permissions_changed=False,
+                          pre_close={k: health[k] for k in ('native_monitor','observed_utc','observed_terminal_utc','process',
+                                                           'observed_running_sha256','sdk')},
+                          close=dict(source=source, method=method, attempt_id=attempt_id, stopped_utc=stopped_utc,
+                                     recorded_utc=datetime.now(timezone.utc).isoformat()))
+            superseded = None
+            if existing['record']:
+                superseded = retire_healthy_chart(controller, (controller.root/HEALTHY_CHART_RECORD).read_bytes(), 'superseded')
+            write_json(controller.root/HEALTHY_CHART_RECORD, record)
+        return dict(status='recorded', chart_sha256=digest, chart_path=str(chart),
+                    observed_running_sha256=health['observed_running_sha256'],
+                    rewritten_on_close=digest != health['observed_running_sha256'],
+                    **(dict(superseded=superseded) if superseded else {}))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, StopIteration) as exc:
+        return dict(status='not_recorded', reason=getattr(exc, 'code', None) or 'check_failed', detail=str(exc))
+
+
 # One stable machine code for every saved-monitor check below (Claude-Mac, goatai#2350 6095158688). The
 # exception stays a ValueError (the CLI's top-level REFUSED is unchanged); ``failed_check`` names the first
 # failing check and ``failed_checks`` all of them. Every sentence names what is wrong and the one step the
@@ -358,7 +721,9 @@ def _profile_menu(profile_name):
     return 'File > Profiles > '+(profile_name or 'GOAT-Studio-...')
 
 
-def verify_monitor_profile(controller, receipt, *, observed_human_reopen=False, preserved_permissions_sha256=None):
+def verify_monitor_profile(controller, receipt, *, observed_human_reopen=False, preserved_permissions_sha256=None, healthy_chart=None):
+    """``healthy_chart``: a record check_healthy_chart returned as valid (monitor-launch only). Its exact chart bytes
+    are accepted through the preserved_permissions_sha256 path, and only for the chart file it is bound to."""
     session, _ = session_state(controller)
     name, profile = monitor_paths(controller, session)
     menu = _profile_menu(name)
@@ -402,6 +767,9 @@ def verify_monitor_profile(controller, receipt, *, observed_human_reopen=False, 
         raise monitor_refusal([('chart_too_large',
             'The saved monitor chart file is over 2 MB, far bigger than a monitor chart; '+SUPPORT_ROUTE,
             dict(chart_bytes=len(raw)))], profile_name=name)
+    if (healthy_chart is not None and preserved_permissions_sha256 is None
+            and healthy_chart['binding']['chart_path'] == str(charts[0])):
+        preserved_permissions_sha256 = healthy_chart['chart_sha256']
     verify_saved_monitor(raw, controller.install['ea_relative_path'], receipt['symbol'], controller.install['terminal_data_root'], observed_human_reopen=observed_human_reopen, preserved_permissions_sha256=preserved_permissions_sha256, profile_name=name)
     return profile
 
@@ -487,6 +855,11 @@ def verify_saved_monitor(raw, ea_relative_path, symbol, data_root, *, observed_h
     # A managed recovery may preserve the exact previously inspected inert
     # chart. Its transaction also checks saved/runtime Algo OFF and archives
     # permission bytes before close and after launch. No bit is reinterpreted.
+    # monitor-launch uses the same path for the exact post-close chart bytes
+    # close-terminal recorded after it observed this monitor healthy right before
+    # its own close (record_post_close_chart; fix B, goatai#2350 6118571536 /
+    # 6118831254); its launch still forces Algo Trading and live trading off.
+    # Any other byte, including another permission value, refuses.
     preserved=(isinstance(preserved_permissions_sha256,str)
                and hashlib.sha256(raw).hexdigest()==preserved_permissions_sha256)
     permission_ok=(mode=='0' or ((observed_human_reopen is True or preserved) and re.fullmatch(r'[0-9]{1,3}',mode)))
@@ -563,9 +936,17 @@ def saved_launch_policy(controller, session):
 
 
 def monitor_launch(controller, attempt_id):
-    if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', attempt_id):
+    if not isinstance(attempt_id, str) or not LAUNCH_ATTEMPT_ID.fullmatch(attempt_id):
         raise ValueError('Attempt ID must be 1..80 letters, digits, underscore or hyphen')
+    # Retire an observed-healthy chart record whose installation, terminal, account or session changed, before
+    # session_state can refuse a changed installation: a record never becomes valid again (fix B).
+    record_path = controller.root/HEALTHY_CHART_RECORD
+    if record_path.exists() or record_path.is_symlink():
+        with exclusive_gate(controller.local/'native-gate'):
+            check_healthy_chart(controller)
     session, _ = session_state(controller)
+    require_unprotected(session['account']['login'])
+    require_demo_binding(controller, session)
     directory = controller.root/'monitor-launches'
     directory.mkdir(exist_ok=True)
     target = directory/(attempt_id+'.json')
@@ -579,7 +960,21 @@ def monitor_launch(controller, attempt_id):
         # Heals a profile left on the previous receipt by an EA update from an earlier controller.
         rebound = rebind_monitor_profile(controller, session, retained_installations(controller))
         receipt = read_json(controller.root/'monitor-profile.json')
-        verify_monitor_profile(controller, receipt)
+        healthy = check_healthy_chart(controller, session)
+        try:
+            profile = verify_monitor_profile(controller, receipt, healthy_chart=healthy['record'])
+        except Refusal as exc:
+            if exc.code == MONITOR_PROFILE_REFUSAL and 'permissions' in exc.fields.get('failed_checks', ()):
+                # Which observed-healthy chart (if any) this launch compared against; nothing in it is a permission.
+                record = healthy['record']
+                exc.fields['observed_healthy_chart'] = (dict(status='differs', chart_sha256=record['chart_sha256']) if record
+                                                        else dict(status=healthy['status'], **({'reason':healthy['reason']} if 'reason' in healthy else {})))
+            raise
+        chart = next(p for p in profile.iterdir() if p.suffix.lower() == '.chr')
+        chart_sha256 = hashlib.sha256(chart.read_bytes()).hexdigest()
+        reused_chart = (dict(chart_sha256=chart_sha256, chart_path=str(chart), recorded_by_close=healthy['record']['close']['attempt_id'],
+                             stopped_utc=healthy['record']['close']['stopped_utc'])
+                        if healthy['record'] and healthy['record']['chart_sha256'] == chart_sha256 else None)
         portable = saved_launch_policy(controller, session)
         processes=inspect_processes(process_binding(controller), research_running=False, selected_stopped=True,
                           absent_roots=[str(Path(controller.install['terminal_executable']).parent),controller.install['terminal_data_root']])
@@ -605,7 +1000,8 @@ def monitor_launch(controller, attempt_id):
                       installation_sha256=sha(controller.install), run_id=session['run_id'],
                       created_at=datetime.now(timezone.utc).isoformat(), execution_ready=False, process_inventory=processes,
                       native_qualification=False, startup_config=str(config),
-                      startup_sha256=hashlib.sha256(startup).hexdigest(), preset_sha256=hashlib.sha256(expected).hexdigest())
+                      startup_sha256=hashlib.sha256(startup).hexdigest(), preset_sha256=hashlib.sha256(expected).hexdigest(),
+                      saved_chart_sha256=chart_sha256, observed_healthy_chart=reused_chart)
         write_json(target, intent)
         # A crash/failure here retains uncertainty; no automatic retry or close.
         process = subprocess.Popen(arguments, cwd=str(Path(arguments[0]).parent),
@@ -614,4 +1010,6 @@ def monitor_launch(controller, attempt_id):
         intent.update(status='process_started_unverified', pid=process.pid)
         write_json(target, intent)
     return intent | dict(reused=False, **(dict(monitor_profile_rebound=rebound) if rebound['status']=='rebound' else {}),
-        next_action='Approve DLL/WebRequest permissions and legitimate GOAT pairing in MT5; run serve, human Give to Agent, then onboarding-status. Process start is not runtime readiness.')
+        next_action=('MT5 reopened the monitor chart GOAT saved when it last closed this healthy monitor, with Algo Trading off; run serve, then onboarding-status (it names any human step left). '
+                     'Process start is not runtime readiness.' if reused_chart else
+                     'Approve DLL/WebRequest permissions and legitimate GOAT pairing in MT5; run serve, human Give to Agent, then onboarding-status. Process start is not runtime readiness.'))

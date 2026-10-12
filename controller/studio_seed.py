@@ -94,6 +94,8 @@ class SeedRunner:
         self.next_step_budget=60
         self.base=controller.root/'seeds';self.slot=controller.root/'seed-active.json'
         self.gate=controller.local/'native-gate'
+        # Fix B: the SDK readback for the first monitor close's health read; None = inspect_idle_demo (tester advisory).
+        self.monitor_sdk_read=None
 
     def path(self,batch_id):
         if not isinstance(batch_id,str) or not re.fullmatch('[A-Za-z0-9_-]{1,80}',batch_id):raise ValueError('Seed batch ID must use 1..80 letters/digits/underscore/hyphen')
@@ -912,9 +914,39 @@ class SeedRunner:
         self._discard_cancel_request(batch_id)          # a new activation: no request made for an earlier one applies
         state['generation']=owner['generation'];state['status']='closing_monitor';state['preflight']=observation;state['initial_process']=current
         if not reactivate:runner_record_start(self.c.install,state,manifest,now=self.clock())   # the news file this run starts on
+        # Fix B (Claude-Mac goatai#2350 6119079150): this is the run's first close, of the GOAT monitor MT5. Read its
+        # health immediately before; the post-close chart is recorded once the stop is observed (_drive_passes).
+        # Evidence only: an unhealthy read records nothing and the start proceeds exactly as before.
+        state['monitor_pre_close']=self._monitor_pre_close(current)
         self._save(root,state)
         write_json(self.slot,dict(status='active',batch_id=batch_id,manifest_sha256=state['manifest_sha256'],generation=state['generation']))
         self.process.close(current)
+
+    # A first monitor close whose stop is observed later than this records nothing (the stop must follow that close).
+    MONITOR_STOP_WINDOW_SECONDS=300
+
+    def _monitor_pre_close(self,current):
+        """studio_onboarding.driver_pre_close_health for the monitor MT5 this activation closes. Never raises."""
+        try:
+            from studio_onboarding import driver_pre_close_health
+            health=driver_pre_close_health(self.c,current,sdk_read=self.monitor_sdk_read)
+        except Exception as error:
+            health=dict(healthy=False,reason='check_failed',detail=str(error))
+        return health|dict(close_unix=self.clock())
+
+    def _monitor_record(self,batch_id,pre):
+        """Once the first close's stop is observed (native gate held): record the post-close monitor chart. Never raises."""
+        try:
+            from datetime import datetime,timezone
+            from studio_onboarding import record_post_close_chart
+            if (isinstance(pre,dict) and pre.get('healthy') is True
+                    and not 0<=self.clock()-float(pre.get('close_unix',float('-inf')))<=self.MONITOR_STOP_WINDOW_SECONDS):
+                return dict(status='not_recorded',reason='stop_not_observed_promptly')
+            return record_post_close_chart(self.c,pre,attempt_id=batch_id,method='first_monitor_close',
+                                           source=self.COMMAND_PREFIX+'-driver',stopped_utc=datetime.now(timezone.utc).isoformat(),
+                                           process=self.process,gate_held=True)
+        except Exception as error:
+            return dict(status='not_recorded',reason='check_failed',detail=str(error))
 
     def _research_guard(self,batch_id):
         """Two publisher budget breaches during this member (the owner research-launch guard,
@@ -1062,7 +1094,12 @@ class SeedRunner:
                 if state['status'] in ('completed','stopped','reconcile_required'):return self._public(root,state)
                 if state['status']=='closing_monitor':
                     if current is not None and current!=state['initial_process']:raise ValueError('Monitor process changed during normal close')
-                    if current is None:state['status']='active';self._save(root,state)
+                    if current is None:
+                        state['status']='active'
+                        if 'monitor_pre_close' in state:
+                            # Only this transition records; later per-member closes never touch the record.
+                            state['monitor_chart_record']=self._monitor_record(batch_id,state.pop('monitor_pre_close'))
+                        self._save(root,state)
                 running=next((m for m in state['members'] if m['status'] in ('running','cancel_requested','timeout_requested')),None)
                 if running and running['status']=='running':self._research_guard(batch_id)
                 if running:

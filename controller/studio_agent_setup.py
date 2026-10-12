@@ -29,17 +29,14 @@ from studio_agent_mailbox import identity, setup_register, setup_request, setup_
 from studio_bridge import write_json
 from studio_installation import read_json
 from studio_native_gate import exclusive_gate, settled_native_request
-from studio_onboarding import session_state, require_idle_control
+from studio_onboarding import (OPEN_LAB_LOGINS, pre_close_health, record_post_close_chart, require_unprotected,
+                               session_state, require_idle_control)
 from studio_refusal import Refusal
 
-# Experiment 02 runs live research on these demo logins. Agent setup and deploy never touch them.
-PROTECTED_ACCOUNTS = frozenset(('3000109427', '3000109421'))
+# The Open Lab experiment demo logins (Experiments 01, 02 and 03). Agent setup, deploy, close-terminal, monitor-launch
+# and monitor-repair never touch them; the one shared list is studio_onboarding.OPEN_LAB_LOGINS.
+PROTECTED_ACCOUNTS = OPEN_LAB_LOGINS
 ATTEMPT_ID = re.compile(r'[A-Za-z0-9_-]{1,80}')
-
-
-def require_unprotected(login):
-    if str(login) in PROTECTED_ACCOUNTS:
-        raise ValueError('This demo account belongs to a running GOAT experiment; agents never change it')
 
 
 @contextmanager
@@ -386,10 +383,11 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
     """Inert-only normal close of the selected terminal. Retained; never repeated."""
     from studio_monitor_probe import inspect_idle_demo
     from studio_seed_process import WindowsSeedProcess
-    session, _ = session_state(controller)
+    session, state = session_state(controller)
     require_unprotected(session['account']['login'])
     process = process or WindowsSeedProcess(controller)
     inspect = inspect or inspect_idle_demo
+    health = None   # Fix B: this close's own health read immediately before it closes MT5 (pre_close_health).
     request = request or setup_request
     path = _journal(controller, 'terminal-closes', attempt_id)
     gate = controller.local / 'native-gate'
@@ -440,6 +438,7 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
             native = inspect(controller)
             if native.get('process') != running:
                 raise ValueError('The terminal changed while it was inspected; nothing was closed')
+            health = pre_close_health(controller, session, state, native, running)
             # Register the shutdown capability before journaling: a refused registration (for
             # example a live one from another build) leaves no close_intent behind (goatai#1885).
             ident = superseded = None
@@ -490,6 +489,7 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
                 again = inspect(controller)
                 if again.get('process') != running:
                     raise ValueError('The terminal changed before close; nothing was closed')
+                health = pre_close_health(controller, session, state, again, running)
                 method = 'controller_normal_close'
                 close_requested_utc = close_requested_utc or _utc_now()
                 record['phase'] = 'close_issued'; record['method'] = method; record['close_requested_utc'] = close_requested_utc
@@ -504,5 +504,10 @@ def close_terminal(controller, attempt_id, *, build_id=None, process=None, inspe
             return record | dict(status='close_outcome_unresolved', close_will_not_be_repeated=True)
         record.update(phase='stopped', status='stopped', stopped_utc=datetime.now(timezone.utc).isoformat(),
                       exit_observation=_exit_observation(observed, close_requested_utc))
+        # Fix B (goatai#2350 6118831254): MT5 rewrites the monitor chart as it closes. Only now, fully stopped, are the
+        # chart bytes the ones the next monitor-launch reads; they are recorded only after a healthy read just before
+        # this close and with nothing bound changed since. Never fails the close (a resumed close records nothing).
+        record['monitor_chart_record'] = record_post_close_chart(controller, health, attempt_id=attempt_id, method=method,
+                                                                 stopped_utc=record['stopped_utc'], process=process)
         write_json(path, record)
         return record

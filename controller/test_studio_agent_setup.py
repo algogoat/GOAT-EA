@@ -303,7 +303,7 @@ class AgentSetupTests(DeployFixture):
             agent_setup.pairing_code(self.c, 'x', mt5=FakeMT5(self.c))
         self.c.session['account']['login'] = '3000109427'
         with patch('studio_agent_setup.session_state', return_value=(self.c.session, {})):
-            with self.assertRaisesRegex(ValueError, 'running GOAT experiment'):
+            with self.assertRaisesRegex(ValueError, 'GOAT Open Lab experiment'):
                 agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
 
     def test_pairing_proves_demo_from_the_broker_before_any_request(self):
@@ -451,7 +451,7 @@ class AgentSetupTests(DeployFixture):
             with self.assertRaisesRegex(ValueError, 'build ID'):
                 agent_setup.pairing_code(self.c, 'x', mt5=FakeMT5(self.c))
         protected = dict(self.c.session, authority_kind='demo_direct', account=dict(self.c.session['account'], login='3000109427'))
-        with patch('studio_agent_setup.session_state', return_value=(protected, {})), self.assertRaisesRegex(ValueError, 'running GOAT experiment'):
+        with patch('studio_agent_setup.session_state', return_value=(protected, {})), self.assertRaisesRegex(ValueError, 'GOAT Open Lab experiment'):
             agent_setup.pairing_code(self.c, BUILD, mt5=FakeMT5(self.c))
         # A file for another build or login is ignored, and the demo lane then falls back without a mailbox write.
         self.shared_code_file(buildId='V1.48-OTHER-BUILD-02')
@@ -816,7 +816,7 @@ class AgentSetupTests(DeployFixture):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 deploy.load(self.c, self.plan(members, **changes), mt5=FakeMT5(self.c))
         self.c.session['account']['login'] = '3000109421'
-        with patch('studio_demo_deploy.session_state', return_value=(self.c.session, {})), self.assertRaisesRegex(ValueError, 'running GOAT experiment'):
+        with patch('studio_demo_deploy.session_state', return_value=(self.c.session, {})), self.assertRaisesRegex(ValueError, 'GOAT Open Lab experiment'):
             deploy.load(self.c, self.plan(accountLogin='3000109421'), mt5=FakeMT5(self.c, login='3000109421'))
         self.assertFalse(deploy.paths(self.c, 'e' * 32)['state'].exists(), 'nothing is staged after a refusal')
 

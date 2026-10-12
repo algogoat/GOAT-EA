@@ -1,8 +1,8 @@
 // B44 item 5 (goatai#2350): BlindExport. Off by default, appended as the last input (append-only, WriteSet never
 // writes it). On: the exporter adds blind=1 to each export run's EA_Desc @{...}; that tester run measures the fit+FWD
-// window (SAMPLE: dt_BOOS_end to dt_FOOS_start) and writes "; EXPORT: blind=1 ranked=fit+fwd" plus a "; RANKED:" line;
+// window (SAMPLE: dt_BOOS_end to dt_FOOS_start) and writes "; EXPORT blind:1 ranked:fit+fwd sr:daily_ann" plus a "; RANKED" line;
 // RunAndStoreSet's profit floor and the SR/ARF it stores (so the MinSR/MinARF count and SortAndTrimExports) come from
-// that line. Off: every export is stamped "; EXPORT: blind=0 ranked=full_span" and nothing else changes.
+// that line. Off: every export is stamped "; EXPORT blind:0 ranked:full_span sr:mt5_stat" and nothing else changes. Neither line
 // This runs the production GoatRankTick / GoatRankLine / GoatReadRankedLine after a syntax-only MQL-to-JS conversion
 // against modelled equity streams, compares them with an independent implementation of the definitions, and pins the
 // wiring and the blind=0 no-drift against c708cae4. Native tester runs are not exercised here.
@@ -84,7 +84,7 @@ function reference(points,from,to){
  let sr=0;if(rets.length>=2){const m=rets.reduce((a,b)=>a+b,0)/rets.length;const v=rets.reduce((a,b)=>a+(b-m)**2,0)/(rets.length-1);if(v>0)sr=m/Math.sqrt(v)*Math.sqrt(252);}
  return {pl:close-open,arf,sr,days:days.size};
 }
-const parse=line=>Object.fromEntries(line.split(' ').filter(x=>x.includes('=')).map(x=>x.split('=')));
+const parse=line=>{assert.ok(!line.includes('='),'a RANKED line holds no =: '+line);return Object.fromEntries(line.split(' ').filter(x=>x.includes(':')).map(x=>x.split(':')));};
 let seed=20261012;const rnd=()=>(seed=(seed*48271)%2147483647)/2147483647;
 function stream(days=180,ticks=40){const out=[];let e=100000,t=Date.UTC(2025,0,6)/1000;
  for(let d=0;d<days;d++){const day=t+d*86400;if([0,6].includes(new Date(day*1000).getUTCDay()))continue;
@@ -97,7 +97,7 @@ for(let run=0;run<6;run++){
  const foos=pts[Math.floor(pts.length*0.85)][0]-pts[Math.floor(pts.length*0.85)][0]%86400;
  const c=harness({boos,foos});for(const [t,e] of pts){c.now=t;c.equity=e;c.GoatRankTick();}
  const line=c.GoatRankLine(),got=parse(line),want=reference(pts,boos,foos);
- assert.ok(line.startsWith('; RANKED: fit+fwd '+date(boos)+'-'+date(foos)+' '),line);
+ assert.ok(line.startsWith('; RANKED fit+fwd '+date(boos)+'-'+date(foos)+' '),line);
  assert.equal(Number(got.Days),want.days);assert.equal(got.Trades,'7');
  assert.equal(got.PL,want.pl.toFixed(2));assert.equal(got.SR,want.sr.toFixed(3),'SR run '+run);assert.equal(got.ARF,want.arf.toFixed(3),'ARF run '+run);
  ok();
@@ -114,11 +114,12 @@ for(let run=0;run<6;run++){
  assert.deepEqual([parse(flat.GoatRankLine()).ARF,parse(flat.GoatRankLine()).PL],['0.000','0.00']);ok();}
 // 4) The exporter's reader: exactly one RANKED line after the blind=1 stamp, with PL, SR and ARF.
 {const c=harness();const read=t=>{const out={};const r=c.GoatReadRankedLine(t,out);return [r,out.pl,out.sr,out.arf];};
- const good='; SAMPLE: x\n; EXPORT: blind=1 ranked=fit+fwd sr=daily_ann\r\n; RANKED: fit+fwd 2025.01.01-2025.06.01 Days=100 Trades=40 PL=-12.50 SR=1.234 ARF=0.456\r\nRisk=500\n';
+ const good='; SAMPLE: x\n; EXPORT blind:1 ranked:fit+fwd sr:daily_ann\r\n; RANKED fit+fwd 2025.01.01-2025.06.01 Days:100 Trades:40 PL:-12.50 SR:1.234 ARF:0.456\r\nRisk=500\n';
  assert.deepEqual(read(good),[true,-12.5,1.234,0.456]);
- for(const [label,text] of [['no stamp',good.replace('; EXPORT: blind=1 ranked=fit+fwd sr=daily_ann\r\n','')],['the pre-condition stamp',good.replace(' sr=daily_ann','')],['blind=0 stamp',good.replace('blind=1 ranked=fit+fwd','blind=0 ranked=full_span')],
-  ['no ranked line',good.replace(/; RANKED:.*\r\n/,'')],['two ranked lines',good.replace(/(; RANKED:.*\r\n)/,'$1$1')],['no SR',good.replace(' SR=1.234','')],
-  ['empty ARF',good.replace('ARF=0.456','ARF=')],['empty file','']]) {assert.equal(read(text)[0],false,label);}
+ for(const [label,text] of [['no stamp',good.replace('; EXPORT blind:1 ranked:fit+fwd sr:daily_ann\r\n','')],['the pre-condition stamp',good.replace(' sr:daily_ann','')],
+  ['the = form of the stamp',good.replace('; EXPORT blind:1 ranked:fit+fwd sr:daily_ann','; EXPORT: blind=1 ranked=fit+fwd sr=daily_ann')],['the = form of RANKED',good.replace(/Days:100 Trades:40 PL:-12.50 SR:1.234 ARF:0.456/,'Days=100 Trades=40 PL=-12.50 SR=1.234 ARF=0.456')],['blind:0 stamp',good.replace('blind:1 ranked:fit+fwd','blind:0 ranked:full_span')],
+  ['no ranked line',good.replace(/; RANKED .*\r\n/,'')],['two ranked lines',good.replace(/(; RANKED .*\r\n)/,'$1$1')],['no SR',good.replace(' SR:1.234','')],
+  ['empty ARF',good.replace('ARF:0.456','ARF:')],['empty file','']]) {assert.equal(read(text)[0],false,label);}
  ok();}
 // 5) Wiring.
 {const lastInput=[...main.matchAll(/^\s*(?:input|sinput)\s+\w+\s+(\w+)/gm)].at(-1);
@@ -129,7 +130,7 @@ for(let run=0;run<6;run++){
  assert.match(audit,/"GOAT_FitnessRunNonce","BlindExport"\};\n   string declared_values\[7\]=\{"false","","0","0","4","0","false"\};/,'the child audit accepts it at its default only');
  assert.match(main,/fwdRangeMeta\+\(BlindExport \? ",blind=1" : ""\)\+"\}\\n"/,'blind=1 rides in the export run meta only when on');
  assert.match(main,/if\(names\[i\]=="blind" && values\[i\]=="1"\) \{g_GoatBlindExport=true;/);
- assert.match(main,/if\(g_GoatBlindExport\) WriteSet\(GoatBlindDesc\(desc\)\);\n\s+else\s+WriteSet\(desc\+"\\n; EXPORT: blind=0 ranked=full_span sr=mt5_stat"\);/);
+ assert.match(main,/if\(g_GoatBlindExport\) WriteSet\(GoatBlindDesc\(desc\)\);\n\s+else\s+WriteSet\(desc\+"\\n; EXPORT blind:0 ranked:full_span sr:mt5_stat"\);/);
  assert.match(main,/    if\(g_GoatBlindExport\) metrix=GoatRankMetrix\(\);[^\n]*\n    newFile \+= metrix\+".csv";/,'a blind export is named by its window metrics');
  assert.match(main,/GoatRankTick\(\); \/\/ B44 item 5/);
  const store=unit(main,'int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[],bool Init=false,const int startAttempts=20)');
@@ -170,19 +171,20 @@ for(let run=0;run<6;run++){
   const full='_Trds=88_Prf='+net.toFixed(0)+'_DD=900_PF=1.23_SR=1.50_ARF='+(net/1e5).toFixed(3);
   const metrix=blind?c.GoatRankMetrix():full,name='GOAT V1.49 EURUSD,M1'+metrix+'.set';
   const lots=Math.round(0.10*(1000/Math.max(fx.FetchMetric(name,'DD'),1.0))*100)/100;
-  const head=blind?c.GoatBlindDesc(desc):desc+'\n; EXPORT: blind=0 ranked=full_span sr=mt5_stat';
+  const head=blind?c.GoatBlindDesc(desc):desc+'\n; EXPORT blind:0 ranked:full_span sr:mt5_stat';
   const content=(head+'\r\n; ===========GENERAL SETTINGS============\r\nMode_Operation=9\r\nEA_Desc=R0001\r\nLots_Input='+lots.toFixed(2)+'\r\nGrid_Size=-2.25\r\n');
   return {name,content,lots};
  }
  const a=exportOf(holdout(1,0.40),true),b=exportOf(holdout(2,0.62),true);
  assert.equal(a.name,b.name,'file name');assert.equal(a.content,b.content,'full SET content, lots included');assert.equal(a.lots,b.lots);
- assert.match(a.content,/; EXPORT: blind=1 ranked=fit\+fwd sr=daily_ann\n; RANKED: fit\+fwd /);
+ assert.match(a.content,/; EXPORT blind:1 ranked:fit\+fwd sr:daily_ann\n; RANKED fit\+fwd /);
+ assert.ok(a.content.split('\n').filter(l=>/^; (EXPORT|RANKED)/.test(l)).every(l=>!l.includes('=')),'neither line holds =');
  assert.ok(!/FOOS|NEWS|Return=|PF=1\.234/.test(a.content),'no full-span, FOOS or news line in a blind SET');
  assert.match(a.content,/; BOOS:.*\n; SAMPLE:.*\n; FWD:/,'the window lines stay');
  const a0=exportOf(holdout(1,0.40),false),b0=exportOf(holdout(2,0.62),false);
  assert.notEqual(a0.name,b0.name,'blind=0 names do depend on FOOS (sanity)');assert.notEqual(a0.content,b0.content);
  // The ranking metrics in the name are the window's: Prf is the RANKED PL, SR and ARF its SR and ARF.
- const ranked=parse(a.content.split('\n').find(l=>l.startsWith('; RANKED:')));
+ const ranked=parse(a.content.split('\n').find(l=>l.startsWith('; RANKED ')).replace(/\r$/,''));
  assert.equal(fx.FetchMetric(a.name,'Prf'),Math.round(Number(ranked.PL)));assert.equal(fx.FetchMetric(a.name,'Trds'),41);
  assert.equal(fx.FetchMetric(a.name,'SR').toFixed(2),Number(ranked.SR).toFixed(2));ok();}// 6) blind=0 no-drift: with the B44 lines taken out, StartExporter and RunAndStoreSet are c708cae4's text.
 let compared=false;

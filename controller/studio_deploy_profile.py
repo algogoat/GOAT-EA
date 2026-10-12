@@ -44,7 +44,7 @@ PERIODS = {token: MT5_PERIODS[token] for token in ('M1', 'M5', 'H1', 'H4', 'D1')
 # each sequence's order comment). Adoption requires it to equal the registration's deploymentId and settingsMatch
 # pins it, so a hand-added chart with the same SET is never adopted.
 DEPLOY_NONCE_INPUT = 'Studio_MonitorRunPath'
-EXPORT_STAMP_PREFIX = '; EXPORT:'
+EXPORT_STAMP_PREFIX = '; EXPORT'
 DEPLOY_NONCE_PREFIX = 'deploy='
 DEPLOYMENT_ID = re.compile(r'[a-f0-9]{32}')
 AI_POLICY_NAMES = ('Mode_Bias', 'Bias_threshold', 'Bias_Protocol', 'Mode_Bias_Trades')
@@ -106,7 +106,8 @@ def set_input_lines(raw):
         if any(c != '\t' and unicodedata.category(c) in ('Cc', 'Zl', 'Zp') for c in piece):
             _refuse_line('a control character or a Unicode line or paragraph separator', piece)
         line = piece.strip(TRIM)
-        # B44 condition 2 (goatai#2350 6127809765): the export stamp ('; EXPORT: blind=... ranked=... sr=...') is provenance,
+        # B44 condition 2 (goatai#2350 6127809765, 6128225191): the export stamp ('; EXPORT blind:... ranked:... sr:...', which holds no '='
+        # so c708cae4 and older writers drop it too; also the pre-release '; EXPORT: blind=...' form) is provenance,
         # not an input. Dropped here and in GOATDeployProfileWriter.mqh, so a stamped B44 SET deploys byte for byte as its
         # unstamped B43 twin.
         if line.startswith(EXPORT_STAMP_PREFIX):

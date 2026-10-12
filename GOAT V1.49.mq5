@@ -2834,7 +2834,7 @@ sinput string Studio_MonitorRunPath=""; // Read-only run folder; blank follows a
 input bool BlindExport=false; // Exporter: rank exports on fit+FWD only (BOOS/FOOS stay for the gates)
 // With BlindExport on, the exporter adds blind=1 to each export run's EA_Desc @{...}. That tester run then measures
 // the fit+FWD window (the SET header's SAMPLE window, dt_BOOS_end to dt_FOOS_start) on every tick and writes it on
-// a "; RANKED:" header line; the exporter's profit floor, SR, ARF and SetsToExport trim read that line. Definitions
+// a "; RANKED" header line; the exporter's profit floor, SR, ARF and SetsToExport trim read that line. Definitions
 // follow the controller's selectionWindow (studio_window_metrics.py): PL = closing - opening equity; ARF = the
 // OnTester ARF (top-5 drawdown episodes, monthly) on the window; SR = daily equity returns, mean / sample standard
 // deviation x sqrt(252), which is NOT MT5's STAT_SHARPE_RATIO. Measurement only: no trading decision reads it.
@@ -2905,15 +2905,15 @@ void GoatRankFinish(void)
       if(rank_var>0) g_GoatRankSR=rank_mean/MathSqrt(rank_var)*MathSqrt(252.0);
      }
   }
-// The "; RANKED:" header line, once at the end of a blind export run.
+// The "; RANKED" header line, once at the end of a blind export run. B44 (goatai#2350 6128225191): the stamp and RANKED
 string GoatRankLine(void)
   {
    string rank_from=(dt_Back_OOS!=0 ? TimeToString(dt_Back_OOS,TIME_DATE) : "start");
    string rank_to=(dt_Fwrd_OOS!=0 ? TimeToString(dt_Fwrd_OOS,TIME_DATE) : "end");
-   if(!g_GoatRankOpened || g_GoatRankOpen<=0.0) return "; RANKED: fit+fwd "+rank_from+"-"+rank_to+" Days=0 Trades=0 PL=0.00 SR=0.000 ARF=0.000";
+   if(!g_GoatRankOpened || g_GoatRankOpen<=0.0) return "; RANKED fit+fwd "+rank_from+"-"+rank_to+" Days:0 Trades:0 PL:0.00 SR:0.000 ARF:0.000";
    GoatRankFinish();
-   return "; RANKED: fit+fwd "+rank_from+"-"+rank_to+" Days="+IntegerToString(g_GoatRankDays)+" Trades="+IntegerToString(trd_IS)
-          +" PL="+DoubleToString(g_GoatRankClose-g_GoatRankOpen,2)+" SR="+DoubleToString(g_GoatRankSR,3)+" ARF="+DoubleToString(g_GoatRankARF,3);
+   return "; RANKED fit+fwd "+rank_from+"-"+rank_to+" Days:"+IntegerToString(g_GoatRankDays)+" Trades:"+IntegerToString(trd_IS)
+          +" PL:"+DoubleToString(g_GoatRankClose-g_GoatRankOpen,2)+" SR:"+DoubleToString(g_GoatRankSR,3)+" ARF:"+DoubleToString(g_GoatRankARF,3);
   }
 // B44 condition 1 (goatai#2350 6127809765): a blind export is blind. Its file-name metrics are the window's, so its
 // name, the AdjustLots scaling (on the file name's DD) and its SET never depend on a FOOS bar. PF: winning over losing
@@ -2957,10 +2957,10 @@ string GoatBlindDesc(const string rank_desc)
          || StringFind(rank_line,"; SAMPLE:")==0 || StringFind(rank_line,"; FWD:")==0)
          rank_kept+=(rank_kept=="" ? "" : "\n")+rank_line;
      }
-   return rank_kept+"\n; EXPORT: blind=1 ranked=fit+fwd sr=daily_ann\n"+GoatRankLine();
+   return rank_kept+"\n; EXPORT blind:1 ranked:fit+fwd sr:daily_ann\n"+GoatRankLine();
   }
-// Exporter side: PL, SR and ARF from an export's one "; RANKED: fit+fwd" line, which must follow its
-// "; EXPORT: blind=1 ranked=fit+fwd sr=daily_ann" stamp. Anything else (missing, repeated, unparsable) is false.
+// Exporter side: PL, SR and ARF from an export's one "; RANKED fit+fwd" line, which must follow its
+// "; EXPORT blind:1 ranked:fit+fwd sr:daily_ann" stamp. Anything else (missing, repeated, unparsable) is false.
 bool GoatReadRankedLine(const string rank_text,double &rank_pl,double &rank_sr,double &rank_arf)
   {
    rank_pl=rank_sr=rank_arf=0.0;
@@ -2970,15 +2970,15 @@ bool GoatReadRankedLine(const string rank_text,double &rank_pl,double &rank_sr,d
    for(int i=0;i<rank_count;i++)
      {
       string rank_line=rank_lines[i]; StringTrimLeft(rank_line); StringTrimRight(rank_line);
-      if(rank_line=="; EXPORT: blind=1 ranked=fit+fwd sr=daily_ann") {rank_stamped=true; continue;}
-      if(StringFind(rank_line,"; RANKED: fit+fwd ")!=0) continue;
+      if(rank_line=="; EXPORT blind:1 ranked:fit+fwd sr:daily_ann") {rank_stamped=true; continue;}
+      if(StringFind(rank_line,"; RANKED fit+fwd ")!=0) continue;
       if(!rank_stamped || ++rank_found>1) return false;
       string rank_tokens[];
       int rank_n=StringSplit(rank_line,' ',rank_tokens),rank_seen=0;
       for(int t=0;t<rank_n;t++)
         {
          string rank_token=rank_tokens[t];
-         int rank_eq=StringFind(rank_token,"=");
+         int rank_eq=StringFind(rank_token,":");
          if(rank_eq<1) continue;
          string rank_key=StringSubstr(rank_token,0,rank_eq),rank_value=StringSubstr(rank_token,rank_eq+1);
          if(rank_value=="" || !MathIsValidNumber(StringToDouble(rank_value))) continue;
@@ -3113,7 +3113,7 @@ int OnInit()
      {
       dt_FWD_end = StringToTime(values[i]); Print("dt_FWD_end:",TimeToString(dt_FWD_end,TIME_DATE));
      }
-     if(names[i]=="blind" && values[i]=="1") {g_GoatBlindExport=true; Print("EXPORT: blind=1 ranked=fit+fwd");} // B44 item 5
+     if(names[i]=="blind" && values[i]=="1") {g_GoatBlindExport=true; Print("EXPORT blind:1 ranked:fit+fwd");} // B44 item 5
     }
     if(MQLInfoInteger(MQL_TESTER))
     {
@@ -4544,7 +4544,7 @@ double OnTester()
        // B44 item 5: every export says how it was ranked (an export without this line is blind=0).
        // sr= names the Sharpe the file's SR is: the window's daily annualized one, or MT5's STAT_SHARPE_RATIO.
        if(g_GoatBlindExport) WriteSet(GoatBlindDesc(desc));
-       else                  WriteSet(desc+"\n; EXPORT: blind=0 ranked=full_span sr=mt5_stat");
+       else                  WriteSet(desc+"\n; EXPORT blind:0 ranked:full_span sr:mt5_stat");
       }
     g_sequence_export_csv=newFile;
     g_sequence_export_set=FileSET_Name;
@@ -5012,7 +5012,7 @@ int RunAndStoreSet(int rowInd,string mode,bool reportMode,ExportRecord &expArr[]
                                                               +", Export Trades="+DoubleToString(trades,0)+" Back Trades="+DoubleToString(xmlData.Rows[0].back_trades,0),Key,EA_Name,Server); return 0;}
 
    // B44 item 5: with BlindExport the profit floor, SR and ARF (so the thresholds and SortAndTrimExports) are the
-   // fit+FWD window's, from the export's own "; RANKED:" line. BOOS and FOOS stay in the export for the gates.
+   // fit+FWD window's, from the export's own "; RANKED" line. BOOS and FOOS stay in the export for the gates.
    double rank_pl=0.0,rank_sr=0.0,rank_arf=0.0;
    if(BlindExport)
    {

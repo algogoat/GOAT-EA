@@ -219,12 +219,17 @@ brokerFit: {                                   // = the broker-fit result's depl
   referenceIdentical: null|{ server, currency, leverage, startingBalance, reason: 'REFERENCE_IDENTICAL_MARGIN' },
   members: [{ index, memberId, brokerSymbol, deployFileName,                      // = each fit member's `deploy`, with
               setSha256Reference, setSha256Deployed, edits,                       //   its index in the plan
-              rules: { volumeMin, volumeStep, volumeMax|null, contractRatio, referenceVolumeMin, startLot|null } }]
-}
+              rules: { volumeMin, volumeStep, volumeMax|null, contractRatio, referenceVolumeMin, referenceVolumeStep,
+                       referenceVolumeMax|null, startLot|null } }],
+  excludedSets: [{ memberId, contentBase64 }]  // round 3 item D: the reference SET of every manifest member the plan
+}                                              //   leaves out (hash-bound to the manifest); added by the app
 ```
 
-Only `manifest`, the reference SET bytes (hash-bound to it) and the planning `equity` are inputs at deploy. Every other
-value is a CLAIM the deploy compares with its own re-derivation (round 2, review item 7).
+The inputs at deploy are `manifest`, the reference SET bytes (the plan members' and `excludedSets`, each hash-bound to
+the manifest) and the planning `equity`. Every other value is a CLAIM the deploy compares with its own re-derivation
+(round 2, review item 7). **The manifest itself is NOT verified yet** (re-review 6132018108 item A, open: the controller
+runtime has no ed25519 library): a plan carrying a forged manifest (another `startingBalance`, `contractSize`,
+`tickValue`, `startLot`) is re-derived from that forged manifest. Until A lands, the plan's manifest is trusted.
 
 - With `brokerFit`, each plan member's `contentBase64`/`sha256` are the REFERENCE SET (as the house store serves it),
   its `fileName` is the result's `deployFileName` and its `symbol` the broker symbol. The plan lists fit members only.
@@ -325,8 +330,9 @@ These override the rules above where they differ.
    loss per lot = reference Risk x money factor / (startLot x lot factor). The pick sizes the margin and the
    `Lots_Max x start lot` minimum; `BELOW_MIN_LOT` when the ideal start lot (deployed Risk / loss per lot) is under
    VOLUME_MIN (the EA would be forced up to VOLUME_MIN). `scaled.startLot` is the pick.
-7. **The deploy trusts no plan value** (Deploy hook above): block v2 carries `manifest`, `equity`, `reviewedAtUtc`
-   and per member `brokerSymbol` / `deployFileName`; everything is re-derived and compared.
+7. **The deploy trusts no plan value except the manifest** (Deploy hook above): block v2 carries `manifest`,
+   `equity`, `reviewedAtUtc` and per member `brokerSymbol` / `deployFileName`; everything else is re-derived and
+   compared. The manifest's signature is not verified yet (round 3 item A, open).
 8. **Server clock from a tick seen arriving:** one tick time cannot prove its own age (3,600 s old on UTC+4 reads
    exactly UTC+3), so the offset is measured only from a mapped symbol's tick that arrives while `read_broker`
    re-reads them (at most 10 s, so its age is at most that). No arrival (closed market) = offset unknown: clock-
@@ -374,3 +380,14 @@ C. **The attach-only race is closed.** `read_broker` records the selected termin
    of the exact `terminal_executable`) before `initialize`, and re-scans after it (whether it succeeded or not). Any
    other identity means `initialize` started MT5: `shutdown()`, nothing is read, refusal `MT5_STARTED_BY_CHECK` "GOAT
    started MT5 by accident; close it and check again." (fields `pidBefore`, `pidAfter`).
+
+D. **The plan deploys exactly the review's fit set.** The block carries `excludedSets` (the reference SET of every
+   manifest member the plan leaves out); with the plan members they must name every manifest member exactly once,
+   each hash-bound to its manifest entry (`deploy_entries` refuses otherwise). The deploy re-derives the WHOLE manifest
+   and adds a stale row `members` (reviewed = the plan's memberIds, live = the re-derived fit set) when they differ: a
+   1-of-35 plan no longer passes the 90% rule at 100%, and a member the review excluded can never be added.
+
+A. **Open: manifest signature verification** (`MANIFEST_UNVERIFIED`). The controller's runtime (the suite's pinned
+   wheels: MetaTrader5 and numpy only, `controller/ci-requirements.txt`, goatai `desktop/tools/suiteRuntimeDependencies.cjs`)
+   has no ed25519 implementation, and GOAT does not hand-roll crypto, so the manifest is not verified by the
+   controller yet (see the Deploy hook note).

@@ -721,10 +721,15 @@ class SetEncodingTests(unittest.TestCase):
             bf.rewrite_set(utf16(['Risk=1.0', 'Risk=2.0']), dict(Risk='250.0'))
 
 
-def plan_block(result):
-    """The deploy plan's brokerFit block as the app assembles it: deployBasis plus each fit member's deploy entry."""
+def plan_block(result, sets=None):
+    """The deploy plan's brokerFit block as the app assembles it: deployBasis plus each fit member's deploy entry, plus
+    the reference SET bytes of every member it leaves out (excludedSets, round 3 item D; `sets` = {setSha256: bytes})."""
+    import base64
     entries = [dict(row['deploy'], index=index) for index, row in enumerate(r for r in result['members'] if r['status'] == 'fit')]
-    return dict(result['deployBasis'], members=entries)
+    by_id = {m['memberId']: m for m in result['deployBasis']['manifest']['members']}
+    excluded = [dict(memberId=row['memberId'], contentBase64=base64.b64encode(sets[by_id[row['memberId']]['setSha256']]).decode())
+                for row in result['members'] if row['status'] != 'fit']
+    return dict(result['deployBasis'], members=entries, excludedSets=excluded)
 
 
 def stale(block, references, **read):
@@ -865,6 +870,44 @@ class DeployRecheckTests(unittest.TestCase):
         rows = stale(block, [KESTREL, fixed], account=live, symbols=facts)
         self.assertIn(dict(memberId='EURUSD.M1.kestrel', input='Risk', reviewed=500.0, live=475.0), rows)
         self.assertIn(dict(memberId='fixed', input='Lots_Input', reviewed=0.1, live=0.09), rows)
+
+    def test_the_plan_deploys_exactly_the_members_the_review_marked_fit(self):
+        # Review 6132018108 item D. Probe: a 35-member portfolio, all fit, and a plan that deploys only member 0 (the
+        # other 34 passed as excluded). The old re-check re-derived the plan's own members only: 1 of 1 = 100% fit,
+        # []. Now the whole manifest is re-derived and the fit set must be exactly the plan's.
+        rows = []
+        for index in range(35):
+            raw = kestrel_with(EA_Desc='R%02d' % index)
+            rows.append((member(raw, member_id='m%02d' % index), raw))
+        sets = {m['setSha256']: raw for m, raw in rows}
+        result = run(rows, margins={'EURUSD': 500.0})
+        self.assertEqual((result['offered'], sum(r['status'] == 'fit' for r in result['members'])), (True, 35))
+        full = plan_block(result, sets)
+        self.assertEqual(stale(full, [raw for _, raw in rows], margins={'EURUSD': 500.0}), [])
+        import base64
+        one_of_35 = dict(full, members=full['members'][:1],
+                         excludedSets=[dict(memberId=m['memberId'], contentBase64=base64.b64encode(raw).decode()) for m, raw in rows[1:]])
+        bf.deploy_entries(one_of_35, [object()])
+        found = stale(one_of_35, [rows[0][1]], margins={'EURUSD': 500.0})
+        self.assertEqual(found, [dict(memberId=None, input='members', reviewed=['m00'], live=['m%02d' % i for i in range(35)])])
+        # A superset: a member the review excluded (no GBPUSD on this broker) forged into the plan.
+        gbp = kestrel_with(EA_Desc='G')
+        pair = [(member(KESTREL), KESTREL), (member(gbp, member_id='gbp', canonical='GBPUSD'), gbp)]
+        reviewed = run(pair)
+        self.assertEqual([r['status'] for r in reviewed['members']], ['fit', 'excluded'])
+        honest = plan_block(reviewed, {m['setSha256']: raw for m, raw in pair})
+        self.assertEqual(inputs(stale(honest, [KESTREL])), [bf.PORTFOLIO_BROKER_UNFIT], 'its fit set matches; 1 of 2 is under 90%')
+        forged_entry = dict(honest['members'][0], index=1, memberId='gbp', setSha256Reference=pair[1][0]['setSha256'],
+                            setSha256Deployed=pair[1][0]['setSha256'], brokerSymbol='GBPUSD',
+                            deployFileName=bf.deploy_file_name(pair[1][0]['setName'], 'GBPUSD'))
+        superset = dict(honest, members=honest['members'] + [forged_entry], excludedSets=[])
+        bf.deploy_entries(superset, [object(), object()])
+        self.assertIn('members', inputs(stale(superset, [KESTREL, gbp])))
+        # Every manifest member exactly once: one left out of both lists, or named twice, is refused at validation.
+        for broken in (dict(honest, excludedSets=[]), dict(honest, excludedSets=honest['excludedSets'] * 2),
+                       dict(honest, excludedSets=[dict(honest['excludedSets'][0], contentBase64=base64.b64encode(KESTREL).decode())])):
+            with self.assertRaises(ValueError):
+                bf.deploy_entries(broken, [object()])
 
     def test_the_deploy_trusts_no_plan_value(self):
         # Review item 7. Probe: a hand-made referenceIdentical {startingBalance: '10000'} on a 10k account deployed

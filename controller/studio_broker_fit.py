@@ -1390,7 +1390,8 @@ def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate
 # ------------------------------------------------------------------ deploy hook (studio_demo_deploy)
 
 DEPLOY_BLOCK_KEYS = frozenset(('schema', 'scale', 'equity', 'referenceEquity', 'accountCurrency', 'rate', 'reviewedAtUtc',
-                               'manifest', 'referenceIdentical', 'members'))
+                               'manifest', 'referenceIdentical', 'members', 'excludedSets'))
+EXCLUDED_SET_KEYS = frozenset(('memberId', 'contentBase64'))
 REFERENCE_IDENTICAL_KEYS = frozenset(('server', 'currency', 'leverage', 'startingBalance', 'reason'))
 DEPLOY_MEMBER_KEYS = frozenset(('index', 'memberId', 'brokerSymbol', 'deployFileName', 'setSha256Reference', 'setSha256Deployed',
                                 'edits', 'rules'))
@@ -1457,7 +1458,37 @@ def deploy_entries(block, members):
                 or entry['deployFileName'] != plan_member.get('fileName', entry['deployFileName'])
                 or entry['deployFileName'] != deploy_file_name(source['setName'], entry['brokerSymbol'])):
             raise ValueError('Broker-fit member %d does not match its plan member and manifest entry' % index)
+    excluded_sets(block)
     return entries
+
+
+def excluded_sets(block):
+    """{memberId: reference SET bytes} of every manifest member the plan does NOT deploy (review 6132018108 item D):
+    the deploy re-derives the fit set over the WHOLE manifest, so the plan carries the bytes of the members it leaves
+    out, each hash-bound to its manifest entry. Together with the plan members they name every manifest member exactly
+    once; anything else is refused."""
+    import base64
+    items, by_id = block['excludedSets'], {member['memberId']: member for member in block['manifest']['members']}
+    deployed = {entry['memberId'] for entry in block['members']}
+    if type(items) is not list:
+        raise ValueError('Invalid broker-fit excludedSets in the demo deploy plan')
+    out = {}
+    for item in items:
+        if type(item) is not dict or set(item) != EXCLUDED_SET_KEYS or not isinstance(item['contentBase64'], str):
+            raise ValueError('Invalid broker-fit excludedSets in the demo deploy plan')
+        source = by_id.get(item['memberId'])
+        if source is None or item['memberId'] in deployed or item['memberId'] in out:
+            raise ValueError('The broker-fit block must name every manifest member exactly once')
+        try:
+            raw = base64.b64decode(item['contentBase64'], validate=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Invalid broker-fit excludedSets in the demo deploy plan') from exc
+        if len(raw) != source['setBytes'] or sha256(raw) != source['setSha256']:
+            raise ValueError('An excluded member SET differs from its manifest entry: ' + item['memberId'])
+        out[item['memberId']] = raw
+    if set(out) | deployed != set(by_id):
+        raise ValueError('The broker-fit block must name every manifest member exactly once')
+    return out
 
 
 def deployed_bytes(reference_raw, entry):
@@ -1498,12 +1529,6 @@ def deploy_record(block):
                               setSha256Deployed=e['setSha256Deployed'], scale=block['scale']) for e in block['members']])
 
 
-def plan_manifest(block):
-    """The block's manifest narrowed to the plan's members, in plan order (the deploy re-derives only those)."""
-    by_id = {member['memberId']: member for member in block['manifest']['members']}
-    return dict(block['manifest'], members=[by_id[entry['memberId']] for entry in block['members']])
-
-
 def stale_members(block, references, schema, *, account, symbols, ticks, quotes, margins, utc_now, arrived=()):
     """The deploy-time re-check (review 6130418265 items 2, 3, 4 and 7). Nothing in the plan is an input except the
     manifest, the reference SET bytes (hash-bound to it) and the planning equity; every other plan value is a claim
@@ -1534,8 +1559,9 @@ def stale_members(block, references, schema, *, account, symbols, ticks, quotes,
     if account.get('currency') != block['accountCurrency'] or live_equity is None or live_equity <= 0:
         add(None, 'account', block['accountCurrency'], account.get('currency'))
         return rows
-    manifest = plan_manifest(block)
-    sets = {sha256(raw): raw for raw in references}
+    # The WHOLE manifest is re-derived (review 6132018108 item D): the plan's members plus the ones it leaves out.
+    manifest = block['manifest']
+    sets = {sha256(raw): raw for raw in list(references) + list(excluded_sets(block).values())}
     reading = dict(account=account, symbols=symbols, ticks=ticks, quotes=quotes, margins=margins, schema=schema, utc_now=utc_now,
                    arrived=arrived)
     reviewed = build_result(manifest, sets, equity=_exact(block['equity']), **reading)
@@ -1561,9 +1587,18 @@ def stale_members(block, references, schema, *, account, symbols, ticks, quotes,
             return rows
     if identical != basis['referenceIdentical']:
         add(None, 'referenceIdentical', identical, basis['referenceIdentical'])
+    # The plan deploys exactly the members the review marks fit: a subset (1 of 35 passing the 90% rule at 100%) or
+    # a superset is stale.
+    planned = sorted(entry['memberId'] for entry in block['members'])
+    fit_now = sorted(row['memberId'] for row in reviewed['members'] if row['status'] == 'fit')
+    if planned != fit_now:
+        add(None, 'members', planned, fit_now)
+    reviewed_rows = {row['memberId']: row for row in reviewed['members']}
+    live_rows = {row['memberId']: row for row in live['members']}
     defaults = schema_defaults(schema)
-    for entry, raw, rev_row, live_row in zip(block['members'], references, reviewed['members'], live['members']):
+    for entry, raw in zip(block['members'], references):
         member_id = entry['memberId']
+        rev_row, live_row = reviewed_rows[member_id], live_rows[member_id]
         if rev_row['status'] != 'fit':
             add(member_id, rev_row['code'], None, None)
             continue
@@ -1601,11 +1636,11 @@ def stale_members(block, references, schema, *, account, symbols, ticks, quotes,
 
 def check_live(controller, session, plan, *, mt5=None, process=None, clock=None, sleep=None):
     """Refuse FIT_STALE before anything is staged when the live broker no longer gives the reviewed fit: one short
-    attach-only read (read_broker) of the plan's members, then stale_members."""
+    attach-only read (read_broker) of the manifest's members, then stale_members."""
     import base64
     block = plan['brokerFit']
     references = [base64.b64decode(member['contentBase64'], validate=True) for member in plan['members']]
-    manifest = plan_manifest(block)
+    manifest = block['manifest']
     account, symbols, ticks, quotes, margins, utc_now, arrived = read_broker(controller, session, manifest, mt5=mt5, process=process,
                                                                              clock=clock, sleep=sleep)
     stale = stale_members(block, references, controller.schema, account=account, symbols=symbols, ticks=ticks, quotes=quotes,

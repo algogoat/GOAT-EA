@@ -133,7 +133,7 @@ class BrokerFitDeployTests(DeployFixture):
             result = deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 50000.0), sleep=lambda s: None)
         self.assertEqual(result['phase'], 'ready')
         read.assert_called_once()
-        self.assertEqual([m['memberId'] for m in read.call_args.args[2]['members']], ['m0', 'm1'], 'only the plan members are read')
+        self.assertEqual([m['memberId'] for m in read.call_args.args[2]['members']], ['m0', 'm1'], 'the whole manifest is read')
         deployed = [entry['setSha256Deployed'] for entry in block['members']]
         self.assertEqual(result['broker_fit'], dict(schema=bf.DEPLOY_SCHEMA, scale=0.5, deployIdentity=bf.deploy_identity(0.5, deployed),
                                                     members=[dict(memberId='m%d' % i, setSha256Reference=hashlib.sha256(raw).hexdigest(),

@@ -180,7 +180,10 @@ class BrokerFitDeployTests(DeployFixture):
         members, raws, block = self.review()
         with self.assertRaises(Refusal) as caught, self.reads(99999.0):
             deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 99999.0), manifest_sha256=self.genuine, sleep=lambda s: None)
-        self.assertEqual((caught.exception.code, caught.exception.fields['stale'][0]['input']), (bf.FIT_STALE, 'Risk'))
+        # Reviewed at exactly scale 1.0 on the reference-identical account (round 6: the reference bytes), so live
+        # 99,999 is below the one-sided band.
+        self.assertEqual((caught.exception.code, caught.exception.fields['stale'][0]['input']),
+                         (bf.FIT_STALE, 'referenceIdentical.equityWithinTolerance'))
 
     def test_an_expired_plan_is_refused(self):
         members, raws, block = self.review(equity=50000)

@@ -470,9 +470,8 @@ F1. **Risk' is kept off the knife edge across a loss-per-lot band** (replaces ro
    - The margin uses the EA's pick at the band's LOW end (the largest start lot). Reported per member:
      `scaled.lossBand {low, high, kind, valueRatio, anchorError}`, `scaled.quantizationMargin` (equity-linear Risk -
      Risk'), `scaled.startLotMax`, `scaled.plannedLossMax`, with `riskSearched` and `plannedLoss` as before.
-   - Applied at every scale, the reference's own included: Kestrel with reference.startLot on the reference account
-     deploys Risk 452.21 (its bytes change, so it never uses the reference-identical exemption); a member without
-     reference.startLot keeps the reference bytes there. Kestrel at 14,642 deploys 50.66 (worst plan 73.20 <= 73.21).
+   - Applied at every scale except exactly 1.0 on a reference-identical account (Round 6). Kestrel at 14,642 deploys
+     50.66 (worst plan 73.20 <= 73.21).
 
 F1-impact. **Read-only report tools** (`controller/studio_broker_fit_impact.py`, run as a script; no MT5, no
 installation, writes nothing):
@@ -487,3 +486,15 @@ installation, writes nothing):
      band's top (1.6 ATR, 1.05 points). Spread, clock, symbol mapping and margin per lot are not assessed.
    - Fixed with it: a reference with `digits: 0` (index CFDs such as WS30) read as "reference broker details are
      missing"; `digits` may be 0 (a whole number).
+
+## Round 6 (goatai#2350 6134542541, 2026-10-12)
+
+**Exactly scale 1.0 on a reference-identical account is exempt from the F1 band.** When every reference-identical
+condition holds (same server, currency and leverage; live equity in the one-sided band startingBalance <= live <=
+startingBalance x 1.05; bytes unchanged) AND the scale is exactly 1.0, nothing is modelled: a RiskperSeq member deploys
+the reference bytes unchanged (Risk as the reference wrote it) and the EA solves its start lot itself at live ATR, as the
+reference account does, even when the member has reference.startLot. Recorded like the exemption: `scaled.lossBand:
+null`, `marginReason` and `margin.basis` `REFERENCE_IDENTICAL_MARGIN`, `margin.unknownBasis: 'reference_scale'`. One
+hair off 1.0 or any condition off, and the band applies. A member whose point distances convert is never at the
+reference itself (judged under the band); one changed member anywhere revokes the exemption, and the exempt members
+are then judged again under the band (not refused). The deploy re-check re-derives the same rule.

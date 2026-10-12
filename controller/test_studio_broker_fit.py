@@ -274,14 +274,15 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual(row['setSha256Reference'], hashlib.sha256(KESTREL).hexdigest())
         self.assertEqual(bf.rewrite_set(KESTREL, row['edits']), KESTREL)
         json.dumps(result, allow_nan=False)
-        # With reference.startLot the round 5 F1 band applies at scale 1.0 too (live ATR moves the reference's own loss
-        # per lot): Risk 500 -> 452.21, whose worst plan anywhere in the ATR band [0.57, 1.68] is 500.00.
+        # Round 6 (goatai#2350 6134542541): with reference.startLot too, exactly scale 1.0 on a reference-identical
+        # account deploys the reference bytes; the EA solves its start lot itself at live ATR (no F1 band).
         row = one(run([(member(KESTREL), KESTREL)]))
-        self.assertEqual((row['edits'], row['startLotSource']), (dict(Risk='452.21'), TRACE))
-        self.assertEqual({k: row['scaled'][k] for k in ('Risk', 'riskSearched', 'quantizationMargin', 'startLot', 'startLotMax', 'plannedLoss',
-                                                         'plannedLossMax')},
-                         dict(Risk=452.21, riskSearched=500.0, quantizationMargin=47.79, startLot=0.09, startLotMax=0.16, plannedLoss=434.93,
-                              plannedLossMax=500.0))
+        self.assertEqual((row['edits'], row['setSha256Deployed'], row['startLotSource']), ({}, row['setSha256Reference'], TRACE))
+        self.assertEqual((row['scaled']['Risk'], row['scaled']['lossBand'], row['scaled']['startLot'], row['scaled']['plannedLoss']),
+                         (500.0, None, 0.1, 500.0))
+        # One hair off 1.0 (planning equity 99,999.99) the band applies: Risk 452.20 over [0.57, 1.68].
+        row = one(run([(member(KESTREL), KESTREL)], equity=99999.99))
+        self.assertEqual((row['edits'], row['scaled']['quantizationMargin'], row['scaled']['plannedLossMax']), (dict(Risk='452.2'), 47.79, 499.99))
         self.assertEqual(row['scaled']['lossBand'], dict(low=0.57, high=1.68, kind='atr', valueRatio=1.0, anchorError=0.05))
 
     def test_risk_scales_and_the_lot_multipliers_do_not(self):
@@ -1230,8 +1231,10 @@ class ReferenceIdenticalTests(unittest.TestCase):
         self.assertEqual((result['margin']['exemption'], result['margin']['verified'], result['offered']), (bf.REFERENCE_IDENTICAL_MARGIN, True, True))
         self.assertEqual(result['deployBasis']['referenceIdentical'], dict(server='Darwinex-Demo', currency='USD', leverage=200,
                                                                           startingBalance='100000', reason=bf.REFERENCE_IDENTICAL_MARGIN))
-        # A member with a known margin is judged as usual and never carries the reason.
-        known = self.check(members=[(member(KESTREL), KESTREL)])
+        # A member with a known margin is judged as usual and never carries the reason (FixedLots: the round 6 scale-1.0
+        # exemption from the F1 band concerns RiskperSeq members only).
+        fixed = kestrel_with(**FIXED)
+        known = self.check(members=[(member(fixed), fixed)])
         self.assertEqual((one(known)['marginReason'], one(known)['margin']['basis'], known['referenceIdentical']['used']), (None, 'ea_caps', False))
         self.assertIsNone(known['deployBasis']['referenceIdentical'])
 
@@ -1277,6 +1280,45 @@ class ReferenceIdenticalTests(unittest.TestCase):
         self.assertEqual((second['status'], second['edits']), ('fit', dict(Risk='467.46', Grid_Size='1.0', Grid_Min='0.5', Grid_Max='10.0')))
         self.assertEqual((first['code'], first['marginReason'], first['margin']['basis']), (bf.MARGIN_UNKNOWN, None, 'start_lot_unknown'))
         self.assertEqual((result['referenceIdentical']['conditions']['bytesUnchanged'], result['referenceIdentical']['used']), (False, False))
+
+    def test_scale_one_deploys_the_reference_bytes_even_with_a_start_lot(self):
+        # Round 6 (goatai#2350 6134542541): exactly the reference-identical conditions AND scale 1.0: nothing is
+        # modelled, the reference bytes deploy, REFERENCE_IDENTICAL_MARGIN stands in for the margin.
+        result = run([(member(KESTREL), KESTREL)])
+        row = one(result)
+        self.assertEqual((row['status'], row['edits'], row['scaled']['Risk'], row['scaled']['lossBand'], row['marginReason']),
+                         ('fit', {}, 500.0, None, bf.REFERENCE_IDENTICAL_MARGIN))
+        self.assertEqual(row['margin'], dict(perLot=1000.0, peakLots=None, required=None, basis=bf.REFERENCE_IDENTICAL_MARGIN,
+                                             unknownBasis='reference_scale'))
+        self.assertTrue(result['referenceIdentical']['used'])
+        # Any condition off: the band (live equity under the reference, another server, another leverage, a scale off
+        # 1.0 with the planning equity).
+        for options in (dict(account=dict(ACCOUNT, equity=99999.0), equity=100000), dict(account=dict(ACCOUNT, server='Other-Demo')),
+                        dict(account=dict(ACCOUNT, leverage=100)), dict(equity=100000.01)):
+            with self.subTest(options=options):
+                row = one(run([(member(KESTREL), KESTREL)], **options))
+                self.assertIsNotNone(row['scaled']['lossBand'])
+                self.assertIn('Risk', row['edits'])
+        # One changed member anywhere revokes it: the member is judged again under the band (not refused).
+        converted = kestrel_with(**dict(NEUTRAL, Grid_Size='10.0', Grid_Min='5.0', Grid_Max='100.0', EA_Desc='B'))
+        members = [(member(KESTREL), KESTREL), (member(converted, member_id='b', canonical='GBPUSD'), converted)]
+        history = {'EURUSD': ticks(), 'GBPUSD': ticks((0.8,), point=0.0001)}
+        result = run(members, symbols=[symbol(), symbol('GBPUSD', **FOUR_DIGIT)], history=history)
+        first = result['members'][0]
+        self.assertEqual((first['status'], first['edits'], first['marginReason'], first['margin']['basis']),
+                         ('fit', dict(Risk='452.21'), None, 'ea_caps'))
+        self.assertEqual((result['referenceIdentical']['conditions']['bytesUnchanged'], result['referenceIdentical']['used']), (False, False))
+
+    def test_the_deploy_recheck_honours_the_scale_one_exemption(self):
+        block = plan_block(run([(member(KESTREL), KESTREL)]))
+        self.assertEqual((block['referenceIdentical']['startingBalance'], block['members'][0]['edits']), ('100000', {}))
+        self.assertEqual(stale(block, [KESTREL]), [])
+        self.assertEqual(stale(block, [KESTREL], account=dict(ACCOUNT, equity=104000.0)), [], 'inside the one-sided band')
+        # Off the exemption the member falls back to the F1 band, so its re-derived bytes change as well.
+        self.assertEqual(inputs(stale(block, [KESTREL], account=dict(ACCOUNT, equity=99999.0))),
+                         ['referenceIdentical.equityWithinTolerance', 'referenceIdentical.bytesUnchanged'])
+        self.assertEqual(inputs(stale(block, [KESTREL], account=dict(ACCOUNT, leverage=100))),
+                         ['referenceIdentical.sameLeverage', 'referenceIdentical.bytesUnchanged'])
 
     def exempt_block(self):
         return plan_block(self.check())

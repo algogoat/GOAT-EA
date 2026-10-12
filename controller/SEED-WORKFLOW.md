@@ -362,10 +362,11 @@ MT5 stays closed after the last member. The reply then carries `monitor_profile`
 and a `next_action`: reopen the monitor with `monitor-launch --attempt-id <new id>`,
 which opens the `GOAT-Studio-...` chart profile with the monitor attached. Try it
 once. After the user approved DLL imports on the chart, it opens only the exact
-chart MT5 saved when GOAT's own `close-terminal` last closed the monitor after
-reading it healthy just before the close (native_monitor facts plus SDK-read
-Algo Trading off, demo, bound login; `observed_healthy_chart` in the reply), with
-Algo Trading still forced off. A seed driver's own closes record nothing. Any other saved chart is refused with
+chart MT5 saved when GOAT last closed the monitor after reading it healthy just
+before the close (native_monitor facts plus SDK-read Algo Trading off, demo, bound
+login; `observed_healthy_chart` in the reply), with Algo Trading still forced off.
+The seed driver's first close (of the monitor, before member 1) is such a close:
+the run state carries `monitor_chart_record`. Member closes never record. Any other saved chart is refused with
 `refusal_code` `MONITOR_PROFILE_CHANGED` and `failed_check` `permissions`; nothing
 was launched. Then ask the user to open MT5 normally and
 choose File > Profiles > the `monitor_profile` name. A plain MT5 open can load an

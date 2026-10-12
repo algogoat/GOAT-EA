@@ -112,15 +112,21 @@ class PreservedChartTests(unittest.TestCase):
         return dict(dict(process=self.identity, account_matches=True, demo=True, connected=True, algo_trading=False,
                          positions=0, orders=0, tester_state='idle', tester_source='window_caption'), **changes)
 
-    def close(self, *, running=None, post_close=None, native=None, observation=None, during_close=None):
+    def mt5_saves_on_close(self, post_close, profile_last=None):
+        """What MT5 does as it closes: it saves the open profile's chart and names that profile ProfileLast."""
+        if post_close is not None:
+            self.save(post_close)
+        name = self.chart.parent.name if profile_last is None else profile_last
+        self.fixture.common_ini.write_text('[Common]\nLogin=123456\nServer=Customer-Demo\n[Charts]\nProfileLast='+name+'\n[Experts]\nEnabled=0\n')
+
+    def close(self, *, running=None, post_close=None, native=None, observation=None, during_close=None, profile_last=None):
         """close-terminal with the running chart ``running``; MT5 rewrites it to ``post_close`` while it closes."""
         if running is not None:
             self.save(running)
         if observation is not False:
             self.fixture.observe(**(observation or {}))
         def closing():
-            if post_close is not None:
-                self.save(post_close)
+            self.mt5_saves_on_close(post_close, profile_last)
             if during_close:
                 during_close()
         terminal = FakeTerminal(dict(self.identity), closing)
@@ -264,6 +270,15 @@ class PreservedChartTests(unittest.TestCase):
                 if other.exists():
                     other.rename(self.chart)
                 self.set_account()
+
+    def test_a_close_on_a_foreign_profile_records_nothing(self):
+        # MT5 had another chart profile open when it closed: no positive evidence the GOAT monitor chart was saved.
+        for profile in ('Default', 'GOAT-Deploy-1'):
+            with self.subTest(profile=profile):
+                result = self.close(running=self.chart_bytes(scale='8'), post_close=self.chart_bytes(scale='7'), profile_last=profile)
+                self.assertEqual((result['monitor_chart_record']['status'], result['monitor_chart_record']['reason']),
+                                 ('not_recorded', 'foreign_profile'))
+                self.assertFalse(self.record.exists())
 
     def test_a_non_demo_binding_never_records(self):
         self.set_account(demo_only=False)
@@ -416,6 +431,210 @@ class PreservedChartTests(unittest.TestCase):
         self.assertEqual(result['launch']['attempt_id'], 'repair-'+'b'*73)
         self.assertEqual(closed, [identity])
         self.start.assert_called_once()
+
+
+class DriverFirstCloseTests(unittest.TestCase):
+    """A start driver's FIRST close of the monitor MT5 records the post-close chart (Claude-Mac goatai#2350 6119079150).
+
+    The customer config-start restart close, and the seed and catch-up drivers' first close, run on their own existing
+    test fixtures (fake controllers and processes). The health read and the record run for real against the bound
+    onboarding controller of PreservedChartTests (``self.rc``): the drivers' calls are routed there with that terminal's
+    process identity and SDK readback, so each driver's wiring and the real record are both exercised. Recording never
+    changes the start: every unhealthy case starts exactly like the healthy one.
+    """
+
+    def setUp(self):
+        self.monitor = PreservedChartTests('test_the_shared_list_holds_every_open_lab_login')
+        self.monitor.setUp()
+        self.addCleanup(self.monitor.doCleanups)
+        self.rc = self.monitor.c
+        self.running = self.monitor.save(self.monitor.chart_bytes(scale='8'))
+        self.post_close = self.monitor.chart_bytes(scale='7')
+        self.record = self.monitor.record
+        import studio_onboarding
+        self.real_health, self.real_record = studio_onboarding.driver_pre_close_health, studio_onboarding.record_post_close_chart
+        self.records = []
+
+    def routed(self, **native_changes):
+        """Route the drivers' health read and record to the bound onboarding controller (see the class docstring)."""
+        stack = patch.multiple('studio_onboarding',
+            driver_pre_close_health=lambda c, current, **kw: self.real_health(
+                self.rc, dict(self.monitor.identity), **(dict(kw, native=self.monitor.native(**native_changes)) | {'sdk_read': None})),
+            record_post_close_chart=lambda c, health, **kw: (self.records.append(kw), self.real_record(self.rc, health, **kw))[1])
+        return stack
+
+    def mt5_closing(self, original, *, profile_last=None, during_close=None, first_only=True):
+        """Wrap a driver fixture's close: as MT5 closes the monitor it saves the chart and names its profile."""
+        closes = []
+        def close(identity):
+            if not closes or not first_only:
+                self.monitor.mt5_saves_on_close(self.post_close, profile_last)
+                if during_close:
+                    during_close()
+            closes.append(identity)
+            return original(identity)
+        return close
+
+    def chart_moved(self):
+        self.monitor.chart.rename(self.monitor.chart.with_name('chart02.chr'))
+
+    def unhealthy_cases(self):
+        return {'Algo Trading on': dict(native=dict(algo_trading=True)),
+                'Open Lab login': dict(account='3000109427'),
+                'foreign profile': dict(profile_last='Default'),
+                'identity changed mid-close': dict(during_close=self.chart_moved)}
+
+    def apply_case(self, case):
+        if 'account' in case:
+            self.monitor.set_account(login=case['account'], server='Darwinex-Demo')
+
+    def reset(self):
+        moved = self.monitor.chart.with_name('chart02.chr')
+        if moved.exists():
+            moved.rename(self.monitor.chart)
+        self.monitor.set_account()
+        self.monitor.save(self.running)
+        self.records.clear()
+
+    def assert_recorded(self, result, source):
+        self.assertEqual(result['status'], 'recorded', result)
+        record = json.loads(self.record.read_text())
+        self.assertEqual(record['chart_sha256'], digest(self.post_close), 'the post-close bytes')
+        self.assertEqual(record['pre_close']['observed_running_sha256'], digest(self.running))
+        self.assertEqual(record['close']['source'], source)
+        launch = monitor_launch(self.rc, 'after-'+source)
+        self.assertEqual(launch['observed_healthy_chart']['chart_sha256'], digest(self.post_close), 'accepted with no click')
+        return record
+
+    # ---- customer config start (the restart close)
+
+    def config_start(self, *, runtime=None, **closing):
+        import test_studio_tester_config_start as tester
+        cfg = tester.CustomerConfigStartTests('test_one_arm_close_config_launch_and_retained_phases')
+        cfg.setUp()
+        self.addCleanup(cfg.doCleanups)
+        cfg.process.close.side_effect = self.mt5_closing(cfg.process.close.side_effect, **closing)
+        # The EA's runtime sample after the arm: batch_ongoing (config start closes an armed monitor).
+        self.monitor.fixture.observe()
+        sample = json.loads((self.rc.local/'ui-observation.json').read_text())['runtime']
+        self.monitor.fixture.observe(runtime=dict(sample, batch_ongoing=True, **(runtime or {})))
+        return cfg
+
+    def test_config_start_restart_close_of_a_healthy_monitor_records_the_post_close_bytes(self):
+        cfg = self.config_start()
+        with self.routed():
+            result = cfg.run_start()
+        self.assertEqual(cfg.events, ['sdk', 'reserve', 'install', 'arm', 'sdk', 'close', 'launch'], 'the start is unchanged')
+        self.assertEqual(result['status'], 'config_process_started_unverified')
+        self.assertEqual(len(self.records), 1)
+        self.assert_recorded(result['monitor_chart_record'], 'config-start')
+
+    def test_config_start_with_an_unhealthy_monitor_records_nothing_and_starts_as_today(self):
+        cases = self.unhealthy_cases()
+        cases['Algo Trading on'] = dict(runtime=dict(terminal_trade_allowed=True))   # the SDK read itself refuses the start
+        for name, case in cases.items():
+            with self.subTest(case=name):
+                self.reset(); self.apply_case(case)
+                cfg = self.config_start(**{k: v for k, v in case.items() if k in ('runtime', 'profile_last', 'during_close')})
+                with self.routed():
+                    result = cfg.run_start()
+                self.assertEqual(cfg.events, ['sdk', 'reserve', 'install', 'arm', 'sdk', 'close', 'launch'])
+                self.assertEqual(result['status'], 'config_process_started_unverified')
+                self.assertEqual(result['monitor_chart_record']['status'], 'not_recorded', result['monitor_chart_record'])
+                self.assertFalse(self.record.exists())
+
+    def test_the_batch_driver_passes_the_record_through_to_the_start_receipt(self):
+        import test_studio_tester_config_start as tester
+        route = tester.CustomerDriverRouteTests('test_regression_customer_batch_start_chooses_config_start_not_the_in_place_click')
+        route.setUp(); self.addCleanup(route.doCleanups)
+        original = route.c.start_config
+        record = dict(status='recorded', chart_sha256='a'*64)
+        route.c.start_config = lambda job_id, **kw: (original(job_id, **kw), dict(status='config_process_started_unverified',
+                                                                                   monitor_chart_record=record))[1]
+        route.c.finished = True
+        result = route.drive(max_seconds=60, restart_consent=True)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(result['monitor_chart_record'], record)
+        journal = json.loads((route.c.root/'batch-drivers/batch.json').read_text())
+        self.assertEqual(journal['monitor_chart_record'], record)
+
+    # ---- seed driver (first close = the monitor close in _activate)
+
+    def seed(self, *, members=2, **closing):
+        import test_studio_seed as seeds
+        s = seeds.SeedTests('test_matrix_complete_with_exact_candidate_values')
+        s.setUp(); self.addCleanup(s.tearDown)
+        for symbol in ('GBPUSD', 'USDJPY')[:members-1]:
+            extra = json.loads(json.dumps(s.plan['jobs'][0])); extra['tester']['Symbol'] = symbol; s.plan['jobs'].append(extra)
+        s.process.close = self.mt5_closing(s.process.close, **closing)
+        s.prepare()
+        self.monitor.fixture.observe()
+        return s
+
+    def test_seed_first_close_of_a_healthy_monitor_records_and_member_closes_never_overwrite(self):
+        s = self.seed(members=2)
+        s.auto = True
+        with self.routed():
+            state = s.runner.start('batch', 10)
+        self.assertEqual(state['status'], 'completed')
+        self.assertEqual((len(s.closes), len(s.starts)), (1, 2), 'the start is unchanged: one monitor close, two members')
+        self.assertEqual(len(self.records), 1, 'only the first close records')
+        self.assert_recorded(state['monitor_chart_record'], 'seed-driver')
+
+    def test_a_seed_member_timeout_close_never_overwrites_the_record(self):
+        s = self.seed(members=2)
+        with self.routed():
+            s.runner.start('batch', 1)                       # monitor closed, member 1 running
+            before = self.record.read_bytes()
+            s.now += 31                                      # past job_timeout_seconds: the driver closes member 1
+            s.runner.resume('batch', 1)
+        self.assertEqual(len(s.closes), 2, 'the monitor close, then the member timeout close')
+        self.assertEqual(len(self.records), 1, 'the member close never records')
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_seed_first_close_of_an_unhealthy_monitor_records_nothing_and_starts_as_today(self):
+        for name, case in self.unhealthy_cases().items():
+            with self.subTest(case=name):
+                self.reset(); self.apply_case(case)
+                s = self.seed(members=1, **{k: v for k, v in case.items() if k in ('profile_last', 'during_close')})
+                s.auto = True
+                with self.routed(**case.get('native', {})):
+                    state = s.runner.start('batch', 10)
+                self.assertEqual(state['status'], 'completed')
+                self.assertEqual((len(s.closes), len(s.starts)), (1, 1))
+                self.assertEqual(state['monitor_chart_record']['status'], 'not_recorded', state['monitor_chart_record'])
+                self.assertFalse(self.record.exists())
+
+    # ---- catch-up driver (same SeedRunner first close)
+
+    def catchup(self, **closing):
+        import test_studio_catchup as catchups
+        n = catchups.NativeCycleTests('test_full_cycle_moves_the_retest_and_judges_the_new_weeks')
+        n.setUp(); self.addCleanup(n.tearDown)
+        n.process.close = self.mt5_closing(n.process.close, **closing)
+        n.runner.prepare('cu1', n.plan())
+        self.monitor.fixture.observe()
+        return n
+
+    def test_catchup_first_close_of_a_healthy_monitor_records_the_post_close_bytes(self):
+        n = self.catchup()
+        n.auto = True
+        with self.routed():
+            state = n.runner.start('cu1', 30)
+        self.assertEqual(state['status'], 'completed')
+        self.assertEqual((len(n.closes), len(n.starts)), (1, 2))
+        self.assertEqual(len(self.records), 1)
+        self.assert_recorded(state['monitor_chart_record'], 'catchup-driver')
+
+    def test_catchup_first_close_on_a_foreign_profile_records_nothing_and_runs_as_today(self):
+        n = self.catchup(profile_last='Default')
+        n.auto = True
+        with self.routed():
+            state = n.runner.start('cu1', 30)
+        self.assertEqual(state['status'], 'completed')
+        self.assertEqual((len(n.closes), len(n.starts)), (1, 2))
+        self.assertEqual((state['monitor_chart_record']['status'], state['monitor_chart_record']['reason']), ('not_recorded', 'foreign_profile'))
+        self.assertFalse(self.record.exists())
 
 
 if __name__ == '__main__':

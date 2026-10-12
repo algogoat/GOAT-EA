@@ -193,7 +193,8 @@ def _summary(path, record):
         journal_path=str(path), job_id=record['binding']['job_id'],
         disk_guard_available=(record.get('schema_version') == 2 and type(record.get('min_free_bytes')) is int
                               and record['min_free_bytes'] > 0),
-        host_liveness_required=True, independent_hard_stop=False)
+        host_liveness_required=True, independent_hard_stop=False) | (
+        dict(monitor_chart_record=record['monitor_chart_record']) if 'monitor_chart_record' in record else {})
 
 
 PAUSE_OVERRUN_SECONDS = 240
@@ -574,7 +575,10 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     _owned_attempt(controller,record)
                     _save(path,record,clock)
                 if config_route:
-                    controller.start_config(job_id,expected_generation=binding['generation'],on_attempt=retain_attempt)
+                    started=controller.start_config(job_id,expected_generation=binding['generation'],on_attempt=retain_attempt)
+                    if isinstance(started,dict) and isinstance(started.get('monitor_chart_record'),dict):
+                        # Fix B: the restart close's post-close monitor chart record, passed through to the start receipt.
+                        record['monitor_chart_record']=started['monitor_chart_record']
                 else:
                     controller.start(job_id,expected_generation=binding['generation'])
                 intent = controller.job(job_id).get('launch_intent', {})

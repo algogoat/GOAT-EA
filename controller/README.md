@@ -258,7 +258,7 @@ Studio inputs, symbol, permission flags and absence of extra charts/indicators.
 MT5 metadata changes can persist. Automated launch accepts the original zero
 permission flags, or (fix B, Claude-Mac goatai#2350 6118571536 and timing ruling
 6118831254) the exact POST-CLOSE chart bytes the controller's own `close-terminal`
-recorded, and nothing else; no permission bit is ever decoded. MT5 rewrites the
+(or a start driver's first close, below) recorded, and nothing else; no permission bit is ever decoded. MT5 rewrites the
 chart as it closes, so the bytes a running monitor loaded are not what the next
 launch reads. `close-terminal`, immediately before its close, reads the monitor's
 health itself: the `onboarding-status` `native_monitor` facts (fresh bound
@@ -268,9 +268,17 @@ same process it closes) on a demo-only, non-Open-Lab binding, and a saved chart
 passing every non-permission check. After MT5 has fully stopped, and only if the
 installation, terminal, account, session/profile and chart file are unchanged, it
 hashes the chart file and writes `monitor-healthy-chart.json` in the controller
-state folder (reported as `monitor_chart_record` in the close journal). A resumed
-close, a close without that healthy read, or any driver's own close records
-nothing. The record is bound to the installation (suite folder ID plus every
+state folder (reported as `monitor_chart_record` in the close journal). A start
+driver's FIRST close of the monitor MT5 records the same way (Claude-Mac goatai#2350
+6119079150): the customer config-start restart close (from its own SDK read and
+the EA's armed runtime sample, `batch_ongoing`, with the EA revision allowed to
+trail the start's own revision steps; `monitor_chart_record` in the start result
+and the batch driver journal), and the seed, catch-up and hold-up drivers' monitor
+close (`monitor_chart_record` in the run state, with the stop observed within 300
+seconds). Every record also needs positive evidence that MT5 closed on the GOAT
+monitor profile: after the stop, the `ProfileLast` it saved names it. Recording
+never refuses or changes a start. A resumed close, a close without that healthy
+read, a per-member close and any other close record nothing. The record is bound to the installation (suite folder ID plus every
 receipt field an EA update does not rewrite, so an EA update keeps it), the
 terminal executable and data folder, the login and server, the session/profile and
 the chart file path. When any of those differ it is moved to

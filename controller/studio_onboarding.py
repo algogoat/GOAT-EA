@@ -8,6 +8,7 @@ a launch. Only close-terminal's post-close record does (record_post_close_chart)
 MT5 files are never written by status.
 """
 import configparser
+import contextlib
 from contextlib import closing
 from datetime import datetime, timezone
 import hashlib
@@ -165,12 +166,16 @@ def onboarding_status(controller, *, mt5=None):
     return result
 
 
-def native_monitor_observation(controller, session, state, process):
+def native_monitor_observation(controller, session, state, process, *, expected_batch_ongoing=False, revision_may_lag=False):
     """The facts onboarding-status's native_monitor step requires; raises ValueError (or KeyError/TypeError/OSError) otherwise.
 
     Fresh bound EA runtime feedback for this terminal, data folder, EA and account (connected, demo, Algo Trading off,
     no batch, idle tester), the controller state loaded, feedback newer than ``process`` (the selected MT5's identity,
     when known) and the activation, and the same owner/revision/generation as the controller. Read-only.
+
+    A start driver's first close passes ``expected_batch_ongoing`` (the customer config start closes MT5 after the
+    EA armed the batch) and ``revision_may_lag``: the driver itself advances the controller revision during the start,
+    so the EA's revision may trail it by those steps; owner and generation must still match exactly.
     """
     from studio_resilient_read import read_observation
     from studio_runtime_check import check_runtime
@@ -179,14 +184,18 @@ def native_monitor_observation(controller, session, state, process):
     check_runtime(observation, now=time.time(), modified=modified, data_path=i['terminal_data_root'],
                   installation_path=str(Path(i['terminal_executable']).parent),
                   program_path=str((Path(i['terminal_data_root'])/'MQL5/Experts').joinpath(*PureWindowsPath(i['ea_relative_path']).parts)),
-                  account_login=session['account']['login'], account_server=session['account']['server'], require_idle=True)
+                  account_login=session['account']['login'], account_server=session['account']['server'], require_idle=True,
+                  expected_batch_ongoing=expected_batch_ongoing)
     if observation.get('loaded') is not True:
         raise ValueError('Monitor has not loaded controller state')
     if process and modified < datetime.fromisoformat(process['created_utc'].replace('Z','+00:00')).timestamp():
         raise ValueError('Monitor feedback predates the selected process; await fresh runtime evidence')
     if modified < (controller.local/'active.json').stat().st_mtime:
         raise ValueError('Monitor feedback predates the selected controller activation')
-    same = all(observation.get(k) == state[k] for k in ('owner','revision','generation'))
+    same = all(observation.get(k) == state[k] for k in (('owner','generation') if revision_may_lag else ('owner','revision','generation')))
+    if same and revision_may_lag:
+        revision = observation.get('revision')
+        same = type(revision) is int and 0 <= revision <= state['revision']
     if not same:
         raise ValueError('Monitor and controller revision/generation/owner differ; run serve and recheck')
     stamp = datetime.strptime(observation['observed_terminal_utc'], '%Y.%m.%d %H:%M:%S').replace(tzinfo=timezone.utc).timestamp()
@@ -414,6 +423,8 @@ HEALTHY_CHART_KIND = 'post_close_monitor_chart'
 HEALTHY_CHART_FIELDS = frozenset(('schema_version','kind','binding','chart_sha256','chart_bytes','permissions_changed','pre_close','close'))
 HEALTHY_OBSERVATION = 'monitor-healthy-observation.json'
 HEALTHY_OBSERVATION_KIND = 'healthy_monitor_observation'
+# Who may write a post-close record: GOAT's own close-terminal, and a start driver's first close of the monitor MT5.
+RECORD_SOURCES = frozenset(('close-terminal', 'config-start', 'seed-driver', 'catchup-driver', 'holdup-driver'))
 
 
 def healthy_chart_binding(controller, session, chart_path):
@@ -456,7 +467,7 @@ def healthy_chart_mismatch(controller, session, record):
     pre, sdk = record['pre_close'], record['pre_close'].get('sdk')
     if (pre.get('native_monitor') != 'complete' or not isinstance(sdk, dict) or sdk.get('demo') is not True
             or sdk.get('algo_trading') is not False or sdk.get('login') != current['account']['login']
-            or sdk.get('server') != current['account']['server'] or record['close'].get('source') != 'close-terminal'):
+            or sdk.get('server') != current['account']['server'] or record['close'].get('source') not in RECORD_SOURCES):
         return 'record'
     return None
 
@@ -558,25 +569,36 @@ def record_healthy_observation(controller, session, processes, *, mt5=None):
         return dict(status='not_observed', reason=getattr(exc, 'code', None) or 'check_failed', detail=str(exc))
 
 
-def pre_close_health(controller, session, state, native, process):
-    """close-terminal's own health read immediately before its close. Never raises.
+def _same_process(a, b):
+    """The same selected MT5: its process ID and image (identities from different readers carry other keys)."""
+    return (isinstance(a, dict) and isinstance(b, dict) and type(a.get('pid')) is int and a.get('pid') == b.get('pid')
+            and PureWindowsPath(str(a.get('executable') or '')) == PureWindowsPath(str(b.get('executable') or '')))
 
-    ``native`` is close-terminal's fresh SDK readback (inspect_idle_demo: selected terminal and data folder, the bound
-    login and server, demo, connected, Algo Trading off, no positions or orders, idle tester) and ``process`` the MT5
-    it is about to close. Healthy only with a demo-only, unprotected binding, that readback for that same process,
-    the onboarding native_monitor facts (native_monitor_observation) and a saved monitor chart that passes every
-    non-permission check. Returns dict(healthy=True, binding, observed_running_sha256, ...) or dict(healthy=False, reason).
+
+def pre_close_health(controller, session, state, native, process, *, expected_batch_ongoing=False, revision_may_lag=False):
+    """A health read immediately before GOAT's own close of the monitor MT5. Never raises.
+
+    ``native`` is a fresh SDK readback (inspect_idle_demo: selected terminal and data folder, the bound login and
+    server, demo, connected, Algo Trading off, no positions or orders), or a callable returning one, read only once
+    every cheaper fact holds; ``process`` is the MT5 about to be closed. Healthy only with a demo-only, unprotected
+    binding, that readback for that same process, the onboarding native_monitor facts (native_monitor_observation)
+    and a saved monitor chart that passes every non-permission check. Returns dict(healthy=True, binding,
+    observed_running_sha256, ...) or dict(healthy=False, reason).
     """
     try:
         if session.get('demo_only') is not True:
             return dict(healthy=False, reason='not_demo_binding')
         if str(session['account']['login']) in OPEN_LAB_LOGINS:
             return dict(healthy=False, reason='protected_account')
-        if (not isinstance(native, dict) or native.get('demo') is not True or native.get('algo_trading') is not False
-                or native.get('account_matches') is not True or native.get('connected') is not True or native.get('process') != process):
-            return dict(healthy=False, reason='sdk_readback')
-        monitor = native_monitor_observation(controller, session, state, process)
+        monitor = native_monitor_observation(controller, session, state, process, expected_batch_ongoing=expected_batch_ongoing,
+                                             revision_may_lag=revision_may_lag)
         chart, raw = _observed_chart(controller, read_json(controller.root/'monitor-profile.json'))
+        if callable(native):
+            native = native()
+        if (not isinstance(native, dict) or native.get('demo') is not True or native.get('algo_trading') is not False
+                or native.get('account_matches') is not True or native.get('connected') is not True
+                or not _same_process(native.get('process'), process)):
+            return dict(healthy=False, reason='sdk_readback')
         return dict(healthy=True, native_monitor='complete', observed_utc=datetime.now(timezone.utc).isoformat(),
                     observed_terminal_utc=monitor['observed_terminal_utc'], process=process,
                     binding=healthy_chart_binding(controller, session, chart),
@@ -588,11 +610,53 @@ def pre_close_health(controller, session, state, native, process):
         return dict(healthy=False, reason=getattr(exc, 'code', None) or 'native_monitor', detail=str(exc))
 
 
-def record_post_close_chart(controller, health, *, attempt_id, method, stopped_utc, process):
-    """After close-terminal's own close: record the POST-CLOSE chart bytes the next monitor-launch reads. Never raises.
+def driver_pre_close_health(controller, process, *, native=None, sdk_read=None, expected_batch_ongoing=False, revision_may_lag=False):
+    """pre_close_health for a start driver's FIRST close of the monitor MT5 (config start, seed, catch-up, hold-up).
 
-    Only with a healthy pre-close read (pre_close_health) from this same close, MT5 still stopped, and the
-    installation, terminal, account, session/profile and chart file unchanged since that read.
+    Reads the session and controller state itself; ``native`` is an SDK readback the driver already took right before
+    its close, else ``sdk_read(controller)`` (default inspect_idle_demo, tester advisory) runs only after every cheaper
+    fact holds. Never raises and never changes the start: an unhealthy answer only means nothing is recorded.
+    """
+    try:
+        session, state = session_state(controller)
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
+        return dict(healthy=False, reason='session', detail=str(exc))
+    if native is None:
+        def native():
+            if sdk_read is not None:
+                return sdk_read(controller)
+            from studio_monitor_probe import inspect_idle_demo
+            return inspect_idle_demo(controller, tester='advisory')
+    return pre_close_health(controller, session, state, native, process, expected_batch_ongoing=expected_batch_ongoing,
+                            revision_may_lag=revision_may_lag)
+
+
+def saved_profile_last(controller):
+    """[Charts] ProfileLast from the selected terminal's common.ini (MT5 writes it as it closes), or None. Read-only."""
+    try:
+        raw = (Path(controller.install['terminal_data_root'])/'config/common.ini').read_bytes()
+        if len(raw) > 4_000_000:
+            return None
+        text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
+    except (OSError, UnicodeError, KeyError, TypeError):
+        return None
+    section = None; found = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith('[') and line.endswith(']'):
+            section = line[1:-1].casefold()
+        elif section == 'charts' and line.partition('=')[0].strip().casefold() == 'profilelast':
+            found.append(line.split('=', 1)[1].strip())
+    return found[0] if len(found) == 1 else None
+
+
+def record_post_close_chart(controller, health, *, attempt_id, method, stopped_utc, process, source='close-terminal', gate_held=False):
+    """After GOAT's own close: record the POST-CLOSE chart bytes the next monitor-launch reads. Never raises.
+
+    Only with a healthy pre-close read (pre_close_health) from this same close, MT5 still stopped, positive evidence
+    that MT5 closed on the GOAT monitor profile (the ProfileLast it saved names it), and the installation, terminal,
+    account, session/profile and chart file unchanged since that read. ``gate_held``: the caller (a seed-lane driver
+    pass) already holds the native gate.
     """
     if not isinstance(health, dict) or health.get('healthy') is not True:
         return dict(status='not_recorded', reason='no_healthy_pre_close_observation',
@@ -600,8 +664,11 @@ def record_post_close_chart(controller, health, *, attempt_id, method, stopped_u
     try:
         if process.inspect() is not None:
             return dict(status='not_recorded', reason='terminal_running')
-        with exclusive_gate(controller.local/'native-gate'):
+        with (contextlib.nullcontext() if gate_held else exclusive_gate(controller.local/'native-gate')):
             session, _ = session_state(controller)
+            name, _ = monitor_paths(controller, session)
+            if saved_profile_last(controller) != name:
+                return dict(status='not_recorded', reason='foreign_profile', profile_last=saved_profile_last(controller))
             chart, raw = _observed_chart(controller, read_json(controller.root/'monitor-profile.json'))
             if healthy_chart_binding(controller, session, chart) != health['binding']:
                 return dict(status='not_recorded', reason='identity_changed')
@@ -611,7 +678,7 @@ def record_post_close_chart(controller, health, *, attempt_id, method, stopped_u
                           chart_bytes=len(raw), permissions_changed=False,
                           pre_close={k: health[k] for k in ('native_monitor','observed_utc','observed_terminal_utc','process',
                                                            'observed_running_sha256','sdk')},
-                          close=dict(source='close-terminal', attempt_id=attempt_id, method=method, stopped_utc=stopped_utc,
+                          close=dict(source=source, method=method, attempt_id=attempt_id, stopped_utc=stopped_utc,
                                      recorded_utc=datetime.now(timezone.utc).isoformat()))
             superseded = None
             if existing['record']:

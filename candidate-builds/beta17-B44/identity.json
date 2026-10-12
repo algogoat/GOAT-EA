@@ -3,7 +3,7 @@
   "version": "1.49",
   "build_id": "V1.49-BETA17-44",
   "build_marker": "B44",
-  "source_base": "c708cae4efaec78c5293911d5697e92ead119fde",
+  "source_base": "4329429be75340baeaea882fa50594ab5944af69",
   "consolidates": [
     "B44.1",
     "B44.2",
@@ -18,61 +18,61 @@
   ],
   "consolidated_heads": {
     "B44.1": {
-      "change": "child magic unique by construction from ChartID(); a restored CID magic still wins; magic_held named",
+      "change": "child magic unique by construction from ChartID(), skipping magics held by CID records, open positions or pending orders; a restored CID magic still wins; magic_held named",
       "pr": "algogoat/GOAT-EA (claude-pc/b44-magic-wire-retry)",
-      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178)"
+      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178; conditions 6127809765)"
     },
     "B44.2": {
       "change": "AI wire fast retry (30 s doubling, capped) after a failed or unverified fetch, deterministic per-chart jitter",
       "pr": "algogoat/GOAT-EA (claude-pc/b44-magic-wire-retry)",
-      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178)"
+      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178; conditions 6127809765)"
     },
     "B44.3": {
       "change": "child snapshot audit streams the saved template (expert block only, no whole-file cap); adoption names snapshot_too_large, snapshot_nul, snapshot_unreadable",
       "pr": "algogoat/GOAT-EA (claude-pc/b44-magic-wire-retry)",
-      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178)"
+      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178; conditions 6127809765)"
     },
     "B44.4": {
       "change": "Print-only AI gate log line (VETO at the bias skip onset, ALLOW at sequence start), live only",
       "pr": "algogoat/GOAT-EA (claude-pc/b44-magic-wire-retry)",
-      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178)"
+      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178; conditions 6127809765)"
     },
     "B44.5": {
-      "change": "BlindExport input (default off, appended last): exports ranked on fit+FWD; every export stamped",
+      "change": "BlindExport input (default off, appended last): a blind export is ranked, named, lot-adjusted and headed on fit+FWD only (FOOS-independent bytes); every export stamped with ranked= and sr=",
       "pr": "algogoat/GOAT-EA (claude-pc/b44-magic-wire-retry)",
-      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178)"
+      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178; conditions 6127809765)"
     },
     "B44.6": {
       "change": "sequence capture: minute marks every 5 min past 1M rows instead of the 2M-row stop (marks_downsampled)",
       "pr": "algogoat/GOAT-EA (claude-pc/b44-magic-wire-retry)",
-      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178)"
+      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178; conditions 6127809765)"
     },
     "B44.7": {
       "change": "VerifyLicense retry (already present since 5e7a5cc) pinned for V1.49",
       "pr": "algogoat/GOAT-EA (claude-pc/b44-magic-wire-retry)",
-      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178)"
+      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178; conditions 6127809765)"
     },
     "B44.9": {
-      "change": "panel creation retried 3 times, then headless (panel_unavailable); no modal Alert() in deploy mode",
+      "change": "panel creation retried 3 times, then headless (panel_unavailable); no modal Alert() in deploy mode, include-order guarded",
       "pr": "algogoat/GOAT-EA (claude-pc/b44-magic-wire-retry)",
-      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178)"
+      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178; conditions 6127809765)"
     },
     "B44.10": {
       "change": "no window-handle read left in the entrypoint",
       "pr": "algogoat/GOAT-EA (claude-pc/b44-magic-wire-retry)",
-      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178)"
+      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178; conditions 6127809765)"
     },
     "B44.11": {
-      "change": "GoatSetupRead opens with FILE_SHARE_READ (EA-MAILBOX-SHARE-01)",
+      "change": "GoatSetupRead opens with FILE_SHARE_READ (EA-MAILBOX-SHARE-01); deploy writers drop the export stamp line",
       "pr": "algogoat/GOAT-EA (claude-pc/b44-magic-wire-retry)",
-      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178)"
+      "coordination": "algogoat/goatai#2350 (6126836633, 6126880655; item 11 6127147178; conditions 6127809765)"
     }
   },
-  "change": "B43 plus the reviewed B44 items of goatai#2350: B44.1 child magic unique by construction from ChartID(); a restored CID magic still wins; magic_held named; B44.2 AI wire fast retry (30 s doubling, capped) after a failed or unverified fetch, deterministic per-chart jitter; B44.3 child snapshot audit streams the saved template (expert block only, no whole-file cap); adoption names snapshot_too_large, snapshot_nul, snapshot_unreadable; B44.4 Print-only AI gate log line (VETO at the bias skip onset, ALLOW at sequence start), live only; B44.5 BlindExport input (default off, appended last): exports ranked on fit+FWD; every export stamped; B44.6 sequence capture: minute marks every 5 min past 1M rows instead of the 2M-row stop (marks_downsampled); B44.7 VerifyLicense retry (already present since 5e7a5cc) pinned for V1.49; B44.9 panel creation retried 3 times, then headless (panel_unavailable); no modal Alert() in deploy mode; B44.10 no window-handle read left in the entrypoint; B44.11 GoatSetupRead opens with FILE_SHARE_READ (EA-MAILBOX-SHARE-01). The input header (contract pin) is unchanged; BlindExport is declared last in the entrypoint and WriteSet never writes it. Trading decisions are unchanged except the magic a new live child draws (item 1).",
+  "change": "B43 plus the reviewed B44 items of goatai#2350: B44.1 child magic unique by construction from ChartID(), skipping magics held by CID records, open positions or pending orders; a restored CID magic still wins; magic_held named; B44.2 AI wire fast retry (30 s doubling, capped) after a failed or unverified fetch, deterministic per-chart jitter; B44.3 child snapshot audit streams the saved template (expert block only, no whole-file cap); adoption names snapshot_too_large, snapshot_nul, snapshot_unreadable; B44.4 Print-only AI gate log line (VETO at the bias skip onset, ALLOW at sequence start), live only; B44.5 BlindExport input (default off, appended last): a blind export is ranked, named, lot-adjusted and headed on fit+FWD only (FOOS-independent bytes); every export stamped with ranked= and sr=; B44.6 sequence capture: minute marks every 5 min past 1M rows instead of the 2M-row stop (marks_downsampled); B44.7 VerifyLicense retry (already present since 5e7a5cc) pinned for V1.49; B44.9 panel creation retried 3 times, then headless (panel_unavailable); no modal Alert() in deploy mode, include-order guarded; B44.10 no window-handle read left in the entrypoint; B44.11 GoatSetupRead opens with FILE_SHARE_READ (EA-MAILBOX-SHARE-01); deploy writers drop the export stamp line. The input header (contract pin) is unchanged; BlindExport is declared last in the entrypoint and WriteSet never writes it. Trading decisions are unchanged except the magic a new live child draws (item 1).",
   "supersedes_candidate": "beta17-B43",
   "sources": {
     "Dashboard.mqh": "34f9fbc47d2c18c76ab52a6ebd9b0ba140f5b61151596410696b634821480f40",
-    "GOAT V1.49.mq5": "3d5d69cca1271598390f32bc7c0e67b408fd135150b8ac5fe20cbc2933346982",
+    "GOAT V1.49.mq5": "e7c1a2c7ff56298609ae02808083f9fc62c6e9e558edcdc0d0f0e187572318d8",
     "GOATAIWireV2.mqh": "14a1f0f2ae0baf65494fea67df0d8efc26ce547cd346fbbc47d3264d00006c90",
     "GOATBatchCancelOrigin.mqh": "03a24684cf7c0e4e6dac7ef2ccce661a228a2bae10ff2f56ad72d722fd74f0f1",
     "GOATDeploymentDiagnostics.mqh": "e6ccb9439213cc8eff31b5a0a4783bfe6c408571cf74298ef87d28c34b071c2f",
@@ -113,12 +113,8 @@
     "Tester.mqh": "2d109fa8be126804ed80e0b92bf5198d54acb35e5075d13b9cd443dd1d02418e",
     "XmlProcessor.mqh": "fd218b06ece97721bd7335f69ac7739bcb5d1fcf34c8a92593c538fb22b902d0"
   },
-  "binary": {
-    "name": "GOAT V1.49.ex5",
-    "sha256": "7a91ee972c0957dc4a0251a4d356440bb693498f00353c046c3b0b09a0bf2018",
-    "bytes": 2455968
-  },
-  "compile": "compile-receipt.json",
+  "binary": null,
+  "compile": "pending",
   "native_qualified": false,
   "customer_delivery": false,
   "retained_root_binary_sha256": "05acac509fd9aa0d84611cdb2b5d83b7dd23b0070ec910733e868568c8e95bd9",

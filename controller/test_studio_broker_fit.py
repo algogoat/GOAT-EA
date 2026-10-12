@@ -1209,6 +1209,19 @@ class ReadBrokerTests(unittest.TestCase):
         process.pid = 77
         self.assertEqual(self.read(FakeMT5(self.c, clock=self.clock))[0]['login'], '123456')
 
+    def test_a_skewed_pc_clock_leaves_the_offset_unknown(self):
+        # Re-review 6132018108 (contract Decision 10): the offset is the tick time minus THIS PC's clock. The app passes
+        # its server time (--server-time-utc); more than 120 s apart, no tick proves the offset.
+        mt5 = FakeMT5(self.c, clock=self.clock)
+        read = lambda server: bf.read_broker(self.c, self.session, manifest([member(KESTREL)]), mt5=mt5, clock=self.clock,
+                                             process=self.process, sleep=self.sleep, server_time_utc=server)
+        self.assertEqual(read(T0 - 120)[6], ['EURUSD'], 'within 120 s: trusted')
+        account, symbols, history, quotes, margins, now, arrived = read(T0 - 121)
+        self.assertEqual((arrived, history), ([], {}))
+        self.assertEqual(read(None)[6], ['EURUSD'], 'not given: unchanged')
+        with patch('studio_onboarding.session_state', return_value=(self.session, None)), self.assertRaisesRegex(ValueError, 'unix seconds'):
+            bf.broker_fit(self.c, self.write_portfolio(), mt5=mt5, clock=self.clock, process=self.process, server_time_utc=float('nan'))
+
     def test_a_market_without_new_ticks_leaves_the_clock_unknown(self):
         # Review 6130418265 item 8 at the read: the last tick is an hour old and never changes. No arrival within the
         # bounded window -> no offset, no tick history read, and the result refuses rather than guessing.
@@ -1237,7 +1250,7 @@ class ReadBrokerTests(unittest.TestCase):
     def test_the_cli_contract_is_declared(self):
         from goat_studio import OPERATION_CONTRACTS
         contract = OPERATION_CONTRACTS['broker-fit']
-        self.assertEqual((contract['required'], contract['optional']), (['portfolio'], ['equity', 'sets']))
+        self.assertEqual((contract['required'], contract['optional']), (['portfolio'], ['equity', 'sets', 'server-time-utc']))
         for phrase in ('NOT_DEMO_ACCOUNT', 'Never writes', 'last 6 h of real ticks', 'MARGIN_UNKNOWN', 'FIT_STALE', 'server-name assumption',
                        'MT5_NOT_RUNNING', 'MARGIN_TOO_HIGH', 'MONEY_VALUE_UNREADABLE'):
             self.assertIn(phrase, contract['effect'])

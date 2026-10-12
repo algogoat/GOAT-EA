@@ -1706,14 +1706,18 @@ def _tick_stamp(tick):
     return (int(msc) if isinstance(msc, (int, float)) and not isinstance(msc, bool) else int(tick.time) * 1000), int(tick.time)
 
 
-def read_broker(controller, session, manifest, *, mt5=None, clock=None, process=None, sleep=None):
+def read_broker(controller, session, manifest, *, mt5=None, clock=None, process=None, sleep=None, server_time_utc=None):
     """One short read-only MT5 SDK session (seconds) under the terminal lease, ATTACH-ONLY: it refuses MT5_NOT_RUNNING
     and never calls initialize() (which starts a closed MT5 and leaves it running) unless the selected terminal64.exe
     is already running. Reads the account, every symbol, the last tick of each mapped symbol and of each conversion
     pair, its tick history of the last SPREAD_HISTORY_HOURS (copy_ticks_range, COPY_TICKS_INFO), and the SDK's margin
     per lot. The broker clock comes only from a tick seen ARRIVING (at most ARRIVAL_WINDOW_SECONDS of re-reading the
     last ticks; a closed market leaves it unknown). Never trades, never selects a symbol into Market Watch, never opens
-    a chart. Returns (account, symbols, ticks, quotes, margins, utc_now, arrived)."""
+    a chart. Returns (account, symbols, ticks, quotes, margins, utc_now, arrived).
+
+    server_time_utc (optional, unix seconds): a trusted time the caller read just before (the app passes its serveApi
+    HTTP Date). The broker offset is measured against this PC's clock, so when the two differ by more than
+    FRESH_QUOTE_SECONDS the clock is not trusted: no tick counts as arrived and the offset is unknown."""
     import time
     from pathlib import Path
     import studio_seed_process
@@ -1769,6 +1773,7 @@ def read_broker(controller, session, manifest, *, mt5=None, clock=None, process=
             # Re-read the mapped symbols' last ticks until one ARRIVES: its age is then at most the time since the
             # first read, so it proves the server clock (review 6130418265 item 8). Bounded; no arrival = unknown.
             started, arrived = clock(), []
+            skewed = server_time_utc is not None and abs(started - server_time_utc) > FRESH_QUOTE_SECONDS
             while True:
                 for name in mapped:
                     stamp = _tick_stamp(mt5.symbol_info_tick(name))
@@ -1776,9 +1781,11 @@ def read_broker(controller, session, manifest, *, mt5=None, clock=None, process=
                         arrived.append(name)
                         quotes[name] = stamp[1]
                 utc_now = clock()
-                if arrived or not mapped or utc_now - started >= ARRIVAL_WINDOW_SECONDS:
+                if arrived or skewed or not mapped or utc_now - started >= ARRIVAL_WINDOW_SECONDS:
                     break
                 sleep(ARRIVAL_POLL_SECONDS)
+            if skewed:
+                arrived = []                     # this PC's clock is off: no tick can prove the broker's offset
             offset = measured_server_offset_minutes([quotes[name] for name in arrived], utc_now)
             ticks = {}
             if offset is not None:
@@ -1807,11 +1814,14 @@ def read_broker(controller, session, manifest, *, mt5=None, clock=None, process=
     return account, symbols, ticks, quotes, margins, utc_now, arrived
 
 
-def broker_fit(controller, portfolio, *, equity=None, sets_dir=None, mt5=None, clock=None, process=None, sleep=None):
+def broker_fit(controller, portfolio, *, equity=None, sets_dir=None, mt5=None, clock=None, process=None, sleep=None,
+               server_time_utc=None):
     """`studio broker-fit`: read-only; refuses NOT_DEMO_ACCOUNT on a non-demo account."""
     from studio_onboarding import session_state
     if equity is not None and (not math.isfinite(equity) or equity <= 0):
         raise ValueError('--equity must be a positive number')
+    if server_time_utc is not None and (not math.isfinite(server_time_utc) or server_time_utc <= 0):
+        raise ValueError('--server-time-utc must be unix seconds')
     manifest, sets = load_portfolio(portfolio, sets_dir)
     installed = controller.install.get('ea_version')
     wanted = (manifest.get('ea') or {}).get('eaVersion')
@@ -1820,6 +1830,7 @@ def broker_fit(controller, portfolio, *, equity=None, sets_dir=None, mt5=None, c
                       'EA_VERSION_MISMATCH')
     session, _ = session_state(controller)
     account, symbols, ticks, quotes, margins, utc_now, arrived = read_broker(controller, session, manifest, mt5=mt5, clock=clock,
-                                                                             process=process, sleep=sleep)
+                                                                             process=process, sleep=sleep,
+                                                                             server_time_utc=server_time_utc)
     return build_result(manifest, sets, account=account, symbols=symbols, ticks=ticks, quotes=quotes, margins=margins,
                         schema=controller.schema, utc_now=utc_now, equity=equity, arrived=arrived)

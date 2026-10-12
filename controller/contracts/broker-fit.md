@@ -25,6 +25,8 @@ goat.exe studio --installation <receipt> broker-fit --portfolio <house manifest 
 - Never writes a file, never selects a symbol into Market Watch, never opens a chart, never trades. Refuses
   `NOT_DEMO_ACCOUNT` on a non-demo account (before any tick is read).
 - `--equity` overrides the account equity (account currency) for planning; still read-only.
+- `--server-time-utc` (optional, unix seconds): a trusted UTC now; a PC clock more than 120 s off leaves the broker's
+  offset unknown (Decision 10).
 - `--sets`: the folder holding the member SET files, each named `<setSha256>` (the app's house cache) or by `setName`;
   default the manifest's folder. Every file must hash to `setSha256` and have `setBytes` bytes (`PORTFOLIO_INVALID`
   otherwise, naming the members).
@@ -298,8 +300,12 @@ runtime has no ed25519 library): a plan carrying a forged manifest (another `sta
    tradable on this broker at any equity: "needs a larger account" would be false); deploy `FIT_STALE`.
 8. **Missing reference keys** (the manifest allows null "where unknown") -> `CONTRACT_MISMATCH`, never a guess.
 9. **The manifest's `minEquity`** is a floor: the effective minEquity is the stricter of it and the computed one.
-10. **Offset measurement limit:** a last tick exactly a whole number of hours old would read as a valid offset (Ops'
-    method has the same limit); the freshest tick over all mapped symbols is used, which in market hours is seconds old.
+10. **Offset measurement limit (updated round 3):** the offset is measured only from a tick seen arriving during the
+    read (round 2 item 8), so an old last tick no longer reads as an offset. The residual risk is a skewed clock on this
+    PC: the offset is the tick time minus the PC's UTC now. The app passes its own trusted server time
+    (`--server-time-utc`, unix seconds, from the serveApi HTTP `Date`); when it differs from the PC clock by more than
+    120 s no tick counts as arrived and the offset is unknown (clock-dependent members refuse). Without it, the PC clock
+    is trusted as before.
 11. **Input file:** a manifest `.json` plus verified SET files (`<setSha256>` or `setName`). `setBytes` is the file size
     (the manifest validator's meaning), not base64 content. `.goatportfolio` packages are refused for now.
 12. **Additive result keys** (marked above) carry what the app needs to deploy and explain.

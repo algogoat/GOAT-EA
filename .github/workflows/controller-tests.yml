@@ -151,6 +151,10 @@ jobs:
         run: node scripts/test_ai_wire_retry.cjs
       - name: B44 child snapshot audit streams the template and adoption names its refusals (goatai#2350)
         run: node scripts/test_child_snapshot_stream.cjs
+      - name: EA-MAILBOX-SHARE-01 mailbox reads are FILE_SHARE_READ (B44 item 11, goatai#2350 6127147178)
+        run: |
+          python scripts/test_lint_ea_mailbox_share.py
+          python scripts/lint_ea_mailbox_share.py
 
       - name: Verify Studio derived Report handoff safety
         run: node scripts/test_studio_derived_report.cjs

@@ -3,8 +3,8 @@
 Golden: a plan with a broker-fit block at scale 1.0 (no edits) stages byte-for-byte what the same plan without it
 stages, and validates to the same members. A scaled plan stages the controller's own scaled SET, hash-bound to the
 reviewed broker-fit result, and the journal keeps {memberId, setSha256Reference, setSha256Deployed, scale} per member.
+Before anything is staged, deploy-load re-reads the live equity and refuses FIT_STALE when the fit no longer holds.
 """
-import base64
 import hashlib
 import json
 import unittest
@@ -12,7 +12,11 @@ from unittest.mock import patch
 
 import studio_broker_fit as bf
 import studio_demo_deploy as deploy
+from studio_installation import contracts
+from studio_refusal import Refusal
 from test_studio_agent_setup import DeployFixture, FakeMT5, member
+
+RULES = dict(volumeMin='0.01', volumeStep='0.01', volumeMax='50.0', contractRatio='1', referenceVolumeMin='0.01', startLot='0.1')
 
 
 def reference_member(index, symbol='EURUSD', risk='500.0'):
@@ -21,13 +25,24 @@ def reference_member(index, symbol='EURUSD', risk='500.0'):
 
 
 def fit_block(raws, edits=None, scale=1.0):
+    """The block the app assembles from the broker-fit result: deployBasis plus each fit member's deploy entry."""
     edits = edits or [{} for _ in raws]
-    return dict(schema=bf.DEPLOY_SCHEMA, scale=scale, members=[
+    return dict(schema=bf.DEPLOY_SCHEMA, scale=scale, referenceEquity='100000', accountCurrency='USD', rate='1', members=[
         dict(index=i, memberId='m%d' % i, setSha256Reference=hashlib.sha256(raw).hexdigest(),
-             setSha256Deployed=hashlib.sha256(bf.rewrite_set(raw, e)).hexdigest(), edits=e) for i, (raw, e) in enumerate(zip(raws, edits))])
+             setSha256Deployed=hashlib.sha256(bf.rewrite_set(raw, e)).hexdigest(), edits=e, rules=dict(RULES))
+        for i, (raw, e) in enumerate(zip(raws, edits))])
+
+
+def live(controller, equity, currency='USD'):
+    return FakeMT5(controller, account=dict(equity=equity, currency=currency))
 
 
 class BrokerFitDeployTests(DeployFixture):
+    def setUp(self):
+        super().setUp()
+        # The shared fixture's compact schema has no sizing inputs; production reads the shipped V1.48 contracts.
+        self.c.schema, _ = contracts('1.48')
+
     def members(self):
         pairs = [reference_member(0), reference_member(1, 'GBPUSD')]
         return [m for m, _ in pairs], [raw for _, raw in pairs]
@@ -72,11 +87,14 @@ class BrokerFitDeployTests(DeployFixture):
             deploy.validate_plan(self.c, self.c.session, json.loads(self.plan(members, brokerFit=block).read_text()))
         with self.assertRaisesRegex(ValueError, 'every deployed member'):
             deploy.validate_plan(self.c, self.c.session, json.loads(self.plan(members, brokerFit=fit_block(raws[:1])).read_text()))
+        with self.assertRaisesRegex(ValueError, 'Invalid broker-fit number'):
+            deploy.validate_plan(self.c, self.c.session, json.loads(self.plan(members, brokerFit=dict(fit_block(raws), rate='x')).read_text()))
+        with self.assertRaisesRegex(ValueError, 'Invalid broker-fit block'):
+            deploy.validate_plan(self.c, self.c.session, json.loads(self.plan(members, brokerFit=dict(fit_block(raws), accountCurrency='usd')).read_text()))
         with self.assertRaisesRegex(ValueError, 'Invalid demo deploy plan'):
             deploy.validate_plan(self.c, self.c.session, json.loads(self.plan(members, extra=1).read_text()))
 
     def test_the_money_safety_check_runs_on_the_deployed_bytes(self):
-        # check_member_values (risk-per-sequence and RISK_NOT_CHOSEN rules) sees what is staged, not only the reference.
         members, raws = self.members()
         edits = [dict(Risk='250.0'), {}]
         seen = []
@@ -84,23 +102,46 @@ class BrokerFitDeployTests(DeployFixture):
             deploy.validate_plan(self.c, self.c.session, json.loads(self.plan(members, brokerFit=fit_block(raws, edits, 0.5)).read_text()))
         self.assertEqual(seen, [bf.rewrite_set(raws[0], edits[0]), raws[1]])
 
-    def test_load_records_the_broker_fit_per_member(self):
+    def test_load_rechecks_the_live_equity_and_records_the_broker_fit(self):
         members, raws = self.members()
-        edits = [dict(Risk='250.0'), {}]
+        edits = [dict(Risk='250.0'), dict(Risk='250.0')]
         block = fit_block(raws, edits, scale=0.5)
         self.start_ea(pairing='none')
         with self.relaunch():
-            result = deploy.load(self.c, self.plan(members, brokerFit=block), mt5=FakeMT5(self.c), sleep=lambda s: None)
+            result = deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 50000.0), sleep=lambda s: None)
         self.assertEqual(result['phase'], 'ready')
         self.assertEqual(result['broker_fit'], dict(schema=bf.DEPLOY_SCHEMA, scale=0.5, members=[
-            dict(memberId='m0', setSha256Reference=hashlib.sha256(raws[0]).hexdigest(),
-                 setSha256Deployed=hashlib.sha256(bf.rewrite_set(raws[0], edits[0])).hexdigest(), scale=0.5),
-            dict(memberId='m1', setSha256Reference=hashlib.sha256(raws[1]).hexdigest(),
-                 setSha256Deployed=hashlib.sha256(raws[1]).hexdigest(), scale=0.5)]))
+            dict(memberId='m%d' % i, setSha256Reference=hashlib.sha256(raw).hexdigest(),
+                 setSha256Deployed=hashlib.sha256(bf.rewrite_set(raw, e)).hexdigest(), scale=0.5)
+            for i, (raw, e) in enumerate(zip(raws, edits))]))
         # The journal's member hashes (and the registration the dashboard audits) are the DEPLOYED bytes.
         self.assertEqual([m['sha256'] for m in result['members']], [e['setSha256Deployed'] for e in block['members']])
         where = deploy.paths(self.c, 'e' * 32)
         self.assertEqual((where['sets'] / members[0]['fileName']).read_bytes(), bf.rewrite_set(raws[0], edits[0]))
+
+    def test_a_stale_fit_is_refused_before_anything_is_written(self):
+        members, raws = self.members()
+        block = fit_block(raws, [dict(Risk='250.0'), dict(Risk='250.0')], scale=0.5)
+        where = deploy.paths(self.c, 'e' * 32)
+        for equity, currency in ((49000.0, 'USD'), (60000.0, 'USD'), (50000.0, 'EUR'), (None, 'USD')):
+            with self.subTest(equity=equity, currency=currency):
+                with self.assertRaises(Refusal) as caught:
+                    deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, equity, currency), sleep=lambda s: None)
+                self.assertEqual(caught.exception.code, bf.FIT_STALE)
+                self.assertIn('The account changed since the check; run the fit again. Nothing was written or launched.',
+                              str(caught.exception))
+                self.assertFalse(where['sets'].exists(), 'no SET was staged')
+                self.assertFalse(where['profile'].exists(), 'no chart was staged')
+                self.assertFalse(where['state'].exists(), 'no dashboard state was staged')
+                self.assertEqual(json.loads(where['journal'].read_text())['phase'], 'refused_before_stage')
+        self.assertEqual(caught.exception.fields['stale'][0]['input'], 'account')
+        self.assertEqual(self.process.inspect() is not None, True, 'MT5 was never closed or relaunched')
+
+    def test_a_scale_one_plan_also_rechecks(self):
+        members, raws = self.members()
+        with self.assertRaises(Refusal) as caught:
+            deploy.load(self.c, self.plan(members, brokerFit=fit_block(raws)), mt5=live(self.c, 99999.0), sleep=lambda s: None)
+        self.assertEqual((caught.exception.code, caught.exception.fields['stale'][0]['input']), (bf.FIT_STALE, 'Risk'))
 
     def test_a_plan_without_broker_fit_keeps_todays_journal_shape(self):
         self.start_ea(pairing='none')

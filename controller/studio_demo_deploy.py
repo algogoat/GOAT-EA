@@ -817,7 +817,12 @@ def load(controller, plan_path, *, mt5=None, process=None, request=None, close=N
                     raise ValueError('Another MT5 terminal with the same data folder name already uses GOAT\'s dashboard files; GOAT will not deploy here')
                 if process.inspect() is None:
                     raise ValueError('Open the selected MT5 on the demo account first so GOAT can verify it is a demo account')
-                broker_proof(controller, session, mt5=mt5)
+                if BROKER_FIT_KEY in plan:
+                    # Never deploy at a stale scale: the live equity re-derives every scaled value first (FIT_STALE).
+                    import studio_broker_fit as broker_fit
+                    broker_fit.check_live(plan, controller.schema, broker_proof(controller, session, mt5=mt5, details=True))
+                else:
+                    broker_proof(controller, session, mt5=mt5)
                 for path, raw in staged_bytes(controller, plan, members).items():
                     write_exact(path, raw)
         except (OSError, ValueError):

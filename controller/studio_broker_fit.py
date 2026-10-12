@@ -1111,7 +1111,10 @@ def reference_facts(reference):
             facts[key] = value
             continue
         number = dec(value)
-        if number is None or number < 0 or (key != 'typicalSpreadPts' and number <= 0):
+        # digits may be 0 (index CFDs such as WS30 quote whole points); it must be a whole number.
+        if key == 'digits' and number is not None and (number != number.to_integral_value() or number < 0):
+            return None
+        if number is None or number < 0 or (key not in ('typicalSpreadPts', 'digits') and number <= 0):
             return None
         facts[key] = number
     for key in ('startLot', 'swapLong', 'swapShort', 'volumeMax'):

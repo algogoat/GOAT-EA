@@ -473,3 +473,17 @@ F1. **Risk' is kept off the knife edge across a loss-per-lot band** (replaces ro
    - Applied at every scale, the reference's own included: Kestrel with reference.startLot on the reference account
      deploys Risk 452.21 (its bytes change, so it never uses the reference-identical exemption); a member without
      reference.startLot keeps the reference bytes there. Kestrel at 14,642 deploys 50.66 (worst plan 73.20 <= 73.21).
+
+F1-impact. **Read-only report tools** (`controller/studio_broker_fit_impact.py`, run as a script; no MT5, no
+installation, writes nothing):
+   - `start-lots --traces <folder> --member-reference <json>`: each member's reference start lot from its reference
+     backtest traces (the opening lot of every sequence of its strategy, in every sha256-verified trace its
+     `<NN>-<sha12>/trace-ref.json` lists, de-duplicated), in the shape of Ops' arms file with
+     `startLotSource: 'trace:<traceSha256>[,...]'`; members without a trace are listed (`missingMembers`).
+   - `impact --member-reference <json> --sets <folder | .goatportfolio> --start-lots <json> --equities ...`: members
+     per outcome at each equity under the round 5 rules on the reference broker (fit / `BELOW_MIN_LOT` /
+     `MARGIN_UNKNOWN` for want of a start lot / `MARGIN_UNKNOWN` otherwise / other), with each member's start lot
+     (the larger median when two sources differ, flagged), n, min, max and whether max / median is inside the F1
+     band's top (1.6 ATR, 1.05 points). Spread, clock, symbol mapping and margin per lot are not assessed.
+   - Fixed with it: a reference with `digits: 0` (index CFDs such as WS30) read as "reference broker details are
+     missing"; `digits` may be 0 (a whole number).

@@ -69,7 +69,11 @@ function terminal({tester=false,chart=0n,symbol='EURUSD'}={}){
   GlobalVariablesTotal:()=>gv.size,GlobalVariableName:i=>[...gv.keys()][i],GlobalVariableGet:k=>gv.get(k)??0,
   Symbol:()=>symbol,ChartID:()=>chart,MAGIC1:0,
   MathRand:()=>{calls.push('MathRand');return 27416;},ChartWindowsHandle:()=>{calls.push('ChartWindowsHandle');return 0;},
-  GetTickCount:()=>{calls.push('GetTickCount');return 0;}};
+  GetTickCount:()=>{calls.push('GetTickCount');return 0;},
+  // B44 condition 3: the account's open positions and pending orders (magics), selected by index.
+  positions:[],orders:[],POSITION_MAGIC:1,ORDER_MAGIC:2,PositionsTotal:()=>c.positions.length,OrdersTotal:()=>c.orders.length,
+  PositionGetTicket:i=>{c.sel=c.positions[i];return 1000+i;},PositionGetInteger:k=>{assert.equal(k,1);return c.sel;},
+  OrderGetTicket:i=>{c.selo=c.orders[i];return 2000+i;},OrderGetInteger:k=>{assert.equal(k,2);return c.selo;}};
  vm.createContext(c);vm.runInContext(code,c);
  // What OnInit writes right after the block: GlobalVariableSet(GoatChildGVName(MAGIC1,Symbol(),GOAT_GV_FIELD_CID),GoatTruncateCidValue(ChartID())).
  const record=(magic,sym,cid)=>gv.set(KEY+'_ID_'+magic+'_'+sym+'_'+CID_FIELD,Number(c.GoatTruncateCidValue(cid)));
@@ -132,6 +136,17 @@ const nextId=()=>{seed=(seed*6364136223846793005n+1442695040888963407n)&((1n<<64
  // Other fields and other keys never hold a magic.
  const other=terminal();other.gv.set(KEY+'_ID_'+c0+'_EURAUD_HB',5);other.gv.set('KID_ID_'+c0+'_EURAUD_CID',5);other.gv.set(KEY+'_SYM_EURAUD_CID',5);
  assert.equal(other.c.GoatDeriveChildMagic(id),c0);ok();}
+
+// 4b. B44 condition 3 (goatai#2350 6127809765): a magic an open position or pending order carries is held, even with
+// no CID record (a chart closed with its trades left open). An open position on candidate n=0 steps to n=1.
+{const id=71300508715022n,t=terminal();const c0=t.c.GoatChildMagicCandidate(id,0),c1=t.c.GoatChildMagicCandidate(id,1),c2=t.c.GoatChildMagicCandidate(id,2);
+ t.c.positions=[12345,c0];assert.equal(t.c.GoatDeriveChildMagic(id),c1,'an open position on candidate 0 steps to candidate 1');
+ const o=terminal();o.c.orders=[c0];assert.equal(o.c.GoatDeriveChildMagic(id),c1,'a pending order holds it too');
+ const both=terminal();both.c.positions=[c0];both.record(c1,'EURAUD',71300456826655n);assert.equal(both.c.GoatDeriveChildMagic(id),c2,'position, then a CID record');
+ const free=terminal();free.c.positions=[c0+1];free.c.orders=[0];assert.equal(free.c.GoatDeriveChildMagic(id),c0,'other magics hold nothing');
+ // The OnInit block: a restored magic still wins even when its own position is open (no re-key of a live child).
+ const live=terminal({chart:id,symbol:'USDJPY'});live.record(c0,'USDJPY',id);live.c.positions=[c0];assert.equal(live.onInit(),c0);
+ ok();}
 
 // 5. The OnInit block: a restored magic wins unchanged; otherwise a live chart derives; the tester keeps its
 // per-run random magic (the export CSV temp name carries MAGIC1).

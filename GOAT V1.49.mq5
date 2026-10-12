@@ -251,6 +251,12 @@ int GoatChildMagicCandidate(const long magic_chart,const int magic_n)
 //----------------------------------------------------------------------------------------------------------------------------------------------------
 bool GoatChildMagicHeld(const int magic_value,const long magic_chart)
   {
+   // B44 condition 3 (goatai#2350 6127809765): a magic an open position or a pending order of this account already
+   // carries is held too, whether or not a CID record names it (a chart closed with trades left open).
+   for(int magic_p=PositionsTotal()-1;magic_p>=0;--magic_p)
+      if(PositionGetTicket(magic_p)>0 && PositionGetInteger(POSITION_MAGIC)==magic_value) return true;
+   for(int magic_o=OrdersTotal()-1;magic_o>=0;--magic_o)
+      if(OrderGetTicket(magic_o)>0 && OrderGetInteger(ORDER_MAGIC)==magic_value) return true;
    long magic_cid=GoatTruncateCidValue(magic_chart);
    for(int magic_i=GlobalVariablesTotal()-1;magic_i>=0;--magic_i)
    {

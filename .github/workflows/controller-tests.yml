@@ -155,6 +155,8 @@ jobs:
         run: node scripts/test_ai_gate_log.cjs
       - name: B44 BlindExport ranks exports on fit+FWD, blind=0 unchanged (goatai#2350)
         run: node scripts/test_blind_export.cjs
+      - name: B44 sequence capture marks go coarser past 1M rows, no 2M stop (goatai#2350)
+        run: node scripts/test_trace_marks_downsample.cjs
       - name: EA-MAILBOX-SHARE-01 mailbox reads are FILE_SHARE_READ (B44 item 11, goatai#2350 6127147178)
         run: |
           python scripts/test_lint_ea_mailbox_share.py

@@ -1,13 +1,16 @@
-"""Fix B (Claude-Mac, goatai#2350 6118571536): monitor-launch reopens the exact chart GOAT observed healthy.
+"""Fix B (Claude-Mac, goatai#2350 6118571536, timing ruling 6118831254): monitor-launch reopens the POST-CLOSE chart.
 
-Fixture-only: no installed terminal is touched, launched or closed, and the MetaTrader5 adapter is never imported for
-real (a fake answers every SDK readback). After a person approves DLL imports, MT5 saves a non-zero expertmode on the
-monitor chart. GOAT never decodes it: when onboarding-status itself observes the monitor healthy (native_monitor
-complete, SDK Algo Trading OFF, demo, the linked login) it records the SHA-256 of the exact saved chart bytes, bound to
-the installation, terminal, account, session and chart file. monitor-launch accepts only those bytes; anything else
-refuses exactly as before. Also: the shared Open Lab protected-login list and the demo check on monitor-launch,
-monitor-repair and close-terminal, and the monitor-repair attempt ID length checked before any close.
+Fixture-only: no installed terminal is touched, launched or closed (fake processes), and the MetaTrader5 adapter is
+never imported for real (a fake answers every SDK readback). After a person approves DLL imports, MT5 saves a non-zero
+expertmode on the monitor chart, and it rewrites the chart again as it closes. GOAT never decodes a permission bit.
+close-terminal reads the monitor's health itself immediately before its own close (native_monitor facts, SDK Algo OFF,
+demo, the bound login, the same process); after MT5 has stopped, with nothing bound changed, it records the SHA-256 of
+the post-close chart bytes. monitor-launch accepts only those bytes; anything else refuses exactly as before. The
+running-chart hash onboarding-status notes is evidence only and never authorises a launch. Also: the shared Open Lab
+protected-login list and the demo check on monitor-launch, monitor-repair and close-terminal, and the monitor-repair
+attempt ID length checked before any close.
 """
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -19,13 +22,17 @@ from studio_agent_setup import close_terminal
 import studio_agent_setup
 import studio_demo_deploy
 from studio_monitor_repair import repair
-from studio_onboarding import (HEALTHY_CHART_ARCHIVE, HEALTHY_CHART_RECORD, MONITOR_PROFILE_REFUSAL, NOT_DEMO_REFUSAL,
-                               OPEN_LAB_LOGINS, PROTECTED_ACCOUNT_REFUSAL, monitor_launch, onboarding_status,
-                               verify_monitor_profile)
+from studio_onboarding import (HEALTHY_CHART_ARCHIVE, HEALTHY_CHART_RECORD, HEALTHY_OBSERVATION, MONITOR_PROFILE_REFUSAL,
+                               NOT_DEMO_REFUSAL, OPEN_LAB_LOGINS, PROTECTED_ACCOUNT_REFUSAL, monitor_launch,
+                               onboarding_status, verify_monitor_profile)
 from studio_refusal import Refusal
 import test_studio_onboarding as onboarding
 
 EXPERIMENT_LOGINS = {'Experiment 01': '3000109268', 'Experiment 02': '3000109427', 'Experiment 03': '3000110706'}
+
+
+def digest(raw):
+    return hashlib.sha256(raw).hexdigest()
 
 
 class FakeMT5:
@@ -54,6 +61,24 @@ class FakeMT5:
     def orders_get(self): return []
 
 
+class FakeTerminal:
+    """The selected MT5 process. ``on_close`` is what MT5 does while it closes (it rewrites the saved chart)."""
+
+    def __init__(self, identity, on_close=None):
+        self.identity, self.on_close, self.closed = identity, on_close, []
+
+    def inspect(self):
+        return self.identity
+
+    def close(self, identity):
+        if identity != self.identity:
+            raise ValueError('changed')
+        self.closed.append(identity)
+        if self.on_close:
+            self.on_close()
+        self.identity = None
+
+
 class PreservedChartTests(unittest.TestCase):
     def setUp(self):
         self.fixture = onboarding.OnboardingTests()
@@ -69,20 +94,47 @@ class PreservedChartTests(unittest.TestCase):
         self.record = self.c.root/HEALTHY_CHART_RECORD
         self.session_path = self.c.root/'session.json'
         self.session_raw = self.session_path.read_bytes()
+        self.identity = dict(pid=55, executable=self.c.install['terminal_executable'], created_utc='2020-01-01T00:00:00+00:00')
+        self.closes = 0
 
     # ---- helpers
 
-    def approve_dll(self, mode='4'):
-        """What MT5 saves after the person approved DLL imports on the monitor chart: a non-zero expertmode."""
-        self.chart.write_text(self.prepared.replace('expertmode=0', 'expertmode='+mode), encoding='utf-16')
-        return self.chart.read_bytes()
+    def chart_bytes(self, mode='4', scale='8'):
+        """A saved monitor chart: after a DLL approval MT5 saves a non-zero expertmode; scale stands for any metadata."""
+        return self.prepared.replace('expertmode=0', 'expertmode='+mode).replace('scale=8', 'scale='+scale).encode('utf-16')
 
-    def status(self, mt5=None, **observation):
-        self.fixture.observe(**observation)
-        return onboarding_status(self.c, mt5=mt5 or FakeMT5(self.c))
+    def save(self, raw):
+        self.chart.write_bytes(raw)
+        return raw
 
-    def recorded(self):
-        result = self.status()['monitor_chart_record']
+    def native(self, **changes):
+        """close-terminal's SDK readback (inspect_idle_demo's answer) for the running selected terminal."""
+        return dict(dict(process=self.identity, account_matches=True, demo=True, connected=True, algo_trading=False,
+                         positions=0, orders=0, tester_state='idle', tester_source='window_caption'), **changes)
+
+    def close(self, *, running=None, post_close=None, native=None, observation=None, during_close=None):
+        """close-terminal with the running chart ``running``; MT5 rewrites it to ``post_close`` while it closes."""
+        if running is not None:
+            self.save(running)
+        if observation is not False:
+            self.fixture.observe(**(observation or {}))
+        def closing():
+            if post_close is not None:
+                self.save(post_close)
+            if during_close:
+                during_close()
+        terminal = FakeTerminal(dict(self.identity), closing)
+        self.closes += 1
+        answer = native if native is not None else self.native()
+        result = close_terminal(self.c, 'close-'+str(self.closes), process=terminal, inspect=lambda c: answer, wait_seconds=2)
+        self.assertEqual(result['phase'], 'stopped')
+        self.assertEqual(len(terminal.closed), 1)
+        return result
+
+    def recorded(self, running=None, post_close=None):
+        running = running if running is not None else self.chart_bytes(scale='8')
+        post_close = post_close if post_close is not None else self.chart_bytes(scale='7')
+        result = self.close(running=running, post_close=post_close)['monitor_chart_record']
         self.assertEqual(result['status'], 'recorded', result)
         return json.loads(self.record.read_text())
 
@@ -106,56 +158,129 @@ class PreservedChartTests(unittest.TestCase):
         journal = self.c.root/HEALTHY_CHART_ARCHIVE/'retired.jsonl'
         return [json.loads(line)['reason'] for line in journal.read_text().splitlines()] if journal.exists() else []
 
-    # ---- record and accept
+    # ---- the running hash is evidence only
 
-    def test_byte_identical_observed_healthy_chart_is_accepted_by_monitor_launch(self):
-        raw = self.approve_dll()
-        record = self.recorded()
-        self.assertEqual(record['chart_sha256'], __import__('hashlib').sha256(raw).hexdigest())
+    def test_a_running_chart_observation_alone_never_authorises_a_launch(self):
+        raw = self.save(self.chart_bytes())
+        self.fixture.observe()
+        result = onboarding_status(self.c, mt5=FakeMT5(self.c))['monitor_healthy_observation']
+        self.assertEqual((result['status'], result['authorises_launch']), ('observed', False))
+        evidence = json.loads((self.c.root/HEALTHY_OBSERVATION).read_text())
+        self.assertEqual(evidence['observed_running_sha256'], digest(raw))
+        self.assertFalse(evidence['authorises_launch'])
+        self.assertEqual(evidence['sdk']['algo_trading'], False)
+        self.assertFalse(self.record.exists())
+        self.assertEqual(self.refused('running-hash-only').fields['observed_healthy_chart']['status'], 'none')
+
+    # ---- close-terminal records the post-close bytes; monitor-launch accepts only them
+
+    def test_close_terminal_records_the_post_close_bytes_and_monitor_launch_accepts_them(self):
+        running, post_close = self.chart_bytes(scale='8'), self.chart_bytes(scale='7')
+        result = self.close(running=running, post_close=post_close)['monitor_chart_record']
+        self.assertEqual(result['status'], 'recorded')
+        self.assertTrue(result['rewritten_on_close'], 'MT5 rewrote the chart as it closed')
+        record = json.loads(self.record.read_text())
+        self.assertEqual(record['chart_sha256'], digest(post_close), 'the post-close bytes, read after MT5 stopped')
+        self.assertEqual(record['pre_close']['observed_running_sha256'], digest(running))
+        self.assertEqual(record['pre_close']['native_monitor'], 'complete')
+        self.assertEqual(record['pre_close']['sdk']['algo_trading'], False)
+        self.assertEqual(record['close']['source'], 'close-terminal')
         self.assertEqual(record['binding']['chart_path'], str(self.chart))
         self.assertEqual(record['binding']['account'], dict(login='123456', server='Customer-Demo'))
         self.assertEqual(record['binding']['terminal_data_root'], self.c.install['terminal_data_root'])
         self.assertEqual(record['binding']['terminal_executable'], self.c.install['terminal_executable'])
-        self.assertEqual(record['observed']['sdk'], dict(login='123456', server='Customer-Demo', demo=True, connected=True,
-                                                         algo_trading=False, build=5200))
         self.assertFalse(record['permissions_changed'])
-        # A second healthy observation of the same bytes needs no new SDK readback.
-        again = FakeMT5(self.c)
-        self.assertEqual(self.status(again)['monitor_chart_record']['status'], 'current')
-        self.assertEqual(again.initialized, 0)
         launch = monitor_launch(self.c, 'self-restore-1')
         self.assertEqual(launch['status'], 'process_started_unverified')
-        self.assertEqual(launch['observed_healthy_chart']['chart_sha256'], record['chart_sha256'])
-        self.assertEqual(launch['saved_chart_sha256'], record['chart_sha256'])
+        self.assertEqual(launch['observed_healthy_chart']['chart_sha256'], digest(post_close))
         startup = Path(launch['startup_config']).read_bytes().decode('utf-16')
         self.assertIn('[Experts]\r\nEnabled=0\r\nAllowLiveTrading=0\r\n', startup, 'Algo Trading and live trading stay forced off')
-        self.assertEqual(self.chart.read_bytes(), raw, 'no permission is written or changed')
+        self.assertEqual(self.chart.read_bytes(), post_close, 'no permission is written or changed')
         self.start.assert_called_once()
 
-    def test_one_changed_byte_is_refused_as_today(self):
-        self.approve_dll(); self.recorded()
-        self.chart.write_text(self.chart.read_text(encoding='utf-16').replace('scale=8', 'scale=7'), encoding='utf-16')
+    def test_the_running_bytes_are_refused_once_mt5_rewrote_them_on_close(self):
+        running = self.chart_bytes(scale='8')
+        self.recorded(running=running, post_close=self.chart_bytes(scale='7'))
+        self.save(running)
+        self.assertEqual(self.refused('running-bytes').fields['observed_healthy_chart']['status'], 'differs')
+
+    def test_bytes_changed_after_the_record_are_refused(self):
+        self.recorded()
+        self.save(self.chart_bytes(scale='6'))
         refusal = self.refused('changed-byte')
         self.assertEqual(refusal.fields['failed_checks'], ['permissions'])
         self.assertEqual(refusal.fields['observed'], {'expertmode': '4', 'required_expertmode': '0'})
         self.assertEqual(refusal.fields['observed_healthy_chart']['status'], 'differs')
 
     def test_a_different_permission_value_is_refused(self):
-        self.approve_dll('4'); self.recorded()
+        self.recorded()
         for mode in ('5', '6', '36'):
             with self.subTest(mode=mode):
-                self.approve_dll(mode)
+                self.save(self.chart_bytes(mode=mode, scale='7'))
                 refusal = self.refused('other-permission-'+mode)
                 self.assertEqual(refusal.fields['failed_check'], 'permissions')
                 self.assertEqual(refusal.fields['observed']['expertmode'], mode)
 
-    def test_a_new_healthy_observation_supersedes_and_archives_the_previous_record(self):
-        self.approve_dll('4'); first = self.recorded()
-        self.approve_dll('6'); second = self.recorded()
+    def test_a_later_healthy_close_supersedes_and_archives_the_previous_record(self):
+        first = self.recorded()
+        second = self.recorded(running=self.chart_bytes(scale='7'), post_close=self.chart_bytes(mode='6', scale='7'))
         self.assertNotEqual(first['chart_sha256'], second['chart_sha256'])
         self.assertEqual(self.retired_reasons(), ['superseded'])
-        self.assertTrue(any(p.suffix == '.json' for p in (self.c.root/HEALTHY_CHART_ARCHIVE).iterdir()))
         self.assertEqual(monitor_launch(self.c, 'after-supersede')['observed_healthy_chart']['chart_sha256'], second['chart_sha256'])
+
+    # ---- no record without a healthy pre-close read, or with anything bound changed
+
+    def test_close_terminal_without_a_healthy_pre_close_observation_records_nothing(self):
+        stale = dict(observed_terminal_utc='2000.01.01 00:00:00')
+        cases = {
+            'native_monitor stale': dict(observation=stale),
+            'native_monitor not loaded': dict(observation=dict(loaded=False)),
+            'sdk Algo Trading on': dict(native=self.native(algo_trading=True)),
+            'sdk not demo': dict(native=self.native(demo=False)),
+            'sdk other login': dict(native=self.native(account_matches=False)),
+            'sdk not connected': dict(native=self.native(connected=False)),
+        }
+        for name, options in cases.items():
+            with self.subTest(case=name):
+                result = self.close(running=self.chart_bytes(scale='8'), post_close=self.chart_bytes(scale='7'), **options)
+                self.assertEqual(result['monitor_chart_record']['status'], 'not_recorded')
+                self.assertEqual(result['monitor_chart_record']['reason'], 'no_healthy_pre_close_observation')
+                self.assertFalse(self.record.exists())
+        self.refused('never-recorded')
+
+    def test_close_terminal_records_nothing_when_identity_changed_during_the_close(self):
+        other = self.chart.with_name('chart02.chr')
+        def account_changed():
+            self.set_account(login='654321')
+        def chart_moved():
+            self.chart.rename(other)
+        for name, change in (('account', account_changed), ('chart path', chart_moved)):
+            with self.subTest(changed=name):
+                result = self.close(running=self.chart_bytes(scale='8'), post_close=self.chart_bytes(scale='7'), during_close=change)
+                self.assertEqual(result['monitor_chart_record']['status'], 'not_recorded', result['monitor_chart_record'])
+                if name == 'chart path':
+                    self.assertEqual(result['monitor_chart_record']['reason'], 'identity_changed')
+                self.assertFalse(self.record.exists())
+                if other.exists():
+                    other.rename(self.chart)
+                self.set_account()
+
+    def test_a_non_demo_binding_never_records(self):
+        self.set_account(demo_only=False)
+        result = self.close(running=self.chart_bytes(scale='8'), post_close=self.chart_bytes(scale='7'))
+        self.assertEqual(result['monitor_chart_record']['pre_close_reason'], 'not_demo_binding')
+        self.assertFalse(self.record.exists())
+
+    def test_a_protected_account_never_records(self):
+        for experiment, login in EXPERIMENT_LOGINS.items():
+            with self.subTest(experiment=experiment):
+                self.set_account(login=login, server='Darwinex-Demo')
+                terminal = FakeTerminal(dict(self.identity))
+                with self.assertRaises(Refusal) as caught:
+                    close_terminal(self.c, 'protected-'+login, process=terminal, inspect=lambda c: self.native())
+                self.assertEqual(caught.exception.code, PROTECTED_ACCOUNT_REFUSAL)
+                self.assertEqual(terminal.closed, [])
+                self.assertFalse(self.record.exists())
 
     # ---- invalidation
 
@@ -163,7 +288,7 @@ class PreservedChartTests(unittest.TestCase):
         for changed in (dict(login='654321'), dict(server='Other-Demo')):
             with self.subTest(changed=changed):
                 self.set_account()
-                self.approve_dll(); self.recorded()
+                self.recorded()
                 self.set_account(**changed)
                 refusal = self.refused('account-'+'-'.join(changed))
                 self.assertEqual(refusal.fields['failed_check'], 'permissions')
@@ -174,7 +299,7 @@ class PreservedChartTests(unittest.TestCase):
                 self.assertEqual(self.refused('account-back-'+'-'.join(changed)).fields['observed_healthy_chart']['status'], 'none')
 
     def test_a_terminal_path_change_retires_the_binding(self):
-        self.approve_dll(); self.recorded()
+        self.recorded()
         original = self.c.install['terminal_executable']
         other = Path(original).parent.parent/'other program'/'terminal64.exe'
         other.parent.mkdir(); other.write_bytes(b'mt5')
@@ -187,55 +312,21 @@ class PreservedChartTests(unittest.TestCase):
         self.assertEqual(self.refused('terminal-back').fields['observed_healthy_chart']['status'], 'none')
 
     def test_an_ea_update_of_the_same_installation_keeps_the_binding(self):
-        self.approve_dll(); record = self.recorded()
+        record = self.recorded()
         self.fixture.update_ea()
         c = self.fixture.reopened()
         launch = monitor_launch(c, 'after-update')
         self.assertEqual(launch['observed_healthy_chart']['chart_sha256'], record['chart_sha256'])
 
-    # ---- no record unless every health fact holds
-
-    def test_no_record_without_a_fresh_native_monitor(self):
-        self.approve_dll()
-        sdk = FakeMT5(self.c)
-        result = self.status(sdk, observed_terminal_utc='2000.01.01 00:00:00')
-        self.assertEqual(result['monitor_chart_record']['status'], 'not_recorded')
-        self.assertEqual(sdk.initialized, 0, 'no SDK readback for a monitor that is not healthy')
-        self.assertFalse(self.record.exists())
-        self.refused('no-record')
-
-    def test_no_record_when_the_sdk_reads_algo_trading_on(self):
-        self.approve_dll()
-        result = self.status(FakeMT5(self.c, algo=True))['monitor_chart_record']
-        self.assertEqual((result['status'], result['reason']), ('not_recorded', 'algo_trading_on'))
-        self.assertFalse(self.record.exists())
-
-    def test_no_record_when_the_sdk_reads_a_non_demo_account(self):
-        self.approve_dll()
-        for mode in (1, 2):
-            result = self.status(FakeMT5(self.c, trade_mode=mode))['monitor_chart_record']
-            self.assertEqual(result['status'], 'not_recorded')
-        self.assertIn('real-money', result['detail'])
-        self.assertFalse(self.record.exists())
-
-    def test_no_record_when_the_sdk_reads_another_login_or_server(self):
-        self.approve_dll()
-        for sdk in (FakeMT5(self.c, login='999999'), FakeMT5(self.c, server='Other-Demo')):
-            result = self.status(sdk)['monitor_chart_record']
-            self.assertEqual(result['status'], 'not_recorded')
-            self.assertIn('different account', result['detail'])
-        self.assertFalse(self.record.exists())
-
     def test_a_human_reopen_observation_alone_never_records(self):
-        raw = self.approve_dll()
+        raw = self.save(self.chart_bytes())
         # The observational check human-reopen paths use accepts the saved permissions but writes nothing.
         receipt = json.loads((self.c.root/'monitor-profile.json').read_text())
         verify_monitor_profile(self.c, receipt, observed_human_reopen=True)
         self.assertFalse(self.record.exists())
-        # A human-opened MT5 (not monitor-launch's process) without fresh healthy runtime feedback: still no record.
+        # A human-opened MT5 without fresh healthy runtime feedback: no observation, no SDK read, no record.
         sdk = FakeMT5(self.c)
-        result = onboarding_status(self.c, mt5=sdk)
-        self.assertEqual(result['monitor_chart_record']['status'], 'not_recorded')
+        self.assertEqual(onboarding_status(self.c, mt5=sdk)['monitor_healthy_observation']['status'], 'not_observed')
         self.assertEqual(sdk.initialized, 0)
         self.assertFalse(self.record.exists())
         self.refused('human-only')

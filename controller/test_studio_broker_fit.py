@@ -92,18 +92,27 @@ def ticks(spreads=(8,), *, point=0.00001, end=T0, count=720, step=30, offset=DAR
 ACCOUNT = dict(login='123456', server='Darwinex-Demo', currency='USD', equity=100000.0, leverage=200, demo=True)
 
 
-def run(members, *, account=None, symbols=None, spread=None, history=None, offset=DARWINEX_OFFSET, margins=None, equity=None,
-        **manifest_changes):
-    """build_result over plain data: every symbol has 6 h of ticks at `spread` points (default 8) and a fresh last tick."""
+def reading(*, account=None, symbols=None, spread=None, history=None, offset=DARWINEX_OFFSET, margins=None, quotes=None,
+            arrived=None, now=T0):
+    """What read_broker returns, as plain data: every symbol has 6 h of ticks at `spread` points (default 8) and a last
+    tick seen arriving at `now` (so the clock is proven)."""
     symbols = symbols if symbols is not None else [symbol()]
+    names = [s['name'] for s in symbols]
+    series = history if history is not None else {s['name']: ticks((spread or 8,), point=s['point'], offset=offset, end=now) for s in symbols}
+    return dict(account=dict(account or ACCOUNT), symbols=symbols, ticks=series,
+                quotes=quotes if quotes is not None else {name: int(now + offset * 60) for name in names},
+                margins=margins if margins is not None else {name: 1000.0 for name in names},
+                utc_now=now, arrived=arrived if arrived is not None else names)
+
+
+def run(members, *, equity=None, account=None, symbols=None, spread=None, history=None, offset=DARWINEX_OFFSET, margins=None,
+        quotes=None, arrived=None, **manifest_changes):
+    """build_result over plain data (see reading)."""
     data = manifest([m for m, _ in members], **manifest_changes)
     sets = {m['setSha256']: raw for m, raw in members}
-    names = [s['name'] for s in symbols]
-    series = history if history is not None else {s['name']: ticks((spread or 8,), point=s['point'], offset=offset) for s in symbols}
-    quotes = {name: int(T0 + offset * 60) for name in names}
-    return bf.build_result(data, sets, account=dict(account or ACCOUNT), symbols=symbols, ticks=series, quotes=quotes,
-                           margins=margins if margins is not None else {name: 1000.0 for name in names}, schema=SCHEMA,
-                           utc_now=T0, equity=equity)
+    return bf.build_result(data, sets, schema=SCHEMA, equity=equity,
+                           **reading(account=account, symbols=symbols, spread=spread, history=history, offset=offset,
+                                     margins=margins, quotes=quotes, arrived=arrived))
 
 
 def one(result):
@@ -133,6 +142,13 @@ class SymbolMappingTests(unittest.TestCase):
         self.assertFalse(bf.is_variant('US30', 'US3000'))
         self.assertFalse(bf.is_variant('EURUSD', 'EURUSDX'))
         self.assertEqual(bf.map_symbol('EURUSD', [symbol('EURUSD', trade_mode=0)])[1][0], bf.SYMBOL_UNAVAILABLE)
+
+    def test_a_pair_without_reported_currencies_is_refused(self):
+        # A six-letter pair must report its base and profit currencies; missing ones cannot prove it is that pair.
+        for missing in (dict(currency_base=''), dict(currency_profit=None)):
+            with self.subTest(missing=missing):
+                self.assertEqual(bf.map_symbol('EURUSD', [symbol('EURUSD', **missing)])[1][0], bf.SYMBOL_UNAVAILABLE)
+                self.assertEqual(bf.map_symbol('EURUSD', [symbol('EURUSD.r', **missing)])[1][0], bf.SYMBOL_UNAVAILABLE)
 
     def test_the_deploy_file_name_carries_the_broker_symbol(self):
         result = run([(member(KESTREL), KESTREL)], symbols=[symbol('EURUSD.raw', currency_base='EUR', currency_profit='USD')])
@@ -186,11 +202,24 @@ class SpreadTests(unittest.TestCase):
         self.assertEqual(one(run([(member(KESTREL), KESTREL)], history={'EURUSD': no_bid}))['code'], bf.SPREAD_SAMPLE_UNAVAILABLE)
 
     def test_without_a_fresh_last_tick_the_clock_and_spread_are_unknown(self):
-        data = manifest([member(KESTREL)])
-        result = bf.build_result(data, {data['members'][0]['setSha256']: KESTREL}, account=dict(ACCOUNT), symbols=[symbol()],
-                                 ticks={'EURUSD': ticks()}, quotes={'EURUSD': int(T0 + 180 * 60 - 4200)}, margins={'EURUSD': 1000.0},
-                                 schema=SCHEMA, utc_now=T0)
+        result = run([(member(KESTREL), KESTREL)], quotes={'EURUSD': int(T0 + 180 * 60 - 4200)}, arrived=[])
         self.assertEqual((one(result)['code'], result['serverOffset']['brokerMinutes']), (bf.SPREAD_SAMPLE_UNAVAILABLE, None))
+
+    def test_an_old_tick_never_proves_the_server_clock(self):
+        # Review 6130418265 item 8. Probe: a UTC+4 broker whose last tick is 3,600 s old. Its time minus UTC now is
+        # exactly 3 hours, so the old rule read UTC+3 = ny-close and let a clock-dependent member through.
+        stale_tick = int(T0 + 240 * 60 - 3600)
+        self.assertEqual(bf.measured_server_offset_minutes([stale_tick], T0), 180, 'one tick time cannot prove its own age')
+        other = dict(ACCOUNT, server='Other-Demo')
+        before = run([(member(KESTREL), KESTREL)], account=other, offset=240, quotes={'EURUSD': stale_tick})   # as if it arrived
+        self.assertEqual((before['serverOffset']['brokerMinutes'], one(before)['status']), (180, 'fit'), 'the probe, reproduced')
+        # Now only a tick seen ARRIVING during the read proves the clock: the old tick leaves it unknown and the
+        # clock-dependent member refuses.
+        after = run([(member(KESTREL), KESTREL)], account=other, offset=240, quotes={'EURUSD': stale_tick}, arrived=[])
+        self.assertEqual((after['serverOffset']['brokerMinutes'], one(after)['code']), (None, bf.SERVER_OFFSET_MISMATCH))
+        neutral = kestrel_with(**NEUTRAL)
+        self.assertEqual(one(run([(member(neutral), neutral)], account=other, offset=240, quotes={'EURUSD': stale_tick},
+                                 arrived=[]))['code'], bf.SERVER_OFFSET_MISMATCH, 'offset-neutral still needs a known offset')
 
     def test_rollover_and_weekend_boundaries_follow_new_york_time(self):
         # EDT (UTC-4) on 2026-10-13: 15:59 / 16:00 / 17:59 / 18:00 New York.
@@ -249,15 +278,84 @@ class ScalingTests(unittest.TestCase):
         self.assertEqual((row['status'], row['edits']['Lots_Input']), ('fit', '0.01'))
 
     def test_a_reference_start_lot_proves_risk_per_sequence_below_the_reference_equity(self):
-        # reference.startLot 0.1 follows the scaled Risk: 0.099 -> 0.09 at 99,000; 0.0099 -> 0.00 at 9,900.
-        self.assertEqual(one(run([(member(KESTREL), KESTREL)], equity=99000))['scaled']['startLot'], 0.09)
+        # reference.startLot 0.1 follows the scaled Risk, and the EA picks the NEAREST step (SolveStartLotsByRisk):
+        # ideal 0.099 -> 0.10 at 99,000; 0.01 at 10,000; ideal 0.0099999 at 9,999.99 is under VOLUME_MIN.
+        self.assertEqual(one(run([(member(KESTREL), KESTREL)], equity=99000))['scaled']['startLot'], 0.1)
         self.assertEqual(one(run([(member(KESTREL), KESTREL)], equity=10000))['scaled']['startLot'], 0.01)
         self.assertEqual(one(run([(member(KESTREL), KESTREL)], equity=9999.99))['code'], bf.BELOW_MIN_LOT)
         # Risk under the EA's 10 is refused even with a large start lot (EA mq5:3253).
         self.assertEqual(one(run([(member(KESTREL, ref=reference(startLot=10)), KESTREL)], equity=1999))['code'], bf.BELOW_MIN_LOT)
-        # The start lot follows the Risk actually written (rounded down to the cent): 3 x 166.66/500 = 0.99996 -> 0.99.
+        # The start lot follows the Risk actually written (rounded down to the cent): 3 x 166.66/500 = 0.99996, which
+        # the EA rounds to its nearest step, 1.0.
         self.assertEqual(one(run([(member(KESTREL, ref=reference(startLot=3)), KESTREL)], equity=33333.33, margins={'EURUSD': 100.0}))['scaled'],
-                         dict(Risk=166.66, Lots_Max=20.0, Lots_Max_Cum=50.0, Lots_Input=0.05, startLot=0.99))
+                         dict(Risk=166.66, Lots_Max=20.0, Lots_Max_Cum=50.0, Lots_Input=0.05, startLot=1.0))
+
+    def test_the_risk_per_sequence_start_lot_is_the_eas_nearest_pick(self):
+        # Review 6130418265 item 6. Probe: startLot 0.10 at Risk 500, scale 0.355 (equity 35,500) -> Risk 177.50.
+        # Ideal start lot 0.0355: the old floor model said 0.03; the EA's solver picks 0.04 (|200-177.5| < |150-177.5|),
+        # so the peak margin was understated by a third: 0.03 x 50 = 1.5 lots before, 0.04 x 50 = 2.0 lots now.
+        row = one(run([(member(KESTREL), KESTREL)], equity=35500))
+        self.assertEqual((row['status'], row['scaled']['Risk'], row['scaled']['startLot']), ('fit', 177.5, 0.04))
+        self.assertEqual((row['margin']['peakLots'], row['margin']['required']), (2.0, 2000.0))
+
+    def test_the_lot_solver_matches_the_ea_traced_by_hand(self):
+        # SolveStartLotsByRisk (mq5:781-827) and NormalizedLots (mq5:445-459) in IEEE doubles, as MQL5 runs them, on a
+        # broker with VOLUME_MIN 0.1, VOLUME_STEP 0.1, VOLUME_MAX 1.0 and a planned loss of 1,000 per lot.
+        # kmax = floor((1.0-0.1)/0.1 + 1e-9) = floor(9.000000000000002 + 1e-9) = 9 (grid 0.1 .. 1.0).
+        loss = lambda lots: lots * 1000.0
+        solve = lambda target: bf.ea_solve_start_lots(target, 0.1, 0.1, 1.0, loss)
+        # 355: round 1 kmid 4 tries k 3,4,5 = 0.4,0.5,0.6 (err 45,145,245), best k3; loss(0.5)=500 > 355 -> kmax 3.
+        #      round 2 kmid 1 tries 0.1,0.2,0.3 (err 255,155,55): no improvement; 200 <= 355 -> kmin 2.
+        #      round 3 kmid 2 tries 0.3,0.3,0.4: none better; 300 <= 355 -> kmin 3 = kmax: stop. k3 -> 0.4 (the floor model: 0.3).
+        self.assertEqual(solve(355), 0.4)
+        # 340: round 2 finds k2 = 0.1 + 2 x 0.1 = 0.30000000000000004 (err 40 < 60): 0.3, the nearer step.
+        self.assertAlmostEqual(solve(340), 0.3, places=12)
+        # 350, a tie on paper: round 1 keeps k3 (0.4, err 50.0); round 2's k2 is 0.30000000000000004, its loss
+        # 300.00000000000006 and err 49.99999999999994 < 50.0, so the EA's doubles pick 0.3.
+        self.assertAlmostEqual(solve(350), 0.3, places=12)
+        # 5 (ideal 0.005) is forced up to VOLUME_MIN 0.1; 2000 is capped at the grid's last step 1.0.
+        self.assertEqual((solve(5), solve(2000)), (0.1, 1.0))
+        # Early returns: no step or no maximum -> VOLUME_MIN (mq5:788); no target -> VOLUME_MIN (mq5:789).
+        self.assertEqual((bf.ea_solve_start_lots(355, 0.1, 0, 1.0, loss), bf.ea_solve_start_lots(0, 0.1, 0.1, 1.0, loss)), (0.1, 0.1))
+        # NormalizedLots rounds half away from zero, 0 below VOLUME_MIN, capped at VOLUME_MAX.
+        self.assertAlmostEqual(bf.ea_normalized_lots(0.25, 0.1, 0.1, 100), 0.3, places=12)
+        self.assertEqual((bf.ea_normalized_lots(0.04, 0.1, 0.1, 100), bf.ea_normalized_lots(7.0, 0.1, 0.1, 5.0)), (0.0, 5.0))
+        # The review's own probe on a 0.01 grid: 177.5 at 5,000 per lot -> 0.04.
+        self.assertEqual(bf.ea_solve_start_lots(177.5, 0.01, 0.01, 50.0, lambda lots: lots * 5000.0), 0.04)
+
+    def test_lots_input_is_snapped_to_the_broker_step_at_factor_one(self):
+        # Review 6130418265 item 1. Probe: VOLUME_STEP 0.1, VOLUME_MIN 0.1, reference Lots_Input 0.25 at scale 1.0. The
+        # old rule wrote nothing, and the EA's NormalizedLots would open 0.25 -> 0.30 (+20%). Now it is floored to 0.2.
+        raw = kestrel_with(**dict(FIXED, Lots_Input='0.25'))
+        self.assertAlmostEqual(bf.ea_normalized_lots(0.25, 0.1, 0.1, 50.0), 0.3, places=12, msg='what the EA would have opened')
+        row = one(run([(member(raw), raw)], symbols=[symbol(volume_min=0.1, volume_step=0.1)]))
+        self.assertEqual((row['status'], row['edits'], row['scaled']['Lots_Input']), ('fit', dict(Lots_Input='0.2'), 0.2))
+        # Also capped at VOLUME_MAX at factor 1.
+        capped = one(run([(member(raw), raw)], symbols=[symbol(volume_max=0.1, volume_min=0.01, volume_step=0.01)]))
+        self.assertEqual(capped['edits'], dict(Lots_Input='0.1'))
+
+    def test_an_unreadable_money_value_excludes_the_member(self):
+        # Review 6130418265 item 5. Probe: MinLevelEquity=9.5e4 (95,000 to MT5) failed the plain-number rule, read as 0
+        # ("no limit") and fitted at 50k. Now any unreadable money value excludes the member.
+        raw = kestrel_with(MinLevelEquity='9.5e4')
+        row = one(run([(member(raw), raw)], equity=50000))
+        self.assertEqual((row['code'], row['message']), (bf.MONEY_VALUE_UNREADABLE, "GOAT cannot read this set's MinLevelEquity value, so it cannot check its money limits."))
+        for name, text in (('MaxLossLocal', '1,000'), ('MaxDailyLossLocal', ''), ('Risk', '5e2')):
+            with self.subTest(name=name):
+                raw = kestrel_with(**{name: text})
+                self.assertEqual(one(run([(member(raw), raw)]))['code'], bf.MONEY_VALUE_UNREADABLE)
+        # An unreadable indicator timeframe may be H4: never offset-neutral.
+        raw = kestrel_with(**dict(NEUTRAL, RSI_TF_='H4'))
+        self.assertIn('RSI_TF_ unreadable', bf.offset_neutral(bf.set_values(raw, SCHEMA), bf.schema_defaults(SCHEMA), 'M1')[1])
+
+    def test_a_grid_size_the_ea_refuses_is_excluded(self):
+        # mq5:3317: Grid_Size inside (-0.5, 0.5) stops the EA. Point ratio 0.1 turns Grid_Size 4.0 into 0.4.
+        raw = kestrel_with(**dict(NEUTRAL, Grid_Size='4.0'))
+        row = one(run([(member(raw, timeframe='M15'), raw)], symbols=[symbol(**FOUR_DIGIT)], spread=1))
+        self.assertEqual((row['code'], row['message']),
+                         (bf.EA_INIT_REFUSED, "On this broker this set's Grid_Size would be 0.4, which the GOAT EA refuses to start with."))
+        self.assertEqual(one(run([(member(kestrel_with(**dict(NEUTRAL, Grid_Size='5.0')), timeframe='M15'),
+                                   kestrel_with(**dict(NEUTRAL, Grid_Size='5.0')))], symbols=[symbol(**FOUR_DIGIT)], spread=1))['status'], 'fit')
 
     def test_without_a_reference_start_lot_risk_per_sequence_is_margin_unknown(self):
         # Ruling (goatai#2350 6129252646): unknown margin fails closed at any equity other than the reference-identical
@@ -324,8 +422,10 @@ class CurrencyTests(unittest.TestCase):
         # Lots follow the reference-currency equity: 0.05 x 2.2 = 0.11. Risk is money in EUR, the same fraction of
         # equity: 500 x 200,000 / 100,000 = 1000.0 (not x2.2, which would over-risk by the exchange rate).
         self.assertEqual(one(result)['edits'], dict(Lots_Input='0.11', Risk='1000.0'))
-        self.assertEqual(result['deployBasis'], dict(schema=bf.DEPLOY_SCHEMA, scale=2.2, referenceEquity='100000', accountCurrency='EUR',
-                                                     rate='1.1', referenceIdentical=None))
+        basis = dict(result['deployBasis'])
+        self.assertEqual(basis.pop('manifest')['schema'], 'goat-house-portfolio-v1')
+        self.assertEqual(basis, dict(schema=bf.DEPLOY_SCHEMA, scale=2.2, equity='200000.0', referenceEquity='100000', accountCurrency='EUR',
+                                     rate='1.1', reviewedAtUtc=int(T0), referenceIdentical=None))
         self.assertEqual(one(run([(member(raw), raw)], account=dict(account, equity=100000.0), symbols=[symbol()]))['edits'], {})
 
     def test_a_jpy_account_uses_the_inverse_pair_at_the_ask(self):
@@ -337,6 +437,17 @@ class CurrencyTests(unittest.TestCase):
         self.assertEqual(one(result)['edits'], dict(Risk='75000.0'))
         wrong = run([(member(KESTREL), KESTREL)], account=account, symbols=[symbol(), facts[1]])
         self.assertEqual(one(wrong)['code'], bf.CONTRACT_MISMATCH)
+
+    def test_a_conversion_price_older_than_120_seconds_is_not_used(self):
+        # Review 6130418265 item 3: the rate needs a price at most 120 s old (judged with the proven server clock).
+        account = dict(ACCOUNT, currency='EUR')
+        facts = [symbol('GBPUSD'), symbol('EURUSD', bid=1.2, ask=1.2002)]
+        live = lambda age: {'GBPUSD': int(T0 + 180 * 60), 'EURUSD': int(T0 + 180 * 60 - age)}
+        raw = kestrel_with(**FIXED)
+        fresh = run([(member(raw, canonical='GBPUSD'), raw)], account=account, symbols=facts, quotes=live(120), arrived=['GBPUSD'])
+        self.assertEqual(fresh['conversion'], dict(rate=1.2, symbol='EURUSD', side='bid'))
+        old = run([(member(raw, canonical='GBPUSD'), raw)], account=account, symbols=facts, quotes=live(121), arrived=['GBPUSD'])
+        self.assertEqual((old['conversion'], old['refusal']['code'], old['deployBasis']), (None, bf.ACCOUNT_CURRENCY_UNSUPPORTED, None))
 
     def test_no_conversion_pair_refuses_every_member(self):
         account = dict(ACCOUNT, currency='CHF')
@@ -437,12 +548,25 @@ class MarginTests(unittest.TestCase):
     def test_member_and_portfolio_margin(self):
         raw = kestrel_with(**dict(FIXED, Allow_Opposite_Seq='true'))
         # 0.05 x Lots_Max_Cum 50 = 2.5 lots, both directions = 5 lots, at 1,000 per lot = 5,000.
-        self.assertEqual(one(run([(member(raw), raw)]))['margin'], dict(perLot=1000.0, peakLots=5.0, required=5000.0, basis='ea_caps'))
-        self.assertEqual(one(run([(member(raw), raw)], margins={'EURUSD': 30000.0}))['code'], bf.MARGIN_INSUFFICIENT)
+        self.assertEqual(one(run([(member(raw), raw)]))['margin'],
+                         dict(perLot=1000.0, peakLots=5.0, required=5000.0, basis='ea_caps', limit=50000.0))
+        self.assertEqual(one(run([(member(raw), raw)], margins={'EURUSD': 30000.0}))['code'], bf.MARGIN_TOO_HIGH)
         pair = [(member(raw), raw), (member(raw, member_id='b'), raw)]
-        result = run(pair, margins={'EURUSD': 12000.0})                      # 60,000 each, 120,000 together
+        result = run(pair, margins={'EURUSD': 6000.0})                       # 30,000 each, 60,000 together
         self.assertEqual({r['status'] for r in result['members']}, {'fit'})
-        self.assertEqual((result['offered'], result['refusal']['code'], result['margin']['required']), (False, bf.MARGIN_INSUFFICIENT, 120000.0))
+        self.assertEqual((result['offered'], result['refusal']['code'], result['refusal']['message'], result['margin']['required'],
+                          result['margin']['limit']),
+                         (False, bf.MARGIN_TOO_HIGH, bf.PORTFOLIO_MARGIN_MESSAGE, 60000.0, 50000.0))
+
+    def test_margin_may_use_at_most_half_the_equity(self):
+        # Review 6130418265 item 9. Probe: a worst case equal to the equity (margin level 100%) used to fit. Now the
+        # rule is peak margin <= 50% of equity (margin level >= 200%); the boundary itself fits.
+        raw = kestrel_with(**dict(FIXED, Allow_Opposite_Seq='true'))                 # 5 lots at the caps
+        at_equity = one(run([(member(raw), raw)], margins={'EURUSD': 20000.0}))   # 100,000 = equity
+        self.assertEqual((at_equity['code'], at_equity['message'], at_equity['margin']['required']),
+                         (bf.MARGIN_TOO_HIGH, "This set could use more than half of this account's equity as margin.", 100000.0))
+        self.assertEqual(one(run([(member(raw), raw)], margins={'EURUSD': 10000.0}))['status'], 'fit')    # exactly 50,000
+        self.assertEqual(one(run([(member(raw), raw)], margins={'EURUSD': 10000.01}))['code'], bf.MARGIN_TOO_HIGH)
 
     def test_unknown_margin_fails_closed(self):
         row = one(run([(member(KESTREL), KESTREL)], margins={'EURUSD': None}, equity=99000))
@@ -491,6 +615,20 @@ def plan_block(result):
     return dict(result['deployBasis'], members=entries)
 
 
+def stale(block, references, **read):
+    """stale_members against a live read built by reading()."""
+    return bf.stale_members(block, references, SCHEMA, **reading(**read))
+
+
+def inputs(rows):
+    return [row['input'] for row in rows]
+
+
+IDENTITY_CASES = HERE / 'contracts' / 'deploy-identity' / 'deploy-identity-cases.json'
+# Vendored byte-identical from goatai docs/fixtures/deploy-identity-cases.json at goatai#2500 head 1e6b7fa4.
+IDENTITY_CASES_SHA256 = '0ac65c400b06cf0bb3e5bfde7abc02c8a755179dc52d129f807a7723288301d6'
+
+
 class DeployRecordTests(unittest.TestCase):
     def test_entries_bytes_and_record(self):
         result = run([(member(KESTREL), KESTREL)], equity=50000)
@@ -500,9 +638,11 @@ class DeployRecordTests(unittest.TestCase):
         self.assertEqual(bf.deployed_bytes(KESTREL, entries[0]), deployed)
         self.assertEqual(entries[0]['rules'], dict(volumeMin='0.01', volumeStep='0.01', volumeMax='50.0', contractRatio='1',
                                                    referenceVolumeMin='0.01', startLot='0.1'))
-        self.assertEqual(bf.deploy_record(block), dict(schema=bf.DEPLOY_SCHEMA, scale=0.5, members=[dict(
-            memberId='EURUSD.M1.kestrel', setSha256Reference=hashlib.sha256(KESTREL).hexdigest(),
-            setSha256Deployed=hashlib.sha256(deployed).hexdigest(), scale=0.5)]))
+        self.assertEqual((entries[0]['brokerSymbol'], entries[0]['deployFileName']), ('EURUSD', 'GOAT V1.49 EURUSD,M1_EURUSD.M1.kestrel.set'))
+        sha = hashlib.sha256(deployed).hexdigest()
+        self.assertEqual(bf.deploy_record(block), dict(schema=bf.DEPLOY_SCHEMA, scale=0.5, deployIdentity=bf.deploy_identity(0.5, [sha]),
+                                                       members=[dict(memberId='EURUSD.M1.kestrel', setSha256Reference=hashlib.sha256(KESTREL).hexdigest(),
+                                                                     setSha256Deployed=sha, scale=0.5)]))
         with self.assertRaisesRegex(ValueError, 'differs from the reviewed'):
             bf.deployed_bytes(KESTREL, dict(entries[0], setSha256Deployed='0' * 64))
         with self.assertRaisesRegex(ValueError, 'not the broker-fit reference'):
@@ -511,29 +651,137 @@ class DeployRecordTests(unittest.TestCase):
             bf.deploy_entries(block, [object(), object()])
         with self.assertRaisesRegex(ValueError, 'Invalid broker-fit block'):
             bf.deploy_entries(dict(block, scale=float('nan')), [object()])
+        with self.assertRaisesRegex(ValueError, 'Invalid broker-fit block'):
+            bf.deploy_entries(dict(block, schema='goat-broker-fit-deploy-v1'), [object()])
         with self.assertRaisesRegex(ValueError, 'Invalid broker-fit member'):
             bf.deploy_entries(dict(block, members=[dict(entries[0], rules={})]), [object()])
+        # brokerSymbol and deployFileName must be the plan member's symbol and file, and the manifest setName's.
+        plan_member = dict(symbol='EURUSD', fileName='GOAT V1.49 EURUSD,M1_EURUSD.M1.kestrel.set')
+        bf.deploy_entries(block, [plan_member])
+        for forged in (dict(brokerSymbol='EURUSD.raw'), dict(deployFileName='GOAT V1.49 EURUSD,M1_other.set')):
+            with self.subTest(forged=forged), self.assertRaisesRegex(ValueError, 'does not match its plan member'):
+                bf.deploy_entries(dict(block, members=[dict(entries[0], **forged)]), [plan_member])
+        with self.assertRaisesRegex(ValueError, 'not a distinct member'):
+            bf.deploy_entries(dict(block, members=[dict(entries[0], memberId='other')]), [object()])
+
+    def test_deploy_identity_reproduces_the_shared_cases(self):
+        # Rule 9: the journal's deploy identity is the app's (goatai#2500 houseDeployIdentity), checked on the shared
+        # vectors byte for byte: pre-image and sha256 of every case.
+        raw = IDENTITY_CASES.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), IDENTITY_CASES_SHA256, 'the vendored copy is byte-identical')
+        cases = json.loads(raw)['cases']
+        self.assertGreaterEqual(len(cases), 6)
+        for case in cases:
+            with self.subTest(case=case['name']):
+                self.assertEqual(bf.deploy_identity_preimage(case['scale'], case['setSha256Deployed']), case['preimage'])
+                self.assertEqual(bf.deploy_identity(case['scale'], case['setSha256Deployed']), case['sha256'])
+        for scale, deployed in ((0, ['a' * 64]), (float('inf'), ['a' * 64]), (1, []), (1, ['A' * 64])):
+            with self.subTest(scale=scale, deployed=deployed), self.assertRaises(ValueError):
+                bf.deploy_identity(scale, deployed)
 
     def test_stale_members_judges_the_live_equity_with_the_same_rules(self):
         block = plan_block(run([(member(KESTREL), KESTREL)], equity=50000))   # reviewed Risk 250.0
-        def stale(equity, currency='USD'):
-            return bf.stale_members(block, [KESTREL], SCHEMA, equity=equity, currency=currency)
-        self.assertEqual(stale(50000.0), [])
-        self.assertEqual(stale(50003.0), [], 'live 250.01 is within one cent above the reviewed 250.0')
-        self.assertEqual(stale(50004.0), [dict(memberId='EURUSD.M1.kestrel', input='Risk', reviewed=250.0, live=250.02)])
-        self.assertEqual(stale(49999.0), [dict(memberId='EURUSD.M1.kestrel', input='Risk', reviewed=250.0, live=249.99)],
+        def check(equity, currency='USD'):
+            return stale(block, [KESTREL], account=dict(ACCOUNT, equity=equity, currency=currency))
+        self.assertEqual(check(50000.0), [])
+        self.assertEqual(check(50003.0), [], 'live 250.01 is within one cent above the reviewed 250.0')
+        self.assertEqual(check(50004.0), [dict(memberId='EURUSD.M1.kestrel', input='Risk', reviewed=250.0, live=250.02)])
+        self.assertEqual(check(49999.0), [dict(memberId='EURUSD.M1.kestrel', input='Risk', reviewed=250.0, live=249.99)],
                          'a reviewed value above the live one would be rounding up: refused at once')
-        self.assertEqual(stale(4000.0)[0]['input'], bf.BELOW_MIN_LOT)
-        self.assertEqual(stale(50000.0, 'EUR')[0]['input'], 'account')
-        self.assertEqual(stale(None)[0]['input'], 'account')
+        self.assertEqual(check(4000.0)[0]['input'], bf.BELOW_MIN_LOT)
+        self.assertEqual(check(50000.0, 'EUR')[0]['input'], 'account')
+        self.assertEqual(check(None)[0]['input'], 'account')
 
     def test_stale_lots_use_one_volume_step(self):
         raw = kestrel_with(**FIXED)
         block = plan_block(run([(member(raw), raw)], equity=60000))            # Lots 0.03, Risk 300.0
-        stale = bf.stale_members(block, [raw], SCHEMA, equity=79999.0, currency='USD')
-        self.assertEqual({row['input'] for row in stale}, {'Risk'}, 'lots 0.0399 -> 0.03 is the same step; Risk moved')
-        stale = bf.stale_members(block, [raw], SCHEMA, equity=100000.0, currency='USD')
-        self.assertIn(dict(memberId='EURUSD.M1.kestrel', input='Lots_Input', reviewed=0.03, live=0.05), stale)
+        rows = stale(block, [raw], account=dict(ACCOUNT, equity=79999.0))
+        self.assertEqual(set(inputs(rows)), {'Risk'}, 'lots 0.0399 -> 0.03 is the same step; Risk moved')
+        rows = stale(block, [raw], account=dict(ACCOUNT, equity=100000.0))
+        self.assertIn(dict(memberId='EURUSD.M1.kestrel', input='Lots_Input', reviewed=0.03, live=0.05), rows)
+
+
+class DeployRecheckTests(unittest.TestCase):
+    """Review 6130418265 items 2, 3, 4 and 7: the deploy re-derives every value from the manifest, the planning equity
+    and the LIVE broker, and only compares the plan's claims."""
+
+    def test_plans_expire_after_15_minutes(self):
+        block = plan_block(run([(member(KESTREL), KESTREL)], equity=50000))
+        live = dict(ACCOUNT, equity=50000.0)
+        self.assertEqual(stale(block, [KESTREL], account=live, now=T0 + 900), [])
+        self.assertEqual(stale(block, [KESTREL], account=live, now=T0 + 901),
+                         [dict(memberId=None, input='reviewedAtUtc', reviewed=int(T0), live=int(T0 + 901))])
+
+    def test_the_rate_is_read_again_at_deploy(self):
+        # Probe: a EUR account reviewed at EURUSD 1.20 gets Lots_Input 0.10 -> 0.12; deployed at 1.00 that is +20%.
+        raw = kestrel_with(**dict(FIXED, Lots_Input='0.10'))
+        account = dict(ACCOUNT, currency='EUR')
+        at = lambda rate: [symbol('EURUSD', bid=rate, ask=rate + 0.0002)]
+        block = plan_block(run([(member(raw), raw)], account=account, symbols=at(1.2)))
+        self.assertEqual((block['rate'], block['members'][0]['edits']), ('1.2', dict(Lots_Input='0.12')))
+        self.assertEqual(stale(block, [raw], account=account, symbols=at(1.2)), [])
+        rows = stale(block, [raw], account=account, symbols=at(1.0))
+        self.assertIn(dict(memberId='EURUSD.M1.kestrel', input='Lots_Input', reviewed='0.12', live=None), rows,
+                      'at 1.00 the rules write no Lots_Input edit (0.10), so the reviewed 0.12 is refused')
+        # The conversion price must be at most 120 s old at deploy too.
+        gbp = kestrel_with(**dict(FIXED, Lots_Input='0.10'))
+        pair = [symbol('GBPUSD'), symbol('EURUSD', bid=1.2, ask=1.2002)]
+        quotes = lambda age: {'GBPUSD': int(T0 + 180 * 60), 'EURUSD': int(T0 + 180 * 60 - age)}
+        block = plan_block(run([(member(gbp, canonical='GBPUSD'), gbp)], account=account, symbols=pair, quotes=quotes(0), arrived=['GBPUSD']))
+        self.assertEqual(stale(block, [gbp], account=account, symbols=pair, quotes=quotes(120), arrived=['GBPUSD']), [])
+        self.assertEqual(inputs(stale(block, [gbp], account=account, symbols=pair, quotes=quotes(121), arrived=['GBPUSD'])), ['rate'])
+
+    def test_fixed_money_limits_are_rechecked_on_the_live_equity(self):
+        # Probe: FixedLots with MinLevelEquity 95000, reviewed at 100,000, deployed at 109,999: the old re-check said
+        # [] and the account could lose 14,999 where 5,000 was intended.
+        raw = kestrel_with(**dict(FIXED, Lots_Input='0.10', MinLevelEquity='95000.0'))
+        block = plan_block(run([(member(raw), raw)]))
+        self.assertEqual(block['members'][0]['edits'], {})
+        rows = stale(block, [raw], account=dict(ACCOUNT, equity=109999.0))
+        self.assertIn(dict(memberId='EURUSD.M1.kestrel', input=bf.CONTRACT_MISMATCH, reviewed=None, live=None), rows)
+
+    def test_below_reference_equity_never_deploys_reference_sized_values(self):
+        # Review item 2 probe, per-value side: reviewed with --equity 100000, live 95,000.01. Risk 500 against the
+        # live 475 (+5.26%) and a FixedLots 0.10 against the live 0.09 (+11%) are both refused.
+        fixed = kestrel_with(**dict(FIXED, Lots_Input='0.10', EA_Desc='F'))
+        members = [(member(KESTREL), KESTREL), (member(fixed, member_id='fixed', canonical='GBPUSD'), fixed)]
+        facts = [symbol(), symbol('GBPUSD')]
+        live = dict(ACCOUNT, equity=95000.01)
+        block = plan_block(run(members, equity=100000, account=live, symbols=facts))
+        self.assertIsNone(block['referenceIdentical'])
+        rows = stale(block, [KESTREL, fixed], account=live, symbols=facts)
+        self.assertIn(dict(memberId='EURUSD.M1.kestrel', input='Risk', reviewed=500.0, live=475.0), rows)
+        self.assertIn(dict(memberId='fixed', input='Lots_Input', reviewed=0.1, live=0.09), rows)
+
+    def test_the_deploy_trusts_no_plan_value(self):
+        # Review item 7. Probe: a hand-made referenceIdentical {startingBalance: '10000'} on a 10k account deployed
+        # 100k-sized bytes (10x): the old re-check judged the band against the plan's own startingBalance.
+        exempt = plan_block(run([(member(KESTREL, ref=NO_START), KESTREL)]))
+        forged = dict(exempt, referenceIdentical=dict(exempt['referenceIdentical'], startingBalance='10000'))
+        rows = stale(forged, [KESTREL], account=dict(ACCOUNT, equity=10000.0))
+        self.assertEqual(inputs(rows), ['referenceIdentical.equityWithinTolerance'])
+        known = plan_block(run([(member(KESTREL), KESTREL)]))                     # no exemption: the claim itself is refused
+        rows = stale(dict(known, referenceIdentical=forged['referenceIdentical']), [KESTREL], account=dict(ACCOUNT, equity=10000.0))
+        self.assertIn('referenceIdentical.equityWithinTolerance', inputs(rows))
+        block = plan_block(run([(member(KESTREL), KESTREL)], equity=50000))
+        entry = block['members'][0]
+        live = dict(ACCOUNT, equity=50000.0)
+        # Rule facts (volume step, contract ratio, start lot ...) are claims compared with the live broker's.
+        rules = dict(entry['rules'], volumeStep='0.001', startLot='1')
+        self.assertEqual(inputs(stale(dict(block, members=[dict(entry, rules=rules)]), [KESTREL], account=live)), ['rules'])
+        # A self-consistent forged edit (its own hash) is refused against the re-derived one.
+        bigger = bf.rewrite_set(KESTREL, dict(Risk='1000.0'))
+        forged_edit = dict(entry, edits=dict(Risk='1000.0'), setSha256Deployed=hashlib.sha256(bigger).hexdigest())
+        self.assertEqual(inputs(stale(dict(block, members=[forged_edit]), [KESTREL], account=live)), ['Risk', 'setSha256Deployed'])
+        # A forged planning equity re-derives other bytes; a forged scale or reference equity is refused as a claim.
+        self.assertIn('setSha256Deployed', inputs(stale(dict(block, equity='100000'), [KESTREL], account=live)))
+        self.assertEqual(inputs(stale(dict(block, scale=1.0), [KESTREL], account=live)), ['scale'])
+        self.assertEqual(inputs(stale(dict(block, referenceEquity='50000'), [KESTREL], account=live)), ['referenceEquity'])
+        # The rate is never an input: a forged one changes nothing that is deployed (the live rate is used).
+        self.assertEqual(stale(dict(block, rate='3'), [KESTREL], account=live), [])
+        # The broker symbol the live broker maps now is compared with the plan's.
+        moved = [symbol('EURUSD.raw', currency_base='EUR', currency_profit='USD')]
+        self.assertIn('brokerSymbol', inputs(stale(block, [KESTREL], account=live, symbols=moved)))
 
 
 NO_START = reference(startLot=None, startLotSource=None)
@@ -555,7 +803,7 @@ class ReferenceIdenticalTests(unittest.TestCase):
                                              unknownBasis='start_lot_unknown'))
         self.assertEqual(row['setSha256Deployed'], row['setSha256Reference'])
         self.assertEqual(result['referenceIdentical'], dict(
-            applies=True, used=True, reason=bf.REFERENCE_IDENTICAL_MARGIN, liveEquity=100000.0, equityTolerance=0.05,
+            applies=True, used=True, reason=bf.REFERENCE_IDENTICAL_MARGIN, liveEquity=100000.0, liveScale=1.0, equityTolerance=0.05,
             conditions=dict(sameServer=True, sameCurrency=True, sameLeverage=True, equityWithinTolerance=True, scaleOne=True,
                             bytesUnchanged=True)))
         self.assertEqual((result['margin']['exemption'], result['margin']['verified'], result['offered']), (bf.REFERENCE_IDENTICAL_MARGIN, True, True))
@@ -573,8 +821,11 @@ class ReferenceIdenticalTests(unittest.TestCase):
         self.assertIsNone(result['deployBasis']['referenceIdentical'])
 
     def test_equity_outside_five_percent_refuses(self):
-        # The account's own equity is judged (the scale is pinned at 1.0 with --equity 100000).
-        for live, fits in ((106000.0, False), (94000.0, False), (105000.0, True), (95000.0, True)):
+        # The account's own equity is judged (the scale is pinned at 1.0 with --equity 100000). The band is ONE-SIDED
+        # (review 6130418265 item 2): startingBalance <= live <= startingBalance x 1.05. Probe: live 95,000.01 was
+        # exempt before and deployed Risk 500 against an equity-linear 475 (+5.26%).
+        for live, fits in ((106000.0, False), (94000.0, False), (105000.0, True), (100000.0, True), (99999.99, False),
+                           (95000.01, False), (95000.0, False)):
             with self.subTest(live=live):
                 result = self.check(account=dict(ACCOUNT, equity=live), equity=100000)
                 self.assertEqual(one(result)['status'] == 'fit', fits)
@@ -611,17 +862,31 @@ class ReferenceIdenticalTests(unittest.TestCase):
 
     def test_the_deploy_recheck_keeps_the_exemption_only_while_every_condition_holds(self):
         block = self.exempt_block()
-        def stale(equity=100000.0, currency='USD', server='Darwinex-Demo', leverage=200, block=block):
-            return bf.stale_members(block, [KESTREL], SCHEMA, equity=equity, currency=currency, server=server, leverage=leverage)
-        self.assertEqual(stale(), [])
-        self.assertEqual(stale(equity=103000.0), [], 'within 5%: the reference bytes deploy at scale 1.0 by design')
-        self.assertEqual([row['input'] for row in stale(leverage=100)], ['referenceIdentical.sameLeverage'])
-        self.assertEqual([row['input'] for row in stale(equity=106000.0)], ['referenceIdentical.equityWithinTolerance'])
-        self.assertEqual([row['input'] for row in stale(server='Other-Demo')], ['referenceIdentical.sameServer'])
-        self.assertEqual(stale(currency='EUR')[0]['input'], 'account')
-        self.assertEqual([row['input'] for row in stale(block=dict(block, scale=0.5))], ['referenceIdentical.scaleOne'])
+        def check(equity=100000.0, currency='USD', server='Darwinex-Demo', leverage=200, block=block):
+            return stale(block, [KESTREL], account=dict(ACCOUNT, equity=equity, currency=currency, server=server, leverage=leverage))
+        self.assertEqual(check(), [])
+        self.assertEqual(check(equity=103000.0), [], 'inside the one-sided band: the reference bytes deploy at scale 1.0 by design')
+        self.assertEqual(inputs(check(leverage=100)), ['referenceIdentical.sameLeverage'])
+        self.assertEqual(inputs(check(equity=106000.0)), ['referenceIdentical.equityWithinTolerance'])
+        # Review item 2 probe at deploy: live 95,000.01 (and anything under the reference) is stale.
+        self.assertEqual(inputs(check(equity=95000.01)), ['referenceIdentical.equityWithinTolerance'])
+        self.assertEqual(inputs(check(equity=99999.99)), ['referenceIdentical.equityWithinTolerance'])
+        self.assertEqual(inputs(check(server='Other-Demo')), ['referenceIdentical.sameServer'])
+        self.assertEqual(check(currency='EUR')[0]['input'], 'account')
+        # The scale and the bytes are re-derived, never read from the plan: a forged scale or edit is refused.
+        self.assertEqual(inputs(check(block=dict(block, scale=0.5))), ['scale'])
         edited = dict(block, members=[dict(block['members'][0], edits=dict(Risk='250.0'))])
-        self.assertEqual([row['input'] for row in stale(block=edited)], ['referenceIdentical.bytesUnchanged'])
+        self.assertEqual(inputs(check(block=edited)), ['Risk'])
+        # A non-exempt member in the same plan gets the per-value check (one-sided inside the band) and every rule at
+        # the live equity.
+        fixed = kestrel_with(**dict(FIXED, Lots_Input='0.10', EA_Desc='F'))
+        members = [(member(KESTREL, ref=NO_START), KESTREL), (member(fixed, member_id='fixed', canonical='GBPUSD'), fixed)]
+        facts = [symbol(), symbol('GBPUSD')]
+        mixed = plan_block(run(members, symbols=facts))
+        self.assertIsNotNone(mixed['referenceIdentical'])
+        self.assertEqual(stale(mixed, [KESTREL, fixed], account=dict(ACCOUNT, equity=104000.0), symbols=facts), [])
+        self.assertIn(bf.MARGIN_TOO_HIGH, inputs(stale(mixed, [KESTREL, fixed], account=dict(ACCOUNT, equity=104000.0), symbols=facts,
+                                                       margins={'EURUSD': 1000.0, 'GBPUSD': 30000.0})))
         bf.deploy_entries(block, [object()])
         with self.assertRaisesRegex(ValueError, 'Invalid broker-fit block'):
             bf.deploy_entries(dict(block, referenceIdentical=dict(block['referenceIdentical'], reason='OTHER')), [object()])
@@ -633,10 +898,11 @@ class FakeMT5:
     ORDER_TYPE_BUY, ORDER_TYPE_SELL = 0, 1
     COPY_TICKS_INFO = 2
 
-    def __init__(self, controller, *, trade_mode=0, symbols=None, clock=None):
+    def __init__(self, controller, *, trade_mode=0, symbols=None, clock=None, ticking=True):
         self.c, self.trade_mode, self.clock = controller, trade_mode, clock
         self.symbols = symbols or [symbol()]
         self.calls = []
+        self.ticking, self.tick_reads = ticking, 0   # ticking: every read sees a newer tick (an open market)
 
     def initialize(self, path, timeout=0):
         self.calls.append('initialize'); return True
@@ -659,7 +925,9 @@ class FakeMT5:
         return None if facts is None else SimpleNamespace(**facts, spread=8, time=0, visible=True)
 
     def symbol_info_tick(self, name):
-        return SimpleNamespace(time=int(self.clock()) + DARWINEX_OFFSET * 60 - 2, bid=1.1, ask=1.10008)
+        self.tick_reads += 1
+        stamp = int(self.clock()) + DARWINEX_OFFSET * 60 - 2 if self.ticking else int(T0) + DARWINEX_OFFSET * 60 - 3600
+        return SimpleNamespace(time=stamp, time_msc=stamp * 1000 + (self.tick_reads if self.ticking else 0), bid=1.1, ask=1.10008)
 
     def copy_ticks_range(self, name, start, end, flags):
         self.calls.append(('ticks', name, start, end, flags))
@@ -667,6 +935,17 @@ class FakeMT5:
 
     def order_calc_margin(self, action, name, volume, price):
         self.calls.append(('margin', action, name)); return 1000.0 * volume
+
+
+class FakeTerminalProcess:
+    """The process lister: the selected terminal64.exe identity, or None when it is not running."""
+
+    def __init__(self, running=True):
+        self.running, self.inspected = running, 0
+
+    def inspect(self):
+        self.inspected += 1
+        return dict(pid=77, executable='terminal64.exe', created_utc='2026-10-13T00:00:00+00:00') if self.running else None
 
 
 class ReadBrokerTests(unittest.TestCase):
@@ -677,9 +956,17 @@ class ReadBrokerTests(unittest.TestCase):
                                  terminal_data_root=str(self.folder / 'data'), ea_version='1.49'), schema=SCHEMA)
         self.session = dict(account=dict(login='123456', server='Darwinex-Demo'))
         self.now = T0
+        self.process = FakeTerminalProcess()
 
     def clock(self):
         return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+    def read(self, mt5):
+        return bf.read_broker(self.c, self.session, manifest([member(KESTREL)]), mt5=mt5, clock=self.clock, process=self.process,
+                              sleep=self.sleep)
 
     def write_portfolio(self):
         data = manifest([member(KESTREL)])
@@ -692,7 +979,7 @@ class ReadBrokerTests(unittest.TestCase):
         portfolio = self.write_portfolio()
         before = sorted(str(p) for p in self.folder.rglob('*') if 'state' not in p.parts)
         with patch('studio_onboarding.session_state', return_value=(self.session, None)):
-            result = bf.broker_fit(self.c, portfolio, mt5=mt5, clock=self.clock)
+            result = bf.broker_fit(self.c, portfolio, mt5=mt5, clock=self.clock, process=self.process, sleep=self.sleep)
         self.assertEqual((result['schema'], result['offered'], one(result)['status']), (bf.SCHEMA, True, 'fit'))
         self.assertEqual((one(result)['spread']['ticks'], result['serverOffset']['brokerMinutes']), (720, 180))
         tick_calls = [call for call in mt5.calls if call[0] == 'ticks']
@@ -704,18 +991,50 @@ class ReadBrokerTests(unittest.TestCase):
     def test_the_rollover_hour_does_not_refuse_up_front(self):
         self.now = utc(2026, 10, 13, 20, 30)                                    # 16:30 New York: the history still counts
         mt5 = FakeMT5(self.c, clock=self.clock)
-        account, symbols, history, quotes, margins, now = bf.read_broker(self.c, self.session, manifest([member(KESTREL)]),
-                                                                        mt5=mt5, clock=self.clock)
-        self.assertEqual((len(history['EURUSD']), now), (720, self.now))
+        account, symbols, history, quotes, margins, now, arrived = self.read(mt5)
+        self.assertEqual((len(history['EURUSD']), now, arrived), (720, self.now, ['EURUSD']))
         self.assertEqual(bf.history_spread(history['EURUSD'], point=Decimal('0.00001'), offset_minutes=180)[1], 660)
 
     def test_non_demo_is_refused_before_reading_ticks(self):
         mt5 = FakeMT5(self.c, trade_mode=2, clock=self.clock)
         with self.assertRaises(Refusal) as caught:
-            bf.read_broker(self.c, self.session, manifest([member(KESTREL)]), mt5=mt5, clock=self.clock)
+            self.read(mt5)
         self.assertEqual(caught.exception.code, bf.NOT_DEMO_ACCOUNT)
         self.assertFalse([call for call in mt5.calls if call[0] in ('ticks', 'margin')])
         self.assertEqual(mt5.calls[-1], 'shutdown')
+
+    def test_initialize_is_never_called_when_mt5_is_not_running(self):
+        # Attach-only (accepted with review 6130418265): MetaTrader5.initialize(path) STARTS a closed MT5 and
+        # shutdown() leaves it running, so no matching terminal64.exe process means nothing is called at all.
+        mt5 = FakeMT5(self.c, clock=self.clock)
+        self.process.running = False
+        with self.assertRaises(Refusal) as caught:
+            self.read(mt5)
+        self.assertEqual((caught.exception.code, str(caught.exception)),
+                         ('MT5_NOT_RUNNING', 'Start MT5 and sign in to your demo account, then check again.'))
+        self.assertEqual((mt5.calls, self.process.inspected), ([], 1), 'initialize never called; nothing launched')
+        portfolio = self.write_portfolio()
+        with patch('studio_onboarding.session_state', return_value=(self.session, None)), self.assertRaises(Refusal) as caught:
+            bf.broker_fit(self.c, portfolio, mt5=mt5, clock=self.clock, process=self.process, sleep=self.sleep)
+        self.assertEqual((caught.exception.code, mt5.calls), (bf.MT5_NOT_RUNNING, []))
+        # The default lister is the selected-terminal inventory (exact terminal_executable path).
+        with patch('studio_seed_process.WindowsSeedProcess', return_value=FakeTerminalProcess(running=False)) as lister:
+            with self.assertRaises(Refusal):
+                bf.read_broker(self.c, self.session, manifest([member(KESTREL)]), mt5=mt5, clock=self.clock, sleep=self.sleep)
+        lister.assert_called_once_with(self.c)
+        self.assertEqual(mt5.calls, [])
+
+    def test_a_market_without_new_ticks_leaves_the_clock_unknown(self):
+        # Review 6130418265 item 8 at the read: the last tick is an hour old and never changes. No arrival within the
+        # bounded window -> no offset, no tick history read, and the result refuses rather than guessing.
+        mt5 = FakeMT5(self.c, clock=self.clock, ticking=False)
+        account, symbols, history, quotes, margins, now, arrived = self.read(mt5)
+        self.assertEqual((arrived, history), ([], {}))
+        self.assertLessEqual(now - T0, bf.ARRIVAL_WINDOW_SECONDS + bf.ARRIVAL_POLL_SECONDS)
+        self.assertGreaterEqual(now - T0, bf.ARRIVAL_WINDOW_SECONDS)
+        result = bf.build_result(manifest([member(KESTREL)]), {hashlib.sha256(KESTREL).hexdigest(): KESTREL}, account=account,
+                                 symbols=symbols, ticks=history, quotes=quotes, margins=margins, schema=SCHEMA, utc_now=now, arrived=arrived)
+        self.assertEqual((result['serverOffset']['brokerMinutes'], one(result)['code']), (None, bf.SPREAD_SAMPLE_UNAVAILABLE))
 
     def test_portfolio_files_must_verify(self):
         portfolio = self.write_portfolio()
@@ -734,7 +1053,8 @@ class ReadBrokerTests(unittest.TestCase):
         from goat_studio import OPERATION_CONTRACTS
         contract = OPERATION_CONTRACTS['broker-fit']
         self.assertEqual((contract['required'], contract['optional']), (['portfolio'], ['equity', 'sets']))
-        for phrase in ('NOT_DEMO_ACCOUNT', 'Never writes', 'last 6 h of real ticks', 'MARGIN_UNKNOWN', 'FIT_STALE', 'server-name assumption'):
+        for phrase in ('NOT_DEMO_ACCOUNT', 'Never writes', 'last 6 h of real ticks', 'MARGIN_UNKNOWN', 'FIT_STALE', 'server-name assumption',
+                       'MT5_NOT_RUNNING', 'MARGIN_TOO_HIGH', 'MONEY_VALUE_UNREADABLE'):
             self.assertIn(phrase, contract['effect'])
 
 

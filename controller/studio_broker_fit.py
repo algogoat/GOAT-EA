@@ -13,11 +13,16 @@ EA semantics this module relies on (GOAT V1.49.mq5, read 2026-10-12):
   tradeCap = Lots_Max*StartLots mq5:1372, 1559, 1732; StartLots*Lots_Max_Cum mq5:1018, 1366, 1553). Scaling them
   with Risk would scale the caps twice, so they are never scaled.
 - The start lot: FixedLots = Lots_Input; ScaledLots = Lots_Input * equity_now / equity_at_init (mq5:3252, 1667: relative
-  to the chart's own start, so it does NOT follow account size); RiskperSeq = solved from Risk on the broker's own tick
-  value, never below VOLUME_MIN (mq5:784-789, 823-824). So Lots_Input scales in FixedLots/ScaledLots, Risk scales in
-  every mode, and RiskperSeq needs no lot edit at all.
+  to the chart's own start, so it does NOT follow account size); RiskperSeq = SolveStartLotsByRisk(Risk) (mq5:781-827):
+  the volume-step lot whose planned sequence loss is NEAREST the Risk, never below VOLUME_MIN. Every lot the EA trades
+  goes through NormalizedLots (mq5:445-459, 1686): the NEAREST volume step (MathRound, half away from zero), 0 below
+  VOLUME_MIN, capped at VOLUME_MAX. So Lots_Input scales in FixedLots/ScaledLots and is always written on the broker's
+  step grid, Risk scales in every mode, and RiskperSeq needs no lot edit at all (ea_solve_start_lots ports the solver).
 - Distances (Grid_Size, Grid_Min, Grid_Max, Lock_Profit_Size, SL_Pips, TSL_Size) are value*10*Point() when positive
   and ATR multiples when negative (GetSize, mq5:6709-6794; mq5:2986-3000). TP_Pips multiplies LP (mq5:2989).
+  Grid_Size inside (-0.5, 0.5) stops the EA at init (mq5:3317).
+- Fixed money limits (MaxLoss*, MaxDaily*, Min/MaxLevelEquity) are account-currency amounts and equity levels the EA
+  compares as written (mq5:5595-5630).
 """
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
@@ -29,7 +34,9 @@ import statistics
 from studio_refusal import Refusal
 
 SCHEMA = 'goat-broker-fit-v1'
-DEPLOY_SCHEMA = 'goat-broker-fit-deploy-v1'
+# v2 (GOAT-EA#228 review 6130418265): the block carries the manifest, the planning equity and the review time, and
+# every member names its broker symbol and deploy file; the deploy re-derives everything from them and the live broker.
+DEPLOY_SCHEMA = 'goat-broker-fit-deploy-v2'
 MANIFEST_SCHEMA = 'goat-house-portfolio-v1'
 
 SYMBOL_UNAVAILABLE = 'SYMBOL_UNAVAILABLE'
@@ -40,12 +47,20 @@ BELOW_MIN_LOT = 'BELOW_MIN_LOT'
 CONTRACT_MISMATCH = 'CONTRACT_MISMATCH'
 POINT_SIZE_MISMATCH = 'POINT_SIZE_MISMATCH'
 SERVER_OFFSET_MISMATCH = 'SERVER_OFFSET_MISMATCH'
-MARGIN_INSUFFICIENT = 'MARGIN_INSUFFICIENT'
+MARGIN_TOO_HIGH = 'MARGIN_TOO_HIGH'
 MARGIN_UNKNOWN = 'MARGIN_UNKNOWN'
+MONEY_VALUE_UNREADABLE = 'MONEY_VALUE_UNREADABLE'
+EA_INIT_REFUSED = 'EA_INIT_REFUSED'
 FIT_STALE = 'FIT_STALE'
+MT5_NOT_RUNNING = 'MT5_NOT_RUNNING'
 # Not a refusal: the explicit reason a member's unknown margin is accepted on a reference-identical account.
 REFERENCE_IDENTICAL_MARGIN = 'REFERENCE_IDENTICAL_MARGIN'
+# One-sided (review 6130418265 item 2): startingBalance <= live equity <= startingBalance x (1 + this).
 REFERENCE_EQUITY_TOLERANCE = Decimal('0.05')
+# Peak margin may use at most half the equity (margin level >= 200%, review 6130418265 item 9).
+MAX_MARGIN_SHARE = Decimal('0.5')
+# A deploy plan older than this refuses FIT_STALE (review 6130418265 item 3).
+PLAN_TTL_SECONDS = 900
 ACCOUNT_CURRENCY_UNSUPPORTED = 'ACCOUNT_CURRENCY_UNSUPPORTED'
 NOT_DEMO_ACCOUNT = 'NOT_DEMO_ACCOUNT'
 PORTFOLIO_INVALID = 'PORTFOLIO_INVALID'
@@ -62,10 +77,14 @@ MESSAGES = {
     CONTRACT_MISMATCH: "This broker's {symbol} contract differs from the one this set was tested on.",
     POINT_SIZE_MISMATCH: "This broker prices {symbol} in a different point size, and GOAT cannot convert this set exactly.",
     SERVER_OFFSET_MISMATCH: "This broker's server clock differs from the one this set was tested on, and this set depends on it.",
-    MARGIN_INSUFFICIENT: "This set could need more margin than this account has.",
+    MARGIN_TOO_HIGH: "This set could use more than half of this account's equity as margin.",
     MARGIN_UNKNOWN: "GOAT cannot work out the most margin this set could need, so it is not offered.",
+    MONEY_VALUE_UNREADABLE: "GOAT cannot read this set's {name} value, so it cannot check its money limits.",
+    EA_INIT_REFUSED: "On this broker this set's {name} would be {value}, which the GOAT EA refuses to start with.",
     ACCOUNT_CURRENCY_UNSUPPORTED: "GOAT cannot convert this account's currency for this portfolio.",
 }
+PORTFOLIO_MARGIN_MESSAGE = "Together these sets could use more than half of this account's equity as margin."
+MT5_NOT_RUNNING_MESSAGE = 'Start MT5 and sign in to your demo account, then check again.'
 FIT_STALE_MESSAGE = 'The account changed since the check; run the fit again.'
 MISSING_REFERENCE_MESSAGE = "This set's reference broker details are missing, so GOAT cannot check it on this account."
 FIXED_MONEY_MESSAGE = "This set uses a fixed money limit ({name}) that GOAT does not scale."
@@ -88,6 +107,10 @@ CONTRACT_VALUE_BAND = (Decimal('0.8'), Decimal('1.25'))
 SPREAD_HISTORY_HOURS = 6
 MIN_TICKS = 100
 FRESH_QUOTE_SECONDS = 120
+# The broker clock is read only from a tick seen ARRIVING during the read (its age is then at most this window), never
+# from a last tick of unknown age (review 6130418265 item 8). A closed market leaves the offset unknown after it.
+ARRIVAL_WINDOW_SECONDS = 10
+ARRIVAL_POLL_SECONDS = 0.25
 
 TRADE_MODE_FULL = 4                    # SYMBOL_TRADE_MODE_FULL
 MODE_LOTS = dict(FixedLots=0, ScaledLots=1, RiskperSeq=2)
@@ -287,8 +310,10 @@ def reference_server_offset(member_reference, reference_account, utc_seconds):
 
 
 def measured_server_offset_minutes(quote_times, utc_now):
-    """The broker server's UTC offset from its freshest quote: last tick time (server clock) minus UTC now, rounded to
-    15 minutes, trusted only when that tick is at most FRESH_QUOTE_SECONDS old. None otherwise (market closed)."""
+    """The broker server's UTC offset from the freshest of `quote_times`: tick time (server clock) minus UTC now,
+    rounded to 15 minutes. One tick time cannot prove its own age (a tick 3,600 s old on a UTC+4 server reads exactly
+    UTC+3), so callers pass ONLY ticks seen arriving during the read (read_broker: ARRIVAL_WINDOW_SECONDS, well under
+    FRESH_QUOTE_SECONDS). None when there is none or it sits off the 15-minute grid by more than FRESH_QUOTE_SECONDS."""
     deltas = [value - utc_now for value in quote_times if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0]
     if not deltas:
         return None
@@ -323,12 +348,13 @@ def _tradable(facts):
 
 
 def _same_instrument(canonical, facts):
-    """For a six-letter pair, the broker's base and profit currencies (when reported) must be its two halves."""
+    """For a six-letter pair, the broker's base and profit currencies must be reported and be its two halves (a symbol
+    without them cannot be proven to be that pair, so it is refused)."""
     if not re.fullmatch(r'[A-Z]{6}', canonical):
         return True
     base, profit = facts.get('currency_base'), facts.get('currency_profit')
     if not base or not profit:
-        return True
+        return False
     return base == canonical[:3] and profit == canonical[3:]
 
 
@@ -356,10 +382,22 @@ def map_symbol(canonical, symbols):
     return None, (SYMBOL_UNAVAILABLE, [])
 
 
-def conversion(account_currency, reference_currency, symbols):
+def quote_age_seconds(tick_time, offset_minutes, utc_now):
+    """Age in seconds of a tick stamped on the server clock, once the server's offset is proven; None otherwise."""
+    if offset_minutes is None or isinstance(tick_time, bool) or not isinstance(tick_time, (int, float)) or tick_time <= 0:
+        return None
+    return utc_now - (tick_time - offset_minutes * 60)
+
+
+def is_conversion_pair(facts, account_currency, reference_currency):
+    return {facts.get('currency_base'), facts.get('currency_profit')} == {account_currency, reference_currency}
+
+
+def conversion(account_currency, reference_currency, symbols, *, quotes=None, offset_minutes=None, utc_now=None):
     """(rate, symbol, side): the value of 1 account-currency unit in the reference currency, from a quoted pair on the
     terminal, taking the side that values the account LOWER (bid when the account currency is the base, 1/ask when it
-    is the quote). (1, None, None) for the same currency; None when no pair is quoted."""
+    is the quote). (1, None, None) for the same currency; None when no pair has a price at most FRESH_QUOTE_SECONDS old
+    (its last tick time in `quotes`, judged with the proven server offset; review 6130418265 item 3)."""
     if account_currency == reference_currency:
         return Decimal(1), None, None
     candidates = []
@@ -367,6 +405,9 @@ def conversion(account_currency, reference_currency, symbols):
         base, profit = facts.get('currency_base'), facts.get('currency_profit')
         bid, ask = dec(facts.get('bid')), dec(facts.get('ask'))
         if not bid or not ask or bid <= 0 or ask <= 0:
+            continue
+        age = quote_age_seconds((quotes or {}).get(facts['name']), offset_minutes, utc_now)
+        if age is None or abs(age) > FRESH_QUOTE_SECONDS:
             continue
         if base == account_currency and profit == reference_currency:
             candidates.append((facts['name'] != account_currency + reference_currency, facts['name'], bid, 'bid'))
@@ -387,6 +428,21 @@ def _value(values, defaults, name):
 def _number(values, defaults, name):
     text = _value(values, defaults, name)
     return dec(first_field(text)) if isinstance(text, str) and NUMBER.fullmatch(first_field(text)) else None
+
+
+def _readable(values, defaults, name):
+    """True when the SET (or the schema default) gives `name` as a plain decimal GOAT reads exactly. A value that is
+    missing or written any other way (9.5e4, 1,000, empty) is unreadable: never taken as 0 or 'no limit'."""
+    text = _value(values, defaults, name)
+    return isinstance(text, str) and NUMBER.fullmatch(first_field(text)) is not None
+
+
+MONEY_INPUTS = ('Risk',) + FIXED_MONEY_INPUTS
+
+
+def unreadable_money(values, defaults):
+    """The first money input (Risk or a fixed money limit) whose value cannot be read; None when all are readable."""
+    return next((name for name in MONEY_INPUTS if not _readable(values, defaults, name)), None)
 
 
 def _flag(values, defaults, name):
@@ -424,7 +480,9 @@ def offset_neutral(values, defaults, timeframe):
     if timeframe not in OFFSET_NEUTRAL_TIMEFRAMES:
         reasons.append('timeframe ' + str(timeframe))
     for name in TF_INPUTS:
-        if _number(values, defaults, name) == TF_H4:
+        if not _readable(values, defaults, name):
+            reasons.append(name + ' unreadable')        # could be H4: never assumed neutral
+        elif _number(values, defaults, name) == TF_H4:
             reasons.append(name + '=H4')
     weekday, friday = _number(values, defaults, 'Active_Time_Weekday'), _number(values, defaults, 'Active_Time_Friday')
     sessions = [_session_minutes(first_field(_value(values, defaults, name) or ''))
@@ -439,13 +497,31 @@ def offset_neutral(values, defaults, timeframe):
     if _number(values, defaults, 'Mode_News') not in (0, 1):
         reasons.append('news filter')
     for name in ('MaxDailyLossLocal', 'MaxDailyProfitLocal'):
-        if (_number(values, defaults, name) or 0) != 0:
+        if not _readable(values, defaults, name) or _number(values, defaults, name) != 0:
             reasons.append(name)
     return not reasons, reasons
 
 
+class EAInitRefused(ValueError):
+    """The converted SET would stop the EA in OnInit (INIT_PARAMETERS_INCORRECT)."""
+
+    def __init__(self, name, value):
+        super().__init__('%s %s is inside the EA\'s init refusal band' % (name, value))
+        self.name, self.value = name, value
+
+
+def ea_init_refusal(values, defaults):
+    """(name, value) when the EA's OnInit would refuse the distances as written: Grid_Size inside (-0.5, 0.5)
+    ("Pip Gap Size too small or zero", mq5:3317). None otherwise."""
+    grid = _number(values, defaults, 'Grid_Size')
+    if grid is not None and Decimal('-0.5') < grid < Decimal('0.5'):
+        return 'Grid_Size', grid
+    return None
+
+
 def _ea_clamps(values, defaults):
-    """The EA's post-init clamp outcome of each distance (mq5:3318-3323), compared before and after a point conversion."""
+    """The EA's post-init clamp outcome of each distance (mq5:3318-3323), compared before and after a point conversion.
+    The Grid_Size init refusal (mq5:3317) is checked separately (ea_init_refusal): it stops the EA, it does not clamp."""
     grid_min, grid_max = _number(values, defaults, 'Grid_Min'), _number(values, defaults, 'Grid_Max')
     lock, tp, tsl = _number(values, defaults, 'Lock_Profit_Size'), _number(values, defaults, 'TP_Pips'), _number(values, defaults, 'TSL_Size')
     def inside(value, limit):
@@ -456,8 +532,12 @@ def _ea_clamps(values, defaults):
 
 def point_edits(values, defaults, ratio):
     """{input: text} converting every positive point distance by ratio (reference point / broker point), or raise
-    ValueError when it cannot be exact (ratio not a power of ten, or an EA clamp would change)."""
+    ValueError when it cannot be exact (ratio not a power of ten, or an EA clamp would change), EAInitRefused when the
+    EA would refuse to start with the converted distances (Grid_Size 4 at ratio 0.1 is 0.4, mq5:3317)."""
     if ratio == 1:
+        refused = ea_init_refusal(values, defaults)
+        if refused:
+            raise EAInitRefused(*refused)
         return {}
     exponent = ratio.log10()
     if exponent != exponent.to_integral_value():
@@ -472,6 +552,9 @@ def point_edits(values, defaults, ratio):
         new = number * ratio
         edits[name] = format_like(new, first_field(values[name]))
         converted[name] = edits[name]
+    refused = ea_init_refusal(converted, defaults)
+    if refused:
+        raise EAInitRefused(*refused)
     if _ea_clamps(values, defaults) != _ea_clamps(converted, defaults):
         raise ValueError('an EA minimum-size rule would change after converting the distances')
     return edits
@@ -482,6 +565,70 @@ def floor_step(value, step):
     if step <= 0:
         raise ValueError('volume step must be positive')
     return (value / step).to_integral_value(rounding=ROUND_FLOOR) * step
+
+
+# ---- the EA's own lot rules, ported line for line in IEEE doubles as MQL5 computes them (GOAT V1.49.mq5)
+
+def _mql_round(x):
+    """MathRound: round half away from zero on the exact double (C round())."""
+    return float(Decimal(x).to_integral_value(rounding='ROUND_HALF_UP'))
+
+
+def ea_normalized_lots(raw_volume, vmin, vstep, vmax):
+    """NormalizedLots (mq5:445-459): the NEAREST whole number of volume steps, 0 below VOLUME_MIN, capped at VOLUME_MAX."""
+    raw_volume, vmin, vstep, vmax = float(raw_volume), float(vmin), float(vstep), float(vmax)
+    if vstep <= 0.0:                                   # mq5:447
+        return 0.0
+    if vmax <= 0.0:                                    # mq5:449
+        return 0.0
+    steps = _mql_round(raw_volume / vstep)             # mq5:451-452
+    lots = steps * vstep                               # mq5:453
+    if abs(lots) < vmin:                               # mq5:455
+        lots = 0.0
+    return min(lots, vmax) if lots >= 0 else -min(abs(lots), vmax)   # mq5:456-457
+
+
+def ea_solve_start_lots(target_loss, vmin, vstep, vmax, loss_for_start):
+    """SolveStartLotsByRisk (mq5:781-827), line for line: a bisection over the volume-step indices that evaluates the
+    middle index and its two neighbours each round and keeps the index whose planned loss is closest to the target
+    (strictly closer wins, so the first one evaluated keeps a tie). `loss_for_start(lots)` stands in for
+    EvalLossForStart (mq5:829-838)."""
+    target_loss, vmin, vstep, vmax = float(target_loss), float(vmin), float(vstep), float(vmax)
+    if vstep <= 0.0 or vmax <= 0.0:                    # mq5:788
+        return vmin
+    if target_loss <= 0.0:                             # mq5:789
+        return vmin
+    kmin = 0                                           # mq5:791
+    kmax = int(math.floor((vmax - vmin) / vstep + 1e-9))   # mq5:792
+    best_k, best_err = kmin, float('inf')              # mq5:794-795 (DBL_MAX)
+    iteration = 0
+    while iteration < 40 and kmin <= kmax:             # mq5:797
+        kmid = (kmin + kmax) // 2                      # mq5:799 (both non-negative: C division)
+        candidates = (max(kmin, kmid - 1), kmid, min(kmax, kmid + 1))   # mq5:801
+        loss_mid, mid_set = 0.0, False
+        for ki in candidates:                          # mq5:805-815
+            start = ea_normalized_lots(vmin + ki * vstep, vmin, vstep, vmax)
+            loss = float(loss_for_start(start))
+            err = abs(loss - target_loss)
+            if err < best_err:
+                best_err, best_k = err, ki
+            if ki == kmid:
+                loss_mid, mid_set = loss, True
+        if not mid_set:                                # mq5:816
+            break
+        if loss_mid > target_loss:                     # mq5:818-819
+            kmax = kmid - 1
+        else:
+            kmin = kmid + 1
+        if kmax - kmin <= 0:                           # mq5:821
+            break
+        iteration += 1
+    return ea_normalized_lots(vmin + best_k * vstep, vmin, vstep, vmax)   # mq5:823-824
+
+
+def _lots(value):
+    """A double lot size as an exact Decimal on a 1e-10 grid (0.1 + 3 * 0.1 is 0.4, not 0.40000000000000002)."""
+    return dec(round(value, 10)).normalize() + 0
 
 
 def uses_risk(values, defaults):
@@ -497,8 +644,10 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
 
     lot_factor   = scale x (reference contract size / broker contract size): what lots multiply by.
     money_factor = account equity / reference equity (= scale / rate): what money inputs (account currency) multiply by.
-    Never rounds up: lots round DOWN to the broker volume step, Risk DOWN to the cent, and anything that would then sit
-    below VOLUME_MIN (or Risk below the EA's 10) is BELOW_MIN_LOT."""
+    Never rounds up what GOAT writes: Lots_Input rounds DOWN to the broker volume step (always, also at factor 1: the
+    EA would otherwise round an off-step value to the NEAREST step, mq5:451-453, 1686) and is capped at VOLUME_MAX,
+    Risk rounds DOWN to the cent, and anything that would then sit below VOLUME_MIN (or Risk below the EA's 10) is
+    BELOW_MIN_LOT. The RiskperSeq start lot is the EA's own pick (ea_solve_start_lots), which may round up."""
     edits, mode = {}, _number(values, defaults, 'Mode_Lots')
     vmin, vstep, vmax = broker['volume_min'], broker['volume_step'], broker['volume_max']
     risk = _number(values, defaults, 'Risk')
@@ -517,25 +666,35 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
     if mode in (MODE_LOTS['FixedLots'], MODE_LOTS['ScaledLots']):
         if lots_input is None:
             return dict(code=CONTRACT_MISMATCH, message=NOT_STATED_MESSAGE.format(name='Lots_Input'))
-        start = lots_input
-        if lot_factor != 1:
+        # Always on the broker's step grid and under its VOLUME_MAX, whatever the factor (review 6130418265 item 1).
+        scaled_lots = lots_input * lot_factor
+        start = floor_step(min(scaled_lots, vmax) if vmax else scaled_lots, vstep)
+        if start != lots_input:
             if 'Lots_Input' not in values:
                 return dict(code=CONTRACT_MISMATCH, message=NOT_STATED_MESSAGE.format(name='Lots_Input'))
-            start = floor_step(min(lots_input * lot_factor, vmax) if vmax else lots_input * lot_factor, vstep)
-            if start != lots_input:
-                edits['Lots_Input'] = format_like(start, first_field(values['Lots_Input']))
+            edits['Lots_Input'] = format_like(start, first_field(values['Lots_Input']))
         if start < vmin:
             return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
         bound = start
     elif mode == MODE_LOTS['RiskperSeq']:
-        # The EA solves the start lot from Risk on this broker's tick value (never below VOLUME_MIN). With the
-        # reference start lot known (reference.startLot) it follows the scaled Risk exactly: deployed Risk in the
-        # reference currency over reference Risk, times the contract ratio, rounded down. Without it the reference
-        # VOLUME_MIN is its only proven lower bound.
+        # The EA picks the start lot itself: SolveStartLotsByRisk (mq5:781-827), the volume step whose planned sequence
+        # loss is NEAREST the deployed Risk. With the reference start lot known (reference.startLot, the EA's pick at
+        # the reference Risk) the planned loss per lot on this broker is linear: reference Risk x money factor /
+        # (startLot x lot factor) in the account currency, so `ideal` = deployed Risk / that is the exact start lot and
+        # the EA's pick is its nearest step (ea_solve_start_lots). The pick sizes the margin; BELOW_MIN_LOT when the
+        # ideal is under VOLUME_MIN (the EA would be forced up to VOLUME_MIN, more than Risk asks). Without
+        # reference.startLot the reference VOLUME_MIN is its only proven lower bound.
         known = reference.get('startLot')
         if known is not None:
-            risk_ratio = new_risk / (risk * money_factor) if risk and money_factor and new_risk is not None else Decimal(1)
-            start = floor_step(known * lot_factor * risk_ratio, vstep)
+            loss_per_lot = risk * money_factor / (known * lot_factor)
+            ideal = new_risk / loss_per_lot
+            if ideal < vmin:
+                return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
+            per_lot = float(loss_per_lot)
+            # An unreported VOLUME_MAX is taken as unbounded: the EA would return VOLUME_MIN (mq5:788), which would
+            # understate the margin.
+            start = _lots(ea_solve_start_lots(new_risk, vmin, vstep, vmax if vmax else Decimal(10) ** 9,
+                                              lambda lots: lots * per_lot))
             bound = start
         else:
             bound = reference['volumeMin'] * lot_factor
@@ -564,7 +723,11 @@ def peak_lots(values, defaults, start):
         lots = start * per_trade * trades
     else:
         return None
-    both = _number(values, defaults, 'Mode_Trade') == 0 and _flag(values, defaults, 'Allow_Opposite_Seq')
+    # An unreadable Mode_Trade or Allow_Opposite_Seq is taken as the worst case (both directions).
+    mode_trade = _number(values, defaults, 'Mode_Trade')
+    opposite = _value(values, defaults, 'Allow_Opposite_Seq')
+    opposite = first_field(opposite) not in ('false', '0') if isinstance(opposite, str) else True
+    both = mode_trade in (None, 0) and opposite
     return lots * (2 if both else 1)
 
 
@@ -649,7 +812,7 @@ def _text(number):
 
 # ------------------------------------------------------------------ the result
 
-def build_result(manifest, sets, *, account, symbols, ticks, quotes, margins, schema, utc_now, equity=None):
+def build_result(manifest, sets, *, account, symbols, ticks, quotes, margins, schema, utc_now, equity=None, arrived=()):
     """BrokerFitResult (contract goat-broker-fit-v1) from plain data.
 
     manifest  goat-house-portfolio-v1 dict; sets {setSha256: reference SET bytes}
@@ -657,7 +820,9 @@ def build_result(manifest, sets, *, account, symbols, ticks, quotes, margins, sc
     symbols   [dict(name, trade_mode, digits, point, trade_contract_size, trade_tick_size, trade_tick_value, volume_min,
               volume_step, volume_max, currency_base, currency_profit, swap_long, swap_short, bid, ask)]
     ticks     {broker symbol: ticks of the last SPREAD_HISTORY_HOURS, each with time (server clock), bid, ask}
-    quotes    {broker symbol: time of its last tick (server clock)}, for the broker's UTC offset
+    quotes    {broker symbol: time of its last tick (server clock)}: mapped symbols and conversion pairs
+    arrived   the symbols whose last tick was seen ARRIVING during the read (read_broker): only they prove the broker's
+              UTC offset; every other quote's age is judged with that offset
     margins   {broker symbol: margin per 1.0 lot in the account currency (worse of buy and sell)}
     equity    planning override in the account currency (--equity)"""
     if account.get('demo') is not True:
@@ -669,13 +834,14 @@ def build_result(manifest, sets, *, account, symbols, ticks, quotes, margins, sc
     account_equity = dec(equity if equity is not None else account.get('equity'))
     if account_equity is None or account_equity <= 0:
         raise Refusal('GOAT could not read a positive equity for this account.', PORTFOLIO_INVALID, field='equity')
-    converted = conversion(account.get('currency'), ref_currency, symbols)
+    measured = measured_server_offset_minutes([quotes[name] for name in arrived if name in quotes], utc_now)
+    converted = conversion(account.get('currency'), ref_currency, symbols, quotes=quotes, offset_minutes=measured, utc_now=utc_now)
     rate = converted[0] if converted else None
     scale = account_equity * rate / ref_equity if rate else None
     conditions = reference_identical_conditions(ref_account, server=account.get('server'), currency=account.get('currency'),
                                                 leverage=account.get('leverage'), live_equity=account.get('equity'), scale=scale)
     clock = dict(same_server=account.get('server') == ref_account['server'],
-                 measured=measured_server_offset_minutes(quotes.values(), utc_now), utc_now=utc_now, account=ref_account,
+                 measured=measured, utc_now=utc_now, account=ref_account,
                  reference_identical=all(conditions.values()))
     by_name = {facts['name']: facts for facts in symbols}
     members, internals = [], []
@@ -698,12 +864,17 @@ def build_result(manifest, sets, *, account, symbols, ticks, quotes, margins, sc
     used = any(inner.get('exempt') for inner in internals)
     result = _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate, converted, scale, members, internals,
                         clock)
+    live = dec(account.get('equity'))
     result['referenceIdentical'] = dict(applies=all(conditions.values()), used=used, reason=REFERENCE_IDENTICAL_MARGIN if used else None,
-                                        conditions=conditions, liveEquity=num(dec(account.get('equity'))),
+                                        conditions=conditions, liveEquity=num(live),
+                                        liveScale=num(live * rate / ref_equity) if live and rate else None,
                                         equityTolerance=num(REFERENCE_EQUITY_TOLERANCE))
+    # What the deploy plan's brokerFit block carries besides its members (+ members[].deploy). The deploy re-derives
+    # every value from `manifest`, `equity` and the live broker and only COMPARES the rest (review 6130418265 item 7).
     result['deployBasis'] = None if rate is None else dict(
-        schema=DEPLOY_SCHEMA, scale=num(scale), referenceEquity=_text(ref_equity), accountCurrency=account.get('currency'),
-        rate=_text(rate), referenceIdentical=None if not used else dict(
+        schema=DEPLOY_SCHEMA, scale=num(scale), equity=_text(account_equity), referenceEquity=_text(ref_equity),
+        accountCurrency=account.get('currency'), rate=_text(rate), reviewedAtUtc=int(utc_now), manifest=manifest,
+        referenceIdentical=None if not used else dict(
             server=ref_account['server'], currency=ref_currency, leverage=ref_account.get('leverage'),
             startingBalance=_text(ref_equity), reason=REFERENCE_IDENTICAL_MARGIN))
     return result
@@ -711,12 +882,16 @@ def build_result(manifest, sets, *, account, symbols, ticks, quotes, margins, sc
 
 def reference_identical_conditions(ref_account, *, server, currency, leverage, live_equity, scale):
     """The account-level conditions of the reference-identical margin exemption (goatai#2350 6130033743): the same
-    server, account currency and leverage as referenceAccount, the account's own (live, first-apply) equity within
-    REFERENCE_EQUITY_TOLERANCE of startingBalance, and a scale of exactly 1.0. bytesUnchanged is added by the caller."""
+    server, account currency and leverage as referenceAccount, the account's own LIVE equity in the ONE-SIDED band
+    startingBalance <= live <= startingBalance x 1.05 (review 6130418265 item 2: below the reference the reference
+    bytes would over-risk), and the deployed bytes' scale (planning equity x rate / startingBalance) exactly 1.0. With
+    the same currency the live scale is then live / startingBalance, inside [1, 1.05]. bytesUnchanged is added by the
+    caller."""
     reference_equity, live = dec(ref_account.get('startingBalance')), dec(live_equity)
     return dict(sameServer=server == ref_account.get('server'), sameCurrency=currency == ref_account.get('currency'),
                 sameLeverage=dec(leverage) is not None and dec(leverage) == dec(ref_account.get('leverage')),
-                equityWithinTolerance=bool(live and reference_equity and abs(live - reference_equity) <= reference_equity * REFERENCE_EQUITY_TOLERANCE),
+                equityWithinTolerance=bool(live and reference_equity
+                                           and reference_equity <= live <= reference_equity * (1 + REFERENCE_EQUITY_TOLERANCE)),
                 scaleOne=scale is not None and scale == 1)
 
 
@@ -740,6 +915,10 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
     inner = dict(weight=weight, min_equity=None, margin=None)
     if rate is None:
         return _excluded(row, ACCOUNT_CURRENCY_UNSUPPORTED, message(ACCOUNT_CURRENCY_UNSUPPORTED), inner)
+    # A money value GOAT cannot read is never 0 / "no limit" (review 6130418265 item 5): the member is left out.
+    unreadable = unreadable_money(values, defaults)
+    if unreadable:
+        return _excluded(row, MONEY_VALUE_UNREADABLE, message(MONEY_VALUE_UNREADABLE, name=unreadable), inner)
     symbol, problem = map_symbol(member['canonicalSymbol'], symbols)
     if problem:
         code, candidates = problem
@@ -764,6 +943,8 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
     point_ratio = reference['point'] / broker['point']
     try:
         converted = point_edits(values, defaults, point_ratio)
+    except EAInitRefused as exc:
+        return _excluded(row, EA_INIT_REFUSED, message(EA_INIT_REFUSED, name=exc.name, value=format_like(exc.value, '')), inner)
     except ValueError as exc:
         return _excluded(row, POINT_SIZE_MISMATCH, message(POINT_SIZE_MISMATCH, symbol=symbol) + ' (' + str(exc) + ')', inner)
     row['pointConversion'] = dict(referencePoint=num(reference['point']), brokerPoint=num(broker['point']),
@@ -797,10 +978,11 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
                         commission=None, commissionSource='not_exposed_by_mt5_sdk')
     if not fits:
         return _excluded(row, SPREAD_TOO_WIDE, message(SPREAD_TOO_WIDE, symbol=symbol), inner)
-    # Fixed money limits are account-level amounts GOAT does not scale.
-    for name in FIXED_MONEY_INPUTS:
-        if (_number(values, defaults, name) or 0) != 0 and account_equity != reference_equity:
-            return _excluded(row, CONTRACT_MISMATCH, FIXED_MONEY_MESSAGE.format(name=name), inner)
+    # Fixed money limits are account-level amounts GOAT does not scale: a non-zero one only at the reference equity
+    # itself (judged again on the LIVE equity at deploy, stale_members).
+    fixed = fixed_money_off_reference(values, defaults, account_equity, reference_equity)
+    if fixed:
+        return _excluded(row, CONTRACT_MISMATCH, FIXED_MONEY_MESSAGE.format(name=fixed), inner)
     # Margin must be knowable at every equity (fail closed): the SDK's margin per lot, an EA lot cap, and a start lot
     # (FixedLots/ScaledLots: Lots_Input; RiskperSeq: reference.startLot).
     per_lot = dec(margins.get(symbol))
@@ -822,7 +1004,7 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
                         contract_ratio=contract_ratio, reference_volume_min=reference['volumeMin'], start_lot=reference['startLot'])
     def at(trial_equity):
         return rules_at(values, defaults, deploy_rules, equity=trial_equity, reference_equity=reference_equity, rate=rate)
-    fixed_money = any((_number(values, defaults, name) or 0) != 0 for name in FIXED_MONEY_INPUTS)
+    fixed_money = any(_number(values, defaults, name) != 0 for name in FIXED_MONEY_INPUTS)
     if not exempt:
         inner['min_equity'] = None if fixed_money else min_equity(lambda trial: at(trial)['code'] is None)
     outcome = at(account_equity)
@@ -844,15 +1026,25 @@ def _member(member, sets, defaults, by_name, symbols, ticks, margins, schema, *,
         # Margin at the scaled caps and this account's leverage (the SDK's own calculation).
         lots = peak_lots(values, defaults, outcome['start_lots'])
         required = per_lot * lots
-        row['margin'] = dict(perLot=num(per_lot), peakLots=num(lots), required=num(required), basis='ea_caps')
+        row['margin'] = dict(perLot=num(per_lot), peakLots=num(lots), required=num(required), basis='ea_caps',
+                             limit=num(account_equity * MAX_MARGIN_SHARE))
         inner['margin'] = required
-        if required > account_equity:
-            return _excluded(row, MARGIN_INSUFFICIENT, message(MARGIN_INSUFFICIENT), inner)
-    # What the deploy plan's brokerFit block carries for this member (it re-checks the live equity with these rules).
-    row['deploy'] = dict(memberId=member['memberId'], setSha256Reference=row['setSha256Reference'],
-                         setSha256Deployed=row['setSha256Deployed'], edits=edits,
+        # Margin level must stay >= 200%: the worst case may use at most half the equity (review 6130418265 item 9).
+        if required > account_equity * MAX_MARGIN_SHARE:
+            return _excluded(row, MARGIN_TOO_HIGH, message(MARGIN_TOO_HIGH), inner)
+    # What the deploy plan's brokerFit block carries for this member: claims the deploy compares with its own
+    # re-derivation from the manifest and the live broker (stale_members), never inputs.
+    row['deploy'] = dict(memberId=member['memberId'], brokerSymbol=symbol, deployFileName=row['deployFileName'],
+                         setSha256Reference=row['setSha256Reference'], setSha256Deployed=row['setSha256Deployed'], edits=edits,
                          rules={RULE_KEYS[key]: _text(value) for key, value in deploy_rules.items()})
     return row, inner
+
+
+def fixed_money_off_reference(values, defaults, equity, reference_equity):
+    """The first non-zero fixed money limit when `equity` is not exactly the reference equity; None otherwise."""
+    if equity == reference_equity:
+        return None
+    return next((name for name in FIXED_MONEY_INPUTS if _number(values, defaults, name) != 0), None)
 
 
 # Deploy-time rule facts, as the plan carries them (exact decimal strings).
@@ -901,7 +1093,7 @@ def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate
     min_equity_value, refusal = None, None
     if rate is not None:
         # Equity-dependent exclusions only: a member excluded for any other reason never becomes tradable by equity, and
-        # margin grows with equity at the same rate, so MARGIN_INSUFFICIENT does not either.
+        # margin grows with equity at the same rate, so MARGIN_TOO_HIGH does not either.
         thresholds = sorted((inner['min_equity'], weight) for inner, weight, row in zip(internals, weights, members)
                             if inner.get('min_equity') is not None and row['code'] in (None, BELOW_MIN_LOT))
         running, needed = Decimal(0), None
@@ -925,8 +1117,8 @@ def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate
         refusal = dict(code=PORTFOLIO_BROKER_UNFIT, message="Less than 90% of this portfolio can trade on this account's broker.")
     elif account_equity < min_equity_value:
         refusal = dict(code=PORTFOLIO_NEEDS_LARGER_ACCOUNT, message='This portfolio needs a larger account.')
-    elif margin_total > account_equity:
-        refusal = dict(code=MARGIN_INSUFFICIENT, message='Together these sets could need more margin than this account has.')
+    elif margin_total > account_equity * MAX_MARGIN_SHARE:
+        refusal = dict(code=MARGIN_TOO_HIGH, message=PORTFOLIO_MARGIN_MESSAGE)
     elif share < TRADABLE_SHARE:
         refusal = dict(code=PORTFOLIO_BROKER_UNFIT, message="Less than 90% of this portfolio can trade on this account's broker.")
     expected, source = reference_server_offset(None, clock['account'], clock['utc_now'])
@@ -941,8 +1133,8 @@ def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate
         minEquity=num(min_equity_value), manifestMinEquity=num(dec(manifest.get('minEquity'))),
         offered=refusal is None, refusal=refusal,
         tradableRiskShare=num(share.quantize(Decimal('0.0001'))), riskWeighting=weighting,
-        margin=dict(required=num(margin_total), equity=num(account_equity), verified=margin_verified, level='member_and_portfolio',
-                    exemption=margin_exemption),
+        margin=dict(required=num(margin_total), equity=num(account_equity), limit=num(account_equity * MAX_MARGIN_SHARE),
+                    verified=margin_verified, level='member_and_portfolio', exemption=margin_exemption),
         # referenceSource 'server_name_assumption' says the manifest gave no serverGmtOffset and GOAT assumed the
         # reference server's clock from its name; memberSources lists what each checked member used.
         serverOffset=dict(brokerMinutes=clock['measured'], referenceMinutes=expected, referenceSource=source,
@@ -952,9 +1144,12 @@ def _portfolio(manifest, account, account_equity, ref_equity, ref_currency, rate
 
 # ------------------------------------------------------------------ deploy hook (studio_demo_deploy)
 
-DEPLOY_BLOCK_KEYS = frozenset(('schema', 'scale', 'referenceEquity', 'accountCurrency', 'rate', 'referenceIdentical', 'members'))
+DEPLOY_BLOCK_KEYS = frozenset(('schema', 'scale', 'equity', 'referenceEquity', 'accountCurrency', 'rate', 'reviewedAtUtc',
+                               'manifest', 'referenceIdentical', 'members'))
 REFERENCE_IDENTICAL_KEYS = frozenset(('server', 'currency', 'leverage', 'startingBalance', 'reason'))
-DEPLOY_MEMBER_KEYS = frozenset(('index', 'memberId', 'setSha256Reference', 'setSha256Deployed', 'edits', 'rules'))
+DEPLOY_MEMBER_KEYS = frozenset(('index', 'memberId', 'brokerSymbol', 'deployFileName', 'setSha256Reference', 'setSha256Deployed',
+                                'edits', 'rules'))
+DEPLOY_IDENTITY_PREFIX = 'goat-house-deploy-identity-v1'
 
 
 def _exact(value, *, positive=True, optional=False):
@@ -969,14 +1164,18 @@ def _exact(value, *, positive=True, optional=False):
 
 
 def deploy_entries(block, members):
-    """Validate a plan's brokerFit block against its members; returns one entry per member, in order, with its rules
-    parsed (Decimals). The block is the broker-fit result's deployBasis plus each fit member's `deploy` with its index."""
+    """Validate a plan's brokerFit block against its members; returns its member entries, in plan order. The block is
+    the broker-fit result's deployBasis plus each fit member's `deploy` with its plan index. Shape only, plus what the
+    plan itself must agree on: every entry names a distinct manifest member, its reference hash is that member's
+    setSha256, and its brokerSymbol / deployFileName are the plan member's symbol / fileName and the manifest setName
+    with that symbol. Every VALUE is re-derived at deploy (stale_members), never taken from here."""
     if (type(block) is not dict or set(block) != DEPLOY_BLOCK_KEYS or block['schema'] != DEPLOY_SCHEMA
             or isinstance(block['scale'], bool) or not isinstance(block['scale'], (int, float))
             or not math.isfinite(block['scale']) or block['scale'] <= 0
-            or not isinstance(block['accountCurrency'], str) or not CURRENCY.fullmatch(block['accountCurrency'])):
+            or not isinstance(block['accountCurrency'], str) or not CURRENCY.fullmatch(block['accountCurrency'])
+            or type(block['reviewedAtUtc']) is not int or block['reviewedAtUtc'] <= 0):
         raise ValueError('Invalid broker-fit block in the demo deploy plan')
-    _exact(block['referenceEquity']); _exact(block['rate'])
+    _exact(block['equity']); _exact(block['referenceEquity']); _exact(block['rate'])
     identical = block['referenceIdentical']
     if identical is not None and (
             type(identical) is not dict or set(identical) != REFERENCE_IDENTICAL_KEYS or identical['reason'] != REFERENCE_IDENTICAL_MARGIN
@@ -985,17 +1184,34 @@ def deploy_entries(block, members):
         raise ValueError('Invalid broker-fit block in the demo deploy plan')
     if identical is not None:
         _exact(identical['startingBalance'])
+    try:
+        validate_manifest(block['manifest'])
+    except Refusal as exc:
+        raise ValueError('Invalid broker-fit manifest in the demo deploy plan: ' + str(exc)) from exc
+    by_id = {member['memberId']: member for member in block['manifest']['members']}
     entries = block['members']
     if type(entries) is not list or len(entries) != len(members):
         raise ValueError('The broker-fit block must name every deployed member, and only them')
-    for index, entry in enumerate(entries):
+    seen = set()
+    for index, (entry, plan_member) in enumerate(zip(entries, members)):
         if (type(entry) is not dict or set(entry) != DEPLOY_MEMBER_KEYS
                 or entry['index'] != index or not isinstance(entry['memberId'], str) or not MEMBER_ID.fullmatch(entry['memberId'])
                 or not SHA256.fullmatch(str(entry['setSha256Reference'])) or not SHA256.fullmatch(str(entry['setSha256Deployed']))
+                or not isinstance(entry['brokerSymbol'], str) or not isinstance(entry['deployFileName'], str)
                 or type(entry['edits']) is not dict or type(entry['rules']) is not dict or set(entry['rules']) != set(RULE_KEYS.values())):
             raise ValueError('Invalid broker-fit member %d in the demo deploy plan' % index)
         for key, name in RULE_KEYS.items():
             _exact(entry['rules'][name], optional=key in ('volume_max', 'start_lot'))
+        source = by_id.get(entry['memberId'])
+        if source is None or entry['memberId'] in seen:
+            raise ValueError('Broker-fit member %d is not a distinct member of the plan\'s manifest' % index)
+        seen.add(entry['memberId'])
+        plan_member = plan_member if isinstance(plan_member, dict) else {}
+        if (entry['setSha256Reference'] != source['setSha256']
+                or entry['brokerSymbol'] != plan_member.get('symbol', entry['brokerSymbol'])
+                or entry['deployFileName'] != plan_member.get('fileName', entry['deployFileName'])
+                or entry['deployFileName'] != deploy_file_name(source['setName'], entry['brokerSymbol'])):
+            raise ValueError('Broker-fit member %d does not match its plan member and manifest entry' % index)
     return entries
 
 
@@ -1009,67 +1225,149 @@ def deployed_bytes(reference_raw, entry):
     return raw
 
 
+def deploy_identity_preimage(scale, deployed):
+    """The house deploy identity pre-image shared with the app (goatai#2500 houseDeployIdentity, vendored test vectors
+    controller/contracts/deploy-identity/deploy-identity-cases.json): 'goat-house-deploy-identity-v1|scale=<S>|' + the
+    setSha256Deployed values (duplicates kept) sorted ascending and joined with ','. S = the scale with exactly 10
+    decimals, then trailing zeros and a trailing point removed. No trailing newline."""
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(scale) or scale <= 0:
+        raise ValueError('The deploy identity needs a finite positive scale')
+    deployed = list(deployed)
+    if not deployed or any(not isinstance(value, str) or not SHA256.fullmatch(value) for value in deployed):
+        raise ValueError('The deploy identity needs at least one lower-case SHA-256')
+    text = format(scale, '.10f').rstrip('0').rstrip('.')
+    return DEPLOY_IDENTITY_PREFIX + '|scale=' + text + '|' + ','.join(sorted(deployed))
+
+
+def deploy_identity(scale, deployed):
+    """sha256 hex of the UTF-8 deploy identity pre-image (Rule 9: the deployment's identity covers its bytes)."""
+    return sha256(deploy_identity_preimage(scale, deployed).encode('utf-8'))
+
+
 def deploy_record(block):
-    """What the deploy journal keeps per member: {memberId, setSha256Reference, setSha256Deployed, scale}."""
+    """What the deploy journal keeps: {schema, scale, deployIdentity, members: [{memberId, setSha256Reference,
+    setSha256Deployed, scale}]}."""
     return dict(schema=block['schema'], scale=block['scale'],
+                deployIdentity=deploy_identity(block['scale'], [e['setSha256Deployed'] for e in block['members']]),
                 members=[dict(memberId=e['memberId'], setSha256Reference=e['setSha256Reference'],
                               setSha256Deployed=e['setSha256Deployed'], scale=block['scale']) for e in block['members']])
 
 
-def stale_members(block, references, schema, *, equity, currency, server=None, leverage=None):
-    """The deploy-time re-check. With the live equity (account currency), every member's Risk and Lots_Input are
-    recomputed by the same rules as the review. A member is stale when the account currency changed, when a rule now
-    excludes it, or when a reviewed value is ABOVE the live one at all (that would be rounding up) or more than one
-    volume step (one cent for Risk) BELOW it. Returns [dict(memberId, input, reviewed, live)]; empty = fresh.
+def plan_manifest(block):
+    """The block's manifest narrowed to the plan's members, in plan order (the deploy re-derives only those)."""
+    by_id = {member['memberId']: member for member in block['manifest']['members']}
+    return dict(block['manifest'], members=[by_id[entry['memberId']] for entry in block['members']])
 
-    A plan reviewed under the reference-identical margin exemption (block referenceIdentical) deploys the reference
-    bytes at scale 1.0 by design, so instead it keeps the exemption only while every condition still holds on the live
-    account: same server, currency and leverage as the reference, live equity within REFERENCE_EQUITY_TOLERANCE of
-    startingBalance, scale 1.0 and every member's bytes the reference's. Any failing condition is stale."""
-    live_equity = dec(equity)
-    if currency != block['accountCurrency'] or live_equity is None or live_equity <= 0:
-        return [dict(memberId=None, input='account', reviewed=block['accountCurrency'], live=currency)]
-    identical = block.get('referenceIdentical')
+
+def stale_members(block, references, schema, *, account, symbols, ticks, quotes, margins, utc_now, arrived=()):
+    """The deploy-time re-check (review 6130418265 items 2, 3, 4 and 7). Nothing in the plan is an input except the
+    manifest, the reference SET bytes (hash-bound to it) and the planning equity; every other plan value is a claim
+    compared with what GOAT derives from them and the LIVE broker read now. Returns [dict(memberId, input, reviewed,
+    live)]; empty = fresh. Stale when:
+    - the plan is older than PLAN_TTL_SECONDS (input 'reviewedAtUtc'), or the account currency changed / no equity;
+    - re-derived at the planning equity on the live broker (live rate, live symbol facts, live clock), a member is not
+      fit or any claim differs: brokerSymbol, deployFileName, setSha256Reference, rules, edits, setSha256Deployed, or
+      the block's referenceIdentical (so a forged rate, contract ratio, volume step, start lot, startingBalance or
+      edit never deploys);
+    - re-derived at the LIVE equity, a member is no longer fit (min lot, money limits, margin <= 50%...) or a deployed
+      Risk / Lots_Input is ABOVE the live value (rounding up) or, outside the reference-identical band, more than one
+      cent / volume step BELOW it; or the portfolio is no longer offered at the live equity.
+    A reference-identical plan (block referenceIdentical) instead keeps its exemption only while every condition holds
+    on the live account ('referenceIdentical.<condition>' rows); its exempt members deploy the reference bytes inside
+    the one-sided band by design, the rest get the per-value check one-sided, and every member's fixed money limits
+    are judged on the live equity."""
+    rows = []
+
+    def add(member_id, name, reviewed, live):
+        rows.append(dict(memberId=member_id, input=name, reviewed=reviewed, live=live))
+
+    age = utc_now - block['reviewedAtUtc']
+    if age > PLAN_TTL_SECONDS or age < -FRESH_QUOTE_SECONDS:
+        add(None, 'reviewedAtUtc', block['reviewedAtUtc'], int(utc_now))
+        return rows
+    live_equity = dec(account.get('equity'))
+    if account.get('currency') != block['accountCurrency'] or live_equity is None or live_equity <= 0:
+        add(None, 'account', block['accountCurrency'], account.get('currency'))
+        return rows
+    manifest = plan_manifest(block)
+    sets = {sha256(raw): raw for raw in references}
+    reading = dict(account=account, symbols=symbols, ticks=ticks, quotes=quotes, margins=margins, schema=schema, utc_now=utc_now,
+                   arrived=arrived)
+    reviewed = build_result(manifest, sets, equity=_exact(block['equity']), **reading)
+    live = build_result(manifest, sets, equity=None, **reading)
+    basis = reviewed['deployBasis']
+    if basis is None:
+        add(None, 'rate', block['rate'], None)
+        return rows
+    if _exact(block['referenceEquity']) != dec(manifest['referenceAccount']['startingBalance']):
+        add(None, 'referenceEquity', block['referenceEquity'], basis['referenceEquity'])
+    # The scale is only a claim (the journal's deploy identity carries it). In one currency it is exact, so it must be
+    # the re-derived one; across currencies it moves with every price and the bytes carry its consequence.
+    if block['accountCurrency'] == manifest['referenceAccount']['currency'] and block['scale'] != reviewed['scale']:
+        add(None, 'scale', block['scale'], reviewed['scale'])
+    identical = block['referenceIdentical']
     if identical is not None:
-        conditions = reference_identical_conditions(
-            dict(server=identical['server'], currency=identical['currency'], leverage=identical['leverage'],
-                 startingBalance=_exact(identical['startingBalance'])),
-            server=server, currency=currency, leverage=leverage, live_equity=live_equity, scale=dec(block['scale']))
-        conditions['bytesUnchanged'] = all(not e['edits'] and e['setSha256Deployed'] == e['setSha256Reference'] for e in block['members'])
-        live = dict(sameServer=server, sameCurrency=currency, sameLeverage=leverage, equityWithinTolerance=num(live_equity),
-                    scaleOne=block['scale'], bytesUnchanged=None)
-        return [dict(memberId=None, input='referenceIdentical.' + name, reviewed=True, live=live[name])
-                for name, holds in conditions.items() if not holds]
+        failing = [name for name, holds in reviewed['referenceIdentical']['conditions'].items() if not holds]
+        observed = dict(sameServer=account.get('server'), sameCurrency=account.get('currency'), sameLeverage=account.get('leverage'),
+                        equityWithinTolerance=num(live_equity), scaleOne=reviewed['scale'], bytesUnchanged=None)
+        for name in failing:
+            add(None, 'referenceIdentical.' + name, True, observed[name])
+        if failing:
+            return rows
+    if identical != basis['referenceIdentical']:
+        add(None, 'referenceIdentical', identical, basis['referenceIdentical'])
     defaults = schema_defaults(schema)
-    reference_equity, rate = _exact(block['referenceEquity']), _exact(block['rate'])
-    stale = []
-    for entry, raw in zip(block['members'], references):
-        rules = {key: _exact(entry['rules'][name], optional=key in ('volume_max', 'start_lot')) for key, name in RULE_KEYS.items()}
-        values = set_values(raw, schema)
-        outcome = rules_at(values, defaults, rules, equity=live_equity, reference_equity=reference_equity, rate=rate)
-        if outcome['code']:
-            stale.append(dict(memberId=entry['memberId'], input=outcome['code'], reviewed=None, live=None))
+    for entry, raw, rev_row, live_row in zip(block['members'], references, reviewed['members'], live['members']):
+        member_id = entry['memberId']
+        if rev_row['status'] != 'fit':
+            add(member_id, rev_row['code'], None, None)
             continue
-        for name, tolerance in (('Risk', CENT), ('Lots_Input', rules['volume_step'])):
-            live = outcome['scaled'][name]
-            reviewed = dec(entry['edits'][name]) if name in entry['edits'] else _number(values, defaults, name)
-            if live is None or reviewed is None:
+        claimed = rev_row['deploy']
+        for name in ('brokerSymbol', 'deployFileName', 'setSha256Reference', 'rules'):
+            if entry[name] != claimed[name]:
+                add(member_id, name, entry[name], claimed[name])
+        for name in sorted(set(entry['edits']) | set(claimed['edits'])):
+            if entry['edits'].get(name) != claimed['edits'].get(name):
+                add(member_id, name, entry['edits'].get(name), claimed['edits'].get(name))
+        if entry['setSha256Deployed'] != claimed['setSha256Deployed']:
+            add(member_id, 'setSha256Deployed', entry['setSha256Deployed'], claimed['setSha256Deployed'])
+        exempt = rev_row['marginReason'] == REFERENCE_IDENTICAL_MARGIN
+        if exempt:
+            # Fixed money limits are judged on the live equity too (review item 4).
+            values = set_values(raw, schema)
+            fixed = fixed_money_off_reference(values, defaults, live_equity, dec(manifest['referenceAccount']['startingBalance']))
+            if fixed:
+                add(member_id, fixed, num(_number(values, defaults, fixed)), num(live_equity))
+            continue
+        if live_row['status'] != 'fit':
+            add(member_id, live_row['code'], None, None)
+            continue
+        for name, tolerance in (('Risk', CENT), ('Lots_Input', dec(live_row['deploy']['rules']['volumeStep']))):
+            then, now = dec(rev_row['scaled'][name]), dec(live_row['scaled'][name])
+            if then is None or now is None:
                 continue
-            if reviewed > live or live - reviewed > tolerance:
-                stale.append(dict(memberId=entry['memberId'], input=name, reviewed=num(reviewed), live=num(live)))
-    return stale
+            if then > now or (identical is None and now - then > tolerance):
+                add(member_id, name, num(then), num(now))
+    gate = reviewed if identical is not None else live
+    if not gate['offered']:
+        add(None, gate['refusal']['code'], None, gate['refusal']['message'])
+    return rows
 
 
-def check_live(plan, schema, proof):
-    """Refuse FIT_STALE before anything is staged when the live account no longer matches the reviewed fit."""
+def check_live(controller, session, plan, *, mt5=None, process=None, clock=None, sleep=None):
+    """Refuse FIT_STALE before anything is staged when the live broker no longer gives the reviewed fit: one short
+    attach-only read (read_broker) of the plan's members, then stale_members."""
     import base64
     block = plan['brokerFit']
     references = [base64.b64decode(member['contentBase64'], validate=True) for member in plan['members']]
-    stale = stale_members(block, references, schema, equity=proof.get('equity'), currency=proof.get('currency'),
-                          server=proof.get('server'), leverage=proof.get('leverage'))
+    manifest = plan_manifest(block)
+    account, symbols, ticks, quotes, margins, utc_now, arrived = read_broker(controller, session, manifest, mt5=mt5, process=process,
+                                                                             clock=clock, sleep=sleep)
+    stale = stale_members(block, references, controller.schema, account=account, symbols=symbols, ticks=ticks, quotes=quotes,
+                          margins=margins, utc_now=utc_now, arrived=arrived)
     if stale:
         raise Refusal(FIT_STALE_MESSAGE + ' Nothing was written or launched.', FIT_STALE, stale=stale[:20],
-                      liveEquity=proof.get('equity'), liveCurrency=proof.get('currency'))
+                      liveEquity=account.get('equity'), liveCurrency=account.get('currency'))
 
 
 # ------------------------------------------------------------------ CLI (read-only MT5 SDK readback)
@@ -1120,21 +1418,39 @@ def _symbol_dict(info):
     return {key: getattr(info, key, None) for key in keys}
 
 
-def read_broker(controller, session, manifest, *, mt5=None, clock=None):
-    """One short read-only MT5 SDK session (seconds) under the terminal lease: account, every symbol, each mapped symbol's
-    last tick and its tick history of the last SPREAD_HISTORY_HOURS (copy_ticks_range, COPY_TICKS_INFO), and the SDK's
-    margin per lot. Never trades, never selects a symbol into Market Watch, never opens a chart, never waits."""
+def _tick_stamp(tick):
+    """(time_msc, time) of an SDK tick; None when there is no tick."""
+    if tick is None or not getattr(tick, 'time', 0):
+        return None
+    msc = getattr(tick, 'time_msc', None)
+    return (int(msc) if isinstance(msc, (int, float)) and not isinstance(msc, bool) else int(tick.time) * 1000), int(tick.time)
+
+
+def read_broker(controller, session, manifest, *, mt5=None, clock=None, process=None, sleep=None):
+    """One short read-only MT5 SDK session (seconds) under the terminal lease, ATTACH-ONLY: it refuses MT5_NOT_RUNNING
+    and never calls initialize() (which starts a closed MT5 and leaves it running) unless the selected terminal64.exe
+    is already running. Reads the account, every symbol, the last tick of each mapped symbol and of each conversion
+    pair, its tick history of the last SPREAD_HISTORY_HOURS (copy_ticks_range, COPY_TICKS_INFO), and the SDK's margin
+    per lot. The broker clock comes only from a tick seen ARRIVING (at most ARRIVAL_WINDOW_SECONDS of re-reading the
+    last ticks; a closed market leaves it unknown). Never trades, never selects a symbol into Market Watch, never opens
+    a chart. Returns (account, symbols, ticks, quotes, margins, utc_now, arrived)."""
     import time
     from pathlib import Path
+    import studio_seed_process
     from studio_terminal_lease import BUSY_READ, terminal_lease
     clock = clock or time.time
+    sleep = sleep or time.sleep
     if mt5 is None:
         try:
             import MetaTrader5 as mt5
         except ImportError as exc:
             raise ValueError('The MetaTrader5 adapter is unavailable; nothing was read') from exc
+    process = process or studio_seed_process.WindowsSeedProcess(controller)
     with terminal_lease(controller.root, purpose='broker-fit', busy_code='BROKER_READ_DEFERRED', busy_message=BUSY_READ,
                         broker_reason='terminal_busy'):
+        # Attach only: the exact selected terminal64.exe must already be running (accepted with review 6130418265).
+        if process.inspect() is None:
+            raise Refusal(MT5_NOT_RUNNING_MESSAGE, MT5_NOT_RUNNING)
         if not mt5.initialize(controller.install['terminal_executable'], timeout=5000):
             raise ValueError('The selected MT5 terminal could not be read; start it and sign in to the demo account')
         try:
@@ -1155,12 +1471,25 @@ def read_broker(controller, session, manifest, *, mt5=None, clock=None):
             symbols = [_symbol_dict(item) for item in (mt5.symbols_get() or ())]
             mapped = sorted({symbol for symbol, problem in (map_symbol(m['canonicalSymbol'], symbols) for m in manifest['members'])
                              if symbol})
-            utc_now = clock()
-            quotes = {}
-            for symbol in mapped:
-                tick = mt5.symbol_info_tick(symbol)
-                quotes[symbol] = int(tick.time) if tick is not None and getattr(tick, 'time', 0) else None
-            offset = measured_server_offset_minutes(quotes.values(), utc_now)
+            reference_currency = manifest['referenceAccount']['currency']
+            pairs = sorted({item['name'] for item in symbols if account['currency'] != reference_currency
+                            and is_conversion_pair(item, account['currency'], reference_currency)} - set(mapped))
+            first = {name: _tick_stamp(mt5.symbol_info_tick(name)) for name in mapped + pairs}
+            quotes = {name: stamp[1] if stamp else None for name, stamp in first.items()}
+            # Re-read the mapped symbols' last ticks until one ARRIVES: its age is then at most the time since the
+            # first read, so it proves the server clock (review 6130418265 item 8). Bounded; no arrival = unknown.
+            started, arrived = clock(), []
+            while True:
+                for name in mapped:
+                    stamp = _tick_stamp(mt5.symbol_info_tick(name))
+                    if stamp and first[name] and stamp[0] > first[name][0]:
+                        arrived.append(name)
+                        quotes[name] = stamp[1]
+                utc_now = clock()
+                if arrived or not mapped or utc_now - started >= ARRIVAL_WINDOW_SECONDS:
+                    break
+                sleep(ARRIVAL_POLL_SECONDS)
+            offset = measured_server_offset_minutes([quotes[name] for name in arrived], utc_now)
             ticks = {}
             if offset is not None:
                 # Tick times and copy_ticks_range dates are the server clock (as Ops' exp03_symbol_specs.py passes them).
@@ -1168,7 +1497,12 @@ def read_broker(controller, session, manifest, *, mt5=None, clock=None):
                 start = server_now - timedelta(hours=SPREAD_HISTORY_HOURS)
                 for symbol in mapped:
                     ticks[symbol] = mt5.copy_ticks_range(symbol, start, server_now, getattr(mt5, 'COPY_TICKS_INFO', 1))
-            fresh = {item['name']: item for item in (_symbol_dict(mt5.symbol_info(name)) for name in mapped) if item['name']}
+            # Fresh facts (and bid/ask) of the mapped symbols AND the conversion pairs (review 6130418265 item 3); the
+            # pairs' quote ages are judged in build_result with the proven clock.
+            fresh = {item['name']: item for item in (_symbol_dict(mt5.symbol_info(name)) for name in mapped + pairs) if item['name']}
+            for name in pairs:
+                stamp = _tick_stamp(mt5.symbol_info_tick(name))
+                quotes[name] = stamp[1] if stamp else None
             symbols = [fresh.get(item['name'], item) for item in symbols]
             margins = {}
             for symbol in mapped:
@@ -1180,10 +1514,10 @@ def read_broker(controller, session, manifest, *, mt5=None, clock=None):
                 margins[symbol] = max(values) if values else None
         finally:
             mt5.shutdown()
-    return account, symbols, ticks, quotes, margins, utc_now
+    return account, symbols, ticks, quotes, margins, utc_now, arrived
 
 
-def broker_fit(controller, portfolio, *, equity=None, sets_dir=None, mt5=None, clock=None):
+def broker_fit(controller, portfolio, *, equity=None, sets_dir=None, mt5=None, clock=None, process=None, sleep=None):
     """`studio broker-fit`: read-only; refuses NOT_DEMO_ACCOUNT on a non-demo account."""
     from studio_onboarding import session_state
     if equity is not None and (not math.isfinite(equity) or equity <= 0):
@@ -1195,6 +1529,7 @@ def broker_fit(controller, portfolio, *, equity=None, sets_dir=None, mt5=None, c
         raise Refusal('This portfolio is built for GOAT EA V' + str(wanted) + '; this terminal runs V' + str(installed) + '.',
                       'EA_VERSION_MISMATCH')
     session, _ = session_state(controller)
-    account, symbols, ticks, quotes, margins, utc_now = read_broker(controller, session, manifest, mt5=mt5, clock=clock)
+    account, symbols, ticks, quotes, margins, utc_now, arrived = read_broker(controller, session, manifest, mt5=mt5, clock=clock,
+                                                                             process=process, sleep=sleep)
     return build_result(manifest, sets, account=account, symbols=symbols, ticks=ticks, quotes=quotes, margins=margins,
-                        schema=controller.schema, utc_now=utc_now, equity=equity)
+                        schema=controller.schema, utc_now=utc_now, equity=equity, arrived=arrived)

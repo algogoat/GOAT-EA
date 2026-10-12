@@ -2,7 +2,8 @@
 
 Shared by the GOAT-EA controller and the goatai app. Rulings: Claude-Mac goatai#1885 6008137980 (2026-10-06), manifest
 `goat-house-portfolio-v1` (#1885 6005691928 / 6005730237), reviewer additions goatai#2350 6128283375 and rulings
-goatai#2350 6129252646 (2026-10-12; these override the original text where they differ). Implementation:
+goatai#2350 6129252646 (2026-10-12; these override the original text where they differ), and the GOAT-EA#228 review
+6130418265 (round 2: see "Round 2" at the end, which overrides anything above it). Implementation:
 `controller/studio_broker_fit.py`; deploy hook: `controller/studio_demo_deploy.py` (`validate_plan`, `load`); tests:
 `controller/test_studio_broker_fit.py`, `controller/test_studio_broker_fit_deploy.py`. Section "Decisions" records every
 point the contract left open.
@@ -13,10 +14,14 @@ point the contract left open.
 goat.exe studio --installation <receipt> broker-fit --portfolio <house manifest .json> [--equity <number>] [--sets <folder>]
 ```
 
-- One short MT5 SDK read (seconds, never a wait) under the installation's terminal lease, with the same
-  initialize/terminal/account checks as `broker_proof`: account currency, equity and leverage; `symbols_get()` once;
-  per mapped symbol `symbol_info_tick()` (last tick, for the broker's GMT offset), `copy_ticks_range(...,
-  COPY_TICKS_INFO)` over the last 6 hours (the spread) and `order_calc_margin()` for 1.0 lot buy and sell.
+- One short MT5 SDK read (seconds) under the installation's terminal lease, ATTACH-ONLY: when no process of the
+  selected `terminal64.exe` (exactly `install.terminal_executable`) is running it refuses `MT5_NOT_RUNNING` ("Start MT5
+  and sign in to your demo account, then check again.") and calls nothing (`initialize(path)` would start MT5 and
+  `shutdown()` would leave it running). Then the same initialize/terminal/account checks as `broker_proof`: account
+  currency, equity and leverage; `symbols_get()` once; per mapped symbol and per conversion pair `symbol_info_tick()`;
+  the mapped symbols' last ticks are re-read (every 0.25 s, at most 10 s) until one ARRIVES, which proves the broker's
+  GMT offset; `copy_ticks_range(..., COPY_TICKS_INFO)` over the last 6 hours (the spread) and `order_calc_margin()` for
+  1.0 lot buy and sell.
 - Never writes a file, never selects a symbol into Market Watch, never opens a chart, never trades. Refuses
   `NOT_DEMO_ACCOUNT` on a non-demo account (before any tick is read).
 - `--equity` overrides the account equity (account currency) for planning; still read-only.
@@ -27,7 +32,7 @@ goat.exe studio --installation <receipt> broker-fit --portfolio <house manifest 
 
 Command-level refusals (`ok: false`, `refusal_code`): `NOT_DEMO_ACCOUNT`, `PORTFOLIO_INVALID`, `RISK_SCALING_UNSUPPORTED`
 (`riskScaling` other than `equity_linear`), `EA_VERSION_MISMATCH` (manifest `ea.eaVersion` differs from the installed
-EA), `BROKER_READ_DEFERRED`.
+EA), `BROKER_READ_DEFERRED`, `MT5_NOT_RUNNING`.
 
 ## Reply `{ ok, result: BrokerFitResult }`
 
@@ -45,47 +50,50 @@ BrokerFitResult = {
   refusal: null|{ code, message },                       // additive: why offered is false
   tradableRiskShare: number,                             // 0..1 at this equity
   riskWeighting: 'risk'|'equal',                         // additive
-  margin: { required, equity, verified: true, level },   // additive: portfolio worst case (unknown margin is refused per member)
+  margin: { required, equity, limit, verified: true, level },   // additive: portfolio worst case; limit = 50% of equity
   serverOffset: { brokerMinutes, referenceMinutes, referenceSource, memberSources, assumed },   // additive
-  referenceIdentical: { applies, used, reason: 'REFERENCE_IDENTICAL_MARGIN'|null, conditions, liveEquity, equityTolerance },  // additive
-  deployBasis: { schema: 'goat-broker-fit-deploy-v1', scale, referenceEquity, accountCurrency, rate,
+  referenceIdentical: { applies, used, reason: 'REFERENCE_IDENTICAL_MARGIN'|null, conditions, liveEquity, liveScale,
+                        equityTolerance },                // additive
+  deployBasis: { schema: 'goat-broker-fit-deploy-v2', scale, equity, referenceEquity, accountCurrency, rate,
+                 reviewedAtUtc, manifest,
                  referenceIdentical: { server, currency, leverage, startingBalance, reason }|null }|null,  // additive
   members: [{
     memberId, canonicalSymbol, brokerSymbol|null, period,
     status: 'fit'|'excluded',
     code: null|'SYMBOL_UNAVAILABLE'|'SYMBOL_AMBIGUOUS'|'SPREAD_TOO_WIDE'|'SPREAD_SAMPLE_UNAVAILABLE'|'BELOW_MIN_LOT'
-          |'CONTRACT_MISMATCH'|'POINT_SIZE_MISMATCH'|'SERVER_OFFSET_MISMATCH'|'MARGIN_INSUFFICIENT'|'MARGIN_UNKNOWN'
-          |'ACCOUNT_CURRENCY_UNSUPPORTED',
+          |'CONTRACT_MISMATCH'|'POINT_SIZE_MISMATCH'|'SERVER_OFFSET_MISMATCH'|'MARGIN_TOO_HIGH'|'MARGIN_UNKNOWN'
+          |'MONEY_VALUE_UNREADABLE'|'EA_INIT_REFUSED'|'ACCOUNT_CURRENCY_UNSUPPORTED',
     message: null|string,                                // one plain sentence
     spreadRatio: number|null,                            // broker median spread (reference points) / typicalSpreadPts
     scaled: { Risk, Lots_Max, Lots_Max_Cum, Lots_Input, startLot }|null,    // the values the deployed SET holds
     setSha256Reference, setSha256Deployed|null,
     deployFileName: string|null,                         // additive: setName with the broker symbol (the deploy plan's fileName)
     edits: { input: text }|null,                         // additive: what the deploy changes in the reference SET
-    deploy: { memberId, setSha256Reference, setSha256Deployed, edits, rules }|null,   // additive: the plan's brokerFit entry
+    deploy: { memberId, brokerSymbol, deployFileName, setSha256Reference, setSha256Deployed, edits, rules }|null,   // the plan's brokerFit entry
     startLotSource: string|null,                         // additive: reference.startLotSource, passed through
     spread: { medianPoints, referencePoints, typicalSpreadPts, limit, ticks, hours }|null,  // additive
     pointConversion: { referencePoint, brokerPoint, factor, inputs }|null,                 // additive
     serverOffset: { sameServer, brokerMinutes, referenceMinutes, referenceSource, offsetNeutral, dependsOn }|null,  // additive
     costs: { swapLong, swapShort, referenceSwapLong, referenceSwapShort, commission: null, commissionSource }|null,
-    margin: { perLot, peakLots, required, basis, unknownBasis? }|null,   // additive
+    margin: { perLot, peakLots, required, basis, limit?, unknownBasis? }|null,   // additive
     marginReason: null|'REFERENCE_IDENTICAL_MARGIN'      // additive: the exemption, never silent
   }]
 }
 ```
 
-Member checks run in this order and the first failing one is the member's code: currency, symbol, contract, point
-size, server clock, spread history, spread, fixed money limits, unknown margin (`MARGIN_UNKNOWN`), equity rules
-(`BELOW_MIN_LOT`), margin (`MARGIN_INSUFFICIENT`).
+Member checks run in this order and the first failing one is the member's code: currency, money values
+(`MONEY_VALUE_UNREADABLE`), symbol, contract, point size (`POINT_SIZE_MISMATCH`, `EA_INIT_REFUSED`), server clock,
+spread history, spread, fixed money limits, unknown margin (`MARGIN_UNKNOWN`), equity rules (`BELOW_MIN_LOT`), margin
+(`MARGIN_TOO_HIGH`).
 
 Portfolio refusal (first that applies): `ACCOUNT_CURRENCY_UNSUPPORTED`, `PORTFOLIO_BROKER_UNFIT` (less than 90% of the
 risk can trade on this broker at any equity), `PORTFOLIO_NEEDS_LARGER_ACCOUNT` (equity < minEquity),
-`MARGIN_INSUFFICIENT` (fit members' worst-case margin together exceeds equity), `PORTFOLIO_BROKER_UNFIT` (share < 90%).
+`MARGIN_TOO_HIGH` (fit members' worst-case margin together exceeds 50% of equity), `PORTFOLIO_BROKER_UNFIT` (share < 90%).
 
 ## Rules
 
 - **Symbol map:** canonical symbol -> exact name when it is tradable (trade mode FULL) and, for a six-letter pair, its
-  base/profit currencies are the pair's halves; else exactly one such variant among `symbols_get()`: canonical plus a
+  base/profit currencies are reported and are the pair's halves; else exactly one such variant among `symbols_get()`: canonical plus a
   suffix (`.raw`, `_i`, `#`, `-x`, or 1-4 lower-case letters such as `m`, `pro`, `ecn`) or a prefix (`#`, `.`, `_`, or
   1-4 lower-case letters with an optional `.`/`_`). None -> `SYMBOL_UNAVAILABLE`; more than one -> `SYMBOL_AMBIGUOUS`
   (the message lists them). Upper-case or digit tails (`EURUSDX`, `US3000`) are other instruments.
@@ -104,14 +112,14 @@ risk can trade on this broker at any equity), `PORTFOLIO_NEEDS_LARGER_ACCOUNT` (
 - **Scaling (`equity_linear`):** scale = account equity x rate / reference equity. Per EA mode (see "EA semantics"):
   - `Risk` (money, account currency) x account equity / reference equity, rounded DOWN to the cent; every mode.
   - `Lots_Input` x scale x (reference contract size / broker contract size), rounded DOWN to the broker volume step
-    (and to VOLUME_MAX); FixedLots and ScaledLots only.
-  - RiskperSeq needs no lot edit (the EA solves the start lot from Risk). Its start lot for the checks is
-    `reference.startLot x lot factor x (deployed Risk / exactly scaled Risk)`, rounded down: it follows the Risk
-    actually written.
+    (and to VOLUME_MAX), also at factor 1 (round 2, item 1); FixedLots and ScaledLots only.
+  - RiskperSeq needs no lot edit (the EA solves the start lot from Risk). Its start lot for the checks is the EA's
+    own pick (round 2, item 6) around the ideal `reference.startLot x lot factor x (deployed Risk / exactly scaled
+    Risk)`: it follows the Risk actually written.
   - `Lots_Max`, `Lots_Max_Cum`: never scaled (they multiply the start lot).
   - An unchanged value is never rewritten, so scale 1.0 on a reference-identical account is byte-identical.
 - **BELOW_MIN_LOT, never round up (no tolerance):** excluded when the scaled `Lots_Input` is below VOLUME_MIN; when the
-  RiskperSeq start lot (from `reference.startLot`) is below VOLUME_MIN; when `Lots_Max x start lot` is below
+  RiskperSeq ideal start lot (from `reference.startLot`) is below VOLUME_MIN; when `Lots_Max x start lot` is below
   VOLUME_MIN; and when Risk is used (RiskperSeq, `Sequence_MLPS_Hard_Close`, Smart Peak, Smart Rescue) and the scaled
   Risk is below the EA's 10 (mq5:3253-3260). Message: "This set needs a larger account."
 - **reference.startLot / startLotSource (optional):** the publisher's reference start lot (the median opening lot of the
@@ -127,10 +135,11 @@ risk can trade on this broker at any equity), `PORTFOLIO_NEEDS_LARGER_ACCOUNT` (
 - **Digits/point:** positive distance inputs are `value x 10 x Point()` (GetSize, mq5:6709-6794); negative ones are ATR
   multiples and point-neutral. When the broker point differs, `Grid_Size, Grid_Min, Grid_Max, Lock_Profit_Size,
   SL_Pips, TSL_Size` (positive only) are multiplied by `referencePoint / brokerPoint` when that ratio is an exact power
-  of ten AND no EA minimum-size clamp (mq5:3318-3323) changes outcome; otherwise `POINT_SIZE_MISMATCH`. `TP_Pips`
+  of ten AND no EA minimum-size clamp (mq5:3318-3323) changes outcome; otherwise `POINT_SIZE_MISMATCH`; a Grid_Size
+  the EA refuses at init (mq5:3317) is `EA_INIT_REFUSED`. `TP_Pips`
   multiplies the lock size and is not converted. The converted inputs are reported in `pointConversion.inputs`.
-- **Server GMT offset:** the broker offset is measured from the freshest last tick of the mapped symbols (tick time on
-  the server clock minus UTC now, rounded to 15 minutes, trusted only when at most 120 s old). The reference offset is,
+- **Server GMT offset:** the broker offset is measured from a mapped symbol's tick seen ARRIVING during the read (tick
+  time on the server clock minus UTC now, rounded to 15 minutes; round 2, item 8). The reference offset is,
   in order: the member's `reference.serverGmtOffset`, the manifest's `referenceAccount.serverGmtOffset`, and only when
   both are absent the server-name assumption (`Darwinex*` = `ny-close`), reported as `referenceSource:
   'server_name_assumption'` (and `serverOffset.assumed: true`). A `serverGmtOffset` is a number of hours (a fixed offset,
@@ -158,22 +167,23 @@ risk can trade on this broker at any equity), `PORTFOLIO_NEEDS_LARGER_ACCOUNT` (
     - same server as `referenceAccount.server`;
     - same account currency;
     - same leverage as `referenceAccount.leverage`;
-    - the account's own (first-apply) equity within ±5% of `startingBalance`, judged on the live equity even when
-      `--equity` pins the plan;
+    - the account's own (first-apply) equity in the one-sided band `startingBalance <= live <= startingBalance x
+      1.05`, judged on the live equity even when `--equity` pins the plan (round 2, item 2);
     - scale exactly 1.0;
     - every member's deployed bytes unchanged (`setSha256Deployed == setSha256Reference`), portfolio-wide: one changed
       member, e.g. by a point conversion, revokes the exemption for all.
 
     Then the reference account's evidenced margin stands in. The result reports `referenceIdentical: { applies, used,
     reason, conditions{sameServer, sameCurrency, sameLeverage, equityWithinTolerance, scaleOne, bytesUnchanged},
-    liveEquity, equityTolerance }`, `margin.exemption`, and `deployBasis.referenceIdentical` (`{ server, currency,
+    liveEquity, liveScale, equityTolerance }`, `margin.exemption`, and `deployBasis.referenceIdentical` (`{ server, currency,
     leverage, startingBalance, reason }`) for the deploy. An exempt member's minimum equity is the reference equity
     itself. Anything else still refuses `MARGIN_UNKNOWN`.
-  - A member whose own worst case exceeds equity -> `MARGIN_INSUFFICIENT`; the fit members' worst cases together
-    exceeding equity -> portfolio refusal `MARGIN_INSUFFICIENT`.
+  - A member whose own worst case exceeds 50% of equity -> `MARGIN_TOO_HIGH`; the fit members' worst cases together
+    exceeding 50% of equity -> portfolio refusal `MARGIN_TOO_HIGH` (round 2, item 9).
 - **Currency:** account currency != reference currency -> rate from a quoted pair on the terminal (exact pair name
   preferred), at the side that values the account LOWER (bid when the account currency is the base, 1/ask when it is
-  the quote). None -> `ACCOUNT_CURRENCY_UNSUPPORTED` for every member, `scale: null`, `offered: false`.
+  the quote), whose last tick is at most 120 s old (round 2, item 3). None -> `ACCOUNT_CURRENCY_UNSUPPORTED` for every
+  member, `scale: null`, `offered: false`.
 - **minEquity / offered:** each member's minimum equity is found exactly on the cent grid by bisection over the same
   equity rules. minEquity = the smallest equity where members worth >= 90% of the risk are tradable (members excluded
   for any non-equity reason, `MARGIN_UNKNOWN` included, never count), raised to the manifest's `minEquity` (converted,
@@ -202,14 +212,19 @@ before (golden test: `test_scale_one_stages_byte_identical_files_golden`).
 
 ```
 brokerFit: {                                   // = the broker-fit result's deployBasis, plus members
-  schema: 'goat-broker-fit-deploy-v1',
-  scale: number, referenceEquity: '100000', accountCurrency: 'USD', rate: '1',     // exact decimal strings
+  schema: 'goat-broker-fit-deploy-v2',
+  scale: number, equity: '50000.0', referenceEquity: '100000', accountCurrency: 'USD', rate: '1',  // exact decimal strings
+  reviewedAtUtc: int,                          // the review's clock (unix seconds); plans expire after 15 minutes
+  manifest: goat-house-portfolio-v1,           // the manifest broker-fit reviewed (the deploy re-derives from it)
   referenceIdentical: null|{ server, currency, leverage, startingBalance, reason: 'REFERENCE_IDENTICAL_MARGIN' },
-  members: [{ index, memberId, setSha256Reference, setSha256Deployed, edits,      // = each fit member's `deploy`, with
-              rules: { volumeMin, volumeStep, volumeMax|null, contractRatio,      //   its index in the plan
-                       referenceVolumeMin, startLot|null } }]
+  members: [{ index, memberId, brokerSymbol, deployFileName,                      // = each fit member's `deploy`, with
+              setSha256Reference, setSha256Deployed, edits,                       //   its index in the plan
+              rules: { volumeMin, volumeStep, volumeMax|null, contractRatio, referenceVolumeMin, startLot|null } }]
 }
 ```
+
+Only `manifest`, the reference SET bytes (hash-bound to it) and the planning `equity` are inputs at deploy. Every other
+value is a CLAIM the deploy compares with its own re-derivation (round 2, review item 7).
 
 - With `brokerFit`, each plan member's `contentBase64`/`sha256` are the REFERENCE SET (as the house store serves it),
   its `fileName` is the result's `deployFileName` and its `symbol` the broker symbol. The plan lists fit members only.
@@ -218,20 +233,38 @@ brokerFit: {                                   // = the broker-fit result's depl
   `setSha256Reference` and the result to `setSha256Deployed`, else the plan is refused before anything is written.
 - The money-safety checks (`check_member_values`), the chart writer and the duplicate check all run on the DEPLOYED
   bytes; the journal, registration and dashboard audit carry the deployed sha256.
-- **Deploy-time equity re-check (`FIT_STALE`):** before anything is staged, deploy-load re-reads the live account
-  (`broker_proof` with details) and recomputes every member's `Risk` and `Lots_Input` with the same rules
-  (`stale_members`). A member is stale when the account currency changed or no equity was read, when a rule now
-  excludes it, when a reviewed value is ABOVE the live one at all (deploying it would round up), or when it is more
-  than one volume step (one cent for `Risk`) BELOW the live one. Any stale member refuses the whole deploy with
-  `FIT_STALE`: "The account changed since the check; run the fit again. Nothing was written or launched." (fields
-  `stale: [{memberId, input, reviewed, live}]`, `liveEquity`, `liveCurrency`). The journal says
-  `refused_before_stage`; the same plan can be run again once the fit is fresh. The exchange rate is the reviewed one.
-- **Reference-identical plans** (`brokerFit.referenceIdentical` not null) deploy the reference bytes at scale 1.0 by
-  design, so instead of the per-value comparison the re-check keeps the exemption only while every condition still
-  holds on the live account: same server, currency and leverage as `referenceIdentical`, live equity within ±5% of its
-  `startingBalance`, block `scale` 1.0, and every member's `edits` empty with `setSha256Deployed == setSha256Reference`.
-  Each failing condition is a `FIT_STALE` row `referenceIdentical.<condition>`.
-- The journal gains `broker_fit: { schema, scale, members: [{ memberId, setSha256Reference, setSha256Deployed, scale }] }`.
+- `deploy_entries` (validate_plan) checks the shape and what the plan must agree on itself: every entry names a
+  distinct manifest member, `setSha256Reference` is that member's `setSha256`, and `brokerSymbol` / `deployFileName`
+  are the plan member's `symbol` / `fileName` and the manifest `setName` with that symbol.
+- **Deploy-time re-derivation (`FIT_STALE`, `stale_members`):** before anything is staged, deploy-load runs
+  `broker_proof`, then one attach-only `read_broker` of the plan's members (live account, symbol facts, conversion
+  price, proven clock, spread history, margin per lot) and runs `build_result` on the plan's manifest twice: at the
+  planning `equity` and at the LIVE equity. Stale rows (`{memberId, input, reviewed, live}`):
+  - `reviewedAtUtc`: the plan is more than 15 minutes old (or from the future by more than 120 s);
+  - `account`: the account currency changed or no equity was read;
+  - `rate`: no conversion price at most 120 s old;
+  - `referenceEquity`, `scale` (one currency only), `referenceIdentical`: a block claim differs from the re-derivation;
+  - at the planning equity on the live broker, a member that is not fit (its code), or any claim that differs:
+    `brokerSymbol`, `deployFileName`, `setSha256Reference`, `rules`, each edited input, `setSha256Deployed`;
+  - at the live equity, a member that is no longer fit (its code: money limits, minimum lot, margin <= 50%, ...), or a
+    deployed `Risk` / `Lots_Input` ABOVE the live value (rounding up) or more than one cent / volume step BELOW it;
+  - the portfolio no longer offered at the live equity (its refusal code).
+  Any row refuses the whole deploy with `FIT_STALE`: "The account changed since the check; run the fit again.
+  Nothing was written or launched." (fields `stale`, `liveEquity`, `liveCurrency`). The journal says
+  `refused_before_stage`.
+- **Reference-identical plans** (`brokerFit.referenceIdentical` not null) keep the exemption only while every
+  condition holds on the live account (`referenceIdentical.<condition>` rows): same server, currency and leverage,
+  live equity in the ONE-SIDED band `startingBalance <= live <= startingBalance x 1.05`, the re-derived scale of the
+  deployed bytes exactly 1.0, every member's re-derived bytes the reference's. Exempt members deploy the reference
+  bytes inside the band by design; their fixed money limits are judged on the live equity. Every other member gets the
+  live-equity rules and the per-value check one-sided (reviewed <= live), and the portfolio must be offered at the
+  planning equity.
+- The journal gains `broker_fit: { schema, scale, deployIdentity, members: [{ memberId, setSha256Reference,
+  setSha256Deployed, scale }] }`. `deployIdentity` is the app's house deploy identity (goatai#2500
+  `houseDeployIdentity`): sha256 hex of the UTF-8 pre-image `goat-house-deploy-identity-v1|scale=<S>|<setSha256Deployed
+  sorted ascending, duplicates kept, comma-joined>`, `S = format(scale, '.10f').rstrip('0').rstrip('.')`, no trailing
+  newline. Shared vectors: `controller/contracts/deploy-identity/deploy-identity-cases.json`, vendored byte-identical
+  from goatai `docs/fixtures/deploy-identity-cases.json` (sha256 `0ac65c40...301d6`); change it there first.
 - At scale 1.0 with no edits, deployed == reference, so every staged file is byte-identical to today's.
 
 ## Decisions (points the contract left open or got wrong)
@@ -256,7 +289,7 @@ brokerFit: {                                   // = the broker-fit result's depl
 6. **Fixed money limits** (`MaxLoss*`, `MaxDaily*`, `Min/MaxLevelEquity`) are not scaled; non-zero off the reference
    equity -> `CONTRACT_MISMATCH` with its own sentence. Balanced35 has them all at 0.
 7. **New codes** the app must mirror: member `SPREAD_SAMPLE_UNAVAILABLE`, `POINT_SIZE_MISMATCH`,
-   `SERVER_OFFSET_MISMATCH`, `MARGIN_INSUFFICIENT`, `MARGIN_UNKNOWN`; portfolio `PORTFOLIO_BROKER_UNFIT` (< 90%
+   `SERVER_OFFSET_MISMATCH`, `MARGIN_TOO_HIGH` (was `MARGIN_INSUFFICIENT`), `MARGIN_UNKNOWN`; portfolio `PORTFOLIO_BROKER_UNFIT` (< 90%
    tradable on this broker at any equity: "needs a larger account" would be false); deploy `FIT_STALE`.
 8. **Missing reference keys** (the manifest allows null "where unknown") -> `CONTRACT_MISMATCH`, never a guess.
 9. **The manifest's `minEquity`** is a floor: the effective minEquity is the stricter of it and the computed one.
@@ -265,3 +298,50 @@ brokerFit: {                                   // = the broker-fit result's depl
 11. **Input file:** a manifest `.json` plus verified SET files (`<setSha256>` or `setName`). `setBytes` is the file size
     (the manifest validator's meaning), not base64 content. `.goatportfolio` packages are refused for now.
 12. **Additive result keys** (marked above) carry what the app needs to deploy and explain.
+
+## Round 2 (GOAT-EA#228 review 6130418265, 2026-10-12)
+
+These override the rules above where they differ.
+
+1. **`Lots_Input` is always on the broker's step grid** (FixedLots/ScaledLots), also at lot factor 1: floored to
+   VOLUME_STEP and capped at VOLUME_MAX. The EA's `NormalizedLots` (mq5:445-459) rounds an off-step value to the
+   NEAREST step (0.25 on a 0.1 step opens 0.30), so GOAT writes the floor (0.2).
+2. **Reference-identical band is one-sided:** `startingBalance <= live equity <= startingBalance x 1.05`
+   (`equityWithinTolerance`); `liveScale` is reported. Below the reference the reference bytes would over-risk.
+3. **Fresh rate, plan TTL:** the conversion pair's last tick must be at most 120 s old (judged with the proven server
+   clock); otherwise there is no rate (`ACCOUNT_CURRENCY_UNSUPPORTED` at review, `rate` stale row at deploy). The
+   deploy reads the rate again and re-derives every lot from it. A plan older than 15 minutes is `FIT_STALE`
+   (`reviewedAtUtc`).
+4. **Fixed money limits at deploy:** judged again on the LIVE equity (non-zero only at exactly the reference equity).
+5. **`MONEY_VALUE_UNREADABLE`:** `Risk` or a fixed money limit (`MaxLossLocal`, `MaxLossGlobal`, `MaxDailyLossLocal`,
+   `MaxDailyProfitLocal`, `MinLevelEquity`, `MaxLevelEquity`) that is missing or not a plain decimal (`9.5e4`, `1,000`,
+   empty) excludes the member: "GOAT cannot read this set's {name} value, so it cannot check its money limits." It is
+   never read as 0 ("no limit"). An unreadable `*_TF_` input makes the member not offset-neutral (it could be H4); an
+   unreadable `Mode_Trade` / `Allow_Opposite_Seq` counts both directions in the margin.
+6. **RiskperSeq start lot = the EA's own pick:** `ea_solve_start_lots` ports `SolveStartLotsByRisk` (mq5:781-827) line
+   for line in IEEE doubles (bisection over step indices with both neighbours, strictly-closer wins, `kmax =
+   floor((vmax - vmin) / vstep + 1e-9)`, 40 rounds) with `NormalizedLots` (mq5:445-459, MathRound = half away from
+   zero). `EvalLossForStart` (mq5:829-838) is modelled as linear in the start lot, anchored at `reference.startLot`:
+   loss per lot = reference Risk x money factor / (startLot x lot factor). The pick sizes the margin and the
+   `Lots_Max x start lot` minimum; `BELOW_MIN_LOT` when the ideal start lot (deployed Risk / loss per lot) is under
+   VOLUME_MIN (the EA would be forced up to VOLUME_MIN). `scaled.startLot` is the pick.
+7. **The deploy trusts no plan value** (Deploy hook above): block v2 carries `manifest`, `equity`, `reviewedAtUtc`
+   and per member `brokerSymbol` / `deployFileName`; everything is re-derived and compared.
+8. **Server clock from a tick seen arriving:** one tick time cannot prove its own age (3,600 s old on UTC+4 reads
+   exactly UTC+3), so the offset is measured only from a mapped symbol's tick that arrives while `read_broker`
+   re-reads them (at most 10 s, so its age is at most that). No arrival (closed market) = offset unknown: clock-
+   dependent members refuse (`SERVER_OFFSET_MISMATCH`, `SPREAD_SAMPLE_UNAVAILABLE`), and with another account currency
+   there is no rate.
+9. **`MARGIN_TOO_HIGH`** replaces `MARGIN_INSUFFICIENT`: a member's worst case, and the fit members' together, may use
+   at most 50% of the equity (margin level >= 200%); the boundary fits. Member: "This set could use more than half of
+   this account's equity as margin." Portfolio: "Together these sets could use more than half of this account's equity
+   as margin." `margin.limit` reports the 50%.
+10. **A six-letter pair must report its base and profit currencies**; a symbol without them is not that pair.
+11. **`EA_INIT_REFUSED`:** a member whose (converted) `Grid_Size` is inside (-0.5, 0.5) is excluded (the EA stops in
+    OnInit, mq5:3317): "On this broker this set's Grid_Size would be 0.4, which the GOAT EA refuses to start with."
+12. **Attach-only `MT5_NOT_RUNNING`** (Command above) for broker-fit and the deploy re-check read.
+13. **Deploy identity** (Deploy hook above): the journal's `broker_fit.deployIdentity`, shared with the app.
+
+New codes the app must mirror: member `MARGIN_TOO_HIGH` (replaces `MARGIN_INSUFFICIENT`), `MONEY_VALUE_UNREADABLE`,
+`EA_INIT_REFUSED`; portfolio `MARGIN_TOO_HIGH`; command `MT5_NOT_RUNNING`; deploy block schema
+`goat-broker-fit-deploy-v2` (a v1 block is refused as invalid).

@@ -5,3 +5,5 @@ controller/fixtures/oosc/** -text
 controller/fixtures/heldout/** -text
 # Golden profile fixtures are byte-exact (UTF-16, CRLF/LF mixes): never normalise them.
 controller/contracts/profile-fixtures/** -text
+# Vendored byte-identical from goatai docs/fixtures (goatai#2500): never normalise it.
+controller/contracts/deploy-identity/** -text

@@ -25,9 +25,9 @@ function panel(failures){
  const calls=[],sleeps=[],phases=[],prints=[];let made=0;
  const c={EA_Name_generated:'GOAT V1.49',REASON_INITFAILED:8,REASON_PROGRAM:0,ChartID:()=>7,ResetLastError:()=>{},GetLastError:()=>4102,
   IntegerToString:String,Sleep:n=>sleeps.push(n),Print:(...a)=>prints.push(a.join('')),GoatDeploymentPhase:(p,t,d,e)=>phases.push([p,d??'',e??0]),
-  PanelDialog:{Create:()=>{calls.push('create');return ++made>failures;},Destroy:r=>calls.push('destroy:'+r)}};
+  PanelDialog:{Create:(chart,name)=>{assert.equal(name,'GOAT V1.49');calls.push('create');return ++made>failures;},Destroy:r=>calls.push('destroy:'+r)}};
  vm.createContext(c);
- const result=vm.runInContext('(function(panel_x1,panel_y1,panel_x2,panel_y2){'+js(unit('bool GoatPanelCreate(const int panel_x1,const int panel_y1,const int panel_x2,const int panel_y2)'))+'})',c)(10,20,300,400);
+ const result=vm.runInContext('(function(panel_name,panel_x1,panel_y1,panel_x2,panel_y2){'+js(unit('bool GoatPanelCreate(const string panel_name,const int panel_x1,const int panel_y1,const int panel_x2,const int panel_y2)'))+'})',c)('GOAT V1.49',10,20,300,400);
  return {result,calls,sleeps,phases,prints};
 }
 {const r=panel(99);
@@ -39,7 +39,7 @@ function panel(failures){
 {const r=panel(0);assert.deepEqual([r.result,r.calls,r.sleeps,r.phases],[true,['create'],[],[]]);ok();}
 // 2) OnInit keeps the chart: no INIT_FAILED and no Alert for the panel any more; Run only on a real panel.
 {assert.ok(!main.includes('Alert("Panel GUI creation Failed'));
- assert.match(main,/if\(MAGIC1==0\) \{\n[^\n]*\n       g_GoatPanelUnavailable=!GoatPanelCreate\(x1,y1,x2,y2\);\n       if\(!g_GoatPanelUnavailable\) \{Sleep\(100\); PanelDialog\.Run\(\); Sleep\(100\);\}\n      \}/);
+ assert.match(main,/if\(MAGIC1==0\) \{\n[^\n]*\n       g_GoatPanelUnavailable=!GoatPanelCreate\(EA_Name_generated,x1,y1,x2,y2\);\n       if\(!g_GoatPanelUnavailable\) \{Sleep\(100\); PanelDialog\.Run\(\); Sleep\(100\);\}\n      \}/);
  assert.match(main,/#ifdef GOAT_PANEL_FAIL_INJECT\n      bool panel_made=false;/);
  assert.ok(!/#define GOAT_PANEL_FAIL_INJECT/.test(main),'never defined in a release build');ok();}
 // 3) Headless: SetEdit draws nothing, the news list is skipped, panel chart events and maximize are skipped.
@@ -57,7 +57,7 @@ function panel(failures){
 //    OnInit's panel block, the chart events, OnDeinit and the news list is absent.
 {const outside=main.split('\n').map((l,i)=>[i+1,l]).filter(([,l])=>/PanelDialog\./.test(l)&&!/^\s*\/\//.test(l)
    &&!/SetEdit\(PanelDialog\.m_edit_/.test(l)&&!/CreateBiEditRow|CreateEditRow|CreateButton|CreateListView|CreateLogo/.test(l));
- const allowed=['PanelDialog.Create(ChartID(),EA_Name_generated','PanelDialog.Destroy(REASON_INITFAILED)','PanelDialog.Run()','PanelDialog.Destroy(reason)',
+ const allowed=['PanelDialog.Create(ChartID(),panel_name','PanelDialog.Destroy(REASON_INITFAILED)','PanelDialog.Run()','PanelDialog.Destroy(reason)',
   'PanelDialog.HandleChartEvent','PanelDialog.Left()','PanelDialog.maximizeWindow()','PanelDialog.OnClickCaption()','PanelDialog.m_list_News','PanelDialog.Move',
   'PanelDialog.Top()','PanelDialog.ControlsTotal()','PanelDialog.Control(i)'];
  for(const [n,l] of outside) assert.ok(allowed.some(a=>l.includes(a)),'unexpected panel read at GOAT V1.49.mq5:'+n+': '+l.trim());ok();}

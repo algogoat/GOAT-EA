@@ -2938,7 +2938,7 @@ bool GoatReadRankedLine(const string rank_text,double &rank_pl,double &rank_sr,d
 // every panel write is skipped (SetEdit, the news list, the panel's chart events). No trading decision reads the panel.
 // GOAT_PANEL_FAIL_INJECT (never defined in a release build) forces the failure for the native harness check.
 bool g_GoatPanelUnavailable=false;
-bool GoatPanelCreate(const int panel_x1,const int panel_y1,const int panel_x2,const int panel_y2)
+bool GoatPanelCreate(const string panel_name,const int panel_x1,const int panel_y1,const int panel_x2,const int panel_y2)
   {
    for(int panel_try=1;panel_try<=3;panel_try++)
      {
@@ -2946,7 +2946,7 @@ bool GoatPanelCreate(const int panel_x1,const int panel_y1,const int panel_x2,co
 #ifdef GOAT_PANEL_FAIL_INJECT
       bool panel_made=false;
 #else
-      bool panel_made=PanelDialog.Create(ChartID(),EA_Name_generated,0,panel_x1,panel_y1,panel_x2,panel_y2);
+      bool panel_made=PanelDialog.Create(ChartID(),panel_name,0,panel_x1,panel_y1,panel_x2,panel_y2);
 #endif
       if(panel_made) return true;
       int panel_error=GetLastError();
@@ -3425,7 +3425,7 @@ int OnInit()
       Sleep(100);
       if(MAGIC1==0) {
        // B44 item 9: three tries, then the chart keeps running without its panel (panel_unavailable); it is never removed for it.
-       g_GoatPanelUnavailable=!GoatPanelCreate(x1,y1,x2,y2);
+       g_GoatPanelUnavailable=!GoatPanelCreate(EA_Name_generated,x1,y1,x2,y2);
        if(!g_GoatPanelUnavailable) {Sleep(100); PanelDialog.Run(); Sleep(100);}
       }
       SetEdit(PanelDialog.m_edit_Info_1,Symbol(),clr_Text,Font_Size,GOAT_UI_INFO_BACK,GOAT_UI_SECTION_BORDER,Font_SubHeader);

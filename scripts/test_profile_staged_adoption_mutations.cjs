@@ -80,7 +80,7 @@ const MUTANTS=[
  ['setup','marker without a bound deployment','if(!GOATIsLowerHex(marker_deployment,32) || DashboardDialog.m_portfolio_command_id<=0','if(DashboardDialog.m_portfolio_command_id<=0'],
  ['setup','marker after any command','\n      || DashboardDialog.m_portfolio_command_type!=GOAT_DASH_CMD_EXPOSURE_POLICY) return;',') return;'],
  ['setup','poll never marks','   GoatPortfolioMarkPolicyApplied(GoatPortfolioDeployment,exposure);\n',''], ['audit','template apply in the audit','bool saved=ChartSaveTemplate(cid,"\\\\Files\\\\"+filename);','bool saved=ChartSaveTemplate(cid,"\\\\Files\\\\"+filename); ChartApplyTemplate(cid,filename);'],
- ['main','template apply in the entrypoint','#define   GOAT_BUILD_MARKER "B43"','#define   GOAT_BUILD_MARKER "B43"\n// ChartApplyTemplate'],
+ ['main','template apply in the entrypoint','#define   GOAT_BUILD_MARKER "B44"','#define   GOAT_BUILD_MARKER "B44"\n// ChartApplyTemplate'],
 ];
 const base=readSources();
 assert.ok(run(base)>0,'the unmutated suite passes');

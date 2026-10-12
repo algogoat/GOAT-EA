@@ -72,7 +72,7 @@
   "supersedes_candidate": "beta17-B43",
   "sources": {
     "Dashboard.mqh": "34f9fbc47d2c18c76ab52a6ebd9b0ba140f5b61151596410696b634821480f40",
-    "GOAT V1.49.mq5": "7a20bc66e240e2f97d40d7750294fda85e0b47fdcc3047e2f60d237af5fa285e",
+    "GOAT V1.49.mq5": "0bd7512cbf42abfedc50923db1eb60b2f10485f96cf3a210d2553a28fecf2d46",
     "GOATAIWireV2.mqh": "14a1f0f2ae0baf65494fea67df0d8efc26ce547cd346fbbc47d3264d00006c90",
     "GOATBatchCancelOrigin.mqh": "03a24684cf7c0e4e6dac7ef2ccce661a228a2bae10ff2f56ad72d722fd74f0f1",
     "GOATDeploymentDiagnostics.mqh": "e6ccb9439213cc8eff31b5a0a4783bfe6c408571cf74298ef87d28c34b071c2f",

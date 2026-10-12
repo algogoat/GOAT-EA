@@ -380,8 +380,10 @@ in File > Profiles for `GOAT Research`. Before the first such batch on an
 installation, GOAT moves aside once (never deletes) the bare charts earlier batches
 left in the monitor profile (`monitor_profile_migration`; `research-profile-status`
 shows the plan); anything else there makes it refuse and leave the profile untouched.
-A batch prepared before this change is refused at its first start: prepare it again
-under a new batch ID.
+A batch prepared before this change is refused at its first start with `refusal_code`
+`PACKAGE_PREDATES_RESEARCH_PROFILE` ("This batch was prepared by an older GOAT; it will be
+prepared again."): prepare the same plan again under a new batch ID. A running or paused
+batch finishes as it is.
 While seeds run, MT5 shows a plain chart and its Strategy Tester, without the GOAT
 Studio panel or queue; tell the user that is expected. On the owner demo lane (`goat.exe demo`) the seed run reopens
 MT5 itself on that profile after the last member and reads the build back

@@ -43,9 +43,22 @@ RESEARCH_PROFILE = 'GOAT Research'
 STATE_FOLDER = 'research-profiles'
 MIGRATION_RECORD = 'monitor-profile-migration.json'
 MIGRATION_JOURNAL = 'monitor-profile-migration.jsonl'
-LEGACY_PACKAGE_REFUSAL = ('This batch was prepared before GOAT ran batches on its own GOAT Research chart profile, '
-                          'so its MT5 start would add charts to the GOAT Studio monitor profile. Prepare the same plan '
-                          'under a new batch ID; nothing was started')
+# A package prepared before batches ran on GOAT Research (its first start would open the monitor profile). Stable code:
+# the goatai app/agent re-prepares the same plan under a new batch ID automatically on it (Claude-Mac goatai#2350
+# 6120693275); documented in AGENT-START-HERE.md's refusal table. Running and paused batches finish as they are.
+PACKAGE_REFUSAL_CODE = 'PACKAGE_PREDATES_RESEARCH_PROFILE'
+LEGACY_PACKAGE_REFUSAL = ('This batch was prepared by an older GOAT; it will be prepared again. Nothing was started '
+                          '(it was packaged before GOAT ran batches on its own GOAT Research chart profile, so starting it '
+                          'would add charts to the GOAT Studio monitor profile).')
+END_STATE_SKIPPED = 'END_STATE_SKIPPED:not_batch_process'
+END_STATE_JOURNAL = 'end-state.jsonl'
+
+
+def legacy_package_refusal(batch_id, kind='batch'):
+    """The structured refusal for a package prepared before GOAT Research (PACKAGE_REFUSAL_CODE)."""
+    from studio_refusal import Refusal
+    return Refusal(LEGACY_PACKAGE_REFUSAL, PACKAGE_REFUSAL_CODE, batch_id=batch_id, kind=kind, prepare_again=True,
+                   next_action='Prepare the same plan again under a new batch ID, then start that batch.')
 ATTEMPT = re.compile(r'[A-Za-z0-9_.-]{1,120}')
 BUSY_JOB_STATUSES = frozenset(('reserved', 'starting', 'running', 'reconcile_required', 'verifying'))
 MAX_CHART_BYTES = 8_000_000
@@ -626,13 +639,74 @@ def monitor_launch_preflight(controller):
     return None
 
 
+def _same_identity(a, b):
+    """The same process: PID, creation time and image (a reused PID is another process)."""
+    return (isinstance(a, dict) and isinstance(b, dict) and type(a.get('pid')) is int and a.get('pid') == b.get('pid')
+            and bool(a.get('created_utc')) and a.get('created_utc') == b.get('created_utc')
+            and PureWindowsPath(str(a.get('executable') or '')) == PureWindowsPath(str(b.get('executable') or '')))
+
+
+def active_config_path(controller, job_id):
+    """The /config file the GOAT EA relaunches MT5 with between this batch's members (Optimizer.mqh ActivatePending:
+    <batch base>\\active_optimization_config.ini, the base of this package's binding and account)."""
+    from studio_installation import read_json
+    from studio_terminal_isolation import binding_base
+    plan = read_json(Path(controller.root)/'packages'/job_id/'studio-plan.json')
+    return Path(binding_base(plan['research_binding'], controller.session['account']))/'active_optimization_config.ini'
+
+
+def _config_args(line):
+    return [PureWindowsPath(match.strip('"')) for match in re.findall(r'/config:("[^"]+"|\S+)', line or '', re.I)]
+
+
+def batch_process_binding(controller, job_id, record, process):
+    """Is the selected MT5 running now the one this batch launched? (Claude-Mac goatai#2350 6120693275 point 4)
+
+    The driver journals ``batch_process`` (pid, image, creation time) at the batch's /config launch. The running MT5
+    is the batch's when it is exactly that process, or a later process whose command line names this batch's own
+    member /config file (the GOAT EA's relaunch between members): then that later process is the batch's last launch
+    and is journaled as ``batch_process``. No record, a different PID, the same PID with another creation time, or any
+    other command line: not_batch_process. Returns dict(status='batch_process'|'not_running'|'not_batch_process', ...)."""
+    recorded = record.get('batch_process')
+    if not (isinstance(recorded, dict) and type(recorded.get('pid')) is int and recorded.get('created_utc')):
+        return dict(status='not_batch_process', reason='no_batch_process_record')
+    running = process.inspect()
+    if running is None:
+        return dict(status='not_running', process=None, recorded=recorded)
+    if _same_identity(running, recorded):
+        return dict(status='batch_process', process=running, source=recorded.get('source'))
+    from studio_seed_process import created_unix
+    reader = getattr(process, 'command_line', None)
+    newer = (created_unix(running.get('created_utc')) or 0) > (created_unix(recorded.get('created_utc')) or float('inf'))
+    if reader is not None and newer and PureWindowsPath(str(running.get('executable') or '')) == PureWindowsPath(str(recorded.get('executable') or '')):
+        config = active_config_path(controller, job_id)
+        if any(str(arg).casefold() == str(PureWindowsPath(config)).casefold() for arg in _config_args(reader(running))):
+            relaunch = dict({k: running.get(k) for k in ('pid', 'executable', 'created_utc')}, source='ea_member_relaunch',
+                            config=str(config), previous=recorded, recorded_utc=utc_now())
+            record['batch_process'] = relaunch          # the batch's last launch, journaled by the driver
+            return dict(status='batch_process', process=running, source='ea_member_relaunch')
+    return dict(status='not_batch_process', reason='different_process', running=running, recorded=recorded)
+
+
+def _journal_end_state(controller, entry):
+    folder = Path(controller.root)/STATE_FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    with (folder/END_STATE_JOURNAL).open('a', encoding='utf-8') as journal:
+        journal.write(json.dumps(dict(entry, utc=utc_now()), sort_keys=True, default=str)+'\n')
+        journal.flush(); os.fsync(journal.fileno())
+
+
 def batch_end_state(controller, job_id, record, *, process=None, inspect=None):
     """At the batch driver's finish: one normal close of the batch's MT5 and monitor-launch back onto the monitor profile.
 
     Within the batch's consent (studio_config_start.RESTART_CONSENT_SCOPE). The close is close-terminal's own (demo,
     Algo Trading off, no positions/orders, idle tester, no batch/seed/native job, not an Open Lab login); before it,
     every monitor-launch check that can be read with MT5 running must pass. Any refusal before the close leaves MT5
-    exactly as it is, with the plain reason; nothing loops or retries. Never raises."""
+    exactly as it is, with the plain reason; nothing loops or retries. Never raises.
+
+    Binding (Claude-Mac goatai#2350 6120693275 point 4): only the MT5 this batch launched may be closed
+    (batch_process_binding; re-checked by close-terminal under the gate right before the close). Any other MT5 is left
+    as it is: status 'skipped', code END_STATE_SKIPPED:not_batch_process, journaled in research-profiles/end-state.jsonl."""
     from studio_config_start import CONFIG_START_LANES, RESTART_CONSENT_SCOPE
     result = dict(status='left_as_is', job_id=job_id)
     session = getattr(controller, 'session', {}) or {}
@@ -648,6 +722,21 @@ def batch_end_state(controller, job_id, record, *, process=None, inspect=None):
             return result | dict(reason='consent_scope', plain='This batch\'s MT5 consent did not cover closing and reopening '
                                  'MT5 at its end, so GOAT left MT5 as it is.')
     end_id = 'batch-end-'+attempt[:32]
+    from studio_seed_process import WindowsSeedProcess
+    process = process or WindowsSeedProcess(controller)
+    try:
+        bound = batch_process_binding(controller, job_id, record, process)
+    except Exception as error:
+        bound = dict(status='not_batch_process', reason='check_failed', detail=str(error)[:300])
+    result['batch_process'] = bound
+    if bound['status'] == 'not_batch_process':
+        # Never close an MT5 this batch did not launch (a person restarted it, another terminal, or no record): MT5 is
+        # left as it is and the next GOAT stop restores ProfileLast lazily (close-terminal, a batch's own end state).
+        _journal_end_state(controller, dict(job_id=job_id, attempt_id=attempt, code=END_STATE_SKIPPED, binding=bound))
+        return result | dict(status='skipped', reason=END_STATE_SKIPPED, code=END_STATE_SKIPPED,
+                             plain='The MT5 running now is not the one this batch launched, so GOAT did not close it. MT5 was '
+                                   'left as it is; GOAT moves its saved chart profile back to the GOAT Studio monitor the next '
+                                   'time it stops MT5.')
     try:
         monitor_launch_preflight(controller)
     except Exception as error:
@@ -655,18 +744,23 @@ def batch_end_state(controller, job_id, record, *, process=None, inspect=None):
                              plain='GOAT could not reopen its monitor yet ('+str(error)[:200]+'), so it left MT5 open on the batch\'s '
                                    'GOAT Research chart profile, which also carries the GOAT monitor.')
     from studio_agent_setup import close_terminal
-    from studio_seed_process import WindowsSeedProcess
-    process = process or WindowsSeedProcess(controller)
     try:
-        closed = close_terminal(controller, end_id, process=process, inspect=inspect)
+        closed = close_terminal(controller, end_id, process=process, inspect=inspect,
+                                expected_process=bound.get('process'))
     except Exception as error:
+        if getattr(error, 'code', None) == END_STATE_SKIPPED:     # another MT5 appeared right before the close
+            _journal_end_state(controller, dict(job_id=job_id, attempt_id=attempt, code=END_STATE_SKIPPED, binding=dict(error.fields)))
+            return result | dict(status='skipped', reason=END_STATE_SKIPPED, code=END_STATE_SKIPPED, detail=str(error)[:400],
+                                 plain='The MT5 running now is not the one this batch launched, so GOAT did not close it.')
         return result | dict(reason='close_refused', detail=str(error)[:400],
                              plain='GOAT did not close MT5 at the end of the batch ('+str(error)[:200]+'); MT5 was left as it is.')
-    result['close'] = {k: closed.get(k) for k in ('attempt_id', 'phase', 'status', 'method', 'stopped_utc', 'monitor_chart_record')}
+    result['close'] = {k: closed.get(k) for k in ('attempt_id', 'phase', 'status', 'method', 'stopped_utc', 'monitor_chart_record',
+                                                 'research_profile_restore')}
     if closed.get('phase') not in ('stopped', 'already_stopped'):
         return result | dict(status='close_unresolved', reason='close_outcome_unresolved',
                              plain='GOAT asked MT5 to close normally at the end of the batch and did not see it stop; it will not '
                                    'repeat the close or launch. If MT5 is closed, open it normally; it opens the GOAT Studio monitor.')
+    # close-terminal already moved ProfileLast back after its stop (research_profile_restore); this is idempotent.
     result['restore'] = restore(controller, 'batch-end:'+job_id, inspect=process.inspect)
     try:
         from studio_onboarding import monitor_launch

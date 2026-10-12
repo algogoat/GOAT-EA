@@ -197,10 +197,27 @@ class CustomerDriverRouteTests(unittest.TestCase):
         write_json(self.c.root/'packages/batch/studio-plan.json', dict(research_binding=dict(
             research_profile='GOAT-Studio-'+'a'*32, report_location_bridge='installation_to_data_v1',
             startup_monitor=dict(expert='GOAT.ex5', preset='GOAT Studio Agent.set', preset_sha256='b'*64))))
-        with self.assertRaisesRegex(ValueError, 'GOAT Research chart profile'):
-            self.drive(max_seconds=60, restart_consent=True)
-        self.assertFalse((self.c.root/'batch-drivers/batch.json').exists())
-        self.assertEqual((self.config_starts, self.c.starts, self.end_states), (0, 0, []))
+        from studio_refusal import Refusal
+        for kind in ('native_human_control', 'demo_direct'):        # both config-start lanes (Banker's included)
+            with self.subTest(lane=kind):
+                self.c.session['authority_kind'] = kind; write_json(self.c.root/'session.json', self.c.session)
+                with self.assertRaises(Refusal) as caught:
+                    self.drive(max_seconds=60, restart_consent=kind == 'native_human_control')
+                self.assertEqual(caught.exception.code, 'PACKAGE_PREDATES_RESEARCH_PROFILE')
+                self.assertIn('This batch was prepared by an older GOAT; it will be prepared again.', str(caught.exception))
+                self.assertEqual((caught.exception.fields['batch_id'], caught.exception.fields['prepare_again']), ('batch', True))
+                self.assertFalse((self.c.root/'batch-drivers/batch.json').exists())
+                self.assertEqual((self.config_starts, self.c.starts, self.end_states), (0, 0, []))
+
+    def test_the_batch_launch_is_journaled_for_the_end_state_binding(self):
+        launched = dict(pid=22, executable='terminal64.exe', created_utc='2026-09-29T01:00:00Z', source='config_start')
+        original = self.c.start_config
+        self.c.start_config = lambda job_id, **kw: (original(job_id, **kw), dict(status='config_process_started_unverified',
+                                                                                 batch_process=launched))[1]
+        self.c.finished = True
+        result = self.drive(max_seconds=60, restart_consent=True)
+        self.assertEqual(result['batch_process'], launched)
+        self.assertEqual(json.loads((self.c.root/'batch-drivers/batch.json').read_text())['batch_process'], launched)
 
     def test_customer_start_without_consent_writes_nothing_and_dispatches_nothing(self):
         with self.assertRaisesRegex(ValueError, 'MT5 restart consent required'):

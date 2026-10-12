@@ -99,6 +99,7 @@ class FixtureMT5:
     def __init__(self, data, *, identity, profile, login='123456', server='Customer-Demo'):
         self.data, self.login, self.server = Path(data), login, server
         self.running, self.profile, self.added = dict(identity), profile, []
+        self.command = 'terminal64.exe'                                   # the monitor was opened normally
         self.pid = identity['pid']
         self.opened, self.starts, self.closes = [profile], [], []
 
@@ -130,6 +131,11 @@ class FixtureMT5:
                                                       'ProfileLast='+self.profile+'\r\n[Experts]\r\nEnabled=0\r\n').encode('utf-16'))
         self.running = None
 
+    def command_line(self, identity):
+        if identity != self.running:
+            raise ValueError('Selected terminal process changed before its command line was read')
+        return self.command
+
     def saved_profile(self):
         ini = self.data/'config'/'common.ini'
         return ini_sections(ini.read_bytes()).get('Charts', {}).get('ProfileLast') if ini.exists() else None
@@ -144,6 +150,7 @@ class FixtureMT5:
         self.added = [symbol] if symbol else []
         self.opened.append(self.profile)
         self.starts.append((Path(config).name, self.profile, symbol))
+        self.command = '"terminal64.exe" /config:"'+str(config)+'"'
         self.pid += 1
         self.running = dict(pid=self.pid, executable='terminal64.exe', created_utc='2020-01-01T00:%02d:00Z' % (self.pid % 60))
         return copy.deepcopy(self.running)
@@ -498,8 +505,11 @@ class MemberIniTests(unittest.TestCase):
         (root/'manifest.json').write_text(json.dumps(manifest))
         state = json.loads((root/'state.json').read_text()); state['manifest_sha256'] = digest((root/'manifest.json').read_bytes())
         (root/'state.json').write_text(json.dumps(state))
-        with self.assertRaisesRegex(ValueError, 'Seed hunt batch: .*GOAT Research chart profile.*new batch ID'):
+        with self.assertRaises(Refusal) as caught:
             s.runner.start('batch', 10)
+        self.assertEqual(caught.exception.code, rp.PACKAGE_REFUSAL_CODE)
+        self.assertIn('This batch was prepared by an older GOAT; it will be prepared again.', str(caught.exception))
+        self.assertEqual((caught.exception.fields['batch_id'], caught.exception.fields['kind'], caught.exception.fields['prepare_again']), ('batch', 'seed', True))
         self.assertEqual((s.closes, s.starts), ([], []), 'refused before the monitor closed')
 
 
@@ -572,14 +582,96 @@ class WordingTests(ResearchCase):
         self.assertIn('GOAT Research', hint['next_action'])
 
 
+def write_batch_plan(c, job_id='batch'):
+    """The package plan of a GOAT Research batch: its binding names the batch folder the EA relaunches MT5 from."""
+    plan = dict(research_binding=dict(research_profile='GOAT Research', common_files_root=c.install['common_files_root'],
+                                      ea_version=c.install['ea_version'], research_data_root=c.install['terminal_data_root']))
+    folder = c.root/'packages'/job_id
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder/'studio-plan.json').write_text(json.dumps(plan))
+    return rp.active_config_path(c, job_id)
+
+
 class EndStateTests(ResearchCase):
-    """The config-start end state's refusals (its success path runs in IntegrationTests)."""
+    """The config-start end state: its refusals and its binding to the MT5 the batch launched (Claude-Mac goatai#2350
+    6120693275 point 4). Its full success path also runs in IntegrationTests."""
+
+    LAUNCHED = dict(pid=70, executable='terminal64.exe', created_utc='2020-01-01T00:10:00Z')
 
     def setUp(self):
         super().setUp()
         self.p.fixture.observe()
-        self.mt5 = FixtureMT5(self.data, identity=dict(pid=70, executable='terminal64.exe', created_utc='x'), profile='GOAT Research')
-        self.record = dict(attempt_id='b'*64, mt5_restart_consent=dict(granted=True, scope=RESTART_CONSENT_SCOPE))
+        self.mt5 = FixtureMT5(self.data, identity=self.LAUNCHED, profile='GOAT Research')
+        self.record = dict(attempt_id='b'*64, mt5_restart_consent=dict(granted=True, scope=RESTART_CONSENT_SCOPE),
+                           batch_process=dict(self.LAUNCHED, source='config_start'))
+        self.active = write_batch_plan(self.c)
+
+    def journal(self):
+        path = self.c.root/rp.STATE_FOLDER/rp.END_STATE_JOURNAL
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def assert_skipped(self, result, reason):
+        self.assertEqual((result['status'], result['code'], result['batch_process']['reason']), ('skipped', rp.END_STATE_SKIPPED, reason))
+        self.assertEqual(rp.END_STATE_SKIPPED, 'END_STATE_SKIPPED:not_batch_process')
+        self.assertEqual(self.mt5.closes, [], 'MT5 untouched')
+        self.p.start.assert_not_called()
+        self.assertEqual(self.journal()[-1]['code'], rp.END_STATE_SKIPPED)
+
+    def test_the_mt5_the_batch_launched_is_closed_and_the_monitor_reopened(self):
+        result = self.end()
+        self.assertEqual(result['status'], 'monitor_relaunched', result)
+        self.assertEqual((result['batch_process']['status'], result['batch_process']['source']), ('batch_process', 'config_start'))
+        self.assertEqual(self.mt5.closes, [self.LAUNCHED])
+        self.assertEqual((result['close']['research_profile_restore']['status'], result['restore']['status']), ('restored', 'not_needed'))
+        self.p.start.assert_called_once()
+
+    def test_another_pid_or_the_same_pid_with_another_creation_time_is_skipped_and_untouched(self):
+        for name, recorded in (('other pid', dict(self.LAUNCHED, pid=71)),
+                               ('same pid, other creation time', dict(self.LAUNCHED, created_utc='2020-01-01T00:09:00Z'))):
+            with self.subTest(case=name):
+                self.assert_skipped(self.end(record=dict(self.record, batch_process=recorded)), 'different_process')
+
+    def test_no_batch_process_record_is_skipped(self):
+        record = dict(self.record); record.pop('batch_process')
+        self.assert_skipped(self.end(record=record), 'no_batch_process_record')
+
+    def test_the_eas_own_member_relaunch_is_the_batchs_last_launch(self):
+        self.mt5.exit()
+        member = Path(str(self.active)); member.parent.mkdir(parents=True, exist_ok=True)
+        member.write_bytes('[Tester]\r\nSymbol=GBPUSD\r\n'.encode('utf-16'))
+        relaunched = self.mt5.start(member)                    # the EA's ShellExecuteW relaunch with its member /config
+        record = dict(self.record)
+        result = self.end(record=record)
+        self.assertEqual(result['status'], 'monitor_relaunched', result)
+        self.assertEqual(result['batch_process']['source'], 'ea_member_relaunch')
+        self.assertEqual({k: record['batch_process'][k] for k in ('pid', 'created_utc', 'source')},
+                         dict(pid=relaunched['pid'], created_utc=relaunched['created_utc'], source='ea_member_relaunch'),
+                         'journaled as the batch\'s last launch')
+        self.assertEqual(self.mt5.closes, [relaunched])
+
+    def test_a_later_mt5_with_any_other_command_line_is_skipped(self):
+        self.mt5.exit()
+        other = self.c.root/'person.ini'; other.write_bytes('[Common]\r\n'.encode('utf-16'))
+        self.mt5.start(other)
+        self.assert_skipped(self.end(), 'different_process')
+        self.mt5.command = 'terminal64.exe'                    # a person's normal open
+        self.assert_skipped(self.end(), 'different_process')
+
+    def test_close_terminal_rebinds_under_the_gate_right_before_the_close(self):
+        from studio_agent_setup import close_terminal
+        with self.assertRaises(Refusal) as caught:
+            close_terminal(self.c, 'rebind', process=self.mt5, inspect=lambda c: self.native(),
+                           expected_process=dict(self.LAUNCHED, pid=99))
+        self.assertEqual(caught.exception.code, rp.END_STATE_SKIPPED)
+        self.assertEqual(self.mt5.closes, [])
+
+    def test_a_skipped_end_state_is_restored_lazily_at_the_next_goat_stop(self):
+        self.set_profile_last('GOAT Research')                 # where the skipped batch left MT5's saved profile
+        self.assert_skipped(self.end(record=dict(self.record, batch_process=dict(self.LAUNCHED, pid=71))), 'different_process')
+        from studio_agent_setup import close_terminal
+        closed = close_terminal(self.c, 'next-stop', process=self.mt5, inspect=lambda c: self.native())
+        self.assertEqual((closed['phase'], closed['research_profile_restore']['status']), ('stopped', 'restored'))
+        self.assertEqual(self.mt5.saved_profile(), self.monitor.name)
 
     def native(self, **changes):
         return dict(dict(process=self.mt5.inspect(), account_matches=True, demo=True, connected=True, algo_trading=False, positions=0,
@@ -661,8 +753,18 @@ class IntegrationTests(ResearchCase):
 
     def test_config_start_batch_ends_back_on_the_monitor_with_no_human_step(self):
         import test_studio_tester_config_start as tester
-        cfg = tester.CustomerConfigStartTests('test_one_arm_close_config_launch_and_retained_phases')
+        self.config_start_batch(tester.CustomerConfigStartTests, dict(mt5_restart_consent=dict(granted=True, scope=RESTART_CONSENT_SCOPE)))
+
+    def test_demo_lane_batch_records_on_its_first_close_and_ends_back_on_the_monitor(self):
+        # Banker's lane (demo_direct): the same first-close record, migration and end state (Claude-Mac 6120693275 point 3).
+        import test_studio_config_start as direct
+        self.c.session['authority_kind'] = 'demo_direct'
+        self.config_start_batch(direct.ConfigStartTests, {})
+
+    def config_start_batch(self, fixture, record_fields):
+        cfg = fixture('test_one_arm_close_config_launch_and_retained_phases')
         cfg.setUp(); self.addCleanup(cfg.doCleanups)
+        active = write_batch_plan(self.c)
         mt5 = FixtureMT5(self.data, identity=cfg.identity, profile=self.monitor.name)
         cfg.process.inspect.side_effect = mt5.inspect
         cfg.process.close.side_effect = mt5.close
@@ -681,21 +783,25 @@ class IntegrationTests(ResearchCase):
         monitor_after_first_close = snapshot(self.monitor)
         record_sha = started['monitor_chart_record']['chart_sha256']
         self.assertEqual(mt5.starts[0][1:], ('GOAT Research', 'GBPJPY'))
-        # The EA's own member relaunch: TerminalClose, then a [Tester]-only /config (MT5 reopens its saved profile).
-        member = self.c.root/'member-2.ini'
+        self.assertEqual((started['batch_process']['pid'], started['batch_process']['created_utc'], started['batch_process']['source']),
+                         (started['process']['pid'], started['process']['created_utc'], 'config_start'), 'the launch is recorded')
+        # The EA's own member relaunch: TerminalClose, then its [Tester]-only member /config (MT5 reopens its saved profile).
+        member = Path(str(active)); member.parent.mkdir(parents=True, exist_ok=True)
         member.write_bytes('[Tester]\r\nSymbol=GBPUSD\r\nPeriod=H1\r\n[TesterInputs]\r\nEA_Desc=R2\r\n'.encode('utf-16'))
         mt5.exit(); mt5.start(member)
         self.assertEqual(mt5.starts[-1][1:], ('GOAT Research', 'GBPUSD'))
-        # The batch driver's finish: the end state (Mac option (i)).
+        # The batch driver's finish: the end state (Mac option (i)), bound to the batch's last launch.
         self.popen_to(mt5)
         self.p.fixture.observe()
-        end = rp.batch_end_state(self.c, 'batch', dict(attempt_id=cfg.attempt, mt5_restart_consent=dict(granted=True, scope=RESTART_CONSENT_SCOPE)),
+        record = dict(attempt_id=cfg.attempt, batch_process=started['batch_process'], **record_fields)
+        end = rp.batch_end_state(self.c, 'batch', record,
                                  process=mt5, inspect=lambda c: dict(process=mt5.inspect(), account_matches=True, demo=True, connected=True,
                                                                      algo_trading=False, positions=0, orders=0, tester_state='idle'))
         self.assertEqual(end['status'], 'monitor_relaunched', end)
+        self.assertEqual((end['batch_process']['source'], record['batch_process']['source']), ('ea_member_relaunch', 'ea_member_relaunch'))
         self.assertEqual(end['close']['phase'], 'stopped')
         self.assertEqual(end['close']['monitor_chart_record']['reason'], 'foreign_profile', 'a GOAT Research close never records')
-        self.assertEqual(end['restore']['status'], 'restored')
+        self.assertEqual((end['close']['research_profile_restore']['status'], end['restore']['status']), ('restored', 'not_needed'))
         self.assertEqual(end['launch']['observed_healthy_chart']['chart_sha256'], record_sha, 'accepted through the fix-B record, no click')
         self.assertEqual(len(mt5.closes), 2, 'the start close and the one end close')
         self.assert_after_batch(mt5, monitor_after_first_close, record_sha)

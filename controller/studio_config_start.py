@@ -11,6 +11,7 @@ reports and the EA aborts its exports. The customer lane additionally requires
 the user's MT5 restart consent retained in this batch's driver journal and an
 SDK-confirmed same idle demo (Algo OFF, zero positions/orders) before arming.
 """
+from datetime import datetime,timezone
 import hashlib
 import json
 from pathlib import Path
@@ -206,11 +207,11 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     if (binding.get('report_location_bridge')!='installation_to_data_v1'
             or not binding.get('startup_monitor') or not binding.get('research_profile')):
         raise ValueError('Prepare a new config-start package under a new batch ID; historical package remains unchanged')
-    from studio_research_profile import LEGACY_PACKAGE_REFUSAL,RESEARCH_PROFILE
+    from studio_research_profile import RESEARCH_PROFILE,legacy_package_refusal
     if binding.get('research_profile')!=RESEARCH_PROFILE:
-        # Packaged before batches ran on GOAT Research: its launch would open the monitor profile (goatai#2350 6120004490).
-        raise ValueError('Prepare a new config-start package under a new batch ID; historical package remains unchanged. '
-                         +LEGACY_PACKAGE_REFUSAL)
+        # Packaged before batches ran on GOAT Research: its launch would open the monitor profile (goatai#2350
+        # 6120004490). PACKAGE_PREDATES_RESEARCH_PROFILE: the app re-prepares it automatically (6120693275).
+        raise legacy_package_refusal(job_id)
     args=c.native_args()
     c.runtime(require_idle=True,expected_batch_ongoing=False)
     before_native_dispatch(c,job)
@@ -314,6 +315,11 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
         # start. The same health facts as close-terminal, from this SDK read and the EA's armed runtime sample
         # (batch_ongoing; the start advanced the revision). Never refuses or alters the start.
         health=_monitor_health(c,identity,native)
+    else:
+        # The direct demo lane (Banker's): the same first-close health read (Claude-Mac goatai#2350 6120693275 point 3),
+        # its SDK readback taken by driver_pre_close_health itself only after every cheaper fact holds, so the end
+        # state's monitor-launch is accepted through the fix-B record in both lanes. Never refuses or alters the start.
+        health=_monitor_health(c,identity,None)
     phase(c,job_id,generation,'controls_installed','close_issued',close_identity=identity)
     process.close(identity)
     deadline=time.monotonic()+30
@@ -325,7 +331,7 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     # moves aside the stray charts earlier batches left, then the record reads the monitor profile MT5 just saved, then
     # GOAT Research is reset for this batch's launch. The monitor profile is never opened again during the batch.
     migration=_migrate(c,intent['attempt_id'],process)
-    monitor_chart_record=_monitor_record(c,health,intent['attempt_id'],process) if customer else None
+    monitor_chart_record=_monitor_record(c,health,intent['attempt_id'],process)
     phase(c,job_id,generation,'close_issued','research_exited')
     research_profile=_research_profile(c,intent['attempt_id'],process)
     material=validate_restart_material(c.state(),c.job(job_id),account=c.session['account'],
@@ -339,9 +345,13 @@ def start(c,job_id,*,expected_generation=None,process=None,on_attempt=None,resum
     # own per-member relaunches stay inside that job.
     launched=research_view(process).start(startup)
     phase(c,job_id,generation,'launch_issued','process_started_unverified',process=launched)
+    # The MT5 process this batch launched (pid + creation time): the end state may only close this process, or a
+    # later one the EA itself relaunched for this batch (studio_research_profile.batch_end_state).
+    batch_process=dict({k:(launched or {}).get(k) for k in ('pid','executable','created_utc')},source='config_start',
+                       recorded_utc=datetime.now(timezone.utc).isoformat()) if isinstance(launched,dict) else None
     return dict(status='config_process_started_unverified',attempt_id=intent['attempt_id'],
                 process=launched,dispatch=published,native_running_verified=False,
-                research_profile=research_profile,monitor_profile_migration=migration,
+                research_profile=research_profile,monitor_profile_migration=migration,batch_process=batch_process,
                 **({'monitor_chart_record':monitor_chart_record} if monitor_chart_record is not None else {}))
 
 

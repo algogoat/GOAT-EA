@@ -164,9 +164,18 @@ class ConfigStartTests(unittest.TestCase):
         # Packaged before batches ran on GOAT Research (goatai#2350 6120004490): its launch would open the monitor profile.
         self.plan['research_binding']['research_profile']='GOAT-Studio-'+'a'*32
         (self.package/'studio-plan.json').write_text(json.dumps(self.plan))
-        with self.assertRaisesRegex(ValueError,'GOAT Research chart profile'):self.run_start()
+        from studio_refusal import Refusal
+        with self.assertRaises(Refusal) as caught:self.run_start()
+        # A stable machine code: the app re-prepares the same plan automatically (goatai#2350 6120693275).
+        self.assertEqual(caught.exception.code,'PACKAGE_PREDATES_RESEARCH_PROFILE')
+        self.assertTrue(str(caught.exception).startswith('This batch was prepared by an older GOAT; it will be prepared again.'))
         self.assertEqual(self.events,[])
         self.mocks['_research_profile'].assert_not_called()
+
+    def test_the_launch_is_recorded_as_the_batch_process(self):
+        result=self.run_start()
+        self.assertEqual({k:result['batch_process'][k] for k in ('pid','executable','created_utc','source')},
+                         dict(pid=22,executable=self.binding['research_terminal'],created_utc='2026-09-29T01:00:00Z',source='config_start'))
 
     def test_goat_research_is_reset_after_the_close_and_before_the_launch(self):
         order=[]

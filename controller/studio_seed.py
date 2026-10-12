@@ -1134,10 +1134,11 @@ class SeedRunner:
                 if state['status'] in ('completed','stopped','reconcile_required'):return self._public(root,state)
                 if state['status']=='prepared':
                     if not initial:raise ValueError('Use seed-start for a prepared batch')
-                    from studio_research_profile import LEGACY_PACKAGE_REFUSAL,research_profile_manifest
+                    from studio_research_profile import legacy_package_refusal,research_profile_manifest
                     if not research_profile_manifest(manifest):
-                        # Prepared before members ran on GOAT Research: refused before the monitor closes.
-                        raise ValueError(self._news_what(batch_id)+': '+LEGACY_PACKAGE_REFUSAL)
+                        # Prepared before members ran on GOAT Research: refused before the monitor closes with
+                        # PACKAGE_PREDATES_RESEARCH_PROFILE; the app re-prepares it automatically (goatai#2350 6120693275).
+                        raise legacy_package_refusal(batch_id,kind=self.COMMAND_PREFIX)
                     self._verify_prepared(batch_id,manifest)
                     # Held-out lock: a lock declared after prepare refuses the start (before the monitor closes).
                     from studio_heldout_guard import check_runner_start

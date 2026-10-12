@@ -58,30 +58,43 @@ Save these "before" captures, via `goat-ro`:
    - The consent covers one close and `/config` reopen at the start, and one close plus monitor-launch at the end (scope `close_and_reopen_selected_mt5_for_this_batch_start_and_end`).
 3. Poll `GS batch-driver-status --job-id …` and `GS batch-status --batch-id …`. Never click Start in MT5 and never relaunch MT5 by hand.
 
-## 4. Capture
+## 4. Capture (the readout)
+
+Take every hash and file read through `goat-ro`. "Launch" means four moments:
+
+- the start's `/config` launch;
+- each EA member relaunch;
+- the end close;
+- the end-state monitor-launch.
 
 | What | Where | Pass |
 |---|---|---|
-| Start receipt | `<state>\batch-drivers\<id>.json`: `start_route`, `mt5_restart_consent.scope`, `monitor_chart_record`, `monitor_profile_migration`, `research_profile` | `config_restart`; new scope; `monitor_chart_record.status` `recorded` (else its reason); migration `migrated`/`clean`/`already`; `research_profile.profile` = `GOAT Research` |
-| GOAT Research reset | `research_profile.manifest_path` and `moved_aside` (`<state>\research-profiles\config-start-<attempt>\`) | `chart01.chr` SHA-256 = `research_profile.chart_sha256`; any previous GOAT Research is listed there whole |
-| Migration | `<state>\research-profiles\monitor-profile-migration.json` and `…\<attempt>\monitor-profile\` | `before`/`after` hashes; `after` = `chart01.chr` only; every moved chart present byte for byte |
-| Monitor profile during and after the batch | `Get-FileHash` of the `GOAT-Studio-<session>` folder at member 1, at member 2 and after the end | identical every time to the post-migration set (only `chart01.chr`, hash = `monitor_chart_record.chart_sha256`) |
-| GOAT Research during the batch | `GS research-profile-status` → `goat_research.files` | `chart01.chr` plus one bare chart (id=0) per tested symbol; strays appear only here |
-| ProfileLast | `[Charts] ProfileLast` in `<data>\config\common.ini` | `GOAT Research` while members run; the `GOAT-Studio-…` name after the end (`end_state.restore`, before/after copies under `<state>\research-profiles\restores\`) |
-| DLL path | `<data>\MQL5\Logs\<yyyymmdd>.log` (Experts) and `<data>\Logs\<yyyymmdd>.log` (Journal) for the batch window | member 2 started by the EA's own relaunch (a second terminal64 start, then a second tester start); no line containing `DLL` with `not allowed`, `cannot load` or `cannot call`, and no `ShellExecuteW` error |
-| End state | `end_state` in the driver journal and in the `run-batch` reply | `status` `monitor_relaunched`; `close.phase` `stopped` (`close.monitor_chart_record.reason` `foreign_profile` is expected); `restore.status` `restored`; `launch.observed_healthy_chart.chart_sha256` = the start's recorded hash |
+| **Monitor-profile hash before, at each member, and after** | `Get-FileHash` of every file in `<data>\MQL5\Profiles\Charts\GOAT-Studio-<session>\`. Take it before the start (step 1), right after the migration (`monitor_profile_migration.after`), while member 1 runs, while member 2 runs, and after the end-state monitor-launch. | From the migration on, every set is identical: only `chart01.chr`, with hash = `monitor_chart_record.chart_sha256`. The only change from "before" is the migration's recorded move-aside. |
+| Start receipt | `<state>\batch-drivers\<id>.json`: `start_route`, `mt5_restart_consent.scope`, `monitor_chart_record`, `monitor_profile_migration`, `research_profile`, `batch_process` | `config_restart`; scope `close_and_reopen_selected_mt5_for_this_batch_start_and_end`; `monitor_chart_record.status` `recorded` (else its reason); migration `migrated`/`clean`/`already`; `research_profile.profile` = `GOAT Research`; `batch_process` = pid and `created_utc` of the launched MT5, `source` `config_start` |
+| GOAT Research reset | `research_profile.manifest_path` and `moved_aside` (`<state>\research-profiles\<UTC stamp>-<hash>\`) | `chart01.chr` SHA-256 = `research_profile.chart_sha256`; any previous GOAT Research is kept there whole |
+| Migration | `<state>\research-profiles\monitor-profile-migration.json` and `<state>\research-profiles\<UTC stamp>-<hash>\monitor-profile\` | `before`/`after` hashes; `after` = `chart01.chr` only; every moved chart present byte for byte |
+| **GOAT Research chart list after** | `GS research-profile-status` → `goat_research.files` (name, bytes, SHA-256) after the end | `chart01.chr` plus one bare chart (`id=0`) per tested symbol; stray charts appear only here |
+| ProfileLast | `[Charts] ProfileLast` in `<data>\config\common.ini`, before, during members and after | the monitor profile before; `GOAT Research` while members run; the monitor profile after the end (`end_state.close.research_profile_restore` `restored`; before/after copies under `<state>\research-profiles\restores\`) |
+| **DLL relaunch lines** | `<data>\MQL5\Logs\<yyyymmdd>.log` (Experts) and `<data>\Logs\<yyyymmdd>.log` (Journal) for the batch window. Quote the lines verbatim with timestamps. | Member 2 is started by the EA's own relaunch: the member-1 tester finish, MT5 exit, a new terminal64 start, then the member-2 tester start. No line containing `DLL` with `not allowed`, `cannot load` or `cannot call`, and no `ShellExecuteW` error. |
+| **End-state monitor-launch receipt + fix-B match** | `end_state` in the driver journal and the `run-batch` reply, and `<state>\monitor-launches\batch-end-<attempt32>.json` | `status` `monitor_relaunched`. `batch_process.status` `batch_process`, with `source` `ea_member_relaunch` after a member relaunch (the journal's `batch_process` now names that last launch). `close.phase` `stopped`. `close.monitor_chart_record.reason` `foreign_profile` (expected: a GOAT Research close never records). `close.research_profile_restore` `restored`. **`launch.observed_healthy_chart.chart_sha256` = the start's `monitor_chart_record.chart_sha256` = the monitor-launch record's `saved_chart_sha256`.** |
+| **Exp 01/02/03 cycle durations around each launch** | Each Exp publisher's cycle log (Ops: watch.ps1 output and the publisher cycle records) | For each of the four launches above: the duration of the cycle before, the cycle spanning the launch, and the cycle after, per experiment. Flag any cycle over its budget or any OVERDUE. |
 | After | `GS onboarding-status` | `native_monitor` complete, demo, `terminal_trade_allowed` false, with no click |
 
 ## 5. Stop rules
 
 A refusing guard is the answer: stop, report, and diagnose on fixtures. No wrapper reruns.
 
+0. **Review gate:** this script and these stop rules are posted to goatai#2350 for Claude-Mac's review. Nothing runs on T3 before that review.
 1. **Any preflight refusal, or a package not bound to `GOAT Research`:** do not start.
+   - The driver refuses an older package with `refusal_code` `PACKAGE_PREDATES_RESEARCH_PROFILE` ("This batch was prepared by an older GOAT; it will be prepared again."). Re-prepare under a new ID; never edit the package.
 2. **The start returns `start_uncertain`:** follow `recovery.next_safe_action` only. Never start again under the same ID.
 3. **The monitor profile's hashes change during the batch** (other than the migration's recorded move-aside): stop. Post the hashes.
 4. **Any DLL error line, or member 2 never starts:** stop. Let `max-seconds` run out (the driver cancels), then `GS batch-stop --job-id …`. This disproves the DLL path; post the log lines.
-5. **`end_state.status` is not `monitor_relaunched`:** do nothing by hand. Post `end_state` (it says whether MT5 was left open on GOAT Research, or closed and not reopened, and why).
+5. **`end_state.status` is not `monitor_relaunched`:** do nothing by hand. Post `end_state`.
+   - `skipped` with `END_STATE_SKIPPED:not_batch_process` means the running MT5 was not the batch's own launch, so it was left open. The next GOAT stop (`close-terminal`) restores ProfileLast lazily.
+   - `left_as_is` or `closed_not_reopened` carry their reason.
    - Never `monitor-launch` again, never use File > Profiles, never edit common.ini.
-6. **Anything touching another terminal, Banker, Exp 02, an Open Lab login, real money or credentials:** stop at once.
+6. **Any Exp 01/02/03 cycle overruns its budget around a launch:** stop after the batch. Post the durations before fix-B gates A and B.
+7. **Anything touching another terminal, Banker, Exp 02, an Open Lab login, real money or credentials:** stop at once.
 
-Post the capture table, filled in, to goatai#2350 (prefix `Claude-PC: [Release]`). Fix-B gates A and B on T3 follow only after Mac reviews it.
+Post the filled-in readout to goatai#2350 (prefix `Claude-PC: [Release]`). Fix-B gates A and B on T3 follow only after Mac reviews it.

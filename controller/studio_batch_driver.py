@@ -195,7 +195,7 @@ def _summary(path, record):
                               and record['min_free_bytes'] > 0),
         host_liveness_required=True, independent_hard_stop=False) | (
         dict(monitor_chart_record=record['monitor_chart_record']) if 'monitor_chart_record' in record else {}) | {
-        key: record[key] for key in ('research_profile', 'monitor_profile_migration', 'end_state') if key in record}
+        key: record[key] for key in ('research_profile', 'monitor_profile_migration', 'batch_process', 'end_state') if key in record}
 
 
 PAUSE_OVERRUN_SECONDS = 240
@@ -546,10 +546,14 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     raise ValueError('This batch was prepared without the report-capable MT5 start, so it could '
                                      'never export. Prepare the same plan under a new batch ID (the GOAT Studio '
                                      'monitor profile from monitor-prepare is required); nothing was started')
-                from studio_research_profile import LEGACY_PACKAGE_REFUSAL, RESEARCH_PROFILE
+            if config_route:
+                # Both config-start lanes: a package prepared before GOAT Research is refused before any journal,
+                # archive, reservation or native effect with PACKAGE_PREDATES_RESEARCH_PROFILE (goatai#2350 6120693275).
+                from studio_research_profile import RESEARCH_PROFILE, legacy_package_refusal
+                plan_path = safe_path(root/'packages'/job_id/'studio-plan.json')
+                recorded = read_json(plan_path).get('research_binding', {}) if plan_path.is_file() else None
                 if recorded is not None and recorded.get('research_profile') != RESEARCH_PROFILE:
-                    # Refused before any journal, archive, reservation or native effect (goatai#2350 6120004490).
-                    raise ValueError(LEGACY_PACKAGE_REFUSAL)
+                    raise legacy_package_refusal(job_id)
             if path.exists():
                 if not refused_before_dispatch(read_json(path), controller.job(job_id)):
                     raise ValueError('Driver journal exists; explicit resume required, never restart')
@@ -613,7 +617,9 @@ def run(controller, job_id, *, max_seconds=None, resume=False, poll_seconds=30,
                     if isinstance(started,dict) and isinstance(started.get('monitor_chart_record'),dict):
                         # Fix B: the restart close's post-close monitor chart record, passed through to the start receipt.
                         record['monitor_chart_record']=started['monitor_chart_record']
-                    for key in ('research_profile','monitor_profile_migration'):
+                    for key in ('research_profile','monitor_profile_migration','batch_process'):
+                        # batch_process: pid + creation time of the MT5 this batch launched; the end state may close
+                        # only that process or the EA's own later relaunch for this batch (goatai#2350 6120693275).
                         # GOAT Research's reset and the one-time monitor-profile migration (studio_research_profile).
                         if isinstance(started,dict) and isinstance(started.get(key),dict):
                             record[key]=started[key]

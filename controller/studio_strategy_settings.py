@@ -119,7 +119,8 @@ def validate_strategy(values, schema):
 
 RISK_SIZING_CODE = 'RISK_PER_SEQUENCE_NEEDS_TWO_TRADES'
 RISK_SIZING_MESSAGE = ('Risk-per-sequence sizing needs at least 2 sequence trades; use fixed lots or raise '
-                       'Max_Seq_Trades (single-trade % risk returns in the next EA build).')
+                       'Max_Seq_Trades. Single-trade risk sizing isn\'t available yet. We\'ll say so in the release '
+                       'notes when it ships.')
 RISK_SIZING_SCHEMA_CODE = 'RISK_SIZING_SCHEMA_UNRECOGNISED'
 
 

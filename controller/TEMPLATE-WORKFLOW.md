@@ -95,8 +95,8 @@ the EA's declared default. A schema with `Mode_Lots` but no `RiskperSeq` choice 
 no `Max_Seq_Trades` is refused (`RISK_SIZING_SCHEMA_UNRECOGNISED`) instead of
 switching the rule off. Reason code
 `RISK_PER_SEQUENCE_NEEDS_TWO_TRADES`: "Risk-per-sequence sizing needs at least 2
-sequence trades; use fixed lots or raise Max_Seq_Trades (single-trade % risk
-returns in the next EA build)." With fewer than 2 trades the EA's planned loss path
+sequence trades; use fixed lots or raise Max_Seq_Trades. Single-trade risk sizing
+isn't available yet. We'll say so in the release notes when it ships." With fewer than 2 trades the EA's planned loss path
 is empty, so its lot solver climbs to the broker's maximum volume.
 
 ## Build a documented variant

@@ -397,3 +397,14 @@ A. **Open: manifest signature verification** (`MANIFEST_UNVERIFIED`). The contro
    wheels: MetaTrader5 and numpy only, `controller/ci-requirements.txt`, goatai `desktop/tools/suiteRuntimeDependencies.cjs`)
    has no ed25519 implementation, and GOAT does not hand-roll crypto, so the manifest is not verified by the
    controller yet (see the Deploy hook note).
+
+## Round 4 (goatai#2350 6132804177, 2026-10-12)
+
+R2. **Risk is searched downwards (accepted rule).** For a RiskperSeq member with a computable planned loss, the
+   deployed Risk' is the LARGEST value <= the equity-linear Risk, on the cent grid (Risk is floored to the cent) and
+   >= the EA's 10 (mq5:3253-3260), at which the EA's own pick (`SolveStartLotsByRisk` on the ported loss) plans a loss
+   <= the equity-linear Risk. The pick only steps up as Risk' grows, so a bisection over whole cents finds it. None at
+   10 -> `BELOW_MIN_LOT` ("This set needs a larger account."). `scaled.Risk` is Risk', `scaled.riskSearched` the
+   equity-linear Risk the search started from, `scaled.plannedLoss` the planned loss at the deployed pick; a lowered
+   Risk' is written as the `Risk` edit, and the deploy re-check re-derives the same Risk'. Kestrel at 14,642 deploys
+   Risk 73.12 (0.01 lots, planned 40.59 <= 73.21; at 73.13 the EA would pick 0.02 and plan 105.66).

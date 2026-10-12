@@ -893,7 +893,7 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
         return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
     lots_input = _number(values, defaults, 'Lots_Input')
     lots_max, lots_max_cum = _number(values, defaults, 'Lots_Max'), _number(values, defaults, 'Lots_Max_Cum')
-    start = planned_loss = None
+    start = planned_loss = risk_searched = None
     if mode in (MODE_LOTS['FixedLots'], MODE_LOTS['ScaledLots']):
         if lots_input is None:
             return dict(code=CONTRACT_MISMATCH, message=NOT_STATED_MESSAGE.format(name='Lots_Input'))
@@ -928,10 +928,44 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
                     return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
                 start = _lots(ea_solve_start_lots(new_risk, vmin, vstep, top, lambda lots: lots * per_lot))
             else:
-                if loss(vmin, vmin, vstep, top) > float(new_risk):
+                memo = {}
+
+                def planned(lots):
+                    key = round(float(lots), 10)
+                    if key not in memo:
+                        memo[key] = loss(key, vmin, vstep, top)
+                    return memo[key]
+
+                cap = float(new_risk)
+
+                def within(target):
+                    # The EA's pick for this Risk plans to lose at most the equity-linear Risk (a 1e-9 relative
+                    # allowance only absorbs the double arithmetic: at the reference the plan IS the Risk).
+                    return planned(ea_solve_start_lots(target, vmin, vstep, top, planned)) <= cap * (1 + 1e-9)
+
+                if planned(vmin) > cap * (1 + 1e-9):
                     return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
-                start = _lots(ea_solve_start_lots(new_risk, vmin, vstep, top, lambda lots: loss(lots, vmin, vstep, top)))
-                planned_loss = _lots(round(loss(start, vmin, vstep, top), 2))
+                # Accepted rule (goatai#2350 6132804177 R2): deploy the LARGEST Risk' <= the equity-linear Risk, on its
+                # cent grid and >= the EA's 10 (mq5:3253-3260), whose planned loss at the EA's own pick is <= the
+                # equity-linear Risk. The pick moves up in steps as Risk' grows, so `within` holds below a boundary:
+                # bisection over whole cents finds it. None at 10 -> the account is too small.
+                risk_searched = new_risk
+                if not within(new_risk):
+                    low, high = int(EA_MIN_RISK / CENT), int(new_risk / CENT)
+                    if not within(EA_MIN_RISK):
+                        return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
+                    while high - low > 1:
+                        middle = (low + high) // 2
+                        if within(Decimal(middle) * CENT):
+                            low = middle
+                        else:
+                            high = middle
+                    new_risk = Decimal(low) * CENT
+                    if 'Risk' not in values:
+                        return dict(code=CONTRACT_MISMATCH, message=NOT_STATED_MESSAGE.format(name='Risk'))
+                    edits['Risk'] = format_like(new_risk, first_field(values['Risk']))
+                start = _lots(ea_solve_start_lots(new_risk, vmin, vstep, top, planned))
+                planned_loss = _lots(round(planned(start), 2))
             bound = start
         else:
             bound = reference['volumeMin'] * lot_factor
@@ -943,9 +977,10 @@ def equity_rules(values, defaults, *, lot_factor, money_factor, broker, referenc
         return dict(code=BELOW_MIN_LOT, message=message(BELOW_MIN_LOT))
     written_lots = dec(edits['Lots_Input']) if 'Lots_Input' in edits else lots_input
     # Lots_Max and Lots_Max_Cum are reported as written: multipliers of the start lot, never scaled. startLot is the
-    # EA's start lot here; plannedLoss its planned sequence loss (RiskperSeq, account currency).
+    # EA's start lot here; plannedLoss its planned sequence loss (RiskperSeq, account currency); riskSearched the
+    # equity-linear Risk the downward search started from (Risk is the deployed Risk', at most it).
     scaled = dict(Risk=new_risk, Lots_Max=lots_max, Lots_Max_Cum=lots_max_cum, Lots_Input=written_lots, startLot=start,
-                  plannedLoss=planned_loss)
+                  plannedLoss=planned_loss, riskSearched=risk_searched)
     return dict(code=None, message=None, edits=edits, scaled=scaled, start_lots=start)
 
 

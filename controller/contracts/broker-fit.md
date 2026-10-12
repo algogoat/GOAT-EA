@@ -408,3 +408,10 @@ R2. **Risk is searched downwards (accepted rule).** For a RiskperSeq member with
    equity-linear Risk the search started from, `scaled.plannedLoss` the planned loss at the deployed pick; a lowered
    Risk' is written as the `Risk` edit, and the deploy re-check re-derives the same Risk'. Kestrel at 14,642 deploys
    Risk 73.12 (0.01 lots, planned 40.59 <= 73.21; at 73.13 the EA would pick 0.02 and plan 105.66).
+
+R3. **The reviewer's four worst-case ladders are tests** (`test_the_reviewers_worst_case_ladders`): with Grid_Factor 1,
+   Grid_Min 0 (clamped to -0.5 ATR, never binding) and Grid_Max 0 (disabled) the ported `GetSize(GRID_VALID)` is the
+   reviewer's `Grid_Exponent^(i-1)`, and the port gives the reviewer's picks and losses before R2 (CumPartial 0.02 /
+   116.60 against 74.68; Last 0.02 / 96.73 against 71.95; Cum 0.02 / 105.26 against 76.64; Start 0.03 / 155.41 against
+   125.00). After R2 each deploys a Risk' whose planned loss is within the equity-linear Risk: 74.66 (0.01, 32.74),
+   71.92 (0.01, 47.11), 76.62 (0.01, 47.99), 124.99 (0.02, 94.59).

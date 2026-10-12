@@ -437,6 +437,43 @@ class ScalingTests(unittest.TestCase):
         self.assertLessEqual(worst, 1.0 + 1e-9)
         self.assertGreater(searched, 0)
 
+    def test_the_reviewers_worst_case_ladders(self):
+        # goatai#2350 6132804177 R3. The reviewer's model: gap = Grid_Exponent^(i-1), Grid_Min / Grid_Max ignored,
+        # reference start lot 0.10 at Risk 500. Here Grid_Size -1 (ATR), Grid_Min 0 (clamped to -0.5 ATR: never
+        # binds, every gap >= 1), Grid_Max 0 (disabled) and Grid_Factor 1, so GetSize(GRID_VALID) is exactly
+        # Grid_Exponent^(lvl-1) and the port must give the reviewer's numbers. "/ 1.0" in the review is Grid_Exponent.
+        cases = (  # name, Mode_Lots_Prog, Lots_Exponent, Lots_Factor, Max_Seq_Trades, Grid_Exponent, equity, Risk, linear, EA pick, its loss
+            ('CumPartial', '5', '1.25', '1.0', '8', '1.3', 14936, 74.68, 0.01, 0.02, 116.60),
+            ('Last', '1', '1.2', '1.0', '10', '1.0', 14390, 71.95, 0.01, 0.02, 96.73),
+            ('Cum', '2', '1.3', '1.0', '10', '1.0', 15328, 76.64, 0.02, 0.02, 105.26),
+            # The review wrote Risk 125.01 for scale 0.25; 500 x 0.25 is 125.00 (same pick and loss).
+            ('Start', '0', '1.6', '1.0', '10', '1.0', 25000, 125.00, 0.03, 0.03, 155.41),
+        )
+        defaults = bf.schema_defaults(SCHEMA)
+        for name, mode, exponent, factor, trades, grid_exponent, equity, risk, linear, pick, planned in cases:
+            with self.subTest(ladder=name):
+                raw = kestrel_with(Mode_Lots_Prog=mode, Lots_Exponent=exponent, Lots_Factor=factor, Max_Seq_Trades=trades,
+                                   Grid_Size='-1.0', Grid_Min='0.0', Grid_Max='0.0', Grid_Exponent=grid_exponent, Grid_Factor='1.0',
+                                   EA_Desc=name)
+                values = bf.set_values(raw, SCHEMA)
+                gaps = bf.grid_shape(values, defaults)
+                for lvl, gap in enumerate(gaps, start=1):
+                    self.assertAlmostEqual(gap, float(grid_exponent) ** (lvl - 1), places=9)
+                loss = bf.sequence_loss(values, defaults, dict(startLot=Decimal('0.1'), volumeMin=Decimal('0.01'), volumeStep=Decimal('0.01'),
+                                                               volumeMax=Decimal('50')), risk=Decimal('500'), conversion=1)
+                ported = bf.ea_solve_start_lots(risk, 0.01, 0.01, 50.0, lambda lots: loss(lots, 0.01, 0.01, 50.0))
+                self.assertEqual(bf.ea_solve_start_lots(risk, 0.01, 0.01, 50.0, lambda lots: lots * 5000.0), linear)
+                self.assertEqual((ported, round(loss(ported, 0.01, 0.01, 50.0), 2)), (pick, planned), 'before round 4 R2')
+                self.assertGreater(planned, risk)
+                # After R2 the deployed plan is within the equity-linear Risk, or the member is excluded.
+                row = one(run([(member(raw), raw)], equity=equity))
+                if row['status'] == 'fit':
+                    self.assertEqual(row['scaled']['riskSearched'], risk)
+                    self.assertLessEqual(row['scaled']['plannedLoss'], risk)
+                    self.assertLess(row['scaled']['Risk'], risk)
+                else:
+                    self.assertEqual(row['code'], bf.BELOW_MIN_LOT)
+
     def test_fixed_lots_margin_follows_the_eas_ladder(self):
         # Review 6132018108 item B2. FixedLots floors the START lot, but every later level still rounds to the nearest
         # step. CumPartial, Lots_Exponent 1.6, Lots_Factor 1.3 at scale 0.10: the reference Lots_Input 0.10 peaks at

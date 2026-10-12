@@ -327,7 +327,7 @@ distinguishes precreated `/profile` charts from disposable `[StartUp]` charts.
 | `state` | None | Process pending UI commands then return drafts/queue/ownership |
 | `submit` | `--request` JSON file | Submit exact versioned agent command envelope; no actor override |
 | `prepare` | `--job-id`, `--set`, `--configuration` | Freeze complete inputs, queue job and stage immutable native package |
-| `prepare-batch` | `--batch-id`, `--plan` | Freeze all file/asset members of a complete native queue; no launch |
+| `prepare-batch` | `--batch-id`, `--plan` | Freeze all file/asset members of a complete native queue; no launch. Refuses a member the EA refuses in the strategy tester although it is valid live (`TESTER_INIT_REFUSED`, e.g. AI bias with a Control Tower protocol) |
 | `batch-status` | `--batch-id` | Reconcile native queue and every member's progress |
 | `save-batch` | `--batch-id`, `--output` | Save a standard `.goatbatch` outside controller state; never overwrite |
 | `load-batch` | New `--batch-id`, `--file` | Validate a saved `.goatbatch` as new unstarted work on this installation |

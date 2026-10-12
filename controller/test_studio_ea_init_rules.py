@@ -6,7 +6,7 @@ import re
 import unittest
 
 from studio_ea_init_rules import (EA_INIT_CODE, EA_INIT_RULES, EA_INIT_SCHEMA_CODE, EA_SOURCE, MAX_COMBINATIONS,
-                                  NOT_PORTED, check_ea_init)
+                                  NOT_PORTED, TESTER_INIT_CODE, TESTER_INIT_RULES, check_ea_init, check_tester_init)
 from studio_installation import contracts
 from studio_strategy_settings import validate_strategy
 from studio_template_tools import schema_default
@@ -49,6 +49,7 @@ class PortedRuleTests(RuleCase):
         'EXPORT_FWD_END_BEFORE_START': (
             dict(EA_Desc='R0@{mode=EXPORT,dt_FWD_start=2026.07.17,dt_FWD_end=2026.07.17}'),
             dict(EA_Desc='R0@{mode=EXPORT,dt_FWD_start=2026.07.17,dt_FWD_end=2026.07.16}')),
+        'DATA_DOWNLOAD_MODE_REMOVES_EA': (dict(Mode_Download='0'), dict(Mode_Download='1')),
         'SESSION_FORMAT': (dict(Active_Time_EU='00:00-23:59'), dict(Active_Time_EU='10:00 to 19:00')),
         'RISK_PER_SEQUENCE_RISK_TOO_LOW': (dict(Mode_Lots='2', Risk='10.0'), dict(Mode_Lots='2', Risk='9.99')),
         'MLPS_HARD_CLOSE_RISK_TOO_LOW': (dict(Sequence_MLPS_Hard_Close='true', Risk='10'),
@@ -195,6 +196,114 @@ class SchemaTests(RuleCase):
             check_ea_init({'Mode_Bias_Exit': '1'}, self.schema)                         # default FixedLots
 
 
+class DataDownloadTests(RuleCase):
+    def test_every_download_mode_removes_the_ea_and_is_refused(self):
+        for value, label in (('1', 'Download_News'), ('2', 'Download_Bias'), ('3', 'Download_NewsBias')):
+            with self.subTest(label=label):
+                message = self.refused('DATA_DOWNLOAD_MODE_REMOVES_EA', Mode_Download=value)
+                self.assertIn('(GOAT V1.49.mq5:2874,2891) fails for Mode_Download=%s (%s)' % (value, label), message)
+                self.assertIn('EA alert: "News History download is not allowed in this mode / Bias History download is '
+                              'not allowed in this mode"', message)
+                self.assertIn('use Download_Disabled', message)
+        self.passes(Mode_Download='0')
+
+
+AI_ON = dict(Mode_Bias='2', Bias_Protocol='2')           # the header defaults: Bias_Opens + ControlTowerV2DemoRaw
+
+
+class TesterInitRuleTests(RuleCase):
+    """P-beta38-prepare-tester-ai-bias: GOAT V1.49.mq5:2777, refused in the tester only."""
+    def refused_in_tester(self, **changes):
+        with self.assertRaises(ValueError) as caught:
+            check_tester_init(self.values(**changes), self.schema)
+        message = str(caught.exception)
+        self.assertTrue(message.startswith(TESTER_INIT_CODE + ': '), message)
+        self.assertIn('Rule TESTER_CONTROL_TOWER_BIAS (GOAT V1.49.mq5:2777)', message)
+        self.assertIn('EA alert: "Live Control Tower bias is unavailable in tester, optimization, and forward contexts. '
+                      'Select BiasProtocol_LegacyRecorded or disable AI bias."', message)
+        return message
+
+    def test_ai_bias_with_a_control_tower_protocol_is_refused_in_the_tester(self):
+        for version, schema in SCHEMAS.items():
+            self.schema = schema
+            for mode in ('0', '2', '3', '4', '5'):                                      # every mode but Bias_Disabled
+                for protocol in ('1', '2'):                                             # ControlTowerV2, ...DemoRaw
+                    with self.subTest(version=version, mode=mode, protocol=protocol):
+                        self.refused_in_tester(Mode_Bias=mode, Bias_Protocol=protocol)
+        self.schema = SCHEMAS['1.49']
+        self.assertIn('fails for Mode_Bias=2 (Bias_Opens), Bias_Protocol=2 (BiasProtocol_ControlTowerV2DemoRaw)',
+                      self.refused_in_tester(**AI_ON))
+
+    def test_ai_off_or_legacy_recorded_passes_in_the_tester(self):
+        for protocol in ('0', '1', '2'):
+            check_tester_init(self.values(Mode_Bias='1', Bias_Protocol=protocol), self.schema)
+        for mode in ('0', '2', '5'):
+            check_tester_init(self.values(Mode_Bias=mode, Bias_Protocol='0'), self.schema)
+
+    def test_ladders_reaching_the_refused_combination_are_refused(self):
+        message = self.refused_in_tester(Mode_Bias='1||1||1||2||Y', Bias_Protocol='2')
+        self.assertIn('Mode_Bias=2 (Bias_Opens), Bias_Protocol=2 (BiasProtocol_ControlTowerV2DemoRaw) (reachable through '
+                      'the optimization range of Mode_Bias)', message)
+        self.refused_in_tester(Mode_Bias='2', Bias_Protocol='0||0||1||1||Y')
+        check_tester_init(self.values(Mode_Bias='1||1||1||1||Y', Bias_Protocol='0||0||1||2||Y'), self.schema)
+        check_tester_init(self.values(Mode_Bias='2||0||1||5||N', Bias_Protocol='0'), self.schema)
+
+    def test_the_live_validate_set_path_is_unaffected(self):
+        from studio_template_tools import validate_raw
+        values = self.values(**AI_ON)
+        validate_strategy(values, self.schema)                                           # live-valid strategy
+        raw = b'\xff\xfe' + ''.join('%s=%s\r\n' % kv for kv in values.items()).encode('utf-16-le')
+        self.assertEqual(validate_raw(raw, self.schema, contracts('1.49')[1])['kind'], 'fixed_settings')
+        self.assertEqual({rule['id'] for rule in EA_INIT_RULES} & {rule['id'] for rule in TESTER_INIT_RULES}, set())
+
+    def test_a_goat_schema_without_the_protocol_label_fails_closed(self):
+        broken = copy.deepcopy(self.schema)
+        broken['inputs']['Bias_Protocol']['enum_choices'] = {'BiasProtocol_LegacyRecorded': 0}
+        with self.assertRaisesRegex(ValueError, '^' + EA_INIT_SCHEMA_CODE + '.*Bias_Protocol.BiasProtocol_ControlTowerV2 '
+                                    'for EA init rule TESTER_CONTROL_TOWER_BIAS'):
+            check_tester_init(self.values(Mode_Bias='1', Bias_Protocol='0'), broken)
+
+
+class PrepareBatchTesterTests(unittest.TestCase):
+    """prepare-batch refuses a tester-refused member before anything is staged or queued."""
+    def setUp(self):
+        import test_goat_studio as fixtures
+        self.fixture = fixtures.PortableControllerTests(); self.fixture.setUp(); self.addCleanup(self.fixture.tearDown)
+        self.c = self.fixture.bound(); self.fixture.grant(self.c)
+        real = SCHEMAS['1.49']['inputs']
+        self.c.schema['inputs'].update(Mode_Bias=dict(real['Mode_Bias']), Bias_Protocol=dict(real['Bias_Protocol']))
+        self.c.store.input_schema = self.c.schema
+        from campaign_ledger import sha
+        self.c.store.input_schema_hash = sha(self.c.schema)
+        self.root = self.fixture.root
+
+    def prepare(self, name, *members):
+        import json
+        from studio_batch import prepare_batch
+        spec = dict(schema_version=1, export=self.fixture.exports, members=[])
+        for index, (mode, protocol) in enumerate(members):
+            source = self.root / ('%s-%d.set' % (name, index))
+            source.write_bytes(('EA_Desc=Template %d\r\nLots=0.1||0.1||0.1||0.3||Y\r\nMode_Bias=%s\r\nBias_Protocol=%s\r\n'
+                                % (index, mode, protocol)).encode('utf-16'))
+            spec['members'].append(dict(set_path=str(source), tester=self.fixture.tester | {'Symbol': 'SYM%d' % index}))
+        plan = self.root / (name + '.json'); plan.write_text(json.dumps(spec), encoding='utf-8')
+        return prepare_batch(self.c, name, plan)
+
+    def test_a_refused_in_tester_member_fails_at_prepare_and_nothing_is_staged(self):
+        with self.assertRaisesRegex(ValueError, '^' + TESTER_INIT_CODE + r': batch member 2 \(.*refused-1\.set\): the EA '
+                                    'refuses this SET in the strategy tester.*TESTER_CONTROL_TOWER_BIAS'):
+            self.prepare('refused', ('1', '2'), ('2', '2'))
+        self.assertEqual(self.c.state()['queue'], [])
+        self.assertFalse((self.c.root / 'packages' / 'refused').exists())
+        with self.assertRaisesRegex(ValueError, '^' + TESTER_INIT_CODE):
+            self.prepare('laddered', ('1||1||1||2||Y', '1'))
+
+    def test_ai_off_and_legacy_recorded_members_prepare(self):
+        result = self.prepare('allowed', ('1', '2'), ('2', '0'))
+        self.assertEqual(result['member_count'], 2)
+        self.assertEqual(len(self.c.state()['queue']), 1)
+
+
 def _code_lines(source):
     """Each source line with comments and string/char literal contents blanked (MQL lexing)."""
     out, state, i = [], 'code', 0
@@ -234,6 +343,7 @@ def _function_lines(code, signature):
 
 
 INIT_RETURN = re.compile(r'\breturn\s*\(?\s*(INIT_PARAMETERS_INCORRECT|INIT_FAILED)\b')
+EXPERT_REMOVE = re.compile(r'\bExpertRemove\s*\(')
 
 
 def _squash(text):
@@ -246,11 +356,15 @@ class InventoryTests(unittest.TestCase):
         self.raw = (REPO / EA_SOURCE).read_text(encoding='utf-8-sig', errors='replace').split('\n')
         code = _code_lines('\n'.join(self.raw))
         first, last = _function_lines(code, 'int OnInit()')
-        self.sites = {number: INIT_RETURN.search(code[number-1])[1] for number in range(first, last+1)
-                      if INIT_RETURN.search(code[number-1])}
+        body = range(first, last+1)
+        self.returns = {number: INIT_RETURN.search(code[number-1])[1] for number in body if INIT_RETURN.search(code[number-1])}
+        # The EA also ends init by removing itself (ExpertRemove) without an INIT_* return: classified the same way.
+        self.removals = {number for number in body if EXPERT_REMOVE.search(code[number-1])}
+        self.sites = set(self.returns) | self.removals
 
     def entries(self):
         return [('ported', rule['id'], rule['lines'], rule['anchor']) for rule in EA_INIT_RULES] + \
+               [('tester', rule['id'], rule['lines'], rule['anchor']) for rule in TESTER_INIT_RULES] + \
                [('not_ported', entry['condition'], entry['lines'], entry['anchor']) for entry in NOT_PORTED]
 
     def test_rule_table_targets_the_newest_ea_source(self):
@@ -263,9 +377,14 @@ class InventoryTests(unittest.TestCase):
         listed = [line for _, _, lines, _ in self.entries() for line in lines]
         self.assertEqual(len(listed), len(set(listed)), 'a line is listed twice')
         self.assertEqual(sorted(self.sites), sorted(listed),
-                         'OnInit refusal lines and the EA_INIT_RULES/NOT_PORTED tables differ')
-        self.assertEqual((len(self.sites), sum(len(r['lines']) for r in EA_INIT_RULES)), (52, 20))
-        self.assertEqual(sorted(kind for kind in self.sites.values()).count('INIT_PARAMETERS_INCORRECT'), 26)
+                         'OnInit refusal/removal lines and the EA_INIT_RULES/TESTER_INIT_RULES/NOT_PORTED tables differ')
+        self.assertEqual((len(self.returns), len(self.removals), len(self.sites)), (52, 8, 56))
+        self.assertEqual(list(self.returns.values()).count('INIT_PARAMETERS_INCORRECT'), 26)
+        self.assertEqual((sum(len(r['lines']) for r in EA_INIT_RULES), sum(len(r['lines']) for r in TESTER_INIT_RULES),
+                          sum(len(e['lines']) for e in NOT_PORTED)), (22, 1, 33))
+        # The removal-only paths (no INIT_* return on the line): name mismatch, the two download removals, and
+        # the unreachable removal after the dashboard-cancel return.
+        self.assertEqual(sorted(self.removals - set(self.returns)), [2765, 2874, 2891, 3166])
 
     def test_each_listed_line_still_carries_its_condition_text(self):
         for kind, name, lines, anchor in self.entries():
@@ -276,9 +395,9 @@ class InventoryTests(unittest.TestCase):
 
     def test_ported_rules_quote_the_eas_own_alert_text(self):
         source = _squash('\n'.join(self.raw))
-        for rule in EA_INIT_RULES:
+        for rule in EA_INIT_RULES + TESTER_INIT_RULES:
             with self.subTest(rule=rule['id']):
-                for fragment in rule['alert'].split('<date>'):
+                for fragment in re.split(r'<date>| / ', rule['alert']):
                     self.assertIn(_squash(fragment), source)
                 self.assertEqual(rule['source'], EA_SOURCE)
                 self.assertTrue(rule['inputs'] and rule['condition'] and callable(rule['predicate']))

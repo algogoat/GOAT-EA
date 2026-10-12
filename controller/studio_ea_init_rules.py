@@ -13,6 +13,10 @@ produces nothing, and an exported or template SET must never fail init. Inputs a
 order the MQL condition reads them, so an input a short-circuited condition never reads is never expanded.
 More than `MAX_COMBINATIONS` evaluations for one rule refuses with a message naming the ladders to narrow.
 
+`TESTER_INIT_RULES` are refusals that also need the strategy-tester context (valid on a live chart, refused in
+every tester pass). They are not part of validate-set; batch prepare applies them (`check_tester_init`,
+`TESTER_INIT_REFUSED`) before anything is staged. The static test counts OnInit `ExpertRemove()` paths too.
+
 Arithmetic mirrors MQL: double inputs are IEEE doubles (Python float), ints and enums are ints, and enum
 values are resolved by label from the schema's `enum_choices`. V1.48 carries the same rules (lines -41).
 """
@@ -25,6 +29,7 @@ from studio_strategy_settings import numeric
 
 EA_SOURCE = 'GOAT V1.49.mq5'
 EA_INIT_CODE = 'EA_INIT_REFUSED'
+TESTER_INIT_CODE = 'TESTER_INIT_REFUSED'
 EA_INIT_SCHEMA_CODE = 'EA_INIT_SCHEMA_UNRECOGNISED'
 MAX_COMBINATIONS = 10_000
 GOAT_INTERFACE_MARKER = 'Mode_Lots'   # same marker check_risk_sizing uses: compact test schemas carry no rules
@@ -52,6 +57,9 @@ class _View:
 
     def choice(self, name, label):
         return self._choices[name][label]
+
+    def has(self, name, label):
+        return label in self._choices.get(name, {})
 
 
 # ---- MQL helpers --------------------------------------------------------------------------------------------
@@ -209,9 +217,29 @@ def _lp_tp_both_disabled(v):
     return lp == 0 and tp == 0
 
 
-def _rule(rule_id, lines, anchor, inputs, enums, condition, alert, predicate):
+def _rule(rule_id, lines, anchor, inputs, enums, condition, alert, predicate, note=None):
     return dict(id=rule_id, source=EA_SOURCE, lines=tuple(lines), anchor=anchor, inputs=tuple(inputs),
-                enums=enums, condition=condition, alert=alert, predicate=predicate)
+                enums=enums, condition=condition, alert=alert, predicate=predicate, note=note)
+
+
+def _download_removes_ea(v):
+    """OnInit lines 2859-2892: a News download removes the EA at 2874 (unless NewsBias), any Bias download at 2891."""
+    mode = v['Mode_Download']
+    news = mode in (v.choice('Mode_Download', 'Download_News'), v.choice('Mode_Download', 'Download_NewsBias'))
+    bias = mode in (v.choice('Mode_Download', 'Download_Bias'), v.choice('Mode_Download', 'Download_NewsBias'))
+    return (news and mode != v.choice('Mode_Download', 'Download_NewsBias')) or bias
+
+
+def _tester_control_tower_bias(v):
+    """OnInit 2774: test context && Mode_Bias!=Bias_Disabled && GOATUsingControlTowerBias() (GOATAIWireV2.mqh:640);
+    the DemoRaw protocol only exists, and only counts, when the build defines GOAT_AI_WIRE_V2_DEMO_RAW_SUPPORTED,
+    which the schema shows by declaring that enum label."""
+    if v['Mode_Bias'] == v.choice('Mode_Bias', 'Bias_Disabled'):
+        return False
+    protocol = v['Bias_Protocol']
+    return (protocol == v.choice('Bias_Protocol', 'BiasProtocol_ControlTowerV2')
+            or (v.has('Bias_Protocol', 'BiasProtocol_ControlTowerV2DemoRaw')
+                and protocol == v.choice('Bias_Protocol', 'BiasProtocol_ControlTowerV2DemoRaw')))
 
 
 SESSION_INPUTS = ('Active_Time_ASIA', 'Active_Time_EU', 'Active_Time_US')
@@ -231,6 +259,14 @@ EA_INIT_RULES = (
           'EA_Desc @{mode=EXPORT}: dt_FWD_start!=0 && dt_FWD_end!=0 && dt_FWD_end<dt_FWD_start',
           'EXPORT: dt_FWD_end:<date> must be after dt_FWD_start',
           _export_rule('dt_FWD_start', 'dt_FWD_end', _fwd_end_before_start)),
+    _rule('DATA_DOWNLOAD_MODE_REMOVES_EA', [2874, 2891], 'History download is not allowed in this mode', ['Mode_Download'],
+          {'Mode_Download': ['Download_Disabled', 'Download_News', 'Download_Bias', 'Download_NewsBias']},
+          'Mode_Download in (Download_News, Download_Bias, Download_NewsBias): ExpertRemove() in OnInit',
+          'News History download is not allowed in this mode / Bias History download is not allowed in this mode',
+          _download_removes_ea,
+          note=('In the tester the EA prints that and removes itself; on a live chart it downloads the data files and '
+                'then removes itself (ExpertRemove, GOAT V1.49.mq5:2874/2891). Mode_Download is the "Data Download '
+                'Mode for Backtest" data tool, never a strategy setting: use Download_Disabled.')),
     _rule('SESSION_FORMAT', [2900, 2902, 2905], 'Session format must be HH:MM-HH:MM', SESSION_INPUTS, {},
           'Active_Time_ASIA/EU/US: StringSplit(s,\'-\')!=2, or either half StringSplit(h,\':\')!=2',
           'Session format must be HH:MM-HH:MM', lambda v: any(_bad_session(v[name]) for name in SESSION_INPUTS)),
@@ -300,6 +336,19 @@ EA_INIT_RULES = (
           'Initialization Failed: Both LP and TP cannot be zero/disabled.', _lp_tp_both_disabled),
 )
 
+# OnInit refusals that depend on input values plus the strategy-tester context only. A SET can be valid on a live
+# chart and still refused in every tester pass, so validate-set (live and tester SETs alike) does not apply these;
+# batch prepare (studio_batch.prepare_batch) does, before anything is staged.
+TESTER_INIT_RULES = (
+    _rule('TESTER_CONTROL_TOWER_BIAS', [2777], 'Live Control Tower bias is unavailable in tester',
+          ['Mode_Bias', 'Bias_Protocol'],
+          {'Mode_Bias': ['Bias_Disabled'], 'Bias_Protocol': ['BiasProtocol_ControlTowerV2']},
+          '(MQL_TESTER || MQL_OPTIMIZATION || MQL_FORWARD) && Mode_Bias!=Bias_Disabled && Bias_Protocol is '
+          'BiasProtocol_ControlTowerV2 or BiasProtocol_ControlTowerV2DemoRaw',
+          'Live Control Tower bias is unavailable in tester, optimization, and forward contexts. Select '
+          'BiasProtocol_LegacyRecorded or disable AI bias.', _tester_control_tower_bias),
+)
+
 # Every other OnInit refusal, with why validate-set cannot decide it from the SET's values alone.
 _STUDIO_SINPUTS = ('Studio_ReadOnlyMonitor/Studio_MonitorRunPath are sinputs declared in the .mq5, not in the '
                    'input header, so they are not in the controller schema; validate_strategy refuses a SET that '
@@ -308,9 +357,9 @@ NOT_PORTED = (
     dict(lines=(2752,), anchor='StringFind(Studio_MonitorRunPath,"GOAT\\\\")!=0', condition='read-only monitor run path outside GOAT\\', reason=_STUDIO_SINPUTS),
     dict(lines=(2754,), anchor='Read-only Studio requires chart operation mode Optimization Studio',
          condition='Studio_ReadOnlyMonitor && (Mode_Operation!=Operation_Batch || MQL_TESTER)', reason=_STUDIO_SINPUTS + '; also run context (tester)'),
-    dict(lines=(2777,), anchor='Live Control Tower bias is unavailable in tester',
-         condition='tester/optimization/forward && Mode_Bias!=Bias_Disabled && Control Tower protocol',
-         reason='run context: the same SET is valid on a live chart and refused only in the tester'),
+    dict(lines=(2765,), anchor='Name Mismatch: The Bot/EA cannot be renamed',
+         condition='EA file renamed (EA_Name != Key+" V"+version): Alert then ExpertRemove()',
+         reason='build identity (the .ex5 file name), not an input value'),
     dict(lines=(2782,), anchor='Legacy recorded bias is historical/test-only',
          condition='Bias_Protocol==BiasProtocol_LegacyRecorded && live chart', reason='run context: valid in the tester, refused live'),
     dict(lines=(2790,), anchor='Demo raw AI bias is restricted to demo accounts',
@@ -332,7 +381,8 @@ NOT_PORTED = (
     dict(lines=(3104,), anchor='Tester GUI creation Failed', condition='Studio GUI creation fails', reason='chart/GUI runtime'),
     dict(lines=(3125,), anchor='Dashboard resume refused: saved state and first chart are required', condition='dashboard resume without saved state', reason='chart and saved dashboard state'),
     dict(lines=(3142,), anchor='Wrong Chart Position', condition='dashboard not on the first chart, user declines', reason='chart layout and user choice'),
-    dict(lines=(3165,), anchor='Dashboard Launch Cancelled', condition='user cancels dashboard resume prompt', reason='user choice'),
+    dict(lines=(3165, 3166), anchor='Dashboard Launch Cancelled',
+         condition='user cancels dashboard resume prompt (3166: unreachable ExpertRemove after the return)', reason='user choice'),
     dict(lines=(3176,), anchor='No valid .set files found', condition='dashboard finds no SETs/config', reason='files on disk'),
     dict(lines=(3184,), anchor='Dashboard GUI creation Failed', condition='dashboard GUI creation fails', reason='chart/GUI runtime'),
     dict(lines=(3209,), anchor='Panel GUI creation Failed', condition='panel GUI creation fails', reason='chart/GUI runtime'),
@@ -422,12 +472,12 @@ def _first_failure(rule, encoded, definitions, choices):
     return explore({})
 
 
-def applicable_rules(schema):
+def applicable_rules(schema, table=EA_INIT_RULES):
     """The rules this schema can express. Fails closed on a GOAT interface that lost a rule's input or enum label."""
     inputs = schema['inputs']
     goat = GOAT_INTERFACE_MARKER in inputs
     rules = []
-    for rule in EA_INIT_RULES:
+    for rule in table:
         missing = [name for name in rule['inputs'] if name not in inputs]
         labels = [name + '.' + label for name, wanted in rule['enums'].items() if name in inputs
                   for label in wanted if label not in (inputs[name].get('enum_choices') or {})]
@@ -444,10 +494,9 @@ def _lines(rule):
     return ','.join(str(line) for line in rule['lines'])
 
 
-def check_ea_init(values, schema):
-    """Refuse a SET that GOAT's OnInit would refuse from its input values alone, for any reachable combination."""
+def _enforce(table, values, schema, code, refused, where=''):
     definitions = schema['inputs']
-    rules = applicable_rules(schema)
+    rules = applicable_rules(schema, table)
     if not rules:
         return
     from studio_template_tools import schema_default
@@ -459,13 +508,28 @@ def check_ea_init(values, schema):
             failure = _first_failure(rule, encoded, definitions, choices)
         except _TooMany:
             ladders = sorted(name for name in rule['inputs'] if _active_ladder(encoded[name], definitions[name]))
-            raise ValueError(EA_INIT_CODE + ': ' + rule['id'] + ' (' + EA_SOURCE + ':' + _lines(rule) + ') cannot be '
+            raise ValueError(code + ': ' + where + rule['id'] + ' (' + EA_SOURCE + ':' + _lines(rule) + ') cannot be '
                              'checked: the optimization ranges of ' + ', '.join(ladders) + ' give more than '
                              + format(MAX_COMBINATIONS, ',') + ' combinations for this EA init rule; narrow them') from None
         if failure is not None:
             combination = ', '.join(name + '=' + shown for name, (_, shown) in failure.items())   # in the order the EA reads them
             ranged = [name for name in failure if _active_ladder(encoded[name], definitions[name])]
             reach = (' (reachable through the optimization range of ' + ', '.join(ranged) + ')') if ranged else ''
-            raise ValueError(EA_INIT_CODE + ': the EA refuses this SET at initialization. Rule ' + rule['id'] + ' ('
+            note = (' ' + rule['note']) if rule.get('note') else ''
+            raise ValueError(code + ': ' + where + refused + ' Rule ' + rule['id'] + ' ('
                              + EA_SOURCE + ':' + _lines(rule) + ') fails for ' + combination + reach
-                             + '. EA alert: "' + rule['alert'] + '"')
+                             + '. EA alert: "' + rule['alert'] + '"' + note)
+
+
+def check_ea_init(values, schema):
+    """Refuse a SET that GOAT's OnInit would refuse from its input values alone, for any reachable combination."""
+    _enforce(EA_INIT_RULES, values, schema, EA_INIT_CODE, 'the EA refuses this SET at initialization.')
+
+
+def check_tester_init(values, schema, *, where=''):
+    """Batch prepare only (P-beta38-prepare-tester-ai-bias): refuse a SET whose OnInit refuses it in the strategy
+    tester (tester, optimization and forward passes) although it is valid on a live chart. Same reachable-value
+    evaluation as check_ea_init; validate-set and live paths do not call this."""
+    _enforce(TESTER_INIT_RULES, values, schema, TESTER_INIT_CODE,
+             'the EA refuses this SET in the strategy tester (every optimization pass would end at OnInit with no '
+             'result); it stays valid on a live chart.', where)

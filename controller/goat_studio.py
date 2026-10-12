@@ -101,7 +101,7 @@ OPERATION_CONTRACTS = {
     'equivalence-status':dict(required=['certificate'],effect='read-only: certificate status (active only with a stored matching canary), canaries and blocking files'),
     'equivalence-canary-plan':dict(required=['certificate','source'],repeatable=['source'],defaults={'max-sets':10,'evidence-end':'auto'},optional=['output'],effect='read-only selection of ~10 diverse exports of the certificate export build with complete Model-4 captures, as a catch-up plan with canary_certificate; the native run is catchup-prepare/start on the installed build'),
     'equivalence-canary-ingest':dict(required=['certificate'],required_one_of=['catchup-id','pairs'],defaults={'min-sets':10},limits={'min-sets':[10,50]},effect='compare deal lists (time, type, entry, volume, price) of a canary catch-up or explicit pairs and store the canary result with its digest; matching deals activate the certificate, any drift refutes it; no terminal effect'),
-    'prepare-batch':dict(required=['batch-id','plan'],effect='validate and freeze a full native Studio batch; no launch'),
+    'prepare-batch':dict(required=['batch-id','plan'],effect='validate and freeze a full native Studio batch; refuses a member the EA refuses in the strategy tester (TESTER_INIT_REFUSED); no launch'),
     'batch-status':dict(required=['batch-id'],effect='reconcile whole native batch and report member progress'),
     'save-batch':dict(required=['batch-id','output'],effect='save native .goatbatch without overwriting'),
     'load-batch':dict(required=['batch-id','file'],effect='validate saved .goatbatch as a new unstarted batch on this installation'),

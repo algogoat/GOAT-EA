@@ -242,6 +242,12 @@ def prepare_batch(controller, batch_id, plan_path, *, now=None):
             raise ValueError('Batch ID already belongs to different members/settings; use a new revision ID')
         _, _, manifest = _verify_package(controller, existing)
         return dict(batch_id=batch_id, package=str(package), manifest=manifest, reused=True, native_started='launch_intent' in existing)
+    # Tester-only EA init refusals (TESTER_INIT_REFUSED): valid live, but every pass would end at OnInit. Checked
+    # for new staging only, so an already-queued identical batch is still reused as before.
+    from studio_ea_init_rules import check_tester_init
+    for index, (member, (source, _, _)) in enumerate(zip(raw_members, retained), 1):
+        check_tester_init(member['strategy']['values'], controller.schema,
+                          where='batch member %d (%s): ' % (index, source))
     if scope is not None and snapshot['queue']:
         from studio_research_retry import predecessor
         # Read-only preflight before staging; store rechecks under its gate/CAS.

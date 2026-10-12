@@ -200,7 +200,8 @@ MT5 saves the GOAT input group headings as equals-framed label rows with an
 empty value inside the expert's input block. The saved-profile verifier accepts
 that heading syntax; it still rejects duplicate real input keys, scripts, changed
 EA paths, non-monitor inputs and changed permission flags. In particular, a
-saved `expertmode=4` remains refused: this parsing correction does not approve
+saved `expertmode=4` remains refused unless those exact chart bytes were recorded
+as observed healthy (see below): this parsing correction does not approve
 permissions or qualify a native relaunch. Preserve the saved chart and follow
 the reported human review/reopen instruction instead of editing its flags.
 
@@ -254,11 +255,35 @@ A launch attempt ID is never replayed. The same ID returns its retained result,
 even after process exit. After a normal close, a new explicit attempt ID may
 reopen the saved monitor; the controller revalidates the chart's EA path, inert
 Studio inputs, symbol, permission flags and absence of extra charts/indicators.
-MT5 metadata changes can persist. Automated launch accepts only the original
-zero permission flags until actual MT5 fixtures qualify their bit meanings. If
-the human's DLL approval changes saved flags, the human must review and reopen
-that saved profile in MT5; the controller never resets or guesses permission
-bits. A launch error or crash retains `launch_intent`
+MT5 metadata changes can persist. Automated launch accepts the original zero
+permission flags, or (fix B, Claude-Mac goatai#2350 6118571536) the exact saved
+chart bytes the controller recorded when it observed this monitor healthy, and
+nothing else; no permission bit is ever decoded. `onboarding-status` writes that
+record, `monitor-healthy-chart.json` in the controller state folder, only when its
+`native_monitor` step is complete (fresh bound runtime: demo, connected, Algo off,
+idle tester, same session revision) and a MetaTrader5 SDK readback under the
+terminal lease shows Algo Trading off, a demo account and the bound login and
+server on the selected terminal and data folder, with the same process and chart
+bytes before and after that readback. The record holds the chart's SHA-256 and is
+bound to the installation (suite folder ID plus every receipt field an EA update
+does not rewrite), the terminal executable and data folder, the login and server,
+the session/profile and the chart file path. When any of those differ it is moved
+to `monitor-healthy-chart-retired/` (journal `retired.jsonl`) and never becomes
+valid again; a newer healthy observation of other bytes supersedes it the same way.
+`monitor-launch` accepts only byte-identical chart bytes for the still-valid
+binding; any other byte, including a different permission value, refuses with
+`MONITOR_PROFILE_CHANGED` exactly as before (the refusal adds
+`observed_healthy_chart`). The launch still writes `[Experts] Enabled=0` and
+`AllowLiveTrading=0`, and readiness still needs the post-launch runtime readback
+of demo and Algo off. If the human's DLL approval changes saved flags before GOAT
+observed that monitor healthy, the human reopens that saved profile in MT5; the
+controller never resets or guesses permission bits. `monitor-launch` and
+`monitor-repair` refuse the Open Lab experiment logins (`PROTECTED_ACCOUNT`, the
+same shared list as `close-terminal`) and a session that is not demo-only or whose
+last EA runtime report for that account says it is not a demo (`NOT_DEMO_ACCOUNT`);
+`monitor-repair` also reads the broker trade mode before its close and checks that
+its relaunch ID (`repair-` + attempt ID, at most 80 characters) is valid before any
+close. A launch error or crash retains `launch_intent`
 and blocks new attempts until the uncertain effect has been inspected. Preserve
 that evidence and use support if it cannot be resolved; do not delete it to
 force a retry. Partial profile staging is also preserved and never overwritten.
@@ -279,9 +304,9 @@ distinguishes precreated `/profile` charts from disposable `[StartUp]` charts.
 | `build-set` | `--source`, `--output`, `--spec` | Clone a real SET with narrow typed replacements; new unique identity, support notes and provenance (a starter source is recorded as parent `starter:<shape>`) |
 | `starter-set` | `--shape single\|sequence`, `--output` | Write a blank starting SET generated from the installed schema (no entry filter, no search axis) and its `.starter.json` receipt; create-only, outside the catalog, never opens MT5 |
 | `bootstrap` | `--account-login`, `--account-server` | Create local human-owned binding and monitor preset; never launch |
-| `onboarding-status` | None | Read-only local binding, process, fresh monitor and human ownership stages; exact recovery steps |
+| `onboarding-status` | None | Read-only local binding, process, fresh monitor and human ownership stages; exact recovery steps. When the monitor is observed healthy (plus an SDK readback of Algo off, demo and the bound login) it records the saved chart's hash in controller state (`monitor_chart_record`); it never writes MT5 files |
 | `monitor-prepare` | `--symbol` | Stage a separate persistent inert monitor profile while terminals are stopped; preserve other profiles |
-| `monitor-launch` | `--attempt-id` | One retained launch of the prepared profile; verify saved account, Algo-off, process and job state |
+| `monitor-launch` | `--attempt-id` | One retained launch of the prepared profile, or of the exact chart last observed healthy; verify saved account, Algo-off, process and job state; refuses Open Lab experiment logins and non-demo bindings |
 | `serve` | Optional `--watch-seconds` | Process Studio inboxes; default 3600, range 0–3600; zero is one cycle |
 | `state` | None | Process pending UI commands then return drafts/queue/ownership |
 | `submit` | `--request` JSON file | Submit exact versioned agent command envelope; no actor override |

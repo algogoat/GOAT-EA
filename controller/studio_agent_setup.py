@@ -29,17 +29,13 @@ from studio_agent_mailbox import identity, setup_register, setup_request, setup_
 from studio_bridge import write_json
 from studio_installation import read_json
 from studio_native_gate import exclusive_gate, settled_native_request
-from studio_onboarding import session_state, require_idle_control
+from studio_onboarding import OPEN_LAB_LOGINS, require_unprotected, session_state, require_idle_control
 from studio_refusal import Refusal
 
-# Experiment 02 runs live research on these demo logins. Agent setup and deploy never touch them.
-PROTECTED_ACCOUNTS = frozenset(('3000109427', '3000109421'))
+# The Open Lab experiment demo logins (Experiments 01, 02 and 03). Agent setup, deploy, close-terminal, monitor-launch
+# and monitor-repair never touch them; the one shared list is studio_onboarding.OPEN_LAB_LOGINS.
+PROTECTED_ACCOUNTS = OPEN_LAB_LOGINS
 ATTEMPT_ID = re.compile(r'[A-Za-z0-9_-]{1,80}')
-
-
-def require_unprotected(login):
-    if str(login) in PROTECTED_ACCOUNTS:
-        raise ValueError('This demo account belongs to a running GOAT experiment; agents never change it')
 
 
 @contextmanager

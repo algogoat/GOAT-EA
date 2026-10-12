@@ -361,7 +361,10 @@ batch has been observed with no selected terminal process, its slot is released.
 MT5 stays closed after the last member. The reply then carries `monitor_profile`
 and a `next_action`: reopen the monitor with `monitor-launch --attempt-id <new id>`,
 which opens the `GOAT-Studio-...` chart profile with the monitor attached. Try it
-once. After the user approved DLL imports on the chart, it is normally refused with
+once. After the user approved DLL imports on the chart, it opens only the exact
+saved chart `onboarding-status` last recorded while it observed the monitor healthy
+(SDK-read Algo Trading off, demo, bound login; `observed_healthy_chart` in the
+reply), with Algo Trading still forced off. Any other saved chart is refused with
 `refusal_code` `MONITOR_PROFILE_CHANGED` and `failed_check` `permissions`; nothing
 was launched. Then ask the user to open MT5 normally and
 choose File > Profiles > the `monitor_profile` name. A plain MT5 open can load an

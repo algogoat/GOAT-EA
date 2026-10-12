@@ -11,16 +11,27 @@ from studio_handover import safe_path
 from studio_installation import read_json
 from studio_monitor_probe import inspect_idle_demo
 from studio_native_gate import exclusive_gate, assert_clear_controls
-from studio_onboarding import session_state, monitor_launch, monitor_chart, monitor_paths, require_idle_control
+from studio_onboarding import (LAUNCH_ATTEMPT_ID, REPAIR_LAUNCH_PREFIX, session_state, monitor_launch, monitor_chart,
+                                monitor_paths, require_demo_binding, require_idle_control, require_unprotected)
 from studio_seed_process import WindowsSeedProcess
 
 
 def repair(controller, attempt_id, *, stop_only=False):
     if type(stop_only) is not bool:
         raise ValueError("Explicit monitor operation required")
-    if not re.fullmatch('[A-Za-z0-9_-]{1,80}', attempt_id):
+    if not isinstance(attempt_id, str) or not re.fullmatch('[A-Za-z0-9_-]{1,80}', attempt_id):
         raise ValueError('Simple retained repair attempt ID required')
+    # The relaunch uses REPAIR_LAUNCH_PREFIX + this ID, which monitor-launch limits to 80 characters: check it before
+    # anything can close MT5, not after (goatai#2350 6118571536).
+    if not stop_only and not LAUNCH_ATTEMPT_ID.fullmatch(REPAIR_LAUNCH_PREFIX+attempt_id):
+        limit = 80-len(REPAIR_LAUNCH_PREFIX)
+        raise ValueError('Monitor repair attempt ID must be 1..'+str(limit)+' letters, digits, underscore or hyphen: its relaunch ID adds "'
+                         +REPAIR_LAUNCH_PREFIX+'" and launch IDs are at most 80 characters. Nothing was closed.')
     session, _ = session_state(controller)
+    # Same account rules as close-terminal, before any close: never an Open Lab experiment login, demo only (the
+    # broker trade mode itself is read by inspect_idle_demo below, as close-terminal does).
+    require_unprotected(session['account']['login'])
+    require_demo_binding(controller, session)
     root = safe_path(controller.root/'monitor-repairs')
     root.mkdir(exist_ok=True)
     path = root/(attempt_id+'.json')

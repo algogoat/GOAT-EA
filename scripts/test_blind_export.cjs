@@ -3,6 +3,7 @@
 // window (SAMPLE: dt_BOOS_end to dt_FOOS_start) and writes "; EXPORT blind:1 ranked:fit+fwd sr:daily_ann" plus a "; RANKED" line;
 // RunAndStoreSet's profit floor and the SR/ARF it stores (so the MinSR/MinARF count and SortAndTrimExports) come from
 // that line. Off: every export is stamped "; EXPORT blind:0 ranked:full_span sr:mt5_stat" and nothing else changes. Neither line
+// holds "=" (goatai#2350 6128225191), so no controller writer copies them into a deployed chart.
 // This runs the production GoatRankTick / GoatRankLine / GoatReadRankedLine after a syntax-only MQL-to-JS conversion
 // against modelled equity streams, compares them with an independent implementation of the definitions, and pins the
 // wiring and the blind=0 no-drift against c708cae4. Native tester runs are not exercised here.

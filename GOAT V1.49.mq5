@@ -2906,6 +2906,8 @@ void GoatRankFinish(void)
      }
   }
 // The "; RANKED" header line, once at the end of a blind export run. B44 (goatai#2350 6128225191): the stamp and RANKED
+// lines hold no "=" at all (key:value), so a controller writer that copies ";" lines holding "=" into a deployed chart
+// (c708cae4 and before) never copies them.
 string GoatRankLine(void)
   {
    string rank_from=(dt_Back_OOS!=0 ? TimeToString(dt_Back_OOS,TIME_DATE) : "start");

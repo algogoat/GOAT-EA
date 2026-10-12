@@ -168,7 +168,7 @@ PLAN_KEYS = frozenset(('schema', 'deploymentId', 'portfolio', 'buildId', 'accoun
 BROKER_FIT_KEY = 'brokerFit'
 
 
-def validate_plan(controller, session, plan):
+def validate_plan(controller, session, plan, *, manifest_sha256=None):
     if type(plan) is not dict or set(plan) not in (PLAN_KEYS, PLAN_KEYS | {BROKER_FIT_KEY}):
         raise ValueError('Invalid demo deploy plan')
     if plan['schema'] != PLAN_SCHEMA or not isinstance(plan['deploymentId'], str) or not DEPLOYMENT_ID.fullmatch(plan['deploymentId']):
@@ -193,7 +193,11 @@ def validate_plan(controller, session, plan):
     fit = None
     if BROKER_FIT_KEY in plan:
         import studio_broker_fit as broker_fit
-        fit = broker_fit.deploy_entries(plan[BROKER_FIT_KEY], members)
+        # The manifest is the one plan value every broker-fit value is re-derived from: it must be the published one.
+        # MANIFEST_UNVERIFIED unless --manifest-sha256 is given and equals its JCS sha256 (round 4 R1); no path skips it.
+        block = plan[BROKER_FIT_KEY]
+        broker_fit.verify_manifest(block.get('manifest') if type(block) is dict else None, manifest_sha256)
+        fit = broker_fit.deploy_entries(block, members)
     expected_ea = 'GOAT V' + controller.install['ea_version']
     names, prepared = set(), []
     for index, member in enumerate(members):
@@ -734,11 +738,12 @@ def _unwind_summary(journal):
     return summary + (' ' + rollback['select_profile_instruction'] if rollback.get('select_profile_instruction') else '')
 
 
-def load(controller, plan_path, *, mt5=None, process=None, request=None, close=None, sleep=time.sleep, clock=time.monotonic):
+def load(controller, plan_path, *, mt5=None, process=None, request=None, close=None, sleep=time.sleep, clock=time.monotonic,
+         manifest_sha256=None):
     from studio_seed_process import WindowsSeedProcess
     session, _ = session_state(controller)
     plan = read_json(plan_path)
-    members = validate_plan(controller, session, plan)
+    members = validate_plan(controller, session, plan, manifest_sha256=manifest_sha256)
     ident = identity(controller, session, plan['buildId'])
     deployment_id = plan['deploymentId']
     where = paths(controller, deployment_id)

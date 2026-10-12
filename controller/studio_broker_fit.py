@@ -54,6 +54,7 @@ EA_INIT_REFUSED = 'EA_INIT_REFUSED'
 FIT_STALE = 'FIT_STALE'
 MT5_NOT_RUNNING = 'MT5_NOT_RUNNING'
 MT5_STARTED_BY_CHECK = 'MT5_STARTED_BY_CHECK'
+MANIFEST_UNVERIFIED = 'MANIFEST_UNVERIFIED'
 # Not a refusal: the explicit reason a member's unknown margin is accepted on a reference-identical account.
 REFERENCE_IDENTICAL_MARGIN = 'REFERENCE_IDENTICAL_MARGIN'
 # One-sided (review 6130418265 item 2): startingBalance <= live equity <= startingBalance x (1 + this).
@@ -87,6 +88,7 @@ MESSAGES = {
 PORTFOLIO_MARGIN_MESSAGE = "Together these sets could use more than half of this account's equity as margin."
 MT5_NOT_RUNNING_MESSAGE = 'Start MT5 and sign in to your demo account, then check again.'
 MT5_STARTED_BY_CHECK_MESSAGE = 'GOAT started MT5 by accident; close it and check again.'
+MANIFEST_UNVERIFIED_MESSAGE = 'GOAT could not verify this house portfolio against its published manifest, so nothing was deployed.'
 FIT_STALE_MESSAGE = 'The account changed since the check; run the fit again.'
 MISSING_REFERENCE_MESSAGE = "This set's reference broker details are missing, so GOAT cannot check it on this account."
 FIXED_MONEY_MESSAGE = "This set uses a fixed money limit ({name}) that GOAT does not scale."
@@ -1141,6 +1143,11 @@ def build_result(manifest, sets, *, account, symbols, ticks, quotes, margins, sc
                                         equityTolerance=num(REFERENCE_EQUITY_TOLERANCE))
     # What the deploy plan's brokerFit block carries besides its members (+ members[].deploy). The deploy re-derives
     # every value from `manifest`, `equity` and the live broker and only COMPARES the rest (review 6130418265 item 7).
+    # The manifest's own JCS sha256 (house feed manifestSha256): the app passes it to deploy-load --manifest-sha256.
+    try:
+        result['manifestSha256'] = manifest_sha256(manifest)
+    except ValueError:
+        result['manifestSha256'] = None
     result['deployBasis'] = None if rate is None else dict(
         schema=DEPLOY_SCHEMA, scale=num(scale), equity=_text(account_equity), referenceEquity=_text(ref_equity),
         accountCurrency=account.get('currency'), rate=_text(rate), reviewedAtUtc=int(utc_now), manifest=manifest,
@@ -1524,6 +1531,98 @@ def excluded_sets(block):
     if set(out) | deployed != set(by_id):
         raise ValueError('The broker-fit block must name every manifest member exactly once')
     return out
+
+
+# ---- manifest identity (round 4 R1): RFC 8785 JCS, stdlib only, the house feed's manifestSha256
+
+def _jcs_number(value):
+    """ECMAScript Number::toString of the double a JSON reader would hold (JSON.stringify): -0 is 0, the shortest
+    round-trip digits, plain notation for 1e-7 < |x| < 1e21, otherwise d[.ddd]e+/-n. Python ints are read as JavaScript
+    reads them, as the nearest double (2**53 + 1 is 2**53)."""
+    if isinstance(value, bool):
+        raise ValueError('not a number')
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise ValueError('a number outside the double range is not I-JSON') from exc
+    if not math.isfinite(number):
+        raise ValueError('a non-finite number is not I-JSON')
+    if number == 0:
+        return '0'
+    sign = '-' if number < 0 else ''
+    _, digit_tuple, exponent = Decimal(repr(abs(number))).as_tuple()
+    digits = ''.join(map(str, digit_tuple)).rstrip('0') or '0'
+    exponent += len(digit_tuple) - len(digits)
+    k, n = len(digits), exponent + len(digits)
+    if k <= n <= 21:
+        text = digits + '0' * (n - k)
+    elif 0 < n <= 21:
+        text = digits[:n] + '.' + digits[n:]
+    elif -6 < n <= 0:
+        text = '0.' + '0' * -n + digits
+    else:
+        text = digits[0] + ('.' + digits[1:] if k > 1 else '') + 'e' + ('+' if n - 1 >= 0 else '-') + str(abs(n - 1))
+    return sign + text
+
+
+_JCS_SHORT = {'"': '\\"', '\\': '\\\\', '\b': '\\b', '\t': '\\t', '\n': '\\n', '\f': '\\f', '\r': '\\r'}
+
+
+def _jcs_string(text):
+    """A string as JSON.stringify writes it; a lone UTF-16 surrogate is not I-JSON and is refused."""
+    out = ['"']
+    for ch in text:
+        code = ord(ch)
+        if 0xD800 <= code <= 0xDFFF:
+            raise ValueError('a lone UTF-16 surrogate is not I-JSON')
+        out.append(_JCS_SHORT.get(ch) or ('\\u%04x' % code if code < 0x20 else ch))
+    out.append('"')
+    return ''.join(out)
+
+
+def jcs(value):
+    """RFC 8785 canonical JSON text: members sorted by the UTF-16 code units of their names, no whitespace."""
+    if value is None:
+        return 'null'
+    if value is True:
+        return 'true'
+    if value is False:
+        return 'false'
+    if isinstance(value, str):
+        return _jcs_string(value)
+    if isinstance(value, (int, float)):
+        return _jcs_number(value)
+    if isinstance(value, list):
+        return '[' + ','.join(jcs(item) for item in value) + ']'
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError('JSON member names are strings')
+        names = sorted(value, key=lambda name: name.encode('utf-16-be', 'surrogatepass'))
+        return '{' + ','.join(_jcs_string(name) + ':' + jcs(value[name]) for name in names) + '}'
+    raise ValueError('not a JSON value: ' + type(value).__name__)
+
+
+def manifest_sha256(manifest):
+    """The house feed's manifestSha256: sha256 hex of the UTF-8 JCS of the manifest without its TOP-LEVEL signature
+    (vectors: controller/contracts/house-manifest/house-manifest-jcs-cases.json, vendored from goatai)."""
+    if type(manifest) is not dict:
+        raise ValueError('the manifest is not a JSON object')
+    return sha256(jcs({name: value for name, value in manifest.items() if name != 'signature'}).encode('utf-8'))
+
+
+def verify_manifest(manifest, expected):
+    """Refuse MANIFEST_UNVERIFIED unless `expected` (the --manifest-sha256 the caller verified against the house feed)
+    is given and equals the manifest's own manifestSha256. Until the ed25519 signature check ships
+    (P-beta38-controller-manifest-signature) this sha is what binds a deploy to the published manifest."""
+    try:
+        actual = manifest_sha256(manifest)
+    except (ValueError, RecursionError):
+        actual = None
+    given = expected.strip().lower() if isinstance(expected, str) else None
+    if actual is None or given is None or not SHA256.fullmatch(given) or given != actual:
+        raise Refusal(MANIFEST_UNVERIFIED_MESSAGE, MANIFEST_UNVERIFIED, manifestSha256=actual,
+                      expected=given if given is None or SHA256.fullmatch(given) else None)
+    return actual
 
 
 def deployed_bytes(reference_raw, entry):

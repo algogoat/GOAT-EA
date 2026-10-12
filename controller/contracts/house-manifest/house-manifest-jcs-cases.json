@@ -1,0 +1,109 @@
+{
+  "schema": "goat-house-manifest-jcs-cases-v1",
+  "source_of_truth": "goatai functions/serve-api/house_portfolio.js canonicalJson and manifestSha256 (OPS-33 v1.1); test: functions/serve-api/test_house_portfolio.cjs",
+  "sync": "The GOAT Portfolio Desktop app vendors this file byte-identically and runs every case against its own canonicaliser. Change it here first, then copy the same bytes; never edit one copy alone. The file is pure ASCII: every non-ASCII character is a \\uXXXX escape, and each input keeps its original number spelling.",
+  "rule": "canonical = RFC 8785 JCS of input: object members sorted by the UTF-16 code units of their names, no whitespace, arrays in order, numbers as ECMAScript Number-to-String (JSON.stringify; -0 is 0, 1e21 is 1e+21), strings and names as JSON.stringify writes them; non-finite numbers and lone surrogates are not I-JSON and are refused. sha256 = lower-case hex SHA-256 of the UTF-8 bytes of canonical. manifestSha256 = sha256 of JCS(manifest without its top-level signature key); a house signature is ed25519 over the 32 raw bytes of manifestSha256.",
+  "cases": [
+    {
+      "name": "rfc8785_3_2_2_values",
+      "note": "RFC 8785 section 3.2.2 example: number re-serialisation, string escapes (only \" \\ and U+0000..U+001F, lower-case hex, / unescaped), literals; members sorted.",
+      "input": {"numbers": [333333333.33333329, 1E30, 4.50, 2e-3, 0.000000000000000000000000001], "string": "\u20ac$\u000F\u000aA'\u0042\u0022\u005c\\\"\/", "literals": [null, true, false]},
+      "canonical": "{\"literals\":[null,true,false],\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27],\"string\":\"\u20ac$\\u000f\\nA'B\\\"\\\\\\\\\\\"/\"}",
+      "sha256": "2d5e01a318d0f0879ab568c4be289c8b1f64ef8921a53c6277d5e069978baacb"
+    },
+    {
+      "name": "rfc8785_3_2_3_key_order",
+      "note": "RFC 8785 section 3.2.3 example: member names sorted by UTF-16 code units, so the non-BMP U+1F600 (surrogates D83D DE00) sorts before U+FB33, the reverse of code point order.",
+      "input": {"\u20ac": "Euro Sign", "\r": "Carriage Return", "\ufb33": "Hebrew Letter Dalet With Dagesh", "1": "One", "\ud83d\ude00": "Emoji: Grinning Face", "\u0080": "Control", "\u00f6": "Latin Small Letter O With Diaeresis"},
+      "canonical": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\u0080\":\"Control\",\"\u00f6\":\"Latin Small Letter O With Diaeresis\",\"\u20ac\":\"Euro Sign\",\"\ud83d\ude00\":\"Emoji: Grinning Face\",\"\ufb33\":\"Hebrew Letter Dalet With Dagesh\"}",
+      "sha256": "5e321556d22018a9656991a9e94f77ec175fa193e52a2429d312f8419ec8b08c"
+    },
+    {
+      "name": "nested_objects_and_integer_like_keys",
+      "note": "Members sorted at every depth; arrays keep their order; empty object and array; integer-like names sort as strings (\"1\" < \"10\" < \"9\"), never in the numeric order JavaScript Object.keys gives them.",
+      "input": {"b": {"z": [3, {"y": null, "x": true}], "a": {}}, "a": [[], {}], "9": "nine", "10": "ten", "1": "one", "B": {"inner": {"d": 4, "c": [{"f": 6, "e": 5}]}}},
+      "canonical": "{\"1\":\"one\",\"10\":\"ten\",\"9\":\"nine\",\"B\":{\"inner\":{\"c\":[{\"e\":5,\"f\":6}],\"d\":4}},\"a\":[[],{}],\"b\":{\"a\":{},\"z\":[3,{\"x\":true,\"y\":null}]}}",
+      "sha256": "31174d7eba0457477281121948e5c3bcdaf083cdea98b020633c93fcaea3a75e"
+    },
+    {
+      "name": "unicode_member_names",
+      "note": "Non-BMP and BMP names: UTF-16 code unit order puts U+1F600 before U+FB01 and U+20AC; upper case before lower case; the empty name first. Non-ASCII is written raw (unescaped) in the canonical form.",
+      "input": {"\ufb01": 1, "\ud83d\ude00": 2, "\u00e9": 3, "e": 4, "E": 5, "\u20ac": 6, "": 7, "\ud834\udd1e": 8},
+      "canonical": "{\"\":7,\"E\":5,\"e\":4,\"\u00e9\":3,\"\u20ac\":6,\"\ud834\udd1e\":8,\"\ud83d\ude00\":2,\"\ufb01\":1}",
+      "sha256": "35a9e533b4e9544ecce7ac31dcc5873016cb71b2057720b74364fd6275839f22"
+    },
+    {
+      "name": "unicode_and_control_strings",
+      "note": "Strings as JSON.stringify writes them: control characters escaped (\\b \\t \\n \\f \\r short forms, others \\u00xx lower case); DEL, U+2028, U+2029 and non-BMP characters raw; quote and backslash escaped; solidus raw.",
+      "input": {"controls": "\u0000\u0001\b\t\n\u000b\f\r\u001f\u007f", "separators": "\u2028|\u2029", "nonBmp": "\ud83d\ude00 \ud834\udd1e caf\u00e9", "escapes": "\"\\\/"},
+      "canonical": "{\"controls\":\"\\u0000\\u0001\\b\\t\\n\\u000b\\f\\r\\u001f\u007f\",\"escapes\":\"\\\"\\\\/\",\"nonBmp\":\"\ud83d\ude00 \ud834\udd1e caf\u00e9\",\"separators\":\"\u2028|\u2029\"}",
+      "sha256": "eb6a859b976f4c6f66d218c74bc99a4ecc970ce530510ce0d079f86c4e59d267"
+    },
+    {
+      "name": "non_bmp_emoji_string",
+      "note": "A well-formed surrogate pair is valid I-JSON and passes: U+1F600 (\\ud83d\\ude00) and U+1F410 (\\ud83d\\udc10) are written raw, as their 4-byte UTF-8, in a value and in a name.",
+      "input": {"grin": "\ud83d\ude00", "\ud83d\udc10": "goat \ud83d\udc10"},
+      "canonical": "{\"grin\":\"\ud83d\ude00\",\"\ud83d\udc10\":\"goat \ud83d\udc10\"}",
+      "sha256": "6912f9e511bb7318f8f787d12ffc689998513bb511bd874d2fb9c65ee1716427"
+    },
+    {
+      "name": "numbers",
+      "note": "ECMAScript Number-to-String (RFC 8785 section 3.2.2.3 and Appendix B): -0 is 0; 1e21 and up and below 1e-6 use exponent form with an explicit sign; trailing zeros dropped; the shortest round-trip digits; 2^53+1 is not representable and reads as 2^53.",
+      "input": [0, -0, 1, -1.5, 100.0, 0.1, 1e-7, 0.000001, 1E21, 1e20, 999999999999999900000, 1e23, 295147905179352825856, 9007199254740993, 5e-324, -5e-324, 1.7976931348623157e308, 333333333.33333329, 1424953923781206.25, -0.0000033333333333333333, 9.999999999999997e-7],
+      "canonical": "[0,0,1,-1.5,100,0.1,1e-7,0.000001,1e+21,100000000000000000000,999999999999999900000,1e+23,295147905179352830000,9007199254740992,5e-324,-5e-324,1.7976931348623157e+308,333333333.3333333,1424953923781206.2,-0.0000033333333333333333,9.999999999999997e-7]",
+      "sha256": "ad86b9964d66449edc7439519aa40f9158d6e47dabaa799def42cd86d4e5b9c7"
+    },
+    {
+      "name": "nulls_and_literals",
+      "note": "null, true and false as literals in members, arrays and nested objects; a null member is kept, never dropped.",
+      "input": {"n": null, "list": [null, false, true, null], "obj": {"inner": null, "flag": false}, "t": true},
+      "canonical": "{\"list\":[null,false,true,null],\"n\":null,\"obj\":{\"flag\":false,\"inner\":null},\"t\":true}",
+      "sha256": "4ff549b65cfa751ed08331cbccdc09ecaf72917034b3630097e0f182a428b874"
+    },
+    {
+      "name": "top_level_array",
+      "note": "A top-level array or scalar canonicalises too; objects inside it are sorted.",
+      "input": [null, "x", 0, {"b": 1, "a": 2}, [{"d": [], "c": {}}]],
+      "canonical": "[null,\"x\",0,{\"a\":2,\"b\":1},[{\"c\":{},\"d\":[]}]]",
+      "sha256": "3ca59ad75e55658bc828c0dcbb3c0feb9dc600dbabd38541a33dcb4645bf975b"
+    }
+  ],
+  "refusedCases": [
+    { "name": "lone_high_surrogate_value", "input": {"a": "x\ud83dy"}, "refusal": "lone UTF-16 surrogate: not I-JSON; HOUSE_STRING_INVALID in a manifest" },
+    { "name": "lone_low_surrogate_value", "input": {"a": "\ude00"}, "refusal": "lone UTF-16 surrogate: not I-JSON; HOUSE_STRING_INVALID in a manifest" },
+    { "name": "high_surrogate_at_end", "input": ["ok", "end\ud83d"], "refusal": "lone UTF-16 surrogate: not I-JSON; HOUSE_STRING_INVALID in a manifest" },
+    { "name": "reversed_pair", "input": {"a": "\ude00\ud83d"}, "refusal": "lone UTF-16 surrogate: not I-JSON; HOUSE_STRING_INVALID in a manifest" },
+    { "name": "lone_surrogate_in_name", "input": {"\ud800": 1}, "refusal": "lone UTF-16 surrogate: not I-JSON; HOUSE_STRING_INVALID in a manifest" },
+    { "name": "lone_surrogate_nested", "input": {"a": {"b": [{"c": "\udfff"}]}}, "refusal": "lone UTF-16 surrogate: not I-JSON; HOUSE_STRING_INVALID in a manifest" }
+  ],
+  "manifestCases": [
+    {
+      "name": "signed",
+      "note": "A top-level signature is left out of the hash.",
+      "manifest": {"schema": "goat-house-portfolio-v1", "portfolioId": "goat-fx-core", "version": 1, "minEquity": 2500, "referenceAccount": {"server": "Darwinex-Demo", "currency": "USD", "startingBalance": 100000, "leverage": 200}, "members": [{"memberId": "EURUSD.M15.ea1b4daac5a52fde", "setName": "GOAT V1.49 EURUSD,M15_Trds=119.set"}], "signature": {"alg": "ed25519", "keyId": "goat-house-2026-10-v1", "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="}},
+      "canonical": "{\"members\":[{\"memberId\":\"EURUSD.M15.ea1b4daac5a52fde\",\"setName\":\"GOAT V1.49 EURUSD,M15_Trds=119.set\"}],\"minEquity\":2500,\"portfolioId\":\"goat-fx-core\",\"referenceAccount\":{\"currency\":\"USD\",\"leverage\":200,\"server\":\"Darwinex-Demo\",\"startingBalance\":100000},\"schema\":\"goat-house-portfolio-v1\",\"version\":1}",
+      "manifestSha256": "e3bfb1a954b805871ea7b2d75bd4387b09145efd703765b69cec3131fd917238"
+    },
+    {
+      "name": "unsigned_null",
+      "note": "signature null hashes the same: the hash never depends on the signature.",
+      "manifest": {"schema": "goat-house-portfolio-v1", "portfolioId": "goat-fx-core", "version": 1, "minEquity": 2500, "referenceAccount": {"server": "Darwinex-Demo", "currency": "USD", "startingBalance": 100000, "leverage": 200}, "members": [{"memberId": "EURUSD.M15.ea1b4daac5a52fde", "setName": "GOAT V1.49 EURUSD,M15_Trds=119.set"}], "signature": null},
+      "canonical": "{\"members\":[{\"memberId\":\"EURUSD.M15.ea1b4daac5a52fde\",\"setName\":\"GOAT V1.49 EURUSD,M15_Trds=119.set\"}],\"minEquity\":2500,\"portfolioId\":\"goat-fx-core\",\"referenceAccount\":{\"currency\":\"USD\",\"leverage\":200,\"server\":\"Darwinex-Demo\",\"startingBalance\":100000},\"schema\":\"goat-house-portfolio-v1\",\"version\":1}",
+      "manifestSha256": "e3bfb1a954b805871ea7b2d75bd4387b09145efd703765b69cec3131fd917238"
+    },
+    {
+      "name": "no_signature_key",
+      "note": "No signature key at all hashes the same again.",
+      "manifest": {"schema": "goat-house-portfolio-v1", "portfolioId": "goat-fx-core", "version": 1, "minEquity": 2500, "referenceAccount": {"server": "Darwinex-Demo", "currency": "USD", "startingBalance": 100000, "leverage": 200}, "members": [{"memberId": "EURUSD.M15.ea1b4daac5a52fde", "setName": "GOAT V1.49 EURUSD,M15_Trds=119.set"}]},
+      "canonical": "{\"members\":[{\"memberId\":\"EURUSD.M15.ea1b4daac5a52fde\",\"setName\":\"GOAT V1.49 EURUSD,M15_Trds=119.set\"}],\"minEquity\":2500,\"portfolioId\":\"goat-fx-core\",\"referenceAccount\":{\"currency\":\"USD\",\"leverage\":200,\"server\":\"Darwinex-Demo\",\"startingBalance\":100000},\"schema\":\"goat-house-portfolio-v1\",\"version\":1}",
+      "manifestSha256": "e3bfb1a954b805871ea7b2d75bd4387b09145efd703765b69cec3131fd917238"
+    },
+    {
+      "name": "nested_signature_kept",
+      "note": "Only the top-level signature is removed: a member field named signature is hashed like any other.",
+      "manifest": {"schema": "goat-house-portfolio-v1", "portfolioId": "goat-fx-core", "version": 1, "minEquity": 2500, "referenceAccount": {"server": "Darwinex-Demo", "currency": "USD", "startingBalance": 100000, "leverage": 200}, "members": [{"memberId": "EURUSD.M15.ea1b4daac5a52fde", "signature": "kept", "setName": "GOAT V1.49 EURUSD,M15_Trds=119.set"}], "signature": null},
+      "canonical": "{\"members\":[{\"memberId\":\"EURUSD.M15.ea1b4daac5a52fde\",\"setName\":\"GOAT V1.49 EURUSD,M15_Trds=119.set\",\"signature\":\"kept\"}],\"minEquity\":2500,\"portfolioId\":\"goat-fx-core\",\"referenceAccount\":{\"currency\":\"USD\",\"leverage\":200,\"server\":\"Darwinex-Demo\",\"startingBalance\":100000},\"schema\":\"goat-house-portfolio-v1\",\"version\":1}",
+      "manifestSha256": "4dcb75abc67431e457d9dd610556fba862869680a118c58ae2c667ec946c03b2"
+    }
+  ]
+}

@@ -66,14 +66,23 @@ class BrokerFitDeployTests(DeployFixture):
         result = bf.build_result(data, {hashlib.sha256(raw).hexdigest(): raw for raw in raws}, schema=self.c.schema, equity=equity,
                                  **reading(account=dict(ACCOUNT, equity=account_equity), symbols=SYMBOLS))
         self.assertTrue(result['offered'], result['refusal'])
+        # The house feed's manifestSha256 of the genuine manifest: what the app passes as --manifest-sha256.
+        self.genuine = result['manifestSha256']
+        self.assertEqual(self.genuine, bf.manifest_sha256(data))
         return members, raws, plan_block(result)
+
+    genuine = None
+
+    def validate(self, plan, manifest_sha256=...):
+        return deploy.validate_plan(self.c, self.c.session, plan,
+                                    manifest_sha256=self.genuine if manifest_sha256 is ... else manifest_sha256)
 
     def reads(self, *args, **kwargs):
         return patch('studio_broker_fit.read_broker', return_value=live_read(*args, **kwargs))
 
     def staged(self, plan_path):
         plan = json.loads(plan_path.read_text())
-        members = deploy.validate_plan(self.c, self.c.session, plan)
+        members = self.validate(plan)
         where = deploy.paths(self.c, plan['deploymentId'])
         for m in members:
             m['path'] = str(where['sets'] / m['name'])
@@ -105,7 +114,7 @@ class BrokerFitDeployTests(DeployFixture):
         members, raws, block = self.review(equity=50000)
         def refuses(pattern, changed):
             with self.assertRaisesRegex(ValueError, pattern):
-                deploy.validate_plan(self.c, self.c.session, json.loads(self.plan(members, brokerFit=changed).read_text()))
+                self.validate(json.loads(self.plan(members, brokerFit=changed).read_text()))
         entry = block['members'][0]
         refuses('differs from the reviewed broker-fit result.*nothing was written',
                 dict(block, members=[dict(entry, setSha256Deployed='0' * 64), block['members'][1]]))
@@ -117,20 +126,20 @@ class BrokerFitDeployTests(DeployFixture):
         refuses('Invalid broker-fit block', dict(block, schema='goat-broker-fit-deploy-v1'))
         refuses('does not match its plan member', dict(block, members=[dict(entry, brokerSymbol='EURUSD.raw'), block['members'][1]]))
         with self.assertRaisesRegex(ValueError, 'Invalid demo deploy plan'):
-            deploy.validate_plan(self.c, self.c.session, json.loads(self.plan(members, extra=1).read_text()))
+            self.validate(json.loads(self.plan(members, extra=1).read_text()))
 
     def test_the_money_safety_check_runs_on_the_deployed_bytes(self):
         members, raws, block = self.review(equity=50000)
         seen = []
         with patch('studio_demo_deploy.check_member_values', side_effect=lambda controller, name, raw: seen.append(raw)):
-            deploy.validate_plan(self.c, self.c.session, json.loads(self.plan(members, brokerFit=block).read_text()))
+            self.validate(json.loads(self.plan(members, brokerFit=block).read_text()))
         self.assertEqual(seen, [bf.rewrite_set(raw, entry['edits']) for raw, entry in zip(raws, block['members'])])
 
     def test_load_rechecks_the_live_broker_and_records_the_broker_fit(self):
         members, raws, block = self.review(equity=50000)
         self.start_ea(pairing='none')
         with self.relaunch(), self.reads(50000.0) as read:
-            result = deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 50000.0), sleep=lambda s: None)
+            result = deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 50000.0), manifest_sha256=self.genuine, sleep=lambda s: None)
         self.assertEqual(result['phase'], 'ready')
         read.assert_called_once()
         self.assertEqual([m['memberId'] for m in read.call_args.args[2]['members']], ['m0', 'm1'], 'the whole manifest is read')
@@ -150,7 +159,7 @@ class BrokerFitDeployTests(DeployFixture):
         for equity, currency in ((49000.0, 'USD'), (60000.0, 'USD'), (50000.0, 'EUR'), (None, 'USD')):
             with self.subTest(equity=equity, currency=currency):
                 with self.assertRaises(Refusal) as caught, self.reads(equity, currency=currency):
-                    deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, equity, currency), sleep=lambda s: None)
+                    deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, equity, currency), manifest_sha256=self.genuine, sleep=lambda s: None)
                 self.assertEqual(caught.exception.code, bf.FIT_STALE)
                 self.assertIn('The account changed since the check; run the fit again. Nothing was written or launched.',
                               str(caught.exception))
@@ -164,14 +173,14 @@ class BrokerFitDeployTests(DeployFixture):
     def test_a_scale_one_plan_also_rechecks(self):
         members, raws, block = self.review()
         with self.assertRaises(Refusal) as caught, self.reads(99999.0):
-            deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 99999.0), sleep=lambda s: None)
+            deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 99999.0), manifest_sha256=self.genuine, sleep=lambda s: None)
         self.assertEqual((caught.exception.code, caught.exception.fields['stale'][0]['input']), (bf.FIT_STALE, 'Risk'))
 
     def test_an_expired_plan_is_refused(self):
         members, raws, block = self.review(equity=50000)
         expired = dict(block, reviewedAtUtc=block['reviewedAtUtc'] - bf.PLAN_TTL_SECONDS - 1)
         with self.assertRaises(Refusal) as caught, self.reads(50000.0):
-            deploy.load(self.c, self.plan(members, brokerFit=expired), mt5=live(self.c, 50000.0), sleep=lambda s: None)
+            deploy.load(self.c, self.plan(members, brokerFit=expired), mt5=live(self.c, 50000.0), manifest_sha256=self.genuine, sleep=lambda s: None)
         self.assertEqual((caught.exception.code, caught.exception.fields['stale'][0]['input']), (bf.FIT_STALE, 'reviewedAtUtc'))
 
     def test_a_reference_identical_plan_deploys_while_every_condition_holds(self):
@@ -180,7 +189,7 @@ class BrokerFitDeployTests(DeployFixture):
         self.assertIsNotNone(block['referenceIdentical'])
         self.start_ea(pairing='none')
         with self.relaunch(), self.reads(103000.0):
-            result = deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 103000.0), sleep=lambda s: None)
+            result = deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, 103000.0), manifest_sha256=self.genuine, sleep=lambda s: None)
         self.assertEqual(result['phase'], 'ready')
         where = deploy.paths(self.c, 'e' * 32)
         self.assertEqual((where['sets'] / members[0]['fileName']).read_bytes(), raws[0], 'the reference bytes, unscaled')
@@ -195,14 +204,48 @@ class BrokerFitDeployTests(DeployFixture):
         for account, failing in cases:
             with self.subTest(account=account):
                 with self.assertRaises(Refusal) as caught, self.reads(**account):
-                    deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, **account), sleep=lambda s: None)
+                    deploy.load(self.c, self.plan(members, brokerFit=block), mt5=live(self.c, **account), manifest_sha256=self.genuine, sleep=lambda s: None)
                 self.assertEqual((caught.exception.code, [row['input'] for row in caught.exception.fields['stale']]), (bf.FIT_STALE, [failing]))
                 self.assertFalse(where['sets'].exists())
         # A hand-made exemption block (another server or startingBalance) is a claim the re-derivation refuses.
         other = dict(block, referenceIdentical=dict(block['referenceIdentical'], server='Darwinex-Demo'))
         with self.assertRaises(Refusal) as caught, self.reads(100000.0):
-            deploy.load(self.c, self.plan(members, brokerFit=other, deploymentId='f' * 32), mt5=live(self.c, 100000.0), sleep=lambda s: None)
+            deploy.load(self.c, self.plan(members, brokerFit=other, deploymentId='f' * 32), mt5=live(self.c, 100000.0), manifest_sha256=self.genuine, sleep=lambda s: None)
         self.assertEqual([row['input'] for row in caught.exception.fields['stale']], ['referenceIdentical'])
+
+    def test_a_broker_fit_plan_needs_the_published_manifest_sha(self):
+        # Round 4 R1 (goatai#2350 6132804177): MANIFEST_UNVERIFIED unless --manifest-sha256 is given and equals the
+        # JCS sha256 of the plan's manifest. Re-review 6132018108 probes: a manifest with startingBalance 10000 deploys
+        # 10x the Risk on a 10k account; contractSize and tickValue x10 turn FixedLots 0.10 into 1.0.
+        members, raws, block = self.review(equity=50000)
+        plan = json.loads(self.plan(members, brokerFit=block).read_text())
+        self.assertEqual(len(self.validate(plan)), 2, 'the genuine manifest passes')
+        probe_a = json.loads(json.dumps(block))
+        probe_a['manifest']['referenceAccount']['startingBalance'] = 10000
+        probe_b = json.loads(json.dumps(block))
+        for entry in probe_b['manifest']['members']:
+            entry['reference'].update(contractSize=entry['reference']['contractSize'] * 10, tickValue=entry['reference']['tickValue'] * 10)
+        cases = ((plan, None, 'no flag'), (plan, '0' * 64, 'a wrong sha'), (plan, 'not-a-sha', 'not a sha'),
+                 (dict(plan, brokerFit=probe_a), self.genuine, 'probe A: startingBalance 10000'),
+                 (dict(plan, brokerFit=probe_b), self.genuine, 'probe B: contractSize and tickValue x10'))
+        where = deploy.paths(self.c, 'e' * 32)
+        for candidate, sha, label in cases:
+            with self.subTest(case=label):
+                with self.assertRaises(Refusal) as caught:
+                    self.validate(candidate, sha)
+                self.assertEqual((caught.exception.code, str(caught.exception)), (bf.MANIFEST_UNVERIFIED, bf.MANIFEST_UNVERIFIED_MESSAGE))
+                path = self.plan(candidate['members'], brokerFit=candidate['brokerFit'])
+                with self.assertRaises(Refusal) as caught, self.reads(50000.0):
+                    deploy.load(self.c, path, mt5=live(self.c, 50000.0), manifest_sha256=sha, sleep=lambda s: None)
+                self.assertEqual(caught.exception.code, bf.MANIFEST_UNVERIFIED)
+                self.assertFalse(where['sets'].exists() or where['journal'].exists(), 'nothing written, not even a journal')
+        # The forged manifests hash differently: a caller cannot pass the genuine sha with forged values.
+        self.assertNotEqual(bf.manifest_sha256(probe_a['manifest']), self.genuine)
+        self.assertNotEqual(bf.manifest_sha256(probe_b['manifest']), self.genuine)
+        # The CLI takes the flag; no default skips it.
+        from goat_studio import OPERATION_CONTRACTS
+        self.assertEqual(OPERATION_CONTRACTS['deploy-load'].get('optional'), ['manifest-sha256'])
+        self.assertIn('MANIFEST_UNVERIFIED', OPERATION_CONTRACTS['deploy-load']['effect'])
 
     def test_a_plan_without_broker_fit_keeps_todays_journal_shape(self):
         self.start_ea(pairing='none')

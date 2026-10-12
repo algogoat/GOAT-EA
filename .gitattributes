@@ -7,3 +7,5 @@ controller/fixtures/heldout/** -text
 controller/contracts/profile-fixtures/** -text
 # Vendored byte-identical from goatai docs/fixtures (goatai#2500): never normalise it.
 controller/contracts/deploy-identity/** -text
+# Vendored byte-identical from goatai docs/fixtures (house feed v1.1, JCS manifestSha256): never normalise it.
+controller/contracts/house-manifest/** -text

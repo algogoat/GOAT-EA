@@ -876,6 +876,63 @@ class DeployRecordTests(unittest.TestCase):
         self.assertIn(dict(memberId='EURUSD.M1.kestrel', input='Lots_Input', reviewed=0.03, live=0.05), rows)
 
 
+JCS_CASES = HERE / 'contracts' / 'house-manifest' / 'house-manifest-jcs-cases.json'
+# Vendored byte-identical from goatai docs/fixtures/house-manifest-jcs-cases.json (house feed v1.1, goatai 269152191).
+JCS_CASES_SHA256 = 'c78e21fdd4866870eebd8d0639c5f01e52ad1f32cf565f55237c50ea18fd3a33'
+
+
+class ManifestShaTests(unittest.TestCase):
+    """Round 4 R1 (goatai#2350 6132804177): the manifest's RFC 8785 JCS sha256, stdlib only, on the shared vectors."""
+
+    def fixture(self):
+        raw = JCS_CASES.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), JCS_CASES_SHA256, 'the vendored copy is byte-identical')
+        return json.loads(raw)
+
+    def test_every_canonical_case(self):
+        cases = self.fixture()['cases']
+        self.assertGreaterEqual(len(cases), 9)
+        for case in cases:
+            with self.subTest(case=case['name']):
+                canonical = bf.jcs(case['input'])
+                self.assertEqual(canonical, case['canonical'])
+                self.assertEqual(hashlib.sha256(canonical.encode('utf-8')).hexdigest(), case['sha256'])
+
+    def test_every_refused_case(self):
+        for case in self.fixture()['refusedCases']:
+            with self.subTest(case=case['name']), self.assertRaisesRegex(ValueError, 'surrogate'):
+                bf.jcs(case['input'])
+
+    def test_every_manifest_case(self):
+        for case in self.fixture()['manifestCases']:
+            with self.subTest(case=case['name']):
+                self.assertEqual(bf.manifest_sha256(case['manifest']), case['manifestSha256'])
+
+    def test_numbers_follow_ecmascript(self):
+        # The cases Python's repr writes differently: exponent signs and padding, ints read as doubles, -0.
+        for value, text in ((1e21, '1e+21'), (1e-7, '1e-7'), (100000, '100000'), (100.0, '100'), (0.01, '0.01'), (-0.0, '0'),
+                            (2 ** 53 + 1, '9007199254740992'), (1.5e300, '1.5e+300'), (123e-20, '1.23e-18')):
+            with self.subTest(value=value):
+                self.assertEqual(bf.jcs(value), text)
+        for bad in (float('nan'), float('inf'), 10 ** 400):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                bf.jcs(bad)
+
+    def test_the_review_states_the_manifest_sha_and_the_deploy_requires_it(self):
+        data = manifest([member(KESTREL)])
+        result = run([(member(KESTREL), KESTREL)])
+        self.assertEqual(result['manifestSha256'], bf.manifest_sha256(data))
+        self.assertEqual(bf.verify_manifest(data, result['manifestSha256'].upper()), result['manifestSha256'])
+        signed = dict(data, signature=dict(alg='ed25519', keyId='goat-house-2026-10-v1', sig='A' * 88))
+        self.assertEqual(bf.manifest_sha256(signed), result['manifestSha256'], 'the top-level signature is left out')
+        forged = json.loads(json.dumps(data))
+        forged['referenceAccount']['startingBalance'] = 10000
+        for candidate, sha in ((data, None), (data, '0' * 64), (forged, result['manifestSha256']), (None, result['manifestSha256'])):
+            with self.assertRaises(Refusal) as caught:
+                bf.verify_manifest(candidate, sha)
+            self.assertEqual(caught.exception.code, bf.MANIFEST_UNVERIFIED)
+
+
 class DeployRecheckTests(unittest.TestCase):
     """Review 6130418265 items 2, 3, 4 and 7: the deploy re-derives every value from the manifest, the planning equity
     and the LIVE broker, and only compares the plan's claims."""

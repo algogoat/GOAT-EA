@@ -229,9 +229,12 @@ brokerFit: {                                   // = the broker-fit result's depl
 
 The inputs at deploy are `manifest`, the reference SET bytes (the plan members' and `excludedSets`, each hash-bound to
 the manifest) and the planning `equity`. Every other value is a CLAIM the deploy compares with its own re-derivation
-(round 2, review item 7). **The manifest itself is NOT verified yet** (re-review 6132018108 item A, open: the controller
-runtime has no ed25519 library): a plan carrying a forged manifest (another `startingBalance`, `contractSize`,
-`tickValue`, `startLot`) is re-derived from that forged manifest. Until A lands, the plan's manifest is trusted.
+(round 2, review item 7). **The manifest is bound by its sha now; its signature check comes in beta.38.** deploy-load
+refuses `MANIFEST_UNVERIFIED` ("GOAT could not verify this house portfolio against its published manifest, so nothing
+was deployed.") before anything is written unless `--manifest-sha256` is given and equals the manifest's RFC 8785 JCS
+sha256 without its top-level `signature` (round 4 R1). A forged manifest (another `startingBalance`, `contractSize`,
+`tickValue`, `startLot`) hashes differently and is refused. The caller is trusted to pass the sha it verified against
+the signed house feed; the controller's own ed25519 check is `P-beta38-controller-manifest-signature`.
 
 - With `brokerFit`, each plan member's `contentBase64`/`sha256` are the REFERENCE SET (as the house store serves it),
   its `fileName` is the result's `deployFileName` and its `symbol` the broker symbol. The plan lists fit members only.
@@ -336,9 +339,10 @@ These override the rules above where they differ.
    loss per lot = reference Risk x money factor / (startLot x lot factor). The pick sizes the margin and the
    `Lots_Max x start lot` minimum; `BELOW_MIN_LOT` when the ideal start lot (deployed Risk / loss per lot) is under
    VOLUME_MIN (the EA would be forced up to VOLUME_MIN). `scaled.startLot` is the pick.
-7. **The deploy trusts no plan value except the manifest** (Deploy hook above): block v2 carries `manifest`,
+7. **The deploy re-derives every plan value from the manifest** (Deploy hook above): block v2 carries `manifest`,
    `equity`, `reviewedAtUtc` and per member `brokerSymbol` / `deployFileName`; everything else is re-derived and
-   compared. The manifest's signature is not verified yet (round 3 item A, open).
+   compared. The manifest is bound by its JCS sha256 (`--manifest-sha256`, round 4 R1); its signature check comes in
+   beta.38.
 8. **Server clock from a tick seen arriving:** one tick time cannot prove its own age (3,600 s old on UTC+4 reads
    exactly UTC+3), so the offset is measured only from a mapped symbol's tick that arrives while `read_broker`
    re-reads them (at most 10 s, so its age is at most that). No arrival (closed market) = offset unknown: clock-
@@ -393,10 +397,9 @@ D. **The plan deploys exactly the review's fit set.** The block carries `exclude
    and adds a stale row `members` (reviewed = the plan's memberIds, live = the re-derived fit set) when they differ: a
    1-of-35 plan no longer passes the 90% rule at 100%, and a member the review excluded can never be added.
 
-A. **Open: manifest signature verification** (`MANIFEST_UNVERIFIED`). The controller's runtime (the suite's pinned
-   wheels: MetaTrader5 and numpy only, `controller/ci-requirements.txt`, goatai `desktop/tools/suiteRuntimeDependencies.cjs`)
-   has no ed25519 implementation, and GOAT does not hand-roll crypto, so the manifest is not verified by the
-   controller yet (see the Deploy hook note).
+A. **Manifest binding:** superseded by round 4 R1 (the sha is bound now). The signature check needs an ed25519
+   implementation the controller runtime does not ship (MetaTrader5 and numpy only); it is
+   `P-beta38-controller-manifest-signature`.
 
 ## Round 4 (goatai#2350 6132804177, 2026-10-12)
 
@@ -415,3 +418,19 @@ R3. **The reviewer's four worst-case ladders are tests** (`test_the_reviewers_wo
    116.60 against 74.68; Last 0.02 / 96.73 against 71.95; Cum 0.02 / 105.26 against 76.64; Start 0.03 / 155.41 against
    125.00). After R2 each deploys a Risk' whose planned loss is within the equity-linear Risk: 74.66 (0.01, 32.74),
    71.92 (0.01, 47.11), 76.62 (0.01, 47.99), 124.99 (0.02, 94.59).
+
+R1. **The manifest sha is mandatory at deploy** (the stopgap until the signature check ships in beta.38).
+   - `manifestSha256` = sha256 hex of the UTF-8 (no BOM) RFC 8785 JCS of the manifest without its TOP-LEVEL
+     `signature` (stdlib `json` + `hashlib`: members sorted by UTF-16 code units, strings as `JSON.stringify` writes them,
+     numbers as ECMAScript Number-to-String of the double a JSON reader holds, so `1e21` is `1e+21` and an integer like
+     `2**53 + 1` reads as `2**53`; non-finite numbers and lone surrogates are refused). Vectors:
+     `controller/contracts/house-manifest/house-manifest-jcs-cases.json`, vendored byte-identical from goatai
+     `docs/fixtures/` (sha256 `c78e21fd...3a33`, `-text`); every case, refused case and manifest case passes.
+   - broker-fit reports it (`manifestSha256`, additive). `deploy-load --manifest-sha256 <hex>`: a plan with a
+     `brokerFit` block refuses `MANIFEST_UNVERIFIED` before anything is written (no journal) unless the flag is given
+     and equals it. Every deploy path goes through `validate_plan`, the CLI included; a plan without `brokerFit` is
+     unchanged.
+   - Out of scope here: `P-beta38-controller-manifest-signature`, the controller's own ed25519 check of
+     `signature {alg: 'ed25519', keyId, sig}` against the pinned house key `goat-house-2026-10-v1` (SPKI-DER sha256
+     `be69c584...6dad`), which needs the `cryptography` + `cffi` wheels added to goatai's `suiteRuntimeDependencies`
+     (beta.38).

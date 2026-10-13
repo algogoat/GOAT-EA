@@ -52,7 +52,7 @@ The loop, every time:
    - Skip `deprecated` templates. Do not repeat a pair whose latest result is `no-qualifying-exports` with the same settings unless the user asks; change something (dates, range variant) and say why.
 5. **Show the user** the proposed order, why each pair is there, and the measured time per member from `benchmark-report`. Start only after their yes.
 
-Rules for honest results: a technical failure is not a bad strategy; seed results are in-sample only; an optimization winner is not out-of-sample proof; missing numbers are `null` or `unavailable`, never zero. Results for local variants (forks) cannot be recorded with `strategy.recordResult` in this beta because it only accepts installed catalog templates; keep them in the work folder and mention it in the handoff.
+Rules for honest results: a technical failure is not a bad strategy; seed results are in-sample only; an optimization winner is not out-of-sample proof; missing numbers are `null` or `unavailable`, never zero. Results for local variants (forks) are recorded with `strategy.recordResult` too: pass the `forkId` from `strategy.forkTemplate`, with `templateId` = that `forkId`, `templateRevision` = the fork's parent revision and `templateSha256` = the fork's sha256. `catalogRevision` must still name an installed catalog revision. The desktop refuses the record if the fork receipt is missing or the stored fork bytes no longer match; edited bytes are a new fork.
 
 ## Budget and pacing
 

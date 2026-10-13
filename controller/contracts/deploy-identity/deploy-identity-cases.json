@@ -1,0 +1,71 @@
+{
+  "schema": "goat-house-deploy-identity-cases-v1",
+  "source_of_truth": "goatai desktop/main/services/demoDeployService.ts houseDeployIdentity (goatai#2500; Claude-Mac goatai#2350 6130422276); test: desktop/tests/houseBrokerFit.test.ts",
+  "sync": "The GOAT-EA controller vendors this file byte-identically and stores the same identity for a broker-fit deploy. Change it here first, then copy the same bytes; never edit one copy alone. The file is pure ASCII.",
+  "rule": "preimage = 'goat-house-deploy-identity-v1|scale=' + S + '|' + the setSha256Deployed values (64 lower-case hex each, duplicates kept) sorted ascending and joined with ','; S = the scale written with exactly 10 decimals (round to nearest) and then trailing zeros and a trailing point removed (JavaScript scale.toFixed(10), Python format(scale, '.10f'), then rstrip('0').rstrip('.')): 1 -> '1', 0.355 -> '0.355'. No trailing newline. sha256 = lower-case hex SHA-256 of the UTF-8 bytes of preimage. The scale must be finite and positive and the list non-empty.",
+  "cases": [
+    {
+      "name": "scale_one_two_members",
+      "scale": 1,
+      "setSha256Deployed": [
+        "6950b056a220595af228cd5665a77d2bf1e477da95975f05e7f61634836dd790",
+        "990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a"
+      ],
+      "preimage": "goat-house-deploy-identity-v1|scale=1|6950b056a220595af228cd5665a77d2bf1e477da95975f05e7f61634836dd790,990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a",
+      "sha256": "3b0bbf1e396f14b5b50db267ed8c3b7fe8f881e536174b63b2b9a703e49e8366"
+    },
+    {
+      "name": "scale_0_355_three_members",
+      "scale": 0.355,
+      "setSha256Deployed": [
+        "6950b056a220595af228cd5665a77d2bf1e477da95975f05e7f61634836dd790",
+        "990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a",
+        "b3694d084297ff36ca68ebdc81cd4c3969cbdb3280e15890b44b6ee6c9763308"
+      ],
+      "preimage": "goat-house-deploy-identity-v1|scale=0.355|6950b056a220595af228cd5665a77d2bf1e477da95975f05e7f61634836dd790,990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a,b3694d084297ff36ca68ebdc81cd4c3969cbdb3280e15890b44b6ee6c9763308",
+      "sha256": "02495b4f34ec9a44d1b7495d8f8d16e5013fe0f248d971aafd23ace38fe59cca"
+    },
+    {
+      "name": "unsorted_input_is_sorted_first",
+      "scale": 0.25,
+      "setSha256Deployed": [
+        "b3694d084297ff36ca68ebdc81cd4c3969cbdb3280e15890b44b6ee6c9763308",
+        "a034602d73223606d9d166442e268d99fb9f63ca3b8030fdedf1cd3cd5ba55a3",
+        "990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a",
+        "6950b056a220595af228cd5665a77d2bf1e477da95975f05e7f61634836dd790"
+      ],
+      "preimage": "goat-house-deploy-identity-v1|scale=0.25|6950b056a220595af228cd5665a77d2bf1e477da95975f05e7f61634836dd790,990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a,a034602d73223606d9d166442e268d99fb9f63ca3b8030fdedf1cd3cd5ba55a3,b3694d084297ff36ca68ebdc81cd4c3969cbdb3280e15890b44b6ee6c9763308",
+      "sha256": "1922658aea76ddd32416b6e66ec05c09d893fd23282d1d66b14368fa45808610"
+    },
+    {
+      "name": "single_member",
+      "scale": 0.5,
+      "setSha256Deployed": [
+        "ebd681da1e8381753e9dda7457391943b20f1731430e725ab9bfab1c37f970d5"
+      ],
+      "preimage": "goat-house-deploy-identity-v1|scale=0.5|ebd681da1e8381753e9dda7457391943b20f1731430e725ab9bfab1c37f970d5",
+      "sha256": "85cf01cdeda1c94f31a09e1fd7cc9b5ffdd528a854ed875882df4c3f5e940e5f"
+    },
+    {
+      "name": "scale_one_third_ten_decimals",
+      "scale": 0.3333333333333333,
+      "setSha256Deployed": [
+        "6950b056a220595af228cd5665a77d2bf1e477da95975f05e7f61634836dd790",
+        "0aea844657382cc6ba647725a757a6a8f9b645ec3f00bd38436f4ad2740b42ae"
+      ],
+      "preimage": "goat-house-deploy-identity-v1|scale=0.3333333333|0aea844657382cc6ba647725a757a6a8f9b645ec3f00bd38436f4ad2740b42ae,6950b056a220595af228cd5665a77d2bf1e477da95975f05e7f61634836dd790",
+      "sha256": "f265accde1f777a16ee9a6ed04f68a00b0d0530353574c9fbe29deb2c053891d"
+    },
+    {
+      "name": "duplicate_hashes_kept",
+      "scale": 2,
+      "setSha256Deployed": [
+        "990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a",
+        "6950b056a220595af228cd5665a77d2bf1e477da95975f05e7f61634836dd790",
+        "990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a"
+      ],
+      "preimage": "goat-house-deploy-identity-v1|scale=2|6950b056a220595af228cd5665a77d2bf1e477da95975f05e7f61634836dd790,990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a,990bd72407293f17a5f9a8280ff479f8799fd6552b60bae8d8d5311d3a60087a",
+      "sha256": "f2ac92e12149c5c9d26c2139d7dec0434fb189af5378b022495eb2ea59912297"
+    }
+  ]
+}

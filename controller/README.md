@@ -328,7 +328,7 @@ distinguishes precreated `/profile` charts from disposable `[StartUp]` charts.
 | `submit` | `--request` JSON file | Submit exact versioned agent command envelope; no actor override |
 | `prepare` | `--job-id`, `--set`, `--configuration` | Freeze complete inputs, queue job and stage immutable native package |
 | `prepare-batch` | `--batch-id`, `--plan` | Freeze all file/asset members of a complete native queue; no launch |
-| `batch-status` | `--batch-id` | Reconcile native queue and every member's progress |
+| `batch-status` | `--batch-id` | Reconcile native queue and every member's progress; `ea_refusal` quotes the EA's refusal of this attempt from the Experts log (null when none) |
 | `save-batch` | `--batch-id`, `--output` | Save a standard `.goatbatch` outside controller state; never overwrite |
 | `load-batch` | New `--batch-id`, `--file` | Validate a saved `.goatbatch` as new unstarted work on this installation |
 | `resume-batch` | `--source-batch-id`, new `--batch-id`, optional `--include-failed` | Prepare verified unfinished members after original completion/cancellation; no launch |
@@ -539,6 +539,23 @@ grant, configuration or native identity requires reconciliation. On the customer
 native human-control lane a new start also needs `--mt5-restart-consent`, because
 the first member starts through the report-capable /config route (see
 "Report-capable first-member startup").
+
+**A batch that stalls at start: read `ea_refusal`** (Banker 2026-10-13). When the EA
+refuses a batch at `OnTesterInit`, it Prints the reason to the terminal's **Experts**
+log (`<data folder>\MQL5\Logs\<yyyymmdd>.log`), e.g. `GOAT optimization refused before
+passes: Native optimization flag/value/range differs: RSI_TF_`, while MT5's tester
+journal (`Tester\logs`) says only `OnTesterInit failed. Optimization cannot be
+started.` `batch-status`, `batch-driver-status`, research-status (`activity`) and the
+stall verdict (`stall`) carry `ea_refusal` (`at`, `line`, `reason`, `kind`, `log`,
+`plain`) read from that log by `studio_ea_refusal`: read-only with a share-friendly
+open, only from the attempt's launch intent up to the next attempt, only the batch's
+own symbols, the last 2 MB per day and at most 200 matching lines; `null` when there
+is none or the log is missing or unreadable. A stall with `ea_refusal` names the
+reason and recommends only the stop: retrying the same inputs refuses again, so fix
+the SET (`build-set`, `validate-set`) and prepare a new batch. On the owner demo lane
+`continue` refuses such a batch (`EA_REFUSED_INPUTS`, or `HUMAN_CANCEL_RETAINED` for a
+retained human cancel), and `clear-stop` reports `clears: owner_stop_file_only`: it
+only ever deletes the owner STOP file.
 
 The driver also requires 5 GiB of free space on each terminal-data, Common-files
 and controller-state filesystem. `--min-free-bytes <positive integer>` selects a

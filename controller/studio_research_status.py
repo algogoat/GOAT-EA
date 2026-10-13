@@ -959,11 +959,18 @@ def research_status(*, root, install, session, local, now, process='unknown', wo
                         **progress)
         # A batch whose MT5 has run nothing for a while is not "running" (goatai#1885, Banker 2026-10-05).
         from studio_batch_stall import research_stall
-        stall = research_stall(activity, monitor, journal, now=now, session=session)
+        from studio_ea_refusal import for_job as ea_refusal_for
+        refusal_fn = (lambda: ea_refusal_for(install, current, jobs, now=now))
+        stall = research_stall(activity, monitor, journal, now=now, session=session, refusal_fn=refusal_fn)
+        # Nothing runs now: the EA's own refusal of this attempt (its Experts log), null when none (Banker 2026-10-13).
+        idle = current.get('status') in ACTIVE | {'failed', 'cancelled'} and activity.get('current_member') is None
         if stall is not None:
             activity.update(status='stalled', stall=stall)
+        activity['ea_refusal'] = stall.get('ea_refusal') if stall is not None else refusal_fn() if idle else None
     activity['_now'] = now
     activity['headline'] = activity['stall']['plain'] if activity.get('status') == 'stalled' else headline(activity)
+    if activity.get('status') != 'stalled' and isinstance(activity.get('ea_refusal'), dict):
+        activity['headline'] = str(activity['headline']).rstrip() + ' ' + activity['ea_refusal']['plain']
     activity.pop('_now', None)
     driver = None
     if journal is not None or activity.get('kind') == 'batch':

@@ -548,8 +548,9 @@ journal (`Tester\logs`) says only `OnTesterInit failed. Optimization cannot be
 started.` `batch-status`, `batch-driver-status`, research-status (`activity`) and the
 stall verdict (`stall`) carry `ea_refusal` (`at`, `line`, `reason`, `kind`, `log`,
 `plain`) read from that log by `studio_ea_refusal`: read-only with a share-friendly
-open, only from the attempt's launch intent up to the next attempt, only the batch's
-own symbols, the last 2 MB per day and at most 200 matching lines; `null` when there
+open, only from the attempt's launch intent up to its retained completion or the next
+attempt, only the batch's own symbols, the launch day and its next two days plus the
+newest three days, the last 2 MB per day and at most 200 matching lines; `null` when there
 is none or the log is missing or unreadable. A stall with `ea_refusal` names the
 reason and recommends only the stop: retrying the same inputs refuses again, so fix
 the SET (`build-set`, `validate-set`) and prepare a new batch. On the owner demo lane

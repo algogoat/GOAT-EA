@@ -196,6 +196,27 @@ class BatchStatusFieldTests(unittest.TestCase):
         return SimpleNamespace(root=self.data / 'state', install=dict(terminal_data_root=str(self.data)),
                                job=lambda job_id: by_id[job_id], state=lambda: dict(queue=list(jobs)))
 
+    def test_a_settled_attempt_ends_at_its_completion(self):
+        # GOAT-EA#234 review: a refusal printed after the attempt settled (another run) is never this attempt's.
+        settled = dict(job('prove-a', local_wall(7, 2)), completion=dict(native=dict(observed_at=iso(local_wall(7, 30)))))
+        install = dict(terminal_data_root=str(self.data))
+        self.assertEqual(attempt_window(settled, [settled]), (local_wall(7, 2), local_wall(7, 30)))
+        self.assertEqual(for_job(install, settled, [settled], now=local_wall(9, 0))['at_local'], '2026-10-13 07:03:27.463')
+        early = dict(settled, completion=dict(native=dict(observed_at=iso(local_wall(7, 3)))))
+        self.assertIsNone(for_job(install, early, [early], now=local_wall(9, 0)))
+        # Unsettled: open-ended, as before.
+        running = dict(settled, status='running')
+        self.assertEqual(attempt_window(running, [running]), (local_wall(7, 2), None))
+
+    def test_the_launch_day_is_read_however_late_the_retry(self):
+        # GOAT-EA#234 review: a continue a week later still sees the launch day's refusal.
+        refused = job('prove-a', local_wall(7, 2))
+        week_later = datetime(2026, 10, 20, 9, 0).timestamp()
+        found = for_job(dict(terminal_data_root=str(self.data)), refused, [refused], now=week_later)
+        self.assertEqual(found['reason'], REASON)
+        days = studio_ea_refusal._days(local_wall(7, 2), week_later)
+        self.assertEqual([day.day for day in days], [13, 14, 15, 18, 19, 20])
+
     def test_research_status_names_the_refusal_when_nothing_runs(self):
         from studio_research_status import research_status
         local = self.data / 'MQL5/Files/GOATStudio'; local.mkdir(parents=True)

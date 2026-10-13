@@ -88,14 +88,14 @@ def _lines(path):
 
 
 def _days(since_wall, end_wall):
-    """The local log days from the attempt's start to its end, newest MAX_LOG_DAYS only, oldest first."""
+    """The local log days of the window, oldest first: always the attempt's launch day and the MAX_LOG_DAYS days
+    from it (a start refusal lands there), plus the newest MAX_LOG_DAYS days up to the window's end. At most
+    2 * MAX_LOG_DAYS files however old the attempt (GOAT-EA#234 review: a retry days later still sees the refusal)."""
     first = datetime.fromtimestamp(since_wall).date()
-    day = datetime.fromtimestamp(max(end_wall, since_wall)).date()
-    days = []
-    while day >= first and len(days) < MAX_LOG_DAYS:
-        days.append(day)
-        day -= timedelta(days=1)
-    return days[::-1]
+    last = datetime.fromtimestamp(max(end_wall, since_wall)).date()
+    days = {first + timedelta(days=step) for step in range(MAX_LOG_DAYS)}
+    days |= {last - timedelta(days=step) for step in range(MAX_LOG_DAYS)}
+    return sorted(day for day in days if first <= day <= last)
 
 
 def _window_lines(root, folder, since_wall, until_wall, end_wall):
@@ -193,17 +193,35 @@ def _symbols(job):
     return found or None
 
 
+SETTLED = frozenset(('completed', 'failed', 'cancelled'))
+
+
+def _settled_wall(job, since):
+    """When a settled attempt's completion was observed (completion.native.observed_at), or None while unsettled."""
+    if job.get('status') not in SETTLED:
+        return None
+    completion = job.get('completion') if isinstance(job.get('completion'), dict) else {}
+    native = completion.get('native') if isinstance(completion.get('native'), dict) else {}
+    wall = _wall(native.get('observed_at'))
+    return wall if wall is not None and wall > since else None
+
+
 def attempt_window(job, jobs=()):
-    """(start, end) of this job's launch attempt: its launch intent, up to the next attempt on this terminal."""
+    """(start, end) of this job's launch attempt: from its launch intent up to the earlier of its retained completion
+    (once settled) and the next attempt on this terminal; open-ended (None) only while unsettled with no later attempt.
+    A refusal another run prints after this attempt settled is never this attempt's (GOAT-EA#234 review)."""
     intent = job.get('launch_intent') if isinstance(job, dict) else None
     since = _wall(intent.get('recorded_at')) if isinstance(intent, dict) else None
     if since is None:
         return None, None
-    later = [wall for wall in (_wall(((other or {}).get('launch_intent') or {}).get('recorded_at'))
-                               for other in jobs or () if isinstance(other, dict)
-                               and other.get('job_id') != job.get('job_id'))
-             if wall is not None and wall > since]
-    return since, (min(later) if later else None)
+    ends = [wall for wall in (_wall(((other or {}).get('launch_intent') or {}).get('recorded_at'))
+                              for other in jobs or () if isinstance(other, dict)
+                              and other.get('job_id') != job.get('job_id'))
+            if wall is not None and wall > since]
+    settled = _settled_wall(job, since)
+    if settled is not None:
+        ends.append(settled)
+    return since, (min(ends) if ends else None)
 
 
 def for_job(install, job, jobs=(), *, now=None):

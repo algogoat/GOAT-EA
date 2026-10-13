@@ -366,7 +366,8 @@ def _export_members(context, set_path, span=None):
         export = read_export(set_path)
         start, end = iso_day(export.get('evidence_start')), iso_day(export.get('evidence_end'))
         span = dict(start=start, end=end + timedelta(days=1), open_end=False) if start and end else None
-        raw = Path(set_path).read_bytes()
+        from studio_run_folder_archive import read_bytes  # a cited SET may live in an archived run folder
+        raw = read_bytes(set_path)
         attribution = context.library.attribute(set_sha256=export.get('set_sha256'), values=set_values(raw))
         if attribution['attribution'] == 'unattributed':
             attribution = _export_fingerprint(context, set_values(raw)) or attribution

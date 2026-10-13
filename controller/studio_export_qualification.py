@@ -446,10 +446,16 @@ def scan_run(run_root, *, generated_at=None):
     """
     # Absolute and canonical before anything else: the held-out guard only recognises an export by its
     # absolute .set path, so a relative --source must never reach it as written (Claude-Mac on #164).
-    run_root = Path(run_root).resolve()
+    # A run folder moved by evidence-archive --run-folders is read from its archive; every path this reports stays the
+    # cited one (studio_run_folder_archive).
+    from studio_run_folder_archive import run_dir
+    cited = Path(run_root).resolve()
+    run_root = run_dir(cited)
     if not any((run_root / name).exists() for name in ('deploy', 'export_settings.GOAT', 'log.GOAT', 'manifest.json')):
-        raise ValueError('Not a GOAT run folder (no deploy folder, export_settings.GOAT, log.GOAT or manifest.json): ' + str(run_root))
+        raise ValueError('Not a GOAT run folder (no deploy folder, export_settings.GOAT, log.GOAT or manifest.json): ' + str(cited))
     thresholds = read_run_thresholds(run_root)
+    if thresholds.get('path'):
+        thresholds = dict(thresholds, path=str(cited / 'export_settings.GOAT'))
     settings_text = ''
     try:
         settings_path = run_root / 'export_settings.GOAT'
@@ -466,14 +472,14 @@ def scan_run(run_root, *, generated_at=None):
                 if len(entries) >= MAX_RUN_SETS:
                     raise ValueError('More than %d kept sets in one run; refusing a partial scan' % MAX_RUN_SETS)
                 stamp = stamp_set(set_path, thresholds)
-                entry = dict(set_path=str(set_path), set_name=stamp['set_name'], set_sha256=stamp['set_sha256'],
+                entry = dict(set_path=str(cited / set_path.relative_to(run_root)), set_name=stamp['set_name'], set_sha256=stamp['set_sha256'],
                              member=alias.name, symbol=symbol.name, qualification=stamp)
                 entries.append(entry)
                 members.setdefault((alias.name, symbol.name), []).append(stamp)
     stamps = [entry['qualification'] for entry in entries]
     native_sets = sum(1 for s in stamps if s.get('ea_native_passed'))
     native_members = sum(1 for kept in members.values() if any(s.get('ea_native_passed') for s in kept))
-    crosscheck = dict(log_path=str(run_root / 'log.GOAT'), adjust_lots=adjust_lots,
+    crosscheck = dict(log_path=str(cited / 'log.GOAT'), adjust_lots=adjust_lots,
                       stamped_native_passed_sets=native_sets, stamped_members_with_native_pass=native_members)
     text = read_log(run_root / 'log.GOAT')
     if text is None:
@@ -504,7 +510,7 @@ def scan_run(run_root, *, generated_at=None):
     for status in ('passed', 'below_threshold', 'unknown'):
         counts[status + '_sets'] = sum(1 for s in stamps if s['status'] == status)
         counts[status + '_members'] = sum(1 for kept in members.values() if summarize(kept)['member'] == status)
-    return dict(schema=BACKFILL_SCHEMA, run_id=run_root.name, run_root=str(run_root), generated_at=generated_at,
+    return dict(schema=BACKFILL_SCHEMA, run_id=cited.name, run_root=str(cited), generated_at=generated_at,
                 thresholds=dict(public_thresholds(thresholds) or {}, available=bool(thresholds.get('available')),
                                 path=thresholds.get('path'), problems=thresholds.get('problems') or []),
                 log_crosscheck=crosscheck, counts=counts, stamps=entries,

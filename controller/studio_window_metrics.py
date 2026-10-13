@@ -220,7 +220,8 @@ def boundaries(from_date, to_date, back_oos_date=None, include_back_oos=True):
 def export_window_metrics(set_path, *, from_date, to_date, back_oos_date=None, include_back_oos=True, csv_raw=None):
     """``preFoos``, ``selectionWindow`` and ``fullExport`` for one kept export unit (read only)."""
     from studio_evidence import parse_header, read_capture, unit_paths
-    paths = unit_paths(set_path)
+    from studio_run_folder_archive import resolve
+    paths = unit_paths(resolve(set_path))     # the archive copy of a unit in a run folder evidence-archive moved
     raw = Path(paths['set']).read_bytes()
     text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
     rows = equity_samples(csv_raw if csv_raw is not None else Path(paths['csv']).read_bytes())

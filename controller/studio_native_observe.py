@@ -29,7 +29,11 @@ def observe(package):
                   studio_source=plan['studio_source'], native_run=str(run),
                   run_alias=aliases[0], member_count=len(aliases), launch_permitted=False, retry_permitted=False,
                   process_liveness='not_observed', export_qualification='not_evaluated')
-    queue = run/'queue.GOAT'
+    # A run folder moved by evidence-archive --run-folders is read from its archive (studio_run_folder_archive);
+    # every path reported stays the run folder's own.
+    from studio_run_folder_archive import run_dir
+    physical = run_dir(run)
+    queue = physical/'queue.GOAT'
     if not queue.exists():
         return result | dict(status='native_evidence_missing',
                              next_action='Inspect activation and process ownership; absence does not prove stopped')
@@ -38,7 +42,7 @@ def observe(package):
     entries = [entry.strip() for entry in text.split('\x1f') if entry.strip()]
     if len(entries)!=len(manifest['jobs']):
         raise ValueError('Native queue/frozen member count mismatch')
-    members=[];artifacts=[dict(path=str(queue),sha256=hashlib.sha256(raw).hexdigest())]
+    members=[];artifacts=[dict(path=str(run/'queue.GOAT'),sha256=hashlib.sha256(raw).hexdigest())]
     for index,(entry,item) in enumerate(zip(entries,manifest['jobs'])):
         alias=item['run_alias'];lines=entry.splitlines();header=lines[0]
         match = re.fullmatch(r';(Pending|Queued|OnGoing|Completed|Error|Cancelled)_[^;\r\n]+:'+re.escape(alias)+r';', header)
@@ -48,7 +52,7 @@ def observe(package):
         expected={k:str(v) for k,v in item['tester'].items()}
         if parser.defaults() or parser.sections()!=['Tester'] or dict(parser['Tester'])!=expected:
             raise ValueError('Native tester configuration differs from frozen member')
-        inputs=run/'inputs'/alias/'Inputs.GOAT';input_raw=inputs.read_bytes()
+        inputs=run/'inputs'/alias/'Inputs.GOAT';input_raw=(physical/'inputs'/alias/'Inputs.GOAT').read_bytes()
         if hashlib.sha256(input_raw).hexdigest()!=item['staged_sha256']:
             raise ValueError('Native strategy input drift')
         artifact=dict(path=str(inputs),sha256=hashlib.sha256(input_raw).hexdigest());artifacts.append(artifact)

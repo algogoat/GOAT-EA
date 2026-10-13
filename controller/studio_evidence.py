@@ -258,8 +258,15 @@ def thresholds(run):
 
 
 def read_export(set_path, *, runs=None):
-    """Facts about one kept export unit. Raises ValueError only for an unreadable SET."""
-    paths = unit_paths(set_path)
+    """Facts about one kept export unit. Raises ValueError only for an unreadable SET.
+
+    A unit inside a run folder moved by ``evidence-archive --run-folders`` is read from its archive copy
+    (studio_run_folder_archive): ``set_path`` stays the cited path, ``archived_set_path`` names the copy read, and
+    ``csv_path`` / ``capture.path`` are where those files are read now."""
+    from studio_run_folder_archive import locate
+    cited = unit_paths(set_path)['set']
+    physical, moved = locate(cited)
+    paths = unit_paths(physical)
     raw = _read(paths['set'], MAX_SET_BYTES)
     info = inspect_set(raw)
     text = raw.decode('utf-16') if raw.startswith(b'\xff\xfe') else raw.decode('utf-8-sig')
@@ -329,7 +336,8 @@ def read_export(set_path, *, runs=None):
     if metrics:
         limits = dict(limits, profit_positive=metrics['profit'] > 0, arf_margin=round(metrics['arf'] - limits['min_arf'], 6),
                       sr_margin=round(metrics['sr'] - limits['min_sr'], 6), source='export_file_name_metrics')
-    return dict(schema='goat-export-evidence-v1', set_path=str(paths['set']), set_sha256=info['sha256'],
+    return dict(schema='goat-export-evidence-v1', set_path=str(cited), set_sha256=info['sha256'],
+                **(dict(archived_set_path=str(paths['set'])) if moved else {}),
                 values_sha256=info['canonical_sha256'], alias=alias, member=member,
                 ea_name=named and named['ea_name'], symbol=named and named['symbol'], period=named and named['period'],
                 metrics=metrics, windows=windows, csv_path=str(paths['csv']) if paths['csv'].is_file() else None,
@@ -346,19 +354,23 @@ def read_export(set_path, *, runs=None):
 
 def collect_sets(sources, limit=MAX_SETS):
     """Kept export SETs under each source (a .set file, member, deploy or run folder)."""
+    from studio_run_folder_archive import logical, resolve
     found, seen = [], set()
     for source in sources:
-        path = Path(source)
-        if not path.is_absolute():
+        cited = Path(source)
+        if not cited.is_absolute():
             raise ValueError('Evidence sources must be absolute paths')
+        # A source inside a run folder moved by evidence-archive --run-folders is walked in its archive copy; each
+        # SET found is still named by its cited path (read_export reads it from the copy).
+        path = resolve(cited, None)
         if path.is_file():
-            candidates = [path] if path.suffix.lower() == '.set' else []
+            candidates = [cited] if path.suffix.lower() == '.set' else []
             if not candidates:
-                raise ValueError('Evidence source file must be an exported .set: ' + str(path))
+                raise ValueError('Evidence source file must be an exported .set: ' + str(cited))
         elif path.is_dir():
             deploy = path / 'deploy'
             base = deploy if deploy.is_dir() and (path / 'export_settings.GOAT').is_file() else path
-            candidates = sorted(p for p in base.rglob('*.set')
+            candidates = sorted(logical(p, path, cited) for p in base.rglob('*.set')
                                 if not any(part.lower().endswith('.goatseq') for part in p.relative_to(base).parts[:-1]))
         else:
             raise ValueError('Evidence source not found: ' + str(path))

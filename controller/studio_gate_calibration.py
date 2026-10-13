@@ -418,10 +418,14 @@ def _number(value):
 
 # ---------------------------------------------------------------- loading runs
 def discover_runs(common_root):
+    from studio_run_folder_archive import run_dir as archived_run_dir
     root = Path(common_root)
     found = []
     for run in sorted(root.glob('R*')):
-        if not run.is_dir() or not (run / 'manifest.json').is_file():
+        if not run.is_dir():
+            continue
+        run = archived_run_dir(run)          # a run folder moved by evidence-archive --run-folders: its archive copy
+        if not (run / 'manifest.json').is_file():
             continue
         if any(True for _ in _goatseq_dirs(run)):
             found.append(run.name)
@@ -461,7 +465,8 @@ def is_filler(file_metrics, settings, header=None):
 
 def load_run(run_dir):
     """Records for every finished sequence capture of one run, plus skipped reasons."""
-    run_dir = Path(run_dir)
+    from studio_run_folder_archive import run_dir as archived_run_dir
+    run_dir = archived_run_dir(Path(run_dir))   # its archive copy once evidence-archive --run-folders moved it (same name)
     manifest = json.loads(_text(run_dir / 'manifest.json', MAX_MANIFEST))
     settings = manifest.get('export_settings') or {}
     jobs = {job['run_alias']: job for job in manifest.get('jobs', [])}

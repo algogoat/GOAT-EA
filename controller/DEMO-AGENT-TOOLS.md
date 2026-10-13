@@ -452,6 +452,44 @@ archive never deletes the only copy. No MT5 effect.
   listed batch in place. The Exp 02
   refusal belongs to the desktop gate, as with `batch-pause-close`.
 
+#### Finished run folders (`evidence-archive --run-folders`, P-beta38-run-folder-archive)
+
+```powershell
+& $goat demo --installation $receipt evidence-archive --run-folders --archive-root 'E:\GOAT-Run-Archive'                                 # preview: eligible folders, bytes, target free space
+& $goat demo --installation $receipt evidence-archive --run-folders --archive-root 'E:\GOAT-Run-Archive' --keep-list '<keep.json>' --apply --confirm   # copy + verify + ARCHIVED.json; sources stay
+& $goat demo --installation $receipt evidence-archive --run-folders --complete --confirm                                                 # separate step: re-verify, then remove the sources
+```
+
+Moves finished native run folders (`Common Files\GOAT\R<12 hex>`) to
+`<archive root>\<run id>\` (`studio_run_folder_archive.py`); the folder keeps only
+`ARCHIVED.json` (archive folder, file count, bytes, manifest sha256, time, state
+`archived` -> `removing` -> `removed`), which every controller reader follows.
+
+- Eligible, from the controller's own state of this installation and every sibling
+  installation sharing these Common Files: a package names the folder (else
+  `not_attributable`, never moved); every owning batch is terminal and settled
+  (`ARCHIVE_NOT_FINISHED`); no EA `active_optimization_run.ini` names it
+  (`ARCHIVE_RUN_ACTIVE`); no driver journal is live, paused or pausing
+  (`ARCHIVE_DRIVER_LIVE`); not continue-able (never-run members, not closed, no
+  successor: `ARCHIVE_CONTINUABLE`) and no unfinished `-rN` successor
+  (`ARCHIVE_SUCCESSOR_ACTIVE`); no unfinished seed hunt, catch-up or hold-up test cites
+  a path inside it (`ARCHIVE_IN_FLIGHT_READER`; finished ones such as b43mig-1 are
+  listed in `cited_by`), no ACTIVE held-out lock freezes one of its SETs; not among the
+  newest `--keep-last` runs (default 10, `ARCHIVE_KEPT_RECENT`) or on `--keep-list`.
+- The desktop library copies a run's `deploy` units into its own library folder at
+  import, so `deploy` moves with the rest.
+- Target: absolute, existing, local NTFS/ReFS, writable, another volume than the run
+  folders (`ARCHIVE_ROOT_SAME_VOLUME`), and `--free-floor-gb` (default 50) still free
+  after the copy (`ARCHIVE_ROOT_FLOOR`). `--run-id` (repeatable) and `--max-runs` narrow
+  a pass.
+- `--apply` copies and sha256-verifies every file, checks the source and the archive
+  hold exactly the same files, writes `.goat-run-archive-manifest.json` in the archive
+  folder and then `ARCHIVED.json` in the source. A crash leaves the source intact; a
+  re-run resumes. `--complete` re-hashes every archived file from disk, checks every
+  source still hashes to the manifest, and only then removes the sources (only regular
+  files below that run folder). It holds its own lock (`ARCHIVE_ARCHIVER_BUSY`), not the
+  terminal lease, and re-checks each run right before copying or removing it.
+
 ### Protected peer restarts
 
 Two MT5 terminals on one PC run independently. The reviewed peer is identified

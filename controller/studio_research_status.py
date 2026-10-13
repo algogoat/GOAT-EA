@@ -577,7 +577,9 @@ def batch_progress(root, install, job, *, now, journal=None):
         return result
     statuses = [m['status'] for m in native['members']]
     aliases = [item['run_alias'] for item in manifest['jobs']]
-    common_run = Path(install['common_files_root']) / manifest['native_run_relative'].replace('\\', '/')
+    from studio_run_folder_archive import run_dir
+    # A run folder moved by evidence-archive --run-folders is read from its archive.
+    common_run = run_dir(Path(install['common_files_root']) / manifest['native_run_relative'].replace('\\', '/'))
     timing = timeline(common_run, aliases)
     # "Qualifying" = passed this run's own export thresholds (goat-export-qualification-v1). The EA
     # also keeps its best set when nothing passed (SortAndTrimExports: Passing=0 Kept=1); those are
